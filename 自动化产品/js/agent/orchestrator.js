@@ -5,7 +5,7 @@ import { state, save, emit, on, notify, accountById, productionById, productById
 import { uid, runPool, debounce } from "../core/util.js";
 import { AI } from "../api/ai.js";
 import { buildSbExternalPrompt, buildImgExternalPrompt, buildSbExternalGroups } from "../api/prompts.js";
-import { groupOf, tagsOf, TAG_POOL, createAccount } from "../domain/accounts.js";
+import { groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
@@ -124,6 +124,8 @@ export function createBatch(plan, sessionId) {
     accountProductIds: plan.accountProductIds || {},
     accountContents: plan.accountContents || {},
     style: plan.style || "",
+    accountCount: Number(plan.accountCount || plan.count) || null,
+    perAccountCount: Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1)),
     sharedRefAssetId: sharedRefAssetIds[0] || null,  // 兼容旧字段
     sharedRefAssetIds,                               // 批量统一参考图（所有账号共用 logo/产品界面，可多张）
     accountRefAssetIds: plan.accountRefAssetIds || {},// 单账号定制参考图
@@ -148,10 +150,11 @@ export const FLOW_TEMPLATES = {
 export function templatePlan(key) {
   const t = FLOW_TEMPLATES[key];
   if (!t) return null;
-  const matched = matchAccounts({ tags: [], group: t.group });
+  const matched = selectAccountsForPlan({ tags: [], group: t.group, accountCount: 3, sort: "stale" });
   return {
     goal: t.label, topicMode: "random", topic: "", productId: "dumate", content: "", style: "",
-    tags: [], group: t.group, accountIds: matched.map(a => a.id), template: key,
+    tags: [], group: t.group, sort: "stale", accountCount: 3, perAccountCount: 1,
+    accountIds: matched.map(a => a.id), template: key,
     sharedRefAssetIds: [], accountRefAssetIds: {}
   };
 }
@@ -161,10 +164,55 @@ export const activeBatches = () => state.batches.filter(b => b.phase !== "done" 
 /* 当前会话的批次（看板按会话独立） */
 export const currentSessionBatches = () => sessionBatches(state.ui.activeSessionId).filter(ownedBy);
 
-export function matchAccounts({ tags = [], group = "all" }) {
-  return state.accounts.filter(a =>
+function accountLastActivityAt(acc) {
+  const prodTimes = state.productions
+    .filter(p => p.accountId === acc.id)
+    .map(p => p.deliveredAt || p.updatedAt || p.createdAt || 0);
+  const assetTimes = state.assets
+    .filter(a => a.accountId === acc.id && a.delivered)
+    .map(a => a.publishedAt || a.updatedAt || a.createdAt || 0);
+  return Math.max(acc.lastPublishedAt || 0, acc.updatedAt || 0, acc.createdAt || 0, ...prodTimes, ...assetTimes);
+}
+
+export function matchAccounts({ tags = [], group = "all", sort = "" } = {}) {
+  const list = state.accounts.filter(a =>
     (group === "all" || !group || groupOf(a) === group) &&
     (!tags.length || tags.some(t => tagsOf(a).includes(t))));
+  if (sort === "stale") {
+    list.sort((a, b) => accountLastActivityAt(a) - accountLastActivityAt(b) || String(a.name || "").localeCompare(String(b.name || ""), "zh-Hans-CN"));
+  }
+  return list;
+}
+
+export function selectAccountsForPlan(params = {}) {
+  const matched = matchAccounts(params);
+  const want = Number(params.accountCount || params.count);
+  if (want > 0 && want < matched.length) return matched.slice(0, want);
+  return matched;
+}
+
+export function defaultPlan(goal = "选择3个很久没发布内容的图文账号，每个账号创作1条内容") {
+  const fb = parseGoalFallback(goal);
+  const params = {
+    ...fb,
+    group: fb.group && fb.group !== "all" ? fb.group : "图文组",
+    sort: fb.sort || "stale",
+    accountCount: fb.accountCount || fb.count || 3,
+    perAccountCount: fb.perAccountCount || 1
+  };
+  const matched = selectAccountsForPlan(params);
+  return {
+    status: "pending", goal,
+    topicMode: "random", topic: "",
+    productId: "dumate", content: "",
+    accountProductIds: {}, accountContents: {},
+    style: params.style || "", tags: params.tags || [], group: params.group,
+    sort: params.sort,
+    accountCount: params.accountCount,
+    perAccountCount: params.perAccountCount,
+    accountIds: matched.map(a => a.id),
+    sharedRefAssetIds: [], accountRefAssetIds: {}
+  };
 }
 
 function hashSeed(str = "") {
@@ -508,21 +556,29 @@ function setBatchPhase(batch, phase) {
 
 export async function startBatch(plan, session) {
   const accounts = plan.accountIds.map(accountById).filter(Boolean);
-  if (!accounts.length) { agentSay("⚠ 没有可用账号，先调整计划或创建账号。"); return null; }
+  if (!accounts.length) { agentSay("⚠ 没有可用账号，先调整筛选条件。"); return null; }
   const batch = createBatch(plan, session.id);
+  const perAccountCount = Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1));
   accounts.forEach(acc => {
     const productId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
-    const p = createProduction({ accountId: acc.id, topic: plan.topic, origin: "agent", batchId: batch.id, style: plan.style, productId });
-    if (p) batch.productionIds.push(p.id);
+    for (let i = 0; i < perAccountCount; i++) {
+      const topic = plan.topicMode === "random" ? "" : (perAccountCount > 1 ? `${plan.topic} ${i + 1}/${perAccountCount}` : plan.topic);
+      const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId });
+      if (p) {
+        p.batchItemIndex = i + 1;
+        p.batchItemTotal = perAccountCount;
+        batch.productionIds.push(p.id);
+      }
+    }
   });
   save("batches", "productions");
   addMsg(session, { role: "agent", type: "progress", payload: { batchId: batch.id } });
-  notify("agent", `批次启动：「${plan.topic}」`, `${accounts.length} 个账号并行起草`);
+  notify("agent", `批次启动：「${batch.topic}」`, `${accounts.length} 个账号 · 共 ${batch.productionIds.length} 条内容`);
   // 起草过程播报到思考面板
   emit("agent:thinking", true);
-  think(`并发起草 ${accounts.length} 个账号的脚本与提示词…`);
+  think(`并发起草 ${accounts.length} 个账号 · ${batch.productionIds.length} 条内容…`);
   let drafted = 0;
-  const total = accounts.length;
+  const total = batch.productionIds.length;
   runPool(batchProds(batch), async p => {
     await draftOne(p, batch);
     drafted++;
@@ -777,101 +833,55 @@ export function contextSummary() {
 
 /* 思考过程播报（驱动对话区的思考小面板） */
 export function think(step) { emit("agent:think", step); }
-const INTENT_LABEL = { plan_batch: "拆解量产计划", create_accounts: "批量建号", run_generation: "派发生成任务", approve_all: "批量过审", deliver_all: "批量交付", retry_failed: "重试失败项", status_query: "汇总当前进度", chat: "查阅数据后回答" };
+const INTENT_LABEL = { plan_batch: "拆解量产计划", run_generation: "派发生成任务", approve_all: "批量过审", deliver_all: "批量交付", retry_failed: "重试失败项", status_query: "汇总当前进度" };
 
 function isPureAccountSelection(text) {
   const s = text.trim();
-  if (/[「"]/.test(s) || /主题|关于|围绕|做一?期|出一?期|发一?条/.test(s)) return false;
-  return /^(随机)?(选择|选|挑|找|找出|匹配|帮我选|帮我找|给我找|选出|安排|来)\s*([0-9两一二三四五六七八九十]+|一些|几个|几|一批|若干)?\s*(个|条|只|家)?\s*(账号|号|图文号|图文账号|素材号|素材账号|真人号|真人账号|数字人号|数字人账号)/.test(s);
+  if (/[「"]/.test(s) || /主题|关于|围绕|做一?期|出一?期/.test(s)) return false;
+  return /(选择|选|挑|找|找出|匹配|帮我选|帮我选择|帮我找|给我挑|给我找|选出|安排|量产|创作|做).{0,24}(账号|号|图文|素材|真人|数字人)/.test(s);
 }
 
 export async function handleUserText(text) {
   const session = ensureSession();
-  addMsg(session, { role: "user", type: "text", payload: { text } });
+  session.title = (text || "").slice(0, 18) || "量产计划";
+  save("sessions");
   emit("agent:thinking", true);
   think("读取工作台上下文…");
   try {
     const r = await routeIntent(text, contextSummary());
     think(`识别意图 · ${INTENT_LABEL[r.intent] || r.intent}`);
-    if (r.intent === "create_accounts") {
-      const accs = await AI.parseAccountsMd(text);
-      let created = 0;
-      const names = [];
-      accs.forEach(x => {
-        if (!x.name || state.accounts.some(a => a.name === x.name)) return;
-        createAccount(x); created++; names.push(x.name);
-      });
-      agentSay(created
-        ? `已创建 ${created} 个账号：${names.join("、")}。直接说主题就能给它们安排一批量产。`
-        : `没有解析出新账号（重名会跳过）。可以这样描述：「创建2个图文号：A 定位办公技巧；B 定位学生党效率」。`);
+    const fb = parseGoalFallback(text);
+    const params = { ...(r.params || {}), ...fb };
+    if (fb.group && fb.group !== "all") params.group = fb.group;
+    if (fb.accountCount != null) params.accountCount = fb.accountCount;
+    if (fb.perAccountCount != null) params.perAccountCount = fb.perAccountCount;
+    if (fb.count != null) params.count = fb.count;
+    if (fb.sort) params.sort = fb.sort;
+    if (isPureAccountSelection(text)) params.topic = "";
+    think("按分组、标签、活跃度匹配账号矩阵…");
+    const matched = selectAccountsForPlan(params);
+    const accountCount = Number(params.accountCount || params.count) || matched.length;
+    const perAccountCount = Math.max(1, Math.min(12, Number(params.perAccountCount || 1) || 1));
+    think(`命中 ${matched.length} 个账号 · 每号 ${perAccountCount} 条 · 生成量产任务板`);
+    const wantsRandom = /随机主题|各自主题|主题随机/.test(text) || !params.topic;
+    const payload = {
+      status: "pending", goal: text,
+      topicMode: wantsRandom ? "random" : "fixed",
+      topic: params.topic || "", productId: "dumate", content: "",
+      accountProductIds: {}, accountContents: {},
+      style: params.style || "", tags: params.tags || [], group: params.group || "all",
+      sort: params.sort || "",
+      accountCount, perAccountCount,
+      accountIds: matched.map(a => a.id),
+      sharedRefAssetIds: [], accountRefAssetIds: {}
+    };
+    const existing = [...session.messages].reverse().find(m => m.type === "plan" && m.payload?.status === "pending");
+    if (existing) {
+      existing.payload = { ...existing.payload, ...payload };
+      save("sessions");
       emit("agent:session");
-      return;
-    }
-    if (r.intent === "run_generation") {
-      let total = 0;
-      activeBatches().forEach(b => { total += startGeneration(b); });
-      agentSay(total ? `收到，已派发 ${total} 个生成任务（并发 2，其余排队）。看板可以实时盯进度。` : "当前没有就绪的渲染任务（分镜上传齐了才能生成）。");
-      return;
-    }
-    if (r.intent === "approve_all") {
-      let n = 0; activeBatches().forEach(b => n += approveAll(b));
-      agentSay(n ? `已标记 ${n} 条为可发布，说「全部发布」即可入供应商端。` : "没有待发布的内容。");
-      return;
-    }
-    if (r.intent === "deliver_all") {
-      let n = 0; activeBatches().forEach(b => n += deliverAll(b));
-      agentSay(n ? `已发布 ${n} 条内容：定稿入发布清单，供应商端按发布序号可见可下载。` : "没有可发布的内容。");
-      return;
-    }
-    if (r.intent === "retry_failed") {
-      let n = 0; activeBatches().forEach(b => n += retryFailedIn(b));
-      agentSay(n ? `正在重试 ${n} 个失败任务。` : "没有失败任务。");
-      return;
-    }
-    if (r.intent === "status_query") {
-      agentSay(statusText());
-      return;
-    }
-    if (r.intent === "plan_batch") {
-      const fb = parseGoalFallback(text);
-      const params = r.params.topic ? { ...r.params } : { ...fb };
-      // 分组 + 数量以文本规则为准（更可靠，兜底 LLM 误判 group=all 或漏数量）
-      if (fb.group && fb.group !== "all") params.group = fb.group;
-      if (fb.count != null) params.count = fb.count;
-      // 纯选号指令（选 / 随机选 N个…号/账号）不要把整句当主题 → 每号随机主题
-      if (isPureAccountSelection(text)) params.topic = "";
-      think("按标签 / 分组匹配账号矩阵…");
-      let matched = matchAccounts(params);
-      // 指定数量：随机抽取 N 个（"随机选10个不太一样的"）
-      const want = Number(params.count);
-      if (want > 0 && want < matched.length) {
-        matched = [...matched].sort(() => Math.random() - 0.5).slice(0, want);
-        think(`按指令随机抽取 ${want} 个账号`);
-      }
-      think(`命中 ${matched.length} 个账号 · 生成计划卡`);
-      const wantsRandom = /随机主题|各自主题|主题随机/.test(text) || !params.topic;
-      addMsg(session, {
-        role: "agent", type: "plan",
-        payload: {
-          status: "pending", goal: text,
-          topicMode: wantsRandom ? "random" : "fixed",
-          topic: params.topic || "", productId: "dumate", content: "",
-          accountProductIds: {}, accountContents: {},
-          style: params.style || "", tags: params.tags || [], group: params.group || "all",
-          accountIds: matched.map(a => a.id)
-        }
-      });
-      return;
-    }
-    // chat
-    try {
-      const reply = await AI.chat([
-        { role: "system", content: `你是「量产 Agent」，一个内容生产工作台的调度助手。工作台能力：按账号定位批量起草脚本/图卡 → 站外出图上传 → （视频）模拟渲染 → 智能剪辑+字幕 → 人工审核 → 定稿交付。当前状态：${contextSummary()}。用简洁中文回答，不要 markdown 标题，必要时给出下一步建议（如「说出主题即可发起量产」）。` },
-        { role: "user", content: text }
-      ]);
-      agentSay(reply || statusText());
-    } catch (e) {
-      agentSay(statusText());
+    } else {
+      addMsg(session, { role: "agent", type: "plan", payload });
     }
   } finally {
     emit("agent:thinking", false);

@@ -4,13 +4,12 @@
 import { $, $$, esc, copyText, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById } from "../core/store.js";
-import { AI } from "../api/ai.js";
 import { toast, confirmModal, promptModal, publishModal } from "../ui/components.js";
 import {
   ensureSession, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
-  matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
-  FLOW_TEMPLATES, templatePlan
+  selectAccountsForPlan, startBatch, startGeneration, deliverAll, retryFailedIn,
+  templatePlan, defaultPlan
 } from "./orchestrator.js";
 import { renderMessage, boardRow } from "./cards.js";
 import { openProductionDrawer } from "../views/prodDrawer.js";
@@ -21,35 +20,25 @@ let mounted = false;
 let rootEl = null;
 let thinking = false;
 let thinkSteps = [];       // 思考过程播报
-let heroSugs = null;       // AI/离线随机生成的灵感建议（每次进入都重新随机）
-let sugsBusy = false;
 
-const QUICK_ACTIONS = [
-  { t: "查看状态", text: "现在进度怎么样了" },
-  { t: "全部生成", text: "开始全部生成" },
-  { t: "全部交付", text: "全部交付" }
-];
-
-async function loadSugs(force = false) {
-  if (sugsBusy || (heroSugs && !force)) return;
-  sugsBusy = true;
-  try { heroSugs = await AI.suggestGoals({ accounts: state.accounts }); }
-  catch (e) { /* 离线兜底已在 AI 内部处理 */ }
-  finally { sugsBusy = false; }
-  if (isLive()) renderMsgs();
+function ensurePlanBoard(session = ensureSession()) {
+  if ((session.messages || []).length) return session;
+  session.title = "新量产计划";
+  addMsg(session, { role: "agent", type: "plan", payload: defaultPlan() });
+  return session;
 }
 
 export const agentView = {
   render(root) {
     rootEl = root;
-    const s = ensureSession();
+    const s = ensurePlanBoard(ensureSession());
     root.innerHTML = `
       <div class="agent-shell">
         <div class="agw-bg"><i></i><i></i><i></i></div>
 
         <header class="agw-top">
           <button class="agw-back" data-agw="exit">${icon("arrowLeft", 15)} 退出工作台</button>
-          <div class="agw-brand"><span class="agw-ava">${agentAvatar(26)}</span><b>批量创作</b><span class="agw-tag">Agent 总调度</span></div>
+          <div class="agw-brand"><span class="agw-ava">${agentAvatar(26)}</span><b>批量创作</b><span class="agw-tag">量产任务板</span></div>
           <div class="agw-phase" id="agwPhase"></div>
           <div class="agw-top-right">
             <label class="agw-auto" title="开启后：上传齐自动渲染、渲染完自动进入待发布">
@@ -66,9 +55,8 @@ export const agentView = {
           <main class="agw-conv">
             <div class="agw-msgs" id="agwMsgs"></div>
             <div class="agw-composer" id="agwComposer">
-              <div class="agc-quick" id="agwQuick">${QUICK_ACTIONS.map((q, i) => `<button class="chip" data-quick="${i}">${esc(q.t)}</button>`).join("")}</div>
               <div class="agw-input-card">
-                <textarea id="agwInput" rows="1" placeholder="一句话下达目标，或直接拖图上传…（Enter 发送 / Shift+Enter 换行）"></textarea>
+                <textarea id="agwInput" rows="1" placeholder="描述量产需求，例如：选择3个久未发布的图文账号，每号3条…"></textarea>
                 <div class="agw-input-tools">
                   <label class="icon-btn ghost" title="上传上传图片">
                     ${icon("upload", 16)}<input type="file" accept="image/*,video/*" multiple hidden id="agwUpload" />
@@ -126,7 +114,7 @@ function schedule(cards = false, phaseOnly = false) {
 function renderSessions() {
   const el = $("#agwSessions"); if (!el) return;
   el.innerHTML = `
-    <button class="agw-new" data-agw="new-session">${icon("plus", 14)} 新会话</button>
+    <button class="agw-new" data-agw="new-session">${icon("plus", 14)} 新建量产</button>
     <div class="agw-slist">${state.sessions.map(s => {
       const last = s.messages[s.messages.length - 1];
       const hasActive = state.batches.some(b => b.sessionId === s.id && b.phase !== "done");
@@ -149,32 +137,9 @@ function textOf(m) {
 
 function renderMsgs(scroll = false) {
   const el = $("#agwMsgs"); if (!el) return;
-  const s = ensureSession();
+  const s = ensurePlanBoard(ensureSession());
   if (!s.messages.length) {
-    loadSugs();
-    el.innerHTML = `
-      <div class="agw-hero">
-        <span class="agw-hero-avatar">${agentAvatar(60)}</span>
-        <h2>把一批内容交给我</h2>
-        <p>固定流程一键发起，或一句话自由下达。我来：<b>选号 → 批量起草 → 渲染 → 智能剪辑 → 你来定稿 → 发布入供应商端</b>。<br/>中途关页面也没关系，回来我会接着推进。</p>
-        <div class="agw-tpls">
-          ${Object.entries(FLOW_TEMPLATES).map(([k, t]) => `
-            <button class="agw-tpl" data-tpl="${k}">
-              <span class="tpl-ico">${icon(t.icon, 18)}</span>
-              <b>${esc(t.label)}</b>
-              <em>${esc(t.desc)}</em>
-              <span class="tpl-go">发起 ${icon("arrowRight", 12)}</span>
-            </button>`).join("")}
-        </div>
-        <div class="agw-sugs-head">
-          <span>${icon("dice", 13)} 随机灵感 <em>${sugsBusy ? "AI 正在按账号矩阵想新点子…" : "按账号矩阵随机生成"}</em></span>
-          <button class="link-btn" data-sug-refresh ${sugsBusy ? "disabled" : ""}>${icon("refresh", 12)} 换一批</button>
-        </div>
-        <div class="agw-hero-sugs">
-          ${(heroSugs || ["给全部账号做一期「把乱文件夹一键归类」", "给图文组来一批「下班前自动生成日报」", "给素材号全自动出一批「合同关键信息提取」"])
-          .map(t => `<button class="agw-sug" data-sug="${esc(t)}">${esc(t)} ${icon("arrowRight", 13)}</button>`).join("")}
-        </div>
-      </div>`;
+    el.innerHTML = "";
     return;
   }
   el.innerHTML = s.messages.map(renderMessage).join("") + `<div id="agwThinking"></div>`;
@@ -451,16 +416,11 @@ function wire(root) {
       if (!plan) return;
       if (!plan.accountIds.length) { toast("该分组下还没有账号"); return; }
       const s3 = ensureSession();
-      addMsg(s3, { role: "user", type: "text", payload: { text: plan.goal } });
-      addMsg(s3, { role: "agent", type: "plan", payload: { status: "pending", ...plan } });
+      const existing = [...s3.messages].reverse().find(m => m.type === "plan" && m.payload?.status === "pending");
+      if (existing) { existing.payload = { ...existing.payload, status: "pending", ...plan }; save("sessions"); renderMsgs(true); }
+      else addMsg(s3, { role: "agent", type: "plan", payload: { status: "pending", ...plan } });
       return;
     }
-    if (e.target.closest("[data-sug-refresh]")) { heroSugs = null; loadSugs(true); renderMsgs(); return; }
-
-    const sug = e.target.closest("[data-sug]");
-    if (sug) { input.value = sug.dataset.sug; fit(); input.focus(); return; }
-    const quick = e.target.closest("[data-quick]");
-    if (quick) { input.value = QUICK_ACTIONS[+quick.dataset.quick].text; fit(); input.focus(); return; }
 
     const act = e.target.closest("[data-act]");
     if (!act) return;
@@ -588,7 +548,9 @@ function wire(root) {
         m.payload[f.dataset.pf] = Array.from(f.selectedOptions).map(o => o.value).filter(Boolean).slice(0, 5);
         if (f.dataset.pf === "sharedRefAssetIds") m.payload.sharedRefAssetId = m.payload.sharedRefAssetIds[0] || null;
       } else {
-        m.payload[f.dataset.pf] = f.value;
+        m.payload[f.dataset.pf] = f.dataset.pf === "perAccountCount"
+          ? Math.max(1, Math.min(12, Number(f.value || 1) || 1))
+          : f.value;
       }
     }
     if (ap) {
@@ -604,7 +566,7 @@ function wire(root) {
       m.payload.accountRefAssetIds[ar.dataset.paccRef] = Array.from(ar.selectedOptions).map(o => o.value).filter(Boolean).slice(0, 3);
     }
     save("sessions");
-    if (f?.multiple || ar) rerenderPlanCard(m.id);
+    if (f?.multiple || ar || f?.dataset.pf === "perAccountCount") rerenderPlanCard(m.id);
   };
   shell.addEventListener("input", updatePlanField);
   shell.addEventListener("change", updatePlanField);
@@ -621,7 +583,7 @@ function wire(root) {
       const t = tagBtn.dataset.ptag;
       const i = m.payload.tags.indexOf(t);
       i >= 0 ? m.payload.tags.splice(i, 1) : m.payload.tags.push(t);
-      m.payload.accountIds = matchAccounts(m.payload).map(a => a.id);
+      m.payload.accountIds = selectAccountsForPlan(m.payload).map(a => a.id);
     } else {
       const id = accBtn.dataset.pacc;
       const i = m.payload.accountIds.indexOf(id);

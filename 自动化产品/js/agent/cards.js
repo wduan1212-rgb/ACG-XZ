@@ -5,7 +5,7 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver } from "../core/store.js";
 import { platChip, groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches } from "./orchestrator.js";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js";
 import { urlFor } from "../domain/assets.js";
 
 export function renderMessage(m) {
@@ -23,8 +23,8 @@ export function renderMessage(m) {
 
 function isPureAccountSelectionText(text) {
   const s = String(text || "").trim();
-  if (/[「"]/.test(s) || /主题|关于|围绕|做一?期|出一?期|发一?条/.test(s)) return false;
-  return /^(随机)?(选择|选|挑|找|找出|匹配|帮我选|帮我找|给我挑|给我找|选出|安排|来|创作|做|量产)\s*([0-9两一二三四五六七八九十]+|一些|几个|几|一批|若干)?\s*(个|条|只|家|篇|张|支)?\s*(小红书|视频号)?\s*(账号|号|图文|图文号|图文账号|素材视频|素材号|素材账号|真人号|真人账号|数字人号|数字人账号)/.test(s);
+  if (/[「"]/.test(s) || /主题|关于|围绕|做一?期|出一?期/.test(s)) return false;
+  return /(选择|选|挑|找|找出|匹配|帮我选|帮我选择|帮我找|给我挑|给我找|选出|安排|量产|创作|做).{0,24}(账号|号|图文|素材|真人|数字人)/.test(s);
 }
 
 function zhCount(text) {
@@ -53,14 +53,12 @@ function normalizeSelectionPlan(p) {
   if (group !== p.group) { p.group = group; changed = true; }
   if (!explicitTags.length && (p.tags || []).length) { p.tags = []; changed = true; }
   else if (explicitTags.length && explicitTags.join("|") !== (p.tags || []).join("|")) { p.tags = explicitTags; changed = true; }
-  const want = zhCount(goal);
-  let matched = state.accounts.filter(a =>
-    (p.group === "all" || groupOf(a) === p.group) &&
-    (!(p.tags || []).length || (p.tags || []).some(t => tagsOf(a).includes(t)))
-  );
-  if (want > 0 && want < matched.length && !(p.accountIds || []).length) matched = matched.slice(0, want);
+  const want = p.accountCount || zhCount(goal);
+  if (/很久没发布|久未发布|长期没发|沉默|低活跃|不活跃|没更新/.test(goal)) { p.sort = "stale"; changed = true; }
+  let matched = selectAccountsForPlan({ group: p.group, tags: p.tags || [], sort: p.sort || "", accountCount: want });
   const nextIds = matched.map(a => a.id);
   if (!(p.accountIds || []).length || (p.accountIds || []).some(id => !nextIds.includes(id))) { p.accountIds = nextIds; changed = true; }
+  if (!p.perAccountCount) { p.perAccountCount = 1; changed = true; }
   return changed;
 }
 
@@ -103,6 +101,8 @@ const CARD = {
     const matched = (p.accountIds || []).map(accountById).filter(Boolean);
     const confirmed = p.status === "confirmed";
     const cancelled = p.status === "cancelled";
+    const perAccountCount = Math.max(1, Math.min(12, Number(p.perAccountCount || 1) || 1));
+    const totalCount = matched.length * perAccountCount;
     const products = Array.isArray(state.products) && state.products.length ? state.products : [{ id: "dumate", name: "百度搭子", shortName: "搭子" }];
     const productOptions = (selected = "") => products.map(pr => `<option value="${esc(pr.id)}" ${selected === pr.id ? "selected" : ""}>${esc(pr.shortName || pr.name)}</option>`).join("");
     const globalRefs = selectedRefIds(p);
@@ -120,7 +120,7 @@ const CARD = {
       </div>`).join("")}
     </div>` : "";
     return `<div class="ag-card plan ${confirmed ? "resolved" : ""}" data-plan="${m.id}">
-      <div class="agc-head">${icon("kanban", 15)}<b>量产计划</b>
+      <div class="agc-head">${icon("kanban", 15)}<b>量产任务板</b>
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : "待确认"}</span>
       </div>
       <div class="agc-grid">
@@ -136,6 +136,10 @@ const CARD = {
           <textarea data-pf="content" rows="3" ${confirmed || cancelled ? "disabled" : ""} placeholder="写具体创作内容、产品角度或表达偏好；留空则每号按账号风格随机。">${esc(p.content || p.style || "")}</textarea>
           <em>默认沿用各账号自带风格，不再单独选择标签。</em>
         </label>
+        <label class="agc-field">每号内容数
+          <input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" ${confirmed || cancelled ? "disabled" : ""} />
+          <em>${matched.length} 个账号 × ${perAccountCount} 条 = ${totalCount} 条</em>
+        </label>
       </div>
       ${(() => {
         const editable = !confirmed && !cancelled;
@@ -149,7 +153,7 @@ const CARD = {
           ${editable && globalRefs.length ? `<button class="link-btn" data-act="plan-refclear" data-mid="${m.id}">清空统一参考</button>` : ""}
         </div>`;
       })()}
-      <div class="agc-sec">命中 ${matched.length} 个账号 <em>点击可增减</em></div>
+      <div class="agc-sec">命中 ${matched.length} 个账号 · 每号 ${perAccountCount} 条 · 共 ${totalCount} 条 <em>点击可增减</em></div>
       <div class="agc-accs">${state.accounts.map(a => {
         const on = (p.accountIds || []).includes(a.id);
         return `<button class="agc-acc ${on ? "on" : ""}" data-pacc="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>
@@ -161,7 +165,7 @@ const CARD = {
       ${perAccountOverrides}
       ${confirmed || cancelled ? "" : `<div class="agc-foot">
         <button class="btn ghost sm" data-act="plan-cancel" data-mid="${m.id}">取消</button>
-        <button class="btn primary sm" data-act="plan-confirm" data-mid="${m.id}">${icon("spark", 14)} 确认执行（${matched.length} 条）</button>
+        <button class="btn primary sm" data-act="plan-confirm" data-mid="${m.id}">${icon("spark", 14)} 确认执行（${totalCount} 条）</button>
       </div>`}
     </div>`;
   },
