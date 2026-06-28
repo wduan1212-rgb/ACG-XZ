@@ -3,13 +3,15 @@
 import { $, $$, esc, gradFor, uid } from "./core/util.js";
 import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
-import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL } from "./core/store.js";
+import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById } from "./core/store.js";
 import * as remote from "./core/remote.js";
 import { pruneEmptySessions } from "./agent/orchestrator.js";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
-import { createAccount, deleteAccount, groupOf, platChip } from "./domain/accounts.js";
+import { createAccount, deleteAccount, groupOf, platChip, appearanceAnchorFor } from "./domain/accounts.js";
+import { productTagLabel } from "./domain/delivery.js";
 import { XHS_ACCOUNT_SEED } from "./data/xhsAccountsSeed.js";
+import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js";
 import { refreshProviderStatus } from "./api/providers.js";
 import { applyLocalDevKeys } from "./local/devKeys.js";
@@ -63,6 +65,106 @@ function ensureXhsSeedAccounts() {
   if (!state.ui.activeAccountId && state.accounts.length) state.ui.activeAccountId = state.accounts[0].id;
   save("accounts", "meta");
   setTimeout(() => toast(`已补齐小红书账号库：新增 ${missing.length} 个账号`), 800);
+}
+
+function accountFromProfile(profile) {
+  const account = {
+    id: uid(),
+    name: profile.name,
+    platform: profile.platform === "视频号" ? "视频号" : "小红书",
+    mode: profile.mode === "图文" ? "图文" : "视频",
+    subType: profile.mode === "图文" ? "" : (profile.subType === "无数字人" ? "无数字人" : "数字人"),
+    position: profile.position || "（待补充定位）",
+    styleProfile: profile.styleProfile || "",
+    tone: profile.tone || "教程感",
+    qtags: profile.qtags || [],
+    monthlyDone: 0,
+    exportSeq: 0,
+    charBoardAssetId: null,
+    voiceRefAssetId: null,
+    voiceId: profile.voiceId || "",
+    voiceName: profile.voiceName || "",
+    avatarAssetId: null,
+    imageStyleAssetId: null,
+    imagePromptTemplate: profile.imagePromptTemplate || "",
+    appearanceAnchor: "",
+    lockedStyle: null,
+    customStyleChips: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  if (account.mode === "视频" && account.subType !== "无数字人") account.appearanceAnchor = appearanceAnchorFor(account);
+  return account;
+}
+
+async function syncAccountsInChunks() {
+  const snap = JSON.parse(JSON.stringify(state.accounts || []));
+  await db.replaceAll("accounts", snap).catch(() => null);
+  if (!remote.isOn() || !remote.hasToken()) return;
+  for (let i = 0; i < snap.length; i += 6) {
+    await remote.putCollection("accounts", snap.slice(i, i + 6));
+  }
+}
+
+async function applyAccountProfileSeed({ createMissing = true, quiet = false } = {}) {
+  if (state.ui.accountProfileVersion === ACCOUNT_PROFILE_VERSION) return 0;
+  let changed = 0, created = 0;
+  ACCOUNT_PROFILE_SEED.forEach(profile => {
+    let acc = state.accounts.find(a => a.name === profile.name && a.platform === profile.platform);
+    if (!acc && createMissing) {
+      if (remote.isOn() && remote.hasToken()) {
+        state.accounts.push(accountFromProfile(profile));
+      } else {
+        createAccount(profile);
+      }
+      created++; changed++;
+      return;
+    }
+    if (!acc) return;
+    const patch = {
+      mode: profile.mode,
+      subType: profile.mode === "图文" ? "" : profile.subType,
+      position: profile.position,
+      styleProfile: profile.styleProfile,
+      tone: profile.tone || acc.tone || "教程感",
+      qtags: profile.qtags || acc.qtags || [],
+      imagePromptTemplate: profile.imagePromptTemplate || acc.imagePromptTemplate || "",
+      voiceId: profile.voiceId || acc.voiceId || "",
+      voiceName: profile.voiceName || acc.voiceName || ""
+    };
+    const needs = Object.entries(patch).some(([k, v]) => JSON.stringify(acc[k] || (Array.isArray(v) ? [] : "")) !== JSON.stringify(v));
+    if (needs) { Object.assign(acc, patch, { updatedAt: Date.now() }); changed++; }
+  });
+  if (changed || state.ui.accountProfileVersion !== ACCOUNT_PROFILE_VERSION) {
+    state.ui.accountProfileVersion = ACCOUNT_PROFILE_VERSION;
+    if (remote.isOn() && remote.hasToken()) {
+      await syncAccountsInChunks();
+      save("meta");
+    } else {
+      save("accounts", "meta");
+    }
+    if (!quiet) setTimeout(() => toast(`已同步账号定位/风格：更新 ${changed - created} 个，新增 ${created} 个视频号`), 900);
+  }
+  return changed;
+}
+
+function normalizeDeliveredProductTags() {
+  let changed = 0;
+  state.assets.forEach(asset => {
+    if (!asset.delivered) return;
+    const tag = asset.productTag || productTagLabel(productById(asset.productId || "dumate"));
+    if (!tag) return;
+    if (asset.productTag !== tag) { asset.productTag = tag; changed++; }
+    asset.tags = Array.isArray(asset.tags) ? asset.tags : [];
+    if (!asset.tags.includes(tag)) { asset.tags.push(tag); changed++; }
+    const name = String(asset.name || "");
+    if (name && !name.includes(`-${tag}-`) && /-(20\d{6})$/.test(name)) {
+      asset.name = name.replace(/-(20\d{6})$/, `-${tag}-$1`);
+      changed++;
+    }
+  });
+  if (changed) save("assets");
+  return changed;
 }
 
 /* ---------- 登录（成员账号制：用户名 + 口令） ---------- */
@@ -139,6 +241,8 @@ function enterMember(member) {
 /* 共享后端登录：先拉服务端全量快照覆盖本地，再复用本地 enter 逻辑 */
 async function enterRemote(member) {
   await pullRemote();
+  await applyAccountProfileSeed({ createMissing: true });
+  normalizeDeliveredProductTags();
   enterMember(member);
   resumeJobs(); resumeActiveBatches();
 }
@@ -341,6 +445,8 @@ async function boot() {
       seedIfEmpty();
       ensureXhsSeedAccounts();
     }
+    if (!remote.isOn() || remote.hasToken()) await applyAccountProfileSeed({ createMissing: true });
+    normalizeDeliveredProductTags();
     pruneEmptySessions();
     await enableServerProxyIfConfigured();
     applyKeyOverrides(state.apiKeys);
@@ -393,6 +499,8 @@ async function boot() {
       const m = await remote.me();
       if (m) {
         await pullRemote();
+        await applyAccountProfileSeed({ createMissing: true });
+        normalizeDeliveredProductTags();
         state.role = m.role; state.ui.currentMemberId = m.id; save("meta");
         document.documentElement.classList.add("has-auth-token");
         applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;

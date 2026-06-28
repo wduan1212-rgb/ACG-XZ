@@ -7,9 +7,17 @@ import { buildDeliveryName, modeLabel } from "./accounts.js";
 import { setStage, touch } from "./productions.js";
 import { assetU8, urlFor } from "./assets.js";
 
+export function productTagLabel(product) {
+  const name = String(product?.name || "");
+  const short = String(product?.shortName || "");
+  if (/百度搭子/.test(name + short)) return "百度搭子";
+  const picked = short || name.split(/[\/｜|]/).map(x => x.trim()).find(Boolean) || name;
+  return String(picked || "").replace(/\s+/g, "").slice(0, 12);
+}
+
 function productTagFor(p) {
   const product = productById(p?.artifacts?.script?.productId || "dumate");
-  return String(product?.shortName || product?.name || "").replace(/\s+/g, "").slice(0, 12);
+  return productTagLabel(product);
 }
 
 function insertProductTagBeforeDate(name, tag) {
@@ -175,7 +183,7 @@ export async function batchDownloadZip(assets, filename = "") {
   const entries = [];
   for (let i = 0; i < list.length; i++) {
     const a = list[i];
-    const folder = `${String(i + 1).padStart(3, "0")}_${safeName(a.title || a.name)}`;
+    const folder = `${String(i + 1).padStart(3, "0")}_${safeName(a.name || a.title)}`;
     entries.push(...await deliveryEntries(a, folder));
     a.status = "已下载";
   }

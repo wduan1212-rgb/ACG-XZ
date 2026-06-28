@@ -506,28 +506,23 @@ function richImagePrompt(item, i, total, ctx) {
   const intent = summarizeImageIntent(ctx);
   const sourcePrompt = cleanText(item?.prompt || item?.idea || item?.line || "");
   const cue = cleanImagePromptSignal(stripInternalImageLabels(sourcePrompt), 72);
-  const modelCue = cue
+  const contentCue = cue
     ? `内容线索：${cue}。`
     : `围绕「${intent.main}」重新组织信息，突出烦恼、动作和结果。`;
   const title = shortChinese(item?.title, 18) || task.title;
   const headline = deriveImageHeadline(item, i, intent, task);
-  const styleLine = ctx.style
-    ? `风格沿用账号模板：${shortChinese(ctx.style, 42)}。`
-    : "风格为白底或浅色底、蓝紫点缀、圆角卡片、真实截图质感、大留白。";
-  const refLine = ctx.styleRefName
-    ? `必须参考统一参考图「${ctx.styleRefName}」的界面结构、品牌色、图标比例、截图质感和视觉密度；多张参考图要综合使用，但不要复制参考图里的旧标题和示例文案。`
-    : "如有统一参考图，优先锁定产品界面层级、品牌色、截图质感和卡片密度，但不要复制参考图里的旧标题和示例文案。";
-  const productLine = ctx.product
-    ? `产品表达围绕「${intent.productName}」的真实功能和使用场景。`
-    : "产品表达以真实办公流程和界面结果为主。";
+  const accountPosition = shortChinese(ctx.account?.position || "账号定位：办公效率教程型；真实体验视角、步骤清楚、少广告感。", 120);
+  const imageStyle = ctx.style
+    ? shortChinese(ctx.style.replace(/^账号风格[:：]?/, ""), 180)
+    : "白底或浅色底，圆角卡片，大留白，真实办公截图质感，蓝紫点缀，文字大而清楚。";
+  const refPrefix = ctx.styleRefName
+    ? `请根据上传的参考图（${ctx.styleRefName}），综合参考产品界面层级、品牌色、截图质感和视觉密度；不要复制参考图里的旧标题和示例文案。`
+    : "";
+  const productLine = ctx.product ? `产品/应用：${intent.productName}，只在流程或界面里自然出现。` : "产品表达以真实办公流程和界面结果为主。";
   return {
     title,
     ui: item?.ui !== false,
-    prompt: normalizeImageSizeText(`小红书笔记风格配图，竖版3:4（1080×1440）。${styleLine}${refLine}${productLine}
-版式：${task.layout}，标题区留白充足，卡片边缘干净，只用少量圆点、细线、箭头或便签贴纸。
-画面：${task.visual}。${modelCue}信息按「烦恼—动作—结果」组织到界面、文件、数据卡片和桌面物件里，不照抄用户输入。
-画面文字：只放大标题「${headline}」和一句短副标题，最多2个关键词小标签；参考图里的文字全部当作不可复制的占位，不要把“封面、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张”等内部分类词写进画面。
-细节：光线明亮通透，白底不要发灰，蓝紫高亮只用于关键按钮/进度/结果卡；界面小字可模糊但结构真实。约束：不要乱码、不要二维码、不要页码、不要六宫格拼图、不要 emoji、不要账号昵称，不要硬广式下载引导。`)
+    prompt: normalizeImageSizeText(`${refPrefix}生成小红书笔记风格3:4尺寸图片。【账号定位：${accountPosition}】【图片风格：${imageStyle}】图片具体内容：【${productLine} 版式采用${task.layout}；画面为${task.visual}；${contentCue}信息按烦恼、动作、结果组织到界面、文件、数据卡片或桌面物件里，不能照抄用户输入。画面文字只放大标题「${headline}」和一句短副标题，最多2个关键词小标签，所有文字清晰可读。】负面约束：不出现二维码、角落不出现logo、不出现页码；不要乱码、不要六宫格拼图、不要 emoji、不要账号昵称，不要硬广式下载引导；不要出现“封面、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张”等内部分类词。`)
   };
 }
 
@@ -923,11 +918,11 @@ export const AI = {
     try {
       const content = await llm([
         { role: "system", content: DUMATE_BRIEF + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，再拆成 ${nImg} 张静态图片：开头钩子、共鸣场景、方法动作、关键细节、结果展示、自然收束等叙事功能。功能名只用于你内部理解，绝不能当作画面文字。
-每条 prompt 开头固定写「小红书笔记风格配图，竖版3:4（1080×1440）」。风格主要按账号定位和账号模板，不要把用户输入原句整段塞进提示词。${safeStyle ? "账号总风格：" + safeStyle + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、logo/图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的版式语言、色彩、字体、参考图使用方式和统一要求；但模板中的示例主题、产品名、图中文字和张数都要替换成本次内容。` : ""}
+每条 prompt 必须使用「生成小红书笔记风格3:4尺寸，【账号定位：...】【图片风格：...】，图片具体内容：【...】。负面约束：...」结构；如果有参考图，则在开头加入「请根据上传的参考图」。风格主要按账号定位和账号模板，不要把用户输入原句整段塞进提示词。${safeStyle ? "账号总风格：" + safeStyle + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张，不要要求角落出现logo。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的版式语言、色彩、字体、参考图使用方式和统一要求；但模板中的示例主题、产品名、图中文字和张数都要替换成本次内容。` : ""}
 
 每条 prompt 控制在 160-260 字，说清：版式、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。只保留1个大标题和1句短副标题，最多2个小标签。
 禁止在 prompt 或画面文字中出现「封面」「痛点引入」「问题引入」「关键步骤」「结果对比」「总结收束」「图1」「第1张」「图片任务」等内部分类词。
-禁止乱码、二维码、密集小字、emoji、六宫格拼图、账号昵称、下载引导。
+禁止乱码、二维码、页码、角落logo、密集小字、emoji、六宫格拼图、账号昵称、下载引导。
 
 ${xhsGuardPrompt()}
 

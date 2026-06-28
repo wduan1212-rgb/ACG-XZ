@@ -3,7 +3,7 @@
 import { $, $$, esc, copyText, fileToDataUrl, todayStamp, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
-import { TAG_POOL, platformCode, createAccount, updateAccount } from "../domain/accounts.js";
+import { platformCode, createAccount, updateAccount } from "../domain/accounts.js";
 import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js";
 import { CHAR_DIR_POOL, buildCharBoardPrompt } from "../api/prompts.js";
@@ -114,9 +114,6 @@ export function openAccountDialog(accountId = null) {
                 <span>固定声线参考 <em class="muted">可上传一段参考音频；当前用于提示词/资产留存，后端支持克隆后可直接调用</em></span>
                 <label class="btn ghost sm ad-voice-drop" id="adVoiceDrop">${draft.voiceFile || editing?.voiceRefAssetId ? "✓ 已有声线参考 · 点击更换 / 可拖音频" : "+ 上传声线参考 / 可拖音频"}<input type="file" accept="audio/*" hidden id="adVoiceUp" /></label>
               </div>` : ""}
-              <div class="field full"><span>账号标签 <em class="muted">Agent 量产按标签选号，可多选</em></span>
-                <div class="fb-row" id="adTags">${TAG_POOL.map(t => `<button class="chip ${draft.qtags.has(t) ? "on" : ""}" data-t="${t}">${t}</button>`).join("")}</div>
-              </div>
             </div>
 
             ${isDH ? `
@@ -189,12 +186,6 @@ export function openAccountDialog(accountId = null) {
         segWire("#adPlat", "platform");
         segWire("#adMode", "mode", true);
         segWire("#adSub", "subType", true);
-        $("#adTags", root).addEventListener("click", e => {
-          const c = e.target.closest("[data-t]"); if (!c) return;
-          const t = c.dataset.t;
-          draft.qtags.has(t) ? draft.qtags.delete(t) : draft.qtags.add(t);
-          c.classList.toggle("on");
-        });
         function refreshNaming() {
           const el = root.querySelector(".ad-naming");
           if (el) el.innerHTML = `素材命名规则：<b>${platformCode(draft.platform)}-${esc((draft.name || "账号名").replace(/\s+/g, ""))}-${draft.mode === "视频" ? esc(draft.subType) : "图文"}-001-${todayStamp()}</b>`;

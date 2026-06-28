@@ -5,7 +5,7 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
 import { platChip, modeLabel, PLATFORM_CODE } from "../domain/accounts.js";
-import { deliveredAssets, downloadDelivery, batchDownloadZip, toggleAdminReviewed } from "../domain/delivery.js";
+import { deliveredAssets, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset, isAnalyticsSupported, refreshAnalyticsLink } from "../domain/analytics.js";
 import { openProductionDrawer } from "./prodDrawer.js";
@@ -29,7 +29,7 @@ function deliveredItemHtml(asset, acc, i) {
   const coverId = isImg ? (asset.packAssetIds || [])[0] : null;
   const u = coverId ? urlFor(coverId) : null;
   const seq = asset.pubSeq ? `#${String(asset.pubSeq).padStart(3, "0")}` : "";
-  const productTag = asset.productTag || productById(asset.productId || "")?.shortName || "";
+  const productTag = asset.productTag || productTagLabel(productById(asset.productId || ""));
   return `<div class="dv-item" style="--d:${i * 40}ms">
     <span class="dv-node${i === 0 ? " latest" : ""}"></span>
     <div class="dv-card card" data-aid="${asset.id}">
@@ -150,11 +150,11 @@ export const deliveryView = {
 
     function drawSupplier(body, all) {
       const platforms = [...new Set(all.map(x => x.acc.platform))];
-      const productTags = [...new Set(all.map(x => x.asset.productTag || productById(x.asset.productId || "")?.shortName || "").filter(Boolean))];
+      const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
       const tags = [...new Set(all.flatMap(x => x.asset.tags || []))];
       const filters = ["all", ...productTags.map(t => `产品:${t}`), ...platforms, "视频", "图文", ...tags.filter(t => !["视频", "图文", ...platforms, ...productTags].includes(t))];
       const rows = all.filter(x => {
-        const ptag = x.asset.productTag || productById(x.asset.productId || "")?.shortName || "";
+        const ptag = x.asset.productTag || productTagLabel(productById(x.asset.productId || ""));
         return supFilter === "all" || x.acc.mode === supFilter || x.acc.platform === supFilter || `产品:${ptag}` === supFilter || (x.asset.tags || []).includes(supFilter);
       });
       body.innerHTML = `
@@ -174,7 +174,7 @@ export const deliveryView = {
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
                 <td class="sup-seq">${asset.pubSeq ? `#${String(asset.pubSeq).padStart(3, "0")}` : "—"}</td>
                 <td class="sup-name"><b>${esc(asset.name)}</b>${asset.title ? `<em>${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(asset.planDate)}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}</td>
-                <td><span class="tag product">${esc(asset.productTag || productById(asset.productId || "")?.shortName || "未标记")}</span></td>
+                <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
                 <td><b>${esc(asset.byAccount || acc.name)}</b>${asset.byMemberName ? `<em class="sup-by">由 ${esc(asset.byMemberName)} 发布</em>` : ""}</td>
                 <td>${platChip(acc.platform, true)}</td>
                 <td>${modeLabel(acc)}</td>
