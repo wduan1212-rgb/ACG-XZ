@@ -4,7 +4,7 @@
 import { $, $$, esc, copyText, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal } from "../ui/components.js";
+import { toast, confirmModal, promptModal, publishModal, openModal } from "../ui/components.js";
 import {
   ensureSession, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
@@ -15,17 +15,31 @@ import { renderMessage, boardRow } from "./cards.js";
 import { openProductionDrawer } from "../views/prodDrawer.js";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
+import { urlFor } from "../domain/assets.js";
 
 let mounted = false;
 let rootEl = null;
 let thinking = false;
 let thinkSteps = [];       // 思考过程播报
+let scrollTopOnce = false;
 
 function ensurePlanBoard(session = ensureSession()) {
   if ((session.messages || []).length) return session;
   session.title = "新量产计划";
   addMsg(session, { role: "agent", type: "plan", payload: defaultPlan() });
   return session;
+}
+
+function scrollMsgsTopSoon() {
+  requestAnimationFrame(() => {
+    const el = $("#agwMsgs");
+    if (el) el.scrollTop = 0;
+    setTimeout(() => {
+      const next = $("#agwMsgs");
+      if (next) next.scrollTop = 0;
+      scrollTopOnce = false;
+    }, 80);
+  });
 }
 
 export const agentView = {
@@ -132,7 +146,7 @@ function renderSessions() {
 
 function textOf(m) {
   if (m.type === "text") return m.payload.text || "";
-  return { plan: "📋 量产计划", progress: "⏱ 批次进度", need_input: "📥 等待上传", approval: "👁 待发布", results: "✅ 批次完成", error: "⚠ 失败报告" }[m.type] || "";
+  return { plan: "📋 量产任务板", progress: "⏱ 批次进度", need_input: "📥 等待上传", approval: "👁 待发布", results: "✅ 批次完成", error: "⚠ 失败报告" }[m.type] || "";
 }
 
 function renderMsgs(scroll = false) {
@@ -145,7 +159,10 @@ function renderMsgs(scroll = false) {
   el.innerHTML = s.messages.map(renderMessage).join("") + `<div id="agwThinking"></div>`;
   renderThinking();
   wireDrops();
-  if (scroll) el.scrollTop = el.scrollHeight;
+  if (scrollTopOnce || scroll === "top") {
+    el.scrollTop = 0;
+    scrollMsgsTopSoon();
+  } else if (scroll) el.scrollTop = el.scrollHeight;
 }
 
 function thinkStepsHtml() {
@@ -388,7 +405,7 @@ function wire(root) {
   shell.addEventListener("click", async e => {
     const exit = e.target.closest('[data-agw="exit"]');
     if (exit) { go("overview"); return; }
-    if (e.target.closest('[data-agw="new-session"]')) { newSession(); return; }
+    if (e.target.closest('[data-agw="new-session"]')) { scrollTopOnce = true; newSession(); scrollMsgsTopSoon(); return; }
     if (e.target.closest('[data-agw="board"]')) { root.querySelector(".agent-shell").classList.toggle("board-hidden"); return; }
 
     // 会话重命名 / 删除（先于会话切换判断）
@@ -430,6 +447,10 @@ function wire(root) {
     const s = ensureSession();
 
     switch (act.dataset.act) {
+      case "plan-asset-pick": {
+        await openPlanAssetPicker(act.dataset.mid, act.dataset.refKind || "shared", act.dataset.refAccount || "");
+        break;
+      }
       case "plan-confirm": {
         const m = s.messages.find(x => x.id === act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
@@ -536,8 +557,9 @@ function wire(root) {
     const f = e.target.closest("[data-pf]");
     const ap = e.target.closest("[data-pacc-prod]");
     const ac = e.target.closest("[data-pacc-content]");
+    const acn = e.target.closest("[data-pacc-count]");
     const ar = e.target.closest("[data-pacc-ref]");
-    if (!f && !ap && !ac && !ar) return;
+    if (!f && !ap && !ac && !acn && !ar) return;
     const node = e.target.closest("[data-plan]");
     if (!node) return;
     const s = ensureSession();
@@ -561,12 +583,16 @@ function wire(root) {
       m.payload.accountContents = m.payload.accountContents || {};
       m.payload.accountContents[ac.dataset.paccContent] = ac.value;
     }
+    if (acn) {
+      m.payload.accountCounts = m.payload.accountCounts || {};
+      m.payload.accountCounts[acn.dataset.paccCount] = Math.max(1, Math.min(12, Number(acn.value || 1) || 1));
+    }
     if (ar) {
       m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
       m.payload.accountRefAssetIds[ar.dataset.paccRef] = Array.from(ar.selectedOptions).map(o => o.value).filter(Boolean).slice(0, 3);
     }
     save("sessions");
-    if (f?.multiple || ar || f?.dataset.pf === "perAccountCount") rerenderPlanCard(m.id);
+    if (f?.multiple || ar || acn || f?.dataset.pf === "perAccountCount") rerenderPlanCard(m.id);
   };
   shell.addEventListener("input", updatePlanField);
   shell.addEventListener("change", updatePlanField);
@@ -625,6 +651,102 @@ async function setPlanRefs(mid, files) {
   save("sessions");
   rerenderPlanCard(m.id);
   toast(`已追加 ${newIds.length} 张统一参考图`);
+}
+
+function planMessage(mid) {
+  const s = ensureSession();
+  return s.messages.find(x => x.id === mid && x.type === "plan");
+}
+
+function planRefIds(payload, kind, accountId = "") {
+  if (kind === "custom") {
+    const raw = payload.accountRefAssetIds?.[accountId];
+    return Array.isArray(raw) ? raw.filter(Boolean) : [];
+  }
+  const ids = Array.isArray(payload.sharedRefAssetIds) ? [...payload.sharedRefAssetIds] : [];
+  if (payload.sharedRefAssetId && !ids.includes(payload.sharedRefAssetId)) ids.unshift(payload.sharedRefAssetId);
+  return [...new Set(ids.filter(Boolean))];
+}
+
+function imageAssetList() {
+  return state.assets.filter(a => a.type === "图片" && !a.delivered);
+}
+
+async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
+  const m = planMessage(mid);
+  if (!m || m.payload.status !== "pending") return;
+  if (kind === "custom" && !accountId) return;
+  const limit = kind === "custom" ? 3 : 5;
+  const title = kind === "custom" ? "选择定制参考图" : "选择统一参考图";
+  const assets = imageAssetList();
+  const selected = new Set(planRefIds(m.payload, kind, accountId).slice(0, limit));
+  const accountName = accountId ? (state.accounts.find(a => a.id === accountId)?.name || "当前账号") : "";
+  const html = `
+    <div class="mp-head">
+      <b>${esc(title)}</b>
+      <button class="icon-btn ghost" data-close title="关闭">${icon("x", 15)}</button>
+    </div>
+    <div class="asset-picker">
+      <div class="asset-picker-meta">
+        <span>${kind === "custom" ? esc(accountName) + " · " : ""}最多 ${limit} 张</span>
+        <em data-ap-count>${selected.size}/${limit}</em>
+      </div>
+      ${assets.length ? `<div class="asset-picker-grid">
+        ${assets.map(a => {
+          const u = urlFor(a);
+          const on = selected.has(a.id);
+          return `<button class="asset-pick-card ${on ? "on" : ""}" data-asset-pick="${a.id}" title="${esc(a.name || "参考图")}">
+            <span class="asset-pick-thumb">${u ? `<img src="${u}" alt="${esc(a.name || "参考图")}" />` : `<i>${esc((a.name || "图").slice(0, 1))}</i>`}</span>
+            <b>${esc(a.name || "未命名图片")}</b>
+            <em>${esc((a.tags || []).slice(0, 2).join(" / ") || "图片素材")}</em>
+            <span class="asset-pick-check">${icon("check", 13)}</span>
+          </button>`;
+        }).join("")}
+      </div>` : `<div class="asset-picker-empty">${icon("image", 20)}<b>资产库暂无可选图片</b><p>可以先用拖入 / 上传区域补充参考图。</p></div>`}
+    </div>
+    <div class="mp-foot">
+      <button class="btn ghost" data-close>取消</button>
+      <button class="btn primary" data-ap-confirm>${icon("check", 13)} 确认选择</button>
+    </div>`;
+  openModal(html, {
+    wide: true,
+    onMount(panel, close) {
+      panel.classList.add("asset-picker-panel");
+      const sync = () => {
+        const count = panel.querySelector("[data-ap-count]");
+        if (count) count.textContent = `${selected.size}/${limit}`;
+        panel.querySelectorAll("[data-asset-pick]").forEach(btn => btn.classList.toggle("on", selected.has(btn.dataset.assetPick)));
+      };
+      panel.addEventListener("click", e => {
+        const btn = e.target.closest("[data-asset-pick]");
+        if (btn) {
+          const id = btn.dataset.assetPick;
+          if (selected.has(id)) selected.delete(id);
+          else {
+            if (selected.size >= limit) { toast(`最多选择 ${limit} 张参考图`); return; }
+            selected.add(id);
+          }
+          sync();
+          return;
+        }
+        if (e.target.closest("[data-ap-confirm]")) {
+          const ids = [...selected].slice(0, limit);
+          if (kind === "custom") {
+            m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
+            m.payload.accountRefAssetIds[accountId] = ids;
+          } else {
+            m.payload.sharedRefAssetIds = ids;
+            m.payload.sharedRefAssetId = ids[0] || null;
+          }
+          save("sessions");
+          rerenderPlanCard(m.id);
+          toast(ids.length ? `已选择 ${ids.length} 张参考图` : "已清空参考图选择");
+          close();
+        }
+      });
+      sync();
+    }
+  });
 }
 
 async function setPlanCustomRefs(mid, accountId, files) {

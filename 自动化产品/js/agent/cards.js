@@ -102,7 +102,9 @@ const CARD = {
     const confirmed = p.status === "confirmed";
     const cancelled = p.status === "cancelled";
     const perAccountCount = Math.max(1, Math.min(12, Number(p.perAccountCount || 1) || 1));
-    const totalCount = matched.length * perAccountCount;
+    const accountCounts = p.accountCounts || {};
+    const countFor = a => Math.max(1, Math.min(12, Number(accountCounts[a.id] || perAccountCount) || 1));
+    const totalCount = matched.reduce((sum, a) => sum + countFor(a), 0);
     const products = Array.isArray(state.products) && state.products.length ? state.products : [{ id: "dumate", name: "百度搭子", shortName: "搭子" }];
     const productOptions = (selected = "") => products.map(pr => `<option value="${esc(pr.id)}" ${selected === pr.id ? "selected" : ""}>${esc(pr.shortName || pr.name)}</option>`).join("");
     const globalRefs = selectedRefIds(p);
@@ -111,12 +113,19 @@ const CARD = {
       ${matched.map(a => `<div class="agc-override">
         <b>${esc(a.name)}</b>
         <select data-pacc-prod="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>${productOptions((p.accountProductIds || {})[a.id] || p.productId || "dumate")}</select>
+        <label class="agc-count-mini"><span>本号条数</span><input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a))}" ${confirmed || cancelled ? "disabled" : ""} /></label>
         <input data-pacc-content="${a.id}" value="${esc((p.accountContents || {})[a.id] || "")}" placeholder="本账号本次创作内容（可留空）" ${confirmed || cancelled ? "disabled" : ""} />
-        <label class="agc-mini-ref ${confirmed || cancelled ? "" : "droppable"}" ${confirmed || cancelled ? "" : `data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}"`}>
-          <span>定制参考图（最多3张）<em>可拖图到这里</em></span>
-          <select multiple size="3" data-pacc-ref="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>${refOptions(accountRefs[a.id] || [])}</select>
-          ${confirmed || cancelled ? "" : `<span class="agc-mini-actions"><em>${refChips((accountRefs[a.id] || []).slice(0, 3), "plan-custom-refremove", m.id)}</em><label class="btn ghost sm">${icon("upload", 11)} 上传<input type="file" accept="image/*" multiple hidden data-pacc-ref-up="${a.id}" data-mid="${m.id}" /></label></span>`}
-        </label>
+        <div class="agc-mini-ref">
+          <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
+          <div class="agc-ref-chips mini">${refChips((accountRefs[a.id] || []).slice(0, 3), confirmed || cancelled ? "" : "plan-custom-refremove", m.id)}</div>
+          ${confirmed || cancelled ? "" : `<div class="agc-mini-actions">
+            <button class="btn ghost sm" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="custom" data-ref-account="${a.id}">${icon("image", 11)} 从资产选择</button>
+            <label class="agc-drop-mini" data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}">
+              ${icon("upload", 12)} 拖入 / 上传
+              <input type="file" accept="image/*" multiple hidden data-pacc-ref-up="${a.id}" data-mid="${m.id}" />
+            </label>
+          </div>`}
+        </div>
       </div>`).join("")}
     </div>` : "";
     return `<div class="ag-card plan ${confirmed ? "resolved" : ""}" data-plan="${m.id}">
@@ -138,22 +147,36 @@ const CARD = {
         </label>
         <label class="agc-field">每号内容数
           <input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" ${confirmed || cancelled ? "disabled" : ""} />
-          <em>${matched.length} 个账号 × ${perAccountCount} 条 = ${totalCount} 条</em>
+          <em>默认 ${perAccountCount} 条，可在单号行单独调整 · 共 ${totalCount} 条</em>
         </label>
       </div>
       ${(() => {
         const editable = !confirmed && !cancelled;
-        return `<div class="agc-ref ${editable ? "droppable" : ""}" ${editable ? `data-plan-refdrop="${m.id}"` : ""}>
-          <span class="agc-ref-l">${icon("star", 12)} 统一参考图<em>所有选中账号都会参考，最多5张；定制图每号最多3张，单独追加，不互相覆盖</em></span>
-          <div class="agc-ref-chips">${refChips(globalRefs, editable ? "plan-refremove" : "", m.id)}</div>
-          ${editable ? `<label class="btn ghost sm">${icon("upload", 12)} 上传<input type="file" accept="image/*" multiple hidden data-plan-ref="${m.id}" /></label>` : ""}
-          ${editable ? `<label class="agc-ref-select">从资产选择
-            <select multiple size="4" data-pf="sharedRefAssetIds">${refOptions(globalRefs)}</select>
-          </label>` : ""}
-          ${editable && globalRefs.length ? `<button class="link-btn" data-act="plan-refclear" data-mid="${m.id}">清空统一参考</button>` : ""}
+        return `<div class="agc-ref">
+          <div class="agc-ref-top">
+            <span class="agc-ref-l">${icon("star", 12)} 统一参考图<em>所有选中账号都会参考，最多5张；定制图每号最多3张，单独追加，不互相覆盖</em></span>
+            ${editable && globalRefs.length ? `<button class="link-btn" data-act="plan-refclear" data-mid="${m.id}">清空统一参考</button>` : ""}
+          </div>
+          <div class="agc-ref-body">
+            <div class="agc-ref-picked">
+              <b>已选参考图</b>
+              <div class="agc-ref-chips">${refChips(globalRefs, editable ? "plan-refremove" : "", m.id)}</div>
+            </div>
+            ${editable ? `<label class="agc-ref-drop" data-plan-refdrop="${m.id}">
+              ${icon("upload", 16)}
+              <b>拖入图片</b>
+              <em>或点击上传，最多补到 5 张</em>
+              <input type="file" accept="image/*" multiple hidden data-plan-ref="${m.id}" />
+            </label>
+            <button class="agc-ref-library" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="shared">
+              ${icon("image", 16)}
+              <b>打开资产库</b>
+              <em>放大看图后选择</em>
+            </button>` : ""}
+          </div>
         </div>`;
       })()}
-      <div class="agc-sec">命中 ${matched.length} 个账号 · 每号 ${perAccountCount} 条 · 共 ${totalCount} 条 <em>点击可增减</em></div>
+      <div class="agc-sec">命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减，单号条数可单独调整</em></div>
       <div class="agc-accs">${state.accounts.map(a => {
         const on = (p.accountIds || []).includes(a.id);
         return `<button class="agc-acc ${on ? "on" : ""}" data-pacc="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>

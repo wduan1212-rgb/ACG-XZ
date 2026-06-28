@@ -123,6 +123,7 @@ export function createBatch(plan, sessionId) {
     content: plan.content || "",
     accountProductIds: plan.accountProductIds || {},
     accountContents: plan.accountContents || {},
+    accountCounts: plan.accountCounts || {},
     style: plan.style || "",
     accountCount: Number(plan.accountCount || plan.count) || null,
     perAccountCount: Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1)),
@@ -155,6 +156,7 @@ export function templatePlan(key) {
     goal: t.label, topicMode: "random", topic: "", productId: "dumate", content: "", style: "",
     tags: [], group: t.group, sort: "stale", accountCount: 3, perAccountCount: 1,
     accountIds: matched.map(a => a.id), template: key,
+    accountCounts: {},
     sharedRefAssetIds: [], accountRefAssetIds: {}
   };
 }
@@ -206,6 +208,7 @@ export function defaultPlan(goal = "选择3个很久没发布内容的图文账�
     topicMode: "random", topic: "",
     productId: "dumate", content: "",
     accountProductIds: {}, accountContents: {},
+    accountCounts: {},
     style: params.style || "", tags: params.tags || [], group: params.group,
     sort: params.sort,
     accountCount: params.accountCount,
@@ -558,9 +561,11 @@ export async function startBatch(plan, session) {
   const accounts = plan.accountIds.map(accountById).filter(Boolean);
   if (!accounts.length) { agentSay("⚠ 没有可用账号，先调整筛选条件。"); return null; }
   const batch = createBatch(plan, session.id);
-  const perAccountCount = Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1));
+  const defaultPerAccountCount = Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1));
+  const accountCounts = plan.accountCounts || {};
   accounts.forEach(acc => {
     const productId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
+    const perAccountCount = Math.max(1, Math.min(12, Number(accountCounts[acc.id] || defaultPerAccountCount) || 1));
     for (let i = 0; i < perAccountCount; i++) {
       const topic = plan.topicMode === "random" ? "" : (perAccountCount > 1 ? `${plan.topic} ${i + 1}/${perAccountCount}` : plan.topic);
       const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId });
@@ -869,6 +874,7 @@ export async function handleUserText(text) {
       topicMode: wantsRandom ? "random" : "fixed",
       topic: params.topic || "", productId: "dumate", content: "",
       accountProductIds: {}, accountContents: {},
+      accountCounts: {},
       style: params.style || "", tags: params.tags || [], group: params.group || "all",
       sort: params.sort || "",
       accountCount, perAccountCount,
