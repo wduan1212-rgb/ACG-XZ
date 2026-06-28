@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>星阵 · 内容生产工作台</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="stylesheet" href="./styles/tokens.css?v=20260626-xz2" />
+    <link rel="stylesheet" href="./styles/base.css?v=20260626-xz2" />
+    <link rel="stylesheet" href="./styles/components.css?v=20260626-xz2" />
+    <link rel="stylesheet" href="./styles/views.css?v=20260626-xz2" />
+    <link rel="stylesheet" href="./styles/analytics.css?v=20260626-xz2" />
+    <link rel="stylesheet" href="./styles/agent.css?v=20260626-xz2" />
+    <script>
+      (function () {
+        try {
+          document.documentElement.classList.add("auth-booting");
+          if (localStorage.getItem("dumate.token")) document.documentElement.classList.add("has-auth-token");
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body data-zone="overview">
+
+    <!-- 开屏 · 三身份口令登录 -->
+    <div id="loginGate" class="login-gate">
+      <div class="lg-stage">
+        <div class="lg-aurora"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
+        <div class="lg-constellation" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        </div>
+        <i class="lg-ground"></i>
+        <i class="lg-deep"></i>
+      </div>
+      <div class="lg-particles" id="lgParticles"></div>
+
+      <div class="lg-center">
+        <div class="lg-logo">
+          <i class="lg-gather"></i>
+          <img src="./assets/brand/xingzhen-logo.png" alt="星阵" class="lg-logo-img" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" />
+          <svg viewBox="0 0 235 50" width="248" height="53" aria-hidden="true" style="color:#0f2745;display:none">
+            <defs>
+              <linearGradient id="lgWa" x1="0" y1="4" x2="40" y2="46" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#C77CFF"/><stop offset="1" stop-color="#6A5BFF"/>
+              </linearGradient>
+              <linearGradient id="lgWt" x1="120" y1="22" x2="158" y2="44" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#5B8CFF"/><stop offset="1" stop-color="#22B8CF"/>
+              </linearGradient>
+              <linearGradient id="lgWp" x1="172" y1="4" x2="232" y2="46" gradientUnits="userSpaceOnUse">
+                <stop offset="0" stop-color="#B07CFF"/><stop offset="1" stop-color="#22A8E8"/>
+              </linearGradient>
+            </defs>
+            <text x="0" y="38" font-family="Inter,'PingFang SC',system-ui,sans-serif" font-size="34" font-weight="850" letter-spacing="2"><tspan fill="url(#lgWa)">星</tspan><tspan fill="currentColor">阵</tspan></text>
+            <path d="M118 25l9-22 9 22 22 9-22 9-9 22-9-22-22-9 22-9z" fill="url(#lgWt)" opacity=".9"/>
+            <path d="M178 9 L220 25 L178 41 Z" fill="none" stroke="url(#lgWp)" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>
+          </svg>
+        </div>
+
+        <div class="lg-card" data-mode="login">
+          <div class="lg-brand"><h1>欢迎登录</h1><p>星阵内容工作台</p></div>
+          <div class="lg-form">
+            <label class="lg-field">
+              <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M12 11a4 4 0 100-8 4 4 0 000 8z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+              <input id="lgUser" type="text" autocomplete="username" placeholder="用户名" />
+            </label>
+            <label class="lg-field">
+              <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M5 11h14v10H5z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 11V7a4 4 0 018 0v4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span>
+              <input id="lgPin" type="password" autocomplete="current-password" placeholder="密码" />
+            </label>
+            <label class="lg-field lg-apply-only" id="lgNameField" hidden>
+              <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M4 20c1.4-3.4 4.2-5.2 8-5.2s6.6 1.8 8 5.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M12 12a4 4 0 100-8 4 4 0 000 8z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span>
+              <input id="lgName" type="text" autocomplete="name" placeholder="姓名 / 昵称" />
+            </label>
+            <label class="lg-field lg-apply-only" id="lgRoleField" hidden>
+              <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+              <select id="lgRole">
+                <option value="editor">创作成员</option>
+                <option value="supplier">供应商</option>
+              </select>
+            </label>
+            <button class="lg-login" id="lgLogin" type="button">登录 →</button>
+            <button class="lg-secondary" id="lgApply" type="button">申请账号</button>
+          </div>
+          <p class="lg-hint" id="lgHint">忘记密码请联系管理员 · 新成员可提交账号申请</p>
+        </div>
+        <p class="lg-foot">安全稳定 · 高效智能 · 创作无限</p>
+      </div>
+    </div>
+
+    <!-- 应用外壳：图标导航 + 上下文面板 + 主画布 -->
+    <div class="app-shell">
+      <nav class="nav-rail">
+        <div class="rail-logo" id="railBrand" title="星阵"></div>
+        <div class="rail-items">
+          <button class="rail-item" data-nav="overview" title="首页">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M3 10l9-7 9 7v10a1 1 0 01-1 1h-5v-7h-6v7H4a1 1 0 01-1-1V10z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <span>首页</span>
+          </button>
+          <button class="rail-item accent" data-nav="agent" title="批量创作">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M12 2l2.1 5.6L20 10l-5.9 2.4L12 18l-2.1-5.6L4 10l5.9-2.4L12 2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M18.5 15.5l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9.9-2.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+            <span>批量创作</span>
+          </button>
+          <button class="rail-item" data-nav="studio" title="单号创作">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M4 6h11v12H4z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M15 10l5-3v10l-5-3z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <span>单号创作</span>
+          </button>
+          <button class="rail-item" data-nav="assets" title="整体资产">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M3 7a2 2 0 012-2h4l2 2h9a1 1 0 011 1v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <span>整体资产</span>
+          </button>
+          <button class="rail-item" data-nav="drafts" title="草稿箱">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M4 13h4l1.5 2.5h5L16 13h4M4 13l2.2-7.3A2 2 0 018.1 4h7.8a2 2 0 011.9 1.7L20 13v4a2 2 0 01-2 2H6a2 2 0 01-2-2v-4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <span>草稿箱</span>
+          </button>
+          <button class="rail-item" data-nav="delivery" title="发布清单">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M3.3 8.3L12 13l8.7-4.7M12 13v8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <span>发布清单</span>
+          </button>
+          <button class="rail-item" data-nav="analytics" title="数据分析">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M2 12h4l3-8 4 16 3-8h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>数据分析</span>
+          </button>
+        </div>
+        <div class="rail-bottom">
+          <button class="rail-item" data-nav="settings" title="设置">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-2.94.67 2 2 0 11-3.96 0 1.65 1.65 0 00-2.94-.67l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 13a2 2 0 110-3.96 1.65 1.65 0 00.67-2.94l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 002.94-.67 2 2 0 113.96 0 1.65 1.65 0 002.94.67l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.67 2.94 2 2 0 110 3.96z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+            <span>设置</span>
+          </button>
+          <button class="rail-item" id="navLogout" title="退出登录">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>退出</span>
+          </button>
+        </div>
+      </nav>
+
+      <aside class="ctx-panel" id="ctxPanel" hidden></aside>
+
+      <div class="main-col">
+        <header class="topbar">
+          <div class="top-crumb" id="topCrumb">首页</div>
+          <div class="top-actions">
+            <button class="top-btn" id="topSearch" title="搜索（⌘K）">
+              <svg viewBox="0 0 24 24" width="15" height="15"><path d="M21 21l-4.3-4.3M11 19a8 8 0 110-16 8 8 0 010 16z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              <span>搜索</span><kbd>⌘K</kbd>
+            </button>
+            <button class="top-btn icon" id="topBell" title="通知中心">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M18 8a6 6 0 10-12 0c0 7-3 8-3 8h18s-3-1-3-8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.3 21a2 2 0 003.4 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+              <em class="badge" id="notifyBadge" hidden></em>
+            </button>
+          </div>
+        </header>
+        <main class="view-root" id="viewRoot"></main>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <script>
+      (function () {
+        window.__dumateBooting = true;
+        function showBootError(err) {
+          var root = document.getElementById("viewRoot");
+          if (!root || root.innerHTML.trim()) return;
+          var msg = (err && (err.message || err.reason && err.reason.message || err.reason)) || err || "未知错误";
+          root.innerHTML = '<div style="margin:32px;padding:18px 20px;border:1px solid #ffd8a8;background:#fff4e6;border-radius:14px;color:#7c2d12"><b>前端加载出错</b><p>' +
+            String(msg).replace(/[&<>"]/g, function (c) { return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]; }) +
+            '</p><button class="btn ghost sm" onclick="location.reload()">刷新重试</button></div>';
+        }
+        window.addEventListener("error", function (e) { showBootError(e.error || e.message); });
+        window.addEventListener("unhandledrejection", function (e) { showBootError(e.reason || e); });
+        window.setTimeout(function () {
+          if (window.__dumateBooting) return;
+          var root = document.getElementById("viewRoot");
+          var gate = document.getElementById("loginGate");
+          if (!root || root.innerHTML.trim()) return;
+          if (gate && !gate.hidden) return;
+          root.innerHTML = '<div style="margin:32px;padding:18px 20px;border:1px solid #ffd8a8;background:#fff4e6;border-radius:14px;color:#7c2d12"><b>启动等待超时</b><p>页面外壳已加载，但数据或接口初始化没有及时完成。可以先刷新重试；如果仍出现，请点击下方按钮清理本机旧缓存后重新登录。</p><button class="btn ghost sm" id="bootReload">刷新重试</button> <button class="btn ghost sm" id="bootClearCache">清理本机缓存</button></div>';
+          var reloadBtn = document.getElementById("bootReload");
+          var clearBtn = document.getElementById("bootClearCache");
+          if (reloadBtn) reloadBtn.addEventListener("click", function () { location.reload(); });
+          if (clearBtn) clearBtn.addEventListener("click", function () {
+            indexedDB.deleteDatabase("dumateStudioV5");
+            localStorage.removeItem("dumate.token");
+            location.reload();
+          });
+        }, 7000);
+      })();
+    </script>
+  <script type="module" src="./js/main.js?v=20260626-xz2"></script>
+  </body>
+</html>

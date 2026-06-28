@@ -1,0 +1,13 @@
+# 运行时数据（共享后端 SQLite / 旧 JSON 存储），不入库
+server/data.sqlite
+server/data.sqlite-wal
+server/data.sqlite-shm
+server/data.json
+# 本地/服务器密钥配置，不入库
+.env
+.env.local
+# Python 缓存
+__pycache__/
+**/__pycache__/
+# 系统
+.DS_Store
