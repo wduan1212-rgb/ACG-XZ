@@ -106,9 +106,44 @@ async function syncAccountsInChunks() {
   }
 }
 
+const accountSeedKey = a => `${a.platform || ""}:${a.name || ""}`;
+const isSeedManagedAccount = a => {
+  if (!a) return false;
+  if (a.mode === "视频") return true;
+  return a.platform === "小红书" && a.mode === "图文";
+};
+
+async function cleanupNonSeedAccounts() {
+  const seedKeys = new Set(ACCOUNT_PROFILE_SEED.map(accountSeedKey));
+  const seen = new Set();
+  const removed = [];
+  const kept = [];
+  (state.accounts || []).forEach(acc => {
+    const key = accountSeedKey(acc);
+    const managed = isSeedManagedAccount(acc);
+    if (managed && (!seedKeys.has(key) || seen.has(key))) {
+      removed.push(acc);
+      return;
+    }
+    if (managed) seen.add(key);
+    kept.push(acc);
+  });
+  if (!removed.length) return 0;
+  const removedIds = new Set(removed.map(a => a.id));
+  state.accounts = kept;
+  if (state.ui.activeAccountId && removedIds.has(state.ui.activeAccountId)) {
+    state.ui.activeAccountId = state.accounts[0]?.id || null;
+  }
+  if (remote.isOn() && remote.hasToken()) {
+    await Promise.all(removed.map(a => remote.deleteDoc("accounts", a.id)));
+  }
+  return removed.length;
+}
+
 async function applyAccountProfileSeed({ createMissing = true, quiet = false } = {}) {
   if (state.ui.accountProfileVersion === ACCOUNT_PROFILE_VERSION) return 0;
-  let changed = 0, created = 0;
+  const removed = await cleanupNonSeedAccounts();
+  let changed = removed, created = 0;
   ACCOUNT_PROFILE_SEED.forEach(profile => {
     let acc = state.accounts.find(a => a.name === profile.name && a.platform === profile.platform);
     if (!acc && createMissing) {
@@ -143,7 +178,7 @@ async function applyAccountProfileSeed({ createMissing = true, quiet = false } =
     } else {
       save("accounts", "meta");
     }
-    if (!quiet) setTimeout(() => toast(`已同步账号定位/风格：更新 ${changed - created} 个，新增 ${created} 个视频号`), 900);
+    if (!quiet) setTimeout(() => toast(`已同步账号定位/风格：更新 ${Math.max(0, changed - created - removed)} 个，新增 ${created} 个，清理旧账号 ${removed} 个`), 900);
   }
   return changed;
 }
