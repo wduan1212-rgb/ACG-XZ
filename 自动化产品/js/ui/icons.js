@@ -99,15 +99,7 @@ export function brandMark(height = 28) {
 
 /* 方形小标（导航栏 / favicon 同款）：深色圆角底 + 渐变描边播放三角 */
 export function brandGlyph(size = 28) {
-  return `<svg viewBox="0 0 48 48" width="${size}" height="${size}" aria-hidden="true">
-    <defs>
-      <linearGradient id="acgGl" x1="8" y1="8" x2="42" y2="40" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#B07CFF"/><stop offset="1" stop-color="#22A8E8"/>
-      </linearGradient>
-    </defs>
-    <rect width="48" height="48" rx="11" fill="#0A0D18"/>
-    <path d="M16 11 L38.5 24 L16 37 Z" fill="none" stroke="url(#acgGl)" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/>
-  </svg>`;
+  return `<img class="brand-glyph-img" src="./logo.png" alt="星阵" width="${size}" height="${size}" />`;
 }
 
 /* Agent 头像：渐变描边机器人（按参考图重绘：天线 + 圆角头壳 + 深色面板 + 双色发光眼） */

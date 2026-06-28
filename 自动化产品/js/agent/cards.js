@@ -176,7 +176,9 @@ const CARD = {
           </div>
         </div>`;
       })()}
-      <div class="agc-sec">命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减，单号条数可单独调整</em></div>
+      <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减，单号条数可单独调整</em></span>
+        ${confirmed || cancelled ? "" : `<button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>`}
+      </div>
       <div class="agc-accs">${state.accounts.map(a => {
         const on = (p.accountIds || []).includes(a.id);
         return `<button class="agc-acc ${on ? "on" : ""}" data-pacc="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>

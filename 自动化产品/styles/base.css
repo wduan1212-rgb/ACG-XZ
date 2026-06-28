@@ -53,6 +53,7 @@ body.role-editor .rail-item[data-nav="settings"] { display: none; }
   z-index: 30;
 }
 .rail-logo { margin-bottom: 14px; cursor: default; filter: drop-shadow(0 4px 14px rgba(61, 91, 255, .35)); }
+.brand-glyph-img { display: block; width: 34px; height: 34px; object-fit: contain; border-radius: 10px; background: rgba(255,255,255,.92); }
 .rail-items { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .rail-bottom { display: flex; flex-direction: column; gap: 4px; }
 .rail-item {
@@ -247,7 +248,7 @@ body.role-editor .rail-item[data-nav="settings"] { display: none; }
   filter: drop-shadow(0 16px 32px rgba(24, 72, 132, .18));
   animation: lgConverge 1.2s cubic-bezier(.18, .7, .16, 1) both;
 }
-.lg-logo-img { display: block; width: 460px; max-width: 86vw; height: auto; max-height: 26vh; object-fit: contain; position: relative; z-index: 1; animation: logoFloat 6.5s ease-in-out 1.2s infinite; }
+.lg-logo-img { display: block; width: 560px; max-width: 90vw; height: auto; max-height: 31vh; object-fit: contain; position: relative; z-index: 1; animation: logoFloat 6.5s ease-in-out 1.2s infinite; }
 @keyframes logoFloat { 50% { transform: translateY(-8px); } }
 /* 开屏：聚焦成形（模糊放大 → 清晰归位） */
 @keyframes lgConverge {

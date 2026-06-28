@@ -8,7 +8,7 @@ import { toast, confirmModal, promptModal, publishModal, openModal } from "../ui
 import {
   ensureSession, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
-  selectAccountsForPlan, startBatch, startGeneration, deliverAll, retryFailedIn,
+  selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan
 } from "./orchestrator.js";
 import { renderMessage, boardRow } from "./cards.js";
@@ -449,6 +449,23 @@ function wire(root) {
     switch (act.dataset.act) {
       case "plan-asset-pick": {
         await openPlanAssetPicker(act.dataset.mid, act.dataset.refKind || "shared", act.dataset.refAccount || "");
+        break;
+      }
+      case "plan-random-accounts": {
+        const m = s.messages.find(x => x.id === act.dataset.mid);
+        if (!m || m.payload.status !== "pending") return;
+        const pool = matchAccounts({ group: m.payload.group || "all", tags: m.payload.tags || [], sort: m.payload.sort || "" });
+        if (!pool.length) { toast("当前条件下没有可选账号"); break; }
+        const picked = pool
+          .map(a => ({ a, r: Math.random() }))
+          .sort((x, y) => x.r - y.r)
+          .slice(0, Math.min(10, pool.length))
+          .map(x => x.a.id);
+        m.payload.accountIds = picked;
+        m.payload.accountCount = picked.length;
+        save("sessions");
+        rerenderPlanCard(m.id);
+        toast(`已随机选择 ${picked.length} 个账号`);
         break;
       }
       case "plan-confirm": {

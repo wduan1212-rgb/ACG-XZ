@@ -206,8 +206,16 @@
 .agc-tags { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 10px; }
 .agc-tags .chip { background: rgba(255, 255, 255, .05); border-color: var(--ag-line); color: var(--d-muted); }
 .agc-tags .chip.on { background: rgba(80, 110, 255, .2); border-color: rgba(132, 152, 255, .5); color: #BFD0FF; }
-.agc-sec { font-size: 11px; font-weight: 700; color: var(--d-muted); margin: 10px 0 7px; }
+.agc-sec { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11px; font-weight: 700; color: var(--d-muted); margin: 10px 0 7px; }
+.agc-sec > span { min-width: 0; }
 .agc-sec em { font-style: normal; font-weight: 500; color: var(--d-faint); margin-left: 6px; }
+.agc-random-pick {
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 9px; border-radius: 999px;
+  border: 1px solid rgba(132,152,255,.28); background: rgba(255,255,255,.045);
+  color: #BFD0FF; font-size: 10.5px; font-weight: 750;
+}
+.agc-random-pick:hover { border-color: rgba(132,152,255,.55); background: rgba(80,110,255,.14); color: #fff; }
 .agc-accs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 220px; overflow-y: auto; }
 .agc-acc {
   display: flex; align-items: center; gap: 8px; text-align: left;
@@ -224,8 +232,8 @@
 .agc-acc > span:nth-child(2), .agc-acc > b { flex: 1; }
 .agc-overrides { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .agc-override {
-  display: grid; grid-template-columns: minmax(120px, .8fr) minmax(118px, .6fr) 96px minmax(180px, 1fr) minmax(260px, 1.15fr);
-  gap: 8px; align-items: center; padding: 7px 9px;
+  display: grid; grid-template-columns: minmax(92px, .8fr) minmax(86px, .52fr) 64px minmax(0, 1fr);
+  gap: 7px; align-items: center; padding: 7px;
   border: 1px solid var(--ag-line); border-radius: var(--r-md);
   background: rgba(255,255,255,.035);
 }
@@ -235,20 +243,21 @@
   border-radius: var(--r-sm); padding: 7px 9px; font-size: 11.5px; color: var(--d-text); outline: 0;
 }
 .agc-override select { color-scheme: dark; }
-.agc-count-mini { display: grid; gap: 3px; color: var(--d-faint); font-size: 9.5px; font-weight: 700; }
+.agc-count-mini { display: grid; gap: 2px; color: var(--d-faint); font-size: 9px; font-weight: 700; }
 .agc-count-mini span { white-space: nowrap; }
 .agc-count-mini input { width: 100%; }
-.agc-mini-ref { display: grid; gap: 7px; min-width: 0; font-size: 9.5px; color: var(--d-faint); font-weight: 650; }
-.agc-mini-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.agc-mini-head span { color: var(--d-muted); font-size: 10.5px; }
+.agc-mini-ref { grid-column: 1 / -1; display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; gap: 7px; align-items: center; min-width: 0; font-size: 9.5px; color: var(--d-faint); font-weight: 650; }
+.agc-mini-head { display: grid; gap: 1px; }
+.agc-mini-head span { color: var(--d-muted); font-size: 10px; }
 .agc-mini-head em { font-style: normal; font-weight: 500; font-size: 9px; color: var(--d-faint); }
-.agc-mini-ref .agc-mini-actions { display: flex; align-items: center; gap: 7px; justify-content: space-between; flex-wrap: wrap; }
+.agc-mini-ref .agc-mini-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 .agc-mini-ref .agc-mini-actions .ref-chip.dark { margin-left: 0; max-width: 150px; }
 .agc-mini-ref .agc-mini-actions .ref-chip.dark span { display: inline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agc-drop-mini {
-  display: inline-flex; align-items: center; gap: 6px; min-height: 30px;
-  padding: 6px 9px; border: 1px dashed rgba(132,152,255,.42); border-radius: var(--r-sm);
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 28px;
+  padding: 5px 7px; border: 1px dashed rgba(132,152,255,.42); border-radius: var(--r-sm);
   color: #AFC0FF; background: rgba(80,110,255,.08); cursor: copy; transition: all var(--t-fast);
+  white-space: nowrap; font-size: 10.5px;
 }
 .agc-drop-mini:hover, .agc-drop-mini.drag-over { border-color: #7C9AFF; background: rgba(80,110,255,.16); box-shadow: var(--d-glow); }
 .agc-ref { display: grid; gap: 10px; margin: 4px 0 10px; padding: 11px; background: rgba(255,255,255,.035); border: 1px solid var(--ag-line); border-radius: var(--r-md); }

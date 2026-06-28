@@ -193,16 +193,15 @@ export function selectAccountsForPlan(params = {}) {
   return matched;
 }
 
-export function defaultPlan(goal = "选择3个很久没发布内容的图文账号，每个账号创作1条内容") {
+export function defaultPlan(goal = "新量产计划") {
   const fb = parseGoalFallback(goal);
   const params = {
     ...fb,
     group: fb.group && fb.group !== "all" ? fb.group : "图文组",
     sort: fb.sort || "stale",
-    accountCount: fb.accountCount || fb.count || 3,
+    accountCount: fb.accountCount || fb.count || null,
     perAccountCount: fb.perAccountCount || 1
   };
-  const matched = selectAccountsForPlan(params);
   return {
     status: "pending", goal,
     topicMode: "random", topic: "",
@@ -213,7 +212,7 @@ export function defaultPlan(goal = "选择3个很久没发布内容的图文账�
     sort: params.sort,
     accountCount: params.accountCount,
     perAccountCount: params.perAccountCount,
-    accountIds: matched.map(a => a.id),
+    accountIds: [],
     sharedRefAssetIds: [], accountRefAssetIds: {}
   };
 }
