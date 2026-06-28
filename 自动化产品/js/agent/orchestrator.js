@@ -561,10 +561,9 @@ export async function startBatch(plan, session) {
   if (!accounts.length) { agentSay("⚠ 没有可用账号，先调整筛选条件。"); return null; }
   const batch = createBatch(plan, session.id);
   const defaultPerAccountCount = Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1));
-  const accountCounts = plan.accountCounts || {};
   accounts.forEach(acc => {
     const productId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
-    const perAccountCount = Math.max(1, Math.min(12, Number(accountCounts[acc.id] || defaultPerAccountCount) || 1));
+    const perAccountCount = defaultPerAccountCount;
     for (let i = 0; i < perAccountCount; i++) {
       const topic = plan.topicMode === "random" ? "" : (perAccountCount > 1 ? `${plan.topic} ${i + 1}/${perAccountCount}` : plan.topic);
       const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId });

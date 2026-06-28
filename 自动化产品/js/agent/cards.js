@@ -102,9 +102,7 @@ const CARD = {
     const confirmed = p.status === "confirmed";
     const cancelled = p.status === "cancelled";
     const perAccountCount = Math.max(1, Math.min(12, Number(p.perAccountCount || 1) || 1));
-    const accountCounts = p.accountCounts || {};
-    const countFor = a => Math.max(1, Math.min(12, Number(accountCounts[a.id] || perAccountCount) || 1));
-    const totalCount = matched.reduce((sum, a) => sum + countFor(a), 0);
+    const totalCount = matched.length * perAccountCount;
     const products = Array.isArray(state.products) && state.products.length ? state.products : [{ id: "dumate", name: "百度搭子", shortName: "搭子" }];
     const productOptions = (selected = "") => products.map(pr => `<option value="${esc(pr.id)}" ${selected === pr.id ? "selected" : ""}>${esc(pr.shortName || pr.name)}</option>`).join("");
     const globalRefs = selectedRefIds(p);
@@ -113,7 +111,6 @@ const CARD = {
       ${matched.map(a => `<div class="agc-override">
         <b>${esc(a.name)}</b>
         <select data-pacc-prod="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>${productOptions((p.accountProductIds || {})[a.id] || p.productId || "dumate")}</select>
-        <label class="agc-count-mini"><span>本号条数</span><input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a))}" ${confirmed || cancelled ? "disabled" : ""} /></label>
         <input data-pacc-content="${a.id}" value="${esc((p.accountContents || {})[a.id] || "")}" placeholder="本账号本次创作内容（可留空）" ${confirmed || cancelled ? "disabled" : ""} />
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
@@ -145,10 +142,6 @@ const CARD = {
           <textarea data-pf="content" rows="3" ${confirmed || cancelled ? "disabled" : ""} placeholder="写具体创作内容、产品角度或表达偏好；留空则每号按账号风格随机。">${esc(p.content || p.style || "")}</textarea>
           <em>默认沿用各账号自带风格，不再单独选择标签。</em>
         </label>
-        <label class="agc-field">每号内容数
-          <input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" ${confirmed || cancelled ? "disabled" : ""} />
-          <em>默认 ${perAccountCount} 条，可在单号行单独调整 · 共 ${totalCount} 条</em>
-        </label>
       </div>
       ${(() => {
         const editable = !confirmed && !cancelled;
@@ -176,8 +169,11 @@ const CARD = {
           </div>
         </div>`;
       })()}
-      <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减，单号条数可单独调整</em></span>
-        ${confirmed || cancelled ? "" : `<button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>`}
+      <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减</em></span>
+        ${confirmed || cancelled ? "" : `<span class="agc-sec-tools">
+          <label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>
+          <button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>
+        </span>`}
       </div>
       <div class="agc-accs">${state.accounts.map(a => {
         const on = (p.accountIds || []).includes(a.id);

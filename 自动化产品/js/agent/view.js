@@ -574,9 +574,8 @@ function wire(root) {
     const f = e.target.closest("[data-pf]");
     const ap = e.target.closest("[data-pacc-prod]");
     const ac = e.target.closest("[data-pacc-content]");
-    const acn = e.target.closest("[data-pacc-count]");
     const ar = e.target.closest("[data-pacc-ref]");
-    if (!f && !ap && !ac && !acn && !ar) return;
+    if (!f && !ap && !ac && !ar) return;
     const node = e.target.closest("[data-plan]");
     if (!node) return;
     const s = ensureSession();
@@ -600,16 +599,12 @@ function wire(root) {
       m.payload.accountContents = m.payload.accountContents || {};
       m.payload.accountContents[ac.dataset.paccContent] = ac.value;
     }
-    if (acn) {
-      m.payload.accountCounts = m.payload.accountCounts || {};
-      m.payload.accountCounts[acn.dataset.paccCount] = Math.max(1, Math.min(12, Number(acn.value || 1) || 1));
-    }
     if (ar) {
       m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
       m.payload.accountRefAssetIds[ar.dataset.paccRef] = Array.from(ar.selectedOptions).map(o => o.value).filter(Boolean).slice(0, 3);
     }
     save("sessions");
-    if (f?.multiple || ar || acn || f?.dataset.pf === "perAccountCount") rerenderPlanCard(m.id);
+    if (f?.multiple || ar || f?.dataset.pf === "perAccountCount") rerenderPlanCard(m.id);
   };
   shell.addEventListener("input", updatePlanField);
   shell.addEventListener("change", updatePlanField);

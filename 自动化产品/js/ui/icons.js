@@ -99,7 +99,7 @@ export function brandMark(height = 28) {
 
 /* 方形小标（导航栏 / favicon 同款）：深色圆角底 + 渐变描边播放三角 */
 export function brandGlyph(size = 28) {
-  return `<img class="brand-glyph-img" src="./logo.png" alt="星阵" width="${size}" height="${size}" />`;
+  return `<img class="brand-glyph-img" src="./assets/brand/xingzhen-icon.png" alt="星阵" width="${size}" height="${size}" />`;
 }
 
 /* Agent 头像：渐变描边机器人（按参考图重绘：天线 + 圆角头壳 + 深色面板 + 双色发光眼） */
