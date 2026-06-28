@@ -435,6 +435,10 @@ IMAGE_PROMPT_TEXT_REPLACEMENTS = (
     ("由AI生成", "由系统生成"),
     ("AI 生成", "智能生成"),
     ("AI生成", "智能生成"),
+    ("清爽种草感", "清爽真实分享感"),
+    ("种草感", "真实分享感"),
+    ("轻种草", "轻推荐"),
+    ("首图", "大字标题"),
 )
 
 
@@ -443,6 +447,9 @@ IMAGE_PROMPT_GUARD = (
     "“由AI生成”“AI绘制”“生成图”“水印”等来源标识；不要出现模型标识、平台标识、"
     "角标、页码、二维码、账号昵称、乱码。不要把“封面”“痛点引入”“问题引入”“关键步骤”"
     "“结果预览”“总结收束”“图1”“第1张”等内部结构词写进画面，这些只作为生成结构参考。"
+    "画面文字不要出现“种草”“痛点”“共鸣”“构图”“封面”“首图”“步骤一”“步骤二”“步骤三”“图片定位”"
+    "“画面定位”等给系统看的定位词；需要表达推荐时，必须改写成具体功能、动作或结果。"
+    "角落装饰最多出现在1-2个角，不要四角都画括号或对称角标。"
     "画面文字只保留本图需要展示的大标题、短句或关键标签，其他界面文字尽量做模糊化或抽象色块处理。"
 )
 
@@ -869,7 +876,7 @@ async def image_generate(req: ImageGenerateReq):
                 used_refs = min(len(ref_files), 8)
                 maas_prompt = prompt
                 if used_refs:
-                    maas_prompt += "\n\n请严格综合参考随消息附带的 %d 张参考图：锁定品牌色、界面层级、构图密度和产品视觉，不复制参考图里的旧标题与示例文字。" % used_refs
+                    maas_prompt += "\n\n请严格综合参考随消息附带的 %d 张参考图：锁定品牌色、界面层级、画面结构密度和产品视觉，不复制参考图里的旧标题与示例文字。" % used_refs
                 maas_model = _maas_model_for_refs(req.model or model, bool(ref_files))
                 maas_body = _maas_image_body(maas_prompt, maas_model, ratio, ref_files)
                 r, data = await _post_json_with_retry(client, endpoint, maas_body, json_headers)
@@ -877,7 +884,7 @@ async def image_generate(req: ImageGenerateReq):
                 used_refs = min(len(ref_files), 8)
                 ref_note = ""
                 if used_refs:
-                    ref_note = "\n\n请严格综合参考随消息附带的 %d 张参考图：锁定品牌色、界面层级、构图密度和产品视觉，不复制参考图里的旧标题与示例文字。" % used_refs
+                    ref_note = "\n\n请严格综合参考随消息附带的 %d 张参考图：锁定品牌色、界面层级、画面结构密度和产品视觉，不复制参考图里的旧标题与示例文字。" % used_refs
                 response_body = {
                     "model": model,
                     "instructions": "你是专业图片生成模型。按用户中文提示生成一张可用于小红书笔记的图片，并返回图片结果。",
@@ -895,7 +902,7 @@ async def image_generate(req: ImageGenerateReq):
                 ref_note = ""
                 if ref_files:
                     used_refs = len(ref_files[:8])
-                    ref_note = "\n\n请严格综合参考随消息附带的 %d 张参考图：锁定品牌色、界面层级、构图密度和产品视觉，不复制参考图里的旧标题与示例文字。" % used_refs
+                    ref_note = "\n\n请严格综合参考随消息附带的 %d 张参考图：锁定品牌色、界面层级、画面结构密度和产品视觉，不复制参考图里的旧标题与示例文字。" % used_refs
                     content[0]["text"] = prompt + ref_note
                 chat_body = {
                     "model": model,
@@ -1210,7 +1217,7 @@ async def video_submit(req: VideoSubmitReq):
         pass
     ref_parts = []
     if resolved_images:
-        ref_parts.append(f"请参考{'、'.join(f'[图{i + 1}]' for i, _, _ in resolved_images)}，并保持主体/界面/构图信息一致。")
+        ref_parts.append(f"请参考{'、'.join(f'[图{i + 1}]' for i, _, _ in resolved_images)}，并保持主体、界面和画面结构信息一致。")
     if unresolved_local_images:
         ref_parts.append("部分本地参考图当前无法被上游读取，本次按文本提示词生成；部署到有 PUBLIC_BASE_URL 的服务器后可自动携带参考图。")
     if resolved_audios:

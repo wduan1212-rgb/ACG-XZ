@@ -331,8 +331,8 @@ function enrichBatchImagePrompt(prompt, refs) {
   const custom = refs.filter(r => r.role === "custom");
   const sharedNames = shared.map(r => r.name).filter(Boolean).slice(0, 5).join("、");
   const customNames = custom.map(r => r.name).filter(Boolean).slice(0, 3).join("、");
-  const customNote = custom.length ? `\n定制参考图约束：另提供 ${custom.length} 张本账号专属参考图（${customNames}），优先参考其账号专属视觉、素材语气、局部构图或产品细节；它们只服务当前账号，不要覆盖统一参考图的品牌一致性。` : "";
-  return `${prompt || ""}\n\n统一参考图约束：已提供 ${shared.length} 张统一参考图（${sharedNames}），生成时综合参考产品界面、logo、配色、版式密度、真实截图质感和图标形态；不要只参考第一张。${customNote}\n参考图中的旧标题、页名和示例文案一律视为占位，不要照抄；画面文字只使用当前提示词指定内容，不能出现“封面、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张”等内部分类词。`;
+  const customNote = custom.length ? `\n定制参考图约束：另提供 ${custom.length} 张本账号专属参考图（${customNames}），优先参考其账号专属视觉、素材语气、画面结构或产品细节；它们只服务当前账号，不要覆盖统一参考图的品牌一致性。` : "";
+  return `${prompt || ""}\n\n统一参考图约束：已提供 ${shared.length} 张统一参考图（${sharedNames}），生成时综合参考产品界面、logo、配色、信息密度、真实截图质感和图标形态；不要只参考第一张。${customNote}\n参考图中的旧标题、页名和示例文案一律视为占位，不要照抄；画面文字只使用当前提示词指定内容，不能出现“种草、痛点、共鸣、构图、封面、首图、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张、步骤一、步骤二、步骤三”等内部分类词或定位词；角落装饰最多1-2处，不要四角都画括号。`;
 }
 
 async function generateBatchImagesInHouse(p, batch, acc) {
@@ -427,7 +427,7 @@ async function draftOne(p, batch) {
       });
       const promptRows = imgPromptRes.shots || [];
       p.artifacts.images.items = p.artifacts.script.shots.map((s, i) => ({
-        title: promptRows[i]?.title || s.idea || `图${i + 1}`,
+        title: promptRows[i]?.title || `图片${i + 1}`,
         visual: s.visual || "",
         prompt: promptRows[i]?.prompt || "",
         assetId: null,

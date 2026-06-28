@@ -362,37 +362,37 @@ function compactVideoPrompt(prompt, maxLen = 2000) {
 
 const IMAGE_CARD_TASKS = [
   {
-    title: "开头钩子",
-    role: "让用户一眼知道这篇笔记解决什么麻烦",
-    layout: "左侧放大标题与一句副标题，右侧放产品/桌面结果画面，底部留一个小型步骤或标签区",
-    visual: "用混乱文件、待处理表格、消息提醒或任务卡片制造真实痛点，再用一块干净的结果界面形成对比"
+    title: "资料从乱到顺",
+    role: "让用户一眼知道这篇笔记解决什么具体办公麻烦",
+    layout: "左侧放大具体功能标题与一句结果短句，右侧放产品/桌面结果画面，底部留一个动作标签区",
+    visual: "用混乱文件、待处理表格、消息提醒或任务卡片展示真实办公麻烦，再用一块干净的结果界面形成对比"
   },
   {
-    title: "共鸣场景",
-    role: "把读者常遇到的混乱场景拆开，让人产生共鸣",
-    layout: "上方大标题，中间用两到三张卡片横向排布痛点，右下角放模糊界面缩略图",
-    visual: "文件夹层层嵌套、表格列名混乱、聊天消息和便签交错出现，关键文字只保留大字短句"
+    title: "资料堆积现场",
+    role: "把读者常遇到的混乱场景拆成可识别的问题清单",
+    layout: "上方大标题，中间用两到三张卡片横向排布待处理资料，右下角放模糊界面缩略图",
+    visual: "文件夹层层嵌套、表格列名混乱、聊天消息和便签交错出现，关键文字只保留真实场景短句"
   },
   {
-    title: "解决路径",
+    title: "一句话交代任务",
     role: "展示一句指令或一个流程如何把问题接住",
     layout: "中央放输入框或流程主卡，左右两侧用箭头连接原始资料和处理结果",
     visual: "鼠标光标停在输入框旁，文件卡片被自动归类，进度条或步骤圆点用蓝紫色高亮"
   },
   {
-    title: "关键步骤",
+    title: "三个动作跑完",
     role: "把方法拆成可复制的步骤，而不是只展示结果",
-    layout: "三段式竖向步骤卡，左侧编号，右侧对应界面/文件/数据的小画面",
-    visual: "每一步都对应一个清楚动作：上传资料、识别字段、生成结果，卡片层级有轻微阴影和留白"
+    layout: "三段式竖向动作卡，每段直接写动词短句，不使用编号词",
+    visual: "每一段都对应一个清楚动作：拖入资料、识别字段、生成结果，卡片层级有轻微阴影和留白"
   },
   {
-    title: "结果对比",
+    title: "整理结果可复用",
     role: "让用户看到前后变化，建立可信度",
     layout: "左右对比结构，左边是处理前的混乱，右边是处理后的整齐结果，中间用细箭头连接",
     visual: "结果区出现整齐文件夹、统计卡片、报告缩略图或清爽表格，文字做模糊化处理但结构清晰"
   },
   {
-    title: "总结收束",
+    title: "少做重复整理",
     role: "给出适用场景和一句可记住的方法结论",
     layout: "大留白结论页，中间放一句核心结论，下方放三枚小卡片总结适用场景",
     visual: "桌面从杂乱变得清爽，产品界面以小窗口形式停在右下角，整体光线更通透"
@@ -402,9 +402,10 @@ const IMAGE_CARD_TASKS = [
 function shortChinese(text, max = 24) {
   const raw = cleanText(text || "")
     .replace(/小红书笔记风格配图|竖版3:4|真实感|高级感/g, "")
+    .replace(/清爽种草感|种草感|种草/g, "")
     .replace(/模型给出的视觉线索可提炼为|参考脚本如下/g, "")
-    .replace(/^(核心思想|画面|版式|文案|截图|提示词|视觉线索|图上文字|图片任务|本页补充线索)[:：]/, "")
-    .replace(/^(封面|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束|图\d+|第\d+张)[·:：｜|\s-]*/g, "")
+    .replace(/^(核心思想|画面|构图|版式|文案|截图|提示词|视觉线索|图上文字|图片任务|本页补充线索)[:：]/, "")
+    .replace(/^(封面|种草|共鸣|痛点|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|自然收束|收束|内容页|图\d+|第\d+张|步骤[一二三四五六七八九十\d]*)[·:：｜|\s-]*/g, "")
     .replace(/[「」"'“”]/g, "")
     .replace(/[｜|<>]/g, " ")
     .replace(/\s+/g, " ")
@@ -418,10 +419,38 @@ function shortChinese(text, max = 24) {
 }
 
 const INTERNAL_IMAGE_LABEL_RE = /(封面|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束|图片任务|第\d+\/\d+张|第\d+张|图\d+)/g;
-const BAD_IMAGE_HEADLINE_RE = /^(图\d+|第\d+张|干货步骤|核心思想|画面|版式|文案|截图|提示词|视觉线索|封面|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束|图片任务)|想要宣传|不要有页码|利他性强|账号定位|参考图|整体的画面|图\d+\s*[·.-]\s*干货步骤|[｜|<>]/;
+const IMAGE_PLANNING_WORD_RE = /(种草|种草感|构图|版式|画面定位|图片定位|内容页|开头钩子|钩子|共鸣场景|共鸣|痛点|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|自然收束|收束|封面|首图|图片任务|核心思想|视觉线索|提示词|文案|截图|图上文字|干货步骤|步骤[一二三四五六七八九十\d]*)/g;
+const BAD_IMAGE_HEADLINE_RE = /^(图\d+|第\d+张|内容页|干货步骤|核心思想|画面|版式|构图|文案|截图|提示词|视觉线索|封面|首图|种草|共鸣|痛点|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|自然收束|收束|图片任务|步骤[一二三四五六七八九十\d]*)|想要宣传|不要有页码|利他性强|账号定位|参考图|整体的画面|图\d+\s*[·.-]\s*干货步骤|[｜|<>]/;
+
+function cleanImagePlanningWords(text = "") {
+  return cleanText(text)
+    .replace(/清爽种草感/g, "清爽真实分享感")
+    .replace(/种草感/g, "真实分享感")
+    .replace(/轻种草/g, "轻推荐")
+    .replace(/种草/g, "推荐功能")
+    .replace(/痛点/g, "待处理问题")
+    .replace(/共鸣/g, "真实场景")
+    .replace(/构图/g, "画面结构")
+    .replace(/版式/g, "画面布局")
+    .replace(/封面/g, "大字标题页")
+    .replace(/首图/g, "大字标题")
+    .replace(/关键步骤/g, "关键动作")
+    .replace(/步骤([一二三四五六七八九十\d]*)/g, "动作$1")
+    .replace(/开头钩子|钩子/g, "开头问题")
+    .replace(/结果对比/g, "前后变化")
+    .replace(/总结收束|自然收束|收束/g, "结论")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanImageDisplayTitle(text = "", fallback = "资料整理完成") {
+  const raw = shortChinese(cleanImagePlanningWords(text), 18);
+  if (!raw || BAD_IMAGE_HEADLINE_RE.test(raw)) return fallback;
+  return raw;
+}
 
 function stripInternalImageLabels(text = "") {
-  return cleanText(text)
+  return cleanImagePlanningWords(text)
     .replace(/(?:封面|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束)[:：·｜|\s-]*/g, "")
     .replace(/第\d+\/\d+张[。；，,\s]*/g, "")
     .replace(/图片任务[:：][^。；\n]*[。；]?/g, "")
@@ -440,7 +469,7 @@ function normalizeImageSizeText(text = "") {
 }
 
 function cleanImagePromptSignal(text, max = 96) {
-  const raw = stripPromptScaffold(text || "")
+  const raw = cleanImagePlanningWords(stripPromptScaffold(text || ""))
     .replace(/模型给出的视觉线索可提炼为[:：]?/g, "")
     .replace(/参考脚本如下[:：]?/g, "")
     .replace(/(?:核心思想|画面|文案|visual|line|idea)[:：]/gi, "")
@@ -449,13 +478,13 @@ function cleanImagePromptSignal(text, max = 96) {
     .replace(/^[，,。；、\s]+|[，,。；、\s]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  if (/面向|讲清楚|重点是|画面要|用户输入|创作内容|不要有|整体风格|利他性|直接加入|生成小红书笔记风格|^信息按|^所有文字|^画面文字/.test(raw)) return "";
+  if (/面向|讲清楚|重点是|画面要|用户输入|创作内容|不要有|整体风格|利他性|直接加入|生成小红书笔记风格|^信息按|^所有文字|^画面文字|图片定位|画面定位/.test(raw)) return "";
   if (!raw || BAD_IMAGE_HEADLINE_RE.test(raw.slice(0, 24))) return "";
   return shortChinese(raw, max);
 }
 
 function stripPromptScaffold(text = "") {
-  return stripPromptMeta(text || "")
+  return cleanImagePlanningWords(stripPromptMeta(text || ""))
     .replace(/（?请根据上传的参考图[^。；\n]*[。；，,]?）?/g, "")
     .replace(/请根据上传的参考图[^。；\n]*[。；，,]?/g, "")
     .replace(/生成小红书笔记风格\s*3:4\s*尺寸(?:图片)?[，,。；\s]*/g, "")
@@ -467,7 +496,7 @@ function stripPromptScaffold(text = "") {
     .replace(/精准描述图片(?:的)?内容，?所有文字清晰可读/g, "")
     .replace(/负面约束\s*[:：][\s\S]*$/g, "")
     .replace(/账号定位\s*[:：]\s*/g, "")
-    .replace(/(?:账号风格|图片风格)\s*[:：]\s*/g, "")
+    .replace(/(?:账号风格|图片风格|整体风格)\s*[:：]\s*/g, "")
     .replace(/模型给出的视觉线索可提炼为[:：]?/g, "")
     .replace(/参考脚本如下[:：]?/g, "")
     .replace(/(?:核心思想|画面|文案|visual|line|idea)[:：]/gi, "")
@@ -522,7 +551,7 @@ function summarizeImageIntent({ script = "", topic = "", account = {}, product =
 }
 
 function deriveImageHeadline(item, i, intent, task) {
-  const structured = cleanText(item?.line || item?.prompt || "");
+  const structured = cleanImagePlanningWords(item?.line || item?.prompt || "");
   const fromLine = structured.match(/(?:文案|图上文字|大标题)[:：]\s*([^｜\n。；]+)/)?.[1];
   const fallbackByTask = [
     `${intent.audience}别再手动熬`,
@@ -540,7 +569,7 @@ function deriveImageHeadline(item, i, intent, task) {
     fallbackByTask[Math.min(i, fallbackByTask.length - 1)]
   ];
   const picked = candidates
-    .map(x => shortChinese(x, 22))
+    .map(x => cleanImageDisplayTitle(x, ""))
     .find(x => x && !BAD_IMAGE_HEADLINE_RE.test(x));
   return picked || fallbackByTask[Math.min(i, fallbackByTask.length - 1)] || `${intent.productName}到底省在哪`;
 }
@@ -553,20 +582,22 @@ function richImagePrompt(item, i, total, ctx) {
   const contentCue = cue
     ? `内容线索：把「${cue}」拆成一个真实办公场景，明确出现待处理资料、操作动作、结果界面三层信息。`
     : `围绕「${intent.main}」重新组织信息，明确出现待处理资料、操作动作、结果界面三层信息。`;
-  const title = shortChinese(item?.title, 18) || task.title;
+  const title = cleanImageDisplayTitle(item?.title, task.title);
   const headline = deriveImageHeadline(item, i, intent, task);
   const accountPosition = shortChinese(stripFieldLabel(ctx.account?.position || "", "账号定位") || "办公效率教程型；真实体验视角、步骤清楚、少广告感。", 120);
   const imageStyle = ctx.style
-    ? shortChinese(stripPromptScaffold(stripFieldLabel(ctx.style, "账号风格")), 190)
+    ? shortChinese(cleanImagePlanningWords(stripPromptScaffold(stripFieldLabel(ctx.style, "账号风格"))), 190)
     : "白底或浅色底，圆角卡片，大留白，真实办公截图质感，蓝紫点缀，文字大而清楚。";
   const refPrefix = ctx.styleRefName
     ? `请根据上传的参考图（${ctx.styleRefName}），综合参考产品界面层级、品牌色、截图质感和视觉密度；不要复制参考图里的旧标题和示例文案。`
     : "";
   const productLine = ctx.product ? `产品/应用：${intent.productName}，只在流程或界面里自然出现。` : "产品表达以真实办公流程和界面结果为主。";
+  const promptBody = cleanImagePlanningWords(`${refPrefix}生成小红书笔记风格3:4尺寸图片。【账号定位：${accountPosition}】【图片风格：${imageStyle}】图片具体内容：【${productLine} 画面布局采用${task.layout}；主体内容是${task.visual}；${contentCue}信息按待处理资料、执行动作、可复用结果组织到界面、文件、数据卡片或桌面物件里，不能照抄用户输入。画面文字只放大标题「${headline}」和一句短副标题，最多2个功能标签；功能标签必须写具体收益或动作，例如“自动归类”“字段识别”“报告可用”，所有文字清晰可读。】`);
+  const promptNeg = "负面约束：不出现二维码、角落不出现logo、不出现页码；不要乱码、不要六宫格拼图、不要 emoji、不要账号昵称，不要硬广式下载引导；画面文字绝对不要出现“种草”“痛点”“共鸣”“构图”“封面”“首图”“步骤一”“步骤二”“步骤三”“图片定位”“画面定位”等给系统看的定位词；角落装饰最多出现在1-2个角，不要四角都画括号。";
   return {
     title,
     ui: item?.ui !== false,
-    prompt: normalizeImageSizeText(`${refPrefix}生成小红书笔记风格3:4尺寸图片。【账号定位：${accountPosition}】【图片风格：${imageStyle}】图片具体内容：【${productLine} 版式采用${task.layout}；画面为${task.visual}；${contentCue}信息按烦恼、动作、结果组织到界面、文件、数据卡片或桌面物件里，不能照抄用户输入。画面文字只放大标题「${headline}」和一句短副标题，最多2个关键词小标签，所有文字清晰可读。】负面约束：不出现二维码、角落不出现logo、不出现页码；不要乱码、不要六宫格拼图、不要 emoji、不要账号昵称，不要硬广式下载引导；不要出现内部分类词、页序词或流程阶段词。`)
+    prompt: normalizeImageSizeText(`${promptBody}${promptNeg}`)
   };
 }
 
@@ -961,16 +992,18 @@ export const AI = {
     const safeTpl = sanitizeXhsText(stripPromptScaffold(tpl));
     try {
       const content = await llm([
-        { role: "system", content: DUMATE_BRIEF + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，再拆成 ${nImg} 张静态图片：开头钩子、共鸣场景、方法动作、关键细节、结果展示、自然收束等叙事功能。功能名只用于你内部理解，绝不能当作画面文字。
-每条 prompt 必须使用「生成小红书笔记风格3:4尺寸，【账号定位：...】【图片风格：...】，图片具体内容：【...】。负面约束：...」结构；如果有参考图，则在开头加入「请根据上传的参考图」。风格主要按账号定位和账号模板，不要把用户输入原句整段塞进提示词，不要在“图片具体内容”里重复外层结构。${safeStyle ? "账号总风格：" + safeStyle + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张，不要要求角落出现logo。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的版式语言、色彩、字体、参考图使用方式和统一要求；但模板只当风格母版，不能原样复制模板句子。` : ""}
+        { role: "system", content: DUMATE_BRIEF + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，再拆成 ${nImg} 张静态图片：开场问题、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。功能名只用于你内部理解，绝不能当作画面文字。
+每条 prompt 必须使用「生成小红书笔记风格3:4尺寸，【账号定位：...】【图片风格：...】，图片具体内容：【...】。负面约束：...」结构；如果有参考图，则在开头加入「请根据上传的参考图」。风格主要按账号定位和账号模板，不要把用户输入原句整段塞进提示词，不要在“图片具体内容”里重复外层结构。${safeStyle ? "账号总风格：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张，不要要求角落出现logo。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；但模板只当风格母版，不能原样复制模板句子。` : ""}
 
 每条 prompt 控制在 160-260 字，说清：版式、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。只保留1个大标题和1句短副标题，最多2个小标签。
-禁止在 prompt 或画面文字中出现「封面」「痛点引入」「问题引入」「关键步骤」「结果对比」「总结收束」「图1」「第1张」「图片任务」等内部分类词。
+画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
+禁止在 prompt 或画面文字中出现「种草」「痛点」「共鸣」「构图」「封面」「痛点引入」「问题引入」「关键步骤」「结果对比」「总结收束」「图1」「第1张」「图片任务」「步骤一」「步骤二」「步骤三」等内部分类词。
+角落装饰最多出现在1-2个角，不要四角都画括号或对称角标。
 禁止乱码、二维码、页码、角落logo、密集小字、emoji、六宫格拼图、账号昵称、下载引导。
 
 ${xhsGuardPrompt()}
 
-只输出 JSON：{"shots":[{"title":"给操作员看的短标题","prompt":"可直接给图像模型的提示词","ui":true}]}` },
+只输出 JSON：{"shots":[{"title":"给操作员看的短标题，必须是具体功能/结果，不能是种草/痛点/构图/步骤/封面等定位词","prompt":"可直接给图像模型的提示词","ui":true}]}` },
         { role: "user", content: `账号定位：${sanitizeXhsText(account.position)}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n${product ? `宣传产品：${sanitizeXhsText(product.name || product.shortName || "")}\n` : ""}${safeTopic ? `本次主题：${safeTopic}\n` : ""}${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号图文模板（风格/结构母版，变量需替换）：\n${safeTpl}\n` : ""}脚本：\n${safeScript || "(据定位自拟)"}` }
       ], { json: true, temperature: 0.8 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
@@ -998,7 +1031,7 @@ ${xhsGuardPrompt()}
           const titleText = (base.match(/图上文案[:：]([^｜\n]+)/) || base.match(/line[:：]([^｜\n]+)/) || [])[1]?.trim()
             || (i === 0 ? shortChinese(safeTopic, 18) || `${(product?.shortName || product?.name || "这个工具")}到底省在哪` : i === nImg - 1 ? "把重复动作交给流程" : base.replace(/^图\d+[：:｜\s]*/, "").slice(0, 18));
           return {
-            title: i === 0 ? "开头钩子" : i === nImg - 1 ? "自然收束" : `内容页 ${i + 1}`,
+            title: i === 0 ? "资料从乱到顺" : i === nImg - 1 ? "少做重复整理" : `动作拆解 ${i + 1}`,
             headline: titleText,
             ui: i > 0 && i < nImg - 1,
             prompt: base

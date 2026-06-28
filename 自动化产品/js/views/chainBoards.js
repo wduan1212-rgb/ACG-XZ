@@ -348,7 +348,7 @@ function refNamesOf(A, extra = []) {
 export function enrichPromptWithRefs(prompt, A) {
   const names = refNamesOf(A);
   if (!names.length) return prompt || "";
-  return `${prompt || ""}\n\n统一参考图约束：本次提供 ${names.length} 张参考图（${names.join("、")}），请综合参考它们的产品界面、logo、配色、版式密度、图标形态和真实截图质感；不要只参考第一张。若参考图之间功能不同，按当前画面主题选择最匹配的一张作为主参考，其余作为品牌与风格辅助参考。参考图里的旧标题、页名、示例文案一律视为占位，不要照抄；画面文字只使用本提示词指定的大标题/副标题，绝不出现“封面、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张”等内部分类词。`;
+  return `${prompt || ""}\n\n统一参考图约束：本次提供 ${names.length} 张参考图（${names.join("、")}），请综合参考它们的产品界面、logo、配色、信息密度、图标形态和真实截图质感；不要只参考第一张。若参考图之间功能不同，按当前画面主题选择最匹配的一张作为主参考，其余作为品牌与风格辅助参考。参考图里的旧标题、页名、示例文案一律视为占位，不要照抄；画面文字只使用本提示词指定的大标题/副标题，绝不出现“种草、痛点、共鸣、构图、封面、首图、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张、步骤一、步骤二、步骤三”等内部分类词或定位词；角落装饰最多1-2处，不要四角都画括号。`;
 }
 
 function normalizeImageWorkshopText(text = "") {
@@ -371,12 +371,12 @@ function ratioFromImagePrompt(text = "", fallback = "3:4") {
 }
 
 function promptForImageModel(text = "") {
-  const bannedLabels = "封面|痛点引入|问题引入|关键步骤|结果对比|总结收束|图\\d+|第\\d+张";
+  const bannedLabels = "种草|痛点|共鸣|构图|封面|首图|痛点引入|问题引入|关键步骤|结果对比|总结收束|图\\d+|第\\d+张|步骤一|步骤二|步骤三";
   return `${normalizeImageWorkshopText(text)
     .replace(new RegExp(`图上文字[：:]\\s*[「“"]?(?:${bannedLabels})[」”"]?`, "g"), "图上文字按本页标题与副标题生成")
     .replace(new RegExp(`图片任务[：:]\\s*(?:${bannedLabels})[，,。；;]?`, "g"), "图片任务：")
     .replace(new RegExp(`\\b(?:${bannedLabels})[：:]`, "g"), "")
-  }\n\n画面内不要写入内部结构词，例如“封面、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张”。只保留面向用户可读的标题、短句、标签和界面信息。`;
+  }\n\n画面内不要写入内部结构词或定位词，例如“种草、痛点、共鸣、构图、封面、首图、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张、步骤一”。只保留面向用户可读的标题、短句、标签和界面信息；角落装饰最多1-2处，不要四角都画括号。`;
 }
 
 export function renderSlotsPage(root, p, isImg) {
@@ -812,7 +812,7 @@ export function renderSlotsPage(root, p, isImg) {
     const selectedProduct = productById(S.productId);
     if (!brief) {
       const picked = await AI.randomPick({ kind: "topic", account: acc });
-      brief = `${picked}：围绕真实使用痛点、具体操作步骤、结果对比、适合人群和一个可复制的小技巧，拆成 ${count} 张图卡讲清楚。`;
+      brief = `${picked}：围绕真实使用麻烦、具体操作动作、前后变化、适合人群和一个可复制的小技巧，拆成 ${count} 张图卡讲清楚。`;
       const input = $("#imgBrief", root); if (input) input.value = brief;
       toast(AI.sourceNote("已随机生成详细创作内容"));
     }
@@ -845,7 +845,7 @@ export function renderSlotsPage(root, p, isImg) {
     });
     const promptRows = promptRes.shots || [];
     A.items = S.shots.map((s, i) => ({
-      title: s.idea || `图${i + 1}`,
+      title: promptRows[i]?.title || `图片${i + 1}`,
       visual: s.visual || "",
       prompt: promptRows[i]?.prompt || "",
       assetId: (A.items[i] || {}).assetId || null,

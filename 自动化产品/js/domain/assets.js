@@ -105,8 +105,12 @@ async function lightlyProcessImageBlob(blob, seed = "") {
       [w * 0.035, h * 0.965, 1, -1],
       [w * 0.965, h * 0.965, -1, -1]
     ];
-    corners.forEach(([x, y, sx, sy], i) => {
-      if (rand() < 0.45) return;
+    const accentCount = Math.floor(rand() * 3); // 0-2 个角点，避免每张图四角都有装饰。
+    const selectedCorners = corners
+      .map((corner, i) => ({ corner, i, order: rand() }))
+      .sort((a, b) => a.order - b.order)
+      .slice(0, accentCount);
+    selectedCorners.forEach(({ corner: [x, y, sx, sy], i }) => {
       const c = palette[(i + Math.floor(rand() * palette.length)) % palette.length];
       const size = Math.max(8, Math.min(w, h) * (0.008 + rand() * 0.012));
       ctx.save();
