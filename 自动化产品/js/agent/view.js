@@ -474,9 +474,13 @@ function wire(root) {
         if (m.payload.topicMode !== "random" && !(m.payload.topic || "").trim()) { toast("先填写主题，或切换为每号随机"); return; }
         if (!m.payload.accountIds.length) { toast("至少选择一个账号"); return; }
         m.payload.status = "confirmed";
+        state.ui.activeProductionId = null;
+        state.ui.returnTo = null;
         save("sessions");
         renderMsgs(true);
         await startBatch({ ...m.payload, goal: m.payload.goal }, s);
+        if (document.body.dataset.zone !== "agent") go("agent");
+        else { renderBoard(); renderPhase(); }
         break;
       }
       case "plan-cancel": {

@@ -15,7 +15,7 @@ import { refreshProviderStatus } from "./api/providers.js";
 import { applyLocalDevKeys } from "./local/devKeys.js";
 import { resumeJobs } from "./api/jobs.js";
 import { resumeActiveBatches } from "./agent/orchestrator.js";
-import { registerView, initRouter, render, go, parseHash } from "./core/router.js";
+import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
 import { overviewView } from "./views/overview.js";
 import { agentView } from "./agent/view.js";
@@ -254,6 +254,7 @@ function renderContextPanel() {
     state.ui.activeAccountId = id;
     state.ui.activeProductionId = null;
     save("meta");
+    allowStudioFromAgent();
     go("studio");
     render();
   };
@@ -297,7 +298,7 @@ function paletteCommands() {
   ] : [
     { label: "首页", group: "导航", icon: "grid", run: () => go("overview") },
     { label: "批量创作", group: "导航", icon: "spark", run: () => go("agent") },
-    { label: "单号创作", group: "导航", icon: "film", run: () => go("studio") },
+    { label: "单号创作", group: "导航", icon: "film", run: () => { allowStudioFromAgent(); go("studio"); } },
     { label: "整体资产", group: "导航", icon: "folder", run: () => go("assets") },
     { label: "草稿箱", group: "导航", icon: "inbox", run: () => go("drafts") },
     { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") },
@@ -311,7 +312,7 @@ function paletteCommands() {
   if (supplier) return cmds;   // 供应商不暴露账号/在制任务快捷跳转
   state.accounts.forEach(a => cmds.push({
     label: a.name, hint: a.position.slice(0, 24), group: "账号", icon: "user",
-    run: () => { state.ui.activeAccountId = a.id; save("meta"); go("studio"); render(); }
+    run: () => { state.ui.activeAccountId = a.id; save("meta"); allowStudioFromAgent(); go("studio"); render(); }
   }));
   state.productions.filter(p => p.stage !== "delivered").slice(0, 30).forEach(p => cmds.push({
     label: p.artifacts.copy.title || p.title || p.topic || "未命名任务",
@@ -357,7 +358,11 @@ async function boot() {
 
     // 外壳
     $("#railBrand").innerHTML = brandGlyph(28);
-    $$("[data-nav]").forEach(b => b.addEventListener("click", () => { state.ui.returnTo = null; go(b.dataset.nav); }));
+    $$("[data-nav]").forEach(b => b.addEventListener("click", () => {
+      state.ui.returnTo = null;
+      if (b.dataset.nav === "studio") allowStudioFromAgent();
+      go(b.dataset.nav);
+    }));
     $("#navLogout").addEventListener("click", logout);
     $("#topSearch").addEventListener("click", () => openPalette(paletteCommands()));
     document.addEventListener("click", e => {

@@ -10,7 +10,7 @@ import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
-import { go, currentRoute } from "../core/router.js";
+import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：9:16 预览帧 + 分镜缩略胶片条（方便发布前自检看成片构成） */
 export function reviewPreviewHtml(p) {
@@ -97,7 +97,7 @@ export function openProductionDrawer(pid, tab) {
           <div class="pd-body">${TAB[curTab] ? TAB[curTab](p) : ""}</div>
           <div class="pd-foot">
             <span class="muted">${p.error ? `⚠ ${esc(p.error)}` : ""}</span>
-            <button class="btn ghost sm" data-pd="workbench">${icon("sliders", 14)} 去这一步微调并重新生成</button>
+            <button class="btn ghost sm" data-pd="workbench">${icon("sliders", 14)} 进入单号工坊微调</button>
           </div>`;
         wire(root);
       };
@@ -105,12 +105,22 @@ export function openProductionDrawer(pid, tab) {
       const wire = (rootEl) => {
         rootEl.querySelectorAll(".pd-tab").forEach(b => b.addEventListener("click", () => { curTab = b.dataset.tab; render(); }));
         // 去工作台微调：按当前页签路由到对应可编辑节点（再在那里重新生成）
-        rootEl.querySelectorAll('[data-pd="workbench"]').forEach(wb => wb.addEventListener("click", () => {
+        rootEl.querySelectorAll('[data-pd="workbench"]').forEach(wb => wb.addEventListener("click", async () => {
+          const from = currentRoute();
+          if (from.zone === "agent") {
+            const ok = await confirmModal({
+              title: "进入单号工坊？",
+              body: "批量创作会继续留在任务板；只有需要单独微调这条内容时，才进入单号图片工坊。",
+              okText: "进入微调"
+            });
+            if (!ok) return;
+          }
           state.ui.activeAccountId = p.accountId;
           state.ui.activeProductionId = p.id;
-          state.ui.returnTo = currentRoute();   // 记住来处，工作台里给「返回」按钮用
+          state.ui.returnTo = from;   // 记住来处，工作台里给「返回」按钮用
           save("meta");
           close();
+          if (from.zone === "agent") allowStudioFromAgent();
           go("studio", tabStage(p, curTab));
         }));
         // 脚本编辑

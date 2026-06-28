@@ -6,6 +6,7 @@ import { state } from "./store.js";
 
 const routes = new Map();   // zone -> { render(root, params), title }
 let current = { zone: null, page: null };
+let allowStudioFromAgentUntil = 0;
 
 export function registerView(zone, view) { routes.set(zone, view); }
 
@@ -16,15 +17,30 @@ export function parseHash() {
 }
 
 export function go(zone, page = null) {
+  if (zone === "studio" && current.zone === "agent" && Date.now() > allowStudioFromAgentUntil) {
+    console.warn("[agent-route-lock] blocked automatic studio navigation from batch workspace");
+    if ((location.hash || "") !== "#/agent") location.hash = "#/agent";
+    else render();
+    return;
+  }
   const target = "#/" + zone + (page ? "/" + page : "");
   if (location.hash === target) render();
   else location.hash = target;
+}
+
+export function allowStudioFromAgent(ms = 3000) {
+  allowStudioFromAgentUntil = Date.now() + ms;
 }
 
 export function currentRoute() { return { ...current }; }
 
 export function render() {
   let { zone, page } = parseHash();
+  if (zone === "studio" && current.zone === "agent" && Date.now() > allowStudioFromAgentUntil) {
+    console.warn("[agent-route-lock] blocked hash studio navigation from batch workspace");
+    zone = "agent"; page = null; location.hash = "#/agent";
+  }
+  if (zone === "studio") allowStudioFromAgentUntil = 0;
   // 权限路由：供应商只进发布清单；设置仅管理员
   if (state.role === "supplier" && zone !== "delivery") { zone = "delivery"; page = null; location.hash = "#/delivery"; }
   if (state.role === "editor" && zone === "settings") { zone = "overview"; page = null; location.hash = "#/overview"; }
