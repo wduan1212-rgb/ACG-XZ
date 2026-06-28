@@ -484,7 +484,13 @@ function stripFieldLabel(text = "", label = "") {
   const raw = cleanText(text || "");
   if (!raw) return "";
   const re = new RegExp(`^${label}\\s*[:：]\\s*`);
-  return raw.replace(re, "").replace(/^账号定位\s*[:：]\s*/, "").replace(/^账号风格\s*[:：]\s*/, "").trim();
+  return raw
+    .replace(re, "")
+    .replace(/^账号定位\s*[:：]\s*/, "")
+    .replace(/^账号风格\s*[:：]\s*/, "")
+    .replace(/^整体风格\s*[:：]\s*/, "")
+    .replace(/^图片风格\s*[:：]\s*/, "")
+    .trim();
 }
 
 function summarizeImageIntent({ script = "", topic = "", account = {}, product = null }) {

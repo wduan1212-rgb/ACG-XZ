@@ -247,9 +247,14 @@ function refreshLiveCards() {
     // 内容没变就不替换（忽略 wireDrops 写入的 data-wired），避免拖拽区/动画频繁重建的「一跳一跳」
     const norm = h => h.replace(/ data-wired="1"/g, "");
     if (norm(fresh.outerHTML) === norm(node.outerHTML)) return;
-    node.replaceWith(fresh);
+    safeReplaceNode(node, fresh);
   });
   wireDrops();
+}
+
+function safeReplaceNode(node, fresh) {
+  if (!node || !fresh || !node.parentNode) return;
+  node.parentNode.replaceChild(fresh, node);
 }
 
 function rerenderPlanCard(mid) {
@@ -262,7 +267,7 @@ function rerenderPlanCard(mid) {
   const keepTop = listEl ? listEl.scrollTop : 0;
   const tmp = document.createElement("div");
   tmp.innerHTML = renderMessage(m);
-  if (tmp.firstElementChild) node.replaceWith(tmp.firstElementChild);
+  if (tmp.firstElementChild) safeReplaceNode(node, tmp.firstElementChild);
   wireDrops();
   if (listEl) listEl.scrollTop = keepTop;
 }
@@ -637,7 +642,7 @@ function wire(root) {
     const keepTop = listEl ? listEl.scrollTop : 0;
     const tmp = document.createElement("div");
     tmp.innerHTML = renderMessage(m);
-    node.closest("[data-mid]").replaceWith(tmp.firstElementChild);
+    safeReplaceNode(node.closest("[data-mid]"), tmp.firstElementChild);
     wireDrops();
     if (listEl) listEl.scrollTop = keepTop;
   });
