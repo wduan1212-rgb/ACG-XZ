@@ -1,7 +1,7 @@
 /* 中央状态：单一数据源 + 事件总线 + 分集合持久化 */
 
 import { db } from "./db.js";
-import { debounce, uid } from "./util.js";
+import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
 import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js";
 
@@ -72,6 +72,43 @@ async function ensureProductsSeed() {
     await db.metaSet("productCatalogVersion", PRODUCT_CATALOG_VERSION).catch(() => null);
     if (remote.isOn()) remote.putCollection("products", JSON.parse(JSON.stringify(state.products)));
   }
+}
+
+const PRODUCT_TERM_COLLECTIONS = [
+  "accounts", "productions", "assets", "sessions", "batches", "jobs",
+  "notifications", "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory"
+];
+const PRODUCT_TERM_SKIP_KEYS = /(^id$|Id$|Ids$|_id$|url$|Url$|URL$|dataUrl$|token$|secret$|apiKey$|password$|pin$|endpoint$|provider$)/;
+
+function normalizeProductTermsValue(value, key = "") {
+  if (typeof value === "string") return PRODUCT_TERM_SKIP_KEYS.test(key) ? value : sanitizeProduct(value);
+  if (Array.isArray(value)) return value.map(x => normalizeProductTermsValue(x, key));
+  if (value && typeof value === "object") {
+    let changed = false;
+    const next = {};
+    Object.entries(value).forEach(([k, v]) => {
+      next[k] = normalizeProductTermsValue(v, k);
+      if (next[k] !== v) changed = true;
+    });
+    return changed ? next : value;
+  }
+  return value;
+}
+
+async function normalizeProductTermsInState({ persistLocal = false, pushRemote = false } = {}) {
+  const changed = [];
+  PRODUCT_TERM_COLLECTIONS.forEach(c => {
+    const before = JSON.stringify(state[c] || []);
+    state[c] = normalizeProductTermsValue(state[c] || [], c);
+    if (before !== JSON.stringify(state[c] || [])) changed.push(c);
+  });
+  if (persistLocal) {
+    for (const c of changed) {
+      try { await db.replaceAll(c, JSON.parse(JSON.stringify(state[c] || []))); } catch { /* ignore */ }
+      if (pushRemote && remote.isOn()) remote.putCollection(c, JSON.parse(JSON.stringify(state[c] || [])));
+    }
+  }
+  return changed;
 }
 
 /* ---- 持久化：标脏集合，防抖落盘 ---- */
@@ -160,6 +197,7 @@ export async function loadAll() {
     db.metaSet("members", JSON.parse(JSON.stringify(state.members)));
   }
   await ensureProductsSeed();
+  await normalizeProductTermsInState({ persistLocal: true });
   if (state.ui.assetSeq == null) state.ui.assetSeq = state.assets.filter(a => !a.delivered).length;
   // 发布序号回填：历史已发布资产补 pubSeq（按发布/创建先后），让发布清单「序号」有意义
   {
@@ -208,6 +246,7 @@ export async function pullRemote() {
     try { await db.replaceAll(c, JSON.parse(JSON.stringify(state[c] || []))); } catch (e) { /* 缓存失败不致命 */ }
   }
   await ensureProductsSeed();
+  await normalizeProductTermsInState({ persistLocal: true, pushRemote: true });
   if (Array.isArray(snap.products) && !snap.products.length) remote.putCollection("products", state.products);
   if (Array.isArray(snap.members)) db.metaSet("members", JSON.parse(JSON.stringify(state.members)));
   state.notifications.sort((a, b) => (b.ts || 0) - (a.ts || 0));

@@ -36,7 +36,7 @@ function seedIfEmpty() {
   if (remote.isOn() && remote.hasToken()) return;
   if (state.accounts.length) return;
   const seeds = [
-    { name: "Dumate 图文教程 01", platform: "小红书", mode: "图文", position: "办公效率教程，围绕 Dumate 文件整理 / 数据分析等功能，少广告腔、强操作演示", qtags: ["职场效率", "产品功能"] },
+    { name: "百度搭子图文教程 01", platform: "小红书", mode: "图文", position: "办公效率教程，围绕百度搭子文件整理 / 数据分析等功能，少广告腔、强操作演示", qtags: ["职场效率", "产品功能"] },
     { name: "AI 办公口播号", platform: "视频号", mode: "视频", subType: "数字人", position: "数字人出镜讲职场效率，前段真人引入、后段产品演示，定位真实办公痛点", qtags: ["职场效率"] },
     { name: "ACG 探场官", platform: "小红书", mode: "视频", subType: "无数字人", position: "探场体验官人设，现场探店 + 产品功能演示结合，活动现场素材二次创作", qtags: ["创作者", "测评中立"] }
   ];

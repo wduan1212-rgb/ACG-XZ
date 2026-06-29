@@ -1,3 +1,5 @@
+import { sanitizeProduct } from "./util.js";
+
 const REPLACEMENTS = new Map([
   ["最佳", "更适合"], ["最好", "更顺手"], ["最大", "更大"], ["最低", "更低"],
   ["最便宜", "更划算"], ["最优", "更优"], ["最强", "很能打"], ["最高端", "高规格"],
@@ -68,10 +70,10 @@ const BLOCK_PATTERNS = [
 ];
 
 export function sanitizeXhsText(input = "") {
-  let out = String(input || "");
+  let out = sanitizeProduct(String(input || ""));
   REPLACEMENTS.forEach((safe, bad) => { out = out.split(bad).join(safe); });
   BLOCK_PATTERNS.forEach(re => { out = out.replace(re, "相关渠道"); });
-  return out.replace(/\s{3,}/g, "  ").trim();
+  return sanitizeProduct(out).replace(/\s{3,}/g, "  ").trim();
 }
 
 export function sanitizeXhsObject(obj) {

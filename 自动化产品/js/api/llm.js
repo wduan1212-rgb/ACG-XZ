@@ -8,7 +8,8 @@ export const LLM_CONFIG = {
   apiKey: "",
   serverManaged: false
 };
-window.DumateConfig = LLM_CONFIG; // 控制台可调试覆盖
+window.XingzhenConfig = LLM_CONFIG; // 控制台可调试覆盖
+window.DumateConfig = LLM_CONFIG; // 兼容旧调试入口
 
 /* 部署模式：服务器配置了 LLM_API_KEY 时，前端默认走同源代理。
    Authorization 里的占位值会被后端忽略，真实 Key 只在服务器环境变量中。 */

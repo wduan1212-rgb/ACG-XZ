@@ -58,7 +58,7 @@ export function openAccountDialog(accountId = null) {
             </div>
             <div class="ad-or"><span>或手动新建一个</span></div>`}
             <div class="ad-grid">
-              <label class="field">账号名称<input class="input" id="adName" value="${esc(draft.name)}" placeholder="例如：Dumate 图文教程 02" /></label>
+              <label class="field">账号名称<input class="input" id="adName" value="${esc(draft.name)}" placeholder="例如：百度搭子图文教程 02" /></label>
               <label class="field">平台
                 <div class="seg-group" id="adPlat">
                   ${["视频号", "小红书"].map(v => `<button type="button" class="${draft.platform === v ? "is-active" : ""}" data-v="${v}"><i class="seg-dot ${platformCode(v).toLowerCase()}"></i>${v}</button>`).join("")}

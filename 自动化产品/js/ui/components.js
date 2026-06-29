@@ -77,18 +77,33 @@ export function promptModal({ title, placeholder = "", value = "", okText = "确
   });
 }
 
-/* 定稿发布弹窗：计划发布时间必填，备注可选。
+/* 定稿发布弹窗：计划发布日期必填，备注可选。
    确认 → { planDate, note }；取消 → null */
+function todayDateValue() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function normalizeDateValue(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return todayDateValue();
+  return raw.slice(0, 10).replace(/\//g, "-");
+}
+
 export function publishModal({ title = "定稿并发布", okText = "定稿并发布", date = "", note = "" } = {}) {
   return new Promise(res => {
+    const defaultDate = normalizeDateValue(date);
     const ov = document.createElement("div");
     ov.className = "modal-ov";
     ov.innerHTML = `
       <div class="modal-panel sm" role="dialog">
         <div class="mp-head"><b>${esc(title)}</b></div>
         <div class="mp-body">
-          <p class="mp-sub">定稿后入供应商端，按发布序号可见可下载。请先填写计划发布时间：</p>
-          <label class="field"><span>计划发布时间（必填）</span><input class="input" type="datetime-local" id="pubDate" value="${esc(date)}" required /></label>
+          <p class="mp-sub">定稿后入供应商端，按发布序号可见可下载。计划发布日期默认今天，可按需调整：</p>
+          <label class="field"><span>计划发布日期（必填）</span><input class="input" type="date" id="pubDate" value="${esc(defaultDate)}" required /></label>
           <label class="field"><span>备注（可选，几句话）</span><textarea class="input" id="pubNote" rows="2" placeholder="例如：周五晚高峰发，配合活动话题">${esc(note)}</textarea></label>
         </div>
         <div class="mp-foot">
@@ -105,8 +120,8 @@ export function publishModal({ title = "定稿并发布", okText = "定稿并发
       const b = e.target.closest("[data-r]");
       if (!b) return;
       if (b.dataset.r === "1") {
-        const planDate = $("#pubDate", ov).value || "";
-        if (!planDate) { toast("请先填写计划发布时间", "error"); $("#pubDate", ov).focus(); return; }
+        const planDate = normalizeDateValue($("#pubDate", ov).value || "");
+        if (!planDate) { toast("请先填写计划发布日期", "error"); $("#pubDate", ov).focus(); return; }
         close({ planDate, note: $("#pubNote", ov).value.trim() });
       }
       else close(null);

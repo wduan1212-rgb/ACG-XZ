@@ -54,7 +54,7 @@ export function renderScriptPage(root, p) {
           <div class="brief-row">
             <label class="field grow">创作主题
               <div class="input-dice">
-                <input class="input" id="csTopic" value="${esc(p.topic || "")}" placeholder="例如：Dumate 一键整理混乱文件夹" />
+                <input class="input" id="csTopic" value="${esc(p.topic || "")}" placeholder="例如：百度搭子一键整理混乱文件夹" />
                 <button class="dice" id="csTopicDice" title="AI 随机主题">${icon("dice", 15)}</button>
               </div>
             </label>

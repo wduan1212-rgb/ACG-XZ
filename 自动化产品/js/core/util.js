@@ -55,11 +55,12 @@ export function stripEmoji(str) {
 }
 export function sanitizeProduct(str) {
   let s = String(str || "");
-  s = s.replace(/百度搭子/g, "@@DMZ@@").replace(/Dumate/gi, "@@DMP@@");
+  s = s.replace(/\bDuMate\b/gi, "百度搭子").replace(/\bDumate\b/gi, "百度搭子");
+  s = s.replace(/百度搭子/g, "@@DMZ@@");
   s = s.replace(/(微信|抖音|快手|淘宝|支付宝|百度)\s*(App|APP|app|应用|网盘|智能云|文库|地图|输入法)?\s*(logo|Logo|图标|标志)/g, "产品 logo");
   s = s.replace(/(微信|抖音|快手|淘宝|支付宝|百度)\s*(App|APP|app|应用|主页|首页|界面)/g, "产品界面");
   s = s.replace(/百度\s*(App|APP|app|应用|网盘|智能云|文库|地图|输入法)/g, "产品");
-  s = s.replace(/@@DMZ@@/g, "百度搭子").replace(/@@DMP@@/g, "Dumate");
+  s = s.replace(/@@DMZ@@/g, "百度搭子");
   return s;
 }
 export const cleanText = s => sanitizeProduct(stripEmoji(s));

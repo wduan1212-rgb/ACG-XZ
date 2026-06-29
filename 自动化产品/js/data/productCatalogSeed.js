@@ -3,14 +3,14 @@
 
 const now = () => Date.now();
 
-export const PRODUCT_CATALOG_VERSION = "20260629-product-db-v1";
+export const PRODUCT_CATALOG_VERSION = "20260629-product-db-v2";
 
 export const PRODUCT_CATALOG_SEED = [
   {
     id: "dumate",
     owner: "ours",
-    name: "Dumate / 百度搭子",
-    shortName: "Dumate",
+    name: "百度搭子",
+    shortName: "百度搭子",
     category: "桌面办公 AI Agent",
     brief: "百度推出的桌面级 AI 办公智能体，能看见屏幕、操作本地软件、处理文件、提取信息、分析数据、生成汇报，并把重复办公流程沉淀成可复用 Skills。",
     coreFeatures: ["本地桌面执行", "文件整理", "格式转换", "信息提取", "数据分析", "办公自动化", "权限确认"],
@@ -31,7 +31,7 @@ export const PRODUCT_CATALOG_SEED = [
     brief: "百度智能云的无代码 AI 应用生成平台，用户用自然语言描述需求，系统拆解页面、流程、数据结构和交互逻辑，生成 H5、网站、小游戏、轻应用和移动 APP。",
     coreFeatures: ["自然语言生成应用", "无代码拖拽调整", "多智能体协作", "前后端与数据库生成", "H5/APP/小程序发布"],
     tutorialAngles: ["一句话生成活动报名页", "从 Excel 需求变成 H5 工具", "普通人做轻量 CRM", "快速验证一个产品原型"],
-    comparisonAngles: ["和 TRAE Builder 的区别", "和 Manus 交付网页/报告的区别", "和 Cursor/Codex 写代码路线的区别", "和 DuMate 桌面执行路线的分工"],
+    comparisonAngles: ["和 TRAE Builder 的区别", "和 Manus 交付网页/报告的区别", "和 Cursor/Codex 写代码路线的区别", "和百度搭子桌面执行路线的分工"],
     blogAngles: ["不会代码也能做一个能用的小工具", "AI 应用生成更适合验证想法", "秒哒负责生成应用，搭子负责处理本地任务"],
     visualAngles: ["一句需求到页面原型", "页面/数据表/发布按钮三段流程", "非技术人拖拽修改应用", "活动页和后台数据表对照"],
     competitors: ["trae", "manus", "cursor", "codex"],
@@ -47,7 +47,7 @@ export const PRODUCT_CATALOG_SEED = [
     brief: "开源、本地优先的个人 AI 助手平台，把多聊天入口、浏览器、系统工具、文件、技能和多 Agent 路由整合成个人 AI 中枢。",
     coreFeatures: ["本地优先", "多渠道聊天入口", "多 Agent 路由", "工具流式输出", "多模型供应商", "浏览器与系统工具"],
     tutorialAngles: ["把多个聊天入口统一到一个助手", "本地 Agent 怎么管理文件和工具", "用 Skills 扩展个人 AI 工作台"],
-    comparisonAngles: ["和 DuMate 的本地执行路线对比", "和 Manus 的 Web 自动化路线对比", "和 Codex/Claude Code 的代码任务路线对比"],
+    comparisonAngles: ["和百度搭子的本地执行路线对比", "和 Manus 的 Web 自动化路线对比", "和 Codex/Claude Code 的代码任务路线对比"],
     blogAngles: ["私人 AI 助手中枢为什么重要", "开源 Agent 更适合重视隐私的人", "多入口会不会成为 Agent 标配"],
     visualAngles: ["消息入口汇聚到中枢", "工具调用流式过程", "本地文件和浏览器工具面板"],
     competitors: ["dumate", "manus", "codex"],
@@ -63,7 +63,7 @@ export const PRODUCT_CATALOG_SEED = [
     brief: "OpenAI 的软件开发 Agent，覆盖本地 CLI、云端任务和代码审查，面向理解代码库、修改代码、运行测试、交付 PR 的工程流程。",
     coreFeatures: ["代码库理解", "本地 CLI", "云端并行任务", "代码审查", "Skills", "Automations"],
     tutorialAngles: ["把一个 bug 交给 Codex 修", "让 AI 跑测试再交付 PR", "用 Skills 固定项目规则"],
-    comparisonAngles: ["和 Claude Code 的工程任务对比", "和 Cursor 的 IDE 体验对比", "和 DuMate 的办公执行边界对比"],
+    comparisonAngles: ["和 Claude Code 的工程任务对比", "和 Cursor 的 IDE 体验对比", "和百度搭子的办公执行边界对比"],
     blogAngles: ["AI 写代码不够，关键是能验证", "本地和云端 Agent 如何分工", "真正的 AI 程序员应该会审查变更"],
     visualAngles: ["issue 到 PR 流程", "终端测试结果", "代码 diff 与审查意见"],
     competitors: ["claude-code", "cursor", "github-copilot", "windsurf"],
@@ -159,7 +159,7 @@ export const PRODUCT_CATALOG_SEED = [
     brief: "本地优先的 Markdown 知识管理工具，主打双链、Graph、Canvas、Bases、插件生态和可扩展工作流，常作为 AI 内容团队的知识底座。",
     coreFeatures: ["本地 Markdown", "双向链接", "Graph", "Canvas", "Bases", "插件生态", "Sync/Publish"],
     tutorialAngles: ["把资料堆变成选题库", "Canvas/Bases 怎么服务内容团队", "Obsidian + AI 做 RAG 问答"],
-    comparisonAngles: ["和 DuMate 的执行型 Agent 对比", "和 Notion/飞书的协作型知识库对比", "和 Manus 的交付型 Agent 对比"],
+    comparisonAngles: ["和百度搭子的执行型 Agent 对比", "和 Notion/飞书的协作型知识库对比", "和 Manus 的交付型 Agent 对比"],
     blogAngles: ["AI 内容团队为什么需要知识底座", "本地文件比云笔记更适合长期沉淀吗", "知识库不是 Agent，但能喂给 Agent"],
     visualAngles: ["双链图谱", "Canvas 资料墙", "Bases 数据表视图"],
     competitors: ["dumate", "manus", "openclaw"],
@@ -175,7 +175,7 @@ export const PRODUCT_CATALOG_SEED = [
     brief: "面向交付完成品的通用 AI Agent，通过浏览器、文件系统、代码执行和技能完成研究、报告、PPT、网页、表格等任务。",
     coreFeatures: ["Cloud Browser", "Browser Operator", "登录态任务", "文件交付", "Agent Skills", "云端沙箱"],
     tutorialAngles: ["让 Agent 做一份调研报告", "Browser Operator 为什么需要用户接管", "把一次流程封装成 Skills"],
-    comparisonAngles: ["和 DuMate 的本地桌面执行对比", "和秒哒的应用生成对比", "和 OpenClaw 的本地个人中枢对比"],
+    comparisonAngles: ["和百度搭子的本地桌面执行对比", "和秒哒的应用生成对比", "和 OpenClaw 的本地个人中枢对比"],
     blogAngles: ["AI Agent 的分水岭是回答还是交付", "Web 自动化和本地桌面自动化各适合什么", "登录态任务需要权限边界"],
     visualAngles: ["浏览器自动操作", "报告/PPT/表格交付物", "任务执行进度"],
     competitors: ["dumate", "miaoda", "openclaw", "trae"],
@@ -191,7 +191,7 @@ export const PRODUCT_CATALOG_SEED = [
     brief: "面向职场办公的同类 AI 助手占位产品，适合放入办公效率、知识整理、任务协作和团队资料处理类对比选题；具体功能发稿前需要再核对官方信息。",
     coreFeatures: ["办公效率", "资料整理", "任务协作", "文档/表格辅助", "团队工作流"],
     tutorialAngles: ["AI 办公助手怎么帮人少做重复整理", "资料整理类工具到底看哪些指标", "办公 AI 适合单人还是团队"],
-    comparisonAngles: ["和 DuMate 的桌面执行能力对比", "和 Manus 的 Web 任务交付对比", "和 Obsidian 的知识沉淀对比"],
+    comparisonAngles: ["和百度搭子的桌面执行能力对比", "和 Manus 的 Web 任务交付对比", "和 Obsidian 的知识沉淀对比"],
     blogAngles: ["办公 AI 不该只比聊天质量", "真正要测的是交付物和权限边界", "同类工具适合做横向测评选题"],
     visualAngles: ["工具能力表格", "办公任务前后对比", "多产品边界对照卡"],
     competitors: ["dumate", "manus", "obsidian"],
@@ -201,13 +201,32 @@ export const PRODUCT_CATALOG_SEED = [
   }
 ];
 
+function normalizeDumateText(value) {
+  if (typeof value === "string") return value.replace(/\bDuMate\b/gi, "百度搭子").replace(/\bDumate\b/gi, "百度搭子");
+  if (Array.isArray(value)) return value.map(normalizeDumateText);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, k === "id" ? v : normalizeDumateText(v)]));
+  }
+  return value;
+}
+
+function normalizeProductDisplay(product = {}) {
+  if (product.id !== "dumate") return product;
+  const cleaned = normalizeDumateText(product);
+  return {
+    ...cleaned,
+    name: "百度搭子",
+    shortName: "百度搭子"
+  };
+}
+
 export function mergeProductCatalog(existing = []) {
   const byId = new Map();
-  PRODUCT_CATALOG_SEED.forEach(p => byId.set(p.id, { ...p }));
+  PRODUCT_CATALOG_SEED.forEach(p => byId.set(p.id, normalizeProductDisplay({ ...p })));
   (existing || []).forEach(p => {
     if (!p || !p.id) return;
     const seeded = byId.get(p.id);
-    byId.set(p.id, seeded ? { ...seeded, ...p, updatedAt: p.updatedAt || seeded.updatedAt } : { ...p });
+    byId.set(p.id, normalizeProductDisplay(seeded ? { ...seeded, ...p, updatedAt: p.updatedAt || seeded.updatedAt } : { ...p }));
   });
   return [...byId.values()];
 }

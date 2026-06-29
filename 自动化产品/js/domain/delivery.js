@@ -25,13 +25,23 @@ function insertProductTagBeforeDate(name, tag) {
   return String(name || "").replace(/-(20\d{6})$/, `-${tag}-$1`);
 }
 
+function todayPlanDate() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function normalizePlanDate(value = "") {
+  const raw = String(value || "").trim();
+  return (raw ? raw.slice(0, 10).replace(/\//g, "-") : todayPlanDate());
+}
+
 /* 发布交付：创作者自行定稿入库（无强制审核门槛），分配全局发布序号 + 记录发布账号/成员
    交付 = 内部定稿归档，产物进入交付库供供应商下载，不涉及任何平台发布 */
 export function deliver(p, opts = {}) {
   const acc = accountById(p.accountId);
   if (!acc) return null;
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
-  if (!opts.planDate) { window.__toast && window.__toast("请先填写计划发布时间", "error"); return null; }
+  const planDate = normalizePlanDate(opts.planDate);
   p.review.state = "approved";   // 创作者点击发布即定稿
   acc.exportSeq = (acc.exportSeq || 0) + 1;
   const productTag = productTagFor(p);
@@ -61,7 +71,7 @@ export function deliver(p, opts = {}) {
     byAccount: acc.name,                          // 发布所属内容账号
     byMemberId: mem?.id || p.ownerId || null,
     byMemberName: mem?.name || "",                // 谁点的发布
-    planDate: opts.planDate || "",                // 计划发布时间（必填）
+    planDate,                                     // 计划发布日期（必填，默认今天）
     publishNote: opts.note || "",                 // 简短备注（可选）
     adminReviewed: false                          // 管理员「已审阅」标注（非强制门槛）
   };
