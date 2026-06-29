@@ -443,14 +443,7 @@ IMAGE_PROMPT_TEXT_REPLACEMENTS = (
 
 
 IMAGE_PROMPT_GUARD = (
-    "\n\n硬性画面约束：画面任何位置都不要出现“AI生成”“AI 生成”“图片由AI生成”"
-    "“由AI生成”“AI绘制”“生成图”“水印”等来源标识；不要出现模型标识、平台标识、"
-    "角标、页码、二维码、账号昵称、乱码。不要把“封面”“痛点引入”“问题引入”“关键步骤”"
-    "“结果预览”“总结收束”“图1”“第1张”等内部结构词写进画面，这些只作为生成结构参考。"
-    "画面文字不要出现“种草”“痛点”“共鸣”“构图”“封面”“首图”“步骤一”“步骤二”“步骤三”“图片定位”"
-    "“画面定位”等给系统看的定位词；需要表达推荐时，必须改写成具体功能、动作或结果。"
-    "角落装饰最多出现在1-2个角，不要四角都画括号或对称角标。"
-    "画面文字只保留本图需要展示的大标题、短句或关键标签，其他界面文字尽量做模糊化或抽象色块处理。"
+    "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。"
 )
 
 
@@ -459,9 +452,8 @@ def _guard_image_prompt(prompt: str) -> str:
     text = prompt or ""
     for src, dst in IMAGE_PROMPT_TEXT_REPLACEMENTS:
         text = text.replace(src, dst)
-    if "硬性画面约束：画面任何位置都不要出现" not in text:
-        text = text.rstrip() + IMAGE_PROMPT_GUARD
-    return text
+    text = re.sub(r"负面约束\s*[:：][\s\S]*$", "", text).rstrip()
+    return f"{text}\n\n{IMAGE_PROMPT_GUARD}".strip()
 
 
 def _image_is_chat_mode(model: str = "", endpoint: str = "") -> bool:

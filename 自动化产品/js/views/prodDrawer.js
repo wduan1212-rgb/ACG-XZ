@@ -166,7 +166,7 @@ export function openProductionDrawer(pid, tab) {
         const t = rootEl.querySelector("#pdCopyTitle"), c = rootEl.querySelector("#pdCopyBody");
         if (t) t.addEventListener("input", () => { p.artifacts.copy.title = t.value; save("productions"); });
         if (c) c.addEventListener("input", () => { p.artifacts.copy.body = c.value; save("productions"); });
-        // 定稿发布（可填计划发布日期 + 备注，可跳过）
+        // 定稿发布（计划发布时间必填，备注可选）
         const dl = rootEl.querySelector("[data-pd-deliver]");
         if (dl) dl.addEventListener("click", async () => {
           const r = await publishModal({ title: `定稿并发布「${p.artifacts.copy.title || p.title}」` });

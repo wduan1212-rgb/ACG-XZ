@@ -14,6 +14,8 @@ import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/pr
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { fileToDataUrl } from "../core/util.js";
 
+const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
+
 /* ---------- 会话 ---------- */
 export function ensureSession() {
   let s = state.sessions.find(x => x.id === state.ui.activeSessionId);
@@ -332,7 +334,9 @@ function enrichBatchImagePrompt(prompt, refs) {
   const sharedNames = shared.map(r => r.name).filter(Boolean).slice(0, 5).join("、");
   const customNames = custom.map(r => r.name).filter(Boolean).slice(0, 3).join("、");
   const customNote = custom.length ? `\n定制参考图约束：另提供 ${custom.length} 张本账号专属参考图（${customNames}），优先参考其账号专属视觉、素材语气、画面结构或产品细节；它们只服务当前账号，不要覆盖统一参考图的品牌一致性。` : "";
-  return `${prompt || ""}\n\n统一参考图约束：已提供 ${shared.length} 张统一参考图（${sharedNames}），生成时综合参考产品界面、logo、配色、信息密度、真实截图质感和图标形态；不要只参考第一张。${customNote}\n参考图中的旧标题、页名和示例文案一律视为占位，不要照抄；画面文字只使用当前提示词指定内容，不能出现“种草、痛点、共鸣、构图、封面、首图、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张、步骤一、步骤二、步骤三”等内部分类词或定位词；角落装饰最多1-2处，不要四角都画括号。`;
+  const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
+  const refNote = `统一参考图：已提供 ${shared.length} 张统一参考图（${sharedNames}），生成时综合参考产品界面、配色、信息密度、真实截图质感和图标形态；不要只参考第一张。${customNote}\n参考图中的旧标题、页名和示例文案一律视为占位，不要照抄；画面文字只使用当前提示词指定内容。`;
+  return `${body}\n\n${refNote}\n\n${IMAGE_NEGATIVE_PROMPT}`.trim();
 }
 
 async function generateBatchImagesInHouse(p, batch, acc) {

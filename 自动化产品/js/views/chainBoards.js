@@ -16,6 +16,7 @@ import { stepperHtml, wireStepper } from "./studio.js";
 
 const modeBySlot = new Map(); // productionId -> "in" | "out"
 const MAX_IMAGE_REFS = 5;
+const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
 
 function hashSeed(str = "") {
   let h = 2166136261;
@@ -68,7 +69,7 @@ export function polishImageForPublish(dataUrl, seedText = "") {
       ctx.fillRect(0, 0, w, h);
       ctx.globalCompositeOperation = "source-over";
 
-      // 可见的轻量版式精修元素：不遮挡主体、不裁剪，只给角落增加系列化设计感。
+      // 可见的轻量版式精修元素：不遮挡主体、不裁剪；角标随机出现，不能固定四角都有。
       const pad = Math.max(18, Math.round(Math.min(w, h) * 0.025));
       const minSide = Math.min(w, h);
       const len = Math.max(42, Math.round(minSide * (0.052 + rnd() * 0.032)));
@@ -82,7 +83,7 @@ export function polishImageForPublish(dataUrl, seedText = "") {
         { key: "tr", x: w - pad, y: pad, sx: -1, sy: 1 },
         { key: "bl", x: pad, y: h - pad, sx: 1, sy: -1 },
         { key: "br", x: w - pad, y: h - pad, sx: -1, sy: -1 },
-      ].sort(() => rnd() - 0.5).slice(0, 2 + Math.floor(rnd() * 3));
+      ].sort(() => rnd() - 0.5).slice(0, Math.floor(rnd() * 3));
       const pickColor = (shift = 0) => colors[(Math.floor(rnd() * colors.length) + shift) % colors.length];
       const withAlpha = (color, alpha) => color.replace(/rgba\(([^)]+),\s*[\d.]+\)/, `rgba($1,${alpha})`);
       const lineW = Math.max(2, Math.round(minSide * (0.0026 + rnd() * 0.0018)));
@@ -348,7 +349,9 @@ function refNamesOf(A, extra = []) {
 export function enrichPromptWithRefs(prompt, A) {
   const names = refNamesOf(A);
   if (!names.length) return prompt || "";
-  return `${prompt || ""}\n\n统一参考图约束：本次提供 ${names.length} 张参考图（${names.join("、")}），请综合参考它们的产品界面、logo、配色、信息密度、图标形态和真实截图质感；不要只参考第一张。若参考图之间功能不同，按当前画面主题选择最匹配的一张作为主参考，其余作为品牌与风格辅助参考。参考图里的旧标题、页名、示例文案一律视为占位，不要照抄；画面文字只使用本提示词指定的大标题/副标题，绝不出现“种草、痛点、共鸣、构图、封面、首图、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张、步骤一、步骤二、步骤三”等内部分类词或定位词；角落装饰最多1-2处，不要四角都画括号。`;
+  const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
+  const refNote = `统一参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），请综合参考它们的产品界面、配色、信息密度、图标形态和真实截图质感；不要只参考第一张。若参考图之间功能不同，按当前画面主题选择最匹配的一张作为主参考，其余作为品牌与风格辅助参考。参考图里的旧标题、页名、示例文案一律视为占位，不要照抄；画面文字只使用本提示词指定的大标题/副标题。`;
+  return `${body}\n\n${refNote}\n\n${IMAGE_NEGATIVE_PROMPT}`.trim();
 }
 
 function normalizeImageWorkshopText(text = "") {
@@ -372,11 +375,14 @@ function ratioFromImagePrompt(text = "", fallback = "3:4") {
 
 function promptForImageModel(text = "") {
   const bannedLabels = "种草|痛点|共鸣|构图|封面|首图|痛点引入|问题引入|关键步骤|结果对比|总结收束|图\\d+|第\\d+张|步骤一|步骤二|步骤三";
-  return `${normalizeImageWorkshopText(text)
+  const cleaned = normalizeImageWorkshopText(text)
     .replace(new RegExp(`图上文字[：:]\\s*[「“"]?(?:${bannedLabels})[」”"]?`, "g"), "图上文字按本页标题与副标题生成")
     .replace(new RegExp(`图片任务[：:]\\s*(?:${bannedLabels})[，,。；;]?`, "g"), "图片任务：")
     .replace(new RegExp(`\\b(?:${bannedLabels})[：:]`, "g"), "")
-  }\n\n画面内不要写入内部结构词或定位词，例如“种草、痛点、共鸣、构图、封面、首图、痛点引入、问题引入、关键步骤、结果对比、总结收束、图1、第1张、步骤一”。只保留面向用户可读的标题、短句、标签和界面信息；角落装饰最多1-2处，不要四角都画括号。`;
+    .replace(/负面约束\s*[:：][\s\S]*$/g, IMAGE_NEGATIVE_PROMPT);
+  return /负面约束\s*[:：]/.test(cleaned)
+    ? cleaned
+    : `${cleaned}\n\n${IMAGE_NEGATIVE_PROMPT}`;
 }
 
 export function renderSlotsPage(root, p, isImg) {
@@ -398,7 +404,21 @@ export function renderSlotsPage(root, p, isImg) {
     save("productions");
   }
 
+  function syncImageFactoryDraft() {
+    if (!isImg) return;
+    const brief = $("#imgBrief", root);
+    const count = $("#imgCount", root);
+    const product = $("#imgProduct", root);
+    if (brief) {
+      S.direction = brief.value.trim();
+      if (S.direction) p.topic = S.direction.slice(0, 80);
+    }
+    if (count) S.imageCount = Math.max(3, Math.min(12, parseInt(count.value, 10) || S.imageCount || 6));
+    if (product) S.productId = product.value || S.productId || "dumate";
+  }
+
   const draw = () => {
+    syncImageFactoryDraft();
     const items = A.items || [];
     const got = items.filter(x => x.assetId).length;
     const refs = refAssetsOf(A);
@@ -435,10 +455,10 @@ export function renderSlotsPage(root, p, isImg) {
                 <input class="input" id="imgCount" type="number" min="3" max="12" value="${esc(S.imageCount || 6)}" />
               </label>
               <label class="field full">创作内容
-                <textarea class="input" id="imgBrief" rows="4" placeholder="写得具体一点：这篇笔记想讲什么、面向谁、希望每张图大概覆盖哪些点。留空则按账号定位随机。">${esc(S.direction || p.topic || "")}</textarea>
+                <textarea class="input" id="imgBrief" rows="4" placeholder="写得具体一点：这篇笔记想讲什么、面向谁、希望每张图大概覆盖哪些点。留空则按产品功能和账号创作风格生成。">${esc(S.direction || p.topic || "")}</textarea>
               </label>
             </div>
-            ${acc.imagePromptTemplate ? `<div class="imgf-note">${icon("checkCircle", 13)} 已启用该账号固定图文模板，张数、产品和本次内容会自动替换。</div>` : `<div class="imgf-note muted">未配置固定模板时，按账号定位和创作内容生成。</div>`}
+            ${acc.imagePromptTemplate ? `<div class="imgf-note">${icon("checkCircle", 13)} 已启用该账号固定图文模板，张数、产品和本次内容会自动替换。</div>` : `<div class="imgf-note muted">未配置固定模板时，按产品功能、本次内容和账号创作风格生成。</div>`}
           </div>` : ""}
 
           <div class="refbar card" id="cbRefbar">
@@ -537,12 +557,14 @@ export function renderSlotsPage(root, p, isImg) {
         S.imageCount = Math.max(3, Math.min(12, parseInt(e.target.value, 10) || 6));
         save("productions");
       });
-      $("#imgBrief", root)?.addEventListener("blur", e => { S.direction = e.target.value.trim(); if (S.direction) p.topic = S.direction.slice(0, 36); save("productions"); });
+      $("#imgBrief", root)?.addEventListener("input", e => { S.direction = e.target.value; if (S.direction.trim()) p.topic = S.direction.trim().slice(0, 80); save("productions"); });
+      $("#imgBrief", root)?.addEventListener("blur", e => { S.direction = e.target.value.trim(); if (S.direction) p.topic = S.direction.slice(0, 80); save("productions"); });
       $("#imgFactoryGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, generateImageWorkshop, "生成中…"));
     }
 
     // 模式切换
     $$(".mode-tab", root).forEach(t => t.addEventListener("click", () => {
+      syncImageFactoryDraft();
       genMode = t.dataset.mode; modeBySlot.set(p.id, genMode);
       if (genMode === "out" && !A.externalPrompt) rebuildExternal();
       draw();
@@ -552,10 +574,11 @@ export function renderSlotsPage(root, p, isImg) {
     const refbar = $("#cbRefbar", root);
     wireDropZone(refbar, async files => { await setRefsFromFiles(files); });
     $$("[data-ref-rm]", root).forEach(btn => btn.addEventListener("click", () => {
+      syncImageFactoryDraft();
       setRefIds(A, refIdsOf(A).filter(id => id !== btn.dataset.refRm));
       save("productions"); draw();
     }));
-    $("#cbRefUp", root).addEventListener("change", async e => { await setRefsFromFiles(e.target.files); e.target.value = ""; });
+    $("#cbRefUp", root).addEventListener("change", async e => { syncImageFactoryDraft(); await setRefsFromFiles(e.target.files); e.target.value = ""; });
     $("#cbRefPick", root).addEventListener("click", () => {
       const box = $("#cbRefChooser", root);
       if (!box.hidden) { box.hidden = true; return; }
@@ -565,11 +588,13 @@ export function renderSlotsPage(root, p, isImg) {
         : `<div class="muted" style="padding:10px">该账号还没有图片资产，先上传一张</div>`;
       box.hidden = false;
       box.querySelectorAll("[data-ref]").forEach(b => b.addEventListener("click", () => {
+        syncImageFactoryDraft();
         appendRefId(A, b.dataset.ref); save("productions"); draw();
       }));
     });
 
     async function setRefsFromFiles(files) {
+      syncImageFactoryDraft();
       const imgs = Array.from(files || []).filter(f => f && f.type.startsWith("image/"));
       if (!imgs.length) return;
       for (const f of imgs.slice(0, MAX_IMAGE_REFS)) {

@@ -106,6 +106,10 @@ function renderHome(root, acc) {
   const accAssets = accountAssets(acc.id);
   const avatarUrl = acc.avatarAssetId ? urlFor(acc.avatarAssetId) : "";
   const styleRefUrl = acc.imageStyleAssetId ? urlFor(acc.imageStyleAssetId) : "";
+  const styleText = String(acc.styleProfile || acc.lockedStyle || "")
+    .replace(/^整体风格\s*[:：]\s*/g, "")
+    .replace(/^账号风格\s*[:：]\s*/g, "")
+    .trim();
 
   root.innerHTML = `
     <div class="studio-home">
@@ -126,7 +130,7 @@ function renderHome(root, acc) {
           <div class="sh-meta">
             <h2>${esc(acc.name)}</h2>
             <div class="sh-sub">${platChip(acc.platform, true)}<span class="tag">${modeLabel(acc)}</span>${monthlyBarHtml(acc, true)}</div>
-            <p class="sh-pos">${esc(acc.position)}</p>
+            <p class="sh-pos">${acc.mode === "图文" ? `创作风格：${esc(styleText || "未设置")}` : `账号定位：${esc(acc.position || "未设置")}`}</p>
           </div>
         </div>
         <div class="sh-actions">

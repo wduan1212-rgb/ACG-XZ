@@ -54,9 +54,9 @@ function stripPromptMeta(text) {
     .trim();
 }
 
-function inferCopyIntent({ topic = "", shots = [], account = null, product = null }) {
+function inferCopyIntent({ topic = "", shots = [], account = null, product = null, useAccountPosition = true }) {
   const productName = product?.shortName || product?.name || "百度搭子";
-  const raw = [topic, account?.position, account?.tone, ...(shots || []).flatMap(s => [s.idea, s.line, s.visual])].join(" ");
+  const raw = [topic, useAccountPosition ? account?.position : "", account?.tone, ...(shots || []).flatMap(s => [s.idea, s.line, s.visual])].join(" ");
   const cleaned = stripPromptMeta(raw);
   const lower = cleaned.toLowerCase();
   const audience = /学生|毕业|论文|导师|课件|考点/.test(cleaned) ? "学生党"
@@ -120,7 +120,7 @@ function looksLikeRawBrief(text, topic) {
 }
 
 function polishCopyResult(result, { topic, shots, account, kind, product }) {
-  const intent = inferCopyIntent({ topic, shots, account, product });
+  const intent = inferCopyIntent({ topic, shots, account, product, useAccountPosition: kind === "video" });
   let title = sanitizeProduct(String(result?.title || "").trim());
   let copy = sanitizeProduct(String(result?.copy || "").trim());
   if (!title || looksLikeRawBrief(title, topic)) {
@@ -449,6 +449,10 @@ function cleanImageDisplayTitle(text = "", fallback = "资料整理完成") {
   return raw;
 }
 
+function minimalImageNegative() {
+  return "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
+}
+
 function stripInternalImageLabels(text = "") {
   return cleanImagePlanningWords(text)
     .replace(/(?:封面|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束)[:：·｜|\s-]*/g, "")
@@ -523,8 +527,8 @@ function stripFieldLabel(text = "", label = "") {
 }
 
 function summarizeImageIntent({ script = "", topic = "", account = {}, product = null }) {
-  const src = stripPromptMeta(cleanText(topic || script || account.position || ""));
-  const inferred = inferCopyIntent({ topic: src, account, product });
+  const src = stripPromptMeta(cleanText(topic || script || ""));
+  const inferred = inferCopyIntent({ topic: src, account, product, useAccountPosition: false });
   const productName = product?.shortName || product?.name || "这个工具";
   const compact = src
     .replace(/(请|帮我|生成|做一篇|做一个|图片|图文|笔记|提示词|小红书)/g, "")
@@ -542,7 +546,7 @@ function summarizeImageIntent({ script = "", topic = "", account = {}, product =
   return {
     main,
     productName,
-    audience: inferred.audience || shortChinese(account.position || "", 24) || "目标读者",
+    audience: inferred.audience || "目标读者",
     pain: inferred.pain,
     action: inferred.action,
     result: inferred.result,
@@ -584,20 +588,18 @@ function richImagePrompt(item, i, total, ctx) {
     : `围绕「${intent.main}」重新组织信息，明确出现待处理资料、操作动作、结果界面三层信息。`;
   const title = cleanImageDisplayTitle(item?.title, task.title);
   const headline = deriveImageHeadline(item, i, intent, task);
-  const accountPosition = shortChinese(stripFieldLabel(ctx.account?.position || "", "账号定位") || "办公效率教程型；真实体验视角、步骤清楚、少广告感。", 120);
   const imageStyle = ctx.style
-    ? shortChinese(cleanImagePlanningWords(stripPromptScaffold(stripFieldLabel(ctx.style, "账号风格"))), 190)
+    ? shortChinese(cleanImagePlanningWords(stripPromptScaffold(stripFieldLabel(ctx.style, "账号风格"))), 130)
     : "白底或浅色底，圆角卡片，大留白，真实办公截图质感，蓝紫点缀，文字大而清楚。";
   const refPrefix = ctx.styleRefName
     ? `请根据上传的参考图（${ctx.styleRefName}），综合参考产品界面层级、品牌色、截图质感和视觉密度；不要复制参考图里的旧标题和示例文案。`
     : "";
   const productLine = ctx.product ? `产品/应用：${intent.productName}，只在流程或界面里自然出现。` : "产品表达以真实办公流程和界面结果为主。";
-  const promptBody = cleanImagePlanningWords(`${refPrefix}生成小红书笔记风格3:4尺寸图片。【账号定位：${accountPosition}】【图片风格：${imageStyle}】图片具体内容：【${productLine} 画面布局采用${task.layout}；主体内容是${task.visual}；${contentCue}信息按待处理资料、执行动作、可复用结果组织到界面、文件、数据卡片或桌面物件里，不能照抄用户输入。画面文字只放大标题「${headline}」和一句短副标题，最多2个功能标签；功能标签必须写具体收益或动作，例如“自动归类”“字段识别”“报告可用”，所有文字清晰可读。】`);
-  const promptNeg = "负面约束：不出现二维码、角落不出现logo、不出现页码；不要乱码、不要六宫格拼图、不要 emoji、不要账号昵称，不要硬广式下载引导；画面文字绝对不要出现“种草”“痛点”“共鸣”“构图”“封面”“首图”“步骤一”“步骤二”“步骤三”“图片定位”“画面定位”等给系统看的定位词；角落装饰最多出现在1-2个角，不要四角都画括号。";
+  const promptBody = cleanImagePlanningWords(`${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine} ${task.layout}；${task.visual}；${contentCue}把待处理资料、执行动作、可复用结果放进界面、文件、数据卡片或桌面物件里，不能照抄用户输入。画面文字只放大标题「${headline}」和一句短副标题，最多2个具体功能标签，例如“自动归类”“字段识别”“报告可用”。】`);
   return {
     title,
     ui: item?.ui !== false,
-    prompt: normalizeImageSizeText(`${promptBody}${promptNeg}`)
+    prompt: normalizeImageSizeText(`${promptBody}${minimalImageNegative()}`)
   };
 }
 
@@ -875,14 +877,16 @@ export const AI = {
       : (direction ? `目标人群方向：${direction}（脚本语气、痛点、例子都贴合这个人群）。` : `人群方向：不限，自由发挥最合适的角度。`);
     const nImg = Math.max(3, Math.min(12, imageCount || 6));
     const sys = image
-      ? `你是小红书爆款图文笔记策划，为百度 ACG 市场部写「小红书笔记图卡内容表」，每行是笔记里的一张配图（封面/步骤/结果卡片）。严格按小红书笔记习惯写：标题是口语化痛点钩子+数字干货感（如「3步把乱文件夹收拾干净」「打工人后悔没早用的整理神器」）；封面图文案要让人想点进来；中间每张是一步可复制的干货；结尾一张轻种草收束。语气、人群、用词都要按账号定位细化（账号定位会在用户消息里给出），写给该定位下刷小红书的真实用户看。图文没有口播，只有画面与图上文案。每行 idea 写清这张图要传达的信息；visual 必须非常具体（构图版式/主视觉/界面里出现的具体文字/配色/光线/产品视觉位置），先在脑内把这张图具象化成真实画面再写，不要用电影感、高级感、种草感这类抽象词。${hasImageTemplate ? `账号配置了固定图文模板，必须优先遵守模板的风格、版式语言、参考图使用方式和统一要求；但模板中的张数、主题、产品名、各图内容都要按本次创作内容重写，最终 shots 必须正好 ${nImg} 行。` : ""}只输出 JSON：{"title":"小红书笔记风标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"图上文案(小红书笔记口吻、精简)"}]}，shots 必须正好 ${nImg} 行（即 ${nImg} 张图，第一张是封面、最后一张是收束）。`
+      ? `你是小红书图文笔记策划，为百度 ACG 市场部写「小红书笔记图卡内容表」，每行是笔记里的一张配图。严格围绕用户本次创作内容展开，不要让账号定位改变主题方向；账号只提供创作风格。标题和图上文案要像真实笔记，具体、有信息量、能让人看懂功能和结果。图文没有口播，只有画面与图上文案。每行 idea 写清这张图要传达的信息；visual 必须非常具体（画面布局/主视觉/界面里出现的具体文字/配色/光线/产品视觉位置），先在脑内把这张图具象化成真实画面再写，不要用电影感、高级感、种草感这类抽象词。内部结构词不要出现在 idea、visual、line 里。${hasImageTemplate ? `账号配置了固定图文模板，必须优先遵守模板的风格、画面语言、参考图使用方式和统一要求；但模板中的张数、主题、产品名、各图内容都要按本次创作内容重写，最终 shots 必须正好 ${nImg} 行。` : ""}只输出 JSON：{"title":"小红书笔记风标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"图上文案(小红书笔记口吻、精简)"}]}，shots 必须正好 ${nImg} 行。`
       : (account.subType === "无数字人"
         ? `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【无数字人】视频：没有固定出镜人物，以场景/产品界面/手部操作混剪为主，line 写专业画外音旁白。成片控制在45-58秒，绝不超过60秒，拆成8-10个镜头；每镜头口播1句，尽量12-24个中文字符，单句至少能自然说3秒，不要赶。偏教程专业可信、理性有梗、不要信息流硬广。visual 非常具体：景别、机位运镜(固定/缓推/横移/跟随)、产品界面模块、界面动效(卡片滑入/进度条/局部高亮)、配色、光线，禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"专业画外音旁白","ui":true,"scene":1}]}。`
         : `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【真人/数字人口播】视频。成片控制在45-58秒，绝不超过60秒，拆成8-10个镜头；每镜头口播1句，尽量12-24个中文字符，单句至少能自然说3秒，不要赶。结构上有真人开场、有产品场景演示、有真人收束，但不要死板两段式。内容丰富、偏教程专业可信、理性有梗、不要信息流硬广：口播像真实经验分享，能直接念。visual 非常具体：人物动作表情、产品界面模块、运镜、界面动效、配色、光线；如果后续有统一参考图，人物外貌由参考图锁定，这里不要写五官长相。禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"口播原话","ui":true,"scene":1}]}。`);
     try {
       const content = await llm([
         { role: "system", content: DUMATE_BRIEF + "\n\n" + productBrief(product) + "\n\n" + sys },
-        { role: "user", content: `账号定位：${account.position}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n${image ? `共生成 ${nImg} 张图。\n` : ""}${image && style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${image && styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${image && hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}主题：${topic}\n${image ? "" : `目标时长：${Math.min(60, duration || 55)}秒以内，最终不超过60秒。口播宁可少一点，保证每句都能自然读完。`}围绕本次宣传产品的真实功能延展教学，但要先用当下热点/真实痛点切入、自然安利，不要孤立自嗨，不要强呼吁下载。${TOPICAL_HOOK}${this.memoryLine(account)}` }
+        { role: "user", content: image
+          ? `账号创作风格：${style || account.styleProfile || "干净可读的小红书图文风"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n共生成 ${nImg} 张图。\n${style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}主题：${topic}\n围绕本次宣传产品的真实功能延展教学，优先服从用户本次创作内容，不要强呼吁下载。${TOPICAL_HOOK}`
+          : `账号定位：${account.position}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n主题：${topic}\n目标时长：${Math.min(60, duration || 55)}秒以内，最终不超过60秒。口播宁可少一点，保证每句都能自然读完。围绕本次宣传产品的真实功能延展教学，但要先用当下热点/真实痛点切入、自然安利，不要孤立自嗨，不要强呼吁下载。${TOPICAL_HOOK}${this.memoryLine(account)}` }
       ], { json: true });
       const d = parseJSONLoose(content);
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
@@ -906,7 +910,7 @@ export const AI = {
     try {
       const content = await llm([
         { role: "system", content: `你在优化一张${image ? "图文" : "视频"}分镜脚本表。保持原有列结构${image ? "（idea/visual/line，无口播）" : "（time/idea/visual/line）"}，按用户的优化方向重写，使脚本更好。只输出 JSON：{"title":"可选新标题","shots":[...]}，shots 字段与输入一致。` },
-        { role: "user", content: `账号定位：${account.position}\n优化方向：${direction}\n当前脚本（JSON）：\n${JSON.stringify(shots)}` }
+        { role: "user", content: `${image ? `账号创作风格：${account.styleProfile || ""}` : `账号定位：${account.position}`}\n优化方向：${direction}\n当前脚本（JSON）：\n${JSON.stringify(shots)}` }
       ], { json: true, temperature: 0.7 });
       const d = parseJSONLoose(content);
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
@@ -993,18 +997,16 @@ export const AI = {
     try {
       const content = await llm([
         { role: "system", content: DUMATE_BRIEF + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，再拆成 ${nImg} 张静态图片：开场问题、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。功能名只用于你内部理解，绝不能当作画面文字。
-每条 prompt 必须使用「生成小红书笔记风格3:4尺寸，【账号定位：...】【图片风格：...】，图片具体内容：【...】。负面约束：...」结构；如果有参考图，则在开头加入「请根据上传的参考图」。风格主要按账号定位和账号模板，不要把用户输入原句整段塞进提示词，不要在“图片具体内容”里重复外层结构。${safeStyle ? "账号总风格：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张，不要要求角落出现logo。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；但模板只当风格母版，不能原样复制模板句子。` : ""}
+每条 prompt 必须使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。${minimalImageNegative()}」结构；如果有参考图，则在开头加入「请根据上传的参考图」。风格主要按账号创作风格和账号模板，不要把账号定位当成本次内容方向，不要把用户输入原句整段塞进提示词，不要在“图片具体内容”里重复外层结构。${safeStyle ? "账号创作风格：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；但模板只当风格母版，不能原样复制模板句子。` : ""}
 
 每条 prompt 控制在 160-260 字，说清：版式、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。只保留1个大标题和1句短副标题，最多2个小标签。
 画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
-禁止在 prompt 或画面文字中出现「种草」「痛点」「共鸣」「构图」「封面」「痛点引入」「问题引入」「关键步骤」「结果对比」「总结收束」「图1」「第1张」「图片任务」「步骤一」「步骤二」「步骤三」等内部分类词。
-角落装饰最多出现在1-2个角，不要四角都画括号或对称角标。
-禁止乱码、二维码、页码、角落logo、密集小字、emoji、六宫格拼图、账号昵称、下载引导。
+内部分类词只用于你理解结构，不要出现在最终 prompt 或画面文字里；最终负面约束只能使用指定的短句，不要额外扩写。
 
 ${xhsGuardPrompt()}
 
 只输出 JSON：{"shots":[{"title":"给操作员看的短标题，必须是具体功能/结果，不能是种草/痛点/构图/步骤/封面等定位词","prompt":"可直接给图像模型的提示词","ui":true}]}` },
-        { role: "user", content: `账号定位：${sanitizeXhsText(account.position)}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n${product ? `宣传产品：${sanitizeXhsText(product.name || product.shortName || "")}\n` : ""}${safeTopic ? `本次主题：${safeTopic}\n` : ""}${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号图文模板（风格/结构母版，变量需替换）：\n${safeTpl}\n` : ""}脚本：\n${safeScript || "(据定位自拟)"}` }
+        { role: "user", content: `账号创作风格：${sanitizeXhsText(account.styleProfile || style || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n${product ? `宣传产品：${sanitizeXhsText(product.name || product.shortName || "")}\n` : ""}${safeTopic ? `本次主题：${safeTopic}\n` : ""}${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号图文模板（风格/结构母版，变量需替换）：\n${safeTpl}\n` : ""}脚本：\n${safeScript || "(据本次主题和创作风格自拟)"}` }
       ], { json: true, temperature: 0.8 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
@@ -1026,12 +1028,12 @@ ${xhsGuardPrompt()}
       const rows = String(safeScript || "").split(/\n+/).map(x => x.trim()).filter(Boolean);
       return {
         shots: normalizeImagePromptItems(Array.from({ length: nImg }, (_, i) => {
-          const rawBase = rows[i] || rows[Math.min(rows.length - 1, i)] || topic || (account.position || "").split("，")[0] || "办公效率方法";
+          const rawBase = rows[i] || rows[Math.min(rows.length - 1, i)] || topic || `${product?.shortName || product?.name || "Dumate"}办公效率方法`;
           const base = rawBase.replace(/^(图\d+|镜头\d+|第\d+张)[：:｜\s]*/g, "").replace(/图上文案[:：][^｜\n]+/g, "").trim();
           const titleText = (base.match(/图上文案[:：]([^｜\n]+)/) || base.match(/line[:：]([^｜\n]+)/) || [])[1]?.trim()
             || (i === 0 ? shortChinese(safeTopic, 18) || `${(product?.shortName || product?.name || "这个工具")}到底省在哪` : i === nImg - 1 ? "把重复动作交给流程" : base.replace(/^图\d+[：:｜\s]*/, "").slice(0, 18));
           return {
-            title: i === 0 ? "资料从乱到顺" : i === nImg - 1 ? "少做重复整理" : `动作拆解 ${i + 1}`,
+            title: IMAGE_CARD_TASKS[Math.min(i, IMAGE_CARD_TASKS.length - 1)]?.title || `资料处理 ${i + 1}`,
             headline: titleText,
             ui: i > 0 && i < nImg - 1,
             prompt: base
@@ -1055,7 +1057,7 @@ ${xhsGuardPrompt()}
     const safeTopic = sanitizeXhsText(topic || "");
     const safeShots = sanitizeXhsObject(JSON.parse(JSON.stringify(shots || [])));
     const safeStyle = sanitizeXhsText(style || "");
-    const intent = inferCopyIntent({ topic: safeTopic, shots: safeShots, account, product });
+    const intent = inferCopyIntent({ topic: safeTopic, shots: safeShots, account, product, useAccountPosition: kind === "video" });
     const script = kind === "video"
       ? (safeShots || []).map((s, i) => `镜头${i + 1}｜${s.time || ""}｜口播：${s.line || ""}`).join("\n")
       : (safeShots || []).map((s, i) => `图${i + 1}｜${s.idea || ""}｜图上文案：${s.line || ""}`).join("\n");
@@ -1067,11 +1069,13 @@ ${xhsGuardPrompt()}
       : `你是小红书爆款笔记文案写手。根据图卡脚本写一篇配套笔记：
 - title：20字以内，像真实创作者的结论/痛点标题，具体、有梗、有信息量，可带1个贴合 emoji。
 - copy：260-520字正文，结构：第一句真实体验/反常识钩子 → 按脚本分点干货（每点一行，可用 ①②③、👉 或 ✅，但不要符号堆砌）→ 一句适用场景/避坑结论自然收束 → 最后一行4-7个具体话题标签。
-语气按账号定位细化，像真人发笔记，不要硬广腔。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`;
+语气按本次内容和账号创作风格细化，像真人发笔记，不要硬广腔。不要让账号定位改变用户本次要写的内容方向。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`;
     try {
       const content = await llm([
         { role: "system", content: DUMATE_BRIEF + "\n\n" + productBrief(product) + "\n\n" + sys + XHS_COPY_STYLE + "\n\n" + xhsGuardPrompt() },
-        { role: "user", content: `账号定位：${sanitizeXhsText(account.position)}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡/视频内容摘要：\n${script}\n${HUMAN_COPY_VOICE}${this.memoryLine(account)}` }
+        { role: "user", content: kind === "video"
+          ? `账号定位：${sanitizeXhsText(account.position)}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡/视频内容摘要：\n${script}\n${HUMAN_COPY_VOICE}${this.memoryLine(account)}`
+          : `账号创作风格：${sanitizeXhsText(account.styleProfile || safeStyle || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡内容摘要：\n${script}\n${HUMAN_COPY_VOICE}` }
       ], { json: true, temperature: 0.9 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.title || !d.copy) throw new Error("模型未返回 title/copy");
@@ -1085,7 +1089,10 @@ ${xhsGuardPrompt()}
 
   async randomTitle({ topic, account }) {
     try {
-      const r = await llm([{ role: "user", content: `给小红书笔记起一个爆款标题，主题「${topic || "Dumate 办公效率"}」，账号定位「${account.position}」。20字以内，口语化痛点钩子+干货感，带1-2个emoji。只回标题本身，不要引号不要解释。` }], { temperature: 1.1 });
+      const styleLine = account?.mode === "图文"
+        ? `账号创作风格「${account.styleProfile || "干净可读"}」`
+        : `账号定位「${account.position}」`;
+      const r = await llm([{ role: "user", content: `给小红书笔记起一个标题，主题「${topic || "Dumate 办公效率"}」，${styleLine}。20字以内，口语化、有信息量，带1-2个emoji。只回标题本身，不要引号不要解释。` }], { temperature: 1.1 });
       const t = sanitizeProduct(String(r).trim().replace(/^["'「]|["'」]$/g, "").slice(0, 30));
       if (t) return this._ok(t);
       throw new Error("空");
@@ -1101,7 +1108,7 @@ ${xhsGuardPrompt()}
       const ask = kind === "direction"
         ? `给我一个适合做 Dumate 办公效率产品教程短视频的目标人群方向，要主流、好理解、贴近大众（比如 职场白领 / 宝妈 / 大学生 / 老师 / 电商卖家 这类），不要冷门抽象概念。只回一个3-6字的词，不要标点不要解释。`
         : kind === "style"
-        ? `为小红书图文笔记配图想一个总视觉风格短语，账号定位「${account.position}」。可以超出常见标签、有新鲜感但要好落地（例如：奶油色清晨书桌风 / 蓝白格子手帐风 / 低饱和莫兰迪办公风）。只回一个5-12字的风格短语，不要标点不要解释。`
+        ? `为小红书图文笔记配图想一个总视觉风格短语，参考当前创作风格「${account.styleProfile || account.position || "干净可读"}」。可以超出常见标签、有新鲜感但要好落地（例如：奶油色清晨书桌风 / 蓝白格子手帐风 / 低饱和莫兰迪办公风）。只回一个5-12字的风格短语，不要标点不要解释。`
         : `给我一个 Dumate 办公效率产品的短视频选题，贴合人群「${account.position}」，只回一句不超过15字的主题，不要标点不要解释。`;
       const r = await llm([{ role: "user", content: ask }], { temperature: 1.0 });
       const t = String(r).trim().replace(/[。.\n"'`]/g, "").slice(0, kind === "style" ? 16 : 18);

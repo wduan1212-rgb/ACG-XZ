@@ -31,6 +31,7 @@ export function deliver(p, opts = {}) {
   const acc = accountById(p.accountId);
   if (!acc) return null;
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
+  if (!opts.planDate) { window.__toast && window.__toast("请先填写计划发布时间", "error"); return null; }
   p.review.state = "approved";   // 创作者点击发布即定稿
   acc.exportSeq = (acc.exportSeq || 0) + 1;
   const productTag = productTagFor(p);
@@ -60,7 +61,7 @@ export function deliver(p, opts = {}) {
     byAccount: acc.name,                          // 发布所属内容账号
     byMemberId: mem?.id || p.ownerId || null,
     byMemberName: mem?.name || "",                // 谁点的发布
-    planDate: opts.planDate || "",                // 计划发布日期（可选）
+    planDate: opts.planDate || "",                // 计划发布时间（必填）
     publishNote: opts.note || "",                 // 简短备注（可选）
     adminReviewed: false                          // 管理员「已审阅」标注（非强制门槛）
   };
