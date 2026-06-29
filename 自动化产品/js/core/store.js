@@ -227,6 +227,11 @@ export function notify(kind, title, body = "", meta = {}) {
 /* ---- 快捷取值 ---- */
 export const accountById = id => state.accounts.find(a => a.id === id);
 export const productById = id => state.products.find(p => p.id === id) || state.products[0] || null;
+export const primaryProducts = () => {
+  const ours = state.products.filter(p => p.owner === "ours");
+  return ours.length ? ours : state.products.filter(p => ["dumate", "miaoda"].includes(p.id));
+};
+export const primaryProductById = id => primaryProducts().find(p => p.id === id) || primaryProducts()[0] || productById(id);
 export const productionById = id => state.productions.find(p => p.id === id);
 export const assetById = id => state.assets.find(a => a.id === id);
 export const activeAccount = () => accountById(state.ui.activeAccountId) || state.accounts[0] || null;

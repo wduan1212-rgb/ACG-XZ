@@ -1,8 +1,8 @@
 /* 链路 · 分镜（视频）/ 图片工坊（图文）：站内图片 API 优先，站外上传仅作备用 */
 
-import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, uid } from "../core/util.js";
+import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, accountById, productById } from "../core/store.js";
+import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { buildSbExternalPrompt, buildImgExternalPrompt } from "../api/prompts.js";
 import { setStage, shotsToText } from "../domain/productions.js";
@@ -10,7 +10,7 @@ import { accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob } from "../domain/assets.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
-import { toast, withLoading, openLightbox, openModal } from "../ui/components.js";
+import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 
@@ -391,8 +391,9 @@ export function renderSlotsPage(root, p, isImg) {
   const page = isImg ? "images" : "boards";
   let genMode = modeBySlot.get(p.id) || (isImg ? "in" : "out");
   const S = p.artifacts.script;
+  const products = primaryProducts();
   if (isImg) {
-    S.productId = S.productId || "dumate";
+    S.productId = primaryProductById(S.productId || "dumate")?.id || "dumate";
     S.imageCount = S.imageCount || 6;
     S.direction = S.direction || "";
     if (p.stage === "script") p.stage = "images";
@@ -447,9 +448,8 @@ export function renderSlotsPage(root, p, isImg) {
             <div class="imgf-grid">
               <label class="field">宣传产品
                 <select class="input" id="imgProduct">
-                  ${state.products.map(x => `<option value="${esc(x.id)}" ${S.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
+                  ${products.map(x => `<option value="${esc(x.id)}" ${S.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
                 </select>
-                <button class="btn ghost sm" id="imgProductAdd" style="margin-top:8px">${icon("plus", 12)} 添加共享产品</button>
               </label>
               <label class="field">生成张数
                 <input class="input" id="imgCount" type="number" min="3" max="12" value="${esc(S.imageCount || 6)}" />
@@ -552,7 +552,6 @@ export function renderSlotsPage(root, p, isImg) {
   function wire() {
     if (isImg) {
       $("#imgProduct", root)?.addEventListener("change", e => { S.productId = e.target.value || "dumate"; save("productions"); });
-      $("#imgProductAdd", root)?.addEventListener("click", openQuickProductDialog);
       $("#imgCount", root)?.addEventListener("input", e => {
         S.imageCount = Math.max(3, Math.min(12, parseInt(e.target.value, 10) || 6));
         save("productions");
@@ -834,10 +833,10 @@ export function renderSlotsPage(root, p, isImg) {
     const count = Math.max(3, Math.min(12, parseInt($("#imgCount", root)?.value, 10) || S.imageCount || 6));
     S.imageCount = count;
     S.productId = $("#imgProduct", root)?.value || S.productId || "dumate";
+    S.productId = primaryProductById(S.productId)?.id || "dumate";
     const selectedProduct = productById(S.productId);
     if (!brief) {
-      const picked = await AI.randomPick({ kind: "topic", account: acc, product: selectedProduct });
-      brief = `${picked}：围绕真实使用麻烦、具体操作动作、前后变化、适合人群和一个可复制的小技巧，拆成 ${count} 张图卡讲清楚。`;
+      brief = await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: count, kind: "image" });
       const input = $("#imgBrief", root); if (input) input.value = brief;
       toast(AI.sourceNote("已随机生成详细创作内容"));
     }
@@ -883,46 +882,6 @@ export function renderSlotsPage(root, p, isImg) {
     save("productions");
     draw();
     toast(AI.sourceNote(`已生成 ${A.items.length} 张图卡结构与提示词`));
-  }
-
-  function openQuickProductDialog() {
-    const draftId = uid();
-    openModal(`
-      <div class="mp-head"><b>添加共享产品</b><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
-      <div class="mp-body">
-        <div class="set-grid">
-          <label class="field">产品名称<input class="input" id="qpdName" placeholder="例如：秒哒 / 新产品名" /></label>
-          <label class="field">短名称<input class="input" id="qpdShort" placeholder="用于标题和图卡文案" /></label>
-          <label class="field">产品类别<input class="input" id="qpdCat" placeholder="例如：AI 应用搭建工具" /></label>
-          <label class="field">表达要求<input class="input" id="qpdTone" value="可信、理性、有梗、像真实用户经验分享；不要硬广，不要强 CTA。" /></label>
-        </div>
-        <label class="field">产品描述 / Markdown
-          <textarea class="input" id="qpdBrief" rows="8" placeholder="粘贴产品功能、卖点、适用场景、禁忌表达；所有成员都能共享使用"></textarea>
-        </label>
-      </div>
-      <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="qpdSave">添加产品</button></div>
-    `, { onMount(panel, close) {
-      $("#qpdSave", panel).addEventListener("click", () => {
-        const name = $("#qpdName", panel).value.trim();
-        const brief = $("#qpdBrief", panel).value.trim();
-        if (!name || !brief) { toast("请填写产品名称和产品描述"); return; }
-        const item = {
-          id: draftId,
-          name,
-          shortName: $("#qpdShort", panel).value.trim() || name,
-          category: $("#qpdCat", panel).value.trim() || "待补充",
-          brief,
-          toneRule: $("#qpdTone", panel).value.trim() || "可信、理性、有梗、不要硬广。",
-          updatedAt: Date.now()
-        };
-        state.products.push(item);
-        S.productId = item.id;
-        save("products", "productions", "meta");
-        close();
-        toast("产品已添加并共享");
-        draw();
-      });
-    }});
   }
 
   if (!A.externalPrompt && (p.artifacts.script.shots || []).length) rebuildExternal();

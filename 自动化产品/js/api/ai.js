@@ -182,6 +182,25 @@ function productListLine(list = []) {
   return list.map(p => `${p.shortName || p.name}（${p.category || "同类工具"}）`).join("、");
 }
 
+function productRelationLine(list = []) {
+  return list.map(p => {
+    const angles = [...(p.blogAngles || []), ...(p.comparisonAngles || []), ...(p.tutorialAngles || [])]
+      .filter(Boolean)
+      .slice(0, 2)
+      .join("；");
+    const features = (p.coreFeatures || []).slice(0, 4).join("/");
+    return `${p.shortName || p.name}：${p.category || "同类工具"}；能力 ${features || "按已知信息克制引用"}；可用角度 ${angles || "只作场景对照"}`;
+  }).join("\n");
+}
+
+function trimCreativeBrief(text, max = 220) {
+  const s = sanitizeXhsText(cleanText(text || ""));
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const last = Math.max(cut.lastIndexOf("。"), cut.lastIndexOf("；"), cut.lastIndexOf("，"));
+  return (last >= 80 ? cut.slice(0, last + 1) : cut).replace(/[，；、:：]$/, "。");
+}
+
 function productAliases(product) {
   return [product?.name, product?.shortName, product?.id]
     .filter(Boolean)
@@ -207,13 +226,13 @@ function productTopicFallback(product, rel = []) {
   const base = source[(name.length + source.length) % Math.max(1, source.length)] || "真实使用流程复盘";
   if (/对比|分工|区别/.test(base) && rel.length) {
     const other = rel[0]?.shortName || rel[0]?.name || "同类工具";
-    return cleanText(`${name}和${other}怎么分工`).slice(0, 18);
+    return cleanText(`${name}和${other}怎么分工`).slice(0, 22);
   }
-  return cleanText(`${name}${base}`.replace(/百度秒哒秒哒|秒哒秒哒/g, "秒哒")).slice(0, 18);
+  return cleanText(`${name}${base}`.replace(/百度秒哒秒哒|秒哒秒哒/g, "秒哒")).slice(0, 22);
 }
 
 function enforceCurrentProductTopic(topic, product, rel = []) {
-  const t = cleanText(topic || "").replace(/[。.\n"'`]/g, "").slice(0, 18);
+  const t = cleanText(topic || "").replace(/[。.\n"'`]/g, "").slice(0, 22);
   if (!product) return t;
   const isMiaoda = /miaoda|百度秒哒|秒哒/i.test(`${product.id || ""} ${product.name || ""} ${product.shortName || ""}`);
   const isDumate = isDumateProduct(product);
@@ -244,6 +263,8 @@ function productBrief(product) {
 对比/测评可用角度：${comparisonLine || "可与同类工具做场景、能力边界、适用人群对比。"}
 AI 博主视角：${blogLine || "像真实创作者做工具观察，不只硬讲单个产品。"}
 可参考同类产品：${productListLine(rel) || "无"}
+同类/互补工具细节：
+${productRelationLine(rel) || "无"}
 表达要求：${p.toneRule || "可信、理性、有梗、像真实用户经验分享；不要硬广，不要强 CTA。"}
 脚本和提示词里必须围绕本次产品写；可以引用同类产品做对比、合集或场景分工，但不能把竞品能力误写成本次产品能力。`;
 }
@@ -255,6 +276,8 @@ function topicalHook(product) {
 - 你是 AI 博主/工具观察者，不是单一产品说明书。选题可以是教程、对比、测评、场景清单或工具分工。
 - 本次主产品优先讲清真实能力；同类产品只作为对照、背景或合集视角，不要喧宾夺主。
 - 如果做教程，既可以只讲本次产品的完整流程，也可以提到"这一类工具怎么选/怎么分工"，再自然落到本次产品。
+- 用户没有写明确创作内容时，允许主动带 1-2 个同类/互补工具做对比、组合或分工妙用，例如"Obsidian 负责知识沉淀，百度搭子负责桌面执行"。这样内容更像 AI 博主科普，而不是孤立宣传。
+- 用户明确写了创作方向时，必须优先服从用户方向；如果用户内容里提到竞品/同类产品，要识别它们在产品库里的功能点，再合理解释它们和本次主产品的关系。不要把竞品能力写成本次主产品能力。
 - 如果做图文，画面信息要像真实博主整理出来的经验：对比表、流程卡、工具分工图、评分卡、真实桌面场景都可以用。
 
 ${productBrief(product)}`;
@@ -964,6 +987,48 @@ export const AI = {
     }
   },
 
+  /* ---------- 创作内容补全：空内容时先生成 brief，再拆图/脚本 ---------- */
+  async generateCreativeBrief({ account, product = null, imageCount = 6, userText = "", kind = "image" }) {
+    const p = product || allProductsForAI().find(x => x.owner === "ours") || null;
+    const rel = relatedProducts(p, allProductsForAI(), 5);
+    const productName = p?.shortName || p?.name || "本次产品";
+    const count = Math.max(3, Math.min(12, Number(imageCount) || 6));
+    const fallback = () => {
+      const first = rel[0]?.shortName || rel[0]?.name || "同类工具";
+      const second = rel[1]?.shortName || rel[1]?.name || "";
+      if (p?.id === "miaoda") {
+        return `${productName}做无代码应用原型：从一个真实小需求切入，先讲非技术人为什么不想从零写代码，再对比 ${first}${second ? ` / ${second}` : ""} 这类工具的适用边界，重点展示用${productName}把需求拆成页面、数据表、后台和发布流程，最后总结适合快速验证想法的小技巧，拆成 ${count} 张图卡讲清楚。`;
+      }
+      return `${productName}和${first}组合做办公知识流：先讲资料分散、知识沉淀和桌面执行割裂的麻烦，再说明${first}更适合沉淀资料/结构化知识，${productName}更适合读取本地文件、整理资料、提取字段和生成可复用结果；中间用一个真实文件夹或项目资料场景演示分工，最后给出适合打工人复用的小 SOP，拆成 ${count} 张图卡讲清楚。`;
+    };
+    try {
+      const content = await llm([
+        { role: "system", content: baseProductFacts(p) + productBrief(p) + `\n\n你是 AI 博主选题策划，负责在生成图卡结构/口播脚本前，先把用户的创作需求补全成一段可执行的「创作内容 brief」。只输出 JSON：{"brief":"..."}。` },
+        { role: "user", content: `${currentProductLine(p)}
+账号：${account?.name || "未命名账号"}
+账号创作风格/定位：${account?.styleProfile || account?.position || "干净可读、真实经验分享"}
+内容形态：${kind === "video" ? "视频口播脚本" : `小红书图文，计划 ${count} 张图卡`}
+用户已写创作方向：${userText ? userText : "未填写"}
+可参考/可组合的同类工具：
+${productRelationLine(rel)}
+
+写作规则：
+1. 如果用户已写创作方向，必须优先服从用户方向，不要改成另一个主题。
+2. 如果用户未填写方向，请主动带 1-2 个同类或互补工具，做对比、组合、分工或妙用科普，让内容像 AI 博主经验，不像孤立宣传。
+3. 如果用户方向里提到竞品/同类产品，要识别它们的功能点，再解释它们和当前主产品如何分工、对比或组合；不能把竞品能力写成当前主产品能力。
+4. brief 要具体到能直接拆图/拆脚本：真实痛点、主产品做什么、参考工具做什么、前后变化、适合人群、可复制小技巧。
+5. 80-150 字，中文，不要编号，不要空泛营销词，不要强 CTA。` }
+      ], { json: true, temperature: userText ? 0.65 : 0.95 });
+      const d = parseJSONLoose(content);
+      const brief = trimCreativeBrief(d.brief || "");
+      if (brief && brief.length >= 30) return this._ok(brief);
+      throw new Error("模型未返回有效 brief");
+    } catch (e) {
+      this._fb(e);
+      return fallback();
+    }
+  },
+
   /* ---------- 脚本生成 ---------- */
   async generateScript({ topic, duration = 30, account, image, direction = "", style = "", imageCount = 6, product = null, imageTemplate = "", styleRefName = "" }) {
     const hasImageTemplate = image && String(imageTemplate || "").trim();
@@ -972,7 +1037,7 @@ export const AI = {
       : (direction ? `目标人群方向：${direction}（脚本语气、痛点、例子都贴合这个人群）。` : `人群方向：不限，自由发挥最合适的角度。`);
     const nImg = Math.max(3, Math.min(12, imageCount || 6));
     const sys = image
-      ? `你是小红书图文笔记策划，为百度 ACG 市场部写「小红书笔记图卡内容表」，每行是笔记里的一张配图。严格围绕用户本次创作内容展开，不要让账号定位改变主题方向；账号只提供创作风格。标题和图上文案要像真实笔记，具体、有信息量、能让人看懂功能和结果。图文没有口播，只有画面与图上文案。每行 idea 写清这张图要传达的信息；visual 必须非常具体（画面布局/主视觉/界面里出现的具体文字/配色/光线/产品视觉位置），先在脑内把这张图具象化成真实画面再写，不要用电影感、高级感、种草感这类抽象词。内部结构词不要出现在 idea、visual、line 里。${hasImageTemplate ? `账号配置了固定图文模板，必须优先遵守模板的风格、画面语言、参考图使用方式和统一要求；但模板中的张数、主题、产品名、各图内容都要按本次创作内容重写，最终 shots 必须正好 ${nImg} 行。` : ""}只输出 JSON：{"title":"小红书笔记风标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"图上文案(小红书笔记口吻、精简)"}]}，shots 必须正好 ${nImg} 行。`
+      ? `你是小红书图文笔记策划，为百度 ACG 市场部写「小红书笔记图卡内容表」，每行是笔记里的一张配图。严格围绕用户本次创作内容展开，不要让账号定位改变主题方向；账号只提供创作风格。标题和图上文案要像真实笔记，具体、有信息量、能让人看懂功能和结果。图文没有口播，只有画面与图上文案。每行 idea 写清这张图要传达的信息；visual 必须非常具体（画面布局/主视觉/界面里出现的具体文字/配色/光线/产品视觉位置），先在脑内把这张图具象化成真实画面再写，不要用电影感、高级感、种草感这类抽象词。内部结构词不要出现在 idea、visual、line 里。若本次创作内容提到竞品/同类工具，要先识别其在产品库中的功能点，再安排成对比表、分工流程、组合用法或边界提醒；本次主产品仍是主角，不能把竞品能力写成主产品能力。${hasImageTemplate ? `账号配置了固定图文模板，必须优先遵守模板的风格、画面语言、参考图使用方式和统一要求；但模板中的张数、主题、产品名、各图内容都要按本次创作内容重写，最终 shots 必须正好 ${nImg} 行。` : ""}只输出 JSON：{"title":"小红书笔记风标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"图上文案(小红书笔记口吻、精简)"}]}，shots 必须正好 ${nImg} 行。`
       : (account.subType === "无数字人"
         ? `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【无数字人】视频：没有固定出镜人物，以场景/产品界面/手部操作混剪为主，line 写专业画外音旁白。成片控制在45-58秒，绝不超过60秒，拆成8-10个镜头；每镜头口播1句，尽量12-24个中文字符，单句至少能自然说3秒，不要赶。偏教程专业可信、理性有梗、不要信息流硬广。visual 非常具体：景别、机位运镜(固定/缓推/横移/跟随)、产品界面模块、界面动效(卡片滑入/进度条/局部高亮)、配色、光线，禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"专业画外音旁白","ui":true,"scene":1}]}。`
         : `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【真人/数字人口播】视频。成片控制在45-58秒，绝不超过60秒，拆成8-10个镜头；每镜头口播1句，尽量12-24个中文字符，单句至少能自然说3秒，不要赶。结构上有真人开场、有产品场景演示、有真人收束，但不要死板两段式。内容丰富、偏教程专业可信、理性有梗、不要信息流硬广：口播像真实经验分享，能直接念。visual 非常具体：人物动作表情、产品界面模块、运镜、界面动效、配色、光线；如果后续有统一参考图，人物外貌由参考图锁定，这里不要写五官长相。禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"口播原话","ui":true,"scene":1}]}。`);
@@ -1093,7 +1158,7 @@ export const AI = {
     const safeTpl = sanitizeXhsText(stripPromptScaffold(tpl));
     try {
       const content = await llm([
-        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，再拆成 ${nImg} 张静态图片：开场问题、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。功能名只用于你内部理解，绝不能当作画面文字。
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，再拆成 ${nImg} 张静态图片：开场问题、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。功能名只用于你内部理解，绝不能当作画面文字。若创作内容里出现竞品/同类工具，要把它们作为对比、组合或分工对象写进画面信息结构，例如对比表、流程箭头、工具分工卡片、边界提醒；不要让画面变成只孤立宣传主产品。
 每条 prompt 必须使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。${minimalImageNegative()}」结构；如果有参考图，则在开头加入「请根据上传的参考图」。风格主要按账号创作风格和账号模板，不要把账号定位当成本次内容方向，不要把用户输入原句整段塞进提示词，不要在“图片具体内容”里重复外层结构。${safeStyle ? "账号创作风格：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；但模板只当风格母版，不能原样复制模板句子。` : ""}
 
 每条 prompt 控制在 160-260 字，说清：版式、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。只保留1个大标题和1句短副标题，最多2个小标签。
@@ -1211,9 +1276,9 @@ ${xhsGuardPrompt()}
         ? `给我一个适合做「${productName}」产品教程短视频的目标人群方向，要主流、好理解、贴近大众（比如 职场白领 / 宝妈 / 大学生 / 老师 / 电商卖家 这类），不要冷门抽象概念。只回一个3-6字的词，不要标点不要解释。`
         : kind === "style"
         ? `为小红书图文笔记配图想一个总视觉风格短语，参考当前创作风格「${account.styleProfile || account.position || "干净可读"}」。可以超出常见标签、有新鲜感但要好落地（例如：奶油色清晨书桌风 / 蓝白格子手帐风 / 低饱和莫兰迪办公风）。只回一个5-12字的风格短语，不要标点不要解释。`
-        : `${currentProductLine(p)}\n给我一个「${productName}」相关的 AI 博主选题，贴合账号人群「${account.position || account.styleProfile || "办公效率人群"}」。可以是教程、对比、测评、工具分工或场景清单，不要只生硬介绍产品。${p?.id === "miaoda" ? "秒哒是无代码 AI 应用生成平台，选题必须围绕应用生成、H5/页面、原型、小工具、数据表/后台、非技术人验证想法；不要写文件整理、桌面自动操作、PDF/Word/Excel 转格式、会议纪要这类桌面执行能力，除非明确是“做一个应用来管理这些流程”。" : ""}${relLine}只回一句不超过18字的主题，不要标点不要解释。`;
+        : `${currentProductLine(p)}\n给我一个「${productName}」相关的 AI 博主选题，贴合账号人群「${account.position || account.styleProfile || "办公效率人群"}」。用户没有写创作内容，所以你要主动引入 1 个同类/互补工具做对比、组合、分工或妙用科普，不要只孤立介绍${productName}。${p?.id === "miaoda" ? "秒哒是无代码 AI 应用生成平台，选题必须围绕应用生成、H5/页面、原型、小工具、数据表/后台、非技术人验证想法；不要写文件整理、桌面自动操作、PDF/Word/Excel 转格式、会议纪要这类桌面执行能力，除非明确是“做一个应用来管理这些流程”。" : ""}${relLine}只回一句不超过22字的主题，不要标点不要解释。`;
       const r = await llm([{ role: "user", content: ask }], { temperature: 1.0 });
-      const t = String(r).trim().replace(/[。.\n"'`]/g, "").slice(0, kind === "style" ? 16 : 18);
+      const t = String(r).trim().replace(/[。.\n"'`]/g, "").slice(0, kind === "style" ? 16 : 22);
       if (t) return this._ok(kind === "direction" ? (t.endsWith("方向") ? t : t + "方向") : kind === "topic" ? enforceCurrentProductTopic(t, p, rel) : t);
       throw new Error("空");
     } catch (e) {

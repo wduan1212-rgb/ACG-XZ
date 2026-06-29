@@ -2,7 +2,7 @@
 
 import { $, $$, esc, copyText, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, accountById, productById } from "../core/store.js";
+import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { STYLE_CHIP_BASE } from "../api/prompts.js";
 import { normalizeVideoTimes, setStage, isMaterial, estimateAudio } from "../domain/productions.js";
@@ -33,7 +33,9 @@ export function renderScriptPage(root, p) {
   const A = p.artifacts.script;
   A.productId = A.productId || "dumate";
   A.direction = A.direction || "";
-  const product = productById(A.productId);
+  const products = primaryProducts();
+  const product = primaryProductById(A.productId || "dumate");
+  A.productId = product?.id || "dumate";
   const memoryContext = getCreativeMemoryContext({ account: acc, platform: acc.platform });
   const audioUrl = p.artifacts.audio.assetId ? urlFor(p.artifacts.audio.assetId) : "";
   const imageStyleRef = isImg && acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
@@ -58,7 +60,7 @@ export function renderScriptPage(root, p) {
             </label>
             <label class="field product-field">宣传产品
               <select class="input" id="csProduct">
-                ${state.products.map(x => `<option value="${esc(x.id)}" ${A.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
+                ${products.map(x => `<option value="${esc(x.id)}" ${A.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
               </select>
             </label>
             ${isImg ? `

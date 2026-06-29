@@ -2,7 +2,7 @@
 
 import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { state, save, accountById, canDeliver } from "../core/store.js";
+import { state, save, accountById, canDeliver, primaryProducts, primaryProductById } from "../core/store.js";
 import { platChip, groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
 import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js";
@@ -103,14 +103,19 @@ const CARD = {
     const cancelled = p.status === "cancelled";
     const perAccountCount = Math.max(1, Math.min(12, Number(p.perAccountCount || 1) || 1));
     const totalCount = matched.length * perAccountCount;
-    const products = Array.isArray(state.products) && state.products.length ? state.products : [{ id: "dumate", name: "百度搭子", shortName: "搭子" }];
+    const products = primaryProducts().length ? primaryProducts() : [{ id: "dumate", name: "百度搭子", shortName: "搭子" }];
     const productOptions = (selected = "") => products.map(pr => `<option value="${esc(pr.id)}" ${selected === pr.id ? "selected" : ""}>${esc(pr.shortName || pr.name)}</option>`).join("");
+    const planProductId = primaryProductById(p.productId || "dumate")?.id || "dumate";
+    if (!confirmed && !cancelled && p.productId !== planProductId) {
+      p.productId = planProductId;
+      save("sessions");
+    }
     const globalRefs = selectedRefIds(p);
     const accountRefs = p.accountRefAssetIds || {};
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
       ${matched.map(a => `<div class="agc-override">
         <b>${esc(a.name)}</b>
-        <select data-pacc-prod="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>${productOptions((p.accountProductIds || {})[a.id] || p.productId || "dumate")}</select>
+        <select data-pacc-prod="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>${productOptions(primaryProductById((p.accountProductIds || {})[a.id] || planProductId)?.id || planProductId)}</select>
         <input data-pacc-content="${a.id}" value="${esc((p.accountContents || {})[a.id] || "")}" placeholder="本账号本次创作内容（可留空）" ${confirmed || cancelled ? "disabled" : ""} />
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
@@ -131,7 +136,7 @@ const CARD = {
       </div>
       <div class="agc-grid">
         <label class="agc-field">宣传产品
-          <select data-pf="productId" ${confirmed || cancelled ? "disabled" : ""}>${productOptions(p.productId || "dumate")}</select>
+          <select data-pf="productId" ${confirmed || cancelled ? "disabled" : ""}>${productOptions(planProductId)}</select>
         </label>
         <label class="agc-field">主题
           ${p.topicMode === "random"

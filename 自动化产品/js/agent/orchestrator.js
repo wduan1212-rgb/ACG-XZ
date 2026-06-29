@@ -1,7 +1,7 @@
 /* 批次编排器：事件驱动的状态机（替代 v4 的 setInterval 盯进度）
    会话/消息/批次全部持久化，刷新后 resumeActiveBatches() 接续 */
 
-import { state, save, emit, on, notify, accountById, productionById, productById, ownedBy, removeRemote } from "../core/store.js";
+import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemote } from "../core/store.js";
 import { uid, runPool, debounce } from "../core/util.js";
 import { AI } from "../api/ai.js";
 import { buildSbExternalPrompt, buildImgExternalPrompt, buildSbExternalGroups } from "../api/prompts.js";
@@ -393,7 +393,8 @@ async function draftOne(p, batch) {
   try {
     setStatus(p, "running");
     // 主题 / 创作内容：支持批次总内容，也支持账号独立覆盖；为空时每号按定位随机
-    const productId = (batch.accountProductIds && batch.accountProductIds[acc.id]) || batch.productId || p.artifacts.script.productId || "dumate";
+    const rawProductId = (batch.accountProductIds && batch.accountProductIds[acc.id]) || batch.productId || p.artifacts.script.productId || "dumate";
+    const productId = primaryProductById(rawProductId)?.id || "dumate";
     p.artifacts.script.productId = productId;
     const contentOverride = ((batch.accountContents && batch.accountContents[acc.id]) || batch.content || "").trim();
     let topic = contentOverride || (batch.topicMode === "random" ? "" : batch.topic);
@@ -566,7 +567,8 @@ export async function startBatch(plan, session) {
   const batch = createBatch(plan, session.id);
   const defaultPerAccountCount = Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1));
   accounts.forEach(acc => {
-    const productId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
+    const rawProductId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
+    const productId = primaryProductById(rawProductId)?.id || "dumate";
     const perAccountCount = defaultPerAccountCount;
     for (let i = 0; i < perAccountCount; i++) {
       const topic = plan.topicMode === "random" ? "" : (perAccountCount > 1 ? `${plan.topic} ${i + 1}/${perAccountCount}` : plan.topic);

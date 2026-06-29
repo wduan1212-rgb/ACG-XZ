@@ -7,13 +7,13 @@
 import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid } from "../core/util.js";
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
-import { state, save, on, accountById, productById } from "../core/store.js";
+import { state, save, on, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { defaultTtsVoiceId, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, thumbHtml } from "../domain/assets.js";
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
-import { toast, withLoading, openLightbox, openModal } from "../ui/components.js";
+import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 import { accountAssets as accAssets } from "../domain/accounts.js";
@@ -89,6 +89,8 @@ export function renderWorkshopPage(root, p) {
   const acc = accountById(p.accountId);
   const A = p.artifacts.boards;
   let shots = p.artifacts.script.shots || [];
+  const products = primaryProducts();
+  p.artifacts.script.productId = primaryProductById(p.artifacts.script.productId || "dumate")?.id || "dumate";
   const product = productById(p.artifacts.script.productId || "dumate");
   const isDigital = p.subType === "数字人";
   A.generationMode = A.generationMode || (isDigital ? "digitalHuman" : "seedance");
@@ -227,12 +229,11 @@ export function renderWorkshopPage(root, p) {
               <b>${icon("fileText", 13)} 创作内容与产品</b>
               <em>写得越具体，口播和画面越准确；留空也可以随机生成一个完整创作内容</em>
             </div>
-            <div class="refbar-chip" style="flex:1;display:grid;grid-template-columns:minmax(260px,1fr) minmax(180px,260px) auto;gap:8px">
+            <div class="refbar-chip" style="flex:1;display:grid;grid-template-columns:minmax(260px,1fr) minmax(180px,260px);gap:8px">
               <div class="input-with-action"><input class="input" id="wsTopic" value="${esc(p.topic || "")}" placeholder="详细写创作内容，例如：会议纪要整理耗时、录音转报告、适合周报复盘" /><button class="icon-btn sm" id="wsDice" title="随机创作内容">${icon("dice", 13)}</button></div>
               <select class="input" id="wsProduct">
-                ${state.products.map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
+                ${products.map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
               </select>
-              <button class="btn ghost sm" id="wsProductAdd">${icon("plus", 12)} 产品</button>
             </div>
             <div class="refbar-actions">
               <button class="btn ghost sm" id="wsDraft">${(shots || []).length ? "重生成口播草稿" : "生成口播草稿"}</button>
@@ -543,46 +544,6 @@ export function renderWorkshopPage(root, p) {
     return true;
   }
 
-  function openQuickProductDialog() {
-    const draftId = uid();
-    openModal(`
-      <div class="mp-head"><b>添加共享产品</b><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
-      <div class="mp-body">
-        <div class="set-grid">
-          <label class="field">产品名称<input class="input" id="qpdName" placeholder="例如：秒哒 / 新产品名" /></label>
-          <label class="field">短名称<input class="input" id="qpdShort" placeholder="用于口播和标题" /></label>
-          <label class="field">产品类别<input class="input" id="qpdCat" placeholder="例如：AI 应用搭建工具" /></label>
-          <label class="field">表达要求<input class="input" id="qpdTone" value="可信、理性、有梗、像真实用户经验分享；不要硬广，不要强 CTA。" /></label>
-        </div>
-        <label class="field">产品描述 / Markdown
-          <textarea class="input" id="qpdBrief" rows="8" placeholder="粘贴产品功能、卖点、适用场景、禁忌表达；所有成员都能共享使用"></textarea>
-        </label>
-      </div>
-      <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="qpdSave">添加产品</button></div>
-    `, { onMount(panel, close) {
-      $("#qpdSave", panel).addEventListener("click", () => {
-        const name = $("#qpdName", panel).value.trim();
-        const brief = $("#qpdBrief", panel).value.trim();
-        if (!name || !brief) { toast("请填写产品名称和产品描述"); return; }
-        const item = {
-          id: draftId,
-          name,
-          shortName: $("#qpdShort", panel).value.trim() || name,
-          category: $("#qpdCat", panel).value.trim() || "待补充",
-          brief,
-          toneRule: $("#qpdTone", panel).value.trim() || "可信、理性、有梗、不要硬广。",
-          updatedAt: Date.now()
-        };
-        state.products.push(item);
-        p.artifacts.script.productId = item.id;
-        save("products", "productions", "meta");
-        close();
-        toast("产品已添加并共享");
-        draw();
-      });
-    }});
-  }
-
   function invalidatePromptsAfterAudioChange() {
     buildMaterialUnits(p);
     (p.artifacts.boards.units || []).forEach(u => {
@@ -618,8 +579,7 @@ export function renderWorkshopPage(root, p) {
       let topic = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || "").trim());
       const selectedProduct = productById(p.artifacts.script.productId || "dumate");
       if (!topic) {
-        const picked = sanitizeXhsText(await AI.randomPick({ kind: "topic", account: acc, product: selectedProduct }));
-        topic = `${picked}：从真实使用痛点、具体操作过程、结果对比和适用人群四个角度展开，避免空泛介绍。`;
+        topic = sanitizeXhsText(await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: 6, kind: "video" }));
         p.topic = topic;
         const input = $("#wsTopic", root); if (input) input.value = topic;
         toast(AI.sourceNote("已随机生成详细创作内容"));
@@ -640,7 +600,6 @@ export function renderWorkshopPage(root, p) {
       toast(AI.sourceNote("已生成口播草稿并按可读时长重排片段"));
       draw();
     }, "生成中…"));
-    $("#wsProductAdd", root)?.addEventListener("click", openQuickProductDialog);
     $("#wsApplyNarration", root)?.addEventListener("click", () => {
       const text = $("#wsNarrationText", root)?.value || "";
       const ok = setNarrationLines(text.split(/\n+/), { invalidateAudio: true });

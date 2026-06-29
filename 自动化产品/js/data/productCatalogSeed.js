@@ -15,10 +15,10 @@ export const PRODUCT_CATALOG_SEED = [
     brief: "百度推出的桌面级 AI 办公智能体，能看见屏幕、操作本地软件、处理文件、提取信息、分析数据、生成汇报，并把重复办公流程沉淀成可复用 Skills。",
     coreFeatures: ["本地桌面执行", "文件整理", "格式转换", "信息提取", "数据分析", "办公自动化", "权限确认"],
     tutorialAngles: ["把乱文件夹自动归档", "从合同/纪要里提取字段", "把表格数据整理成汇报", "让重复网页流程自动跑"],
-    comparisonAngles: ["和纯聊天 AI 的区别", "和 Manus 的任务交付路线对比", "和 Obsidian 的知识沉淀路线对比", "和 WorkBuddy 的办公场景对比"],
-    blogAngles: ["桌面智能体不是聊天框", "AI 真正帮人省时间的是执行流程", "文件和表格类任务最容易看出差异"],
+    comparisonAngles: ["和 Obsidian 的知识沉淀路线对比", "和 Manus 的任务交付路线对比", "和纯聊天 AI 的区别", "和 WorkBuddy 的办公场景对比"],
+    blogAngles: ["Obsidian 负责沉淀知识，百度搭子负责执行桌面任务", "桌面智能体不是聊天框", "AI 真正帮人省时间的是执行流程", "文件和表格类任务最容易看出差异"],
     visualAngles: ["杂乱桌面到整洁结果", "输入一句话后文件卡片自动归类", "处理前后对比表格", "权限确认与本地文件夹授权"],
-    competitors: ["manus", "openclaw", "trae", "workbuddy", "obsidian"],
+    competitors: ["obsidian", "manus", "openclaw", "workbuddy", "trae"],
     toneRule: "可信、理性、有梗、像真实用户经验分享；先讲场景和问题，再自然出现产品，不要硬广，不要强 CTA。",
     updatedAt: now()
   },
