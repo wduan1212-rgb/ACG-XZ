@@ -247,7 +247,7 @@ Seedance 模式目标：
 - 安装：Node LTS、Python 3.10/3.11 venv、ffmpeg、nginx、git、unzip、build-essential。
 - 使用 systemd 管理前端静态服务 / Python API 服务。
 - `.env` 放服务端，不进 git。
-- 生产 Key 必须由部署方直接预置到服务器环境变量 / `.env`，不要要求用户在页面、终端或聊天里手动粘贴 Key。当前生产只接入 B 端 MiniMax、公司 DeepSeek、image-2；Seedance、个人 DeepSeek、个人 MiniMax 不接入生产。
+- 生产 Key 必须由部署方直接预置到服务器环境变量 / `.env`，不要要求用户在页面、终端或聊天里手动粘贴 Key。当前部署先接入已提供的 B 端 MiniMax、公司 DeepSeek、image-2；其他模型或服务不是永久不接，等用户后续把本地 Key 更新齐后，最终也应由部署方统一写入服务器环境。
 - 上传目录、SQLite/JSON 状态文件、日志目录都放数据盘并定期备份。
 - 首次登录后建议关闭密码直连或至少改为密钥登录 + 强密码，并限制安全组来源；不要把凭据提交到 GitHub。
 - 部署前先在本地确认：图片生成、参考图、多参考图、MiniMax、Seedance、批量创作入口、同步逻辑全部正常。
