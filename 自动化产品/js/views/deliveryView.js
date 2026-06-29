@@ -24,6 +24,13 @@ function extractShareTitle(text) {
   return beforeSource.split(/\s+-\s+/)[0].replace(/^\d+\s*/, "").trim();
 }
 
+function supplierTagsHtml(tags = []) {
+  const list = [...new Set((tags || []).filter(Boolean))];
+  const shown = list.slice(0, 2);
+  const rest = Math.max(0, list.length - shown.length);
+  return `${shown.map(t => `<span class="tag">${esc(t)}</span>`).join("")}${rest ? `<span class="tag more">+${rest}</span>` : ""}`;
+}
+
 function deliveredItemHtml(asset, acc, i) {
   const isImg = asset.type === "图集";
   const coverId = isImg ? (asset.packAssetIds || [])[0] : null;
@@ -164,6 +171,18 @@ export const deliveryView = {
         }).join("")}</div>
         <div class="sup-table-wrap card">
           <table class="sup-table">
+            <colgroup>
+              <col class="sup-col-check" />
+              <col class="sup-col-seq" />
+              <col class="sup-col-name" />
+              <col class="sup-col-product" />
+              <col class="sup-col-account" />
+              <col class="sup-col-platform" />
+              <col class="sup-col-kind" />
+              <col class="sup-col-tags" />
+              <col class="sup-col-status" />
+              <col class="sup-col-actions" />
+            </colgroup>
             <thead><tr>
               <th class="c-check"><input type="checkbox" id="supAll" /></th>
               <th class="c-seq">序号</th>
@@ -178,7 +197,7 @@ export const deliveryView = {
                 <td><b>${esc(asset.byAccount || acc.name)}</b>${asset.byMemberName ? `<em class="sup-by">由 ${esc(asset.byMemberName)} 发布</em>` : ""}</td>
                 <td>${platChip(acc.platform, true)}</td>
                 <td>${modeLabel(acc)}</td>
-                <td><div class="sup-tags">${(asset.tags || []).slice(0, 4).map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div></td>
+                <td><div class="sup-tags" title="${esc((asset.tags || []).join(" / "))}">${supplierTagsHtml(asset.tags)}</div></td>
                 <td><span class="sup-status ${asset.status === "已发布" ? "pub" : asset.status === "已下载" ? "done" : ""}">${asset.publishedUrl ? "已发布 ✓" : asset.status || "未下载"}</span></td>
                 <td class="sup-acts">
                   <button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
