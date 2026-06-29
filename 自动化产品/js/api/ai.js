@@ -209,6 +209,53 @@ function productAliases(product) {
     .filter(x => x && x.length >= 2);
 }
 
+function escapeRegExp(text = "") {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function productMentionRegex(alias) {
+  const raw = String(alias || "").trim();
+  if (!raw) return null;
+  const escaped = escapeRegExp(raw);
+  return /^[a-z0-9][a-z0-9._-]*$/i.test(raw)
+    ? new RegExp(`(^|[^a-z0-9._-])${escaped}([^a-z0-9._-]|$)`, "i")
+    : new RegExp(escaped, "i");
+}
+
+function productsMentionedIn(text = "", currentProduct = null, limit = 4) {
+  const src = cleanText(text || "");
+  if (!src) return [];
+  const currentId = currentProduct?.id;
+  return allProductsForAI()
+    .filter(p => p?.id && p.id !== currentId)
+    .filter(p => productAliases(p).some(alias => {
+      const re = productMentionRegex(alias);
+      return re && re.test(src);
+    }))
+    .slice(0, limit);
+}
+
+function imageRelationContext(ctx = {}, item = {}) {
+  const text = [
+    ctx.topic,
+    ctx.script,
+    item?.prompt,
+    item?.idea,
+    item?.line,
+    item?.visual,
+    item?.title
+  ].filter(Boolean).join(" ");
+  const explicit = productsMentionedIn(text, ctx.product, 4);
+  if (!explicit.length) return "";
+  const names = explicit.map(p => p.shortName || p.name).join("、");
+  const detail = productRelationLine(explicit);
+  const mode = /组合|搭配|配合|一起|协同|联动/.test(text) ? "组合用法"
+    : /分工|边界|适合|不适合/.test(text) ? "任务分工"
+    : /对比|vs|VS|区别|相比|测评/.test(text) ? "对比关系"
+    : "同类参照";
+  return `本图延续创作内容里的${mode}：主产品是 ${ctx.product?.shortName || ctx.product?.name || "本次产品"}，参照对象是 ${names}。${detail ? `参照对象事实：${detail}。` : ""}画面同时呈现双方职责、任务边界或组合流程；竞品能力放在参照对象一侧，主产品能力放在主产品一侧。`;
+}
+
 function currentProductLine(product) {
   const p = product || {};
   const aliases = productAliases(p).filter(x => !/^[a-z0-9_-]+$/i.test(x) || /dumate|codex|cursor|manus|trae|windsurf|openclaw|obsidian|workbuddy/i.test(x));
@@ -278,7 +325,8 @@ function topicalHook(product) {
 - 如果做教程，既可以只讲本次产品的完整流程，也可以提到"这一类工具怎么选/怎么分工"，再自然落到本次产品。
 - 用户没有写明确创作内容时，允许主动带 1-2 个同类/互补工具做对比、组合或分工妙用，例如"Obsidian 负责知识沉淀，百度搭子负责桌面执行"。这样内容更像 AI 博主科普，而不是孤立宣传。
 - 用户明确写了创作方向时，必须优先服从用户方向；如果用户内容里提到竞品/同类产品，要识别它们在产品库里的功能点，再合理解释它们和本次主产品的关系。不要把竞品能力写成本次主产品能力。
-- 如果做图文，画面信息要像真实博主整理出来的经验：对比表、流程卡、工具分工图、评分卡、真实桌面场景都可以用。
+- 如果做图文，画面信息要像真实博主整理出来的经验：对比表、流程卡、工具分工图、边界对照卡、真实桌面场景都可以用。
+- 如果是测评、对比或工具选择类选题，不做分数、星级、排名或打分表；改用“适合谁 / 不适合谁 / 任务边界 / 真实证据 / 组合方式”来表达判断。
 
 ${productBrief(product)}`;
 }
@@ -538,6 +586,16 @@ function cleanImagePlanningWords(text = "") {
     .replace(/种草感/g, "真实分享感")
     .replace(/轻种草/g, "轻推荐")
     .replace(/种草/g, "推荐功能")
+    .replace(/评分卡/g, "适配判断卡")
+    .replace(/评分/g, "适配判断")
+    .replace(/打分/g, "适配判断")
+    .replace(/星级/g, "适用层级")
+    .replace(/排行榜/g, "对照表")
+    .replace(/分数表/g, "边界对照表")
+    .replace(/分数/g, "判断维度")
+    .replace(/排名/g, "对照关系")
+    .replace(/给分/g, "给出适配结论")
+    .replace(/(\d+)\s*分/g, "$1项维度")
     .replace(/痛点/g, "待处理问题")
     .replace(/共鸣/g, "真实场景")
     .replace(/构图/g, "画面结构")
@@ -702,10 +760,13 @@ function richImagePrompt(item, i, total, ctx) {
     ? shortChinese(cleanImagePlanningWords(stripPromptScaffold(stripFieldLabel(ctx.style, "账号风格"))), 130)
     : "白底或浅色底，圆角卡片，大留白，真实办公截图质感，蓝紫点缀，文字大而清楚。";
   const refPrefix = ctx.styleRefName
-    ? `请根据上传的参考图（${ctx.styleRefName}），综合参考产品界面层级、品牌色、截图质感和视觉密度；不要复制参考图里的旧标题和示例文案。`
+    ? `请根据上传的参考图（${ctx.styleRefName}），综合参考产品界面层级、品牌色、截图质感和视觉密度；参考图里的旧标题和示例文案需要按本次主题重写。`
     : "";
-  const productLine = ctx.product ? `产品/应用：${intent.productName}，只在流程或界面里自然出现。` : "产品表达以真实办公流程和界面结果为主。";
-  const promptBody = cleanImagePlanningWords(`${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine} ${task.layout}；${task.visual}；${contentCue}把待处理资料、执行动作、可复用结果放进界面、文件、数据卡片或桌面物件里，不能照抄用户输入。画面文字只放大标题「${headline}」和一句短副标题，最多2个具体功能标签，例如“自动归类”“字段识别”“报告可用”。】`);
+  const relationLine = imageRelationContext(ctx, item);
+  const productLine = ctx.product
+    ? `主产品：${intent.productName}，只在流程或界面里自然出现。${relationLine ? relationLine : "如果本次创作内容没有参照对象，就按真实办公流程表达。"}`
+    : "产品表达以真实办公流程和界面结果为主。";
+  const promptBody = cleanImagePlanningWords(`${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine} ${task.layout}；${task.visual}；${contentCue}把待处理资料、执行动作、可复用结果放进界面、文件、数据卡片或桌面物件里，按本次主题重写成真实资料、动作和结果。测评或对比主题用适合谁、不适合谁、任务边界和证据卡表达判断。画面文字只放大标题「${headline}」和一句短副标题，最多2个具体功能标签，例如“自动归类”“字段识别”“报告可用”。】`);
   return {
     title,
     ui: item?.ui !== false,
@@ -1163,6 +1224,7 @@ ${productRelationLine(rel)}
 
 每条 prompt 控制在 160-260 字，说清：版式、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。只保留1个大标题和1句短副标题，最多2个小标签。
 画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
+测评、对比或工具选择类选题只能写适合谁、不适合谁、任务边界、证据和组合方式，不要生成分数、星级、排行榜、打分表或评分卡。
 内部分类词只用于你理解结构，不要出现在最终 prompt 或画面文字里；最终负面约束只能使用指定的短句，不要额外扩写。
 
 ${xhsGuardPrompt()}

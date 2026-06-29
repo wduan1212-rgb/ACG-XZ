@@ -193,7 +193,7 @@ export const PRODUCT_CATALOG_SEED = [
     tutorialAngles: ["AI 办公助手怎么帮人少做重复整理", "资料整理类工具到底看哪些指标", "办公 AI 适合单人还是团队"],
     comparisonAngles: ["和 DuMate 的桌面执行能力对比", "和 Manus 的 Web 任务交付对比", "和 Obsidian 的知识沉淀对比"],
     blogAngles: ["办公 AI 不该只比聊天质量", "真正要测的是交付物和权限边界", "同类工具适合做横向测评选题"],
-    visualAngles: ["工具能力表格", "办公任务前后对比", "多产品评分卡"],
+    visualAngles: ["工具能力表格", "办公任务前后对比", "多产品边界对照卡"],
     competitors: ["dumate", "manus", "obsidian"],
     toneRule: "作为未深调研竞品使用时必须克制：只做同类框架对比，不编造具体未确认功能。",
     needsResearch: true,
