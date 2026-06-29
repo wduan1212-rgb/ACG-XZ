@@ -69,7 +69,7 @@ export function renderCopyPage(root, p) {
   }, "生成中…"));
 
   $("#ccTitleDice", root).addEventListener("click", e => withLoading(e.currentTarget, async () => {
-    const t = await AI.randomTitle({ topic: p.topic, account: acc });
+    const t = await AI.randomTitle({ topic: p.topic, account: acc, product: productById(p.artifacts.script.productId || "dumate") });
     C.title = t; $("#ccTitle", root).value = t; save("productions");
     toast("已随机标题");
   }, "…"));

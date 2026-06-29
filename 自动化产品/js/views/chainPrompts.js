@@ -2,7 +2,7 @@
 
 import { $, $$, esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { save, accountById } from "../core/store.js";
+import { save, accountById, productById } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { setStage } from "../domain/productions.js";
 import { toast, withLoading } from "../ui/components.js";
@@ -63,7 +63,7 @@ export function renderPromptsPage(root, p) {
   $("#cpGen", root).addEventListener("click", e => withLoading(e.currentTarget, async () => {
     const shots = p.artifacts.script.shots || [];
     if (!shots.length) { toast("先回脚本页生成脚本"); return; }
-    const res = await AI.generatePrompts({ shots, duration: 30, account: acc });
+    const res = await AI.generatePrompts({ shots, duration: 30, account: acc, product: productById(p.artifacts.script.productId || "dumate") });
     p.artifacts.prompts = res.prompts || [];
     save("productions");
     renderPromptsPage(root, p);

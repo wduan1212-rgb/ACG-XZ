@@ -397,10 +397,10 @@ async function draftOne(p, batch) {
     p.artifacts.script.productId = productId;
     const contentOverride = ((batch.accountContents && batch.accountContents[acc.id]) || batch.content || "").trim();
     let topic = contentOverride || (batch.topicMode === "random" ? "" : batch.topic);
-    if (!topic) topic = p.topic || await AI.randomPick({ kind: "topic", account: acc });
+    const product = productById(productId);
+    if (!topic) topic = p.topic || await AI.randomPick({ kind: "topic", account: acc, product });
     p.topic = topic;
     const style = acc.styleProfile || acc.lockedStyle || batch.style || "";
-    const product = productById(productId);
 
     const sres = material
       ? await AI.generateMaterialScript({ topic, account: acc, style, product })

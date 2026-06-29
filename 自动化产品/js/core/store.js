@@ -3,6 +3,7 @@
 import { db } from "./db.js";
 import { debounce, uid } from "./util.js";
 import * as remote from "./remote.js";
+import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js";
 
 export const state = {
   role: null,                 // 当前登录成员的角色："admin" | "editor" | "supplier" | null
@@ -56,22 +57,21 @@ export function off(evt, fn) { listeners[evt] = (listeners[evt] || []).filter(f 
 export function emit(evt, payload) { (listeners[evt] || []).forEach(f => { try { f(payload); } catch (e) { console.error("[store]", evt, e); } }); }
 
 function defaultProducts() {
-  return [{
-    id: "dumate",
-    name: "Dumate / 百度搭子",
-    shortName: "Dumate",
-    category: "办公效率 AI Agent",
-    brief: "桌面端 AI Agent，可理解一句话指令并在本地沙箱里自动整理文件、转换格式、提取信息、分析数据、生成汇报和操作网页流程。",
-    toneRule: "可信、理性、有梗、像真实用户经验分享；不要硬广，不要强 CTA，不要反复喊下载。",
-    updatedAt: Date.now()
-  }];
+  return mergeProductCatalog([]);
 }
 
 async function ensureProductsSeed() {
-  if (state.products.length) return;
-  state.products = defaultProducts();
-  await db.replaceAll("products", JSON.parse(JSON.stringify(state.products))).catch(() => null);
-  await db.metaSet("products", JSON.parse(JSON.stringify(state.products))).catch(() => null);
+  const before = JSON.stringify((state.products || []).map(p => ({ id: p.id, owner: p.owner, name: p.name, shortName: p.shortName, category: p.category })));
+  state.products = state.products.length ? mergeProductCatalog(state.products) : defaultProducts();
+  const after = JSON.stringify((state.products || []).map(p => ({ id: p.id, owner: p.owner, name: p.name, shortName: p.shortName, category: p.category })));
+  const seeded = before !== after;
+  const currentVersion = await db.metaGet("productCatalogVersion");
+  if (seeded || currentVersion !== PRODUCT_CATALOG_VERSION) {
+    await db.replaceAll("products", JSON.parse(JSON.stringify(state.products))).catch(() => null);
+    await db.metaSet("products", JSON.parse(JSON.stringify(state.products))).catch(() => null);
+    await db.metaSet("productCatalogVersion", PRODUCT_CATALOG_VERSION).catch(() => null);
+    if (remote.isOn()) remote.putCollection("products", JSON.parse(JSON.stringify(state.products)));
+  }
 }
 
 /* ---- 持久化：标脏集合，防抖落盘 ---- */

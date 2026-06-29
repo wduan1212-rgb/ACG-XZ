@@ -334,7 +334,7 @@ export const settingsView = {
           accounts: state.accounts, productions: state.productions,
           assets: state.assets.map(a => ({ ...a })),
           sessions: state.sessions, batches: state.batches, jobs: state.jobs,
-          apiKeys: state.apiKeys, ui: state.ui
+          products: state.products, apiKeys: state.apiKeys, ui: state.ui
         };
         downloadBlob(`dumate-studio-backup-${Date.now()}.json`, new Blob([JSON.stringify(snap, null, 2)], { type: "application/json" }));
         toast("已导出数据快照");
@@ -346,7 +346,7 @@ export const settingsView = {
           if (!snap.accounts) throw new Error("不是有效的备份文件");
           const ok = await confirmModal({ title: "导入将覆盖当前数据，继续？", body: "建议先导出一份当前数据。", danger: true, okText: "覆盖导入" });
           if (!ok) return;
-          ["members", "accounts", "productions", "assets", "sessions", "batches", "jobs", "apiKeys"].forEach(k => { if (snap[k]) state[k] = snap[k]; });
+          ["members", "accounts", "productions", "assets", "sessions", "batches", "jobs", "products", "apiKeys"].forEach(k => { if (snap[k]) state[k] = snap[k]; });
           if (snap.ui) Object.assign(state.ui, snap.ui);
           await persistNow();
           location.reload();

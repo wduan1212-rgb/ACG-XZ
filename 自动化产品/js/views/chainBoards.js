@@ -666,7 +666,7 @@ export function renderSlotsPage(root, p, isImg) {
             assetId: (A.items[i] || {}).assetId || null, status: (A.items[i] || {}).assetId ? "done" : "idle"
           }));
         } else {
-          const res = await AI.generateStoryboardPrompts({ shots, account: acc, style: p.artifacts.script.style, sharedRefName: sharedRefs.map(x => x.name).join("、") });
+          const res = await AI.generateStoryboardPrompts({ shots, account: acc, style: p.artifacts.script.style, sharedRefName: sharedRefs.map(x => x.name).join("、"), product: productById(p.artifacts.script.productId || "dumate") });
           A.items = shots.map((s, i) => ({
             title: s.idea || `分镜${i + 1}`, visual: s.visual || "",
             prompt: (res.shots[i] || {}).prompt || AI.fallbackStoryboardPrompt(s, acc, p.artifacts.script.style, sharedRefs.map(x => x.name).join("、")),
@@ -836,7 +836,7 @@ export function renderSlotsPage(root, p, isImg) {
     S.productId = $("#imgProduct", root)?.value || S.productId || "dumate";
     const selectedProduct = productById(S.productId);
     if (!brief) {
-      const picked = await AI.randomPick({ kind: "topic", account: acc });
+      const picked = await AI.randomPick({ kind: "topic", account: acc, product: selectedProduct });
       brief = `${picked}：围绕真实使用麻烦、具体操作动作、前后变化、适合人群和一个可复制的小技巧，拆成 ${count} 张图卡讲清楚。`;
       const input = $("#imgBrief", root); if (input) input.value = brief;
       toast(AI.sourceNote("已随机生成详细创作内容"));

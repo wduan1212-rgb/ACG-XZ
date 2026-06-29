@@ -1,6 +1,6 @@
 /* 链路 · 分镜工坊（素材号专属一体节点）：
    按场景合并的「分镜单元」——一个单元 = 一条 10-15s 多镜头视频片段
-   含 Dumate logo / 产品界面 → 【全能参考】：自动附上固定的 logo + 界面图作参考（替代旧的图生视频）
+   含产品 logo / 产品界面 → 【全能参考】：自动附上固定的 logo + 界面图作参考（替代旧的图生视频）
    纯场景 → 【文生视频】：直接文生视频，不带参考
    顶部「全能参考素材」(logo / 界面图，所有全能参考单元共用) + 口播音频上传 + 一键复制所有口播 */
 
@@ -607,7 +607,7 @@ export function renderWorkshopPage(root, p) {
     }));
     $("#wsTopic", root)?.addEventListener("input", e => { p.topic = sanitizeXhsText(e.target.value.trim()); save("productions"); });
     $("#wsDice", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
-      const topic = sanitizeXhsText(await AI.randomPick({ kind: "topic", account: acc }));
+      const topic = sanitizeXhsText(await AI.randomPick({ kind: "topic", account: acc, product: productById(p.artifacts.script.productId || "dumate") }));
       p.topic = topic;
       const input = $("#wsTopic", root); if (input) input.value = topic;
       save("productions");
@@ -616,15 +616,15 @@ export function renderWorkshopPage(root, p) {
     $("#wsProduct", root)?.addEventListener("change", e => { p.artifacts.script.productId = e.target.value || "dumate"; save("productions"); });
     $("#wsDraft", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       let topic = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || "").trim());
+      const selectedProduct = productById(p.artifacts.script.productId || "dumate");
       if (!topic) {
-        const picked = sanitizeXhsText(await AI.randomPick({ kind: "topic", account: acc }));
+        const picked = sanitizeXhsText(await AI.randomPick({ kind: "topic", account: acc, product: selectedProduct }));
         topic = `${picked}：从真实使用痛点、具体操作过程、结果对比和适用人群四个角度展开，避免空泛介绍。`;
         p.topic = topic;
         const input = $("#wsTopic", root); if (input) input.value = topic;
         toast(AI.sourceNote("已随机生成详细创作内容"));
       }
       p.topic = sanitizeXhsText(topic);
-      const selectedProduct = productById(p.artifacts.script.productId || "dumate");
       const style = p.artifacts.script.style || acc?.styleProfile || acc?.lockedStyle || "";
       const res = isMaterial(p)
         ? await AI.generateMaterialScript({ topic, account: acc, style, product: selectedProduct })

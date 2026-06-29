@@ -237,7 +237,7 @@ export function renderScriptPage(root, p) {
   });
   $("#csTopicDice", root).addEventListener("click", async e => {
     await withLoading(e.currentTarget, async () => {
-      const t = await AI.randomPick({ kind: "topic", account: acc });
+      const t = await AI.randomPick({ kind: "topic", account: acc, product: productById((productSelect && productSelect.value) || A.productId || "dumate") });
       $("#csTopic", root).value = t; p.topic = t; save("productions");
       toast("已随机主题：" + t);
     }, "…");

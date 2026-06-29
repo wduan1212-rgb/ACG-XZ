@@ -7,6 +7,8 @@ import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
 import { TAG_POOL } from "../domain/accounts.js";
 import { getCreativeMemoryContext } from "../domain/analytics.js";
+import { state } from "../core/store.js";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js";
 
 /* 选题"和当下结合、自然安利"指引（脚本类共用）：避免孤立自嗨、硬塞产品名。
    注：模型不能真实联网，这里用的是它知识里的常青热点/话题方向，不保证是今天的最新事件。 */
@@ -14,8 +16,8 @@ const TOPICAL_HOOK = `
 
 【选题要和当下结合，别自嗨式介绍产品】
 - 开头不要孤立地介绍产品。先用一个"当下真实在发生的点"切入：最近这个领域大家都在聊的现象/热度方向（如 AI Agent 集中爆发、各类工具刷屏、打工人与自媒体人的效率焦虑、降本增效、副业与内容内卷等，结合你知识里该领域近期的热点话题），或一个戳中人的真实痛点、反常识结论。把这个钩子和本期主题自然焊在一起，让人第一秒就觉得"说的就是我现在的事"。
-- 百度搭子（Dumate）是"解决方案"，要自然带出、不要硬塞：先把痛点/场景讲透、讲到观众点头，再顺势引出"后来我是怎么用百度搭子解决的"，像真人跟朋友安利。全篇提到产品名 1-2 次即可，不要每句都念，更不要广告腔。
-- 引出后落到 Dumate 能真正应用的具体办公场景（贴合本期主题那一类动作：文件整理 / 格式转换 / 信息提取 / 数据分析出报告 / 自动操作网页等），说清"它具体怎么做、帮你省下了什么"。
+- 本次产品是"解决方案"之一，要自然带出、不要硬塞：先把痛点/场景讲透、讲到观众点头，再顺势引出"后来我是怎么用这个工具解决的"，像真人跟朋友分享。全篇提到产品名 1-2 次即可，不要每句都念，更不要广告腔。
+- 引出后落到本次产品能真正应用的具体场景，说清"它具体怎么做、帮你省下了什么"，不要把不同产品的能力混在一起。
 - 全程利他、有信息量、有钩子，别空喊口号或自夸——没人想看一个只会王婆卖瓜的视频。`;
 
 /* 小红书/视频号"真人写"文案语气指引（去 AI 腔、有含金量） */
@@ -32,10 +34,10 @@ const HUMAN_COPY_VOICE = `
 
 const XHS_COPY_STYLE = `
 
-【Dumate 小红书文案参考风格】
+【AI 博主小红书文案参考风格】
 - 标题优先用：对比选择型、结论前置型、反转吐槽型、清单合集型。像"打工人别再手动整理文件了""说实话 这个桌面 AI 比想象中能干""3步把乱文件夹收拾干净"这类真实用户标题。
-- 选题和标题不必每次硬带产品名。可以借同类高流量词切入，例如 AI Agent、桌面智能体、AI办公、效率工具、Codex、WorkBuddy、DeepSeek，再在正文自然落到本次产品。
-- 标签组合用「品类词 + 场景词 + 流量词 + 品牌词」：例如 #AI工具 #桌面智能体 #效率工具 #自动化办公 #打工人效率 #Dumate。不要只写品牌词。
+- 选题和标题不必每次硬带产品名。可以借同类高流量词切入，例如 AI Agent、桌面智能体、AI办公、效率工具、无代码应用、Codex、WorkBuddy、DeepSeek，再在正文自然落到本次产品。
+- 标签组合用「品类词 + 场景词 + 流量词 + 品牌词」：例如 #AI工具 #桌面智能体 #效率工具 #自动化办公 #打工人效率。不要只写品牌词。
 - 正文不要把创作内容原文当开头。先提炼一个真实痛点或反常识体验，再分点讲清具体方法。
 - 口吻像朋友推荐：可以写"我也是被安利的""本来没抱期望""试了一圈才发现""说实话"；优点缺点都可以说一点，增强真实感。
 - 少呼吁、少广告，不要"快去下载""立刻体验"；结尾用适用场景、避坑提醒或评论问题自然收束。
@@ -163,14 +165,99 @@ function fallbackXhsCopy({ intent, shots = [], account = {}, kind = "image" }) {
   return `${opener}\n\n${points.join("\n")}\n\n${ending}\n\n${tags}`;
 }
 
+function allProductsForAI() {
+  return (state.products && state.products.length) ? state.products : PRODUCT_CATALOG_SEED;
+}
+
+function isDumateProduct(product) {
+  const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""}`;
+  return !product || /dumate|百度搭子|搭子/i.test(text);
+}
+
+function baseProductFacts(product) {
+  return isDumateProduct(product) ? DUMATE_BRIEF + "\n\n" : "";
+}
+
+function productListLine(list = []) {
+  return list.map(p => `${p.shortName || p.name}（${p.category || "同类工具"}）`).join("、");
+}
+
+function productAliases(product) {
+  return [product?.name, product?.shortName, product?.id]
+    .filter(Boolean)
+    .flatMap(x => String(x).split(/[\/｜|、\s]+/))
+    .map(x => x.trim())
+    .filter(x => x && x.length >= 2);
+}
+
+function currentProductLine(product) {
+  const p = product || {};
+  const aliases = productAliases(p).filter(x => !/^[a-z0-9_-]+$/i.test(x) || /dumate|codex|cursor|manus|trae|windsurf|openclaw|obsidian|workbuddy/i.test(x));
+  return `当前产品已锁定：${p.name || "本次产品"}${p.shortName ? `（短名：${p.shortName}）` : ""}。账号名、旧主题或历史素材里若出现其他产品名，只能当作旧数据，不得改写成本次产品。${aliases.length ? `选题可以不硬带产品名，但如果出现产品名，必须优先使用：${aliases.join(" / ")}。` : ""}`;
+}
+
+function productTopicFallback(product, rel = []) {
+  const p = product || {};
+  const name = p.shortName || p.name || "本次产品";
+  const source = [
+    ...(p.tutorialAngles || []),
+    ...(p.blogAngles || []),
+    ...(p.comparisonAngles || [])
+  ].filter(Boolean);
+  const base = source[(name.length + source.length) % Math.max(1, source.length)] || "真实使用流程复盘";
+  if (/对比|分工|区别/.test(base) && rel.length) {
+    const other = rel[0]?.shortName || rel[0]?.name || "同类工具";
+    return cleanText(`${name}和${other}怎么分工`).slice(0, 18);
+  }
+  return cleanText(`${name}${base}`.replace(/百度秒哒秒哒|秒哒秒哒/g, "秒哒")).slice(0, 18);
+}
+
+function enforceCurrentProductTopic(topic, product, rel = []) {
+  const t = cleanText(topic || "").replace(/[。.\n"'`]/g, "").slice(0, 18);
+  if (!product) return t;
+  const isMiaoda = /miaoda|百度秒哒|秒哒/i.test(`${product.id || ""} ${product.name || ""} ${product.shortName || ""}`);
+  const isDumate = isDumateProduct(product);
+  const wronglyDumate = !isDumate && /Dumate|百度搭子|搭子/.test(t);
+  const wronglyMiaoda = !isMiaoda && /百度秒哒|秒哒/.test(t);
+  const miaodaCapabilityLeak = isMiaoda
+    && /文件整理|乱文件|桌面|会议数据|会议纪要|合同|PDF|Word|Excel|归档|格式转换|本地文件/.test(t)
+    && !/应用|页面|H5|原型|小工具|CRM|后台|数据表|报名页/.test(t);
+  if (wronglyDumate || wronglyMiaoda || miaodaCapabilityLeak) return productTopicFallback(product, rel);
+  return t || productTopicFallback(product, rel);
+}
+
 function productBrief(product) {
   const p = product || {};
   const name = p.name || "Dumate / 百度搭子";
+  const rel = relatedProducts(p, allProductsForAI(), 5);
+  const ownerLine = p.owner === "ours" ? "我们的产品" : p.owner === "competitor" ? "竞品/同类产品" : "产品";
+  const featureLine = (p.coreFeatures || []).slice(0, 8).join(" / ");
+  const tutorialLine = (p.tutorialAngles || []).slice(0, 5).join("；");
+  const comparisonLine = (p.comparisonAngles || []).slice(0, 5).join("；");
+  const blogLine = (p.blogAngles || []).slice(0, 5).join("；");
   return `【本次宣传产品】${name}
+产品身份：${ownerLine}
 产品类别：${p.category || "办公效率 AI Agent"}
 核心信息：${p.brief || "桌面端 AI Agent，可理解一句话指令并自动完成文件整理、格式转换、信息提取、数据分析、汇报生成和网页自动操作。"}
+核心能力：${featureLine || "按产品事实展开，不编造未确认能力。"}
+教程选题可用角度：${tutorialLine || "围绕真实使用流程和可复用方法展开。"}
+对比/测评可用角度：${comparisonLine || "可与同类工具做场景、能力边界、适用人群对比。"}
+AI 博主视角：${blogLine || "像真实创作者做工具观察，不只硬讲单个产品。"}
+可参考同类产品：${productListLine(rel) || "无"}
 表达要求：${p.toneRule || "可信、理性、有梗、像真实用户经验分享；不要硬广，不要强 CTA。"}
-脚本和提示词里必须围绕这个产品写，不要默认只宣传 Dumate 以外的信息。`;
+脚本和提示词里必须围绕本次产品写；可以引用同类产品做对比、合集或场景分工，但不能把竞品能力误写成本次产品能力。`;
+}
+
+function topicalHook(product) {
+  return `${TOPICAL_HOOK}
+
+【产品数据库选题意识】
+- 你是 AI 博主/工具观察者，不是单一产品说明书。选题可以是教程、对比、测评、场景清单或工具分工。
+- 本次主产品优先讲清真实能力；同类产品只作为对照、背景或合集视角，不要喧宾夺主。
+- 如果做教程，既可以只讲本次产品的完整流程，也可以提到"这一类工具怎么选/怎么分工"，再自然落到本次产品。
+- 如果做图文，画面信息要像真实博主整理出来的经验：对比表、流程卡、工具分工图、评分卡、真实桌面场景都可以用。
+
+${productBrief(product)}`;
 }
 
 function videoNegative({ hasNarrationAudio = true } = {}) {
@@ -639,14 +726,14 @@ export const AI = {
 【画面 visual】非常具体：空间环境、产品界面里出现的具体文字与数据、界面动效、配色、光线。不要写运镜（运镜留给视频提示词阶段）。画面中不要安排任何叠加文字/字幕。${style ? `整体画面风格：${style}。` : ""}
 
 【每镜头两个关键标记】
-- ui：布尔。该镜头画面是否包含"产品界面 / Dumate logo / 需要清晰呈现的真实中文文字"。含这些→ui=true（后续需要分镜图参考再图生视频）；纯场景/空镜/氛围/手部特写等不含界面文字的→ui=false（后续直接文生视频，省去出图）。
+- ui：布尔。该镜头画面是否包含"产品界面 / 产品 logo / 需要清晰呈现的真实中文文字"。含这些→ui=true（后续需要分镜图参考再图生视频）；纯场景/空镜/氛围/手部特写等不含界面文字的→ui=false（后续直接文生视频，省去出图）。
 - scene：整数场景编号。连续几个镜头若发生在同一场景、动作连贯，给同一个 scene 编号（后续会合成一条多镜头视频）；切换场景就换新编号。
 
 只输出 JSON：{"title":"标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"画外音口播稿(可直接念，1句短句)","ui":true,"scene":1}]}，8-10 个镜头。`;
     try {
       const content = await llm([
-        { role: "system", content: DUMATE_BRIEF + "\n\n" + productBrief(product) + "\n\n" + sys },
-        { role: "user", content: `账号定位：${account.position}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n主题：${topic}\n先用当下热点/真实痛点切入并和主题焊在一起，再自然安利产品（不硬塞，全篇自然提到 1-2 次即可）。口播要有信息量、利他、理性可信，可以有梗但不油，结尾不要任何引导关注/下载的话。${TOPICAL_HOOK}${this.memoryLine(account)}` }
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys },
+        { role: "user", content: `账号定位：${account.position}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n主题：${topic}\n先用当下热点/真实痛点切入并和主题焊在一起，再自然安利产品（不硬塞，全篇自然提到 1-2 次即可）。口播要有信息量、利他、理性可信，可以有梗但不油，结尾不要任何引导关注/下载的话。${topicalHook(product)}${this.memoryLine(account)}` }
       ], { json: true, temperature: 0.85 });
       const d = parseJSONLoose(content);
       if (!d.shots || d.shots.length < 8) throw new Error("模型未返回足够镜头");
@@ -657,7 +744,7 @@ export const AI = {
       })) });
     } catch (e) {
       this._fb(e);
-      return this._mockMaterialScript({ topic, account });
+      return this._mockMaterialScript({ topic, account, product });
     }
   },
 
@@ -708,7 +795,7 @@ export const AI = {
 - 画面不要单调重复：不能每段都写电脑屏幕/文件夹/界面。素材号优先用手部动作、桌面物件、文件拟物化流转、数据卡片、空间光线变化、结果物料展示来丰富画面，不要反复安排无关出镜人。真人/数字人账号第一段要让固定博主正脸出镜并参考角色图，后续段落尽量不出现出镜人；若必须有人，只出现一次手部、背影、肩部或过肩轮廓，不写脸部特写。整体像一个完整小短篇，而不是连续录屏。
 - 每句口播要有情绪色彩：焦虑、吐槽、松一口气、轻微惊喜、理性确认都要通过停顿、手部动作、镜头节奏和环境变化表达，避免机械 AI 播报感。
 - 画面整体更明亮：白天自然光、浅色办公空间、蓝白界面色块、干净桌面，少用压抑暗色；痛点可以冷一点，但不要脏乱。
-- 【全能参考】单元：画面会出现 Dumate 的 logo 与产品界面（系统会自动附上固定的 logo 图与界面参考图作为参考），要写清界面/桌面如何出现与变化；但界面上的文字一律做模糊处理、不要求可读（品牌一致由参考图保证）。
+- 【全能参考】单元：画面会出现本次产品的产品界面与品牌视觉（系统会自动附上固定参考图作为参考），要写清界面/桌面如何出现与变化；但界面上的文字一律做模糊处理、不要求可读（品牌一致由参考图保证）。
 - 【文生视频】单元：纯场景/空镜/实物/手部/环境，不出现 logo、不出现产品界面。
 - 每个 videoPrompt 只输出最终视频生成指令，不要写“参考脚本如下 / 账号定位参考 / 主体设定 / 镜头依据”等解释给人的文字，不要额外发明声音标签。
 - 真人/数字人账号若已有统一角色参考图，第一段固定博主可以正脸出镜并用参考图锁定同一张脸；非第一段不要写固定博主，不要写无关出镜人的脸部特写。
@@ -718,7 +805,7 @@ export const AI = {
 只输出 JSON：{"units":[{"videoPrompt":"镜头…完整分段提示词"}]}，顺序与单元一致，数量等于单元数。`;
     try {
       const content = await llm([
-        { role: "system", content: DUMATE_BRIEF + "\n\n" + productBrief(product) + "\n\n" + sys },
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys },
         { role: "user", content: `账号定位：${account.position}\n共 ${units.length} 个单元：\n${unitText}` }
       ], { json: true, temperature: 0.75 });
       const d = parseJSONLoose(content);
@@ -726,30 +813,32 @@ export const AI = {
       return this._ok({ units: units.map((u, i) => {
         const r = d.units[i] || {};
         const unitOpts = { account, hasNarrationAudio, hasVoiceRef, hasCharacterRef, hasSceneRef, needsCharacter: account?.subType === "数字人" && i === 0 };
-        return { imagePrompt: "", videoPrompt: this._ensureRichVideoPrompt(cleanText((r.videoPrompt || "").trim()), u, shots, style, NEG, unitOpts) };
+        return { imagePrompt: "", videoPrompt: this._ensureRichVideoPrompt(cleanText((r.videoPrompt || "").trim()), u, shots, style, NEG, { ...unitOpts, product }) };
       }) });
     } catch (e) {
       this._fb(e);
       await delay(300);
-      return { units: units.map((u, i) => ({ imagePrompt: "", videoPrompt: this._fbUnitVideo(u, shots, style, NEG, { account, hasNarrationAudio, hasVoiceRef, hasCharacterRef, hasSceneRef, needsCharacter: account?.subType === "数字人" && i === 0 }) })) };
+      return { units: units.map((u, i) => ({ imagePrompt: "", videoPrompt: this._fbUnitVideo(u, shots, style, NEG, { account, product, hasNarrationAudio, hasVoiceRef, hasCharacterRef, hasSceneRef, needsCharacter: account?.subType === "数字人" && i === 0 }) })) };
     }
   },
-  _fbUnitImage(u, shots, style) {
+  _fbUnitImage(u, shots, style, product = null) {
     const us = (u.shotIndexes || []).map(k => shots[k]).filter(Boolean);
-    const v = us.map(s => s.visual || s.idea || "").filter(Boolean)[0] || "Dumate 产品界面与整洁桌面";
+    const productName = product?.shortName || product?.name || "本次产品";
+    const v = us.map(s => s.visual || s.idea || "").filter(Boolean)[0] || `${productName}产品界面与整洁桌面`;
     const lines = us.map((s, i) => `画面依据${i + 1}：${s.visual || s.idea || ""}`).join("；");
-    return cleanText(`9:16竖版分镜首帧定帧，真实办公产品广告质感，${style || "白底极简、科技蓝紫渐变(#3f6bff→#9a45ff)、圆角卡片UI、大留白、干净现代办公感"}。构图为桌面/电脑屏幕/人物手部或办公环境的稳定中近景，主体关系清晰：屏幕占画面主要视觉中心，前景可见键盘、鼠标、咖啡杯或文件夹等真实办公物件，背景保持浅景深虚化。光线为正面偏侧的明亮柔光，冷暖适中，屏幕区域清晰但不刺眼，桌面材质干净。核心画面：${v}。${lines}。Dumate 产品界面必须清晰呈现，界面只保留少量大字号中文，例如「文件整理」「批量转换」「数据分析」「生成报告」等可读模块，Dumate logo 位于界面右上角或窗口顶部，不出现其它品牌。画面不要字幕、不要花字、不要二维码、不要乱码、不要密集小字、不要多余下载按钮。`);
+    return cleanText(`9:16竖版分镜首帧定帧，真实办公产品广告质感，${style || "白底极简、科技蓝紫渐变(#3f6bff→#9a45ff)、圆角卡片UI、大留白、干净现代办公感"}。画面结构为桌面/电脑屏幕/人物手部或办公环境的稳定中近景，主体关系清晰：屏幕占画面主要视觉中心，前景可见键盘、鼠标、咖啡杯或文件夹等真实办公物件，背景保持浅景深虚化。光线为正面偏侧的明亮柔光，冷暖适中，屏幕区域清晰但不刺眼，桌面材质干净。核心画面：${v}。${lines}。${productName}产品界面必须清晰呈现，界面只保留少量大字号中文，例如「整理资料」「生成页面」「数据分析」「生成报告」等可读模块。画面不要字幕、不要花字、不要二维码、不要乱码、不要密集小字、不要多余下载按钮。`);
   },
   _fbUnitVideo(u, shots, style, NEG, opts = {}) {
     const us = (u.shotIndexes || []).map(k => shots[k]).filter(Boolean);
     const account = opts.account || {};
+    const productName = opts.product?.shortName || opts.product?.name || "本次产品";
     const hasNarrationAudio = !!opts.hasNarrationAudio;
     const hasVoiceRef = !!opts.hasVoiceRef;
     const hasCharacterRef = !!opts.hasCharacterRef;
     const dur = Math.min(15, Math.ceil(u.dur || 4));
     const split = timeBlocksForDuration(dur);
-    const title = us[0]?.idea || (u.needsImage ? "Dumate 自动执行任务" : "办公效率痛点转折");
-    const firstVisual = us.map(s => s.visual || s.idea || "").filter(Boolean)[0] || "真实电脑桌面、浏览器窗口、文件夹和 Dumate 工作台界面";
+    const title = us[0]?.idea || (u.needsImage ? `${productName}自动执行任务` : "办公效率痛点转折");
+    const firstVisual = us.map(s => s.visual || s.idea || "").filter(Boolean)[0] || `真实电脑桌面、浏览器窗口、文件夹和${productName}工作台界面`;
     const setupLine = u.needsImage
       ? "画面围绕真实电脑桌面、产品工作台界面、文件夹/表格/报告卡片、鼠标轨迹和少量手部操作展开；界面参考固定产品界面图保持品牌色和布局一致，不主动添加额外 logo。"
       : "画面围绕真实办公桌面、电脑屏幕、手部操作、浏览器窗口、文件夹、便签与少量办公物件展开；不出现产品 logo 和清晰产品界面。";
@@ -775,7 +864,7 @@ export const AI = {
       const narration = !hasNarrationAudio ? (narrationParts[i] || "") : "";
       const refLine = u.needsImage
         ? "产品界面由参考图锁定一致性，画面里只保留模块色块、窗口轮廓、鼠标轨迹和动效节奏；不要在屏幕任何位置新增 logo，所有具体文字都做模糊处理，避免乱码和可读小字。"
-        : "这是纯场景文生视频，不出现 Dumate logo、不出现清晰产品界面，重点放在办公桌面、手部动作、屏幕光、文件流转和情绪变化。";
+        : "这是纯场景文生视频，不出现产品 logo、不出现清晰产品界面，重点放在办公桌面、手部动作、屏幕光、文件流转和情绪变化。";
       const transitionLine = needsCharacter
         ? "可以用手部经过镜头、窗光变化、文件卡片滑入、角色视线转移或桌面物件遮挡完成衔接"
         : "可以用手部经过镜头、窗光变化、文件卡片滑入、屏幕反光、鼠标轨迹或桌面物件遮挡完成衔接";
@@ -825,12 +914,13 @@ export const AI = {
   },
 
   /* ---------- 素材号：逐镜头视频提示词（旧版，保留兼容） ---------- */
-  async generateShotVideoPrompts({ shots, perShot = [], account, style = "" }) {
+  async generateShotVideoPrompts({ shots, perShot = [], account, style = "", product = null }) {
     const { MATERIAL_VIDEO_NEG } = await import("./prompts.js");
-    const fallback = (s, i) => cleanText(`这是一条 Dumate 产品视频的单镜头素材，9:16 竖屏，时长${Math.ceil(perShot[i]?.dur || 4)}秒，场景/产品界面混剪，纯画面无人声。画面内容：${s.visual || s.idea || "产品界面演示"}。镜头语言：${i % 2 ? "缓推" : "横移"}运镜、干净构图、明亮柔光${style ? `；整体风格：${style}` : ""}。${MATERIAL_VIDEO_NEG}`);
+    const productName = product?.shortName || product?.name || "本次产品";
+    const fallback = (s, i) => cleanText(`这是一条${productName}产品视频的单镜头素材，9:16 竖屏，时长${Math.ceil(perShot[i]?.dur || 4)}秒，场景/产品界面混剪，纯画面无人声。画面内容：${s.visual || s.idea || "产品界面演示"}。镜头语言：${i % 2 ? "缓推" : "横移"}运镜、干净画面结构、明亮柔光${style ? `；整体风格：${style}` : ""}。${MATERIAL_VIDEO_NEG}`);
     try {
       const content = await llm([
-        { role: "system", content: DUMATE_BRIEF + `\n\n你为素材混剪视频逐镜头生成视频提示词：每个镜头一条独立提示词，对应生成一段独立的视频素材片段。每条开头写明"9:16竖屏，时长N秒，场景/产品界面混剪，纯画面无人声"。画面具体到景别/机位运镜/界面文字/动效/光线，禁止抽象词。每条结尾都必须带上这段负面提示词："${MATERIAL_VIDEO_NEG}"。只输出 JSON：{"shots":[{"prompt":"..."}]}，数量与镜头数一致。` },
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + `\n\n你为素材混剪视频逐镜头生成视频提示词：每个镜头一条独立提示词，对应生成一段独立的视频素材片段。每条开头写明"9:16竖屏，时长N秒，场景/产品界面混剪，纯画面无人声"。画面具体到景别/机位运镜/界面文字/动效/光线，禁止抽象词。每条结尾都必须带上这段负面提示词："${MATERIAL_VIDEO_NEG}"。只输出 JSON：{"shots":[{"prompt":"..."}]}，数量与镜头数一致。` },
         { role: "user", content: `账号定位：${account.position}\n${style ? `画面风格：${style}\n` : ""}共 ${shots.length} 个镜头（含各自时长）：\n${shots.map((s, i) => `${i + 1}. [${Math.ceil(perShot[i]?.dur || 4)}秒] ${s.visual || ""}`).join("\n")}` }
       ], { json: true, temperature: 0.6 });
       const d = parseJSONLoose(content);
@@ -844,21 +934,26 @@ export const AI = {
   },
 
   /* ---------- 灵感建议：按账号矩阵随机生成量产指令（LLM 优先，离线真随机兜底） ---------- */
-  async suggestGoals({ accounts = [] }) {
+  async suggestGoals({ accounts = [], products = null }) {
     const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+    const productList = products && products.length ? products : allProductsForAI();
+    const ours = productList.filter(p => p.owner === "ours");
+    const comps = productList.filter(p => p.owner === "competitor").slice(0, 8);
     const offline = () => {
       const tags = [...new Set(accounts.flatMap(a => a.qtags || []))];
       const t1 = pick(TOPIC_POOL), t2 = pick(TOPIC_POOL.filter(x => x !== t1)), t3 = pick(TOPIC_POOL);
+      const own = pick(ours.length ? ours : productList) || { shortName: "本次产品" };
+      const comp = pick(comps.length ? comps : productList.filter(p => p.id !== own.id)) || { shortName: "同类工具" };
       return [
-        `给${tags.length ? "所有" + pick(tags) + "标签的" : "全部"}账号做一期「${t1}」`,
-        `给图文组来一批「${t2}」，${pick(STYLE_POOL)}`,
-        `给素材号全自动出一批「${t3}」`
+        `给${tags.length ? "所有" + pick(tags) + "标签的" : "全部"}账号做「${own.shortName || own.name} ${t1}」`,
+        `给图文组做${own.shortName || own.name}和${comp.shortName || comp.name}对比`,
+        `给素材号全自动出一批「${t3}」AI博主视角`
       ];
     };
     try {
       const content = await llm([
-        { role: "system", content: `根据账号矩阵给内容量产 Agent 生成 3 条一句话指令建议。要求：主题贴合 Dumate 真实功能（文件整理/格式转换/信息提取/数据分析/办公自动化）且每次新颖不重复；指明范围（全部 / 某标签 / 图文组 / 真人 / 素材号）；每条不超过 32 字；只输出 JSON：{"suggestions":["...","...","..."]}` },
-        { role: "user", content: `账号矩阵：${JSON.stringify(accounts.map(a => ({ 名称: a.name, 分组: a.mode === "图文" ? "图文组" : a.subType === "数字人" ? "真人" : "素材", 定位: (a.position || "").slice(0, 30), 标签: a.qtags || [] })))}\n随机种子：${Math.random().toString(36).slice(2, 8)}` }
+        { role: "system", content: `根据账号矩阵和产品知识库，给内容量产 Agent 生成 3 条一句话指令建议。要求像真实 AI 博主选题：可以做教程、对比、测评、工具分工或场景清单；优先使用我们的产品，也可以引入竞品/同类产品做横向对比；主题每次新颖不重复；指明范围（全部 / 某标签 / 图文组 / 真人 / 素材号）；每条不超过 32 字；只输出 JSON：{"suggestions":["...","...","..."]}` },
+        { role: "user", content: `账号矩阵：${JSON.stringify(accounts.map(a => ({ 名称: a.name, 分组: a.mode === "图文" ? "图文组" : a.subType === "数字人" ? "真人" : "素材", 定位: (a.position || "").slice(0, 30), 标签: a.qtags || [] })))}\n产品知识库：${JSON.stringify(productList.map(p => ({ 名称: p.name, 身份: p.owner === "ours" ? "我们的产品" : "竞品", 类别: p.category, 选题角度: (p.blogAngles || p.tutorialAngles || []).slice(0, 3), 可对比: (p.comparisonAngles || []).slice(0, 2) })))}\n随机种子：${Math.random().toString(36).slice(2, 8)}` }
       ], { json: true, temperature: 1.2 });
       const d = parseJSONLoose(content);
       if (Array.isArray(d.suggestions) && d.suggestions.length >= 3) return this._ok(d.suggestions.slice(0, 3).map(s => String(s).slice(0, 40)));
@@ -883,10 +978,10 @@ export const AI = {
         : `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【真人/数字人口播】视频。成片控制在45-58秒，绝不超过60秒，拆成8-10个镜头；每镜头口播1句，尽量12-24个中文字符，单句至少能自然说3秒，不要赶。结构上有真人开场、有产品场景演示、有真人收束，但不要死板两段式。内容丰富、偏教程专业可信、理性有梗、不要信息流硬广：口播像真实经验分享，能直接念。visual 非常具体：人物动作表情、产品界面模块、运镜、界面动效、配色、光线；如果后续有统一参考图，人物外貌由参考图锁定，这里不要写五官长相。禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"口播原话","ui":true,"scene":1}]}。`);
     try {
       const content = await llm([
-        { role: "system", content: DUMATE_BRIEF + "\n\n" + productBrief(product) + "\n\n" + sys },
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys },
         { role: "user", content: image
-          ? `账号创作风格：${style || account.styleProfile || "干净可读的小红书图文风"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n共生成 ${nImg} 张图。\n${style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}主题：${topic}\n围绕本次宣传产品的真实功能延展教学，优先服从用户本次创作内容，不要强呼吁下载。${TOPICAL_HOOK}`
-          : `账号定位：${account.position}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n主题：${topic}\n目标时长：${Math.min(60, duration || 55)}秒以内，最终不超过60秒。口播宁可少一点，保证每句都能自然读完。围绕本次宣传产品的真实功能延展教学，但要先用当下热点/真实痛点切入、自然安利，不要孤立自嗨，不要强呼吁下载。${TOPICAL_HOOK}${this.memoryLine(account)}` }
+          ? `账号创作风格：${style || account.styleProfile || "干净可读的小红书图文风"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n共生成 ${nImg} 张图。\n${style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}主题：${topic}\n围绕本次宣传产品的真实功能延展教学，优先服从用户本次创作内容，不要强呼吁下载。${topicalHook(product)}`
+          : `账号定位：${account.position}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n主题：${topic}\n目标时长：${Math.min(60, duration || 55)}秒以内，最终不超过60秒。口播宁可少一点，保证每句都能自然读完。围绕本次宣传产品的真实功能延展教学，但要先用当下热点/真实痛点切入、自然安利，不要孤立自嗨，不要强呼吁下载。${topicalHook(product)}${this.memoryLine(account)}` }
       ], { json: true });
       const d = parseJSONLoose(content);
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
@@ -901,7 +996,7 @@ export const AI = {
       return this._ok({ title: cleanText(d.title) || topic, shots: cleanShots });
     } catch (e) {
       this._fb(e);
-      return this._mockScript({ topic, account, image, imageCount: nImg });
+      return this._mockScript({ topic, account, image, imageCount: nImg, product });
     }
   },
 
@@ -935,14 +1030,14 @@ export const AI = {
     return groups;
   },
 
-  async generatePrompts({ shots, duration = 30, account }) {
+  async generatePrompts({ shots, duration = 30, account, product = null }) {
     const groups = this._sceneGroups(shots || [], duration);
     const scenesText = groups.map((g, i) =>
       `【场景${i + 1}】\n  第一段(0-15秒)对应脚本镜头：\n${(g.front.length ? g.front : g.all).map((x, j) => `   镜头${j + 1} 画面：${x.visual || ""}｜口播：${x.line || ""}`).join("\n") || "   （无）"}\n  第二段(0-15秒)对应脚本镜头：\n${(g.back.length ? g.back : g.all).map((x, j) => `   镜头${j + 1} 画面：${x.visual || ""}｜口播：${x.line || ""}`).join("\n") || "   （无）"}`
     ).join("\n\n");
     try {
       const content = await llm([
-        { role: "system", content: DUMATE_BRIEF + "\n\n" + (account.subType === "无数字人" ? NO_DH_FRAMEWORK : PROMPT_FRAMEWORK) },
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + (account.subType === "无数字人" ? NO_DH_FRAMEWORK : PROMPT_FRAMEWORK) },
         { role: "user", content: `账号定位：${account.position}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n\n以下是已确定的分镜脚本，严格据此改写（每段都是独立的0-15秒视频，不要写衔接性措辞）：\n${scenesText}\n\n请为每个场景输出 segA(第一段0-15秒) 与 segB(第二段0-15秒) 完整提示词。` }
       ], { json: true, temperature: 0.6 });
       const d = parseJSONLoose(content);
@@ -956,33 +1051,35 @@ export const AI = {
       return this._ok({ prompts });
     } catch (e) {
       this._fb(e);
-      return this._mockPrompts({ groups, account });
+      return this._mockPrompts({ groups, account, product });
     }
   },
 
   /* ---------- 分镜图提示词 ---------- */
-  fallbackStoryboardPrompt(shot, account, style, sharedRefName) {
+  fallbackStoryboardPrompt(shot, account, style, sharedRefName, product = null) {
     const styleTxt = style || "白底极简、蓝紫渐变品牌色(#3f6bff 到 #9a45ff)、圆角卡片 UI、大留白、干净办公感";
     const refTxt = sharedRefName ? `统一参考「${sharedRefName}」保持品牌/角色一致；` : "";
     const v = (shot.visual || "数字人坐在办公桌前").trim();
-    return cleanText(`9:16 竖图，${styleTxt}。画面内容：${v}。镜头：中近景、固定机位、人物三分位构图；光线：正面偏侧暖色柔光；界面元素：Dumate 产品界面与 logo（logo 居右上角），界面文字精简、大字号、清晰可读；主体动作与表情：自然放松、看向镜头或界面；背景：简洁办公桌面、浅景深虚化。${refTxt}无字幕、不叠加标题花字，不要二维码、不要乱码、不要密集小字、不要 emoji。`);
+    const productName = product?.shortName || product?.name || "本次产品";
+    return cleanText(`9:16 竖图，${styleTxt}。画面内容：${v}。镜头：中近景、固定机位、人物三分位画面结构；光线：正面偏侧暖色柔光；界面元素：${productName}产品界面，界面文字精简、大字号、清晰可读；主体动作与表情：自然放松、看向镜头或界面；背景：简洁办公桌面、浅景深虚化。${refTxt}无字幕、不叠加标题花字，不要二维码、不要乱码、不要密集小字、不要 emoji。`);
   },
 
-  async generateStoryboardPrompts({ shots, account, style, sharedRefName }) {
+  async generateStoryboardPrompts({ shots, account, style, sharedRefName, product = null }) {
     const refLine = sharedRefName ? `所有分镜图统一参考「${sharedRefName}」，保持品牌/角色一致。` : "";
-    const sys = `你是 Dumate 视频分镜图设计师。脚本每个镜头对应生成一张静态分镜图(9:16竖图)的画面提示词，数量必须与脚本镜头数完全一致、不能少、不能留空。${style ? "统一风格：" + style + "。" : "默认白底极简、蓝紫渐变品牌色、圆角卡片 UI、大留白。"}${refLine}写每条前，先把脚本那句画面在脑内具象化成一个完整真实场景（空间环境里有什么物件、光线从哪来、人物正在做哪个具体动作、屏幕里显示什么文字数据），脚本一句话至少扩成 3-5 个可落地的具体视觉细节。每条都要非常具体：景别(中近景/特写/全景)、机位与构图、人物动作与表情、界面里出现的具体文字、配色、光线方向与冷暖、背景元素、Dumate logo 位置。整体偏教程、专业、可信，不是信息流硬广，画面干净克制。画面里不要叠加字幕/标题/花字(产品界面本身自带的少量UI文字可以)。禁止使用『电影感/高级感/种草感/氛围感/科技感』等抽象词，要把这种感觉翻译成具体构图/光线/景深来写。不要 emoji、不要二维码、不要乱码。只输出 JSON：{"shots":[{"prompt":"..."}]}，shots 数量=脚本镜头数。`;
+    const productName = product?.shortName || product?.name || "本次产品";
+    const sys = `你是${productName}视频分镜图设计师。脚本每个镜头对应生成一张静态分镜图(9:16竖图)的画面提示词，数量必须与脚本镜头数完全一致、不能少、不能留空。${style ? "统一风格：" + style + "。" : "默认白底极简、蓝紫渐变品牌色、圆角卡片 UI、大留白。"}${refLine}写每条前，先把脚本那句画面在脑内具象化成一个完整真实场景（空间环境里有什么物件、光线从哪来、人物正在做哪个具体动作、屏幕里显示什么文字数据），脚本一句话至少扩成 3-5 个可落地的具体视觉细节。每条都要非常具体：景别(中近景/特写/全景)、机位与画面结构、人物动作与表情、界面里出现的具体文字、配色、光线方向与冷暖、背景元素、产品界面出现位置。整体偏教程、专业、可信，不是信息流硬广，画面干净克制。画面里不要叠加字幕/标题/花字(产品界面本身自带的少量UI文字可以)。禁止使用『电影感/高级感/种草感/氛围感/科技感』等抽象词，要把这种感觉翻译成具体画面结构/光线/景深来写。不要 emoji、不要二维码、不要乱码。只输出 JSON：{"shots":[{"prompt":"..."}]}，shots 数量=脚本镜头数。`;
     try {
       const content = await llm([
-        { role: "system", content: DUMATE_BRIEF + "\n\n" + sys },
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys },
         { role: "user", content: `账号定位：${account.position}\n共 ${shots.length} 个镜头，请输出 ${shots.length} 条提示词：\n${shots.map((x, i) => (i + 1) + ". " + (x.visual || "")).join("\n")}` }
       ], { json: true, temperature: 0.7 });
       const d = parseJSONLoose(content);
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
-      return this._ok({ shots: shots.map((x, i) => ({ prompt: cleanText((d.shots[i] && d.shots[i].prompt || "").trim()) || this.fallbackStoryboardPrompt(x, account, style, sharedRefName) })) });
+      return this._ok({ shots: shots.map((x, i) => ({ prompt: cleanText((d.shots[i] && d.shots[i].prompt || "").trim()) || this.fallbackStoryboardPrompt(x, account, style, sharedRefName, product) })) });
     } catch (e) {
       this._fb(e);
       await delay(400);
-      return { shots: shots.map(x => ({ prompt: this.fallbackStoryboardPrompt(x, account, style, sharedRefName) })) };
+      return { shots: shots.map(x => ({ prompt: this.fallbackStoryboardPrompt(x, account, style, sharedRefName, product) })) };
     }
   },
 
@@ -996,7 +1093,7 @@ export const AI = {
     const safeTpl = sanitizeXhsText(stripPromptScaffold(tpl));
     try {
       const content = await llm([
-        { role: "system", content: DUMATE_BRIEF + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，再拆成 ${nImg} 张静态图片：开场问题、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。功能名只用于你内部理解，绝不能当作画面文字。
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，再拆成 ${nImg} 张静态图片：开场问题、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。功能名只用于你内部理解，绝不能当作画面文字。
 每条 prompt 必须使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。${minimalImageNegative()}」结构；如果有参考图，则在开头加入「请根据上传的参考图」。风格主要按账号创作风格和账号模板，不要把账号定位当成本次内容方向，不要把用户输入原句整段塞进提示词，不要在“图片具体内容”里重复外层结构。${safeStyle ? "账号创作风格：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；但模板只当风格母版，不能原样复制模板句子。` : ""}
 
 每条 prompt 控制在 160-260 字，说清：版式、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。只保留1个大标题和1句短副标题，最多2个小标签。
@@ -1028,7 +1125,7 @@ ${xhsGuardPrompt()}
       const rows = String(safeScript || "").split(/\n+/).map(x => x.trim()).filter(Boolean);
       return {
         shots: normalizeImagePromptItems(Array.from({ length: nImg }, (_, i) => {
-          const rawBase = rows[i] || rows[Math.min(rows.length - 1, i)] || topic || `${product?.shortName || product?.name || "Dumate"}办公效率方法`;
+          const rawBase = rows[i] || rows[Math.min(rows.length - 1, i)] || topic || `${product?.shortName || product?.name || "AI工具"}办公效率方法`;
           const base = rawBase.replace(/^(图\d+|镜头\d+|第\d+张)[：:｜\s]*/g, "").replace(/图上文案[:：][^｜\n]+/g, "").trim();
           const titleText = (base.match(/图上文案[:：]([^｜\n]+)/) || base.match(/line[:：]([^｜\n]+)/) || [])[1]?.trim()
             || (i === 0 ? shortChinese(safeTopic, 18) || `${(product?.shortName || product?.name || "这个工具")}到底省在哪` : i === nImg - 1 ? "把重复动作交给流程" : base.replace(/^图\d+[：:｜\s]*/, "").slice(0, 18));
@@ -1072,7 +1169,7 @@ ${xhsGuardPrompt()}
 语气按本次内容和账号创作风格细化，像真人发笔记，不要硬广腔。不要让账号定位改变用户本次要写的内容方向。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`;
     try {
       const content = await llm([
-        { role: "system", content: DUMATE_BRIEF + "\n\n" + productBrief(product) + "\n\n" + sys + XHS_COPY_STYLE + "\n\n" + xhsGuardPrompt() },
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys + XHS_COPY_STYLE + "\n\n" + xhsGuardPrompt() },
         { role: "user", content: kind === "video"
           ? `账号定位：${sanitizeXhsText(account.position)}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡/视频内容摘要：\n${script}\n${HUMAN_COPY_VOICE}${this.memoryLine(account)}`
           : `账号创作风格：${sanitizeXhsText(account.styleProfile || safeStyle || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡内容摘要：\n${script}\n${HUMAN_COPY_VOICE}` }
@@ -1087,12 +1184,13 @@ ${xhsGuardPrompt()}
     }
   },
 
-  async randomTitle({ topic, account }) {
+  async randomTitle({ topic, account, product = null }) {
     try {
       const styleLine = account?.mode === "图文"
         ? `账号创作风格「${account.styleProfile || "干净可读"}」`
         : `账号定位「${account.position}」`;
-      const r = await llm([{ role: "user", content: `给小红书笔记起一个标题，主题「${topic || "Dumate 办公效率"}」，${styleLine}。20字以内，口语化、有信息量，带1-2个emoji。只回标题本身，不要引号不要解释。` }], { temperature: 1.1 });
+      const productName = product?.shortName || product?.name || "AI工具";
+      const r = await llm([{ role: "user", content: `给小红书笔记起一个标题，主题「${topic || `${productName} 办公效率`}」，${styleLine}。20字以内，口语化、有信息量，带1-2个emoji。只回标题本身，不要引号不要解释。` }], { temperature: 1.1 });
       const t = sanitizeProduct(String(r).trim().replace(/^["'「]|["'」]$/g, "").slice(0, 30));
       if (t) return this._ok(t);
       throw new Error("空");
@@ -1103,16 +1201,20 @@ ${xhsGuardPrompt()}
   },
 
   /* ---------- 随机骰子 ---------- */
-  async randomPick({ kind, account }) {
+  async randomPick({ kind, account, product = null }) {
     try {
+      const p = product || allProductsForAI().find(x => x.owner === "ours") || null;
+      const rel = relatedProducts(p, allProductsForAI(), 4);
+      const productName = p?.shortName || p?.name || "本次产品";
+      const relLine = rel.length ? `可参考同类产品：${rel.map(x => `${x.shortName || x.name}（${x.category || "同类工具"}）`).join("、")}。` : "";
       const ask = kind === "direction"
-        ? `给我一个适合做 Dumate 办公效率产品教程短视频的目标人群方向，要主流、好理解、贴近大众（比如 职场白领 / 宝妈 / 大学生 / 老师 / 电商卖家 这类），不要冷门抽象概念。只回一个3-6字的词，不要标点不要解释。`
+        ? `给我一个适合做「${productName}」产品教程短视频的目标人群方向，要主流、好理解、贴近大众（比如 职场白领 / 宝妈 / 大学生 / 老师 / 电商卖家 这类），不要冷门抽象概念。只回一个3-6字的词，不要标点不要解释。`
         : kind === "style"
         ? `为小红书图文笔记配图想一个总视觉风格短语，参考当前创作风格「${account.styleProfile || account.position || "干净可读"}」。可以超出常见标签、有新鲜感但要好落地（例如：奶油色清晨书桌风 / 蓝白格子手帐风 / 低饱和莫兰迪办公风）。只回一个5-12字的风格短语，不要标点不要解释。`
-        : `给我一个 Dumate 办公效率产品的短视频选题，贴合人群「${account.position}」，只回一句不超过15字的主题，不要标点不要解释。`;
+        : `${currentProductLine(p)}\n给我一个「${productName}」相关的 AI 博主选题，贴合账号人群「${account.position || account.styleProfile || "办公效率人群"}」。可以是教程、对比、测评、工具分工或场景清单，不要只生硬介绍产品。${p?.id === "miaoda" ? "秒哒是无代码 AI 应用生成平台，选题必须围绕应用生成、H5/页面、原型、小工具、数据表/后台、非技术人验证想法；不要写文件整理、桌面自动操作、PDF/Word/Excel 转格式、会议纪要这类桌面执行能力，除非明确是“做一个应用来管理这些流程”。" : ""}${relLine}只回一句不超过18字的主题，不要标点不要解释。`;
       const r = await llm([{ role: "user", content: ask }], { temperature: 1.0 });
       const t = String(r).trim().replace(/[。.\n"'`]/g, "").slice(0, kind === "style" ? 16 : 18);
-      if (t) return this._ok(kind === "direction" ? (t.endsWith("方向") ? t : t + "方向") : t);
+      if (t) return this._ok(kind === "direction" ? (t.endsWith("方向") ? t : t + "方向") : kind === "topic" ? enforceCurrentProductTopic(t, p, rel) : t);
       throw new Error("空");
     } catch (e) {
       this._fb(e);
@@ -1156,12 +1258,13 @@ ${xhsGuardPrompt()}
   },
 
   /* 素材号长脚本本地兜底（12 镜头、利他口播、带 ui/scene 标记） */
-  async _mockMaterialScript({ topic, account }) {
+  async _mockMaterialScript({ topic, account, product = null }) {
     await delay(600);
-    const t = (topic || "").replace(/Dumate|百度搭子/g, "").trim() || "重复的办公杂活";
+    const productName = product?.shortName || product?.name || "本次产品";
+    const t = (topic || "").replace(/Dumate|百度搭子|百度秒哒|秒哒/g, "").trim() || "重复的办公杂活";
     const rows = [
       { idea: "痛点钩子", visual: "凌乱桌面、堆叠文件与杂乱文件夹的特写，冷调光，画面略压抑", line: `先说个扎心的：很多人每天有近一个小时，是耗在${t}这种重复杂活上的。不是你不够快，是这些活本就不该手动干。`, ui: false, scene: 1 },
-      { idea: "提出方案", visual: "Dumate 桌面端首页圆角输入框，浅蓝网格背景，界面干净明亮，输入框光标闪烁", line: `这两年我把这些事都丢给了一个桌面智能体——百度搭子 Dumate。它不是聊天框，是真能看着你的屏幕、直接动手把活干完的那种。`, ui: true, scene: 2 },
+      { idea: "提出方案", visual: `${productName}产品界面首页圆角输入框，浅蓝网格背景，界面干净明亮，输入框光标闪烁`, line: `后来我会先看这类 AI 工具能不能把流程真的跑起来，这次用的是${productName}。重点不是会聊天，而是能把任务拆开并交付结果。`, ui: true, scene: 2 },
       { idea: "演示输入", visual: "特写输入框里逐字浮现一句任务指令，发送按钮蓝紫高亮，任务卡片从下方滑入", line: `用法简单到离谱：把要做的事，像跟同事说话一样打一句话发给它。`, ui: true, scene: 2 },
       { idea: "拆解步骤", visual: "任务卡片展开成三张步骤卡片自上而下排开，每张带蓝紫小圆点和一行中文说明", line: `它会先把这件事拆成清清楚楚的几步，让你知道它打算怎么干，而不是黑箱乱来。`, ui: true, scene: 2 },
       { idea: "执行过程", visual: "文件卡片成批滑入处理区，蓝紫扫描线自左向右扫过，进度条推进、数字跳动", line: `确认之后它就自己开始执行，批量处理、跨软件来回切换，全程你不用守着。`, ui: true, scene: 3 },
@@ -1171,26 +1274,27 @@ ${xhsGuardPrompt()}
       { idea: "能力三：办公自动化", visual: "网页表单被自动填写、资料批量下载、多个软件窗口依次被操作的画面", line: `第三类更狠，是替你动手：自动网页填表、批量查信息下资料、把好几个软件串成一条流程跑下来。`, ui: true, scene: 6 },
       { idea: "安全说明", visual: "本地沙箱的示意画面，数据在本机闭环流转、不外传的图示，冷静蓝调", line: `可能你担心数据安全——它跑在本地沙箱里，资料不外流，这点对处理公司文件的人挺关键。`, ui: false, scene: 7 },
       { idea: "适用人群", visual: "办公桌前空镜，桌上摆着键盘、咖啡和便签，暖色晨光", line: `所以它真正帮到的，是每天被这些重复活拖住、本该把时间花在更值钱的事情上的人。`, ui: false, scene: 8 },
-      { idea: "金句收束", visual: "所有结果卡片缓缓汇聚成一个 Dumate logo，白底浅蓝网格，定格成一张干净的完成卡片", line: `一句话总结：能交给工具的，就别再用人肉硬扛。把重复留给它，把脑子留给真正重要的事。`, ui: true, scene: 9 }
+      { idea: "金句收束", visual: `所有结果卡片缓缓汇聚成${productName}完成卡片，白底浅蓝网格，定格成一张干净的完成卡片`, line: `一句话总结：能交给工具的，就别再用人肉硬扛。把重复留给流程，把脑子留给真正重要的事。`, ui: true, scene: 9 }
     ];
     return { title: topic, shots: rows.map(r => ({ ...r, line: stripCTA(r.line) })) };
   },
 
   /* ---------- 本地回退模板 ---------- */
-  async _mockScript({ topic, account, image, imageCount }) {
+  async _mockScript({ topic, account, image, imageCount, product = null }) {
     await delay(600);
-    const clean = (topic || "").replace(/Dumate|百度搭子/g, "").trim() || "杂事";
+    const productName = product?.shortName || product?.name || "本次产品";
+    const clean = (topic || "").replace(/Dumate|百度搭子|百度秒哒|秒哒/g, "").trim() || "杂事";
     if (image) {
       const n = Math.max(3, Math.min(9, imageCount || 6));
-      const cover = { idea: "痛点钩子，引出场景", visual: "封面：白底大留白，居中大字标题 + Dumate logo 浮现", line: `${clean}太费时？` };
-      const ending = { idea: "品牌收束", visual: "Dumate logo 居中 + 极简完成卡片", line: "效率交给 Dumate" };
+      const cover = { idea: "真实问题开场", visual: `白底大留白，居中大字标题，旁边出现${productName}产品界面小卡片`, line: `${clean}太费时？` };
+      const ending = { idea: "方法结论", visual: `${productName}完成卡片居中，旁边是整齐结果清单`, line: `把重复动作交给${productName}` };
       const stepsPool = [
-        { idea: "引入 Dumate 入口", visual: "Dumate 首页圆角输入框，浅蓝网格背景", line: "打开 Dumate" },
+        { idea: "引入产品入口", visual: `${productName}首页圆角输入框，浅蓝网格背景`, line: `打开${productName}` },
         { idea: "演示输入任务", visual: "输入框内出现任务文字，发送按钮高亮", line: "一句话交给它" },
         { idea: "展示自动执行过程", visual: "任务卡片展开，进度条推进，蓝紫扫描线", line: "它自己动手干" },
         { idea: "展示结构化结果", visual: "结果卡片三个分区，蓝紫完成圆点", line: "几秒出结果" },
         { idea: "展示更多功能", visual: "白色卡片排列三个小图标：转格式/提信息/批量改名", line: "不止这一招" },
-        { idea: "对比前后效果", visual: "左乱右整对比图，中间箭头指向 Dumate logo", line: "前后差距一目了然" },
+        { idea: "对比前后效果", visual: `左乱右整对比图，中间箭头指向${productName}结果卡`, line: "前后差距一目了然" },
         { idea: "使用小贴士", visual: "便签式卡片列两条使用技巧，配勾选图标", line: "记住这两个技巧" }
       ];
       const mid = stepsPool.slice(0, Math.max(1, n - 2));
@@ -1198,23 +1302,23 @@ ${xhsGuardPrompt()}
     }
     const dh = account.subType !== "无数字人";
     const base = dh ? [
-      { idea: "数字人开场钩子，痛点共鸣", visual: "数字人正面中近景、固定机位、暖色正面光，Dumate logo 右上轻浮现", line: `你是不是也总被${clean}困住，半天搞不定？` },
-      { idea: "引出产品", visual: "缓推切到 Dumate 首页圆角输入框，浅蓝网格背景，输入框微微高亮", line: "其实打开百度搭子 Dumate，一句话就能交给它。" },
+      { idea: "数字人开场钩子", visual: `数字人正面中近景、固定机位、暖色正面光，${productName}产品界面小卡片右上轻浮现`, line: `你是不是也总被${clean}困住，半天搞不定？` },
+      { idea: "引出产品", visual: `缓推切到${productName}首页圆角输入框，浅蓝网格背景，输入框微微高亮`, line: `其实这类任务可以先交给${productName}跑一遍。` },
       { idea: "输入任务演示", visual: "特写输入框出现任务文字、点发送按钮蓝紫高亮，任务卡片滑入", line: "把要做的事直接发给它。" },
       { idea: "拆解步骤演示", visual: "任务卡片展开成三张步骤卡片依次滑入，蓝紫小圆点，鼠标依次划过", line: "它会自动拆成清晰的步骤，一步到位。" },
       { idea: "执行过程", visual: "文件/资料卡片滑入处理区，蓝紫扫描线+进度条从左推进", line: "交给它之后，等几秒就好。" },
       { idea: "结果展示", visual: "结构化结果卡片汇聚，三个分区、右上完成圆点，局部高亮", line: "结果清晰、能直接用。" },
       { idea: "数字人使用建议", visual: "切回数字人中近景，右侧悬浮结果卡片三条结果", line: "省下来的时间，喝杯咖啡不香吗？" },
-      { idea: "数字人收束", visual: "数字人微笑看镜头，结果卡片缩小汇聚到 Dumate logo，定格完成卡片", line: "想更轻松，就用百度搭子 Dumate。" }
+      { idea: "数字人收束", visual: `数字人微笑看镜头，结果卡片缩小汇聚到${productName}完成卡片`, line: `适合重复出现的任务，就把它固定成一套流程。` }
     ] : [
       { idea: "场景痛点引入", visual: "凌乱桌面/堆叠文件特写，缓推运镜，冷调光，画面压抑", line: "处理这些杂事，常常要花掉一上午。" },
-      { idea: "引出产品界面", visual: "横移切到 Dumate 首页圆角输入框，浅蓝网格，界面干净明亮", line: "用百度搭子 Dumate，一句话就能交给它。" },
+      { idea: "引出产品界面", visual: `横移切到${productName}首页圆角输入框，浅蓝网格，界面干净明亮`, line: `用${productName}这类工具，先把任务说清楚。` },
       { idea: "输入任务演示", visual: "输入框任务文字浮现、发送按钮蓝紫高亮，任务卡片滑入", line: "把需求直接发过去。" },
       { idea: "拆解步骤演示", visual: "三张步骤卡片自上而下滑入，蓝紫小圆点，轻微推拉", line: "它会自动拆解成清晰步骤。" },
       { idea: "执行过程", visual: "文件卡片滑入处理区，蓝紫扫描线、进度条推进、数字跳动", line: "整个过程自动完成。" },
       { idea: "结果展示", visual: "结构化结果卡片汇聚，三分区、完成圆点、局部高亮放大", line: "几秒就能拿到能直接用的结果。" },
       { idea: "对比收束", visual: "左乱右整对比画面横移，右侧定格整洁结果", line: "效率差距，一目了然。" },
-      { idea: "品牌收束", visual: "所有卡片汇聚到 Dumate logo，白底浅蓝网格，定格完成卡片", line: "把杂事交给百度搭子 Dumate。" }
+      { idea: "结论收束", visual: `所有卡片汇聚到${productName}完成卡片，白底浅蓝网格，定格完成卡片`, line: `把杂事变成流程，才是真的省时间。` }
     ];
     const shots = base.map((b, i) => ({ time: `${i * 3}-${i === 7 ? 30 : i * 3 + 3}s`, idea: b.idea, visual: b.visual, line: b.line }));
     return { title: topic, shots };
@@ -1254,8 +1358,9 @@ ${xhsGuardPrompt()}
     return cleanText(out);
   },
 
-  async _mockPrompts({ groups, account }) {
+  async _mockPrompts({ groups, account, product = null }) {
     await delay(500);
+    const productName = product?.shortName || product?.name || "本次产品";
     const NEG = "负面提示词：无字幕，不要在画面上叠加任何字幕/标题/花字/文字条，不要二维码或扫码引导，不要乱码，不要大段密集文字，不要夸张特效，不要复杂剧情，不要像硬广，不要人物表情僵硬，不要桌面杂乱，不要过多 UI 小字，不要使用任何 emoji。";
     const dh = account.subType !== "无数字人";
     const characterLine = account?.charBoardAssetId
@@ -1265,8 +1370,8 @@ ${xhsGuardPrompt()}
       ? "口播音色与语气参考统一参考音频；普通话清晰自然，语速中等，不要把句子压缩到听不清。"
       : this._voiceAnchor(account);
     const head = dh
-      ? `@参考数字人图，@参考产品界面与logo图，这是一条 Dumate 产品教程短视频，9:16竖屏，时长15秒。\n${characterLine}\n${voiceLine}`
-      : `@参考产品界面与logo图，这是一条 Dumate 产品教程短视频，9:16竖屏，时长15秒，场景/产品界面混剪，专业画外音旁白（无固定出镜人物）。`;
+      ? `@参考数字人图，@参考产品界面与logo图，这是一条${productName}产品教程短视频，9:16竖屏，时长15秒。\n${characterLine}\n${voiceLine}`
+      : `@参考产品界面与logo图，这是一条${productName}产品教程短视频，9:16竖屏，时长15秒，场景/产品界面混剪，专业画外音旁白（无固定出镜人物）。`;
     const voiceKey = dh ? "口播" : "画外音";
     const defVisual = dh ? "数字人中近景，固定机位，柔和正面光，背景简洁办公桌" : "产品界面特写，缓推运镜，卡片滑入动效，浅蓝网格背景";
     const seg = (arr) => {
