@@ -1,7 +1,7 @@
 /* 发布清单：定稿入库（创作端） + 素材分发（供应商端）
    交付 = 内部定稿归档，产物进入交付库供供应商下载，不涉及任何平台发布 */
 
-import { state, save, notify, accountById, assetById, canDeliver, currentMember, productById } from "../core/store.js";
+import { state, save, notify, accountById, assetById, canDeliver, currentMember, productById, removeRemote } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
 import { setStage, touch } from "./productions.js";
@@ -95,6 +95,42 @@ export function toggleAdminReviewed(asset) {
   return asset.adminReviewed;
 }
 
+export function canDeleteDelivery(asset) {
+  if (!asset?.delivered) return false;
+  if (state.role === "admin") return true;
+  if (state.role !== "editor") return false;
+  const mem = currentMember();
+  const prod = state.productions.find(p => p.id === asset.productionId);
+  return !!mem && (
+    asset.byMemberId === mem.id ||
+    prod?.ownerId === mem.id ||
+    (!asset.byMemberId && asset.byMemberName && asset.byMemberName === mem.name)
+  );
+}
+
+export function deleteDeliveryAsset(asset) {
+  if (!asset || !canDeleteDelivery(asset)) return false;
+  const acc = accountById(asset.accountId);
+  const prod = state.productions.find(p => p.id === asset.productionId);
+  const analyticsIds = state.analyticsLinks
+    .filter(x => x.assetId === asset.id || (asset.publishedUrl && x.url === asset.publishedUrl))
+    .map(x => x.id);
+  state.analyticsLinks = state.analyticsLinks.filter(x => !analyticsIds.includes(x.id));
+  state.assets = state.assets.filter(x => x.id !== asset.id);
+  if (acc && (acc.monthlyDone || 0) > 0) acc.monthlyDone = Math.max(0, (acc.monthlyDone || 0) - 1);
+  if (prod?.delivery?.assetId === asset.id) {
+    prod.delivery = null;
+    prod.review = { ...(prod.review || {}), state: "pending", at: Date.now() };
+    setStage(prod, "review", "pending");
+    touch(prod);
+  }
+  save("assets", "accounts", "productions", "analyticsLinks", "meta");
+  removeRemote("assets", asset.id);
+  analyticsIds.forEach(id => removeRemote("analyticsLinks", id));
+  notify("delivery", `「${asset.title || asset.name}」已回撤`, "发布清单记录已删除，原始账号素材保留");
+  return true;
+}
+
 export function deliveredAssets() {
   const out = [];
   state.assets.forEach(x => {
@@ -142,6 +178,8 @@ async function deliveryEntries(asset, folder = "") {
     `形式：${asset.type || ""}`,
     asset.planDate ? `计划发布：${asset.planDate}` : "",
     asset.publishNote ? `备注：${asset.publishNote}` : "",
+    asset.supplierNote ? `供应商回传备注：${asset.supplierNote}` : "",
+    asset.publishedUrl ? `发布链接：${asset.publishedUrl}` : "",
     "", "--- 发布文案 ---", asset.copy || ""
   ].filter(x => x != null).join("\n");
   entries.push({ name: `${base}标题文案.txt`, u8: encText(manifest) });

@@ -5,11 +5,11 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
 import { platChip, modeLabel, PLATFORM_CODE } from "../domain/accounts.js";
-import { deliveredAssets, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel } from "../domain/delivery.js";
+import { canDeleteDelivery, deleteDeliveryAsset, deliveredAssets, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset, isAnalyticsSupported, refreshAnalyticsLink } from "../domain/analytics.js";
 import { openProductionDrawer } from "./prodDrawer.js";
-import { emptyState, toast, openLightbox, promptModal } from "../ui/components.js";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
 
 function extractUrl(text) {
@@ -51,6 +51,7 @@ function deliveredItemHtml(asset, acc, i) {
       <div class="dv-detail" hidden>
         ${asset.planDate || asset.publishNote ? `<div class="dv-pubmeta">${asset.planDate ? `<span>${icon("clock", 12)} 计划发布：<b>${esc(asset.planDate)}</b></span>` : ""}${asset.publishNote ? `<span>${icon("fileText", 12)} 备注：${esc(asset.publishNote)}</span>` : ""}</div>` : ""}
         ${asset.publishedUrl ? `<div class="dv-published">${icon("link", 13)} 发布链接：<a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${esc(asset.publishedUrl.slice(0, 64))}${asset.publishedUrl.length > 64 ? "…" : ""}</a><em>${asset.publishedAt ? timeAgo(asset.publishedAt) + "回传" : ""}</em></div>` : ""}
+        ${asset.supplierNote ? `<div class="dv-supplier-note">${icon("fileText", 13)} 供应商备注：${esc(asset.supplierNote)}</div>` : ""}
         ${asset.copy ? `<pre class="dv-copy">${esc(asset.copy)}</pre>` : ""}
         ${isImg && (asset.packAssetIds || []).length ? `<div class="cc-grid">${asset.packAssetIds.map((id, k) => { const uu = urlFor(id); return uu ? `<div class="cc-thumb"><img src="${uu}" data-dvimg/><span>${k + 1}</span></div>` : ""; }).join("")}</div>` : ""}
         <div class="dv-actions">
@@ -58,6 +59,7 @@ function deliveredItemHtml(asset, acc, i) {
           <button class="btn ghost sm" data-dvact="download">${icon("download", 13)} 下载 zip</button>
           <button class="btn ghost sm" data-dvact="link">${icon("link", 13)} ${asset.publishedUrl ? "修改发布链接" : "登记发布链接"}</button>
           ${canMarkReviewed() ? `<button class="btn ghost sm" data-dvact="review">${icon("eye", 13)} ${asset.adminReviewed ? "取消已审阅" : "标记已审阅"}</button>` : ""}
+          ${canDeleteDelivery(asset) ? `<button class="btn ghost sm danger-soft" data-dvact="delete">${icon("trash", 13)} 回撤删除</button>` : ""}
           ${asset.productionId ? `<button class="btn ghost sm" data-dvact="prod">${icon("eye", 13)} 全链路回看</button>` : ""}
         </div>
       </div>
@@ -66,16 +68,19 @@ function deliveredItemHtml(asset, acc, i) {
 }
 
 async function returnLinkFlow(asset, acc, redraw) {
-  const raw = await promptModal({
+  const ret = await supplierReturnModal({
     title: `回传发布链接 · ${asset.name}`,
-    placeholder: `粘贴${acc?.platform || "平台"}链接，或整段分享文案`,
-    value: asset.publishedUrl || "", okText: "确认回传"
+    platform: acc?.platform || "平台",
+    value: asset.publishedUrl || "",
+    note: asset.supplierNote || ""
   });
-  if (raw == null) return;
+  if (ret == null) return;
+  const raw = ret.raw || "";
   const url = extractUrl(raw);
   if (!url) { toast("没有识别到链接：请粘贴包含 http:// 或 https:// 的分享内容"); return; }
   const shareTitle = extractShareTitle(raw);
   asset.publishedUrl = url;
+  asset.supplierNote = String(ret.note || "").trim().slice(0, 300);
   if (shareTitle) asset.publishedTitle = shareTitle;
   asset.publishedRawText = String(raw || "").slice(0, 500);
   asset.publishedAt = Date.now();
@@ -109,7 +114,7 @@ export const deliveryView = {
           <div class="page-head">
             <div><div class="eyebrow">发布清单</div>
             <h2>${isSupplierRole ? "下载素材 → 平台发布 → 回传链接，完成闭环" : "定稿归档 · 供应商领取 · 发布回链全程可见"}</h2></div>
-            ${isSupplierRole ? `<button class="btn primary" id="dvBatchDl">${icon("download", 14)} 一键下载未下载</button>` : ""}
+            ${isSupplierRole ? `<button class="btn primary" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>` : ""}
           </div>
           ${isSupplierRole ? "" : `
           <div class="mode-tabs slim" data-active="${tab}">
@@ -150,6 +155,24 @@ export const deliveryView = {
           if (act === "download") { await downloadDelivery(asset); toast("已下载 " + asset.name); draw(); }
           if (act === "link") await returnLinkFlow(asset, acc, draw);
           if (act === "review") { const on = toggleAdminReviewed(asset); toast(on ? "已标记为「已审阅」" : "已取消「已审阅」"); draw(); }
+          if (act === "delete") {
+            const ok1 = await confirmModal({
+              title: "确认回撤这条发布内容？",
+              body: `<p>将从发布清单删除「${esc(asset.title || asset.name)}」。供应商端不再可见，原始账号素材会保留。</p>`,
+              okText: "继续回撤",
+              danger: true
+            });
+            if (!ok1) return;
+            const ok2 = await confirmModal({
+              title: "二次确认删除",
+              body: `<p>该操作会同步到共享数据。删除后如需重新进入发布清单，需要回到审核页再次定稿发布。</p>`,
+              okText: "确认删除",
+              danger: true
+            });
+            if (!ok2) return;
+            if (deleteDeliveryAsset(asset)) { toast("已回撤删除发布记录"); draw(); }
+            else toast("当前账号无权删除这条发布记录", "error");
+          }
           if (act === "prod" && asset.productionId && productionById(asset.productionId)) openProductionDrawer(asset.productionId);
         }));
       });
@@ -192,7 +215,7 @@ export const deliveryView = {
               <tr data-sup="${asset.id}">
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
                 <td class="sup-seq">${asset.pubSeq ? `#${String(asset.pubSeq).padStart(3, "0")}` : "—"}</td>
-                <td class="sup-name"><b>${esc(asset.name)}</b>${asset.title ? `<em>${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(asset.planDate)}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}</td>
+                <td class="sup-name"><b>${esc(asset.name)}</b>${asset.title ? `<em>${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(asset.planDate)}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
                 <td><b>${esc(asset.byAccount || acc.name)}</b>${asset.byMemberName ? `<em class="sup-by">由 ${esc(asset.byMemberName)} 发布</em>` : ""}</td>
                 <td>${platChip(acc.platform, true)}</td>

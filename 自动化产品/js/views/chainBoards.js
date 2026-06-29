@@ -11,7 +11,7 @@ import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob } from "../dom
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox } from "../ui/components.js";
-import { go } from "../core/router.js";
+import { currentRoute, go } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 
 const modeBySlot = new Map(); // productionId -> "in" | "out"
@@ -549,6 +549,12 @@ export function renderSlotsPage(root, p, isImg) {
     </div>`;
   }
 
+  const routePage = isImg ? "images" : "boards";
+  const canRedrawCurrent = () => {
+    const r = currentRoute();
+    return root.isConnected && r.zone === "studio" && r.page === routePage && state.ui.activeProductionId === p.id;
+  };
+
   function wire() {
     if (isImg) {
       $("#imgProduct", root)?.addEventListener("change", e => { S.productId = e.target.value || "dumate"; save("productions"); });
@@ -632,7 +638,7 @@ export function renderSlotsPage(root, p, isImg) {
           }
         });
         save("productions");
-        draw();
+        if (canRedrawCurrent()) draw();
         let ok = 0;
         for (let i = 0; i < fresh.length; i++) {
           if (!fresh[i].prompt) continue;
@@ -640,7 +646,7 @@ export function renderSlotsPage(root, p, isImg) {
           if (fresh[i].assetId) ok++;
         }
         save("productions");
-        draw();
+        if (canRedrawCurrent()) draw();
         toast(ok ? `已生成 ${ok}/${fresh.length} 张图片` : "没有图片生成成功，请检查错误提示", ok ? "" : "error");
       }, "生成图片中…"));
 
@@ -689,7 +695,7 @@ export function renderSlotsPage(root, p, isImg) {
       draw();
     }));
     $$("[data-gen]", root).forEach(b => b.addEventListener("click", async () => {
-      await generateOneImage(+b.dataset.gen);
+      await generateOneImage(+b.dataset.gen, { single: true });
     }));
     $$(".sc-thumb img", root).forEach(im => im.addEventListener("click", () => openLightbox(im, im.src, "")));
 
@@ -740,17 +746,21 @@ export function renderSlotsPage(root, p, isImg) {
   }
 
   async function generateOneImage(i, opts = {}) {
-    const { redraw = true, silent = false } = opts;
+    const { redraw = true, silent = false, single = false } = opts;
     const it = A.items[i];
     if (!it) return;
     if (!it.prompt && isImg) {
+      if (single) {
+        toast("这张图还没有提示词，先点「生成图卡结构与提示词」");
+        return;
+      }
       await generateImageWorkshop();
     }
     const fresh = A.items[i];
     if (!fresh || !fresh.prompt) { toast("这张图还没有提示词，先生成图卡结构"); return; }
     fresh.status = "loading";
     fresh.error = "";
-    if (redraw) draw();
+    if (redraw && canRedrawCurrent()) draw();
     try {
       const provider = activeProviderFor("image");
       const key = providerKeyFor("image", provider);
@@ -787,7 +797,7 @@ export function renderSlotsPage(root, p, isImg) {
       toast("图片生成失败：" + fresh.error, "error");
     }
     save("productions");
-    if (redraw) draw();
+    if (redraw && canRedrawCurrent()) draw();
   }
 
   async function handleReturn(files) {
@@ -803,7 +813,7 @@ export function renderSlotsPage(root, p, isImg) {
         await fillSlot(slot, f);
       }
     }
-    draw();
+    if (canRedrawCurrent()) draw();
   }
 
   function rebuildExternal() {
@@ -880,7 +890,7 @@ export function renderSlotsPage(root, p, isImg) {
     p.stage = "images";
     p.stageStatus = "pending";
     save("productions");
-    draw();
+    if (canRedrawCurrent()) draw();
     toast(AI.sourceNote(`已生成 ${A.items.length} 张图卡结构与提示词`));
   }
 

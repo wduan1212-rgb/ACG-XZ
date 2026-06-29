@@ -77,6 +77,49 @@ export function promptModal({ title, placeholder = "", value = "", okText = "确
   });
 }
 
+/* 供应商回传链接：链接必填，备注可选。
+   确认 → { raw, note }；取消 → null */
+export function supplierReturnModal({ title = "回传发布链接", platform = "平台", value = "", note = "" } = {}) {
+  return new Promise(res => {
+    const ov = document.createElement("div");
+    ov.className = "modal-ov";
+    ov.innerHTML = `
+      <div class="modal-panel sm" role="dialog">
+        <div class="mp-head"><b>${esc(title)}</b></div>
+        <div class="mp-body">
+          <p class="mp-sub">粘贴${esc(platform)}发布链接或整段分享文案；备注供创作者在首页和发布清单里查看。</p>
+          <label class="field"><span>发布链接（必填）</span><input class="input" id="retRaw" placeholder="https://..." value="${esc(value)}" /></label>
+          <label class="field"><span>供应商备注（可选）</span><textarea class="input" id="retNote" rows="3" placeholder="例如：已按约定话题发布，标题略有调整">${esc(note)}</textarea></label>
+        </div>
+        <div class="mp-foot">
+          <button class="btn ghost" data-r="0">取消</button>
+          <button class="btn primary" data-r="1">确认回传</button>
+        </div>
+      </div>`;
+    document.body.appendChild(ov);
+    requestAnimationFrame(() => { ov.classList.add("open"); $("#retRaw", ov).focus(); });
+    let closed = false;
+    const close = v => { if (closed) return; closed = true; ov.classList.remove("open"); setTimeout(() => ov.remove(), 200); res(v); };
+    ov.addEventListener("click", e => {
+      if (e.target === ov) return close(null);
+      const b = e.target.closest("[data-r]");
+      if (!b) return;
+      if (b.dataset.r === "1") {
+        const raw = $("#retRaw", ov).value.trim();
+        if (!raw) { toast("请先粘贴发布链接", "error"); $("#retRaw", ov).focus(); return; }
+        close({ raw, note: $("#retNote", ov).value.trim() });
+      } else close(null);
+    });
+    $("#retRaw", ov).addEventListener("keydown", e => {
+      if (e.key === "Enter") {
+        const raw = $("#retRaw", ov).value.trim();
+        if (!raw) { toast("请先粘贴发布链接", "error"); return; }
+        close({ raw, note: $("#retNote", ov).value.trim() });
+      }
+    });
+  });
+}
+
 /* 定稿发布弹窗：计划发布日期必填，备注可选。
    确认 → { planDate, note }；取消 → null */
 function todayDateValue() {

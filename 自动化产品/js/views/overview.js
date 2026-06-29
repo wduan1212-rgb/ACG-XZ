@@ -178,7 +178,7 @@ export const overviewView = {
               ${delivered.slice(0, 20).map(({ asset, acc }) => `
                 <div class="ovr-row" ${asset.productionId ? `data-prod="${asset.productionId}"` : ""}>
                   <span class="ovr-cover" style="background:${gradFor(asset.name)}">${asset.type === "图集" ? icon("image", 14) : icon("play", 14)}</span>
-                  <span class="ovt-main"><b>${esc(asset.title || asset.name)}</b><em>${esc(acc.name)} · ${asset.publishedUrl ? "已发布 ✓" : asset.status || "未下载"}</em></span>
+                  <span class="ovt-main"><b>${esc(asset.title || asset.name)}</b><em>${esc(acc.name)} · ${asset.publishedUrl ? "已发布 ✓" : asset.status || "未下载"}${asset.supplierNote ? ` · 备注：${esc(asset.supplierNote)}` : ""}</em></span>
                   ${safeChip(acc?.platform, true)}
                   <time>${timeAgo(asset.createdAt)}</time>
                 </div>`).join("")}
