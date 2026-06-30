@@ -180,6 +180,7 @@ export function createBatch(plan, sessionId) {
     accountContents: plan.accountContents || {},
     accountCounts: plan.accountCounts || {},
     accountImageCounts: plan.accountImageCounts || {},
+    useOnlineTrends: !!plan.useOnlineTrends,
     imageCount: Math.max(3, Math.min(12, Number(plan.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT)),
     style: plan.style || "",
     accountCount: Number(plan.accountCount || plan.count) || null,
@@ -214,6 +215,7 @@ export function templatePlan(key) {
     tags: [], group: t.group, sort: "stale", accountCount: 3, perAccountCount: 1,
     accountIds: matched.map(a => a.id), template: key,
     accountCounts: {},
+    useOnlineTrends: false,
     sharedRefAssetIds: [], accountRefAssetIds: {}
   };
 }
@@ -271,6 +273,7 @@ export function defaultPlan(goal = "新量产计划") {
     accountProductIds: {}, accountContents: {},
     accountCounts: {},
     accountImageCounts: {},
+    useOnlineTrends: false,
     imageCount: DEFAULT_XHS_IMAGE_COUNT,
     style: params.style || "", tags: params.tags || [], group: params.group,
     sort: params.sort,
@@ -485,6 +488,7 @@ async function draftOne(p, batch) {
     let topic = contentOverride || (batch.topicMode === "random" ? "" : batch.topic);
     const product = productById(productId);
     const style = acc.styleProfile || acc.lockedStyle || batch.style || "";
+    const useOnlineTrends = !!batch.useOnlineTrends;
     const batchVariant = p.batchCreativeVariant || p.artifacts.script.batchCreativeVariant || batchVariantFor({
       acc,
       batch,
@@ -494,15 +498,27 @@ async function draftOne(p, batch) {
     });
     p.batchCreativeVariant = batchVariant;
     p.artifacts.script.batchCreativeVariant = batchVariant;
+    let trendGuide = await AI.trendGuide({
+      topic: contentOverride || batch.topic || p.topic || "",
+      account: acc,
+      product,
+      batchVariant,
+      useOnlineTrends,
+      kind: isImg ? "image" : "video"
+    });
     if (!topic) topic = p.topic || await AI.randomPick({
       kind: "topic",
       account: acc,
       product,
       batchVariant,
       seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
-      avoidTopics: existingBatchTopics(batch, p.id)
+      avoidTopics: existingBatchTopics(batch, p.id),
+      useOnlineTrends,
+      trendGuide
     });
     p.topic = topic;
+    p.artifacts.script.trendGuide = trendGuide;
+    p.artifacts.script.useOnlineTrends = useOnlineTrends;
 
     const sres = material
       ? await AI.generateMaterialScript({ topic, account: acc, style, product })
@@ -513,7 +529,9 @@ async function draftOne(p, batch) {
         direction: isImg ? topic : "",
         imageTemplate: acc.imagePromptTemplate || "",
         styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : "",
-        batchVariant: isImg ? batchVariant : null
+        batchVariant: isImg ? batchVariant : null,
+        useOnlineTrends,
+        trendGuide
       });
     p.artifacts.script.shots = sres.shots || [];
     p.artifacts.script.title = sres.title || topic;
@@ -531,7 +549,9 @@ async function draftOne(p, batch) {
         product,
         topic,
         styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : "",
-        batchVariant
+        batchVariant,
+        useOnlineTrends,
+        trendGuide
       });
       const promptRows = imgPromptRes.shots || [];
       p.artifacts.images.items = p.artifacts.script.shots.map((s, i) => ({
@@ -566,13 +586,13 @@ async function draftOne(p, batch) {
       });
       units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
       p.artifacts.boards.externalGroups = buildSbExternalGroups({ shots: p.artifacts.script.shots, style });
-      const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant, avoidCopies: existingBatchCopies(batch, p.id) });
+      const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide });
       p.artifacts.copy = { title: cp0.title || p.title, body: cp0.copy || "" };
       setStage(p, "workshop", "running");
       createUnitVideoJobs(p);   // t2v 单元直接生成；i2v 单元无图时也先出片占位，回工坊可补图重生成
       return;
     }
-    const cp = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: isImg ? "image" : "video", product, batchVariant: isImg ? batchVariant : null, avoidCopies: existingBatchCopies(batch, p.id) });
+    const cp = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: isImg ? "image" : "video", product, batchVariant: isImg ? batchVariant : null, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide });
     p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "" };
     if (isImg) {
       try {

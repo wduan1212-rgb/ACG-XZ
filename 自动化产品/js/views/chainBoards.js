@@ -397,6 +397,7 @@ export function renderSlotsPage(root, p, isImg) {
     S.productId = primaryProductById(S.productId || "dumate")?.id || "dumate";
     S.imageCount = S.imageCount || DEFAULT_XHS_IMAGE_COUNT;
     S.direction = S.direction || "";
+    S.useOnlineTrends = !!S.useOnlineTrends;
     if (p.stage === "script") p.stage = "images";
   }
 
@@ -411,12 +412,14 @@ export function renderSlotsPage(root, p, isImg) {
     const brief = $("#imgBrief", root);
     const count = $("#imgCount", root);
     const product = $("#imgProduct", root);
+    const onlineTrends = $("#imgOnlineTrends", root);
     if (brief) {
       S.direction = brief.value.trim();
       if (S.direction) p.topic = S.direction.slice(0, 80);
     }
     if (count) S.imageCount = Math.max(3, Math.min(12, parseInt(count.value, 10) || S.imageCount || DEFAULT_XHS_IMAGE_COUNT));
     if (product) S.productId = product.value || S.productId || "dumate";
+    if (onlineTrends) S.useOnlineTrends = !!onlineTrends.checked;
   }
 
   const draw = () => {
@@ -454,6 +457,9 @@ export function renderSlotsPage(root, p, isImg) {
               </label>
               <label class="field">生成张数
                 <input class="input" id="imgCount" type="number" min="3" max="12" value="${esc(S.imageCount || DEFAULT_XHS_IMAGE_COUNT)}" />
+              </label>
+              <label class="field imgf-trend-field">热门参考
+                <span class="trend-switch"><input id="imgOnlineTrends" type="checkbox" ${S.useOnlineTrends ? "checked" : ""} /><b>联网参考小红书</b></span>
               </label>
               <label class="field full">创作内容
                 <textarea class="input" id="imgBrief" rows="4" placeholder="写得具体一点：这篇笔记想讲什么、面向谁、希望每张图大概覆盖哪些点。留空则按产品功能和账号创作风格生成。">${esc(S.direction || p.topic || "")}</textarea>
@@ -585,6 +591,7 @@ export function renderSlotsPage(root, p, isImg) {
       });
       $("#imgBrief", root)?.addEventListener("input", e => { S.direction = e.target.value; if (S.direction.trim()) p.topic = S.direction.trim().slice(0, 80); save("productions"); });
       $("#imgBrief", root)?.addEventListener("blur", e => { S.direction = e.target.value.trim(); if (S.direction) p.topic = S.direction.slice(0, 80); save("productions"); });
+      $("#imgOnlineTrends", root)?.addEventListener("change", e => { S.useOnlineTrends = !!e.target.checked; save("productions"); });
       $("#imgFactoryGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, generateImageWorkshop, "生成中…"));
     }
 
@@ -894,9 +901,10 @@ export function renderSlotsPage(root, p, isImg) {
     S.imageCount = count;
     S.productId = $("#imgProduct", root)?.value || S.productId || "dumate";
     S.productId = primaryProductById(S.productId)?.id || "dumate";
+    S.useOnlineTrends = !!$("#imgOnlineTrends", root)?.checked;
     const selectedProduct = productById(S.productId);
     if (!brief) {
-      brief = await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: count, kind: "image" });
+      brief = await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: count, kind: "image", useOnlineTrends: S.useOnlineTrends });
       const input = $("#imgBrief", root); if (input) input.value = brief;
       toast(AI.sourceNote("已随机生成详细创作内容"));
     }
@@ -905,12 +913,15 @@ export function renderSlotsPage(root, p, isImg) {
     p.topic = topic.slice(0, 80);
     const styleRef = acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
     const style = acc.styleProfile || S.style || "";
+    const trendGuide = await AI.trendGuide({ topic, account: acc, product: selectedProduct, useOnlineTrends: S.useOnlineTrends, kind: "image" });
     const res = await AI.generateScript({
       topic, duration: 0, account: acc, image: true,
       direction: brief || topic,
       style, imageCount: count, product: selectedProduct,
       imageTemplate: acc.imagePromptTemplate || "",
-      styleRefName: refNamesOf(A, [styleRef?.name]).join("、")
+      styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
+      useOnlineTrends: S.useOnlineTrends,
+      trendGuide
     });
     S.shots = res.shots || [];
     S.title = res.title || topic;
@@ -925,8 +936,11 @@ export function renderSlotsPage(root, p, isImg) {
       styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
       imageCount: count,
       product: selectedProduct,
-      topic
+      topic,
+      useOnlineTrends: S.useOnlineTrends,
+      trendGuide
     });
+    S.trendGuide = trendGuide;
     const promptRows = promptRes.shots || [];
     A.items = S.shots.map((s, i) => ({
       title: promptRows[i]?.title || `图片${i + 1}`,

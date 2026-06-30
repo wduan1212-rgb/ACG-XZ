@@ -239,6 +239,22 @@
   color: #BFD0FF; font-size: 10.5px; font-weight: 750;
 }
 .agc-random-pick:hover { border-color: rgba(132,152,255,.55); background: rgba(80,110,255,.14); color: #fff; }
+.agc-trend-toggle {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; height: 30px;
+  padding: 0 10px; border-radius: 999px;
+  border: 1px solid rgba(45,212,191,.25); background: rgba(20,184,166,.08);
+  color: #A7F3D0; font-size: 10.5px; font-weight: 750; white-space: nowrap; cursor: pointer;
+}
+.agc-trend-toggle input {
+  appearance: none; width: 26px; height: 16px; border-radius: 999px;
+  background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18); position: relative;
+}
+.agc-trend-toggle input::after {
+  content: ""; position: absolute; width: 10px; height: 10px; border-radius: 50%;
+  left: 2px; top: 2px; background: rgba(255,255,255,.74); transition: transform var(--t-fast), background var(--t-fast);
+}
+.agc-trend-toggle input:checked { background: linear-gradient(135deg,#14B8A6,#6366F1); }
+.agc-trend-toggle input:checked::after { transform: translateX(10px); background: #fff; }
 .agc-accs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 220px; overflow-y: auto; }
 .agc-acc {
   display: flex; align-items: center; gap: 8px; text-align: left;

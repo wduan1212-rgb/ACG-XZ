@@ -241,6 +241,11 @@ class LLMReq(BaseModel):
     temperature: float = 0.7
 
 
+class XhsTrendReq(BaseModel):
+    query: str = ""
+    limit: int = 8
+
+
 class ImageRef(BaseModel):
     role: str = "shared"
     name: str = ""
@@ -778,6 +783,71 @@ async def llm_proxy(req: LLMReq):
             detail = r.text[:800]
         raise _llm_error(r.status_code, detail)
     return {"content": r.json()["choices"][0]["message"]["content"]}
+
+
+def _parse_xhs_opencli_yaml(text: str, limit: int = 8) -> List[Dict]:
+    items: List[Dict] = []
+    current: Dict[str, str] = {}
+    key_re = re.compile(r"^\s*(?:-\s*)?(rank|title|likes|published_at|author|url)\s*:\s*(.*)\s*$", re.I)
+    for line in (text or "").splitlines():
+        m = key_re.match(line)
+        if not m:
+            continue
+        key = m.group(1).lower()
+        value = m.group(2).strip().strip('"').strip("'")
+        if key == "rank" and current.get("title"):
+            items.append(current)
+            current = {}
+        current[key] = value
+    if current.get("title"):
+        items.append(current)
+    clean = []
+    for item in items:
+        title = re.sub(r"\s+", " ", item.get("title", "")).strip()
+        if not title:
+            continue
+        clean.append({
+            "title": title[:80],
+            "likes": item.get("likes", ""),
+            "author": item.get("author", ""),
+            "url": item.get("url", "")
+        })
+        if len(clean) >= limit:
+            break
+    return clean
+
+
+@app.post("/api/research/xhs-trends")
+async def xhs_trends(req: XhsTrendReq):
+    """可选联网趋势参考。失败时前端回退本地趋势库，不阻塞创作链路。"""
+    query = re.sub(r"\s+", " ", (req.query or "")).strip()[:90]
+    limit = max(1, min(12, int(req.limit or 8)))
+    if not query:
+        return {"ok": False, "items": [], "reason": "missing_query"}
+    if os.getenv("XHS_TREND_SEARCH", "auto").lower() in {"0", "false", "off", "no"}:
+        return {"ok": False, "items": [], "reason": "disabled"}
+    if not shutil.which("opencli"):
+        return {
+            "ok": False,
+            "items": [],
+            "reason": "opencli_missing",
+            "message": "未检测到 OpenCLI。可在浏览器中配置 OpenCLI 后重试；本次已自动回退本地趋势库。"
+        }
+    try:
+        run = subprocess.run(
+            ["opencli", "xiaohongshu", "search", query, "-f", "yaml"],
+            cwd=str(FRONTEND_DIR),
+            capture_output=True,
+            text=True,
+            timeout=35,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "items": [], "reason": "timeout", "message": "小红书趋势搜索超时，已回退本地趋势库。"}
+    if run.returncode != 0:
+        raw = (run.stderr or run.stdout or "").lower()
+        reason = "auth_required" if any(x in raw for x in ("auth", "login", "登录", "token", "cookie")) else "opencli_failed"
+        return {"ok": False, "items": [], "reason": reason, "message": "小红书联网参考暂不可用。可在浏览器中配置 OpenCLI 后重试；本次已自动回退本地趋势库。"}
+    return {"ok": True, "provider": "opencli", "query": query, "items": _parse_xhs_opencli_yaml(run.stdout, limit)}
 
 
 @app.post("/api/chat/completions")

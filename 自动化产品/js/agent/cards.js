@@ -210,6 +210,10 @@ const CARD = {
         ${locked ? "" : `<span class="agc-sec-tools">
           <label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>
           ${hasImageAccounts ? `<label class="agc-count-inline">默认图数<input type="number" min="3" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>` : ""}
+          <label class="agc-trend-toggle" title="开启后会先参考小红书热门方向；不可用时自动回退本地趋势库">
+            <input type="checkbox" data-pf="useOnlineTrends" ${p.useOnlineTrends ? "checked" : ""} />
+            ${icon("spark", 12)} 联网参考热门
+          </label>
           <button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>
         </span>`}
       </div>

@@ -722,7 +722,9 @@ function wire(root) {
     const { msg: m } = findMessageInSessions(node.dataset.plan);
     if (!m || m.payload.status !== "pending") return;
     if (f) {
-      if (f.multiple) {
+      if (f.type === "checkbox") {
+        m.payload[f.dataset.pf] = !!f.checked;
+      } else if (f.multiple) {
         m.payload[f.dataset.pf] = Array.from(f.selectedOptions).map(o => o.value).filter(Boolean).slice(0, 5);
         if (f.dataset.pf === "sharedRefAssetIds") m.payload.sharedRefAssetId = m.payload.sharedRefAssetIds[0] || null;
       } else {
