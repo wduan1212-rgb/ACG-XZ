@@ -10,6 +10,8 @@ import { getCreativeMemoryContext } from "../domain/analytics.js";
 import { state } from "../core/store.js";
 import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js";
 
+const DEFAULT_XHS_IMAGE_COUNT = 4;
+
 /* 选题"和当下结合、自然安利"指引（脚本类共用）：避免孤立自嗨、硬塞产品名。
    注：模型不能真实联网，这里用的是它知识里的常青热点/话题方向，不保证是今天的最新事件。 */
 const TOPICAL_HOOK = `
@@ -239,6 +241,36 @@ function productsMentionedIn(text = "", currentProduct = null, limit = 4) {
     .slice(0, limit);
 }
 
+function productRoleLine(product) {
+  if (!product) return "";
+  const name = productDisplayName(product, "同类工具");
+  const feature = (product.coreFeatures || []).slice(0, 4).join(" / ");
+  const category = sanitizeProduct(product.category || "同类工具");
+  return `${name}用于${category}${feature ? `（${sanitizeProduct(feature)}）` : ""}`;
+}
+
+function productRelationDetail(ctx = {}, item = {}) {
+  const text = [
+    ctx.topic,
+    ctx.script,
+    item?.prompt,
+    item?.idea,
+    item?.line,
+    item?.visual,
+    item?.title
+  ].filter(Boolean).join(" ");
+  const explicit = productsMentionedIn(text, ctx.product, 4);
+  if (!explicit.length) return "";
+  const main = productDisplayName(ctx.product);
+  const roles = explicit.map(productRoleLine).filter(Boolean).join("；");
+  const names = explicit.map(p => p.shortName || p.name).join("、");
+  const mode = /组合|搭配|配合|一起|协同|联动/.test(text) ? "组合用法"
+    : /分工|边界|适合|不适合/.test(text) ? "任务分工"
+    : /对比|vs|VS|区别|相比|测评/.test(text) ? "功能对比"
+    : "工具分工";
+  return `本次是${mode}：${main}作为主产品展示具体执行动作、流程推进和结果交付；${roles || `${names}作为参照对象`}。画面必须具体呈现“谁负责沉淀/思考/记录，谁负责执行/整理/输出”的关系，不能只写${names}作参照。`;
+}
+
 function imageRelationContext(ctx = {}, item = {}) {
   const text = [
     ctx.topic,
@@ -256,7 +288,8 @@ function imageRelationContext(ctx = {}, item = {}) {
     : /分工|边界|适合|不适合/.test(text) ? "任务分工"
     : /对比|vs|VS|区别|相比|测评/.test(text) ? "对比关系"
     : "同类参照";
-  return `延续本次${mode}：主产品是 ${productDisplayName(ctx.product)}，参照对象是 ${sanitizeProduct(names)}；画面只呈现双方职责、任务边界或组合流程里与本张主题相关的一点。`;
+  const detail = productRelationDetail(ctx, item);
+  return `${detail || `延续本次${mode}：主产品是 ${productDisplayName(ctx.product)}，参照对象是 ${sanitizeProduct(names)}。`}画面只呈现双方职责、任务边界或组合流程里与本张主题相关的一点。`;
 }
 
 function currentProductLine(product) {
@@ -768,7 +801,7 @@ function imageBeatCue(item, ctx, max = 52) {
   return cue || shortChinese(stripPromptScaffold(ctx.topic || ctx.script || ""), max) || "";
 }
 
-function splitImageBeats(ctx = {}, n = 6) {
+function splitImageBeats(ctx = {}, n = DEFAULT_XHS_IMAGE_COUNT) {
   const raw = stripPromptScaffold(cleanText(ctx.script || ctx.topic || ""));
   const parts = raw
     .replace(/(第一张|第二张|第三张|第四张|第五张|第六张|第七张|第八张|第九张|第十张)/g, "。$1")
@@ -795,28 +828,41 @@ function splitImageBeats(ctx = {}, n = 6) {
   return Array.from({ length: n }, (_, i) => uniq[i] || fallback[Math.min(i, fallback.length - 1)]);
 }
 
+function imageDensityMode(ctx = {}) {
+  const raw = stripPromptScaffold(cleanText(ctx.script || ctx.topic || ""));
+  if (raw.length < 42) return "sparse";
+  if (raw.length > 180) return "dense";
+  return "balanced";
+}
+
 function richImagePrompt(item, i, total, ctx) {
   const task = IMAGE_CARD_TASKS[Math.min(i, IMAGE_CARD_TASKS.length - 1)] || IMAGE_CARD_TASKS[IMAGE_CARD_TASKS.length - 1];
   const intent = summarizeImageIntent(ctx);
   const lightStyle = isLightIllustrationStyle(ctx);
-  const cue = imageBeatCue(item, ctx, lightStyle ? 34 : 58);
+  const density = imageDensityMode(ctx);
+  const cue = imageBeatCue(item, ctx, lightStyle ? 34 : density === "dense" ? 38 : 48);
   const oneBeat = cue || intent.main;
   const contentCue = lightStyle
     ? `本图只讲「${oneBeat}」；用小人动作、表情、箭头或1个气泡讲清。`
-    : `本图只承载一个核心信息：「${oneBeat}」；把用户长内容先压缩成一个具体场景、一个关键动作和一个结果证据。`;
+    : density === "sparse"
+      ? `本图围绕「${oneBeat}」补足一个真实使用例子：一个任务输入、一个界面动作、一个可见结果。`
+      : `本图只讲「${oneBeat}」；画面分成标题、操作区、结果区三层，信息留白充足。`;
   const title = cleanImageDisplayTitle(item?.title, task.title);
   const headline = deriveImageHeadline(item, i, intent, task);
   const imageStyle = ctx.style
-    ? shortChinese(cleanImagePlanningWords(stripPromptScaffold(stripFieldLabel(ctx.style, "账号风格"))), lightStyle ? 62 : 120)
+    ? shortChinese(cleanImagePlanningWords(stripPromptScaffold(stripFieldLabel(ctx.style, "账号风格"))), lightStyle ? 62 : 96)
     : "白底或浅色底，圆角卡片，大留白，真实办公截图质感，蓝紫点缀，文字大而清楚。";
   const refPrefix = ctx.styleRefName
     ? `请根据上传的参考图（${ctx.styleRefName}），综合参考产品界面层级、品牌色、截图质感和视觉密度；参考图里的旧标题和示例文案需要按本次主题重写。`
     : "";
   const relationLine = imageRelationContext(ctx, item);
   const relationNames = (relationLine.match(/参照对象是\s*([^；。]+)/) || [])[1] || "";
+  const lightRelation = relationLine
+    ? shortChinese(relationLine, 96)
+    : (relationNames ? `${relationNames}作参照` : "");
   const productLine = ctx.product
     ? (lightStyle
-      ? `主产品：${intent.productName}${relationNames ? `，${relationNames}作参照` : ""}；只画本张主题的一点。`
+      ? `主产品：${intent.productName}。${lightRelation ? `${lightRelation}；` : ""}只画本张主题的一点。`
       : `主产品：${intent.productName}，只在流程或界面里自然出现。${relationLine || "按真实办公流程表达主产品动作和结果。"}`)
     : "产品表达以真实办公流程和界面结果为主。";
   const layoutLine = lightStyle
@@ -824,10 +870,14 @@ function richImagePrompt(item, i, total, ctx) {
     : task.layout;
   const visualLine = lightStyle
     ? "用夸张表情、手势、文件小图标、轻箭头和小窗口表达前后变化，像轻松的图解故事"
-    : task.visual;
+    : density === "dense"
+      ? shortChinese(task.visual, 42)
+      : task.visual;
   const textLine = lightStyle
     ? `只放大标题「${headline}」和一句12字内气泡，最多1个功能标签。`
-    : `画面文字只放大标题「${headline}」和一句短副标题，最多2个具体功能标签，例如“自动归类”“字段识别”“报告可用”。`;
+    : density === "dense"
+      ? `画面文字只放大标题「${headline}」和一句短副标题，最多1个具体功能标签。`
+      : `画面文字只放大标题「${headline}」和一句短副标题，最多2个具体功能标签，例如“自动归类”“字段识别”“报告可用”。`;
   const promptBody = cleanImagePlanningWords(lightStyle
     ? `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine} ${layoutLine}；${contentCue}${textLine}】`
     : `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine} ${layoutLine}；${visualLine}；${contentCue}${textLine}】`);
@@ -839,7 +889,7 @@ function richImagePrompt(item, i, total, ctx) {
 }
 
 function normalizeImagePromptItems(items, ctx) {
-  const n = Math.max(3, Math.min(12, Number(ctx.imageCount) || (items || []).length || 6));
+  const n = Math.max(3, Math.min(12, Number(ctx.imageCount) || (items || []).length || DEFAULT_XHS_IMAGE_COUNT));
   const src = Array.isArray(items) ? items : [];
   const beats = splitImageBeats(ctx, n);
   return Array.from({ length: n }, (_, i) => richImagePrompt(src[i] || {}, i, n, { ...ctx, beat: beats[i] }));
@@ -1116,11 +1166,11 @@ export const AI = {
   },
 
   /* ---------- 创作内容补全：空内容时先生成 brief，再拆图/脚本 ---------- */
-  async generateCreativeBrief({ account, product = null, imageCount = 6, userText = "", kind = "image" }) {
+  async generateCreativeBrief({ account, product = null, imageCount = DEFAULT_XHS_IMAGE_COUNT, userText = "", kind = "image" }) {
     const p = product || allProductsForAI().find(x => x.owner === "ours") || null;
     const rel = relatedProducts(p, allProductsForAI(), 5);
     const productName = productDisplayName(p);
-    const count = Math.max(3, Math.min(12, Number(imageCount) || 6));
+    const count = Math.max(3, Math.min(12, Number(imageCount) || DEFAULT_XHS_IMAGE_COUNT));
     const fallback = () => {
       const first = productDisplayName(rel[0], "同类工具");
       const second = rel[1] ? productDisplayName(rel[1], "") : "";
@@ -1158,12 +1208,14 @@ ${productRelationLine(rel)}
   },
 
   /* ---------- 脚本生成 ---------- */
-  async generateScript({ topic, duration = 30, account, image, direction = "", style = "", imageCount = 6, product = null, imageTemplate = "", styleRefName = "" }) {
+  async generateScript({ topic, duration = 30, account, image, direction = "", style = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, imageTemplate = "", styleRefName = "" }) {
     const hasImageTemplate = image && String(imageTemplate || "").trim();
+    const mentionedTools = productsMentionedIn(`${topic}\n${direction}`, product, 4);
+    const mentionedGuide = productRelationLine(mentionedTools);
     const dirText = image
       ? (direction ? `本次创作内容：${direction}。` : `本次创作内容：围绕主题自由发挥，但每张图都要有清晰信息点。`)
       : (direction ? `目标人群方向：${direction}（脚本语气、痛点、例子都贴合这个人群）。` : `人群方向：不限，自由发挥最合适的角度。`);
-    const nImg = Math.max(3, Math.min(12, imageCount || 6));
+    const nImg = Math.max(3, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
     const sys = image
       ? `你是小红书图文笔记策划，为百度 ACG 市场部写「小红书笔记图卡内容表」，每行是笔记里的一张配图。严格围绕用户本次创作内容展开，不要让账号定位改变主题方向；账号只提供创作风格。
 先把用户创作内容压缩成 ${nImg} 个信息节拍，每张图只承担一个观点/动作/证据；长内容要总结、取舍、分布，不要把所有信息塞进每一张图。标题和图上文案要像真实笔记，具体、有信息量、能让人看懂功能和结果。图文没有口播，只有画面与图上文案。每行 idea 写清这张图唯一要传达的信息；visual 必须非常具体（画面布局/主视觉/界面里出现的具体文字/配色/光线/产品视觉位置），先在脑内把这张图具象化成真实画面再写，不要用电影感、高级感、种草感这类抽象词。内部结构词不要出现在 idea、visual、line 里。
@@ -1176,7 +1228,7 @@ ${productRelationLine(rel)}
       const content = await llm([
         { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys },
         { role: "user", content: image
-          ? `账号创作风格：${style || account.styleProfile || "干净可读的小红书图文风"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n共生成 ${nImg} 张图。\n${style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}主题：${topic}\n围绕本次宣传产品的真实功能延展教学，优先服从用户本次创作内容，不要强呼吁下载。${topicalHook(product)}`
+          ? `账号创作风格：${style || account.styleProfile || "干净可读的小红书图文风"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n共生成 ${nImg} 张图。\n${style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}${mentionedGuide ? `本次创作内容里明确提到的同类/互补工具能力：\n${mentionedGuide}\n请把这些工具具体安排成组合流程、功能边界或对比卡，不要只挂名字。\n` : ""}主题：${topic}\n围绕本次宣传产品的真实功能延展教学，优先服从用户本次创作内容，不要强呼吁下载。${topicalHook(product)}`
           : `账号定位：${account.position}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n主题：${topic}\n目标时长：${Math.min(60, duration || 55)}秒以内，最终不超过60秒。口播宁可少一点，保证每句都能自然读完。围绕本次宣传产品的真实功能延展教学，但要先用当下热点/真实痛点切入、自然安利，不要孤立自嗨，不要强呼吁下载。${topicalHook(product)}${this.memoryLine(account)}` }
       ], { json: true });
       const d = parseJSONLoose(content);
@@ -1280,13 +1332,15 @@ ${productRelationLine(rel)}
   },
 
   /* ---------- 图文：逐张图片提示词 ---------- */
-  async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = 6, product = null, topic = "" }) {
+  async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, topic = "" }) {
     const tpl = String(imageTemplate || "").trim();
-    const nImg = Math.max(3, Math.min(12, imageCount || 6));
+    const nImg = Math.max(3, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
     const safeTopic = sanitizeXhsText(cleanText(topic || ""));
     const safeScript = sanitizeXhsText(cleanText(script || ""));
     const safeStyle = sanitizeXhsText(cleanText(style || ""));
     const safeTpl = sanitizeXhsText(stripPromptScaffold(tpl));
+    const mentionedTools = productsMentionedIn(`${safeTopic}\n${safeScript}`, product, 4);
+    const mentionedGuide = productRelationLine(mentionedTools);
     try {
       const content = await llm([
         { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，压缩成 ${nImg} 个信息节拍，再拆成 ${nImg} 张静态图片：开场问题、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。每张图只承载一个核心信息，不要把用户长内容整段塞进每张 prompt。功能名只用于你内部理解，绝不能当作画面文字。若创作内容里出现竞品/同类工具，要把它们作为对比、组合或分工对象写进画面信息结构，例如对比表、流程箭头、工具分工卡片、边界提醒；不要让画面变成只孤立宣传主产品。
@@ -1300,7 +1354,7 @@ ${productRelationLine(rel)}
 ${xhsGuardPrompt()}
 
 只输出 JSON：{"shots":[{"title":"给操作员看的短标题，必须是具体功能/结果，不能是种草/痛点/构图/步骤/封面等定位词","prompt":"可直接给图像模型的提示词","ui":true}]}` },
-        { role: "user", content: `账号创作风格：${sanitizeXhsText(account.styleProfile || style || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n${product ? `宣传产品：${sanitizeXhsText(product.name || product.shortName || "")}\n` : ""}${safeTopic ? `本次主题：${safeTopic}\n` : ""}${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号图文模板（风格/结构母版，变量需替换）：\n${safeTpl}\n` : ""}脚本：\n${safeScript || "(据本次主题和创作风格自拟)"}` }
+        { role: "user", content: `账号创作风格：${sanitizeXhsText(account.styleProfile || style || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n${product ? `宣传产品：${sanitizeXhsText(product.name || product.shortName || "")}\n` : ""}${safeTopic ? `本次主题：${safeTopic}\n` : ""}${mentionedGuide ? `本次主题/脚本里提到的其他工具能力：\n${mentionedGuide}\n图片提示词必须具体写出它们和主产品如何结合、分工或对比；不要只写“作参照”。\n` : ""}${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号图文模板（风格/结构母版，变量需替换）：\n${safeTpl}\n` : ""}脚本：\n${safeScript || "(据本次主题和创作风格自拟)"}` }
       ], { json: true, temperature: 0.8 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
@@ -1482,10 +1536,24 @@ ${xhsGuardPrompt()}
     const productName = productDisplayName(product);
     const clean = (topic || "").replace(/Dumate|百度搭子|百度秒哒|秒哒/g, "").trim() || "杂事";
     if (image) {
-      const n = Math.max(3, Math.min(9, imageCount || 6));
-      const cover = { idea: "真实问题开场", visual: `白底大留白，居中大字标题，旁边出现${productName}产品界面小卡片`, line: `${clean}太费时？` };
-      const ending = { idea: "方法结论", visual: `${productName}完成卡片居中，旁边是整齐结果清单`, line: `把重复动作交给${productName}` };
-      const stepsPool = [
+      const n = Math.max(3, Math.min(9, imageCount || DEFAULT_XHS_IMAGE_COUNT));
+      const mentioned = productsMentionedIn(topic, product, 2);
+      const firstRef = mentioned[0];
+      const refName = firstRef ? productDisplayName(firstRef, "同类工具") : "";
+      const isRelation = !!firstRef;
+      const cover = isRelation
+        ? { idea: `${refName}和${productName}怎么分工`, visual: `左右分栏：左侧是${refName}知识库/资料沉淀界面，右侧是${productName}桌面执行结果卡，中间用箭头连接`, line: `${refName}负责沉淀，${productName}负责执行` }
+        : { idea: "真实问题开场", visual: `白底大留白，居中大字标题，旁边出现${productName}产品界面小卡片`, line: `${clean}太费时？` };
+      const ending = isRelation
+        ? { idea: "组合方法结论", visual: `一张小 SOP 卡片：先在${refName}整理资料，再让${productName}读取本地文件并输出清单/报告`, line: "先沉淀，再执行" }
+        : { idea: "方法结论", visual: `${productName}完成卡片居中，旁边是整齐结果清单`, line: `把重复动作交给${productName}` };
+      const stepsPool = isRelation ? [
+        { idea: "先用知识库收住上下文", visual: `${refName}里有双链节点、Canvas资料墙或标签卡，标出合同/金额/项目资料`, line: `${refName}放长期资料` },
+        { idea: "再用桌面 Agent 执行动作", visual: `${productName}输入框写着“按知识库规则整理本地合同文件并提取金额”，任务卡开始执行`, line: `${productName}处理本地文件` },
+        { idea: "展示分工边界", visual: `两列对照卡：${refName}写沉淀/检索/知识结构，${productName}写分类/提取/转格式/生成结果`, line: "一个帮你想，一个帮你干" },
+        { idea: "输出可复用结果", visual: `${productName}生成表格清单、归档文件夹和复盘报告，旁边回写到${refName}的一张总结卡`, line: "结果再回到知识库" },
+        { idea: "适用场景提醒", visual: "便签列出内容选题、合同归档、项目资料复盘三个场景，小箭头串成循环", line: "适合反复做的流程" }
+      ] : [
         { idea: "引入产品入口", visual: `${productName}首页圆角输入框，浅蓝网格背景`, line: `打开${productName}` },
         { idea: "演示输入任务", visual: "输入框内出现任务文字，发送按钮高亮", line: "一句话交给它" },
         { idea: "展示自动执行过程", visual: "任务卡片展开，进度条推进，蓝紫扫描线", line: "它自己动手干" },

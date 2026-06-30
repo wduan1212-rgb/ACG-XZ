@@ -97,6 +97,7 @@ export function toggleAdminReviewed(asset) {
 
 export function canDeleteDelivery(asset) {
   if (!asset?.delivered) return false;
+  if (deliveryRetractBlockReason(asset)) return false;
   if (state.role === "admin") return true;
   if (state.role !== "editor") return false;
   const mem = currentMember();
@@ -106,6 +107,26 @@ export function canDeleteDelivery(asset) {
     prod?.ownerId === mem.id ||
     (!asset.byMemberId && asset.byMemberName && asset.byMemberName === mem.name)
   );
+}
+
+export function canSeeDeliveryRetract(asset) {
+  if (!asset?.delivered) return false;
+  if (state.role === "admin") return true;
+  if (state.role !== "editor") return false;
+  const mem = currentMember();
+  const prod = state.productions.find(p => p.id === asset.productionId);
+  return !!mem && (
+    asset.byMemberId === mem.id ||
+    prod?.ownerId === mem.id ||
+    (!asset.byMemberId && asset.byMemberName && asset.byMemberName === mem.name)
+  );
+}
+
+export function deliveryRetractBlockReason(asset) {
+  if (!asset?.delivered) return "不是发布清单内容";
+  if (asset.publishedUrl || asset.status === "已发布") return "供应商已回传发布链接，无法回撤";
+  if (asset.status === "已下载") return "供应商已下载，无法回撤";
+  return "";
 }
 
 export function deleteDeliveryAsset(asset) {
@@ -127,7 +148,7 @@ export function deleteDeliveryAsset(asset) {
   save("assets", "accounts", "productions", "analyticsLinks", "meta");
   removeRemote("assets", asset.id);
   analyticsIds.forEach(id => removeRemote("analyticsLinks", id));
-  notify("delivery", `「${asset.title || asset.name}」已回撤`, "发布清单记录已删除，原始账号素材保留");
+  notify("delivery", `「${asset.title || asset.name}」已回撤`, "发布清单记录已删除，内容已退回草稿/审核状态，原始账号素材保留");
   return true;
 }
 

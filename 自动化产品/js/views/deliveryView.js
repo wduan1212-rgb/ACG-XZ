@@ -5,7 +5,7 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
 import { platChip, modeLabel, PLATFORM_CODE } from "../domain/accounts.js";
-import { canDeleteDelivery, deleteDeliveryAsset, deliveredAssets, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel } from "../domain/delivery.js";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset, isAnalyticsSupported, refreshAnalyticsLink } from "../domain/analytics.js";
 import { openProductionDrawer } from "./prodDrawer.js";
@@ -37,6 +37,9 @@ function deliveredItemHtml(asset, acc, i) {
   const u = coverId ? urlFor(coverId) : null;
   const seq = asset.pubSeq ? `#${String(asset.pubSeq).padStart(3, "0")}` : "";
   const productTag = asset.productTag || productTagLabel(productById(asset.productId || ""));
+  const retractReason = deliveryRetractBlockReason(asset);
+  const canRetract = canDeleteDelivery(asset);
+  const showRetract = canRetract || canSeeDeliveryRetract(asset);
   return `<div class="dv-item" style="--d:${i * 40}ms">
     <span class="dv-node${i === 0 ? " latest" : ""}"></span>
     <div class="dv-card card" data-aid="${asset.id}">
@@ -59,7 +62,7 @@ function deliveredItemHtml(asset, acc, i) {
           <button class="btn ghost sm" data-dvact="download">${icon("download", 13)} 下载 zip</button>
           <button class="btn ghost sm" data-dvact="link">${icon("link", 13)} ${asset.publishedUrl ? "修改发布链接" : "登记发布链接"}</button>
           ${canMarkReviewed() ? `<button class="btn ghost sm" data-dvact="review">${icon("eye", 13)} ${asset.adminReviewed ? "取消已审阅" : "标记已审阅"}</button>` : ""}
-          ${canDeleteDelivery(asset) ? `<button class="btn ghost sm danger-soft" data-dvact="delete">${icon("trash", 13)} 回撤删除</button>` : ""}
+          ${showRetract ? `<button class="btn ghost sm danger-soft" ${canRetract ? `data-dvact="delete"` : "disabled"} title="${esc(retractReason || "回撤到草稿/审核状态")}">${icon("trash", 13)} ${canRetract ? "回撤删除" : "已下载不可回撤"}</button>` : ""}
           ${asset.productionId ? `<button class="btn ghost sm" data-dvact="prod">${icon("eye", 13)} 全链路回看</button>` : ""}
         </div>
       </div>
@@ -158,7 +161,7 @@ export const deliveryView = {
           if (act === "delete") {
             const ok1 = await confirmModal({
               title: "确认回撤这条发布内容？",
-              body: `<p>将从发布清单删除「${esc(asset.title || asset.name)}」。供应商端不再可见，原始账号素材会保留。</p>`,
+              body: `<p>将从发布清单删除「${esc(asset.title || asset.name)}」，并退回到自己的草稿/审核状态。供应商端不再可见，原始账号素材会保留。</p>`,
               okText: "继续回撤",
               danger: true
             });

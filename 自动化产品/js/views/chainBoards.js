@@ -16,6 +16,7 @@ import { stepperHtml, wireStepper } from "./studio.js";
 
 const modeBySlot = new Map(); // productionId -> "in" | "out"
 const MAX_IMAGE_REFS = 5;
+const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
 
 function hashSeed(str = "") {
@@ -394,7 +395,7 @@ export function renderSlotsPage(root, p, isImg) {
   const products = primaryProducts();
   if (isImg) {
     S.productId = primaryProductById(S.productId || "dumate")?.id || "dumate";
-    S.imageCount = S.imageCount || 6;
+    S.imageCount = S.imageCount || DEFAULT_XHS_IMAGE_COUNT;
     S.direction = S.direction || "";
     if (p.stage === "script") p.stage = "images";
   }
@@ -414,7 +415,7 @@ export function renderSlotsPage(root, p, isImg) {
       S.direction = brief.value.trim();
       if (S.direction) p.topic = S.direction.slice(0, 80);
     }
-    if (count) S.imageCount = Math.max(3, Math.min(12, parseInt(count.value, 10) || S.imageCount || 6));
+    if (count) S.imageCount = Math.max(3, Math.min(12, parseInt(count.value, 10) || S.imageCount || DEFAULT_XHS_IMAGE_COUNT));
     if (product) S.productId = product.value || S.productId || "dumate";
   }
 
@@ -452,7 +453,7 @@ export function renderSlotsPage(root, p, isImg) {
                 </select>
               </label>
               <label class="field">生成张数
-                <input class="input" id="imgCount" type="number" min="3" max="12" value="${esc(S.imageCount || 6)}" />
+                <input class="input" id="imgCount" type="number" min="3" max="12" value="${esc(S.imageCount || DEFAULT_XHS_IMAGE_COUNT)}" />
               </label>
               <label class="field full">创作内容
                 <textarea class="input" id="imgBrief" rows="4" placeholder="写得具体一点：这篇笔记想讲什么、面向谁、希望每张图大概覆盖哪些点。留空则按产品功能和账号创作风格生成。">${esc(S.direction || p.topic || "")}</textarea>
@@ -555,11 +556,31 @@ export function renderSlotsPage(root, p, isImg) {
     return root.isConnected && r.zone === "studio" && r.page === routePage && state.ui.activeProductionId === p.id;
   };
 
+  function startImageRun(mode, index = null) {
+    const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    A.imageRun = { token, mode, index, startedAt: Date.now() };
+    return token;
+  }
+
+  function imageRunActive(token, mode = "") {
+    if (!token) return true;
+    return A.imageRun?.token === token && (!mode || A.imageRun.mode === mode);
+  }
+
+  function clearOtherLoadingSlots(index) {
+    (A.items || []).forEach((x, j) => {
+      if (j !== index && x.status === "loading" && !x.assetId) {
+        x.status = "idle";
+        x.error = "";
+      }
+    });
+  }
+
   function wire() {
     if (isImg) {
       $("#imgProduct", root)?.addEventListener("change", e => { S.productId = e.target.value || "dumate"; save("productions"); });
       $("#imgCount", root)?.addEventListener("input", e => {
-        S.imageCount = Math.max(3, Math.min(12, parseInt(e.target.value, 10) || 6));
+        S.imageCount = Math.max(3, Math.min(12, parseInt(e.target.value, 10) || DEFAULT_XHS_IMAGE_COUNT));
         save("productions");
       });
       $("#imgBrief", root)?.addEventListener("input", e => { S.direction = e.target.value; if (S.direction.trim()) p.topic = S.direction.trim().slice(0, 80); save("productions"); });
@@ -624,6 +645,7 @@ export function renderSlotsPage(root, p, isImg) {
       $("#cbDropInput", root).addEventListener("change", e => { handleReturn(e.target.files); e.target.value = ""; });
     } else {
       $("#cbGenAllImages", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+        const runToken = startImageRun("all");
         const items = A.items || [];
         if (!items.length) {
           await generateImageWorkshop();
@@ -632,7 +654,7 @@ export function renderSlotsPage(root, p, isImg) {
         if (!fresh.length) { toast("还没有可生成的图卡"); return; }
         if (!imageApiConfigured()) { toast("图片 API 未接入，请先配置站内图片服务，或切到站外上传", "error"); return; }
         fresh.forEach(x => {
-          if (x.prompt && !x.assetId) {
+          if (imageRunActive(runToken, "all") && x.prompt && !x.assetId) {
             x.status = "loading";
             x.error = "";
           }
@@ -641,10 +663,15 @@ export function renderSlotsPage(root, p, isImg) {
         if (canRedrawCurrent()) draw();
         let ok = 0;
         for (let i = 0; i < fresh.length; i++) {
+          if (!imageRunActive(runToken, "all")) {
+            toast("已切换为单张生成，停止全量队列");
+            return;
+          }
           if (!fresh[i].prompt) continue;
-          await generateOneImage(i, { redraw: true, silent: true });
+          await generateOneImage(i, { redraw: true, silent: true, runToken, runMode: "all" });
           if (fresh[i].assetId) ok++;
         }
+        if (!imageRunActive(runToken, "all")) return;
         save("productions");
         if (canRedrawCurrent()) draw();
         toast(ok ? `已生成 ${ok}/${fresh.length} 张图片` : "没有图片生成成功，请检查错误提示", ok ? "" : "error");
@@ -662,7 +689,7 @@ export function renderSlotsPage(root, p, isImg) {
             style: p.artifacts.script.style,
             imageTemplate: acc.imagePromptTemplate || "",
             styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
-            imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || 6,
+            imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || DEFAULT_XHS_IMAGE_COUNT,
             product: productById(p.artifacts.script.productId),
             topic: p.topic
           });
@@ -694,8 +721,15 @@ export function renderSlotsPage(root, p, isImg) {
       await fillSlot(+inp.dataset.up, f);
       draw();
     }));
-    $$("[data-gen]", root).forEach(b => b.addEventListener("click", async () => {
-      await generateOneImage(+b.dataset.gen, { single: true });
+    $$("[data-gen]", root).forEach(b => b.addEventListener("click", async e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const index = +b.dataset.gen;
+      const runToken = startImageRun("single", index);
+      clearOtherLoadingSlots(index);
+      save("productions");
+      if (canRedrawCurrent()) draw();
+      await generateOneImage(index, { single: true, runToken, runMode: "single" });
     }));
     $$(".sc-thumb img", root).forEach(im => im.addEventListener("click", () => openLightbox(im, im.src, "")));
 
@@ -746,7 +780,8 @@ export function renderSlotsPage(root, p, isImg) {
   }
 
   async function generateOneImage(i, opts = {}) {
-    const { redraw = true, silent = false, single = false } = opts;
+    const { redraw = true, silent = false, single = false, runToken = "", runMode = "" } = opts;
+    if (!imageRunActive(runToken, runMode)) return;
     const it = A.items[i];
     if (!it) return;
     if (!it.prompt && isImg) {
@@ -758,6 +793,8 @@ export function renderSlotsPage(root, p, isImg) {
     }
     const fresh = A.items[i];
     if (!fresh || !fresh.prompt) { toast("这张图还没有提示词，先生成图卡结构"); return; }
+    if (!imageRunActive(runToken, runMode)) return;
+    if (runMode === "single") clearOtherLoadingSlots(i);
     fresh.status = "loading";
     fresh.error = "";
     if (redraw && canRedrawCurrent()) draw();
@@ -777,6 +814,7 @@ export function renderSlotsPage(root, p, isImg) {
           model: key?.model || "custom-imagemodel-gt"
         });
         const out = await provider.poll(r.providerRef);
+        if (!imageRunActive(runToken, runMode)) return;
         if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || "图片生成未返回结果");
         const dataUrl = out.output.dataUrl.startsWith("data:")
           ? out.output.dataUrl
@@ -792,6 +830,7 @@ export function renderSlotsPage(root, p, isImg) {
         if (!silent) toast(`第 ${i + 1} 张已生成并精修入库`);
       }
     } catch (e) {
+      if (!imageRunActive(runToken, runMode)) return;
       fresh.status = "failed";
       fresh.error = e.message || String(e);
       toast("图片生成失败：" + fresh.error, "error");
@@ -832,7 +871,7 @@ export function renderSlotsPage(root, p, isImg) {
         refNames,
         template: acc.imagePromptTemplate || "",
         productName: product?.name || product?.shortName || "",
-        imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || 6
+        imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || DEFAULT_XHS_IMAGE_COUNT
       })
       : buildSbExternalPrompt({ shots, boards: (A.items || []).filter(x => x.prompt), style: p.artifacts.script.style, sharedRefName: sharedRefs.map(x => x.name).join("、") });
     save("productions");
@@ -840,7 +879,7 @@ export function renderSlotsPage(root, p, isImg) {
 
   async function generateImageWorkshop() {
     let brief = ($("#imgBrief", root)?.value || "").trim();
-    const count = Math.max(3, Math.min(12, parseInt($("#imgCount", root)?.value, 10) || S.imageCount || 6));
+    const count = Math.max(3, Math.min(12, parseInt($("#imgCount", root)?.value, 10) || S.imageCount || DEFAULT_XHS_IMAGE_COUNT));
     S.imageCount = count;
     S.productId = $("#imgProduct", root)?.value || S.productId || "dumate";
     S.productId = primaryProductById(S.productId)?.id || "dumate";

@@ -14,6 +14,8 @@ import { toast, withLoading, promptModal } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 
+const DEFAULT_XHS_IMAGE_COUNT = 4;
+
 function audioDurationOf(url) {
   return new Promise(res => {
     if (!url) return res(0);
@@ -65,8 +67,8 @@ export function renderScriptPage(root, p) {
             </label>
             ${isImg ? `
             <div class="field count-field">
-              <span>生成几张图 <em id="csCountVal">${A.imageCount || 6} 张</em></span>
-              <div class="count-slider"><span>3</span><input type="range" id="csCount" min="3" max="9" step="1" value="${A.imageCount || 6}" /><span>9</span></div>
+              <span>生成几张图 <em id="csCountVal">${A.imageCount || DEFAULT_XHS_IMAGE_COUNT} 张</em></span>
+              <div class="count-slider"><span>3</span><input type="range" id="csCount" min="3" max="9" step="1" value="${A.imageCount || DEFAULT_XHS_IMAGE_COUNT}" /><span>9</span></div>
             </div>` : ""}
           </div>
           ${isImg ? `
@@ -318,7 +320,7 @@ export function renderScriptPage(root, p) {
       : await AI.generateScript({
         topic, duration: isImg ? 0 : 55, account: acc, image: isImg,
         direction: contentBrief,
-        style, imageCount: A.imageCount || 6, product: selectedProduct,
+        style, imageCount: A.imageCount || DEFAULT_XHS_IMAGE_COUNT, product: selectedProduct,
         imageTemplate: acc.imagePromptTemplate || "",
         styleRefName: imageStyleRef?.name || ""
       });
