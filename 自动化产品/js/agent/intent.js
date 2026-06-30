@@ -34,13 +34,28 @@ function firstNum(re, text) {
   return m ? zhNum(m[1]) : null;
 }
 
+function tagMatches(goal, tag) {
+  if (goal.includes(tag)) return true;
+  if (tag === "学生教培") return /学生党|学生|教培|学习|复习|校园/.test(goal);
+  if (tag === "职场效率") return /职场|办公|效率|打工|上班/.test(goal);
+  if (tag === "创作者") return /自媒体|创作者|博主|内容号|创作号|OPC|个人IP/.test(goal);
+  if (tag === "产品功能") return /产品功能|功能教程|产品教程|工具教程|功能演示/.test(goal);
+  if (tag === "家庭管理") return /家庭|家务|居家|亲子/.test(goal);
+  if (tag === "岗位垂类") return /岗位|运营|财务|法务|销售|人事|HR|设计|教师/.test(goal);
+  if (tag === "测评中立") return /测评|对比|横评|中立|避坑/.test(goal);
+  return false;
+}
+
+function selectionRange(goal = "") {
+  const n = firstNum(/(?:最后|后|倒数|末尾)\s*([0-9]+|[两一二三四五六七八九十]+)\s*(个|只|家)?\s*(账号|号|图文|图文号|图文账号|素材号|真人号|数字人号)?/, goal);
+  if (n) return { pickFrom: "end", accountCount: n };
+  const first = firstNum(/(?:前|最前|开头|开始)\s*([0-9]+|[两一二三四五六七八九十]+)\s*(个|只|家)?\s*(账号|号|图文|图文号|图文账号|素材号|真人号|数字人号)?/, goal);
+  if (first) return { pickFrom: "start", accountCount: first };
+  return { pickFrom: "" };
+}
+
 export function parseGoalFallback(goal) {
-  const tags = TAG_POOL.filter(t =>
-    goal.includes(t) ||
-    goal.includes(t.slice(0, 2)) ||
-    (t === "学生教培" && /学生党|学生|教培|学习|复习|校园/.test(goal)) ||
-    (t === "职场效率" && /职场|办公|效率|打工|上班/.test(goal))
-  );
+  const tags = TAG_POOL.filter(t => tagMatches(goal, t));
   const group = /图文|笔记|小红书图/.test(goal) ? "图文组"
     : (goal.includes("真人") || goal.includes("数字人")) ? "真人"
     : (goal.includes("素材") || goal.includes("无数字人")) ? "素材" : "all";
@@ -52,6 +67,7 @@ export function parseGoalFallback(goal) {
     || firstNum(/([0-9]+|[两一二三四五六七八九十]+)\s*(条|篇|张|支)\s*(内容|图文|笔记|视频)/, goal);
   const genericCount = firstNum(/([0-9]+|[两一二三四五六七八九十]+)\s*(个|条|只|家|篇|张|支)\s*(账号|号|图文|笔记|视频|素材|真人|数字人)?/, goal);
   const count = accountCount || genericCount;
+  const range = selectionRange(goal);
   const sort = /很久没(发|发布|更新)|长期没(发|发布|更新)|久未(发|发布|更新)|最近没(发|发布|更新)|沉默|低活跃|冷启动/.test(goal) ? "stale" : "";
   // 只在明确给了主题时才取主题（引号 / 主题是X / 关于X / 围绕X / 做一期X）；否则留空 → 每号随机主题。
   // "选择N个图文号" 这类纯选号指令不要把整句当成主题。
@@ -62,9 +78,9 @@ export function parseGoalFallback(goal) {
   if (isPureAccountSelectionText(goal) && !qm) topic = "";
   return {
     topic: topic.slice(0, 30), tags, group, style: styleM ? styleM[1] : "",
-    count, accountCount: accountCount || count || null,
+    count: range.accountCount || count, accountCount: range.accountCount || accountCount || count || null,
     perAccountCount: Math.max(1, perAccountCount || 1),
-    sort
+    sort, pickFrom: range.pickFrom || ""
   };
 }
 

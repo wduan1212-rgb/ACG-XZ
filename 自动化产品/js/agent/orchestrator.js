@@ -14,6 +14,7 @@ import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/pr
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { fileToDataUrl } from "../core/util.js";
 
+const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
 
 /* ---------- 会话 ---------- */
@@ -126,6 +127,8 @@ export function createBatch(plan, sessionId) {
     accountProductIds: plan.accountProductIds || {},
     accountContents: plan.accountContents || {},
     accountCounts: plan.accountCounts || {},
+    accountImageCounts: plan.accountImageCounts || {},
+    imageCount: Math.max(3, Math.min(12, Number(plan.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT)),
     style: plan.style || "",
     accountCount: Number(plan.accountCount || plan.count) || null,
     perAccountCount: Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1)),
@@ -191,7 +194,10 @@ export function matchAccounts({ tags = [], group = "all", sort = "" } = {}) {
 export function selectAccountsForPlan(params = {}) {
   const matched = matchAccounts(params);
   const want = Number(params.accountCount || params.count);
-  if (want > 0 && want < matched.length) return matched.slice(0, want);
+  if (want > 0 && want < matched.length) {
+    if (params.pickFrom === "end") return matched.slice(-want);
+    return matched.slice(0, want);
+  }
   return matched;
 }
 
@@ -210,8 +216,11 @@ export function defaultPlan(goal = "新量产计划") {
     productId: "dumate", content: "",
     accountProductIds: {}, accountContents: {},
     accountCounts: {},
+    accountImageCounts: {},
+    imageCount: DEFAULT_XHS_IMAGE_COUNT,
     style: params.style || "", tags: params.tags || [], group: params.group,
     sort: params.sort,
+    pickFrom: params.pickFrom || "",
     accountCount: params.accountCount,
     perAccountCount: params.perAccountCount,
     accountIds: [],
@@ -256,18 +265,40 @@ async function polishImageDataUrl(dataUrl, seedText = "") {
       ctx.fillRect(0, 0, w, h);
       ctx.globalCompositeOperation = "source-over";
       const pad = Math.max(18, Math.round(Math.min(w, h) * 0.025));
-      const len = Math.max(42, Math.round(Math.min(w, h) * (0.055 + rnd() * 0.02)));
+      const len = Math.max(34, Math.round(Math.min(w, h) * (0.04 + rnd() * 0.025)));
       const colors = ["rgba(63,107,255,.22)", "rgba(255,77,141,.18)", "rgba(20,184,166,.18)", "rgba(154,69,255,.18)"];
       ctx.lineCap = "round";
       ctx.lineWidth = Math.max(3, Math.round(Math.min(w, h) * 0.004));
-      [["tl", pad, pad, 1, 1], ["tr", w - pad, pad, -1, 1], ["bl", pad, h - pad, 1, -1], ["br", w - pad, h - pad, -1, -1]].forEach((c, i) => {
+      const corners = [["tl", pad, pad, 1, 1], ["tr", w - pad, pad, -1, 1], ["bl", pad, h - pad, 1, -1], ["br", w - pad, h - pad, -1, -1]]
+        .map((corner, i) => ({ corner, i, order: rnd() }))
+        .sort((a, b) => a.order - b.order)
+        .slice(0, Math.floor(rnd() * 3)); // 0-2 个角，避免每张图四角都出现括号。
+      corners.forEach(({ corner: c, i }) => {
         const [, x, y, sx, sy] = c;
         ctx.strokeStyle = colors[(i + Math.floor(rnd() * colors.length)) % colors.length];
+        ctx.globalAlpha = 0.72 + rnd() * 0.18;
         ctx.beginPath();
-        ctx.moveTo(x, y + sy * len);
-        ctx.quadraticCurveTo(x, y, x + sx * len, y);
+        const variant = Math.floor(rnd() * 4);
+        if (variant === 0) {
+          ctx.moveTo(x, y + sy * len);
+          ctx.quadraticCurveTo(x, y, x + sx * len, y);
+        } else if (variant === 1) {
+          ctx.moveTo(x, y + sy * len * 0.9);
+          ctx.lineTo(x, y + sy * len * 0.25);
+          ctx.moveTo(x + sx * len * 0.25, y);
+          ctx.lineTo(x + sx * len * 0.9, y);
+        } else if (variant === 2) {
+          const r = len * 0.22;
+          ctx.arc(x + sx * r, y + sy * r, r, 0, Math.PI * 2);
+        } else {
+          ctx.moveTo(x, y + sy * len * 0.55);
+          ctx.lineTo(x + sx * len * 0.55, y);
+          ctx.moveTo(x + sx * len * 0.18, y + sy * len * 0.72);
+          ctx.lineTo(x + sx * len * 0.72, y + sy * len * 0.18);
+        }
         ctx.stroke();
       });
+      ctx.globalAlpha = 1;
       resolve(canvas.toDataURL(dataUrl.startsWith("data:image/png") ? "image/png" : "image/jpeg", 0.94));
     };
     img.onerror = () => resolve(dataUrl);
@@ -408,7 +439,7 @@ async function draftOne(p, batch) {
       : await AI.generateScript({
         topic: topic + (style ? `（风格策略：${style}）` : ""),
         duration: isImg ? 0 : 55, account: acc, image: isImg, style: isImg ? style : "",
-        imageCount: p.artifacts.script.imageCount || 6, product,
+        imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT, product,
         direction: isImg ? topic : "",
         imageTemplate: acc.imagePromptTemplate || "",
         styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : ""
@@ -425,7 +456,7 @@ async function draftOne(p, batch) {
         account: acc,
         style,
         imageTemplate: acc.imagePromptTemplate || "",
-        imageCount: p.artifacts.script.imageCount || 6,
+        imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT,
         product,
         topic,
         styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : ""
@@ -443,7 +474,7 @@ async function draftOne(p, batch) {
         items: p.artifacts.images.items,
         template: acc.imagePromptTemplate || "",
         productName: product?.name || product?.shortName || "",
-        imageCount: p.artifacts.script.imageCount || 6,
+        imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT,
         refNames: acc.imageStyleAssetId ? [state.assets.find(a => a.id === acc.imageStyleAssetId)?.name].filter(Boolean) : []
       });
     } else {
@@ -566,14 +597,17 @@ export async function startBatch(plan, session) {
   if (!accounts.length) { agentSay("⚠ 没有可用账号，先调整筛选条件。"); return null; }
   const batch = createBatch(plan, session.id);
   const defaultPerAccountCount = Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1));
+  const defaultImageCount = Math.max(3, Math.min(12, Number(plan.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT));
   accounts.forEach(acc => {
     const rawProductId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
     const productId = primaryProductById(rawProductId)?.id || "dumate";
-    const perAccountCount = defaultPerAccountCount;
+    const perAccountCount = Math.max(1, Math.min(12, Number((plan.accountCounts || {})[acc.id] || defaultPerAccountCount) || defaultPerAccountCount));
+    const imageCount = Math.max(3, Math.min(12, Number((plan.accountImageCounts || {})[acc.id] || defaultImageCount) || defaultImageCount));
     for (let i = 0; i < perAccountCount; i++) {
       const topic = plan.topicMode === "random" ? "" : (perAccountCount > 1 ? `${plan.topic} ${i + 1}/${perAccountCount}` : plan.topic);
       const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId });
       if (p) {
+        p.artifacts.script.imageCount = imageCount;
         p.batchItemIndex = i + 1;
         p.batchItemTotal = perAccountCount;
         batch.productionIds.push(p.id);
@@ -584,15 +618,15 @@ export async function startBatch(plan, session) {
   addMsg(session, { role: "agent", type: "progress", payload: { batchId: batch.id } });
   notify("agent", `批次启动：「${batch.topic}」`, `${accounts.length} 个账号 · 共 ${batch.productionIds.length} 条内容`);
   // 起草过程播报到思考面板
-  emit("agent:thinking", true);
-  think(`并发起草 ${accounts.length} 个账号 · ${batch.productionIds.length} 条内容…`);
+  emit("agent:thinking", { sessionId: session.id, value: true });
+  think(`并发起草 ${accounts.length} 个账号 · ${batch.productionIds.length} 条内容…`, session.id);
   let drafted = 0;
   const total = batch.productionIds.length;
   runPool(batchProds(batch), async p => {
     await draftOne(p, batch);
     drafted++;
-    think(`起草完成 ${drafted}/${total} · ${accountById(p.accountId)?.name || ""}`);
-  }, 2).then(() => { emit("agent:thinking", false); evaluate(batch.id); });
+    think(`起草完成 ${drafted}/${total} · ${accountById(p.accountId)?.name || ""}`, session.id);
+  }, 2).then(() => { emit("agent:thinking", { sessionId: session.id, value: false }); evaluate(batch.id); });
   return batch;
 }
 
@@ -841,7 +875,7 @@ export function contextSummary() {
 }
 
 /* 思考过程播报（驱动对话区的思考小面板） */
-export function think(step) { emit("agent:think", step); }
+export function think(step, sessionId = state.ui.activeSessionId) { emit("agent:think", { sessionId, step }); }
 const INTENT_LABEL = { plan_batch: "拆解量产计划", run_generation: "派发生成任务", approve_all: "批量过审", deliver_all: "批量交付", retry_failed: "重试失败项", status_query: "汇总当前进度" };
 
 function isPureAccountSelection(text) {
@@ -854,11 +888,11 @@ export async function handleUserText(text) {
   const session = ensureSession();
   session.title = (text || "").slice(0, 18) || "量产计划";
   save("sessions");
-  emit("agent:thinking", true);
-  think("读取工作台上下文…");
+  emit("agent:thinking", { sessionId: session.id, value: true });
+  think("读取工作台上下文…", session.id);
   try {
     const r = await routeIntent(text, contextSummary());
-    think(`识别意图 · ${INTENT_LABEL[r.intent] || r.intent}`);
+    think(`识别意图 · ${INTENT_LABEL[r.intent] || r.intent}`, session.id);
     const fb = parseGoalFallback(text);
     const params = { ...(r.params || {}), ...fb };
     if (fb.group && fb.group !== "all") params.group = fb.group;
@@ -866,12 +900,13 @@ export async function handleUserText(text) {
     if (fb.perAccountCount != null) params.perAccountCount = fb.perAccountCount;
     if (fb.count != null) params.count = fb.count;
     if (fb.sort) params.sort = fb.sort;
+    if (fb.pickFrom) params.pickFrom = fb.pickFrom;
     if (isPureAccountSelection(text)) params.topic = "";
-    think("按分组、标签、活跃度匹配账号矩阵…");
+    think("按分组、标签、活跃度匹配账号矩阵…", session.id);
     const matched = selectAccountsForPlan(params);
     const accountCount = Number(params.accountCount || params.count) || matched.length;
     const perAccountCount = Math.max(1, Math.min(12, Number(params.perAccountCount || 1) || 1));
-    think(`命中 ${matched.length} 个账号 · 每号 ${perAccountCount} 条 · 生成量产任务板`);
+    think(`命中 ${matched.length} 个账号 · 每号 ${perAccountCount} 条 · 生成量产任务板`, session.id);
     const wantsRandom = /随机主题|各自主题|主题随机/.test(text) || !params.topic;
     const payload = {
       status: "pending", goal: text,
@@ -879,8 +914,11 @@ export async function handleUserText(text) {
       topic: params.topic || "", productId: "dumate", content: "",
       accountProductIds: {}, accountContents: {},
       accountCounts: {},
+      accountImageCounts: {},
+      imageCount: DEFAULT_XHS_IMAGE_COUNT,
       style: params.style || "", tags: params.tags || [], group: params.group || "all",
       sort: params.sort || "",
+      pickFrom: params.pickFrom || "",
       accountCount, perAccountCount,
       accountIds: matched.map(a => a.id),
       sharedRefAssetIds: [], accountRefAssetIds: {}
@@ -894,7 +932,7 @@ export async function handleUserText(text) {
       addMsg(session, { role: "agent", type: "plan", payload });
     }
   } finally {
-    emit("agent:thinking", false);
+    emit("agent:thinking", { sessionId: session.id, value: false });
   }
 }
 

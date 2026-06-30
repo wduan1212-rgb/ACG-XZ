@@ -19,8 +19,7 @@ import { urlFor } from "../domain/assets.js";
 
 let mounted = false;
 let rootEl = null;
-let thinking = false;
-let thinkSteps = [];       // 思考过程播报
+const thinkingBySession = new Map(); // sessionId -> { active, steps }
 let scrollTopOnce = false;
 
 function ensurePlanBoard(session = ensureSession()) {
@@ -28,6 +27,15 @@ function ensurePlanBoard(session = ensureSession()) {
   session.title = "新量产计划";
   addMsg(session, { role: "agent", type: "plan", payload: defaultPlan() });
   return session;
+}
+
+function findMessageInSessions(messageId) {
+  for (const session of state.sessions || []) {
+    const msg = (session.messages || []).find(m => m.id === messageId);
+    if (msg) return { session, msg };
+  }
+  const session = ensureSession();
+  return { session, msg: (session.messages || []).find(m => m.id === messageId) || null };
 }
 
 function scrollMsgsTopSoon() {
@@ -95,8 +103,29 @@ export const agentView = {
       mounted = true;
       on("agent:msg", () => isLive() && (renderMsgs(true), renderSessions()));
       on("agent:session", () => isLive() && (renderSessions(), renderMsgs(true), renderBoard(), renderPhase()));
-      on("agent:thinking", v => { thinking = v; if (!v) setTimeout(() => { thinkSteps = []; }, 400); else thinkSteps = []; isLive() && renderThinking(); });
-      on("agent:think", step => { thinkSteps.push(step); isLive() && renderThinking(); });
+      on("agent:thinking", payload => {
+        const sessionId = typeof payload === "object" && payload ? payload.sessionId : state.ui.activeSessionId;
+        const value = typeof payload === "object" && payload ? !!payload.value : !!payload;
+        if (!sessionId) return;
+        const cur = thinkingBySession.get(sessionId) || { active: false, steps: [] };
+        cur.active = value;
+        cur.steps = value ? [] : cur.steps;
+        thinkingBySession.set(sessionId, cur);
+        if (!value) setTimeout(() => {
+          const latest = thinkingBySession.get(sessionId);
+          if (latest && !latest.active) { latest.steps = []; thinkingBySession.set(sessionId, latest); isLive() && renderThinking(); }
+        }, 400);
+        isLive() && renderThinking();
+      });
+      on("agent:think", payload => {
+        const sessionId = typeof payload === "object" && payload ? payload.sessionId : state.ui.activeSessionId;
+        const step = typeof payload === "object" && payload ? payload.step : payload;
+        if (!sessionId || !step) return;
+        const cur = thinkingBySession.get(sessionId) || { active: false, steps: [] };
+        cur.steps.push(step);
+        thinkingBySession.set(sessionId, cur);
+        isLive() && renderThinking();
+      });
       on("batch:update", () => schedule(true));
       on("job:update", () => schedule(false));
       on("production:update", () => schedule(true));
@@ -166,7 +195,7 @@ function renderMsgs(scroll = false) {
 }
 
 function thinkStepsHtml() {
-  const steps = thinkSteps.slice(-4);
+  const steps = (thinkingBySession.get(state.ui.activeSessionId)?.steps || []).slice(-4);
   return steps.map((s, i) => `<div class="think-step ${i === steps.length - 1 ? "cur" : "done"}">${i === steps.length - 1 ? `<span class="ts-dot spin"></span>` : icon("check", 11, "ok")}<span>${esc(s)}</span></div>`).join("")
     || `<div class="think-step cur"><span class="ts-dot spin"></span><span>整理思路…</span></div>`;
 }
@@ -180,7 +209,8 @@ function thinkProgHtml() {
 }
 function renderThinking() {
   const t = $("#agwThinking"); if (!t) return;
-  if (!thinking) { t.innerHTML = ""; return; }
+  const cur = thinkingBySession.get(state.ui.activeSessionId);
+  if (!cur?.active) { t.innerHTML = ""; return; }
   // 已存在面板：只就地更新步骤/进度，避免整块重渲染导致动效重启「一跳一跳」
   const panel = t.querySelector(".think-panel");
   if (panel) {
@@ -228,7 +258,6 @@ function updateProgressCard(node, b) {
   }
 }
 function refreshLiveCards() {
-  const s = ensureSession();
   $$('#agwMsgs [data-mid]').forEach(node => {
     // 进度卡就地更新，不换节点（避免进度条/动画重启的闪烁）
     if (node.dataset.mtype === "progress") {
@@ -238,7 +267,7 @@ function refreshLiveCards() {
       return;
     }
     if (!node.querySelector("[data-live]") && node.dataset.mtype !== "approval" && node.dataset.mtype !== "need_input") return;
-    const m = s.messages.find(x => x.id === node.dataset.mid);
+    const { msg: m } = findMessageInSessions(node.dataset.mid);
     if (!m) return;
     const tmp = document.createElement("div");
     tmp.innerHTML = renderMessage(m);
@@ -257,19 +286,38 @@ function safeReplaceNode(node, fresh) {
   node.parentNode.replaceChild(fresh, node);
 }
 
+function planScrollSnapshot(row) {
+  const listEl = $("#agwMsgs");
+  return {
+    listTop: listEl ? listEl.scrollTop : 0,
+    accTop: row?.querySelector?.(".agc-accs")?.scrollTop || 0
+  };
+}
+
+function restorePlanScroll(snap, row) {
+  const restore = () => {
+    const listEl = $("#agwMsgs");
+    const accs = row?.querySelector?.(".agc-accs");
+    if (listEl) listEl.scrollTop = snap.listTop;
+    if (accs) accs.scrollTop = snap.accTop;
+  };
+  restore();
+  requestAnimationFrame(restore);
+  setTimeout(restore, 60);
+}
+
 function rerenderPlanCard(mid) {
   const node = document.querySelector(`#agwMsgs [data-mid="${mid}"]`);
   if (!node) return;
-  const s = ensureSession();
-  const m = s.messages.find(x => x.id === mid);
+  const { msg: m } = findMessageInSessions(mid);
   if (!m) return;
-  const listEl = $("#agwMsgs");
-  const keepTop = listEl ? listEl.scrollTop : 0;
+  const snap = planScrollSnapshot(node);
   const tmp = document.createElement("div");
   tmp.innerHTML = renderMessage(m);
-  if (tmp.firstElementChild) safeReplaceNode(node, tmp.firstElementChild);
+  const fresh = tmp.firstElementChild;
+  if (fresh) safeReplaceNode(node, fresh);
   wireDrops();
-  if (listEl) listEl.scrollTop = keepTop;
+  restorePlanScroll(snap, fresh);
 }
 
 function renderBoard() {
@@ -406,6 +454,33 @@ function wire(root) {
     toast(e.target.checked ? "已开启自动推进：上传齐自动渲染、完成自动进入待发布" : "已关闭自动推进：每个关口都会等你确认");
   });
 
+  const handlePlanPickClick = e => {
+    const tagBtn = e.target.closest("[data-ptag]");
+    const accBtn = e.target.closest("[data-pacc]");
+    if (!tagBtn && !accBtn) return false;
+    e.preventDefault();
+    const node = e.target.closest("[data-plan]");
+    if (!node) return true;
+    const { msg: m } = findMessageInSessions(node.dataset.plan);
+    if (!m || m.payload.status !== "pending") return true;
+    if (tagBtn) {
+      const t = tagBtn.dataset.ptag;
+      const i = m.payload.tags.indexOf(t);
+      i >= 0 ? m.payload.tags.splice(i, 1) : m.payload.tags.push(t);
+      m.payload.manualAccountSelection = false;
+      m.payload.accountIds = selectAccountsForPlan(m.payload).map(a => a.id);
+    } else {
+      const id = accBtn.dataset.pacc;
+      const i = m.payload.accountIds.indexOf(id);
+      i >= 0 ? m.payload.accountIds.splice(i, 1) : m.payload.accountIds.push(id);
+      m.payload.accountCount = m.payload.accountIds.length;
+      m.payload.manualAccountSelection = true;
+    }
+    save("sessions");
+    rerenderPlanCard(m.id);
+    return true;
+  };
+
   // 全局委托
   shell.addEventListener("click", async e => {
     const exit = e.target.closest('[data-agw="exit"]');
@@ -418,7 +493,7 @@ function wire(root) {
     if (srn) {
       const s2 = state.sessions.find(x => x.id === srn.dataset.srename);
       const name = await promptModal({ title: "重命名会话", value: s2?.title || "", placeholder: "会话名称" });
-      if (name) renameSession(srn.dataset.srename, name);
+      if (name) { renameSession(srn.dataset.srename, name); renderSessions(); }
       return;
     }
     const sdl = e.target.closest("[data-sdel]");
@@ -444,6 +519,8 @@ function wire(root) {
       return;
     }
 
+    if (handlePlanPickClick(e)) return;
+
     const act = e.target.closest("[data-act]");
     if (!act) return;
     const pid = act.dataset.pid;
@@ -457,7 +534,7 @@ function wire(root) {
         break;
       }
       case "plan-random-accounts": {
-        const m = s.messages.find(x => x.id === act.dataset.mid);
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
         const pool = matchAccounts({ group: m.payload.group || "all", tags: m.payload.tags || [], sort: m.payload.sort || "" });
         if (!pool.length) { toast("当前条件下没有可选账号"); break; }
@@ -468,13 +545,14 @@ function wire(root) {
           .map(x => x.a.id);
         m.payload.accountIds = picked;
         m.payload.accountCount = picked.length;
+        m.payload.manualAccountSelection = true;
         save("sessions");
         rerenderPlanCard(m.id);
         toast(`已随机选择 ${picked.length} 个账号`);
         break;
       }
       case "plan-confirm": {
-        const m = s.messages.find(x => x.id === act.dataset.mid);
+        const { session: ownerSession, msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
         if (m.payload.topicMode !== "random" && !(m.payload.topic || "").trim()) { toast("先填写主题，或切换为每号随机"); return; }
         if (!m.payload.accountIds.length) { toast("至少选择一个账号"); return; }
@@ -483,18 +561,18 @@ function wire(root) {
         state.ui.returnTo = null;
         save("sessions");
         renderMsgs(true);
-        await startBatch({ ...m.payload, goal: m.payload.goal }, s);
+        await startBatch({ ...m.payload, goal: m.payload.goal }, ownerSession || s);
         if (document.body.dataset.zone !== "agent") go("agent");
         else { renderBoard(); renderPhase(); }
         break;
       }
       case "plan-cancel": {
-        const m = s.messages.find(x => x.id === act.dataset.mid);
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (m) { m.payload.status = "cancelled"; save("sessions"); renderMsgs(); }
         break;
       }
       case "plan-topicmode": {
-        const m = s.messages.find(x => x.id === act.dataset.mid);
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") break;
         m.payload.topicMode = m.payload.topicMode === "random" ? "fixed" : "random";
         save("sessions");
@@ -502,7 +580,7 @@ function wire(root) {
         break;
       }
       case "plan-refclear": {
-        const m = s.messages.find(x => x.id === act.dataset.mid);
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (m) {
           m.payload.sharedRefAssetId = null;
           m.payload.sharedRefAssetIds = [];
@@ -512,7 +590,7 @@ function wire(root) {
         break;
       }
       case "plan-refremove": {
-        const m = s.messages.find(x => x.id === act.dataset.mid);
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (m) {
           const id = act.dataset.refid;
           m.payload.sharedRefAssetIds = (m.payload.sharedRefAssetIds || []).filter(x => x !== id);
@@ -523,7 +601,7 @@ function wire(root) {
         break;
       }
       case "plan-custom-refremove": {
-        const m = s.messages.find(x => x.id === act.dataset.mid);
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
         const accountId = act.closest("[data-ref-account]")?.dataset.refAccount || act.closest("[data-pacc-ref]")?.dataset.paccRef;
         if (m && accountId) {
           const id = act.dataset.refid;
@@ -584,11 +662,12 @@ function wire(root) {
     const ap = e.target.closest("[data-pacc-prod]");
     const ac = e.target.closest("[data-pacc-content]");
     const ar = e.target.closest("[data-pacc-ref]");
-    if (!f && !ap && !ac && !ar) return;
+    const acount = e.target.closest("[data-pacc-count]");
+    const aimg = e.target.closest("[data-pacc-imgcount]");
+    if (!f && !ap && !ac && !ar && !acount && !aimg) return;
     const node = e.target.closest("[data-plan]");
     if (!node) return;
-    const s = ensureSession();
-    const m = s.messages.find(x => x.id === node.dataset.plan);
+    const { msg: m } = findMessageInSessions(node.dataset.plan);
     if (!m || m.payload.status !== "pending") return;
     if (f) {
       if (f.multiple) {
@@ -597,6 +676,8 @@ function wire(root) {
       } else {
         m.payload[f.dataset.pf] = f.dataset.pf === "perAccountCount"
           ? Math.max(1, Math.min(12, Number(f.value || 1) || 1))
+          : f.dataset.pf === "imageCount"
+            ? Math.max(3, Math.min(12, Number(f.value || 4) || 4))
           : f.value;
       }
     }
@@ -612,47 +693,25 @@ function wire(root) {
       m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
       m.payload.accountRefAssetIds[ar.dataset.paccRef] = Array.from(ar.selectedOptions).map(o => o.value).filter(Boolean).slice(0, 3);
     }
+    if (acount) {
+      m.payload.accountCounts = m.payload.accountCounts || {};
+      m.payload.accountCounts[acount.dataset.paccCount] = Math.max(1, Math.min(12, Number(acount.value || m.payload.perAccountCount || 1) || 1));
+    }
+    if (aimg) {
+      m.payload.accountImageCounts = m.payload.accountImageCounts || {};
+      m.payload.accountImageCounts[aimg.dataset.paccImgcount] = Math.max(3, Math.min(12, Number(aimg.value || m.payload.imageCount || 4) || 4));
+    }
     save("sessions");
-    if (f?.multiple || ar || f?.dataset.pf === "perAccountCount") rerenderPlanCard(m.id);
+    if (f?.multiple || ar || acount || aimg || ["perAccountCount", "imageCount"].includes(f?.dataset.pf)) rerenderPlanCard(m.id);
   };
   shell.addEventListener("input", updatePlanField);
   shell.addEventListener("change", updatePlanField);
-  shell.addEventListener("click", e => {
-    const tagBtn = e.target.closest("[data-ptag]");
-    const accBtn = e.target.closest("[data-pacc]");
-    if (!tagBtn && !accBtn) return;
-    const node = e.target.closest("[data-plan]");
-    if (!node) return;
-    const s = ensureSession();
-    const m = s.messages.find(x => x.id === node.dataset.plan);
-    if (!m || m.payload.status !== "pending") return;
-    if (tagBtn) {
-      const t = tagBtn.dataset.ptag;
-      const i = m.payload.tags.indexOf(t);
-      i >= 0 ? m.payload.tags.splice(i, 1) : m.payload.tags.push(t);
-      m.payload.accountIds = selectAccountsForPlan(m.payload).map(a => a.id);
-    } else {
-      const id = accBtn.dataset.pacc;
-      const i = m.payload.accountIds.indexOf(id);
-      i >= 0 ? m.payload.accountIds.splice(i, 1) : m.payload.accountIds.push(id);
-    }
-    save("sessions");
-    // 整卡重建会让消息列表滚动跳回顶部 —— 重建前后保住 scrollTop
-    const listEl = $("#agwMsgs");
-    const keepTop = listEl ? listEl.scrollTop : 0;
-    const tmp = document.createElement("div");
-    tmp.innerHTML = renderMessage(m);
-    safeReplaceNode(node.closest("[data-mid]"), tmp.firstElementChild);
-    wireDrops();
-    if (listEl) listEl.scrollTop = keepTop;
-  });
 
   wireDrops();
 }
 
 async function setPlanRefs(mid, files) {
-  const s = ensureSession();
-  const m = s.messages.find(x => x.id === mid);
+  const { msg: m } = findMessageInSessions(mid);
   if (!m || m.payload.status !== "pending") return;
   const oldIds = Array.isArray(m.payload.sharedRefAssetIds) ? m.payload.sharedRefAssetIds : (m.payload.sharedRefAssetId ? [m.payload.sharedRefAssetId] : []);
   const remaining = Math.max(0, 5 - oldIds.length);
@@ -675,8 +734,8 @@ async function setPlanRefs(mid, files) {
 }
 
 function planMessage(mid) {
-  const s = ensureSession();
-  return s.messages.find(x => x.id === mid && x.type === "plan");
+  const { msg } = findMessageInSessions(mid);
+  return msg?.type === "plan" ? msg : null;
 }
 
 function planRefIds(payload, kind, accountId = "") {
@@ -771,8 +830,7 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
 }
 
 async function setPlanCustomRefs(mid, accountId, files) {
-  const s = ensureSession();
-  const m = s.messages.find(x => x.id === mid);
+  const { msg: m } = findMessageInSessions(mid);
   if (!m || m.payload.status !== "pending" || !accountId) return;
   const oldMap = m.payload.accountRefAssetIds || {};
   const oldIds = Array.isArray(oldMap[accountId]) ? oldMap[accountId] : [];

@@ -73,7 +73,11 @@ export function promptModal({ title, placeholder = "", value = "", okText = "确
       const b = e.target.closest("[data-r]");
       if (b) close(b.dataset.r === "1" ? $("#pmInput", ov).value.trim() : null);
     });
-    $("#pmInput", ov).addEventListener("keydown", e => { if (e.key === "Enter") close($("#pmInput", ov).value.trim()); });
+    $("#pmInput", ov).addEventListener("keydown", e => {
+      e.stopPropagation();
+      if (e.key === "Enter") close($("#pmInput", ov).value.trim());
+      if (e.key === "Escape") close(null);
+    });
   });
 }
 

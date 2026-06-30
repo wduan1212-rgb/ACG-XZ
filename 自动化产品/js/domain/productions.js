@@ -46,7 +46,7 @@ export const STATUS_LABEL = {
 
 export function blankArtifacts() {
   return {
-    script: { title: "", shots: [], source: "", style: "", imageCount: 6, direction: "", productId: "dumate" },
+    script: { title: "", shots: [], source: "", style: "", imageCount: 4, direction: "", productId: "dumate" },
     boards: { items: [], units: [], sharedRefAssetId: null, externalPrompt: "", externalGroups: [], generationMode: null, digitalHuman: { provider: "", model: "", segments: [] } },
     images: { items: [], sharedRefAssetId: null, externalPrompt: "" },
     prompts: [],
