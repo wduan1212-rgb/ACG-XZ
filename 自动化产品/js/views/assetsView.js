@@ -8,7 +8,7 @@ import { downloadAsset } from "../domain/delivery.js";
 import { platChip, groupOf } from "../domain/accounts.js";
 import { emptyState, promptModal, confirmModal, openLightbox } from "../ui/components.js";
 
-let fAcc = "all", fTag = "all", fQ = "", fKind = "all";
+let fAcc = "all", fTag = "all", fQ = "", fKind = "all", accFilterExpanded = false;
 const collapsedAcc = new Set();
 const isSharedAsset = a => !!a?.delivered || !!a?.shared;
 function deliveredTags(accountId = "all") {
@@ -35,6 +35,11 @@ export const assetsView = {
       if (fKind === "screen") list = list.filter(a => a.type === "视频" || (a.tags || []).some(t => /录屏|屏幕录制|产品录屏/.test(t)));
       if (fKind === "generated") list = list.filter(a => a.shared && a.type === "图片");
       const tags = deliveredTags(fAcc);
+      const accounts = state.accounts || [];
+      const visibleAccounts = accFilterExpanded
+        ? accounts
+        : accounts.filter((a, i) => i < 16 || a.id === fAcc);
+      const hiddenCount = Math.max(0, accounts.length - visibleAccounts.length);
       root.innerHTML = `
         <div class="assets-page">
           <div class="page-head">
@@ -50,12 +55,16 @@ export const assetsView = {
             <div class="fb-row">
               <button class="chip ${fKind === "all" ? "on" : ""}" data-fkind="all">全部发布素材</button>
               <button class="chip ${fKind === "generated" ? "on" : ""}" data-fkind="generated">${icon("image", 12)} 已发布生成图</button>
-              <button class="chip ${fKind === "bgm" ? "on" : ""}" data-fkind="bgm">${icon("music", 12)} 已发布 BGM</button>
-              <button class="chip ${fKind === "screen" ? "on" : ""}" data-fkind="screen">${icon("film", 12)} 已发布录屏</button>
             </div>
-            <div class="fb-row">
+            <div class="fb-row media-row">
+              <span class="fb-caption">剪辑素材库</span>
+              <button class="chip ${fKind === "bgm" ? "on" : ""}" data-fkind="bgm">${icon("music", 12)} BGM 库</button>
+              <button class="chip ${fKind === "screen" ? "on" : ""}" data-fkind="screen">${icon("film", 12)} 录屏库</button>
+            </div>
+            <div class="fb-row account-row ${accFilterExpanded ? "expanded" : ""}">
               <button class="chip ${fAcc === "all" ? "on" : ""}" data-facc="all">全部账号</button>
-              ${state.accounts.map(a => `<button class="chip ${fAcc === a.id ? "on" : ""}" data-facc="${a.id}">${esc(a.name)}</button>`).join("")}
+              ${visibleAccounts.map(a => `<button class="chip ${fAcc === a.id ? "on" : ""}" data-facc="${a.id}">${esc(a.name)}</button>`).join("")}
+              ${hiddenCount ? `<button class="chip ghost" data-acc-more>展开全部账号 +${hiddenCount}</button>` : (accFilterExpanded && accounts.length > 16 ? `<button class="chip ghost" data-acc-more>收起账号</button>` : "")}
             </div>
             <div class="fb-row">
               <button class="chip ${fTag === "all" ? "on" : ""}" data-ftag="all">全部标签</button>
@@ -119,6 +128,7 @@ export const assetsView = {
       $("#avSearch", root).addEventListener("input", e => { fQ = e.target.value; draw(); setTimeout(() => { const i = $("#avSearch", root); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 0); });
       $$("[data-fkind]", root).forEach(b => b.addEventListener("click", () => { fKind = b.dataset.fkind; draw(); }));
       $$("[data-facc]", root).forEach(b => b.addEventListener("click", () => { fAcc = b.dataset.facc; fTag = "all"; draw(); }));
+      root.querySelector("[data-acc-more]")?.addEventListener("click", () => { accFilterExpanded = !accFilterExpanded; draw(); });
       $$("[data-ftag]", root).forEach(b => b.addEventListener("click", () => { fTag = b.dataset.ftag; draw(); }));
       root.querySelector("[data-go-delivery]")?.addEventListener("click", () => { location.hash = "#/delivery"; });
       $$("[data-accsec]", root).forEach(b => b.addEventListener("click", () => {

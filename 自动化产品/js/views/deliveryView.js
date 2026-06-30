@@ -240,7 +240,9 @@ export const deliveryView = {
                     ${icon("chevronDown", 14)}
                   </button>
                   <div class="dv-day-list">
-                    ${closed ? "" : g.items.map(({ asset, acc }, i) => deliveredItemHtml(asset, acc, i, seqMap.get(asset.id))).join("")}
+                    <div class="dv-day-list-inner">
+                      ${g.items.map(({ asset, acc }, i) => deliveredItemHtml(asset, acc, i, seqMap.get(asset.id))).join("")}
+                    </div>
                   </div>
                 </section>`;
               }).join("")}
@@ -256,7 +258,8 @@ export const deliveryView = {
         e.stopPropagation();
         const key = b.dataset.dayToggle;
         collapsedDays.has(key) ? collapsedDays.delete(key) : collapsedDays.add(key);
-        drawCreator(body, all);
+        const sec = b.closest(".dv-day");
+        sec?.classList.toggle("collapsed", collapsedDays.has(key));
       }));
 
       // 已发布列表

@@ -24,11 +24,25 @@ const BATCH_CREATIVE_VARIANTS = [
   { key: "mistake-fix", name: "避坑修正型", angle: "先指出常见错误做法，再给更稳的流程", focus: "误区、正确做法、示例指令" },
   { key: "before-after", name: "前后对比型", angle: "展示处理前后的变化，用结果建立可信度", focus: "处理前、执行中、处理后" },
   { key: "one-person-team", name: "一人团队型", angle: "从一个人或小团队的重复劳动切入", focus: "个人卡点、任务拆分、交付结果" },
-  { key: "calm-note", name: "冷静备忘型", angle: "像公开备忘录一样冷静总结，不喊口号", focus: "结论、清单、边界、复用提醒" }
+  { key: "calm-note", name: "冷静备忘型", angle: "像公开备忘录一样冷静总结，不喊口号", focus: "结论、清单、边界、复用提醒" },
+  { key: "time-save", name: "时间收益型", angle: "从可感知的时间差切入，说明省时来自哪一步", focus: "原来耗时、关键动作、时间变化、使用边界" },
+  { key: "combo-wow", name: "组合王炸型", angle: "讲两个工具为什么要分工组合，而不是孤立宣传", focus: "工具A职责、主产品职责、衔接动作、适合场景" },
+  { key: "anti-chat", name: "反聊天框型", angle: "从“不要只让AI回答”切入，强调执行和交付", focus: "旧用法、新用法、执行证据、可复用句式" },
+  { key: "starter-guide", name: "新手教程型", angle: "降低门槛，讲第一次上手应该怎么试", focus: "准备材料、第一句指令、结果检查、避坑" },
+  { key: "question-talk", name: "话题提问型", angle: "用真实疑问制造讨论，再用案例回答", focus: "问题、案例、结论、边界" },
+  { key: "collection", name: "收藏合集型", angle: "把内容做成可保存的指令/流程合集", focus: "可收藏场景、任务类型、复制句式、保存价值" },
+  { key: "proof-shot", name: "证据截图型", angle: "用结果截图/输出物建立可信度", focus: "输入材料、执行中证据、输出结果、复核方法" }
 ];
 
+function variantHash(str = "") {
+  let h = 2166136261;
+  for (const ch of String(str)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
 function batchVariantFor({ acc, batch, globalIndex = 0, itemIndex = 1, itemTotal = 1 }) {
-  const base = BATCH_CREATIVE_VARIANTS[globalIndex % BATCH_CREATIVE_VARIANTS.length];
+  const offset = variantHash(`${batch?.id || ""}:${acc?.id || acc?.name || ""}:${itemIndex}`);
+  const base = BATCH_CREATIVE_VARIANTS[(globalIndex + (offset % 5)) % BATCH_CREATIVE_VARIANTS.length];
   const accTag = tagsOf(acc)[0] || groupOf(acc);
   const repeated = itemTotal > 1 ? `同账号第 ${itemIndex}/${itemTotal} 条也要换例子和标题，不要复用上一条。` : "";
   return {

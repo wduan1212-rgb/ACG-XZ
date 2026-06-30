@@ -132,6 +132,8 @@ const CARD = {
     const countFor = id => Math.max(1, Math.min(12, Number((p.accountCounts || {})[id] || perAccountCount) || perAccountCount));
     const imageCountFor = id => Math.max(3, Math.min(12, Number((p.accountImageCounts || {})[id] || imageCountDefault) || imageCountDefault));
     const totalCount = matched.reduce((sum, a) => sum + countFor(a.id), 0);
+    const isImageAcc = a => a?.mode === "图文" || groupOf(a) === "图文组";
+    const hasImageAccounts = matched.some(isImageAcc);
     const products = primaryProducts().length ? primaryProducts() : [{ id: "dumate", name: "百度搭子", shortName: "搭子" }];
     const productOptions = (selected = "") => products.map(pr => `<option value="${esc(pr.id)}" ${selected === pr.id ? "selected" : ""}>${esc(pr.shortName || pr.name)}</option>`).join("");
     const planProductId = primaryProductById(p.productId || "dumate")?.id || "dumate";
@@ -143,11 +145,13 @@ const CARD = {
     const accountRefs = p.accountRefAssetIds || {};
     const accountPool = (state.accounts || []).filter(Boolean);
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
-      ${matched.map(a => `<div class="agc-override">
+      ${matched.map(a => {
+        const imgAcc = isImageAcc(a);
+        return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"}">
         <b>${esc(a.name)}</b>
         <select data-pacc-prod="${a.id}" ${locked ? "disabled" : ""}>${productOptions(primaryProductById((p.accountProductIds || {})[a.id] || planProductId)?.id || planProductId)}</select>
         <label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>
-        <label class="agc-mini-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>
+        ${imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
         <input data-pacc-content="${a.id}" value="${esc((p.accountContents || {})[a.id] || "")}" placeholder="本账号本次创作内容（可留空）" ${locked ? "disabled" : ""} />
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
@@ -160,7 +164,8 @@ const CARD = {
             </label>
           </div>`}
         </div>
-      </div>`).join("")}
+      </div>`;
+      }).join("")}
     </div>` : "";
     return `<div class="ag-card plan ${confirmed ? "resolved" : ""}" data-plan="${m.id}">
       <div class="agc-head">${icon("kanban", 15)}<b>量产任务板</b>
@@ -204,15 +209,16 @@ const CARD = {
       <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减</em></span>
         ${locked ? "" : `<span class="agc-sec-tools">
           <label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>
-          <label class="agc-count-inline">默认图数<input type="number" min="3" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>
+          ${hasImageAccounts ? `<label class="agc-count-inline">默认图数<input type="number" min="3" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>` : ""}
           <button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>
         </span>`}
       </div>
       <div class="agc-accs">${accountPool.map((a, idx) => {
         const on = (p.accountIds || []).includes(a.id);
-        return `<button class="agc-acc ${on ? "on" : ""}" data-pacc="${a.id}" ${locked ? "disabled" : ""}>
+        const imgAcc = isImageAcc(a);
+        return `<button class="agc-acc ${on ? "on" : ""} ${imgAcc ? "is-image" : "is-video"}" data-pacc="${a.id}" ${locked ? "disabled" : ""}>
           <span class="agc-idx">#${String(idx + 1).padStart(2, "0")}</span>
-          <span class="dot" style="background:${gradFor(a.name)}"></span>
+          <span class="dot" style="background:${imgAcc ? gradFor(a.name) : "linear-gradient(135deg,#17C964,#22D3EE)"}"></span>
           <b>${esc(a.name)}</b><em>${groupOf(a)}${tagsOf(a).length ? " · " + tagsOf(a).slice(0, 2).join("/") : ""}</em>
           ${on ? icon("check", 13, "ok") : ""}
         </button>`;

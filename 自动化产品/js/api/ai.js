@@ -36,14 +36,19 @@ const HUMAN_COPY_VOICE = `
 
 const XHS_COPY_STYLE = `
 
-【AI 博主小红书文案参考风格】
-- 标题优先用：对比选择型、结论前置型、反转吐槽型、清单合集型。像"打工人别再手动整理文件了""说实话 这个桌面 AI 比想象中能干""3步把乱文件夹收拾干净"这类真实用户标题。
-- 选题和标题不必每次硬带产品名。可以借同类高流量词切入，例如 AI Agent、桌面智能体、AI办公、效率工具、无代码应用、Codex、WorkBuddy、DeepSeek，再在正文自然落到本次产品。
+【AI 博主小红书文案编辑规则】
+来自同类高互动内容的稳定结构：标题要先让人想点开，正文再给可复用信息，而不是把产品名放大喊三遍。
+- 标题优先从这些类型里选一种，不要连续重复：时间收益型（5分钟/15分钟/从1小时到5分钟）、组合王炸型（A+B怎么分工）、反常识型（别再把AI当聊天框）、清单收藏型（必装N个/通用指令/工作流合集）、实测复盘型（我试了一圈/跑通了）、新手教程型（零基础/手把手/完整流程）、问题挑战型（真的有人用得到吗）、边界判断型（适合谁/不适合谁）。
+- 标题不必每次带产品名；可以用 AI Agent、桌面智能体、AI办公、效率工具、无代码应用、Codex、WorkBuddy、Obsidian 等品类词或同类工具制造点击理由，再在正文自然落到本次产品。
+- 标题必须具体但克制：避免"最强/封神/吊打/秒杀/全网第一"等夸大词；避免敏感夸张承诺；20字以内，尽量有场景、有动作、有结果。
+- 正文首句必须换写法：可以是实测结论、吐槽痛点、反常识观察、问题引入、收藏价值、避坑提醒。不要所有账号都用"说实话"或"打工人最烦"开头。
+- 正文骨架也要轮换：三段短文、①②③清单、"我怎么做"步骤、"适合/不适合"边界、工具分工表述、复盘备忘录、避坑清单、收藏模板都可以用；同批账号必须换骨架。
+- 批量生产最重要的是"像不同博主写的"：同一批里标题、第一句话、分点标签、例子、结尾标签不能像换词复读；如果主题相同，也要换成不同场景、不同切入、不同证据和不同表达节奏。
+- 没有用户明确内容时，必须主动发散真实 AI 博主选题：可以写桌面智能体 vs 聊天机器人、Codex/Obsidian/WorkBuddy/百度搭子的分工、打工人场景、创作者场景、知识库场景、资料整理场景、自动化流程场景。不要所有账号都写"整理资料从乱到顺"。
+- 内容要像 AI 博主：讲清功能分工、真实场景、操作动作、结果证据、适用人群和一个小技巧。可以带 1-2 个同类/互补产品做对比或组合，但主产品能力不能写混。
 - 标签组合用「品类词 + 场景词 + 流量词 + 品牌词」：例如 #AI工具 #桌面智能体 #效率工具 #自动化办公 #打工人效率。不要只写品牌词。
-- 正文不要把创作内容原文当开头。先提炼一个真实痛点或反常识体验，再分点讲清具体方法。
-- 口吻像朋友推荐：可以写"我也是被安利的""本来没抱期望""试了一圈才发现""说实话"；优点缺点都可以说一点，增强真实感。
-- 少呼吁、少广告，不要"快去下载""立刻体验"；结尾用适用场景、避坑提醒或评论问题自然收束。
-- 图文笔记正文适合 300-520 字，段落短，信息密度高，有步骤、有场景、有结果。`;
+- 对外发布的标题、正文和话题标签不要出现自家产品名（例如百度搭子、百度秒哒、Dumate），统一用桌面智能体、AI应用搭建工具、AI工具、这个工具等品类词表达；竞品或互补工具名可以按主题自然出现。
+- 图文笔记正文适合 260-520 字，短段落，高信息密度；视频简介适合更口语。少呼吁、少广告，不要"快去下载""立刻体验"。`;
 
 const XHS_BATCH_COPY_FORMS = [
   {
@@ -101,6 +106,55 @@ const XHS_BATCH_COPY_FORMS = [
     titleHint: "公开备忘录 / 我把流程记下来 / 冷静复盘",
     opening: "像写给自己的经验备忘，不喊口号，强调可复盘。",
     structure: "结论 -> 操作清单 -> 边界 -> 下次怎么复用"
+  },
+  {
+    key: "time-save",
+    name: "时间收益型",
+    titleHint: "从1小时到5分钟 / 15分钟跑通 / 少加班一小时",
+    opening: "用真实可感的时间差开头，必须说明省下来的时间来自哪一步。",
+    structure: "原来耗时 -> 关键动作 -> 时间变化 -> 使用边界"
+  },
+  {
+    key: "combo-wow",
+    name: "组合王炸型",
+    titleHint: "A+B王炸组合 / 一个负责沉淀一个负责执行",
+    opening: "先说明两个工具为什么要一起用，再讲各自职责。",
+    structure: "工具A职责 -> 主产品职责 -> 衔接动作 -> 适合场景"
+  },
+  {
+    key: "anti-chat",
+    name: "反聊天框型",
+    titleHint: "别再只会问AI / 不是聊天是执行 / 让AI自己跑流程",
+    opening: "用反常识观点开头：不是让 AI 回答，而是让它执行。",
+    structure: "旧用法 -> 新用法 -> 桌面执行证据 -> 可复用句式"
+  },
+  {
+    key: "starter-guide",
+    name: "新手教程型",
+    titleHint: "零基础上手 / 第一次用桌面智能体 / 新手别绕路",
+    opening: "用新手视角降低门槛，告诉读者第一步做什么。",
+    structure: "准备什么 -> 输入什么 -> 看什么结果 -> 第一次避坑"
+  },
+  {
+    key: "question-talk",
+    name: "话题提问型",
+    titleHint: "真的有人用得到AI Agent吗 / 它到底能干嘛",
+    opening: "先抛一个真实疑问，再用本条案例回答。",
+    structure: "问题 -> 真实案例 -> 结论 -> 讨论边界"
+  },
+  {
+    key: "collection",
+    name: "收藏合集型",
+    titleHint: "必存 / 通用指令 / 工作流合集 / 这几类任务",
+    opening: "开头明确这条适合收藏，但正文必须给具体可执行内容。",
+    structure: "可收藏场景 -> 3类任务 -> 复制句式 -> 保存价值"
+  },
+  {
+    key: "proof-shot",
+    name: "证据截图型",
+    titleHint: "附真实截图 / 跑完才知道 / 结果长这样",
+    opening: "强调看结果说话，用截图/结果/文件变化建立可信度。",
+    structure: "输入材料 -> 执行中证据 -> 输出结果 -> 复核方法"
   }
 ];
 
@@ -255,6 +309,23 @@ function productDisplayName(product, fallback = "本次产品") {
   return sanitizeProduct(product?.shortName || product?.name || fallback);
 }
 
+function genericProductLabel(product = null) {
+  const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""} ${product?.category || ""}`;
+  if (/miaoda|秒哒/i.test(text)) return "AI应用搭建工具";
+  if (/dumate|百度搭子|搭子|桌面智能体/i.test(text)) return "桌面智能体";
+  if (/agent|智能体/i.test(text)) return "AI智能体工具";
+  return "AI工具";
+}
+
+function publicCopyProductLabel(intent = {}, product = null) {
+  if (product) return genericProductLabel(product);
+  const text = `${intent?.productName || ""} ${intent?.scene || ""}`;
+  if (/秒哒/i.test(text)) return "AI应用搭建工具";
+  if (/Dumate|百度搭子|搭子|桌面智能体/i.test(text)) return "桌面智能体";
+  if (/Agent|智能体/i.test(text)) return "AI智能体工具";
+  return "AI工具";
+}
+
 function inferCopyIntent({ topic = "", shots = [], account = null, product = null, useAccountPosition = true }) {
   const productName = productDisplayName(product, "百度搭子");
   const raw = [topic, useAccountPosition ? account?.position : "", account?.tone, ...(shots || []).flatMap(s => [s.idea, s.line, s.visual])].join(" ");
@@ -297,7 +368,7 @@ function inferCopyIntent({ topic = "", shots = [], account = null, product = nul
 }
 
 function copyTitlePool(intent, kind = "image", variant = null) {
-  const p = intent.productName;
+  const p = publicCopyProductLabel(intent);
   const base = [
     `${intent.audience}别再手动扛了`,
     `不是所有AI工具都只会聊天`,
@@ -321,6 +392,13 @@ function copyTitlePool(intent, kind = "image", variant = null) {
   if (v?.key === "before-after") base.unshift(`从乱到顺只差这一步`, `以前手动整理现在交给流程`);
   if (v?.key === "one-person-team") base.unshift(`一个人干活也能像有同事`, `${intent.audience}的小团队工作法`);
   if (v?.key === "calm-note") base.unshift(`这份流程我先存了`, `公开备忘录：${intent.action}`);
+  if (v?.key === "time-save") base.unshift(`从1小时到5分钟差在哪`, `${intent.pain.replace(/太.+$/, "")}终于省下来了`);
+  if (v?.key === "combo-wow") base.unshift(`这两个AI工具真该分工用`, `别把所有事都塞进聊天框`);
+  if (v?.key === "anti-chat") base.unshift(`别再只让AI回答问题了`, `桌面AI真正有用的是执行`);
+  if (v?.key === "starter-guide") base.unshift(`第一次用桌面智能体先看这条`, `${intent.audience}别从复杂功能开始`);
+  if (v?.key === "question-talk") base.unshift(`AI Agent真的用得到吗`, `这个场景我终于看懂了`);
+  if (v?.key === "collection") base.unshift(`${intent.audience}可以存这几句指令`, `这几类重复任务别手动做`);
+  if (v?.key === "proof-shot") base.unshift(`跑完结果长这样`, `看截图才知道它省在哪`);
   return base.map(x => x.replace(/\s+/g, " ").slice(0, 28));
 }
 
@@ -342,13 +420,20 @@ function polishCopyResult(result, { topic, shots, account, kind, product, batchV
     title = pool[Math.abs((topic || "").length + (shots || []).length) % pool.length];
   }
   if (!copy || looksLikeRawBrief(copy.slice(0, 80), topic) || /想要宣传|画面风格|不要有页码|利他性强/.test(copy) || tooSimilarCopy({ title, copy }, avoidCopies)) {
-    copy = fallbackXhsCopy({ intent, shots, account, kind, batchVariant });
+    copy = fallbackXhsCopy({ intent, shots, account, kind, batchVariant, product });
   }
-  return { title, copy };
+  return {
+    title: stripOwnProductMentions(title, product),
+    copy: stripOwnProductMentions(copy, product)
+  };
 }
 
-function fallbackXhsCopy({ intent, shots = [], account = {}, kind = "image", batchVariant = null }) {
+function fallbackXhsCopy({ intent, shots = [], account = {}, kind = "image", batchVariant = null, product = null }) {
   const variant = copyVariant((account.name || "").length + intent.pain.length, batchVariant);
+  const toolLabel = publicCopyProductLabel(intent, product);
+  const publicScene = intent.productName
+    ? String(intent.scene || "").replace(new RegExp(escapeRegExp(intent.productName), "g"), toolLabel)
+    : String(intent.scene || "");
   const lines = (shots || []).map(s => stripPromptMeta(s.line || s.idea || s.visual || "")).filter(Boolean);
   const usableLine = (x) => x && x.length >= 10 && x.length <= 42 && !/面向|有真实的感觉|小红书|配图|画面|构图|白底|无页码|不要|整体|参考|风格|按钮|高亮|截图|文案|打开\s*(Dumate|百度搭子)|一句话交给|自己动手干|效率交给/.test(x);
   const dataLike = /论文|课件|考点/.test(intent.pain) ? "资料、课件、表格和导师要求"
@@ -366,7 +451,7 @@ function fallbackXhsCopy({ intent, shots = [], account = {}, kind = "image", bat
   const fromShots = lines.filter(usableLine).slice(0, 3).map((x, i) => `${["①", "②", "③"][i]} ${x.replace(/[。！？!?]+$/, "")}`);
   let points = fromShots.length >= 3 ? fromShots : nuggets;
   if (variant?.key === "tool-division") points = [
-    `① 先把沉淀和执行分开：知识库/文档工具负责放资料，${intent.productName}负责把桌面任务跑出结果。`,
+    `① 先把沉淀和执行分开：知识库/文档工具负责放资料，${toolLabel}负责把桌面任务跑出结果。`,
     `② 真正要写清的是任务边界：哪些资料要读、哪些字段要提、最后交付成什么格式。`,
     `③ 跑完后再回到原来的知识库或工作流里复盘，不要把所有东西都堆在聊天窗口。`
   ];
@@ -380,9 +465,44 @@ function fallbackXhsCopy({ intent, shots = [], account = {}, kind = "image", bat
     `② 更稳做法：先给资料范围、目标字段和交付格式。`,
     `③ 最后让它列遗漏项，这一步比生成结果本身更值钱。`
   ];
+  if (variant?.key === "time-save") points = [
+    `先看最耗时的地方：不是点击慢，而是每次都要重新分类、提字段、核对遗漏。`,
+    `我会把资料范围和结果格式一次说清楚，让它先跑出一份可复核清单。`,
+    `省下来的时间主要在重复整理和格式搬运，最后还是要人看关键结论。`
+  ];
+  if (variant?.key === "combo-wow") points = [
+    `这类任务别只靠一个工具硬扛，沉淀、执行、复盘最好分开。`,
+    `${toolLabel}更适合把桌面文件和执行动作跑出来，再把结果放回原来的知识库或项目流程。`,
+    `分工清楚后，AI 就不再只是回答问题，而是能接住一段真实流程。`
+  ];
+  if (variant?.key === "anti-chat") points = [
+    `我以前也只会问"帮我整理一下"，后来发现这太像聊天了。`,
+    `更好用的方式是直接写交付物：读哪些资料、提哪些字段、最后输出成什么。`,
+    `它能不能真省事，关键看结果能不能复核，而不是回答得多漂亮。`
+  ];
+  if (variant?.key === "starter-guide") points = [
+    `第一次用别急着搞复杂自动化，先拿一个低风险文件夹练手。`,
+    `指令只写三件事：资料范围、处理动作、最终格式。`,
+    `跑完后先检查遗漏项，再决定要不要把这套流程复用到工作里。`
+  ];
+  if (variant?.key === "question-talk") points = [
+    `如果只是闲聊，它确实不稀奇；但放到重复办公动作里，差别会明显很多。`,
+    `真正有用的场景是：材料固定、目标明确、结果需要反复复核。`,
+    `所以我不会说它万能，更像是把低价值整理先挡掉。`
+  ];
+  if (variant?.key === "collection") points = [
+    `这几类任务最值得存成固定句式：分类、提字段、生成清单、复核遗漏。`,
+    `每次只换资料和目标，不要每次都重新发明一套指令。`,
+    `适合放在自己的 SOP 里，越重复越值钱。`
+  ];
+  if (variant?.key === "proof-shot") points = [
+    `别只看它说得好不好，先看输出物能不能继续用。`,
+    `我会重点检查三件事：字段有没有漏、分类是否合理、结果能不能追溯到原资料。`,
+    `能留下可复核结果的流程，才是真的省时间。`
+  ];
   const openerPool = [
     `我也是试了一圈才发现，${intent.pain}这件事，真的没必要全靠手动硬扛。`,
-    `本来没抱太大期待，结果用 ${intent.scene} 跑了一遍，才发现省时间的点不在"更快点击"，而在流程被固定住。`,
+    `本来没抱太大期待，结果用 ${publicScene || toolLabel} 跑了一遍，才发现省时间的点不在"更快点击"，而在流程被固定住。`,
     `说实话，${intent.audience}最烦的不是不会做，而是同一套重复动作每次都要重新来。`,
     `才知道不同工具真的要分工，不是所有事情都塞进一个聊天框里就会变好。`,
     `这条我更想当成备忘录留着：先把流程搭稳，再谈让 AI 帮你省时间。`
@@ -390,12 +510,19 @@ function fallbackXhsCopy({ intent, shots = [], account = {}, kind = "image", bat
   if (variant?.key === "real-test") openerPool.unshift(`我按真实工作流试了一遍，${intent.scene}有用的地方不是炫技，而是能把结果交代清楚。`);
   if (variant?.key === "before-after") openerPool.unshift(`以前处理${dataLike}像在翻垃圾堆，现在我会先让流程把它们分成能检查的几类。`);
   if (variant?.key === "one-person-team") openerPool.unshift(`一个人干活最怕的不是任务多，是每个任务都要从零搭流程。`);
+  if (variant?.key === "time-save") openerPool.unshift(`我更关心它到底省在哪一步，所以这次只看从${intent.pain.replace(/太.+$/, "")}到可复核结果的时间差。`);
+  if (variant?.key === "combo-wow") openerPool.unshift(`这类工作流最好别迷信单个工具，真正顺的是让不同 AI 各干自己擅长的事。`);
+  if (variant?.key === "anti-chat") openerPool.unshift(`别再把 AI 当聊天框了，办公场景里更重要的是它能不能把动作跑完。`);
+  if (variant?.key === "starter-guide") openerPool.unshift(`第一次试桌面智能体，我建议先从一个小任务开始，别一上来就让它接管全部工作。`);
+  if (variant?.key === "question-talk") openerPool.unshift(`AI Agent 到底有没有用？我觉得要看它是不是落在一个真实、重复、可检查的任务上。`);
+  if (variant?.key === "collection") openerPool.unshift(`这条更像我给自己存的一份小抄，适合处理那些每周都要重复的办公任务。`);
+  if (variant?.key === "proof-shot") openerPool.unshift(`我现在看 AI 工具不会只听介绍，先看它最后能留下什么结果。`);
   const opener = openerPool[(intent.pain.length + (account.name || "").length) % openerPool.length];
   const ending = kind === "video"
     ? `比较适合那种每天都有重复办公动作的人。它不是万能，但把低价值的整理活先挡掉，脑子就能留给更重要的判断。`
     : `适合当一个小 SOP 留着：先给资料，再给目标，再让它输出可复核的结果。这样不夸张，但确实能少掉很多重复整理。`;
-  const tags = `#AI办公 #自动化办公 #打工人效率 #${intent.audience} #${intent.productName.replace(/[ /]/g, "")}`;
-  return `${opener}\n\n${points.join("\n")}\n\n${ending}\n\n${tags}`;
+  const tags = `#AI办公 #自动化办公 #打工人效率 #${intent.audience} #${toolLabel.replace(/[ /]/g, "")}`;
+  return stripOwnProductMentions(`${opener}\n\n${points.join("\n")}\n\n${ending}\n\n${tags}`, product);
 }
 
 function allProductsForAI() {
@@ -405,6 +532,28 @@ function allProductsForAI() {
 function isDumateProduct(product) {
   const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""}`;
   return !product || /dumate|百度搭子|搭子/i.test(text);
+}
+
+function ownProductAliases(product = null) {
+  const ours = allProductsForAI().filter(p => p?.owner === "ours" || isDumateProduct(p) || /miaoda|秒哒/i.test(`${p?.id || ""} ${p?.name || ""} ${p?.shortName || ""}`));
+  const list = [product, ...ours].filter(Boolean);
+  return [...new Set(list.flatMap(productAliases))]
+    .filter(x => x && !/^AI$/i.test(x))
+    .sort((a, b) => b.length - a.length);
+}
+
+function stripOwnProductMentions(text = "", product = null) {
+  let out = sanitizeProduct(String(text || ""));
+  const generic = genericProductLabel(product);
+  ownProductAliases(product).forEach(alias => {
+    const re = productMentionRegex(alias);
+    if (re) out = out.replace(re, (m, a = "", b = "") => `${a || ""}${generic}${b || ""}`);
+  });
+  return out
+    .replace(/#(?:百度搭子|百度秒哒|Dumate|DuMate|秒哒)\b/gi, `#${generic}`)
+    .replace(new RegExp(`${escapeRegExp(generic)}\\s*${escapeRegExp(generic)}`, "g"), generic)
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function baseProductFacts(product) {
@@ -793,10 +942,10 @@ function compactVideoPrompt(prompt, maxLen = 2000) {
 
 const IMAGE_CARD_TASKS = [
   {
-    title: "资料从乱到顺",
-    role: "让用户一眼知道这篇笔记解决什么具体办公麻烦",
-    layout: "左侧放大具体功能标题与一句结果短句，右侧放产品/桌面结果画面，底部留一个动作标签区",
-    visual: "用混乱文件、待处理表格、消息提醒或任务卡片展示真实办公麻烦，再用一块干净的结果界面形成对比"
+    title: "一眼想点开",
+    role: "用强点击理由吸引用户进入，不承担教程细节",
+    layout: "大字标题占画面主体，旁边只放一个简单视觉符号、工具标识或前后对比箭头，留白充足",
+    visual: "用两枚产品标识、一个电脑/文件夹小图标、一个箭头或 VS 关系表达主题，不放表格、清单和多段说明"
   },
   {
     title: "资料堆积现场",
@@ -938,9 +1087,20 @@ function cleanImagePromptSignal(text, max = 96) {
     .replace(/^[，,。；、\s]+|[，,。；、\s]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
+  const styleOnly = /(简笔画|火柴人|手绘|漫画|白底|大字标题|少文字|箭头|气泡|圆角|留白|配色|背景|卡片|字体|色彩)/.test(raw)
+    && !/(整理|执行|沉淀|提取|归档|对比|输入|输出|生成|复盘|文件|知识|任务|结果|流程|工具|适合|不适合|Obsidian|Manus|WorkBuddy|Codex|Excel|PDF|Word)/i.test(raw);
+  if (styleOnly) return "";
   if (/面向|讲清楚|重点是|画面要|用户输入|创作内容|不要有|整体风格|利他性|直接加入|生成小红书笔记风格|^信息按|^所有文字|^画面文字|图片定位|画面定位/.test(raw)) return "";
   if (!raw || BAD_IMAGE_HEADLINE_RE.test(raw.slice(0, 24))) return "";
   return shortChinese(raw, max);
+}
+
+function isStyleOnlyCue(text = "") {
+  const raw = cleanText(text || "");
+  if (!raw) return false;
+  const style = /(简笔画|火柴人|手绘|漫画|白底|大字标题|少文字|箭头|气泡|圆角|留白|配色|背景|卡片|字体|色彩|组图风|截图质感)/.test(raw);
+  const content = /(整理|执行|沉淀|提取|归档|对比|输入|输出|生成|复盘|文件|知识|任务|结果|流程|适合|不适合|Obsidian|Manus|WorkBuddy|Codex|Excel|PDF|Word)/i.test(raw);
+  return style && !content;
 }
 
 function stripPromptScaffold(text = "") {
@@ -1087,55 +1247,125 @@ function imageDensityMode(ctx = {}) {
   return "balanced";
 }
 
+function simpleRelationVisual(ctx = {}) {
+  const text = [ctx.topic, ctx.script].filter(Boolean).join(" ");
+  const mentioned = productsMentionedIn(text, ctx.product, 2);
+  if (!mentioned.length) return "";
+  const main = productDisplayName(ctx.product, "百度搭子");
+  const other = productDisplayName(mentioned[0], "同类工具");
+  const connector = /对比|vs|VS|区别|相比|测评/.test(text) ? "VS" : "+";
+  return `画面只放${other}与${main}两个产品标识或简化图标，中间用「${connector}」或一根箭头连接，表达工具分工。`;
+}
+
+function conciseRelationLine(ctx = {}, item = {}) {
+  const text = [
+    ctx.topic,
+    ctx.script,
+    item?.prompt,
+    item?.idea,
+    item?.line,
+    item?.visual,
+    item?.title
+  ].filter(Boolean).join(" ");
+  const explicit = productsMentionedIn(text, ctx.product, 2);
+  if (!explicit.length) return "";
+  const main = productDisplayName(ctx.product, "百度搭子");
+  const roles = explicit.map(productRoleLine).filter(Boolean).join("；");
+  return `${main}负责桌面执行；${roles || explicit.map(p => productDisplayName(p)).join("、") + "负责参照任务"}。`;
+}
+
+function coverBeatText(item, ctx, intent) {
+  const candidates = [
+    item?.line,
+    item?.title,
+    item?.idea,
+    ctx.topic,
+    intent.main
+  ];
+  return candidates
+    .map(x => cleanImageDisplayTitle(x, ""))
+    .find(Boolean) || intent.main || "这套流程更省事";
+}
+
+function promptCanBeDense(ctx = {}, item = {}) {
+  const src = [
+    ctx.style,
+    ctx.imageTemplate,
+    ctx.account?.styleProfile,
+    item?.visual,
+    item?.line,
+    item?.idea,
+    item?.prompt,
+    item?.title
+  ].filter(Boolean).join(" ");
+  return /模拟飞书|飞书文档|文档截图|表格截图|Excel表|数据表|日报|周报|长文|报告页|清单页|文章页|备忘录页/.test(src);
+}
+
 function richImagePrompt(item, i, total, ctx) {
   const task = IMAGE_CARD_TASKS[Math.min(i, IMAGE_CARD_TASKS.length - 1)] || IMAGE_CARD_TASKS[IMAGE_CARD_TASKS.length - 1];
   const intent = summarizeImageIntent(ctx);
   const lightStyle = isLightIllustrationStyle(ctx);
   const density = imageDensityMode(ctx);
-  const cue = imageBeatCue(item, ctx, lightStyle ? 34 : density === "dense" ? 38 : 48);
+  const isCover = i === 0;
+  const canDense = promptCanBeDense(ctx, item);
+  const localCueRaw = imageBeatCue(item, { ...ctx, topic: "", script: "", beat: "" }, lightStyle ? 24 : canDense ? 34 : 26);
+  const localCue = isStyleOnlyCue(localCueRaw) ? "" : localCueRaw;
+  const cue = isCover
+    ? coverBeatText(item, ctx, intent)
+    : localCue || shortChinese(ctx.beat || "", canDense ? 28 : 22);
   const oneBeat = cue || intent.main;
-  const contentCue = lightStyle
-    ? `本图只讲「${oneBeat}」；用小人动作、表情、箭头或1个气泡讲清。`
-    : density === "sparse"
-      ? `本图围绕「${oneBeat}」补足一个真实使用例子：一个任务输入、一个界面动作、一个可见结果。`
-      : `本图只讲「${oneBeat}」；画面分成标题、操作区、结果区三层，信息留白充足。`;
+  const contentCue = isCover
+    ? `画面只围绕「${oneBeat}」这个点击理由，做成醒目、有好奇感的大字标题页。`
+    : lightStyle
+    ? `本图只讲「${oneBeat}」，靠小人动作、箭头和1个气泡表达。`
+    : canDense
+      ? `本图只讲「${oneBeat}」，用一个文档/表格局部承载信息，文字清晰可读。`
+      : density === "sparse"
+        ? `本图围绕「${oneBeat}」补一个真实例子：任务输入、界面动作、可见结果各一个。`
+        : `本图只讲「${oneBeat}」，标题醒目，画面留白，逻辑一眼可懂。`;
   const title = cleanImageDisplayTitle(item?.title, task.title);
-  const headline = deriveImageHeadline(item, i, intent, task);
+  const headline = shortChinese(deriveImageHeadline(item, i, intent, task), isCover ? 14 : 18);
   const imageStyle = ctx.style
-    ? shortChinese(cleanImagePlanningWords(stripPromptScaffold(stripFieldLabel(ctx.style, "账号风格"))), lightStyle ? 62 : 96)
+    ? shortChinese(cleanImagePlanningWords(stripPromptScaffold(stripFieldLabel(ctx.style, "账号风格"))), isCover ? 34 : lightStyle ? 46 : 56)
     : "白底或浅色底，圆角卡片，大留白，真实办公截图质感，蓝紫点缀，文字大而清楚。";
   const refPrefix = ctx.styleRefName
     ? `请根据上传的参考图（${ctx.styleRefName}），综合参考产品界面层级、品牌色、截图质感和视觉密度；参考图里的旧标题和示例文案需要按本次主题重写。`
     : "";
-  const relationLine = imageRelationContext(ctx, item);
-  const relationNames = (relationLine.match(/参照对象是\s*([^；。]+)/) || [])[1] || "";
-  const relationCore = relationLine
-    ? shortChinese(relationLine.replace(/画面必须具体呈现[^。]+。?/g, "呈现职责分工、任务边界或组合流程。"), lightStyle ? 46 : 76)
-    : "";
-  const lightRelation = relationLine
-    ? relationCore
-    : (relationNames ? `${relationNames}作参照` : "");
+  const relationCore = conciseRelationLine(ctx, item);
+  const coverRelation = simpleRelationVisual(ctx);
   const productLine = ctx.product
-    ? (lightStyle
-      ? `主产品：${intent.productName}。${lightRelation ? `${lightRelation}；` : ""}只画本张主题的一点。`
-      : `主产品：${intent.productName}，只在流程或界面里自然出现。${relationCore || "按真实办公流程表达主产品动作和结果。"}`)
+    ? (isCover
+      ? `${coverRelation || `${intent.productName}以简化产品标识出现，重点放在点击标题。`}`
+      : lightStyle
+      ? `${relationCore || `${intent.productName}只画本张主题的一点。`}`
+      : `${relationCore || `${intent.productName}呈现一个真实办公动作和一个可见结果。`}`)
     : "产品表达以真实办公流程和界面结果为主。";
-  const layoutLine = lightStyle
-    ? "中央放1-2个简笔画小人、电脑或文件小物件，动作关系清楚，留白充足"
-    : task.layout;
-  const visualLine = lightStyle
-    ? "用夸张表情、手势、文件小图标、轻箭头和小窗口表达前后变化，像轻松的图解故事"
-    : density === "dense"
-      ? shortChinese(task.visual, 64)
-      : task.visual;
-  const textLine = lightStyle
-    ? `只放大标题「${headline}」和一句12字内气泡，最多1个功能标签。`
-    : density === "dense"
-      ? `画面文字只放大标题「${headline}」和一句短副标题，最多1个具体功能标签。`
-      : `画面文字只放大标题「${headline}」和一句短副标题，最多2个具体功能标签，例如“自动归类”“字段识别”“报告可用”。`;
-  const promptBody = cleanImagePlanningWords(lightStyle
-    ? `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine} ${layoutLine}；${contentCue}${textLine}】`
-    : `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine} ${layoutLine}；${visualLine}；${contentCue}${textLine}】`);
+  const layoutLine = isCover
+    ? "大标题占据画面60%以上，视觉元素只保留1-2个图标、logo位或简单物件，背景干净，强对比"
+    : lightStyle
+    ? "中央放1-2个简笔画小人、电脑或文件小物件，动作关系清楚"
+    : canDense
+      ? "大标题+局部文档/表格卡片，最多三行重点"
+      : "大标题+一个主视觉卡片+一处结果提示，结构简洁";
+  const visualLine = isCover
+    ? "一个干净背景、两个简化图标或一个桌面小物件，画面空旷有冲击"
+    : lightStyle
+    ? "用表情、手势、文件小图标和轻箭头讲清动作"
+    : canDense
+      ? "局部文档或表格文字可读，旁边只放一个操作箭头和结果状态"
+      : "一个真实办公物件或界面卡片突出核心动作，背景留白";
+  const textLine = isCover
+    ? `画面文字只保留一个超大标题「${headline}」和一句10字内副标题，最多1个短标签。`
+    : lightStyle
+    ? `文字只放大标题「${headline}」和一句12字内气泡。`
+    : canDense
+      ? `文字可稍多但保持清晰：大标题「${headline}」+最多三行文档/表格重点。`
+      : `文字只放大标题「${headline}」和一句短副标题，最多1个具体标签。`;
+  const promptBody = cleanImagePlanningWords(isCover
+    ? `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine}${layoutLine}；${visualLine}；${textLine}】`
+    : lightStyle
+    ? `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine}${layoutLine}；${contentCue}${textLine}】`
+    : `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine}${layoutLine}；${visualLine}；${contentCue}${textLine}】`);
   return {
     title,
     ui: item?.ui !== false,
@@ -1539,6 +1769,8 @@ ${productRelationLine(rel)}
     const sys = image
       ? `你是小红书图文笔记策划，为百度 ACG 市场部写「小红书笔记图卡内容表」，每行是笔记里的一张配图。严格围绕用户本次创作内容展开，不要让账号定位改变主题方向；账号只提供创作风格。
 先把用户创作内容压缩成 ${nImg} 个信息节拍，每张图只承担一个观点/动作/证据；长内容要总结、取舍、分布，不要把所有信息塞进每一张图。信息密度预算：每张图最多 1 个大标题、1 句短解释、1 个具体动作/证据、最多 2 个短标签；如果用户内容超过 ${nImg} 张图能承载的量，先提炼主线，宁可舍弃次要细节，也不要在单张图塞多段文字、多张表格或长清单。每张图只回答一个小问题：为什么、怎么做、看到了什么结果或边界是什么。标题和图上文案要像真实笔记，具体、有信息量、能让人看懂功能和结果。图文没有口播，只有画面与图上文案。每行 idea 写清这张图唯一要传达的信息；visual 必须非常具体（画面布局/主视觉/界面里出现的具体文字/配色/光线/产品视觉位置），先在脑内把这张图具象化成真实画面再写，不要用电影感、高级感、种草感这类抽象词。内部结构词不要出现在 idea、visual、line 里。
+第一张图默认是点击入口，不是教程信息页：只承担“让人想点开”的职责。除非用户明确要求首图高信息量，否则第一张只放一个强标题、一句短副标题、1-2 个简单图标/产品标识/前后对比箭头；不要在第一张放流程、步骤、长清单、表格、多截图或密集小字。若主题是 Obsidian、Codex、WorkBuddy 等工具和主产品对比/组合，第一张优先用两个工具标识或简化图标 + 大字标题 + 一个箭头/VS 关系来表达。
+第二张开始再讲真实场景、执行动作、工具分工、结果证据和结论。图片数量少时要主动压缩信息，把次要内容变成一句结论；图片数量多但用户只给少量方向时，要补真实使用场景、例子和边界提醒。
 同一批量任务里每个账号都要像不同博主写同一方向：可以共享大主题，但必须更换切入角度、例子、标题表达、图卡顺序和结尾结论；不要输出多条相同或近似的图卡脚本。
 如果账号风格是火柴人、简笔画、小人、漫画或手绘，line 控制在 8-16 个中文字符，visual 重点写人物动作、表情、气泡、箭头和小物件，减少界面文字和表格密度。
 若本次创作内容提到竞品/同类工具，要先识别其在产品库中的功能点，再安排成对比表、分工流程、组合用法或边界提醒；本次主产品仍是主角，不能把竞品能力写成主产品能力。测评或对比类内容只写适合谁、任务边界、真实证据和组合方式，不写分数、星级、排行榜或评分卡。${hasImageTemplate ? `账号配置了固定图文模板，必须优先遵守模板的风格、画面语言、参考图使用方式和统一要求；但模板中的张数、主题、产品名、各图内容都要按本次创作内容重写，最终 shots 必须正好 ${nImg} 行。` : ""}只输出 JSON：{"title":"小红书笔记风标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"图上文案(小红书笔记口吻、精简)"}]}，shots 必须正好 ${nImg} 行。`
@@ -1658,11 +1890,13 @@ ${productRelationLine(rel)}
     const variantGuide = batchVariantLine(batchVariant);
     try {
       const content = await llm([
-        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，压缩成 ${nImg} 个信息节拍，再拆成 ${nImg} 张静态图片：开场问题、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。每张图只承载一个核心信息，不要把用户长内容整段塞进每张 prompt。信息密度预算：每张图最多 1 个主标题、1 句短副标题、1 个具体动作/证据、最多 2 个短标签；不要同一张同时放流程表、对比表、清单、截图和大段说明。若内容过多，先在内部重新规划：把重要信息平均分给 ${nImg} 张图，次要内容压成一句结论或舍弃；若内容过少，补一个真实使用例子、结果证据或边界提醒。功能名只用于你内部理解，绝不能当作画面文字。若创作内容里出现竞品/同类工具，要把它们作为对比、组合或分工对象写进画面信息结构，例如对比表、流程箭头、工具分工卡片、边界提醒；不要让画面变成只孤立宣传主产品。
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，压缩成 ${nImg} 个信息节拍，再拆成 ${nImg} 张静态图片：点击入口、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。每张图只承载一个核心信息，不要把用户长内容整段塞进每张 prompt。信息密度预算：每张图最多 1 个主标题、1 句短副标题、1 个具体动作/证据、最多 2 个短标签；不要同一张同时放流程表、对比表、清单、截图和大段说明。
+第一张图默认是点击入口，优先冲击感和可点击性：只放一个强标题、一句10字内副标题、1-2个简单视觉元素。不要在第一张放步骤、长清单、密集截图、表格或多段解释；如果是工具组合/对比主题，第一张用两个工具标识或简化图标 + 大字标题 + 箭头/VS 即可。第二张之后再展开场景、操作、结果和边界。
+若内容过多，先在内部重新规划：把重要信息平均分给 ${nImg} 张图，次要内容压成一句结论或舍弃；若内容过少，补一个真实使用例子、结果证据或边界提醒。功能名只用于你内部理解，绝不能当作画面文字。若创作内容里出现竞品/同类工具，要把它们作为对比、组合或分工对象写进画面信息结构，例如分工箭头、工具边界卡片、组合流程或适用场景提醒；不要让画面变成只孤立宣传主产品。
 同一批量任务的不同账号必须有不同内容编排：即使统一创作方向相同，也要改变每张图的标题、例子、主视觉、卡片顺序和结论，不要复用同一套图片提示词。
 每条 prompt 必须使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。${minimalImageNegative()}」结构；如果有参考图，则在开头加入「请根据上传的参考图」。风格主要按账号创作风格和账号模板，不要把账号定位当成本次内容方向，不要把用户输入原句整段塞进提示词，不要在“图片具体内容”里重复外层结构。${safeStyle ? "账号创作风格：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；但模板只当风格母版，不能原样复制模板句子。` : ""}
 
-每条 prompt 控制在 140-230 字，说清：版式、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。只保留1个大标题和1句短副标题，最多2个小标签。若账号风格是火柴人、简笔画、小人、漫画或手绘，则画面靠人物动作、表情、气泡和箭头讲解，文字更少，避免复杂表格和长文案。
+每条 prompt 控制在 120-210 字；第一张控制在 100-160 字。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。只保留1个大标题和1句短副标题，最多2个小标签；第一张最多1个小标签。若账号风格是火柴人、简笔画、小人、漫画或手绘，则画面靠人物动作、表情、气泡和箭头讲解，文字更少，避免复杂表格和长文案。
 画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
 测评、对比或工具选择类选题只能写适合谁、不适合谁、任务边界、证据和组合方式，不要生成分数、星级、排行榜、打分表或评分卡。
 内部分类词只用于你理解结构，不要出现在最终 prompt 或画面文字里；最终负面约束只能使用指定的短句，不要额外扩写。
@@ -1738,11 +1972,11 @@ ${xhsGuardPrompt()}
 语气按本次内容和账号创作风格细化，像真人发笔记，不要硬广腔。不要让账号定位改变用户本次要写的内容方向。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`;
     try {
       const content = await llm([
-        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys + XHS_COPY_STYLE + "\n\n" + xhsGuardPrompt() },
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys + XHS_COPY_STYLE + "\n\n【对外文案产品名规则】\n标题、正文和话题标签都不要出现自家产品名；需要指代时用「桌面智能体」「AI应用搭建工具」「这个工具」「这类工具」等品类词。竞品或互补工具名可以出现，但不要把主产品名写进标题或正文。\n\n【同批去重硬约束】\n如果用户没有写很具体的内容，请先自己选择一个不同于同批其他账号的真实场景，再写标题和正文。禁止只改产品名、账号名或数字；禁止连续使用同一种标题类型、同一种首句和同一种三点清单。标题可以不带产品名，但正文必须让人知道具体工具怎么分工或怎么用。\n\n" + xhsGuardPrompt() },
         { role: "user", content: kind === "video"
           ? `账号定位：${sanitizeXhsText(account.position)}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡/视频内容摘要：\n${script}\n${HUMAN_COPY_VOICE}${this.memoryLine(account)}`
           : `账号创作风格：${sanitizeXhsText(account.styleProfile || safeStyle || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡内容摘要：\n${script}\n${HUMAN_COPY_VOICE}` }
-      ], { json: true, temperature: 0.9 });
+      ], { json: true, temperature: 1.02 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.title || !d.copy) throw new Error("模型未返回 title/copy");
       return this._ok(polishCopyResult(d, { topic: safeTopic, shots: safeShots, account, kind, product, batchVariant, avoidCopies }));
@@ -1759,13 +1993,13 @@ ${xhsGuardPrompt()}
         ? `账号创作风格「${account.styleProfile || "干净可读"}」`
         : `账号定位「${account.position}」`;
       const productName = productDisplayName(product, "AI工具");
-      const r = await llm([{ role: "user", content: `给小红书笔记起一个标题，主题「${topic || `${productName} 办公效率`}」，${styleLine}。20字以内，口语化、有信息量，带1-2个emoji。只回标题本身，不要引号不要解释。` }], { temperature: 1.1 });
-      const t = sanitizeProduct(String(r).trim().replace(/^["'「]|["'」]$/g, "").slice(0, 30));
+      const r = await llm([{ role: "user", content: `给小红书笔记起一个标题，主题「${topic || `${productName} 办公效率`}」，${styleLine}。20字以内，口语化、有信息量，带1-2个emoji。不要出现自家产品名，用品类词替代。只回标题本身，不要引号不要解释。` }], { temperature: 1.1 });
+      const t = stripOwnProductMentions(String(r).trim().replace(/^["'「]|["'」]$/g, "").slice(0, 30), product);
       if (t) return this._ok(t);
       throw new Error("空");
     } catch (e) {
       this._fb(e);
-      return this._mockCopy({ topic, shots: [], account }).title;
+      return stripOwnProductMentions(this._mockCopy({ topic, shots: [], account, product }).title, product);
     }
   },
 
@@ -1987,12 +2221,15 @@ ${xhsGuardPrompt()}
     const intent = inferCopyIntent({ topic, shots, account, product });
     const titles = copyTitlePool(intent, "image", batchVariant);
     let idx = Math.abs((account?.name || "").length + (topic || "").length + Number(batchVariant?.index || 0)) % titles.length;
-    let out = { title: titles[idx], copy: fallbackXhsCopy({ intent, shots, account, kind: "image", batchVariant }) };
+    let out = { title: titles[idx], copy: fallbackXhsCopy({ intent, shots, account, kind: "image", batchVariant, product }) };
     if (tooSimilarCopy(out, avoidCopies)) {
       idx = (idx + 3) % titles.length;
-      out = { title: titles[idx], copy: fallbackXhsCopy({ intent, shots, account, kind: "image", batchVariant: { ...batchVariant, key: "mistake-fix" } }) };
+      out = { title: titles[idx], copy: fallbackXhsCopy({ intent, shots, account, kind: "image", batchVariant: { ...batchVariant, key: "mistake-fix" }, product }) };
     }
-    return out;
+    return {
+      title: stripOwnProductMentions(out.title, product),
+      copy: stripOwnProductMentions(out.copy, product)
+    };
   }
 };
 
