@@ -15,7 +15,7 @@ import { renderMessage, boardRow } from "./cards.js";
 import { openProductionDrawer } from "../views/prodDrawer.js";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
-import { urlFor } from "../domain/assets.js";
+import { urlFor, removeAsset } from "../domain/assets.js";
 
 let mounted = false;
 let rootEl = null;
@@ -841,12 +841,15 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
         ${assets.map(a => {
           const u = urlFor(a);
           const on = selected.has(a.id);
-          return `<button class="asset-pick-card ${on ? "on" : ""}" data-asset-pick="${a.id}" title="${esc(a.name || "参考图")}">
+          const source = sourceLabel(a);
+          const deletable = source !== "已发布生成图";
+          return `<div class="asset-pick-card ${on ? "on" : ""}" data-asset-pick="${a.id}" role="button" tabindex="0" title="${esc(a.name || "参考图")}">
             <span class="asset-pick-thumb">${u ? `<img src="${u}" alt="${esc(a.name || "参考图")}" />` : `<i>${esc((a.name || "图").slice(0, 1))}</i>`}</span>
             <b>${esc(a.name || "未命名图片")}</b>
-            <em>${esc(sourceLabel(a))}</em>
+            <em>${esc(source)}</em>
             <span class="asset-pick-check">${icon("check", 13)}</span>
-          </button>`;
+            ${deletable ? `<button class="asset-pick-delete" data-asset-del="${a.id}" title="删除这张参考图">${icon("trash", 12)}</button>` : ""}
+          </div>`;
         }).join("")}
       </div>` : `<div class="asset-picker-empty">${icon("image", 20)}<b>资产库暂无可选图片</b><p>可以先用拖入 / 上传区域补充参考图。</p></div>`}
     </div>
@@ -864,6 +867,30 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
         panel.querySelectorAll("[data-asset-pick]").forEach(btn => btn.classList.toggle("on", selected.has(btn.dataset.assetPick)));
       };
       panel.addEventListener("click", e => {
+        const del = e.target.closest("[data-asset-del]");
+        if (del) {
+          e.stopPropagation();
+          const id = del.dataset.assetDel;
+          const asset = state.assets.find(x => x.id === id);
+          confirmModal({ title: `删除参考图「${asset?.name || "未命名图片"}」？`, body: "会从整体资产库移除；已经选中的引用也会同步摘掉。", danger: true, okText: "删除" }).then(async ok => {
+            if (!ok) return;
+            selected.delete(id);
+            if (kind === "custom") {
+              m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
+              m.payload.accountRefAssetIds[accountId] = (m.payload.accountRefAssetIds[accountId] || []).filter(x => x !== id);
+            } else {
+              m.payload.sharedRefAssetIds = (m.payload.sharedRefAssetIds || []).filter(x => x !== id);
+              if (m.payload.sharedRefAssetId === id) m.payload.sharedRefAssetId = m.payload.sharedRefAssetIds[0] || null;
+            }
+            await removeAsset(id);
+            save("sessions");
+            const card = panel.querySelector(`[data-asset-pick="${id}"]`);
+            if (card) card.remove();
+            sync();
+            toast("已删除参考图");
+          });
+          return;
+        }
         const btn = e.target.closest("[data-asset-pick]");
         if (btn) {
           const id = btn.dataset.assetPick;

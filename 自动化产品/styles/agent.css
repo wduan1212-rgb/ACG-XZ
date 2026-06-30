@@ -359,6 +359,16 @@
 .asset-pick-card em { font-style: normal; font-size: 9.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .asset-pick-check { position: absolute; right: 8px; top: 8px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--brand); color: #fff; opacity: 0; transform: scale(.85); transition: all var(--t-fast); }
 .asset-pick-card.on .asset-pick-check { opacity: 1; transform: none; }
+.asset-pick-delete {
+  position: absolute; right: 8px; top: 36px; width: 24px; height: 24px;
+  display: grid; place-items: center; border-radius: 8px;
+  background: rgba(255,255,255,.92); color: var(--danger);
+  border: 1px solid rgba(239,68,68,.18);
+  opacity: 0; transform: translateY(-3px); transition: all var(--t-fast);
+  box-shadow: var(--shadow-sm);
+}
+.asset-pick-card:hover .asset-pick-delete, .asset-pick-delete:focus-visible { opacity: 1; transform: none; }
+.asset-pick-delete:hover { background: var(--danger-bg); border-color: rgba(239,68,68,.3); }
 .asset-picker-empty { display: grid; place-items: center; gap: 8px; padding: 34px; border: 1px dashed var(--hairline); border-radius: var(--r-md); color: var(--muted); text-align: center; }
 .asset-picker-empty b { color: var(--text); }
 .asset-picker-empty p { font-size: 12px; }

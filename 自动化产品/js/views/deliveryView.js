@@ -31,6 +31,12 @@ function supplierTagsHtml(tags = []) {
   return `${shown.map(t => `<span class="tag">${esc(t)}</span>`).join("")}${rest ? `<span class="tag more">+${rest}</span>` : ""}`;
 }
 
+function dateOnly(value = "") {
+  const raw = String(value || "").trim();
+  const m = raw.match(/\d{4}[-/]\d{1,2}[-/]\d{1,2}/);
+  return m ? m[0].replace(/\//g, "-") : raw;
+}
+
 let collapsedDays = new Set();
 
 function deliveryTime(asset) {
@@ -89,6 +95,8 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
   const retractReason = deliveryRetractBlockReason(asset);
   const canRetract = canDeleteDelivery(asset);
   const showRetract = canRetract || canSeeDeliveryRetract(asset);
+  const plan = dateOnly(asset.planDate);
+  const detailText = `${asset.name}${isImg ? ".zip" : ".mp4"}${asset.byMemberName ? ` · 由 ${asset.byMemberName} 发布` : ""} · ${timeAgo(asset.deliveredAt || asset.createdAt)} · 供应商：${asset.status || "未下载"}`;
   return `<div class="dv-item" style="--d:${i * 40}ms">
     <span class="dv-node${i === 0 ? " latest" : ""}"></span>
     <div class="dv-card card" data-aid="${asset.id}">
@@ -96,12 +104,16 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
         <span class="dv-cover">${u ? `<img src="${u}"/>` : `<i style="background:${gradFor(asset.name)}">${isImg ? "图" : "▶"}</i>`}<em>${isImg ? `${(asset.packAssetIds || []).length} 张` : `${asset.clips || 0} 段`}</em></span>
         <span class="dv-main">
           <b>${seq ? `<span class="dv-seq">${seq}</span>` : ""}${esc(asset.title || asset.name)}</b>
-          <span class="dv-meta">${platChip(acc.platform, true)}${productTag ? `<span class="tag product">${esc(productTag)}</span>` : ""}<span class="tag acc">${esc(asset.byAccount || acc.name)}</span>${asset.planDate ? `<span class="tag date">${icon("clock", 10)} 计划 ${esc(asset.planDate)}</span>` : ""}${asset.adminReviewed ? `<span class="tag rev">${icon("checkCircle", 10)} 已审阅</span>` : ""}${asset.publishedUrl ? `<span class="tag pub">${icon("checkCircle", 10)} 已发布</span>` : ""}<em>${esc(asset.name)}${isImg ? ".zip" : ".mp4"}${asset.byMemberName ? ` · 由 ${esc(asset.byMemberName)} 发布` : ""} · ${timeAgo(asset.deliveredAt || asset.createdAt)} · 供应商：${asset.status || "未下载"}</em></span>
+          <span class="dv-meta">
+            <span class="dv-tagline">${platChip(acc.platform, true)}${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag acc" title="${esc(asset.byAccount || acc.name)}">${esc(asset.byAccount || acc.name)}</span>${plan ? `<span class="tag date" title="计划 ${esc(plan)}">${icon("clock", 10)} 计划 ${esc(plan)}</span>` : ""}</span>
+            <em title="${esc(detailText)}">${esc(detailText)}</em>
+            ${asset.adminReviewed ? `<span class="tag rev">${icon("checkCircle", 10)} 已审阅</span>` : ""}${asset.publishedUrl ? `<span class="tag pub">${icon("checkCircle", 10)} 已发布</span>` : ""}
+          </span>
         </span>
         <span class="dv-chev">${icon("chevronDown", 14)}</span>
       </div>
       <div class="dv-detail" hidden>
-        ${asset.planDate || asset.publishNote ? `<div class="dv-pubmeta">${asset.planDate ? `<span>${icon("clock", 12)} 计划发布：<b>${esc(asset.planDate)}</b></span>` : ""}${asset.publishNote ? `<span>${icon("fileText", 12)} 备注：${esc(asset.publishNote)}</span>` : ""}</div>` : ""}
+        ${asset.planDate || asset.publishNote ? `<div class="dv-pubmeta">${plan ? `<span>${icon("clock", 12)} 计划发布：<b>${esc(plan)}</b></span>` : ""}${asset.publishNote ? `<span>${icon("fileText", 12)} 备注：${esc(asset.publishNote)}</span>` : ""}</div>` : ""}
         ${asset.publishedUrl ? `<div class="dv-published">${icon("link", 13)} 发布链接：<a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${esc(asset.publishedUrl.slice(0, 64))}${asset.publishedUrl.length > 64 ? "…" : ""}</a><em>${asset.publishedAt ? timeAgo(asset.publishedAt) + "回传" : ""}</em></div>` : ""}
         ${asset.supplierNote ? `<div class="dv-supplier-note">${icon("fileText", 13)} 供应商备注：${esc(asset.supplierNote)}</div>` : ""}
         ${asset.copy ? `<pre class="dv-copy">${esc(asset.copy)}</pre>` : ""}
@@ -149,6 +161,32 @@ async function returnLinkFlow(asset, acc, redraw) {
     toast("已记录发布链接，素材标记为「已发布」");
   }
   redraw();
+}
+
+function supplierDetailHtml(asset, acc) {
+  const isImg = asset.type === "图集";
+  const ids = isImg ? (asset.packAssetIds || []) : [];
+  const title = asset.title || asset.name;
+  return `<tr class="sup-detail-row" data-sup-detail="${asset.id}" hidden>
+    <td colspan="10">
+      <div class="sup-detail">
+        <div class="sup-detail-copy">
+          <b>${esc(title)}</b>
+          ${asset.copy ? `<pre>${esc(asset.copy)}</pre>` : `<p>暂无文案，可从创作端补充后重新定稿。</p>`}
+          <div class="sup-detail-meta">
+            <span>${esc(acc.platform || "平台")}</span>
+            <span>${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记产品")}</span>
+            <span>${esc(dateOnly(asset.planDate) || "未计划")}</span>
+            <span>${esc(asset.status || "未下载")}</span>
+          </div>
+        </div>
+        ${ids.length ? `<div class="sup-detail-imgs">${ids.map((id, k) => {
+          const u = urlFor(id);
+          return u ? `<button class="sup-thumb" data-supimg="${id}" title="预览第 ${k + 1} 张"><img src="${u}" alt="第 ${k + 1} 张"/><span>${k + 1}</span></button>` : "";
+        }).join("")}</div>` : `<div class="sup-detail-empty">${isImg ? "图集文件缺少预览图" : "视频素材可下载后预览"}</div>`}
+      </div>
+    </td>
+  </tr>`;
 }
 
 let tab = "creator"; // creator | supplier
@@ -300,7 +338,7 @@ export const deliveryView = {
               <tr data-sup="${asset.id}">
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
-                <td class="sup-name"><b>${esc(asset.name)}</b>${asset.title ? `<em>${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(asset.planDate)}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
+                <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
                 <td><b>${esc(asset.byAccount || acc.name)}</b>${asset.byMemberName ? `<em class="sup-by">由 ${esc(asset.byMemberName)} 发布</em>` : ""}</td>
                 <td>${platChip(acc.platform, true)}</td>
@@ -311,7 +349,7 @@ export const deliveryView = {
                   <button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
                   <button class="btn ${asset.publishedUrl ? "ghost" : "primary"} sm" data-suplink="${asset.id}">${icon("link", 13)} ${asset.publishedUrl ? "改链接" : "回传链接"}</button>
                 </td>
-              </tr>`).join("") : `<tr><td colspan="10" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
+              </tr>${supplierDetailHtml(asset, acc)}`).join("") : `<tr><td colspan="10" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
             </tbody>
           </table>
         </div>`;
@@ -327,6 +365,19 @@ export const deliveryView = {
         if (!a) return;
         const acc = accountById(a.accountId);
         await returnLinkFlow(a, acc, draw);
+      }));
+      $$("tr[data-sup]", body).forEach(tr => tr.addEventListener("click", e => {
+        if (e.target.closest("button,input,a")) return;
+        const detail = body.querySelector(`[data-sup-detail="${tr.dataset.sup}"]`);
+        if (!detail) return;
+        detail.hidden = !detail.hidden;
+        tr.classList.toggle("open", !detail.hidden);
+      }));
+      $$("[data-supimg]", body).forEach(b => b.addEventListener("click", e => {
+        e.stopPropagation();
+        const a = state.assets.find(x => x.id === b.dataset.supimg);
+        const img = b.querySelector("img");
+        if (a && img) openLightbox(img, urlFor(a), a.name);
       }));
     }
 

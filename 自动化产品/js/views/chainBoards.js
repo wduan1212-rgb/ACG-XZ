@@ -7,10 +7,10 @@ import { AI } from "../api/ai.js";
 import { buildSbExternalPrompt, buildImgExternalPrompt } from "../api/prompts.js";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { accountAssets } from "../domain/accounts.js";
-import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob } from "../domain/assets.js";
+import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
-import { toast, withLoading, openLightbox } from "../ui/components.js";
+import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 
@@ -610,9 +610,20 @@ export function renderSlotsPage(root, p, isImg) {
       if (!box.hidden) { box.hidden = true; return; }
       const assets = accountAssets(acc.id).filter(a => a.type === "图片");
       box.innerHTML = assets.length ? `<div class="ref-grid">${assets.map(a => `
-        <button class="ref-item ${refIdsOf(A).includes(a.id) ? "is-picked" : ""}" data-ref="${a.id}">${thumbHtml(a)}<span>${esc(a.name)}</span></button>`).join("")}</div>`
+        <div class="ref-item ${refIdsOf(A).includes(a.id) ? "is-picked" : ""}" data-ref="${a.id}" role="button" tabindex="0">${thumbHtml(a)}<span>${esc(a.name)}</span>${/(已发布生成图|站内生成|笔记图)/.test((a.tags || []).join(" ")) ? "" : `<button class="ref-del" data-ref-del="${a.id}" title="删除参考图">${icon("trash", 11)}</button>`}</div>`).join("")}</div>`
         : `<div class="muted" style="padding:10px">该账号还没有图片资产，先上传一张</div>`;
       box.hidden = false;
+      box.querySelectorAll("[data-ref-del]").forEach(b => b.addEventListener("click", async e => {
+        e.stopPropagation();
+        const a = state.assets.find(x => x.id === b.dataset.refDel);
+        const ok = await confirmModal({ title: `删除参考图「${a?.name || "未命名图片"}」？`, body: "会从资产库移除，并从当前参考图选择中摘掉。", danger: true, okText: "删除" });
+        if (!ok) return;
+        syncImageFactoryDraft();
+        setRefIds(A, refIdsOf(A).filter(id => id !== b.dataset.refDel));
+        await removeAsset(b.dataset.refDel);
+        save("productions");
+        draw();
+      }));
       box.querySelectorAll("[data-ref]").forEach(b => b.addEventListener("click", () => {
         syncImageFactoryDraft();
         appendRefId(A, b.dataset.ref); save("productions"); draw();
@@ -930,7 +941,7 @@ export function renderSlotsPage(root, p, isImg) {
     p.stageStatus = "pending";
     save("productions");
     if (canRedrawCurrent()) draw();
-    toast(AI.sourceNote(`已生成 ${A.items.length} 张图卡结构与提示词`));
+    toast(AI.sourceNote("已生成"));
   }
 
   if (!A.externalPrompt && (p.artifacts.script.shots || []).length) rebuildExternal();

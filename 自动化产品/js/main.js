@@ -1,6 +1,6 @@
 /* 应用入口：装载数据 → 迁移 → 恢复任务 → 外壳 → 路由 */
 
-import { $, $$, esc, gradFor, uid } from "./core/util.js";
+import { $, $$, esc, uid } from "./core/util.js";
 import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById } from "./core/store.js";
@@ -8,7 +8,7 @@ import * as remote from "./core/remote.js";
 import { pruneEmptySessions } from "./agent/orchestrator.js";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
-import { createAccount, deleteAccount, groupOf, platChip, appearanceAnchorFor } from "./domain/accounts.js";
+import { createAccount, deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
 import { productTagLabel } from "./domain/delivery.js";
 import { XHS_ACCOUNT_SEED } from "./data/xhsAccountsSeed.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
@@ -202,6 +202,32 @@ function normalizeDeliveredProductTags() {
   return changed;
 }
 
+function normalizeDeliveredSharedAssets() {
+  let changed = 0;
+  state.assets.forEach(asset => {
+    if (!asset.delivered || asset.type !== "图集") return;
+    const tag = asset.productTag || productTagLabel(productById(asset.productId || "dumate"));
+    (asset.packAssetIds || []).forEach((id, index) => {
+      const img = state.assets.find(x => x.id === id);
+      if (!img || img.type !== "图片") return;
+      const tags = new Set([...(img.tags || []), "已发布生成图", "共享素材"]);
+      if (tag) tags.add(tag);
+      if (!img.shared) { img.shared = true; changed++; }
+      if (img.sharedSource !== "delivered-production") { img.sharedSource = "delivered-production"; changed++; }
+      if (!img.sharedAt) { img.sharedAt = asset.deliveredAt || asset.createdAt || Date.now(); changed++; }
+      if (!img.productionId && asset.productionId) { img.productionId = asset.productionId; changed++; }
+      if (!img.productId && asset.productId) { img.productId = asset.productId; changed++; }
+      if (!img.productTag && tag) { img.productTag = tag; changed++; }
+      if (!img.title && asset.title) { img.title = asset.title; changed++; }
+      if (!img.name) { img.name = `已发布生成图${String(index + 1).padStart(2, "0")}`; changed++; }
+      const nextTags = [...tags];
+      if ((img.tags || []).join("|") !== nextTags.join("|")) { img.tags = nextTags; changed++; }
+    });
+  });
+  if (changed) save("assets");
+  return changed;
+}
+
 /* ---------- 登录（成员账号制：用户名 + 口令） ---------- */
 function showGate() {
   document.documentElement.classList.remove("auth-booting");
@@ -278,6 +304,7 @@ async function enterRemote(member) {
   await pullRemote();
   await applyAccountProfileSeed({ createMissing: true });
   normalizeDeliveredProductTags();
+  normalizeDeliveredSharedAssets();
   enterMember(member);
   resumeJobs(); resumeActiveBatches();
 }
@@ -368,9 +395,8 @@ function renderContextPanel() {
           <button class="ctx-gtitle" data-g="${esc(g.key)}"><span class="chev ${collapsed ? "closed" : ""}">${icon("chevronDown", 12)}</span>${esc(g.key)}<em>${g.list.length}</em></button>
           ${collapsed ? "" : g.list.map(a => `
             <div class="ctx-acc ${a.id === state.ui.activeAccountId ? "is-active" : ""}" data-acc="${a.id}" role="button" tabindex="0">
-              <span class="ctx-idx" style="--acc-grad:${gradFor(a.name)}">#${String(accountIndex.get(a.id) || 0).padStart(2, "0")}</span>
-              <span class="ctx-name">${esc(a.name)}</span>
-              ${platChip(a.platform, true)}
+              <span class="ctx-idx ${platformCode(a.platform).toLowerCase()}" title="${esc(a.platform || "")}">#${String(accountIndex.get(a.id) || 0).padStart(2, "0")}</span>
+              <span class="ctx-name" title="${esc(a.name)}">${esc(a.name)}</span>
               <em>${a.monthlyDone || 0}</em>
               ${state.role === "admin" ? `<button class="ctx-del" data-acc-del="${a.id}" title="删除账号">${icon("trash", 12)}</button>` : ""}
             </div>`).join("")}
@@ -483,6 +509,7 @@ async function boot() {
       await applyAccountProfileSeed({ createMissing: true });
     }
     normalizeDeliveredProductTags();
+    normalizeDeliveredSharedAssets();
     pruneEmptySessions();
     await enableServerProxyIfConfigured();
     applyKeyOverrides(state.apiKeys);
@@ -537,6 +564,7 @@ async function boot() {
         await pullRemote();
         await applyAccountProfileSeed({ createMissing: true });
         normalizeDeliveredProductTags();
+        normalizeDeliveredSharedAssets();
         state.role = m.role; state.ui.currentMemberId = m.id; save("meta");
         document.documentElement.classList.add("has-auth-token");
         applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;
