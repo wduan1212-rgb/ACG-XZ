@@ -160,11 +160,6 @@ const CARD = {
         <label class="agc-field">宣传产品
           <select data-pf="productId" ${confirmed || cancelled ? "disabled" : ""}>${productOptions(planProductId)}</select>
         </label>
-        <label class="agc-field">主题
-          ${p.topicMode === "random"
-            ? `<span class="agc-random">${icon("dice", 13)} 每号随机主题（AI 按各自定位出题）<button class="link-btn" data-act="plan-topicmode" data-mid="${m.id}" ${confirmed || cancelled ? "disabled" : ""}>改为固定</button></span>`
-            : `<span class="agc-topicrow"><input data-pf="topic" value="${esc(p.topic || "")}" ${confirmed || cancelled ? "disabled" : ""} /><button class="link-btn" data-act="plan-topicmode" data-mid="${m.id}" ${confirmed || cancelled ? "disabled" : ""}>改为随机</button></span>`}
-        </label>
         <label class="agc-field wide">总创作要求
           <textarea data-pf="content" rows="3" ${confirmed || cancelled ? "disabled" : ""} placeholder="写具体创作内容、产品角度或表达偏好；留空则每号按账号风格随机。">${esc(p.content || p.style || "")}</textarea>
           <em>默认沿用各账号自带风格，不再单独选择标签。</em>

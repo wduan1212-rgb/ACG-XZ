@@ -16,6 +16,43 @@ import { fileToDataUrl } from "../core/util.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
+const BATCH_CREATIVE_VARIANTS = [
+  { key: "pain-relief", name: "痛点急救型", angle: "从一个具体办公痛点切入，讲清这条内容解决哪种麻烦", focus: "痛点现场、具体动作、结果变化" },
+  { key: "tool-division", name: "工具分工型", angle: "讲同类/互补工具和主产品如何分工，不孤立宣传", focus: "工具边界、组合流程、主产品负责的动作" },
+  { key: "real-test", name: "真实实测型", angle: "像真实博主试完后复盘，优点和边界都说一点", focus: "实测过程、有效证据、适用/不适用" },
+  { key: "template-save", name: "模板收藏型", angle: "把内容做成可收藏复用的流程卡或模板", focus: "模板字段、复用步骤、适用场景" },
+  { key: "mistake-fix", name: "避坑修正型", angle: "先指出常见错误做法，再给更稳的流程", focus: "误区、正确做法、示例指令" },
+  { key: "before-after", name: "前后对比型", angle: "展示处理前后的变化，用结果建立可信度", focus: "处理前、执行中、处理后" },
+  { key: "one-person-team", name: "一人团队型", angle: "从一个人或小团队的重复劳动切入", focus: "个人卡点、任务拆分、交付结果" },
+  { key: "calm-note", name: "冷静备忘型", angle: "像公开备忘录一样冷静总结，不喊口号", focus: "结论、清单、边界、复用提醒" }
+];
+
+function batchVariantFor({ acc, batch, globalIndex = 0, itemIndex = 1, itemTotal = 1 }) {
+  const base = BATCH_CREATIVE_VARIANTS[globalIndex % BATCH_CREATIVE_VARIANTS.length];
+  const accTag = tagsOf(acc)[0] || groupOf(acc);
+  const repeated = itemTotal > 1 ? `同账号第 ${itemIndex}/${itemTotal} 条也要换例子和标题，不要复用上一条。` : "";
+  return {
+    ...base,
+    index: globalIndex + 1,
+    total: Math.max(1, batch?.plannedTotal || batch?.productionIds?.length || 1),
+    accountName: acc?.name || "",
+    accountTag,
+    focus: `${base.focus}；结合账号标签「${accTag}」写不同例子。${repeated}`
+  };
+}
+
+function existingBatchCopies(batch, currentId) {
+  return batchProds(batch)
+    .filter(x => x.id !== currentId && (x.artifacts?.copy?.title || x.artifacts?.copy?.body))
+    .map(x => ({ title: x.artifacts.copy.title || x.title || "", copy: x.artifacts.copy.body || "" }));
+}
+
+function existingBatchTopics(batch, currentId) {
+  return batchProds(batch)
+    .filter(x => x.id !== currentId && (x.topic || x.artifacts?.script?.title))
+    .map(x => x.topic || x.artifacts.script.title || "")
+    .filter(Boolean);
+}
 
 /* ---------- 会话 ---------- */
 export function ensureSession() {
@@ -120,8 +157,8 @@ export function createBatch(plan, sessionId) {
     id: uid(), sessionId,
     ownerId: state.ui.currentMemberId || null,
     goal: plan.goal || "",
-    topic: plan.topicMode === "random" ? "每号随机主题" : plan.topic,
-    topicMode: plan.topicMode || "fixed",   // fixed | random（每个账号各随机一个主题）
+    topic: (plan.content || "").trim() || (plan.topic || "").trim() || "自动随机创作",
+    topicMode: (plan.content || "").trim() ? "fixed" : (plan.topicMode || "random"),   // fixed | random（每条内容自动出题）
     productId: plan.productId || "dumate",
     content: plan.content || "",
     accountProductIds: plan.accountProductIds || {},
@@ -430,9 +467,25 @@ async function draftOne(p, batch) {
     const contentOverride = ((batch.accountContents && batch.accountContents[acc.id]) || batch.content || "").trim();
     let topic = contentOverride || (batch.topicMode === "random" ? "" : batch.topic);
     const product = productById(productId);
-    if (!topic) topic = p.topic || await AI.randomPick({ kind: "topic", account: acc, product });
-    p.topic = topic;
     const style = acc.styleProfile || acc.lockedStyle || batch.style || "";
+    const batchVariant = p.batchCreativeVariant || p.artifacts.script.batchCreativeVariant || batchVariantFor({
+      acc,
+      batch,
+      globalIndex: Math.max(0, (batch.productionIds || []).indexOf(p.id)),
+      itemIndex: p.batchItemIndex || 1,
+      itemTotal: p.batchItemTotal || 1
+    });
+    p.batchCreativeVariant = batchVariant;
+    p.artifacts.script.batchCreativeVariant = batchVariant;
+    if (!topic) topic = p.topic || await AI.randomPick({
+      kind: "topic",
+      account: acc,
+      product,
+      batchVariant,
+      seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
+      avoidTopics: existingBatchTopics(batch, p.id)
+    });
+    p.topic = topic;
 
     const sres = material
       ? await AI.generateMaterialScript({ topic, account: acc, style, product })
@@ -442,7 +495,8 @@ async function draftOne(p, batch) {
         imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT, product,
         direction: isImg ? topic : "",
         imageTemplate: acc.imagePromptTemplate || "",
-        styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : ""
+        styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : "",
+        batchVariant: isImg ? batchVariant : null
       });
     p.artifacts.script.shots = sres.shots || [];
     p.artifacts.script.title = sres.title || topic;
@@ -459,7 +513,8 @@ async function draftOne(p, batch) {
         imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT,
         product,
         topic,
-        styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : ""
+        styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : "",
+        batchVariant
       });
       const promptRows = imgPromptRes.shots || [];
       p.artifacts.images.items = p.artifacts.script.shots.map((s, i) => ({
@@ -494,13 +549,13 @@ async function draftOne(p, batch) {
       });
       units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
       p.artifacts.boards.externalGroups = buildSbExternalGroups({ shots: p.artifacts.script.shots, style });
-      const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product });
+      const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant, avoidCopies: existingBatchCopies(batch, p.id) });
       p.artifacts.copy = { title: cp0.title || p.title, body: cp0.copy || "" };
       setStage(p, "workshop", "running");
       createUnitVideoJobs(p);   // t2v 单元直接生成；i2v 单元无图时也先出片占位，回工坊可补图重生成
       return;
     }
-    const cp = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: isImg ? "image" : "video", product });
+    const cp = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: isImg ? "image" : "video", product, batchVariant: isImg ? batchVariant : null, avoidCopies: existingBatchCopies(batch, p.id) });
     p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "" };
     if (isImg) {
       try {
@@ -598,18 +653,25 @@ export async function startBatch(plan, session) {
   const batch = createBatch(plan, session.id);
   const defaultPerAccountCount = Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1));
   const defaultImageCount = Math.max(3, Math.min(12, Number(plan.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT));
+  batch.plannedTotal = accounts.reduce((sum, acc) => {
+    const n = Math.max(1, Math.min(12, Number((plan.accountCounts || {})[acc.id] || defaultPerAccountCount) || defaultPerAccountCount));
+    return sum + n;
+  }, 0);
   accounts.forEach(acc => {
     const rawProductId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
     const productId = primaryProductById(rawProductId)?.id || "dumate";
     const perAccountCount = Math.max(1, Math.min(12, Number((plan.accountCounts || {})[acc.id] || defaultPerAccountCount) || defaultPerAccountCount));
     const imageCount = Math.max(3, Math.min(12, Number((plan.accountImageCounts || {})[acc.id] || defaultImageCount) || defaultImageCount));
     for (let i = 0; i < perAccountCount; i++) {
+      const globalIndex = batch.productionIds.length;
       const topic = plan.topicMode === "random" ? "" : (perAccountCount > 1 ? `${plan.topic} ${i + 1}/${perAccountCount}` : plan.topic);
       const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId });
       if (p) {
         p.artifacts.script.imageCount = imageCount;
         p.batchItemIndex = i + 1;
         p.batchItemTotal = perAccountCount;
+        p.batchCreativeVariant = batchVariantFor({ acc, batch, globalIndex, itemIndex: i + 1, itemTotal: perAccountCount });
+        p.artifacts.script.batchCreativeVariant = p.batchCreativeVariant;
         batch.productionIds.push(p.id);
       }
     }

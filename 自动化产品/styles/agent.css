@@ -250,13 +250,15 @@
 .agc-overrides { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .agc-override {
   display: grid;
-  grid-template-columns: minmax(150px, .78fr) 140px 92px 92px minmax(260px, 1.25fr);
+  grid-template-columns: minmax(128px, 1fr) minmax(112px, .8fr) 72px 72px;
   grid-template-areas:
-    "name product itemcount imgcount content"
-    "refhead refstate refstate refactions refactions";
-  column-gap: 10px; row-gap: 10px; align-items: end; padding: 10px 12px;
+    "name product itemcount imgcount"
+    "content content content content"
+    "refhead refstate refactions refactions";
+  column-gap: 7px; row-gap: 9px; align-items: end; padding: 10px;
   border: 1px solid var(--ag-line); border-radius: var(--r-md);
   background: rgba(255,255,255,.035);
+  min-width: 0;
 }
 .agc-override b { grid-area: name; align-self: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--d-text); }
 .agc-override > select { grid-area: product; }
@@ -265,13 +267,13 @@
 .agc-mini-count:nth-of-type(1) { grid-area: itemcount; }
 .agc-mini-count:nth-of-type(2) { grid-area: imgcount; }
 .agc-mini-count input {
-  width: 100%; height: 42px; min-width: 0; border-radius: var(--r-sm);
+  width: 100%; height: 38px; min-width: 0; border-radius: var(--r-sm);
   border: 1px solid var(--ag-line); background: rgba(255,255,255,.05);
   color: var(--d-text); padding: 0 8px; font-size: 11.5px; font-weight: 800; outline: 0;
 }
 .agc-override select, .agc-override input {
-  min-width: 0; background: rgba(255, 255, 255, .05); border: 1px solid var(--ag-line);
-  height: 42px; border-radius: var(--r-sm); padding: 0 12px; font-size: 11.5px; color: var(--d-text); outline: 0;
+  min-width: 0; width: 100%; box-sizing: border-box; background: rgba(255, 255, 255, .05); border: 1px solid var(--ag-line);
+  height: 38px; border-radius: var(--r-sm); padding: 0 10px; font-size: 11px; color: var(--d-text); outline: 0;
 }
 .agc-override select { color-scheme: dark; }
 .agc-mini-ref {
@@ -288,13 +290,13 @@
 .agc-mini-head span { color: var(--d-muted); font-size: 10px; }
 .agc-mini-head em { font-style: normal; font-weight: 500; font-size: 9px; color: var(--d-faint); }
 .agc-mini-ref .agc-ref-chips.mini { grid-area: refstate; align-self: center; min-width: 0; }
-.agc-mini-ref .agc-mini-actions { grid-area: refactions; display: grid; grid-template-columns: minmax(0, 1fr) minmax(116px, auto); gap: 8px; align-items: center; justify-content: stretch; min-width: 0; }
-.agc-mini-ref .agc-mini-actions .btn.sm { height: 34px; justify-content: center; padding: 0 12px; white-space: nowrap; }
+.agc-mini-ref .agc-mini-actions { grid-area: refactions; display: grid; grid-template-columns: minmax(0, 1fr) minmax(104px, auto); gap: 7px; align-items: center; justify-content: stretch; min-width: 0; }
+.agc-mini-ref .agc-mini-actions .btn.sm { height: 32px; justify-content: center; padding: 0 10px; white-space: nowrap; }
 .agc-mini-ref .agc-mini-actions .ref-chip.dark { margin-left: 0; max-width: 150px; }
 .agc-mini-ref .agc-mini-actions .ref-chip.dark span { display: inline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agc-drop-mini {
-  display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 34px;
-  padding: 0 10px; border: 1px dashed rgba(132,152,255,.42); border-radius: var(--r-sm);
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 32px;
+  padding: 0 8px; border: 1px dashed rgba(132,152,255,.42); border-radius: var(--r-sm);
   color: #AFC0FF; background: rgba(80,110,255,.08); cursor: copy; transition: all var(--t-fast);
   white-space: nowrap; font-size: 10.5px;
 }

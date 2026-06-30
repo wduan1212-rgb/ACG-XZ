@@ -14,19 +14,31 @@ window.DumateConfig = LLM_CONFIG; // 兼容旧调试入口
 /* 部署模式：服务器配置了 LLM_API_KEY 时，前端默认走同源代理。
    Authorization 里的占位值会被后端忽略，真实 Key 只在服务器环境变量中。 */
 export async function enableServerProxyIfConfigured() {
+  const candidates = ["/api/health"];
   try {
-    const res = await fetch("/api/health", { cache: "no-store" });
-    if (!res.ok) return false;
-    const data = await res.json();
-    if (!data.llm_configured) return false;
-    LLM_CONFIG.endpoint = "/api/chat/completions";
-    LLM_CONFIG.apiKey = "server-managed";
-    LLM_CONFIG.serverManaged = true;
-    if (data.llm_model) LLM_CONFIG.model = data.llm_model;
-    return true;
-  } catch {
-    return false;
+    const loc = window.location;
+    if (loc?.protocol === "http:" && loc.hostname && loc.port !== "8787") {
+      candidates.push("http://127.0.0.1:8787/api/health");
+    }
+  } catch (_) {}
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (!data.llm_configured) continue;
+      const origin = /^https?:\/\//.test(url) ? new URL(url).origin : "";
+      LLM_CONFIG.endpoint = `${origin}/api/chat/completions`;
+      LLM_CONFIG.apiKey = "server-managed";
+      LLM_CONFIG.serverManaged = true;
+      if (data.llm_model) LLM_CONFIG.model = data.llm_model;
+      return true;
+    } catch {
+      // Try the next local backend candidate. This keeps localhost:4173 usable
+      // while the shared FastAPI backend runs on 8787.
+    }
   }
+  return false;
 }
 
 /* 设置页保存的语言类 Key 覆盖默认配置 */

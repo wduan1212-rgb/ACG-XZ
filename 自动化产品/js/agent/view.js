@@ -554,8 +554,11 @@ function wire(root) {
       case "plan-confirm": {
         const { session: ownerSession, msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
-        if (m.payload.topicMode !== "random" && !(m.payload.topic || "").trim()) { toast("先填写主题，或切换为每号随机"); return; }
         if (!m.payload.accountIds.length) { toast("至少选择一个账号"); return; }
+        if (!(m.payload.content || "").trim() && !(m.payload.topic || "").trim()) {
+          m.payload.topicMode = "random";
+          m.payload.topic = "";
+        }
         m.payload.status = "confirmed";
         state.ui.activeProductionId = null;
         state.ui.returnTo = null;
@@ -569,14 +572,6 @@ function wire(root) {
       case "plan-cancel": {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (m) { m.payload.status = "cancelled"; save("sessions"); renderMsgs(); }
-        break;
-      }
-      case "plan-topicmode": {
-        const { msg: m } = findMessageInSessions(act.dataset.mid);
-        if (!m || m.payload.status !== "pending") break;
-        m.payload.topicMode = m.payload.topicMode === "random" ? "fixed" : "random";
-        save("sessions");
-        renderMsgs();
         break;
       }
       case "plan-refclear": {
