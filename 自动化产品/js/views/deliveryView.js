@@ -31,11 +31,60 @@ function supplierTagsHtml(tags = []) {
   return `${shown.map(t => `<span class="tag">${esc(t)}</span>`).join("")}${rest ? `<span class="tag more">+${rest}</span>` : ""}`;
 }
 
-function deliveredItemHtml(asset, acc, i) {
+let collapsedDays = new Set();
+
+function deliveryTime(asset) {
+  return Number(asset.deliveredAt || asset.createdAt || 0);
+}
+
+function dayKey(asset) {
+  const d = new Date(deliveryTime(asset) || Date.now());
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+function dayLabel(key) {
+  const today = dayKey({ deliveredAt: Date.now() });
+  const yesterday = dayKey({ deliveredAt: Date.now() - 86400000 });
+  if (key === today) return "今天";
+  if (key === yesterday) return "昨天";
+  return key.replace(/-/g, "/");
+}
+
+function displaySeqMap(all) {
+  const map = new Map();
+  [...all]
+    .sort((a, b) => deliveryTime(a.asset) - deliveryTime(b.asset))
+    .forEach((x, i) => map.set(x.asset.id, i + 1));
+  return map;
+}
+
+function seqText(seq) {
+  return seq ? `#${String(seq).padStart(3, "0")}` : "";
+}
+
+function sortDelivered(all) {
+  return [...all].sort((a, b) => deliveryTime(b.asset) - deliveryTime(a.asset));
+}
+
+function groupByDay(all) {
+  const groups = [];
+  sortDelivered(all).forEach(row => {
+    const key = dayKey(row.asset);
+    let g = groups.find(x => x.key === key);
+    if (!g) { g = { key, items: [] }; groups.push(g); }
+    g.items.push(row);
+  });
+  return groups;
+}
+
+function deliveredItemHtml(asset, acc, i, displaySeq) {
   const isImg = asset.type === "图集";
   const coverId = isImg ? (asset.packAssetIds || [])[0] : null;
   const u = coverId ? urlFor(coverId) : null;
-  const seq = asset.pubSeq ? `#${String(asset.pubSeq).padStart(3, "0")}` : "";
+  const seq = seqText(displaySeq);
   const productTag = asset.productTag || productTagLabel(productById(asset.productId || ""));
   const retractReason = deliveryRetractBlockReason(asset);
   const canRetract = canDeleteDelivery(asset);
@@ -111,13 +160,13 @@ export const deliveryView = {
     if (isSupplierRole) tab = "supplier";
 
     const draw = () => {
-      const all = deliveredAssets();
+      const all = sortDelivered(deliveredAssets());
       root.innerHTML = `
         <div class="delivery-page">
           <div class="page-head">
             <div><div class="eyebrow">发布清单</div>
             <h2>${isSupplierRole ? "下载素材 → 平台发布 → 回传链接，完成闭环" : "定稿归档 · 供应商领取 · 发布回链全程可见"}</h2></div>
-            ${isSupplierRole ? `<button class="btn primary" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>` : ""}
+            ${(isSupplierRole || tab === "supplier") ? `<button class="btn primary" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>` : ""}
           </div>
           ${isSupplierRole ? "" : `
           <div class="mode-tabs slim" data-active="${tab}">
@@ -136,9 +185,41 @@ export const deliveryView = {
     };
 
     function drawCreator(body, all) {
+      const seqMap = displaySeqMap(all);
+      const groups = groupByDay(all);
       body.innerHTML = all.length
-        ? `<div class="dv-flow">${all.map(({ asset, acc }, i) => deliveredItemHtml(asset, acc, i)).join("")}</div>`
+        ? `<div class="dv-layout">
+            <aside class="dv-date-nav" aria-label="发布时间轴">
+              ${groups.map(g => `<button class="dv-date-link" data-day-jump="${esc(g.key)}"><span>${esc(dayLabel(g.key))}</span><em>${g.items.length}</em></button>`).join("")}
+            </aside>
+            <div class="dv-flow">
+              ${groups.map(g => {
+                const closed = collapsedDays.has(g.key);
+                return `<section class="dv-day ${closed ? "collapsed" : ""}" id="dv-day-${esc(g.key)}">
+                  <button class="dv-day-head" data-day-toggle="${esc(g.key)}">
+                    <span>${esc(dayLabel(g.key))}</span>
+                    <em>${esc(g.key)} · ${g.items.length} 条</em>
+                    ${icon("chevronDown", 14)}
+                  </button>
+                  <div class="dv-day-list">
+                    ${closed ? "" : g.items.map(({ asset, acc }, i) => deliveredItemHtml(asset, acc, i, seqMap.get(asset.id))).join("")}
+                  </div>
+                </section>`;
+              }).join("")}
+            </div>
+          </div>`
         : emptyState("package", "还没有发布记录", "在审核页点「定稿并发布」后，会按发布序号汇总在这里（未发布的内容在「草稿箱」）");
+
+      $$("[data-day-jump]", body).forEach(b => b.addEventListener("click", () => {
+        const target = body.querySelector(`#dv-day-${CSS.escape(b.dataset.dayJump)}`);
+        target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }));
+      $$("[data-day-toggle]", body).forEach(b => b.addEventListener("click", e => {
+        e.stopPropagation();
+        const key = b.dataset.dayToggle;
+        collapsedDays.has(key) ? collapsedDays.delete(key) : collapsedDays.add(key);
+        drawCreator(body, all);
+      }));
 
       // 已发布列表
       $$(".dv-head", body).forEach(h => h.addEventListener("click", () => {
@@ -182,6 +263,7 @@ export const deliveryView = {
     }
 
     function drawSupplier(body, all) {
+      const seqMap = displaySeqMap(all);
       const platforms = [...new Set(all.map(x => x.acc.platform))];
       const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
       const tags = [...new Set(all.flatMap(x => x.asset.tags || []))];
@@ -217,7 +299,7 @@ export const deliveryView = {
             <tbody>${rows.length ? rows.map(({ asset, acc }) => `
               <tr data-sup="${asset.id}">
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
-                <td class="sup-seq">${asset.pubSeq ? `#${String(asset.pubSeq).padStart(3, "0")}` : "—"}</td>
+                <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
                 <td class="sup-name"><b>${esc(asset.name)}</b>${asset.title ? `<em>${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(asset.planDate)}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
                 <td><b>${esc(asset.byAccount || acc.name)}</b>${asset.byMemberName ? `<em class="sup-by">由 ${esc(asset.byMemberName)} 发布</em>` : ""}</td>

@@ -1,4 +1,4 @@
-/* 共享资产库：只展示已发布/已交付内容；草稿、口播和生成中素材留在账号资产/草稿链路 */
+/* 共享资产库：展示已发布/已交付内容，以及发布后沉淀的生成图；草稿、口播和生成中素材留在账号资产/草稿链路 */
 
 import { $, $$, esc, gradFor } from "../core/util.js";
 import { icon } from "../ui/icons.js";
@@ -10,7 +10,7 @@ import { emptyState, promptModal, confirmModal, openLightbox } from "../ui/compo
 
 let fAcc = "all", fTag = "all", fQ = "", fKind = "all";
 const collapsedAcc = new Set();
-const isSharedAsset = a => !!a?.delivered;
+const isSharedAsset = a => !!a?.delivered || !!a?.shared;
 function deliveredTags(accountId = "all") {
   const set = new Set();
   state.assets.forEach(a => {
@@ -33,12 +33,13 @@ export const assetsView = {
       const isBgmAsset = a => tagsOfAsset(a).some(t => /^(BGM|音乐库)$/.test(t)) && !tagsOfAsset(a).some(t => /口播音频|声线参考|统一参考音频/.test(t));
       if (fKind === "bgm") list = list.filter(isBgmAsset);
       if (fKind === "screen") list = list.filter(a => a.type === "视频" || (a.tags || []).some(t => /录屏|屏幕录制|产品录屏/.test(t)));
+      if (fKind === "generated") list = list.filter(a => a.shared && a.type === "图片");
       const tags = deliveredTags(fAcc);
       root.innerHTML = `
         <div class="assets-page">
           <div class="page-head">
             <div><div class="eyebrow">共享素材库 · 发布后入库</div>
-            <h2>只展示已发布/已交付内容；草稿口播和生成中视频留在个人链路</h2></div>
+            <h2>已发布内容和发布后沉淀的生成图会进入这里；草稿口播和生成中素材留在个人链路</h2></div>
             <div class="head-actions">
               <span class="tag">${icon("package", 13)} 发布后自动进入共享库</span>
               <button class="btn ghost" data-go-delivery>${icon("package", 14)} 去发布清单</button>
@@ -48,6 +49,7 @@ export const assetsView = {
             <div class="fb-search">${icon("search", 14)}<input id="avSearch" placeholder="搜索素材名 / 标签" value="${esc(fQ)}" /></div>
             <div class="fb-row">
               <button class="chip ${fKind === "all" ? "on" : ""}" data-fkind="all">全部发布素材</button>
+              <button class="chip ${fKind === "generated" ? "on" : ""}" data-fkind="generated">${icon("image", 12)} 已发布生成图</button>
               <button class="chip ${fKind === "bgm" ? "on" : ""}" data-fkind="bgm">${icon("music", 12)} 已发布 BGM</button>
               <button class="chip ${fKind === "screen" ? "on" : ""}" data-fkind="screen">${icon("film", 12)} 已发布录屏</button>
             </div>

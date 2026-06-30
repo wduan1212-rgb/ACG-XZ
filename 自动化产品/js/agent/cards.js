@@ -79,7 +79,15 @@ function normalizeSelectionPlan(p) {
 }
 
 function imageAssets() {
-  return state.assets.filter(a => a.type === "图片" && !a.delivered);
+  const score = a => {
+    const tags = (a.tags || []).join(" ");
+    if (/logo|头像|图文风格参考|主界面|角色版/i.test(`${a.name || ""} ${tags}`)) return 0;
+    if (a.shared || /已发布生成图|站内生成|笔记图/.test(tags)) return 1;
+    return 2;
+  };
+  return state.assets
+    .filter(a => a.type === "图片" && !a.delivered)
+    .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0));
 }
 
 function selectedRefIds(p, key = "sharedRefAssetIds") {
@@ -117,6 +125,8 @@ const CARD = {
     const matched = (p.accountIds || []).map(accountById).filter(Boolean);
     const confirmed = p.status === "confirmed";
     const cancelled = p.status === "cancelled";
+    const starting = p.status === "starting";
+    const locked = confirmed || cancelled || starting;
     const perAccountCount = Math.max(1, Math.min(12, Number(p.perAccountCount || 1) || 1));
     const imageCountDefault = Math.max(3, Math.min(12, Number(p.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT));
     const countFor = id => Math.max(1, Math.min(12, Number((p.accountCounts || {})[id] || perAccountCount) || perAccountCount));
@@ -135,14 +145,14 @@ const CARD = {
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
       ${matched.map(a => `<div class="agc-override">
         <b>${esc(a.name)}</b>
-        <select data-pacc-prod="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>${productOptions(primaryProductById((p.accountProductIds || {})[a.id] || planProductId)?.id || planProductId)}</select>
-        <label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${confirmed || cancelled ? "disabled" : ""} /></label>
-        <label class="agc-mini-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${confirmed || cancelled ? "disabled" : ""} /></label>
-        <input data-pacc-content="${a.id}" value="${esc((p.accountContents || {})[a.id] || "")}" placeholder="本账号本次创作内容（可留空）" ${confirmed || cancelled ? "disabled" : ""} />
+        <select data-pacc-prod="${a.id}" ${locked ? "disabled" : ""}>${productOptions(primaryProductById((p.accountProductIds || {})[a.id] || planProductId)?.id || planProductId)}</select>
+        <label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>
+        <label class="agc-mini-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>
+        <input data-pacc-content="${a.id}" value="${esc((p.accountContents || {})[a.id] || "")}" placeholder="本账号本次创作内容（可留空）" ${locked ? "disabled" : ""} />
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
-          <div class="agc-ref-chips mini">${refChips((accountRefs[a.id] || []).slice(0, 3), confirmed || cancelled ? "" : "plan-custom-refremove", m.id)}</div>
-          ${confirmed || cancelled ? "" : `<div class="agc-mini-actions">
+          <div class="agc-ref-chips mini">${refChips((accountRefs[a.id] || []).slice(0, 3), locked ? "" : "plan-custom-refremove", m.id)}</div>
+          ${locked ? "" : `<div class="agc-mini-actions">
             <button class="btn ghost sm" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="custom" data-ref-account="${a.id}">${icon("image", 11)} 从资产选择</button>
             <label class="agc-drop-mini" data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}">
               ${icon("upload", 12)} 拖入 / 上传
@@ -154,19 +164,19 @@ const CARD = {
     </div>` : "";
     return `<div class="ag-card plan ${confirmed ? "resolved" : ""}" data-plan="${m.id}">
       <div class="agc-head">${icon("kanban", 15)}<b>量产任务板</b>
-        <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : "待确认"}</span>
+        <label class="agc-product-pill">产品
+          <select data-pf="productId" ${locked ? "disabled" : ""}>${productOptions(planProductId)}</select>
+        </label>
+        <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
       </div>
       <div class="agc-grid">
-        <label class="agc-field">宣传产品
-          <select data-pf="productId" ${confirmed || cancelled ? "disabled" : ""}>${productOptions(planProductId)}</select>
-        </label>
         <label class="agc-field wide">总创作要求
-          <textarea data-pf="content" rows="3" ${confirmed || cancelled ? "disabled" : ""} placeholder="写具体创作内容、产品角度或表达偏好；留空则每号按账号风格随机。">${esc(p.content || p.style || "")}</textarea>
+          <textarea data-pf="content" rows="3" ${locked ? "disabled" : ""} placeholder="写具体创作内容、产品角度或表达偏好；留空则每号按账号风格随机。">${esc(p.content || p.style || "")}</textarea>
           <em>默认沿用各账号自带风格，不再单独选择标签。</em>
         </label>
       </div>
       ${(() => {
-        const editable = !confirmed && !cancelled;
+        const editable = !locked;
         return `<div class="agc-ref">
           <div class="agc-ref-top">
             <span class="agc-ref-l">${icon("star", 12)} 统一参考图<em>所有选中账号都会参考，最多5张；定制图每号最多3张，单独追加，不互相覆盖</em></span>
@@ -192,7 +202,7 @@ const CARD = {
         </div>`;
       })()}
       <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减</em></span>
-        ${confirmed || cancelled ? "" : `<span class="agc-sec-tools">
+        ${locked ? "" : `<span class="agc-sec-tools">
           <label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>
           <label class="agc-count-inline">默认图数<input type="number" min="3" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>
           <button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>
@@ -200,7 +210,7 @@ const CARD = {
       </div>
       <div class="agc-accs">${accountPool.map((a, idx) => {
         const on = (p.accountIds || []).includes(a.id);
-        return `<button class="agc-acc ${on ? "on" : ""}" data-pacc="${a.id}" ${confirmed || cancelled ? "disabled" : ""}>
+        return `<button class="agc-acc ${on ? "on" : ""}" data-pacc="${a.id}" ${locked ? "disabled" : ""}>
           <span class="agc-idx">#${String(idx + 1).padStart(2, "0")}</span>
           <span class="dot" style="background:${gradFor(a.name)}"></span>
           <b>${esc(a.name)}</b><em>${groupOf(a)}${tagsOf(a).length ? " · " + tagsOf(a).slice(0, 2).join("/") : ""}</em>
@@ -208,7 +218,7 @@ const CARD = {
         </button>`;
       }).join("")}</div>
       ${perAccountOverrides}
-      ${confirmed || cancelled ? "" : `<div class="agc-foot">
+      ${locked ? "" : `<div class="agc-foot">
         <button class="btn ghost sm" data-act="plan-cancel" data-mid="${m.id}">取消</button>
         <button class="btn primary sm" data-act="plan-confirm" data-mid="${m.id}">${icon("spark", 14)} 确认执行（${totalCount} 条）</button>
       </div>`}

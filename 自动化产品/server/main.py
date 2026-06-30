@@ -577,7 +577,7 @@ async def _generated_image_to_data_url(client: httpx.AsyncClient, output: str, r
             out,
             headers={"Accept": "image/*", "Accept-Encoding": "identity"},
             timeout=httpx.Timeout(120.0, connect=12.0),
-            follow_redirects=True,
+            allow_redirects=True,
         )
     try:
         if getattr(client, "is_closed", False):
@@ -1337,8 +1337,8 @@ async def proxy_file(req: FileProxyReq):
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "仅支持 http/https 文件地址")
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=12.0), follow_redirects=True, trust_env=False) as client:
-            r = await client.get(url)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False) as client:
+            r = await client.get(url, allow_redirects=True)
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"远端文件下载失败：{exc.__class__.__name__} {exc}")
     if r.status_code >= 400:
@@ -1374,9 +1374,9 @@ async def video_compose(req: ComposeReq):
         files = []
         narr_path = tdir / "narration.mp3"
         bgm_path = tdir / "bgm.mp3"
-        async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=12.0), follow_redirects=True, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=12.0), trust_env=False) as client:
             for i, c in enumerate(clips):
-                r = await client.get(c.url)
+                r = await client.get(c.url, allow_redirects=True)
                 if r.status_code >= 400:
                     raise HTTPException(502, f"下载片段失败：{c.name or i + 1} HTTP {r.status_code}")
                 fp = tdir / f"clip_{i:03d}.mp4"
@@ -1794,8 +1794,8 @@ async def _justone_get(path: str, params: dict) -> dict:
     if not JUSTONEAPI_KEY:
         raise RuntimeError("JUSTONEAPI_KEY not configured")
     q = {"token": JUSTONEAPI_KEY, **{k: v for k, v in params.items() if v not in (None, "")}}
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        r = await client.get(JUSTONEAPI_BASE_URL + path, params=q)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(JUSTONEAPI_BASE_URL + path, params=q, allow_redirects=True)
     if r.status_code != 200:
         raise RuntimeError(f"JustOneAPI HTTP {r.status_code}: {r.text[:240]}")
     payload = r.json()
@@ -2065,13 +2065,41 @@ def _safe_file_stem(value: str) -> str:
 
 
 def _safe_ext(filename: str, mime: str = "") -> str:
+    mime_ext = mimetypes.guess_extension((mime or "").split(";")[0].strip()) or ""
+    if mime_ext in (".jpe",):
+        mime_ext = ".jpg"
     ext = Path(filename or "").suffix.lower()
+    known_exts = {
+        ".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp3", ".wav", ".m4a",
+        ".aac", ".mp4", ".mov", ".webm", ".json", ".txt", ".csv", ".zip",
+        ".pdf",
+    }
+    if ext in known_exts:
+        return ext
+    if mime_ext and len(mime_ext) <= 12:
+        return mime_ext
     if ext and len(ext) <= 12 and all(ch.isalnum() or ch == "." for ch in ext):
         return ext
-    guessed = mimetypes.guess_extension((mime or "").split(";")[0].strip()) or ""
-    if guessed in (".jpe",):
-        guessed = ".jpg"
-    return guessed if guessed and len(guessed) <= 12 else ".bin"
+    return ".bin"
+
+
+def _media_type_for_path(path: Path) -> str:
+    media = mimetypes.guess_type(path.name)[0]
+    if media and media != "application/octet-stream":
+        return media
+    try:
+        head = path.read_bytes()[:16]
+    except Exception:
+        return media or "application/octet-stream"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    return media or "application/octet-stream"
 
 
 def _upload_path(name: str) -> Path:
@@ -2116,7 +2144,7 @@ def file_get(name: str):
     path = _upload_path(name)
     if not path.exists():
         raise HTTPException(404, "文件不存在或已被清理")
-    media = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    media = _media_type_for_path(path)
     return FileResponse(path, media_type=media, filename=path.name)
 
 

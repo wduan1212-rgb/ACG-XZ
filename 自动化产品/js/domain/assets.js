@@ -43,6 +43,38 @@ function hashText(text = "") {
   return h >>> 0;
 }
 
+function assetHashFromDataUrl(dataUrl = "") {
+  if (!dataUrl) return "";
+  const body = String(dataUrl).replace(/^data:[^,]*,/, "");
+  return `du-${hashText(body || dataUrl).toString(36)}`;
+}
+
+async function assetHashFromBlob(blob) {
+  if (!(blob instanceof Blob)) return "";
+  const buf = await blob.arrayBuffer();
+  let h = 2166136261;
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) {
+    h ^= bytes[i];
+    h = Math.imul(h, 16777619);
+  }
+  return `bl-${(h >>> 0).toString(36)}-${blob.size}`;
+}
+
+function mergeAssetMeta(existing, { accountId, tags = [], name = "" } = {}) {
+  existing.tags = [...new Set([...(existing.tags || []), ...(tags || [])])];
+  if (!existing.accountId && accountId) existing.accountId = accountId;
+  if (!existing.name && name) existing.name = name;
+  existing.updatedAt = Date.now();
+  save("assets");
+  return existing;
+}
+
+function duplicateAssetByHash(hash, type = "图片") {
+  if (!hash) return null;
+  return state.assets.find(a => a.type === type && a.contentHash === hash) || null;
+}
+
 function seededRand(seed) {
   let t = seed >>> 0;
   return () => {
@@ -185,7 +217,10 @@ export function urlFor(idOrAsset) {
 
 /* 新增资产（dataUrl 形式进来 → 转 Blob 落库） */
 export async function addAssetFromDataUrl(accountId, { name, type = "图片", tags = [], dataUrl }) {
-  const a = { id: uid(), accountId, seq: nextSeq(), ownerId: state.ui.currentMemberId || null, name: name || "未命名素材", type, tags, createdAt: Date.now(), hasBlob: !!dataUrl };
+  const contentHash = dataUrl ? assetHashFromDataUrl(dataUrl) : "";
+  const dup = duplicateAssetByHash(contentHash, type);
+  if (dup) return mergeAssetMeta(dup, { accountId, tags, name });
+  const a = { id: uid(), accountId, seq: nextSeq(), ownerId: state.ui.currentMemberId || null, name: name || "未命名素材", type, tags, createdAt: Date.now(), hasBlob: !!dataUrl, contentHash };
   if (dataUrl) {
     try {
       const raw = dataUrlToBlob(dataUrl);
@@ -206,8 +241,12 @@ export async function addAssetFromDataUrl(accountId, { name, type = "图片", ta
 
 export async function addAssetFromFile(accountId, file, { tags = [], name } = {}) {
   const type = file.type.startsWith("video/") ? "视频" : file.type.startsWith("audio/") ? "音频" : "图片";
-  const a = { id: uid(), accountId, seq: nextSeq(), ownerId: state.ui.currentMemberId || null, name: name || file.name.replace(/\.[^.]+$/, ""), type, tags, createdAt: Date.now(), hasBlob: true, mime: file.type };
-  const blob = type === "图片" ? await lightlyProcessImageBlob(file, file.name || a.name) : file;
+  const assetName = name || file.name.replace(/\.[^.]+$/, "");
+  const blob = type === "图片" ? await lightlyProcessImageBlob(file, file.name || assetName) : file;
+  const contentHash = await assetHashFromBlob(blob);
+  const dup = duplicateAssetByHash(contentHash, type);
+  if (dup) return mergeAssetMeta(dup, { accountId, tags, name: assetName });
+  const a = { id: uid(), accountId, seq: nextSeq(), ownerId: state.ui.currentMemberId || null, name: assetName, type, tags, createdAt: Date.now(), hasBlob: true, mime: file.type, contentHash };
   if (blob !== file) {
     a.processed = "clarity-filter-v2";
     a.mime = blob.type || a.mime;

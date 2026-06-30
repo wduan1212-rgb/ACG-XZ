@@ -394,6 +394,31 @@ def _guard_suspicious_account_bulk(conn, items):
         )
 
 
+def _account_semantic_key(item):
+    if not isinstance(item, dict):
+        return None
+    platform = str(item.get("platform") or "").strip()
+    mode = str(item.get("mode") or "").strip()
+    name = str(item.get("name") or "").strip()
+    if not (platform and mode and name):
+        return None
+    return platform, mode, name
+
+
+def _existing_account_keys(conn):
+    keys = {}
+    rows = conn.execute("SELECT id,data FROM docs WHERE collection='accounts'").fetchall()
+    for doc_id, raw in rows:
+        try:
+            item = json.loads(raw)
+        except Exception:
+            continue
+        key = _account_semantic_key(item)
+        if key and key not in keys:
+            keys[key] = doc_id
+    return keys
+
+
 def upsert_docs(collection, items):
     if collection not in COLLECTIONS:
         raise ValueError("unknown collection")
@@ -403,9 +428,17 @@ def upsert_docs(collection, items):
         try:
             if collection == "accounts":
                 _guard_suspicious_account_bulk(conn, items or [])
+                semantic_keys = _existing_account_keys(conn)
+            else:
+                semantic_keys = {}
             for it in items:
                 if not isinstance(it, dict) or "id" not in it:
                     continue
+                if collection == "accounts":
+                    key = _account_semantic_key(it)
+                    existing_id = semantic_keys.get(key)
+                    if existing_id and existing_id != it["id"]:
+                        continue
                 ua = int(it.get("updatedAt") or it.get("createdAt") or time.time() * 1000)
                 cur = conn.execute(
                     "SELECT updated_at FROM docs WHERE collection=? AND id=?", (collection, it["id"])
@@ -416,6 +449,10 @@ def upsert_docs(collection, items):
                     "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                     (collection, it["id"], it.get("ownerId"), ua, json.dumps(it, ensure_ascii=False)),
                 )
+                if collection == "accounts":
+                    key = _account_semantic_key(it)
+                    if key:
+                        semantic_keys[key] = it["id"]
             conn.commit()
         finally:
             conn.close()

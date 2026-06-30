@@ -477,11 +477,11 @@ async function boot() {
     // 本地历史 Blob 可能很多，不能阻塞首屏。资源预览需要时会优先走服务端 URL，
     // 这里后台预热即可，避免旧 IndexedDB 把登录页/首页拖成白屏。
     preloadBlobUrls().catch(e => console.warn("[blob-preload]", e));
-    if (!remote.isOn() || !remote.hasToken()) {
+    if (!remote.isOn()) {
       seedIfEmpty();
       ensureXhsSeedAccounts();
+      await applyAccountProfileSeed({ createMissing: true });
     }
-    if (!remote.isOn() || remote.hasToken()) await applyAccountProfileSeed({ createMissing: true });
     normalizeDeliveredProductTags();
     pruneEmptySessions();
     await enableServerProxyIfConfigured();

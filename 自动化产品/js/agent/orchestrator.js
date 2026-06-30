@@ -36,7 +36,7 @@ function batchVariantFor({ acc, batch, globalIndex = 0, itemIndex = 1, itemTotal
     index: globalIndex + 1,
     total: Math.max(1, batch?.plannedTotal || batch?.productionIds?.length || 1),
     accountName: acc?.name || "",
-    accountTag,
+    accountTag: accTag,
     focus: `${base.focus}；结合账号标签「${accTag}」写不同例子。${repeated}`
   };
 }
@@ -155,6 +155,7 @@ export function createBatch(plan, sessionId) {
   ].filter(Boolean))];
   const batch = {
     id: uid(), sessionId,
+    planMessageId: plan.planMessageId || "",
     ownerId: state.ui.currentMemberId || null,
     goal: plan.goal || "",
     topic: (plan.content || "").trim() || (plan.topic || "").trim() || "自动随机创作",
@@ -206,7 +207,9 @@ export const batchById = id => state.batches.find(b => b.id === id);
 export const batchProds = b => (b.productionIds || []).map(productionById).filter(Boolean);
 export const activeBatches = () => state.batches.filter(b => b.phase !== "done" && ownedBy(b));
 /* 当前会话的批次（看板按会话独立） */
-export const currentSessionBatches = () => sessionBatches(state.ui.activeSessionId).filter(ownedBy);
+export const currentSessionBatches = () => sessionBatches(state.ui.activeSessionId)
+  .filter(ownedBy)
+  .filter(b => (b.productionIds || []).length);
 
 function accountLastActivityAt(acc) {
   const prodTimes = state.productions
@@ -677,6 +680,7 @@ export async function startBatch(plan, session) {
     }
   });
   save("batches", "productions");
+  emit("batch:update", batch);
   addMsg(session, { role: "agent", type: "progress", payload: { batchId: batch.id } });
   notify("agent", `批次启动：「${batch.topic}」`, `${accounts.length} 个账号 · 共 ${batch.productionIds.length} 条内容`);
   // 起草过程播报到思考面板

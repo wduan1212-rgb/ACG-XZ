@@ -35,6 +35,23 @@ function normalizePlanDate(value = "") {
   return (raw ? raw.slice(0, 10).replace(/\//g, "-") : todayPlanDate());
 }
 
+function markPackImagesShared(p, productTag) {
+  const items = (p.artifacts?.images?.items || []).filter(x => x.assetId);
+  items.forEach((it, index) => {
+    const img = assetById(it.assetId);
+    if (!img || img.delivered || img.type !== "图片") return;
+    img.shared = true;
+    img.sharedAt = Date.now();
+    img.sharedSource = "delivered-production";
+    img.productionId = p.id;
+    img.productId = p.artifacts?.script?.productId || img.productId || "dumate";
+    img.productTag = productTag || img.productTag || "";
+    img.title = img.title || it.title || p.artifacts?.copy?.title || p.title || "";
+    img.name = img.name || `已发布生成图${String(index + 1).padStart(2, "0")}`;
+    img.tags = [...new Set([...(img.tags || []), "已发布生成图", "共享素材", ...(productTag ? [productTag] : [])])];
+  });
+}
+
 /* 发布交付：创作者自行定稿入库（无强制审核门槛），分配全局发布序号 + 记录发布账号/成员
    交付 = 内部定稿归档，产物进入交付库供供应商下载，不涉及任何平台发布 */
 export function deliver(p, opts = {}) {
@@ -75,6 +92,7 @@ export function deliver(p, opts = {}) {
     publishNote: opts.note || "",                 // 简短备注（可选）
     adminReviewed: false                          // 管理员「已审阅」标注（非强制门槛）
   };
+  if (isImg) markPackImagesShared(p, productTag);
   state.assets.push(asset);
   acc.monthlyDone = (acc.monthlyDone || 0) + 1;
   p.delivery = { assetId: asset.id, name, at: Date.now(), pubSeq, planDate: asset.planDate, note: asset.publishNote };

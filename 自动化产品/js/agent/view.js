@@ -38,6 +38,36 @@ function findMessageInSessions(messageId) {
   return { session, msg: (session.messages || []).find(m => m.id === messageId) || null };
 }
 
+function planHasLiveBatch(session, msg) {
+  if (!session || !msg) return false;
+  if ((state.batches || []).some(b => b.planMessageId === msg.id)) return true;
+  const messages = session.messages || [];
+  const idx = messages.indexOf(msg);
+  const later = idx >= 0 ? messages.slice(idx + 1) : messages;
+  return later.some(m => m.type === "progress" && batchById(m.payload?.batchId));
+}
+
+function repairPlanStates(session) {
+  let changed = false;
+  const now = Date.now();
+  (session.messages || []).forEach(m => {
+    if (m.type !== "plan" || !m.payload) return;
+    if (m.payload.status === "confirmed" && !planHasLiveBatch(session, m)) {
+      m.payload.status = "pending";
+      delete m.payload.batchId;
+      delete m.payload.startedAt;
+      changed = true;
+    }
+    if (m.payload.status === "starting" && now - Number(m.payload.startedAt || 0) > 45000 && !planHasLiveBatch(session, m)) {
+      m.payload.status = "pending";
+      delete m.payload.startedAt;
+      changed = true;
+    }
+  });
+  if (changed) save("sessions");
+  return changed;
+}
+
 function scrollMsgsTopSoon() {
   requestAnimationFrame(() => {
     const el = $("#agwMsgs");
@@ -181,6 +211,7 @@ function textOf(m) {
 function renderMsgs(scroll = false) {
   const el = $("#agwMsgs"); if (!el) return;
   const s = ensurePlanBoard(ensureSession());
+  repairPlanStates(s);
   if (!s.messages.length) {
     el.innerHTML = "";
     return;
@@ -559,19 +590,45 @@ function wire(root) {
           m.payload.topicMode = "random";
           m.payload.topic = "";
         }
-        m.payload.status = "confirmed";
+        const runSession = ownerSession || s;
+        state.ui.activeSessionId = runSession.id;
+        m.payload.status = "starting";
+        m.payload.startedAt = Date.now();
         state.ui.activeProductionId = null;
         state.ui.returnTo = null;
-        save("sessions");
+        save("sessions", "meta");
         renderMsgs(true);
-        await startBatch({ ...m.payload, goal: m.payload.goal }, ownerSession || s);
-        if (document.body.dataset.zone !== "agent") go("agent");
-        else { renderBoard(); renderPhase(); }
+        try {
+          const batch = await startBatch({ ...m.payload, goal: m.payload.goal, planMessageId: m.id }, runSession);
+          if (!batch) throw new Error("batch not created");
+          m.payload.status = "confirmed";
+          m.payload.batchId = batch.id;
+          delete m.payload.startedAt;
+          save("sessions");
+          if (document.body.dataset.zone !== "agent") go("agent");
+          else { renderMsgs(true); renderSessions(); renderBoard(); renderPhase(); }
+        } catch (err) {
+          console.error(err);
+          m.payload.status = "pending";
+          delete m.payload.startedAt;
+          save("sessions");
+          renderMsgs(true);
+          renderBoard();
+          toast("批量任务启动失败，请检查本地 API 或稍后重试", "error");
+        }
         break;
       }
       case "plan-cancel": {
-        const { msg: m } = findMessageInSessions(act.dataset.mid);
-        if (m) { m.payload.status = "cancelled"; save("sessions"); renderMsgs(); }
+        const { session: ownerSession, msg: m } = findMessageInSessions(act.dataset.mid);
+        if (m && ownerSession) {
+          ownerSession.messages = (ownerSession.messages || []).filter(x => x.id !== m.id);
+          if (!ownerSession.messages.length) ownerSession.title = "新量产计划";
+          save("sessions");
+          renderSessions();
+          renderMsgs("top");
+          renderBoard();
+          renderPhase();
+        }
         break;
       }
       case "plan-refclear": {
@@ -744,7 +801,15 @@ function planRefIds(payload, kind, accountId = "") {
 }
 
 function imageAssetList() {
-  return state.assets.filter(a => a.type === "图片" && !a.delivered);
+  const score = a => {
+    const tags = (a.tags || []).join(" ");
+    if (/logo|头像|图文风格参考|主界面|角色版/i.test(`${a.name || ""} ${tags}`)) return 0;
+    if (a.shared || /已发布生成图|站内生成|笔记图/.test(tags)) return 1;
+    return 2;
+  };
+  return state.assets
+    .filter(a => a.type === "图片" && !a.delivered)
+    .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0));
 }
 
 async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
@@ -756,6 +821,12 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
   const assets = imageAssetList();
   const selected = new Set(planRefIds(m.payload, kind, accountId).slice(0, limit));
   const accountName = accountId ? (state.accounts.find(a => a.id === accountId)?.name || "当前账号") : "";
+  const sourceLabel = a => {
+    const tags = (a.tags || []).join(" ");
+    if (/logo|头像|图文风格参考|主界面|角色版/i.test(`${a.name || ""} ${tags}`)) return "Logo / 账号资产";
+    if (a.shared || /已发布生成图|站内生成|笔记图/.test(tags)) return "已发布生成图";
+    return "账号素材";
+  };
   const html = `
     <div class="mp-head">
       <b>${esc(title)}</b>
@@ -773,7 +844,7 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
           return `<button class="asset-pick-card ${on ? "on" : ""}" data-asset-pick="${a.id}" title="${esc(a.name || "参考图")}">
             <span class="asset-pick-thumb">${u ? `<img src="${u}" alt="${esc(a.name || "参考图")}" />` : `<i>${esc((a.name || "图").slice(0, 1))}</i>`}</span>
             <b>${esc(a.name || "未命名图片")}</b>
-            <em>${esc((a.tags || []).slice(0, 2).join(" / ") || "图片素材")}</em>
+            <em>${esc(sourceLabel(a))}</em>
             <span class="asset-pick-check">${icon("check", 13)}</span>
           </button>`;
         }).join("")}
