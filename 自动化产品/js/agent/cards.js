@@ -5,7 +5,7 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, primaryProducts, primaryProductById } from "../core/store.js";
 import { platChip, groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, matchAccounts, selectAccountsForPlan } from "./orchestrator.js";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -131,7 +131,7 @@ const CARD = {
     }
     const globalRefs = selectedRefIds(p);
     const accountRefs = p.accountRefAssetIds || {};
-    const accountPool = matchAccounts({ group: p.group || "all", tags: p.tags || [], sort: p.sort || "" });
+    const accountPool = (state.accounts || []).filter(Boolean);
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
       ${matched.map(a => `<div class="agc-override">
         <b>${esc(a.name)}</b>

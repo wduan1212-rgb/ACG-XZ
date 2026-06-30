@@ -109,6 +109,19 @@ body.role-editor .rail-item[data-nav="settings"] { display: none; }
 }
 .ctx-acc:hover { background: var(--tint); }
 .ctx-acc.is-active { background: var(--surface); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line); }
+.ctx-idx {
+  flex: none; width: 34px; height: 22px; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 800; letter-spacing: 0;
+  color: #53627d; background: linear-gradient(135deg, rgba(255,255,255,.88), rgba(245,247,255,.72));
+  border: 1px solid rgba(148,163,184,.28);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--acc-grad, #3D5BFF) 72%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+.ctx-acc.is-active .ctx-idx {
+  color: #2F46D8; border-color: rgba(61,91,255,.26);
+  background: linear-gradient(135deg, rgba(236,240,255,.95), rgba(255,255,255,.86));
+}
 .ctx-acc .ctx-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
 .ctx-acc em { font-style: normal; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .ctx-del {

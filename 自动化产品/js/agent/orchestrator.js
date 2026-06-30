@@ -205,7 +205,7 @@ export function defaultPlan(goal = "新量产计划") {
   const fb = parseGoalFallback(goal);
   const params = {
     ...fb,
-    group: fb.group && fb.group !== "all" ? fb.group : "图文组",
+    group: fb.group && fb.group !== "all" ? fb.group : "all",
     sort: fb.sort || "stale",
     accountCount: fb.accountCount || fb.count || null,
     perAccountCount: fb.perAccountCount || 1

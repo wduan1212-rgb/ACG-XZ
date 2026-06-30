@@ -250,15 +250,15 @@
 .agc-overrides { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .agc-override {
   display: grid;
-  grid-template-columns: minmax(150px, .72fr) minmax(128px, .56fr) 92px 92px minmax(0, 1.35fr);
+  grid-template-columns: minmax(150px, .78fr) 140px 92px 92px minmax(260px, 1.25fr);
   grid-template-areas:
     "name product itemcount imgcount content"
-    "refs refs refs refs refs";
-  column-gap: 10px; row-gap: 9px; align-items: center; padding: 10px;
+    "refhead refstate refstate refactions refactions";
+  column-gap: 10px; row-gap: 10px; align-items: end; padding: 10px 12px;
   border: 1px solid var(--ag-line); border-radius: var(--r-md);
   background: rgba(255,255,255,.035);
 }
-.agc-override b { grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--d-text); }
+.agc-override b { grid-area: name; align-self: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--d-text); }
 .agc-override > select { grid-area: product; }
 .agc-override > input { grid-area: content; }
 .agc-mini-count { min-width: 0; display: grid; gap: 3px; color: #8EA0D0; font-size: 9px; font-weight: 750; }
@@ -275,15 +275,20 @@
 }
 .agc-override select { color-scheme: dark; }
 .agc-mini-ref {
-  grid-area: refs; display: grid; grid-template-columns: minmax(150px, .72fr) minmax(220px, 1fr) minmax(260px, 1.15fr);
-  gap: 10px; align-items: center; min-width: 0; padding-top: 9px;
-  border-top: 1px solid rgba(132,152,255,.08);
+  display: contents;
   font-size: 9.5px; color: var(--d-faint); font-weight: 650;
 }
-.agc-mini-head { display: grid; gap: 1px; }
+.agc-mini-head,
+.agc-mini-ref .agc-ref-chips.mini,
+.agc-mini-ref .agc-mini-actions {
+  padding-top: 9px;
+  border-top: 1px solid rgba(132,152,255,.08);
+}
+.agc-mini-head { grid-area: refhead; display: grid; gap: 1px; align-self: center; min-width: 0; }
 .agc-mini-head span { color: var(--d-muted); font-size: 10px; }
 .agc-mini-head em { font-style: normal; font-weight: 500; font-size: 9px; color: var(--d-faint); }
-.agc-mini-ref .agc-mini-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(116px, auto); gap: 8px; align-items: center; justify-content: stretch; }
+.agc-mini-ref .agc-ref-chips.mini { grid-area: refstate; align-self: center; min-width: 0; }
+.agc-mini-ref .agc-mini-actions { grid-area: refactions; display: grid; grid-template-columns: minmax(0, 1fr) minmax(116px, auto); gap: 8px; align-items: center; justify-content: stretch; min-width: 0; }
 .agc-mini-ref .agc-mini-actions .btn.sm { height: 34px; justify-content: center; padding: 0 12px; white-space: nowrap; }
 .agc-mini-ref .agc-mini-actions .ref-chip.dark { margin-left: 0; max-width: 150px; }
 .agc-mini-ref .agc-mini-actions .ref-chip.dark span { display: inline; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -566,8 +571,10 @@
       "product product"
       "itemcount imgcount"
       "content content"
-      "refs refs";
+      "refhead refhead"
+      "refstate refstate"
+      "refactions refactions";
   }
-  .agc-mini-ref { grid-template-columns: 1fr; }
+  .agc-mini-ref .agc-mini-actions { grid-template-columns: 1fr; }
   .agc-ref-body { grid-template-columns: 1fr; }
 }

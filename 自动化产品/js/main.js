@@ -349,6 +349,7 @@ function renderContextPanel() {
   const prevScrollTop = panel.querySelector(".ctx-groups")?.scrollTop ?? state.ui.ctxScrollTop ?? 0;
   const q = (panel.dataset.q || "").toLowerCase();
   const f = a => a.name.toLowerCase().includes(q);
+  const accountIndex = new Map(state.accounts.map((a, i) => [a.id, i + 1]));
   const groups = [
     { key: "图文组", list: state.accounts.filter(a => a.mode === "图文" && f(a)) },
     { key: "真人 · 数字人", list: state.accounts.filter(a => a.mode === "视频" && a.subType === "数字人" && f(a)) },
@@ -367,7 +368,7 @@ function renderContextPanel() {
           <button class="ctx-gtitle" data-g="${esc(g.key)}"><span class="chev ${collapsed ? "closed" : ""}">${icon("chevronDown", 12)}</span>${esc(g.key)}<em>${g.list.length}</em></button>
           ${collapsed ? "" : g.list.map(a => `
             <div class="ctx-acc ${a.id === state.ui.activeAccountId ? "is-active" : ""}" data-acc="${a.id}" role="button" tabindex="0">
-              <span class="dot" style="background:${gradFor(a.name)}"></span>
+              <span class="ctx-idx" style="--acc-grad:${gradFor(a.name)}">#${String(accountIndex.get(a.id) || 0).padStart(2, "0")}</span>
               <span class="ctx-name">${esc(a.name)}</span>
               ${platChip(a.platform, true)}
               <em>${a.monthlyDone || 0}</em>
