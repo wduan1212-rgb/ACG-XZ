@@ -1,4 +1,4 @@
-/* 链路 · 分镜（视频）/ 图片工坊（图文）：站内图片 API 优先，站外上传仅作备用 */
+/* 链路 · 分镜（视频）/ 图文创作台（图文）：站内图片 API 优先，站外上传仅作备用 */
 
 import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
@@ -358,7 +358,7 @@ export function enrichPromptWithRefs(prompt, A) {
   const names = refNamesOf(A);
   if (!names.length) return prompt || "";
   const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
-  const refNote = `统一参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），请综合参考它们的产品界面、配色、信息密度、图标形态和真实截图质感；不要只参考第一张。若参考图之间功能不同，按当前画面主题选择最匹配的一张作为主参考，其余作为品牌与风格辅助参考。参考图里的旧标题、页名、示例文案一律视为占位，不要照抄；画面文字只使用本提示词指定的大标题/副标题。`;
+  const refNote = `统一参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），综合参考它们的产品界面、配色、信息密度、图标形态和真实截图质感。若参考图之间功能不同，按当前画面主题选择最匹配的一张作为主参考，其余作为品牌与风格辅助参考；参考图里的旧标题、页名、示例文案视为占位，画面文字按本提示词指定的大标题/副标题重写。`;
   return `${body}\n\n${refNote}\n\n${IMAGE_NEGATIVE_PROMPT}`.trim();
 }
 
@@ -432,29 +432,30 @@ export function renderSlotsPage(root, p, isImg) {
   const draw = () => {
     syncImageFactoryDraft();
     const items = A.items || [];
+    const C = p.artifacts.copy || { title: "", body: "" };
     const got = items.filter(x => x.assetId).length;
     const refs = refAssetsOf(A);
     const flowTitle = isImg
-      ? (genMode === "in" ? "创作内容 → 图卡结构 → 站内生成" : "创作内容 → 图卡结构 → 站外上传")
+      ? (genMode === "in" ? "创作内容 → 文案标题 → 图卡提示词 → 站内生成" : "创作内容 → 文案标题 → 图卡提示词 → 站外上传")
       : "按脚本逐镜头出分镜图";
     root.innerHTML = `
       ${stepperHtml(p, page)}
       <div class="chain-page solo">
         <div class="chain-main">
           <div class="page-head">
-            <div><div class="eyebrow">${isImg ? "图文链路 · 图片工坊" : "视频链路 · 分镜图"}</div>
+            <div><div class="eyebrow">${isImg ? "图文链路 · 图文创作台" : "视频链路 · 分镜图"}</div>
             <h2>${flowTitle} <span class="head-count">${got}/${items.length}</span></h2></div>
             <div class="head-actions">
               ${isImg ? "" : `<button class="btn ghost" id="cbSkip">跳过此步 ${icon("arrowRight", 13)}</button>`}
-              <button class="btn primary" id="cbNext">下一步：${isImg ? "文案" : "提示词"} ${icon("arrowRight", 14)}</button>
+              <button class="btn primary" id="cbNext">下一步：${isImg ? "审核" : "提示词"} ${icon("arrowRight", 14)}</button>
             </div>
           </div>
 
           ${isImg ? `
           <div class="img-factory card">
             <div class="imgf-head">
-              <div><b>${icon("image", 14)} 图片工坊</b><em>直接在这里填创作内容、选择产品和张数；不再单独走脚本节点</em></div>
-              <button class="btn gen" id="imgFactoryGen">${icon("spark", 15)} 生成图卡结构与提示词</button>
+              <div><b>${icon("image", 14)} 图文创作台</b><em>创作内容、标题文案、图卡结构和提示词在这里一次准备</em></div>
+              <button class="btn gen" id="imgFactoryGen">${icon("spark", 15)} 生成文案与图卡提示词</button>
             </div>
             <div class="imgf-grid">
               <label class="field">宣传产品
@@ -473,6 +474,19 @@ export function renderSlotsPage(root, p, isImg) {
               </label>
             </div>
             ${acc.imagePromptTemplate ? `<div class="imgf-note">${icon("checkCircle", 13)} 已启用该账号固定图文模板，张数、产品和本次内容会自动替换。</div>` : `<div class="imgf-note muted">未配置固定模板时，按产品功能、本次内容和账号创作风格生成。</div>`}
+          </div>
+
+          <div class="copy-inline card">
+            <div class="copy-inline-head">
+              <div><b>${icon("type", 14)} 发布文案</b><em>文案先生成，图卡提示词会轻量呼应；可在这里直接微调</em></div>
+              <button class="btn ghost sm" id="imgCopyGen">${icon("spark", 13)} 只重写文案</button>
+            </div>
+            <label class="field">标题
+              <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" placeholder="生成后可编辑，标题不直接写自家产品名" />
+            </label>
+            <label class="field">正文
+              <textarea class="input" id="imgCopyBody" rows="5" placeholder="发布文案会随交付包带出；生成图卡前会优先准备它。">${esc(C.body || "")}</textarea>
+            </label>
           </div>` : ""}
 
           <div class="refbar card" id="cbRefbar">
@@ -529,7 +543,7 @@ export function renderSlotsPage(root, p, isImg) {
           </div>`}`}
 
           <div class="slot-cards" id="cbCards">${items.map((it, i) => slotCard(it, i, isImg)).join("") ||
-            `<div class="empty-state slim">${icon("image", 22)}<b>${isImg ? "先在上方图片工坊生成图卡结构" : "先回脚本页生成脚本"}</b><p>每${isImg ? "张图" : "个镜头"}会在这里生成一个出图槽位</p></div>`}</div>
+            `<div class="empty-state slim">${icon("image", 22)}<b>${isImg ? "先在上方图文创作台生成图卡结构" : "先回脚本页生成脚本"}</b><p>每${isImg ? "张图" : "个镜头"}会在这里生成一个出图槽位</p></div>`}</div>
         </div>
       </div>`;
     wireStepper(root);
@@ -600,6 +614,12 @@ export function renderSlotsPage(root, p, isImg) {
       $("#imgBrief", root)?.addEventListener("blur", e => { S.direction = e.target.value.trim(); if (S.direction) p.topic = S.direction.slice(0, 80); save("productions"); });
       $("#imgOnlineTrends", root)?.addEventListener("change", e => { S.useOnlineTrends = !!e.target.checked; save("productions"); });
       $("#imgFactoryGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, generateImageWorkshop, "生成中…"));
+      $("#imgCopyTitle", root)?.addEventListener("input", e => { p.artifacts.copy.title = e.target.value; save("productions"); });
+      $("#imgCopyBody", root)?.addEventListener("input", e => { p.artifacts.copy.body = e.target.value; save("productions"); });
+      $("#imgCopyGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+        await generateImageCopy({ force: true });
+        draw();
+      }, "生成文案中…"));
     }
 
     // 模式切换
@@ -699,12 +719,12 @@ export function renderSlotsPage(root, p, isImg) {
         if (!imageRunActive(runToken, "all")) return;
         save("productions");
         if (canRedrawCurrent()) draw();
-        toast(ok ? `已生成 ${ok}/${fresh.length} 张图片` : "没有图片生成成功，请检查错误提示", ok ? "" : "error");
+        toast(ok ? "已生成" : "没有图片生成成功，请检查错误提示", ok ? "" : "error");
       }, "生成图片中…"));
 
       $("#cbGenPrompts", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
         const shots = p.artifacts.script.shots || [];
-        if (!shots.length) { toast(isImg ? "先在图片工坊生成图卡结构" : "先回脚本页生成脚本"); return; }
+        if (!shots.length) { toast(isImg ? "先在图文创作台生成图卡结构" : "先回脚本页生成脚本"); return; }
         const sharedRefs = refAssetsOf(A);
         if (isImg) {
           const styleRef = acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
@@ -716,7 +736,8 @@ export function renderSlotsPage(root, p, isImg) {
             styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
             imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || DEFAULT_XHS_IMAGE_COUNT,
             product: productById(p.artifacts.script.productId),
-            topic: p.topic
+            topic: p.topic,
+            copy: p.artifacts.copy
           });
           A.items = (res.shots || []).map((s, i) => ({
             title: s.title || `图${i + 1}`, visual: (shots[i] || {}).visual || "", prompt: s.prompt || "", ui: !!s.ui,
@@ -764,8 +785,10 @@ export function renderSlotsPage(root, p, isImg) {
       const got = items.filter(x => x.assetId).length;
       if (isImg) {
         if (!got) { toast("还没有上传任何成图（至少上传 1 张）"); return; }
-        if (p.stage === "images") setStage(p, "copy", "pending");
-        go("studio", "copy");
+        if (!(p.artifacts.copy.body || "").trim()) { toast("先生成或填写发布文案"); return; }
+        if (!(p.artifacts.copy.title || "").trim()) p.artifacts.copy.title = p.title || p.topic || "未命名内容";
+        if (p.stage === "images" || p.stage === "copy") setStage(p, "review", "pending");
+        go("studio", "review");
       } else {
         if (p.stage === "boards" && got === items.length && items.length) maybeAdvanceAfterInput(p);
         else if (p.stage === "boards") setStage(p, "prompts", (p.artifacts.prompts || []).length ? "done" : "pending");
@@ -902,6 +925,43 @@ export function renderSlotsPage(root, p, isImg) {
     save("productions");
   }
 
+  async function generateImageCopy(opts = {}) {
+    const {
+      force = false,
+      topicOverride = "",
+      shotsOverride = null,
+      productOverride = null,
+      styleOverride = "",
+      trendPrep = null,
+      trendGuide = ""
+    } = opts;
+    const C = p.artifacts.copy;
+    if (!force && (C.title || "").trim() && (C.body || "").trim()) return C;
+    const shots = shotsOverride || S.shots || p.artifacts.script.shots || [];
+    if (!shots.length) return C;
+    const product = productOverride || productById(S.productId || "dumate");
+    const style = styleOverride || S.style || acc.styleProfile || "";
+    const res = await AI.generateCopy({
+      topic: topicOverride || p.topic || S.direction || "",
+      shots,
+      account: acc,
+      style,
+      kind: "image",
+      product,
+      useOnlineTrends: !!S.useOnlineTrends,
+      trendGuide: trendGuide || S.trendGuide || "",
+      trendPrep: trendPrep || S.trendPrep || null
+    });
+    C.title = res.title || C.title || p.title || p.topic || "";
+    C.body = res.copy || C.body || "";
+    const titleInput = $("#imgCopyTitle", root);
+    const bodyInput = $("#imgCopyBody", root);
+    if (titleInput) titleInput.value = C.title;
+    if (bodyInput) bodyInput.value = C.body;
+    save("productions");
+    return C;
+  }
+
   async function generateImageWorkshop() {
     let brief = ($("#imgBrief", root)?.value || "").trim();
     const count = Math.max(3, Math.min(12, parseInt($("#imgCount", root)?.value, 10) || S.imageCount || DEFAULT_XHS_IMAGE_COUNT));
@@ -939,6 +999,15 @@ export function renderSlotsPage(root, p, isImg) {
     S.source = AI.lastSource;
     S.style = style;
     p.title = res.title || topic;
+    const copy = await generateImageCopy({
+      topicOverride: topic,
+      shotsOverride: S.shots,
+      productOverride: selectedProduct,
+      styleOverride: style,
+      trendGuide,
+      trendPrep,
+      force: true
+    });
     const promptRes = await AI.generateImagePrompts({
       script: shotsToText(S.shots, true),
       account: acc,
@@ -950,7 +1019,8 @@ export function renderSlotsPage(root, p, isImg) {
       topic,
       useOnlineTrends: S.useOnlineTrends,
       trendGuide,
-      trendPrep
+      trendPrep,
+      copy
     });
     S.trendPrep = trendPrep;
     S.trendGuide = trendGuide;
@@ -968,7 +1038,7 @@ export function renderSlotsPage(root, p, isImg) {
     p.stageStatus = "pending";
     save("productions");
     if (canRedrawCurrent()) draw();
-    toast(AI.sourceNote("已生成"));
+    toast(AI.sourceNote("已生成文案、图卡结构与提示词"));
   }
 
   if (!A.externalPrompt && (p.artifacts.script.shots || []).length) rebuildExternal();

@@ -141,7 +141,11 @@ async function cleanupNonSeedAccounts() {
 }
 
 async function applyAccountProfileSeed({ createMissing = true, quiet = false } = {}) {
-  if (state.ui.accountProfileVersion === ACCOUNT_PROFILE_VERSION) return 0;
+  const seedKeys = new Set(ACCOUNT_PROFILE_SEED.map(accountSeedKey));
+  const hasAllSeedAccounts = ACCOUNT_PROFILE_SEED.every(profile =>
+    (state.accounts || []).some(acc => accountSeedKey(acc) === accountSeedKey(profile))
+  );
+  if (state.ui.accountProfileVersion === ACCOUNT_PROFILE_VERSION && hasAllSeedAccounts) return 0;
   const removed = await cleanupNonSeedAccounts();
   let changed = removed, created = 0;
   ACCOUNT_PROFILE_SEED.forEach(profile => {
@@ -451,7 +455,8 @@ function renderTopbar() {
   const acc = activeAccount();
   const { page } = parseHash();
   let crumb = ZONE_TITLE[zone] || "";
-  if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${page && page !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图片工坊", prompts: "提示词", workshop: "分镜工坊", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[page] || "") : ""}`;
+  const shownPage = acc?.mode === "图文" && ["script", "copy"].includes(page) ? "images" : page;
+  if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: "分镜工坊", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
   bc.textContent = crumb;
 }
 

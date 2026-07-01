@@ -582,7 +582,7 @@ async def _generated_image_to_data_url(client: httpx.AsyncClient, output: str, r
             out,
             headers={"Accept": "image/*", "Accept-Encoding": "identity"},
             timeout=httpx.Timeout(120.0, connect=12.0),
-            allow_redirects=True,
+            follow_redirects=True,
         )
     try:
         if getattr(client, "is_closed", False):
@@ -990,18 +990,27 @@ async def image_generate(req: ImageGenerateReq):
                 used_refs = len(ref_files)
             else:
                 r, data = await _post_json_with_retry(client, endpoint, body, json_headers)
+    except HTTPException:
+        raise
     except httpx.HTTPError as exc:
         raise HTTPException(502, "无法连接图片 API（%s）：%s %s" % (_public_base(endpoint), exc.__class__.__name__, exc))
+    except Exception as exc:
+        raise HTTPException(502, "图片 API 适配失败：%s %s" % (exc.__class__.__name__, str(exc)[:240]))
     if r.status_code >= 400:
         detail = _http_detail(data) if data else r.text[:1000]
         raise HTTPException(r.status_code, detail or "图片生成失败")
     if isinstance(data, dict) and (data.get("error") or str(data.get("status") or "").lower() == "failed"):
         detail = _http_detail(data) or "图片生成失败"
         raise HTTPException(502, detail)
-    output = _find_image_url_or_data(data) if responses_mode else (_image_from_chat_response(data) if chat_mode else _image_from_response(data))
-    if not output:
-        raise HTTPException(502, "图片 API 没有返回图片数据")
-    output = await _generated_image_to_data_url(client, output, ratio)
+    try:
+        output = _find_image_url_or_data(data) if responses_mode else (_image_from_chat_response(data) if chat_mode else _image_from_response(data))
+        if not output:
+            raise HTTPException(502, "图片 API 没有返回图片数据")
+        output = await _generated_image_to_data_url(client, output, ratio)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, "图片 API 返回已收到，但服务端解析失败：%s %s" % (exc.__class__.__name__, str(exc)[:240]))
     return {
         "ok": True,
         "dataUrl": output,

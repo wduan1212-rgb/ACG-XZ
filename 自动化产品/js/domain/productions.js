@@ -1,5 +1,5 @@
 /* production：统一内容生产任务模型 + 阶段状态机
-   图文：images(图片工坊：创作内容/模板/成图一体) → copy → review → delivered
+   图文：images(图文创作台：创作内容/文案/提示词/成图一体) → review → delivered
    视频（真人/素材）：workshop(选题/口播/分镜一体节点) → cut(智能混剪+BGM) → copy → review */
 
 import { state, save, emit, accountById, ownedBy, removeRemote } from "../core/store.js";
@@ -9,7 +9,7 @@ import { BGM_POOL } from "../api/prompts.js";
 export const STAGES = {
   script: { label: "脚本", icon: "fileText" },
   boards: { label: "分镜", icon: "image" },
-  images: { label: "图片工坊", icon: "image" },
+  images: { label: "图文创作台", icon: "image" },
   prompts: { label: "提示词", icon: "list" },
   workshop: { label: "分镜工坊", icon: "layers" },
   render: { label: "生成", icon: "film" },
@@ -25,7 +25,7 @@ export const isVideoWorkshop = p => p && p.mode === "视频";
 /* flowOf 接受 production / account（含 mode + subType）或 (mode, subType) */
 export const flowOf = (p, subType) => {
   const mode = typeof p === "object" && p ? p.mode : p;
-  if (mode === "图文") return ["images", "copy", "review"];
+  if (mode === "图文") return ["images", "review"];
   return ["workshop", "cut", "copy", "review"];
 };
 
@@ -34,6 +34,7 @@ export function normalizeStage(p) {
   if (p.stage === "delivered") return "delivered";
   const flow = flowOf(p);
   if (p.mode === "图文" && p.stage === "script") return "images";
+  if (p.mode === "图文" && p.stage === "copy") return "images";
   if (isVideoWorkshop(p) && p.stage === "script") return "workshop";
   if (flow.includes(p.stage)) return p.stage;
   if (isVideoWorkshop(p) && ["boards", "prompts", "render"].includes(p.stage)) return "workshop";

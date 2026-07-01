@@ -73,23 +73,50 @@ ${items.join("\n")}
 统一要求：出现角色脸部时一律将脸部打码（马赛克处理）；不要在画面上叠加字幕 / 标题 / 花字；不要二维码；不要乱码；不要密集小字；不要 emoji。`;
 }
 
-export function buildImgExternalPrompt({ topic = "", position = "", shots = [], items = [], style = "", refNames = [], template = "", productName = "", imageCount = 6 }) {
-  const n = items.length || shots.length || 6;
+function cleanImageTemplateText(text = "") {
+  return String(text || "")
+    .replace(/（?请根据上传的参考图[^。；\n]*[。；，,]?）?/g, "")
+    .replace(/生成小红书笔记风格\s*3:4\s*尺寸(?:图片)?[，,。；\s]*/g, "")
+    .replace(/【\s*账号定位\s*[:：][^】]*】/g, "")
+    .replace(/【[^】]*(?:账号定位|账号风格|图片风格|视角)[^】]*】/g, "")
+    .replace(/图片具体内容\s*[:：]\s*【?/g, "")
+    .replace(/精准描述图片(?:的)?内容，?所有文字清晰可读/g, "")
+    .replace(/负面约束\s*[:：][\s\S]*$/g, "")
+    .replace(/清爽种草感|种草感|轻种草|种草/g, "真实分享感")
+    .replace(/痛点/g, "待处理问题")
+    .replace(/共鸣/g, "真实场景")
+    .replace(/构图/g, "画面结构")
+    .replace(/版式/g, "画面布局")
+    .replace(/封面/g, "首张")
+    .replace(/步骤([一二三四五六七八九十\d]*)/g, "动作$1")
+    .replace(/评分|打分|星级|排行榜|分数表|分数/g, "适配判断")
+    .replace(/(?:^|[。；;])\s*[^。；;\n]*(?:不要出现|不出现|不要加入|不要放|不要写|禁止出现|避免出现|不得出现|不能出现|不要二维码|不要页码|不要logo|不要乱码)[^。；;\n]*[。；;]?/g, "。")
+    .replace(/[【】]/g, "")
+    .replace(/[｜|<>]/g, "，")
+    .replace(/，{2,}/g, "，")
+    .replace(/^[，,。；、\s]+|[，,。；、\s]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function buildImgExternalPrompt({ topic = "", position = "", shots = [], items = [], style = "", refNames = [], template = "", productName = "", imageCount = 4 }) {
+  const n = items.length || shots.length || imageCount || 4;
   const imageNegative = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
   const refPrefix = refNames.length ? `（请根据上传的参考图：${refNames.join("、")}）` : "";
   const styleLine = String(style || "白底极简、圆角卡片、大留白、真实办公截图质感，强调文字清楚和信息层级")
     .replace(/^整体风格\s*[:：]\s*/, "")
     .replace(/^账号风格\s*[:：]\s*/, "");
   const labelFor = i => `图片${String.fromCharCode(65 + (i % 26))}`;
-  const lines = (items.length ? items.map((p, i) => `${labelFor(i)}（${p.title || "内容图"}）：${p.prompt}`)
-    : shots.map((s, i) => `${labelFor(i)}：${s.idea || "内容图"}。请先理解这一页的信息作用，再扩写成完整设计提示词；素材线索：${s.visual || ""}${s.line ? `；画面核心文字可提炼为「${s.line}」` : ""}`));
-  const tpl = String(template || "").trim();
+  const cleanLine = text => cleanImageTemplateText(text).replace(/图\d+|第\d+张/g, "本张");
+  const lines = (items.length ? items.map((p, i) => `${labelFor(i)}（${cleanLine(p.title || "内容图")}）：${cleanLine(p.prompt || "")}`)
+    : shots.map((s, i) => `${labelFor(i)}：${cleanLine(s.idea || "内容图")}。请先理解这一页的信息作用，再扩写成完整设计提示词；素材线索：${cleanLine(s.visual || "")}${s.line ? `；画面核心文字可提炼为「${cleanLine(s.line)}」` : ""}`));
+  const tpl = cleanImageTemplateText(template);
   if (tpl) {
-    const count = Math.max(3, Math.min(12, imageCount || n || 6));
-    return `${refPrefix}请按下方【账号固定图文模板】的版式语言、色彩、字体、参考图使用方式和统一要求，重新生成本次小红书笔记配图提示词。
+    const count = Math.max(3, Math.min(12, imageCount || n || 4));
+    return `${refPrefix}按下方【账号固定图文模板】的版式语言、色彩、字体、参考图使用方式和统一要求，重新生成本次小红书笔记配图提示词。
 
 【本次变量】
-- 本次生成张数：${count} 张独立图片（不要拼成宫格，不要多出或少出）
+- 本次生成张数：${count} 张独立图片，数量与下方内容一致
 - 本次主题：${topic || `${productName || "产品"}使用体验`}
 - 宣传产品/应用：${productName || "本次选择的产品"}
 - 创作风格：${styleLine}
@@ -101,17 +128,17 @@ ${lines.slice(0, count).join("\n")}
 ${tpl}
 
 【执行要求】
-1. 先分析本次主题和创作内容：提炼读者遇到的具体问题、产品解决点、每张图片的信息任务；不要把用户原文整段塞进提示词。
-2. 模板中的固定张数、示例主题、示例产品名、示例各图内容都只是占位变量，必须替换成上面的本次变量；最终只输出 ${count} 张独立图片。
-3. 如果模板要求按功能对应参考图，请按本次上传参考图和本次各图内容重新对应，不要照抄模板示例里的产品功能；多张参考图要综合参考，不要只参考第一张。
-4. 每张图都必须写成：「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【精准描述图片的内容所有文字清晰可读】。${imageNegative}」如果有参考图，开头保留「请根据上传的参考图」。
-5. 每张图都要写清：画幅、版式结构、主视觉、界面/产品元素、图上文字、配色、字体气质和留白；单张提示词控制在90-170字，第1张更简洁。
+1. 先分析本次主题和创作内容：提炼读者遇到的具体问题、产品解决点、每张图片的信息任务；用编辑视角摘要、拆分和重排信息。
+2. 模板中的固定张数、示例主题、示例产品名、示例各图内容都只是占位变量，用上面的本次变量改写为 ${count} 张独立图片。
+3. 如果模板包含按功能对应参考图的习惯，请按本次上传参考图和本次各图内容重新对应；多张参考图综合参考，按当前图片任务选择主参考与辅助参考。
+4. 每张图输出为：「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【精准描述图片的内容所有文字清晰可读】。${imageNegative}」如果有参考图，开头保留「请根据上传的参考图」。
+5. 每张图说明画幅、画面结构、主视觉、界面/产品元素、图上文字、配色、字体气质和留白；按内容复杂度自然取舍，首张更简洁有点击感，内页可适当承载清晰信息。
 6. 统一要求：${count}张图风格、配色、版式语言保持一致；最终负面约束只使用上面指定的短句。`;
   }
-  return `${refPrefix}分别生成${n}张独立图片，统一小红书笔记风格3:4尺寸。请先分析本次主题，提炼读者遇到的具体问题、产品解决点和每张图片承担的信息任务，不要把用户原句整段直接塞进图片提示词。
+  return `${refPrefix}分别生成${n}张独立图片，统一小红书笔记风格3:4尺寸。请先分析本次主题，提炼读者遇到的具体问题、产品解决点和每张图片承担的信息任务，用编辑视角摘要、拆分和重排信息。
 主题是「${topic || `${productName || "产品"}使用体验`}」，宣传产品/应用：${productName || "本次选择的产品"}。
 【图片风格：${styleLine}】
-每张图都要写成完整提示词，并包含「图片具体内容：【精准描述图片的内容，所有文字清晰可读】」和「${imageNegative}」。每张图都要写清版式结构、主视觉、界面/产品元素、图上文字、配色、字体气质和留白；单张提示词控制在90-170字，第1张更简洁。
+每张图写成完整提示词，并包含「图片具体内容：【精准描述图片的内容，所有文字清晰可读】」和「${imageNegative}」。每张图说明画面结构、主视觉、界面/产品元素、图上文字、配色、字体气质和留白；按内容复杂度自然取舍，首张更简洁有点击感，内页可适当承载清晰信息。
 各图内容如下：
 ${lines.join("\n")}
 统一要求：${n}张图风格、配色、版式语言保持一致，像同一篇小红书笔记的配图；最终负面约束只使用上面指定的短句。`;

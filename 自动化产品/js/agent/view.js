@@ -40,11 +40,15 @@ function findMessageInSessions(messageId) {
 
 function planHasLiveBatch(session, msg) {
   if (!session || !msg) return false;
-  if ((state.batches || []).some(b => b.planMessageId === msg.id)) return true;
+  const isLive = b => b
+    && b.sessionId === session.id
+    && b.planMessageId === msg.id
+    && (b.productionIds || []).length > 0;
+  if ((state.batches || []).some(isLive)) return true;
   const messages = session.messages || [];
   const idx = messages.indexOf(msg);
   const later = idx >= 0 ? messages.slice(idx + 1) : messages;
-  return later.some(m => m.type === "progress" && batchById(m.payload?.batchId));
+  return later.some(m => m.type === "progress" && isLive(batchById(m.payload?.batchId)));
 }
 
 function repairPlanStates(session) {
@@ -809,9 +813,17 @@ function imageAssetList() {
     if (a.shared || /已发布生成图|站内生成|笔记图/.test(tags)) return 1;
     return 2;
   };
+  const seen = new Set();
   return state.assets
     .filter(a => a.type === "图片" && !a.delivered)
-    .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0));
+    .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0))
+    .filter(a => {
+      const key = a.dataUrl || a.url || a.remoteUrl || `${String(a.name || "").toLowerCase()}|${(a.tags || []).join("|")}|${a.accountId || ""}`;
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {

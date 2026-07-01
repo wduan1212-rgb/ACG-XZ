@@ -15,6 +15,21 @@ import { reviewPreviewHtml } from "./prodDrawer.js";
 export function renderCopyPage(root, p) {
   const acc = accountById(p.accountId);
   const isImg = p.mode === "图文";
+  if (isImg) {
+    root.innerHTML = `
+      ${stepperHtml(p, "images")}
+      <div class="chain-page solo">
+        <div class="empty-state card">
+          ${icon("image", 24)}
+          <b>图文文案已合并到图文创作台</b>
+          <p>标题、文案、图卡结构和提示词现在在一个界面完成。</p>
+          <button class="btn primary" id="ccBackToImages">回到图文创作台</button>
+        </div>
+      </div>`;
+    wireStepper(root);
+    $("#ccBackToImages", root)?.addEventListener("click", () => go("studio", "images"));
+    return;
+  }
   const C = p.artifacts.copy;
 
   root.innerHTML = `
@@ -59,7 +74,7 @@ export function renderCopyPage(root, p) {
 
   $("#ccGen", root).addEventListener("click", e => withLoading(e.currentTarget, async () => {
     const shots = p.artifacts.script.shots || [];
-    if (!shots.length) { toast(isImg ? "先去图片工坊生成图卡结构" : "先回脚本页生成脚本"); return; }
+    if (!shots.length) { toast(isImg ? "先去图文创作台生成图卡结构" : "先回脚本页生成脚本"); return; }
     const res = await AI.generateCopy({ topic: p.topic, shots, account: acc, style: p.artifacts.script.style, kind: isImg ? "image" : "video", product: productById(p.artifacts.script.productId || "dumate"), useOnlineTrends: !!p.artifacts.script.useOnlineTrends, trendGuide: p.artifacts.script.trendGuide || "", trendPrep: p.artifacts.script.trendPrep || null });
     C.title = res.title; C.body = res.copy;
     $("#ccTitle", root).value = res.title;
@@ -146,7 +161,7 @@ export function renderReviewPage(root, p) {
         </section>`}
 
         <section class="card review-sec">
-          <div class="card-head"><b>${isImg ? "③" : "④"} 发布文案</b><button class="link-btn" data-chain="copy">去编辑 ${icon("arrowRight", 12)}</button></div>
+          <div class="card-head"><b>${isImg ? "③" : "④"} 发布文案</b><button class="link-btn" data-chain="${isImg ? "images" : "copy"}">去编辑 ${icon("arrowRight", 12)}</button></div>
           <div class="rv-copy"><b>${esc(p.artifacts.copy.title || "（未填标题）")}</b><pre>${esc(p.artifacts.copy.body || "（未填文案）")}</pre></div>
         </section>
       </div>

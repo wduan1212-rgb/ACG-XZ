@@ -711,3 +711,32 @@
 
 - 本版不包含任何密钥、服务器密码、公网 IP 或私网 IP。
 - OpenCLI 是联网热门增强项，不是创作硬依赖；服务器或本地没有 OpenCLI 时，应提示用户在浏览器中配置 OpenCLI 后重试，并继续使用本地趋势库。
+
+## v28 - 2026-07-01
+
+### 本版范围
+
+- 修复批量图文生成链路的状态恢复和重试逻辑：`images running/pending` 且已有 prompt 但未成图时，刷新后会继续调用站内图片生成，不再停在图文创作台。
+- 批量图片生成增加单任务锁和已完成图片跳过逻辑，避免重复恢复时同一张图被重复生成。
+- 批量图文链路确认按 4 张图执行，文案前置后再生成图片 prompt，图片 prompt 主要参考文案、产品和账号风格。
+- 图片 prompt 出口清洗可见字段标签，避免 `标题：/正文：/画面文字：` 被画进图里；负面约束继续只保留页码、二维码、左上角/右上角 logo 约束。
+- 修复图片风格短句压缩截断问题，避免出现“深色项目复盘风为”这类半句。
+- 修复后端图片代理重定向参数，`httpx` 使用 `follow_redirects=True`。
+- 账号种子补齐逻辑改为同时验证 80 个种子账号是否真实存在，避免服务器或本地 state 空账号池却因为版本号相同而跳过初始化。
+- 发布清单、供应商视角和整体资产库维持上一版交互：批量下载、展开预览、已发布图进入共享素材、BGM/录屏剪辑素材库分区。
+
+### 验证结果
+
+- `node --check` 通过：`agent/cards.js`、`agent/orchestrator.js`、`agent/view.js`、`api/ai.js`、`api/prompts.js`、`core/migrate.js`、`data/xhsTrendLibrary.js`、`domain/productions.js`、`main.js`、`views/chainBoards.js`、`views/chainCopy.js`、`views/prodDrawer.js`、`views/studio.js`、`views/deliveryView.js`。
+- `python3 -m py_compile 自动化产品/server/main.py` 通过。
+- `git diff --check` 通过。
+- 本地 `/api/health` 正常，语言模型配置已接通；`/api/image/config` 正常，图片 API 配置可达。
+- 浏览器真实验证 `http://127.0.0.1:8787/?v=20260701-v28-final#/agent`：账号池为 80 个账号，50 个图文号 + 30 个视频号；批量新建默认 0 账号；选择 1 个账号后确认执行，节点式任务看板出现。
+- 浏览器真实跑通批量图文最小任务：生成 4 条图片 prompt，站内生成 4/4 张图并进入待审；prompt 未出现旧英文产品名、可见字段标签或额外负面约束。
+- 浏览器验证 `#/delivery`：发布清单无横向溢出，日期时间轴可见，供应商视角有“批量下载未下载”和回传链接，点击素材行可展开文案和图片序号。
+- 浏览器验证 `#/assets`：已发布生成图进入共享素材库；BGM 库、录屏库位于剪辑素材库；账号筛选默认折叠，页面无横向溢出。
+
+### 注意
+
+- 本版不包含任何密钥、服务器密码、公网 IP 或私网 IP。
+- 未跟踪的 `.codex-lark-auth/`、`diagrams/`、`星阵背景.mp4` 未纳入本次版本；它们不是本次平台代码提交内容。

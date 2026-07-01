@@ -327,6 +327,15 @@ function sanitizeOwnProductForGeneratedText(text = "") {
     .replace(/MIAODA/gi, "百度秒哒");
 }
 
+function stripVisibleTextLabels(text = "") {
+  return String(text || "")
+    .replace(/([「“"'])\s*(?:标题|主标题|大标题|副标题|小标题|文案|正文|主题|画面短句|画面文字|图上文案|图上文字|核心文字)\s*[:：]\s*/g, "$1")
+    .replace(/^(?:标题|主标题|大标题|副标题|小标题|文案|正文|主题|画面短句|画面文字|图上文案|图上文字|核心文字)\s*[:：]\s*/g, "")
+    .replace(/[，,；;\s]+(?:标题|主标题|大标题|副标题|小标题|文案|正文|主题|画面短句|画面文字|图上文案|图上文字|核心文字)\s*[:：]\s*/g, "，")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function genericProductLabel(product = null) {
   const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""} ${product?.category || ""}`;
   if (/miaoda|秒哒/i.test(text)) return "AI应用搭建工具";
@@ -1025,8 +1034,8 @@ const IMAGE_CARD_TASKS = [
   {
     title: "桌面乱到崩",
     role: "用强点击理由吸引用户进入，不承担教程细节",
-    layout: "大字标题占画面主体，旁边只放一个简单视觉符号、工具标识或前后对比箭头，留白充足",
-    visual: "用两枚产品标识、一个电脑/文件夹小图标、一个箭头或 VS 关系表达主题，不放表格、清单和多段说明"
+    layout: "大字标题作为视觉中心，旁边搭配简单视觉符号、工具标识或前后对比箭头，留白充足",
+    visual: "用产品标识、电脑/文件夹小图标、箭头或 VS 关系表达主题，保持入口图简洁有冲击"
   },
   {
     title: "资料堆成山",
@@ -1043,7 +1052,7 @@ const IMAGE_CARD_TASKS = [
   {
     title: "动作跑起来",
     role: "把方法拆成可复制的步骤，而不是只展示结果",
-    layout: "三段式竖向动作卡，每段直接写动词短句，不使用编号词",
+    layout: "竖向动作卡分层展示，每段直接写动词短句，节奏清楚",
     visual: "每一段都对应一个清楚动作：拖入资料、识别字段、生成结果，卡片层级有轻微阴影和留白"
   },
   {
@@ -1098,7 +1107,7 @@ function stripStructuredPromptNoise(text = "") {
 }
 
 function cleanImagePlanningWords(text = "") {
-  return cleanText(stripStructuredPromptNoise(text))
+  return stripVisibleTextLabels(cleanText(stripStructuredPromptNoise(text)))
     .replace(/清爽种草感/g, "清爽真实分享感")
     .replace(/种草感/g, "真实分享感")
     .replace(/轻种草/g, "轻推荐")
@@ -1121,6 +1130,12 @@ function cleanImagePlanningWords(text = "") {
     .replace(/首图/g, "大字标题")
     .replace(/关键步骤/g, "关键动作")
     .replace(/步骤([一二三四五六七八九十\d]*)/g, "动作$1")
+    .replace(/最多\s*[一二三四五六七八九十\d]+\s*(?:行|个|条|处|段|组|张|字)?\s*(?:重点|短标签|小标签|标签|副标题|主标题|视觉元素|图标|文字|气泡)?/g, "")
+    .replace(/(?:控制在|限定在)\s*\d+\s*[-~—]\s*\d+\s*字/g, "按内容复杂度精炼表达")
+    .replace(/第一张\s*(?:控制在|限定在)\s*\d+\s*[-~—]\s*\d+\s*字/g, "第一张更简洁有点击感")
+    .replace(/只(?:保留|放|讲|写|画|呈现|展示)\s*[一二三四五六七八九十\d]*\s*(?:个|条|处|张|组|行)?/g, "")
+    .replace(/本图只(?:讲|放|写|画|呈现|展示)/g, "本图聚焦")
+    .replace(/(?:^|[。；;])\s*[^。；;\n]*(?:不要出现|不出现|不要加入|不要放|不要写|禁止出现|避免出现|不得出现|不能出现|不要二维码|不要页码|不要logo|不要乱码)[^。；;\n]*[。；;]?/g, "。")
     .replace(/开头钩子|钩子/g, "开头问题")
     .replace(/结果对比/g, "前后变化")
     .replace(/总结收束|自然收束|收束/g, "结论")
@@ -1130,7 +1145,7 @@ function cleanImagePlanningWords(text = "") {
 }
 
 function cleanImageDisplayTitle(text = "", fallback = "资料整理完成") {
-  const raw = shortChinese(cleanImagePlanningWords(text), 18);
+  const raw = shortChinese(stripVisibleTextLabels(cleanImagePlanningWords(text)), 18);
   if (!raw || BAD_IMAGE_HEADLINE_RE.test(raw)) return fallback;
   return raw;
 }
@@ -1259,11 +1274,23 @@ function compactImageStyle(text = "", max = 38) {
     else if (!picked.length) picked.push(shortChinese(part, max));
     if (picked.join("，").length >= max * 0.72) break;
   }
-  return picked.join("，") || shortChinese(raw, max);
+  return (picked.join("，") || shortChinese(raw, max))
+    .replace(/风为$/, "风为辅")
+    .replace(/为主、([^，。；;]+)为$/, "为主、$1为辅")
+    .replace(/[，,；;、]\s*$/, "");
 }
 
-function summarizeImageIntent({ script = "", topic = "", account = {}, product = null }) {
-  const src = stripPromptMeta(cleanText(topic || script || ""));
+function copyTextForImagePlanning(copy = null) {
+  if (!copy) return "";
+  return cleanText([
+    copy.title ? stripVisibleTextLabels(copy.title) : "",
+    stripVisibleTextLabels(copy.body || copy.copy || "")
+  ].filter(Boolean).join("\n"));
+}
+
+function summarizeImageIntent({ script = "", topic = "", account = {}, product = null, copy = null }) {
+  const copyText = copyTextForImagePlanning(copy);
+  const src = stripPromptMeta(cleanText(copyText || topic || script || ""));
   const inferred = inferCopyIntent({ topic: src, account, product, useAccountPosition: false });
   const productName = chineseProductDisplayName(product, "百度搭子");
   const compact = src
@@ -1343,7 +1370,7 @@ function imageBeatCue(item, ctx, max = 52) {
 }
 
 function splitImageBeats(ctx = {}, n = DEFAULT_XHS_IMAGE_COUNT) {
-  const raw = stripPromptScaffold(cleanText(ctx.script || ctx.topic || ""));
+  const raw = stripPromptScaffold(cleanText(copyTextForImagePlanning(ctx.copy) || ctx.script || ctx.topic || ""));
   const relationTools = productsMentionedIn(raw, ctx.product, 2);
   const parts = raw
     .replace(/(第一张|第二张|第三张|第四张|第五张|第六张|第七张|第八张|第九张|第十张)/g, "。$1")
@@ -1382,7 +1409,7 @@ function splitImageBeats(ctx = {}, n = DEFAULT_XHS_IMAGE_COUNT) {
 }
 
 function imageDensityMode(ctx = {}) {
-  const raw = stripPromptScaffold(cleanText(ctx.script || ctx.topic || ""));
+  const raw = stripPromptScaffold(cleanText(copyTextForImagePlanning(ctx.copy) || ctx.script || ctx.topic || ""));
   if (raw.length < 42) return "sparse";
   if (raw.length > 180) return "dense";
   return "balanced";
@@ -1395,7 +1422,7 @@ function simpleRelationVisual(ctx = {}) {
   const main = chineseProductDisplayName(ctx.product, "百度搭子");
   const other = productDisplayName(mentioned[0], "同类工具");
   const connector = /对比|vs|VS|区别|相比|测评/.test(text) ? "VS" : "+";
-  return `只放${other}与${main}两个标识，中间用「${connector}」或箭头。`;
+  return `${other}与${main}两个标识作为主视觉，中间用「${connector}」或箭头表达关系。`;
 }
 
 function conciseRelationLine(ctx = {}, item = {}) {
@@ -1430,6 +1457,7 @@ function coverBeatText(item, ctx, intent) {
 
 function promptCanBeDense(ctx = {}, item = {}) {
   const src = [
+    copyTextForImagePlanning(ctx.copy),
     ctx.style,
     ctx.imageTemplate,
     ctx.account?.styleProfile,
@@ -1457,14 +1485,14 @@ function richImagePrompt(item, i, total, ctx) {
     : localCue || shortChinese(ctx.beat || "", canDense ? 28 : 22);
   const oneBeat = cue || intent.main;
   const contentCue = isCover
-    ? `只围绕「${oneBeat}」做大字标题页，画面留白。`
+    ? `围绕「${oneBeat}」做大字标题页，画面留白。`
     : lightStyle
-    ? `只讲「${oneBeat}」，靠小人动作和1个气泡表达。`
+    ? `围绕「${oneBeat}」用小人动作、表情和气泡表达，文字少量辅助。`
     : canDense
-      ? `只讲「${oneBeat}」，用一个文档/表格局部承载。`
+      ? `围绕「${oneBeat}」用一个文档/表格局部承载，信息分层清楚。`
       : density === "sparse"
         ? `围绕「${oneBeat}」补一个真实例子。`
-        : `只讲「${oneBeat}」，留白足，逻辑清楚。`;
+        : `围绕「${oneBeat}」安排一个核心动作或结果，留白足，逻辑清楚。`;
   const title = cleanImageDisplayTitle(item?.title, task.title);
   const relationCover = isCover && simpleRelationVisual(ctx);
   let headlineRaw = relationCover ? intent.main : deriveImageHeadline(item, i, intent, task);
@@ -1482,30 +1510,30 @@ function richImagePrompt(item, i, total, ctx) {
     ? (isCover
       ? `${coverRelation || `${intent.productName}可用简化标识出现。`}`
       : lightStyle
-      ? `${relationCore || `${intent.productName}只画本张主题的一点。`}`
+      ? `${relationCore || `${intent.productName}呈现本张主题相关的一个动作或结果。`}`
       : `${relationCore || `${intent.productName}呈现一个办公动作和结果。`}`)
     : "产品表达以真实办公流程和界面结果为主。";
   const layoutLine = isCover
-    ? "超大标题占60%以上，1-2个图标/箭头，强对比"
+    ? "超大标题作为视觉中心，少量图标或箭头辅助，强对比"
     : lightStyle
-    ? "中央1-2个简笔画小人+电脑/文件小物件"
+    ? "中央简笔画小人+电脑/文件小物件"
     : canDense
-      ? "大标题+局部文档/表格卡片，最多三行重点"
+      ? "大标题+局部文档/表格卡片，信息分层清楚"
       : "大标题+一个主视觉卡片+一处结果提示";
   const visualLine = isCover
     ? "干净背景，画面空旷有冲击"
     : lightStyle
     ? "用表情、手势、文件图标和轻箭头讲动作"
     : canDense
-      ? "局部文字可读，旁边只放一个操作箭头和结果状态"
+      ? "局部文字可读，用操作箭头和结果状态形成层次"
       : "一个办公物件或界面卡片突出核心动作";
   const textLine = isCover
-    ? `文字只放超大标题「${headline}」和一句短副标题。`
+    ? `文字以超大标题「${headline}」为主，配一句短副标题，画面保留呼吸感。`
     : lightStyle
-    ? `文字只放标题「${headline}」和一句12字内气泡。`
+    ? `文字以标题「${headline}」和简短气泡配合人物动作。`
     : canDense
-      ? `文字：标题「${headline}」+最多三行重点。`
-      : `文字只放标题「${headline}」和一句短副标题。`;
+      ? `画面文字围绕「${headline}」展开，并配合文案提炼的关键说明自然排布。`
+      : `文字以标题「${headline}」和一句短副标题为主，必要时加入功能标签。`;
   const promptBody = cleanImagePlanningWords(isCover
     ? `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${productLine}${layoutLine}；${visualLine}；${textLine}】`
     : lightStyle
@@ -1514,7 +1542,7 @@ function richImagePrompt(item, i, total, ctx) {
   return {
     title,
     ui: item?.ui !== false,
-    prompt: normalizeImageSizeText(sanitizeOwnProductForGeneratedText(`${promptBody}${minimalImageNegative()}`))
+    prompt: normalizeImageSizeText(stripVisibleTextLabels(sanitizeOwnProductForGeneratedText(`${promptBody}${minimalImageNegative()}`)))
   };
 }
 
@@ -1935,7 +1963,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const mentionedTools = productsMentionedIn(`${topic}\n${direction}`, product, 4);
     const mentionedGuide = productRelationLine(mentionedTools);
     const dirText = image
-      ? (direction ? `本次创作内容：${direction}。` : `本次创作内容：围绕主题自由发挥，但每张图都要有清晰信息点。`)
+      ? (direction ? `本次创作内容：${direction}。` : `本次创作内容：围绕主题自由发挥，每张图承担清晰信息点。`)
       : (direction ? `目标人群方向：${direction}（脚本语气、痛点、例子都贴合这个人群）。` : `人群方向：不限，自由发挥最合适的角度。`);
     const nImg = Math.max(3, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
     const variantGuide = batchVariantLine(batchVariant);
@@ -1943,12 +1971,12 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const trendGuideText = prep?.guide || trendGuide || await resolveTrendGuide({ topic: `${topic}\n${direction}`, account, product, batchVariant, useOnlineTrends, kind: image ? "image" : "video", imageCount: nImg });
     const prepLine = prep ? `结构化选题预案：\n选题来源：${prep.source === "online" ? "联网趋势改写" : "本地投放方向"}（仅内部参考）\n预制创作内容：${prep.creativeContent || ""}\n图片/内容策略：${prep.imageStrategy || ""}\n预制标题方向：${prep.title || ""}\n预制文案骨架：${String(prep.copy || "").split(/\n/).slice(0, 8).join(" / ")}\n` : "";
     const sys = image
-      ? `你是小红书图文笔记策划，为百度 ACG 市场部写「小红书笔记图卡内容表」，每行是笔记里的一张配图。严格围绕用户本次创作内容展开，不要让账号定位改变主题方向；账号只提供创作风格。
-先把用户创作内容压缩成 ${nImg} 个信息节拍，每张图只承担一个观点/动作/证据；长内容要总结、取舍、分布，不要把所有信息塞进每一张图。信息密度预算：每张图最多 1 个大标题、1 句短解释、1 个具体动作/证据、最多 2 个短标签；如果用户内容超过 ${nImg} 张图能承载的量，先提炼主线，宁可舍弃次要细节，也不要在单张图塞多段文字、多张表格或长清单。每张图只回答一个小问题：为什么、怎么做、看到了什么结果或边界是什么。标题和图上文案要像真实笔记，具体、有信息量、能让人看懂功能和结果。图文没有口播，只有画面与图上文案。每行 idea 写清这张图唯一要传达的信息；visual 必须非常具体（画面布局/主视觉/界面里出现的具体文字/配色/光线/产品视觉位置），先在脑内把这张图具象化成真实画面再写，不要用电影感、高级感、种草感这类抽象词。内部结构词不要出现在 idea、visual、line 里。
-第一张图默认是点击入口，不是教程信息页：只承担“让人想点开”的职责。除非用户明确要求首图高信息量，否则第一张只放一个强标题、一句短副标题、1-2 个简单图标/产品标识/前后对比箭头；不要在第一张放流程、步骤、长清单、表格、多截图或密集小字。若主题是 Obsidian、Codex、WorkBuddy 等工具和主产品对比/组合，第一张优先用两个工具标识或简化图标 + 大字标题 + 一个箭头/VS 关系来表达。
+      ? `你是小红书图文笔记策划，为百度 ACG 市场部写「小红书笔记图卡内容表」，每行是笔记里的一张配图。严格围绕用户本次创作内容展开；账号只提供创作风格，不提供内容方向。
+先把用户创作内容整理成 ${nImg} 个信息节拍，每张图承担一个清楚的信息任务：观点、动作、证据、结果或边界。长内容要总结、取舍、分布，不要把所有信息塞进每一张图；短内容要补真实使用场景、结果证据或边界提醒。信息密度由内容判断：封面更轻，内页可以适当承载具体信息；模拟文档、表格、报告页时可以更细，但必须分层清楚、文字可读、重点明确。标题和图上文案要像真实笔记，具体、有信息量、能让人看懂功能和结果。图文没有口播，只有画面与图上文案。每行 idea 写清这张图唯一要传达的信息；visual 必须非常具体（画面布局/主视觉/界面里出现的具体文字/配色/光线/产品视觉位置），先在脑内把这张图具象化成真实画面再写，不要用电影感、高级感、种草感这类抽象词。内部结构词不要出现在 idea、visual、line 里。
+第一张图默认是点击入口，不是教程信息页：优先强标题、简单主视觉和清晰关系。除非用户明确要求首图高信息量，否则第一张不要变成流程、长清单、复杂表格、多截图或密集小字。若主题是 Obsidian、Codex、WorkBuddy 等工具和主产品对比/组合，第一张优先用两个工具标识或简化图标 + 大字标题 + 箭头/VS 关系来表达。
 第二张开始再讲真实场景、执行动作、工具分工、结果证据和结论。图片数量少时要主动压缩信息，把次要内容变成一句结论；图片数量多但用户只给少量方向时，要补真实使用场景、例子和边界提醒。
 同一批量任务里每个账号都要像不同博主写同一方向：可以共享大主题，但必须更换切入角度、例子、标题表达、图卡顺序和结尾结论；不要输出多条相同或近似的图卡脚本。
-如果账号风格是火柴人、简笔画、小人、漫画或手绘，line 控制在 8-16 个中文字符，visual 重点写人物动作、表情、气泡、箭头和小物件，减少界面文字和表格密度。
+如果账号风格是火柴人、简笔画、小人、漫画或手绘，line 更偏短句，visual 重点写人物动作、表情、气泡、箭头和小物件，减少界面文字和表格密度。
 若本次创作内容提到竞品/同类工具，要先识别其在产品库中的功能点，再安排成对比表、分工流程、组合用法或边界提醒；本次主产品仍是主角，不能把竞品能力写成主产品能力。测评或对比类内容只写适合谁、任务边界、真实证据和组合方式，不写分数、星级、排行榜或评分卡。
 小红书趋势参考只用于你内部决定标题钩子、文案骨架和图卡节奏，禁止照抄样本标题，也不要把“热门参考/趋势参考/样本标题”等词写进 shots。${hasImageTemplate ? `账号配置了固定图文模板，必须优先遵守模板的风格、画面语言、参考图使用方式和统一要求；但模板中的张数、主题、产品名、各图内容都要按本次创作内容重写，最终 shots 必须正好 ${nImg} 行。` : ""}只输出 JSON：{"title":"小红书笔记风标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"图上文案(小红书笔记口吻、精简)"}]}，shots 必须正好 ${nImg} 行。`
       : (account.subType === "无数字人"
@@ -2055,14 +2083,17 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
   },
 
   /* ---------- 图文：逐张图片提示词 ---------- */
-  async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, topic = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null }) {
+  async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, topic = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null, copy = null }) {
     const tpl = String(imageTemplate || "").trim();
     const nImg = Math.max(3, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
     const safeTopic = sanitizeXhsText(cleanText(topic || ""));
     const safeScript = sanitizeXhsText(cleanText(scriptInputText(script)));
     const safeStyle = sanitizeXhsText(cleanText(style || ""));
     const safeTpl = sanitizeXhsText(stripPromptScaffold(tpl));
-    const mentionedTools = productsMentionedIn(`${safeTopic}\n${safeScript}`, product, 4);
+    const copyTitle = sanitizeXhsText(stripOwnProductMentions(copy?.title || "", product));
+    const copyBody = sanitizeXhsText(stripOwnProductMentions(copy?.body || copy?.copy || "", product));
+    const copyBrief = [copyTitle ? `标题：${copyTitle}` : "", copyBody ? `正文：${shortChinese(copyBody.replace(/\n+/g, " / "), 420)}` : ""].filter(Boolean).join("\n");
+    const mentionedTools = productsMentionedIn(`${safeTopic}\n${copyBrief}\n${safeScript}`, product, 4);
     const mentionedGuide = productRelationLine(mentionedTools);
     const variantGuide = batchVariantLine(batchVariant);
     const prep = trendPrep || await resolveTrendPrep({ topic: `${safeTopic}\n${safeScript}`, account, product, batchVariant, useOnlineTrends, kind: "image", imageCount: nImg });
@@ -2070,21 +2101,21 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const prepLine = prep ? `结构化图片策略：\n选题来源：${prep.source === "online" ? "联网趋势改写" : "本地投放方向"}（仅内部参考）\n创作内容：${prep.creativeContent || ""}\n图片策略：${prep.imageStrategy || ""}\n` : "";
     try {
       const content = await llm([
-        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。先理解用户创作内容，压缩成 ${nImg} 个信息节拍，再拆成 ${nImg} 张静态图片：点击入口、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。每张图只承载一个核心信息，不要把用户长内容整段塞进每张 prompt。信息密度预算：每张图最多 1 个主标题、1 句短副标题、1 个具体动作/证据、最多 2 个短标签；不要同一张同时放流程表、对比表、清单、截图和大段说明。
-第一张图默认是点击入口，优先冲击感和可点击性：只放一个强标题、一句10字内副标题、1-2个简单视觉元素。不要在第一张放步骤、长清单、密集截图、表格或多段解释；如果是工具组合/对比主题，第一张用两个工具标识或简化图标 + 大字标题 + 箭头/VS 即可。第二张之后再展开场景、操作、结果和边界。
-若内容过多，先在内部重新规划：把重要信息平均分给 ${nImg} 张图，次要内容压成一句结论或舍弃；若内容过少，补一个真实使用例子、结果证据或边界提醒。功能名只用于你内部理解，绝不能当作画面文字。若创作内容里出现竞品/同类工具，要把它们作为对比、组合或分工对象写进画面信息结构，例如分工箭头、工具边界卡片、组合流程或适用场景提醒；不要让画面变成只孤立宣传主产品。
-同一批量任务的不同账号必须有不同内容编排：即使统一创作方向相同，也要改变每张图的标题、例子、主视觉、卡片顺序和结论，不要复用同一套图片提示词。
-每条 prompt 必须使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。${minimalImageNegative()}」结构；如果有参考图，则在开头加入「请根据上传的参考图」。风格主要按账号创作风格和账号模板，不要把账号定位当成本次内容方向，不要把用户输入原句整段塞进提示词，不要在“图片具体内容”里重复外层结构。${safeStyle ? "账号创作风格：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条都要继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图要综合，不要只参考第一张。` : ""}${safeTpl ? `账号有固定模板，必须继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；但模板只当风格母版，不能原样复制模板句子。` : ""}
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。图文配图的内容判断以「发布文案」为第一依据，用户创作内容和脚本只作为补充，账号只提供视觉风格，不参与内容方向判断。先把发布文案整理成 ${nImg} 个信息节拍，再拆成 ${nImg} 张静态图片：点击入口、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。每张图承载一个清楚的核心信息，长文案先做摘要、取舍和分布。信息密度由内容判断：入口图更轻，突出强标题和简单主视觉；内页按文案需要承载具体动作、证据或结果，模拟文档/表格/报告页时可以更细，同时保持层级清楚、文字可读。
+第一张图默认是点击入口，优先冲击感和可点击性：用强标题、短副标题和简单视觉关系吸引点击。工具组合/对比主题的第一张以工具标识或简化图标、大字标题、箭头或 VS 关系为主；第二张之后再展开场景、操作、结果和边界。
+若内容过多，先在内部重新规划：把重要信息分给 ${nImg} 张图，次要内容压成一句结论；若内容过少，补一个真实使用例子、结果证据或边界提醒。功能名只用于内部理解，画面文字要写具体动作和结果。若创作内容里出现竞品/同类工具，要把它们作为对比、组合或分工对象写进画面信息结构，例如分工箭头、工具边界卡片、组合流程或适用场景提醒，让画面明确呈现主产品和其他工具的关系。
+同一批量任务的不同账号必须有不同内容编排：即使统一创作方向相同，也要改变每张图的标题、例子、主视觉、卡片顺序和结论，形成不同账号的内容差异。
+每条 prompt 输出正向主体，使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。」结构；如果有参考图，则在开头加入「请根据上传的参考图」。系统会统一追加固定短负面约束，模型只写正向画面主体。风格主要按账号创作风格和账号模板，账号定位不参与本次内容方向判断，用户输入原句需先整理成画面信息。${safeStyle ? "账号创作风格：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `统一参考图：${sanitizeXhsText(styleRefName)}。每条继承参考图的品牌色、界面结构、图标比例、截图质感和视觉密度；多张参考图按当前画面主题选择主参考与辅助参考。` : ""}${safeTpl ? `账号有固定模板，继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；模板只当风格母版，模板句子需要替换成本次内容。` : ""}
 
-每条 prompt 控制在 90-170 字；第一张控制在 70-130 字。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。只保留1个大标题和1句短副标题，最多2个小标签；第一张最多1个小标签。若账号风格是火柴人、简笔画、小人、漫画或手绘，则画面靠人物动作、表情、气泡和箭头讲解，文字更少，避免复杂表格和长文案。
+每条 prompt 保持精炼但足够具体。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。画面文字围绕主标题、短解释和必要标签组织，按内容复杂度自然取舍；封面更简洁，内页可适当增加信息。若账号风格是火柴人、简笔画、小人、漫画或手绘，则画面靠人物动作、表情、气泡和箭头讲解，文字更少，避免复杂表格和长文案。
 画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
-测评、对比或工具选择类选题只能写适合谁、不适合谁、任务边界、证据和组合方式，不要生成分数、星级、排行榜、打分表或评分卡。
-内部分类词只用于你理解结构，不要出现在最终 prompt 或画面文字里；最终负面约束只能使用指定的短句，不要额外扩写。
+测评、对比或工具选择类选题用适合谁、不适合谁、任务边界、证据和组合方式表达，采用边界对照、场景分工和使用建议，不采用分数、星级、排行榜、打分表或评分卡。
+内部分类词只用于理解结构，最终 prompt 主体保持正向画面描述。
 
 ${xhsGuardPrompt()}
 
-只输出 JSON：{"shots":[{"title":"给操作员看的短标题，必须是具体功能/结果，不能是种草/痛点/构图/步骤/封面等定位词","prompt":"可直接给图像模型的提示词","ui":true}]}` },
-        { role: "user", content: `账号创作风格：${sanitizeXhsText(account.styleProfile || style || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n${product ? `宣传产品：${sanitizeXhsText(chineseProductDisplayName(product))}\n` : ""}${safeTopic ? `本次主题：${safeTopic}\n` : ""}${variantGuide ? `${variantGuide}\n` : ""}${prepLine}${mentionedGuide ? `本次主题/脚本里提到的其他工具能力：\n${mentionedGuide}\n图片提示词必须具体写出它们和主产品如何结合、分工或对比；不要只写“作参照”。\n` : ""}正向编排参考（只用于取舍信息、安排第1张点击入口和内页节奏，不要照抄样本，不要写入最终 prompt）：\n${trendGuideText}\n${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号图文模板（风格/结构母版，变量需替换）：\n${safeTpl}\n` : ""}脚本：\n${safeScript || "(据本次主题和创作风格自拟)"}` }
+只输出 JSON：{"shots":[{"title":"给操作员看的短标题，写具体功能或结果","prompt":"可直接给图像模型的提示词","ui":true}]}` },
+        { role: "user", content: `账号创作风格（只决定视觉风格）：${sanitizeXhsText(account.styleProfile || style || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n${product ? `宣传产品：${sanitizeXhsText(chineseProductDisplayName(product))}\n` : ""}${safeTopic ? `本次主题：${safeTopic}\n` : ""}${variantGuide ? `${variantGuide}\n` : ""}${copyBrief ? `发布文案（图片内容第一依据，需围绕它拆图）：\n${copyBrief}\n` : ""}${prepLine}${mentionedGuide ? `本次主题/文案/脚本里提到的其他工具能力：\n${mentionedGuide}\n图片提示词必须具体写出它们和主产品如何结合、分工或对比；不要只写“作参照”。\n` : ""}正向编排参考（只用于取舍信息、安排第1张点击入口和内页节奏，不要照抄样本，不要写入最终 prompt）：\n${trendGuideText}\n${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号图文模板（风格/结构母版，变量需替换）：\n${safeTpl}\n` : ""}图卡脚本（仅补充画面线索，内容不得偏离发布文案）：\n${safeScript || "(据本次主题和创作风格自拟)"}` }
       ], { json: true, temperature: 0.8 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
@@ -2098,6 +2129,7 @@ ${xhsGuardPrompt()}
           styleRefName,
           imageCount: nImg,
           product,
+          copy,
           trendPrep: prep
         })
       });
@@ -2126,6 +2158,7 @@ ${xhsGuardPrompt()}
           styleRefName,
           imageCount: nImg,
           product,
+          copy,
           trendPrep: prep
         })
       };

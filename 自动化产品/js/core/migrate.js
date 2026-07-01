@@ -139,7 +139,7 @@ export async function migrateFromV4() {
       else if (t.status === "failed") { p.stage = "script"; p.stageStatus = "failed"; }
       else if (!p.artifacts.script.shots.length) { p.stage = "script"; p.stageStatus = "pending"; }
       else if (!allBoards) { p.stage = isImg ? "images" : "boards"; p.stageStatus = "needs_input"; }
-      else { p.stage = isImg ? "copy" : "render"; p.stageStatus = "pending"; }
+      else { p.stage = isImg ? "review" : "render"; p.stageStatus = "pending"; }
       state.productions.push(p); counts.productions++;
     } catch (e) { /* 跳过 */ }
   }
@@ -164,7 +164,7 @@ export async function migrateFromV4() {
         review: { state: "pending", notes: "", returnTo: null, at: null },
         delivery: null, error: null, createdAt: Date.now(), updatedAt: Date.now()
       };
-      p.artifacts.script = { title: d.title || "", shots: d.shots || [], source: "", style: d.imageStyle || "", imageCount: d.imageCount || 6, direction: d.direction || "" };
+      p.artifacts.script = { title: d.title || "", shots: d.shots || [], source: "", style: d.imageStyle || "", imageCount: d.imageCount || 4, direction: d.direction || "" };
       if (!isImg && (d.shots || []).length) normalizeVideoTimes(p.artifacts.script.shots);
       p.artifacts.prompts = d.prompts || [];
       p.artifacts.subs = d.subs || [];

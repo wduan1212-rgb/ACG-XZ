@@ -85,9 +85,17 @@ function imageAssets() {
     if (a.shared || /已发布生成图|站内生成|笔记图/.test(tags)) return 1;
     return 2;
   };
+  const seen = new Set();
   return state.assets
     .filter(a => a.type === "图片" && !a.delivered)
-    .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0));
+    .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0))
+    .filter(a => {
+      const key = a.dataUrl || a.url || a.remoteUrl || `${String(a.name || "").toLowerCase()}|${(a.tags || []).join("|")}|${a.accountId || ""}`;
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function selectedRefIds(p, key = "sharedRefAssetIds") {

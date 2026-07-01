@@ -51,7 +51,7 @@ export const studioView = {
     };
     // 链路类型守卫：所有视频号的 分镜/提示词/生成 统一进工坊
     let target = page;
-    if (prod.mode === "图文" && page === "script") target = "images";
+    if (prod.mode === "图文" && ["script", "copy"].includes(page)) target = "images";
     if (isVideoWorkshop(prod) && ["script", "boards", "prompts", "render"].includes(page)) target = "workshop";
     if (!isVideoWorkshop(prod) && page === "workshop") target = "images";
     const fn = PAGES[target];
@@ -141,7 +141,7 @@ function renderHome(root, acc) {
       </header>
 
       <section class="sh-flow card">
-        <div class="card-head"><b>创作链路</b><em>${acc.mode === "图文" ? "图片工坊（创作内容/模板/成图）→ 文案 → 审核 → 交付" : "分镜工坊（选题/口播/提示词）→ 智能混剪+BGM → 文案 → 审核 → 交付"}</em></div>
+        <div class="card-head"><b>创作链路</b><em>${acc.mode === "图文" ? "图文创作台（文案标题/图卡提示词/成图）→ 审核 → 交付" : "分镜工坊（选题/口播/提示词）→ 智能混剪+BGM → 文案 → 审核 → 交付"}</em></div>
         <div class="sh-flow-steps">
           ${flow.map((st, i) => `
             <button class="fs-card" data-sh-flow="${st}" style="--d:${i * 40}ms">

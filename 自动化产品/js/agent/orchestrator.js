@@ -16,6 +16,7 @@ import { fileToDataUrl } from "../core/util.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
+const activeImageRecoveries = new Set();
 
 function promptProductName(product = null) {
   const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""}`;
@@ -429,9 +430,9 @@ function enrichBatchImagePrompt(prompt, refs) {
   const custom = refs.filter(r => r.role === "custom");
   const sharedNames = shared.map(r => r.name).filter(Boolean).slice(0, 5).join("、");
   const customNames = custom.map(r => r.name).filter(Boolean).slice(0, 3).join("、");
-  const customNote = custom.length ? `\n定制参考图约束：另提供 ${custom.length} 张本账号专属参考图（${customNames}），优先参考其账号专属视觉、素材语气、画面结构或产品细节；它们只服务当前账号，不要覆盖统一参考图的品牌一致性。` : "";
+  const customNote = custom.length ? `\n定制参考图：另提供 ${custom.length} 张本账号专属参考图（${customNames}），优先承接其账号专属视觉、素材语气、画面结构或产品细节；统一参考图继续负责品牌一致性。` : "";
   const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
-  const refNote = `统一参考图：已提供 ${shared.length} 张统一参考图（${sharedNames}），生成时综合参考产品界面、配色、信息密度、真实截图质感和图标形态；不要只参考第一张。${customNote}\n参考图中的旧标题、页名和示例文案一律视为占位，不要照抄；画面文字只使用当前提示词指定内容。`;
+  const refNote = `统一参考图：已提供 ${shared.length} 张统一参考图（${sharedNames}），生成时综合参考产品界面、配色、信息密度、真实截图质感和图标形态，按当前画面主题选择主参考与辅助参考。${customNote}\n参考图中的旧标题、页名和示例文案视为占位，画面文字按当前提示词重写。`;
   return `${body}\n\n${refNote}\n\n${IMAGE_NEGATIVE_PROMPT}`.trim();
 }
 
@@ -454,6 +455,7 @@ async function generateBatchImagesInHouse(p, batch, acc) {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (!it?.prompt) continue;
+    if (it.assetId && it.status === "done") continue;
     it.status = "loading";
     save("productions");
     const req = await provider.submit({
@@ -478,6 +480,28 @@ async function generateBatchImagesInHouse(p, batch, acc) {
     save("productions");
   }
   return items.length > 0 && items.every(x => x.assetId);
+}
+
+async function runBatchImagesToReview(p, batch) {
+  if (activeImageRecoveries.has(p.id)) return false;
+  const acc = accountById(p.accountId);
+  if (!acc) {
+    setStatus(p, "failed", "账号不存在");
+    return false;
+  }
+  activeImageRecoveries.add(p.id);
+  try {
+    setBatchPhase(batch, "generating");
+    const generated = await generateBatchImagesInHouse(p, batch, acc);
+    setStage(p, generated ? "review" : "images", generated ? "pending" : "needs_input");
+    return generated;
+  } catch (e) {
+    setStatus(p, "failed", "站内图片生成失败：" + (e.message || e));
+    return false;
+  } finally {
+    activeImageRecoveries.delete(p.id);
+    evaluate(batch.id);
+  }
 }
 
 /* ---------- 起草 ---------- */
@@ -537,7 +561,7 @@ async function draftOne(p, batch) {
     const sres = material
       ? await AI.generateMaterialScript({ topic, account: acc, style, product })
       : await AI.generateScript({
-        topic: topic + (style ? `（风格策略：${style}）` : ""),
+        topic,
         duration: isImg ? 0 : 55, account: acc, image: isImg, style: isImg ? style : "",
         imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT, product,
         direction: isImg ? topic : "",
@@ -555,6 +579,20 @@ async function draftOne(p, batch) {
     p.title = sres.title || topic;
 
     if (isImg) {
+      const cp = await AI.generateCopy({
+        topic,
+        shots: p.artifacts.script.shots,
+        account: acc,
+        style,
+        kind: "image",
+        product,
+        batchVariant,
+        avoidCopies: existingBatchCopies(batch, p.id),
+        useOnlineTrends,
+        trendGuide,
+        trendPrep
+      });
+      p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "" };
       const imgPromptRes = await AI.generateImagePrompts({
         script: shotsToText(p.artifacts.script.shots, true),
         account: acc,
@@ -567,7 +605,8 @@ async function draftOne(p, batch) {
         batchVariant,
         useOnlineTrends,
         trendGuide,
-        trendPrep
+        trendPrep,
+        copy: p.artifacts.copy
       });
       const promptRows = imgPromptRes.shots || [];
       p.artifacts.images.items = p.artifacts.script.shots.map((s, i) => ({
@@ -608,16 +647,12 @@ async function draftOne(p, batch) {
       createUnitVideoJobs(p);   // t2v 单元直接生成；i2v 单元无图时也先出片占位，回工坊可补图重生成
       return;
     }
-    const cp = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: isImg ? "image" : "video", product, batchVariant: isImg ? batchVariant : null, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide, trendPrep });
-    p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "" };
+    if (!isImg) {
+      const cp = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant: null, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide, trendPrep });
+      p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "" };
+    }
     if (isImg) {
-      try {
-        setBatchPhase(batch, "generating");
-        const generated = await generateBatchImagesInHouse(p, batch, acc);
-        setStage(p, generated ? "review" : "images", generated ? "pending" : "needs_input");
-      } catch (e) {
-        setStatus(p, "failed", "站内图片生成失败：" + (e.message || e));
-      }
+      await runBatchImagesToReview(p, batch);
     } else {
       setStage(p, "boards", "needs_input");
     }
@@ -742,7 +777,19 @@ export async function startBatch(plan, session) {
     await draftOne(p, batch);
     drafted++;
     think(`起草完成 ${drafted}/${total} · ${accountById(p.accountId)?.name || ""}`, session.id);
-  }, 2).then(() => { emit("agent:thinking", { sessionId: session.id, value: false }); evaluate(batch.id); });
+  }, 2).then(() => {
+    emit("agent:thinking", { sessionId: session.id, value: false });
+    evaluate(batch.id);
+  }).catch(err => {
+    console.error(err);
+    batch.phase = "review";
+    batch.error = String(err?.message || err || "批量任务启动失败");
+    batch.updatedAt = Date.now();
+    save("batches");
+    think("批量任务启动失败，请检查本地 API 或稍后重试", session.id);
+    emit("agent:thinking", { sessionId: session.id, value: false });
+    emit("batch:update", batch);
+  });
   return batch;
 }
 
@@ -752,8 +799,8 @@ export function maybeAdvanceAfterInput(p) {
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   if (!items.length || !items.every(x => x.assetId)) return false;
   if (isImg) {
-    // 图文：成图齐 → 文案已有则直接进审核，否则先去文案页
-    setStage(p, (p.artifacts.copy.body || "").trim() ? "review" : "copy", "pending");
+    // 图文：文案已合并到图文创作台；文案缺失时留在本页补齐。
+    setStage(p, (p.artifacts.copy.body || "").trim() ? "review" : "images", "pending");
   } else {
     // 视频：分镜齐 → 渲染就绪
     setStage(p, "render", "pending");
@@ -809,6 +856,10 @@ export function retryFailedIn(batch) {
       return;
     }
     if (p.stage === "script") { setStatus(p, "pending"); draftOne(p, batch).then(() => evaluate(batch.id)); n++; }
+    else if (p.mode === "图文" && (p.stage === "images" || p.artifacts?.images?.items?.length)) {
+      runBatchImagesToReview(p, batch);
+      n++;
+    }
     else if (jobStage) {
       const failed = jobsOf(p).filter(j => j.status === "failed");
       if (failed.length) failed.forEach(j => retryJob(j.id));
@@ -927,6 +978,16 @@ export function resumeActiveBatches() {
   activeBatches().forEach(b => {
     const stuck = batchProds(b).filter(p => p.stage === "script" && (p.stageStatus === "running" || p.stageStatus === "pending"));
     if (stuck.length) { runPool(stuck, p => draftOne(p, b), 2).then(() => evaluate(b.id)); resumed += stuck.length; }
+    const imageStuck = batchProds(b).filter(p =>
+      p.mode === "图文"
+      && p.stage === "images"
+      && (p.stageStatus === "running" || p.stageStatus === "pending")
+      && (p.artifacts?.images?.items || []).some(x => x.prompt && !x.assetId)
+    );
+    if (imageStuck.length) {
+      runPool(imageStuck, p => runBatchImagesToReview(p, b), 1).then(() => evaluate(b.id));
+      resumed += imageStuck.length;
+    }
     evaluate(b.id);
   });
   return resumed;

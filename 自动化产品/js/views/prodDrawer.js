@@ -79,9 +79,9 @@ export function openProductionDrawer(pid, tab) {
         const acc = accountById(p.accountId);
         const material = p.subType === "无数字人" && p.mode === "视频";
         const tabs = [
-          [isImg ? "images" : "boards", isImg ? "图片工坊" : "分镜工坊"],
+          [isImg ? "images" : "boards", isImg ? "图文创作台" : "分镜工坊"],
           ...(isImg ? [] : material ? [["render", "成片"]] : [["prompts", "提示词"], ["render", "成片"]]),
-          ["copy", "文案"],
+          ...(isImg ? [] : [["copy", "文案"]]),
           ["review", "审核"]
         ];
         root.innerHTML = `
@@ -110,7 +110,7 @@ export function openProductionDrawer(pid, tab) {
           if (from.zone === "agent") {
             const ok = await confirmModal({
               title: "进入单号工坊？",
-              body: "批量创作会继续留在任务板；只有需要单独微调这条内容时，才进入单号图片工坊。",
+              body: "批量创作会继续留在任务板；只有需要单独微调这条内容时，才进入单号图文创作台。",
               okText: "进入微调"
             });
             if (!ok) return;
@@ -183,7 +183,7 @@ export function openProductionDrawer(pid, tab) {
 
 function defaultTab(p) {
   if (p.stage === "review" || p.stage === "delivered") return "review";
-  if (p.stage === "copy") return "copy";
+  if (p.stage === "copy") return p.mode === "图文" ? "images" : "copy";
   if (p.mode === "视频" && (p.stage === "workshop" || p.stage === "render")) return "boards";
   if (p.stage === "cut") return "render";
   if (p.mode === "视频") return "boards";
@@ -196,6 +196,7 @@ function defaultTab(p) {
 export function stagePage(p) {
   const m = { script: "script", boards: "boards", images: "images", prompts: "prompts", workshop: "workshop", render: "render", cut: "cut", copy: "copy", review: "review", delivered: "review" };
   if (p.mode === "图文" && p.stage === "script") return "images";
+  if (p.mode === "图文" && p.stage === "copy") return "images";
   if (p.mode === "视频" && ["script", "boards", "prompts", "render"].includes(p.stage)) return "workshop";
   return m[p.stage] || "script";
 }
@@ -209,7 +210,7 @@ function tabStage(p, tab) {
     case "images": return "images";
     case "prompts": return "prompts";
     case "render": return video ? "workshop" : "review";
-    case "copy": return "copy";
+    case "copy": return video ? "copy" : "images";
     case "review": return "review";
     default: return stagePage(p);
   }
