@@ -16,6 +16,14 @@ import { fileToDataUrl } from "../core/util.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
+
+function promptProductName(product = null) {
+  const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""}`;
+  if (/miaoda|秒哒/i.test(text)) return "百度秒哒";
+  if (/dumate|百度搭子|搭子/i.test(text)) return "百度搭子";
+  return (product?.shortName || product?.name || "").replace(/Dumate|DuMate/gi, "百度搭子").replace(/MIAODA/gi, "百度秒哒");
+}
+
 const BATCH_CREATIVE_VARIANTS = [
   { key: "pain-relief", name: "痛点急救型", angle: "从一个具体办公痛点切入，讲清这条内容解决哪种麻烦", focus: "痛点现场、具体动作、结果变化" },
   { key: "tool-division", name: "工具分工型", angle: "讲同类/互补工具和主产品如何分工，不孤立宣传", focus: "工具边界、组合流程、主产品负责的动作" },
@@ -498,14 +506,18 @@ async function draftOne(p, batch) {
     });
     p.batchCreativeVariant = batchVariant;
     p.artifacts.script.batchCreativeVariant = batchVariant;
-    let trendGuide = await AI.trendGuide({
+    let trendPrep = await AI.trendPrep({
       topic: contentOverride || batch.topic || p.topic || "",
       account: acc,
       product,
       batchVariant,
       useOnlineTrends,
-      kind: isImg ? "image" : "video"
+      kind: isImg ? "image" : "video",
+      imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT,
+      seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`
     });
+    let trendGuide = trendPrep?.guide || "";
+    if (!topic && trendPrep?.creativeContent) topic = trendPrep.creativeContent;
     if (!topic) topic = p.topic || await AI.randomPick({
       kind: "topic",
       account: acc,
@@ -514,9 +526,11 @@ async function draftOne(p, batch) {
       seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
       avoidTopics: existingBatchTopics(batch, p.id),
       useOnlineTrends,
-      trendGuide
+      trendGuide,
+      trendPrep
     });
     p.topic = topic;
+    p.artifacts.script.trendPrep = trendPrep;
     p.artifacts.script.trendGuide = trendGuide;
     p.artifacts.script.useOnlineTrends = useOnlineTrends;
 
@@ -531,7 +545,8 @@ async function draftOne(p, batch) {
         styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : "",
         batchVariant: isImg ? batchVariant : null,
         useOnlineTrends,
-        trendGuide
+        trendGuide,
+        trendPrep
       });
     p.artifacts.script.shots = sres.shots || [];
     p.artifacts.script.title = sres.title || topic;
@@ -551,7 +566,8 @@ async function draftOne(p, batch) {
         styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : "",
         batchVariant,
         useOnlineTrends,
-        trendGuide
+        trendGuide,
+        trendPrep
       });
       const promptRows = imgPromptRes.shots || [];
       p.artifacts.images.items = p.artifacts.script.shots.map((s, i) => ({
@@ -565,7 +581,7 @@ async function draftOne(p, batch) {
         topic, position: acc.position, shots: p.artifacts.script.shots, style,
         items: p.artifacts.images.items,
         template: acc.imagePromptTemplate || "",
-        productName: product?.name || product?.shortName || "",
+        productName: promptProductName(product),
         imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT,
         refNames: acc.imageStyleAssetId ? [state.assets.find(a => a.id === acc.imageStyleAssetId)?.name].filter(Boolean) : []
       });
@@ -586,13 +602,13 @@ async function draftOne(p, batch) {
       });
       units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
       p.artifacts.boards.externalGroups = buildSbExternalGroups({ shots: p.artifacts.script.shots, style });
-      const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide });
+      const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide, trendPrep });
       p.artifacts.copy = { title: cp0.title || p.title, body: cp0.copy || "" };
       setStage(p, "workshop", "running");
       createUnitVideoJobs(p);   // t2v 单元直接生成；i2v 单元无图时也先出片占位，回工坊可补图重生成
       return;
     }
-    const cp = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: isImg ? "image" : "video", product, batchVariant: isImg ? batchVariant : null, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide });
+    const cp = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: isImg ? "image" : "video", product, batchVariant: isImg ? batchVariant : null, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide, trendPrep });
     p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "" };
     if (isImg) {
       try {

@@ -60,7 +60,7 @@ export function renderCopyPage(root, p) {
   $("#ccGen", root).addEventListener("click", e => withLoading(e.currentTarget, async () => {
     const shots = p.artifacts.script.shots || [];
     if (!shots.length) { toast(isImg ? "先去图片工坊生成图卡结构" : "先回脚本页生成脚本"); return; }
-    const res = await AI.generateCopy({ topic: p.topic, shots, account: acc, style: p.artifacts.script.style, kind: isImg ? "image" : "video", product: productById(p.artifacts.script.productId || "dumate"), useOnlineTrends: !!p.artifacts.script.useOnlineTrends, trendGuide: p.artifacts.script.trendGuide || "" });
+    const res = await AI.generateCopy({ topic: p.topic, shots, account: acc, style: p.artifacts.script.style, kind: isImg ? "image" : "video", product: productById(p.artifacts.script.productId || "dumate"), useOnlineTrends: !!p.artifacts.script.useOnlineTrends, trendGuide: p.artifacts.script.trendGuide || "", trendPrep: p.artifacts.script.trendPrep || null });
     C.title = res.title; C.body = res.copy;
     $("#ccTitle", root).value = res.title;
     $("#ccBody", root).value = res.copy;
@@ -69,7 +69,7 @@ export function renderCopyPage(root, p) {
   }, "生成中…"));
 
   $("#ccTitleDice", root).addEventListener("click", e => withLoading(e.currentTarget, async () => {
-    const t = await AI.randomTitle({ topic: p.topic, account: acc, product: productById(p.artifacts.script.productId || "dumate"), useOnlineTrends: !!p.artifacts.script.useOnlineTrends, trendGuide: p.artifacts.script.trendGuide || "" });
+    const t = await AI.randomTitle({ topic: p.topic, account: acc, product: productById(p.artifacts.script.productId || "dumate"), useOnlineTrends: !!p.artifacts.script.useOnlineTrends, trendGuide: p.artifacts.script.trendGuide || "", trendPrep: p.artifacts.script.trendPrep || null });
     C.title = t; $("#ccTitle", root).value = t; save("productions");
     toast("已随机标题");
   }, "…"));

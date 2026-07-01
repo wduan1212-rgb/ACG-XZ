@@ -57,7 +57,7 @@ function sparkline(rows) {
 
 function rankingHtml(items, type = "account") {
   const list = (items || []).slice(0, 5);
-  if (!list.length) return `<div class="muted">同步数据后显示排行</div>`;
+  if (!list.length) return `<div class="muted">更新数据后显示排行</div>`;
   const max = Math.max(...list.map(x => x.score || x.views || 1), 1);
   return `<div class="da-rank">${list.map((x, i) => {
     const name = type === "tag" ? x.tag : x.name;
@@ -75,7 +75,7 @@ function reportHtml(report) {
     return `<div class="da-bot-empty">
       <span>${icon("bot", 26)}</span>
       <b>等待生成复盘</b>
-      <p>同步小红书数据后，检测机器人会把表现规律沉淀成下一批创作建议。</p>
+      <p>更新小红书数据后，检测机器人会把表现规律沉淀成下一批创作建议。</p>
     </div>`;
   }
   return `<div class="da-report">
@@ -119,7 +119,7 @@ function rowHtml(r) {
     <td class="num">${m ? m.qualityScore : "-"}</td>
     <td class="da-time">${r.link.lastSyncedAt ? timeAgo(r.link.lastSyncedAt) : "未同步"}</td>
     <td class="da-actions">
-      <button class="btn ghost sm" data-refresh="${r.link.id}">${icon("refresh", 12)} 检测</button>
+      <button class="btn ghost sm" data-refresh="${r.link.id}">${icon("refresh", 12)} 更新数据</button>
       <a class="link-btn" href="${esc(r.link.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 12)}</a>
     </td>
   </tr>`;
@@ -146,7 +146,7 @@ export const analyticsView = {
             <div><div class="eyebrow">数据分析</div><h2>发布回链检测 · 复盘建议 · 创作记忆</h2></div>
             <div class="head-actions">
               <button class="btn ghost" id="daSyncHistory">${icon("link", 14)} 同步历史回链</button>
-              <button class="btn ghost" id="daRefreshAll">${icon("refresh", 14)} 同步数据</button>
+              <button class="btn ghost" id="daRefreshAll">${icon("refresh", 14)} 更新数据</button>
               <button class="btn primary" id="daReport">${icon("bot", 14)} 生成复盘</button>
             </div>
           </div>
@@ -223,12 +223,13 @@ function wire(root, redraw) {
   });
   $("#daRefreshAll", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
     const r = await refreshAllAnalytics();
-    toast(r.total ? `已同步 ${r.ok}/${r.total} 条数据` : "没有需要同步的链接");
+    const firstErr = (r.failed || []).find(x => x.error)?.error;
+    toast(r.total ? `已更新 ${r.ok}/${r.total} 条数据${firstErr ? `，失败原因：${firstErr}` : ""}` : "没有需要更新的链接");
     redraw();
-  }, "同步中…"));
+  }, "更新中…"));
   $("#daReport", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
     if (!analyticsRows().some(r => r.latest)) {
-      toast("先同步至少一条小红书数据，再生成复盘");
+      toast("先更新至少一条小红书数据，再生成复盘");
       return;
     }
     const report = buildLocalInsight(analyticsRows());
@@ -243,9 +244,10 @@ function wire(root, redraw) {
   });
   $$("[data-refresh]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
     const snap = await refreshAnalyticsLink(b.dataset.refresh);
-    toast(snap ? "检测完成" : "检测未产生新数据");
+    const link = state.analyticsLinks.find(x => x.id === b.dataset.refresh);
+    toast(snap ? "数据已更新" : `更新失败：${link?.error || "未产生新数据"}`);
     redraw();
-  }, "检测中…")));
+  }, "更新中…")));
   $$("[data-mem-off]", root).forEach(b => b.addEventListener("click", () => {
     const m = state.creativeMemory.find(x => x.id === b.dataset.memOff);
     if (!m) return;

@@ -148,11 +148,13 @@ export async function refreshAllAnalytics({ staleOnly = false } = {}) {
     return !l.lastSyncedAt || now - l.lastSyncedAt > 3 * 3600_000;
   });
   let ok = 0;
+  const failed = [];
   for (const link of targets) {
     const snap = await refreshAnalyticsLink(link.id);
     if (snap) ok++;
+    else failed.push({ id: link.id, title: link.title || link.url, error: link.error || "未产生新数据" });
   }
-  return { total: targets.length, ok };
+  return { total: targets.length, ok, failed };
 }
 
 export function analyticsRows() {

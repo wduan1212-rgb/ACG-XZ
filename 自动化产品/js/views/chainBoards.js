@@ -19,6 +19,13 @@ const MAX_IMAGE_REFS = 5;
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
 
+function promptProductName(product = null) {
+  const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""}`;
+  if (/miaoda|秒哒/i.test(text)) return "百度秒哒";
+  if (/dumate|百度搭子|搭子/i.test(text)) return "百度搭子";
+  return (product?.shortName || product?.name || "").replace(/Dumate|DuMate/gi, "百度搭子").replace(/MIAODA/gi, "百度秒哒");
+}
+
 function hashSeed(str = "") {
   let h = 2166136261;
   for (const ch of String(str)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
@@ -888,7 +895,7 @@ export function renderSlotsPage(root, p, isImg) {
         style: p.artifacts.script.style,
         refNames,
         template: acc.imagePromptTemplate || "",
-        productName: product?.name || product?.shortName || "",
+        productName: promptProductName(product),
         imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || DEFAULT_XHS_IMAGE_COUNT
       })
       : buildSbExternalPrompt({ shots, boards: (A.items || []).filter(x => x.prompt), style: p.artifacts.script.style, sharedRefName: sharedRefs.map(x => x.name).join("、") });
@@ -903,17 +910,20 @@ export function renderSlotsPage(root, p, isImg) {
     S.productId = primaryProductById(S.productId)?.id || "dumate";
     S.useOnlineTrends = !!$("#imgOnlineTrends", root)?.checked;
     const selectedProduct = productById(S.productId);
+    let trendPrep = await AI.trendPrep({ topic: brief || p.topic || "", account: acc, product: selectedProduct, useOnlineTrends: S.useOnlineTrends, kind: "image", imageCount: count });
     if (!brief) {
-      brief = await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: count, kind: "image", useOnlineTrends: S.useOnlineTrends });
+      brief = await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: count, kind: "image", useOnlineTrends: S.useOnlineTrends, trendPrep });
       const input = $("#imgBrief", root); if (input) input.value = brief;
       toast(AI.sourceNote("已随机生成详细创作内容"));
+      trendPrep = await AI.trendPrep({ topic: brief, account: acc, product: selectedProduct, useOnlineTrends: S.useOnlineTrends, kind: "image", imageCount: count });
     }
     S.direction = brief;
     const topic = brief || p.topic || `${selectedProduct?.shortName || selectedProduct?.name || "产品"} 图文笔记`;
     p.topic = topic.slice(0, 80);
     const styleRef = acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
     const style = acc.styleProfile || S.style || "";
-    const trendGuide = await AI.trendGuide({ topic, account: acc, product: selectedProduct, useOnlineTrends: S.useOnlineTrends, kind: "image" });
+    const trendGuide = trendPrep?.guide || await AI.trendGuide({ topic, account: acc, product: selectedProduct, useOnlineTrends: S.useOnlineTrends, kind: "image", imageCount: count });
+    if (S.useOnlineTrends && trendPrep?.referenceNote) toast(trendPrep.referenceNote);
     const res = await AI.generateScript({
       topic, duration: 0, account: acc, image: true,
       direction: brief || topic,
@@ -921,7 +931,8 @@ export function renderSlotsPage(root, p, isImg) {
       imageTemplate: acc.imagePromptTemplate || "",
       styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
       useOnlineTrends: S.useOnlineTrends,
-      trendGuide
+      trendGuide,
+      trendPrep
     });
     S.shots = res.shots || [];
     S.title = res.title || topic;
@@ -938,8 +949,10 @@ export function renderSlotsPage(root, p, isImg) {
       product: selectedProduct,
       topic,
       useOnlineTrends: S.useOnlineTrends,
-      trendGuide
+      trendGuide,
+      trendPrep
     });
+    S.trendPrep = trendPrep;
     S.trendGuide = trendGuide;
     const promptRows = promptRes.shots || [];
     A.items = S.shots.map((s, i) => ({
