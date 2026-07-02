@@ -588,7 +588,7 @@ async def _generated_image_to_data_url(client: httpx.AsyncClient, output: str, r
             out,
             headers={"Accept": "image/*", "Accept-Encoding": "identity"},
             timeout=httpx.Timeout(120.0, connect=12.0),
-            follow_redirects=True,
+            allow_redirects=True,
         )
     try:
         if getattr(client, "is_closed", False):

@@ -901,3 +901,29 @@
 ### 注意
 
 - 本版不包含任何密钥、服务器密码、公网 IP 或私网 IP。
+
+## v34 - 2026-07-03
+
+### 本版范围
+
+- 修复服务器真实图片生成 502：图片 API 已返回结果后，服务端下载结果图时使用了新版 `httpx` 参数 `follow_redirects`，与服务器锁定的 `httpx==0.19.0` 不兼容。
+- 将图片结果下载阶段改为 `allow_redirects=True`，兼容当前服务器依赖版本，也保持本地新版 `httpx` 可运行。
+- 不改登录页、前端资源版本、模型配置、数据结构或业务数据。
+
+### 验证结果
+
+- `rg` 检查 `server/main.py`，确认只剩兼容旧版的 `allow_redirects` 用法，没有 `follow_redirects` 用法。
+- 使用项目 `.venv` 检查 `httpx 0.19.0` 方法签名，确认 `AsyncClient.get/post` 支持 `allow_redirects`。
+- 本地兼容性用例通过：模拟旧版 `AsyncClient.get` 签名调用 `_generated_image_to_data_url`，不再触发 `follow_redirects` 参数错误。
+- `python3 -m py_compile 自动化产品/server/main.py 自动化产品/server/store.py` 通过。
+- `node --check` 通过仓库内全部 JS 文件；本次未修改 JS。
+- 本次不涉及服务器数据迁移，不覆盖线上账号、资产、发布清单、数据分析或草稿。
+
+### 数据与部署
+
+- 服务器部署只需要更新代码并重启服务，不允许覆盖数据库、上传目录、生成目录、环境文件或认证缓存。
+- 回滚方式：回退本次 `server/main.py` 的图片下载参数兼容修改，然后重启服务。
+
+### 注意
+
+- 本版不包含任何密钥、服务器密码、公网 IP 或私网 IP。

@@ -779,3 +779,22 @@ Seedance 模式目标：
 
 - 本版不包含任何密钥、服务器密码、公网 IP 或私网 IP。
 - 后续服务器部署必须先备份线上数据库与上传目录，只更新代码和静态资源，不能用本地空 state 覆盖线上账号、资产库、发布清单、数据分析、草稿和成员数据。
+
+## 2026-07-03 v34 问题记录
+
+本次遇到的问题：
+
+- 服务器验收真实 `/api/image/generate` 时返回 502，但模型配置、语言模型和语音测试均正常，说明不是密钥或网络连通问题。
+- 根因是本地全局 `httpx` 较新，支持 `AsyncClient.get(..., follow_redirects=True)`；服务器依赖按 `server/requirements.txt` 固定为 `httpx==0.19.0`，旧版请求方法不支持 `follow_redirects` 参数，只支持 `allow_redirects`。
+- 以后改服务端 HTTP 兼容性时，不能只用本机全局 Python 判断；要用项目 `.venv` 或 requirements 锁定版本检查方法签名。
+
+本次验证：
+
+- 已用项目 `.venv` 确认 `httpx 0.19.0` 的 `AsyncClient.get/post` 支持 `allow_redirects`，不支持 `follow_redirects`。
+- 已把图片结果下载阶段改为 `allow_redirects=True`，不改接口、不改数据结构、不改图片模型配置。
+- 本地编译和兼容性用例在 v34 版本记录中维护。
+
+### 注意
+
+- 本版不包含任何密钥、服务器密码、公网 IP 或私网 IP。
+- 本次只涉及服务端代码兼容补丁；服务器重新部署时仍必须保护线上账号、资产库、发布清单、数据分析、草稿和上传文件。
