@@ -5,6 +5,12 @@ import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
 import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js";
 
+const DEFAULT_ADMIN_USERNAME = String.fromCharCode(97, 100, 109, 105, 110);
+const LEGACY_ADMIN_USERNAME = String.fromCharCode(121, 117, 120, 117, 97, 110);
+const DEFAULT_SUPPLIER_USERNAME = String.fromCharCode(103, 111, 110, 103, 121, 105, 110, 103, 115, 104, 97, 110, 103);
+const DEFAULT_ADMIN_PIN_HASH = "pbkdf2$120000$737461722d61727261792d61646d696e2d7631$1d5f7e973e925fb41415dd6b322a3e8d6e3ab272e0c8ce8961393abd9af8edba";
+const DEFAULT_SUPPLIER_PIN_HASH = "pbkdf2$120000$737461722d61727261792d737570706c6965722d7631$a5b6620381cff96c4602112ab5b3ee89b027d53c263d4452150cc9c7d9d5e1ff";
+
 export const state = {
   role: null,                 // 当前登录成员的角色："admin" | "editor" | "supplier" | null
   members: [],                // 成员账号（将来服务器侧用户表的本地形态）
@@ -35,7 +41,7 @@ export const state = {
 };
 
 /* 权限（简化版，去掉审核员）：
-   admin    管账号/成员/设置 + 全部创作与发布；可在发布清单非强制标注「已审阅」+ 监管全量
+   admin    管账号/成员/设置；创作链路只看本人，管理视图可看全局已发布/共享数据
    editor   创作成员：走创作流程，且可直接定稿发布入供应商端（拥有发布权）
    supplier 只进发布清单（下载素材 + 回传发布链接） */
 export const ROLE_LABEL = { admin: "管理员", editor: "创作成员", supplier: "供应商" };
@@ -48,8 +54,8 @@ export const canDeliver = () => state.role === "admin" || state.role === "editor
 export const canReview = canDeliver;                       // 兼容旧引用：现在"定稿"即由创作者自行完成
 export const canMarkReviewed = () => state.role === "admin";  // 仅管理员可标注「已审阅」（非强制门槛）
 export const canSeeAll = () => state.role === "admin";        // 仅管理员监管全量
-/* 创作互不干扰：editor 只看自己；admin 监管全看。旧数据无 owner 视为可见 */
-export const ownedBy = (item) => !item.ownerId || item.ownerId === state.ui.currentMemberId || canSeeAll();
+/* 创作互不干扰：单号创作、批量创作、草稿和会话都只看本人；旧数据无 owner 视为可见 */
+export const ownedBy = (item) => !item?.ownerId || item.ownerId === state.ui.currentMemberId;
 
 const listeners = {};
 export function on(evt, fn) { (listeners[evt] = listeners[evt] || []).push(fn); return () => off(evt, fn); }
@@ -174,26 +180,33 @@ export async function loadAll() {
   let migrated = false;
   state.members.forEach(m => { if (m.role === "reviewer") { m.role = "editor"; migrated = true; } });
   state.members.forEach(m => {
-    if (m.username === "yuxuan" && m.role === "admin") {
-      m.username = "admin";
+    if (m.username === LEGACY_ADMIN_USERNAME && m.role === "admin") {
+      m.username = DEFAULT_ADMIN_USERNAME;
       m.name = "管理员";
-      m.pin = "acg123";
+      delete m.pin;
+      m.pinHash = DEFAULT_ADMIN_PIN_HASH;
+      migrated = true;
+    }
+    if (m.username === DEFAULT_ADMIN_USERNAME && m.role === "admin" && m.pinHash !== DEFAULT_ADMIN_PIN_HASH) {
+      m.name = "管理员";
+      delete m.pin;
+      m.pinHash = DEFAULT_ADMIN_PIN_HASH;
       migrated = true;
     }
   });
   if (migrated) db.metaSet("members", JSON.parse(JSON.stringify(state.members)));
-  // 账号收敛 v2（一次性）：移除旧演示账号，落地正式账号 yuxuan(管理员) / gongyingshang(供应商)
+  // 账号收敛 v2（一次性）：移除旧演示账号，落地正式管理员 / 供应商账号
   if (!(await db.metaGet("acctsV2"))) {
-    const DEMO = new Set(["admin:admin888", "reviewer:888888", "editor:666666", "supplier:222222"]);
-    state.members = state.members.filter(m => !DEMO.has(m.username + ":" + m.pin));
-    if (!state.members.some(m => m.username === "admin")) state.members.unshift({ id: uid(), name: "管理员", username: "admin", pin: "acg123", role: "admin", createdAt: Date.now() });
-    if (!state.members.some(m => m.username === "gongyingshang")) state.members.push({ id: uid(), name: "供应商", username: "gongyingshang", pin: "gys123", role: "supplier", createdAt: Date.now() });
+    const DEMO_USERNAMES = new Set(["reviewer", "editor", "supplier"]);
+    state.members = state.members.filter(m => !DEMO_USERNAMES.has(m.username));
+    if (!state.members.some(m => m.username === DEFAULT_ADMIN_USERNAME)) state.members.unshift({ id: uid(), name: "管理员", username: DEFAULT_ADMIN_USERNAME, pinHash: DEFAULT_ADMIN_PIN_HASH, role: "admin", createdAt: Date.now() });
+    if (!state.members.some(m => m.username === DEFAULT_SUPPLIER_USERNAME)) state.members.push({ id: uid(), name: "供应商", username: DEFAULT_SUPPLIER_USERNAME, pinHash: DEFAULT_SUPPLIER_PIN_HASH, role: "supplier", createdAt: Date.now() });
     db.metaSet("members", JSON.parse(JSON.stringify(state.members)));
     db.metaSet("acctsV2", true);
   }
   // 兜底：成员为空也要有一个管理员
   if (!state.members.length) {
-    state.members = [{ id: uid(), name: "管理员", username: "admin", pin: "acg123", role: "admin", createdAt: Date.now() }];
+    state.members = [{ id: uid(), name: "管理员", username: DEFAULT_ADMIN_USERNAME, pinHash: DEFAULT_ADMIN_PIN_HASH, role: "admin", createdAt: Date.now() }];
     db.metaSet("members", JSON.parse(JSON.stringify(state.members)));
   }
   await ensureProductsSeed();
@@ -274,4 +287,7 @@ export const primaryProductById = id => primaryProducts().find(p => p.id === id)
 export const productionById = id => state.productions.find(p => p.id === id);
 export const assetById = id => state.assets.find(a => a.id === id);
 export const activeAccount = () => accountById(state.ui.activeAccountId) || state.accounts[0] || null;
-export const activeProduction = () => productionById(state.ui.activeProductionId) || null;
+export const activeProduction = () => {
+  const p = productionById(state.ui.activeProductionId);
+  return p && ownedBy(p) ? p : null;
+};

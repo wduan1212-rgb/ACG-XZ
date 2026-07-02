@@ -3,7 +3,7 @@
 import { $, $$, esc, uid } from "./core/util.js";
 import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
-import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById } from "./core/store.js";
+import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
 import { pruneEmptySessions } from "./agent/orchestrator.js";
 import { migrateFromV4 } from "./core/migrate.js";
@@ -37,8 +37,8 @@ function seedIfEmpty() {
   if (state.accounts.length) return;
   const seeds = [
     { name: "百度搭子图文教程 01", platform: "小红书", mode: "图文", position: "办公效率教程，围绕百度搭子文件整理 / 数据分析等功能，少广告腔、强操作演示", qtags: ["职场效率", "产品功能"] },
-    { name: "AI 办公口播号", platform: "视频号", mode: "视频", subType: "数字人", position: "数字人出镜讲职场效率，前段真人引入、后段产品演示，定位真实办公痛点", qtags: ["职场效率"] },
-    { name: "ACG 探场官", platform: "小红书", mode: "视频", subType: "无数字人", position: "探场体验官人设，现场探店 + 产品功能演示结合，活动现场素材二次创作", qtags: ["创作者", "测评中立"] }
+    { name: "AI 办公口播号", platform: "视频号", mode: "视频", subType: "数字人", styleProfile: "数字人出镜讲职场效率，前段真人引入、后段产品演示，聚焦真实办公痛点", qtags: ["职场效率"] },
+    { name: "ACG 探场官", platform: "小红书", mode: "视频", subType: "无数字人", styleProfile: "探场体验官语气，现场探店 + 产品功能演示结合，活动现场素材二次创作", qtags: ["创作者", "测评中立"] }
   ];
   seeds.forEach(s => createAccount(s));
   state.ui.activeAccountId = state.accounts[0].id;
@@ -55,7 +55,6 @@ function ensureXhsSeedAccounts() {
     platform: s.platform,
     mode: s.mode,
     subType: s.subType,
-    position: s.position,
     styleProfile: s.styleProfile,
     tone: s.tone,
     qtags: s.qtags,
@@ -74,7 +73,7 @@ function accountFromProfile(profile) {
     platform: profile.platform === "视频号" ? "视频号" : "小红书",
     mode: profile.mode === "图文" ? "图文" : "视频",
     subType: profile.mode === "图文" ? "" : (profile.subType === "无数字人" ? "无数字人" : "数字人"),
-    position: profile.position || "（待补充定位）",
+    position: "",
     styleProfile: profile.styleProfile || "",
     tone: profile.tone || "教程感",
     qtags: profile.qtags || [],
@@ -163,7 +162,6 @@ async function applyAccountProfileSeed({ createMissing = true, quiet = false } =
     const patch = {
       mode: profile.mode,
       subType: profile.mode === "图文" ? "" : profile.subType,
-      position: profile.position,
       styleProfile: profile.styleProfile,
       tone: profile.tone || acc.tone || "教程感",
       qtags: profile.qtags || acc.qtags || [],
@@ -182,7 +180,7 @@ async function applyAccountProfileSeed({ createMissing = true, quiet = false } =
     } else {
       save("accounts", "meta");
     }
-    if (!quiet) setTimeout(() => toast(`已同步账号定位/风格：更新 ${Math.max(0, changed - created - removed)} 个，新增 ${created} 个，清理旧账号 ${removed} 个`), 900);
+    if (!quiet) setTimeout(() => toast(`已同步账号风格：更新 ${Math.max(0, changed - created - removed)} 个，新增 ${created} 个，清理旧账号 ${removed} 个`), 900);
   }
   return changed;
 }
@@ -239,6 +237,7 @@ function showGate() {
   const gate = $("#loginGate");
   gate.hidden = false;
   document.body.classList.add("gated");
+  playLoginBackground();
   setGateMode("login");
   const u = $("#lgUser"), p = $("#lgPin"), n = $("#lgName");
   if (u) u.value = ""; if (p) p.value = ""; if (n) n.value = "";
@@ -258,6 +257,23 @@ function setGateMode(mode) {
   if (hint) hint.textContent = apply
     ? "提交后等待管理员在后台审批，通过后即可登录"
     : "忘记密码请联系管理员 · 新成员可提交账号申请";
+}
+function playLoginBackground() {
+  const video = $("#loginBgVideo");
+  if (!video) return;
+  const tryPlay = () => {
+    if ($("#loginGate")?.hidden) return;
+    const p = video.play?.();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  };
+  tryPlay();
+  if (video.dataset.playWired === "1") return;
+  video.dataset.playWired = "1";
+  ["pointerdown", "keydown"].forEach(ev => window.addEventListener(ev, tryPlay, { once: true, passive: true }));
+}
+function pauseLoginBackground() {
+  const video = $("#loginBgVideo");
+  if (video && !video.paused) video.pause();
 }
 function applyRoleClasses() {
   document.body.classList.toggle("role-supplier", state.role === "supplier");
@@ -296,6 +312,7 @@ function enterMember(member) {
   state.ui.currentMemberId = member.id;
   save("meta");
   document.documentElement.classList.add("has-auth-token");
+  pauseLoginBackground();
   $("#loginGate").hidden = true;
   document.body.classList.remove("gated");
   applyRoleClasses();
@@ -315,6 +332,31 @@ async function enterRemote(member) {
 function shakeCard() {
   const card = $(".lg-card");
   card.classList.remove("shake"); void card.offsetWidth; card.classList.add("shake");
+}
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+function bytesToHex(bytes) {
+  return Array.from(new Uint8Array(bytes), b => b.toString(16).padStart(2, "0")).join("");
+}
+async function verifyPbkdf2Pin(pin, stored) {
+  const [algo, iterText, saltHex, hashHex] = String(stored || "").split("$");
+  const iters = Number(iterText);
+  if (algo !== "pbkdf2" || !iters || !saltHex || !hashHex || !window.crypto?.subtle) return false;
+  try {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(pin), "PBKDF2", false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: hexToBytes(saltHex), iterations: iters }, key, hashHex.length * 4);
+    return bytesToHex(bits) === hashHex;
+  } catch {
+    return false;
+  }
+}
+async function verifyLocalMemberPin(member, pin) {
+  if (!member) return false;
+  if (member.pinHash) return verifyPbkdf2Pin(pin, member.pinHash);
+  return member.pin === pin;
 }
 function wireGate() {
   const gate = $("#loginGate");
@@ -347,7 +389,10 @@ function wireGate() {
       catch (e) { $("#lgPin").value = ""; shakeCard(); toast("用户名或密码不对，再试一次", "error"); return; }
       await enterRemote(member);
     } else {
-      const member = state.members.find(m => m.username === username && m.pin === pin);
+      let member = null;
+      for (const m of state.members) {
+        if (m.username === username && await verifyLocalMemberPin(m, pin)) { member = m; break; }
+      }
       if (!member) { $("#lgPin").value = ""; shakeCard(); toast("用户名或密码不对，再试一次", "error"); return; }
       enterMember(member);
     }
@@ -482,10 +527,10 @@ function paletteCommands() {
   const cmds = [...nav];
   if (supplier) return cmds;   // 供应商不暴露账号/在制任务快捷跳转
   state.accounts.forEach(a => cmds.push({
-    label: a.name, hint: a.position.slice(0, 24), group: "账号", icon: "user",
+    label: a.name, hint: (a.styleProfile || a.voiceName || "").slice(0, 24), group: "账号", icon: "user",
     run: () => { state.ui.activeAccountId = a.id; save("meta"); allowStudioFromAgent(); go("studio"); render(); }
   }));
-  state.productions.filter(p => p.stage !== "delivered").slice(0, 30).forEach(p => cmds.push({
+  state.productions.filter(p => ownedBy(p) && p.stage !== "delivered").slice(0, 30).forEach(p => cmds.push({
     label: p.artifacts.copy.title || p.title || p.topic || "未命名任务",
     hint: "在制任务", group: "任务", icon: "film",
     run: () => openProductionDrawer(p.id)
@@ -572,12 +617,14 @@ async function boot() {
         normalizeDeliveredSharedAssets();
         state.role = m.role; state.ui.currentMemberId = m.id; save("meta");
         document.documentElement.classList.add("has-auth-token");
+        pauseLoginBackground();
         applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;
       } else {
         remote.logout();
       }
     } else if (!remote.isOn() && state.role && state.ui.currentMemberId) {
       document.documentElement.classList.add("has-auth-token");
+      pauseLoginBackground();
       applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;
     }
     if (!entered) { showGate(); render(); }

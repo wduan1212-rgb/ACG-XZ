@@ -2,7 +2,7 @@
 
 import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { state, save, accountById, canDeliver, primaryProducts, primaryProductById } from "../core/store.js";
+import { state, save, accountById, canDeliver, primaryProducts, primaryProductById, ownedBy } from "../core/store.js";
 import { platChip, groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
 import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js";
@@ -87,7 +87,7 @@ function imageAssets() {
   };
   const seen = new Set();
   return state.assets
-    .filter(a => a.type === "图片" && !a.delivered)
+    .filter(a => a.type === "图片" && !a.delivered && (a.shared || ownedBy(a)))
     .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0))
     .filter(a => {
       const key = a.dataUrl || a.url || a.remoteUrl || `${String(a.name || "").toLowerCase()}|${(a.tags || []).join("|")}|${a.accountId || ""}`;
@@ -160,7 +160,7 @@ const CARD = {
         <select data-pacc-prod="${a.id}" ${locked ? "disabled" : ""}>${productOptions(primaryProductById((p.accountProductIds || {})[a.id] || planProductId)?.id || planProductId)}</select>
         <label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>
         ${imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
-        <input data-pacc-content="${a.id}" value="${esc((p.accountContents || {})[a.id] || "")}" placeholder="本账号本次创作内容（可留空）" ${locked ? "disabled" : ""} />
+        <input data-pacc-content="${a.id}" value="${esc((p.accountContents || {})[a.id] || "")}" placeholder="本账号本次创作内容（留空则四方向短选题）" ${locked ? "disabled" : ""} />
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
           <div class="agc-ref-chips mini">${refChips((accountRefs[a.id] || []).slice(0, 3), locked ? "" : "plan-custom-refremove", m.id)}</div>
@@ -184,7 +184,7 @@ const CARD = {
       </div>
       <div class="agc-grid">
         <label class="agc-field wide">总创作要求
-          <textarea data-pf="content" rows="3" ${locked ? "disabled" : ""} placeholder="写具体创作内容、产品角度或表达偏好；留空则每号按账号风格随机。">${esc(p.content || p.style || "")}</textarea>
+          <textarea data-pf="content" rows="3" ${locked ? "disabled" : ""} placeholder="写具体创作内容、产品角度或表达偏好；留空则从四个方向自动挑短选题。">${esc(p.content || p.style || "")}</textarea>
           <em>默认沿用各账号自带风格，不再单独选择标签。</em>
         </label>
       </div>
@@ -292,13 +292,12 @@ const CARD = {
         <b>${esc(acc?.name || "")}</b>
         <span class="agn-bar"><i style="width:${items.length ? got / items.length * 100 : 0}%"></i></span>
         <em>${got}/${items.length}</em>
-        <button class="link-btn" data-act="copy-external" data-pid="${p.id}">复制提示词</button>
         <button class="link-btn" data-act="open-prod" data-pid="${p.id}">详情</button>
       </div>`;
     }).join("");
     return `<div class="ag-card live" data-live="batch" data-batch="${b.id}">
       <div class="agc-head">${icon("upload", 15)}<b>等待补图 / 上传</b><span class="agc-state wait">${waiting.length} 条任务</span></div>
-      <p class="agc-p">站内生成失败或你选择站外出图时，把图片<b>直接拖进下面这块区域</b>（或拖到输入框），我会按顺序分发到各任务，全部就位后${b.autoAdvance ? "自动" : "等你确认再"}继续。</p>
+      <p class="agc-p">站内生成失败或需要人工补图时，把图片<b>直接拖进下面这块区域</b>（或拖到输入框），我会按顺序分发到各任务，全部就位后${b.autoAdvance ? "自动" : "等你确认再"}继续。</p>
       ${rows ? `<div class="agn-list">${rows}</div>` : `<div class="agc-p ok">${icon("checkCircle", 14)} 已全部上传完成</div>`}
       ${waiting.length ? `<div class="ag-drop" data-agdrop="${b.id}">
         <span class="agd-rings"><i></i><i></i></span>

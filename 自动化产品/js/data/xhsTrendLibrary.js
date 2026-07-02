@@ -3,6 +3,7 @@
    对外标题/文案不出现自家产品名；图像策略里统一使用中文产品名。 */
 
 const OWN_PRODUCT_RE = /(Dumate|DuMate|MIAODA|百度搭子|百度秒哒|秒哒|搭子)/gi;
+export const MIN_TREND_INTERACTIONS = 100;
 
 export const XHS_TREND_LIBRARY = [
   {
@@ -85,6 +86,45 @@ const OFFLINE_WORKER_TOPICS = [
   "新手第一次做AI办公工作流"
 ];
 
+export const DEFAULT_CREATIVE_DIRECTIONS = [
+  {
+    key: "comparison_choice",
+    name: "强对比选型",
+    topics: [
+      "一篇讲清 Codex / Claude Code / WorkBuddy 怎么选",
+      "用了一个月 Codex 换桌面智能体",
+      "从 WorkBuddy 迁到桌面智能体的28天"
+    ]
+  },
+  {
+    key: "ecosystem_combo",
+    name: "联动绑定生态",
+    topics: [
+      "桌面智能体 + Obsidian 知识库工作流",
+      "桌面智能体 + 飞书五分钟搭自动化报表",
+      "桌面智能体 + WPS 做 AI 办公全家桶"
+    ]
+  },
+  {
+    key: "worker_efficiency",
+    name: "打工人效率场景",
+    topics: [
+      "AI 帮我少加班三小时",
+      "周报写到崩溃？让桌面智能体先打底",
+      "同事以为我招了 AI 助理"
+    ]
+  },
+  {
+    key: "beginner_reversal",
+    name: "小白反转入门",
+    topics: [
+      "零基础桌面智能体全攻略",
+      "不用编程也能让 AI 跑流程",
+      "被 AI 劝退三次后终于上手"
+    ]
+  }
+];
+
 const HOT_TITLE_PATTERNS = [
   "{pain}，终于不用手动扛了",
   "我试了一圈，才分清{category}怎么用",
@@ -119,6 +159,29 @@ function pick(list, seed = 0) {
   if (!Array.isArray(list) || !list.length) return "";
   const n = Number.isFinite(Number(seed)) ? Number(seed) : hashText(seed);
   return list[Math.abs(n) % list.length];
+}
+
+export function trendInteractionCount(value = "") {
+  if (typeof value === "number") return Math.max(0, Math.round(value));
+  const s = String(value || "").replace(/,/g, "").trim().toLowerCase();
+  if (!s) return 0;
+  const m = s.match(/([0-9]+(?:\.[0-9]+)?)/);
+  if (!m) return 0;
+  const n = Number(m[1]) || 0;
+  const mul = /万|w/.test(s) ? 10000 : /千|k/.test(s) ? 1000 : 1;
+  return Math.round(n * mul);
+}
+
+export function pickDefaultCreativeTopic({ seed = "", avoidTopics = [] } = {}) {
+  const avoid = new Set((avoidTopics || []).map(x => compactText(x, 80)));
+  const base = Math.abs(hashText(seed));
+  const directions = DEFAULT_CREATIVE_DIRECTIONS;
+  for (let i = 0; i < directions.length * 3; i++) {
+    const dir = directions[(base + i) % directions.length];
+    const topic = dir.topics[(Math.floor(base / 7) + i) % dir.topics.length];
+    if (topic && !avoid.has(compactText(topic, 80))) return topic;
+  }
+  return directions[base % directions.length].topics[base % directions[base % directions.length].topics.length];
 }
 
 function compactText(text = "", max = 180) {
@@ -165,15 +228,20 @@ function cleanTags(tags = [], product = null) {
 
 export function normalizeTrendItems(items = []) {
   return (Array.isArray(items) ? items : [])
-    .map((x, i) => ({
-      title: compactText(x.title || x.note_title || x.name || "", 60),
-      desc: compactText(x.desc || x.description || x.content || x.text || "", 120),
-      author: compactText(x.author || x.user || x.nickname || "", 24),
-      url: x.url || x.link || "",
-      likes: x.likes || x.like || x.interactions || "",
-      index: i + 1
-    }))
+    .map((x, i) => {
+      const rawLikes = x.likes || x.like || x.interactions || x.collects || x.comments || "";
+      return {
+        title: compactText(x.title || x.note_title || x.name || "", 60),
+        desc: compactText(x.desc || x.description || x.summary || x.content || x.text || "", 520),
+        author: compactText(x.author || x.user || x.nickname || "", 24),
+        url: x.url || x.link || "",
+        likes: rawLikes,
+        interactions: trendInteractionCount(rawLikes),
+        index: i + 1
+      };
+    })
     .filter(x => x.title || x.desc)
+    .sort((a, b) => (b.interactions || 0) - (a.interactions || 0) || a.index - b.index)
     .slice(0, 12);
 }
 
@@ -326,20 +394,87 @@ function buildCopy({ title, direction, topic, onlineItems, product, seed, kind }
   const structure = pick(direction?.structures || [], seed + 2);
   const cat = publicCategory(product);
   const compare = /obsidian/i.test(topic) ? "知识库负责沉淀，桌面执行负责把文件、表格和动作跑起来" : /codex|workbuddy|manus|cursor/i.test(topic) ? "不同工具放在不同步骤，别让一个聊天框包办所有事情" : "先把材料、动作和结果拆开，再让工具按流程处理";
+  const cleanTopic = stripOwnProductNames(topic, product).replace(/[。.]$/, "");
+  const refHook = ref?.title ? `我参考的是「${stripOwnProductNames(ref.title, product)}」这种标题钩子，但正文一定要换成自己的流程。` : "";
+  const tips = [
+    `先把需求写成一句能执行的话：资料在哪里、要提什么字段、最后交付什么格式。`,
+    `中间不要只看生成速度，要让它列出遗漏项和判断依据，这一步最能防止返工。`,
+    `${compare}，最后再把结果放回原来的文档或知识库里复盘。`
+  ];
+  const proseForms = [
+    [
+      opening,
+      "",
+      `这次主题是「${cleanTopic}」。我会先把它写成一个真实使用场景，而不是一上来介绍功能：人为什么会卡住、哪一步最浪费时间、工具到底接住了哪一段。`,
+      "",
+      `比较有内容的写法，是把一个小动作讲细：材料怎么给、目标怎么说、跑完后怎么判断结果能不能用。${tips[1]}这样读起来不像说明书，更像有人真的踩过一遍。`,
+      "",
+      structure ? `可以参考「${structure}」的节奏，但不要照着排成固定清单。封面给一个清楚判断，内页挑最有用的动作展开，最后补一句边界。` : `图文节奏可以更松一点：先让人看到真实问题，再给做法和复核方式，别把每页都塞成说明书。`,
+      refHook
+    ],
+    [
+      `我现在写这类 AI 办公内容，会先问一个很现实的问题：读者看完能不能马上少踩一个坑？`,
+      "",
+      `如果主题是「${cleanTopic}」，不要只写“效率提升”。更有用的是讲清楚它具体省掉哪一段：是少翻文件、少改格式，还是少来回解释需求。`,
+      "",
+      `可以把方法写得像一次真实复盘：${tips.join(" ")}`,
+      "",
+      kind === "video" ? "做成口播时，不用强行三段论，像跟朋友讲一次试用体验就行：哪里卡、怎么改、最后值不值得。" : "做成图文时，封面给判断，正文像经验贴一样展开，读者能拿走一个具体动作就够了。"
+    ],
+    [
+      `这次我只保留读者能照着做的部分，不写空泛的工具夸法。`,
+      "",
+      `围绕「${cleanTopic}」，正文可以不用固定分点。只要讲清哪些材料最乱、哪个动作最重复、最后怎么确认结果靠谱，内容就不会空。`,
+      "",
+      `小技巧是别一上来就写“全自动”。先给一个真实例子，比如周报、合同、资料归档、选题表或客服记录，再把工具放进那一步里。这样读者知道它到底帮在哪，也知道什么时候不该用。`,
+      "",
+      refHook || "离线没有热门正文时，就按本次主题自己造一个可信场景，别复读模板句。"
+    ]
+  ];
   const body = [
-    opening,
-    "",
-    `这次我更想讲清楚：${stripOwnProductNames(topic, product).replace(/[。.]$/, "")}。`,
-    `① 先看场景：哪里最重复、最耗神、最容易出错`,
-    `② 再看动作：${compare}`,
-    `③ 最后看结果：输出物能不能复核、能不能下次继续用`,
-    "",
-    structure ? `这条更适合按「${structure}」讲：先让读者看到真实卡点，再给一个能照着试的小流程。` : "这条更适合先讲真实卡点，再给一个能照着试的小流程。",
-    kind === "video" ? "适合做成口播：先抛问题，再用一个具体桌面场景讲分工。" : "适合做成图文：第1张只放一个强标题，内页一页只讲一个动作或证据。",
+    ...pick(proseForms, seed + 3).filter(Boolean),
     "",
     cleanTags(["AI办公", cat, "效率工具", "工作流", "打工人效率"], product).join(" ")
   ].join("\n");
   return stripOwnProductNames(body, product);
+}
+
+function inferRefTags(item = {}, product = null) {
+  const raw = `${item.title || ""} ${item.desc || ""}`;
+  const picked = [];
+  if (/周报|汇报/.test(raw)) picked.push("周报效率");
+  if (/Excel|表格|数据/i.test(raw)) picked.push("表格整理");
+  if (/Obsidian|知识库|笔记/i.test(raw)) picked.push("知识库");
+  if (/Codex|Cursor|代码|开发/i.test(raw)) picked.push("AI开发");
+  if (/Manus|智能体|Agent/i.test(raw)) picked.push("智能体");
+  if (/小白|零基础|新手/.test(raw)) picked.push("新手教程");
+  if (/对比|区别|怎么选|VS|vs/.test(raw)) picked.push("工具对比");
+  return cleanTags([...(picked.length ? picked : ["热门参考"]), publicCategory(product)], product).slice(0, 5);
+}
+
+function buildReferenceRewrite({ items = [], title = "", copy = "", tags = [], product = null, source = "local", referenceNote = "" } = {}) {
+  if (source !== "online" || !items.length) return null;
+  const ref = items[0] || {};
+  const refCopy = ref.desc && ref.desc.length > 18
+    ? ref.desc
+    : "搜索接口当前只返回标题、摘要或互动信息，未开放完整正文；这里保留可得钩子，改写时只参考结构和选题。";
+  return {
+    source,
+    referenceNote,
+    reference: {
+      title: stripOwnProductNames(ref.title || "", product),
+      copy: stripOwnProductNames(refCopy, product),
+      tags: inferRefTags(ref, product),
+      author: ref.author || "",
+      likes: ref.likes || "",
+      url: ref.url || ""
+    },
+    rewrite: {
+      title: stripOwnProductNames(title || "", product),
+      copy: stripOwnProductNames(copy || "", product),
+      tags: tags || []
+    }
+  };
 }
 
 function buildImageStrategy({ topic, product, direction, imageCount, onlineItems, seed }) {
@@ -368,7 +503,11 @@ export function buildTrendPrep({
   imageCount = 4,
   seed = ""
 } = {}) {
-  const items = normalizeTrendItems(onlineItems);
+  const normalizedItems = normalizeTrendItems(onlineItems);
+  const lowInteractionCount = useOnlineTrends ? normalizedItems.filter(x => (x.interactions || 0) < MIN_TREND_INTERACTIONS).length : 0;
+  const items = useOnlineTrends
+    ? normalizedItems.filter(x => (x.interactions || 0) >= MIN_TREND_INTERACTIONS)
+    : normalizedItems;
   const direction = chooseDirection({ topic, account, batchVariant, seed });
   const h = hashText(`${topic}|${account?.id || account?.name || ""}|${batchVariant?.name || ""}|${kind}|${seed}|${items.map(x => x.title).join("|")}`);
   const creativeContent = topicFromInput({ topic, direction, seed: h });
@@ -378,7 +517,11 @@ export function buildTrendPrep({
   const imageStrategy = buildImageStrategy({ topic: creativeContent, product, direction, imageCount, onlineItems: items, seed: h });
   const referenceNote = items.length
     ? `参考了「${items.slice(0, 3).map(x => stripOwnProductNames(x.title, product)).filter(Boolean).join("」「")}」等热门笔记的标题钩子和内容结构，已重新改写。`
+    : useOnlineTrends && normalizedItems.length
+    ? `本轮联网结果有 ${lowInteractionCount} 条互动低于 ${MIN_TREND_INTERACTIONS}，未纳入热门参考；改用本地四方向选题继续生成。`
     : `使用本地投放方向「${direction?.name || "AI办公选题"}」生成选题和文案结构。`;
+  const source = useOnlineTrends && items.length ? "online" : "local";
+  const referenceRewrite = buildReferenceRewrite({ items, title, copy, tags, product, source, referenceNote });
   const guideLines = [
     `方向：${direction?.name || "AI办公选题"}`,
     `参考说明：${referenceNote}`,
@@ -386,10 +529,10 @@ export function buildTrendPrep({
     `创作内容：${creativeContent}`,
     `文案骨架：${stripOwnProductNames(copy.split("\n").slice(0, 8).join(" / "), product)}`,
     `图片策略：${imageStrategy}`,
-    items.length ? `热门样本：${items.slice(0, 5).map((x, i) => `${i + 1}. ${stripOwnProductNames(x.title, product)}${x.likes ? `（${x.likes}）` : ""}`).join("；")}` : ""
+    items.length ? `热门样本：${items.slice(0, 5).map((x, i) => `${i + 1}. ${stripOwnProductNames(x.title, product)}${x.likes ? `（${x.likes}）` : ""}${x.desc ? `｜可用摘要：${stripOwnProductNames(compactText(x.desc, 120), product)}` : ""}`).join("；")}` : ""
   ].filter(Boolean);
   return {
-    source: useOnlineTrends && items.length ? "online" : "local",
+    source,
     directionKey: direction?.key || "",
     directionName: direction?.name || "",
     topic: compactText(stripOwnProductNames(title, product), 60),
@@ -399,6 +542,7 @@ export function buildTrendPrep({
     tags,
     imageStrategy,
     referenceNote,
+    referenceRewrite,
     referenceItems: items,
     guide: guideLines.join("\n")
   };

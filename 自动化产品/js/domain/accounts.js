@@ -1,6 +1,6 @@
 /* 账号领域：分组 / 标签 / 命名规则 / 增删改 */
 
-import { state, save, notify, removeRemote } from "../core/store.js";
+import { state, save, notify, removeRemote, ownedBy } from "../core/store.js";
 import { uid, todayStamp, esc } from "../core/util.js";
 
 export const TAG_POOL = ["产品功能", "家庭管理", "职场效率", "创作者", "岗位垂类", "测评中立", "学生教培"];
@@ -9,7 +9,7 @@ export const platformCode = p => PLATFORM_CODE[p] || "XHS";
 
 export const groupOf = a => a.mode === "图文" ? "图文组" : (a.subType === "数字人" ? "真人" : "素材");
 export const tagsOf = a => (a.qtags && a.qtags.length) ? a.qtags
-  : TAG_POOL.filter(t => ((a.position || "") + (a.name || "")).includes(t.slice(0, 2)));
+  : TAG_POOL.filter(t => ((a.styleProfile || "") + (a.name || "")).includes(t.slice(0, 2)));
 export const modeLabel = a => a.mode === "视频" ? (a.subType || "视频") : "图文";
 export function appearanceAnchorFor(account = {}) {
   const key = `${account.id || ""}${account.name || ""}`;
@@ -47,7 +47,7 @@ export function createAccount(data) {
     platform: ["小红书", "视频号", "抖音", "公众号"].includes(data.platform) ? data.platform : "小红书",
     mode: data.mode === "图文" ? "图文" : "视频",
     subType: data.mode === "图文" ? "" : (data.subType === "无数字人" ? "无数字人" : "数字人"),
-    position: data.position || "（待补充定位）",
+    position: "",
     styleProfile: data.styleProfile || "",
     tone: data.tone || "教程感",
     qtags: (data.qtags || []).filter(t => TAG_POOL.includes(t)),
@@ -94,7 +94,7 @@ export function deleteAccount(id) {
 }
 
 export function accountAssets(accId) {
-  return state.assets.filter(x => x.accountId === accId && !x.delivered);
+  return state.assets.filter(x => x.accountId === accId && !x.delivered && ownedBy(x));
 }
 
 export const charBoardOf = a => a && a.charBoardAssetId ? state.assets.find(x => x.id === a.charBoardAssetId) : null;

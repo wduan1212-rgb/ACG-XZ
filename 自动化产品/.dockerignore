@@ -1,0 +1,12 @@
+server/data.sqlite
+server/data.sqlite-*
+server/data.json
+server/uploads/
+server/composed/
+server/logs/
+server/__pycache__/
+server/**/*.pyc
+.env
+.env.*
+*.log
+_backup_*/

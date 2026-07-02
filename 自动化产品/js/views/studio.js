@@ -106,6 +106,7 @@ function renderHome(root, acc) {
   const accAssets = accountAssets(acc.id);
   const avatarUrl = acc.avatarAssetId ? urlFor(acc.avatarAssetId) : "";
   const styleRefUrl = acc.imageStyleAssetId ? urlFor(acc.imageStyleAssetId) : "";
+  const charRefUrl = board ? urlFor(board) : "";
   const styleText = String(acc.styleProfile || acc.lockedStyle || "")
     .replace(/^整体风格\s*[:：]\s*/g, "")
     .replace(/^账号风格\s*[:：]\s*/g, "")
@@ -126,15 +127,19 @@ function renderHome(root, acc) {
               <span>风格</span>
               ${admin ? `<input type="file" accept="image/*" hidden id="shStyleRefUp" />` : ""}
             </button>` : ""}
+            ${acc.mode === "视频" ? `<button class="sh-ref-card style role" type="button" data-sh-ref="role" title="${admin ? "拖入 / 上传角色形象" : "角色形象"}">
+              ${charRefUrl ? `<img src="${charRefUrl}" alt="角色形象"/>` : `<em>${icon("user", 16)}</em>`}
+              <span>角色</span>
+              ${admin ? `<input type="file" accept="image/*" hidden id="shRoleRefUp" />` : ""}
+            </button>` : ""}
           </div>
           <div class="sh-meta">
             <h2>${esc(acc.name)}</h2>
             <div class="sh-sub">${platChip(acc.platform, true)}<span class="tag">${modeLabel(acc)}</span>${monthlyBarHtml(acc, true)}</div>
-            <p class="sh-pos">${acc.mode === "图文" ? `创作风格：${esc(styleText || "未设置")}` : `账号定位：${esc(acc.position || "未设置")}`}</p>
+            <p class="sh-pos">创作风格：${esc(styleText || "未设置")}</p>
           </div>
         </div>
         <div class="sh-actions">
-          ${acc.mode === "视频" && acc.subType === "数字人" ? `<button class="btn ghost" data-sh="charboard">${icon("user", 14)} 角色身份版</button>` : ""}
           ${admin ? `<button class="btn ghost" data-sh="edit">${icon("edit", 14)} 编辑账号</button><button class="btn ghost danger" data-sh="delete">${icon("trash", 14)} 删除账号</button>` : ""}
           <button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>
         </div>
@@ -245,17 +250,6 @@ function renderHome(root, acc) {
 	      toast("账号已删除");
 	      go("studio");
 	    },
-	    charboard: () => {
-      const b = charBoardOf(acc);
-      const u = b ? urlFor(b) : null;
-      if (u) {
-        const img = document.createElement("img"); img.src = u;
-        img.style.cssText = "position:fixed;left:50%;top:50%;width:60px;height:40px;opacity:0";
-        document.body.appendChild(img);
-        openLightbox(img, u, acc.name + " 角色身份版");
-        setTimeout(() => img.remove(), 600);
-      } else toast("还没有角色身份版，编辑账号可生成或上传");
-    },
     delivery: () => go("delivery")
   };
   root.querySelectorAll("[data-sh]").forEach(b => b.addEventListener("click", () => onAct[b.dataset.sh] && onAct[b.dataset.sh]()));
@@ -263,26 +257,31 @@ function renderHome(root, acc) {
   async function setHomeRef(kind, file) {
     if (!admin || !file || !file.type.startsWith("image/")) return;
     const dataUrl = await fileToDataUrl(file);
+    const name = kind === "avatar" ? `${acc.name}_头像` : kind === "role" ? `${acc.name}_角色形象` : `${acc.name}_成图风格参考`;
+    const tags = kind === "avatar" ? ["账号头像"] : kind === "role" ? ["角色形象", "角色版"] : ["成图风格参考"];
     const a = await addAssetFromDataUrl(acc.id, {
-      name: kind === "avatar" ? `${acc.name}_头像` : `${acc.name}_成图风格参考`,
-      tags: [kind === "avatar" ? "账号头像" : "成图风格参考"], dataUrl
+      name,
+      tags,
+      dataUrl
     });
     if (kind === "avatar") acc.avatarAssetId = a.id;
+    else if (kind === "role") acc.charBoardAssetId = a.id;
     else acc.imageStyleAssetId = a.id;
     save("accounts");
-    toast(kind === "avatar" ? "头像已更新" : "成图风格参考已更新");
+    toast(kind === "avatar" ? "头像已更新" : kind === "role" ? "角色形象已更新" : "成图风格参考已更新");
     renderHome(root, acc);
   }
 
   root.querySelectorAll("[data-sh-ref]").forEach(btn => {
     const kind = btn.dataset.shRef;
-    const currentUrl = kind === "avatar" ? avatarUrl : styleRefUrl;
+    const currentUrl = kind === "avatar" ? avatarUrl : kind === "role" ? charRefUrl : styleRefUrl;
+    const currentName = kind === "avatar" ? `${acc.name} 头像` : kind === "role" ? `${acc.name} 角色形象` : `${acc.name} 成图风格参考`;
     if (admin) {
       const input = btn.querySelector("input[type=file]");
       btn.addEventListener("click", e => {
         const img = btn.querySelector("img");
         if (currentUrl && e.target.closest("img")) {
-          openLightbox(img, currentUrl, kind === "avatar" ? `${acc.name} 头像` : `${acc.name} 成图风格参考`);
+          openLightbox(img, currentUrl, currentName);
           return;
         }
         input && input.click();
@@ -291,7 +290,7 @@ function renderHome(root, acc) {
       wireDropZone(btn, files => setHomeRef(kind, Array.from(files).find(f => f.type.startsWith("image/"))), { filesOnly: true });
     } else if (currentUrl) {
       const img = btn.querySelector("img");
-      btn.addEventListener("click", () => img && openLightbox(img, currentUrl, kind === "avatar" ? `${acc.name} 头像` : `${acc.name} 成图风格参考`));
+      btn.addEventListener("click", () => img && openLightbox(img, currentUrl, currentName));
     }
   });
 }

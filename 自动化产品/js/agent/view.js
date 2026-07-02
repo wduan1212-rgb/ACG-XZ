@@ -1,12 +1,12 @@
 /* Agent 工作台：独立沉浸式三栏工作区
    会话列表 | 对话流（结构化卡片） | 任务看板（流水线可视化） */
 
-import { $, $$, esc, copyText, wireDropZone, timeAgo } from "../core/util.js";
+import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { state, save, on, productionById } from "../core/store.js";
+import { state, save, on, productionById, ownedBy } from "../core/store.js";
 import { toast, confirmModal, promptModal, publishModal, openModal } from "../ui/components.js";
 import {
-  ensureSession, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
+  ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan
@@ -30,7 +30,7 @@ function ensurePlanBoard(session = ensureSession()) {
 }
 
 function findMessageInSessions(messageId) {
-  for (const session of state.sessions || []) {
+  for (const session of mySessions()) {
     const msg = (session.messages || []).find(m => m.id === messageId);
     if (msg) return { session, msg };
   }
@@ -41,6 +41,7 @@ function findMessageInSessions(messageId) {
 function planHasLiveBatch(session, msg) {
   if (!session || !msg) return false;
   const isLive = b => b
+    && ownedBy(b)
     && b.sessionId === session.id
     && b.planMessageId === msg.id
     && (b.productionIds || []).length > 0;
@@ -190,11 +191,12 @@ function schedule(cards = false, phaseOnly = false) {
 /* ---------- 子区渲染 ---------- */
 function renderSessions() {
   const el = $("#agwSessions"); if (!el) return;
+  const sessions = mySessions();
   el.innerHTML = `
     <button class="agw-new" data-agw="new-session">${icon("plus", 14)} 新建量产</button>
-    <div class="agw-slist">${state.sessions.map(s => {
+    <div class="agw-slist">${sessions.map(s => {
       const last = s.messages[s.messages.length - 1];
-      const hasActive = state.batches.some(b => b.sessionId === s.id && b.phase !== "done");
+      const hasActive = state.batches.some(b => ownedBy(b) && b.sessionId === s.id && b.phase !== "done");
       return `<div class="agw-sitem ${s.id === state.ui.activeSessionId ? "is-active" : ""}" data-session="${s.id}" role="button" tabindex="0">
         <b>${esc(s.title)}</b>
         <em>${last ? esc(textOf(last)).slice(0, 26) : "空会话"}</em>
@@ -668,12 +670,6 @@ function wire(root) {
         }
         break;
       }
-      case "copy-external": {
-        if (!p) return;
-        const txt = p.mode === "图文" ? p.artifacts.images.externalPrompt : p.artifacts.boards.externalPrompt;
-        copyText(txt || "", "已复制整段提示词，去第三方模型粘贴即可");
-        break;
-      }
       case "open-prod": if (p) openProductionDrawer(p.id); break;
       case "batch-generate": if (batch) { const n = startGeneration(batch); toast(n ? `已派发 ${n} 个渲染任务` : "没有就绪任务"); } break;
       case "batch-retry": if (batch) { const n = retryFailedIn(batch); toast(n ? `正在重试 ${n} 个失败任务` : "没有失败任务"); } break;
@@ -815,7 +811,7 @@ function imageAssetList() {
   };
   const seen = new Set();
   return state.assets
-    .filter(a => a.type === "图片" && !a.delivered)
+    .filter(a => a.type === "图片" && !a.delivered && (a.shared || ownedBy(a)))
     .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0))
     .filter(a => {
       const key = a.dataUrl || a.url || a.remoteUrl || `${String(a.name || "").toLowerCase()}|${(a.tags || []).join("|")}|${a.accountId || ""}`;

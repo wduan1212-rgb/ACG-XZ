@@ -122,8 +122,6 @@ export async function migrateFromV4() {
       p.artifacts.script.title = t.title || "";
       p.artifacts.prompts = t.prompts || [];
       p.artifacts.copy = { title: t.title || "", body: t.copy || "" };
-      if (isImg) p.artifacts.images.externalPrompt = t.sbPrompt || "";
-      else p.artifacts.boards.externalPrompt = t.sbPrompt || "";
       // 回传的分镜图 → 资产 + 槽位
       const slotKey = isImg ? "images" : "boards";
       const items = (t.shots || []).map((s, i) => ({ title: s.idea || "", visual: s.visual || "", prompt: "", assetId: null, status: "idle" }));

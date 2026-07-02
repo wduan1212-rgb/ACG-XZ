@@ -480,7 +480,7 @@ export function renderCutPage(root, p) {
   const bgmVol = $("#cutBgmVol", root);
   if (bgmVol) bgmVol.addEventListener("input", e => {
     if (!p.artifacts.bgm) {
-      const b = pickBgm(acc?.position, p.topic);
+      const b = pickBgm(acc?.styleProfile || acc?.voiceName, p.topic);
       p.artifacts.bgm = { name: b.name, mood: b.mood, volume: 0.25, auto: false };
     }
     p.artifacts.bgm.volume = (+e.target.value) / 100;

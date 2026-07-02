@@ -45,7 +45,7 @@ export const settingsView = {
               <div class="card-head"><b>接入服务</b><em>按能力配置 Provider，保存后立即生效</em></div>
               <div class="set-status">
                 <span class="cap ${LLM_CONFIG.apiKey ? "ok" : "warn"}">${icon("type", 13)} 语言模型 · ${LLM_CONFIG.apiKey ? "已就绪（" + esc(LLM_CONFIG.model) + "）" : "未配置"}</span>
-                <span class="cap ${imageApiConfigured() ? "ok" : "warn"}">${icon("image", 13)} 图片生成 · ${imageApiConfigured() ? "已配置" : "未接入 · 站外上传"}</span>
+                <span class="cap ${imageApiConfigured() ? "ok" : "warn"}">${icon("image", 13)} 图片生成 · ${imageApiConfigured() ? "已配置" : "未接入 · 可上传补图"}</span>
                 <span class="cap ${videoApiConfigured() ? "ok" : "warn"}">${icon("film", 13)} 视频生成 · ${videoApiConfigured() ? "已配置" : "未接入 · 模拟引擎"}</span>
               </div>
               <div class="set-grid">

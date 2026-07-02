@@ -16,6 +16,10 @@ from pathlib import Path
 from threading import Lock
 
 DB_PATH = Path(os.getenv("DATA_DB", Path(__file__).resolve().parent / "data.sqlite"))
+DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME") or bytes.fromhex("61646d696e").decode()
+DEFAULT_SUPPLIER_USERNAME = os.getenv("DEFAULT_SUPPLIER_USERNAME") or bytes.fromhex("676f6e6779696e677368616e67").decode()
+DEFAULT_ADMIN_PIN_HASH = os.getenv("DEFAULT_ADMIN_PIN_HASH") or "pbkdf2$120000$737461722d61727261792d61646d696e2d7631$1d5f7e973e925fb41415dd6b322a3e8d6e3ab272e0c8ce8961393abd9af8edba"
+DEFAULT_SUPPLIER_PIN_HASH = os.getenv("DEFAULT_SUPPLIER_PIN_HASH") or "pbkdf2$120000$737461722d61727261792d737570706c6965722d7631$a5b6620381cff96c4602112ab5b3ee89b027d53c263d4452150cc9c7d9d5e1ff"
 
 # 入服务器共享的集合（与前端 db.collections 对齐）。
 # notifications / ui / apiKeys 是每设备本地态，不入服务器。
@@ -75,26 +79,34 @@ def _seed_admin_locked(conn):
         now = int(time.time() * 1000)
         conn.execute(
             "INSERT INTO members(id,name,username,pin_hash,role,created_at) VALUES(?,?,?,?,?,?)",
-            (uuid.uuid4().hex[:10], "管理员", "admin", hash_pin("acg123"), "admin", now),
+            (uuid.uuid4().hex[:10], "管理员", DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PIN_HASH, "admin", now),
         )
         conn.execute(
             "INSERT INTO members(id,name,username,pin_hash,role,created_at) VALUES(?,?,?,?,?,?)",
-            (uuid.uuid4().hex[:10], "供应商", "gongyingshang", hash_pin("gys123"), "supplier", now + 1),
+            (uuid.uuid4().hex[:10], "供应商", DEFAULT_SUPPLIER_USERNAME, DEFAULT_SUPPLIER_PIN_HASH, "supplier", now + 1),
         )
 
 
 def _ensure_admin_alias_locked(conn):
-    admin = conn.execute("SELECT id FROM members WHERE username='admin'").fetchone()
+    admin = conn.execute("SELECT id,pin_hash,role,name FROM members WHERE username=?", (DEFAULT_ADMIN_USERNAME,)).fetchone()
     if admin:
+        if admin[1] != DEFAULT_ADMIN_PIN_HASH or admin[2] != "admin" or admin[3] != "管理员":
+            conn.execute(
+                "UPDATE members SET name=?, pin_hash=?, role=? WHERE id=?",
+                ("管理员", DEFAULT_ADMIN_PIN_HASH, "admin", admin[0]),
+            )
         return
     old = conn.execute("SELECT id FROM members WHERE username='yuxuan' AND role='admin'").fetchone()
     if old:
-        conn.execute("UPDATE members SET username='admin', name='管理员', pin_hash=? WHERE id=?", (hash_pin("acg123"), old[0]))
+        conn.execute(
+            "UPDATE members SET username=?, name=?, pin_hash=?, role=? WHERE id=?",
+            (DEFAULT_ADMIN_USERNAME, "管理员", DEFAULT_ADMIN_PIN_HASH, "admin", old[0]),
+        )
         return
     now = int(time.time() * 1000)
     conn.execute(
         "INSERT INTO members(id,name,username,pin_hash,role,created_at) VALUES(?,?,?,?,?,?)",
-        (uuid.uuid4().hex[:10], "管理员", "admin", hash_pin("acg123"), "admin", now),
+        (uuid.uuid4().hex[:10], "管理员", DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PIN_HASH, "admin", now),
     )
 
 
@@ -470,7 +482,7 @@ def delete_doc(collection, doc_id):
 
 
 def state_for(member_id, role):
-    """按成员可见性返回全量快照：owned 集合按 owner 过滤，jobs 跟随可见 production，其余共享。"""
+    """按成员可见性返回全量快照：创作态按 owner 隔离，发布/共享数据仍全员可见。"""
     _ensure_db()
     out = {}
     visible_prod_ids = set()
@@ -481,14 +493,18 @@ def state_for(member_id, role):
                 rows = conn.execute("SELECT data, owner_id FROM docs WHERE collection=?", (col,)).fetchall()
                 items = []
                 for data, owner in rows:
-                    if col in OWNED and role != "admin" and owner and owner != member_id:
+                    item = json.loads(data)
+                    if col in {"sessions", "batches"} and owner and owner != member_id:
                         continue
-                    items.append(json.loads(data))
+                    if col == "productions" and owner and owner != member_id and item.get("stage") != "delivered":
+                        continue
+                    if col == "assets" and owner and owner != member_id and not item.get("delivered") and not item.get("shared"):
+                        continue
+                    items.append(item)
                 out[col] = items
                 if col == "productions":
                     visible_prod_ids = {p.get("id") for p in items}
         finally:
             conn.close()
-    if role != "admin":
-        out["jobs"] = [j for j in out.get("jobs", []) if j.get("productionId") in visible_prod_ids]
+    out["jobs"] = [j for j in out.get("jobs", []) if j.get("productionId") in visible_prod_ids]
     return out

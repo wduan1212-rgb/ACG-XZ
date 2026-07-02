@@ -4,26 +4,20 @@
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemote } from "../core/store.js";
 import { uid, runPool, debounce } from "../core/util.js";
 import { AI } from "../api/ai.js";
-import { buildSbExternalPrompt, buildImgExternalPrompt, buildSbExternalGroups } from "../api/prompts.js";
 import { groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
 import { addAssetFromDataUrl, addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
+import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { fileToDataUrl } from "../core/util.js";
+import { pickDefaultCreativeTopic } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
 const activeImageRecoveries = new Set();
-
-function promptProductName(product = null) {
-  const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""}`;
-  if (/miaoda|秒哒/i.test(text)) return "百度秒哒";
-  if (/dumate|百度搭子|搭子/i.test(text)) return "百度搭子";
-  return (product?.shortName || product?.name || "").replace(/Dumate|DuMate/gi, "百度搭子").replace(/MIAODA/gi, "百度秒哒");
-}
 
 const BATCH_CREATIVE_VARIANTS = [
   { key: "pain-relief", name: "痛点急救型", angle: "从一个具体办公痛点切入，讲清这条内容解决哪种麻烦", focus: "痛点现场、具体动作、结果变化" },
@@ -77,11 +71,29 @@ function existingBatchTopics(batch, currentId) {
     .filter(Boolean);
 }
 
+function copyTags(body = "", fallback = []) {
+  const tags = Array.from(String(body || "").matchAll(/#[\p{L}\p{N}_-]{2,}/gu)).map(m => m[0].replace(/^#/, ""));
+  return [...new Set(tags.length ? tags : (fallback || []))].slice(0, 8);
+}
+
+function referenceRewriteForCopy(trendPrep, copy) {
+  const rw = trendPrep?.referenceRewrite || null;
+  if (!rw) return null;
+  return {
+    ...rw,
+    rewrite: {
+      ...(rw.rewrite || {}),
+      title: copy?.title || rw.rewrite?.title || "",
+      copy: copy?.body || copy?.copy || rw.rewrite?.copy || "",
+      tags: copyTags(copy?.body || copy?.copy || "", rw.rewrite?.tags || [])
+    }
+  };
+}
+
 /* ---------- 会话 ---------- */
 export function ensureSession() {
-  let s = state.sessions.find(x => x.id === state.ui.activeSessionId);
-  if (!s) s = state.sessions[0];
-  if (!s || !ownedBy(s)) s = mySessions()[0] || newSession();
+  let s = mySessions().find(x => x.id === state.ui.activeSessionId);
+  if (!s) s = mySessions()[0] || newSession();
   state.ui.activeSessionId = s.id;
   return s;
 }
@@ -110,18 +122,20 @@ export function renameSession(id, title) {
   if (s && title) { s.title = title.slice(0, 24); save("sessions"); emit("agent:session"); }
 }
 export function deleteSession(id) {
+  const target = state.sessions.find(x => x.id === id);
+  if (!target || !ownedBy(target)) return;
   state.sessions = state.sessions.filter(x => x.id !== id);
-  if (state.ui.activeSessionId === id) state.ui.activeSessionId = state.sessions[0]?.id || null;
+  if (state.ui.activeSessionId === id) state.ui.activeSessionId = mySessions()[0]?.id || null;
   save("sessions", "meta");
   emit("agent:session");
 }
 /* 启动清理：历史遗留的空会话只保留最新一个 */
 export function pruneEmptySessions() {
-  const empties = state.sessions.filter(s => !(s.messages || []).length);
+  const empties = mySessions().filter(s => !(s.messages || []).length);
   if (empties.length > 1) {
     const keep = empties[0].id;
-    state.sessions = state.sessions.filter(s => (s.messages || []).length || s.id === keep);
-    if (!state.sessions.find(s => s.id === state.ui.activeSessionId)) state.ui.activeSessionId = state.sessions[0]?.id || null;
+    state.sessions = state.sessions.filter(s => (s.messages || []).length || !ownedBy(s) || s.id === keep);
+    if (!mySessions().find(s => s.id === state.ui.activeSessionId)) state.ui.activeSessionId = mySessions()[0]?.id || null;
     save("sessions", "meta");
   }
 }
@@ -181,7 +195,7 @@ export function createBatch(plan, sessionId) {
     planMessageId: plan.planMessageId || "",
     ownerId: state.ui.currentMemberId || null,
     goal: plan.goal || "",
-    topic: (plan.content || "").trim() || (plan.topic || "").trim() || "自动随机创作",
+    topic: (plan.content || "").trim() || (plan.topic || "").trim() || "四方向自动选题",
     topicMode: (plan.content || "").trim() ? "fixed" : (plan.topicMode || "random"),   // fixed | random（每条内容自动出题）
     productId: plan.productId || "dumate",
     content: plan.content || "",
@@ -209,11 +223,11 @@ export function createBatch(plan, sessionId) {
   return batch;
 }
 
-/* 固定流程模板：一键发起规定动作（主题每号随机、风格用账号自带创作风格） */
+/* 固定流程模板：一键发起规定动作（空内容时从四方向短选题池自动挑选） */
 export const FLOW_TEMPLATES = {
-  notes: { label: "全部图文号 · 出一批笔记", group: "图文组", icon: "image", desc: "每号随机主题 · 风格用账号自带 · 站内自动出图" },
-  material: { label: "全部素材号 · 全自动出片", group: "素材", icon: "layers", desc: "随机主题 → 口播音频 → 逐镜头视频 → 智能混剪，无需人工上传" },
-  dh: { label: "全部真人号 · 出口播视频", group: "真人", icon: "user", desc: "每号随机主题 · 分镜工坊分段生成 · 自动混剪" }
+  notes: { label: "全部图文号 · 出一批笔记", group: "图文组", icon: "image", desc: "四方向短选题 · 风格用账号自带 · 站内自动出图" },
+  material: { label: "全部素材号 · 全自动出片", group: "素材", icon: "layers", desc: "四方向短选题 → 口播音频 → 逐镜头视频 → 智能混剪" },
+  dh: { label: "全部真人号 · 出口播视频", group: "真人", icon: "user", desc: "四方向短选题 · 分镜工坊分段生成 · 自动混剪" }
 };
 export function templatePlan(key) {
   const t = FLOW_TEMPLATES[key];
@@ -294,82 +308,8 @@ export function defaultPlan(goal = "新量产计划") {
   };
 }
 
-function hashSeed(str = "") {
-  let h = 2166136261;
-  for (const ch of String(str)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
-function seeded(seed) {
-  let t = seed >>> 0;
-  return () => {
-    t += 0x6D2B79F5;
-    let r = Math.imul(t ^ (t >>> 15), 1 | t);
-    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
-    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
-  };
-}
 async function polishImageDataUrl(dataUrl, seedText = "") {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-      if (!w || !h) return resolve(dataUrl);
-      const canvas = document.createElement("canvas");
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      const rnd = seeded(hashSeed(seedText + ":" + w + "x" + h));
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, w, h);
-      ctx.filter = "saturate(1.055) contrast(1.045) brightness(1.018)";
-      ctx.drawImage(img, 0, 0, w, h);
-      ctx.filter = "none";
-      const glow = ctx.createLinearGradient(0, 0, w, h);
-      glow.addColorStop(0, "rgba(255,255,255,.10)");
-      glow.addColorStop(1, "rgba(40,88,220,.035)");
-      ctx.globalCompositeOperation = "soft-light";
-      ctx.fillStyle = glow;
-      ctx.fillRect(0, 0, w, h);
-      ctx.globalCompositeOperation = "source-over";
-      const pad = Math.max(18, Math.round(Math.min(w, h) * 0.025));
-      const len = Math.max(34, Math.round(Math.min(w, h) * (0.04 + rnd() * 0.025)));
-      const colors = ["rgba(63,107,255,.22)", "rgba(255,77,141,.18)", "rgba(20,184,166,.18)", "rgba(154,69,255,.18)"];
-      ctx.lineCap = "round";
-      ctx.lineWidth = Math.max(3, Math.round(Math.min(w, h) * 0.004));
-      const corners = [["tl", pad, pad, 1, 1], ["tr", w - pad, pad, -1, 1], ["bl", pad, h - pad, 1, -1], ["br", w - pad, h - pad, -1, -1]]
-        .map((corner, i) => ({ corner, i, order: rnd() }))
-        .sort((a, b) => a.order - b.order)
-        .slice(0, Math.floor(rnd() * 3)); // 0-2 个角，避免每张图四角都出现括号。
-      corners.forEach(({ corner: c, i }) => {
-        const [, x, y, sx, sy] = c;
-        ctx.strokeStyle = colors[(i + Math.floor(rnd() * colors.length)) % colors.length];
-        ctx.globalAlpha = 0.72 + rnd() * 0.18;
-        ctx.beginPath();
-        const variant = Math.floor(rnd() * 4);
-        if (variant === 0) {
-          ctx.moveTo(x, y + sy * len);
-          ctx.quadraticCurveTo(x, y, x + sx * len, y);
-        } else if (variant === 1) {
-          ctx.moveTo(x, y + sy * len * 0.9);
-          ctx.lineTo(x, y + sy * len * 0.25);
-          ctx.moveTo(x + sx * len * 0.25, y);
-          ctx.lineTo(x + sx * len * 0.9, y);
-        } else if (variant === 2) {
-          const r = len * 0.22;
-          ctx.arc(x + sx * r, y + sy * r, r, 0, Math.PI * 2);
-        } else {
-          ctx.moveTo(x, y + sy * len * 0.55);
-          ctx.lineTo(x + sx * len * 0.55, y);
-          ctx.moveTo(x + sx * len * 0.18, y + sy * len * 0.72);
-          ctx.lineTo(x + sx * len * 0.72, y + sy * len * 0.18);
-        }
-        ctx.stroke();
-      });
-      ctx.globalAlpha = 1;
-      resolve(canvas.toDataURL(dataUrl.startsWith("data:image/png") ? "image/png" : "image/jpeg", 0.94));
-    };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
-  });
+  return polishImageForPublish(dataUrl, seedText);
 }
 
 async function dataUrlFromUrl(url) {
@@ -430,9 +370,9 @@ function enrichBatchImagePrompt(prompt, refs) {
   const custom = refs.filter(r => r.role === "custom");
   const sharedNames = shared.map(r => r.name).filter(Boolean).slice(0, 5).join("、");
   const customNames = custom.map(r => r.name).filter(Boolean).slice(0, 3).join("、");
-  const customNote = custom.length ? `\n定制参考图：另提供 ${custom.length} 张本账号专属参考图（${customNames}），优先承接其账号专属视觉、素材语气、画面结构或产品细节；统一参考图继续负责品牌一致性。` : "";
+  const customNote = custom.length ? `\n定制参考图：另提供 ${custom.length} 张本账号专属参考图（${customNames}）。` : "";
   const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
-  const refNote = `统一参考图：已提供 ${shared.length} 张统一参考图（${sharedNames}），生成时综合参考产品界面、配色、信息密度、真实截图质感和图标形态，按当前画面主题选择主参考与辅助参考。${customNote}\n参考图中的旧标题、页名和示例文案视为占位，画面文字按当前提示词重写。`;
+  const refNote = `参考图：本次提供 ${refs.length} 张参考图（${[sharedNames, customNames].filter(Boolean).join("、")}），以本次提示词的主题和文字内容为准。${customNote}`;
   return `${body}\n\n${refNote}\n\n${IMAGE_NEGATIVE_PROMPT}`.trim();
 }
 
@@ -512,15 +452,19 @@ async function draftOne(p, batch) {
   const material = isMaterial(p);
   try {
     setStatus(p, "running");
-    // 主题 / 创作内容：支持批次总内容，也支持账号独立覆盖；为空时每号按定位随机
+    // 主题 / 创作内容：支持批次总内容，也支持账号独立覆盖；为空时只从固定四方向短选题池里挑。
     const rawProductId = (batch.accountProductIds && batch.accountProductIds[acc.id]) || batch.productId || p.artifacts.script.productId || "dumate";
     const productId = primaryProductById(rawProductId)?.id || "dumate";
     p.artifacts.script.productId = productId;
     const contentOverride = ((batch.accountContents && batch.accountContents[acc.id]) || batch.content || "").trim();
-    let topic = contentOverride || (batch.topicMode === "random" ? "" : batch.topic);
+    const defaultTopic = pickDefaultCreativeTopic({
+      seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
+      avoidTopics: existingBatchTopics(batch, p.id)
+    });
+    let topic = contentOverride || (batch.topicMode === "random" ? (p.topic || defaultTopic) : batch.topic);
     const product = productById(productId);
     const style = acc.styleProfile || acc.lockedStyle || batch.style || "";
-    const useOnlineTrends = !!batch.useOnlineTrends;
+    const useOnlineTrends = isImg && !!batch.useOnlineTrends;
     const batchVariant = p.batchCreativeVariant || p.artifacts.script.batchCreativeVariant || batchVariantFor({
       acc,
       batch,
@@ -531,7 +475,7 @@ async function draftOne(p, batch) {
     p.batchCreativeVariant = batchVariant;
     p.artifacts.script.batchCreativeVariant = batchVariant;
     let trendPrep = await AI.trendPrep({
-      topic: contentOverride || batch.topic || p.topic || "",
+      topic: topic || contentOverride || batch.topic || p.topic || "",
       account: acc,
       product,
       batchVariant,
@@ -541,22 +485,13 @@ async function draftOne(p, batch) {
       seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`
     });
     let trendGuide = trendPrep?.guide || "";
-    if (!topic && trendPrep?.creativeContent) topic = trendPrep.creativeContent;
-    if (!topic) topic = p.topic || await AI.randomPick({
-      kind: "topic",
-      account: acc,
-      product,
-      batchVariant,
-      seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
-      avoidTopics: existingBatchTopics(batch, p.id),
-      useOnlineTrends,
-      trendGuide,
-      trendPrep
-    });
+    if (!topic) topic = defaultTopic;
     p.topic = topic;
     p.artifacts.script.trendPrep = trendPrep;
     p.artifacts.script.trendGuide = trendGuide;
     p.artifacts.script.useOnlineTrends = useOnlineTrends;
+    const draftRw = referenceRewriteForCopy(trendPrep, p.artifacts.copy);
+    if (draftRw) p.artifacts.copy.referenceRewrite = draftRw;
 
     const sres = material
       ? await AI.generateMaterialScript({ topic, account: acc, style, product })
@@ -593,6 +528,8 @@ async function draftOne(p, batch) {
         trendPrep
       });
       p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "" };
+      const rw = referenceRewriteForCopy(trendPrep, p.artifacts.copy);
+      if (rw) p.artifacts.copy.referenceRewrite = rw;
       const imgPromptRes = await AI.generateImagePrompts({
         script: shotsToText(p.artifacts.script.shots, true),
         account: acc,
@@ -616,14 +553,6 @@ async function draftOne(p, batch) {
         assetId: null,
         status: "idle"
       }));
-      p.artifacts.images.externalPrompt = buildImgExternalPrompt({
-        topic, position: acc.position, shots: p.artifacts.script.shots, style,
-        items: p.artifacts.images.items,
-        template: acc.imagePromptTemplate || "",
-        productName: promptProductName(product),
-        imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT,
-        refNames: acc.imageStyleAssetId ? [state.assets.find(a => a.id === acc.imageStyleAssetId)?.name].filter(Boolean) : []
-      });
     } else {
       // 视频号全自动：口播估时 → 按场景合并分镜单元 → 分段提示词 → 派发视频任务
       Object.assign(p.artifacts.audio, estimateAudio(p.artifacts.script.shots), { source: "estimate" });
@@ -640,7 +569,6 @@ async function draftOne(p, batch) {
         hasSceneRef: !!(batch.sharedRefAssetId || p.artifacts.boards.sharedRefAssetId)
       });
       units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
-      p.artifacts.boards.externalGroups = buildSbExternalGroups({ shots: p.artifacts.script.shots, style });
       const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide, trendPrep });
       p.artifacts.copy = { title: cp0.title || p.title, body: cp0.copy || "" };
       setStage(p, "workshop", "running");
@@ -932,7 +860,7 @@ export function evaluate(batchId) {
     });
   } else if (renderPending > 0 || rendering.length > 0) {
     if (renderPending > 0 && batch.autoAdvance) {
-      // 素材号用站内分镜（无需上传）；真人号用站外分镜上传后渲染——措辞区分
+      // 素材号用站内分镜（无需上传）；真人号按工坊设置生成后渲染。
       const pend = prods.filter(p => (p.mode === "视频" && p.stage === "render" && p.stageStatus !== "running") || (p.stage === "workshop" && p.stageStatus !== "running"));
       const allInhouse = pend.length > 0 && pend.every(p => p.stage === "workshop");
       emitOnce("gen_kick", () => agentSay(allInhouse
@@ -1002,9 +930,9 @@ export async function routeMediaFiles(files, batchId = null) {
     const hasGap = p => ((p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || []).some(x => !x.assetId);
     // 从某个批次的上传区拖入 → 只分发到该批次的任务，且按看板/卡片显示顺序填，避免跑到别的账号/会话上
     const b = batchId ? batchById(batchId) : null;
-    const targets = b
+    const targets = b && ownedBy(b)
       ? batchProds(b).filter(p => p.stageStatus === "needs_input" && hasGap(p))
-      : state.productions.filter(p => p.stageStatus === "needs_input" && hasGap(p)).sort((a, b2) => a.createdAt - b2.createdAt);
+      : state.productions.filter(p => ownedBy(p) && p.stageStatus === "needs_input" && hasGap(p)).sort((a, b2) => a.createdAt - b2.createdAt);
     let fi = 0;
     for (const p of targets) {
       if (fi >= imgs.length) break;
@@ -1032,7 +960,7 @@ export async function routeMediaFiles(files, batchId = null) {
     out.extra = imgs.length - fi;
   }
   for (const f of vids) {
-    const accId = state.productions.find(p => p.batchId)?.accountId || state.accounts[0]?.id;
+    const accId = state.productions.find(p => ownedBy(p) && p.batchId)?.accountId || state.accounts[0]?.id;
     if (accId) await addAssetFromFile(accId, f, { tags: ["Agent上传"] });
   }
   evaluateAll();
@@ -1116,7 +1044,7 @@ export async function handleUserText(text) {
 export function statusText() {
   const bs = activeBatches();
   if (!bs.length) {
-    const n = state.productions.filter(p => p.stage !== "delivered").length;
+    const n = state.productions.filter(p => ownedBy(p) && p.stage !== "delivered").length;
     return n ? `当前没有进行中的批次，但有 ${n} 条在制任务散落在单号创作。一句话告诉我主题，我可以发起一批新的量产。` : "一切就绪。说出主题（可带标签/范围/风格），例如：「给所有职场效率账号做一期下班前自动生成日报，偏教程风」。";
   }
   return bs.map(b => {

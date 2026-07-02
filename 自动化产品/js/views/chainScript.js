@@ -1,4 +1,4 @@
-/* 链路 · 脚本页：主题/风格/张数 → AI 按定位生成结构化分镜表 → 行内编辑 → 优化 */
+/* 链路 · 脚本页：主题/风格/张数 → AI 生成结构化脚本 → 行内编辑 → 优化 */
 
 import { $, $$, esc, copyText, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
@@ -48,7 +48,7 @@ export function renderScriptPage(root, p) {
       <div class="chain-main">
         <div class="page-head">
           <div><div class="eyebrow">${material ? "素材链路 · 脚本" : STAGES_LABEL(isImg)}</div>
-          <h2>${isImg ? "AI 依账号定位生成小红书笔记图卡" : material ? "AI 生成素材号口播脚本（可长可短 · 有深度/有梗）" : "AI 生成真人口播脚本（分段工坊出片）"}</h2></div>
+          <h2>${isImg ? "AI 按创作内容生成小红书笔记图卡" : material ? "AI 生成素材号口播脚本（可长可短 · 有深度/有梗）" : "AI 生成真人口播脚本（分段工坊出片）"}</h2></div>
           <button class="btn primary" id="csNext">下一步：${isImg ? "成图" : "分镜工坊"} ${icon("arrowRight", 14)}</button>
         </div>
 
@@ -74,7 +74,7 @@ export function renderScriptPage(root, p) {
           ${isImg ? `
           <div class="brief-row">
             <label class="field grow">创作内容
-              <textarea class="input" id="csContent" rows="5" placeholder="把这次想做的笔记内容写具体一些：产品、痛点、使用场景、希望几张图分别讲什么。留空则按创作主题和账号定位自由发挥。">${esc(A.direction || "")}</textarea>
+                <textarea class="input" id="csContent" rows="5" placeholder="把这次想做的笔记内容写具体一些：产品、痛点、使用场景、希望几张图分别讲什么。留空则从四个方向自动挑短选题。">${esc(A.direction || "")}</textarea>
             </label>
           </div>
           <div class="brief-row">
@@ -88,7 +88,7 @@ export function renderScriptPage(root, p) {
             </label>
           </div>` : ""}
           <div class="brief-row">
-            <button class="btn gen" id="csGen">${icon("spark", 15)} 按定位生成脚本</button>
+            <button class="btn gen" id="csGen">${icon("spark", 15)} ${isImg ? "生成图卡脚本" : "生成视频脚本"}</button>
             ${A.source ? `<span class="src-note">${A.source === "llm" ? "✓ DeepSeek 真实生成" : "⚠ 本地模板（API 未通）"}</span>` : ""}
           </div>
         </div>
@@ -132,19 +132,19 @@ export function renderScriptPage(root, p) {
           <div class="tts-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
             <button class="btn ghost sm" id="csCopyLines">${icon("list", 13)} 一键复制所有口播</button>
             <label class="btn ghost sm">${icon("upload", 13)} 上传 / 回传口播音频<input type="file" accept="audio/*" hidden id="csAudioUp" /></label>
-            <span class="muted">站外配好的口播可拖到本卡片上传，按真实时长重排分镜</span>
+            <span class="muted">已有口播音频可拖到本卡片上传，按真实时长重排分镜</span>
           </div>
         </div>` : ""}
       </div>
 
       <aside class="chain-side">
         <div class="side-card card">
-          <h3>账号定位</h3>
+          <h3>账号创作风格</h3>
           <div class="pos-card">
             <div class="pc-row"><span>账号</span><b>${esc(acc.name)}</b></div>
             <div class="pc-row"><span>平台</span><b>${esc(acc.platform)}</b></div>
             <div class="pc-row"><span>模式</span><b>${esc(p.mode)}${p.subType ? " · " + esc(p.subType) : ""}</b></div>
-            <div class="pc-row"><span>定位</span><b>${esc(acc.position)}</b></div>
+            <div class="pc-row"><span>风格</span><b>${esc(acc.styleProfile || acc.lockedStyle || "未配置")}</b></div>
           </div>
         </div>
         ${memoryContext ? `<div class="side-card card hint">
@@ -153,7 +153,7 @@ export function renderScriptPage(root, p) {
         </div>` : ""}
         ${isImg ? "" : material ? `<div class="side-card card hint">
           <h3>素材号规则</h3>
-          <p>口播稿是灵魂：按账号定位写出深度或梗。可先生成/上传<b>口播音频</b>定时长；如果不上传音频，分镜工坊会把口播逐句写进视频提示词里。</p>
+          <p>口播稿是灵魂：按创作内容、口播风格参考和账号创作风格写出深度或节奏。可先生成/上传<b>口播音频</b>定时长；如果不上传音频，分镜工坊会把口播逐句写进视频提示词里。</p>
         </div>` : `<div class="side-card card hint">
           <h3>结构规则</h3>
           <p>真人账号不再走两段式生成台：脚本后直接进入分镜工坊，按口播时长自动拆成多个 15s 内片段，用统一参考图、角色锚点和固定声线保持一致。</p>
@@ -181,7 +181,7 @@ export function renderScriptPage(root, p) {
     const wrap = $("#csTable", root);
     const shots = A.shots || [];
     if (!shots.length) {
-      wrap.innerHTML = `<div class="empty-state slim">${icon(isImg ? "image" : "film", 22)}<b>点击「按定位生成脚本」</b><p>AI 会按账号定位输出${isImg ? "笔记图卡内容（核心思想 / 画面 / 图上文案）" : "结构化分镜表（时间 / 思想 / 画面 / 口播）"}</p></div>`;
+      wrap.innerHTML = `<div class="empty-state slim">${icon(isImg ? "image" : "film", 22)}<b>点击「${isImg ? "生成图卡脚本" : "生成视频脚本"}」</b><p>AI 会按${isImg ? "创作内容、产品信息和账号创作风格输出笔记图卡内容（核心思想 / 画面 / 图上文案）" : "创作内容、口播风格参考、账号创作风格和产品信息输出结构化分镜表（时间 / 思想 / 画面 / 口播）"}</p></div>`;
       return;
     }
     const C = cols();
@@ -385,12 +385,12 @@ export function renderScriptPage(root, p) {
     go("assets");
   });
 
-  // 一键复制所有口播（去站外配音/粘贴）
+  // 一键复制所有口播
   $("#csCopyLines", root)?.addEventListener("click", () => {
     const text = (A.shots || []).map(s => (s.line || "").trim()).filter(Boolean).join("\n");
     if (!text) { toast("脚本里还没有口播文案"); return; }
     copyText(text);
-    toast("已复制全部口播，可去站外配音/粘贴");
+    toast("已复制全部口播文案");
   });
   // 上传 / 回传口播音频：按真实时长重排分镜（支持拖拽到卡片）
   const onAudioFile = async (file) => {

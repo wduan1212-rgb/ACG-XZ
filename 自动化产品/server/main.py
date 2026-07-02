@@ -48,8 +48,8 @@ except ImportError:  # 兼容以脚本方式直接运行
 
 ROOT = Path(__file__).resolve().parent
 FRONTEND_DIR = ROOT.parent          # index.html 所在目录
-DATA_FILE = ROOT / "data.json"
-UPLOAD_DIR = ROOT / "uploads"
+DATA_FILE = Path(os.getenv("LEGACY_DATA_FILE", ROOT / "data.json"))
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", ROOT / "uploads"))
 
 
 def load_env_local():
@@ -86,7 +86,7 @@ SEEDANCE_GENERATE_AUDIO = os.getenv("SEEDANCE_GENERATE_AUDIO", "").lower() in {"
 SEEDANCE_WATERMARK = os.getenv("SEEDANCE_WATERMARK", "").lower() in {"1", "true", "yes"}
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 VIDEO_REFS = {}
-COMPOSED_DIR = ROOT / "composed"
+COMPOSED_DIR = Path(os.getenv("COMPOSED_DIR", ROOT / "composed"))
 MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
 MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com").rstrip("/")
 MINIMAX_GROUP_ID = os.getenv("MINIMAX_GROUP_ID", "").strip()
@@ -171,8 +171,14 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
-def no_cache_file(path: Path):
-    return FileResponse(str(path), headers={
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+}
+
+
+def no_cache_file(path: Path, media_type: str = None):
+    return FileResponse(str(path), media_type=media_type, headers={
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache"
     })
@@ -788,7 +794,7 @@ async def llm_proxy(req: LLMReq):
 def _parse_xhs_opencli_yaml(text: str, limit: int = 8) -> List[Dict]:
     items: List[Dict] = []
     current: Dict[str, str] = {}
-    key_re = re.compile(r"^\s*(?:-\s*)?(rank|title|likes|published_at|author|url)\s*:\s*(.*)\s*$", re.I)
+    key_re = re.compile(r"^\s*(?:-\s*)?(rank|title|note_title|likes|published_at|author|url|desc|description|summary|content|text)\s*:\s*(.*)\s*$", re.I)
     for line in (text or "").splitlines():
         m = key_re.match(line)
         if not m:
@@ -803,11 +809,13 @@ def _parse_xhs_opencli_yaml(text: str, limit: int = 8) -> List[Dict]:
         items.append(current)
     clean = []
     for item in items:
-        title = re.sub(r"\s+", " ", item.get("title", "")).strip()
+        title = re.sub(r"\s+", " ", item.get("title") or item.get("note_title") or "").strip()
         if not title:
             continue
+        desc = re.sub(r"\s+", " ", item.get("desc") or item.get("description") or item.get("summary") or item.get("content") or item.get("text") or "").strip()
         clean.append({
             "title": title[:80],
+            "desc": desc[:800],
             "likes": item.get("likes", ""),
             "author": item.get("author", ""),
             "url": item.get("url", "")
@@ -938,7 +946,7 @@ async def image_generate(req: ImageGenerateReq):
                 used_refs = min(len(ref_files), 8)
                 maas_prompt = prompt
                 if used_refs:
-                    maas_prompt += "\n\n请严格综合参考随消息附带的 %d 张参考图：锁定品牌色、界面层级、画面结构密度和产品视觉，不复制参考图里的旧标题与示例文字。" % used_refs
+                    maas_prompt += "\n\n参考随消息附带的 %d 张参考图；以本次提示词的主题和文字内容为准。" % used_refs
                 maas_model = _maas_model_for_refs(req.model or model, bool(ref_files))
                 maas_body = _maas_image_body(maas_prompt, maas_model, ratio, ref_files)
                 r, data = await _post_json_with_retry(client, endpoint, maas_body, json_headers)
@@ -946,7 +954,7 @@ async def image_generate(req: ImageGenerateReq):
                 used_refs = min(len(ref_files), 8)
                 ref_note = ""
                 if used_refs:
-                    ref_note = "\n\n请严格综合参考随消息附带的 %d 张参考图：锁定品牌色、界面层级、画面结构密度和产品视觉，不复制参考图里的旧标题与示例文字。" % used_refs
+                    ref_note = "\n\n参考随消息附带的 %d 张参考图；以本次提示词的主题和文字内容为准。" % used_refs
                 response_body = {
                     "model": model,
                     "instructions": "你是专业图片生成模型。按用户中文提示生成一张可用于小红书笔记的图片，并返回图片结果。",
@@ -964,7 +972,7 @@ async def image_generate(req: ImageGenerateReq):
                 ref_note = ""
                 if ref_files:
                     used_refs = len(ref_files[:8])
-                    ref_note = "\n\n请严格综合参考随消息附带的 %d 张参考图：锁定品牌色、界面层级、画面结构密度和产品视觉，不复制参考图里的旧标题与示例文字。" % used_refs
+                    ref_note = "\n\n参考随消息附带的 %d 张参考图；以本次提示词的主题和文字内容为准。" % used_refs
                     content[0]["text"] = prompt + ref_note
                 chat_body = {
                     "model": model,
@@ -1823,10 +1831,7 @@ class AnalyticsFetchReq(BaseModel):
     noteId: Optional[str] = None
     assetId: Optional[str] = None
     accountId: Optional[str] = None
-
-
-def _hash_num(text: str) -> int:
-    return int(hashlib.sha1(text.encode("utf-8")).hexdigest()[:10], 16)
+    title: Optional[str] = None
 
 
 def _note_id(url: str) -> str:
@@ -1939,26 +1944,268 @@ def _comment_texts(payload: dict, limit: int = 12):
     return out
 
 
+def _parse_opencli_scalar_yaml(text: str) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    key_re = re.compile(r"^\s*(?:-\s*)?([A-Za-z_][\w-]*)\s*:\s*(.*)\s*$")
+
+    def clean(value: str) -> str:
+        s = (value or "").strip()
+        if s in {"", "[]", "{}", "null", "None", "|", "|-", ">", ">-"}:
+            return ""
+        if (len(s) >= 2 and s[0] == s[-1] and s[0] in {"'", '"'}):
+            s = s[1:-1]
+        return s.strip()
+
+    current_field = ""
+    value_lines: List[str] = []
+    collecting_block = False
+
+    def flush_field():
+        nonlocal current_field, value_lines, collecting_block
+        key = current_field.strip().lower().replace("-", "_")
+        value = "\n".join(x for x in value_lines if x.strip()).strip()
+        if key and value:
+            out.setdefault(key, value)
+        current_field = ""
+        value_lines = []
+        collecting_block = False
+
+    for raw in (text or "").splitlines():
+        line = raw.rstrip()
+        field_match = re.match(r"^\s*-\s*field\s*:\s*(.+?)\s*$", line, re.I)
+        if field_match:
+            flush_field()
+            current_field = clean(field_match.group(1))
+            continue
+        if current_field:
+            value_match = re.match(r"^\s*value\s*:\s*(.*)\s*$", line, re.I)
+            if value_match:
+                value = value_match.group(1).strip()
+                cleaned = clean(value)
+                if cleaned:
+                    value_lines.append(cleaned)
+                    collecting_block = False
+                else:
+                    collecting_block = True
+                continue
+            if collecting_block or value_lines:
+                if re.match(r"^\s{2,}\S", raw) or re.match(r"^\s*-\s+(?!field\s*:)", raw, re.I):
+                    cleaned = clean(line)
+                    if cleaned:
+                        value_lines.append(cleaned)
+                    continue
+                flush_field()
+        m = key_re.match(line)
+        if not m:
+            continue
+        key = m.group(1).strip().lower().replace("-", "_")
+        if key in {"field", "value"}:
+            continue
+        value = clean(m.group(2))
+        if not value:
+            continue
+        out.setdefault(key, value)
+    flush_field()
+    return out
+
+
+def _first_field(data: Dict[str, str], *names: str) -> str:
+    for name in names:
+        value = data.get(name.lower().replace("-", "_"))
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _normalize_opencli_xhs_note(text: str, url: str, note_id: str, fallback: str = "") -> dict:
+    data = _parse_opencli_scalar_yaml(text)
+    title = _first_field(data, "title", "note_title", "display_title", "displayTitle")
+    desc = _first_field(data, "desc", "description", "summary", "content", "text", "note_desc")
+    author = _first_field(data, "author", "nickname", "nick_name", "nickName", "user", "username")
+    likes = _num(_first_field(data, "likes", "like", "liked_count", "likedCount", "like_count", "likeCount"))
+    collects = _num(_first_field(data, "collects", "collected_count", "collectedCount", "collect_count", "collectCount", "favorites", "fav_count", "favoriteCount"))
+    comments = _num(_first_field(data, "comments", "comment_count", "commentCount", "comment"))
+    shares = _num(_first_field(data, "shares", "share_count", "shareCount", "share"))
+    views = _num(_first_field(data, "views", "view_count", "viewCount", "read_count", "readCount", "reads", "exposure"))
+    if not any([title, desc, likes, collects, comments, shares, views]):
+        raise RuntimeError("OpenCLI 未返回可用笔记详情；小红书详情通常需要从搜索结果打开带 xsec_token 的完整链接")
+    total_interactions = likes + collects + comments + shares
+    engagement = total_interactions / views if views else 0
+    score_base = views if views else total_interactions
+    score = max(35, min(96, int((engagement * 520 if views else min(1, total_interactions / 5000) * 70) + len(str(score_base or 1)) * 8)))
+    return {
+        "provider": "agent-reach-opencli",
+        "noteId": note_id,
+        "title": title,
+        "author": author,
+        "publishTime": _first_field(data, "published_at", "publish_time", "publishTime", "create_time", "createTime") or None,
+        "fetchedAt": int(time.time() * 1000),
+        "metrics": {
+            "views": views,
+            "likes": likes,
+            "collects": collects,
+            "comments": comments,
+            "shares": shares,
+            "engagementRate": engagement,
+            "qualityScore": score,
+        },
+        "commentsSample": [],
+        "raw": {
+            "provider": "agent-reach-opencli",
+            "url": url,
+            "fallback": fallback,
+            "note": {k: v for k, v in data.items() if k not in {"token", "cookie", "authorization"}},
+            "desc": desc,
+            "viewsUnavailable": not bool(views),
+        },
+    }
+
+
+async def _run_opencli_xhs_note(url: str) -> str:
+    if os.getenv("AGENT_REACH_ANALYTICS", "auto").lower() in {"0", "false", "off", "no"}:
+        raise RuntimeError("agent-reach 小红书采集已被环境变量关闭")
+    if not shutil.which("opencli"):
+        raise RuntimeError("agent-reach 当前小红书后端不可用：未检测到 OpenCLI")
+    try:
+        run = await asyncio.to_thread(
+            subprocess.run,
+            ["opencli", "xiaohongshu", "note", url, "-f", "yaml"],
+            cwd=str(FRONTEND_DIR),
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("agent-reach/OpenCLI 读取小红书笔记超时")
+    raw = (run.stderr or run.stdout or "").strip()
+    if run.returncode != 0:
+        low = raw.lower()
+        if any(x in low for x in ("auth", "login", "登录", "token", "cookie")):
+            raise RuntimeError("agent-reach/OpenCLI 未获得小红书登录态，请先在浏览器登录小红书后重试")
+        if "xsec" in low:
+            raise RuntimeError("小红书详情需要带 xsec_token 的完整链接，请先从搜索结果打开原文链接后再采集")
+        raise RuntimeError(f"agent-reach/OpenCLI 读取失败：{raw[:240] or '未知错误'}")
+    return run.stdout
+
+
+async def _opencli_xhs_search(query: str, limit: int = 6) -> List[Dict]:
+    if not shutil.which("opencli"):
+        raise RuntimeError("agent-reach 当前小红书后端不可用：未检测到 OpenCLI")
+    q = re.sub(r"\s+", " ", (query or "")).strip()[:90]
+    if not q:
+        return []
+    try:
+        run = await asyncio.to_thread(
+            subprocess.run,
+            ["opencli", "xiaohongshu", "search", q, "-f", "yaml"],
+            cwd=str(FRONTEND_DIR),
+            capture_output=True,
+            text=True,
+            timeout=35,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("agent-reach/OpenCLI 按标题重搜小红书超时")
+    raw = (run.stderr or run.stdout or "").strip()
+    if run.returncode != 0:
+        low = raw.lower()
+        if any(x in low for x in ("auth", "login", "登录", "token", "cookie")):
+            raise RuntimeError("agent-reach/OpenCLI 未获得小红书登录态，请先在浏览器登录小红书后重试")
+        raise RuntimeError(f"agent-reach/OpenCLI 按标题重搜失败：{raw[:220] or '未知错误'}")
+    return _parse_xhs_opencli_yaml(run.stdout, limit)
+
+
+def _normalize_opencli_xhs_search_item(item: Dict, note_id: str, title_hint: str, reason: str) -> dict:
+    title = re.sub(r"\s+", " ", item.get("title") or title_hint or "").strip()
+    desc = re.sub(r"\s+", " ", item.get("desc") or "").strip()
+    author = re.sub(r"\s+", " ", item.get("author") or "").strip()
+    likes = _num(item.get("likes"))
+    if not any([title, desc, author, likes]):
+        raise RuntimeError(reason)
+    total_interactions = likes
+    score = max(35, min(82, int(min(1, total_interactions / 3000) * 58 + len(str(total_interactions or 1)) * 7)))
+    return {
+        "provider": "agent-reach-opencli-search",
+        "noteId": note_id,
+        "title": title,
+        "author": author,
+        "publishTime": item.get("published_at") or None,
+        "fetchedAt": int(time.time() * 1000),
+        "metrics": {
+            "views": 0,
+            "likes": likes,
+            "collects": 0,
+            "comments": 0,
+            "shares": 0,
+            "engagementRate": 0,
+            "qualityScore": score,
+        },
+        "commentsSample": [],
+        "raw": {
+            "provider": "agent-reach-opencli-search",
+            "url": item.get("url") or "",
+            "searchItem": item,
+            "desc": desc,
+            "viewsUnavailable": True,
+            "detailUnavailable": True,
+            "detailError": reason,
+        },
+    }
+
+
+async def _opencli_xhs_note(url: str, note_id: str, title: str = "") -> dict:
+    first_error = ""
+    try:
+        return _normalize_opencli_xhs_note(await _run_opencli_xhs_note(url), url, note_id)
+    except Exception as exc:
+        first_error = str(exc)
+        if not (title or "").strip():
+            raise
+
+    items = await _opencli_xhs_search(title, 6)
+    if not items:
+        raise RuntimeError(f"{first_error}；已按标题重搜但没有找到可用候选")
+    candidates = sorted(
+        items,
+        key=lambda item: 0 if (note_id and note_id in (item.get("url") or "")) else 1,
+    )
+    last_error = first_error
+    for item in candidates:
+        item_url = (item.get("url") or "").strip()
+        if not item_url:
+            continue
+        try:
+            return _normalize_opencli_xhs_note(
+                await _run_opencli_xhs_note(item_url),
+                item_url,
+                note_id,
+                fallback="title_search",
+            )
+        except Exception as exc:
+            last_error = str(exc)
+            continue
+    return _normalize_opencli_xhs_search_item(candidates[0], note_id, title, last_error)
+
+
 @app.post("/api/analytics/resolve")
 async def analytics_resolve(req: AnalyticsResolveReq):
-    """解析小红书分享链接。
-    生产环境建议接授权/第三方 provider。未配置时返回稳定本地解析结果。
-    """
+    """解析小红书分享链接。只做真实 URL 解析，不合成模拟数据。"""
+    url = (req.url or "").strip()
+    if not url:
+        raise HTTPException(400, "链接为空，无法解析")
     return {
         "ok": True,
-        "provider": "justoneapi-note-id" if JUSTONEAPI_KEY else "server-mock",
-        "noteId": _note_id(req.url),
-        "canonicalUrl": req.url,
+        "provider": "server-url-parser",
+        "noteId": _note_id(url),
+        "canonicalUrl": url,
         "resolvedAt": int(time.time() * 1000),
     }
 
 
 @app.post("/api/analytics/fetch")
 async def analytics_fetch(req: AnalyticsFetchReq):
-    """拉取笔记指标。
-    配置 JUSTONEAPI_KEY 后优先调用小红书真实接口；未配置时返回稳定模拟数据。
-    """
+    """拉取笔记指标。没有真实采集服务时明确失败，前端展示失败原因。"""
     note_id = req.noteId or _note_id(req.url)
+    justone_error = ""
     if JUSTONEAPI_KEY:
         try:
             detail_raw = await _justone_get("/api/xiaohongshu/get-note-detail/v5", {"noteId": note_id})
@@ -1990,41 +2237,14 @@ async def analytics_fetch(req: AnalyticsFetchReq):
                 },
             }
         except Exception as exc:
-            raise HTTPException(502, f"JustOneAPI 调用失败：{str(exc)[:260]}")
+            justone_error = f"JustOneAPI 调用失败：{str(exc)[:220]}"
 
-    seed = _hash_num(req.url or req.noteId or "")
-    age_h = max(1, int(seed % 96) + 1)
-    base = 300 + seed % 1400
-    views = int(base * (1 + min(9, age_h ** 0.45)) + age_h * (seed % 19))
-    like_rate = 0.035 + ((seed >> 8) % 55) / 1000
-    collect_rate = 0.014 + ((seed >> 13) % 38) / 1000
-    comment_rate = 0.004 + ((seed >> 18) % 18) / 1000
-    likes = int(views * like_rate)
-    collects = int(views * collect_rate)
-    comments = int(views * comment_rate)
-    shares = int(views * (0.003 + ((seed >> 22) % 12) / 1000))
-    engagement = (likes + collects + comments + shares) / views if views else 0
-    score = max(35, min(96, int(engagement * 520 + len(str(views)) * 10)))
-    return {
-        "provider": "server-mock" if not JUSTONEAPI_KEY else "server-provider-pending",
-        "noteId": req.noteId or _note_id(req.url),
-        "fetchedAt": int(time.time() * 1000),
-        "metrics": {
-            "views": views,
-            "likes": likes,
-            "collects": collects,
-            "comments": comments,
-            "shares": shares,
-            "engagementRate": engagement,
-            "qualityScore": score,
-        },
-        "commentsSample": [
-            "能不能出一个具体步骤版",
-            "这个标题如果更直接会想点进去",
-            "封面信息少一点可能更清楚",
-        ],
-        "raw": {"mock": not bool(JUSTONEAPI_KEY), "seed": seed},
-    }
+    try:
+        return await _opencli_xhs_note(req.url, note_id, req.title or "")
+    except Exception as exc:
+        prefix = f"{justone_error}；" if justone_error else ""
+        raise HTTPException(503, f"{prefix}agent-reach/OpenCLI 未能返回小红书真实指标：{str(exc)[:260]}")
+
 
 
 # =========================================================
@@ -2111,8 +2331,9 @@ def member_request_create(req: MemberApplyReq):
 
 
 @app.get("/api/state")
-def api_state(me=Depends(require_member)):
+def api_state(response: Response, me=Depends(require_member)):
     """按当前成员可见性返回全量快照（owned 按 owner 过滤、jobs 跟随、其余共享）。"""
+    response.headers["Cache-Control"] = "no-store"
     data = store.state_for(me["id"], me["role"])
     if me["role"] == "admin":
         data["members"] = store.list_members()
@@ -2311,7 +2532,7 @@ def index():
 
 @app.head("/")
 def index_head():
-    return Response(status_code=200)
+    return Response(status_code=200, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/index.html")
@@ -2321,12 +2542,17 @@ def index_html():
 
 @app.head("/index.html")
 def index_html_head():
-    return Response(status_code=200)
+    return Response(status_code=200, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/favicon.svg")
 def favicon():
-    return FileResponse(str(FRONTEND_DIR / "favicon.svg"))
+    return no_cache_file(FRONTEND_DIR / "assets" / "brand" / "xingzhen-favicon.png", media_type="image/png")
+
+
+@app.get("/favicon.ico")
+def favicon_ico():
+    return no_cache_file(FRONTEND_DIR / "assets" / "brand" / "xingzhen-favicon.png", media_type="image/png")
 
 
 @app.get("/logo.png")

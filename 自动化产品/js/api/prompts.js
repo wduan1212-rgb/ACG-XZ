@@ -1,4 +1,4 @@
-/* 提示词资产：产品事实手册 / 两段式视频框架 / 站外整段提示词 / 角色身份板
+/* 提示词资产：产品事实手册 / 两段式视频框架 / 角色身份板
    —— 团队调优过的业务核心，自 v4 完整移植 */
 
 /* 百度搭子产品事实手册（按当前产品动态注入，防编造功能） */
@@ -56,93 +56,6 @@ export const NO_DH_FRAMEWORK = `
 禁止使用『电影感/高级感/种草感/氛围感/科技感』等抽象词，要翻译成具体镜头语言。
 每段结尾固定负面提示词：无字幕，不生成字幕轨，不要在画面上叠加任何字幕/标题/花字/文字条、不要二维码或扫码、不要乱码、不要大段密集文字、不要夸张特效、不要复杂剧情、不要像硬广、不要桌面杂乱、不要过多 UI 小字、不要 emoji。
 严格输出 JSON：{"scenes":[{"title":"场景名","segA":"第一段(0-15秒)","segB":"第二段(0-15秒)","ui":true}]}，不要输出 JSON 以外的任何文字。`;
-
-/* ---------- 站外整段提示词组装 ---------- */
-export function buildSbExternalPrompt({ shots = [], boards = [], style = "", sharedRefName = "" }) {
-  const n = boards.length || shots.length || 8;
-  const styleLine = style || "白底极简、蓝紫品牌渐变（#3f6bff→#9a45ff）、圆角卡片 UI、大留白、干净办公感";
-  const refLine = sharedRefName
-    ? `所有分镜统一参考所附图片「${sharedRefName}」（品牌 / 角色一致）。`
-    : `所有分镜统一参考所附图片（品牌 / 角色一致）。`;
-  const items = boards.length
-    ? boards.map((c, i) => `分镜${i + 1}：${c.prompt || c.visual || ""}`)
-    : shots.map((s, i) => `分镜${i + 1}：${s.visual || s.idea || ""}`);
-  return `生成${n}张分镜图，统一9:16竖版尺寸。${refLine}
-统一风格：${styleLine}；${n}张图保持同一套构图、配色与光线语言，像同一条视频的分镜。
-${items.join("\n")}
-统一要求：出现角色脸部时一律将脸部打码（马赛克处理）；不要在画面上叠加字幕 / 标题 / 花字；不要二维码；不要乱码；不要密集小字；不要 emoji。`;
-}
-
-function cleanImageTemplateText(text = "") {
-  return String(text || "")
-    .replace(/（?请根据上传的参考图[^。；\n]*[。；，,]?）?/g, "")
-    .replace(/生成小红书笔记风格\s*3:4\s*尺寸(?:图片)?[，,。；\s]*/g, "")
-    .replace(/【\s*账号定位\s*[:：][^】]*】/g, "")
-    .replace(/【[^】]*(?:账号定位|账号风格|图片风格|视角)[^】]*】/g, "")
-    .replace(/图片具体内容\s*[:：]\s*【?/g, "")
-    .replace(/精准描述图片(?:的)?内容，?所有文字清晰可读/g, "")
-    .replace(/负面约束\s*[:：][\s\S]*$/g, "")
-    .replace(/清爽种草感|种草感|轻种草|种草/g, "真实分享感")
-    .replace(/痛点/g, "待处理问题")
-    .replace(/共鸣/g, "真实场景")
-    .replace(/构图/g, "画面结构")
-    .replace(/版式/g, "画面布局")
-    .replace(/封面/g, "首张")
-    .replace(/步骤([一二三四五六七八九十\d]*)/g, "动作$1")
-    .replace(/评分|打分|星级|排行榜|分数表|分数/g, "适配判断")
-    .replace(/(?:^|[。；;])\s*[^。；;\n]*(?:不要出现|不出现|不要加入|不要放|不要写|禁止出现|避免出现|不得出现|不能出现|不要二维码|不要页码|不要logo|不要乱码)[^。；;\n]*[。；;]?/g, "。")
-    .replace(/[【】]/g, "")
-    .replace(/[｜|<>]/g, "，")
-    .replace(/，{2,}/g, "，")
-    .replace(/^[，,。；、\s]+|[，,。；、\s]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-export function buildImgExternalPrompt({ topic = "", position = "", shots = [], items = [], style = "", refNames = [], template = "", productName = "", imageCount = 4 }) {
-  const n = items.length || shots.length || imageCount || 4;
-  const imageNegative = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
-  const refPrefix = refNames.length ? `（请根据上传的参考图：${refNames.join("、")}）` : "";
-  const styleLine = String(style || "白底极简、圆角卡片、大留白、真实办公截图质感，强调文字清楚和信息层级")
-    .replace(/^整体风格\s*[:：]\s*/, "")
-    .replace(/^账号风格\s*[:：]\s*/, "");
-  const labelFor = i => `图片${String.fromCharCode(65 + (i % 26))}`;
-  const cleanLine = text => cleanImageTemplateText(text).replace(/图\d+|第\d+张/g, "本张");
-  const lines = (items.length ? items.map((p, i) => `${labelFor(i)}（${cleanLine(p.title || "内容图")}）：${cleanLine(p.prompt || "")}`)
-    : shots.map((s, i) => `${labelFor(i)}：${cleanLine(s.idea || "内容图")}。请先理解这一页的信息作用，再扩写成完整设计提示词；素材线索：${cleanLine(s.visual || "")}${s.line ? `；画面核心文字可提炼为「${cleanLine(s.line)}」` : ""}`));
-  const tpl = cleanImageTemplateText(template);
-  if (tpl) {
-    const count = Math.max(3, Math.min(12, imageCount || n || 4));
-    return `${refPrefix}按下方【账号固定图文模板】的版式语言、色彩、字体、参考图使用方式和统一要求，重新生成本次小红书笔记配图提示词。
-
-【本次变量】
-- 本次生成张数：${count} 张独立图片，数量与下方内容一致
-- 本次主题：${topic || `${productName || "产品"}使用体验`}
-- 宣传产品/应用：${productName || "本次选择的产品"}
-- 创作风格：${styleLine}
-- 风格参考：${refNames.length ? refNames.join("、") : "随帖上传的参考图与账号风格图"}
-- 本次各图内容：
-${lines.slice(0, count).join("\n")}
-
-【账号固定图文模板】
-${tpl}
-
-【执行要求】
-1. 先分析本次主题和创作内容：提炼读者遇到的具体问题、产品解决点、每张图片的信息任务；用编辑视角摘要、拆分和重排信息。
-2. 模板中的固定张数、示例主题、示例产品名、示例各图内容都只是占位变量，用上面的本次变量改写为 ${count} 张独立图片。
-3. 如果模板包含按功能对应参考图的习惯，请按本次上传参考图和本次各图内容重新对应；多张参考图综合参考，按当前图片任务选择主参考与辅助参考。
-4. 每张图输出为：「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【精准描述图片的内容所有文字清晰可读】。${imageNegative}」如果有参考图，开头保留「请根据上传的参考图」。
-5. 每张图说明画幅、画面结构、主视觉、界面/产品元素、图上文字、配色、字体气质和留白；按内容复杂度自然取舍，首张更简洁有点击感，内页可适当承载清晰信息。
-6. 统一要求：${count}张图风格、配色、版式语言保持一致；最终负面约束只使用上面指定的短句。`;
-  }
-  return `${refPrefix}分别生成${n}张独立图片，统一小红书笔记风格3:4尺寸。请先分析本次主题，提炼读者遇到的具体问题、产品解决点和每张图片承担的信息任务，用编辑视角摘要、拆分和重排信息。
-主题是「${topic || `${productName || "产品"}使用体验`}」，宣传产品/应用：${productName || "本次选择的产品"}。
-【图片风格：${styleLine}】
-每张图写成完整提示词，并包含「图片具体内容：【精准描述图片的内容，所有文字清晰可读】」和「${imageNegative}」。每张图说明画面结构、主视觉、界面/产品元素、图上文字、配色、字体气质和留白；按内容复杂度自然取舍，首张更简洁有点击感，内页可适当承载清晰信息。
-各图内容如下：
-${lines.join("\n")}
-统一要求：${n}张图风格、配色、版式语言保持一致，像同一篇小红书笔记的配图；最终负面约束只使用上面指定的短句。`;
-}
 
 /* ---------- 角色身份板 ---------- */
 export const CHAR_DIR_POOL = [
@@ -212,24 +125,6 @@ ${direction}。
 /* ---------- 素材号（无数字人）专用 ---------- */
 export const MATERIAL_VIDEO_NEG = "负面约束：无字幕，不生成字幕轨，不生成花字，不出现可读文字，不出现旁白标注、外框、水印，不出现二维码与乱码，出现文字或界面的地方一律模糊处理；无口播、无人声、无 BGM、无音效。";
 export const MATERIAL_IMAGE_NEG = "负面：无字幕花字、无二维码、无乱码密集小字。";
-
-/* 站外分镜出图：每组最多 10 张，超出自动拆组 */
-export function buildSbExternalGroups({ shots = [], boards = [], style = "", sharedRefName = "" }) {
-  const items = (boards.length ? boards.map((c, i) => ({ i, text: c.prompt || c.visual || "" }))
-    : shots.map((s, i) => ({ i, text: s.visual || s.idea || "" })));
-  if (!items.length) return [];
-  const styleLine = style || "白底极简、蓝紫品牌渐变（#3f6bff→#9a45ff）、干净专业感";
-  const refLine = sharedRefName ? `所有分镜统一参考所附图片「${sharedRefName}」（品牌一致）。` : `所有分镜统一参考所附图片（品牌一致）。`;
-  const groups = [];
-  for (let g = 0; g < items.length; g += 10) {
-    const slice = items.slice(g, g + 10);
-    groups.push(`【第 ${groups.length + 1} 组 · 分镜 ${slice[0].i + 1}-${slice[slice.length - 1].i + 1}】生成${slice.length}张分镜图，统一9:16竖版尺寸。${refLine}
-统一风格：${styleLine}；同一条视频的分镜，构图、配色与光线语言保持一致。
-${slice.map(x => `分镜${x.i + 1}：${x.text}`).join("\n")}
-统一要求：出现人物脸部一律打码；不要在画面上叠加字幕/标题/花字；不要二维码；不要乱码；不要密集小字；不要 emoji。`);
-  }
-  return groups;
-}
 
 /* 内置 BGM 库（音频 API / 真实曲库接入前的选配占位，粗剪时混入、音量低于口播） */
 export const BGM_POOL = [

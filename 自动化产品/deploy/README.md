@@ -3,13 +3,13 @@
 Recommended target directory:
 
 ```bash
-/home/wangduan/dumate-studio
+/opt/dumate-studio
 ```
 
 Start:
 
 ```bash
-cd /home/wangduan/dumate-studio
+cd /opt/dumate-studio
 chmod +x deploy/*.sh
 deploy/start_server.sh
 ```
@@ -17,23 +17,39 @@ deploy/start_server.sh
 Stop:
 
 ```bash
-cd /home/wangduan/dumate-studio
+cd /opt/dumate-studio
 deploy/stop_server.sh
 ```
 
 Status:
 
 ```bash
-cd /home/wangduan/dumate-studio
+cd /opt/dumate-studio
 deploy/status_server.sh
 ```
 
 Default service port: `8787`.
 
-Open from the same intranet if BCC security group and relay allow it:
+Data protection rules for upgrades:
 
-```text
-http://<BCC_HOST_OR_IP>:8787/#/overview
+```bash
+# Before restart, deploy/start_server.sh writes a timestamped snapshot under ./backups.
+# Do not overwrite these runtime files with local empty files:
+server/data.sqlite
+server/data.sqlite-*
+server/data.json
+server/uploads/
+server/composed/
 ```
 
-If the page cannot be reached, ask the BCC/WebRelay owner to open or map TCP port `8787`.
+When syncing code to the server, exclude runtime data:
+
+```bash
+rsync -av --exclude 'server/data.sqlite*' --exclude 'server/data.json' --exclude 'server/uploads/' --exclude 'server/composed/' --exclude 'server/logs/' ./ <ssh-target>:/opt/dumate-studio/
+```
+
+Docker deployments should mount a persistent data directory:
+
+```bash
+docker run -d --name dumate-studio -p 8787:8787 -v /opt/dumate-data:/data dumate-studio:latest
+```

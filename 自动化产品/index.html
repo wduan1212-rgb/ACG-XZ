@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>星阵 · 内容生产工作台</title>
-    <link rel="icon" type="image/png" href="./assets/brand/xingzhen-icon.png" />
-    <link rel="stylesheet" href="./styles/tokens.css?v=20260630-v25" />
-    <link rel="stylesheet" href="./styles/base.css?v=20260630-v25" />
-    <link rel="stylesheet" href="./styles/components.css?v=20260630-v25" />
-    <link rel="stylesheet" href="./styles/views.css?v=20260630-v25" />
-    <link rel="stylesheet" href="./styles/analytics.css?v=20260630-v25" />
-    <link rel="stylesheet" href="./styles/agent.css?v=20260630-v25" />
+    <link rel="icon" type="image/png" href="./assets/brand/xingzhen-favicon.png?v=20260703-v37" />
+    <link rel="stylesheet" href="./styles/tokens.css?v=20260703-v37" />
+    <link rel="stylesheet" href="./styles/base.css?v=20260703-v37" />
+    <link rel="stylesheet" href="./styles/components.css?v=20260703-v37" />
+    <link rel="stylesheet" href="./styles/views.css?v=20260703-v37" />
+    <link rel="stylesheet" href="./styles/analytics.css?v=20260703-v37" />
+    <link rel="stylesheet" href="./styles/agent.css?v=20260703-v37" />
     <script>
       (function () {
         try {
@@ -24,6 +24,9 @@
 
     <!-- 开屏 · 三身份口令登录 -->
     <div id="loginGate" class="login-gate">
+      <video id="loginBgVideo" class="lg-bg-video" autoplay muted loop playsinline poster="./assets/brand/main-login-fallback.png" aria-hidden="true">
+        <source src="./assets/brand/main-login-bg.mp4" type="video/mp4" />
+      </video>
       <div class="lg-stage">
         <div class="lg-aurora"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
         <div class="lg-constellation" aria-hidden="true">
@@ -35,27 +38,6 @@
       <div class="lg-particles" id="lgParticles"></div>
 
       <div class="lg-center">
-        <div class="lg-logo">
-          <i class="lg-gather"></i>
-          <img src="./logo.png" alt="星阵" class="lg-logo-img" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" />
-          <svg viewBox="0 0 235 50" width="248" height="53" aria-hidden="true" style="color:#0f2745;display:none">
-            <defs>
-              <linearGradient id="lgWa" x1="0" y1="4" x2="40" y2="46" gradientUnits="userSpaceOnUse">
-                <stop offset="0" stop-color="#C77CFF"/><stop offset="1" stop-color="#6A5BFF"/>
-              </linearGradient>
-              <linearGradient id="lgWt" x1="120" y1="22" x2="158" y2="44" gradientUnits="userSpaceOnUse">
-                <stop offset="0" stop-color="#5B8CFF"/><stop offset="1" stop-color="#22B8CF"/>
-              </linearGradient>
-              <linearGradient id="lgWp" x1="172" y1="4" x2="232" y2="46" gradientUnits="userSpaceOnUse">
-                <stop offset="0" stop-color="#B07CFF"/><stop offset="1" stop-color="#22A8E8"/>
-              </linearGradient>
-            </defs>
-            <text x="0" y="38" font-family="Inter,'PingFang SC',system-ui,sans-serif" font-size="34" font-weight="850" letter-spacing="2"><tspan fill="url(#lgWa)">星</tspan><tspan fill="currentColor">阵</tspan></text>
-            <path d="M118 25l9-22 9 22 22 9-22 9-9 22-9-22-22-9 22-9z" fill="url(#lgWt)" opacity=".9"/>
-            <path d="M178 9 L220 25 L178 41 Z" fill="none" stroke="url(#lgWp)" stroke-width="6" stroke-linejoin="round" stroke-linecap="round"/>
-          </svg>
-        </div>
-
         <div class="lg-card" data-mode="login">
           <div class="lg-brand"><h1>欢迎登录</h1><p>星阵内容工作台</p></div>
           <div class="lg-form">
@@ -81,9 +63,7 @@
             <button class="lg-login" id="lgLogin" type="button">登录 →</button>
             <button class="lg-secondary" id="lgApply" type="button">申请账号</button>
           </div>
-          <p class="lg-hint" id="lgHint">忘记密码请联系管理员 · 新成员可提交账号申请</p>
         </div>
-        <p class="lg-foot">安全稳定 · 高效智能 · 创作无限</p>
       </div>
     </div>
 
@@ -185,6 +165,6 @@
         }, 7000);
       })();
     </script>
-  <script type="module" src="./js/main.js?v=20260630-v25"></script>
+  <script type="module" src="./js/main.js?v=20260703-v37"></script>
   </body>
 </html>

@@ -1,12 +1,11 @@
-/* 创建 / 编辑账号对话框：平台/形式/类型/定位/标签 + md 批量导入 + 数字人身份板（AI 提示词流） */
+/* 创建 / 编辑账号对话框：平台/形式/类型/创作风格 + md 批量导入 + 角色形象 / 口播参考上传 */
 
-import { $, $$, esc, copyText, fileToDataUrl, todayStamp, wireDropZone } from "../core/util.js";
+import { $, $$, esc, fileToDataUrl, todayStamp, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount } from "../domain/accounts.js";
 import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js";
-import { CHAR_DIR_POOL, buildCharBoardPrompt } from "../api/prompts.js";
 import { defaultTtsVoiceId, ttsVoicePresets } from "../api/providers.js";
 import { openModal, toast } from "../ui/components.js";
 import { go, render as routerRender } from "../core/router.js";
@@ -18,7 +17,6 @@ export function openAccountDialog(accountId = null) {
     platform: editing?.platform || "小红书",
     mode: editing?.mode || "视频",
     subType: editing?.subType || "数字人",
-    position: editing && editing.position !== "（待补充定位）" ? editing.position : "",
     styleProfile: editing?.styleProfile || "",
     voiceName: editing?.voiceName || "",
     voiceId: editing?.voiceId || "",
@@ -52,7 +50,7 @@ export function openAccountDialog(accountId = null) {
               <div class="adb-drop-core">${icon("fileText", 20)}</div>
               <div class="adb-drop-text">
                 <b>批量建号 · 拖入 md 文档</b>
-                <em>一个账号一段（名称 / 平台 / 形式 / 类型 / 定位 / 标签），AI 自动识别 · 或点击选择</em>
+                <em>一个账号一段（名称 / 平台 / 形式 / 类型 / 风格 / 标签），AI 自动识别 · 或点击选择</em>
               </div>
               <input type="file" accept=".md,.txt,.markdown" hidden id="adImportMd" />
             </div>
@@ -75,7 +73,6 @@ export function openAccountDialog(accountId = null) {
                   <button type="button" class="${draft.subType === "无数字人" ? "is-active" : ""}" data-v="无数字人">${icon("layers", 14)}无数字人<span class="seg-sub">场景/界面混剪</span></button>
                 </div>
               </label>` : ""}
-              <label class="field full">账号定位<input class="input" id="adPos" value="${esc(draft.position)}" placeholder="例如：办公效率教程 / 产品功能讲解（人群方向也写在这里）" /></label>
               <label class="field full">创作风格 <em class="muted" style="font-weight:500">账号自带的固定风格：量产/随机主题时自动使用，不必每次填</em>
                 <input class="input" id="adStyle" value="${esc(draft.styleProfile)}" placeholder="例如：白底极简种草风 / 口播犀利有梗 / 深度测评冷静叙事" /></label>
               <div class="field full">
@@ -94,7 +91,7 @@ export function openAccountDialog(accountId = null) {
                   <input type="file" accept="image/*" hidden id="adStyleRefUp" />
                 </label>
               </div>
-              <label class="field full">图文提示词模板 <em class="muted" style="font-weight:500">站外整段提示词、站内逐图提示词都会优先参考；产品名、主题、各图内容会按本次创作自动替换</em>
+              <label class="field full">图文提示词模板 <em class="muted" style="font-weight:500">站内逐图提示词会优先参考；产品名、主题、各图内容会按本次创作自动替换</em>
                 <textarea class="input" id="adImgTpl" rows="8" placeholder="粘贴你的图文模板提示词，例如：请独立分别生成6张独立图片……">${esc(draft.imagePromptTemplate)}</textarea>
               </label>` : ""}
               ${isVideo ? `
@@ -111,30 +108,17 @@ export function openAccountDialog(accountId = null) {
                 </select>
               </label>` : ""}
               <div class="field full">
-                <span>固定声线参考 <em class="muted">可上传一段参考音频；当前用于提示词/资产留存，后端支持克隆后可直接调用</em></span>
-                <label class="btn ghost sm ad-voice-drop" id="adVoiceDrop">${draft.voiceFile || editing?.voiceRefAssetId ? "✓ 已有声线参考 · 点击更换 / 可拖音频" : "+ 上传声线参考 / 可拖音频"}<input type="file" accept="audio/*" hidden id="adVoiceUp" /></label>
+                <span>账号口播风格参考 <em class="muted">可上传一段参考音频，用于锁定账号口播语气、节奏和音色方向</em></span>
+                <label class="btn ghost sm ad-voice-drop" id="adVoiceDrop">${draft.voiceFile || editing?.voiceRefAssetId ? "✓ 已有口播风格参考 · 点击更换 / 可拖音频" : "+ 上传口播风格参考 / 可拖音频"}<input type="file" accept="audio/*" hidden id="adVoiceUp" /></label>
               </div>` : ""}
             </div>
 
-            ${isDH ? `
+            ${isVideo ? `
             <div class="ad-block">
-              <div class="adb-head"><b>数字人参考</b><em class="muted">角色身份版用于生成时锁定人物形象</em></div>
+              <div class="adb-head"><b>角色形象</b><em class="muted">拖入账号角色图；数字人会用它锁定人物形象，真人链路会作为角色风格参考</em></div>
               <div class="ad-char-row">
-                <label class="btn ghost sm ad-char-drop" id="adCharDrop">${draft.charDataUrl || (editing && editing.charBoardAssetId) ? "✓ 已有角色版 · 点击更换 / 可拖图" : "+ 上传角色参考版 / 可拖图"}<input type="file" accept="image/*" hidden id="adCharUp" /></label>
+                <label class="btn ghost sm ad-char-drop" id="adCharDrop">${draft.charDataUrl || (editing && editing.charBoardAssetId) ? "✓ 已有角色形象 · 点击更换 / 可拖图" : "+ 上传角色形象 / 可拖图"}<input type="file" accept="image/*" hidden id="adCharUp" /></label>
                 ${draft.charDataUrl ? `<img class="ad-char-prev" src="${draft.charDataUrl}"/>` : ""}
-              </div>
-              <div class="ad-ai-board">
-                <div class="adb-head"><b>${icon("wand", 13)} 没有角色版？AI 生成一张身份板</b><em class="muted">随机方向 → 生成提示词 → 第三方出图 → 上传</em></div>
-                <div class="ad-dir-row">
-                  <button class="dice" id="adDirDice" title="随机角色风格方向">${icon("dice", 14)}</button>
-                  <input class="input" id="adDirInput" placeholder="点骰子随机一个角色风格方向，可手改" />
-                  <button class="btn ghost sm" id="adDirGo">生成提示词</button>
-                </div>
-                <pre class="ad-char-prompt" id="adCharPrompt" hidden></pre>
-                <div class="head-actions" id="adCharActs" hidden>
-                  <button class="btn ghost sm" id="adCharCopy">${icon("copy", 13)} 复制整段提示词</button>
-                  <label class="btn primary sm ad-char-drop" id="adCharReturnDrop">${icon("upload", 13)} 上传身份版 / 可拖图<input type="file" accept="image/*" hidden id="adCharReturn" /></label>
-                </div>
               </div>
             </div>` : ""}
 
@@ -156,7 +140,6 @@ export function openAccountDialog(accountId = null) {
 
       const wire = () => {
         $("#adName", root).addEventListener("input", e => { draft.name = e.target.value; refreshNaming(); });
-        $("#adPos", root).addEventListener("input", e => { draft.position = e.target.value; });
         $("#adStyle", root).addEventListener("input", e => { draft.styleProfile = e.target.value; });
         const imgTpl = $("#adImgTpl", root);
         if (imgTpl) imgTpl.addEventListener("input", e => { draft.imagePromptTemplate = e.target.value; });
@@ -191,7 +174,7 @@ export function openAccountDialog(accountId = null) {
           if (el) el.innerHTML = `素材命名规则：<b>${platformCode(draft.platform)}-${esc((draft.name || "账号名").replace(/\s+/g, ""))}-${draft.mode === "视频" ? esc(draft.subType) : "图文"}-001-${todayStamp()}</b>`;
         }
 
-        async function setCharBoard(file, msg = "已选择角色参考版") {
+        async function setCharBoard(file, msg = "已选择角色形象") {
           if (!file || !file.type.startsWith("image/")) return;
           draft.charDataUrl = await fileToDataUrl(file);
           draw();
@@ -223,7 +206,7 @@ export function openAccountDialog(accountId = null) {
           styleRefDrop.addEventListener("click", () => $("#adStyleRefUp", root)?.click());
           wireDropZone(styleRefDrop, files => setStyleRef(Array.from(files).find(f => f.type.startsWith("image/"))), { filesOnly: true });
         }
-        function setVoiceFile(file, msg = "已选择声线参考") {
+        function setVoiceFile(file, msg = "已选择账号口播风格参考") {
           if (!file || !file.type.startsWith("audio/")) return;
           draft.voiceFile = file;
           toast(msg);
@@ -233,30 +216,10 @@ export function openAccountDialog(accountId = null) {
         const voiceUp = $("#adVoiceUp", root);
         if (voiceUp) voiceUp.addEventListener("change", e => setVoiceFile(e.target.files[0]));
         const voiceDrop = $("#adVoiceDrop", root);
-        if (voiceDrop) wireDropZone(voiceDrop, files => setVoiceFile(Array.from(files).find(f => f.type.startsWith("audio/")), "已拖入声线参考"), { filesOnly: true });
+        if (voiceDrop) wireDropZone(voiceDrop, files => setVoiceFile(Array.from(files).find(f => f.type.startsWith("audio/")), "已拖入账号口播风格参考"), { filesOnly: true });
         const charUp = $("#adCharUp", root);
         if (charUp) charUp.addEventListener("change", e => setCharBoard(e.target.files[0]));
-        wireDropZone($("#adCharDrop", root), files => setCharBoard(Array.from(files).find(f => f.type.startsWith("image/")), "已拖入角色参考版"), { filesOnly: true });
-        const dirDice = $("#adDirDice", root);
-        if (dirDice) {
-          dirDice.addEventListener("click", () => {
-            const cur = $("#adDirInput", root).value;
-            let pick = cur;
-            while (pick === cur) pick = CHAR_DIR_POOL[Math.floor(Math.random() * CHAR_DIR_POOL.length)];
-            $("#adDirInput", root).value = pick;
-          });
-          $("#adDirGo", root).addEventListener("click", () => {
-            let dir = $("#adDirInput", root).value.trim();
-            if (!dir) { dir = CHAR_DIR_POOL[Math.floor(Math.random() * CHAR_DIR_POOL.length)]; $("#adDirInput", root).value = dir; }
-            $("#adCharPrompt", root).textContent = buildCharBoardPrompt(dir);
-            $("#adCharPrompt", root).hidden = false;
-            $("#adCharActs", root).hidden = false;
-            toast("提示词已生成：复制去第三方出图，回来点「上传身份版」");
-          });
-          $("#adCharCopy", root).addEventListener("click", () => copyText($("#adCharPrompt", root).textContent, "已复制身份板提示词"));
-          $("#adCharReturn", root).addEventListener("change", e => setCharBoard(e.target.files[0], "身份版已上传，将作为角色参考版"));
-          wireDropZone($("#adCharReturnDrop", root), files => setCharBoard(Array.from(files).find(f => f.type.startsWith("image/")), "已拖入身份版，将作为角色参考版"), { filesOnly: true });
-        }
+        wireDropZone($("#adCharDrop", root), files => setCharBoard(Array.from(files).find(f => f.type.startsWith("image/")), "已拖入角色形象"), { filesOnly: true });
 
         $("#adAssets", root).addEventListener("change", async e => {
           for (const f of Array.from(e.target.files)) draft.assets.push({ name: f.name.replace(/\.[^.]+$/, ""), dataUrl: await fileToDataUrl(f) });
@@ -292,14 +255,14 @@ export function openAccountDialog(accountId = null) {
           const name = draft.name.trim();
           if (!name) { toast("请填写账号名称"); return; }
           const isDH = draft.mode === "视频" && draft.subType === "数字人";
-          if (isDH && !editing && !draft.charDataUrl) { toast("数字人账号请先上传或上传角色参考版"); return; }
+          if (isDH && !editing && !draft.charDataUrl) { toast("数字人账号请先上传角色形象"); return; }
 
           let acc;
           if (editing) {
             acc = updateAccount(editing.id, {
               name, platform: draft.platform, mode: draft.mode,
               subType: draft.mode === "图文" ? "" : draft.subType,
-              position: draft.position.trim() || "（待补充定位）",
+              position: "",
               styleProfile: draft.styleProfile.trim(),
               voiceName: draft.voiceName.trim(),
               voiceId: draft.voiceId.trim(),
@@ -309,7 +272,7 @@ export function openAccountDialog(accountId = null) {
           } else {
             acc = createAccount({
               name, platform: draft.platform, mode: draft.mode, subType: draft.subType,
-              position: draft.position.trim(), styleProfile: draft.styleProfile.trim(),
+              position: "", styleProfile: draft.styleProfile.trim(),
               voiceName: draft.voiceName.trim(), voiceId: draft.voiceId.trim(),
               imagePromptTemplate: draft.imagePromptTemplate.trim(),
               qtags: [...draft.qtags]
@@ -326,12 +289,12 @@ export function openAccountDialog(accountId = null) {
             save("accounts");
           }
           if (draft.charDataUrl) {
-            const ca = await addAssetFromDataUrl(acc.id, { name: name + " 角色身份版", tags: ["角色版"], dataUrl: draft.charDataUrl });
+            const ca = await addAssetFromDataUrl(acc.id, { name: name + " 角色形象", tags: ["角色形象", "角色版"], dataUrl: draft.charDataUrl });
             acc.charBoardAssetId = ca.id;
           }
           for (const a of draft.assets) await addAssetFromDataUrl(acc.id, { name: a.name, tags: [], dataUrl: a.dataUrl });
           if (draft.voiceFile) {
-            const va = await addAssetFromFile(acc.id, draft.voiceFile, { tags: ["声线参考", "口播音频"] });
+            const va = await addAssetFromFile(acc.id, draft.voiceFile, { tags: ["口播风格参考", "声线参考", "口播音频"] });
             acc.voiceRefAssetId = va.id;
           }
           save("accounts");

@@ -20,9 +20,14 @@ export function linkByAsset(assetId) {
   return state.analyticsLinks.find(x => x.assetId === assetId) || null;
 }
 
+function isMockSnapshot(snapshot) {
+  return /mock/i.test(snapshot?.provider || "") || snapshot?.raw?.mock === true;
+}
+
 export function snapshotsOf(linkId) {
   return state.metricSnapshots
     .filter(x => x.linkId === linkId)
+    .filter(x => !isMockSnapshot(x))
     .sort((a, b) => (a.fetchedAt || 0) - (b.fetchedAt || 0));
 }
 

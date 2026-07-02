@@ -198,21 +198,21 @@ export function renderWorkshopPage(root, p) {
 
           ${isDigital ? `<div class="refbar card" id="wsCharbar">
             <div class="refbar-left">
-              <b>${icon("user", 13)} ${isDigitalHumanMode ? "统一参考图" : "角色参考图"}</b>
-              <em>${isDigitalHumanMode ? "数字人默认每段都参考这张角色图；单段可在下方覆盖专属角色图。" : "只用于真人出镜片段。没有上传时，第一段提示词会自动写入固定外貌锚点。"}</em>
+              <b>${icon("user", 13)} 角色形象</b>
+              <em>${isDigitalHumanMode ? "数字人默认每段都参考这张角色图；单段可覆盖专属角色形象。" : "用于真人出镜片段的角色形象参考。没有上传时，第一段提示词会自动写入固定外貌锚点。"}</em>
             </div>
             <div class="refbar-chip">${charRef
               ? `<span class="ref-chip">${thumbHtml(charRef)}<span>${esc(charRef.name)}</span><button class="ref-x" data-chardel>${icon("x", 11)}</button></span>`
-              : `<span class="muted">未设置，可拖拽角色图到此</span>`}</div>
+              : `<span class="muted">未设置，可拖拽角色形象图到此</span>`}</div>
             <div class="refbar-actions">
-              <label class="btn ghost sm">上传角色图<input type="file" accept="image/*" hidden id="wsCharUp" /></label>
+              <label class="btn ghost sm">上传角色形象<input type="file" accept="image/*" hidden id="wsCharUp" /></label>
             </div>
           </div>` : ""}
 
           ${!isDigitalHumanMode ? `<div class="refbar card" id="wsRefbar">
             <div class="refbar-left">
               <b>${icon("star", 13)} 场景 / 产品参考图</b>
-              <em>${esc(product?.shortName || "产品")} logo、界面、场景光线与桌面风格从这里参考；支持拖拽图片，声线音频请拖到下方参考声线区域</em>
+              <em>${esc(product?.shortName || "产品")} logo、界面、场景光线与桌面风格从这里参考；支持拖拽图片，口播风格音频请拖到下方参考区域</em>
             </div>
             <div class="refbar-chip">${sceneRefs.length
               ? sceneRefs.map(a => `<span class="ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button class="ref-x" data-omnidel="${a.id}">${icon("x", 11)}</button></span>`).join("")
@@ -255,12 +255,12 @@ export function renderWorkshopPage(root, p) {
 
           <div class="refbar card" id="wsAudioBar">
             <div class="refbar-left">
-              <b>${icon("mic", 13)} ${isDigitalHumanMode ? "口播音频" : "参考声线 / 口播音频"}</b>
+              <b>${icon("mic", 13)} ${isDigitalHumanMode ? "口播音频" : "账号口播风格参考 / 口播音频"}</b>
               <em>${isDigitalHumanMode
-                ? "数字人模式会先用 Minimax 生成口播，再按≤30s切段；每段默认用统一角色图，可单段覆盖角色参考图。"
+                ? "数字人模式会先用 Minimax 生成口播，再按≤30s切段；每段默认用角色形象，可单段覆盖专属角色图。"
                 : isDigital
-                  ? "Seedance 真人模式会把口播写入视频提示词，并用固定声线锚点保持音色。"
-                : (voiceRefAsset ? `参考声线「${esc(voiceRefAsset.name)}」会写入提示词，用于统一口播音色；` : "可上传/拖拽参考音频锁定声线；")}${!isDigital && audioAsset
+                  ? "Seedance 真人模式会把口播写入视频提示词，并用账号口播风格参考保持音色和节奏。"
+                : (voiceRefAsset ? `口播风格参考「${esc(voiceRefAsset.name)}」会写入提示词，用于统一口播音色；` : "可上传/拖拽参考音频锁定账号口播风格；")}${!isDigital && audioAsset
                 ? `已上传「${esc(audioAsset.name)}」· 真实时长 ${fmtTC(p.artifacts.audio.duration || 0)}，分镜已按真实时长重排`
                 : isDigital ? "" : `素材号请先生成或上传口播音频；Seedance 视频始终生成纯画面，后期混入口播`}${p.artifacts.audio.lastError ? ` · ${esc(p.artifacts.audio.lastError)}` : ""}</em>
             </div>
@@ -274,7 +274,7 @@ export function renderWorkshopPage(root, p) {
               <button class="btn ghost sm" id="wsVoiceFix">${icon("check", 12)} 固定到账号</button>` : ""}
               <button class="btn ghost sm" id="wsCopyLines">${icon("list", 13)} 一键复制所有口播</button>
               ${!isDigital || isDigitalHumanMode ? `<button class="btn ghost sm" id="wsTts">${icon("mic", 13)} ${isDigitalHumanMode ? "生成分段口播" : (audioAsset && p.artifacts.audio.source === "tts" ? "重新生成口播" : "生成口播音频")}${ttsApiConfigured() ? "" : "（估时）"}</button>` : ""}
-              ${!isDigitalHumanMode ? `<label class="btn ghost sm">${voiceRefAsset ? "更换参考声线" : "上传参考声线"}<input type="file" accept="audio/*" hidden id="wsVoiceRefUp" /></label>` : ""}
+              ${!isDigitalHumanMode ? `<label class="btn ghost sm">${voiceRefAsset ? "更换口播风格参考" : "上传口播风格参考"}<input type="file" accept="audio/*" hidden id="wsVoiceRefUp" /></label>` : ""}
               ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
             </div>
             ${audioAsset && !isDigitalHumanMode ? `<div class="tts-audio" style="grid-column:1/-1;margin-top:10px;display:flex;align-items:center;gap:10px">
@@ -582,7 +582,7 @@ export function renderWorkshopPage(root, p) {
         topic = sanitizeXhsText(await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: 6, kind: "video" }));
         p.topic = topic;
         const input = $("#wsTopic", root); if (input) input.value = topic;
-        toast(AI.sourceNote("已随机生成详细创作内容"));
+        toast(AI.sourceNote("已按四方向生成短选题"));
       }
       p.topic = sanitizeXhsText(topic);
       const style = p.artifacts.script.style || acc?.styleProfile || acc?.lockedStyle || "";
@@ -669,13 +669,13 @@ export function renderWorkshopPage(root, p) {
     async function setCharRef(f) {
       if (!f || !f.type.startsWith("image/")) { toast("请上传角色图片"); return; }
       const dataUrl = await fileToDataUrl(f);
-      const a = await addAssetFromDataUrl(acc.id, { name: f.name.replace(/\.[^.]+$/, ""), tags: ["角色参考图", "数字人身份板"], dataUrl });
+      const a = await addAssetFromDataUrl(acc.id, { name: f.name.replace(/\.[^.]+$/, ""), tags: ["角色形象", "角色版"], dataUrl });
       A.characterRefAssetId = a.id;
       if (acc) acc.charBoardAssetId = a.id;
       A.omniRefAssetIds = (A.omniRefAssetIds || []).filter(id => id !== a.id);
       A.sceneRefAssetIds = (A.sceneRefAssetIds || []).filter(id => id !== a.id);
       save("productions", "accounts");
-      toast("已设置角色参考图");
+      toast("已设置角色形象");
       draw();
     }
 
@@ -684,7 +684,7 @@ export function renderWorkshopPage(root, p) {
       const text = narrationText(shots);
       if (!text) { toast("脚本里还没有口播文案"); return; }
       copyText(text);
-      toast("已复制全部口播，可去站外配音/粘贴");
+      toast("已复制全部口播文案");
     });
     $("#wsVoicePreset", root)?.addEventListener("change", e => {
       p.artifacts.audio.voiceId = e.currentTarget.value || "";
@@ -820,12 +820,12 @@ export function renderWorkshopPage(root, p) {
     });
     async function setVoiceRef(f) {
       if (!f || !f.type.startsWith("audio/")) { toast("请上传音频文件"); return; }
-      const a = await addAssetFromFile(acc.id, f, { tags: ["声线参考", "统一参考音频"] });
+      const a = await addAssetFromFile(acc.id, f, { tags: ["口播风格参考", "声线参考", "统一参考音频"] });
       p.artifacts.audio.voiceRefAssetId = a.id;
       p.artifacts.audio.voiceRefDisabled = false;
       if (acc && !acc.voiceRefAssetId) acc.voiceRefAssetId = a.id;
       save("productions", "accounts");
-      toast("已加入统一参考声线");
+      toast("已加入账号口播风格参考");
       draw();
     }
     async function setAudio(file) {

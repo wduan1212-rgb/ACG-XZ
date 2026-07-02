@@ -75,7 +75,7 @@ export function renderCopyPage(root, p) {
   $("#ccGen", root).addEventListener("click", e => withLoading(e.currentTarget, async () => {
     const shots = p.artifacts.script.shots || [];
     if (!shots.length) { toast(isImg ? "先去图文创作台生成图卡结构" : "先回脚本页生成脚本"); return; }
-    const res = await AI.generateCopy({ topic: p.topic, shots, account: acc, style: p.artifacts.script.style, kind: isImg ? "image" : "video", product: productById(p.artifacts.script.productId || "dumate"), useOnlineTrends: !!p.artifacts.script.useOnlineTrends, trendGuide: p.artifacts.script.trendGuide || "", trendPrep: p.artifacts.script.trendPrep || null });
+    const res = await AI.generateCopy({ topic: p.topic, shots, account: acc, style: p.artifacts.script.style, kind: isImg ? "image" : "video", product: productById(p.artifacts.script.productId || "dumate"), useOnlineTrends: isImg && !!p.artifacts.script.useOnlineTrends, trendGuide: p.artifacts.script.trendGuide || "", trendPrep: isImg ? (p.artifacts.script.trendPrep || null) : null });
     C.title = res.title; C.body = res.copy;
     $("#ccTitle", root).value = res.title;
     $("#ccBody", root).value = res.copy;

@@ -1,7 +1,7 @@
 /* 资产领域：共享模式下二进制上传到服务端，离线模式保留 IndexedDB Blob 缓存 */
 
 import { db } from "../core/db.js";
-import { state, save, assetById, removeRemote } from "../core/store.js";
+import { state, save, assetById, removeRemote, ownedBy } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { uid, esc, gradFor, dataUrlToBlob, extOfMime } from "../core/util.js";
 
@@ -325,6 +325,7 @@ export function thumbHtml(a, cls = "") {
 export function searchAssets({ accountId = "all", tag = "all", q = "", includeDelivered = false } = {}) {
   const kw = q.trim().toLowerCase();
   return state.assets.filter(a => {
+    if (!a.delivered && !a.shared && !ownedBy(a)) return false;
     if (!includeDelivered && a.delivered) return false;
     if (accountId !== "all" && a.accountId !== accountId) return false;
     if (tag !== "all" && !(a.tags || []).includes(tag)) return false;
@@ -336,6 +337,7 @@ export function searchAssets({ accountId = "all", tag = "all", q = "", includeDe
 export function allTags(accountId = "all") {
   const set = new Set();
   state.assets.forEach(a => {
+    if (!a.delivered && !a.shared && !ownedBy(a)) return;
     if (a.delivered) return;
     if (accountId !== "all" && a.accountId !== accountId) return;
     (a.tags || []).forEach(t => set.add(t));

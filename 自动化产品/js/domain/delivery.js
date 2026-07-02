@@ -1,7 +1,7 @@
 /* 发布清单：定稿入库（创作端） + 素材分发（供应商端）
    交付 = 内部定稿归档，产物进入交付库供供应商下载，不涉及任何平台发布 */
 
-import { state, save, notify, accountById, assetById, canDeliver, currentMember, productById, removeRemote } from "../core/store.js";
+import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, removeRemote } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
 import { setStage, touch } from "./productions.js";
@@ -100,6 +100,7 @@ export function deliver(p, opts = {}) {
   touch(p);
   setStage(p, "delivered", "done");
   save("assets", "accounts", "productions", "meta");
+  persistNow();
   notify("delivery", `「${asset.title || name}」已发布`, `#${String(pubSeq).padStart(3, "0")} · ${name}${isImg ? ".zip" : ".mp4"} · 供应商端可见`);
   return asset;
 }

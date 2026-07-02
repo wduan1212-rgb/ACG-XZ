@@ -33,7 +33,7 @@ function statusPill(link) {
 
 function providerLabel(provider) {
   if (!provider) return "";
-  if (/mock/.test(provider)) return "模拟数据";
+  if (/mock/.test(provider)) return "";
   return provider;
 }
 
@@ -108,8 +108,9 @@ function rowHtml(r) {
   const m = r.latest?.metrics;
   const title = r.link.title || r.asset?.title || r.asset?.name || "未命名内容";
   const err = r.link.status === "failed" && r.link.error ? `<em class="da-error">${esc(r.link.error)}</em>` : "";
+  const provider = providerLabel(r.link.provider);
   return `<tr data-link="${r.link.id}">
-    <td class="da-title"><b>${esc(title)}</b><em>${esc(r.acc?.name || "未归属账号")} · ${esc(r.link.platform || "")}${r.link.provider ? ` · ${esc(providerLabel(r.link.provider))}` : ""}</em>${err}</td>
+    <td class="da-title"><b>${esc(title)}</b><em>${esc(r.acc?.name || "未归属账号")} · ${esc(r.link.platform || "")}${provider ? ` · ${esc(provider)}` : ""}</em>${err}</td>
     <td>${statusPill(r.link)}</td>
     <td class="num">${m ? fmt(m.views) : "-"}</td>
     <td class="num">${m ? fmt(m.likes) : "-"}</td>

@@ -15,9 +15,8 @@ fi
 
 echo
 echo "== Health =="
-curl -fsS "http://127.0.0.1:${PORT}/api/health" || true
+curl -fsS "http://localhost:${PORT}/api/health" || true
 
 echo
 echo "== Recent logs =="
 tail -n 80 logs/app.log 2>/dev/null || true
-

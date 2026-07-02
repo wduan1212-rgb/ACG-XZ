@@ -96,7 +96,9 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
   const canRetract = canDeleteDelivery(asset);
   const showRetract = canRetract || canSeeDeliveryRetract(asset);
   const plan = dateOnly(asset.planDate);
-  const detailText = `${asset.name}${isImg ? ".zip" : ".mp4"}${asset.byMemberName ? ` · 由 ${asset.byMemberName} 发布` : ""} · ${timeAgo(asset.deliveredAt || asset.createdAt)} · 供应商：${asset.status || "未下载"}`;
+  const contentAccount = asset.byAccount || acc.name;
+  const publisher = asset.byMemberName || "";
+  const detailText = `${asset.name}${isImg ? ".zip" : ".mp4"} · 内容账号：${contentAccount}${publisher ? ` · 发布者：${publisher}` : ""} · ${timeAgo(asset.deliveredAt || asset.createdAt)} · 供应商：${asset.status || "未下载"}`;
   return `<div class="dv-item" style="--d:${i * 40}ms">
     <span class="dv-node${i === 0 ? " latest" : ""}"></span>
     <div class="dv-card card" data-aid="${asset.id}">
@@ -105,7 +107,7 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
         <span class="dv-main">
           <b>${seq ? `<span class="dv-seq">${seq}</span>` : ""}${esc(asset.title || asset.name)}</b>
           <span class="dv-meta">
-            <span class="dv-tagline">${platChip(acc.platform, true)}${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag acc" title="${esc(asset.byAccount || acc.name)}">${esc(asset.byAccount || acc.name)}</span>${plan ? `<span class="tag date" title="计划 ${esc(plan)}">${icon("clock", 10)} 计划 ${esc(plan)}</span>` : ""}</span>
+            <span class="dv-tagline">${platChip(acc.platform, true)}${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag acc" title="内容账号：${esc(contentAccount)}">内容账号：${esc(contentAccount)}</span>${publisher ? `<span class="tag pubby" title="发布者：${esc(publisher)}">发布者：${esc(publisher)}</span>` : ""}${plan ? `<span class="tag date" title="计划 ${esc(plan)}">${icon("clock", 10)} 计划 ${esc(plan)}</span>` : ""}</span>
             <em title="${esc(detailText)}">${esc(detailText)}</em>
             ${asset.adminReviewed ? `<span class="tag rev">${icon("checkCircle", 10)} 已审阅</span>` : ""}${asset.publishedUrl ? `<span class="tag pub">${icon("checkCircle", 10)} 已发布</span>` : ""}
           </span>
@@ -335,7 +337,7 @@ export const deliveryView = {
             <thead><tr>
               <th class="c-check"><input type="checkbox" id="supAll" /></th>
               <th class="c-seq">序号</th>
-              <th>素材名</th><th>产品</th><th>发布账号</th><th>平台</th><th>形式</th><th>标签</th><th>状态</th><th></th>
+              <th>素材名</th><th>产品</th><th>内容账号 / 发布者</th><th>平台</th><th>形式</th><th>标签</th><th>状态</th><th></th>
             </tr></thead>
             <tbody>${rows.length ? rows.map(({ asset, acc }) => `
               <tr data-sup="${asset.id}">
@@ -343,7 +345,7 @@ export const deliveryView = {
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
                 <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
-                <td><b>${esc(asset.byAccount || acc.name)}</b>${asset.byMemberName ? `<em class="sup-by">由 ${esc(asset.byMemberName)} 发布</em>` : ""}</td>
+                <td><b>${esc(asset.byAccount || acc.name)}</b>${asset.byMemberName ? `<em class="sup-by">发布者：${esc(asset.byMemberName)}</em>` : ""}</td>
                 <td>${platChip(acc.platform, true)}</td>
                 <td>${modeLabel(acc)}</td>
                 <td><div class="sup-tags" title="${esc((asset.tags || []).join(" / "))}">${supplierTagsHtml(asset.tags)}</div></td>

@@ -1,297 +1,26 @@
-/* 链路 · 分镜（视频）/ 图文创作台（图文）：站内图片 API 优先，站外上传仅作备用 */
+/* 链路 · 分镜（视频）/ 图文创作台（图文）：站内图片 API + 上传补图 */
 
-import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone } from "../core/util.js";
+import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
-import { buildSbExternalPrompt, buildImgExternalPrompt } from "../api/prompts.js";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
+import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 
-const modeBySlot = new Map(); // productionId -> "in" | "out"
+const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
 
-function promptProductName(product = null) {
-  const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""}`;
-  if (/miaoda|秒哒/i.test(text)) return "百度秒哒";
-  if (/dumate|百度搭子|搭子/i.test(text)) return "百度搭子";
-  return (product?.shortName || product?.name || "").replace(/Dumate|DuMate/gi, "百度搭子").replace(/MIAODA/gi, "百度秒哒");
-}
-
-function hashSeed(str = "") {
-  let h = 2166136261;
-  for (const ch of String(str)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
-function seeded(seed) {
-  let t = seed >>> 0;
-  return () => {
-    t += 0x6D2B79F5;
-    let r = Math.imul(t ^ (t >>> 15), 1 | t);
-    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
-    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
-  };
-}
 export function polishImageForPublish(dataUrl, seedText = "") {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      const w = img.naturalWidth || img.width;
-      const h = img.naturalHeight || img.height;
-      if (!w || !h) return resolve(dataUrl);
-      const canvas = document.createElement("canvas");
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      const rnd = seeded(hashSeed(seedText + ":" + w + "x" + h));
-      const filterPresets = [
-        { sat: 1.045, contrast: 1.035, bright: 1.012, tintA: "rgba(255,255,255,.09)", tintB: "rgba(74,144,226,.035)" },
-        { sat: 1.070, contrast: 1.022, bright: 1.018, tintA: "rgba(255,248,240,.075)", tintB: "rgba(255,91,141,.026)" },
-        { sat: 0.985, contrast: 1.060, bright: 1.020, tintA: "rgba(240,250,255,.075)", tintB: "rgba(36,180,166,.032)" },
-        { sat: 1.025, contrast: 1.045, bright: 1.028, tintA: "rgba(255,255,255,.065)", tintB: "rgba(116,88,255,.032)" },
-        { sat: 1.090, contrast: 1.018, bright: 1.008, tintA: "rgba(255,250,232,.060)", tintB: "rgba(245,158,11,.024)" },
-        { sat: 1.000, contrast: 1.072, bright: 1.014, tintA: "rgba(246,249,255,.070)", tintB: "rgba(59,130,246,.026)" },
-        { sat: 1.055, contrast: 1.030, bright: 1.034, tintA: "rgba(255,252,246,.055)", tintB: "rgba(236,72,153,.022)" },
-        { sat: 0.970, contrast: 1.082, bright: 1.024, tintA: "rgba(245,255,252,.060)", tintB: "rgba(16,185,129,.025)" },
-      ];
-      const preset = filterPresets[Math.floor(rnd() * filterPresets.length)] || filterPresets[0];
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, w, h);
-      ctx.filter = `saturate(${preset.sat.toFixed(3)}) contrast(${preset.contrast.toFixed(3)}) brightness(${preset.bright.toFixed(3)})`;
-      ctx.drawImage(img, 0, 0, w, h);
-      ctx.filter = "none";
-
-      const light = ctx.createLinearGradient(0, 0, w, h);
-      light.addColorStop(0, preset.tintA);
-      light.addColorStop(0.42, "rgba(255,255,255,.020)");
-      light.addColorStop(1, preset.tintB);
-      ctx.globalCompositeOperation = "soft-light";
-      ctx.fillStyle = light;
-      ctx.fillRect(0, 0, w, h);
-      ctx.globalCompositeOperation = "source-over";
-
-      // 可见的轻量版式精修元素：不遮挡主体、不裁剪；角标随机出现，不能固定四角都有。
-      const pad = Math.max(18, Math.round(Math.min(w, h) * 0.025));
-      const minSide = Math.min(w, h);
-      const len = Math.max(42, Math.round(minSide * (0.052 + rnd() * 0.032)));
-      const colors = [
-        "rgba(63,107,255,.22)", "rgba(154,69,255,.18)", "rgba(255,77,141,.17)",
-        "rgba(20,184,166,.17)", "rgba(245,158,11,.15)", "rgba(56,189,248,.17)",
-        "rgba(14,165,233,.15)", "rgba(99,102,241,.16)", "rgba(244,114,182,.14)",
-      ];
-      const corners = [
-        { key: "tl", x: pad, y: pad, sx: 1, sy: 1 },
-        { key: "tr", x: w - pad, y: pad, sx: -1, sy: 1 },
-        { key: "bl", x: pad, y: h - pad, sx: 1, sy: -1 },
-        { key: "br", x: w - pad, y: h - pad, sx: -1, sy: -1 },
-      ].sort(() => rnd() - 0.5).slice(0, Math.floor(rnd() * 3));
-      const pickColor = (shift = 0) => colors[(Math.floor(rnd() * colors.length) + shift) % colors.length];
-      const withAlpha = (color, alpha) => color.replace(/rgba\(([^)]+),\s*[\d.]+\)/, `rgba($1,${alpha})`);
-      const lineW = Math.max(2, Math.round(minSide * (0.0026 + rnd() * 0.0018)));
-      const veilMode = Math.floor(rnd() * 5);
-      if (veilMode === 0) {
-        const veil = ctx.createLinearGradient(w * 0.18, 0, w * 0.82, h);
-        veil.addColorStop(0, "rgba(255,255,255,.035)");
-        veil.addColorStop(1, "rgba(59,130,246,.020)");
-        ctx.fillStyle = veil;
-        ctx.fillRect(0, 0, w, h);
-      } else if (veilMode === 1) {
-        const veil = ctx.createRadialGradient(w * (0.18 + rnd() * 0.64), h * (0.16 + rnd() * 0.68), 1, w * 0.5, h * 0.5, Math.max(w, h) * 0.78);
-        veil.addColorStop(0, "rgba(255,255,255,.045)");
-        veil.addColorStop(1, "rgba(255,255,255,0)");
-        ctx.fillStyle = veil;
-        ctx.fillRect(0, 0, w, h);
-      } else if (veilMode === 2) {
-        ctx.globalAlpha = 0.032 + rnd() * 0.018;
-        ctx.fillStyle = pickColor();
-        const step = Math.max(26, Math.round(minSide * (0.036 + rnd() * 0.018)));
-        for (let yy = -step; yy < h + step; yy += step * (1.7 + rnd() * 0.8)) {
-          ctx.fillRect(0, yy, w, Math.max(1, Math.round(step * (0.045 + rnd() * 0.045))));
-        }
-        ctx.globalAlpha = 1;
-      } else if (veilMode === 3) {
-        ctx.globalAlpha = 0.022 + rnd() * 0.012;
-        ctx.strokeStyle = pickColor(3);
-        ctx.lineWidth = Math.max(1, Math.round(lineW * 0.55));
-        const step = Math.max(32, Math.round(minSide * (0.050 + rnd() * 0.018)));
-        for (let xx = -step; xx < w + step; xx += step) {
-          ctx.beginPath();
-          ctx.moveTo(xx, 0);
-          ctx.lineTo(xx + h * 0.12, h);
-          ctx.stroke();
-        }
-        ctx.globalAlpha = 1;
-      }
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.lineWidth = lineW;
-      const drawArc = ({ x, y, sx, sy }) => {
-        ctx.strokeStyle = pickColor();
-        ctx.beginPath();
-        ctx.moveTo(x, y + sy * len);
-        ctx.quadraticCurveTo(x + sx * len * 0.12, y + sy * len * 0.12, x + sx * len, y);
-        ctx.stroke();
-      };
-      const drawCornerTicks = ({ x, y, sx, sy }) => {
-        ctx.strokeStyle = pickColor(1);
-        const gap = len * (0.18 + rnd() * 0.10);
-        const a = len * (0.25 + rnd() * 0.12);
-        ctx.beginPath();
-        ctx.moveTo(x + sx * gap, y);
-        ctx.lineTo(x + sx * (gap + a), y);
-        ctx.moveTo(x, y + sy * gap);
-        ctx.lineTo(x, y + sy * (gap + a));
-        ctx.stroke();
-      };
-      const drawDots = ({ x, y, sx, sy }) => {
-        ctx.fillStyle = pickColor(2);
-        const count = 3 + Math.floor(rnd() * 4);
-        for (let n = 0; n < count; n += 1) {
-          const r = Math.max(2, Math.round(minSide * (0.002 + rnd() * 0.0025)));
-          ctx.beginPath();
-          ctx.arc(x + sx * len * (0.25 + n * 0.13), y + sy * len * (0.78 + (rnd() - 0.5) * 0.22), r, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      };
-      const drawSpark = ({ x, y, sx, sy }) => {
-        const cx = x + sx * len * (0.64 + rnd() * 0.16);
-        const cy = y + sy * len * (0.30 + rnd() * 0.28);
-        const r = Math.max(5, Math.round(len * (0.075 + rnd() * 0.035)));
-        ctx.strokeStyle = pickColor(3);
-        ctx.beginPath();
-        ctx.moveTo(cx - r, cy);
-        ctx.lineTo(cx + r, cy);
-        ctx.moveTo(cx, cy - r);
-        ctx.lineTo(cx, cy + r);
-        if (rnd() > 0.45) {
-          ctx.moveTo(cx - r * 0.55, cy - r * 0.55);
-          ctx.lineTo(cx + r * 0.55, cy + r * 0.55);
-          ctx.moveTo(cx + r * 0.55, cy - r * 0.55);
-          ctx.lineTo(cx - r * 0.55, cy + r * 0.55);
-        }
-        ctx.stroke();
-      };
-      const drawMiniGrid = ({ x, y, sx, sy }) => {
-        ctx.strokeStyle = pickColor(4);
-        ctx.globalAlpha = 0.55;
-        const step = Math.max(7, Math.round(len * 0.13));
-        const rows = 2 + Math.floor(rnd() * 2);
-        const cols = 2 + Math.floor(rnd() * 3);
-        const ox = x + sx * len * (0.35 + rnd() * 0.16);
-        const oy = y + sy * len * (0.36 + rnd() * 0.16);
-        for (let a = 0; a < cols; a += 1) {
-          for (let b = 0; b < rows; b += 1) {
-            ctx.strokeRect(ox + sx * a * step, oy + sy * b * step, sx * step * 0.45, sy * step * 0.45);
-          }
-        }
-        ctx.globalAlpha = 1;
-      };
-      const drawSoftBlob = ({ x, y, sx, sy }) => {
-        const r = len * (0.18 + rnd() * 0.12);
-        const g = ctx.createRadialGradient(x + sx * len * 0.68, y + sy * len * 0.65, 1, x + sx * len * 0.68, y + sy * len * 0.65, r);
-        g.addColorStop(0, withAlpha(pickColor(), 0.12));
-        g.addColorStop(1, "rgba(255,255,255,0)");
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(x + sx * len * 0.68, y + sy * len * 0.65, r, 0, Math.PI * 2);
-        ctx.fill();
-      };
-      const drawChevron = ({ x, y, sx, sy }) => {
-        ctx.strokeStyle = pickColor(5);
-        const cx = x + sx * len * (0.35 + rnd() * 0.24);
-        const cy = y + sy * len * (0.48 + rnd() * 0.18);
-        const s = len * (0.13 + rnd() * 0.06);
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + sx * s, cy + sy * s * 0.62);
-        ctx.lineTo(cx + sx * s * 2, cy);
-        if (rnd() > 0.52) {
-          ctx.moveTo(cx + sx * s * 0.45, cy + sy * s * 0.82);
-          ctx.lineTo(cx + sx * s * 1.45, cy + sy * s * 1.42);
-          ctx.lineTo(cx + sx * s * 2.45, cy + sy * s * 0.82);
-        }
-        ctx.stroke();
-      };
-      const drawWave = ({ x, y, sx, sy }) => {
-        ctx.strokeStyle = withAlpha(pickColor(6), 0.18);
-        const ox = x + sx * len * (0.12 + rnd() * 0.22);
-        const oy = y + sy * len * (0.62 + rnd() * 0.18);
-        const amp = len * (0.055 + rnd() * 0.025);
-        const seg = len * (0.14 + rnd() * 0.04);
-        ctx.beginPath();
-        ctx.moveTo(ox, oy);
-        for (let n = 1; n <= 4; n += 1) {
-          ctx.quadraticCurveTo(ox + sx * seg * (n - 0.5), oy + sy * amp * (n % 2 ? -1 : 1), ox + sx * seg * n, oy);
-        }
-        ctx.stroke();
-      };
-      const drawTinyCards = ({ x, y, sx, sy }) => {
-        ctx.strokeStyle = withAlpha(pickColor(7), 0.20);
-        ctx.fillStyle = "rgba(255,255,255,.22)";
-        const baseX = x + sx * len * (0.42 + rnd() * 0.16);
-        const baseY = y + sy * len * (0.18 + rnd() * 0.18);
-        for (let n = 0; n < 2 + Math.floor(rnd() * 2); n += 1) {
-          const ww = sx * len * (0.13 + rnd() * 0.035);
-          const hh = sy * len * (0.08 + rnd() * 0.030);
-          const xx = baseX + sx * n * len * 0.105;
-          const yy = baseY + sy * n * len * 0.070;
-          const rx = Math.min(xx, xx + ww);
-          const ry = Math.min(yy, yy + hh);
-          const rw = Math.abs(ww);
-          const rh = Math.abs(hh);
-          ctx.beginPath();
-          if (ctx.roundRect) ctx.roundRect(rx, ry, rw, rh, Math.max(3, lineW * 1.4));
-          else ctx.rect(rx, ry, rw, rh);
-          ctx.fill();
-          ctx.stroke();
-        }
-      };
-      const drawBracketRail = ({ x, y, sx, sy }) => {
-        ctx.strokeStyle = withAlpha(pickColor(8), 0.16 + rnd() * 0.06);
-        const ox = x + sx * len * (0.18 + rnd() * 0.18);
-        const oy = y + sy * len * (0.20 + rnd() * 0.20);
-        const long = len * (0.45 + rnd() * 0.22);
-        const short = len * (0.10 + rnd() * 0.05);
-        ctx.beginPath();
-        ctx.moveTo(ox, oy);
-        ctx.lineTo(ox + sx * long, oy);
-        ctx.lineTo(ox + sx * long, oy + sy * short);
-        ctx.moveTo(ox, oy + sy * short * 1.9);
-        ctx.lineTo(ox, oy + sy * (short * 1.9 + long * 0.42));
-        ctx.stroke();
-      };
-      const drawOrbitMarks = ({ x, y, sx, sy }) => {
-        ctx.strokeStyle = withAlpha(pickColor(2), 0.13 + rnd() * 0.05);
-        ctx.fillStyle = withAlpha(pickColor(5), 0.16);
-        const cx = x + sx * len * (0.55 + rnd() * 0.20);
-        const cy = y + sy * len * (0.55 + rnd() * 0.20);
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, len * (0.16 + rnd() * 0.04), len * (0.07 + rnd() * 0.03), (rnd() - 0.5) * 0.8, 0, Math.PI * 2);
-        ctx.stroke();
-        for (let n = 0; n < 2 + Math.floor(rnd() * 3); n += 1) {
-          ctx.beginPath();
-          ctx.arc(cx + sx * len * (0.08 + n * 0.07), cy + sy * len * ((rnd() - 0.5) * 0.16), Math.max(2, lineW * (0.75 + rnd())), 0, Math.PI * 2);
-          ctx.fill();
-        }
-      };
-      const motifs = [drawArc, drawCornerTicks, drawDots, drawSpark, drawMiniGrid, drawSoftBlob, drawChevron, drawWave, drawTinyCards, drawBracketRail, drawOrbitMarks];
-      corners.forEach((corner, i) => {
-        const local = motifs.slice().sort(() => rnd() - 0.5).slice(0, 2 + ((i + Math.floor(rnd() * 2)) % 2));
-        local.forEach(fn => fn(corner));
-      });
-      const mime = dataUrl.startsWith("data:image/png") ? "image/png" : "image/jpeg";
-      resolve(canvas.toDataURL(mime, mime === "image/jpeg" ? 0.94 : undefined));
-    };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
-  });
+  return polishPublishImage(dataUrl, seedText);
 }
 
 export async function urlToDataUrl(url) {
@@ -358,7 +87,7 @@ export function enrichPromptWithRefs(prompt, A) {
   const names = refNamesOf(A);
   if (!names.length) return prompt || "";
   const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
-  const refNote = `统一参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），综合参考它们的产品界面、配色、信息密度、图标形态和真实截图质感。若参考图之间功能不同，按当前画面主题选择最匹配的一张作为主参考，其余作为品牌与风格辅助参考；参考图里的旧标题、页名、示例文案视为占位，画面文字按本提示词指定的大标题/副标题重写。`;
+  const refNote = `参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），以本次提示词的主题和文字内容为准。`;
   return `${body}\n\n${refNote}\n\n${IMAGE_NEGATIVE_PROMPT}`.trim();
 }
 
@@ -369,6 +98,59 @@ function normalizeImageWorkshopText(text = "") {
     .replace(/画面以小红书竖版3:4（1080×1440）为主/g, "画面按小红书竖版3:4（1080×1440）出图")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function trendRewriteHtml(prep) {
+  const rw = prep?.referenceRewrite || prep;
+  if (!rw?.reference?.title && !rw?.rewrite?.title) return "";
+  const tagHtml = tags => (tags || []).slice(0, 6).map(t => `<span class="tag">${esc(t)}</span>`).join("");
+  const refMeta = [rw.reference?.author ? `作者：${rw.reference.author}` : "", rw.reference?.likes ? `互动：${rw.reference.likes}` : ""].filter(Boolean).join(" · ");
+  const refTitle = rw.reference?.title || "";
+  const refUrl = rw.reference?.url || "";
+  const searchUrl = refTitle ? `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(refTitle)}` : "";
+  const refActionHtml = [refUrl ? `<a class="trend-link" href="${esc(refUrl)}" target="_blank" rel="noreferrer">打开原文</a>` : "", searchUrl ? `<a class="trend-link" href="${esc(searchUrl)}" target="_blank" rel="noreferrer">搜索原文</a>` : ""].filter(Boolean).join("");
+  return `<div class="trend-rewrite card">
+    <div class="trend-card ref">
+      <b>热门参考</b>
+      <h4>${esc(rw.reference?.title || "未返回标题")}</h4>
+      ${refMeta ? `<em>${esc(refMeta)}</em>` : ""}
+      <p>${esc(rw.reference?.copy || "原始参考未返回正文。")}</p>
+      ${refActionHtml ? `<div class="trend-actions">${refActionHtml}</div>` : ""}
+      <div class="trend-tags">${tagHtml(rw.reference?.tags)}</div>
+    </div>
+    <div class="trend-card rewrite">
+      <div class="trend-edit-head">
+        <b>改写结果</b>
+        <button class="btn ghost sm" id="imgCopyGen">${icon("spark", 13)} 只重写文案</button>
+      </div>
+      <label class="field">标题
+        <input class="input" id="trendCopyTitle" value="${esc(rw.rewrite?.title || "")}" />
+      </label>
+      <label class="field">正文
+        <textarea class="input" id="trendCopyBody" rows="7">${esc(rw.rewrite?.copy || "")}</textarea>
+      </label>
+      <div class="trend-tags">${tagHtml(rw.rewrite?.tags)}</div>
+    </div>
+  </div>`;
+}
+
+function copyTags(body = "", fallback = []) {
+  const tags = Array.from(String(body || "").matchAll(/#[\p{L}\p{N}_-]{2,}/gu)).map(m => m[0].replace(/^#/, ""));
+  return [...new Set(tags.length ? tags : (fallback || []))].slice(0, 8);
+}
+
+function rewriteForCopy(prep, copy) {
+  const rw = prep?.referenceRewrite || null;
+  if (!rw) return null;
+  return {
+    ...rw,
+    rewrite: {
+      ...(rw.rewrite || {}),
+      title: copy?.title || rw.rewrite?.title || "",
+      copy: copy?.body || copy?.copy || rw.rewrite?.copy || "",
+      tags: copyTags(copy?.body || copy?.copy || "", rw.rewrite?.tags || [])
+    }
+  };
 }
 
 function ratioFromImagePrompt(text = "", fallback = "3:4") {
@@ -397,7 +179,8 @@ export function renderSlotsPage(root, p, isImg) {
   const acc = accountById(p.accountId);
   const A = isImg ? p.artifacts.images : p.artifacts.boards;
   const page = isImg ? "images" : "boards";
-  let genMode = modeBySlot.get(p.id) || (isImg ? "in" : "out");
+  let genMode = "in";
+  modeBySlot.set(p.id, "in");
   const S = p.artifacts.script;
   const products = primaryProducts();
   if (isImg) {
@@ -435,8 +218,9 @@ export function renderSlotsPage(root, p, isImg) {
     const C = p.artifacts.copy || { title: "", body: "" };
     const got = items.filter(x => x.assetId).length;
     const refs = refAssetsOf(A);
+    const trendPanel = isImg ? trendRewriteHtml(C.referenceRewrite || S.trendPrep || p.artifacts.script.trendPrep) : "";
     const flowTitle = isImg
-      ? (genMode === "in" ? "创作内容 → 文案标题 → 图卡提示词 → 站内生成" : "创作内容 → 文案标题 → 图卡提示词 → 站外上传")
+      ? "创作内容 → 文案标题 → 图卡提示词 → 站内生成 / 上传补图"
       : "按脚本逐镜头出分镜图";
     root.innerHTML = `
       ${stepperHtml(p, page)}
@@ -470,13 +254,13 @@ export function renderSlotsPage(root, p, isImg) {
                 <span class="trend-switch"><input id="imgOnlineTrends" type="checkbox" ${S.useOnlineTrends ? "checked" : ""} /><b>联网参考小红书</b></span>
               </label>
               <label class="field full">创作内容
-                <textarea class="input" id="imgBrief" rows="4" placeholder="写得具体一点：这篇笔记想讲什么、面向谁、希望每张图大概覆盖哪些点。留空则按产品功能和账号创作风格生成。">${esc(S.direction || p.topic || "")}</textarea>
+                <textarea class="input" id="imgBrief" rows="4" placeholder="写得具体一点：这篇笔记想讲什么、面向谁、希望每张图大概覆盖哪些点。留空则从四个方向自动挑短选题。">${esc(S.direction || p.topic || "")}</textarea>
               </label>
             </div>
-            ${acc.imagePromptTemplate ? `<div class="imgf-note">${icon("checkCircle", 13)} 已启用该账号固定图文模板，张数、产品和本次内容会自动替换。</div>` : `<div class="imgf-note muted">未配置固定模板时，按产品功能、本次内容和账号创作风格生成。</div>`}
+            ${acc.imagePromptTemplate ? `<div class="imgf-note">${icon("checkCircle", 13)} 已启用该账号固定图文模板，张数、产品和本次内容会自动替换。</div>` : `<div class="imgf-note muted">未配置固定模板时，按最终文案内容生成图片，账号创作风格只决定视觉效果。</div>`}
           </div>
 
-          <div class="copy-inline card">
+          ${trendPanel ? "" : `<div class="copy-inline card">
             <div class="copy-inline-head">
               <div><b>${icon("type", 14)} 发布文案</b><em>文案先生成，图卡提示词会轻量呼应；可在这里直接微调</em></div>
               <button class="btn ghost sm" id="imgCopyGen">${icon("spark", 13)} 只重写文案</button>
@@ -487,12 +271,13 @@ export function renderSlotsPage(root, p, isImg) {
             <label class="field">正文
               <textarea class="input" id="imgCopyBody" rows="5" placeholder="发布文案会随交付包带出；生成图卡前会优先准备它。">${esc(C.body || "")}</textarea>
             </label>
-          </div>` : ""}
+          </div>`}
+          ${trendPanel}` : ""}
 
           <div class="refbar card" id="cbRefbar">
             <div class="refbar-left">
               <b>${icon("star", 13)} 统一参考图</b>
-              <em>每张图生成 / 站外出图都带上它（最多 5 张：logo / 角色版 / 界面截图）· 可拖图到此</em>
+              <em>站内生成和上传补图都会保留这些参考（最多 5 张：logo / 角色版 / 界面截图）· 可拖图到此</em>
             </div>
             <div class="refbar-chip">${refs.length
               ? refs.map(a => `<span class="ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button class="ref-x" data-ref-rm="${a.id}">${icon("x", 11)}</button></span>`).join("")
@@ -506,41 +291,21 @@ export function renderSlotsPage(root, p, isImg) {
 
           ${isImg ? `
           <div class="generation-toolbar card">
-            <div class="mode-tabs image-mode-tabs" data-active="${genMode}">
-              <button class="mode-tab ${genMode === "in" ? "is-active" : ""}" data-mode="in">站内生成<span>${imageApiConfigured() ? "已接图片 API" : "图片 API 未接"}</span></button>
-              <button class="mode-tab ${genMode === "out" ? "is-active" : ""}" data-mode="out">站外上传<span>整段提示词 · 第三方生成后上传</span></button>
+            <div class="mode-tabs image-mode-tabs" data-active="in">
+              <button class="mode-tab is-active" data-mode="in">站内生成<span>${imageApiConfigured() ? "已接图片 API" : "图片 API 未接"}</span></button>
             </div>
             <div class="generation-actions">
-              ${genMode === "in"
-                ? `<button class="btn gen" id="cbGenAllImages">${icon("spark", 15)} 一键生成全部图片</button>`
-                : `<span class="muted">复制整段提示词后上传成图</span>`}
+              <button class="btn gen" id="cbGenAllImages">${icon("spark", 15)} 一键生成全部图片</button>
             </div>
           </div>` : `
-          <div class="mode-tabs" data-active="${genMode}">
-            <button class="mode-tab ${genMode === "in" ? "is-active" : ""}" data-mode="in">站内生成<span>${imageApiConfigured() ? "已接图片 API" : "图片 API 未接"}</span></button>
-            <button class="mode-tab ${genMode === "out" ? "is-active" : ""}" data-mode="out">站外出图<span>整段提示词 · 第三方生成上传</span></button>
+          <div class="mode-tabs" data-active="in">
+            <button class="mode-tab is-active" data-mode="in">站内生成<span>${imageApiConfigured() ? "已接图片 API" : "图片 API 未接"}</span></button>
           </div>`}
 
-          ${genMode === "out" ? `
-          <div class="external-panel card">
-            <div class="ep-head">
-            <div><b>一整段可复制提示词</b><em class="muted">复制后配合参考图粘贴到第三方图片模型，生成后上传到下方槽位</em></div>
-              <div class="head-actions">
-                <button class="btn ghost sm" id="cbEpRefresh">${icon("refresh", 13)} ${isImg ? "按图卡结构重组" : "按脚本重组"}</button>
-                <button class="btn primary sm" id="cbEpCopy">${icon("copy", 13)} 复制整段</button>
-              </div>
-            </div>
-            <div class="ep-prompt" id="cbEpText" contenteditable="true">${esc(A.externalPrompt || "")}</div>
-            <div class="ep-return" id="cbDrop">
-              <div class="epd-core">${icon("upload", 20)}</div>
-              <div class="epd-text"><b>等待上传<i class="dots"><i>.</i><i>.</i><i>.</i></i></b><em>把生成的图拖进来或点击选择（多选）· 按顺序对应${isImg ? "图" : "分镜"} 1、2、3…并自动入库</em></div>
-              <input type="file" accept="image/*" multiple hidden id="cbDropInput" />
-            </div>
-          </div>` : `
           ${isImg ? "" : `<div class="inhouse-controls">
             <button class="btn gen" id="cbGenPrompts">${icon("spark", 15)} 按脚本生成分镜图提示词</button>
             <span class="muted">${imageApiConfigured() ? "" : "图片 API 未接入"}</span>
-          </div>`}`}
+          </div>`}
 
           <div class="slot-cards" id="cbCards">${items.map((it, i) => slotCard(it, i, isImg)).join("") ||
             `<div class="empty-state slim">${icon("image", 22)}<b>${isImg ? "先在上方图文创作台生成图卡结构" : "先回脚本页生成脚本"}</b><p>每${isImg ? "张图" : "个镜头"}会在这里生成一个出图槽位</p></div>`}</div>
@@ -560,7 +325,7 @@ export function renderSlotsPage(root, p, isImg) {
       <span class="sc-num">${i + 1}</span>
       <div class="sc-text">
         <div class="sc-line">${esc(it.title || "")}<em>${esc(shownVisual.slice(0, 60))}</em></div>
-        <div class="sc-prompt" contenteditable="true" data-prompt="${i}" data-ph="${genMode === "in" ? "点右侧按钮生成图片，或手写提示词" : "（站外模式以整段提示词为准，可单独补充）"}">${esc(shownPrompt)}</div>
+        <div class="sc-prompt" contenteditable="true" data-prompt="${i}" data-ph="点右侧按钮生成图片，或手写提示词">${esc(shownPrompt)}</div>
         ${it.error ? `<div class="sc-error">${esc(it.error)}</div>` : ""}
       </div>
       <div class="sc-thumb" data-thumb="${i}">
@@ -571,7 +336,7 @@ export function renderSlotsPage(root, p, isImg) {
         ${refined ? `<span class="sc-badge">已精修</span>` : ""}
       </div>
       <div class="sc-side">
-        ${genMode === "in" ? `<button class="btn ghost sm" data-gen="${i}">${u || it.status === "done" ? "重新生成" : "生成此图"}</button>` : ""}
+        <button class="btn ghost sm" data-gen="${i}">${u || it.status === "done" ? "重新生成" : "生成此图"}</button>
         <label class="btn ghost sm">上传<input type="file" accept="image/*" hidden data-up="${i}" /></label>
       </div>
     </div>`;
@@ -612,22 +377,38 @@ export function renderSlotsPage(root, p, isImg) {
       });
       $("#imgBrief", root)?.addEventListener("input", e => { S.direction = e.target.value; if (S.direction.trim()) p.topic = S.direction.trim().slice(0, 80); save("productions"); });
       $("#imgBrief", root)?.addEventListener("blur", e => { S.direction = e.target.value.trim(); if (S.direction) p.topic = S.direction.slice(0, 80); save("productions"); });
-      $("#imgOnlineTrends", root)?.addEventListener("change", e => { S.useOnlineTrends = !!e.target.checked; save("productions"); });
+      $("#imgOnlineTrends", root)?.addEventListener("change", e => {
+        S.useOnlineTrends = !!e.target.checked;
+        S.trendPrep = null;
+        S.trendGuide = "";
+        if (p.artifacts.copy) delete p.artifacts.copy.referenceRewrite;
+        save("productions");
+        draw();
+      });
       $("#imgFactoryGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, generateImageWorkshop, "生成中…"));
       $("#imgCopyTitle", root)?.addEventListener("input", e => { p.artifacts.copy.title = e.target.value; save("productions"); });
       $("#imgCopyBody", root)?.addEventListener("input", e => { p.artifacts.copy.body = e.target.value; save("productions"); });
+      $("#trendCopyTitle", root)?.addEventListener("input", e => {
+        p.artifacts.copy.title = e.target.value;
+        const rw = p.artifacts.copy.referenceRewrite;
+        if (rw?.rewrite) rw.rewrite.title = e.target.value;
+        save("productions");
+      });
+      $("#trendCopyBody", root)?.addEventListener("input", e => {
+        p.artifacts.copy.body = e.target.value;
+        const rw = p.artifacts.copy.referenceRewrite;
+        if (rw?.rewrite) rw.rewrite.copy = e.target.value;
+        save("productions");
+      });
       $("#imgCopyGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
         await generateImageCopy({ force: true });
         draw();
       }, "生成文案中…"));
     }
 
-    // 模式切换
     $$(".mode-tab", root).forEach(t => t.addEventListener("click", () => {
       syncImageFactoryDraft();
-      genMode = t.dataset.mode; modeBySlot.set(p.id, genMode);
-      if (genMode === "out" && !A.externalPrompt) rebuildExternal();
-      draw();
+      genMode = "in"; modeBySlot.set(p.id, "in");
     }));
 
     // 统一参考
@@ -679,17 +460,7 @@ export function renderSlotsPage(root, p, isImg) {
       draw();
     }
 
-    // 站外面板
-    if (genMode === "out") {
-      $("#cbEpRefresh", root).addEventListener("click", () => { rebuildExternal(); draw(); toast("已按当前脚本重新组装"); });
-      $("#cbEpCopy", root).addEventListener("click", () => copyText($("#cbEpText", root).textContent, "已复制整段提示词，去第三方模型粘贴即可"));
-      $("#cbEpText", root).addEventListener("blur", () => { A.externalPrompt = $("#cbEpText", root).textContent; save("productions"); });
-      const dz = $("#cbDrop", root);
-      wireDropZone(dz, files => handleReturn(files));
-      dz.addEventListener("click", () => $("#cbDropInput", root).click());
-      $("#cbDropInput", root).addEventListener("change", e => { handleReturn(e.target.files); e.target.value = ""; });
-    } else {
-      $("#cbGenAllImages", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+    $("#cbGenAllImages", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
         const runToken = startImageRun("all");
         const items = A.items || [];
         if (!items.length) {
@@ -697,7 +468,7 @@ export function renderSlotsPage(root, p, isImg) {
         }
         const fresh = A.items || [];
         if (!fresh.length) { toast("还没有可生成的图卡"); return; }
-        if (!imageApiConfigured()) { toast("图片 API 未接入，请先配置站内图片服务，或切到站外上传", "error"); return; }
+        if (!imageApiConfigured()) { toast("图片 API 未接入，请先配置站内图片服务，或使用槽位上传补图", "error"); return; }
         fresh.forEach(x => {
           if (imageRunActive(runToken, "all") && x.prompt && !x.assetId) {
             x.status = "loading";
@@ -720,9 +491,9 @@ export function renderSlotsPage(root, p, isImg) {
         save("productions");
         if (canRedrawCurrent()) draw();
         toast(ok ? "已生成" : "没有图片生成成功，请检查错误提示", ok ? "" : "error");
-      }, "生成图片中…"));
+    }, "生成图片中…"));
 
-      $("#cbGenPrompts", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+    $("#cbGenPrompts", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
         const shots = p.artifacts.script.shots || [];
         if (!shots.length) { toast(isImg ? "先在图文创作台生成图卡结构" : "先回脚本页生成脚本"); return; }
         const sharedRefs = refAssetsOf(A);
@@ -754,8 +525,7 @@ export function renderSlotsPage(root, p, isImg) {
         save("productions");
         draw();
         toast(AI.sourceNote(`已生成 ${A.items.length} 条提示词`));
-      }, "生成中…"));
-    }
+    }, "生成中…"));
 
     // 槽位编辑/上传/站内生成
     $$("[data-prompt]", root).forEach(el => el.addEventListener("blur", () => {
@@ -850,7 +620,7 @@ export function renderSlotsPage(root, p, isImg) {
       const provider = activeProviderFor("image");
       const key = providerKeyFor("image", provider);
       if (!imageApiConfigured() || provider?.mock) {
-        throw new Error("图片 API 未接入：请配置服务端 IMAGE_API_KEY/IMAGE_BASE_URL，或切换到站外上传");
+        throw new Error("图片 API 未接入：请配置站内图片服务，或使用槽位上传补图");
       } else {
         const finalPrompt = enrichPromptWithRefs(promptForImageModel(fresh.prompt), A);
         const r = await provider.submit({
@@ -895,34 +665,12 @@ export function renderSlotsPage(root, p, isImg) {
       if (slot < 0) {
         let dataUrl = await fileToDataUrl(f);
         if (isImg) dataUrl = await polishImageForPublish(dataUrl, `${p.id}-extra-${f.name}-${p.topic || ""}`);
-        await addAssetFromDataUrl(acc.id, { name: `站外${isImg ? "笔记图" : "分镜"}_${f.name.replace(/\.[^.]+$/, "").slice(0, 10)}`, tags: isImg ? ["笔记图", "站外生成", "发布前精修"] : ["分镜图", "站外生成"], dataUrl });
+        await addAssetFromDataUrl(acc.id, { name: `上传补图_${f.name.replace(/\.[^.]+$/, "").slice(0, 10)}`, tags: isImg ? ["笔记图", "上传补图", "发布前精修"] : ["分镜图", "上传补图"], dataUrl });
       } else {
         await fillSlot(slot, f);
       }
     }
     if (canRedrawCurrent()) draw();
-  }
-
-  function rebuildExternal() {
-    const shots = p.artifacts.script.shots || [];
-    const sharedRefs = refAssetsOf(A);
-    const styleRef = isImg && acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
-    const product = productById(p.artifacts.script.productId);
-    const refNames = refNamesOf(A, [styleRef?.name]);
-    A.externalPrompt = isImg
-      ? buildImgExternalPrompt({
-        topic: p.topic,
-        position: acc.position,
-        shots,
-        items: (A.items || []).filter(x => x.prompt),
-        style: p.artifacts.script.style,
-        refNames,
-        template: acc.imagePromptTemplate || "",
-        productName: promptProductName(product),
-        imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || DEFAULT_XHS_IMAGE_COUNT
-      })
-      : buildSbExternalPrompt({ shots, boards: (A.items || []).filter(x => x.prompt), style: p.artifacts.script.style, sharedRefName: sharedRefs.map(x => x.name).join("、") });
-    save("productions");
   }
 
   async function generateImageCopy(opts = {}) {
@@ -936,13 +684,33 @@ export function renderSlotsPage(root, p, isImg) {
       trendGuide = ""
     } = opts;
     const C = p.artifacts.copy;
-    if (!force && (C.title || "").trim() && (C.body || "").trim()) return C;
+    let effectiveTrendPrep = trendPrep || S.trendPrep || null;
     const shots = shotsOverride || S.shots || p.artifacts.script.shots || [];
-    if (!shots.length) return C;
     const product = productOverride || productById(S.productId || "dumate");
     const style = styleOverride || S.style || acc.styleProfile || "";
+    const topicForCopy = topicOverride || p.topic || S.direction || "";
+    if (S.useOnlineTrends && (force || !effectiveTrendPrep)) {
+      effectiveTrendPrep = await AI.trendPrep({
+        topic: topicForCopy,
+        account: acc,
+        product,
+        useOnlineTrends: true,
+        kind: "image",
+        imageCount: Math.max(3, Math.min(12, shots.length || S.imageCount || DEFAULT_XHS_IMAGE_COUNT))
+      });
+      S.trendPrep = effectiveTrendPrep;
+      S.trendGuide = effectiveTrendPrep?.guide || S.trendGuide || "";
+      if (effectiveTrendPrep?.referenceNote) toast(effectiveTrendPrep.referenceNote);
+      save("productions");
+    }
+    if (!force && (C.title || "").trim() && (C.body || "").trim()) {
+      const rw = rewriteForCopy(effectiveTrendPrep, C);
+      if (rw) C.referenceRewrite = rw;
+      return C;
+    }
+    if (!shots.length) return C;
     const res = await AI.generateCopy({
-      topic: topicOverride || p.topic || S.direction || "",
+      topic: topicForCopy,
       shots,
       account: acc,
       style,
@@ -950,14 +718,20 @@ export function renderSlotsPage(root, p, isImg) {
       product,
       useOnlineTrends: !!S.useOnlineTrends,
       trendGuide: trendGuide || S.trendGuide || "",
-      trendPrep: trendPrep || S.trendPrep || null
+      trendPrep: effectiveTrendPrep
     });
     C.title = res.title || C.title || p.title || p.topic || "";
     C.body = res.copy || C.body || "";
+    const rw = rewriteForCopy(effectiveTrendPrep, C);
+    if (rw) C.referenceRewrite = rw;
     const titleInput = $("#imgCopyTitle", root);
     const bodyInput = $("#imgCopyBody", root);
+    const trendTitleInput = $("#trendCopyTitle", root);
+    const trendBodyInput = $("#trendCopyBody", root);
     if (titleInput) titleInput.value = C.title;
     if (bodyInput) bodyInput.value = C.body;
+    if (trendTitleInput) trendTitleInput.value = C.title;
+    if (trendBodyInput) trendBodyInput.value = C.body;
     save("productions");
     return C;
   }
@@ -974,7 +748,7 @@ export function renderSlotsPage(root, p, isImg) {
     if (!brief) {
       brief = await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: count, kind: "image", useOnlineTrends: S.useOnlineTrends, trendPrep });
       const input = $("#imgBrief", root); if (input) input.value = brief;
-      toast(AI.sourceNote("已随机生成详细创作内容"));
+      toast(AI.sourceNote("已按四方向生成短选题"));
       trendPrep = await AI.trendPrep({ topic: brief, account: acc, product: selectedProduct, useOnlineTrends: S.useOnlineTrends, kind: "image", imageCount: count });
     }
     S.direction = brief;
@@ -1024,6 +798,8 @@ export function renderSlotsPage(root, p, isImg) {
     });
     S.trendPrep = trendPrep;
     S.trendGuide = trendGuide;
+    const rw = rewriteForCopy(trendPrep, p.artifacts.copy);
+    if (rw) p.artifacts.copy.referenceRewrite = rw;
     const promptRows = promptRes.shots || [];
     A.items = S.shots.map((s, i) => ({
       title: promptRows[i]?.title || `图片${i + 1}`,
@@ -1032,8 +808,6 @@ export function renderSlotsPage(root, p, isImg) {
       assetId: (A.items[i] || {}).assetId || null,
       status: (A.items[i] || {}).assetId ? "done" : "idle"
     }));
-    A.externalPrompt = "";
-    rebuildExternal();
     p.stage = "images";
     p.stageStatus = "pending";
     save("productions");
@@ -1041,6 +815,5 @@ export function renderSlotsPage(root, p, isImg) {
     toast(AI.sourceNote("已生成文案、图卡结构与提示词"));
   }
 
-  if (!A.externalPrompt && (p.artifacts.script.shots || []).length) rebuildExternal();
   draw();
 }

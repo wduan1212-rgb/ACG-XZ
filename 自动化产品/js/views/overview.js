@@ -24,7 +24,7 @@ const safeAccount = a => ({
   platform: (a && a.platform) || "小红书",
   mode: (a && a.mode) || "图文",
   subType: (a && a.subType) || "",
-  position: (a && a.position) || "",
+  styleProfile: (a && a.styleProfile) || "",
   monthlyDone: (a && a.monthlyDone) || 0
 });
 const safeGroup = a => {
@@ -33,18 +33,23 @@ const safeGroup = a => {
 const safeChip = (platform, sm = true) => {
   try { return platChip(platform || "小红书", sm); } catch (e) { return `<span class="plat-chip sm">小红书</span>`; }
 };
+const visibleWorkProductions = () => state.productions.filter(p => p.stage === "delivered" || ownedBy(p));
+const visiblePrivateAssets = () => state.assets.filter(a => !a.delivered && !a.shared && ownedBy(a));
 
 function computeStats() {
   const today = dayKey(Date.now());
   const yest = dayKey(Date.now() - 864e5);
   const delivered = state.assets.filter(a => a.delivered);
+  const privateAssets = visiblePrivateAssets();
+  const visibleProds = visibleWorkProductions();
+  const visibleProdIds = new Set(visibleProds.map(p => p.id));
   const stageCount = {};
-  state.productions.forEach(p => {
+  visibleProds.forEach(p => {
     const k = p.stage === "delivered" ? "已交付" : (STAGES[p.stage] || {}).label || p.stage;
     stageCount[k] = (stageCount[k] || 0) + 1;
   });
-  const assetsToday = state.assets.filter(a => !a.delivered && dayKey(a.createdAt) === today).length;
-  const assetsYest = state.assets.filter(a => !a.delivered && dayKey(a.createdAt) === yest).length;
+  const assetsToday = privateAssets.filter(a => dayKey(a.createdAt) === today).length;
+  const assetsYest = privateAssets.filter(a => dayKey(a.createdAt) === yest).length;
   return {
     日期: { 今天: today, 昨天: yest },
     账号: state.accounts.filter(Boolean).map(a => {
@@ -52,8 +57,8 @@ function computeStats() {
       return { 名称: acc.name, 平台: acc.platform, 分组: safeGroup(acc), 本月交付: acc.monthlyDone || 0 };
     }),
     任务阶段分布: stageCount,
-    待审核: state.productions.filter(p => p.stage === "review" && p.stageStatus !== "failed").length,
-    失败任务: state.productions.filter(p => p.stageStatus === "failed").length,
+    待审核: visibleProds.filter(p => p.stage === "review" && p.stageStatus !== "failed").length,
+    失败任务: visibleProds.filter(p => p.stageStatus === "failed").length,
     交付: {
       总数: delivered.length,
       今天交付: delivered.filter(a => dayKey(a.createdAt) === today).length,
@@ -65,9 +70,9 @@ function computeStats() {
     },
     素材入库: { 今天: assetsToday, 昨天: assetsYest },
     渲染任务: {
-      成功: state.jobs.filter(j => j.status === "succeeded").length,
-      失败: state.jobs.filter(j => j.status === "failed").length,
-      进行中: state.jobs.filter(j => ["queued", "submitted", "running"].includes(j.status)).length
+      成功: state.jobs.filter(j => visibleProdIds.has(j.productionId) && j.status === "succeeded").length,
+      失败: state.jobs.filter(j => visibleProdIds.has(j.productionId) && j.status === "failed").length,
+      进行中: state.jobs.filter(j => visibleProdIds.has(j.productionId) && ["queued", "submitted", "running"].includes(j.status)).length
     }
   };
 }
@@ -148,7 +153,7 @@ export const overviewView = {
         </section>
 
         <div class="ov-stats">
-          ${stat("等待上传", waiting.length, "站外出图后拖回即可", "agent", waiting.length ? "warn" : "")}
+          ${stat("等待上传", waiting.length, "上传补图后继续", "agent", waiting.length ? "warn" : "")}
           ${stat("生成中", rendering.length, "渲染 / 分镜工坊", "agent", rendering.length ? "run" : "")}
           ${stat("待审核", inReview.length, "人工确认后交付", "agent", inReview.length ? "review" : "")}
           ${stat("失败待重试", failed.length, "一键重试", "agent", failed.length ? "fail" : "")}

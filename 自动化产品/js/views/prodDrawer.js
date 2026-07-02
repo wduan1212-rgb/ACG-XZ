@@ -1,6 +1,6 @@
 /* 任务详情抽屉：Agent 看板 / 创作空间 / 发布清单 共用的任务控制面板 */
 
-import { esc, gradFor, copyText, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
+import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
 import { openDrawer, toast, confirmModal, openLightbox, publishModal } from "../ui/components.js";
@@ -129,12 +129,6 @@ export function openProductionDrawer(pid, tab) {
           const f = td.dataset.shotField;
           if (p.artifacts.script.shots[i]) { p.artifacts.script.shots[i][f] = td.textContent.trim(); save("productions"); }
         }));
-        // 复制站外提示词
-        const cp = rootEl.querySelector("[data-pd-copy]");
-        if (cp) cp.addEventListener("click", () => {
-          const txt = isImg ? p.artifacts.images.externalPrompt : p.artifacts.boards.externalPrompt;
-          copyText(txt || "", "已复制整段提示词，去第三方模型粘贴即可");
-        });
         // 槽位上传
         rootEl.querySelectorAll("[data-slot-up]").forEach(inp => inp.addEventListener("change", async e => {
           const i = +inp.dataset.slotUp;
@@ -323,7 +317,7 @@ function slotsTab(p, isImg) {
   if (!items.length) return `<div class="pd-empty">${icon("image", 22)}<p>脚本起草后这里会列出${isImg ? "每张图" : "每个分镜"}的上传槽位</p></div>`;
   const got = items.filter(x => x.assetId).length;
   return `
-    <div class="pd-note">站外出图上传 <b>${got}/${items.length}</b> · <button class="link-btn" data-pd-copy>${icon("copy", 13)} 复制整段提示词</button></div>
+    <div class="pd-note">上传补图 <b>${got}/${items.length}</b></div>
     <div class="pd-drop" data-pd-drop>
       ${icon("upload", 16)} 把图拖到这里按顺序分发（可多选）
       <input type="file" accept="image/*" multiple hidden data-pd-drop-input />

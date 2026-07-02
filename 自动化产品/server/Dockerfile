@@ -8,13 +8,23 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY index.html favicon.svg logo.png ./
 COPY js/ ./js/
 COPY styles/ ./styles/
+COPY assets/ ./assets/
 
 # 后端
-COPY server/ ./server/
+COPY server/main.py server/store.py ./server/
+COPY server/requirements.txt ./server/requirements.txt
+COPY server/minimax_system_voices.json ./server/minimax_system_voices.json
+COPY server/scripts/ ./server/scripts/
+RUN mkdir -p /data/uploads /data/composed
 
 # 运行时注入：LLM_API_KEY（语言模型，经 /api/chat/completions 代理）
-#            JUSTONEAPI_KEY（小红书真实数据采集，留空则走稳定模拟数据）
+#            JUSTONEAPI_KEY（小红书真实数据采集，留空则数据采集接口明确失败）
 ENV LLM_API_KEY="" \
-    JUSTONEAPI_KEY=""
+    JUSTONEAPI_KEY="" \
+    DATA_DB="/data/data.sqlite" \
+    LEGACY_DATA_FILE="/data/data.json" \
+    UPLOAD_DIR="/data/uploads" \
+    COMPOSED_DIR="/data/composed"
+VOLUME ["/data"]
 EXPOSE 8787
 CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8787"]

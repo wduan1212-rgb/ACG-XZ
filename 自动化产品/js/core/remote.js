@@ -27,14 +27,14 @@ async function fetchWithTimeout(path, options = {}, timeoutMs = FETCH_TIMEOUT_MS
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(path, { ...options, signal: ctrl.signal });
+    return await fetch(path, { cache: "no-store", ...options, signal: ctrl.signal });
   } finally {
     clearTimeout(timer);
   }
 }
 
 async function req(path, { method = "GET", body, auth = true } = {}) {
-  const headers = { "Content-Type": "application/json" };
+  const headers = { "Content-Type": "application/json", "Cache-Control": "no-cache" };
   if (auth && _token) headers.Authorization = "Bearer " + _token;
   let res;
   try {

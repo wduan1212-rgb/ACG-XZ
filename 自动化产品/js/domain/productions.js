@@ -48,8 +48,8 @@ export const STATUS_LABEL = {
 export function blankArtifacts() {
   return {
     script: { title: "", shots: [], source: "", style: "", imageCount: 4, direction: "", productId: "dumate" },
-    boards: { items: [], units: [], sharedRefAssetId: null, externalPrompt: "", externalGroups: [], generationMode: null, digitalHuman: { provider: "", model: "", segments: [] } },
-    images: { items: [], sharedRefAssetId: null, externalPrompt: "" },
+    boards: { items: [], units: [], sharedRefAssetId: null, generationMode: null, digitalHuman: { provider: "", model: "", segments: [] } },
+    images: { items: [], sharedRefAssetId: null },
     prompts: [],
     audio: { assetId: null, duration: 0, perShot: [], source: "", voiceId: "", voiceRefAssetId: null, voiceRefDisabled: false },  // 口播/声线（视频号）
     bgm: null,              // {name, volume, auto}（素材号智能混剪选配）
@@ -127,9 +127,9 @@ export function buildMaterialUnits(p) {
 export const materialUnits = p => p.artifacts.boards.units || [];
 export const unitShots = (p, u) => (u.shotIndexes || []).map(i => p.artifacts.script.shots[i]).filter(Boolean);
 
-/* 按账号定位智能选一条 BGM（搞笑→活泼，知识→沉稳，默认轻快） */
-export function pickBgm(position = "", seed = "") {
-  const pos = String(position);
+/* 按账号创作风格智能选一条 BGM（搞笑→活泼，知识→沉稳，默认轻快） */
+export function pickBgm(styleProfile = "", seed = "") {
+  const pos = String(styleProfile);
   let mood = "轻快";
   if (/搞笑|幽默|段子|梗/.test(pos)) mood = "活泼";
   else if (/深度|知识|科普|测评|专业/.test(pos)) mood = "沉稳";
@@ -254,7 +254,7 @@ export function inFlightOf(accountId) {
   return productionsOf(accountId).filter(p => p.stage !== "delivered");
 }
 
-/* 当前成员名下的全部任务（创作互不干扰；admin 全看） */
+/* 当前成员名下的全部任务（创作互不干扰；admin 也只看自己的创作态任务） */
 export function myProductions() {
   return state.productions.filter(ownedBy);
 }
@@ -350,7 +350,7 @@ export function autoMixMaterial(p) {
   p.artifacts.subs = subs;
   const hasExternalVoice = !!p.artifacts.audio.assetId && ["tts", "upload"].includes(p.artifacts.audio.source);
   if (hasExternalVoice && !p.artifacts.bgm) {
-    const b = pickBgm(acc?.position, p.topic);
+    const b = pickBgm(acc?.styleProfile || acc?.voiceName, p.topic);
     p.artifacts.bgm = { name: b.name, mood: b.mood, volume: 0.25, auto: true };
   } else if (!hasExternalVoice && p.artifacts.bgm?.auto) {
     p.artifacts.bgm = null;
