@@ -590,6 +590,15 @@ function trendReferenceForCopy(prep = null, product = null) {
   }).join("\n\n");
 }
 
+function directReferenceCopyFromPrep(prep = null, product = null) {
+  if (prep?.source !== "online") return null;
+  const rw = prep?.referenceRewrite?.rewrite || {};
+  const title = sanitizeXhsText(stripOwnProductMentions(rw.title || prep?.title || "", product));
+  const copy = sanitizeXhsText(stripOwnProductMentions(rw.copy || prep?.copy || "", product));
+  if (!title || !copy) return null;
+  return sanitizeXhsObject({ title, copy });
+}
+
 function productListLine(list = []) {
   return list.map(p => `${productDisplayName(p, "同类工具")}（${sanitizeProduct(p.category || "同类工具")}）`).join("、");
 }
@@ -2027,7 +2036,7 @@ ${kind === "video" ? `账号创作风格：${account?.styleProfile || account?.v
 用户已写创作方向：${userText ? userText : "未填写"}
 可参考/可组合的同类工具：
 ${productRelationLine(rel)}
-小红书热门结构参考（只学选题钩子、标题结构、图卡节奏，不要照抄样本，不要把样本标题写入成品）：
+小红书热门结构参考（联网参考命中时优先保留参考标题和选题关系；没有正文时只补充可验证的经验，不要改成另一个主题）：
 ${trendGuideText}
 ${prep?.referenceNote ? `\n联网/本地参考说明：${prep.referenceNote}` : ""}
 ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
@@ -2071,7 +2080,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
 同一批量任务里每个账号都要像不同博主写同一方向：可以共享大主题，但必须更换切入角度、例子、标题表达、图卡顺序和结尾结论；不要输出多条相同或近似的图卡脚本。
 如果账号风格是火柴人、简笔画、小人、漫画或手绘，line 更偏短句，visual 重点写人物动作、表情、气泡、箭头和小物件，减少界面文字和表格密度。
 若本次创作内容提到竞品/同类工具，要先识别其在产品库中的功能点，再安排成对比表、分工流程、组合用法或边界提醒；本次主产品仍是主角，不能把竞品能力写成主产品能力。测评或对比类内容只写适合谁、任务边界、真实证据和组合方式，不写分数、星级、排行榜或评分卡。
-小红书趋势参考只用于你内部决定标题钩子、文案骨架和图卡节奏，禁止照抄样本标题，也不要把“热门参考/趋势参考/样本标题”等词写进 shots。${hasImageTemplate ? `账号配置了固定图文模板，必须优先遵守模板的风格、画面语言、参考图使用方式和统一要求；但模板中的张数、主题、产品名、各图内容都要按本次创作内容重写，最终 shots 必须正好 ${nImg} 行。` : ""}只输出 JSON：{"title":"小红书笔记风标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"图上文案(小红书笔记口吻、精简)"}]}，shots 必须正好 ${nImg} 行。`
+小红书趋势参考用于决定标题钩子、文案骨架和图卡节奏；联网参考命中时，标题和选题关系要尽量贴近参考，只做产品名弱化和本次产品能力校正，不要把“热门参考/趋势参考/样本标题”等词写进 shots。${hasImageTemplate ? `账号配置了固定图文模板，必须优先遵守模板的风格、画面语言、参考图使用方式和统一要求；但模板中的张数、主题、产品名、各图内容都要按本次创作内容重写，最终 shots 必须正好 ${nImg} 行。` : ""}只输出 JSON：{"title":"小红书笔记风标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"图上文案(小红书笔记口吻、精简)"}]}，shots 必须正好 ${nImg} 行。`
       : (account.subType === "无数字人"
         ? `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【无数字人】视频：没有固定出镜人物，以场景/产品界面/手部操作混剪为主，line 写专业画外音旁白。成片控制在45-58秒，绝不超过60秒，拆成8-10个镜头；每镜头口播1句，尽量12-24个中文字符，单句至少能自然说3秒，不要赶。偏教程专业可信、理性有梗、不要信息流硬广。visual 非常具体：景别、机位运镜(固定/缓推/横移/跟随)、产品界面模块、界面动效(卡片滑入/进度条/局部高亮)、配色、光线，禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"专业画外音旁白","ui":true,"scene":1}]}。`
         : `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【真人/数字人口播】视频。成片控制在50-65秒，拆成12-16个可切分口播镜头；每镜头口播1句，尽量14-30个中文字符，像真人一口气讲经验，不要赶。口播风格参考：先从真实误解或门槛担心切入，例如以为AI工具很复杂；随后给轻微惊讶/松一口气的反差；中段用1-2个具体办公或作品集案例讲清“直接说人话、工具拆解任务、一步步执行、还能整理文件/总结资料/分析表格/捋需求”；结尾落在“不是让我变程序员，而是把脑子里的想法或手里的乱东西推进到可看可用的版本”。不要逐字照抄任何参考话术。可以有情绪起伏、口语停顿和朋友式解释感，但不要输出 {happy}、{/happy}、(clear-throat) 这类情绪/音效标签，也不要输出括号舞台指令。结构上有真人开场、有产品场景演示、有真人收束，但不要死板两段式。内容丰富、偏教程专业可信、理性有梗、不要信息流硬广：口播像真实经验分享，能直接念。visual 非常具体：人物动作表情、产品界面模块、运镜、界面动效、配色、光线；如果后续有统一参考图，人物外貌由参考图锁定，这里不要写五官长相。禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"口播原话","ui":true,"scene":1}]}。`);
@@ -2079,7 +2088,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       const content = await llm([
         { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys },
         { role: "user", content: image
-          ? `账号创作风格：${style || account.styleProfile || "干净可读的小红书图文风"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n${variantGuide ? `\n${variantGuide}\n` : ""}共生成 ${nImg} 张图。\n${style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}${prepLine}${mentionedGuide ? `本次创作内容里明确提到的同类/互补工具能力：\n${mentionedGuide}\n请把这些工具具体安排成组合流程、功能边界或对比卡，不要只挂名字。\n` : ""}小红书趋势参考（只学结构、节奏和选题钩子，不要照抄，不要写进图上文字）：\n${trendGuideText}\n主题：${topic}\n围绕本次宣传产品的真实功能延展教学，优先服从用户本次创作内容，不要强呼吁下载。${topicalHook(product)}`
+          ? `账号创作风格：${style || account.styleProfile || "干净可读的小红书图文风"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n${variantGuide ? `\n${variantGuide}\n` : ""}共生成 ${nImg} 张图。\n${style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}${prepLine}${mentionedGuide ? `本次创作内容里明确提到的同类/互补工具能力：\n${mentionedGuide}\n请把这些工具具体安排成组合流程、功能边界或对比卡，不要只挂名字。\n` : ""}小红书趋势参考（联网时尽量保留参考标题和选题关系；只做产品名弱化、内容校正和图卡化）：\n${trendGuideText}\n主题：${topic}\n围绕本次宣传产品的真实功能延展教学，优先服从用户本次创作内容，不要强呼吁下载。${topicalHook(product)}`
           : `账号创作风格：${account.styleProfile || style || "真实经验分享"}\n账号口播风格参考：${account.voiceName || account.styleProfile || style || account.tone || "自然、可信、有教程感"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n${prepLine}视频号脚本不使用联网热门参考；只参考账号创作风格、账号口播风格、本次选题、产品真实功能和本地内容结构。\n本地结构参考（只学节奏，不要照抄）：\n${trendGuideText}\n主题：${topic}\n目标时长：${Math.min(60, duration || 55)}秒以内，最终不超过60秒。口播宁可少一点，保证每句都能自然读完。围绕本次宣传产品的真实功能延展教学，但要先用真实痛点切入、自然安利，不要孤立自嗨，不要强呼吁下载。${topicalHook(product)}${this.memoryLine(account)}` }
       ], { json: true });
       const d = parseJSONLoose(content);
@@ -2268,6 +2277,8 @@ ${xhsGuardPrompt()}
     const prep = trendPrep || await resolveTrendPrep({ topic: safeTopic, account, product, batchVariant, useOnlineTrends, kind, imageCount: Math.max(3, Math.min(12, (safeShots || []).length || DEFAULT_XHS_IMAGE_COUNT)) });
     const trendGuideText = prep?.guide || trendGuide || await resolveTrendGuide({ topic: safeTopic, account, product, batchVariant, useOnlineTrends, kind });
     const trendReferenceText = trendReferenceForCopy(prep, product);
+    const directReferenceCopy = kind === "image" ? directReferenceCopyFromPrep(prep, product) : null;
+    if (directReferenceCopy) return this._ok(directReferenceCopy);
     const offlineCopyLine = !trendReferenceText
       ? "当前没有联网参考原文可用：本地趋势库只当灵感，不要被它的标题、结构或固定话术限制。请直接围绕本次主题、图卡内容和账号风格，写成真实使用后的经验复盘；允许选择更自然的叙述顺序。正文少换行，不留空行，不要机械分点；要讲清一个具体场景、一个可执行方法和一个复核/边界判断。"
       : "";
@@ -2285,10 +2296,10 @@ ${xhsGuardPrompt()}
 语气按本次内容和账号创作风格细化，像真人发笔记，不要硬广腔。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`;
     try {
       const content = await llm([
-        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys + XHS_COPY_STYLE + "\n\n【小红书联网参考吸收规则】\n如果有联网参考，优先吸收里面真实可用的信息：痛点、教程步骤、踩坑点、读者关心的问题、互动数字暗示的受欢迎角度、标题情绪和口语节奏。不要只学结构，也不要写成泛泛的工具说明。\n可以把参考内容改写成更适合本账号的亲历式经验，但必须换场景、换顺序、换表达，不能连续照搬样本文案原句；参考只有标题/摘要时，要基于可得信息做真实推断，不能编造参考正文。\n\n【离线创作放开规则】\n没有联网参考或用户关闭联网时，不要被本地趋势库限制成模板文。本地趋势只提供方向词，最终文案要优先服从用户主题、图卡内容、账号语气和真实使用逻辑。可以写成亲历复盘、经验分享、避坑提醒、场景叙述、轻教程或观点表达，只要主题点讲透、信息有深度、语气像真人。\n\n【小红书热门结构与内容参考】\n" + trendGuideText + "\n\n【对外文案产品名规则】\n标题、正文和话题标签都不要出现自家产品名；需要指代时用「桌面智能体」「AI应用搭建工具」「这个工具」「这类工具」等品类词。竞品或互补工具名可以出现，但不要把主产品名写进标题或正文。\n\n【同批去重硬约束】\n如果用户没有写很具体的内容，请先自己选择一个不同于同批其他账号的真实场景，再写标题和正文。禁止只改产品名、账号名或数字；禁止连续使用同一种标题类型、同一种首句和同一种三点清单。标题可以不带产品名，但正文必须让人知道具体工具怎么分工或怎么用。\n\n" + xhsGuardPrompt() },
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys + XHS_COPY_STYLE + "\n\n【小红书联网参考吸收规则】\n如果有联网参考，先保留参考标题、正文结构、语气和核心表达，目标是 80% 以上相似；不要强行换成另一个主题、另一个场景或另一套三段式结构。\n只做必要改写：把自家产品名和不需要点名的竞品名弱化为 AI、AI工具、桌面智能体、同类工具；如果参考本身写的是 Obsidian+AI、AI办公、知识管理这类泛称，就直接保留，不要改成产品硬广。\n参考只有标题/摘要时，不编造不存在的正文；围绕这个标题和可得摘要补充一段自然、有干货的经验说明，仍要保持标题问题和选题关系不变。\n\n【离线创作放开规则】\n没有联网参考或用户关闭联网时，不要被本地趋势库限制成模板文。本地趋势只提供方向词，最终文案要优先服从用户主题、图卡内容、账号语气和真实使用逻辑。可以写成亲历复盘、经验分享、避坑提醒、场景叙述、轻教程或观点表达，只要主题点讲透、信息有深度、语气像真人。\n\n【小红书热门结构与内容参考】\n" + trendGuideText + "\n\n【对外文案产品名规则】\n标题、正文和话题标签都不要出现自家产品名；需要指代时用「AI」「AI工具」「桌面智能体」「这个工具」「这类工具」等品类词。竞品或互补工具名仅在用户明确做对比/选型时保留，否则也弱化成 AI 或同类工具。\n\n【同批去重硬约束】\n如果用户没有写很具体的内容，请先自己选择一个不同于同批其他账号的真实场景，再写标题和正文。禁止只改产品名、账号名或数字；禁止连续使用同一种标题类型、同一种首句和同一种三点清单。标题可以不带产品名，但正文必须让人知道具体工具怎么分工或怎么用。\n\n" + xhsGuardPrompt() },
         { role: "user", content: kind === "video"
           ? `账号创作风格：${sanitizeXhsText(account.styleProfile || account.voiceName || safeStyle || "")}\n账号口播风格参考：${sanitizeXhsText(account.voiceName || account.styleProfile || account.tone || "自然、可信、有教程感")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}已定口播逐句稿（发布标题和简介必须围绕这些口播总结，不要另起主题）：\n${script}\n标题参考方向：国产Codex/AI Agent/桌面智能体/零门槛/1分钟上手/一篇讲清楚/少绕路/真实用法。根据口播选择最贴切的一种，不要硬塞无关词。\n${HUMAN_COPY_VOICE}${this.memoryLine(account)}`
-          : `账号创作风格：${sanitizeXhsText(account.styleProfile || safeStyle || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${trendReferenceText ? `联网参考原始可用信息（要吸收真实痛点/步骤/互动信号，但不要照抄原句）：\n${trendReferenceText}\n` : `${offlineCopyLine}\n`}${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡内容摘要：\n${script}\n${HUMAN_COPY_VOICE}` }
+          : `账号创作风格：${sanitizeXhsText(account.styleProfile || safeStyle || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（用于判断是否要弱化/保留工具名）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${trendReferenceText ? `联网参考原始可用信息（标题和结构要尽量保留，目标 80%+ 相似；只弱化产品名，不另起主题）：\n${trendReferenceText}\n` : `${offlineCopyLine}\n`}${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡内容摘要：\n${script}\n${HUMAN_COPY_VOICE}` }
       ], { json: true, temperature: 1.02 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.title || !d.copy) throw new Error("模型未返回 title/copy");

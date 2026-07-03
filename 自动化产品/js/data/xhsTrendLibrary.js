@@ -98,44 +98,44 @@ export const DEFAULT_CREATIVE_DIRECTIONS = [
     key: "comparison_choice",
     name: "强对比选型",
     topics: [
-      "一篇讲清 Codex / Claude Code / WorkBuddy 怎么选",
-      "代码智能体和桌面执行别混用",
-      "AI Agent 到底该按场景选",
-      "别再用一个 AI 包办所有任务",
-      "用了一个月才分清这些工具"
+      "Codex 对比相关",
+      "AI Agent 选型相关",
+      "代码智能体对比相关",
+      "Codex/Claude Code 怎么选相关",
+      "AI 工具分工相关"
     ]
   },
   {
     key: "ecosystem_combo",
     name: "联动绑定生态",
     topics: [
-      "Obsidian 沉淀，桌面智能体执行",
-      "资料库和桌面执行怎么接上",
-      "桌面智能体 + 飞书搭自动化报表",
-      "桌面智能体 + WPS 做 AI 办公流",
-      "把知识库变成能跑的流程"
+      "Obsidian + AI 相关",
+      "知识库自动化相关",
+      "AI + 知识管理相关",
+      "内容创作工作流相关",
+      "资料沉淀与执行相关"
     ]
   },
   {
     key: "worker_efficiency",
     name: "打工人效率场景",
     topics: [
-      "周报先别硬写，让流程打底",
-      "表格字段别再手动复制",
-      "下班前汇总别再从零整理",
-      "零散资料先跑成清单",
-      "同事以为我招了 AI 助理"
+      "周报效率相关",
+      "表格整理相关",
+      "文件归档相关",
+      "会议纪要相关",
+      "打工人自动化相关"
     ]
   },
   {
     key: "beginner_reversal",
     name: "小白反转入门",
     topics: [
-      "小白第一次先跑一个小流程",
-      "不用编程也能让 AI 跑流程",
-      "先把一个重复动作交给 AI",
-      "被 AI 劝退后从这一步开始",
-      "零基础别一上来做大自动化"
+      "AI 工具小白入门相关",
+      "零基础 AI 办公相关",
+      "不用编程相关",
+      "新手工作流相关",
+      "低门槛自动化相关"
     ]
   }
 ];
@@ -242,6 +242,67 @@ function stripOwnProductNames(text = "", product = null) {
     .trim();
 }
 
+function shouldKeepSpecificTool(name = "", topic = "") {
+  const src = String(topic || "");
+  if (!name || !src) return false;
+  const re = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  return re.test(src) && /对比|区别|怎么选|vs|VS|分工|选型/.test(src);
+}
+
+function softenReferenceProductNames(text = "", { product = null, topic = "" } = {}) {
+  let out = String(text || "").replace(OWN_PRODUCT_RE, "AI");
+  const replacements = [
+    ["WorkBuddy", "WorkBuddy"],
+    ["OpenAI Codex", "Codex"],
+    ["Codex", "Codex"],
+    ["Claude Code", "Claude Code"],
+    ["Manus", "Manus"],
+    ["Cursor", "Cursor"],
+    ["GitHub Copilot", "Copilot"],
+    ["Copilot", "Copilot"]
+  ];
+  replacements.forEach(([pattern, label]) => {
+    const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+    out = out.replace(re, m => shouldKeepSpecificTool(label, topic) ? (label === "OpenAI Codex" ? "Codex" : m) : "AI");
+  });
+  return out
+    .replace(/AI\s*([+＋/／和与])\s*AI/gi, "AI工具")
+    .replace(/AI工具\s*([+＋/／和与])\s*AI工具/gi, "AI工具")
+    .replace(/AI\s*知识库/gi, "AI+知识库")
+    .replace(/\s*\+\s*/g, "+")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
+
+function adaptReferenceTitle(refTitle = "", { topic = "", product = null } = {}) {
+  const raw = compactText(refTitle, 48);
+  if (!raw || raw.length < 5) return "";
+  return compactText(softenReferenceProductNames(raw, { topic, product })
+    .replace(/全行业通用|全网通用|保姆级|神器|封神|吊打|秒杀/gi, "")
+    .replace(/[ \t]+/g, " ")
+    .trim(), 34);
+}
+
+function referenceLikeCopy({ ref = null, title = "", topic = "", product = null, seed = 0, kind = "image" } = {}) {
+  if (!ref?.title && !ref?.desc) return "";
+  const adaptedTitle = title || adaptReferenceTitle(ref.title || "", { topic, product });
+  const tags = cleanTags(inferRefTags(ref, product), product).join(" ");
+  const desc = compactText(ref.desc || "", 620);
+  if (desc && desc.length > 18) {
+    const body = softenReferenceProductNames(desc, { topic, product })
+      .replace(/\n{3,}/g, "\n")
+      .trim();
+    return stripOwnProductNames([body, tags].filter(Boolean).join("\n"), product);
+  }
+  const topicLine = compactText(softenReferenceProductNames(topic || adaptedTitle, { topic, product }), 42);
+  const templates = [
+    `我会直接按「${adaptedTitle || topicLine}」这个问题来写，不再绕到别的选题上。\n核心就是先把资料沉淀和 AI 执行分开：Obsidian 这类工具负责把内容留住，AI 负责把选题、结构和可交付结果往前推。写的时候保留原参考的标题钩子，只把具体工具名弱化成 AI，不硬塞产品名。\n这类内容最有用的地方不是喊效率，而是讲清楚一个真实动作：资料从哪里来、AI 接哪一步、最后怎么检查结果能不能用。读者看完能照着改自己的知识库或内容流程，这条才算有干货。`,
+    `这条就围绕「${adaptedTitle || topicLine}」展开。\n如果参考标题本来讲的是 Obsidian+AI，那就不要强行改成一个新故事。更自然的写法是保留这个组合关系：一个负责沉淀，一个负责整理和生成，最后落到内容创作、知识管理或工作流复用。\n正文可以写得像真实复盘：先说以前资料只是堆着，后来把 AI 接进来以后，选题、摘要、卡片和发布内容能顺着同一条线走。重点是方法能被复制，而不是换几个夸张词。`,
+    `参考里的重点其实已经很清楚：${adaptedTitle || topicLine}。\n改写时我会保留这个表达方式，只把 WorkBuddy、Codex 或其它具体工具名按需要弱化成 AI/同类工具，避免变成硬广。正文也不另起炉灶，还是围绕知识沉淀、内容创作、自动整理这些原本的痛点去写。\n更像真人的写法，是把一个细节讲透：比如先把零散资料放进知识库，再让 AI 帮你抽主题、排结构、生成可发的内容，最后人工检查事实和逻辑。`
+  ];
+  return stripOwnProductNames([pick(templates, seed), tags].filter(Boolean).join("\n"), product);
+}
+
 function cleanTags(tags = [], product = null) {
   const base = (Array.isArray(tags) ? tags : String(tags || "").split(/[，,\s#]+/))
     .map(x => String(x || "").replace(/^#/, "").trim())
@@ -318,6 +379,8 @@ function rewriteTitle({ direction, topic, onlineItems, product, seed }) {
   const pain = /周报/.test(topic) ? "写周报" : /表格|Excel/i.test(topic) ? "表格整理" : /文件|资料/.test(topic) ? "资料整理" : /Obsidian|知识库/i.test(topic) ? "知识库流程" : "重复办公";
   const time = /周报|表格|文件|资料/.test(topic) ? "10分钟" : "一次跑通";
   const hot = String(ref?.title || "");
+  const adaptedRefTitle = adaptReferenceTitle(hot, { topic, product });
+  if (adaptedRefTitle) return adaptedRefTitle;
   const imitate = imitateHotTitle(hot, { topic, product, pain, cat, time });
   if (imitate) return imitate;
   const topicTitle = inferTitleFromTopic(topic, product);
@@ -416,12 +479,14 @@ function imitateHotTitle(hot = "", { topic = "", product = null, pain = "重复�
 
 function buildCopy({ title, direction, topic, onlineItems, product, seed, kind }) {
   const ref = pick(onlineItems, seed + 1);
+  const refDriven = referenceLikeCopy({ ref, title, topic, product, seed, kind });
+  if (refDriven) return refDriven;
   const opening = pick(COPY_OPENINGS, seed);
   const structure = pick(direction?.structures || [], seed + 2);
   const cat = publicCategory(product);
   const compare = /obsidian/i.test(topic) ? "知识库负责沉淀，桌面执行负责把文件、表格和动作跑起来" : /codex|workbuddy|manus|cursor/i.test(topic) ? "不同工具放在不同步骤，别让一个聊天框包办所有事情" : "先把材料、动作和结果拆开，再让工具按流程处理";
   const cleanTopic = stripOwnProductNames(topic, product).replace(/[。.]$/, "");
-  const refHook = ref?.title ? `我参考的是「${stripOwnProductNames(ref.title, product)}」这种标题钩子，但正文一定要换成自己的流程。` : "";
+  const refHook = ref?.title ? `参考标题是「${adaptReferenceTitle(ref.title, { topic, product }) || stripOwnProductNames(ref.title, product)}」，正文要尽量保留原本的选题关系，只做产品名弱化和必要补充。` : "";
   const tips = [
     `先把需求写成一句能执行的话：资料在哪里、要提什么字段、最后交付什么格式。`,
     `中间不要只看生成速度，要让它列出遗漏项和判断依据，这一步最能防止返工。`,
@@ -487,8 +552,8 @@ function buildReferenceRewrite({ items = [], title = "", copy = "", tags = [], p
     source,
     referenceNote,
     reference: {
-      title: stripOwnProductNames(ref.title || "", product),
-      copy: stripOwnProductNames(refCopy, product),
+      title: compactText(ref.title || "", 80),
+      copy: compactText(refCopy, 620),
       tags: inferRefTags(ref, product),
       author: ref.author || "",
       likes: ref.likes || "",

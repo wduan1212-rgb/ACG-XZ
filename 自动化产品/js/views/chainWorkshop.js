@@ -19,7 +19,8 @@ import { stepperHtml, wireStepper } from "./studio.js";
 import { accountAssets as accAssets } from "../domain/accounts.js";
 
 let liveRoot = null, liveProd = null, liveDraw = null, wired = false;
-const DIGITAL_SEGMENT_MAX_SEC = 18;
+const DIGITAL_SEGMENT_TARGET_SEC = 27;
+const DIGITAL_SEGMENT_MAX_SEC = 30;
 
 const assetById = id => state.assets.find(a => a.id === id);
 function audioDuration(url) {
@@ -212,7 +213,7 @@ export function renderWorkshopPage(root, p) {
       <div class="dh-plan-head">
         <div>
           <b>${icon("user", 13)} 数字人分段</b>
-          <em>${digitalSegments.length ? `已切为 ${digitalSegments.length} 段，每段约18s以内；每段=口播音频 + 角色图。` : "生成口播草稿后自动拆成约18s以内的数字人口播片段。"}</em>
+          <em>${digitalSegments.length ? `已切为 ${digitalSegments.length} 段，尽量少切，单段目标约${DIGITAL_SEGMENT_TARGET_SEC}s且不超过${DIGITAL_SEGMENT_MAX_SEC}s；每段=口播音频 + 角色图。` : `生成口播草稿后按接近${DIGITAL_SEGMENT_TARGET_SEC}s自动拆段，只有长口播才会多切。`}</em>
         </div>
         <button class="btn gen sm" id="wsDhVideoAll">${icon("spark", 13)} 一键生成视频</button>
       </div>
@@ -243,7 +244,7 @@ export function renderWorkshopPage(root, p) {
             <div class="head-actions">
               <span class="tag">${icon("mic", 11)} ${hasNarrationAudio ? "外部口播" : "提示词口播"} ${fmtTC(p.artifacts.audio.duration || 0)}${p.artifacts.audio.source === "upload" ? " · 已上传" : ""}</span>
               <span class="tag">${icon("layers", 11)} ${isDigitalHumanMode ? "数字人分段" : `文生 ${units.length - refN} · 全能参考 ${refN}`}</span>
-              ${isDigital ? `<span class="dh-mode ${isDigitalHumanMode ? "is-digital" : "is-seedance"}" data-mode="${isDigitalHumanMode ? "digitalHuman" : "seedance"}" title="数字人模式先用 Minimax 生成口播，再按约18s切段，每段=音频+角色图；Seedance 模式沿用视频模型直接生成">
+              ${isDigital ? `<span class="dh-mode ${isDigitalHumanMode ? "is-digital" : "is-seedance"}" data-mode="${isDigitalHumanMode ? "digitalHuman" : "seedance"}" title="数字人模式先用 Minimax 生成口播，尽量少切；单段目标约${DIGITAL_SEGMENT_TARGET_SEC}s，上限${DIGITAL_SEGMENT_MAX_SEC}s，每段=音频+角色图；Seedance 模式沿用视频模型直接生成">
                 <i aria-hidden="true"></i>
                 <button class="${isDigitalHumanMode ? "on" : ""}" data-dh-mode="digitalHuman">数字人</button>
                 <button class="${!isDigitalHumanMode ? "on" : ""}" data-dh-mode="seedance">Seedance</button>
@@ -318,7 +319,7 @@ export function renderWorkshopPage(root, p) {
             <div class="refbar-left">
               <b>${icon("mic", 13)} ${isDigitalHumanMode ? "口播音频" : "账号口播风格参考 / 口播音频"}</b>
               <em>${isDigitalHumanMode
-                ? "数字人模式会先用 Minimax 生成口播，再按约18s切段；每段默认用角色形象，可单段覆盖专属角色图。"
+                ? `数字人模式会先用 Minimax 生成口播，再按接近${DIGITAL_SEGMENT_TARGET_SEC}s尽量少切；单段不超过${DIGITAL_SEGMENT_MAX_SEC}s，每段默认用角色形象，可单段覆盖专属角色图。`
                 : isDigital
                   ? "Seedance 真人模式会把口播写入视频提示词，并用账号口播风格参考保持音色和节奏。"
                 : (voiceRefAsset ? `口播风格参考「${esc(voiceRefAsset.name)}」会写入提示词，用于统一口播音色；` : "可上传/拖拽参考音频锁定账号口播风格；")}${!isDigital && audioAsset
@@ -326,17 +327,21 @@ export function renderWorkshopPage(root, p) {
                 : isDigital ? "" : `素材号请先生成或上传口播音频；Seedance 视频始终生成纯画面，后期混入口播`}${p.artifacts.audio.lastError ? ` · ${esc(p.artifacts.audio.lastError)}` : ""}</em>
             </div>
             <div class="refbar-chip">${!isDigitalHumanMode && voiceRefAsset ? `<span class="ref-chip audio">${icon("mic", 12)}<span>${esc(voiceRefAsset.name)}</span><button class="ref-x" data-voicedel>${icon("x", 11)}</button></span>` : ""}</div>
-            <div class="refbar-actions">
-              ${(!isDigital || isDigitalHumanMode) ? voicePickerHtml({ selected: selectedVoice, options: voiceOptions, favoriteIds: favoriteVoiceIds, lockedVoiceId: acc?.voiceId || "" }) : ""}
-              ${(!isDigital || isDigitalHumanMode) ? `<div class="voice-id-search">
-                <input class="input sm" id="wsVoiceId" value="${esc(selectedVoice.voiceId || "")}" placeholder="粘贴 / 搜索 voice_id" />
-                <button class="btn ghost sm" id="wsVoiceLookup">${icon("search", 12)} 识别</button>
-              </div>` : ""}
-              ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm ${voiceFav ? "voice-action-active" : ""}" id="wsVoiceFav">${icon("star", 12)} ${voiceFav ? "已收藏" : "收藏"}</button>
-              <button class="btn ghost sm ${voiceLocked ? "voice-action-active" : ""}" id="wsVoiceFix">${icon("check", 12)} ${voiceLocked ? "已锁定" : "固定到账号"}</button>` : ""}
-              ${!isDigital || isDigitalHumanMode ? `<button class="btn ghost sm" id="wsTts">${icon("mic", 13)} ${isDigitalHumanMode ? "生成分段口播" : (audioAsset && p.artifacts.audio.source === "tts" ? "重新生成口播" : "生成口播音频")}${ttsApiConfigured() ? "" : "（估时）"}</button>` : ""}
-              ${!isDigitalHumanMode ? `<label class="btn ghost sm">${voiceRefAsset ? "更换口播风格参考" : "上传口播风格参考"}<input type="file" accept="audio/*" hidden id="wsVoiceRefUp" /></label>` : ""}
-              ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
+            <div class="refbar-actions voice-audio-actions">
+              <div class="voice-main-controls">
+                ${(!isDigital || isDigitalHumanMode) ? voicePickerHtml({ selected: selectedVoice, options: voiceOptions, favoriteIds: favoriteVoiceIds, lockedVoiceId: acc?.voiceId || "" }) : ""}
+                ${(!isDigital || isDigitalHumanMode) ? `<div class="voice-id-search">
+                  <input class="input sm" id="wsVoiceId" value="${esc(selectedVoice.voiceId || "")}" placeholder="粘贴 / 搜索 voice_id" />
+                  <button class="btn ghost sm" id="wsVoiceLookup">${icon("search", 12)} 识别</button>
+                </div>` : ""}
+              </div>
+              <div class="voice-side-actions">
+                ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm ${voiceFav ? "voice-action-active" : ""}" id="wsVoiceFav">${icon("star", 12)} ${voiceFav ? "已收藏" : "收藏"}</button>
+                <button class="btn ghost sm ${voiceLocked ? "voice-action-active" : ""}" id="wsVoiceFix">${icon("check", 12)} ${voiceLocked ? "已锁定" : "固定到账号"}</button>` : ""}
+                ${!isDigital || isDigitalHumanMode ? `<button class="btn ghost sm" id="wsTts">${icon("mic", 13)} ${isDigitalHumanMode ? "生成分段口播" : (audioAsset && p.artifacts.audio.source === "tts" ? "重新生成口播" : "生成口播音频")}${ttsApiConfigured() ? "" : "（估时）"}</button>` : ""}
+                ${!isDigitalHumanMode ? `<label class="btn ghost sm">${voiceRefAsset ? "更换口播风格参考" : "上传口播风格参考"}<input type="file" accept="audio/*" hidden id="wsVoiceRefUp" /></label>` : ""}
+                ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
+              </div>
             </div>
             ${p.artifacts.audio.voiceLookup ? `<div class="voice-lookup-note" style="grid-column:1/-1">${esc(p.artifacts.audio.voiceLookup)}</div>` : ""}
             ${audioAsset && !isDigitalHumanMode ? `<div class="tts-audio" style="grid-column:1/-1;margin-top:10px;display:flex;align-items:center;gap:10px">
