@@ -238,7 +238,11 @@ export function saveMembers() {
 
 /* 删除同步到共享后端（本地删除后调用；远端关时 no-op）。写穿透只新增/更新，删除必须显式发。 */
 export function removeRemote(collection, ...ids) {
-  ids.forEach(id => remote.deleteDoc(collection, id));
+  ids.forEach(id => remote.deleteDoc(collection, id).catch(e => console.warn("远端删除失败", collection, id, e)));
+}
+
+export async function removeRemoteAsync(collection, ...ids) {
+  await Promise.all(ids.filter(id => id != null).map(id => remote.deleteDoc(collection, id)));
 }
 
 /* 登录后从服务端拉全量快照覆盖本地 + 回写 IndexedDB 缓存（离线可用）。

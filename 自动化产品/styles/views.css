@@ -1022,6 +1022,32 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .pdr-notes { background: var(--warning-bg); color: var(--warning); border-radius: var(--r-md); padding: 9px 12px; font-size: 12px; }
 .pdr-sum { font-size: 12px; color: var(--muted); line-height: 1.7; }
 .pdr-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.pd-copy-panel {
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(247,249,252,.88));
+  padding: 12px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
+}
+.pd-copy-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+.pd-copy-panel-head b { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.pd-copy-panel-head em { font-style: normal; color: var(--faint); font-size: 10.5px; }
+.pd-copy-panel .field { margin-bottom: 9px; }
+.pd-copy-panel .field:last-child { margin-bottom: 0; }
+.pd-copy-panel textarea.input { resize: vertical; min-height: 136px; line-height: 1.75; }
+.pd-ref-panel h4 { margin: 0 0 6px; font-size: 13.5px; line-height: 1.45; }
+.pd-ref-meta { color: var(--faint); font-size: 11px; margin-bottom: 8px; }
+.pd-ref-copy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  max-height: 154px;
+  overflow-y: auto;
+}
+.pd-ref-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.pd-ref-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
 
 /* ---------- 账号对话框 ---------- */
 .ad-body { max-height: calc(100vh - 250px); overflow-y: auto; padding-right: 4px; }

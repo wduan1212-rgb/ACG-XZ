@@ -2355,7 +2355,10 @@ def api_put(collection: str, req: PutReq, me=Depends(require_member)):
 
 @app.delete("/api/db/{collection}/{doc_id}")
 def api_del(collection: str, doc_id: str, me=Depends(require_member)):
-    store.delete_doc(collection, doc_id)
+    try:
+        store.delete_doc(collection, doc_id)
+    except ValueError:
+        raise HTTPException(400, "未知集合")
     return {"ok": True}
 
 

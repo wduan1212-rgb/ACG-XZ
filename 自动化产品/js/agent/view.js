@@ -387,7 +387,14 @@ function renderBoard() {
     const batch = batchById(b.dataset.batchdel);
     if (!batch) return;
     const ok = await confirmModal({ title: `删除这一批任务？`, body: `「${batch.topic}」共 ${(batch.productionIds || []).length} 条，连同其在制产物一并移除（已交付的保留）。`, danger: true, okText: "删除" });
-    if (ok) { deleteBatch(batch.id); renderBoard(); renderPhase(); }
+    if (ok) {
+      try {
+        await deleteBatch(batch.id);
+        renderBoard(); renderPhase();
+      } catch (err) {
+        toast("服务器删除失败，请刷新或重新登录后再试", "error");
+      }
+    }
   }));
   // 删除单条任务
   $$("#agwBoard [data-proddel]").forEach(b => b.addEventListener("click", async e => {
@@ -395,7 +402,14 @@ function renderBoard() {
     const p = productionById(b.dataset.proddel);
     if (!p) return;
     const ok = await confirmModal({ title: `删除任务「${p.title || p.topic || "未命名"}」？`, danger: true, okText: "删除" });
-    if (ok) { removeProductionFromBatch(p.id); renderBoard(); renderPhase(); refreshLiveCards(); }
+    if (ok) {
+      try {
+        await removeProductionFromBatch(p.id);
+        renderBoard(); renderPhase(); refreshLiveCards();
+      } catch (err) {
+        toast("服务器删除失败，请刷新或重新登录后再试", "error");
+      }
+    }
   }));
   // 看板行拖拽上传
   $$("#agwBoard [data-dropprod]").forEach(row => {
@@ -536,7 +550,14 @@ function wire(root) {
     const sdl = e.target.closest("[data-sdel]");
     if (sdl) {
       const ok = await confirmModal({ title: "删除这个会话？", body: "对话记录会被删除；批次与任务数据保留，可在看板/单号创作里继续查看。", danger: true, okText: "删除" });
-      if (ok) { deleteSession(sdl.dataset.sdel); renderSessions(); renderMsgs(true); }
+      if (ok) {
+        try {
+          await deleteSession(sdl.dataset.sdel);
+          renderSessions(); renderMsgs(true);
+        } catch (err) {
+          toast("服务器删除失败，请刷新或重新登录后再试", "error");
+        }
+      }
       return;
     }
 

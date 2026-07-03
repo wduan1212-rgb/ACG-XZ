@@ -1,7 +1,7 @@
 /* 批次编排器：事件驱动的状态机（替代 v4 的 setInterval 盯进度）
    会话/消息/批次全部持久化，刷新后 resumeActiveBatches() 接续 */
 
-import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemote } from "../core/store.js";
+import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce } from "../core/util.js";
 import { AI } from "../api/ai.js";
 import { groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
@@ -121,9 +121,10 @@ export function renameSession(id, title) {
   const s = state.sessions.find(x => x.id === id);
   if (s && title) { s.title = title.slice(0, 24); save("sessions"); emit("agent:session"); }
 }
-export function deleteSession(id) {
+export async function deleteSession(id) {
   const target = state.sessions.find(x => x.id === id);
   if (!target || !ownedBy(target)) return;
+  await removeRemoteAsync("sessions", id);
   state.sessions = state.sessions.filter(x => x.id !== id);
   if (state.ui.activeSessionId === id) state.ui.activeSessionId = mySessions()[0]?.id || null;
   save("sessions", "meta");
@@ -144,30 +145,34 @@ export function sessionBatches(sessionId) {
   return state.batches.filter(b => b.sessionId === sessionId);
 }
 /* 删除整批（连同未交付的在制产物与其 job） */
-export function deleteBatch(batchId) {
+export async function deleteBatch(batchId) {
   const b = batchById(batchId); if (!b) return;
   const ids = b.productionIds || [];
   const removedProdIds = state.productions.filter(p => ids.includes(p.id) && p.stage !== "delivered").map(p => p.id);
   const removedJobIds = state.jobs.filter(j => removedProdIds.includes(j.productionId)).map(j => j.id);
+  await Promise.all([
+    removeRemoteAsync("batches", batchId),
+    removeRemoteAsync("productions", ...removedProdIds),
+    removeRemoteAsync("jobs", ...removedJobIds)
+  ]);
   state.productions = state.productions.filter(p => !(ids.includes(p.id) && p.stage !== "delivered"));
   state.jobs = state.jobs.filter(j => !ids.includes(j.productionId) || state.productions.some(p => p.id === j.productionId));
   state.batches = state.batches.filter(x => x.id !== batchId);
   save("productions", "jobs", "batches");
-  removeRemote("batches", batchId);
-  removeRemote("productions", ...removedProdIds);
-  removeRemote("jobs", ...removedJobIds);
   emit("batch:update", b);
 }
 /* 从批次里删除单条任务 */
-export function removeProductionFromBatch(pid) {
+export async function removeProductionFromBatch(pid) {
   const p = productionById(pid);
   const jobIds = state.jobs.filter(j => j.productionId === pid).map(j => j.id);
+  await Promise.all([
+    removeRemoteAsync("productions", pid),
+    removeRemoteAsync("jobs", ...jobIds)
+  ]);
   state.productions = state.productions.filter(x => x.id !== pid);
   state.jobs = state.jobs.filter(j => j.productionId !== pid);
   state.batches.forEach(b => { b.productionIds = (b.productionIds || []).filter(id => id !== pid); });
   save("productions", "jobs", "batches");
-  removeRemote("productions", pid);
-  removeRemote("jobs", ...jobIds);
   if (p) emit("production:update", p);
 }
 export function addMsg(session, msg) {

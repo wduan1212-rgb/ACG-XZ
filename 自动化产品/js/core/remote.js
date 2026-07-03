@@ -80,7 +80,7 @@ export function putCollection(name, items) {
 }
 export function deleteDoc(name, id) {
   if (!_on || !_token || _authBlocked || !SYNCED.has(name) || id == null) return Promise.resolve();
-  return req("/api/db/" + name + "/" + encodeURIComponent(id), { method: "DELETE" }).catch(() => {});
+  return req("/api/db/" + name + "/" + encodeURIComponent(id), { method: "DELETE" });
 }
 
 /* 成员管理（admin）：口令在服务端哈希存储 */

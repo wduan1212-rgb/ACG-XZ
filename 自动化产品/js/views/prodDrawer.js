@@ -158,8 +158,8 @@ export function openProductionDrawer(pid, tab) {
         rootEl.querySelectorAll(".pd-slot img").forEach(im => im.addEventListener("click", () => openLightbox(im, im.src, "")));
         // 文案编辑
         const t = rootEl.querySelector("#pdCopyTitle"), c = rootEl.querySelector("#pdCopyBody");
-        if (t) t.addEventListener("input", () => { p.artifacts.copy.title = t.value; save("productions"); });
-        if (c) c.addEventListener("input", () => { p.artifacts.copy.body = c.value; save("productions"); });
+        if (t) t.addEventListener("input", () => { p.artifacts.copy = p.artifacts.copy || {}; p.artifacts.copy.title = t.value; save("productions"); });
+        if (c) c.addEventListener("input", () => { p.artifacts.copy = p.artifacts.copy || {}; p.artifacts.copy.body = c.value; save("productions"); });
         // 定稿发布（计划发布时间必填，备注可选）
         const dl = rootEl.querySelector("[data-pd-deliver]");
         if (dl) dl.addEventListener("click", async () => {
@@ -208,6 +208,62 @@ function tabStage(p, tab) {
     case "review": return "review";
     default: return stagePage(p);
   }
+}
+
+function copyTags(body = "", fallback = []) {
+  const fromBody = Array.from(String(body || "").matchAll(/#[\p{L}\p{N}_-]{2,}/gu)).map(m => m[0].replace(/^#/, ""));
+  return [...new Set(fromBody.length ? fromBody : (fallback || []))].slice(0, 8);
+}
+
+function tagListHtml(tags = []) {
+  return (tags || []).slice(0, 8).map(t => `<span class="tag">${esc(String(t || "").replace(/^#/, ""))}</span>`).join("");
+}
+
+function reviewCopyEditorHtml(p) {
+  const copy = p.artifacts.copy || {};
+  const body = copy.body || copy.copy || "";
+  const tags = copyTags(body, copy.tags || copy.referenceRewrite?.rewrite?.tags || []);
+  return `<section class="pd-copy-panel">
+    <div class="pd-copy-panel-head">
+      <b>${icon("fileText", 15)} 发布文案</b>
+      <em>可直接修改，实时保存</em>
+    </div>
+    <label class="field">标题
+      <input id="pdCopyTitle" class="input" value="${esc(copy.title || p.title || "")}" />
+    </label>
+    <label class="field">正文
+      <textarea id="pdCopyBody" class="input" rows="8">${esc(body)}</textarea>
+    </label>
+    ${tags.length ? `<div class="pd-ref-tags">${tagListHtml(tags)}</div>` : ""}
+  </section>`;
+}
+
+function reviewReferenceHtml(p) {
+  const rw = p.artifacts.copy?.referenceRewrite || p.artifacts.script?.trendPrep?.referenceRewrite || p.artifacts.script?.trendPrep || null;
+  const ref = rw?.reference || null;
+  if (!ref || !(ref.title || ref.copy || ref.url || (ref.tags || []).length)) return "";
+  const meta = [
+    ref.author ? `作者：${ref.author}` : "",
+    ref.likes ? `互动：${ref.likes}` : "",
+    rw.referenceNote || ""
+  ].filter(Boolean).join(" · ");
+  const title = ref.title || "热门参考";
+  const refUrl = ref.url || "";
+  const searchUrl = title ? `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(title)}` : "";
+  return `<section class="pd-copy-panel pd-ref-panel">
+    <div class="pd-copy-panel-head">
+      <b>${icon("spark", 15)} 联网参考文案</b>
+      <em>只参考钩子与结构，不照搬</em>
+    </div>
+    <h4>${esc(title)}</h4>
+    ${meta ? `<div class="pd-ref-meta">${esc(meta)}</div>` : ""}
+    <p class="pd-ref-copy">${esc(ref.copy || "搜索接口当前未开放完整正文；这里保留可得标题、摘要和互动信息。")}</p>
+    <div class="pd-ref-actions">
+      ${refUrl ? `<a class="trend-link" href="${esc(refUrl)}" target="_blank" rel="noreferrer">打开原文</a>` : ""}
+      ${searchUrl ? `<a class="trend-link" href="${esc(searchUrl)}" target="_blank" rel="noreferrer">搜索原文</a>` : ""}
+    </div>
+    ${ref.tags?.length ? `<div class="pd-ref-tags">${tagListHtml(ref.tags)}</div>` : ""}
+  </section>`;
 }
 
 async function fillSlot(p, idx, file) {
@@ -301,6 +357,8 @@ const TAB = {
         ${reviewPreviewHtml(p)}
         <div class="pdr-state">${icon("eye", 16)} 发布前自检：核对成片预览与文案，确认无误即可定稿发布</div>
         <div class="pdr-sum">「${esc(p.artifacts.copy.title || p.title)}」 · ${p.mode === "图文" ? `${(p.artifacts.images.items || []).filter(x => x.assetId).length} 张组图打包 zip + 文案.txt` : `${(p.artifacts.timeline || []).length} 段成片拼接${(p.artifacts.subs || []).some(s => s.text) ? " + 字幕" : ""}`}</div>
+        ${reviewCopyEditorHtml(p)}
+        ${reviewReferenceHtml(p)}
         <div class="pdr-actions">
           ${p.stage === "review"
             ? (canPub ? `<button class="btn primary" data-pd-deliver>${icon("package", 14)} 定稿并发布入供应商端</button>`

@@ -2,7 +2,7 @@
    图文：images(图文创作台：创作内容/文案/提示词/成图一体) → review → delivered
    视频（真人/素材）：workshop(选题/口播/分镜一体节点) → cut(智能混剪+BGM) → copy → review */
 
-import { state, save, emit, accountById, ownedBy, removeRemote } from "../core/store.js";
+import { state, save, emit, accountById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, spreadCaption } from "../core/util.js";
 import { BGM_POOL } from "../api/prompts.js";
 
@@ -236,14 +236,16 @@ export function statusPill(p) {
   return [(STAGES[stage] || STAGES.images).label + " · 待处理", "pending"];
 }
 
-export function deleteProduction(id) {
+export async function deleteProduction(id) {
   const jobIds = state.jobs.filter(j => j.productionId === id).map(j => j.id);
+  await Promise.all([
+    removeRemoteAsync("productions", id),
+    removeRemoteAsync("jobs", ...jobIds)
+  ]);
   state.productions = state.productions.filter(p => p.id !== id);
   state.jobs = state.jobs.filter(j => j.productionId !== id);
   if (state.ui.activeProductionId === id) state.ui.activeProductionId = null;
   save("productions", "jobs", "meta");
-  removeRemote("productions", id);
-  removeRemote("jobs", ...jobIds);
 }
 
 export function productionsOf(accountId) {

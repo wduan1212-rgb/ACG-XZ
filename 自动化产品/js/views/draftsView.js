@@ -66,7 +66,15 @@ export const draftsView = {
         e.stopPropagation();
         const p = productionById(b.dataset.draftDel); if (!p) return;
         const ok = await confirmModal({ title: `删除草稿「${p.artifacts.copy.title || p.title || p.topic || "未命名"}」？`, body: "该任务的脚本 / 分镜等中间产物会被移除（已发布资产不受影响）。", danger: true, okText: "删除" });
-        if (ok) { deleteProduction(p.id); toast("已删除草稿"); draw(); }
+        if (ok) {
+          try {
+            await deleteProduction(p.id);
+            toast("已删除草稿");
+            draw();
+          } catch (err) {
+            toast("服务器删除失败，请刷新或重新登录后再试", "error");
+          }
+        }
       }));
       $$("[data-draft]", root).forEach(el => el.addEventListener("click", e => {
         if (e.target.closest("button")) return;

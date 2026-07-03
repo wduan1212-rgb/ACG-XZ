@@ -927,3 +927,30 @@
 ### 注意
 
 - 本版不包含任何密钥、服务器密码、公网 IP 或私网 IP。
+
+## v35 - 2026-07-03
+
+### 本版范围
+
+- 修复服务器草稿删除后刷新复活：服务端新增删除墓碑表，删除 `productions / jobs / sessions / batches / assets / accounts` 等同步集合时记录 tombstone，旧浏览器缓存再次 upsert 同 id 时不会把已删除数据插回。
+- 前端关键删除路径改为等待远端 DELETE 成功后再本地删除：草稿箱、单号创作页、Agent 批次、批次内单条任务、Agent 会话删除失败时会提示刷新 / 重新登录 / 稍后重试。
+- 批量创作详情抽屉的“审核”页新增发布文案编辑区，可直接修改标题和正文；如果图文任务使用了联网参考，会同时显示参考标题、互动信息、可得参考文案和“打开原文 / 搜索原文”入口。
+- 服务端 `/api/db/{collection}/{doc_id}` DELETE 对未知集合返回 400，不再让异常冒成 500。
+
+### 验证结果
+
+- `python3 -m py_compile 自动化产品/server/main.py 自动化产品/server/store.py 自动化产品/server/tests/test_store_tombstone.py` 通过。
+- `python3 自动化产品/server/tests/test_store_tombstone.py` 通过，覆盖删除后旧快照 upsert 不复活，以及新 id 正常写入。
+- `node --check` 通过本次修改的关键 JS 文件：`prodDrawer.js`、`remote.js`、`store.js`、`productions.js`、`draftsView.js`、`studio.js`、`agent/orchestrator.js`、`agent/view.js`。
+- `rg` 检查关键删除调用点，确认 UI 删除路径已 await。
+
+### 数据与部署
+
+- 本次会在服务器 SQLite 内自动创建 `deleted_docs` 表，属于兼容性 schema 增量；不需要清库，不迁移业务数据。
+- 部署必须只更新代码并重启服务；禁止覆盖线上数据库、上传目录、账号、资产库、发布清单、数据分析、草稿、成员数据、环境文件或认证缓存。
+- 部署前建议备份服务器数据库和上传目录；部署后重点验收草稿删除刷新不复活、批次任务删除不复活、批量图文审核页可直接编辑文案。
+- 回滚方式：回退本次前端删除 await、服务端 tombstone 和抽屉审核页相关文件后重启服务；已创建的 `deleted_docs` 表可保留，不影响旧代码读取 docs。
+
+### 注意
+
+- 本版不包含任何密钥、服务器密码、公网 IP 或私网 IP。

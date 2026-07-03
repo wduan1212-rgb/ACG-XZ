@@ -206,7 +206,14 @@ function renderHome(root, acc) {
     e.stopPropagation();
     const p = productionById(b.dataset.prodDel);
     const ok = await confirmModal({ title: `删除任务「${p.title || p.topic || "未命名"}」？`, body: "该任务的脚本/提示词等中间产物会被移除（已入库资产保留）。", danger: true, okText: "删除" });
-    if (ok) { deleteProduction(p.id); renderHome(root, acc); }
+    if (ok) {
+      try {
+        await deleteProduction(p.id);
+        renderHome(root, acc);
+      } catch (err) {
+        toast("服务器删除失败，请刷新或重新登录后再试", "error");
+      }
+    }
   }));
   root.querySelectorAll("[data-prod]").forEach(el => el.addEventListener("click", () => openProductionDrawer(el.dataset.prod)));
 

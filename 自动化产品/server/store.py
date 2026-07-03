@@ -40,6 +40,12 @@ CREATE TABLE IF NOT EXISTS docs(
   PRIMARY KEY(collection, id)
 );
 CREATE INDEX IF NOT EXISTS idx_docs_owner ON docs(collection, owner_id);
+CREATE TABLE IF NOT EXISTS deleted_docs(
+  collection TEXT NOT NULL,
+  id         TEXT NOT NULL,
+  deleted_at INTEGER NOT NULL,
+  PRIMARY KEY(collection, id)
+);
 CREATE TABLE IF NOT EXISTS members(
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
@@ -438,6 +444,9 @@ def upsert_docs(collection, items):
     with _lock:
         conn = _connect()
         try:
+            deleted_ids = {
+                r[0] for r in conn.execute("SELECT id FROM deleted_docs WHERE collection=?", (collection,)).fetchall()
+            }
             if collection == "accounts":
                 _guard_suspicious_account_bulk(conn, items or [])
                 semantic_keys = _existing_account_keys(conn)
@@ -446,36 +455,47 @@ def upsert_docs(collection, items):
             for it in items:
                 if not isinstance(it, dict) or "id" not in it:
                     continue
+                doc_id = str(it["id"])
+                if doc_id in deleted_ids:
+                    continue
                 if collection == "accounts":
                     key = _account_semantic_key(it)
                     existing_id = semantic_keys.get(key)
-                    if existing_id and existing_id != it["id"]:
+                    if existing_id and existing_id != doc_id:
                         continue
                 ua = int(it.get("updatedAt") or it.get("createdAt") or time.time() * 1000)
                 cur = conn.execute(
-                    "SELECT updated_at FROM docs WHERE collection=? AND id=?", (collection, it["id"])
+                    "SELECT updated_at FROM docs WHERE collection=? AND id=?", (collection, doc_id)
                 ).fetchone()
                 if cur and cur[0] > ua:
                     continue  # 服务器已有更新的版本，跳过（避免旧端覆盖新数据）
                 conn.execute(
                     "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
-                    (collection, it["id"], it.get("ownerId"), ua, json.dumps(it, ensure_ascii=False)),
+                    (collection, doc_id, it.get("ownerId"), ua, json.dumps(it, ensure_ascii=False)),
                 )
                 if collection == "accounts":
                     key = _account_semantic_key(it)
                     if key:
-                        semantic_keys[key] = it["id"]
+                        semantic_keys[key] = doc_id
             conn.commit()
         finally:
             conn.close()
 
 
 def delete_doc(collection, doc_id):
+    if collection not in COLLECTIONS:
+        raise ValueError("unknown collection")
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
-            conn.execute("DELETE FROM docs WHERE collection=? AND id=?", (collection, doc_id))
+            did = str(doc_id)
+            now = int(time.time() * 1000)
+            conn.execute("DELETE FROM docs WHERE collection=? AND id=?", (collection, did))
+            conn.execute(
+                "INSERT OR REPLACE INTO deleted_docs(collection,id,deleted_at) VALUES(?,?,?)",
+                (collection, did, now),
+            )
             conn.commit()
         finally:
             conn.close()
