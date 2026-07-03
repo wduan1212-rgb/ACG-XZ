@@ -12,6 +12,7 @@
    } */
 
 import { state } from "../core/store.js";
+import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { ACCOUNT_PROFILE_SEED } from "../data/accountProfilesSeed.js";
 import { XHS_ACCOUNT_SEED } from "../data/xhsAccountsSeed.js";
 
@@ -499,12 +500,14 @@ export function ttsApiConfigured() {
 
 export async function synthesizeTts({ text, voiceId, speed = 1, vol = 1, pitch = 0 }) {
   if (!serverTts.configured) throw new Error("服务器未配置 Minimax TTS");
+  const cleanText = sanitizeXhsText(text);
+  if (!cleanText) throw new Error("口播文本为空");
   let res;
   try {
     res = await fetch("/api/tts/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, voiceId, speed, vol, pitch })
+      body: JSON.stringify({ text: cleanText, voiceId, speed, vol, pitch })
     });
   } catch (e) {
     throw new Error("连不上本地服务端 /api/tts/generate —— 请确认用 start-shared.command（python 服务端）打开、且改完后已重启它（" + (e.message || e) + "）");

@@ -69,8 +69,16 @@ const BLOCK_PATTERNS = [
   /私域/gi
 ];
 
+export function stripVoiceControlMarks(input = "") {
+  return String(input || "")
+    .replace(/\{\/?[a-z][a-z0-9_-]*\}/gi, "")
+    .replace(/\((?:clear[-_\s]?throat|breath|laugh|sigh|pause|cough|smile|surprised|happy)\)/gi, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
 export function sanitizeXhsText(input = "") {
-  let out = sanitizeProduct(String(input || ""));
+  let out = sanitizeProduct(stripVoiceControlMarks(input));
   REPLACEMENTS.forEach((safe, bad) => { out = out.split(bad).join(safe); });
   BLOCK_PATTERNS.forEach(re => { out = out.replace(re, "相关渠道"); });
   return sanitizeProduct(out).replace(/\s{3,}/g, "  ").trim();

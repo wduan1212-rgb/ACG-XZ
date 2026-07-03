@@ -410,6 +410,16 @@ function copyTitlePool(intent, kind = "image", variant = null) {
     `${intent.audience}可以试试这套固定流程`,
     `我把${intent.pain.replace(/太.+$/, "")}交给了桌面AI`
   ];
+  if (kind === "video") {
+    base.unshift(
+      `国产桌面智能体，1分钟上手教程讲清楚`,
+      `不用安装复杂环境，这个AI工具真能上手`,
+      `AI办公别只会聊天，这条把用法讲透`,
+      `零基础用桌面智能体，先看这条少绕路`,
+      `${intent.audience}第一次用AI Agent看这篇`,
+      `${intent.pain.replace(/太.+$/, "")}，这套流程讲明白`
+    );
+  }
   if (kind === "image") {
     base.push(`3步把${intent.pain.replace(/太.+$/, "")}理顺`);
     base.push(`${intent.audience}后悔没早用的整理方法`);
@@ -1697,7 +1707,7 @@ function normalizeScriptResult(d, { topic = "", image = false, imageCount = DEFA
       ...raw,
       idea: image ? completeImageText(idea, 42) : cleanText(idea),
       visual: cleanText(visual),
-      line: image ? completeImageText(line, 36) : stripCTA(cleanText(line)),
+      line: image ? completeImageText(line, 36) : stripCTA(sanitizeXhsText(cleanText(line))),
       ui: raw.ui !== false && /界面|logo|文字|屏幕|表格|数据|文档|报告|卡片|按钮|输入框|窗口/.test((visual || "") + (raw.ui === true ? "界面" : "")),
       scene: Number.isFinite(raw.scene) ? raw.scene : i + 1
     };
@@ -1757,7 +1767,7 @@ export const AI = {
       const d = parseJSONLoose(content);
       if (!d.shots || d.shots.length < 8) throw new Error("模型未返回足够镜头");
       return this._ok({ title: cleanText(d.title) || topic, shots: d.shots.map((x, i) => ({
-        idea: cleanText(x.idea), visual: cleanText(x.visual), line: stripCTA(cleanText(x.line)),
+        idea: cleanText(x.idea), visual: cleanText(x.visual), line: stripCTA(sanitizeXhsText(cleanText(x.line))),
         ui: x.ui !== false && /界面|logo|文字|屏幕|表格|数据|文档|报告|卡片|按钮|输入框|窗口/.test((x.visual || "") + (x.ui === true ? "界面" : "")),
         scene: Number.isFinite(x.scene) ? x.scene : i + 1
       })) });
@@ -2064,7 +2074,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
 小红书趋势参考只用于你内部决定标题钩子、文案骨架和图卡节奏，禁止照抄样本标题，也不要把“热门参考/趋势参考/样本标题”等词写进 shots。${hasImageTemplate ? `账号配置了固定图文模板，必须优先遵守模板的风格、画面语言、参考图使用方式和统一要求；但模板中的张数、主题、产品名、各图内容都要按本次创作内容重写，最终 shots 必须正好 ${nImg} 行。` : ""}只输出 JSON：{"title":"小红书笔记风标题","shots":[{"idea":"核心思想","visual":"非常具体的画面","line":"图上文案(小红书笔记口吻、精简)"}]}，shots 必须正好 ${nImg} 行。`
       : (account.subType === "无数字人"
         ? `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【无数字人】视频：没有固定出镜人物，以场景/产品界面/手部操作混剪为主，line 写专业画外音旁白。成片控制在45-58秒，绝不超过60秒，拆成8-10个镜头；每镜头口播1句，尽量12-24个中文字符，单句至少能自然说3秒，不要赶。偏教程专业可信、理性有梗、不要信息流硬广。visual 非常具体：景别、机位运镜(固定/缓推/横移/跟随)、产品界面模块、界面动效(卡片滑入/进度条/局部高亮)、配色、光线，禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"专业画外音旁白","ui":true,"scene":1}]}。`
-        : `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【真人/数字人口播】视频。成片控制在45-58秒，绝不超过60秒，拆成8-10个镜头；每镜头口播1句，尽量12-24个中文字符，单句至少能自然说3秒，不要赶。结构上有真人开场、有产品场景演示、有真人收束，但不要死板两段式。内容丰富、偏教程专业可信、理性有梗、不要信息流硬广：口播像真实经验分享，能直接念。visual 非常具体：人物动作表情、产品界面模块、运镜、界面动效、配色、光线；如果后续有统一参考图，人物外貌由参考图锁定，这里不要写五官长相。禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"口播原话","ui":true,"scene":1}]}。`);
+        : `你是百度 ACG 市场部资深短视频编剧，写指定产品教程【真人/数字人口播】视频。成片控制在50-65秒，拆成12-16个可切分口播镜头；每镜头口播1句，尽量14-30个中文字符，像真人一口气讲经验，不要赶。口播风格参考：先从真实误解或门槛担心切入，例如以为AI工具很复杂；随后给轻微惊讶/松一口气的反差；中段用1-2个具体办公或作品集案例讲清“直接说人话、工具拆解任务、一步步执行、还能整理文件/总结资料/分析表格/捋需求”；结尾落在“不是让我变程序员，而是把脑子里的想法或手里的乱东西推进到可看可用的版本”。不要逐字照抄任何参考话术。可以有情绪起伏、口语停顿和朋友式解释感，但不要输出 {happy}、{/happy}、(clear-throat) 这类情绪/音效标签，也不要输出括号舞台指令。结构上有真人开场、有产品场景演示、有真人收束，但不要死板两段式。内容丰富、偏教程专业可信、理性有梗、不要信息流硬广：口播像真实经验分享，能直接念。visual 非常具体：人物动作表情、产品界面模块、运镜、界面动效、配色、光线；如果后续有统一参考图，人物外貌由参考图锁定，这里不要写五官长相。禁止电影感/高级感/种草感等抽象词。visual 里不要安排叠加字幕/标题文字。每镜头带 ui(true/false) 和 scene(连续场景编号)。只输出 JSON：{"title":"标题","shots":[{"time":"0-4s","idea":"核心思想","visual":"非常具体的画面分镜","line":"口播原话","ui":true,"scene":1}]}。`);
     try {
       const content = await llm([
         { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys },
@@ -2266,8 +2276,8 @@ ${xhsGuardPrompt()}
       : (safeShots || []).map((s, i) => `图${i + 1}｜${s.idea || ""}｜图上文案：${s.line || ""}`).join("\n");
     const sys = kind === "video"
       ? `你是短视频发布文案写手，为成片写发布标题与简介（发布平台：${account.platform}，按该平台调性写）：
-- title：20字以内，像真实创作者的结论/痛点标题，具体、有梗、有信息量，可带1个贴合 emoji，但不要标题党过度。
-- copy：260-480字简介，像真实创作者发视频后的补充说明。不要总是分点，不要写固定编号清单；可以用实测复盘、适合/不适合、一个可复制口播流程来写。段落之间只用单换行，不留空行。必须来自口播脚本，给出真实方法、边界或避坑结论，最后一行4-7个具体话题标签。
+- title：16-32字，必须从口播内容里提炼，不要不明所以。优先仿照这些网感结构，但不能照抄完整句：` + `国产codex，不用安装1分钟上手零门槛教程，一篇讲清楚！ / AI办公别只会聊天，这条把真实用法讲透 / 零基础用桌面智能体，先看这篇少绕路。标题要有对象、门槛/收益/教程感、具体结果；可以出现 Codex/AI Agent/桌面智能体等品类词，避免空泛标题。
+- copy：260-480字简介，像真实创作者发视频后的补充说明。必须先根据口播逐句总结出一个主结论，再展开真实使用场景、关键动作和边界提醒。不要总是分点，不要写固定编号清单；可以用实测复盘、适合/不适合、一个可复制口播流程来写。段落之间只用单换行，不留空行。必须来自口播脚本，不能脱离口播另写一套图文文案；最后一行4-7个具体话题标签。
 语气按账号创作风格和口播风格细化，像真人发视频，不要硬广腔，不要假装临时接到领导任务。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`
       : `你是小红书爆款笔记文案写手。根据图卡脚本写一篇配套笔记：
 - title：20字以内，像真实创作者的结论/痛点标题，具体、有梗、有信息量，可带1个贴合 emoji。
@@ -2277,7 +2287,7 @@ ${xhsGuardPrompt()}
       const content = await llm([
         { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys + XHS_COPY_STYLE + "\n\n【小红书联网参考吸收规则】\n如果有联网参考，优先吸收里面真实可用的信息：痛点、教程步骤、踩坑点、读者关心的问题、互动数字暗示的受欢迎角度、标题情绪和口语节奏。不要只学结构，也不要写成泛泛的工具说明。\n可以把参考内容改写成更适合本账号的亲历式经验，但必须换场景、换顺序、换表达，不能连续照搬样本文案原句；参考只有标题/摘要时，要基于可得信息做真实推断，不能编造参考正文。\n\n【离线创作放开规则】\n没有联网参考或用户关闭联网时，不要被本地趋势库限制成模板文。本地趋势只提供方向词，最终文案要优先服从用户主题、图卡内容、账号语气和真实使用逻辑。可以写成亲历复盘、经验分享、避坑提醒、场景叙述、轻教程或观点表达，只要主题点讲透、信息有深度、语气像真人。\n\n【小红书热门结构与内容参考】\n" + trendGuideText + "\n\n【对外文案产品名规则】\n标题、正文和话题标签都不要出现自家产品名；需要指代时用「桌面智能体」「AI应用搭建工具」「这个工具」「这类工具」等品类词。竞品或互补工具名可以出现，但不要把主产品名写进标题或正文。\n\n【同批去重硬约束】\n如果用户没有写很具体的内容，请先自己选择一个不同于同批其他账号的真实场景，再写标题和正文。禁止只改产品名、账号名或数字；禁止连续使用同一种标题类型、同一种首句和同一种三点清单。标题可以不带产品名，但正文必须让人知道具体工具怎么分工或怎么用。\n\n" + xhsGuardPrompt() },
         { role: "user", content: kind === "video"
-          ? `账号创作风格：${sanitizeXhsText(account.styleProfile || account.voiceName || safeStyle || "")}\n账号口播风格参考：${sanitizeXhsText(account.voiceName || account.styleProfile || account.tone || "自然、可信、有教程感")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡/视频内容摘要：\n${script}\n${HUMAN_COPY_VOICE}${this.memoryLine(account)}`
+          ? `账号创作风格：${sanitizeXhsText(account.styleProfile || account.voiceName || safeStyle || "")}\n账号口播风格参考：${sanitizeXhsText(account.voiceName || account.styleProfile || account.tone || "自然、可信、有教程感")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}已定口播逐句稿（发布标题和简介必须围绕这些口播总结，不要另起主题）：\n${script}\n标题参考方向：国产Codex/AI Agent/桌面智能体/零门槛/1分钟上手/一篇讲清楚/少绕路/真实用法。根据口播选择最贴切的一种，不要硬塞无关词。\n${HUMAN_COPY_VOICE}${this.memoryLine(account)}`
           : `账号创作风格：${sanitizeXhsText(account.styleProfile || safeStyle || "")}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${trendReferenceText ? `联网参考原始可用信息（要吸收真实痛点/步骤/互动信号，但不要照抄原句）：\n${trendReferenceText}\n` : `${offlineCopyLine}\n`}${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡内容摘要：\n${script}\n${HUMAN_COPY_VOICE}` }
       ], { json: true, temperature: 1.02 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
@@ -2394,7 +2404,7 @@ ${xhsGuardPrompt()}
       { idea: "适用人群", visual: "办公桌前空镜，桌上摆着键盘、咖啡和便签，暖色晨光", line: `所以它真正帮到的，是每天被这些重复活拖住、本该把时间花在更值钱的事情上的人。`, ui: false, scene: 8 },
       { idea: "金句收束", visual: `所有结果卡片缓缓汇聚成${productName}完成卡片，白底浅蓝网格，定格成一张干净的完成卡片`, line: `一句话总结：能交给工具的，就别再用人肉硬扛。把重复留给流程，把脑子留给真正重要的事。`, ui: true, scene: 9 }
     ];
-    return { title: topic, shots: rows.map(r => ({ ...r, line: stripCTA(r.line) })) };
+    return { title: topic, shots: rows.map(r => ({ ...r, line: stripCTA(sanitizeXhsText(r.line)) })) };
   },
 
   /* ---------- 本地回退模板 ---------- */

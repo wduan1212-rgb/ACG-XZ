@@ -9,7 +9,7 @@ import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, on, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
-import { defaultTtsVoiceId, lookupTtsVoice, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
+import { defaultTtsVoiceId, findKnownTtsVoice, lookupTtsVoice, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, thumbHtml } from "../domain/assets.js";
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
@@ -19,6 +19,7 @@ import { stepperHtml, wireStepper } from "./studio.js";
 import { accountAssets as accAssets } from "../domain/accounts.js";
 
 let liveRoot = null, liveProd = null, liveDraw = null, wired = false;
+const DIGITAL_SEGMENT_MAX_SEC = 18;
 
 const assetById = id => state.assets.find(a => a.id === id);
 function audioDuration(url) {
@@ -39,7 +40,62 @@ function narrationText(shots) {
 function selectedVoicePreset(p, acc) {
   const voiceId = (p?.artifacts?.audio?.voiceId || acc?.voiceId || defaultTtsVoiceId() || "").trim();
   const preset = ttsVoicePresets().find(v => v.voiceId === voiceId);
-  return { voiceId, name: preset?.name || acc?.voiceName || voiceId || "默认声线" };
+  const known = findKnownTtsVoice(voiceId);
+  const accountName = acc?.voiceId === voiceId ? acc?.voiceName : "";
+  const transientName = p?.artifacts?.audio?.voiceName || "";
+  return { voiceId, name: preset?.name || accountName || transientName || known?.name || voiceId || "默认/手动声线" };
+}
+
+function voicePickerOptions(selectedId = "", selectedName = "", favoriteIds = new Set()) {
+  const presets = ttsVoicePresets().map(v => ({ voiceId: v.voiceId, name: v.name || v.voiceId, source: "系统预设" }));
+  const byId = new Map();
+  const push = opt => {
+    const id = String(opt.voiceId || "");
+    if (!id && byId.has("")) return;
+    if (id && byId.has(id)) return;
+    byId.set(id, opt);
+  };
+  [...favoriteIds].filter(Boolean).forEach(id => {
+    const preset = presets.find(v => v.voiceId === id);
+    const known = findKnownTtsVoice(id);
+    push({ voiceId: id, name: preset?.name || known?.name || id, source: "收藏声线" });
+  });
+  if (selectedId && !byId.has(selectedId)) push({ voiceId: selectedId, name: selectedName || findKnownTtsVoice(selectedId)?.name || selectedId, source: "当前声线" });
+  push({ voiceId: "", name: "默认/手动声线", source: "平台默认" });
+  presets.forEach(push);
+  const list = [...byId.values()];
+  return list.sort((a, b) => {
+    const af = favoriteIds.has(a.voiceId) ? 0 : 1;
+    const bf = favoriteIds.has(b.voiceId) ? 0 : 1;
+    if (af !== bf) return af - bf;
+    if (a.voiceId === selectedId && b.voiceId !== selectedId) return -1;
+    if (b.voiceId === selectedId && a.voiceId !== selectedId) return 1;
+    if (!a.voiceId && b.voiceId) return -1;
+    if (!b.voiceId && a.voiceId) return 1;
+    return 0;
+  });
+}
+
+function voicePickerHtml({ selected, options, favoriteIds, lockedVoiceId }) {
+  const selectedId = selected.voiceId || "";
+  return `<div class="voice-picker" id="wsVoicePicker">
+    <button class="voice-picker-btn" id="wsVoicePickerBtn" type="button">
+      <span>${esc(selected.name || "默认/手动声线")}</span>
+      <em>${selectedId ? esc(selectedId) : "平台默认 / 手动输入"}</em>
+      ${icon("chevronDown", 13)}
+    </button>
+    <div class="voice-menu" id="wsVoiceMenu" hidden>
+      ${options.map(opt => {
+        const fav = favoriteIds.has(opt.voiceId);
+        const active = opt.voiceId === selectedId;
+        const locked = opt.voiceId && opt.voiceId === lockedVoiceId;
+        return `<button class="voice-option ${active ? "is-active" : ""} ${fav ? "is-fav" : ""}" type="button" data-voice-option="${esc(opt.voiceId)}">
+          <span>${fav ? icon("star", 12) : icon(active ? "check" : "mic", 12)} <b>${esc(opt.name || opt.voiceId || "默认/手动声线")}</b></span>
+          <em>${locked ? "已锁定" : fav ? "已收藏" : esc(opt.source || "")}</em>
+        </button>`;
+      }).join("")}
+    </div>
+  </div>`;
 }
 
 function audioPlanFromDuration(shots, duration) {
@@ -59,7 +115,7 @@ function digitalSegmentsFromShots(p, acc) {
   let cur = null;
   shots.forEach((s, i) => {
     const d = Math.max(3, Number(per[i]?.dur || 4));
-    if (!cur || (cur.dur + d > 30 && cur.shotIndexes.length)) {
+    if (!cur || (cur.dur + d > DIGITAL_SEGMENT_MAX_SEC && cur.shotIndexes.length)) {
       cur = { id: uid(), shotIndexes: [], dur: 0, line: "", characterRefAssetId: "", customCharacterRefAssetId: "", audioAssetId: null, audioDuration: 0, status: "pending" };
       segments.push(cur);
     }
@@ -76,7 +132,7 @@ function digitalSegmentsFromShots(p, acc) {
     if (oldSeg?.status) seg.status = oldSeg.status;
     if (oldSeg?.videoStatus) seg.videoStatus = oldSeg.videoStatus;
     if (oldSeg?.videoPrompt) seg.videoPrompt = oldSeg.videoPrompt;
-    seg.dur = Math.round(Math.min(30, seg.dur) * 10) / 10;
+    seg.dur = Math.round(Math.min(DIGITAL_SEGMENT_MAX_SEC, seg.dur) * 10) / 10;
     seg.line = seg.shotIndexes.map(i => sanitizeXhsText((shots[i]?.line || "").trim())).filter(Boolean).join("\n");
     seg.characterRefAssetId = seg.customCharacterRefAssetId || globalChar || null;
   });
@@ -145,13 +201,18 @@ export function renderWorkshopPage(root, p) {
     const voiceRefAsset = p.artifacts.audio.voiceRefAssetId ? assetById(p.artifacts.audio.voiceRefAssetId) : null;
     const hasNarrationAudio = hasAudio();
     const digitalSegments = isDigitalHumanMode ? digitalSegmentsFromShots(p, acc) : [];
+    const selectedVoice = selectedVoicePreset(p, acc);
+    const favoriteVoiceIds = new Set(state.ui.favoriteVoiceIds || []);
+    const voiceOptions = voicePickerOptions(selectedVoice.voiceId, selectedVoice.name, favoriteVoiceIds);
+    const voiceLocked = !!(selectedVoice.voiceId && acc?.voiceId === selectedVoice.voiceId);
+    const voiceFav = !!(selectedVoice.voiceId && favoriteVoiceIds.has(selectedVoice.voiceId));
     const ratio = A.ratio || "9:16";
     const rtBtn = (r) => `<button class="ws-rt" data-ratio="${r}" style="font-size:11px;padding:3px 10px;border-radius:7px;cursor:pointer;border:1px solid ${ratio === r ? "#6a5bff" : "var(--d-line-2,rgba(120,130,160,.3))"};background:${ratio === r ? "rgba(106,91,255,.16)" : "transparent"};color:${ratio === r ? "#8b7bff" : "inherit"}">${r}</button>`;
     const digitalPlanHtml = isDigitalHumanMode ? `<div class="dh-plan-inline">
       <div class="dh-plan-head">
         <div>
           <b>${icon("user", 13)} 数字人分段</b>
-          <em>${digitalSegments.length ? `已切为 ${digitalSegments.length} 段，每段不超过30s；每段=口播音频 + 角色图。` : "生成口播草稿后自动拆成不超过30s的数字人口播片段。"}</em>
+          <em>${digitalSegments.length ? `已切为 ${digitalSegments.length} 段，每段约18s以内；每段=口播音频 + 角色图。` : "生成口播草稿后自动拆成约18s以内的数字人口播片段。"}</em>
         </div>
         <button class="btn gen sm" id="wsDhVideoAll">${icon("spark", 13)} 一键生成视频</button>
       </div>
@@ -182,7 +243,7 @@ export function renderWorkshopPage(root, p) {
             <div class="head-actions">
               <span class="tag">${icon("mic", 11)} ${hasNarrationAudio ? "外部口播" : "提示词口播"} ${fmtTC(p.artifacts.audio.duration || 0)}${p.artifacts.audio.source === "upload" ? " · 已上传" : ""}</span>
               <span class="tag">${icon("layers", 11)} ${isDigitalHumanMode ? "数字人分段" : `文生 ${units.length - refN} · 全能参考 ${refN}`}</span>
-              ${isDigital ? `<span class="dh-mode ${isDigitalHumanMode ? "is-digital" : "is-seedance"}" data-mode="${isDigitalHumanMode ? "digitalHuman" : "seedance"}" title="数字人模式先用 Minimax 生成口播，再按≤30s切段，每段=音频+角色图；Seedance 模式沿用视频模型直接生成">
+              ${isDigital ? `<span class="dh-mode ${isDigitalHumanMode ? "is-digital" : "is-seedance"}" data-mode="${isDigitalHumanMode ? "digitalHuman" : "seedance"}" title="数字人模式先用 Minimax 生成口播，再按约18s切段，每段=音频+角色图；Seedance 模式沿用视频模型直接生成">
                 <i aria-hidden="true"></i>
                 <button class="${isDigitalHumanMode ? "on" : ""}" data-dh-mode="digitalHuman">数字人</button>
                 <button class="${!isDigitalHumanMode ? "on" : ""}" data-dh-mode="seedance">Seedance</button>
@@ -249,7 +310,7 @@ export function renderWorkshopPage(root, p) {
               <textarea class="input" id="wsNarrationText" rows="5" placeholder="生成口播草稿后可在这里修改；也可以直接粘贴自定义口播，每行一句">${esc(narrationText(shots))}</textarea>
             </div>
             <div class="refbar-actions">
-              <button class="btn ghost sm" id="wsApplyNarration">${icon("check", 12)} 应用口播</button>
+              <button class="btn ghost sm" id="wsCopyLines">${icon("list", 13)} 一键复制所有口播</button>
             </div>
           </div>
 
@@ -257,7 +318,7 @@ export function renderWorkshopPage(root, p) {
             <div class="refbar-left">
               <b>${icon("mic", 13)} ${isDigitalHumanMode ? "口播音频" : "账号口播风格参考 / 口播音频"}</b>
               <em>${isDigitalHumanMode
-                ? "数字人模式会先用 Minimax 生成口播，再按≤30s切段；每段默认用角色形象，可单段覆盖专属角色图。"
+                ? "数字人模式会先用 Minimax 生成口播，再按约18s切段；每段默认用角色形象，可单段覆盖专属角色图。"
                 : isDigital
                   ? "Seedance 真人模式会把口播写入视频提示词，并用账号口播风格参考保持音色和节奏。"
                 : (voiceRefAsset ? `口播风格参考「${esc(voiceRefAsset.name)}」会写入提示词，用于统一口播音色；` : "可上传/拖拽参考音频锁定账号口播风格；")}${!isDigital && audioAsset
@@ -266,17 +327,13 @@ export function renderWorkshopPage(root, p) {
             </div>
             <div class="refbar-chip">${!isDigitalHumanMode && voiceRefAsset ? `<span class="ref-chip audio">${icon("mic", 12)}<span>${esc(voiceRefAsset.name)}</span><button class="ref-x" data-voicedel>${icon("x", 11)}</button></span>` : ""}</div>
             <div class="refbar-actions">
-              ${(!isDigital || isDigitalHumanMode) && ttsVoicePresets().length ? `<select class="input sm" id="wsVoicePreset" title="选择 MiniMax 口播声线" style="width:190px">
-                <option value="">默认/手动声线</option>
-                ${ttsVoicePresets().map(v => `<option value="${esc(v.voiceId)}" ${(p.artifacts.audio.voiceId || acc?.voiceId || defaultTtsVoiceId()) === v.voiceId ? "selected" : ""}>${esc(v.name)}</option>`).join("")}
-              </select>` : ""}
+              ${(!isDigital || isDigitalHumanMode) ? voicePickerHtml({ selected: selectedVoice, options: voiceOptions, favoriteIds: favoriteVoiceIds, lockedVoiceId: acc?.voiceId || "" }) : ""}
               ${(!isDigital || isDigitalHumanMode) ? `<div class="voice-id-search">
-                <input class="input sm" id="wsVoiceId" value="${esc(p.artifacts.audio.voiceId || acc?.voiceId || defaultTtsVoiceId())}" placeholder="粘贴 / 搜索 voice_id" />
+                <input class="input sm" id="wsVoiceId" value="${esc(selectedVoice.voiceId || "")}" placeholder="粘贴 / 搜索 voice_id" />
                 <button class="btn ghost sm" id="wsVoiceLookup">${icon("search", 12)} 识别</button>
               </div>` : ""}
-              ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm" id="wsVoiceFav">${icon("star", 12)} 收藏</button>
-              <button class="btn ghost sm" id="wsVoiceFix">${icon("check", 12)} 固定到账号</button>` : ""}
-              <button class="btn ghost sm" id="wsCopyLines">${icon("list", 13)} 一键复制所有口播</button>
+              ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm ${voiceFav ? "voice-action-active" : ""}" id="wsVoiceFav">${icon("star", 12)} ${voiceFav ? "已收藏" : "收藏"}</button>
+              <button class="btn ghost sm ${voiceLocked ? "voice-action-active" : ""}" id="wsVoiceFix">${icon("check", 12)} ${voiceLocked ? "已锁定" : "固定到账号"}</button>` : ""}
               ${!isDigital || isDigitalHumanMode ? `<button class="btn ghost sm" id="wsTts">${icon("mic", 13)} ${isDigitalHumanMode ? "生成分段口播" : (audioAsset && p.artifacts.audio.source === "tts" ? "重新生成口播" : "生成口播音频")}${ttsApiConfigured() ? "" : "（估时）"}</button>` : ""}
               ${!isDigitalHumanMode ? `<label class="btn ghost sm">${voiceRefAsset ? "更换口播风格参考" : "上传口播风格参考"}<input type="file" accept="audio/*" hidden id="wsVoiceRefUp" /></label>` : ""}
               ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
@@ -372,6 +429,7 @@ export function renderWorkshopPage(root, p) {
   }
 
   async function ensurePrompts(force = false) {
+    syncNarrationFromEditor({ silent: true });
     const units = materialUnits(p);
     if (isDigitalHumanMode) {
       applyDigitalFixedPrompts(units);
@@ -513,9 +571,12 @@ export function renderWorkshopPage(root, p) {
     return true;
   }
 
-  function setNarrationLines(lines, { invalidateAudio = true } = {}) {
+  function setNarrationLines(lines, { invalidateAudio = true, silent = false } = {}) {
     const clean = (lines || []).map(x => sanitizeXhsText(String(x || "").trim())).filter(Boolean);
-    if (!clean.length) { toast("口播内容不能为空"); return false; }
+    if (!clean.length) { if (!silent) toast("口播内容不能为空"); return false; }
+    const before = narrationText(shots);
+    const after = clean.join("\n");
+    if (before === after) return true;
     if (!shots.length) {
       p.artifacts.script.shots = clean.map((line, i) => ({
         idea: `口播段 ${i + 1}`,
@@ -549,6 +610,11 @@ export function renderWorkshopPage(root, p) {
     return true;
   }
 
+  function syncNarrationFromEditor({ silent = true } = {}) {
+    const text = $("#wsNarrationText", root)?.value || "";
+    return setNarrationLines(text.split(/\n+/), { invalidateAudio: true, silent });
+  }
+
   function invalidatePromptsAfterAudioChange() {
     buildMaterialUnits(p);
     (p.artifacts.boards.units || []).forEach(u => {
@@ -573,11 +639,16 @@ export function renderWorkshopPage(root, p) {
     }));
     $("#wsTopic", root)?.addEventListener("input", e => { p.topic = sanitizeXhsText(e.target.value.trim()); save("productions"); });
     $("#wsDice", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
-      const topic = sanitizeXhsText(await AI.randomPick({ kind: "topic", account: acc, product: productById(p.artifacts.script.productId || "dumate") }));
+      const topic = sanitizeXhsText(await AI.generateCreativeBrief({
+        account: acc,
+        product: productById(p.artifacts.script.productId || "dumate"),
+        imageCount: 6,
+        kind: "video"
+      }));
       p.topic = topic;
       const input = $("#wsTopic", root); if (input) input.value = topic;
       save("productions");
-      toast(AI.sourceNote("已随机生成选题"));
+      toast(AI.sourceNote("已从四方向库随机生成视频选题"));
     }, "随机中…"));
     $("#wsProduct", root)?.addEventListener("change", e => { p.artifacts.script.productId = e.target.value || "dumate"; save("productions"); });
     $("#wsDraft", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
@@ -593,7 +664,7 @@ export function renderWorkshopPage(root, p) {
       const style = p.artifacts.script.style || acc?.styleProfile || acc?.lockedStyle || "";
       const res = isMaterial(p)
         ? await AI.generateMaterialScript({ topic, account: acc, style, product: selectedProduct })
-        : await AI.generateScript({ topic, duration: 55, account: acc, image: false, style, product: selectedProduct });
+        : await AI.generateScript({ topic, duration: isDigitalHumanMode ? 64 : 55, account: acc, image: false, style, product: selectedProduct });
       p.artifacts.script.shots = res.shots || [];
       shots = p.artifacts.script.shots || [];
       p.artifacts.script.title = res.title || topic;
@@ -605,11 +676,8 @@ export function renderWorkshopPage(root, p) {
       toast(AI.sourceNote("已生成口播草稿并按可读时长重排片段"));
       draw();
     }, "生成中…"));
-    $("#wsApplyNarration", root)?.addEventListener("click", () => {
-      const text = $("#wsNarrationText", root)?.value || "";
-      const ok = setNarrationLines(text.split(/\n+/), { invalidateAudio: true });
-      if (ok) { toast("口播草稿已应用，已清空旧音频和旧提示词"); draw(); }
-    });
+    $("#wsNarrationText", root)?.addEventListener("blur", () => syncNarrationFromEditor({ silent: true }));
+    $("#wsNarrationText", root)?.addEventListener("change", () => syncNarrationFromEditor({ silent: true }));
     // 全能参考素材（logo / 界面图，可多张）
     const charbar = $("#wsCharbar", root);
     wireDropZone(charbar, async files => {
@@ -685,22 +753,33 @@ export function renderWorkshopPage(root, p) {
     }
 
     // 口播：一键复制 + 上传音频（按真实时长重排）
-    $("#wsCopyLines", root).addEventListener("click", () => {
+    $("#wsCopyLines", root)?.addEventListener("click", () => {
+      syncNarrationFromEditor({ silent: true });
       const text = narrationText(shots);
       if (!text) { toast("脚本里还没有口播文案"); return; }
       copyText(text);
       toast("已复制全部口播文案");
     });
-    $("#wsVoicePreset", root)?.addEventListener("change", e => {
-      p.artifacts.audio.voiceId = e.currentTarget.value || "";
-      p.artifacts.audio.voiceLookup = "";
-      const input = $("#wsVoiceId", root);
-      if (input) input.value = p.artifacts.audio.voiceId;
-      save("productions");
-      toast(p.artifacts.audio.voiceId ? "已切换口播声线" : "已切回默认/手动声线");
+    const voiceBtn = $("#wsVoicePickerBtn", root);
+    const voiceMenu = $("#wsVoiceMenu", root);
+    voiceBtn?.addEventListener("click", e => {
+      e.stopPropagation();
+      if (voiceMenu) voiceMenu.hidden = !voiceMenu.hidden;
     });
+    $$("[data-voice-option]", root).forEach(b => b.addEventListener("click", () => {
+      const id = b.dataset.voiceOption || "";
+      const known = id ? findKnownTtsVoice(id) : null;
+      const preset = ttsVoicePresets().find(v => v.voiceId === id);
+      p.artifacts.audio.voiceId = id;
+      p.artifacts.audio.voiceName = preset?.name || known?.name || "";
+      p.artifacts.audio.voiceLookup = "";
+      save("productions");
+      toast(id ? `已切换声线：${p.artifacts.audio.voiceName || id}` : "已切回默认/手动声线");
+      draw();
+    }));
     $("#wsVoiceId", root)?.addEventListener("input", e => {
       p.artifacts.audio.voiceId = e.currentTarget.value.trim();
+      p.artifacts.audio.voiceName = "";
       p.artifacts.audio.voiceLookup = "";
       save("productions");
     });
@@ -709,15 +788,11 @@ export function renderWorkshopPage(root, p) {
       if (!voiceId) { toast("请先填写 voice_id"); return; }
       const res = await lookupTtsVoice(voiceId, { test: true });
       p.artifacts.audio.voiceId = voiceId;
+      p.artifacts.audio.voiceName = res.name || "";
       const usedBy = (res.accounts || []).map(x => x.account).filter(Boolean).slice(0, 3).join("、");
       const local = res.name ? `识别为：${res.name}${usedBy ? `（用于 ${usedBy}${(res.accounts || []).length > 3 ? " 等账号" : ""}）` : ""}` : "本地未命名，按自定义声线 ID 使用";
       const remote = res.valid === true ? "上游测试有效" : res.valid === false ? "上游返回无效" : (res.configured ? "上游未能确认" : "本地未配置 TTS，暂未上游测试");
       p.artifacts.audio.voiceLookup = `${local} · ${remote}${res.detail ? `：${res.detail.slice(0, 120)}` : ""}`;
-      if (acc && res.name) {
-        acc.voiceId = voiceId;
-        acc.voiceName = res.name;
-        save("accounts");
-      }
       save("productions");
       toast(res.valid === false ? "声线上游测试未通过" : "声线识别完成");
       draw();
@@ -732,6 +807,7 @@ export function renderWorkshopPage(root, p) {
       state.ui.favoriteVoiceIds = [...favs];
       save("meta");
       toast(`已收藏声线：${name}`);
+      draw();
     });
     $("#wsVoiceFix", root)?.addEventListener("click", () => {
       const typed = ($("#wsVoiceId", root)?.value || "").trim();
@@ -741,10 +817,13 @@ export function renderWorkshopPage(root, p) {
       acc.voiceId = voiceId;
       acc.voiceName = name;
       p.artifacts.audio.voiceId = voiceId;
+      p.artifacts.audio.voiceName = name;
       save("accounts", "productions");
       toast(`已固定到账号：${name}`);
+      draw();
     });
     $("#wsTts", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      syncNarrationFromEditor({ silent: true });
       if (!shots.length) { toast("先生成口播草稿"); return; }
       const text = narrationText(shots);
       if (!text) { toast("没有可合成的口播文本"); return; }
@@ -914,6 +993,7 @@ export function renderWorkshopPage(root, p) {
     }, "生成中…")));
 
     $("#wsAuto", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      syncNarrationFromEditor({ silent: true });
       if (!shots.length) { toast("先在上方生成口播草稿"); return; }
       if (isDigitalHumanMode) {
         const segs = digitalSegmentsFromShots(p, acc);
@@ -942,6 +1022,7 @@ export function renderWorkshopPage(root, p) {
     }, "起草中…"));
 
     $("#wsGenPrompts", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      syncNarrationFromEditor({ silent: true });
       if (!shots.length) { toast("先在上方生成口播草稿"); return; }
       await ensurePrompts(true);
       draw();
@@ -972,7 +1053,8 @@ export function renderWorkshopPage(root, p) {
       toast("视频已提交但还没有拿到回链，稍后自动刷新或点重生成");
     }));
 
-    $("#wsNext", root).addEventListener("click", () => {
+    $("#wsNext", root)?.addEventListener("click", () => {
+      syncNarrationFromEditor({ silent: true });
       if (isDigitalHumanMode) {
         const segs = digitalSegmentsFromShots(p, acc);
         const ready = segs.length && segs.every(x => x.audioAssetId && assetById(x.audioAssetId) && x.characterRefAssetId && assetById(x.characterRefAssetId));
