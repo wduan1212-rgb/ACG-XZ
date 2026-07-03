@@ -7,7 +7,7 @@ import { AI } from "../api/ai.js";
 import { STYLE_CHIP_BASE } from "../api/prompts.js";
 import { normalizeVideoTimes, setStage, isMaterial, estimateAudio } from "../domain/productions.js";
 import { getCreativeMemoryContext } from "../domain/analytics.js";
-import { defaultTtsVoiceId, synthesizeTts, ttsApiConfigured, ttsProviderLabel, ttsVoicePresets } from "../api/providers.js";
+import { defaultTtsVoiceId, lookupTtsVoice, synthesizeTts, ttsApiConfigured, ttsProviderLabel, ttsVoicePresets } from "../api/providers.js";
 import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.js";
 import { fmtTC } from "../core/util.js";
 import { toast, withLoading, promptModal } from "../ui/components.js";
@@ -124,9 +124,13 @@ export function renderScriptPage(root, p) {
               </select>
             </label>` : ""}
             <label class="field compact">声线 ID
-              <input class="input" id="csVoiceId" value="${esc(p.artifacts.audio.voiceId || acc.voiceId || defaultTtsVoiceId())}" placeholder="例如 Chinese (Mandarin)_News_Anchor 或你的克隆声线 ID" />
+              <div class="input-with-action">
+                <input class="input" id="csVoiceId" value="${esc(p.artifacts.audio.voiceId || acc.voiceId || defaultTtsVoiceId())}" placeholder="例如 Chinese (Mandarin)_News_Anchor 或你的克隆声线 ID" />
+                <button type="button" class="btn ghost sm" id="csVoiceLookup">${icon("search", 13)} 识别</button>
+              </div>
             </label>
             <span class="muted">${acc.voiceName ? `账号固定声线：${esc(acc.voiceName)} · ` : ""}可指定 Minimax voice_id；留空则使用服务器默认声线。</span>
+            ${p.artifacts.audio.voiceLookup ? `<span class="voice-lookup-note full">${esc(p.artifacts.audio.voiceLookup)}</span>` : ""}
           </div>
           <button class="btn ghost" id="csTts">${icon("mic", 14)} ${(p.artifacts.audio.perShot || []).length ? "重新生成口播音频" : "生成口播音频"}${ttsApiConfigured() ? "" : "（估时）"}</button>
           <div class="tts-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
@@ -370,6 +374,7 @@ export function renderScriptPage(root, p) {
   const voiceInput = $("#csVoiceId", root);
   if (voiceInput) voiceInput.addEventListener("input", e => {
     p.artifacts.audio.voiceId = e.target.value.trim();
+    p.artifacts.audio.voiceLookup = "";
     save("productions");
   });
   const voicePreset = $("#csVoicePreset", root);
@@ -377,8 +382,28 @@ export function renderScriptPage(root, p) {
     if (!e.target.value) return;
     $("#csVoiceId", root).value = e.target.value;
     p.artifacts.audio.voiceId = e.target.value;
+    p.artifacts.audio.voiceLookup = "";
     save("productions");
   });
+  const voiceLookup = $("#csVoiceLookup", root);
+  if (voiceLookup) voiceLookup.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+    const voiceId = ($("#csVoiceId", root)?.value || "").trim();
+    if (!voiceId) { toast("请先填写 voice_id"); return; }
+    const res = await lookupTtsVoice(voiceId, { test: true });
+    p.artifacts.audio.voiceId = voiceId;
+    const usedBy = (res.accounts || []).map(x => x.account).filter(Boolean).slice(0, 3).join("、");
+    const local = res.name ? `识别为：${res.name}${usedBy ? `（用于 ${usedBy}${(res.accounts || []).length > 3 ? " 等账号" : ""}）` : ""}` : "本地未命名，按自定义声线 ID 使用";
+    const remote = res.valid === true ? "上游测试有效" : res.valid === false ? "上游返回无效" : (res.configured ? "上游未能确认" : "本地未配置 TTS，暂未上游测试");
+    p.artifacts.audio.voiceLookup = `${local} · ${remote}${res.detail ? `：${res.detail.slice(0, 120)}` : ""}`;
+    if (acc && res.name) {
+      acc.voiceId = voiceId;
+      acc.voiceName = res.name;
+      save("accounts");
+    }
+    save("productions");
+    toast(res.valid === false ? "声线上游测试未通过" : "声线识别完成");
+    renderScriptPage(root, p);
+  }, "识别中…"));
   const audioAsset = $("#csAudioAsset", root);
   if (audioAsset) audioAsset.addEventListener("click", () => {
     state.ui.assetsFilterAccount = p.accountId;

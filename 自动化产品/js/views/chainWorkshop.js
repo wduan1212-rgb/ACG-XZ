@@ -9,7 +9,7 @@ import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, on, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
-import { defaultTtsVoiceId, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
+import { defaultTtsVoiceId, lookupTtsVoice, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, thumbHtml } from "../domain/assets.js";
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
@@ -270,6 +270,10 @@ export function renderWorkshopPage(root, p) {
                 <option value="">默认/手动声线</option>
                 ${ttsVoicePresets().map(v => `<option value="${esc(v.voiceId)}" ${(p.artifacts.audio.voiceId || acc?.voiceId || defaultTtsVoiceId()) === v.voiceId ? "selected" : ""}>${esc(v.name)}</option>`).join("")}
               </select>` : ""}
+              ${(!isDigital || isDigitalHumanMode) ? `<div class="voice-id-search">
+                <input class="input sm" id="wsVoiceId" value="${esc(p.artifacts.audio.voiceId || acc?.voiceId || defaultTtsVoiceId())}" placeholder="粘贴 / 搜索 voice_id" />
+                <button class="btn ghost sm" id="wsVoiceLookup">${icon("search", 12)} 识别</button>
+              </div>` : ""}
               ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm" id="wsVoiceFav">${icon("star", 12)} 收藏</button>
               <button class="btn ghost sm" id="wsVoiceFix">${icon("check", 12)} 固定到账号</button>` : ""}
               <button class="btn ghost sm" id="wsCopyLines">${icon("list", 13)} 一键复制所有口播</button>
@@ -277,6 +281,7 @@ export function renderWorkshopPage(root, p) {
               ${!isDigitalHumanMode ? `<label class="btn ghost sm">${voiceRefAsset ? "更换口播风格参考" : "上传口播风格参考"}<input type="file" accept="audio/*" hidden id="wsVoiceRefUp" /></label>` : ""}
               ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
             </div>
+            ${p.artifacts.audio.voiceLookup ? `<div class="voice-lookup-note" style="grid-column:1/-1">${esc(p.artifacts.audio.voiceLookup)}</div>` : ""}
             ${audioAsset && !isDigitalHumanMode ? `<div class="tts-audio" style="grid-column:1/-1;margin-top:10px;display:flex;align-items:center;gap:10px">
               <span class="muted" style="font-size:12px">口播预览</span>
               <audio src="${esc(urlFor(audioAsset))}" controls preload="metadata" style="width:min(520px,100%);height:34px"></audio>
@@ -688,10 +693,38 @@ export function renderWorkshopPage(root, p) {
     });
     $("#wsVoicePreset", root)?.addEventListener("change", e => {
       p.artifacts.audio.voiceId = e.currentTarget.value || "";
+      p.artifacts.audio.voiceLookup = "";
+      const input = $("#wsVoiceId", root);
+      if (input) input.value = p.artifacts.audio.voiceId;
       save("productions");
       toast(p.artifacts.audio.voiceId ? "已切换口播声线" : "已切回默认/手动声线");
     });
+    $("#wsVoiceId", root)?.addEventListener("input", e => {
+      p.artifacts.audio.voiceId = e.currentTarget.value.trim();
+      p.artifacts.audio.voiceLookup = "";
+      save("productions");
+    });
+    $("#wsVoiceLookup", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      const voiceId = ($("#wsVoiceId", root)?.value || "").trim();
+      if (!voiceId) { toast("请先填写 voice_id"); return; }
+      const res = await lookupTtsVoice(voiceId, { test: true });
+      p.artifacts.audio.voiceId = voiceId;
+      const usedBy = (res.accounts || []).map(x => x.account).filter(Boolean).slice(0, 3).join("、");
+      const local = res.name ? `识别为：${res.name}${usedBy ? `（用于 ${usedBy}${(res.accounts || []).length > 3 ? " 等账号" : ""}）` : ""}` : "本地未命名，按自定义声线 ID 使用";
+      const remote = res.valid === true ? "上游测试有效" : res.valid === false ? "上游返回无效" : (res.configured ? "上游未能确认" : "本地未配置 TTS，暂未上游测试");
+      p.artifacts.audio.voiceLookup = `${local} · ${remote}${res.detail ? `：${res.detail.slice(0, 120)}` : ""}`;
+      if (acc && res.name) {
+        acc.voiceId = voiceId;
+        acc.voiceName = res.name;
+        save("accounts");
+      }
+      save("productions");
+      toast(res.valid === false ? "声线上游测试未通过" : "声线识别完成");
+      draw();
+    }, "识别中…"));
     $("#wsVoiceFav", root)?.addEventListener("click", () => {
+      const typed = ($("#wsVoiceId", root)?.value || "").trim();
+      if (typed) p.artifacts.audio.voiceId = typed;
       const { voiceId, name } = selectedVoicePreset(p, acc);
       if (!voiceId) { toast("请先选择一个有效声线"); return; }
       const favs = new Set(state.ui.favoriteVoiceIds || []);
@@ -701,6 +734,8 @@ export function renderWorkshopPage(root, p) {
       toast(`已收藏声线：${name}`);
     });
     $("#wsVoiceFix", root)?.addEventListener("click", () => {
+      const typed = ($("#wsVoiceId", root)?.value || "").trim();
+      if (typed) p.artifacts.audio.voiceId = typed;
       const { voiceId, name } = selectedVoicePreset(p, acc);
       if (!voiceId || !acc) { toast("请先选择一个有效声线"); return; }
       acc.voiceId = voiceId;
@@ -713,7 +748,9 @@ export function renderWorkshopPage(root, p) {
       if (!shots.length) { toast("先生成口播草稿"); return; }
       const text = narrationText(shots);
       if (!text) { toast("没有可合成的口播文本"); return; }
-      const voiceId = (p.artifacts.audio.voiceId || acc?.voiceId || defaultTtsVoiceId() || "").trim();
+      const typedVoiceId = ($("#wsVoiceId", root)?.value || "").trim();
+      const voiceId = (typedVoiceId || p.artifacts.audio.voiceId || acc?.voiceId || defaultTtsVoiceId() || "").trim();
+      p.artifacts.audio.voiceId = voiceId;
       if (isDigitalHumanMode) {
         try {
           const out = await synthesizeDigitalSegmentAudio(voiceId);

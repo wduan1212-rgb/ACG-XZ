@@ -12,6 +12,8 @@
    } */
 
 import { state } from "../core/store.js";
+import { ACCOUNT_PROFILE_SEED } from "../data/accountProfilesSeed.js";
+import { XHS_ACCOUNT_SEED } from "../data/xhsAccountsSeed.js";
 
 const registry = new Map();
 const imageRuns = new Map();
@@ -193,6 +195,76 @@ export function defaultTtsVoiceId() {
 }
 export function ttsVoicePresets() {
   return Array.isArray(serverTts.voices) ? serverTts.voices : [];
+}
+
+function voiceSeedRows() {
+  return [
+    ...(Array.isArray(ACCOUNT_PROFILE_SEED) ? ACCOUNT_PROFILE_SEED : []),
+    ...(Array.isArray(XHS_ACCOUNT_SEED) ? XHS_ACCOUNT_SEED : [])
+  ];
+}
+
+export function findKnownTtsVoice(voiceId = "") {
+  const id = String(voiceId || "").trim();
+  if (!id) return null;
+  const exactPreset = ttsVoicePresets().find(v => v.voiceId === id);
+  const presetMatches = ttsVoicePresets()
+    .filter(v => v.voiceId !== id && (String(v.voiceId || "").includes(id) || String(v.name || "").includes(id)))
+    .slice(0, 8);
+  const accountRows = (state.accounts || [])
+    .filter(a => a.voiceId === id)
+    .map(a => ({ name: a.voiceName || id, account: a.name, source: "当前账号" }));
+  const seedRows = voiceSeedRows()
+    .filter(a => a.voiceId === id)
+    .map(a => ({ name: a.voiceName || id, account: a.name, source: a.seedCode || "账号画像" }));
+  const first = exactPreset
+    ? { name: exactPreset.name || id, source: "系统预设" }
+    : (accountRows[0] || seedRows[0] || null);
+  return {
+    voiceId: id,
+    name: first?.name || "",
+    source: first?.source || "",
+    known: !!first,
+    preset: exactPreset || null,
+    presetMatches,
+    accounts: [...accountRows, ...seedRows]
+  };
+}
+
+export async function lookupTtsVoice(voiceId = "", { test = true } = {}) {
+  const id = String(voiceId || "").trim();
+  if (!id) throw new Error("请先填写声线 ID");
+  const local = findKnownTtsVoice(id);
+  const result = {
+    voiceId: id,
+    name: local?.name || "",
+    source: local?.source || "",
+    known: !!local?.known,
+    accounts: local?.accounts || [],
+    presetMatches: local?.presetMatches || [],
+    configured: !!serverTts.configured,
+    valid: null,
+    detail: ""
+  };
+  if (!serverTts.configured || !test) return result;
+  let res;
+  try {
+    res = await fetch(`/api/tts/voice/lookup?voiceId=${encodeURIComponent(id)}&test=${test ? "true" : "false"}`, {
+      cache: "no-store"
+    });
+  } catch (e) {
+    result.detail = "连不上本地服务端 /api/tts/voice/lookup：" + (e.message || e);
+    return result;
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || data.error || `声线查询失败 (${res.status})`);
+  result.name = result.name || data.name || "";
+  result.known = result.known || !!data.known;
+  result.configured = !!data.configured;
+  result.valid = data.valid;
+  result.detail = data.detail || "";
+  result.durationMs = data.durationMs || 0;
+  return result;
 }
 
 export async function refreshProviderStatus() {

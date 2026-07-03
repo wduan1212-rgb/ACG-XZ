@@ -2,10 +2,11 @@
 
 import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { state, save, productionById, accountById, canManageAccounts, ownedBy } from "../core/store.js";
+import { state, save, accountById, ownedBy, assetById } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
 import { STAGES, statusPill } from "../domain/productions.js";
 import { deliveredAssets } from "../domain/delivery.js";
+import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js";
 import { LLM_CONFIG } from "../api/llm.js";
 import { openProductionDrawer } from "./prodDrawer.js";
@@ -109,6 +110,24 @@ async function askData(q) {
 
 const CHAT_SUGS = ["昨天产出了多少素材？", "供应商下载了多少？", "哪个账号本月产量最高？", "还有多少在等审核？"];
 
+function firstAccountImage(accountId) {
+  return [...state.assets]
+    .filter(a => a.accountId === accountId && a.type === "图片" && !a.delivered)
+    .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+    .find(a => urlFor(a)) || null;
+}
+
+function realDeliveryThumb(asset, acc) {
+  const packCover = (asset.packAssetIds || []).map(id => assetById(id)).find(a => a && urlFor(a));
+  const avatar = acc?.avatarAssetId ? assetById(acc.avatarAssetId) : null;
+  const avatarCover = avatar && urlFor(avatar) ? avatar : null;
+  const firstImage = firstAccountImage(asset.accountId);
+  const cover = packCover || avatarCover || firstImage;
+  const u = cover ? urlFor(cover) : "";
+  if (u) return `<span class="ovr-cover real"><img src="${esc(u)}" alt="${esc(asset.title || acc?.name || "交付封面")}"/></span>`;
+  return `<span class="ovr-cover fallback" style="background:${gradFor(asset.name)}">${asset.type === "图集" ? icon("image", 14) : icon("play", 14)}</span>`;
+}
+
 /* ---------- 视图 ---------- */
 export const overviewView = {
   render(root) {
@@ -128,7 +147,6 @@ export const overviewView = {
         <b>${n}</b><span>${label}</span><em>${sub}</em>
       </button>`;
 
-    const admin = canManageAccounts();
     root.innerHTML = `
       <div class="overview">
         <div class="ov-hero card">
@@ -137,20 +155,20 @@ export const overviewView = {
             <h2>${greeting()}，今天从这里开始</h2>
             <p>${accounts.length} 个账号 · ${inflight.length} 条在制 · 本月已交付 ${monthly} 条</p>
           </div>
-          ${admin ? `<button class="btn primary" id="ovNewAccHero">${icon("plus", 14)} 新建账号</button>` : ""}
+          <div class="ovh-right">
+            <section class="ov-chat ov-chat-mini" id="ovChat">
+              <div class="ovc-head">
+                <span class="ovc-ava">${agentAvatar(24)}</span>
+                <div><b>数据问答</b><em>只读真实数据</em></div>
+              </div>
+              <div class="ovc-msgs" id="ovcMsgs"></div>
+              <div class="ovc-input">
+                <input id="ovcInput" placeholder="问问数据：昨天产出多少素材？" />
+                <button class="ovc-send" id="ovcSend" title="发送">${icon("send", 15)}</button>
+              </div>
+            </section>
+          </div>
         </div>
-
-        <section class="card ov-chat" id="ovChat">
-          <div class="ovc-head">
-            <span class="ovc-ava">${agentAvatar(28)}</span>
-            <div><b>数据问答</b><em>只读库里的真实数据回答 · 不执行操作</em></div>
-          </div>
-          <div class="ovc-msgs" id="ovcMsgs"></div>
-          <div class="ovc-input">
-            <input id="ovcInput" placeholder="问问数据：昨天产出多少素材？供应商下载了多少？" />
-            <button class="ovc-send" id="ovcSend" title="发送">${icon("send", 15)}</button>
-          </div>
-        </section>
 
         <div class="ov-stats">
           ${stat("等待上传", waiting.length, "上传补图后继续", "agent", waiting.length ? "warn" : "")}
@@ -182,7 +200,7 @@ export const overviewView = {
             ${delivered.length ? `<div class="ov-recent-list ov-scroll">
               ${delivered.slice(0, 20).map(({ asset, acc }) => `
                 <div class="ovr-row" ${asset.productionId ? `data-prod="${asset.productionId}"` : ""}>
-                  <span class="ovr-cover" style="background:${gradFor(asset.name)}">${asset.type === "图集" ? icon("image", 14) : icon("play", 14)}</span>
+                  ${realDeliveryThumb(asset, acc)}
                   <span class="ovt-main"><b>${esc(asset.title || asset.name)}</b><em>${esc(acc.name)} · ${asset.publishedUrl ? "已发布 ✓" : asset.status || "未下载"}${asset.supplierNote ? ` · 备注：${esc(asset.supplierNote)}` : ""}</em></span>
                   ${safeChip(acc?.platform, true)}
                   <time>${timeAgo(asset.createdAt)}</time>
@@ -190,19 +208,6 @@ export const overviewView = {
             </div>` : emptyState("package", "还没有交付记录", "完成创作并审核交付后会汇总在这里")}
           </section>
         </div>
-
-        <section class="card ov-accounts">
-          <div class="card-head"><b>账号矩阵</b><div class="head-actions">${admin ? `<button class="link-btn" id="ovNewAcc">${icon("plus", 12)} 新建账号</button>` : ""}<button class="link-btn" data-ov-go="studio">单号创作 ${icon("arrowRight", 12)}</button></div></div>
-          <div class="ov-acc-grid ov-scroll">
-            ${accounts.length ? accounts.map(a => `
-              <button class="ov-acc" data-acc="${a.id}" title="${esc(a.name)}">
-                <span class="ova-avatar" style="background:${gradFor(a.name)}">${esc((a.name || "账")[0] || "账")}</span>
-                <span class="ovt-main"><b>${esc(a.name)}</b><em>${safeGroup(a)} · ${a.monthlyDone || 0} 条</em></span>
-                ${safeChip(a.platform, true)}
-              </button>`).join("")
-              : `<div class="empty-state slim">${icon("user", 22)}<b>还没有账号</b><p>管理员可以先新建账号，或等待账号库初始化。</p></div>`}
-          </div>
-        </section>
       </div>`;
 
     root.querySelectorAll("[data-ov-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.ovGo)));
@@ -211,8 +216,6 @@ export const overviewView = {
       state.ui.activeAccountId = b.dataset.acc; save("meta");
       go("studio");
     }));
-    root.querySelectorAll("#ovNewAcc, #ovNewAccHero").forEach(b => b.addEventListener("click", () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} }))));
-
     /* 数据问答 */
     const msgsEl = $("#ovcMsgs", root);
     const inputEl = $("#ovcInput", root);

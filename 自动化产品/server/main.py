@@ -839,7 +839,7 @@ async def xhs_trends(req: XhsTrendReq):
             "ok": False,
             "items": [],
             "reason": "opencli_missing",
-            "message": "未检测到 OpenCLI。可在浏览器中配置 OpenCLI 后重试；本次已自动回退本地趋势库。"
+            "message": "服务器进程未检测到 OpenCLI 命令。本地浏览器已配置不等于线上可用；请在服务器运行环境安装 OpenCLI 并确认服务进程 PATH 可见，本次已自动回退本地趋势库。"
         }
     try:
         run = subprocess.run(
@@ -854,7 +854,8 @@ async def xhs_trends(req: XhsTrendReq):
     if run.returncode != 0:
         raw = (run.stderr or run.stdout or "").lower()
         reason = "auth_required" if any(x in raw for x in ("auth", "login", "登录", "token", "cookie")) else "opencli_failed"
-        return {"ok": False, "items": [], "reason": reason, "message": "小红书联网参考暂不可用。可在浏览器中配置 OpenCLI 后重试；本次已自动回退本地趋势库。"}
+        message = "小红书联网参考暂不可用。请确认服务器 OpenCLI 可执行、已完成小红书登录态授权，且服务进程能读取同一份配置；本次已自动回退本地趋势库。"
+        return {"ok": False, "items": [], "reason": reason, "message": message}
     return {"ok": True, "provider": "opencli", "query": query, "items": _parse_xhs_opencli_yaml(run.stdout, limit)}
 
 
@@ -1533,6 +1534,16 @@ class TtsReq(BaseModel):
     languageBoost: str = "auto"
 
 
+def _known_voice_name(voice_id: str) -> str:
+    vid = str(voice_id or "").strip()
+    if not vid:
+        return ""
+    for item in MINIMAX_VOICE_PRESETS:
+        if item.get("voiceId") == vid:
+            return item.get("name") or vid
+    return ""
+
+
 def _int_if_whole(value, default=0):
     try:
         n = float(value)
@@ -1647,6 +1658,54 @@ async def tts_test():
             raise HTTPException(400, "默认 Minimax voice_id 无效或不存在：" + msg[:500])
         raise HTTPException(502, msg)
     return {"ok": True, "provider": "minimax", "model": MINIMAX_TTS_MODEL, "voiceId": MINIMAX_VOICE_ID}
+
+
+@app.get("/api/tts/voice/lookup")
+async def tts_voice_lookup(voiceId: str = "", test: bool = True):
+    voice_id = (voiceId or "").strip()
+    if not voice_id:
+        raise HTTPException(400, "请填写 Minimax voice_id")
+    known_name = _known_voice_name(voice_id)
+    result = {
+        "ok": True,
+        "provider": "minimax",
+        "configured": bool(MINIMAX_API_KEY),
+        "model": MINIMAX_TTS_MODEL,
+        "voiceId": voice_id,
+        "known": bool(known_name),
+        "name": known_name,
+        "valid": None,
+        "detail": ""
+    }
+    if not test:
+        return result
+    if not MINIMAX_API_KEY:
+        result["detail"] = "服务器未配置 Minimax TTS，已完成本地识别，无法做上游有效性测试"
+        return result
+    try:
+        r = await _minimax_tts_request(_tts_payload("声线测试", voice_id))
+    except httpx.HTTPError as exc:
+        result["detail"] = _minimax_connect_error(exc)
+        return result
+    if r.status_code >= 400:
+        try:
+            err = r.json()
+            detail = _http_detail(err.get("detail")) or _readable_error(err.get("base_resp")) or _http_detail(err) or r.text[:500]
+        except Exception:
+            detail = r.text[:500]
+        result["valid"] = False if _looks_like_voice_error(detail) else None
+        result["detail"] = detail
+        return result
+    data = r.json()
+    base = data.get("base_resp") or {}
+    if base.get("status_code", 0) != 0:
+        msg = base.get("status_msg") or "Minimax TTS 声线测试失败"
+        result["valid"] = False if _looks_like_voice_error(msg) else None
+        result["detail"] = msg
+        return result
+    result["valid"] = True
+    result["durationMs"] = int((data.get("extra_info") or {}).get("audio_length") or 0)
+    return result
 
 
 @app.post("/api/tts/generate")
@@ -2065,7 +2124,7 @@ async def _run_opencli_xhs_note(url: str) -> str:
     if os.getenv("AGENT_REACH_ANALYTICS", "auto").lower() in {"0", "false", "off", "no"}:
         raise RuntimeError("agent-reach 小红书采集已被环境变量关闭")
     if not shutil.which("opencli"):
-        raise RuntimeError("agent-reach 当前小红书后端不可用：未检测到 OpenCLI")
+        raise RuntimeError("agent-reach 当前小红书后端不可用：服务器进程未检测到 OpenCLI")
     try:
         run = await asyncio.to_thread(
             subprocess.run,
@@ -2081,7 +2140,7 @@ async def _run_opencli_xhs_note(url: str) -> str:
     if run.returncode != 0:
         low = raw.lower()
         if any(x in low for x in ("auth", "login", "登录", "token", "cookie")):
-            raise RuntimeError("agent-reach/OpenCLI 未获得小红书登录态，请先在浏览器登录小红书后重试")
+            raise RuntimeError("agent-reach/OpenCLI 未获得服务器侧小红书登录态，请在服务器 OpenCLI 运行环境完成授权后重试")
         if "xsec" in low:
             raise RuntimeError("小红书详情需要带 xsec_token 的完整链接，请先从搜索结果打开原文链接后再采集")
         raise RuntimeError(f"agent-reach/OpenCLI 读取失败：{raw[:240] or '未知错误'}")
@@ -2090,7 +2149,7 @@ async def _run_opencli_xhs_note(url: str) -> str:
 
 async def _opencli_xhs_search(query: str, limit: int = 6) -> List[Dict]:
     if not shutil.which("opencli"):
-        raise RuntimeError("agent-reach 当前小红书后端不可用：未检测到 OpenCLI")
+        raise RuntimeError("agent-reach 当前小红书后端不可用：服务器进程未检测到 OpenCLI")
     q = re.sub(r"\s+", " ", (query or "")).strip()[:90]
     if not q:
         return []
@@ -2109,7 +2168,7 @@ async def _opencli_xhs_search(query: str, limit: int = 6) -> List[Dict]:
     if run.returncode != 0:
         low = raw.lower()
         if any(x in low for x in ("auth", "login", "登录", "token", "cookie")):
-            raise RuntimeError("agent-reach/OpenCLI 未获得小红书登录态，请先在浏览器登录小红书后重试")
+            raise RuntimeError("agent-reach/OpenCLI 未获得服务器侧小红书登录态，请在服务器 OpenCLI 运行环境完成授权后重试")
         raise RuntimeError(f"agent-reach/OpenCLI 按标题重搜失败：{raw[:220] or '未知错误'}")
     return _parse_xhs_opencli_yaml(run.stdout, limit)
 

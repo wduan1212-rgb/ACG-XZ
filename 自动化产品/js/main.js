@@ -166,8 +166,8 @@ async function applyAccountProfileSeed({ createMissing = true, quiet = false } =
       tone: profile.tone || acc.tone || "教程感",
       qtags: profile.qtags || acc.qtags || [],
       imagePromptTemplate: profile.imagePromptTemplate || acc.imagePromptTemplate || "",
-      voiceId: profile.voiceId || acc.voiceId || "",
-      voiceName: profile.voiceName || acc.voiceName || ""
+      voiceId: acc.voiceId || profile.voiceId || "",
+      voiceName: acc.voiceName || profile.voiceName || ""
     };
     const needs = Object.entries(patch).some(([k, v]) => JSON.stringify(acc[k] || (Array.isArray(v) ? [] : "")) !== JSON.stringify(v));
     if (needs) { Object.assign(acc, patch, { updatedAt: Date.now() }); changed++; }
@@ -497,12 +497,23 @@ const ZONE_TITLE = { overview: "首页", agent: "批量创作", studio: "单号�
 function renderTopbar() {
   const zone = document.body.dataset.zone;
   const bc = $("#topCrumb");
+  const actions = $(".top-actions");
   const acc = activeAccount();
   const { page } = parseHash();
   let crumb = ZONE_TITLE[zone] || "";
   const shownPage = acc?.mode === "图文" && ["script", "copy"].includes(page) ? "images" : page;
   if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: "分镜工坊", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
   bc.textContent = crumb;
+  let newAccBtn = $("#topNewAccount");
+  if (!newAccBtn && actions) {
+    newAccBtn = document.createElement("button");
+    newAccBtn.id = "topNewAccount";
+    newAccBtn.className = "top-btn top-primary";
+    newAccBtn.innerHTML = `${icon("plus", 13)} <span>新建账号</span>`;
+    newAccBtn.addEventListener("click", () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })));
+    actions.insertBefore(newAccBtn, $("#topSearch"));
+  }
+  if (newAccBtn) newAccBtn.hidden = !(zone === "overview" && state.role === "admin");
 }
 
 /* ---------- ⌘K ---------- */

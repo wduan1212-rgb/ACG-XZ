@@ -6,7 +6,7 @@ import { state, save, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount } from "../domain/accounts.js";
 import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js";
-import { defaultTtsVoiceId, ttsVoicePresets } from "../api/providers.js";
+import { defaultTtsVoiceId, lookupTtsVoice, ttsVoicePresets } from "../api/providers.js";
 import { openModal, toast } from "../ui/components.js";
 import { go, render as routerRender } from "../core/router.js";
 
@@ -20,6 +20,7 @@ export function openAccountDialog(accountId = null) {
     styleProfile: editing?.styleProfile || "",
     voiceName: editing?.voiceName || "",
     voiceId: editing?.voiceId || "",
+    voiceLookup: "",
     voiceFile: null,
     avatarDataUrl: null,
     styleRefDataUrl: null,
@@ -99,7 +100,11 @@ export function openAccountDialog(accountId = null) {
                 <input class="input" id="adVoiceName" value="${esc(draft.voiceName)}" placeholder="例如：素材号男 / 素材号女 / 职场女声" />
               </label>
               <label class="field">Minimax voice_id
-                <input class="input" id="adVoiceId" value="${esc(draft.voiceId)}" placeholder="留空则使用平台默认声线" />
+                <div class="input-with-action">
+                  <input class="input" id="adVoiceId" value="${esc(draft.voiceId)}" placeholder="留空则使用平台默认声线" />
+                  <button type="button" class="btn ghost sm" id="adVoiceLookup">${icon("search", 13)} 识别</button>
+                </div>
+                ${draft.voiceLookup ? `<em class="voice-lookup-note">${esc(draft.voiceLookup)}</em>` : ""}
               </label>
               ${ttsVoicePresets().length ? `<label class="field full">声线预设
                 <select class="input" id="adVoicePreset">
@@ -146,7 +151,31 @@ export function openAccountDialog(accountId = null) {
         const voiceName = $("#adVoiceName", root);
         if (voiceName) voiceName.addEventListener("input", e => { draft.voiceName = e.target.value; });
         const voiceId = $("#adVoiceId", root);
-        if (voiceId) voiceId.addEventListener("input", e => { draft.voiceId = e.target.value; });
+        if (voiceId) voiceId.addEventListener("input", e => { draft.voiceId = e.target.value; draft.voiceLookup = ""; });
+        const voiceLookup = $("#adVoiceLookup", root);
+        if (voiceLookup) voiceLookup.addEventListener("click", async () => {
+          const id = ($("#adVoiceId", root)?.value || "").trim();
+          if (!id) { toast("请先填写 voice_id"); return; }
+          voiceLookup.disabled = true;
+          voiceLookup.textContent = "识别中…";
+          try {
+            const res = await lookupTtsVoice(id, { test: true });
+            draft.voiceId = id;
+            if (res.name) {
+              draft.voiceName = res.name;
+              const nameInput = $("#adVoiceName", root);
+              if (nameInput) nameInput.value = res.name;
+            }
+            const usedBy = (res.accounts || []).map(x => x.account).filter(Boolean).slice(0, 3).join("、");
+            const local = res.name ? `识别为：${res.name}${usedBy ? `（用于 ${usedBy}${(res.accounts || []).length > 3 ? " 等账号" : ""}）` : ""}` : "本地未命名，按自定义声线 ID 保存";
+            const remote = res.valid === true ? "上游测试有效" : res.valid === false ? "上游返回无效" : (res.configured ? "上游未能确认" : "本地未配置 TTS，暂未上游测试");
+            draft.voiceLookup = `${local} · ${remote}${res.detail ? `：${res.detail.slice(0, 120)}` : ""}`;
+            draw();
+          } catch (err) {
+            draft.voiceLookup = err.message || "声线识别失败";
+            draw();
+          }
+        });
         const voicePreset = $("#adVoicePreset", root);
         if (voicePreset) voicePreset.addEventListener("change", e => {
           const id = e.target.value || "";

@@ -32,9 +32,10 @@ const HUMAN_COPY_VOICE = `
 【按"真人发的"来写，不要 AI 腔模板文】
 对照真实账号"配文案参考"的语气与信息密度来写：
 - 更像真实创作者的使用笔记：可以写"我试了一圈""才知道""逼自己看完/跑完之后""以前每次都要反复交代，后来我把它做成固定流程"。
-- 信息密度高、可复制：给出具体工具名、步骤、指令模板、前后对比、数字和适用场景；默认写成短段落和真实复盘，只有用户内容天然适合清单时才少量分点。
+- 信息密度高、可复制：给出具体工具名、步骤、指令模板、前后对比、数字和适用场景；默认写成真实复盘，只有用户内容天然适合清单时才少量分点。
 - 少写假剧情，尤其不要"上周领导突然…"这种短剧感开头；优先写真实踩坑、真实效率变化、能直接复制的方法。
 - 开头可以反常识、结论先行、对话式吐槽或实测复盘，不要固定成"第一段抛观点 + 三点内容 + 收尾段"。
+- 正文段落要紧凑：段落之间只用单换行，不留空行；不要用一堆空行把内容撑开。
 - 结尾自然收束，可以给一个适用场景/避坑提醒/复盘结论；不要强行求评论、求收藏、喊下载。最后一行 4-7 个贴合定位的话题标签（#开头），标签要具体，不只写泛泛的 #AI工具。
 - 禁止固定套话：不要再写可保存流程口号、备忘录/小抄口吻、"先把流程搭稳"、"不夸张但确实"这类固定收束句。
 - 严禁 AI 腔与硬广腔：不要"赋能/助力/高效便捷/一站式/打造闭环"这类空话，不要通篇形容词没有实质内容。宁可具体、口语、有细节。文案要紧扣脚本里的真实内容来写，有含金量。`;
@@ -53,7 +54,7 @@ const XHS_COPY_STYLE = `
 - 内容要像 AI 博主：讲清功能分工、真实场景、操作动作、结果证据、适用人群和一个小技巧。可以带 1-2 个同类/互补产品做对比或组合，但主产品能力不能写混。
 - 标签组合用「品类词 + 场景词 + 流量词 + 品牌词」：例如 #AI工具 #桌面智能体 #效率工具 #自动化办公 #打工人效率。不要只写品牌词。
 - 对外发布的标题、正文和话题标签不要出现自家产品名（例如百度搭子、百度秒哒），统一用桌面智能体、AI应用搭建工具、AI工具、这个工具等品类词表达；竞品或互补工具名可以按主题自然出现。
-- 图文笔记正文适合 260-520 字，短段落，高信息密度；视频简介适合更口语。少呼吁、少广告，不要"快去下载""立刻体验"。`;
+- 图文笔记正文适合 320-620 字，高信息密度；视频简介适合更口语。段落之间只用单换行，不留空行。少呼吁、少广告，不要"快去下载""立刻体验"。`;
 
 const XHS_BATCH_COPY_FORMS = [
   {
@@ -451,7 +452,8 @@ function deTemplateCopy(copy = "") {
     .replace(/①\s*/g, "")
     .replace(/②\s*/g, "")
     .replace(/③\s*/g, "")
-    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]*\n[ \t]*\n+/g, "\n")
+    .replace(/[ \t]+/g, " ")
     .trim();
 }
 
@@ -604,7 +606,7 @@ function showTrendSearchNotice(message = "") {
   box.id = "xhsTrendNotice";
   box.innerHTML = `<div class="modal-panel sm">
     <h3>联网参考热门暂不可用</h3>
-    <p class="muted">${sanitizeProduct(message || "未检测到 OpenCLI 或当前 OpenCLI 未完成小红书授权。可在浏览器中配置 OpenCLI 后重试；本次会自动使用本地趋势库继续生成。")}</p>
+    <p class="muted">${sanitizeProduct(message || "服务器进程未检测到 OpenCLI，或服务器侧 OpenCLI 未完成小红书授权。本机浏览器配置不会自动同步到线上服务；本次会自动使用本地趋势库继续生成。")}</p>
     <div class="modal-actions">
       <button class="btn ghost sm" data-trend-ok>确定</button>
       <button class="btn primary sm" data-trend-mute>不再提醒</button>
@@ -1987,10 +1989,11 @@ export const AI = {
   async generateCreativeBrief({ account, product = null, imageCount = DEFAULT_XHS_IMAGE_COUNT, userText = "", kind = "image", useOnlineTrends = false, trendGuide = "", trendPrep = null }) {
     const p = product || allProductsForAI().find(x => x.owner === "ours") || null;
     const rel = relatedProducts(p, allProductsForAI(), 5);
-  const productName = chineseProductDisplayName(p);
+    const productName = chineseProductDisplayName(p);
     const count = Math.max(3, Math.min(12, Number(imageCount) || DEFAULT_XHS_IMAGE_COUNT));
+    const emptyRunSeed = `${account?.id || account?.name || "account"}:${p?.id || "product"}:${kind}:${count}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
     const fixedEmptyTopic = pickDefaultCreativeTopic({
-      seed: `${account?.id || account?.name || "account"}:${p?.id || "product"}:${kind}:${count}`
+      seed: emptyRunSeed
     });
     const fallback = () => {
       if (!userText) return fixedEmptyTopic;
@@ -2256,7 +2259,7 @@ ${xhsGuardPrompt()}
     const trendGuideText = prep?.guide || trendGuide || await resolveTrendGuide({ topic: safeTopic, account, product, batchVariant, useOnlineTrends, kind });
     const trendReferenceText = trendReferenceForCopy(prep, product);
     const offlineCopyLine = !trendReferenceText
-      ? "当前没有联网参考原文可用：本地趋势库只当灵感，不要被它的标题、结构或固定话术限制。请直接围绕本次主题、图卡内容和账号风格，写成真实使用后的经验复盘；允许选择更自然的叙述顺序，只要主题讲清、干货够、像真人写。"
+      ? "当前没有联网参考原文可用：本地趋势库只当灵感，不要被它的标题、结构或固定话术限制。请直接围绕本次主题、图卡内容和账号风格，写成真实使用后的经验复盘；允许选择更自然的叙述顺序。正文少换行，不留空行，不要机械分点；要讲清一个具体场景、一个可执行方法和一个复核/边界判断。"
       : "";
     const script = kind === "video"
       ? (safeShots || []).map((s, i) => `镜头${i + 1}｜${s.time || ""}｜口播：${s.line || ""}`).join("\n")
@@ -2264,11 +2267,11 @@ ${xhsGuardPrompt()}
     const sys = kind === "video"
       ? `你是短视频发布文案写手，为成片写发布标题与简介（发布平台：${account.platform}，按该平台调性写）：
 - title：20字以内，像真实创作者的结论/痛点标题，具体、有梗、有信息量，可带1个贴合 emoji，但不要标题党过度。
-- copy：220-420字简介，像真实创作者发视频后的补充说明。不要总是分点，不要写固定编号清单；可以用短段落、实测复盘、适合/不适合、一个可复制口播流程来写。必须来自口播脚本，给出真实方法、边界或避坑结论，最后一行4-7个具体话题标签。
+- copy：260-480字简介，像真实创作者发视频后的补充说明。不要总是分点，不要写固定编号清单；可以用实测复盘、适合/不适合、一个可复制口播流程来写。段落之间只用单换行，不留空行。必须来自口播脚本，给出真实方法、边界或避坑结论，最后一行4-7个具体话题标签。
 语气按账号创作风格和口播风格细化，像真人发视频，不要硬广腔，不要假装临时接到领导任务。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`
       : `你是小红书爆款笔记文案写手。根据图卡脚本写一篇配套笔记：
 - title：20字以内，像真实创作者的结论/痛点标题，具体、有梗、有信息量，可带1个贴合 emoji。
-- copy：260-520字正文，像真实小红书效率博主的经验笔记。不要总是分点，不要写固定编号清单；优先写成短段落、实测复盘或场景叙述，必要时再少量列点。正文要有干货：具体场景、操作顺序、指令写法、结果怎么复核、适合/不适合谁，最后一行4-7个具体话题标签。
+- copy：320-620字正文，像真实小红书效率博主的经验笔记。不要总是分点，不要写固定编号清单；优先写成实测复盘或场景叙述，必要时再少量列点。段落之间只用单换行，不留空行。正文要有干货：具体场景、操作顺序、指令写法、结果怎么复核、适合/不适合谁，最后一行4-7个具体话题标签。
 语气按本次内容和账号创作风格细化，像真人发笔记，不要硬广腔。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`;
     try {
       const content = await llm([
@@ -2307,20 +2310,21 @@ ${xhsGuardPrompt()}
   /* ---------- 随机骰子 ---------- */
   async randomPick({ kind, account, product = null, batchVariant = null, seed = "", avoidTopics = [], useOnlineTrends = false, trendGuide = "", trendPrep = null }) {
     try {
+      const runSeed = seed || `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
       const p = product || allProductsForAI().find(x => x.owner === "ours") || null;
       const rel = relatedProducts(p, allProductsForAI(), 4);
       const productName = chineseProductDisplayName(p);
       const relLine = rel.length ? `可参考同类产品：${productListLine(rel)}。` : "";
       const variantGuide = batchVariantLine(batchVariant);
       const avoidLine = (avoidTopics || []).slice(-8).map((x, i) => `${i + 1}. ${sanitizeXhsText(x)}`).join("\n");
-      const prep = trendPrep || await resolveTrendPrep({ topic: seed, account, product: p, batchVariant, useOnlineTrends, kind: "image", seed });
+      const prep = trendPrep || await resolveTrendPrep({ topic: "", account, product: p, batchVariant, useOnlineTrends, kind: "image", seed: runSeed });
       if (kind === "topic" && prep?.creativeContent && !tooSimilarTopic(prep.creativeContent, avoidTopics)) return this._ok(enforceCurrentProductTopic(cleanRandomTopicText(prep.creativeContent, 30), p, rel));
-      const trendGuideText = prep?.guide || trendGuide || await resolveTrendGuide({ topic: seed, account, product: p, batchVariant, useOnlineTrends, kind: "image", seed });
+      const trendGuideText = prep?.guide || trendGuide || await resolveTrendGuide({ topic: "", account, product: p, batchVariant, useOnlineTrends, kind: "image", seed: runSeed });
       const ask = kind === "direction"
         ? `给我一个适合做「${productName}」产品教程短视频的目标人群方向，要主流、好理解、贴近大众（比如 职场白领 / 宝妈 / 大学生 / 老师 / 电商卖家 这类），不要冷门抽象概念。只回一个3-6字的词，不要标点不要解释。`
         : kind === "style"
         ? `为小红书图文笔记配图想一个总视觉风格短语，参考当前创作风格「${account.styleProfile || "干净可读"}」。可以超出常见标签、有新鲜感但要好落地（例如：奶油色清晨书桌风 / 蓝白格子手帐风 / 低饱和莫兰迪办公风）。只回一个5-12字的风格短语，不要标点不要解释。`
-        : `${currentProductLine(p)}\n给我一个「${productName}」相关的 AI 博主选题，贴合账号创作风格「${account.styleProfile || "办公效率人群"}」和账号名「${account.name || "未命名账号"}」。用户没有写创作内容，所以你要主动引入 1 个同类/互补工具做对比、组合、分工或妙用科普，不要只孤立介绍${productName}。${variantGuide ? `\n${variantGuide}` : ""}${avoidLine ? `\n同批已经出现过这些主题，必须避开，不要同义改写：\n${avoidLine}` : ""}${p?.id === "miaoda" ? "秒哒是无代码 AI 应用生成平台，选题必须围绕应用生成、H5/页面、原型、小工具、数据表/后台、非技术人验证想法；不要写文件整理、桌面自动操作、PDF/Word/Excel 转格式、会议纪要这类桌面执行能力，除非明确是“做一个应用来管理这些流程”。" : ""}${relLine}\n热门方向参考（只学选题角度，不照抄）：\n${trendGuideText}\n随机种子：${seed || Math.random().toString(36).slice(2, 8)}。只回一句不超过22字的主题，不要标点不要解释。`;
+        : `${currentProductLine(p)}\n给我一个「${productName}」相关的 AI 博主选题，贴合账号创作风格「${account.styleProfile || "办公效率人群"}」和账号名「${account.name || "未命名账号"}」。用户没有写创作内容，所以你要主动引入 1 个同类/互补工具做对比、组合、分工或妙用科普，不要只孤立介绍${productName}。${variantGuide ? `\n${variantGuide}` : ""}${avoidLine ? `\n同批已经出现过这些主题，必须避开，不要同义改写：\n${avoidLine}` : ""}${p?.id === "miaoda" ? "秒哒是无代码 AI 应用生成平台，选题必须围绕应用生成、H5/页面、原型、小工具、数据表/后台、非技术人验证想法；不要写文件整理、桌面自动操作、PDF/Word/Excel 转格式、会议纪要这类桌面执行能力，除非明确是“做一个应用来管理这些流程”。" : ""}${relLine}\n热门方向参考（只学选题角度，不照抄）：\n${trendGuideText}\n随机种子：${runSeed}。只回一句不超过22字的主题，不要标点不要解释。`;
       const r = await llm([{ role: "user", content: ask }], { temperature: 1.0 });
       const t = kind === "style"
         ? String(r).trim().replace(/[。.\n"'`]/g, "").slice(0, 16)
@@ -2329,7 +2333,8 @@ ${xhsGuardPrompt()}
       throw new Error("空");
     } catch (e) {
       this._fb(e);
-      if (kind === "topic") return fallbackRandomTopic({ account, product, batchVariant, seed, avoidTopics });
+      const runSeed = seed || `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+      if (kind === "topic") return fallbackRandomTopic({ account, product, batchVariant, seed: runSeed, avoidTopics });
       const pool = kind === "direction" ? DIR_POOL : kind === "style" ? STYLE_POOL : TOPIC_POOL;
       const pick = pool[Math.floor(Math.random() * pool.length)];
       return kind === "direction" ? pick + "方向" : pick;
