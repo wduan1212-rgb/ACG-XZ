@@ -4,13 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>星阵 · 内容生产工作台</title>
-    <link rel="icon" type="image/png" href="./assets/brand/xingzhen-favicon.png?v=20260703-v37" />
-    <link rel="stylesheet" href="./styles/tokens.css?v=20260703-v37" />
-    <link rel="stylesheet" href="./styles/base.css?v=20260703-v37" />
-    <link rel="stylesheet" href="./styles/components.css?v=20260703-v37" />
-    <link rel="stylesheet" href="./styles/views.css?v=20260703-v37" />
-    <link rel="stylesheet" href="./styles/analytics.css?v=20260703-v37" />
-    <link rel="stylesheet" href="./styles/agent.css?v=20260703-v37" />
+    <link rel="icon" type="image/png" href="./assets/brand/xingzhen-favicon.png?v=20260704-v41" />
+    <link rel="stylesheet" href="./styles/tokens.css?v=20260704-v41" />
+    <link rel="stylesheet" href="./styles/base.css?v=20260704-v41" />
+    <link rel="stylesheet" href="./styles/components.css?v=20260704-v41" />
+    <link rel="stylesheet" href="./styles/views.css?v=20260704-v41" />
+    <link rel="stylesheet" href="./styles/analytics.css?v=20260704-v41" />
+    <link rel="stylesheet" href="./styles/agent.css?v=20260704-v41" />
     <script>
       (function () {
         try {
@@ -24,9 +24,6 @@
 
     <!-- 开屏 · 三身份口令登录 -->
     <div id="loginGate" class="login-gate">
-      <video id="loginBgVideo" class="lg-bg-video" autoplay muted loop playsinline poster="./assets/brand/main-login-fallback.png" aria-hidden="true">
-        <source src="./assets/brand/main-login-bg.mp4" type="video/mp4" />
-      </video>
       <div class="lg-stage">
         <div class="lg-aurora"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
         <div class="lg-constellation" aria-hidden="true">
@@ -39,7 +36,11 @@
 
       <div class="lg-center">
         <div class="lg-card" data-mode="login">
-          <div class="lg-brand"><h1>欢迎登录</h1><p>星阵内容工作台</p></div>
+          <div class="lg-brand">
+            <img class="lg-login-logo" src="./assets/brand/xingzhen-login-logo.png?v=20260704-v41" alt="星阵" />
+            <h1>欢迎登录</h1>
+            <p>星阵内容工作台</p>
+          </div>
           <div class="lg-form">
             <label class="lg-field">
               <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M12 11a4 4 0 100-8 4 4 0 000 8z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
@@ -99,6 +100,10 @@
           <button class="rail-item" data-nav="analytics" title="数据分析">
             <svg viewBox="0 0 24 24" width="19" height="19"><path d="M2 12h4l3-8 4 16 3-8h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span>数据分析</span>
+          </button>
+          <button class="rail-item" data-nav="voice" title="语音生成">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M12 15a3 3 0 003-3V6a3 3 0 10-6 0v6a3 3 0 003 3z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M6 11a6 6 0 0012 0M12 17v4M4 21h16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            <span>语音生成</span>
           </button>
         </div>
         <div class="rail-bottom">
@@ -165,6 +170,6 @@
         }, 7000);
       })();
     </script>
-  <script type="module" src="./js/main.js?v=20260703-v37"></script>
+  <script type="module" src="./js/main.js?v=20260704-v41"></script>
   </body>
 </html>

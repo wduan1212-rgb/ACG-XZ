@@ -43,7 +43,7 @@ fi
 # ============ 真实 API（去掉行首 # 并填上你的 Key；不填则相应能力走模拟/估时）============
 # 语言模型（脚本/文案）：部署到服务器后建议只配服务端环境变量，所有成员自动走 /api/chat/completions
 # export LLM_API_KEY=sk-xxxxxx
-# export LLM_ENDPOINT=https://api.deepseek.com/chat/completions
+# export LLM_ENDPOINT=https://api.minimaxi.com/v1/chat/completions
 # 或者使用 OpenAI-compatible 内网网关：
 # export LLM_BASE_URL=http://你的内网网关
 # export LLM_MODEL=网关支持的-chat-模型名

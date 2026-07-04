@@ -1,5 +1,5 @@
 /* hash 路由：#/zone 或 #/studio/<page>
-   zones: overview | agent | studio | assets | delivery | settings */
+   zones: overview | voice | agent | studio | assets | drafts | delivery | analytics | settings */
 
 import { $, $$ } from "./util.js";
 import { state } from "./store.js";
@@ -41,9 +41,9 @@ export function render() {
     zone = "agent"; page = null; location.hash = "#/agent";
   }
   if (zone === "studio") allowStudioFromAgentUntil = 0;
-  // 权限路由：供应商只进发布清单；设置仅管理员
+  // 权限路由：供应商只进发布清单；设置和语音工作台仅管理员
   if (state.role === "supplier" && zone !== "delivery") { zone = "delivery"; page = null; location.hash = "#/delivery"; }
-  if (state.role === "editor" && zone === "settings") { zone = "overview"; page = null; location.hash = "#/overview"; }
+  if (state.role !== "admin" && (zone === "settings" || zone === "voice")) { zone = "overview"; page = null; location.hash = "#/overview"; }
   if (!routes.has(zone)) { zone = "overview"; page = null; }
   current = { zone, page };
 

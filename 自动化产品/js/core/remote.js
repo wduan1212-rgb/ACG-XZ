@@ -11,7 +11,7 @@ const FETCH_TIMEOUT_MS = 9000;
 /* 与服务端 store.COLLECTIONS 对齐：notifications/ui/apiKeys 是本地态，不入服务器 */
 export const SYNCED = new Set([
   "accounts", "productions", "assets", "sessions", "batches", "jobs",
-  "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory", "products"
+  "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory", "products", "voicePresets"
 ]);
 
 export const isOn = () => _on;

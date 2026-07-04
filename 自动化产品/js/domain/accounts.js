@@ -94,7 +94,7 @@ export function deleteAccount(id) {
 }
 
 export function accountAssets(accId) {
-  return state.assets.filter(x => x.accountId === accId && !x.delivered && ownedBy(x));
+  return state.assets.filter(x => x.accountId === accId && (x.delivered || x.shared || ownedBy(x)));
 }
 
 export const charBoardOf = a => a && a.charBoardAssetId ? state.assets.find(x => x.id === a.charBoardAssetId) : null;

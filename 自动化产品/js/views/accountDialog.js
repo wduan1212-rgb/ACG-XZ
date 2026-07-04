@@ -6,7 +6,8 @@ import { state, save, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount } from "../domain/accounts.js";
 import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js";
-import { defaultTtsVoiceId, lookupTtsVoice, ttsVoicePresets } from "../api/providers.js";
+import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
+import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
 import { openModal, toast } from "../ui/components.js";
 import { go, render as routerRender } from "../core/router.js";
 
@@ -40,6 +41,7 @@ export function openAccountDialog(accountId = null) {
         const isDH = isVideo && draft.subType === "数字人";
         const avatarUrl = draft.avatarDataUrl || (editing?.avatarAssetId ? urlFor(editing.avatarAssetId) : "");
         const styleRefUrl = draft.styleRefDataUrl || (editing?.imageStyleAssetId ? urlFor(editing.imageStyleAssetId) : "");
+        const voiceGroups = voicePickerGroups({ selectedId: draft.voiceId, selectedName: draft.voiceName });
         root.innerHTML = `
           <div class="mp-head">
             <div><div class="eyebrow">${editing ? "编辑账号" : "创建账号"}</div><b style="font-size:16px">${editing ? esc(editing.name) : "新建内容账号"}</b></div>
@@ -106,10 +108,10 @@ export function openAccountDialog(accountId = null) {
                 </div>
                 ${draft.voiceLookup ? `<em class="voice-lookup-note">${esc(draft.voiceLookup)}</em>` : ""}
               </label>
-              ${ttsVoicePresets().length ? `<label class="field full">声线预设
+              ${voiceGroups.length ? `<label class="field full">声线预设
                 <select class="input" id="adVoicePreset">
                   <option value="">默认平台声线${defaultTtsVoiceId() ? `（${esc(defaultTtsVoiceId())}）` : ""}</option>
-                  ${ttsVoicePresets().map(v => `<option value="${esc(v.voiceId)}" ${draft.voiceId === v.voiceId ? "selected" : ""}>${esc(v.name)} · ${esc(v.voiceId)}</option>`).join("")}
+                  ${voiceGroups.map(g => `<optgroup label="${esc(g.title)}">${(g.items || []).filter(v => v.voiceId).map(v => `<option value="${esc(v.voiceId)}" ${draft.voiceId === v.voiceId ? "selected" : ""}>${esc(v.name)} · ${esc(v.voiceId)}</option>`).join("")}</optgroup>`).join("")}
                 </select>
               </label>` : ""}
               <div class="field full">
@@ -179,7 +181,7 @@ export function openAccountDialog(accountId = null) {
         const voicePreset = $("#adVoicePreset", root);
         if (voicePreset) voicePreset.addEventListener("change", e => {
           const id = e.target.value || "";
-          const preset = ttsVoicePresets().find(v => v.voiceId === id);
+          const preset = id ? findVoiceOption(id) : null;
           draft.voiceId = id;
           draft.voiceName = preset?.name || draft.voiceName || "";
           const idInput = $("#adVoiceId", root);

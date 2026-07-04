@@ -89,7 +89,7 @@ export function renderScriptPage(root, p) {
           </div>` : ""}
           <div class="brief-row">
             <button class="btn gen" id="csGen">${icon("spark", 15)} ${isImg ? "生成图卡脚本" : "生成视频脚本"}</button>
-            ${A.source ? `<span class="src-note">${A.source === "llm" ? "✓ DeepSeek 真实生成" : "⚠ 本地模板（API 未通）"}</span>` : ""}
+            ${A.source ? `<span class="src-note">${A.source === "llm" ? "✓ 模型真实生成" : "⚠ 本地模板（API 未通）"}</span>` : ""}
           </div>
         </div>
 
@@ -336,7 +336,7 @@ export function renderScriptPage(root, p) {
     if (p.stage === "script") p.stageStatus = "done";
     save("productions");
     renderScriptPage(root, p);
-    toast(AI.sourceNote(isImg ? "已生成笔记图卡脚本" : material ? "已生成长视频口播脚本" : "DeepSeek 已生成分镜脚本"));
+    toast(AI.sourceNote(isImg ? "已生成笔记图卡脚本" : material ? "已生成长视频口播脚本" : "模型已生成分镜脚本"));
   }, "生成中…"));
 
   const tts = $("#csTts", root);

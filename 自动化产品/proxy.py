@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-Dumate 本地 LLM 代理 —— 仅当浏览器直连 DeepSeek 出现 CORS 报错时才需要。
+Dumate 本地 LLM 代理 —— 仅当浏览器直连语言模型出现 CORS 报错时才需要。
 
 用法：
     python3 proxy.py
 然后在浏览器控制台执行（或在「设置」里把 Provider 填成这个地址）：
     DumateConfig.endpoint = "http://localhost:8787/chat"
 
-它会把请求转发到 DeepSeek 并补上跨域响应头，避免浏览器 CORS 拦截。
+它会把请求转发到 LLM_ENDPOINT 并补上跨域响应头，避免浏览器 CORS 拦截。
 默认从环境变量 LLM_API_KEY 读取 key，也可由请求头 Authorization 覆盖。
 """
 import json, os, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-UPSTREAM = "https://api.deepseek.com/chat/completions"
+UPSTREAM = os.getenv("LLM_ENDPOINT", "https://api.minimaxi.com/v1/chat/completions")
 DEFAULT_KEY = os.getenv("LLM_API_KEY", "")
 PORT = 8787
 

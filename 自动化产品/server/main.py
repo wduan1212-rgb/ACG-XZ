@@ -2,7 +2,7 @@
 # ACG 视频工具 · 最小可运行后端（FastAPI）
 # 作用：
 #   1. 托管前端静态页（index.html + js/ ES Modules + styles/ 分仓 CSS）
-#   2. /api/llm 转发 DeepSeek 等模型请求（解决 CORS + 隐藏 Key）
+#   2. /api/llm 转发 MiniMax M3 等模型请求（解决 CORS + 隐藏 Key）
 #   3. /api/accounts /api/assets 等数据接口（JSON 文件存储，可换数据库）
 #   4. 自动生成 OpenAPI 文档（/docs），CLI 与 agent 直接对接
 # 运行：
@@ -24,6 +24,7 @@ import tempfile
 import mimetypes
 import io
 import re
+import inspect
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -40,6 +41,24 @@ except Exception:  # Pillow is optional; image generation still works without po
     Image = None
     ImageOps = None
     ImageEnhance = None
+
+_HTTPX_ASYNC_CLIENT_PARAMS = set(inspect.signature(httpx.AsyncClient).parameters)
+_HTTPX_ASYNC_CLIENT_GET_PARAMS = set(inspect.signature(httpx.AsyncClient.get).parameters)
+
+
+def _httpx_async_client_kwargs(**kwargs):
+    follow_redirects = bool(kwargs.pop("follow_redirects", False))
+    if follow_redirects and "follow_redirects" in _HTTPX_ASYNC_CLIENT_PARAMS:
+        kwargs["follow_redirects"] = True
+    return kwargs
+
+
+def _httpx_get_redirect_kwargs():
+    if "follow_redirects" in _HTTPX_ASYNC_CLIENT_GET_PARAMS:
+        return {"follow_redirects": True}
+    if "allow_redirects" in _HTTPX_ASYNC_CLIENT_GET_PARAMS:
+        return {"allow_redirects": True}
+    return {}
 
 try:
     from . import store
@@ -68,14 +87,15 @@ def load_env_local():
 load_env_local()
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
-LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", (LLM_BASE_URL + "/v1/chat/completions") if LLM_BASE_URL else "https://api.deepseek.com/chat/completions")
+LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", (LLM_BASE_URL + "/v1/chat/completions") if LLM_BASE_URL else "https://api.minimaxi.com/v1/chat/completions")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "deepseek-chat")
+LLM_MODEL = os.getenv("LLM_MODEL", "MiniMax-M3")
 LLM_FORCE_MODEL = os.getenv("LLM_FORCE_MODEL", "true").lower() not in {"0", "false", "no"}
 LLM_THINKING = os.getenv("LLM_THINKING", "").strip().lower()
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "0") or "0")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
 LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "12"))
+LLM_SUPPORTS_RESPONSE_FORMAT = os.getenv("LLM_SUPPORTS_RESPONSE_FORMAT", "").strip().lower()
 JUSTONEAPI_KEY = os.getenv("JUSTONEAPI_KEY", "")
 JUSTONEAPI_BASE_URL = os.getenv("JUSTONEAPI_BASE_URL", "https://api.justoneapi.com").rstrip("/")
 SEEDANCE_API_KEY = os.getenv("SEEDANCE_API_KEY", "") or os.getenv("SEEDANCE_KEY", "")
@@ -227,9 +247,32 @@ def _llm_error(status_code: int, detail: str, raw: str = ""):
     return HTTPException(status_code, msg[:800])
 
 
+def _llm_is_minimax() -> bool:
+    value = f"{LLM_ENDPOINT} {LLM_MODEL}".lower()
+    return "minimax" in value
+
+
+def _llm_supports_response_format() -> bool:
+    if LLM_SUPPORTS_RESPONSE_FORMAT in {"1", "true", "yes"}:
+        return True
+    if LLM_SUPPORTS_RESPONSE_FORMAT in {"0", "false", "no"}:
+        return False
+    return not _llm_is_minimax()
+
+
+def _clean_llm_text(text: str = "") -> str:
+    out = str(text or "")
+    out = re.sub(r"<think>.*?</think>", "", out, flags=re.I | re.S)
+    out = re.sub(r"^\s*思考[:：].*?(?=\n\s*(?:答复|回答|输出|正文)[:：]|\Z)", "", out, flags=re.S)
+    out = re.sub(r"^\s*(?:答复|回答|输出|正文)[:：]\s*", "", out)
+    return out.strip()
+
+
 async def _call_llm(body: dict, auth_header: str = ""):
     if LLM_FORCE_MODEL and LLM_MODEL:
         body["model"] = LLM_MODEL
+    if not _llm_supports_response_format():
+        body.pop("response_format", None)
     if LLM_THINKING in {"enabled", "disabled"} and "thinking" not in body:
         body["thinking"] = {"type": LLM_THINKING}
     if LLM_MAX_TOKENS > 0 and "max_tokens" not in body:
@@ -588,11 +631,10 @@ async def _generated_image_to_data_url(client: httpx.AsyncClient, output: str, r
             out,
             headers={"Accept": "image/*", "Accept-Encoding": "identity"},
             timeout=httpx.Timeout(120.0, connect=12.0),
-            allow_redirects=True,
         )
     try:
         if getattr(client, "is_closed", False):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=12.0), trust_env=False) as fresh:
+            async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(120.0, connect=12.0), trust_env=False, follow_redirects=True)) as fresh:
                 resp = await _get(fresh)
         else:
             resp = await _get(client)
@@ -721,7 +763,7 @@ async def _collect_image_ref_files(client: httpx.AsyncClient, refs: List[ImageRe
             url = _local_api_origin() + url
         if url and url.startswith(("http://", "https://")):
             try:
-                r = await client.get(url, timeout=httpx.Timeout(60.0, connect=8.0))
+                r = await client.get(url, timeout=httpx.Timeout(60.0, connect=8.0), **_httpx_get_redirect_kwargs())
                 ctype = (r.headers.get("content-type") or ref.mime or "").split(";")[0]
                 if r.status_code < 400 and (ctype.startswith("image/") or _looks_like_image_blob(r.content)):
                     mime = ctype if ctype.startswith("image/") else (ref.mime or "image/png")
@@ -769,7 +811,7 @@ async def llm_test():
     if r.status_code >= 400:
         raise _llm_error(r.status_code, _http_detail(r.json() if "json" in (r.headers.get("content-type") or "") else r.text[:800]))
     data = r.json()
-    content = _deep_get(data, ("choices", 0, "message", "content"), default="")
+    content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
     return {"ok": True, "model": LLM_MODEL, "content": content, "endpoint": _mask_endpoint(LLM_ENDPOINT)}
 
 
@@ -788,7 +830,11 @@ async def llm_proxy(req: LLMReq):
         except Exception:
             detail = r.text[:800]
         raise _llm_error(r.status_code, detail)
-    return {"content": r.json()["choices"][0]["message"]["content"]}
+    data = r.json()
+    content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
+    if not content:
+        raise _llm_error(502, "模型无有效返回")
+    return {"content": content}
 
 
 def _parse_xhs_opencli_yaml(text: str, limit: int = 8) -> List[Dict]:
@@ -825,6 +871,40 @@ def _parse_xhs_opencli_yaml(text: str, limit: int = 8) -> List[Dict]:
     return clean
 
 
+def _opencli_env() -> Dict[str, str]:
+    common_paths = [
+        str(Path.home() / ".local" / "bin"),
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+    current_path = os.getenv("PATH", "")
+    merged = ":".join([p for p in common_paths + current_path.split(":") if p])
+    env = dict(os.environ)
+    env["PATH"] = merged
+    return env
+
+
+def _opencli_bin() -> str:
+    explicit = (os.getenv("OPENCLI_BIN") or os.getenv("AGENT_REACH_OPENCLI_BIN") or "").strip()
+    candidates = [
+        explicit,
+        shutil.which("opencli", path=_opencli_env().get("PATH")),
+        str(Path.home() / ".local" / "bin" / "opencli"),
+        "/usr/local/bin/opencli",
+        "/opt/homebrew/bin/opencli",
+        "/usr/bin/opencli",
+    ]
+    for item in candidates:
+        if not item:
+            continue
+        p = Path(item).expanduser()
+        if p.exists() and os.access(p, os.X_OK):
+            return str(p)
+    return ""
+
+
 @app.post("/api/research/xhs-trends")
 async def xhs_trends(req: XhsTrendReq):
     """可选联网趋势参考。失败时前端回退本地趋势库，不阻塞创作链路。"""
@@ -834,17 +914,19 @@ async def xhs_trends(req: XhsTrendReq):
         return {"ok": False, "items": [], "reason": "missing_query"}
     if os.getenv("XHS_TREND_SEARCH", "auto").lower() in {"0", "false", "off", "no"}:
         return {"ok": False, "items": [], "reason": "disabled"}
-    if not shutil.which("opencli"):
+    opencli = _opencli_bin()
+    if not opencli:
         return {
             "ok": False,
             "items": [],
             "reason": "opencli_missing",
-            "message": "服务器进程未检测到 OpenCLI 命令。本地浏览器已配置不等于线上可用；请在服务器运行环境安装 OpenCLI 并确认服务进程 PATH 可见，本次已自动回退本地趋势库。"
+            "message": "服务器进程未检测到 OpenCLI 命令。本地浏览器已配置不等于线上可用；请在服务器服务用户下安装 OpenCLI，或配置 OPENCLI_BIN / 服务进程 PATH，本次已自动回退本地趋势库。"
         }
     try:
         run = subprocess.run(
-            ["opencli", "xiaohongshu", "search", query, "-f", "yaml"],
+            [opencli, "xiaohongshu", "search", query, "-f", "yaml"],
             cwd=str(FRONTEND_DIR),
+            env=_opencli_env(),
             capture_output=True,
             text=True,
             timeout=35,
@@ -940,7 +1022,7 @@ async def image_generate(req: ImageGenerateReq):
     used_refs = 0
     skipped_refs = 0
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False) as client:
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
             ref_files = await _collect_image_ref_files(client, req.refs or [])
             skipped_refs = max(0, len(req.refs or []) - len(ref_files))
             if maas_mode:
@@ -1425,8 +1507,8 @@ async def proxy_file(req: FileProxyReq):
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "仅支持 http/https 文件地址")
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False) as client:
-            r = await client.get(url, allow_redirects=True)
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
+            r = await client.get(url, **_httpx_get_redirect_kwargs())
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"远端文件下载失败：{exc.__class__.__name__} {exc}")
     if r.status_code >= 400:
@@ -1462,9 +1544,9 @@ async def video_compose(req: ComposeReq):
         files = []
         narr_path = tdir / "narration.mp3"
         bgm_path = tdir / "bgm.mp3"
-        async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=12.0), trust_env=False) as client:
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(240.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
             for i, c in enumerate(clips):
-                r = await client.get(c.url, allow_redirects=True)
+                r = await client.get(c.url, **_httpx_get_redirect_kwargs())
                 if r.status_code >= 400:
                     raise HTTPException(502, f"下载片段失败：{c.name or i + 1} HTTP {r.status_code}")
                 fp = tdir / f"clip_{i:03d}.mp4"
@@ -1473,13 +1555,13 @@ async def video_compose(req: ComposeReq):
             if req.narrationDataUrl:
                 _write_data_url(narr_path, req.narrationDataUrl)
             elif req.narrationUrl and req.narrationUrl.startswith(("http://", "https://")):
-                r = await client.get(req.narrationUrl)
+                r = await client.get(req.narrationUrl, **_httpx_get_redirect_kwargs())
                 if r.status_code < 400:
                     narr_path.write_bytes(r.content)
             if req.bgmDataUrl:
                 _write_data_url(bgm_path, req.bgmDataUrl)
             elif req.bgmUrl and req.bgmUrl.startswith(("http://", "https://")):
-                r = await client.get(req.bgmUrl)
+                r = await client.get(req.bgmUrl, **_httpx_get_redirect_kwargs())
                 if r.status_code < 400:
                     bgm_path.write_bytes(r.content)
         concat = tdir / "concat.txt"
@@ -1534,6 +1616,13 @@ class TtsReq(BaseModel):
     languageBoost: str = "auto"
 
 
+class VoiceDesignReq(BaseModel):
+    prompt: str = ""
+    description: str = ""
+    previewText: str = ""
+    name: str = ""
+
+
 def _known_voice_name(voice_id: str) -> str:
     vid = str(voice_id or "").strip()
     if not vid:
@@ -1556,6 +1645,16 @@ async def _minimax_tts_request(payload: dict):
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
         return await client.post(
             f"{MINIMAX_BASE_URL}/v1/t2a_v2",
+            params=({"GroupId": MINIMAX_GROUP_ID} if MINIMAX_GROUP_ID else None),
+            json=payload,
+            headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+        )
+
+
+async def _minimax_voice_design_request(payload: dict):
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
+        return await client.post(
+            f"{MINIMAX_BASE_URL}/v1/voice_design",
             params=({"GroupId": MINIMAX_GROUP_ID} if MINIMAX_GROUP_ID else None),
             json=payload,
             headers={"Authorization": f"Bearer {MINIMAX_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
@@ -1588,7 +1687,12 @@ def _tts_payload(text: str, voice_id: str, speed=1, vol=1, pitch=0, language_boo
 
 
 def _audio_data_url_from_minimax(data: dict) -> str:
-    audio = ((data.get("data") or {}).get("audio") or data.get("audio") or "")
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    audio = (
+        payload.get("audio") or payload.get("trial_audio") or
+        data.get("audio") or data.get("trial_audio") or
+        ""
+    )
     if not audio:
         return ""
     fmt = ((data.get("extra_info") or {}).get("audio_format") or "mp3")
@@ -1600,6 +1704,15 @@ def _audio_data_url_from_minimax(data: dict) -> str:
     except ValueError:
         encoded = audio
     return f"data:audio/{fmt};base64,{encoded}"
+
+
+def _minimax_voice_design_id(data: dict) -> str:
+    payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return str(
+        data.get("voice_id") or data.get("voiceId") or
+        payload.get("voice_id") or payload.get("voiceId") or
+        ""
+    ).strip()
 
 
 def _looks_like_voice_error(message: str) -> bool:
@@ -1706,6 +1819,48 @@ async def tts_voice_lookup(voiceId: str = "", test: bool = True):
     result["valid"] = True
     result["durationMs"] = int((data.get("extra_info") or {}).get("audio_length") or 0)
     return result
+
+
+@app.post("/api/tts/voice/design")
+async def tts_voice_design(req: VoiceDesignReq):
+    if not MINIMAX_API_KEY:
+        raise HTTPException(500, "服务器未配置 MINIMAX_API_KEY")
+    prompt = (req.prompt or req.description or "").strip()
+    if not prompt:
+        raise HTTPException(400, "请填写音色设计描述")
+    preview_text = (req.previewText or "这是一段用于试听新音色的中文口播。语气自然，节奏清楚，适合内容创作。").strip()
+    payload = {
+        "prompt": prompt[:1200],
+        "preview_text": preview_text[:2000],
+    }
+    try:
+        r = await _minimax_voice_design_request(payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, _minimax_connect_error(exc))
+    try:
+        data = r.json()
+    except Exception:
+        data = {}
+    if r.status_code >= 400:
+        detail = _http_detail(data.get("detail")) if data else ""
+        detail = detail or _readable_error(data.get("base_resp")) or _http_detail(data) or r.text[:500]
+        raise HTTPException(r.status_code, detail or "Minimax 音色设计失败")
+    base = data.get("base_resp") or {}
+    if base.get("status_code", 0) != 0:
+        raise HTTPException(502, base.get("status_msg") or "Minimax 音色设计失败")
+    voice_id = _minimax_voice_design_id(data)
+    if not voice_id:
+        raise HTTPException(502, {"detail": "Minimax 已返回结果，但没有 voice_id", "raw": data})
+    audio_data_url = _audio_data_url_from_minimax(data)
+    return {
+        "ok": True,
+        "provider": "minimax",
+        "voiceId": voice_id,
+        "name": (req.name or "").strip() or voice_id,
+        "audioDataUrl": audio_data_url,
+        "model": MINIMAX_TTS_MODEL,
+        "traceId": data.get("trace_id") or "",
+    }
 
 
 @app.post("/api/tts/generate")
@@ -1937,8 +2092,8 @@ async def _justone_get(path: str, params: dict) -> dict:
     if not JUSTONEAPI_KEY:
         raise RuntimeError("JUSTONEAPI_KEY not configured")
     q = {"token": JUSTONEAPI_KEY, **{k: v for k, v in params.items() if v not in (None, "")}}
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.get(JUSTONEAPI_BASE_URL + path, params=q, allow_redirects=True)
+    async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=60, follow_redirects=True)) as client:
+        r = await client.get(JUSTONEAPI_BASE_URL + path, params=q, **_httpx_get_redirect_kwargs())
     if r.status_code != 200:
         raise RuntimeError(f"JustOneAPI HTTP {r.status_code}: {r.text[:240]}")
     payload = r.json()
@@ -2123,13 +2278,15 @@ def _normalize_opencli_xhs_note(text: str, url: str, note_id: str, fallback: str
 async def _run_opencli_xhs_note(url: str) -> str:
     if os.getenv("AGENT_REACH_ANALYTICS", "auto").lower() in {"0", "false", "off", "no"}:
         raise RuntimeError("agent-reach 小红书采集已被环境变量关闭")
-    if not shutil.which("opencli"):
-        raise RuntimeError("agent-reach 当前小红书后端不可用：服务器进程未检测到 OpenCLI")
+    opencli = _opencli_bin()
+    if not opencli:
+        raise RuntimeError("agent-reach 当前小红书后端不可用：服务器进程未检测到 OpenCLI；请配置 OPENCLI_BIN 或修正服务进程 PATH")
     try:
         run = await asyncio.to_thread(
             subprocess.run,
-            ["opencli", "xiaohongshu", "note", url, "-f", "yaml"],
+            [opencli, "xiaohongshu", "note", url, "-f", "yaml"],
             cwd=str(FRONTEND_DIR),
+            env=_opencli_env(),
             capture_output=True,
             text=True,
             timeout=45,
@@ -2148,16 +2305,18 @@ async def _run_opencli_xhs_note(url: str) -> str:
 
 
 async def _opencli_xhs_search(query: str, limit: int = 6) -> List[Dict]:
-    if not shutil.which("opencli"):
-        raise RuntimeError("agent-reach 当前小红书后端不可用：服务器进程未检测到 OpenCLI")
+    opencli = _opencli_bin()
+    if not opencli:
+        raise RuntimeError("agent-reach 当前小红书后端不可用：服务器进程未检测到 OpenCLI；请配置 OPENCLI_BIN 或修正服务进程 PATH")
     q = re.sub(r"\s+", " ", (query or "")).strip()[:90]
     if not q:
         return []
     try:
         run = await asyncio.to_thread(
             subprocess.run,
-            ["opencli", "xiaohongshu", "search", q, "-f", "yaml"],
+            [opencli, "xiaohongshu", "search", q, "-f", "yaml"],
             cwd=str(FRONTEND_DIR),
+            env=_opencli_env(),
             capture_output=True,
             text=True,
             timeout=35,

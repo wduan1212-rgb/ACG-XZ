@@ -14,12 +14,12 @@ import { XHS_ACCOUNT_SEED } from "./data/xhsAccountsSeed.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js";
 import { refreshProviderStatus } from "./api/providers.js";
-import { applyLocalDevKeys } from "./local/devKeys.js";
 import { resumeJobs } from "./api/jobs.js";
 import { resumeActiveBatches } from "./agent/orchestrator.js";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
 import { overviewView } from "./views/overview.js";
+import { voiceLabView } from "./views/voiceLab.js";
 import { agentView } from "./agent/view.js";
 import { studioView } from "./views/studio.js";
 import { assetsView } from "./views/assetsView.js";
@@ -493,11 +493,14 @@ function renderContextPanel() {
 }
 
 /* ---------- 顶栏 ---------- */
-const ZONE_TITLE = { overview: "首页", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
+const ZONE_TITLE = { overview: "首页", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
 function renderTopbar() {
   const zone = document.body.dataset.zone;
   const bc = $("#topCrumb");
   const actions = $(".top-actions");
+  const voiceDock = $("#voiceTopDock");
+  document.querySelector(".topbar")?.classList.toggle("voice-topbar-active", zone === "voice");
+  if (voiceDock && zone !== "voice") voiceDock.remove();
   const acc = activeAccount();
   const { page } = parseHash();
   let crumb = ZONE_TITLE[zone] || "";
@@ -531,6 +534,7 @@ function paletteCommands() {
     { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") },
     { label: "数据分析", group: "导航", icon: "pulse", run: () => go("analytics") },
     ...(state.role === "admin" ? [
+      { label: "语音生成", group: "导航", icon: "mic", run: () => go("voice") },
       { label: "设置", group: "导航", icon: "gear", run: () => go("settings") },
       { label: "创建账号", group: "操作", icon: "plus", run: () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })) }
     ] : [])
@@ -554,7 +558,6 @@ async function boot() {
   try {
     await db.open();
     await loadAll();
-    if (applyLocalDevKeys(state)) save("meta");
     await remote.init();              // 探测是否由共享后端托管（决定走远端还是本地模式）
     const mig = await migrateFromV4();
     if (mig.migrated) {
@@ -577,6 +580,7 @@ async function boot() {
 
     // 注册路由
     registerView("overview", overviewView);
+    registerView("voice", voiceLabView);
     registerView("agent", agentView);
     registerView("studio", studioView);
     registerView("assets", assetsView);

@@ -43,6 +43,7 @@ body.gated .app-shell { filter: blur(8px) saturate(.9); pointer-events: none; us
 body.role-supplier .ctx-panel { display: none !important; }
 body.role-supplier .rail-item:not([data-nav="delivery"]):not(#navLogout) { display: none; }
 body.role-editor .rail-item[data-nav="settings"] { display: none; }
+body:not(.role-admin) .rail-item[data-nav="voice"] { display: none; }
 
 /* 导航栏 */
 .nav-rail {
@@ -297,6 +298,16 @@ body.role-editor .rail-item[data-nav="settings"] { display: none; }
   filter: drop-shadow(0 8px 24px rgba(255, 255, 255, .38)) drop-shadow(0 16px 32px rgba(24, 72, 132, .22));
   animation: logoFloat 6.5s ease-in-out 1.2s infinite;
 }
+.lg-login-logo {
+  display: block;
+  width: min(230px, 58vw);
+  max-height: 118px;
+  object-fit: contain;
+  margin: -6px auto 6px;
+  filter:
+    drop-shadow(0 16px 30px rgba(42, 113, 218, .16))
+    drop-shadow(0 5px 12px rgba(255, 255, 255, .74));
+}
 @keyframes logoFloat { 50% { transform: translateY(-8px); } }
 /* 开屏：聚焦成形（模糊放大 → 清晰归位） */
 @keyframes lgConverge {
@@ -449,6 +460,13 @@ body {
   backdrop-filter: blur(26px) saturate(1.26);
   -webkit-backdrop-filter: blur(26px) saturate(1.26);
 }
+.topbar.voice-topbar-active {
+  position: relative;
+  min-width: 0;
+}
+.topbar.voice-topbar-active .top-crumb {
+  flex: 0 0 160px;
+}
 .view-root {
   background:
     radial-gradient(780px 280px at 16% 0%, rgba(65, 132, 255, .07), transparent 64%),
@@ -457,35 +475,38 @@ body {
 }
 
 .login-gate {
-  background: #EDF2F8 url("../assets/brand/main-login-fallback.png") center / cover no-repeat;
+  background:
+    radial-gradient(920px 520px at 50% 14%, rgba(72, 154, 255, .18), transparent 68%),
+    radial-gradient(700px 420px at 15% 72%, rgba(219, 232, 247, .68), transparent 66%),
+    radial-gradient(640px 420px at 90% 26%, rgba(192, 213, 238, .46), transparent 64%),
+    linear-gradient(180deg, #fbfdff 0%, #edf4fb 50%, #f9fbff 100%);
 }
 .lg-bg-video {
-  display: block;
-  opacity: .88;
-  filter: saturate(.72) contrast(1.06) brightness(1.08);
+  display: none;
 }
 .login-gate::before {
   inset: 0;
   z-index: 1;
   background:
-    radial-gradient(760px 440px at 50% 24%, rgba(255,255,255,.32), transparent 68%),
-    linear-gradient(120deg, rgba(255,255,255,.18), transparent 38%, rgba(20, 72, 135, .10) 64%, transparent 78%),
-    repeating-linear-gradient(90deg, rgba(255,255,255,.075) 0 1px, transparent 1px 78px),
-    repeating-linear-gradient(0deg, rgba(255,255,255,.055) 0 1px, transparent 1px 78px);
-  opacity: .76;
+    radial-gradient(760px 440px at 50% 24%, rgba(255,255,255,.54), transparent 68%),
+    linear-gradient(116deg, transparent 0 30%, rgba(74, 132, 210, .08) 30.2%, transparent 31.5% 64%, rgba(15, 53, 103, .055) 64.2%, transparent 66%),
+    repeating-linear-gradient(90deg, rgba(24, 71, 128, .045) 0 1px, transparent 1px 84px),
+    repeating-linear-gradient(0deg, rgba(24, 71, 128, .035) 0 1px, transparent 1px 84px);
+  opacity: .82;
   animation: loginFieldDrift 22s ease-in-out infinite alternate;
 }
 .login-gate::after {
   z-index: 2;
   background:
-    radial-gradient(980px 520px at 50% 52%, rgba(255,255,255,.52), transparent 66%),
-    linear-gradient(90deg, rgba(255,255,255,.28), transparent 34%, rgba(255,255,255,.22));
-  opacity: .72;
+    radial-gradient(980px 520px at 50% 52%, rgba(255,255,255,.72), transparent 66%),
+    conic-gradient(from 210deg at 50% 42%, transparent 0 18%, rgba(76, 148, 230, .11) 20%, transparent 26% 56%, rgba(10, 37, 72, .075) 58%, transparent 64% 100%),
+    linear-gradient(90deg, rgba(255,255,255,.42), transparent 36%, rgba(255,255,255,.34));
+  opacity: .78;
   animation: loginSheen 12s ease-in-out infinite alternate;
 }
 .lg-stage { opacity: .34; z-index: 3; }
 .lg-particles { z-index: 3; }
-.lg-center { top: clamp(64px, 10vh, 126px); }
+.lg-center { top: clamp(-86px, -7vh, -32px); }
 .lg-logo { display: none; }
 .lg-card {
   width: min(520px, calc(100vw - 48px));

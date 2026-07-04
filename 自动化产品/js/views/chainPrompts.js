@@ -67,7 +67,7 @@ export function renderPromptsPage(root, p) {
     p.artifacts.prompts = res.prompts || [];
     save("productions");
     renderPromptsPage(root, p);
-    toast(AI.sourceNote(`DeepSeek 已生成 ${res.prompts.length} 个场景提示词`));
+    toast(AI.sourceNote(`模型已生成 ${res.prompts.length} 个场景提示词`));
   }, "生成中…"));
 
   $$("[data-pedit]", root).forEach(el => el.addEventListener("blur", () => {

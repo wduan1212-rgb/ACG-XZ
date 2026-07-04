@@ -215,12 +215,15 @@ export function findKnownTtsVoice(voiceId = "") {
   const accountRows = (state.accounts || [])
     .filter(a => a.voiceId === id)
     .map(a => ({ name: a.voiceName || id, account: a.name, source: "当前账号" }));
+  const customRows = (state.voicePresets || [])
+    .filter(v => v.voiceId === id)
+    .map(v => ({ name: v.name || id, account: "", source: "我的音色" }));
   const seedRows = voiceSeedRows()
     .filter(a => a.voiceId === id)
     .map(a => ({ name: a.voiceName || id, account: a.name, source: a.seedCode || "账号画像" }));
   const first = exactPreset
     ? { name: exactPreset.name || id, source: "系统预设" }
-    : (accountRows[0] || seedRows[0] || null);
+    : (customRows[0] || accountRows[0] || seedRows[0] || null);
   return {
     voiceId: id,
     name: first?.name || "",
@@ -228,7 +231,7 @@ export function findKnownTtsVoice(voiceId = "") {
     known: !!first,
     preset: exactPreset || null,
     presetMatches,
-    accounts: [...accountRows, ...seedRows]
+    accounts: [...customRows, ...accountRows, ...seedRows]
   };
 }
 
@@ -514,6 +517,26 @@ export async function synthesizeTts({ text, voiceId, speed = 1, vol = 1, pitch =
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `Minimax TTS 失败 (${res.status})`);
+  return data;
+}
+
+export async function designTtsVoice({ prompt, previewText, name = "" }) {
+  if (!serverTts.configured) throw new Error("服务器未配置 Minimax TTS");
+  const cleanPrompt = sanitizeXhsText(prompt);
+  const cleanPreview = sanitizeXhsText(previewText);
+  if (!cleanPrompt) throw new Error("请先填写音色设计描述");
+  let res;
+  try {
+    res = await fetch("/api/tts/voice/design", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: cleanPrompt, previewText: cleanPreview, name: sanitizeXhsText(name) })
+    });
+  } catch (e) {
+    throw new Error("连不上本地服务端 /api/tts/voice/design —— 请确认用 start-shared.command（python 服务端）打开、且改完后已重启它（" + (e.message || e) + "）");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `Minimax 音色设计失败 (${res.status})`);
   return data;
 }
 

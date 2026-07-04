@@ -25,10 +25,10 @@ DEFAULT_SUPPLIER_PIN_HASH = os.getenv("DEFAULT_SUPPLIER_PIN_HASH") or "pbkdf2$12
 # notifications / ui / apiKeys 是每设备本地态，不入服务器。
 COLLECTIONS = [
     "accounts", "productions", "assets", "sessions", "batches", "jobs",
-    "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory", "products",
+    "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory", "products", "voicePresets",
 ]
 # 按 owner 隔离的集合（创作互不干扰）；其余全员共享。jobs 跟随其 production 的可见性。
-OWNED = {"productions", "sessions", "batches"}
+OWNED = {"productions", "sessions", "batches", "voicePresets"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS docs(
@@ -519,6 +519,8 @@ def state_for(member_id, role):
                     if col == "productions" and owner and owner != member_id and item.get("stage") != "delivered":
                         continue
                     if col == "assets" and owner and owner != member_id and not item.get("delivered") and not item.get("shared"):
+                        continue
+                    if col == "voicePresets" and owner and owner != member_id:
                         continue
                     items.append(item)
                 out[col] = items

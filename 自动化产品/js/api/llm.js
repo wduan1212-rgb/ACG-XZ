@@ -3,8 +3,8 @@
    本地直连受 CORS 阻时也可起 proxy.py 并把 Provider 填成 http://localhost:8787/chat */
 
 export const LLM_CONFIG = {
-  endpoint: "https://api.deepseek.com/chat/completions",
-  model: "deepseek-chat",
+  endpoint: "https://api.minimaxi.com/v1/chat/completions",
+  model: "MiniMax-M3",
   apiKey: "",
   serverManaged: false
 };
@@ -52,6 +52,14 @@ export function applyKeyOverrides(apiKeys) {
   }
 }
 
+function cleanModelText(text = "") {
+  return String(text || "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^\s*思考[:：][\s\S]*?(?=\n\s*(?:答复|回答|输出|正文)[:：]|\s*$)/, "")
+    .replace(/^\s*(?:答复|回答|输出|正文)[:：]\s*/, "")
+    .trim();
+}
+
 export async function llm(messages, { json = false, temperature = 0.7, signal, timeoutMs = 45000 } = {}) {
   if (!LLM_CONFIG.apiKey) throw new Error("未配置语言模型 Key");
   const ep = LLM_CONFIG.endpoint || "";
@@ -81,7 +89,7 @@ export async function llm(messages, { json = false, temperature = 0.7, signal, t
   if (d.base_resp && Number(d.base_resp.status_code) !== 0) {
     throw new Error(`模型返回错误 ${d.base_resp.status_code}：${d.base_resp.status_msg || "调用失败"}`);
   }
-  const content = d.choices?.[0]?.message?.content;
+  const content = cleanModelText(d.choices?.[0]?.message?.content);
   if (content == null || content === "") throw new Error("模型无有效返回：" + JSON.stringify(d).slice(0, 200));
   return content;
 }

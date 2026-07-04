@@ -59,7 +59,7 @@ export const settingsView = {
                   </select>
                 </label>
                 <label class="field">Provider / Endpoint<input class="input" id="setProvider" placeholder="名称或 http(s) 地址（语言类填地址可覆盖 endpoint）" /></label>
-                <label class="field">模型（可选）<input class="input" id="setModel" placeholder="图片填 custom-imagemodel-gt；语言填 deepseek-v4-pro-202606 等" /></label>
+                <label class="field">模型（可选）<input class="input" id="setModel" placeholder="图片填 custom-imagemodel-gt；语言填 MiniMax-M3 等" /></label>
                 <label class="field">API Key<input class="input" id="setSecret" type="password" autocomplete="off" placeholder="保存后不明文展示" /></label>
               </div>
               <div class="head-actions">

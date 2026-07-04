@@ -17,6 +17,7 @@ import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 import { accountAssets as accAssets } from "../domain/accounts.js";
+import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from "../domain/voices.js";
 
 let liveRoot = null, liveProd = null, liveDraw = null, wired = false;
 const DIGITAL_SEGMENT_TARGET_SEC = 27;
@@ -47,38 +48,9 @@ function selectedVoicePreset(p, acc) {
   return { voiceId, name: preset?.name || accountName || transientName || known?.name || voiceId || "默认/手动声线" };
 }
 
-function voicePickerOptions(selectedId = "", selectedName = "", favoriteIds = new Set()) {
-  const presets = ttsVoicePresets().map(v => ({ voiceId: v.voiceId, name: v.name || v.voiceId, source: "系统预设" }));
-  const byId = new Map();
-  const push = opt => {
-    const id = String(opt.voiceId || "");
-    if (!id && byId.has("")) return;
-    if (id && byId.has(id)) return;
-    byId.set(id, opt);
-  };
-  [...favoriteIds].filter(Boolean).forEach(id => {
-    const preset = presets.find(v => v.voiceId === id);
-    const known = findKnownTtsVoice(id);
-    push({ voiceId: id, name: preset?.name || known?.name || id, source: "收藏声线" });
-  });
-  if (selectedId && !byId.has(selectedId)) push({ voiceId: selectedId, name: selectedName || findKnownTtsVoice(selectedId)?.name || selectedId, source: "当前声线" });
-  push({ voiceId: "", name: "默认/手动声线", source: "平台默认" });
-  presets.forEach(push);
-  const list = [...byId.values()];
-  return list.sort((a, b) => {
-    const af = favoriteIds.has(a.voiceId) ? 0 : 1;
-    const bf = favoriteIds.has(b.voiceId) ? 0 : 1;
-    if (af !== bf) return af - bf;
-    if (a.voiceId === selectedId && b.voiceId !== selectedId) return -1;
-    if (b.voiceId === selectedId && a.voiceId !== selectedId) return 1;
-    if (!a.voiceId && b.voiceId) return -1;
-    if (!b.voiceId && a.voiceId) return 1;
-    return 0;
-  });
-}
-
-function voicePickerHtml({ selected, options, favoriteIds, lockedVoiceId }) {
+function voicePickerHtml({ selected, groups, favoriteIds, lockedVoiceId }) {
   const selectedId = selected.voiceId || "";
+  const blocks = (groups || []).filter(g => (g.items || []).length);
   return `<div class="voice-picker" id="wsVoicePicker">
     <button class="voice-picker-btn" id="wsVoicePickerBtn" type="button">
       <span>${esc(selected.name || "默认/手动声线")}</span>
@@ -86,15 +58,19 @@ function voicePickerHtml({ selected, options, favoriteIds, lockedVoiceId }) {
       ${icon("chevronDown", 13)}
     </button>
     <div class="voice-menu" id="wsVoiceMenu" hidden>
-      ${options.map(opt => {
-        const fav = favoriteIds.has(opt.voiceId);
-        const active = opt.voiceId === selectedId;
-        const locked = opt.voiceId && opt.voiceId === lockedVoiceId;
-        return `<button class="voice-option ${active ? "is-active" : ""} ${fav ? "is-fav" : ""}" type="button" data-voice-option="${esc(opt.voiceId)}">
-          <span>${fav ? icon("star", 12) : icon(active ? "check" : "mic", 12)} <b>${esc(opt.name || opt.voiceId || "默认/手动声线")}</b></span>
-          <em>${locked ? "已锁定" : fav ? "已收藏" : esc(opt.source || "")}</em>
-        </button>`;
-      }).join("")}
+      ${blocks.map(group => `<div class="voice-menu-group">
+        <div class="voice-menu-title">${esc(group.title)}</div>
+        ${(group.items || []).map(opt => {
+          const fav = favoriteIds.has(opt.voiceId);
+          const active = opt.voiceId === selectedId;
+          const locked = opt.voiceId && opt.voiceId === lockedVoiceId;
+          const sourceText = ({ mine: "我的音色", system: "系统音色", favorite: "收藏音色", default: "平台默认", current: "当前声线" }[opt.source]) || opt.source || "";
+          return `<button class="voice-option ${active ? "is-active" : ""} ${fav ? "is-fav" : ""}" type="button" data-voice-option="${esc(opt.voiceId)}">
+            <span>${fav ? icon("star", 12) : icon(active ? "check" : "mic", 12)} <b>${esc(opt.name || opt.voiceId || "默认/手动声线")}</b></span>
+            <em>${locked ? "已锁定" : fav ? "已收藏" : esc(sourceText)}</em>
+          </button>`;
+        }).join("")}
+      </div>`).join("")}
     </div>
   </div>`;
 }
@@ -203,8 +179,8 @@ export function renderWorkshopPage(root, p) {
     const hasNarrationAudio = hasAudio();
     const digitalSegments = isDigitalHumanMode ? digitalSegmentsFromShots(p, acc) : [];
     const selectedVoice = selectedVoicePreset(p, acc);
-    const favoriteVoiceIds = new Set(state.ui.favoriteVoiceIds || []);
-    const voiceOptions = voicePickerOptions(selectedVoice.voiceId, selectedVoice.name, favoriteVoiceIds);
+    const favoriteVoiceIds = sharedFavoriteVoiceIds();
+    const voiceGroups = voicePickerGroups({ selectedId: selectedVoice.voiceId, selectedName: selectedVoice.name });
     const voiceLocked = !!(selectedVoice.voiceId && acc?.voiceId === selectedVoice.voiceId);
     const voiceFav = !!(selectedVoice.voiceId && favoriteVoiceIds.has(selectedVoice.voiceId));
     const ratio = A.ratio || "9:16";
@@ -329,7 +305,7 @@ export function renderWorkshopPage(root, p) {
             <div class="refbar-chip">${!isDigitalHumanMode && voiceRefAsset ? `<span class="ref-chip audio">${icon("mic", 12)}<span>${esc(voiceRefAsset.name)}</span><button class="ref-x" data-voicedel>${icon("x", 11)}</button></span>` : ""}</div>
             <div class="refbar-actions voice-audio-actions">
               <div class="voice-main-controls">
-                ${(!isDigital || isDigitalHumanMode) ? voicePickerHtml({ selected: selectedVoice, options: voiceOptions, favoriteIds: favoriteVoiceIds, lockedVoiceId: acc?.voiceId || "" }) : ""}
+                ${(!isDigital || isDigitalHumanMode) ? voicePickerHtml({ selected: selectedVoice, groups: voiceGroups, favoriteIds: favoriteVoiceIds, lockedVoiceId: acc?.voiceId || "" }) : ""}
                 ${(!isDigital || isDigitalHumanMode) ? `<div class="voice-id-search">
                   <input class="input sm" id="wsVoiceId" value="${esc(selectedVoice.voiceId || "")}" placeholder="粘贴 / 搜索 voice_id" />
                   <button class="btn ghost sm" id="wsVoiceLookup">${icon("search", 12)} 识别</button>

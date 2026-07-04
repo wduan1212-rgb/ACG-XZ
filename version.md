@@ -1,5 +1,81 @@
 # 星阵版本记录
 
+## v41 - 2026-07-04
+
+### 本版范围
+
+- 登录页移除视频背景引用，改为静态白色科技感背景，降低服务器和弱设备首屏负载。
+- 登录页恢复星阵 logo，资源写入 `自动化产品/assets/brand/xingzhen-login-logo.png`，不依赖本机临时路径。
+- 语音生成入口移动到侧边栏“数据分析”之后，并改为管理员专属；导航、命令面板和 hash 路由均做了权限限制。
+- 移除前端入口对本机 `js/local/devKeys.js` 的依赖，避免部署时缺少被忽略文件，也避免任何开发 key 进入仓库。
+- 语音生成页功能切换条并入应用顶栏中间，与搜索 / 通知处在同一栏；页面内容区整体上移。
+- 登录面板略微上移，保留静态白色科技背景与毛边玻璃质感。
+- 数据分析 OpenCLI 查找增强：服务端支持 `OPENCLI_BIN` / `AGENT_REACH_OPENCLI_BIN` 和常见安装路径，缓解服务器服务进程 PATH 过短导致的“未检测到 OpenCLI”。
+- 图片生成 / 文件代理 / 视频合成等 URL 下载阶段改为按当前 `httpx` 方法签名动态选择重定向参数，兼容本地新版和服务器旧版依赖。
+- 单个账号主页的“账号资产库”现在会显示该账号已进入整体资产库的已发布 / 共享资产；未发布私有素材仍按当前成员隔离。
+- 静态资源版本号升级到 `20260704-v41`，避免浏览器继续拿旧的登录页、导航和样式缓存。
+
+### 验证结果
+
+- 本地 8787 `/api/health` 通过，语言模型配置显示已配置，模型为 MiniMax-M3。
+- 本地 8787 `/api/llm/test`、`/api/tts/generate`、`/api/image/generate` 真实最小调用均通过。
+- 数据分析本地最小链路通过：`/api/analytics/resolve` 返回 200 并解析小红书 noteId；`/api/analytics/fetch` 在本机 OpenCLI 可用时返回真实结构化结果。
+- Playwright 验证通过：登录页不存在 `loginBgVideo` / `.lg-bg-video` 节点，登录 logo 存在；非管理员态语音入口隐藏，管理员态语音入口位于数据分析后；非管理员手输 `#/voice` 会回到 `#/overview`。
+- Playwright 补充验证通过：登录页视频节点数量为 0，登录 logo 存在，登录面板上移；语音生成功能条挂载到顶栏 `#voiceTopDock`，页面内容区不再保留独立大功能条。
+- Node 抽测通过：同账号下本人私有素材、已发布素材和共享素材会出现在单个账号资产库；其他成员未发布私有素材不会出现。
+- `python3 -m py_compile` 通过：`自动化产品/server/main.py`、`自动化产品/server/store.py`、`自动化产品/proxy.py`。
+- `node --check` 通过：`router.js`、`main.js`、`voiceLab.js`、`voices.js`、`ai.js`、`llm.js`。
+- `bash -n` 通过：`start.command`、`start-shared.command`。
+- `git diff --check` 通过，无空白格式错误。
+
+### 数据与部署
+
+- 本版不新增业务数据迁移；沿用 v39 已增加的 `voicePresets` 集合。
+- 后续服务器部署只更新代码和静态资源并重启服务；不得覆盖服务器数据库、账号、资产库、发布清单、草稿、任务、成员、分析数据、上传目录、环境文件或认证缓存。
+- 数据分析服务器可用性依赖服务进程自己的 OpenCLI 命令和小红书登录态，不能只看浏览器或本机是否配置过。
+- 若服务器仍提示未检测到 OpenCLI，可在服务环境配置 `OPENCLI_BIN` 指向 OpenCLI 可执行文件，或修正服务进程 PATH；不需要覆盖业务数据库。
+- 回滚方式：回退本次提交后重启服务；登录页会回到上一版本，业务数据不需要回滚。
+
+### 注意
+
+- 本版不包含任何密钥、服务器密码、公网 IP、私网 IP、token 或账号凭据。
+
+## v39 - 2026-07-03
+
+### 本版范围
+
+- 新增独立“语音生成”入口；页面收紧为单屏语音工作台，顶部小标签切换语音合成、音色设计和音色管理，不再做成长下滑页。
+- 接入 MiniMax 音色设计服务端路由 `/api/tts/voice/design`，生成 `voice_id` 和试听音频；普通 TTS 继续走 `/api/tts/generate`。
+- 新增统一音色库：我的音色、收藏音色、系统音色会在语音生成页、数字人口播声线选择、账号编辑固定声线中复用。
+- 音色库卡片支持点击选择并试听；系统音色、收藏音色和我的音色共用 `/api/tts/generate` 试听链路，收藏 / 复制按钮不会误触试听。
+- 新增 `voicePresets` 同步集合保存用户设计音色，按账号 `ownerId` 隔离；试听音频只保留在当前页面运行态，不作为长期服务器业务数据写入。
+- 语言模型默认切换到 MiniMax-M3 的 OpenAI 兼容接口；MiniMax 不走 `response_format`，后端和前端都会清理模型可能返回的思考段。
+- 语音生成页 UI 再收紧：顶部只保留克制毛边玻璃功能条，左侧音色库 / 中间文本输入 / 右侧调试台单屏布局；输入框支持粘贴，聚焦或有内容时隐藏打字提示，切换动效改为轻滑。
+- 离线图文生成进一步放开：用户填写创作需求且不联网时，文案优先围绕用户需求展开，图片提示词再从文案标题、正文和 tag 提取内容；账号风格只决定视觉效果。
+
+### 验证结果
+
+- `python3 -m py_compile` 通过：`自动化产品/server/main.py`、`自动化产品/server/store.py`。
+- `node --check` 通过：`voiceLab.js`、`voices.js`、`chainWorkshop.js`、`accountDialog.js`、`providers.js`、`ai.js`、`main.js`、`db.js`、`remote.js`、`store.js`。
+- 本地 8787 验证通过：`/api/tts/config` 返回已配置，普通 `/api/tts/generate` 成功返回音频。
+- 本地真实音色设计验证通过：`/api/tts/voice/design` 成功返回 `voice_id` 和试听音频。
+- 本地 MiniMax-M3 验证通过：`/api/llm/config` 返回已配置，`/api/llm/test` 成功返回最小文本。
+- 本地系统音色试听验证通过：`/api/tts/generate` 使用系统 voice_id 成功返回音频 data URL。
+- 临时数据库验证通过：`voicePresets` 可写入，创作者只能读取自己的设计音色，其他成员不可见。
+- Playwright 打开 `#/voice` 成功，语音生成入口、顶部功能标签、语音合成区、音色库区和调试区均渲染；未登录门禁态下仍可确认页面结构无白屏。
+- `git diff --check` 通过，无空白格式错误。
+
+### 数据与部署
+
+- 本版涉及轻量数据结构扩展：前端 IndexedDB 版本从 3 升到 4，新增 `voicePresets`；服务端 `store.py` 新增同名集合和按账号隔离逻辑。
+- 部署时只更新代码和静态资源并重启服务；不得覆盖服务器数据库、账号、资产库、发布清单、草稿、任务、成员、分析数据、上传目录、环境文件或认证缓存。
+- 部署时服务器环境里的 `LLM_ENDPOINT / LLM_BASE_URL / LLM_API_KEY` 必须来自同一 MiniMax 网关；国内 key 通常应配 `https://api.minimaxi.com/v1/chat/completions`，不要和海外网关混用。
+- 回滚方式：回退本次提交后重启服务；数据库中额外存在的 `voicePresets` 集合可保留，不影响旧版本读取其他业务数据。
+
+### 注意
+
+- 本版不包含任何密钥、服务器密码、公网 IP、私网 IP、token 或账号凭据。
+
 ## v38 - 2026-07-03
 
 ### 本版范围

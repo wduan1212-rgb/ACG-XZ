@@ -2,10 +2,10 @@
    旧库 acgVideoTool(v4) 保持原样不动，作为迁移来源与回滚备份 */
 
 const DB_NAME = "dumateStudioV5";
-const DB_VER = 3;
+const DB_VER = 4;
 const COLLECTIONS = [
   "accounts", "productions", "assets", "sessions", "batches", "jobs", "notifications",
-  "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory", "products"
+  "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory", "products", "voicePresets"
 ];
 
 let _db = null;

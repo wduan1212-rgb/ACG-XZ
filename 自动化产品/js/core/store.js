@@ -26,6 +26,7 @@ export const state = {
   insightReports: [],
   creativeMemory: [],
   products: [],
+  voicePresets: [],
   apiKeys: [],                // 存于 meta
   ui: {
     activeAccountId: null,
@@ -82,7 +83,7 @@ async function ensureProductsSeed() {
 
 const PRODUCT_TERM_COLLECTIONS = [
   "accounts", "productions", "assets", "sessions", "batches", "jobs",
-  "notifications", "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory"
+  "notifications", "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory", "voicePresets"
 ];
 const PRODUCT_TERM_SKIP_KEYS = /(^id$|Id$|Ids$|_id$|url$|Url$|URL$|dataUrl$|token$|secret$|apiKey$|password$|pin$|endpoint$|provider$)/;
 
@@ -211,6 +212,34 @@ export async function loadAll() {
   }
   await ensureProductsSeed();
   await normalizeProductTermsInState({ persistLocal: true });
+  if (Array.isArray(state.ui.customVoices) && state.ui.customVoices.length) {
+    const existing = new Set((state.voicePresets || []).map(v => v.voiceId || v.id).filter(Boolean));
+    const now = Date.now();
+    const migrated = [];
+    state.ui.customVoices.forEach(v => {
+      const voiceId = String(v.voiceId || "").trim();
+      if (!voiceId || existing.has(voiceId)) return;
+      existing.add(voiceId);
+      migrated.push({
+        id: v.id || uid(),
+        voiceId,
+        name: v.name || voiceId,
+        description: v.description || "",
+        source: "mine",
+        ownerId: state.ui.currentMemberId || "",
+        createdAt: v.createdAt || now,
+        updatedAt: v.updatedAt || v.createdAt || now,
+        previewAudioDataUrl: v.previewAudioDataUrl || v.audioDataUrl || "",
+      });
+    });
+    if (migrated.length) {
+      state.voicePresets.unshift(...migrated);
+      await db.replaceAll("voicePresets", JSON.parse(JSON.stringify(state.voicePresets)));
+      if (remote.isOn()) remote.putCollection("voicePresets", JSON.parse(JSON.stringify(state.voicePresets)));
+    }
+    delete state.ui.customVoices;
+    db.metaSet("ui", JSON.parse(JSON.stringify(state.ui)));
+  }
   if (state.ui.assetSeq == null) state.ui.assetSeq = state.assets.filter(a => !a.delivered).length;
   // 发布序号回填：历史已发布资产补 pubSeq（按发布/创建先后），让发布清单「序号」有意义
   {
