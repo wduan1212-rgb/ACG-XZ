@@ -15,6 +15,7 @@ import os
 import time
 import uuid
 import hashlib
+import hmac
 import base64
 import asyncio
 import socket
@@ -25,8 +26,10 @@ import mimetypes
 import io
 import re
 import inspect
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
@@ -96,14 +99,47 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "0") or "0")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
 LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "12"))
 LLM_SUPPORTS_RESPONSE_FORMAT = os.getenv("LLM_SUPPORTS_RESPONSE_FORMAT", "").strip().lower()
-JUSTONEAPI_KEY = os.getenv("JUSTONEAPI_KEY", "")
-JUSTONEAPI_BASE_URL = os.getenv("JUSTONEAPI_BASE_URL", "https://api.justoneapi.com").rstrip("/")
-SEEDANCE_API_KEY = os.getenv("SEEDANCE_API_KEY", "") or os.getenv("SEEDANCE_KEY", "")
-SEEDANCE_BASE_URL = (os.getenv("SEEDANCE_BASE_URL") or os.getenv("LLMONE_BASE_URL") or "https://api.llmone.ai").rstrip("/")
-SEEDANCE_MODEL = os.getenv("SEEDANCE_MODEL", "doubao-seedance-2-0-fast-260128")
+VIDEO_PROVIDER = (os.getenv("VIDEO_PROVIDER") or os.getenv("SEEDANCE_PROVIDER") or "seedance").strip().lower()
+SEEDANCE_API_KEY = (
+    os.getenv("SEEDANCE_API_KEY", "")
+    or os.getenv("JIMENG_API_KEY", "")
+    or os.getenv("ARK_API_KEY", "")
+    or os.getenv("VIDEO_API_KEY", "")
+    or os.getenv("SEEDANCE_KEY", "")
+)
+_ARK_VIDEO_KEY = SEEDANCE_API_KEY.strip().startswith("ark-")
+_DEFAULT_SEEDANCE_BASE_URL = "https://ark.cn-beijing.volces.com" if _ARK_VIDEO_KEY else "https://api.llmone.ai"
+_EXPLICIT_SEEDANCE_BASE_URL = os.getenv("SEEDANCE_BASE_URL") or os.getenv("JIMENG_BASE_URL") or os.getenv("ARK_BASE_URL")
+SEEDANCE_BASE_URL = (_EXPLICIT_SEEDANCE_BASE_URL or ("" if _ARK_VIDEO_KEY else os.getenv("LLMONE_BASE_URL", "")) or _DEFAULT_SEEDANCE_BASE_URL).rstrip("/")
+SEEDANCE_MODEL = os.getenv("SEEDANCE_MODEL") or os.getenv("JIMENG_MODEL") or os.getenv("ARK_VIDEO_MODEL") or "doubao-seedance-2-0-260128"
+DIGITAL_HUMAN_MODEL = os.getenv("DIGITAL_HUMAN_MODEL") or os.getenv("OMNIHUMAN_MODEL") or os.getenv("OMINIHUMAN_MODEL") or "omni-human-1.5"
 SEEDANCE_RESOLUTION = os.getenv("SEEDANCE_RESOLUTION", "720p")
 SEEDANCE_GENERATE_AUDIO = os.getenv("SEEDANCE_GENERATE_AUDIO", "").lower() in {"1", "true", "yes"}
 SEEDANCE_WATERMARK = os.getenv("SEEDANCE_WATERMARK", "").lower() in {"1", "true", "yes"}
+SEEDANCE_SUBMIT_PATH = os.getenv("SEEDANCE_SUBMIT_PATH", "").strip()
+SEEDANCE_POLL_PATH = os.getenv("SEEDANCE_POLL_PATH", "").strip()
+SEEDANCE_PAYLOAD_MODE = os.getenv("SEEDANCE_PAYLOAD_MODE", "").strip().lower()
+DIGITAL_HUMAN_ACCESS_KEY = (
+    os.getenv("DIGITAL_HUMAN_ACCESS_KEY", "")
+    or os.getenv("VOLC_ACCESS_KEY_ID", "")
+    or os.getenv("VOLCENGINE_ACCESS_KEY_ID", "")
+    or os.getenv("VOLC_ACCESSKEY", "")
+    or os.getenv("VOLC_AK", "")
+)
+DIGITAL_HUMAN_SECRET_KEY = (
+    os.getenv("DIGITAL_HUMAN_SECRET_KEY", "")
+    or os.getenv("VOLC_SECRET_ACCESS_KEY", "")
+    or os.getenv("VOLCENGINE_SECRET_ACCESS_KEY", "")
+    or os.getenv("VOLC_SECRETKEY", "")
+    or os.getenv("VOLC_SK", "")
+)
+DIGITAL_HUMAN_SECURITY_TOKEN = os.getenv("DIGITAL_HUMAN_SECURITY_TOKEN", "") or os.getenv("VOLC_SECURITY_TOKEN", "")
+DIGITAL_HUMAN_BASE_URL = os.getenv("DIGITAL_HUMAN_BASE_URL", "https://visual.volcengineapi.com").rstrip("/")
+DIGITAL_HUMAN_REQ_KEY = os.getenv("DIGITAL_HUMAN_REQ_KEY", "jimeng_realman_avatar_picture_omni_v15")
+DIGITAL_HUMAN_REGION = os.getenv("DIGITAL_HUMAN_REGION", "cn-north-1")
+DIGITAL_HUMAN_SERVICE = os.getenv("DIGITAL_HUMAN_SERVICE", "cv")
+DIGITAL_HUMAN_OUTPUT_RESOLUTION = int(os.getenv("DIGITAL_HUMAN_OUTPUT_RESOLUTION", "720") or "720")
+DIGITAL_HUMAN_PE_FAST_MODE = os.getenv("DIGITAL_HUMAN_PE_FAST_MODE", "true").lower() not in {"0", "false", "no"}
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 VIDEO_REFS = {}
 COMPOSED_DIR = Path(os.getenv("COMPOSED_DIR", ROOT / "composed"))
@@ -112,6 +148,7 @@ MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com").rst
 MINIMAX_GROUP_ID = os.getenv("MINIMAX_GROUP_ID", "").strip()
 MINIMAX_TTS_MODEL = os.getenv("MINIMAX_TTS_MODEL", "speech-2.8-hd")
 MINIMAX_VOICE_ID = os.getenv("MINIMAX_VOICE_ID", "presenter_female")
+MINIMAX_TTS_SPEED = float(os.getenv("MINIMAX_TTS_SPEED", "1.2") or "1.2")
 DEFAULT_MINIMAX_VOICE_PRESETS = [
     {"name": "男声 · 青涩青年男生，清爽少年感", "voiceId": "male-qn-qingse"},
     {"name": "男声 · 精英青年男声，商务稳重", "voiceId": "male-qn-jingying"},
@@ -177,6 +214,19 @@ IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "https://tokenhub.tencentmaas.com/v
 IMAGE_ENDPOINT = os.getenv("IMAGE_ENDPOINT", "").strip()
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "custom-imagemodel-gt")
 IMAGE_MODE = os.getenv("IMAGE_MODE", "").strip().lower()
+JUSTONE_API_KEY = (
+    os.getenv("JUSTONE_API_KEY", "")
+    or os.getenv("JUSTONE_API_TOKEN", "")
+    or os.getenv("JUSTONE_TOKEN", "")
+    or os.getenv("JUSTONEAPI_KEY", "")
+    or os.getenv("JUSTONEAPI_TOKEN", "")
+)
+JUSTONE_BASE_URL = (os.getenv("JUSTONE_BASE_URL", "") or os.getenv("JUSTONEAPI_BASE_URL", "") or "https://api.justoneapi.com").rstrip("/")
+JUSTONE_SHARE_PATH = os.getenv("JUSTONE_SHARE_PATH", "/api/xiaohongshu/share-url-transfer/v1")
+JUSTONE_NOTE_DETAIL_PATH = os.getenv("JUSTONE_NOTE_DETAIL_PATH", "/api/xiaohongshu/get-note-detail/v2")
+JUSTONE_WECHAT_BASIC_PATH = os.getenv("JUSTONE_WECHAT_BASIC_PATH", "/api/weixin-channels/get-video-basic-info/v1")
+JUSTONE_WECHAT_METRICS_PATH = os.getenv("JUSTONE_WECHAT_METRICS_PATH", "/api/weixin-channels/get-video-metrics/v1")
+JUSTONE_TIMEOUT = float(os.getenv("JUSTONE_TIMEOUT", "90") or "90")
 
 app = FastAPI(title="ACG 视频工具 API", version="0.1.0",
               description="账号化 AI 视频生产工作台后端。CLI / agent 可直接按本 OpenAPI 调用。")
@@ -290,9 +340,12 @@ class LLMReq(BaseModel):
     temperature: float = 0.7
 
 
-class XhsTrendReq(BaseModel):
-    query: str = ""
-    limit: int = 8
+class AnalyticsJustOneReq(BaseModel):
+    url: str
+    platform: str = ""
+    noteId: str = ""
+    objectId: str = ""
+    objectNonceId: str = ""
 
 
 class ImageRef(BaseModel):
@@ -837,110 +890,6 @@ async def llm_proxy(req: LLMReq):
     return {"content": content}
 
 
-def _parse_xhs_opencli_yaml(text: str, limit: int = 8) -> List[Dict]:
-    items: List[Dict] = []
-    current: Dict[str, str] = {}
-    key_re = re.compile(r"^\s*(?:-\s*)?(rank|title|note_title|likes|published_at|author|url|desc|description|summary|content|text)\s*:\s*(.*)\s*$", re.I)
-    for line in (text or "").splitlines():
-        m = key_re.match(line)
-        if not m:
-            continue
-        key = m.group(1).lower()
-        value = m.group(2).strip().strip('"').strip("'")
-        if key == "rank" and current.get("title"):
-            items.append(current)
-            current = {}
-        current[key] = value
-    if current.get("title"):
-        items.append(current)
-    clean = []
-    for item in items:
-        title = re.sub(r"\s+", " ", item.get("title") or item.get("note_title") or "").strip()
-        if not title:
-            continue
-        desc = re.sub(r"\s+", " ", item.get("desc") or item.get("description") or item.get("summary") or item.get("content") or item.get("text") or "").strip()
-        clean.append({
-            "title": title[:80],
-            "desc": desc[:800],
-            "likes": item.get("likes", ""),
-            "author": item.get("author", ""),
-            "url": item.get("url", "")
-        })
-        if len(clean) >= limit:
-            break
-    return clean
-
-
-def _opencli_env() -> Dict[str, str]:
-    common_paths = [
-        str(Path.home() / ".local" / "bin"),
-        "/usr/local/bin",
-        "/opt/homebrew/bin",
-        "/usr/bin",
-        "/bin",
-    ]
-    current_path = os.getenv("PATH", "")
-    merged = ":".join([p for p in common_paths + current_path.split(":") if p])
-    env = dict(os.environ)
-    env["PATH"] = merged
-    return env
-
-
-def _opencli_bin() -> str:
-    explicit = (os.getenv("OPENCLI_BIN") or os.getenv("AGENT_REACH_OPENCLI_BIN") or "").strip()
-    candidates = [
-        explicit,
-        shutil.which("opencli", path=_opencli_env().get("PATH")),
-        str(Path.home() / ".local" / "bin" / "opencli"),
-        "/usr/local/bin/opencli",
-        "/opt/homebrew/bin/opencli",
-        "/usr/bin/opencli",
-    ]
-    for item in candidates:
-        if not item:
-            continue
-        p = Path(item).expanduser()
-        if p.exists() and os.access(p, os.X_OK):
-            return str(p)
-    return ""
-
-
-@app.post("/api/research/xhs-trends")
-async def xhs_trends(req: XhsTrendReq):
-    """可选联网趋势参考。失败时前端回退本地趋势库，不阻塞创作链路。"""
-    query = re.sub(r"\s+", " ", (req.query or "")).strip()[:90]
-    limit = max(1, min(12, int(req.limit or 8)))
-    if not query:
-        return {"ok": False, "items": [], "reason": "missing_query"}
-    if os.getenv("XHS_TREND_SEARCH", "auto").lower() in {"0", "false", "off", "no"}:
-        return {"ok": False, "items": [], "reason": "disabled"}
-    opencli = _opencli_bin()
-    if not opencli:
-        return {
-            "ok": False,
-            "items": [],
-            "reason": "opencli_missing",
-            "message": "服务器进程未检测到 OpenCLI 命令。本地浏览器已配置不等于线上可用；请在服务器服务用户下安装 OpenCLI，或配置 OPENCLI_BIN / 服务进程 PATH，本次已自动回退本地趋势库。"
-        }
-    try:
-        run = subprocess.run(
-            [opencli, "xiaohongshu", "search", query, "-f", "yaml"],
-            cwd=str(FRONTEND_DIR),
-            env=_opencli_env(),
-            capture_output=True,
-            text=True,
-            timeout=35,
-        )
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "items": [], "reason": "timeout", "message": "小红书趋势搜索超时，已回退本地趋势库。"}
-    if run.returncode != 0:
-        raw = (run.stderr or run.stdout or "").lower()
-        reason = "auth_required" if any(x in raw for x in ("auth", "login", "登录", "token", "cookie")) else "opencli_failed"
-        message = "小红书联网参考暂不可用。请确认服务器 OpenCLI 可执行、已完成小红书登录态授权，且服务进程能读取同一份配置；本次已自动回退本地趋势库。"
-        return {"ok": False, "items": [], "reason": reason, "message": message}
-    return {"ok": True, "provider": "opencli", "query": query, "items": _parse_xhs_opencli_yaml(run.stdout, limit)}
-
-
 @app.post("/api/chat/completions")
 async def chat_completions_proxy(req: Request):
     """OpenAI 兼容透传：前端语言模型 Provider 指到这里即可，免浏览器跨域、Key 藏服务器。
@@ -1194,6 +1143,11 @@ def _normalize_provider_error(text: str) -> str:
         return ""
     if "InputImageSensitiveContent" in s:
         return "参考图未通过 Seedance 图片安全检测。请换一张更清晰、无敏感元素的参考图，或先移除参考图后重试。"
+    if "InvalidEndpointOrModel.NotFound" in s and any(x in s.lower() for x in ("omni", "human")):
+        return (
+            "数字人模型未开通或模型 ID 不属于当前 Ark 视频任务接口。"
+            "Seedance 2.0 可继续使用；OmniHuman 1.5 需要在即梦/智能视觉服务侧开通并提供对应接口或准确模型 ID 后再接入。"
+        )
     return s
 
 
@@ -1281,6 +1235,308 @@ def _resolve_base(url: str):
         return False, getattr(e, "strerror", "") or str(e)
 
 
+def _join_url(base: str, path: str) -> str:
+    base = (base or "").rstrip("/")
+    path = "/" + str(path or "").lstrip("/")
+    return base + path
+
+
+def _first_number(obj, keys: Tuple[str, ...]) -> int:
+    def norm_key(k):
+        return re.sub(r"[^a-z0-9]", "", str(k or "").lower())
+    wanted = {norm_key(k) for k in keys}
+    stack = [obj]
+    while stack:
+        cur = stack.pop(0)
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if norm_key(k) in wanted:
+                    raw = str(v).replace(",", "").strip()
+                    m = re.search(r"-?\d+(?:\.\d+)?", raw)
+                    if m:
+                        try:
+                            return int(float(m.group(0)))
+                        except Exception:
+                            pass
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return 0
+
+
+def _first_text(obj, keys: Tuple[str, ...]) -> str:
+    def norm_key(k):
+        return re.sub(r"[^a-z0-9]", "", str(k or "").lower())
+    wanted = {norm_key(k) for k in keys}
+    stack = [obj]
+    while stack:
+        cur = stack.pop(0)
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if norm_key(k) in wanted and v not in (None, ""):
+                    return str(v)
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return ""
+
+
+def _clean_social_text(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _text_candidates(obj, keys: Tuple[str, ...]) -> list:
+    def norm_key(k):
+        return re.sub(r"[^a-z0-9]", "", str(k or "").lower())
+    wanted = {norm_key(k) for k in keys}
+    found = []
+    stack = [("", obj)]
+    while stack:
+        path, cur = stack.pop(0)
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                child_path = f"{path}.{k}" if path else str(k)
+                if norm_key(k) in wanted and v not in (None, ""):
+                    text = _clean_social_text(v)
+                    if text:
+                        found.append((child_path, norm_key(k), text))
+                stack.append((child_path, v))
+        elif isinstance(cur, list):
+            for i, v in enumerate(cur):
+                stack.append((f"{path}[{i}]", v))
+    return found
+
+
+def _xhs_detail_title(detail: dict) -> str:
+    candidates = _text_candidates(detail, ("title", "displayTitle", "display_title", "share_title"))
+
+    def rank(item):
+        path = item[0]
+        if re.search(r"\.note_list\[\d+\]\.title$", path):
+            return 0
+        if path.endswith(".share_info.title"):
+            return 1
+        if re.search(r"\.(display_title|displayTitle)$", path):
+            return 2
+        if path.endswith(".title") and "mini_program_info" not in path and "qq_mini_program_info" not in path:
+            return 3
+        if path.endswith(".share_title"):
+            return 4
+        return 9
+
+    for path, _, text in sorted(candidates, key=rank):
+        if "mini_program_info" in path or "qq_mini_program_info" in path:
+            continue
+        if re.search(r"发了.*笔记|快点来看", text):
+            continue
+        return text
+    return _clean_social_text(_first_text(detail, ("desc", "description")))
+
+
+def _wechat_channels_title(basic: dict) -> str:
+    candidates = _text_candidates(basic, ("title", "desc", "description"))
+
+    def rank(item):
+        path, key, _ = item
+        if path.endswith(".data.title"):
+            return 0
+        if path.endswith(".title"):
+            return 1
+        if key in {"desc", "description"}:
+            return 2
+        return 9
+
+    for _, _, text in sorted(candidates, key=rank):
+        if text:
+            return text
+    return ""
+
+
+def _extract_xhs_note_id(value: str) -> str:
+    s = str(value or "")
+    for pattern in (
+        r"/explore/([A-Za-z0-9_-]+)",
+        r"/discovery/item/([A-Za-z0-9_-]+)",
+        r"(?:noteId|note_id|item_id)=([A-Za-z0-9_-]+)",
+    ):
+        m = re.search(pattern, s)
+        if m:
+            return m.group(1)
+    if re.fullmatch(r"[A-Za-z0-9_-]{16,40}", s.strip()):
+        return s.strip()
+    return ""
+
+
+def _analytics_platform(req: AnalyticsJustOneReq) -> str:
+    s = f"{req.platform or ''} {req.url or ''}".lower()
+    if re.search(r"xiaohongshu|xhslink|\bxhs\b|小红书", s):
+        return "小红书"
+    if re.search(r"channels|weixin|wechat|finder|video\.qq\.com|视频号", s):
+        return "视频号"
+    return str(req.platform or "").strip() or "未知平台"
+
+
+def _justone_metrics(data: dict) -> dict:
+    views = _first_number(data, ("view_count", "views", "read_count", "readCount", "pv", "exposure_count", "impression_count", "play_count", "playCount"))
+    likes = _first_number(data, ("liked_count", "like_count", "likes", "likedCount", "likeCount", "like_num"))
+    collects = _first_number(data, ("collected_count", "collect_count", "favorite_count", "favorites", "collects", "collectedCount", "fav_count", "favoriteCount"))
+    comments = _first_number(data, ("comment_count", "comments_count", "comments", "commentCount", "commentsCount", "comment_num"))
+    shares = _first_number(data, ("share_count", "shared_count", "shares", "shareCount", "sharedCount", "forward_count", "forwardCount", "forward_num", "repost_count"))
+    engagement = likes + collects + comments + shares
+    engagement_rate = engagement / views if views else 0
+    quality = round(min(96, max(30, engagement_rate * 520 + (views + 10) ** 0.12 * 12)))
+    return {
+        "views": views,
+        "likes": likes,
+        "collects": collects,
+        "comments": comments,
+        "shares": shares,
+        "engagementRate": engagement_rate,
+        "qualityScore": quality,
+    }
+
+
+def _justone_token_missing():
+    if JUSTONE_API_KEY:
+        return
+    raise HTTPException(501, "JustOneAPI 数据接口已预留，等待在服务器环境配置 JUSTONE_API_KEY 或 JUSTONE_API_TOKEN")
+
+
+async def _justone_get(path: str, params: dict) -> dict:
+    _justone_token_missing()
+    url = _join_url(JUSTONE_BASE_URL, path)
+    query = {"token": JUSTONE_API_KEY, **{k: v for k, v in (params or {}).items() if v not in (None, "")}}
+    try:
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=JUSTONE_TIMEOUT, follow_redirects=True)) as client:
+            r = await client.get(url, params=query)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"JustOneAPI 请求失败：{exc.__class__.__name__}")
+    try:
+        data = r.json()
+    except Exception:
+        raise HTTPException(502, "JustOneAPI 未返回 JSON")
+    if r.status_code >= 400:
+        raise HTTPException(r.status_code, _readable_error(data) or f"JustOneAPI HTTP {r.status_code}")
+    code = data.get("code") if isinstance(data, dict) else None
+    if code not in (None, 0, "0"):
+        raise HTTPException(502, _readable_error(data.get("message") or data.get("msg") or data.get("error")) or f"JustOneAPI 业务码 {code}")
+    return data
+
+
+async def _justone_post_form(path: str, params: dict) -> dict:
+    _justone_token_missing()
+    url = _join_url(JUSTONE_BASE_URL, path)
+    form = {"token": JUSTONE_API_KEY, **{k: v for k, v in (params or {}).items() if v not in (None, "")}}
+    try:
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=JUSTONE_TIMEOUT, follow_redirects=True)) as client:
+            r = await client.post(url, data=form, headers={"Content-Type": "application/x-www-form-urlencoded"})
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"JustOneAPI 请求失败：{exc.__class__.__name__}")
+    try:
+        data = r.json()
+    except Exception:
+        raise HTTPException(502, "JustOneAPI 未返回 JSON")
+    if r.status_code >= 400:
+        raise HTTPException(r.status_code, _readable_error(data) or f"JustOneAPI HTTP {r.status_code}")
+    code = data.get("code") if isinstance(data, dict) else None
+    if code not in (None, 0, "0"):
+        raise HTTPException(502, _readable_error(data.get("message") or data.get("msg") or data.get("error")) or f"JustOneAPI 业务码 {code}")
+    return data
+
+
+@app.get("/api/analytics/justoneapi/config")
+def analytics_justone_config():
+    reachable, detail = _resolve_base(JUSTONE_BASE_URL)
+    return {
+        "ok": True,
+        "provider": "JustOneAPI",
+        "configured": bool(JUSTONE_API_KEY),
+        "reachable": reachable,
+        "detail": detail,
+        "baseUrl": _public_base(JUSTONE_BASE_URL),
+        "sharePath": JUSTONE_SHARE_PATH,
+        "noteDetailPath": JUSTONE_NOTE_DETAIL_PATH,
+        "wechatBasicPath": JUSTONE_WECHAT_BASIC_PATH,
+        "wechatMetricsPath": JUSTONE_WECHAT_METRICS_PATH,
+        "platforms": ["小红书", "视频号"],
+    }
+
+
+async def _fetch_xhs_metrics(req: AnalyticsJustOneReq):
+    raw_url = str(req.url or "").strip()
+    note_id = str(req.noteId or "").strip() or _extract_xhs_note_id(raw_url)
+    resolved = None
+    if not note_id and raw_url:
+        resolved = await _justone_get(JUSTONE_SHARE_PATH, {"shareUrl": raw_url})
+        note_id = (
+            _first_text(resolved, ("noteId", "note_id", "itemId", "item_id", "id"))
+            or _extract_xhs_note_id(json.dumps(resolved, ensure_ascii=False))
+        )
+    if not note_id:
+        raise HTTPException(400, "未能从链接解析出小红书 noteId")
+    detail = await _justone_get(JUSTONE_NOTE_DETAIL_PATH, {"noteId": note_id})
+    metrics = _justone_metrics(detail)
+    title = _xhs_detail_title(detail)
+    return {
+        "ok": True,
+        "provider": "JustOneAPI",
+        "platform": "小红书",
+        "noteId": note_id,
+        "title": title,
+        "metrics": metrics,
+        "raw": {"platform": "小红书", "noteId": note_id, "resolved": bool(resolved)},
+    }
+
+
+async def _fetch_wechat_channels_metrics(req: AnalyticsJustOneReq):
+    raw_url = str(req.url or "").strip()
+    legacy_object_id = str(req.noteId or "").strip()
+    object_id = str(req.objectId or "").strip()
+    if not object_id and re.fullmatch(r"\d{8,}", legacy_object_id):
+        object_id = legacy_object_id
+    object_nonce_id = str(req.objectNonceId or "").strip()
+    basic = None
+    if raw_url:
+        basic = await _justone_get(JUSTONE_WECHAT_BASIC_PATH, {"feedInfo": raw_url})
+        parsed_object_id = _first_text(basic, ("objectId", "object_id", "objectid", "id"))
+        parsed_nonce = _first_text(basic, ("objectNonceId", "object_nonce_id", "nonceId", "nonce_id"))
+        object_id = parsed_object_id or object_id
+        object_nonce_id = parsed_nonce or object_nonce_id
+    if not object_id:
+        if not raw_url:
+            raise HTTPException(400, "未提供视频号链接或 objectId")
+        object_id = _first_text(basic, ("objectId", "object_id", "objectid", "id"))
+        object_nonce_id = object_nonce_id or _first_text(basic, ("objectNonceId", "object_nonce_id", "nonceId", "nonce_id"))
+    if not object_id:
+        raise HTTPException(400, "未能从链接解析出视频号 objectId")
+    metrics_res = await _justone_post_form(JUSTONE_WECHAT_METRICS_PATH, {
+        "objectId": object_id,
+        "objectNonceId": object_nonce_id,
+    })
+    metrics = _justone_metrics({"basic": basic or {}, "metrics": metrics_res})
+    title = _wechat_channels_title(basic or {})
+    return {
+        "ok": True,
+        "provider": "JustOneAPI",
+        "platform": "视频号",
+        "objectId": object_id,
+        "objectNonceId": object_nonce_id,
+        "title": title,
+        "metrics": metrics,
+        "raw": {"platform": "视频号", "objectId": object_id, "hasBasic": bool(basic)},
+    }
+
+
+@app.post("/api/analytics/justoneapi/fetch")
+async def analytics_justone_fetch(req: AnalyticsJustOneReq):
+    platform = _analytics_platform(req)
+    if platform == "视频号":
+        return await _fetch_wechat_channels_metrics(req)
+    if platform == "小红书":
+        return await _fetch_xhs_metrics(req)
+    raise HTTPException(400, f"暂不支持该平台的数据监测：{platform}")
+
+
 def _ref_url(ref: VideoRef) -> str:
     src = ref.dataUrl or ref.url or ""
     if not src or src.startswith("blob:"):
@@ -1329,17 +1585,302 @@ def _ref_role(ref: VideoRef, index: int) -> str:
     return "reference_image"
 
 
+def _video_provider_name() -> str:
+    if VIDEO_PROVIDER in {"ark", "volcengine", "volces", "jimeng"} or "volces" in SEEDANCE_BASE_URL or "ark." in SEEDANCE_BASE_URL:
+        return "jimeng-ark"
+    return VIDEO_PROVIDER or "seedance"
+
+
+def _video_payload_mode() -> str:
+    if SEEDANCE_PAYLOAD_MODE:
+        return SEEDANCE_PAYLOAD_MODE
+    return "ark" if _video_provider_name() == "jimeng-ark" else "metadata"
+
+
+def _join_video_url(path: str) -> str:
+    if path.startswith(("http://", "https://")):
+        return path
+    return f"{SEEDANCE_BASE_URL}/{path.lstrip('/')}"
+
+
+def _video_submit_url() -> str:
+    if SEEDANCE_SUBMIT_PATH:
+        return _join_video_url(SEEDANCE_SUBMIT_PATH)
+    if _video_payload_mode() == "ark":
+        return _join_video_url("/api/v3/contents/generations/tasks")
+    return _join_video_url("/v1/video/generations")
+
+
+def _video_poll_url(task_id: str) -> str:
+    tid = task_id.strip()
+    if SEEDANCE_POLL_PATH:
+        return _join_video_url(SEEDANCE_POLL_PATH.replace("{task_id}", tid).replace("{id}", tid))
+    if _video_payload_mode() == "ark":
+        return _join_video_url(f"/api/v3/contents/generations/tasks/{tid}")
+    return _join_video_url(f"/v1/video/generations/{tid}")
+
+
+def _video_payload(req: VideoSubmitReq, content: list[dict]) -> dict:
+    duration = max(4, min(15, int(req.duration or 15)))
+    model = DIGITAL_HUMAN_MODEL if str(req.model or "").strip() == "__digital_human__" else (req.model or SEEDANCE_MODEL)
+    if _video_payload_mode() == "ark":
+        return {
+            "model": model,
+            "content": content,
+            "ratio": req.ratio or "9:16",
+            "duration": duration,
+            "resolution": req.resolution or SEEDANCE_RESOLUTION,
+            "watermark": SEEDANCE_WATERMARK,
+            "generate_audio": SEEDANCE_GENERATE_AUDIO if req.generateAudio is None else req.generateAudio,
+            "return_last_frame": True,
+            "seed": -1,
+        }
+    return {
+        "model": model,
+        "prompt": "",
+        "metadata": {
+            "content": content,
+            "ratio": req.ratio or "9:16",
+            "duration": duration,
+            "resolution": req.resolution or SEEDANCE_RESOLUTION,
+            "watermark": SEEDANCE_WATERMARK,
+            "generate_audio": SEEDANCE_GENERATE_AUDIO if req.generateAudio is None else req.generateAudio,
+            "return_last_frame": True,
+            "seed": -1,
+        },
+    }
+
+
+def _is_digital_human_request(req: VideoSubmitReq) -> bool:
+    return str(req.model or "").strip() == "__digital_human__"
+
+
+def _digital_human_configured() -> bool:
+    return bool(DIGITAL_HUMAN_ACCESS_KEY and DIGITAL_HUMAN_SECRET_KEY)
+
+
+def _digital_human_task_id(task_id: str) -> str:
+    tid = str(task_id or "").strip()
+    return tid.split(":", 1)[1] if tid.startswith("omnihuman:") else tid
+
+
+def _is_digital_human_task(task_id: str) -> bool:
+    return str(task_id or "").strip().startswith("omnihuman:")
+
+
+def _digital_human_url(action: str) -> str:
+    return f"{DIGITAL_HUMAN_BASE_URL}/?Action={quote(action)}&Version=2022-08-31"
+
+
+def _canonical_query(query: str) -> str:
+    pairs = []
+    for part in (query or "").split("&"):
+        if not part:
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+        else:
+            k, v = part, ""
+        pairs.append((quote(k, safe="-_.~"), quote(v, safe="-_.~")))
+    return "&".join(f"{k}={v}" for k, v in sorted(pairs))
+
+
+def _volc_signed_headers(method: str, url: str, body: bytes) -> dict:
+    if not _digital_human_configured():
+        raise HTTPException(
+            500,
+            "OmniHuman 数字人未配置火山智能视觉 AK/SK：请配置 VOLC_ACCESS_KEY_ID 与 VOLC_SECRET_ACCESS_KEY，Ark API Key 不能直接调用该 CV 接口。"
+        )
+    parsed = urlparse(url)
+    host = parsed.netloc
+    payload_hash = hashlib.sha256(body).hexdigest()
+    now = datetime.now(timezone.utc)
+    x_date = now.strftime("%Y%m%dT%H%M%SZ")
+    short_date = now.strftime("%Y%m%d")
+    headers = {
+        "content-type": "application/json",
+        "host": host,
+        "x-content-sha256": payload_hash,
+        "x-date": x_date,
+    }
+    if DIGITAL_HUMAN_SECURITY_TOKEN:
+        headers["x-security-token"] = DIGITAL_HUMAN_SECURITY_TOKEN
+    signed_keys = sorted(headers.keys())
+    canonical_headers = "".join(f"{k}:{headers[k].strip()}\n" for k in signed_keys)
+    signed_headers = ";".join(signed_keys)
+    canonical_request = "\n".join([
+        method.upper(),
+        parsed.path or "/",
+        _canonical_query(parsed.query),
+        canonical_headers,
+        signed_headers,
+        payload_hash,
+    ])
+    scope = f"{short_date}/{DIGITAL_HUMAN_REGION}/{DIGITAL_HUMAN_SERVICE}/request"
+    string_to_sign = "\n".join([
+        "HMAC-SHA256",
+        x_date,
+        scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ])
+    key = DIGITAL_HUMAN_SECRET_KEY.encode("utf-8")
+    for item in (short_date, DIGITAL_HUMAN_REGION, DIGITAL_HUMAN_SERVICE, "request"):
+        key = hmac.new(key, item.encode("utf-8"), hashlib.sha256).digest()
+    signature = hmac.new(key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    headers["authorization"] = (
+        f"HMAC-SHA256 Credential={DIGITAL_HUMAN_ACCESS_KEY}/{scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    return {k.title() if k != "authorization" else "Authorization": v for k, v in headers.items()}
+
+
+def _cv_status(data: dict) -> str:
+    d = data.get("data") if isinstance(data.get("data"), dict) else {}
+    s = str(d.get("status") or data.get("status") or "").lower()
+    if s in {"done", "succeeded", "success", "completed"}:
+        return "succeeded"
+    if s in {"expired", "not_found", "failed", "fail", "failure", "error"}:
+        return "failed"
+    return "running"
+
+
+def _cv_error(data: dict) -> str:
+    d = data.get("data") if isinstance(data.get("data"), dict) else {}
+    msg = (
+        _readable_error(data.get("message")) or _readable_error(data.get("msg")) or
+        _readable_error(data.get("error")) or _readable_error(d.get("message")) or
+        _readable_error(d.get("error")) or _readable_error(d.get("status_msg")) or
+        "OmniHuman 数字人生成失败"
+    )
+    return msg
+
+
+async def _digital_human_submit(req: VideoSubmitReq, resolved_images, resolved_audios):
+    if not _digital_human_configured():
+        raise HTTPException(
+            500,
+            "OmniHuman 数字人未配置火山智能视觉 AK/SK：请配置 VOLC_ACCESS_KEY_ID 与 VOLC_SECRET_ACCESS_KEY，Ark API Key 不能直接调用该 CV 接口。"
+        )
+    image_candidates = [(i, ref, url) for i, ref, url in resolved_images if str(url or "").startswith(("http://", "https://"))]
+    audio_candidates = [(i, ref, url) for i, ref, url in resolved_audios if str(url or "").startswith(("http://", "https://"))]
+    if not image_candidates:
+        raise HTTPException(
+            400,
+            "OmniHuman 数字人需要公网可访问的角色图 URL。请配置 PUBLIC_BASE_URL，或上传可被火山读取的图片 URL；本地 dataURL/localhost 不能直接提交。"
+        )
+    if not audio_candidates:
+        raise HTTPException(
+            400,
+            "OmniHuman 数字人需要公网可访问的口播音频 URL。请配置 PUBLIC_BASE_URL，或上传可被火山读取的 mp3/wav URL；本地 dataURL/localhost 不能直接提交。"
+        )
+    body = {
+        "req_key": DIGITAL_HUMAN_REQ_KEY,
+        "image_url": image_candidates[0][2],
+        "audio_url": audio_candidates[0][2],
+        "seed": -1,
+        "prompt": str(req.prompt or "角色自然口播，动作和表情自然。").strip()[:300],
+        "output_resolution": 1080 if DIGITAL_HUMAN_OUTPUT_RESOLUTION == 1080 else 720,
+        "pe_fast_mode": bool(DIGITAL_HUMAN_PE_FAST_MODE),
+    }
+    raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    url = _digital_human_url("CVSubmitTask")
+    headers = _volc_signed_headers("POST", url, raw)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
+            r = await client.post(url, content=raw, headers=headers)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"无法连接 OmniHuman 智能视觉接口：{exc.__class__.__name__} {exc}")
+    try:
+        data = r.json()
+    except Exception:
+        data = {"message": r.text[:1000]}
+    if r.status_code >= 400:
+        raise HTTPException(r.status_code, _http_detail(data) or "OmniHuman 提交失败")
+    code = data.get("code")
+    if code not in (None, 10000, "10000"):
+        raise HTTPException(502, _http_detail(data) or f"OmniHuman 提交失败：code={code}")
+    task_id = _find_provider_ref(data)
+    if not task_id:
+        raise HTTPException(502, {"detail": "OmniHuman 已返回结果，但没有任务 ID；请检查接口返回结构。", "raw": data})
+    return {"ok": True, "provider": "jimeng-omnihuman", "providerRef": f"omnihuman:{task_id}", "raw": data}
+
+
+async def _digital_human_poll(task_id: str):
+    if not _digital_human_configured():
+        raise HTTPException(
+            500,
+            "OmniHuman 数字人未配置火山智能视觉 AK/SK：请配置 VOLC_ACCESS_KEY_ID 与 VOLC_SECRET_ACCESS_KEY。"
+        )
+    body = {"req_key": DIGITAL_HUMAN_REQ_KEY, "task_id": _digital_human_task_id(task_id)}
+    raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    url = _digital_human_url("CVGetResult")
+    headers = _volc_signed_headers("POST", url, raw)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=8.0), trust_env=False) as client:
+            r = await client.post(url, content=raw, headers=headers)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"无法连接 OmniHuman 智能视觉接口：{exc.__class__.__name__} {exc}")
+    try:
+        data = r.json()
+    except Exception:
+        data = {"message": r.text[:1000]}
+    if r.status_code >= 400:
+        raise HTTPException(r.status_code, _http_detail(data) or "OmniHuman 轮询失败")
+    code = data.get("code")
+    if code not in (None, 10000, "10000"):
+        return {
+            "ok": True,
+            "status": "failed",
+            "progress": 0,
+            "output": None,
+            "error": _http_detail(data) or f"OmniHuman 轮询失败：code={code}",
+            "raw": data,
+        }
+    status = _cv_status(data)
+    video_url = _find_video_url(data)
+    return {
+        "ok": True,
+        "status": status,
+        "progress": _video_progress(data, status),
+        "output": {"url": video_url, "label": "OmniHuman 数字人片段已生成"} if video_url else None,
+        "error": _cv_error(data) if status == "failed" else None,
+        "raw": data,
+    }
+
+
+def _find_provider_ref(data: dict) -> str:
+    if not isinstance(data, dict):
+        return ""
+    d1 = data.get("data") if isinstance(data.get("data"), dict) else {}
+    d2 = d1.get("data") if isinstance(d1.get("data"), dict) else {}
+    for obj in (data, d1, d2):
+        for key in ("id", "task_id", "taskId", "taskID", "generation_id", "generationId"):
+            value = obj.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
 @app.get("/api/video/config")
 def video_config():
     reachable, detail = _resolve_base(SEEDANCE_BASE_URL)
+    dh_reachable, dh_detail = _resolve_base(DIGITAL_HUMAN_BASE_URL)
     return {
         "ok": True,
-        "provider": "seedance",
+        "provider": _video_provider_name(),
         "configured": bool(SEEDANCE_API_KEY),
         "reachable": reachable,
         "detail": detail,
         "model": SEEDANCE_MODEL,
+        "digitalHumanModel": DIGITAL_HUMAN_MODEL,
+        "digitalHumanConfigured": _digital_human_configured(),
+        "digitalHumanReachable": dh_reachable,
+        "digitalHumanDetail": dh_detail,
+        "digitalHumanReqKey": DIGITAL_HUMAN_REQ_KEY,
+        "payloadMode": _video_payload_mode(),
         "baseUrl": _public_base(SEEDANCE_BASE_URL),
+        "digitalHumanBaseUrl": _public_base(DIGITAL_HUMAN_BASE_URL),
+        "publicBaseConfigured": bool(PUBLIC_BASE_URL),
     }
 
 
@@ -1354,25 +1895,41 @@ def video_ref(rid: str):
 
 @app.post("/api/video/submit")
 async def video_submit(req: VideoSubmitReq):
-    if not SEEDANCE_API_KEY:
+    is_digital_human = _is_digital_human_request(req)
+    if not SEEDANCE_API_KEY and not is_digital_human:
         raise HTTPException(500, "服务器未配置 SEEDANCE_API_KEY")
     resolved_images = []
+    resolved_videos = []
     resolved_audios = []
+    ignored_local_videos = []
     ignored_local_audios = []
     unresolved_local_images = []
-    for i, ref in enumerate((req.refs or [])[:9]):
+    for i, ref in enumerate((req.refs or [])[:15]):
         kind = _ref_kind(ref)
         url = _ref_url(ref)
         if url and kind == "audio" and url.startswith("data:"):
             ignored_local_audios.append(ref.name or f"音频{i + 1}")
         elif url and kind == "audio":
             resolved_audios.append((i, ref, url))
+        elif url and kind == "video" and url.startswith("data:"):
+            ignored_local_videos.append(ref.name or f"视频{i + 1}")
+        elif url and kind == "video":
+            resolved_videos.append((i, ref, url))
         elif url and kind == "image":
             resolved_images.append((i, ref, url))
         elif ref.dataUrl and kind == "audio":
             ignored_local_audios.append(ref.name or f"音频{i + 1}")
+        elif ref.dataUrl and kind == "video":
+            ignored_local_videos.append(ref.name or f"视频{i + 1}")
+        elif kind == "video" and (ref.url or "").startswith(("http://localhost", "https://localhost", "http://127.0.0.1", "https://127.0.0.1")):
+            ignored_local_videos.append(ref.name or f"视频{i + 1}")
         elif ref.dataUrl or (ref.url or "").startswith(("http://localhost", "https://localhost", "http://127.0.0.1", "https://127.0.0.1")):
             unresolved_local_images.append(ref.name or f"图{i + 1}")
+    if is_digital_human:
+        return await _digital_human_submit(req, resolved_images, resolved_audios)
+    resolved_images = resolved_images[:9]
+    resolved_videos = resolved_videos[:3]
+    resolved_audios = resolved_audios[:3]
     if unresolved_local_images:
         # 本地调试时 localhost/dataURL 参考图无法被 Seedance 上游读取。图片参考降级为纯文本生成，
         # 避免卡死创作；音频参考仍需真实可访问 URL，因为它会影响生成声音。
@@ -1380,10 +1937,18 @@ async def video_submit(req: VideoSubmitReq):
     ref_parts = []
     if resolved_images:
         ref_parts.append(f"请参考{'、'.join(f'[图{i + 1}]' for i, _, _ in resolved_images)}，并保持主体、界面和画面结构信息一致。")
+    if resolved_videos:
+        ref_parts.append(f"请参考{'、'.join(f'[视频{i + 1}]' for i, _, _ in resolved_videos)}的镜头节奏、运动方式、构图层次和转场节奏；画面主题仍以文本提示词为准。")
     if unresolved_local_images:
         ref_parts.append("部分本地参考图当前无法被上游读取，本次按文本提示词生成；部署到有 PUBLIC_BASE_URL 的服务器后可自动携带参考图。")
     if resolved_audios:
         ref_parts.append(f"请参考{'、'.join(f'[音频{i + 1}]' for i, _, _ in resolved_audios)}的声线、音色、语气和语速生成视频口播；口播内容以文本提示词为准，不生成字幕。")
+    if ignored_local_videos:
+        raise HTTPException(
+            400,
+            "Seedance 视频参考没有传给上游：当前视频是本地文件/dataURL，上游无法读取。"
+            "请配置 PUBLIC_BASE_URL 为 Seedance 可访问的 http 地址，或把 mp4 上传到可访问 URL 后再作为视频参考。"
+        )
     if ignored_local_audios:
         raise HTTPException(
             400,
@@ -1394,22 +1959,11 @@ async def video_submit(req: VideoSubmitReq):
     content = [{"type": "text", "text": ref_hint + req.prompt.strip()}]
     for i, ref, url in resolved_images:
         content.append({"type": "image_url", "image_url": {"url": url}, "role": _ref_role(ref, i)})
+    for i, ref, url in resolved_videos:
+        content.append({"type": "video_url", "video_url": {"url": url}, "role": "reference_video"})
     for i, ref, url in resolved_audios:
         content.append({"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"})
-    payload = {
-        "model": req.model or SEEDANCE_MODEL,
-        "prompt": "",
-        "metadata": {
-            "content": content,
-            "ratio": req.ratio or "9:16",
-            "duration": max(4, min(15, int(req.duration or 15))),
-            "resolution": req.resolution or SEEDANCE_RESOLUTION,
-            "watermark": SEEDANCE_WATERMARK,
-            "generate_audio": SEEDANCE_GENERATE_AUDIO if req.generateAudio is None else req.generateAudio,
-            "return_last_frame": True,
-            "seed": -1,
-        },
-    }
+    payload = _video_payload(req, content)
     headers = {
         "Authorization": f"Bearer {SEEDANCE_API_KEY}",
         "Content-Type": "application/json",
@@ -1418,7 +1972,7 @@ async def video_submit(req: VideoSubmitReq):
     }
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
-            r = await client.post(f"{SEEDANCE_BASE_URL}/v1/video/generations", json=payload, headers=headers)
+            r = await client.post(_video_submit_url(), json=payload, headers=headers)
             if r.status_code >= 400 and resolved_images:
                 try:
                     err_text = json.dumps(r.json(), ensure_ascii=False)
@@ -1426,9 +1980,7 @@ async def video_submit(req: VideoSubmitReq):
                     err_text = r.text[:1200]
                 low = err_text.lower()
                 if "image_url" in low and ("timeout while fetching" in low or "fetching resource" in low or "not valid" in low):
-                    fallback_payload = dict(payload)
-                    fallback_meta = dict(payload.get("metadata") or {})
-                    fallback_meta["content"] = [{
+                    fallback_content = [{
                         "type": "text",
                         "text": (
                             "参考图当前无法被 Seedance 上游读取，本次自动降级为纯文本生成；"
@@ -1436,8 +1988,8 @@ async def video_submit(req: VideoSubmitReq):
                             + req.prompt.strip()
                         ),
                     }]
-                    fallback_payload["metadata"] = fallback_meta
-                    r = await client.post(f"{SEEDANCE_BASE_URL}/v1/video/generations", json=fallback_payload, headers=headers)
+                    fallback_payload = _video_payload(req, fallback_content)
+                    r = await client.post(_video_submit_url(), json=fallback_payload, headers=headers)
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"无法连接 Seedance（{SEEDANCE_BASE_URL}）：{exc.__class__.__name__} {exc}。请确认 SEEDANCE_BASE_URL 可达（内网地址需在内网/VPN）。")
     if r.status_code >= 400:
@@ -1453,19 +2005,21 @@ async def video_submit(req: VideoSubmitReq):
             detail = _normalize_provider_error(r.text[:800])
         raise HTTPException(r.status_code, detail)
     data = r.json()
-    provider_ref = data.get("id") or data.get("task_id") or data.get("taskId") or (data.get("data") or {}).get("id") or (data.get("data") or {}).get("task_id")
+    provider_ref = _find_provider_ref(data)
     if not provider_ref:
         raise HTTPException(502, {"detail": "Seedance 已返回结果，但没有任务 ID；请检查模型/接口返回结构。", "raw": data})
-    return {"ok": True, "providerRef": provider_ref, "raw": data}
+    return {"ok": True, "provider": _video_provider_name(), "providerRef": provider_ref, "raw": data}
 
 
 @app.get("/api/video/poll/{task_id}")
 async def video_poll(task_id: str):
+    if _is_digital_human_task(task_id):
+        return await _digital_human_poll(task_id)
     if not SEEDANCE_API_KEY:
         raise HTTPException(500, "服务器未配置 SEEDANCE_API_KEY")
     headers = {"Authorization": f"Bearer {SEEDANCE_API_KEY}", "Accept": "application/json", "Accept-Encoding": "identity"}
     async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
-        r = await client.get(f"{SEEDANCE_BASE_URL}/v1/video/generations/{task_id}", headers=headers)
+        r = await client.get(_video_poll_url(task_id), headers=headers)
     if r.status_code >= 400:
         try:
             error_data = r.json()
@@ -1493,9 +2047,11 @@ async def video_poll(task_id: str):
 
 @app.post("/api/video/cancel/{task_id}")
 async def video_cancel(task_id: str):
+    if _is_digital_human_task(task_id):
+        return {"ok": True}
     if SEEDANCE_API_KEY:
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
-            await client.delete(f"{SEEDANCE_BASE_URL}/v1/video/generations/{task_id}",
+            await client.delete(_video_poll_url(task_id),
                                 headers={"Authorization": f"Bearer {SEEDANCE_API_KEY}"})
     return {"ok": True}
 
@@ -1610,7 +2166,7 @@ async def video_compose(req: ComposeReq):
 class TtsReq(BaseModel):
     text: str
     voiceId: str = ""
-    speed: float = 1
+    speed: float = MINIMAX_TTS_SPEED
     vol: float = 1
     pitch: float = 0
     languageBoost: str = "auto"
@@ -1669,7 +2225,7 @@ def _minimax_connect_error(exc: Exception) -> str:
     ) % (_public_base(MINIMAX_BASE_URL), exc.__class__.__name__, exc)
 
 
-def _tts_payload(text: str, voice_id: str, speed=1, vol=1, pitch=0, language_boost="auto"):
+def _tts_payload(text: str, voice_id: str, speed=MINIMAX_TTS_SPEED, vol=1, pitch=0, language_boost="auto"):
     return {
         "model": MINIMAX_TTS_MODEL,
         "text": (text or "")[:9999],
@@ -1678,7 +2234,7 @@ def _tts_payload(text: str, voice_id: str, speed=1, vol=1, pitch=0, language_boo
         "output_format": "hex",
         "voice_setting": {
             "voice_id": voice_id,
-            "speed": _int_if_whole(speed, 1),
+            "speed": _int_if_whole(speed, MINIMAX_TTS_SPEED),
             "vol": int(round(float(vol or 1))),
             "pitch": int(round(float(pitch or 0))),
         },
@@ -2035,26 +2591,6 @@ def health():
     }
 
 
-# ---------- 数据分析：小红书链接解析 / 指标采集 ----------
-class AnalyticsResolveReq(BaseModel):
-    url: str
-
-
-class AnalyticsFetchReq(BaseModel):
-    url: str
-    noteId: Optional[str] = None
-    assetId: Optional[str] = None
-    accountId: Optional[str] = None
-    title: Optional[str] = None
-
-
-def _note_id(url: str) -> str:
-    for mark in ("/explore/", "/discovery/item/", "/item/"):
-        if mark in url:
-            return url.split(mark, 1)[1].split("?", 1)[0].split("/", 1)[0]
-    return "note_" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
-
-
 def _deep_get(obj, *paths, default=None):
     for path in paths:
       cur = obj
@@ -2070,398 +2606,6 @@ def _deep_get(obj, *paths, default=None):
       if ok and cur not in (None, ""):
           return cur
     return default
-
-
-def _num(value) -> int:
-    if value is None:
-        return 0
-    if isinstance(value, (int, float)):
-        return int(value)
-    s = str(value).replace(",", "").strip().lower()
-    mul = 1
-    if "万" in s or "w" in s:
-        mul = 10000
-    digits = "".join(ch for ch in s if ch.isdigit() or ch == ".")
-    try:
-        return int(float(digits or "0") * mul)
-    except ValueError:
-        return 0
-
-
-async def _justone_get(path: str, params: dict) -> dict:
-    if not JUSTONEAPI_KEY:
-        raise RuntimeError("JUSTONEAPI_KEY not configured")
-    q = {"token": JUSTONEAPI_KEY, **{k: v for k, v in params.items() if v not in (None, "")}}
-    async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=60, follow_redirects=True)) as client:
-        r = await client.get(JUSTONEAPI_BASE_URL + path, params=q, **_httpx_get_redirect_kwargs())
-    if r.status_code != 200:
-        raise RuntimeError(f"JustOneAPI HTTP {r.status_code}: {r.text[:240]}")
-    payload = r.json()
-    if isinstance(payload, dict) and payload.get("code") not in (0, "0", None):
-        raise RuntimeError(f"JustOneAPI {payload.get('code')}: {payload.get('message') or payload}")
-    return payload
-
-
-def _normalize_note_detail(payload: dict) -> dict:
-    data = payload.get("data") if isinstance(payload, dict) else payload
-    note = _deep_get(data, ("note",), ("noteDetail",), ("note_detail",), ("items", 0), ("list", 0), default=data)
-    if not isinstance(note, dict):
-        note = data if isinstance(data, dict) else {}
-    inter = _deep_get(note, ("interactInfo",), ("interact_info",), ("interaction",), ("statistics",), ("stats",), default={}) or {}
-    user = _deep_get(note, ("user",), ("userInfo",), ("user_info",), ("author",), default={}) or {}
-    title = _deep_get(note, ("title",), ("displayTitle",), ("display_title",), ("noteCard", "displayTitle"), default="")
-    desc = _deep_get(note, ("desc",), ("description",), ("content",), default="")
-    author = _deep_get(user, ("nickname",), ("nickName",), ("name",), ("userName",), default="")
-    likes = _num(_deep_get(inter, ("likedCount",), ("liked_count",), ("likeCount",), ("like_count",), ("likes",), default=0)
-                 or _deep_get(note, ("likedCount",), ("liked_count",), ("likeCount",), ("likes",), default=0))
-    collects = _num(_deep_get(inter, ("collectedCount",), ("collected_count",), ("collectCount",), ("collect_count",), ("favCount",), ("favoriteCount",), default=0)
-                    or _deep_get(note, ("collectedCount",), ("collectCount",), ("collects",), default=0))
-    comments = _num(_deep_get(inter, ("commentCount",), ("comment_count",), ("comments",), default=0)
-                    or _deep_get(note, ("commentCount",), ("comment_count",), default=0))
-    shares = _num(_deep_get(inter, ("shareCount",), ("share_count",), ("shares",), default=0)
-                  or _deep_get(note, ("shareCount",), ("share_count",), default=0))
-    views = _num(_deep_get(inter, ("viewCount",), ("view_count",), ("readCount",), ("read_count",), ("exposure",), default=0)
-                 or _deep_get(note, ("viewCount",), ("readCount",), ("views",), default=0))
-    return {
-        "title": title,
-        "desc": desc,
-        "author": author,
-        "publishTime": _deep_get(note, ("time",), ("publishTime",), ("publish_time",), ("createTime",), ("create_time",), default=None),
-        "metrics": {
-            "views": views,
-            "likes": likes,
-            "collects": collects,
-            "comments": comments,
-            "shares": shares,
-        },
-        "rawNote": note,
-    }
-
-
-def _comment_texts(payload: dict, limit: int = 12):
-    data = payload.get("data") if isinstance(payload, dict) else payload
-    candidates = [
-        _deep_get(data, ("comments",), default=None),
-        _deep_get(data, ("commentList",), default=None),
-        _deep_get(data, ("comment_list",), default=None),
-        _deep_get(data, ("list",), default=None),
-        _deep_get(data, ("items",), default=None),
-    ]
-    comments = next((x for x in candidates if isinstance(x, list)), [])
-    out = []
-    for c in comments[:limit]:
-        if not isinstance(c, dict):
-            continue
-        text = _deep_get(c, ("content",), ("text",), ("comment",), ("desc",), default="")
-        if text:
-            out.append(str(text))
-    return out
-
-
-def _parse_opencli_scalar_yaml(text: str) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-    key_re = re.compile(r"^\s*(?:-\s*)?([A-Za-z_][\w-]*)\s*:\s*(.*)\s*$")
-
-    def clean(value: str) -> str:
-        s = (value or "").strip()
-        if s in {"", "[]", "{}", "null", "None", "|", "|-", ">", ">-"}:
-            return ""
-        if (len(s) >= 2 and s[0] == s[-1] and s[0] in {"'", '"'}):
-            s = s[1:-1]
-        return s.strip()
-
-    current_field = ""
-    value_lines: List[str] = []
-    collecting_block = False
-
-    def flush_field():
-        nonlocal current_field, value_lines, collecting_block
-        key = current_field.strip().lower().replace("-", "_")
-        value = "\n".join(x for x in value_lines if x.strip()).strip()
-        if key and value:
-            out.setdefault(key, value)
-        current_field = ""
-        value_lines = []
-        collecting_block = False
-
-    for raw in (text or "").splitlines():
-        line = raw.rstrip()
-        field_match = re.match(r"^\s*-\s*field\s*:\s*(.+?)\s*$", line, re.I)
-        if field_match:
-            flush_field()
-            current_field = clean(field_match.group(1))
-            continue
-        if current_field:
-            value_match = re.match(r"^\s*value\s*:\s*(.*)\s*$", line, re.I)
-            if value_match:
-                value = value_match.group(1).strip()
-                cleaned = clean(value)
-                if cleaned:
-                    value_lines.append(cleaned)
-                    collecting_block = False
-                else:
-                    collecting_block = True
-                continue
-            if collecting_block or value_lines:
-                if re.match(r"^\s{2,}\S", raw) or re.match(r"^\s*-\s+(?!field\s*:)", raw, re.I):
-                    cleaned = clean(line)
-                    if cleaned:
-                        value_lines.append(cleaned)
-                    continue
-                flush_field()
-        m = key_re.match(line)
-        if not m:
-            continue
-        key = m.group(1).strip().lower().replace("-", "_")
-        if key in {"field", "value"}:
-            continue
-        value = clean(m.group(2))
-        if not value:
-            continue
-        out.setdefault(key, value)
-    flush_field()
-    return out
-
-
-def _first_field(data: Dict[str, str], *names: str) -> str:
-    for name in names:
-        value = data.get(name.lower().replace("-", "_"))
-        if value not in (None, ""):
-            return str(value)
-    return ""
-
-
-def _normalize_opencli_xhs_note(text: str, url: str, note_id: str, fallback: str = "") -> dict:
-    data = _parse_opencli_scalar_yaml(text)
-    title = _first_field(data, "title", "note_title", "display_title", "displayTitle")
-    desc = _first_field(data, "desc", "description", "summary", "content", "text", "note_desc")
-    author = _first_field(data, "author", "nickname", "nick_name", "nickName", "user", "username")
-    likes = _num(_first_field(data, "likes", "like", "liked_count", "likedCount", "like_count", "likeCount"))
-    collects = _num(_first_field(data, "collects", "collected_count", "collectedCount", "collect_count", "collectCount", "favorites", "fav_count", "favoriteCount"))
-    comments = _num(_first_field(data, "comments", "comment_count", "commentCount", "comment"))
-    shares = _num(_first_field(data, "shares", "share_count", "shareCount", "share"))
-    views = _num(_first_field(data, "views", "view_count", "viewCount", "read_count", "readCount", "reads", "exposure"))
-    if not any([title, desc, likes, collects, comments, shares, views]):
-        raise RuntimeError("OpenCLI 未返回可用笔记详情；小红书详情通常需要从搜索结果打开带 xsec_token 的完整链接")
-    total_interactions = likes + collects + comments + shares
-    engagement = total_interactions / views if views else 0
-    score_base = views if views else total_interactions
-    score = max(35, min(96, int((engagement * 520 if views else min(1, total_interactions / 5000) * 70) + len(str(score_base or 1)) * 8)))
-    return {
-        "provider": "agent-reach-opencli",
-        "noteId": note_id,
-        "title": title,
-        "author": author,
-        "publishTime": _first_field(data, "published_at", "publish_time", "publishTime", "create_time", "createTime") or None,
-        "fetchedAt": int(time.time() * 1000),
-        "metrics": {
-            "views": views,
-            "likes": likes,
-            "collects": collects,
-            "comments": comments,
-            "shares": shares,
-            "engagementRate": engagement,
-            "qualityScore": score,
-        },
-        "commentsSample": [],
-        "raw": {
-            "provider": "agent-reach-opencli",
-            "url": url,
-            "fallback": fallback,
-            "note": {k: v for k, v in data.items() if k not in {"token", "cookie", "authorization"}},
-            "desc": desc,
-            "viewsUnavailable": not bool(views),
-        },
-    }
-
-
-async def _run_opencli_xhs_note(url: str) -> str:
-    if os.getenv("AGENT_REACH_ANALYTICS", "auto").lower() in {"0", "false", "off", "no"}:
-        raise RuntimeError("agent-reach 小红书采集已被环境变量关闭")
-    opencli = _opencli_bin()
-    if not opencli:
-        raise RuntimeError("agent-reach 当前小红书后端不可用：服务器进程未检测到 OpenCLI；请配置 OPENCLI_BIN 或修正服务进程 PATH")
-    try:
-        run = await asyncio.to_thread(
-            subprocess.run,
-            [opencli, "xiaohongshu", "note", url, "-f", "yaml"],
-            cwd=str(FRONTEND_DIR),
-            env=_opencli_env(),
-            capture_output=True,
-            text=True,
-            timeout=45,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("agent-reach/OpenCLI 读取小红书笔记超时")
-    raw = (run.stderr or run.stdout or "").strip()
-    if run.returncode != 0:
-        low = raw.lower()
-        if any(x in low for x in ("auth", "login", "登录", "token", "cookie")):
-            raise RuntimeError("agent-reach/OpenCLI 未获得服务器侧小红书登录态，请在服务器 OpenCLI 运行环境完成授权后重试")
-        if "xsec" in low:
-            raise RuntimeError("小红书详情需要带 xsec_token 的完整链接，请先从搜索结果打开原文链接后再采集")
-        raise RuntimeError(f"agent-reach/OpenCLI 读取失败：{raw[:240] or '未知错误'}")
-    return run.stdout
-
-
-async def _opencli_xhs_search(query: str, limit: int = 6) -> List[Dict]:
-    opencli = _opencli_bin()
-    if not opencli:
-        raise RuntimeError("agent-reach 当前小红书后端不可用：服务器进程未检测到 OpenCLI；请配置 OPENCLI_BIN 或修正服务进程 PATH")
-    q = re.sub(r"\s+", " ", (query or "")).strip()[:90]
-    if not q:
-        return []
-    try:
-        run = await asyncio.to_thread(
-            subprocess.run,
-            [opencli, "xiaohongshu", "search", q, "-f", "yaml"],
-            cwd=str(FRONTEND_DIR),
-            env=_opencli_env(),
-            capture_output=True,
-            text=True,
-            timeout=35,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("agent-reach/OpenCLI 按标题重搜小红书超时")
-    raw = (run.stderr or run.stdout or "").strip()
-    if run.returncode != 0:
-        low = raw.lower()
-        if any(x in low for x in ("auth", "login", "登录", "token", "cookie")):
-            raise RuntimeError("agent-reach/OpenCLI 未获得服务器侧小红书登录态，请在服务器 OpenCLI 运行环境完成授权后重试")
-        raise RuntimeError(f"agent-reach/OpenCLI 按标题重搜失败：{raw[:220] or '未知错误'}")
-    return _parse_xhs_opencli_yaml(run.stdout, limit)
-
-
-def _normalize_opencli_xhs_search_item(item: Dict, note_id: str, title_hint: str, reason: str) -> dict:
-    title = re.sub(r"\s+", " ", item.get("title") or title_hint or "").strip()
-    desc = re.sub(r"\s+", " ", item.get("desc") or "").strip()
-    author = re.sub(r"\s+", " ", item.get("author") or "").strip()
-    likes = _num(item.get("likes"))
-    if not any([title, desc, author, likes]):
-        raise RuntimeError(reason)
-    total_interactions = likes
-    score = max(35, min(82, int(min(1, total_interactions / 3000) * 58 + len(str(total_interactions or 1)) * 7)))
-    return {
-        "provider": "agent-reach-opencli-search",
-        "noteId": note_id,
-        "title": title,
-        "author": author,
-        "publishTime": item.get("published_at") or None,
-        "fetchedAt": int(time.time() * 1000),
-        "metrics": {
-            "views": 0,
-            "likes": likes,
-            "collects": 0,
-            "comments": 0,
-            "shares": 0,
-            "engagementRate": 0,
-            "qualityScore": score,
-        },
-        "commentsSample": [],
-        "raw": {
-            "provider": "agent-reach-opencli-search",
-            "url": item.get("url") or "",
-            "searchItem": item,
-            "desc": desc,
-            "viewsUnavailable": True,
-            "detailUnavailable": True,
-            "detailError": reason,
-        },
-    }
-
-
-async def _opencli_xhs_note(url: str, note_id: str, title: str = "") -> dict:
-    first_error = ""
-    try:
-        return _normalize_opencli_xhs_note(await _run_opencli_xhs_note(url), url, note_id)
-    except Exception as exc:
-        first_error = str(exc)
-        if not (title or "").strip():
-            raise
-
-    items = await _opencli_xhs_search(title, 6)
-    if not items:
-        raise RuntimeError(f"{first_error}；已按标题重搜但没有找到可用候选")
-    candidates = sorted(
-        items,
-        key=lambda item: 0 if (note_id and note_id in (item.get("url") or "")) else 1,
-    )
-    last_error = first_error
-    for item in candidates:
-        item_url = (item.get("url") or "").strip()
-        if not item_url:
-            continue
-        try:
-            return _normalize_opencli_xhs_note(
-                await _run_opencli_xhs_note(item_url),
-                item_url,
-                note_id,
-                fallback="title_search",
-            )
-        except Exception as exc:
-            last_error = str(exc)
-            continue
-    return _normalize_opencli_xhs_search_item(candidates[0], note_id, title, last_error)
-
-
-@app.post("/api/analytics/resolve")
-async def analytics_resolve(req: AnalyticsResolveReq):
-    """解析小红书分享链接。只做真实 URL 解析，不合成模拟数据。"""
-    url = (req.url or "").strip()
-    if not url:
-        raise HTTPException(400, "链接为空，无法解析")
-    return {
-        "ok": True,
-        "provider": "server-url-parser",
-        "noteId": _note_id(url),
-        "canonicalUrl": url,
-        "resolvedAt": int(time.time() * 1000),
-    }
-
-
-@app.post("/api/analytics/fetch")
-async def analytics_fetch(req: AnalyticsFetchReq):
-    """拉取笔记指标。没有真实采集服务时明确失败，前端展示失败原因。"""
-    note_id = req.noteId or _note_id(req.url)
-    justone_error = ""
-    if JUSTONEAPI_KEY:
-        try:
-            detail_raw = await _justone_get("/api/xiaohongshu/get-note-detail/v5", {"noteId": note_id})
-            detail = _normalize_note_detail(detail_raw)
-            comment_raw = await _justone_get("/api/xiaohongshu/get-note-comment/v4", {"noteId": note_id})
-            comments_sample = _comment_texts(comment_raw)
-            metrics = detail["metrics"]
-            total_base = metrics["views"] or (metrics["likes"] + metrics["collects"] + metrics["comments"] + metrics["shares"]) * 20
-            engagement = (metrics["likes"] + metrics["collects"] + metrics["comments"] + metrics["shares"]) / total_base if total_base else 0
-            score = max(35, min(96, int(engagement * 520 + len(str(total_base or 1)) * 10)))
-            return {
-                "provider": "justoneapi",
-                "noteId": note_id,
-                "title": detail["title"],
-                "author": detail["author"],
-                "publishTime": detail["publishTime"],
-                "fetchedAt": int(time.time() * 1000),
-                "metrics": {
-                    **metrics,
-                    "views": metrics["views"],
-                    "engagementRate": engagement,
-                    "qualityScore": score,
-                },
-                "commentsSample": comments_sample,
-                "raw": {
-                    "detail": detail_raw,
-                    "comments": comment_raw,
-                    "note": detail["rawNote"],
-                },
-            }
-        except Exception as exc:
-            justone_error = f"JustOneAPI 调用失败：{str(exc)[:220]}"
-
-    try:
-        return await _opencli_xhs_note(req.url, note_id, req.title or "")
-    except Exception as exc:
-        prefix = f"{justone_error}；" if justone_error else ""
-        raise HTTPException(503, f"{prefix}agent-reach/OpenCLI 未能返回小红书真实指标：{str(exc)[:260]}")
 
 
 

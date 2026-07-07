@@ -1,6 +1,6 @@
-/* 小红书趋势/选题预案库
-   用途：联网搜索可用时吸收热门标题骨架；不可用时走本地四方向投放池。
-   对外标题/文案不出现自家产品名；图像策略里统一使用中文产品名。 */
+/* 小红书本地选题预案库
+   用途：外部检索能力移除后，为图文和视频提供稳定的本地四方向投放池。
+   这里只提供选题节奏，不覆盖用户创作内容。 */
 
 const OWN_PRODUCT_RE = /(Dumate|DuMate|MIAODA|百度搭子|百度秒哒|秒哒|搭子)/gi;
 export const MIN_TREND_INTERACTIONS = 100;
@@ -22,7 +22,7 @@ export const XHS_TREND_LIBRARY = [
   {
     key: "comparison_choice",
     name: "强对比选型",
-    search: "Codex WorkBuddy Obsidian AI Agent 怎么选",
+    search: "Codex Claude Code Cursor AI Agent 怎么选 对比 小红书",
     seeds: [
       "这类AI工具到底怎么分工",
       "不是谁更强，是该放在哪一步",
@@ -35,7 +35,7 @@ export const XHS_TREND_LIBRARY = [
   {
     key: "ecosystem_combo",
     name: "生态联动组合",
-    search: "Obsidian AI Agent 组合 工作流 小红书",
+    search: "Codex Obsidian AI 知识库 工作流 联动 小红书",
     seeds: [
       "一个负责沉淀，一个负责执行",
       "知识库和桌面执行终于接上了",
@@ -48,7 +48,7 @@ export const XHS_TREND_LIBRARY = [
   {
     key: "worker_efficiency",
     name: "打工人效率场景",
-    search: "AI工具 周报 Excel 打工人 效率 小红书",
+    search: "Codex AI Agent 办公提效 桌面智能体 省时间 小红书",
     seeds: [
       "写周报的时间终于能省一点",
       "表格和资料别再手动捋",
@@ -61,7 +61,7 @@ export const XHS_TREND_LIBRARY = [
   {
     key: "beginner_reversal",
     name: "小白低门槛反转",
-    search: "零基础 AI工具 教程 小白 工作流 小红书",
+    search: "Codex AI工具 零门槛 教程 小白 上手 小红书",
     seeds: [
       "不会写代码也能让AI跑流程",
       "第一次用桌面智能体先做这一步",
@@ -80,62 +80,63 @@ const DEFAULT_CREATIVE_DIRECTION_KEYS = [
   "beginner_reversal"
 ];
 
-const OFFLINE_WORKER_TOPICS = [
-  "周报从一小时压到十分钟",
-  "文件夹乱到不敢打开怎么办",
-  "表格字段一个个复制太折磨",
-  "会议纪要写完还要再整理一遍",
-  "下班前突然要一份汇总",
-  "资料散在聊天记录和网盘里",
-  "每天重复填同一张表",
-  "把截图、表格、文档串成一个流程",
-  "同事问一遍就能跑的自动化",
-  "新手第一次做AI办公工作流"
-];
+const ONLINE_CODEX_TOPICS = {
+  comparison_choice: "Codex和其他产品对比相关",
+  ecosystem_combo: "Codex和其他产品联动相关",
+  worker_efficiency: "Codex提效相关",
+  beginner_reversal: "Codex体验测评教程相关"
+};
+
+const OFFLINE_PRODUCT_TOPIC_TAILS = {
+  comparison_choice: "和其他产品对比相关",
+  ecosystem_combo: "和其他产品联动相关",
+  worker_efficiency: "提效相关",
+  beginner_reversal: "体验测评教程相关"
+};
 
 export const DEFAULT_CREATIVE_DIRECTIONS = [
   {
     key: "comparison_choice",
     name: "强对比选型",
     topics: [
-      "Codex 对比相关",
-      "AI Agent 选型相关",
-      "代码智能体对比相关",
-      "Codex/Claude Code 怎么选相关",
-      "AI 工具分工相关"
+      "Codex和同类工具对比相关",
+      "Codex和Claude Code怎么选相关",
+      "Codex和Cursor分工相关",
+      "AI Agent选型对比相关",
+      "代码智能体对比测评相关"
     ]
   },
   {
     key: "ecosystem_combo",
     name: "联动绑定生态",
     topics: [
-      "Obsidian + AI 相关",
-      "知识库自动化相关",
-      "AI + 知识管理相关",
-      "内容创作工作流相关",
-      "资料沉淀与执行相关"
+      "Codex和Obsidian联动相关",
+      "Codex和知识库工作流相关",
+      "AI和知识管理联动相关",
+      "Codex和内容创作流程相关",
+      "AI工具生态联动相关"
     ]
   },
   {
     key: "worker_efficiency",
     name: "打工人效率场景",
     topics: [
-      "周报效率相关",
-      "表格整理相关",
-      "文件归档相关",
-      "会议纪要相关",
-      "打工人自动化相关"
+      "Codex提效工作流相关",
+      "AI Agent办公提效相关",
+      "桌面智能体省时间相关",
+      "重复任务自动化相关",
+      "打工人AI提效相关"
     ]
   },
   {
     key: "beginner_reversal",
     name: "小白反转入门",
     topics: [
-      "AI 工具小白入门相关",
-      "零基础 AI 办公相关",
-      "不用编程相关",
-      "新手工作流相关",
-      "低门槛自动化相关"
+      "Codex体验测评教程相关",
+      "Codex零门槛上手相关",
+      "国产Codex测评相关",
+      "AI工具小白教程相关",
+      "Codex真实使用体验相关"
     ]
   }
 ];
@@ -146,9 +147,19 @@ function defaultCreativeDirections() {
     .filter(Boolean);
 }
 
-function defaultTopicsForDirection(direction = null) {
+function productCreativeTopics(product = null) {
+  const name = zhProductName(product);
+  return DEFAULT_CREATIVE_DIRECTION_KEYS.map(key => `${name}${OFFLINE_PRODUCT_TOPIC_TAILS[key] || "使用教程相关"}`);
+}
+
+function defaultTopicsForDirection(direction = null, product = null, useOnlineTrends = false) {
+  if (useOnlineTrends) {
+    const key = direction?.key || "worker_efficiency";
+    return [ONLINE_CODEX_TOPICS[key] || ONLINE_CODEX_TOPICS.worker_efficiency];
+  }
+  if (product) return productCreativeTopics(product);
   const byKey = DEFAULT_CREATIVE_DIRECTIONS.find(x => x.key === direction?.key);
-  return byKey?.topics?.length ? byKey.topics : OFFLINE_WORKER_TOPICS;
+  return byKey?.topics?.length ? byKey.topics : DEFAULT_CREATIVE_DIRECTION_KEYS.map(key => ONLINE_CODEX_TOPICS[key]);
 }
 
 const HOT_TITLE_PATTERNS = [
@@ -219,10 +230,71 @@ function compactText(text = "", max = 180) {
   return s.slice(0, max).replace(/[，、；:：\s]*$/, "");
 }
 
+function isSearchOnlyTopic(text = "") {
+  const raw = compactText(text, 80);
+  if (!raw) return false;
+  if (/^(周报效率|表格整理|文件归档|会议纪要|知识库自动化|内容创作工作流|资料沉淀与执行|打工人自动化|新手工作流|低门槛自动化|不用编程)\s*相关?$/.test(raw)) return true;
+  if (/^(周报|表格|文件|资料|会议|纪要)\s*(整理|效率|归档)?\s*相关$/.test(raw)) return true;
+  return false;
+}
+
+function isInstructionLikeTopic(text = "") {
+  const raw = compactText(text, 160);
+  if (!raw) return false;
+  return /前排|延展例子|搜索决策词|搜索视角|真实办公场景|可带一个同类工具|先讲|再说明|拆成\s*\d+\s*张|张图卡|适合做|讲清痛点|动作、?结果|不要写一大段|参考标题|改写/.test(raw);
+}
+
 function zhProductName(product) {
   const raw = String(product?.shortName || product?.name || "");
   if (/秒哒|miaoda/i.test(raw) || product?.id === "miaoda") return "百度秒哒";
   return "百度搭子";
+}
+
+function escapeRegExp(text = "") {
+  return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeOwnProductNoise(text = "", name = "百度搭子") {
+  let out = String(text || "");
+  if (name === "百度搭子") {
+    out = out
+      .replace(/(?:\d+\s*)?百度(?:\d+|百度|搭子){1,10}搭子?/g, "百度搭子")
+      .replace(/\d*百度\d*(?:百度)+搭子/g, "百度搭子")
+      .replace(/百度(?:百度)+搭子/g, "百度搭子")
+      .replace(/百度搭子(?:搭子|百度搭子)+/g, "百度搭子");
+  }
+  if (name) {
+    const escaped = escapeRegExp(name);
+    out = out
+      .replace(new RegExp(`(?:${escaped}[!！~～、，,。\\s]*){2,}`, "g"), name)
+      .replace(new RegExp(`${escaped}(?:\\s*${escaped})+`, "g"), name)
+      .replace(new RegExp(`(${escaped})和\\1`, "g"), `${name}和同类工具`)
+      .replace(new RegExp(`(${escaped})\\+\\1`, "g"), `${name}+同类工具`);
+  }
+  return out.replace(/[ \t]+/g, " ").trim();
+}
+
+function cleanRepeatedTitleNoise(text = "", { product = null, max = 34 } = {}) {
+  const current = zhProductName(product);
+  let out = normalizeOwnProductNoise(compactText(text, max * 3), current)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!out) return "";
+  const tutorial = out.match(/\d+\s*分钟学会.{0,34}?(?:终级教程|终极教程|教程|入门|上手|讲清楚)[~～]?/);
+  if (tutorial?.[0]) out = tutorial[0];
+  ["40分钟学会", "30分钟学会", "10分钟学会", "一篇讲清楚", "零基础"].forEach(marker => {
+    const first = out.indexOf(marker);
+    const second = first >= 0 ? out.indexOf(marker, first + marker.length) : -1;
+    if (second > 0) out = out.slice(0, second);
+  });
+  const escaped = escapeRegExp(current);
+  if (escaped) {
+    const re = new RegExp(`(${escaped}[^!！?？。；;，,~～]{0,18})(?:${escaped}[^!！?？。；;，,~～]{0,18})+`, "g");
+    out = out.replace(re, "$1");
+  }
+  return compactText(normalizeOwnProductNoise(out, current)
+    .replace(/[，,。；;、\s]+$/g, "")
+    .trim(), max);
 }
 
 function publicCategory(product) {
@@ -231,15 +303,26 @@ function publicCategory(product) {
   return "桌面智能体";
 }
 
+export function normalizeCreativeTopicForMode({ topic = "", product = null, useOnlineTrends = false, direction = null, seed = "" } = {}) {
+  const raw = compactText(topic, 80);
+  const cleanRaw = isSearchOnlyTopic(raw) || isInstructionLikeTopic(raw) ? "" : raw;
+  const dir = direction || chooseDirection({ topic: cleanRaw || raw, seed });
+  const key = dir?.key || "worker_efficiency";
+  if (useOnlineTrends) return ONLINE_CODEX_TOPICS[key] || ONLINE_CODEX_TOPICS.worker_efficiency;
+  if (cleanRaw && cleanRaw.length >= 4) return cleanRaw;
+  const topics = productCreativeTopics(product);
+  const byKey = DEFAULT_CREATIVE_DIRECTION_KEYS.indexOf(key);
+  if (byKey >= 0 && topics[byKey]) return topics[byKey];
+  return pick(topics, seed || key);
+}
+
 function stripOwnProductNames(text = "", product = null) {
-  const cat = publicCategory(product);
-  return String(text || "")
-    .replace(OWN_PRODUCT_RE, cat)
-    .replace(/AI应用搭建工具应用搭建工具/g, "AI应用搭建工具")
-    .replace(/桌面智能体桌面智能体/g, "桌面智能体")
+  const name = zhProductName(product);
+  return normalizeOwnProductNoise(String(text || "")
+    .replace(OWN_PRODUCT_RE, name)
     .replace(/[ \t]+/g, " ")
     .replace(/[ \t]*\n[ \t]*\n+/g, "\n")
-    .trim();
+    .trim(), name);
 }
 
 function shouldKeepSpecificTool(name = "", topic = "") {
@@ -250,37 +333,46 @@ function shouldKeepSpecificTool(name = "", topic = "") {
 }
 
 function softenReferenceProductNames(text = "", { product = null, topic = "" } = {}) {
-  let out = String(text || "").replace(OWN_PRODUCT_RE, "AI");
+  const current = zhProductName(product);
+  let out = String(text || "").replace(OWN_PRODUCT_RE, current);
   const replacements = [
-    ["WorkBuddy", "WorkBuddy"],
-    ["OpenAI Codex", "Codex"],
-    ["Codex", "Codex"],
-    ["Claude Code", "Claude Code"],
-    ["Manus", "Manus"],
-    ["Cursor", "Cursor"],
-    ["GitHub Copilot", "Copilot"],
-    ["Copilot", "Copilot"]
+    "OpenAI Codex",
+    "Claude Code",
+    "GitHub Copilot",
+    "WorkBuddy",
+    "Codex",
+    "Manus",
+    "Cursor",
+    "Copilot",
+    "DeepSeek",
+    "DuMate",
+    "Dumate"
   ];
-  replacements.forEach(([pattern, label]) => {
+  replacements.forEach(pattern => {
     const re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-    out = out.replace(re, m => shouldKeepSpecificTool(label, topic) ? (label === "OpenAI Codex" ? "Codex" : m) : "AI");
+    out = out.replace(re, current);
   });
-  return out
-    .replace(/AI\s*([+＋/／和与])\s*AI/gi, "AI工具")
-    .replace(/AI工具\s*([+＋/／和与])\s*AI工具/gi, "AI工具")
+  return normalizeOwnProductNoise(out
+    .replace(new RegExp(`${current}\\s*([+＋/／和与])\\s*${current}`, "g"), `${current}和同类工具`)
+    .replace(/AI\s*(?:到底)?(?:怎么选|选哪个|哪一个)/gi, "AI工具到底怎么选")
+    .replace(/AI有多强/gi, `${current}有多强`)
+    .replace(/AI太好用/gi, `${current}太好用`)
+    .replace(/AI真好用/gi, `${current}真好用`)
     .replace(/AI\s*知识库/gi, "AI+知识库")
     .replace(/\s*\+\s*/g, "+")
     .replace(/[ \t]+/g, " ")
-    .trim();
+    .trim(), current);
 }
 
 function adaptReferenceTitle(refTitle = "", { topic = "", product = null } = {}) {
   const raw = compactText(refTitle, 48);
   if (!raw || raw.length < 5) return "";
-  return compactText(softenReferenceProductNames(raw, { topic, product })
+  return cleanRepeatedTitleNoise(softenReferenceProductNames(raw, { topic, product })
+    .replace(/^AI(?=(太|真|不|，|！|!|好|能|可以))/, "这个AI工具")
+    .replace(/^AI(?=(有多强|到底|怎么|为啥|为什么|如何))/, "这个AI工具")
     .replace(/全行业通用|全网通用|保姆级|神器|封神|吊打|秒杀/gi, "")
     .replace(/[ \t]+/g, " ")
-    .trim(), 34);
+    .trim(), { product, max: 34 });
 }
 
 function referenceLikeCopy({ ref = null, title = "", topic = "", product = null, seed = 0, kind = "image" } = {}) {
@@ -295,22 +387,55 @@ function referenceLikeCopy({ ref = null, title = "", topic = "", product = null,
     return stripOwnProductNames([body, tags].filter(Boolean).join("\n"), product);
   }
   const topicLine = compactText(softenReferenceProductNames(topic || adaptedTitle, { topic, product }), 42);
-  const templates = [
-    `我会直接按「${adaptedTitle || topicLine}」这个问题来写，不再绕到别的选题上。\n核心就是先把资料沉淀和 AI 执行分开：Obsidian 这类工具负责把内容留住，AI 负责把选题、结构和可交付结果往前推。写的时候保留原参考的标题钩子，只把具体工具名弱化成 AI，不硬塞产品名。\n这类内容最有用的地方不是喊效率，而是讲清楚一个真实动作：资料从哪里来、AI 接哪一步、最后怎么检查结果能不能用。读者看完能照着改自己的知识库或内容流程，这条才算有干货。`,
-    `这条就围绕「${adaptedTitle || topicLine}」展开。\n如果参考标题本来讲的是 Obsidian+AI，那就不要强行改成一个新故事。更自然的写法是保留这个组合关系：一个负责沉淀，一个负责整理和生成，最后落到内容创作、知识管理或工作流复用。\n正文可以写得像真实复盘：先说以前资料只是堆着，后来把 AI 接进来以后，选题、摘要、卡片和发布内容能顺着同一条线走。重点是方法能被复制，而不是换几个夸张词。`,
-    `参考里的重点其实已经很清楚：${adaptedTitle || topicLine}。\n改写时我会保留这个表达方式，只把 WorkBuddy、Codex 或其它具体工具名按需要弱化成 AI/同类工具，避免变成硬广。正文也不另起炉灶，还是围绕知识沉淀、内容创作、自动整理这些原本的痛点去写。\n更像真人的写法，是把一个细节讲透：比如先把零散资料放进知识库，再让 AI 帮你抽主题、排结构、生成可发的内容，最后人工检查事实和逻辑。`
-  ];
+  const theme = adaptedTitle || topicLine || "这个AI工具到底怎么用";
+  const refSignal = `${theme} ${ref.title || ""} ${ref.desc || ""}`;
+  const topicSignal = `${topicLine} ${topic}`;
+  const src = `${refSignal} ${topicSignal}`;
+  const refIsCompare = /对比|区别|怎么选|VS|vs|分工/.test(refSignal);
+  const refIsCombo = /Obsidian|知识库|笔记|联动|组合|\+/.test(refSignal);
+  const isCompare = refIsCompare || /对比|区别|怎么选|VS|vs|分工/.test(topicSignal);
+  const isCombo = refIsCombo || /Obsidian|知识库|笔记|联动|组合|\+/.test(topicSignal);
+  const isEfficiency = /提效|效率|省时间|自动化|周报|表格|文件|会议|打工人/.test(src);
+  const isBeginner = (/零基础|小白|入门|教程|学会|上手|第一次/.test(refSignal) && !refIsCombo && !refIsCompare)
+    || (!refIsCombo && !refIsCompare && /零基础|小白|入门|教程|学会|上手|第一次/.test(topicSignal));
+  const isPower = /多强|好用|能不能|为所欲为|值得|实测|测评/.test(src);
+  const productName = zhProductName(product);
+  const templates = [];
+  if (isBeginner) {
+    templates.push(
+      `第一次试${productName}，我建议别先研究一堆复杂功能。拿一个低风险小任务开始就够了：比如整理一个文件夹、汇总一份周报材料，或者把零散资料变成清单。\n我的习惯是先把需求说成人话：材料在哪里、要它做什么、最后想得到什么格式。它会先拆步骤，再一步步跑，跑完以后你再看结果有没有漏项。\n真正降低门槛的不是“自动化”三个字，而是你不用先学代码，也不用把每个按钮都摸明白。能把一个小任务跑顺，再把这套说法复用到更正式的工作里，才是最稳的上手方式。`,
+      `${productName}这类工具，新手最容易卡在第一步：不知道该问什么。\n我现在会直接给它一个完整任务，不说“帮我整理一下”这种虚话，而是说清楚资料范围、目标字段、输出格式和检查标准。这样它生成的结果就不会飘，后面也更好改。\n如果你只是想先判断它值不值得用，别上来挑战大项目。先用一个真实但不危险的小任务试：跑得通、看得懂、能复核，再慢慢把流程扩大。`
+    );
+  }
+  if (isCombo) {
+    templates.push(
+      `我现在越来越觉得，知识库和桌面执行工具不是互相替代的关系。\nObsidian 这类工具更适合放长期资料、链接和复盘；${productName}更适合接住当下要做的动作，比如读文件、整理字段、生成清单、把结果变成可交付版本。\n这个组合的关键不是“多装一个工具”，而是把资料沉淀和任务执行分开。前者负责记住上下文，后者负责把手头那堆乱材料往前推一步。`,
+      `如果你已经有知识库，别只把它当资料仓库。\n我更推荐的用法是：知识库负责保存背景和规则，${productName}负责处理桌面上的具体任务。比如先把项目资料、历史记录和判断标准放清楚，再让它按这些规则整理文件、提取重点或生成初稿。\n这样写出来的内容不是凭空生成，而是能回到原资料里复核。对内容创作、项目复盘和办公流来说，这点比单纯“生成得快”更重要。`
+    );
+  }
+  if (isCompare) {
+    templates.push(
+      `这类工具别只看谁更强，真的要看任务边界。\n如果是聊天、灵感、解释概念，同类工具都能做；但如果你手里已经有文件、表格、截图和一堆待处理材料，${productName}更适合接“执行”这一步。\n我的判断方式很简单：任务有没有明确材料、明确动作、明确结果。如果这三件事说得清楚，就值得交给它跑；如果只是想泛泛讨论，反而没必要硬上。`
+    );
+  }
+  if (isEfficiency || isPower || !templates.length) {
+    templates.push(
+      `${productName}到底有多好用，我不会看宣传词，我只看它能不能把一个真实任务推进到可检查的结果。\n比如文件散在不同地方、周报材料还没归类、表格字段需要提取，这些事最烦的不是难，而是重复。你把资料范围、动作和输出格式说清楚，它先把重复劳动压下去，人再负责最后判断。\n所以它有用的点不是替你做所有决定，而是先帮你把乱东西整理到能看的版本。对我来说，这已经能省掉很多来回折腾的时间。`,
+      `很多 AI 办公内容写得太满了，我更关心一个问题：它能不能少掉我每天重复做的那几步。\n${productName}比较适合接边界清楚的任务：给材料、说目标、定格式、再复核。比如把资料整理成清单，把会议内容变成待办，把文件夹按规则归类。\n跑完以后不要急着直接用，先看字段有没有漏、分类是否合理、结论能不能回到原资料里验证。能通过这一步，才是真的能进工作流。`
+    );
+  }
   return stripOwnProductNames([pick(templates, seed), tags].filter(Boolean).join("\n"), product);
 }
 
 function cleanTags(tags = [], product = null) {
+  const current = zhProductName(product);
   const base = (Array.isArray(tags) ? tags : String(tags || "").split(/[，,\s#]+/))
     .map(x => String(x || "").replace(/^#/, "").trim())
     .filter(Boolean)
     .map(x => stripOwnProductNames(x, product).replace(/^#/, "").trim())
-    .filter(x => x && !OWN_PRODUCT_RE.test(x));
-  const merged = [...base, "AI办公", "效率工具", "打工人效率"].filter(Boolean);
-  return [...new Set(merged)].slice(0, 6).map(x => `#${x}`);
+    .filter(Boolean);
+  const merged = [current, ...base, "AI办公", "效率工具", "打工人效率"].filter(Boolean);
+  return [...new Set(merged)].slice(0, 7).map(x => `#${x}`);
 }
 
 export function normalizeTrendItems(items = []) {
@@ -335,26 +460,35 @@ export function normalizeTrendItems(items = []) {
 function chooseDirection({ topic = "", account = {}, batchVariant = null, seed = "" } = {}) {
   const text = `${topic} ${account?.name || ""} ${account?.styleProfile || ""} ${batchVariant?.name || ""}`;
   const lower = text.toLowerCase();
-  if (/周报|表格|excel|文件|资料|打工人|下班|会议|纪要/.test(text)) return XHS_TREND_LIBRARY.find(x => x.key === "worker_efficiency");
-  if (/obsidian|codex|workbuddy|manus|cursor|copilot|对比|怎么选|vs/i.test(lower)) return XHS_TREND_LIBRARY.find(x => x.key === "comparison_choice");
-  if (/组合|联动|知识库|生态|沉淀|长期/.test(text)) return XHS_TREND_LIBRARY.find(x => x.key === "ecosystem_combo");
-  if (/小白|零基础|不用编程|第一次|新手/.test(text)) return XHS_TREND_LIBRARY.find(x => x.key === "beginner_reversal");
+  if (/组合|联动|知识库|生态|沉淀|长期|obsidian/i.test(lower)) return XHS_TREND_LIBRARY.find(x => x.key === "ecosystem_combo");
+  if (/提效|省时间|效率|打工人|自动化|周报|表格|excel|文件|资料|下班|会议|纪要/.test(text)) return XHS_TREND_LIBRARY.find(x => x.key === "worker_efficiency");
+  if (/小白|零基础|不用编程|第一次|新手|教程|测评|体验|上手/.test(text)) return XHS_TREND_LIBRARY.find(x => x.key === "beginner_reversal");
+  if (/workbuddy|manus|cursor|copilot|claude code|对比|怎么选|vs|区别|分工|选型/i.test(lower)) return XHS_TREND_LIBRARY.find(x => x.key === "comparison_choice");
   if (/别|千万|真香|吐槽|反转|嫌/.test(text)) return XHS_TREND_LIBRARY.find(x => x.key === "negative_reversal");
   return pick(defaultCreativeDirections(), hashText(`${seed}${text}`));
 }
 
-export function buildTrendSearchQuery({ topic = "", account = {}, product = null, batchVariant = null, kind = "image" } = {}) {
-  const dir = chooseDirection({ topic, account, batchVariant, seed: kind });
-  const raw = compactText(topic, 50);
-  const accountHint = compactText(account?.styleProfile || account?.mode || "", 24);
-  const cat = publicCategory(product);
-  return [raw, dir?.search, accountHint, cat, kind === "video" ? "视频号 口播" : "小红书 图文"].filter(Boolean).join(" ");
+export function buildTrendSearchQuery({ topic = "", account = {}, product = null, batchVariant = null, kind = "image", useOnlineTrends = false, seed = "" } = {}) {
+  const trendSeed = seed || kind;
+  const normalizedTopic = normalizeCreativeTopicForMode({ topic, product, useOnlineTrends, seed: trendSeed });
+  const directionTopic = useOnlineTrends ? normalizedTopic : (isSearchOnlyTopic(topic) || isInstructionLikeTopic(topic) ? "" : topic);
+  const dir = chooseDirection({ topic: directionTopic, account, batchVariant, seed: trendSeed });
+  const raw = useOnlineTrends ? normalizedTopic : (isSearchOnlyTopic(topic) || isInstructionLikeTopic(topic) ? "" : compactText(topic, 50));
+  const accountHint = useOnlineTrends ? "" : compactText(account?.styleProfile || account?.mode || "", 24);
+  const cat = useOnlineTrends ? "" : publicCategory(product);
+  return [raw, dir?.search, accountHint, cat, kind === "video" ? "视频号 口播" : "小红书 图文"]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/(?:小红书\s*){2,}/g, "小红书 ")
+    .replace(/(?:图文\s*){2,}/g, "图文 ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
-function topicFromInput({ topic = "", direction = null, seed = 0 } = {}) {
+function topicFromInput({ topic = "", direction = null, product = null, useOnlineTrends = false, seed = 0 } = {}) {
   const raw = compactText(topic, 120);
-  if (raw && raw.length >= 6) return raw;
-  const topics = defaultTopicsForDirection(direction);
+  if (!useOnlineTrends && raw && raw.length >= 6 && !isSearchOnlyTopic(raw) && !isInstructionLikeTopic(raw)) return raw;
+  const topics = defaultTopicsForDirection(direction, product, useOnlineTrends);
   const base = pick(topics, Number(seed) + Math.floor(Number(seed) / 11));
   return base;
 }
@@ -408,6 +542,7 @@ function rewriteTitle({ direction, topic, onlineItems, product, seed }) {
 }
 
 function imitateHotTitle(hot = "", { topic = "", product = null, pain = "重复办公", cat = "AI工具", time = "10分钟" } = {}) {
+  const current = zhProductName(product);
   const toolName = (name = "") => {
     const raw = stripOwnProductNames(String(name || "").trim(), product)
       .replace(/OpenAI\s+Codex/gi, "Codex")
@@ -415,22 +550,21 @@ function imitateHotTitle(hot = "", { topic = "", product = null, pain = "重复�
     if (!raw) return "";
     if (/桌面智能体|AI应用搭建工具/.test(raw)) return raw;
     if (/obsidian/i.test(raw)) return /obsidian/i.test(topic) ? "Obsidian" : "知识库";
-    if (/codex/i.test(raw)) return /codex/i.test(topic) ? "Codex" : "代码智能体";
-    if (/workbuddy/i.test(raw)) return /workbuddy/i.test(topic) ? "WorkBuddy" : "协作智能体";
-    if (/manus/i.test(raw)) return /manus/i.test(topic) ? "Manus" : "云端智能体";
-    if (/cursor|claude code|copilot|trae|windsurf|openclaw/i.test(raw)) return /cursor|claude|copilot|trae|windsurf|openclaw/i.test(topic) ? raw : "同类工具";
+    if (/codex|workbuddy|manus|cursor|claude code|copilot|trae|windsurf|openclaw|deepseek/i.test(raw)) return current;
     return compactText(raw, 10);
   };
   const pairTitle = (a, b, tail) => {
     const left = toolName(a);
     const right = toolName(b);
-    if (!left || !right || left === right || /同类工具/.test(`${left}${right}`)) return "";
+    if (!left || !right) return "";
+    if (left === right) return compactText(`${left}和同类工具${tail}`, 30);
+    if (/同类工具/.test(`${left}${right}`)) return compactText(`${current}和同类工具${tail}`, 30);
     return compactText(stripOwnProductNames(`${left}和${right}${tail}`, product), 30);
   };
   const raw = stripOwnProductNames(hot, product)
     .replace(/WorkBuddy|workbuddy|Codex|OpenAI Codex|Manus|Cursor|Claude Code|GitHub Copilot|Obsidian/gi, (m) => {
       if (/obsidian/i.test(m)) return /obsidian/i.test(topic) ? "Obsidian" : "知识库";
-      if (/codex|workbuddy|manus|cursor|claude|copilot/i.test(m)) return /codex|workbuddy|manus|cursor|claude|copilot/i.test(topic) ? m : "同类工具";
+      if (/codex|workbuddy|manus|cursor|claude|copilot/i.test(m)) return current;
       return m;
     })
     .replace(/全行业通用|全网通用|保姆级|神器|封神|吊打|秒杀/gi, "")
@@ -495,30 +629,21 @@ function buildCopy({ title, direction, topic, onlineItems, product, seed, kind }
   const proseForms = [
     [
       opening,
-      "",
       `这次主题是「${cleanTopic}」。我会先把它写成一个真实使用场景，而不是一上来介绍功能：人为什么会卡住、哪一步最浪费时间、工具到底接住了哪一段。`,
-      "",
       `比较有内容的写法，是把一个小动作讲细：材料怎么给、目标怎么说、跑完后怎么判断结果能不能用。${tips[1]}这样读起来不像说明书，更像有人真的踩过一遍。`,
-      "",
       structure ? `可以参考「${structure}」的节奏，但不要照着排成固定清单。封面给一个清楚判断，内页挑最有用的动作展开，最后补一句边界。` : `图文节奏可以更松一点：先让人看到真实问题，再给做法和复核方式，别把每页都塞成说明书。`,
       refHook
     ],
     [
       `我现在写这类 AI 办公内容，会先问一个很现实的问题：读者看完能不能马上少踩一个坑？`,
-      "",
       `如果主题是「${cleanTopic}」，不要只写“效率提升”。更有用的是讲清楚它具体省掉哪一段：是少翻文件、少改格式，还是少来回解释需求。`,
-      "",
       `可以把方法写得像一次真实复盘：${tips.join(" ")}`,
-      "",
       kind === "video" ? "做成口播时，不用强行三段论，像跟朋友讲一次试用体验就行：哪里卡、怎么改、最后值不值得。" : "做成图文时，封面给判断，正文像经验贴一样展开，读者能拿走一个具体动作就够了。"
     ],
     [
       `这次我只保留读者能照着做的部分，不写空泛的工具夸法。`,
-      "",
       `围绕「${cleanTopic}」，正文可以不用固定分点。只要讲清哪些材料最乱、哪个动作最重复、最后怎么确认结果靠谱，内容就不会空。`,
-      "",
       `小技巧是别一上来就写“全自动”。先给一个真实例子，比如周报、合同、资料归档、选题表或客服记录，再把工具放进那一步里。这样读者知道它到底帮在哪，也知道什么时候不该用。`,
-      "",
       refHook || "离线没有热门正文时，就按本次主题自己造一个可信场景，别复读模板句。"
     ]
   ];
@@ -539,7 +664,7 @@ function inferRefTags(item = {}, product = null) {
   if (/Manus|智能体|Agent/i.test(raw)) picked.push("智能体");
   if (/小白|零基础|新手/.test(raw)) picked.push("新手教程");
   if (/对比|区别|怎么选|VS|vs/.test(raw)) picked.push("工具对比");
-  return cleanTags([...(picked.length ? picked : ["热门参考"]), publicCategory(product)], product).slice(0, 5);
+  return cleanTags([...(picked.length ? picked : ["本地参考"]), publicCategory(product)], product).slice(0, 5);
 }
 
 function buildReferenceRewrite({ items = [], title = "", copy = "", tags = [], product = null, source = "local", referenceNote = "" } = {}) {
@@ -598,17 +723,19 @@ export function buildTrendPrep({
   const items = useOnlineTrends
     ? normalizedItems.filter(x => (x.interactions || 0) >= MIN_TREND_INTERACTIONS)
     : normalizedItems;
-  const direction = chooseDirection({ topic, account, batchVariant, seed });
+  const directionSeedTopic = useOnlineTrends ? normalizeCreativeTopicForMode({ topic, product, useOnlineTrends, seed }) : (isSearchOnlyTopic(topic) || isInstructionLikeTopic(topic) ? "" : topic);
+  const direction = chooseDirection({ topic: directionSeedTopic, account, batchVariant, seed });
   const h = hashText(`${topic}|${account?.id || account?.name || ""}|${batchVariant?.name || ""}|${kind}|${seed}|${items.map(x => x.title).join("|")}`);
-  const creativeContent = topicFromInput({ topic, direction, seed: h });
-  const title = rewriteTitle({ direction, topic: creativeContent, onlineItems: items, product, seed: h });
-  const copy = buildCopy({ title, direction, topic: creativeContent, onlineItems: items, product, seed: h, kind });
+  const creativeContent = normalizeCreativeTopicForMode({ topic: topicFromInput({ topic, direction, product, useOnlineTrends, seed: h }), product, useOnlineTrends, direction, seed: h });
+  const primaryItems = useOnlineTrends && items.length ? [items[0]] : items;
+  const title = rewriteTitle({ direction, topic: creativeContent, onlineItems: primaryItems, product, seed: h });
+  const copy = buildCopy({ title, direction, topic: creativeContent, onlineItems: primaryItems, product, seed: h, kind });
   const tags = cleanTags([publicCategory(product), direction?.name, kind === "video" ? "口播脚本" : "图文笔记"], product);
-  const imageStrategy = buildImageStrategy({ topic: creativeContent, product, direction, imageCount, onlineItems: items, seed: h });
+  const imageStrategy = buildImageStrategy({ topic: creativeContent, product, direction, imageCount, onlineItems: primaryItems, seed: h });
   const referenceNote = items.length
     ? `参考了「${items.slice(0, 3).map(x => stripOwnProductNames(x.title, product)).filter(Boolean).join("」「")}」等热门笔记的标题钩子和内容结构，已重新改写。`
     : useOnlineTrends && normalizedItems.length
-    ? `本轮联网结果有 ${lowInteractionCount} 条互动低于 ${MIN_TREND_INTERACTIONS}，未纳入热门参考；改用本地四方向选题继续生成。`
+    ? `本轮本地样本有 ${lowInteractionCount} 条互动低于 ${MIN_TREND_INTERACTIONS}，未纳入结构参考；改用本地四方向选题继续生成。`
     : `使用本地四方向「${direction?.name || "AI办公选题"}」生成选题和文案结构。`;
   const source = useOnlineTrends && items.length ? "online" : "local";
   const referenceRewrite = buildReferenceRewrite({ items, title, copy, tags, product, source, referenceNote });

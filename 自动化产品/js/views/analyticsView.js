@@ -1,16 +1,16 @@
-/* 数据分析看板：供应商回链后的检测、复盘、创作记忆 */
+/* 数据分析看板：小红书 / 视频号发布回链与真实指标同步 */
 
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save } from "../core/store.js";
 import { toast, withLoading, emptyState } from "../ui/components.js";
 import {
-  analyticsRows, analyticsSummary, refreshAllAnalytics, refreshAnalyticsLink,
-  syncExistingPublishedAssets, buildLocalInsight, saveInsightReport,
-  commitReportToMemory, memoryStats
+  analyticsRows, analyticsSummary,
+  syncExistingPublishedAssets, refreshAllAnalytics, refreshAnalyticsLink, justOneAnalyticsStatus
 } from "../domain/analytics.js";
 
 let filter = "all";
+let justOneStatus = null;
+let qaLog = [];
 
 const fmt = n => Number(n || 0).toLocaleString("zh-CN");
 const pct = n => ((Number(n || 0) * 100).toFixed(1) + "%");
@@ -19,15 +19,39 @@ function statCard(label, value, sub = "", cls = "") {
   return `<div class="ov-stat ${cls} card"><b>${esc(value)}</b><span>${esc(label)}</span>${sub ? `<em>${esc(sub)}</em>` : ""}</div>`;
 }
 
+function justOneCard() {
+  const s = justOneStatus;
+  const label = !s
+    ? "未检测"
+    : s.configured
+      ? (s.reachable === false ? "已配置 · 网络待确认" : "已配置")
+      : "待配置";
+  const detail = !s
+    ? "服务端已预留 JustOneAPI 代理，令牌只从服务器环境变量读取。"
+    : s.configured
+      ? "可用于小红书笔记与视频号内容指标同步。"
+      : "等待服务器环境配置 JustOneAPI 令牌后启用。";
+  return `<section class="card da-justone">
+    <div class="da-justone-main">
+      <span>${icon("pulse", 14)}</span>
+      <div><b>JustOneAPI 数据接口</b><em>${esc(detail)}</em></div>
+    </div>
+    <div class="da-justone-side">
+      <span class="status-pill ${s?.configured ? "approved" : "input"}">${esc(label)}</span>
+      <button class="btn ghost sm" id="daCheckJustOne">${icon("refresh", 12)} 检测接口</button>
+    </div>
+  </section>`;
+}
+
 function statusPill(link) {
   const map = {
-    pending: ["待检测", "pending"],
-    syncing: ["同步中", "running"],
+    pending: ["仅回链", "input"],
+    syncing: ["仅回链", "input"],
     synced: ["已同步", "approved"],
-    failed: ["检测失败", "failed"],
-    unsupported: ["暂不支持", "input"]
+    failed: ["待处理", "input"],
+    unsupported: ["仅回链", "input"]
   };
-  const [label, cls] = map[link.status] || ["待检测", "pending"];
+  const [label, cls] = map[link.status] || ["仅回链", "input"];
   return `<span class="status-pill ${cls}">${esc(label)}</span>`;
 }
 
@@ -37,77 +61,10 @@ function providerLabel(provider) {
   return provider;
 }
 
-function sparkline(rows) {
-  const points = rows
-    .filter(r => r.latest)
-    .slice()
-    .reverse()
-    .slice(-12)
-    .map(r => r.latest.metrics.views || 0);
-  if (!points.length) return `<div class="da-empty-line">暂无趋势</div>`;
-  const max = Math.max(...points, 1);
-  const w = 320, h = 84;
-  const step = points.length > 1 ? w / (points.length - 1) : w;
-  const d = points.map((v, i) => `${i ? "L" : "M"}${Math.round(i * step)},${Math.round(h - (v / max) * (h - 10) - 5)}`).join(" ");
-  return `<svg class="da-line" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-    <path class="da-line-fill" d="${d} L${w},${h} L0,${h} Z"></path>
-    <path class="da-line-stroke" d="${d}"></path>
-  </svg>`;
-}
-
-function rankingHtml(items, type = "account") {
-  const list = (items || []).slice(0, 5);
-  if (!list.length) return `<div class="muted">更新数据后显示排行</div>`;
-  const max = Math.max(...list.map(x => x.score || x.views || 1), 1);
-  return `<div class="da-rank">${list.map((x, i) => {
-    const name = type === "tag" ? x.tag : x.name;
-    const val = x.score || 0;
-    return `<div class="da-rank-row">
-      <span class="da-rank-no">${i + 1}</span>
-      <span class="da-rank-main"><b>${esc(name)}</b><i><em style="width:${Math.max(8, val / max * 100)}%"></em></i></span>
-      <span class="da-rank-val">${val}</span>
-    </div>`;
-  }).join("")}</div>`;
-}
-
-function reportHtml(report) {
-  if (!report) {
-    return `<div class="da-bot-empty">
-      <span>${icon("bot", 26)}</span>
-      <b>等待生成复盘</b>
-      <p>更新小红书数据后，检测机器人会把表现规律沉淀成下一批创作建议。</p>
-    </div>`;
-  }
-  return `<div class="da-report">
-    <div class="da-report-head">
-      <span class="da-bot">${icon("bot", 18)}</span>
-      <div><b>${esc(report.title || "数据复盘")}</b><em>${timeAgo(report.createdAt)} · ${esc(report.source || "robot")}</em></div>
-    </div>
-    <p>${esc(report.summary || "")}</p>
-    <div class="da-advice-grid">
-      <div><b>下一批选题</b>${(report.nextTopics || []).map(x => `<span>${esc(x)}</span>`).join("")}</div>
-      <div><b>脚本优化</b>${(report.scriptAdvice || []).map(x => `<span>${esc(x)}</span>`).join("")}</div>
-    </div>
-    <div class="da-rules">${(report.rules || []).map(r => `<span class="tag">${esc(r.type)} · ${esc(r.rule)}</span>`).join("")}</div>
-  </div>`;
-}
-
-function memoryHtml() {
-  const items = state.creativeMemory.filter(m => m.status !== "deprecated").slice(0, 8);
-  if (!items.length) return `<div class="muted">复盘报告写入后，这里会显示会被创作模型读取的规则。</div>`;
-  return `<div class="da-memory-list">${items.map(m => `
-    <div class="da-memory" data-mid="${m.id}">
-      <span class="tag">${esc(m.type || "general")}</span>
-      <b>${esc(m.rule)}</b>
-      <em>${esc(m.evidence || "")}</em>
-      <button class="icon-btn sm danger" data-mem-off="${m.id}" title="停用这条记忆">${icon("x", 12)}</button>
-    </div>`).join("")}</div>`;
-}
-
 function rowHtml(r) {
   const m = r.latest?.metrics;
   const title = r.link.title || r.asset?.title || r.asset?.name || "未命名内容";
-  const err = r.link.status === "failed" && r.link.error ? `<em class="da-error">${esc(r.link.error)}</em>` : "";
+  const err = ["failed", "unsupported"].includes(r.link.status) && r.link.error ? `<em class="da-error">${esc(r.link.error)}</em>` : "";
   const provider = providerLabel(r.link.provider);
   return `<tr data-link="${r.link.id}">
     <td class="da-title"><b>${esc(title)}</b><em>${esc(r.acc?.name || "未归属账号")} · ${esc(r.link.platform || "")}${provider ? ` · ${esc(provider)}` : ""}</em>${err}</td>
@@ -120,10 +77,54 @@ function rowHtml(r) {
     <td class="num">${m ? m.qualityScore : "-"}</td>
     <td class="da-time">${r.link.lastSyncedAt ? timeAgo(r.link.lastSyncedAt) : "未同步"}</td>
     <td class="da-actions">
-      <button class="btn ghost sm" data-refresh="${r.link.id}">${icon("refresh", 12)} 更新数据</button>
-      <a class="link-btn" href="${esc(r.link.url)}" target="_blank" rel="noopener noreferrer">${icon("external", 12)}</a>
+      <button class="icon-btn sm" data-refresh-link="${esc(r.link.id)}" title="刷新这条数据">${icon("refresh", 12)}</button>
+      <a class="icon-btn sm" href="${esc(r.link.url)}" target="_blank" rel="noopener noreferrer" title="打开发布链接">${icon("external", 12)}</a>
     </td>
   </tr>`;
+}
+
+function qaAnswer(q, rows) {
+  const s = analyticsSummary(rows);
+  const synced = rows.filter(r => r.latest);
+  const top = s.top;
+  if (/仅回链|未同步|待补|待刷新|没数据/.test(q)) {
+    const pending = rows.filter(r => !r.latest);
+    return pending.length
+      ? `还有 ${pending.length} 条只有回链没有快照：${pending.slice(0, 3).map(r => r.link.title || r.asset?.name || "未命名").join("、")}。可以逐条点右侧刷新，也可以点顶部刷新数据。`
+      : "当前所有回链都有快照。";
+  }
+  if (/账号|谁|哪个|排行|最好|最高/.test(q)) {
+    return s.accounts.length
+      ? `账号表现前三：${s.accounts.slice(0, 3).map(a => `${a.name}（${a.count}条，均分${a.score}，阅读${fmt(a.views)}）`).join("、")}。`
+      : "当前还没有可按账号统计的快照。";
+  }
+  if (/互动|点赞|收藏|评论|赞|藏/.test(q)) {
+    return `总互动 ${fmt(s.totalEngagement)} 次，整体互动率 ${pct(s.engagementRate)}；当前最高质量内容是「${top?.link.title || top?.asset?.name || "暂无"}」。`;
+  }
+  if (/质量|平均|分/.test(q)) {
+    return synced.length
+      ? `已同步 ${synced.length} 条，平均质量分 ${s.avgScore}。最高分是「${top?.link.title || top?.asset?.name || "未命名"}」，质量分 ${top?.latest.metrics.qualityScore || "-"}.`
+      : "还没有质量分快照，先刷新数据。";
+  }
+  if (/视频号|小红书/.test(q)) {
+    const platform = /视频号/.test(q) ? "视频号" : "小红书";
+    const picked = rows.filter(r => r.link.platform === platform);
+    const ps = analyticsSummary(picked);
+    return `${platform} 共 ${picked.length} 条回链，${ps.synced} 条有快照，总阅读 ${fmt(ps.totalViews)}，互动率 ${pct(ps.engagementRate)}。`;
+  }
+  if (/阅读|浏览|曝光/.test(q)) return `总阅读 ${fmt(s.totalViews)}，来自 ${s.synced} 条已同步内容；${top ? `当前最好的是「${top.link.title || top.asset?.name || "未命名"}」。` : "暂无最高内容。"}`;
+  return `当前有 ${s.total} 条回链，${s.synced} 条有快照，总阅读 ${fmt(s.totalViews)}，总互动 ${fmt(s.totalEngagement)}，互动率 ${pct(s.engagementRate)}。你可以问：哪个账号表现最好？还有哪些仅回链？小红书数据怎么样？`;
+}
+
+function qaCard(rows) {
+  const suggestions = ["哪个账号表现最好？", "还有哪些仅回链？", "小红书数据怎么样？"];
+  return `<div class="da-qa card">
+    <div class="da-qa-head">${icon("spark", 13)}<b>数据问答</b><em>只读当前快照</em></div>
+    <div class="da-qa-msgs" id="daQaMsgs">
+      ${qaLog.length ? qaLog.slice(-4).map(m => `<div class="da-qa-bubble ${m.role}">${esc(m.text)}</div>`).join("") : `<div class="da-qa-sugs">${suggestions.map(q => `<button class="chip" data-da-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>`}
+    </div>
+    <div class="da-qa-input"><input id="daQaInput" placeholder="问数据：哪个账号互动最好？" /><button class="ovc-send" id="daQaSend" title="发送">${icon("send", 14)}</button></div>
+  </div>`;
 }
 
 export const analyticsView = {
@@ -133,71 +134,53 @@ export const analyticsView = {
       const rowsAll = analyticsRows();
       const rows = rowsAll.filter(r => {
         if (filter === "all") return true;
-        if (filter === "todo") return !r.latest && r.link.status !== "unsupported";
+        if (filter === "todo") return !r.latest;
         if (filter === "synced") return !!r.latest;
         if (filter === "risk") return r.link.status === "failed" || r.link.status === "unsupported";
         return r.link.platform === filter;
       });
       const s = analyticsSummary(rowsAll);
-      const latestReport = state.insightReports.find(r => (r.linkedSnapshotIds || []).length) || null;
-      const mem = memoryStats();
       root.innerHTML = `
         <div class="analytics-page">
           <div class="page-head">
-            <div><div class="eyebrow">数据分析</div><h2>发布回链检测 · 复盘建议 · 创作记忆</h2></div>
+            <div><div class="eyebrow">数据分析</div><h2>小红书 / 视频号数据监测</h2></div>
             <div class="head-actions">
-              <button class="btn ghost" id="daSyncHistory">${icon("link", 14)} 同步历史回链</button>
-              <button class="btn ghost" id="daRefreshAll">${icon("refresh", 14)} 更新数据</button>
-              <button class="btn primary" id="daReport">${icon("bot", 14)} 生成复盘</button>
+              <button class="btn ghost" id="daRefreshMetrics">${icon("refresh", 14)} 刷新数据</button>
             </div>
           </div>
 
           <section class="ov-stats da-stats">
-            ${statCard("回传链接", s.total, `${s.synced} 条已检测`)}
-            ${statCard("总阅读", fmt(s.totalViews), "来自已同步样本", "run")}
+            ${statCard("回传链接", s.total, `${s.synced} 条有历史快照`)}
+            ${statCard("总阅读", fmt(s.totalViews), "来自已有快照", "run")}
             ${statCard("互动率", pct(s.engagementRate), `${fmt(s.totalEngagement)} 次互动`, "review")}
-            ${statCard("平均质量分", s.avgScore || "-", "0-100 综合评分")}
-            ${statCard("异常/待处理", s.failed, `${s.pending} 条待检测`, s.failed ? "fail" : "")}
+            ${qaCard(rowsAll)}
           </section>
-
-          <section class="da-grid">
-            <div class="card da-panel da-trend">
-              <div class="card-head"><b>阅读趋势</b><em>最近 12 条已同步内容</em></div>
-              ${sparkline(rowsAll)}
-            </div>
-            <div class="card da-panel">
-              <div class="card-head"><b>账号排行</b><em>按质量分</em></div>
-              ${rankingHtml(s.accounts)}
-            </div>
-            <div class="card da-panel">
-              <div class="card-head"><b>标签表现</b><em>复盘素材</em></div>
-              ${rankingHtml(s.tags, "tag")}
-            </div>
-          </section>
-
-          <section class="da-workspace">
-            <div class="card da-panel da-bot-panel">
-              <div class="card-head"><b>${icon("bot", 14)} 检测机器人</b><button class="link-btn" id="daCommit" ${latestReport ? "" : "disabled"}>${icon("spark", 12)} 写入创作记忆</button></div>
-              ${reportHtml(latestReport)}
-            </div>
-            <div class="card da-panel">
-              <div class="card-head"><b>${icon("archive", 14)} 创作记忆</b><em>${mem.active} 条生效</em></div>
-              ${memoryHtml()}
-            </div>
-          </section>
+          ${justOneCard()}
 
           <section class="card da-table-card">
             <div class="da-table-head">
               <div class="mode-tabs slim">
                 ${[
-                  ["all", "全部"], ["todo", "待检测"], ["synced", "已同步"], ["risk", "异常"]
+                  ["all", "全部"], ["todo", "仅回链"], ["synced", "有快照"], ["risk", "待处理"]
                 ].map(([k, label]) => `<button class="mode-tab ${filter === k ? "is-active" : ""}" data-f="${k}">${label}<span>${countFor(rowsAll, k)}</span></button>`).join("")}
               </div>
             </div>
             ${rows.length ? `<div class="da-table-wrap"><table class="da-table">
-              <thead><tr><th>内容</th><th>状态</th><th>阅读</th><th>赞</th><th>藏</th><th>评</th><th>互动率</th><th>质量</th><th>同步</th><th></th></tr></thead>
+              <colgroup>
+                <col class="da-col-title">
+                <col class="da-col-status">
+                <col class="da-col-num">
+                <col class="da-col-num">
+                <col class="da-col-num">
+                <col class="da-col-num">
+                <col class="da-col-rate">
+                <col class="da-col-score">
+                <col class="da-col-time">
+                <col class="da-col-action">
+              </colgroup>
+              <thead><tr><th>内容</th><th>状态</th><th>阅读</th><th>赞</th><th>藏</th><th>评</th><th>互动率</th><th>质量</th><th>快照</th><th></th></tr></thead>
               <tbody>${rows.map(rowHtml).join("")}</tbody>
-            </table></div>` : emptyState("pulse", "还没有可分析的数据", "供应商在发布清单回传小红书链接后，会自动进入这里。")}
+            </table></div>` : emptyState("pulse", "还没有回链数据", "供应商在发布清单回传链接后，会自动进入这里。")}
           </section>
         </div>`;
       wire(root, draw);
@@ -208,7 +191,7 @@ export const analyticsView = {
 
 function countFor(rows, key) {
   if (key === "all") return rows.length;
-  if (key === "todo") return rows.filter(r => !r.latest && r.link.status !== "unsupported").length;
+  if (key === "todo") return rows.filter(r => !r.latest).length;
   if (key === "synced") return rows.filter(r => r.latest).length;
   if (key === "risk") return rows.filter(r => r.link.status === "failed" || r.link.status === "unsupported").length;
   return 0;
@@ -217,45 +200,40 @@ function countFor(rows, key) {
 function wire(root, redraw) {
   $("[data-f=\"" + filter + "\"]", root)?.closest(".mode-tabs")?.setAttribute("data-active", filter);
   $$("[data-f]", root).forEach(b => b.addEventListener("click", () => { filter = b.dataset.f; redraw(); }));
-  $("#daSyncHistory", root)?.addEventListener("click", () => {
-    const n = syncExistingPublishedAssets();
-    toast(n ? `已补入 ${n} 条历史回链` : "历史回链已是最新");
+  $("#daRefreshMetrics", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+    syncExistingPublishedAssets();
+    const res = await refreshAllAnalytics();
+    if (!res.total) toast("还没有可刷新的小红书或视频号回链");
+    else if (res.failed.length) toast(`已同步 ${res.ok}/${res.total} 条，${res.failed.length} 条待处理`, "error");
+    else toast(`已同步 ${res.ok}/${res.total} 条数据快照`);
     redraw();
-  });
-  $("#daRefreshAll", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
-    const r = await refreshAllAnalytics();
-    const firstErr = (r.failed || []).find(x => x.error)?.error;
-    toast(r.total ? `已更新 ${r.ok}/${r.total} 条数据${firstErr ? `，失败原因：${firstErr}` : ""}` : "没有需要更新的链接");
+  }, "刷新中…"));
+  $("#daCheckJustOne", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+    justOneStatus = await justOneAnalyticsStatus();
+    toast(justOneStatus.configured ? "JustOneAPI 接口已配置" : "JustOneAPI 接口待配置");
     redraw();
-  }, "更新中…"));
-  $("#daReport", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
-    if (!analyticsRows().some(r => r.latest)) {
-      toast("先更新至少一条小红书数据，再生成复盘");
-      return;
-    }
-    const report = buildLocalInsight(analyticsRows());
-    saveInsightReport(report);
-    toast("检测机器人已生成复盘");
+  }, "检测中…"));
+  $$("[data-refresh-link]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+    const snap = await refreshAnalyticsLink(b.dataset.refreshLink);
+    const row = analyticsRows().find(r => r.link.id === b.dataset.refreshLink);
+    toast(snap ? `已刷新：${row?.link.title || "该条数据"}` : `刷新失败：${row?.link.error || "请稍后重试"}`, snap ? undefined : "error");
     redraw();
-  }, "复盘中…"));
-  $("#daCommit", root)?.addEventListener("click", () => {
-    const n = commitReportToMemory(state.insightReports[0]);
-    toast(n ? `已写入 ${n} 条创作记忆` : "没有新的记忆需要写入");
+  }, "")));
+  const input = $("#daQaInput", root);
+  const sendQa = () => {
+    const q = (input?.value || "").trim();
+    if (!q) return;
+    const rows = analyticsRows();
+    qaLog.push({ role: "user", text: q }, { role: "agent", text: qaAnswer(q, rows) });
+    if (qaLog.length > 10) qaLog = qaLog.slice(-10);
+    input.value = "";
     redraw();
-  });
-  $$("[data-refresh]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
-    const snap = await refreshAnalyticsLink(b.dataset.refresh);
-    const link = state.analyticsLinks.find(x => x.id === b.dataset.refresh);
-    toast(snap ? "数据已更新" : `更新失败：${link?.error || "未产生新数据"}`);
-    redraw();
-  }, "更新中…")));
-  $$("[data-mem-off]", root).forEach(b => b.addEventListener("click", () => {
-    const m = state.creativeMemory.find(x => x.id === b.dataset.memOff);
-    if (!m) return;
-    m.status = "deprecated";
-    m.updatedAt = Date.now();
-    save("creativeMemory");
-    toast("已停用这条创作记忆");
+  };
+  $("#daQaSend", root)?.addEventListener("click", sendQa);
+  input?.addEventListener("keydown", e => { if (e.key === "Enter") sendQa(); });
+  $$("[data-da-q]", root).forEach(b => b.addEventListener("click", () => {
+    qaLog.push({ role: "user", text: b.dataset.daQ }, { role: "agent", text: qaAnswer(b.dataset.daQ, analyticsRows()) });
+    if (qaLog.length > 10) qaLog = qaLog.slice(-10);
     redraw();
   }));
 }

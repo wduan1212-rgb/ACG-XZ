@@ -1,19 +1,20 @@
-/* 小红书数据闭环：链接登记、指标快照、复盘报告、创作记忆 */
+/* 发布数据闭环：链接登记、指标快照、复盘报告、创作记忆 */
 
 import { uid } from "../core/util.js";
 import { state, save, notify, accountById, assetById, productionById } from "../core/store.js";
-import { analyticsApi } from "../api/analytics.js";
+
+const ANALYTICS_PENDING_MESSAGE = "等待数据接口同步；未配置时仅保留发布回链、历史快照和本地复盘。";
 
 export function platformFromUrl(url, fallback = "") {
   const s = String(url || "").toLowerCase();
   if (/xiaohongshu|xhslink|xhs/.test(s)) return "小红书";
-  if (/weixin|channels/.test(s)) return "视频号";
+  if (/weixin|wechat|channels|finder|video\.qq\.com/.test(s)) return "视频号";
   if (/douyin|iesdouyin/.test(s)) return "抖音";
   return fallback || "未知平台";
 }
 
 export function isAnalyticsSupported(url, platform = "") {
-  return platformFromUrl(url, platform) === "小红书";
+  return ["小红书", "视频号"].includes(platformFromUrl(url, platform));
 }
 
 export function linkByAsset(assetId) {
@@ -52,15 +53,19 @@ export function ensureAnalyticsForAsset(asset, acc = null) {
     publishedAt: asset.publishedAt || asset.deliveredAt || Date.now()
   };
   if (link) {
-    Object.assign(link, base, { updatedAt: Date.now(), status: link.status || "pending" });
+    Object.assign(link, base, { updatedAt: Date.now() });
+    if (!link.lastSnapshotId && ["pending", "syncing", "failed", "unsupported", undefined, ""].includes(link.status)) {
+      link.status = isAnalyticsSupported(link.url, link.platform) ? "pending" : "unsupported";
+      link.error = isAnalyticsSupported(link.url, link.platform) ? ANALYTICS_PENDING_MESSAGE : "该平台暂未接入数据监测。";
+    }
   } else {
     link = {
       id: uid(),
       createdAt: Date.now(),
       updatedAt: Date.now(),
       noteId: "",
-      status: isAnalyticsSupported(asset.publishedUrl, platform) ? "pending" : "unsupported",
-      error: "",
+      status: isAnalyticsSupported(base.url, base.platform) ? "pending" : "unsupported",
+      error: isAnalyticsSupported(base.url, base.platform) ? ANALYTICS_PENDING_MESSAGE : "该平台暂未接入数据监测。",
       source: "supplier-return",
       ...base
     };
@@ -72,12 +77,29 @@ export function ensureAnalyticsForAsset(asset, acc = null) {
 
 export function syncExistingPublishedAssets() {
   let n = 0;
+  state.analyticsLinks.forEach(link => {
+    const platform = platformFromUrl(link.url, link.platform);
+    const supported = isAnalyticsSupported(link.url, platform);
+    let changed = false;
+    if (platform && platform !== link.platform) { link.platform = platform; changed = true; }
+    if (supported && ["unsupported", "failed", undefined, ""].includes(link.status) && !link.lastSnapshotId) {
+      link.status = "pending";
+      link.error = ANALYTICS_PENDING_MESSAGE;
+      changed = true;
+    }
+    if (platform === "视频号" && link.noteId && !link.objectId) {
+      link.noteId = "";
+      changed = true;
+    }
+    if (changed) link.updatedAt = Date.now();
+  });
   state.assets.forEach(asset => {
     if (!asset.publishedUrl) return;
     const before = linkByAsset(asset.id);
     const link = ensureAnalyticsForAsset(asset);
     if (link && !before) n++;
   });
+  if (state.analyticsLinks.some(link => link.error === ANALYTICS_PENDING_MESSAGE || link.platform === "视频号")) save("analyticsLinks");
   if (n) notify("analytics", "已同步历史发布链接", `${n} 条已进入数据分析池`);
   return n;
 }
@@ -85,49 +107,51 @@ export function syncExistingPublishedAssets() {
 export async function refreshAnalyticsLink(linkId) {
   const link = state.analyticsLinks.find(x => x.id === linkId);
   if (!link) return null;
-  if (!isAnalyticsSupported(link.url, link.platform)) {
-    link.status = "unsupported";
-    link.error = "当前仅内置小红书数据检测适配器";
-    link.updatedAt = Date.now();
-    save("analyticsLinks");
-    return null;
-  }
   link.status = "syncing";
   link.error = "";
   link.updatedAt = Date.now();
   save("analyticsLinks");
   try {
-    const resolved = await analyticsApi.resolve(link.url);
-    link.noteId = resolved.noteId || link.noteId;
-    link.canonicalUrl = resolved.canonicalUrl || link.url;
-    link.title = resolved.title || link.title;
-    link.provider = resolved.provider || link.provider || "server";
-    const prev = latestSnapshot(link.id)?.metrics || null;
-    const data = await analyticsApi.fetchMetrics(link, prev);
-    link.title = data.title || link.title;
-    const snap = {
+    const platform = platformFromUrl(link.url, link.platform);
+    const res = await fetch("/api/analytics/justoneapi/fetch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: link.url,
+        platform,
+        noteId: platform === "视频号" ? "" : (link.noteId || ""),
+        objectId: link.objectId || "",
+        objectNonceId: link.objectNonceId || ""
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `JustOneAPI 同步失败 (${res.status})`);
+    const snapshot = {
       id: uid(),
       linkId: link.id,
-      assetId: link.assetId,
-      accountId: link.accountId,
-      productionId: link.productionId,
-      provider: data.provider || "server",
-      noteId: data.noteId || link.noteId,
-      fetchedAt: data.fetchedAt || Date.now(),
-      metrics: normalizeMetrics(data.metrics),
-      commentsSample: data.commentsSample || [],
-      raw: data.raw || null
+      fetchedAt: Date.now(),
+      provider: data.provider || "JustOneAPI",
+      noteId: data.noteId || data.objectId || link.noteId || link.objectId || "",
+      metrics: normalizeMetrics(data.metrics || {}),
+      raw: data.raw || data
     };
-    state.metricSnapshots.push(snap);
+    state.metricSnapshots.unshift(snapshot);
+    link.lastSnapshotId = snapshot.id;
+    link.noteId = data.noteId || link.noteId || "";
+    link.objectId = data.objectId || link.objectId || "";
+    link.objectNonceId = data.objectNonceId || link.objectNonceId || "";
+    link.title = data.title || link.title || "";
+    link.platform = data.platform || link.platform || platformFromUrl(link.url);
+    link.provider = data.provider || "JustOneAPI";
     link.status = "synced";
-    link.lastSnapshotId = snap.id;
-    link.lastSyncedAt = snap.fetchedAt;
+    link.error = "";
+    link.lastSyncedAt = Date.now();
     link.updatedAt = Date.now();
-    save("analyticsLinks", "metricSnapshots");
-    return snap;
-  } catch (e) {
+    save("metricSnapshots", "analyticsLinks");
+    return snapshot;
+  } catch (err) {
     link.status = "failed";
-    link.error = e.message || String(e);
+    link.error = err.message || ANALYTICS_PENDING_MESSAGE;
     link.updatedAt = Date.now();
     save("analyticsLinks");
     return null;
@@ -146,20 +170,36 @@ function normalizeMetrics(m = {}) {
 }
 
 export async function refreshAllAnalytics({ staleOnly = false } = {}) {
-  const now = Date.now();
-  const targets = state.analyticsLinks.filter(l => {
-    if (!isAnalyticsSupported(l.url, l.platform)) return false;
-    if (!staleOnly) return true;
-    return !l.lastSyncedAt || now - l.lastSyncedAt > 3 * 3600_000;
-  });
-  let ok = 0;
+  const rows = state.analyticsLinks.filter(link => isAnalyticsSupported(link.url, link.platform));
+  const picked = staleOnly
+    ? rows.filter(link => !latestSnapshot(link.id) || Date.now() - latestSnapshot(link.id).fetchedAt > 1000 * 60 * 60 * 24)
+    : rows;
   const failed = [];
-  for (const link of targets) {
+  let ok = 0;
+  for (const link of picked) {
     const snap = await refreshAnalyticsLink(link.id);
     if (snap) ok++;
-    else failed.push({ id: link.id, title: link.title || link.url, error: link.error || "未产生新数据" });
+    else failed.push({ id: link.id, title: link.title || link.url, error: link.error || "同步失败" });
   }
-  return { total: targets.length, ok, failed };
+  return { total: picked.length, ok, failed };
+}
+
+export async function justOneAnalyticsStatus() {
+  try {
+    const res = await fetch("/api/analytics/justoneapi/config", { cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+    return data;
+  } catch (err) {
+    return {
+      ok: false,
+      provider: "JustOneAPI",
+      configured: false,
+      reachable: false,
+      detail: err.message || "接口不可用",
+      platforms: ["小红书", "视频号"]
+    };
+  }
 }
 
 export function analyticsRows() {
@@ -260,10 +300,10 @@ export function buildLocalInsight(rows = analyticsRows()) {
     id: uid(),
     createdAt: Date.now(),
     range: "latest",
-    title: "小红书数据检测复盘",
+    title: "发布数据检测复盘",
     summary: summary.synced
       ? `${summary.synced} 条已检测内容，平均质量分 ${summary.avgScore}，总互动率 ${(summary.engagementRate * 100).toFixed(1)}%。${top ? `当前最好的是「${top.link.title || top.asset?.name || "未命名"}」。` : ""}`
-      : "还没有可复盘的数据，先同步已回传的小红书链接。",
+      : "还没有可复盘的数据，先同步已回传的小红书或视频号链接。",
     nextTopics: [
       `${topAccount} 延展一批同类痛点的系列选题`,
       `围绕「${strongTag}」做 3 条清单/避坑/对比内容`,

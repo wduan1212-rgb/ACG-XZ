@@ -16,6 +16,15 @@
 
 本地固定预览端口：`http://localhost:8787/#/overview`。不要占用 `4173`。
 
+## 2026-07-07 新增避坑：v49 提交完整依赖闭环
+
+- 提交前必须以 commit 对象为准做前端模块加载检查。`api/ai.js` 引入 `normalizeCreativeTopicForMode` 时，`data/xhsTrendLibrary.js` 必须同 commit 导出该函数；只在本地工作区存在不算部署可用。
+- 修复线上加载失败时，不能只改浏览器缓存或服务器静态资源；必须把缺失导出所在文件提交并推送到部署分支。
+- 数字人部署验收需要 `/api/video/config` 暴露数字人配置状态、上游可达性、payload 模式和 `PUBLIC_BASE_URL` 配置状态。部署线程不能只看 Seedance 字段判断 OmniHuman 可用。
+- 数字人真实验收顺序：前端能加载 -> `/api/video/config` 字段齐全 -> 角色图/分段口播音频经公开资源地址可访问 -> 提交返回 providerRef -> 轮询到真实输出。
+- 如果服务端切到 JustOneAPI 代理，前端数据分析也必须同 commit 切到 `/api/analytics/justoneapi/*`；不要出现后端删除旧 `/api/analytics/fetch`、前端仍调用旧接口的半提交。
+- 本地工作区很脏时，提交要显式列文件并跑 `git diff --cached --check`；不要 `git add .`。
+
 ## 2026-07-07 新增避坑：v48 数字人分段、口播一体化与部署前置
 
 - 数字人分段 ID 必须稳定。`digitalSegmentsFromShots` 这类从分镜重建展示数据的函数不能每次都生成新 ID，否则按钮上的 `data-dh-video` 会指向旧片段，点击后误报“缺少数字人片段 / 先生成口播草稿”，即使页面上已经有音频和角色图。

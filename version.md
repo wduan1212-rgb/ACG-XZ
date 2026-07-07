@@ -1,5 +1,34 @@
 # 星阵版本记录
 
+## v49 - 2026-07-07
+
+### 本版范围
+
+- 修复线上 v48 前端加载失败：补齐 `xhsTrendLibrary.js` 导出的 `normalizeCreativeTopicForMode`，与 `api/ai.js` 的 import 保持一致。
+- 将本地已验证的数据分析 JustOneAPI 代理前后端配套提交：数据分析页改用 `/api/analytics/justoneapi/config` 和 `/api/analytics/justoneapi/fetch`，删除旧的前端采集适配器文件，避免部署后前后端接口不匹配。
+- 将本地已验证的 OmniHuman 数字人服务端实现提交：`/api/video/config` 返回数字人模型、配置可见性、上游可达性、payload 模式、公开资源地址配置状态等验收字段。
+- `/api/video/submit` 对数字人请求走智能视觉签名提交，返回带数字人前缀的 providerRef；`/api/video/poll/{task_id}` 能按 providerRef 路由到数字人轮询。
+- 数字人缺凭据、缺公网角色图、缺公网口播音频时返回明确错误，不再伪装提交成功。
+
+### 验证结果
+
+- 本地 `curl /api/video/config` 返回 `digitalHumanModel`、`digitalHumanConfigured`、`digitalHumanReachable`、`digitalHumanBaseUrl`、`publicBaseConfigured` 等字段，可供部署线程验收。
+- 浏览器真实刷新工作台通过，未再出现 `normalizeCreativeTopicForMode` 缺导出导致的前端加载错误。
+- `node --check` 通过：`自动化产品/js/data/xhsTrendLibrary.js`、`自动化产品/js/api/ai.js`、`自动化产品/js/domain/analytics.js`、`自动化产品/js/views/analyticsView.js`。
+- `python3 -m py_compile 自动化产品/server/main.py` 通过。
+- `git diff --check` 通过本次提交范围。
+
+### 数据与部署
+
+- 本次不包含服务器部署；已通知部署线程重新按保护数据流程部署。
+- 部署时只允许更新代码和静态资源并重启服务；不得覆盖服务器数据库、上传目录、账号、资产库、发布清单、草稿、成员、数据分析、环境文件或认证缓存。
+- JustOneAPI 与数字人凭据只能放在服务器环境变量或私密配置文件；仓库、文档、聊天和提交信息都不能写入明文凭据。
+- 数字人真实验收仍以服务器为准：配置字段可见后，还要提交一个真实数字人分段任务，拿到 providerRef 并轮询到输出才算完成。
+
+### 注意
+
+- 本版不包含任何密钥、服务器密码、公网 IP、私网 IP、token 或账号凭据。
+
 ## v48 - 2026-07-07
 
 ### 本版范围
