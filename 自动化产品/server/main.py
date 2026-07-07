@@ -1600,7 +1600,15 @@ def _video_payload_mode() -> str:
 def _join_video_url(path: str) -> str:
     if path.startswith(("http://", "https://")):
         return path
-    return f"{SEEDANCE_BASE_URL}/{path.lstrip('/')}"
+    base = SEEDANCE_BASE_URL.rstrip("/")
+    clean_path = "/" + path.lstrip("/")
+    if base.endswith("/api/v3") and clean_path.startswith("/api/v3/"):
+        clean_path = clean_path[len("/api/v3"):]
+    if base.endswith("/api/v3/contents/generations/tasks") and clean_path.startswith("/api/v3/contents/generations/tasks"):
+        clean_path = clean_path[len("/api/v3/contents/generations/tasks"):]
+        if not clean_path:
+            return base
+    return f"{base}{clean_path}"
 
 
 def _video_submit_url() -> str:
