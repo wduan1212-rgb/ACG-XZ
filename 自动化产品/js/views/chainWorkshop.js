@@ -1,4 +1,4 @@
-/* 链路 · 分镜工坊（素材号专属一体节点）：
+/* 链路 · 文案分镜（素材号专属一体节点）：
    按场景合并的「分镜单元」——一个单元 = 一条 10-15s 多镜头视频片段
    含产品 logo / 产品界面 → 【全能参考】：自动附上固定的 logo + 界面图作参考（替代旧的图生视频）
    纯场景 → 【文生视频】：直接文生视频，不带参考
@@ -9,9 +9,10 @@ import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, on, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
-import { defaultTtsVoiceId, findKnownTtsVoice, lookupTtsVoice, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
+import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, thumbHtml } from "../domain/assets.js";
+import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
@@ -22,6 +23,9 @@ import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from ".
 let liveRoot = null, liveProd = null, liveDraw = null, wired = false;
 const DIGITAL_SEGMENT_TARGET_SEC = 27;
 const DIGITAL_SEGMENT_MAX_SEC = 30;
+const COVER_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
+let videoConfigCache = null;
+let videoConfigAt = 0;
 
 const assetById = id => state.assets.find(a => a.id === id);
 function audioDuration(url) {
@@ -39,6 +43,29 @@ function narrationText(shots) {
   return (shots || []).map(s => (s.line || "").trim()).filter(Boolean).join("\n");
 }
 
+function isPublicHttpUrl(url = "") {
+  const u = String(url || "");
+  return /^https?:\/\//i.test(u) && !/^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::|\/|$)/i.test(u);
+}
+
+function isServerFileUrl(url = "") {
+  const u = String(url || "");
+  return /^\/api\/files\//.test(u) || /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?\/api\/files\//i.test(u);
+}
+
+async function videoServerConfig() {
+  if (videoConfigCache && Date.now() - videoConfigAt < 30000) return videoConfigCache;
+  try {
+    const res = await fetch("/api/video/config", { cache: "no-store" });
+    const data = await res.json().catch(() => ({}));
+    videoConfigCache = res.ok ? data : { ok: false, detail: data.detail || data.error || `HTTP ${res.status}` };
+  } catch (err) {
+    videoConfigCache = { ok: false, detail: err.message || "视频服务不可用" };
+  }
+  videoConfigAt = Date.now();
+  return videoConfigCache;
+}
+
 function selectedVoicePreset(p, acc) {
   const voiceId = (p?.artifacts?.audio?.voiceId || acc?.voiceId || defaultTtsVoiceId() || "").trim();
   const preset = ttsVoicePresets().find(v => v.voiceId === voiceId);
@@ -46,6 +73,103 @@ function selectedVoicePreset(p, acc) {
   const accountName = acc?.voiceId === voiceId ? acc?.voiceName : "";
   const transientName = p?.artifacts?.audio?.voiceName || "";
   return { voiceId, name: preset?.name || accountName || transientName || known?.name || voiceId || "默认/手动声线" };
+}
+
+function coverState(p) {
+  const A = p.artifacts.boards || (p.artifacts.boards = {});
+  A.cover = A.cover || { prompt: "", assetId: null, refAssetIds: [], status: "idle", error: "" };
+  A.cover.refAssetIds = Array.isArray(A.cover.refAssetIds) ? A.cover.refAssetIds.filter(Boolean).slice(0, 5) : [];
+  A.cover.status = A.cover.status || "idle";
+  return A.cover;
+}
+
+function coverRefAssets(cover) {
+  return (cover.refAssetIds || []).map(assetById).filter(Boolean).slice(0, 5);
+}
+
+async function coverUrlToDataUrl(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("图片 URL 下载失败：" + res.status);
+  return await fileToDataUrl(await res.blob());
+}
+
+async function coverProviderRefs(cover) {
+  const refs = [];
+  for (const a of coverRefAssets(cover)) {
+    const u = urlFor(a);
+    let dataUrl = "";
+    let publicUrl = "";
+    if (/^data:/.test(u || "")) dataUrl = u;
+    else if (/^https?:\/\//.test(u || "")) publicUrl = u;
+    else if (u) {
+      try { dataUrl = await coverUrlToDataUrl(u); } catch (_) { /* ignore local reference failures */ }
+    }
+    if (dataUrl || publicUrl) {
+      refs.push({
+        id: a.id,
+        name: a.name || "封面参考图",
+        type: a.type,
+        mime: a.mime || "image/png",
+        url: publicUrl,
+        dataUrl
+      });
+    }
+  }
+  return refs;
+}
+
+async function providerRefsFromAssetIds(assetIds = [], max = 9) {
+  const refs = [];
+  const seen = new Set();
+  for (const id of assetIds) {
+    if (!id || seen.has(id) || refs.length >= max) continue;
+    seen.add(id);
+    const a = assetById(id);
+    if (!a) continue;
+    const u = urlFor(a);
+    let dataUrl = "";
+    let publicUrl = "";
+    if (/^data:/.test(u || "")) dataUrl = u;
+    else if (/^https?:\/\//.test(u || "")) publicUrl = u;
+    else if (u) {
+      try { dataUrl = await coverUrlToDataUrl(u); } catch (_) { /* ignore local reference failures */ }
+    }
+    if (dataUrl || publicUrl) {
+      refs.push({
+        id: a.id,
+        name: a.name || "参考图",
+        type: a.type,
+        mime: a.mime || "image/png",
+        url: publicUrl,
+        dataUrl
+      });
+    }
+  }
+  return refs;
+}
+
+function enrichCoverPromptWithRefs(prompt, cover) {
+  const names = coverRefAssets(cover).map(a => a.name || "封面参考图").filter(Boolean).slice(0, 5);
+  if (!names.length) return prompt || "";
+  const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
+  return `${body}\n\n封面参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），只参考人物/产品/构图气质；封面主题、标题和画面信息必须以发布标题与文案为准。\n\n${COVER_NEGATIVE_PROMPT}`.trim();
+}
+
+function coverPromptFromCopy({ title = "", body = "", product = null, custom = "", ratio = "3:4" } = {}) {
+  const safeTitle = sanitizeXhsText(title || "视频封面");
+  const safeBody = sanitizeXhsText(body || "").slice(0, 360);
+  const prod = product?.shortName || product?.name || "当前产品";
+  const extra = sanitizeXhsText(custom || "").slice(0, 280);
+  return [
+    `生成短视频封面图，比例${ratio}。`,
+    `封面主标题必须完整出现：「${safeTitle}」。`,
+    `封面内容必须紧扣发布文案，不要扩展成其他主题；主产品是${prod}。`,
+    safeBody ? `文案摘要：${safeBody}` : "",
+    "画面要求：冲击力强，有纵深感和透视感；前景一个强视觉锚点，中景展示关键动作或结果，背景保留空间层次。",
+    "视觉风格：黑白灰极简科技感，少量冷蓝高光，干净高级，文字清晰可读，适合视频号/小红书封面。",
+    extra ? `补充画面要求：${extra}` : "",
+    COVER_NEGATIVE_PROMPT
+  ].filter(Boolean).join("\n");
 }
 
 function voicePickerHtml({ selected, groups, favoriteIds, lockedVoiceId }) {
@@ -102,6 +226,7 @@ function digitalSegmentsFromShots(p, acc) {
   const globalChar = A.characterRefAssetId || acc?.charBoardAssetId || null;
   segments.forEach(seg => {
     const oldSeg = old.find(x => (x.shotIndexes || []).some(i => seg.shotIndexes.includes(i)));
+    if (oldSeg?.id) seg.id = oldSeg.id;
     if (oldSeg?.customCharacterRefAssetId) seg.customCharacterRefAssetId = oldSeg.customCharacterRefAssetId;
     if (oldSeg?.audioAssetId) seg.audioAssetId = oldSeg.audioAssetId;
     if (oldSeg?.audioDuration) seg.audioDuration = oldSeg.audioDuration;
@@ -115,6 +240,303 @@ function digitalSegmentsFromShots(p, acc) {
   });
   A.digitalHuman = { ...(A.digitalHuman || {}), provider: A.digitalHuman?.provider || "reserved", model: A.digitalHuman?.model || "digital-human-api-placeholder", segments };
   return segments;
+}
+
+function digitalSegmentsForDisplay(p, acc) {
+  const shots = p.artifacts.script.shots || [];
+  const existing = Array.isArray(p.artifacts.boards?.digitalHuman?.segments) ? p.artifacts.boards.digitalHuman.segments : [];
+  if (!shots.length && existing.length) return existing;
+  return digitalSegmentsFromShots(p, acc);
+}
+
+const INFO_FLOW_DIRECTIONS = [
+  {
+    key: "zero-start",
+    topic: "国产AI工具零门槛上手",
+    title: product => `${product}，不用安装也能快速上手！`,
+    hook: product => `0-3s：深夜工位，一个不会写代码的人盯着空白网页草稿，屏幕上弹出一堆红色待办；3-7s：手机震动，朋友发来“你不是不会做网页吗？”角色抬头笑一下，直接打开${product}；7-11s：镜头快速推近屏幕，需求被拆成任务卡，页面轮廓一块块亮起；11-15s：角色把咖啡放下，对镜头说“我真的一行代码都没写”，画面定格在已经能看的页面。`,
+    demo: product => `0-4s：角色把一句需求输入${product}，屏幕左侧保留原始想法，右侧自动拆出“结构、素材、执行、检查”四张任务卡；4-8s：镜头近景点击任务卡，网页、文档和素材被拉进同一工作区，口播说“先别写代码，先让它把任务拆清楚”；8-12s：执行进度、结果预览和可修改入口连续出现；12-15s：角色把手机举到镜头前，屏幕显示任务进度和初版页面，收束“想法能先跑起来”。`
+  },
+  {
+    key: "workflow",
+    topic: "AI工作流提效",
+    title: product => `${product}把乱任务跑成可交付流程`,
+    hook: product => `0-3s：会议结束，桌上堆满录音、截图和表格，角色把文件夹直接倒在桌面上；3-6s：镜头俯冲进一堆资料，文件像风暴一样旋转；6-10s：角色说“别先整理，先让AI跑一遍”，屏幕上出现${product}的任务队列；10-15s：资料被吸进一个发光任务板，三列卡片依次弹出“分类、提取、交付”。`,
+    demo: product => `0-4s：角色把一堆截图、会议纪要和表格拖进${product}，界面先标出资料类型和缺口；4-8s：镜头俯拍切到任务清单，系统把“分类、提取、生成、复核”拆成可执行步骤；8-12s：周报、表格、脚本草稿并排生成，旁边有修改入口；12-15s：散乱资料回扣成一个可交付文件夹，角色直接复制交付清单。`
+  },
+  {
+    key: "compare",
+    topic: "AI工具对比测评",
+    title: product => `${product}和别的AI工具到底差在哪？`,
+    hook: product => `0-4s：桌面分成左右两边，一边是“只聊天”，另一边是“能执行”，两边同时开始计时；4-8s：左边还在输出建议，右边已经打开文件、生成页面、整理清单；8-12s：角色从画面中间伸手按下暂停，镜头定格在两边结果差距；12-15s：屏幕大字“不是谁更会说，是谁能把事往前推”。`,
+    demo: product => `0-4s：画面左右对比，一边还在输出建议，另一边${product}已经把需求拆成任务卡；4-8s：镜头切到自动读文件、改页面、整理素材三个真实动作，每个动作都有进度反馈；8-12s：执行日志、可预览结果和交付物同时出现；12-15s：回到左右对比桌面，${product}一侧已经有可发送的初版，另一侧只剩一段建议。`
+  },
+  {
+    key: "office-scene",
+    topic: "真实办公场景测评",
+    title: product => `真实办公场景里，${product}到底能干什么？`,
+    hook: product => `0-3s：早会刚结束，老板一句“今天下班前给我”，角色表情瞬间僵住；3-6s：白板上飞出“整理资料、做表格、写脚本、出封面”四个任务砸向屏幕；6-11s：角色把这些需求一句话扔给${product}，镜头跟随任务卡快速分裂成多个小步骤；11-15s：画面突然安静，屏幕显示“已生成初版”，角色小声说“这就能看了？”`,
+    demo: product => `0-4s：老板口头需求被贴到${product}输入框，界面立刻拆出资料整理、脚本生成、封面图和审核清单四个交付项；4-9s：镜头快速切过四个窗口，每个窗口都生成可修改内容；9-13s：结果页显示初版链接、可编辑文案和交付清单；13-15s：回到聊天窗口，角色直接发送初版链接，口播收束“先有能改的版本”。`
+  }
+];
+
+function stripInfoFlowDirectorNotes(text = "") {
+  return String(text || "")
+    .replace(/(?:^|\n)导演要求：[^\n]*(?=\n|$)/g, "")
+    .replace(/不要写“冲突打开”“要有概念”“高级感”这类抽象占位词。?/g, "")
+    .replace(/不要只出现抽象光效。?/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function ensureInfoFlowState(p) {
+  const A = p.artifacts.boards || (p.artifacts.boards = {});
+  A.materialMode = A.materialMode || (isMaterial(p) ? "infoFlow" : "standard");
+  A.infoFlow = A.infoFlow || { segments: [], storyboards: [], status: "idle", error: "" };
+  A.infoFlow.segments = Array.isArray(A.infoFlow.segments) ? A.infoFlow.segments.slice(0, 2) : [];
+  A.infoFlow.segments.forEach(seg => {
+    if (seg?.videoPrompt) seg.videoPrompt = stripInfoFlowDirectorNotes(seg.videoPrompt);
+  });
+  A.infoFlow.storyboards = Array.isArray(A.infoFlow.storyboards) ? A.infoFlow.storyboards : [];
+  A.infoFlow.status = A.infoFlow.status || "idle";
+  return A.infoFlow;
+}
+
+function infoProductName(product) {
+  return product?.shortName || product?.name || "百度搭子";
+}
+
+function compactInfoFlowText(text = "", max = 96) {
+  return String(text || "").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function infoFlowCopyCue(copyText = "", fallback = "") {
+  const fallbackText = String(fallback || "").trim();
+  const lines = String(copyText || "")
+    .split(/\n+/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .filter(x => !x.startsWith("#") && x !== fallbackText);
+  const body = lines[0] || fallbackText;
+  const parts = body.match(/[^。！？!?]+[。！？!?]?/g) || [body];
+  return compactInfoFlowText(parts.slice(0, 2).join(""), 128);
+}
+
+function infoFlowRoleAnchor(acc = {}) {
+  return [
+    "角色外貌锚点：真实办公室内容创作者，25-32岁，脸型偏鹅蛋或小方脸，眉眼清爽，鼻梁自然，嘴角有轻微疲惫但反应很快；中等身材，肩颈放松，动作干净。",
+    "穿搭细节：浅灰或白色通勤上衣，外搭薄衬衫或简洁夹克，袖口自然挽起；桌面动作以抓手机、推开文件、敲键盘、拖拽资料、指向屏幕为主。",
+    "表情变化：开头被任务压住时焦躁又好笑，中段看到任务开始自动跑时明显惊讶，结尾松一口气，像真的发现一个省事方法。"
+  ].filter(Boolean).join(" ");
+}
+
+function infoFlowVoiceAnchor(acc = {}) {
+  const selected = compactInfoFlowText(acc.voiceName || acc.voiceId || "", 42);
+  return [
+    `声线锚点：${selected ? `${selected}；` : ""}年轻职场朋友感，普通话清晰，音色干净偏明亮，语速约1.15到1.25倍，句尾自然下落，吐字有颗粒感。`,
+    "说话像边操作边吐槽：开头有一点被任务追着跑的无奈，中段带明显惊喜，结尾给出确定结论；不要播音腔，不要机械念稿。"
+  ].join(" ");
+}
+
+const VIDEO_BAIDU_TAG_LINE = "#AI工具 #AI提效 #codex #AI办公 #效率工具 #百度搭子";
+
+function videoPublishTagLine(product = null) {
+  const name = infoProductName(product);
+  if (/百度搭子|Dumate|DuMate|搭子/.test(name)) return VIDEO_BAIDU_TAG_LINE;
+  return `#AI工具 #AI提效 #codex #AI办公 #效率工具 #${name.replace(/\s+/g, "")}`;
+}
+
+function infoFlowFeatureBrief(topic = "", productName = "百度搭子") {
+  const t = String(topic || "").toLowerCase();
+  if (/模型|model|隐藏|玩法|效率翻倍|选对|十大|10大|十个|10个/.test(t)) {
+    return {
+      pain: "同一个需求用错模型时，输出会像跑偏的实习生：要么空泛、要么过度发挥、要么完全不按格式来",
+      feature: "模型选择和隐藏玩法组合",
+      action: `${productName}把“选模型、拆任务、拉资料、生成初版、复核修改”串成一条流程，让不同模型负责不同环节`,
+      result: "模型先选对，后面的整理、生成和复核才不会一路返工",
+      prop: "三块写着不同模型的小卡片、返工记录、任务看板、资料文件夹和一个正在对比输出结果的屏幕"
+    };
+  }
+  if (/skill|技能|教程|速通/.test(t)) {
+    return {
+      pain: "同一类复盘、整理、写脚本的活反复出现，每次都像从零开始",
+      feature: "Skill 复用流程",
+      action: `把“读资料、拆步骤、生成初版、复核清单”沉淀成 ${productName} 里的固定 Skill`,
+      result: "下次只换素材，流程还能继续复用",
+      prop: "一叠贴满便签的资料、一个弹出十几条返工消息的手机、一个正在生成任务卡的电脑屏幕"
+    };
+  }
+  if (/钱|成本|预算|外包|省/.test(t)) {
+    return {
+      pain: "老板问这个月少花多少钱，桌面上摊着预算表、报价单和项目截图",
+      feature: "成本核算和交付拆解",
+      action: `${productName}把外包项、沟通成本和可自动化步骤拆成一张可复核表`,
+      result: "哪些钱能省、哪些活该留给人，一眼能看出来",
+      prop: "计算器、预算表、报价截图、红色待确认便签"
+    };
+  }
+  if (/表格|周报|资料|知识库|流程|工作流|整理/.test(t)) {
+    return {
+      pain: "周报、截图、会议纪要和表格混成一团，越整理越乱",
+      feature: "资料沉淀和工作流整理",
+      action: `${productName}先分类资料，再提取字段，最后输出能复核的清单和报告初稿`,
+      result: "散乱资料被推进成一个可以继续修改的交付包",
+      prop: "文件夹、会议录音、表格截图、知识库页面和一张进度看板"
+    };
+  }
+  if (/对比|测评|差在哪|codex|agent|ai/.test(t)) {
+    return {
+      pain: "一边是只会回答建议的 AI，一边是能把任务往前推的桌面智能体",
+      feature: "任务执行链路对比",
+      action: `${productName}把需求拆成任务，自动读取资料并生成一个可看的初版`,
+      result: "观众能看到差别不是谁更会说，而是谁真的推进了一步",
+      prop: "左右分屏、计时器、任务日志、预览页面和交付文件夹"
+    };
+  }
+  return {
+    pain: "一个普通打工人被一堆临时需求追着跑，屏幕、手机和桌面同时爆炸",
+    feature: "任务拆解到初版交付",
+    action: `${productName}把一句口头需求拆成步骤，拉资料、跑任务、给出可修改结果`,
+    result: "先把事情推进到能看的版本，而不是停在建议里",
+    prop: "手机消息、电脑屏幕、文件夹、待办便签和咖啡杯"
+  };
+}
+
+function buildInfoFlowFrontBeat({ mainTopic, productName, focus }) {
+  return [
+    `0-3s：办公室桌面突然被${focus.prop}塞满，手机连续弹出“十分钟后要初版”“顺便做个封面”“再整理下资料”，角色一边抓头发一边把咖啡差点碰倒。`,
+    `3-6s：镜头手持快速绕桌一圈，文件夹、截图、表格和聊天消息像失控一样叠到屏幕前；角色低声吐槽“这不是一个需求，这是来拆我的”。`,
+    `6-10s：画面突然切成夸张对比：左边随便选工具后输出一堆空话，右边角色把「${mainTopic}」拆成几张任务卡贴到屏幕上，镜头快速推近每张卡的错位结果。`,
+    `10-15s：角色把错误输出揉成纸团扔到桌边，深吸一口气，对镜头说“先别急着跑，先选对怎么跑”，画面停在一张清晰的执行路线草图上。`
+  ].join(" ");
+}
+
+function buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText = "" }) {
+  const cue = infoFlowCopyCue(copyText, mainTopic);
+  return [
+    `0-3s：口播直接扣回发布文案重点：“${cue}”。画面近景看到用户在${productName}里输入「${mainTopic}」，旁边放着资料、截图和待办。`,
+    `3-7s：界面按文案逻辑生成任务清单，逐项展示${focus.action}；镜头用近景点击、快速推拉和屏幕录制感切换，让观众看到每一步负责什么。`,
+    `7-11s：切到功能结果：不同模型或步骤产出的内容并排出现，资料被归类，关键字段被提取，页面或报告初稿出现，旁边保留修改入口和复核清单。`,
+    `11-15s：回扣前段混乱桌面，角色把生成的初版发出去，口播收束“先选对模型和流程，效率才真的翻倍。”画面突出${focus.result}。`
+  ].join(" ");
+}
+
+function buildInfoFlowPublishCopy({ title, topic, productName, product }) {
+  const focus = infoFlowFeatureBrief(topic, productName);
+  const isModelTopic = /模型|model|隐藏|玩法|效率翻倍|选对|十大|10大|十个|10个/.test(String(topic || "").toLowerCase());
+  if (isModelTopic) {
+    return [
+      title,
+      `我发现很多人用 AI 提效慢，不是工具不行，而是一上来就把所有任务丢给同一个模型。真正影响效率的，是先判断这件事该让谁负责：谁适合拆步骤，谁适合拉资料，谁适合写初版，谁适合做复核。`,
+      `${productName}这类桌面智能体适合做的，就是把「${topic}」这种需求拆成可执行流程。你不用先想完整答案，只要把目标、素材和判断标准说清楚，它就能先把任务卡、资料整理、初版结果和修改入口跑出来。`,
+      `这条 B 面会重点看几个隐藏玩法：先选模型，再拆任务；先给资料，再让它生成；先要可修改初版，不要一次追求完美。这样做的好处是返工会少很多，因为每一步都有结果可以检查。`,
+      `A 面会拍得更夸张一点：用错模型时，输出像开盲盒；B 面再回到真实操作，看看怎么把模型选择和工作流串起来。`,
+      videoPublishTagLine(product)
+    ].join("\n\n");
+  }
+  return [
+    title,
+    `${productName}这类工具，最容易被低估的其实不是“会回答”，而是它能先把一件乱事推到能改的版本。`,
+    `比如${focus.pain}，以前我会先卡在整理这一步：资料要看，步骤要拆，结果还要能交付。现在我会先把需求丢进去，让它把任务拆出来，再看哪些地方需要我判断。`,
+    `这条视频里重点看${focus.feature}：${focus.action}。它不替你拍脑袋做决定，但能把重复劳动先压下去，让人把注意力留给判断和修改。`,
+    `如果你也经常被资料、截图、表格和临时需求追着跑，可以试试先让它跑一版。很多时候，最难的不是完美，而是先有一个能看的初稿。`,
+    videoPublishTagLine(product)
+  ].join("\n\n");
+}
+
+function buildInfoFlowStoryboards({ mainTopic, productName, focus }) {
+  return [
+    `9:16竖屏分镜图1：信息流功能演示开场，主题是「${mainTopic}」。桌面上有${focus.prop}，画面有透视纵深，人物手把资料拖进${productName}工作区，能看出“混乱需求开始被接住”。`,
+    `9:16竖屏分镜图2：${productName}任务拆解界面近景，屏幕上清晰出现“资料整理、步骤拆解、执行结果、复核清单”四个区域，视觉重心是任务卡从输入框延伸出来。`,
+    `9:16竖屏分镜图3：${productName}执行中段，左侧是原始资料和截图，右侧是生成的清单、表格、网页或报告初稿，画面强调${focus.feature}，文字少而完整。`,
+    `9:16竖屏分镜图4：执行结果收束，文件夹、预览页面和交付清单同时出现，角色手指点击发送，画面表达${focus.result}，保留产品logo或界面参考但不要堆满屏。`
+  ];
+}
+
+function pickInfoFlowDirection(seed = "") {
+  const s = String(seed || "");
+  const sum = [...s].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+  return INFO_FLOW_DIRECTIONS[sum % INFO_FLOW_DIRECTIONS.length];
+}
+
+function compactInfoTopic(raw, product) {
+  const clean = sanitizeXhsText(String(raw || "").replace(/\s+/g, " ").trim());
+  if (clean) return clean.slice(0, 48);
+  const productName = infoProductName(product);
+  const d = pickInfoFlowDirection(`${Date.now()}-${productName}`);
+  return d.topic;
+}
+
+function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = "" } = {}) {
+  const productName = infoProductName(product);
+  const cleanTopic = compactInfoTopic(topic, product);
+  const direction = pickInfoFlowDirection(cleanTopic || productName);
+  const isCustom = !!String(topic || "").trim();
+  const title = isCustom
+    ? (cleanTopic.length <= 18 ? `${cleanTopic}，用${productName}跑一遍` : cleanTopic)
+    : direction.title(productName);
+  const roleAnchor = infoFlowRoleAnchor(acc);
+  const voiceAnchor = infoFlowVoiceAnchor(acc);
+  const mainTopic = cleanTopic || title || direction.topic;
+  const focus = infoFlowFeatureBrief(mainTopic, productName);
+  const frontBase = buildInfoFlowFrontBeat({ mainTopic, productName, focus });
+  const customCopy = String(copyText || "").trim();
+  const generatedCopy = buildInfoFlowPublishCopy({ title, topic: mainTopic, productName, product });
+  const copy = customCopy || generatedCopy;
+  const backBase = buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText: copy });
+  const frontPrompt = [
+    "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次，节奏爽快但不能乱。",
+    roleAnchor,
+    voiceAnchor,
+    frontBase,
+    "负面约束：无字幕，不生成花字，不生成水印，不生成二维码，不出现多余品牌元素，不长时间静态讲解，不做抽象科技空镜。"
+  ].join("\n");
+  const backPrompt = [
+    "快节奏的信息流广告风格，生成9:16短视频后15秒产品功能演示段。根据功能演示分镜图、产品logo和产品界面参考继续生成；画面要呼应前段冲突，口播直接讲操作动作和结果，不要使用自指式说明。",
+    roleAnchor,
+    voiceAnchor,
+    backBase,
+    "负面约束：无字幕，不生成花字，不生成水印，不生成二维码，不堆满屏幕，不偏离产品功能演示。字幕、花字和音效留到智能混剪阶段处理。"
+  ].join("\n");
+  const storyboards = buildInfoFlowStoryboards({ mainTopic, productName, focus });
+  return {
+    title,
+    topic: cleanTopic,
+    copy,
+    segments: [
+      { id: "front15", label: "前15s", title: "前15s钩子", duration: 15, caption: title, visual: frontBase, videoPrompt: frontPrompt, storyboardAssetIds: [] },
+      { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, caption: `我把这件事交给${productName}，让它先拆步骤、跑资料、给出初版。`, visual: backBase, videoPrompt: backPrompt, storyboardPrompts: storyboards, storyboardAssetIds: [] }
+    ]
+  };
+}
+
+function applyInfoFlowPlan(p, plan) {
+  const A = p.artifacts.boards || (p.artifacts.boards = {});
+  A.materialMode = "infoFlow";
+  const prev = ensureInfoFlowState(p);
+  const oldBack = prev.segments?.[1] || {};
+  A.infoFlow = {
+    ...prev,
+    status: "ready",
+    error: "",
+    segments: (plan.segments || []).slice(0, 2).map((seg, i) => ({
+      ...seg,
+      videoPrompt: stripInfoFlowDirectorNotes(seg.videoPrompt || ""),
+      storyboardAssetIds: i === 1 ? [...new Set([...(oldBack.storyboardAssetIds || []), ...(seg.storyboardAssetIds || [])])] : []
+    }))
+  };
+  p.topic = plan.topic || p.topic || "";
+  p.title = plan.title || p.title || p.topic || "";
+  p.artifacts.script.title = p.title;
+  p.artifacts.copy = { ...(p.artifacts.copy || {}), title: p.title, body: plan.copy || p.artifacts.copy?.body || "" };
+  Object.assign(p.artifacts.audio, {
+    assetId: null,
+    duration: 30,
+    perShot: [{ dur: 15 }, { dur: 15 }],
+    source: "seedance-native",
+    lastError: ""
+  });
+  buildMaterialUnits(p);
 }
 
 export function renderWorkshopPage(root, p) {
@@ -131,6 +553,8 @@ export function renderWorkshopPage(root, p) {
   let isDigitalHumanMode = isDigital && A.generationMode === "digitalHuman";
   const hasAudio = () => !!p.artifacts.audio.assetId && ["tts", "upload"].includes(p.artifacts.audio.source);
   const materialPureVideo = () => isMaterial(p) && !isDigital;
+  let activeInfoFlowMode = false;
+  ensureInfoFlowState(p);
 
   // 全能参考素材迁移：旧的单张统一参考图 sharedRefAssetId → omniRefAssetIds 数组（logo / 界面图可多张）
   A.omniRefAssetIds = A.omniRefAssetIds || [];
@@ -149,7 +573,6 @@ export function renderWorkshopPage(root, p) {
     A.omniRefAssetIds = [...new Set(inferred)].slice(0, 5);
     if (!A.sceneRefAssetIds.length) A.sceneRefAssetIds = A.omniRefAssetIds.filter(id => id !== acc?.charBoardAssetId);
   }
-  if (acc?.voiceRefAssetId && !p.artifacts.audio.voiceRefAssetId && !p.artifacts.audio.voiceRefDisabled) p.artifacts.audio.voiceRefAssetId = acc.voiceRefAssetId;
   A.ratio = A.ratio || "9:16";   // 全片统一尺寸（9:16 / 16:9）
 
   // 估时兜底 + 单元构建
@@ -158,6 +581,7 @@ export function renderWorkshopPage(root, p) {
     save("productions");
   }
   if (!(A.units || []).length && shots.length) { buildMaterialUnits(p); save("productions"); }
+  shots = p.artifacts.script.shots || [];
 
   const jobOfUnit = i => {
     const u = materialUnits(p)[i];
@@ -168,6 +592,12 @@ export function renderWorkshopPage(root, p) {
   const draw = () => {
     liveDraw = draw;
     isDigitalHumanMode = isDigital && A.generationMode === "digitalHuman";
+    activeInfoFlowMode = materialPureVideo() && A.materialMode === "infoFlow";
+    const infoFlow = ensureInfoFlowState(p);
+    if (activeInfoFlowMode) {
+      buildMaterialUnits(p);
+      shots = p.artifacts.script.shots || [];
+    }
     const units = materialUnits(p);
     const okCount = units.filter((u, i) => jobOfUnit(i)?.status === "succeeded").length;
     const running = units.some((u, i) => ["queued", "submitted", "running"].includes(jobOfUnit(i)?.status || ""));
@@ -175,36 +605,48 @@ export function renderWorkshopPage(root, p) {
     const sceneRefs = [...new Set([...(A.sceneRefAssetIds || []), ...(A.omniRefAssetIds || []).filter(id => id !== A.characterRefAssetId)])].map(assetById).filter(Boolean);
     const charRef = A.characterRefAssetId ? assetById(A.characterRefAssetId) : null;
     const audioAsset = p.artifacts.audio.assetId ? assetById(p.artifacts.audio.assetId) : null;
-    const voiceRefAsset = p.artifacts.audio.voiceRefAssetId ? assetById(p.artifacts.audio.voiceRefAssetId) : null;
     const hasNarrationAudio = hasAudio();
-    const digitalSegments = isDigitalHumanMode ? digitalSegmentsFromShots(p, acc) : [];
+    const digitalSegments = isDigitalHumanMode ? digitalSegmentsForDisplay(p, acc) : [];
     const selectedVoice = selectedVoicePreset(p, acc);
     const favoriteVoiceIds = sharedFavoriteVoiceIds();
     const voiceGroups = voicePickerGroups({ selectedId: selectedVoice.voiceId, selectedName: selectedVoice.name });
     const voiceLocked = !!(selectedVoice.voiceId && acc?.voiceId === selectedVoice.voiceId);
     const voiceFav = !!(selectedVoice.voiceId && favoriteVoiceIds.has(selectedVoice.voiceId));
+    const C = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
+    const cover = coverState(p);
+    const coverAsset = cover.assetId ? assetById(cover.assetId) : null;
+    const coverRefs = coverRefAssets(cover);
     const ratio = A.ratio || "9:16";
     const rtBtn = (r) => `<button class="ws-rt" data-ratio="${r}" style="font-size:11px;padding:3px 10px;border-radius:7px;cursor:pointer;border:1px solid ${ratio === r ? "#6a5bff" : "var(--d-line-2,rgba(120,130,160,.3))"};background:${ratio === r ? "rgba(106,91,255,.16)" : "transparent"};color:${ratio === r ? "#8b7bff" : "inherit"}">${r}</button>`;
+    const modeBtn = (mode, label) => `<button class="${A.materialMode === mode ? "on" : ""}" type="button" data-material-mode="${mode}">${label}</button>`;
     const digitalPlanHtml = isDigitalHumanMode ? `<div class="dh-plan-inline">
       <div class="dh-plan-head">
         <div>
           <b>${icon("user", 13)} 数字人分段</b>
           <em>${digitalSegments.length ? `已切为 ${digitalSegments.length} 段，尽量少切，单段目标约${DIGITAL_SEGMENT_TARGET_SEC}s且不超过${DIGITAL_SEGMENT_MAX_SEC}s；每段=口播音频 + 角色图。` : `生成口播草稿后按接近${DIGITAL_SEGMENT_TARGET_SEC}s自动拆段，只有长口播才会多切。`}</em>
         </div>
-        <button class="btn gen sm" id="wsDhVideoAll">${icon("spark", 13)} 一键生成视频</button>
+        <button class="btn gen sm" id="wsDhVideoAll">${digitalSegments.some((seg, i) => ["queued", "running", "submitted"].includes((state.jobs || []).find(j => j.id === seg.videoJobId)?.status || seg.videoStatus || "")) ? `${icon("spark", 13)} 生成中…` : `${icon("spark", 13)} 一键生成视频`}</button>
       </div>
       <div class="dh-segs">
         ${digitalSegments.length ? digitalSegments.map((seg, i) => {
           const ref = seg.characterRefAssetId ? assetById(seg.characterRefAssetId) : null;
-          const busy = ["queued", "running", "submitted"].includes(seg.videoStatus || "");
+          const job = (state.jobs || []).find(j => j.id === seg.videoJobId)
+            || [...(state.jobs || [])].reverse().find(j => j.productionId === p.id && j.segIndex === i && j.kind === "video" && j.model === "__digital_human__");
+          const status = job?.status || seg.videoStatus || "";
+          const busy = ["queued", "running", "submitted"].includes(status);
+          const done = status === "succeeded" || !!job?.output?.url;
+          const failed = status === "failed";
+          const stateText = busy ? "生成中" : done ? "已生成" : failed ? "失败" : seg.audioAssetId ? "可生成" : "待口播";
+          const jobError = failed && job?.error ? String(job.error || "") : "";
           return `<div class="dh-seg ${busy ? "is-generating" : ""}" data-dh-seg="${seg.id}">
             <b>D${String(i + 1).padStart(2, "0")}</b><span>${fmtTC(seg.dur)}</span>
-            <em>${ref ? esc(ref.name) : "未设置角色图"}</em>
+            <em>${ref ? esc(ref.name) : "未设置角色图"}</em><i class="dh-status ${busy ? "running" : done ? "done" : failed ? "failed" : ""}">${stateText}</i>
             <div class="dh-seg-drop droppable" data-unit-char-ref="${seg.id}">${ref ? thumbHtml(ref) : icon("upload", 13)}<span>单段角色图</span></div>
             ${seg.audioAssetId && assetById(seg.audioAssetId) ? `<audio class="dh-audio" src="${esc(urlFor(assetById(seg.audioAssetId)))}" controls preload="metadata"></audio>` : `<small class="dh-audio-miss">未生成分段音频</small>`}
+            ${jobError ? `<small class="dh-error">${esc(jobError)}</small>` : ""}
             <div class="dh-seg-actions">
               <button class="btn ghost sm" data-dh-regen="${seg.id}">${icon("refresh", 11)} 重新生成</button>
-              <button class="btn primary sm" data-dh-video="${seg.id}">${busy ? "生成中…" : "生成视频"}</button>
+              <button class="btn primary sm" data-dh-video="${seg.id}" ${busy ? "disabled" : ""}>${busy ? "生成中…" : done ? "重新生成视频" : "生成视频"}</button>
             </div>
           </div>`;
         }).join("") : [0, 1, 2].map(i => `<div class="dh-seg ghost"><b>D${String(i + 1).padStart(2, "0")}</b><span>待切分</span><em>生成口播后出现</em><div class="dh-seg-drop">${icon("upload", 13)}<span>单段角色图</span></div><small class="dh-audio-miss">等待口播</small></div>`).join("")}
@@ -215,11 +657,12 @@ export function renderWorkshopPage(root, p) {
       <div class="chain-page solo">
         <div class="chain-main">
           <div class="page-head">
-            <div><div class="eyebrow">${p.subType === "数字人" ? "真人链路" : "素材链路"} · 分镜工坊</div>
+            <div><div class="eyebrow">${p.subType === "数字人" ? "真人链路" : "素材链路"} · 文案分镜</div>
             <h2>${isDigitalHumanMode ? `${digitalSegments.length || units.length || 0} 个数字人口播段 · 分段生成` : `${units.length} 个分镜单元 · Seedance 编排出片`} <span class="head-count">${isDigitalHumanMode ? `${digitalSegments.filter(x => x.audioAssetId).length}/${digitalSegments.length || 0} 音频` : `${okCount}/${units.length} 就绪`}</span></h2></div>
             <div class="head-actions">
               <span class="tag">${icon("mic", 11)} ${hasNarrationAudio ? "外部口播" : "提示词口播"} ${fmtTC(p.artifacts.audio.duration || 0)}${p.artifacts.audio.source === "upload" ? " · 已上传" : ""}</span>
               <span class="tag">${icon("layers", 11)} ${isDigitalHumanMode ? "数字人分段" : `文生 ${units.length - refN} · 全能参考 ${refN}`}</span>
+              ${materialPureVideo() ? `<span class="material-mode-switch">${modeBtn("standard", "文案分镜")}${modeBtn("infoFlow", "信息流")}</span>` : ""}
               ${isDigital ? `<span class="dh-mode ${isDigitalHumanMode ? "is-digital" : "is-seedance"}" data-mode="${isDigitalHumanMode ? "digitalHuman" : "seedance"}" title="数字人模式先用 Minimax 生成口播，尽量少切；单段目标约${DIGITAL_SEGMENT_TARGET_SEC}s，上限${DIGITAL_SEGMENT_MAX_SEC}s，每段=音频+角色图；Seedance 模式沿用视频模型直接生成">
                 <i aria-hidden="true"></i>
                 <button class="${isDigitalHumanMode ? "on" : ""}" data-dh-mode="digitalHuman">数字人</button>
@@ -247,10 +690,10 @@ export function renderWorkshopPage(root, p) {
             </div>
           </div>` : ""}
 
-          ${!isDigitalHumanMode ? `<div class="refbar card" id="wsRefbar">
+          ${!isDigitalHumanMode && !activeInfoFlowMode ? `<div class="refbar card" id="wsRefbar">
             <div class="refbar-left">
               <b>${icon("star", 13)} 场景 / 产品参考图</b>
-              <em>${esc(product?.shortName || "产品")} logo、界面、场景光线与桌面风格从这里参考；支持拖拽图片，口播风格音频请拖到下方参考区域</em>
+              <em>${esc(product?.shortName || "产品")} logo、界面、场景光线与桌面风格从这里参考；支持拖拽图片，只影响画面参考</em>
             </div>
             <div class="refbar-chip">${sceneRefs.length
               ? sceneRefs.map(a => `<span class="ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button class="ref-x" data-omnidel="${a.id}">${icon("x", 11)}</button></span>`).join("")
@@ -262,47 +705,75 @@ export function renderWorkshopPage(root, p) {
           </div>
           <div id="wsRefChooser" class="ref-chooser card" hidden></div>` : ""}
 
-          <div class="refbar card" id="wsBriefbar">
+          <div class="refbar card video-briefbar video-brief-coverbar" id="wsBriefbar">
             <div class="refbar-left">
-              <b>${icon("fileText", 13)} 创作内容与产品</b>
-              <em>写得越具体，口播和画面越准确；留空也可以随机生成一个完整创作内容</em>
+              <b>${icon("fileText", 13)} 创作主题 / 发布文案</b>
+              <em>主题、发布文案和封面统一在这里定稿；封面跟随标题与正文生成</em>
             </div>
-            <div class="refbar-chip" style="flex:1;display:grid;grid-template-columns:minmax(260px,1fr) minmax(180px,260px);gap:8px">
-              <div class="input-with-action"><input class="input" id="wsTopic" value="${esc(p.topic || "")}" placeholder="详细写创作内容，例如：会议纪要整理耗时、录音转报告、适合周报复盘" /><button class="icon-btn sm" id="wsDice" title="随机创作内容">${icon("dice", 13)}</button></div>
-              <select class="input" id="wsProduct">
-                ${products.map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
-              </select>
-            </div>
-            <div class="refbar-actions">
-              <button class="btn ghost sm" id="wsDraft">${(shots || []).length ? "重生成口播草稿" : "生成口播草稿"}</button>
+            <div class="refbar-chip ws-brief-fields">
+              <div class="ws-topic-row">
+                <div class="input-with-action"><input class="input" id="wsTopic" value="${esc(p.topic || "")}" placeholder="详细写创作主题，例如：AI工作流提效、Skill速通、资料整理对比" /><button class="icon-btn sm" id="wsDice" title="随机创作内容">${icon("dice", 13)}</button></div>
+                <select class="input" id="wsProduct">
+                  ${products.map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
+                </select>
+              </div>
+              <div class="ws-copy-fields">
+                <input class="input" id="wsCopyTitle" value="${esc(C.title || "")}" placeholder="发布标题，例如：国产桌面智能体，1分钟上手讲清楚" />
+                <textarea class="input" id="wsCopyBody" rows="4" placeholder="按口播内容总结成发布简介，可直接修改">${esc(C.body || "")}</textarea>
+              </div>
+              ${activeInfoFlowMode ? "" : `<div class="ws-narration-inline">
+                <div class="ws-inline-head">
+                  <div class="ws-inline-label">
+                    <b>${icon("list", 13)} 口播草稿</b>
+                    <em>${materialPureVideo() ? "素材号视频只生成纯画面；这里用于后期字幕和混剪" : "数字人和真人视频会把口播写入对应时间结构"}</em>
+                  </div>
+                  <div class="ws-brief-actions">
+                    <button class="btn dark sm" id="wsDraft">${icon("spark", 13)} ${(shots || []).length ? "一键重生成" : "一键生成"}</button>
+                    <button class="btn ghost sm" id="wsCopyGen">按口播生成文案</button>
+                    <button class="btn ghost sm" id="wsCopyLines">${icon("list", 13)} 复制口播</button>
+                  </div>
+                </div>
+                <textarea class="input" id="wsNarrationText" rows="4" placeholder="一键生成后可在这里修改；也可以直接粘贴自定义口播，每行一句">${esc(narrationText(shots))}</textarea>
+              </div>`}
+              <div class="ws-cover-inline ${cover.status === "loading" ? "is-loading" : ""}" id="wsCoverBar">
+                <button class="cover-frame ${coverAsset ? "has-cover" : ""} ${cover.status === "loading" ? "is-loading" : ""}" id="wsCoverStage" type="button" ${coverAsset ? "" : "disabled"} aria-label="${coverAsset ? "预览封面图" : "封面预览位"}">
+                  ${cover.status === "loading"
+                    ? `<div class="cover-loading"><span></span><b>封面生成中</b><em>3:4</em></div>`
+                    : coverAsset
+                      ? `${thumbHtml(coverAsset)}<span>点击预览</span>`
+                      : `<div class="cover-empty"><b>3:4</b><em>封面预览</em></div>`}
+                </button>
+                <div class="ws-cover-fields">
+                  <div class="ws-cover-toolbar">
+                    <div class="ws-cover-label"><b>${icon("image", 12)} 封面图</b><em>可拖入参考图 / logo / 人物图，只影响封面</em></div>
+                    <div class="ws-cover-actions">
+                      <button class="btn ghost sm" id="wsCoverGen">${cover.status === "loading" ? "生成中…" : `${icon("spark", 13)} 生成封面`}</button>
+                      <label class="btn ghost sm">上传参考<input type="file" accept="image/*" multiple hidden id="wsCoverRefUp" /></label>
+                      <label class="btn ghost sm">${coverAsset ? "替换封面" : "上传封面"}<input type="file" accept="image/*" hidden id="wsCoverUpload" /></label>
+                    </div>
+                  </div>
+                  <textarea class="input" id="wsCoverPrompt" rows="2" placeholder="补充封面画面要求；系统会自动绑定发布标题和文案">${esc(cover.prompt || "")}</textarea>
+                  <div class="cover-ref-strip">
+                    ${coverRefs.length ? coverRefs.map(a => `<span class="ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button class="ref-x" data-cover-ref-rm="${a.id}">${icon("x", 11)}</button></span>`).join("") : `<span class="muted">未设置封面参考图</span>`}
+                  </div>
+                  ${cover.error ? `<div class="sc-error">${esc(cover.error)}</div>` : ""}
+                </div>
+              </div>
             </div>
           </div>
 
-          <div class="refbar card" id="wsNarrationBar">
+          ${activeInfoFlowMode ? "" : `<div class="refbar card" id="wsAudioBar">
             <div class="refbar-left">
-              <b>${icon("list", 13)} 口播草稿</b>
-              <em>${materialPureVideo() ? "素材号视频只生成纯画面；这里的口播用于 Minimax/上传音频和后期混剪字幕" : "真人视频会把口播写入对应时间结构"}</em>
-            </div>
-            <div class="refbar-chip" style="flex:1;display:grid;gap:8px">
-              <textarea class="input" id="wsNarrationText" rows="5" placeholder="生成口播草稿后可在这里修改；也可以直接粘贴自定义口播，每行一句">${esc(narrationText(shots))}</textarea>
-            </div>
-            <div class="refbar-actions">
-              <button class="btn ghost sm" id="wsCopyLines">${icon("list", 13)} 一键复制所有口播</button>
-            </div>
-          </div>
-
-          <div class="refbar card" id="wsAudioBar">
-            <div class="refbar-left">
-              <b>${icon("mic", 13)} ${isDigitalHumanMode ? "口播音频" : "账号口播风格参考 / 口播音频"}</b>
+              <b>${icon("mic", 13)} 口播音频</b>
               <em>${isDigitalHumanMode
                 ? `数字人模式会先用 Minimax 生成口播，再按接近${DIGITAL_SEGMENT_TARGET_SEC}s尽量少切；单段不超过${DIGITAL_SEGMENT_MAX_SEC}s，每段默认用角色形象，可单段覆盖专属角色图。`
                 : isDigital
-                  ? "Seedance 真人模式会把口播写入视频提示词，并用账号口播风格参考保持音色和节奏。"
-                : (voiceRefAsset ? `口播风格参考「${esc(voiceRefAsset.name)}」会写入提示词，用于统一口播音色；` : "可上传/拖拽参考音频锁定账号口播风格；")}${!isDigital && audioAsset
+                  ? "Seedance 真人模式会把口播写入视频提示词；口播音色由声线选择和已生成音频决定。"
+                : ""}${!isDigital && audioAsset
                 ? `已上传「${esc(audioAsset.name)}」· 真实时长 ${fmtTC(p.artifacts.audio.duration || 0)}，分镜已按真实时长重排`
                 : isDigital ? "" : `素材号请先生成或上传口播音频；Seedance 视频始终生成纯画面，后期混入口播`}${p.artifacts.audio.lastError ? ` · ${esc(p.artifacts.audio.lastError)}` : ""}</em>
             </div>
-            <div class="refbar-chip">${!isDigitalHumanMode && voiceRefAsset ? `<span class="ref-chip audio">${icon("mic", 12)}<span>${esc(voiceRefAsset.name)}</span><button class="ref-x" data-voicedel>${icon("x", 11)}</button></span>` : ""}</div>
+            <div class="refbar-chip"></div>
             <div class="refbar-actions voice-audio-actions">
               <div class="voice-main-controls">
                 ${(!isDigital || isDigitalHumanMode) ? voicePickerHtml({ selected: selectedVoice, groups: voiceGroups, favoriteIds: favoriteVoiceIds, lockedVoiceId: acc?.voiceId || "" }) : ""}
@@ -315,7 +786,6 @@ export function renderWorkshopPage(root, p) {
                 ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm ${voiceFav ? "voice-action-active" : ""}" id="wsVoiceFav">${icon("star", 12)} ${voiceFav ? "已收藏" : "收藏"}</button>
                 <button class="btn ghost sm ${voiceLocked ? "voice-action-active" : ""}" id="wsVoiceFix">${icon("check", 12)} ${voiceLocked ? "已锁定" : "固定到账号"}</button>` : ""}
                 ${!isDigital || isDigitalHumanMode ? `<button class="btn ghost sm" id="wsTts">${icon("mic", 13)} ${isDigitalHumanMode ? "生成分段口播" : (audioAsset && p.artifacts.audio.source === "tts" ? "重新生成口播" : "生成口播音频")}${ttsApiConfigured() ? "" : "（估时）"}</button>` : ""}
-                ${!isDigitalHumanMode ? `<label class="btn ghost sm">${voiceRefAsset ? "更换口播风格参考" : "上传口播风格参考"}<input type="file" accept="audio/*" hidden id="wsVoiceRefUp" /></label>` : ""}
                 ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
               </div>
             </div>
@@ -325,9 +795,9 @@ export function renderWorkshopPage(root, p) {
               <audio src="${esc(urlFor(audioAsset))}" controls preload="metadata" style="width:min(520px,100%);height:34px"></audio>
             </div>` : ""}
             ${digitalPlanHtml}
-          </div>
+          </div>`}
 
-          ${isDigitalHumanMode ? "" : `
+          ${isDigitalHumanMode ? "" : activeInfoFlowMode ? infoFlowPanel(infoFlow, sceneRefs) : `
             <div class="inhouse-controls">
               <button class="btn gen" id="wsAuto">${icon("spark", 15)} ${running ? "生成中…" : okCount === units.length && units.length ? "全部片段已就绪" : "一键全自动编排出片"}</button>
               <button class="btn ghost" id="wsGenPrompts">${icon("list", 14)} 仅生成提示词</button>
@@ -344,6 +814,69 @@ export function renderWorkshopPage(root, p) {
     wireStepper(root);
     wire();
   };
+
+  function infoFlowPanel(infoFlow, sceneRefs = []) {
+    const segs = (infoFlow.segments || []).length
+      ? infoFlow.segments
+      : [
+        { id: "front15", label: "前15s", title: "前15s钩子", videoPrompt: "", caption: "用一个强冲突开场，快速把观众停住", duration: 15 },
+        { id: "back15", label: "后15s", title: "后15s功能演示", videoPrompt: "", caption: "功能演示要和前面呼应，产品动作必须具体", duration: 15, storyboardAssetIds: [] }
+      ];
+    const back = segs[1] || {};
+    const storyboardAssets = (back.storyboardAssetIds || []).map(assetById).filter(Boolean);
+    const loading = infoFlow.status === "storyboarding";
+    return `<div class="infoflow-panel card" id="wsInfoFlow">
+      <div class="infoflow-head">
+        <div>
+          <b>${icon("film", 14)} 信息流</b>
+          <em>不强制先生成口播。前15s做钩子，后15s做产品演示；功能演示段可先生成分镜图再带入视频。</em>
+        </div>
+        <div class="infoflow-actions">
+          <button class="btn ghost sm" id="wsInfoPlan">${icon("spark", 13)} 生成脚本</button>
+          <button class="btn ghost sm" id="wsInfoStoryboard">${loading ? "分镜生成中…" : `${icon("image", 13)} 生成功能演示分镜`}</button>
+          <button class="btn gen sm" id="wsInfoVideo">${icon("film", 13)} 生成信息流视频</button>
+        </div>
+      </div>
+      ${infoFlow.error ? `<div class="sc-error">${esc(infoFlow.error)}</div>` : ""}
+      <div class="infoflow-ref-row" id="wsInfoFlowRefs">
+        <div>
+          <b>${icon("star", 13)} 产品 / 界面参考</b>
+          <em>${esc(product?.shortName || "产品")} logo、界面和产品环境从这里参考；前15s钩子不使用，后15s功能演示会自动带上。</em>
+        </div>
+        <div class="refbar-chip">${sceneRefs.length
+          ? sceneRefs.map(a => `<span class="ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button class="ref-x" data-omnidel="${a.id}">${icon("x", 11)}</button></span>`).join("")
+          : `<span class="muted">可拖入产品logo、界面图、场景图</span>`}</div>
+        <div class="refbar-actions">
+          <button class="btn ghost sm" id="wsRefPick">从资产选择</button>
+          <label class="btn ghost sm">上传<input type="file" accept="image/*" multiple hidden id="wsRefUp" /></label>
+        </div>
+      </div>
+      <div id="wsRefChooser" class="ref-chooser card" hidden></div>
+      <div class="infoflow-grid">
+        ${segs.slice(0, 2).map((seg, i) => `<div class="if-card ${i === 1 ? "back" : "front"}">
+          <div class="if-card-top">
+            <span>${esc(seg.label || (i === 0 ? "前15s" : "后15s"))}</span>
+            <b>${esc(seg.title || (i === 0 ? "前15s钩子" : "后15s功能演示"))}</b>
+            <em>${fmtTC(seg.duration || 15)}</em>
+          </div>
+          <p>${esc(seg.caption || (i === 0 ? "强钩子 / 角色冲突 / 快切" : "功能演示 / 分镜参考 / 产品呼应"))}</p>
+          <textarea class="input" rows="8" data-if-prompt="${i}" placeholder="${i === 0 ? "前15s导演提示词" : "后15s导演提示词，会自动参考功能演示分镜图"}">${esc(seg.videoPrompt || "")}</textarea>
+        </div>`).join("")}
+      </div>
+      <div class="if-storyboard-row" id="wsInfoStoryboardDrop">
+        <div class="if-storyboard-title">
+          <b>${icon("image", 13)} 功能演示分镜参考</b>
+          <em>可自动生成或手动拖入；提交后15s视频时会自动作为功能演示参考图。</em>
+        </div>
+        <div class="if-storyboards ${loading ? "is-loading" : ""}">
+          ${storyboardAssets.length
+            ? storyboardAssets.map(a => `<button class="if-board-thumb" type="button" data-if-board="${a.id}">${thumbHtml(a)}<span>${esc(a.name)}</span><i data-if-board-rm="${a.id}">${icon("x", 10)}</i></button>`).join("")
+            : [1, 2, 3].map(n => `<div class="if-board-empty"><b>${n}</b><em>${loading ? "生成中" : "待分镜"}</em></div>`).join("")}
+        </div>
+        <label class="btn ghost sm">${icon("upload", 12)} 上传分镜<input type="file" accept="image/*" multiple hidden id="wsInfoStoryboardUp" /></label>
+      </div>
+    </div>`;
+  }
 
   function unitCard(u, i, job) {
     const us = unitShots(p, u);
@@ -425,7 +958,7 @@ export function renderWorkshopPage(root, p) {
       units, shots, account: acc, style: p.artifacts.script.style,
       product: productById(p.artifacts.script.productId || "dumate"),
       hasNarrationAudio: isDigital ? false : (pureVideoByPolicy || hasAudio()),
-      hasVoiceRef: !!p.artifacts.audio.voiceRefAssetId || (!p.artifacts.audio.voiceRefDisabled && !!acc?.voiceRefAssetId),
+      hasVoiceRef: false,
       hasCharacterRef: !!(A.characterRefAssetId || acc?.charBoardAssetId),
       hasSceneRef: !!((A.sceneRefAssetIds || []).length || (A.omniRefAssetIds || []).filter(id => id !== A.characterRefAssetId).length)
     });
@@ -463,7 +996,7 @@ export function renderWorkshopPage(root, p) {
       const seg = segs[i];
       const text = sanitizeXhsText(seg.line || "");
       if (!text) continue;
-      const out = await synthesizeTts({ text, voiceId });
+      const out = await synthesizeTts({ text, voiceId, speed: 1.2 });
       const a = await addAssetFromDataUrl(acc.id, {
         name: `数字人口播_D${String(i + 1).padStart(2, "0")}_${(p.title || p.topic || "视频").slice(0, 8)}`,
         type: "音频",
@@ -490,7 +1023,7 @@ export function renderWorkshopPage(root, p) {
   }
 
   async function synthesizeOneDigitalSegment(segId, voiceId) {
-    const segs = digitalSegmentsFromShots(p, acc);
+    const segs = digitalSegmentsForDisplay(p, acc);
     const index = segs.findIndex(x => x.id === segId);
     const seg = segs[index];
     if (!seg) throw new Error("未找到数字人分段");
@@ -509,7 +1042,7 @@ export function renderWorkshopPage(root, p) {
       });
       return { count: 0, duration: seg.dur || 0 };
     }
-    const out = await synthesizeTts({ text, voiceId });
+    const out = await synthesizeTts({ text, voiceId, speed: 1.2 });
     const a = await addAssetFromDataUrl(acc.id, {
       name: `数字人口播_D${String(index + 1).padStart(2, "0")}_${(p.title || p.topic || "视频").slice(0, 8)}`,
       type: "音频",
@@ -535,11 +1068,15 @@ export function renderWorkshopPage(root, p) {
   }
 
   function prepareDigitalVideoSegments(ids = null) {
-    const segs = digitalSegmentsFromShots(p, acc);
+    const segs = digitalSegmentsForDisplay(p, acc);
     const pick = ids ? segs.filter(x => ids.includes(x.id)) : segs;
-    if (!shots.length || !pick.length) { toast("先生成口播草稿并切分数字人片段"); return false; }
+    if (!pick.length) {
+      const hasSegmentAudio = (A.digitalHuman?.segments || []).some(x => x.audioAssetId && assetById(x.audioAssetId));
+      toast(hasSegmentAudio ? "已检测到旧分段口播，但当前按钮指向的片段已刷新；请再点一次生成视频" : "先生成口播草稿并切分数字人片段");
+      return false;
+    }
     const missingAudio = pick.filter(x => !x.audioAssetId || !assetById(x.audioAssetId));
-    if (missingAudio.length) { toast("请先生成分段口播音频"); return false; }
+    if (missingAudio.length) { toast("数字人需要每段独立口播音频，请先点「生成分段口播」"); return false; }
     const missingRef = pick.filter(x => !x.characterRefAssetId || !assetById(x.characterRefAssetId));
     if (missingRef.length) { toast("请先上传统一参考图，或给单段拖入角色图"); return false; }
     applyDigitalFixedPrompts();
@@ -549,6 +1086,41 @@ export function renderWorkshopPage(root, p) {
     });
     A.digitalHuman.segments = segs;
     save("productions");
+    return true;
+  }
+
+  function pickDigitalVideoSegments(ids = null) {
+    const segs = digitalSegmentsForDisplay(p, acc);
+    return ids ? segs.filter(x => ids.includes(x.id)) : segs;
+  }
+
+  async function ensureDigitalHumanCanSubmit(ids = null) {
+    const pick = pickDigitalVideoSegments(ids);
+    if (!pick.length) return false;
+    const cfg = await videoServerConfig();
+    if (!cfg.ok) {
+      toast(`数字人服务不可用：${cfg.detail || "无法读取视频配置"}`, "error");
+      return false;
+    }
+    if (!cfg.digitalHumanConfigured) {
+      toast("数字人模型未配置智能视觉 AK/SK；部署服务器后需配置数字人环境变量", "error");
+      return false;
+    }
+    const localRefs = [];
+    pick.forEach(seg => {
+      const charAsset = assetById(seg.characterRefAssetId);
+      const audioAsset = assetById(seg.audioAssetId);
+      [[charAsset, "角色图"], [audioAsset, "口播音频"]].forEach(([asset, label]) => {
+        const u = urlFor(asset) || "";
+        if (!asset || isPublicHttpUrl(u)) return;
+        if (isServerFileUrl(u) && cfg.publicBaseConfigured) return;
+        localRefs.push(label);
+      });
+    });
+    if (localRefs.length) {
+      toast("已检测到分段口播和角色图，但它们当前不是公网 URL；OmniHuman 只能读取公网素材。部署服务器后请配置 PUBLIC_BASE_URL，或先换成公网图片/音频链接再生成。", "error");
+      return false;
+    }
     return true;
   }
 
@@ -596,6 +1168,54 @@ export function renderWorkshopPage(root, p) {
     return setNarrationLines(text.split(/\n+/), { invalidateAudio: true, silent });
   }
 
+  function syncCopyFromEditor({ markBodyManual = false } = {}) {
+    p.artifacts.copy = p.artifacts.copy || { title: "", body: "" };
+    const title = ($("#wsCopyTitle", root)?.value || "").trim();
+    const body = ($("#wsCopyBody", root)?.value || "").trim();
+    p.artifacts.copy.title = sanitizeXhsText(title);
+    p.artifacts.copy.body = sanitizeXhsText(body);
+    if (markBodyManual) p.artifacts.copy.infoFlowBodyManual = true;
+    save("productions");
+  }
+
+  function infoFlowCopyOverride() {
+    return p.artifacts.copy?.infoFlowBodyManual ? (p.artifacts.copy.body || "") : "";
+  }
+
+  async function generateVideoCopyFromWorkshop(triggerEl = null) {
+    syncNarrationFromEditor({ silent: true });
+    const currentShots = p.artifacts.script.shots || [];
+    if (!currentShots.length) { toast("先生成口播草稿"); return; }
+    const selectedProduct = productById(p.artifacts.script.productId || "dumate");
+    const style = p.artifacts.script.style || acc?.styleProfile || acc?.lockedStyle || "";
+    const run = async () => {
+      const res = await AI.generateCopy({
+        topic: p.topic,
+        shots: currentShots,
+        account: acc,
+        style,
+        kind: "video",
+        product: selectedProduct,
+        useOnlineTrends: false,
+        trendGuide: "",
+        trendPrep: null
+      });
+      p.artifacts.copy = {
+        ...(p.artifacts.copy || {}),
+        title: res.title || p.artifacts.script.title || p.title || p.topic || "",
+        body: res.copy || ""
+      };
+      save("productions");
+      const titleInput = $("#wsCopyTitle", root);
+      const bodyInput = $("#wsCopyBody", root);
+      if (titleInput) titleInput.value = p.artifacts.copy.title || "";
+      if (bodyInput) bodyInput.value = p.artifacts.copy.body || "";
+      toast(AI.sourceNote("已按口播生成发布文案"));
+    };
+    if (triggerEl) return withLoading(triggerEl, run, "生成中…");
+    return run();
+  }
+
   function invalidatePromptsAfterAudioChange() {
     buildMaterialUnits(p);
     (p.artifacts.boards.units || []).forEach(u => {
@@ -610,6 +1230,15 @@ export function renderWorkshopPage(root, p) {
   }
 
   function wire() {
+    $$("[data-material-mode]", root).forEach(b => b.addEventListener("click", () => {
+      const next = b.dataset.materialMode || "standard";
+      if (A.materialMode === next) return;
+      A.materialMode = next;
+      if (next === "infoFlow") ensureInfoFlowState(p);
+      save("productions");
+      toast(next === "infoFlow" ? "已切到信息流：前15s钩子 + 后15s功能演示" : "已切回文案分镜");
+      draw();
+    }));
     $$("[data-dh-mode]", root).forEach(b => b.addEventListener("click", () => {
       const next = b.dataset.dhMode;
       if (!next || A.generationMode === next) return;
@@ -618,8 +1247,26 @@ export function renderWorkshopPage(root, p) {
       toast(next === "digitalHuman" ? "已切到数字人模式：默认先生成口播，再分段生成数字人" : "已切到 Seedance 真人视频模式");
       draw();
     }));
-    $("#wsTopic", root)?.addEventListener("input", e => { p.topic = sanitizeXhsText(e.target.value.trim()); save("productions"); });
+    $("#wsTopic", root)?.addEventListener("input", e => {
+      p.topic = sanitizeXhsText(e.target.value.trim());
+      if (p.artifacts.copy) p.artifacts.copy.infoFlowBodyManual = false;
+      save("productions");
+    });
     $("#wsDice", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      if (activeInfoFlowMode) {
+        if (p.artifacts.copy) p.artifacts.copy.infoFlowBodyManual = false;
+        const plan = buildInfoFlowPlan({
+          topic: "",
+          acc,
+          product: productById(p.artifacts.script.productId || "dumate")
+        });
+        applyInfoFlowPlan(p, plan);
+        const input = $("#wsTopic", root); if (input) input.value = p.topic || "";
+        save("productions");
+        toast("已随机生成信息流方向");
+        draw();
+        return;
+      }
       const topic = sanitizeXhsText(await AI.generateCreativeBrief({
         account: acc,
         product: productById(p.artifacts.script.productId || "dumate"),
@@ -635,6 +1282,16 @@ export function renderWorkshopPage(root, p) {
     $("#wsDraft", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       let topic = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || "").trim());
       const selectedProduct = productById(p.artifacts.script.productId || "dumate");
+      if (activeInfoFlowMode) {
+        syncCopyFromEditor();
+        const plan = buildInfoFlowPlan({ topic, acc, product: selectedProduct, copyText: infoFlowCopyOverride() });
+        applyInfoFlowPlan(p, plan);
+        const input = $("#wsTopic", root); if (input) input.value = p.topic || "";
+        save("productions");
+        toast("已生成信息流前后15秒脚本");
+        draw();
+        return;
+      }
       if (!topic) {
         topic = sanitizeXhsText(await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: 6, kind: "video" }));
         p.topic = topic;
@@ -650,15 +1307,67 @@ export function renderWorkshopPage(root, p) {
       shots = p.artifacts.script.shots || [];
       p.artifacts.script.title = res.title || topic;
       p.title = res.title || topic;
+      const copyRes = await AI.generateCopy({
+        topic,
+        shots,
+        account: acc,
+        style,
+        kind: "video",
+        product: selectedProduct,
+        useOnlineTrends: false,
+        trendGuide: "",
+        trendPrep: null
+      });
+      p.artifacts.copy = {
+        ...(p.artifacts.copy || {}),
+        title: copyRes.title || res.title || topic,
+        body: copyRes.copy || ""
+      };
       Object.assign(p.artifacts.audio, estimateAudio(p.artifacts.script.shots), { assetId: null, source: "estimate", lastError: "" });
       p.artifacts.boards.units = [];
       buildMaterialUnits(p);
       save("productions");
-      toast(AI.sourceNote("已生成口播草稿并按可读时长重排片段"));
+      toast(AI.sourceNote("已生成口播草稿、发布文案并按可读时长重排片段"));
       draw();
     }, "生成中…"));
     $("#wsNarrationText", root)?.addEventListener("blur", () => syncNarrationFromEditor({ silent: true }));
     $("#wsNarrationText", root)?.addEventListener("change", () => syncNarrationFromEditor({ silent: true }));
+    $("#wsCopyTitle", root)?.addEventListener("input", () => syncCopyFromEditor());
+    $("#wsCopyBody", root)?.addEventListener("input", () => syncCopyFromEditor({ markBodyManual: true }));
+    $("#wsCopyGen", root)?.addEventListener("click", e => generateVideoCopyFromWorkshop(e.currentTarget));
+    $("#wsCoverPrompt", root)?.addEventListener("input", e => {
+      const cover = coverState(p);
+      cover.prompt = e.currentTarget.value;
+      save("productions");
+    });
+    $("#wsCoverGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      await generateCoverImage();
+    }, "生成中…"));
+    $("#wsCoverRefUp", root)?.addEventListener("change", async e => {
+      await addCoverRefs(e.target.files);
+      e.target.value = "";
+    });
+    $("#wsCoverUpload", root)?.addEventListener("change", async e => {
+      const f = Array.from(e.target.files || []).find(x => x.type.startsWith("image/"));
+      e.target.value = "";
+      if (f) await uploadCoverImage(f);
+    });
+    const coverbar = $("#wsCoverBar", root);
+    wireDropZone(coverbar, async files => {
+      const list = Array.from(files || []).filter(f => f.type.startsWith("image/"));
+      if (list.length) await addCoverRefs(list);
+    });
+    $$("[data-cover-ref-rm]", root).forEach(b => b.addEventListener("click", () => {
+      const cover = coverState(p);
+      cover.refAssetIds = (cover.refAssetIds || []).filter(id => id !== b.dataset.coverRefRm);
+      save("productions");
+      draw();
+    }));
+    $("#wsCoverStage", root)?.addEventListener("click", e => {
+      const cover = coverState(p);
+      const asset = cover.assetId ? assetById(cover.assetId) : null;
+      if (asset) openLightbox(e.currentTarget, urlFor(asset), asset.name || "视频封面");
+    });
     // 全能参考素材（logo / 界面图，可多张）
     const charbar = $("#wsCharbar", root);
     wireDropZone(charbar, async files => {
@@ -675,7 +1384,7 @@ export function renderWorkshopPage(root, p) {
       save("productions", "accounts");
       draw();
     });
-    const refbar = $("#wsRefbar", root);
+    const refbar = $("#wsRefbar", root) || $("#wsInfoFlowRefs", root);
     wireDropZone(refbar, async files => { await addRefs(files); });
     $("#wsRefUp", root)?.addEventListener("change", async e => { await addOmni(e.target.files); e.target.value = ""; });
     $$("[data-omnidel]", root).forEach(b => b.addEventListener("click", () => {
@@ -704,8 +1413,6 @@ export function renderWorkshopPage(root, p) {
     });
     async function addRefs(files) {
       const list = Array.from(files || []);
-      const audios = list.filter(f => f.type.startsWith("audio/"));
-      if (audios[0]) await setVoiceRef(audios[0]);
       await addOmni(list.filter(f => f.type.startsWith("image/")));
     }
     async function addOmni(files) {
@@ -732,6 +1439,270 @@ export function renderWorkshopPage(root, p) {
       toast("已设置角色形象");
       draw();
     }
+
+    async function addCoverRefs(files) {
+      const imgs = Array.from(files || []).filter(f => f.type.startsWith("image/"));
+      if (!imgs.length) return;
+      const cover = coverState(p);
+      for (const f of imgs.slice(0, 5)) {
+        const dataUrl = await fileToDataUrl(f);
+        const a = await addAssetFromDataUrl(acc.id, {
+          name: f.name.replace(/\.[^.]+$/, ""),
+          tags: ["视频封面参考", "账号资产"],
+          dataUrl
+        });
+        cover.refAssetIds = [...new Set([...(cover.refAssetIds || []), a.id])].slice(0, 5);
+      }
+      save("productions");
+      toast("已加入封面参考图");
+      draw();
+    }
+
+    async function uploadCoverImage(file) {
+      if (!file || !file.type.startsWith("image/")) { toast("请上传图片文件"); return; }
+      const cover = coverState(p);
+      let dataUrl = await fileToDataUrl(file);
+      dataUrl = await polishPublishImage(dataUrl, `${p.id}-cover-upload-${p.artifacts.copy?.title || p.topic || ""}`);
+      const a = await addAssetFromDataUrl(acc.id, {
+        name: `视频封面_${file.name.replace(/\.[^.]+$/, "").slice(0, 18)}`,
+        tags: ["视频封面", "上传封面", "账号资产"],
+        dataUrl
+      });
+      cover.assetId = a.id;
+      cover.status = "done";
+      cover.error = "";
+      save("productions");
+      toast("已上传封面图");
+      draw();
+    }
+
+    async function generateCoverImage() {
+      syncCopyFromEditor();
+      const cover = coverState(p);
+      const title = (p.artifacts.copy?.title || p.title || p.topic || "").trim();
+      if (!title) { toast("先生成或填写发布标题，再生成封面"); return; }
+      if (!imageApiConfigured()) throw new Error("图片 API 未接入：请先配置站内图片服务，或手动上传封面");
+      const ratio = "3:4";
+      const rawCustom = ($("#wsCoverPrompt", root)?.value || cover.prompt || "").trim();
+      const custom = /^生成短视频封面图/.test(rawCustom) ? "" : rawCustom;
+      cover.prompt = coverPromptFromCopy({
+        title,
+        body: p.artifacts.copy?.body || narrationText(p.artifacts.script.shots || []),
+        product: productById(p.artifacts.script.productId || "dumate"),
+        custom,
+        ratio
+      });
+      cover.status = "loading";
+      cover.error = "";
+      save("productions");
+      draw();
+      try {
+        const provider = activeProviderFor("image");
+        const key = providerKeyFor("image", provider);
+        if (provider?.mock) throw new Error("图片 API 未接入：当前图片 Provider 是模拟模式");
+        const finalPrompt = enrichCoverPromptWithRefs(cover.prompt, cover);
+        const r = await provider.submit({
+          prompt: finalPrompt,
+          refs: await coverProviderRefs(cover),
+          ratio,
+          apiKey: key?.secret,
+          endpoint: key?.provider,
+          model: key?.model || "custom-imagemodel-gt"
+        });
+        const out = await provider.poll(r.providerRef);
+        if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || "图片生成未返回结果");
+        const dataUrl = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await coverUrlToDataUrl(out.output.dataUrl);
+        const polished = await polishPublishImage(dataUrl, `${p.id}-cover-${title}`);
+        const a = await addAssetFromDataUrl(acc.id, {
+          name: `视频封面_${title.slice(0, 12)}`,
+          tags: ["视频封面", "站内生成", "发布前精修", "账号资产"],
+          dataUrl: polished
+        });
+        cover.assetId = a.id;
+        cover.status = "done";
+        cover.error = "";
+        save("productions");
+        toast("封面图已生成并入库");
+      } catch (err) {
+        cover.status = "failed";
+        cover.error = err.message || String(err);
+        save("productions");
+        toast("封面生成失败：" + cover.error, "error");
+      } finally {
+        draw();
+      }
+    }
+
+    function syncInfoFlowPrompts() {
+      if (!activeInfoFlowMode) return;
+      const info = ensureInfoFlowState(p);
+      if (!info.segments.length) return;
+      $$("[data-if-prompt]", root).forEach(el => {
+        const i = +el.dataset.ifPrompt;
+        if (info.segments[i]) {
+          const cleaned = stripInfoFlowDirectorNotes(el.value.trim());
+          info.segments[i].videoPrompt = cleaned;
+          if (el.value !== cleaned) el.value = cleaned;
+        }
+      });
+      buildMaterialUnits(p);
+      save("productions");
+    }
+
+    async function addInfoFlowStoryboardRefs(files) {
+      const imgs = Array.from(files || []).filter(f => f.type.startsWith("image/"));
+      if (!imgs.length) return;
+      let info = ensureInfoFlowState(p);
+      if (!info.segments.length) {
+        applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+        info = ensureInfoFlowState(p);
+      }
+      const back = info.segments[1] || (info.segments[1] = { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, storyboardAssetIds: [] });
+      for (const f of imgs) {
+        const dataUrl = await fileToDataUrl(f);
+        const a = await addAssetFromDataUrl(acc.id, {
+          name: `信息流功能演示分镜_${f.name.replace(/\.[^.]+$/, "").slice(0, 16)}`,
+          tags: ["信息流分镜图", "功能演示分镜", "账号资产"],
+          dataUrl
+        });
+        back.storyboardAssetIds = [...new Set([...(back.storyboardAssetIds || []), a.id])];
+      }
+      A.infoFlow.storyboards = back.storyboardAssetIds || [];
+      buildMaterialUnits(p);
+      save("productions");
+      toast("已加入功能演示分镜参考图");
+      draw();
+    }
+
+    async function generateInfoFlowStoryboards({ silent = false } = {}) {
+      let info = ensureInfoFlowState(p);
+      if (!info.segments.length) {
+        applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+        info = ensureInfoFlowState(p);
+      }
+      const back = info.segments[1];
+      if (!back) throw new Error("请先生成信息流脚本");
+      if (!imageApiConfigured()) throw new Error("图片 API 未接入：请手动上传功能演示分镜参考图");
+      const prompts = (back.storyboardPrompts || []).length ? back.storyboardPrompts : buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }).segments[1].storyboardPrompts;
+      const provider = activeProviderFor("image");
+      const key = providerKeyFor("image", provider);
+      if (provider?.mock) throw new Error("图片 API 未接入：当前图片 Provider 是模拟模式");
+      info.status = "storyboarding";
+      info.error = "";
+      save("productions");
+      draw();
+      try {
+        const refIds = [...new Set([...(A.omniRefAssetIds || []), ...(A.sceneRefAssetIds || [])].filter(Boolean))];
+        const refs = await providerRefsFromAssetIds(refIds, 9);
+        const made = [];
+        for (let i = 0; i < prompts.length; i++) {
+          const prompt = [
+            prompts[i],
+            "画面必须是9:16竖版分镜图，文字少而清晰，保留产品logo/界面参考，不要二维码，不要页码。"
+          ].join("\n");
+          const r = await provider.submit({
+            prompt,
+            refs,
+            ratio: "9:16",
+            apiKey: key?.secret,
+            endpoint: key?.provider,
+            model: key?.model || "custom-imagemodel-gt"
+          });
+          const out = await provider.poll(r.providerRef);
+          if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || `第${i + 1}张分镜未返回结果`);
+          const dataUrl = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await coverUrlToDataUrl(out.output.dataUrl);
+          const polished = await polishPublishImage(dataUrl, `${p.id}-infoflow-storyboard-${i + 1}`);
+          const a = await addAssetFromDataUrl(acc.id, {
+            name: `信息流功能演示分镜_${i + 1}_${(p.title || p.topic || "视频").slice(0, 10)}`,
+            tags: ["信息流分镜图", "功能演示分镜", "站内生成", "账号资产"],
+            dataUrl: polished
+          });
+          made.push(a.id);
+        }
+        back.storyboardAssetIds = [...new Set([...(back.storyboardAssetIds || []), ...made])];
+        A.infoFlow.storyboards = back.storyboardAssetIds;
+        info.status = "ready";
+        info.error = "";
+        buildMaterialUnits(p);
+        save("productions");
+        if (!silent) toast(`功能演示分镜已生成：${made.length} 张`);
+        return made;
+      } catch (err) {
+        info.status = "failed";
+        info.error = err.message || String(err);
+        save("productions");
+        if (!silent) toast("功能演示分镜生成失败：" + info.error, "error");
+        throw err;
+      } finally {
+        draw();
+      }
+    }
+
+    $$("[data-if-prompt]", root).forEach(el => {
+      el.addEventListener("blur", syncInfoFlowPrompts);
+      el.addEventListener("change", syncInfoFlowPrompts);
+    });
+    $("#wsInfoPlan", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      syncCopyFromEditor();
+      const topic = ($("#wsTopic", root)?.value || p.topic || "").trim();
+      applyInfoFlowPlan(p, buildInfoFlowPlan({ topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+      save("productions");
+      toast("已生成信息流前后15秒脚本");
+      draw();
+    }, "生成中…"));
+    $("#wsInfoStoryboard", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      syncInfoFlowPrompts();
+      await generateInfoFlowStoryboards();
+    }, "生成中…"));
+    $("#wsInfoStoryboardUp", root)?.addEventListener("change", async e => {
+      await addInfoFlowStoryboardRefs(e.target.files);
+      e.target.value = "";
+    });
+    const infoDrop = $("#wsInfoStoryboardDrop", root);
+    wireDropZone(infoDrop, async files => { await addInfoFlowStoryboardRefs(files); });
+    $$("[data-if-board]", root).forEach(b => b.addEventListener("click", e => {
+      if (e.target.closest("[data-if-board-rm]")) return;
+      const a = assetById(b.dataset.ifBoard);
+      if (a) openLightbox(b, urlFor(a), a.name || "功能演示分镜");
+    }));
+    $$("[data-if-board-rm]", root).forEach(b => b.addEventListener("click", e => {
+      e.stopPropagation();
+      const info = ensureInfoFlowState(p);
+      const back = info.segments[1];
+      if (back) back.storyboardAssetIds = (back.storyboardAssetIds || []).filter(id => id !== b.dataset.ifBoardRm);
+      A.infoFlow.storyboards = back?.storyboardAssetIds || [];
+      buildMaterialUnits(p);
+      save("productions");
+      draw();
+    }));
+    $("#wsInfoVideo", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      if (!activeInfoFlowMode) return;
+      const info = ensureInfoFlowState(p);
+      if (!info.segments.length) {
+        applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+      }
+      syncInfoFlowPrompts();
+      const back = ensureInfoFlowState(p).segments[1];
+      if (back && !(back.storyboardAssetIds || []).length) {
+        if (!imageApiConfigured()) {
+          toast("请先上传或生成功能演示分镜参考图，再生成信息流视频", "error");
+          return;
+        }
+        try { await generateInfoFlowStoryboards({ silent: true }); }
+        catch (_) {
+          toast("功能演示分镜未生成成功，请先修复分镜再生成视频", "error");
+          return;
+        }
+      }
+      buildMaterialUnits(p);
+      const units = materialUnits(p);
+      if (!units.length || units.some(u => !u.videoPrompt)) { toast("请先生成信息流脚本"); return; }
+      const n = createUnitVideoJobs(p);
+      if (p.stage === "workshop") setStatus(p, "running");
+      save("productions");
+      toast(n ? `已派发 ${n} 个信息流视频片段` : "信息流片段已在队列或已生成");
+      draw();
+    }, "提交中…"));
 
     // 口播：一键复制 + 上传音频（按真实时长重排）
     $("#wsCopyLines", root)?.addEventListener("click", () => {
@@ -834,7 +1805,7 @@ export function renderWorkshopPage(root, p) {
       }
       if (ttsApiConfigured()) {
         try {
-          const out = await synthesizeTts({ text, voiceId });
+          const out = await synthesizeTts({ text, voiceId, speed: 1.2 });
           if (out.fallbackVoice && out.voiceId && out.voiceId !== voiceId) toast(`账号声线不可用，已自动改用默认声线：${out.voiceId}`);
           const a = await addAssetFromDataUrl(acc.id, {
             name: `口播音频_${(p.title || p.topic || "视频").slice(0, 10)}`,
@@ -846,7 +1817,7 @@ export function renderWorkshopPage(root, p) {
             assetId: a.id,
             source: "tts",
             voiceId: out.voiceId || voiceId,
-            voiceRefAssetId: p.artifacts.audio.voiceRefDisabled ? null : (p.artifacts.audio.voiceRefAssetId || acc?.voiceRefAssetId || null),
+            voiceRefAssetId: null,
             lastError: ""
           });
         } catch (err) {
@@ -854,7 +1825,7 @@ export function renderWorkshopPage(root, p) {
             assetId: null,
             source: "estimate",
             voiceId,
-            voiceRefAssetId: p.artifacts.audio.voiceRefDisabled ? null : (p.artifacts.audio.voiceRefAssetId || acc?.voiceRefAssetId || null),
+            voiceRefAssetId: null,
             lastError: err.message || "Minimax TTS 生成失败"
           });
           save("productions");
@@ -867,7 +1838,7 @@ export function renderWorkshopPage(root, p) {
           assetId: null,
           source: "estimate",
           voiceId,
-          voiceRefAssetId: p.artifacts.audio.voiceRefDisabled ? null : (p.artifacts.audio.voiceRefAssetId || acc?.voiceRefAssetId || null),
+          voiceRefAssetId: null,
           lastError: "服务器未配置 Minimax TTS，当前仅估时"
         });
       }
@@ -881,22 +1852,11 @@ export function renderWorkshopPage(root, p) {
       if (!f) return;
       await setAudio(f);
     });
-    $("#wsVoiceRefUp", root)?.addEventListener("change", async e => {
-      const f = e.target.files[0]; e.target.value = "";
-      if (!f) return;
-      await setVoiceRef(f);
-    });
-    $("[data-voicedel]", root)?.addEventListener("click", () => {
-      p.artifacts.audio.voiceRefAssetId = null;
-      p.artifacts.audio.voiceRefDisabled = true;
-      save("productions");
-      draw();
-    });
     const audioBar = $("#wsAudioBar", root);
     wireDropZone(audioBar, async files => {
       if (isDigitalHumanMode) return;
       const f = Array.from(files || []).find(x => x.type.startsWith("audio/"));
-      if (f) await setVoiceRef(f);
+      if (f) await setAudio(f);
     });
     $$("[data-unit-char-ref]", root).forEach(z => {
       wireDropZone(z, async files => {
@@ -915,16 +1875,6 @@ export function renderWorkshopPage(root, p) {
         draw();
       }, { filesOnly: true });
     });
-    async function setVoiceRef(f) {
-      if (!f || !f.type.startsWith("audio/")) { toast("请上传音频文件"); return; }
-      const a = await addAssetFromFile(acc.id, f, { tags: ["口播风格参考", "声线参考", "统一参考音频"] });
-      p.artifacts.audio.voiceRefAssetId = a.id;
-      p.artifacts.audio.voiceRefDisabled = false;
-      if (acc && !acc.voiceRefAssetId) acc.voiceRefAssetId = a.id;
-      save("productions", "accounts");
-      toast("已加入账号口播风格参考");
-      draw();
-    }
     async function setAudio(file) {
       const a = await addAssetFromFile(acc.id, file, { tags: ["口播音频"] });
       const realDur = await audioDuration(urlFor(a));
@@ -939,7 +1889,7 @@ export function renderWorkshopPage(root, p) {
         perShot,
         source: "upload",
         voiceId: p.artifacts.audio.voiceId || acc?.voiceId || "",
-        voiceRefAssetId: p.artifacts.audio.voiceRefDisabled ? null : (p.artifacts.audio.voiceRefAssetId || acc?.voiceRefAssetId || null),
+        voiceRefAssetId: null,
         lastError: ""
       };
       invalidatePromptsAfterAudioChange();   // 按真实时长重排分镜单元（15s 拆分也随之更新），并清掉旧提示词
@@ -950,13 +1900,23 @@ export function renderWorkshopPage(root, p) {
 
     $("#wsDhVideoAll", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       if (prepareDigitalVideoSegments()) {
-        toast("数字人生成已准备好：每段已绑定口播音频和角色图，待接入数字人 API 后提交生成");
+        if (!await ensureDigitalHumanCanSubmit()) { draw(); return; }
+        const n = createUnitVideoJobs(p);
+        if (p.stage === "workshop") setStatus(p, "running");
+        save("productions");
+        toast(n ? `已派发 ${n} 个数字人片段生成任务` : "数字人片段都已在队列或已生成");
         draw();
       }
     }, "生成中…"));
     $$("[data-dh-video]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       if (prepareDigitalVideoSegments([b.dataset.dhVideo])) {
-        toast("该段数字人生成已准备好，待接入数字人 API 后提交生成");
+        if (!await ensureDigitalHumanCanSubmit([b.dataset.dhVideo])) { draw(); return; }
+        const segs = digitalSegmentsForDisplay(p, acc);
+        const i = segs.findIndex(x => x.id === b.dataset.dhVideo);
+        const n = i >= 0 ? createUnitVideoJobs(p, i) : 0;
+        if (p.stage === "workshop") setStatus(p, "running");
+        save("productions");
+        toast(n ? "已派发该段数字人生成任务" : "该段数字人片段已在队列或已生成");
         draw();
       }
     }, "生成中…")));
@@ -975,9 +1935,10 @@ export function renderWorkshopPage(root, p) {
 
     $("#wsAuto", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       syncNarrationFromEditor({ silent: true });
-      if (!shots.length) { toast("先在上方生成口播草稿"); return; }
+      const existingDigitalSegments = isDigitalHumanMode ? digitalSegmentsForDisplay(p, acc) : [];
+      if (!shots.length && !existingDigitalSegments.length) { toast("先在上方生成口播草稿"); return; }
       if (isDigitalHumanMode) {
-        const segs = digitalSegmentsFromShots(p, acc);
+        const segs = existingDigitalSegments.length ? existingDigitalSegments : digitalSegmentsForDisplay(p, acc);
         const audioReady = segs.length && segs.every(x => x.audioAssetId && assetById(x.audioAssetId));
         if (!audioReady) {
           save("productions");
@@ -991,8 +1952,13 @@ export function renderWorkshopPage(root, p) {
           toast("数字人模式还缺角色图：请上传统一角色图，或给单段拖入定制角色图");
           return;
         }
+        if (!prepareDigitalVideoSegments()) { draw(); return; }
+        if (!await ensureDigitalHumanCanSubmit()) { draw(); return; }
+        const n = createUnitVideoJobs(p);
+        if (p.stage === "workshop") setStatus(p, "running");
         save("productions");
-        toast("数字人 API 已预留：当前已完成口播分段与角色图绑定，待接入真实模型后可提交生成");
+        toast(n ? `已派发 ${n} 个数字人片段（需要公网角色图和口播音频）` : "数字人片段都已在队列或已生成");
+        draw();
         return;
       }
       await ensurePrompts();
@@ -1036,8 +2002,13 @@ export function renderWorkshopPage(root, p) {
 
     $("#wsNext", root)?.addEventListener("click", () => {
       syncNarrationFromEditor({ silent: true });
+      syncCopyFromEditor();
+      if (!((p.artifacts.copy?.title || "").trim()) || !((p.artifacts.copy?.body || "").trim())) {
+        toast("先生成或填写发布文案，再进入剪辑");
+        return;
+      }
       if (isDigitalHumanMode) {
-        const segs = digitalSegmentsFromShots(p, acc);
+        const segs = digitalSegmentsForDisplay(p, acc);
         const ready = segs.length && segs.every(x => x.audioAssetId && assetById(x.audioAssetId) && x.characterRefAssetId && assetById(x.characterRefAssetId));
         if (!ready) { toast("数字人模式请先完成分段口播和角色图"); return; }
         prepareDigitalVideoSegments();
