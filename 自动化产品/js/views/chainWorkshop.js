@@ -379,6 +379,31 @@ function stripLeadingCopyTitle(body = "", title = "") {
   return lines.join("\n").replace(/^\s*[:：,，.。!！?？-]+/, "").trim();
 }
 
+function copyBodyForSpeech(body = "") {
+  return sanitizeXhsText(String(body || "")
+    .split(/\n+/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .filter(x => !/^#/.test(x))
+    .join("\n")
+    .replace(/#[^\s#]+/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .trim());
+}
+
+function completeCustomVideoBody(title = "", product = null) {
+  const t = sanitizeXhsText(String(title || "").trim()) || "这件事";
+  const productName = infoProductName(product);
+  const tagLine = videoPublishTagLine(product);
+  return [
+    `很多人卡在「${t}」，不是因为不会用 AI，而是每次都从一堆零散资料里重新开始试。`,
+    `我的做法是先把资料边界、目标结果和复核点列清楚，再交给${productName}跑出一版能继续修改的初稿。`,
+    "真正省时间的地方，是中间那些分类、提取、整理和生成结果的重复动作先被压下去。",
+    "这样人不用放弃判断，只需要把注意力留给最后的筛选、修改和确认。",
+    tagLine
+  ].join("\n");
+}
+
 function infoFlowCopyCue(copyText = "", fallback = "") {
   const fallbackText = String(fallback || "").trim();
   const lines = String(copyText || "")
@@ -797,6 +822,8 @@ export function renderWorkshopPage(root, p) {
     const voiceLocked = !!(selectedVoice.voiceId && acc?.voiceId === selectedVoice.voiceId);
     const voiceFav = !!(selectedVoice.voiceId && favoriteVoiceIds.has(selectedVoice.voiceId));
     const C = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
+    if (C.customMode == null) C.customMode = true;
+    const customCopyMode = C.customMode !== false;
     const cover = coverState(p);
     if (ensureDigitalCoverRoleRef(p, acc, cover)) save("productions");
     const coverAsset = cover.assetId ? assetById(cover.assetId) : null;
@@ -894,17 +921,18 @@ export function renderWorkshopPage(root, p) {
           </div>
           <div id="wsRefChooser" class="ref-chooser card" hidden></div>` : ""}
 
-          <div class="refbar card video-briefbar video-brief-coverbar ${activeInfoFlowMode ? "no-narration" : ""}" id="wsBriefbar">
+          <div class="refbar card video-briefbar video-brief-coverbar ${activeInfoFlowMode ? "no-narration" : ""} ${customCopyMode ? "custom-copy-mode" : "standard-copy-mode"}" id="wsBriefbar">
             <div class="refbar-left">
               <b>${icon("fileText", 13)} 创作主题 / 发布文案</b>
               <em>主题、发布文案和封面统一在这里定稿；封面跟随标题与正文生成</em>
             </div>
             <div class="refbar-chip ws-brief-fields">
-              <div class="ws-topic-row">
-                <div class="input-with-action"><input class="input" id="wsTopic" value="${esc(p.topic || "")}" placeholder="详细写创作主题，例如：AI工作流提效、Skill速通、资料整理对比" /><button class="icon-btn sm" id="wsDice" title="随机创作内容">${icon("dice", 13)}</button></div>
+              <div class="ws-topic-row ${customCopyMode ? "is-custom" : "is-standard"}">
+                ${customCopyMode ? "" : `<div class="input-with-action"><input class="input" id="wsTopic" value="${esc(p.topic || "")}" placeholder="详细写创作主题，例如：AI工作流提效、Skill速通、资料整理对比" /><button class="icon-btn sm" id="wsDice" title="随机创作内容">${icon("dice", 13)}</button></div>`}
                 <select class="input" id="wsProduct">
                   ${products.map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
                 </select>
+                <button class="btn ghost sm ws-copy-mode ${customCopyMode ? "is-active" : ""}" id="wsCopyModeToggle" type="button">${customCopyMode ? "自定义文案" : "标准生成"}</button>
                 <button class="btn gen sm" id="wsBriefGenerate">${icon("spark", 13)} 一键生成</button>
               </div>
               <div class="ws-copy-fields">
@@ -1493,16 +1521,24 @@ export function renderWorkshopPage(root, p) {
   async function generateWorkshopDraft() {
     let topic = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || "").trim());
     const selectedProduct = productById(p.artifacts.script.productId || "dumate");
+    const customMode = p.artifacts.copy?.customMode !== false;
     if (activeInfoFlowMode) {
       syncCopyFromEditor();
-      const customTitle = (p.artifacts.copy?.title || "").trim();
-      const customBody = (p.artifacts.copy?.body || "").trim();
+      let customTitle = (p.artifacts.copy?.title || "").trim();
+      let customBody = (p.artifacts.copy?.body || "").trim();
+      if (customMode) {
+        if (!customTitle && topic) customTitle = topic;
+        if (!customBody && customTitle) customBody = completeCustomVideoBody(customTitle, selectedProduct);
+        if (!customTitle && !customBody) { toast("自定义模式先填写标题，系统会自动补正文"); return; }
+        p.artifacts.copy.title = customTitle || p.title || topic;
+        p.artifacts.copy.body = stripLeadingCopyTitle(customBody, p.artifacts.copy.title);
+      }
       const plan = buildInfoFlowPlan({
-        topic: topic || customTitle,
-        title: customTitle,
+        topic: customMode ? (topic || customTitle) : topic,
+        title: customMode ? customTitle : "",
         acc,
         product: selectedProduct,
-        copyText: customBody || infoFlowCopyOverride()
+        copyText: customMode ? copyBodyForSpeech(customBody) : infoFlowCopyOverride()
       });
       applyInfoFlowPlan(p, plan);
       const input = $("#wsTopic", root); if (input) input.value = p.topic || "";
@@ -1512,13 +1548,16 @@ export function renderWorkshopPage(root, p) {
       return;
     }
     syncCopyFromEditor();
-    const customTitle = (p.artifacts.copy?.title || "").trim();
-    const customBody = (p.artifacts.copy?.body || "").trim();
-    if (customTitle || customBody) {
+    let customTitle = (p.artifacts.copy?.title || "").trim();
+    let customBody = (p.artifacts.copy?.body || "").trim();
+    if (customMode) {
+      if (!customTitle && topic) customTitle = topic;
+      if (!customBody && customTitle) customBody = completeCustomVideoBody(customTitle, selectedProduct);
+      if (!customTitle && !customBody) { toast("自定义模式先填写标题，系统会自动补正文"); return; }
       if (!topic) topic = customTitle || customBody.split(/\n+/).find(Boolean) || "";
       p.topic = sanitizeXhsText(topic);
       p.title = customTitle || p.topic;
-      p.artifacts.script.shots = customWorkshopShotsFromCopy(customTitle || p.title, customBody);
+      p.artifacts.script.shots = customWorkshopShotsFromCopy(customTitle || p.title, copyBodyForSpeech(customBody));
       shots = p.artifacts.script.shots || [];
       p.artifacts.script.title = p.title;
       p.artifacts.script.source = "custom-copy";
@@ -1635,6 +1674,13 @@ export function renderWorkshopPage(root, p) {
       toast(AI.sourceNote("已从四方向库随机生成视频选题"));
     }, "随机中…"));
     $("#wsProduct", root)?.addEventListener("change", e => { p.artifacts.script.productId = e.target.value || "dumate"; save("productions"); });
+    $("#wsCopyModeToggle", root)?.addEventListener("click", () => {
+      p.artifacts.copy = p.artifacts.copy || { title: "", body: "" };
+      p.artifacts.copy.customMode = p.artifacts.copy.customMode === false;
+      save("productions");
+      toast(p.artifacts.copy.customMode === false ? "已切到标准生成" : "已切到自定义文案");
+      draw();
+    });
     const wireDraftGenerate = selector => {
       $(selector, root)?.addEventListener("click", e => withLoading(e.currentTarget, generateWorkshopDraft, "生成中…"));
     };

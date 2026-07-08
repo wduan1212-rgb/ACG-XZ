@@ -930,13 +930,13 @@ function buildBatchCustomCopyShots(copy, count, product) {
     if (i === 0) {
       return {
         idea: title || shortBeat,
-        visual: `封面图：围绕发布标题「${title || shortBeat}」做强点击入口，主视觉、文字和副标题都服务这篇文案，不引入文案外的新主题。`,
+        visual: `围绕发布标题「${title || shortBeat}」做强点击入口，主视觉、文字和副标题都服务这篇文案，不引入文案外的新主题。`,
         line: title || shortBeat
       };
     }
     return {
       idea: shortBeat,
-      visual: `内页图${i + 1}：围绕发布文案里的信息「${shortBeat}」展开，用${productName}相关的真实办公动作、流程卡片、结果对照或可复核清单表达。`,
+      visual: `围绕发布文案里的信息「${shortBeat}」展开，用${productName}相关的真实办公动作、流程卡片、结果对照或可复核清单表达。`,
       line: shortBeat
     };
   });

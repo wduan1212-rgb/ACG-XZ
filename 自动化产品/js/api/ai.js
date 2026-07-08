@@ -327,8 +327,18 @@ function sanitizeOwnProductForGeneratedText(text = "") {
     .replace(/MIAODA/gi, "百度秒哒");
 }
 
-function stripVisibleTextLabels(text = "") {
+function stripImageRoleLabels(text = "") {
   return String(text || "")
+    .replace(/([「“"'])\s*(?:封面图?|首图|入口图|内页图?\s*\d*|内容页\s*\d*|图\s*\d+|第\s*\d+\s*张)\s*[:：]\s*/g, "$1")
+    .replace(/^(?:封面图?|首图|入口图|内页图?\s*\d*|内容页\s*\d*|图\s*\d+|第\s*\d+\s*张)\s*[:：]\s*/g, "")
+    .replace(/([，,。；;\s])(?:封面图?|首图|入口图|内页图?\s*\d*|内容页\s*\d*|图\s*\d+|第\s*\d+\s*张)\s*[:：]\s*/g, "$1")
+    .replace(/(?:画面文字|图上文案|图上文字)\s*[:：]\s*(?:封面图?|首图|入口图|内页图?\s*\d*|内容页\s*\d*)\s*[:：]\s*/g, "画面文字：")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripVisibleTextLabels(text = "") {
+  return stripImageRoleLabels(text)
     .replace(/([「“"'])\s*(?:标题|主标题|大标题|副标题|小标题|文案|正文|主题|画面短句|画面文字|图上文案|图上文字|核心文字)\s*[:：]\s*/g, "$1")
     .replace(/^(?:标题|主标题|大标题|副标题|小标题|文案|正文|主题|画面短句|画面文字|图上文案|图上文字|核心文字)\s*[:：]\s*/g, "")
     .replace(/[，,；;\s]+(?:标题|主标题|大标题|副标题|小标题|文案|正文|主题|画面短句|画面文字|图上文案|图上文字|核心文字)\s*[:：]\s*/g, "，")
@@ -1395,7 +1405,7 @@ function minimalImageNegative() {
 
 function stripInternalImageLabels(text = "") {
   return cleanImagePlanningWords(text)
-    .replace(/(?:封面|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束)[:：·｜|\s-]*/g, "")
+    .replace(/(?:封面图?|首图|入口图|内页图?\s*\d*|内容页\s*\d*|图\s*\d+|第\s*\d+\s*张|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束)[:：·｜|\s-]*/g, "")
     .replace(/第\d+\/\d+张[。；，,\s]*/g, "")
     .replace(/图片任务[:：][^。；\n]*[。；]?/g, "")
     .replace(/图上文字[:：]/g, "画面短句：")
@@ -1507,7 +1517,7 @@ function copyTextForImagePlanning(copy = null) {
 }
 
 function copyTitleForImagePlanning(copy = null, product = null) {
-  const raw = replaceReferenceToolNames(copy?.title || copy?.headline || "", product);
+  const raw = sanitizeOwnProductForGeneratedText(copy?.title || copy?.headline || "");
   const title = cleanGeneratedHeadlineNoise(raw, product, 48);
   if (!title || BAD_IMAGE_HEADLINE_RE.test(title.slice(0, 24))) return "";
   return title;
@@ -2392,9 +2402,9 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const safeScript = sanitizeXhsText(cleanText(scriptInputText(script)));
     const safeStyle = sanitizeXhsText(cleanText(style || ""));
     const safeTpl = sanitizeXhsText(stripPromptScaffold(tpl));
-    const rawCopyTitle = replaceReferenceToolNames(copy?.title || "", product);
+    const rawCopyTitle = sanitizeOwnProductForGeneratedText(copy?.title || "");
     const copyTitle = sanitizeXhsText(cleanGeneratedHeadlineNoise(rawCopyTitle, product, 56) || rawCopyTitle);
-    const copyBody = sanitizeXhsText(replaceReferenceToolNames(copy?.body || copy?.copy || "", product));
+    const copyBody = sanitizeXhsText(sanitizeOwnProductForGeneratedText(copy?.body || copy?.copy || ""));
     const copyForPrompt = copy ? { ...copy, title: copyTitle, headline: copyTitle, body: copyBody, copy: copyBody } : null;
     const copyBrief = [copyTitle ? `标题：${copyTitle}` : "", copyBody ? `正文：${shortChinese(copyBody.replace(/\n+/g, " / "), 420)}` : ""].filter(Boolean).join("\n");
     const hasCopyBrief = !!copyBrief;
