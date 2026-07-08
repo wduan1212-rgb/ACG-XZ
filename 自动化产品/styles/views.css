@@ -805,11 +805,13 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 #wsBriefbar.video-briefbar .ws-brief-fields {
   flex: none;
   display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 7px;
   align-items: stretch;
   min-width: 0;
 }
 #wsBriefbar.video-briefbar .ws-topic-row {
+  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: minmax(320px, 1fr) minmax(180px, 260px) minmax(118px, auto);
   gap: 8px;
@@ -834,21 +836,23 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   padding-inline: 12px;
 }
 #wsBriefbar.video-briefbar .ws-copy-fields {
+  grid-column: 1 / -1;
   flex: none;
   display: grid;
-  grid-template-columns: minmax(220px, .72fr) minmax(300px, 1.28fr);
+  grid-template-columns: minmax(220px, .36fr) minmax(0, 1fr);
   gap: 8px;
   align-items: start;
   min-width: 0;
 }
 #wsBriefbar.video-briefbar .ws-copy-fields .input { width: 100%; min-width: 0; min-height: 42px; }
 #wsBriefbar.video-briefbar .ws-copy-fields textarea {
-  min-height: 70px;
-  max-height: 112px;
+  min-height: 56px;
+  max-height: 92px;
   resize: vertical;
   line-height: 1.55;
 }
 .ws-narration-inline {
+  grid-column: 1 / 2;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 8px;
@@ -892,8 +896,8 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   line-height: 1.45;
 }
 .ws-narration-inline textarea {
-  min-height: 92px;
-  max-height: 150px;
+  min-height: 126px;
+  max-height: 190px;
   resize: vertical;
   line-height: 1.56;
 }
@@ -903,12 +907,13 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 #wsBriefbar.video-brief-coverbar > .refbar-left { padding-top: 2px; }
 #wsBriefbar.video-brief-coverbar .ws-brief-fields { gap: 8px; }
 .ws-cover-inline {
+  grid-column: 2 / 3;
   display: grid;
-  grid-template-columns: minmax(128px, 168px) minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(132px, 172px);
+  gap: 10px;
   align-items: stretch;
   min-width: 0;
-  padding: 10px;
+  padding: 8px 10px;
   border: 1px solid rgba(15, 23, 42, .075);
   border-radius: 16px;
   background: linear-gradient(135deg, rgba(248,251,255,.78), rgba(255,255,255,.58));
@@ -920,9 +925,10 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   box-shadow: 0 0 0 3px rgba(37, 99, 235, .08), inset 0 1px 0 rgba(255,255,255,.78);
 }
 .ws-cover-inline .cover-frame {
+  order: 2;
   width: 100%;
   max-width: none;
-  min-height: 172px;
+  min-height: 176px;
   border-radius: 12px;
 }
 .ws-cover-inline .cover-empty,
@@ -938,6 +944,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   font-size: 9px;
 }
 .ws-cover-fields {
+  order: 1;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
@@ -945,7 +952,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 }
 .ws-cover-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -994,7 +1001,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .ws-cover-actions {
   display: flex;
   align-items: stretch;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 6px;
   min-width: 0;
   white-space: nowrap;
@@ -1003,6 +1010,10 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   min-height: 34px;
   padding: 5px 10px;
   justify-content: center;
+}
+#wsBriefbar.no-narration .ws-cover-inline {
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 220px);
 }
 #wsAudioBar { align-items: flex-start; }
 #wsAudioBar > .refbar-chip { flex: 0 1 auto; min-width: 0; }
@@ -1044,9 +1055,15 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   }
   #wsBriefbar.video-briefbar .ws-topic-row,
   #wsBriefbar.video-briefbar .ws-copy-fields,
+  #wsBriefbar.video-briefbar .ws-brief-fields,
   .ws-inline-head {
     grid-template-columns: 1fr;
     min-width: 100%;
+  }
+  .ws-narration-inline,
+  .ws-cover-inline,
+  #wsBriefbar.no-narration .ws-cover-inline {
+    grid-column: 1 / -1;
   }
   .ws-inline-label {
     display: grid;
@@ -1070,6 +1087,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
     grid-template-columns: 1fr;
   }
   .ws-cover-inline .cover-frame {
+    order: 0;
     width: 100%;
     min-height: 122px;
   }
@@ -1664,10 +1682,22 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   box-shadow: var(--shadow-xs); transition: all var(--t-fast);
 }
 .acc-sec-head:hover { border-color: var(--line-2); }
+.acc-sec-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
 .acc-sec-head .chev { display: inline-flex; color: var(--faint); transition: transform var(--t-fast); }
 .acc-sec.collapsed .chev { transform: rotate(-90deg); }
 .acc-sec-ava { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 12px; flex: none; }
-.acc-sec-head b { font-size: 13px; }
+.acc-sec-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .acc-sec-head em { font-style: normal; margin-left: auto; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .asset-card { overflow: hidden; transition: all var(--t-fast); }
 .asset-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
@@ -2168,6 +2198,21 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .if-card-top em { font-style: normal; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .if-card p { margin: 0 0 8px; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
 .if-card textarea { min-height: 174px; resize: vertical; line-height: 1.55; font-size: 12px; }
+.if-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148,163,184,.18);
+}
+.if-card-actions span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
 .if-storyboard-row {
   margin-top: 12px;
   display: grid;

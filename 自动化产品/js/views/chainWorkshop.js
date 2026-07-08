@@ -23,6 +23,8 @@ import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from ".
 let liveRoot = null, liveProd = null, liveDraw = null, wired = false;
 const DIGITAL_SEGMENT_TARGET_SEC = 27;
 const DIGITAL_SEGMENT_MAX_SEC = 30;
+const COVER_LOADING_TIMEOUT_MS = 8 * 60 * 1000;
+const COVER_GENERATE_TIMEOUT_MS = 140000;
 const COVER_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
 let videoConfigCache = null;
 let videoConfigAt = 0;
@@ -80,11 +82,39 @@ function coverState(p) {
   A.cover = A.cover || { prompt: "", assetId: null, refAssetIds: [], status: "idle", error: "" };
   A.cover.refAssetIds = Array.isArray(A.cover.refAssetIds) ? A.cover.refAssetIds.filter(Boolean).slice(0, 5) : [];
   A.cover.status = A.cover.status || "idle";
+  if (A.cover.status === "loading" && !A.cover.assetId) {
+    const age = Date.now() - Number(A.cover.updatedAt || 0);
+    if (!A.cover.updatedAt || age > COVER_LOADING_TIMEOUT_MS) {
+      A.cover.status = "failed";
+      A.cover.error = "封面生成超时，已恢复为可重试状态";
+      A.cover.updatedAt = Date.now();
+      save("productions");
+    }
+  }
   return A.cover;
 }
 
 function coverRefAssets(cover) {
   return (cover.refAssetIds || []).map(assetById).filter(Boolean).slice(0, 5);
+}
+
+function ensureDigitalCoverRoleRef(p, acc, cover) {
+  if (p?.subType !== "数字人") return false;
+  const id = p.artifacts?.boards?.characterRefAssetId || acc?.charBoardAssetId || "";
+  if (!id || !assetById(id)) return false;
+  cover.refAssetIds = Array.isArray(cover.refAssetIds) ? cover.refAssetIds.filter(Boolean) : [];
+  if (cover.refAssetIds.includes(id)) return false;
+  cover.refAssetIds = [id, ...cover.refAssetIds].slice(0, 5);
+  cover.updatedAt = Date.now();
+  return true;
+}
+
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 async function coverUrlToDataUrl(url) {
@@ -738,7 +768,7 @@ export function renderWorkshopPage(root, p) {
 
   const jobOfUnit = i => {
     const u = materialUnits(p)[i];
-    const list = state.jobs.filter(j => j.productionId === p.id && j.segIndex === i && (!u?.videoPrompt || j.prompt === u.videoPrompt)).sort((a, b) => a.createdAt - b.createdAt);
+    const list = state.jobs.filter(j => !j.superseded && j.productionId === p.id && j.segIndex === i && (!u?.videoPrompt || j.prompt === u.videoPrompt)).sort((a, b) => a.createdAt - b.createdAt);
     return list[list.length - 1] || null;
   };
 
@@ -767,24 +797,29 @@ export function renderWorkshopPage(root, p) {
     const voiceFav = !!(selectedVoice.voiceId && favoriteVoiceIds.has(selectedVoice.voiceId));
     const C = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
     const cover = coverState(p);
+    if (ensureDigitalCoverRoleRef(p, acc, cover)) save("productions");
     const coverAsset = cover.assetId ? assetById(cover.assetId) : null;
     const coverRefs = coverRefAssets(cover);
     const ratio = A.ratio || "9:16";
     const rtBtn = (r) => `<button class="ws-rt" data-ratio="${r}" style="font-size:11px;padding:3px 10px;border-radius:7px;cursor:pointer;border:1px solid ${ratio === r ? "#6a5bff" : "var(--d-line-2,rgba(120,130,160,.3))"};background:${ratio === r ? "rgba(106,91,255,.16)" : "transparent"};color:${ratio === r ? "#8b7bff" : "inherit"}">${r}</button>`;
     const modeBtn = (mode, label) => `<button class="${A.materialMode === mode ? "on" : ""}" type="button" data-material-mode="${mode}">${label}</button>`;
+    const digitalJobFor = (seg, i) => (state.jobs || []).find(j => !j.superseded && j.id === seg.videoJobId)
+      || [...(state.jobs || [])].reverse().find(j => !j.superseded && j.productionId === p.id && j.segIndex === i && j.kind === "video" && j.model === "__digital_human__");
+    const digitalBusy = digitalSegments.some((seg, i) => ["queued", "running", "submitted"].includes(digitalJobFor(seg, i)?.status || seg.videoStatus || ""));
+    const digitalFailed = digitalSegments.some((seg, i) => (digitalJobFor(seg, i)?.status || seg.videoStatus || "") === "failed");
+    const digitalAllLabel = digitalBusy ? "生成中…" : digitalFailed ? "继续生成/重试失败段" : "一键生成视频";
     const digitalPlanHtml = isDigitalHumanMode ? `<div class="dh-plan-inline">
       <div class="dh-plan-head">
         <div>
           <b>${icon("user", 13)} 数字人分段</b>
           <em>${digitalSegments.length ? `已切为 ${digitalSegments.length} 段，尽量少切，单段目标约${DIGITAL_SEGMENT_TARGET_SEC}s且不超过${DIGITAL_SEGMENT_MAX_SEC}s；每段=口播音频 + 角色图。` : `生成口播草稿后按接近${DIGITAL_SEGMENT_TARGET_SEC}s自动拆段，只有长口播才会多切。`}</em>
         </div>
-        <button class="btn gen sm" id="wsDhVideoAll">${digitalSegments.some((seg, i) => ["queued", "running", "submitted"].includes((state.jobs || []).find(j => j.id === seg.videoJobId)?.status || seg.videoStatus || "")) ? `${icon("spark", 13)} 生成中…` : `${icon("spark", 13)} 一键生成视频`}</button>
+        <button class="btn gen sm" id="wsDhVideoAll" ${digitalBusy ? "disabled" : ""}>${digitalBusy ? `<span class="spin-dot"></span> ${digitalAllLabel}` : `${icon("spark", 13)} ${digitalAllLabel}`}</button>
       </div>
       <div class="dh-segs">
         ${digitalSegments.length ? digitalSegments.map((seg, i) => {
           const ref = seg.characterRefAssetId ? assetById(seg.characterRefAssetId) : null;
-          const job = (state.jobs || []).find(j => j.id === seg.videoJobId)
-            || [...(state.jobs || [])].reverse().find(j => j.productionId === p.id && j.segIndex === i && j.kind === "video" && j.model === "__digital_human__");
+          const job = digitalJobFor(seg, i);
           const status = job?.status || seg.videoStatus || "";
           const busy = ["queued", "running", "submitted"].includes(status);
           const done = status === "succeeded" || !!job?.output?.url;
@@ -858,7 +893,7 @@ export function renderWorkshopPage(root, p) {
           </div>
           <div id="wsRefChooser" class="ref-chooser card" hidden></div>` : ""}
 
-          <div class="refbar card video-briefbar video-brief-coverbar" id="wsBriefbar">
+          <div class="refbar card video-briefbar video-brief-coverbar ${activeInfoFlowMode ? "no-narration" : ""}" id="wsBriefbar">
             <div class="refbar-left">
               <b>${icon("fileText", 13)} 创作主题 / 发布文案</b>
               <em>主题、发布文案和封面统一在这里定稿；封面跟随标题与正文生成</em>
@@ -1036,7 +1071,11 @@ export function renderWorkshopPage(root, p) {
       </div>
       <div id="wsRefChooser" class="ref-chooser card" hidden></div>
       <div class="infoflow-grid">
-        ${segs.slice(0, 2).map((seg, i) => `<div class="if-card ${i === 1 ? "back" : "front"}">
+        ${segs.slice(0, 2).map((seg, i) => {
+          const video = videoItems[i] || {};
+          const canSubmit = !video.busy && String(seg.videoPrompt || "").trim();
+          const regenLabel = video.failed ? "重试本段" : video.done ? "重生本段" : "生成本段";
+          return `<div class="if-card ${i === 1 ? "back" : "front"}">
           <div class="if-card-top">
             <span>${esc(seg.label || (i === 0 ? "前15s" : "后15s"))}</span>
             <b>${esc(seg.title || (i === 0 ? "前15s钩子" : "后15s功能演示"))}</b>
@@ -1044,7 +1083,12 @@ export function renderWorkshopPage(root, p) {
           </div>
           <p>${esc(seg.caption || (i === 0 ? "强钩子 / 角色冲突 / 快切" : "功能演示 / 分镜参考 / 产品呼应"))}</p>
           <textarea class="input" rows="8" data-if-prompt="${i}" placeholder="${i === 0 ? "前15s导演提示词" : "后15s导演提示词，会自动参考功能演示分镜图"}">${esc(seg.videoPrompt || "")}</textarea>
-        </div>`).join("")}
+          <div class="if-card-actions">
+            <span>${video.busy ? "生成中" : video.done ? "已生成" : video.failed ? "上次失败" : "未提交"}</span>
+            <button class="btn ghost sm" data-if-seg-video="${i}" ${canSubmit ? "" : "disabled"}>${video.busy ? `<span class="spin-dot"></span> 生成中` : `${icon("refresh", 12)} ${regenLabel}`}</button>
+          </div>
+        </div>`;
+        }).join("")}
       </div>
       <div class="if-storyboard-row" id="wsInfoStoryboardDrop">
         <div class="if-storyboard-title">
@@ -1665,6 +1709,7 @@ export function renderWorkshopPage(root, p) {
         });
         cover.refAssetIds = [...new Set([...(cover.refAssetIds || []), a.id])].slice(0, 5);
       }
+      cover.updatedAt = Date.now();
       save("productions");
       toast("已加入封面参考图");
       draw();
@@ -1683,6 +1728,7 @@ export function renderWorkshopPage(root, p) {
       cover.assetId = a.id;
       cover.status = "done";
       cover.error = "";
+      cover.updatedAt = Date.now();
       save("productions");
       toast("已上传封面图");
       draw();
@@ -1694,6 +1740,7 @@ export function renderWorkshopPage(root, p) {
       const title = (p.artifacts.copy?.title || p.title || p.topic || "").trim();
       if (!title) { toast("先生成或填写发布标题，再生成封面"); return; }
       if (!imageApiConfigured()) throw new Error("图片 API 未接入：请先配置站内图片服务，或手动上传封面");
+      ensureDigitalCoverRoleRef(p, acc, cover);
       const ratio = "3:4";
       const rawCustom = ($("#wsCoverPrompt", root)?.value || cover.prompt || "").trim();
       const custom = /^生成短视频封面图/.test(rawCustom) ? "" : rawCustom;
@@ -1706,22 +1753,36 @@ export function renderWorkshopPage(root, p) {
       });
       cover.status = "loading";
       cover.error = "";
+      cover.updatedAt = Date.now();
       save("productions");
       draw();
       try {
         const provider = activeProviderFor("image");
         const key = providerKeyFor("image", provider);
         if (provider?.mock) throw new Error("图片 API 未接入：当前图片 Provider 是模拟模式");
-        const finalPrompt = enrichCoverPromptWithRefs(cover.prompt, cover);
-        const r = await provider.submit({
-          prompt: finalPrompt,
-          refs: await coverProviderRefs(cover),
-          ratio,
-          apiKey: key?.secret,
-          endpoint: key?.provider,
-          model: key?.model || "custom-imagemodel-gt"
-        });
-        const out = await provider.poll(r.providerRef);
+        const runCover = async (refs, useRefPrompt) => {
+          const finalPrompt = useRefPrompt ? enrichCoverPromptWithRefs(cover.prompt, cover) : cover.prompt;
+          const r = await withTimeout(provider.submit({
+            prompt: finalPrompt,
+            refs,
+            ratio,
+            apiKey: key?.secret,
+            endpoint: key?.provider,
+            model: key?.model || "custom-imagemodel-gt"
+          }), COVER_GENERATE_TIMEOUT_MS, "封面图提交超时");
+          return await withTimeout(provider.poll(r.providerRef), COVER_GENERATE_TIMEOUT_MS, "封面图生成超时");
+        };
+        const refs = await withTimeout(coverProviderRefs(cover), 45000, "封面参考图读取超时");
+        let out;
+        try {
+          out = await runCover(refs, refs.length > 0);
+        } catch (err) {
+          if (!(p.subType === "数字人" && refs.length)) throw err;
+          cover.error = "角色参考图封面生成超时，已自动降级为纯文本封面重试";
+          cover.updatedAt = Date.now();
+          save("productions");
+          out = await runCover([], false);
+        }
         if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || "图片生成未返回结果");
         const dataUrl = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await coverUrlToDataUrl(out.output.dataUrl);
         const polished = await polishPublishImage(dataUrl, `${p.id}-cover-${title}`);
@@ -1733,11 +1794,16 @@ export function renderWorkshopPage(root, p) {
         cover.assetId = a.id;
         cover.status = "done";
         cover.error = "";
+        cover.updatedAt = Date.now();
         save("productions");
         toast("封面图已生成并入库");
       } catch (err) {
         cover.status = "failed";
-        cover.error = err.message || String(err);
+        const msg = err.message || String(err);
+        cover.error = /超时|timeout/i.test(msg) && p.subType === "数字人"
+          ? "数字人封面生成超时：角色参考图路径可能过慢，可重试、移除参考图或直接上传封面"
+          : msg;
+        cover.updatedAt = Date.now();
         save("productions");
         toast("封面生成失败：" + cover.error, "error");
       } finally {
@@ -1887,30 +1953,35 @@ export function renderWorkshopPage(root, p) {
       save("productions");
       draw();
     }));
-    $("#wsInfoVideo", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
-      if (!activeInfoFlowMode) return;
+    async function prepareInfoFlowVideos(targetIndex = null) {
+      if (!activeInfoFlowMode) return 0;
       const info = ensureInfoFlowState(p);
       if (!info.segments.length) {
         applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
       }
       syncInfoFlowPrompts();
       let infoNow = ensureInfoFlowState(p);
+      const needsBackStoryboard = targetIndex == null || targetIndex === 1;
       const back = infoNow.segments[1];
-      if (back && !(back.storyboardAssetIds || []).length) {
+      if (needsBackStoryboard && back && !(back.storyboardAssetIds || []).length) {
         if (!imageApiConfigured()) {
           toast("请先上传或生成功能演示分镜参考图，再生成信息流视频", "error");
-          return;
+          return 0;
         }
         try { await generateInfoFlowStoryboards({ silent: true }); }
         catch (_) {
           toast("功能演示分镜未生成成功，请先修复分镜再生成视频", "error");
-          return;
+          return 0;
         }
       }
       buildMaterialUnits(p);
       infoNow = ensureInfoFlowState(p);
-      const readySegs = (infoNow.segments || []).slice(0, 2).filter(seg => String(seg.videoPrompt || "").trim());
-      if (readySegs.length < 2) { toast("请先生成信息流脚本"); return; }
+      const readySegs = (infoNow.segments || []).slice(0, 2);
+      const neededSegs = targetIndex == null ? readySegs : [readySegs[targetIndex]];
+      if (neededSegs.some(seg => !String(seg?.videoPrompt || "").trim())) {
+        toast(targetIndex == null ? "请先生成信息流脚本" : "请先填写该段信息流提示词");
+        return 0;
+      }
       let units = materialUnits(p);
       if (!units.length) {
         applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
@@ -1920,12 +1991,22 @@ export function renderWorkshopPage(root, p) {
       units.forEach((u, i) => {
         if (!u.videoPrompt && readySegs[i]?.videoPrompt) u.videoPrompt = readySegs[i].videoPrompt;
       });
-      const n = createUnitVideoJobs(p);
-      if (p.stage === "workshop") setStatus(p, "running");
+      const n = targetIndex == null ? createUnitVideoJobs(p) : createUnitVideoJobs(p, targetIndex);
+      if (n && p.stage === "workshop") setStatus(p, "running");
       save("productions");
+      return n;
+    }
+    $("#wsInfoVideo", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      const n = await prepareInfoFlowVideos();
       toast(n ? `已派发 ${n} 个信息流视频片段` : "信息流片段已在队列或已生成");
       draw();
     }, "提交中…"));
+    $$("[data-if-seg-video]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      const i = +e.currentTarget.dataset.ifSegVideo;
+      const n = await prepareInfoFlowVideos(i);
+      toast(n ? `已派发 ${i === 0 ? "前15s" : "后15s"}片段生成` : "该信息流片段已在队列或已生成");
+      draw();
+    }, "提交中…")));
 
     // 口播：一键复制 + 上传音频（按真实时长重排）
     $("#wsCopyLines", root)?.addEventListener("click", () => {

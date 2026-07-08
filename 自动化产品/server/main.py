@@ -1763,6 +1763,26 @@ def _cv_error(data: dict) -> str:
     return msg
 
 
+def _digital_human_transient_error(status_code: int = 0, data=None, text: str = "") -> bool:
+    raw = ""
+    if isinstance(data, dict):
+        raw = json.dumps(data, ensure_ascii=False)
+    else:
+        raw = str(text or data or "")
+    return bool(
+        status_code in {429, 502, 503, 504} or
+        re.search(r"Concurrent Limit|API Concurrent|Gateway Time-out|Gateway Timeout|TLB|timeout|timed out|Too Many Requests|限流|并发|网关超时", raw, re.I)
+    )
+
+
+def _digital_human_transient_detail(data=None, status_code: int = 0) -> str:
+    if _digital_human_transient_error(status_code, data):
+        return "OmniHuman 上游限流或网关超时，请稍后重试；系统已按单并发退避处理。"
+    if isinstance(data, dict):
+        return _http_detail(data) or f"OmniHuman 请求失败：status={status_code}"
+    return str(data or f"OmniHuman 请求失败：status={status_code}")
+
+
 async def _digital_human_submit(req: VideoSubmitReq, resolved_images, resolved_audios):
     if not _digital_human_configured():
         raise HTTPException(
@@ -1793,20 +1813,36 @@ async def _digital_human_submit(req: VideoSubmitReq, resolved_images, resolved_a
     raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     url = _digital_human_url("CVSubmitTask")
     headers = _volc_signed_headers("POST", url, raw)
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
-            r = await client.post(url, content=raw, headers=headers)
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, f"无法连接 OmniHuman 智能视觉接口：{exc.__class__.__name__} {exc}")
-    try:
-        data = r.json()
-    except Exception:
-        data = {"message": r.text[:1000]}
+    data = {}
+    r = None
+    last_error = ""
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
+                r = await client.post(url, content=raw, headers=headers)
+            try:
+                data = r.json()
+            except Exception:
+                data = {"message": r.text[:1000]}
+            code = data.get("code") if isinstance(data, dict) else None
+            if r.status_code < 400 and code in (None, 10000, "10000"):
+                break
+            if not _digital_human_transient_error(r.status_code, data) or attempt >= 2:
+                break
+            last_error = _digital_human_transient_detail(data, r.status_code)
+            await asyncio.sleep(4 + attempt * 5)
+        except httpx.HTTPError as exc:
+            last_error = f"{exc.__class__.__name__} {exc}"
+            if attempt >= 2 or not _digital_human_transient_error(502, text=last_error):
+                raise HTTPException(502, f"无法连接 OmniHuman 智能视觉接口：{last_error}")
+            await asyncio.sleep(4 + attempt * 5)
+    if r is None:
+        raise HTTPException(502, last_error or "OmniHuman 提交失败")
     if r.status_code >= 400:
-        raise HTTPException(r.status_code, _http_detail(data) or "OmniHuman 提交失败")
+        raise HTTPException(r.status_code, _digital_human_transient_detail(data, r.status_code) or "OmniHuman 提交失败")
     code = data.get("code")
     if code not in (None, 10000, "10000"):
-        raise HTTPException(502, _http_detail(data) or f"OmniHuman 提交失败：code={code}")
+        raise HTTPException(502, _digital_human_transient_detail(data, 502) or f"OmniHuman 提交失败：code={code}")
     task_id = _find_provider_ref(data)
     if not task_id:
         raise HTTPException(502, {"detail": "OmniHuman 已返回结果，但没有任务 ID；请检查接口返回结构。", "raw": data})

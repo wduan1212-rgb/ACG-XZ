@@ -1228,6 +1228,40 @@ function accountDefaultRefIds(acc) {
   return [...new Set(out)].slice(0, 5);
 }
 
+function latestDigitalJob(p, segIndex) {
+  return [...(state.jobs || [])].reverse().find(j =>
+    j.productionId === p.id && j.segIndex === segIndex && j.kind === "video" && j.model === "__digital_human__" && !j.superseded
+  );
+}
+
+function supersedeSegmentJobs(p, segIndex) {
+  let changed = false;
+  (state.jobs || []).forEach(j => {
+    if (j.productionId === p.id && j.segIndex === segIndex && j.kind === "video" && j.model === "__digital_human__" && !["queued", "submitted", "running"].includes(j.status)) {
+      j.superseded = true;
+      changed = true;
+    }
+  });
+  if (changed) save("jobs");
+}
+
+function latestUnitJob(p, segIndex, prompt) {
+  return [...(state.jobs || [])].reverse().find(j =>
+    !j.superseded && j.productionId === p.id && j.segIndex === segIndex && j.kind === "video" && (!prompt || j.prompt === prompt)
+  );
+}
+
+function supersedeUnitJobs(p, segIndex, prompt) {
+  let changed = false;
+  (state.jobs || []).forEach(j => {
+    if (j.productionId === p.id && j.segIndex === segIndex && j.kind === "video" && (!prompt || j.prompt === prompt) && !["queued", "submitted", "running"].includes(j.status)) {
+      j.superseded = true;
+      changed = true;
+    }
+  });
+  if (changed) save("jobs");
+}
+
 /* 素材号：按「分镜单元」派发视频任务（全能参考单元带固定 logo+界面图、文生视频单元纯文生；已成功的跳过） */
 export function createUnitVideoJobs(p, onlyUnitIndex = null) {
   const units = buildMaterialUnits(p); // 重算确保与脚本同步
@@ -1254,11 +1288,14 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
     const segs = Array.isArray(A.digitalHuman?.segments) ? A.digitalHuman.segments : [];
     segs.forEach((seg, i) => {
       if (onlyUnitIndex != null && i !== onlyUnitIndex) return;
+      const existing = latestDigitalJob(p, i);
+      if (existing && ["queued", "submitted", "running"].includes(existing.status)) return;
+      if (onlyUnitIndex == null && existing?.status === "succeeded") return;
+      supersedeSegmentJobs(p, i);
       const characterAssetId = seg.characterRefAssetId || characterRefId;
       const audioAssetId = seg.audioAssetId;
       const prompt = (seg.videoPrompt || A.digitalHuman?.fixedPrompt || "角色自然地讲述内容，动作自然，表情自然").trim();
       if (!characterAssetId || !audioAssetId || !prompt) return;
-      if (onlyUnitIndex == null && state.jobs.some(j => j.productionId === p.id && j.segIndex === i && j.status === "succeeded" && j.prompt === prompt)) return;
       const job = createJob({
         kind: "video",
         productionId: p.id,
@@ -1274,6 +1311,7 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
       seg.videoStatus = "queued";
       seg.videoJobId = job.id;
       seg.videoQueuedAt = Date.now();
+      seg.videoError = "";
       n++;
     });
     return n;
@@ -1283,7 +1321,10 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
     const prompt = u.infoFlow ? stripInfoFlowDirectorNotes(u.videoPrompt || "") : (u.videoPrompt || "");
     if (!prompt) return;
     if (u.infoFlow && u.videoPrompt !== prompt) u.videoPrompt = prompt;
-    if (onlyUnitIndex == null && state.jobs.some(j => j.productionId === p.id && j.segIndex === i && j.status === "succeeded" && j.prompt === prompt)) return;
+    const existing = latestUnitJob(p, i, prompt);
+    if (existing && ["queued", "submitted", "running"].includes(existing.status)) return;
+    if (onlyUnitIndex == null && existing?.status === "succeeded") return;
+    supersedeUnitJobs(p, i, prompt);
     // 真人只在第一段带角色参考；场景/产品参考按需要挂载，避免角色图污染纯场景片段。
     const needsCharacter = p.subType === "数字人" && i === 0;
     const refs = [...new Set([

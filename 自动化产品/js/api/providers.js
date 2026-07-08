@@ -365,6 +365,25 @@ registerProvider({
   async cancel(ref) { mockRuns.delete(ref); }
 });
 
+async function readProviderJson(res) {
+  const text = await res.text().catch(() => "");
+  if (!text) return {};
+  try { return JSON.parse(text); }
+  catch { return { detail: text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 500) }; }
+}
+
+function videoProviderError(data = {}, status = 0, action = "提交") {
+  const raw = data.detail || data.error || data.message || data.msg || "";
+  const msg = typeof raw === "object" ? JSON.stringify(raw) : String(raw || "");
+  if (/Concurrent Limit|API Concurrent|并发|限流|Too Many Requests|429/i.test(msg)) {
+    return "OmniHuman 上游并发限制：数字人一次只能生成 1 段，系统会自动退避重试。";
+  }
+  if (/Gateway Time-out|Gateway Timeout|504|TLB|timeout|timed out|网关超时/i.test(`${msg} ${status}`)) {
+    return "OmniHuman 上游网关超时，系统会自动退避重试；如果多次失败请稍后再试。";
+  }
+  return msg || `视频${action}失败 (${status})`;
+}
+
 /* ---------- Seedance 视频 Provider：浏览器 → 同源服务端代理 → Seedance ----------
    API key 只放在服务器 SEEDANCE_API_KEY / .env.local，前端永不直连远端。 */
 registerProvider({
@@ -393,14 +412,14 @@ registerProvider({
     } catch (e) {
       throw new Error("连不上本地服务端 /api/video/submit —— 请确认用 start-shared.command（python 服务端）打开、且改完后已重启它（" + (e.message || e) + "）");
     }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.providerRef) throw new Error(data.detail || data.error || `Seedance 提交失败 (${res.status})`);
+    const data = await readProviderJson(res);
+    if (!res.ok || !data.providerRef) throw new Error(videoProviderError(data, res.status, "提交"));
     return { providerRef: data.providerRef };
   },
   async poll(ref) {
     const res = await fetch(`/api/video/poll/${encodeURIComponent(ref)}`, { cache: "no-store" });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || data.error || `Seedance 轮询失败 (${res.status})`);
+    const data = await readProviderJson(res);
+    if (!res.ok) throw new Error(videoProviderError(data, res.status, "轮询"));
     return {
       status: data.status || "running",
       progress: data.progress ?? (data.status === "succeeded" ? 100 : 50),

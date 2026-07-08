@@ -169,7 +169,7 @@ function supplierDetailHtml(asset, acc) {
   const contentAccount = asset.byAccount || acc.name;
   const publisher = publisherLabel(asset);
   return `<tr class="sup-detail-row" data-sup-detail="${asset.id}" hidden>
-    <td colspan="10">
+    <td colspan="9">
       <div class="sup-detail">
         <div class="sup-detail-copy">
           <b>${esc(title)}</b>

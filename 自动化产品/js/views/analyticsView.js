@@ -3,6 +3,7 @@
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { toast, withLoading, emptyState } from "../ui/components.js";
+import { state } from "../core/store.js";
 import {
   analyticsRows, analyticsSummary,
   syncExistingPublishedAssets, refreshAllAnalytics, refreshAnalyticsLink, justOneAnalyticsStatus
@@ -31,6 +32,7 @@ function justOneCard() {
     : s.configured
       ? "可用于小红书笔记与视频号内容指标同步。"
       : "等待服务器环境配置 JustOneAPI 令牌后启用。";
+  const canRefresh = state.role === "admin";
   return `<section class="card da-justone">
     <div class="da-justone-main">
       <span>${icon("pulse", 14)}</span>
@@ -38,7 +40,7 @@ function justOneCard() {
     </div>
     <div class="da-justone-side">
       <span class="status-pill ${s?.configured ? "approved" : "input"}">${esc(label)}</span>
-      <button class="btn ghost sm" id="daCheckJustOne">${icon("refresh", 12)} 检测接口</button>
+      ${canRefresh ? `<button class="btn ghost sm" id="daCheckJustOne">${icon("refresh", 12)} 检测接口</button>` : ""}
     </div>
   </section>`;
 }
@@ -62,6 +64,7 @@ function providerLabel(provider) {
 }
 
 function rowHtml(r) {
+  const canRefresh = state.role === "admin";
   const m = r.latest?.metrics;
   const title = r.link.title || r.asset?.title || r.asset?.name || "未命名内容";
   const err = ["failed", "unsupported"].includes(r.link.status) && r.link.error ? `<em class="da-error">${esc(r.link.error)}</em>` : "";
@@ -75,7 +78,7 @@ function rowHtml(r) {
     <td class="num">${m ? pct(m.engagementRate) : "-"}</td>
     <td class="da-time">${r.link.lastSyncedAt ? timeAgo(r.link.lastSyncedAt) : "未同步"}</td>
     <td class="da-actions">
-      <button class="icon-btn sm" data-refresh-link="${esc(r.link.id)}" title="刷新这条数据">${icon("refresh", 12)}</button>
+      ${canRefresh ? `<button class="icon-btn sm" data-refresh-link="${esc(r.link.id)}" title="刷新这条数据">${icon("refresh", 12)}</button>` : ""}
       <a class="icon-btn sm" href="${esc(r.link.url)}" target="_blank" rel="noopener noreferrer" title="打开发布链接">${icon("external", 12)}</a>
     </td>
   </tr>`;
@@ -133,13 +136,14 @@ export const analyticsView = {
         return r.link.platform === filter;
       });
       const s = analyticsSummary(rowsAll);
+      const canRefresh = state.role === "admin";
       root.innerHTML = `
         <div class="analytics-page">
           <div class="page-head">
             <div><div class="eyebrow">数据分析</div><h2>小红书 / 视频号数据监测</h2></div>
-            <div class="head-actions">
+            ${canRefresh ? `<div class="head-actions">
               <button class="btn ghost" id="daRefreshMetrics">${icon("refresh", 14)} 刷新数据</button>
-            </div>
+            </div>` : ""}
           </div>
 
           <section class="ov-stats da-stats">
