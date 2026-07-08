@@ -323,8 +323,11 @@ async def _call_llm(body: dict, auth_header: str = ""):
         body["model"] = LLM_MODEL
     if not _llm_supports_response_format():
         body.pop("response_format", None)
-    if LLM_THINKING in {"enabled", "disabled"} and "thinking" not in body:
-        body["thinking"] = {"type": LLM_THINKING}
+    thinking = LLM_THINKING
+    if thinking == "enabled" and _llm_is_minimax():
+        thinking = "adaptive"
+    if thinking in {"adaptive", "enabled", "disabled"} and "thinking" not in body:
+        body["thinking"] = {"type": thinking}
     if LLM_MAX_TOKENS > 0 and "max_tokens" not in body:
         body["max_tokens"] = LLM_MAX_TOKENS
     try:

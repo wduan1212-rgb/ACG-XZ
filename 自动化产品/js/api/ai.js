@@ -1008,9 +1008,7 @@ ${productBrief(product)}`;
 }
 
 function videoNegative({ hasNarrationAudio = true } = {}) {
-  return hasNarrationAudio
-    ? "负面约束：无字幕，不生成字幕轨，不生成花字，不出现可读文字，不出现旁白标注、外框、水印，不出现二维码与乱码，不要在屏幕的任何地方加logo，出现文字或界面的地方一律模糊处理；无口播、无人声、无 BGM，可保留轻微真实环境音或操作声。"
-    : "负面约束：无字幕，不生成字幕轨，不生成花字，不出现可读文字，不出现旁白标注、外框、水印，不出现二维码与乱码，不要在屏幕的任何地方加logo，出现文字或界面的地方一律模糊处理；无 BGM、无多余音效，不要下载按钮，不要扫码引导。";
+  return "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
 }
 
 function timeBlocksForDuration(duration) {
@@ -1191,7 +1189,7 @@ function compactVideoPrompt(prompt, maxLen = 2000) {
   const neg = (raw.match(/负面约束[:：][\s\S]*$/) || [""])[0];
   const headRoom = Math.max(900, maxLen - neg.length - 20);
   const head = raw.replace(/负面约束[:：][\s\S]*$/, "").slice(0, headRoom).replace(/[，,；;。\s]*$/, "");
-  return `${head}\n\n${neg || "负面约束：无字幕，不生成字幕轨，不生成花字，不出现可读文字，不出现旁白标注、外框、水印，不出现二维码与乱码，不要在屏幕的任何地方加logo，出现文字或界面的地方一律模糊处理；无 BGM、无多余音效，不要下载按钮，不要扫码引导。"}`.slice(0, maxLen);
+  return `${head}\n\n${neg || videoNegative()}`.slice(0, maxLen);
 }
 
 const IMAGE_CARD_TASKS = [
@@ -1289,9 +1287,9 @@ function completeImageText(text = "", max = 34) {
   return safe;
 }
 
-const INTERNAL_IMAGE_LABEL_RE = /(封面|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束|图片任务|第\d+\/\d+张|第\d+张|图\d+)/g;
-const IMAGE_PLANNING_WORD_RE = /(种草|种草感|构图|版式|画面定位|图片定位|内容页|开头钩子|钩子|共鸣场景|共鸣|痛点|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|自然收束|收束|封面|首图|图片任务|核心思想|视觉线索|提示词|文案|截图|图上文字|干货步骤|步骤[一二三四五六七八九十\d]*)/g;
-const BAD_IMAGE_HEADLINE_RE = /^(图\d+|第\d+张|内容页|干货步骤|核心思想|画面|版式|构图|文案|截图|提示词|视觉线索|封面|首图|种草|共鸣|痛点|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|自然收束|收束|图片任务|步骤[一二三四五六七八九十\d]*|一眼想点开|吸引点击|点击入口)|想要宣传|不要有页码|利他性强|账号定位|参考图|整体的画面|图\d+\s*[·.-]\s*干货步骤|[｜|<>]/;
+const INTERNAL_IMAGE_LABEL_RE = /(封面|首图|内页\d*|内容页|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束|图片任务|第\d+\/\d+张|第\d+张|图\d+)/g;
+const IMAGE_PLANNING_WORD_RE = /(种草|种草感|构图|版式|画面定位|图片定位|内页\d*|内容页|开头钩子|钩子|共鸣场景|共鸣|痛点|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|自然收束|收束|封面|首图|图片任务|核心思想|视觉线索|提示词|文案|截图|图上文字|干货步骤|步骤[一二三四五六七八九十\d]*)/g;
+const BAD_IMAGE_HEADLINE_RE = /^(图\d+|第\d+张|内页\d*|内容页|干货步骤|核心思想|画面|版式|构图|文案|截图|提示词|视觉线索|封面|首图|种草|共鸣|痛点|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|自然收束|收束|图片任务|步骤[一二三四五六七八九十\d]*|一眼想点开|吸引点击|点击入口)|想要宣传|不要有页码|利他性强|账号定位|参考图|整体的画面|图\d+\s*[·.-]\s*干货步骤|[｜|<>]/;
 
 function stripStructuredPromptNoise(text = "") {
   return String(text || "")
@@ -1405,7 +1403,7 @@ function minimalImageNegative() {
 
 function stripInternalImageLabels(text = "") {
   return cleanImagePlanningWords(text)
-    .replace(/(?:封面图?|首图|入口图|内页图?\s*\d*|内容页\s*\d*|图\s*\d+|第\s*\d+\s*张|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束)[:：·｜|\s-]*/g, "")
+    .replace(/(?:封面图?|首图|入口图|内页图?\s*\d*|内页\s*\d*|内容页\s*\d*|图\s*\d+|第\s*\d+\s*张|痛点引入|问题引入|解决路径|关键步骤|结果对比|总结收束|收束)[:：·｜|\s-]*/g, "")
     .replace(/第\d+\/\d+张[。；，,\s]*/g, "")
     .replace(/图片任务[:：][^。；\n]*[。；]?/g, "")
     .replace(/图上文字[:：]/g, "画面短句：")
@@ -1777,11 +1775,12 @@ function richImagePrompt(item, i, total, ctx) {
       : density === "sparse"
         ? `围绕「${oneBeat}」补一个真实例子。`
         : `围绕「${oneBeat}」安排一个核心动作或结果，留白足，逻辑清楚。`;
-  const title = fullCoverTitle || cleanImageDisplayTitle(item?.title, task.title);
+  const title = fullCoverTitle || cleanImageDisplayTitle(stripInternalImageLabels(item?.title || ""), task.title);
   const relationCover = isCover && simpleRelationVisual(ctx);
   let headlineRaw = fullCoverTitle || (relationCover ? intent.main : deriveImageHeadline(item, i, intent, task));
   if (!isCover && IMAGE_CARD_TASKS.some(t => t.title === headlineRaw) && oneBeat) headlineRaw = oneBeat;
-  const headline = fullCoverTitle || completeImageText(headlineRaw, isCover ? 48 : canDense ? 40 : 36);
+  const cleanHeadline = cleanImageDisplayTitle(stripInternalImageLabels(headlineRaw), "");
+  const headline = fullCoverTitle || completeImageText(cleanHeadline || headlineRaw, isCover ? 48 : canDense ? 40 : 36);
   const imageStyle = ctx.style
     ? compactImageStyle(ctx.style, isCover ? 24 : lightStyle ? 32 : 38)
     : "白底或浅色底，圆角卡片，大留白，真实办公截图质感，蓝紫点缀，文字大而清楚。";
@@ -1916,6 +1915,66 @@ function normalizeScriptResult(d, { topic = "", image = false, imageCount = DEFA
   return { title: sanitizeOwnProductForGeneratedText(cleanScriptTitle(d.title || "", topic, product)), shots };
 }
 
+function cleanCustomVideoText(text = "", { stripTags = false, title = "" } = {}) {
+  let out = sanitizeXhsText(cleanText(String(text || "")))
+    .replace(/[「」]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (stripTags) out = out.replace(/#[^\s#]+/g, " ").replace(/[ \t]+/g, " ").trim();
+  const titleNorm = normalizeForDedupe(title);
+  if (titleNorm) {
+    const lines = out.split(/\n+/).map(x => x.trim()).filter(Boolean);
+    while (lines.length && normalizeForDedupe(lines[0]).startsWith(titleNorm)) {
+      const rest = lines[0]
+        .replace(new RegExp(`^\\s*${String(title).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[，,。.!！?？:：-]*\\s*`), "")
+        .trim();
+      if (rest && normalizeForDedupe(rest) !== titleNorm) {
+        lines[0] = rest;
+        break;
+      }
+      lines.shift();
+    }
+    out = lines.join("\n").trim();
+  }
+  return out.replace(/[“”]/g, "\"").trim();
+}
+
+function parseCustomVideoDraftText(content = "", fallbackTitle = "") {
+  const raw = String(content || "").replace(/\r/g, "").trim();
+  if (!raw) throw new Error("模型无有效返回");
+  try {
+    const d = sanitizeXhsObject(parseJSONLoose(raw));
+    if (d && (d.copy || d.narration)) return d;
+  } catch (_) {
+    // Thinking models can return good prose that is fragile as JSON; use sections.
+  }
+  const text = raw
+    .replace(/^\s*[-#*\d.、\s]*(?:结果|输出)[:：]\s*/i, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const labels = {
+    title: "(?:标题|发布标题|title)",
+    copy: "(?:发布文案|平台文案|正文|copy)",
+    narration: "(?:口播|口播稿|口播内容|narration)",
+    visualPrompt: "(?:分镜提示|分镜图提示|视觉提示|画面提示|visualPrompt|visual)"
+  };
+  const allLabels = Object.values(labels).join("|");
+  const pick = key => {
+    const re = new RegExp(`(?:^|\\n)\\s*(?:${labels[key]})\\s*[:：]\\s*([\\s\\S]*?)(?=\\n\\s*(?:${allLabels})\\s*[:：]|$)`, "i");
+    return (text.match(re)?.[1] || "").trim();
+  };
+  const parsed = {
+    title: pick("title") || fallbackTitle,
+    copy: pick("copy"),
+    narration: pick("narration"),
+    visualPrompt: pick("visualPrompt")
+  };
+  if (!parsed.copy || !parsed.narration) {
+    throw new Error("模型未按标题/发布文案/口播/分镜提示四段返回");
+  }
+  return parsed;
+}
+
 export const AI = {
   lastSource: "mock",
   lastError: "",
@@ -1944,7 +2003,7 @@ export const AI = {
 
   /* ---------- 素材号长视频脚本（60s+，有深度/有梗、利他，画外音后期配；每镜头标 ui/scene） ---------- */
   async generateMaterialScript({ topic, account, style = "", product = null }) {
-    const sys = `你是百度 ACG 市场部资深长视频编剧，为指定产品写【素材号】视频脚本：没有固定出镜人物，画面全部由场景/产品界面/实拍素材混剪而成。line 是后期配音的画外音口播稿（画面本身无人声）。
+    const sys = `你是百度 ACG 市场部资深长视频编剧，为指定产品写【素材号】视频脚本：没有固定出镜人物，画面全部由场景/产品界面/实拍素材混剪而成。line 是口播或旁白内容参考。
 
 【时长与篇幅】成片控制在 45-58 秒，绝不超过 60 秒，拆成 8-10 个镜头。每镜头口播只写 1 句，尽量 12-24 个中文字符；宁可少说一点、说清楚一点，确保每句话至少能自然讲 3 秒，不要把口播写得太赶。
 
@@ -2121,10 +2180,10 @@ export const AI = {
       return Math.max(m, mm ? Number(mm[1]) : 0);
     }, 0);
     const wrongDuration = maxEnd > dur + 0.2 || (dur < 13 && /(13\s*[-–]\s*15\s*s|时长\s*15\s*秒)/.test(prompt));
-    const hasHardNeg = /无字幕|不生成字幕|不要字幕/.test(prompt) && /无\s*BGM|不要\s*BGM|不出现\s*BGM/.test(prompt) && (opts.hasNarrationAudio ? /无口播|不要口播|无人声/.test(prompt) : true);
+    const hasHardNeg = /无字幕|不生成字幕|不要字幕/.test(prompt) && /不生成花字|不要花字/.test(prompt) && /不生成水印|不要水印|无水印/.test(prompt) && /不生成二维码|不要二维码|无二维码/.test(prompt);
     const hasMetaText = /主体设定|角色设定|参考脚本|旁白含义|镜头依据|账号定位参考|账号背景参考|声线锚点|<[^>]+>/.test(prompt);
-    const duplicateNeg = ((prompt.match(/负面约束/g) || []).length > 1) || (/无口播|无人声/.test(prompt.slice(0, 220)) && /负面约束/.test(prompt));
-    const wrongNarrationNeg = !opts.hasNarrationAudio && /无口播|不要口播|无人声/.test(prompt);
+    const duplicateNeg = ((prompt.match(/负面约束/g) || []).length > 1) || (/无口播|无人声|无\s*BGM|无多余音效/.test(prompt.slice(0, 260)) && /负面约束/.test(prompt));
+    const wrongNarrationNeg = /无口播|不要口播|无人声|无\s*BGM|不要\s*BGM|无多余音效|无音效/.test(prompt);
     const missingNarration = !opts.hasNarrationAudio && !/口播(?:原话)?[:：]/.test(prompt);
     const narrationConflict = opts.hasNarrationAudio && /口播(?:原话)?[:：]|画外音|旁白|人声|声音参考|声线/.test(prompt);
     const repeatedVoice = hasRepeatedNarration(prompt);
@@ -2147,10 +2206,10 @@ export const AI = {
   async generateShotVideoPrompts({ shots, perShot = [], account, style = "", product = null }) {
     const { MATERIAL_VIDEO_NEG } = await import("./prompts.js");
     const productName = chineseProductDisplayName(product);
-    const fallback = (s, i) => cleanText(`这是一条${productName}产品视频的单镜头素材，9:16 竖屏，时长${Math.ceil(perShot[i]?.dur || 4)}秒，场景/产品界面混剪，纯画面无人声。画面内容：${s.visual || s.idea || "产品界面演示"}。镜头语言：${i % 2 ? "缓推" : "横移"}运镜、干净画面结构、明亮柔光${style ? `；整体风格：${style}` : ""}。${MATERIAL_VIDEO_NEG}`);
+    const fallback = (s, i) => cleanText(`这是一条${productName}产品视频的单镜头素材，9:16 竖屏，时长${Math.ceil(perShot[i]?.dur || 4)}秒，场景/产品界面混剪。画面内容：${s.visual || s.idea || "产品界面演示"}。镜头语言：${i % 2 ? "缓推" : "横移"}运镜、干净画面结构、明亮柔光${style ? `；整体风格：${style}` : ""}。${MATERIAL_VIDEO_NEG}`);
     try {
       const content = await llm([
-        { role: "system", content: baseProductFacts(product) + productBrief(product) + `\n\n你为素材混剪视频逐镜头生成视频提示词：每个镜头一条独立提示词，对应生成一段独立的视频素材片段。每条开头写明"9:16竖屏，时长N秒，场景/产品界面混剪，纯画面无人声"。画面具体到景别/机位运镜/界面文字/动效/光线，禁止抽象词。每条结尾都必须带上这段负面提示词："${MATERIAL_VIDEO_NEG}"。只输出 JSON：{"shots":[{"prompt":"..."}]}，数量与镜头数一致。` },
+        { role: "system", content: baseProductFacts(product) + productBrief(product) + `\n\n你为素材混剪视频逐镜头生成视频提示词：每个镜头一条独立提示词，对应生成一段独立的视频素材片段。每条开头写明"9:16竖屏，时长N秒，场景/产品界面混剪"。画面具体到景别/机位运镜/界面文字/动效/光线，禁止抽象词。每条结尾都必须带上这段负面提示词："${MATERIAL_VIDEO_NEG}"。只输出 JSON：{"shots":[{"prompt":"..."}]}，数量与镜头数一致。` },
         { role: "user", content: `账号创作风格：${account.styleProfile || style || "真实办公教程风"}\n${style ? `画面风格：${style}\n` : ""}共 ${shots.length} 个镜头（含各自时长）：\n${shots.map((s, i) => `${i + 1}. [${Math.ceil(perShot[i]?.dur || 4)}秒] ${s.visual || ""}`).join("\n")}` }
       ], { json: true, temperature: 0.6 });
       const d = parseJSONLoose(content);
@@ -2416,13 +2475,13 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const variantGuide = batchVariantLine(batchVariant);
     try {
       const content = await llm([
-        { role: "system", content: imagePromptProductBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。图文配图的内容判断以「发布文案」为第一依据，用户创作内容和脚本只作为补充，账号只提供视觉风格，不参与内容方向判断。图片里讲什么必须跟最终标题、正文和标签一致；如果发布文案和脚本/本地结构参考冲突，以发布文案为准，并删除脚本里无关工具词。禁止把发布文案标题替换成另一个标题；如果文案是「AI 20个自动化工作流分享」，图片必须围绕自动化工作流清单、流程卡和可复用结果，而不是改成工具对比、知识库或其他无关主题。先把发布文案整理成 ${nImg} 个信息节拍，再拆成 ${nImg} 张静态图片：点击入口、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。每张图承载一个清楚的核心信息，长文案先做摘要、取舍和分布。信息密度由内容判断：入口图更轻，突出强标题和简单主视觉；内页按文案需要承载具体动作、证据或结果，模拟文档/表格/报告页时可以更细，同时保持层级清楚、文字可读。
+        { role: "system", content: imagePromptProductBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。图文配图的内容判断以「发布文案」为第一依据，用户创作内容和脚本只作为补充，账号只提供视觉风格，不参与内容方向判断。图片里讲什么必须跟最终标题、正文和标签一致；如果发布文案和脚本/本地结构参考冲突，以发布文案为准，并删除脚本里无关工具词。禁止把发布文案标题替换成另一个标题；如果文案是「AI 20个自动化工作流分享」，图片必须围绕自动化工作流清单、流程卡和可复用结果，而不是改成工具对比、知识库或其他无关主题。先把发布文案整理成 ${nImg} 个信息节拍，再拆成 ${nImg} 张静态图片：点击入口、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。每张图承载一个清楚的核心信息，长文案先做摘要、取舍和分布。信息密度由内容判断：第一张更轻，突出强标题和简单主视觉；后续图片按文案需要承载具体动作、证据或结果，模拟文档/表格/报告页时可以更细，同时保持层级清楚、文字可读。不要把“封面、首图、内页、内容页、第几张”等结构词写进标题、画面文字或 prompt。
 第一张图默认是点击入口，优先冲击感和可点击性：用强标题、短副标题和简单视觉关系吸引点击。工具组合/对比主题的第一张以工具标识或简化图标、大字标题、箭头或 VS 关系为主；第二张之后再展开场景、操作、结果和边界。
 若内容过多，先在内部重新规划：把重要信息分给 ${nImg} 张图，次要内容压成一句结论；若内容过少，补一个真实使用例子、结果证据或边界提醒。功能名只用于内部理解，画面文字要写具体动作和结果。若创作内容里出现竞品/同类工具，要把它们作为对比、组合或分工对象写进画面信息结构，例如分工箭头、工具边界卡片、组合流程或适用场景提醒，让画面明确呈现主产品和其他工具的关系。
 同一批量任务的不同账号必须有不同内容编排：即使统一创作方向相同，也要改变每张图的标题、例子、主视觉、卡片顺序和结论，形成不同账号的内容差异。
 每条 prompt 输出正向主体，使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。」结构；如果有参考图，则在开头加入「请根据上传的参考图」。系统会统一追加固定短负面约束，模型只写正向画面主体。图片内容只来自最终发布文案、图卡脚本和产品信息；视觉效果只来自账号创作风格、账号模板和参考图。本地结构样本、账号名称都不得改写图片内容主题。用户输入原句需先整理成画面信息。${safeStyle ? "账号创作风格（只决定视觉效果）：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `参考图（只作为视觉/构图参考，不提供内容主题）：${sanitizeXhsText(styleRefName)}。` : ""}${safeTpl ? `账号有固定模板，继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；模板只当风格母版，模板句子需要替换成本次内容。` : ""}
 
-每条 prompt 保持精炼但足够具体。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。画面文字围绕主标题、短解释和必要标签组织，按内容复杂度自然取舍；封面更简洁，内页可适当增加信息。若账号风格是火柴人、简笔画、小人、漫画或手绘，则画面靠人物动作、表情、气泡和箭头讲解，文字更少，避免复杂表格和长文案。
+每条 prompt 保持精炼但足够具体。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。画面文字围绕主标题、短解释和必要标签组织，按内容复杂度自然取舍；第一张更简洁，后续图可适当增加信息。若账号风格是火柴人、简笔画、小人、漫画或手绘，则画面靠人物动作、表情、气泡和箭头讲解，文字更少，避免复杂表格和长文案。
 画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
 测评、对比或工具选择类选题用适合谁、不适合谁、任务边界、证据和组合方式表达，采用边界对照、场景分工和使用建议，不采用分数、星级、排行榜、打分表或评分卡。
 内部分类词只用于理解结构，最终 prompt 主体保持正向画面描述。
@@ -2515,6 +2574,72 @@ ${xhsGuardPrompt()}
       this._fb(e);
       await delay(400);
       return sanitizeXhsObject(this._mockCopy({ topic: safeTopic, shots: safeShots, account, product, kind, batchVariant, avoidCopies }));
+    }
+  },
+
+  async generateCustomVideoDraft({ title = "", body = "", account = {}, product = null, mode = "digital" } = {}) {
+    const safeTitle = cleanCustomVideoText(title);
+    const safeBody = cleanCustomVideoText(body);
+    if (!safeTitle && !safeBody) throw new Error("自定义模式需要填写标题或文案");
+    const productName = chineseProductDisplayName(product);
+    const platform = account?.platform || "视频号";
+    const accountVoice = copyAccountVoice(account, account?.styleProfile || account?.lockedStyle || "", safeTitle || safeBody);
+    const isMaterialMode = mode === "material";
+    const sys = [
+      "你是短视频内容策划和发布文案写手。先理解用户标题/文案的真实意图，再写内容，不套固定模板。",
+      "发布文案：专业、克制、偏解析测评，像真人创作者发平台内容；第一句直接给判断或场景，不要完整复述标题，不要用 哎/跟你说/说个事/你感受一下 这类闲聊开场，不要写 本条围绕/这条围绕/本文围绕/本期围绕。",
+      "口播：比发布文案更长，用第一人称 我 的视角，口语化，有情绪和现场感，像 60-90 秒内能自然讲完的真人口播；不要照抄发布文案。",
+      "如果只有标题，请补出文案和口播；如果正文含 #标签，标签只留在发布文案末尾，不进入口播或视频提示词。",
+      "不要使用「」『』符号，不要输出思考过程。",
+      "只按四段输出，不要加解释：\n标题：...\n发布文案：...\n口播：...\n分镜提示：..."
+    ].join("\n");
+    const bodyNote = safeBody
+      ? `用户已写文案：\n${safeBody}\n\n如果里面有 #标签，只把标签留给发布文案最后一行，不要写进口播和视频提示词。`
+      : "用户未写正文：请根据标题补出发布文案和口播。";
+    const visualAsk = isMaterialMode
+      ? "分镜提示为必填，写成 120-220 个中文字符的功能演示分镜图参考提示：描述 3-4 个关键画面、产品界面、操作动作和结果；不要写口播台词、标签、第一镜/第二镜编号或时间码。这个字段不会作为视频提示词。"
+      : "visualPrompt 写成真人/数字人画面提示词：同一角色、办公室场景、自然讲述，可穿插产品界面和资料处理结果，不要写标签。";
+    const messages = [
+      { role: "system", content: sys },
+      { role: "user", content: [
+        `平台：${platform}`,
+        `账号语气：${accountVoice}`,
+        `主产品：${productName}`,
+        `生成类型：${isMaterialMode ? "素材号/无数字人视频" : "真人/数字人视频"}`,
+        `用户标题：${safeTitle || "未填写"}`,
+        bodyNote,
+        visualAsk,
+        "发布文案 180-340 个中文字符，最后一行 4-7 个标签；口播 380-620 个中文字符。标题可优化但不能换题。"
+      ].join("\n") }
+    ];
+    try {
+      let content = "";
+      try {
+        content = await llm(messages, { temperature: 0.96, timeoutMs: 90000, thinking: "adaptive", maxTokens: 12000 });
+      } catch (err) {
+        if (!/模型无有效返回|finish_reason|length|JSON|四段/.test(err?.message || String(err))) throw err;
+        content = await llm(messages, { temperature: 0.96, timeoutMs: 90000, thinking: "disabled", maxTokens: 5000 });
+      }
+      const d = parseCustomVideoDraftText(content, safeTitle);
+      const out = {
+        title: cleanCustomVideoText(d.title || safeTitle || ""),
+        copy: ensureVideoBrandTags(cleanCustomVideoText(d.copy || safeBody || "", { title: d.title || safeTitle }), product),
+        narration: cleanCustomVideoText(d.narration || "", { stripTags: true, title: d.title || safeTitle }),
+        visualPrompt: cleanCustomVideoText(d.visualPrompt || "", { stripTags: true, title: d.title || safeTitle })
+      };
+      if (!out.title) out.title = safeTitle || cleanCustomVideoText((out.copy || out.narration).split(/\n+/)[0] || "");
+      if (!out.copy || !out.narration) throw new Error("模型未返回完整的发布文案和口播");
+      if (isMaterialMode && !out.visualPrompt) throw new Error("模型未返回素材号分镜提示，请重试");
+      if (normalizeForDedupe(out.copy) === normalizeForDedupe(out.narration)) throw new Error("模型返回的发布文案和口播过于相似，请重试");
+      if (!/我|咱|我们/.test(out.narration)) throw new Error("模型口播缺少第一人称视角，请重试");
+      if (out.narration.length < Math.min(360, out.copy.length + 80)) throw new Error("模型口播长度不足，请重试");
+      if (/本条围绕|这条围绕|本文围绕|本期围绕/.test(`${out.copy}\n${out.narration}`)) throw new Error("模型文案仍含元话术，请重试");
+      if (/^(哎|嘿|诶|欸|跟你说|我跟你说|说个事|你感受一下|家人们|兄弟们|姐妹们)/.test(out.copy.trim())) throw new Error("模型发布文案过于口语化，请重试");
+      return this._ok(out);
+    } catch (e) {
+      this.lastSource = "error";
+      this.lastError = (e && e.message) || String(e || "语言模型调用失败");
+      throw new Error(`自定义视频内容需要语言模型生成：${this.lastError}`);
     }
   },
 
@@ -2831,7 +2956,7 @@ ${xhsGuardPrompt()}
       .replace(/口播语气节奏参考上传音频[（(][^）)]*[）)]?/g, "口播音色与语气参考统一参考音频")
       .replace(/参考上传音频/g, "参考统一参考音频")
       .replace(/参考音频/g, "参考统一参考音频");
-    const neg = "负面约束：无字幕，不生成字幕轨，不在画面上叠加任何字幕/标题/花字/文字条，不出现二维码或扫码引导，不要乱码，不要大段密集文字，不要桌面杂乱，不要使用任何 emoji。";
+    const neg = videoNegative();
     if (account?.subType !== "无数字人") {
       if (!account?.charBoardAssetId && !/外貌锚点|脸型|眉毛|眼型|鼻梁|发型|参考数字人图|角色参考图/.test(out)) out += `\n\n${this._humanAppearanceAnchor(account)}`;
       if (account?.voiceRefAssetId) {
@@ -2847,7 +2972,7 @@ ${xhsGuardPrompt()}
   async _mockPrompts({ groups, account, product = null }) {
     await delay(500);
     const productName = chineseProductDisplayName(product);
-    const NEG = "负面提示词：无字幕，不要在画面上叠加任何字幕/标题/花字/文字条，不要二维码或扫码引导，不要乱码，不要大段密集文字，不要夸张特效，不要复杂剧情，不要像硬广，不要人物表情僵硬，不要桌面杂乱，不要过多 UI 小字，不要使用任何 emoji。";
+    const NEG = "负面提示词：无字幕，不生成花字，不生成水印，不生成二维码。";
     const dh = account.subType !== "无数字人";
     const characterLine = account?.charBoardAssetId
       ? "角色形象以参考数字人图为准，所有出镜镜头保持同一人物、同一服装、同一发型和同一表情习惯，不重新设计角色。"

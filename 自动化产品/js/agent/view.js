@@ -21,6 +21,56 @@ let mounted = false;
 let rootEl = null;
 const thinkingBySession = new Map(); // sessionId -> { active, steps }
 let scrollTopOnce = false;
+const PLAN_KIND_GROUP = { image: "图文组", material: "素材", real: "真人" };
+
+function normalizePlanKind(kind = "", group = "") {
+  if (["image", "material", "real"].includes(kind)) return kind;
+  if (group === "素材") return "material";
+  if (group === "真人") return "real";
+  return "image";
+}
+
+function planGroupForKind(kind = "image") {
+  return PLAN_KIND_GROUP[normalizePlanKind(kind)] || "图文组";
+}
+
+function accountIdsForKind(kind, ids = [], fallbackCount = 0) {
+  const group = planGroupForKind(kind);
+  const pool = matchAccounts({ group, tags: [], sort: "" });
+  const allowed = new Set(pool.map(a => a.id));
+  const kept = (ids || []).filter(id => allowed.has(id));
+  if (kept.length || !fallbackCount) return kept;
+  return pool.slice(0, Math.min(10, Math.max(1, fallbackCount))).map(a => a.id);
+}
+
+function applyPlanMode(payload, mode) {
+  payload.creativeMode = mode === "auto" ? "auto" : "custom";
+  if (payload.creativeMode === "custom") {
+    payload.content = "";
+    payload.topic = "";
+    payload.topicMode = "fixed";
+    payload.perAccountCount = 1;
+    payload.accountCounts = {};
+  } else if (!payload.topicMode) {
+    payload.topicMode = "random";
+  }
+  payload.accountCustomCopyModes = {};
+  (payload.accountIds || []).forEach(id => {
+    payload.accountCustomCopyModes[id] = payload.creativeMode === "custom";
+  });
+}
+
+function applyPlanKind(payload, kind) {
+  const nextKind = normalizePlanKind(kind, payload.group);
+  const oldCount = (payload.accountIds || []).length || Number(payload.accountCount || 0) || 2;
+  payload.contentKind = nextKind;
+  payload.group = planGroupForKind(nextKind);
+  payload.tags = [];
+  payload.accountIds = accountIdsForKind(nextKind, payload.accountIds || [], oldCount);
+  payload.accountCount = payload.accountIds.length;
+  payload.manualAccountSelection = true;
+  applyPlanMode(payload, payload.creativeMode);
+}
 
 function ensurePlanBoard(session = ensureSession()) {
   if ((session.messages || []).length) return session;
@@ -577,6 +627,19 @@ function wire(root) {
       return;
     }
 
+    const creativeBtn = e.target.closest("[data-pf-creative]");
+    const kindBtn = e.target.closest("[data-pf-kind]");
+    if (creativeBtn || kindBtn) {
+      const node = e.target.closest("[data-plan]");
+      const { msg: m } = node ? findMessageInSessions(node.dataset.plan) : {};
+      if (!m || m.payload.status !== "pending") return;
+      if (creativeBtn) applyPlanMode(m.payload, creativeBtn.dataset.pfCreative);
+      if (kindBtn) applyPlanKind(m.payload, kindBtn.dataset.pfKind);
+      save("sessions");
+      rerenderPlanCard(m.id);
+      return;
+    }
+
     if (handlePlanPickClick(e)) return;
 
     const copyToggle = e.target.closest("[data-pacc-copy-toggle]");
@@ -615,6 +678,7 @@ function wire(root) {
       case "plan-random-accounts": {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
+        m.payload.group = planGroupForKind(m.payload.contentKind || normalizePlanKind("", m.payload.group));
         const pool = matchAccounts({ group: m.payload.group || "all", tags: m.payload.tags || [], sort: m.payload.sort || "" });
         if (!pool.length) { toast("当前条件下没有可选账号"); break; }
         const picked = pool
@@ -633,22 +697,35 @@ function wire(root) {
       case "plan-confirm": {
         const { session: ownerSession, msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
+        m.payload.contentKind = normalizePlanKind(m.payload.contentKind, m.payload.group);
+        m.payload.group = planGroupForKind(m.payload.contentKind);
+        m.payload.accountIds = accountIdsForKind(m.payload.contentKind, m.payload.accountIds || [], 0);
+        m.payload.accountCount = m.payload.accountIds.length;
+        applyPlanMode(m.payload, m.payload.creativeMode);
         if (!m.payload.accountIds.length) { toast("至少选择一个账号"); return; }
-        const missingCustom = (m.payload.accountIds || []).filter(id => {
-          if ((m.payload.accountCustomCopyModes || {})[id] === false) return false;
+        const isCustomPlan = m.payload.creativeMode !== "auto";
+        const missingCustom = isCustomPlan ? (m.payload.accountIds || []).filter(id => {
           const title = ((m.payload.accountCopyTitles || {})[id] || "").trim();
           const body = ((m.payload.accountCopyBodies || {})[id] || "").trim();
           return !title && !body;
-        });
+        }) : [];
         if (missingCustom.length) {
           const names = missingCustom
             .slice(0, 3)
             .map(id => state.accounts.find(a => a.id === id)?.name || "未命名账号")
             .join("、");
-          toast(`自定义生产请先填写标题和文案：${names}${missingCustom.length > 3 ? "等" : ""}`);
+          toast(`自定义创作请先填写标题或文案：${names}${missingCustom.length > 3 ? "等" : ""}`);
           return;
         }
-        if (!(m.payload.content || "").trim() && !(m.payload.topic || "").trim()) {
+        if (m.payload.contentKind === "real") {
+          const missingRole = (m.payload.accountIds || []).filter(id => !state.accounts.find(a => a.id === id)?.charBoardAssetId);
+          if (missingRole.length) {
+            const names = missingRole.slice(0, 3).map(id => state.accounts.find(a => a.id === id)?.name || "未命名账号").join("、");
+            toast(`真人视频请先上传角色形象：${names}${missingRole.length > 3 ? "等" : ""}`);
+            return;
+          }
+        }
+        if (m.payload.creativeMode === "auto" && !(m.payload.content || "").trim() && !(m.payload.topic || "").trim()) {
           m.payload.topicMode = "random";
           m.payload.topic = "";
         }
@@ -719,6 +796,15 @@ function wire(root) {
         if (m) {
           const id = act.dataset.refid;
           m.payload.coverRefAssetIds = (m.payload.coverRefAssetIds || []).filter(x => x !== id);
+          save("sessions");
+          rerenderPlanCard(m.id);
+        }
+        break;
+      }
+      case "plan-cover-refclear": {
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
+        if (m) {
+          m.payload.coverRefAssetIds = [];
           save("sessions");
           rerenderPlanCard(m.id);
         }

@@ -9,6 +9,37 @@ import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } f
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
+const CONTENT_KIND_GROUP = { image: "图文组", material: "素材", real: "真人" };
+const CONTENT_KIND_LABEL = { image: "图文", material: "素材视频", real: "真人视频" };
+
+function kindFromGroup(group = "") {
+  if (group === "素材") return "material";
+  if (group === "真人") return "real";
+  return "image";
+}
+
+function normalizePlanKind(p) {
+  p.creativeMode = p.creativeMode === "auto" ? "auto" : "custom";
+  p.contentKind = ["image", "material", "real"].includes(p.contentKind) ? p.contentKind : kindFromGroup(p.group);
+  p.group = CONTENT_KIND_GROUP[p.contentKind] || "图文组";
+  if (p.creativeMode === "custom") {
+    p.content = "";
+    p.topic = "";
+    p.topicMode = "fixed";
+    p.perAccountCount = 1;
+    p.accountCounts = {};
+  }
+  const match = a => {
+    const g = groupOf(a);
+    if (p.contentKind === "image") return a?.mode === "图文" || g === "图文组";
+    if (p.contentKind === "material") return a?.mode === "视频" && g === "素材";
+    if (p.contentKind === "real") return a?.mode === "视频" && g === "真人";
+    return true;
+  };
+  p.accountIds = (p.accountIds || []).filter(id => match(accountById(id)));
+  p.accountCount = p.accountIds.length;
+  return match;
+}
 
 export function renderMessage(m) {
   if (m.role === "user") {
@@ -58,7 +89,8 @@ function normalizeSelectionPlan(p) {
   const goal = p.goal || "";
   const tailPick = /(?:最后|后|倒数|末尾)\s*([0-9]+|[两一二三四五六七八九十]+)\s*(个|只|家)?\s*(账号|号|图文|图文号|图文账号|素材号|真人号|数字人号)?/.test(goal);
   if (tailPick && p.pickFrom !== "end") { p.pickFrom = "end"; changed = true; }
-  const group = /图文|笔记|小红书图/.test(goal) ? "图文组" : (goal.includes("真人") || goal.includes("数字人")) ? "真人" : (goal.includes("素材") || goal.includes("无数字人")) ? "素材" : p.group || "all";
+  const lockedGroup = CONTENT_KIND_GROUP[p.contentKind || ""];
+  const group = lockedGroup || (/图文|笔记|小红书图/.test(goal) ? "图文组" : (goal.includes("真人") || goal.includes("数字人")) ? "真人" : (goal.includes("素材") || goal.includes("无数字人")) ? "素材" : p.group || "all");
   const explicitTags = TAG_POOL.filter(t => tagMatches(goal, t));
   if (p.topic || p.topicMode !== "random") { p.topic = ""; p.topicMode = "random"; changed = true; }
   if (group !== p.group) { p.group = group; changed = true; }
@@ -129,7 +161,10 @@ const CARD = {
   /* 计划卡：确认前可改主题/风格/标签/选号 */
   plan(m) {
     const p = m.payload;
-    if (normalizeSelectionPlan(p)) save("sessions");
+    const beforePlan = JSON.stringify({ creativeMode: p.creativeMode, contentKind: p.contentKind, group: p.group, accountIds: p.accountIds, perAccountCount: p.perAccountCount, content: p.content, topic: p.topic });
+    const accountMatchesCurrentKind = normalizePlanKind(p);
+    const normalized = normalizeSelectionPlan(p);
+    if (normalized || beforePlan !== JSON.stringify({ creativeMode: p.creativeMode, contentKind: p.contentKind, group: p.group, accountIds: p.accountIds, perAccountCount: p.perAccountCount, content: p.content, topic: p.topic })) save("sessions");
     const matched = (p.accountIds || []).map(accountById).filter(Boolean);
     const confirmed = p.status === "confirmed";
     const cancelled = p.status === "cancelled";
@@ -143,6 +178,10 @@ const CARD = {
     const isImageAcc = a => a?.mode === "图文" || groupOf(a) === "图文组";
     const hasImageAccounts = matched.some(isImageAcc);
     const hasVideoAccounts = matched.some(a => !isImageAcc(a));
+    const customMode = p.creativeMode !== "auto";
+    const isImageKind = p.contentKind === "image";
+    const isMaterialKind = p.contentKind === "material";
+    const isRealKind = p.contentKind === "real";
     const products = primaryProducts().length ? primaryProducts() : [{ id: "dumate", name: "百度搭子", shortName: "搭子" }];
     const productOptions = (selected = "") => products.map(pr => `<option value="${esc(pr.id)}" ${selected === pr.id ? "selected" : ""}>${esc(pr.shortName || pr.name)}</option>`).join("");
     const planProductId = primaryProductById(p.productId || "dumate")?.id || "dumate";
@@ -153,27 +192,28 @@ const CARD = {
     const globalRefs = selectedRefIds(p);
     const coverRefs = selectedRefIds(p, "coverRefAssetIds");
     const accountRefs = p.accountRefAssetIds || {};
-    const accountPool = (state.accounts || []).filter(Boolean);
+    const accountPool = (state.accounts || []).filter(Boolean).filter(accountMatchesCurrentKind);
+    const modeBtn = (mode, label) => `<button type="button" class="agc-seg ${p.creativeMode === mode ? "is-active" : ""}" data-pf-creative="${mode}" ${locked ? "disabled" : ""}>${label}</button>`;
+    const kindBtn = (kind, label) => `<button type="button" class="agc-seg ${p.contentKind === kind ? "is-active" : ""}" data-pf-kind="${kind}" ${locked ? "disabled" : ""}>${label}</button>`;
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
       ${matched.map(a => {
         const imgAcc = isImageAcc(a);
-        const customCopyMode = (p.accountCustomCopyModes || {})[a.id] !== false;
+        const customCopyMode = customMode;
         const customCopyTitle = ((p.accountCopyTitles || {})[a.id] || "").trim();
         const customCopyBody = ((p.accountCopyBodies || {})[a.id] || "").trim();
         const standardCopy = esc((p.accountContents || {})[a.id] || "");
         const copyFields = `<div class="agc-copy-fields ${customCopyMode ? "is-custom" : ""}">
           <input class="agc-standard-copy" data-pacc-content="${a.id}" value="${standardCopy}" placeholder="本账号本次创作内容（留空则四方向短选题）" ${locked ? "disabled" : ""} />
           <div class="agc-account-copy">
-            <input data-pacc-copy-title="${a.id}" value="${esc(customCopyTitle)}" placeholder="标题" ${locked ? "disabled" : ""} />
-            <textarea data-pacc-copy-body="${a.id}" rows="1" placeholder="${imgAcc ? "文案正文" : "文案 / 口播正文"}" ${locked ? "disabled" : ""}>${esc(customCopyBody)}</textarea>
+            <input data-pacc-copy-title="${a.id}" value="${esc(customCopyTitle)}" placeholder="必填标题" ${locked ? "disabled" : ""} />
+            <textarea data-pacc-copy-body="${a.id}" rows="2" placeholder="${imgAcc ? "文案正文；只写标题也可以由模型补全文案" : "文案正文；真人号会转成更长口播，素材号会转成 B 面提示词"}" ${locked ? "disabled" : ""}>${esc(customCopyBody)}</textarea>
           </div>
         </div>`;
         return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"}">
         <b>${esc(a.name)}</b>
-        <select data-pacc-prod="${a.id}" ${locked ? "disabled" : ""}>${productOptions(primaryProductById((p.accountProductIds || {})[a.id] || planProductId)?.id || planProductId)}</select>
-        <label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>
-        ${imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
-        <button type="button" class="agc-copy-toggle ${customCopyMode ? "is-on" : ""}" data-pacc-copy-toggle="${a.id}" aria-pressed="${customCopyMode ? "true" : "false"}" ${locked ? "disabled" : ""}><span>${customCopyMode ? "自定义文案" : "标准生成"}</span></button>
+        <span class="agc-product-lock">${icon("lock", 11)} 产品库后台参考</span>
+        ${customMode ? "" : `<label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>`}
+        ${customMode ? `<span class="agc-video-chain" title="自定义标题/文案驱动">${imgAcc ? icon("image", 12) : icon("video", 12)} 自定义</span>` : imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
         ${copyFields}
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
@@ -191,60 +231,63 @@ const CARD = {
     </div>` : "";
     return `<div class="ag-card plan ${confirmed ? "resolved" : ""}" data-plan="${m.id}">
       <div class="agc-head">${icon("kanban", 15)}<b>量产任务板</b>
-        <label class="agc-product-pill">产品
+        <div class="agc-modebar">
+          <span class="agc-seg-group">${modeBtn("custom", "自定义创作")}${modeBtn("auto", "自动创作")}</span>
+          <span class="agc-seg-group">${kindBtn("image", "图文")}${kindBtn("material", "素材视频")}${kindBtn("real", "真人视频")}</span>
+        </div>
+        ${customMode ? `<span class="agc-product-pill is-locked">${icon("lock", 12)} 产品库后台参考</span>` : `<label class="agc-product-pill">产品
           <select data-pf="productId" ${locked ? "disabled" : ""}>${productOptions(planProductId)}</select>
-        </label>
+        </label>`}
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
       </div>
-      <div class="agc-grid">
+      ${customMode ? `<div class="agc-custom-hint">${icon("spark", 13)} 当前是 ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 自定义创作：选择账号后逐个填写标题和文案；产品库只作后台识别，标题和文案优先。</div>` : `<div class="agc-grid">
         <label class="agc-field wide">总创作要求
           <textarea data-pf="content" rows="3" ${locked ? "disabled" : ""} placeholder="写具体创作内容、产品角度或表达偏好；留空则从四个方向自动挑短选题。">${esc(p.content || p.style || "")}</textarea>
           <em>默认沿用各账号自带风格，不再单独选择标签。</em>
         </label>
-      </div>
+      </div>`}
       ${(() => {
         const editable = !locked;
+        const refKind = isImageKind ? "shared" : "cover";
+        const refIds = isImageKind ? globalRefs : coverRefs;
+        const removeAct = isImageKind ? "plan-refremove" : "plan-cover-refremove";
+        const clearAct = isImageKind ? "plan-refclear" : "plan-cover-refclear";
+        const dropAttr = isImageKind ? `data-plan-refdrop="${m.id}"` : `data-plan-cover-refdrop="${m.id}"`;
+        const inputAttr = isImageKind ? `data-plan-ref="${m.id}"` : `data-plan-cover-ref="${m.id}"`;
+        const refTitle = isImageKind ? "统一参考图" : isMaterialKind ? "统一素材视频参考" : "统一真人视频封面参考";
+        const refDesc = isImageKind
+          ? "图文成图会参考，最多5张；单账号定制图可单独追加"
+          : isMaterialKind
+          ? "用于视频封面、信息流 B 面分镜和功能演示参考，最多5张"
+          : "用于视频封面参考；角色形象仍读取账号角色图，缺失时生成会拦截";
         return `<div class="agc-ref">
           <div class="agc-ref-top">
-            <span class="agc-ref-l">${icon("star", 12)} 统一参考图<em>所有选中账号都会参考，最多5张；定制图每号最多3张，单独追加，不互相覆盖</em></span>
-            ${editable && globalRefs.length ? `<button class="link-btn" data-act="plan-refclear" data-mid="${m.id}">清空统一参考</button>` : ""}
+            <span class="agc-ref-l">${icon("star", 12)} ${refTitle}<em>${refDesc}</em></span>
+            ${editable && refIds.length ? `<button class="link-btn" data-act="${clearAct}" data-mid="${m.id}">清空统一参考</button>` : ""}
           </div>
           <div class="agc-ref-body">
             <div class="agc-ref-picked">
               <b>已选参考图</b>
-              <div class="agc-ref-chips">${refChips(globalRefs, editable ? "plan-refremove" : "", m.id)}</div>
+              <div class="agc-ref-chips">${refChips(refIds, editable ? removeAct : "", m.id)}</div>
             </div>
-            ${editable ? `<label class="agc-ref-drop" data-plan-refdrop="${m.id}">
+            ${editable ? `<label class="agc-ref-drop" ${dropAttr}>
               ${icon("upload", 16)}
               <b>拖入图片</b>
               <em>或点击上传，最多补到 5 张</em>
-              <input type="file" accept="image/*" multiple hidden data-plan-ref="${m.id}" />
+              <input type="file" accept="image/*" multiple hidden ${inputAttr} />
             </label>
-            <button class="agc-ref-library" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="shared">
+            <button class="agc-ref-library" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="${refKind}">
               ${icon("image", 16)}
               <b>打开资产库</b>
               <em>放大看图后选择</em>
             </button>` : ""}
           </div>
-          ${hasVideoAccounts ? `<div class="agc-cover-ref">
-            <div class="agc-cover-ref-info">
-              <b>${icon("image", 12)} 统一视频参考图</b>
-              <em>自动用于视频封面、信息流 B 面分镜和功能演示参考；主题仍跟随生成后的标题和文案</em>
-            </div>
-            <div class="agc-cover-ref-status">${coverRefs.length ? `已选 ${coverRefs.length} 张` : "未设置，封面和 B 面分镜按文案自动生成"}</div>
-            ${editable ? `<div class="agc-cover-ref-actions">
-              <label class="btn ghost sm" data-plan-cover-refdrop="${m.id}">
-                ${icon("upload", 12)} 上传统一参考
-                <input type="file" accept="image/*" multiple hidden data-plan-cover-ref="${m.id}" />
-              </label>
-            </div>` : ""}
-          </div>` : ""}
         </div>`;
       })()}
       <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减</em></span>
         ${locked ? "" : `<span class="agc-sec-tools">
-          <label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>
-          ${hasImageAccounts ? `<label class="agc-count-inline">默认图数<input type="number" min="3" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>` : ""}
+          ${customMode ? "" : `<label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>`}
+          ${!customMode && hasImageAccounts ? `<label class="agc-count-inline">默认图数<input type="number" min="3" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>` : ""}
           <button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>
         </span>`}
       </div>

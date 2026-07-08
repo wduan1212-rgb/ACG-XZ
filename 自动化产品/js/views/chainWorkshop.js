@@ -25,7 +25,16 @@ const DIGITAL_SEGMENT_TARGET_SEC = 27;
 const DIGITAL_SEGMENT_MAX_SEC = 30;
 const COVER_LOADING_TIMEOUT_MS = 8 * 60 * 1000;
 const COVER_GENERATE_TIMEOUT_MS = 140000;
-const COVER_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
+const COVER_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
+const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
+const COVER_STYLE_HINTS = [
+  "波普风，大色块和强对比排版",
+  "极简风，大留白和一个强视觉焦点",
+  "杂志封面风，标题醒目、层级清楚",
+  "手写标注风，少量重点圈画",
+  "蓝白科技风，干净界面和冷色高光",
+  "轻 3D 插画风，主体明确、空间干净"
+];
 let videoConfigCache = null;
 let videoConfigAt = 0;
 
@@ -182,22 +191,25 @@ function enrichCoverPromptWithRefs(prompt, cover) {
   const names = coverRefAssets(cover).map(a => a.name || "封面参考图").filter(Boolean).slice(0, 5);
   if (!names.length) return prompt || "";
   const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
-  return `${body}\n\n封面参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），只参考人物/产品/构图气质；封面主题、标题和画面信息必须以发布标题与文案为准。\n\n${COVER_NEGATIVE_PROMPT}`.trim();
+  return `${body}\n\n封面参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），只参考人物、产品或构图气质；封面内容仍以标题为主，不要把正文内容画成小字。\n\n${COVER_NEGATIVE_PROMPT}`.trim();
+}
+
+function coverStyleHint(seed = "") {
+  const s = String(seed || "");
+  let n = 0;
+  for (let i = 0; i < s.length; i++) n = (n * 31 + s.charCodeAt(i)) >>> 0;
+  return COVER_STYLE_HINTS[(n + Math.floor(Date.now() / 60000)) % COVER_STYLE_HINTS.length];
 }
 
 function coverPromptFromCopy({ title = "", body = "", product = null, custom = "", ratio = "3:4" } = {}) {
   const safeTitle = sanitizeXhsText(title || "视频封面");
-  const safeBody = sanitizeXhsText(body || "").slice(0, 360);
-  const prod = product?.shortName || product?.name || "当前产品";
   const extra = sanitizeXhsText(custom || "").slice(0, 280);
+  const style = coverStyleHint(`${safeTitle}:${product?.id || product?.name || ""}:${extra}`);
   return [
-    `生成短视频封面图，比例${ratio}。`,
-    `封面主标题必须完整出现：「${safeTitle}」。`,
-    `封面内容必须紧扣发布文案，不要扩展成其他主题；主产品是${prod}。`,
-    safeBody ? `文案摘要：${safeBody}` : "",
-    "画面要求：冲击力强，有纵深感和透视感；前景一个强视觉锚点，中景展示关键动作或结果，背景保留空间层次。",
-    "视觉风格：黑白灰极简科技感，少量冷蓝高光，干净高级，文字清晰可读，适合视频号/小红书封面。",
-    extra ? `补充画面要求：${extra}` : "",
+    `这是一张具有冲击力的短视频封面图，比例${ratio}，文字清晰明显。`,
+    `标题内容：${safeTitle}`,
+    `风格描述：${style}。`,
+    extra ? `补充风格：${extra}` : "",
     COVER_NEGATIVE_PROMPT
   ].filter(Boolean).join("\n");
 }
@@ -312,6 +324,9 @@ const INFO_FLOW_DIRECTIONS = [
 
 function stripInfoFlowDirectorNotes(text = "") {
   return String(text || "")
+    .split(/\n{2,}/)
+    .filter(block => !/(?:功能演示分镜结构|分镜结构|第一镜|第二镜|第三镜|第四镜|第五镜|第六镜|前排镜|前景镜|后排镜|第[一二三四五六七八九十]+镜\s*[:：])/.test(block))
+    .join("\n\n")
     .replace(/(?:^|\n)导演要求：[^\n]*(?=\n|$)/g, "")
     .replace(/不要写“冲突打开”“要有概念”“高级感”这类抽象占位词。?/g, "")
     .replace(/不要只出现抽象光效。?/g, "")
@@ -396,7 +411,7 @@ function completeCustomVideoBody(title = "", product = null) {
   const productName = infoProductName(product);
   const tagLine = videoPublishTagLine(product);
   return [
-    `很多人卡在「${t}」，不是因为不会用 AI，而是每次都从一堆零散资料里重新开始试。`,
+    `很多人卡在${t}，不是因为不会用 AI，而是每次都从一堆零散资料里重新开始试。`,
     `我的做法是先把资料边界、目标结果和复核点列清楚，再交给${productName}跑出一版能继续修改的初稿。`,
     "真正省时间的地方，是中间那些分类、提取、整理和生成结果的重复动作先被压下去。",
     "这样人不用放弃判断，只需要把注意力留给最后的筛选、修改和确认。",
@@ -570,9 +585,9 @@ function buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed = "" }) {
 function buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText = "", seed = "" }) {
   const cue = infoFlowCopyCue(copyText, mainTopic);
   const starts = [
-    `0-3s：画面近景看到用户在${productName}里输入「${mainTopic}」，旁边放着资料、截图和待办，旁白一句：“${cue}”。`,
-    `0-3s：接前段桌面，角色把路线草图拍进${productName}工作区，输入框里清楚出现「${mainTopic}」，旁白点出“先把任务说清楚”。`,
-    `0-3s：镜头从前段那张任务卡推入屏幕，${productName}工作区打开，资料、目标和判断标准被放进同一行，旁白说“先把资料和目标放到同一处”。`
+    `0-3s：画面近景看到用户在${productName}里输入「${mainTopic}」，旁边放着资料、截图和待办，口播自然扣回发布文案重点：“${cue}”。`,
+    `0-3s：接前段桌面，角色把路线草图拍进${productName}工作区，输入框里清楚出现「${mainTopic}」，口播点出“先把任务说清楚”。`,
+    `0-3s：镜头从前段那张任务卡推入屏幕，${productName}工作区打开，资料、目标和判断标准被放进同一行，口播说“先把资料和目标放到同一处”。`
   ];
   const mids = [
     `3-7s：界面按文案逻辑生成任务清单，逐项展示${focus.action}；镜头用近景点击、快速推拉和屏幕录制感切换，让观众看到每一步负责什么。`,
@@ -671,7 +686,7 @@ function compactInfoTopic(raw, product) {
   return d.topic;
 }
 
-function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = "", title = "" } = {}) {
+function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = "", publishCopy = "", title = "" } = {}) {
   const productName = infoProductName(product);
   const customTitle = sanitizeXhsText(String(title || "").replace(/\s+/g, " ").trim());
   const cleanTopic = compactInfoTopic(topic || customTitle, product);
@@ -687,17 +702,18 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
   const mainTopic = cleanTopic || finalTitle || direction.topic;
   const focus = infoFlowFeatureBrief(mainTopic, productName);
   const frontBase = buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed: runSeed });
-  const customCopy = String(copyText || "").trim();
+  const promptCue = String(copyText || "").trim();
+  const customCopy = String(publishCopy || copyText || "").trim();
   const generatedCopy = buildInfoFlowPublishCopy({ title: finalTitle, topic: mainTopic, productName, product, seed: runSeed });
   const copy = stripLeadingCopyTitle(customCopy || generatedCopy, finalTitle);
-  const backBase = buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText: copy, seed: runSeed });
+  const backBase = buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText: promptCue || copy, seed: runSeed });
   const frontPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次，节奏爽快但不能乱。",
     styleAnchor,
     roleAnchor,
     voiceAnchor,
     frontBase,
-    "负面约束：无字幕，不生成花字，不生成水印，不生成二维码，不出现多余品牌元素，不长时间静态讲解，不做抽象科技空镜。"
+    VIDEO_NEGATIVE_PROMPT
   ].join("\n");
   const backPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频后15秒产品功能演示段。根据功能演示分镜图、产品logo和产品界面参考继续生成；画面要呼应前段冲突，口播直接讲操作动作和结果，不要使用自指式说明。",
@@ -705,7 +721,7 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
     roleAnchor,
     voiceAnchor,
     backBase,
-    "负面约束：无字幕，不生成花字，不生成水印，不生成二维码，不堆满屏幕，不偏离产品功能演示。字幕、花字和音效留到智能混剪阶段处理。"
+    VIDEO_NEGATIVE_PROMPT
   ].join("\n");
   const storyboards = buildInfoFlowStoryboards({ mainTopic, productName, focus, styleAnchor });
   return {
@@ -748,12 +764,40 @@ function applyInfoFlowPlan(p, plan) {
   buildMaterialUnits(p);
 }
 
+function normProductText(text = "") {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[\s"'“”‘’《》「」【】\[\]（）()!！?？:：,，.。;；、~～\-_/\\]+/g, "");
+}
+
+function productTerms(product = {}) {
+  return [
+    product.id,
+    product.name,
+    product.shortName,
+    product.category,
+    ...(product.keywords || []),
+    ...(product.coreFeatures || []),
+    ...(product.tutorialAngles || []),
+    ...(product.blogAngles || [])
+  ].filter(Boolean);
+}
+
+function inferWorkshopProductFromCopy(title = "", body = "", fallback = null) {
+  const source = normProductText(`${title}\n${body}`);
+  const choices = primaryProducts();
+  const hit = choices.find(product => productTerms(product).some(term => {
+    const t = normProductText(term);
+    return t && t.length >= 2 && source.includes(t);
+  }));
+  return hit || fallback || primaryProductById("dumate") || productById("dumate");
+}
+
 export function renderWorkshopPage(root, p) {
   liveRoot = root; liveProd = p;
   const acc = accountById(p.accountId);
   const A = p.artifacts.boards;
   let shots = p.artifacts.script.shots || [];
-  const products = primaryProducts();
   p.artifacts.script.productId = primaryProductById(p.artifacts.script.productId || "dumate")?.id || "dumate";
   const product = productById(p.artifacts.script.productId || "dumate");
   const isDigital = p.subType === "数字人";
@@ -922,21 +966,25 @@ export function renderWorkshopPage(root, p) {
           <div id="wsRefChooser" class="ref-chooser card" hidden></div>` : ""}
 
           <div class="refbar card video-briefbar video-brief-coverbar ${activeInfoFlowMode ? "no-narration" : ""} ${customCopyMode ? "custom-copy-mode" : "standard-copy-mode"}" id="wsBriefbar">
-            <div class="refbar-left">
+            ${customCopyMode ? "" : `<div class="refbar-left">
               <b>${icon("fileText", 13)} 创作主题 / 发布文案</b>
               <em>主题、发布文案和封面统一在这里定稿；封面跟随标题与正文生成</em>
-            </div>
+            </div>`}
             <div class="refbar-chip ws-brief-fields">
               <div class="ws-topic-row ${customCopyMode ? "is-custom" : "is-standard"}">
+                ${customCopyMode ? `<div class="ws-brief-heading">
+                  <b>${icon("fileText", 13)} 创作主题 / 发布文案</b>
+                  <em>主题、发布文案和封面统一在这里定稿；封面跟随标题与正文生成</em>
+                </div>` : ""}
                 ${customCopyMode ? "" : `<div class="input-with-action"><input class="input" id="wsTopic" value="${esc(p.topic || "")}" placeholder="详细写创作主题，例如：AI工作流提效、Skill速通、资料整理对比" /><button class="icon-btn sm" id="wsDice" title="随机创作内容">${icon("dice", 13)}</button></div>`}
-                <select class="input" id="wsProduct">
-                  ${products.map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
-                </select>
+                ${customCopyMode ? "" : `<select class="input" id="wsProduct">
+                  ${primaryProducts().map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
+                </select>`}
                 <button class="btn ghost sm ws-copy-mode ${customCopyMode ? "is-active" : ""}" id="wsCopyModeToggle" type="button">${customCopyMode ? "自定义文案" : "标准生成"}</button>
                 <button class="btn gen sm" id="wsBriefGenerate">${icon("spark", 13)} 一键生成</button>
               </div>
               <div class="ws-copy-fields">
-                <input class="input" id="wsCopyTitle" value="${esc(C.title || "")}" placeholder="发布标题，例如：国产桌面智能体，1分钟上手讲清楚" />
+                <textarea class="input ws-copy-title" id="wsCopyTitle" rows="2" placeholder="发布标题，例如：国产桌面智能体，1分钟上手讲清楚">${esc(C.title || "")}</textarea>
                 <textarea class="input" id="wsCopyBody" rows="4" placeholder="按口播内容总结成发布简介，可直接修改">${esc(C.body || "")}</textarea>
               </div>
               ${activeInfoFlowMode ? "" : `<div class="ws-narration-inline">
@@ -970,7 +1018,7 @@ export function renderWorkshopPage(root, p) {
                       <label class="btn ghost sm">${coverAsset ? "替换封面" : "上传封面"}<input type="file" accept="image/*" hidden id="wsCoverUpload" /></label>
                     </div>
                   </div>
-                  <textarea class="input" id="wsCoverPrompt" rows="2" placeholder="补充封面画面要求；系统会自动绑定发布标题和文案">${esc(cover.prompt || "")}</textarea>
+                  <textarea class="input" id="wsCoverPrompt" rows="2" placeholder="补充封面风格或参考要求；系统只把发布标题作为封面主文字">${esc(cover.prompt || "")}</textarea>
                   <div class="cover-ref-strip">
                     ${coverRefs.length ? coverRefs.map(a => `<span class="ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button class="ref-x" data-cover-ref-rm="${a.id}">${icon("x", 11)}</button></span>`).join("") : `<span class="muted">未设置封面参考图</span>`}
                   </div>
@@ -1001,10 +1049,12 @@ export function renderWorkshopPage(root, p) {
                 </div>` : ""}
               </div>
               <div class="voice-side-actions">
-                ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm ${voiceFav ? "voice-action-active" : ""}" id="wsVoiceFav">${icon("star", 12)} ${voiceFav ? "已收藏" : "收藏"}</button>
-                <button class="btn ghost sm ${voiceLocked ? "voice-action-active" : ""}" id="wsVoiceFix">${icon("check", 12)} ${voiceLocked ? "已锁定" : "固定到账号"}</button>` : ""}
-                ${!isDigital || isDigitalHumanMode ? `<button class="btn ghost sm" id="wsTts">${icon("mic", 13)} ${isDigitalHumanMode ? "生成分段口播" : (audioAsset && p.artifacts.audio.source === "tts" ? "重新生成口播" : "生成口播音频")}${ttsApiConfigured() ? "" : "（估时）"}</button>` : ""}
-                ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
+                ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm voice-fav-btn ${voiceFav ? "voice-action-active" : ""}" id="wsVoiceFav">${icon("star", 12)} ${voiceFav ? "已收藏" : "收藏"}</button>` : ""}
+                <div class="voice-stacked-actions">
+                  ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm ${voiceLocked ? "voice-action-active" : ""}" id="wsVoiceFix">${icon("check", 12)} ${voiceLocked ? "已锁定" : "固定到账号"}</button>` : ""}
+                  ${!isDigital || isDigitalHumanMode ? `<button class="btn ghost sm" id="wsTts">${icon("mic", 13)} ${isDigitalHumanMode ? "生成分段口播" : (audioAsset && p.artifacts.audio.source === "tts" ? "重新生成口播" : "生成口播音频")}${ttsApiConfigured() ? "" : "（估时）"}</button>` : ""}
+                  ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
+                </div>
               </div>
             </div>
             ${p.artifacts.audio.voiceLookup ? `<div class="voice-lookup-note" style="grid-column:1/-1">${esc(p.artifacts.audio.voiceLookup)}</div>` : ""}
@@ -1099,6 +1149,18 @@ export function renderWorkshopPage(root, p) {
         </div>
       </div>
       <div id="wsRefChooser" class="ref-chooser card" hidden></div>
+      <div class="if-storyboard-row" id="wsInfoStoryboardDrop">
+        <div class="if-storyboard-title">
+          <b>${icon("image", 13)} 功能演示分镜参考</b>
+          <em>可自动生成或手动拖入；提交后15s视频时会自动作为功能演示参考图。</em>
+        </div>
+        <div class="if-storyboards ${loading ? "is-loading" : ""}">
+          ${storyboardAssets.length
+            ? storyboardAssets.map(a => `<button class="if-board-thumb" type="button" data-if-board="${a.id}">${thumbHtml(a)}<span>${esc(a.name)}</span><i data-if-board-rm="${a.id}">${icon("x", 10)}</i></button>`).join("")
+            : [1, 2, 3].map(n => `<div class="if-board-empty"><b>${n}</b><em>${loading ? "生成中" : "待分镜"}</em></div>`).join("")}
+        </div>
+        <label class="btn ghost sm">${icon("upload", 12)} 上传分镜<input type="file" accept="image/*" multiple hidden id="wsInfoStoryboardUp" /></label>
+      </div>
       <div class="infoflow-grid">
         ${segs.slice(0, 2).map((seg, i) => {
           const video = videoItems[i] || {};
@@ -1118,18 +1180,6 @@ export function renderWorkshopPage(root, p) {
           </div>
         </div>`;
         }).join("")}
-      </div>
-      <div class="if-storyboard-row" id="wsInfoStoryboardDrop">
-        <div class="if-storyboard-title">
-          <b>${icon("image", 13)} 功能演示分镜参考</b>
-          <em>可自动生成或手动拖入；提交后15s视频时会自动作为功能演示参考图。</em>
-        </div>
-        <div class="if-storyboards ${loading ? "is-loading" : ""}">
-          ${storyboardAssets.length
-            ? storyboardAssets.map(a => `<button class="if-board-thumb" type="button" data-if-board="${a.id}">${thumbHtml(a)}<span>${esc(a.name)}</span><i data-if-board-rm="${a.id}">${icon("x", 10)}</i></button>`).join("")
-            : [1, 2, 3].map(n => `<div class="if-board-empty"><b>${n}</b><em>${loading ? "生成中" : "待分镜"}</em></div>`).join("")}
-        </div>
-        <label class="btn ghost sm">${icon("upload", 12)} 上传分镜<input type="file" accept="image/*" multiple hidden id="wsInfoStoryboardUp" /></label>
       </div>
       ${hasVideoJobs ? `<div class="if-video-status ${videoState[0]}">
         <div class="if-video-summary">
@@ -1495,7 +1545,25 @@ export function renderWorkshopPage(root, p) {
     return run();
   }
 
-  function customWorkshopShotsFromCopy(title = "", body = "") {
+  async function customVideoDraftFromModel({ title = "", body = "", product = null } = {}) {
+    const mode = isMaterial(p) ? "material" : "digital";
+    const generated = await AI.generateCustomVideoDraft({
+      title,
+      body,
+      account: acc,
+      product,
+      mode
+    });
+    const finalTitle = sanitizeXhsText(title || generated.title || p.title || p.topic || "").replace(/[「」]/g, "").trim();
+    return {
+      title: finalTitle,
+      copy: stripLeadingCopyTitle((generated.copy || body || "").replace(/[「」]/g, ""), finalTitle),
+      narration: copyBodyForSpeech((generated.narration || "").replace(/[「」]/g, "")),
+      visualPrompt: sanitizeXhsText((generated.visualPrompt || "").replace(/[「」]/g, "")).trim()
+    };
+  }
+
+  function customWorkshopShotsFromCopy(title = "", body = "", visualPrompt = "") {
     const raw = sanitizeXhsText(body || title || "");
     const lines = raw
       .replace(/#[^\s#]+/g, " ")
@@ -1509,9 +1577,11 @@ export function renderWorkshopPage(root, p) {
       idea: i === 0 ? (title || line).slice(0, 40) : line.slice(0, 44),
       visual: isDigitalHumanMode
         ? (i === 0
-          ? `固定真人/数字人正面中近景开场，围绕标题「${title || line}」自然开口，表情真实，背景是干净办公桌。`
-          : `真人/数字人延续同一角色讲述，旁边穿插产品任务卡、资料整理结果或界面局部，画面服务这句口播：「${line.slice(0, 42)}」。`)
-        : `围绕这句内容生成可拍办公画面：「${line.slice(0, 42)}」。使用手部操作、产品界面、资料流转或结果展示推进，不偏离用户自定义文案。`,
+          ? `固定真人/数字人正面中近景开场，围绕标题 ${title || line} 自然开口，表情真实，背景是干净办公桌。`
+          : `真人/数字人延续同一角色讲述，旁边穿插产品任务卡、资料整理结果或界面局部，画面服务这句口播：${line.slice(0, 42)}。`)
+        : (visualPrompt && i === 0
+          ? `${visualPrompt} 本镜头先交代主题和核心结果：${line.slice(0, 42)}。`
+          : `围绕这句内容生成可拍办公画面：${line.slice(0, 42)}。使用手部操作、产品界面、资料流转或结果展示推进，不偏离用户自定义文案。`),
       line,
       ui: !isDigitalHumanMode || i % 3 !== 1,
       scene: i + 1
@@ -1520,26 +1590,42 @@ export function renderWorkshopPage(root, p) {
 
   async function generateWorkshopDraft() {
     let topic = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || "").trim());
-    const selectedProduct = productById(p.artifacts.script.productId || "dumate");
     const customMode = p.artifacts.copy?.customMode !== false;
+    syncCopyFromEditor();
+    let customTitle = (p.artifacts.copy?.title || "").trim();
+    let customBody = (p.artifacts.copy?.body || "").trim();
+    const configuredProduct = productById(p.artifacts.script.productId || "dumate");
+    const selectedProduct = customMode
+      ? inferWorkshopProductFromCopy(customTitle || topic, customBody, configuredProduct)
+      : configuredProduct;
+    if (selectedProduct?.id) p.artifacts.script.productId = selectedProduct.id;
     if (activeInfoFlowMode) {
-      syncCopyFromEditor();
-      let customTitle = (p.artifacts.copy?.title || "").trim();
-      let customBody = (p.artifacts.copy?.body || "").trim();
       if (customMode) {
         if (!customTitle && topic) customTitle = topic;
-        if (!customBody && customTitle) customBody = completeCustomVideoBody(customTitle, selectedProduct);
         if (!customTitle && !customBody) { toast("自定义模式先填写标题，系统会自动补正文"); return; }
+        const generated = await customVideoDraftFromModel({ title: customTitle || topic, body: customBody, product: selectedProduct });
+        customTitle = customTitle || generated.title || topic;
+        customBody = generated.copy || customBody;
         p.artifacts.copy.title = customTitle || p.title || topic;
         p.artifacts.copy.body = stripLeadingCopyTitle(customBody, p.artifacts.copy.title);
+        p.artifacts.copy.generatedNarration = generated.narration || "";
+        p.artifacts.copy.generatedVisualPrompt = generated.visualPrompt || "";
       }
       const plan = buildInfoFlowPlan({
         topic: customMode ? (topic || customTitle) : topic,
         title: customMode ? customTitle : "",
         acc,
         product: selectedProduct,
-        copyText: customMode ? copyBodyForSpeech(customBody) : infoFlowCopyOverride()
+        publishCopy: customMode ? customBody : "",
+        copyText: customMode ? copyBodyForSpeech(p.artifacts.copy.generatedNarration || customBody) : infoFlowCopyOverride()
       });
+      if (customMode && p.artifacts.copy.generatedVisualPrompt && plan.segments?.[1]) {
+        plan.segments[1].storyboardPrompts = [
+          p.artifacts.copy.generatedVisualPrompt,
+          ...(plan.segments[1].storyboardPrompts || [])
+        ].slice(0, 4);
+        plan.segments[1].videoPrompt = stripInfoFlowDirectorNotes(plan.segments[1].videoPrompt || "");
+      }
       applyInfoFlowPlan(p, plan);
       const input = $("#wsTopic", root); if (input) input.value = p.topic || "";
       save("productions");
@@ -1547,23 +1633,25 @@ export function renderWorkshopPage(root, p) {
       draw();
       return;
     }
-    syncCopyFromEditor();
-    let customTitle = (p.artifacts.copy?.title || "").trim();
-    let customBody = (p.artifacts.copy?.body || "").trim();
     if (customMode) {
       if (!customTitle && topic) customTitle = topic;
-      if (!customBody && customTitle) customBody = completeCustomVideoBody(customTitle, selectedProduct);
       if (!customTitle && !customBody) { toast("自定义模式先填写标题，系统会自动补正文"); return; }
+      const generated = await customVideoDraftFromModel({ title: customTitle || topic, body: customBody, product: selectedProduct });
+      customTitle = customTitle || generated.title || topic;
+      customBody = generated.copy || customBody;
       if (!topic) topic = customTitle || customBody.split(/\n+/).find(Boolean) || "";
       p.topic = sanitizeXhsText(topic);
       p.title = customTitle || p.topic;
-      p.artifacts.script.shots = customWorkshopShotsFromCopy(customTitle || p.title, copyBodyForSpeech(customBody));
+      p.artifacts.script.shots = customWorkshopShotsFromCopy(customTitle || p.title, generated.narration || copyBodyForSpeech(customBody), generated.visualPrompt);
       shots = p.artifacts.script.shots || [];
       p.artifacts.script.title = p.title;
       p.artifacts.script.source = "custom-copy";
       p.artifacts.script.style = p.artifacts.script.style || acc?.styleProfile || acc?.lockedStyle || "";
+      p.artifacts.script.productId = selectedProduct?.id || p.artifacts.script.productId || "dumate";
       p.artifacts.copy.title = p.title;
       p.artifacts.copy.body = stripLeadingCopyTitle(customBody, p.title);
+      p.artifacts.copy.generatedNarration = generated.narration || "";
+      p.artifacts.copy.generatedVisualPrompt = generated.visualPrompt || "";
       Object.assign(p.artifacts.audio, estimateAudio(shots), { assetId: null, source: "estimate", lastError: "" });
       p.artifacts.boards.units = [];
       buildMaterialUnits(p);
@@ -1847,7 +1935,9 @@ export function renderWorkshopPage(root, p) {
       cover.prompt = coverPromptFromCopy({
         title,
         body: p.artifacts.copy?.body || narrationText(p.artifacts.script.shots || []),
-        product: productById(p.artifacts.script.productId || "dumate"),
+        product: p.artifacts.copy?.customMode !== false
+          ? inferWorkshopProductFromCopy(title, p.artifacts.copy?.body || "", productById(p.artifacts.script.productId || "dumate"))
+          : productById(p.artifacts.script.productId || "dumate"),
         custom,
         ratio
       });

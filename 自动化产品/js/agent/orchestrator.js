@@ -16,8 +16,59 @@ import { fileToDataUrl } from "../core/util.js";
 import { pickDefaultCreativeTopic } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
-const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
+const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
+const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
+const COVER_STYLE_HINTS = [
+  "波普风，大色块和强对比排版",
+  "极简风，大留白和一个强视觉焦点",
+  "杂志封面风，标题醒目、层级清楚",
+  "手写标注风，少量重点圈画",
+  "蓝白科技风，干净界面和冷色高光",
+  "轻 3D 插画风，主体明确、空间干净"
+];
 const activeImageRecoveries = new Set();
+
+const CONTENT_KIND_GROUP = { image: "图文组", material: "素材", real: "真人" };
+
+function contentKindFromGroup(group = "") {
+  if (group === "素材") return "material";
+  if (group === "真人") return "real";
+  return "image";
+}
+
+function coverStyleHint(seed = "") {
+  const s = String(seed || "");
+  let n = 0;
+  for (let i = 0; i < s.length; i++) n = (n * 31 + s.charCodeAt(i)) >>> 0;
+  return COVER_STYLE_HINTS[(n + Math.floor(Date.now() / 60000)) % COVER_STYLE_HINTS.length];
+}
+
+function normalizeContentKind(kind = "", group = "") {
+  return ["image", "material", "real"].includes(kind) ? kind : contentKindFromGroup(group);
+}
+
+function accountMatchesKind(acc, kind = "image") {
+  const g = groupOf(acc);
+  if (kind === "image") return acc?.mode === "图文" || g === "图文组";
+  if (kind === "material") return acc?.mode === "视频" && g === "素材";
+  if (kind === "real") return acc?.mode === "视频" && g === "真人";
+  return true;
+}
+
+function enforcePlanKind(plan = {}) {
+  const contentKind = normalizeContentKind(plan.contentKind, plan.group);
+  plan.contentKind = contentKind;
+  plan.group = CONTENT_KIND_GROUP[contentKind] || plan.group || "图文组";
+  plan.creativeMode = plan.creativeMode === "auto" ? "auto" : "custom";
+  if (plan.creativeMode === "custom") {
+    plan.topicMode = "fixed";
+    plan.content = "";
+    plan.perAccountCount = 1;
+    plan.accountCounts = {};
+  }
+  plan.accountIds = (plan.accountIds || []).filter(id => accountMatchesKind(accountById(id), contentKind));
+  return plan;
+}
 
 const BATCH_CREATIVE_VARIANTS = [
   { key: "pain-relief", name: "痛点急救型", angle: "从一个具体办公痛点切入，讲清这条内容解决哪种麻烦", focus: "痛点现场、具体动作、结果变化" },
@@ -148,6 +199,9 @@ function infoFlowCopyCue(copyText = "", fallback = "") {
 
 function stripInfoFlowDirectorNotes(text = "") {
   return String(text || "")
+    .split(/\n{2,}/)
+    .filter(block => !/(?:功能演示分镜结构|分镜结构|第一镜|第二镜|第三镜|第四镜|第五镜|第六镜|前排镜|前景镜|后排镜|第[一二三四五六七八九十]+镜\s*[:：])/.test(block))
+    .join("\n\n")
     .replace(/(?:^|\n)导演要求：[^\n]*(?=\n|$)/g, "")
     .replace(/不要写“冲突打开”“要有概念”“高级感”这类抽象占位词。?/g, "")
     .replace(/不要只出现抽象光效。?/g, "")
@@ -268,8 +322,8 @@ function buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText = "", s
   const cue = infoFlowCopyCue(copyText, mainTopic);
   const starts = [
     `0-3s：口播直接扣回发布文案重点：“${cue}”。画面近景看到用户在${productName}里输入「${mainTopic}」，旁边放着资料、截图和待办。`,
-    `0-3s：接前段桌面，角色把路线草图拍进${productName}工作区，输入框里清楚出现「${mainTopic}」，旁白点出“先把任务说清楚”。`,
-    `0-3s：镜头从前段那张任务卡推入屏幕，${productName}工作区打开，资料、目标和判断标准被放进同一行，旁白说“先把资料和目标放到同一处”。`
+    `0-3s：接前段桌面，角色把路线草图拍进${productName}工作区，输入框里清楚出现「${mainTopic}」，口播点出“先把任务说清楚”。`,
+    `0-3s：镜头从前段那张任务卡推入屏幕，${productName}工作区打开，资料、目标和判断标准被放进同一行，口播说“先把资料和目标放到同一处”。`
   ];
   const mids = [
     `3-7s：界面按文案逻辑生成任务清单，逐项展示${focus.action}；镜头用近景点击、快速推拉和屏幕录制感切换，让观众看到每一步负责什么。`,
@@ -382,10 +436,11 @@ function batchInfoFlowTitle({ topic, productName, seed }) {
   return raw.length > 38 ? `${raw.slice(0, 37)}…` : raw;
 }
 
-function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed = "", title = "", copyText = "" } = {}) {
+function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed = "", title = "", copyText = "", publishCopy = "" } = {}) {
   const productName = infoFlowProductName(product);
   const customTitle = String(title || "").replace(/\s+/g, " ").trim();
-  const customCopy = String(copyText || "").trim();
+  const promptCue = String(copyText || "").trim();
+  const customCopy = String(publishCopy || copyText || "").trim();
   const cleanTopic = String(topic || customTitle || "").replace(/\s+/g, " ").trim().slice(0, 48);
   const variantSeed = `${cleanTopic || "auto"}:${seed}:${acc?.id || acc?.name || ""}:${productName}`;
   const direction = pickBatchInfoFlowDirection(variantSeed);
@@ -398,20 +453,20 @@ function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed =
   const focus = infoFlowFeatureBrief(`${mainTopic} ${angle.focus}`, productName);
   const frontBase = buildInfoFlowFrontBeat({ mainTopic: storyTopic, productName, focus, seed: variantSeed });
   const copy = stripLeadingCopyTitle(customCopy || buildInfoFlowPublishCopy({ title: finalTitle, topic: mainTopic, productName, product }), finalTitle);
-  const backBase = buildInfoFlowBackBeat({ mainTopic: storyTopic, productName, focus, copyText: copy, seed: variantSeed });
+  const backBase = buildInfoFlowBackBeat({ mainTopic: storyTopic, productName, focus, copyText: promptCue || copy, seed: variantSeed });
   const frontPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次。",
     roleAnchor,
     voiceAnchor,
     frontBase,
-    "负面约束：无字幕，不生成花字，不生成水印，不生成二维码，不出现多余品牌元素。"
+    VIDEO_NEGATIVE_PROMPT
   ].join("\n");
   const backPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频后15秒产品功能演示段。根据功能演示分镜图、产品logo和产品界面参考继续生成；画面要呼应前段冲突，口播直接讲操作动作和结果，不要使用自指式说明。",
     roleAnchor,
     voiceAnchor,
     backBase,
-    "负面约束：无字幕，不生成花字，不生成水印，不生成二维码，不堆满屏幕。字幕、花字和音效留到智能混剪阶段处理。"
+    VIDEO_NEGATIVE_PROMPT
   ].join("\n");
   const storyboards = buildInfoFlowStoryboards({ mainTopic: storyTopic, productName, focus });
   return {
@@ -532,16 +587,12 @@ function ensureVideoCoverPrompt(p, product = null) {
   A.cover = A.cover || { prompt: "", assetId: null, refAssetIds: [], status: "idle", error: "" };
   const title = (p.artifacts?.copy?.title || p.title || p.topic || "").trim();
   if (!title) return;
-  const body = String(p.artifacts?.copy?.body || "").replace(/\s+/g, " ").slice(0, 280);
   if (A.cover.prompt && A.cover.prompt.includes(title)) return;
-  const productName = product?.shortName || product?.name || "当前产品";
+  const style = coverStyleHint(`${title}:${product?.id || product?.name || ""}:${p.id || ""}`);
   A.cover.prompt = [
-    "生成短视频封面图，比例3:4。",
-    `封面主标题必须完整出现：「${title}」。`,
-    `封面内容紧扣发布文案和标题，不要扩展成其他主题；主产品是${productName}。`,
-    body ? `文案摘要：${body}` : "",
-    "画面要求：冲击力强，有纵深感和透视感；前景一个强视觉锚点，中景展示关键动作或结果，背景保留空间层次。",
-    "视觉风格：黑白灰极简科技感，少量冷蓝高光，文字清晰可读。",
+    "这是一张具有冲击力的短视频封面图，比例3:4，文字清晰明显。",
+    `标题内容：${title}`,
+    `风格描述：${style}。`,
     IMAGE_NEGATIVE_PROMPT
   ].filter(Boolean).join("\n");
   A.cover.status = A.cover.status || "idle";
@@ -703,6 +754,7 @@ export function agentSay(text, extra = {}) {
 
 /* ---------- 批次 ---------- */
 export function createBatch(plan, sessionId) {
+  enforcePlanKind(plan);
   const sharedRefAssetIds = [...new Set([
     ...(Array.isArray(plan.sharedRefAssetIds) ? plan.sharedRefAssetIds : []),
     plan.sharedRefAssetId
@@ -710,13 +762,15 @@ export function createBatch(plan, sessionId) {
   const coverRefAssetIds = [...new Set(Array.isArray(plan.coverRefAssetIds) ? plan.coverRefAssetIds.filter(Boolean) : [])].slice(0, 5);
   const accountCustomCopyModes = { ...(plan.accountCustomCopyModes || {}) };
   (plan.accountIds || []).forEach(id => {
-    if (accountCustomCopyModes[id] == null) accountCustomCopyModes[id] = true;
+    if (accountCustomCopyModes[id] == null) accountCustomCopyModes[id] = plan.creativeMode === "custom";
   });
   const batch = {
     id: uid(), sessionId,
     planMessageId: plan.planMessageId || "",
     ownerId: state.ui.currentMemberId || null,
     goal: plan.goal || "",
+    creativeMode: plan.creativeMode || "custom",
+    contentKind: plan.contentKind || "image",
     topic: (plan.content || "").trim() || (plan.topic || "").trim() || "四方向自动选题",
     topicMode: (plan.content || "").trim() ? "fixed" : (plan.topicMode || "random"),   // fixed | random（每条内容自动出题）
     productId: plan.productId || "dumate",
@@ -759,15 +813,15 @@ export function templatePlan(key) {
   const t = FLOW_TEMPLATES[key];
   if (!t) return null;
   const matched = selectAccountsForPlan({ tags: [], group: t.group, accountCount: 3, sort: "stale" });
-  return {
-    goal: t.label, topicMode: "random", topic: "", productId: "dumate", content: "", style: "",
+  return enforcePlanKind({
+    goal: t.label, creativeMode: "auto", contentKind: contentKindFromGroup(t.group), topicMode: "random", topic: "", productId: "dumate", content: "", style: "",
     tags: [], group: t.group, sort: "stale", accountCount: 3, perAccountCount: 1,
     accountIds: matched.map(a => a.id), template: key,
     accountCounts: {},
     accountCustomCopyModes: {}, accountCopyTitles: {}, accountCopyBodies: {},
     useOnlineTrends: false,
     sharedRefAssetIds: [], coverRefAssetIds: [], accountRefAssetIds: {}
-  };
+  });
 }
 export const batchById = id => state.batches.find(b => b.id === id);
 export const batchProds = b => (b.productionIds || []).map(productionById).filter(Boolean);
@@ -816,9 +870,10 @@ export function defaultPlan(goal = "新量产计划") {
     accountCount: fb.accountCount || fb.count || null,
     perAccountCount: fb.perAccountCount || 1
   };
-  return {
+  return enforcePlanKind({
     status: "pending", goal,
-    topicMode: "random", topic: "",
+    creativeMode: "custom", contentKind: "image",
+    topicMode: "fixed", topic: "",
     productId: "dumate", content: "",
     accountProductIds: {}, accountContents: {},
     accountCustomCopyModes: {}, accountCopyTitles: {}, accountCopyBodies: {},
@@ -833,7 +888,7 @@ export function defaultPlan(goal = "新量产计划") {
     perAccountCount: params.perAccountCount,
     accountIds: [],
     sharedRefAssetIds: [], coverRefAssetIds: [], accountRefAssetIds: {}
-  };
+  });
 }
 
 async function polishImageDataUrl(dataUrl, seedText = "") {
@@ -1089,20 +1144,53 @@ async function draftOne(p, batch) {
       p.topic = customTopic;
       p.title = customCopyTitle || customTopic;
       p.artifacts.copy = { title: p.title, body: customCopyBody };
+      let customVideoDraft = null;
+      if (!isImg) {
+        try {
+          customVideoDraft = await AI.generateCustomVideoDraft({
+            title: customCopyTitle || customTopic,
+            body: customCopyBody,
+            account: acc,
+            product,
+            mode: material ? "material" : "digital"
+          });
+          p.title = customCopyTitle || p.title || customVideoDraft.title;
+          p.artifacts.copy = {
+            title: p.title,
+            body: customVideoDraft.copy || customCopyBody || ""
+          };
+          p.artifacts.script.generatedNarration = customVideoDraft.narration || "";
+          p.artifacts.script.generatedVisualPrompt = customVideoDraft.visualPrompt || "";
+          p.artifacts.script.source = "llm-custom-video";
+        } catch (err) {
+          setStatus(p, "failed", err?.message || "自定义视频内容需要语言模型生成，请稍后重试");
+          return;
+        }
+      }
       if (material && p.artifacts.boards?.materialMode === "infoFlow") {
         const planInfo = buildBatchInfoFlowPlan({
           topic: customTopic,
           title: p.artifacts.copy.title,
-          copyText: p.artifacts.copy.body,
+          copyText: customVideoDraft?.narration || p.artifacts.copy.body,
+          publishCopy: customVideoDraft?.copy || customCopyBody || p.artifacts.copy.body,
           product,
           acc,
           seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`
         });
         applyBatchInfoFlowPlan(p, planInfo);
-        p.artifacts.copy.title = customCopyTitle || planInfo.title || p.title;
-        p.artifacts.copy.body = stripLeadingCopyTitle(customCopyBody || planInfo.copy || "", p.artifacts.copy.title);
-        p.artifacts.script.source = "custom-infoflow";
+        p.artifacts.copy.title = customCopyTitle || customVideoDraft?.title || planInfo.title || p.title;
+        p.artifacts.copy.body = stripLeadingCopyTitle(customVideoDraft?.copy || customCopyBody || planInfo.copy || "", p.artifacts.copy.title);
+        p.artifacts.script.source = "llm-custom-infoflow";
         p.artifacts.script.style = style;
+        const backSeg = p.artifacts.boards?.infoFlow?.segments?.[1];
+        const visualPrompt = (customVideoDraft?.visualPrompt || "").trim();
+        if (backSeg && visualPrompt) {
+          backSeg.videoPrompt = stripInfoFlowDirectorNotes(backSeg.videoPrompt || "");
+          backSeg.storyboardPrompts = [
+            visualPrompt,
+            ...(backSeg.storyboardPrompts || [])
+          ].slice(0, 4);
+        }
         if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
         if (batch.sharedRefAssetId && accountAssetsHas(acc.id, batch.sharedRefAssetId)) {
           p.artifacts.boards.sharedRefAssetId = batch.sharedRefAssetId;
@@ -1131,10 +1219,14 @@ async function draftOne(p, batch) {
         return;
       }
       if (!isImg) {
-        const shots = buildVideoCustomCopyShots(p.artifacts.copy, product, p.subType === "数字人");
+        const narrationCopy = {
+          title: p.artifacts.copy.title || p.title,
+          body: customVideoDraft?.narration || p.artifacts.copy.body || ""
+        };
+        const shots = buildVideoCustomCopyShots(narrationCopy, product, p.subType === "数字人");
         p.artifacts.script.shots = shots;
         p.artifacts.script.title = p.title;
-        p.artifacts.script.source = "custom-copy";
+        p.artifacts.script.source = "llm-custom-video";
         p.artifacts.script.style = style;
         Object.assign(p.artifacts.audio, estimateAudio(shots), { assetId: null, source: "estimate", lastError: "" });
         if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
@@ -1480,6 +1572,7 @@ function setBatchPhase(batch, phase) {
 }
 
 export async function startBatch(plan, session) {
+  enforcePlanKind(plan);
   const accounts = plan.accountIds.map(accountById).filter(Boolean);
   if (!accounts.length) { agentSay("⚠ 没有可用账号，先调整筛选条件。"); return null; }
   const batch = createBatch(plan, session.id);
@@ -1818,6 +1911,8 @@ export async function handleUserText(text) {
     const fb = parseGoalFallback(text);
     const params = { ...(r.params || {}), ...fb };
     if (fb.group && fb.group !== "all") params.group = fb.group;
+    params.contentKind = normalizeContentKind(params.contentKind, params.group);
+    params.group = CONTENT_KIND_GROUP[params.contentKind] || params.group || "图文组";
     if (fb.accountCount != null) params.accountCount = fb.accountCount;
     if (fb.perAccountCount != null) params.perAccountCount = fb.perAccountCount;
     if (fb.count != null) params.count = fb.count;
@@ -1830,8 +1925,10 @@ export async function handleUserText(text) {
     const perAccountCount = Math.max(1, Math.min(12, Number(params.perAccountCount || 1) || 1));
     think(`命中 ${matched.length} 个账号 · 每号 ${perAccountCount} 条 · 生成量产任务板`, session.id);
     const wantsRandom = /随机主题|各自主题|主题随机/.test(text) || !params.topic;
-    const payload = {
+    const payload = enforcePlanKind({
       status: "pending", goal: text,
+      creativeMode: "auto",
+      contentKind: params.contentKind,
       topicMode: wantsRandom ? "random" : "fixed",
       topic: params.topic || "", productId: "dumate", content: "",
       accountProductIds: {}, accountContents: {},
@@ -1844,7 +1941,7 @@ export async function handleUserText(text) {
       accountCount, perAccountCount,
       accountIds: matched.map(a => a.id),
       sharedRefAssetIds: [], coverRefAssetIds: [], accountRefAssetIds: {}
-    };
+    });
     const existing = [...session.messages].reverse().find(m => m.type === "plan" && m.payload?.status === "pending");
     if (existing) {
       existing.payload = { ...existing.payload, ...payload };

@@ -137,7 +137,8 @@ export function renderSlotsPage(root, p, isImg) {
     S.imageCount = S.imageCount || DEFAULT_XHS_IMAGE_COUNT;
     S.direction = S.direction || "";
     S.useOnlineTrends = false;
-    A.customCopyMode = allowCustomCopy ? !!A.customCopyMode : false;
+    if (allowCustomCopy && A.customCopyMode == null) A.customCopyMode = true;
+    A.customCopyMode = allowCustomCopy ? A.customCopyMode !== false : false;
     if (p.stage === "script") p.stage = "images";
   }
 
@@ -237,11 +238,11 @@ export function renderSlotsPage(root, p, isImg) {
               </div>
             </div>
             <div class="imgf-grid">
-              <label class="field">宣传产品
+              ${customCopyMode ? `<div class="field imgf-product-locked"><span>${icon("lock", 13)} 产品库后台参考</span><em>标题和正文优先，产品能力只作边界与品牌参考</em></div>` : `<label class="field">宣传产品
                 <select class="input" id="imgProduct">
                   ${products.map(x => `<option value="${esc(x.id)}" ${S.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
                 </select>
-              </label>
+              </label>`}
               <label class="field">生成张数
                 <input class="input" id="imgCount" type="number" min="3" max="12" value="${esc(S.imageCount || DEFAULT_XHS_IMAGE_COUNT)}" />
               </label>
@@ -258,7 +259,7 @@ export function renderSlotsPage(root, p, isImg) {
             ${acc.imagePromptTemplate ? `<div class="imgf-note">${icon("checkCircle", 13)} 已启用该账号固定图文模板，张数、产品和本次内容会自动替换。</div>` : `<div class="imgf-note muted">未配置固定模板时，按最终文案内容生成图片，账号创作风格只决定视觉效果。</div>`}
           </div>
 
-          ${trendPanel ? "" : `<div class="copy-inline card">
+          ${trendPanel ? "" : `<div class="copy-inline card ${customCopyMode ? "is-custom-copy" : ""}">
             <div class="copy-inline-head">
               <div><b>${icon("type", 14)} 发布文案</b><em>${customCopyMode ? "这里就是图卡提示词的核心依据；请直接填入最终要发布的文案" : "文案先生成，图卡提示词会轻量呼应；可在这里直接微调"}</em></div>
               ${customCopyMode ? "" : `<button class="btn ghost sm" id="imgCopyGen">${icon("spark", 13)} 只重写文案</button>`}

@@ -181,12 +181,22 @@
 .ag-card.resolved { opacity: .82; }
 .agc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 11px; color: #fff; }
 .agc-head b { font-size: 13px; flex: 1; }
+.agc-modebar { display: flex; align-items: center; justify-content: flex-end; gap: 7px; flex-wrap: wrap; margin-left: auto; }
+.agc-seg-group { display: inline-flex; align-items: center; gap: 3px; padding: 3px; border-radius: 999px; background: rgba(255,255,255,.045); border: 1px solid rgba(132,152,255,.13); }
+.agc-seg {
+  height: 26px; padding: 0 10px; border: 0; border-radius: 999px;
+  background: transparent; color: #8FA0C4; font-size: 10.5px; font-weight: 850;
+  cursor: pointer; transition: background var(--t-fast), color var(--t-fast), box-shadow var(--t-fast);
+}
+.agc-seg:hover { color: #EAF0FF; background: rgba(255,255,255,.055); }
+.agc-seg.is-active { color: #F8FBFF; background: linear-gradient(135deg, rgba(80,110,255,.8), rgba(34,211,238,.42)); box-shadow: 0 8px 22px rgba(53,91,255,.22); }
 .agc-product-pill {
   flex: none; display: inline-flex; align-items: center; gap: 6px;
   height: 28px; padding: 0 7px 0 10px; border-radius: 999px;
   border: 1px solid rgba(132,152,255,.22); background: rgba(255,255,255,.045);
   color: #8EA0D0; font-size: 10px; font-weight: 750;
 }
+.agc-product-pill.is-locked { margin-left: 0; padding: 0 12px; color: #BFD0FF; background: rgba(80,110,255,.12); }
 .agc-product-pill select {
   height: 22px; min-width: 86px; max-width: 130px; border: 0; outline: 0;
   border-radius: 999px; padding: 0 22px 0 8px;
@@ -204,6 +214,12 @@
 .agc-p.ok { color: #5BE0B0; display: flex; align-items: center; gap: 6px; }
 .agc-p.fail { color: #FF8787; display: flex; align-items: center; gap: 6px; }
 .agc-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-bottom: 10px; }
+.agc-custom-hint {
+  display: flex; align-items: center; gap: 7px; margin: 0 0 10px; padding: 9px 11px;
+  border: 1px solid rgba(132,152,255,.18); border-radius: var(--r-sm);
+  background: linear-gradient(135deg, rgba(80,110,255,.12), rgba(34,211,238,.055));
+  color: #B7C6EF; font-size: 11px; font-weight: 650;
+}
 .agc-field { display: flex; flex-direction: column; gap: 5px; font-size: 10.5px; font-weight: 700; color: var(--d-faint); }
 .agc-field input, .agc-field select, .agc-field textarea {
   background: rgba(255, 255, 255, .05); border: 1px solid var(--ag-line);
@@ -281,11 +297,11 @@
 .agc-overrides { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow: hidden; }
 .agc-override {
   display: grid;
-  grid-template-columns: minmax(96px, .85fr) minmax(86px, 130px) 62px 62px 98px minmax(0, 1.35fr);
+  grid-template-columns: minmax(104px, .9fr) minmax(116px, .85fr) 64px 76px minmax(0, 1.45fr);
   grid-template-areas:
-    "name product itemcount imgcount copymode content"
-    "refhead refstate refstate refstate refstate refstate"
-    "refactions refactions refactions refactions refactions refactions";
+    "name product itemcount imgcount content"
+    "refhead refstate refstate refstate refstate"
+    "refactions refactions refactions refactions refactions";
   column-gap: 6px; row-gap: 8px; align-items: end; padding: 8px;
   border: 1px solid var(--ag-line); border-radius: var(--r-md);
   background: rgba(255,255,255,.035);
@@ -293,6 +309,12 @@
 }
 .agc-override b { grid-area: name; align-self: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--d-text); }
 .agc-override > select { grid-area: product; }
+.agc-product-lock {
+  grid-area: product; height: 36px; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  border: 1px solid rgba(132,152,255,.24); border-radius: var(--r-sm);
+  background: rgba(80,110,255,.095); color: #BFD0FF; font-size: 9.5px; font-weight: 850;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .agc-override > input,
 .agc-copy-fields { grid-area: content; }
 .agc-mini-count { min-width: 0; display: grid; gap: 3px; color: #8EA0D0; font-size: 9px; font-weight: 750; }
@@ -682,12 +704,12 @@
 @media (max-width: 1180px) { .agw-body { grid-template-columns: 200px minmax(0, 1fr) 320px; } .agres-grid { grid-template-columns: 1fr 1fr; } .agw-tpls { grid-template-columns: 1fr; } }
 @media (max-width: 1280px) {
   .agc-override {
-    grid-template-columns: minmax(110px, 1fr) minmax(86px, 120px) 62px 62px 98px;
+    grid-template-columns: minmax(110px, 1fr) minmax(110px, 130px) 68px 76px;
     grid-template-areas:
-      "name product itemcount imgcount copymode"
-      "content content content content content"
-      "refhead refstate refstate refstate refstate"
-      "refactions refactions refactions refactions refactions";
+      "name product itemcount imgcount"
+      "content content content content"
+      "refhead refstate refstate refstate"
+      "refactions refactions refactions refactions";
   }
 }
 @media (max-width: 960px) {
@@ -700,7 +722,6 @@
       "name name"
       "product product"
       "itemcount imgcount"
-      "copymode copymode"
       "content content"
       "refhead refhead"
       "refstate refstate"
