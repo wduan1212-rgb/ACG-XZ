@@ -579,6 +579,27 @@ function wire(root) {
 
     if (handlePlanPickClick(e)) return;
 
+    const copyToggle = e.target.closest("[data-pacc-copy-toggle]");
+    if (copyToggle) {
+      const node = copyToggle.closest("[data-plan]");
+      const { msg: m } = node ? findMessageInSessions(node.dataset.plan) : {};
+      if (!m || m.payload.status !== "pending") return;
+      const accId = copyToggle.dataset.paccCopyToggle;
+      m.payload.accountCustomCopyModes = m.payload.accountCustomCopyModes || {};
+      const next = !m.payload.accountCustomCopyModes[accId];
+      m.payload.accountCustomCopyModes[accId] = next;
+      save("sessions");
+      copyToggle.classList.toggle("is-on", next);
+      copyToggle.setAttribute("aria-pressed", next ? "true" : "false");
+      const label = copyToggle.querySelector("span");
+      if (label) label.textContent = next ? "自定义文案" : "标准生成";
+      const row = copyToggle.closest(".agc-override");
+      row?.querySelector(".agc-copy-fields")?.classList.toggle("is-custom", next);
+      if (next) row?.querySelector("[data-pacc-copy-title]")?.focus();
+      else row?.querySelector("[data-pacc-content]")?.focus();
+      return;
+    }
+
     const act = e.target.closest("[data-act]");
     if (!act) return;
     const pid = act.dataset.pid;
@@ -679,6 +700,16 @@ function wire(root) {
         }
         break;
       }
+      case "plan-cover-refremove": {
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
+        if (m) {
+          const id = act.dataset.refid;
+          m.payload.coverRefAssetIds = (m.payload.coverRefAssetIds || []).filter(x => x !== id);
+          save("sessions");
+          rerenderPlanCard(m.id);
+        }
+        break;
+      }
       case "plan-custom-refremove": {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
         const accountId = act.closest("[data-ref-account]")?.dataset.refAccount || act.closest("[data-pacc-ref]")?.dataset.paccRef;
@@ -722,6 +753,8 @@ function wire(root) {
     }
     const ref = e.target.closest("[data-plan-ref]");
     if (ref && ref.files.length) { await setPlanRefs(ref.dataset.planRef, Array.from(ref.files)); ref.value = ""; }
+    const coverRef = e.target.closest("[data-plan-cover-ref]");
+    if (coverRef && coverRef.files.length) { await setPlanRefs(coverRef.dataset.planCoverRef, Array.from(coverRef.files), "cover"); coverRef.value = ""; }
     const customRef = e.target.closest("[data-pacc-ref-up]");
     if (customRef && customRef.files.length) {
       await setPlanCustomRefs(customRef.dataset.mid, customRef.dataset.paccRefUp, Array.from(customRef.files));
@@ -734,10 +767,12 @@ function wire(root) {
     const f = e.target.closest("[data-pf]");
     const ap = e.target.closest("[data-pacc-prod]");
     const ac = e.target.closest("[data-pacc-content]");
+    const actitle = e.target.closest("[data-pacc-copy-title]");
+    const acbody = e.target.closest("[data-pacc-copy-body]");
     const ar = e.target.closest("[data-pacc-ref]");
     const acount = e.target.closest("[data-pacc-count]");
     const aimg = e.target.closest("[data-pacc-imgcount]");
-    if (!f && !ap && !ac && !ar && !acount && !aimg) return;
+    if (!f && !ap && !ac && !actitle && !acbody && !ar && !acount && !aimg) return;
     const node = e.target.closest("[data-plan]");
     if (!node) return;
     const { msg: m } = findMessageInSessions(node.dataset.plan);
@@ -764,6 +799,14 @@ function wire(root) {
       m.payload.accountContents = m.payload.accountContents || {};
       m.payload.accountContents[ac.dataset.paccContent] = ac.value;
     }
+    if (actitle) {
+      m.payload.accountCopyTitles = m.payload.accountCopyTitles || {};
+      m.payload.accountCopyTitles[actitle.dataset.paccCopyTitle] = actitle.value;
+    }
+    if (acbody) {
+      m.payload.accountCopyBodies = m.payload.accountCopyBodies || {};
+      m.payload.accountCopyBodies[acbody.dataset.paccCopyBody] = acbody.value;
+    }
     if (ar) {
       m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
       m.payload.accountRefAssetIds[ar.dataset.paccRef] = Array.from(ar.selectedOptions).map(o => o.value).filter(Boolean).slice(0, 3);
@@ -785,27 +828,35 @@ function wire(root) {
   wireDrops();
 }
 
-async function setPlanRefs(mid, files) {
+async function setPlanRefs(mid, files, kind = "shared") {
   const { msg: m } = findMessageInSessions(mid);
   if (!m || m.payload.status !== "pending") return;
-  const oldIds = Array.isArray(m.payload.sharedRefAssetIds) ? m.payload.sharedRefAssetIds : (m.payload.sharedRefAssetId ? [m.payload.sharedRefAssetId] : []);
+  const isCover = kind === "cover";
+  const oldIds = isCover
+    ? (Array.isArray(m.payload.coverRefAssetIds) ? m.payload.coverRefAssetIds : [])
+    : (Array.isArray(m.payload.sharedRefAssetIds) ? m.payload.sharedRefAssetIds : (m.payload.sharedRefAssetId ? [m.payload.sharedRefAssetId] : []));
   const remaining = Math.max(0, 5 - oldIds.length);
   const imgs = Array.from(files || []).filter(f => f?.type?.startsWith("image/")).slice(0, remaining);
-  if (!imgs.length) { toast("统一参考图最多 5 张"); return; }
+  if (!imgs.length) { toast(`${isCover ? "统一视频参考图" : "统一参考图"}最多 5 张`); return; }
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
   const acc0 = state.accounts.find(a => m.payload.accountIds.includes(a.id) && a.subType === "无数字人") || state.accounts.find(a => m.payload.accountIds.includes(a.id));
   const newIds = [];
   for (const file of imgs) {
     const dataUrl = await fileToDataUrl(file);
-    const a = await addAssetFromDataUrl(acc0?.id, { name: file.name || "批量统一参考图", tags: ["参考图", "统一参考"], dataUrl });
+    const a = await addAssetFromDataUrl(acc0?.id, { name: file.name || (isCover ? "批量统一视频参考图" : "批量统一参考图"), tags: ["参考图", isCover ? "视频统一参考" : "统一参考"], dataUrl });
     newIds.push(a.id);
   }
-  m.payload.sharedRefAssetIds = [...new Set([...oldIds, ...newIds])].slice(0, 5);
-  m.payload.sharedRefAssetId = m.payload.sharedRefAssetIds[0] || null;
+  const nextIds = [...new Set([...oldIds, ...newIds])].slice(0, 5);
+  if (isCover) {
+    m.payload.coverRefAssetIds = nextIds;
+  } else {
+    m.payload.sharedRefAssetIds = nextIds;
+    m.payload.sharedRefAssetId = m.payload.sharedRefAssetIds[0] || null;
+  }
   save("sessions");
   rerenderPlanCard(m.id);
-  toast(`已追加 ${newIds.length} 张统一参考图`);
+  toast(`已追加 ${newIds.length} 张${isCover ? "统一视频参考图" : "统一参考图"}`);
 }
 
 function planMessage(mid) {
@@ -818,6 +869,7 @@ function planRefIds(payload, kind, accountId = "") {
     const raw = payload.accountRefAssetIds?.[accountId];
     return Array.isArray(raw) ? raw.filter(Boolean) : [];
   }
+  if (kind === "cover") return Array.isArray(payload.coverRefAssetIds) ? [...new Set(payload.coverRefAssetIds.filter(Boolean))] : [];
   const ids = Array.isArray(payload.sharedRefAssetIds) ? [...payload.sharedRefAssetIds] : [];
   if (payload.sharedRefAssetId && !ids.includes(payload.sharedRefAssetId)) ids.unshift(payload.sharedRefAssetId);
   return [...new Set(ids.filter(Boolean))];
@@ -848,7 +900,7 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
   if (!m || m.payload.status !== "pending") return;
   if (kind === "custom" && !accountId) return;
   const limit = kind === "custom" ? 3 : 5;
-  const title = kind === "custom" ? "选择定制参考图" : "选择统一参考图";
+  const title = kind === "custom" ? "选择定制参考图" : kind === "cover" ? "选择统一视频参考图" : "选择统一参考图";
   const assets = imageAssetList();
   const selected = new Set(planRefIds(m.payload, kind, accountId).slice(0, limit));
   const accountName = accountId ? (state.accounts.find(a => a.id === accountId)?.name || "当前账号") : "";
@@ -909,6 +961,8 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
             if (kind === "custom") {
               m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
               m.payload.accountRefAssetIds[accountId] = (m.payload.accountRefAssetIds[accountId] || []).filter(x => x !== id);
+            } else if (kind === "cover") {
+              m.payload.coverRefAssetIds = (m.payload.coverRefAssetIds || []).filter(x => x !== id);
             } else {
               m.payload.sharedRefAssetIds = (m.payload.sharedRefAssetIds || []).filter(x => x !== id);
               if (m.payload.sharedRefAssetId === id) m.payload.sharedRefAssetId = m.payload.sharedRefAssetIds[0] || null;
@@ -938,6 +992,8 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
           if (kind === "custom") {
             m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
             m.payload.accountRefAssetIds[accountId] = ids;
+          } else if (kind === "cover") {
+            m.payload.coverRefAssetIds = ids;
           } else {
             m.payload.sharedRefAssetIds = ids;
             m.payload.sharedRefAssetId = ids[0] || null;
@@ -990,6 +1046,12 @@ function wireDrops() {
     if (z.dataset.wired) return;
     z.dataset.wired = "1";
     wireDropZone(z, files => setPlanRefs(z.dataset.planRefdrop, Array.from(files).filter(f => f.type.startsWith("image/"))), { filesOnly: true });
+  });
+  // 计划卡统一视频参考图：供视频封面、信息流 B 面分镜和功能演示共同参考
+  $$("#agwMsgs [data-plan-cover-refdrop]").forEach(z => {
+    if (z.dataset.wired) return;
+    z.dataset.wired = "1";
+    wireDropZone(z, files => setPlanRefs(z.dataset.planCoverRefdrop, Array.from(files).filter(f => f.type.startsWith("image/")), "cover"), { filesOnly: true });
   });
   // 计划卡单账号定制参考图：支持拖入，不影响统一参考图
   $$("#agwMsgs [data-plan-custom-refdrop]").forEach(z => {

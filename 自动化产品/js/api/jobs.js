@@ -10,10 +10,10 @@ const CONCURRENCY = 2;
 const POLL_MS = 700;
 let timer = null;
 
-export function createJob({ kind = "video", productionId, segIndex = 0, segName = "", prompt, refAssetIds = [], ratio = "9:16", duration = 15, generateAudio = null }) {
+export function createJob({ kind = "video", productionId, segIndex = 0, segName = "", prompt, refAssetIds = [], ratio = "9:16", duration = 15, generateAudio = null, model = "" }) {
   const job = {
     id: uid(), kind, productionId, segIndex, segName,
-    prompt, refAssetIds, ratio, duration, generateAudio,
+    prompt, refAssetIds, ratio, duration, generateAudio, model,
     provider: null, providerRef: null,
     status: "queued", progress: 0, attempts: 0,
     output: null, error: null,
@@ -84,6 +84,7 @@ async function tick() {
         const { providerRef } = await p.submit({
           prompt: j.prompt, refs, ratio: j.ratio, duration: j.duration,
           generateAudio: j.generateAudio,
+          model: j.model || key?.model || "",
           attempt: j.attempts - 1,
           apiKey: key?.secret || "",
           endpoint,
@@ -100,7 +101,7 @@ async function tick() {
 }
 
 async function refsForJob(j) {
-  const ids = [...new Set(j.refAssetIds || [])].slice(0, 9);
+  const ids = [...new Set(j.refAssetIds || [])].slice(0, 15);
   const refs = [];
   for (const id of ids) {
     const a = assetById(id);

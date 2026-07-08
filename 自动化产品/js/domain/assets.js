@@ -208,8 +208,9 @@ async function uploadServerFile(a, blob, filename = "") {
 export function urlFor(idOrAsset) {
   const a = typeof idOrAsset === "string" ? assetById(idOrAsset) : idOrAsset;
   if (!a) return null;
-  if (urlCache.has(a.id)) return urlCache.get(a.id);
   const remoteUrl = serverFileUrl(a);
+  if (remoteUrl && (remote.isOn() || !urlCache.has(a.id))) return remoteUrl;
+  if (urlCache.has(a.id)) return urlCache.get(a.id);
   if (remoteUrl) return remoteUrl;
   if (a.dataUrl) return a.dataUrl; // 兼容遗留小数据
   return null;

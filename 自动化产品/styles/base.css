@@ -506,7 +506,7 @@ body {
 }
 .lg-stage { opacity: .34; z-index: 3; }
 .lg-particles { z-index: 3; }
-.lg-center { top: clamp(-86px, -7vh, -32px); }
+.lg-center { top: 0; }
 .lg-logo { display: none; }
 .lg-card {
   width: min(520px, calc(100vw - 48px));

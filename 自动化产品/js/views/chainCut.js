@@ -125,7 +125,7 @@ export function renderCutPage(root, p) {
             <p class="muted">9:16 竖屏 · 1080×1920${TL().length ? ` · 将命名「${esc(buildDeliveryName(acc, (acc.exportSeq || 0) + 1))}」` : ""}</p>
             ${p.artifacts.finalVideoUrl ? `<a class="btn ghost block" href="${esc(p.artifacts.finalVideoUrl)}" target="_blank" rel="noreferrer">${icon("download", 13)} 查看/下载合成成片</a>` : ""}
             <button class="btn ghost block" id="cutCompose">${icon("film", 13)} 合成成片</button>
-            <button class="btn primary block" id="cutNext">下一步：文案 ${icon("arrowRight", 13)}</button>
+            <button class="btn primary block" id="cutNext">下一步：审核 ${icon("arrowRight", 13)}</button>
           </div>
         </aside>
       </div>
@@ -442,7 +442,7 @@ export function renderCutPage(root, p) {
   $("#cutAuto", root).addEventListener("click", () => {
     snapshot();
     const r = autoAssemble(p);
-    if (!r.clips && !TL().length) { toast(isVideoWorkshop(p) ? "还没有就绪片段：回分镜工坊「一键全自动」生成" : "还没有可用片段：先去生成台生成，或等 Agent 渲染完成"); return; }
+    if (!r.clips && !TL().length) { toast(isVideoWorkshop(p) ? "还没有就绪片段：回文案分镜「一键全自动」生成" : "还没有可用片段：先去生成台生成，或等 Agent 渲染完成"); return; }
     renderCutPage(root, p);
     toast(`智能${isVideoWorkshop(p) ? "混剪" : "拼接"}完成：${TL().length} 段 + ${SUBS().length} 条字幕${r.bgm ? ` · BGM「${r.bgm}」` : ""}`);
   });
@@ -623,8 +623,12 @@ export function renderCutPage(root, p) {
 
   $("#cutNext", root).addEventListener("click", () => {
     if (!TL().length) { toast("时间轴为空：先加入片段或一键智能拼接"); return; }
-    if (p.stage === "cut" || p.stage === "render") setStage(p, "copy", "pending");
-    go("studio", "copy");
+    if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
+      toast("先回到文案分镜生成或上传封面图，再进入发布");
+      return;
+    }
+    if (p.stage === "cut" || p.stage === "render" || p.stage === "copy") setStage(p, "review", "pending");
+    go("studio", "review");
   });
 
   drawTimeline();

@@ -1,10 +1,10 @@
-/* 创建 / 编辑账号对话框：平台/形式/类型/创作风格 + md 批量导入 + 角色形象 / 口播参考上传 */
+/* 创建 / 编辑账号对话框：平台/形式/类型/创作风格 + md 批量导入 + 角色形象 */
 
 import { $, $$, esc, fileToDataUrl, todayStamp, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount } from "../domain/accounts.js";
-import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.js";
+import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
@@ -22,7 +22,6 @@ export function openAccountDialog(accountId = null) {
     voiceName: editing?.voiceName || "",
     voiceId: editing?.voiceId || "",
     voiceLookup: "",
-    voiceFile: null,
     avatarDataUrl: null,
     styleRefDataUrl: null,
     imagePromptTemplate: editing?.imagePromptTemplate || "",
@@ -114,10 +113,7 @@ export function openAccountDialog(accountId = null) {
                   ${voiceGroups.map(g => `<optgroup label="${esc(g.title)}">${(g.items || []).filter(v => v.voiceId).map(v => `<option value="${esc(v.voiceId)}" ${draft.voiceId === v.voiceId ? "selected" : ""}>${esc(v.name)} · ${esc(v.voiceId)}</option>`).join("")}</optgroup>`).join("")}
                 </select>
               </label>` : ""}
-              <div class="field full">
-                <span>账号口播风格参考 <em class="muted">可上传一段参考音频，用于锁定账号口播语气、节奏和音色方向</em></span>
-                <label class="btn ghost sm ad-voice-drop" id="adVoiceDrop">${draft.voiceFile || editing?.voiceRefAssetId ? "✓ 已有口播风格参考 · 点击更换 / 可拖音频" : "+ 上传口播风格参考 / 可拖音频"}<input type="file" accept="audio/*" hidden id="adVoiceUp" /></label>
-              </div>` : ""}
+              ` : ""}
             </div>
 
             ${isVideo ? `
@@ -237,17 +233,6 @@ export function openAccountDialog(accountId = null) {
           styleRefDrop.addEventListener("click", () => $("#adStyleRefUp", root)?.click());
           wireDropZone(styleRefDrop, files => setStyleRef(Array.from(files).find(f => f.type.startsWith("image/"))), { filesOnly: true });
         }
-        function setVoiceFile(file, msg = "已选择账号口播风格参考") {
-          if (!file || !file.type.startsWith("audio/")) return;
-          draft.voiceFile = file;
-          toast(msg);
-          const el = $("#adVoiceDrop", root);
-          if (el) el.childNodes[0].textContent = `✓ ${file.name} · 点击更换 / 可拖音频`;
-        }
-        const voiceUp = $("#adVoiceUp", root);
-        if (voiceUp) voiceUp.addEventListener("change", e => setVoiceFile(e.target.files[0]));
-        const voiceDrop = $("#adVoiceDrop", root);
-        if (voiceDrop) wireDropZone(voiceDrop, files => setVoiceFile(Array.from(files).find(f => f.type.startsWith("audio/")), "已拖入账号口播风格参考"), { filesOnly: true });
         const charUp = $("#adCharUp", root);
         if (charUp) charUp.addEventListener("change", e => setCharBoard(e.target.files[0]));
         wireDropZone($("#adCharDrop", root), files => setCharBoard(Array.from(files).find(f => f.type.startsWith("image/")), "已拖入角色形象"), { filesOnly: true });
@@ -324,10 +309,6 @@ export function openAccountDialog(accountId = null) {
             acc.charBoardAssetId = ca.id;
           }
           for (const a of draft.assets) await addAssetFromDataUrl(acc.id, { name: a.name, tags: [], dataUrl: a.dataUrl });
-          if (draft.voiceFile) {
-            const va = await addAssetFromFile(acc.id, draft.voiceFile, { tags: ["口播风格参考", "声线参考", "口播音频"] });
-            acc.voiceRefAssetId = va.id;
-          }
           save("accounts");
           state.ui.activeAccountId = acc.id;
           save("meta");

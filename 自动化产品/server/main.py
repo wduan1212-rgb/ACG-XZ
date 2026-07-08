@@ -2233,6 +2233,22 @@ def _minimax_connect_error(exc: Exception) -> str:
     ) % (_public_base(MINIMAX_BASE_URL), exc.__class__.__name__, exc)
 
 
+def _normalize_minimax_tts_error(msg: str) -> str:
+    text = str(msg or "")
+    low = text.lower()
+    if (
+        "insufficient balance" in low
+        or "balance insufficient" in low
+        or "quota" in low
+        or "credit" in low
+        or "余额不足" in text
+        or "额度不足" in text
+        or "账户余额" in text
+    ):
+        return "Minimax TTS 上游返回余额或额度不足，请在服务器私密环境中更换可用 Key 或充值后重试。"
+    return text
+
+
 def _tts_payload(text: str, voice_id: str, speed=MINIMAX_TTS_SPEED, vol=1, pitch=0, language_boost="auto"):
     return {
         "model": MINIMAX_TTS_MODEL,
@@ -2324,13 +2340,14 @@ async def tts_test():
             detail = _http_detail(err.get("detail")) or _readable_error(err.get("base_resp")) or _http_detail(err) or r.text[:500]
         except Exception:
             detail = r.text[:500]
+        detail = _normalize_minimax_tts_error(detail)
         if _looks_like_voice_error(detail):
             raise HTTPException(400, "默认 Minimax voice_id 无效或不存在：" + detail[:500])
         raise HTTPException(r.status_code, detail)
     data = r.json()
     base = data.get("base_resp") or {}
     if base.get("status_code", 0) != 0:
-        msg = base.get("status_msg") or "Minimax TTS 测试失败"
+        msg = _normalize_minimax_tts_error(base.get("status_msg") or "Minimax TTS 测试失败")
         if _looks_like_voice_error(msg):
             raise HTTPException(400, "默认 Minimax voice_id 无效或不存在：" + msg[:500])
         raise HTTPException(502, msg)
@@ -2376,7 +2393,7 @@ async def tts_voice_lookup(voiceId: str = "", test: bool = True):
     data = r.json()
     base = data.get("base_resp") or {}
     if base.get("status_code", 0) != 0:
-        msg = base.get("status_msg") or "Minimax TTS 声线测试失败"
+        msg = _normalize_minimax_tts_error(base.get("status_msg") or "Minimax TTS 声线测试失败")
         result["valid"] = False if _looks_like_voice_error(msg) else None
         result["detail"] = msg
         return result
@@ -2408,10 +2425,10 @@ async def tts_voice_design(req: VoiceDesignReq):
     if r.status_code >= 400:
         detail = _http_detail(data.get("detail")) if data else ""
         detail = detail or _readable_error(data.get("base_resp")) or _http_detail(data) or r.text[:500]
-        raise HTTPException(r.status_code, detail or "Minimax 音色设计失败")
+        raise HTTPException(r.status_code, _normalize_minimax_tts_error(detail or "Minimax 音色设计失败"))
     base = data.get("base_resp") or {}
     if base.get("status_code", 0) != 0:
-        raise HTTPException(502, base.get("status_msg") or "Minimax 音色设计失败")
+        raise HTTPException(502, _normalize_minimax_tts_error(base.get("status_msg") or "Minimax 音色设计失败"))
     voice_id = _minimax_voice_design_id(data)
     if not voice_id:
         raise HTTPException(502, {"detail": "Minimax 已返回结果，但没有 voice_id", "raw": data})
@@ -2451,6 +2468,7 @@ async def tts_generate(req: TtsReq):
             detail = _http_detail(err.get("detail")) or _readable_error(err.get("base_resp")) or _http_detail(err) or r.text[:500]
         except Exception:
             detail = r.text[:500]
+        detail = _normalize_minimax_tts_error(detail)
         if voice_id != MINIMAX_VOICE_ID and _looks_like_voice_error(detail):
             payload = build_payload(MINIMAX_VOICE_ID)
             used_fallback_voice = True
@@ -2464,7 +2482,7 @@ async def tts_generate(req: TtsReq):
                     detail = _http_detail(err.get("detail")) or _readable_error(err.get("base_resp")) or _http_detail(err) or r.text[:500]
                 except Exception:
                     detail = r.text[:500]
-                raise HTTPException(r.status_code, detail)
+                raise HTTPException(r.status_code, _normalize_minimax_tts_error(detail))
             data = r.json()
             base = data.get("base_resp") or {}
             voice_id = MINIMAX_VOICE_ID
@@ -2474,7 +2492,7 @@ async def tts_generate(req: TtsReq):
         data = r.json()
         base = data.get("base_resp") or {}
     if base.get("status_code", 0) != 0:
-        msg = base.get("status_msg") or "Minimax TTS 生成失败"
+        msg = _normalize_minimax_tts_error(base.get("status_msg") or "Minimax TTS 生成失败")
         if voice_id != MINIMAX_VOICE_ID and _looks_like_voice_error(msg):
             payload = build_payload(MINIMAX_VOICE_ID)
             used_fallback_voice = True
@@ -2493,7 +2511,7 @@ async def tts_generate(req: TtsReq):
             base = data.get("base_resp") or {}
             voice_id = MINIMAX_VOICE_ID
         if base.get("status_code", 0) != 0:
-            raise HTTPException(502, base.get("status_msg") or msg)
+            raise HTTPException(502, _normalize_minimax_tts_error(base.get("status_msg") or msg))
     audio_data_url = _audio_data_url_from_minimax(data)
     if not audio_data_url:
         raise HTTPException(502, {"detail": "Minimax 已返回结果，但没有 audio 字段", "raw": data})

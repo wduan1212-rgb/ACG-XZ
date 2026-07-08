@@ -18,9 +18,7 @@ COPY server/scripts/ ./server/scripts/
 RUN mkdir -p /data/uploads /data/composed
 
 # 运行时注入：LLM_API_KEY（语言模型，经 /api/chat/completions 代理）
-#            JUSTONEAPI_KEY（小红书真实数据采集，留空则数据采集接口明确失败）
 ENV LLM_API_KEY="" \
-    JUSTONEAPI_KEY="" \
     DATA_DB="/data/data.sqlite" \
     LEGACY_DATA_FILE="/data/data.json" \
     UPLOAD_DIR="/data/uploads" \

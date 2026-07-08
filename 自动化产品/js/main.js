@@ -504,8 +504,12 @@ function renderTopbar() {
   const acc = activeAccount();
   const { page } = parseHash();
   let crumb = ZONE_TITLE[zone] || "";
-  const shownPage = acc?.mode === "图文" && ["script", "copy"].includes(page) ? "images" : page;
-  if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: "分镜工坊", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
+  const shownPage = acc?.mode === "图文" && ["script", "copy"].includes(page)
+    ? "images"
+    : acc?.mode === "视频" && ["script", "boards", "prompts", "render", "copy"].includes(page)
+      ? "workshop"
+      : page;
+  if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: "文案分镜", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
   bc.textContent = crumb;
   let newAccBtn = $("#topNewAccount");
   if (!newAccBtn && actions) {

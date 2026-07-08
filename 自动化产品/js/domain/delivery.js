@@ -20,6 +20,58 @@ function productTagFor(p) {
   return productTagLabel(product);
 }
 
+function memberNameById(id) {
+  return state.members.find(m => m.id === id)?.name || "";
+}
+
+function publisherNameFor(asset, prod = null) {
+  return asset?.byMemberName || memberNameById(asset?.byMemberId) || memberNameById(prod?.ownerId) || "";
+}
+
+function deliverySnapshotFromProduction(p, acc, productTag = productTagFor(p)) {
+  const isImg = p.mode === "图文";
+  const imgItems = (p.artifacts.images.items || []).filter(x => x.assetId);
+  const timeline = p.artifacts.timeline || [];
+  const withSub = (p.artifacts.subs || []).some(s => (s.text || "").trim());
+  const coverAssetId = isImg
+    ? (imgItems[0]?.assetId || "")
+    : (p.artifacts?.boards?.cover?.assetId || "");
+  return {
+    type: isImg ? "图集" : "视频",
+    tags: ["成片", acc?.mode, acc?.platform, ...(productTag ? [productTag] : []), ...(isImg ? [`${imgItems.length}张组图`] : withSub ? ["带字幕"] : [])].filter(Boolean),
+    title: p.artifacts.copy.title || p.title,
+    copy: p.artifacts.copy.body || "",
+    packAssetIds: isImg ? imgItems.map(x => x.assetId) : [],
+    videoUrl: isImg ? "" : (p.artifacts.finalVideoUrl || ""),
+    clipJobIds: isImg ? [] : timeline.map(x => x.jobId).filter(Boolean),
+    clipUrls: isImg ? [] : timeline.map(x => state.jobs.find(j => j.id === x.jobId)?.output?.url).filter(Boolean),
+    clips: isImg ? 0 : timeline.length,
+    subCount: (p.artifacts.subs || []).filter(s => (s.text || "").trim()).length,
+    productId: p.artifacts?.script?.productId || "dumate",
+    productTag,
+    byAccount: acc?.name || "",
+    coverAssetId
+  };
+}
+
+function isPublishedDelivery(asset) {
+  return !!asset?.publishedUrl || asset?.status === "已发布";
+}
+
+function purgeOpenDeliveryAssetsForProduction(p) {
+  const stale = state.assets.filter(x => x.delivered && x.productionId === p.id && !isPublishedDelivery(x));
+  if (!stale.length) return 0;
+  const ids = stale.map(x => x.id);
+  const analyticsIds = state.analyticsLinks
+    .filter(x => ids.includes(x.assetId))
+    .map(x => x.id);
+  state.assets = state.assets.filter(x => !ids.includes(x.id));
+  state.analyticsLinks = state.analyticsLinks.filter(x => !analyticsIds.includes(x.id));
+  ids.forEach(id => removeRemote("assets", id));
+  analyticsIds.forEach(id => removeRemote("analyticsLinks", id));
+  return stale.length;
+}
+
 function insertProductTagBeforeDate(name, tag) {
   if (!tag || String(name || "").includes(`-${tag}-`)) return name;
   return String(name || "").replace(/-(20\d{6})$/, `-${tag}-$1`);
@@ -60,48 +112,40 @@ export function deliver(p, opts = {}) {
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
   const planDate = normalizePlanDate(opts.planDate);
   p.review.state = "approved";   // 创作者点击发布即定稿
+  const replaced = purgeOpenDeliveryAssetsForProduction(p);
+  if (replaced && (acc.monthlyDone || 0) > 0) acc.monthlyDone = Math.max(0, (acc.monthlyDone || 0) - replaced);
   acc.exportSeq = (acc.exportSeq || 0) + 1;
   const productTag = productTagFor(p);
   const name = insertProductTagBeforeDate(buildDeliveryName(acc, acc.exportSeq), productTag);
-  const isImg = p.mode === "图文";
-  const imgItems = (p.artifacts.images.items || []).filter(x => x.assetId);
-  const withSub = (p.artifacts.subs || []).some(s => (s.text || "").trim());
   const mem = currentMember();
+  const publisherName = mem?.name || memberNameById(p.ownerId);
   const pubSeq = (state.ui.deliverSeq = (state.ui.deliverSeq || 0) + 1);
+  const snapshot = deliverySnapshotFromProduction(p, acc, productTag);
 
   const asset = {
     id: uid(), accountId: acc.id, name,
-    type: isImg ? "图集" : "视频",
-    tags: ["成片", acc.mode, acc.platform, ...(productTag ? [productTag] : []), ...(isImg ? [`${imgItems.length}张组图`] : withSub ? ["带字幕"] : [])],
+    ...snapshot,
     createdAt: Date.now(), delivered: true, status: "未下载",
-    title: p.artifacts.copy.title || p.title, copy: p.artifacts.copy.body || "",
     productionId: p.id,
-    packAssetIds: isImg ? imgItems.map(x => x.assetId) : [],
-    videoUrl: isImg ? "" : (p.artifacts.finalVideoUrl || ""),
-    clipJobIds: isImg ? [] : (p.artifacts.timeline || []).map(x => x.jobId).filter(Boolean),
-    clipUrls: isImg ? [] : (p.artifacts.timeline || []).map(x => state.jobs.find(j => j.id === x.jobId)?.output?.url).filter(Boolean),
-    clips: isImg ? 0 : (p.artifacts.timeline || []).length,
-    subCount: (p.artifacts.subs || []).filter(s => (s.text || "").trim()).length,
     pubSeq, deliveredAt: Date.now(),
-    productId: p.artifacts?.script?.productId || "dumate",
-    productTag,
     byAccount: acc.name,                          // 发布所属内容账号
     byMemberId: mem?.id || p.ownerId || null,
-    byMemberName: mem?.name || "",                // 谁点的发布
+    byMemberName: publisherName || "",            // 谁点的发布
+    sourceUpdatedAt: p.updatedAt || Date.now(),
     planDate,                                     // 计划发布日期（必填，默认今天）
     publishNote: opts.note || "",                 // 简短备注（可选）
     adminReviewed: false                          // 管理员「已审阅」标注（非强制门槛）
   };
-  if (isImg) markPackImagesShared(p, productTag);
+  if (snapshot.type === "图集") markPackImagesShared(p, productTag);
   state.assets.push(asset);
   acc.monthlyDone = (acc.monthlyDone || 0) + 1;
-  p.delivery = { assetId: asset.id, name, at: Date.now(), pubSeq, planDate: asset.planDate, note: asset.publishNote };
+  p.delivery = { assetId: asset.id, name, at: Date.now(), pubSeq, planDate: asset.planDate, note: asset.publishNote, sourceUpdatedAt: asset.sourceUpdatedAt };
   p.review.at = Date.now();
   touch(p);
   setStage(p, "delivered", "done");
-  save("assets", "accounts", "productions", "meta");
+  save("assets", "accounts", "productions", "analyticsLinks", "meta");
   persistNow();
-  notify("delivery", `「${asset.title || name}」已发布`, `#${String(pubSeq).padStart(3, "0")} · ${name}${isImg ? ".zip" : ".mp4"} · 供应商端可见`);
+  notify("delivery", `「${asset.title || name}」已发布`, `#${String(pubSeq).padStart(3, "0")} · ${name}${snapshot.type === "图集" ? ".zip" : ".mp4"} · 供应商端可见`);
   return asset;
 }
 
@@ -175,11 +219,30 @@ export function deliveredAssets() {
   const out = [];
   state.assets.forEach(x => {
     if (!x.delivered) return;
+    const prod = state.productions.find(p => p.id === x.productionId);
+    if (prod?.delivery?.assetId && prod.delivery.assetId !== x.id && !isPublishedDelivery(x)) return;
     const acc = accountById(x.accountId);
-    if (acc) out.push({ asset: x, acc });
+    if (acc) out.push({ asset: syncDeliveryAssetSnapshot(x), acc });
   });
   // 按发布序号（点击发布的先后）排序，最新在前
   return out.sort((a, b) => (b.asset.pubSeq || b.asset.createdAt || 0) - (a.asset.pubSeq || a.asset.createdAt || 0));
+}
+
+export function syncDeliveryAssetSnapshot(asset) {
+  if (!asset?.delivered) return asset;
+  const prod = state.productions.find(p => p.id === asset.productionId);
+  const acc = accountById(asset.accountId);
+  if (!prod || !acc) return asset;
+  asset.byAccount = asset.byAccount || acc.name;
+  asset.byMemberName = publisherNameFor(asset, prod);
+  asset.byMemberId = asset.byMemberId || prod.ownerId || null;
+  if (prod.delivery?.assetId && prod.delivery.assetId === asset.id) {
+    Object.assign(asset, deliverySnapshotFromProduction(prod, acc, asset.productTag || productTagFor(prod)));
+    asset.byAccount = acc.name;
+    asset.byMemberName = publisherNameFor(asset, prod);
+    asset.sourceUpdatedAt = prod.updatedAt || asset.sourceUpdatedAt || asset.deliveredAt || asset.createdAt;
+  }
+  return asset;
 }
 
 function safeName(str, fallback = "未命名") {
@@ -194,11 +257,14 @@ function encText(text) {
 async function remoteFileU8(url) {
   if (!url) return null;
   try {
-    const res = await fetch("/api/proxy/file", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url })
-    });
+    const sameOrigin = String(url).startsWith("/") || String(url).startsWith(location.origin);
+    const res = sameOrigin
+      ? await fetch(url, { credentials: "same-origin" })
+      : await fetch("/api/proxy/file", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url })
+        });
     if (!res.ok) return null;
     const ct = res.headers.get("content-type") || "video/mp4";
     const ext = /webm/.test(ct) ? "webm" : /quicktime|mov/.test(ct) ? "mov" : "mp4";
@@ -209,11 +275,14 @@ async function remoteFileU8(url) {
 }
 
 async function deliveryEntries(asset, folder = "") {
+  asset = syncDeliveryAssetSnapshot(asset);
   const base = folder ? safeName(folder) + "/" : "";
   const entries = [];
   const manifest = [
     `素材名：${asset.name || ""}`,
     asset.productTag ? `产品标签：${asset.productTag}` : "",
+    asset.byAccount ? `内容账号：${asset.byAccount}` : "",
+    asset.byMemberName ? `发布人：${asset.byMemberName}` : "",
     `标题：${asset.title || ""}`,
     `形式：${asset.type || ""}`,
     asset.planDate ? `计划发布：${asset.planDate}` : "",
@@ -223,6 +292,10 @@ async function deliveryEntries(asset, folder = "") {
     "", "--- 发布文案 ---", asset.copy || ""
   ].filter(x => x != null).join("\n");
   entries.push({ name: `${base}标题文案.txt`, u8: encText(manifest) });
+  if (asset.coverAssetId) {
+    const d = await assetU8(asset.coverAssetId);
+    if (d) entries.push({ name: `${base}封面图.${d.ext}`, u8: d.u8 });
+  }
   if (asset.type === "图集" && (asset.packAssetIds || []).length) {
     for (let i = 0; i < asset.packAssetIds.length; i++) {
       const d = await assetU8(asset.packAssetIds[i]);
@@ -257,6 +330,7 @@ async function deliveryEntries(asset, folder = "") {
 
 /* 下载交付物：图集/视频均打包为 zip（视频尽量拉取真实 mp4，失败时保留下载链接） */
 export async function downloadDelivery(asset) {
+  asset = syncDeliveryAssetSnapshot(asset);
   const entries = await deliveryEntries(asset);
   downloadBlob(`${safeName(asset.name)}.zip`, buildZipBlob(entries));
   asset.status = "已下载";
@@ -271,7 +345,7 @@ export async function batchDownloadZip(assets, filename = "") {
   const list = (assets || []).filter(Boolean);
   const entries = [];
   for (let i = 0; i < list.length; i++) {
-    const a = list[i];
+    const a = syncDeliveryAssetSnapshot(list[i]);
     const folder = `${String(i + 1).padStart(3, "0")}_${safeName(a.name || a.title)}`;
     entries.push(...await deliveryEntries(a, folder));
     a.status = "已下载";

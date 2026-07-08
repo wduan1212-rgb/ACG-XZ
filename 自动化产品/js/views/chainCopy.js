@@ -1,19 +1,16 @@
 /* 链路 · 文案页 + 审核页 */
 
-import { $, $$, esc, gradFor } from "../core/util.js";
+import { $, $$, esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { save, accountById, canDeliver, productById } from "../core/store.js";
-import { AI } from "../api/ai.js";
-import { setStage } from "../domain/productions.js";
+import { accountById, canDeliver } from "../core/store.js";
 import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { toast, withLoading, confirmModal, openLightbox, publishModal } from "../ui/components.js";
+import { toast, openLightbox, publishModal } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 import { reviewPreviewHtml } from "./prodDrawer.js";
 
 export function renderCopyPage(root, p) {
-  const acc = accountById(p.accountId);
   const isImg = p.mode === "图文";
   if (isImg) {
     root.innerHTML = `
@@ -30,86 +27,18 @@ export function renderCopyPage(root, p) {
     $("#ccBackToImages", root)?.addEventListener("click", () => go("studio", "images"));
     return;
   }
-  const C = p.artifacts.copy;
-
   root.innerHTML = `
-    ${stepperHtml(p, "copy")}
-    <div class="chain-page">
-      <div class="chain-main">
-        <div class="page-head">
-          <div><div class="eyebrow">${isImg ? "图文链路 · 文案" : "视频链路 · 文案"}</div>
-          <h2>${isImg ? "按图卡生成爆款笔记文案" : "按口播内容生成标题与简介"}</h2></div>
-          <button class="btn primary" id="ccNext">提交审核 ${icon("arrowRight", 14)}</button>
-        </div>
-        <div class="inhouse-controls">
-          <button class="btn gen" id="ccGen">${icon("spark", 15)} ${isImg ? "按图卡生成文案与标题" : "按口播生成文案与标题"}</button>
-        </div>
-        <label class="field">标题
-          <div class="input-dice">
-            <input class="input" id="ccTitle" value="${esc(C.title || "")}" placeholder="抓人的标题，可带表情 🔥" />
-            <button class="dice" id="ccTitleDice" title="随机换一个标题">${icon("dice", 15)}</button>
-          </div>
-        </label>
-        <label class="field">发布文案
-          <textarea class="input" id="ccBody" rows="12" placeholder="钩子开头 + 分点干货 + 互动结尾 + 话题标签，可直接编辑">${esc(C.body || "")}</textarea>
-        </label>
+    ${stepperHtml(p, "workshop")}
+    <div class="chain-page solo">
+      <div class="empty-state card">
+        ${icon("layers", 24)}
+        <b>视频文案已合并到文案分镜</b>
+        <p>标题、简介、口播草稿和分镜现在在一个界面完成。</p>
+        <button class="btn primary" id="ccBackToWorkshop">回到文案分镜</button>
       </div>
-      <aside class="chain-side">
-        <div class="side-card card">
-          <h3>${isImg ? "本次配图" : "本次成片构成"}</h3>
-          <div id="ccPreview">${previewHtml(p, isImg)}</div>
-        </div>
-        <div class="side-card card hint">
-          <h3>交付去向</h3>
-          <p>审核通过并交付后，内容 + 标题 + 文案进入<b>发布清单</b>：按账号规则自动命名（${isImg ? "图集打包 zip 附文案.txt" : "成片带标题简介"}），供应商端可见可下载。</p>
-        </div>
-      </aside>
     </div>`;
-
   wireStepper(root);
-  $$("#ccPreview img", root).forEach(im => im.addEventListener("click", () => openLightbox(im, im.src, "")));
-
-  $("#ccTitle", root).addEventListener("input", e => { C.title = e.target.value; save("productions"); });
-  $("#ccBody", root).addEventListener("input", e => { C.body = e.target.value; save("productions"); });
-
-  $("#ccGen", root).addEventListener("click", e => withLoading(e.currentTarget, async () => {
-    const shots = p.artifacts.script.shots || [];
-    if (!shots.length) { toast(isImg ? "先去图文创作台生成图卡结构" : "先回脚本页生成脚本"); return; }
-    const res = await AI.generateCopy({ topic: p.topic, shots, account: acc, style: p.artifacts.script.style, kind: isImg ? "image" : "video", product: productById(p.artifacts.script.productId || "dumate"), useOnlineTrends: isImg && !!p.artifacts.script.useOnlineTrends, trendGuide: p.artifacts.script.trendGuide || "", trendPrep: isImg ? (p.artifacts.script.trendPrep || null) : null });
-    C.title = res.title; C.body = res.copy;
-    $("#ccTitle", root).value = res.title;
-    $("#ccBody", root).value = res.copy;
-    save("productions");
-    toast(AI.sourceNote(isImg ? "已按图卡生成爆款文案与标题" : "已按口播生成标题与简介"));
-  }, "生成中…"));
-
-  $("#ccTitleDice", root).addEventListener("click", e => withLoading(e.currentTarget, async () => {
-    const t = await AI.randomTitle({ topic: p.topic, account: acc, product: productById(p.artifacts.script.productId || "dumate"), useOnlineTrends: !!p.artifacts.script.useOnlineTrends, trendGuide: p.artifacts.script.trendGuide || "", trendPrep: p.artifacts.script.trendPrep || null });
-    C.title = t; $("#ccTitle", root).value = t; save("productions");
-    toast("已随机标题");
-  }, "…"));
-
-  $("#ccNext", root).addEventListener("click", () => {
-    if (!(C.body || "").trim()) { toast("先生成或写一段发布文案"); return; }
-    if (!(C.title || "").trim()) C.title = p.title || p.topic || "未命名内容";
-    if (["copy", "cut", "images", "render"].includes(p.stage)) setStage(p, "review", "pending");
-    go("studio", "review");
-  });
-}
-
-function previewHtml(p, isImg) {
-  if (isImg) {
-    const items = (p.artifacts.images.items || []).filter(x => x.assetId);
-    return items.length
-      ? `<div class="cc-grid">${items.map((it, i) => `<div class="cc-thumb"><img src="${urlFor(it.assetId)}"/><span>${i + 1}</span></div>`).join("")}</div>`
-      : `<div class="muted">还没有成图：回「成图」页上传图片，交付时整组打包。</div>`;
-  }
-  const tl = p.artifacts.timeline || [];
-  const withSub = (p.artifacts.subs || []).some(s => (s.text || "").trim());
-  return tl.length
-    ? tl.map((c, i) => `<div class="cc-clip"><em>${i + 1}</em><b>${esc(c.name)}</b><span>${c.dur || 15}s${c.trimIn ? ` · 裁头${c.trimIn}s` : ""}</span></div>`).join("")
-      + `<div class="muted" style="margin-top:8px;font-size:11px">共 ${tl.length} 段${withSub ? " · 含字幕" : ""}</div>`
-    : `<div class="muted">时间轴为空：回「剪辑」页拼接片段。</div>`;
+  $("#ccBackToWorkshop", root)?.addEventListener("click", () => go("studio", "workshop"));
 }
 
 /* ---------- 审核页 ---------- */
@@ -120,7 +49,6 @@ export function renderReviewPage(root, p) {
   const shots = p.artifacts.script.shots || [];
   const items = (isImg ? p.artifacts.images.items : p.artifacts.boards.items) || [];
   const visuals = items.filter(x => x.assetId);
-  const r = p.review;
   const deliveredState = p.stage === "delivered";
 
   root.innerHTML = `
@@ -161,7 +89,7 @@ export function renderReviewPage(root, p) {
         </section>`}
 
         <section class="card review-sec">
-          <div class="card-head"><b>${isImg ? "③" : "④"} 发布文案</b><button class="link-btn" data-chain="${isImg ? "images" : "copy"}">去编辑 ${icon("arrowRight", 12)}</button></div>
+          <div class="card-head"><b>${isImg ? "③" : "④"} 发布文案</b><button class="link-btn" data-chain="${isImg ? "images" : "workshop"}">去编辑 ${icon("arrowRight", 12)}</button></div>
           <div class="rv-copy"><b>${esc(p.artifacts.copy.title || "（未填标题）")}</b><pre>${esc(p.artifacts.copy.body || "（未填文案）")}</pre></div>
         </section>
       </div>
@@ -187,6 +115,10 @@ export function renderReviewPage(root, p) {
 
   const dl = $("#rvDeliver", root);
   if (dl) dl.addEventListener("click", async () => {
+    if (!isImg && !p.artifacts?.boards?.cover?.assetId) {
+      toast("先回到文案分镜生成或上传封面图，再发布到供应商端");
+      return;
+    }
     const r = await publishModal({ title: `定稿并发布「${p.artifacts.copy.title || p.title}」` });
     if (r == null) return;
     const a = deliver(p, r);

@@ -182,8 +182,9 @@ function dataUrlFromImageResponse(data) {
 }
 
 export function videoProviderLabel() {
-  if (serverVideo.configured && serverVideo.reachable === false) return "Seedance · 上游未连通";
-  if (serverVideo.configured) return `Seedance · ${serverVideo.model || "已配置"}`;
+  const label = /jimeng|ark|volc/i.test(serverVideo.provider || "") ? "即梦/方舟" : "Seedance";
+  if (serverVideo.configured && serverVideo.reachable === false) return `${label} · 上游未连通`;
+  if (serverVideo.configured) return `${label} · ${serverVideo.model || "已配置"}`;
   return videoApiConfigured() ? "视频 API 已配置" : "模拟渲染引擎（视频 API 未接入）";
 }
 export function ttsProviderLabel() {
@@ -371,13 +372,14 @@ registerProvider({
   kind: "video",
   label: "Seedance",
   capabilities: { ratios: ["9:16", "16:9"], maxDuration: 15, refImages: true, characterLock: true },
-  async submit({ prompt, refs, ratio, duration, generateAudio }) {
+  async submit({ prompt, refs, ratio, duration, generateAudio, model }) {
     const cleanRefs = [];
     for (const ref of refs || []) {
-      if (cleanRefs.length >= 9) break;
+      if (cleanRefs.length >= 15) break;
       const isImage = !ref.type || ref.type === "图片" || /^image\//.test(ref.mime || ref.blob?.type || "");
       const isAudio = ref.type === "音频" || /^audio\//.test(ref.mime || ref.blob?.type || "");
-      if (!isImage && !isAudio) continue;
+      const isVideo = ref.type === "视频" || /^video\//.test(ref.mime || ref.blob?.type || "");
+      if (!isImage && !isAudio && !isVideo) continue;
       const item = await refPayload(ref);
       if (item.url || item.dataUrl) cleanRefs.push(item);
     }
@@ -386,7 +388,7 @@ registerProvider({
       res = await fetch("/api/video/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, refs: cleanRefs, ratio, duration: duration || 15, generateAudio })
+        body: JSON.stringify({ prompt, refs: cleanRefs, ratio, duration: duration || 15, generateAudio, model: model || "" })
       });
     } catch (e) {
       throw new Error("连不上本地服务端 /api/video/submit —— 请确认用 start-shared.command（python 服务端）打开、且改完后已重启它（" + (e.message || e) + "）");
@@ -501,7 +503,15 @@ export function ttsApiConfigured() {
   return (serverTts.configured && serverTts.reachable !== false) || state.apiKeys.some(x => x.type === "tts" && x.secret);
 }
 
-export async function synthesizeTts({ text, voiceId, speed = 1, vol = 1, pitch = 0 }) {
+function normalizeTtsErrorMessage(message = "") {
+  const msg = String(message || "");
+  if (/insufficient\s*balance|balance\s*insufficient|quota|credit|余额不足|额度不足|账户余额/i.test(msg)) {
+    return "Minimax TTS 上游返回余额或额度不足，请在服务端更换可用 Key 或充值后重试。";
+  }
+  return msg;
+}
+
+export async function synthesizeTts({ text, voiceId, speed = 1.2, vol = 1, pitch = 0 }) {
   if (!serverTts.configured) throw new Error("服务器未配置 Minimax TTS");
   const cleanText = sanitizeXhsText(text);
   if (!cleanText) throw new Error("口播文本为空");
@@ -516,7 +526,7 @@ export async function synthesizeTts({ text, voiceId, speed = 1, vol = 1, pitch =
     throw new Error("连不上本地服务端 /api/tts/generate —— 请确认用 start-shared.command（python 服务端）打开、且改完后已重启它（" + (e.message || e) + "）");
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `Minimax TTS 失败 (${res.status})`);
+  if (!res.ok || !data.ok) throw new Error(normalizeTtsErrorMessage(data.detail || data.error || `Minimax TTS 失败 (${res.status})`));
   return data;
 }
 

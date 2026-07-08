@@ -69,12 +69,10 @@ function rowHtml(r) {
   return `<tr data-link="${r.link.id}">
     <td class="da-title"><b>${esc(title)}</b><em>${esc(r.acc?.name || "未归属账号")} · ${esc(r.link.platform || "")}${provider ? ` · ${esc(provider)}` : ""}</em>${err}</td>
     <td>${statusPill(r.link)}</td>
-    <td class="num">${m ? fmt(m.views) : "-"}</td>
     <td class="num">${m ? fmt(m.likes) : "-"}</td>
     <td class="num">${m ? fmt(m.collects) : "-"}</td>
     <td class="num">${m ? fmt(m.comments) : "-"}</td>
     <td class="num">${m ? pct(m.engagementRate) : "-"}</td>
-    <td class="num">${m ? m.qualityScore : "-"}</td>
     <td class="da-time">${r.link.lastSyncedAt ? timeAgo(r.link.lastSyncedAt) : "未同步"}</td>
     <td class="da-actions">
       <button class="icon-btn sm" data-refresh-link="${esc(r.link.id)}" title="刷新这条数据">${icon("refresh", 12)}</button>
@@ -95,25 +93,20 @@ function qaAnswer(q, rows) {
   }
   if (/账号|谁|哪个|排行|最好|最高/.test(q)) {
     return s.accounts.length
-      ? `账号表现前三：${s.accounts.slice(0, 3).map(a => `${a.name}（${a.count}条，均分${a.score}，阅读${fmt(a.views)}）`).join("、")}。`
+      ? `账号表现前三：${s.accounts.slice(0, 3).map(a => `${a.name}（${a.count}条，互动${fmt(a.engagement)}）`).join("、")}。`
       : "当前还没有可按账号统计的快照。";
   }
   if (/互动|点赞|收藏|评论|赞|藏/.test(q)) {
-    return `总互动 ${fmt(s.totalEngagement)} 次，整体互动率 ${pct(s.engagementRate)}；当前最高质量内容是「${top?.link.title || top?.asset?.name || "暂无"}」。`;
-  }
-  if (/质量|平均|分/.test(q)) {
-    return synced.length
-      ? `已同步 ${synced.length} 条，平均质量分 ${s.avgScore}。最高分是「${top?.link.title || top?.asset?.name || "未命名"}」，质量分 ${top?.latest.metrics.qualityScore || "-"}.`
-      : "还没有质量分快照，先刷新数据。";
+    return `总互动 ${fmt(s.totalEngagement)} 次，整体互动率 ${pct(s.engagementRate)}；当前互动较好的内容是「${top?.link.title || top?.asset?.name || "暂无"}」。`;
   }
   if (/视频号|小红书/.test(q)) {
     const platform = /视频号/.test(q) ? "视频号" : "小红书";
     const picked = rows.filter(r => r.link.platform === platform);
     const ps = analyticsSummary(picked);
-    return `${platform} 共 ${picked.length} 条回链，${ps.synced} 条有快照，总阅读 ${fmt(ps.totalViews)}，互动率 ${pct(ps.engagementRate)}。`;
+    return `${platform} 共 ${picked.length} 条回链，${ps.synced} 条有快照，总互动 ${fmt(ps.totalEngagement)}，互动率 ${pct(ps.engagementRate)}。`;
   }
-  if (/阅读|浏览|曝光/.test(q)) return `总阅读 ${fmt(s.totalViews)}，来自 ${s.synced} 条已同步内容；${top ? `当前最好的是「${top.link.title || top.asset?.name || "未命名"}」。` : "暂无最高内容。"}`;
-  return `当前有 ${s.total} 条回链，${s.synced} 条有快照，总阅读 ${fmt(s.totalViews)}，总互动 ${fmt(s.totalEngagement)}，互动率 ${pct(s.engagementRate)}。你可以问：哪个账号表现最好？还有哪些仅回链？小红书数据怎么样？`;
+  if (/阅读|浏览|曝光|质量|平均|分/.test(q)) return "当前接口不稳定返回阅读和质量分，面板只展示回链、快照、赞藏评和互动率。可以问：哪个账号互动最好？还有哪些仅回链？";
+  return `当前有 ${s.total} 条回链，${s.synced} 条有快照，总互动 ${fmt(s.totalEngagement)}，互动率 ${pct(s.engagementRate)}。你可以问：哪个账号互动最好？还有哪些仅回链？小红书数据怎么样？`;
 }
 
 function qaCard(rows) {
@@ -151,7 +144,6 @@ export const analyticsView = {
 
           <section class="ov-stats da-stats">
             ${statCard("回传链接", s.total, `${s.synced} 条有历史快照`)}
-            ${statCard("总阅读", fmt(s.totalViews), "来自已有快照", "run")}
             ${statCard("互动率", pct(s.engagementRate), `${fmt(s.totalEngagement)} 次互动`, "review")}
             ${qaCard(rowsAll)}
           </section>
@@ -172,13 +164,11 @@ export const analyticsView = {
                 <col class="da-col-num">
                 <col class="da-col-num">
                 <col class="da-col-num">
-                <col class="da-col-num">
                 <col class="da-col-rate">
-                <col class="da-col-score">
                 <col class="da-col-time">
                 <col class="da-col-action">
               </colgroup>
-              <thead><tr><th>内容</th><th>状态</th><th>阅读</th><th>赞</th><th>藏</th><th>评</th><th>互动率</th><th>质量</th><th>快照</th><th></th></tr></thead>
+              <thead><tr><th>内容</th><th>状态</th><th>赞</th><th>藏</th><th>评</th><th>互动率</th><th>快照</th><th></th></tr></thead>
               <tbody>${rows.map(rowHtml).join("")}</tbody>
             </table></div>` : emptyState("pulse", "还没有回链数据", "供应商在发布清单回传链接后，会自动进入这里。")}
           </section>

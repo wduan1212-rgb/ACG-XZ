@@ -510,6 +510,31 @@ function polishVideoBrandCopy(result = {}, product = null) {
   };
 }
 
+function stripLeadingDuplicateTitle(copy = "", title = "") {
+  const raw = String(copy || "").trim();
+  const t = String(title || "").trim();
+  if (!raw || !t) return raw;
+  const norm = x => String(x || "").replace(/[#\s"'“”‘’《》「」【】\[\]（）()!！?？:：,，.。;；、~～-]/g, "").toLowerCase();
+  const lines = raw.split(/\n+/).map(x => x.trim()).filter(Boolean);
+  const titleNorm = norm(t);
+  while (lines.length) {
+    const firstNorm = norm(lines[0]);
+    if (firstNorm && (firstNorm === titleNorm || firstNorm.startsWith(titleNorm))) {
+      const rest = lines[0]
+        .replace(new RegExp(`^\\s*${escapeRegExp(t)}\\s*[:：,，.。!！?？-]*\\s*`), "")
+        .trim();
+      if (rest && norm(rest) !== titleNorm) {
+        lines[0] = rest;
+        break;
+      }
+      lines.shift();
+      continue;
+    }
+    break;
+  }
+  return lines.join("\n").replace(/^\s*[:：,，.。!！?？-]+/, "").trim();
+}
+
 function polishCopyResult(result, { topic, shots, account, kind, product, batchVariant = null, avoidCopies = [] }) {
   const intent = inferCopyIntent({ topic, shots, account, product, useAccountPosition: kind === "video" });
   let title = sanitizeProduct(String(result?.title || "").trim());
@@ -524,6 +549,7 @@ function polishCopyResult(result, { topic, shots, account, kind, product, batchV
   copy = deTemplateCopy(copy);
   title = stripOwnProductMentions(replaceReferenceToolNames(title, product), product);
   copy = stripOwnProductMentions(replaceReferenceToolNames(copy, product), product);
+  copy = stripLeadingDuplicateTitle(copy, title);
   if (kind === "video") return sanitizeXhsObject(polishVideoBrandCopy({ title, copy }, product));
   return { title, copy };
 }
@@ -2456,43 +2482,21 @@ ${xhsGuardPrompt()}
     const speechVoice = copyAccountVoice(account, account?.voiceName || safeStyle, safeTopic);
     const intent = inferCopyIntent({ topic: safeTopic, shots: safeShots, account, product, useAccountPosition: false });
     const variantGuide = batchVariantLine(batchVariant);
-    const avoidLine = (avoidCopies || []).slice(-6).map((x, i) => `${i + 1}. 标题：${sanitizeXhsText(x.title || "")}；首句：${sanitizeXhsText(String(x.copy || x.body || "").split(/\n/).find(Boolean) || "").slice(0, 60)}`).join("\n");
-    const prep = await resolveTrendPrep({ topic: safeTopic, account, product, batchVariant, useOnlineTrends: false, kind, imageCount: Math.max(3, Math.min(12, (safeShots || []).length || DEFAULT_XHS_IMAGE_COUNT)) });
-    const trendGuideText = prep?.guide || await resolveTrendGuide({ topic: safeTopic, account, product, batchVariant, useOnlineTrends: false, kind });
-    const offlineCopyLine = "当前按本地创作需求生成：如果用户写了创作内容，文案必须优先服从这段创作需求，把里面的主题、场景、工具关系、目标读者和想讲的结论吃透后再写；本地结构库只当节奏参考，不得覆盖用户需求，不要被它的标题、结构或固定话术限制。请直接围绕本次主题、图卡内容和账号风格，写成真实使用后的经验复盘；允许选择更自然的叙述顺序。正文少换行，不留空行，不要机械分点；要讲清一个具体场景、一个可执行方法、结果怎么复核和适合/不适合谁。";
+    const offlineCopyLine = "围绕用户主题和图卡内容写即可，自由组织标题、正文和表达方式；不要换题，不要把标题原样放在正文第一句。";
     const script = kind === "video"
       ? (safeShots || []).map((s, i) => `镜头${i + 1}｜${s.time || ""}｜口播：${s.line || ""}`).join("\n")
       : (safeShots || []).map((s, i) => `图${i + 1}｜${s.idea || ""}｜图上文案：${s.line || ""}`).join("\n");
     const videoProductName = chineseProductDisplayName(product, "百度搭子");
     const sys = kind === "video"
-      ? `你是短视频发布文案写手，为成片写发布标题与简介（发布平台：${account.platform}，按该平台调性写）：
-- title：16-32字，必须从口播内容里提炼，不要不明所以。优先仿照这些网感结构，但不能照抄完整句：` + `国产codex，不用安装1分钟上手零门槛教程，一篇讲清楚！ / AI办公别只会聊天，这条把真实用法讲透 / 零基础用桌面智能体，先看这篇少绕路。标题要有对象、门槛/收益/教程感、具体结果；可以出现 Codex/AI Agent/桌面智能体等品类词，避免空泛标题。
-- 当前主产品是「${videoProductName}」。标题和正文可以自然出现这个产品名，尤其当参考结构靠产品名形成点击点时，直接把同类工具名替换成「${videoProductName}」，不要刻意弱化成泛泛的“AI测试”。
-- copy：260-480字简介，像真实创作者发视频后的补充说明。必须先根据口播逐句总结出一个主结论，再展开真实使用场景、关键动作和边界提醒。不要总是分点，不要写固定编号清单；可以用实测复盘、适合/不适合、一个可复制口播流程来写。段落之间只用单换行，不留空行。必须来自口播脚本，不能脱离口播另写一套图文文案；最后一行4-7个具体话题标签，必须包含「#${videoProductName}」。
-语气按账号创作风格和口播风格细化，像真人发视频，不要硬广腔，不要假装临时接到领导任务。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`
-      : `你是小红书爆款笔记文案写手。根据图卡脚本写一篇配套笔记：
-- title：20字以内，像真实创作者的结论/痛点标题，具体、有梗、有信息量，可带1个贴合 emoji。
-- copy：320-620字正文，像真实小红书效率博主的经验笔记。不要总是分点，不要写固定编号清单；优先写成实测复盘或场景叙述，必要时再少量列点。段落之间只用单换行，不留空行。正文要有干货：具体场景、操作顺序、指令写法、结果怎么复核、适合/不适合谁，最后一行4-7个具体话题标签。
-语气按本次内容和账号创作风格细化，像真人发笔记，不要硬广腔。用户给的创作内容只是素材和约束，禁止原样当标题或正文第一句；必须先提炼痛点、动作和结果后再写。只输出 JSON：{"title":"...","copy":"..."}`;
-    const copyGroundRules = `【本地创作规则】
-当前版本不再调用外部搜索。文案只使用用户创作内容、图卡脚本、账号语气、产品事实和本地四方向选题；如果用户写了创作内容，必须优先服从用户主题，不得随机换题。
-标题、正文和标签可以自然出现当前主产品名；竞品或互补工具只在明确对比/联动时出现。
-正文要像真实经验复盘，少换行、不留空行，不固定三段式；重点讲清具体场景、可执行动作、复核结果和适合/不适合谁。
-图文链路必须先把发布文案写扎实，再让图片提示词围绕标题、正文和标签拆图；图片视觉风格可以来自账号风格，但图片内容主题不得脱离发布文案。
-
-【本地结构参考】
-${trendGuideText}
-
-【同批去重硬约束】
-如果用户没有写很具体的内容，请先自己选择一个不同于同批其他账号的真实场景，再写标题和正文。禁止只改账号名或数字；禁止连续使用同一种标题类型、同一种首句和同一种三点清单。正文必须让人知道具体工具怎么分工或怎么用。
-
-${xhsGuardPrompt()}`;
+      ? `你是短视频发布文案写手。根据用户主题、平台、产品和口播内容，写一个发布标题和简介。自由发挥，贴合主题即可；标题自然有点击欲，正文像真人发布后的补充说明。不要换题，不要把标题原样当正文第一句。最后一行给 4-7 个话题标签，包含「#${videoProductName}」。只输出 JSON：{"title":"...","copy":"..."}`
+      : `你是小红书笔记文案写手。根据用户主题和图卡内容，写一个发布标题和正文。自由发挥，贴合主题即可；正文像真实创作者的经验分享。不要换题，不要把标题原样当正文第一句。最后一行给 4-7 个话题标签。只输出 JSON：{"title":"...","copy":"..."}`;
+    const copyGroundRules = "只根据用户主题、已定内容、账号语气和当前产品写文案；主题优先，可以自然出现产品名，不要写成无关的固定模板。";
     try {
       const content = await llm([
-        { role: "system", content: copyProductBrief(product) + "\n\n" + sys + HUMAN_COPY_VOICE + "\n\n" + copyGroundRules },
+        { role: "system", content: sys + "\n\n" + copyGroundRules },
         { role: "user", content: kind === "video"
-          ? `账号创作风格：${accountVoice}\n账号口播风格参考：${speechVoice}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n当前主产品：${videoProductName}\n创作内容原文（只用于理解，不要照抄）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}已定口播逐句稿（发布标题和简介必须围绕这些口播总结，不要另起主题）：\n${script}\n标题参考方向：国产${videoProductName}/${videoProductName}零门槛/1分钟上手/一篇讲清楚/少绕路/真实用法。根据口播选择最贴切的一种，不要硬塞无关词。标签最后必须带 #${videoProductName}。\n${this.memoryLine(account)}`
-          : `账号创作风格：${accountVoice}\n语气：${sanitizeXhsText(account.tone || "教程感")}\n创作内容原文（用于判断是否要弱化/保留工具名）：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${avoidLine ? `同批已经出现过的标题/首句，必须避开：\n${avoidLine}\n` : ""}提炼后的发布角度：面向${intent.audience}，痛点是「${intent.pain}」，核心动作是「${intent.action}」，结果价值是「${intent.result}」。\n${offlineCopyLine}\n${safeStyle ? "图片风格：" + safeStyle + "\n" : ""}图卡内容摘要：\n${script}` }
+          ? `平台：${account.platform}\n账号语气：${accountVoice}\n口播风格：${speechVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}已定口播内容：\n${script}\n${this.memoryLine(account)}`
+          : `平台：${account.platform}\n账号语气：${accountVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${offlineCopyLine}\n${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}图卡内容：\n${script}` }
       ], { json: true, temperature: 1.02 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.title || !d.copy) throw new Error("模型未返回 title/copy");

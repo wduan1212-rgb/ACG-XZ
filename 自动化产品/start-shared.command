@@ -48,8 +48,6 @@ fi
 # export LLM_BASE_URL=http://你的内网网关
 # export LLM_MODEL=网关支持的-chat-模型名
 # export LLM_FORCE_MODEL=true
-# 小红书真实数据采集：
-# export JUSTONEAPI_KEY=xxxxxx
 # 视频生成 Seedance（内网地址需本机在内网/VPN 才能连通）：
 # export SEEDANCE_API_KEY=xxxxxx
 # export SEEDANCE_BASE_URL=http://api.dbh.baidu-int.com

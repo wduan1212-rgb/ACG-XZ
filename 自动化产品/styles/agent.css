@@ -281,11 +281,11 @@
 .agc-overrides { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; min-width: 0; overflow: hidden; }
 .agc-override {
   display: grid;
-  grid-template-columns: minmax(96px, .9fr) minmax(86px, 140px) 62px 62px minmax(0, 1.25fr);
+  grid-template-columns: minmax(96px, .85fr) minmax(86px, 130px) 62px 62px 98px minmax(0, 1.35fr);
   grid-template-areas:
-    "name product itemcount imgcount content"
-    "refhead refstate refstate refstate refstate"
-    "refactions refactions refactions refactions refactions";
+    "name product itemcount imgcount copymode content"
+    "refhead refstate refstate refstate refstate refstate"
+    "refactions refactions refactions refactions refactions refactions";
   column-gap: 6px; row-gap: 8px; align-items: end; padding: 8px;
   border: 1px solid var(--ag-line); border-radius: var(--r-md);
   background: rgba(255,255,255,.035);
@@ -293,7 +293,8 @@
 }
 .agc-override b { grid-area: name; align-self: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--d-text); }
 .agc-override > select { grid-area: product; }
-.agc-override > input { grid-area: content; }
+.agc-override > input,
+.agc-copy-fields { grid-area: content; }
 .agc-mini-count { min-width: 0; display: grid; gap: 3px; color: #8EA0D0; font-size: 9px; font-weight: 750; }
 .agc-mini-count:nth-of-type(1) { grid-area: itemcount; }
 .agc-mini-count.img-count { grid-area: imgcount; }
@@ -307,16 +308,61 @@
 }
 .agc-video-chain svg { flex: none; }
 .agc-override.is-video { border-color: rgba(45,212,191,.18); }
+.agc-copy-toggle {
+  grid-area: copymode;
+  position: relative;
+  height: 36px;
+  min-width: 0;
+  border: 1px solid rgba(132,152,255,.22);
+  border-radius: var(--r-sm);
+  background: rgba(255,255,255,.045);
+  color: #A7B6DE;
+  overflow: hidden;
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 850;
+  white-space: nowrap;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+}
+.agc-copy-toggle:hover { border-color: rgba(180,195,230,.36); background: rgba(255,255,255,.075); }
+.agc-copy-toggle span { display: block; overflow: hidden; text-overflow: ellipsis; }
+.agc-copy-toggle.is-on {
+  color: #F7FAFF;
+  border-color: rgba(132,152,255,.45);
+  background: rgba(80,110,255,.16);
+}
+.agc-copy-fields {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+.agc-copy-fields .agc-standard-copy { display: block; }
+.agc-copy-fields .agc-account-copy { display: none; }
+.agc-copy-fields.is-custom .agc-standard-copy { display: none; }
+.agc-copy-fields.is-custom .agc-account-copy { display: grid; }
+.agc-account-copy {
+  grid-template-columns: minmax(0, .72fr) minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
 .agc-mini-count input {
   width: 100%; height: 36px; min-width: 0; border-radius: var(--r-sm);
   border: 1px solid var(--ag-line); background: rgba(255,255,255,.05);
   color: var(--d-text); padding: 0 8px; font-size: 11.5px; font-weight: 800; outline: 0;
 }
-.agc-override select, .agc-override input {
+.agc-override select, .agc-override input, .agc-account-copy textarea {
   min-width: 0; width: 100%; box-sizing: border-box; background: rgba(255, 255, 255, .05); border: 1px solid var(--ag-line);
   height: 36px; border-radius: var(--r-sm); padding: 0 9px; font-size: 11px; color: var(--d-text); outline: 0;
 }
 .agc-override > input { height: 36px; }
+.agc-account-copy textarea {
+  min-height: 36px;
+  max-height: 58px;
+  resize: vertical;
+  padding-top: 8px;
+  line-height: 1.35;
+}
 .agc-override select { color-scheme: dark; }
 .agc-mini-ref {
   display: contents;
@@ -370,6 +416,22 @@
 .agc-ref-drop:hover, .agc-ref-drop.drag-over, .agc-ref-library:hover { border-color: #7C9AFF; background: rgba(80,110,255,.16); box-shadow: var(--d-glow); }
 .agc-ref-drop b, .agc-ref-library b { font-size: 11px; color: var(--d-text); }
 .agc-ref-drop em, .agc-ref-library em { font-style: normal; font-size: 9.5px; color: var(--d-faint); }
+.agc-cover-ref {
+  display: grid;
+  grid-template-columns: minmax(180px, .8fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid rgba(132,152,255,.12);
+  border-radius: var(--r-sm);
+  background: rgba(255,255,255,.03);
+}
+.agc-cover-ref-info { min-width: 0; display: grid; gap: 3px; }
+.agc-cover-ref-info b { display: inline-flex; align-items: center; gap: 5px; color: var(--d-text); font-size: 11.5px; }
+.agc-cover-ref-info em { font-style: normal; color: var(--d-faint); font-size: 10px; line-height: 1.45; }
+.agc-cover-ref-status { color: var(--d-muted); font-size: 11px; min-width: 0; }
+.agc-cover-ref-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+.agc-cover-ref-actions .btn.sm { height: 32px; white-space: nowrap; }
 .asset-picker { display: grid; gap: 12px; }
 .modal-panel.asset-picker-panel { width: min(920px, calc(100vw - 40px)); }
 .asset-picker-meta { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12px; }
@@ -620,12 +682,12 @@
 @media (max-width: 1180px) { .agw-body { grid-template-columns: 200px minmax(0, 1fr) 320px; } .agres-grid { grid-template-columns: 1fr 1fr; } .agw-tpls { grid-template-columns: 1fr; } }
 @media (max-width: 1280px) {
   .agc-override {
-    grid-template-columns: minmax(110px, 1fr) minmax(86px, 120px) 62px 62px;
+    grid-template-columns: minmax(110px, 1fr) minmax(86px, 120px) 62px 62px 98px;
     grid-template-areas:
-      "name product itemcount imgcount"
-      "content content content content"
-      "refhead refstate refstate refstate"
-      "refactions refactions refactions refactions";
+      "name product itemcount imgcount copymode"
+      "content content content content content"
+      "refhead refstate refstate refstate refstate"
+      "refactions refactions refactions refactions refactions";
   }
 }
 @media (max-width: 960px) {
@@ -638,13 +700,17 @@
       "name name"
       "product product"
       "itemcount imgcount"
+      "copymode copymode"
       "content content"
       "refhead refhead"
       "refstate refstate"
       "refactions refactions";
   }
+  .agc-account-copy { grid-template-columns: 1fr; }
   .agc-mini-ref .agc-mini-actions { grid-template-columns: 1fr; }
   .agc-ref-body { grid-template-columns: 1fr; }
+  .agc-cover-ref { grid-template-columns: 1fr; align-items: stretch; }
+  .agc-cover-ref-actions { justify-content: flex-start; }
 }
 
 /* ---------- v36 主版本 · 批量生产黑白冷蓝玻璃肤色（不改布局） ---------- */
@@ -727,6 +793,7 @@
 .agc-override,
 .agc-acc,
 .agc-ref-picked,
+.agc-cover-ref,
 .asset-pick-card,
 .agres-item,
 .mb-row,
@@ -783,7 +850,9 @@
 .agc-count-inline input,
 .agc-mini-count input,
 .agc-override select,
-.agc-override input {
+.agc-override input,
+.agc-account-copy textarea,
+.agc-copy-toggle {
   background: rgba(255,255,255,.065);
   border-color: rgba(255,255,255,.12);
   color: #F4F7FB;

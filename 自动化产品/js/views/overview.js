@@ -172,7 +172,7 @@ export const overviewView = {
 
         <div class="ov-stats">
           ${stat("等待上传", waiting.length, "上传补图后继续", "agent", waiting.length ? "warn" : "")}
-          ${stat("生成中", rendering.length, "渲染 / 分镜工坊", "agent", rendering.length ? "run" : "")}
+          ${stat("生成中", rendering.length, "文案分镜 / 渲染", "agent", rendering.length ? "run" : "")}
           ${stat("待审核", inReview.length, "人工确认后交付", "agent", inReview.length ? "review" : "")}
           ${stat("失败待重试", failed.length, "一键重试", "agent", failed.length ? "fail" : "")}
           ${stat("供应商待下载", pendingDl, "发布清单可批量下载", "delivery", "")}

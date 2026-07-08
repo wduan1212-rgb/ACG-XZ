@@ -310,6 +310,45 @@ function compactInfoFlowText(text = "", max = 96) {
   return String(text || "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+function infoFlowHash(seed = "") {
+  let h = 2166136261;
+  for (const ch of String(seed || "")) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function pickInfoFlow(list = [], seed = "", offset = 0) {
+  if (!list.length) return null;
+  return list[Math.abs(infoFlowHash(`${seed}:${offset}`)) % list.length];
+}
+
+function stripLeadingCopyTitle(body = "", title = "") {
+  const raw = String(body || "").trim();
+  const t = String(title || "").trim();
+  if (!raw || !t) return raw;
+  const norm = x => String(x || "").replace(/[#\s"'“”‘’《》「」【】\[\]（）()!！?？:：,，.。;；、~～-]/g, "").toLowerCase();
+  const lines = raw.split(/\n+/).map(x => x.trim()).filter(Boolean);
+  const titleNorm = norm(t);
+  while (lines.length) {
+    const firstNorm = norm(lines[0]);
+    if (firstNorm && (firstNorm === titleNorm || firstNorm.startsWith(titleNorm))) {
+      const rest = lines[0]
+        .replace(new RegExp(`^\\s*${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[:：,，.。!！?？-]*\\s*`), "")
+        .trim();
+      if (rest && norm(rest) !== titleNorm) {
+        lines[0] = rest;
+        break;
+      }
+      lines.shift();
+      continue;
+    }
+    break;
+  }
+  return lines.join("\n").replace(/^\s*[:：,，.。!！?？-]+/, "").trim();
+}
+
 function infoFlowCopyCue(copyText = "", fallback = "") {
   const fallbackText = String(fallback || "").trim();
   const lines = String(copyText || "")
@@ -339,6 +378,14 @@ function infoFlowVoiceAnchor(acc = {}) {
 }
 
 const VIDEO_BAIDU_TAG_LINE = "#AI工具 #AI提效 #codex #AI办公 #效率工具 #百度搭子";
+
+const INFO_FLOW_STYLE_ANCHORS = [
+  "统一为轻喜剧真人办公室快剪：明亮自然光、手持推拉、桌面真实道具、人物反应夸张但可信。",
+  "统一为清爽 2.5D 动画广告风：人物动作夸张、界面卡片弹出、蓝白色工作区、节奏像短视频动效。",
+  "统一为动漫化办公室剧情风：表情放大、动作有弹性、桌面和屏幕保持同一套蓝白产品色。",
+  "统一为屏幕录制混合真人手部风：真实桌面近景、手部拖拽、屏幕任务卡动效，前后段都像同一条产品短片。",
+  "统一为微缩桌面夸张风：文件、手机和任务卡像小道具一样涌动，后段继续用同一套微缩工作台演示产品。"
+];
 
 function videoPublishTagLine(product = null) {
   const name = infoProductName(product);
@@ -402,54 +449,126 @@ function infoFlowFeatureBrief(topic = "", productName = "百度搭子") {
   };
 }
 
-function buildInfoFlowFrontBeat({ mainTopic, productName, focus }) {
-  return [
+function buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed = "" }) {
+  const openers = [
     `0-3s：办公室桌面突然被${focus.prop}塞满，手机连续弹出“十分钟后要初版”“顺便做个封面”“再整理下资料”，角色一边抓头发一边把咖啡差点碰倒。`,
+    `0-3s：镜头从桌面低角度冲进来，${focus.prop}像多米诺一样倒向键盘，角色手忙脚乱按住电脑和手机。`,
+    `0-3s：电梯门一开，角色怀里抱着${focus.prop}冲回工位，屏幕上任务提醒连续闪烁，表情像刚被临时加班砸中。`,
+    `0-3s：画面先给一个极近特写：鼠标旁堆着${focus.prop}，聊天窗口又跳出新需求，角色闭眼深呼吸三秒。`
+  ];
+  const turns = [
     `3-6s：镜头手持快速绕桌一圈，文件夹、截图、表格和聊天消息像失控一样叠到屏幕前；角色低声吐槽“这不是一个需求，这是来拆我的”。`,
-    `6-10s：画面突然切成夸张对比：左边随便选工具后输出一堆空话，右边角色把「${mainTopic}」拆成几张任务卡贴到屏幕上，镜头快速推近每张卡的错位结果。`,
-    `10-15s：角色把错误输出揉成纸团扔到桌边，深吸一口气，对镜头说“先别急着跑，先选对怎么跑”，画面停在一张清晰的执行路线草图上。`
-  ].join(" ");
-}
-
-function buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText = "" }) {
-  const cue = infoFlowCopyCue(copyText, mainTopic);
+    `3-6s：画面快切三次：空白文档、凌乱资料、错误输出，角色每切一次表情更崩一点，最后把便签贴满屏幕边缘。`,
+    `3-6s：角色试着随便跑一次，屏幕弹出三段看似漂亮但完全跑偏的结果，镜头突然推到他愣住的表情。`,
+    `3-6s：桌面被分成两半，一边是“直接开跑”的混乱输出，一边是还没被整理的真实资料，形成荒诞对照。`
+  ];
+  const twists = [
+    `6-10s：画面切成夸张对比：左边随便选工具后输出一堆空话，右边角色把「${mainTopic}」拆成几张任务卡贴到屏幕上，镜头快速推近每张卡的错位结果。`,
+    `6-10s：角色突然停下，把「${mainTopic}」写成一句完整任务，旁边三张模型/流程卡依次亮起，镜头跟着卡片快速横移。`,
+    `6-10s：错误输出被角色一张张拖到废纸篓，屏幕中央只留下「${mainTopic}」和“先判断、再执行、再复核”三步。`,
+    `6-10s：桌面灯光一收，角色像开盲盒一样翻开三张方案卡，前两张跑偏，第三张终于把任务拆到可执行。`
+  ];
+  const closes = [
+    `10-15s：角色把错误输出揉成纸团扔到桌边，深吸一口气，对镜头说“先别急着跑，先选对怎么跑”，画面停在一张清晰的执行路线草图上。`,
+    `10-15s：镜头从角色表情拉回屏幕，混乱资料被一条路线框住，角色点头说“这次先让它按步骤来”。`,
+    `10-15s：画面突然安静，桌面只剩一张干净任务卡，角色把手机扣下，对镜头抛一句“别让模型替你乱猜”。`,
+    `10-15s：角色把三张方案卡合成一条执行线，屏幕定格在「先选对模型，再跑流程」的操作画面。`
+  ];
   return [
-    `0-3s：口播直接扣回发布文案重点：“${cue}”。画面近景看到用户在${productName}里输入「${mainTopic}」，旁边放着资料、截图和待办。`,
-    `3-7s：界面按文案逻辑生成任务清单，逐项展示${focus.action}；镜头用近景点击、快速推拉和屏幕录制感切换，让观众看到每一步负责什么。`,
-    `7-11s：切到功能结果：不同模型或步骤产出的内容并排出现，资料被归类，关键字段被提取，页面或报告初稿出现，旁边保留修改入口和复核清单。`,
-    `11-15s：回扣前段混乱桌面，角色把生成的初版发出去，口播收束“先选对模型和流程，效率才真的翻倍。”画面突出${focus.result}。`
+    pickInfoFlow(openers, seed, 1),
+    pickInfoFlow(turns, seed, 2),
+    pickInfoFlow(twists, seed, 3),
+    pickInfoFlow(closes, seed, 4)
   ].join(" ");
 }
 
-function buildInfoFlowPublishCopy({ title, topic, productName, product }) {
+function buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText = "", seed = "" }) {
+  const cue = infoFlowCopyCue(copyText, mainTopic);
+  const starts = [
+    `0-3s：画面近景看到用户在${productName}里输入「${mainTopic}」，旁边放着资料、截图和待办，旁白一句：“${cue}”。`,
+    `0-3s：接前段桌面，角色把路线草图拍进${productName}工作区，输入框里清楚出现「${mainTopic}」，旁白点出“先把任务说清楚”。`,
+    `0-3s：镜头从前段那张任务卡推入屏幕，${productName}工作区打开，资料、目标和判断标准被放进同一行。`
+  ];
+  const mids = [
+    `3-7s：界面按文案逻辑生成任务清单，逐项展示${focus.action}；镜头用近景点击、快速推拉和屏幕录制感切换，让观众看到每一步负责什么。`,
+    `3-7s：任务卡从左到右展开，先拆步骤，再读取资料，再生成初版；每一步旁边都有可修改入口，画面不跳题。`,
+    `3-7s：屏幕中部出现流程看板，资料、模型选择、执行动作和复核项依次亮起，角色只做确认和微调。`
+  ];
+  const results = [
+    `7-11s：切到功能结果：不同模型或步骤产出的内容并排出现，资料被归类，关键字段被提取，页面或报告初稿出现，旁边保留修改入口和复核清单。`,
+    `7-11s：结果区分成三列：输入材料、执行过程、可改初版，镜头逐列扫过，观众能看到它不是只给建议。`,
+    `7-11s：原始资料被自动归类成清单、表格和文案初稿，角色点击一处错误项，界面立刻进入可修改状态。`
+  ];
+  const closes = [
+    `11-15s：回扣前段混乱桌面，角色把生成的初版发出去，口播收束“先选对模型和流程，效率才真的翻倍。”画面突出${focus.result}。`,
+    `11-15s：画面回到前段的同一个桌面，道具位置保持一致，但屏幕已经有可交付初版，角色松一口气点发送。`,
+    `11-15s：最后给到执行路线和结果预览同屏，角色把错乱资料移到一边，保留可复核清单和初版链接。`
+  ];
+  return [
+    pickInfoFlow(starts, seed, 11),
+    pickInfoFlow(mids, seed, 12),
+    pickInfoFlow(results, seed, 13),
+    pickInfoFlow(closes, seed, 14)
+  ].join(" ");
+}
+
+function buildInfoFlowPublishCopy({ title, topic, productName, product, seed = "" }) {
   const focus = infoFlowFeatureBrief(topic, productName);
   const isModelTopic = /模型|model|隐藏|玩法|效率翻倍|选对|十大|10大|十个|10个/.test(String(topic || "").toLowerCase());
+  const modelOpeners = [
+    `很多人用 AI 提效慢，不是不会提问，而是一开始就让同一个模型包办所有事。`,
+    `我现在判断一个 AI 工作流靠不靠谱，第一步不是写 Prompt，而是先决定这件事该怎么分工。`,
+    `同一个需求，模型选错以后很容易越跑越偏：看起来字很多，能直接改的结果却很少。`,
+    `最近我重新梳理了一遍「${topic}」，发现真正省时间的不是一句神奇指令，而是先把模型和任务顺序排对。`
+  ];
+  const modelMids = [
+    `${productName}这类桌面智能体适合做的，是把「${topic}」拆成可执行流程：谁负责拆步骤，谁负责拉资料，谁负责写初版，谁负责复核修改。`,
+    `我的习惯是先把目标、素材和判断标准说清楚，再让${productName}把任务卡、资料整理、初版结果和修改入口一起跑出来。`,
+    `这次会重点看几个隐藏玩法：先选模型，再拆任务；先给资料，再生成；先要可修改初版，不要一开始追求完美。`
+  ];
+  const modelEnds = [
+    `这样做的好处是每一步都有结果能检查，跑偏了也知道该从哪里改，不会一路返工到最后。`,
+    `它不是替人拍脑袋做决定，而是先把重复劳动压下去，让人把注意力留给判断和修改。`,
+    `如果你也经常被资料、截图、临时需求追着跑，可以先从一个小任务试：选对模型和流程，再看效率是不是真的翻倍。`
+  ];
   if (isModelTopic) {
     return [
-      title,
-      `我发现很多人用 AI 提效慢，不是工具不行，而是一上来就把所有任务丢给同一个模型。真正影响效率的，是先判断这件事该让谁负责：谁适合拆步骤，谁适合拉资料，谁适合写初版，谁适合做复核。`,
-      `${productName}这类桌面智能体适合做的，就是把「${topic}」这种需求拆成可执行流程。你不用先想完整答案，只要把目标、素材和判断标准说清楚，它就能先把任务卡、资料整理、初版结果和修改入口跑出来。`,
-      `这条 B 面会重点看几个隐藏玩法：先选模型，再拆任务；先给资料，再让它生成；先要可修改初版，不要一次追求完美。这样做的好处是返工会少很多，因为每一步都有结果可以检查。`,
-      `A 面会拍得更夸张一点：用错模型时，输出像开盲盒；B 面再回到真实操作，看看怎么把模型选择和工作流串起来。`,
+      pickInfoFlow(modelOpeners, seed, 21),
+      pickInfoFlow(modelMids, seed, 22),
+      pickInfoFlow(modelEnds, seed, 23),
       videoPublishTagLine(product)
     ].join("\n\n");
   }
-  return [
-    title,
-    `${productName}这类工具，最容易被低估的其实不是“会回答”，而是它能先把一件乱事推到能改的版本。`,
+  const generalOpeners = [
+    `${productName}这类工具，最容易被低估的不是“会回答”，而是能先把一件乱事推到能改的版本。`,
+    `我现在看 AI 办公工具，会先看它能不能把${focus.pain}这种场景拆成可检查步骤。`,
+    `真正省时间的地方，经常不是最后那段漂亮文案，而是中间那些分类、提取、生成初版和复核动作。`
+  ];
+  const generalMids = [
     `比如${focus.pain}，以前我会先卡在整理这一步：资料要看，步骤要拆，结果还要能交付。现在我会先把需求丢进去，让它把任务拆出来，再看哪些地方需要我判断。`,
-    `这条视频里重点看${focus.feature}：${focus.action}。它不替你拍脑袋做决定，但能把重复劳动先压下去，让人把注意力留给判断和修改。`,
-    `如果你也经常被资料、截图、表格和临时需求追着跑，可以试试先让它跑一版。很多时候，最难的不是完美，而是先有一个能看的初稿。`,
+    `这次重点看${focus.feature}：${focus.action}。它不替你做最终判断，但能把重复动作先压下去。`,
+    `我的用法很简单：先说清材料边界和结果格式，再让它跑一版可修改初稿，最后只检查遗漏和判断依据。`
+  ];
+  const generalEnds = [
+    `很多时候，最难的不是一次做完美，而是先有一个能看的初稿。`,
+    `如果你也经常被资料、截图、表格和临时需求追着跑，可以先拿一个低风险任务试一遍。`,
+    `只要结果能回到原资料里复核，这种流程就比单纯聊天更适合日常办公。`
+  ];
+  return [
+    pickInfoFlow(generalOpeners, seed, 31),
+    pickInfoFlow(generalMids, seed, 32),
+    pickInfoFlow(generalEnds, seed, 33),
     videoPublishTagLine(product)
   ].join("\n\n");
 }
 
-function buildInfoFlowStoryboards({ mainTopic, productName, focus }) {
+function buildInfoFlowStoryboards({ mainTopic, productName, focus, styleAnchor = "" }) {
+  const styleLine = styleAnchor ? `统一视觉风格：${styleAnchor}` : "统一视觉风格：快节奏信息流广告，前后段保持同一套人物、色彩、光线和界面语言。";
   return [
-    `9:16竖屏分镜图1：信息流功能演示开场，主题是「${mainTopic}」。桌面上有${focus.prop}，画面有透视纵深，人物手把资料拖进${productName}工作区，能看出“混乱需求开始被接住”。`,
-    `9:16竖屏分镜图2：${productName}任务拆解界面近景，屏幕上清晰出现“资料整理、步骤拆解、执行结果、复核清单”四个区域，视觉重心是任务卡从输入框延伸出来。`,
-    `9:16竖屏分镜图3：${productName}执行中段，左侧是原始资料和截图，右侧是生成的清单、表格、网页或报告初稿，画面强调${focus.feature}，文字少而完整。`,
-    `9:16竖屏分镜图4：执行结果收束，文件夹、预览页面和交付清单同时出现，角色手指点击发送，画面表达${focus.result}，保留产品logo或界面参考但不要堆满屏。`
+    `9:16竖屏分镜图1：${styleLine}主题是「${mainTopic}」。桌面上有${focus.prop}，画面有透视纵深，人物手把资料拖进${productName}工作区，能看出“混乱需求开始被接住”。`,
+    `9:16竖屏分镜图2：${styleLine}${productName}任务拆解界面近景，屏幕上清晰出现“资料整理、步骤拆解、执行结果、复核清单”四个区域，视觉重心是任务卡从输入框延伸出来。`,
+    `9:16竖屏分镜图3：${styleLine}${productName}执行中段，左侧是原始资料和截图，右侧是生成的清单、表格、网页或报告初稿，画面强调${focus.feature}，文字少而完整。`,
+    `9:16竖屏分镜图4：${styleLine}执行结果收束，文件夹、预览页面和交付清单同时出现，角色手指点击发送，画面表达${focus.result}，保留产品logo或界面参考但不要堆满屏。`
   ];
 }
 
@@ -470,6 +589,7 @@ function compactInfoTopic(raw, product) {
 function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = "" } = {}) {
   const productName = infoProductName(product);
   const cleanTopic = compactInfoTopic(topic, product);
+  const runSeed = `${cleanTopic || topic}:${productName}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
   const direction = pickInfoFlowDirection(cleanTopic || productName);
   const isCustom = !!String(topic || "").trim();
   const title = isCustom
@@ -477,15 +597,17 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
     : direction.title(productName);
   const roleAnchor = infoFlowRoleAnchor(acc);
   const voiceAnchor = infoFlowVoiceAnchor(acc);
+  const styleAnchor = pickInfoFlow(INFO_FLOW_STYLE_ANCHORS, runSeed, 0);
   const mainTopic = cleanTopic || title || direction.topic;
   const focus = infoFlowFeatureBrief(mainTopic, productName);
-  const frontBase = buildInfoFlowFrontBeat({ mainTopic, productName, focus });
+  const frontBase = buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed: runSeed });
   const customCopy = String(copyText || "").trim();
-  const generatedCopy = buildInfoFlowPublishCopy({ title, topic: mainTopic, productName, product });
-  const copy = customCopy || generatedCopy;
-  const backBase = buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText: copy });
+  const generatedCopy = buildInfoFlowPublishCopy({ title, topic: mainTopic, productName, product, seed: runSeed });
+  const copy = stripLeadingCopyTitle(customCopy || generatedCopy, title);
+  const backBase = buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText: copy, seed: runSeed });
   const frontPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次，节奏爽快但不能乱。",
+    styleAnchor,
     roleAnchor,
     voiceAnchor,
     frontBase,
@@ -493,12 +615,13 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
   ].join("\n");
   const backPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频后15秒产品功能演示段。根据功能演示分镜图、产品logo和产品界面参考继续生成；画面要呼应前段冲突，口播直接讲操作动作和结果，不要使用自指式说明。",
+    styleAnchor,
     roleAnchor,
     voiceAnchor,
     backBase,
     "负面约束：无字幕，不生成花字，不生成水印，不生成二维码，不堆满屏幕，不偏离产品功能演示。字幕、花字和音效留到智能混剪阶段处理。"
   ].join("\n");
-  const storyboards = buildInfoFlowStoryboards({ mainTopic, productName, focus });
+  const storyboards = buildInfoFlowStoryboards({ mainTopic, productName, focus, styleAnchor });
   return {
     title,
     topic: cleanTopic,
@@ -528,7 +651,7 @@ function applyInfoFlowPlan(p, plan) {
   p.topic = plan.topic || p.topic || "";
   p.title = plan.title || p.title || p.topic || "";
   p.artifacts.script.title = p.title;
-  p.artifacts.copy = { ...(p.artifacts.copy || {}), title: p.title, body: plan.copy || p.artifacts.copy?.body || "" };
+  p.artifacts.copy = { ...(p.artifacts.copy || {}), title: p.title, body: stripLeadingCopyTitle(plan.copy || p.artifacts.copy?.body || "", p.title) };
   Object.assign(p.artifacts.audio, {
     assetId: null,
     duration: 30,
@@ -716,6 +839,7 @@ export function renderWorkshopPage(root, p) {
                 <select class="input" id="wsProduct">
                   ${products.map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
                 </select>
+                <button class="btn gen sm" id="wsBriefGenerate">${icon("spark", 13)} 一键生成</button>
               </div>
               <div class="ws-copy-fields">
                 <input class="input" id="wsCopyTitle" value="${esc(C.title || "")}" placeholder="发布标题，例如：国产桌面智能体，1分钟上手讲清楚" />
@@ -825,6 +949,35 @@ export function renderWorkshopPage(root, p) {
     const back = segs[1] || {};
     const storyboardAssets = (back.storyboardAssetIds || []).map(assetById).filter(Boolean);
     const loading = infoFlow.status === "storyboarding";
+    const videoItems = segs.slice(0, 2).map((seg, i) => {
+      const job = jobOfUnit(i);
+      const status = job?.status || "";
+      const busy = ["queued", "submitted", "running"].includes(status);
+      const done = status === "succeeded";
+      const failed = status === "failed";
+      return { seg, i, job, status, busy, done, failed, videoUrl: done ? (job.output?.url || "") : "" };
+    });
+    const hasVideoJobs = videoItems.some(x => x.job);
+    const busyVideos = videoItems.filter(x => x.busy).length;
+    const doneVideos = videoItems.filter(x => x.done).length;
+    const failedVideos = videoItems.filter(x => x.failed).length;
+    const infoVideoRunning = busyVideos > 0;
+    const infoVideoDone = videoItems.length > 0 && doneVideos === videoItems.length;
+    const infoVideoFailed = failedVideos > 0;
+    const infoVideoLabel = infoVideoRunning
+      ? "生成中…"
+      : infoVideoDone
+        ? "重新生成信息流视频"
+        : infoVideoFailed
+          ? "重试信息流视频"
+          : "生成信息流视频";
+    const videoState = infoVideoFailed
+      ? ["failed", "有片段失败", "失败原因会显示在对应片段卡片，可直接重试生成。"]
+      : infoVideoRunning
+        ? ["running", "信息流视频生成中", "前15s和后15s片段已进入队列，完成后这里会自动换成视频预览。"]
+        : infoVideoDone
+          ? ["done", "信息流视频已生成", "两个片段都已就绪，可以继续进入剪辑或回看。"]
+          : ["queued", "信息流片段已提交", "如果上游较慢，会先显示占位和进度，完成后自动出现预览。"];
     return `<div class="infoflow-panel card" id="wsInfoFlow">
       <div class="infoflow-head">
         <div>
@@ -834,7 +987,7 @@ export function renderWorkshopPage(root, p) {
         <div class="infoflow-actions">
           <button class="btn ghost sm" id="wsInfoPlan">${icon("spark", 13)} 生成脚本</button>
           <button class="btn ghost sm" id="wsInfoStoryboard">${loading ? "分镜生成中…" : `${icon("image", 13)} 生成功能演示分镜`}</button>
-          <button class="btn gen sm" id="wsInfoVideo">${icon("film", 13)} 生成信息流视频</button>
+          <button class="btn gen sm" id="wsInfoVideo" ${infoVideoRunning ? "disabled" : ""}>${infoVideoRunning ? `<span class="spin-dot"></span> ${infoVideoLabel}` : `${icon("film", 13)} ${infoVideoLabel}`}</button>
         </div>
       </div>
       ${infoFlow.error ? `<div class="sc-error">${esc(infoFlow.error)}</div>` : ""}
@@ -875,6 +1028,29 @@ export function renderWorkshopPage(root, p) {
         </div>
         <label class="btn ghost sm">${icon("upload", 12)} 上传分镜<input type="file" accept="image/*" multiple hidden id="wsInfoStoryboardUp" /></label>
       </div>
+      ${hasVideoJobs ? `<div class="if-video-status ${videoState[0]}">
+        <div class="if-video-summary">
+          ${infoVideoRunning ? `<span class="if-video-pulse"></span>` : icon(infoVideoDone ? "checkCircle" : infoVideoFailed ? "alert" : "film", 15)}
+          <b>${videoState[1]}</b>
+          <em>${videoState[2]}</em>
+        </div>
+        <div class="if-video-previews">
+          ${videoItems.map(({ seg, i, job, status, busy, done, failed, videoUrl }) => {
+            const label = seg.label || (i === 0 ? "前15s" : "后15s");
+            const stateText = busy ? (status === "queued" ? "排队中" : `生成 ${Math.max(1, Math.round(job?.progress || 1))}%`) : done ? "已生成" : failed ? "失败" : "等待提交";
+            const err = failed && job?.error ? String(job.error || "").slice(0, 80) : "";
+            return `<div class="if-video-tile ${busy ? "running" : done ? "done" : failed ? "failed" : ""}">
+              <div class="if-video-frame ${videoUrl ? "has-video" : ""}" ${videoUrl ? `data-if-video="${i}" data-video-url="${esc(videoUrl)}"` : ""}>
+                ${videoUrl
+                  ? `<video src="${esc(videoUrl)}" controls playsinline preload="metadata"></video>`
+                  : `<div class="if-video-placeholder">${busy ? `<span class="if-video-pulse"></span>` : icon(failed ? "alert" : "film", 18)}<b>${esc(label)}</b><em>${stateText}</em></div>`}
+              </div>
+              <div class="if-video-meta"><b>${esc(label)}片段</b><span>${esc(stateText)}</span></div>
+              ${err ? `<small>${esc(err)}</small>` : ""}
+            </div>`;
+          }).join("")}
+        </div>
+      </div>` : ""}
     </div>`;
   }
 
@@ -1203,7 +1379,7 @@ export function renderWorkshopPage(root, p) {
       p.artifacts.copy = {
         ...(p.artifacts.copy || {}),
         title: res.title || p.artifacts.script.title || p.title || p.topic || "",
-        body: res.copy || ""
+        body: stripLeadingCopyTitle(res.copy || "", res.title || p.artifacts.script.title || p.title || p.topic || "")
       };
       save("productions");
       const titleInput = $("#wsCopyTitle", root);
@@ -1214,6 +1390,58 @@ export function renderWorkshopPage(root, p) {
     };
     if (triggerEl) return withLoading(triggerEl, run, "生成中…");
     return run();
+  }
+
+  async function generateWorkshopDraft() {
+    let topic = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || "").trim());
+    const selectedProduct = productById(p.artifacts.script.productId || "dumate");
+    if (activeInfoFlowMode) {
+      syncCopyFromEditor();
+      const plan = buildInfoFlowPlan({ topic, acc, product: selectedProduct, copyText: infoFlowCopyOverride() });
+      applyInfoFlowPlan(p, plan);
+      const input = $("#wsTopic", root); if (input) input.value = p.topic || "";
+      save("productions");
+      toast("已生成信息流前后15秒脚本");
+      draw();
+      return;
+    }
+    if (!topic) {
+      topic = sanitizeXhsText(await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: 6, kind: "video" }));
+      p.topic = topic;
+      const input = $("#wsTopic", root); if (input) input.value = topic;
+      toast(AI.sourceNote("已按四方向生成短选题"));
+    }
+    p.topic = sanitizeXhsText(topic);
+    const style = p.artifacts.script.style || acc?.styleProfile || acc?.lockedStyle || "";
+    const res = isMaterial(p)
+      ? await AI.generateMaterialScript({ topic, account: acc, style, product: selectedProduct })
+      : await AI.generateScript({ topic, duration: isDigitalHumanMode ? 64 : 55, account: acc, image: false, style, product: selectedProduct });
+    p.artifacts.script.shots = res.shots || [];
+    shots = p.artifacts.script.shots || [];
+    p.artifacts.script.title = res.title || topic;
+    p.title = res.title || topic;
+    const copyRes = await AI.generateCopy({
+      topic,
+      shots,
+      account: acc,
+      style,
+      kind: "video",
+      product: selectedProduct,
+      useOnlineTrends: false,
+      trendGuide: "",
+      trendPrep: null
+    });
+    p.artifacts.copy = {
+      ...(p.artifacts.copy || {}),
+      title: copyRes.title || res.title || topic,
+      body: stripLeadingCopyTitle(copyRes.copy || "", copyRes.title || res.title || topic)
+    };
+    Object.assign(p.artifacts.audio, estimateAudio(p.artifacts.script.shots), { assetId: null, source: "estimate", lastError: "" });
+    p.artifacts.boards.units = [];
+    buildMaterialUnits(p);
+    save("productions");
+    toast(AI.sourceNote("已生成口播草稿、发布文案并按可读时长重排片段"));
+    draw();
   }
 
   function invalidatePromptsAfterAudioChange() {
@@ -1279,57 +1507,11 @@ export function renderWorkshopPage(root, p) {
       toast(AI.sourceNote("已从四方向库随机生成视频选题"));
     }, "随机中…"));
     $("#wsProduct", root)?.addEventListener("change", e => { p.artifacts.script.productId = e.target.value || "dumate"; save("productions"); });
-    $("#wsDraft", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
-      let topic = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || "").trim());
-      const selectedProduct = productById(p.artifacts.script.productId || "dumate");
-      if (activeInfoFlowMode) {
-        syncCopyFromEditor();
-        const plan = buildInfoFlowPlan({ topic, acc, product: selectedProduct, copyText: infoFlowCopyOverride() });
-        applyInfoFlowPlan(p, plan);
-        const input = $("#wsTopic", root); if (input) input.value = p.topic || "";
-        save("productions");
-        toast("已生成信息流前后15秒脚本");
-        draw();
-        return;
-      }
-      if (!topic) {
-        topic = sanitizeXhsText(await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: 6, kind: "video" }));
-        p.topic = topic;
-        const input = $("#wsTopic", root); if (input) input.value = topic;
-        toast(AI.sourceNote("已按四方向生成短选题"));
-      }
-      p.topic = sanitizeXhsText(topic);
-      const style = p.artifacts.script.style || acc?.styleProfile || acc?.lockedStyle || "";
-      const res = isMaterial(p)
-        ? await AI.generateMaterialScript({ topic, account: acc, style, product: selectedProduct })
-        : await AI.generateScript({ topic, duration: isDigitalHumanMode ? 64 : 55, account: acc, image: false, style, product: selectedProduct });
-      p.artifacts.script.shots = res.shots || [];
-      shots = p.artifacts.script.shots || [];
-      p.artifacts.script.title = res.title || topic;
-      p.title = res.title || topic;
-      const copyRes = await AI.generateCopy({
-        topic,
-        shots,
-        account: acc,
-        style,
-        kind: "video",
-        product: selectedProduct,
-        useOnlineTrends: false,
-        trendGuide: "",
-        trendPrep: null
-      });
-      p.artifacts.copy = {
-        ...(p.artifacts.copy || {}),
-        title: copyRes.title || res.title || topic,
-        body: copyRes.copy || ""
-      };
-      Object.assign(p.artifacts.audio, estimateAudio(p.artifacts.script.shots), { assetId: null, source: "estimate", lastError: "" });
-      p.artifacts.boards.units = [];
-      buildMaterialUnits(p);
-      save("productions");
-      toast(AI.sourceNote("已生成口播草稿、发布文案并按可读时长重排片段"));
-      draw();
-    }, "生成中…"));
+    const wireDraftGenerate = selector => {
+      $(selector, root)?.addEventListener("click", e => withLoading(e.currentTarget, generateWorkshopDraft, "生成中…"));
+    };
+    wireDraftGenerate("#wsBriefGenerate");
+    wireDraftGenerate("#wsDraft");
     $("#wsNarrationText", root)?.addEventListener("blur", () => syncNarrationFromEditor({ silent: true }));
     $("#wsNarrationText", root)?.addEventListener("change", () => syncNarrationFromEditor({ silent: true }));
     $("#wsCopyTitle", root)?.addEventListener("input", () => syncCopyFromEditor());
@@ -1682,7 +1864,8 @@ export function renderWorkshopPage(root, p) {
         applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
       }
       syncInfoFlowPrompts();
-      const back = ensureInfoFlowState(p).segments[1];
+      let infoNow = ensureInfoFlowState(p);
+      const back = infoNow.segments[1];
       if (back && !(back.storyboardAssetIds || []).length) {
         if (!imageApiConfigured()) {
           toast("请先上传或生成功能演示分镜参考图，再生成信息流视频", "error");
@@ -1695,8 +1878,18 @@ export function renderWorkshopPage(root, p) {
         }
       }
       buildMaterialUnits(p);
-      const units = materialUnits(p);
-      if (!units.length || units.some(u => !u.videoPrompt)) { toast("请先生成信息流脚本"); return; }
+      infoNow = ensureInfoFlowState(p);
+      const readySegs = (infoNow.segments || []).slice(0, 2).filter(seg => String(seg.videoPrompt || "").trim());
+      if (readySegs.length < 2) { toast("请先生成信息流脚本"); return; }
+      let units = materialUnits(p);
+      if (!units.length) {
+        applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+        buildMaterialUnits(p);
+        units = materialUnits(p);
+      }
+      units.forEach((u, i) => {
+        if (!u.videoPrompt && readySegs[i]?.videoPrompt) u.videoPrompt = readySegs[i].videoPrompt;
+      });
       const n = createUnitVideoJobs(p);
       if (p.stage === "workshop") setStatus(p, "running");
       save("productions");
@@ -1999,12 +2192,24 @@ export function renderWorkshopPage(root, p) {
       }
       toast("视频已提交但还没有拿到回链，稍后自动刷新或点重生成");
     }));
+    $$("[data-if-video]", root).forEach(el => el.addEventListener("click", e => {
+      if (e.target.closest("video")) return;
+      const video = el.querySelector("video");
+      if (video) {
+        if (video.paused) video.play().catch(() => null);
+        else video.pause();
+      }
+    }));
 
     $("#wsNext", root)?.addEventListener("click", () => {
       syncNarrationFromEditor({ silent: true });
       syncCopyFromEditor();
       if (!((p.artifacts.copy?.title || "").trim()) || !((p.artifacts.copy?.body || "").trim())) {
         toast("先生成或填写发布文案，再进入剪辑");
+        return;
+      }
+      if (!coverState(p).assetId) {
+        toast("先生成或上传封面图，再进入下一步");
         return;
       }
       if (isDigitalHumanMode) {

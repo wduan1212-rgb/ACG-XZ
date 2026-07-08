@@ -49,7 +49,7 @@ export function renderScriptPage(root, p) {
         <div class="page-head">
           <div><div class="eyebrow">${material ? "素材链路 · 脚本" : STAGES_LABEL(isImg)}</div>
           <h2>${isImg ? "AI 按创作内容生成小红书笔记图卡" : material ? "AI 生成素材号口播脚本（可长可短 · 有深度/有梗）" : "AI 生成真人口播脚本（分段工坊出片）"}</h2></div>
-          <button class="btn primary" id="csNext">下一步：${isImg ? "成图" : "分镜工坊"} ${icon("arrowRight", 14)}</button>
+          <button class="btn primary" id="csNext">下一步：${isImg ? "成图" : "文案分镜"} ${icon("arrowRight", 14)}</button>
         </div>
 
         <div class="brief card">
@@ -157,10 +157,10 @@ export function renderScriptPage(root, p) {
         </div>` : ""}
         ${isImg ? "" : material ? `<div class="side-card card hint">
           <h3>素材号规则</h3>
-          <p>口播稿是灵魂：按创作内容、口播风格参考和账号创作风格写出深度或节奏。可先生成/上传<b>口播音频</b>定时长；如果不上传音频，分镜工坊会把口播逐句写进视频提示词里。</p>
+          <p>口播稿是灵魂：按创作内容、口播风格参考和账号创作风格写出深度或节奏。可先生成/上传<b>口播音频</b>定时长；如果不上传音频，文案分镜会把口播逐句写进视频提示词里。</p>
         </div>` : `<div class="side-card card hint">
           <h3>结构规则</h3>
-          <p>真人账号不再走两段式生成台：脚本后直接进入分镜工坊，按口播时长自动拆成多个 15s 内片段，用统一参考图、角色锚点和固定声线保持一致。</p>
+          <p>真人账号不再走两段式生成台：脚本后直接进入文案分镜，按口播时长自动拆成多个 15s 内片段，用统一参考图、角色锚点和固定声线保持一致。</p>
         </div>`}
         ${isImg && (acc.imagePromptTemplate || imageStyleRef) ? `<div class="side-card card hint">
           <h3>${icon("image", 13)} 图文模板</h3>
@@ -211,7 +211,7 @@ export function renderScriptPage(root, p) {
         ? `<div class="seg-mini">共 ${n} 张图卡：封面 → 步骤 → 收束。下一步逐张出图。</div>`
         : material
         ? `<div class="seg-mini"><div class="sm-top"><b>长视频</b><span>${(p.artifacts.audio.duration ? fmtTC(p.artifacts.audio.duration) : "约 " + Math.round(n * 5) + "s")}</span></div><div>${n} 个镜头 · 片段时长跟随口播音频</div></div>`
-        : `<div class="seg-mini"><div class="sm-top"><b>分镜工坊</b><span>≤60s</span></div><div>按口播时长自动拆成多个 15s 内片段</div></div><div class="muted" style="margin-top:6px">共 ${n} 个镜头</div>`)
+        : `<div class="seg-mini"><div class="sm-top"><b>文案分镜</b><span>≤60s</span></div><div>按口播时长自动拆成多个 15s 内片段</div></div><div class="muted" style="margin-top:6px">共 ${n} 个镜头</div>`)
       : `<div class="muted">生成脚本后显示结构概览</div>`);
   }
   function narrationText(shots) {
@@ -348,7 +348,7 @@ export function renderScriptPage(root, p) {
       const text = narrationText(A.shots);
       if (!text) { toast("没有可合成的口播文本"); return; }
       try {
-        const out = await synthesizeTts({ text, voiceId });
+        const out = await synthesizeTts({ text, voiceId, speed: 1.2 });
         const asset = await addAssetFromDataUrl(p.accountId, {
           name: `口播音频_${(p.title || p.topic || "素材号").slice(0, 10)}`,
           type: "音频",

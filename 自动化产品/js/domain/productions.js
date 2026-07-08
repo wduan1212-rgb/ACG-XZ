@@ -1,6 +1,6 @@
 /* production：统一内容生产任务模型 + 阶段状态机
    图文：images(图文创作台：创作内容/文案/提示词/成图一体) → review → delivered
-   视频（真人/素材）：workshop(选题/口播/分镜一体节点) → cut(智能混剪+BGM) → copy → review */
+   视频（真人/素材）：workshop(文案/口播/分镜一体节点) → cut(智能混剪+BGM) → review */
 
 import { state, save, emit, accountById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, spreadCaption } from "../core/util.js";
@@ -11,7 +11,7 @@ export const STAGES = {
   boards: { label: "分镜", icon: "image" },
   images: { label: "图文创作台", icon: "image" },
   prompts: { label: "提示词", icon: "list" },
-  workshop: { label: "分镜工坊", icon: "layers" },
+  workshop: { label: "文案分镜", icon: "layers" },
   render: { label: "生成", icon: "film" },
   cut: { label: "剪辑", icon: "scissors" },
   copy: { label: "文案", icon: "type" },
@@ -26,7 +26,7 @@ export const isVideoWorkshop = p => p && p.mode === "视频";
 export const flowOf = (p, subType) => {
   const mode = typeof p === "object" && p ? p.mode : p;
   if (mode === "图文") return ["images", "review"];
-  return ["workshop", "cut", "copy", "review"];
+  return ["workshop", "cut", "review"];
 };
 
 /* 旧数据兜底：阶段不在当前链路里时映射到最近的合法阶段 */
@@ -36,9 +36,10 @@ export function normalizeStage(p) {
   if (p.mode === "图文" && p.stage === "script") return "images";
   if (p.mode === "图文" && p.stage === "copy") return "images";
   if (isVideoWorkshop(p) && p.stage === "script") return "workshop";
+  if (isVideoWorkshop(p) && p.stage === "copy") return (p.artifacts?.timeline || []).length ? "review" : "workshop";
   if (flow.includes(p.stage)) return p.stage;
   if (isVideoWorkshop(p) && ["boards", "prompts", "render"].includes(p.stage)) return "workshop";
-  return p.mode === "图文" ? "images" : "script";
+  return p.mode === "图文" ? "images" : "workshop";
 }
 
 export const STATUS_LABEL = {
@@ -48,7 +49,16 @@ export const STATUS_LABEL = {
 export function blankArtifacts() {
   return {
     script: { title: "", shots: [], source: "", style: "", imageCount: 4, direction: "", productId: "dumate" },
-    boards: { items: [], units: [], sharedRefAssetId: null, generationMode: null, digitalHuman: { provider: "", model: "", segments: [] } },
+    boards: {
+      items: [],
+      units: [],
+      sharedRefAssetId: null,
+      generationMode: null,
+      materialMode: "infoFlow",
+      infoFlow: { segments: [], storyboards: [], status: "idle", error: "" },
+      cover: { prompt: "", assetId: null, refAssetIds: [], status: "idle", error: "" },
+      digitalHuman: { provider: "", model: "", segments: [] }
+    },
     images: { items: [], sharedRefAssetId: null },
     prompts: [],
     audio: { assetId: null, duration: 0, perShot: [], source: "", voiceId: "", voiceRefAssetId: null, voiceRefDisabled: false },  // 口播/声线（视频号）
@@ -77,6 +87,48 @@ export function estimateAudio(shots) {
 export const UNIT_MAX_SEC = 15;   // 单镜头视频上限（当前视频模型不支持超过 15s）
 export const UNIT_TARGET_MIN_SEC = 10; // 尽量合成 10-15s 的连贯多镜头，避免 5s 碎片导致口播过赶
 export function buildMaterialUnits(p) {
+  const A = p.artifacts.boards || (p.artifacts.boards = {});
+  if (A.materialMode === "infoFlow" && Array.isArray(A.infoFlow?.segments) && A.infoFlow.segments.length) {
+    const old = A.units || [];
+    const segments = A.infoFlow.segments.slice(0, 2);
+    if (!(p.artifacts.audio.perShot || []).length) {
+      p.artifacts.audio.perShot = segments.map(seg => ({ dur: Math.min(UNIT_MAX_SEC, Math.max(2, Number(seg.duration || 15))) }));
+      p.artifacts.audio.duration = p.artifacts.audio.perShot.reduce((sum, x) => sum + x.dur, 0);
+      p.artifacts.audio.source = p.artifacts.audio.source || "seedance-native";
+    }
+    p.artifacts.script.shots = segments.map((seg, i) => ({
+      time: i === 0 ? "0-15s" : "15-30s",
+      scene: i + 1,
+      idea: seg.title || seg.label || (i === 0 ? "前15s钩子" : "后15s功能演示"),
+      visual: seg.visual || seg.videoPrompt || "",
+      line: seg.caption || seg.title || "",
+      ui: i > 0
+    }));
+    A.units = segments.map((seg, i) => {
+      const prev = old.find(x => x.infoFlowId === seg.id || x.shotIndexes?.[0] === i) || {};
+      return {
+        id: prev.id || uid(),
+        infoFlow: true,
+        infoFlowId: seg.id || (i === 0 ? "front15" : "back15"),
+        scene: i + 1,
+        scenes: [i + 1],
+        shotIndexes: [i],
+        label: seg.label || (i === 0 ? "前15s" : "后15s"),
+        needsImage: i > 0,
+        mode: i > 0 ? "i2v" : "t2v",
+        imagePrompt: prev.imagePrompt || "",
+        videoPrompt: seg.videoPrompt || prev.videoPrompt || "",
+        imageAssetId: prev.imageAssetId || null,
+        refAssetId: prev.refAssetId || null,
+        refAssetIds: i > 0 ? [...new Set(seg.storyboardAssetIds || [])] : [],
+        dur: Math.min(UNIT_MAX_SEC, Math.max(2, Number(seg.duration || 15))),
+        status: prev.status || "idle",
+        part: 1,
+        sceneParts: 1
+      };
+    });
+    return A.units;
+  }
   const shots = p.artifacts.script.shots || [];
   const per = p.artifacts.audio.perShot || [];
   const old = p.artifacts.boards.units || [];
@@ -351,7 +403,10 @@ export function autoMixMaterial(p) {
   });
   p.artifacts.subs = subs;
   const hasExternalVoice = !!p.artifacts.audio.assetId && ["tts", "upload"].includes(p.artifacts.audio.source);
-  if (hasExternalVoice && !p.artifacts.bgm) {
+  const isInfoFlow = p.artifacts.boards?.materialMode === "infoFlow";
+  if (isInfoFlow) {
+    p.artifacts.bgm = null;
+  } else if (hasExternalVoice && !p.artifacts.bgm) {
     const b = pickBgm(acc?.styleProfile || acc?.voiceName, p.topic);
     p.artifacts.bgm = { name: b.name, mood: b.mood, volume: 0.25, auto: true };
   } else if (!hasExternalVoice && p.artifacts.bgm?.auto) {

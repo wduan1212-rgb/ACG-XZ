@@ -7,7 +7,7 @@ import { state, save, notify, accountById, productionById, canMarkReviewed, prod
 import { platChip, modeLabel, PLATFORM_CODE } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
-import { ensureAnalyticsForAsset, isAnalyticsSupported, refreshAnalyticsLink } from "../domain/analytics.js";
+import { ensureAnalyticsForAsset } from "../domain/analytics.js";
 import { openProductionDrawer } from "./prodDrawer.js";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
@@ -71,6 +71,10 @@ function seqText(seq) {
   return seq ? `#${String(seq).padStart(3, "0")}` : "";
 }
 
+function publisherLabel(asset) {
+  return asset.byMemberName || "未记录";
+}
+
 function sortDelivered(all) {
   return [...all].sort((a, b) => deliveryTime(b.asset) - deliveryTime(a.asset));
 }
@@ -88,7 +92,7 @@ function groupByDay(all) {
 
 function deliveredItemHtml(asset, acc, i, displaySeq) {
   const isImg = asset.type === "图集";
-  const coverId = isImg ? (asset.packAssetIds || [])[0] : null;
+  const coverId = asset.coverAssetId || (isImg ? (asset.packAssetIds || [])[0] : null);
   const u = coverId ? urlFor(coverId) : null;
   const seq = seqText(displaySeq);
   const productTag = asset.productTag || productTagLabel(productById(asset.productId || ""));
@@ -97,8 +101,8 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
   const showRetract = canRetract || canSeeDeliveryRetract(asset);
   const plan = dateOnly(asset.planDate);
   const contentAccount = asset.byAccount || acc.name;
-  const publisher = asset.byMemberName || "";
-  const detailText = `${asset.name}${isImg ? ".zip" : ".mp4"} · 内容账号：${contentAccount}${publisher ? ` · 发布者：${publisher}` : ""} · ${timeAgo(asset.deliveredAt || asset.createdAt)} · 供应商：${asset.status || "未下载"}`;
+  const publisher = publisherLabel(asset);
+  const detailText = `${asset.name}${isImg ? ".zip" : ".mp4"} · 内容账号：${contentAccount} · 发布人：${publisher} · ${timeAgo(asset.deliveredAt || asset.createdAt)} · 供应商：${asset.status || "未下载"}`;
   return `<div class="dv-item" style="--d:${i * 40}ms">
     <span class="dv-node${i === 0 ? " latest" : ""}"></span>
     <div class="dv-card card" data-aid="${asset.id}">
@@ -107,7 +111,7 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
         <span class="dv-main">
           <b>${seq ? `<span class="dv-seq">${seq}</span>` : ""}${esc(asset.title || asset.name)}</b>
           <span class="dv-meta">
-            <span class="dv-tagline">${platChip(acc.platform, true)}${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag acc" title="内容账号：${esc(contentAccount)}">内容账号：${esc(contentAccount)}</span>${publisher ? `<span class="tag pubby" title="发布者：${esc(publisher)}">发布者：${esc(publisher)}</span>` : ""}${plan ? `<span class="tag date" title="计划 ${esc(plan)}">${icon("clock", 10)} 计划 ${esc(plan)}</span>` : ""}</span>
+            <span class="dv-tagline">${platChip(acc.platform, true)}${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag acc" title="内容账号：${esc(contentAccount)}">内容账号：${esc(contentAccount)}</span><span class="tag pubby" title="发布人：${esc(publisher)}">发布人：${esc(publisher)}</span>${plan ? `<span class="tag date" title="计划 ${esc(plan)}">${icon("clock", 10)} 计划 ${esc(plan)}</span>` : ""}</span>
             <em title="${esc(detailText)}">${esc(detailText)}</em>
             ${asset.adminReviewed ? `<span class="tag rev">${icon("checkCircle", 10)} 已审阅</span>` : ""}${asset.publishedUrl ? `<span class="tag pub">${icon("checkCircle", 10)} 已发布</span>` : ""}
           </span>
@@ -153,15 +157,8 @@ async function returnLinkFlow(asset, acc, redraw) {
   asset.status = "已发布";
   save("assets");
   notify("delivery", `「${asset.title || asset.name}」已发布`, `供应商回传了发布链接，链路闭环 ✓`);
-  const link = ensureAnalyticsForAsset(asset, acc);
-  if (link && isAnalyticsSupported(link.url, link.platform)) {
-    refreshAnalyticsLink(link.id).then(snap => {
-      if (snap) notify("analytics", "小红书数据已完成首次检测", `${asset.title || asset.name} 已进入数据分析看板`);
-    });
-    toast("已记录发布链接，素材标记为「已发布」，数据检测已排队");
-  } else {
-    toast("已记录发布链接，素材标记为「已发布」");
-  }
+  ensureAnalyticsForAsset(asset, acc);
+  toast("已记录发布链接，素材标记为「已发布」");
   redraw();
 }
 
@@ -169,6 +166,8 @@ function supplierDetailHtml(asset, acc) {
   const isImg = asset.type === "图集";
   const ids = isImg ? (asset.packAssetIds || []) : [];
   const title = asset.title || asset.name;
+  const contentAccount = asset.byAccount || acc.name;
+  const publisher = publisherLabel(asset);
   return `<tr class="sup-detail-row" data-sup-detail="${asset.id}" hidden>
     <td colspan="10">
       <div class="sup-detail">
@@ -177,6 +176,8 @@ function supplierDetailHtml(asset, acc) {
           ${asset.copy ? `<pre>${esc(asset.copy)}</pre>` : `<p>暂无文案，可从创作端补充后重新定稿。</p>`}
           <div class="sup-detail-meta">
             <span>${esc(acc.platform || "平台")}</span>
+            <span>内容账号：${esc(contentAccount)}</span>
+            <span>发布人：${esc(publisher)}</span>
             <span>${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记产品")}</span>
             <span>${esc(dateOnly(asset.planDate) || "未计划")}</span>
             <span>${esc(asset.status || "未下载")}</span>
@@ -337,7 +338,7 @@ export const deliveryView = {
             <thead><tr>
               <th class="c-check"><input type="checkbox" id="supAll" /></th>
               <th class="c-seq">序号</th>
-              <th>素材名</th><th>产品</th><th>内容账号 / 发布者</th><th>平台</th><th>形式</th><th>标签</th><th>状态</th><th></th>
+              <th>素材名</th><th>产品</th><th>内容账号 / 发布人</th><th>平台</th><th>形式</th><th>标签</th><th>状态</th><th></th>
             </tr></thead>
             <tbody>${rows.length ? rows.map(({ asset, acc }) => `
               <tr data-sup="${asset.id}">
@@ -345,7 +346,7 @@ export const deliveryView = {
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
                 <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
-                <td><b>${esc(asset.byAccount || acc.name)}</b>${asset.byMemberName ? `<em class="sup-by">发布者：${esc(asset.byMemberName)}</em>` : ""}</td>
+                <td><b>内容账号：${esc(asset.byAccount || acc.name)}</b><em class="sup-by">发布人：${esc(publisherLabel(asset))}</em></td>
                 <td>${platChip(acc.platform, true)}</td>
                 <td>${modeLabel(acc)}</td>
                 <td><div class="sup-tags" title="${esc((asset.tags || []).join(" / "))}">${supplierTagsHtml(asset.tags)}</div></td>

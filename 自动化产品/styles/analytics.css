@@ -1,6 +1,6 @@
 /* 数据分析：克制型运营看板 */
 .analytics-page { display: flex; flex-direction: column; gap: 16px; max-width: 1280px; margin: 0 auto; }
-.da-stats { grid-template-columns: repeat(5, 1fr); align-items: stretch; }
+.da-stats { grid-template-columns: repeat(4, 1fr); align-items: stretch; }
 .da-qa {
   grid-column: span 2;
   display: grid;
@@ -79,12 +79,11 @@
 .da-table-card { padding: 14px; }
 .da-table-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .da-table-wrap { width: 100%; overflow-x: auto; }
-.da-table { width: 100%; border-collapse: collapse; min-width: 860px; table-layout: fixed; }
+.da-table { width: 100%; border-collapse: collapse; min-width: 760px; table-layout: fixed; }
 .da-col-title { width: auto; }
 .da-col-status { width: 92px; }
 .da-col-num { width: 70px; }
 .da-col-rate { width: 82px; }
-.da-col-score { width: 70px; }
 .da-col-time { width: 86px; }
 .da-col-action { width: 78px; }
 .da-table th { text-align: left; font-size: 11px; color: var(--faint); font-weight: 750; padding: 8px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }

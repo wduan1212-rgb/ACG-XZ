@@ -79,9 +79,8 @@ export function openProductionDrawer(pid, tab) {
         const acc = accountById(p.accountId);
         const material = p.subType === "无数字人" && p.mode === "视频";
         const tabs = [
-          [isImg ? "images" : "boards", isImg ? "图文创作台" : "分镜工坊"],
+          [isImg ? "images" : "boards", isImg ? "图文创作台" : "文案分镜"],
           ...(isImg ? [] : material ? [["render", "成片"]] : [["prompts", "提示词"], ["render", "成片"]]),
-          ...(isImg ? [] : [["copy", "文案"]]),
           ["review", "审核"]
         ];
         root.innerHTML = `
@@ -177,7 +176,7 @@ export function openProductionDrawer(pid, tab) {
 
 function defaultTab(p) {
   if (p.stage === "review" || p.stage === "delivered") return "review";
-  if (p.stage === "copy") return p.mode === "图文" ? "images" : "copy";
+  if (p.stage === "copy") return p.mode === "图文" ? "images" : ((p.artifacts?.timeline || []).length ? "review" : "boards");
   if (p.mode === "视频" && (p.stage === "workshop" || p.stage === "render")) return "boards";
   if (p.stage === "cut") return "render";
   if (p.mode === "视频") return "boards";
@@ -192,7 +191,8 @@ export function stagePage(p) {
   if (p.mode === "图文" && p.stage === "script") return "images";
   if (p.mode === "图文" && p.stage === "copy") return "images";
   if (p.mode === "视频" && ["script", "boards", "prompts", "render"].includes(p.stage)) return "workshop";
-  return m[p.stage] || "script";
+  if (p.mode === "视频" && p.stage === "copy") return (p.artifacts?.timeline || []).length ? "review" : "workshop";
+  return m[p.stage] || (p.mode === "视频" ? "workshop" : "script");
 }
 
 /* 抽屉页签 → 工作台里可编辑+重新生成的对应节点（去微调用） */
@@ -204,7 +204,7 @@ function tabStage(p, tab) {
     case "images": return "images";
     case "prompts": return "prompts";
     case "render": return video ? "workshop" : "review";
-    case "copy": return video ? "copy" : "images";
+    case "copy": return video ? "workshop" : "images";
     case "review": return "review";
     default: return stagePage(p);
   }
@@ -239,31 +239,7 @@ function reviewCopyEditorHtml(p) {
 }
 
 function reviewReferenceHtml(p) {
-  const rw = p.artifacts.copy?.referenceRewrite || p.artifacts.script?.trendPrep?.referenceRewrite || p.artifacts.script?.trendPrep || null;
-  const ref = rw?.reference || null;
-  if (!ref || !(ref.title || ref.copy || ref.url || (ref.tags || []).length)) return "";
-  const meta = [
-    ref.author ? `作者：${ref.author}` : "",
-    ref.likes ? `互动：${ref.likes}` : "",
-    rw.referenceNote || ""
-  ].filter(Boolean).join(" · ");
-  const title = ref.title || "热门参考";
-  const refUrl = ref.url || "";
-  const searchUrl = title ? `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(title)}` : "";
-  return `<section class="pd-copy-panel pd-ref-panel">
-    <div class="pd-copy-panel-head">
-      <b>${icon("spark", 15)} 联网参考文案</b>
-      <em>只参考钩子与结构，不照搬</em>
-    </div>
-    <h4>${esc(title)}</h4>
-    ${meta ? `<div class="pd-ref-meta">${esc(meta)}</div>` : ""}
-    <p class="pd-ref-copy">${esc(ref.copy || "搜索接口当前未开放完整正文；这里保留可得标题、摘要和互动信息。")}</p>
-    <div class="pd-ref-actions">
-      ${refUrl ? `<a class="trend-link" href="${esc(refUrl)}" target="_blank" rel="noreferrer">打开原文</a>` : ""}
-      ${searchUrl ? `<a class="trend-link" href="${esc(searchUrl)}" target="_blank" rel="noreferrer">搜索原文</a>` : ""}
-    </div>
-    ${ref.tags?.length ? `<div class="pd-ref-tags">${tagListHtml(ref.tags)}</div>` : ""}
-  </section>`;
+  return "";
 }
 
 async function fillSlot(p, idx, file) {

@@ -142,6 +142,7 @@ const CARD = {
     const totalCount = matched.reduce((sum, a) => sum + countFor(a.id), 0);
     const isImageAcc = a => a?.mode === "图文" || groupOf(a) === "图文组";
     const hasImageAccounts = matched.some(isImageAcc);
+    const hasVideoAccounts = matched.some(a => !isImageAcc(a));
     const products = primaryProducts().length ? primaryProducts() : [{ id: "dumate", name: "百度搭子", shortName: "搭子" }];
     const productOptions = (selected = "") => products.map(pr => `<option value="${esc(pr.id)}" ${selected === pr.id ? "selected" : ""}>${esc(pr.shortName || pr.name)}</option>`).join("");
     const planProductId = primaryProductById(p.productId || "dumate")?.id || "dumate";
@@ -150,17 +151,30 @@ const CARD = {
       save("sessions");
     }
     const globalRefs = selectedRefIds(p);
+    const coverRefs = selectedRefIds(p, "coverRefAssetIds");
     const accountRefs = p.accountRefAssetIds || {};
     const accountPool = (state.accounts || []).filter(Boolean);
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
       ${matched.map(a => {
         const imgAcc = isImageAcc(a);
+        const customCopyMode = imgAcc && !!(p.accountCustomCopyModes || {})[a.id];
+        const customCopyTitle = ((p.accountCopyTitles || {})[a.id] || "").trim();
+        const customCopyBody = ((p.accountCopyBodies || {})[a.id] || "").trim();
+        const standardCopy = esc((p.accountContents || {})[a.id] || "");
+        const copyFields = `<div class="agc-copy-fields ${customCopyMode ? "is-custom" : ""}">
+          <input class="agc-standard-copy" data-pacc-content="${a.id}" value="${standardCopy}" placeholder="本账号本次创作内容（留空则四方向短选题）" ${locked ? "disabled" : ""} />
+          <div class="agc-account-copy">
+            <input data-pacc-copy-title="${a.id}" value="${esc(customCopyTitle)}" placeholder="标题" ${locked ? "disabled" : ""} />
+            <textarea data-pacc-copy-body="${a.id}" rows="1" placeholder="文案正文" ${locked ? "disabled" : ""}>${esc(customCopyBody)}</textarea>
+          </div>
+        </div>`;
         return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"}">
         <b>${esc(a.name)}</b>
         <select data-pacc-prod="${a.id}" ${locked ? "disabled" : ""}>${productOptions(primaryProductById((p.accountProductIds || {})[a.id] || planProductId)?.id || planProductId)}</select>
         <label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>
         ${imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
-        <input data-pacc-content="${a.id}" value="${esc((p.accountContents || {})[a.id] || "")}" placeholder="本账号本次创作内容（留空则四方向短选题）" ${locked ? "disabled" : ""} />
+        ${imgAcc ? `<button type="button" class="agc-copy-toggle ${customCopyMode ? "is-on" : ""}" data-pacc-copy-toggle="${a.id}" aria-pressed="${customCopyMode ? "true" : "false"}" ${locked ? "disabled" : ""}><span>${customCopyMode ? "自定义文案" : "标准生成"}</span></button>` : ""}
+        ${copyFields}
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
           <div class="agc-ref-chips mini">${refChips((accountRefs[a.id] || []).slice(0, 3), locked ? "" : "plan-custom-refremove", m.id)}</div>
@@ -212,16 +226,25 @@ const CARD = {
               <em>放大看图后选择</em>
             </button>` : ""}
           </div>
+          ${hasVideoAccounts ? `<div class="agc-cover-ref">
+            <div class="agc-cover-ref-info">
+              <b>${icon("image", 12)} 统一视频参考图</b>
+              <em>自动用于视频封面、信息流 B 面分镜和功能演示参考；主题仍跟随生成后的标题和文案</em>
+            </div>
+            <div class="agc-cover-ref-status">${coverRefs.length ? `已选 ${coverRefs.length} 张` : "未设置，封面和 B 面分镜按文案自动生成"}</div>
+            ${editable ? `<div class="agc-cover-ref-actions">
+              <label class="btn ghost sm" data-plan-cover-refdrop="${m.id}">
+                ${icon("upload", 12)} 上传统一参考
+                <input type="file" accept="image/*" multiple hidden data-plan-cover-ref="${m.id}" />
+              </label>
+            </div>` : ""}
+          </div>` : ""}
         </div>`;
       })()}
       <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减</em></span>
         ${locked ? "" : `<span class="agc-sec-tools">
           <label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>
           ${hasImageAccounts ? `<label class="agc-count-inline">默认图数<input type="number" min="3" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>` : ""}
-          <label class="agc-trend-toggle" title="开启后会先参考小红书热门方向；不可用时自动回退本地趋势库">
-            <input type="checkbox" data-pf="useOnlineTrends" ${p.useOnlineTrends ? "checked" : ""} />
-            ${icon("spark", 12)} 联网参考热门
-          </label>
           <button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>
         </span>`}
       </div>

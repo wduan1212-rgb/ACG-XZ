@@ -100,59 +100,6 @@ function normalizeImageWorkshopText(text = "") {
     .trim();
 }
 
-function trendRewriteHtml(prep) {
-  const rw = prep?.referenceRewrite || prep;
-  if (!rw?.reference?.title && !rw?.rewrite?.title) return "";
-  const tagHtml = tags => (tags || []).slice(0, 6).map(t => `<span class="tag">${esc(t)}</span>`).join("");
-  const refMeta = [rw.reference?.author ? `作者：${rw.reference.author}` : "", rw.reference?.likes ? `互动：${rw.reference.likes}` : ""].filter(Boolean).join(" · ");
-  const refTitle = rw.reference?.title || "";
-  const refUrl = rw.reference?.url || "";
-  const searchUrl = refTitle ? `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(refTitle)}` : "";
-  const refActionHtml = [refUrl ? `<a class="trend-link" href="${esc(refUrl)}" target="_blank" rel="noreferrer">打开原文</a>` : "", searchUrl ? `<a class="trend-link" href="${esc(searchUrl)}" target="_blank" rel="noreferrer">搜索原文</a>` : ""].filter(Boolean).join("");
-  return `<div class="trend-rewrite card">
-    <div class="trend-card ref">
-      <b>热门参考</b>
-      <h4>${esc(rw.reference?.title || "未返回标题")}</h4>
-      ${refMeta ? `<em>${esc(refMeta)}</em>` : ""}
-      <p>${esc(rw.reference?.copy || "原始参考未返回正文。")}</p>
-      ${refActionHtml ? `<div class="trend-actions">${refActionHtml}</div>` : ""}
-      <div class="trend-tags">${tagHtml(rw.reference?.tags)}</div>
-    </div>
-    <div class="trend-card rewrite">
-      <div class="trend-edit-head">
-        <b>改写结果</b>
-        <button class="btn ghost sm" id="imgCopyGen">${icon("spark", 13)} 只重写文案</button>
-      </div>
-      <label class="field">标题
-        <input class="input" id="trendCopyTitle" value="${esc(rw.rewrite?.title || "")}" />
-      </label>
-      <label class="field">正文
-        <textarea class="input" id="trendCopyBody" rows="7">${esc(rw.rewrite?.copy || "")}</textarea>
-      </label>
-      <div class="trend-tags">${tagHtml(rw.rewrite?.tags)}</div>
-    </div>
-  </div>`;
-}
-
-function copyTags(body = "", fallback = []) {
-  const tags = Array.from(String(body || "").matchAll(/#[\p{L}\p{N}_-]{2,}/gu)).map(m => m[0].replace(/^#/, ""));
-  return [...new Set(tags.length ? tags : (fallback || []))].slice(0, 8);
-}
-
-function rewriteForCopy(prep, copy) {
-  const rw = prep?.referenceRewrite || null;
-  if (!rw) return null;
-  return {
-    ...rw,
-    rewrite: {
-      ...(rw.rewrite || {}),
-      title: copy?.title || rw.rewrite?.title || "",
-      copy: copy?.body || copy?.copy || rw.rewrite?.copy || "",
-      tags: copyTags(copy?.body || copy?.copy || "", rw.rewrite?.tags || [])
-    }
-  };
-}
-
 function ratioFromImagePrompt(text = "", fallback = "3:4") {
   const s = String(text || "");
   if (/9\s*[:：]\s*16|1080\s*[x×]\s*1920|竖屏\s*9\s*[:：]\s*16/.test(s)) return "9:16";
@@ -183,11 +130,14 @@ export function renderSlotsPage(root, p, isImg) {
   modeBySlot.set(p.id, "in");
   const S = p.artifacts.script;
   const products = primaryProducts();
+  const allowCustomCopy = isImg && !p.batchId && p.origin !== "agent";
   if (isImg) {
+    p.artifacts.copy = p.artifacts.copy || { title: "", body: "" };
     S.productId = primaryProductById(S.productId || "dumate")?.id || "dumate";
     S.imageCount = S.imageCount || DEFAULT_XHS_IMAGE_COUNT;
     S.direction = S.direction || "";
-    S.useOnlineTrends = !!S.useOnlineTrends;
+    S.useOnlineTrends = false;
+    A.customCopyMode = allowCustomCopy ? !!A.customCopyMode : false;
     if (p.stage === "script") p.stage = "images";
   }
 
@@ -202,25 +152,68 @@ export function renderSlotsPage(root, p, isImg) {
     const brief = $("#imgBrief", root);
     const count = $("#imgCount", root);
     const product = $("#imgProduct", root);
-    const onlineTrends = $("#imgOnlineTrends", root);
     if (brief) {
       S.direction = brief.value.trim();
       if (S.direction) p.topic = S.direction.slice(0, 80);
     }
     if (count) S.imageCount = Math.max(3, Math.min(12, parseInt(count.value, 10) || S.imageCount || DEFAULT_XHS_IMAGE_COUNT));
     if (product) S.productId = product.value || S.productId || "dumate";
-    if (onlineTrends) S.useOnlineTrends = !!onlineTrends.checked;
+    S.useOnlineTrends = false;
+  }
+
+  function syncCopyDraft() {
+    if (!isImg) return;
+    const C = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
+    const title = $("#imgCopyTitle", root);
+    const body = $("#imgCopyBody", root);
+    if (title) C.title = title.value.trim();
+    if (body) C.body = body.value.trim();
+  }
+
+  function splitCopyBeats(title = "", body = "", count = DEFAULT_XHS_IMAGE_COUNT) {
+    const withoutTags = String(body || "").replace(/#[^\s#]+/g, " ");
+    const sentences = withoutTags
+      .replace(/\n+/g, "。")
+      .split(/[。！？!?；;]+/)
+      .map(x => x.replace(/\s+/g, " ").trim())
+      .filter(x => x && x.length > 4);
+    const first = title || sentences[0] || "本次主题";
+    const beats = [first, ...sentences.filter(x => x !== first)];
+    return Array.from({ length: count }, (_, i) => beats[i] || beats[beats.length - 1] || first);
+  }
+
+  function buildCustomCopyShots(copy, count, product) {
+    const title = (copy?.title || "").trim();
+    const body = (copy?.body || copy?.copy || "").trim();
+    const productName = product?.shortName || product?.name || "百度搭子";
+    const beats = splitCopyBeats(title, body, count);
+    return beats.map((beat, i) => {
+      const shortBeat = beat.slice(0, i === 0 ? 36 : 46);
+      if (i === 0) {
+        return {
+          idea: title || shortBeat,
+          visual: `封面图：围绕发布标题「${title || shortBeat}」做强点击入口，主视觉和短副标题必须服务这篇文案，不引入文案外的新主题。`,
+          line: title || shortBeat
+        };
+      }
+      return {
+        idea: shortBeat,
+        visual: `内页图${i + 1}：围绕发布文案里的信息「${shortBeat}」展开，用${productName}相关的真实办公动作、流程卡片、结果对照或可复核清单表达。`,
+        line: shortBeat
+      };
+    });
   }
 
   const draw = () => {
     syncImageFactoryDraft();
     const items = A.items || [];
     const C = p.artifacts.copy || { title: "", body: "" };
+    const customCopyMode = allowCustomCopy && !!A.customCopyMode;
     const got = items.filter(x => x.assetId).length;
     const refs = refAssetsOf(A);
-    const trendPanel = isImg ? trendRewriteHtml(C.referenceRewrite || S.trendPrep || p.artifacts.script.trendPrep) : "";
+    const trendPanel = "";
     const flowTitle = isImg
-      ? "创作内容 → 文案标题 → 图卡提示词 → 站内生成 / 上传补图"
+      ? (customCopyMode ? "自定义文案 → 图卡提示词 → 站内生成 / 上传补图" : "创作内容 → 文案标题 → 图卡提示词 → 站内生成 / 上传补图")
       : "按脚本逐镜头出分镜图";
     root.innerHTML = `
       ${stepperHtml(p, page)}
@@ -239,7 +232,9 @@ export function renderSlotsPage(root, p, isImg) {
           <div class="img-factory card">
             <div class="imgf-head">
               <div><b>${icon("image", 14)} 图文创作台</b><em>创作内容、标题文案、图卡结构和提示词在这里一次准备</em></div>
-              <button class="btn gen" id="imgFactoryGen">${icon("spark", 15)} 生成文案与图卡提示词</button>
+              <div class="head-actions">
+                <button class="btn gen" id="imgFactoryGen">${icon("spark", 15)} ${customCopyMode ? "按文案生成图卡提示词" : "生成文案与图卡提示词"}</button>
+              </div>
             </div>
             <div class="imgf-grid">
               <label class="field">宣传产品
@@ -250,26 +245,29 @@ export function renderSlotsPage(root, p, isImg) {
               <label class="field">生成张数
                 <input class="input" id="imgCount" type="number" min="3" max="12" value="${esc(S.imageCount || DEFAULT_XHS_IMAGE_COUNT)}" />
               </label>
-              <label class="field imgf-trend-field">热门参考
-                <span class="trend-switch"><input id="imgOnlineTrends" type="checkbox" ${S.useOnlineTrends ? "checked" : ""} /><b>联网参考小红书</b></span>
-              </label>
-              <label class="field full">创作内容
+              ${allowCustomCopy ? `<div class="field imgf-mode-field">生成模式
+                <div class="copy-mode-tabs imgf-copy-switch" aria-label="图文创作模式">
+                  <button class="${customCopyMode ? "" : "is-active"}" data-img-copy-mode="standard" type="button">标准生成</button>
+                  <button class="${customCopyMode ? "is-active" : ""}" data-img-copy-mode="custom" type="button">自定义文案</button>
+                </div>
+              </div>` : ""}
+              ${customCopyMode ? `<div class="imgf-note full">${icon("checkCircle", 13)} 自定义文案模式已开启：上方创作内容不参与生成，图卡提示词只根据下方标题和正文拆解。</div>` : `<label class="field full">创作内容
                 <textarea class="input" id="imgBrief" rows="4" placeholder="写得具体一点：这篇笔记想讲什么、面向谁、希望每张图大概覆盖哪些点。留空则从四个方向自动挑短选题。">${esc(S.direction || p.topic || "")}</textarea>
-              </label>
+              </label>`}
             </div>
             ${acc.imagePromptTemplate ? `<div class="imgf-note">${icon("checkCircle", 13)} 已启用该账号固定图文模板，张数、产品和本次内容会自动替换。</div>` : `<div class="imgf-note muted">未配置固定模板时，按最终文案内容生成图片，账号创作风格只决定视觉效果。</div>`}
           </div>
 
           ${trendPanel ? "" : `<div class="copy-inline card">
             <div class="copy-inline-head">
-              <div><b>${icon("type", 14)} 发布文案</b><em>文案先生成，图卡提示词会轻量呼应；可在这里直接微调</em></div>
-              <button class="btn ghost sm" id="imgCopyGen">${icon("spark", 13)} 只重写文案</button>
+              <div><b>${icon("type", 14)} 发布文案</b><em>${customCopyMode ? "这里就是图卡提示词的核心依据；请直接填入最终要发布的文案" : "文案先生成，图卡提示词会轻量呼应；可在这里直接微调"}</em></div>
+              ${customCopyMode ? "" : `<button class="btn ghost sm" id="imgCopyGen">${icon("spark", 13)} 只重写文案</button>`}
             </div>
             <label class="field">标题
-              <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" placeholder="生成后可编辑，标题不直接写自家产品名" />
+              <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" placeholder="${customCopyMode ? "填写发布标题，图片封面会完整围绕它" : "生成后可编辑，标题不直接写自家产品名"}" />
             </label>
             <label class="field">正文
-              <textarea class="input" id="imgCopyBody" rows="5" placeholder="发布文案会随交付包带出；生成图卡前会优先准备它。">${esc(C.body || "")}</textarea>
+              <textarea class="input" id="imgCopyBody" rows="5" placeholder="${customCopyMode ? "粘贴或写入最终正文；系统会按正文含义拆成图卡提示词。" : "发布文案会随交付包带出；生成图卡前会优先准备它。"}">${esc(C.body || "")}</textarea>
             </label>
           </div>`}
           ${trendPanel}` : ""}
@@ -377,29 +375,16 @@ export function renderSlotsPage(root, p, isImg) {
       });
       $("#imgBrief", root)?.addEventListener("input", e => { S.direction = e.target.value; if (S.direction.trim()) p.topic = S.direction.trim().slice(0, 80); save("productions"); });
       $("#imgBrief", root)?.addEventListener("blur", e => { S.direction = e.target.value.trim(); if (S.direction) p.topic = S.direction.slice(0, 80); save("productions"); });
-      $("#imgOnlineTrends", root)?.addEventListener("change", e => {
-        S.useOnlineTrends = !!e.target.checked;
-        S.trendPrep = null;
-        S.trendGuide = "";
-        if (p.artifacts.copy) delete p.artifacts.copy.referenceRewrite;
+      $$("[data-img-copy-mode]", root).forEach(btn => btn.addEventListener("click", () => {
+        syncImageFactoryDraft();
+        syncCopyDraft();
+        A.customCopyMode = btn.dataset.imgCopyMode === "custom";
         save("productions");
         draw();
-      });
+      }));
       $("#imgFactoryGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, generateImageWorkshop, "生成中…"));
       $("#imgCopyTitle", root)?.addEventListener("input", e => { p.artifacts.copy.title = e.target.value; save("productions"); });
       $("#imgCopyBody", root)?.addEventListener("input", e => { p.artifacts.copy.body = e.target.value; save("productions"); });
-      $("#trendCopyTitle", root)?.addEventListener("input", e => {
-        p.artifacts.copy.title = e.target.value;
-        const rw = p.artifacts.copy.referenceRewrite;
-        if (rw?.rewrite) rw.rewrite.title = e.target.value;
-        save("productions");
-      });
-      $("#trendCopyBody", root)?.addEventListener("input", e => {
-        p.artifacts.copy.body = e.target.value;
-        const rw = p.artifacts.copy.referenceRewrite;
-        if (rw?.rewrite) rw.rewrite.copy = e.target.value;
-        save("productions");
-      });
       $("#imgCopyGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
         await generateImageCopy({ force: true });
         draw();
@@ -684,28 +669,15 @@ export function renderSlotsPage(root, p, isImg) {
       trendGuide = ""
     } = opts;
     const C = p.artifacts.copy;
-    let effectiveTrendPrep = trendPrep || S.trendPrep || null;
     const shots = shotsOverride || S.shots || p.artifacts.script.shots || [];
     const product = productOverride || productById(S.productId || "dumate");
     const style = styleOverride || S.style || acc.styleProfile || "";
     const topicForCopy = topicOverride || p.topic || S.direction || "";
-    if (S.useOnlineTrends && (force || !effectiveTrendPrep)) {
-      effectiveTrendPrep = await AI.trendPrep({
-        topic: topicForCopy,
-        account: acc,
-        product,
-        useOnlineTrends: true,
-        kind: "image",
-        imageCount: Math.max(3, Math.min(12, shots.length || S.imageCount || DEFAULT_XHS_IMAGE_COUNT))
-      });
-      S.trendPrep = effectiveTrendPrep;
-      S.trendGuide = effectiveTrendPrep?.guide || S.trendGuide || "";
-      if (effectiveTrendPrep?.referenceNote) toast(effectiveTrendPrep.referenceNote);
-      save("productions");
-    }
+    S.useOnlineTrends = false;
+    S.trendPrep = null;
+    S.trendGuide = "";
+    if (C.referenceRewrite) delete C.referenceRewrite;
     if (!force && (C.title || "").trim() && (C.body || "").trim()) {
-      const rw = rewriteForCopy(effectiveTrendPrep, C);
-      if (rw) C.referenceRewrite = rw;
       return C;
     }
     if (!shots.length) return C;
@@ -716,57 +688,56 @@ export function renderSlotsPage(root, p, isImg) {
       style,
       kind: "image",
       product,
-      useOnlineTrends: !!S.useOnlineTrends,
-      trendGuide: trendGuide || S.trendGuide || "",
-      trendPrep: effectiveTrendPrep
+      useOnlineTrends: false,
+      trendGuide: "",
+      trendPrep: null
     });
     C.title = res.title || C.title || p.title || p.topic || "";
     C.body = res.copy || C.body || "";
-    const rw = rewriteForCopy(effectiveTrendPrep, C);
-    if (rw) C.referenceRewrite = rw;
     const titleInput = $("#imgCopyTitle", root);
     const bodyInput = $("#imgCopyBody", root);
-    const trendTitleInput = $("#trendCopyTitle", root);
-    const trendBodyInput = $("#trendCopyBody", root);
     if (titleInput) titleInput.value = C.title;
     if (bodyInput) bodyInput.value = C.body;
-    if (trendTitleInput) trendTitleInput.value = C.title;
-    if (trendBodyInput) trendBodyInput.value = C.body;
     save("productions");
     return C;
   }
 
   async function generateImageWorkshop() {
+    if (allowCustomCopy && A.customCopyMode) {
+      await generateCustomCopyImageWorkshop();
+      return;
+    }
     let brief = ($("#imgBrief", root)?.value || "").trim();
     const count = Math.max(3, Math.min(12, parseInt($("#imgCount", root)?.value, 10) || S.imageCount || DEFAULT_XHS_IMAGE_COUNT));
     S.imageCount = count;
     S.productId = $("#imgProduct", root)?.value || S.productId || "dumate";
     S.productId = primaryProductById(S.productId)?.id || "dumate";
-    S.useOnlineTrends = !!$("#imgOnlineTrends", root)?.checked;
+    S.useOnlineTrends = false;
+    S.trendPrep = null;
+    S.trendGuide = "";
+    if (p.artifacts.copy?.referenceRewrite) delete p.artifacts.copy.referenceRewrite;
     const selectedProduct = productById(S.productId);
-    let trendPrep = await AI.trendPrep({ topic: brief || p.topic || "", account: acc, product: selectedProduct, useOnlineTrends: S.useOnlineTrends, kind: "image", imageCount: count });
+    let trendPrep = null;
     if (!brief) {
-      brief = await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: count, kind: "image", useOnlineTrends: S.useOnlineTrends, trendPrep });
+      brief = await AI.generateCreativeBrief({ account: acc, product: selectedProduct, imageCount: count, kind: "image", useOnlineTrends: false, trendPrep: null });
       const input = $("#imgBrief", root); if (input) input.value = brief;
       toast(AI.sourceNote("已按四方向生成短选题"));
-      trendPrep = await AI.trendPrep({ topic: brief, account: acc, product: selectedProduct, useOnlineTrends: S.useOnlineTrends, kind: "image", imageCount: count });
     }
     S.direction = brief;
     const topic = brief || p.topic || `${selectedProduct?.shortName || selectedProduct?.name || "产品"} 图文笔记`;
     p.topic = topic.slice(0, 80);
     const styleRef = acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
     const style = acc.styleProfile || S.style || "";
-    const trendGuide = trendPrep?.guide || await AI.trendGuide({ topic, account: acc, product: selectedProduct, useOnlineTrends: S.useOnlineTrends, kind: "image", imageCount: count });
-    if (S.useOnlineTrends && trendPrep?.referenceNote) toast(trendPrep.referenceNote);
+    const trendGuide = "";
     const res = await AI.generateScript({
       topic, duration: 0, account: acc, image: true,
       direction: brief || topic,
       style, imageCount: count, product: selectedProduct,
       imageTemplate: acc.imagePromptTemplate || "",
       styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
-      useOnlineTrends: S.useOnlineTrends,
-      trendGuide,
-      trendPrep
+      useOnlineTrends: false,
+      trendGuide: "",
+      trendPrep: null
     });
     S.shots = res.shots || [];
     S.title = res.title || topic;
@@ -778,8 +749,8 @@ export function renderSlotsPage(root, p, isImg) {
       shotsOverride: S.shots,
       productOverride: selectedProduct,
       styleOverride: style,
-      trendGuide,
-      trendPrep,
+      trendGuide: "",
+      trendPrep: null,
       force: true
     });
     const promptRes = await AI.generateImagePrompts({
@@ -791,15 +762,13 @@ export function renderSlotsPage(root, p, isImg) {
       imageCount: count,
       product: selectedProduct,
       topic,
-      useOnlineTrends: S.useOnlineTrends,
-      trendGuide,
-      trendPrep,
+      useOnlineTrends: false,
+      trendGuide: "",
+      trendPrep: null,
       copy
     });
-    S.trendPrep = trendPrep;
-    S.trendGuide = trendGuide;
-    const rw = rewriteForCopy(trendPrep, p.artifacts.copy);
-    if (rw) p.artifacts.copy.referenceRewrite = rw;
+    S.trendPrep = null;
+    S.trendGuide = "";
     const promptRows = promptRes.shots || [];
     A.items = S.shots.map((s, i) => ({
       title: promptRows[i]?.title || `图片${i + 1}`,
@@ -813,6 +782,64 @@ export function renderSlotsPage(root, p, isImg) {
     save("productions");
     if (canRedrawCurrent()) draw();
     toast(AI.sourceNote("已生成文案、图卡结构与提示词"));
+  }
+
+  async function generateCustomCopyImageWorkshop() {
+    syncCopyDraft();
+    const C = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
+    const title = (C.title || "").trim();
+    const body = (C.body || "").trim();
+    if (!title && !body) {
+      toast("自定义文案模式需要先填写标题或正文");
+      return;
+    }
+    const count = Math.max(3, Math.min(12, parseInt($("#imgCount", root)?.value, 10) || S.imageCount || DEFAULT_XHS_IMAGE_COUNT));
+    S.imageCount = count;
+    S.productId = $("#imgProduct", root)?.value || S.productId || "dumate";
+    S.productId = primaryProductById(S.productId)?.id || "dumate";
+    S.useOnlineTrends = false;
+    S.trendPrep = null;
+    S.trendGuide = "";
+    if (C.referenceRewrite) delete C.referenceRewrite;
+    const selectedProduct = productById(S.productId);
+    const topic = (title || body.split(/\n+/).find(Boolean) || `${selectedProduct?.shortName || selectedProduct?.name || "产品"} 自定义文案`).slice(0, 80);
+    p.topic = topic;
+    p.title = title || topic;
+    const styleRef = acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
+    const style = acc.styleProfile || S.style || "";
+    const shots = buildCustomCopyShots(C, count, selectedProduct);
+    S.direction = "";
+    S.shots = shots;
+    S.title = p.title;
+    S.source = "custom-copy";
+    S.style = style;
+    const promptRes = await AI.generateImagePrompts({
+      script: shotsToText(shots, true),
+      account: acc,
+      style,
+      imageTemplate: acc.imagePromptTemplate || "",
+      styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
+      imageCount: count,
+      product: selectedProduct,
+      topic,
+      useOnlineTrends: false,
+      trendGuide: "",
+      trendPrep: null,
+      copy: C
+    });
+    const promptRows = promptRes.shots || [];
+    A.items = shots.map((s, i) => ({
+      title: promptRows[i]?.title || s.idea || `图片${i + 1}`,
+      visual: s.visual || "",
+      prompt: promptRows[i]?.prompt || "",
+      assetId: (A.items[i] || {}).assetId || null,
+      status: (A.items[i] || {}).assetId ? "done" : "idle"
+    }));
+    p.stage = "images";
+    p.stageStatus = "pending";
+    save("productions");
+    if (canRedrawCurrent()) draw();
+    toast(AI.sourceNote("已按自定义文案生成图卡提示词"));
   }
 
   draw();
