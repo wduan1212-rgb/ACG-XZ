@@ -107,6 +107,25 @@ function copyTags(body = "", fallback = []) {
   return [...new Set(tags.length ? tags : (fallback || []))].slice(0, 8);
 }
 
+function stripLeadingCopyTitle(body = "", title = "") {
+  const raw = String(body || "").trim();
+  const t = String(title || "").trim();
+  if (!raw || !t) return raw;
+  const norm = x => String(x || "").replace(/[#\s"'“”‘’《》「」【】\[\]（）()!！?？:：,，.。;；、~～-]/g, "").toLowerCase();
+  const lines = raw.split(/\n+/).map(x => x.trim()).filter(Boolean);
+  const titleNorm = norm(t);
+  while (lines.length) {
+    const firstNorm = norm(lines[0]);
+    if (!firstNorm || !(firstNorm === titleNorm || firstNorm.startsWith(titleNorm))) break;
+    const rest = lines[0]
+      .replace(new RegExp(`^\\s*${t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*[:：,，.。!！?？-]*\\s*`), "")
+      .trim();
+    if (rest && norm(rest) !== titleNorm) { lines[0] = rest; break; }
+    lines.shift();
+  }
+  return lines.join("\n").replace(/^\s*[:：,，.。!！?？-]+/, "").trim();
+}
+
 function infoFlowProductName(product) {
   return product?.shortName || product?.name || "百度搭子";
 }
@@ -363,20 +382,22 @@ function batchInfoFlowTitle({ topic, productName, seed }) {
   return raw.length > 38 ? `${raw.slice(0, 37)}…` : raw;
 }
 
-function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed = "" } = {}) {
+function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed = "", title = "", copyText = "" } = {}) {
   const productName = infoFlowProductName(product);
-  const cleanTopic = String(topic || "").replace(/\s+/g, " ").trim().slice(0, 48);
+  const customTitle = String(title || "").replace(/\s+/g, " ").trim();
+  const customCopy = String(copyText || "").trim();
+  const cleanTopic = String(topic || customTitle || "").replace(/\s+/g, " ").trim().slice(0, 48);
   const variantSeed = `${cleanTopic || "auto"}:${seed}:${acc?.id || acc?.name || ""}:${productName}`;
   const direction = pickBatchInfoFlowDirection(variantSeed);
   const angle = pickBatchInfoFlowAngle(`${variantSeed}:angle`);
   const mainTopic = cleanTopic || direction.topic;
   const storyTopic = cleanTopic ? `${mainTopic}｜${angle.name}` : mainTopic;
-  const title = cleanTopic ? batchInfoFlowTitle({ topic: mainTopic, productName, seed: variantSeed }) : direction.title(productName);
+  const finalTitle = customTitle || (cleanTopic ? batchInfoFlowTitle({ topic: mainTopic, productName, seed: variantSeed }) : direction.title(productName));
   const roleAnchor = infoFlowRoleAnchor(acc);
   const voiceAnchor = infoFlowVoiceAnchor(acc);
   const focus = infoFlowFeatureBrief(`${mainTopic} ${angle.focus}`, productName);
   const frontBase = buildInfoFlowFrontBeat({ mainTopic: storyTopic, productName, focus, seed: variantSeed });
-  const copy = buildInfoFlowPublishCopy({ title, topic: mainTopic, productName, product });
+  const copy = stripLeadingCopyTitle(customCopy || buildInfoFlowPublishCopy({ title: finalTitle, topic: mainTopic, productName, product }), finalTitle);
   const backBase = buildInfoFlowBackBeat({ mainTopic: storyTopic, productName, focus, copyText: copy, seed: variantSeed });
   const frontPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次。",
@@ -394,11 +415,11 @@ function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed =
   ].join("\n");
   const storyboards = buildInfoFlowStoryboards({ mainTopic: storyTopic, productName, focus });
   return {
-    title,
+    title: finalTitle,
     topic: mainTopic,
     copy,
     segments: [
-      { id: "front15", label: "前15s", title: "前15s钩子", duration: 15, caption: title, visual: frontBase, videoPrompt: frontPrompt, storyboardAssetIds: [] },
+      { id: "front15", label: "前15s", title: "前15s钩子", duration: 15, caption: finalTitle, visual: frontBase, videoPrompt: frontPrompt, storyboardAssetIds: [] },
       { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, caption: `我把这件事交给${productName}，让它先拆步骤、跑资料、给出初版。`, visual: backBase, videoPrompt: backPrompt, storyboardPrompts: storyboards, storyboardAssetIds: [] }
     ]
   };
@@ -687,6 +708,10 @@ export function createBatch(plan, sessionId) {
     plan.sharedRefAssetId
   ].filter(Boolean))];
   const coverRefAssetIds = [...new Set(Array.isArray(plan.coverRefAssetIds) ? plan.coverRefAssetIds.filter(Boolean) : [])].slice(0, 5);
+  const accountCustomCopyModes = { ...(plan.accountCustomCopyModes || {}) };
+  (plan.accountIds || []).forEach(id => {
+    if (accountCustomCopyModes[id] == null) accountCustomCopyModes[id] = true;
+  });
   const batch = {
     id: uid(), sessionId,
     planMessageId: plan.planMessageId || "",
@@ -698,7 +723,7 @@ export function createBatch(plan, sessionId) {
     content: plan.content || "",
     accountProductIds: plan.accountProductIds || {},
     accountContents: plan.accountContents || {},
-    accountCustomCopyModes: plan.accountCustomCopyModes || {},
+    accountCustomCopyModes,
     accountCopyTitles: plan.accountCopyTitles || {},
     accountCopyBodies: plan.accountCopyBodies || {},
     accountCounts: plan.accountCounts || {},
@@ -917,6 +942,33 @@ function buildBatchCustomCopyShots(copy, count, product) {
   });
 }
 
+function buildVideoCustomCopyShots(copy, product, isDigital = false) {
+  const title = String(copy?.title || "").trim();
+  const body = String(copy?.body || copy?.copy || "").trim();
+  const productName = product?.shortName || product?.name || "百度搭子";
+  const raw = body || title;
+  const sentences = String(raw || "")
+    .replace(/#[^\s#]+/g, " ")
+    .replace(/\n+/g, "。")
+    .split(/[。！？!?；;]+/)
+    .map(x => x.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const beats = sentences.length ? sentences : [title || `${productName}本期口播`];
+  const max = isDigital ? 14 : 10;
+  return beats.slice(0, max).map((line, i) => ({
+    time: "",
+    idea: i === 0 ? (title || line).slice(0, 40) : line.slice(0, 44),
+    visual: isDigital
+      ? (i === 0
+        ? `固定真人/数字人正面中近景开场，围绕标题「${title || line}」自然开口，神态真实，背景是干净办公桌。`
+        : `真人/数字人延续同一角色口播，旁边穿插${productName}任务卡、资料整理结果或界面局部，画面服务这句口播：「${line.slice(0, 42)}」。`)
+      : `围绕这句口播生成可拍画面：「${line.slice(0, 42)}」。画面以办公物件、手部操作、产品界面、资料流转或结果展示推进，不偏离用户自定义文案。`,
+    line,
+    ui: !isDigital || i % 3 !== 1,
+    scene: i + 1
+  }));
+}
+
 async function generateBatchImagesInHouse(p, batch, acc) {
   if (!imageApiConfigured()) return false;
   const provider = activeProviderFor("image");
@@ -1025,17 +1077,87 @@ async function draftOne(p, batch) {
     const draftRw = referenceRewriteForCopy(trendPrep, p.artifacts.copy);
     if (draftRw) p.artifacts.copy.referenceRewrite = draftRw;
 
-    const customCopyMode = isImg && !!batch.accountCustomCopyModes?.[acc.id];
+    const customCopyMode = batch.accountCustomCopyModes?.[acc.id] === true;
     const customCopyTitle = ((batch.accountCopyTitles || {})[acc.id] || "").trim();
     const customCopyBody = ((batch.accountCopyBodies || {})[acc.id] || "").trim();
+    if (customCopyMode && !customCopyTitle && !customCopyBody) {
+      setStatus(p, "failed", "自定义生产请先填写标题和文案");
+      return;
+    }
     if (customCopyMode && (customCopyTitle || customCopyBody)) {
-      const count = Math.max(3, Math.min(12, Number(
-        p.artifacts.script.imageCount || batch.accountImageCounts?.[acc.id] || batch.imageCount || DEFAULT_XHS_IMAGE_COUNT
-      ) || DEFAULT_XHS_IMAGE_COUNT));
       const customTopic = (customCopyTitle || customCopyBody.split(/\n+/).find(Boolean) || topic || defaultTopic).slice(0, 80);
       p.topic = customTopic;
       p.title = customCopyTitle || customTopic;
       p.artifacts.copy = { title: p.title, body: customCopyBody };
+      if (material && p.artifacts.boards?.materialMode === "infoFlow") {
+        const planInfo = buildBatchInfoFlowPlan({
+          topic: customTopic,
+          title: p.artifacts.copy.title,
+          copyText: p.artifacts.copy.body,
+          product,
+          acc,
+          seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`
+        });
+        applyBatchInfoFlowPlan(p, planInfo);
+        p.artifacts.copy.title = customCopyTitle || planInfo.title || p.title;
+        p.artifacts.copy.body = stripLeadingCopyTitle(customCopyBody || planInfo.copy || "", p.artifacts.copy.title);
+        p.artifacts.script.source = "custom-infoflow";
+        p.artifacts.script.style = style;
+        if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
+        if (batch.sharedRefAssetId && accountAssetsHas(acc.id, batch.sharedRefAssetId)) {
+          p.artifacts.boards.sharedRefAssetId = batch.sharedRefAssetId;
+        }
+        p.artifacts.boards.omniRefAssetIds = [...new Set([
+          ...(p.artifacts.boards.omniRefAssetIds || []),
+          ...accountDefaultRefIds(acc)
+        ])].slice(0, 9);
+        p.artifacts.boards.sceneRefAssetIds = [...new Set([
+          ...(p.artifacts.boards.sceneRefAssetIds || []),
+          batch.sharedRefAssetId,
+          ...(p.artifacts.boards.omniRefAssetIds || [])
+        ].filter(Boolean))].slice(0, 9);
+        applyBatchCoverRefs(p, batch);
+        ensureVideoCoverPrompt(p, product);
+        await generateVideoCoverInHouse(p);
+        const storyboardReady = await generateBatchInfoFlowStoryboards(p, batch, acc);
+        const back = p.artifacts.boards?.infoFlow?.segments?.[1];
+        if (!storyboardReady || !(back?.storyboardAssetIds || []).length) {
+          setStage(p, "workshop", "needs_input");
+          setStatus(p, "needs_input", "功能演示分镜未生成，请补充参考图或稍后重试分镜生成");
+          return;
+        }
+        setStage(p, "workshop", "running");
+        createUnitVideoJobs(p);
+        return;
+      }
+      if (!isImg) {
+        const shots = buildVideoCustomCopyShots(p.artifacts.copy, product, p.subType === "数字人");
+        p.artifacts.script.shots = shots;
+        p.artifacts.script.title = p.title;
+        p.artifacts.script.source = "custom-copy";
+        p.artifacts.script.style = style;
+        Object.assign(p.artifacts.audio, estimateAudio(shots), { assetId: null, source: "estimate", lastError: "" });
+        if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
+        if (batch.sharedRefAssetId && accountAssetsHas(acc.id, batch.sharedRefAssetId)) p.artifacts.boards.sharedRefAssetId = batch.sharedRefAssetId;
+        const units = buildMaterialUnits(p);
+        const ures = await AI.generateUnitPrompts({
+          units, shots, account: acc, style, product,
+          hasNarrationAudio: false,
+          hasVoiceRef: false,
+          hasCharacterRef: !!acc?.charBoardAssetId,
+          hasSceneRef: !!(batch.sharedRefAssetId || p.artifacts.boards.sharedRefAssetId)
+        });
+        units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
+        applyBatchCoverRefs(p, batch);
+        ensureVideoCoverPrompt(p, product);
+        await generateVideoCoverInHouse(p);
+        setStage(p, "workshop", "running");
+        createUnitVideoJobs(p);
+        return;
+      }
+      const count = Math.max(3, Math.min(12, Number(
+        p.artifacts.script.imageCount || batch.accountImageCounts?.[acc.id] || batch.imageCount || DEFAULT_XHS_IMAGE_COUNT
+      ) || DEFAULT_XHS_IMAGE_COUNT));
       const shots = buildBatchCustomCopyShots(p.artifacts.copy, count, product);
       p.artifacts.script.imageCount = count;
       p.artifacts.script.shots = shots;

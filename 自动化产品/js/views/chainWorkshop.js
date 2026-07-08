@@ -646,24 +646,25 @@ function compactInfoTopic(raw, product) {
   return d.topic;
 }
 
-function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = "" } = {}) {
+function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = "", title = "" } = {}) {
   const productName = infoProductName(product);
-  const cleanTopic = compactInfoTopic(topic, product);
+  const customTitle = sanitizeXhsText(String(title || "").replace(/\s+/g, " ").trim());
+  const cleanTopic = compactInfoTopic(topic || customTitle, product);
   const runSeed = `${cleanTopic || topic}:${productName}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
   const direction = pickInfoFlowDirection(cleanTopic || productName);
   const isCustom = !!String(topic || "").trim();
-  const title = isCustom
+  const finalTitle = customTitle || (isCustom
     ? infoFlowHotTitle(cleanTopic, productName, runSeed)
-    : direction.title(productName);
+    : direction.title(productName));
   const roleAnchor = infoFlowRoleAnchor(acc);
   const voiceAnchor = infoFlowVoiceAnchor(acc);
   const styleAnchor = pickInfoFlow(INFO_FLOW_STYLE_ANCHORS, runSeed, 0);
-  const mainTopic = cleanTopic || title || direction.topic;
+  const mainTopic = cleanTopic || finalTitle || direction.topic;
   const focus = infoFlowFeatureBrief(mainTopic, productName);
   const frontBase = buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed: runSeed });
   const customCopy = String(copyText || "").trim();
-  const generatedCopy = buildInfoFlowPublishCopy({ title, topic: mainTopic, productName, product, seed: runSeed });
-  const copy = stripLeadingCopyTitle(customCopy || generatedCopy, title);
+  const generatedCopy = buildInfoFlowPublishCopy({ title: finalTitle, topic: mainTopic, productName, product, seed: runSeed });
+  const copy = stripLeadingCopyTitle(customCopy || generatedCopy, finalTitle);
   const backBase = buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText: copy, seed: runSeed });
   const frontPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次，节奏爽快但不能乱。",
@@ -683,11 +684,11 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
   ].join("\n");
   const storyboards = buildInfoFlowStoryboards({ mainTopic, productName, focus, styleAnchor });
   return {
-    title,
+    title: finalTitle,
     topic: cleanTopic,
     copy,
     segments: [
-      { id: "front15", label: "前15s", title: "前15s钩子", duration: 15, caption: title, visual: frontBase, videoPrompt: frontPrompt, storyboardAssetIds: [] },
+      { id: "front15", label: "前15s", title: "前15s钩子", duration: 15, caption: finalTitle, visual: frontBase, videoPrompt: frontPrompt, storyboardAssetIds: [] },
       { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, caption: `我把这件事交给${productName}，让它先拆步骤、跑资料、给出初版。`, visual: backBase, videoPrompt: backPrompt, storyboardPrompts: storyboards, storyboardAssetIds: [] }
     ]
   };
@@ -1466,16 +1467,69 @@ export function renderWorkshopPage(root, p) {
     return run();
   }
 
+  function customWorkshopShotsFromCopy(title = "", body = "") {
+    const raw = sanitizeXhsText(body || title || "");
+    const lines = raw
+      .replace(/#[^\s#]+/g, " ")
+      .replace(/\n+/g, "。")
+      .split(/[。！？!?；;]+/)
+      .map(x => x.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    const beats = (lines.length ? lines : [title || p.topic || "本期口播"]).slice(0, isDigitalHumanMode ? 14 : 10);
+    return beats.map((line, i) => ({
+      time: "",
+      idea: i === 0 ? (title || line).slice(0, 40) : line.slice(0, 44),
+      visual: isDigitalHumanMode
+        ? (i === 0
+          ? `固定真人/数字人正面中近景开场，围绕标题「${title || line}」自然开口，表情真实，背景是干净办公桌。`
+          : `真人/数字人延续同一角色讲述，旁边穿插产品任务卡、资料整理结果或界面局部，画面服务这句口播：「${line.slice(0, 42)}」。`)
+        : `围绕这句内容生成可拍办公画面：「${line.slice(0, 42)}」。使用手部操作、产品界面、资料流转或结果展示推进，不偏离用户自定义文案。`,
+      line,
+      ui: !isDigitalHumanMode || i % 3 !== 1,
+      scene: i + 1
+    }));
+  }
+
   async function generateWorkshopDraft() {
     let topic = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || "").trim());
     const selectedProduct = productById(p.artifacts.script.productId || "dumate");
     if (activeInfoFlowMode) {
       syncCopyFromEditor();
-      const plan = buildInfoFlowPlan({ topic, acc, product: selectedProduct, copyText: infoFlowCopyOverride() });
+      const customTitle = (p.artifacts.copy?.title || "").trim();
+      const customBody = (p.artifacts.copy?.body || "").trim();
+      const plan = buildInfoFlowPlan({
+        topic: topic || customTitle,
+        title: customTitle,
+        acc,
+        product: selectedProduct,
+        copyText: customBody || infoFlowCopyOverride()
+      });
       applyInfoFlowPlan(p, plan);
       const input = $("#wsTopic", root); if (input) input.value = p.topic || "";
       save("productions");
       toast("已生成信息流前后15秒脚本");
+      draw();
+      return;
+    }
+    syncCopyFromEditor();
+    const customTitle = (p.artifacts.copy?.title || "").trim();
+    const customBody = (p.artifacts.copy?.body || "").trim();
+    if (customTitle || customBody) {
+      if (!topic) topic = customTitle || customBody.split(/\n+/).find(Boolean) || "";
+      p.topic = sanitizeXhsText(topic);
+      p.title = customTitle || p.topic;
+      p.artifacts.script.shots = customWorkshopShotsFromCopy(customTitle || p.title, customBody);
+      shots = p.artifacts.script.shots || [];
+      p.artifacts.script.title = p.title;
+      p.artifacts.script.source = "custom-copy";
+      p.artifacts.script.style = p.artifacts.script.style || acc?.styleProfile || acc?.lockedStyle || "";
+      p.artifacts.copy.title = p.title;
+      p.artifacts.copy.body = stripLeadingCopyTitle(customBody, p.title);
+      Object.assign(p.artifacts.audio, estimateAudio(shots), { assetId: null, source: "estimate", lastError: "" });
+      p.artifacts.boards.units = [];
+      buildMaterialUnits(p);
+      save("productions");
+      toast("已按自定义文案生成口播和视频提示词结构");
       draw();
       return;
     }

@@ -157,7 +157,7 @@ const CARD = {
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
       ${matched.map(a => {
         const imgAcc = isImageAcc(a);
-        const customCopyMode = imgAcc && !!(p.accountCustomCopyModes || {})[a.id];
+        const customCopyMode = (p.accountCustomCopyModes || {})[a.id] !== false;
         const customCopyTitle = ((p.accountCopyTitles || {})[a.id] || "").trim();
         const customCopyBody = ((p.accountCopyBodies || {})[a.id] || "").trim();
         const standardCopy = esc((p.accountContents || {})[a.id] || "");
@@ -165,7 +165,7 @@ const CARD = {
           <input class="agc-standard-copy" data-pacc-content="${a.id}" value="${standardCopy}" placeholder="本账号本次创作内容（留空则四方向短选题）" ${locked ? "disabled" : ""} />
           <div class="agc-account-copy">
             <input data-pacc-copy-title="${a.id}" value="${esc(customCopyTitle)}" placeholder="标题" ${locked ? "disabled" : ""} />
-            <textarea data-pacc-copy-body="${a.id}" rows="1" placeholder="文案正文" ${locked ? "disabled" : ""}>${esc(customCopyBody)}</textarea>
+            <textarea data-pacc-copy-body="${a.id}" rows="1" placeholder="${imgAcc ? "文案正文" : "文案 / 口播正文"}" ${locked ? "disabled" : ""}>${esc(customCopyBody)}</textarea>
           </div>
         </div>`;
         return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"}">
@@ -173,7 +173,7 @@ const CARD = {
         <select data-pacc-prod="${a.id}" ${locked ? "disabled" : ""}>${productOptions(primaryProductById((p.accountProductIds || {})[a.id] || planProductId)?.id || planProductId)}</select>
         <label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>
         ${imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
-        ${imgAcc ? `<button type="button" class="agc-copy-toggle ${customCopyMode ? "is-on" : ""}" data-pacc-copy-toggle="${a.id}" aria-pressed="${customCopyMode ? "true" : "false"}" ${locked ? "disabled" : ""}><span>${customCopyMode ? "自定义文案" : "标准生成"}</span></button>` : ""}
+        <button type="button" class="agc-copy-toggle ${customCopyMode ? "is-on" : ""}" data-pacc-copy-toggle="${a.id}" aria-pressed="${customCopyMode ? "true" : "false"}" ${locked ? "disabled" : ""}><span>${customCopyMode ? "自定义文案" : "标准生成"}</span></button>
         ${copyFields}
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>

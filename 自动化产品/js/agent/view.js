@@ -634,6 +634,20 @@ function wire(root) {
         const { session: ownerSession, msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
         if (!m.payload.accountIds.length) { toast("至少选择一个账号"); return; }
+        const missingCustom = (m.payload.accountIds || []).filter(id => {
+          if ((m.payload.accountCustomCopyModes || {})[id] === false) return false;
+          const title = ((m.payload.accountCopyTitles || {})[id] || "").trim();
+          const body = ((m.payload.accountCopyBodies || {})[id] || "").trim();
+          return !title && !body;
+        });
+        if (missingCustom.length) {
+          const names = missingCustom
+            .slice(0, 3)
+            .map(id => state.accounts.find(a => a.id === id)?.name || "未命名账号")
+            .join("、");
+          toast(`自定义生产请先填写标题和文案：${names}${missingCustom.length > 3 ? "等" : ""}`);
+          return;
+        }
         if (!(m.payload.content || "").trim() && !(m.payload.topic || "").trim()) {
           m.payload.topicMode = "random";
           m.payload.topic = "";
