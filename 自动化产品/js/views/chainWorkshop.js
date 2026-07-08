@@ -387,6 +387,36 @@ const INFO_FLOW_STYLE_ANCHORS = [
   "统一为微缩桌面夸张风：文件、手机和任务卡像小道具一样涌动，后段继续用同一套微缩工作台演示产品。"
 ];
 
+const INFO_FLOW_TITLE_PATTERNS = [
+  (topic, product) => `别再硬聊AI了，${topic}这样跑`,
+  (topic, product) => `${topic}卡住？先让${product}拆开`,
+  (topic, product) => `我用${product}重做了一遍：${topic}`,
+  (topic, product) => `${topic}效率翻倍，关键不是多写Prompt`,
+  (topic, product) => `普通人做${topic}，先避开这个坑`,
+  (topic, product) => `${product}这招，专治${topic}跑偏`,
+  (topic, product) => `${topic}别从零开始，先要一个可改初版`,
+  (topic, product) => `同样是${topic}，换个流程差太多`,
+  (topic, product) => `${topic}别再瞎试，先看这一步`,
+  (topic, product) => `我终于知道${topic}为什么慢了`,
+  (topic, product) => `${product}处理${topic}，第一步很反常识`,
+  (topic, product) => `${topic}想提速，别让模型乱猜`,
+  (topic, product) => `把${topic}交给${product}，结果很意外`,
+  (topic, product) => `${topic}从混乱到能交付，我只改了流程`,
+  (topic, product) => `${topic}真正省时间的是这件小事`,
+  (topic, product) => `${product}不是聊天框，${topic}要这样用`,
+  (topic, product) => `${topic}跑不出来，可能不是提示词问题`,
+  (topic, product) => `${topic}先别追求完美，先拿到初版`,
+  (topic, product) => `做${topic}，我现在先问${product}这句`,
+  (topic, product) => `${topic}被低估的提效入口在这里`
+];
+
+function infoFlowHotTitle(topic = "", productName = "百度搭子", seed = "") {
+  const t = String(topic || "").replace(/[!！?？。,.，、]+$/g, "").trim() || "这件办公乱事";
+  const make = pickInfoFlow(INFO_FLOW_TITLE_PATTERNS, seed, 41) || INFO_FLOW_TITLE_PATTERNS[0];
+  const raw = make(t, productName).replace(/\s+/g, "");
+  return raw.length > 34 ? `${raw.slice(0, 33)}…` : raw;
+}
+
 function videoPublishTagLine(product = null) {
   const name = infoProductName(product);
   if (/百度搭子|Dumate|DuMate|搭子/.test(name)) return VIDEO_BAIDU_TAG_LINE;
@@ -458,9 +488,9 @@ function buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed = "" }) {
   ];
   const turns = [
     `3-6s：镜头手持快速绕桌一圈，文件夹、截图、表格和聊天消息像失控一样叠到屏幕前；角色低声吐槽“这不是一个需求，这是来拆我的”。`,
-    `3-6s：画面快切三次：空白文档、凌乱资料、错误输出，角色每切一次表情更崩一点，最后把便签贴满屏幕边缘。`,
-    `3-6s：角色试着随便跑一次，屏幕弹出三段看似漂亮但完全跑偏的结果，镜头突然推到他愣住的表情。`,
-    `3-6s：桌面被分成两半，一边是“直接开跑”的混乱输出，一边是还没被整理的真实资料，形成荒诞对照。`
+    `3-6s：画面快切三次：空白文档、凌乱资料、错误输出，角色每切一次表情更崩一点，最后小声说“别再给我加需求了”。`,
+    `3-6s：角色试着随便跑一次，屏幕弹出三段看似漂亮但完全跑偏的结果，镜头突然推到他愣住的表情，脱口而出“字很多，但完全不能用”。`,
+    `3-6s：桌面被分成两半，一边是“直接开跑”的混乱输出，一边是还没被整理的真实资料，角色皱眉说“先别急，流程还没定”。`
   ];
   const twists = [
     `6-10s：画面切成夸张对比：左边随便选工具后输出一堆空话，右边角色把「${mainTopic}」拆成几张任务卡贴到屏幕上，镜头快速推近每张卡的错位结果。`,
@@ -472,7 +502,7 @@ function buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed = "" }) {
     `10-15s：角色把错误输出揉成纸团扔到桌边，深吸一口气，对镜头说“先别急着跑，先选对怎么跑”，画面停在一张清晰的执行路线草图上。`,
     `10-15s：镜头从角色表情拉回屏幕，混乱资料被一条路线框住，角色点头说“这次先让它按步骤来”。`,
     `10-15s：画面突然安静，桌面只剩一张干净任务卡，角色把手机扣下，对镜头抛一句“别让模型替你乱猜”。`,
-    `10-15s：角色把三张方案卡合成一条执行线，屏幕定格在「先选对模型，再跑流程」的操作画面。`
+    `10-15s：角色把三张方案卡合成一条执行线，屏幕定格在操作画面，对镜头说“先选对模型，再跑流程”。`
   ];
   return [
     pickInfoFlow(openers, seed, 1),
@@ -487,7 +517,7 @@ function buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText = "", s
   const starts = [
     `0-3s：画面近景看到用户在${productName}里输入「${mainTopic}」，旁边放着资料、截图和待办，旁白一句：“${cue}”。`,
     `0-3s：接前段桌面，角色把路线草图拍进${productName}工作区，输入框里清楚出现「${mainTopic}」，旁白点出“先把任务说清楚”。`,
-    `0-3s：镜头从前段那张任务卡推入屏幕，${productName}工作区打开，资料、目标和判断标准被放进同一行。`
+    `0-3s：镜头从前段那张任务卡推入屏幕，${productName}工作区打开，资料、目标和判断标准被放进同一行，旁白说“先把资料和目标放到同一处”。`
   ];
   const mids = [
     `3-7s：界面按文案逻辑生成任务清单，逐项展示${focus.action}；镜头用近景点击、快速推拉和屏幕录制感切换，让观众看到每一步负责什么。`,
@@ -501,8 +531,8 @@ function buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText = "", s
   ];
   const closes = [
     `11-15s：回扣前段混乱桌面，角色把生成的初版发出去，口播收束“先选对模型和流程，效率才真的翻倍。”画面突出${focus.result}。`,
-    `11-15s：画面回到前段的同一个桌面，道具位置保持一致，但屏幕已经有可交付初版，角色松一口气点发送。`,
-    `11-15s：最后给到执行路线和结果预览同屏，角色把错乱资料移到一边，保留可复核清单和初版链接。`
+    `11-15s：画面回到前段的同一个桌面，道具位置保持一致，但屏幕已经有可交付初版，角色松一口气说“这次终于能交了”。`,
+    `11-15s：最后给到执行路线和结果预览同屏，角色把错乱资料移到一边，旁白收束“先有可改初版，再谈完美”。`
   ];
   return [
     pickInfoFlow(starts, seed, 11),
@@ -593,7 +623,7 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
   const direction = pickInfoFlowDirection(cleanTopic || productName);
   const isCustom = !!String(topic || "").trim();
   const title = isCustom
-    ? (cleanTopic.length <= 18 ? `${cleanTopic}，用${productName}跑一遍` : cleanTopic)
+    ? infoFlowHotTitle(cleanTopic, productName, runSeed)
     : direction.title(productName);
   const roleAnchor = infoFlowRoleAnchor(acc);
   const voiceAnchor = infoFlowVoiceAnchor(acc);

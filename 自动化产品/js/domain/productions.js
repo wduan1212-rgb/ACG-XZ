@@ -86,6 +86,38 @@ export function estimateAudio(shots) {
    否则 t2v 直接文生视频（可选加参考图）。保留已有单元的提示词/图。 */
 export const UNIT_MAX_SEC = 15;   // 单镜头视频上限（当前视频模型不支持超过 15s）
 export const UNIT_TARGET_MIN_SEC = 10; // 尽量合成 10-15s 的连贯多镜头，避免 5s 碎片导致口播过赶
+
+function speechFromPrompt(text = "") {
+  const raw = String(text || "").replace(/\r/g, "\n");
+  if (!raw.trim()) return "";
+  const hits = [];
+  const add = value => {
+    const clean = String(value || "")
+      .replace(/^(?:口播原话|旁白一句|旁白|口播|角色说|对镜头说)\s*[:：]?\s*/g, "")
+      .replace(/^[“”"'‘’「」《》\s]+|[“”"'‘’「」《》\s]+$/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (clean.length >= 4 && !/^(无字幕|不要|禁止|负面约束|说话像|声线锚点)/.test(clean)) hits.push(clean);
+  };
+  const sentenceParts = raw
+    .split(/[\n。；;]+/)
+    .map(x => x.trim())
+    .filter(Boolean)
+    .filter(x => /口播|旁白|说|吐槽|念|喊/.test(x))
+    .filter(x => !/^(快节奏|目标是|统一视觉风格|角色外貌锚点|穿搭细节|表情变化|声线锚点|说话像|负面约束)/.test(x));
+  sentenceParts.forEach(part => {
+    let m;
+    const quoteRe = /[“"']([^“”"']{4,90})[”"']/g;
+    while ((m = quoteRe.exec(part))) add(m[1]);
+    const colon = part.match(/(?:口播原话|旁白|口播)\s*[:：]\s*([^。！？!?\n]{4,90}[。！？!?]?)/);
+    if (colon) add(colon[1]);
+    if (!/(?:\d+\s*-\s*\d+\s*s|秒|镜头|画面)/i.test(part)) return;
+    const natural = part.match(/(?:对镜头说|低声吐槽|小声说|点头说|口播收束|口播说|旁白一句|旁白点出|角色[^，。；;]{0,16}(?:说|吐槽|喊|念))\s*[“"']?([^“”"'。！？!?\n]{4,90})[”"']?/);
+    if (natural) add(natural[1]);
+  });
+  return [...new Set(hits)].slice(0, 2).join(" ");
+}
+
 export function buildMaterialUnits(p) {
   const A = p.artifacts.boards || (p.artifacts.boards = {});
   if (A.materialMode === "infoFlow" && Array.isArray(A.infoFlow?.segments) && A.infoFlow.segments.length) {
@@ -101,7 +133,7 @@ export function buildMaterialUnits(p) {
       scene: i + 1,
       idea: seg.title || seg.label || (i === 0 ? "前15s钩子" : "后15s功能演示"),
       visual: seg.visual || seg.videoPrompt || "",
-      line: seg.caption || seg.title || "",
+      line: speechFromPrompt(seg.videoPrompt || seg.visual || ""),
       ui: i > 0
     }));
     A.units = segments.map((seg, i) => {

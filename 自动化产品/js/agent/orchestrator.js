@@ -216,22 +216,62 @@ function infoFlowFeatureBrief(topic = "", productName = "百度搭子") {
   };
 }
 
-function buildInfoFlowFrontBeat({ mainTopic, productName, focus }) {
-  return [
+function buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed = "" }) {
+  const openers = [
     `0-3s：办公室桌面突然被${focus.prop}塞满，手机连续弹出“十分钟后要初版”“顺便做个封面”“再整理下资料”，角色一边抓头发一边把咖啡差点碰倒。`,
+    `0-3s：电梯门一开，角色怀里抱着${focus.prop}冲回工位，屏幕上任务提醒连续闪烁，表情像刚被临时加班砸中。`,
+    `0-3s：镜头从桌面低角度冲进来，${focus.prop}像多米诺一样倒向键盘，角色手忙脚乱按住电脑和手机。`
+  ];
+  const turns = [
     `3-6s：镜头手持快速绕桌一圈，文件夹、截图、表格和聊天消息像失控一样叠到屏幕前；角色低声吐槽“这不是一个需求，这是来拆我的”。`,
+    `3-6s：画面快切三次：空白文档、凌乱资料、错误输出，角色每切一次表情更崩一点，最后小声说“别再给我加需求了”。`,
+    `3-6s：角色试着随便跑一次，屏幕弹出三段看似漂亮但完全跑偏的结果，镜头突然推到他愣住的表情，脱口而出“字很多，但完全不能用”。`
+  ];
+  const twists = [
     `6-10s：画面突然切成夸张对比：左边随便选工具后输出一堆空话，右边角色把「${mainTopic}」拆成几张任务卡贴到屏幕上，镜头快速推近每张卡的错位结果。`,
-    `10-15s：角色把错误输出揉成纸团扔到桌边，深吸一口气，对镜头说“先别急着跑，先选对怎么跑”，画面停在一张清晰的执行路线草图上。`
+    `6-10s：角色突然停下，把「${mainTopic}」写成一句完整任务，旁边三张模型/流程卡依次亮起，镜头跟着卡片快速横移。`,
+    `6-10s：错误输出被角色一张张拖到废纸篓，屏幕中央只留下「${mainTopic}」和“先判断、再执行、再复核”三步。`
+  ];
+  const closes = [
+    `10-15s：角色把错误输出揉成纸团扔到桌边，深吸一口气，对镜头说“先别急着跑，先选对怎么跑”，画面停在一张清晰的执行路线草图上。`,
+    `10-15s：镜头从角色表情拉回屏幕，混乱资料被一条路线框住，角色点头说“这次先让它按步骤来”。`,
+    `10-15s：画面突然安静，桌面只剩一张干净任务卡，角色把手机扣下，对镜头抛一句“别让模型替你乱猜”。`
+  ];
+  return [
+    pickBatchInfoFlow(openers, seed, 1),
+    pickBatchInfoFlow(turns, seed, 2),
+    pickBatchInfoFlow(twists, seed, 3),
+    pickBatchInfoFlow(closes, seed, 4)
   ].join(" ");
 }
 
-function buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText = "" }) {
+function buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText = "", seed = "" }) {
   const cue = infoFlowCopyCue(copyText, mainTopic);
-  return [
+  const starts = [
     `0-3s：口播直接扣回发布文案重点：“${cue}”。画面近景看到用户在${productName}里输入「${mainTopic}」，旁边放着资料、截图和待办。`,
+    `0-3s：接前段桌面，角色把路线草图拍进${productName}工作区，输入框里清楚出现「${mainTopic}」，旁白点出“先把任务说清楚”。`,
+    `0-3s：镜头从前段那张任务卡推入屏幕，${productName}工作区打开，资料、目标和判断标准被放进同一行，旁白说“先把资料和目标放到同一处”。`
+  ];
+  const mids = [
     `3-7s：界面按文案逻辑生成任务清单，逐项展示${focus.action}；镜头用近景点击、快速推拉和屏幕录制感切换，让观众看到每一步负责什么。`,
+    `3-7s：任务卡从左到右展开，先拆步骤，再读取资料，再生成初版；每一步旁边都有可修改入口，画面不跳题。`,
+    `3-7s：屏幕中部出现流程看板，资料、模型选择、执行动作和复核项依次亮起，角色只做确认和微调。`
+  ];
+  const results = [
     `7-11s：切到功能结果：不同模型或步骤产出的内容并排出现，资料被归类，关键字段被提取，页面或报告初稿出现，旁边保留修改入口和复核清单。`,
-    `11-15s：回扣前段混乱桌面，角色把生成的初版发出去，口播收束“先选对模型和流程，效率才真的翻倍。”画面突出${focus.result}。`
+    `7-11s：结果区分成三列：输入材料、执行过程、可改初版，镜头逐列扫过，观众能看到它不是只给建议。`,
+    `7-11s：原始资料被自动归类成清单、表格和文案初稿，角色点击一处错误项，界面立刻进入可修改状态。`
+  ];
+  const closes = [
+    `11-15s：回扣前段混乱桌面，角色把生成的初版发出去，口播收束“先选对模型和流程，效率才真的翻倍。”画面突出${focus.result}。`,
+    `11-15s：画面回到前段的同一个桌面，道具位置保持一致，但屏幕已经有可交付初版，角色松一口气说“这次终于能交了”。`,
+    `11-15s：最后给到执行路线和结果预览同屏，角色把错乱资料移到一边，旁白收束“先有可改初版，再谈完美”。`
+  ];
+  return [
+    pickBatchInfoFlow(starts, seed, 11),
+    pickBatchInfoFlow(mids, seed, 12),
+    pickBatchInfoFlow(results, seed, 13),
+    pickBatchInfoFlow(closes, seed, 14)
   ].join(" ");
 }
 
@@ -290,11 +330,30 @@ const INFO_FLOW_BATCH_TITLE_PATTERNS = [
   (topic, product) => `${product}怎么处理「${topic}」？30秒看懂`,
   (topic, product) => `${topic}卡住了？用${product}先拆步骤`,
   (topic, product) => `${topic}从一团乱到能交付，${product}跑给你看`,
-  (topic, product) => `把「${topic}」交给${product}，结果有点离谱`
+  (topic, product) => `把「${topic}」交给${product}，结果有点离谱`,
+  (topic, product) => `别再硬聊AI了，${topic}先这样拆`,
+  (topic, product) => `${topic}效率差距，往往差在第一步`,
+  (topic, product) => `普通人做${topic}，先别让AI自由发挥`,
+  (topic, product) => `${product}这招，专治${topic}跑偏`,
+  (topic, product) => `${topic}别再瞎试，先看这一步`,
+  (topic, product) => `我终于知道${topic}为什么慢了`,
+  (topic, product) => `${product}处理${topic}，第一步很反常识`,
+  (topic, product) => `${topic}想提速，别让模型乱猜`,
+  (topic, product) => `把${topic}交给${product}，结果很意外`,
+  (topic, product) => `${topic}从混乱到能交付，我只改了流程`,
+  (topic, product) => `${topic}真正省时间的是这件小事`,
+  (topic, product) => `${product}不是聊天框，${topic}要这样用`,
+  (topic, product) => `${topic}跑不出来，可能不是提示词问题`,
+  (topic, product) => `${topic}先别追求完美，先拿到初版`
 ];
 
 function pickBatchInfoFlowAngle(seed = "") {
   return INFO_FLOW_BATCH_TOPIC_ANGLES[variantHash(seed) % INFO_FLOW_BATCH_TOPIC_ANGLES.length];
+}
+
+function pickBatchInfoFlow(list = [], seed = "", offset = 0) {
+  if (!list.length) return "";
+  return list[variantHash(`${seed}:${offset}`) % list.length];
 }
 
 function batchInfoFlowTitle({ topic, productName, seed }) {
@@ -316,9 +375,9 @@ function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed =
   const roleAnchor = infoFlowRoleAnchor(acc);
   const voiceAnchor = infoFlowVoiceAnchor(acc);
   const focus = infoFlowFeatureBrief(`${mainTopic} ${angle.focus}`, productName);
-  const frontBase = buildInfoFlowFrontBeat({ mainTopic: storyTopic, productName, focus });
+  const frontBase = buildInfoFlowFrontBeat({ mainTopic: storyTopic, productName, focus, seed: variantSeed });
   const copy = buildInfoFlowPublishCopy({ title, topic: mainTopic, productName, product });
-  const backBase = buildInfoFlowBackBeat({ mainTopic: storyTopic, productName, focus, copyText: copy });
+  const backBase = buildInfoFlowBackBeat({ mainTopic: storyTopic, productName, focus, copyText: copy, seed: variantSeed });
   const frontPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次。",
     roleAnchor,

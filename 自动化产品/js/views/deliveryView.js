@@ -330,7 +330,6 @@ export const deliveryView = {
               <col class="sup-col-product" />
               <col class="sup-col-account" />
               <col class="sup-col-platform" />
-              <col class="sup-col-kind" />
               <col class="sup-col-tags" />
               <col class="sup-col-status" />
               <col class="sup-col-actions" />
@@ -338,7 +337,7 @@ export const deliveryView = {
             <thead><tr>
               <th class="c-check"><input type="checkbox" id="supAll" /></th>
               <th class="c-seq">序号</th>
-              <th>素材名</th><th>产品</th><th>内容账号 / 发布人</th><th>平台</th><th>形式</th><th>标签</th><th>状态</th><th></th>
+              <th>素材名</th><th>产品</th><th>内容账号 / 发布人</th><th>平台</th><th>标签</th><th>状态</th><th></th>
             </tr></thead>
             <tbody>${rows.length ? rows.map(({ asset, acc }) => `
               <tr data-sup="${asset.id}">
@@ -348,14 +347,13 @@ export const deliveryView = {
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
                 <td><b>内容账号：${esc(asset.byAccount || acc.name)}</b><em class="sup-by">发布人：${esc(publisherLabel(asset))}</em></td>
                 <td>${platChip(acc.platform, true)}</td>
-                <td>${modeLabel(acc)}</td>
                 <td><div class="sup-tags" title="${esc((asset.tags || []).join(" / "))}">${supplierTagsHtml(asset.tags)}</div></td>
                 <td><span class="sup-status ${asset.status === "已发布" ? "pub" : asset.status === "已下载" ? "done" : ""}">${asset.publishedUrl ? "已发布 ✓" : asset.status || "未下载"}</span></td>
                 <td class="sup-acts">
                   <button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
                   <button class="btn ${asset.publishedUrl ? "ghost" : "primary"} sm" data-suplink="${asset.id}">${icon("link", 13)} ${asset.publishedUrl ? "改链接" : "回传链接"}</button>
                 </td>
-              </tr>${supplierDetailHtml(asset, acc)}`).join("") : `<tr><td colspan="10" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
+              </tr>${supplierDetailHtml(asset, acc)}`).join("") : `<tr><td colspan="9" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
             </tbody>
           </table>
         </div>`;
