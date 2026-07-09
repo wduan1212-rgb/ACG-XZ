@@ -458,7 +458,27 @@ function renderContextPanel() {
     groupsEl.addEventListener("scroll", () => { state.ui.ctxScrollTop = groupsEl.scrollTop; }, { passive: true });
   }
   $("#ctxNew").addEventListener("click", () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })));
-  $("#ctxSearch").addEventListener("input", e => { panel.dataset.q = e.target.value; renderContextPanel(); setTimeout(() => { const i = $("#ctxSearch"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 0); });
+  const ctxSearch = $("#ctxSearch");
+  if (ctxSearch) {
+    let composing = false;
+    const applyContextSearch = () => {
+      panel.dataset.q = ctxSearch.value;
+      renderContextPanel();
+      setTimeout(() => {
+        const i = $("#ctxSearch");
+        if (i) {
+          i.focus();
+          i.setSelectionRange(i.value.length, i.value.length);
+        }
+      }, 0);
+    };
+    ctxSearch.addEventListener("compositionstart", () => { composing = true; });
+    ctxSearch.addEventListener("compositionend", () => { composing = false; applyContextSearch(); });
+    ctxSearch.addEventListener("input", e => {
+      if (composing || e.isComposing) return;
+      applyContextSearch();
+    });
+  }
   $$(".ctx-gtitle", panel).forEach(b => b.addEventListener("click", () => {
     collapsedGroups.has(b.dataset.g) ? collapsedGroups.delete(b.dataset.g) : collapsedGroups.add(b.dataset.g);
     state.ui.collapsedGroups = [...collapsedGroups]; save("meta");

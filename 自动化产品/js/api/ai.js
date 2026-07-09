@@ -497,6 +497,7 @@ function ensureVideoTitleBrand(title = "", product = null) {
 function ensureVideoBrandTags(copy = "", product = null) {
   const current = chineseProductDisplayName(product, "百度搭子");
   let out = replaceReferenceToolNames(copy, product)
+    .replace(/#国产百度搭子(?=\s|$)/g, "")
     .replace(/\n{3,}/g, "\n")
     .trim();
   const tags = current === "百度搭子"
@@ -510,7 +511,7 @@ function ensureVideoBrandTags(copy = "", product = null) {
       out += `\n${tags.join(" ")}`;
     }
   }
-  return normalizeOwnProductNoise(out, current);
+  return normalizeOwnProductNoise(out, current).replace(/#国产百度搭子(?=\s|$)/g, "").replace(/[ \t]+\n/g, "\n").trim();
 }
 
 function polishVideoBrandCopy(result = {}, product = null) {
@@ -1918,6 +1919,10 @@ function normalizeScriptResult(d, { topic = "", image = false, imageCount = DEFA
 function cleanCustomVideoText(text = "", { stripTags = false, title = "" } = {}) {
   let out = sanitizeXhsText(cleanText(String(text || "")))
     .replace(/[「」]/g, "")
+    .replace(/翻墙/g, "跨网络访问")
+    .replace(/科学上网/g, "跨网络访问")
+    .replace(/魔法上网/g, "跨网络访问")
+    .replace(/VPN/gi, "网络环境")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   if (stripTags) out = out.replace(/#[^\s#]+/g, " ").replace(/[ \t]+/g, " ").trim();

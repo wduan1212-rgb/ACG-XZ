@@ -140,7 +140,17 @@ export const assetsView = {
     }
 
     const wire = () => {
-      $("#avSearch", root).addEventListener("input", e => { fQ = e.target.value; draw(); setTimeout(() => { const i = $("#avSearch", root); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 0); });
+      const search = $("#avSearch", root);
+      if (search) {
+        let composing = false;
+        const applySearch = () => { fQ = search.value; draw(); };
+        search.addEventListener("compositionstart", () => { composing = true; });
+        search.addEventListener("compositionend", () => { composing = false; applySearch(); });
+        search.addEventListener("input", e => {
+          if (composing || e.isComposing) return;
+          applySearch();
+        });
+      }
       $$("[data-fkind]", root).forEach(b => b.addEventListener("click", () => { fKind = b.dataset.fkind; draw(); }));
       $$("[data-facc]", root).forEach(b => b.addEventListener("click", () => { fAcc = b.dataset.facc; draw(); }));
       root.querySelector("[data-acc-more]")?.addEventListener("click", () => { accFilterExpanded = !accFilterExpanded; draw(); });

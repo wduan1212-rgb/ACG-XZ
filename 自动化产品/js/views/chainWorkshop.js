@@ -27,6 +27,7 @@ const COVER_LOADING_TIMEOUT_MS = 8 * 60 * 1000;
 const COVER_GENERATE_TIMEOUT_MS = 140000;
 const COVER_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
 const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
+const STORYBOARD_NO_REAL_PERSON_PROMPT = "分镜图只呈现产品界面、设备、流程卡、图标、手部局部或2.5D/动画人物；不要出现写实真人、真人正脸或真人半身像。";
 const COVER_STYLE_HINTS = [
   "波普风，大色块和强对比排版",
   "极简风，大留白和一个强视觉焦点",
@@ -370,6 +371,21 @@ function stripInfoFlowDirectorNotes(text = "") {
     .replace(/不要只出现抽象光效。?/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function storyboardSafePrompt(text = "") {
+  const base = String(text || "").trim();
+  if (!base) return STORYBOARD_NO_REAL_PERSON_PROMPT;
+  return `${base}\n${STORYBOARD_NO_REAL_PERSON_PROMPT}`;
+}
+
+function safeTtsText(text = "") {
+  return sanitizeXhsText(String(text || "")
+    .replace(/翻墙/g, "跨网络访问")
+    .replace(/科学上网/g, "跨网络访问")
+    .replace(/魔法上网/g, "跨网络访问")
+    .replace(/VPN/gi, "网络环境")
+    .trim());
 }
 
 function ensureInfoFlowState(p) {
@@ -773,11 +789,18 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
   };
 }
 
-function applyInfoFlowPlan(p, plan) {
+function applyInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
   const A = p.artifacts.boards || (p.artifacts.boards = {});
   A.materialMode = "infoFlow";
   const prev = ensureInfoFlowState(p);
   const oldBack = prev.segments?.[1] || {};
+  const oldCopy = p.artifacts.copy || {};
+  const nextTitle = preserveCopy
+    ? (oldCopy.title || p.title || plan.title || p.topic || "")
+    : (plan.title || p.title || p.topic || "");
+  const nextBody = preserveCopy
+    ? (oldCopy.body || stripLeadingCopyTitle(plan.copy || "", nextTitle))
+    : stripLeadingCopyTitle(plan.copy || oldCopy.body || "", nextTitle);
   A.infoFlow = {
     ...prev,
     status: "ready",
@@ -789,9 +812,9 @@ function applyInfoFlowPlan(p, plan) {
     }))
   };
   p.topic = plan.topic || p.topic || "";
-  p.title = plan.title || p.title || p.topic || "";
+  p.title = nextTitle;
   p.artifacts.script.title = p.title;
-  p.artifacts.copy = { ...(p.artifacts.copy || {}), title: p.title, body: stripLeadingCopyTitle(plan.copy || p.artifacts.copy?.body || "", p.title) };
+  p.artifacts.copy = { ...oldCopy, title: nextTitle, body: nextBody };
   Object.assign(p.artifacts.audio, {
     assetId: null,
     duration: 30,
@@ -935,6 +958,7 @@ export function renderWorkshopPage(root, p) {
       <div class="dh-segs">
         ${digitalSegments.length ? digitalSegments.map((seg, i) => {
           const ref = seg.characterRefAssetId ? assetById(seg.characterRefAssetId) : null;
+          const refPoster = ref ? (urlFor(ref) || "") : "";
           const job = digitalJobFor(seg, i);
           const status = job?.status || seg.videoStatus || "";
           const busy = ["queued", "running", "submitted"].includes(status);
@@ -945,13 +969,14 @@ export function renderWorkshopPage(root, p) {
           const jobError = failed && job?.error ? String(job.error || "") : "";
           const progress = Math.max(1, Math.min(99, Number(job?.progress || seg.videoProgress || 1)));
           const waitingText = status === "queued" ? "已进入队列" : status === "submitted" ? "已提交上游" : "正在轮询成片";
+          const visibleDuration = Number(seg.audioDuration || seg.dur || 0);
           return `<div class="dh-seg ${busy ? "is-generating" : ""}" data-dh-seg="${seg.id}">
-            <b>D${String(i + 1).padStart(2, "0")}</b><span>${fmtTC(seg.dur)}</span>
+            <b>D${String(i + 1).padStart(2, "0")}</b><span>${fmtTC(visibleDuration)}</span>
             <em>${ref ? esc(ref.name) : "未设置角色图"}</em><i class="dh-status ${busy ? "running" : done ? "done" : failed ? "failed" : ""}">${stateText}</i>
             <div class="dh-seg-drop droppable" data-unit-char-ref="${seg.id}">${ref ? thumbHtml(ref) : icon("upload", 13)}<span>单段角色图</span></div>
             ${seg.audioAssetId && assetById(seg.audioAssetId) ? `<audio class="dh-audio" src="${esc(urlFor(assetById(seg.audioAssetId)))}" controls preload="metadata"></audio>` : `<small class="dh-audio-miss">未生成分段音频</small>`}
             ${videoUrl
-              ? `<video class="dh-video" src="${esc(videoUrl)}" controls playsinline preload="metadata"></video>`
+              ? `<video class="dh-video" src="${esc(videoUrl)}" ${refPoster ? `poster="${esc(refPoster)}"` : ""} controls playsinline preload="metadata"></video>`
               : busy ? `<div class="dh-video-placeholder">
                 <span class="spin-dot"></span>
                 <b>视频生成中</b>
@@ -1382,7 +1407,7 @@ export function renderWorkshopPage(root, p) {
     let total = 0;
     for (let i = 0; i < segs.length; i++) {
       const seg = segs[i];
-      const text = sanitizeXhsText(seg.line || "");
+      const text = safeTtsText(seg.line || "");
       if (!text) continue;
       const out = await synthesizeTts({ text, voiceId, speed: 1.2 });
       const a = await addAssetFromDataUrl(acc.id, {
@@ -1415,7 +1440,7 @@ export function renderWorkshopPage(root, p) {
     const index = segs.findIndex(x => x.id === segId);
     const seg = segs[index];
     if (!seg) throw new Error("未找到数字人分段");
-    const text = sanitizeXhsText(seg.line || "");
+    const text = safeTtsText(seg.line || "");
     if (!text) throw new Error("该段没有口播内容");
     if (!ttsApiConfigured()) {
       seg.audioAssetId = null;
@@ -1676,12 +1701,15 @@ export function renderWorkshopPage(root, p) {
         if (!customTitle && topic) customTitle = topic;
         if (!customTitle && !customBody) { toast("自定义模式先填写标题，系统会自动补正文"); return; }
         const generated = await customVideoDraftFromModel({ title: customTitle || topic, body: customBody, product: selectedProduct });
+        const userTitle = customTitle;
+        const userBody = customBody;
         customTitle = customTitle || generated.title || topic;
-        customBody = generated.copy || customBody;
+        customBody = customBody || generated.copy || "";
         p.artifacts.copy.title = customTitle || p.title || topic;
-        p.artifacts.copy.body = stripLeadingCopyTitle(customBody, p.artifacts.copy.title);
+        p.artifacts.copy.body = userBody ? userBody : stripLeadingCopyTitle(customBody, p.artifacts.copy.title);
         p.artifacts.copy.generatedNarration = generated.narration || "";
         p.artifacts.copy.generatedVisualPrompt = generated.visualPrompt || "";
+        if (userTitle) p.artifacts.copy.title = userTitle;
       }
       const plan = buildInfoFlowPlan({
         topic: customMode ? (customTitle || topic) : topic,
@@ -1693,12 +1721,12 @@ export function renderWorkshopPage(root, p) {
       });
       if (customMode && p.artifacts.copy.generatedVisualPrompt && plan.segments?.[1]) {
         plan.segments[1].storyboardPrompts = [
-          p.artifacts.copy.generatedVisualPrompt,
+          storyboardSafePrompt(p.artifacts.copy.generatedVisualPrompt),
           ...(plan.segments[1].storyboardPrompts || [])
         ].slice(0, 4);
         plan.segments[1].videoPrompt = stripInfoFlowDirectorNotes(plan.segments[1].videoPrompt || "");
       }
-      applyInfoFlowPlan(p, plan);
+      applyInfoFlowPlan(p, plan, { preserveCopy: customMode });
       const input = $("#wsTopic", root); if (input) input.value = p.topic || "";
       save("productions");
       toast("已生成信息流前后15秒脚本");
@@ -2112,7 +2140,7 @@ export function renderWorkshopPage(root, p) {
 
     function applyCurrentInfoFlowPlan() {
       const plan = buildInfoFlowPlan(currentInfoFlowPlanArgs());
-      applyInfoFlowPlan(p, plan);
+      applyInfoFlowPlan(p, plan, { preserveCopy: p.artifacts.copy?.customMode !== false });
       const info = ensureInfoFlowState(p);
       if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
         info.status = "failed";
@@ -2189,7 +2217,7 @@ export function renderWorkshopPage(root, p) {
         const made = [];
         for (let i = 0; i < prompts.length; i++) {
           const prompt = [
-            prompts[i],
+            storyboardSafePrompt(prompts[i]),
             "画面必须是9:16竖版分镜图，文字少而清晰，保留产品logo/界面参考，不要二维码，不要页码。"
           ].join("\n");
           const r = await provider.submit({
@@ -2335,7 +2363,7 @@ export function renderWorkshopPage(root, p) {
     // 口播：一键复制 + 上传音频（按真实时长重排）
     $("#wsCopyLines", root)?.addEventListener("click", () => {
       syncNarrationFromEditor({ silent: true });
-      const text = narrationText(shots);
+      const text = safeTtsText(narrationText(shots));
       if (!text) { toast("脚本里还没有口播文案"); return; }
       copyText(text);
       toast("已复制全部口播文案");

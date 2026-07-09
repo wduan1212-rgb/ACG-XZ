@@ -18,6 +18,7 @@ import { pickDefaultCreativeTopic } from "../data/xhsTrendLibrary.js";
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
 const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
+const STORYBOARD_NO_REAL_PERSON_PROMPT = "分镜图只呈现产品界面、设备、流程卡、图标、手部局部或2.5D/动画人物；不要出现写实真人、真人正脸或真人半身像。";
 const COVER_STYLE_HINTS = [
   "波普风，大色块和强对比排版",
   "极简风，大留白和一个强视觉焦点",
@@ -207,6 +208,12 @@ function stripInfoFlowDirectorNotes(text = "") {
     .replace(/不要只出现抽象光效。?/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function storyboardSafePrompt(text = "") {
+  const base = String(text || "").trim();
+  if (!base) return STORYBOARD_NO_REAL_PERSON_PROMPT;
+  return `${base}\n${STORYBOARD_NO_REAL_PERSON_PROMPT}`;
 }
 
 function infoFlowRoleAnchor(acc = {}) {
@@ -480,9 +487,16 @@ function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed =
   };
 }
 
-function applyBatchInfoFlowPlan(p, plan) {
+function applyBatchInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
   const A = p.artifacts.boards || (p.artifacts.boards = {});
   A.materialMode = "infoFlow";
+  const oldCopy = p.artifacts.copy || {};
+  const nextTitle = preserveCopy
+    ? (oldCopy.title || p.title || plan.title || p.topic || "")
+    : (plan.title || p.title || p.topic || "");
+  const nextBody = preserveCopy
+    ? (oldCopy.body || plan.copy || "")
+    : (plan.copy || oldCopy.body || "");
   A.infoFlow = {
     ...(A.infoFlow || {}),
     status: "ready",
@@ -495,9 +509,9 @@ function applyBatchInfoFlowPlan(p, plan) {
     storyboards: []
   };
   p.topic = plan.topic || p.topic || "";
-  p.title = plan.title || p.title || p.topic || "";
+  p.title = nextTitle;
   p.artifacts.script.title = p.title;
-  p.artifacts.copy = { ...(p.artifacts.copy || {}), title: p.title, body: plan.copy || "" };
+  p.artifacts.copy = { ...oldCopy, title: nextTitle, body: nextBody };
   Object.assign(p.artifacts.audio, {
     assetId: null,
     duration: 30,
@@ -527,14 +541,14 @@ async function generateBatchInfoFlowStoryboards(p, batch, acc) {
   const prompts = Array.isArray(back.storyboardPrompts) && back.storyboardPrompts.length
     ? back.storyboardPrompts
     : buildBatchInfoFlowPlan({ topic: p.topic, product: productById(p.artifacts.script.productId || "dumate"), acc, seed: p.id }).segments[1].storyboardPrompts;
-  const made = [];
-  info.status = "storyboarding";
+    const made = [];
+    info.status = "storyboarding";
   info.error = "";
   save("productions");
   try {
     for (let i = 0; i < prompts.length; i++) {
       const req = await provider.submit({
-        prompt: enrichBatchImagePrompt(`${prompts[i]}\n画面必须是9:16竖版分镜图，文字少而清晰，保留产品logo/界面参考，不要二维码，不要页码。`, refs),
+        prompt: enrichBatchImagePrompt(`${storyboardSafePrompt(prompts[i])}\n画面必须是9:16竖版分镜图，文字少而清晰，保留产品logo/界面参考，不要二维码，不要页码。`, refs),
         refs,
         ratio: "9:16",
         apiKey: key?.secret,
@@ -1157,7 +1171,7 @@ async function draftOne(p, batch) {
           p.title = customCopyTitle || p.title || customVideoDraft.title;
           p.artifacts.copy = {
             title: p.title,
-            body: customVideoDraft.copy || customCopyBody || ""
+            body: customCopyBody || customVideoDraft.copy || ""
           };
           p.artifacts.script.generatedNarration = customVideoDraft.narration || "";
           p.artifacts.script.generatedVisualPrompt = customVideoDraft.visualPrompt || "";
@@ -1172,14 +1186,14 @@ async function draftOne(p, batch) {
           topic: customTopic,
           title: p.artifacts.copy.title,
           copyText: customVideoDraft?.narration || p.artifacts.copy.body,
-          publishCopy: customVideoDraft?.copy || customCopyBody || p.artifacts.copy.body,
+          publishCopy: customCopyBody || p.artifacts.copy.body || customVideoDraft?.copy,
           product,
           acc,
           seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`
         });
-        applyBatchInfoFlowPlan(p, planInfo);
-        p.artifacts.copy.title = customCopyTitle || customVideoDraft?.title || planInfo.title || p.title;
-        p.artifacts.copy.body = stripLeadingCopyTitle(customVideoDraft?.copy || customCopyBody || planInfo.copy || "", p.artifacts.copy.title);
+        applyBatchInfoFlowPlan(p, planInfo, { preserveCopy: true });
+        p.artifacts.copy.title = customCopyTitle || p.artifacts.copy.title || customVideoDraft?.title || planInfo.title || p.title;
+        p.artifacts.copy.body = stripLeadingCopyTitle(customCopyBody || p.artifacts.copy.body || customVideoDraft?.copy || planInfo.copy || "", p.artifacts.copy.title);
         p.artifacts.script.source = "llm-custom-infoflow";
         p.artifacts.script.style = style;
         const backSeg = p.artifacts.boards?.infoFlow?.segments?.[1];
@@ -1187,7 +1201,7 @@ async function draftOne(p, batch) {
         if (backSeg && visualPrompt) {
           backSeg.videoPrompt = stripInfoFlowDirectorNotes(backSeg.videoPrompt || "");
           backSeg.storyboardPrompts = [
-            visualPrompt,
+            storyboardSafePrompt(visualPrompt),
             ...(backSeg.storyboardPrompts || [])
           ].slice(0, 4);
         }

@@ -35,7 +35,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 try:
@@ -253,6 +253,56 @@ def no_cache_file(path: Path, media_type: str = None):
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache"
     })
+
+
+def ranged_file_response(request: Request, path: Path, media_type: str = None, cache_seconds: int = 3600):
+    size = path.stat().st_size
+    media = media_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    base_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": f"public, max-age={cache_seconds}",
+    }
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    if not range_header:
+        return FileResponse(str(path), media_type=media, headers=base_headers)
+
+    m = re.match(r"bytes=(\d*)-(\d*)$", range_header.strip())
+    if not m:
+        return FileResponse(str(path), media_type=media, headers=base_headers)
+
+    start_raw, end_raw = m.groups()
+    if start_raw == "" and end_raw == "":
+        return FileResponse(str(path), media_type=media, headers=base_headers)
+    if start_raw == "":
+        suffix = int(end_raw or "0")
+        start = max(size - suffix, 0)
+        end = size - 1
+    else:
+        start = int(start_raw)
+        end = int(end_raw) if end_raw else size - 1
+    end = min(end, size - 1)
+    if start >= size or start > end:
+        return Response(status_code=416, headers={**base_headers, "Content-Range": f"bytes */{size}"})
+
+    length = end - start + 1
+
+    def chunked():
+        with path.open("rb") as f:
+            f.seek(start)
+            remaining = length
+            while remaining > 0:
+                data = f.read(min(1024 * 1024, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+
+    headers = {
+        **base_headers,
+        "Content-Range": f"bytes {start}-{end}/{size}",
+        "Content-Length": str(length),
+    }
+    return StreamingResponse(chunked(), status_code=206, media_type=media, headers=headers)
 
 
 # ---------- 简易 JSON 存储（团队规模够用，后续可换 SQLite/Postgres） ----------
@@ -2231,12 +2281,12 @@ async def proxy_file(req: FileProxyReq):
 
 
 @app.get("/api/video/composed/{name}")
-def composed_file(name: str):
+def composed_file(name: str, request: Request):
     safe_name = Path(name).name
     path = COMPOSED_DIR / safe_name
     if not path.exists():
         raise HTTPException(404, "成片不存在")
-    return FileResponse(path, media_type="video/mp4", filename=safe_name)
+    return ranged_file_response(request, path, media_type="video/mp4")
 
 
 async def _write_video_source(client: httpx.AsyncClient, url: str, path: Path, label: str) -> bool:
@@ -3003,12 +3053,12 @@ async def file_put(asset_id: str, req: Request, filename: str = "", mime: str = 
 
 
 @app.get("/api/files/{name}")
-def file_get(name: str):
+def file_get(name: str, request: Request):
     path = _upload_path(name)
     if not path.exists():
         raise HTTPException(404, "文件不存在或已被清理")
     media = _media_type_for_path(path)
-    return FileResponse(path, media_type=media, filename=path.name)
+    return ranged_file_response(request, path, media_type=media)
 
 
 @app.delete("/api/files/{name}")
