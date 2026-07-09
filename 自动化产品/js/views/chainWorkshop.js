@@ -7,7 +7,7 @@
 import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid } from "../core/util.js";
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
-import { state, save, on, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
+import { state, save, persistNow, on, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
@@ -29,7 +29,12 @@ const INFO_FLOW_STORYBOARD_TIMEOUT_MS = 4 * 60 * 1000;
 const INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS = 140000;
 const COVER_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
 const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
-const STORYBOARD_NO_REAL_PERSON_PROMPT = "分镜图只呈现产品界面、设备、流程卡、图标、手部局部或2.5D/动画人物；不要出现写实真人、真人正脸或真人半身像。";
+const STORYBOARD_VISUAL_SCOPE_PROMPT = "分镜图只呈现产品界面、设备、流程卡、图标、手部局部或2.5D动画角色；人物仅用卡通轮廓、背影或局部动作，不画可识别人物肖像。";
+const STORYBOARD_RISKY_TERMS = [
+  ["写实" + "真人", "2.5D动画角色"],
+  ["真人" + "正脸", "动画角色侧影"],
+  ["真人" + "半身像", "动画角色半身"]
+];
 const COVER_STYLE_HINTS = [
   "波普风，大色块和强对比排版",
   "极简风，大留白和一个强视觉焦点",
@@ -376,14 +381,21 @@ function stripInfoFlowDirectorNotes(text = "") {
 }
 
 function storyboardSafePrompt(text = "") {
-  const base = String(text || "").trim();
-  const cleaned = base
-    .replace(/写实真人/g, "2.5D动画角色")
-    .replace(/真人正脸/g, "动画角色侧影")
-    .replace(/真人半身像/g, "动画角色半身")
-    .trim();
-  if (!cleaned) return STORYBOARD_NO_REAL_PERSON_PROMPT;
-  return `${cleaned}\n${STORYBOARD_NO_REAL_PERSON_PROMPT}`;
+  const cleaned = sanitizeStoryboardText(text);
+  if (!cleaned) return STORYBOARD_VISUAL_SCOPE_PROMPT;
+  return `${cleaned}\n${STORYBOARD_VISUAL_SCOPE_PROMPT}`;
+}
+
+function sanitizeStoryboardText(text = "") {
+  let cleaned = String(text || "");
+  STORYBOARD_RISKY_TERMS.forEach(([from, to]) => { cleaned = cleaned.replaceAll(from, to); });
+  return cleaned.trim();
+}
+
+function touchProduction(p, info = null) {
+  const now = Date.now();
+  if (info) info.updatedAt = now;
+  if (p) p.updatedAt = now;
 }
 
 function safeTtsText(text = "") {
@@ -400,8 +412,20 @@ function ensureInfoFlowState(p) {
   A.materialMode = A.materialMode || (isMaterial(p) ? "infoFlow" : "standard");
   A.infoFlow = A.infoFlow || { segments: [], storyboards: [], status: "idle", error: "" };
   A.infoFlow.segments = Array.isArray(A.infoFlow.segments) ? A.infoFlow.segments.slice(0, 2) : [];
+  let changed = false;
   A.infoFlow.segments.forEach(seg => {
-    if (seg?.videoPrompt) seg.videoPrompt = stripInfoFlowDirectorNotes(seg.videoPrompt);
+    if (!seg) return;
+    if (seg.videoPrompt) {
+      const next = stripInfoFlowDirectorNotes(seg.videoPrompt);
+      if (next !== seg.videoPrompt) { seg.videoPrompt = next; changed = true; }
+    }
+    if (Array.isArray(seg.storyboardPrompts)) {
+      const next = seg.storyboardPrompts.map(sanitizeStoryboardText).filter(Boolean);
+      if (JSON.stringify(next) !== JSON.stringify(seg.storyboardPrompts)) {
+        seg.storyboardPrompts = next;
+        changed = true;
+      }
+    }
   });
   A.infoFlow.storyboards = Array.isArray(A.infoFlow.storyboards) ? A.infoFlow.storyboards : [];
   A.infoFlow.status = A.infoFlow.status || "idle";
@@ -411,10 +435,11 @@ function ensureInfoFlowState(p) {
     if (!A.infoFlow.updatedAt || (!hasStoryboard && age > INFO_FLOW_STORYBOARD_TIMEOUT_MS)) {
       A.infoFlow.status = "failed";
       A.infoFlow.error = "功能演示分镜生成超时或连接中断，请重试。";
-      A.infoFlow.updatedAt = Date.now();
-      save("productions");
+      touchProduction(p, A.infoFlow);
+      changed = true;
     }
   }
+  if (changed) save("productions");
   return A.infoFlow;
 }
 
@@ -825,6 +850,7 @@ function applyInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
     segments: (plan.segments || []).slice(0, 2).map((seg, i) => ({
       ...seg,
       videoPrompt: stripInfoFlowDirectorNotes(seg.videoPrompt || ""),
+      storyboardPrompts: Array.isArray(seg.storyboardPrompts) ? seg.storyboardPrompts.map(sanitizeStoryboardText).filter(Boolean) : seg.storyboardPrompts,
       storyboardAssetIds: i === 1 ? [...new Set([...(oldBack.storyboardAssetIds || []), ...(seg.storyboardAssetIds || [])])] : []
     }))
   };
@@ -840,6 +866,7 @@ function applyInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
     lastError: ""
   });
   buildMaterialUnits(p);
+  touchProduction(p, A.infoFlow);
 }
 
 function normProductText(text = "") {
@@ -2131,6 +2158,7 @@ export function renderWorkshopPage(root, p) {
         }
       });
       buildMaterialUnits(p);
+      touchProduction(p, info);
       save("productions");
     }
 
@@ -2162,6 +2190,7 @@ export function renderWorkshopPage(root, p) {
       if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
         info.status = "failed";
         info.error = "信息流脚本生成失败：没有返回完整的前后段脚本，请重试。";
+        touchProduction(p, info);
         save("productions");
         throw new Error(info.error);
       }
@@ -2177,11 +2206,13 @@ export function renderWorkshopPage(root, p) {
       if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
         info.status = "failed";
         info.error = "信息流脚本生成失败：没有写入前后15秒脚本。";
+        touchProduction(p, info);
         save("productions");
         throw new Error(info.error);
       }
       info.status = "ready";
       info.error = "";
+      touchProduction(p, info);
       save("productions");
       return info;
     }
@@ -2220,14 +2251,19 @@ export function renderWorkshopPage(root, p) {
       const back = info.segments[1];
       if (!back) throw new Error("请先生成信息流脚本");
       if (!imageApiConfigured()) throw new Error("图片 API 未接入：请手动上传功能演示分镜参考图");
-      const prompts = ((back.storyboardPrompts || []).length ? back.storyboardPrompts : buildInfoFlowPlan(currentInfoFlowPlanArgs()).segments[1].storyboardPrompts).slice(0, 3);
+      const prompts = ((back.storyboardPrompts || []).length ? back.storyboardPrompts : buildInfoFlowPlan(currentInfoFlowPlanArgs()).segments[1].storyboardPrompts)
+        .map(sanitizeStoryboardText)
+        .filter(Boolean)
+        .slice(0, 3);
+      if (!prompts.length) throw new Error("缺少功能演示分镜提示词，请先重新生成信息流脚本");
       const provider = activeProviderFor("image");
       const key = providerKeyFor("image", provider);
       if (provider?.mock) throw new Error("图片 API 未接入：当前图片 Provider 是模拟模式");
       info.status = "storyboarding";
       info.error = "";
-      info.updatedAt = Date.now();
+      touchProduction(p, info);
       save("productions");
+      await persistNow();
       draw();
       try {
         const refIds = [...new Set([...(A.omniRefAssetIds || []), ...(A.sceneRefAssetIds || [])].filter(Boolean))];
@@ -2256,16 +2292,17 @@ export function renderWorkshopPage(root, p) {
             dataUrl: polished
           });
           made.push(a.id);
-          info.updatedAt = Date.now();
+          touchProduction(p, info);
           save("productions");
         }
         back.storyboardAssetIds = [...new Set([...(back.storyboardAssetIds || []), ...made])];
         A.infoFlow.storyboards = back.storyboardAssetIds;
         info.status = "ready";
         info.error = "";
-        info.updatedAt = Date.now();
+        touchProduction(p, info);
         buildMaterialUnits(p);
         save("productions");
+        await persistNow();
         if (!silent) toast(`功能演示分镜已生成：${made.length} 张`);
         return made;
       } catch (err) {
@@ -2274,8 +2311,9 @@ export function renderWorkshopPage(root, p) {
         info.error = /499|abort|cancel|断开|超时|timeout/i.test(raw)
           ? "功能演示分镜生成超时或连接中断，请重试；如连续失败，可先手动上传分镜参考图。"
           : raw;
-        info.updatedAt = Date.now();
+        touchProduction(p, info);
         save("productions");
+        await persistNow();
         if (!silent) toast("功能演示分镜生成失败：" + info.error, "error");
         throw err;
       } finally {
@@ -2299,6 +2337,7 @@ export function renderWorkshopPage(root, p) {
         const info = ensureInfoFlowState(p);
         info.status = "failed";
         info.error = err.message || String(err) || "信息流脚本生成失败";
+        touchProduction(p, info);
         save("productions");
         toast(info.error, "error");
       } finally {

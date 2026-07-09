@@ -29,6 +29,12 @@ COLLECTIONS = [
 ]
 # 按 owner 隔离的集合（创作互不干扰）；其余全员共享。jobs 跟随其 production 的可见性。
 OWNED = {"productions", "sessions", "batches", "voicePresets"}
+INFO_FLOW_STORYBOARD_TIMEOUT_MS = 4 * 60 * 1000
+STORYBOARD_RISKY_TERMS = (
+    ("写实" + "真人", "2.5D动画角色"),
+    ("真人" + "正脸", "动画角色侧影"),
+    ("真人" + "半身像", "动画角色半身"),
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS docs(
@@ -501,6 +507,48 @@ def delete_doc(collection, doc_id):
             conn.close()
 
 
+def _sanitize_storyboard_terms(value):
+    if isinstance(value, str):
+        out = value
+        for source, target in STORYBOARD_RISKY_TERMS:
+            out = out.replace(source, target)
+        return out
+    if isinstance(value, list):
+        return [_sanitize_storyboard_terms(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _sanitize_storyboard_terms(v) for k, v in value.items()}
+    return value
+
+
+def _heal_production_runtime_state(item):
+    """修复旧前端遗留的中间态，避免 UI 永久卡在生成中。"""
+    if not isinstance(item, dict):
+        return item, False
+    changed = False
+    artifacts = item.get("artifacts") if isinstance(item.get("artifacts"), dict) else {}
+    boards = artifacts.get("boards") if isinstance(artifacts.get("boards"), dict) else {}
+    info = boards.get("infoFlow") if isinstance(boards.get("infoFlow"), dict) else None
+    if not info:
+        return item, False
+    cleaned = _sanitize_storyboard_terms(info)
+    if cleaned != info:
+        boards["infoFlow"] = cleaned
+        info = cleaned
+        changed = True
+    if info.get("status") == "storyboarding":
+        segments = info.get("segments") if isinstance(info.get("segments"), list) else []
+        has_storyboard = bool(info.get("storyboards")) or any(bool((s or {}).get("storyboardAssetIds")) for s in segments if isinstance(s, dict))
+        age = int(time.time() * 1000) - int(info.get("updatedAt") or 0)
+        if (not info.get("updatedAt")) or ((not has_storyboard) and age > INFO_FLOW_STORYBOARD_TIMEOUT_MS):
+            now = int(time.time() * 1000)
+            info["status"] = "failed"
+            info["error"] = "功能演示分镜生成超时或连接中断，请重试。"
+            info["updatedAt"] = now
+            item["updatedAt"] = now
+            changed = True
+    return item, changed
+
+
 def state_for(member_id, role):
     """按成员可见性返回全量快照：创作态按 owner 隔离，发布/共享数据仍全员可见。"""
     _ensure_db()
@@ -514,6 +562,9 @@ def state_for(member_id, role):
                 items = []
                 for data, owner in rows:
                     item = json.loads(data)
+                    healed = False
+                    if col == "productions":
+                        item, healed = _heal_production_runtime_state(item)
                     if col in {"sessions", "batches"} and owner and owner != member_id:
                         continue
                     if col == "productions" and owner and owner != member_id and item.get("stage") != "delivered":
@@ -522,10 +573,16 @@ def state_for(member_id, role):
                         continue
                     if col == "voicePresets" and owner and owner != member_id:
                         continue
+                    if healed and col == "productions":
+                        conn.execute(
+                            "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                            (col, str(item.get("id")), item.get("ownerId"), int(item.get("updatedAt") or time.time() * 1000), json.dumps(item, ensure_ascii=False)),
+                        )
                     items.append(item)
                 out[col] = items
                 if col == "productions":
                     visible_prod_ids = {p.get("id") for p in items}
+            conn.commit()
         finally:
             conn.close()
     out["jobs"] = [j for j in out.get("jobs", []) if j.get("productionId") in visible_prod_ids]

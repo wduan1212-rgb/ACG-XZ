@@ -5,7 +5,7 @@ import { state, save, emit, on, notify, accountById, productionById, productById
 import { uid, runPool, debounce } from "../core/util.js";
 import { AI } from "../api/ai.js";
 import { groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
-import { createProduction, setStage, setStatus, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
+import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
 import { addAssetFromDataUrl, addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
@@ -19,7 +19,12 @@ const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
 const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
 const INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS = 140000;
-const STORYBOARD_NO_REAL_PERSON_PROMPT = "分镜图只呈现产品界面、设备、流程卡、图标、手部局部或2.5D/动画人物；不要出现写实真人、真人正脸或真人半身像。";
+const STORYBOARD_VISUAL_SCOPE_PROMPT = "分镜图只呈现产品界面、设备、流程卡、图标、手部局部或2.5D动画角色；人物仅用卡通轮廓、背影或局部动作，不画可识别人物肖像。";
+const STORYBOARD_RISKY_TERMS = [
+  ["写实" + "真人", "2.5D动画角色"],
+  ["真人" + "正脸", "动画角色侧影"],
+  ["真人" + "半身像", "动画角色半身"]
+];
 const COVER_STYLE_HINTS = [
   "波普风，大色块和强对比排版",
   "极简风，大留白和一个强视觉焦点",
@@ -212,14 +217,20 @@ function stripInfoFlowDirectorNotes(text = "") {
 }
 
 function storyboardSafePrompt(text = "") {
-  const base = String(text || "").trim();
-  const cleaned = base
-    .replace(/写实真人/g, "2.5D动画角色")
-    .replace(/真人正脸/g, "动画角色侧影")
-    .replace(/真人半身像/g, "动画角色半身")
-    .trim();
-  if (!cleaned) return STORYBOARD_NO_REAL_PERSON_PROMPT;
-  return `${cleaned}\n${STORYBOARD_NO_REAL_PERSON_PROMPT}`;
+  const cleaned = sanitizeStoryboardText(text);
+  if (!cleaned) return STORYBOARD_VISUAL_SCOPE_PROMPT;
+  return `${cleaned}\n${STORYBOARD_VISUAL_SCOPE_PROMPT}`;
+}
+
+function sanitizeStoryboardText(text = "") {
+  let cleaned = String(text || "");
+  STORYBOARD_RISKY_TERMS.forEach(([from, to]) => { cleaned = cleaned.replaceAll(from, to); });
+  return cleaned.trim();
+}
+
+function touchInfoFlowProduction(p, info = null) {
+  if (info) info.updatedAt = Date.now();
+  touch(p);
 }
 
 function withTimeout(promise, ms, message) {
@@ -518,6 +529,7 @@ function applyBatchInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
     segments: (plan.segments || []).slice(0, 2).map((seg, i) => ({
       ...seg,
       videoPrompt: stripInfoFlowDirectorNotes(seg.videoPrompt || ""),
+      storyboardPrompts: Array.isArray(seg.storyboardPrompts) ? seg.storyboardPrompts.map(sanitizeStoryboardText).filter(Boolean) : seg.storyboardPrompts,
       storyboardAssetIds: i === 1 ? [...new Set(seg.storyboardAssetIds || [])] : []
     })),
     storyboards: []
@@ -534,6 +546,7 @@ function applyBatchInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
     lastError: ""
   });
   buildMaterialUnits(p);
+  touch(p);
 }
 
 async function generateBatchInfoFlowStoryboards(p, batch, acc) {
@@ -554,11 +567,16 @@ async function generateBatchInfoFlowStoryboards(p, batch, acc) {
   const refs = await imageRefsForIds(refIds, "infoflow");
   const prompts = (Array.isArray(back.storyboardPrompts) && back.storyboardPrompts.length
     ? back.storyboardPrompts
-    : buildBatchInfoFlowPlan({ topic: p.topic, product: productById(p.artifacts.script.productId || "dumate"), acc, seed: p.id }).segments[1].storyboardPrompts).slice(0, 3);
+    : buildBatchInfoFlowPlan({ topic: p.topic, product: productById(p.artifacts.script.productId || "dumate"), acc, seed: p.id }).segments[1].storyboardPrompts)
+    .map(sanitizeStoryboardText)
+    .filter(Boolean)
+    .slice(0, 3);
+  if (!prompts.length) return false;
+  back.storyboardPrompts = prompts;
   const made = [];
   info.status = "storyboarding";
   info.error = "";
-  info.updatedAt = Date.now();
+  touchInfoFlowProduction(p, info);
   save("productions");
   try {
     for (let i = 0; i < prompts.length; i++) {
@@ -580,14 +598,14 @@ async function generateBatchInfoFlowStoryboards(p, batch, acc) {
         dataUrl: polished
       });
       made.push(a.id);
-      info.updatedAt = Date.now();
+      touchInfoFlowProduction(p, info);
       save("productions");
     }
     back.storyboardAssetIds = [...new Set([...(back.storyboardAssetIds || []), ...made])];
     info.storyboards = back.storyboardAssetIds;
     info.status = "ready";
     info.error = "";
-    info.updatedAt = Date.now();
+    touchInfoFlowProduction(p, info);
     buildMaterialUnits(p);
     save("productions");
     return true;
@@ -597,7 +615,7 @@ async function generateBatchInfoFlowStoryboards(p, batch, acc) {
     info.error = /499|abort|cancel|断开|超时|timeout/i.test(raw)
       ? "功能演示分镜生成超时或连接中断，请重试；如连续失败，可先手动上传分镜参考图。"
       : raw;
-    info.updatedAt = Date.now();
+    touchInfoFlowProduction(p, info);
     save("productions");
     return false;
   }
