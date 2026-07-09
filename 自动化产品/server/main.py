@@ -143,6 +143,7 @@ DIGITAL_HUMAN_PE_FAST_MODE = os.getenv("DIGITAL_HUMAN_PE_FAST_MODE", "true").low
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 VIDEO_REFS = {}
 COMPOSED_DIR = Path(os.getenv("COMPOSED_DIR", ROOT / "composed"))
+VIDEO_OUTPUT_CACHE_MAX_BYTES = int(os.getenv("VIDEO_OUTPUT_CACHE_MAX_BYTES", "734003200") or "734003200")
 MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
 MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com").rstrip("/")
 MINIMAX_GROUP_ID = os.getenv("MINIMAX_GROUP_ID", "").strip()
@@ -1201,6 +1202,89 @@ def _find_video_url(obj) -> str:
     return ""
 
 
+def _local_server_file_path(url: str) -> Optional[Path]:
+    raw = str(url or "").strip()
+    if not raw:
+        return None
+    path = urlparse(raw).path if raw.startswith(("http://", "https://")) else raw
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    if path.startswith("/api/video/composed/"):
+        local = COMPOSED_DIR / Path(path[len("/api/video/composed/"):]).name
+    elif path.startswith("/api/files/"):
+        local = UPLOAD_DIR / Path(path[len("/api/files/"):]).name
+    else:
+        return None
+    try:
+        local.resolve().relative_to(local.parent.resolve())
+    except Exception:
+        return None
+    return local
+
+
+def _stable_local_video_url(url: str) -> str:
+    raw = str(url or "").strip()
+    path = urlparse(raw).path if raw.startswith(("http://", "https://")) else raw
+    path = path.split("?", 1)[0].split("#", 1)[0]
+    if path.startswith("/api/video/composed/"):
+        return "/api/video/composed/" + Path(path[len("/api/video/composed/"):]).name
+    if path.startswith("/api/files/"):
+        return "/api/files/" + Path(path[len("/api/files/"):]).name
+    return ""
+
+
+async def _download_binary(client: httpx.AsyncClient, url: str, label: str, max_bytes: int = VIDEO_OUTPUT_CACHE_MAX_BYTES) -> bytes:
+    try:
+        r = await client.get(url, **_httpx_get_redirect_kwargs())
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"{label}下载失败：{exc.__class__.__name__}")
+    if r.status_code >= 400:
+        raise RuntimeError(f"{label}下载失败：HTTP {r.status_code}")
+    data = r.content or b""
+    if not data:
+        raise RuntimeError(f"{label}下载失败：文件为空")
+    if max_bytes > 0 and len(data) > max_bytes:
+        raise RuntimeError(f"{label}下载失败：文件过大")
+    return data
+
+
+async def _cache_generated_video_output(video_url: str, prefix: str) -> Tuple[str, str]:
+    raw = str(video_url or "").strip()
+    if not raw:
+        return "", ""
+    stable = _stable_local_video_url(raw)
+    if stable:
+        local = _local_server_file_path(stable)
+        if local and local.exists() and local.stat().st_size > 0:
+            return stable, ""
+        return "", "视频已生成，但服务器缓存文件暂不可读取，请重试生成。"
+    if not raw.startswith(("http://", "https://")):
+        return raw, ""
+    COMPOSED_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:18]
+    out_name = f"{prefix}_{digest}.mp4"
+    out_path = COMPOSED_DIR / out_name
+    if out_path.exists() and out_path.stat().st_size > 0:
+        return f"/api/video/composed/{out_name}", ""
+    tmp_path = out_path.with_suffix(".tmp")
+    try:
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(
+            timeout=httpx.Timeout(240.0, connect=12.0),
+            trust_env=False,
+            follow_redirects=True
+        )) as client:
+            data = await _download_binary(client, raw, "成片")
+        tmp_path.write_bytes(data)
+        tmp_path.replace(out_path)
+        return f"/api/video/composed/{out_name}", ""
+    except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+        return "", "视频已生成，但服务器缓存成片失败；请稍后重试该段，避免直接播放上游临时地址。"
+
+
 def _public_base(url: str) -> str:
     parts = url.split("/")
     return f"{parts[0]}//{parts[2]}/***" if len(parts) > 2 else "***"
@@ -1885,12 +1969,25 @@ async def _digital_human_poll(task_id: str):
         }
     status = _cv_status(data)
     video_url = _find_video_url(data)
+    output = None
+    error = _cv_error(data) if status == "failed" else None
+    if status == "succeeded" and video_url:
+        stable_url, cache_error = await _cache_generated_video_output(video_url, "omnihuman")
+        if stable_url:
+            output = {"url": stable_url, "label": "OmniHuman 数字人片段已生成"}
+        else:
+            status = "failed"
+            error = cache_error or "OmniHuman 已生成视频，但服务器未能缓存成片，请重试该段。"
+    elif video_url:
+        stable_url, _ = await _cache_generated_video_output(video_url, "omnihuman")
+        if stable_url:
+            output = {"url": stable_url, "label": "OmniHuman 数字人片段已生成"}
     return {
         "ok": True,
         "status": status,
         "progress": _video_progress(data, status),
-        "output": {"url": video_url, "label": "OmniHuman 数字人片段已生成"} if video_url else None,
-        "error": _cv_error(data) if status == "failed" else None,
+        "output": output,
+        "error": error,
         "raw": data,
     }
 
@@ -2082,12 +2179,25 @@ async def video_poll(task_id: str):
     data = r.json()
     status = _video_status(data)
     video_url = _find_video_url(data)
+    output = None
+    error = _video_error(data) if status == "failed" else None
+    if status == "succeeded" and video_url:
+        stable_url, cache_error = await _cache_generated_video_output(video_url, "seedance")
+        if stable_url:
+            output = {"url": stable_url, "label": "Seedance 片段已生成"}
+        else:
+            status = "failed"
+            error = cache_error or "Seedance 已生成视频，但服务器未能缓存成片，请重试该段。"
+    elif video_url:
+        stable_url, _ = await _cache_generated_video_output(video_url, "seedance")
+        if stable_url:
+            output = {"url": stable_url, "label": "Seedance 片段已生成"}
     return {
         "ok": True,
         "status": status,
         "progress": _video_progress(data, status),
-        "output": {"url": video_url, "label": "Seedance 片段已生成"} if video_url else None,
-        "error": _video_error(data) if status == "failed" else None,
+        "output": output,
+        "error": error,
         "raw": data,
     }
 
@@ -2129,6 +2239,31 @@ def composed_file(name: str):
     return FileResponse(path, media_type="video/mp4", filename=safe_name)
 
 
+async def _write_video_source(client: httpx.AsyncClient, url: str, path: Path, label: str) -> bool:
+    source = str(url or "").strip()
+    if not source:
+        return False
+    local = _local_server_file_path(source)
+    if local:
+        if not local.exists() or local.stat().st_size <= 0:
+            raise HTTPException(502, f"{label}不可读取")
+        shutil.copyfile(local, path)
+        return True
+    if not source.startswith(("http://", "https://")):
+        return False
+    try:
+        data = await _download_binary(client, source, label)
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))
+    path.write_bytes(data)
+    return True
+
+
+def _supported_video_source(url: str) -> bool:
+    source = str(url or "").strip()
+    return bool(source and (source.startswith(("http://", "https://", "/api/video/composed/", "/api/files/"))))
+
+
 @app.post("/api/video/compose")
 async def video_compose(req: ComposeReq):
     """把时间轴上的 Seedance 片段拼成一个同源 mp4。
@@ -2136,7 +2271,7 @@ async def video_compose(req: ComposeReq):
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
         raise HTTPException(501, "本机未安装 ffmpeg，无法合成成片。服务器部署时请安装 ffmpeg 后再使用 /api/video/compose。")
-    clips = [c for c in (req.clips or []) if (c.url or "").startswith(("http://", "https://"))]
+    clips = [c for c in (req.clips or []) if _supported_video_source(c.url)]
     if not clips:
         raise HTTPException(400, "没有可合成的视频片段 URL")
     total_dur = max(0.5, sum(float(c.dur or 0) for c in clips) or (len(clips) * 15))
@@ -2150,24 +2285,17 @@ async def video_compose(req: ComposeReq):
         bgm_path = tdir / "bgm.mp3"
         async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(240.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
             for i, c in enumerate(clips):
-                r = await client.get(c.url, **_httpx_get_redirect_kwargs())
-                if r.status_code >= 400:
-                    raise HTTPException(502, f"下载片段失败：{c.name or i + 1} HTTP {r.status_code}")
                 fp = tdir / f"clip_{i:03d}.mp4"
-                fp.write_bytes(r.content)
+                await _write_video_source(client, c.url, fp, f"下载片段失败：{c.name or i + 1}")
                 files.append(fp)
             if req.narrationDataUrl:
                 _write_data_url(narr_path, req.narrationDataUrl)
-            elif req.narrationUrl and req.narrationUrl.startswith(("http://", "https://")):
-                r = await client.get(req.narrationUrl, **_httpx_get_redirect_kwargs())
-                if r.status_code < 400:
-                    narr_path.write_bytes(r.content)
+            elif req.narrationUrl:
+                await _write_video_source(client, req.narrationUrl, narr_path, "下载口播音频失败")
             if req.bgmDataUrl:
                 _write_data_url(bgm_path, req.bgmDataUrl)
-            elif req.bgmUrl and req.bgmUrl.startswith(("http://", "https://")):
-                r = await client.get(req.bgmUrl, **_httpx_get_redirect_kwargs())
-                if r.status_code < 400:
-                    bgm_path.write_bytes(r.content)
+            elif req.bgmUrl:
+                await _write_video_source(client, req.bgmUrl, bgm_path, "下载 BGM 失败")
         concat = tdir / "concat.txt"
         lines = []
         for f in files:

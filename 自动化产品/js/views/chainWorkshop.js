@@ -2113,7 +2113,32 @@ export function renderWorkshopPage(root, p) {
     function applyCurrentInfoFlowPlan() {
       const plan = buildInfoFlowPlan(currentInfoFlowPlanArgs());
       applyInfoFlowPlan(p, plan);
+      const info = ensureInfoFlowState(p);
+      if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
+        info.status = "failed";
+        info.error = "信息流脚本生成失败：没有返回完整的前后段脚本，请重试。";
+        save("productions");
+        throw new Error(info.error);
+      }
       return plan;
+    }
+
+    function ensureCurrentInfoFlowPlanReady() {
+      let info = ensureInfoFlowState(p);
+      if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
+        applyCurrentInfoFlowPlan();
+        info = ensureInfoFlowState(p);
+      }
+      if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
+        info.status = "failed";
+        info.error = "信息流脚本生成失败：没有写入前后15秒脚本。";
+        save("productions");
+        throw new Error(info.error);
+      }
+      info.status = "ready";
+      info.error = "";
+      save("productions");
+      return info;
     }
 
     async function addInfoFlowStoryboardRefs(files) {
@@ -2211,14 +2236,21 @@ export function renderWorkshopPage(root, p) {
     });
     $("#wsInfoPlan", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       syncCopyFromEditor();
-      if (p.artifacts.copy?.customMode !== false) {
-        await generateWorkshopDraft();
-        return;
+      try {
+        if (p.artifacts.copy?.customMode !== false) {
+          await generateWorkshopDraft();
+        }
+        ensureCurrentInfoFlowPlanReady();
+        toast("已生成信息流前后15秒脚本");
+      } catch (err) {
+        const info = ensureInfoFlowState(p);
+        info.status = "failed";
+        info.error = err.message || String(err) || "信息流脚本生成失败";
+        save("productions");
+        toast(info.error, "error");
+      } finally {
+        draw();
       }
-      applyCurrentInfoFlowPlan();
-      save("productions");
-      toast("已生成信息流前后15秒脚本");
-      draw();
     }, "生成中…"));
     $("#wsInfoStoryboard", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       syncInfoFlowPrompts();
@@ -2504,6 +2536,30 @@ export function renderWorkshopPage(root, p) {
         draw();
       }
     }, "生成中…"));
+    $$(".dh-video", root).forEach(video => video.addEventListener("error", () => {
+      const segId = video.closest("[data-dh-seg]")?.dataset.dhSeg || "";
+      const segs = digitalSegmentsForDisplay(p, acc);
+      const idx = segs.findIndex(x => x.id === segId);
+      const seg = idx >= 0 ? segs[idx] : null;
+      const job = seg ? digitalJobFor(seg, idx) : null;
+      const message = "视频已生成，但预览资源暂不可读取；请重试该段，系统会重新缓存成片。";
+      if (job) {
+        job.status = "failed";
+        job.error = message;
+        job.output = null;
+        job.updatedAt = Date.now();
+        save("jobs");
+      }
+      if (seg) {
+        seg.videoStatus = "failed";
+        seg.videoError = message;
+        seg.videoOutput = null;
+        seg.videoUpdatedAt = Date.now();
+        save("productions");
+      }
+      toast(message, "error");
+      draw();
+    }, { once: true }));
     $$("[data-dh-video]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       if (prepareDigitalVideoSegments([b.dataset.dhVideo])) {
         if (!await ensureDigitalHumanCanSubmit([b.dataset.dhVideo])) { draw(); return; }
