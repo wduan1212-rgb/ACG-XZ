@@ -25,6 +25,8 @@ const DIGITAL_SEGMENT_TARGET_SEC = 27;
 const DIGITAL_SEGMENT_MAX_SEC = 30;
 const COVER_LOADING_TIMEOUT_MS = 8 * 60 * 1000;
 const COVER_GENERATE_TIMEOUT_MS = 140000;
+const INFO_FLOW_STORYBOARD_TIMEOUT_MS = 4 * 60 * 1000;
+const INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS = 140000;
 const COVER_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
 const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
 const STORYBOARD_NO_REAL_PERSON_PROMPT = "分镜图只呈现产品界面、设备、流程卡、图标、手部局部或2.5D/动画人物；不要出现写实真人、真人正脸或真人半身像。";
@@ -375,8 +377,13 @@ function stripInfoFlowDirectorNotes(text = "") {
 
 function storyboardSafePrompt(text = "") {
   const base = String(text || "").trim();
-  if (!base) return STORYBOARD_NO_REAL_PERSON_PROMPT;
-  return `${base}\n${STORYBOARD_NO_REAL_PERSON_PROMPT}`;
+  const cleaned = base
+    .replace(/写实真人/g, "2.5D动画角色")
+    .replace(/真人正脸/g, "动画角色侧影")
+    .replace(/真人半身像/g, "动画角色半身")
+    .trim();
+  if (!cleaned) return STORYBOARD_NO_REAL_PERSON_PROMPT;
+  return `${cleaned}\n${STORYBOARD_NO_REAL_PERSON_PROMPT}`;
 }
 
 function safeTtsText(text = "") {
@@ -398,6 +405,16 @@ function ensureInfoFlowState(p) {
   });
   A.infoFlow.storyboards = Array.isArray(A.infoFlow.storyboards) ? A.infoFlow.storyboards : [];
   A.infoFlow.status = A.infoFlow.status || "idle";
+  if (A.infoFlow.status === "storyboarding") {
+    const age = Date.now() - Number(A.infoFlow.updatedAt || 0);
+    const hasStoryboard = A.infoFlow.storyboards.length || A.infoFlow.segments.some(seg => (seg.storyboardAssetIds || []).length);
+    if (!A.infoFlow.updatedAt || (!hasStoryboard && age > INFO_FLOW_STORYBOARD_TIMEOUT_MS)) {
+      A.infoFlow.status = "failed";
+      A.infoFlow.error = "功能演示分镜生成超时或连接中断，请重试。";
+      A.infoFlow.updatedAt = Date.now();
+      save("productions");
+    }
+  }
   return A.infoFlow;
 }
 
@@ -2203,53 +2220,61 @@ export function renderWorkshopPage(root, p) {
       const back = info.segments[1];
       if (!back) throw new Error("请先生成信息流脚本");
       if (!imageApiConfigured()) throw new Error("图片 API 未接入：请手动上传功能演示分镜参考图");
-      const prompts = (back.storyboardPrompts || []).length ? back.storyboardPrompts : buildInfoFlowPlan(currentInfoFlowPlanArgs()).segments[1].storyboardPrompts;
+      const prompts = ((back.storyboardPrompts || []).length ? back.storyboardPrompts : buildInfoFlowPlan(currentInfoFlowPlanArgs()).segments[1].storyboardPrompts).slice(0, 3);
       const provider = activeProviderFor("image");
       const key = providerKeyFor("image", provider);
       if (provider?.mock) throw new Error("图片 API 未接入：当前图片 Provider 是模拟模式");
       info.status = "storyboarding";
       info.error = "";
+      info.updatedAt = Date.now();
       save("productions");
       draw();
       try {
         const refIds = [...new Set([...(A.omniRefAssetIds || []), ...(A.sceneRefAssetIds || [])].filter(Boolean))];
-        const refs = await providerRefsFromAssetIds(refIds, 9);
+        const refs = await withTimeout(providerRefsFromAssetIds(refIds, 9), 45000, "分镜参考图读取超时");
         const made = [];
         for (let i = 0; i < prompts.length; i++) {
           const prompt = [
             storyboardSafePrompt(prompts[i]),
             "画面必须是9:16竖版分镜图，文字少而清晰，保留产品logo/界面参考，不要二维码，不要页码。"
           ].join("\n");
-          const r = await provider.submit({
+          const r = await withTimeout(provider.submit({
             prompt,
             refs,
             ratio: "9:16",
             apiKey: key?.secret,
             endpoint: key?.provider,
             model: key?.model || "custom-imagemodel-gt"
-          });
-          const out = await provider.poll(r.providerRef);
+          }), INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS, `第${i + 1}张分镜提交超时`);
+          const out = await withTimeout(provider.poll(r.providerRef), INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS, `第${i + 1}张分镜生成超时`);
           if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || `第${i + 1}张分镜未返回结果`);
-          const dataUrl = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await coverUrlToDataUrl(out.output.dataUrl);
-          const polished = await polishPublishImage(dataUrl, `${p.id}-infoflow-storyboard-${i + 1}`);
+          const dataUrl = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await withTimeout(coverUrlToDataUrl(out.output.dataUrl), 45000, `第${i + 1}张分镜下载超时`);
+          const polished = await withTimeout(polishPublishImage(dataUrl, `${p.id}-infoflow-storyboard-${i + 1}`), 45000, `第${i + 1}张分镜处理超时`);
           const a = await addAssetFromDataUrl(acc.id, {
             name: `信息流功能演示分镜_${i + 1}_${(p.title || p.topic || "视频").slice(0, 10)}`,
             tags: ["信息流分镜图", "功能演示分镜", "站内生成", "账号资产"],
             dataUrl: polished
           });
           made.push(a.id);
+          info.updatedAt = Date.now();
+          save("productions");
         }
         back.storyboardAssetIds = [...new Set([...(back.storyboardAssetIds || []), ...made])];
         A.infoFlow.storyboards = back.storyboardAssetIds;
         info.status = "ready";
         info.error = "";
+        info.updatedAt = Date.now();
         buildMaterialUnits(p);
         save("productions");
         if (!silent) toast(`功能演示分镜已生成：${made.length} 张`);
         return made;
       } catch (err) {
         info.status = "failed";
-        info.error = err.message || String(err);
+        const raw = err.message || String(err);
+        info.error = /499|abort|cancel|断开|超时|timeout/i.test(raw)
+          ? "功能演示分镜生成超时或连接中断，请重试；如连续失败，可先手动上传分镜参考图。"
+          : raw;
+        info.updatedAt = Date.now();
         save("productions");
         if (!silent) toast("功能演示分镜生成失败：" + info.error, "error");
         throw err;

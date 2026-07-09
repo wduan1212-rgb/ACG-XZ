@@ -18,6 +18,7 @@ import { pickDefaultCreativeTopic } from "../data/xhsTrendLibrary.js";
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
 const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
+const INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS = 140000;
 const STORYBOARD_NO_REAL_PERSON_PROMPT = "分镜图只呈现产品界面、设备、流程卡、图标、手部局部或2.5D/动画人物；不要出现写实真人、真人正脸或真人半身像。";
 const COVER_STYLE_HINTS = [
   "波普风，大色块和强对比排版",
@@ -212,8 +213,21 @@ function stripInfoFlowDirectorNotes(text = "") {
 
 function storyboardSafePrompt(text = "") {
   const base = String(text || "").trim();
-  if (!base) return STORYBOARD_NO_REAL_PERSON_PROMPT;
-  return `${base}\n${STORYBOARD_NO_REAL_PERSON_PROMPT}`;
+  const cleaned = base
+    .replace(/写实真人/g, "2.5D动画角色")
+    .replace(/真人正脸/g, "动画角色侧影")
+    .replace(/真人半身像/g, "动画角色半身")
+    .trim();
+  if (!cleaned) return STORYBOARD_NO_REAL_PERSON_PROMPT;
+  return `${cleaned}\n${STORYBOARD_NO_REAL_PERSON_PROMPT}`;
+}
+
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function infoFlowRoleAnchor(acc = {}) {
@@ -538,44 +552,52 @@ async function generateBatchInfoFlowStoryboards(p, batch, acc) {
     ...(A.sceneRefAssetIds || [])
   ].filter(Boolean))].slice(0, 9);
   const refs = await imageRefsForIds(refIds, "infoflow");
-  const prompts = Array.isArray(back.storyboardPrompts) && back.storyboardPrompts.length
+  const prompts = (Array.isArray(back.storyboardPrompts) && back.storyboardPrompts.length
     ? back.storyboardPrompts
-    : buildBatchInfoFlowPlan({ topic: p.topic, product: productById(p.artifacts.script.productId || "dumate"), acc, seed: p.id }).segments[1].storyboardPrompts;
-    const made = [];
-    info.status = "storyboarding";
+    : buildBatchInfoFlowPlan({ topic: p.topic, product: productById(p.artifacts.script.productId || "dumate"), acc, seed: p.id }).segments[1].storyboardPrompts).slice(0, 3);
+  const made = [];
+  info.status = "storyboarding";
   info.error = "";
+  info.updatedAt = Date.now();
   save("productions");
   try {
     for (let i = 0; i < prompts.length; i++) {
-      const req = await provider.submit({
+      const req = await withTimeout(provider.submit({
         prompt: enrichBatchImagePrompt(`${storyboardSafePrompt(prompts[i])}\n画面必须是9:16竖版分镜图，文字少而清晰，保留产品logo/界面参考，不要二维码，不要页码。`, refs),
         refs,
         ratio: "9:16",
         apiKey: key?.secret,
         endpoint: key?.provider,
         model: key?.model || "custom-imagemodel-gt"
-      });
-      const out = await provider.poll(req.providerRef);
+      }), INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS, `第 ${i + 1} 张信息流分镜提交超时`);
+      const out = await withTimeout(provider.poll(req.providerRef), INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS, `第 ${i + 1} 张信息流分镜生成超时`);
       if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || `第 ${i + 1} 张信息流分镜未返回结果`);
-      const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
-      const polished = await polishImageDataUrl(raw, `${p.id}-batch-infoflow-storyboard-${i + 1}`);
+      const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await withTimeout(dataUrlFromUrl(out.output.dataUrl), 45000, `第 ${i + 1} 张信息流分镜下载超时`);
+      const polished = await withTimeout(polishImageDataUrl(raw, `${p.id}-batch-infoflow-storyboard-${i + 1}`), 45000, `第 ${i + 1} 张信息流分镜处理超时`);
       const a = await addAssetFromDataUrl(acc.id, {
         name: `信息流功能演示分镜_${i + 1}_${(p.title || p.topic || "视频").slice(0, 10)}`,
         tags: ["信息流分镜图", "功能演示分镜", "站内生成", "账号资产"],
         dataUrl: polished
       });
       made.push(a.id);
+      info.updatedAt = Date.now();
+      save("productions");
     }
     back.storyboardAssetIds = [...new Set([...(back.storyboardAssetIds || []), ...made])];
     info.storyboards = back.storyboardAssetIds;
     info.status = "ready";
     info.error = "";
+    info.updatedAt = Date.now();
     buildMaterialUnits(p);
     save("productions");
     return true;
   } catch (err) {
     info.status = "failed";
-    info.error = err.message || String(err);
+    const raw = err.message || String(err);
+    info.error = /499|abort|cancel|断开|超时|timeout/i.test(raw)
+      ? "功能演示分镜生成超时或连接中断，请重试；如连续失败，可先手动上传分镜参考图。"
+      : raw;
+    info.updatedAt = Date.now();
     save("productions");
     return false;
   }
