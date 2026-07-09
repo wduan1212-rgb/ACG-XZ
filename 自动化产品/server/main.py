@@ -2122,10 +2122,11 @@ async def proxy_file(req: FileProxyReq):
 
 @app.get("/api/video/composed/{name}")
 def composed_file(name: str):
-    path = COMPOSED_DIR / name
+    safe_name = Path(name).name
+    path = COMPOSED_DIR / safe_name
     if not path.exists():
         raise HTTPException(404, "成片不存在")
-    return FileResponse(path, media_type="video/mp4", filename=name)
+    return FileResponse(path, media_type="video/mp4", filename=safe_name)
 
 
 @app.post("/api/video/compose")
@@ -2289,6 +2290,10 @@ def _normalize_minimax_tts_error(msg: str) -> str:
 
 
 def _tts_payload(text: str, voice_id: str, speed=MINIMAX_TTS_SPEED, vol=1, pitch=0, language_boost="auto"):
+    try:
+        safe_vol = max(0.1, min(10.0, float(vol if vol is not None else 1)))
+    except Exception:
+        safe_vol = 1
     return {
         "model": MINIMAX_TTS_MODEL,
         "text": (text or "")[:9999],
@@ -2298,8 +2303,8 @@ def _tts_payload(text: str, voice_id: str, speed=MINIMAX_TTS_SPEED, vol=1, pitch
         "voice_setting": {
             "voice_id": voice_id,
             "speed": _int_if_whole(speed, MINIMAX_TTS_SPEED),
-            "vol": int(round(float(vol or 1))),
-            "pitch": int(round(float(pitch or 0))),
+            "vol": _int_if_whole(safe_vol, 1),
+            "pitch": _int_if_whole(pitch, 0),
         },
         "audio_setting": {"sample_rate": 32000, "bitrate": 128000, "format": "mp3", "channel": 1},
     }

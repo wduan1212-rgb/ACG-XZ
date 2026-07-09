@@ -15,10 +15,43 @@ const DIGITAL_HUMAN_MAX_ATTEMPTS = 3;
 let timer = null;
 let ticking = false;
 
-export function createJob({ kind = "video", productionId, segIndex = 0, segName = "", prompt, refAssetIds = [], ratio = "9:16", duration = 15, generateAudio = null, model = "" }) {
+function outputUrl(output) {
+  if (!output) return "";
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      const found = outputUrl(item);
+      if (found) return found;
+    }
+    return "";
+  }
+  if (typeof output === "object") {
+    for (const key of ["url", "videoUrl", "video_url", "result_url"]) {
+      const value = output[key];
+      if (typeof value === "string" && value) return value;
+    }
+    for (const value of Object.values(output)) {
+      const found = outputUrl(value);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
+function normalizeOutput(output) {
+  const url = outputUrl(output);
+  if (!output && !url) return null;
+  if (typeof output === "object" && !Array.isArray(output)) {
+    return url && !output.url ? { ...output, url } : output;
+  }
+  return url ? { url } : null;
+}
+
+export function createJob({ kind = "video", productionId, segIndex = 0, segName = "", prompt, refAssetIds = [], ratio = "9:16", duration = 15, generateAudio = null, model = "", segmentId = "" }) {
   const job = {
     id: uid(), kind, productionId, segIndex, segName,
     prompt, refAssetIds, ratio, duration, generateAudio, model,
+    segmentId,
     provider: null, providerRef: null,
     status: "queued", progress: 0, attempts: 0,
     nextPollAt: 0, nextAttemptAt: 0,
@@ -107,19 +140,47 @@ function scheduleSubmitRetry(j, message) {
   return false;
 }
 
+function ensureDigitalSegmentForJob(p, j) {
+  if (!p?.artifacts) return null;
+  const A = p.artifacts.boards || (p.artifacts.boards = {});
+  A.digitalHuman = A.digitalHuman || { provider: "", model: "", segments: [] };
+  if (!Array.isArray(A.digitalHuman.segments)) A.digitalHuman.segments = [];
+  let seg = j.segmentId ? A.digitalHuman.segments.find(x => x.id === j.segmentId) : null;
+  if (!seg) seg = A.digitalHuman.segments[j.segIndex];
+  if (!seg && Number.isInteger(j.segIndex) && j.segIndex >= 0) {
+    while (A.digitalHuman.segments.length <= j.segIndex) {
+      A.digitalHuman.segments.push({
+        id: uid(),
+        shotIndexes: [],
+        dur: 0,
+        line: "",
+        characterRefAssetId: "",
+        audioAssetId: null,
+        status: "pending"
+      });
+    }
+    seg = A.digitalHuman.segments[j.segIndex];
+  }
+  if (seg && j.segmentId && !seg.id) seg.id = j.segmentId;
+  return seg || null;
+}
+
 function syncJobToProduction(j) {
   if (!isDigitalHumanJob(j)) return;
   const p = productionById(j.productionId);
-  const seg = p?.artifacts?.boards?.digitalHuman?.segments?.[j.segIndex];
+  const seg = ensureDigitalSegmentForJob(p, j);
   if (!seg) return;
   seg.videoJobId = j.id;
+  if (j.segmentId) seg.id = j.segmentId;
   seg.videoStatus = j.status;
   seg.videoProgress = j.progress || 0;
   seg.providerRef = j.providerRef || "";
-  seg.videoOutput = j.output || null;
+  seg.videoOutput = normalizeOutput(j.output);
   seg.videoError = j.error || "";
   seg.videoUpdatedAt = j.updatedAt || Date.now();
+  p.updatedAt = Date.now();
   save("productions");
+  emit("production:update", p);
 }
 
 async function tick() {
@@ -135,7 +196,7 @@ async function tick() {
     try {
       const r = await p.poll(j.providerRef);
       if (r.status === "succeeded") {
-        j.status = "succeeded"; j.progress = 100; j.output = r.output || {}; j.updatedAt = Date.now();
+        j.status = "succeeded"; j.progress = 100; j.output = normalizeOutput(r.output); j.updatedAt = Date.now();
         j.nextPollAt = 0; j.error = null;
         save("jobs"); emit("job:update", j); syncJobToProduction(j); emit("job:done", j);
       } else if (r.status === "failed") {

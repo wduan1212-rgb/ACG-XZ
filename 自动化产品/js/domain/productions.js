@@ -22,6 +22,29 @@ export const STAGES = {
 export const isMaterial = p => p && p.mode === "视频" && p.subType === "无数字人";
 export const isVideoWorkshop = p => p && p.mode === "视频";
 
+function outputUrl(output) {
+  if (!output) return "";
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      const found = outputUrl(item);
+      if (found) return found;
+    }
+    return "";
+  }
+  if (typeof output === "object") {
+    for (const key of ["url", "videoUrl", "video_url", "result_url"]) {
+      const value = output[key];
+      if (typeof value === "string" && value) return value;
+    }
+    for (const value of Object.values(output)) {
+      const found = outputUrl(value);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
 /* flowOf 接受 production / account（含 mode + subType）或 (mode, subType) */
 export const flowOf = (p, subType) => {
   const mode = typeof p === "object" && p ? p.mode : p;
@@ -384,6 +407,44 @@ export function segmentsForGen(p) {
 /* 智能剪辑：用已成功的 job 自动拼时间轴 + 从口播铺字幕
    素材号额外：片段时长跟随口播音频估时、自动选配 BGM（音量低于口播） */
 export function autoAssemble(p) {
+  const dh = p.artifacts?.boards?.digitalHuman;
+  if (isVideoWorkshop(p) && p.artifacts?.boards?.generationMode === "digitalHuman" && Array.isArray(dh?.segments) && dh.segments.length) {
+    const clips = dh.segments.map((seg, i) => {
+      const list = state.jobs.filter(j =>
+        j.productionId === p.id
+        && j.kind === "video"
+        && j.model === "__digital_human__"
+        && j.status === "succeeded"
+        && (j.segmentId ? j.segmentId === seg.id : j.segIndex === i)
+      );
+      const job = (seg.videoJobId && list.find(j => j.id === seg.videoJobId)) || list[list.length - 1];
+      const url = outputUrl(job?.output) || outputUrl(seg.videoOutput);
+      if (!url) return null;
+      return {
+        id: uid(),
+        jobId: job.id,
+        segmentId: seg.id || "",
+        name: job.segName || `数字人${String(i + 1).padStart(2, "0")}`,
+        dur: Math.max(1, Math.round(Number(seg.audioDuration || seg.dur || job.duration || 15) * 10) / 10),
+        trimIn: 0
+      };
+    }).filter(Boolean);
+    if (clips.length) p.artifacts.timeline = clips;
+    if (!(p.artifacts.subs || []).length) {
+      let t = 0;
+      const subs = [];
+      dh.segments.forEach(seg => {
+        const d = Math.max(1, Number(seg.audioDuration || seg.dur || 3));
+        const line = String(seg.line || "").trim();
+        if (line) subs.push(...spreadCaption(line, t, t + d));
+        t += d;
+      });
+      p.artifacts.subs = subs;
+    }
+    touch(p);
+    save("productions");
+    return { clips: p.artifacts.timeline.length, subs: (p.artifacts.subs || []).length };
+  }
   if (isVideoWorkshop(p) && (p.artifacts.boards.units || []).length) return autoMixMaterial(p);
   const segs = segmentsForGen(p);
   const okJobs = segs.map((s, i) => {
@@ -451,6 +512,23 @@ export function autoMixMaterial(p) {
 
 /* 素材号：重生成某单元后，时间轴对应片段自动换绑到新 job */
 export function rebindUnitClip(p, unitIndex, job) {
+  const dh = p.artifacts?.boards?.digitalHuman;
+  if (isVideoWorkshop(p) && p.artifacts?.boards?.generationMode === "digitalHuman" && Array.isArray(dh?.segments)) {
+    const seg = dh.segments[unitIndex];
+    if (!seg || !job) return;
+    const clip = (p.artifacts.timeline || []).find(c =>
+      (seg.id && c.segmentId === seg.id) || c.jobId === seg.videoJobId || c.jobId === job.id
+    );
+    if (clip) {
+      clip.jobId = job.id;
+      clip.segmentId = seg.id || clip.segmentId || "";
+      clip.trimIn = 0;
+      clip.dur = Math.max(1, Math.round(Number(seg.audioDuration || seg.dur || job.duration || clip.dur || 15) * 10) / 10);
+      touch(p);
+      save("productions");
+    }
+    return;
+  }
   const units = materialUnits(p);
   const u = units[unitIndex]; if (!u || !job) return;
   const clip = (p.artifacts.timeline || []).find(c => c.unitId === u.id);

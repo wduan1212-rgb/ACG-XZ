@@ -69,6 +69,8 @@ const BLOCK_PATTERNS = [
   /私域/gi
 ];
 
+const SKIP_SANITIZE_KEYS = /(?:^|_)(?:id|url|uri|href|src|path|key|secret|token|hash|dataUrl|blob|base64|mime|providerRef|assetId|jobId)$/i;
+
 export function stripVoiceControlMarks(input = "") {
   return String(input || "")
     .replace(/\{\/?[a-z][a-z0-9_-]*\}/gi, "")
@@ -79,16 +81,17 @@ export function stripVoiceControlMarks(input = "") {
 
 export function sanitizeXhsText(input = "") {
   let out = sanitizeProduct(stripVoiceControlMarks(input));
+  out = out.replace(/#\s*国产\s*百度搭子/gi, "#百度搭子");
   REPLACEMENTS.forEach((safe, bad) => { out = out.split(bad).join(safe); });
   BLOCK_PATTERNS.forEach(re => { out = out.replace(re, "相关渠道"); });
   return sanitizeProduct(out).replace(/\s{3,}/g, "  ").trim();
 }
 
-export function sanitizeXhsObject(obj) {
-  if (typeof obj === "string") return sanitizeXhsText(obj);
-  if (Array.isArray(obj)) return obj.map(sanitizeXhsObject);
+export function sanitizeXhsObject(obj, key = "") {
+  if (typeof obj === "string") return SKIP_SANITIZE_KEYS.test(key) ? obj : sanitizeXhsText(obj);
+  if (Array.isArray(obj)) return obj.map(item => sanitizeXhsObject(item, key));
   if (obj && typeof obj === "object") {
-    Object.keys(obj).forEach(k => { obj[k] = sanitizeXhsObject(obj[k]); });
+    Object.keys(obj).forEach(k => { obj[k] = sanitizeXhsObject(obj[k], k); });
   }
   return obj;
 }

@@ -1442,16 +1442,55 @@ function accountDefaultRefIds(acc) {
   return [...new Set(out)].slice(0, 5);
 }
 
-function latestDigitalJob(p, segIndex) {
+function digitalJobMatches(j, p, segIndex, segmentId = "") {
+  if (!(j.productionId === p.id && j.kind === "video" && j.model === "__digital_human__")) return false;
+  if (segmentId && j.segmentId) return j.segmentId === segmentId;
+  return j.segIndex === segIndex;
+}
+
+function outputUrl(output) {
+  if (!output) return "";
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      const found = outputUrl(item);
+      if (found) return found;
+    }
+    return "";
+  }
+  if (typeof output === "object") {
+    for (const key of ["url", "videoUrl", "video_url", "result_url"]) {
+      const value = output[key];
+      if (typeof value === "string" && value) return value;
+    }
+    for (const value of Object.values(output)) {
+      const found = outputUrl(value);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
+function latestDigitalJob(p, segIndex, segmentId = "") {
   return [...(state.jobs || [])].reverse().find(j =>
-    j.productionId === p.id && j.segIndex === segIndex && j.kind === "video" && j.model === "__digital_human__" && !j.superseded
+    digitalJobMatches(j, p, segIndex, segmentId) && !j.superseded
   );
 }
 
-function supersedeSegmentJobs(p, segIndex) {
+function hasActiveDigitalJob(p) {
+  return (state.jobs || []).some(j =>
+    !j.superseded
+    && j.productionId === p.id
+    && j.kind === "video"
+    && j.model === "__digital_human__"
+    && ["queued", "submitted", "running"].includes(j.status)
+  );
+}
+
+function supersedeSegmentJobs(p, segIndex, segmentId = "") {
   let changed = false;
   (state.jobs || []).forEach(j => {
-    if (j.productionId === p.id && j.segIndex === segIndex && j.kind === "video" && j.model === "__digital_human__" && !["queued", "submitted", "running"].includes(j.status)) {
+    if (digitalJobMatches(j, p, segIndex, segmentId) && !["queued", "submitted", "running"].includes(j.status)) {
       j.superseded = true;
       changed = true;
     }
@@ -1499,20 +1538,23 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
   const audioRefs = [...voiceRefs].filter(Boolean);
   let n = 0;
   if (useDigitalHumanModel) {
+    if (hasActiveDigitalJob(p)) return 0;
     const segs = Array.isArray(A.digitalHuman?.segments) ? A.digitalHuman.segments : [];
     segs.forEach((seg, i) => {
+      if (n > 0) return;
       if (onlyUnitIndex != null && i !== onlyUnitIndex) return;
-      const existing = latestDigitalJob(p, i);
+      const existing = latestDigitalJob(p, i, seg.id || "");
       if (existing && ["queued", "submitted", "running"].includes(existing.status)) return;
-      if (onlyUnitIndex == null && existing?.status === "succeeded") return;
-      supersedeSegmentJobs(p, i);
+      if (onlyUnitIndex == null && (outputUrl(existing?.output) || outputUrl(seg.videoOutput))) return;
       const characterAssetId = seg.characterRefAssetId || characterRefId;
       const audioAssetId = seg.audioAssetId;
       const prompt = (seg.videoPrompt || A.digitalHuman?.fixedPrompt || "角色自然地讲述内容，动作自然，表情自然").trim();
       if (!characterAssetId || !audioAssetId || !prompt) return;
+      supersedeSegmentJobs(p, i, seg.id || "");
       const job = createJob({
         kind: "video",
         productionId: p.id,
+        segmentId: seg.id || "",
         segIndex: i,
         segName: `数字人${String(i + 1).padStart(2, "0")}`,
         prompt,

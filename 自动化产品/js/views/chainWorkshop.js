@@ -64,6 +64,29 @@ function isServerFileUrl(url = "") {
   return /^\/api\/files\//.test(u) || /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?\/api\/files\//i.test(u);
 }
 
+function outputUrl(output) {
+  if (!output) return "";
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      const found = outputUrl(item);
+      if (found) return found;
+    }
+    return "";
+  }
+  if (typeof output === "object") {
+    for (const key of ["url", "videoUrl", "video_url", "result_url"]) {
+      const value = output[key];
+      if (typeof value === "string" && value) return value;
+    }
+    for (const value of Object.values(output)) {
+      const found = outputUrl(value);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
 async function videoServerConfig() {
   if (videoConfigCache && Date.now() - videoConfigAt < 30000) return videoConfigCache;
   try {
@@ -274,8 +297,15 @@ function digitalSegmentsFromShots(p, acc) {
     if (oldSeg?.audioDuration) seg.audioDuration = oldSeg.audioDuration;
     if (oldSeg?.voiceId) seg.voiceId = oldSeg.voiceId;
     if (oldSeg?.status) seg.status = oldSeg.status;
+    if (oldSeg?.videoJobId) seg.videoJobId = oldSeg.videoJobId;
     if (oldSeg?.videoStatus) seg.videoStatus = oldSeg.videoStatus;
     if (oldSeg?.videoPrompt) seg.videoPrompt = oldSeg.videoPrompt;
+    if (oldSeg?.providerRef) seg.providerRef = oldSeg.providerRef;
+    if (oldSeg?.videoOutput) seg.videoOutput = oldSeg.videoOutput;
+    if (oldSeg?.videoError) seg.videoError = oldSeg.videoError;
+    if (oldSeg?.videoProgress) seg.videoProgress = oldSeg.videoProgress;
+    if (oldSeg?.videoQueuedAt) seg.videoQueuedAt = oldSeg.videoQueuedAt;
+    if (oldSeg?.videoUpdatedAt) seg.videoUpdatedAt = oldSeg.videoUpdatedAt;
     seg.dur = Math.round(Math.min(DIGITAL_SEGMENT_MAX_SEC, seg.dur) * 10) / 10;
     seg.line = seg.shotIndexes.map(i => sanitizeXhsText((shots[i]?.line || "").trim())).filter(Boolean).join("\n");
     seg.characterRefAssetId = seg.customCharacterRefAssetId || globalChar || null;
@@ -289,6 +319,14 @@ function digitalSegmentsForDisplay(p, acc) {
   const existing = Array.isArray(p.artifacts.boards?.digitalHuman?.segments) ? p.artifacts.boards.digitalHuman.segments : [];
   if (!shots.length && existing.length) return existing;
   return digitalSegmentsFromShots(p, acc);
+}
+
+function persistDigitalSegmentsForCurrentState(p, acc) {
+  const segs = digitalSegmentsForDisplay(p, acc);
+  const A = p.artifacts.boards || (p.artifacts.boards = {});
+  A.digitalHuman = A.digitalHuman || { provider: "", model: "", segments: [] };
+  A.digitalHuman.segments = segs;
+  return segs;
 }
 
 const INFO_FLOW_DIRECTIONS = [
@@ -876,7 +914,13 @@ export function renderWorkshopPage(root, p) {
     const rtBtn = (r) => `<button class="ws-rt" data-ratio="${r}" style="font-size:11px;padding:3px 10px;border-radius:7px;cursor:pointer;border:1px solid ${ratio === r ? "#6a5bff" : "var(--d-line-2,rgba(120,130,160,.3))"};background:${ratio === r ? "rgba(106,91,255,.16)" : "transparent"};color:${ratio === r ? "#8b7bff" : "inherit"}">${r}</button>`;
     const modeBtn = (mode, label) => `<button class="${A.materialMode === mode ? "on" : ""}" type="button" data-material-mode="${mode}">${label}</button>`;
     const digitalJobFor = (seg, i) => (state.jobs || []).find(j => !j.superseded && j.id === seg.videoJobId)
-      || [...(state.jobs || [])].reverse().find(j => !j.superseded && j.productionId === p.id && j.segIndex === i && j.kind === "video" && j.model === "__digital_human__");
+      || [...(state.jobs || [])].reverse().find(j =>
+        !j.superseded
+        && j.productionId === p.id
+        && j.kind === "video"
+        && j.model === "__digital_human__"
+        && (j.segmentId ? j.segmentId === seg.id : j.segIndex === i)
+      );
     const digitalBusy = digitalSegments.some((seg, i) => ["queued", "running", "submitted"].includes(digitalJobFor(seg, i)?.status || seg.videoStatus || ""));
     const digitalFailed = digitalSegments.some((seg, i) => (digitalJobFor(seg, i)?.status || seg.videoStatus || "") === "failed");
     const digitalAllLabel = digitalBusy ? "生成中…" : digitalFailed ? "继续生成/重试失败段" : "一键生成视频";
@@ -894,15 +938,30 @@ export function renderWorkshopPage(root, p) {
           const job = digitalJobFor(seg, i);
           const status = job?.status || seg.videoStatus || "";
           const busy = ["queued", "running", "submitted"].includes(status);
-          const done = status === "succeeded" || !!job?.output?.url;
+          const videoUrl = outputUrl(job?.output) || outputUrl(seg.videoOutput);
+          const done = status === "succeeded" || !!videoUrl;
           const failed = status === "failed";
           const stateText = busy ? "生成中" : done ? "已生成" : failed ? "失败" : seg.audioAssetId ? "可生成" : "待口播";
           const jobError = failed && job?.error ? String(job.error || "") : "";
+          const progress = Math.max(1, Math.min(99, Number(job?.progress || seg.videoProgress || 1)));
+          const waitingText = status === "queued" ? "已进入队列" : status === "submitted" ? "已提交上游" : "正在轮询成片";
           return `<div class="dh-seg ${busy ? "is-generating" : ""}" data-dh-seg="${seg.id}">
             <b>D${String(i + 1).padStart(2, "0")}</b><span>${fmtTC(seg.dur)}</span>
             <em>${ref ? esc(ref.name) : "未设置角色图"}</em><i class="dh-status ${busy ? "running" : done ? "done" : failed ? "failed" : ""}">${stateText}</i>
             <div class="dh-seg-drop droppable" data-unit-char-ref="${seg.id}">${ref ? thumbHtml(ref) : icon("upload", 13)}<span>单段角色图</span></div>
             ${seg.audioAssetId && assetById(seg.audioAssetId) ? `<audio class="dh-audio" src="${esc(urlFor(assetById(seg.audioAssetId)))}" controls preload="metadata"></audio>` : `<small class="dh-audio-miss">未生成分段音频</small>`}
+            ${videoUrl
+              ? `<video class="dh-video" src="${esc(videoUrl)}" controls playsinline preload="metadata"></video>`
+              : busy ? `<div class="dh-video-placeholder">
+                <span class="spin-dot"></span>
+                <b>视频生成中</b>
+                <em>${esc(waitingText)} · ${progress}%</em>
+                <i><b style="width:${progress}%"></b></i>
+              </div>` : `<div class="dh-video-placeholder idle">
+                ${icon("film", 18)}
+                <b>${seg.audioAssetId ? "等待生成视频" : "等待口播音频"}</b>
+                <em>${seg.audioAssetId ? "生成后会在这里预览" : "先生成分段口播后再提交"}</em>
+              </div>`}
             ${jobError ? `<small class="dh-error">${esc(jobError)}</small>` : ""}
             <div class="dh-seg-actions">
               <button class="btn ghost sm" data-dh-regen="${seg.id}">${icon("refresh", 11)} 重新生成</button>
@@ -1397,7 +1456,7 @@ export function renderWorkshopPage(root, p) {
   }
 
   function prepareDigitalVideoSegments(ids = null) {
-    const segs = digitalSegmentsForDisplay(p, acc);
+    const segs = persistDigitalSegmentsForCurrentState(p, acc);
     const pick = ids ? segs.filter(x => ids.includes(x.id)) : segs;
     if (!pick.length) {
       const hasSegmentAudio = (A.digitalHuman?.segments || []).some(x => x.audioAssetId && assetById(x.audioAssetId));
@@ -1405,26 +1464,39 @@ export function renderWorkshopPage(root, p) {
       return false;
     }
     const missingAudio = pick.filter(x => !x.audioAssetId || !assetById(x.audioAssetId));
-    if (missingAudio.length) { toast("数字人需要每段独立口播音频，请先点「生成分段口播」"); return false; }
     const missingRef = pick.filter(x => !x.characterRefAssetId || !assetById(x.characterRefAssetId));
-    if (missingRef.length) { toast("请先上传统一参考图，或给单段拖入角色图"); return false; }
+    const ready = pick.filter(x =>
+      x.audioAssetId && assetById(x.audioAssetId)
+      && x.characterRefAssetId && assetById(x.characterRefAssetId)
+    );
+    if (ids && missingAudio.length) { toast("该段缺少分段口播音频，请先点「生成分段口播」或重新生成该段口播"); return false; }
+    if (ids && missingRef.length) { toast("该段缺少角色图，请先上传统一角色图，或给单段拖入角色图"); return false; }
+    if (!ids && !ready.length) {
+      toast(missingAudio.length ? "当前没有可生成的数字人片段：至少先生成一段分段口播音频" : "当前没有可生成的数字人片段：请先补齐角色图");
+      return false;
+    }
     applyDigitalFixedPrompts();
-    pick.forEach(seg => {
-      seg.videoStatus = "ready";
+    ready.forEach(seg => {
+      if (seg.videoStatus !== "succeeded" && !seg.videoOutput?.url) seg.videoStatus = "ready";
       seg.videoPrompt = A.digitalHuman.fixedPrompt;
     });
     A.digitalHuman.segments = segs;
     save("productions");
+    if (!ids && missingAudio.length) toast(`已跳过 ${missingAudio.length} 个缺少分段口播音频的数字人片段`);
+    if (!ids && missingRef.length && ready.length) toast(`已跳过 ${missingRef.length} 个缺少角色图的数字人片段`);
     return true;
   }
 
   function pickDigitalVideoSegments(ids = null) {
-    const segs = digitalSegmentsForDisplay(p, acc);
+    const segs = persistDigitalSegmentsForCurrentState(p, acc);
     return ids ? segs.filter(x => ids.includes(x.id)) : segs;
   }
 
   async function ensureDigitalHumanCanSubmit(ids = null) {
-    const pick = pickDigitalVideoSegments(ids);
+    const pick = pickDigitalVideoSegments(ids).filter(seg =>
+      seg.audioAssetId && assetById(seg.audioAssetId)
+      && seg.characterRefAssetId && assetById(seg.characterRefAssetId)
+    );
     if (!pick.length) return false;
     const cfg = await videoServerConfig();
     if (!cfg.ok) {
@@ -1612,7 +1684,7 @@ export function renderWorkshopPage(root, p) {
         p.artifacts.copy.generatedVisualPrompt = generated.visualPrompt || "";
       }
       const plan = buildInfoFlowPlan({
-        topic: customMode ? (topic || customTitle) : topic,
+        topic: customMode ? (customTitle || topic) : topic,
         title: customMode ? customTitle : "",
         acc,
         product: selectedProduct,
@@ -2017,12 +2089,39 @@ export function renderWorkshopPage(root, p) {
       save("productions");
     }
 
+    function currentInfoFlowPlanArgs() {
+      const copy = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
+      const customMode = copy.customMode !== false;
+      const configuredProduct = productById(p.artifacts.script.productId || "dumate");
+      const title = sanitizeXhsText(String(copy.title || p.title || p.topic || "").trim());
+      const body = String(copy.body || "").trim();
+      const topicInput = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || title || "").trim());
+      const selectedProduct = customMode
+        ? inferWorkshopProductFromCopy(title || topicInput, body, configuredProduct)
+        : configuredProduct;
+      if (selectedProduct?.id) p.artifacts.script.productId = selectedProduct.id;
+      return {
+        topic: customMode ? (title || topicInput) : topicInput,
+        title: customMode ? title : "",
+        acc,
+        product: selectedProduct,
+        publishCopy: customMode ? body : "",
+        copyText: customMode ? copyBodyForSpeech(copy.generatedNarration || body) : infoFlowCopyOverride()
+      };
+    }
+
+    function applyCurrentInfoFlowPlan() {
+      const plan = buildInfoFlowPlan(currentInfoFlowPlanArgs());
+      applyInfoFlowPlan(p, plan);
+      return plan;
+    }
+
     async function addInfoFlowStoryboardRefs(files) {
       const imgs = Array.from(files || []).filter(f => f.type.startsWith("image/"));
       if (!imgs.length) return;
       let info = ensureInfoFlowState(p);
       if (!info.segments.length) {
-        applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+        applyCurrentInfoFlowPlan();
         info = ensureInfoFlowState(p);
       }
       const back = info.segments[1] || (info.segments[1] = { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, storyboardAssetIds: [] });
@@ -2045,13 +2144,13 @@ export function renderWorkshopPage(root, p) {
     async function generateInfoFlowStoryboards({ silent = false } = {}) {
       let info = ensureInfoFlowState(p);
       if (!info.segments.length) {
-        applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+        applyCurrentInfoFlowPlan();
         info = ensureInfoFlowState(p);
       }
       const back = info.segments[1];
       if (!back) throw new Error("请先生成信息流脚本");
       if (!imageApiConfigured()) throw new Error("图片 API 未接入：请手动上传功能演示分镜参考图");
-      const prompts = (back.storyboardPrompts || []).length ? back.storyboardPrompts : buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }).segments[1].storyboardPrompts;
+      const prompts = (back.storyboardPrompts || []).length ? back.storyboardPrompts : buildInfoFlowPlan(currentInfoFlowPlanArgs()).segments[1].storyboardPrompts;
       const provider = activeProviderFor("image");
       const key = providerKeyFor("image", provider);
       if (provider?.mock) throw new Error("图片 API 未接入：当前图片 Provider 是模拟模式");
@@ -2112,8 +2211,11 @@ export function renderWorkshopPage(root, p) {
     });
     $("#wsInfoPlan", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       syncCopyFromEditor();
-      const topic = ($("#wsTopic", root)?.value || p.topic || "").trim();
-      applyInfoFlowPlan(p, buildInfoFlowPlan({ topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+      if (p.artifacts.copy?.customMode !== false) {
+        await generateWorkshopDraft();
+        return;
+      }
+      applyCurrentInfoFlowPlan();
       save("productions");
       toast("已生成信息流前后15秒脚本");
       draw();
@@ -2147,7 +2249,7 @@ export function renderWorkshopPage(root, p) {
       if (!activeInfoFlowMode) return 0;
       const info = ensureInfoFlowState(p);
       if (!info.segments.length) {
-        applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+        applyCurrentInfoFlowPlan();
       }
       syncInfoFlowPrompts();
       let infoNow = ensureInfoFlowState(p);
@@ -2174,7 +2276,7 @@ export function renderWorkshopPage(root, p) {
       }
       let units = materialUnits(p);
       if (!units.length) {
-        applyInfoFlowPlan(p, buildInfoFlowPlan({ topic: p.topic, acc, product: productById(p.artifacts.script.productId || "dumate"), copyText: infoFlowCopyOverride() }));
+        applyCurrentInfoFlowPlan();
         buildMaterialUnits(p);
         units = materialUnits(p);
       }
