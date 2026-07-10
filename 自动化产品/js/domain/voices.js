@@ -111,6 +111,25 @@ export function rememberCustomVoice(item = {}) {
   return next;
 }
 
+export function renameCustomVoice(voiceId = "", name = "") {
+  const id = String(voiceId || "").trim();
+  const nextName = String(name || "").trim().slice(0, 40);
+  if (!id || !nextName) return null;
+  ensureVoiceMeta();
+  const current = state.voicePresets.find(v => v.voiceId === id && (!v.ownerId || !myId() || v.ownerId === myId()));
+  if (!current) return null;
+  current.name = nextName;
+  current.updatedAt = Date.now();
+  (state.accounts || []).forEach(account => {
+    if (account.voiceId === id) account.voiceName = nextName;
+  });
+  (state.productions || []).forEach(production => {
+    if (production?.artifacts?.audio?.voiceId === id) production.artifacts.audio.voiceName = nextName;
+  });
+  save("voicePresets", "accounts", "productions");
+  return cleanVoiceOption(current, "mine");
+}
+
 export function voicePickerGroups({ selectedId = "", selectedName = "", includeDefault = true } = {}) {
   ensureVoiceMeta();
   const favs = favoriteVoiceIds();

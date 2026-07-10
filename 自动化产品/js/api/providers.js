@@ -18,9 +18,10 @@ import { XHS_ACCOUNT_SEED } from "../data/xhsAccountsSeed.js";
 
 const registry = new Map();
 const imageRuns = new Map();
-const serverVideo = { checked: false, configured: false, reachable: true, provider: "", model: "", error: "" };
-const serverImage = { checked: false, configured: false, reachable: true, provider: "", model: "", mode: "", error: "" };
-const serverTts = { checked: false, configured: false, provider: "", model: "", voiceId: "", voices: [], error: "" };
+const serverVideo = { checked: false, failed: false, configured: false, reachable: true, provider: "", model: "", error: "" };
+const serverImage = { checked: false, failed: false, configured: false, reachable: true, provider: "", model: "", mode: "", error: "" };
+const serverTts = { checked: false, failed: false, configured: false, provider: "", model: "", voiceId: "", voices: [], error: "" };
+let providerStatusPromise = null;
 export function registerProvider(adapter) { registry.set(adapter.id, adapter); }
 export function getProvider(id) { return registry.get(id) || null; }
 
@@ -144,6 +145,23 @@ export function activeProviderFor(kind) {
     if (real) return real;
   }
   return registry.get(`mock-${kind}`);
+}
+
+/* Video submission must not race the async server configuration probe. A
+   configured deployment always uses the same Seedance adapter for submit and
+   for later polling; mock is only available after a completed probe says the
+   server is not configured. */
+export async function providerReadyForSubmit(kind) {
+  if (kind === "video" && !serverVideo.checked) await refreshProviderStatus();
+  if (kind === "video" && serverVideo.failed) {
+    throw new Error("视频服务配置检测失败，请稍后重试；未创建模拟视频任务。");
+  }
+  const provider = activeProviderFor(kind);
+  if (kind === "video" && serverVideo.configured && (!provider || provider.mock)) {
+    throw new Error("视频服务已配置但适配器尚未就绪，请稍后重试。");
+  }
+  if (!provider) throw new Error("未注册可用的生成服务");
+  return provider;
 }
 
 export function videoApiConfigured() {
@@ -273,10 +291,13 @@ export async function lookupTtsVoice(voiceId = "", { test = true } = {}) {
 }
 
 export async function refreshProviderStatus() {
+  if (providerStatusPromise) return providerStatusPromise;
+  providerStatusPromise = (async () => {
   const load = async (url, target, unavailable) => {
     try {
       const data = await fetchJsonWithTimeout(url);
       target.checked = true;
+      target.failed = false;
       target.configured = !!data.configured;
       if ("reachable" in data) target.reachable = data.reachable !== false;
       target.provider = data.provider || "";
@@ -287,6 +308,7 @@ export async function refreshProviderStatus() {
       target.error = data.detail || "";
     } catch (e) {
       target.checked = true;
+      target.failed = true;
       target.configured = false;
       target.reachable = false;
       target.error = (e && e.name === "AbortError") ? unavailable + " timeout" : (e.message || String(e));
@@ -298,6 +320,12 @@ export async function refreshProviderStatus() {
     load("/api/tts/config", serverTts, "tts config unavailable")
   ]);
   return { video: { ...serverVideo }, image: { ...serverImage }, tts: { ...serverTts } };
+  })();
+  try {
+    return await providerStatusPromise;
+  } finally {
+    providerStatusPromise = null;
+  }
 }
 
 function blobToDataUrl(blob) {

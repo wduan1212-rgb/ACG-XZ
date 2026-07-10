@@ -3,7 +3,7 @@
 
 import { state, save, emit, productionById, notify, assetById } from "../core/store.js";
 import { uid } from "../core/util.js";
-import { activeProviderFor, providerKeyFor } from "./providers.js";
+import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
 
 const CONCURRENCY = 2;
@@ -80,8 +80,8 @@ export function retryJob(id) {
 export async function cancelJob(id) {
   const j = jobById(id); if (!j) return;
   if (j.providerRef && j.provider) {
-    const p = activeProviderFor(j.kind);
-    try { await p.cancel(j.providerRef); } catch (e) { /* 忽略 */ }
+    const p = getProvider(j.provider);
+    try { if (p) await p.cancel(j.providerRef); } catch (e) { /* 忽略 */ }
   }
   j.status = "canceled"; j.updatedAt = Date.now();
   save("jobs"); emit("job:update", j);
@@ -103,6 +103,14 @@ function delayedQueuedJobs() {
 
 function isDigitalHumanJob(j) {
   return j?.kind === "video" && j?.model === "__digital_human__";
+}
+
+function isLegacyMockVideoJob(j) {
+  return j?.kind === "video" && j?.provider === "mock-video" && /^mv_/i.test(String(j?.providerRef || ""));
+}
+
+function legacyMockVideoError() {
+  return "该视频任务来自旧的模拟渲染，无法在真实视频服务中继续查询。请按当前真实视频服务重新提交。";
 }
 
 function isTransientProviderError(message = "") {
@@ -191,7 +199,8 @@ async function tick() {
   for (const j of activeJobs()) {
     const now = Date.now();
     if (Number(j.nextPollAt || 0) > now) continue;
-    const p = activeProviderFor(j.kind);
+    if (isLegacyMockVideoJob(j)) { failJob(j, legacyMockVideoError()); continue; }
+    const p = j.provider ? getProvider(j.provider) : null;
     if (!p || !j.providerRef) { failJob(j, "Provider 不可用"); continue; }
     try {
       const r = await p.poll(j.providerRef);
@@ -236,10 +245,10 @@ async function tick() {
       candidates.push(j);
     }
     for (const j of candidates) {
-      const p = activeProviderFor(j.kind);
-      if (!p) { failJob(j, "未注册可用的生成服务"); continue; }
       try {
+        const p = await providerReadyForSubmit(j.kind);
         j.attempts++;
+        j.provider = p.id;
         j.status = "submitted";
         j.progress = Math.max(1, j.progress || 1);
         j.error = null;
@@ -316,9 +325,17 @@ export function resumeJobs() {
   let touched = false;
   state.jobs.forEach(j => {
     if (j.status === "submitted" || j.status === "running") {
-      const p = activeProviderFor(j.kind);
-      if (p && p.mock) { j.status = "queued"; j.progress = 0; j.providerRef = null; n++; }
-      // 真实 provider：保留 providerRef，直接继续 poll
+      if (isLegacyMockVideoJob(j)) {
+        j.status = "failed";
+        j.error = legacyMockVideoError();
+        j.nextPollAt = 0;
+        j.updatedAt = Date.now();
+        syncJobToProduction(j);
+        touched = true;
+        return;
+      }
+      if (!j.providerRef) { j.status = "queued"; j.progress = 0; n++; }
+      // 已持久化 provider 的真实任务保留引用，按原 provider 继续轮询。
       if (!j.nextPollAt) { j.nextPollAt = Date.now() + pollDelayFor(j); touched = true; }
       syncJobToProduction(j);
     }

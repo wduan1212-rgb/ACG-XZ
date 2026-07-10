@@ -247,10 +247,10 @@ function renderSessions() {
     <div class="agw-slist">${sessions.map(s => {
       const last = s.messages[s.messages.length - 1];
       const hasActive = state.batches.some(b => ownedBy(b) && b.sessionId === s.id && b.phase !== "done");
-      return `<div class="agw-sitem ${s.id === state.ui.activeSessionId ? "is-active" : ""}" data-session="${s.id}" role="button" tabindex="0">
+      const hint = last ? textOf(last) : "新会话";
+      return `<div class="agw-sitem ${s.id === state.ui.activeSessionId ? "is-active" : ""}" data-session="${s.id}" role="button" tabindex="0" title="${esc(hint)}">
         <b>${esc(s.title)}</b>
-        <em>${last ? esc(textOf(last)).slice(0, 26) : "空会话"}</em>
-        <span class="agw-stime">${hasActive ? `<i class="live-dot"></i>` : ""}${timeAgo(s.createdAt)}</span>
+        <span class="agw-stime"><i class="agw-run-dot ${hasActive ? "is-running" : ""}" title="${hasActive ? "运行中" : "未运行"}"></i>${timeAgo(s.createdAt)}</span>
         <span class="agw-sacts">
           <button class="sact" data-srename="${s.id}" title="重命名">${icon("edit", 12)}</button>
           <button class="sact danger" data-sdel="${s.id}" title="删除会话">${icon("trash", 12)}</button>
@@ -261,7 +261,7 @@ function renderSessions() {
 
 function textOf(m) {
   if (m.type === "text") return m.payload.text || "";
-  return { plan: "📋 量产任务板", progress: "⏱ 批次进度", need_input: "📥 等待上传", approval: "👁 待发布", results: "✅ 批次完成", error: "⚠ 失败报告" }[m.type] || "";
+  return { plan: "量产任务板", progress: "批次进度", need_input: "等待上传", approval: "待发布", results: "批次完成", error: "失败报告" }[m.type] || "";
 }
 
 function renderMsgs(scroll = false) {

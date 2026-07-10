@@ -96,15 +96,16 @@
 .agw-new:hover { color: #fff; border-color: rgba(132, 152, 255, .5); background: rgba(80, 110, 255, .08); }
 .agw-slist { display: flex; flex-direction: column; gap: 2px; }
 .agw-sitem {
-  width: 100%; text-align: left; border-radius: var(--r-md);
-  padding: 9px 10px; border-left: 2px solid transparent;
+  width: 100%; min-height: 38px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  text-align: left; border-radius: 0; padding: 8px 10px; border: 0; border-bottom: 1px solid rgba(132,152,255,.10); border-left: 2px solid transparent;
   transition: all var(--t-fast); position: relative;
 }
 .agw-sitem:hover { background: rgba(255, 255, 255, .03); }
 .agw-sitem.is-active { background: rgba(124, 154, 255, .08); border-left-color: #7C9AFF; }
-.agw-sitem b { display: block; font-size: 12px; color: var(--d-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 64px; }
-.agw-sitem em { display: block; font-style: normal; font-size: 10.5px; color: var(--d-faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agw-stime { position: absolute; top: 9px; right: 10px; font-size: 9.5px; color: var(--d-faint); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.agw-sitem b { display: block; min-width: 0; font-size: 12px; color: var(--d-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agw-stime { justify-self: end; font-size: 10px; color: var(--d-faint); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.agw-run-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(148,163,184,.45); box-shadow: 0 0 0 2px rgba(148,163,184,.10); }
+.agw-run-dot.is-running { background: #38d6ad; box-shadow: 0 0 0 2px rgba(56,214,173,.16), 0 0 10px rgba(56,214,173,.35); }
 
 /* ---------- 对话流 ---------- */
 .agw-conv { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -330,6 +331,14 @@
 }
 .agc-video-chain svg { flex: none; }
 .agc-override.is-video { border-color: rgba(45,212,191,.18); }
+.agc-override.is-custom-plan {
+  grid-template-columns: minmax(148px, .8fr) minmax(0, 2.8fr);
+  grid-template-areas:
+    "name content"
+    "refhead refstate"
+    "refactions refactions";
+}
+.agc-override.is-custom-plan .agc-account-copy { grid-template-columns: minmax(170px, .78fr) minmax(0, 1.72fr); }
 .agc-copy-toggle {
   grid-area: copymode;
   position: relative;
@@ -675,7 +684,7 @@
 /* 会话操作（hover 显示） */
 .agw-sitem { cursor: pointer; }
 .agw-sacts {
-  position: absolute; right: 7px; bottom: 7px; display: flex; gap: 4px;
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%); display: flex; gap: 4px;
   opacity: 0; transition: opacity var(--t-fast);
 }
 .agw-sitem:hover .agw-sacts { opacity: 1; }
@@ -839,6 +848,19 @@
   background: rgba(47,128,255,.12);
   border-color: rgba(109,168,255,.42);
 }
+/* Session list intentionally stays thread-like, not card-like. */
+.agw-sitem {
+  background: transparent;
+  border-top-color: transparent;
+  border-right-color: transparent;
+  border-bottom-color: rgba(132,152,255,.10);
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.agw-sitem:hover { background: rgba(255,255,255,.035); border-left-color: rgba(109,168,255,.30); border-bottom-color: rgba(132,152,255,.12); }
+.agw-sitem.is-active { background: rgba(47,128,255,.10); border-left-color: #7C9AFF; border-bottom-color: rgba(109,168,255,.18); }
 .ag-bubble.user,
 .agw-send {
   background: linear-gradient(135deg, #0A0F18, #1F2937 58%, #2F80FF);

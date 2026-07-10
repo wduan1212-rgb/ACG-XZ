@@ -248,6 +248,32 @@ export function openLightbox(originEl, src, name) {
   ov.addEventListener("click", close);
 }
 
+/* Video preview keeps native controls outside workshop cards, so browser media
+   controls are never blocked by a parent card's interaction layer. */
+export function openVideoPreview(src, name = "视频预览") {
+  if (!src) return;
+  const ov = document.createElement("div");
+  ov.className = "lightbox media-preview";
+  ov.innerHTML = `<div class="lb-bg"></div><div class="lb-video-wrap"><video class="lb-video" src="${esc(src)}" controls playsinline preload="metadata"></video><button class="lb-close" type="button" aria-label="关闭预览">${icon("x", 18)}</button></div><div class="lb-name">${esc(name)}</div>`;
+  document.body.appendChild(ov);
+  const video = ov.querySelector(".lb-video");
+  const onKey = e => { if (e.key === "Escape") close(); };
+  const close = () => {
+    video?.pause();
+    document.removeEventListener("keydown", onKey);
+    ov.classList.remove("open");
+    setTimeout(() => ov.remove(), 220);
+  };
+  requestAnimationFrame(() => {
+    ov.classList.add("open");
+    video?.play().catch(() => null);
+  });
+  ov.addEventListener("click", e => {
+    if (e.target === ov || e.target.closest(".lb-bg") || e.target.closest(".lb-close")) close();
+  });
+  document.addEventListener("keydown", onKey);
+}
+
 /* ---------- 空态 ---------- */
 export function emptyState(icoName, title, hint = "", cta = "") {
   return `<div class="empty-state">

@@ -14,7 +14,7 @@ import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssembl
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
-import { toast, withLoading, openLightbox } from "../ui/components.js";
+import { toast, withLoading, openLightbox, openVideoPreview } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 import { accountAssets as accAssets } from "../domain/accounts.js";
@@ -1033,6 +1033,7 @@ export function renderWorkshopPage(root, p) {
               </div>`}
             ${jobError ? `<small class="dh-error">${esc(jobError)}</small>` : ""}
             <div class="dh-seg-actions">
+              ${done ? `<button class="btn ghost sm" data-dh-preview="${seg.id}">${icon("eye", 11)} 放大预览</button>` : ""}
               <button class="btn ghost sm" data-dh-regen="${seg.id}">${icon("refresh", 11)} 重新生成</button>
               <button class="btn primary sm" data-dh-video="${seg.id}" ${busy ? "disabled" : ""}>${busy ? "生成中…" : done ? "重新生成视频" : "生成视频"}</button>
             </div>
@@ -2652,6 +2653,15 @@ export function renderWorkshopPage(root, p) {
       toast(message, "error");
       draw();
     }, { once: true }));
+    $$('[data-dh-preview]', root).forEach(b => b.addEventListener("click", () => {
+      const segs = digitalSegmentsForDisplay(p, acc);
+      const i = segs.findIndex(x => x.id === b.dataset.dhPreview);
+      const seg = i >= 0 ? segs[i] : null;
+      const job = seg ? digitalJobFor(seg, i) : null;
+      const videoUrl = outputUrl(job?.output) || outputUrl(seg?.videoOutput);
+      if (!videoUrl) { toast("该段视频还没有可预览的成片"); return; }
+      openVideoPreview(videoUrl, `D${String(i + 1).padStart(2, "0")} 数字人视频`);
+    }));
     $$("[data-dh-video]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       if (prepareDigitalVideoSegments([b.dataset.dhVideo])) {
         if (!await ensureDigitalHumanCanSubmit([b.dataset.dhVideo])) { draw(); return; }

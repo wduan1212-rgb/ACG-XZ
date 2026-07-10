@@ -1,9 +1,9 @@
 import { $, $$, esc, copyText } from "../core/util.js";
 import { state, save } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { toast, withLoading } from "../ui/components.js";
+import { promptModal, toast, withLoading } from "../ui/components.js";
 import { designTtsVoice, refreshProviderStatus, synthesizeTts, ttsProviderLabel } from "../api/providers.js";
-import { favoriteVoiceIds, findVoiceOption, isFavoriteVoice, rememberCustomVoice, setFavoriteVoice, toggleFavoriteVoice, voiceListByTab, voiceMeta } from "../domain/voices.js";
+import { favoriteVoiceIds, findVoiceOption, isFavoriteVoice, rememberCustomVoice, renameCustomVoice, setFavoriteVoice, toggleFavoriteVoice, voiceListByTab, voiceMeta } from "../domain/voices.js";
 
 let runtimeAudio = null;
 let runtimeDesignAudio = null;
@@ -135,6 +135,7 @@ function voiceCard(v, selectedId) {
     <span class="vl-voice-actions">
       <button class="icon-btn tiny" type="button" title="试听音色" data-vl-preview="${esc(v.voiceId)}">${icon(previewing ? "pause" : "play", 13)}</button>
       <button class="icon-btn tiny" type="button" title="${fav ? "取消收藏" : "收藏音色"}" data-vl-fav="${esc(v.voiceId)}">${icon("star", 13)}</button>
+      ${v.source === "mine" ? `<button class="icon-btn tiny" type="button" title="重命名音色" data-vl-rename="${esc(v.voiceId)}">${icon("edit", 13)}</button>` : ""}
       <button class="icon-btn tiny" type="button" title="复制 voice_id" data-vl-copy="${esc(v.voiceId)}">${icon("copy", 13)}</button>
     </span>
   </div>`;
@@ -301,6 +302,16 @@ export const voiceLabView = {
       const id = b.dataset.vlFav || "";
       const next = toggleFavoriteVoice(id);
       toast(next ? "已收藏音色" : "已取消收藏");
+      this.render(root);
+    }));
+    $$("[data-vl-rename]", root).forEach(b => b.addEventListener("click", async e => {
+      e.stopPropagation();
+      const voice = findVoiceOption(b.dataset.vlRename || "");
+      const name = await promptModal({ title: "重命名自定义声线", placeholder: "输入声线名称", value: voice.name || "", okText: "保存名称" });
+      if (name == null) return;
+      const saved = renameCustomVoice(voice.voiceId, name);
+      if (!saved) { toast("名称不能为空，或该音色不属于当前账号", "error"); return; }
+      toast(`已重命名为：${saved.name}`);
       this.render(root);
     }));
     $$("[data-vl-copy]", root).forEach(b => b.addEventListener("click", e => {

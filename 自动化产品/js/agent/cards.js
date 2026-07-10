@@ -209,11 +209,10 @@ const CARD = {
             <textarea data-pacc-copy-body="${a.id}" rows="2" placeholder="${imgAcc ? "文案正文；只写标题也可以由模型补全文案" : "文案正文；真人号会转成更长口播，素材号会转成 B 面提示词"}" ${locked ? "disabled" : ""}>${esc(customCopyBody)}</textarea>
           </div>
         </div>`;
-        return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"}">
+        return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"} ${customMode ? "is-custom-plan" : ""}">
         <b>${esc(a.name)}</b>
-        <span class="agc-product-lock">${icon("lock", 11)} 产品库后台参考</span>
         ${customMode ? "" : `<label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>`}
-        ${customMode ? `<span class="agc-video-chain" title="自定义标题/文案驱动">${imgAcc ? icon("image", 12) : icon("video", 12)} 自定义</span>` : imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
+        ${customMode ? "" : imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
         ${copyFields}
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
