@@ -409,6 +409,7 @@ export function segmentsForGen(p) {
 export function autoAssemble(p) {
   const dh = p.artifacts?.boards?.digitalHuman;
   if (isVideoWorkshop(p) && p.artifacts?.boards?.generationMode === "digitalHuman" && Array.isArray(dh?.segments) && dh.segments.length) {
+    const previous = new Map((p.artifacts.timeline || []).map(clip => [clip.segmentId || clip.jobId, clip]));
     const clips = dh.segments.map((seg, i) => {
       const list = state.jobs.filter(j =>
         j.productionId === p.id
@@ -420,16 +421,27 @@ export function autoAssemble(p) {
       const job = (seg.videoJobId && list.find(j => j.id === seg.videoJobId)) || list[list.length - 1];
       const url = outputUrl(job?.output) || outputUrl(seg.videoOutput);
       if (!url) return null;
+      const old = previous.get(seg.id) || previous.get(seg.videoJobId) || previous.get(job?.id);
       return {
-        id: uid(),
-        jobId: job.id,
+        id: old?.id || uid(),
+        jobId: job?.id || seg.videoJobId || "",
         segmentId: seg.id || "",
-        name: job.segName || `数字人${String(i + 1).padStart(2, "0")}`,
-        dur: Math.max(1, Math.round(Number(seg.audioDuration || seg.dur || job.duration || 15) * 10) / 10),
-        trimIn: 0
+        name: job?.segName || old?.name || `数字人${String(i + 1).padStart(2, "0")}`,
+        videoUrl: url,
+        dur: Math.max(1, Math.round(Number(seg.audioDuration || seg.dur || job?.duration || old?.dur || 15) * 10) / 10),
+        trimIn: old?.trimIn || 0
       };
     }).filter(Boolean);
-    if (clips.length) p.artifacts.timeline = clips;
+    if (clips.length) {
+      const before = JSON.stringify((p.artifacts.timeline || []).map(clip => [clip.segmentId, clip.jobId, clip.videoUrl, clip.dur, clip.trimIn]));
+      const after = JSON.stringify(clips.map(clip => [clip.segmentId, clip.jobId, clip.videoUrl, clip.dur, clip.trimIn]));
+      p.artifacts.timeline = clips;
+      if (before !== after) {
+        p.artifacts.finalVideoUrl = "";
+        p.artifacts.finalVideoName = "";
+        p.artifacts.composeError = "";
+      }
+    }
     if (!(p.artifacts.subs || []).length) {
       let t = 0;
       const subs = [];
@@ -519,14 +531,35 @@ export function rebindUnitClip(p, unitIndex, job) {
     const clip = (p.artifacts.timeline || []).find(c =>
       (seg.id && c.segmentId === seg.id) || c.jobId === seg.videoJobId || c.jobId === job.id
     );
+    const url = outputUrl(job.output) || outputUrl(seg.videoOutput);
     if (clip) {
       clip.jobId = job.id;
       clip.segmentId = seg.id || clip.segmentId || "";
+      clip.videoUrl = url || clip.videoUrl || "";
       clip.trimIn = 0;
       clip.dur = Math.max(1, Math.round(Number(seg.audioDuration || seg.dur || job.duration || clip.dur || 15) * 10) / 10);
-      touch(p);
-      save("productions");
+    } else if (url) {
+      const next = {
+        id: uid(),
+        jobId: job.id,
+        segmentId: seg.id || "",
+        videoUrl: url,
+        name: job.segName || `数字人${String(unitIndex + 1).padStart(2, "0")}`,
+        dur: Math.max(1, Math.round(Number(seg.audioDuration || seg.dur || job.duration || 15) * 10) / 10),
+        trimIn: 0
+      };
+      const timeline = p.artifacts.timeline || (p.artifacts.timeline = []);
+      const after = timeline.findIndex(item => {
+        const index = dh.segments.findIndex(candidate => candidate.id && candidate.id === item.segmentId);
+        return index > unitIndex;
+      });
+      timeline.splice(after < 0 ? timeline.length : after, 0, next);
     }
+    p.artifacts.finalVideoUrl = "";
+    p.artifacts.finalVideoName = "";
+    p.artifacts.composeError = "";
+    touch(p);
+    save("productions");
     return;
   }
   const units = materialUnits(p);

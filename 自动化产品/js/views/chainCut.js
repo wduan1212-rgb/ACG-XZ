@@ -9,7 +9,7 @@ import { BGM_POOL } from "../api/prompts.js";
 import { buildDeliveryName } from "../domain/accounts.js";
 import { accountAssets } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
-import { toast, withLoading } from "../ui/components.js";
+import { toast } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 
@@ -24,6 +24,7 @@ export function renderCutPage(root, p) {
   let playTimer = null;
   let activeSubIdx = 0;
   let selectedClipId = null;
+  let activeTrack = "";
 
   const TL = () => p.artifacts.timeline || (p.artifacts.timeline = []);
   const SUBS = () => p.artifacts.subs || (p.artifacts.subs = []);
@@ -32,7 +33,9 @@ export function renderCutPage(root, p) {
   const clipsTotal = () => TL().reduce((s, c) => s + clipDur(c), 0);
   const totalDur = () => Math.max(30, clipsTotal(), SUBS().reduce((m, s) => Math.max(m, s.end || 0), 0));
   const jobForClip = c => c?.jobId ? state.jobs.find(j => j.id === c.jobId) : null;
-  const videoUrlForClip = c => jobForClip(c)?.output?.url || "";
+  const digitalSegmentForClip = c => (p.artifacts?.boards?.digitalHuman?.segments || [])
+    .find(seg => (c?.segmentId && seg.id === c.segmentId) || (c?.jobId && seg.videoJobId === c.jobId));
+  const videoUrlForClip = c => c?.videoUrl || jobForClip(c)?.output?.url || digitalSegmentForClip(c)?.videoOutput?.url || "";
   const audioAssets = () => accountAssets(p.accountId).filter(a => a.type === "音频" && !a.delivered);
   const mediaUrlForAsset = id => {
     const u = urlFor(id) || "";
@@ -56,8 +59,64 @@ export function renderCutPage(root, p) {
     });
     return { dataUrl, url };
   };
+  const videoJobsComplete = () => {
+    const digital = p.artifacts?.boards?.digitalHuman?.segments || [];
+    if (p.artifacts?.boards?.generationMode === "digitalHuman") {
+      return digital.length > 0 && digital.every(seg => !!(seg.videoOutput?.url || seg.videoOutput?.videoUrl));
+    }
+    const jobs = state.jobs.filter(job => job.productionId === p.id && job.kind === "video");
+    return jobs.length > 0 && jobs.every(job => job.status === "succeeded");
+  };
 
-  if (!TL().length && state.jobs.some(j => j.productionId === p.id && j.status === "succeeded")) {
+  async function composeFinal({ automatic = false } = {}) {
+    if (p.artifacts.composing || !TL().length) return false;
+    const clips = TL().map(c => ({
+      url: videoUrlForClip(c), name: c.name || "", dur: c.dur || 15, trimIn: c.trimIn || 0
+    })).filter(c => c.url);
+    if (!clips.length) return false;
+    p.artifacts.composing = true;
+    p.artifacts.composeError = "";
+    save("productions");
+    try {
+      const narrationMedia = await assetMedia(p.artifacts.audio?.assetId);
+      const bgmMedia = await assetMedia(p.artifacts.bgm?.assetId);
+      const res = await fetch("/api/video/compose", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: p.artifacts.copy?.title || p.title || p.topic || "final",
+          clips,
+          narrationDataUrl: narrationMedia.dataUrl || "",
+          narrationUrl: narrationMedia.url || "",
+          bgmDataUrl: bgmMedia.dataUrl || "",
+          bgmUrl: bgmMedia.url || "",
+          bgmVolume: p.artifacts.bgm?.volume ?? 0.25,
+          narrationVolume: p.artifacts.audio?.volume ?? 1
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `合成失败 (${res.status})`);
+      p.artifacts.finalVideoUrl = data.url;
+      p.artifacts.finalVideoName = data.name || "";
+      p.artifacts.composeError = "";
+      return true;
+    } catch (err) {
+      p.artifacts.composeError = err?.message || "自动合成失败";
+      if (!automatic) toast(p.artifacts.composeError, "error");
+      return false;
+    } finally {
+      p.artifacts.composing = false;
+      save("productions");
+      if (automatic && root.isConnected) renderCutPage(root, p);
+    }
+  }
+
+  if (p.artifacts?.boards?.generationMode === "digitalHuman" && (
+    state.jobs.some(j => j.productionId === p.id && j.status === "succeeded")
+    || (p.artifacts?.boards?.digitalHuman?.segments || []).some(seg => seg.videoOutput)
+  )) {
+    autoAssemble(p);
+  } else if (!TL().length && state.jobs.some(j => j.productionId === p.id && j.status === "succeeded")) {
     autoAssemble(p);
   }
 
@@ -92,18 +151,17 @@ export function renderCutPage(root, p) {
             <button class="cp-play" id="cpPlay">${icon("play", 22)}</button>
             <div class="cp-sub" id="cpSub" hidden></div>
           </div>
-          <div class="cp-bar"><span id="cpTimecode">00:00 / 00:30</span><em id="cpHint">拖动字幕可调垂直位置</em></div>
+          <div class="cp-bar"><span id="cpTimecode">00:00 / 00:30</span></div>
         </section>
         <aside class="cut-side">
-          <div class="side-card card">
-            <h3>${icon("wand", 14)} 智能${isVideoWorkshop(p) ? "混剪" : "剪辑"}</h3>
-            <p class="muted">${isVideoWorkshop(p) ? "按口播时长拼片段 + 铺字幕 + 自动选配 BGM，再来精修。" : "自动按片段顺序拼接 + 从口播铺字幕，再来精修。"}</p>
-            <button class="btn gen block" id="cutAuto">${icon("spark", 14)} 一键智能${isVideoWorkshop(p) ? "混剪" : "拼接"}</button>
-          </div>
           ${isVideoWorkshop(p) ? `
           <div class="side-card card">
             <h3>${icon("music", 14)} 声音轨</h3>
-            <div class="cut-audio-row">${icon("mic", 12)} 口播音频 <b>${fmtTC(p.artifacts.audio?.duration || 0)}</b><em class="muted">音量 100%</em></div>
+            <div class="cut-audio-row vol">
+              ${icon("mic", 12)} <span>口播</span>
+              <input type="range" id="cutNarrationVol" min="0" max="100" step="5" value="${Math.round((p.artifacts.audio?.volume ?? 1) * 100)}" />
+              <em id="cutNarrationVolV">${Math.round((p.artifacts.audio?.volume ?? 1) * 100)}%</em>
+            </div>
             <div class="cut-audio-row">
               ${icon("music", 12)} BGM
               <select class="input sm" id="cutBgm">
@@ -122,9 +180,9 @@ export function renderCutPage(root, p) {
           </div>` : ""}
           <div class="side-card card">
             <h3>导出</h3>
-            <p class="muted">9:16 竖屏 · 1080×1920${TL().length ? ` · 将命名「${esc(buildDeliveryName(acc, (acc.exportSeq || 0) + 1))}」` : ""}</p>
+            <p class="muted">9:16 竖屏 · 1080×1920${p.artifacts.composing ? " · 自动合成中" : TL().length ? ` · 将命名「${esc(buildDeliveryName(acc, (acc.exportSeq || 0) + 1))}」` : ""}</p>
             ${p.artifacts.finalVideoUrl ? `<a class="btn ghost block" href="${esc(p.artifacts.finalVideoUrl)}" target="_blank" rel="noreferrer">${icon("download", 13)} 查看/下载合成成片</a>` : ""}
-            <button class="btn ghost block" id="cutCompose">${icon("film", 13)} 合成成片</button>
+            ${p.artifacts.composeError ? `<p class="muted">${esc(p.artifacts.composeError)}</p>` : ""}
             <button class="btn primary block" id="cutNext">下一步：审核 ${icon("arrowRight", 13)}</button>
           </div>
         </aside>
@@ -134,14 +192,14 @@ export function renderCutPage(root, p) {
         <div class="tl-toolbar">
           <div class="tlt-left">
             <b>时间轴</b>
-            <em class="muted" id="tlMeta">拖动排序 · 拖两端裁剪 · 点片段选中后可分割 · ⌘Z 撤回</em>
+            <em class="muted" id="tlMeta"></em>
           </div>
           <div class="tlt-actions">
-            <button class="btn ghost sm" id="tlFillSubs">${icon("type", 13)} 从口播填字幕</button>
-            <button class="btn ghost sm" id="tlAddSub">${icon("plus", 13)} 字幕块</button>
-            <button class="btn ghost sm" id="tlSplit" title="在播放头处分割选中片段">${icon("split", 13)} 分割</button>
-            <button class="btn ghost sm" id="tlSrt">${icon("download", 13)} .srt</button>
-            <button class="btn ghost sm" id="tlUndo">${icon("undo", 13)} 撤回</button>
+            <button class="icon-btn sm tl-text-btn" id="tlFillSubs" title="按已绑定口播重建字幕">T</button>
+            <button class="icon-btn sm" id="tlAddSub" title="添加字幕">${icon("plus", 13)}</button>
+            <button class="icon-btn sm" id="tlSplit" title="在播放头处分割选中片段">${icon("split", 13)}</button>
+            <button class="icon-btn sm" id="tlSrt" title="导出 SRT">${icon("download", 13)}</button>
+            <button class="icon-btn sm" id="tlUndo" title="撤回">${icon("undo", 13)}</button>
             <span class="tl-zoom">
               <button class="icon-btn sm" id="tlZoomOut">${icon("zoomOut", 13)}</button>
               <button class="icon-btn sm" id="tlZoomIn">${icon("zoomIn", 13)}</button>
@@ -166,8 +224,8 @@ export function renderCutPage(root, p) {
   function drawTimeline() {
     const total = totalDur(), W = total * PPS;
     $("#tlMeta", root).textContent = TL().length
-      ? `${TL().length} 段 · 共 ${Math.round(clipsTotal())}s · 拖动排序 / 两端裁剪 / 选中后分割 · ⌘Z 撤回`
-      : "时间轴为空：在生成台「加入剪辑」或点上方「一键智能拼接」";
+      ? `${TL().length} 段 · ${Math.round(clipsTotal())}s`
+      : "等待已生成视频";
     const ruler = $("#tlRuler", root);
     ruler.style.width = W + "px";
     const step = PPS >= 28 ? 5 : 10;
@@ -178,12 +236,12 @@ export function renderCutPage(root, p) {
     const ct = $("#tlClipTrack", root); ct.style.width = W + "px";
     ct.innerHTML = TL().length ? TL().map((c, i) => `
       <div class="tl-clip ${c.id === selectedClipId ? "is-selected" : ""}" draggable="true" data-id="${c.id}" style="left:${clipStart(i) * PPS}px;width:${clipDur(c) * PPS - 4}px;--g:${gradFor(c.name)}">
+        ${videoUrlForClip(c) ? `<video class="tl-clip-preview" src="${esc(videoUrlForClip(c))}" muted playsinline preload="metadata"></video>` : ""}
         <span class="tl-trim l" data-trim="l" data-id="${c.id}" title="向右拖：裁掉开头"></span>
         <span class="tl-clip-name">${esc(c.name)}</span>
         <span class="tl-clip-dur">${clipDur(c)}s${c.trimIn ? ` · 裁头${c.trimIn}s` : ""}</span>
-        <button class="tl-clip-x" data-x="${c.id}">${icon("x", 10)}</button>
         <span class="tl-trim r" data-trim="r" data-id="${c.id}" title="向左拖：裁掉结尾"></span>
-      </div>`).join("") : `<div class="tl-empty">把生成的片段「加入剪辑」，或点「一键智能拼接」</div>`;
+      </div>`).join("") : `<div class="tl-empty">生成完成的片段会自动加入时间轴</div>`;
 
     const stk = $("#tlSubTrack", root); stk.style.width = W + "px";
     stk.innerHTML = SUBS().map((s, i) => `
@@ -192,6 +250,10 @@ export function renderCutPage(root, p) {
         <span class="tl-sub-resize" data-i="${i}"></span>
       </div>`).join("");
 
+    $$(".tl-clip-preview", root).forEach(video => video.addEventListener("loadedmetadata", () => {
+      if (!Number.isFinite(video.duration) || video.duration <= 0) return;
+      try { video.currentTime = Math.min(.35, Math.max(0, video.duration - .05)); } catch {}
+    }, { once: true }));
     wireClips(); wireSubs();
     drawSubEditor(); updatePlayhead();
   }
@@ -220,7 +282,7 @@ export function renderCutPage(root, p) {
         video.currentTime = Math.min(localTime, Math.max(0, (video.duration || localTime + 1) - 0.1));
       }
       video.hidden = false;
-      $("#cpFrame", root).style.opacity = ".18";
+      $("#cpFrame", root).style.opacity = "0";
     } else {
       video.pause();
       video.removeAttribute("src");
@@ -269,7 +331,7 @@ export function renderCutPage(root, p) {
       }
       if (shouldPlay && audio.paused) audio.play().catch(() => null);
     };
-    syncOne(narration, playheadT, 1);
+    syncOne(narration, playheadT, p.artifacts.audio?.volume ?? 1);
     const bgmDur = Number.isFinite(bgm?.duration) && bgm.duration > 0 ? bgm.duration : 0;
     syncOne(bgm, bgmDur ? playheadT % bgmDur : playheadT, p.artifacts.bgm?.volume ?? 0.25);
   }
@@ -298,15 +360,11 @@ export function renderCutPage(root, p) {
   /* ---------- 片段轨交互 ---------- */
   function wireClips() {
     let dragId = null;
-    $$(".tl-clip-x", root).forEach(x => x.addEventListener("click", e => {
-      e.stopPropagation(); snapshot();
-      p.artifacts.timeline = TL().filter(c => c.id !== x.dataset.x);
-      save("productions"); drawTimeline();
-    }));
     $$(".tl-clip", root).forEach(el => {
       el.addEventListener("click", e => {
-        if (e.target.closest(".tl-trim") || e.target.closest(".tl-clip-x")) return;
+        if (e.target.closest(".tl-trim")) return;
         selectedClipId = selectedClipId === el.dataset.id ? null : el.dataset.id;
+        activeTrack = selectedClipId ? "clip" : "";
         drawTimeline();
       });
       el.addEventListener("dragstart", () => { dragId = el.dataset.id; el.classList.add("dragging"); });
@@ -380,6 +438,7 @@ export function renderCutPage(root, p) {
         if (e.target.classList.contains("tl-sub-resize")) return;
         el.setPointerCapture(e.pointerId); startX = e.clientX; origStart = SUBS()[i].start || 0; moved = false;
         activeSubIdx = i;
+        activeTrack = "sub";
         $$(".tl-sub", root).forEach(x => x.classList.toggle("is-active", +x.dataset.i === i));
         drawSubEditor(); updatePlayhead();
       });
@@ -399,7 +458,7 @@ export function renderCutPage(root, p) {
   function drawSubEditor() {
     const box = $("#tlSubEditor", root); if (!box) return;
     const subs = SUBS();
-    if (!subs.length) { box.innerHTML = `<div class="muted" style="padding:8px 2px">还没有字幕：点「从口播填字幕」自动铺好，或「+ 字幕块」手动加。</div>`; return; }
+    if (!subs.length) { box.innerHTML = `<div class="muted" style="padding:8px 2px">按 T 从已绑定口播生成字幕，或用 + 新增字幕。</div>`; return; }
     const i = Math.min(activeSubIdx, subs.length - 1); const s = subs[i];
     const st = p.artifacts.subStyle;
     box.innerHTML = `
@@ -408,7 +467,6 @@ export function renderCutPage(root, p) {
         <input class="input num" id="tseStart" type="number" min="0" step="0.5" value="${s.start}" /> →
         <input class="input num" id="tseEnd" type="number" min="0" step="0.5" value="${s.end}" /> 秒
         <textarea class="input grow" id="tseText" rows="1" placeholder="字幕文字，可换行">${esc(s.text || "")}</textarea>
-        <button class="icon-btn danger" id="tseDel" title="删除此条">${icon("trash", 14)}</button>
       </div>
       <div class="tse-row style">
         <span>字号</span><input type="range" id="tseSize" min="10" max="26" step="1" value="${st.size}" /><em id="tseSizeV">${st.size}px</em>
@@ -425,7 +483,6 @@ export function renderCutPage(root, p) {
       if (blk) blk.querySelector(".tl-sub-text").textContent = cleanCaptionText(e.target.value || "字幕");
       updatePlayhead();
     });
-    $("#tseDel", root).addEventListener("click", () => { snapshot(); subs.splice(i, 1); if (activeSubIdx >= subs.length) activeSubIdx = Math.max(0, subs.length - 1); save("productions"); drawTimeline(); });
     const wireStyle = (id, valId, key, fmt) => {
       $(id, root).addEventListener("input", e => {
         snapOnce(); p.artifacts.subStyle[key] = parseFloat(e.target.value);
@@ -439,13 +496,6 @@ export function renderCutPage(root, p) {
   }
 
   /* ---------- 工具栏 ---------- */
-  $("#cutAuto", root).addEventListener("click", () => {
-    snapshot();
-    const r = autoAssemble(p);
-    if (!r.clips && !TL().length) { toast(isVideoWorkshop(p) ? "还没有就绪片段：回文案分镜「一键全自动」生成" : "还没有可用片段：先去生成台生成，或等 Agent 渲染完成"); return; }
-    renderCutPage(root, p);
-    toast(`智能${isVideoWorkshop(p) ? "混剪" : "拼接"}完成：${TL().length} 段 + ${SUBS().length} 条字幕${r.bgm ? ` · BGM「${r.bgm}」` : ""}`);
-  });
   const bgmSel = $("#cutBgm", root);
   if (bgmSel) bgmSel.addEventListener("change", e => {
     const name = e.target.value;
@@ -487,15 +537,26 @@ export function renderCutPage(root, p) {
     $("#cutBgmVolV", root).textContent = e.target.value + "%";
     save("productions");
   });
+  $("#cutNarrationVol", root)?.addEventListener("input", e => {
+    p.artifacts.audio = p.artifacts.audio || {};
+    p.artifacts.audio.volume = (+e.target.value) / 100;
+    $("#cutNarrationVolV", root).textContent = e.target.value + "%";
+    syncPreviewAudio(!!playTimer);
+    save("productions");
+  });
   $("#tlFillSubs", root).addEventListener("click", () => {
+    const digitalSegments = p.artifacts.boards?.digitalHuman?.segments || [];
     const rows = (p.artifacts.script.shots || []).filter(s => (s.line || "").trim());
-    if (!rows.length) { toast("脚本里没有口播/画外音"); return; }
+    if (!digitalSegments.length && !rows.length) { toast("还没有可匹配的口播内容"); return; }
     snapshot();
     let t = 0; const subs = [];
     const per = p.artifacts.audio?.perShot || [];
-    (p.artifacts.script.shots || []).forEach((s, i) => {
+    const sourceRows = digitalSegments.length
+      ? digitalSegments.map(seg => ({ line: seg.line || "", dur: seg.audioDuration || seg.dur || 0 }))
+      : (p.artifacts.script.shots || []).map((shot, i) => ({ ...shot, dur: per[i]?.dur || 0 }));
+    sourceRows.forEach((s, i) => {
       const line = (s.line || "").trim();
-      const d = isVideoWorkshop(p) ? ((per[i] && per[i].dur) || 3) : 0;
+      const d = isVideoWorkshop(p) ? (Number(s.dur) || (per[i] && per[i].dur) || 3) : 0;
       let st = t, en;
       if (isVideoWorkshop(p)) {
         en = st + d;
@@ -508,7 +569,7 @@ export function renderCutPage(root, p) {
     });
     p.artifacts.subs = subs;
     save("productions"); drawTimeline();
-    toast(`已从脚本填入 ${p.artifacts.subs.length} 条字幕（长句已自动断行）`);
+    toast(`已按已绑定口播排入 ${p.artifacts.subs.length} 条字幕`);
   });
   $("#tlAddSub", root).addEventListener("click", () => {
     snapshot();
@@ -527,7 +588,10 @@ export function renderCutPage(root, p) {
     if (at <= 0.5 || at >= clipDur(c) - 0.5) { toast("播放头要落在片段中间才能分割"); return; }
     snapshot();
     const d1 = Math.round(at * 2) / 2;
-    const c2 = { id: Math.random().toString(36).slice(2, 10), jobId: c.jobId, name: c.name + " ·切", dur: clipDur(c) - d1, trimIn: (c.trimIn || 0) + d1 };
+    const c2 = {
+      id: Math.random().toString(36).slice(2, 10), jobId: c.jobId, segmentId: c.segmentId || "",
+      videoUrl: c.videoUrl || "", name: c.name + " ·切", dur: clipDur(c) - d1, trimIn: (c.trimIn || 0) + d1
+    };
     c.dur = d1;
     TL().splice(i + 1, 0, c2);
     save("productions"); drawTimeline();
@@ -543,38 +607,6 @@ export function renderCutPage(root, p) {
   $("#tlZoomIn", root).addEventListener("click", () => { PPS = Math.min(100, Math.round(PPS * 1.3)); drawTimeline(); });
   $("#tlZoomOut", root).addEventListener("click", () => { PPS = Math.max(14, Math.round(PPS / 1.3)); drawTimeline(); });
   $("#cpPlay", root).addEventListener("click", togglePlay);
-  $("#cutCompose", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
-    if (!TL().length) { toast("时间轴为空：先一键智能拼接"); return; }
-    const clips = TL().map(c => ({
-      url: videoUrlForClip(c),
-      name: c.name || "",
-      dur: c.dur || 15,
-      trimIn: c.trimIn || 0
-    })).filter(c => c.url);
-    if (!clips.length) { toast("时间轴里还没有真实视频回链"); return; }
-    const narrationMedia = await assetMedia(p.artifacts.audio?.assetId);
-    const bgmMedia = await assetMedia(p.artifacts.bgm?.assetId);
-    const res = await fetch("/api/video/compose", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: p.artifacts.copy?.title || p.title || p.topic || "final",
-        clips,
-        narrationDataUrl: narrationMedia.dataUrl || "",
-        narrationUrl: narrationMedia.url || "",
-        bgmDataUrl: bgmMedia.dataUrl || "",
-        bgmUrl: bgmMedia.url || "",
-        bgmVolume: p.artifacts.bgm?.volume ?? 0.25
-      })
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `合成失败 (${res.status})`);
-    p.artifacts.finalVideoUrl = data.url;
-    p.artifacts.finalVideoName = data.name || "";
-    save("productions");
-    toast("合成成片已生成，交付包将优先使用这个 mp4");
-    renderCutPage(root, p);
-  }, "合成中…").catch(err => toast(err.message || "合成失败", "error")));
   $("#tlRuler", root).addEventListener("pointerdown", e => {
     const rect = $("#tlRuler", root).getBoundingClientRect();
     stopPlay(); playheadT = (e.clientX - rect.left) / PPS; updatePlayhead();
@@ -608,21 +640,48 @@ export function renderCutPage(root, p) {
     cpSub.addEventListener("pointermove", move);
     cpSub.addEventListener("pointerup", up);
   });
-  // ⌘Z
+  // 键盘剪辑：Delete 删除当前选中片段或字幕，⌘Z 撤回。
   const keyHandler = e => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && document.body.dataset.zone === "studio" && root.isConnected) {
-      const tag = (document.activeElement || {}).tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
+    if (document.body.dataset.zone !== "studio" || !root.isConnected) return;
+    const tag = (document.activeElement || {}).tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || (document.activeElement || {}).isContentEditable) return;
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
       e.preventDefault(); undo();
+      return;
+    }
+    if ((e.key === "Delete" || e.key === "Backspace") && activeTrack) {
+      e.preventDefault();
+      snapshot();
+      if (activeTrack === "clip" && selectedClipId) {
+        p.artifacts.timeline = TL().filter(clip => clip.id !== selectedClipId);
+        selectedClipId = null;
+      } else if (activeTrack === "sub" && SUBS()[activeSubIdx]) {
+        SUBS().splice(activeSubIdx, 1);
+        activeSubIdx = Math.max(0, Math.min(activeSubIdx, SUBS().length - 1));
+      }
+      activeTrack = "";
+      save("productions"); drawTimeline();
     }
   };
+  if (root.__cutKeyHandler) document.removeEventListener("keydown", root.__cutKeyHandler);
+  root.__cutKeyHandler = keyHandler;
   document.addEventListener("keydown", keyHandler);
   window.addEventListener("view:rendered", function off() {
-    if (!root.isConnected) { document.removeEventListener("keydown", keyHandler); window.removeEventListener("view:rendered", off); }
+    if (!root.isConnected) {
+      document.removeEventListener("keydown", keyHandler);
+      if (root.__cutKeyHandler === keyHandler) delete root.__cutKeyHandler;
+      window.removeEventListener("view:rendered", off);
+    }
   });
 
   $("#cutNext", root).addEventListener("click", () => {
-    if (!TL().length) { toast("时间轴为空：先加入片段或一键智能拼接"); return; }
+    if (!TL().length) { toast("时间轴为空：请先等待视频片段生成完成"); return; }
+    if (p.artifacts.composing) { toast("正在自动合成成片，请稍候"); return; }
+    if (videoJobsComplete() && !p.artifacts.finalVideoUrl) {
+      composeFinal({ automatic: true });
+      toast("正在自动合成成片，请稍候");
+      return;
+    }
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("先回到文案分镜生成或上传封面图，再进入发布");
       return;
@@ -632,4 +691,7 @@ export function renderCutPage(root, p) {
   });
 
   drawTimeline();
+  if (!p.artifacts.finalVideoUrl && !p.artifacts.composing && !p.artifacts.composeError && videoJobsComplete()) {
+    queueMicrotask(() => composeFinal({ automatic: true }));
+  }
 }

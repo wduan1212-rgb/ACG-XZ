@@ -4,13 +4,10 @@ import { $, $$, esc, gradFor, downloadBlob } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, persistNow, ROLE_LABEL } from "../core/store.js";
 import { db } from "../core/db.js";
-import { LLM_CONFIG, applyKeyOverrides, llm } from "../api/llm.js";
-import { videoApiConfigured, imageApiConfigured } from "../api/providers.js";
-import { toast, confirmModal, promptModal, openModal, withLoading } from "../ui/components.js";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js";
 import { uid } from "../core/util.js";
 import * as remote from "../core/remote.js";
 
-const TYPE_LABEL = { language: "脚本 / 文案（语言模型）", image: "图片生成", video: "视频生成", tts: "TTS / 数字人" };
 const ROLE_DESC = { admin: "全功能 · 管账号/成员/设置 + 创作与发布；可在发布清单标注「已审阅」+ 监管全量", editor: "创作成员：走创作流程，且可直接定稿发布入供应商端", supplier: "仅发布清单：下载素材 + 上传发布链接" };
 const ROLE_OPTS = ["admin", "editor", "supplier"];
 
@@ -40,47 +37,7 @@ export const settingsView = {
             <div><div class="eyebrow">设置</div><h2>服务接入与数据管理</h2></div>
           </div>
 
-          <div class="set-cols">
-            <section class="card set-form">
-              <div class="card-head"><b>接入服务</b><em>按能力配置 Provider，保存后立即生效</em></div>
-              <div class="set-status">
-                <span class="cap ${LLM_CONFIG.apiKey ? "ok" : "warn"}">${icon("type", 13)} 语言模型 · ${LLM_CONFIG.apiKey ? "已就绪（" + esc(LLM_CONFIG.model) + "）" : "未配置"}</span>
-                <span class="cap ${imageApiConfigured() ? "ok" : "warn"}">${icon("image", 13)} 图片生成 · ${imageApiConfigured() ? "已配置" : "未接入 · 可上传补图"}</span>
-                <span class="cap ${videoApiConfigured() ? "ok" : "warn"}">${icon("film", 13)} 视频生成 · ${videoApiConfigured() ? "已配置" : "未接入 · 模拟引擎"}</span>
-              </div>
-              <div class="set-grid">
-                <label class="field">Key 名称<input class="input" id="setName" placeholder="例如：即梦视频主 Key" /></label>
-                <label class="field">服务类型
-                  <select class="input" id="setType">
-                    <option value="language">脚本 / 文案（语言模型）</option>
-                    <option value="image">图片生成 API</option>
-                    <option value="video">视频生成 API</option>
-                    <option value="tts">TTS / 数字人 API</option>
-                  </select>
-                </label>
-                <label class="field">Provider / Endpoint<input class="input" id="setProvider" placeholder="名称或 http(s) 地址（语言类填地址可覆盖 endpoint）" /></label>
-                <label class="field">模型（可选）<input class="input" id="setModel" placeholder="图片填 custom-imagemodel-gt；语言填 MiniMax-M3 等" /></label>
-                <label class="field">API Key<input class="input" id="setSecret" type="password" autocomplete="off" placeholder="保存后不明文展示" /></label>
-              </div>
-              <div class="head-actions">
-                <button class="btn ghost" id="setTest">${icon("pulse", 14)} 测试语言模型连接</button>
-                <button class="btn primary" id="setSave">${icon("check", 14)} 保存 Key</button>
-              </div>
-              <p class="muted" style="margin-top:10px">说明：语言模型 Key 保存后即生效；视频 / 图片 Key 保存后标记为"已配置"，真实调用待 Provider 适配器接入（接口已预留，见 js/api/providers.js）。<b>部署到服务器后</b>，建议把语言类 Provider 填 <code>/api/chat/completions</code>（同源服务端代理，免跨域、真实 Key 藏在服务器 LLM_API_KEY），Key 此处填占位即可；本地直连遇 CORS 也可运行 proxy.py 把 Provider 填 http://localhost:8787/chat。</p>
-            </section>
-
-            <section class="card set-list">
-              <div class="card-head"><b>已保存的 Key</b><em>${state.apiKeys.length} 个</em></div>
-              ${state.apiKeys.length ? state.apiKeys.map(k => `
-                <div class="key-row">
-                  <span class="key-ico" style="background:${gradFor(k.name)}">${(TYPE_LABEL[k.type] || "?")[0]}</span>
-                  <span class="ovt-main"><b>${esc(k.name)}</b><em>${TYPE_LABEL[k.type] || k.type} · ${esc(k.provider || "—")}${k.model ? ` · ${esc(k.model)}` : ""} · ••••${esc(k.tail || "")}</em></span>
-                  <button class="icon-btn danger" data-kdel="${k.id}">${icon("trash", 14)}</button>
-                </div>`).join("") : `<div class="muted" style="padding:8px 2px">尚未保存任何 Key。语言模型当前使用内置默认配置。</div>`}
-            </section>
-          </div>
-
-          <section class="card set-data">
+          <section class="card set-data product-library">
             <div class="card-head"><b>产品库</b><em>脚本、分镜提示词和发布文案都会按所选产品生成</em>
               <button class="btn primary sm" id="prodAdd">${icon("plus", 13)} 添加产品</button></div>
             <div class="prod-list">
@@ -94,7 +51,7 @@ export const settingsView = {
             </div>
           </section>
 
-          ${canReviewRequests() ? `<section class="card set-data">
+          ${canReviewRequests() ? `<section class="card set-data member-requests">
             <div class="card-head"><b>成员申请</b><em>${requestsLoaded ? `${memberRequests.length} 条待审批` : "正在读取申请"}</em>
               <button class="btn ghost sm" id="reqRefresh">${icon("pulse", 13)} 刷新</button></div>
             <div class="mem-list">
@@ -108,7 +65,7 @@ export const settingsView = {
             </div>
           </section>` : ""}
 
-          <section class="card set-data">
+          <section class="card set-data member-accounts">
             <div class="card-head"><b>成员账号</b><em>每人一个账号与权限，创作互不干扰；资产库与发布清单全员共享</em>
               <button class="btn primary sm" id="memAdd">${icon("plus", 13)} 添加成员</button></div>
             <div class="mem-list" id="memList">
@@ -123,7 +80,7 @@ export const settingsView = {
             </div>
           </section>
 
-          <section class="card set-data">
+          <section class="card set-data data-management">
             <div class="card-head"><b>数据管理</b><em>数据保存在本机浏览器（IndexedDB 分仓）</em></div>
             <div class="head-actions">
               <button class="btn ghost" id="setExport">${icon("download", 14)} 导出全部数据</button>
@@ -150,35 +107,6 @@ export const settingsView = {
     }
 
     function wire() {
-      $("#setSave", root).addEventListener("click", () => {
-        const name = $("#setName", root).value.trim();
-        const secret = $("#setSecret", root).value.trim();
-        if (!name || !secret) { toast("请填写 Key 名称与 API Key"); return; }
-        const type = $("#setType", root).value;
-        const provider = $("#setProvider", root).value.trim();
-        const model = $("#setModel", root).value.trim();
-        state.apiKeys.push({ id: uid(), name, type, provider, model, secret, tail: secret.slice(-4) });
-        if (type === "language") applyKeyOverrides(state.apiKeys);
-        save("meta");
-        toast(type === "language" ? "语言模型配置已更新并生效" : "API Key 已保存");
-        draw();
-      });
-      $("#setTest", root).addEventListener("click", e => withLoading(e.currentTarget, async () => {
-        try {
-          const r = await llm([{ role: "user", content: "回复两个字：在线" }], { temperature: 0 });
-          toast("✓ 连接正常：" + String(r).slice(0, 20));
-        } catch (err) {
-          toast("✗ 连接失败：" + (err.message || "网络/CORS").slice(0, 60));
-        }
-      }, "测试中…"));
-      $$("[data-kdel]", root).forEach(b => b.addEventListener("click", async () => {
-        const ok = await confirmModal({ title: "删除这个 Key？", danger: true, okText: "删除" });
-        if (!ok) return;
-        state.apiKeys = state.apiKeys.filter(k => k.id !== b.dataset.kdel);
-        applyKeyOverrides(state.apiKeys);
-        save("meta");
-        draw();
-      }));
       const productDialog = (item) => {
         const editing = !!item;
         const p0 = item || productFromText("");
@@ -273,7 +201,7 @@ export const settingsView = {
           <div class="mp-body">
             <label class="field">姓名<input class="input" id="mdName" value="${esc(m.name)}" placeholder="例如：小红" /></label>
             <label class="field">用户名（登录用）<input class="input" id="mdUser" value="${esc(m.username)}" placeholder="字母/数字，唯一" /></label>
-            <label class="field">口令<input class="input" id="mdPin" value="${esc(m.pin)}" placeholder="登录口令" /></label>
+            <label class="field">${editing ? "重设登录密码（留空不改）" : "初始登录密码"}<input class="input" id="mdPin" type="password" value="" autocomplete="new-password" placeholder="${editing ? "设置新密码" : "登录密码"}" /></label>
             <label class="field">角色
               <select class="input" id="mdRole">
                 ${ROLE_OPTS.map(r => `<option value="${r}" ${m.role === r ? "selected" : ""}>${ROLE_LABEL[r]} · ${ROLE_DESC[r]}</option>`).join("")}
@@ -292,13 +220,13 @@ export const settingsView = {
             if (state.members.some(x => x.username === username && x.id !== m.id)) { toast("用户名已存在"); return; }
             if (remote.isOn()) {
               try {
-                if (editing) await remote.members.update(m.id, { name, username, pin, role });
+                if (editing) await remote.members.update(m.id, { name, username, ...(pin ? { pin } : {}), role });
                 else await remote.members.add({ name, username, pin, role });
                 state.members = await remote.members.list();
                 saveMembers();
               } catch (e) { toast("保存失败：" + (e.message || e)); return; }
             } else {
-              if (editing) { const t = state.members.find(x => x.id === m.id); Object.assign(t, { name, username, pin, role }); }
+              if (editing) { const t = state.members.find(x => x.id === m.id); Object.assign(t, { name, username, ...(pin ? { pin } : {}), role }); }
               else state.members.push({ id: uid(), name, username, pin, role, createdAt: Date.now() });
               saveMembers();
             }
@@ -334,7 +262,7 @@ export const settingsView = {
           accounts: state.accounts, productions: state.productions,
           assets: state.assets.map(a => ({ ...a })),
           sessions: state.sessions, batches: state.batches, jobs: state.jobs,
-          products: state.products, apiKeys: state.apiKeys, ui: state.ui
+          products: state.products, ui: state.ui
         };
         downloadBlob(`dumate-studio-backup-${Date.now()}.json`, new Blob([JSON.stringify(snap, null, 2)], { type: "application/json" }));
         toast("已导出数据快照");
@@ -346,7 +274,7 @@ export const settingsView = {
           if (!snap.accounts) throw new Error("不是有效的备份文件");
           const ok = await confirmModal({ title: "导入将覆盖当前数据，继续？", body: "建议先导出一份当前数据。", danger: true, okText: "覆盖导入" });
           if (!ok) return;
-          ["members", "accounts", "productions", "assets", "sessions", "batches", "jobs", "products", "apiKeys"].forEach(k => { if (snap[k]) state[k] = snap[k]; });
+          ["members", "accounts", "productions", "assets", "sessions", "batches", "jobs", "products"].forEach(k => { if (snap[k]) state[k] = snap[k]; });
           if (snap.ui) Object.assign(state.ui, snap.ui);
           await persistNow();
           location.reload();

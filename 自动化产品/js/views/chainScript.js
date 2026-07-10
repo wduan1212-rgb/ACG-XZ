@@ -68,7 +68,7 @@ export function renderScriptPage(root, p) {
             ${isImg ? `
             <div class="field count-field">
               <span>生成几张图 <em id="csCountVal">${A.imageCount || DEFAULT_XHS_IMAGE_COUNT} 张</em></span>
-              <div class="count-slider"><span>3</span><input type="range" id="csCount" min="3" max="9" step="1" value="${A.imageCount || DEFAULT_XHS_IMAGE_COUNT}" /><span>9</span></div>
+              <div class="count-slider"><span>1</span><input type="range" id="csCount" min="1" max="9" step="1" value="${A.imageCount || DEFAULT_XHS_IMAGE_COUNT}" /><span>9</span></div>
             </div>` : ""}
           </div>
           ${isImg ? `

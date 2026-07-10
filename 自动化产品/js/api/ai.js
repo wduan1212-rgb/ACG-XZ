@@ -1832,7 +1832,7 @@ function richImagePrompt(item, i, total, ctx) {
 }
 
 function normalizeImagePromptItems(items, ctx) {
-  const n = Math.max(3, Math.min(12, Number(ctx.imageCount) || (items || []).length || DEFAULT_XHS_IMAGE_COUNT));
+  const n = Math.max(1, Math.min(12, Number(ctx.imageCount) || (items || []).length || DEFAULT_XHS_IMAGE_COUNT));
   const src = Array.isArray(items) ? items : [];
   const beats = splitImageBeats(ctx, n);
   return Array.from({ length: n }, (_, i) => richImagePrompt(src[i] || {}, i, n, { ...ctx, beat: beats[i] }));
@@ -1867,6 +1867,20 @@ function fallbackImageShot(i, total, { topic = "", product = null } = {}) {
   const first = productDisplayName(rel[0], "知识库");
   const second = rel[1] ? productDisplayName(rel[1], "") : "";
   const relation = rel.length;
+  if (total === 1) {
+    return {
+      idea: cleanText(topic || "本次主题").slice(0, 30),
+      visual: `一张有序信息图：上部强标题，中部用三个简洁动作或证据卡讲清主题，下部以一条可复用结论收束，画面层级清楚且不出现页码或内页字样`,
+      line: cleanText(topic || "把关键动作排成一张图").slice(0, 30)
+    };
+  }
+  if (total === 2 && i === 1) {
+    return {
+      idea: "关键动作和结果",
+      visual: `第二张干货信息图：以具体操作、证据或结果卡展开主题，信息密度高于首图但保持文字可读和层级清楚`,
+      line: "把关键动作和结果讲清楚"
+    };
+  }
   const relationRows = [
     { idea: "先拆工具分工", visual: `三栏分工卡：${productName}写桌面执行，${first}写知识沉淀${second ? `，${second}写云端任务` : ""}，每栏只放一个图标和一句职责`, line: "先分清谁负责什么" },
     { idea: `${productName}负责执行`, visual: `电脑桌面上混乱文件夹被拖入${productName}任务框，右侧出现分类清单和结果卡`, line: `${productName}管桌面执行` },
@@ -1888,7 +1902,7 @@ function fallbackImageShot(i, total, { topic = "", product = null } = {}) {
 }
 
 function normalizeScriptResult(d, { topic = "", image = false, imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null } = {}) {
-  const want = image ? Math.max(3, Math.min(12, Number(imageCount) || DEFAULT_XHS_IMAGE_COUNT)) : Math.max(1, (d.shots || []).length);
+  const want = image ? Math.max(1, Math.min(12, Number(imageCount) || DEFAULT_XHS_IMAGE_COUNT)) : Math.max(1, (d.shots || []).length);
   const src = Array.isArray(d.shots) ? d.shots : [];
   const badLine = (text = "") => {
     const t = cleanText(text);
@@ -2268,7 +2282,7 @@ export const AI = {
     const p = product || allProductsForAI().find(x => x.owner === "ours") || null;
     const rel = relatedProducts(p, allProductsForAI(), 5);
     const productName = chineseProductDisplayName(p);
-    const count = Math.max(3, Math.min(12, Number(imageCount) || DEFAULT_XHS_IMAGE_COUNT));
+    const count = Math.max(1, Math.min(12, Number(imageCount) || DEFAULT_XHS_IMAGE_COUNT));
     const emptyRunSeed = `${account?.id || account?.name || "account"}:${p?.id || "product"}:${kind}:${count}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
     const fixedEmptyTopic = normalizeCreativeTopicForMode({
       topic: "",
@@ -2341,7 +2355,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const dirText = image
       ? (direction ? `本次创作内容：${direction}。` : `本次创作内容：围绕主题自由发挥，每张图承担清晰信息点。`)
       : (direction ? `目标人群方向：${direction}（脚本语气、痛点、例子都贴合这个人群）。` : `人群方向：不限，自由发挥最合适的角度。`);
-    const nImg = Math.max(3, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
+    const nImg = Math.max(1, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
     const variantGuide = batchVariantLine(batchVariant);
     const prep = await resolveTrendPrep({ topic: `${topic}\n${direction}`, account, product, batchVariant, useOnlineTrends: false, kind: image ? "image" : "video", imageCount: nImg });
     const trendGuideText = prep?.guide || await resolveTrendGuide({ topic: `${topic}\n${direction}`, account, product, batchVariant, useOnlineTrends: false, kind: image ? "image" : "video", imageCount: nImg });
@@ -2461,7 +2475,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
   /* ---------- 图文：逐张图片提示词 ---------- */
   async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, topic = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null, copy = null }) {
     const tpl = String(imageTemplate || "").trim();
-    const nImg = Math.max(3, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
+    const nImg = Math.max(1, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
     const safeTopic = sanitizeXhsText(cleanText(topic || ""));
     const safeScript = sanitizeXhsText(cleanText(scriptInputText(script)));
     const safeStyle = sanitizeXhsText(cleanText(style || ""));
@@ -2886,7 +2900,7 @@ ${xhsGuardPrompt()}
     const productName = chineseProductDisplayName(product);
     const clean = (topic || "").replace(/Dumate|百度搭子|百度秒哒|秒哒/g, "").trim() || "杂事";
     if (image) {
-      const n = Math.max(3, Math.min(9, imageCount || DEFAULT_XHS_IMAGE_COUNT));
+      const n = Math.max(1, Math.min(9, imageCount || DEFAULT_XHS_IMAGE_COUNT));
       const mentioned = productsMentionedIn(topic, product, 2);
       const firstRef = mentioned[0];
       const refName = firstRef ? productDisplayName(firstRef, "同类工具") : "";

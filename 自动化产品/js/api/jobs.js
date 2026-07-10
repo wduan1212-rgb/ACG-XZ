@@ -6,7 +6,8 @@ import { uid } from "../core/util.js";
 import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
 
-const CONCURRENCY = 2;
+const CONCURRENCY = 4;
+const DIGITAL_HUMAN_CONCURRENCY = 3;
 const TICK_MS = 1000;
 const DEFAULT_POLL_MS = 8000;
 const DIGITAL_HUMAN_POLL_MS = 12000;
@@ -119,7 +120,7 @@ function isTransientProviderError(message = "") {
 
 function readableProviderError(message = "") {
   const msg = String(message || "生成失败");
-  if (isTransientProviderError(msg)) return "OmniHuman 上游限流或网关超时，请稍后重试；系统已按单并发退避处理。";
+  if (isTransientProviderError(msg)) return "OmniHuman 上游限流或网关超时，请稍后重试；系统会自动退避重试。";
   return msg;
 }
 
@@ -235,13 +236,13 @@ async function tick() {
   // 2) 队列补位
   const slots = CONCURRENCY - activeJobs().length;
   if (slots > 0) {
-    const activeDigital = activeJobs().some(isDigitalHumanJob);
-    let digitalPicked = false;
+    const activeDigital = activeJobs().filter(isDigitalHumanJob).length;
+    let digitalPicked = 0;
     const candidates = [];
     for (const j of queuedJobs()) {
       if (candidates.length >= slots) break;
-      if (isDigitalHumanJob(j) && (activeDigital || digitalPicked)) continue;
-      if (isDigitalHumanJob(j)) digitalPicked = true;
+      if (isDigitalHumanJob(j) && activeDigital + digitalPicked >= DIGITAL_HUMAN_CONCURRENCY) continue;
+      if (isDigitalHumanJob(j)) digitalPicked++;
       candidates.push(j);
     }
     for (const j of candidates) {

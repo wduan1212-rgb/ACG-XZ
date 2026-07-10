@@ -1162,6 +1162,7 @@ class ComposeReq(BaseModel):
     bgmUrl: str = ""
     bgmDataUrl: str = ""
     bgmVolume: float = 0.25
+    narrationVolume: float = 1.0
 
 
 def _video_status(data: dict) -> str:
@@ -1920,7 +1921,7 @@ def _digital_human_transient_error(status_code: int = 0, data=None, text: str = 
 
 def _digital_human_transient_detail(data=None, status_code: int = 0) -> str:
     if _digital_human_transient_error(status_code, data):
-        return "OmniHuman 上游限流或网关超时，请稍后重试；系统已按单并发退避处理。"
+        return "OmniHuman 上游限流或网关超时，请稍后重试；系统会自动退避重试。"
     if isinstance(data, dict):
         return _http_detail(data) or f"OmniHuman 请求失败：status={status_code}"
     return str(data or f"OmniHuman 请求失败：status={status_code}")
@@ -2372,6 +2373,7 @@ async def video_compose(req: ComposeReq):
             shutil.copyfile(base_path, out_path)
         else:
             vol = max(0.05, min(0.6, float(req.bgmVolume or 0.25)))
+            narration_vol = max(0.0, min(1.0, float(req.narrationVolume if req.narrationVolume is not None else 1.0)))
             audio_cmd = [ffmpeg, "-y", "-i", str(base_path)]
             if has_narr:
                 audio_cmd += ["-i", str(narr_path)]
@@ -2380,11 +2382,11 @@ async def video_compose(req: ComposeReq):
             if has_narr and has_bgm:
                 audio_cmd += [
                     "-filter_complex",
-                    f"[1:a]volume=1.0[a1];[2:a]volume={vol}[a2];[a1][a2]amix=inputs=2:duration=shortest:dropout_transition=0[a]",
+                    f"[1:a]volume={narration_vol}[a1];[2:a]volume={vol}[a2];[a1][a2]amix=inputs=2:duration=shortest:dropout_transition=0[a]",
                     "-map", "0:v:0", "-map", "[a]"
                 ]
             elif has_narr:
-                audio_cmd += ["-map", "0:v:0", "-map", "1:a:0"]
+                audio_cmd += ["-map", "0:v:0", "-map", "1:a:0", "-filter:a", f"volume={narration_vol}"]
             else:
                 audio_cmd += ["-map", "0:v:0", "-map", "1:a:0", "-filter:a", f"volume={vol}"]
             audio_cmd += ["-c:v", "copy", "-c:a", "aac", "-shortest", "-t", f"{total_dur:.3f}", "-movflags", "+faststart", str(out_path)]

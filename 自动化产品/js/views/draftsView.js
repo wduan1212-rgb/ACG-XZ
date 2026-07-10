@@ -1,5 +1,4 @@
-/* 草稿箱（独立页）：本人名下、尚未发布的全部 production（进行中 / 失败 / 已生成待发布）。
-   与「发布清单」分开——草稿箱按账号隔离、仅本人可见；发布清单是共享的成片库。 */
+/* 草稿箱（独立页）：本人名下、尚未发布的全部 production（进行中 / 失败 / 已生成待发布）。 */
 
 import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
@@ -16,12 +15,13 @@ function draftProductions() {
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 
-function draftRowHtml(p) {
+function draftRowHtml(p, selected) {
   const [label, cls] = statusPill(p);
   const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
   const cover = items.find(x => x.assetId);
   const u = cover ? urlFor(cover.assetId) : null;
   return `<div class="draft-row ${p.stageStatus === "failed" ? "fail" : ""}" data-draft="${p.id}">
+    <input class="draft-check" type="checkbox" data-draft-check="${p.id}" ${selected.has(p.id) ? "checked" : ""} aria-label="选择草稿" />
     <span class="draft-cover">${u ? `<img src="${u}"/>` : `<i style="background:${gradFor(p.title || p.id)}">${p.mode === "图文" ? "图" : "▶"}</i>`}</span>
     <span class="draft-main"><b>${esc(p.artifacts.copy.title || p.title || p.topic || "未命名创作")}</b><em>${STAGES[p.stage]?.label || p.stage} · ${timeAgo(p.updatedAt)}</em></span>
     <span class="status-pill ${cls}">${label}</span>
@@ -32,26 +32,34 @@ function draftRowHtml(p) {
 
 export const draftsView = {
   render(root) {
+    const selected = new Set();
+    const collapsed = new Set();
     const draw = () => {
       const drafts = draftProductions();
-      const byAcc = new Map();
-      drafts.forEach(p => { const a = accountById(p.accountId); const k = a ? a.id : "?"; if (!byAcc.has(k)) byAcc.set(k, { acc: a, list: [] }); byAcc.get(k).list.push(p); });
+      const byDate = new Map();
+      drafts.forEach(p => {
+        const d = new Date(p.updatedAt || Date.now());
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        if (!byDate.has(key)) byDate.set(key, []);
+        byDate.get(key).push(p);
+      });
       const failed = drafts.filter(p => p.stageStatus === "failed").length;
 
       root.innerHTML = `
         <div class="drafts-page">
           <div class="page-head">
             <div><div class="eyebrow">草稿箱</div>
-            <h2>未发布的进行中 / 失败 / 已生成待发布 · 按账号隔离仅本人可见</h2></div>
+            <h2>未发布的进行中 / 失败 / 已生成待发布</h2></div>
             <div class="head-actions">
               <span class="tag">${icon("inbox", 12)} ${drafts.length} 条草稿</span>
               ${failed ? `<span class="tag warn">${icon("alert", 11)} ${failed} 条失败</span>` : ""}
+              ${selected.size ? `<button class="btn danger ghost sm" id="draftBulkDelete">${icon("trash", 12)} 删除已选 ${selected.size}</button>` : ""}
             </div>
           </div>
-          ${drafts.length ? `<div class="draft-groups page">${[...byAcc.values()].map(({ acc, list }) => `
-            <section class="draft-acc card">
-              <div class="draft-acc-head"><span class="dot sm" style="background:${gradFor(acc?.name || "")}"></span><b>${esc(acc?.name || "未知账号")}</b><em>${list.length} 条</em></div>
-              ${list.map(draftRowHtml).join("")}
+          ${drafts.length ? `<div class="draft-groups page draft-timeline">${[...byDate.entries()].map(([date, list]) => `
+            <section class="draft-acc card ${collapsed.has(date) ? "collapsed" : ""}">
+              <button class="draft-acc-head" data-draft-fold="${date}"><span class="dot sm" style="background:${gradFor(date)}"></span><b>${date}</b><em>${list.length} 条</em>${icon("chevronDown", 14)}</button>
+              <div class="draft-date-list">${list.map(p => draftRowHtml(p, selected)).join("")}</div>
             </section>`).join("")}</div>`
           : emptyState("inbox", "草稿箱是空的", "在批量创作 / 单号创作里发起的内容，未发布前都会先存放在这里。点「定稿并发布」后才进入发布清单。")}
         </div>`;
@@ -84,3 +92,19 @@ export const draftsView = {
     draw();
   }
 };
+      $("#draftBulkDelete", root)?.addEventListener("click", async () => {
+        const ids = [...selected];
+        const ok = await confirmModal({ title: `删除已选 ${ids.length} 条草稿？`, body: "草稿及其未发布中间产物会被移除。", danger: true, okText: "删除" });
+        if (!ok) return;
+        for (const id of ids) await deleteProduction(id);
+        selected.clear(); toast("已删除所选草稿"); draw();
+      });
+      $$('[data-draft-check]', root).forEach(b => b.addEventListener("click", e => {
+        e.stopPropagation();
+        if (b.checked) selected.add(b.dataset.draftCheck); else selected.delete(b.dataset.draftCheck);
+        draw();
+      }));
+      $$('[data-draft-fold]', root).forEach(b => b.addEventListener("click", () => {
+        if (collapsed.has(b.dataset.draftFold)) collapsed.delete(b.dataset.draftFold); else collapsed.add(b.dataset.draftFold);
+        draw();
+      }));

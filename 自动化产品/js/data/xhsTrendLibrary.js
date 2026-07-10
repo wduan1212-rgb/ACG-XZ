@@ -694,12 +694,15 @@ function buildReferenceRewrite({ items = [], title = "", copy = "", tags = [], p
 
 function buildImageStrategy({ topic, product, direction, imageCount, onlineItems, seed }) {
   const zh = zhProductName(product);
-  const n = Math.max(3, Math.min(12, Number(imageCount) || 4));
+  const n = Math.max(1, Math.min(12, Number(imageCount) || 4));
   const ref = pick(onlineItems, seed + 2);
   const parts = [
     `图片里主产品统一写「${zh}」；涉及百度秒哒时也只使用中文名。`,
-    `第1张低信息密度：一个大标题、一句短副标题、1-2 个简单视觉元素，避免表格、长流程和密集截图。`,
-    `内页按 ${n} 张重新分配信息：每张只讲一个小问题，依次覆盖真实场景、工具分工/组合动作、可复核结果、边界或收藏结论。`,
+    n === 1
+      ? `只有 1 张：做成一张有序信息图，上部强标题，中部呈现 2-3 个关键动作或证据，底部给出一句结论；不要页码、不要拆成内页。`
+      : n === 2
+        ? `共 2 张：第1张低信息密度，用大标题和简单主视觉建立点击；第2张再展开具体动作、证据或结果。`
+        : `第1张低信息密度：一个大标题、一句短副标题、1-2 个简单视觉元素；第2张起再依次覆盖真实场景、工具分工/组合动作、可复核结果、边界或收藏结论。`,
     `如果主题里有同类工具，具体写清它负责哪一步、${zh}负责哪一步，用箭头、左右分工或场景卡表达。`,
     `文字轻量：普通风格以醒目主标题、短解释和必要标签为主；火柴人/漫画风格主要靠人物动作、气泡和箭头。`,
     `内部取材方向：${ref?.title ? `参考热门标题钩子和结构节奏，改写成本次主题` : direction?.name || "本地四方向"}；画面只呈现本次内容本身。`

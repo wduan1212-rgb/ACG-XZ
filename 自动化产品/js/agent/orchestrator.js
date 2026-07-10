@@ -67,6 +67,7 @@ function enforcePlanKind(plan = {}) {
   plan.contentKind = contentKind;
   plan.group = CONTENT_KIND_GROUP[contentKind] || plan.group || "图文组";
   plan.creativeMode = plan.creativeMode === "auto" ? "auto" : "custom";
+  if (contentKind === "image") plan.creativeMode = "custom";
   if (plan.creativeMode === "custom") {
     plan.topicMode = "fixed";
     plan.content = "";
@@ -837,7 +838,7 @@ export function createBatch(plan, sessionId) {
     accountCounts: plan.accountCounts || {},
     accountImageCounts: plan.accountImageCounts || {},
     useOnlineTrends: false,
-    imageCount: Math.max(3, Math.min(12, Number(plan.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT)),
+    imageCount: Math.max(1, Math.min(12, Number(plan.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT)),
     style: plan.style || "",
     accountCount: Number(plan.accountCount || plan.count) || null,
     perAccountCount: Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1)),
@@ -1301,7 +1302,7 @@ async function draftOne(p, batch) {
         createUnitVideoJobs(p);
         return;
       }
-      const count = Math.max(3, Math.min(12, Number(
+      const count = Math.max(1, Math.min(12, Number(
         p.artifacts.script.imageCount || batch.accountImageCounts?.[acc.id] || batch.imageCount || DEFAULT_XHS_IMAGE_COUNT
       ) || DEFAULT_XHS_IMAGE_COUNT));
       const shots = buildBatchCustomCopyShots(p.artifacts.copy, count, product);
@@ -1673,7 +1674,7 @@ export async function startBatch(plan, session) {
   if (!accounts.length) { agentSay("⚠ 没有可用账号，先调整筛选条件。"); return null; }
   const batch = createBatch(plan, session.id);
   const defaultPerAccountCount = Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1));
-  const defaultImageCount = Math.max(3, Math.min(12, Number(plan.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT));
+  const defaultImageCount = Math.max(1, Math.min(12, Number(plan.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT));
   batch.plannedTotal = accounts.reduce((sum, acc) => {
     const n = Math.max(1, Math.min(12, Number((plan.accountCounts || {})[acc.id] || defaultPerAccountCount) || defaultPerAccountCount));
     return sum + n;
@@ -1682,7 +1683,7 @@ export async function startBatch(plan, session) {
     const rawProductId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
     const productId = primaryProductById(rawProductId)?.id || "dumate";
     const perAccountCount = Math.max(1, Math.min(12, Number((plan.accountCounts || {})[acc.id] || defaultPerAccountCount) || defaultPerAccountCount));
-    const imageCount = Math.max(3, Math.min(12, Number((plan.accountImageCounts || {})[acc.id] || defaultImageCount) || defaultImageCount));
+    const imageCount = Math.max(1, Math.min(12, Number((plan.accountImageCounts || {})[acc.id] || defaultImageCount) || defaultImageCount));
     for (let i = 0; i < perAccountCount; i++) {
       const globalIndex = batch.productionIds.length;
       const topic = plan.topicMode === "random" ? "" : (perAccountCount > 1 ? `${plan.topic} ${i + 1}/${perAccountCount}` : plan.topic);

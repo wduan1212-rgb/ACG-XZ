@@ -139,12 +139,13 @@ export function buildZipBlob(entries) { // entries: [{name, u8}]
     const nm = enc.encode(e.name), crc = crc32(e.u8), sz = e.u8.length;
     const lh = new DataView(new ArrayBuffer(30));
     lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true);
-    lh.setUint16(8, 0, true);
+    lh.setUint16(6, 0x0800, true); // UTF-8 filename flag for Windows unzip tools
     lh.setUint32(14, crc, true); lh.setUint32(18, sz, true); lh.setUint32(22, sz, true);
     lh.setUint16(26, nm.length, true);
     parts.push(new Uint8Array(lh.buffer), nm, e.u8);
     const ch = new DataView(new ArrayBuffer(46));
     ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true);
+    ch.setUint16(8, 0x0800, true);
     ch.setUint32(16, crc, true); ch.setUint32(20, sz, true); ch.setUint32(24, sz, true);
     ch.setUint16(28, nm.length, true); ch.setUint32(42, offset, true);
     central.push(new Uint8Array(ch.buffer), nm);

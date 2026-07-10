@@ -21,6 +21,7 @@ function kindFromGroup(group = "") {
 function normalizePlanKind(p) {
   p.creativeMode = p.creativeMode === "auto" ? "auto" : "custom";
   p.contentKind = ["image", "material", "real"].includes(p.contentKind) ? p.contentKind : kindFromGroup(p.group);
+  if (p.contentKind === "image") p.creativeMode = "custom";
   p.group = CONTENT_KIND_GROUP[p.contentKind] || "图文组";
   if (p.creativeMode === "custom") {
     p.content = "";
@@ -171,9 +172,9 @@ const CARD = {
     const starting = p.status === "starting";
     const locked = confirmed || cancelled || starting;
     const perAccountCount = Math.max(1, Math.min(12, Number(p.perAccountCount || 1) || 1));
-    const imageCountDefault = Math.max(3, Math.min(12, Number(p.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT));
+    const imageCountDefault = Math.max(1, Math.min(12, Number(p.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT));
     const countFor = id => Math.max(1, Math.min(12, Number((p.accountCounts || {})[id] || perAccountCount) || perAccountCount));
-    const imageCountFor = id => Math.max(3, Math.min(12, Number((p.accountImageCounts || {})[id] || imageCountDefault) || imageCountDefault));
+    const imageCountFor = id => Math.max(1, Math.min(12, Number((p.accountImageCounts || {})[id] || imageCountDefault) || imageCountDefault));
     const totalCount = matched.reduce((sum, a) => sum + countFor(a.id), 0);
     const isImageAcc = a => a?.mode === "图文" || groupOf(a) === "图文组";
     const hasImageAccounts = matched.some(isImageAcc);
@@ -212,7 +213,7 @@ const CARD = {
         return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"} ${customMode ? "is-custom-plan" : ""}">
         <b>${esc(a.name)}</b>
         ${customMode ? "" : `<label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>`}
-        ${customMode ? "" : imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="3" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
+        ${imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="1" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : (customMode ? "" : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`) }
         ${copyFields}
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
@@ -231,10 +232,10 @@ const CARD = {
     return `<div class="ag-card plan ${confirmed ? "resolved" : ""}" data-plan="${m.id}">
       <div class="agc-head">${icon("kanban", 15)}<b>量产任务板</b>
         <div class="agc-modebar">
-          <span class="agc-seg-group">${modeBtn("custom", "自定义创作")}${modeBtn("auto", "自动创作")}</span>
+          ${isImageKind ? "" : `<span class="agc-seg-group">${modeBtn("custom", "自定义创作")}${modeBtn("auto", "自动创作")}</span>`}
           <span class="agc-seg-group">${kindBtn("image", "图文")}${kindBtn("material", "素材视频")}${kindBtn("real", "真人视频")}</span>
         </div>
-        ${customMode ? `<span class="agc-product-pill is-locked">${icon("lock", 12)} 产品库后台参考</span>` : `<label class="agc-product-pill">产品
+        ${customMode ? "" : `<label class="agc-product-pill">产品
           <select data-pf="productId" ${locked ? "disabled" : ""}>${productOptions(planProductId)}</select>
         </label>`}
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
@@ -286,7 +287,7 @@ const CARD = {
       <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减</em></span>
         ${locked ? "" : `<span class="agc-sec-tools">
           ${customMode ? "" : `<label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>`}
-          ${!customMode && hasImageAccounts ? `<label class="agc-count-inline">默认图数<input type="number" min="3" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>` : ""}
+          ${!customMode && hasImageAccounts ? `<label class="agc-count-inline">默认图数<input type="number" min="1" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>` : ""}
           <button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>
         </span>`}
       </div>

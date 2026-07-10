@@ -44,7 +44,7 @@ function accountIdsForKind(kind, ids = [], fallbackCount = 0) {
 }
 
 function applyPlanMode(payload, mode) {
-  payload.creativeMode = mode === "auto" ? "auto" : "custom";
+  payload.creativeMode = payload.contentKind === "image" ? "custom" : (mode === "auto" ? "auto" : "custom");
   if (payload.creativeMode === "custom") {
     payload.content = "";
     payload.topic = "";
@@ -64,6 +64,7 @@ function applyPlanKind(payload, kind) {
   const nextKind = normalizePlanKind(kind, payload.group);
   const oldCount = (payload.accountIds || []).length || Number(payload.accountCount || 0) || 2;
   payload.contentKind = nextKind;
+  if (nextKind === "image") payload.creativeMode = "custom";
   payload.group = planGroupForKind(nextKind);
   payload.tags = [];
   payload.accountIds = accountIdsForKind(nextKind, payload.accountIds || [], oldCount);
@@ -887,7 +888,7 @@ function wire(root) {
         m.payload[f.dataset.pf] = f.dataset.pf === "perAccountCount"
           ? Math.max(1, Math.min(12, Number(f.value || 1) || 1))
           : f.dataset.pf === "imageCount"
-            ? Math.max(3, Math.min(12, Number(f.value || 4) || 4))
+            ? Math.max(1, Math.min(12, Number(f.value || 4) || 4))
           : f.value;
       }
     }
@@ -917,7 +918,7 @@ function wire(root) {
     }
     if (aimg) {
       m.payload.accountImageCounts = m.payload.accountImageCounts || {};
-      m.payload.accountImageCounts[aimg.dataset.paccImgcount] = Math.max(3, Math.min(12, Number(aimg.value || m.payload.imageCount || 4) || 4));
+      m.payload.accountImageCounts[aimg.dataset.paccImgcount] = Math.max(1, Math.min(12, Number(aimg.value || m.payload.imageCount || 4) || 4));
     }
     save("sessions");
     if (f?.multiple || ar || acount || aimg || ["perAccountCount", "imageCount"].includes(f?.dataset.pf)) rerenderPlanCard(m.id);

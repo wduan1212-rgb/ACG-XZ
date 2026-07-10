@@ -337,7 +337,7 @@ export const deliveryView = {
             <thead><tr>
               <th class="c-check"><input type="checkbox" id="supAll" /></th>
               <th class="c-seq">序号</th>
-              <th>素材名</th><th>产品</th><th>内容账号 / 发布人</th><th>平台</th><th>标签</th><th>状态</th><th></th>
+              <th>素材名</th><th>产品</th><th>发布人</th><th>平台</th><th>标签</th><th>状态</th><th></th>
             </tr></thead>
             <tbody>${rows.length ? rows.map(({ asset, acc }) => `
               <tr data-sup="${asset.id}">
@@ -345,7 +345,7 @@ export const deliveryView = {
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
                 <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
-                <td><b>内容账号：${esc(asset.byAccount || acc.name)}</b><em class="sup-by">发布人：${esc(publisherLabel(asset))}</em></td>
+                <td><b>${esc(publisherLabel(asset))}</b></td>
                 <td>${platChip(acc.platform, true)}</td>
                 <td><div class="sup-tags" title="${esc((asset.tags || []).join(" / "))}">${supplierTagsHtml(asset.tags)}</div></td>
                 <td><span class="sup-status ${asset.status === "已发布" ? "pub" : asset.status === "已下载" ? "done" : ""}">${asset.publishedUrl ? "已发布 ✓" : asset.status || "未下载"}</span></td>
