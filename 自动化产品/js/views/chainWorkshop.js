@@ -946,6 +946,14 @@ export function renderWorkshopPage(root, p) {
     const list = state.jobs.filter(j => !j.superseded && j.productionId === p.id && j.segIndex === i && (!u?.videoPrompt || j.prompt === u.videoPrompt)).sort((a, b) => a.createdAt - b.createdAt);
     return list[list.length - 1] || null;
   };
+  const digitalJobFor = (seg, i) => (state.jobs || []).find(j => !j.superseded && j.id === seg?.videoJobId)
+    || [...(state.jobs || [])].reverse().find(j =>
+      !j.superseded
+      && j.productionId === p.id
+      && j.kind === "video"
+      && j.model === "__digital_human__"
+      && (j.segmentId ? j.segmentId === seg?.id : j.segIndex === i)
+    );
 
   const draw = () => {
     liveDraw = draw;
@@ -980,14 +988,6 @@ export function renderWorkshopPage(root, p) {
     const ratio = A.ratio || "9:16";
     const rtBtn = (r) => `<button class="ws-rt" data-ratio="${r}" style="font-size:11px;padding:3px 10px;border-radius:7px;cursor:pointer;border:1px solid ${ratio === r ? "#6a5bff" : "var(--d-line-2,rgba(120,130,160,.3))"};background:${ratio === r ? "rgba(106,91,255,.16)" : "transparent"};color:${ratio === r ? "#8b7bff" : "inherit"}">${r}</button>`;
     const modeBtn = (mode, label) => `<button class="${A.materialMode === mode ? "on" : ""}" type="button" data-material-mode="${mode}">${label}</button>`;
-    const digitalJobFor = (seg, i) => (state.jobs || []).find(j => !j.superseded && j.id === seg.videoJobId)
-      || [...(state.jobs || [])].reverse().find(j =>
-        !j.superseded
-        && j.productionId === p.id
-        && j.kind === "video"
-        && j.model === "__digital_human__"
-        && (j.segmentId ? j.segmentId === seg.id : j.segIndex === i)
-      );
     const digitalBusy = digitalSegments.some((seg, i) => ["queued", "running", "submitted"].includes(digitalJobFor(seg, i)?.status || seg.videoStatus || ""));
     const digitalFailed = digitalSegments.some((seg, i) => (digitalJobFor(seg, i)?.status || seg.videoStatus || "") === "failed");
     const digitalAllLabel = digitalBusy ? "生成中…" : digitalFailed ? "继续生成/重试失败段" : "一键生成视频";
