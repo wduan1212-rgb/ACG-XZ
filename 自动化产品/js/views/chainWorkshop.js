@@ -1462,7 +1462,8 @@ export function renderWorkshopPage(root, p) {
         dataUrl: out.audioDataUrl
       });
       seg.audioAssetId = a.id;
-      seg.audioDuration = Math.round((out.duration || seg.dur || 0) * 10) / 10;
+      const measuredDuration = await audioDuration(urlFor(a) || a.fileUrl || "");
+      seg.audioDuration = Math.round((measuredDuration || out.duration || seg.dur || 0) * 10) / 10;
       seg.voiceId = out.voiceId || voiceId;
       seg.status = "audioReady";
       total += seg.audioDuration || seg.dur || 0;
@@ -1508,7 +1509,8 @@ export function renderWorkshopPage(root, p) {
       dataUrl: out.audioDataUrl
     });
     seg.audioAssetId = a.id;
-    seg.audioDuration = Math.round((out.duration || seg.dur || 0) * 10) / 10;
+    const measuredDuration = await audioDuration(urlFor(a) || a.fileUrl || "");
+    seg.audioDuration = Math.round((measuredDuration || out.duration || seg.dur || 0) * 10) / 10;
     seg.voiceId = out.voiceId || voiceId;
     seg.status = "audioReady";
     A.digitalHuman.segments = segs;

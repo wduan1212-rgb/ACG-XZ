@@ -332,11 +332,11 @@
 .agc-video-chain svg { flex: none; }
 .agc-override.is-video { border-color: rgba(45,212,191,.18); }
 .agc-override.is-custom-plan {
-  grid-template-columns: minmax(148px, .8fr) minmax(0, 2.8fr);
+  grid-template-columns: minmax(148px, .8fr) minmax(0, 2.8fr) 76px;
   grid-template-areas:
-    "name content"
-    "refhead refstate"
-    "refactions refactions";
+    "name content imgcount"
+    "refhead refstate refstate"
+    "refactions refactions refactions";
 }
 .agc-override.is-custom-plan .agc-account-copy { grid-template-columns: minmax(170px, .78fr) minmax(0, 1.72fr); }
 .agc-copy-toggle {

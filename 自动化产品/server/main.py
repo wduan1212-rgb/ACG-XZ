@@ -1154,6 +1154,12 @@ class ComposeClip(BaseModel):
     trimIn: Optional[float] = 0
 
 
+class ComposeSubtitle(BaseModel):
+    start: float = 0
+    end: float = 0
+    text: str = ""
+
+
 class ComposeReq(BaseModel):
     clips: List[ComposeClip]
     title: str = "final"
@@ -1163,6 +1169,7 @@ class ComposeReq(BaseModel):
     bgmDataUrl: str = ""
     bgmVolume: float = 0.25
     narrationVolume: float = 1.0
+    subtitles: List[ComposeSubtitle] = []
 
 
 def _video_status(data: dict) -> str:
@@ -2321,6 +2328,31 @@ def _supported_video_source(url: str) -> bool:
     return bool(source and (source.startswith(("http://", "https://", "/api/video/composed/", "/api/files/"))))
 
 
+def _srt_time(value: float) -> str:
+    ms = max(0, int(round(float(value or 0) * 1000)))
+    hour, rest = divmod(ms, 3600000)
+    minute, rest = divmod(rest, 60000)
+    second, milli = divmod(rest, 1000)
+    return f"{hour:02d}:{minute:02d}:{second:02d},{milli:03d}"
+
+
+def _write_compose_srt(path: Path, subtitles: List[ComposeSubtitle]) -> bool:
+    rows = []
+    last_end = -0.05
+    for sub in subtitles or []:
+        text = str(sub.text or "").strip().replace("\r", "").replace("\n", " ")
+        if not text:
+            continue
+        start = max(last_end + 0.05, float(sub.start or 0))
+        end = max(start + 0.35, float(sub.end or 0))
+        rows.append(f"{len(rows) + 1}\n{_srt_time(start)} --> {_srt_time(end)}\n{text}\n")
+        last_end = end
+    if not rows:
+        return False
+    path.write_text("\n".join(rows), "utf-8")
+    return True
+
+
 @app.post("/api/video/compose")
 async def video_compose(req: ComposeReq):
     """把时间轴上的 Seedance 片段拼成一个同源 mp4。
@@ -2360,6 +2392,8 @@ async def video_compose(req: ComposeReq):
             lines.append(f"file '{escaped}'")
         concat.write_text("\n".join(lines), "utf-8")
         base_path = tdir / "base.mp4"
+        mixed_path = tdir / "mixed.mp4"
+        srt_path = tdir / "captions.srt"
         cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(base_path)]
         run = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if run.returncode != 0:
@@ -2370,7 +2404,7 @@ async def video_compose(req: ComposeReq):
         has_narr = narr_path.exists() and narr_path.stat().st_size > 0
         has_bgm = bgm_path.exists() and bgm_path.stat().st_size > 0
         if not has_narr and not has_bgm:
-            shutil.copyfile(base_path, out_path)
+            shutil.copyfile(base_path, mixed_path)
         else:
             vol = max(0.05, min(0.6, float(req.bgmVolume or 0.25)))
             narration_vol = max(0.0, min(1.0, float(req.narrationVolume if req.narrationVolume is not None else 1.0)))
@@ -2389,10 +2423,22 @@ async def video_compose(req: ComposeReq):
                 audio_cmd += ["-map", "0:v:0", "-map", "1:a:0", "-filter:a", f"volume={narration_vol}"]
             else:
                 audio_cmd += ["-map", "0:v:0", "-map", "1:a:0", "-filter:a", f"volume={vol}"]
-            audio_cmd += ["-c:v", "copy", "-c:a", "aac", "-shortest", "-t", f"{total_dur:.3f}", "-movflags", "+faststart", str(out_path)]
+            audio_cmd += ["-c:v", "copy", "-c:a", "aac", "-shortest", "-t", f"{total_dur:.3f}", "-movflags", "+faststart", str(mixed_path)]
             run = subprocess.run(audio_cmd, capture_output=True, text=True, timeout=900)
-            if run.returncode != 0 or not out_path.exists():
+            if run.returncode != 0 or not mixed_path.exists():
                 raise HTTPException(502, "ffmpeg 混音失败：" + (run.stderr or run.stdout)[-800:])
+        if _write_compose_srt(srt_path, req.subtitles):
+            srt_filter = str(srt_path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+            subtitle_cmd = [
+                ffmpeg, "-y", "-i", str(mixed_path),
+                "-vf", f"subtitles='{srt_filter}':charenc=UTF-8:force_style='FontName=Arial,FontSize=20,Outline=2,Alignment=2,MarginV=120'",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", "-movflags", "+faststart", str(out_path)
+            ]
+            run = subprocess.run(subtitle_cmd, capture_output=True, text=True, timeout=900)
+            if run.returncode != 0 or not out_path.exists():
+                raise HTTPException(502, "ffmpeg 字幕烧录失败：" + (run.stderr or run.stdout)[-800:])
+        else:
+            shutil.copyfile(mixed_path, out_path)
     return {"ok": True, "url": f"/api/video/composed/{out_name}", "name": out_name}
 
 

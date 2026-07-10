@@ -9,7 +9,7 @@ import { BGM_POOL } from "../api/prompts.js";
 import { buildDeliveryName } from "../domain/accounts.js";
 import { accountAssets } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
-import { toast } from "../ui/components.js";
+import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js";
 
@@ -67,6 +67,63 @@ export function renderCutPage(root, p) {
     const jobs = state.jobs.filter(job => job.productionId === p.id && job.kind === "video");
     return jobs.length > 0 && jobs.every(job => job.status === "succeeded");
   };
+  const captionSignature = () => JSON.stringify(SUBS().map(s => [s.start, s.end, cleanCaptionText(s.text || "")]));
+  const timelineSignature = () => JSON.stringify(TL().map(c => [c.id, c.videoUrl || c.jobId, c.dur, c.trimIn || 0]));
+  const needsCompose = () => !!TL().length && (!p.artifacts.finalVideoUrl
+    || p.artifacts.finalVideoCaptionSig !== captionSignature()
+    || p.artifacts.finalVideoTimelineSig !== timelineSignature());
+
+  // Keep one caption lane readable: generated cues follow the finished clip duration,
+  // while manual edits are clamped between adjacent cues instead of stacking.
+  function normalizeCaptionTrack(subs = SUBS()) {
+    let cursor = 0;
+    subs.sort((a, b) => (a.start || 0) - (b.start || 0));
+    subs.forEach(s => {
+      const duration = Math.max(.5, Number(s.end || 0) - Number(s.start || 0));
+      s.start = Math.round(Math.max(cursor, Number(s.start || 0)) * 10) / 10;
+      s.end = Math.round((s.start + duration) * 10) / 10;
+      cursor = s.end + .1;
+    });
+    return subs;
+  }
+
+  function rebuildDigitalCaptions() {
+    const subs = [];
+    let t = 0;
+    TL().forEach(c => {
+      const seg = digitalSegmentForClip(c);
+      const line = String(seg?.line || "").trim();
+      const end = t + clipDur(c);
+      if (line) subs.push(...spreadCaption(line, t, end).map(s => ({ ...s, autoAligned: true })));
+      t = end;
+    });
+    p.artifacts.subs = normalizeCaptionTrack(subs);
+    p.artifacts.subTimingSource = "clip-audio";
+  }
+
+  function refreshCaptionAlignment({ force = false } = {}) {
+    const digital = p.artifacts?.boards?.generationMode === "digitalHuman";
+    if (digital && (force || !SUBS().length || p.artifacts.subTimingSource !== "manual")) rebuildDigitalCaptions();
+    else normalizeCaptionTrack();
+  }
+
+  function syncClipDurationFromMedia(clipId, duration) {
+    const clip = TL().find(c => c.id === clipId);
+    const actual = Math.round(Number(duration || 0) * 10) / 10;
+    if (!clip || !Number.isFinite(actual) || actual < 1 || Math.abs(clipDur(clip) - actual) < .2) return;
+    clip.dur = actual;
+    const seg = digitalSegmentForClip(clip);
+    if (seg) {
+      seg.audioDuration = actual;
+      seg.dur = actual;
+    }
+    refreshCaptionAlignment({ force: true });
+    p.artifacts.finalVideoUrl = "";
+    p.artifacts.finalVideoName = "";
+    p.artifacts.composeError = "";
+    save("productions");
+    queueMicrotask(() => root.isConnected && drawTimeline());
+  }
 
   async function composeFinal({ automatic = false } = {}) {
     if (p.artifacts.composing || !TL().length) return false;
@@ -91,13 +148,18 @@ export function renderCutPage(root, p) {
           bgmDataUrl: bgmMedia.dataUrl || "",
           bgmUrl: bgmMedia.url || "",
           bgmVolume: p.artifacts.bgm?.volume ?? 0.25,
-          narrationVolume: p.artifacts.audio?.volume ?? 1
+          narrationVolume: p.artifacts.audio?.volume ?? 1,
+          subtitles: SUBS().filter(s => cleanCaptionText(s.text || "")).map(s => ({
+            start: Number(s.start || 0), end: Number(s.end || 0), text: cleanCaptionText(s.text || "")
+          }))
         })
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `合成失败 (${res.status})`);
       p.artifacts.finalVideoUrl = data.url;
       p.artifacts.finalVideoName = data.name || "";
+      p.artifacts.finalVideoCaptionSig = captionSignature();
+      p.artifacts.finalVideoTimelineSig = timelineSignature();
       p.artifacts.composeError = "";
       return true;
     } catch (err) {
@@ -119,6 +181,7 @@ export function renderCutPage(root, p) {
   } else if (!TL().length && state.jobs.some(j => j.productionId === p.id && j.status === "succeeded")) {
     autoAssemble(p);
   }
+  refreshCaptionAlignment();
 
   const hist = histories.get(p.id) || histories.set(p.id, []).get(p.id);
   const snapshot = () => {
@@ -138,7 +201,7 @@ export function renderCutPage(root, p) {
   };
 
   root.innerHTML = `
-    ${stepperHtml(p, "cut")}
+    ${stepperHtml(p, "cut").replace('chain-stepper', 'chain-stepper cut-stepper')}
     <div class="cut-page">
       <div class="cut-top">
         <section class="cut-preview card dark">
@@ -149,6 +212,7 @@ export function renderCutPage(root, p) {
             <div class="cp-frame" id="cpFrame"></div>
             <div class="cp-cliplabel" id="cpClipLabel"></div>
             <button class="cp-play" id="cpPlay">${icon("play", 22)}</button>
+            <button class="cp-zoom icon-btn" id="cpZoom" title="放大预览">${icon("zoomIn", 16)}</button>
             <div class="cp-sub" id="cpSub" hidden></div>
           </div>
           <div class="cp-bar"><span id="cpTimecode">00:00 / 00:30</span></div>
@@ -176,12 +240,9 @@ export function renderCutPage(root, p) {
               <input type="range" id="cutBgmVol" min="5" max="60" step="5" value="${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}" />
               <em id="cutBgmVolV">${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}%</em>
             </div>
-            <p class="muted" style="margin-top:6px">BGM 音量恒低于口播（上限 60%）${p.artifacts.bgm?.auto ? " · 当前为智能选配" : ""}</p>
           </div>` : ""}
           <div class="side-card card">
-            <h3>导出</h3>
-            <p class="muted">9:16 竖屏 · 1080×1920${p.artifacts.composing ? " · 自动合成中" : TL().length ? ` · 将命名「${esc(buildDeliveryName(acc, (acc.exportSeq || 0) + 1))}」` : ""}</p>
-            ${p.artifacts.finalVideoUrl ? `<a class="btn ghost block" href="${esc(p.artifacts.finalVideoUrl)}" target="_blank" rel="noreferrer">${icon("download", 13)} 查看/下载合成成片</a>` : ""}
+            <h3>${p.artifacts.composing ? "正在合成" : "交付"}</h3>
             ${p.artifacts.composeError ? `<p class="muted">${esc(p.artifacts.composeError)}</p>` : ""}
             <button class="btn primary block" id="cutNext">下一步：审核 ${icon("arrowRight", 13)}</button>
           </div>
@@ -236,7 +297,7 @@ export function renderCutPage(root, p) {
     const ct = $("#tlClipTrack", root); ct.style.width = W + "px";
     ct.innerHTML = TL().length ? TL().map((c, i) => `
       <div class="tl-clip ${c.id === selectedClipId ? "is-selected" : ""}" draggable="true" data-id="${c.id}" style="left:${clipStart(i) * PPS}px;width:${clipDur(c) * PPS - 4}px;--g:${gradFor(c.name)}">
-        ${videoUrlForClip(c) ? `<video class="tl-clip-preview" src="${esc(videoUrlForClip(c))}" muted playsinline preload="metadata"></video>` : ""}
+        ${videoUrlForClip(c) ? `<video class="tl-clip-preview" data-id="${esc(c.id)}" src="${esc(videoUrlForClip(c))}" muted playsinline preload="metadata"></video>` : ""}
         <span class="tl-trim l" data-trim="l" data-id="${c.id}" title="向右拖：裁掉开头"></span>
         <span class="tl-clip-name">${esc(c.name)}</span>
         <span class="tl-clip-dur">${clipDur(c)}s${c.trimIn ? ` · 裁头${c.trimIn}s` : ""}</span>
@@ -253,6 +314,7 @@ export function renderCutPage(root, p) {
     $$(".tl-clip-preview", root).forEach(video => video.addEventListener("loadedmetadata", () => {
       if (!Number.isFinite(video.duration) || video.duration <= 0) return;
       try { video.currentTime = Math.min(.35, Math.max(0, video.duration - .05)); } catch {}
+      syncClipDurationFromMedia(video.dataset.id, video.duration);
     }, { once: true }));
     wireClips(); wireSubs();
     drawSubEditor(); updatePlayhead();
@@ -423,10 +485,12 @@ export function renderCutPage(root, p) {
         const el = h.closest(".tl-sub");
         const move = ev => {
           if (!snapped) { snapshot(); snapped = true; }
-          s.end = Math.max((s.start || 0) + 0.5, Math.round((origEnd + (ev.clientX - startX) / PPS) * 2) / 2);
+          const next = SUBS()[i + 1];
+          const upper = next ? Math.max((s.start || 0) + .5, (next.start || 0) - .1) : Infinity;
+          s.end = Math.min(upper, Math.max((s.start || 0) + 0.5, Math.round((origEnd + (ev.clientX - startX) / PPS) * 2) / 2));
           el.style.width = Math.max(24, (s.end - (s.start || 0)) * PPS - 2) + "px";
         };
-        const up = () => { h.removeEventListener("pointermove", move); h.removeEventListener("pointerup", up); save("productions"); drawTimeline(); };
+        const up = () => { h.removeEventListener("pointermove", move); h.removeEventListener("pointerup", up); p.artifacts.subTimingSource = "manual"; normalizeCaptionTrack(); save("productions"); drawTimeline(); };
         h.addEventListener("pointermove", move);
         h.addEventListener("pointerup", up);
       });
@@ -447,11 +511,14 @@ export function renderCutPage(root, p) {
         const dx = e.clientX - startX; if (Math.abs(dx) < 3) return;
         if (!moved) { snapshot(); moved = true; }
         const s = SUBS()[i]; const dur = (s.end || 0) - (s.start || 0);
-        const ns = Math.max(0, Math.round((origStart + dx / PPS) * 2) / 2);
+        const prev = SUBS()[i - 1], next = SUBS()[i + 1];
+        const lower = prev ? (prev.end || 0) + .1 : 0;
+        const upper = next ? Math.max(lower, (next.start || 0) - dur - .1) : Infinity;
+        const ns = Math.min(upper, Math.max(lower, Math.round((origStart + dx / PPS) * 2) / 2));
         s.start = ns; s.end = ns + dur;
         el.style.left = (ns * PPS) + "px";
       });
-      el.addEventListener("pointerup", () => { if (moved) { save("productions"); drawTimeline(); } });
+      el.addEventListener("pointerup", () => { if (moved) { p.artifacts.subTimingSource = "manual"; normalizeCaptionTrack(); save("productions"); drawTimeline(); } });
     });
   }
 
@@ -475,8 +542,8 @@ export function renderCutPage(root, p) {
       </div>`;
     let edited = false;
     const snapOnce = () => { if (!edited) { snapshot(); edited = true; } };
-    $("#tseStart", root).addEventListener("input", e => { snapOnce(); s.start = parseFloat(e.target.value) || 0; save("productions"); drawTimeline(); });
-    $("#tseEnd", root).addEventListener("input", e => { snapOnce(); s.end = parseFloat(e.target.value) || 0; save("productions"); drawTimeline(); });
+    $("#tseStart", root).addEventListener("input", e => { snapOnce(); s.start = parseFloat(e.target.value) || 0; p.artifacts.subTimingSource = "manual"; normalizeCaptionTrack(); save("productions"); drawTimeline(); });
+    $("#tseEnd", root).addEventListener("input", e => { snapOnce(); s.end = parseFloat(e.target.value) || 0; p.artifacts.subTimingSource = "manual"; normalizeCaptionTrack(); save("productions"); drawTimeline(); });
     $("#tseText", root).addEventListener("input", e => {
       snapOnce(); s.text = e.target.value; save("productions");
       const blk = $$(".tl-sub", root)[i];
@@ -567,7 +634,8 @@ export function renderCutPage(root, p) {
       t = en;
       if (line) subs.push(...spreadCaption(line, st, en));
     });
-    p.artifacts.subs = subs;
+    p.artifacts.subs = normalizeCaptionTrack(subs);
+    p.artifacts.subTimingSource = "clip-audio";
     save("productions"); drawTimeline();
     toast(`已按已绑定口播排入 ${p.artifacts.subs.length} 条字幕`);
   });
@@ -576,6 +644,8 @@ export function renderCutPage(root, p) {
     const subs = SUBS(); const last = subs[subs.length - 1];
     const st = last ? last.end : Math.round(playheadT);
     subs.push({ start: st, end: st + 3, text: "" });
+    p.artifacts.subTimingSource = "manual";
+    normalizeCaptionTrack(subs);
     activeSubIdx = subs.length - 1;
     save("productions"); drawTimeline();
   });
@@ -607,6 +677,16 @@ export function renderCutPage(root, p) {
   $("#tlZoomIn", root).addEventListener("click", () => { PPS = Math.min(100, Math.round(PPS * 1.3)); drawTimeline(); });
   $("#tlZoomOut", root).addEventListener("click", () => { PPS = Math.max(14, Math.round(PPS / 1.3)); drawTimeline(); });
   $("#cpPlay", root).addEventListener("click", togglePlay);
+  $("#cpZoom", root).addEventListener("click", () => {
+    let elapsed = 0, clip = null;
+    for (const item of TL()) {
+      if (playheadT < elapsed + clipDur(item)) { clip = item; break; }
+      elapsed += clipDur(item);
+    }
+    const src = videoUrlForClip(clip);
+    if (!src) { toast("当前播放头还没有可预览的视频"); return; }
+    openVideoPreview(src, clip?.name || "片段预览");
+  });
   $("#tlRuler", root).addEventListener("pointerdown", e => {
     const rect = $("#tlRuler", root).getBoundingClientRect();
     stopPlay(); playheadT = (e.clientX - rect.left) / PPS; updatePlayhead();
@@ -677,7 +757,7 @@ export function renderCutPage(root, p) {
   $("#cutNext", root).addEventListener("click", () => {
     if (!TL().length) { toast("时间轴为空：请先等待视频片段生成完成"); return; }
     if (p.artifacts.composing) { toast("正在自动合成成片，请稍候"); return; }
-    if (videoJobsComplete() && !p.artifacts.finalVideoUrl) {
+    if (videoJobsComplete() && needsCompose()) {
       composeFinal({ automatic: true });
       toast("正在自动合成成片，请稍候");
       return;
@@ -691,7 +771,7 @@ export function renderCutPage(root, p) {
   });
 
   drawTimeline();
-  if (!p.artifacts.finalVideoUrl && !p.artifacts.composing && !p.artifacts.composeError && videoJobsComplete()) {
+  if (needsCompose() && !p.artifacts.composing && !p.artifacts.composeError && videoJobsComplete()) {
     queueMicrotask(() => composeFinal({ automatic: true }));
   }
 }
