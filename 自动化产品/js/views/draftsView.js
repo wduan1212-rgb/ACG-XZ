@@ -64,6 +64,22 @@ export const draftsView = {
           : emptyState("inbox", "草稿箱是空的", "在批量创作 / 单号创作里发起的内容，未发布前都会先存放在这里。点「定稿并发布」后才进入发布清单。")}
         </div>`;
 
+      $("#draftBulkDelete", root)?.addEventListener("click", async () => {
+        const ids = [...selected];
+        const ok = await confirmModal({ title: `删除已选 ${ids.length} 条草稿？`, body: "草稿及其未发布中间产物会被移除。", danger: true, okText: "删除" });
+        if (!ok) return;
+        for (const id of ids) await deleteProduction(id);
+        selected.clear(); toast("已删除所选草稿"); draw();
+      });
+      $$('[data-draft-check]', root).forEach(b => b.addEventListener("click", e => {
+        e.stopPropagation();
+        if (b.checked) selected.add(b.dataset.draftCheck); else selected.delete(b.dataset.draftCheck);
+        draw();
+      }));
+      $$('[data-draft-fold]', root).forEach(b => b.addEventListener("click", () => {
+        if (collapsed.has(b.dataset.draftFold)) collapsed.delete(b.dataset.draftFold); else collapsed.add(b.dataset.draftFold);
+        draw();
+      }));
       $$("[data-draft-go]", root).forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();
         const p = productionById(b.dataset.draftGo); if (!p) return;
@@ -92,19 +108,3 @@ export const draftsView = {
     draw();
   }
 };
-      $("#draftBulkDelete", root)?.addEventListener("click", async () => {
-        const ids = [...selected];
-        const ok = await confirmModal({ title: `删除已选 ${ids.length} 条草稿？`, body: "草稿及其未发布中间产物会被移除。", danger: true, okText: "删除" });
-        if (!ok) return;
-        for (const id of ids) await deleteProduction(id);
-        selected.clear(); toast("已删除所选草稿"); draw();
-      });
-      $$('[data-draft-check]', root).forEach(b => b.addEventListener("click", e => {
-        e.stopPropagation();
-        if (b.checked) selected.add(b.dataset.draftCheck); else selected.delete(b.dataset.draftCheck);
-        draw();
-      }));
-      $$('[data-draft-fold]', root).forEach(b => b.addEventListener("click", () => {
-        if (collapsed.has(b.dataset.draftFold)) collapsed.delete(b.dataset.draftFold); else collapsed.add(b.dataset.draftFold);
-        draw();
-      }));
