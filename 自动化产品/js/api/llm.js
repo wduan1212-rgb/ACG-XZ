@@ -63,14 +63,18 @@ function cleanModelText(text = "") {
 export async function llm(messages, { json = false, temperature = 0.7, signal, timeoutMs = 45000, thinking = "", maxTokens = 0 } = {}) {
   if (!LLM_CONFIG.apiKey) throw new Error("未配置语言模型 Key");
   const ep = LLM_CONFIG.endpoint || "";
+  // In deployed mode the server owns model, thinking, and output limits.
+  // Keeping these client-side settings out of the request prevents an old
+  // browser bundle from silently overriding the server's production policy.
+  const serverManaged = LLM_CONFIG.serverManaged || /(?:^|\/)api\/chat\/completions(?:\?|$)/.test(ep);
   // MiniMax 的 chatcompletion 不支持 OpenAI 的 response_format，发了会直接参数报错；靠提示词约束 JSON 输出即可
   const supportsJsonFormat = !/minimax/i.test(ep);
   const body = { model: LLM_CONFIG.model, temperature, messages };
   if (json && supportsJsonFormat) body.response_format = { type: "json_object" };
-  if (["adaptive", "enabled", "disabled"].includes(thinking)) {
+  if (!serverManaged && ["adaptive", "enabled", "disabled"].includes(thinking)) {
     body.thinking = { type: thinking === "enabled" ? "adaptive" : thinking };
   }
-  if (Number(maxTokens) > 0) body.max_tokens = Number(maxTokens);
+  if (!serverManaged && Number(maxTokens) > 0) body.max_tokens = Number(maxTokens);
   const ctrl = signal ? null : new AbortController();
   const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
   let res;

@@ -2620,10 +2620,10 @@ ${xhsGuardPrompt()}
     try {
       let content = "";
       try {
-        content = await llm(messages, { temperature: 0.96, timeoutMs: 90000, thinking: "adaptive", maxTokens: 12000 });
+        content = await llm(messages, { temperature: 0.9, timeoutMs: 90000, thinking: "disabled", maxTokens: 4096 });
       } catch (err) {
         if (!/模型无有效返回|finish_reason|length|JSON|四段/.test(err?.message || String(err))) throw err;
-        content = await llm(messages, { temperature: 0.96, timeoutMs: 90000, thinking: "disabled", maxTokens: 5000 });
+        content = await llm(messages, { temperature: 0.9, timeoutMs: 90000, thinking: "disabled", maxTokens: 4096 });
       }
       const d = parseCustomVideoDraftText(content, safeTitle);
       const out = {

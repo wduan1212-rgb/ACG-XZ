@@ -377,10 +377,16 @@ async def _call_llm(body: dict, auth_header: str = ""):
     thinking = LLM_THINKING
     if thinking == "enabled" and _llm_is_minimax():
         thinking = "adaptive"
-    if thinking in {"adaptive", "enabled", "disabled"} and "thinking" not in body:
+    # The browser must not be able to override the deployed provider policy.
+    # This also protects active tabs that still have a cached older bundle.
+    if thinking in {"adaptive", "enabled", "disabled"}:
         body["thinking"] = {"type": thinking}
-    if LLM_MAX_TOKENS > 0 and "max_tokens" not in body:
+    elif _llm_is_minimax():
+        body.pop("thinking", None)
+    if LLM_MAX_TOKENS > 0:
         body["max_tokens"] = LLM_MAX_TOKENS
+    elif _llm_is_minimax() and int(body.get("max_tokens") or 0) > 4096:
+        body["max_tokens"] = 4096
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(LLM_TIMEOUT, connect=LLM_CONNECT_TIMEOUT), trust_env=False) as client:
             return await client.post(LLM_ENDPOINT, json=body, headers=_llm_headers(auth_header))
