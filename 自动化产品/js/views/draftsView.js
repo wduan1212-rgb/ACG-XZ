@@ -1,6 +1,6 @@
 /* 草稿箱（独立页）：本人名下、尚未发布的全部 production（进行中 / 失败 / 已生成待发布）。 */
 
-import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
+import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, ownedBy, accountById, productionById } from "../core/store.js";
 import { STAGES, statusPill, deleteProduction } from "../domain/productions.js";
@@ -22,7 +22,7 @@ function draftRowHtml(p, selected) {
   const u = cover ? urlFor(cover.assetId) : null;
   return `<div class="draft-row ${p.stageStatus === "failed" ? "fail" : ""}" data-draft="${p.id}">
     <input class="draft-check" type="checkbox" data-draft-check="${p.id}" ${selected.has(p.id) ? "checked" : ""} aria-label="选择草稿" />
-    <span class="draft-cover">${u ? `<img src="${u}"/>` : `<i style="background:${gradFor(p.title || p.id)}">${p.mode === "图文" ? "图" : "▶"}</i>`}</span>
+    <span class="draft-cover">${u ? `<img src="${u}"/>` : `<i class="draft-cover-empty">${icon(p.mode === "图文" ? "image" : "video", 15)}</i>`}</span>
     <span class="draft-main"><b>${esc(p.artifacts.copy.title || p.title || p.topic || "未命名创作")}</b><em>${STAGES[p.stage]?.label || p.stage} · ${timeAgo(p.updatedAt)}</em></span>
     <span class="status-pill ${cls}">${label}</span>
     <button class="btn ghost sm" data-draft-go="${p.id}">继续 ${icon("arrowRight", 12)}</button>
@@ -53,13 +53,13 @@ export const draftsView = {
             <div class="head-actions">
               <span class="tag">${icon("inbox", 12)} ${drafts.length} 条草稿</span>
               ${failed ? `<span class="tag warn">${icon("alert", 11)} ${failed} 条失败</span>` : ""}
-              ${selected.size ? `<button class="btn danger ghost sm" id="draftBulkDelete">${icon("trash", 12)} 删除已选 ${selected.size}</button>` : ""}
+              <button class="btn danger ghost sm" id="draftBulkDelete" ${selected.size ? "" : "hidden"}>${icon("trash", 12)} 删除已选 <span>${selected.size}</span></button>
             </div>
           </div>
           ${drafts.length ? `<div class="draft-groups page draft-timeline">${[...byDate.entries()].map(([date, list]) => `
             <section class="draft-acc card ${collapsed.has(date) ? "collapsed" : ""}">
-              <button class="draft-acc-head" data-draft-fold="${date}"><span class="dot sm" style="background:${gradFor(date)}"></span><b>${date}</b><em>${list.length} 条</em>${icon("chevronDown", 14)}</button>
-              <div class="draft-date-list">${list.map(p => draftRowHtml(p, selected)).join("")}</div>
+              <button class="draft-acc-head" data-draft-fold="${date}"><span class="draft-line-marker"></span><b>${date}</b><em>${list.length} 条</em>${icon("chevronDown", 14)}</button>
+              <div class="draft-date-shell"><div class="draft-date-list">${list.map(p => draftRowHtml(p, selected)).join("")}</div></div>
             </section>`).join("")}</div>`
           : emptyState("inbox", "草稿箱是空的", "在批量创作 / 单号创作里发起的内容，未发布前都会先存放在这里。点「定稿并发布」后才进入发布清单。")}
         </div>`;
@@ -74,11 +74,19 @@ export const draftsView = {
       $$('[data-draft-check]', root).forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();
         if (b.checked) selected.add(b.dataset.draftCheck); else selected.delete(b.dataset.draftCheck);
-        draw();
+        const bulk = $("#draftBulkDelete", root);
+        if (bulk) {
+          bulk.hidden = selected.size === 0;
+          const count = bulk.querySelector("span");
+          if (count) count.textContent = String(selected.size);
+        }
       }));
       $$('[data-draft-fold]', root).forEach(b => b.addEventListener("click", () => {
-        if (collapsed.has(b.dataset.draftFold)) collapsed.delete(b.dataset.draftFold); else collapsed.add(b.dataset.draftFold);
-        draw();
+        const date = b.dataset.draftFold;
+        const section = b.closest(".draft-acc");
+        if (!section) return;
+        if (collapsed.has(date)) collapsed.delete(date); else collapsed.add(date);
+        section.classList.toggle("collapsed", collapsed.has(date));
       }));
       $$("[data-draft-go]", root).forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();

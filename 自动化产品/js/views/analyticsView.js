@@ -1,7 +1,7 @@
 /* 数据分析看板：小红书 / 视频号发布回链与真实指标同步 */
 
 import { $, $$, esc, timeAgo } from "../core/util.js";
-import { icon } from "../ui/icons.js";
+import { icon, agentAvatar } from "../ui/icons.js";
 import { toast, withLoading, emptyState } from "../ui/components.js";
 import { state } from "../core/store.js";
 import {
@@ -10,11 +10,25 @@ import {
 } from "../domain/analytics.js";
 
 let filter = "all";
+let platformFilter = "all";
+let timeFilter = "all";
 let justOneStatus = null;
 let qaLog = [];
 
 const fmt = n => Number(n || 0).toLocaleString("zh-CN");
 const pct = n => ((Number(n || 0) * 100).toFixed(1) + "%");
+
+function rowTimestamp(row) {
+  const value = row.latest?.capturedAt || row.link.lastSyncedAt || row.link.publishedAt || row.link.createdAt || 0;
+  if (typeof value === "number") return value;
+  return Date.parse(value) || 0;
+}
+
+function inTimeWindow(row) {
+  if (timeFilter === "all") return true;
+  const timestamp = rowTimestamp(row);
+  return timestamp > 0 && timestamp >= Date.now() - Number(timeFilter) * 86400000;
+}
 
 function statCard(label, value, sub = "", cls = "") {
   return `<div class="ov-stat ${cls} card"><b>${esc(value)}</b><span>${esc(label)}</span>${sub ? `<em>${esc(sub)}</em>` : ""}</div>`;
@@ -114,7 +128,7 @@ function qaAnswer(q, rows) {
 function qaCard(rows) {
   const suggestions = ["哪个账号表现最好？", "还有哪些仅回链？", "小红书数据怎么样？"];
   return `<div class="da-qa card">
-    <div class="da-qa-head">${icon("spark", 13)}<b>数据问答</b><em>只读当前快照</em></div>
+    <div class="da-qa-head"><span class="da-qa-avatar">${agentAvatar(22)}</span><b>数据问答</b><em>只读当前快照</em></div>
     <div class="da-qa-msgs" id="daQaMsgs">
       ${qaLog.length ? qaLog.slice(-4).map(m => `<div class="da-qa-bubble ${m.role}">${esc(m.text)}</div>`).join("") : `<div class="da-qa-sugs">${suggestions.map(q => `<button class="chip" data-da-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>`}
     </div>
@@ -128,23 +142,17 @@ export const analyticsView = {
     const draw = () => {
       const rowsAll = analyticsRows();
       const rows = rowsAll.filter(r => {
-        if (filter === "all") return true;
-        if (filter === "todo") return !r.latest;
-        if (filter === "synced") return !!r.latest;
-        if (filter === "risk") return r.link.status === "failed" || r.link.status === "unsupported";
-        return r.link.platform === filter;
+        const statusMatch = filter === "all"
+          || (filter === "todo" && !r.latest)
+          || (filter === "synced" && !!r.latest)
+          || (filter === "risk" && (r.link.status === "failed" || r.link.status === "unsupported"));
+        const platformMatch = platformFilter === "all" || r.link.platform === platformFilter;
+        return statusMatch && platformMatch && inTimeWindow(r);
       });
       const s = analyticsSummary(rowsAll);
       const canRefresh = state.role === "admin";
       root.innerHTML = `
         <div class="analytics-page">
-          <div class="page-head">
-            <div><div class="eyebrow">数据分析</div><h2>小红书 / 视频号数据监测</h2></div>
-            ${canRefresh ? `<div class="head-actions">
-              <button class="btn ghost" id="daRefreshMetrics">${icon("refresh", 14)} 刷新数据</button>
-            </div>` : ""}
-          </div>
-
           <section class="ov-stats da-stats">
             ${statCard("回传链接", s.total, `${s.synced} 条有历史快照`)}
             ${statCard("总互动", fmt(s.totalEngagement), "赞、藏、评合计", "review")}
@@ -158,6 +166,20 @@ export const analyticsView = {
                 ${[
                   ["all", "全部"], ["todo", "仅回链"], ["synced", "有快照"], ["risk", "待处理"]
                 ].map(([k, label]) => `<button class="mode-tab ${filter === k ? "is-active" : ""}" data-f="${k}">${label}<span>${countFor(rowsAll, k)}</span></button>`).join("")}
+              </div>
+              <div class="da-filter-selects">
+                ${canRefresh ? `<button class="btn ghost sm" id="daRefreshMetrics">${icon("refresh", 13)} 刷新数据</button>` : ""}
+                <label class="select-shell">${icon("filter", 13)}<select id="daPlatformFilter" aria-label="平台筛选">
+                  <option value="all">全部平台</option>
+                  <option value="小红书" ${platformFilter === "小红书" ? "selected" : ""}>小红书</option>
+                  <option value="视频号" ${platformFilter === "视频号" ? "selected" : ""}>视频号</option>
+                </select>${icon("chevronDown", 12)}</label>
+                <label class="select-shell">${icon("clock", 13)}<select id="daTimeFilter" aria-label="时间筛选">
+                  <option value="all">全部时间</option>
+                  <option value="7" ${timeFilter === "7" ? "selected" : ""}>近 7 天</option>
+                  <option value="30" ${timeFilter === "30" ? "selected" : ""}>近 30 天</option>
+                  <option value="90" ${timeFilter === "90" ? "selected" : ""}>近 90 天</option>
+                </select>${icon("chevronDown", 12)}</label>
               </div>
             </div>
             ${rows.length ? `<div class="da-table-wrap"><table class="da-table">
@@ -192,6 +214,8 @@ function countFor(rows, key) {
 function wire(root, redraw) {
   $("[data-f=\"" + filter + "\"]", root)?.closest(".mode-tabs")?.setAttribute("data-active", filter);
   $$("[data-f]", root).forEach(b => b.addEventListener("click", () => { filter = b.dataset.f; redraw(); }));
+  $("#daPlatformFilter", root)?.addEventListener("change", e => { platformFilter = e.currentTarget.value; redraw(); });
+  $("#daTimeFilter", root)?.addEventListener("change", e => { timeFilter = e.currentTarget.value; redraw(); });
   $("#daRefreshMetrics", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
     syncExistingPublishedAssets();
     const res = await refreshAllAnalytics();

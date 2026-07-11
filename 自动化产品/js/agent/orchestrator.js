@@ -66,8 +66,7 @@ function enforcePlanKind(plan = {}) {
   const contentKind = normalizeContentKind(plan.contentKind, plan.group);
   plan.contentKind = contentKind;
   plan.group = CONTENT_KIND_GROUP[contentKind] || plan.group || "图文组";
-  plan.creativeMode = plan.creativeMode === "auto" ? "auto" : "custom";
-  if (contentKind === "image") plan.creativeMode = "custom";
+  plan.creativeMode = "custom";
   if (plan.creativeMode === "custom") {
     plan.topicMode = "fixed";
     plan.content = "";
@@ -858,18 +857,18 @@ export function createBatch(plan, sessionId) {
   return batch;
 }
 
-/* 固定流程模板：一键发起规定动作（空内容时从四方向短选题池自动挑选） */
+/* 固定流程模板：只预选账号与内容类型，标题和文案由用户逐个填写。 */
 export const FLOW_TEMPLATES = {
-  notes: { label: "全部图文号 · 出一批笔记", group: "图文组", icon: "image", desc: "四方向短选题 · 风格用账号自带 · 站内自动出图" },
-  material: { label: "全部素材号 · 全自动出片", group: "素材", icon: "layers", desc: "四方向短选题 → 口播音频 → 逐镜头视频 → 智能混剪" },
-  dh: { label: "全部真人号 · 出口播视频", group: "真人", icon: "user", desc: "四方向短选题 · 文案分镜分段生成 · 自动混剪" }
+  notes: { label: "全部图文号 · 自定义笔记", group: "图文组", icon: "image", desc: "预选图文账号 · 逐个填写标题与正文" },
+  material: { label: "全部素材号 · 自定义视频", group: "素材", icon: "layers", desc: "预选素材账号 · 逐个填写标题与文案" },
+  dh: { label: "全部真人号 · 自定义口播", group: "真人", icon: "user", desc: "预选真人账号 · 逐个填写标题与口播文案" }
 };
 export function templatePlan(key) {
   const t = FLOW_TEMPLATES[key];
   if (!t) return null;
   const matched = selectAccountsForPlan({ tags: [], group: t.group, accountCount: 3, sort: "stale" });
   return enforcePlanKind({
-    goal: t.label, creativeMode: "auto", contentKind: contentKindFromGroup(t.group), topicMode: "random", topic: "", productId: "dumate", content: "", style: "",
+    goal: t.label, creativeMode: "custom", contentKind: contentKindFromGroup(t.group), topicMode: "fixed", topic: "", productId: "dumate", content: "", style: "",
     tags: [], group: t.group, sort: "stale", accountCount: 3, perAccountCount: 1,
     accountIds: matched.map(a => a.id), template: key,
     accountCounts: {},
@@ -2021,12 +2020,11 @@ export async function handleUserText(text) {
     const accountCount = Number(params.accountCount || params.count) || matched.length;
     const perAccountCount = Math.max(1, Math.min(12, Number(params.perAccountCount || 1) || 1));
     think(`命中 ${matched.length} 个账号 · 每号 ${perAccountCount} 条 · 生成量产任务板`, session.id);
-    const wantsRandom = /随机主题|各自主题|主题随机/.test(text) || !params.topic;
     const payload = enforcePlanKind({
       status: "pending", goal: text,
-      creativeMode: "auto",
+      creativeMode: "custom",
       contentKind: params.contentKind,
-      topicMode: wantsRandom ? "random" : "fixed",
+      topicMode: "fixed",
       topic: params.topic || "", productId: "dumate", content: "",
       accountProductIds: {}, accountContents: {},
       accountCounts: {},

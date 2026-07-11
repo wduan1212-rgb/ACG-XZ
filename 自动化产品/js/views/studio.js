@@ -119,7 +119,7 @@ function renderHome(root, acc) {
         <div class="sh-id">
           <div class="sh-ref-stack ${admin ? "can-edit" : ""}">
             <button class="sh-ref-card avatar" type="button" data-sh-ref="avatar" title="${admin ? "拖入 / 上传账号头像" : "账号头像"}">
-              ${avatarUrl ? `<img src="${avatarUrl}" alt="${esc(acc.name)}"/>` : `<i style="background:${gradFor(acc.name)}">${esc(acc.name[0])}</i>`}
+              ${avatarUrl ? `<img src="${avatarUrl}" alt="${esc(acc.name)}"/>` : `<i class="account-avatar-fallback">${icon("user", 18)}</i>`}
               <span>头像</span>
               ${admin ? `<input type="file" accept="image/*" hidden id="shAvatarUp" />` : ""}
             </button>
@@ -151,7 +151,6 @@ function renderHome(root, acc) {
         ${inflight.length ? `<div class="sh-prod-list">${inflight.map(p => {
           const [label, cls] = statusPill(p);
           return `<div class="shp-row" data-prod="${p.id}">
-            <span class="shp-stage">${icon(STAGES[p.stage].icon, 14)}</span>
             <span class="shp-main"><b>${esc(p.artifacts.copy.title || p.title || p.topic || "未命名创作")}</b>
             <em>${p.origin === "agent" ? "Agent 批次 · " : ""}${STAGES[p.stage].label} · ${timeAgo(p.updatedAt)}</em></span>
             <span class="status-pill ${cls}">${label}</span>

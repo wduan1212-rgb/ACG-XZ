@@ -48,6 +48,7 @@ export const assetsView = {
     // 从账号资产库跳来时预筛该账号
     if (state.ui.assetsFilterAccount) { fAcc = state.ui.assetsFilterAccount; fQ = ""; state.ui.assetsFilterAccount = null; }
     const draw = () => {
+      $("#assetsTopDock")?.remove();
       let list = searchAssets({ accountId: fAcc, tag: "all", q: fQ, includeDelivered: true })
         .filter(a => libraryMode === "shared"
           ? isSharedAsset(a)
@@ -79,6 +80,14 @@ export const assetsView = {
             ${renderBody(list)}
           </div>
         </div>`;
+      const topDock = $(".head-actions", root);
+      const topbar = document.querySelector(".topbar");
+      const topActions = document.querySelector(".top-actions");
+      if (topDock && topbar && topActions) {
+        topDock.id = "assetsTopDock";
+        topDock.classList.add("topbar-assets-dock");
+        topbar.insertBefore(topDock, topActions);
+      }
       wire();
     };
 
@@ -127,7 +136,7 @@ export const assetsView = {
             </button>
             ${acc && imgCount ? `<button class="btn ghost sm" data-export-del-acc="${id}">${icon("download", 12)} 导出并清空图片 (${imgCount})</button>` : ""}
           </div>
-          ${collapsed ? "" : `<div class="asset-grid">${items.map(cardHtml).join("")}</div>`}
+          <div class="acc-sec-body" ${collapsed ? "hidden" : ""}><div class="asset-grid">${items.map(cardHtml).join("")}</div></div>
         </section>`;
       }).join("");
     }
@@ -145,10 +154,10 @@ export const assetsView = {
         });
       }
       $("#avKind", root)?.addEventListener("change", e => { fKind = e.currentTarget.value; draw(); });
-      $$("[data-library]", root).forEach(b => b.addEventListener("click", () => { libraryMode = b.dataset.library; fKind = "all"; draw(); }));
+      $$("[data-library]", $("#assetsTopDock") || root).forEach(b => b.addEventListener("click", () => { libraryMode = b.dataset.library; fKind = "all"; draw(); }));
       $("#avAccount", root)?.addEventListener("change", e => { fAcc = e.currentTarget.value; draw(); });
-      root.querySelector("[data-go-delivery]")?.addEventListener("click", () => { location.hash = "#/delivery"; });
-      $$("[data-export-del-acc]", root).forEach(b => b.addEventListener("click", e => {
+      $("#assetsTopDock [data-go-delivery]")?.addEventListener("click", () => { location.hash = "#/delivery"; });
+      [...$$("[data-export-del-acc]", root), ...$$("#assetsTopDock [data-export-del-acc]")].forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();
         withLoading(e.currentTarget, async () => {
           const n = await exportAndPurgeAccountImages(e.currentTarget.dataset.exportDelAcc);
@@ -157,8 +166,22 @@ export const assetsView = {
       }));
       $$("[data-accsec]", root).forEach(b => b.addEventListener("click", () => {
         const id = b.dataset.accsec;
-        collapsedAcc.has(id) ? collapsedAcc.delete(id) : collapsedAcc.add(id);
-        draw();
+        const section = b.closest(".acc-sec");
+        const body = section?.querySelector(".acc-sec-body");
+        if (!section || !body) return;
+        const opening = collapsedAcc.has(id);
+        if (opening) {
+          collapsedAcc.delete(id);
+          section.classList.remove("collapsed");
+          body.hidden = false;
+          const height = body.scrollHeight;
+          body.animate([{ height: "0px", opacity: 0 }, { height: `${height}px`, opacity: 1 }], { duration: 240, easing: "cubic-bezier(.2,.8,.2,1)" }).onfinish = () => { body.style.height = ""; };
+        } else {
+          collapsedAcc.add(id);
+          section.classList.add("collapsed");
+          const height = body.getBoundingClientRect().height;
+          body.animate([{ height: `${height}px`, opacity: 1 }, { height: "0px", opacity: 0 }], { duration: 200, easing: "cubic-bezier(.4,0,.2,1)" }).onfinish = () => { body.hidden = true; body.style.height = ""; };
+        }
       }));
 
       $$(".asset-card", root).forEach(card => {

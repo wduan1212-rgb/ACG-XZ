@@ -35,7 +35,7 @@ export const settingsView = {
       root.innerHTML = `
         <div class="settings-page">
           <section class="card set-data product-library">
-            <div class="card-head"><b>产品库</b><em>脚本、分镜提示词和发布文案都会按所选产品生成</em>
+            <div class="card-head"><b>产品库</b><em>仅提供产品事实、界面与视觉边界参考，不直接决定标题和文案</em>
               <button class="btn primary sm" id="prodAdd">${icon("plus", 13)} 添加产品</button></div>
             <div class="prod-list">
               ${state.products.map(p => `

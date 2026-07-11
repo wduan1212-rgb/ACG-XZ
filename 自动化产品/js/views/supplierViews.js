@@ -1,4 +1,4 @@
-import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
+import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state } from "../core/store.js";
 import { emptyState, openModal, confirmModal, toast } from "../ui/components.js";
@@ -9,14 +9,25 @@ const accountAvatar = acc => {
   const avatar = acc?.avatarUrl || (acc?.avatarAssetId ? urlFor(acc.avatarAssetId) : "");
   return avatar
     ? `<img src="${esc(avatar)}" alt=""/>`
-    : `<span style="background:${gradFor(acc?.name || "账号")}">${esc((acc?.name || "?")[0])}</span>`;
+    : `<span class="supplier-avatar-fallback">${icon("user", 18)}</span>`;
 };
 let supplierAccountQuery = "";
 let supplierPlatform = "all";
+let supplierActivityType = "all";
+let supplierActivityDays = "all";
+const onSupplierRoute = zone => document.body.dataset.zone === zone;
 
-function transitionSupplier(render) {
-  if (document.startViewTransition) document.startViewTransition(render);
-  else render();
+function supplierActivityKind(item = {}) {
+  const text = `${item.action || ""} ${item.detail || ""}`;
+  if (/观看量|播放量|浏览量|观看|播放/.test(text)) return "views";
+  if (/回传|发布链接|链接/.test(text)) return "link";
+  if (/下载|领取素材|领取内容/.test(text)) return "download";
+  return "other";
+}
+
+function supplierActivityTimestamp(item = {}) {
+  if (typeof item.createdAt === "number") return item.createdAt;
+  return Date.parse(item.createdAt || "") || 0;
 }
 
 async function supplierData() {
@@ -30,6 +41,7 @@ export async function renderSupplierOverview(root) {
   root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">供应商首页</div><h2>账号分配与发布进度</h2></div></div><div class="supplier-loading">正在读取...</div></div>`;
   try {
     const { children, bindings, activity } = await supplierData();
+    if (!onSupplierRoute("overview")) return;
     const delivered = state.assets.filter(a => a.delivered);
     const published = delivered.filter(a => a.publishedUrl);
     root.innerHTML = `<div class="supplier-shell">
@@ -38,12 +50,32 @@ export async function renderSupplierOverview(root) {
         <div><b>${children.length}</b><span>子账号</span></div><div><b>${bindings.length}</b><span>已分配账号</span></div>
         <div><b>${delivered.length}</b><span>待发布内容</span></div><div><b>${published.length}</b><span>已回传链接</span></div>
       </div>
-      <section class="card supplier-activity"><div class="card-head supplier-activity-head"><b>最近操作</b></div>
-        ${activity.length ? activity.slice(0, 30).map(x => `<div class="supplier-log"><i></i><span><b>${esc(x.memberName || "成员")}</b><em>${esc(x.detail || x.action || "更新了发布内容")}</em></span><time>${timeAgo(x.createdAt)}</time></div>`).join("") : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
+      <section class="card supplier-activity"><div class="card-head supplier-activity-head"><b>最近操作</b>
+        ${activity.length ? `<div class="supplier-activity-filters">
+          <label class="select-shell">${icon("filter", 12)}<select id="supplierActivityType"><option value="all">全部操作</option><option value="views" ${supplierActivityType === "views" ? "selected" : ""}>编辑观看量</option><option value="link" ${supplierActivityType === "link" ? "selected" : ""}>回传链接</option><option value="download" ${supplierActivityType === "download" ? "selected" : ""}>下载素材</option><option value="other" ${supplierActivityType === "other" ? "selected" : ""}>其他操作</option></select>${icon("chevronDown", 11)}</label>
+          <label class="select-shell">${icon("clock", 12)}<select id="supplierActivityDays"><option value="all">全部时间</option><option value="7" ${supplierActivityDays === "7" ? "selected" : ""}>近 7 天</option><option value="30" ${supplierActivityDays === "30" ? "selected" : ""}>近 30 天</option></select>${icon("chevronDown", 11)}</label>
+        </div>` : ""}</div>
+        ${activity.length ? activity.slice(0, 60).map(x => `<div class="supplier-log" data-activity-kind="${supplierActivityKind(x)}" data-activity-ts="${supplierActivityTimestamp(x)}"><i></i><span><b>${esc(x.memberName || "成员")}</b><em>${esc(x.detail || x.action || "更新了发布内容")}</em></span><time>${timeAgo(x.createdAt)}</time></div>`).join("") + `<p class="supplier-activity-empty" hidden>当前筛选下暂无操作</p>` : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
       </section>
     </div>`;
+    const applyActivityFilters = () => {
+      const cutoff = supplierActivityDays === "all" ? 0 : Date.now() - Number(supplierActivityDays) * 86400000;
+      let visible = 0;
+      $$("[data-activity-kind]", root).forEach(row => {
+        const show = (supplierActivityType === "all" || row.dataset.activityKind === supplierActivityType)
+          && (!cutoff || Number(row.dataset.activityTs || 0) >= cutoff);
+        row.hidden = !show;
+        if (show) visible += 1;
+      });
+      const empty = $(".supplier-activity-empty", root);
+      if (empty) empty.hidden = visible > 0;
+    };
+    $("#supplierActivityType", root)?.addEventListener("change", e => { supplierActivityType = e.currentTarget.value; applyActivityFilters(); });
+    $("#supplierActivityDays", root)?.addEventListener("change", e => { supplierActivityDays = e.currentTarget.value; applyActivityFilters(); });
+    applyActivityFilters();
     $("#supplierOverviewChildAdd", root)?.addEventListener("click", () => createChildrenDialog(() => renderSupplierOverview(root)));
   } catch (e) {
+    if (!onSupplierRoute("overview")) return;
     root.innerHTML = `<div class="supplier-shell">${emptyState("x", "供应商数据读取失败", esc(e.message || e))}</div>`;
   }
 }
@@ -52,21 +84,41 @@ export async function renderSupplierAccounts(root) {
   root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div><div class="supplier-loading">正在读取...</div></div>`;
   try {
     const { children, bindings } = await supplierData();
+    if (!onSupplierRoute("assets")) return;
     const childMap = new Map(children.map(x => [x.id, x]));
     const platforms = [...new Set(state.accounts.map(x => x.platform).filter(Boolean))];
-    const visibleAccounts = state.accounts.filter(acc => (!supplierAccountQuery || `${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase().includes(supplierAccountQuery.toLowerCase())) && (supplierPlatform === "all" || acc.platform === supplierPlatform));
     root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div>
       <div class="supplier-account-tools"><label>${icon("search", 14)}<input id="supplierAccountSearch" value="${esc(supplierAccountQuery)}" placeholder="搜索账号" /></label><div class="supplier-filter-chips"><button class="${supplierPlatform === "all" ? "on" : ""}" data-supplier-platform="all">全部平台</button>${platforms.map(x => `<button class="${supplierPlatform === x ? "on" : ""}" data-supplier-platform="${esc(x)}">${esc(x)}</button>`).join("")}</div></div>
-      <div class="supplier-account-grid is-switching">${visibleAccounts.map(acc => {
+      <div class="supplier-account-grid">${state.accounts.map(acc => {
         const binding = bindings.find(x => x.accountId === acc.id);
         const child = binding ? childMap.get(binding.childId) : null;
-        return `<article class="supplier-account"><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")}</em></div><label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}"><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></article>`;
+        const searchable = `${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase();
+        const hidden = (supplierAccountQuery && !searchable.includes(supplierAccountQuery.toLowerCase())) || (supplierPlatform !== "all" && acc.platform !== supplierPlatform);
+        return `<article class="supplier-account" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")}</em></div><label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}"><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></article>`;
       }).join("")}</div></div>`;
+    const applyAccountFilters = () => {
+      const cards = $$(".supplier-account", root);
+      const before = new Map(cards.filter(card => !card.hidden).map(card => [card, card.getBoundingClientRect()]));
+      const query = supplierAccountQuery.trim().toLowerCase();
+      cards.forEach(card => {
+        card.hidden = !!query && !card.dataset.accountSearch.includes(query)
+          || supplierPlatform !== "all" && card.dataset.accountPlatform !== supplierPlatform;
+      });
+      $$('[data-supplier-platform]', root).forEach(button => button.classList.toggle("on", button.dataset.supplierPlatform === supplierPlatform));
+      requestAnimationFrame(() => cards.filter(card => !card.hidden).forEach(card => {
+        const oldRect = before.get(card);
+        if (!oldRect) return card.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+        const nextRect = card.getBoundingClientRect();
+        const dx = oldRect.left - nextRect.left;
+        const dy = oldRect.top - nextRect.top;
+        if (dx || dy) card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 210, easing: "cubic-bezier(.2,.8,.2,1)" });
+      }));
+    };
     let composing = false;
     $("#supplierAccountSearch", root)?.addEventListener("compositionstart", () => { composing = true; });
-    $("#supplierAccountSearch", root)?.addEventListener("compositionend", e => { composing = false; supplierAccountQuery = e.currentTarget.value; transitionSupplier(() => renderSupplierAccounts(root)); });
-    $("#supplierAccountSearch", root)?.addEventListener("input", e => { if (!composing && !e.isComposing) { supplierAccountQuery = e.currentTarget.value; transitionSupplier(() => renderSupplierAccounts(root)); } });
-    $$("[data-supplier-platform]", root).forEach(b => b.addEventListener("click", () => { supplierPlatform = b.dataset.supplierPlatform; transitionSupplier(() => renderSupplierAccounts(root)); }));
+    $("#supplierAccountSearch", root)?.addEventListener("compositionend", e => { composing = false; supplierAccountQuery = e.currentTarget.value; applyAccountFilters(); });
+    $("#supplierAccountSearch", root)?.addEventListener("input", e => { if (!composing && !e.isComposing) { supplierAccountQuery = e.currentTarget.value; applyAccountFilters(); } });
+    $$("[data-supplier-platform]", root).forEach(b => b.addEventListener("click", () => { supplierPlatform = b.dataset.supplierPlatform; applyAccountFilters(); }));
     $$("[data-account-assign]", root).forEach(sel => sel.addEventListener("change", async () => {
       const accountId = sel.dataset.accountAssign;
       const childId = sel.value;
@@ -92,6 +144,7 @@ export async function renderSupplierAccounts(root) {
       }
     }));
   } catch (e) {
+    if (!onSupplierRoute("assets")) return;
     root.innerHTML = `<div class="supplier-shell">${emptyState("x", "账号看板读取失败", esc(e.message || e))}</div>`;
   }
 }
@@ -130,13 +183,14 @@ export async function renderSupplierSettings(root) {
   const draw = async () => {
     try {
       const [{ children, bindings }, requests] = await Promise.all([supplierData(), remote.memberRequests.list("pending")]);
+      if (!onSupplierRoute("settings")) return;
       root.innerHTML = `<div class="supplier-shell">
         <div class="page-head"><div><div class="eyebrow">设置</div><h2>子账号与账号分配</h2></div><button class="btn primary" id="supplierChildAdd">${icon("plus", 14)} 批量建立子账号</button></div>
         <section class="card supplier-requests"><div class="card-head"><b>子账号申请</b><em>${requests.length} 条待处理</em></div>
-          ${requests.length ? requests.map(r => `<div class="supplier-child-row"><span class="mem-ava" style="background:${gradFor(r.name)}">${esc((r.name || "?")[0])}</span><span><b>${esc(r.name)}</b><em>@${esc(r.username)} · ${r.createdAt ? timeAgo(r.createdAt) : "刚刚"}</em></span><button class="btn primary sm" data-supplier-approve="${r.id}">通过</button><button class="btn ghost sm danger" data-supplier-reject="${r.id}">拒绝</button></div>`).join("") : `<p class="supplier-empty">暂无待处理申请</p>`}
+          ${requests.length ? requests.map(r => `<div class="supplier-child-row"><span class="mem-ava supplier-member-fallback">${icon("user", 15)}</span><span><b>${esc(r.name)}</b><em>@${esc(r.username)} · ${r.createdAt ? timeAgo(r.createdAt) : "刚刚"}</em></span><button class="btn primary sm" data-supplier-approve="${r.id}">通过</button><button class="btn ghost sm danger" data-supplier-reject="${r.id}">拒绝</button></div>`).join("") : `<p class="supplier-empty">暂无待处理申请</p>`}
         </section>
         <section class="card supplier-children"><div class="card-head"><b>供应商子账号</b><em>为每个子账号分配可见的自媒体账号</em></div>
-          ${children.length ? children.map(c => { const n = bindings.filter(x => x.childId === c.id).length; return `<div class="supplier-child-row"><span class="mem-ava" style="background:${gradFor(c.name)}">${esc((c.name || "?")[0])}</span><span><b>${esc(c.name)}</b><em>@${esc(c.username)} · 已分配 ${n} 个账号</em></span><button class="btn ghost sm" data-supplier-assign="${c.id}">${icon("grid", 13)} 分配账号</button><button class="icon-btn sm danger" data-supplier-delete="${c.id}" title="删除">${icon("trash", 13)}</button></div>`; }).join("") : emptyState("users", "还没有子账号", "可批量建立，或审批子账号申请")}
+          ${children.length ? children.map(c => { const n = bindings.filter(x => x.childId === c.id).length; return `<div class="supplier-child-row"><span class="mem-ava supplier-member-fallback">${icon("user", 15)}</span><span><b>${esc(c.name)}</b><em>@${esc(c.username)} · 已分配 ${n} 个账号</em></span><button class="btn ghost sm" data-supplier-assign="${c.id}">${icon("grid", 13)} 分配账号</button><button class="icon-btn sm danger" data-supplier-delete="${c.id}" title="删除">${icon("trash", 13)}</button></div>`; }).join("") : emptyState("users", "还没有子账号", "可批量建立，或审批子账号申请")}
         </section>
       </div>`;
       $("#supplierChildAdd", root)?.addEventListener("click", () => createChildrenDialog(draw));
@@ -148,6 +202,7 @@ export async function renderSupplierSettings(root) {
         if (await confirmModal({ title: `删除子账号「${esc(c?.name || "") }」？`, danger: true, okText: "删除" })) { await remote.supplier.removeChild(b.dataset.supplierDelete); toast("子账号已删除"); draw(); }
       }));
     } catch (e) {
+      if (!onSupplierRoute("settings")) return;
       root.innerHTML = `<div class="supplier-shell">${emptyState("x", "供应商设置读取失败", esc(e.message || e))}</div>`;
     }
   };

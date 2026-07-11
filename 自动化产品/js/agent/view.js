@@ -43,20 +43,16 @@ function accountIdsForKind(kind, ids = [], fallbackCount = 0) {
   return pool.slice(0, Math.min(10, Math.max(1, fallbackCount))).map(a => a.id);
 }
 
-function applyPlanMode(payload, mode) {
-  payload.creativeMode = payload.contentKind === "image" ? "custom" : (mode === "auto" ? "auto" : "custom");
-  if (payload.creativeMode === "custom") {
-    payload.content = "";
-    payload.topic = "";
-    payload.topicMode = "fixed";
-    payload.perAccountCount = 1;
-    payload.accountCounts = {};
-  } else if (!payload.topicMode) {
-    payload.topicMode = "random";
-  }
+function applyPlanMode(payload) {
+  payload.creativeMode = "custom";
+  payload.content = "";
+  payload.topic = "";
+  payload.topicMode = "fixed";
+  payload.perAccountCount = 1;
+  payload.accountCounts = {};
   payload.accountCustomCopyModes = {};
   (payload.accountIds || []).forEach(id => {
-    payload.accountCustomCopyModes[id] = payload.creativeMode === "custom";
+    payload.accountCustomCopyModes[id] = true;
   });
 }
 
@@ -64,13 +60,13 @@ function applyPlanKind(payload, kind) {
   const nextKind = normalizePlanKind(kind, payload.group);
   const oldCount = (payload.accountIds || []).length || Number(payload.accountCount || 0) || 2;
   payload.contentKind = nextKind;
-  if (nextKind === "image") payload.creativeMode = "custom";
+  payload.creativeMode = "custom";
   payload.group = planGroupForKind(nextKind);
   payload.tags = [];
   payload.accountIds = accountIdsForKind(nextKind, payload.accountIds || [], oldCount);
   payload.accountCount = payload.accountIds.length;
   payload.manualAccountSelection = true;
-  applyPlanMode(payload, payload.creativeMode);
+  applyPlanMode(payload);
 }
 
 function ensurePlanBoard(session = ensureSession()) {
@@ -631,41 +627,18 @@ function wire(root) {
       return;
     }
 
-    const creativeBtn = e.target.closest("[data-pf-creative]");
     const kindBtn = e.target.closest("[data-pf-kind]");
-    if (creativeBtn || kindBtn) {
+    if (kindBtn) {
       const node = e.target.closest("[data-plan]");
       const { msg: m } = node ? findMessageInSessions(node.dataset.plan) : {};
       if (!m || m.payload.status !== "pending") return;
-      if (creativeBtn) applyPlanMode(m.payload, creativeBtn.dataset.pfCreative);
-      if (kindBtn) applyPlanKind(m.payload, kindBtn.dataset.pfKind);
+      applyPlanKind(m.payload, kindBtn.dataset.pfKind);
       save("sessions");
       rerenderPlanCard(m.id);
       return;
     }
 
     if (handlePlanPickClick(e)) return;
-
-    const copyToggle = e.target.closest("[data-pacc-copy-toggle]");
-    if (copyToggle) {
-      const node = copyToggle.closest("[data-plan]");
-      const { msg: m } = node ? findMessageInSessions(node.dataset.plan) : {};
-      if (!m || m.payload.status !== "pending") return;
-      const accId = copyToggle.dataset.paccCopyToggle;
-      m.payload.accountCustomCopyModes = m.payload.accountCustomCopyModes || {};
-      const next = !m.payload.accountCustomCopyModes[accId];
-      m.payload.accountCustomCopyModes[accId] = next;
-      save("sessions");
-      copyToggle.classList.toggle("is-on", next);
-      copyToggle.setAttribute("aria-pressed", next ? "true" : "false");
-      const label = copyToggle.querySelector("span");
-      if (label) label.textContent = next ? "自定义文案" : "标准生成";
-      const row = copyToggle.closest(".agc-override");
-      row?.querySelector(".agc-copy-fields")?.classList.toggle("is-custom", next);
-      if (next) row?.querySelector("[data-pacc-copy-title]")?.focus();
-      else row?.querySelector("[data-pacc-content]")?.focus();
-      return;
-    }
 
     const act = e.target.closest("[data-act]");
     if (!act) return;
@@ -675,6 +648,34 @@ function wire(root) {
     const s = ensureSession();
 
     switch (act.dataset.act) {
+      case "plan-select-all": {
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
+        if (!m || m.payload.status !== "pending") return;
+        const group = planGroupForKind(m.payload.contentKind || normalizePlanKind("", m.payload.group));
+        const pool = matchAccounts({ group, tags: [], sort: "" });
+        const allSelected = pool.length > 0 && pool.every(account => (m.payload.accountIds || []).includes(account.id));
+        m.payload.accountIds = allSelected ? [] : pool.map(account => account.id);
+        m.payload.accountCount = m.payload.accountIds.length;
+        m.payload.manualAccountSelection = true;
+        save("sessions");
+        rerenderPlanCard(m.id);
+        toast(allSelected ? "已取消全选" : `已全选 ${pool.length} 个账号`);
+        break;
+      }
+      case "plan-remove-account": {
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
+        if (!m || m.payload.status !== "pending") return;
+        const accountId = act.dataset.account || "";
+        m.payload.accountIds = (m.payload.accountIds || []).filter(id => id !== accountId);
+        m.payload.accountCount = m.payload.accountIds.length;
+        ["accountCopyTitles", "accountCopyBodies", "accountRefAssetIds", "accountImageCounts", "accountCounts", "accountContents", "accountProductIds", "accountCustomCopyModes"].forEach(key => {
+          if (m.payload[key]) delete m.payload[key][accountId];
+        });
+        save("sessions");
+        rerenderPlanCard(m.id);
+        toast("已从本次计划取消该账号");
+        break;
+      }
       case "plan-asset-pick": {
         await openPlanAssetPicker(act.dataset.mid, act.dataset.refKind || "shared", act.dataset.refAccount || "");
         break;
@@ -705,9 +706,9 @@ function wire(root) {
         m.payload.group = planGroupForKind(m.payload.contentKind);
         m.payload.accountIds = accountIdsForKind(m.payload.contentKind, m.payload.accountIds || [], 0);
         m.payload.accountCount = m.payload.accountIds.length;
-        applyPlanMode(m.payload, m.payload.creativeMode);
+        applyPlanMode(m.payload);
         if (!m.payload.accountIds.length) { toast("至少选择一个账号"); return; }
-        const isCustomPlan = m.payload.creativeMode !== "auto";
+        const isCustomPlan = true;
         const missingCustom = isCustomPlan ? (m.payload.accountIds || []).filter(id => {
           const title = ((m.payload.accountCopyTitles || {})[id] || "").trim();
           const body = ((m.payload.accountCopyBodies || {})[id] || "").trim();
@@ -728,10 +729,6 @@ function wire(root) {
             toast(`真人视频请先上传角色形象：${names}${missingRole.length > 3 ? "等" : ""}`);
             return;
           }
-        }
-        if (m.payload.creativeMode === "auto" && !(m.payload.content || "").trim() && !(m.payload.topic || "").trim()) {
-          m.payload.topicMode = "random";
-          m.payload.topic = "";
         }
         const runSession = ownerSession || s;
         state.ui.activeSessionId = runSession.id;
@@ -1150,12 +1147,20 @@ function wireDrops() {
     if (z.dataset.wired) return;
     z.dataset.wired = "1";
     wireDropZone(z, files => setPlanRefs(z.dataset.planRefdrop, Array.from(files).filter(f => f.type.startsWith("image/"))), { filesOnly: true });
+    z.addEventListener("click", e => {
+      if (e.target.closest("button, .ref-chip")) return;
+      z.querySelector("[data-plan-ref]")?.click();
+    });
   });
   // 计划卡统一视频参考图：供视频封面、信息流 B 面分镜和功能演示共同参考
   $$("#agwMsgs [data-plan-cover-refdrop]").forEach(z => {
     if (z.dataset.wired) return;
     z.dataset.wired = "1";
     wireDropZone(z, files => setPlanRefs(z.dataset.planCoverRefdrop, Array.from(files).filter(f => f.type.startsWith("image/")), "cover"), { filesOnly: true });
+    z.addEventListener("click", e => {
+      if (e.target.closest("button, .ref-chip")) return;
+      z.querySelector("[data-plan-cover-ref]")?.click();
+    });
   });
   // 计划卡单账号定制参考图：支持拖入，不影响统一参考图
   $$("#agwMsgs [data-plan-custom-refdrop]").forEach(z => {

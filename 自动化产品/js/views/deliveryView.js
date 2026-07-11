@@ -202,25 +202,38 @@ export const deliveryView = {
       const all = sortDelivered(deliveredAssets());
       root.innerHTML = `
         <div class="delivery-page">
-          <div class="page-head">
-            <div><div class="eyebrow">发布清单</div>
-            <h2>${isSupplierRole ? "发布清单" : "定稿归档 · 发布回链全程可见"}</h2></div>
-            ${(isSupplierRole || tab === "supplier") ? `<button class="btn primary" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>` : ""}
-          </div>
-          ${isAdmin ? `
-          <div class="mode-tabs slim" data-active="${tab}">
-            <button class="mode-tab ${tab === "creator" ? "is-active" : ""}" data-dtab="creator">创作端视角<span>交付明细 · 全链路回看</span></button>
-            <button class="mode-tab ${tab === "supplier" ? "is-active" : ""}" data-dtab="supplier">供应商视角<span>他们看到的素材库</span></button>
+          ${isAdmin ? `<div class="delivery-toolbar">
+            <div class="mode-tabs slim" data-active="${tab}">
+              <button class="mode-tab ${tab === "creator" ? "is-active" : ""}" data-dtab="creator">创作端视角<span>交付明细 · 全链路回看</span></button>
+              <button class="mode-tab ${tab === "supplier" ? "is-active" : ""}" data-dtab="supplier">供应商视角<span>他们看到的素材库</span></button>
+            </div>
           </div>` : ""}
           <div id="dvBody"></div>
         </div>`;
 
-      $$("[data-dtab]", root).forEach(b => b.addEventListener("click", () => { tab = b.dataset.dtab; draw(); }));
       const body = $("#dvBody", root);
-      if (tab === "creator") drawCreator(body, all);
-      else drawSupplier(body, all);
-      const bd = $("#dvBatchDl", root);
-      if (bd) bd.addEventListener("click", batchDl);
+      const renderActiveBody = () => {
+        if (tab === "creator") drawCreator(body, all);
+        else drawSupplier(body, all);
+        $("#dvBatchDl", root)?.addEventListener("click", batchDl);
+      };
+      renderActiveBody();
+      $$("[data-dtab]", root).forEach(button => button.addEventListener("click", () => {
+        const next = button.dataset.dtab;
+        if (next === tab) return;
+        tab = next;
+        const scroll = document.querySelector(".main-scroll");
+        const beforeScroll = scroll?.scrollTop || 0;
+        $$("[data-dtab]", root).forEach(item => item.classList.toggle("is-active", item.dataset.dtab === tab));
+        $(".mode-tabs", root)?.setAttribute("data-active", tab);
+        const swap = () => {
+          renderActiveBody();
+          if (scroll) scroll.scrollTop = beforeScroll;
+          body.animate?.([{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "cubic-bezier(.2,.8,.2,1)" });
+        };
+        if (typeof body.animate !== "function") return swap();
+        body.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 90, easing: "ease-out" }).onfinish = swap;
+      }));
     };
 
     function drawCreator(body, all) {
@@ -320,6 +333,7 @@ export const deliveryView = {
           <label class="select-shell">${icon("filter", 13)}<select data-sup-select="type"><option value="all">全部形式</option><option value="视频" ${supFilters.type === "视频" ? "selected" : ""}>视频</option><option value="图文" ${supFilters.type === "图文" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("user", 13)}<select data-sup-select="publisher"><option value="all">全部发布人</option>${[...new Set(all.map(x => publisherLabel(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.publisher === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("clock", 13)}<select data-sup-select="date"><option value="all">全部时间</option>${[...new Set(all.map(x => dayKey(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+          <button class="btn primary supplier-batch-download" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>
         </div>
         <div class="sup-table-wrap card">
           <table class="sup-table">

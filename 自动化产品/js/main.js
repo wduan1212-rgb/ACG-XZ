@@ -19,6 +19,8 @@ import { resumeActiveBatches } from "./agent/orchestrator.js";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js";
+import { initLoginBeams } from "./ui/loginBeams.js";
+import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { overviewView } from "./views/overview.js";
 import { voiceLabView } from "./views/voiceLab.js";
 import { agentView } from "./agent/view.js";
@@ -250,14 +252,29 @@ function setGateMode(mode) {
   const apply = gateMode === "apply";
   const card = $(".lg-card");
   if (card) card.dataset.mode = gateMode;
-  const nameField = $("#lgNameField"), roleField = $("#lgRoleField"), loginBtn = $("#lgLogin"), applyBtn = $("#lgApply"), hint = $("#lgHint");
+  const nameField = $("#lgNameField"), roleField = $("#lgRoleField"), loginBtn = $("#lgLogin"), applyBtn = $("#lgApply"), hint = $("#lgHint"), title = $("#lgModeTitle");
   if (nameField) nameField.hidden = !apply;
   if (roleField) roleField.hidden = !apply;
-  if (loginBtn) loginBtn.textContent = apply ? "提交申请 →" : "登录 →";
-  if (applyBtn) applyBtn.textContent = apply ? "返回登录" : "申请账号";
+  if (title) title.textContent = apply ? "申请" : "登录";
+  if (loginBtn) {
+    const label = apply ? "申请" : "登录";
+    const labelNode = loginBtn.querySelector("span");
+    if (labelNode) labelNode.textContent = label;
+    else loginBtn.textContent = label;
+  }
+  if (applyBtn) {
+    applyBtn.textContent = apply ? "申请中" : "申请账号";
+    applyBtn.setAttribute("aria-pressed", apply ? "true" : "false");
+    applyBtn.title = apply ? "返回登录" : "申请账号";
+  }
   if (hint) hint.textContent = apply
-    ? "提交后等待管理员在后台审批，通过后即可登录"
-    : "忘记密码请联系管理员 · 新成员可提交账号申请";
+    ? "填写资料，提交后等待管理员审批"
+    : "使用星阵账号继续";
+  if (card) {
+    card.classList.remove("is-switching");
+    void card.offsetWidth;
+    card.classList.add("is-switching");
+  }
 }
 function playLoginBackground() {
   const video = $("#loginBgVideo");
@@ -541,11 +558,14 @@ function renderTopbar() {
   const actions = $(".top-actions");
   const topbar = document.querySelector(".topbar");
   const voiceDock = $("#voiceTopDock");
+  const assetsDock = $("#assetsTopDock");
   topbar?.classList.toggle("voice-topbar-active", zone === "voice");
   if (voiceDock && zone !== "voice") voiceDock.remove();
+  if (assetsDock && zone !== "assets") assetsDock.remove();
   const acc = activeAccount();
   const { page } = parseHash();
   let crumb = ZONE_TITLE[zone] || "";
+  if (zone === "assets" && ["supplier", "supplier_parent"].includes(state.role)) crumb = "全部账号";
   const shownPage = acc?.mode === "图文" && ["script", "copy"].includes(page)
     ? "images"
     : acc?.mode === "视频" && ["script", "boards", "prompts", "render", "copy"].includes(page)
@@ -650,6 +670,8 @@ async function boot() {
     registerView("settings", settingsView);
     initRouter();
     installSelectEnhancer();
+    installUIEnhancements();
+    initLoginBeams();
 
     // 外壳
     $("#railBrand").innerHTML = brandGlyph(28);
@@ -673,15 +695,6 @@ async function boot() {
 
     // 登录分流（三身份 + 口令）
     wireGate();
-    const lgp = $("#lgParticles");
-    for (let i = 0; i < 20; i++) {
-      const p = document.createElement("i");
-      p.style.setProperty("--x", (Math.random() * 100).toFixed(1) + "%");
-      p.style.setProperty("--d", (Math.random() * 9).toFixed(2) + "s");
-      p.style.setProperty("--t", (8 + Math.random() * 8).toFixed(2) + "s");
-      lgp.appendChild(p);
-    }
-
     // 进入：远端共享模式凭 token 自动续登；本地模式凭本地 role/member
     let entered = false;
     if (remote.isOn() && remote.hasToken()) {

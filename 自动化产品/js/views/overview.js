@@ -9,8 +9,8 @@ import { deliveredAssets } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js";
 import { LLM_CONFIG } from "../api/llm.js";
-import { openProductionDrawer } from "./prodDrawer.js";
-import { emptyState } from "../ui/components.js";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js";
+import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { renderSupplierOverview } from "./supplierViews.js";
 
@@ -144,10 +144,63 @@ export const overviewView = {
     const delivered = deliveredAssets();
     const pendingDl = delivered.filter(x => !x.asset.status || x.asset.status === "未下载").length;
 
-    const stat = (label, n, sub, zone, accent = "") => `
-      <button class="ov-stat card ${accent}" data-ov-go="${zone}">
+    const stat = (key, label, n, sub, accent = "") => `
+      <button class="ov-stat card ${accent}" data-ov-stat="${key}">
         <b>${n}</b><span>${label}</span><em>${sub}</em>
       </button>`;
+
+    const taskGroups = {
+      waiting: { title: "等待上传", items: waiting, type: "production" },
+      rendering: { title: "生成中", items: rendering, type: "production" },
+      review: { title: "待审核", items: inReview, type: "production" },
+      failed: { title: "失败待重试", items: failed, type: "production" },
+      supplier: { title: "供应商待下载", items: delivered.filter(x => !x.asset.status || x.asset.status === "未下载"), type: "delivery" }
+    };
+
+    const openTaskGroup = key => {
+      const group = taskGroups[key];
+      if (!group) return;
+      const rows = group.type === "production"
+        ? group.items.map(p => {
+          const acc = accountById(p.accountId);
+          const [status] = statusPill(p);
+          return `<div class="overview-task-row">
+            <span class="overview-task-main"><b>${esc(p.artifacts?.copy?.title || p.title || p.topic || "未命名任务")}</b><em>${esc(acc?.name || "未命名账号")} · ${esc(groupOf(safeAccount(acc)))} · ${esc(status)}</em></span>
+            <time>${timeAgo(p.updatedAt || p.createdAt)}</time>
+            <button class="btn primary sm" data-ov-workbench="${p.id}">${icon("arrowRight", 12)} 进入工作台</button>
+          </div>`;
+        }).join("")
+        : group.items.map(({ asset, acc }) => `<div class="overview-task-row">
+            <span class="overview-task-main"><b>${esc(asset.title || asset.name || "未命名交付")}</b><em>${esc(acc?.name || "未命名账号")} · ${esc(acc?.platform || "")} · ${esc(asset.status || "未下载")}</em></span>
+            <time>${timeAgo(asset.deliveredAt || asset.createdAt)}</time>
+            <button class="btn primary sm" data-ov-delivery>${icon("arrowRight", 12)} 去发布清单</button>
+          </div>`).join("");
+      const html = `<div class="mp-head"><b>${esc(group.title)} · ${group.items.length} 项</b><button class="icon-btn ghost" data-close title="关闭">${icon("x", 15)}</button></div>
+        <div class="overview-task-list">${rows || `<div class="overview-task-empty">当前没有${esc(group.title)}任务</div>`}</div>`;
+      openModal(html, {
+        wide: true,
+        onMount(panel, close) {
+          panel.classList.add("overview-task-panel");
+          panel.addEventListener("click", e => {
+            const workbench = e.target.closest("[data-ov-workbench]");
+            if (workbench) {
+              const p = state.productions.find(x => x.id === workbench.dataset.ovWorkbench);
+              if (!p) return;
+              state.ui.activeAccountId = p.accountId;
+              state.ui.activeProductionId = p.id;
+              save("meta");
+              close();
+              window.setTimeout(() => go("studio", stagePage(p)), 180);
+              return;
+            }
+            if (e.target.closest("[data-ov-delivery]")) {
+              close();
+              window.setTimeout(() => go("delivery"), 180);
+            }
+          });
+        }
+      });
+    };
 
     root.innerHTML = `
       <div class="overview">
@@ -173,11 +226,11 @@ export const overviewView = {
         </div>
 
         <div class="ov-stats">
-          ${stat("等待上传", waiting.length, "上传补图后继续", "agent", waiting.length ? "warn" : "")}
-          ${stat("生成中", rendering.length, "文案分镜 / 渲染", "agent", rendering.length ? "run" : "")}
-          ${stat("待审核", inReview.length, "人工确认后交付", "agent", inReview.length ? "review" : "")}
-          ${stat("失败待重试", failed.length, "一键重试", "agent", failed.length ? "fail" : "")}
-          ${stat("供应商待下载", pendingDl, "发布清单可批量下载", "delivery", "")}
+          ${stat("waiting", "等待上传", waiting.length, "上传补图后继续", waiting.length ? "warn" : "")}
+          ${stat("rendering", "生成中", rendering.length, "文案分镜 / 渲染", rendering.length ? "run" : "")}
+          ${stat("review", "待审核", inReview.length, "人工确认后交付", inReview.length ? "review" : "")}
+          ${stat("failed", "失败待重试", failed.length, "进入工作台处理", failed.length ? "fail" : "")}
+          ${stat("supplier", "供应商待下载", pendingDl, "发布清单可批量下载", "")}
         </div>
 
         <div class="ov-cols">
@@ -213,6 +266,7 @@ export const overviewView = {
       </div>`;
 
     root.querySelectorAll("[data-ov-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.ovGo)));
+    root.querySelectorAll("[data-ov-stat]").forEach(b => b.addEventListener("click", () => openTaskGroup(b.dataset.ovStat)));
     root.querySelectorAll("[data-prod]").forEach(b => b.addEventListener("click", () => openProductionDrawer(b.dataset.prod)));
     root.querySelectorAll("[data-acc]").forEach(b => b.addEventListener("click", () => {
       state.ui.activeAccountId = b.dataset.acc; save("meta");

@@ -102,32 +102,7 @@ export function brandGlyph(size = 28) {
   return `<img class="brand-glyph-img" src="./assets/brand/xingzhen-icon.png" alt="星阵" width="${size}" height="${size}" />`;
 }
 
-/* Agent 头像：渐变描边机器人（按参考图重绘：天线 + 圆角头壳 + 深色面板 + 双色发光眼） */
 export function agentAvatar(size = 34) {
-  return `<svg viewBox="0 0 64 64" width="${size}" height="${size}" aria-hidden="true">
-    <defs>
-      <linearGradient id="agR" x1="8" y1="14" x2="56" y2="54" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#A86CFF"/><stop offset="1" stop-color="#2E7CF6"/>
-      </linearGradient>
-      <linearGradient id="agEL" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#C08CFF"/><stop offset="1" stop-color="#7A5CFF"/>
-      </linearGradient>
-      <linearGradient id="agER" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#5FA8FF"/><stop offset="1" stop-color="#2E6CF6"/>
-      </linearGradient>
-    </defs>
-    <!-- 天线 -->
-    <line x1="32" y1="16" x2="32" y2="9" stroke="url(#agR)" stroke-width="3.6" stroke-linecap="round"/>
-    <circle cx="32" cy="7" r="3.6" fill="url(#agR)"/>
-    <!-- 侧耳 -->
-    <rect x="5" y="29" width="7" height="14" rx="3.5" fill="#9D6CFF"/>
-    <rect x="52" y="29" width="7" height="14" rx="3.5" fill="#3E8CF6"/>
-    <!-- 头壳（渐变描边） -->
-    <rect x="10" y="16" width="44" height="40" rx="17" fill="#fff" stroke="url(#agR)" stroke-width="4.6"/>
-    <!-- 面板 -->
-    <rect x="17" y="24" width="30" height="24" rx="10.5" fill="#10142A"/>
-    <!-- 双色发光眼 -->
-    <rect x="25" y="30" width="5.2" height="12" rx="2.6" fill="url(#agEL)"/>
-    <rect x="34" y="30" width="5.2" height="12" rx="2.6" fill="url(#agER)"/>
-  </svg>`;
+  const glyph = Math.max(14, Math.round(size * .58));
+  return `<span class="agent-avatar-mono" style="width:${size}px;height:${size}px">${icon("bot", glyph)}</span>`;
 }

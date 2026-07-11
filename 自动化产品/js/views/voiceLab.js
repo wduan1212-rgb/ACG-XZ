@@ -15,12 +15,16 @@ const VOICE_PREVIEW_TEXT = "这是当前音色试听，语气自然，适合口�
 
 function labState() {
   const ui = voiceMeta();
+  const previous = ui.voiceLab || {};
+  const migratedSpeed = previous._speedDefaultV2
+    ? previous.speed
+    : (previous.speed == null || Number(previous.speed) === 1 ? 1.2 : previous.speed);
   ui.voiceLab = {
     tab: "system",
     mode: "tts",
     text: "",
     voiceId: "",
-    speed: 1,
+    speed: 1.2,
     vol: 1,
     pitch: 0,
     designName: "",
@@ -28,7 +32,9 @@ function labState() {
     designPreview: "大家可以先把需求说清楚，再让工具帮你一步一步跑起来。",
     voiceGender: "all",
     voiceLocale: "all",
-    ...(ui.voiceLab || {})
+    ...previous,
+    speed: migratedSpeed ?? 1.2,
+    _speedDefaultV2: true
   };
   return ui.voiceLab;
 }
@@ -110,7 +116,7 @@ function toolPanelHtml(mode, s, selected) {
       </div>
     </div>
     <div class="vl-sliders">
-      <label>语速 <span>${Number(s.speed || 1).toFixed(1)}</span><input id="vlSpeed" type="range" min="0.5" max="2" step="0.1" value="${esc(s.speed || 1)}" /></label>
+      <label>语速 <span>${Number(s.speed ?? 1.2).toFixed(1)}</span><input id="vlSpeed" type="range" min="0.5" max="2" step="0.1" value="${esc(s.speed ?? 1.2)}" /></label>
       <label>音量 <span>${Number(s.vol || 1).toFixed(1)}</span><input id="vlVol" type="range" min="0.5" max="2" step="0.1" value="${esc(s.vol || 1)}" /></label>
       <label>声调 <span>${Number(s.pitch || 0)}</span><input id="vlPitch" type="range" min="-12" max="12" step="1" value="${esc(s.pitch || 0)}" /></label>
     </div>
@@ -136,7 +142,7 @@ function voiceCard(v, selectedId) {
     <i>${esc(sourceLabel(v.source))}</i>
     <span class="vl-voice-actions">
       <button class="icon-btn tiny" type="button" title="试听音色" data-vl-preview="${esc(v.voiceId)}">${icon(previewing ? "pause" : "play", 13)}</button>
-      <button class="icon-btn tiny" type="button" title="${fav ? "取消收藏" : "收藏音色"}" data-vl-fav="${esc(v.voiceId)}">${icon("star", 13)}</button>
+      <button class="icon-btn tiny ${fav ? "is-active" : ""}" type="button" title="${fav ? "取消收藏" : "收藏音色"}" data-vl-fav="${esc(v.voiceId)}">${icon("star", 13)}</button>
       ${v.source === "mine" ? `<button class="icon-btn tiny" type="button" title="重命名音色" data-vl-rename="${esc(v.voiceId)}">${icon("edit", 13)}</button>` : ""}
       <button class="icon-btn tiny" type="button" title="复制 voice_id" data-vl-copy="${esc(v.voiceId)}">${icon("copy", 13)}</button>
     </span>
@@ -190,7 +196,7 @@ async function previewVoice(voiceId, s) {
   const cacheKey = `${id}::${sample}`;
   let out = voice.previewAudioDataUrl ? { audioDataUrl: voice.previewAudioDataUrl, voiceId: id } : voicePreviewCache.get(cacheKey);
   if (!out) {
-    out = await synthesizeTts({ text: sample, voiceId: id, speed: Number(s.speed || 1), vol: Number(s.vol || 1), pitch: Number(s.pitch || 0) });
+    out = await synthesizeTts({ text: sample, voiceId: id, speed: Number(s.speed ?? 1.2), vol: Number(s.vol || 1), pitch: Number(s.pitch || 0) });
     voicePreviewCache.set(cacheKey, out);
   }
   runtimeAudio = {
@@ -225,7 +231,7 @@ export const voiceLabView = {
       <section class="vl-workbench" data-vl-view="${esc(mode)}">
         <div class="vl-library glass-panel">
           <div class="vl-section-head">
-            <div><b>${icon("archive", 16)} 音色库</b><em>我的音色 ${voiceListByTab("mine").length} · 收藏 ${favCount} · 系统 ${voiceListByTab("system").length}</em></div>
+            <div><b>${icon("archive", 16)} 音色库</b><em>我的音色 ${voiceListByTab("mine").length} · 收藏 <span data-vl-favorite-count>${favCount}</span> · 系统 ${voiceListByTab("system").length}</em></div>
           </div>
           <div class="vl-tabs">
             ${[["mine", "我的音色"], ["favorite", "收藏音色"], ["system", "系统音色"]].map(([key, label]) => `<button class="${(s.tab || "system") === key ? "is-active" : ""}" data-vl-tab="${key}">${label}</button>`).join("")}
@@ -268,13 +274,74 @@ export const voiceLabView = {
     textEl?.addEventListener("paste", () => requestAnimationFrame(syncText));
     textEl?.addEventListener("change", syncText);
     textEl?.addEventListener("blur", syncText);
+    const syncFavoriteUi = (voiceId, favorite) => {
+      $$(`[data-vl-fav="${CSS.escape(voiceId)}"]`, root).forEach(button => {
+        button.title = favorite ? "取消收藏" : "收藏音色";
+        button.classList.toggle("is-active", favorite);
+        button.closest(".vl-voice-card")?.classList.toggle("is-fav", favorite);
+      });
+      if (selected.voiceId === voiceId) {
+        const current = $("#vlFavCurrent", root);
+        if (current) current.innerHTML = `${icon("star", 13)} ${favorite ? "已收藏" : "收藏"}`;
+      }
+      const counter = $("[data-vl-favorite-count]", root);
+      if (counter) counter.textContent = String(favoriteVoiceIds().size);
+      if ((labState().tab || "system") === "favorite" && !favorite) {
+        const card = $(`[data-vl-voice="${CSS.escape(voiceId)}"]`, root);
+        if (card) {
+          const height = card.offsetHeight;
+          card.animate(
+            [{ height: `${height}px`, opacity: 1 }, { height: "0px", opacity: 0, marginBlock: "0px", paddingBlock: "0px" }],
+            { duration: 180, easing: "cubic-bezier(.4,0,.2,1)" }
+          ).onfinish = () => card.remove();
+        }
+      }
+    };
+    const syncSelectedVoiceUi = (voiceId, previewing = false) => {
+      const voice = findVoiceOption(voiceId || "");
+      $$('[data-vl-voice]', root).forEach(card => {
+        const active = card.dataset.vlVoice === voiceId;
+        card.classList.toggle("is-active", active);
+        card.classList.toggle("is-previewing", active && previewing);
+        const core = card.querySelector(".vl-voice-core");
+        const glyph = core?.querySelector("svg");
+        if (glyph) glyph.outerHTML = icon(active ? "check" : "mic", 15);
+      });
+      const current = $(".vl-current-voice", root);
+      const name = voice.name || "默认/手动声线";
+      const currentName = current?.querySelector(":scope > b");
+      const currentId = current?.querySelector(":scope > em");
+      const currentSource = current?.querySelector(":scope > i");
+      if (currentName) currentName.textContent = name;
+      if (currentId) currentId.textContent = voice.voiceId || "平台默认 / 手动输入";
+      if (currentSource) currentSource.textContent = sourceLabel(voice.source);
+      const consoleState = $(".vl-console .vl-section-head em", root);
+      if (consoleState) consoleState.textContent = `当前：${name}`;
+      const favorite = voice.voiceId ? isFavoriteVoice(voice.voiceId) : false;
+      const currentFav = $("#vlFavCurrent", root);
+      if (currentFav) currentFav.innerHTML = `${icon("star", 13)} ${favorite ? "已收藏" : "收藏"}`;
+    };
+    const mountRuntimePlayer = () => {
+      const side = $(".vl-side-panel", root);
+      if (!side) return;
+      side.querySelector(".vl-player")?.remove();
+      if (runtimeAudio?.url) side.insertAdjacentHTML("beforeend", audioPlayerHtml(runtimeAudio, "main"));
+      $$('[data-vl-copy-audio]', side).forEach(button => button.addEventListener("click", () => {
+        const audio = button.dataset.vlCopyAudio === "design" ? runtimeDesignAudio : runtimeAudio;
+        if (!audio?.voiceId) return;
+        copyText(audio.voiceId);
+        toast("已复制 voice_id");
+      }));
+    };
     ["Speed", "Vol", "Pitch"].forEach(key => {
       const el = $(`#vl${key}`, root);
       if (!el) return;
       el.addEventListener("input", e => {
         const map = { Speed: "speed", Vol: "vol", Pitch: "pitch" };
-        saveLabPatch({ [map[key]]: Number(e.currentTarget.value) });
-        this.render(root);
+        const value = Number(e.currentTarget.value);
+        saveLabPatch({ [map[key]]: value, ...(key === "Speed" ? { _speedDefaultV2: true } : {}) });
+        const output = e.currentTarget.closest("label")?.querySelector(":scope > span");
+        if (output) output.textContent = key === "Pitch" ? String(value) : value.toFixed(1);
       });
     });
 
@@ -293,11 +360,11 @@ export const voiceLabView = {
       saveLabPatch({ voiceId: id, mode: "tts" });
       if (!id) {
         toast("已切换默认声线");
-        this.render(root);
+        syncSelectedVoiceUi("");
         return;
       }
       previewingVoiceId = id;
-      this.render(root);
+      syncSelectedVoiceUi(id, true);
       try {
         await previewVoice(id, labState());
         toast("已生成试听");
@@ -305,7 +372,8 @@ export const voiceLabView = {
         toast(`试听失败：${err?.message || err}`);
       } finally {
         previewingVoiceId = "";
-        this.render(root);
+        syncSelectedVoiceUi(id, false);
+        mountRuntimePlayer();
       }
     };
     $$("[data-vl-voice]", root).forEach(b => b.addEventListener("click", () => {
@@ -325,7 +393,7 @@ export const voiceLabView = {
       const id = b.dataset.vlFav || "";
       const next = toggleFavoriteVoice(id);
       toast(next ? "已收藏音色" : "已取消收藏");
-      this.render(root);
+      syncFavoriteUi(id, next);
     }));
     $$("[data-vl-rename]", root).forEach(b => b.addEventListener("click", async e => {
       e.stopPropagation();
@@ -343,14 +411,16 @@ export const voiceLabView = {
       toast("已复制 voice_id");
     }));
     $("#vlFavCurrent", root)?.addEventListener("click", () => {
-      if (!selected.voiceId) { toast("默认声线无需收藏"); return; }
-      const next = toggleFavoriteVoice(selected.voiceId);
+      const currentId = labState().voiceId || "";
+      if (!currentId) { toast("默认声线无需收藏"); return; }
+      const next = toggleFavoriteVoice(currentId);
       toast(next ? "已收藏当前音色" : "已取消收藏当前音色");
-      this.render(root);
+      syncFavoriteUi(currentId, next);
     });
     $("#vlCopyCurrent", root)?.addEventListener("click", () => {
-      if (!selected.voiceId) { toast("当前为默认声线"); return; }
-      copyText(selected.voiceId);
+      const currentId = labState().voiceId || "";
+      if (!currentId) { toast("当前为默认声线"); return; }
+      copyText(currentId);
       toast("已复制 voice_id");
     });
     $$("[data-vl-copy-audio]", root).forEach(b => b.addEventListener("click", () => {
@@ -363,7 +433,7 @@ export const voiceLabView = {
       const text = ($("#vlText", root)?.value || "").trim();
       if (!text) { toast("请先输入口播文本"); return; }
       saveLabPatch({ text, mode: "tts" });
-      const out = await synthesizeTts({ text, voiceId: s.voiceId || "", speed: Number(s.speed || 1), vol: Number(s.vol || 1), pitch: Number(s.pitch || 0) });
+      const out = await synthesizeTts({ text, voiceId: s.voiceId || "", speed: Number(s.speed ?? 1.2), vol: Number(s.vol || 1), pitch: Number(s.pitch || 0) });
       const voice = findVoiceOption(out.voiceId || s.voiceId || "");
       runtimeAudio = {
         url: out.audioDataUrl,

@@ -979,8 +979,11 @@ export function renderWorkshopPage(root, p) {
     const voiceLocked = !!(selectedVoice.voiceId && acc?.voiceId === selectedVoice.voiceId);
     const voiceFav = !!(selectedVoice.voiceId && favoriteVoiceIds.has(selectedVoice.voiceId));
     const C = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
-    if (C.customMode == null) C.customMode = true;
-    const customCopyMode = C.customMode !== false;
+    if (C.customMode !== true) {
+      C.customMode = true;
+      save("productions");
+    }
+    const customCopyMode = true;
     const cover = coverState(p);
     if (ensureDigitalCoverRoleRef(p, acc, cover)) save("productions");
     const coverAsset = cover.assetId ? assetById(cover.assetId) : null;
@@ -1109,7 +1112,6 @@ export function renderWorkshopPage(root, p) {
                 ${customCopyMode ? "" : `<select class="input" id="wsProduct">
                   ${primaryProducts().map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
                 </select>`}
-                <button class="btn ghost sm ws-copy-mode ${customCopyMode ? "is-active" : ""}" id="wsCopyModeToggle" type="button">${customCopyMode ? "自定义文案" : "标准生成"}</button>
                 <button class="btn gen sm" id="wsBriefGenerate">${icon("spark", 13)} 一键生成</button>
               </div>
               <div class="ws-copy-fields">
@@ -1728,7 +1730,7 @@ export function renderWorkshopPage(root, p) {
 
   async function generateWorkshopDraft() {
     let topic = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || "").trim());
-    const customMode = p.artifacts.copy?.customMode !== false;
+    const customMode = true;
     syncCopyFromEditor();
     let customTitle = (p.artifacts.copy?.title || "").trim();
     let customBody = (p.artifacts.copy?.body || "").trim();
@@ -1903,13 +1905,6 @@ export function renderWorkshopPage(root, p) {
       toast(AI.sourceNote("已从四方向库随机生成视频选题"));
     }, "随机中…"));
     $("#wsProduct", root)?.addEventListener("change", e => { p.artifacts.script.productId = e.target.value || "dumate"; save("productions"); });
-    $("#wsCopyModeToggle", root)?.addEventListener("click", () => {
-      p.artifacts.copy = p.artifacts.copy || { title: "", body: "" };
-      p.artifacts.copy.customMode = p.artifacts.copy.customMode === false;
-      save("productions");
-      toast(p.artifacts.copy.customMode === false ? "已切到标准生成" : "已切到自定义文案");
-      draw();
-    });
     const wireDraftGenerate = selector => {
       $(selector, root)?.addEventListener("click", e => withLoading(e.currentTarget, generateWorkshopDraft, "生成中…"));
     };
@@ -2076,9 +2071,7 @@ export function renderWorkshopPage(root, p) {
       cover.prompt = coverPromptFromCopy({
         title,
         body: p.artifacts.copy?.body || narrationText(p.artifacts.script.shots || []),
-        product: p.artifacts.copy?.customMode !== false
-          ? inferWorkshopProductFromCopy(title, p.artifacts.copy?.body || "", productById(p.artifacts.script.productId || "dumate"))
-          : productById(p.artifacts.script.productId || "dumate"),
+        product: inferWorkshopProductFromCopy(title, p.artifacts.copy?.body || "", productById(p.artifacts.script.productId || "dumate")),
         custom,
         ratio
       });
@@ -2161,7 +2154,7 @@ export function renderWorkshopPage(root, p) {
 
     function currentInfoFlowPlanArgs() {
       const copy = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
-      const customMode = copy.customMode !== false;
+      const customMode = true;
       const configuredProduct = productById(p.artifacts.script.productId || "dumate");
       const title = sanitizeXhsText(String(copy.title || p.title || p.topic || "").trim());
       const body = String(copy.body || "").trim();
@@ -2182,7 +2175,7 @@ export function renderWorkshopPage(root, p) {
 
     function applyCurrentInfoFlowPlan() {
       const plan = buildInfoFlowPlan(currentInfoFlowPlanArgs());
-      applyInfoFlowPlan(p, plan, { preserveCopy: p.artifacts.copy?.customMode !== false });
+      applyInfoFlowPlan(p, plan, { preserveCopy: true });
       const info = ensureInfoFlowState(p);
       if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
         info.status = "failed";
@@ -2325,9 +2318,7 @@ export function renderWorkshopPage(root, p) {
     $("#wsInfoPlan", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       syncCopyFromEditor();
       try {
-        if (p.artifacts.copy?.customMode !== false) {
-          await generateWorkshopDraft();
-        }
+        await generateWorkshopDraft();
         ensureCurrentInfoFlowPlanReady();
         toast("已生成信息流前后15秒脚本");
       } catch (err) {

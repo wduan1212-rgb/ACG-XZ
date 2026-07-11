@@ -4,13 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>星阵 · 内容生产工作台</title>
-    <link rel="icon" type="image/png" href="./assets/brand/xingzhen-favicon.png?v=20260710-v69" />
-    <link rel="stylesheet" href="./styles/tokens.css?v=20260710-v69" />
-    <link rel="stylesheet" href="./styles/base.css?v=20260710-v69" />
-    <link rel="stylesheet" href="./styles/components.css?v=20260710-v69" />
-    <link rel="stylesheet" href="./styles/views.css?v=20260710-v69" />
-    <link rel="stylesheet" href="./styles/analytics.css?v=20260710-v69" />
-    <link rel="stylesheet" href="./styles/agent.css?v=20260710-v69" />
+    <link rel="icon" type="image/svg+xml" href="./assets/brand/xingzhen-favicon-black.svg?v=20260711-v71" />
+    <link rel="stylesheet" href="./styles/tokens.css?v=20260711-v70" />
+    <link rel="stylesheet" href="./styles/base.css?v=20260711-v70" />
+    <link rel="stylesheet" href="./styles/components.css?v=20260711-v70" />
+    <link rel="stylesheet" href="./styles/views.css?v=20260711-v70" />
+    <link rel="stylesheet" href="./styles/analytics.css?v=20260711-v70" />
+    <link rel="stylesheet" href="./styles/agent.css?v=20260711-v70" />
+    <link rel="stylesheet" href="./styles/ui-motion.css?v=20260712-v72" />
     <script>
       (function () {
         try {
@@ -24,22 +25,16 @@
 
     <!-- 开屏 · 三身份口令登录 -->
     <div id="loginGate" class="login-gate">
-      <div class="lg-stage">
-        <div class="lg-aurora"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
-        <div class="lg-constellation" aria-hidden="true">
-          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-        </div>
-        <i class="lg-ground"></i>
-        <i class="lg-deep"></i>
-      </div>
-      <div class="lg-particles" id="lgParticles"></div>
+      <canvas class="lg-beams" id="lgBeams" aria-hidden="true"></canvas>
+      <div class="lg-wordmark" aria-hidden="true">星阵</div>
+      <button class="lg-secondary" id="lgApply" type="button" aria-pressed="false">申请账号</button>
 
       <div class="lg-center">
         <div class="lg-card" data-mode="login">
           <div class="lg-brand">
             <img class="lg-login-logo" src="./assets/brand/xingzhen-login-logo.png?v=20260710-v64" alt="星阵" />
-            <h1>欢迎登录</h1>
-            <p>星阵内容工作台</p>
+            <h1 id="lgModeTitle">登录</h1>
+            <p id="lgHint">使用星阵账号继续</p>
           </div>
           <div class="lg-form">
             <label class="lg-field">
@@ -62,8 +57,7 @@
                 <option value="supplier_child">供应商子账号</option>
               </select>
             </label>
-            <button class="lg-login" id="lgLogin" type="button">登录 →</button>
-            <button class="lg-secondary" id="lgApply" type="button">申请账号</button>
+            <button class="lg-login" id="lgLogin" type="button"><span>登录</span></button>
           </div>
         </div>
       </div>
@@ -171,6 +165,6 @@
         }, 7000);
       })();
     </script>
-  <script type="module" src="./js/main.js?v=20260710-v69"></script>
+    <script type="module" src="./js/main.js?v=20260712-v72"></script>
   </body>
 </html>

@@ -80,7 +80,7 @@ export function openAccountDialog(accountId = null) {
               <div class="field full">
                 <span>账号头像 <em class="muted">仅管理员可维护，可点击或拖图替换</em></span>
                 <label class="ad-image-drop avatar" id="adAvatarDrop">
-                  ${avatarUrl ? `<img src="${avatarUrl}" alt="账号头像" />` : `<i>${esc((draft.name || editing?.name || "号")[0])}</i>`}
+                  ${avatarUrl ? `<img src="${avatarUrl}" alt="账号头像" />` : `<i class="account-avatar-fallback">${icon("user", 18)}</i>`}
                   <b>拖入 / 上传头像</b>
                   <input type="file" accept="image/*" hidden id="adAvatarUp" />
                 </label>

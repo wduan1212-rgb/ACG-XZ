@@ -2,7 +2,7 @@
 
 import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { state, save, accountById, canDeliver, primaryProducts, primaryProductById, ownedBy } from "../core/store.js";
+import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
 import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js";
@@ -19,9 +19,8 @@ function kindFromGroup(group = "") {
 }
 
 function normalizePlanKind(p) {
-  p.creativeMode = p.creativeMode === "auto" ? "auto" : "custom";
+  p.creativeMode = "custom";
   p.contentKind = ["image", "material", "real"].includes(p.contentKind) ? p.contentKind : kindFromGroup(p.group);
-  if (p.contentKind === "image") p.creativeMode = "custom";
   p.group = CONTENT_KIND_GROUP[p.contentKind] || "图文组";
   if (p.creativeMode === "custom") {
     p.content = "";
@@ -177,24 +176,14 @@ const CARD = {
     const imageCountFor = id => Math.max(1, Math.min(12, Number((p.accountImageCounts || {})[id] || imageCountDefault) || imageCountDefault));
     const totalCount = matched.reduce((sum, a) => sum + countFor(a.id), 0);
     const isImageAcc = a => a?.mode === "图文" || groupOf(a) === "图文组";
-    const hasImageAccounts = matched.some(isImageAcc);
-    const hasVideoAccounts = matched.some(a => !isImageAcc(a));
-    const customMode = p.creativeMode !== "auto";
+    const customMode = true;
     const isImageKind = p.contentKind === "image";
     const isMaterialKind = p.contentKind === "material";
     const isRealKind = p.contentKind === "real";
-    const products = primaryProducts().length ? primaryProducts() : [{ id: "dumate", name: "百度搭子", shortName: "搭子" }];
-    const productOptions = (selected = "") => products.map(pr => `<option value="${esc(pr.id)}" ${selected === pr.id ? "selected" : ""}>${esc(pr.shortName || pr.name)}</option>`).join("");
-    const planProductId = primaryProductById(p.productId || "dumate")?.id || "dumate";
-    if (!confirmed && !cancelled && p.productId !== planProductId) {
-      p.productId = planProductId;
-      save("sessions");
-    }
     const globalRefs = selectedRefIds(p);
     const coverRefs = selectedRefIds(p, "coverRefAssetIds");
     const accountRefs = p.accountRefAssetIds || {};
     const accountPool = (state.accounts || []).filter(Boolean).filter(accountMatchesCurrentKind);
-    const modeBtn = (mode, label) => `<button type="button" class="agc-seg ${p.creativeMode === mode ? "is-active" : ""}" data-pf-creative="${mode}" ${locked ? "disabled" : ""}>${label}</button>`;
     const kindBtn = (kind, label) => `<button type="button" class="agc-seg ${p.contentKind === kind ? "is-active" : ""}" data-pf-kind="${kind}" ${locked ? "disabled" : ""}>${label}</button>`;
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
       ${matched.map(a => {
@@ -202,29 +191,25 @@ const CARD = {
         const customCopyMode = customMode;
         const customCopyTitle = ((p.accountCopyTitles || {})[a.id] || "").trim();
         const customCopyBody = ((p.accountCopyBodies || {})[a.id] || "").trim();
-        const standardCopy = esc((p.accountContents || {})[a.id] || "");
         const copyFields = `<div class="agc-copy-fields ${customCopyMode ? "is-custom" : ""}">
-          <input class="agc-standard-copy" data-pacc-content="${a.id}" value="${standardCopy}" placeholder="本账号本次创作内容（留空则四方向短选题）" ${locked ? "disabled" : ""} />
           <div class="agc-account-copy">
             <input data-pacc-copy-title="${a.id}" value="${esc(customCopyTitle)}" placeholder="必填标题" ${locked ? "disabled" : ""} />
             <textarea data-pacc-copy-body="${a.id}" rows="2" placeholder="${imgAcc ? "文案正文；只写标题也可以由模型补全文案" : "文案正文；真人号会转成更长口播，素材号会转成 B 面提示词"}" ${locked ? "disabled" : ""}>${esc(customCopyBody)}</textarea>
           </div>
         </div>`;
-        return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"} ${customMode ? "is-custom-plan" : ""}">
-        <b>${esc(a.name)}</b>
+        return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"} ${customMode ? "is-custom-plan" : ""}" ${locked ? "" : `data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}"`}>
+        <div class="agc-override-name"><b>${esc(a.name)}</b><span>${esc(groupOf(a))} · ${esc(a.platform || a.mode || "账号")}</span></div>
+        ${locked ? "" : `<div class="agc-override-actions">
+          <button data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="custom" data-ref-account="${a.id}">${icon("image", 11)} 从资产选择</button>
+          <button data-act="plan-remove-account" data-mid="${m.id}" data-account="${a.id}">${icon("x", 10)} 取消选择</button>
+        </div>`}
         ${customMode ? "" : `<label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>`}
         ${imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="1" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : (customMode ? "" : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`) }
         ${copyFields}
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
           <div class="agc-ref-chips mini" data-ref-account="${a.id}">${refChips((accountRefs[a.id] || []).slice(0, 3), locked ? "" : "plan-custom-refremove", m.id, a.id)}</div>
-          ${locked ? "" : `<div class="agc-mini-actions">
-            <button class="btn ghost sm" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="custom" data-ref-account="${a.id}">${icon("image", 11)} 从资产选择</button>
-            <label class="agc-drop-mini" data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}">
-              ${icon("upload", 12)} 拖入 / 上传
-              <input type="file" accept="image/*" multiple hidden data-pacc-ref-up="${a.id}" data-mid="${m.id}" />
-            </label>
-          </div>`}
+          ${locked ? "" : `<input type="file" accept="image/*" multiple hidden data-pacc-ref-up="${a.id}" data-mid="${m.id}" />`}
         </div>
       </div>`;
       }).join("")}
@@ -232,20 +217,11 @@ const CARD = {
     return `<div class="ag-card plan ${confirmed ? "resolved" : ""}" data-plan="${m.id}">
       <div class="agc-head">${icon("kanban", 15)}<b>量产任务板</b>
         <div class="agc-modebar">
-          ${isImageKind ? "" : `<span class="agc-seg-group">${modeBtn("custom", "自定义创作")}${modeBtn("auto", "自动创作")}</span>`}
           <span class="agc-seg-group">${kindBtn("image", "图文")}${kindBtn("material", "素材视频")}${kindBtn("real", "真人视频")}</span>
         </div>
-        ${customMode ? "" : `<label class="agc-product-pill">产品
-          <select data-pf="productId" ${locked ? "disabled" : ""}>${productOptions(planProductId)}</select>
-        </label>`}
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
       </div>
-      ${customMode ? `<div class="agc-custom-hint">${icon("spark", 13)} 当前是 ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 自定义创作：选择账号后逐个填写标题和文案；产品库只作后台识别，标题和文案优先。</div>` : `<div class="agc-grid">
-        <label class="agc-field wide">总创作要求
-          <textarea data-pf="content" rows="3" ${locked ? "disabled" : ""} placeholder="写具体创作内容、产品角度或表达偏好；留空则从四个方向自动挑短选题。">${esc(p.content || p.style || "")}</textarea>
-          <em>默认沿用各账号自带风格，不再单独选择标签。</em>
-        </label>
-      </div>`}
+      <div class="agc-custom-hint">${icon("spark", 13)} ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 逐个账号填写标题和文案；产品库仅提供事实与视觉参考，不决定创作内容。</div>
       ${(() => {
         const editable = !locked;
         const refKind = isImageKind ? "shared" : "cover";
@@ -266,17 +242,12 @@ const CARD = {
             ${editable && refIds.length ? `<button class="link-btn" data-act="${clearAct}" data-mid="${m.id}">清空统一参考</button>` : ""}
           </div>
           <div class="agc-ref-body">
-            <div class="agc-ref-picked">
-              <b>已选参考图</b>
+            <div class="agc-ref-picked ${editable ? "is-dropzone" : ""}" ${editable ? dropAttr : ""}>
+              <div class="agc-ref-picked-head"><b>已选参考图</b>${editable ? `<span>${icon("upload", 11)} 拖入或点击上传</span>` : ""}</div>
               <div class="agc-ref-chips">${refChips(refIds, editable ? removeAct : "", m.id)}</div>
+              ${editable ? `<input type="file" accept="image/*" multiple hidden ${inputAttr} />` : ""}
             </div>
-            ${editable ? `<label class="agc-ref-drop" ${dropAttr}>
-              ${icon("upload", 16)}
-              <b>拖入图片</b>
-              <em>或点击上传，最多补到 5 张</em>
-              <input type="file" accept="image/*" multiple hidden ${inputAttr} />
-            </label>
-            <button class="agc-ref-library" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="${refKind}">
+            ${editable ? `<button class="agc-ref-library" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="${refKind}">
               ${icon("image", 16)}
               <b>打开资产库</b>
               <em>放大看图后选择</em>
@@ -287,7 +258,7 @@ const CARD = {
       <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减</em></span>
         ${locked ? "" : `<span class="agc-sec-tools">
           ${customMode ? "" : `<label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>`}
-          ${!customMode && hasImageAccounts ? `<label class="agc-count-inline">默认图数<input type="number" min="1" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>` : ""}
+          <button class="agc-random-pick" data-act="plan-select-all" data-mid="${m.id}">${accountPool.length > 0 && accountPool.every(a => (p.accountIds || []).includes(a.id)) ? "取消全选" : "全选"}</button>
           <button class="agc-random-pick" data-act="plan-random-accounts" data-mid="${m.id}" title="随机选择最多10个账号">${icon("dice", 13)} 随机选 ≤10</button>
         </span>`}
       </div>
@@ -296,13 +267,12 @@ const CARD = {
         const imgAcc = isImageAcc(a);
         return `<button class="agc-acc ${on ? "on" : ""} ${imgAcc ? "is-image" : "is-video"}" data-pacc="${a.id}" ${locked ? "disabled" : ""}>
           <span class="agc-idx">#${String(idx + 1).padStart(2, "0")}</span>
-          <span class="dot" style="background:${imgAcc ? gradFor(a.name) : "linear-gradient(135deg,#17C964,#22D3EE)"}"></span>
           <b>${esc(a.name)}</b><em>${groupOf(a)}${tagsOf(a).length ? " · " + tagsOf(a).slice(0, 2).join("/") : ""}</em>
           ${on ? icon("check", 13, "ok") : ""}
         </button>`;
       }).join("")}</div>
       ${perAccountOverrides}
-      ${locked ? "" : `<div class="agc-foot">
+      ${locked ? "" : `<div class="agc-foot is-plan-actions">
         <button class="btn ghost sm" data-act="plan-cancel" data-mid="${m.id}">取消</button>
         <button class="btn primary sm" data-act="plan-confirm" data-mid="${m.id}">${icon("spark", 14)} 确认执行（${totalCount} 条）</button>
       </div>`}
@@ -473,7 +443,7 @@ export function boardRow(p) {
     sub = `<span class="mb-sub fail-text">${esc((p.error || "失败").slice(0, 18))}</span>`;
   }
   const TYPE = p.mode === "图文" ? ["图文", "img"] : p.subType === "无数字人" ? ["素材", "mat"] : ["真人", "dh"];
-  return `<div class="mb-row" data-act="open-prod" data-pid="${p.id}" data-dropprod="${p.id}" role="button">
+  return `<div class="mb-row ${p.stageStatus === "running" ? "is-running" : ""}" data-act="open-prod" data-pid="${p.id}" data-dropprod="${p.id}" role="button">
     <div class="mb-top">
       <span class="mb-type ${TYPE[1]}">${esc(TYPE[0])}</span>
       <b>${esc(acc?.name || "")}</b>

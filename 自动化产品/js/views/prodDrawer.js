@@ -86,7 +86,7 @@ export function openProductionDrawer(pid, tab) {
         root.innerHTML = `
           <div class="pd-head">
             <div class="pd-title">
-              <span class="dot lg" style="background:${gradFor(acc?.name || "")}"></span>
+              <span class="prod-account-marker ${p.stageStatus === "running" ? "is-running" : ""}" aria-hidden="true"></span>
               <div><b>${esc(p.artifacts.copy.title || p.title || p.topic || "未命名任务")}</b>
               <em>${esc(acc?.name || "")} ${platChip(acc?.platform || "", true)} · ${p.mode}${p.origin === "agent" ? " · Agent 批次" : ""}</em></div>
             </div>
