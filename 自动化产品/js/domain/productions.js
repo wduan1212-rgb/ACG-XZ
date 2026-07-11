@@ -4,7 +4,6 @@
 
 import { state, save, emit, accountById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, spreadCaption } from "../core/util.js";
-import { BGM_POOL } from "../api/prompts.js";
 
 export const STAGES = {
   script: { label: "脚本", icon: "fileText" },
@@ -233,19 +232,6 @@ export function buildMaterialUnits(p) {
 }
 export const materialUnits = p => p.artifacts.boards.units || [];
 export const unitShots = (p, u) => (u.shotIndexes || []).map(i => p.artifacts.script.shots[i]).filter(Boolean);
-
-/* 按账号创作风格智能选一条 BGM（搞笑→活泼，知识→沉稳，默认轻快） */
-export function pickBgm(styleProfile = "", seed = "") {
-  const pos = String(styleProfile);
-  let mood = "轻快";
-  if (/搞笑|幽默|段子|梗/.test(pos)) mood = "活泼";
-  else if (/深度|知识|科普|测评|专业/.test(pos)) mood = "沉稳";
-  else if (/治愈|温暖|生活/.test(pos)) mood = "温暖";
-  const pool = BGM_POOL.filter(b => b.mood === mood);
-  const list = pool.length ? pool : BGM_POOL;
-  const h = [...String(seed || pos)].reduce((a, c) => a + c.charCodeAt(0), 0);
-  return list[h % list.length];
-}
 
 export function createProduction({ accountId, topic = "", origin = "manual", batchId = null, style = "", productId = "dumate" }) {
   const acc = accountById(accountId);
@@ -511,9 +497,6 @@ export function autoMixMaterial(p) {
   const isInfoFlow = p.artifacts.boards?.materialMode === "infoFlow";
   if (isInfoFlow) {
     p.artifacts.bgm = null;
-  } else if (hasExternalVoice && !p.artifacts.bgm) {
-    const b = pickBgm(acc?.styleProfile || acc?.voiceName, p.topic);
-    p.artifacts.bgm = { name: b.name, mood: b.mood, volume: 0.25, auto: true };
   } else if (!hasExternalVoice && p.artifacts.bgm?.auto) {
     p.artifacts.bgm = null;
   }

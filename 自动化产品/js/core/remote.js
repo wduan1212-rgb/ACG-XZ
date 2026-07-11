@@ -85,7 +85,7 @@ export function deleteDoc(name, id) {
 
 /* 成员管理（admin）：口令在服务端哈希存储 */
 export const members = {
-  list: () => req("/api/members"),
+  list: (fresh = false) => req("/api/members" + (fresh ? "?ts=" + Date.now() : "")),
   add: (m) => req("/api/members", { method: "POST", body: m }),
   update: (id, m) => req("/api/members/" + id, { method: "PUT", body: m }),
   remove: (id) => req("/api/members/" + id, { method: "DELETE" })
@@ -95,4 +95,17 @@ export const memberRequests = {
   list: (status = "pending") => req("/api/member-requests" + (status ? "?status=" + encodeURIComponent(status) : "")),
   approve: (id) => req("/api/member-requests/" + encodeURIComponent(id) + "/approve", { method: "POST" }),
   reject: (id) => req("/api/member-requests/" + encodeURIComponent(id) + "/reject", { method: "POST" })
+};
+
+/* 供应商母账号：子账号、内容账号绑定与操作记录均由服务端授权。 */
+export const supplier = {
+  children: () => req("/api/supplier/children"),
+  addChildren: (items) => req("/api/supplier/children", { method: "POST", body: { items } }),
+  updateChild: (id, data) => req("/api/supplier/children/" + encodeURIComponent(id), { method: "PUT", body: data }),
+  removeChild: (id) => req("/api/supplier/children/" + encodeURIComponent(id), { method: "DELETE" }),
+  bindings: () => req("/api/supplier/bindings"),
+  bindAccounts: (id, accountIds) => req("/api/supplier/children/" + encodeURIComponent(id) + "/accounts", { method: "PUT", body: { accountIds } }),
+  activity: () => req("/api/supplier/activity"),
+  record: (data) => req("/api/supplier/activity", { method: "POST", body: data }),
+  updateViews: (assetId, viewCount) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/views", { method: "PUT", body: { viewCount } })
 };

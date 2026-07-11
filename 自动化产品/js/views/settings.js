@@ -1,15 +1,15 @@
-/* 设置：能力-Provider 档案（语言/图片/视频/TTS）+ 数据管理（导出/导入/清空） */
+/* 设置：成员、角色与产品资料。运行服务配置只保留在服务端。 */
 
-import { $, $$, esc, gradFor, downloadBlob } from "../core/util.js";
+import { $, $$, esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, saveMembers, persistNow, ROLE_LABEL } from "../core/store.js";
-import { db } from "../core/db.js";
+import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
 import { toast, confirmModal, promptModal, openModal } from "../ui/components.js";
 import { uid } from "../core/util.js";
 import * as remote from "../core/remote.js";
+import { renderSupplierSettings } from "./supplierViews.js";
 
-const ROLE_DESC = { admin: "全功能 · 管账号/成员/设置 + 创作与发布；可在发布清单标注「已审阅」+ 监管全量", editor: "创作成员：走创作流程，且可直接定稿发布入供应商端", supplier: "仅发布清单：下载素材 + 上传发布链接" };
-const ROLE_OPTS = ["admin", "editor", "supplier"];
+const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
+const ROLE_OPTS = ["admin", "editor", "supplier_parent"];
 
 function productFromText(text = {}) {
   const raw = typeof text === "string" ? text : (text.raw || "");
@@ -27,23 +27,19 @@ function productFromText(text = {}) {
 
 export const settingsView = {
   render(root) {
+    if (["supplier", "supplier_parent"].includes(state.role)) { renderSupplierSettings(root); return; }
     let memberRequests = [];
     let requestsLoaded = false;
     const canReviewRequests = () => remote.isOn() && state.role === "admin";
     const draw = () => {
       root.innerHTML = `
         <div class="settings-page">
-          <div class="page-head">
-            <div><div class="eyebrow">设置</div><h2>服务接入与数据管理</h2></div>
-          </div>
-
           <section class="card set-data product-library">
             <div class="card-head"><b>产品库</b><em>脚本、分镜提示词和发布文案都会按所选产品生成</em>
               <button class="btn primary sm" id="prodAdd">${icon("plus", 13)} 添加产品</button></div>
             <div class="prod-list">
               ${state.products.map(p => `
                 <div class="key-row product-row">
-                  <span class="key-ico" style="background:${gradFor(p.name)}">${esc((p.shortName || p.name || "?")[0])}</span>
                   <span class="ovt-main"><b>${esc(p.name)}</b><em>${esc(p.category || "未分类")} · ${esc((p.brief || "").slice(0, 80))}${(p.brief || "").length > 80 ? "…" : ""}</em></span>
                   <button class="icon-btn sm" data-pedit="${p.id}" title="编辑">${icon("edit", 13)}</button>
                   <button class="icon-btn sm danger" data-pdel="${p.id}" title="删除" ${state.products.length <= 1 ? "disabled" : ""}>${icon("trash", 13)}</button>
@@ -57,7 +53,6 @@ export const settingsView = {
             <div class="mem-list">
               ${!requestsLoaded ? `<div class="muted" style="padding:8px 2px">正在读取申请...</div>` : memberRequests.length ? memberRequests.map(r => `
                 <div class="mem-row">
-                  <span class="mem-ava" style="background:${gradFor(r.name)}">${esc((r.name || "?")[0])}</span>
                   <span class="ovt-main"><b>${esc(r.name)}</b><em>@${esc(r.username)} · 申请角色：${ROLE_LABEL[r.role] || r.role} · ${r.createdAt ? new Date(r.createdAt).toLocaleString() : ""}</em></span>
                   <button class="btn primary sm" data-rapprove="${r.id}">${icon("check", 13)} 通过</button>
                   <button class="btn ghost sm danger" data-rreject="${r.id}">${icon("x", 13)} 拒绝</button>
@@ -71,8 +66,7 @@ export const settingsView = {
             <div class="mem-list" id="memList">
               ${state.members.map(m => `
                 <div class="mem-row" data-mem="${m.id}">
-                  <span class="mem-ava" style="background:${gradFor(m.name)}">${esc((m.name || "?")[0])}</span>
-                  <span class="ovt-main"><b>${esc(m.name)} ${m.id === state.ui.currentMemberId ? `<i class="mem-me">当前</i>` : ""}</b><em>@${esc(m.username)} · ${ROLE_LABEL[m.role] || m.role} · ${ROLE_DESC[m.role] || ""}</em></span>
+                  <span class="ovt-main"><b>${esc(m.name)} ${m.id === state.ui.currentMemberId ? `<i class="mem-me">当前</i>` : ""}</b><em>@${esc(m.username)} · ${ROLE_DESC[m.role] || ROLE_LABEL[m.role] || m.role}</em></span>
                   <span class="mem-role tag ${m.role}">${ROLE_LABEL[m.role] || m.role}</span>
                   <button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button>
                   <button class="icon-btn sm danger" data-mdel="${m.id}" title="删除" ${m.id === state.ui.currentMemberId ? "disabled" : ""}>${icon("trash", 13)}</button>
@@ -80,15 +74,6 @@ export const settingsView = {
             </div>
           </section>
 
-          <section class="card set-data data-management">
-            <div class="card-head"><b>数据管理</b><em>数据保存在本机浏览器（IndexedDB 分仓）</em></div>
-            <div class="head-actions">
-              <button class="btn ghost" id="setExport">${icon("download", 14)} 导出全部数据</button>
-              <label class="btn ghost">${icon("upload", 14)} 导入数据<input type="file" accept=".json" hidden id="setImport" /></label>
-              <button class="btn danger ghost" id="setWipe">${icon("trash", 14)} 清空本机数据</button>
-            </div>
-            <p class="muted" style="margin-top:10px">导出 = 账号 / 任务 / 会话 / 批次 / 任务队列 / Key 的 JSON 快照（不含图片二进制，图片随浏览器库保留）。v4 旧库迁移后原样保留，可随时回退旧版（_backup_v4/）。</p>
-          </section>
         </div>`;
       wire();
     };
@@ -96,7 +81,7 @@ export const settingsView = {
     async function loadRequests() {
       if (!canReviewRequests()) return;
       try {
-        memberRequests = await remote.memberRequests.list("pending");
+        memberRequests = (await remote.memberRequests.list("pending")).filter(x => x.role !== "supplier_child");
         requestsLoaded = true;
         draw();
       } catch (e) {
@@ -204,7 +189,7 @@ export const settingsView = {
             <label class="field">${editing ? "重设登录密码（留空不改）" : "初始登录密码"}<input class="input" id="mdPin" type="password" value="" autocomplete="new-password" placeholder="${editing ? "设置新密码" : "登录密码"}" /></label>
             <label class="field">角色
               <select class="input" id="mdRole">
-                ${ROLE_OPTS.map(r => `<option value="${r}" ${m.role === r ? "selected" : ""}>${ROLE_LABEL[r]} · ${ROLE_DESC[r]}</option>`).join("")}
+                ${ROLE_OPTS.map(r => `<option value="${r}" ${m.role === r ? "selected" : ""}>${ROLE_DESC[r]}</option>`).join("")}
               </select>
             </label>
           </div>
@@ -220,9 +205,12 @@ export const settingsView = {
             if (state.members.some(x => x.username === username && x.id !== m.id)) { toast("用户名已存在"); return; }
             if (remote.isOn()) {
               try {
-                if (editing) await remote.members.update(m.id, { name, username, ...(pin ? { pin } : {}), role });
-                else await remote.members.add({ name, username, pin, role });
-                state.members = await remote.members.list();
+                const savedMember = editing
+                  ? await remote.members.update(m.id, { name, username, ...(pin ? { pin } : {}), role })
+                  : await remote.members.add({ name, username, pin, role });
+                if (!savedMember || savedMember.role !== role) throw new Error("角色保存未生效，请刷新后重试");
+                state.members = state.members.filter(x => x.id !== savedMember.id).concat(savedMember);
+                state.members = await remote.members.list(true);
                 saveMembers();
               } catch (e) { toast("保存失败：" + (e.message || e)); return; }
             } else {
@@ -254,38 +242,6 @@ export const settingsView = {
         toast("成员已删除");
       }));
 
-      $("#setExport", root).addEventListener("click", async () => {
-        await persistNow();
-        const snap = {
-          v: 5, exportedAt: new Date().toISOString(),
-          members: state.members,
-          accounts: state.accounts, productions: state.productions,
-          assets: state.assets.map(a => ({ ...a })),
-          sessions: state.sessions, batches: state.batches, jobs: state.jobs,
-          products: state.products, ui: state.ui
-        };
-        downloadBlob(`dumate-studio-backup-${Date.now()}.json`, new Blob([JSON.stringify(snap, null, 2)], { type: "application/json" }));
-        toast("已导出数据快照");
-      });
-      $("#setImport", root).addEventListener("change", async e => {
-        const f = e.target.files[0]; if (!f) return;
-        try {
-          const snap = JSON.parse(await f.text());
-          if (!snap.accounts) throw new Error("不是有效的备份文件");
-          const ok = await confirmModal({ title: "导入将覆盖当前数据，继续？", body: "建议先导出一份当前数据。", danger: true, okText: "覆盖导入" });
-          if (!ok) return;
-          ["members", "accounts", "productions", "assets", "sessions", "batches", "jobs", "products"].forEach(k => { if (snap[k]) state[k] = snap[k]; });
-          if (snap.ui) Object.assign(state.ui, snap.ui);
-          await persistNow();
-          location.reload();
-        } catch (err) { toast("导入失败：" + err.message); }
-      });
-      $("#setWipe", root).addEventListener("click", async () => {
-        const ok = await confirmModal({ title: "清空本机全部数据？", body: "账号、任务、资产、会话都会被删除，且不可恢复（v4 旧库不受影响）。", danger: true, okText: "清空" });
-        if (!ok) return;
-        await db.wipe();
-        location.reload();
-      });
     }
 
     draw();

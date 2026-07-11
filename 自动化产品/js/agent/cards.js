@@ -144,13 +144,13 @@ function refOptions(selected = []) {
   return assets.map(a => `<option value="${esc(a.id)}" ${sel.has(a.id) ? "selected" : ""}>${esc(a.name || "未命名图片")}</option>`).join("");
 }
 
-function refChips(ids = [], action, mid) {
+function refChips(ids = [], action, mid, accountId = "") {
   const list = ids.map(id => state.assets.find(a => a.id === id)).filter(Boolean);
   if (!list.length) return `<span class="muted">未设置</span>`;
   return list.map(a => `<span class="ref-chip dark">
     ${urlFor(a.id) ? `<img src="${urlFor(a.id)}"/>` : ""}
     <span>${esc(a.name || "参考图")}</span>
-    ${action ? `<button class="ref-x" data-act="${action}" data-mid="${mid}" data-refid="${a.id}">${icon("x", 10)}</button>` : ""}
+    ${action ? `<button type="button" class="ref-x" data-act="${action}" data-mid="${mid}" data-refid="${a.id}" ${accountId ? `data-ref-account="${esc(accountId)}"` : ""} aria-label="移除参考图">${icon("x", 10)}</button>` : ""}
   </span>`).join("");
 }
 
@@ -217,7 +217,7 @@ const CARD = {
         ${copyFields}
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
-          <div class="agc-ref-chips mini">${refChips((accountRefs[a.id] || []).slice(0, 3), locked ? "" : "plan-custom-refremove", m.id)}</div>
+          <div class="agc-ref-chips mini" data-ref-account="${a.id}">${refChips((accountRefs[a.id] || []).slice(0, 3), locked ? "" : "plan-custom-refremove", m.id, a.id)}</div>
           ${locked ? "" : `<div class="agc-mini-actions">
             <button class="btn ghost sm" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="custom" data-ref-account="${a.id}">${icon("image", 11)} 从资产选择</button>
             <label class="agc-drop-mini" data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}">

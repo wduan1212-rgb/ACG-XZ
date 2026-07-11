@@ -2928,6 +2928,26 @@ class MemberReq(BaseModel):
     username: str = ""
     pin: str = ""
     role: str = "editor"
+    parentId: str = ""
+
+
+class SupplierChildrenReq(BaseModel):
+    items: list = []
+
+
+class SupplierBindReq(BaseModel):
+    accountIds: list = []
+
+
+class SupplierActivityReq(BaseModel):
+    action: str = ""
+    accountId: str = ""
+    assetId: str = ""
+    detail: str = ""
+
+
+class SupplierViewsReq(BaseModel):
+    viewCount: int = 0
 
 
 class MemberApplyReq(BaseModel):
@@ -2939,7 +2959,9 @@ class MemberApplyReq(BaseModel):
 
 
 def _clean_role(role: str) -> str:
-    return role if role in {"admin", "editor", "supplier"} else "editor"
+    if role == "supplier":
+        return "supplier_parent"
+    return role if role in {"admin", "editor", "supplier_parent", "supplier_child"} else "editor"
 
 
 def require_member(authorization: str = Header(default="")):
@@ -2953,6 +2975,12 @@ def require_member(authorization: str = Header(default="")):
 def require_admin(me=Depends(require_member)):
     if me["role"] != "admin":
         raise HTTPException(403, "需要管理员权限")
+    return me
+
+
+def require_supplier_parent(me=Depends(require_member)):
+    if me["role"] != "supplier_parent":
+        raise HTTPException(403, "需要供应商管理权限")
     return me
 
 
@@ -2998,15 +3026,28 @@ def member_request_create(req: MemberApplyReq):
 def api_state(response: Response, me=Depends(require_member)):
     """按当前成员可见性返回全量快照（owned 按 owner 过滤、jobs 跟随、其余共享）。"""
     response.headers["Cache-Control"] = "no-store"
-    data = store.state_for(me["id"], me["role"])
+    data = store.state_for(me["id"], me["role"], me.get("parentId"))
     if me["role"] == "admin":
         data["members"] = store.list_members()
+    elif me["role"] == "supplier_parent":
+        data["members"] = [me, *store.list_supplier_children(me["id"])]
+    else:
+        data["members"] = [me]
     return data
 
 
 @app.put("/api/db/{collection}")
 def api_put(collection: str, req: PutReq, me=Depends(require_member)):
     """写穿透：按 id upsert（后写胜），绝不整表删，故不会冲掉他人数据。"""
+    if me["role"] in {"supplier_parent", "supplier_child"}:
+        if collection != "assets":
+            raise HTTPException(403, "供应商账号只能更新交付清单")
+        assigned = store.supplier_account_ids_for_child(me["id"]) if me["role"] == "supplier_child" else None
+        for item in req.items or []:
+            if not isinstance(item, dict) or (not item.get("delivered") and not item.get("shared")):
+                raise HTTPException(403, "只能更新已交付素材")
+            if assigned is not None and item.get("accountId") not in assigned:
+                raise HTTPException(403, "无权更新未分配账号的素材")
     try:
         store.upsert_docs(collection, req.items)
     except ValueError as exc:
@@ -3019,6 +3060,8 @@ def api_put(collection: str, req: PutReq, me=Depends(require_member)):
 
 @app.delete("/api/db/{collection}/{doc_id}")
 def api_del(collection: str, doc_id: str, me=Depends(require_member)):
+    if me["role"] in {"supplier_parent", "supplier_child"}:
+        raise HTTPException(403, "供应商账号不能删除业务数据")
     try:
         store.delete_doc(collection, doc_id)
     except ValueError:
@@ -3128,13 +3171,94 @@ def members_list(me=Depends(require_admin)):
     return store.list_members()
 
 
+@app.get("/api/supplier/children")
+def supplier_children(me=Depends(require_supplier_parent)):
+    return store.list_supplier_children(me["id"])
+
+
+@app.post("/api/supplier/children")
+def supplier_children_create(req: SupplierChildrenReq, me=Depends(require_supplier_parent)):
+    try:
+        return store.create_supplier_children(me["id"], [(x.dict() if hasattr(x, "dict") else x.model_dump()) for x in req.items])
+    except ValueError as exc:
+        if str(exc) == "username_exists":
+            raise HTTPException(409, "用户名已存在")
+        raise HTTPException(400, "姓名、用户名和初始密码必填")
+
+
+@app.put("/api/supplier/children/{mid}")
+def supplier_child_update(mid: str, req: MemberReq, me=Depends(require_supplier_parent)):
+    row = store.supplier_child_for(me["id"], mid)
+    if not row:
+        raise HTTPException(404, "供应商子账号不存在")
+    username = req.username.strip() if req.username else None
+    if username:
+        existing = store.get_member_by_username(username)
+        if existing and existing[0] != mid:
+            raise HTTPException(409, "用户名已存在")
+    updated = store.update_member(mid, name=req.name or None, username=username, pin=req.pin or None)
+    return store.member_public(updated)
+
+
+@app.delete("/api/supplier/children/{mid}")
+def supplier_child_delete(mid: str, me=Depends(require_supplier_parent)):
+    row = store.supplier_child_for(me["id"], mid)
+    if not row:
+        raise HTTPException(404, "供应商子账号不存在")
+    store.delete_member(mid)
+    return {"ok": True}
+
+
+@app.get("/api/supplier/bindings")
+def supplier_bindings(me=Depends(require_supplier_parent)):
+    return store.supplier_bindings(me["id"])
+
+
+@app.put("/api/supplier/children/{mid}/accounts")
+def supplier_child_accounts(mid: str, req: SupplierBindReq, me=Depends(require_supplier_parent)):
+    ok = store.set_supplier_child_accounts(me["id"], mid, req.accountIds, me["id"])
+    if not ok:
+        raise HTTPException(404, "供应商子账号不存在")
+    return {"ok": True, "bindings": store.supplier_bindings(me["id"])}
+
+
+@app.get("/api/supplier/activity")
+def supplier_activity(me=Depends(require_supplier_parent)):
+    return store.list_supplier_activity(me["id"])
+
+
+@app.post("/api/supplier/activity")
+def supplier_activity_add(req: SupplierActivityReq, me=Depends(require_member)):
+    if me["role"] not in {"supplier_parent", "supplier_child"}:
+        raise HTTPException(403, "需要供应商权限")
+    parent_id = me.get("parentId") or (me["id"] if me["role"] == "supplier_parent" else "")
+    store.add_supplier_activity(parent_id, me["id"] if me["role"] == "supplier_child" else "", me["id"], req.action, req.accountId, req.assetId, req.detail)
+    return {"ok": True}
+
+
+@app.put("/api/supplier/assets/{asset_id}/views")
+def supplier_asset_views(asset_id: str, req: SupplierViewsReq, me=Depends(require_member)):
+    item, err = store.update_supplier_asset_views(asset_id, req.viewCount, me["id"], me["role"])
+    if err == "forbidden":
+        raise HTTPException(403, "只有供应商账号可以更新观看量")
+    if err == "unassigned":
+        raise HTTPException(403, "无权更新未分配账号的观看量")
+    if err:
+        raise HTTPException(404, "交付素材不存在")
+    parent_id = me.get("parentId") or (me["id"] if me["role"] == "supplier_parent" else "")
+    store.add_supplier_activity(parent_id, me["id"] if me["role"] == "supplier_child" else "", me["id"], "update_views", item.get("accountId") or "", asset_id, "更新了观看量")
+    return {"ok": True, "asset": item}
+
+
 @app.post("/api/members")
 def members_add(req: MemberReq, me=Depends(require_admin)):
     if not req.username.strip() or not req.pin:
         raise HTTPException(400, "用户名与初始密码必填")
     if store.get_member_by_username(req.username.strip()):
         raise HTTPException(409, "用户名已存在")
-    return store.member_public(store.add_member(req.name or req.username, req.username.strip(), req.pin, _clean_role(req.role)))
+    role = _clean_role(req.role)
+    parent_id = req.parentId.strip() if role == "supplier_child" and req.parentId else None
+    return store.member_public(store.add_member(req.name or req.username, req.username.strip(), req.pin, role, parent_id))
 
 
 @app.put("/api/members/{mid}")
@@ -3144,7 +3268,9 @@ def members_update(mid: str, req: MemberReq, me=Depends(require_admin)):
         existing = store.get_member_by_username(username)
         if existing and existing[0] != mid:
             raise HTTPException(409, "用户名已存在")
-    row = store.update_member(mid, name=req.name or None, username=username, role=_clean_role(req.role) if req.role else None, pin=req.pin or None)
+    role = _clean_role(req.role) if req.role else None
+    parent_id = req.parentId.strip() if role == "supplier_child" and req.parentId else None
+    row = store.update_member(mid, name=req.name or None, username=username, role=role, pin=req.pin or None, parent_id=parent_id)
     if not row:
         raise HTTPException(404, "成员不存在")
     return store.member_public(row)
@@ -3159,14 +3285,24 @@ def members_delete(mid: str, me=Depends(require_admin)):
 
 
 @app.get("/api/member-requests")
-def member_requests_list(status: str = "", me=Depends(require_admin)):
+def member_requests_list(status: str = "", me=Depends(require_member)):
+    if me["role"] not in {"admin", "supplier_parent"}:
+        raise HTTPException(403, "需要成员管理权限")
     st = status if status in {"pending", "approved", "rejected"} else None
-    return store.list_member_requests(st)
+    rows = store.list_member_requests(st)
+    return rows if me["role"] == "admin" else [x for x in rows if x.get("role") == "supplier_child"]
 
 
 @app.post("/api/member-requests/{rid}/approve")
-def member_requests_approve(rid: str, me=Depends(require_admin)):
-    row, err = store.approve_member_request(rid, me["id"])
+def member_requests_approve(rid: str, me=Depends(require_member)):
+    if me["role"] not in {"admin", "supplier_parent"}:
+        raise HTTPException(403, "需要成员管理权限")
+    request_row = store.get_member_request(rid)
+    if me["role"] == "admin" and request_row and request_row[4] == "supplier_child":
+        raise HTTPException(403, "供应商子账号申请需由供应商管理员审批")
+    if me["role"] == "supplier_parent" and (not request_row or request_row[4] != "supplier_child"):
+        raise HTTPException(403, "只能审批供应商子账号申请")
+    row, err = store.approve_member_request(rid, me["id"], me["id"] if me["role"] == "supplier_parent" else None)
     if err == "not_found":
         raise HTTPException(404, "申请不存在")
     if err == "not_pending":
@@ -3177,7 +3313,12 @@ def member_requests_approve(rid: str, me=Depends(require_admin)):
 
 
 @app.post("/api/member-requests/{rid}/reject")
-def member_requests_reject(rid: str, me=Depends(require_admin)):
+def member_requests_reject(rid: str, me=Depends(require_member)):
+    if me["role"] not in {"admin", "supplier_parent"}:
+        raise HTTPException(403, "需要成员管理权限")
+    request_row = store.get_member_request(rid)
+    if me["role"] == "supplier_parent" and (not request_row or request_row[4] != "supplier_child"):
+        raise HTTPException(403, "只能处理供应商子账号申请")
     ok, err = store.reject_member_request(rid, me["id"])
     if err == "not_found":
         raise HTTPException(404, "申请不存在")

@@ -12,6 +12,7 @@ import { LLM_CONFIG } from "../api/llm.js";
 import { openProductionDrawer } from "./prodDrawer.js";
 import { emptyState } from "../ui/components.js";
 import { go } from "../core/router.js";
+import { renderSupplierOverview } from "./supplierViews.js";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
@@ -131,6 +132,7 @@ function realDeliveryThumb(asset, acc) {
 /* ---------- 视图 ---------- */
 export const overviewView = {
   render(root) {
+    if (["supplier", "supplier_parent"].includes(state.role)) { renderSupplierOverview(root); return; }
     const accounts = state.accounts.filter(Boolean).map(safeAccount);
     const prods = state.productions.filter(ownedBy);
     const inflight = prods.filter(p => p.stage !== "delivered");

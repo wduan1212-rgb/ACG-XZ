@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS members(
   username   TEXT NOT NULL UNIQUE,
   pin_hash   TEXT NOT NULL,
   role       TEXT NOT NULL,
+  parent_id  TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS member_requests(
@@ -73,6 +74,27 @@ CREATE TABLE IF NOT EXISTS member_requests(
   reviewed_by TEXT
 );
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS supplier_account_bindings(
+  parent_id  TEXT NOT NULL,
+  child_id   TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  created_by TEXT,
+  PRIMARY KEY(parent_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_supplier_bindings_child ON supplier_account_bindings(child_id);
+CREATE TABLE IF NOT EXISTS supplier_activity(
+  id          TEXT PRIMARY KEY,
+  parent_id   TEXT,
+  child_id    TEXT,
+  member_id   TEXT NOT NULL,
+  action      TEXT NOT NULL,
+  account_id  TEXT,
+  asset_id    TEXT,
+  detail      TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_supplier_activity_parent ON supplier_activity(parent_id, created_at DESC);
 """
 
 _lock = Lock()
@@ -90,12 +112,12 @@ def _seed_admin_locked(conn):
     if conn.execute("SELECT COUNT(*) FROM members").fetchone()[0] == 0:
         now = int(time.time() * 1000)
         conn.execute(
-            "INSERT INTO members(id,name,username,pin_hash,role,created_at) VALUES(?,?,?,?,?,?)",
-            (uuid.uuid4().hex[:10], "管理员", DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PIN_HASH, "admin", now),
+            "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
+            (uuid.uuid4().hex[:10], "管理员", DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PIN_HASH, "admin", None, now),
         )
         conn.execute(
-            "INSERT INTO members(id,name,username,pin_hash,role,created_at) VALUES(?,?,?,?,?,?)",
-            (uuid.uuid4().hex[:10], "供应商", DEFAULT_SUPPLIER_USERNAME, DEFAULT_SUPPLIER_PIN_HASH, "supplier", now + 1),
+            "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
+            (uuid.uuid4().hex[:10], "供应商", DEFAULT_SUPPLIER_USERNAME, DEFAULT_SUPPLIER_PIN_HASH, "supplier_parent", None, now + 1),
         )
 
 
@@ -122,6 +144,13 @@ def _ensure_admin_alias_locked(conn):
     )
 
 
+def _ensure_supplier_parent_role_locked(conn):
+    """旧版曾把默认供应商账号保存为创作成员；只修正角色，不改账号、密码或业务数据。"""
+    row = conn.execute("SELECT id,role FROM members WHERE username=?", (DEFAULT_SUPPLIER_USERNAME,)).fetchone()
+    if row and row[1] != "supplier_parent":
+        conn.execute("UPDATE members SET role='supplier_parent', parent_id=NULL WHERE id=?", (row[0],))
+
+
 def _ensure_db():
     global _initialized
     if _initialized:
@@ -132,8 +161,14 @@ def _ensure_db():
         conn = _connect()
         try:
             conn.executescript(SCHEMA)
+            member_cols = {r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
+            if "parent_id" not in member_cols:
+                conn.execute("ALTER TABLE members ADD COLUMN parent_id TEXT")
+            # 旧版 supplier 无子账号概念，安全迁移为供应商母账号。
+            conn.execute("UPDATE members SET role='supplier_parent' WHERE role='supplier'")
             _seed_admin_locked(conn)
             _ensure_admin_alias_locked(conn)
+            _ensure_supplier_parent_role_locked(conn)
             conn.commit()
             _initialized = True
         finally:
@@ -225,22 +260,22 @@ def _seed_admin():
 
 
 def _member_public(row):
-    return {"id": row[0], "name": row[1], "username": row[2], "role": row[4], "createdAt": row[5]}
+    return {"id": row[0], "name": row[1], "username": row[2], "role": row[4], "parentId": row[5] if len(row) > 6 else None, "createdAt": row[6] if len(row) > 6 else row[5]}
 
 
-def add_member(name, username, pin, role):
-    return add_member_with_hash(name, username, hash_pin(pin), role)
+def add_member(name, username, pin, role, parent_id=None):
+    return add_member_with_hash(name, username, hash_pin(pin), role, parent_id)
 
 
-def add_member_with_hash(name, username, pin_hash, role):
+def add_member_with_hash(name, username, pin_hash, role, parent_id=None):
     mid = uuid.uuid4().hex[:10]
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
             conn.execute(
-                "INSERT INTO members(id,name,username,pin_hash,role,created_at) VALUES(?,?,?,?,?,?)",
-                (mid, name, username, pin_hash, role, int(time.time() * 1000)),
+                "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                (mid, name, username, pin_hash, role, parent_id, int(time.time() * 1000)),
             )
             conn.commit()
         finally:
@@ -249,19 +284,19 @@ def add_member_with_hash(name, username, pin_hash, role):
 
 
 def get_member(mid):
-    return _fetchone("SELECT id,name,username,pin_hash,role,created_at FROM members WHERE id=?", (mid,))
+    return _fetchone("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members WHERE id=?", (mid,))
 
 
 def get_member_by_username(username):
-    return _fetchone("SELECT id,name,username,pin_hash,role,created_at FROM members WHERE username=?", (username,))
+    return _fetchone("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members WHERE username=?", (username,))
 
 
 def list_members():
-    rows = _fetchall("SELECT id,name,username,pin_hash,role,created_at FROM members ORDER BY created_at")
+    rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members ORDER BY created_at")
     return [_member_public(r) for r in rows]
 
 
-def update_member(mid, name=None, username=None, role=None, pin=None):
+def update_member(mid, name=None, username=None, role=None, pin=None, parent_id=None):
     sets, vals = [], []
     if name is not None:
         sets.append("name=?"); vals.append(name)
@@ -269,6 +304,8 @@ def update_member(mid, name=None, username=None, role=None, pin=None):
         sets.append("username=?"); vals.append(username)
     if role is not None:
         sets.append("role=?"); vals.append(role)
+    if parent_id is not None:
+        sets.append("parent_id=?"); vals.append(parent_id or None)
     if pin:
         sets.append("pin_hash=?"); vals.append(hash_pin(pin))
     if sets:
@@ -289,6 +326,8 @@ def delete_member(mid):
     with _lock:
         conn = _connect()
         try:
+            conn.execute("DELETE FROM supplier_account_bindings WHERE child_id=? OR parent_id=?", (mid, mid))
+            conn.execute("DELETE FROM supplier_activity WHERE child_id=? OR parent_id=? OR member_id=?", (mid, mid, mid))
             conn.execute("DELETE FROM members WHERE id=?", (mid,))
             conn.commit()
         finally:
@@ -348,7 +387,7 @@ def username_has_pending_request(username):
     return bool(row)
 
 
-def approve_member_request(rid, reviewer_id):
+def approve_member_request(rid, reviewer_id, parent_id=None):
     _ensure_db()
     with _lock:
         conn = _connect()
@@ -363,8 +402,8 @@ def approve_member_request(rid, reviewer_id):
             mid = uuid.uuid4().hex[:10]
             now = int(time.time() * 1000)
             conn.execute(
-                "INSERT INTO members(id,name,username,pin_hash,role,created_at) VALUES(?,?,?,?,?,?)",
-                (mid, row[1], row[2], row[3], row[4], now),
+                "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                (mid, row[1], row[2], row[3], row[4], parent_id if row[4] == "supplier_child" else None, now),
             )
             conn.execute(
                 "UPDATE member_requests SET status='approved', reviewed_at=?, reviewed_by=? WHERE id=?",
@@ -374,6 +413,107 @@ def approve_member_request(rid, reviewer_id):
         finally:
             conn.close()
     return get_member(mid), None
+
+
+# ---------- 供应商组织：母账号可管理子账号并分配内容账号 ----------
+def list_supplier_children(parent_id, include_all=False):
+    if include_all:
+        rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members WHERE role='supplier_child' ORDER BY created_at")
+    else:
+        rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members WHERE role='supplier_child' AND parent_id=? ORDER BY created_at", (parent_id,))
+    return [_member_public(r) for r in rows]
+
+
+def supplier_child_for(parent_id, child_id, include_all=False):
+    row = get_member(child_id)
+    if not row or row[4] != "supplier_child":
+        return None
+    if not include_all and row[5] != parent_id:
+        return None
+    return row
+
+
+def create_supplier_children(parent_id, items):
+    made = []
+    for item in items or []:
+        name = str((item or {}).get("name") or "").strip()
+        username = str((item or {}).get("username") or "").strip()
+        pin = str((item or {}).get("pin") or "")
+        if not name or not username or not pin:
+            raise ValueError("missing_fields")
+        if get_member_by_username(username):
+            raise ValueError("username_exists")
+        made.append(member_public(add_member(name, username, pin, "supplier_child", parent_id)))
+    return made
+
+
+def supplier_bindings(parent_id, include_all=False):
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            sql = "SELECT parent_id,child_id,account_id,created_at,created_by FROM supplier_account_bindings"
+            rows = conn.execute(sql + (" ORDER BY created_at" if include_all else " WHERE parent_id=? ORDER BY created_at"), () if include_all else (parent_id,)).fetchall()
+            return [{"parentId": r[0], "childId": r[1], "accountId": r[2], "createdAt": r[3], "createdBy": r[4]} for r in rows]
+        finally:
+            conn.close()
+
+
+def supplier_account_ids_for_child(child_id):
+    rows = _fetchall("SELECT account_id FROM supplier_account_bindings WHERE child_id=?", (child_id,))
+    return {r[0] for r in rows}
+
+
+def set_supplier_child_accounts(parent_id, child_id, account_ids, actor_id, include_all=False):
+    child = supplier_child_for(parent_id, child_id, include_all)
+    if not child:
+        return False
+    actual_parent_id = child[5] or parent_id
+    ids = sorted({str(x) for x in (account_ids or []) if str(x)})
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("DELETE FROM supplier_account_bindings WHERE child_id=?", (child_id,))
+            now = int(time.time() * 1000)
+            for aid in ids:
+                # 一个内容账号在同一供应商母账号下只对应一个子账号，新的分配会安全迁移。
+                conn.execute("DELETE FROM supplier_account_bindings WHERE parent_id=? AND account_id=?", (actual_parent_id, aid))
+                conn.execute("INSERT INTO supplier_account_bindings(parent_id,child_id,account_id,created_at,created_by) VALUES(?,?,?,?,?)", (actual_parent_id, child_id, aid, now, actor_id))
+            conn.commit()
+        finally:
+            conn.close()
+    return True
+
+
+def add_supplier_activity(parent_id, child_id, member_id, action, account_id="", asset_id="", detail=""):
+    _ensure_db()
+    now = int(time.time() * 1000)
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "INSERT INTO supplier_activity(id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (uuid.uuid4().hex[:12], parent_id or None, child_id or None, member_id, str(action or "")[:40], account_id or None, asset_id or None, str(detail or "")[:300], now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def list_supplier_activity(parent_id, include_all=False, limit=80):
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            if include_all:
+                rows = conn.execute("SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at FROM supplier_activity ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+            else:
+                rows = conn.execute("SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at FROM supplier_activity WHERE parent_id=? ORDER BY created_at DESC LIMIT ?", (parent_id, limit)).fetchall()
+            members = {r[0]: r[1] for r in conn.execute("SELECT id,name FROM members").fetchall()}
+            return [{"id": r[0], "parentId": r[1], "childId": r[2], "memberId": r[3], "memberName": members.get(r[3], "成员"), "action": r[4], "accountId": r[5], "assetId": r[6], "detail": r[7] or "", "createdAt": r[8]} for r in rows]
+        finally:
+            conn.close()
 
 
 def reject_member_request(rid, reviewer_id):
@@ -507,6 +647,40 @@ def delete_doc(collection, doc_id):
             conn.close()
 
 
+def update_supplier_asset_views(asset_id, view_count, member_id, role):
+    """供应商观看量专用写入：母账号可更新供应商端交付，子账号仅可更新已分配账号。"""
+    if role not in {"supplier_parent", "supplier_child"}:
+        return None, "forbidden"
+    _ensure_db()
+    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            item = json.loads(row[0])
+            if not item.get("delivered") and not item.get("shared"):
+                return None, "not_delivered"
+            if assigned is not None and item.get("accountId") not in assigned:
+                return None, "unassigned"
+            now = int(time.time() * 1000)
+            item["viewCount"] = max(0, int(view_count or 0))
+            item["viewsUpdatedAt"] = now
+            item["viewsUpdatedBy"] = member_id
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("assets", str(asset_id), row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item, None
+        finally:
+            conn.close()
+
+
 def _sanitize_storyboard_terms(value):
     if isinstance(value, str):
         out = value
@@ -549,15 +723,20 @@ def _heal_production_runtime_state(item):
     return item, changed
 
 
-def state_for(member_id, role):
-    """按成员可见性返回全量快照：创作态按 owner 隔离，发布/共享数据仍全员可见。"""
+def state_for(member_id, role, parent_id=None):
+    """按成员可见性返回快照：创作端按人隔离，供应商子账号只取得已分配账号的交付物。"""
     _ensure_db()
     out = {}
     visible_prod_ids = set()
+    assigned_account_ids = supplier_account_ids_for_child(member_id) if role == "supplier_child" else set()
+    visible_asset_ids = set()
     with _lock:
         conn = _connect()
         try:
             for col in COLLECTIONS:
+                if role in {"supplier_parent", "supplier_child"} and col not in {"accounts", "assets"}:
+                    out[col] = []
+                    continue
                 rows = conn.execute("SELECT data, owner_id FROM docs WHERE collection=?", (col,)).fetchall()
                 items = []
                 for data, owner in rows:
@@ -567,10 +746,32 @@ def state_for(member_id, role):
                         item, healed = _heal_production_runtime_state(item)
                     if col in {"sessions", "batches"} and owner and owner != member_id:
                         continue
-                    if col == "productions" and owner and owner != member_id and item.get("stage") != "delivered":
+                    if col == "accounts" and role == "supplier_child" and item.get("id") not in assigned_account_ids:
                         continue
-                    if col == "assets" and owner and owner != member_id and not item.get("delivered") and not item.get("shared"):
-                        continue
+                    if col == "accounts" and role in {"supplier_parent", "supplier_child"}:
+                        item = {
+                            key: item.get(key) for key in (
+                                "id", "name", "platform", "mode", "index", "avatarAssetId", "avatarUrl"
+                            ) if item.get(key) is not None
+                        }
+                    if col == "productions":
+                        if role == "supplier_child" and (item.get("stage") != "delivered" or item.get("accountId") not in assigned_account_ids):
+                            continue
+                        if role == "supplier_parent" and item.get("stage") != "delivered":
+                            continue
+                        if role == "editor" and owner and owner != member_id:
+                            continue
+                        if role not in {"supplier_child", "supplier_parent", "editor", "admin"} and owner and owner != member_id:
+                            continue
+                    if col == "assets":
+                        if role == "supplier_child" and ((not item.get("delivered") and not item.get("shared")) or item.get("accountId") not in assigned_account_ids):
+                            continue
+                        if role == "supplier_parent" and not item.get("delivered") and not item.get("shared"):
+                            continue
+                        if role == "editor" and item.get("delivered") and item.get("byMemberId") and item.get("byMemberId") != member_id:
+                            continue
+                        if role not in {"supplier_child", "supplier_parent", "editor", "admin"} and owner and owner != member_id and not item.get("delivered") and not item.get("shared"):
+                            continue
                     if col == "voicePresets" and owner and owner != member_id:
                         continue
                     if healed and col == "productions":
@@ -582,8 +783,12 @@ def state_for(member_id, role):
                 out[col] = items
                 if col == "productions":
                     visible_prod_ids = {p.get("id") for p in items}
+                if col == "assets":
+                    visible_asset_ids = {a.get("id") for a in items}
             conn.commit()
         finally:
             conn.close()
     out["jobs"] = [j for j in out.get("jobs", []) if j.get("productionId") in visible_prod_ids]
+    if role == "supplier_child":
+        out["analyticsLinks"] = [x for x in out.get("analyticsLinks", []) if x.get("assetId") in visible_asset_ids]
     return out

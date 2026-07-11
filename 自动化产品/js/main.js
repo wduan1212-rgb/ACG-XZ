@@ -18,6 +18,7 @@ import { resumeJobs } from "./api/jobs.js";
 import { resumeActiveBatches } from "./agent/orchestrator.js";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
+import { installSelectEnhancer } from "./ui/selectEnhancer.js";
 import { overviewView } from "./views/overview.js";
 import { voiceLabView } from "./views/voiceLab.js";
 import { agentView } from "./agent/view.js";
@@ -276,9 +277,25 @@ function pauseLoginBackground() {
   if (video && !video.paused) video.pause();
 }
 function applyRoleClasses() {
-  document.body.classList.toggle("role-supplier", state.role === "supplier");
+  document.body.classList.toggle("role-supplier", state.role === "supplier" || state.role === "supplier_parent" || state.role === "supplier_child");
+  document.body.classList.toggle("role-supplier-parent", state.role === "supplier" || state.role === "supplier_parent");
+  document.body.classList.toggle("role-supplier-child", state.role === "supplier_child");
   document.body.classList.toggle("role-editor", state.role === "editor");
   document.body.classList.toggle("role-admin", state.role === "admin");
+  const parent = state.role === "supplier" || state.role === "supplier_parent";
+  const labels = {
+    overview: parent ? "首页" : "首页",
+    assets: parent ? "全部账号" : "整体资产",
+    delivery: "发布清单",
+    settings: "设置"
+  };
+  Object.entries(labels).forEach(([zone, label]) => {
+    const item = document.querySelector(`[data-nav="${zone}"]`);
+    if (!item) return;
+    item.title = label;
+    const span = item.querySelector("span");
+    if (span) span.textContent = label;
+  });
 }
 
 function ensureViewRendered(reason = "startup") {
@@ -316,16 +333,20 @@ function enterMember(member) {
   $("#loginGate").hidden = true;
   document.body.classList.remove("gated");
   applyRoleClasses();
-  go(member.role === "supplier" ? "delivery" : "overview");
+  go(member.role === "supplier_child" ? "delivery" : "overview");
   render();
   toast(`欢迎回来 · ${esc(member.name)}（${ROLE_LABEL[member.role] || ""}）`);
 }
 /* 共享后端登录：先拉服务端全量快照覆盖本地，再复用本地 enter 逻辑 */
 async function enterRemote(member) {
+  state.role = member.role;
+  state.ui.currentMemberId = member.id;
   await pullRemote();
-  await applyAccountProfileSeed({ createMissing: true });
-  normalizeDeliveredProductTags();
-  normalizeDeliveredSharedAssets();
+  if (!["supplier", "supplier_parent", "supplier_child"].includes(member.role)) {
+    await applyAccountProfileSeed({ createMissing: true });
+    normalizeDeliveredProductTags();
+    normalizeDeliveredSharedAssets();
+  }
   enterMember(member);
   resumeJobs(); resumeActiveBatches();
 }
@@ -409,7 +430,7 @@ function logout() {
   state.role = null;
   state.ui.currentMemberId = null;
   save("meta");
-  document.body.classList.remove("role-supplier", "role-editor", "role-admin");
+  document.body.classList.remove("role-supplier", "role-supplier-parent", "role-supplier-child", "role-editor", "role-admin");
   showGate();
 }
 
@@ -418,7 +439,7 @@ const collapsedGroups = new Set(state.ui.collapsedGroups || []);
 function renderContextPanel() {
   const panel = $("#ctxPanel");
   const zone = document.body.dataset.zone;
-  const show = zone === "studio" && state.role !== "supplier";
+  const show = zone === "studio" && !["supplier", "supplier_parent", "supplier_child"].includes(state.role);
   panel.hidden = !show;
   document.body.classList.toggle("has-panel", show);
   if (!show) return;
@@ -518,8 +539,9 @@ function renderTopbar() {
   const zone = document.body.dataset.zone;
   const bc = $("#topCrumb");
   const actions = $(".top-actions");
+  const topbar = document.querySelector(".topbar");
   const voiceDock = $("#voiceTopDock");
-  document.querySelector(".topbar")?.classList.toggle("voice-topbar-active", zone === "voice");
+  topbar?.classList.toggle("voice-topbar-active", zone === "voice");
   if (voiceDock && zone !== "voice") voiceDock.remove();
   const acc = activeAccount();
   const { page } = parseHash();
@@ -531,6 +553,15 @@ function renderTopbar() {
       : page;
   if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: "文案分镜", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
   bc.textContent = crumb;
+  const oldStudioStepper = topbar?.querySelector(".chain-stepper");
+  const studioStepper = zone === "studio" ? document.querySelector(".view-root .chain-stepper") : null;
+  if (oldStudioStepper && oldStudioStepper !== studioStepper) oldStudioStepper.remove();
+  if (studioStepper && topbar && actions) {
+    topbar.classList.add("studio-topbar-active");
+    topbar.insertBefore(studioStepper, actions);
+  } else {
+    topbar?.classList.remove("studio-topbar-active");
+  }
   let newAccBtn = $("#topNewAccount");
   if (!newAccBtn && actions) {
     newAccBtn = document.createElement("button");
@@ -545,10 +576,15 @@ function renderTopbar() {
 
 /* ---------- ⌘K ---------- */
 function paletteCommands() {
-  // 供应商仅「发布清单」，与左侧导航栏的角色门禁(base.css role-supplier)保持一致
-  const supplier = state.role === "supplier";
-  const nav = supplier ? [
+  const supplierChild = state.role === "supplier_child";
+  const supplierParent = state.role === "supplier" || state.role === "supplier_parent";
+  const nav = supplierChild ? [
     { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") }
+  ] : supplierParent ? [
+    { label: "供应商首页", group: "导航", icon: "grid", run: () => go("overview") },
+    { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") },
+    { label: "全部账号", group: "导航", icon: "users", run: () => go("assets") },
+    { label: "供应商设置", group: "导航", icon: "settings", run: () => go("settings") }
   ] : [
     { label: "首页", group: "导航", icon: "grid", run: () => go("overview") },
     { label: "批量创作", group: "导航", icon: "spark", run: () => go("agent") },
@@ -564,7 +600,7 @@ function paletteCommands() {
     ] : [])
   ];
   const cmds = [...nav];
-  if (supplier) return cmds;   // 供应商不暴露账号/在制任务快捷跳转
+  if (supplierChild || supplierParent) return cmds;
   state.accounts.forEach(a => cmds.push({
     label: a.name, hint: (a.styleProfile || a.voiceName || "").slice(0, 24), group: "账号", icon: "user",
     run: () => { state.ui.activeAccountId = a.id; save("meta"); allowStudioFromAgent(); go("studio"); render(); }
@@ -595,9 +631,9 @@ async function boot() {
       seedIfEmpty();
       ensureXhsSeedAccounts();
       await applyAccountProfileSeed({ createMissing: true });
+      normalizeDeliveredProductTags();
+      normalizeDeliveredSharedAssets();
     }
-    normalizeDeliveredProductTags();
-    normalizeDeliveredSharedAssets();
     pruneEmptySessions();
     await enableServerProxyIfConfigured();
     applyKeyOverrides(state.apiKeys);
@@ -613,6 +649,7 @@ async function boot() {
     registerView("analytics", analyticsView);
     registerView("settings", settingsView);
     initRouter();
+    installSelectEnhancer();
 
     // 外壳
     $("#railBrand").innerHTML = brandGlyph(28);
@@ -650,11 +687,14 @@ async function boot() {
     if (remote.isOn() && remote.hasToken()) {
       const m = await remote.me();
       if (m) {
+        state.role = m.role; state.ui.currentMemberId = m.id;
         await pullRemote();
-        await applyAccountProfileSeed({ createMissing: true });
-        normalizeDeliveredProductTags();
-        normalizeDeliveredSharedAssets();
-        state.role = m.role; state.ui.currentMemberId = m.id; save("meta");
+        if (!["supplier", "supplier_parent", "supplier_child"].includes(m.role)) {
+          await applyAccountProfileSeed({ createMissing: true });
+          normalizeDeliveredProductTags();
+          normalizeDeliveredSharedAssets();
+        }
+        save("meta");
         document.documentElement.classList.add("has-auth-token");
         pauseLoginBackground();
         applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;

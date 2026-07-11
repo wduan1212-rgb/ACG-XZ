@@ -146,17 +146,6 @@ function renderHome(root, acc) {
         </div>
       </header>
 
-      <section class="sh-flow card">
-        <div class="card-head"><b>创作链路</b><em>${acc.mode === "图文" ? "图文创作台（文案标题/图卡提示词/成图）→ 审核 → 交付" : "文案分镜（选题/标题文案/口播/提示词）→ 智能混剪+BGM → 审核 → 交付"}</em></div>
-        <div class="sh-flow-steps">
-          ${flow.map((st, i) => `
-            <button class="fs-card" data-sh-flow="${st}" style="--d:${i * 40}ms">
-              <span class="fs-ico">${icon(STAGES[st].icon, 18)}<i class="fs-num">${i + 1}</i></span>
-              <b>${STAGES[st].label}</b>
-            </button>${i < flow.length - 1 ? `<span class="fs-arrow">${icon("chevronRight", 14)}</span>` : ""}`).join("")}
-        </div>
-      </section>
-
       <section class="sh-prods card">
         <div class="card-head"><b>在制任务</b><em>${inflight.length} 条</em></div>
         ${inflight.length ? `<div class="sh-prod-list">${inflight.map(p => {

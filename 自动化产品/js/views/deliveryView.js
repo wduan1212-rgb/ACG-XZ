@@ -4,13 +4,14 @@
 import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
-import { platChip, modeLabel, PLATFORM_CODE } from "../domain/accounts.js";
+import { platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js";
 import { openProductionDrawer } from "./prodDrawer.js";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal } from "../ui/components.js";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
+import * as remote from "../core/remote.js";
 
 function extractUrl(text) {
   const m = String(text || "").match(/https?:\/\/[^\s"'<>，。；、）】]+/);
@@ -22,13 +23,6 @@ function extractShareTitle(text) {
   if (!body) return "";
   const beforeSource = body.split(/\s*[|｜]\s*小红书/)[0] || body;
   return beforeSource.split(/\s+-\s+/)[0].replace(/^\d+\s*/, "").trim();
-}
-
-function supplierTagsHtml(tags = []) {
-  const list = [...new Set((tags || []).filter(Boolean))];
-  const shown = list.slice(0, 2);
-  const rest = Math.max(0, list.length - shown.length);
-  return `${shown.map(t => `<span class="tag">${esc(t)}</span>`).join("")}${rest ? `<span class="tag more">+${rest}</span>` : ""}`;
 }
 
 function dateOnly(value = "") {
@@ -102,7 +96,6 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
   const plan = dateOnly(asset.planDate);
   const contentAccount = asset.byAccount || acc.name;
   const publisher = publisherLabel(asset);
-  const detailText = `${asset.name}${isImg ? ".zip" : ".mp4"} · 内容账号：${contentAccount} · 发布人：${publisher} · ${timeAgo(asset.deliveredAt || asset.createdAt)} · 供应商：${asset.status || "未下载"}`;
   return `<div class="dv-item" style="--d:${i * 40}ms">
     <span class="dv-node${i === 0 ? " latest" : ""}"></span>
     <div class="dv-card card" data-aid="${asset.id}">
@@ -111,14 +104,13 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
         <span class="dv-main">
           <b>${seq ? `<span class="dv-seq">${seq}</span>` : ""}${esc(asset.title || asset.name)}</b>
           <span class="dv-meta">
-            <span class="dv-tagline">${platChip(acc.platform, true)}${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag acc" title="内容账号：${esc(contentAccount)}">内容账号：${esc(contentAccount)}</span><span class="tag pubby" title="发布人：${esc(publisher)}">发布人：${esc(publisher)}</span>${plan ? `<span class="tag date" title="计划 ${esc(plan)}">${icon("clock", 10)} 计划 ${esc(plan)}</span>` : ""}</span>
-            <em title="${esc(detailText)}">${esc(detailText)}</em>
-            ${asset.adminReviewed ? `<span class="tag rev">${icon("checkCircle", 10)} 已审阅</span>` : ""}${asset.publishedUrl ? `<span class="tag pub">${icon("checkCircle", 10)} 已发布</span>` : ""}
+            <span class="dv-tagline">${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag pubby">发布人：${esc(publisher)}</span><span class="tag date">${icon("clock", 10)} ${esc(plan || dateOnly(asset.deliveredAt || asset.createdAt))}</span><span class="tag ${asset.publishedUrl ? "pub" : ""}">${asset.publishedUrl ? `${icon("checkCircle", 10)} 已发布` : "待发布"}</span></span>
           </span>
         </span>
         <span class="dv-chev">${icon("chevronDown", 14)}</span>
       </div>
       <div class="dv-detail" hidden>
+        <div class="dv-detail-facts"><span>内容账号：${esc(contentAccount)}</span><span>平台：${esc(acc.platform || "平台")}</span><span>文件：${esc(asset.name)}${isImg ? ".zip" : ".mp4"}</span></div>
         ${asset.planDate || asset.publishNote ? `<div class="dv-pubmeta">${plan ? `<span>${icon("clock", 12)} 计划发布：<b>${esc(plan)}</b></span>` : ""}${asset.publishNote ? `<span>${icon("fileText", 12)} 备注：${esc(asset.publishNote)}</span>` : ""}</div>` : ""}
         ${asset.publishedUrl ? `<div class="dv-published">${icon("link", 13)} 发布链接：<a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${esc(asset.publishedUrl.slice(0, 64))}${asset.publishedUrl.length > 64 ? "…" : ""}</a><em>${asset.publishedAt ? timeAgo(asset.publishedAt) + "回传" : ""}</em></div>` : ""}
         ${asset.supplierNote ? `<div class="dv-supplier-note">${icon("fileText", 13)} 供应商备注：${esc(asset.supplierNote)}</div>` : ""}
@@ -158,6 +150,9 @@ async function returnLinkFlow(asset, acc, redraw) {
   save("assets");
   notify("delivery", `「${asset.title || asset.name}」已发布`, `供应商回传了发布链接，链路闭环 ✓`);
   ensureAnalyticsForAsset(asset, acc);
+  if (["supplier_parent", "supplier_child", "supplier"].includes(state.role) && remote.isOn()) {
+    remote.supplier.record({ action: "return_link", accountId: asset.accountId || "", assetId: asset.id, detail: `回传了「${asset.title || asset.name}」的发布链接` }).catch(() => {});
+  }
   toast("已记录发布链接，素材标记为「已发布」");
   redraw();
 }
@@ -193,12 +188,15 @@ function supplierDetailHtml(asset, acc) {
 }
 
 let tab = "creator"; // creator | supplier
-let supFilter = "all";
+let supFilters = { product: "all", type: "all", publisher: "all", date: "all" };
 
 export const deliveryView = {
   render(root) {
-    const isSupplierRole = state.role === "supplier";
+    const isSupplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+    const canUpdateViews = ["supplier_parent", "supplier_child"].includes(state.role);
+    const isAdmin = state.role === "admin";
     if (isSupplierRole) tab = "supplier";
+    if (!isAdmin && !isSupplierRole) tab = "creator";
 
     const draw = () => {
       const all = sortDelivered(deliveredAssets());
@@ -206,14 +204,14 @@ export const deliveryView = {
         <div class="delivery-page">
           <div class="page-head">
             <div><div class="eyebrow">发布清单</div>
-            <h2>${isSupplierRole ? "下载素材 → 平台发布 → 回传链接，完成闭环" : "定稿归档 · 供应商领取 · 发布回链全程可见"}</h2></div>
+            <h2>${isSupplierRole ? "发布清单" : "定稿归档 · 发布回链全程可见"}</h2></div>
             ${(isSupplierRole || tab === "supplier") ? `<button class="btn primary" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>` : ""}
           </div>
-          ${isSupplierRole ? "" : `
+          ${isAdmin ? `
           <div class="mode-tabs slim" data-active="${tab}">
             <button class="mode-tab ${tab === "creator" ? "is-active" : ""}" data-dtab="creator">创作端视角<span>交付明细 · 全链路回看</span></button>
             <button class="mode-tab ${tab === "supplier" ? "is-active" : ""}" data-dtab="supplier">供应商视角<span>他们看到的素材库</span></button>
-          </div>`}
+          </div>` : ""}
           <div id="dvBody"></div>
         </div>`;
 
@@ -308,19 +306,21 @@ export const deliveryView = {
 
     function drawSupplier(body, all) {
       const seqMap = displaySeqMap(all);
-      const platforms = [...new Set(all.map(x => x.acc.platform))];
       const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
-      const tags = [...new Set(all.flatMap(x => x.asset.tags || []))];
-      const filters = ["all", ...productTags.map(t => `产品:${t}`), ...platforms, "视频", "图文", ...tags.filter(t => !["视频", "图文", ...platforms, ...productTags].includes(t))];
       const rows = all.filter(x => {
         const ptag = x.asset.productTag || productTagLabel(productById(x.asset.productId || ""));
-        return supFilter === "all" || x.acc.mode === supFilter || x.acc.platform === supFilter || `产品:${ptag}` === supFilter || (x.asset.tags || []).includes(supFilter);
+        return (supFilters.product === "all" || ptag === supFilters.product)
+          && (supFilters.type === "all" || x.acc.mode === supFilters.type)
+          && (supFilters.publisher === "all" || publisherLabel(x.asset) === supFilters.publisher)
+          && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date);
       });
       body.innerHTML = `
-        <div class="fb-row" style="margin-bottom:12px">${filters.map(f => {
-          const isPlat = PLATFORM_CODE[f];
-          return `<button class="chip ${isPlat ? "plat" : ""} ${supFilter === f ? "on" : ""}" data-supf="${esc(f)}">${f === "all" ? "全部" : esc(f.replace(/^产品:/, "产品 · "))}</button>`;
-        }).join("")}</div>
+        <div class="supplier-filters">
+          <label class="select-shell">${icon("package", 13)}<select data-sup-select="product"><option value="all">全部产品</option>${productTags.map(x => `<option value="${esc(x)}" ${supFilters.product === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+          <label class="select-shell">${icon("filter", 13)}<select data-sup-select="type"><option value="all">全部形式</option><option value="视频" ${supFilters.type === "视频" ? "selected" : ""}>视频</option><option value="图文" ${supFilters.type === "图文" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>
+          <label class="select-shell">${icon("user", 13)}<select data-sup-select="publisher"><option value="all">全部发布人</option>${[...new Set(all.map(x => publisherLabel(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.publisher === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+          <label class="select-shell">${icon("clock", 13)}<select data-sup-select="date"><option value="all">全部时间</option>${[...new Set(all.map(x => dayKey(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+        </div>
         <div class="sup-table-wrap card">
           <table class="sup-table">
             <colgroup>
@@ -337,7 +337,7 @@ export const deliveryView = {
             <thead><tr>
               <th class="c-check"><input type="checkbox" id="supAll" /></th>
               <th class="c-seq">序号</th>
-              <th>素材名</th><th>产品</th><th>发布人</th><th>平台</th><th>标签</th><th>状态</th><th></th>
+              <th>素材名</th><th>产品</th><th>发布人</th><th>平台</th><th>观看量</th><th>状态</th><th></th>
             </tr></thead>
             <tbody>${rows.length ? rows.map(({ asset, acc }) => `
               <tr data-sup="${asset.id}">
@@ -347,7 +347,9 @@ export const deliveryView = {
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
                 <td><b>${esc(publisherLabel(asset))}</b></td>
                 <td>${platChip(acc.platform, true)}</td>
-                <td><div class="sup-tags" title="${esc((asset.tags || []).join(" / "))}">${supplierTagsHtml(asset.tags)}</div></td>
+                <td>${canUpdateViews
+                  ? `<button class="sup-views" data-supviews="${asset.id}" title="更新观看量">${Number(asset.viewCount || 0).toLocaleString()} ${icon("edit", 11)}</button>`
+                  : `<span class="sup-views-readonly" title="供应商同步的观看量">${Number(asset.viewCount || 0).toLocaleString()}</span>`}</td>
                 <td><span class="sup-status ${asset.status === "已发布" ? "pub" : asset.status === "已下载" ? "done" : ""}">${asset.publishedUrl ? "已发布 ✓" : asset.status || "未下载"}</span></td>
                 <td class="sup-acts">
                   <button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
@@ -357,12 +359,38 @@ export const deliveryView = {
             </tbody>
           </table>
         </div>`;
-      $$("[data-supf]", body).forEach(b => b.addEventListener("click", () => { supFilter = b.dataset.supf; draw(); }));
+      $$("[data-sup-select]", body).forEach(b => b.addEventListener("change", () => { supFilters[b.dataset.supSelect] = b.value; draw(); }));
       const supAll = $("#supAll", body);
       if (supAll) supAll.addEventListener("change", e => $$(".sup-check", body).forEach(c => c.checked = e.target.checked));
       $$("[data-supdl]", body).forEach(b => b.addEventListener("click", async () => {
         const a = state.assets.find(x => x.id === b.dataset.supdl);
-        if (a) { await downloadDelivery(a); toast("已下载 " + a.name); draw(); }
+        if (a) {
+          await downloadDelivery(a);
+          if (isSupplierRole && remote.isOn()) remote.supplier.record({ action: "download", accountId: a.accountId || "", assetId: a.id, detail: `下载了「${a.title || a.name}」` }).catch(() => {});
+          toast("已下载 " + a.name); draw();
+        }
+      }));
+      $$("[data-supviews]", body).forEach(b => b.addEventListener("click", async e => {
+        e.stopPropagation();
+        const a = state.assets.find(x => x.id === b.dataset.supviews);
+        if (!a) return;
+        const value = await promptModal({ title: "更新观看量", value: String(a.viewCount || 0), placeholder: "请输入当前观看量" });
+        if (value == null) return;
+        const nextViews = Math.max(0, Math.round(Number(String(value).replace(/[,，\s]/g, "")) || 0));
+        if (remote.isOn()) {
+          try {
+            const result = await remote.supplier.updateViews(a.id, nextViews);
+            Object.assign(a, result.asset || {});
+          } catch (err) {
+            toast(err?.message || "观看量更新失败");
+            return;
+          }
+        } else {
+          a.viewCount = nextViews;
+          a.viewsUpdatedAt = Date.now(); a.viewsUpdatedBy = state.ui.currentMemberId;
+          save("assets");
+        }
+        toast("观看量已更新"); draw();
       }));
       $$("[data-suplink]", body).forEach(b => b.addEventListener("click", async () => {
         const a = state.assets.find(x => x.id === b.dataset.suplink);

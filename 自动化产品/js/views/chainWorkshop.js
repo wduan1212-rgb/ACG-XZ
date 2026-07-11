@@ -1290,47 +1290,41 @@ export function renderWorkshopPage(root, p) {
         </div>
         <label class="btn ghost sm">${icon("upload", 12)} 上传分镜<input type="file" accept="image/*" multiple hidden id="wsInfoStoryboardUp" /></label>
       </div>
-      <div class="infoflow-grid">
+      <div class="infoflow-segment-list">
         ${segs.slice(0, 2).map((seg, i) => {
           const video = videoItems[i] || {};
           const canSubmit = !video.busy && String(seg.videoPrompt || "").trim();
           const regenLabel = video.failed ? "重试本段" : video.done ? "重生本段" : "生成本段";
-          return `<div class="if-card ${i === 1 ? "back" : "front"}">
-          <div class="if-card-top">
-            <span>${esc(seg.label || (i === 0 ? "前15s" : "后15s"))}</span>
-            <b>${esc(seg.title || (i === 0 ? "前15s钩子" : "后15s功能演示"))}</b>
-            <em>${fmtTC(seg.duration || 15)}</em>
-          </div>
-          <p>${esc(seg.caption || (i === 0 ? "强钩子 / 角色冲突 / 快切" : "功能演示 / 分镜参考 / 产品呼应"))}</p>
-          <textarea class="input" rows="8" data-if-prompt="${i}" placeholder="${i === 0 ? "前15s导演提示词" : "后15s导演提示词，会自动参考功能演示分镜图"}">${esc(seg.videoPrompt || "")}</textarea>
-          <div class="if-card-actions">
-            <span>${video.busy ? "生成中" : video.done ? "已生成" : video.failed ? "上次失败" : "未提交"}</span>
-            <button class="btn ghost sm" data-if-seg-video="${i}" ${canSubmit ? "" : "disabled"}>${video.busy ? `<span class="spin-dot"></span> 生成中` : `${icon("refresh", 12)} ${regenLabel}`}</button>
-          </div>
-        </div>`;
+          const stateText = video.busy ? (video.status === "queued" ? "排队中" : `生成 ${Math.max(1, Math.round(video.job?.progress || 1))}%`) : video.done ? "已生成" : video.failed ? "生成失败" : "等待生成";
+          const err = video.failed && video.job?.error ? String(video.job.error || "").slice(0, 100) : "";
+          return `<div class="if-segment-row ${i === 1 ? "back" : "front"}">
+            <div class="if-segment-copy">
+              <div class="if-card-top">
+                <span>${esc(seg.label || (i === 0 ? "前15s" : "后15s"))}</span>
+                <b>${esc(seg.title || (i === 0 ? "前15s钩子" : "后15s功能演示"))}</b>
+                <em>${fmtTC(seg.duration || 15)}</em>
+              </div>
+              <p>${esc(seg.caption || (i === 0 ? "强钩子 / 角色冲突 / 快切" : "功能演示 / 分镜参考 / 产品呼应"))}</p>
+              <textarea class="input" rows="9" data-if-prompt="${i}" placeholder="${i === 0 ? "前15s导演提示词" : "后15s导演提示词，会自动参考功能演示分镜图"}">${esc(seg.videoPrompt || "")}</textarea>
+              <div class="if-card-actions">
+                <span>${stateText}</span>
+                <button class="btn ghost sm" data-if-seg-video="${i}" ${canSubmit ? "" : "disabled"}>${video.busy ? `<span class="spin-dot"></span> 生成中` : `${icon("refresh", 12)} ${regenLabel}`}</button>
+              </div>
+            </div>
+            <div class="if-segment-media ${video.busy ? "running" : video.done ? "done" : video.failed ? "failed" : ""}">
+              ${video.videoUrl
+                ? `<button type="button" class="if-video-frame has-video" data-if-video="${i}" data-video-url="${esc(video.videoUrl)}" title="放大预览"><video src="${esc(video.videoUrl)}" muted playsinline preload="metadata"></video><span>${icon("eye", 18)}</span></button>`
+                : `<div class="if-video-placeholder">${video.busy ? `<span class="if-video-pulse"></span>` : icon(video.failed ? "alert" : "film", 22)}<b>${esc(seg.label || (i === 0 ? "前15s" : "后15s"))}视频</b><em>${esc(stateText)}</em></div>`}
+              ${err ? `<small>${esc(err)}</small>` : ""}
+            </div>
+          </div>`;
         }).join("")}
       </div>
-      ${hasVideoJobs ? `<div class="if-video-status ${videoState[0]}">
+      ${hasVideoJobs ? `<div class="if-video-status compact ${videoState[0]}">
         <div class="if-video-summary">
           ${infoVideoRunning ? `<span class="if-video-pulse"></span>` : icon(infoVideoDone ? "checkCircle" : infoVideoFailed ? "alert" : "film", 15)}
           <b>${videoState[1]}</b>
           <em>${videoState[2]}</em>
-        </div>
-        <div class="if-video-previews">
-          ${videoItems.map(({ seg, i, job, status, busy, done, failed, videoUrl }) => {
-            const label = seg.label || (i === 0 ? "前15s" : "后15s");
-            const stateText = busy ? (status === "queued" ? "排队中" : `生成 ${Math.max(1, Math.round(job?.progress || 1))}%`) : done ? "已生成" : failed ? "失败" : "等待提交";
-            const err = failed && job?.error ? String(job.error || "").slice(0, 80) : "";
-            return `<div class="if-video-tile ${busy ? "running" : done ? "done" : failed ? "failed" : ""}">
-              <div class="if-video-frame ${videoUrl ? "has-video" : ""}" ${videoUrl ? `data-if-video="${i}" data-video-url="${esc(videoUrl)}"` : ""}>
-                ${videoUrl
-                  ? `<video src="${esc(videoUrl)}" controls playsinline preload="metadata"></video>`
-                  : `<div class="if-video-placeholder">${busy ? `<span class="if-video-pulse"></span>` : icon(failed ? "alert" : "film", 18)}<b>${esc(label)}</b><em>${stateText}</em></div>`}
-              </div>
-              <div class="if-video-meta"><b>${esc(label)}片段</b><span>${esc(stateText)}</span></div>
-              ${err ? `<small>${esc(err)}</small>` : ""}
-            </div>`;
-          }).join("")}
         </div>
       </div>` : ""}
     </div>`;

@@ -1,14 +1,15 @@
 /* 共享资产库：展示已发布/已交付内容，以及发布后沉淀的生成图；草稿、口播和生成中素材留在账号资产/草稿链路 */
 
-import { $, $$, esc, gradFor, buildZipBlob, downloadBlob } from "../core/util.js";
+import { $, $$, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
 import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8 } from "../domain/assets.js";
 import { downloadAsset } from "../domain/delivery.js";
 import { platChip, groupOf } from "../domain/accounts.js";
 import { emptyState, promptModal, confirmModal, openLightbox, toast, withLoading } from "../ui/components.js";
+import { renderSupplierAccounts } from "./supplierViews.js";
 
-let fAcc = "all", fQ = "", fKind = "all", accFilterExpanded = false;
+let fAcc = "all", fQ = "", fKind = "all", libraryMode = "shared", collapseInitialized = false;
 const collapsedAcc = new Set();
 const isSharedAsset = a => !!a?.delivered || !!a?.shared;
 const assetKind = a => a.type === "视频" || (a.tags || []).some(t => /视频|成片/.test(t)) ? "视频" : "图文";
@@ -43,43 +44,36 @@ async function exportAndPurgeAccountImages(accountId) {
 
 export const assetsView = {
   render(root) {
+    if (["supplier", "supplier_parent"].includes(state.role)) { renderSupplierAccounts(root); return; }
     // 从账号资产库跳来时预筛该账号
     if (state.ui.assetsFilterAccount) { fAcc = state.ui.assetsFilterAccount; fQ = ""; state.ui.assetsFilterAccount = null; }
     const draw = () => {
       let list = searchAssets({ accountId: fAcc, tag: "all", q: fQ, includeDelivered: true })
-        .filter(isSharedAsset)
+        .filter(a => libraryMode === "shared"
+          ? isSharedAsset(a)
+          : libraryMode === "bgm"
+            ? (a.type === "音频" && (a.tags || []).some(t => /bgm|配乐|音乐/i.test(t)) && !(a.tags || []).some(t => /口播|语音|tts/i.test(t)))
+            : (a.tags || []).some(t => /素材库|剪辑素材|视频素材/.test(t)))
         .sort((a, b) => (b.deliveredAt || b.createdAt || 0) - (a.deliveredAt || a.createdAt || 0));
       if (fKind === "video") list = list.filter(a => assetKind(a) === "视频");
       if (fKind === "image") list = list.filter(a => assetKind(a) === "图文");
       const accounts = state.accounts || [];
-      const visibleAccounts = accFilterExpanded
-        ? accounts
-        : accounts.filter((a, i) => i < 16 || a.id === fAcc);
-      const hiddenCount = Math.max(0, accounts.length - visibleAccounts.length);
       const selectedImageCount = fAcc === "all" ? 0 : accountImageAssets(fAcc).length;
+      if (!collapseInitialized) { state.accounts.forEach(a => collapsedAcc.add(a.id)); collapsedAcc.add("__none"); collapseInitialized = true; }
       root.innerHTML = `
         <div class="assets-page">
           <div class="page-head">
-            <div><div class="eyebrow">共享素材库 · 发布后入库</div>
-            <h2>已发布内容和发布后沉淀的生成图会进入这里；草稿口播和生成中素材留在个人链路</h2></div>
+            <div><div class="eyebrow">整体资产</div><h2>${libraryMode === "shared" ? "账号资产" : libraryMode === "bgm" ? "BGM 库" : "剪辑素材库"}</h2></div>
             <div class="head-actions">
-              <span class="tag">${icon("package", 13)} 发布后自动进入共享库</span>
+              <div class="asset-library-tabs"><button class="${libraryMode === "shared" ? "on" : ""}" data-library="shared">${icon("package", 13)} 账号资产</button><button class="${libraryMode === "bgm" ? "on" : ""}" data-library="bgm">${icon("music", 13)} BGM</button><button class="${libraryMode === "material" ? "on" : ""}" data-library="material">${icon("film", 13)} 剪辑素材</button></div>
               ${fAcc !== "all" ? `<button class="btn ghost" data-export-del-acc="${esc(fAcc)}" ${selectedImageCount ? "" : "disabled"}>${icon("download", 14)} 导出并清空图片 ${selectedImageCount ? `(${selectedImageCount})` : ""}</button>` : ""}
               <button class="btn ghost" data-go-delivery>${icon("package", 14)} 去发布清单</button>
             </div>
           </div>
-          <div class="filter-bar card">
+          <div class="filter-bar card asset-smart-filters">
             <div class="fb-search">${icon("search", 14)}<input id="avSearch" placeholder="搜索素材名 / 标签" value="${esc(fQ)}" /></div>
-            <div class="fb-row">
-              <button class="chip ${fKind === "all" ? "on" : ""}" data-fkind="all">全部</button>
-              <button class="chip ${fKind === "video" ? "on" : ""}" data-fkind="video">${icon("film", 12)} 视频</button>
-              <button class="chip ${fKind === "image" ? "on" : ""}" data-fkind="image">${icon("image", 12)} 图文</button>
-            </div>
-            <div class="fb-row account-row ${accFilterExpanded ? "expanded" : ""}">
-              <button class="chip ${fAcc === "all" ? "on" : ""}" data-facc="all">全部账号</button>
-              ${visibleAccounts.map(a => `<button class="chip ${fAcc === a.id ? "on" : ""}" data-facc="${a.id}">${esc(a.name)}</button>`).join("")}
-              ${hiddenCount ? `<button class="chip ghost" data-acc-more>展开全部账号 +${hiddenCount}</button>` : (accFilterExpanded && accounts.length > 16 ? `<button class="chip ghost" data-acc-more>收起账号</button>` : "")}
-            </div>
+            ${libraryMode !== "bgm" ? `<label class="select-shell">${icon("filter", 13)}<select id="avKind"><option value="all">全部形式</option><option value="video" ${fKind === "video" ? "selected" : ""}>视频</option><option value="image" ${fKind === "image" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>` : ""}
+            <label class="select-shell account-select">${icon("users", 13)}<select id="avAccount"><option value="all">全部账号</option>${accounts.map(a => `<option value="${esc(a.id)}" ${fAcc === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           </div>
           <div id="avBody">
             ${renderBody(list)}
@@ -127,7 +121,6 @@ export const assetsView = {
           <div class="acc-sec-head">
             <button class="acc-sec-main" data-accsec="${id}">
               <span class="chev">${icon("chevronDown", 13)}</span>
-              ${acc ? `<span class="acc-sec-ava" style="background:${gradFor(acc.name)}">${esc(acc.name[0])}</span>` : `<span class="acc-sec-ava" style="background:var(--line-2)">?</span>`}
               <b>${esc(acc?.name || "未归属账号")}</b>
               ${acc ? `<span class="tag">${groupOf(acc)}</span>${platChip(acc.platform, true)}` : ""}
               <em>${items.length} 个</em>
@@ -151,9 +144,9 @@ export const assetsView = {
           applySearch();
         });
       }
-      $$("[data-fkind]", root).forEach(b => b.addEventListener("click", () => { fKind = b.dataset.fkind; draw(); }));
-      $$("[data-facc]", root).forEach(b => b.addEventListener("click", () => { fAcc = b.dataset.facc; draw(); }));
-      root.querySelector("[data-acc-more]")?.addEventListener("click", () => { accFilterExpanded = !accFilterExpanded; draw(); });
+      $("#avKind", root)?.addEventListener("change", e => { fKind = e.currentTarget.value; draw(); });
+      $$("[data-library]", root).forEach(b => b.addEventListener("click", () => { libraryMode = b.dataset.library; fKind = "all"; draw(); }));
+      $("#avAccount", root)?.addEventListener("change", e => { fAcc = e.currentTarget.value; draw(); });
       root.querySelector("[data-go-delivery]")?.addEventListener("click", () => { location.hash = "#/delivery"; });
       $$("[data-export-del-acc]", root).forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();

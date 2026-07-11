@@ -4,8 +4,7 @@
 import { $, $$, esc, gradFor, fmtTC, buildSRT, downloadBlob, clamp, spreadCaption, cleanCaptionText, wireDropZone } from "../core/util.js?v=20260623-captions";
 import { icon } from "../ui/icons.js";
 import { save, accountById, state } from "../core/store.js";
-import { autoAssemble, setStage, isVideoWorkshop, pickBgm } from "../domain/productions.js";
-import { BGM_POOL } from "../api/prompts.js";
+import { autoAssemble, setStage, isVideoWorkshop } from "../domain/productions.js";
 import { buildDeliveryName } from "../domain/accounts.js";
 import { accountAssets } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
@@ -36,7 +35,13 @@ export function renderCutPage(root, p) {
   const digitalSegmentForClip = c => (p.artifacts?.boards?.digitalHuman?.segments || [])
     .find(seg => (c?.segmentId && seg.id === c.segmentId) || (c?.jobId && seg.videoJobId === c.jobId));
   const videoUrlForClip = c => c?.videoUrl || jobForClip(c)?.output?.url || digitalSegmentForClip(c)?.videoOutput?.url || "";
-  const audioAssets = () => accountAssets(p.accountId).filter(a => a.type === "音频" && !a.delivered);
+  const audioAssets = () => accountAssets(p.accountId).filter(a => {
+    if (a.type !== "音频" || a.delivered) return false;
+    const tags = (a.tags || []).map(t => String(t || "").trim());
+    const isMusic = tags.some(t => /^(BGM|音乐库|配乐)$/i.test(t));
+    const isVoice = tags.some(t => /口播|语音|TTS|数字人/i.test(t)) || /口播|语音|数字人|TTS|MiniMax/i.test(a.name || "");
+    return isMusic && !isVoice;
+  });
   const mediaUrlForAsset = id => {
     const u = urlFor(id) || "";
     return u || "";
@@ -226,11 +231,10 @@ export function renderCutPage(root, p) {
               <input type="range" id="cutNarrationVol" min="0" max="100" step="5" value="${Math.round((p.artifacts.audio?.volume ?? 1) * 100)}" />
               <em id="cutNarrationVolV">${Math.round((p.artifacts.audio?.volume ?? 1) * 100)}%</em>
             </div>
-            <div class="cut-audio-row">
+            <div class="cut-audio-row cut-bgm-select">
               ${icon("music", 12)} BGM
-              <select class="input sm" id="cutBgm">
+              <select class="input sm" id="cutBgm" aria-label="选择 BGM">
                 <option value="">无 BGM</option>
-                ${BGM_POOL.map(b => `<option value="${esc(b.name)}" ${p.artifacts.bgm?.name === b.name ? "selected" : ""}>${esc(b.name)}（${b.mood}）</option>`).join("")}
                 ${audioAssets().length ? `<optgroup label="账号 BGM 库">${audioAssets().map(a => `<option value="asset:${esc(a.id)}" ${p.artifacts.bgm?.assetId === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</optgroup>` : ""}
               </select>
             </div>
@@ -572,10 +576,7 @@ export function renderCutPage(root, p) {
       const a = state.assets.find(x => x.id === id);
       p.artifacts.bgm = { name: a?.name || "上传 BGM", assetId: id, mood: "自定义", volume: p.artifacts.bgm?.volume ?? 0.25, auto: false };
     }
-    else {
-      const b = BGM_POOL.find(x => x.name === name);
-      p.artifacts.bgm = { name, mood: b?.mood || "", volume: p.artifacts.bgm?.volume ?? 0.25, auto: false };
-    }
+    else { p.artifacts.bgm = null; }
     save("productions");
     toast(name ? `BGM 已换为「${p.artifacts.bgm?.name || name}」` : "已移除 BGM");
   });
@@ -596,10 +597,7 @@ export function renderCutPage(root, p) {
   $("#cutBgmUp", root)?.addEventListener("change", e => addBgmFile(e.target.files?.[0]));
   const bgmVol = $("#cutBgmVol", root);
   if (bgmVol) bgmVol.addEventListener("input", e => {
-    if (!p.artifacts.bgm) {
-      const b = pickBgm(acc?.styleProfile || acc?.voiceName, p.topic);
-      p.artifacts.bgm = { name: b.name, mood: b.mood, volume: 0.25, auto: false };
-    }
+    if (!p.artifacts.bgm?.assetId) { toast("请先上传或选择一条 BGM", "error"); return; }
     p.artifacts.bgm.volume = (+e.target.value) / 100;
     $("#cutBgmVolV", root).textContent = e.target.value + "%";
     save("productions");

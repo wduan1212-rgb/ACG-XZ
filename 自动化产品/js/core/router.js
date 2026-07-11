@@ -41,9 +41,10 @@ export function render() {
     zone = "agent"; page = null; location.hash = "#/agent";
   }
   if (zone === "studio") allowStudioFromAgentUntil = 0;
-  // 权限路由：供应商只进发布清单；设置和语音工作台仅管理员
-  if (state.role === "supplier" && zone !== "delivery") { zone = "delivery"; page = null; location.hash = "#/delivery"; }
-  if (state.role !== "admin" && (zone === "settings" || zone === "voice")) { zone = "overview"; page = null; location.hash = "#/overview"; }
+  // 权限路由：供应商子账号只处理发布；供应商母账号可看首页、账号板、发布和设置。
+  if (state.role === "supplier_child" && zone !== "delivery") { zone = "delivery"; page = null; location.hash = "#/delivery"; }
+  if ((state.role === "supplier_parent" || state.role === "supplier") && !["overview", "assets", "delivery", "settings"].includes(zone)) { zone = "overview"; page = null; location.hash = "#/overview"; }
+  if (state.role !== "admin" && state.role !== "supplier_parent" && state.role !== "supplier" && (zone === "settings" || zone === "voice")) { zone = "overview"; page = null; location.hash = "#/overview"; }
   if (!routes.has(zone)) { zone = "overview"; page = null; }
   current = { zone, page };
 

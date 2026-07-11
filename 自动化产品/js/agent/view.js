@@ -403,7 +403,10 @@ function rerenderPlanCard(mid) {
   const tmp = document.createElement("div");
   tmp.innerHTML = renderMessage(m);
   const fresh = tmp.firstElementChild;
-  if (fresh) safeReplaceNode(node, fresh);
+  if (fresh) {
+    fresh.classList.add("no-enter");
+    safeReplaceNode(node, fresh);
+  }
   wireDrops();
   restorePlanScroll(snap, fresh);
 }
@@ -813,7 +816,7 @@ function wire(root) {
       }
       case "plan-custom-refremove": {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
-        const accountId = act.closest("[data-ref-account]")?.dataset.refAccount || act.closest("[data-pacc-ref]")?.dataset.paccRef;
+        const accountId = act.dataset.refAccount || act.closest("[data-ref-account]")?.dataset.refAccount || act.closest("[data-pacc-ref]")?.dataset.paccRef;
         if (m && accountId) {
           const id = act.dataset.refid;
           m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
