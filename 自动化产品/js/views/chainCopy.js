@@ -2,12 +2,12 @@
 
 import { $, $$, esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { accountById, canDeliver } from "../core/store.js";
+import { canDeliver } from "../core/store.js";
 import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
 import { toast, openLightbox, publishModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260712-v73-4";
 import { reviewPreviewHtml } from "./prodDrawer.js";
 
 export function renderCopyPage(root, p) {
@@ -43,8 +43,37 @@ export function renderCopyPage(root, p) {
 
 /* ---------- 审核页 ---------- */
 export function renderReviewPage(root, p) {
-  const acc = accountById(p.accountId);
   const isImg = p.mode === "图文";
+  if (!isImg && !p.artifacts?.boards?.cover?.assetId) {
+    const cover = p.artifacts?.boards?.cover || {};
+    root.innerHTML = `
+      ${stepperHtml(p, "review")}
+      <div class="chain-page solo review-page">
+        <div class="empty-state card">
+          ${icon("image", 24)}
+          <b>${cover.status === "failed" ? "封面自动生成失败" : "正在补齐视频封面"}</b>
+          <p>${cover.status === "failed" ? esc(cover.error || "请重试或返回文案分镜手动上传封面") : "审核前必须有封面，生成完成后会自动进入审核。"}</p>
+          ${cover.status === "failed" ? `<button class="btn primary" id="rvRetryCover">重新生成封面</button><button class="btn ghost" id="rvBackWorkshop">返回文案分镜</button>` : `<span class="status-pill running">生成中</span>`}
+        </div>
+      </div>`;
+    wireStepper(root);
+    const run = async () => {
+      try {
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260712-v73-4");
+        await ensureVideoCover(p);
+        if (root.isConnected) renderReviewPage(root, p);
+      } catch (err) {
+        if (root.isConnected) renderReviewPage(root, p);
+      }
+    };
+    if (cover.status !== "loading" && cover.status !== "failed") queueMicrotask(run);
+    $("#rvRetryCover", root)?.addEventListener("click", () => {
+      p.artifacts.boards.cover.status = "idle";
+      run();
+    });
+    $("#rvBackWorkshop", root)?.addEventListener("click", () => go("studio", "workshop"));
+    return;
+  }
   const canPub = canDeliver();
   const shots = p.artifacts.script.shots || [];
   const items = (isImg ? p.artifacts.images.items : p.artifacts.boards.items) || [];
@@ -53,20 +82,10 @@ export function renderReviewPage(root, p) {
 
   root.innerHTML = `
     ${stepperHtml(p, "review")}
-    <div class="chain-page">
+    <div class="chain-page solo review-page">
       <div class="chain-main">
-        <div class="page-head">
-          <div><div class="eyebrow">定稿发布</div>
-          <h2>${deliveredState ? "已发布" : "确认无误后定稿并发布"}</h2></div>
-          <div class="head-actions">
-            ${deliveredState ? `<button class="btn ghost" id="rvToDelivery">${icon("package", 14)} 去发布清单</button>`
-            : canPub ? `<button class="btn primary" id="rvDeliver">${icon("package", 14)} 定稿并发布入供应商端</button>`
-            : `<span class="muted">当前账号无发布权限</span>`}
-          </div>
-        </div>
-
-        ${deliveredState ? `<div class="review-banner ok card">${icon("checkCircle", 18)}<div><b>已发布：${esc(p.delivery?.name || "")}${p.delivery?.pubSeq ? ` · #${String(p.delivery.pubSeq).padStart(3, "0")}` : ""}</b><em>发布清单与供应商端可见 · ${isImg ? "图集 zip + 文案.txt" : "成片 + 标题简介"}</em></div></div>`
-        : `<div class="review-banner card">${icon("eye", 16)}<div><b>发布前自检</b><em>核对下方成片预览 / 脚本 / 文案，确认无误后点右上角「定稿并发布」即入供应商端</em></div></div>`}
+        ${deliveredState ? `<div class="review-banner ok card review-publish-bar">${icon("checkCircle", 18)}<div><b>已发布：${esc(p.delivery?.name || "")}${p.delivery?.pubSeq ? ` · #${String(p.delivery.pubSeq).padStart(3, "0")}` : ""}</b><em>发布清单与供应商端可见 · ${isImg ? "图集 zip + 文案.txt" : "成片 + 标题简介"}</em></div><button class="btn ghost" id="rvToDelivery">${icon("package", 14)} 去发布清单</button></div>`
+        : `<div class="review-banner card review-publish-bar">${icon("eye", 16)}<div><b>发布前自检</b><em>核对下方成片预览、脚本与文案，确认无误后即可定稿发布</em></div>${canPub ? `<button class="btn primary" id="rvDeliver">${icon("package", 14)} 定稿并发布入供应商端</button>` : `<span class="muted">当前账号无发布权限</span>`}</div>`}
 
         ${reviewPreviewHtml(p) ? `<section class="card review-sec">
           <div class="card-head"><b>成片预览</b><em>${isImg ? "组图配图" : "9:16 成片构成"}</em></div>
@@ -93,21 +112,6 @@ export function renderReviewPage(root, p) {
           <div class="rv-copy"><b>${esc(p.artifacts.copy.title || "（未填标题）")}</b><pre>${esc(p.artifacts.copy.body || "（未填文案）")}</pre></div>
         </section>
       </div>
-
-      <aside class="chain-side">
-        <div class="side-card card">
-          <h3>交付物</h3>
-          <div class="pos-card">
-            <div class="pc-row"><span>账号</span><b>${esc(acc.name)}</b></div>
-            <div class="pc-row"><span>形式</span><b>${isImg ? `${visuals.length} 张图集 zip` : `${(p.artifacts.timeline || []).length} 段成片`}</b></div>
-            <div class="pc-row"><span>命名</span><b>${esc(p.delivery?.name || "交付时自动生成")}</b></div>
-          </div>
-        </div>
-        <div class="side-card card hint">
-          <h3>发布说明</h3>
-          <p>创作者自检无误后即可「定稿并发布」入供应商端，无需额外审核门槛。发布后进入发布清单按发布序号排序，供应商端按标签可见、可批量下载；管理员可在发布清单非强制地标注「已审阅」。</p>
-        </div>
-      </aside>
     </div>`;
 
   wireStepper(root);

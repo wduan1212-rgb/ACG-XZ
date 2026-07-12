@@ -403,12 +403,12 @@ function buildInfoFlowPublishCopy({ title, topic, productName, product }) {
   ].join("\n\n");
 }
 
-function buildInfoFlowStoryboards({ mainTopic, productName, focus }) {
+function buildInfoFlowStoryboards({ mainTopic, productName, focus, styleAnchor = "" }) {
+  const style = styleAnchor || "超写实真人信息流质感，真实自然光、真实材质、克制运镜，前后段保持同一色温和镜头语言";
+  const rule = `统一风格：${style}。B面分镜仅生成产品界面、桌面软件窗口和屏幕录制构图；禁止人物、正脸、手部、手指、人体部位、Q版角色、Q版手部和拟人化肢体。界面文字密度低，仅保留少量清晰简体中文，禁止乱码、花字、水印和二维码。`;
   return [
-    `9:16竖屏分镜图1：信息流功能演示开场，主题是「${mainTopic}」。桌面上有${focus.prop}，画面有透视纵深，人物手把资料拖进${productName}工作区，能看出“混乱需求开始被接住”。`,
-    `9:16竖屏分镜图2：${productName}任务拆解界面近景，屏幕上清晰出现“资料整理、步骤拆解、执行结果、复核清单”四个区域，视觉重心是任务卡从输入框延伸出来。`,
-    `9:16竖屏分镜图3：${productName}执行中段，左侧是原始资料和截图，右侧是生成的清单、表格、网页或报告初稿，画面强调${focus.feature}，文字少而完整。`,
-    `9:16竖屏分镜图4：执行结果收束，文件夹、预览页面和交付清单同时出现，角色手指点击发送，画面表达${focus.result}，保留产品logo或界面参考但不要堆满屏。`
+    `9:16竖屏分镜图1：${rule}主题是「${mainTopic}」。${productName}任务拆解界面近景，用简洁图形表达资料导入、步骤拆解和执行状态。`,
+    `9:16竖屏分镜图2：${rule}${productName}结果界面近景，原始资料、可改初版和复核清单形成清楚的三栏关系。`
   ];
 }
 
@@ -482,6 +482,7 @@ function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed =
   const finalTitle = customTitle || (cleanTopic ? batchInfoFlowTitle({ topic: mainTopic, productName, seed: variantSeed }) : direction.title(productName));
   const roleAnchor = infoFlowRoleAnchor(acc);
   const voiceAnchor = infoFlowVoiceAnchor(acc);
+  const styleAnchor = "超写实真人信息流质感，真实自然光、真实皮肤和材质、克制手持运镜；前后两段保持同一色温、颗粒和镜头语言。";
   const focus = infoFlowFeatureBrief(`${mainTopic} ${angle.focus}`, productName);
   const frontBase = buildInfoFlowFrontBeat({ mainTopic: storyTopic, productName, focus, seed: variantSeed });
   const copy = stripLeadingCopyTitle(customCopy || buildInfoFlowPublishCopy({ title: finalTitle, topic: mainTopic, productName, product }), finalTitle);
@@ -490,17 +491,19 @@ function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed =
     "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次。",
     roleAnchor,
     voiceAnchor,
+    styleAnchor,
     frontBase,
     VIDEO_NEGATIVE_PROMPT
   ].join("\n");
   const backPrompt = [
     "快节奏的信息流广告风格，生成9:16短视频后15秒产品功能演示段。根据功能演示分镜图、产品logo和产品界面参考继续生成；画面要呼应前段冲突，口播直接讲操作动作和结果，不要使用自指式说明。",
-    roleAnchor,
+    "B面仅展示真实产品界面、桌面软件窗口和屏幕录制式操作；禁止人物、手部、手指、人体部位、Q版角色和拟人化肢体。界面文字少而清楚，避免高密度文字。",
     voiceAnchor,
+    styleAnchor,
     backBase,
     VIDEO_NEGATIVE_PROMPT
   ].join("\n");
-  const storyboards = buildInfoFlowStoryboards({ mainTopic: storyTopic, productName, focus });
+  const storyboards = buildInfoFlowStoryboards({ mainTopic: storyTopic, productName, focus, styleAnchor });
   return {
     title: finalTitle,
     topic: mainTopic,
@@ -570,7 +573,7 @@ async function generateBatchInfoFlowStoryboards(p, batch, acc) {
     : buildBatchInfoFlowPlan({ topic: p.topic, product: productById(p.artifacts.script.productId || "dumate"), acc, seed: p.id }).segments[1].storyboardPrompts)
     .map(sanitizeStoryboardText)
     .filter(Boolean)
-    .slice(0, 3);
+    .slice(0, 2);
   if (!prompts.length) return false;
   back.storyboardPrompts = prompts;
   const made = [];
@@ -581,7 +584,7 @@ async function generateBatchInfoFlowStoryboards(p, batch, acc) {
   try {
     for (let i = 0; i < prompts.length; i++) {
       const req = await withTimeout(provider.submit({
-        prompt: enrichBatchImagePrompt(`${storyboardSafePrompt(prompts[i])}\n画面必须是9:16竖版分镜图，文字少而清晰，保留产品logo/界面参考，不要二维码，不要页码。`, refs),
+        prompt: enrichBatchImagePrompt(`${storyboardSafePrompt(prompts[i])}\n画面必须是9:16竖版纯界面分镜图，仅展示产品界面和桌面软件窗口；禁止人物、手部、手指、人体部位、Q版角色和拟人化肢体。文字密度低，仅保留少量清晰界面文字，不要二维码，不要页码。`, refs),
         refs,
         ratio: "9:16",
         apiKey: key?.secret,
@@ -601,7 +604,7 @@ async function generateBatchInfoFlowStoryboards(p, batch, acc) {
       touchInfoFlowProduction(p, info);
       save("productions");
     }
-    back.storyboardAssetIds = [...new Set([...(back.storyboardAssetIds || []), ...made])];
+    back.storyboardAssetIds = made.slice(0, 2);
     info.storyboards = back.storyboardAssetIds;
     info.status = "ready";
     info.error = "";
@@ -809,6 +812,7 @@ export function agentSay(text, extra = {}) {
 /* ---------- 批次 ---------- */
 export function createBatch(plan, sessionId) {
   enforcePlanKind(plan);
+  const customTitles = Object.values(plan.accountCopyTitles || {}).map(x => String(x || "").trim()).filter(Boolean);
   const sharedRefAssetIds = [...new Set([
     ...(Array.isArray(plan.sharedRefAssetIds) ? plan.sharedRefAssetIds : []),
     plan.sharedRefAssetId
@@ -825,8 +829,8 @@ export function createBatch(plan, sessionId) {
     goal: plan.goal || "",
     creativeMode: plan.creativeMode || "custom",
     contentKind: plan.contentKind || "image",
-    topic: (plan.content || "").trim() || (plan.topic || "").trim() || "四方向自动选题",
-    topicMode: (plan.content || "").trim() ? "fixed" : (plan.topicMode || "random"),   // fixed | random（每条内容自动出题）
+    topic: (plan.content || "").trim() || (plan.topic || "").trim() || customTitles[0] || "自定义文案创作",
+    topicMode: "fixed",
     productId: plan.productId || "dumate",
     content: plan.content || "",
     accountProductIds: plan.accountProductIds || {},

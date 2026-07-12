@@ -6,7 +6,7 @@ import { state, save, accountById } from "../core/store.js";
 import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8 } from "../domain/assets.js";
 import { downloadAsset } from "../domain/delivery.js";
 import { platChip, groupOf } from "../domain/accounts.js";
-import { emptyState, promptModal, confirmModal, openLightbox, toast, withLoading } from "../ui/components.js";
+import { emptyState, promptModal, confirmModal, openLightbox, toast, withLoading, removeWithMotion } from "../ui/components.js";
 import { renderSupplierAccounts } from "./supplierViews.js";
 
 let fAcc = "all", fQ = "", fKind = "all", libraryMode = "shared", collapseInitialized = false;
@@ -46,12 +46,19 @@ export const assetsView = {
   render(root) {
     if (["supplier", "supplier_parent"].includes(state.role)) { renderSupplierAccounts(root); return; }
     // 从账号资产库跳来时预筛该账号
-    if (state.ui.assetsFilterAccount) { fAcc = state.ui.assetsFilterAccount; fQ = ""; state.ui.assetsFilterAccount = null; }
+    let includeAccountPrivate = Boolean(state.ui.assetsIncludePrivate);
+    if (state.ui.assetsFilterAccount) {
+      fAcc = state.ui.assetsFilterAccount;
+      fQ = "";
+      state.ui.assetsFilterAccount = null;
+      state.ui.assetsIncludePrivate = false;
+      save("meta");
+    }
     const draw = () => {
       $("#assetsTopDock")?.remove();
       let list = searchAssets({ accountId: fAcc, tag: "all", q: fQ, includeDelivered: true })
         .filter(a => libraryMode === "shared"
-          ? isSharedAsset(a)
+          ? (includeAccountPrivate && fAcc !== "all" ? a.accountId === fAcc : isSharedAsset(a))
           : libraryMode === "bgm"
             ? (a.type === "音频" && (a.tags || []).some(t => /bgm|配乐|音乐/i.test(t)) && !(a.tags || []).some(t => /口播|语音|tts/i.test(t)))
             : (a.tags || []).some(t => /素材库|剪辑素材|视频素材/.test(t)))
@@ -155,7 +162,7 @@ export const assetsView = {
       }
       $("#avKind", root)?.addEventListener("change", e => { fKind = e.currentTarget.value; draw(); });
       $$("[data-library]", $("#assetsTopDock") || root).forEach(b => b.addEventListener("click", () => { libraryMode = b.dataset.library; fKind = "all"; draw(); }));
-      $("#avAccount", root)?.addEventListener("change", e => { fAcc = e.currentTarget.value; draw(); });
+      $("#avAccount", root)?.addEventListener("change", e => { fAcc = e.currentTarget.value; includeAccountPrivate = false; draw(); });
       $("#assetsTopDock [data-go-delivery]")?.addEventListener("click", () => { location.hash = "#/delivery"; });
       [...$$("[data-export-del-acc]", root), ...$$("#assetsTopDock [data-export-del-acc]")].forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();
@@ -203,7 +210,10 @@ export const assetsView = {
         });
         card.querySelector('[data-aact="del"]').addEventListener("click", async () => {
           const ok = await confirmModal({ title: `删除素材「${a.name}」？`, danger: true, okText: "删除" });
-          if (ok) { await removeAsset(a.id); draw(); }
+          if (ok) {
+            await removeWithMotion(card, () => removeAsset(a.id));
+            if (!root.querySelector(".asset-card")) draw();
+          }
         });
       });
     };

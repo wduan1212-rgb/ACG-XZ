@@ -10,7 +10,7 @@ import { accountAssets } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260712-v73-4";
 
 let PPS = 40;
 const CLIP_SEC = 15;
@@ -18,7 +18,22 @@ const histories = new Map(); // productionId -> []
 
 export function renderCutPage(root, p) {
   const acc = accountById(p.accountId);
-  if (!p.artifacts.subStyle) p.artifacts.subStyle = { size: 13, stroke: 2, bottom: 12 };
+  const legacySubStyle = p.artifacts.subStyle
+    && Number(p.artifacts.subStyle.size) === 13
+    && Number(p.artifacts.subStyle.stroke) === 2
+    && Number(p.artifacts.subStyle.bottom) === 12;
+  const lowSubStyle = p.artifacts.subStyle
+    && Number(p.artifacts.subStyle.size) === 11
+    && Number(p.artifacts.subStyle.stroke) === 1
+    && Number(p.artifacts.subStyle.bottom) === 5;
+  if (!p.artifacts.subStyle || legacySubStyle || lowSubStyle) {
+    p.artifacts.subStyle = { size: 11, stroke: 1, bottom: 22 };
+    if (legacySubStyle || lowSubStyle) {
+      p.artifacts.finalVideoUrl = "";
+      p.artifacts.finalVideoCaptionSig = "";
+    }
+    save("productions");
+  }
   let playheadT = 0;
   let playTimer = null;
   let activeSubIdx = 0;
@@ -72,7 +87,10 @@ export function renderCutPage(root, p) {
     const jobs = state.jobs.filter(job => job.productionId === p.id && job.kind === "video");
     return jobs.length > 0 && jobs.every(job => job.status === "succeeded");
   };
-  const captionSignature = () => JSON.stringify(SUBS().map(s => [s.start, s.end, cleanCaptionText(s.text || "")]));
+  const captionSignature = () => JSON.stringify({
+    cues: SUBS().map(s => [s.start, s.end, cleanCaptionText(s.text || "")]),
+    style: p.artifacts.subStyle
+  });
   const timelineSignature = () => JSON.stringify(TL().map(c => [c.id, c.videoUrl || c.jobId, c.dur, c.trimIn || 0]));
   const needsCompose = () => !!TL().length && (!p.artifacts.finalVideoUrl
     || p.artifacts.finalVideoCaptionSig !== captionSignature()
@@ -110,6 +128,52 @@ export function renderCutPage(root, p) {
     const digital = p.artifacts?.boards?.generationMode === "digitalHuman";
     if (digital && (force || !SUBS().length || p.artifacts.subTimingSource !== "manual")) rebuildDigitalCaptions();
     else normalizeCaptionTrack();
+  }
+
+  function captionTextForClip(clip, index) {
+    const digital = digitalSegmentForClip(clip);
+    if (digital?.line) return String(digital.line).trim();
+    const unit = (p.artifacts.boards?.units || []).find(item => item.id === clip.unitId);
+    const scriptLine = unit
+      ? (unit.shotIndexes || []).map(i => p.artifacts.script.shots?.[i]?.line || "").filter(Boolean).join(" ").trim()
+      : String(p.artifacts.script.shots?.[index]?.line || "").trim();
+    const infoPrompt = p.artifacts.boards?.infoFlow?.segments?.[index]?.videoPrompt || "";
+    const unitPrompt = unit?.prompt || unit?.videoPrompt || "";
+    const prompt = `${unitPrompt}\n${infoPrompt}`;
+    const quoted = [...prompt.matchAll(/[“"「]([^”"」]{3,48})[”"」]/g)].map(match => match[1].trim());
+    return [...new Set([scriptLine, ...quoted].filter(Boolean))].join("，");
+  }
+
+  async function alignCaptionsToAudio({ silent = false } = {}) {
+    const clips = TL().map((clip, index) => ({ url: videoUrlForClip(clip), text: captionTextForClip(clip, index) })).filter(item => item.url && item.text);
+    if (!clips.length) return false;
+    if (p.artifacts.audioTimingPending) return false;
+    p.artifacts.audioTimingPending = true;
+    save("productions");
+    try {
+      const res = await fetch("/api/video/audio-timing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clips })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !Array.isArray(data.cues) || !data.cues.length) throw new Error(data.detail || "未检测到可匹配的人声区间");
+      p.artifacts.subs = normalizeCaptionTrack(data.cues.map(cue => ({ ...cue, autoAligned: true })));
+      p.artifacts.subTimingSource = "audio-analysis-v3";
+      p.artifacts.audioTimingSource = data.source || "audio-analysis-v3";
+      p.artifacts.finalVideoUrl = "";
+      p.artifacts.finalVideoCaptionSig = "";
+      save("productions");
+      drawTimeline();
+      if (!silent) toast(`已按真实视频人声匹配 ${data.cues.length} 条字幕`);
+      return true;
+    } catch (err) {
+      if (!silent) toast(`音轨匹配失败，已保留口播估时：${err?.message || err}`, "error");
+      return false;
+    } finally {
+      p.artifacts.audioTimingPending = false;
+      save("productions");
+    }
   }
 
   function syncClipDurationFromMedia(clipId, duration) {
@@ -154,6 +218,7 @@ export function renderCutPage(root, p) {
           bgmUrl: bgmMedia.url || "",
           bgmVolume: p.artifacts.bgm?.volume ?? 0.25,
           narrationVolume: p.artifacts.audio?.volume ?? 1,
+          subtitleStyle: p.artifacts.subStyle,
           subtitles: SUBS().filter(s => cleanCaptionText(s.text || "")).map(s => ({
             start: Number(s.start || 0), end: Number(s.end || 0), text: cleanCaptionText(s.text || "")
           }))
@@ -223,6 +288,11 @@ export function renderCutPage(root, p) {
           <div class="cp-bar"><span id="cpTimecode">00:00 / 00:30</span></div>
         </section>
         <aside class="cut-side">
+          <div class="side-card card">
+            <h3>${p.artifacts.composing ? "正在合成" : "交付"}</h3>
+            ${p.artifacts.composeError ? `<p class="muted">${esc(p.artifacts.composeError)}</p>` : ""}
+            <button class="btn primary block" id="cutNext">下一步：审核 ${icon("arrowRight", 13)}</button>
+          </div>
           ${isVideoWorkshop(p) ? `
           <div class="side-card card">
             <h3>${icon("music", 14)} 声音轨</h3>
@@ -244,12 +314,8 @@ export function renderCutPage(root, p) {
               <input type="range" id="cutBgmVol" min="5" max="60" step="5" value="${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}" />
               <em id="cutBgmVolV">${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}%</em>
             </div>
+            <button class="btn ghost block" id="tlFillSubs" title="从当前视频识别真实口播，并用脚本文字智能修正">${icon("type", 13)} 识别字幕</button>
           </div>` : ""}
-          <div class="side-card card">
-            <h3>${p.artifacts.composing ? "正在合成" : "交付"}</h3>
-            ${p.artifacts.composeError ? `<p class="muted">${esc(p.artifacts.composeError)}</p>` : ""}
-            <button class="btn primary block" id="cutNext">下一步：审核 ${icon("arrowRight", 13)}</button>
-          </div>
         </aside>
       </div>
 
@@ -260,8 +326,7 @@ export function renderCutPage(root, p) {
             <em class="muted" id="tlMeta"></em>
           </div>
           <div class="tlt-actions">
-            <button class="icon-btn sm tl-text-btn" id="tlFillSubs" title="按已绑定口播重建字幕">T</button>
-            <button class="icon-btn sm" id="tlAddSub" title="添加字幕">${icon("plus", 13)}</button>
+            <button class="icon-btn sm tl-text-btn" id="tlAddSub" title="增加文字">T</button>
             <button class="icon-btn sm" id="tlSplit" title="在播放头处分割选中片段">${icon("split", 13)}</button>
             <button class="icon-btn sm" id="tlSrt" title="导出 SRT">${icon("download", 13)}</button>
             <button class="icon-btn sm" id="tlUndo" title="撤回">${icon("undo", 13)}</button>
@@ -312,7 +377,8 @@ export function renderCutPage(root, p) {
     stk.innerHTML = SUBS().map((s, i) => `
       <div class="tl-sub ${i === activeSubIdx ? "is-active" : ""}" data-i="${i}" style="left:${(s.start || 0) * PPS}px;width:${Math.max(24, ((s.end || 0) - (s.start || 0)) * PPS - 2)}px">
         <span class="tl-sub-text">${esc(cleanCaptionText(s.text || "字幕"))}</span>
-        <span class="tl-sub-resize" data-i="${i}"></span>
+        <span class="tl-sub-resize left" data-i="${i}" data-side="left" title="拖动字幕开始时间"></span>
+        <span class="tl-sub-resize right" data-i="${i}" data-side="right" title="拖动字幕结束时间"></span>
       </div>`).join("");
 
     $$(".tl-clip-preview", root).forEach(video => video.addEventListener("loadedmetadata", () => {
@@ -361,7 +427,7 @@ export function renderCutPage(root, p) {
     const sub = SUBS().find(s => playheadT >= (s.start || 0) && playheadT < (s.end || 0));
     const el = $("#cpSub", root);
     if (sub && (sub.text || "").trim()) { el.hidden = false; el.textContent = cleanCaptionText(sub.text); }
-    else { const s2 = SUBS()[activeSubIdx]; if (s2 && (s2.text || "").trim() && !playTimer) { el.hidden = false; el.textContent = cleanCaptionText(s2.text); } else el.hidden = true; }
+    else el.hidden = true;
     applySubStyle();
     syncPreviewAudio(!!playTimer);
   }
@@ -483,15 +549,24 @@ export function renderCutPage(root, p) {
       h.addEventListener("pointerdown", e => {
         e.stopPropagation(); e.preventDefault();
         const i = +h.dataset.i; const s = SUBS()[i]; if (!s) return;
-        const startX = e.clientX, origEnd = s.end || 0;
+        const side = h.dataset.side || "right";
+        const startX = e.clientX, origStart = s.start || 0, origEnd = s.end || 0;
         let snapped = false;
         h.setPointerCapture(e.pointerId);
         const el = h.closest(".tl-sub");
         const move = ev => {
           if (!snapped) { snapshot(); snapped = true; }
-          const next = SUBS()[i + 1];
-          const upper = next ? Math.max((s.start || 0) + .5, (next.start || 0) - .1) : Infinity;
-          s.end = Math.min(upper, Math.max((s.start || 0) + 0.5, Math.round((origEnd + (ev.clientX - startX) / PPS) * 2) / 2));
+          const delta = (ev.clientX - startX) / PPS;
+          if (side === "left") {
+            const prev = SUBS()[i - 1];
+            const lower = prev ? (prev.end || 0) + .1 : 0;
+            s.start = Math.min(origEnd - .5, Math.max(lower, Math.round((origStart + delta) * 2) / 2));
+          } else {
+            const next = SUBS()[i + 1];
+            const upper = next ? Math.max((s.start || 0) + .5, (next.start || 0) - .1) : Infinity;
+            s.end = Math.min(upper, Math.max((s.start || 0) + 0.5, Math.round((origEnd + delta) * 2) / 2));
+          }
+          el.style.left = (s.start * PPS) + "px";
           el.style.width = Math.max(24, (s.end - (s.start || 0)) * PPS - 2) + "px";
         };
         const up = () => { h.removeEventListener("pointermove", move); h.removeEventListener("pointerup", up); p.artifacts.subTimingSource = "manual"; normalizeCaptionTrack(); save("productions"); drawTimeline(); };
@@ -538,6 +613,7 @@ export function renderCutPage(root, p) {
         <input class="input num" id="tseStart" type="number" min="0" step="0.5" value="${s.start}" /> →
         <input class="input num" id="tseEnd" type="number" min="0" step="0.5" value="${s.end}" /> 秒
         <textarea class="input grow" id="tseText" rows="1" placeholder="字幕文字，可换行">${esc(s.text || "")}</textarea>
+        <button class="icon-btn sm" id="tseDelete" title="删除当前字幕">${icon("trash", 13)}</button>
       </div>
       <div class="tse-row style">
         <span>字号</span><input type="range" id="tseSize" min="10" max="26" step="1" value="${st.size}" /><em id="tseSizeV">${st.size}px</em>
@@ -553,6 +629,16 @@ export function renderCutPage(root, p) {
       const blk = $$(".tl-sub", root)[i];
       if (blk) blk.querySelector(".tl-sub-text").textContent = cleanCaptionText(e.target.value || "字幕");
       updatePlayhead();
+    });
+    $("#tseDelete", root).addEventListener("click", () => {
+      snapshot();
+      SUBS().splice(i, 1);
+      activeSubIdx = Math.max(0, Math.min(i, SUBS().length - 1));
+      activeTrack = "";
+      p.artifacts.subTimingSource = "manual";
+      save("productions");
+      drawTimeline();
+      toast("已删除字幕，可用撤回恢复");
     });
     const wireStyle = (id, valId, key, fmt) => {
       $(id, root).addEventListener("input", e => {
@@ -609,11 +695,18 @@ export function renderCutPage(root, p) {
     syncPreviewAudio(!!playTimer);
     save("productions");
   });
-  $("#tlFillSubs", root).addEventListener("click", () => {
+  $("#tlFillSubs", root).addEventListener("click", async () => {
     const digitalSegments = p.artifacts.boards?.digitalHuman?.segments || [];
     const rows = (p.artifacts.script.shots || []).filter(s => (s.line || "").trim());
     if (!digitalSegments.length && !rows.length) { toast("还没有可匹配的口播内容"); return; }
     snapshot();
+    const button = $("#tlFillSubs", root);
+    button.disabled = true;
+    button.innerHTML = `${icon("refresh", 13)} 识别中…`;
+    const aligned = await alignCaptionsToAudio();
+    button.disabled = false;
+    button.innerHTML = `${icon("type", 13)} 识别字幕`;
+    if (aligned) return;
     let t = 0; const subs = [];
     const per = p.artifacts.audio?.perShot || [];
     const sourceRows = digitalSegments.length
@@ -736,6 +829,7 @@ export function renderCutPage(root, p) {
       } else if (activeTrack === "sub" && SUBS()[activeSubIdx]) {
         SUBS().splice(activeSubIdx, 1);
         activeSubIdx = Math.max(0, Math.min(activeSubIdx, SUBS().length - 1));
+        p.artifacts.subTimingSource = "manual";
       }
       activeTrack = "";
       save("productions"); drawTimeline();
@@ -752,7 +846,7 @@ export function renderCutPage(root, p) {
     }
   });
 
-  $("#cutNext", root).addEventListener("click", () => {
+  $("#cutNext", root).addEventListener("click", async () => {
     if (!TL().length) { toast("时间轴为空：请先等待视频片段生成完成"); return; }
     if (p.artifacts.composing) { toast("正在自动合成成片，请稍候"); return; }
     if (videoJobsComplete() && needsCompose()) {
@@ -761,14 +855,24 @@ export function renderCutPage(root, p) {
       return;
     }
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
-      toast("先回到文案分镜生成或上传封面图，再进入发布");
-      return;
+      toast("未检测到封面，正在自动生成");
+      try {
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260712-v73-4");
+        await ensureVideoCover(p);
+        toast("封面已自动生成并入库");
+      } catch (err) {
+        toast("封面自动生成失败：" + (err?.message || err), "error");
+        return;
+      }
     }
     if (p.stage === "cut" || p.stage === "render" || p.stage === "copy") setStage(p, "review", "pending");
     go("studio", "review");
   });
 
   drawTimeline();
+  if (p.artifacts.subTimingSource !== "audio-analysis-v3" && TL().some(c => videoUrlForClip(c)) && !p.artifacts.audioTimingPending) {
+    queueMicrotask(() => alignCaptionsToAudio({ silent: true }));
+  }
   if (needsCompose() && !p.artifacts.composing && !p.artifacts.composeError && videoJobsComplete()) {
     queueMicrotask(() => composeFinal({ automatic: true }));
   }

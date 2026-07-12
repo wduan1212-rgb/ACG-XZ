@@ -277,6 +277,18 @@ export async function replaceAssetBlob(assetId, dataUrl) {
 
 export async function removeAsset(id) {
   const a = assetById(id); if (!a) return;
+  const scrub = value => {
+    if (Array.isArray(value)) return value.filter(item => item !== id).map(scrub);
+    if (!value || typeof value !== "object") return value === id ? null : value;
+    Object.keys(value).forEach(key => {
+      if (value[key] === id) value[key] = null;
+      else value[key] = scrub(value[key]);
+    });
+    return value;
+  };
+  state.accounts.forEach(scrub);
+  state.productions.forEach(scrub);
+  state.jobs.forEach(scrub);
   state.assets = state.assets.filter(x => x.id !== id);
   await db.delBlob(id);
   const u = urlCache.get(id);
@@ -287,7 +299,7 @@ export async function removeAsset(id) {
       headers: { "Authorization": "Bearer " + remote.getToken() }
     }).catch(() => null);
   }
-  save("assets");
+  save("assets", "accounts", "productions", "jobs");
   removeRemote("assets", id);
 }
 
@@ -315,12 +327,12 @@ export async function assetU8(id) {
   return { u8: new Uint8Array(await b.arrayBuffer()), ext: extOfMime(b.type || "image/png") };
 }
 
-/* 缩略 html：有图用图，无图用渐变占位 */
-const TYPE_HUE = { "图片": "linear-gradient(135deg,#3D5BFF,#4b8dff)", "视频": "linear-gradient(135deg,#7A4DFF,#3D5BFF)", "音频": "linear-gradient(135deg,#0CA678,#22B8CF)", "图集": "linear-gradient(135deg,#E64980,#7A4DFF)" };
+/* 缩略 html：没有可视帧时使用统一黑白媒体占位。 */
+const TYPE_ICON = { "图片": "▧", "视频": "▶", "音频": "♪", "图集": "▦" };
 export function thumbHtml(a, cls = "") {
   const u = urlFor(a);
   if (u && a.type !== "音频") return `<img class="${cls}" src="${u}" alt="" loading="lazy"/>`;
-  return `<div class="ph ${cls}" style="background:${TYPE_HUE[a.type] || gradFor(a.name)}"><span>${esc((a.type || a.name || "素")[0])}</span></div>`;
+  return `<div class="ph media-placeholder ${cls}" data-kind="${esc(a.type || "素材")}"><span>${TYPE_ICON[a.type] || "·"}</span><em>${esc(a.type || "素材")}</em></div>`;
 }
 
 export function searchAssets({ accountId = "all", tag = "all", q = "", includeDelivered = false } = {}) {

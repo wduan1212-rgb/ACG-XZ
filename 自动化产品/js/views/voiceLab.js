@@ -136,10 +136,10 @@ function voiceCard(v, selectedId) {
   const fav = isFavoriteVoice(v.voiceId);
   const active = v.voiceId === selectedId;
   const previewing = previewingVoiceId === v.voiceId;
-  return `<div class="vl-voice-card ${active ? "is-active" : ""} ${fav ? "is-fav" : ""} ${previewing ? "is-previewing" : ""}" role="button" tabindex="0" data-vl-voice="${esc(v.voiceId)}" title="点击选择并试听">
+  return `<div class="vl-voice-card ${v.source === "mine" ? "is-mine" : ""} ${active ? "is-active" : ""} ${fav ? "is-fav" : ""} ${previewing ? "is-previewing" : ""}" role="button" tabindex="0" data-vl-voice="${esc(v.voiceId)}" title="点击选择并试听">
     <span class="vl-voice-core">${icon(active ? "check" : "mic", 15)}<b>${esc(v.name || v.voiceId)}</b></span>
     <em>${esc(v.voiceId)}</em>
-    <i>${esc(sourceLabel(v.source))}</i>
+    ${v.source === "system" ? "" : `<i>${esc(sourceLabel(v.source))}</i>`}
     <span class="vl-voice-actions">
       <button class="icon-btn tiny" type="button" title="试听音色" data-vl-preview="${esc(v.voiceId)}">${icon(previewing ? "pause" : "play", 13)}</button>
       <button class="icon-btn tiny ${fav ? "is-active" : ""}" type="button" title="${fav ? "取消收藏" : "收藏音色"}" data-vl-fav="${esc(v.voiceId)}">${icon("star", 13)}</button>

@@ -4,7 +4,7 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal } from "../ui/components.js";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
@@ -439,8 +439,8 @@ function renderBoard() {
     const ok = await confirmModal({ title: `删除这一批任务？`, body: `「${batch.topic}」共 ${(batch.productionIds || []).length} 条，连同其在制产物一并移除（已交付的保留）。`, danger: true, okText: "删除" });
     if (ok) {
       try {
-        await deleteBatch(batch.id);
-        renderBoard(); renderPhase();
+        await removeWithMotion(b.closest(".mb-group"), () => deleteBatch(batch.id));
+        renderPhase();
       } catch (err) {
         toast("服务器删除失败，请刷新或重新登录后再试", "error");
       }
@@ -454,8 +454,8 @@ function renderBoard() {
     const ok = await confirmModal({ title: `删除任务「${p.title || p.topic || "未命名"}」？`, danger: true, okText: "删除" });
     if (ok) {
       try {
-        await removeProductionFromBatch(p.id);
-        renderBoard(); renderPhase(); refreshLiveCards();
+        await removeWithMotion(b.closest(".mb-row"), () => removeProductionFromBatch(p.id));
+        renderPhase(); refreshLiveCards();
       } catch (err) {
         toast("服务器删除失败，请刷新或重新登录后再试", "error");
       }

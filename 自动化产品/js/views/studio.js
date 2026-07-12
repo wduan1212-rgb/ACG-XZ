@@ -5,17 +5,17 @@ import { icon } from "../ui/icons.js";
 import { state, save, activeAccount, activeProduction, productionById, canManageAccounts } from "../core/store.js";
 import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
-import { emptyState, toast, confirmModal, openLightbox } from "../ui/components.js";
+import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js";
-import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl } from "../domain/assets.js";
-import { renderScriptPage } from "./chainScript.js";
-import { renderSlotsPage } from "./chainBoards.js";
-import { renderPromptsPage } from "./chainPrompts.js";
-import { renderRenderPage } from "./chainRender.js";
-import { renderWorkshopPage } from "./chainWorkshop.js";
-import { renderCutPage } from "./chainCut.js?v=20260623-captions";
-import { renderCopyPage, renderReviewPage } from "./chainCopy.js";
+import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset } from "../domain/assets.js";
+import { renderScriptPage } from "./chainScript.js?v=20260712-v73-4";
+import { renderSlotsPage } from "./chainBoards.js?v=20260712-v73-4";
+import { renderPromptsPage } from "./chainPrompts.js?v=20260712-v73-4";
+import { renderRenderPage } from "./chainRender.js?v=20260712-v73-4";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260712-v73-4";
+import { renderCutPage } from "./chainCut.js?v=20260712-v73-4";
+import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260712-v73-4";
 
 export const studioView = {
   render(root, { page }) {
@@ -163,6 +163,7 @@ function renderHome(root, acc) {
       <section class="sh-assets card">
         <div class="card-head"><b>账号资产库</b><div class="head-actions"><em>${accAssets.length} 个素材</em>
           <label class="link-btn">${icon("upload", 12)} 上传<input type="file" accept="image/*,video/*,audio/*" multiple hidden id="shAssetUp" /></label>
+          <button class="link-btn" id="shAssetView">查看账号资产 ${icon("eye", 12)}</button>
           <button class="link-btn" id="shAssetAll">整体资产 ${icon("arrowRight", 12)}</button></div></div>
         ${accAssets.length ? `<div class="sh-asset-grid">${accAssets.slice(0, 14).map(a => `
           <div class="sh-asset" data-aid="${a.id}" title="${esc(a.name)}">
@@ -197,8 +198,9 @@ function renderHome(root, acc) {
     const ok = await confirmModal({ title: `删除任务「${p.title || p.topic || "未命名"}」？`, body: "该任务的脚本/提示词等中间产物会被移除（已入库资产保留）。", danger: true, okText: "删除" });
     if (ok) {
       try {
-        await deleteProduction(p.id);
-        renderHome(root, acc);
+        const row = b.closest(".shp-row");
+        await removeWithMotion(row, () => deleteProduction(p.id));
+        toast("任务已删除");
       } catch (err) {
         toast("服务器删除失败，请刷新或重新登录后再试", "error");
       }
@@ -214,9 +216,15 @@ function renderHome(root, acc) {
   }
   const shUp = $("#shAssetUp", root);
   if (shUp) shUp.addEventListener("change", e => uploadToAccount(e.target.files));
-  const goAllAssets = () => { state.ui.assetsFilterAccount = acc.id; go("assets"); };
+  const goAllAssets = () => {
+    state.ui.assetsFilterAccount = acc.id;
+    state.ui.assetsIncludePrivate = true;
+    save("meta");
+    go("assets");
+  };
   const shAll = $("#shAssetAll", root); if (shAll) shAll.addEventListener("click", goAllAssets);
   const shMore = $("#shAssetMore", root); if (shMore) shMore.addEventListener("click", goAllAssets);
+  $("#shAssetView", root)?.addEventListener("click", openAccountAssetModal);
   root.querySelectorAll(".sh-asset[data-aid]").forEach(el => {
     const a = state.assets.find(x => x.id === el.dataset.aid);
     if (!a) return;
@@ -225,6 +233,38 @@ function renderHome(root, acc) {
   });
   const drop = $("#shAssetDrop", root);
   if (drop) wireDropZone(drop, files => uploadToAccount(files), { filesOnly: true });
+
+  function openAccountAssetModal() {
+    const currentAssets = () => accountAssets(acc.id).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const list = currentAssets();
+    const html = `<div class="mp-head"><div><b>${esc(acc.name)} · 账号资产</b><em>${list.length} 个素材</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
+      <div class="account-assets-modal">${list.length ? list.map(a => `<article class="account-asset-item" data-account-asset="${a.id}">
+        <button class="account-asset-preview" type="button" data-account-preview="${a.id}">${thumbHtml(a)}<span>${assetCode(a) || a.type}</span></button>
+        <div><b>${esc(a.name || "未命名素材")}</b><em>${esc(a.type || "素材")}</em></div>
+        <button class="icon-btn sm danger" type="button" data-account-asset-del="${a.id}" title="删除账号资产">${icon("trash", 13)}</button>
+      </article>`).join("") : `<div class="vl-empty">该账号还没有资产</div>`}</div>
+      <div class="mp-foot"><button class="btn ghost" data-close>关闭</button></div>`;
+    openModal(html, { wide: true, onMount(panel) {
+      panel.classList.add("account-assets-panel");
+      panel.querySelectorAll("[data-account-preview]").forEach(button => button.addEventListener("click", () => {
+        const a = state.assets.find(item => item.id === button.dataset.accountPreview);
+        if (!a) return;
+        if (a.type === "视频") return openVideoPreview(urlFor(a), a.name);
+        const media = button.querySelector("img");
+        if (media) openLightbox(media, urlFor(a), a.name);
+      }));
+      panel.querySelectorAll("[data-account-asset-del]").forEach(button => button.addEventListener("click", async () => {
+        const a = state.assets.find(item => item.id === button.dataset.accountAssetDel);
+        if (!a) return;
+        const ok = await confirmModal({ title: `删除账号资产「${a.name || "未命名素材"}」？`, body: "会同步清除该素材在账号和未发布任务中的引用。", danger: true, okText: "删除" });
+        if (!ok) return;
+        await removeWithMotion(button.closest("[data-account-asset]"), () => removeAsset(a.id));
+        toast("账号资产已删除");
+        const count = panel.querySelector(".mp-head em");
+        if (count) count.textContent = `${currentAssets().length} 个素材`;
+      }));
+    }});
+  }
 
   root.querySelectorAll("[data-sh-flow]").forEach(b => b.addEventListener("click", () => {
     const inflight2 = productionsOf(acc.id).filter(p => p.stage !== "delivered");

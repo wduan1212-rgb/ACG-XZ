@@ -26,6 +26,7 @@ import mimetypes
 import io
 import re
 import inspect
+import difflib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -1160,6 +1161,12 @@ class ComposeSubtitle(BaseModel):
     text: str = ""
 
 
+class ComposeSubtitleStyle(BaseModel):
+    size: float = 11
+    stroke: float = 1
+    bottom: float = 22
+
+
 class ComposeReq(BaseModel):
     clips: List[ComposeClip]
     title: str = "final"
@@ -1169,7 +1176,17 @@ class ComposeReq(BaseModel):
     bgmDataUrl: str = ""
     bgmVolume: float = 0.25
     narrationVolume: float = 1.0
+    subtitleStyle: ComposeSubtitleStyle = ComposeSubtitleStyle()
     subtitles: List[ComposeSubtitle] = []
+
+
+class AudioTimingClip(BaseModel):
+    url: str
+    text: str = ""
+
+
+class AudioTimingReq(BaseModel):
+    clips: List[AudioTimingClip]
 
 
 def _video_status(data: dict) -> str:
@@ -2353,6 +2370,194 @@ def _write_compose_srt(path: Path, subtitles: List[ComposeSubtitle]) -> bool:
     return True
 
 
+def _caption_chunks(text: str, max_len: int = 18) -> List[str]:
+    clean = re.sub(r"\s+", "", str(text or "").strip())
+    if not clean:
+        return []
+    chunks = []
+    for sentence in re.split(r"(?<=[，。！？!?；;])", clean):
+        sentence = sentence.strip()
+        while len(sentence) > max_len:
+            cut = max_len
+            for mark in ("，", "。", "！", "？", ";", "；"):
+                pos = sentence.rfind(mark, 0, max_len + 1)
+                if pos >= max(4, max_len // 2):
+                    cut = pos + 1
+                    break
+            chunks.append(sentence[:cut])
+            sentence = sentence[cut:]
+        if sentence:
+            chunks.append(sentence)
+    return chunks
+
+
+def _media_duration_from_ffmpeg(stderr: str) -> float:
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr or "")
+    if not match:
+        return 0.0
+    return int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3))
+
+
+def _speech_windows(stderr: str, duration: float) -> List[Tuple[float, float]]:
+    silences = []
+    pending = None
+    for line in (stderr or "").splitlines():
+        start = re.search(r"silence_start:\s*([0-9.]+)", line)
+        end = re.search(r"silence_end:\s*([0-9.]+)", line)
+        if start:
+            pending = float(start.group(1))
+        if end:
+            silences.append((0.0 if pending is None else pending, float(end.group(1))))
+            pending = None
+    if pending is not None:
+        silences.append((pending, duration))
+    windows = []
+    cursor = 0.0
+    for start, end in silences:
+        if start - cursor >= 0.18:
+            windows.append((cursor, start))
+        cursor = max(cursor, end)
+    if duration - cursor >= 0.18:
+        windows.append((cursor, duration))
+    return windows or ([(0.0, duration)] if duration > 0 else [])
+
+
+def _align_chunks_to_windows(chunks: List[str], windows: List[Tuple[float, float]], offset: float) -> List[dict]:
+    if not chunks or not windows:
+        return []
+    timeline = [[start, end, max(0.1, end - start)] for start, end in windows if end - start >= 0.16]
+    if not timeline:
+        return []
+    # Keep every cue inside one detected speech window so it cannot bridge a
+    # silent pause and appear before the next spoken sentence.
+    counts = [0] * len(timeline)
+    if len(chunks) >= len(timeline):
+        for i in range(len(timeline)):
+            counts[i] = 1
+        remaining = len(chunks) - len(timeline)
+        weights = [item[2] for item in timeline]
+        while remaining > 0:
+            target = max(range(len(timeline)), key=lambda i: weights[i] / max(1, counts[i]))
+            counts[target] += 1
+            remaining -= 1
+    else:
+        selected = sorted(sorted(range(len(timeline)), key=lambda i: timeline[i][2], reverse=True)[:len(chunks)])
+        timeline = [timeline[i] for i in selected]
+        counts = [1] * len(timeline)
+    cues = []
+    chunk_index = 0
+    for (window_start, window_end, window_dur), count in zip(timeline, counts):
+        group = chunks[chunk_index:chunk_index + count]
+        chunk_index += count
+        chars = max(1, sum(len(text) for text in group))
+        cursor = window_start
+        for index, text in enumerate(group):
+            share = window_dur * len(text) / chars
+            cue_end = window_end if index == len(group) - 1 else min(window_end, cursor + max(0.38, share))
+            cues.append({"start": round(offset + cursor, 2), "end": round(offset + max(cursor + 0.32, cue_end), 2), "text": text})
+            cursor = cue_end
+    return cues
+
+
+def _whisper_cpp_paths() -> Tuple[Optional[Path], Optional[Path]]:
+    cache = Path.home() / ".cache" / "acg-xz" / "whisper.cpp"
+    binary = Path(os.getenv("ACG_WHISPER_BIN", cache / "build" / "bin" / "whisper-cli")).expanduser()
+    model = Path(os.getenv("ACG_WHISPER_MODEL", cache / "models" / "ggml-base.bin")).expanduser()
+    return (binary, model) if binary.is_file() and os.access(binary, os.X_OK) and model.is_file() else (None, None)
+
+
+def _correct_whisper_text(text: str, prompt: str) -> str:
+    recognized = re.sub(r"\s+", "", str(text or "")).strip("，。！？!?；; ")
+    recognized = recognized.replace("许求", "需求").replace("下班钱", "下班前").replace("硬牌", "硬排")
+    candidates = [re.sub(r"[\s，。！？!?；;]+", "", item) for item in _caption_chunks(prompt, max_len=14)]
+    candidates = [item for item in candidates if 2 <= len(item) <= 20]
+    best = recognized
+    best_ratio = 0.0
+    for candidate in candidates:
+        if abs(len(candidate) - len(recognized)) > 4:
+            continue
+        ratio = difflib.SequenceMatcher(None, recognized, candidate).ratio()
+        if ratio > best_ratio:
+            best, best_ratio = candidate, ratio
+    return best if best_ratio >= 0.72 else recognized
+
+
+def _transcribe_with_whisper(ffmpeg: str, media_path: Path, workdir: Path, index: int, prompt: str = "") -> Tuple[List[dict], float]:
+    binary, model = _whisper_cpp_paths()
+    if not binary or not model:
+        return [], 0.0
+    wav_path = workdir / f"whisper_{index:03d}.wav"
+    extract = subprocess.run(
+        [ffmpeg, "-hide_banner", "-y", "-i", str(media_path), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav_path)],
+        capture_output=True, text=True, timeout=300
+    )
+    duration = _media_duration_from_ffmpeg(extract.stderr)
+    if extract.returncode != 0 or not wav_path.exists():
+        return [], duration
+    output_prefix = workdir / f"whisper_{index:03d}"
+    command = [str(binary), "-m", str(model), "-f", str(wav_path), "-l", "zh", "-ml", "12", "-sow", "-oj", "-of", str(output_prefix), "-sns", "-np"]
+    run = subprocess.run(
+        command,
+        capture_output=True, text=True, timeout=600
+    )
+    output_path = output_prefix.with_suffix(".json")
+    if run.returncode != 0 or not output_path.exists():
+        return [], duration
+    try:
+        payload = json.loads(output_path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [], duration
+    cues = []
+    for segment in payload.get("transcription") or []:
+        text = _correct_whisper_text(segment.get("text") or "", prompt)
+        offsets = segment.get("offsets") if isinstance(segment.get("offsets"), dict) else {}
+        start = max(0.0, float(offsets.get("from") or 0) / 1000)
+        end = min(duration or 1e9, max(start + 0.25, float(offsets.get("to") or 0) / 1000))
+        if text and end > start:
+            cues.append({"start": round(start, 2), "end": round(end, 2), "text": text})
+    return cues, duration
+
+
+@app.post("/api/video/audio-timing")
+async def video_audio_timing(req: AudioTimingReq):
+    """Analyze real clip audio and align supplied narration text to speech windows."""
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise HTTPException(501, "本机未安装 ffmpeg，无法分析视频音轨")
+    cues = []
+    offset = 0.0
+    with tempfile.TemporaryDirectory() as td:
+        tdir = Path(td)
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(240.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
+            for index, clip in enumerate((req.clips or [])[:24]):
+                path = tdir / f"timing_{index:03d}.mp4"
+                await _write_video_source(client, clip.url, path, f"下载字幕分析片段失败：{index + 1}")
+                whisper_cues, whisper_duration = _transcribe_with_whisper(ffmpeg, path, tdir, index, clip.text)
+                if whisper_cues:
+                    cues.extend({**cue, "start": round(offset + cue["start"], 2), "end": round(offset + cue["end"], 2)} for cue in whisper_cues)
+                    offset += whisper_duration
+                    continue
+                analyses = []
+                for threshold in ("-27dB", "-31dB", "-35dB"):
+                    run = subprocess.run(
+                        [ffmpeg, "-hide_banner", "-i", str(path), "-af", f"highpass=f=150,lowpass=f=3800,afftdn=nf=-25,silencedetect=noise={threshold}:d=0.16", "-f", "null", "-"],
+                        capture_output=True, text=True, timeout=300
+                    )
+                    duration = _media_duration_from_ffmpeg(run.stderr)
+                    if duration > 0:
+                        analyses.append((duration, _speech_windows(run.stderr, duration)))
+                duration = analyses[0][0] if analyses else 0
+                if duration <= 0:
+                    continue
+                chunks = _caption_chunks(clip.text)
+                candidates = [item[1] for item in analyses if item[1]]
+                windows = min(candidates, key=lambda rows: (abs(len(rows) - max(1, len(chunks))), -sum(end - start for start, end in rows))) if candidates else [(0.0, duration)]
+                cues.extend(_align_chunks_to_windows(chunks, windows, offset))
+                offset += duration
+    source = "whisper-cpp-base" if _whisper_cpp_paths()[0] else "ffmpeg-dialogue-vad-v3"
+    return {"ok": True, "duration": round(offset, 2), "cues": cues, "source": source}
+
+
 @app.post("/api/video/compose")
 async def video_compose(req: ComposeReq):
     """把时间轴上的 Seedance 片段拼成一个同源 mp4。
@@ -2429,9 +2634,17 @@ async def video_compose(req: ComposeReq):
                 raise HTTPException(502, "ffmpeg 混音失败：" + (run.stderr or run.stdout)[-800:])
         if _write_compose_srt(srt_path, req.subtitles):
             srt_filter = str(srt_path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+            style = req.subtitleStyle
+            ass_size = max(7.0, min(16.0, float(style.size or 11) * 0.82))
+            ass_outline = max(0.0, min(2.0, float(style.stroke or 0) * 0.75))
+            ass_margin = max(18, min(120, int(float(style.bottom or 22) * 2.88)))
+            force_style = (
+                f"FontSize={ass_size:.1f},Outline={ass_outline:.1f},Shadow=0,"
+                f"Alignment=2,MarginV={ass_margin}"
+            )
             subtitle_cmd = [
                 ffmpeg, "-y", "-i", str(mixed_path),
-                "-vf", f"subtitles='{srt_filter}':charenc=UTF-8:force_style='FontName=Arial,FontSize=20,Outline=2,Alignment=2,MarginV=120'",
+                "-vf", f"subtitles='{srt_filter}':charenc=UTF-8:force_style='{force_style}'",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", "-movflags", "+faststart", str(out_path)
             ]
             run = subprocess.run(subtitle_cmd, capture_output=True, text=True, timeout=900)

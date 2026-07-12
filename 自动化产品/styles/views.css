@@ -1676,7 +1676,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 }
 
 /* ---------- 剪辑页 ---------- */
-.view-root .chain-stepper.cut-stepper { max-width: 1320px; margin: 0 auto 8px; top: 0; }
+.view-root .chain-stepper.cut-stepper { display: flex; max-width: 1320px; margin: 0 auto 8px; top: 0; }
 .view-root:has(.cut-page) { display: flex; padding-bottom: 10px; }
 .cut-page { max-width: 1320px; width: 100%; margin: 0 auto; display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; gap: 8px; }
 .cut-top { display: grid; flex: 1 1 auto; min-height: 0; grid-template-columns: minmax(0, 1fr) 258px; gap: 8px; align-items: stretch; }
@@ -1719,6 +1719,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .cut-page .side-card, .cut-page .tl-editor, .cut-page .tl-scroll, .cut-page .cut-bgm-drop { border-radius: 0; }
 .cut-bgm-drop {
   margin-top: 8px; min-height: 38px; border: 1px dashed var(--line-2); border-radius: var(--r-md);
+  width: 100%; min-width: 0; box-sizing: border-box;
   display: flex; align-items: center; justify-content: center; gap: 6px;
   color: var(--muted); font-size: 11.5px; cursor: pointer; background: var(--soft);
 }
@@ -1758,11 +1759,13 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   background: linear-gradient(135deg, rgba(122, 77, 255, .16), rgba(61, 91, 255, .16));
   border: 1px solid rgba(122, 77, 255, .45);
   border-radius: 0; display: flex; align-items: center;
-  padding: 0 14px 0 8px; cursor: grab; user-select: none; box-sizing: border-box;
+  padding: 0 14px; cursor: grab; user-select: none; box-sizing: border-box;
 }
 .tl-sub.is-active { border-color: var(--violet); box-shadow: 0 0 0 2px rgba(122, 77, 255, .25); z-index: 2; }
 .tl-sub-text { font-size: 10.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tl-sub-resize { position: absolute; right: 0; top: 0; bottom: 0; width: 10px; cursor: ew-resize; border-radius: 0 7px 7px 0; }
+.tl-sub-resize { position: absolute; top: 0; bottom: 0; width: 10px; cursor: ew-resize; }
+.tl-sub-resize.left { left: 0; border-radius: 7px 0 0 7px; }
+.tl-sub-resize.right { right: 0; border-radius: 0 7px 7px 0; }
 .tl-sub-resize:hover { background: rgba(122, 77, 255, .35); }
 .tl-cliptrack { height: 48px; border-top: 1px solid var(--hairline); }
 .tl-clip {

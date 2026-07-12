@@ -92,7 +92,7 @@ function normalizeSelectionPlan(p) {
   const lockedGroup = CONTENT_KIND_GROUP[p.contentKind || ""];
   const group = lockedGroup || (/图文|笔记|小红书图/.test(goal) ? "图文组" : (goal.includes("真人") || goal.includes("数字人")) ? "真人" : (goal.includes("素材") || goal.includes("无数字人")) ? "素材" : p.group || "all");
   const explicitTags = TAG_POOL.filter(t => tagMatches(goal, t));
-  if (p.topic || p.topicMode !== "random") { p.topic = ""; p.topicMode = "random"; changed = true; }
+  if (p.topic || p.topicMode !== "fixed") { p.topic = ""; p.topicMode = "fixed"; changed = true; }
   if (group !== p.group) { p.group = group; changed = true; }
   if (!explicitTags.length && (p.tags || []).length) { p.tags = []; changed = true; }
   else if (explicitTags.length && explicitTags.join("|") !== (p.tags || []).join("|")) { p.tags = explicitTags; changed = true; }

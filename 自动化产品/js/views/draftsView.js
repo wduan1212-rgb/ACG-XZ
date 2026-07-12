@@ -6,7 +6,7 @@ import { state, save, ownedBy, accountById, productionById } from "../core/store
 import { STAGES, statusPill, deleteProduction } from "../domain/productions.js";
 import { urlFor } from "../domain/assets.js";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js";
-import { emptyState, toast, confirmModal } from "../ui/components.js";
+import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
 
 function draftProductions() {
@@ -68,8 +68,12 @@ export const draftsView = {
         const ids = [...selected];
         const ok = await confirmModal({ title: `删除已选 ${ids.length} 条草稿？`, body: "草稿及其未发布中间产物会被移除。", danger: true, okText: "删除" });
         if (!ok) return;
-        for (const id of ids) await deleteProduction(id);
-        selected.clear(); toast("已删除所选草稿"); draw();
+        const rows = ids.map(id => root.querySelector(`[data-draft="${CSS.escape(id)}"]`)).filter(Boolean);
+        await removeWithMotion(rows, async () => {
+          for (const id of ids) await deleteProduction(id);
+        });
+        selected.clear(); toast("已删除所选草稿");
+        if (!draftProductions().length) draw();
       });
       $$('[data-draft-check]', root).forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();
@@ -100,9 +104,10 @@ export const draftsView = {
         const ok = await confirmModal({ title: `删除草稿「${p.artifacts.copy.title || p.title || p.topic || "未命名"}」？`, body: "该任务的脚本 / 分镜等中间产物会被移除（已发布资产不受影响）。", danger: true, okText: "删除" });
         if (ok) {
           try {
-            await deleteProduction(p.id);
+            const row = b.closest("[data-draft]");
+            await removeWithMotion(row, () => deleteProduction(p.id));
             toast("已删除草稿");
-            draw();
+            if (!draftProductions().length) draw();
           } catch (err) {
             toast("服务器删除失败，请刷新或重新登录后再试", "error");
           }

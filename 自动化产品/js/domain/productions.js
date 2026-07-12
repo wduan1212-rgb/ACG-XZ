@@ -88,7 +88,7 @@ export function blankArtifacts() {
     renders: [],            // jobId 列表
     timeline: [],           // [{id, jobId, name, dur, trimIn}]
     subs: [],
-    subStyle: { size: 13, stroke: 2, bottom: 12 },
+    subStyle: { size: 11, stroke: 1, bottom: 22 },
     copy: { title: "", body: "" }
   };
 }

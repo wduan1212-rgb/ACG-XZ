@@ -12,7 +12,7 @@ import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.
 import { fmtTC } from "../core/util.js";
 import { toast, withLoading, promptModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260712-v73-4";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 

@@ -22,6 +22,25 @@ export function toast(msg, kind = "info") {
 }
 window.__toast = toast;
 
+/* Collapse a row/card only after its async delete succeeds. */
+export async function removeWithMotion(elements, removeAction, { duration = 220 } = {}) {
+  const rows = (Array.isArray(elements) ? elements : [elements]).filter(Boolean);
+  const result = await removeAction();
+  await Promise.all(rows.map(row => new Promise(resolve => {
+    const rect = row.getBoundingClientRect();
+    const marginBlock = getComputedStyle(row).marginBlock;
+    row.style.overflow = "hidden";
+    row.style.height = `${rect.height}px`;
+    row.style.pointerEvents = "none";
+    const animation = row.animate([
+      { opacity: 1, transform: "translateX(0)", height: `${rect.height}px`, marginBlock },
+      { opacity: 0, transform: "translateX(12px)", height: "0px", marginBlock: "0px", paddingBlock: "0px", borderWidth: "0px" }
+    ], { duration, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" });
+    animation.onfinish = animation.oncancel = () => { row.remove(); resolve(); };
+  })));
+  return result;
+}
+
 /* ---------- 确认弹层（替代原生 confirm） ---------- */
 export function confirmModal({ title, body = "", okText = "确认", cancelText = "取消", danger = false }) {
   return new Promise(res => {
@@ -254,7 +273,7 @@ export function openVideoPreview(src, name = "视频预览") {
   if (!src) return;
   const ov = document.createElement("div");
   ov.className = "lightbox media-preview";
-  ov.innerHTML = `<div class="lb-bg"></div><div class="lb-video-wrap"><video class="lb-video" src="${esc(src)}" controls playsinline preload="metadata"></video><button class="lb-close" type="button" aria-label="关闭预览">${icon("x", 18)}</button></div><div class="lb-name">${esc(name)}</div>`;
+  ov.innerHTML = `<div class="lb-bg"></div><button class="lb-back" type="button">${icon("arrowLeft", 15)} 返回</button><div class="lb-video-wrap"><video class="lb-video" src="${esc(src)}" controls playsinline preload="metadata"></video><button class="lb-close" type="button" aria-label="关闭预览">${icon("x", 18)}</button></div><div class="lb-name">${esc(name)}</div>`;
   document.body.appendChild(ov);
   const video = ov.querySelector(".lb-video");
   const onKey = e => { if (e.key === "Escape") close(); };
@@ -269,7 +288,7 @@ export function openVideoPreview(src, name = "视频预览") {
     video?.play().catch(() => null);
   });
   ov.addEventListener("click", e => {
-    if (e.target === ov || e.target.closest(".lb-bg") || e.target.closest(".lb-close")) close();
+    if (e.target === ov || e.target.closest(".lb-bg") || e.target.closest(".lb-close") || e.target.closest(".lb-back")) close();
   });
   document.addEventListener("keydown", onKey);
 }
