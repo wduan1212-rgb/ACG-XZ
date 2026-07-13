@@ -22,6 +22,9 @@ export function openAccountDialog(accountId = null) {
     voiceName: editing?.voiceName || "",
     voiceId: editing?.voiceId || "",
     voiceLookup: "",
+    seedanceVoiceRefAssetId: editing?.voiceRefAssetId || editing?.seedanceVoiceRefAssetId || "",
+    seedanceVoiceRefDataUrl: null,
+    seedanceVoiceRefName: "",
     avatarDataUrl: null,
     styleRefDataUrl: null,
     imagePromptTemplate: editing?.imagePromptTemplate || "",
@@ -36,11 +39,18 @@ export function openAccountDialog(accountId = null) {
       const root = panel.querySelector("#adRoot");
 
       const draw = () => {
+        const previousBody = $(".ad-body", root);
+        const previousScrollTop = previousBody?.scrollTop || 0;
+        const previousHeight = root.getBoundingClientRect().height;
+        if (previousHeight > 0) root.style.minHeight = `${Math.round(previousHeight)}px`;
         const isVideo = draft.mode === "视频";
         const isDH = isVideo && draft.subType === "数字人";
         const avatarUrl = draft.avatarDataUrl || (editing?.avatarAssetId ? urlFor(editing.avatarAssetId) : "");
         const styleRefUrl = draft.styleRefDataUrl || (editing?.imageStyleAssetId ? urlFor(editing.imageStyleAssetId) : "");
         const voiceGroups = voicePickerGroups({ selectedId: draft.voiceId, selectedName: draft.voiceName });
+        const referenceAudioAssets = (state.assets || [])
+          .filter(a => a.type === "音频" && (a.tags || []).some(t => /参考音频库|语音素材库|音色试听|口播/i.test(t)))
+          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
         root.innerHTML = `
           <div class="mp-head">
             <div><div class="eyebrow">${editing ? "编辑账号" : "创建账号"}</div><b style="font-size:16px">${editing ? esc(editing.name) : "新建内容账号"}</b></div>
@@ -97,22 +107,31 @@ export function openAccountDialog(accountId = null) {
                 <textarea class="input" id="adImgTpl" rows="8" placeholder="粘贴你的图文模板提示词，例如：请独立分别生成6张独立图片……">${esc(draft.imagePromptTemplate)}</textarea>
               </label>` : ""}
               ${isVideo ? `
-              <label class="field">固定声线名称
-                <input class="input" id="adVoiceName" value="${esc(draft.voiceName)}" placeholder="例如：素材号男 / 素材号女 / 职场女声" />
-              </label>
-              <label class="field">Minimax voice_id
-                <div class="input-with-action">
-                  <input class="input" id="adVoiceId" value="${esc(draft.voiceId)}" placeholder="留空则使用平台默认声线" />
-                  <button type="button" class="btn ghost sm" id="adVoiceLookup">${icon("search", 13)} 识别</button>
+              <div class="field full ad-voice-config">
+                <span>${isDH ? "固定口播声线" : "口播声线"}</span>
+                <div class="ad-voice-row">
+                  <select class="input" id="adVoicePreset">
+                    <option value="">默认平台声线${defaultTtsVoiceId() ? `（${esc(defaultTtsVoiceId())}）` : ""}</option>
+                    ${voiceGroups.map(g => `<optgroup label="${esc(g.title)}">${(g.items || []).filter(v => v.voiceId).map(v => `<option value="${esc(v.voiceId)}" ${draft.voiceId === v.voiceId ? "selected" : ""}>${esc(v.name)} · ${esc(v.voiceId)}</option>`).join("")}</optgroup>`).join("")}
+                  </select>
+                  <div class="input-with-action">
+                    <input class="input" id="adVoiceId" value="${esc(draft.voiceId)}" placeholder="识别已有 voice_id" />
+                    <button type="button" class="btn ghost sm" id="adVoiceLookup">${icon("search", 13)} 识别</button>
+                  </div>
                 </div>
                 ${draft.voiceLookup ? `<em class="voice-lookup-note">${esc(draft.voiceLookup)}</em>` : ""}
-              </label>
-              ${voiceGroups.length ? `<label class="field full">声线预设
-                <select class="input" id="adVoicePreset">
-                  <option value="">默认平台声线${defaultTtsVoiceId() ? `（${esc(defaultTtsVoiceId())}）` : ""}</option>
-                  ${voiceGroups.map(g => `<optgroup label="${esc(g.title)}">${(g.items || []).filter(v => v.voiceId).map(v => `<option value="${esc(v.voiceId)}" ${draft.voiceId === v.voiceId ? "selected" : ""}>${esc(v.name)} · ${esc(v.voiceId)}</option>`).join("")}</optgroup>`).join("")}
-                </select>
-              </label>` : ""}
+              </div>
+              ${!isDH ? `<div class="field full ad-reference-audio">
+                <span>Seedance 总参考音频 <em class="muted">每一段视频共用同一条音色参考</em></span>
+                <div class="ad-reference-audio-row">
+                  <select class="input" id="adReferenceAudio">
+                    <option value="">不使用参考音频</option>
+                    ${referenceAudioAssets.map(a => `<option value="${esc(a.id)}" ${draft.seedanceVoiceRefAssetId === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}
+                  </select>
+                  <label class="btn ghost sm">${icon("upload", 13)} 拖入总参考音频<input type="file" accept="audio/*" hidden id="adReferenceAudioUp" /></label>
+                </div>
+                ${draft.seedanceVoiceRefName ? `<em class="voice-lookup-note">待加入总参考音频库：${esc(draft.seedanceVoiceRefName)}</em>` : ""}
+              </div>` : ""}
               ` : ""}
             </div>
 
@@ -139,6 +158,9 @@ export function openAccountDialog(accountId = null) {
             <button class="btn primary" id="adConfirm">${editing ? "保存修改" : "创建并进入创作空间"}</button>
           </div>`;
         wire();
+        const nextBody = $(".ad-body", root);
+        if (nextBody) nextBody.scrollTop = previousScrollTop;
+        requestAnimationFrame(() => { root.style.minHeight = ""; });
       };
 
       const wire = () => {
@@ -146,8 +168,6 @@ export function openAccountDialog(accountId = null) {
         $("#adStyle", root).addEventListener("input", e => { draft.styleProfile = e.target.value; });
         const imgTpl = $("#adImgTpl", root);
         if (imgTpl) imgTpl.addEventListener("input", e => { draft.imagePromptTemplate = e.target.value; });
-        const voiceName = $("#adVoiceName", root);
-        if (voiceName) voiceName.addEventListener("input", e => { draft.voiceName = e.target.value; });
         const voiceId = $("#adVoiceId", root);
         if (voiceId) voiceId.addEventListener("input", e => { draft.voiceId = e.target.value; draft.voiceLookup = ""; });
         const voiceLookup = $("#adVoiceLookup", root);
@@ -161,8 +181,6 @@ export function openAccountDialog(accountId = null) {
             draft.voiceId = id;
             if (res.name) {
               draft.voiceName = res.name;
-              const nameInput = $("#adVoiceName", root);
-              if (nameInput) nameInput.value = res.name;
             }
             const usedBy = (res.accounts || []).map(x => x.account).filter(Boolean).slice(0, 3).join("、");
             const local = res.name ? `识别为：${res.name}${usedBy ? `（用于 ${usedBy}${(res.accounts || []).length > 3 ? " 等账号" : ""}）` : ""}` : "本地未命名，按自定义声线 ID 保存";
@@ -181,10 +199,27 @@ export function openAccountDialog(accountId = null) {
           draft.voiceId = id;
           draft.voiceName = preset?.name || draft.voiceName || "";
           const idInput = $("#adVoiceId", root);
-          const nameInput = $("#adVoiceName", root);
           if (idInput) idInput.value = id;
-          if (preset && nameInput) nameInput.value = preset.name;
         });
+        $("#adReferenceAudio", root)?.addEventListener("change", e => {
+          draft.seedanceVoiceRefAssetId = e.currentTarget.value || "";
+          draft.seedanceVoiceRefDataUrl = null;
+          draft.seedanceVoiceRefName = "";
+        });
+        const setReferenceAudio = async file => {
+          if (!file || !file.type.startsWith("audio/")) { toast("请拖入音频文件", "error"); return; }
+          draft.seedanceVoiceRefDataUrl = await fileToDataUrl(file);
+          draft.seedanceVoiceRefName = file.name.replace(/\.[^.]+$/, "");
+          draft.seedanceVoiceRefAssetId = "";
+          draw();
+          toast("已准备加入总参考音频库");
+        };
+        const referenceAudioUp = $("#adReferenceAudioUp", root);
+        if (referenceAudioUp) {
+          referenceAudioUp.addEventListener("change", e => setReferenceAudio(e.target.files[0]));
+          const label = referenceAudioUp.closest("label");
+          wireDropZone(label, files => setReferenceAudio(Array.from(files).find(f => f.type.startsWith("audio/"))), { filesOnly: true });
+        }
         const segWire = (sel, key, redraw = false) => {
           const box = $(sel, root); if (!box) return;
           box.addEventListener("click", e => {
@@ -273,6 +308,16 @@ export function openAccountDialog(accountId = null) {
           const isDH = draft.mode === "视频" && draft.subType === "数字人";
           if (isDH && !editing && !draft.charDataUrl) { toast("数字人账号请先上传角色形象"); return; }
 
+          let seedanceVoiceRefAssetId = draft.seedanceVoiceRefAssetId || "";
+          if (draft.seedanceVoiceRefDataUrl) {
+            const ref = await addAssetFromDataUrl(null, {
+              name: draft.seedanceVoiceRefName || `${name} 参考音频`,
+              type: "音频",
+              tags: ["参考音频库", "声线参考"],
+              dataUrl: draft.seedanceVoiceRefDataUrl
+            });
+            seedanceVoiceRefAssetId = ref.id;
+          }
           let acc;
           if (editing) {
             acc = updateAccount(editing.id, {
@@ -282,6 +327,7 @@ export function openAccountDialog(accountId = null) {
               styleProfile: draft.styleProfile.trim(),
               voiceName: draft.voiceName.trim(),
               voiceId: draft.voiceId.trim(),
+              voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
               imagePromptTemplate: draft.imagePromptTemplate.trim(),
               qtags: [...draft.qtags]
             });
@@ -290,6 +336,7 @@ export function openAccountDialog(accountId = null) {
               name, platform: draft.platform, mode: draft.mode, subType: draft.subType,
               position: "", styleProfile: draft.styleProfile.trim(),
               voiceName: draft.voiceName.trim(), voiceId: draft.voiceId.trim(),
+              voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
               imagePromptTemplate: draft.imagePromptTemplate.trim(),
               qtags: [...draft.qtags]
             });

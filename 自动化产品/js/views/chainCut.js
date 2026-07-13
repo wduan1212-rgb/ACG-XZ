@@ -10,7 +10,7 @@ import { accountAssets } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260712-v73-4";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v74-1";
 
 let PPS = 40;
 const CLIP_SEC = 15;
@@ -99,12 +99,27 @@ export function renderCutPage(root, p) {
   // Keep one caption lane readable: generated cues follow the finished clip duration,
   // while manual edits are clamped between adjacent cues instead of stacking.
   function normalizeCaptionTrack(subs = SUBS()) {
+    const digital = p.artifacts?.boards?.generationMode === "digitalHuman";
+    const ranges = digital ? TL().map((clip, index) => ({
+      index,
+      start: clipStart(index),
+      end: clipStart(index) + clipDur(clip)
+    })) : [];
     let cursor = 0;
     subs.sort((a, b) => (a.start || 0) - (b.start || 0));
     subs.forEach(s => {
       const duration = Math.max(.5, Number(s.end || 0) - Number(s.start || 0));
-      s.start = Math.round(Math.max(cursor, Number(s.start || 0)) * 10) / 10;
-      s.end = Math.round((s.start + duration) * 10) / 10;
+      const rawStart = Number(s.start || 0);
+      const range = ranges.find(item => rawStart >= item.start - .05 && rawStart < item.end) || ranges.at(-1);
+      if (range) {
+        if (cursor >= range.end - .12 || cursor < range.start) cursor = range.start;
+        s.start = Math.round(Math.max(range.start, cursor, rawStart) * 10) / 10;
+        s.end = Math.round(Math.min(range.end - .05, s.start + duration) * 10) / 10;
+        if (s.end <= s.start) s.end = Math.round(Math.min(range.end, s.start + .25) * 10) / 10;
+      } else {
+        s.start = Math.round(Math.max(cursor, rawStart) * 10) / 10;
+        s.end = Math.round((s.start + duration) * 10) / 10;
+      }
       cursor = s.end + .1;
     });
     return subs;
@@ -218,6 +233,7 @@ export function renderCutPage(root, p) {
           bgmUrl: bgmMedia.url || "",
           bgmVolume: p.artifacts.bgm?.volume ?? 0.25,
           narrationVolume: p.artifacts.audio?.volume ?? 1,
+          transitionDuration: p.artifacts?.boards?.generationMode === "digitalHuman" && clips.length > 1 ? 0.35 : 0,
           subtitleStyle: p.artifacts.subStyle,
           subtitles: SUBS().filter(s => cleanCaptionText(s.text || "")).map(s => ({
             start: Number(s.start || 0), end: Number(s.end || 0), text: cleanCaptionText(s.text || "")
@@ -857,7 +873,7 @@ export function renderCutPage(root, p) {
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("未检测到封面，正在自动生成");
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260712-v73-4");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260713-v74-1");
         await ensureVideoCover(p);
         toast("封面已自动生成并入库");
       } catch (err) {

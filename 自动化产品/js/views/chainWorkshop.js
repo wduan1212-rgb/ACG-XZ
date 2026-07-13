@@ -11,18 +11,19 @@ import { state, save, persistNow, on, accountById, productById, primaryProducts,
 import { AI } from "../api/ai.js";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
-import { urlFor, addAssetFromDataUrl, addAssetFromFile, thumbHtml } from "../domain/assets.js";
+import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox, openVideoPreview } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260712-v73-4";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v74-1";
 import { accountAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from "../domain/voices.js";
 
 let liveRoot = null, liveProd = null, liveDraw = null, wired = false;
 const DIGITAL_SEGMENT_TARGET_SEC = 27;
 const DIGITAL_SEGMENT_MAX_SEC = 30;
+const DIGITAL_HUMAN_FIXED_PROMPT = "角色动作自然，表情自然生动，语言表达流畅，视线自然看镜头，自然地讲述内容。";
 const COVER_LOADING_TIMEOUT_MS = 8 * 60 * 1000;
 const COVER_GENERATE_TIMEOUT_MS = 140000;
 const INFO_FLOW_STORYBOARD_TIMEOUT_MS = 4 * 60 * 1000;
@@ -56,6 +57,40 @@ function audioDuration(url) {
     el.onerror = () => res(0);
     el.src = url;
   });
+}
+
+export function planDigitalSegmentGroups(durations = [], {
+  target = DIGITAL_SEGMENT_TARGET_SEC,
+  max = DIGITAL_SEGMENT_MAX_SEC,
+  short = 8
+} = {}) {
+  const values = durations.map(value => Math.min(max, Math.max(3, Number(value || 0) || 3)));
+  const dp = Array(values.length + 1).fill(null);
+  dp[values.length] = { groups: [], count: 0, shortPenalty: 0, targetPenalty: 0 };
+  for (let start = values.length - 1; start >= 0; start--) {
+    let sum = 0;
+    for (let end = start; end < values.length; end++) {
+      sum += values[end];
+      if (sum > max && end > start) break;
+      const rest = dp[end + 1];
+      if (!rest) continue;
+      const clipped = Math.min(max, sum);
+      const candidate = {
+        groups: [{ indexes: Array.from({ length: end - start + 1 }, (_, i) => start + i), dur: clipped }, ...rest.groups],
+        count: rest.count + 1,
+        shortPenalty: rest.shortPenalty + (clipped < short ? short - clipped : 0),
+        targetPenalty: rest.targetPenalty + Math.abs(target - clipped)
+      };
+      const current = dp[start];
+      const better = !current
+        || candidate.count < current.count
+        || (candidate.count === current.count && candidate.shortPenalty < current.shortPenalty)
+        || (candidate.count === current.count && candidate.shortPenalty === current.shortPenalty && candidate.targetPenalty < current.targetPenalty);
+      if (better) dp[start] = candidate;
+      if (sum >= max) break;
+    }
+  }
+  return dp[0]?.groups || [];
 }
 
 function narrationText(shots) {
@@ -285,17 +320,18 @@ function digitalSegmentsFromShots(p, acc) {
   const per = p.artifacts.audio.perShot || estimateAudio(shots).perShot || [];
   const A = p.artifacts.boards;
   const old = A.digitalHuman?.segments || [];
-  const segments = [];
-  let cur = null;
-  shots.forEach((s, i) => {
-    const d = Math.max(3, Number(per[i]?.dur || 4));
-    if (!cur || (cur.dur + d > DIGITAL_SEGMENT_MAX_SEC && cur.shotIndexes.length)) {
-      cur = { id: uid(), shotIndexes: [], dur: 0, line: "", characterRefAssetId: "", customCharacterRefAssetId: "", audioAssetId: null, audioDuration: 0, status: "pending" };
-      segments.push(cur);
-    }
-    cur.shotIndexes.push(i);
-    cur.dur += d;
-  });
+  const groups = planDigitalSegmentGroups(shots.map((_, i) => per[i]?.dur || 4));
+  const segments = groups.map(group => ({
+    id: uid(),
+    shotIndexes: group.indexes,
+    dur: group.dur,
+    line: "",
+    characterRefAssetId: "",
+    customCharacterRefAssetId: "",
+    audioAssetId: null,
+    audioDuration: 0,
+    status: "pending"
+  }));
   const globalChar = A.characterRefAssetId || acc?.charBoardAssetId || null;
   segments.forEach(seg => {
     const oldSeg = old.find(x => (x.shotIndexes || []).some(i => seg.shotIndexes.includes(i)));
@@ -1102,7 +1138,6 @@ export function renderWorkshopPage(root, p) {
               </div>`}
             ${jobError ? `<small class="dh-error">${esc(jobError)}</small>` : ""}
             <div class="dh-seg-actions">
-              ${done ? `<button class="btn ghost sm" data-dh-preview="${seg.id}">${icon("eye", 11)} 放大预览</button>` : ""}
               <button class="btn ghost sm" data-dh-regen="${seg.id}">${icon("refresh", 11)} 重新生成</button>
               <button class="btn primary sm" data-dh-video="${seg.id}" ${busy ? "disabled" : ""}>${busy ? "生成中…" : done ? "重新生成视频" : "生成视频"}</button>
             </div>
@@ -1254,7 +1289,7 @@ export function renderWorkshopPage(root, p) {
                 </div>
               </div>
             </div>
-            ${p.artifacts.audio.voiceLookup ? `<div class="voice-lookup-note" style="grid-column:1/-1">${esc(p.artifacts.audio.voiceLookup)}</div>` : ""}
+            <div class="voice-lookup-note" id="wsVoiceLookupNote" style="grid-column:1/-1" ${p.artifacts.audio.voiceLookup ? "" : "hidden"}>${esc(p.artifacts.audio.voiceLookup || "")}</div>
             ${audioAsset && !isDigitalHumanMode ? `<div class="tts-audio" style="grid-column:1/-1;margin-top:10px;display:flex;align-items:center;gap:10px">
               <span class="muted" style="font-size:12px">口播预览</span>
               <audio src="${esc(urlFor(audioAsset))}" controls preload="metadata" style="width:min(520px,100%);height:34px"></audio>
@@ -1493,11 +1528,11 @@ export function renderWorkshopPage(root, p) {
 
   function applyDigitalFixedPrompts(units = materialUnits(p)) {
     units.forEach(u => {
-      u.videoPrompt = "角色自然地讲述内容，动作自然，表情自然";
+      u.videoPrompt = DIGITAL_HUMAN_FIXED_PROMPT;
       u.needsImage = true;
     });
     A.digitalHuman = A.digitalHuman || {};
-    A.digitalHuman.fixedPrompt = "角色自然地讲述内容，动作自然，表情自然";
+    A.digitalHuman.fixedPrompt = DIGITAL_HUMAN_FIXED_PROMPT;
   }
 
   async function synthesizeDigitalSegmentAudio(voiceId) {
@@ -1516,6 +1551,7 @@ export function renderWorkshopPage(root, p) {
     let total = 0;
     for (let i = 0; i < segs.length; i++) {
       const seg = segs[i];
+      const previousAudioAssetId = seg.audioAssetId || null;
       const text = safeTtsText(seg.line || "");
       if (!text) continue;
       const out = await synthesizeTts({ text, voiceId, speed: 1.2 });
@@ -1530,6 +1566,10 @@ export function renderWorkshopPage(root, p) {
       seg.audioDuration = Math.round((measuredDuration || out.duration || seg.dur || 0) * 10) / 10;
       seg.voiceId = out.voiceId || voiceId;
       seg.status = "audioReady";
+      seg.videoStatus = "pending";
+      seg.videoOutput = null;
+      seg.videoJobId = null;
+      if (previousAudioAssetId && previousAudioAssetId !== a.id) await removeAsset(previousAudioAssetId);
       total += seg.audioDuration || seg.dur || 0;
     }
     A.digitalHuman.segments = segs;
@@ -1565,6 +1605,7 @@ export function renderWorkshopPage(root, p) {
       });
       return { count: 0, duration: seg.dur || 0 };
     }
+    const previousAudioAssetId = seg.audioAssetId || null;
     const out = await synthesizeTts({ text, voiceId, speed: 1.2 });
     const a = await addAssetFromDataUrl(acc.id, {
       name: `数字人口播_D${String(index + 1).padStart(2, "0")}_${(p.title || p.topic || "视频").slice(0, 8)}`,
@@ -1577,6 +1618,10 @@ export function renderWorkshopPage(root, p) {
     seg.audioDuration = Math.round((measuredDuration || out.duration || seg.dur || 0) * 10) / 10;
     seg.voiceId = out.voiceId || voiceId;
     seg.status = "audioReady";
+    seg.videoStatus = "pending";
+    seg.videoOutput = null;
+    seg.videoJobId = null;
+    if (previousAudioAssetId && previousAudioAssetId !== a.id) await removeAsset(previousAudioAssetId);
     A.digitalHuman.segments = segs;
     const total = segs.reduce((sum, x) => sum + Number(x.audioDuration || x.dur || 0), 0);
     Object.assign(p.artifacts.audio, {
@@ -2432,6 +2477,17 @@ export function renderWorkshopPage(root, p) {
       e.stopPropagation();
       if (voiceMenu) voiceMenu.hidden = !voiceMenu.hidden;
     });
+    const syncVoiceControls = () => {
+      const selected = selectedVoicePreset(p, acc);
+      const label = voiceBtn?.querySelector("span");
+      const idLabel = voiceBtn?.querySelector("em");
+      if (label) label.textContent = selected.name || "默认/手动声线";
+      if (idLabel) idLabel.textContent = selected.voiceId || "平台默认 / 手动输入";
+      const input = $("#wsVoiceId", root);
+      if (input && document.activeElement !== input) input.value = selected.voiceId || "";
+      $$("[data-voice-option]", root).forEach(option => option.classList.toggle("is-active", option.dataset.voiceOption === selected.voiceId));
+      if (voiceMenu) voiceMenu.hidden = true;
+    };
     $$("[data-voice-option]", root).forEach(b => b.addEventListener("click", () => {
       const id = b.dataset.voiceOption || "";
       const known = id ? findKnownTtsVoice(id) : null;
@@ -2441,7 +2497,7 @@ export function renderWorkshopPage(root, p) {
       p.artifacts.audio.voiceLookup = "";
       save("productions");
       toast(id ? `已切换声线：${p.artifacts.audio.voiceName || id}` : "已切回默认/手动声线");
-      draw();
+      syncVoiceControls();
     }));
     $("#wsVoiceId", root)?.addEventListener("input", e => {
       p.artifacts.audio.voiceId = e.currentTarget.value.trim();
@@ -2461,7 +2517,9 @@ export function renderWorkshopPage(root, p) {
       p.artifacts.audio.voiceLookup = `${local} · ${remote}${res.detail ? `：${res.detail.slice(0, 120)}` : ""}`;
       save("productions");
       toast(res.valid === false ? "声线上游测试未通过" : "声线识别完成");
-      draw();
+      const note = $("#wsVoiceLookupNote", root);
+      if (note) { note.hidden = false; note.textContent = p.artifacts.audio.voiceLookup; }
+      syncVoiceControls();
     }, "识别中…"));
     $("#wsVoiceFav", root)?.addEventListener("click", () => {
       const typed = ($("#wsVoiceId", root)?.value || "").trim();
@@ -2473,7 +2531,8 @@ export function renderWorkshopPage(root, p) {
       state.ui.favoriteVoiceIds = [...favs];
       save("meta");
       toast(`已收藏声线：${name}`);
-      draw();
+      const button = $("#wsVoiceFav", root);
+      if (button) { button.classList.add("voice-action-active"); button.innerHTML = `${icon("star", 12)} 已收藏`; }
     });
     $("#wsVoiceFix", root)?.addEventListener("click", () => {
       const typed = ($("#wsVoiceId", root)?.value || "").trim();
@@ -2486,7 +2545,9 @@ export function renderWorkshopPage(root, p) {
       p.artifacts.audio.voiceName = name;
       save("accounts", "productions");
       toast(`已固定到账号：${name}`);
-      draw();
+      const button = $("#wsVoiceFix", root);
+      if (button) { button.classList.add("voice-action-active"); button.innerHTML = `${icon("check", 12)} 已锁定`; }
+      syncVoiceControls();
     });
     $("#wsTts", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       syncNarrationFromEditor({ silent: true });
@@ -2646,15 +2707,6 @@ export function renderWorkshopPage(root, p) {
       toast(message, "error");
       draw();
     }, { once: true }));
-    $$('[data-dh-preview]', root).forEach(b => b.addEventListener("click", () => {
-      const segs = digitalSegmentsForDisplay(p, acc);
-      const i = segs.findIndex(x => x.id === b.dataset.dhPreview);
-      const seg = i >= 0 ? segs[i] : null;
-      const job = seg ? digitalJobFor(seg, i) : null;
-      const videoUrl = outputUrl(job?.output) || outputUrl(seg?.videoOutput);
-      if (!videoUrl) { toast("该段视频还没有可预览的成片"); return; }
-      openVideoPreview(videoUrl, `D${String(i + 1).padStart(2, "0")} 数字人视频`);
-    }));
     $$("[data-dh-video]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       if (prepareDigitalVideoSegments([b.dataset.dhVideo])) {
         if (!await ensureDigitalHumanCanSubmit([b.dataset.dhVideo])) { draw(); return; }

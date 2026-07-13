@@ -730,9 +730,21 @@ def state_for(member_id, role, parent_id=None):
     visible_prod_ids = set()
     assigned_account_ids = supplier_account_ids_for_child(member_id) if role == "supplier_child" else set()
     visible_asset_ids = set()
+    supplier_avatar_asset_ids = set()
+    supplier_production_created_at = {}
     with _lock:
         conn = _connect()
         try:
+            if role in {"supplier_parent", "supplier_child"}:
+                production_rows = conn.execute("SELECT id, data FROM docs WHERE collection='productions'").fetchall()
+                for production_id, raw_data in production_rows:
+                    try:
+                        production = json.loads(raw_data)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if role == "supplier_child" and production.get("accountId") not in assigned_account_ids:
+                        continue
+                    supplier_production_created_at[str(production_id)] = production.get("createdAt")
             for col in COLLECTIONS:
                 if role in {"supplier_parent", "supplier_child"} and col not in {"accounts", "assets"}:
                     out[col] = []
@@ -749,6 +761,8 @@ def state_for(member_id, role, parent_id=None):
                     if col == "accounts" and role == "supplier_child" and item.get("id") not in assigned_account_ids:
                         continue
                     if col == "accounts" and role in {"supplier_parent", "supplier_child"}:
+                        if item.get("avatarAssetId"):
+                            supplier_avatar_asset_ids.add(item.get("avatarAssetId"))
                         item = {
                             key: item.get(key) for key in (
                                 "id", "name", "platform", "mode", "index", "avatarAssetId", "avatarUrl"
@@ -764,9 +778,12 @@ def state_for(member_id, role, parent_id=None):
                         if role not in {"supplier_child", "supplier_parent", "editor", "admin"} and owner and owner != member_id:
                             continue
                     if col == "assets":
-                        if role == "supplier_child" and ((not item.get("delivered") and not item.get("shared")) or item.get("accountId") not in assigned_account_ids):
+                        if role in {"supplier_parent", "supplier_child"} and not item.get("sourceCreatedAt"):
+                            item["sourceCreatedAt"] = supplier_production_created_at.get(str(item.get("productionId") or "")) or item.get("createdAt")
+                        is_supplier_avatar = item.get("id") in supplier_avatar_asset_ids
+                        if role == "supplier_child" and not is_supplier_avatar and ((not item.get("delivered") and not item.get("shared")) or item.get("accountId") not in assigned_account_ids):
                             continue
-                        if role == "supplier_parent" and not item.get("delivered") and not item.get("shared"):
+                        if role == "supplier_parent" and not is_supplier_avatar and not item.get("delivered") and not item.get("shared"):
                             continue
                         if role == "editor" and item.get("delivered") and item.get("byMemberId") and item.get("byMemberId") != member_id:
                             continue

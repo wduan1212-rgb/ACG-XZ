@@ -31,6 +31,14 @@ function dateOnly(value = "") {
   return m ? m[0].replace(/\//g, "-") : raw;
 }
 
+function dateFromTime(value) {
+  const time = Number(value || 0);
+  if (!time) return "";
+  const d = new Date(time);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 let collapsedDays = new Set();
 
 function deliveryTime(asset) {
@@ -189,6 +197,7 @@ function supplierDetailHtml(asset, acc) {
 
 let tab = "creator"; // creator | supplier
 let supFilters = { product: "all", type: "all", publisher: "all", date: "all" };
+let creatorProductFilter = "all";
 
 export const deliveryView = {
   render(root) {
@@ -215,7 +224,6 @@ export const deliveryView = {
       const renderActiveBody = () => {
         if (tab === "creator") drawCreator(body, all);
         else drawSupplier(body, all);
-        $("#dvBatchDl", root)?.addEventListener("click", batchDl);
       };
       renderActiveBody();
       $$("[data-dtab]", root).forEach(button => button.addEventListener("click", () => {
@@ -238,12 +246,19 @@ export const deliveryView = {
 
     function drawCreator(body, all) {
       const seqMap = displaySeqMap(all);
-      const groups = groupByDay(all);
-      body.innerHTML = all.length
-        ? `<div class="dv-layout">
-            <aside class="dv-date-nav" aria-label="发布时间轴">
+      const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
+      const visible = creatorProductFilter === "all"
+        ? all
+        : all.filter(x => (x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))) === creatorProductFilter);
+      const groups = groupByDay(visible);
+      body.innerHTML = `<div class="creator-delivery-filters">
+          <button class="${creatorProductFilter === "all" ? "on" : ""}" data-creator-product="all">全部标签</button>
+          ${productTags.map(tag => `<button class="${creatorProductFilter === tag ? "on" : ""}" data-creator-product="${esc(tag)}">${esc(tag)}</button>`).join("")}
+        </div>` + (visible.length
+        ? `<div class="dv-layout ${creatorProductFilter === "all" ? "" : "is-filtered"}">
+            ${creatorProductFilter === "all" ? `<aside class="dv-date-nav" aria-label="发布时间轴">
               ${groups.map(g => `<button class="dv-date-link" data-day-jump="${esc(g.key)}"><span>${esc(dayLabel(g.key))}</span><em>${g.items.length}</em></button>`).join("")}
-            </aside>
+            </aside>` : ""}
             <div class="dv-flow">
               ${groups.map(g => {
                 const closed = collapsedDays.has(g.key);
@@ -262,7 +277,19 @@ export const deliveryView = {
               }).join("")}
             </div>
           </div>`
-        : emptyState("package", "还没有发布记录", "在审核页点「定稿并发布」后，会按发布序号汇总在这里（未发布的内容在「草稿箱」）");
+        : emptyState("package", creatorProductFilter === "all" ? "还没有发布记录" : "这个标签下还没有发布记录", creatorProductFilter === "all" ? "在审核页点「定稿并发布」后，会按发布序号汇总在这里（未发布的内容在「草稿箱」）" : "切换其他标签，或返回全部标签查看时间轴"));
+
+      $$("[data-creator-product]", body).forEach(button => button.addEventListener("click", () => {
+        const next = button.dataset.creatorProduct || "all";
+        if (next === creatorProductFilter) return;
+        creatorProductFilter = next;
+        const height = body.offsetHeight;
+        body.style.minHeight = `${height}px`;
+        drawCreator(body, all);
+        const animation = body.animate?.([{ opacity: .55, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 160, easing: "cubic-bezier(.2,.8,.2,1)" });
+        if (animation) animation.finished.finally(() => { body.style.minHeight = ""; });
+        else body.style.minHeight = "";
+      }));
 
       $$("[data-day-jump]", body).forEach(b => b.addEventListener("click", () => {
         const target = body.querySelector(`#dv-day-${CSS.escape(b.dataset.dayJump)}`);
@@ -320,13 +347,15 @@ export const deliveryView = {
     function drawSupplier(body, all) {
       const seqMap = displaySeqMap(all);
       const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
-      const rows = all.filter(x => {
+      const matchesFilters = x => {
         const ptag = x.asset.productTag || productTagLabel(productById(x.asset.productId || ""));
         return (supFilters.product === "all" || ptag === supFilters.product)
           && (supFilters.type === "all" || x.acc.mode === supFilters.type)
           && (supFilters.publisher === "all" || publisherLabel(x.asset) === supFilters.publisher)
           && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date);
-      });
+      };
+      const rows = all;
+      const visibleCount = rows.filter(matchesFilters).length;
       body.innerHTML = `
         <div class="supplier-filters">
           <label class="select-shell">${icon("package", 13)}<select data-sup-select="product"><option value="all">全部产品</option>${productTags.map(x => `<option value="${esc(x)}" ${supFilters.product === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
@@ -353,11 +382,14 @@ export const deliveryView = {
               <th class="c-seq">序号</th>
               <th>素材名</th><th>产品</th><th>发布人</th><th>平台</th><th>观看量</th><th>状态</th><th></th>
             </tr></thead>
-            <tbody>${rows.length ? rows.map(({ asset, acc }) => `
-              <tr data-sup="${asset.id}">
+            <tbody>${rows.length ? rows.map(item => {
+              const { asset, acc } = item;
+              const ptag = asset.productTag || productTagLabel(productById(asset.productId || ""));
+              return `
+              <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-date="${esc(dayKey(asset))}" ${matchesFilters(item) ? "" : "hidden"}>
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
-                <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
+                <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}<span class="sup-date-line">${dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt) ? `<em class="sup-created">${icon("calendar", 10)} 创作 ${esc(dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt))}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}</span>${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
                 <td><b>${esc(publisherLabel(asset))}</b></td>
                 <td>${platChip(acc.platform, true)}</td>
@@ -369,13 +401,47 @@ export const deliveryView = {
                   <button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
                   <button class="btn ${asset.publishedUrl ? "ghost" : "primary"} sm" data-suplink="${asset.id}">${icon("link", 13)} ${asset.publishedUrl ? "改链接" : "回传链接"}</button>
                 </td>
-              </tr>${supplierDetailHtml(asset, acc)}`).join("") : `<tr><td colspan="9" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
+              </tr>${supplierDetailHtml(asset, acc)}`;
+            }).join("") + `<tr class="sup-empty-filter" ${visibleCount ? "hidden" : ""}><td colspan="9" class="sup-empty">当前筛选下暂无素材。</td></tr>` : `<tr><td colspan="9" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
             </tbody>
           </table>
         </div>`;
-      $$("[data-sup-select]", body).forEach(b => b.addEventListener("change", () => { supFilters[b.dataset.supSelect] = b.value; draw(); }));
+      const applySupplierFilters = () => {
+        let shown = 0;
+        $$("tr[data-sup]", body).forEach(row => {
+          const show = (supFilters.product === "all" || row.dataset.supProduct === supFilters.product)
+            && (supFilters.type === "all" || row.dataset.supType === supFilters.type)
+            && (supFilters.publisher === "all" || row.dataset.supPublisher === supFilters.publisher)
+            && (supFilters.date === "all" || row.dataset.supDate === supFilters.date);
+          const detail = body.querySelector(`[data-sup-detail="${CSS.escape(row.dataset.sup)}"]`);
+          row.getAnimations?.().forEach(animation => animation.cancel());
+          if (show) {
+            shown++;
+            if (row.hidden) {
+              row.hidden = false;
+              row.animate?.([{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "cubic-bezier(.2,.8,.2,1)" });
+            }
+          } else if (!row.hidden) {
+            if (detail) detail.hidden = true;
+            row.classList.remove("open");
+            const animation = row.animate?.([{ opacity: 1 }, { opacity: 0, transform: "translateY(-3px)" }], { duration: 120, easing: "ease-out" });
+            if (animation) animation.onfinish = () => { row.hidden = true; };
+            else row.hidden = true;
+          }
+        });
+        const empty = $(".sup-empty-filter", body);
+        if (empty) empty.hidden = shown > 0;
+      };
+      $$("[data-sup-select]", body).forEach(b => b.addEventListener("change", () => {
+        supFilters[b.dataset.supSelect] = b.value;
+        applySupplierFilters();
+      }));
+      $("#dvBatchDl", body)?.addEventListener("click", batchDl);
       const supAll = $("#supAll", body);
-      if (supAll) supAll.addEventListener("change", e => $$(".sup-check", body).forEach(c => c.checked = e.target.checked));
+      if (supAll) supAll.addEventListener("change", e => $$("tr[data-sup]", body).filter(row => !row.hidden).forEach(row => {
+        const checkbox = $(".sup-check", row);
+        if (checkbox) checkbox.checked = e.target.checked;
+      }));
       $$("[data-supdl]", body).forEach(b => b.addEventListener("click", async () => {
         const a = state.assets.find(x => x.id === b.dataset.supdl);
         if (a) {
@@ -428,10 +494,10 @@ export const deliveryView = {
     }
 
     async function batchDl() {
-      const checkedIds = $$("tr[data-sup]", root).filter(tr => tr.querySelector(".sup-check")?.checked).map(tr => tr.dataset.sup);
+      const checkedIds = $$("tr[data-sup]", root).filter(tr => !tr.hidden && tr.querySelector(".sup-check")?.checked).map(tr => tr.dataset.sup);
       const pendingIds = $$("tr[data-sup]", root).filter(tr => {
         const a = state.assets.find(x => x.id === tr.dataset.sup);
-        return a && !a.publishedUrl && (a.status || "未下载") !== "已下载";
+        return !tr.hidden && a && !a.publishedUrl && (a.status || "未下载") !== "已下载";
       }).map(tr => tr.dataset.sup);
       const ids = checkedIds.length ? checkedIds : pendingIds;
       if (!ids.length) { toast("当前筛选下没有未下载素材"); return; }

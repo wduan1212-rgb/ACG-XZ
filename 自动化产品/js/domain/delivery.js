@@ -128,6 +128,7 @@ export function deliver(p, opts = {}) {
     createdAt: Date.now(), delivered: true, status: "未下载",
     productionId: p.id,
     pubSeq, deliveredAt: Date.now(),
+    sourceCreatedAt: p.createdAt || Date.now(),      // 创作端建立该任务的时间
     byAccount: acc.name,                          // 发布所属内容账号
     byMemberId: mem?.id || p.ownerId || null,
     byMemberName: publisherName || "",            // 谁点的发布

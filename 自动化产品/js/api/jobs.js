@@ -7,7 +7,7 @@ import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers
 import { assetBlob, urlFor } from "../domain/assets.js";
 
 const CONCURRENCY = 4;
-const DIGITAL_HUMAN_CONCURRENCY = 3;
+const DIGITAL_HUMAN_CONCURRENCY = 10;
 const TICK_MS = 1000;
 const DEFAULT_POLL_MS = 8000;
 const DIGITAL_HUMAN_POLL_MS = 12000;
@@ -234,18 +234,28 @@ async function tick() {
     }
   }
   // 2) 队列补位
-  const slots = CONCURRENCY - activeJobs().length;
+  const active = activeJobs();
+  const activeDigital = active.filter(isDigitalHumanJob).length;
+  const activeStandard = active.length - activeDigital;
+  const standardSlots = Math.max(0, CONCURRENCY - activeStandard);
+  const digitalSlots = Math.max(0, DIGITAL_HUMAN_CONCURRENCY - activeDigital);
+  const slots = standardSlots + digitalSlots;
   if (slots > 0) {
-    const activeDigital = activeJobs().filter(isDigitalHumanJob).length;
     let digitalPicked = 0;
+    let standardPicked = 0;
     const candidates = [];
     for (const j of queuedJobs()) {
       if (candidates.length >= slots) break;
-      if (isDigitalHumanJob(j) && activeDigital + digitalPicked >= DIGITAL_HUMAN_CONCURRENCY) continue;
-      if (isDigitalHumanJob(j)) digitalPicked++;
+      if (isDigitalHumanJob(j)) {
+        if (digitalPicked >= digitalSlots) continue;
+        digitalPicked++;
+      } else {
+        if (standardPicked >= standardSlots) continue;
+        standardPicked++;
+      }
       candidates.push(j);
     }
-    for (const j of candidates) {
+    const submitCandidate = async j => {
       try {
         const p = await providerReadyForSubmit(j.kind);
         j.attempts++;
@@ -274,7 +284,9 @@ async function tick() {
         const msg = e.message || "提交失败";
         if (!scheduleSubmitRetry(j, msg)) failJob(j, msg);
       }
-    }
+    };
+    // 数字人上游允许 10 并发；同一轮候选项并行提交，避免 UI 看起来仍在逐个排队。
+    await Promise.allSettled(candidates.map(submitCandidate));
   }
   // 3) 空转时停表
   if (!activeJobs().length && !queuedJobs().length && !delayedQueuedJobs().length) stop();

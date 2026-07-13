@@ -1535,14 +1535,14 @@ function latestDigitalJob(p, segIndex, segmentId = "") {
   );
 }
 
-function hasActiveDigitalJob(p) {
-  return (state.jobs || []).some(j =>
+function activeDigitalJobCount(p) {
+  return (state.jobs || []).filter(j =>
     !j.superseded
     && j.productionId === p.id
     && j.kind === "video"
     && j.model === "__digital_human__"
     && ["queued", "submitted", "running"].includes(j.status)
-  );
+  ).length;
 }
 
 function supersedeSegmentJobs(p, segIndex, segmentId = "") {
@@ -1590,23 +1590,24 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
     A.sharedRefAssetId
   ].filter(Boolean))];
   const hasExternalVoice = !!p.artifacts.audio.assetId && ["tts", "upload"].includes(p.artifacts.audio.source);
-  const wantsSeedanceVoice = false;
+  const wantsSeedanceVoice = p.subType === "无数字人" && !!acc?.voiceRefAssetId;
   const useDigitalHumanModel = p.subType === "数字人" && A.generationMode === "digitalHuman";
-  const voiceRefs = [];
+  const voiceRefs = wantsSeedanceVoice ? [acc.voiceRefAssetId] : [];
   const audioRefs = [...voiceRefs].filter(Boolean);
   let n = 0;
   if (useDigitalHumanModel) {
-    if (hasActiveDigitalJob(p)) return 0;
+    const availableSlots = Math.max(0, 10 - activeDigitalJobCount(p));
+    if (!availableSlots) return 0;
     const segs = Array.isArray(A.digitalHuman?.segments) ? A.digitalHuman.segments : [];
     segs.forEach((seg, i) => {
-      if (n > 0) return;
+      if (n >= availableSlots) return;
       if (onlyUnitIndex != null && i !== onlyUnitIndex) return;
       const existing = latestDigitalJob(p, i, seg.id || "");
       if (existing && ["queued", "submitted", "running"].includes(existing.status)) return;
       if (onlyUnitIndex == null && (outputUrl(existing?.output) || outputUrl(seg.videoOutput))) return;
       const characterAssetId = seg.characterRefAssetId || characterRefId;
       const audioAssetId = seg.audioAssetId;
-      const prompt = (seg.videoPrompt || A.digitalHuman?.fixedPrompt || "角色自然地讲述内容，动作自然，表情自然").trim();
+      const prompt = (seg.videoPrompt || A.digitalHuman?.fixedPrompt || "角色动作自然，表情自然生动，语言表达流畅，视线自然看镜头，自然地讲述内容。").trim();
       if (!characterAssetId || !audioAssetId || !prompt) return;
       supersedeSegmentJobs(p, i, seg.id || "");
       const job = createJob({
@@ -1641,8 +1642,13 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
     supersedeUnitJobs(p, i, prompt);
     // 真人只在第一段带角色参考；场景/产品参考按需要挂载，避免角色图污染纯场景片段。
     const needsCharacter = p.subType === "数字人" && i === 0;
+    // Seedance 2.0 上游不接受“音频是唯一参考模态”；固定声线时为每段同时挂一张已有视觉参考。
+    const audioCompanionVisual = wantsSeedanceVoice
+      ? ((u.refAssetIds || [])[0] || sceneRefs[0] || characterRefId || null)
+      : null;
     const refs = [...new Set([
       needsCharacter ? characterRefId : null,
+      audioCompanionVisual,
       ...(u.refAssetIds || []),
       ...(u.needsImage || needsCharacter ? sceneRefs : []),
       ...audioRefs

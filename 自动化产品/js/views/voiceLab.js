@@ -1,9 +1,10 @@
-import { $, $$, esc, copyText } from "../core/util.js";
+import { $, $$, esc, copyText, wireDropZone } from "../core/util.js";
 import { state, save } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { promptModal, toast, withLoading } from "../ui/components.js";
+import { confirmModal, promptModal, toast, withLoading, removeWithMotion } from "../ui/components.js";
 import { designTtsVoice, refreshProviderStatus, synthesizeTts, ttsProviderLabel } from "../api/providers.js";
-import { favoriteVoiceIds, findVoiceOption, isFavoriteVoice, rememberCustomVoice, renameCustomVoice, setFavoriteVoice, toggleFavoriteVoice, voiceListByTab, voiceMeta } from "../domain/voices.js";
+import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
+import { deleteCustomVoice, favoriteVoiceIds, findVoiceOption, isFavoriteVoice, rememberCustomVoice, renameCustomVoice, setFavoriteVoice, toggleFavoriteVoice, voiceListByTab, voiceMeta } from "../domain/voices.js";
 
 let runtimeAudio = null;
 let runtimeDesignAudio = null;
@@ -63,9 +64,55 @@ function mountVoiceTopbar(mode, rerender) {
     <div class="vl-mini-status"><span>Minimax</span><b>${esc(ttsProviderLabel().replace(/^Minimax ·\s*/, ""))}</b><em>voice_design / t2a_v2</em></div>
   `;
   $$("[data-vl-mode]", dock).forEach(b => b.addEventListener("click", () => {
-    saveLabPatch({ mode: b.dataset.vlMode || "tts" });
-    rerender?.();
+    const next = b.dataset.vlMode || "tts";
+    if (next === labState().mode) return;
+    saveLabPatch({ mode: next });
+    rerender?.(next, dock);
   }));
+}
+
+function voiceAudioAssets(kind = "all") {
+  return (state.assets || [])
+    .filter(a => {
+      if (a.type !== "音频") return false;
+      const tags = a.tags || [];
+      if (kind === "reference") return tags.some(t => /参考音频库|声线参考/i.test(t));
+      if (kind === "voice") return tags.some(t => /语音素材库|口播|tts/i.test(t)) && !tags.some(t => /参考音频库/i.test(t));
+      return tags.some(t => /语音素材库|参考音频库|口播|tts/i.test(t));
+    })
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+async function saveAudioAsset(audio, tags = [], { global = false } = {}) {
+  if (!audio?.url) return null;
+  const saved = await addAssetFromDataUrl(global ? null : (state.ui.activeAccountId || null), {
+    name: audio.name || "语音素材",
+    type: "音频",
+    tags: [...new Set(["口播", ...tags])],
+    dataUrl: audio.url
+  });
+  audio.assetId = saved.id;
+  return saved;
+}
+
+function voiceAudioLibraryHtml() {
+  const listHtml = list => list.map(a => {
+    const url = urlFor(a);
+    return `<div class="vl-audio-item" data-vl-audio-asset="${esc(a.id)}">
+      <div>${icon("music", 14)}<b>${esc(a.name)}</b><em>${esc((a.tags || []).filter(t => t !== "语音素材库").slice(0, 2).join(" · "))}</em></div>
+      ${url ? `<audio src="${esc(url)}" controls preload="metadata"></audio>` : `<span class="muted">音频文件暂不可用</span>`}
+      <button class="icon-btn tiny" type="button" title="删除语音素材" data-vl-delete-audio="${esc(a.id)}">${icon("trash", 13)}</button>
+    </div>`;
+  }).join("");
+  const voice = voiceAudioAssets("voice");
+  const reference = voiceAudioAssets("reference");
+  return `<div class="vl-audio-library">
+    <section><div class="vl-audio-library-head"><b>语音素材库</b><em>${voice.length}</em></div>${voice.length ? listHtml(voice) : `<p class="muted">生成音频时可选择加入。</p>`}</section>
+    <section><div class="vl-audio-library-head"><b>总参考音频库</b><em>${reference.length}</em></div>
+      <label class="vl-reference-drop" id="vlReferenceDrop">${icon("upload", 13)} 拖入自己的参考音频<input type="file" accept="audio/*" hidden id="vlReferenceUpload" /></label>
+      ${reference.length ? listHtml(reference) : `<p class="muted">非数字人账号可共用这里的声线参考。</p>`}
+    </section>
+  </div>`;
 }
 
 function toolPanelHtml(mode, s, selected) {
@@ -80,7 +127,7 @@ function toolPanelHtml(mode, s, selected) {
         <label class="vl-field grow">音色描述<textarea class="input" id="vlDesignPrompt" rows="5" placeholder="描述想要的声音">${esc(s.designPrompt || "")}</textarea></label>
         <label class="vl-field">试听文本<textarea class="input" id="vlDesignPreview" rows="3" placeholder="用于试听的短口播">${esc(s.designPreview || "")}</textarea></label>
       </div>
-      ${audioPlayerHtml(runtimeDesignAudio, "design")}
+      <div id="vlDesignResult">${runtimeDesignAudio?.url ? `${audioPlayerHtml(runtimeDesignAudio, "design")}<div class="vl-design-confirm"><button class="btn ghost sm" id="vlDiscardDesign">放弃</button><button class="btn primary sm" id="vlConfirmDesign">${icon("check", 13)} 保存到我的音色</button></div>` : ""}</div>
     </aside>`;
   }
   if (mode === "library") {
@@ -97,10 +144,7 @@ function toolPanelHtml(mode, s, selected) {
           <button class="btn ghost sm" id="vlCopyCurrent">${icon("copy", 13)} 复制 ID</button>
         </div>
       </div>
-      <div class="vl-tool-note">
-        <b>部署存储</b>
-        <span>设计音色会写入服务器同步集合 voicePresets，并按账号隔离；运行时生成的试听音频只在当前页面保留。</span>
-      </div>
+      ${voiceAudioLibraryHtml()}
     </aside>`;
   }
   return `<aside class="vl-side-panel vl-console glass-panel">
@@ -143,7 +187,7 @@ function voiceCard(v, selectedId) {
     <span class="vl-voice-actions">
       <button class="icon-btn tiny" type="button" title="试听音色" data-vl-preview="${esc(v.voiceId)}">${icon(previewing ? "pause" : "play", 13)}</button>
       <button class="icon-btn tiny ${fav ? "is-active" : ""}" type="button" title="${fav ? "取消收藏" : "收藏音色"}" data-vl-fav="${esc(v.voiceId)}">${icon("star", 13)}</button>
-      ${v.source === "mine" ? `<button class="icon-btn tiny" type="button" title="重命名音色" data-vl-rename="${esc(v.voiceId)}">${icon("edit", 13)}</button>` : ""}
+      ${v.source === "mine" ? `<button class="icon-btn tiny" type="button" title="修改音色名称" data-vl-rename="${esc(v.voiceId)}">${icon("edit", 13)}</button><button class="icon-btn tiny danger" type="button" title="删除我的音色" data-vl-delete-voice="${esc(v.voiceId)}">${icon("trash", 13)}</button>` : ""}
       <button class="icon-btn tiny" type="button" title="复制 voice_id" data-vl-copy="${esc(v.voiceId)}">${icon("copy", 13)}</button>
     </span>
   </div>`;
@@ -194,7 +238,13 @@ async function previewVoice(voiceId, s) {
   const voice = findVoiceOption(id);
   const sample = String(s.designPreview || VOICE_PREVIEW_TEXT).trim().slice(0, 80) || VOICE_PREVIEW_TEXT;
   const cacheKey = `${id}::${sample}`;
-  let out = voice.previewAudioDataUrl ? { audioDataUrl: voice.previewAudioDataUrl, voiceId: id } : voicePreviewCache.get(cacheKey);
+  const storedAssetId = voiceMeta().voicePreviewAssetIds?.[id];
+  const storedUrl = storedAssetId ? urlFor(storedAssetId) : "";
+  let out = voice.previewAudioDataUrl
+    ? { audioDataUrl: voice.previewAudioDataUrl, voiceId: id }
+    : storedUrl
+      ? { audioDataUrl: storedUrl, voiceId: id, assetId: storedAssetId }
+      : voicePreviewCache.get(cacheKey);
   if (!out) {
     out = await synthesizeTts({ text: sample, voiceId: id, speed: Number(s.speed ?? 1.2), vol: Number(s.vol || 1), pitch: Number(s.pitch || 0) });
     voicePreviewCache.set(cacheKey, out);
@@ -203,8 +253,16 @@ async function previewVoice(voiceId, s) {
     url: out.audioDataUrl,
     voiceId: out.voiceId || id,
     voiceName: voice.name || out.voiceId || id,
-    name: `${voice.name || "音色"}_试听`
+    name: `${voice.name || "音色"}_试听`,
+    assetId: out.assetId || ""
   };
+  if (!runtimeAudio.assetId) {
+    const saved = await saveAudioAsset(runtimeAudio, ["语音素材库", "音色试听", id]);
+    const ui = voiceMeta();
+    ui.voicePreviewAssetIds = ui.voicePreviewAssetIds || {};
+    ui.voicePreviewAssetIds[id] = saved.id;
+    save("meta");
+  }
 }
 
 function ensureProviderStatus(renderAgain) {
@@ -220,13 +278,23 @@ function ensureProviderStatus(renderAgain) {
 
 export const voiceLabView = {
   render(root) {
-    ensureProviderStatus(() => this.render(root));
+    const stableRerender = () => {
+      const scroll = document.querySelector(".main-scroll");
+      const scrollTop = scroll?.scrollTop || 0;
+      root.style.minHeight = `${root.getBoundingClientRect().height}px`;
+      this.render(root);
+      requestAnimationFrame(() => {
+        if (scroll) scroll.scrollTop = scrollTop;
+        root.style.minHeight = "";
+      });
+    };
+    ensureProviderStatus(stableRerender);
     const s = labState();
     const selected = findVoiceOption(s.voiceId || "");
     const favCount = favoriteVoiceIds().size;
     const currentList = voiceListHtml(s.tab || "system", selected.voiceId, s);
     const mode = s.mode || "tts";
-    mountVoiceTopbar(mode, () => this.render(root));
+    mountVoiceTopbar(mode, stableRerender);
     root.innerHTML = `<div class="voice-lab-page">
       <section class="vl-workbench" data-vl-view="${esc(mode)}">
         <div class="vl-library glass-panel">
@@ -252,8 +320,12 @@ export const voiceLabView = {
             <textarea class="vl-textarea" id="vlText" maxlength="5000" placeholder=" ">${esc(s.text || "")}</textarea>
             <div class="vl-typewriter"><span>输入要生成的口播文本</span></div>
           </div>
-          <div class="vl-editor-foot">
+      <div class="vl-editor-foot">
             <span id="vlTextCount">${(s.text || "").length} / 5000 字</span>
+            <span class="vl-audio-save-options">
+              <label class="vl-save-audio"><input type="checkbox" id="vlSaveAudio" ${s.saveGeneratedAudio ? "checked" : ""} /> 加入语音素材库</label>
+              <label class="vl-save-audio"><input type="checkbox" id="vlSaveReferenceAudio" ${s.saveReferenceAudio ? "checked" : ""} /> 加入参考音频库</label>
+            </span>
           </div>
         </div>
 
@@ -274,6 +346,8 @@ export const voiceLabView = {
     textEl?.addEventListener("paste", () => requestAnimationFrame(syncText));
     textEl?.addEventListener("change", syncText);
     textEl?.addEventListener("blur", syncText);
+    $("#vlSaveAudio", root)?.addEventListener("change", e => saveLabPatch({ saveGeneratedAudio: e.currentTarget.checked }));
+    $("#vlSaveReferenceAudio", root)?.addEventListener("change", e => saveLabPatch({ saveReferenceAudio: e.currentTarget.checked }));
     const syncFavoriteUi = (voiceId, favorite) => {
       $$(`[data-vl-fav="${CSS.escape(voiceId)}"]`, root).forEach(button => {
         button.title = favorite ? "取消收藏" : "收藏音色";
@@ -345,14 +419,23 @@ export const voiceLabView = {
       });
     });
 
+    const refreshVoiceList = () => {
+      const list = $(".vl-voice-list", root);
+      if (!list) return;
+      list.innerHTML = voiceListHtml(labState().tab || "system", labState().voiceId || "", labState());
+      list.animate?.([{ opacity: .45, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 150, easing: "cubic-bezier(.2,.8,.2,1)" });
+    };
     $$("[data-vl-tab]", root).forEach(b => b.addEventListener("click", () => {
-      saveLabPatch({ tab: b.dataset.vlTab || "system" });
-      this.render(root);
+      const next = b.dataset.vlTab || "system";
+      if (next === labState().tab) return;
+      saveLabPatch({ tab: next });
+      $$("[data-vl-tab]", root).forEach(button => button.classList.toggle("is-active", button.dataset.vlTab === next));
+      refreshVoiceList();
     }));
     [["vlVoiceGender", "voiceGender"], ["vlVoiceLocale", "voiceLocale"]].forEach(([id, key]) => {
       $("#" + id, root)?.addEventListener("change", e => {
         saveLabPatch({ [key]: e.currentTarget.value });
-        this.render(root);
+        refreshVoiceList();
       });
     });
     const selectAndPreview = async (voiceId) => {
@@ -376,40 +459,53 @@ export const voiceLabView = {
         mountRuntimePlayer();
       }
     };
-    $$("[data-vl-voice]", root).forEach(b => b.addEventListener("click", () => {
-      selectAndPreview(b.dataset.vlVoice || "");
-    }));
-    $$("[data-vl-voice]", root).forEach(b => b.addEventListener("keydown", e => {
+    $(".vl-voice-list", root)?.addEventListener("click", async e => {
+      const action = e.target.closest("button");
+      if (action?.dataset.vlPreview) { e.stopPropagation(); selectAndPreview(action.dataset.vlPreview); return; }
+      if (action?.dataset.vlFav) {
+        e.stopPropagation();
+        const id = action.dataset.vlFav;
+        const next = toggleFavoriteVoice(id);
+        toast(next ? "已收藏音色" : "已取消收藏");
+        syncFavoriteUi(id, next);
+        return;
+      }
+      if (action?.dataset.vlCopy) { e.stopPropagation(); copyText(action.dataset.vlCopy); toast("已复制 voice_id"); return; }
+      if (action?.dataset.vlRename) {
+        e.stopPropagation();
+        const voice = findVoiceOption(action.dataset.vlRename);
+        const name = await promptModal({ title: "修改我的音色名称", placeholder: "输入声线名称", value: voice.name || "", okText: "保存" });
+        if (name == null) return;
+        const saved = renameCustomVoice(voice.voiceId, name);
+        if (!saved) { toast("名称不能为空，或该音色不属于当前账号", "error"); return; }
+        const card = action.closest("[data-vl-voice]");
+        const title = card?.querySelector(".vl-voice-core b");
+        if (title) title.textContent = saved.name;
+        toast(`已改名为：${saved.name}`);
+        return;
+      }
+      if (action?.dataset.vlDeleteVoice) {
+        e.stopPropagation();
+        const voice = findVoiceOption(action.dataset.vlDeleteVoice);
+        const ok = await confirmModal({ title: "删除我的音色？", body: `<p>将删除“${esc(voice.name)}”，使用该音色的账号会恢复为默认声线。</p>`, okText: "删除", danger: true });
+        if (!ok) return;
+        const card = action.closest("[data-vl-voice]");
+        await removeWithMotion(card, async () => deleteCustomVoice(voice.voiceId));
+        const counter = $("[data-vl-favorite-count]", root);
+        if (counter) counter.textContent = String(favoriteVoiceIds().size);
+        toast("已删除我的音色");
+        return;
+      }
+      const card = e.target.closest("[data-vl-voice]");
+      if (card) selectAndPreview(card.dataset.vlVoice || "");
+    });
+    $(".vl-voice-list", root)?.addEventListener("keydown", e => {
       if (e.key !== "Enter" && e.key !== " ") return;
+      const card = e.target.closest("[data-vl-voice]");
+      if (!card) return;
       e.preventDefault();
-      b.click();
-    }));
-    $$("[data-vl-preview]", root).forEach(b => b.addEventListener("click", e => {
-      e.stopPropagation();
-      selectAndPreview(b.dataset.vlPreview || "");
-    }));
-    $$("[data-vl-fav]", root).forEach(b => b.addEventListener("click", e => {
-      e.stopPropagation();
-      const id = b.dataset.vlFav || "";
-      const next = toggleFavoriteVoice(id);
-      toast(next ? "已收藏音色" : "已取消收藏");
-      syncFavoriteUi(id, next);
-    }));
-    $$("[data-vl-rename]", root).forEach(b => b.addEventListener("click", async e => {
-      e.stopPropagation();
-      const voice = findVoiceOption(b.dataset.vlRename || "");
-      const name = await promptModal({ title: "重命名自定义声线", placeholder: "输入声线名称", value: voice.name || "", okText: "保存名称" });
-      if (name == null) return;
-      const saved = renameCustomVoice(voice.voiceId, name);
-      if (!saved) { toast("名称不能为空，或该音色不属于当前账号", "error"); return; }
-      toast(`已重命名为：${saved.name}`);
-      this.render(root);
-    }));
-    $$("[data-vl-copy]", root).forEach(b => b.addEventListener("click", e => {
-      e.stopPropagation();
-      copyText(b.dataset.vlCopy || "");
-      toast("已复制 voice_id");
-    }));
+      selectAndPreview(card.dataset.vlVoice || "");
+    });
     $("#vlFavCurrent", root)?.addEventListener("click", () => {
       const currentId = labState().voiceId || "";
       if (!currentId) { toast("默认声线无需收藏"); return; }
@@ -429,6 +525,59 @@ export const voiceLabView = {
       copyText(audio.voiceId);
       toast("已复制 voice_id");
     }));
+    const wireAudioLibrary = () => {
+      $$("[data-vl-delete-audio]", root).forEach(b => b.addEventListener("click", async () => {
+        const row = b.closest("[data-vl-audio-asset]");
+        const id = b.dataset.vlDeleteAudio || "";
+        if (!id) return;
+        await removeWithMotion(row, async () => removeAsset(id));
+        toast("已删除语音素材");
+      }));
+      const addReferenceFile = async file => {
+        if (!file || !file.type.startsWith("audio/")) { toast("请拖入音频文件", "error"); return; }
+        await addAssetFromFile(null, file, { tags: ["参考音频库", "声线参考"], name: file.name.replace(/\.[^.]+$/, "") });
+        const current = $(".vl-audio-library", root);
+        if (current) {
+          current.outerHTML = voiceAudioLibraryHtml();
+          wireAudioLibrary();
+        }
+        toast("已加入总参考音频库");
+      };
+      $("#vlReferenceUpload", root)?.addEventListener("change", e => addReferenceFile(e.currentTarget.files[0]));
+      const drop = $("#vlReferenceDrop", root);
+      if (drop) wireDropZone(drop, files => addReferenceFile(Array.from(files).find(file => file.type.startsWith("audio/"))), { filesOnly: true });
+    };
+    wireAudioLibrary();
+    const wireDesignCandidate = () => {
+      $("[data-vl-copy-audio=\"design\"]", root)?.addEventListener("click", () => {
+        if (!runtimeDesignAudio?.voiceId) return;
+        copyText(runtimeDesignAudio.voiceId);
+        toast("已复制 voice_id");
+      }, { once: true });
+      $("#vlDiscardDesign", root)?.addEventListener("click", () => {
+        runtimeDesignAudio = null;
+        const result = $("#vlDesignResult", root);
+        if (result) result.innerHTML = "";
+        toast("已放弃本次音色候选");
+      });
+      $("#vlConfirmDesign", root)?.addEventListener("click", () => {
+        if (!runtimeDesignAudio?.voiceId) return;
+        const saved = rememberCustomVoice({
+          voiceId: runtimeDesignAudio.voiceId,
+          name: runtimeDesignAudio.pendingName || runtimeDesignAudio.voiceName || "新设计音色",
+          description: runtimeDesignAudio.pendingPrompt || "",
+          previewAudioDataUrl: runtimeDesignAudio.url || ""
+        });
+        setFavoriteVoice(saved.voiceId, true);
+        saveLabPatch({ voiceId: saved.voiceId, tab: "mine", mode: "design", designName: "" });
+        $$("[data-vl-tab]", root).forEach(button => button.classList.toggle("is-active", button.dataset.vlTab === "mine"));
+        refreshVoiceList();
+        const result = $("#vlDesignResult", root);
+        if (result) result.innerHTML = `<div class="vl-saved-note">${icon("check", 13)} 已保存到我的音色</div>`;
+        toast(`音色已保存：${saved.name}`);
+      });
+    };
+    wireDesignCandidate();
     $("#vlGenerate", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       const text = ($("#vlText", root)?.value || "").trim();
       if (!text) { toast("请先输入口播文本"); return; }
@@ -441,8 +590,15 @@ export const voiceLabView = {
         voiceName: voice.name || out.voiceId || "生成音频",
         name: `语音_${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`
       };
-      toast("音频已生成");
-      this.render(root);
+      const saveVoice = Boolean($("#vlSaveAudio", root)?.checked);
+      const saveReference = Boolean($("#vlSaveReferenceAudio", root)?.checked);
+      saveLabPatch({ saveGeneratedAudio: saveVoice, saveReferenceAudio: saveReference });
+      if (saveVoice || saveReference) {
+        const tags = [saveVoice ? "语音素材库" : "", saveReference ? "参考音频库" : "", saveReference ? "声线参考" : ""].filter(Boolean);
+        await saveAudioAsset(runtimeAudio, tags, { global: saveReference });
+      }
+      toast(saveReference ? "音频已生成并加入总参考音频库" : saveVoice ? "音频已生成并加入语音素材库" : "音频已生成");
+      mountRuntimePlayer();
     }, "生成中…"));
     $("#vlDesign", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       const name = ($("#vlDesignName", root)?.value || "").trim();
@@ -450,17 +606,20 @@ export const voiceLabView = {
       const previewText = ($("#vlDesignPreview", root)?.value || "").trim();
       saveLabPatch({ designName: name, designPrompt: prompt, designPreview: previewText });
       const out = await designTtsVoice({ prompt, previewText, name });
-      const saved = rememberCustomVoice({ voiceId: out.voiceId, name: name || out.name || "新设计音色", description: prompt, previewAudioDataUrl: out.audioDataUrl || "" });
-      setFavoriteVoice(out.voiceId, true);
-      runtimeDesignAudio = out.audioDataUrl ? {
+      runtimeDesignAudio = {
         url: out.audioDataUrl,
         voiceId: out.voiceId,
-        voiceName: saved.name,
-        name: `${saved.name}_试听`
-      } : null;
-      saveLabPatch({ voiceId: out.voiceId, tab: "mine", mode: "design", designName: "" });
-      toast(`音色已加入我的音色：${saved.name}`);
-      this.render(root);
+        voiceName: name || out.name || "新设计音色",
+        name: `${name || out.name || "新设计音色"}_试听`,
+        pendingName: name || out.name || "新设计音色",
+        pendingPrompt: prompt
+      };
+      const result = $("#vlDesignResult", root);
+      if (result) {
+        result.innerHTML = `${audioPlayerHtml(runtimeDesignAudio, "design")}<div class="vl-design-confirm"><button class="btn ghost sm" id="vlDiscardDesign">放弃</button><button class="btn primary sm" id="vlConfirmDesign">${icon("check", 13)} 保存到我的音色</button></div>`;
+        wireDesignCandidate();
+      }
+      toast("音色候选已生成，试听后确认是否保存");
     }, "设计中…"));
   }
 };

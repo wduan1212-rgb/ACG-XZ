@@ -9,13 +9,13 @@ import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openMo
 import { go } from "../core/router.js";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset } from "../domain/assets.js";
-import { renderScriptPage } from "./chainScript.js?v=20260712-v73-4";
-import { renderSlotsPage } from "./chainBoards.js?v=20260712-v73-4";
-import { renderPromptsPage } from "./chainPrompts.js?v=20260712-v73-4";
-import { renderRenderPage } from "./chainRender.js?v=20260712-v73-4";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260712-v73-4";
-import { renderCutPage } from "./chainCut.js?v=20260712-v73-4";
-import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260712-v73-4";
+import { renderScriptPage } from "./chainScript.js?v=20260713-v74-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260713-v74-1";
+import { renderPromptsPage } from "./chainPrompts.js?v=20260713-v74-1";
+import { renderRenderPage } from "./chainRender.js?v=20260713-v74-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260713-v74-1";
+import { renderCutPage } from "./chainCut.js?v=20260713-v74-1";
+import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260713-v74-1";
 
 export const studioView = {
   render(root, { page }) {
@@ -141,7 +141,7 @@ function renderHome(root, acc) {
           </div>
         </div>
         <div class="sh-actions">
-          ${admin ? `<button class="btn ghost" data-sh="edit">${icon("edit", 14)} 编辑账号</button><button class="btn ghost danger" data-sh="delete">${icon("trash", 14)} 删除账号</button>` : ""}
+          ${admin ? `<button class="icon-btn account-edit-trigger" data-sh="edit" title="编辑账号" aria-label="编辑账号">${icon("edit", 16)}</button><button class="icon-btn danger" data-sh="delete" title="删除账号" aria-label="删除账号">${icon("trash", 16)}</button>` : ""}
           <button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>
         </div>
       </header>

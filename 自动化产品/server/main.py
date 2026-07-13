@@ -1176,6 +1176,7 @@ class ComposeReq(BaseModel):
     bgmDataUrl: str = ""
     bgmVolume: float = 0.25
     narrationVolume: float = 1.0
+    transitionDuration: float = 0.0
     subtitleStyle: ComposeSubtitleStyle = ComposeSubtitleStyle()
     subtitles: List[ComposeSubtitle] = []
 
@@ -2370,6 +2371,64 @@ def _write_compose_srt(path: Path, subtitles: List[ComposeSubtitle]) -> bool:
     return True
 
 
+def _shift_subtitles_for_transitions(subtitles: List[ComposeSubtitle], clips: List[ComposeClip], transition: float) -> List[ComposeSubtitle]:
+    """Keep captions aligned after xfade shortens every clip boundary."""
+    if transition <= 0 or len(clips) < 2:
+        return subtitles
+    boundaries = []
+    cursor = 0.0
+    for clip in clips[:-1]:
+        cursor += max(0.5, float(clip.dur or 0))
+        boundaries.append(cursor)
+    shifted = []
+    for sub in subtitles or []:
+        start = float(sub.start or 0)
+        end = float(sub.end or 0)
+        passed_start = sum(1 for boundary in boundaries if start >= boundary - 0.02)
+        passed_end = sum(1 for boundary in boundaries if end > boundary + 0.02)
+        shifted.append(ComposeSubtitle(
+            start=max(0.0, start - passed_start * transition),
+            end=max(0.0, end - passed_end * transition),
+            text=sub.text,
+        ))
+    return shifted
+
+
+def _compose_with_xfade(ffmpeg: str, files: List[Path], clips: List[ComposeClip], output: Path, transition: float) -> bool:
+    """Compose same-format digital-human clips with a short video/audio dissolve."""
+    if transition <= 0 or len(files) < 2:
+        return False
+    transition = max(0.12, min(0.6, transition))
+    command = [ffmpeg, "-y"]
+    for path in files:
+        command += ["-i", str(path)]
+    filters = []
+    durations = [max(0.5, float(clip.dur or 0)) for clip in clips]
+    for index in range(len(files)):
+        filters.append(f"[{index}:v]settb=AVTB,fps=30,format=yuv420p[v{index}]")
+        filters.append(f"[{index}:a]aresample=async=1:first_pts=0[a{index}]")
+    video_label = "v0"
+    audio_label = "a0"
+    elapsed = durations[0]
+    for index in range(1, len(files)):
+        video_out = f"vx{index}"
+        audio_out = f"ax{index}"
+        offset = max(0.1, elapsed - transition)
+        filters.append(f"[{video_label}][v{index}]xfade=transition=fade:duration={transition:.3f}:offset={offset:.3f}[{video_out}]")
+        filters.append(f"[{audio_label}][a{index}]acrossfade=d={transition:.3f}:c1=tri:c2=tri[{audio_out}]")
+        video_label = video_out
+        audio_label = audio_out
+        elapsed += durations[index] - transition
+    command += [
+        "-filter_complex", ";".join(filters),
+        "-map", f"[{video_label}]", "-map", f"[{audio_label}]",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-t", f"{elapsed:.3f}", "-movflags", "+faststart", str(output)
+    ]
+    run = subprocess.run(command, capture_output=True, text=True, timeout=1200)
+    return run.returncode == 0 and output.exists() and output.stat().st_size > 0
+
+
 def _caption_chunks(text: str, max_len: int = 18) -> List[str]:
     clean = re.sub(r"\s+", "", str(text or "").strip())
     if not clean:
@@ -2568,7 +2627,9 @@ async def video_compose(req: ComposeReq):
     clips = [c for c in (req.clips or []) if _supported_video_source(c.url)]
     if not clips:
         raise HTTPException(400, "没有可合成的视频片段 URL")
-    total_dur = max(0.5, sum(float(c.dur or 0) for c in clips) or (len(clips) * 15))
+    transition = max(0.0, min(0.6, float(req.transitionDuration or 0))) if len(clips) > 1 else 0.0
+    raw_total_dur = sum(float(c.dur or 0) for c in clips) or (len(clips) * 15)
+    total_dur = max(0.5, raw_total_dur - transition * max(0, len(clips) - 1))
     COMPOSED_DIR.mkdir(parents=True, exist_ok=True)
     out_name = f"{int(time.time())}_{hashlib.sha1((req.title or 'final').encode('utf-8')).hexdigest()[:8]}.mp4"
     out_path = COMPOSED_DIR / out_name
@@ -2599,13 +2660,16 @@ async def video_compose(req: ComposeReq):
         base_path = tdir / "base.mp4"
         mixed_path = tdir / "mixed.mp4"
         srt_path = tdir / "captions.srt"
-        cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(base_path)]
-        run = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if run.returncode != 0:
-            cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", str(base_path)]
-            run = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-        if run.returncode != 0 or not base_path.exists():
-            raise HTTPException(502, "ffmpeg 合成失败：" + (run.stderr or run.stdout)[-800:])
+        transitioned = _compose_with_xfade(ffmpeg, files, clips, base_path, transition)
+        if not transitioned:
+            total_dur = max(0.5, raw_total_dur)
+            cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(base_path)]
+            run = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if run.returncode != 0:
+                cmd = [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", str(base_path)]
+                run = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+            if run.returncode != 0 or not base_path.exists():
+                raise HTTPException(502, "ffmpeg 合成失败：" + (run.stderr or run.stdout)[-800:])
         has_narr = narr_path.exists() and narr_path.stat().st_size > 0
         has_bgm = bgm_path.exists() and bgm_path.stat().st_size > 0
         if not has_narr and not has_bgm:
@@ -2632,7 +2696,8 @@ async def video_compose(req: ComposeReq):
             run = subprocess.run(audio_cmd, capture_output=True, text=True, timeout=900)
             if run.returncode != 0 or not mixed_path.exists():
                 raise HTTPException(502, "ffmpeg 混音失败：" + (run.stderr or run.stdout)[-800:])
-        if _write_compose_srt(srt_path, req.subtitles):
+        compose_subtitles = _shift_subtitles_for_transitions(req.subtitles, clips, transition if transitioned else 0.0)
+        if _write_compose_srt(srt_path, compose_subtitles):
             srt_filter = str(srt_path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
             style = req.subtitleStyle
             ass_size = max(7.0, min(16.0, float(style.size or 11) * 0.82))

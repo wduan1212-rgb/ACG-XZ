@@ -130,6 +130,25 @@ export function renameCustomVoice(voiceId = "", name = "") {
   return cleanVoiceOption(current, "mine");
 }
 
+export function deleteCustomVoice(voiceId = "") {
+  const id = String(voiceId || "").trim();
+  if (!id) return false;
+  ensureVoiceMeta();
+  const current = myId();
+  const before = state.voicePresets.length;
+  state.voicePresets = state.voicePresets.filter(v => v.voiceId !== id || (v.ownerId && current && v.ownerId !== current));
+  if (state.voicePresets.length === before) return false;
+  state.ui.favoriteVoiceIds = (state.ui.favoriteVoiceIds || []).filter(x => x !== id);
+  (state.accounts || []).forEach(account => {
+    if (account.voiceId === id) {
+      account.voiceId = "";
+      account.voiceName = "";
+    }
+  });
+  save("voicePresets", "accounts", "meta");
+  return true;
+}
+
 export function voicePickerGroups({ selectedId = "", selectedName = "", includeDefault = true } = {}) {
   ensureVoiceMeta();
   const favs = favoriteVoiceIds();
