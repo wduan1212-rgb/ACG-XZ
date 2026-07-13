@@ -2,7 +2,7 @@
 
 import { $, $$, esc, copyText, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
+import { state, save, accountById, productById, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { STYLE_CHIP_BASE } from "../api/prompts.js";
 import { normalizeVideoTimes, setStage, isMaterial, estimateAudio } from "../domain/productions.js";
@@ -12,7 +12,7 @@ import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.
 import { fmtTC } from "../core/util.js";
 import { toast, withLoading, promptModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v74-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v75-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 
@@ -29,13 +29,13 @@ function audioDurationOf(url) {
 
 export function renderScriptPage(root, p) {
   const acc = accountById(p.accountId);
+  const canConfigureAccount = state.role === "admin";
   const isImg = p.mode === "图文";
   const material = isMaterial(p);
   const isVideo = !isImg;
   const A = p.artifacts.script;
   A.productId = A.productId || "dumate";
   A.direction = A.direction || "";
-  const products = primaryProducts();
   const product = primaryProductById(A.productId || "dumate");
   A.productId = product?.id || "dumate";
   const memoryContext = getCreativeMemoryContext({ account: acc, platform: acc.platform });
@@ -59,11 +59,6 @@ export function renderScriptPage(root, p) {
                 <input class="input" id="csTopic" value="${esc(p.topic || "")}" placeholder="例如：百度搭子一键整理混乱文件夹" />
                 <button class="dice" id="csTopicDice" title="AI 随机主题">${icon("dice", 15)}</button>
               </div>
-            </label>
-            <label class="field product-field">宣传产品
-              <select class="input" id="csProduct">
-                ${products.map(x => `<option value="${esc(x.id)}" ${A.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
-              </select>
             </label>
             ${isImg ? `
             <div class="field count-field">
@@ -117,20 +112,20 @@ export function renderScriptPage(root, p) {
             <button class="btn ghost sm" id="csAudioAsset">${icon("folder", 13)} 资产库</button>
           </div>` : ""}
           <div class="tts-controls">
-            ${ttsVoicePresets().length ? `<label class="field compact preset">预设声线
+            ${canConfigureAccount && ttsVoicePresets().length ? `<label class="field compact preset">预设声线
               <select class="input" id="csVoicePreset">
                 <option value="">手动 / 默认</option>
                 ${ttsVoicePresets().map(v => `<option value="${esc(v.voiceId)}" ${(p.artifacts.audio.voiceId || acc.voiceId || defaultTtsVoiceId()) === v.voiceId ? "selected" : ""}>${esc(v.name)}</option>`).join("")}
               </select>
             </label>` : ""}
-            <label class="field compact">声线 ID
+            ${canConfigureAccount ? `<label class="field compact">声线 ID
               <div class="input-with-action">
                 <input class="input" id="csVoiceId" value="${esc(p.artifacts.audio.voiceId || acc.voiceId || defaultTtsVoiceId())}" placeholder="例如 Chinese (Mandarin)_News_Anchor 或你的克隆声线 ID" />
                 <button type="button" class="btn ghost sm" id="csVoiceLookup">${icon("search", 13)} 识别</button>
               </div>
             </label>
-            <span class="muted">${acc.voiceName ? `账号固定声线：${esc(acc.voiceName)} · ` : ""}可指定 Minimax voice_id；留空则使用服务器默认声线。</span>
-            ${p.artifacts.audio.voiceLookup ? `<span class="voice-lookup-note full">${esc(p.artifacts.audio.voiceLookup)}</span>` : ""}
+            <span class="muted">${acc.voiceName ? `账号固定声线：${esc(acc.voiceName)} · ` : ""}管理员可选择预设声线；留空则使用平台默认声线。</span>
+            ${p.artifacts.audio.voiceLookup ? `<span class="voice-lookup-note full">${esc(p.artifacts.audio.voiceLookup)}</span>` : ""}` : `<div class="voice-account-fixed">${icon("lock", 13)}<span><b>${esc(acc.voiceName || "账号默认声线")}</b><em>管理员已固定，生成时自动使用</em></span></div>`}
           </div>
           <button class="btn ghost" id="csTts">${icon("mic", 14)} ${(p.artifacts.audio.perShot || []).length ? "重新生成口播音频" : "生成口播音频"}${ttsApiConfigured() ? "" : "（估时）"}</button>
           <div class="tts-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
@@ -238,14 +233,9 @@ export function renderScriptPage(root, p) {
 
   /* ---------- 事件 ---------- */
   $("#csTopic", root).addEventListener("input", e => { p.topic = e.target.value; p.title = p.title || e.target.value; save("productions"); });
-  const productSelect = $("#csProduct", root);
-  if (productSelect) productSelect.addEventListener("change", e => {
-    A.productId = e.target.value || "dumate";
-    save("productions");
-  });
   $("#csTopicDice", root).addEventListener("click", async e => {
     await withLoading(e.currentTarget, async () => {
-      const t = await AI.randomPick({ kind: "topic", account: acc, product: productById((productSelect && productSelect.value) || A.productId || "dumate") });
+      const t = await AI.randomPick({ kind: "topic", account: acc, product: productById(A.productId || "dumate") });
       $("#csTopic", root).value = t; p.topic = t; save("productions");
       toast("已随机主题：" + t);
     }, "…");

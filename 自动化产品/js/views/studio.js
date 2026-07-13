@@ -9,19 +9,20 @@ import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openMo
 import { go } from "../core/router.js";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset } from "../domain/assets.js";
-import { renderScriptPage } from "./chainScript.js?v=20260713-v74-1";
-import { renderSlotsPage } from "./chainBoards.js?v=20260713-v74-1";
-import { renderPromptsPage } from "./chainPrompts.js?v=20260713-v74-1";
-import { renderRenderPage } from "./chainRender.js?v=20260713-v74-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260713-v74-1";
-import { renderCutPage } from "./chainCut.js?v=20260713-v74-1";
-import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260713-v74-1";
+import { renderScriptPage } from "./chainScript.js?v=20260713-v75-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260713-v75-1";
+import { renderPromptsPage } from "./chainPrompts.js?v=20260713-v75-1";
+import { renderRenderPage } from "./chainRender.js?v=20260713-v75-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260713-v75-1";
+import { renderCutPage } from "./chainCut.js?v=20260713-v75-1";
+import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260713-v75-1";
 
 export const studioView = {
   render(root, { page }) {
     const acc = activeAccount();
     if (!acc) {
-      root.innerHTML = emptyState("users", "还没有账号", "先创建第一个内容账号", `<button class="btn primary" data-open-create-account>${icon("plus", 14)} 创建账号</button>`);
+      const admin = canManageAccounts();
+      root.innerHTML = emptyState("users", admin ? "还没有账号" : "还没有分配账号", admin ? "先创建第一个内容账号" : "请联系管理员分配可创作账号", admin ? `<button class="btn primary" data-open-create-account>${icon("plus", 14)} 创建账号</button>` : "");
       return;
     }
     if (!page || page === "home") return renderHome(root, acc);
@@ -141,6 +142,7 @@ function renderHome(root, acc) {
           </div>
         </div>
         <div class="sh-actions">
+          ${acc.homepageUrl ? `<a class="btn ghost sh-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("eye", 13)} 查看主页</a>` : ""}
           ${admin ? `<button class="icon-btn account-edit-trigger" data-sh="edit" title="编辑账号" aria-label="编辑账号">${icon("edit", 16)}</button><button class="icon-btn danger" data-sh="delete" title="删除账号" aria-label="删除账号">${icon("trash", 16)}</button>` : ""}
           <button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>
         </div>

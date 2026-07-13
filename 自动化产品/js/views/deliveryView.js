@@ -5,7 +5,7 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
 import { platChip } from "../domain/accounts.js";
-import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel } from "../domain/delivery.js";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js";
 import { openProductionDrawer } from "./prodDrawer.js";
@@ -104,6 +104,7 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
   const plan = dateOnly(asset.planDate);
   const contentAccount = asset.byAccount || acc.name;
   const publisher = publisherLabel(asset);
+  const supplierDownloaded = supplierHasDownloaded(asset);
   return `<div class="dv-item" style="--d:${i * 40}ms">
     <span class="dv-node${i === 0 ? " latest" : ""}"></span>
     <div class="dv-card card" data-aid="${asset.id}">
@@ -112,7 +113,7 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
         <span class="dv-main">
           <b>${seq ? `<span class="dv-seq">${seq}</span>` : ""}${esc(asset.title || asset.name)}</b>
           <span class="dv-meta">
-            <span class="dv-tagline">${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag pubby">发布人：${esc(publisher)}</span><span class="tag date">${icon("clock", 10)} ${esc(plan || dateOnly(asset.deliveredAt || asset.createdAt))}</span><span class="tag ${asset.publishedUrl ? "pub" : ""}">${asset.publishedUrl ? `${icon("checkCircle", 10)} 已发布` : "待发布"}</span></span>
+            <span class="dv-tagline">${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag pubby">发布人：${esc(publisher)}</span><span class="tag date">${icon("clock", 10)} ${esc(plan || dateOnly(asset.deliveredAt || asset.createdAt))}</span><span class="tag ${supplierDownloaded ? "supplier-downloaded" : "supplier-pending"}">${supplierDownloaded ? `${icon("checkCircle", 10)} 供应商已下载` : "供应商未下载"}</span><span class="tag ${asset.publishedUrl ? "pub" : ""}">${asset.publishedUrl ? `${icon("checkCircle", 10)} 已发布` : "待发布"}</span></span>
           </span>
         </span>
         <span class="dv-chev">${icon("chevronDown", 14)}</span>
@@ -196,7 +197,7 @@ function supplierDetailHtml(asset, acc) {
 }
 
 let tab = "creator"; // creator | supplier
-let supFilters = { product: "all", type: "all", publisher: "all", date: "all" };
+let supFilters = { product: "all", type: "all", publisher: "all", account: "all", date: "all" };
 let creatorProductFilter = "all";
 
 export const deliveryView = {
@@ -318,7 +319,7 @@ export const deliveryView = {
           e.stopPropagation();
           const act = b.dataset.dvact;
           if (act === "copy") copyText((asset.title || "") + "\n\n" + (asset.copy || ""), "已复制标题+文案");
-          if (act === "download") { await downloadDelivery(asset); toast("已下载 " + asset.name); draw(); }
+          if (act === "download") { await downloadDelivery(asset, { markDownloaded: false }); toast("已下载 " + asset.name); }
           if (act === "link") await returnLinkFlow(asset, acc, draw);
           if (act === "review") { const on = toggleAdminReviewed(asset); toast(on ? "已标记为「已审阅」" : "已取消「已审阅」"); draw(); }
           if (act === "delete") {
@@ -352,6 +353,7 @@ export const deliveryView = {
         return (supFilters.product === "all" || ptag === supFilters.product)
           && (supFilters.type === "all" || x.acc.mode === supFilters.type)
           && (supFilters.publisher === "all" || publisherLabel(x.asset) === supFilters.publisher)
+          && (supFilters.account === "all" || x.acc.id === supFilters.account)
           && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date);
       };
       const rows = all;
@@ -361,6 +363,7 @@ export const deliveryView = {
           <label class="select-shell">${icon("package", 13)}<select data-sup-select="product"><option value="all">全部产品</option>${productTags.map(x => `<option value="${esc(x)}" ${supFilters.product === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("filter", 13)}<select data-sup-select="type"><option value="all">全部形式</option><option value="视频" ${supFilters.type === "视频" ? "selected" : ""}>视频</option><option value="图文" ${supFilters.type === "图文" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("user", 13)}<select data-sup-select="publisher"><option value="all">全部发布人</option>${[...new Set(all.map(x => publisherLabel(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.publisher === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+          <label class="select-shell">${icon("users", 13)}<select data-sup-select="account"><option value="all">全部账号</option>${[...new Map(all.map(x => [x.acc.id, x.acc])).values()].map(acc => `<option value="${esc(acc.id)}" ${supFilters.account === acc.id ? "selected" : ""}>${esc(acc.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("clock", 13)}<select data-sup-select="date"><option value="all">全部时间</option>${[...new Set(all.map(x => dayKey(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <button class="btn primary supplier-batch-download" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>
         </div>
@@ -386,7 +389,7 @@ export const deliveryView = {
               const { asset, acc } = item;
               const ptag = asset.productTag || productTagLabel(productById(asset.productId || ""));
               return `
-              <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-date="${esc(dayKey(asset))}" ${matchesFilters(item) ? "" : "hidden"}>
+              <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-account="${esc(acc.id)}" data-sup-date="${esc(dayKey(asset))}" ${matchesFilters(item) ? "" : "hidden"}>
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
                 <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}<span class="sup-date-line">${dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt) ? `<em class="sup-created">${icon("calendar", 10)} 创作 ${esc(dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt))}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}</span>${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
@@ -396,10 +399,10 @@ export const deliveryView = {
                 <td>${canUpdateViews
                   ? `<button class="sup-views" data-supviews="${asset.id}" title="更新观看量">${Number(asset.viewCount || 0).toLocaleString()} ${icon("edit", 11)}</button>`
                   : `<span class="sup-views-readonly" title="供应商同步的观看量">${Number(asset.viewCount || 0).toLocaleString()}</span>`}</td>
-                <td><span class="sup-status ${asset.status === "已发布" ? "pub" : asset.status === "已下载" ? "done" : ""}">${asset.publishedUrl ? "已发布 ✓" : asset.status || "未下载"}</span></td>
+                <td><span class="sup-status ${asset.status === "已发布" ? "pub" : supplierHasDownloaded(asset) ? "done" : ""}">${asset.publishedUrl ? "已发布 ✓" : supplierHasDownloaded(asset) ? "已下载" : "未下载"}</span></td>
                 <td class="sup-acts">
-                  <button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
-                  <button class="btn ${asset.publishedUrl ? "ghost" : "primary"} sm" data-suplink="${asset.id}">${icon("link", 13)} ${asset.publishedUrl ? "改链接" : "回传链接"}</button>
+                  <div class="sup-actions-inner"><button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
+                  <button class="btn ${asset.publishedUrl ? "ghost" : "primary"} sm" data-suplink="${asset.id}">${icon("link", 13)} ${asset.publishedUrl ? "改链接" : "回传链接"}</button></div>
                 </td>
               </tr>${supplierDetailHtml(asset, acc)}`;
             }).join("") + `<tr class="sup-empty-filter" ${visibleCount ? "hidden" : ""}><td colspan="9" class="sup-empty">当前筛选下暂无素材。</td></tr>` : `<tr><td colspan="9" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
@@ -412,6 +415,7 @@ export const deliveryView = {
           const show = (supFilters.product === "all" || row.dataset.supProduct === supFilters.product)
             && (supFilters.type === "all" || row.dataset.supType === supFilters.type)
             && (supFilters.publisher === "all" || row.dataset.supPublisher === supFilters.publisher)
+            && (supFilters.account === "all" || row.dataset.supAccount === supFilters.account)
             && (supFilters.date === "all" || row.dataset.supDate === supFilters.date);
           const detail = body.querySelector(`[data-sup-detail="${CSS.escape(row.dataset.sup)}"]`);
           row.getAnimations?.().forEach(animation => animation.cancel());
@@ -445,8 +449,7 @@ export const deliveryView = {
       $$("[data-supdl]", body).forEach(b => b.addEventListener("click", async () => {
         const a = state.assets.find(x => x.id === b.dataset.supdl);
         if (a) {
-          await downloadDelivery(a);
-          if (isSupplierRole && remote.isOn()) remote.supplier.record({ action: "download", accountId: a.accountId || "", assetId: a.id, detail: `下载了「${a.title || a.name}」` }).catch(() => {});
+          await downloadDelivery(a, { markDownloaded: isSupplierRole });
           toast("已下载 " + a.name); draw();
         }
       }));
@@ -497,13 +500,13 @@ export const deliveryView = {
       const checkedIds = $$("tr[data-sup]", root).filter(tr => !tr.hidden && tr.querySelector(".sup-check")?.checked).map(tr => tr.dataset.sup);
       const pendingIds = $$("tr[data-sup]", root).filter(tr => {
         const a = state.assets.find(x => x.id === tr.dataset.sup);
-        return !tr.hidden && a && !a.publishedUrl && (a.status || "未下载") !== "已下载";
+        return !tr.hidden && a && !a.publishedUrl && !supplierHasDownloaded(a);
       }).map(tr => tr.dataset.sup);
       const ids = checkedIds.length ? checkedIds : pendingIds;
       if (!ids.length) { toast("当前筛选下没有未下载素材"); return; }
       const assets = ids.map(id => state.assets.find(x => x.id === id)).filter(Boolean);
-      const n = await batchDownloadZip(assets);
-      toast(`${checkedIds.length ? "已打包所选" : "已打包未下载"} ${n} 个素材，状态更新为已下载`);
+      const n = await batchDownloadZip(assets, "", { markDownloaded: isSupplierRole });
+      toast(`${checkedIds.length ? "已打包所选" : "已打包未下载"} ${n} 个素材${isSupplierRole ? "，供应商下载状态已更新" : ""}`);
       draw();
     }
 

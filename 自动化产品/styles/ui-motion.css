@@ -269,7 +269,7 @@ body.role-supplier .view-root { padding-bottom: 34px; }
   to { opacity: 1; transform: none; }
 }
 
-/* ---------- Monochrome Beams login ---------- */
+/* ---------- Galaxy login ---------- */
 .login-gate {
   color: #fff;
   background: #050506;
@@ -277,17 +277,18 @@ body.role-supplier .view-root { padding-bottom: 34px; }
 .login-gate::before {
   inset: 0;
   z-index: 1;
-  background: linear-gradient(180deg, rgba(0,0,0,.08), rgba(0,0,0,.42));
+  background: linear-gradient(180deg, rgba(0,0,0,.12), rgba(0,0,0,.52));
   opacity: 1;
   animation: none;
 }
 .login-gate::after {
   z-index: 2;
-  background: radial-gradient(ellipse at center, transparent 24%, rgba(0,0,0,.48) 100%);
+  background: radial-gradient(ellipse at center, rgba(0,0,0,.04) 12%, rgba(0,0,0,.58) 100%);
   opacity: 1;
   animation: none;
 }
 .lg-beams { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; display: block; }
+.login-gate.galaxy-fallback,
 .login-gate.beams-fallback { background: #050506 url("../assets/brand/main-login-fallback.png") center / cover no-repeat; }
 .lg-wordmark {
   position: absolute;
@@ -645,7 +646,7 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
 .supplier-account-grid.is-switching { animation: supplierGridIn 160ms ease-out both; }
 @keyframes supplierGridIn { from { opacity: .76; } to { opacity: 1; } }
 .supplier-account {
-  grid-template-columns: 34px minmax(0, 1fr) 118px;
+  grid-template-columns: 34px minmax(0, 1fr) 142px;
   gap: 9px;
   min-height: 62px;
   padding: 9px 11px;
@@ -671,6 +672,9 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
 }
 .supplier-account b { font-size: 12px; line-height: 1.3; }
 .supplier-account em { margin-top: 2px; font-size: 10px; }
+.supplier-account-controls { min-width: 0; display: grid; gap: 6px; align-content: center; }
+.supplier-homepage-actions { min-width: 0; display: grid; gap: 4px; margin: 0; }
+.supplier-homepage-actions .btn { width: 100%; justify-content: center; }
 .supplier-account-tools { gap: 8px; margin-bottom: 8px; }
 .supplier-account-tools > label {
   width: min(300px, 100%);
@@ -716,7 +720,7 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
   .delivery-toolbar { align-items: stretch; flex-direction: column; }
   .delivery-toolbar .mode-tabs { width: 100%; }
   .delivery-toolbar > .btn { align-self: flex-end; }
-  .supplier-account { grid-template-columns: 34px minmax(0, 1fr) 112px; }
+  .supplier-account { grid-template-columns: 34px minmax(0, 1fr) 136px; }
 }
 
 /* ---------- v71 r3: stable local interactions and monochrome refinement ---------- */
@@ -731,8 +735,8 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
 .sup-table .sup-name b { font-size: 11.5px; }
 .sup-table .sup-name em { margin-top: 1px; font-size: 10px; }
 .sup-table .btn.sm { min-height: 30px; padding: 5px 10px; }
-.sup-col-actions { width: 194px; }
-.sup-acts { gap: 5px; }
+.sup-col-actions { width: 228px; }
+.sup-actions-inner { gap: 5px; }
 
 .agent-avatar-mono {
   display: inline-grid;
@@ -1057,6 +1061,22 @@ body:not(.immersive) .view-root .btn.gen:hover {
   border-radius: 0;
   box-shadow: none;
   background: transparent;
+}
+
+/* Account editing keeps local hover state from spilling into adjacent controls. */
+#adRoot .btn.ghost::before,
+#adRoot .seg-group button::before { display: none !important; }
+#adRoot .btn.ghost:hover,
+#adRoot .seg-group button:hover {
+  color: #111318;
+  border-color: #cfd3da;
+  background: #f5f6f7;
+  transform: none;
+}
+.account-dialog-panel {
+  background: #f5f6f8;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .acc-sec { margin: 0; }
 .acc-sec-head {

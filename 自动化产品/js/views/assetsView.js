@@ -1,12 +1,12 @@
 /* 共享资产库：展示已发布/已交付内容，以及发布后沉淀的生成图；草稿、口播和生成中素材留在账号资产/草稿链路 */
 
-import { $, $$, esc, buildZipBlob, downloadBlob } from "../core/util.js";
+import { $, $$, esc, buildZipBlob, downloadBlob, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
-import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8 } from "../domain/assets.js";
+import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile } from "../domain/assets.js";
 import { downloadAsset } from "../domain/delivery.js";
-import { platChip, groupOf } from "../domain/accounts.js";
-import { emptyState, promptModal, confirmModal, openLightbox, toast, withLoading, removeWithMotion } from "../ui/components.js";
+import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
+import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js";
 import { renderSupplierAccounts } from "./supplierViews.js";
 
 let fAcc = "all", fQ = "", fKind = "all", libraryMode = "shared", collapseInitialized = false;
@@ -15,8 +15,9 @@ const isSharedAsset = a => !!a?.delivered || !!a?.shared;
 const assetKind = a => a.type === "视频" || (a.tags || []).some(t => /视频|成片/.test(t)) ? "视频" : "图文";
 const cleanName = s => String(s || "未命名").replace(/[\\/:*?"<>|#]+/g, "_").replace(/\s+/g, "_").slice(0, 60);
 const accountImageAssets = accountId => state.assets
-  .filter(a => isSharedAsset(a) && a.accountId === accountId && a.type === "图片")
+  .filter(a => isSharedAsset(a) && a.accountId === accountId && a.type === "图片" && !isAvatarAsset(a))
   .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+const libraryLabels = { shared: "账号资产", bgm: "BGM 库", material: "剪辑素材库", voice: "语音素材库", reference: "总参考音频库" };
 
 async function exportAndPurgeAccountImages(accountId) {
   const acc = accountById(accountId);
@@ -55,13 +56,22 @@ export const assetsView = {
       save("meta");
     }
     const draw = () => {
+      root.__assetDropController?.abort();
+      root.__assetDropController = null;
+      root.classList.remove("drag-over");
+      delete root.dataset.dropHint;
       $("#assetsTopDock")?.remove();
       let list = searchAssets({ accountId: fAcc, tag: "all", q: fQ, includeDelivered: true })
+        .filter(a => !isAvatarAsset(a))
         .filter(a => libraryMode === "shared"
           ? (includeAccountPrivate && fAcc !== "all" ? a.accountId === fAcc : isSharedAsset(a))
           : libraryMode === "bgm"
             ? (a.type === "音频" && (a.tags || []).some(t => /bgm|配乐|音乐/i.test(t)) && !(a.tags || []).some(t => /口播|语音|tts/i.test(t)))
-            : (a.tags || []).some(t => /素材库|剪辑素材|视频素材/.test(t)))
+            : libraryMode === "material"
+              ? (a.type === "视频" && (a.tags || []).some(t => /素材库|剪辑素材|视频素材/.test(t)))
+              : libraryMode === "voice"
+                ? (a.type === "音频" && (a.tags || []).some(t => /语音素材库|口播|tts/i.test(t)) && !(a.tags || []).some(t => /参考音频库/i.test(t)))
+                : (a.type === "音频" && (a.tags || []).some(t => /参考音频库|声线参考/i.test(t))))
         .sort((a, b) => (b.deliveredAt || b.createdAt || 0) - (a.deliveredAt || a.createdAt || 0));
       if (fKind === "video") list = list.filter(a => assetKind(a) === "视频");
       if (fKind === "image") list = list.filter(a => assetKind(a) === "图文");
@@ -71,10 +81,9 @@ export const assetsView = {
       root.innerHTML = `
         <div class="assets-page">
           <div class="page-head">
-            <div><div class="eyebrow">整体资产</div><h2>${libraryMode === "shared" ? "账号资产" : libraryMode === "bgm" ? "BGM 库" : "剪辑素材库"}</h2></div>
+            <div><div class="eyebrow">整体资产</div><h2>${libraryLabels[libraryMode] || "账号资产"}</h2></div>
             <div class="head-actions">
-              <div class="asset-library-tabs"><button class="${libraryMode === "shared" ? "on" : ""}" data-library="shared">${icon("package", 13)} 账号资产</button><button class="${libraryMode === "bgm" ? "on" : ""}" data-library="bgm">${icon("music", 13)} BGM</button><button class="${libraryMode === "material" ? "on" : ""}" data-library="material">${icon("film", 13)} 剪辑素材</button></div>
-              ${fAcc !== "all" ? `<button class="btn ghost" data-export-del-acc="${esc(fAcc)}" ${selectedImageCount ? "" : "disabled"}>${icon("download", 14)} 导出并清空图片 ${selectedImageCount ? `(${selectedImageCount})` : ""}</button>` : ""}
+              <div class="asset-library-tabs"><button class="${libraryMode === "shared" ? "on" : ""}" data-library="shared">${icon("package", 13)} 账号资产</button><button class="${libraryMode === "bgm" ? "on" : ""}" data-library="bgm">${icon("music", 13)} BGM</button><button class="${libraryMode === "material" ? "on" : ""}" data-library="material">${icon("film", 13)} 剪辑素材</button><button class="${libraryMode === "voice" ? "on" : ""}" data-library="voice">${icon("mic", 13)} 语音素材</button><button class="${libraryMode === "reference" ? "on" : ""}" data-library="reference">${icon("pulse", 13)} 参考音频</button></div>
               <button class="btn ghost" data-go-delivery>${icon("package", 14)} 去发布清单</button>
             </div>
           </div>
@@ -82,6 +91,7 @@ export const assetsView = {
             <div class="fb-search">${icon("search", 14)}<input id="avSearch" placeholder="搜索素材名 / 标签" value="${esc(fQ)}" /></div>
             ${libraryMode !== "bgm" ? `<label class="select-shell">${icon("filter", 13)}<select id="avKind"><option value="all">全部形式</option><option value="video" ${fKind === "video" ? "selected" : ""}>视频</option><option value="image" ${fKind === "image" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>` : ""}
             <label class="select-shell account-select">${icon("users", 13)}<select id="avAccount"><option value="all">全部账号</option>${accounts.map(a => `<option value="${esc(a.id)}" ${fAcc === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+            ${fAcc !== "all" ? `<button class="btn ghost asset-filter-action" data-export-del-acc="${esc(fAcc)}" ${selectedImageCount ? "" : "disabled"}>${icon("download", 14)} 导出并清空图片 ${selectedImageCount ? `(${selectedImageCount})` : ""}</button>` : ""}
           </div>
           <div id="avBody">
             ${renderBody(list)}
@@ -101,26 +111,28 @@ export const assetsView = {
     const cardHtml = a => {
       const acc = accountById(a.accountId);
       const kind = assetKind(a);
-      return `<div class="asset-card card" data-aid="${a.id}">
-        <div class="ac-thumb">${thumbHtml(a)}
+      const audioUrl = a.type === "音频" ? urlFor(a) : "";
+      return `<div class="asset-card card ${a.type === "音频" ? "is-audio" : ""}" data-aid="${a.id}">
+        <div class="ac-thumb">${a.type === "音频" && audioUrl ? `<div class="asset-audio-thumb">${icon("pulse", 22)}<audio controls preload="metadata" src="${esc(audioUrl)}"></audio></div>` : thumbHtml(a)}
           ${a.seq ? `<span class="ac-seq">${assetCode(a)}</span>` : ""}
           ${a.type === "视频" ? `<span class="ac-play">${icon("play", 13)}</span>` : ""}
           <div class="ac-hover">
             <button class="ac-mini" data-aact="download" title="下载">${icon("download", 13)}</button>
             <button class="ac-mini" data-aact="rename" title="重命名">${icon("edit", 13)}</button>
+            <button class="ac-mini" data-aact="assign" title="分配到账号素材库">${icon("users", 13)}</button>
             <button class="ac-mini" data-aact="tag" title="加标签">#</button>
             <button class="ac-mini danger" data-aact="del" title="删除">${icon("trash", 13)}</button>
           </div>
         </div>
         <div class="ac-body">
           <div class="ac-name" title="${esc(a.name)}">${esc(a.name)}</div>
-          <div class="ac-tags">${acc ? platChip(acc.platform, true) : ""}<span class="tag">${esc(kind)}</span></div>
+          <div class="ac-tags">${acc ? `<span class="tag">${esc(acc.name)}</span>${platChip(acc.platform, true)}` : `<span class="tag">公共素材池</span>`}<span class="tag">${esc(kind)}</span></div>
         </div>
       </div>`;
     };
 
     function renderBody(list) {
-      if (!list.length) return emptyState("folder", "还没有已发布素材", "完成定稿发布后，内容会进入这里供团队共享和下载");
+      if (!list.length) return emptyState("folder", `${libraryLabels[libraryMode] || "资产库"}暂无内容`, libraryMode === "shared" ? "完成定稿发布后，内容会进入这里供团队共享和下载" : "可从上方拖入符合格式的文件");
       // 指定账号：直接平铺
       if (fAcc !== "all") return `<div class="asset-grid">${list.map(cardHtml).join("")}</div>`;
       // 全部账号：按账号分组，支持折叠
@@ -163,6 +175,27 @@ export const assetsView = {
       $("#avKind", root)?.addEventListener("change", e => { fKind = e.currentTarget.value; draw(); });
       $$("[data-library]", $("#assetsTopDock") || root).forEach(b => b.addEventListener("click", () => { libraryMode = b.dataset.library; fKind = "all"; draw(); }));
       $("#avAccount", root)?.addEventListener("change", e => { fAcc = e.currentTarget.value; includeAccountPrivate = false; draw(); });
+      const uploadLibraryFile = async file => {
+        if (!file) return;
+        const isMp3 = file.type === "audio/mpeg" || /\.mp3$/i.test(file.name || "");
+        if (libraryMode === "bgm" && !isMp3) { toast("BGM 库仅支持 MP3 格式", "error"); return; }
+        if (libraryMode === "material" && !file.type.startsWith("video/")) { toast("剪辑素材库仅支持视频格式", "error"); return; }
+        if (["voice", "reference"].includes(libraryMode) && !file.type.startsWith("audio/")) { toast("请拖入音频文件", "error"); return; }
+        const tags = libraryMode === "bgm" ? ["BGM", "音乐"]
+          : libraryMode === "material" ? ["剪辑素材", "视频素材"]
+            : libraryMode === "voice" ? ["语音素材库"] : ["参考音频库", "声线参考"];
+        await addAssetFromFile(null, file, { tags });
+        toast(`已加入${libraryLabels[libraryMode]} · 公共素材池`);
+        draw();
+      };
+      if (libraryMode !== "shared") {
+        const controller = new AbortController();
+        root.__assetDropController = controller;
+        root.dataset.dropHint = libraryMode === "bgm" ? "松手加入 BGM 库 · 仅 MP3" : libraryMode === "material" ? "松手加入剪辑素材库 · 仅视频" : "松手加入音频库";
+        wireDropZone(root, async files => { for (const file of Array.from(files || [])) await uploadLibraryFile(file); }, { filesOnly: true, signal: controller.signal });
+      } else {
+        delete root.dataset.dropHint;
+      }
       $("#assetsTopDock [data-go-delivery]")?.addEventListener("click", () => { location.hash = "#/delivery"; });
       [...$$("[data-export-del-acc]", root), ...$$("#assetsTopDock [data-export-del-acc]")].forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();
@@ -200,6 +233,26 @@ export const assetsView = {
         card.querySelector('[data-aact="rename"]').addEventListener("click", async () => {
           const name = await promptModal({ title: "重命名素材", value: a.name });
           if (name) { a.name = name; save("assets"); draw(); }
+        });
+        card.querySelector('[data-aact="assign"]').addEventListener("click", () => {
+          const options = state.accounts.map(acc => `<option value="${esc(acc.id)}" ${a.accountId === acc.id ? "selected" : ""}>${esc(acc.name)} · ${esc(acc.platform)}</option>`).join("");
+          openModal(`<div class="mp-head"><b>分配素材库</b><button class="icon-btn" data-close>${icon("x", 15)}</button></div>
+            <div class="mp-body"><p class="mp-sub">默认放在公共素材池；明确选择账号后，仅该账号和公共素材可在生产时调用。</p>
+              <label class="field"><span>归属素材库</span><select class="input" id="assetAssignAccount"><option value="">公共素材池</option>${options}</select></label>
+            </div><div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="assetAssignSave">保存分配</button></div>`, {
+            onMount(panel, close) {
+              panel.querySelector("#assetAssignSave")?.addEventListener("click", () => {
+                const next = panel.querySelector("#assetAssignAccount")?.value || null;
+                a.accountId = next;
+                a.tags = (a.tags || []).filter(tag => tag !== "账号素材");
+                if (next) a.tags.push("账号素材");
+                save("assets");
+                close();
+                toast(next ? "已分配到账号素材库" : "已移回公共素材池");
+                draw();
+              });
+            }
+          });
         });
         card.querySelector('[data-aact="tag"]').addEventListener("click", async () => {
           const t = await promptModal({ title: "添加标签（逗号分隔多个）", placeholder: "例如：角色版, 界面截图" });

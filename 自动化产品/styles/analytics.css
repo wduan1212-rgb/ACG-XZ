@@ -1,6 +1,6 @@
 /* 数据分析：克制型运营看板 */
 .analytics-page { display: flex; flex-direction: column; gap: 16px; max-width: 1280px; margin: 0 auto; }
-.da-stats { grid-template-columns: repeat(4, 1fr); align-items: stretch; }
+.da-stats { grid-template-columns: repeat(5, 1fr); align-items: stretch; }
 .da-qa {
   grid-column: span 2;
   display: grid;

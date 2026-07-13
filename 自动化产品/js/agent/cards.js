@@ -3,7 +3,7 @@
 import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
-import { platChip, groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
+import { platChip, groupOf, tagsOf, TAG_POOL, isAvatarAsset } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
 import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js";
 import { urlFor } from "../domain/assets.js";
@@ -119,7 +119,7 @@ function imageAssets() {
   };
   const seen = new Set();
   return state.assets
-    .filter(a => a.type === "图片" && !a.delivered && (a.shared || ownedBy(a)))
+    .filter(a => a.type === "图片" && !isAvatarAsset(a) && !a.accountId && !a.delivered && (a.shared || ownedBy(a)))
     .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0))
     .filter(a => {
       const key = a.dataUrl || a.url || a.remoteUrl || `${String(a.name || "").toLowerCase()}|${(a.tags || []).join("|")}|${a.accountId || ""}`;
@@ -310,14 +310,6 @@ const CARD = {
     const b = batchById(m.payload.batchId);
     if (!b) return `<div class="ag-bubble agent">批次已不存在</div>`;
     const prods = batchProds(b);
-    if (m.payload.mode === "confirm_generate") {
-      const ready = prods.filter(p => p.stage === "render" && p.stageStatus !== "running").length;
-      return `<div class="ag-card live" data-live="batch" data-batch="${b.id}">
-        <div class="agc-head">${icon("film", 15)}<b>分镜全部就位</b></div>
-        <p class="agc-p">自动推进已关闭。${ready} 条视频就绪，确认后开始批量渲染（并发 2）。</p>
-        <div class="agc-foot"><button class="btn primary sm" data-act="batch-generate" data-batch="${b.id}">${icon("play", 13)} 开始批量生成</button></div>
-      </div>`;
-    }
     const waiting = prods.filter(p => p.stageStatus === "needs_input");
     const rows = waiting.map(p => {
       const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
@@ -333,7 +325,7 @@ const CARD = {
     }).join("");
     return `<div class="ag-card live" data-live="batch" data-batch="${b.id}">
       <div class="agc-head">${icon("upload", 15)}<b>等待补图 / 上传</b><span class="agc-state wait">${waiting.length} 条任务</span></div>
-      <p class="agc-p">站内生成失败或需要人工补图时，把图片<b>直接拖进下面这块区域</b>（或拖到输入框），我会按顺序分发到各任务，全部就位后${b.autoAdvance ? "自动" : "等你确认再"}继续。</p>
+      <p class="agc-p">站内生成失败或需要人工补图时，把图片<b>直接拖进下面这块区域</b>（或拖到输入框），我会按顺序分发到各任务，全部就位后自动继续。</p>
       ${rows ? `<div class="agn-list">${rows}</div>` : `<div class="agc-p ok">${icon("checkCircle", 14)} 已全部上传完成</div>`}
       ${waiting.length ? `<div class="ag-drop" data-agdrop="${b.id}">
         <span class="agd-rings"><i></i><i></i></span>
@@ -358,8 +350,12 @@ const CARD = {
       const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
       const cover = items.find(x => x.assetId);
       const coverUrl = cover ? urlFor(cover.assetId) : null;
+      const editableBoards = p.mode === "图文" ? items.map((item, index) => {
+        const src = item.assetId ? urlFor(item.assetId) : "";
+        return `<button class="agr-board ${item.status === "loading" ? "is-loading" : ""}" type="button" data-act="batch-image-edit" data-pid="${p.id}" data-image-index="${index}" title="编辑第 ${index + 1} 张提示词并重新生成">${src ? `<img src="${src}" alt="第 ${index + 1} 张"/>` : `<i>${index + 1}</i>`}<span>${icon("edit", 10)}</span></button>`;
+      }).join("") : "";
       return `<div class="agr-row">
-        <span class="agr-cover">${coverUrl ? `<img src="${coverUrl}"/>` : `<i style="background:${gradFor(p.title)}">${p.mode === "图文" ? "图" : "片"}</i>`}</span>
+        ${editableBoards ? `<span class="agr-board-strip">${editableBoards}</span>` : `<span class="agr-cover">${coverUrl ? `<img src="${coverUrl}"/>` : `<i style="background:${gradFor(p.title)}">片</i>`}</span>`}
         <span class="agr-main"><b>${esc(p.artifacts.copy.title || p.title || p.topic)}</b><em>${esc(acc?.name || "")} · ${p.mode}</em></span>
         <button class="link-btn" data-act="open-prod" data-pid="${p.id}">查看</button>
         ${canPub ? `<button class="btn primary sm" data-act="prod-deliver" data-pid="${p.id}">定稿发布</button>` : ""}

@@ -91,6 +91,10 @@ async function saveAudioAsset(audio, tags = [], { global = false } = {}) {
     tags: [...new Set(["口播", ...tags])],
     dataUrl: audio.url
   });
+  if (global || audio.savedReferenceAssetId) {
+    saved.accountId = null;
+    save("assets");
+  }
   audio.assetId = saved.id;
   return saved;
 }
@@ -220,6 +224,7 @@ function audioPlayerHtml(audio, key = "main") {
     <div class="vl-player-actions">
       <button class="btn ghost sm" data-vl-copy-audio="${esc(key)}">${icon("copy", 13)} 复制 voice_id</button>
       <a class="btn ghost sm" href="${esc(audio.url)}" download="${esc((audio.name || "voice-lab") + ".mp3")}">${icon("download", 13)} 下载</a>
+      ${key === "main" ? `<button class="btn ghost sm ${audio.savedVoiceAssetId ? "is-active" : ""}" type="button" data-vl-archive-audio="voice" ${audio.savedVoiceAssetId ? "disabled" : ""}>${icon("archive", 13)} ${audio.savedVoiceAssetId ? "已加入语音素材库" : "加入语音素材库"}</button><button class="btn ghost sm ${audio.savedReferenceAssetId ? "is-active" : ""}" type="button" data-vl-archive-audio="reference" ${audio.savedReferenceAssetId ? "disabled" : ""}>${icon("pulse", 13)} ${audio.savedReferenceAssetId ? "已加入参考音频库" : "加入参考音频库"}</button><button class="icon-btn sm danger" type="button" title="丢弃本次音频" data-vl-discard-audio>${icon("trash", 13)}</button>` : ""}
     </div>
   </div>`;
 }
@@ -320,13 +325,7 @@ export const voiceLabView = {
             <textarea class="vl-textarea" id="vlText" maxlength="5000" placeholder=" ">${esc(s.text || "")}</textarea>
             <div class="vl-typewriter"><span>输入要生成的口播文本</span></div>
           </div>
-      <div class="vl-editor-foot">
-            <span id="vlTextCount">${(s.text || "").length} / 5000 字</span>
-            <span class="vl-audio-save-options">
-              <label class="vl-save-audio"><input type="checkbox" id="vlSaveAudio" ${s.saveGeneratedAudio ? "checked" : ""} /> 加入语音素材库</label>
-              <label class="vl-save-audio"><input type="checkbox" id="vlSaveReferenceAudio" ${s.saveReferenceAudio ? "checked" : ""} /> 加入参考音频库</label>
-            </span>
-          </div>
+      <div class="vl-editor-foot"><span id="vlTextCount">${(s.text || "").length} / 5000 字</span><em>生成后再决定是否加入素材库</em></div>
         </div>
 
         ${toolPanelHtml(mode, s, selected)}
@@ -346,8 +345,6 @@ export const voiceLabView = {
     textEl?.addEventListener("paste", () => requestAnimationFrame(syncText));
     textEl?.addEventListener("change", syncText);
     textEl?.addEventListener("blur", syncText);
-    $("#vlSaveAudio", root)?.addEventListener("change", e => saveLabPatch({ saveGeneratedAudio: e.currentTarget.checked }));
-    $("#vlSaveReferenceAudio", root)?.addEventListener("change", e => saveLabPatch({ saveReferenceAudio: e.currentTarget.checked }));
     const syncFavoriteUi = (voiceId, favorite) => {
       $$(`[data-vl-fav="${CSS.escape(voiceId)}"]`, root).forEach(button => {
         button.title = favorite ? "取消收藏" : "收藏音色";
@@ -406,6 +403,25 @@ export const voiceLabView = {
         copyText(audio.voiceId);
         toast("已复制 voice_id");
       }));
+      $$('[data-vl-archive-audio]', side).forEach(button => button.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+        if (!runtimeAudio?.url) return;
+        const kind = e.currentTarget.dataset.vlArchiveAudio;
+        if (kind === "reference") {
+          const saved = await saveAudioAsset(runtimeAudio, ["参考音频库", "声线参考"], { global: true });
+          runtimeAudio.savedReferenceAssetId = saved?.id || "";
+          toast("已加入总参考音频库");
+        } else {
+          const saved = await saveAudioAsset(runtimeAudio, ["语音素材库"]);
+          runtimeAudio.savedVoiceAssetId = saved?.id || "";
+          toast("已加入语音素材库");
+        }
+        mountRuntimePlayer();
+      }, "保存中…")));
+      $('[data-vl-discard-audio]', side)?.addEventListener("click", () => {
+        runtimeAudio = null;
+        side.querySelector(".vl-player")?.remove();
+        toast("已丢弃本次临时音频");
+      });
     };
     ["Speed", "Vol", "Pitch"].forEach(key => {
       const el = $(`#vl${key}`, root);
@@ -590,14 +606,7 @@ export const voiceLabView = {
         voiceName: voice.name || out.voiceId || "生成音频",
         name: `语音_${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`
       };
-      const saveVoice = Boolean($("#vlSaveAudio", root)?.checked);
-      const saveReference = Boolean($("#vlSaveReferenceAudio", root)?.checked);
-      saveLabPatch({ saveGeneratedAudio: saveVoice, saveReferenceAudio: saveReference });
-      if (saveVoice || saveReference) {
-        const tags = [saveVoice ? "语音素材库" : "", saveReference ? "参考音频库" : "", saveReference ? "声线参考" : ""].filter(Boolean);
-        await saveAudioAsset(runtimeAudio, tags, { global: saveReference });
-      }
-      toast(saveReference ? "音频已生成并加入总参考音频库" : saveVoice ? "音频已生成并加入语音素材库" : "音频已生成");
+      toast("音频已生成，可试听后决定是否加入素材库");
       mountRuntimePlayer();
     }, "生成中…"));
     $("#vlDesign", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {

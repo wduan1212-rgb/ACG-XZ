@@ -1,9 +1,11 @@
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state } from "../core/store.js";
-import { emptyState, openModal, confirmModal, toast } from "../ui/components.js";
+import { state, save } from "../core/store.js";
+import { emptyState, openModal, confirmModal, toast, promptModal } from "../ui/components.js";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
+import { deliveryViewsSummary } from "../domain/delivery.js";
+import { normalizeHomepageUrl } from "../domain/accounts.js";
 
 const accountAvatar = acc => {
   const avatar = acc?.avatarUrl || (acc?.avatarAssetId ? urlFor(acc.avatarAssetId) : "");
@@ -15,6 +17,7 @@ let supplierAccountQuery = "";
 let supplierPlatform = "all";
 let supplierActivityType = "all";
 let supplierActivityDays = "all";
+let supplierViewsPlatform = "all";
 const onSupplierRoute = zone => document.body.dataset.zone === zone;
 
 function supplierActivityKind(item = {}) {
@@ -44,11 +47,13 @@ export async function renderSupplierOverview(root) {
     if (!onSupplierRoute("overview")) return;
     const delivered = state.assets.filter(a => a.delivered);
     const published = delivered.filter(a => a.publishedUrl);
+    const views = deliveryViewsSummary(supplierViewsPlatform);
     root.innerHTML = `<div class="supplier-shell">
       <div class="page-head"><div><div class="eyebrow">供应商首页</div><h2>账号分配与发布进度</h2></div><button class="btn primary" id="supplierOverviewChildAdd">${icon("plus", 14)} 批量建立子账号</button></div>
       <div class="supplier-stats">
         <div><b>${children.length}</b><span>子账号</span></div><div><b>${bindings.length}</b><span>已分配账号</span></div>
         <div><b>${delivered.length}</b><span>待发布内容</span></div><div><b>${published.length}</b><span>已回传链接</span></div>
+        <div class="supplier-views-stat"><b id="supplierViewsTotal">${Number(views.totalViews || 0).toLocaleString("zh-CN")}</b><span>总播放量 · ${esc(supplierViewsPlatform === "all" ? "全平台" : supplierViewsPlatform)}</span><div class="supplier-stat-switch"><button class="${supplierViewsPlatform === "all" ? "on" : ""}" data-views-platform="all">全部</button><button class="${supplierViewsPlatform === "小红书" ? "on" : ""}" data-views-platform="小红书">小红书</button><button class="${supplierViewsPlatform === "视频号" ? "on" : ""}" data-views-platform="视频号">视频号</button></div></div>
       </div>
       <section class="card supplier-activity"><div class="card-head supplier-activity-head"><b>最近操作</b>
         ${activity.length ? `<div class="supplier-activity-filters">
@@ -73,6 +78,18 @@ export async function renderSupplierOverview(root) {
     $("#supplierActivityType", root)?.addEventListener("change", e => { supplierActivityType = e.currentTarget.value; applyActivityFilters(); });
     $("#supplierActivityDays", root)?.addEventListener("change", e => { supplierActivityDays = e.currentTarget.value; applyActivityFilters(); });
     applyActivityFilters();
+    $$('[data-views-platform]', root).forEach(button => button.addEventListener("click", () => {
+      const next = button.dataset.viewsPlatform || "all";
+      if (next === supplierViewsPlatform) return;
+      supplierViewsPlatform = next;
+      const nextSummary = deliveryViewsSummary(next);
+      const total = $("#supplierViewsTotal", root);
+      if (total) total.textContent = Number(nextSummary.totalViews || 0).toLocaleString("zh-CN");
+      $$('[data-views-platform]', root).forEach(item => item.classList.toggle("on", item.dataset.viewsPlatform === next));
+      const label = total?.nextElementSibling;
+      if (label) label.textContent = `总播放量 · ${next === "all" ? "全平台" : next}`;
+      total?.animate?.([{ opacity: .35, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "cubic-bezier(.2,.8,.2,1)" });
+    }));
     $("#supplierOverviewChildAdd", root)?.addEventListener("click", () => createChildrenDialog(() => renderSupplierOverview(root)));
   } catch (e) {
     if (!onSupplierRoute("overview")) return;
@@ -87,6 +104,8 @@ export async function renderSupplierAccounts(root) {
     if (!onSupplierRoute("assets")) return;
     const childMap = new Map(children.map(x => [x.id, x]));
     const platforms = [...new Set(state.accounts.map(x => x.platform).filter(Boolean))];
+    const canEditHomepage = ["supplier", "supplier_parent"].includes(state.role);
+    const homepageActionsHtml = acc => `<div class="supplier-homepage-actions" data-homepage-actions="${esc(acc.id)}">${acc.homepageUrl ? `<a class="btn ghost sm" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 查看主页</a>` : `<span>未填写主页</span>`}${canEditHomepage ? `<button class="btn ghost sm" type="button" data-homepage-edit="${esc(acc.id)}">${icon("edit", 12)} 编辑主页链接</button>` : ""}</div>`;
     root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div>
       <div class="supplier-account-tools"><label>${icon("search", 14)}<input id="supplierAccountSearch" value="${esc(supplierAccountQuery)}" placeholder="搜索账号" /></label><div class="supplier-filter-chips"><button class="${supplierPlatform === "all" ? "on" : ""}" data-supplier-platform="all">全部平台</button>${platforms.map(x => `<button class="${supplierPlatform === x ? "on" : ""}" data-supplier-platform="${esc(x)}">${esc(x)}</button>`).join("")}</div></div>
       <div class="supplier-account-grid">${state.accounts.map(acc => {
@@ -94,7 +113,7 @@ export async function renderSupplierAccounts(root) {
         const child = binding ? childMap.get(binding.childId) : null;
         const searchable = `${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase();
         const hidden = (supplierAccountQuery && !searchable.includes(supplierAccountQuery.toLowerCase())) || (supplierPlatform !== "all" && acc.platform !== supplierPlatform);
-        return `<article class="supplier-account" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")}</em></div><label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}"><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></article>`;
+        return `<article class="supplier-account" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")}</em></div><div class="supplier-account-controls">${homepageActionsHtml(acc)}<label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></article>`;
       }).join("")}</div></div>`;
     const applyAccountFilters = () => {
       const cards = $$(".supplier-account", root);
@@ -119,6 +138,39 @@ export async function renderSupplierAccounts(root) {
     $("#supplierAccountSearch", root)?.addEventListener("compositionend", e => { composing = false; supplierAccountQuery = e.currentTarget.value; applyAccountFilters(); });
     $("#supplierAccountSearch", root)?.addEventListener("input", e => { if (!composing && !e.isComposing) { supplierAccountQuery = e.currentTarget.value; applyAccountFilters(); } });
     $$("[data-supplier-platform]", root).forEach(b => b.addEventListener("click", () => { supplierPlatform = b.dataset.supplierPlatform; applyAccountFilters(); }));
+    const wireHomepageEdit = scope => {
+      $$('[data-homepage-edit]', scope).forEach(button => button.addEventListener("click", async () => {
+        const acc = state.accounts.find(item => item.id === button.dataset.homepageEdit);
+        if (!acc || !canEditHomepage) return;
+        const value = await promptModal({ title: `编辑主页链接 · ${acc.name}`, value: acc.homepageUrl || "", placeholder: "https://...（留空可清除）" });
+        if (value == null) return;
+        let homepageUrl = "";
+        try { homepageUrl = normalizeHomepageUrl(value); }
+        catch (err) { toast(err.message || "主页链接格式不正确", "error"); return; }
+        button.disabled = true;
+        try {
+          if (remote.isOn()) {
+            const result = await remote.supplier.updateHomepage(acc.id, homepageUrl);
+            Object.assign(acc, result.account || { homepageUrl });
+          } else {
+            acc.homepageUrl = homepageUrl;
+            acc.updatedAt = Date.now();
+            save("accounts");
+          }
+          const actions = root.querySelector(`[data-homepage-actions="${CSS.escape(acc.id)}"]`);
+          if (actions) {
+            actions.outerHTML = homepageActionsHtml(acc);
+            const card = root.querySelector(`[data-account-id="${CSS.escape(acc.id)}"]`);
+            if (card) wireHomepageEdit(card);
+          }
+          toast(homepageUrl ? "主页链接已更新" : "主页链接已清除");
+        } catch (err) {
+          button.disabled = false;
+          toast(err.message || "主页链接更新失败", "error");
+        }
+      }));
+    };
+    wireHomepageEdit(root);
     $$("[data-account-assign]", root).forEach(sel => sel.addEventListener("change", async () => {
       const accountId = sel.dataset.accountAssign;
       const childId = sel.value;
@@ -168,9 +220,28 @@ function createChildrenDialog(onDone) {
 
 function assignDialog(child, bindings, onDone) {
   const selected = new Set(bindings.filter(x => x.childId === child.id).map(x => x.accountId));
+  const platforms = [...new Set(state.accounts.map(acc => acc.platform).filter(Boolean))];
   openModal(`<div class="mp-head"><b>分配账号 · ${esc(child.name)}</b><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
-    <div class="mp-body"><div class="supplier-assign-list">${state.accounts.map(acc => `<label><input type="checkbox" value="${esc(acc.id)}" ${selected.has(acc.id) ? "checked" : ""}/><span class="supplier-account-avatar small">${accountAvatar(acc)}</span><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")}</em></label>`).join("")}</div></div>
+    <div class="mp-body"><div class="supplier-assign-tools"><label>${icon("search", 13)}<input id="supplierAssignSearch" placeholder="搜索账号" /></label><div class="supplier-filter-chips"><button class="on" type="button" data-assign-platform="all">全部</button>${platforms.map(platform => `<button type="button" data-assign-platform="${esc(platform)}">${esc(platform)}</button>`).join("")}</div></div><div class="supplier-assign-list">${state.accounts.map(acc => `<label data-assign-row data-search="${esc(`${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase())}" data-platform="${esc(acc.platform || "")}"><input type="checkbox" value="${esc(acc.id)}" ${selected.has(acc.id) ? "checked" : ""}/><span class="supplier-account-avatar small">${accountAvatar(acc)}</span><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")}</em></label>`).join("")}</div><p class="supplier-assign-empty" hidden>当前筛选下没有账号</p></div>
     <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="supplierAssignSave">保存分配</button></div>`, { onMount(panel, close) {
+      let query = "";
+      let platform = "all";
+      const apply = () => {
+        let visible = 0;
+        $$('[data-assign-row]', panel).forEach(row => {
+          const show = (!query || row.dataset.search.includes(query)) && (platform === "all" || row.dataset.platform === platform);
+          row.hidden = !show;
+          if (show) visible++;
+        });
+        const empty = $(".supplier-assign-empty", panel);
+        if (empty) empty.hidden = visible > 0;
+      };
+      $("#supplierAssignSearch", panel)?.addEventListener("input", event => { query = event.currentTarget.value.trim().toLowerCase(); apply(); });
+      $$('[data-assign-platform]', panel).forEach(button => button.addEventListener("click", () => {
+        platform = button.dataset.assignPlatform || "all";
+        $$('[data-assign-platform]', panel).forEach(item => item.classList.toggle("on", item === button));
+        apply();
+      }));
       $("#supplierAssignSave", panel).addEventListener("click", async () => {
         const ids = $$('input[type="checkbox"]:checked', panel).map(x => x.value);
         try { await remote.supplier.bindAccounts(child.id, ids); close(); toast("账号分配已更新"); onDone(); } catch (e) { toast(e.message || String(e), "error"); }

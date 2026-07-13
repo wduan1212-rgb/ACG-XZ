@@ -14,6 +14,7 @@ import time
 import uuid
 from pathlib import Path
 from threading import Lock
+from urllib.parse import urlparse
 
 DB_PATH = Path(os.getenv("DATA_DB", Path(__file__).resolve().parent / "data.sqlite"))
 DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME") or bytes.fromhex("61646d696e").decode()
@@ -681,6 +682,88 @@ def update_supplier_asset_views(asset_id, view_count, member_id, role):
             conn.close()
 
 
+def _normalize_homepage_url(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if any(ch.isspace() for ch in raw):
+        raise ValueError("invalid_homepage_url")
+    if "://" not in raw:
+        raw = "https://" + raw
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("invalid_homepage_url")
+    return parsed.geturl()
+
+
+def update_supplier_account_homepage(account_id, homepage_url, member_id, role):
+    """供应商母账号只更新账号主页字段；子账号没有账号编辑权限。"""
+    if role not in {"supplier_parent", "supplier"}:
+        return None, "forbidden"
+    try:
+        normalized = _normalize_homepage_url(homepage_url)
+    except ValueError:
+        return None, "invalid_url"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT data,owner_id FROM docs WHERE collection='accounts' AND id=?", (str(account_id),)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            item = json.loads(row[0])
+            now = int(time.time() * 1000)
+            item["homepageUrl"] = normalized
+            item["homepageUpdatedAt"] = now
+            item["homepageUpdatedBy"] = member_id
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("accounts", str(account_id), row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item, None
+        finally:
+            conn.close()
+
+
+def mark_supplier_asset_downloaded(asset_id, member_id, role):
+    """只有真实供应商下载会写入供应商下载状态；创作端下载不经过此函数。"""
+    if role not in {"supplier_parent", "supplier_child", "supplier"}:
+        return None, "forbidden"
+    _ensure_db()
+    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            item = json.loads(row[0])
+            if not item.get("delivered") and not item.get("shared"):
+                return None, "not_delivered"
+            if assigned is not None and item.get("accountId") not in assigned:
+                return None, "unassigned"
+            now = int(time.time() * 1000)
+            item["supplierDownloadedAt"] = now
+            item["supplierDownloadedBy"] = member_id
+            if not item.get("publishedUrl") and item.get("status") != "已发布":
+                item["status"] = "已下载"
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("assets", str(asset_id), row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item, None
+        finally:
+            conn.close()
+
+
 def _sanitize_storyboard_terms(value):
     if isinstance(value, str):
         out = value
@@ -765,7 +848,7 @@ def state_for(member_id, role, parent_id=None):
                             supplier_avatar_asset_ids.add(item.get("avatarAssetId"))
                         item = {
                             key: item.get(key) for key in (
-                                "id", "name", "platform", "mode", "index", "avatarAssetId", "avatarUrl"
+                                "id", "name", "platform", "mode", "index", "avatarAssetId", "avatarUrl", "homepageUrl"
                             ) if item.get(key) is not None
                         }
                     if col == "productions":

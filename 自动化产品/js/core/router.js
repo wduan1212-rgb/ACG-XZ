@@ -60,6 +60,10 @@ export function render() {
     console.error("[router] missing #viewRoot");
     return;
   }
+  root.__assetDropController?.abort();
+  root.__assetDropController = null;
+  root.classList.remove("drag-over");
+  delete root.dataset.dropHint;
   root.scrollTop = 0;
   try {
     view.render(root, { page });

@@ -227,14 +227,15 @@ export function spreadCaption(text, start, end, maxLen = 18) {
 /* ---------- 通用拖拽热区 ---------- */
 export function wireDropZone(zone, handler, opts = {}) {
   if (!zone) return;
+  const listenerOptions = opts.signal ? { signal: opts.signal } : undefined;
   ["dragenter", "dragover"].forEach(ev => zone.addEventListener(ev, e => {
     if (opts.filesOnly && !(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files"))) return;
     e.preventDefault(); e.stopPropagation(); zone.classList.add("drag-over");
-  }));
+  }, listenerOptions));
   ["dragleave", "drop"].forEach(ev => zone.addEventListener(ev, e => {
     e.preventDefault(); e.stopPropagation();
     if (ev === "dragleave" && zone.contains(e.relatedTarget)) return;
     zone.classList.remove("drag-over");
-  }));
-  zone.addEventListener("drop", e => { if (e.dataTransfer.files.length) handler(e.dataTransfer.files, e); });
+  }, listenerOptions));
+  zone.addEventListener("drop", e => { if (e.dataTransfer.files.length) handler(e.dataTransfer.files, e); }, listenerOptions);
 }

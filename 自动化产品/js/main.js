@@ -24,7 +24,7 @@ import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { overviewView } from "./views/overview.js";
 import { voiceLabView } from "./views/voiceLab.js";
 import { agentView } from "./agent/view.js";
-import { studioView } from "./views/studio.js?v=20260713-v74-1";
+import { studioView } from "./views/studio.js?v=20260713-v75-1";
 import { assetsView } from "./views/assetsView.js";
 import { deliveryView } from "./views/deliveryView.js";
 import { analyticsView } from "./views/analyticsView.js";
@@ -472,7 +472,7 @@ function renderContextPanel() {
   panel.innerHTML = `
     <div class="ctx-head">
       <b>账号矩阵</b>
-      <button class="icon-btn sm" id="ctxNew" title="创建账号">${icon("plus", 14)}</button>
+      ${state.role === "admin" ? `<button class="icon-btn sm" id="ctxNew" title="创建账号">${icon("plus", 14)}</button>` : ""}
     </div>
     <div class="ctx-search">${icon("search", 13)}<input id="ctxSearch" placeholder="搜索账号" value="${esc(panel.dataset.q || "")}" /></div>
     <div class="ctx-groups">
@@ -495,7 +495,7 @@ function renderContextPanel() {
     groupsEl.scrollTop = prevScrollTop;
     groupsEl.addEventListener("scroll", () => { state.ui.ctxScrollTop = groupsEl.scrollTop; }, { passive: true });
   }
-  $("#ctxNew").addEventListener("click", () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })));
+  $("#ctxNew")?.addEventListener("click", () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })));
   const ctxSearch = $("#ctxSearch");
   if (ctxSearch) {
     let composing = false;

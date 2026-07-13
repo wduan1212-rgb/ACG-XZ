@@ -8,6 +8,7 @@ import {
   analyticsRows, analyticsSummary,
   syncExistingPublishedAssets, refreshAllAnalytics, refreshAnalyticsLink, justOneAnalyticsStatus
 } from "../domain/analytics.js";
+import { deliveryViewsSummary } from "../domain/delivery.js";
 
 let filter = "all";
 let platformFilter = "all";
@@ -150,12 +151,14 @@ export const analyticsView = {
         return statusMatch && platformMatch && inTimeWindow(r);
       });
       const s = analyticsSummary(rowsAll);
+      const views = deliveryViewsSummary(platformFilter);
       const canRefresh = state.role === "admin";
       root.innerHTML = `
         <div class="analytics-page">
           <section class="ov-stats da-stats">
             ${statCard("回传链接", s.total, `${s.synced} 条有历史快照`)}
             ${statCard("总互动", fmt(s.totalEngagement), "赞、藏、评合计", "review")}
+            ${statCard("总播放量", fmt(views.totalViews), `${platformFilter === "all" ? "全平台" : platformFilter} · ${views.deliveryCount} 条交付`, "views")}
             ${qaCard(rowsAll)}
           </section>
           ${justOneCard()}

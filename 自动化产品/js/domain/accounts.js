@@ -1,6 +1,6 @@
 /* 账号领域：分组 / 标签 / 命名规则 / 增删改 */
 
-import { state, save, notify, removeRemote, ownedBy } from "../core/store.js";
+import { state, save, notify, removeRemote } from "../core/store.js";
 import { uid, todayStamp, esc } from "../core/util.js";
 
 export const TAG_POOL = ["产品功能", "家庭管理", "职场效率", "创作者", "岗位垂类", "测评中立", "学生教培"];
@@ -11,6 +11,15 @@ export const groupOf = a => a.mode === "图文" ? "图文组" : (a.subType === "
 export const tagsOf = a => (a.qtags && a.qtags.length) ? a.qtags
   : TAG_POOL.filter(t => ((a.styleProfile || "") + (a.name || "")).includes(t.slice(0, 2)));
 export const modeLabel = a => a.mode === "视频" ? (a.subType || "视频") : "图文";
+export function normalizeHomepageUrl(value = "") {
+  let raw = String(value || "").trim();
+  if (!raw) return "";
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(raw)) raw = `https://${raw}`;
+  let parsed;
+  try { parsed = new URL(raw); } catch { throw new Error("主页链接格式不正确"); }
+  if (!/^https?:$/.test(parsed.protocol) || !parsed.hostname) throw new Error("主页链接仅支持 http:// 或 https://");
+  return parsed.href;
+}
 export function appearanceAnchorFor(account = {}) {
   const key = `${account.id || ""}${account.name || ""}`;
   const n = [...key].reduce((a, c) => a + c.charCodeAt(0), 0) % 2;
@@ -59,9 +68,10 @@ export function createAccount(data) {
     avatarAssetId: data.avatarAssetId || null,
     imageStyleAssetId: data.imageStyleAssetId || null,
     imagePromptTemplate: data.imagePromptTemplate || "",
+    homepageUrl: normalizeHomepageUrl(data.homepageUrl || ""),
     appearanceAnchor: data.appearanceAnchor || (data.mode === "视频" && data.subType !== "无数字人" ? appearanceAnchorFor(data) : ""),
     lockedStyle: null, customStyleChips: [],
-    createdAt: Date.now()
+    createdAt: Date.now(), updatedAt: Date.now()
   };
   state.accounts.push(a);
   save("accounts");
@@ -71,7 +81,7 @@ export function createAccount(data) {
 export function updateAccount(id, patch) {
   const a = state.accounts.find(x => x.id === id);
   if (!a) return null;
-  Object.assign(a, patch);
+  Object.assign(a, patch, { updatedAt: Date.now() });
   save("accounts");
   return a;
 }
@@ -93,8 +103,19 @@ export function deleteAccount(id) {
   return true;
 }
 
+export function isAvatarAsset(asset) {
+  const text = `${asset?.name || ""} ${(asset?.tags || []).join(" ")}`;
+  return /账号头像|头像素材|(^|[\s_-])头像([\s_-]|$)/i.test(text);
+}
+
 export function accountAssets(accId) {
-  return state.assets.filter(x => x.accountId === accId && (x.delivered || x.shared || ownedBy(x)));
+  return state.assets.filter(x => x.accountId === accId && !isAvatarAsset(x));
+}
+
+export function productionAssets(accId) {
+  return state.assets.filter(x => !isAvatarAsset(x)
+    && (!x.accountId || x.accountId === accId)
+    && !x.delivered);
 }
 
 export const charBoardOf = a => a && a.charBoardAssetId ? state.assets.find(x => x.id === a.charBoardAssetId) : null;

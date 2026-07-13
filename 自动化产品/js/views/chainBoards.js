@@ -5,14 +5,14 @@ import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { setStage, shotsToText } from "../domain/productions.js";
-import { accountAssets } from "../domain/accounts.js";
+import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v74-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v75-1";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -257,7 +257,7 @@ export function renderSlotsPage(root, p, isImg) {
               <button class="btn gen sm" id="imgFactoryGen">${icon("spark", 13)} 按文案生成图卡提示词</button>
             </div>
             <label class="field">标题
-              <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" placeholder="${customCopyMode ? "填写发布标题，图片封面会完整围绕它" : "生成后可编辑，标题不直接写自家产品名"}" />
+              <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" required placeholder="${customCopyMode ? "填写发布标题（必填），图片封面会完整围绕它" : "生成后可编辑，发布标题必填"}" />
             </label>
             <label class="field">正文
               <textarea class="input" id="imgCopyBody" rows="5" placeholder="${customCopyMode ? "粘贴或写入最终正文；系统会按正文含义拆成图卡提示词。" : "发布文案会随交付包带出；生成图卡前会优先准备它。"}">${esc(C.body || "")}</textarea>

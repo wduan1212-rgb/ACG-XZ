@@ -143,8 +143,8 @@ export function supplierReturnModal({ title = "回传发布链接", platform = "
   });
 }
 
-/* 定稿发布弹窗：计划发布日期必填，备注可选。
-   确认 → { planDate, note }；取消 → null */
+/* 定稿发布弹窗：计划发布日期和产品标签必填，备注可选。
+   确认 → { planDate, productTag, note }；取消 → null */
 function todayDateValue() {
   const d = new Date();
   const y = d.getFullYear();
@@ -159,7 +159,7 @@ function normalizeDateValue(value = "") {
   return raw.slice(0, 10).replace(/\//g, "-");
 }
 
-export function publishModal({ title = "定稿并发布", okText = "定稿并发布", date = "", note = "" } = {}) {
+export function publishModal({ title = "定稿并发布", okText = "定稿并发布", date = "", productTag = "", note = "" } = {}) {
   return new Promise(res => {
     const defaultDate = normalizeDateValue(date);
     const ov = document.createElement("div");
@@ -170,6 +170,7 @@ export function publishModal({ title = "定稿并发布", okText = "定稿并发
         <div class="mp-body">
           <p class="mp-sub">定稿后入供应商端，按发布序号可见可下载。计划发布日期默认今天，可按需调整：</p>
           <label class="field"><span>计划发布日期（必填）</span><input class="input" type="date" id="pubDate" value="${esc(defaultDate)}" required /></label>
+          <label class="field"><span>产品标签（必填）</span><input class="input" id="pubProductTag" value="${esc(productTag)}" maxlength="20" placeholder="例如：百度搭子" required /></label>
           <label class="field"><span>备注（可选，几句话）</span><textarea class="input" id="pubNote" rows="2" placeholder="例如：周五晚高峰发，配合活动话题">${esc(note)}</textarea></label>
         </div>
         <div class="mp-foot">
@@ -188,7 +189,9 @@ export function publishModal({ title = "定稿并发布", okText = "定稿并发
       if (b.dataset.r === "1") {
         const planDate = normalizeDateValue($("#pubDate", ov).value || "");
         if (!planDate) { toast("请先填写计划发布日期", "error"); $("#pubDate", ov).focus(); return; }
-        close({ planDate, note: $("#pubNote", ov).value.trim() });
+        const nextProductTag = $("#pubProductTag", ov).value.trim().slice(0, 20);
+        if (!nextProductTag) { toast("请填写产品标签", "error"); $("#pubProductTag", ov).focus(); return; }
+        close({ planDate, productTag: nextProductTag, note: $("#pubNote", ov).value.trim() });
       }
       else close(null);
     });

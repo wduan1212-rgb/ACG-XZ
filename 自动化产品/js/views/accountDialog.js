@@ -3,7 +3,7 @@
 import { $, $$, esc, fileToDataUrl, todayStamp, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
-import { platformCode, createAccount, updateAccount } from "../domain/accounts.js";
+import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
 import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
@@ -12,6 +12,10 @@ import { openModal, toast } from "../ui/components.js";
 import { go, render as routerRender } from "../core/router.js";
 
 export function openAccountDialog(accountId = null) {
+  if (state.role !== "admin") {
+    toast("仅管理员可创建或编辑账号", "error");
+    return;
+  }
   const editing = accountId ? accountById(accountId) : null;
   const draft = {
     name: editing?.name || "",
@@ -19,6 +23,7 @@ export function openAccountDialog(accountId = null) {
     mode: editing?.mode || "视频",
     subType: editing?.subType || "数字人",
     styleProfile: editing?.styleProfile || "",
+    homepageUrl: editing?.homepageUrl || "",
     voiceName: editing?.voiceName || "",
     voiceId: editing?.voiceId || "",
     voiceLookup: "",
@@ -36,6 +41,7 @@ export function openAccountDialog(accountId = null) {
   openModal(`<div id="adRoot"></div>`, {
     wide: true,
     onMount(panel, close) {
+      panel.classList.add("account-dialog-panel");
       const root = panel.querySelector("#adRoot");
 
       const draw = () => {
@@ -48,7 +54,7 @@ export function openAccountDialog(accountId = null) {
         const avatarUrl = draft.avatarDataUrl || (editing?.avatarAssetId ? urlFor(editing.avatarAssetId) : "");
         const styleRefUrl = draft.styleRefDataUrl || (editing?.imageStyleAssetId ? urlFor(editing.imageStyleAssetId) : "");
         const voiceGroups = voicePickerGroups({ selectedId: draft.voiceId, selectedName: draft.voiceName });
-        const referenceAudioAssets = (state.assets || [])
+        const referenceAudioAssets = productionAssets(editing?.id || "__new_account__")
           .filter(a => a.type === "音频" && (a.tags || []).some(t => /参考音频库|语音素材库|音色试听|口播/i.test(t)))
           .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
         root.innerHTML = `
@@ -87,6 +93,9 @@ export function openAccountDialog(accountId = null) {
               </label>` : ""}
               <label class="field full">创作风格 <em class="muted" style="font-weight:500">账号自带的固定风格：量产/随机主题时自动使用，不必每次填</em>
                 <input class="input" id="adStyle" value="${esc(draft.styleProfile)}" placeholder="例如：白底极简种草风 / 口播犀利有梗 / 深度测评冷静叙事" /></label>
+              <label class="field full">账号主页链接 <em class="muted" style="font-weight:500">创作端与供应商端共享同一链接</em>
+                <div class="ad-homepage-row"><input class="input" id="adHomepageUrl" value="${esc(draft.homepageUrl)}" placeholder="https://..." /><button class="btn ghost sm" type="button" id="adHomepageView">${icon("link", 13)} 查看主页</button></div>
+              </label>
               <div class="field full">
                 <span>账号头像 <em class="muted">仅管理员可维护，可点击或拖图替换</em></span>
                 <label class="ad-image-drop avatar" id="adAvatarDrop">
@@ -166,6 +175,14 @@ export function openAccountDialog(accountId = null) {
       const wire = () => {
         $("#adName", root).addEventListener("input", e => { draft.name = e.target.value; refreshNaming(); });
         $("#adStyle", root).addEventListener("input", e => { draft.styleProfile = e.target.value; });
+        $("#adHomepageUrl", root)?.addEventListener("input", e => { draft.homepageUrl = e.target.value; });
+        $("#adHomepageView", root)?.addEventListener("click", () => {
+          try {
+            const url = normalizeHomepageUrl($("#adHomepageUrl", root)?.value || draft.homepageUrl);
+            if (!url) { toast("请先填写主页链接"); return; }
+            window.open(url, "_blank", "noopener,noreferrer");
+          } catch (err) { toast(err.message || "主页链接格式不正确", "error"); }
+        });
         const imgTpl = $("#adImgTpl", root);
         if (imgTpl) imgTpl.addEventListener("input", e => { draft.imagePromptTemplate = e.target.value; });
         const voiceId = $("#adVoiceId", root);
@@ -305,6 +322,9 @@ export function openAccountDialog(accountId = null) {
         $("#adConfirm", root).addEventListener("click", async () => {
           const name = draft.name.trim();
           if (!name) { toast("请填写账号名称"); return; }
+          let homepageUrl = "";
+          try { homepageUrl = normalizeHomepageUrl(draft.homepageUrl); }
+          catch (err) { toast(err.message || "主页链接格式不正确", "error"); return; }
           const isDH = draft.mode === "视频" && draft.subType === "数字人";
           if (isDH && !editing && !draft.charDataUrl) { toast("数字人账号请先上传角色形象"); return; }
 
@@ -329,6 +349,7 @@ export function openAccountDialog(accountId = null) {
               voiceId: draft.voiceId.trim(),
               voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
               imagePromptTemplate: draft.imagePromptTemplate.trim(),
+              homepageUrl,
               qtags: [...draft.qtags]
             });
           } else {
@@ -338,6 +359,7 @@ export function openAccountDialog(accountId = null) {
               voiceName: draft.voiceName.trim(), voiceId: draft.voiceId.trim(),
               voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
               imagePromptTemplate: draft.imagePromptTemplate.trim(),
+              homepageUrl,
               qtags: [...draft.qtags]
             });
           }

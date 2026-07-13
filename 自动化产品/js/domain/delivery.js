@@ -6,6 +6,9 @@ import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
 import { setStage, touch } from "./productions.js";
 import { assetU8, urlFor } from "./assets.js";
+import * as remote from "../core/remote.js";
+
+const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 
 export function productTagLabel(product) {
   const name = String(product?.name || "");
@@ -111,11 +114,12 @@ export function deliver(p, opts = {}) {
   if (!acc) return null;
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
   const planDate = normalizePlanDate(opts.planDate);
+  const productTag = String(opts.productTag || "").trim().slice(0, 20);
+  if (!productTag) { window.__toast && window.__toast("请在发布弹窗填写产品标签", "error"); return null; }
   p.review.state = "approved";   // 创作者点击发布即定稿
   const replaced = purgeOpenDeliveryAssetsForProduction(p);
   if (replaced && (acc.monthlyDone || 0) > 0) acc.monthlyDone = Math.max(0, (acc.monthlyDone || 0) - replaced);
   acc.exportSeq = (acc.exportSeq || 0) + 1;
-  const productTag = productTagFor(p);
   const name = insertProductTagBeforeDate(buildDeliveryName(acc, acc.exportSeq), productTag);
   const mem = currentMember();
   const publisherName = mem?.name || memberNameById(p.ownerId);
@@ -140,7 +144,7 @@ export function deliver(p, opts = {}) {
   if (snapshot.type === "图集") markPackImagesShared(p, productTag);
   state.assets.push(asset);
   acc.monthlyDone = (acc.monthlyDone || 0) + 1;
-  p.delivery = { assetId: asset.id, name, at: Date.now(), pubSeq, planDate: asset.planDate, note: asset.publishNote, sourceUpdatedAt: asset.sourceUpdatedAt };
+  p.delivery = { assetId: asset.id, name, at: Date.now(), pubSeq, planDate: asset.planDate, productTag, note: asset.publishNote, sourceUpdatedAt: asset.sourceUpdatedAt };
   p.review.at = Date.now();
   touch(p);
   setStage(p, "delivered", "done");
@@ -189,8 +193,12 @@ export function canSeeDeliveryRetract(asset) {
 export function deliveryRetractBlockReason(asset) {
   if (!asset?.delivered) return "不是发布清单内容";
   if (asset.publishedUrl || asset.status === "已发布") return "供应商已回传发布链接，无法回撤";
-  if (asset.status === "已下载") return "供应商已下载，无法回撤";
+  if (supplierHasDownloaded(asset)) return "供应商已下载，无法回撤";
   return "";
+}
+
+export function supplierHasDownloaded(asset) {
+  return !!asset?.supplierDownloadedAt || asset?.status === "已下载";
 }
 
 export function deleteDeliveryAsset(asset) {
@@ -227,6 +235,14 @@ export function deliveredAssets() {
   });
   // 按发布序号（点击发布的先后）排序，最新在前
   return out.sort((a, b) => (b.asset.pubSeq || b.asset.createdAt || 0) - (a.asset.pubSeq || a.asset.createdAt || 0));
+}
+
+export function deliveryViewsSummary(platform = "all") {
+  const rows = deliveredAssets().filter(({ acc }) => platform === "all" || acc.platform === platform);
+  return {
+    totalViews: rows.reduce((sum, { asset }) => sum + Math.max(0, Number(asset.viewCount || 0)), 0),
+    deliveryCount: rows.length
+  };
 }
 
 export function syncDeliveryAssetSnapshot(asset) {
@@ -330,36 +346,68 @@ async function deliveryEntries(asset, folder = "") {
 }
 
 /* 下载交付物：图集/视频均打包为 zip（视频尽量拉取真实 mp4，失败时保留下载链接） */
-export async function downloadDelivery(asset) {
+export async function downloadDelivery(asset, { markDownloaded = true } = {}) {
   asset = syncDeliveryAssetSnapshot(asset);
   const entries = await deliveryEntries(asset);
   downloadBlob(`${safeName(asset.name)}.zip`, buildZipBlob(entries));
-  asset.status = "已下载";
-  save("assets");
+  if (markDownloaded && SUPPLIER_ROLES.has(state.role)) {
+    if (remote.isOn()) {
+      try {
+        const result = await remote.supplier.markDownloaded(asset.id);
+        Object.assign(asset, result?.asset || {});
+      } catch (err) {
+        window.__toast?.(`文件已下载，但供应商下载状态同步失败：${err?.message || err}`, "error");
+      }
+    } else {
+      asset.supplierDownloadedAt = Date.now();
+      asset.supplierDownloadedBy = state.ui.currentMemberId || "";
+      if (!asset.publishedUrl && asset.status !== "已发布") asset.status = "已下载";
+      save("assets");
+    }
+  }
 }
 
 export async function batchDownload(assets) {
   return batchDownloadZip(assets);
 }
 
-export async function batchDownloadZip(assets, filename = "") {
+export async function batchDownloadZip(assets, filename = "", { markDownloaded = true } = {}) {
   const list = (assets || []).filter(Boolean);
   const entries = [];
   for (let i = 0; i < list.length; i++) {
     const a = syncDeliveryAssetSnapshot(list[i]);
     const folder = `${String(i + 1).padStart(3, "0")}_${safeName(a.name || a.title)}`;
     entries.push(...await deliveryEntries(a, folder));
-    a.status = "已下载";
   }
   if (!entries.length) return 0;
   downloadBlob(filename || `供应商待下载素材_${Date.now()}.zip`, buildZipBlob(entries));
-  save("assets");
+  if (markDownloaded && SUPPLIER_ROLES.has(state.role)) {
+    if (remote.isOn()) {
+      const results = await Promise.allSettled(list.map(a => remote.supplier.markDownloaded(a.id)));
+      results.forEach((result, index) => {
+        if (result.status === "fulfilled") Object.assign(list[index], result.value?.asset || {});
+      });
+      const failed = results.filter(result => result.status === "rejected").length;
+      if (failed) window.__toast?.(`文件已下载，但有 ${failed} 条供应商下载状态同步失败`, "error");
+    } else {
+      const now = Date.now();
+      list.forEach(a => {
+        a.supplierDownloadedAt = now;
+        a.supplierDownloadedBy = state.ui.currentMemberId || "";
+        if (!a.publishedUrl && a.status !== "已发布") a.status = "已下载";
+      });
+      save("assets");
+    }
+  }
   return list.length;
 }
 
 /* 单个普通资产下载 */
 export async function downloadAsset(a) {
-  if (a.delivered) return downloadDelivery(a);
+  if (a.delivered) {
+    const supplierDownload = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+    return downloadDelivery(a, { markDownloaded: supplierDownload });
+  }
   const d = await assetU8(a.id);
   if (d) { downloadBlob(`${a.name}.${d.ext}`, new Blob([d.u8])); return; }
   const u = urlFor(a);

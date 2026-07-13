@@ -8,7 +8,7 @@ import { groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
-import { addAssetFromDataUrl, addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
+import { addAssetFromDataUrl, addAssetFromFile, assetBlob, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
@@ -853,7 +853,7 @@ export function createBatch(plan, sessionId) {
     accountIds: plan.accountIds || [],
     productionIds: [],
     phase: "drafting",         // drafting | awaiting_input | generating | review | done
-    autoAdvance: state.ui.autoAdvance !== false,
+    autoAdvance: true,
     createdAt: Date.now(), updatedAt: Date.now()
   };
   state.batches.push(batch);
@@ -1126,6 +1126,59 @@ async function generateBatchImagesInHouse(p, batch, acc) {
     save("productions");
   }
   return items.length > 0 && items.every(x => x.assetId);
+}
+
+export async function regenerateBatchImage(p, imageIndex) {
+  if (!p || p.mode !== "图文") throw new Error("当前任务不是图文生产");
+  const item = p.artifacts.images?.items?.[Number(imageIndex)];
+  if (!item?.prompt?.trim()) throw new Error("请先填写这张图的提示词");
+  const batch = batchById(p.batchId);
+  const acc = accountById(p.accountId);
+  if (!batch || !acc) throw new Error("批次或账号不存在");
+  if (!imageApiConfigured()) throw new Error("图片生成服务未配置");
+  const provider = activeProviderFor("image");
+  if (!provider || provider.mock) throw new Error("图片生成服务当前不可用");
+  const key = providerKeyFor("image", provider);
+  const refGroups = imageRefGroupsFor(acc, batch, p);
+  const refs = [
+    ...(await imageRefsForIds(refGroups.shared, "shared")),
+    ...(await imageRefsForIds(refGroups.custom, "custom"))
+  ].slice(0, 8);
+  item.status = "loading";
+  item.error = "";
+  save("productions");
+  try {
+    const req = await provider.submit({
+      prompt: enrichBatchImagePrompt(item.prompt, refs),
+      refs,
+      ratio: "3:4",
+      apiKey: key?.secret,
+      endpoint: key?.provider,
+      model: key?.model || ""
+    });
+    const out = await provider.poll(req.providerRef);
+    if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || "图片生成未返回结果");
+    const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
+    const polished = await polishImageDataUrl(raw, `${p.id}-batch-regen-${Number(imageIndex)}-${p.topic || ""}`);
+    if (item.assetId) await replaceAssetBlob(item.assetId, polished);
+    else {
+      const asset = await addAssetFromDataUrl(acc.id, {
+        name: `站内笔记图${String(Number(imageIndex) + 1).padStart(2, "0")}_${(item.title || p.title || "").slice(0, 10)}`,
+        tags: ["笔记图", "站内生成", "发布前精修"],
+        dataUrl: polished
+      });
+      item.assetId = asset.id;
+    }
+    item.status = "done";
+    item.updatedAt = Date.now();
+    save("productions");
+    return item;
+  } catch (err) {
+    item.status = "failed";
+    item.error = err?.message || String(err);
+    save("productions");
+    throw err;
+  }
 }
 
 async function runBatchImagesToReview(p, batch) {
@@ -1590,9 +1643,10 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
     A.sharedRefAssetId
   ].filter(Boolean))];
   const hasExternalVoice = !!p.artifacts.audio.assetId && ["tts", "upload"].includes(p.artifacts.audio.source);
-  const wantsSeedanceVoice = p.subType === "无数字人" && !!acc?.voiceRefAssetId;
+  const productionReferenceAudioId = A.referenceAudioAssetId || null;
+  const wantsSeedanceVoice = p.subType === "无数字人" && !!(productionReferenceAudioId || acc?.voiceRefAssetId);
   const useDigitalHumanModel = p.subType === "数字人" && A.generationMode === "digitalHuman";
-  const voiceRefs = wantsSeedanceVoice ? [acc.voiceRefAssetId] : [];
+  const voiceRefs = wantsSeedanceVoice ? [productionReferenceAudioId || acc.voiceRefAssetId] : [];
   const audioRefs = [...voiceRefs].filter(Boolean);
   let n = 0;
   if (useDigitalHumanModel) {
@@ -1644,8 +1698,12 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
     const needsCharacter = p.subType === "数字人" && i === 0;
     // Seedance 2.0 上游不接受“音频是唯一参考模态”；固定声线时为每段同时挂一张已有视觉参考。
     const audioCompanionVisual = wantsSeedanceVoice
-      ? ((u.refAssetIds || [])[0] || sceneRefs[0] || characterRefId || null)
+      ? ((u.refAssetIds || [])[0] || sceneRefs[0] || characterRefId || A.cover?.assetId || acc?.avatarAssetId || null)
       : null;
+    if (wantsSeedanceVoice && !audioCompanionVisual) {
+      window.__toast?.("已选择参考音频：还需要一张产品图、封面或账号头像作为 Seedance 视觉参考", "error");
+      return;
+    }
     const refs = [...new Set([
       needsCharacter ? characterRefId : null,
       audioCompanionVisual,
@@ -1819,6 +1877,7 @@ export function retryFailedIn(batch) {
 export function evaluate(batchId) {
   const batch = batchById(batchId);
   if (!batch || batch.phase === "done") return;
+  if (batch.autoAdvance !== true) batch.autoAdvance = true;
   const prods = batchProds(batch);
   if (!prods.length) return;
   const session = state.sessions.find(s => s.id === batch.sessionId) || ensureSession();
@@ -1875,7 +1934,7 @@ export function evaluate(batchId) {
       addMsg(session, { role: "agent", type: "need_input", payload: { batchId: batch.id } });
     });
   } else if (renderPending > 0 || rendering.length > 0) {
-    if (renderPending > 0 && batch.autoAdvance) {
+    if (renderPending > 0) {
       // 素材号用站内分镜（无需上传）；真人号按工坊设置生成后渲染。
       const pend = prods.filter(p => (p.mode === "视频" && p.stage === "render" && p.stageStatus !== "running") || (p.stage === "workshop" && p.stageStatus !== "running"));
       const allInhouse = pend.length > 0 && pend.every(p => p.stage === "workshop");
@@ -1883,11 +1942,6 @@ export function evaluate(batchId) {
         ? "脚本就绪，自动开始批量生成分镜视频（站内分镜 · 并发 2，其余排队）。"
         : "分镜全部上传完成，自动开始批量渲染（并发 2，其余排队）。"));
       startGeneration(batch);
-    } else if (renderPending > 0 && !batch.autoAdvance) {
-      batch.phase = "awaiting_input";
-      emitOnce("gen_wait", () => {
-        addMsg(session, { role: "agent", type: "need_input", payload: { batchId: batch.id, mode: "confirm_generate" } });
-      });
     } else {
       batch.phase = "generating";
     }

@@ -9,13 +9,14 @@ import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
-  templatePlan, defaultPlan
+  templatePlan, defaultPlan, regenerateBatchImage
 } from "./orchestrator.js";
 import { renderMessage, boardRow } from "./cards.js";
 import { openProductionDrawer } from "../views/prodDrawer.js";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, removeAsset } from "../domain/assets.js";
+import { isAvatarAsset } from "../domain/accounts.js";
 
 let mounted = false;
 let rootEl = null;
@@ -145,10 +146,6 @@ export const agentView = {
           <div class="agw-brand"><span class="agw-ava">${agentAvatar(26)}</span><b>批量创作</b><span class="agw-tag">量产任务板</span></div>
           <div class="agw-phase" id="agwPhase"></div>
           <div class="agw-top-right">
-            <label class="agw-auto" title="开启后：上传齐自动渲染、渲染完自动进入待发布">
-              <input type="checkbox" id="agwAuto" ${state.ui.autoAdvance !== false ? "checked" : ""} />
-              <i></i><span>自动推进</span>
-            </label>
             <button class="agw-board-toggle" data-agw="board">${icon("kanban", 15)} 看板</button>
           </div>
         </header>
@@ -548,13 +545,6 @@ function wire(root) {
     reportRoute(r);
   });
 
-  $("#agwAuto", root).addEventListener("change", e => {
-    state.ui.autoAdvance = e.target.checked;
-    currentSessionBatches().forEach(b => { b.autoAdvance = e.target.checked; });
-    save("meta", "batches");
-    toast(e.target.checked ? "已开启自动推进：上传齐自动渲染、完成自动进入待发布" : "已关闭自动推进：每个关口都会等你确认");
-  });
-
   const handlePlanPickClick = e => {
     const tagBtn = e.target.closest("[data-ptag]");
     const accBtn = e.target.closest("[data-pacc]");
@@ -823,6 +813,7 @@ function wire(root) {
         }
         break;
       }
+      case "batch-image-edit": if (p) openBatchImageEditor(p, act.dataset.imageIndex); break;
       case "open-prod": if (p) openProductionDrawer(p.id); break;
       case "batch-generate": if (batch) { const n = startGeneration(batch); toast(n ? `已派发 ${n} 个渲染任务` : "没有就绪任务"); } break;
       case "batch-retry": if (batch) { const n = retryFailedIn(batch); toast(n ? `正在重试 ${n} 个失败任务` : "没有失败任务"); } break;
@@ -976,7 +967,7 @@ function planRefIds(payload, kind, accountId = "") {
   return [...new Set(ids.filter(Boolean))];
 }
 
-function imageAssetList() {
+function imageAssetList(accountId = "") {
   const score = a => {
     const tags = (a.tags || []).join(" ");
     if (/logo|头像|图文风格参考|主界面|角色版/i.test(`${a.name || ""} ${tags}`)) return 0;
@@ -985,7 +976,9 @@ function imageAssetList() {
   };
   const seen = new Set();
   return state.assets
-    .filter(a => a.type === "图片" && !a.delivered && (a.shared || ownedBy(a)))
+    .filter(a => a.type === "图片" && !isAvatarAsset(a) && !a.delivered
+      && (!a.accountId || (accountId && a.accountId === accountId))
+      && (a.shared || ownedBy(a)))
     .sort((a, b) => score(a) - score(b) || (b.sharedAt || b.createdAt || 0) - (a.sharedAt || a.createdAt || 0))
     .filter(a => {
       const key = a.dataUrl || a.url || a.remoteUrl || `${String(a.name || "").toLowerCase()}|${(a.tags || []).join("|")}|${a.accountId || ""}`;
@@ -1002,12 +995,13 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
   if (kind === "custom" && !accountId) return;
   const limit = kind === "custom" ? 3 : 5;
   const title = kind === "custom" ? "选择定制参考图" : kind === "cover" ? "选择统一视频参考图" : "选择统一参考图";
-  const assets = imageAssetList();
+  const assets = imageAssetList(kind === "custom" ? accountId : "");
   const selected = new Set(planRefIds(m.payload, kind, accountId).slice(0, limit));
   const accountName = accountId ? (state.accounts.find(a => a.id === accountId)?.name || "当前账号") : "";
   const sourceLabel = a => {
     const tags = (a.tags || []).join(" ");
-    if (/logo|头像|图文风格参考|主界面|角色版/i.test(`${a.name || ""} ${tags}`)) return "Logo / 账号资产";
+    if (!a.accountId) return "公共素材池";
+    if (/logo|图文风格参考|主界面|角色版/i.test(`${a.name || ""} ${tags}`)) return "账号固定素材";
     if (a.shared || /已发布生成图|站内生成|笔记图/.test(tags)) return "已发布生成图";
     return "账号素材";
   };
@@ -1106,6 +1100,44 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
         }
       });
       sync();
+    }
+  });
+}
+
+function openBatchImageEditor(p, imageIndex) {
+  const index = Number(imageIndex);
+  const item = p?.artifacts?.images?.items?.[index];
+  if (!item) return;
+  const imageUrl = item.assetId ? urlFor(item.assetId) : "";
+  openModal(`<div class="mp-head"><b>编辑第 ${index + 1} 张提示词</b><button class="icon-btn" data-close>${icon("x", 15)}</button></div>
+    <div class="mp-body batch-image-editor">
+      ${imageUrl ? `<img src="${esc(imageUrl)}" alt="第 ${index + 1} 张当前图片"/>` : ""}
+      <label class="field"><span>图片提示词</span><textarea class="input" id="batchImagePrompt" rows="9" placeholder="写清楚主体、构图、风格和画面文字">${esc(item.prompt || "")}</textarea></label>
+      ${item.error ? `<p class="sc-error">${esc(item.error)}</p>` : ""}
+    </div>
+    <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="batchImageRegenerate">${icon("refresh", 13)} 保存并重新生成</button></div>`, {
+    wide: true,
+    onMount(panel, close) {
+      panel.querySelector("#batchImageRegenerate")?.addEventListener("click", async e => {
+        const prompt = panel.querySelector("#batchImagePrompt")?.value.trim() || "";
+        if (!prompt) { toast("请先填写图片提示词", "error"); return; }
+        item.prompt = prompt;
+        save("productions");
+        const button = e.currentTarget;
+        button.disabled = true;
+        button.textContent = "重新生成中…";
+        try {
+          await regenerateBatchImage(p, index);
+          close();
+          toast(`第 ${index + 1} 张已重新生成`);
+          refreshLiveCards();
+          renderBoard();
+        } catch (err) {
+          button.disabled = false;
+          button.innerHTML = `${icon("refresh", 13)} 重试生成`;
+          toast(err?.message || "重新生成失败", "error");
+        }
+      });
     }
   });
 }

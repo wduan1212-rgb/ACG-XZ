@@ -77,6 +77,7 @@ export function blankArtifacts() {
       sharedRefAssetId: null,
       generationMode: null,
       materialMode: "infoFlow",
+      referenceAudioAssetId: null,
       infoFlow: { segments: [], storyboards: [], status: "idle", error: "" },
       cover: { prompt: "", assetId: null, refAssetIds: [], status: "idle", error: "" },
       digitalHuman: { provider: "", model: "", segments: [] }

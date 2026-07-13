@@ -4,13 +4,13 @@ import { $, $$, esc, gradFor, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, on, accountById } from "../core/store.js";
 import { segmentsForGen, setStage, setStatus, autoAssemble } from "../domain/productions.js";
-import { accountAssets } from "../domain/accounts.js";
+import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromFile } from "../domain/assets.js";
 import { createJob, retryJob, cancelJob } from "../api/jobs.js";
 import { videoApiConfigured, videoApiHealthy, videoProviderLabel } from "../api/providers.js";
 import { toast } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v74-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v75-1";
 
 const segIdxByProd = new Map();
 const draftBySeg = new Map(); // `${pid}:${seg}` -> html

@@ -7,7 +7,7 @@
 import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid } from "../core/util.js";
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
-import { state, save, persistNow, on, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
+import { state, save, persistNow, on, accountById, productById, primaryProductById } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
@@ -16,8 +16,8 @@ import { polishImageForPublish as polishPublishImage } from "../domain/imagePoli
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox, openVideoPreview } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v74-1";
-import { accountAssets as accAssets } from "../domain/accounts.js";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v75-1";
+import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from "../domain/voices.js";
 
 let liveRoot = null, liveProd = null, liveDraw = null, wired = false;
@@ -1003,11 +1003,16 @@ export async function ensureVideoCover(p) {
 export function renderWorkshopPage(root, p) {
   liveRoot = root; liveProd = p;
   const acc = accountById(p.accountId);
+  const canConfigureAccount = state.role === "admin";
   const A = p.artifacts.boards;
   let shots = p.artifacts.script.shots || [];
   p.artifacts.script.productId = primaryProductById(p.artifacts.script.productId || "dumate")?.id || "dumate";
   const product = productById(p.artifacts.script.productId || "dumate");
   const isDigital = p.subType === "数字人";
+  if (!canConfigureAccount && acc) {
+    p.artifacts.audio.voiceId = acc.voiceId || defaultTtsVoiceId() || "";
+    p.artifacts.audio.voiceName = acc.voiceName || "";
+  }
   A.generationMode = A.generationMode || (isDigital ? "digitalHuman" : "seedance");
   A.digitalHuman = A.digitalHuman || { provider: "", model: "", segments: [] };
   let isDigitalHumanMode = isDigital && A.generationMode === "digitalHuman";
@@ -1071,6 +1076,7 @@ export function renderWorkshopPage(root, p) {
     const running = units.some((u, i) => ["queued", "submitted", "running"].includes(jobOfUnit(i)?.status || ""));
     const refN = units.filter(u => u.needsImage).length;
     const sceneRefs = [...new Set([...(A.sceneRefAssetIds || []), ...(A.omniRefAssetIds || []).filter(id => id !== A.characterRefAssetId)])].map(assetById).filter(Boolean);
+    const referenceAudio = A.referenceAudioAssetId ? assetById(A.referenceAudioAssetId) : null;
     const charRef = A.characterRefAssetId ? assetById(A.characterRefAssetId) : null;
     const audioAsset = p.artifacts.audio.assetId ? assetById(p.artifacts.audio.assetId) : null;
     const hasNarrationAudio = hasAudio();
@@ -1122,7 +1128,7 @@ export function renderWorkshopPage(root, p) {
           return `<div class="dh-seg ${busy ? "is-generating" : ""}" data-dh-seg="${seg.id}">
             <b>D${String(i + 1).padStart(2, "0")}</b><span>${fmtTC(visibleDuration)}</span>
             <em>${ref ? esc(ref.name) : "未设置角色图"}</em><i class="dh-status ${busy ? "running" : done ? "done" : failed ? "failed" : ""}">${stateText}</i>
-            <div class="dh-seg-drop droppable" data-unit-char-ref="${seg.id}">${ref ? thumbHtml(ref) : icon("upload", 13)}<span>单段角色图</span></div>
+            <div class="dh-seg-drop ${canConfigureAccount ? "droppable" : "is-locked"}" ${canConfigureAccount ? `data-unit-char-ref="${seg.id}"` : ""}>${ref ? thumbHtml(ref) : icon(canConfigureAccount ? "upload" : "lock", 13)}<span>${canConfigureAccount ? "单段角色图" : "账号固定角色"}</span></div>
             ${seg.audioAssetId && assetById(seg.audioAssetId) ? `<audio class="dh-audio" src="${esc(urlFor(assetById(seg.audioAssetId)))}" controls preload="metadata"></audio>` : `<small class="dh-audio-miss">未生成分段音频</small>`}
             ${videoUrl
               ? `<video class="dh-video" src="${esc(videoUrl)}" ${refPoster ? `poster="${esc(refPoster)}"` : ""} controls playsinline preload="metadata"></video>`
@@ -1156,11 +1162,11 @@ export function renderWorkshopPage(root, p) {
               <span class="tag">${icon("mic", 11)} ${hasNarrationAudio ? "外部口播" : "提示词口播"} ${fmtTC(p.artifacts.audio.duration || 0)}${p.artifacts.audio.source === "upload" ? " · 已上传" : ""}</span>
               <span class="tag">${icon("layers", 11)} ${isDigitalHumanMode ? "数字人分段" : `文生 ${units.length - refN} · 全能参考 ${refN}`}</span>
               ${materialPureVideo() ? `<span class="material-mode-switch">${modeBtn("standard", "文案分镜")}${modeBtn("infoFlow", "信息流")}</span>` : ""}
-              ${isDigital ? `<span class="dh-mode ${isDigitalHumanMode ? "is-digital" : "is-seedance"}" data-mode="${isDigitalHumanMode ? "digitalHuman" : "seedance"}" title="数字人模式先用 Minimax 生成口播，尽量少切；单段目标约${DIGITAL_SEGMENT_TARGET_SEC}s，上限${DIGITAL_SEGMENT_MAX_SEC}s，每段=音频+角色图；Seedance 模式沿用视频模型直接生成">
+              ${isDigital && canConfigureAccount ? `<span class="dh-mode ${isDigitalHumanMode ? "is-digital" : "is-seedance"}" data-mode="${isDigitalHumanMode ? "digitalHuman" : "seedance"}" title="数字人模式先用 Minimax 生成口播，尽量少切；单段目标约${DIGITAL_SEGMENT_TARGET_SEC}s，上限${DIGITAL_SEGMENT_MAX_SEC}s，每段=音频+角色图；Seedance 模式沿用视频模型直接生成">
                 <i aria-hidden="true"></i>
                 <button class="${isDigitalHumanMode ? "on" : ""}" data-dh-mode="digitalHuman">数字人</button>
                 <button class="${!isDigitalHumanMode ? "on" : ""}" data-dh-mode="seedance">Seedance</button>
-              </span>` : ""}
+              </span>` : isDigital ? `<span class="tag ws-account-lock">${icon("lock", 11)} ${isDigitalHumanMode ? "数字人" : "Seedance"} · 管理员已固定</span>` : ""}
               <span style="display:inline-flex;gap:4px;align-items:center" title="所有分镜统一这个尺寸"><em class="muted" style="font-size:11px">尺寸</em>${rtBtn("9:16")}${rtBtn("16:9")}</span>
               <button class="btn primary" id="wsNext">下一步：智能混剪 ${icon("arrowRight", 14)}</button>
             </div>
@@ -1176,10 +1182,10 @@ export function renderWorkshopPage(root, p) {
               <em>${isDigitalHumanMode ? "数字人默认每段都参考这张角色图；单段可覆盖专属角色形象。" : "用于真人出镜片段的角色形象参考。没有上传时，第一段提示词会自动写入固定外貌锚点。"}</em>
             </div>
             <div class="refbar-chip">${charRef
-              ? `<span class="ref-chip">${thumbHtml(charRef)}<span>${esc(charRef.name)}</span><button class="ref-x" data-chardel>${icon("x", 11)}</button></span>`
-              : `<span class="muted">未设置，可拖拽角色形象图到此</span>`}</div>
+              ? `<span class="ref-chip">${thumbHtml(charRef)}<span>${esc(charRef.name)}</span>${canConfigureAccount ? `<button class="ref-x" data-chardel>${icon("x", 11)}</button>` : ""}</span>`
+              : `<span class="muted">${canConfigureAccount ? "未设置，可拖拽角色形象图到此" : "管理员暂未设置账号角色形象"}</span>`}</div>
             <div class="refbar-actions">
-              <label class="btn ghost sm">上传角色形象<input type="file" accept="image/*" hidden id="wsCharUp" /></label>
+              ${canConfigureAccount ? `<label class="btn ghost sm">上传角色形象<input type="file" accept="image/*" hidden id="wsCharUp" /></label>` : `<span class="tag">${icon("lock", 11)} 管理员专属</span>`}
             </div>
           </div>` : ""}
 
@@ -1190,10 +1196,10 @@ export function renderWorkshopPage(root, p) {
             </div>
             <div class="refbar-chip">${sceneRefs.length
               ? sceneRefs.map(a => `<span class="ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button class="ref-x" data-omnidel="${a.id}">${icon("x", 11)}</button></span>`).join("")
-              : `<span class="muted">未设置</span>`}</div>
+              : ""}${referenceAudio ? `<span class="ref-chip is-audio">${icon("pulse", 13)}<span>${esc(referenceAudio.name)}</span><button class="ref-x" data-reference-audio-del>${icon("x", 11)}</button></span>` : ""}${!sceneRefs.length && !referenceAudio ? `<span class="muted">可拖入图片或 MP3 总参考音频</span>` : ""}</div>
             <div class="refbar-actions">
               <button class="btn ghost sm" id="wsRefPick">从资产选择</button>
-              <label class="btn ghost sm">上传<input type="file" accept="image/*" multiple hidden id="wsRefUp" /></label>
+              <label class="btn ghost sm">上传<input type="file" accept="image/*,.mp3,audio/mpeg" multiple hidden id="wsRefUp" /></label>
             </div>
           </div>
           <div id="wsRefChooser" class="ref-chooser card" hidden></div>` : ""}
@@ -1210,13 +1216,10 @@ export function renderWorkshopPage(root, p) {
                   <em>主题、发布文案和封面统一在这里定稿；封面跟随标题与正文生成</em>
                 </div>` : ""}
                 ${customCopyMode ? "" : `<div class="input-with-action"><input class="input" id="wsTopic" value="${esc(p.topic || "")}" placeholder="详细写创作主题，例如：AI工作流提效、Skill速通、资料整理对比" /><button class="icon-btn sm" id="wsDice" title="随机创作内容">${icon("dice", 13)}</button></div>`}
-                ${customCopyMode ? "" : `<select class="input" id="wsProduct">
-                  ${primaryProducts().map(x => `<option value="${esc(x.id)}" ${p.artifacts.script.productId === x.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}
-                </select>`}
                 <button class="btn gen sm" id="wsBriefGenerate">${icon("spark", 13)} 一键生成</button>
               </div>
               <div class="ws-copy-fields">
-                <textarea class="input ws-copy-title" id="wsCopyTitle" rows="2" placeholder="发布标题，例如：国产桌面智能体，1分钟上手讲清楚">${esc(C.title || "")}</textarea>
+                <textarea class="input ws-copy-title" id="wsCopyTitle" rows="2" required placeholder="发布标题（必填），例如：国产桌面智能体，1分钟上手讲清楚">${esc(C.title || "")}</textarea>
                 <textarea class="input" id="wsCopyBody" rows="4" placeholder="按口播内容总结成发布简介，可直接修改">${esc(C.body || "")}</textarea>
               </div>
               ${activeInfoFlowMode ? "" : `<div class="ws-narration-inline">
@@ -1274,16 +1277,16 @@ export function renderWorkshopPage(root, p) {
             <div class="refbar-chip"></div>
             <div class="refbar-actions voice-audio-actions">
               <div class="voice-main-controls">
-                ${(!isDigital || isDigitalHumanMode) ? voicePickerHtml({ selected: selectedVoice, groups: voiceGroups, favoriteIds: favoriteVoiceIds, lockedVoiceId: acc?.voiceId || "" }) : ""}
-                ${(!isDigital || isDigitalHumanMode) ? `<div class="voice-id-search">
+                ${(!isDigital || isDigitalHumanMode) && canConfigureAccount ? voicePickerHtml({ selected: selectedVoice, groups: voiceGroups, favoriteIds: favoriteVoiceIds, lockedVoiceId: acc?.voiceId || "" }) : ""}
+                ${(!isDigital || isDigitalHumanMode) && canConfigureAccount ? `<div class="voice-id-search">
                   <input class="input sm" id="wsVoiceId" value="${esc(selectedVoice.voiceId || "")}" placeholder="粘贴 / 搜索 voice_id" />
                   <button class="btn ghost sm" id="wsVoiceLookup">${icon("search", 12)} 识别</button>
-                </div>` : ""}
+                </div>` : (!isDigital || isDigitalHumanMode) ? `<div class="voice-account-fixed">${icon("lock", 13)}<span><b>${esc(selectedVoice.name || "账号默认声线")}</b><em>管理员已固定，生成时自动使用</em></span></div>` : ""}
               </div>
               <div class="voice-side-actions">
-                ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm voice-fav-btn ${voiceFav ? "voice-action-active" : ""}" id="wsVoiceFav">${icon("star", 12)} ${voiceFav ? "已收藏" : "收藏"}</button>` : ""}
+                ${(!isDigital || isDigitalHumanMode) && canConfigureAccount ? `<button class="btn ghost sm voice-fav-btn ${voiceFav ? "voice-action-active" : ""}" id="wsVoiceFav">${icon("star", 12)} ${voiceFav ? "已收藏" : "收藏"}</button>` : ""}
                 <div class="voice-stacked-actions">
-                  ${(!isDigital || isDigitalHumanMode) ? `<button class="btn ghost sm ${voiceLocked ? "voice-action-active" : ""}" id="wsVoiceFix">${icon("check", 12)} ${voiceLocked ? "已锁定" : "固定到账号"}</button>` : ""}
+                  ${(!isDigital || isDigitalHumanMode) && canConfigureAccount ? `<button class="btn ghost sm ${voiceLocked ? "voice-action-active" : ""}" id="wsVoiceFix">${icon("check", 12)} ${voiceLocked ? "已锁定" : "固定到账号"}</button>` : ""}
                   ${!isDigital || isDigitalHumanMode ? `<button class="btn ghost sm" id="wsTts">${icon("mic", 13)} ${isDigitalHumanMode ? "生成分段口播" : (audioAsset && p.artifacts.audio.source === "tts" ? "重新生成口播" : "生成口播音频")}${ttsApiConfigured() ? "" : "（估时）"}</button>` : ""}
                   ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
                 </div>
@@ -1297,7 +1300,7 @@ export function renderWorkshopPage(root, p) {
             ${digitalPlanHtml}
           </div>`}
 
-          ${isDigitalHumanMode ? "" : activeInfoFlowMode ? infoFlowPanel(infoFlow, sceneRefs) : `
+          ${isDigitalHumanMode ? "" : activeInfoFlowMode ? infoFlowPanel(infoFlow, sceneRefs, referenceAudio) : `
             <div class="inhouse-controls">
               <button class="btn gen" id="wsAuto">${icon("spark", 15)} ${running ? "生成中…" : okCount === units.length && units.length ? "全部片段已就绪" : "一键全自动编排出片"}</button>
               <button class="btn ghost" id="wsGenPrompts">${icon("list", 14)} 仅生成提示词</button>
@@ -1306,7 +1309,7 @@ export function renderWorkshopPage(root, p) {
 
             <div class="ws-cards" id="wsCards">
               ${units.map((u, i) => unitCard(u, i, jobOfUnit(i))).join("") ||
-                `<div class="empty-state slim">${icon("layers", 22)}<b>先生成口播草稿</b><p>在上方输入选题与产品，直接生成可拆分的分镜单元</p></div>`}
+                `<div class="empty-state slim">${icon("layers", 22)}<b>先生成口播草稿</b><p>在上方输入创作主题，直接生成可拆分的分镜单元</p></div>`}
             </div>
           `}
         </div>
@@ -1315,7 +1318,7 @@ export function renderWorkshopPage(root, p) {
     wire();
   };
 
-  function infoFlowPanel(infoFlow, sceneRefs = []) {
+  function infoFlowPanel(infoFlow, sceneRefs = [], referenceAudio = null) {
     const segs = (infoFlow.segments || []).length
       ? infoFlow.segments
       : [
@@ -1374,10 +1377,10 @@ export function renderWorkshopPage(root, p) {
         </div>
         <div class="refbar-chip">${sceneRefs.length
           ? sceneRefs.map(a => `<span class="ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button class="ref-x" data-omnidel="${a.id}">${icon("x", 11)}</button></span>`).join("")
-          : `<span class="muted">可拖入产品logo、界面图、场景图</span>`}</div>
+          : ""}${referenceAudio ? `<span class="ref-chip is-audio">${icon("pulse", 13)}<span>${esc(referenceAudio.name)}</span><button class="ref-x" data-reference-audio-del>${icon("x", 11)}</button></span>` : ""}${!sceneRefs.length && !referenceAudio ? `<span class="muted">可拖入产品图或 MP3，总参考会用于每段视频</span>` : ""}</div>
         <div class="refbar-actions">
           <button class="btn ghost sm" id="wsRefPick">从资产选择</button>
-          <label class="btn ghost sm">上传<input type="file" accept="image/*" multiple hidden id="wsRefUp" /></label>
+          <label class="btn ghost sm">上传<input type="file" accept="image/*,.mp3,audio/mpeg" multiple hidden id="wsRefUp" /></label>
         </div>
       </div>
       <div id="wsRefChooser" class="ref-chooser card" hidden></div>
@@ -2017,7 +2020,6 @@ export function renderWorkshopPage(root, p) {
       save("productions");
       toast(AI.sourceNote("已从四方向库随机生成视频选题"));
     }, "随机中…"));
-    $("#wsProduct", root)?.addEventListener("change", e => { p.artifacts.script.productId = e.target.value || "dumate"; save("productions"); });
     const wireDraftGenerate = selector => {
       $(selector, root)?.addEventListener("click", e => withLoading(e.currentTarget, generateWorkshopDraft, "生成中…"));
     };
@@ -2063,7 +2065,7 @@ export function renderWorkshopPage(root, p) {
     });
     // 全能参考素材（logo / 界面图，可多张）
     const charbar = $("#wsCharbar", root);
-    wireDropZone(charbar, async files => {
+    if (canConfigureAccount) wireDropZone(charbar, async files => {
       const f = Array.from(files || []).find(x => x.type.startsWith("image/"));
       if (f) await setCharRef(f);
     });
@@ -2079,12 +2081,17 @@ export function renderWorkshopPage(root, p) {
     });
     const refbar = $("#wsRefbar", root) || $("#wsInfoFlowRefs", root);
     wireDropZone(refbar, async files => { await addRefs(files); });
-    $("#wsRefUp", root)?.addEventListener("change", async e => { await addOmni(e.target.files); e.target.value = ""; });
+    $("#wsRefUp", root)?.addEventListener("change", async e => { await addRefs(e.target.files); e.target.value = ""; });
     $$("[data-omnidel]", root).forEach(b => b.addEventListener("click", () => {
       A.omniRefAssetIds = A.omniRefAssetIds.filter(id => id !== b.dataset.omnidel);
       A.sceneRefAssetIds = (A.sceneRefAssetIds || []).filter(id => id !== b.dataset.omnidel);
       save("productions"); draw();
     }));
+    $("[data-reference-audio-del]", root)?.addEventListener("click", () => {
+      A.referenceAudioAssetId = null;
+      save("productions");
+      draw();
+    });
     // 尺寸切换（9:16 / 16:9）：全片统一，写进 boards.ratio，生成时传给视频 API
     $$("[data-ratio]", root).forEach(b => b.addEventListener("click", () => {
       if (A.ratio === b.dataset.ratio) return;
@@ -2093,20 +2100,37 @@ export function renderWorkshopPage(root, p) {
     $("#wsRefPick", root)?.addEventListener("click", () => {
       const box = $("#wsRefChooser", root);
       if (!box.hidden) { box.hidden = true; return; }
-      const known = new Set([...(A.sceneRefAssetIds || []), ...(A.omniRefAssetIds || []), A.characterRefAssetId].filter(Boolean));
-      const assets = accAssets(acc.id).filter(a => a.type === "图片" && !known.has(a.id));
+      const known = new Set([...(A.sceneRefAssetIds || []), ...(A.omniRefAssetIds || []), A.characterRefAssetId, A.referenceAudioAssetId].filter(Boolean));
+      const images = accAssets(acc.id).filter(a => a.type === "图片");
+      const referenceAudios = accAssets(acc.id).filter(a => a.type === "音频" && (a.tags || []).some(tag => /参考音频库|声线参考/i.test(tag)));
+      const assets = [...images, ...referenceAudios].filter(a => !known.has(a.id));
       box.innerHTML = assets.length ? `<div class="ref-grid">${assets.map(a => `<button class="ref-item" data-ref="${a.id}">${thumbHtml(a)}<span>${esc(a.name)}</span></button>`).join("")}</div>`
-        : `<div class="muted" style="padding:10px">该账号没有可选的图片资产</div>`;
+        : `<div class="muted" style="padding:10px">暂无可选的图片或参考音频</div>`;
       box.hidden = false;
       box.querySelectorAll("[data-ref]").forEach(b => b.addEventListener("click", () => {
-        A.omniRefAssetIds.push(b.dataset.ref);
-        A.sceneRefAssetIds = [...new Set([...(A.sceneRefAssetIds || []), b.dataset.ref])];
+        const picked = assetById(b.dataset.ref);
+        if (picked?.type === "音频") A.referenceAudioAssetId = picked.id;
+        else {
+          A.omniRefAssetIds.push(b.dataset.ref);
+          A.sceneRefAssetIds = [...new Set([...(A.sceneRefAssetIds || []), b.dataset.ref])];
+        }
         save("productions"); draw();
       }));
     });
     async function addRefs(files) {
       const list = Array.from(files || []);
       await addOmni(list.filter(f => f.type.startsWith("image/")));
+      const audio = list.find(f => f.type === "audio/mpeg" || /\.mp3$/i.test(f.name || ""));
+      if (audio) {
+        const saved = await addAssetFromFile(null, audio, {
+          tags: ["参考音频库", "声线参考", "生产总参考"],
+          name: audio.name.replace(/\.[^.]+$/, "")
+        });
+        A.referenceAudioAssetId = saved.id;
+        save("productions");
+        toast("已设置本次生产的 MP3 总参考音频");
+        draw();
+      }
     }
     async function addOmni(files) {
       const imgs = Array.from(files || []).filter(f => f.type.startsWith("image/"));
@@ -2633,7 +2657,7 @@ export function renderWorkshopPage(root, p) {
       const f = Array.from(files || []).find(x => x.type.startsWith("audio/"));
       if (f) await setAudio(f);
     });
-    $$("[data-unit-char-ref]", root).forEach(z => {
+    if (canConfigureAccount) $$("[data-unit-char-ref]", root).forEach(z => {
       wireDropZone(z, async files => {
         const f = Array.from(files || []).find(x => x.type.startsWith("image/"));
         if (!f) return;

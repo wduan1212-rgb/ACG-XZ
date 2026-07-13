@@ -510,6 +510,11 @@ def _maas_base_from_endpoint(endpoint: str = "") -> str:
     return base
 
 
+def _maas_endpoint_for_refs(endpoint: str = "", has_refs: bool = False) -> str:
+    suffix = "/aiart/gtimage" if has_refs else "/aiart/gttext"
+    return _maas_base_from_endpoint(endpoint) + suffix
+
+
 def _image_edit_endpoint(endpoint: str = "") -> str:
     gen = _image_endpoint(endpoint)
     if _image_is_maas_mode(endpoint=gen):
@@ -644,13 +649,13 @@ def _image_is_maas_mode(model: str = "", endpoint: str = "") -> bool:
     )
 
 
-def _image_from_response(data: dict) -> str:
+def _image_from_response(data: dict, default_mime: str = "image/png") -> str:
     item = ((data.get("data") or [{}])[0] if isinstance(data.get("data"), list) else {}) or \
         ((data.get("images") or [{}])[0] if isinstance(data.get("images"), list) else {}) or \
         _deep_get(data, ("result", "data", 0), default={}) or {}
     b64 = item.get("b64_json") or item.get("b64") or item.get("base64") or data.get("b64_json")
     if b64:
-        return b64 if str(b64).startswith("data:image/") else "data:image/png;base64," + str(b64)
+        return b64 if str(b64).startswith("data:image/") else "data:%s;base64,%s" % (default_mime, str(b64))
     return item.get("url") or data.get("url") or ""
 
 
@@ -791,7 +796,8 @@ def _maas_image_body(prompt: str, model: str, ratio: str, ref_files: List[Tuple[
         "prompt": prompt,
         "n": 1,
         "size": _image_size(ratio),
-        "response_format": "url",
+        "response_format": "b64_json",
+        "output_format": "jpeg",
         "logo_add": 0,
     }
     if ref_files:
@@ -1031,6 +1037,7 @@ async def image_generate(req: ImageGenerateReq):
     }
     used_refs = 0
     skipped_refs = 0
+    request_endpoint = endpoint
     try:
         async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
             ref_files = await _collect_image_ref_files(client, req.refs or [])
@@ -1042,7 +1049,8 @@ async def image_generate(req: ImageGenerateReq):
                     maas_prompt += "\n\n参考随消息附带的 %d 张参考图；以本次提示词的主题和文字内容为准。" % used_refs
                 maas_model = _maas_model_for_refs(req.model or model, bool(ref_files))
                 maas_body = _maas_image_body(maas_prompt, maas_model, ratio, ref_files)
-                r, data = await _post_json_with_retry(client, endpoint, maas_body, json_headers)
+                request_endpoint = _maas_endpoint_for_refs(endpoint, bool(ref_files))
+                r, data = await _post_json_with_retry(client, request_endpoint, maas_body, json_headers)
             elif responses_mode:
                 used_refs = min(len(ref_files), 8)
                 ref_note = ""
@@ -1094,7 +1102,7 @@ async def image_generate(req: ImageGenerateReq):
     except HTTPException:
         raise
     except httpx.HTTPError as exc:
-        raise HTTPException(502, "无法连接图片 API（%s）：%s %s" % (_public_base(endpoint), exc.__class__.__name__, exc))
+        raise HTTPException(502, "无法连接图片 API（%s）：%s %s" % (_public_base(request_endpoint), exc.__class__.__name__, exc))
     except Exception as exc:
         raise HTTPException(502, "图片 API 适配失败：%s %s" % (exc.__class__.__name__, str(exc)[:240]))
     if r.status_code >= 400:
@@ -1104,7 +1112,7 @@ async def image_generate(req: ImageGenerateReq):
         detail = _http_detail(data) or "图片生成失败"
         raise HTTPException(502, detail)
     try:
-        output = _find_image_url_or_data(data) if responses_mode else (_image_from_chat_response(data) if chat_mode else _image_from_response(data))
+        output = _find_image_url_or_data(data) if responses_mode else (_image_from_chat_response(data) if chat_mode else _image_from_response(data, "image/jpeg" if maas_mode else "image/png"))
         if not output:
             raise HTTPException(502, "图片 API 没有返回图片数据")
         output = await _generated_image_to_data_url(client, output, ratio)
@@ -3228,6 +3236,10 @@ class SupplierViewsReq(BaseModel):
     viewCount: int = 0
 
 
+class SupplierHomepageReq(BaseModel):
+    homepageUrl: str = ""
+
+
 class MemberApplyReq(BaseModel):
     name: str = ""
     username: str = ""
@@ -3526,6 +3538,32 @@ def supplier_asset_views(asset_id: str, req: SupplierViewsReq, me=Depends(requir
     parent_id = me.get("parentId") or (me["id"] if me["role"] == "supplier_parent" else "")
     store.add_supplier_activity(parent_id, me["id"] if me["role"] == "supplier_child" else "", me["id"], "update_views", item.get("accountId") or "", asset_id, "更新了观看量")
     return {"ok": True, "asset": item}
+
+
+@app.put("/api/supplier/assets/{asset_id}/downloaded")
+def supplier_asset_downloaded(asset_id: str, me=Depends(require_member)):
+    item, err = store.mark_supplier_asset_downloaded(asset_id, me["id"], me["role"])
+    if err == "forbidden":
+        raise HTTPException(403, "只有供应商账号可以标记下载状态")
+    if err == "unassigned":
+        raise HTTPException(403, "无权下载未分配账号的素材")
+    if err:
+        raise HTTPException(404, "交付素材不存在")
+    parent_id = me.get("parentId") or (me["id"] if me["role"] in {"supplier_parent", "supplier"} else "")
+    store.add_supplier_activity(parent_id, me["id"] if me["role"] == "supplier_child" else "", me["id"], "download", item.get("accountId") or "", asset_id, "下载了交付素材")
+    return {"ok": True, "asset": item}
+
+
+@app.put("/api/supplier/accounts/{account_id}/homepage")
+def supplier_account_homepage(account_id: str, req: SupplierHomepageReq, me=Depends(require_member)):
+    item, err = store.update_supplier_account_homepage(account_id, req.homepageUrl, me["id"], me["role"])
+    if err == "forbidden":
+        raise HTTPException(403, "只有供应商母账号可以编辑主页链接")
+    if err == "invalid_url":
+        raise HTTPException(400, "主页链接仅支持 http:// 或 https://")
+    if err:
+        raise HTTPException(404, "账号不存在")
+    return {"ok": True, "account": item}
 
 
 @app.post("/api/members")
