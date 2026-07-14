@@ -2,7 +2,7 @@
 
 import { db } from "../core/db.js";
 import { state, save, assetById, accountById, removeRemote, ownedBy } from "../core/store.js";
-import * as remote from "../core/remote.js";
+import * as remote from "../core/remote.js?v=20260715-v82-1";
 import { uid, esc, gradFor, dataUrlToBlob, extOfMime } from "../core/util.js";
 
 const urlCache = new Map(); // assetId -> objectURL

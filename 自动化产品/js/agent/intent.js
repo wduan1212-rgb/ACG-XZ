@@ -1,6 +1,6 @@
 /* 意图路由：正则快通道（离线可用） + LLM 路由（带上下文，多轮可懂） */
 
-import { llm } from "../api/llm.js";
+import { llm } from "../api/llm.js?v=20260715-v82-1";
 import { parseJSONLoose } from "../core/util.js";
 import { TAG_POOL } from "../domain/accounts.js";
 

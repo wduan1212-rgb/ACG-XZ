@@ -6,7 +6,7 @@ import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
 import { setStage, touch } from "./productions.js";
 import { assetU8, urlFor } from "./assets.js";
-import * as remote from "../core/remote.js";
+import * as remote from "../core/remote.js?v=20260715-v82-1";
 
 const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 

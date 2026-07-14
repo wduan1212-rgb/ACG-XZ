@@ -5,7 +5,7 @@ import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
 import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js";
+import { AI } from "../api/ai.js?v=20260715-v82-1";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
 import { openModal, toast } from "../ui/components.js";

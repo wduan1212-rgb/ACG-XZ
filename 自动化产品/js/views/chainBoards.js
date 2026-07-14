@@ -3,21 +3,33 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260714-v80-1";
+import { AI } from "../api/ai.js?v=20260715-v82-1";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260714-v80-1";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260715-v82-1";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v80-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v82-1";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现页码，不出现二维码，图片右上角和左上角不要加入logo，其他位置可以正常出现logo。";
+
+export function resizeImageSlots(items = [], count = DEFAULT_XHS_IMAGE_COUNT) {
+  const total = Math.max(1, Math.min(12, Number(count) || DEFAULT_XHS_IMAGE_COUNT));
+  const existing = Array.isArray(items) ? items : [];
+  return Array.from({ length: total }, (_, index) => existing[index] || {
+    title: `图片${index + 1}`,
+    visual: "",
+    prompt: "",
+    assetId: null,
+    status: "idle"
+  });
+}
 
 export function polishImageForPublish(dataUrl, seedText = "") {
   return polishPublishImage(dataUrl, seedText);
@@ -93,10 +105,26 @@ export function enrichPromptWithRefs(prompt, A) {
 
 function normalizeImageWorkshopText(text = "") {
   return String(text || "")
+    .replace(/\\r\\n|\\n|\\r/g, " ")
+    .replace(/(?:本张只展开|围绕正文分配信息)「([^」]+)」[^。；;]*[。；;]?/g, "画面核心内容：「$1」。")
+    .replace(/信息密度按[^。；;]+[。；;]?/g, "")
+    .replace(/不重复封面[^。；;]*[。；;]?/g, "")
+    .replace(/也不提前讲后续内容[^。；;]*[。；;]?/g, "")
+    .replace(/正文第\d+部分[:：]/g, "")
+    .replace(/只基于正文信息「([^」]+)」换一个表达角度展开[^。；;]*/g, "$1")
     .replace(/小红书竖版3:4（1080×1440）\s*[，,。；;]?\s*（1080×1440）/g, "小红书竖版3:4（1080×1440）")
     .replace(/小红书竖版3:4（1080×1440）\s*[，,。；;]?\s*画面以小红书竖版3:4（1080×1440）为主/g, "小红书竖版3:4（1080×1440）")
     .replace(/画面以小红书竖版3:4（1080×1440）为主/g, "画面按小红书竖版3:4（1080×1440）出图")
     .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeGeneratedLineBreaks(text = "") {
+  return String(text || "")
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .replace(/\\t/g, " ")
+    .replace(/\u0000/g, "")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -127,10 +155,12 @@ export function renderSlotsPage(root, p, isImg) {
   const A = isImg ? p.artifacts.images : p.artifacts.boards;
   const page = isImg ? "images" : "boards";
   let genMode = "in";
+  let imageModeDirection = "";
   modeBySlot.set(p.id, "in");
   const S = p.artifacts.script;
   const products = primaryProducts();
   const allowCustomCopy = isImg && !p.batchId && p.origin !== "agent";
+  const allowSingleImageMode = isImg && !p.batchId && p.origin !== "agent";
   if (isImg) {
     p.artifacts.copy = p.artifacts.copy || { title: "", body: "" };
     S.productId = primaryProductById(S.productId || "dumate")?.id || "dumate";
@@ -140,11 +170,17 @@ export function renderSlotsPage(root, p, isImg) {
     if (isImg) A.customCopyMode = true;
     else if (allowCustomCopy && A.customCopyMode == null) A.customCopyMode = true;
     A.customCopyMode = isImg ? true : (allowCustomCopy ? A.customCopyMode !== false : false);
+    if (!allowSingleImageMode) A.creationMode = "copy";
+    else if (!["copy", "single"].includes(A.creationMode)) A.creationMode = "copy";
+    if (A.creationMode === "single" && (A.items || []).length > 1) {
+      if (!(A.copyItems || []).length) A.copyItems = [...A.items];
+      A.items = A.singleItem ? [A.singleItem] : [];
+    }
     if (p.stage === "script") p.stage = "images";
   }
 
   // 槽位缺失时按脚本初始化
-  if (!(A.items || []).length && (p.artifacts.script.shots || []).length) {
+  if (!(A.items || []).length && (p.artifacts.script.shots || []).length && (!isImg || A.creationMode !== "single")) {
     A.items = p.artifacts.script.shots.map((s, i) => ({ title: s.idea || `${isImg ? "图" : "分镜"}${i + 1}`, visual: s.visual || "", prompt: "", assetId: null, status: "idle" }));
     save("productions");
   }
@@ -158,6 +194,19 @@ export function renderSlotsPage(root, p, isImg) {
 
   function syncCopyDraft() {
     if (!isImg) return;
+    if (A.creationMode === "single") {
+      const singleTitle = $("#imgSingleTitle", root);
+      const singlePrompt = $("#imgSinglePrompt", root);
+      const singleCopy = $("#imgSingleCopy", root);
+      if (singleTitle) A.singleTitle = singleTitle.value.trim();
+      if (singlePrompt) A.singlePrompt = singlePrompt.value.trim();
+      if (singleCopy) {
+        const body = normalizeGeneratedLineBreaks(singleCopy.value);
+        p.artifacts.copy = { title: A.singleTitle || "", body };
+        A.singleResult = { ...p.artifacts.copy };
+      }
+      return;
+    }
     const C = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
     const title = $("#imgCopyTitle", root);
     const body = $("#imgCopyBody", root);
@@ -166,7 +215,7 @@ export function renderSlotsPage(root, p, isImg) {
   }
 
   function splitCopyBeats(title = "", body = "", count = DEFAULT_XHS_IMAGE_COUNT) {
-    const withoutTags = String(body || "").replace(/#[^\s#]+/g, " ");
+    const withoutTags = normalizeGeneratedLineBreaks(body).replace(/#[^\s#]+/g, " ");
     const sentences = withoutTags
       .replace(/\n+/g, "。")
       .split(/[。！？!?；;]+/)
@@ -218,12 +267,17 @@ export function renderSlotsPage(root, p, isImg) {
     const items = A.items || [];
     const C = p.artifacts.copy || { title: "", body: "" };
     const customCopyMode = allowCustomCopy && !!A.customCopyMode;
+    const singleImageMode = allowSingleImageMode && A.creationMode === "single";
     const got = items.filter(x => x.assetId).length;
     const refs = refAssetsOf(A);
     const trendPanel = "";
     const flowTitle = isImg
       ? (customCopyMode ? "自定义文案 → 图卡提示词 → 一键生成 / 上传补图" : "创作内容 → 文案标题 → 图卡提示词 → 一键生成 / 上传补图")
       : "按脚本逐镜头出分镜图";
+    const imageCreationSwitcher = isImg && allowSingleImageMode ? `<div class="image-creation-mode" data-mode="${singleImageMode ? "single" : "copy"}" role="tablist" aria-label="图文创作方式">
+      <button type="button" class="${singleImageMode ? "" : "is-active"}" data-image-creation-mode="copy">文案组图</button>
+      <button type="button" class="${singleImageMode ? "is-active" : ""}" data-image-creation-mode="single">单图创作</button>
+    </div>` : "";
     root.innerHTML = `
       ${stepperHtml(p, page)}
       <div class="chain-page solo">
@@ -231,26 +285,42 @@ export function renderSlotsPage(root, p, isImg) {
           <div class="page-head">
             <div><div class="eyebrow">${isImg ? "图文链路 · 图文创作台" : "视频链路 · 分镜图"}</div>
             <h2>${flowTitle} <span class="head-count">${got}/${items.length}</span></h2></div>
-            <div class="head-actions">
+            ${isImg ? "" : `<div class="head-actions">
               ${isImg ? "" : `<button class="btn ghost" id="cbSkip">跳过此步 ${icon("arrowRight", 13)}</button>`}
               <button class="btn primary" id="cbNext">下一步：${isImg ? "审核" : "提示词"} ${icon("arrowRight", 14)}</button>
-            </div>
+            </div>`}
           </div>
 
           ${isImg ? `
-          ${trendPanel ? "" : `<div class="copy-inline card ${customCopyMode ? "is-custom-copy" : ""}">
+          <div class="image-mode-stage ${imageModeDirection ? `is-${imageModeDirection}` : ""}" data-image-mode-stage>
+          ${trendPanel ? "" : singleImageMode ? `<div class="single-image-inline card image-mode-panel">
+            <div class="copy-inline-head">
+              <div><b>${icon("image", 14)} 单图创作</b><em>标题生成发布文案；提示词和账号视觉风格只负责生成这一张图片</em></div>
+              <div class="copy-inline-actions">${imageCreationSwitcher}<button class="btn gen sm" id="imgSingleRun">${icon("spark", 13)} 生成单图并写文案</button><button class="btn primary sm" id="cbNext">下一步：审核 ${icon("arrowRight", 14)}</button></div>
+            </div>
+            <label class="field">标题
+              <input class="input" id="imgSingleTitle" value="${esc(A.singleTitle || C.title || "")}" required placeholder="必填标题：用于同步生成发布文案" />
+            </label>
+            <label class="field">提示词
+              <textarea class="input" id="imgSinglePrompt" rows="5" required placeholder="必填：完整描述你想生成的单张图片内容；账号风格只影响视觉设计。">${esc(A.singlePrompt || "")}</textarea>
+            </label>
+            ${A.singleCopyError ? `<p class="single-image-error">${esc(A.singleCopyError)}</p>` : ""}
+            <label class="field single-image-copy-field">发布文案
+              <textarea class="input" id="imgSingleCopy" rows="5" placeholder="可直接填写；留空则在生成单图时根据标题生成，已填内容不会被覆盖。">${esc(normalizeGeneratedLineBreaks(C.body || ""))}</textarea>
+            </label>
+          </div>` : `<div class="copy-inline card image-mode-panel ${customCopyMode ? "is-custom-copy" : ""}">
             <div class="copy-inline-head">
               <div><b>${icon("image", 14)} 图文创作台</b><em>${customCopyMode ? "标题、正文和图卡提示词在这里一次准备" : "文案先生成，图卡提示词会轻量呼应；可在这里直接微调"}</em></div>
-              <button class="btn gen sm" id="imgFactoryGen">${icon("spark", 13)} 按文案生成图卡提示词</button>
+              <div class="copy-inline-actions">${imageCreationSwitcher}<label class="image-count-select">${icon("image", 12)}<span>图片数量</span><select class="input" id="imgCount">${Array.from({ length: 12 }, (_, i) => i + 1).map(count => `<option value="${count}" ${count === Number(S.imageCount || DEFAULT_XHS_IMAGE_COUNT) ? "selected" : ""}>${count} 张</option>`).join("")}</select></label><button class="btn gen sm" id="imgFactoryGen">${icon("spark", 13)} 按文案生成图卡提示词</button><button class="btn primary sm" id="cbNext">下一步：审核 ${icon("arrowRight", 14)}</button></div>
             </div>
             <label class="field">标题
               <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" required placeholder="${customCopyMode ? "必填标题：填写发布标题，图片封面会完整围绕它" : "必填标题：生成后可编辑"}" />
             </label>
             <label class="field">正文
-              <textarea class="input" id="imgCopyBody" rows="5" placeholder="${customCopyMode ? "粘贴或写入最终正文；系统会按正文含义拆成图卡提示词。" : "发布文案会随交付包带出；生成图卡前会优先准备它。"}">${esc(C.body || "")}</textarea>
+              <textarea class="input" id="imgCopyBody" rows="5" placeholder="${customCopyMode ? "粘贴或写入最终正文；系统会按正文含义拆成图卡提示词。" : "发布文案会随交付包带出；生成图卡前会优先准备它。"}">${esc(normalizeGeneratedLineBreaks(C.body || ""))}</textarea>
             </label>
           </div>`}
-          ${trendPanel}` : ""}
+          ${trendPanel}</div>` : ""}
 
           <div class="refbar card img-ref-generation" id="cbRefbar">
             <div class="refbar-left">
@@ -263,7 +333,7 @@ export function renderSlotsPage(root, p, isImg) {
             <div class="refbar-actions">
               <button class="btn ghost sm" id="cbRefPick">从资产选择</button>
               <label class="btn ghost sm">上传<input type="file" accept="image/*" multiple hidden id="cbRefUp" /></label>
-              ${isImg ? `<button class="btn gen" id="cbGenAllImages">${icon("spark", 15)} 一键生成全部图片</button>` : ""}
+              ${isImg && !singleImageMode ? `<button class="btn gen" id="cbGenAllImages">${icon("spark", 15)} 一键生成全部图片</button>` : ""}
             </div>
           </div>
           <div id="cbRefChooser" class="ref-chooser card" hidden></div>
@@ -334,15 +404,72 @@ export function renderSlotsPage(root, p, isImg) {
     });
   }
 
+  function switchImageCreationMode(next) {
+    if (!allowSingleImageMode || next === A.creationMode) return;
+    const oldStage = $("[data-image-mode-stage]", root);
+    const oldHeight = oldStage?.getBoundingClientRect().height || 0;
+    syncCopyDraft();
+    if (A.creationMode === "copy") {
+      A.copyItems = [...(A.items || [])];
+      A.copyDraft = { ...(p.artifacts.copy || { title: "", body: "" }) };
+    } else {
+      A.singleItem = (A.items || [])[0] || null;
+      A.singleResult = { ...(p.artifacts.copy || { title: A.singleTitle || "", body: "" }) };
+    }
+    imageModeDirection = next === "single" ? "forward" : "backward";
+    A.creationMode = next;
+    if (next === "single") {
+      A.items = A.singleItem ? [A.singleItem] : [];
+      p.artifacts.copy = { ...(A.singleResult || { title: A.singleTitle || "", body: "" }) };
+    } else {
+      A.items = [...(A.copyItems || [])];
+      p.artifacts.copy = { ...(A.copyDraft || { title: "", body: "" }) };
+    }
+    A.singleCopyError = "";
+    save("productions");
+    draw();
+    const stage = $("[data-image-mode-stage]", root);
+    if (!stage) return;
+    const targetHeight = stage.scrollHeight;
+    if (oldHeight && Math.abs(targetHeight - oldHeight) > 2 && stage.animate) {
+      stage.style.height = `${oldHeight}px`;
+      stage.style.overflow = "hidden";
+      stage.animate([{ height: `${oldHeight}px` }, { height: `${targetHeight}px` }], {
+        duration: 300,
+        easing: "cubic-bezier(.22,.75,.2,1)"
+      }).finished.finally(() => {
+        stage.style.height = "";
+        stage.style.overflow = "";
+      });
+    }
+    imageModeDirection = "";
+  }
+
   function wire() {
     if (isImg) {
-      $("#imgCount", root)?.addEventListener("input", e => {
-        S.imageCount = Math.max(1, Math.min(12, parseInt(e.target.value, 10) || DEFAULT_XHS_IMAGE_COUNT));
+      $$('[data-image-creation-mode]', root).forEach(button => button.addEventListener("click", () => {
+        const next = button.dataset.imageCreationMode;
+        switchImageCreationMode(next);
+      }));
+      $("#imgCount", root)?.addEventListener("change", e => {
+        const count = Math.max(1, Math.min(12, parseInt(e.target.value, 10) || DEFAULT_XHS_IMAGE_COUNT));
+        S.imageCount = count;
+        A.items = resizeImageSlots(A.items, count);
+        A.copyItems = [...A.items];
         save("productions");
+        draw();
       });
       $("#imgFactoryGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, generateImageWorkshop, "生成中…"));
       $("#imgCopyTitle", root)?.addEventListener("input", e => { p.artifacts.copy.title = e.target.value; save("productions"); });
       $("#imgCopyBody", root)?.addEventListener("input", e => { p.artifacts.copy.body = e.target.value; save("productions"); });
+      $("#imgSingleTitle", root)?.addEventListener("input", e => { A.singleTitle = e.target.value; save("productions"); });
+      $("#imgSinglePrompt", root)?.addEventListener("input", e => { A.singlePrompt = e.target.value; save("productions"); });
+      $("#imgSingleCopy", root)?.addEventListener("input", e => {
+        p.artifacts.copy = { title: A.singleTitle || "", body: e.target.value };
+        A.singleResult = { ...p.artifacts.copy };
+        save("productions");
+      });
+      $("#imgSingleRun", root)?.addEventListener("click", e => withLoading(e.currentTarget, generateSingleImageWorkflow, "生成中…"));
       $("#imgCopyGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
         await generateImageCopy({ force: true });
         draw();
@@ -493,7 +620,7 @@ export function renderSlotsPage(root, p, isImg) {
     $$(".sc-thumb img", root).forEach(im => im.addEventListener("click", () => openLightbox(im, im.src, "")));
 
     // 下一步
-    $("#cbNext", root).addEventListener("click", () => {
+    $("#cbNext", root)?.addEventListener("click", () => {
       const items = A.items || [];
       const got = items.filter(x => x.assetId).length;
       if (isImg) {
@@ -664,13 +791,78 @@ export function renderSlotsPage(root, p, isImg) {
     await generateCustomCopyImageWorkshop();
   }
 
+  function singleImagePrompt() {
+    const content = String(A.singlePrompt || "").trim();
+    if (!content) return "";
+    const visualStyle = String(acc.styleProfile || S.style || "清晰、克制、主体突出、文字可读").trim();
+    return `生成3:4竖版单张图片。【图片具体内容：${content}】【账号视觉风格：${visualStyle}】账号风格只决定视觉设计，不得改变、补写或删减图片内容。`;
+  }
+
+  async function generateSingleImageWorkflow() {
+    syncCopyDraft();
+    const title = String(A.singleTitle || "").trim();
+    const prompt = singleImagePrompt();
+    if (!title) {
+      toast("请先填写单图标题", "error");
+      return;
+    }
+    if (!prompt) {
+      toast("请先填写单图提示词", "error");
+      return;
+    }
+    A.creationMode = "single";
+    A.singleCopyError = "";
+    const userCopy = normalizeGeneratedLineBreaks(p.artifacts.copy?.body || "");
+    const generatedCopyPromise = userCopy ? null : AI.generateImageCopyFromTitle({ title, account: acc });
+    const existing = A.items?.[0] || {};
+    if (!existing.assetId || existing.sourcePrompt !== A.singlePrompt) {
+      A.items = [{
+        title: "单图创作",
+        visual: A.singlePrompt,
+        prompt,
+        sourcePrompt: A.singlePrompt,
+        assetId: null,
+        status: "idle"
+      }];
+      A.singleItem = A.items[0];
+      const token = startImageRun("single", 0);
+      await generateOneImage(0, { redraw: false, silent: true, single: true, runToken: token, runMode: "single" });
+    }
+    const item = A.items?.[0];
+    if (!item?.assetId) {
+      if (generatedCopyPromise) await generatedCopyPromise.catch(() => null);
+      save("productions");
+      if (canRedrawCurrent()) draw();
+      return;
+    }
+    try {
+      const generated = generatedCopyPromise ? await generatedCopyPromise : { title, copy: userCopy };
+      p.artifacts.copy = { title, body: normalizeGeneratedLineBreaks(generated.copy) };
+      p.title = title;
+      p.topic = title;
+      S.title = title;
+      S.source = "single-image-title-copy";
+      setStage(p, "review", "pending");
+      A.singleCopyError = "";
+      A.singleItem = item;
+      A.singleResult = { ...p.artifacts.copy };
+      toast(userCopy ? "已保留用户填写文案并生成单图" : "单图和标题对应的发布文案已生成");
+    } catch (error) {
+      A.singleCopyError = `单图已生成，但标题文案生成失败：${error?.message || error}`;
+      toast(A.singleCopyError, "error");
+    }
+    save("productions");
+    if (!A.singleCopyError) go("studio", "review");
+    else if (canRedrawCurrent()) draw();
+  }
+
   async function generateCustomCopyImageWorkshop() {
     syncCopyDraft();
     const C = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
     let title = (C.title || "").trim();
     let body = (C.body || "").trim();
-    if (!title && !body) {
-      toast("自定义文案模式需要先填写标题或正文");
+    if (!title) {
+      toast("文案组图必须先填写标题", "error");
       return;
     }
     const count = Math.max(1, Math.min(12, parseInt($("#imgCount", root)?.value, 10) || S.imageCount || DEFAULT_XHS_IMAGE_COUNT));
@@ -681,22 +873,10 @@ export function renderSlotsPage(root, p, isImg) {
     S.trendPrep = null;
     S.trendGuide = "";
     if (C.referenceRewrite) delete C.referenceRewrite;
-    const selectedProduct = productById(S.productId);
-    const topic = (title || body.split(/\n+/).find(Boolean) || `${selectedProduct?.shortName || selectedProduct?.name || "产品"} 自定义文案`).slice(0, 80);
+    const topic = title.slice(0, 80);
     if (!body) {
-      const copySeedShots = buildCustomCopyShots({ title, body: title }, count, selectedProduct);
-      const generatedCopy = await AI.generateCopy({
-        topic,
-        shots: copySeedShots,
-        account: acc,
-        style: acc.styleProfile || S.style || "",
-        kind: "image",
-        product: selectedProduct,
-        useOnlineTrends: false,
-        trendGuide: "",
-        trendPrep: null
-      });
-      C.title = title || generatedCopy.title || topic;
+      const generatedCopy = await AI.generateImageCopyFromTitle({ title, account: acc });
+      C.title = title;
       C.body = generatedCopy.copy || "";
       title = (C.title || "").trim();
       body = (C.body || "").trim();
@@ -711,7 +891,7 @@ export function renderSlotsPage(root, p, isImg) {
     p.title = title || topic;
     const styleRef = acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
     const style = acc.styleProfile || S.style || "";
-    const shots = buildCustomCopyShots(C, count, selectedProduct);
+    const shots = buildCustomCopyShots(C, count, null);
     S.direction = "";
     S.shots = shots;
     S.title = p.title;
@@ -724,7 +904,7 @@ export function renderSlotsPage(root, p, isImg) {
       imageTemplate: acc.imagePromptTemplate || "",
       styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
       imageCount: count,
-      product: selectedProduct,
+      product: null,
       topic,
       useOnlineTrends: false,
       trendGuide: "",

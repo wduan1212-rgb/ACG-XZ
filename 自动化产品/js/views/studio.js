@@ -7,15 +7,15 @@ import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, delete
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260715-v82-1";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset } from "../domain/assets.js";
-import { renderScriptPage } from "./chainScript.js?v=20260714-v80-1";
-import { renderSlotsPage } from "./chainBoards.js?v=20260714-v80-1";
-import { renderPromptsPage } from "./chainPrompts.js?v=20260714-v80-1";
-import { renderRenderPage } from "./chainRender.js?v=20260714-v80-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260714-v80-1";
-import { renderCutPage } from "./chainCut.js?v=20260714-v80-1";
-import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260714-v80-1";
+import { renderScriptPage } from "./chainScript.js?v=20260715-v82-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260715-v82-1";
+import { renderPromptsPage } from "./chainPrompts.js?v=20260715-v82-1";
+import { renderRenderPage } from "./chainRender.js?v=20260715-v82-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260715-v82-1";
+import { renderCutPage } from "./chainCut.js?v=20260715-v82-1";
+import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260715-v82-1";
 
 export const studioView = {
   render(root, { page }) {

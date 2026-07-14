@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm } from "./llm.js";
+import { llm, visionCopy } from "./llm.js?v=20260715-v82-1";
 import { DUMATE_BRIEF, PROMPT_FRAMEWORK, NO_DH_FRAMEWORK, DIR_POOL, TOPIC_POOL, STYLE_POOL } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
@@ -514,14 +514,46 @@ function ensureVideoBrandTags(copy = "", product = null) {
   return normalizeOwnProductNoise(out, current).replace(/#国产百度搭子(?=\s|$)/g, "").replace(/[ \t]+\n/g, "\n").trim();
 }
 
-function ensureImagePublishTags(copy = "", product = null) {
-  const current = chineseProductDisplayName(product, "百度搭子");
-  let out = String(copy || "").trim();
+function explicitProductTags(text = "", product = null) {
+  const source = cleanText(text || "");
+  const tags = [];
+  if (product) tags.push(`#${chineseProductDisplayName(product, "百度搭子")}`);
+  [
+    [/百度搭子|Dumate|DuMate/i, "#百度搭子"],
+    [/秒哒|Miaoda/i, "#秒哒"],
+    [/\bCodex\b/i, "#Codex"],
+    [/\bObsidian\b/i, "#Obsidian"],
+    [/\bWorkBuddy\b/i, "#WorkBuddy"],
+    [/\bManus\b/i, "#Manus"]
+  ].forEach(([pattern, tag]) => { if (pattern.test(source)) tags.push(tag); });
+  return [...new Set(tags)];
+}
+
+function normalizeGeneratedEscapes(text = "") {
+  return String(text || "")
+    .replace(/\\r\\n|\\n|\\r/g, "\n")
+    .replace(/\\t/g, " ")
+    .replace(/\u0000/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function ensureImagePublishTags(copy = "", product = null, sourceText = "") {
+  let out = normalizeGeneratedEscapes(copy);
+  const productTags = explicitProductTags(sourceText, product);
+  if (sourceText) {
+    ["#百度搭子", "#秒哒", "#Codex", "#Obsidian", "#WorkBuddy", "#Manus"]
+      .filter(tag => !productTags.includes(tag))
+      .forEach(tag => { out = out.replace(new RegExp(`${escapeRegExp(tag)}(?=\\s|$)`, "gi"), ""); });
+    out = out.replace(/[ \t]+\n/g, "\n").replace(/ {2,}/g, " ").trim();
+  }
   const existing = [...out.matchAll(/#[^\s#]+/g)].map(match => match[0]);
-  const defaults = ["#AI办公", "#效率工具", "#桌面智能体", "#工作流", `#${current}`];
-  const missing = defaults.filter(tag => !existing.includes(tag));
-  const needed = Math.max(0, 4 - existing.length);
-  if (needed) out = `${out}\n${missing.slice(0, needed).join(" ")}`.trim();
+  const missingProducts = productTags.filter(tag => !existing.includes(tag));
+  const genericTags = ["#AI办公", "#效率工具", "#工作流", "#AI工具"]
+    .filter(tag => !existing.includes(tag) && !missingProducts.includes(tag));
+  const genericNeeded = Math.max(0, 4 - existing.length - missingProducts.length);
+  const append = [...missingProducts, ...genericTags.slice(0, genericNeeded)];
+  if (append.length) out = `${out}\n${append.join(" ")}`.trim();
   return out;
 }
 
@@ -1700,6 +1732,69 @@ function splitImageBeats(ctx = {}, n = DEFAULT_XHS_IMAGE_COUNT) {
   return Array.from({ length: n }, (_, i) => uniq[i] || fallback[Math.min(i, fallback.length - 1)]);
 }
 
+function copyContentBeats(title = "", body = "", n = DEFAULT_XHS_IMAGE_COUNT) {
+  const count = Math.max(1, Math.min(12, Number(n) || DEFAULT_XHS_IMAGE_COUNT));
+  const cleanTitle = stripVisibleTextLabels(cleanText(normalizeGeneratedEscapes(title))).trim();
+  const cleanBody = stripVisibleTextLabels(cleanText(normalizeGeneratedEscapes(body)))
+    .replace(/#[^\s#]+/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const sentences = cleanBody
+    .replace(/\n+/g, "。")
+    .split(/[。！？!?；;]+/)
+    .map(x => x.replace(/^[①②③④⑤⑥⑦⑧⑨⑩\d.)、\s]+/, "").trim())
+    .filter(x => x.length >= 4)
+    .flatMap(sentence => sentence.length > 90
+      ? sentence.split(/[，,：:]/).map(x => x.trim()).filter(x => x.length >= 6)
+      : [sentence]);
+  const bodyCore = sentences.join("；") || cleanBody || cleanTitle;
+  if (count === 1) return [`标题「${cleanTitle}」；图片内容：${bodyCore}`.trim()];
+
+  const beats = [`主标题「${cleanTitle}」；短副标题概括「${completeImageText(bodyCore, 64)}」`];
+  const slots = count - 1;
+  const expansionLenses = ["核心判断", "真实场景", "具体动作", "执行步骤", "结果变化", "适用边界", "常见误区", "结论复盘", "可直接照做的要点", "前后对照", "使用提醒"];
+  for (let i = 0; i < slots; i++) {
+    const start = Math.floor(i * Math.max(1, sentences.length) / slots);
+    const end = Math.max(start + 1, Math.floor((i + 1) * Math.max(1, sentences.length) / slots));
+    const assigned = sentences.slice(start, end).join("；")
+      || sentences[Math.min(i, sentences.length - 1)]
+      || bodyCore;
+    const lens = expansionLenses[i % expansionLenses.length];
+    beats.push(sentences.length >= slots
+      ? completeImageText(assigned, 150)
+      : `${lens}视角：${completeImageText(assigned, 120)}`);
+  }
+  return beats;
+}
+
+function stripImagePlanningInstructions(text = "") {
+  return normalizeGeneratedEscapes(text)
+    .replace(/围绕正文分配信息「([^」]+)」设计一张强相关静态图[^。；;]*[。；;]?/g, "画面核心内容：「$1」。")
+    .replace(/本张只展开「([^」]+)」[^。；;]*[。；;]?/g, "画面核心内容：「$1」。")
+    .replace(/只基于正文信息「([^」]+)」换一个表达角度展开[^。；;]*/g, "$1")
+    .replace(/正文第\d+部分[:：]/g, "")
+    .replace(/信息密度按[^。；;]+[。；;]?/g, "")
+    .replace(/不重复封面[^。；;]*[。；;]?/g, "")
+    .replace(/也不提前讲后续内容[^。；;]*[。；;]?/g, "")
+    .replace(/不加入正文外的办公案例或产品知识[^。；;]*[。；;]?/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/([。；;])\1+/g, "$1")
+    .trim();
+}
+
+function promptMatchesAssignedCopy(prompt = "", beat = "", title = "") {
+  const haystack = cleanText(prompt || "").toLowerCase();
+  const source = cleanText(`${title} ${beat}`)
+    .replace(/[的了和是在把与及或一个这那为用从到中上下来]+/g, " ")
+    .toLowerCase();
+  const latin = source.match(/[a-z][a-z0-9._+-]{2,}/g) || [];
+  const chinese = (source.match(/[\u4e00-\u9fa5]{2,}/g) || [])
+    .flatMap(word => word.length <= 6 ? [word] : Array.from({ length: word.length - 1 }, (_, i) => word.slice(i, i + 2)))
+    .filter(word => word.length >= 2);
+  return [...new Set([...latin, ...chinese])].some(token => haystack.includes(token));
+}
+
 function imageDensityMode(ctx = {}) {
   const raw = stripPromptScaffold(cleanText(copyTextForImagePlanning(ctx.copy) || ctx.script || ctx.topic || ""));
   if (raw.length < 42) return "sparse";
@@ -1847,6 +1942,45 @@ function normalizeImagePromptItems(items, ctx) {
   const src = Array.isArray(items) ? items : [];
   const beats = splitImageBeats(ctx, n);
   return Array.from({ length: n }, (_, i) => richImagePrompt(src[i] || {}, i, n, { ...ctx, beat: beats[i] }));
+}
+
+function normalizeCopyDrivenImagePromptItems(items, ctx) {
+  const n = Math.max(1, Math.min(12, Number(ctx.imageCount) || (items || []).length || DEFAULT_XHS_IMAGE_COUNT));
+  const src = Array.isArray(items) ? items : [];
+  const copyTitle = stripVisibleTextLabels(cleanText(normalizeGeneratedEscapes(ctx.copy?.title || ctx.copy?.headline || ""))).trim();
+  const copyBody = cleanText(normalizeGeneratedEscapes(ctx.copy?.body || ctx.copy?.copy || "")).trim();
+  const beats = Array.isArray(ctx.contentBeats) && ctx.contentBeats.length
+    ? ctx.contentBeats.slice(0, n)
+    : copyContentBeats(copyTitle, copyBody, n);
+  const style = compactImageStyle(ctx.style || ctx.account?.styleProfile || "白底或浅色底，清晰层级，大留白，文字可读", 80);
+  return Array.from({ length: n }, (_, i) => {
+    const item = src[i] || {};
+    const beat = completeImageText(stripImagePlanningInstructions(beats[i] || copyTextForImagePlanning(ctx.copy) || ctx.topic || "本次文案内容"), 180);
+    const title = i === 0 && copyTitle
+      ? cleanImageDisplayTitle(copyTitle, copyTitle.slice(0, 36), 56)
+      : cleanImageDisplayTitle(item.title || item.headline || beat, beat.slice(0, 36));
+    const raw = stripImagePlanningInstructions(String(item.prompt || "")
+      .replace(/负面约束\s*[:：][\s\S]*$/g, "")
+      .replace(/【图片提示词轻量产品校准】[\s\S]*$/g, "")
+      .trim());
+    const related = promptMatchesAssignedCopy(raw, beat, i === 0 ? copyTitle : "");
+    const generatedContent = related
+      ? raw
+      : `画面核心内容：「${beat}」。用一个明确主视觉，配合相关动作、界面、数据卡和精炼短文字直接呈现。`;
+    const anchor = i === 0 && copyTitle
+      ? `主标题完整显示「${copyTitle}」，简洁低噪点背景，单一强主视觉带明显纵深感，配一句概括正文核心的短副标题。`
+      : `画面聚焦「${beat}」。`;
+    const content = stripImagePlanningInstructions(`${anchor}${generatedContent}`);
+    const prefix = ctx.styleRefName ? `请根据上传的参考图（${ctx.styleRefName}）的视觉语言。` : "";
+    const prompt = /【图片风格[:：]/.test(content)
+      ? `${prefix}${content}`
+      : `${prefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${style}】图片具体内容：【${content}】`;
+    return {
+      title,
+      ui: item.ui !== false,
+      prompt: normalizeImageSizeText(`${prompt}${minimalImageNegative()}`)
+    };
+  });
 }
 
 function stripCreativeInstructionText(text = "") {
@@ -2033,6 +2167,7 @@ function parseInfoFlowCreativePlan(content = "") {
   const back = raw.backPrompt || raw.back?.videoPrompt || raw.back?.prompt || raw.segments?.[1]?.videoPrompt || raw.segments?.[1]?.prompt || "";
   return {
     creativeAngle: cleanCustomVideoText(raw.creativeAngle || raw.angle || raw.front?.creativeAngle || "全新信息流创意"),
+    visualStyle: cleanCustomVideoText(raw.visualStyle || raw.style || raw.front?.visualStyle || "超写实商业广告质感，自然电影光影，真实材质，统一色彩与镜头语言", { stripTags: true }),
     frontPrompt: cleanCustomVideoText(front, { stripTags: true }),
     backPrompt: cleanCustomVideoText(back, { stripTags: true })
   };
@@ -2538,44 +2673,37 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const safeScript = sanitizeXhsText(cleanText(scriptInputText(script)));
     const safeStyle = sanitizeXhsText(cleanText(style || ""));
     const safeTpl = sanitizeXhsText(stripPromptScaffold(tpl));
-    const rawCopyTitle = sanitizeOwnProductForGeneratedText(copy?.title || "");
-    const copyTitle = sanitizeXhsText(cleanGeneratedHeadlineNoise(rawCopyTitle, product, 56) || rawCopyTitle);
-    const copyBody = sanitizeXhsText(sanitizeOwnProductForGeneratedText(copy?.body || copy?.copy || ""))
+    const rawCopyTitle = stripVisibleTextLabels(cleanText(normalizeGeneratedEscapes(copy?.title || ""))).trim();
+    const copyTitle = sanitizeXhsText(rawCopyTitle);
+    const copyBody = sanitizeXhsText(cleanText(normalizeGeneratedEscapes(copy?.body || copy?.copy || "")))
       .replace(/#[^\s#]+/g, " ")
       .replace(/[ \t]+/g, " ")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
     const copyForPrompt = copy ? { ...copy, title: copyTitle, headline: copyTitle, body: copyBody, copy: copyBody } : null;
-    const copyBrief = [copyTitle ? `标题：${copyTitle}` : "", copyBody ? `正文：${shortChinese(copyBody.replace(/\n+/g, " / "), 420)}` : ""].filter(Boolean).join("\n");
+    const copyBrief = [copyTitle ? `标题：${copyTitle}` : "", copyBody ? `正文：${copyBody.slice(0, 2800)}` : ""].filter(Boolean).join("\n");
     const hasCopyBrief = !!copyBrief;
-    const contentBasis = hasCopyBrief ? copyBrief : [safeTopic, safeScript].filter(Boolean).join("\n");
-    const mentionedTools = /对比|vs|VS|区别|分工|边界|相比|测评|联动|组合|\+/.test(contentBasis)
-      ? productsMentionedIn(contentBasis, product, 4)
-      : [];
-    const mentionedGuide = productRelationLine(mentionedTools);
-    const variantGuide = batchVariantLine(batchVariant);
+    const contentBeats = hasCopyBrief ? copyContentBeats(copyTitle, copyBody, nImg) : [];
     try {
       const content = await llm([
-        { role: "system", content: imagePromptProductBrief(product) + "\n\n" + `你是小红书笔记配图的图片提示词设计师。图文配图的内容判断以「发布文案」为第一依据，用户创作内容和脚本只作为补充，账号只提供视觉风格，不参与内容方向判断。图片里讲什么必须跟最终标题、正文和标签一致；如果发布文案和脚本/本地结构参考冲突，以发布文案为准，并删除脚本里无关工具词。禁止把发布文案标题替换成另一个标题；如果文案是「AI 20个自动化工作流分享」，图片必须围绕自动化工作流清单、流程卡和可复用结果，而不是改成工具对比、知识库或其他无关主题。先把发布文案整理成 ${nImg} 个信息节拍，再拆成 ${nImg} 张静态图片：点击入口、真实办公场景、执行动作、关键细节、可复用结果、结论提醒等叙事功能。每张图承载一个清楚的核心信息，长文案先做摘要、取舍和分布。信息密度由内容判断：第一张更轻，突出强标题和简单主视觉；后续图片按文案需要承载具体动作、证据或结果，模拟文档/表格/报告页时可以更细，同时保持层级清楚、文字可读。不要把“封面、首图、内页、内容页、第几张”等结构词写进标题、画面文字或 prompt。
-第一张图默认是点击入口，优先冲击感和可点击性：用强标题、短副标题和简单视觉关系吸引点击。工具组合/对比主题的第一张以工具标识或简化图标、大字标题、箭头或 VS 关系为主；第二张之后再展开场景、操作、结果和边界。
-若内容过多，先在内部重新规划：把重要信息分给 ${nImg} 张图，次要内容压成一句结论；若内容过少，补一个真实使用例子、结果证据或边界提醒。功能名只用于内部理解，画面文字要写具体动作和结果。若创作内容里出现竞品/同类工具，要把它们作为对比、组合或分工对象写进画面信息结构，例如分工箭头、工具边界卡片、组合流程或适用场景提醒，让画面明确呈现主产品和其他工具的关系。
-同一批量任务的不同账号必须有不同内容编排：即使统一创作方向相同，也要改变每张图的标题、例子、主视觉、卡片顺序和结论，形成不同账号的内容差异。
-每条 prompt 输出正向主体，使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。」结构；如果有参考图，则在开头加入「请根据上传的参考图」。系统会统一追加固定短负面约束，模型只写正向画面主体。图片内容只来自最终发布文案、图卡脚本和产品信息；视觉效果只来自账号创作风格、账号模板和参考图。本地结构样本、账号名称都不得改写图片内容主题。用户输入原句需先整理成画面信息。${safeStyle ? "账号创作风格（只决定视觉效果）：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `参考图（只作为视觉/构图参考，不提供内容主题）：${sanitizeXhsText(styleRefName)}。` : ""}${safeTpl ? `账号有固定模板，继承模板的画面语言、色彩、字体、参考图使用方式和统一要求；模板只当风格母版，模板句子需要替换成本次内容。` : ""}
+        { role: "system", content: `你是小红书笔记配图的图片提示词设计师。最终发布标题和正文是图片内容的唯一事实来源；账号资料只决定视觉设计，不决定图片讲什么。不得使用产品资料库、竞品关系、账号定位、历史模板、本地结构样本或默认办公案例补写内容。发布文案里明确出现的产品名、软件名和动作可以原样理解，但不能用你记忆中的产品介绍覆盖正文。禁止把发布标题换成另一个主题。先把正文完整理解并均匀规划为 ${nImg} 个不重复的信息节拍，再拆成 ${nImg} 张静态图片；每张承担正文中的一段具体信息，顺序合理，覆盖正文要点，不重复同一句。
+第一张图默认是点击入口，优先冲击感和可点击性：用强标题、短副标题和简单视觉关系吸引点击。第一张负责概括正文的核心入口；第二张之后再按正文顺序展开具体信息。
+若内容过多，先在内部重新规划：把重要信息均匀分给 ${nImg} 张图，次要内容压成一句结论；若内容较少，只能把正文已有信息改写成例子、结果或边界提醒，不得补入正文之外的产品知识、默认案例或事实。
+同一批量任务的不同账号可以改变每张图的标题表达、主视觉和卡片顺序，但内容事实仍只能来自该账号最终正文。
+每条 prompt 输出正向主体，使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。」结构；如果有参考图，则在开头加入「请根据上传的参考图」。图片内容只来自最终发布文案；视觉效果只来自账号创作风格、账号模板和参考图。${safeStyle ? "账号创作风格（只决定视觉效果）：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `参考图（只作为视觉/构图参考，不提供内容主题）：${sanitizeXhsText(styleRefName)}。` : ""}${safeTpl ? `账号固定模板只作为配色、字体、布局和画面语言母版，模板文字和内容必须全部换成本次正文。` : ""}
 
 每条 prompt 保持精炼但足够具体。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。画面文字围绕主标题、短解释和必要标签组织，按内容复杂度自然取舍；第一张更简洁，后续图可适当增加信息。若账号风格是火柴人、简笔画、小人、漫画或手绘，则画面靠人物动作、表情、气泡和箭头讲解，文字更少，避免复杂表格和长文案。
 画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
 测评、对比或工具选择类选题用适合谁、不适合谁、任务边界、证据和组合方式表达，采用边界对照、场景分工和使用建议，不采用分数、星级、排行榜、打分表或评分卡。
-内部分类词只用于理解结构，最终 prompt 主体保持正向画面描述。
-
-${xhsGuardPrompt()}
+内部分类词只用于理解结构，最终 prompt 主体保持正向画面描述。不要套用任何默认产品卖点、默认办公清单或历史常用句式。
 
 只输出 JSON：{"shots":[{"title":"给操作员看的短标题，写具体功能或结果","prompt":"可直接给图像模型的提示词","ui":true}]}` },
-        { role: "user", content: `账号创作风格（只决定视觉效果，不决定内容）：${sanitizeXhsText(account.styleProfile || style || "")}\n${product ? `主产品：${sanitizeXhsText(chineseProductDisplayName(product))}\n` : ""}${safeTopic ? `本次主题（只作辅助，不得覆盖发布文案）：${safeTopic}\n` : ""}${variantGuide ? `${variantGuide}\n` : ""}${copyBrief ? `发布文案（图片内容第一依据，只能围绕它拆图）：\n${copyBrief}\n` : "发布文案暂缺：只允许根据本次主题和图卡脚本拆图，不要引用本地结构样本或账号风格去改写内容方向。\n"}${mentionedGuide ? `发布文案/图卡脚本里明确提到的其他工具能力：\n${mentionedGuide}\n图片提示词必须具体写出它们和主产品如何结合、分工或对比；不要只写“作参照”。\n` : ""}${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号图文模板（只作为视觉风格/结构母版，变量需替换）：\n${safeTpl}\n` : ""}图卡脚本（只补充画面线索；若和发布文案冲突，以发布文案为准）：\n${safeScript || "(按发布文案拆图)"}` }
+        { role: "user", content: `账号创作风格（只决定视觉设计）：${sanitizeXhsText(account.styleProfile || style || "")}\n${copyBrief ? `最终发布文案（图片内容唯一依据；标签已移除，不参与画面规划）：\n${copyBrief}\n\n已经按正文顺序确定的信息分配（必须逐张遵守，不能换题）：\n${contentBeats.map((beat, i) => `图${i + 1}：${beat}`).join("\n")}\n` : `发布文案暂缺，只能使用这次标题/脚本：\n${[safeTopic, safeScript].filter(Boolean).join("\n")}`}\n${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号视觉模板：\n${safeTpl}\n` : ""}请输出 ${nImg} 张图的完整提示词。图1必须是简洁、有冲击力、低噪点的封面；后续图片严格按上面的正文信息分配展开。` }
       ], { json: true, temperature: 0.8 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
       return this._ok({
-        shots: normalizeImagePromptItems(d.shots, {
+        shots: (hasCopyBrief ? normalizeCopyDrivenImagePromptItems : normalizeImagePromptItems)(d.shots, {
           script: safeScript,
           topic: safeTopic,
           account,
@@ -2585,6 +2713,7 @@ ${xhsGuardPrompt()}
           imageCount: nImg,
           product,
           copy: copyForPrompt,
+          contentBeats,
           trendPrep: null
         })
       });
@@ -2593,7 +2722,7 @@ ${xhsGuardPrompt()}
       await delay(400);
       const rows = String(safeScript || "").split(/\n+/).map(x => x.trim()).filter(Boolean);
       return {
-        shots: normalizeImagePromptItems(Array.from({ length: nImg }, (_, i) => {
+        shots: (hasCopyBrief ? normalizeCopyDrivenImagePromptItems : normalizeImagePromptItems)(Array.from({ length: nImg }, (_, i) => {
           const rawBase = rows[i] || rows[Math.min(rows.length - 1, i)] || topic || `${genericProductLabel(product)}办公效率方法`;
           const base = rawBase.replace(/^(图\d+|镜头\d+|第\d+张)[：:｜\s]*/g, "").replace(/图上文案[:：][^｜\n]+/g, "").trim();
           const titleText = (base.match(/图上文案[:：]([^｜\n]+)/) || base.match(/line[:：]([^｜\n]+)/) || [])[1]?.trim()
@@ -2614,10 +2743,46 @@ ${xhsGuardPrompt()}
           imageCount: nImg,
           product,
           copy: copyForPrompt,
+          contentBeats,
           trendPrep: null
         })
       };
     }
+  },
+
+  async generateImageCopyFromTitle({ title = "", account = {} } = {}) {
+    const sourceTitle = stripVisibleTextLabels(cleanText(title || "")).trim();
+    if (!sourceTitle) throw new Error("请先填写发布标题");
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const content = await llm([
+          { role: "system", content: `你是小红书图文正文写手。用户给出的标题是唯一内容主题，必须先理解标题在说什么，再写一篇与标题强相关的正文。不得把标题替换成泛化的 AI 办公、效率清单或其他常见模板；不得引入标题未指向的新产品、新选题或竞品关系。正文要回答标题承诺的问题，按自然段给出具体解释、场景、做法或结论，像真人经验分享，不把标题原样重复成第一句。最后一行给 4-7 个相关话题标签。账号信息只决定语气，不改变主题。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
+          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n请只围绕这个标题写正文。` }
+        ], { json: true, temperature: attempt ? 0.72 : 0.92 });
+        const data = sanitizeXhsObject(parseJSONLoose(content));
+        const copyText = ensureImagePublishTags(normalizeGeneratedEscapes(data.copy || data.body || ""), null, sourceTitle);
+        if (!copyText) throw new Error("模型没有返回与标题对应的正文");
+        this.lastSource = "llm-title-copy";
+        this.lastError = "";
+        return { title: sourceTitle, copy: copyText };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("标题文案生成失败");
+  },
+
+  async generateCopyFromImage({ imageDataUrl = "", account = {} } = {}) {
+    if (!imageDataUrl) throw new Error("没有可供识别的成图");
+    const content = await visionCopy(imageDataUrl, copyAccountVoice(account, account?.styleProfile || "", ""));
+    const data = sanitizeXhsObject(parseJSONLoose(content));
+    const title = cleanGeneratedHeadlineNoise(data.title || data.headline || "", null, 32);
+    const copy = ensureImagePublishTags(data.copy || data.body || "", null);
+    if (!title || !copy) throw new Error("视觉模型没有返回完整标题和文案");
+    this.lastSource = "llm-vision";
+    this.lastError = "";
+    return { title, copy };
   },
 
   /* ---------- 发布文案（交付包随附） ---------- */
@@ -2755,7 +2920,8 @@ ${xhsGuardPrompt()}
         "视频提示词要能直接交给视频模型：每个时间段写景别、机位或运镜、具体画面、动作变化、声音或台词、光线和转场。A/B 都是 9:16，每段严格 15 秒。",
         "不得出现这些固定句：这不是一个需求这是来拆我的、别再给我加需求了、字很多但完全不能用。不得写模板、同上、延续常规、根据文案等空话。",
         "发布标签不进入台词、画面或提示词。",
-        "只输出 JSON：{\"creativeAngle\":\"一句话创意\",\"frontPrompt\":\"A面完整导演提示词\",\"backPrompt\":\"B面完整导演提示词\"}"
+        "先为整条视频定义一个统一画面风格，例如超写实、电影纪实、夸张舞台广告或高质感三维界面；A/B 两面必须使用完全相同的光影、色彩、材质和镜头语言。",
+        "只输出 JSON：{\"creativeAngle\":\"一句话创意\",\"visualStyle\":\"A/B面共用的画面风格\",\"frontPrompt\":\"A面完整导演提示词\",\"backPrompt\":\"B面完整导演提示词\"}"
       ].join("\n");
       const user = [
         `创意引擎：${engine}`,
@@ -2773,7 +2939,11 @@ ${xhsGuardPrompt()}
           { role: "system", content: system },
           { role: "user", content: user }
         ], { json: true, temperature: 1.15, timeoutMs: 90000, thinking: "disabled", maxTokens: 5200 });
-        const plan = assertInfoFlowCreativePlan(parseInfoFlowCreativePlan(content), previousPrompts);
+        const plan = parseInfoFlowCreativePlan(content);
+        const sharedStyle = plan.visualStyle || "超写实商业广告质感，自然电影光影，真实材质，统一色彩与镜头语言";
+        plan.frontPrompt = `统一画面风格：${sharedStyle}。\n${plan.frontPrompt}`;
+        plan.backPrompt = `统一画面风格：${sharedStyle}。\n${plan.backPrompt}`;
+        assertInfoFlowCreativePlan(plan, previousPrompts);
         const storyboardContent = await llm([
           { role: "system", content: "你是产品界面分镜设计师。只根据用户给出的 B 面视频提示词，拆成 1-2 张能作为图生视频参考的 9:16 静态分镜图。只画产品界面、桌面软件窗口、文件、图标和流程卡；禁止人物、手部、手指、人体部位、Q版角色和拟人化肢体；界面文字少而清楚。不要增加 B 面提示词以外的新主题。只输出 JSON：{\"storyboards\":[\"提示词1\",\"提示词2\"]}" },
           { role: "user", content: plan.backPrompt }

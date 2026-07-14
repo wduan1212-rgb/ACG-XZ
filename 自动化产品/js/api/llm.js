@@ -101,3 +101,25 @@ export async function llm(messages, { json = false, temperature = 0.7, signal, t
   if (content == null || content === "") throw new Error("模型无有效返回：" + JSON.stringify(d).slice(0, 200));
   return content;
 }
+
+export async function visionCopy(imageDataUrl, accountStyle = "", { timeoutMs = 90000 } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch("/api/llm/vision-copy", {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageDataUrl, accountStyle })
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status + "：" + (await res.text()).slice(0, 240));
+    const data = await res.json();
+    if (!data?.content) throw new Error("视觉模型没有返回文案");
+    return cleanModelText(data.content);
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("视觉文案生成超时，请重试");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}

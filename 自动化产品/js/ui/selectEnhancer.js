@@ -11,6 +11,18 @@ const closeMenu = () => {
 
 const labelOf = select => select.options[select.selectedIndex]?.textContent?.trim() || "请选择";
 
+const placeMenu = (menu, trigger) => {
+  if (!menu?.isConnected || !trigger?.isConnected) return false;
+  const rect = trigger.getBoundingClientRect();
+  const width = Math.max(rect.width, 176);
+  const below = innerHeight - rect.bottom > Math.min(menu.scrollHeight, 320) + 12;
+  menu.style.width = `${width}px`;
+  menu.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - width - 10))}px`;
+  menu.style.top = below ? `${rect.bottom + 6}px` : "auto";
+  menu.style.bottom = below ? "auto" : `${innerHeight - rect.top + 6}px`;
+  return true;
+};
+
 function openMenu(select, trigger) {
   if (active?.select === select) return closeMenu();
   closeMenu();
@@ -36,13 +48,7 @@ function openMenu(select, trigger) {
     menu.appendChild(button);
   });
   document.body.appendChild(menu);
-  const rect = trigger.getBoundingClientRect();
-  const width = Math.max(rect.width, 176);
-  const below = innerHeight - rect.bottom > Math.min(menu.scrollHeight, 320) + 12;
-  menu.style.width = `${width}px`;
-  menu.style.left = `${Math.min(rect.left, innerWidth - width - 10)}px`;
-  menu.style.top = below ? `${rect.bottom + 6}px` : "auto";
-  menu.style.bottom = below ? "auto" : `${innerHeight - rect.top + 6}px`;
+  placeMenu(menu, trigger);
   menu.addEventListener("wheel", e => e.stopPropagation(), { passive: true });
   menu.addEventListener("touchmove", e => e.stopPropagation(), { passive: true });
   trigger.setAttribute("aria-expanded", "true");
@@ -88,6 +94,6 @@ export function installSelectEnhancer() {
   window.addEventListener("resize", closeMenu, { passive: true });
   window.addEventListener("scroll", e => {
     if (active?.menu && (e.target === active.menu || active.menu.contains(e.target))) return;
-    closeMenu();
+    if (!active?.trigger?.isConnected || !placeMenu(active.menu, active.trigger)) closeMenu();
   }, { passive: true, capture: true });
 }

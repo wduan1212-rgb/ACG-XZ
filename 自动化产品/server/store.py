@@ -425,6 +425,16 @@ def list_supplier_children(parent_id, include_all=False):
     return [_member_public(r) for r in rows]
 
 
+def list_supplier_members():
+    """供应商管理员共享同一组织视图：可见全部管理员与子账号。"""
+    rows = _fetchall(
+        "SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members "
+        "WHERE role IN ('supplier_parent','supplier_child') "
+        "ORDER BY CASE role WHEN 'supplier_parent' THEN 0 ELSE 1 END, created_at"
+    )
+    return [_member_public(r) for r in rows]
+
+
 def supplier_child_for(parent_id, child_id, include_all=False):
     row = get_member(child_id)
     if not row or row[4] != "supplier_child":
@@ -638,10 +648,24 @@ def upsert_docs(collection, items):
                         continue
                 ua = int(it.get("updatedAt") or it.get("createdAt") or time.time() * 1000)
                 cur = conn.execute(
-                    "SELECT updated_at FROM docs WHERE collection=? AND id=?", (collection, doc_id)
+                    "SELECT updated_at,data FROM docs WHERE collection=? AND id=?", (collection, doc_id)
                 ).fetchone()
                 if cur and cur[0] > ua:
                     continue  # 服务器已有更新的版本，跳过（避免旧端覆盖新数据）
+                if collection == "assets" and cur:
+                    # 备注、下载与观看量由专用原子接口维护。旧浏览器回推整条资产时，
+                    # 不允许缺字段的本地快照把这些服务器权威字段清掉。
+                    try:
+                        existing = json.loads(cur[1])
+                    except Exception:
+                        existing = {}
+                    for key in (
+                        "remarks", "remarkReadAt", "latestRemarkAt",
+                        "supplierDownloadedAt", "supplierDownloadedBy",
+                        "viewsUpdatedAt", "viewsUpdatedBy", "viewCount",
+                    ):
+                        if key not in it and key in existing:
+                            it[key] = existing[key]
                 conn.execute(
                     "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                     (collection, doc_id, it.get("ownerId"), ua, json.dumps(it, ensure_ascii=False)),
@@ -651,6 +675,130 @@ def upsert_docs(collection, items):
                     if key:
                         semantic_keys[key] = doc_id
             conn.commit()
+        finally:
+            conn.close()
+
+
+def _delivery_asset_access(item, member_id, role, conn):
+    if not isinstance(item, dict) or not item.get("delivered"):
+        return False
+    if role in {"admin", "supplier_parent", "supplier"}:
+        return True
+    if role == "supplier_child":
+        assigned = {
+            row[0] for row in conn.execute(
+                "SELECT account_id FROM supplier_account_bindings WHERE child_id=?", (member_id,)
+            ).fetchall()
+        }
+        return item.get("accountId") in assigned
+    if role == "editor":
+        if item.get("byMemberId") == member_id:
+            return True
+        production_id = str(item.get("productionId") or "")
+        if not production_id:
+            return False
+        row = conn.execute(
+            "SELECT owner_id,data FROM docs WHERE collection='productions' AND id=?", (production_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if row[0] == member_id:
+            return True
+        try:
+            return json.loads(row[1]).get("ownerId") == member_id
+        except Exception:
+            return False
+    return False
+
+
+def delivery_remarks(asset_id, member_id, role):
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT data FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            item = json.loads(row[0])
+            if not _delivery_asset_access(item, member_id, role, conn):
+                return None, "forbidden"
+            return {
+                "remarks": list(item.get("remarks") or []),
+                "remarkReadAt": dict(item.get("remarkReadAt") or {}),
+                "latestRemarkAt": int(item.get("latestRemarkAt") or 0),
+            }, None
+        finally:
+            conn.close()
+
+
+def add_delivery_remark(asset_id, member, text):
+    body = str(text or "").strip()
+    if not body:
+        return None, "empty"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            item = json.loads(row[0])
+            if not _delivery_asset_access(item, member["id"], member["role"], conn):
+                return None, "forbidden"
+            now = int(time.time() * 1000)
+            remarks = list(item.get("remarks") or [])[-499:]
+            remarks.append({
+                "id": uuid.uuid4().hex[:12],
+                "authorId": member["id"],
+                "authorName": str(member.get("name") or "成员")[:60],
+                "authorRole": member["role"],
+                "text": body[:1200],
+                "createdAt": now,
+            })
+            read_at = dict(item.get("remarkReadAt") or {})
+            read_at[member["id"]] = now
+            item["remarks"] = remarks
+            item["remarkReadAt"] = read_at
+            item["latestRemarkAt"] = now
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("assets", str(asset_id), row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item, None
+        finally:
+            conn.close()
+
+
+def mark_delivery_remarks_read(asset_id, member_id, role):
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            item = json.loads(row[0])
+            if not _delivery_asset_access(item, member_id, role, conn):
+                return None, "forbidden"
+            now = int(time.time() * 1000)
+            read_at = dict(item.get("remarkReadAt") or {})
+            read_at[member_id] = max(now, int(item.get("latestRemarkAt") or 0))
+            item["remarkReadAt"] = read_at
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("assets", str(asset_id), row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item, None
         finally:
             conn.close()
 

@@ -2,7 +2,7 @@ import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save } from "../core/store.js";
 import { emptyState, openModal, confirmModal, toast, promptModal } from "../ui/components.js";
-import * as remote from "../core/remote.js";
+import * as remote from "../core/remote.js?v=20260715-v82-1";
 import { urlFor } from "../domain/assets.js";
 import { deliveryViewsSummary } from "../domain/delivery.js";
 import { normalizeHomepageUrl } from "../domain/accounts.js";
@@ -33,11 +33,11 @@ function supplierActivityTimestamp(item = {}) {
   return Date.parse(item.createdAt || "") || 0;
 }
 
-async function supplierData() {
-  const [children, bindings, activity] = await Promise.all([
-    remote.supplier.children(), remote.supplier.bindings(), remote.supplier.activity()
+async function supplierData(includeMembers = false) {
+  const [members, children, bindings, activity] = await Promise.all([
+    includeMembers ? remote.supplier.members() : Promise.resolve([]), remote.supplier.children(), remote.supplier.bindings(), remote.supplier.activity()
   ]);
-  return { children: children || [], bindings: bindings || [], activity: activity || [] };
+  return { members: members || [], children: children || [], bindings: bindings || [], activity: activity || [] };
 }
 
 export async function renderSupplierOverview(root) {
@@ -272,22 +272,62 @@ function assignDialog(child, bindings, onDone) {
     }});
 }
 
+function editSupplierMemberDialog(member, onDone) {
+  if (!member) return;
+  const isChild = member.role === "supplier_child";
+  openModal(`<div class="mp-head"><b>编辑${isChild ? "子账号" : "供应商管理员"}</b><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
+    <div class="mp-body supplier-member-form">
+      <label>姓名<input class="input" id="supplierMemberName" value="${esc(member.name || "")}" /></label>
+      <label>用户名<input class="input" id="supplierMemberUsername" value="${esc(member.username || "")}" /></label>
+      <label>新密码<input class="input" id="supplierMemberPin" type="password" placeholder="留空则不修改密码" autocomplete="new-password" /></label>
+      <p>${isChild ? "供应商管理员可修改子账号资料、重置密码或删除账号。" : "所有供应商管理员共享管理员账号维护权限；留空密码不会覆盖原密码。"}</p>
+    </div>
+    <div class="mp-foot"><span id="supplierMemberStatus" class="supplier-child-submit-status"></span><button class="btn ghost" data-close>取消</button><button class="btn primary" id="supplierMemberSave">保存修改</button></div>`, { onMount(panel, close) {
+      $("#supplierMemberSave", panel)?.addEventListener("click", async () => {
+        const button = $("#supplierMemberSave", panel);
+        const status = $("#supplierMemberStatus", panel);
+        const name = $("#supplierMemberName", panel)?.value.trim() || "";
+        const username = $("#supplierMemberUsername", panel)?.value.trim() || "";
+        const pin = $("#supplierMemberPin", panel)?.value || "";
+        if (!name || !username) {
+          status.textContent = "姓名和用户名必填";
+          status.className = "supplier-child-submit-status is-error";
+          return;
+        }
+        button.disabled = true;
+        status.textContent = "正在保存…";
+        status.className = "supplier-child-submit-status is-loading";
+        try {
+          await remote.supplier.updateMember(member.id, { name, username, pin });
+          toast("供应商账号已更新");
+          close();
+          await Promise.resolve(onDone?.());
+        } catch (error) {
+          status.textContent = error?.message || "保存失败";
+          status.className = "supplier-child-submit-status is-error";
+          button.disabled = false;
+        }
+      });
+    }});
+}
+
 export async function renderSupplierSettings(root) {
-  root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">设置</div><h2>子账号与账号分配</h2></div></div><div class="supplier-loading">正在读取...</div></div>`;
+  root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">设置</div><h2>供应商账号与账号分配</h2></div></div><div class="supplier-loading">正在读取...</div></div>`;
   const draw = async () => {
     try {
-      const [{ children, bindings }, requests] = await Promise.all([supplierData(), remote.memberRequests.list("pending")]);
+      const [{ members, children, bindings }, requests] = await Promise.all([supplierData(true), remote.memberRequests.list("pending")]);
       if (!onSupplierRoute("settings")) return;
       root.innerHTML = `<div class="supplier-shell">
-        <div class="page-head"><div><div class="eyebrow">设置</div><h2>子账号与账号分配</h2></div><button class="btn primary" id="supplierChildAdd">${icon("plus", 14)} 批量建立子账号</button></div>
+        <div class="page-head"><div><div class="eyebrow">设置</div><h2>供应商账号与账号分配</h2></div><button class="btn primary" id="supplierChildAdd">${icon("plus", 14)} 批量建立子账号</button></div>
         <section class="card supplier-requests"><div class="card-head"><b>子账号申请</b><em>${requests.length} 条待处理</em></div>
           ${requests.length ? requests.map(r => `<div class="supplier-child-row"><span class="mem-ava supplier-member-fallback">${icon("user", 15)}</span><span><b>${esc(r.name)}</b><em>@${esc(r.username)} · ${r.createdAt ? timeAgo(r.createdAt) : "刚刚"}</em></span><button class="btn primary sm" data-supplier-approve="${r.id}">通过</button><button class="btn ghost sm danger" data-supplier-reject="${r.id}">拒绝</button></div>`).join("") : `<p class="supplier-empty">暂无待处理申请</p>`}
         </section>
-        <section class="card supplier-children"><div class="card-head"><b>供应商子账号</b><em>为每个子账号分配可见的自媒体账号</em></div>
-          ${children.length ? children.map(c => { const n = bindings.filter(x => x.childId === c.id).length; return `<div class="supplier-child-row"><span class="mem-ava supplier-member-fallback">${icon("user", 15)}</span><span><b>${esc(c.name)}</b><em>@${esc(c.username)} · 已分配 ${n} 个账号</em></span><button class="btn ghost sm" data-supplier-assign="${c.id}">${icon("grid", 13)} 分配账号</button><button class="icon-btn sm danger" data-supplier-delete="${c.id}" title="删除">${icon("trash", 13)}</button></div>`; }).join("") : emptyState("users", "还没有子账号", "可批量建立，或审批子账号申请")}
+        <section class="card supplier-children"><div class="card-head"><b>全部供应商账号</b><em>管理员可维护所有管理员与子账号；子账号可单独分配自媒体账号</em></div>
+          ${members.length ? members.map(member => { const isChild = member.role === "supplier_child"; const n = isChild ? bindings.filter(x => x.childId === member.id).length : 0; return `<div class="supplier-child-row supplier-member-row"><span class="mem-ava supplier-member-fallback">${icon(isChild ? "user" : "shield", 15)}</span><span><b>${esc(member.name)}</b><em>@${esc(member.username)} · ${isChild ? `子账号 · 已分配 ${n} 个账号` : "供应商管理员"}</em></span><button class="btn ghost sm" data-supplier-edit="${member.id}">${icon("edit", 13)} 编辑账号</button>${isChild ? `<button class="btn ghost sm" data-supplier-assign="${member.id}">${icon("grid", 13)} 分配账号</button><button class="icon-btn sm danger" data-supplier-delete="${member.id}" title="删除">${icon("trash", 13)}</button>` : ""}</div>`; }).join("") : emptyState("users", "还没有供应商账号", "可批量建立，或审批子账号申请")}
         </section>
       </div>`;
       $("#supplierChildAdd", root)?.addEventListener("click", () => createChildrenDialog(draw));
+      $$('[data-supplier-edit]', root).forEach(b => b.addEventListener("click", () => editSupplierMemberDialog(members.find(x => x.id === b.dataset.supplierEdit), draw)));
       $$('[data-supplier-assign]', root).forEach(b => b.addEventListener("click", () => assignDialog(children.find(x => x.id === b.dataset.supplierAssign), bindings, draw)));
       $$('[data-supplier-approve]', root).forEach(b => b.addEventListener("click", async () => { await remote.memberRequests.approve(b.dataset.supplierApprove); toast("申请已通过"); draw(); }));
       $$('[data-supplier-reject]', root).forEach(b => b.addEventListener("click", async () => { await remote.memberRequests.reject(b.dataset.supplierReject); toast("申请已拒绝"); draw(); }));

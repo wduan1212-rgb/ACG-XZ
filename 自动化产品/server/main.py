@@ -27,6 +27,7 @@ import io
 import re
 import inspect
 import difflib
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -100,6 +101,7 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "0") or "0")
 LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
 LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "12"))
 LLM_SUPPORTS_RESPONSE_FORMAT = os.getenv("LLM_SUPPORTS_RESPONSE_FORMAT", "").strip().lower()
+LLM_VISION_MODEL = os.getenv("LLM_VISION_MODEL", "").strip()
 VIDEO_PROVIDER = (os.getenv("VIDEO_PROVIDER") or os.getenv("SEEDANCE_PROVIDER") or "seedance").strip().lower()
 SEEDANCE_API_KEY = (
     os.getenv("SEEDANCE_API_KEY", "")
@@ -370,8 +372,8 @@ def _clean_llm_text(text: str = "") -> str:
     return out.strip()
 
 
-async def _call_llm(body: dict, auth_header: str = ""):
-    if LLM_FORCE_MODEL and LLM_MODEL:
+async def _call_llm(body: dict, auth_header: str = "", force_deployed_model: bool = True):
+    if force_deployed_model and LLM_FORCE_MODEL and LLM_MODEL:
         body["model"] = LLM_MODEL
     if not _llm_supports_response_format():
         body.pop("response_format", None)
@@ -399,6 +401,11 @@ class LLMReq(BaseModel):
     messages: list
     json_mode: bool = False
     temperature: float = 0.7
+
+
+class VisionCopyReq(BaseModel):
+    imageDataUrl: str
+    accountStyle: str = ""
 
 
 class AnalyticsJustOneReq(BaseModel):
@@ -954,6 +961,48 @@ async def llm_proxy(req: LLMReq):
     content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
     if not content:
         raise _llm_error(502, "模型无有效返回")
+    return {"content": content}
+
+
+@app.post("/api/llm/vision-copy")
+async def llm_vision_copy(req: VisionCopyReq):
+    """单图创作：让已配置的视觉语言模型看最终成图，再写发布标题与正文。"""
+    if not LLM_API_KEY:
+        raise HTTPException(500, "服务器未配置语言模型")
+    image = str(req.imageDataUrl or "").strip()
+    if not re.match(r"^data:image/(?:png|jpe?g|webp);base64,", image, flags=re.I):
+        raise HTTPException(400, "图片数据格式不支持")
+    if len(image) > 16 * 1024 * 1024:
+        raise HTTPException(413, "图片过大，请压缩后重试")
+    style = str(req.accountStyle or "").strip()[:800]
+    body = {
+        "model": LLM_VISION_MODEL or LLM_MODEL,
+        "temperature": 0.78,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": (
+                    "请仔细看这张最终成图，先理解画面中的主体、文字、动作、场景和信息关系，"
+                    "再生成可直接发布的中文标题与正文。不要引入图片里没有的新产品能力或新主题。"
+                    "正文应自然、有信息量，末尾带4到7个相关话题标签。"
+                    + ("账号表达风格仅供语气参考：" + style if style else "")
+                    + "。只输出JSON：{\"title\":\"标题\",\"copy\":\"正文和标签\"}"
+                )},
+                {"type": "image_url", "image_url": {"url": image}},
+            ],
+        }],
+    }
+    r = await _call_llm(body, force_deployed_model=not bool(LLM_VISION_MODEL))
+    if r.status_code >= 400:
+        try:
+            detail = _http_detail(r.json())
+        except Exception:
+            detail = r.text[:500]
+        raise _llm_error(r.status_code, detail)
+    data = r.json()
+    content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
+    if not content:
+        raise HTTPException(502, "视觉模型没有返回文案")
     return {"content": content}
 
 
@@ -3246,6 +3295,10 @@ class SupplierHomepageReq(BaseModel):
     homepageUrl: str = ""
 
 
+class DeliveryRemarkReq(BaseModel):
+    text: str = ""
+
+
 class MemberApplyReq(BaseModel):
     name: str = ""
     username: str = ""
@@ -3326,7 +3379,7 @@ def api_state(response: Response, me=Depends(require_member)):
     if me["role"] == "admin":
         data["members"] = store.list_members()
     elif me["role"] == "supplier_parent":
-        data["members"] = [me, *store.list_supplier_children(me["id"])]
+        data["members"] = store.list_supplier_members()
     else:
         data["members"] = [me]
     return data
@@ -3469,7 +3522,12 @@ def members_list(me=Depends(require_admin)):
 
 @app.get("/api/supplier/children")
 def supplier_children(me=Depends(require_supplier_parent)):
-    return store.list_supplier_children(me["id"])
+    return store.list_supplier_children(me["id"], include_all=True)
+
+
+@app.get("/api/supplier/members")
+def supplier_members(me=Depends(require_supplier_parent)):
+    return store.list_supplier_members()
 
 
 @app.post("/api/supplier/children")
@@ -3480,11 +3538,15 @@ def supplier_children_create(req: SupplierChildrenReq, me=Depends(require_suppli
         if str(exc) == "username_exists":
             raise HTTPException(409, "用户名已存在")
         raise HTTPException(400, "姓名、用户名和初始密码必填")
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "用户名已存在")
+    except sqlite3.Error as exc:
+        raise HTTPException(503, "账号存储暂时不可用，请刷新后重试") from exc
 
 
 @app.put("/api/supplier/children/{mid}")
 def supplier_child_update(mid: str, req: MemberReq, me=Depends(require_supplier_parent)):
-    row = store.supplier_child_for(me["id"], mid)
+    row = store.supplier_child_for(me["id"], mid, include_all=True)
     if not row:
         raise HTTPException(404, "供应商子账号不存在")
     username = req.username.strip() if req.username else None
@@ -3498,7 +3560,7 @@ def supplier_child_update(mid: str, req: MemberReq, me=Depends(require_supplier_
 
 @app.delete("/api/supplier/children/{mid}")
 def supplier_child_delete(mid: str, me=Depends(require_supplier_parent)):
-    row = store.supplier_child_for(me["id"], mid)
+    row = store.supplier_child_for(me["id"], mid, include_all=True)
     if not row:
         raise HTTPException(404, "供应商子账号不存在")
     store.delete_member(mid)
@@ -3507,20 +3569,34 @@ def supplier_child_delete(mid: str, me=Depends(require_supplier_parent)):
 
 @app.get("/api/supplier/bindings")
 def supplier_bindings(me=Depends(require_supplier_parent)):
-    return store.supplier_bindings(me["id"])
+    return store.supplier_bindings(me["id"], include_all=True)
 
 
 @app.put("/api/supplier/children/{mid}/accounts")
 def supplier_child_accounts(mid: str, req: SupplierBindReq, me=Depends(require_supplier_parent)):
-    ok = store.set_supplier_child_accounts(me["id"], mid, req.accountIds, me["id"])
+    ok = store.set_supplier_child_accounts(me["id"], mid, req.accountIds, me["id"], include_all=True)
     if not ok:
         raise HTTPException(404, "供应商子账号不存在")
-    return {"ok": True, "bindings": store.supplier_bindings(me["id"])}
+    return {"ok": True, "bindings": store.supplier_bindings(me["id"], include_all=True)}
 
 
 @app.get("/api/supplier/activity")
 def supplier_activity(me=Depends(require_supplier_parent)):
-    return store.list_supplier_activity(me["id"])
+    return store.list_supplier_activity(me["id"], include_all=True)
+
+
+@app.put("/api/supplier/members/{mid}")
+def supplier_member_update(mid: str, req: MemberReq, me=Depends(require_supplier_parent)):
+    row = store.get_member(mid)
+    if not row or row[4] not in {"supplier_parent", "supplier_child"}:
+        raise HTTPException(404, "供应商账号不存在")
+    username = req.username.strip() if req.username else None
+    if username:
+        existing = store.get_member_by_username(username)
+        if existing and existing[0] != mid:
+            raise HTTPException(409, "用户名已存在")
+    updated = store.update_member(mid, name=req.name or None, username=username, pin=req.pin or None)
+    return store.member_public(updated)
 
 
 @app.post("/api/supplier/activity")
@@ -3570,6 +3646,38 @@ def supplier_account_homepage(account_id: str, req: SupplierHomepageReq, me=Depe
     if err:
         raise HTTPException(404, "账号不存在")
     return {"ok": True, "account": item}
+
+
+def _remark_http_error(err):
+    if err == "forbidden":
+        raise HTTPException(403, "无权查看或回复这条发布内容")
+    if err == "empty":
+        raise HTTPException(400, "备注内容不能为空")
+    raise HTTPException(404, "发布内容不存在")
+
+
+@app.get("/api/deliveries/{asset_id}/remarks")
+def delivery_remarks(asset_id: str, me=Depends(require_member)):
+    data, err = store.delivery_remarks(asset_id, me["id"], me["role"])
+    if err:
+        _remark_http_error(err)
+    return data
+
+
+@app.post("/api/deliveries/{asset_id}/remarks")
+def delivery_remark_add(asset_id: str, req: DeliveryRemarkReq, me=Depends(require_member)):
+    item, err = store.add_delivery_remark(asset_id, me, req.text)
+    if err:
+        _remark_http_error(err)
+    return {"ok": True, "asset": item}
+
+
+@app.put("/api/deliveries/{asset_id}/remarks/read")
+def delivery_remarks_read(asset_id: str, me=Depends(require_member)):
+    item, err = store.mark_delivery_remarks_read(asset_id, me["id"], me["role"])
+    if err:
+        _remark_http_error(err)
+    return {"ok": True, "asset": item}
 
 
 @app.post("/api/members")

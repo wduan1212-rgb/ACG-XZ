@@ -3,7 +3,7 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260714-v80-1";
+import { AI } from "../api/ai.js?v=20260715-v82-1";
 import { groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
@@ -840,6 +840,9 @@ export function createBatch(plan, sessionId) {
     accountCustomCopyModes,
     accountCopyTitles: plan.accountCopyTitles || {},
     accountCopyBodies: plan.accountCopyBodies || {},
+    accountImageCreationModes: plan.accountImageCreationModes || {},
+    accountImagePrompts: plan.accountImagePrompts || {},
+    accountSingleImageTitles: plan.accountSingleImageTitles || {},
     accountCounts: plan.accountCounts || {},
     accountImageCounts: plan.accountImageCounts || {},
     useOnlineTrends: false,
@@ -879,6 +882,7 @@ export function templatePlan(key) {
     accountIds: matched.map(a => a.id), template: key,
     accountCounts: {},
     accountCustomCopyModes: {}, accountCopyTitles: {}, accountCopyBodies: {},
+    accountImageCreationModes: {}, accountImagePrompts: {}, accountSingleImageTitles: {},
     useOnlineTrends: false,
     sharedRefAssetIds: [], coverRefAssetIds: [], accountRefAssetIds: {}
   });
@@ -936,9 +940,9 @@ export function defaultPlan(goal = "新量产计划") {
     topicMode: "fixed", topic: "",
     productId: "dumate", content: "",
     accountProductIds: {}, accountContents: {},
-    accountCustomCopyModes: {}, accountCopyTitles: {}, accountCopyBodies: {},
+    accountCustomCopyModes: {}, accountCopyTitles: {}, accountCopyBodies: {}, accountSingleImageTitles: {},
     accountCounts: {},
-    accountImageCounts: {},
+    accountImageCounts: {}, accountImageCreationModes: {}, accountImagePrompts: {},
     useOnlineTrends: false,
     imageCount: DEFAULT_XHS_IMAGE_COUNT,
     style: params.style || "", tags: params.tags || [], group: params.group,
@@ -1246,10 +1250,54 @@ async function draftOne(p, batch) {
     if (draftRw) p.artifacts.copy.referenceRewrite = draftRw;
 
     const customCopyMode = batch.accountCustomCopyModes?.[acc.id] === true;
+    const singleImageMode = isImg && batch.accountImageCreationModes?.[acc.id] === "single";
+    const singleImagePrompt = String(batch.accountImagePrompts?.[acc.id] || "").trim();
+    const singleImageTitle = String(batch.accountSingleImageTitles?.[acc.id] || "").trim();
     const customCopyTitle = ((batch.accountCopyTitles || {})[acc.id] || "").trim();
     const customCopyBody = ((batch.accountCopyBodies || {})[acc.id] || "").trim();
-    if (customCopyMode && !customCopyTitle && !customCopyBody) {
-      setStatus(p, "failed", "自定义生产请先填写标题和文案");
+    if (singleImageMode) {
+      if (!singleImageTitle || !singleImagePrompt) {
+        setStatus(p, "failed", "单图创作请先填写标题和图片提示词");
+        return;
+      }
+      p.topic = singleImageTitle;
+      p.title = singleImageTitle;
+      p.artifacts.copy = { title: "", body: "" };
+      p.artifacts.script.imageCount = 1;
+      p.artifacts.script.source = "single-image-prompt";
+      p.artifacts.script.style = style;
+      p.artifacts.images.creationMode = "single";
+      p.artifacts.images.singlePrompt = singleImagePrompt;
+      p.artifacts.images.items = [{
+        title: singleImageTitle,
+        visual: singleImagePrompt,
+        prompt: `生成一张 3:4 竖版图片。图片内容只依据以下用户提示词：${singleImagePrompt}\n账号视觉风格：${style || acc.imagePromptTemplate || "保持账号既有视觉设计"}。账号风格只控制视觉设计，不得增加、删除或改写提示词内容。\n${IMAGE_NEGATIVE_PROMPT}`,
+        assetId: null,
+        status: "idle"
+      }];
+      const copyPromise = AI.generateImageCopyFromTitle({ title: singleImageTitle, account: acc });
+      const generated = await generateBatchImagesInHouse(p, batch, acc);
+      const item = p.artifacts.images.items[0];
+      if (!generated || !item?.assetId) {
+        await copyPromise.catch(() => null);
+        setStatus(p, "failed", item?.error || "单图生成失败");
+        return;
+      }
+      try {
+        const generatedCopy = await copyPromise;
+        p.title = singleImageTitle;
+        p.artifacts.copy = { title: p.title, body: generatedCopy.copy || "" };
+        p.artifacts.script.title = p.title;
+        p.artifacts.script.source = "single-image-title-copy";
+        setStage(p, "review", "pending");
+        setStatus(p, "pending");
+      } catch (error) {
+        setStatus(p, "failed", error?.message || "图片已生成，但看图生成文案失败");
+      }
+      return;
+    }
+    if (customCopyMode && ((isImg && !customCopyTitle) || (!isImg && !customCopyTitle && !customCopyBody))) {
+      setStatus(p, "failed", isImg ? "图文组图请先填写标题" : "自定义生产请先填写标题和文案");
       return;
     }
     if (customCopyMode && (customCopyTitle || customCopyBody)) {
@@ -1366,10 +1414,24 @@ async function draftOne(p, batch) {
         createUnitVideoJobs(p);
         return;
       }
+      if (!p.artifacts.copy.body.trim()) {
+        try {
+          const generatedCopy = await AI.generateImageCopyFromTitle({
+            title: p.artifacts.copy.title || customTopic,
+            account: acc
+          });
+          p.artifacts.copy.title = customCopyTitle || p.artifacts.copy.title;
+          p.title = p.artifacts.copy.title;
+          p.artifacts.copy.body = generatedCopy.copy || generatedCopy.body || "";
+        } catch (error) {
+          setStatus(p, "failed", error?.message || "只填写标题时自动生成正文失败");
+          return;
+        }
+      }
       const count = Math.max(1, Math.min(12, Number(
         p.artifacts.script.imageCount || batch.accountImageCounts?.[acc.id] || batch.imageCount || DEFAULT_XHS_IMAGE_COUNT
       ) || DEFAULT_XHS_IMAGE_COUNT));
-      const shots = buildBatchCustomCopyShots(p.artifacts.copy, count, product);
+      const shots = buildBatchCustomCopyShots(p.artifacts.copy, count, null);
       p.artifacts.script.imageCount = count;
       p.artifacts.script.shots = shots;
       p.artifacts.script.title = p.title;
@@ -1385,7 +1447,7 @@ async function draftOne(p, batch) {
         style,
         imageTemplate: acc.imagePromptTemplate || "",
         imageCount: count,
-        product,
+        product: null,
         topic: customTopic,
         styleRefName,
         batchVariant,
@@ -1398,7 +1460,7 @@ async function draftOne(p, batch) {
       p.artifacts.images.items = shots.map((s, i) => ({
         title: promptRows[i]?.title || s.idea || `图片${i + 1}`,
         visual: s.visual || "",
-        prompt: promptRows[i]?.prompt || `生成小红书图文3:4图片。图片内容必须围绕标题「${p.artifacts.copy.title}」和文案信息「${(customCopyBody || s.line || "").slice(0, 180)}」。${s.visual || ""}\n${IMAGE_NEGATIVE_PROMPT}`,
+        prompt: promptRows[i]?.prompt || `生成小红书图文3:4图片。图片内容必须围绕标题「${p.artifacts.copy.title}」和正文信息「${(p.artifacts.copy.body || s.line || "").slice(0, 360)}」。${s.visual || ""}\n${IMAGE_NEGATIVE_PROMPT}`,
         assetId: null,
         status: "idle"
       }));

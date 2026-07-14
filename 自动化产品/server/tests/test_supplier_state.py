@@ -141,6 +141,69 @@ class SupplierStateTest(unittest.TestCase):
             self.assertGreater(updated["supplierDownloadedAt"], 0)
             self.assertEqual(updated["supplierDownloadedBy"], "supplier-parent")
 
+    def test_supplier_admin_can_list_and_edit_all_supplier_members(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            parent_a = store.add_member("供应商管理员甲", "supplier_parent_a", "local-test-pin", "supplier_parent")
+            parent_b = store.add_member("供应商管理员乙", "supplier_parent_b", "local-test-pin", "supplier_parent")
+            child = store.create_supplier_children(parent_a[0], [{
+                "name": "子账号", "username": "supplier_child_editable", "pin": "local-test-pin",
+            }])[0]
+
+            visible = store.list_supplier_members()
+            self.assertTrue({parent_a[0], parent_b[0], child["id"]}.issubset({row["id"] for row in visible}))
+            updated = store.update_member(parent_b[0], name="管理员乙已更新", pin="new-local-test-pin")
+            self.assertEqual(store.member_public(updated)["name"], "管理员乙已更新")
+
+    def test_delivery_remarks_are_persistent_and_track_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            editor = store.add_member("创作者", "remarks_editor", "local-test-pin", "editor")
+            supplier = store.add_member("供应商管理员", "remarks_supplier", "local-test-pin", "supplier_parent")
+            store.upsert_docs("assets", [{
+                "id": "delivery-remarks-1",
+                "accountId": "account-1",
+                "ownerId": editor[0],
+                "byMemberId": editor[0],
+                "type": "图集",
+                "name": "交付图集",
+                "delivered": True,
+                "updatedAt": 100,
+            }])
+
+            item, err = store.add_delivery_remark("delivery-remarks-1", {
+                "id": supplier[0], "name": "供应商管理员", "role": "supplier_parent",
+            }, "请补一张封面")
+            self.assertIsNone(err)
+            self.assertEqual(item["remarks"][0]["text"], "请补一张封面")
+            self.assertGreater(item["latestRemarkAt"], item["remarkReadAt"].get(editor[0], 0))
+
+            item, err = store.mark_delivery_remarks_read("delivery-remarks-1", editor[0], "editor")
+            self.assertIsNone(err)
+            self.assertGreaterEqual(item["remarkReadAt"][editor[0]], item["latestRemarkAt"])
+
+            item, err = store.add_delivery_remark("delivery-remarks-1", {
+                "id": editor[0], "name": "创作者", "role": "editor",
+            }, "已补充，请复核")
+            self.assertIsNone(err)
+            self.assertEqual(len(item["remarks"]), 2)
+
+    def test_stale_asset_upsert_preserves_server_remark_timeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("assets", [{
+                "id": "delivery-preserve-1", "delivered": True, "name": "交付内容", "updatedAt": 100,
+                "remarks": [{"id": "remark-1", "text": "服务端备注", "createdAt": 200}],
+                "remarkReadAt": {"supplier-1": 200}, "latestRemarkAt": 200,
+            }])
+            store.upsert_docs("assets", [{
+                "id": "delivery-preserve-1", "delivered": True, "name": "旧客户端回写", "updatedAt": 300,
+            }])
+            snapshot = store.state_for("admin-1", "admin")
+            item = next(row for row in snapshot["assets"] if row["id"] == "delivery-preserve-1")
+            self.assertEqual(item["remarks"][0]["text"], "服务端备注")
+            self.assertEqual(item["latestRemarkAt"], 200)
+
 
 if __name__ == "__main__":
     unittest.main()

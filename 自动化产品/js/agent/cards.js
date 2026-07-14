@@ -5,7 +5,7 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, tagsOf, TAG_POOL, isAvatarAsset } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js?v=20260714-v80-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js?v=20260715-v82-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -189,13 +189,25 @@ const CARD = {
       ${matched.map(a => {
         const imgAcc = isImageAcc(a);
         const customCopyMode = customMode;
+        const imageCreationMode = imgAcc ? ((p.accountImageCreationModes || {})[a.id] || "copy") : "copy";
+        const singleImagePrompt = ((p.accountImagePrompts || {})[a.id] || "").trim();
+        const singleImageTitle = ((p.accountSingleImageTitles || {})[a.id] || "").trim();
         const customCopyTitle = ((p.accountCopyTitles || {})[a.id] || "").trim();
         const customCopyBody = ((p.accountCopyBodies || {})[a.id] || "").trim();
-        const copyFields = `<div class="agc-copy-fields ${customCopyMode ? "is-custom" : ""}">
-          <div class="agc-account-copy">
+        const imageModeSwitch = imgAcc ? `<div class="agc-image-mode-switch" data-mode="${imageCreationMode}" aria-label="图文创作模式">
+          <button type="button" class="${imageCreationMode === "copy" ? "is-active" : ""}" data-act="plan-image-mode" data-mid="${m.id}" data-account="${a.id}" data-mode="copy" title="文案组图" ${locked ? "disabled" : ""}>多</button>
+          <button type="button" class="${imageCreationMode === "single" ? "is-active" : ""}" data-act="plan-image-mode" data-mid="${m.id}" data-account="${a.id}" data-mode="single" title="单图创作" ${locked ? "disabled" : ""}>单</button>
+        </div>` : "";
+        const copyFields = `<div class="agc-copy-fields ${customCopyMode ? "is-custom" : ""} image-mode-panel" data-image-mode="${imageCreationMode}">
+          ${imageCreationMode === "single" ? `<div class="agc-account-copy single-image-copy">
+            ${imageModeSwitch}
+            <input data-pacc-single-title="${a.id}" value="${esc(singleImageTitle)}" placeholder="必填标题：用于生成发布文案" ${locked ? "disabled" : ""} />
+            <button type="button" class="agc-copy-editor-btn ${singleImagePrompt ? "is-filled" : ""}" data-act="plan-edit-single-image" data-mid="${m.id}" data-account="${a.id}" ${locked ? "disabled" : ""}>${icon("image", 11)} ${singleImagePrompt ? "已填图片提示词" : "填写图片提示词"}</button>
+          </div>` : `<div class="agc-account-copy">
+            ${imageModeSwitch}
             <input data-pacc-copy-title="${a.id}" value="${esc(customCopyTitle)}" placeholder="必填标题" ${locked ? "disabled" : ""} />
-            <textarea data-pacc-copy-body="${a.id}" rows="2" placeholder="${imgAcc ? "文案正文；只写标题也可以由模型补全文案" : "文案正文；真人号会转成更长口播，素材号会转成 B 面提示词"}" ${locked ? "disabled" : ""}>${esc(customCopyBody)}</textarea>
-          </div>
+            <button type="button" class="agc-copy-editor-btn ${customCopyBody ? "is-filled" : ""}" data-act="plan-edit-copy" data-mid="${m.id}" data-account="${a.id}" ${locked ? "disabled" : ""}>${icon("fileText", 11)} ${customCopyBody ? "已填文案" : "填写文案"}</button>
+          </div>`}
         </div>`;
         return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"} ${customMode ? "is-custom-plan" : ""}" ${locked ? "" : `data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}"`}>
         <div class="agc-override-name"><b>${esc(a.name)}</b><span>${esc(groupOf(a))} · ${esc(a.platform || a.mode || "账号")}</span></div>
@@ -204,7 +216,7 @@ const CARD = {
           <button data-act="plan-remove-account" data-mid="${m.id}" data-account="${a.id}">${icon("x", 10)} 取消选择</button>
         </div>`}
         ${customMode ? "" : `<label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>`}
-        ${imgAcc ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="1" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : (customMode ? "" : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`) }
+        ${imgAcc && imageCreationMode !== "single" ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="1" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : (imgAcc ? "" : customMode ? "" : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`) }
         ${copyFields}
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
@@ -221,7 +233,7 @@ const CARD = {
         </div>
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
       </div>
-      <div class="agc-custom-hint">${icon("spark", 13)} ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 逐个账号填写标题和文案；产品库仅提供事实与视觉参考，不决定创作内容。</div>
+      <div class="agc-custom-hint">${icon("spark", 13)} ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 图文可按账号选择文案组图或单图创作；内容只取当前输入，账号风格只控制视觉设计。</div>
       ${(() => {
         const editable = !locked;
         const refKind = isImageKind ? "shared" : "cover";

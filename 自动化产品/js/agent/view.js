@@ -10,9 +10,9 @@ import {
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage
-} from "./orchestrator.js?v=20260714-v80-1";
-import { renderMessage, boardRow } from "./cards.js";
-import { openProductionDrawer } from "../views/prodDrawer.js";
+} from "./orchestrator.js?v=20260715-v82-1";
+import { renderMessage, boardRow } from "./cards.js?v=20260715-v82-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260715-v82-1";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, removeAsset } from "../domain/assets.js";
@@ -387,7 +387,7 @@ function restorePlanScroll(snap, row) {
   setTimeout(restore, 60);
 }
 
-function rerenderPlanCard(mid) {
+function rerenderPlanCard(mid, direction = "") {
   const node = document.querySelector(`#agwMsgs [data-mid="${mid}"]`);
   if (!node) return;
   const { msg: m } = findMessageInSessions(mid);
@@ -398,6 +398,7 @@ function rerenderPlanCard(mid) {
   const fresh = tmp.firstElementChild;
   if (fresh) {
     fresh.classList.add("no-enter");
+    if (direction) fresh.classList.add(`image-mode-${direction}`);
     safeReplaceNode(node, fresh);
   }
   wireDrops();
@@ -472,7 +473,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260714-v80-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260715-v82-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -658,7 +659,7 @@ function wire(root) {
         const accountId = act.dataset.account || "";
         m.payload.accountIds = (m.payload.accountIds || []).filter(id => id !== accountId);
         m.payload.accountCount = m.payload.accountIds.length;
-        ["accountCopyTitles", "accountCopyBodies", "accountRefAssetIds", "accountImageCounts", "accountCounts", "accountContents", "accountProductIds", "accountCustomCopyModes"].forEach(key => {
+        ["accountCopyTitles", "accountCopyBodies", "accountRefAssetIds", "accountImageCounts", "accountImageCreationModes", "accountImagePrompts", "accountSingleImageTitles", "accountCounts", "accountContents", "accountProductIds", "accountCustomCopyModes"].forEach(key => {
           if (m.payload[key]) delete m.payload[key][accountId];
         });
         save("sessions");
@@ -668,6 +669,25 @@ function wire(root) {
       }
       case "plan-asset-pick": {
         await openPlanAssetPicker(act.dataset.mid, act.dataset.refKind || "shared", act.dataset.refAccount || "");
+        break;
+      }
+      case "plan-image-mode": {
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
+        if (!m || m.payload.status !== "pending") return;
+        const accountId = act.dataset.account || "";
+        if (!accountId) return;
+        m.payload.accountImageCreationModes = m.payload.accountImageCreationModes || {};
+        m.payload.accountImageCreationModes[accountId] = act.dataset.mode === "single" ? "single" : "copy";
+        save("sessions");
+        rerenderPlanCard(m.id, act.dataset.mode === "single" ? "forward" : "backward");
+        break;
+      }
+      case "plan-edit-copy": {
+        openPlanContentEditor(act.dataset.mid, act.dataset.account || "", "copy");
+        break;
+      }
+      case "plan-edit-single-image": {
+        openPlanContentEditor(act.dataset.mid, act.dataset.account || "", "single");
         break;
       }
       case "plan-random-accounts": {
@@ -700,16 +720,22 @@ function wire(root) {
         if (!m.payload.accountIds.length) { toast("至少选择一个账号"); return; }
         const isCustomPlan = true;
         const missingCustom = isCustomPlan ? (m.payload.accountIds || []).filter(id => {
+          const acc = state.accounts.find(a => a.id === id);
+          const imageAccount = acc?.mode === "图文" || groupOf(acc) === "图文组";
+          if (imageAccount && (m.payload.accountImageCreationModes || {})[id] === "single") {
+            return !String((m.payload.accountSingleImageTitles || {})[id] || "").trim()
+              || !String((m.payload.accountImagePrompts || {})[id] || "").trim();
+          }
           const title = ((m.payload.accountCopyTitles || {})[id] || "").trim();
           const body = ((m.payload.accountCopyBodies || {})[id] || "").trim();
-          return !title && !body;
+          return imageAccount ? !title : (!title && !body);
         }) : [];
         if (missingCustom.length) {
           const names = missingCustom
             .slice(0, 3)
             .map(id => state.accounts.find(a => a.id === id)?.name || "未命名账号")
             .join("、");
-          toast(`自定义创作请先填写标题或文案：${names}${missingCustom.length > 3 ? "等" : ""}`);
+          toast(`图文组图需填写标题；单图需填写标题和提示词：${names}${missingCustom.length > 3 ? "等" : ""}`);
           return;
         }
         if (m.payload.contentKind === "real") {
@@ -861,10 +887,12 @@ function wire(root) {
     const ac = e.target.closest("[data-pacc-content]");
     const actitle = e.target.closest("[data-pacc-copy-title]");
     const acbody = e.target.closest("[data-pacc-copy-body]");
+    const aiprompt = e.target.closest("[data-pacc-image-prompt]");
+    const aisingleTitle = e.target.closest("[data-pacc-single-title]");
     const ar = e.target.closest("[data-pacc-ref]");
     const acount = e.target.closest("[data-pacc-count]");
     const aimg = e.target.closest("[data-pacc-imgcount]");
-    if (!f && !ap && !ac && !actitle && !acbody && !ar && !acount && !aimg) return;
+    if (!f && !ap && !ac && !actitle && !acbody && !aiprompt && !aisingleTitle && !ar && !acount && !aimg) return;
     const node = e.target.closest("[data-plan]");
     if (!node) return;
     const { msg: m } = findMessageInSessions(node.dataset.plan);
@@ -898,6 +926,14 @@ function wire(root) {
     if (acbody) {
       m.payload.accountCopyBodies = m.payload.accountCopyBodies || {};
       m.payload.accountCopyBodies[acbody.dataset.paccCopyBody] = acbody.value;
+    }
+    if (aiprompt) {
+      m.payload.accountImagePrompts = m.payload.accountImagePrompts || {};
+      m.payload.accountImagePrompts[aiprompt.dataset.paccImagePrompt] = aiprompt.value;
+    }
+    if (aisingleTitle) {
+      m.payload.accountSingleImageTitles = m.payload.accountSingleImageTitles || {};
+      m.payload.accountSingleImageTitles[aisingleTitle.dataset.paccSingleTitle] = aisingleTitle.value;
     }
     if (ar) {
       m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
@@ -1100,6 +1136,46 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
         }
       });
       sync();
+    }
+  });
+}
+
+function openPlanContentEditor(mid, accountId, kind = "copy") {
+  const { msg: m } = findMessageInSessions(mid);
+  if (!m || m.payload.status !== "pending" || !accountId) return;
+  const accountName = state.accounts.find(account => account.id === accountId)?.name || "当前账号";
+  const single = kind === "single";
+  const current = single
+    ? String((m.payload.accountImagePrompts || {})[accountId] || "")
+    : String((m.payload.accountCopyBodies || {})[accountId] || "");
+  openModal(`<div class="mp-head"><div><b>${single ? "填写单图提示词" : "填写发布文案"}</b><em>${esc(accountName)}</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
+    <div class="mp-body agc-copy-editor-modal">
+      <label><span>${single ? "图片提示词（必填）" : "发布正文（可留空，由标题自动生成）"}</span>
+        <textarea class="input" id="agcPlanContent" rows="12" maxlength="6000" placeholder="${single ? "完整描述这一张图片的主体、动作、场景、构图和需要出现的文字；账号风格只控制视觉。" : "直接填写最终发布正文；标签可保留，标签不会进入图片提示词。"}">${esc(current)}</textarea>
+      </label>
+    </div>
+    <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="agcPlanContentSave">保存</button></div>`, {
+    onMount(panel, close) {
+      const input = $("#agcPlanContent", panel);
+      requestAnimationFrame(() => input?.focus());
+      $("#agcPlanContentSave", panel)?.addEventListener("click", () => {
+        const value = input?.value.trim() || "";
+        if (single && !value) {
+          toast("单图模式必须填写图片提示词");
+          input?.focus();
+          return;
+        }
+        if (single) {
+          m.payload.accountImagePrompts = m.payload.accountImagePrompts || {};
+          m.payload.accountImagePrompts[accountId] = value;
+        } else {
+          m.payload.accountCopyBodies = m.payload.accountCopyBodies || {};
+          m.payload.accountCopyBodies[accountId] = value;
+        }
+        save("sessions");
+        close();
+        rerenderPlanCard(mid);
+      });
     }
   });
 }

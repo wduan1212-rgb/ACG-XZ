@@ -99,9 +99,11 @@ export const memberRequests = {
 
 /* 供应商母账号：子账号、内容账号绑定与操作记录均由服务端授权。 */
 export const supplier = {
+  members: () => req("/api/supplier/members"),
   children: () => req("/api/supplier/children"),
   addChildren: (items) => req("/api/supplier/children", { method: "POST", body: { items } }),
   updateChild: (id, data) => req("/api/supplier/children/" + encodeURIComponent(id), { method: "PUT", body: data }),
+  updateMember: (id, data) => req("/api/supplier/members/" + encodeURIComponent(id), { method: "PUT", body: data }),
   removeChild: (id) => req("/api/supplier/children/" + encodeURIComponent(id), { method: "DELETE" }),
   bindings: () => req("/api/supplier/bindings"),
   bindAccounts: (id, accountIds) => req("/api/supplier/children/" + encodeURIComponent(id) + "/accounts", { method: "PUT", body: { accountIds } }),
@@ -110,4 +112,10 @@ export const supplier = {
   updateViews: (assetId, viewCount) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/views", { method: "PUT", body: { viewCount } }),
   markDownloaded: (assetId) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/downloaded", { method: "PUT" }),
   updateHomepage: (accountId, homepageUrl) => req("/api/supplier/accounts/" + encodeURIComponent(accountId) + "/homepage", { method: "PUT", body: { homepageUrl } })
+};
+
+export const deliveryRemarks = {
+  list: (assetId) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks"),
+  add: (assetId, text) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks", { method: "POST", body: { text } }),
+  read: (assetId) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks/read", { method: "PUT" })
 };

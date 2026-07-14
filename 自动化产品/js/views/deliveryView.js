@@ -9,9 +9,9 @@ import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, delivere
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js";
 import { openProductionDrawer } from "./prodDrawer.js";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal } from "../ui/components.js";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
-import * as remote from "../core/remote.js";
+import * as remote from "../core/remote.js?v=20260715-v82-1";
 
 function extractUrl(text) {
   const m = String(text || "").match(/https?:\/\/[^\s"'<>，。；、）】]+/);
@@ -81,6 +81,85 @@ function sortDelivered(all) {
   return [...all].sort((a, b) => deliveryTime(b.asset) - deliveryTime(a.asset));
 }
 
+function remarkReadAt(asset) {
+  return Number(asset?.remarkReadAt?.[state.ui.currentMemberId || ""] || 0);
+}
+
+function hasUnreadRemark(asset) {
+  return Number(asset?.latestRemarkAt || 0) > remarkReadAt(asset);
+}
+
+function remarkDot(asset) {
+  return hasUnreadRemark(asset) ? `<i class="delivery-remark-dot" title="有未读备注"></i>` : "";
+}
+
+async function openDeliveryRemarks(asset, redraw) {
+  if (!asset) return;
+  openModal(`<div class="mp-head delivery-chat-head"><div><b>发布沟通</b><em>${esc(asset.title || asset.name || "发布内容")}</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
+    <div class="mp-body delivery-remark-modal"><div id="deliveryRemarkTimeline" class="delivery-remark-timeline"><p class="supplier-empty">正在读取消息…</p></div><label class="delivery-remark-reply"><span>发送消息</span><textarea class="input" id="deliveryRemarkText" rows="3" maxlength="1200" placeholder="输入消息，发送后双方会在同一条时间线上看到"></textarea></label></div>
+    <div class="mp-foot delivery-chat-foot"><span id="deliveryRemarkStatus" class="supplier-child-submit-status"></span><button class="btn ghost" data-close>关闭</button><button class="btn primary" id="deliveryRemarkSend">${icon("arrowRight", 13)} 发送</button></div>`, { onMount(panel) {
+      const timeline = $("#deliveryRemarkTimeline", panel);
+      const status = $("#deliveryRemarkStatus", panel);
+      const renderTimeline = remarks => {
+        timeline.innerHTML = remarks.length ? remarks.map(item => `<article class="delivery-remark-entry ${item.authorId === state.ui.currentMemberId ? "is-mine" : ""}"><span class="delivery-chat-avatar">${esc((item.authorName || "成").slice(0, 1))}</span><div><header><b>${esc(item.authorName || "成员")}</b><span>${item.authorRole === "supplier_parent" ? "供应商管理员" : item.authorRole === "supplier_child" ? "供应商子账号" : item.authorRole === "admin" ? "创作管理员" : "创作者"}</span><time>${timeAgo(item.createdAt)}</time></header><p>${esc(item.text || "").replace(/\n/g, "<br/>")}</p></div></article>`).join("") : `<p class="delivery-remark-empty">还没有消息，可以直接开始沟通。</p>`;
+        timeline.scrollTop = timeline.scrollHeight;
+      };
+      const load = async () => {
+        try {
+          if (remote.isOn()) {
+            const data = await remote.deliveryRemarks.list(asset.id);
+            asset.remarks = data.remarks || [];
+            asset.remarkReadAt = data.remarkReadAt || {};
+            asset.latestRemarkAt = data.latestRemarkAt || 0;
+            const readResult = await remote.deliveryRemarks.read(asset.id);
+            Object.assign(asset, readResult.asset || {});
+          } else {
+            asset.remarks = asset.remarks || [];
+            asset.remarkReadAt = asset.remarkReadAt || {};
+            asset.remarkReadAt[state.ui.currentMemberId || "local"] = Math.max(Date.now(), Number(asset.latestRemarkAt || 0));
+            save("assets");
+          }
+          renderTimeline(asset.remarks || []);
+          redraw?.();
+        } catch (error) {
+          timeline.innerHTML = `<p class="delivery-remark-empty is-error">${esc(error?.message || "备注读取失败")}</p>`;
+        }
+      };
+      $("#deliveryRemarkSend", panel)?.addEventListener("click", async () => {
+        const button = $("#deliveryRemarkSend", panel);
+        const input = $("#deliveryRemarkText", panel);
+        const text = input?.value.trim() || "";
+        if (!text) { status.textContent = "请先填写消息内容"; status.className = "supplier-child-submit-status is-error"; return; }
+        button.disabled = true;
+        status.textContent = "发送中…";
+        status.className = "supplier-child-submit-status is-loading";
+        try {
+          if (remote.isOn()) {
+            const result = await remote.deliveryRemarks.add(asset.id, text);
+            Object.assign(asset, result.asset || {});
+          } else {
+            const now = Date.now();
+            asset.remarks = [...(asset.remarks || []), { id: `local-${now}`, authorId: state.ui.currentMemberId || "local", authorName: state.members.find(x => x.id === state.ui.currentMemberId)?.name || "当前成员", authorRole: state.role, text, createdAt: now }];
+            asset.latestRemarkAt = now;
+            asset.remarkReadAt = { ...(asset.remarkReadAt || {}), [state.ui.currentMemberId || "local"]: now };
+            save("assets");
+          }
+          input.value = "";
+          status.textContent = "已发送";
+          status.className = "supplier-child-submit-status is-success";
+          renderTimeline(asset.remarks || []);
+          redraw?.();
+        } catch (error) {
+          status.textContent = error?.message || "发送失败";
+          status.className = "supplier-child-submit-status is-error";
+        } finally {
+          button.disabled = false;
+        }
+      });
+      load();
+    }});
+}
+
 function groupByDay(all) {
   const groups = [];
   sortDelivered(all).forEach(row => {
@@ -116,7 +195,7 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
             <span class="dv-tagline">${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag pubby">发布人：${esc(publisher)}</span><span class="tag date">${icon("clock", 10)} ${esc(plan || dateOnly(asset.deliveredAt || asset.createdAt))}</span><span class="tag ${supplierDownloaded ? "supplier-downloaded" : "supplier-pending"}">${supplierDownloaded ? `${icon("checkCircle", 10)} 供应商已下载` : "供应商未下载"}</span><span class="tag ${asset.publishedUrl ? "pub" : ""}">${asset.publishedUrl ? `${icon("checkCircle", 10)} 已发布` : "待发布"}</span></span>
           </span>
         </span>
-        <span class="dv-chev">${icon("chevronDown", 14)}</span>
+        <span class="dv-chev">${remarkDot(asset)}${icon("chevronDown", 14)}</span>
       </div>
       <div class="dv-detail" hidden>
         <div class="dv-detail-facts"><span>内容账号：${esc(contentAccount)}</span><span>平台：${esc(acc.platform || "平台")}</span><span>文件：${esc(asset.name)}${isImg ? ".zip" : ".mp4"}</span></div>
@@ -129,6 +208,7 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
           <button class="btn ghost sm" data-dvact="copy">${icon("copy", 13)} 复制标题+文案</button>
           <button class="btn ghost sm" data-dvact="download">${icon("download", 13)} 下载 zip</button>
           <button class="btn ghost sm" data-dvact="link">${icon("link", 13)} ${asset.publishedUrl ? "修改发布链接" : "登记发布链接"}</button>
+          <button class="btn ghost sm delivery-remark-button" data-dvact="remarks">${icon("fileText", 13)} 查看备注${remarkDot(asset)}</button>
           ${canMarkReviewed() ? `<button class="btn ghost sm" data-dvact="review">${icon("eye", 13)} ${asset.adminReviewed ? "取消已审阅" : "标记已审阅"}</button>` : ""}
           ${showRetract ? `<button class="btn ghost sm danger-soft" ${canRetract ? `data-dvact="delete"` : "disabled"} title="${esc(retractReason || "回撤到草稿/审核状态")}">${icon("trash", 13)} ${canRetract ? "回撤删除" : "已下载不可回撤"}</button>` : ""}
           ${asset.productionId ? `<button class="btn ghost sm" data-dvact="prod">${icon("eye", 13)} 全链路回看</button>` : ""}
@@ -199,6 +279,7 @@ function supplierDetailHtml(asset, acc) {
 let tab = "creator"; // creator | supplier
 let supFilters = { product: "all", type: "all", publisher: "all", account: "all", date: "all" };
 let creatorProductFilter = "all";
+let creatorRemarkFilter = "all";
 
 export const deliveryView = {
   render(root) {
@@ -248,16 +329,16 @@ export const deliveryView = {
     function drawCreator(body, all) {
       const seqMap = displaySeqMap(all);
       const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
-      const visible = creatorProductFilter === "all"
-        ? all
-        : all.filter(x => (x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))) === creatorProductFilter);
+      const visible = all.filter(x => (creatorProductFilter === "all" || (x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))) === creatorProductFilter)
+        && (creatorRemarkFilter === "all" || hasUnreadRemark(x.asset)));
       const groups = groupByDay(visible);
       body.innerHTML = `<div class="creator-delivery-filters">
           <button class="${creatorProductFilter === "all" ? "on" : ""}" data-creator-product="all">全部标签</button>
           ${productTags.map(tag => `<button class="${creatorProductFilter === tag ? "on" : ""}" data-creator-product="${esc(tag)}">${esc(tag)}</button>`).join("")}
+          <button class="creator-remark-filter ${creatorRemarkFilter === "unread" ? "on" : ""}" data-creator-remarks="unread">${icon("fileText", 12)} 最新备注${all.some(x => hasUnreadRemark(x.asset)) ? `<i class="delivery-remark-dot"></i>` : ""}</button>
         </div>` + (visible.length
-        ? `<div class="dv-layout ${creatorProductFilter === "all" ? "" : "is-filtered"}">
-            ${creatorProductFilter === "all" ? `<aside class="dv-date-nav" aria-label="发布时间轴">
+        ? `<div class="dv-layout ${creatorProductFilter === "all" && creatorRemarkFilter === "all" ? "" : "is-filtered"}">
+            ${creatorProductFilter === "all" && creatorRemarkFilter === "all" ? `<aside class="dv-date-nav" aria-label="发布时间轴">
               ${groups.map(g => `<button class="dv-date-link" data-day-jump="${esc(g.key)}"><span>${esc(dayLabel(g.key))}</span><em>${g.items.length}</em></button>`).join("")}
             </aside>` : ""}
             <div class="dv-flow">
@@ -292,6 +373,11 @@ export const deliveryView = {
         else body.style.minHeight = "";
       }));
 
+      $$("[data-creator-remarks]", body).forEach(button => button.addEventListener("click", () => {
+        creatorRemarkFilter = creatorRemarkFilter === "unread" ? "all" : "unread";
+        drawCreator(body, all);
+      }));
+
       $$("[data-day-jump]", body).forEach(b => b.addEventListener("click", () => {
         const target = body.querySelector(`#dv-day-${CSS.escape(b.dataset.dayJump)}`);
         target?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -321,6 +407,7 @@ export const deliveryView = {
           if (act === "copy") copyText((asset.title || "") + "\n\n" + (asset.copy || ""), "已复制标题+文案");
           if (act === "download") { await downloadDelivery(asset, { markDownloaded: false }); toast("已下载 " + asset.name); }
           if (act === "link") await returnLinkFlow(asset, acc, draw);
+          if (act === "remarks") await openDeliveryRemarks(asset, draw);
           if (act === "review") { const on = toggleAdminReviewed(asset); toast(on ? "已标记为「已审阅」" : "已取消「已审阅」"); draw(); }
           if (act === "delete") {
             const ok1 = await confirmModal({
@@ -392,7 +479,7 @@ export const deliveryView = {
               <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-account="${esc(acc.id)}" data-sup-date="${esc(dayKey(asset))}" ${matchesFilters(item) ? "" : "hidden"}>
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
-                <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}<span class="sup-date-line">${dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt) ? `<em class="sup-created">${icon("calendar", 10)} 创作 ${esc(dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt))}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}</span>${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
+                <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}${remarkDot(asset)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}<span class="sup-date-line">${dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt) ? `<em class="sup-created">${icon("calendar", 10)} 创作 ${esc(dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt))}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}</span>${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
                 <td><b>${esc(publisherLabel(asset))}</b></td>
                 <td>${platChip(acc.platform, true)}</td>
@@ -402,6 +489,7 @@ export const deliveryView = {
                 <td><span class="sup-status ${asset.status === "已发布" ? "pub" : supplierHasDownloaded(asset) ? "done" : ""}">${asset.publishedUrl ? "已发布 ✓" : supplierHasDownloaded(asset) ? "已下载" : "未下载"}</span></td>
                 <td class="sup-acts">
                   <div class="sup-actions-inner"><button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
+                  ${isSupplierRole ? `<button class="btn ghost sm delivery-remark-button" data-supremarks="${asset.id}">${icon("fileText", 13)} 备注${remarkDot(asset)}</button>` : ""}
                   <button class="btn ${asset.publishedUrl ? "ghost" : "primary"} sm" data-suplink="${asset.id}">${icon("link", 13)} ${asset.publishedUrl ? "改链接" : "回传链接"}</button></div>
                 </td>
               </tr>${supplierDetailHtml(asset, acc)}`;
@@ -480,6 +568,11 @@ export const deliveryView = {
         if (!a) return;
         const acc = accountById(a.accountId);
         await returnLinkFlow(a, acc, draw);
+      }));
+      $$("[data-supremarks]", body).forEach(b => b.addEventListener("click", async event => {
+        event.stopPropagation();
+        const asset = state.assets.find(x => x.id === b.dataset.supremarks);
+        if (asset) await openDeliveryRemarks(asset, draw);
       }));
       $$("tr[data-sup]", body).forEach(tr => tr.addEventListener("click", e => {
         if (e.target.closest("button,input,a")) return;
