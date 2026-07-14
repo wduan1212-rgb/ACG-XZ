@@ -7,7 +7,7 @@
 import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid } from "../core/util.js";
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
-import { state, save, persistNow, on, accountById, productById, primaryProductById } from "../core/store.js";
+import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
@@ -16,7 +16,7 @@ import { polishImageForPublish as polishPublishImage } from "../domain/imagePoli
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox, openVideoPreview } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v75-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v77-2";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from "../domain/voices.js";
 

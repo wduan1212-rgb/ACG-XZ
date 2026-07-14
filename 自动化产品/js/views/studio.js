@@ -13,7 +13,7 @@ import { renderScriptPage } from "./chainScript.js?v=20260713-v75-1";
 import { renderSlotsPage } from "./chainBoards.js?v=20260713-v75-1";
 import { renderPromptsPage } from "./chainPrompts.js?v=20260713-v75-1";
 import { renderRenderPage } from "./chainRender.js?v=20260713-v75-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260713-v75-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260714-v77-2";
 import { renderCutPage } from "./chainCut.js?v=20260713-v75-1";
 import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260713-v75-1";
 
