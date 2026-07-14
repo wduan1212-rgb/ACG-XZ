@@ -545,6 +545,9 @@ body[data-zone="overview"] .view-root::after {
 .slot-cards { display: flex; flex-direction: column; gap: 10px; }
 .generation-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; margin-bottom: 14px; }
 .generation-toolbar .mode-tabs { margin: 0; }
+.img-ref-generation { align-items: center; gap: 12px; }
+.img-ref-generation .refbar-actions { flex-wrap: wrap; justify-content: flex-end; }
+.img-ref-generation #cbGenAllImages { min-height: 38px; margin-left: 4px; }
 .generation-actions { margin-left: auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .slot-card { display: flex; gap: 14px; padding: 13px 14px; align-items: stretch; animation: fadeUp .35s var(--ease) backwards; }
 .sc-num { width: 22px; height: 22px; border-radius: 7px; background: var(--ink); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; flex: none; align-self: flex-start; }
@@ -945,6 +948,39 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 #wsBriefbar.video-briefbar .ws-copy-fields #wsCopyBody {
   min-height: 92px;
 }
+#wsBriefbar.is-digital-human .ws-brief-fields {
+  grid-template-columns: minmax(0, 1fr);
+}
+#wsBriefbar.is-digital-human .ws-topic-row,
+#wsBriefbar.is-digital-human .ws-copy-fields,
+#wsBriefbar.is-digital-human .ws-narration-inline,
+#wsBriefbar.is-digital-human .ws-cover-inline {
+  grid-column: 1 / -1;
+  grid-row: auto;
+}
+#wsBriefbar.is-digital-human .ws-copy-fields {
+  grid-template-columns: minmax(0, 1fr);
+}
+#wsBriefbar.is-digital-human .ws-copy-fields #wsCopyTitle {
+  min-height: 58px;
+  max-height: 76px;
+}
+#wsBriefbar.is-digital-human .ws-copy-fields #wsCopyBody {
+  min-height: 112px;
+  max-height: 180px;
+}
+#wsBriefbar.is-digital-human .ws-narration-inline textarea {
+  min-height: 150px;
+}
+#wsBriefbar.is-digital-human .ws-cover-inline {
+  min-height: 250px;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 250px);
+}
+#wsBriefbar.is-digital-human .ws-cover-inline .cover-frame,
+#wsBriefbar.is-digital-human .ws-cover-inline .cover-empty,
+#wsBriefbar.is-digital-human .ws-cover-inline .cover-loading {
+  min-height: 220px;
+}
 #wsBriefbar.custom-copy-mode #wsCopyTitle:placeholder-shown {
   border-color: rgba(96, 165, 250, .55);
   background:
@@ -1179,16 +1215,16 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   }
   #wsBriefbar.no-narration .ws-cover-inline { grid-template-columns: minmax(0, 1fr); }
 }
-#wsAudioBar { align-items: flex-start; }
-#wsAudioBar > .refbar-left { flex: 0 0 190px; max-width: 190px; }
+#wsAudioBar { align-items: center; padding-block: 12px; }
+#wsAudioBar > .refbar-left { flex: 0 0 132px; max-width: 132px; }
 #wsAudioBar > .refbar-chip { flex: 0 1 auto; min-width: 0; }
 #wsAudioBar > .refbar-chip:empty { display: none; }
 #wsAudioBar .refbar-actions.voice-audio-actions {
   flex: 1 1 760px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(240px, 310px);
-  align-items: start;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 330px);
+  align-items: stretch;
+  gap: 8px;
   justify-content: stretch;
 }
 .voice-main-controls { display: grid; grid-template-columns: minmax(230px, 1fr) minmax(260px, 1fr); gap: 8px; min-width: 0; }
@@ -1198,9 +1234,16 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .voice-account-fixed em { color: var(--faint); font-size: 10.5px; font-style: normal; }
 .voice-main-controls .voice-picker { width: 100%; min-width: 0; flex: none; }
 .voice-main-controls .voice-id-search { width: 100%; min-width: 0; }
+.voice-main-controls .voice-picker,
+.voice-main-controls .voice-id-search,
+.voice-main-controls .input,
+.voice-side-actions .btn,
+.voice-side-actions label.btn {
+  border-radius: 10px !important;
+}
 .voice-side-actions {
   display: grid;
-  grid-template-columns: minmax(92px, 112px) minmax(150px, 1fr);
+  grid-template-columns: minmax(82px, 96px) minmax(150px, 1fr);
   align-items: stretch;
   justify-content: flex-end;
   gap: 7px;
@@ -1212,6 +1255,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   min-height: 34px !important;
   align-self: stretch;
   justify-content: center;
+  border-radius: 10px !important;
 }
 .voice-stacked-actions {
   display: grid;

@@ -7,7 +7,7 @@ import { AI } from "../api/ai.js";
 import { setStage } from "../domain/productions.js";
 import { toast, withLoading } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v75-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v78-1";
 
 export function renderPromptsPage(root, p) {
   const acc = accountById(p.accountId);

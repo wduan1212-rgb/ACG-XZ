@@ -16,7 +16,7 @@ import { polishImageForPublish as polishPublishImage } from "../domain/imagePoli
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox, openVideoPreview } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v75-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v78-1";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from "../domain/voices.js";
 
@@ -1159,8 +1159,6 @@ export function renderWorkshopPage(root, p) {
             <div><div class="eyebrow">${p.subType === "数字人" ? "真人链路" : "素材链路"} · 文案分镜</div>
             <h2>${isDigitalHumanMode ? `${digitalSegments.length || units.length || 0} 个数字人口播段 · 分段生成` : `${units.length} 个分镜单元 · Seedance 编排出片`} <span class="head-count">${isDigitalHumanMode ? `${digitalSegments.filter(x => x.audioAssetId).length}/${digitalSegments.length || 0} 音频` : `${okCount}/${units.length} 就绪`}</span></h2></div>
             <div class="head-actions">
-              <span class="tag">${icon("mic", 11)} ${hasNarrationAudio ? "外部口播" : "提示词口播"} ${fmtTC(p.artifacts.audio.duration || 0)}${p.artifacts.audio.source === "upload" ? " · 已上传" : ""}</span>
-              <span class="tag">${icon("layers", 11)} ${isDigitalHumanMode ? "数字人分段" : `文生 ${units.length - refN} · 全能参考 ${refN}`}</span>
               ${materialPureVideo() ? `<span class="material-mode-switch">${modeBtn("standard", "文案分镜")}${modeBtn("infoFlow", "信息流")}</span>` : ""}
               ${isDigital && canConfigureAccount ? `<span class="dh-mode ${isDigitalHumanMode ? "is-digital" : "is-seedance"}" data-mode="${isDigitalHumanMode ? "digitalHuman" : "seedance"}" title="数字人模式先用 Minimax 生成口播，尽量少切；单段目标约${DIGITAL_SEGMENT_TARGET_SEC}s，上限${DIGITAL_SEGMENT_MAX_SEC}s，每段=音频+角色图；Seedance 模式沿用视频模型直接生成">
                 <i aria-hidden="true"></i>
@@ -1171,21 +1169,16 @@ export function renderWorkshopPage(root, p) {
               <button class="btn primary" id="wsNext">下一步：智能混剪 ${icon("arrowRight", 14)}</button>
             </div>
           </div>
-          ${isDigital ? `<div class="ws-mode-note ${isDigitalHumanMode ? "digital" : "seedance"}">
-            <b>${isDigitalHumanMode ? "当前：数字人模式" : "当前：Seedance 真人视频模式"}</b>
-            <span>${isDigitalHumanMode ? "流程为口播分段 → 每段音频 + 角色图生成数字人口播片段 → 进入混剪；视频提示词固定为自然讲述。" : "直接用 Seedance 生成真人视频，口播会写入对应时间结构。"}</span>
-          </div>` : ""}
-
-          ${isDigital ? `<div class="refbar card" id="wsCharbar">
+          ${isDigital && canConfigureAccount ? `<div class="refbar card" id="wsCharbar">
             <div class="refbar-left">
               <b>${icon("user", 13)} 角色形象</b>
               <em>${isDigitalHumanMode ? "数字人默认每段都参考这张角色图；单段可覆盖专属角色形象。" : "用于真人出镜片段的角色形象参考。没有上传时，第一段提示词会自动写入固定外貌锚点。"}</em>
             </div>
             <div class="refbar-chip">${charRef
-              ? `<span class="ref-chip">${thumbHtml(charRef)}<span>${esc(charRef.name)}</span>${canConfigureAccount ? `<button class="ref-x" data-chardel>${icon("x", 11)}</button>` : ""}</span>`
-              : `<span class="muted">${canConfigureAccount ? "未设置，可拖拽角色形象图到此" : "管理员暂未设置账号角色形象"}</span>`}</div>
+              ? `<span class="ref-chip">${thumbHtml(charRef)}<span>${esc(charRef.name)}</span><button class="ref-x" data-chardel>${icon("x", 11)}</button></span>`
+              : `<span class="muted">未设置，可拖拽角色形象图到此</span>`}</div>
             <div class="refbar-actions">
-              ${canConfigureAccount ? `<label class="btn ghost sm">上传角色形象<input type="file" accept="image/*" hidden id="wsCharUp" /></label>` : `<span class="tag">${icon("lock", 11)} 管理员专属</span>`}
+              <label class="btn ghost sm">上传角色形象<input type="file" accept="image/*" hidden id="wsCharUp" /></label>
             </div>
           </div>` : ""}
 
@@ -1204,7 +1197,7 @@ export function renderWorkshopPage(root, p) {
           </div>
           <div id="wsRefChooser" class="ref-chooser card" hidden></div>` : ""}
 
-          <div class="refbar card video-briefbar video-brief-coverbar ${activeInfoFlowMode ? "no-narration" : ""} ${customCopyMode ? "custom-copy-mode" : "standard-copy-mode"}" id="wsBriefbar">
+          <div class="refbar card video-briefbar video-brief-coverbar ${activeInfoFlowMode ? "no-narration" : ""} ${isDigitalHumanMode ? "is-digital-human" : ""} ${customCopyMode ? "custom-copy-mode" : "standard-copy-mode"}" id="wsBriefbar">
             ${customCopyMode ? "" : `<div class="refbar-left">
               <b>${icon("fileText", 13)} 创作主题 / 发布文案</b>
               <em>主题、发布文案和封面统一在这里定稿；封面跟随标题与正文生成</em>
@@ -1266,13 +1259,6 @@ export function renderWorkshopPage(root, p) {
           ${activeInfoFlowMode ? "" : `<div class="refbar card" id="wsAudioBar">
             <div class="refbar-left">
               <b>${icon("mic", 13)} 口播音频</b>
-              <em>${isDigitalHumanMode
-                ? `数字人模式会先用 Minimax 生成口播，再按接近${DIGITAL_SEGMENT_TARGET_SEC}s尽量少切；单段不超过${DIGITAL_SEGMENT_MAX_SEC}s，每段默认用角色形象，可单段覆盖专属角色图。`
-                : isDigital
-                  ? "Seedance 真人模式会把口播写入视频提示词；口播音色由声线选择和已生成音频决定。"
-                : ""}${!isDigital && audioAsset
-                ? `已上传「${esc(audioAsset.name)}」· 真实时长 ${fmtTC(p.artifacts.audio.duration || 0)}，分镜已按真实时长重排`
-                : isDigital ? "" : `素材号请先生成或上传口播音频；Seedance 视频始终生成纯画面，后期混入口播`}${p.artifacts.audio.lastError ? ` · ${esc(p.artifacts.audio.lastError)}` : ""}</em>
             </div>
             <div class="refbar-chip"></div>
             <div class="refbar-actions voice-audio-actions">
@@ -1288,7 +1274,7 @@ export function renderWorkshopPage(root, p) {
                 <div class="voice-stacked-actions">
                   ${(!isDigital || isDigitalHumanMode) && canConfigureAccount ? `<button class="btn ghost sm ${voiceLocked ? "voice-action-active" : ""}" id="wsVoiceFix">${icon("check", 12)} ${voiceLocked ? "已锁定" : "固定到账号"}</button>` : ""}
                   ${!isDigital || isDigitalHumanMode ? `<button class="btn ghost sm" id="wsTts">${icon("mic", 13)} ${isDigitalHumanMode ? "生成分段口播" : (audioAsset && p.artifacts.audio.source === "tts" ? "重新生成口播" : "生成口播音频")}${ttsApiConfigured() ? "" : "（估时）"}</button>` : ""}
-                  ${!isDigital ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
+                  ${!isDigital || isDigitalHumanMode ? `<label class="btn ghost sm">${audioAsset ? "重新上传" : "上传口播音频"}<input type="file" accept="audio/*" hidden id="wsAudioUp" /></label>` : ""}
                 </div>
               </div>
             </div>
@@ -1314,6 +1300,12 @@ export function renderWorkshopPage(root, p) {
           `}
         </div>
       </div>`;
+    if (isDigitalHumanMode) {
+      const audioBar = $("#wsAudioBar", root);
+      const charBar = $("#wsCharbar", root);
+      const pageHead = $(".page-head", root);
+      if (audioBar) (charBar || pageHead)?.after(audioBar);
+    }
     wireStepper(root);
     wire();
   };

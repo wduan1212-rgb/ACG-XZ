@@ -12,7 +12,7 @@ import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/pr
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260713-v75-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v78-1";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -222,7 +222,7 @@ export function renderSlotsPage(root, p, isImg) {
     const refs = refAssetsOf(A);
     const trendPanel = "";
     const flowTitle = isImg
-      ? (customCopyMode ? "自定义文案 → 图卡提示词 → 站内生成 / 上传补图" : "创作内容 → 文案标题 → 图卡提示词 → 站内生成 / 上传补图")
+      ? (customCopyMode ? "自定义文案 → 图卡提示词 → 一键生成 / 上传补图" : "创作内容 → 文案标题 → 图卡提示词 → 一键生成 / 上传补图")
       : "按脚本逐镜头出分镜图";
     root.innerHTML = `
       ${stepperHtml(p, page)}
@@ -238,26 +238,13 @@ export function renderSlotsPage(root, p, isImg) {
           </div>
 
           ${isImg ? `
-          <div class="img-factory card">
-            <div class="imgf-head">
-              <div><b>${icon("image", 14)} 图文创作台</b><em>创作内容、标题文案、图卡结构和提示词在这里一次准备</em></div>
-            </div>
-            <div class="imgf-grid">
-              <label class="field">生成张数
-                <input class="input" id="imgCount" type="number" min="1" max="12" value="${esc(S.imageCount || DEFAULT_XHS_IMAGE_COUNT)}" />
-              </label>
-              <div class="imgf-note full">${icon("checkCircle", 13)} 图卡提示词只根据下方标题和正文拆解，产品库仅在后台提供事实边界。</div>
-            </div>
-            ${acc.imagePromptTemplate ? `<div class="imgf-note">${icon("checkCircle", 13)} 已启用该账号固定图文模板，张数、产品和本次内容会自动替换。</div>` : `<div class="imgf-note muted">未配置固定模板时，按最终文案内容生成图片，账号创作风格只决定视觉效果。</div>`}
-          </div>
-
           ${trendPanel ? "" : `<div class="copy-inline card ${customCopyMode ? "is-custom-copy" : ""}">
             <div class="copy-inline-head">
-              <div><b>${icon("type", 14)} 发布文案</b><em>${customCopyMode ? "这里就是图卡提示词的核心依据；请直接填入最终要发布的文案" : "文案先生成，图卡提示词会轻量呼应；可在这里直接微调"}</em></div>
+              <div><b>${icon("image", 14)} 图文创作台</b><em>${customCopyMode ? "标题、正文和图卡提示词在这里一次准备" : "文案先生成，图卡提示词会轻量呼应；可在这里直接微调"}</em></div>
               <button class="btn gen sm" id="imgFactoryGen">${icon("spark", 13)} 按文案生成图卡提示词</button>
             </div>
             <label class="field">标题
-              <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" required placeholder="${customCopyMode ? "填写发布标题（必填），图片封面会完整围绕它" : "生成后可编辑，发布标题必填"}" />
+              <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" required placeholder="${customCopyMode ? "必填标题：填写发布标题，图片封面会完整围绕它" : "必填标题：生成后可编辑"}" />
             </label>
             <label class="field">正文
               <textarea class="input" id="imgCopyBody" rows="5" placeholder="${customCopyMode ? "粘贴或写入最终正文；系统会按正文含义拆成图卡提示词。" : "发布文案会随交付包带出；生成图卡前会优先准备它。"}">${esc(C.body || "")}</textarea>
@@ -265,10 +252,10 @@ export function renderSlotsPage(root, p, isImg) {
           </div>`}
           ${trendPanel}` : ""}
 
-          <div class="refbar card" id="cbRefbar">
+          <div class="refbar card img-ref-generation" id="cbRefbar">
             <div class="refbar-left">
               <b>${icon("star", 13)} 统一参考图</b>
-              <em>站内生成和上传补图都会保留这些参考（最多 5 张：logo / 角色版 / 界面截图）· 可拖图到此</em>
+              <em>生成和上传补图都会保留这些参考（最多 5 张：logo / 角色版 / 界面截图）· 可拖图到此</em>
             </div>
             <div class="refbar-chip">${refs.length
               ? refs.map(a => `<span class="ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button class="ref-x" data-ref-rm="${a.id}">${icon("x", 11)}</button></span>`).join("")
@@ -276,19 +263,12 @@ export function renderSlotsPage(root, p, isImg) {
             <div class="refbar-actions">
               <button class="btn ghost sm" id="cbRefPick">从资产选择</button>
               <label class="btn ghost sm">上传<input type="file" accept="image/*" multiple hidden id="cbRefUp" /></label>
+              ${isImg ? `<button class="btn gen" id="cbGenAllImages">${icon("spark", 15)} 一键生成全部图片</button>` : ""}
             </div>
           </div>
           <div id="cbRefChooser" class="ref-chooser card" hidden></div>
 
-          ${isImg ? `
-          <div class="generation-toolbar card">
-            <div class="mode-tabs image-mode-tabs" data-active="in">
-              <button class="mode-tab is-active" data-mode="in">站内生成<span>${imageApiConfigured() ? "已接图片 API" : "图片 API 未接"}</span></button>
-            </div>
-            <div class="generation-actions">
-              <button class="btn gen" id="cbGenAllImages">${icon("spark", 15)} 一键生成全部图片</button>
-            </div>
-          </div>` : `
+          ${isImg ? "" : `
           <div class="mode-tabs" data-active="in">
             <button class="mode-tab is-active" data-mode="in">站内生成<span>${imageApiConfigured() ? "已接图片 API" : "图片 API 未接"}</span></button>
           </div>`}
