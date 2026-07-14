@@ -224,8 +224,9 @@ function audioPlayerHtml(audio, key = "main") {
     <div>${icon("music", 16)}<b>${esc(audio.name || "生成音频")}</b><em>${esc(audio.voiceName || audio.voiceId || "")}</em></div>
     <audio src="${esc(audio.url)}" controls preload="metadata"></audio>
     <div class="vl-player-actions">
-      <a class="btn ghost sm" href="${esc(audio.url)}" download="${esc((audio.name || "voice-lab") + ".mp3")}">${icon("download", 13)} 下载</a>
-      ${key === "main" ? `<button class="btn ghost sm ${audio.savedVoiceAssetId ? "is-active" : ""}" type="button" data-vl-archive-audio="voice" ${audio.savedVoiceAssetId ? "disabled" : ""}>${icon("archive", 13)} ${audio.savedVoiceAssetId ? "已加入语音素材库" : "加入语音素材库"}</button><button class="btn ghost sm ${audio.savedReferenceAssetId ? "is-active" : ""}" type="button" data-vl-archive-audio="reference" ${audio.savedReferenceAssetId ? "disabled" : ""}>${icon("pulse", 13)} ${audio.savedReferenceAssetId ? "已加入参考音频库" : "加入参考音频库"}</button><button class="icon-btn sm danger" type="button" title="丢弃本次音频" data-vl-discard-audio>${icon("trash", 13)}</button>` : ""}
+      ${key === "main"
+        ? `<button class="btn ghost sm ${audio.savedVoiceAssetId ? "is-active" : ""}" type="button" data-vl-archive-audio="voice" ${audio.savedVoiceAssetId ? "disabled" : ""}>${icon("archive", 13)} ${audio.savedVoiceAssetId ? "已加入语音素材库" : "加入语音素材库"}</button><button class="btn ghost sm ${audio.savedReferenceAssetId ? "is-active" : ""}" type="button" data-vl-archive-audio="reference" ${audio.savedReferenceAssetId ? "disabled" : ""}>${icon("pulse", 13)} ${audio.savedReferenceAssetId ? "已加入参考音频库" : "加入参考音频库"}</button>`
+        : `<a class="btn ghost sm" href="${esc(audio.url)}" download="${esc((audio.name || "voice-lab") + ".mp3")}">${icon("download", 13)} 下载</a>`}
     </div>
   </div>`;
 }
@@ -239,7 +240,12 @@ function runtimeAudioSlotHtml() {
   } else if (runtimeAudio?.url) {
     body = audioPlayerHtml(runtimeAudio, "main");
   }
-  return `<section class="vl-output-slot" id="vlRuntimeSlot" data-state="${esc(runtimeAudioState)}"><div class="vl-output-title"><b>音频预览</b><span>${runtimeAudioState === "loading" ? "生成中" : runtimeAudio?.url ? "已生成" : "待生成"}</span></div>${body}</section>`;
+  const isReady = Boolean(runtimeAudio?.url) && runtimeAudioState !== "loading" && runtimeAudioState !== "error";
+  const status = runtimeAudioState === "loading" ? "生成中" : isReady ? "已生成" : "待生成";
+  const quickActions = isReady
+    ? `<div class="vl-output-quick-actions"><a href="${esc(runtimeAudio.url)}" download="${esc((runtimeAudio.name || "voice-lab") + ".mp3")}" title="下载音频">${icon("download", 12)}<span>下载</span></a><button type="button" title="丢弃本次音频" data-vl-discard-audio>${icon("trash", 12)}<span>删除</span></button></div>`
+    : "";
+  return `<section class="vl-output-slot" id="vlRuntimeSlot" data-state="${esc(runtimeAudioState)}"><div class="vl-output-title"><b>音频预览</b><div class="vl-output-status"><span>${status}</span>${quickActions}</div></div>${body}</section>`;
 }
 
 function saveLabPatch(patch) {
@@ -296,25 +302,44 @@ function ensureProviderStatus(renderAgain) {
 
 export const voiceLabView = {
   render(root) {
-    const stableRerender = () => {
+    const stableRerender = (nextMode = "", dock = null) => {
+      if (root.dataset.vlSwitching === "true") return;
       const scroll = document.querySelector(".main-scroll");
       const scrollTop = scroll?.scrollTop || 0;
       const oldHeight = root.getBoundingClientRect().height;
       root.style.minHeight = `${oldHeight}px`;
       root.classList.add("vl-view-switching");
-      this.render(root);
-      const nextHeight = root.getBoundingClientRect().height;
-      root.style.minHeight = `${Math.max(oldHeight, nextHeight)}px`;
-      if (scroll) scroll.scrollTop = scrollTop;
-      requestAnimationFrame(() => {
+
+      const renderNext = () => {
+        this.render(root);
+        const nextHeight = root.getBoundingClientRect().height;
+        root.style.minHeight = `${Math.max(oldHeight, nextHeight)}px`;
         if (scroll) scroll.scrollTop = scrollTop;
-        $(".vl-workbench", root)?.classList.add("is-switching-in");
-      });
-      window.setTimeout(() => {
-        if (scroll) scroll.scrollTop = scrollTop;
-        root.style.minHeight = "";
-        root.classList.remove("vl-view-switching");
-      }, 280);
+        requestAnimationFrame(() => {
+          if (scroll) scroll.scrollTop = scrollTop;
+          $(".vl-workbench", root)?.classList.add("is-switching-in");
+        });
+        window.setTimeout(() => {
+          if (scroll) scroll.scrollTop = scrollTop;
+          root.style.minHeight = "";
+          root.classList.remove("vl-view-switching");
+          delete root.dataset.vlSwitching;
+          dock?.classList.remove("is-switching");
+        }, nextMode ? 340 : 40);
+      };
+
+      if (!nextMode) {
+        renderNext();
+        return;
+      }
+
+      root.dataset.vlSwitching = "true";
+      dock?.classList.add("is-switching");
+      $$('[data-vl-mode]', dock).forEach(button => button.classList.toggle("is-active", button.dataset.vlMode === nextMode));
+      const liquid = $(".vl-mode-liquid", dock);
+      if (liquid) liquid.style.setProperty("--i", String(Math.max(0, ["tts", "design", "library"].indexOf(nextMode))));
+      $(".vl-workbench", root)?.classList.add("is-switching-out");
+      window.setTimeout(renderNext, 150);
     };
     ensureProviderStatus(stableRerender);
     const s = labState();

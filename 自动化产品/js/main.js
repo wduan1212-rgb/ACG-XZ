@@ -22,7 +22,7 @@ import { installSelectEnhancer } from "./ui/selectEnhancer.js";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { overviewView } from "./views/overview.js";
-import { voiceLabView } from "./views/voiceLab.js";
+import { voiceLabView } from "./views/voiceLab.js?v=20260714-v77-1";
 import { agentView } from "./agent/view.js";
 import { studioView } from "./views/studio.js?v=20260714-v76-1";
 import { assetsView } from "./views/assetsView.js";

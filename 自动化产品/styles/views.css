@@ -1414,14 +1414,14 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   border: 1px solid var(--line);
   background: rgba(255,255,255,.58);
   min-height: 0;
-  animation: vlPanelIn 220ms cubic-bezier(.24,.86,.32,1) both;
 }
-.vl-workbench[data-vl-view="design"] { --vl-shift: 3px; }
-.vl-workbench[data-vl-view="library"] { --vl-shift: -3px; }
-.vl-workbench[data-vl-view="tts"] { --vl-shift: 0px; }
 @keyframes vlPanelIn {
-  from { opacity: .9; transform: translateX(var(--vl-shift, 0)); }
-  to { opacity: 1; transform: translateX(0); }
+  from { opacity: 0; transform: translateY(5px) scale(.998); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes vlPanelOut {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(3px) scale(.998); }
 }
 .vl-workbench > .glass-panel {
   min-height: 0;
@@ -1664,8 +1664,34 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 }
 .vl-output-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .vl-output-title b { color: var(--text); font-size: 12.5px; }
-.vl-output-title span { padding: 3px 7px; border-radius: 999px; color: var(--muted); background: var(--soft); font-size: 9.5px; font-weight: 800; }
+.vl-output-status { display: grid; justify-items: end; gap: 5px; }
+.vl-output-status > span { padding: 3px 7px; border-radius: 999px; color: var(--muted); background: var(--soft); font-size: 9.5px; font-weight: 800; }
+.vl-output-quick-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.vl-output-quick-actions a,
+.vl-output-quick-actions button {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  background: rgba(255,255,255,.68);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+.vl-output-quick-actions a:hover,
+.vl-output-quick-actions button:hover { color: var(--text); border-color: var(--line-2); background: #fff; transform: translateY(-1px); }
+.vl-output-quick-actions button:hover { color: var(--danger); }
 .vl-output-slot .vl-player { margin-top: 0; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.vl-output-slot .vl-player-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.vl-output-slot .vl-player-actions .btn { width: 100%; min-width: 0; min-height: 32px; justify-content: center; padding-inline: 7px; white-space: nowrap; }
 .vl-output-empty, .vl-output-loading {
   min-height: 124px;
   display: grid;
@@ -1684,7 +1710,13 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .vl-output-spinner { width: 24px; height: 24px; border: 2px solid rgba(37,99,235,.16); border-top-color: var(--brand); border-radius: 50%; animation: vlOutputSpin .8s linear infinite; }
 @keyframes vlOutputSpin { to { transform: rotate(360deg); } }
 .view-root.vl-view-switching { overflow-anchor: none; }
-.vl-workbench.is-switching-in { animation: vlPanelIn 260ms cubic-bezier(.24,.86,.32,1) both; }
+.vl-workbench.is-switching-out { pointer-events: none; animation: vlPanelOut 150ms cubic-bezier(.4,0,1,1) both; }
+.vl-workbench.is-switching-in { animation: vlPanelIn 300ms cubic-bezier(.16,1,.3,1) both; }
+.topbar-voice-dock.is-switching { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .vl-workbench.is-switching-out,
+  .vl-workbench.is-switching-in { animation-duration: 1ms; transform: none; }
+}
 .vl-design-confirm { display: flex; justify-content: flex-end; gap: 7px; margin-top: 8px; }
 .vl-saved-note { margin-top: 10px; padding: 9px 0; color: var(--text); font-size: 12px; font-weight: 800; border-top: 1px solid var(--hairline); }
 .vl-audio-library { min-height: 0; margin-top: 10px; overflow-y: auto; display: grid; align-content: start; gap: 12px; scrollbar-gutter: stable; }
