@@ -3,13 +3,13 @@
 import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
-import { openDrawer, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js";
+import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js";
 import { STAGES, jobsOf } from "../domain/productions.js";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
+import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */
@@ -69,6 +69,43 @@ function workshopPreviewHtml(p) {
   const ready = jobsOf(p).filter(j => j.status === "succeeded").map(j => ({ name: j.segName || `片段 ${Number(j.segIndex || 0) + 1}`, url: outputUrl(j.output) })).filter(x => x.url);
   if (!ready.length) return `<div class="pd-empty compact">${icon("film", 20)}<p>视频生成后会直接在文案分镜阶段出现预览</p></div>`;
   return `<div class="pd-workshop-preview"><div class="pd-note">视频预览 ${ready.length} 段 · 可播放声音，点击放大查看</div><div class="pd-video-grid">${ready.map((item, i) => `<article><video src="${esc(item.url)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="${i}" data-video-url="${esc(item.url)}">${icon("eye", 12)} 放大</button><em>${esc(item.name)}</em></article>`).join("")}</div></div>`;
+}
+
+function openImageRefineModal(p, imageIndex, onDone) {
+  const index = Number(imageIndex);
+  const item = p?.artifacts?.images?.items?.[index];
+  if (!item) return;
+  const imageUrl = item.assetId ? urlFor(item.assetId) : "";
+  openModal(`<div class="mp-head"><b>微调第 ${index + 1} 张图片</b><button class="icon-btn" data-close>${icon("x", 15)}</button></div>
+    <div class="mp-body batch-image-editor">
+      ${imageUrl ? `<img src="${esc(imageUrl)}" alt="第 ${index + 1} 张当前图片"/>` : ""}
+      <label class="field"><span>单张图片提示词</span><textarea class="input" id="pdImagePrompt" rows="9" placeholder="写清楚主体、构图、风格和画面文字">${esc(item.prompt || "")}</textarea></label>
+      ${item.error ? `<p class="sc-error">${esc(item.error)}</p>` : ""}
+    </div>
+    <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="pdImageRegenerate">${icon("refresh", 13)} 保存并重新生成</button></div>`, {
+    wide: true,
+    onMount(panel, closeModal) {
+      panel.querySelector("#pdImageRegenerate")?.addEventListener("click", async e => {
+        const prompt = panel.querySelector("#pdImagePrompt")?.value.trim() || "";
+        if (!prompt) { toast("请先填写图片提示词", "error"); return; }
+        item.prompt = prompt;
+        save("productions");
+        const button = e.currentTarget;
+        button.disabled = true;
+        button.textContent = "重新生成中…";
+        try {
+          await regenerateBatchImage(p, index);
+          closeModal();
+          onDone?.();
+          toast(`第 ${index + 1} 张已重新生成`);
+        } catch (err) {
+          button.disabled = false;
+          button.innerHTML = `${icon("refresh", 13)} 重试生成`;
+          toast(err?.message || "重新生成失败", "error");
+        }
+      });
+    }
+  });
 }
 
 export function openProductionDrawer(pid, tab) {
@@ -139,6 +176,11 @@ export function openProductionDrawer(pid, tab) {
           const f = e.target.files[0]; if (!f) return;
           await fillSlot(p, i, f);
           render();
+        }));
+        rootEl.querySelectorAll("[data-slot-refine]").forEach(button => button.addEventListener("click", e => {
+          e.preventDefault();
+          e.stopPropagation();
+          openImageRefineModal(p, button.dataset.slotRefine, render);
         }));
         // 整体拖拽上传
         const dz = rootEl.querySelector("[data-pd-drop]");
@@ -368,7 +410,10 @@ function slotsTab(p, isImg) {
       return `<div class="pd-slot ${u ? "filled" : ""}">
         ${u ? `<img src="${u}"/>` : `<span class="pds-ph">${i + 1}</span>`}
         <div class="pds-cap"><b>${i + 1}. ${esc(it.title || (isImg ? "图" : "分镜") + (i + 1))}</b><em>${esc((it.visual || "").slice(0, 30))}</em></div>
-        <label class="pds-up">${u ? "替换" : "上传"}<input type="file" accept="image/*" hidden data-slot-up="${i}" /></label>
+        <div class="pds-tools">
+          ${isImg && u && p.batchId ? `<button type="button" class="pds-refine" data-slot-refine="${i}">${icon("sliders", 11)} 微调</button>` : ""}
+          <label class="pds-up">${u ? "替换" : "上传"}<input type="file" accept="image/*" hidden data-slot-up="${i}" /></label>
+        </div>
       </div>`;
     }).join("")}</div>`;
 }

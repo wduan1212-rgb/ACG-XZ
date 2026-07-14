@@ -7,6 +7,8 @@ import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../d
 import { deleteCustomVoice, favoriteVoiceIds, findVoiceOption, isFavoriteVoice, rememberCustomVoice, renameCustomVoice, setFavoriteVoice, toggleFavoriteVoice, voiceListByTab, voiceMeta } from "../domain/voices.js";
 
 let runtimeAudio = null;
+let runtimeAudioState = "idle";
+let runtimeAudioError = "";
 let runtimeDesignAudio = null;
 let previewingVoiceId = "";
 const voicePreviewCache = new Map();
@@ -155,6 +157,7 @@ function toolPanelHtml(mode, s, selected) {
     <div class="vl-section-head compact">
       <div><b>${icon("mic", 16)} 调试台</b><em>当前：${esc(selected.name || "默认/手动声线")}</em></div>
     </div>
+    ${runtimeAudioSlotHtml()}
     <div class="vl-current-voice">
       <b>${esc(selected.name || "默认/手动声线")}</b>
       <em>${selected.voiceId ? esc(selected.voiceId) : "平台默认 / 手动输入"}</em>
@@ -168,7 +171,6 @@ function toolPanelHtml(mode, s, selected) {
       <label>音量 <span>${Number(s.vol || 1).toFixed(1)}</span><input id="vlVol" type="range" min="0.5" max="2" step="0.1" value="${esc(s.vol || 1)}" /></label>
       <label>声调 <span>${Number(s.pitch || 0)}</span><input id="vlPitch" type="range" min="-12" max="12" step="1" value="${esc(s.pitch || 0)}" /></label>
     </div>
-    ${audioPlayerHtml(runtimeAudio, "main")}
   </aside>`;
 }
 
@@ -222,11 +224,22 @@ function audioPlayerHtml(audio, key = "main") {
     <div>${icon("music", 16)}<b>${esc(audio.name || "生成音频")}</b><em>${esc(audio.voiceName || audio.voiceId || "")}</em></div>
     <audio src="${esc(audio.url)}" controls preload="metadata"></audio>
     <div class="vl-player-actions">
-      <button class="btn ghost sm" data-vl-copy-audio="${esc(key)}">${icon("copy", 13)} 复制 voice_id</button>
       <a class="btn ghost sm" href="${esc(audio.url)}" download="${esc((audio.name || "voice-lab") + ".mp3")}">${icon("download", 13)} 下载</a>
       ${key === "main" ? `<button class="btn ghost sm ${audio.savedVoiceAssetId ? "is-active" : ""}" type="button" data-vl-archive-audio="voice" ${audio.savedVoiceAssetId ? "disabled" : ""}>${icon("archive", 13)} ${audio.savedVoiceAssetId ? "已加入语音素材库" : "加入语音素材库"}</button><button class="btn ghost sm ${audio.savedReferenceAssetId ? "is-active" : ""}" type="button" data-vl-archive-audio="reference" ${audio.savedReferenceAssetId ? "disabled" : ""}>${icon("pulse", 13)} ${audio.savedReferenceAssetId ? "已加入参考音频库" : "加入参考音频库"}</button><button class="icon-btn sm danger" type="button" title="丢弃本次音频" data-vl-discard-audio>${icon("trash", 13)}</button>` : ""}
     </div>
   </div>`;
+}
+
+function runtimeAudioSlotHtml() {
+  let body = `<div class="vl-output-empty">${icon("music", 20)}<b>等待生成音频</b><em>选择音色并生成后，可在这里直接试听和归档</em></div>`;
+  if (runtimeAudioState === "loading") {
+    body = `<div class="vl-output-loading"><span class="vl-output-spinner" aria-hidden="true"></span><b>正在生成音频</b><em>请稍候，完成后会自动出现播放器</em></div>`;
+  } else if (runtimeAudioState === "error") {
+    body = `<div class="vl-output-empty is-error">${icon("alert", 20)}<b>生成未完成</b><em>${esc(runtimeAudioError || "请检查接口后重试")}</em></div>`;
+  } else if (runtimeAudio?.url) {
+    body = audioPlayerHtml(runtimeAudio, "main");
+  }
+  return `<section class="vl-output-slot" id="vlRuntimeSlot" data-state="${esc(runtimeAudioState)}"><div class="vl-output-title"><b>音频预览</b><span>${runtimeAudioState === "loading" ? "生成中" : runtimeAudio?.url ? "已生成" : "待生成"}</span></div>${body}</section>`;
 }
 
 function saveLabPatch(patch) {
@@ -286,12 +299,22 @@ export const voiceLabView = {
     const stableRerender = () => {
       const scroll = document.querySelector(".main-scroll");
       const scrollTop = scroll?.scrollTop || 0;
-      root.style.minHeight = `${root.getBoundingClientRect().height}px`;
+      const oldHeight = root.getBoundingClientRect().height;
+      root.style.minHeight = `${oldHeight}px`;
+      root.classList.add("vl-view-switching");
       this.render(root);
+      const nextHeight = root.getBoundingClientRect().height;
+      root.style.minHeight = `${Math.max(oldHeight, nextHeight)}px`;
+      if (scroll) scroll.scrollTop = scrollTop;
       requestAnimationFrame(() => {
         if (scroll) scroll.scrollTop = scrollTop;
-        root.style.minHeight = "";
+        $(".vl-workbench", root)?.classList.add("is-switching-in");
       });
+      window.setTimeout(() => {
+        if (scroll) scroll.scrollTop = scrollTop;
+        root.style.minHeight = "";
+        root.classList.remove("vl-view-switching");
+      }, 280);
     };
     ensureProviderStatus(stableRerender);
     const s = labState();
@@ -393,17 +416,11 @@ export const voiceLabView = {
       if (currentFav) currentFav.innerHTML = `${icon("star", 13)} ${favorite ? "已收藏" : "收藏"}`;
     };
     const mountRuntimePlayer = () => {
-      const side = $(".vl-side-panel", root);
-      if (!side) return;
-      side.querySelector(".vl-player")?.remove();
-      if (runtimeAudio?.url) side.insertAdjacentHTML("beforeend", audioPlayerHtml(runtimeAudio, "main"));
-      $$('[data-vl-copy-audio]', side).forEach(button => button.addEventListener("click", () => {
-        const audio = button.dataset.vlCopyAudio === "design" ? runtimeDesignAudio : runtimeAudio;
-        if (!audio?.voiceId) return;
-        copyText(audio.voiceId);
-        toast("已复制 voice_id");
-      }));
-      $$('[data-vl-archive-audio]', side).forEach(button => button.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      const current = $("#vlRuntimeSlot", root);
+      if (!current) return;
+      current.outerHTML = runtimeAudioSlotHtml();
+      const slot = $("#vlRuntimeSlot", root);
+      $$('[data-vl-archive-audio]', slot).forEach(button => button.addEventListener("click", e => withLoading(e.currentTarget, async () => {
         if (!runtimeAudio?.url) return;
         const kind = e.currentTarget.dataset.vlArchiveAudio;
         if (kind === "reference") {
@@ -417,9 +434,11 @@ export const voiceLabView = {
         }
         mountRuntimePlayer();
       }, "保存中…")));
-      $('[data-vl-discard-audio]', side)?.addEventListener("click", () => {
+      $('[data-vl-discard-audio]', slot)?.addEventListener("click", () => {
         runtimeAudio = null;
-        side.querySelector(".vl-player")?.remove();
+        runtimeAudioState = "idle";
+        runtimeAudioError = "";
+        mountRuntimePlayer();
         toast("已丢弃本次临时音频");
       });
     };
@@ -463,11 +482,17 @@ export const voiceLabView = {
         return;
       }
       previewingVoiceId = id;
+      runtimeAudioState = "loading";
+      runtimeAudioError = "";
+      mountRuntimePlayer();
       syncSelectedVoiceUi(id, true);
       try {
         await previewVoice(id, labState());
+        runtimeAudioState = "ready";
         toast("已生成试听");
       } catch (err) {
+        runtimeAudioState = "error";
+        runtimeAudioError = err?.message || String(err || "生成失败");
         toast(`试听失败：${err?.message || err}`);
       } finally {
         previewingVoiceId = "";
@@ -598,16 +623,27 @@ export const voiceLabView = {
       const text = ($("#vlText", root)?.value || "").trim();
       if (!text) { toast("请先输入口播文本"); return; }
       saveLabPatch({ text, mode: "tts" });
-      const out = await synthesizeTts({ text, voiceId: s.voiceId || "", speed: Number(s.speed ?? 1.2), vol: Number(s.vol || 1), pitch: Number(s.pitch || 0) });
-      const voice = findVoiceOption(out.voiceId || s.voiceId || "");
-      runtimeAudio = {
-        url: out.audioDataUrl,
-        voiceId: out.voiceId || s.voiceId || "",
-        voiceName: voice.name || out.voiceId || "生成音频",
-        name: `语音_${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`
-      };
-      toast("音频已生成，可试听后决定是否加入素材库");
+      runtimeAudioState = "loading";
+      runtimeAudioError = "";
       mountRuntimePlayer();
+      try {
+        const out = await synthesizeTts({ text, voiceId: s.voiceId || "", speed: Number(s.speed ?? 1.2), vol: Number(s.vol || 1), pitch: Number(s.pitch || 0) });
+        const voice = findVoiceOption(out.voiceId || s.voiceId || "");
+        runtimeAudio = {
+          url: out.audioDataUrl,
+          voiceId: out.voiceId || s.voiceId || "",
+          voiceName: voice.name || out.voiceId || "生成音频",
+          name: `语音_${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`
+        };
+        runtimeAudioState = "ready";
+        toast("音频已生成，可试听后决定是否加入素材库");
+      } catch (err) {
+        runtimeAudioState = "error";
+        runtimeAudioError = err?.message || String(err || "生成失败");
+        throw err;
+      } finally {
+        mountRuntimePlayer();
+      }
     }, "生成中…"));
     $("#vlDesign", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       const name = ($("#vlDesignName", root)?.value || "").trim();

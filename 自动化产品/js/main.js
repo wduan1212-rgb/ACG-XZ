@@ -24,7 +24,7 @@ import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { overviewView } from "./views/overview.js";
 import { voiceLabView } from "./views/voiceLab.js";
 import { agentView } from "./agent/view.js";
-import { studioView } from "./views/studio.js?v=20260713-v75-1";
+import { studioView } from "./views/studio.js?v=20260714-v76-1";
 import { assetsView } from "./views/assetsView.js";
 import { deliveryView } from "./views/deliveryView.js";
 import { analyticsView } from "./views/analyticsView.js";

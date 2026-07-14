@@ -552,9 +552,9 @@
 .agr-board-strip::-webkit-scrollbar { display: none; }
 .agr-board { position: relative; width: 36px; height: 48px; flex: 0 0 36px; overflow: hidden; padding: 0; border: 1px solid var(--ag-line); border-radius: 7px; color: var(--d-muted); background: rgba(255,255,255,.04); cursor: pointer; }
 .agr-board img, .agr-board > i { width: 100%; height: 100%; object-fit: cover; display: grid; place-items: center; font-style: normal; }
-.agr-board > span { position: absolute; right: 2px; bottom: 2px; width: 17px; height: 17px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: rgba(8,10,18,.76); opacity: 0; transition: opacity 160ms ease; }
+.agr-board > span { position: absolute; right: 2px; bottom: 2px; min-width: 31px; height: 16px; padding: 0 4px; display: inline-flex; align-items: center; justify-content: center; gap: 2px; border-radius: 5px; color: #fff; background: rgba(8,10,18,.82); font-size: 7px; font-weight: 800; opacity: 0; transform: translateY(2px); transition: opacity 160ms ease, transform 160ms ease; }
 .agr-board:hover { border-color: rgba(155,176,255,.72); }
-.agr-board:hover > span { opacity: 1; }
+.agr-board:hover > span, .agr-board:focus-visible > span { opacity: 1; transform: none; }
 .agr-board.is-loading::after { content: ""; position: absolute; inset: 0; background: rgba(7,9,16,.62); }
 .agr-main { flex: 1; min-width: 0; }
 .agr-main b { display: block; font-size: 12px; color: var(--d-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

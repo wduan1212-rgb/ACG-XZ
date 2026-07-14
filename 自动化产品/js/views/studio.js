@@ -142,7 +142,9 @@ function renderHome(root, acc) {
           </div>
         </div>
         <div class="sh-actions">
-          ${acc.homepageUrl ? `<a class="btn ghost sh-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("eye", 13)} 查看主页</a>` : ""}
+          ${acc.homepageUrl
+            ? `<a class="btn ghost sh-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转主页</a>`
+            : `<button class="btn ghost sh-homepage-link is-disabled" type="button" disabled title="管理员尚未填写主页链接">${icon("external", 13)} 跳转主页</button>`}
           ${admin ? `<button class="icon-btn account-edit-trigger" data-sh="edit" title="编辑账号" aria-label="编辑账号">${icon("edit", 16)}</button><button class="icon-btn danger" data-sh="delete" title="删除账号" aria-label="删除账号">${icon("trash", 16)}</button>` : ""}
           <button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>
         </div>

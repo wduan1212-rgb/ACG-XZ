@@ -77,7 +77,10 @@
   gap: 8px;
 }
 .da-table-card { padding: 14px; }
-.da-table-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.da-table-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: nowrap; min-width: 0; }
+.da-table-head > .mode-tabs { flex: 0 0 auto; margin: 0; }
+.da-filter-selects { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; }
+.da-filter-selects .select-shell, .da-filter-selects .btn { flex: 0 0 auto; white-space: nowrap; }
 .da-table-wrap { width: 100%; overflow-x: auto; }
 .da-table { width: 100%; border-collapse: collapse; min-width: 760px; table-layout: fixed; }
 .da-col-title { width: auto; }
@@ -104,6 +107,8 @@
   .da-qa { grid-column: 1 / -1; }
   .da-justone { align-items: stretch; flex-direction: column; }
   .da-justone-side { justify-content: space-between; }
+  .da-table-head { align-items: stretch; flex-direction: column; }
+  .da-filter-selects { justify-content: flex-start; flex-wrap: wrap; }
 }
 
 @media (max-width: 640px) {

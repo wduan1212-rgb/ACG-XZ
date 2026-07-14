@@ -352,7 +352,7 @@ const CARD = {
       const coverUrl = cover ? urlFor(cover.assetId) : null;
       const editableBoards = p.mode === "图文" ? items.map((item, index) => {
         const src = item.assetId ? urlFor(item.assetId) : "";
-        return `<button class="agr-board ${item.status === "loading" ? "is-loading" : ""}" type="button" data-act="batch-image-edit" data-pid="${p.id}" data-image-index="${index}" title="编辑第 ${index + 1} 张提示词并重新生成">${src ? `<img src="${src}" alt="第 ${index + 1} 张"/>` : `<i>${index + 1}</i>`}<span>${icon("edit", 10)}</span></button>`;
+        return `<button class="agr-board ${item.status === "loading" ? "is-loading" : ""}" type="button" data-act="batch-image-edit" data-pid="${p.id}" data-image-index="${index}" title="编辑第 ${index + 1} 张提示词并重新生成">${src ? `<img src="${src}" alt="第 ${index + 1} 张"/>` : `<i>${index + 1}</i>`}<span>${icon("sliders", 9)} 微调</span></button>`;
       }).join("") : "";
       return `<div class="agr-row">
         ${editableBoards ? `<span class="agr-board-strip">${editableBoards}</span>` : `<span class="agr-cover">${coverUrl ? `<img src="${coverUrl}"/>` : `<i style="background:${gradFor(p.title)}">片</i>`}</span>`}

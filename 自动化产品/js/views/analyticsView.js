@@ -13,6 +13,7 @@ import { deliveryViewsSummary } from "../domain/delivery.js";
 let filter = "all";
 let platformFilter = "all";
 let timeFilter = "all";
+let productFilter = "all";
 let justOneStatus = null;
 let qaLog = [];
 
@@ -29,6 +30,10 @@ function inTimeWindow(row) {
   if (timeFilter === "all") return true;
   const timestamp = rowTimestamp(row);
   return timestamp > 0 && timestamp >= Date.now() - Number(timeFilter) * 86400000;
+}
+
+function productTagOf(row) {
+  return String(row?.asset?.productTag || row?.prod?.delivery?.productTag || "").trim();
 }
 
 function statCard(label, value, sub = "", cls = "") {
@@ -142,13 +147,15 @@ export const analyticsView = {
     syncExistingPublishedAssets();
     const draw = () => {
       const rowsAll = analyticsRows();
+      const productTags = [...new Set(rowsAll.map(productTagOf).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
       const rows = rowsAll.filter(r => {
         const statusMatch = filter === "all"
           || (filter === "todo" && !r.latest)
           || (filter === "synced" && !!r.latest)
           || (filter === "risk" && (r.link.status === "failed" || r.link.status === "unsupported"));
         const platformMatch = platformFilter === "all" || r.link.platform === platformFilter;
-        return statusMatch && platformMatch && inTimeWindow(r);
+        const productMatch = productFilter === "all" || productTagOf(r) === productFilter;
+        return statusMatch && platformMatch && productMatch && inTimeWindow(r);
       });
       const s = analyticsSummary(rowsAll);
       const views = deliveryViewsSummary(platformFilter);
@@ -182,6 +189,10 @@ export const analyticsView = {
                   <option value="7" ${timeFilter === "7" ? "selected" : ""}>近 7 天</option>
                   <option value="30" ${timeFilter === "30" ? "selected" : ""}>近 30 天</option>
                   <option value="90" ${timeFilter === "90" ? "selected" : ""}>近 90 天</option>
+                </select>${icon("chevronDown", 12)}</label>
+                <label class="select-shell">${icon("package", 13)}<select id="daProductFilter" aria-label="产品筛选">
+                  <option value="all">全部产品</option>
+                  ${productTags.map(tag => `<option value="${esc(tag)}" ${productFilter === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}
                 </select>${icon("chevronDown", 12)}</label>
               </div>
             </div>
@@ -219,6 +230,7 @@ function wire(root, redraw) {
   $$("[data-f]", root).forEach(b => b.addEventListener("click", () => { filter = b.dataset.f; redraw(); }));
   $("#daPlatformFilter", root)?.addEventListener("change", e => { platformFilter = e.currentTarget.value; redraw(); });
   $("#daTimeFilter", root)?.addEventListener("change", e => { timeFilter = e.currentTarget.value; redraw(); });
+  $("#daProductFilter", root)?.addEventListener("change", e => { productFilter = e.currentTarget.value; redraw(); });
   $("#daRefreshMetrics", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
     syncExistingPublishedAssets();
     const res = await refreshAllAnalytics();
