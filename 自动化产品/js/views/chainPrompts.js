@@ -3,11 +3,11 @@
 import { $, $$, esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { save, accountById, productById } from "../core/store.js";
-import { AI } from "../api/ai.js";
+import { AI } from "../api/ai.js?v=20260714-v80-1";
 import { setStage } from "../domain/productions.js";
 import { toast, withLoading } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v79-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v80-1";
 
 export function renderPromptsPage(root, p) {
   const acc = accountById(p.accountId);

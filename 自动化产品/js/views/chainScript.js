@@ -3,7 +3,7 @@
 import { $, $$, esc, copyText, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js";
+import { AI } from "../api/ai.js?v=20260714-v80-1";
 import { STYLE_CHIP_BASE } from "../api/prompts.js";
 import { normalizeVideoTimes, setStage, isMaterial, estimateAudio } from "../domain/productions.js";
 import { getCreativeMemoryContext } from "../domain/analytics.js";
@@ -12,7 +12,7 @@ import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.
 import { fmtTC } from "../core/util.js";
 import { toast, withLoading, promptModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v79-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v80-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 

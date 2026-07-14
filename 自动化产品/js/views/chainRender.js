@@ -10,7 +10,7 @@ import { createJob, retryJob, cancelJob } from "../api/jobs.js";
 import { videoApiConfigured, videoApiHealthy, videoProviderLabel } from "../api/providers.js";
 import { toast } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v79-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v80-1";
 
 const segIdxByProd = new Map();
 const draftBySeg = new Map(); // `${pid}:${seg}` -> html

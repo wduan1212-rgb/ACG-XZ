@@ -8,15 +8,15 @@ import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid 
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
-import { AI } from "../api/ai.js";
+import { AI } from "../api/ai.js?v=20260714-v80-1";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js";
-import { toast, withLoading, openLightbox, openVideoPreview } from "../ui/components.js";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260714-v80-1";
+import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v79-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v80-1";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from "../domain/voices.js";
 
@@ -685,9 +685,9 @@ function buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed = "" }) {
     `0-3s：画面先给一个极近特写：鼠标旁堆着${focus.prop}，聊天窗口又跳出新需求，角色闭眼深呼吸三秒。`
   ];
   const turns = [
-    `3-6s：镜头手持快速绕桌一圈，文件夹、截图、表格和聊天消息像失控一样叠到屏幕前；角色低声吐槽“这不是一个需求，这是来拆我的”。`,
-    `3-6s：画面快切三次：空白文档、凌乱资料、错误输出，角色每切一次表情更崩一点，最后小声说“别再给我加需求了”。`,
-    `3-6s：角色试着随便跑一次，屏幕弹出三段看似漂亮但完全跑偏的结果，镜头突然推到他愣住的表情，脱口而出“字很多，但完全不能用”。`,
+    `3-6s：镜头手持快速绕桌一圈，文件夹、截图、表格和聊天消息像失控一样叠到屏幕前；角色用符合本次主题的原创短台词回应冲突。`,
+    `3-6s：画面快切三次：空白文档、凌乱资料、错误输出，角色每切一次表情更崩一点，最后用本次主题专属台词把阻碍说清。`,
+    `3-6s：角色试着随便跑一次，屏幕弹出三段完全跑偏的结果，镜头突然推到他愣住的表情；反应和台词必须针对本次文案重新创作。`,
     `3-6s：桌面被分成两半，一边是“直接开跑”的混乱输出，一边是还没被整理的真实资料，角色皱眉说“先别急，流程还没定”。`
   ];
   const twists = [
@@ -813,7 +813,7 @@ function compactInfoTopic(raw, product) {
   return d.topic;
 }
 
-function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = "", publishCopy = "", title = "" } = {}) {
+function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = "", publishCopy = "", title = "", creativePlan = null } = {}) {
   const productName = infoProductName(product);
   const customTitle = sanitizeXhsText(String(title || "").replace(/\s+/g, " ").trim());
   const cleanTopic = compactInfoTopic(topic || customTitle, product);
@@ -828,13 +828,16 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
   const styleAnchor = pickInfoFlow(INFO_FLOW_STYLE_ANCHORS, runSeed, 0);
   const mainTopic = cleanTopic || finalTitle || direction.topic;
   const focus = infoFlowFeatureBrief(mainTopic, productName);
-  const frontBase = buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed: runSeed });
+  const frontBase = creativePlan?.frontPrompt || buildInfoFlowFrontBeat({ mainTopic, productName, focus, seed: runSeed });
   const promptCue = String(copyText || "").trim();
   const customCopy = String(publishCopy || copyText || "").trim();
   const generatedCopy = buildInfoFlowPublishCopy({ title: finalTitle, topic: mainTopic, productName, product, seed: runSeed });
   const copy = stripLeadingCopyTitle(customCopy || generatedCopy, finalTitle);
-  const backBase = buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText: promptCue || copy, seed: runSeed });
-  const frontPrompt = [
+  const backBase = creativePlan?.backPrompt || buildInfoFlowBackBeat({ mainTopic, productName, focus, copyText: promptCue || copy, seed: runSeed });
+  const frontPrompt = creativePlan?.frontPrompt ? [
+    creativePlan.frontPrompt,
+    VIDEO_NEGATIVE_PROMPT
+  ].join("\n") : [
     "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次，节奏爽快但不能乱。",
     styleAnchor,
     roleAnchor,
@@ -842,7 +845,10 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
     frontBase,
     VIDEO_NEGATIVE_PROMPT
   ].join("\n");
-  const backPrompt = [
+  const backPrompt = creativePlan?.backPrompt ? [
+    creativePlan.backPrompt,
+    VIDEO_NEGATIVE_PROMPT
+  ].join("\n") : [
     "快节奏的信息流广告风格，生成9:16短视频后15秒产品功能演示段。根据功能演示分镜图、产品logo和产品界面参考继续生成；画面要呼应前段冲突，口播直接讲操作动作和结果，不要使用自指式说明。",
     styleAnchor,
     "B面仅展示真实产品界面、桌面软件窗口和屏幕录制式操作；禁止人物、手部、手指、人体部位、Q版角色和拟人化肢体。界面文字少而清楚，避免高密度文字。",
@@ -850,14 +856,16 @@ function buildInfoFlowPlan({ topic = "", product = null, acc = null, copyText = 
     backBase,
     VIDEO_NEGATIVE_PROMPT
   ].join("\n");
-  const storyboards = buildInfoFlowStoryboards({ mainTopic, productName, focus, styleAnchor });
+  const storyboards = (creativePlan?.storyboardPrompts || []).length
+    ? creativePlan.storyboardPrompts
+    : buildInfoFlowStoryboards({ mainTopic, productName, focus, styleAnchor });
   return {
     title: finalTitle,
     topic: cleanTopic,
     copy,
     segments: [
-      { id: "front15", label: "前15s", title: "前15s钩子", duration: 15, caption: finalTitle, visual: frontBase, videoPrompt: frontPrompt, storyboardAssetIds: [] },
-      { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, caption: `我把这件事交给${productName}，让它先拆步骤、跑资料、给出初版。`, visual: backBase, videoPrompt: backPrompt, storyboardPrompts: storyboards, storyboardAssetIds: [] }
+      { id: "front15", label: "前15s", title: "前15s钩子", duration: 15, caption: creativePlan?.creativeAngle || finalTitle, visual: frontBase, videoPrompt: frontPrompt, storyboardAssetIds: [] },
+      { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, caption: creativePlan?.creativeAngle ? `承接「${creativePlan.creativeAngle}」的冲突，用产品界面完成解决。` : `我把这件事交给${productName}，让它先拆步骤、跑资料、给出初版。`, visual: backBase, videoPrompt: backPrompt, storyboardPrompts: storyboards, storyboardAssetIds: [] }
     ]
   };
 }
@@ -866,7 +874,6 @@ function applyInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
   const A = p.artifacts.boards || (p.artifacts.boards = {});
   A.materialMode = "infoFlow";
   const prev = ensureInfoFlowState(p);
-  const oldBack = prev.segments?.[1] || {};
   const oldCopy = p.artifacts.copy || {};
   const nextTitle = preserveCopy
     ? (oldCopy.title || p.title || plan.title || p.topic || "")
@@ -882,8 +889,9 @@ function applyInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
       ...seg,
       videoPrompt: stripInfoFlowDirectorNotes(seg.videoPrompt || ""),
       storyboardPrompts: Array.isArray(seg.storyboardPrompts) ? seg.storyboardPrompts.map(sanitizeStoryboardText).filter(Boolean) : seg.storyboardPrompts,
-      storyboardAssetIds: i === 1 ? [...new Set([...(oldBack.storyboardAssetIds || []), ...(seg.storyboardAssetIds || [])])] : []
-    }))
+      storyboardAssetIds: i === 1 ? [...new Set(seg.storyboardAssetIds || [])] : []
+    })),
+    storyboards: []
   };
   p.topic = plan.topic || p.topic || "";
   p.title = nextTitle;
@@ -1361,7 +1369,7 @@ export function renderWorkshopPage(root, p) {
       <div class="infoflow-head">
         <div>
           <b>${icon("film", 14)} 信息流</b>
-          <em>不强制先生成口播。前15s做钩子，后15s做产品演示；功能演示段可先生成分镜图再带入视频。</em>
+          <em>标题 → 发布文案 → 全新 A/B 面视频提示词 → B 面分镜图提示词 → 分镜图 → 参考分镜生成视频。</em>
         </div>
         <div class="infoflow-actions">
           <button class="btn ghost sm" id="wsInfoPlan">${icon("refresh", 13)} 重新生成提示词</button>
@@ -1415,7 +1423,7 @@ export function renderWorkshopPage(root, p) {
                 <textarea class="input" rows="9" data-if-prompt="${i}" placeholder="${i === 0 ? "前15s导演提示词" : "后15s导演提示词，会自动参考功能演示分镜图"}">${esc(seg.videoPrompt || "")}</textarea>
                 <div class="if-segment-media ${video.busy ? "running" : video.done ? "done" : video.failed ? "failed" : ""}">
                   ${video.videoUrl
-                    ? `<div class="if-video-frame has-video"><video src="${esc(video.videoUrl)}" controls playsinline preload="metadata"></video><button type="button" data-if-video="${i}" data-video-url="${esc(video.videoUrl)}" title="放大预览">${icon("eye", 16)}</button></div>`
+                    ? `<div class="if-video-frame has-video"><video src="${esc(video.videoUrl)}" controls playsinline preload="metadata"></video></div>`
                     : `<div class="if-video-placeholder">${video.busy ? `<span class="if-video-pulse"></span>` : icon(video.failed ? "alert" : "film", 22)}<b>${esc(seg.label || (i === 0 ? "前15s" : "后15s"))}视频</b><em>${esc(stateText)}</em></div>`}
                   ${err ? `<small>${esc(err)}</small>` : ""}
                 </div>
@@ -1808,7 +1816,7 @@ export function renderWorkshopPage(root, p) {
   }
 
   async function customVideoDraftFromModel({ title = "", body = "", product = null } = {}) {
-    const mode = isMaterial(p) ? "material" : "digital";
+    const mode = activeInfoFlowMode ? "infoFlow" : isMaterial(p) ? "material" : "digital";
     const generated = await AI.generateCustomVideoDraft({
       title,
       body,
@@ -1876,25 +1884,30 @@ export function renderWorkshopPage(root, p) {
         p.artifacts.copy.generatedVisualPrompt = generated.visualPrompt || "";
         if (userTitle) p.artifacts.copy.title = userTitle;
       }
+      const existingInfoFlowPrompts = ensureInfoFlowState(p).segments
+        .map(segment => segment?.videoPrompt || "")
+        .filter(Boolean);
+      const creativePlan = await AI.generateInfoFlowCreativePlan({
+        title: customTitle || p.artifacts.copy.title || topic,
+        copy: p.artifacts.copy.body || customBody,
+        narration: p.artifacts.copy.generatedNarration || customBody,
+        account: acc,
+        product: selectedProduct,
+        previousPrompts: existingInfoFlowPrompts
+      });
       const plan = buildInfoFlowPlan({
         topic: customMode ? (customTitle || topic) : topic,
         title: customMode ? customTitle : "",
         acc,
         product: selectedProduct,
         publishCopy: customMode ? customBody : "",
-        copyText: customMode ? copyBodyForSpeech(p.artifacts.copy.generatedNarration || customBody) : infoFlowCopyOverride()
+        copyText: customMode ? copyBodyForSpeech(p.artifacts.copy.generatedNarration || customBody) : infoFlowCopyOverride(),
+        creativePlan
       });
-      if (customMode && p.artifacts.copy.generatedVisualPrompt && plan.segments?.[1]) {
-        plan.segments[1].storyboardPrompts = [
-          storyboardSafePrompt(p.artifacts.copy.generatedVisualPrompt),
-          ...(plan.segments[1].storyboardPrompts || [])
-        ].slice(0, 4);
-        plan.segments[1].videoPrompt = stripInfoFlowDirectorNotes(plan.segments[1].videoPrompt || "");
-      }
       applyInfoFlowPlan(p, plan, { preserveCopy: customMode });
       const input = $("#wsTopic", root); if (input) input.value = p.topic || "";
       save("productions");
-      toast("已生成信息流前后15秒脚本");
+      toast("已按标题与文案生成全新的 A/B 面信息流提示词");
       draw();
       return;
     }
@@ -2245,46 +2258,10 @@ export function renderWorkshopPage(root, p) {
       save("productions");
     }
 
-    function currentInfoFlowPlanArgs() {
-      const copy = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
-      const customMode = true;
-      const configuredProduct = productById(p.artifacts.script.productId || "dumate");
-      const title = sanitizeXhsText(String(copy.title || p.title || p.topic || "").trim());
-      const body = String(copy.body || "").trim();
-      const topicInput = sanitizeXhsText(($("#wsTopic", root)?.value || p.topic || title || "").trim());
-      const selectedProduct = customMode
-        ? inferWorkshopProductFromCopy(title || topicInput, body, configuredProduct)
-        : configuredProduct;
-      if (selectedProduct?.id) p.artifacts.script.productId = selectedProduct.id;
-      return {
-        topic: customMode ? (title || topicInput) : topicInput,
-        title: customMode ? title : "",
-        acc,
-        product: selectedProduct,
-        publishCopy: customMode ? body : "",
-        copyText: customMode ? copyBodyForSpeech(copy.generatedNarration || body) : infoFlowCopyOverride()
-      };
-    }
-
-    function applyCurrentInfoFlowPlan() {
-      const plan = buildInfoFlowPlan(currentInfoFlowPlanArgs());
-      applyInfoFlowPlan(p, plan, { preserveCopy: true });
-      const info = ensureInfoFlowState(p);
-      if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
-        info.status = "failed";
-        info.error = "信息流脚本生成失败：没有返回完整的前后段脚本，请重试。";
-        touchProduction(p, info);
-        save("productions");
-        throw new Error(info.error);
-      }
-      return plan;
-    }
-
     function ensureCurrentInfoFlowPlanReady() {
       let info = ensureInfoFlowState(p);
       if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
-        applyCurrentInfoFlowPlan();
-        info = ensureInfoFlowState(p);
+        throw new Error("请先点「重新生成提示词」，不要使用旧的本地模板");
       }
       if (!info.segments.length || !info.segments[0]?.videoPrompt || !info.segments[1]?.videoPrompt) {
         info.status = "failed";
@@ -2304,10 +2281,7 @@ export function renderWorkshopPage(root, p) {
       const imgs = Array.from(files || []).filter(f => f.type.startsWith("image/"));
       if (!imgs.length) return;
       let info = ensureInfoFlowState(p);
-      if (!info.segments.length) {
-        applyCurrentInfoFlowPlan();
-        info = ensureInfoFlowState(p);
-      }
+      if (!info.segments.length) throw new Error("请先重新生成信息流提示词");
       const back = info.segments[1] || (info.segments[1] = { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, storyboardAssetIds: [] });
       for (const f of imgs) {
         const dataUrl = await fileToDataUrl(f);
@@ -2327,14 +2301,11 @@ export function renderWorkshopPage(root, p) {
 
     async function generateInfoFlowStoryboards({ silent = false } = {}) {
       let info = ensureInfoFlowState(p);
-      if (!info.segments.length) {
-        applyCurrentInfoFlowPlan();
-        info = ensureInfoFlowState(p);
-      }
+      if (!info.segments.length) throw new Error("请先重新生成信息流提示词");
       const back = info.segments[1];
       if (!back) throw new Error("请先生成信息流脚本");
       if (!imageApiConfigured()) throw new Error("图片 API 未接入：请手动上传功能演示分镜参考图");
-      const prompts = ((back.storyboardPrompts || []).length ? back.storyboardPrompts : buildInfoFlowPlan(currentInfoFlowPlanArgs()).segments[1].storyboardPrompts)
+      const prompts = (back.storyboardPrompts || [])
         .map(sanitizeStoryboardText)
         .filter(Boolean)
         .slice(0, 2);
@@ -2459,9 +2430,7 @@ export function renderWorkshopPage(root, p) {
     async function prepareInfoFlowVideos(targetIndex = null) {
       if (!activeInfoFlowMode) return 0;
       const info = ensureInfoFlowState(p);
-      if (!info.segments.length) {
-        applyCurrentInfoFlowPlan();
-      }
+      if (!info.segments.length) throw new Error("请先重新生成信息流提示词");
       syncInfoFlowPrompts();
       let infoNow = ensureInfoFlowState(p);
       const needsBackStoryboard = targetIndex == null || targetIndex === 1;
@@ -2487,7 +2456,6 @@ export function renderWorkshopPage(root, p) {
       }
       let units = materialUnits(p);
       if (!units.length) {
-        applyCurrentInfoFlowPlan();
         buildMaterialUnits(p);
         units = materialUnits(p);
       }
@@ -2841,8 +2809,6 @@ export function renderWorkshopPage(root, p) {
       }
       toast("视频已提交但还没有拿到回链，稍后自动刷新或点重生成");
     }));
-    $$("[data-if-video]", root).forEach(el => el.addEventListener("click", () => openVideoPreview(el.dataset.videoUrl, "信息流片段预览")));
-
     $("#wsNext", root)?.addEventListener("click", () => {
       syncNarrationFromEditor({ silent: true });
       syncCopyFromEditor();

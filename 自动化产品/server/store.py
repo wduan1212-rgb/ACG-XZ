@@ -435,17 +435,43 @@ def supplier_child_for(parent_id, child_id, include_all=False):
 
 
 def create_supplier_children(parent_id, items):
-    made = []
+    normalized = []
     for item in items or []:
         name = str((item or {}).get("name") or "").strip()
         username = str((item or {}).get("username") or "").strip()
         pin = str((item or {}).get("pin") or "")
         if not name or not username or not pin:
             raise ValueError("missing_fields")
-        if get_member_by_username(username):
-            raise ValueError("username_exists")
-        made.append(member_public(add_member(name, username, pin, "supplier_child", parent_id)))
-    return made
+        normalized.append((name, username, pin))
+    usernames = [row[1].lower() for row in normalized]
+    if len(set(usernames)) != len(usernames):
+        raise ValueError("username_exists")
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            for _name, username, _pin in normalized:
+                if conn.execute("SELECT 1 FROM members WHERE lower(username)=lower(?)", (username,)).fetchone():
+                    raise ValueError("username_exists")
+            made = []
+            now = int(time.time() * 1000)
+            for index, (name, username, pin) in enumerate(normalized):
+                mid = uuid.uuid4().hex[:10]
+                conn.execute(
+                    "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                    (mid, name, username, hash_pin(pin), "supplier_child", parent_id, now + index),
+                )
+                made.append({
+                    "id": mid, "name": name, "username": username,
+                    "role": "supplier_child", "parentId": parent_id, "createdAt": now + index,
+                })
+            conn.commit()
+            return made
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def supplier_bindings(parent_id, include_all=False):

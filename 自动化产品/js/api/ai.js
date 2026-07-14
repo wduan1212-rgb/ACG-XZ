@@ -514,6 +514,17 @@ function ensureVideoBrandTags(copy = "", product = null) {
   return normalizeOwnProductNoise(out, current).replace(/#国产百度搭子(?=\s|$)/g, "").replace(/[ \t]+\n/g, "\n").trim();
 }
 
+function ensureImagePublishTags(copy = "", product = null) {
+  const current = chineseProductDisplayName(product, "百度搭子");
+  let out = String(copy || "").trim();
+  const existing = [...out.matchAll(/#[^\s#]+/g)].map(match => match[0]);
+  const defaults = ["#AI办公", "#效率工具", "#桌面智能体", "#工作流", `#${current}`];
+  const missing = defaults.filter(tag => !existing.includes(tag));
+  const needed = Math.max(0, 4 - existing.length);
+  if (needed) out = `${out}\n${missing.slice(0, needed).join(" ")}`.trim();
+  return out;
+}
+
 function polishVideoBrandCopy(result = {}, product = null) {
   return {
     title: ensureVideoTitleBrand(result.title || "", product),
@@ -562,7 +573,7 @@ function polishCopyResult(result, { topic, shots, account, kind, product, batchV
   copy = stripOwnProductMentions(replaceReferenceToolNames(copy, product), product);
   copy = stripLeadingDuplicateTitle(copy, title);
   if (kind === "video") return sanitizeXhsObject(polishVideoBrandCopy({ title, copy }, product));
-  return { title, copy };
+  return { title, copy: ensureImagePublishTags(copy, product) };
 }
 
 function fallbackXhsCopy({ intent, shots = [], account = {}, kind = "image", batchVariant = null, product = null }) {
@@ -1994,6 +2005,53 @@ function parseCustomVideoDraftText(content = "", fallbackTitle = "") {
   return parsed;
 }
 
+const INFO_FLOW_BANNED_LINES = [
+  "这不是一个需求，这是来拆我的",
+  "别再给我加需求了",
+  "字很多，但完全不能用"
+];
+
+function infoFlowSimilarity(left = "", right = "") {
+  const normalize = value => String(value || "").toLowerCase().replace(/[^\u4e00-\u9fffa-z0-9]+/g, "");
+  const tokens = value => {
+    const text = normalize(value);
+    const set = new Set();
+    for (let i = 0; i < text.length - 1; i++) set.add(text.slice(i, i + 2));
+    return set;
+  };
+  const a = tokens(left);
+  const b = tokens(right);
+  if (!a.size || !b.size) return 0;
+  let overlap = 0;
+  a.forEach(token => { if (b.has(token)) overlap++; });
+  return overlap / Math.max(1, a.size + b.size - overlap);
+}
+
+function parseInfoFlowCreativePlan(content = "") {
+  const raw = sanitizeXhsObject(parseJSONLoose(content));
+  const front = raw.frontPrompt || raw.front?.videoPrompt || raw.front?.prompt || raw.segments?.[0]?.videoPrompt || raw.segments?.[0]?.prompt || "";
+  const back = raw.backPrompt || raw.back?.videoPrompt || raw.back?.prompt || raw.segments?.[1]?.videoPrompt || raw.segments?.[1]?.prompt || "";
+  return {
+    creativeAngle: cleanCustomVideoText(raw.creativeAngle || raw.angle || raw.front?.creativeAngle || "全新信息流创意"),
+    frontPrompt: cleanCustomVideoText(front, { stripTags: true }),
+    backPrompt: cleanCustomVideoText(back, { stripTags: true })
+  };
+}
+
+function assertInfoFlowCreativePlan(plan, previousPrompts = []) {
+  const combined = `${plan.frontPrompt}\n${plan.backPrompt}`;
+  const normalizedCombined = combined.replace(/[^\u4e00-\u9fff]+/g, "");
+  if (!plan.frontPrompt || !plan.backPrompt) throw new Error("模型未返回完整的 A/B 面视频提示词");
+  if (plan.frontPrompt.length < 240 || plan.backPrompt.length < 220) throw new Error("信息流提示词细节不足，请重新创作");
+  if (INFO_FLOW_BANNED_LINES.some(line => normalizedCombined.includes(line.replace(/[^\u4e00-\u9fff]+/g, "")))) throw new Error("信息流仍含固定模板台词，请重新创作");
+  const timedFront = (plan.frontPrompt.match(/\d+\s*[-—–~至]\s*\d+\s*(?:s|秒)/gi) || []).length;
+  const timedBack = (plan.backPrompt.match(/\d+\s*[-—–~至]\s*\d+\s*(?:s|秒)/gi) || []).length;
+  if (timedFront < 4 || timedBack < 4) throw new Error("信息流提示词缺少完整的分时镜头设计");
+  if (infoFlowSimilarity(plan.frontPrompt, plan.backPrompt) > 0.62) throw new Error("A/B 面内容过于雷同，请重新创作");
+  if ((previousPrompts || []).some(prev => infoFlowSimilarity(combined, prev) > 0.68)) throw new Error("新提示词与上一版过于相似，请重新创作");
+  return plan;
+}
+
 export const AI = {
   lastSource: "mock",
   lastError: "",
@@ -2482,7 +2540,11 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const safeTpl = sanitizeXhsText(stripPromptScaffold(tpl));
     const rawCopyTitle = sanitizeOwnProductForGeneratedText(copy?.title || "");
     const copyTitle = sanitizeXhsText(cleanGeneratedHeadlineNoise(rawCopyTitle, product, 56) || rawCopyTitle);
-    const copyBody = sanitizeXhsText(sanitizeOwnProductForGeneratedText(copy?.body || copy?.copy || ""));
+    const copyBody = sanitizeXhsText(sanitizeOwnProductForGeneratedText(copy?.body || copy?.copy || ""))
+      .replace(/#[^\s#]+/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
     const copyForPrompt = copy ? { ...copy, title: copyTitle, headline: copyTitle, body: copyBody, copy: copyBody } : null;
     const copyBrief = [copyTitle ? `标题：${copyTitle}` : "", copyBody ? `正文：${shortChinese(copyBody.replace(/\n+/g, " / "), 420)}` : ""].filter(Boolean).join("\n");
     const hasCopyBrief = !!copyBrief;
@@ -2604,6 +2666,7 @@ ${xhsGuardPrompt()}
     const platform = account?.platform || "视频号";
     const accountVoice = copyAccountVoice(account, account?.styleProfile || account?.lockedStyle || "", safeTitle || safeBody);
     const isMaterialMode = mode === "material";
+    const isInfoFlowMode = mode === "infoFlow";
     const sys = [
       "你是短视频内容策划和发布文案写手。先理解用户标题/文案的真实意图，再写内容，不套固定模板。",
       "发布文案：专业、克制、偏解析测评，像真人创作者发平台内容；第一句直接给判断或场景，不要完整复述标题，不要用 哎/跟你说/说个事/你感受一下 这类闲聊开场，不要写 本条围绕/这条围绕/本文围绕/本期围绕。",
@@ -2617,6 +2680,8 @@ ${xhsGuardPrompt()}
       : "用户未写正文：请根据标题补出发布文案和口播。";
     const visualAsk = isMaterialMode
       ? "分镜提示为必填，写成 120-220 个中文字符的功能演示分镜图参考提示：描述 3-4 个关键画面、产品界面、操作动作和结果；不要写口播台词、标签、第一镜/第二镜编号或时间码。这个字段不会作为视频提示词。"
+      : isInfoFlowMode
+        ? "分镜提示固定写：由后续信息流创意链路生成。不要在这里提前套用剧情、台词或视频提示词。"
       : "visualPrompt 写成真人/数字人画面提示词：同一角色、办公室场景、自然讲述，可穿插产品界面和资料处理结果，不要写标签。";
     const messages = [
       { role: "system", content: sys },
@@ -2624,7 +2689,7 @@ ${xhsGuardPrompt()}
         `平台：${platform}`,
         `账号语气：${accountVoice}`,
         `主产品：${productName}`,
-        `生成类型：${isMaterialMode ? "素材号/无数字人视频" : "真人/数字人视频"}`,
+        `生成类型：${isInfoFlowMode ? "信息流视频" : isMaterialMode ? "素材号/无数字人视频" : "真人/数字人视频"}`,
         `用户标题：${safeTitle || "未填写"}`,
         bodyNote,
         visualAsk,
@@ -2660,6 +2725,73 @@ ${xhsGuardPrompt()}
       this.lastError = (e && e.message) || String(e || "语言模型调用失败");
       throw new Error(`自定义视频内容需要语言模型生成：${this.lastError}`);
     }
+  },
+
+  async generateInfoFlowCreativePlan({ title = "", copy = "", narration = "", account = {}, product = null, previousPrompts = [] } = {}) {
+    const safeTitle = cleanCustomVideoText(title, { stripTags: true });
+    const safeCopy = cleanCustomVideoText(copy, { stripTags: true, title: safeTitle });
+    const safeNarration = cleanCustomVideoText(narration, { stripTags: true, title: safeTitle });
+    if (!safeTitle && !safeCopy) throw new Error("生成信息流提示词前需要标题或发布文案");
+    const productName = chineseProductDisplayName(product);
+    const accountVoice = copyAccountVoice(account, account?.styleProfile || account?.lockedStyle || "", safeTitle || safeCopy);
+    const engines = [
+      "荒诞职场短剧：用一个意外事件把痛点推到极端，再自然回落到解决方案",
+      "视觉隐喻广告：把抽象任务具象成会失控的空间、道具或机关，用强运镜讲清冲突",
+      "反常识对话：用两名角色立场冲突和一句反转建立钩子，台词短、狠、自然",
+      "伪纪录片现场：像偶然拍到的真实办公事故，镜头有观察感，结尾突然给出可执行办法",
+      "高密度喜剧误会：连续升级三次误会，最后用产品流程把前面的笑点全部回收",
+      "一镜到底挑战：用空间调度和连续动作制造压力，最后切进纯界面完成反差"
+    ];
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${attempt}`;
+      const engine = engines[Math.floor(Math.random() * engines.length)];
+      const avoid = (previousPrompts || []).filter(Boolean).slice(-2).map((value, index) => `上一版${index + 1}（禁止复用其剧情、台词、道具和运镜）：${String(value).slice(0, 900)}`).join("\n");
+      const system = [
+        "你是顶级短视频创意导演。每次都要从标题和发布文案重新构思，不套用固定办公焦虑模板，不复用上一版台词或镜头。",
+        "输出一组连续的 30 秒信息流创意，A 面 15 秒负责剧情钩子，B 面 15 秒负责产品界面演示。",
+        "A 面必须有完整微型剧情：明确人物目标、阻碍、升级和反转。可以夸张剧情、表演、对话、空间变化或运镜，但必须服务本次标题和文案。前 2 秒就出现异常事件；至少 4 个分时镜头；台词必须原创、短促、自然。A 面禁止出现产品 logo、产品界面和产品名。",
+        "B 面必须接住 A 面冲突，用真实产品界面、桌面软件窗口和屏幕录制式操作完成解决。B 面至少 4 个分时镜头，只展示界面、窗口、文件、图标和流程卡；禁止人物、手部、手指、人体部位、Q版角色和拟人化肢体；低文字密度。",
+        "视频提示词要能直接交给视频模型：每个时间段写景别、机位或运镜、具体画面、动作变化、声音或台词、光线和转场。A/B 都是 9:16，每段严格 15 秒。",
+        "不得出现这些固定句：这不是一个需求这是来拆我的、别再给我加需求了、字很多但完全不能用。不得写模板、同上、延续常规、根据文案等空话。",
+        "发布标签不进入台词、画面或提示词。",
+        "只输出 JSON：{\"creativeAngle\":\"一句话创意\",\"frontPrompt\":\"A面完整导演提示词\",\"backPrompt\":\"B面完整导演提示词\"}"
+      ].join("\n");
+      const user = [
+        `创意引擎：${engine}`,
+        `创意随机种子：${nonce}`,
+        `平台：${account?.platform || "视频号"}`,
+        `账号语气：${accountVoice}`,
+        `主产品：${productName}`,
+        `标题：${safeTitle || "未填写"}`,
+        `去标签发布文案：${safeCopy || "未填写"}`,
+        `口播内容依据：${safeNarration || safeCopy || safeTitle}`,
+        avoid
+      ].filter(Boolean).join("\n\n");
+      try {
+        const content = await llm([
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ], { json: true, temperature: 1.15, timeoutMs: 90000, thinking: "disabled", maxTokens: 5200 });
+        const plan = assertInfoFlowCreativePlan(parseInfoFlowCreativePlan(content), previousPrompts);
+        const storyboardContent = await llm([
+          { role: "system", content: "你是产品界面分镜设计师。只根据用户给出的 B 面视频提示词，拆成 1-2 张能作为图生视频参考的 9:16 静态分镜图。只画产品界面、桌面软件窗口、文件、图标和流程卡；禁止人物、手部、手指、人体部位、Q版角色和拟人化肢体；界面文字少而清楚。不要增加 B 面提示词以外的新主题。只输出 JSON：{\"storyboards\":[\"提示词1\",\"提示词2\"]}" },
+          { role: "user", content: plan.backPrompt }
+        ], { json: true, temperature: 0.78, timeoutMs: 90000, thinking: "disabled", maxTokens: 2400 });
+        const storyboardData = sanitizeXhsObject(parseJSONLoose(storyboardContent));
+        const storyboardPrompts = (storyboardData.storyboards || storyboardData.prompts || [])
+          .map(value => cleanCustomVideoText(typeof value === "string" ? value : value?.prompt || "", { stripTags: true }))
+          .filter(value => value.length >= 60)
+          .slice(0, 2);
+        if (!storyboardPrompts.length) throw new Error("模型未返回 B 面分镜图提示词");
+        return this._ok({ ...plan, storyboardPrompts });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    this.lastSource = "error";
+    this.lastError = lastError?.message || String(lastError || "信息流创意生成失败");
+    throw new Error(`信息流创意需要语言模型重新生成：${this.lastError}`);
   },
 
   async randomTitle({ topic, account, product = null, useOnlineTrends = false, trendGuide = "", trendPrep = null }) {

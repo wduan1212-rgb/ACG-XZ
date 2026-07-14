@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js";
+import { AI } from "../api/ai.js?v=20260714-v80-1";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260714-v80-1";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v79-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v80-1";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -667,8 +667,8 @@ export function renderSlotsPage(root, p, isImg) {
   async function generateCustomCopyImageWorkshop() {
     syncCopyDraft();
     const C = p.artifacts.copy || (p.artifacts.copy = { title: "", body: "" });
-    const title = (C.title || "").trim();
-    const body = (C.body || "").trim();
+    let title = (C.title || "").trim();
+    let body = (C.body || "").trim();
     if (!title && !body) {
       toast("自定义文案模式需要先填写标题或正文");
       return;
@@ -683,6 +683,30 @@ export function renderSlotsPage(root, p, isImg) {
     if (C.referenceRewrite) delete C.referenceRewrite;
     const selectedProduct = productById(S.productId);
     const topic = (title || body.split(/\n+/).find(Boolean) || `${selectedProduct?.shortName || selectedProduct?.name || "产品"} 自定义文案`).slice(0, 80);
+    if (!body) {
+      const copySeedShots = buildCustomCopyShots({ title, body: title }, count, selectedProduct);
+      const generatedCopy = await AI.generateCopy({
+        topic,
+        shots: copySeedShots,
+        account: acc,
+        style: acc.styleProfile || S.style || "",
+        kind: "image",
+        product: selectedProduct,
+        useOnlineTrends: false,
+        trendGuide: "",
+        trendPrep: null
+      });
+      C.title = title || generatedCopy.title || topic;
+      C.body = generatedCopy.copy || "";
+      title = (C.title || "").trim();
+      body = (C.body || "").trim();
+      if (!body) throw new Error("发布文案生成失败，请重试");
+      const titleInput = $("#imgCopyTitle", root);
+      const bodyInput = $("#imgCopyBody", root);
+      if (titleInput) titleInput.value = C.title;
+      if (bodyInput) bodyInput.value = C.body;
+      toast(AI.sourceNote("已先生成发布文案，再拆解图卡提示词"));
+    }
     p.topic = topic;
     p.title = title || topic;
     const styleRef = acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;

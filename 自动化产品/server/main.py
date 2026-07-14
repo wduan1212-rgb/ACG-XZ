@@ -3217,8 +3217,14 @@ class MemberReq(BaseModel):
     parentId: str = ""
 
 
+class SupplierChildReq(BaseModel):
+    name: str = ""
+    username: str = ""
+    pin: str = ""
+
+
 class SupplierChildrenReq(BaseModel):
-    items: list = []
+    items: list[SupplierChildReq] = []
 
 
 class SupplierBindReq(BaseModel):
@@ -3469,7 +3475,7 @@ def supplier_children(me=Depends(require_supplier_parent)):
 @app.post("/api/supplier/children")
 def supplier_children_create(req: SupplierChildrenReq, me=Depends(require_supplier_parent)):
     try:
-        return store.create_supplier_children(me["id"], [(x.dict() if hasattr(x, "dict") else x.model_dump()) for x in req.items])
+        return store.create_supplier_children(me["id"], [(x.model_dump() if hasattr(x, "model_dump") else x.dict()) for x in req.items])
     except ValueError as exc:
         if str(exc) == "username_exists":
             raise HTTPException(409, "用户名已存在")

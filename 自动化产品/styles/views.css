@@ -3168,6 +3168,10 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .supplier-child-modal-body { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; padding-block: 12px; overflow: hidden; }
 .supplier-child-modal .supplier-child-editor { min-height: 0; margin: 0; padding: 2px 5px 2px 1px; overflow-y: auto; overflow-x: hidden; align-content: start; scrollbar-gutter: stable; }
 .supplier-child-modal .supplier-child-add-row { justify-self: start; }
+.supplier-child-submit-status { margin-right: auto; max-width: 330px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.supplier-child-submit-status.is-loading { color: var(--text); }
+.supplier-child-submit-status.is-success { color: #15945f; }
+.supplier-child-submit-status.is-error { color: #c53b4a; }
 .supplier-child-edit-row { max-height: 54px; transition: opacity 180ms ease, transform 180ms ease, max-height 180ms ease, margin 180ms ease; }
 .supplier-child-edit-row.is-entering { opacity: 0; transform: translateY(7px); max-height: 0; }
 .supplier-child-edit-row.is-leaving { opacity: 0; transform: translateX(8px); max-height: 0; margin-block: -4px; pointer-events: none; }

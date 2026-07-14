@@ -204,16 +204,39 @@ export async function renderSupplierAccounts(root) {
 function createChildrenDialog(onDone) {
   openModal(`<div class="mp-head"><b>批量建立子账号</b><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
     <div class="mp-body supplier-child-modal-body"><div class="supplier-child-editor" id="supplierChildRows">${[0, 1].map(i => `<div class="supplier-child-edit-row"><input class="input" data-child-name placeholder="姓名"/><input class="input" data-child-user placeholder="用户名"/><input class="input" data-child-pin type="password" placeholder="初始密码"/><button class="icon-btn danger" type="button" data-child-row-remove title="删除此行">${icon("trash", 14)}</button></div>`).join("")}</div><button class="btn ghost sm supplier-child-add-row" type="button" id="supplierChildRowAdd">${icon("plus", 13)} 添加一行</button></div>
-    <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="supplierChildCreate">创建账号</button></div>`, { onMount(panel, close) {
+    <div class="mp-foot"><span class="supplier-child-submit-status" id="supplierChildSubmitStatus" role="status" aria-live="polite"></span><button class="btn ghost" data-close>取消</button><button class="btn primary" id="supplierChildCreate">创建账号</button></div>`, { onMount(panel, close) {
       panel.classList.add("supplier-child-modal");
       const addRow = () => { const row = document.createElement("div"); row.className = "supplier-child-edit-row is-entering"; row.innerHTML = `<input class="input" data-child-name placeholder="姓名"/><input class="input" data-child-user placeholder="用户名"/><input class="input" data-child-pin type="password" placeholder="初始密码"/><button class="icon-btn danger" type="button" data-child-row-remove title="删除此行">${icon("trash", 14)}</button>`; const rows = $("#supplierChildRows", panel); rows.appendChild(row); requestAnimationFrame(() => row.classList.remove("is-entering")); rows.scrollTo({ top: rows.scrollHeight, behavior: "smooth" }); };
       $("#supplierChildRowAdd", panel).addEventListener("click", addRow);
       panel.addEventListener("click", e => { const b = e.target.closest("[data-child-row-remove]"); if (b && $$(".supplier-child-edit-row", panel).length > 1) { const row = b.closest(".supplier-child-edit-row"); row.classList.add("is-leaving"); row.addEventListener("transitionend", () => row.remove(), { once: true }); setTimeout(() => row.remove(), 220); } });
       $("#supplierChildCreate", panel).addEventListener("click", async () => {
+        const submit = $("#supplierChildCreate", panel);
+        const status = $("#supplierChildSubmitStatus", panel);
+        const showStatus = (message = "", kind = "") => {
+          status.textContent = message;
+          status.className = `supplier-child-submit-status${kind ? ` is-${kind}` : ""}`;
+        };
         const items = $$(".supplier-child-edit-row", panel).map(row => ({ name: $("[data-child-name]", row).value.trim(), username: $("[data-child-user]", row).value.trim(), pin: $("[data-child-pin]", row).value.trim(), role: "supplier_child" })).filter(x => x.name || x.username || x.pin);
-        if (items.some(x => !x.name || !x.username || !x.pin)) { toast("每一行都要填写姓名、用户名和初始密码", "error"); return; }
-        if (!items.length) { toast("请按示例填写至少一个子账号", "error"); return; }
-        try { await remote.supplier.addChildren(items); close(); toast(`已创建 ${items.length} 个子账号`); onDone(); } catch (e) { toast((e.message || String(e)).replace(/^HTTP\s+\d+\s+/, ""), "error"); }
+        if (items.some(x => !x.name || !x.username || !x.pin)) { showStatus("每一行都要填写完整", "error"); toast("每一行都要填写姓名、用户名和初始密码", "error"); return; }
+        if (!items.length) { showStatus("请至少填写一个子账号", "error"); toast("请按示例填写至少一个子账号", "error"); return; }
+        const usernames = items.map(x => x.username.toLowerCase());
+        if (new Set(usernames).size !== usernames.length) { showStatus("用户名不能重复", "error"); toast("本批次存在重复用户名，请修改后再创建", "error"); return; }
+        submit.disabled = true;
+        submit.innerHTML = `<span class="spin-dot"></span> 创建中…`;
+        showStatus(`正在创建 ${items.length} 个账号…`, "loading");
+        try {
+          const created = await remote.supplier.addChildren(items);
+          showStatus(`已创建 ${created?.length || items.length} 个账号`, "success");
+          toast(`已创建 ${created?.length || items.length} 个子账号`);
+          await Promise.resolve(onDone?.());
+          close();
+        } catch (e) {
+          const message = (e.message || String(e)).replace(/^HTTP\s+\d+\s+/, "").replace(/^\{\s*"detail"\s*:\s*"([^"]+)"\s*\}$/, "$1");
+          showStatus(message || "创建失败，请重试", "error");
+          toast(message || "创建失败，请重试", "error");
+          submit.disabled = false;
+          submit.textContent = "创建账号";
+        }
       });
     }});
 }
