@@ -12,7 +12,7 @@ import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/pr
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v78-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v79-1";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -267,11 +267,6 @@ export function renderSlotsPage(root, p, isImg) {
             </div>
           </div>
           <div id="cbRefChooser" class="ref-chooser card" hidden></div>
-
-          ${isImg ? "" : `
-          <div class="mode-tabs" data-active="in">
-            <button class="mode-tab is-active" data-mode="in">站内生成<span>${imageApiConfigured() ? "已接图片 API" : "图片 API 未接"}</span></button>
-          </div>`}
 
           ${isImg ? "" : `<div class="inhouse-controls">
             <button class="btn gen" id="cbGenPrompts">${icon("spark", 15)} 按脚本生成分镜图提示词</button>

@@ -7,7 +7,7 @@
 import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid } from "../core/util.js";
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
-import { state, save, persistNow, on, accountById, productById, primaryProductById } from "../core/store.js";
+import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
 import { AI } from "../api/ai.js";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
@@ -16,7 +16,7 @@ import { polishImageForPublish as polishPublishImage } from "../domain/imagePoli
 import { createUnitVideoJobs } from "../agent/orchestrator.js";
 import { toast, withLoading, openLightbox, openVideoPreview } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v78-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v79-1";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from "../domain/voices.js";
 
@@ -1305,6 +1305,14 @@ export function renderWorkshopPage(root, p) {
       const charBar = $("#wsCharbar", root);
       const pageHead = $(".page-head", root);
       if (audioBar) (charBar || pageHead)?.after(audioBar);
+      const briefBar = $("#wsBriefbar", root);
+      const digitalPlan = $(".dh-plan-inline", root);
+      const coverBar = $("#wsCoverBar", root);
+      if (digitalPlan && briefBar) briefBar.after(digitalPlan);
+      if (coverBar && digitalPlan) {
+        coverBar.classList.add("card", "is-detached-cover");
+        digitalPlan.after(coverBar);
+      }
     }
     wireStepper(root);
     wire();
@@ -1356,7 +1364,7 @@ export function renderWorkshopPage(root, p) {
           <em>不强制先生成口播。前15s做钩子，后15s做产品演示；功能演示段可先生成分镜图再带入视频。</em>
         </div>
         <div class="infoflow-actions">
-          <button class="btn ghost sm" id="wsInfoPlan">${icon("spark", 13)} 生成脚本</button>
+          <button class="btn ghost sm" id="wsInfoPlan">${icon("refresh", 13)} 重新生成提示词</button>
           <button class="btn ghost sm" id="wsInfoStoryboard">${loading ? "分镜生成中…" : `${icon("image", 13)} 生成功能演示分镜`}</button>
           <button class="btn gen sm" id="wsInfoVideo" ${infoVideoRunning ? "disabled" : ""}>${infoVideoRunning ? `<span class="spin-dot"></span> ${infoVideoLabel}` : `${icon("film", 13)} ${infoVideoLabel}`}</button>
         </div>
@@ -1534,14 +1542,16 @@ export function renderWorkshopPage(root, p) {
     const segs = digitalSegmentsFromShots(p, acc);
     if (!segs.length) throw new Error("没有可生成的数字人口播分段");
     if (!ttsApiConfigured()) {
+      const existingCount = segs.filter(seg => seg.audioAssetId && assetById(seg.audioAssetId)).length;
       Object.assign(p.artifacts.audio, estimateAudio(shots), {
         assetId: null,
-        source: "estimate",
+        source: existingCount ? "tts-segments" : "estimate",
         voiceId,
-        lastError: "服务器未配置 Minimax TTS，当前仅估时"
+        lastError: "服务器未配置 Minimax TTS，已保留原有分段音频"
       });
-      segs.forEach(seg => { seg.audioAssetId = null; seg.status = "estimate"; });
-      return { count: 0, duration: p.artifacts.audio.duration || 0 };
+      segs.forEach(seg => { if (!seg.audioAssetId) seg.status = "estimate"; });
+      A.digitalHuman.segments = segs;
+      return { count: existingCount, duration: p.artifacts.audio.duration || 0 };
     }
     let total = 0;
     for (let i = 0; i < segs.length; i++) {
@@ -1564,6 +1574,9 @@ export function renderWorkshopPage(root, p) {
       seg.videoStatus = "pending";
       seg.videoOutput = null;
       seg.videoJobId = null;
+      A.digitalHuman.segments = segs;
+      save("productions");
+      await persistNow();
       if (previousAudioAssetId && previousAudioAssetId !== a.id) await removeAsset(previousAudioAssetId);
       total += seg.audioDuration || seg.dur || 0;
     }
@@ -1588,17 +1601,16 @@ export function renderWorkshopPage(root, p) {
     const text = safeTtsText(seg.line || "");
     if (!text) throw new Error("该段没有口播内容");
     if (!ttsApiConfigured()) {
-      seg.audioAssetId = null;
-      seg.status = "estimate";
+      if (!seg.audioAssetId) seg.status = "estimate";
       A.digitalHuman.segments = segs;
       Object.assign(p.artifacts.audio, estimateAudio(shots), {
         assetId: null,
-        source: "estimate",
+        source: seg.audioAssetId ? "tts-segments" : "estimate",
         voiceId,
         voiceRefAssetId: null,
-        lastError: "服务器未配置 Minimax TTS，当前仅估时"
+        lastError: "服务器未配置 Minimax TTS，已保留原有分段音频"
       });
-      return { count: 0, duration: seg.dur || 0 };
+      return { count: seg.audioAssetId ? 1 : 0, duration: seg.audioDuration || seg.dur || 0 };
     }
     const previousAudioAssetId = seg.audioAssetId || null;
     const out = await synthesizeTts({ text, voiceId, speed: 1.2 });
@@ -1616,8 +1628,10 @@ export function renderWorkshopPage(root, p) {
     seg.videoStatus = "pending";
     seg.videoOutput = null;
     seg.videoJobId = null;
-    if (previousAudioAssetId && previousAudioAssetId !== a.id) await removeAsset(previousAudioAssetId);
     A.digitalHuman.segments = segs;
+    save("productions");
+    await persistNow();
+    if (previousAudioAssetId && previousAudioAssetId !== a.id) await removeAsset(previousAudioAssetId);
     const total = segs.reduce((sum, x) => sum + Number(x.audioDuration || x.dur || 0), 0);
     Object.assign(p.artifacts.audio, {
       assetId: null,
@@ -2075,14 +2089,26 @@ export function renderWorkshopPage(root, p) {
     wireDropZone(refbar, async files => { await addRefs(files); });
     $("#wsRefUp", root)?.addEventListener("change", async e => { await addRefs(e.target.files); e.target.value = ""; });
     $$("[data-omnidel]", root).forEach(b => b.addEventListener("click", () => {
-      A.omniRefAssetIds = A.omniRefAssetIds.filter(id => id !== b.dataset.omnidel);
-      A.sceneRefAssetIds = (A.sceneRefAssetIds || []).filter(id => id !== b.dataset.omnidel);
-      save("productions"); draw();
+      const removedId = b.dataset.omnidel;
+      A.omniRefAssetIds = A.omniRefAssetIds.filter(id => id !== removedId);
+      A.sceneRefAssetIds = (A.sceneRefAssetIds || []).filter(id => id !== removedId);
+      save("productions");
+      $$("[data-omnidel]", root)
+        .filter(node => node.dataset.omnidel === removedId)
+        .forEach(node => node.closest(".ref-chip")?.remove());
+      const chipRow = $(".refbar-chip", refbar);
+      if (chipRow && !chipRow.querySelector(".ref-chip")) {
+        chipRow.innerHTML = `<span class="muted">${activeInfoFlowMode ? "可拖入产品图或 MP3，总参考会用于每段视频" : "未设置（可选）"}</span>`;
+      }
     }));
     $("[data-reference-audio-del]", root)?.addEventListener("click", () => {
       A.referenceAudioAssetId = null;
       save("productions");
-      draw();
+      $("[data-reference-audio-del]", root)?.closest(".ref-chip")?.remove();
+      const chipRow = $(".refbar-chip", refbar);
+      if (chipRow && !chipRow.querySelector(".ref-chip")) {
+        chipRow.innerHTML = `<span class="muted">${activeInfoFlowMode ? "可拖入产品图或 MP3，总参考会用于每段视频" : "未设置（可选）"}</span>`;
+      }
     });
     // 尺寸切换（9:16 / 16:9）：全片统一，写进 boards.ratio，生成时传给视频 API
     $$("[data-ratio]", root).forEach(b => b.addEventListener("click", () => {
@@ -2387,7 +2413,7 @@ export function renderWorkshopPage(root, p) {
       try {
         await generateWorkshopDraft();
         ensureCurrentInfoFlowPlanReady();
-        toast("已生成信息流前后15秒脚本");
+        toast("已重新生成信息流前后15秒提示词");
       } catch (err) {
         const info = ensureInfoFlowState(p);
         info.status = "failed";
@@ -2398,7 +2424,7 @@ export function renderWorkshopPage(root, p) {
       } finally {
         draw();
       }
-    }, "生成中…"));
+    }, "重生成中…"));
     $("#wsInfoStoryboard", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       syncInfoFlowPrompts();
       await generateInfoFlowStoryboards();
@@ -2422,7 +2448,13 @@ export function renderWorkshopPage(root, p) {
       A.infoFlow.storyboards = back?.storyboardAssetIds || [];
       buildMaterialUnits(p);
       save("productions");
-      draw();
+      const card = b.closest(".if-board-thumb");
+      const row = card?.parentElement;
+      card?.remove();
+      if (row) {
+        const position = row.querySelectorAll(".if-board-thumb,.if-board-empty").length + 1;
+        if (position <= 2) row.insertAdjacentHTML("beforeend", `<div class="if-board-empty"><b>${position}</b><em>待分镜</em></div>`);
+      }
     }));
     async function prepareInfoFlowVideos(targetIndex = null) {
       if (!activeInfoFlowMode) return 0;
@@ -2581,15 +2613,10 @@ export function renderWorkshopPage(root, p) {
           toast(out.count ? `数字人口播已分段生成：${out.count} 段 · ${fmtTC(out.duration || 0)}` : "已生成数字人分段估时");
           draw();
         } catch (err) {
-          Object.assign(p.artifacts.audio, estimateAudio(shots), {
-            assetId: null,
-            source: "estimate",
-            voiceId,
-            voiceRefAssetId: null,
-            lastError: err.message || "Minimax TTS 生成失败"
-          });
+          p.artifacts.audio.voiceId = voiceId;
+          p.artifacts.audio.lastError = err.message || "Minimax TTS 生成失败";
           save("productions");
-          toast("Minimax 分段口播失败，已保留分段计划", "error");
+          toast("Minimax 分段口播失败，已保留原有分段音频", "error");
           draw();
         }
         return;

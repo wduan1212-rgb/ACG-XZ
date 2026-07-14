@@ -43,6 +43,8 @@ function openMenu(select, trigger) {
   menu.style.left = `${Math.min(rect.left, innerWidth - width - 10)}px`;
   menu.style.top = below ? `${rect.bottom + 6}px` : "auto";
   menu.style.bottom = below ? "auto" : `${innerHeight - rect.top + 6}px`;
+  menu.addEventListener("wheel", e => e.stopPropagation(), { passive: true });
+  menu.addEventListener("touchmove", e => e.stopPropagation(), { passive: true });
   trigger.setAttribute("aria-expanded", "true");
   active = { select, trigger, menu };
 }
@@ -84,5 +86,8 @@ export function installSelectEnhancer() {
   document.addEventListener("click", closeMenu);
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeMenu(); });
   window.addEventListener("resize", closeMenu, { passive: true });
-  window.addEventListener("scroll", closeMenu, { passive: true, capture: true });
+  window.addEventListener("scroll", e => {
+    if (active?.menu && (e.target === active.menu || active.menu.contains(e.target))) return;
+    closeMenu();
+  }, { passive: true, capture: true });
 }

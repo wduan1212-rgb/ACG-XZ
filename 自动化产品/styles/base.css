@@ -181,6 +181,8 @@ body:not(.role-admin) .rail-item[data-nav="voice"] { display: none; }
   z-index: 10050;
   max-height: min(320px, 54vh);
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   padding: 6px;
   border: 1px solid rgba(15,23,42,.12);
   border-radius: 8px;

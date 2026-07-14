@@ -10,13 +10,15 @@ import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v78-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260714-v79-1";
 
 let PPS = 40;
 const CLIP_SEC = 15;
 const histories = new Map(); // productionId -> []
 
 export function renderCutPage(root, p) {
+  root.__cutStopPlay?.();
+  root.__cutStopPlay = null;
   const acc = accountById(p.accountId);
   const legacySubStyle = p.artifacts.subStyle
     && Number(p.artifacts.subStyle.size) === 13
@@ -36,6 +38,9 @@ export function renderCutPage(root, p) {
   }
   let playheadT = 0;
   let playTimer = null;
+  let playStartedAt = 0;
+  let playStartedT = 0;
+  let timelineRedrawFrame = null;
   let activeSubIdx = 0;
   let selectedClipId = null;
   let activeTrack = "";
@@ -206,7 +211,12 @@ export function renderCutPage(root, p) {
     p.artifacts.finalVideoName = "";
     p.artifacts.composeError = "";
     save("productions");
-    queueMicrotask(() => root.isConnected && drawTimeline());
+    if (!timelineRedrawFrame) {
+      timelineRedrawFrame = requestAnimationFrame(() => {
+        timelineRedrawFrame = null;
+        if (root.isConnected && !playTimer) drawTimeline();
+      });
+    }
   }
 
   async function composeFinal({ automatic = false } = {}) {
@@ -426,7 +436,7 @@ export function renderCutPage(root, p) {
           if (Number.isFinite(video.duration)) video.currentTime = Math.min(localTime, Math.max(0, video.duration - 0.1));
           if (playTimer) video.play().catch(() => null);
         }, { once: true });
-      } else if (!video.seeking && Math.abs((video.currentTime || 0) - localTime) > 0.6) {
+      } else if (!video.seeking && Math.abs((video.currentTime || 0) - localTime) > 1.1) {
         video.currentTime = Math.min(localTime, Math.max(0, (video.duration || localTime + 1) - 0.1));
       }
       video.hidden = false;
@@ -474,7 +484,7 @@ export function renderCutPage(root, p) {
       audio.volume = clamp(volume, 0, 1);
       const dur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
       const target = dur ? Math.min(Math.max(0, t), Math.max(0, dur - 0.05)) : Math.max(0, t);
-      if (!audio.seeking && Math.abs((audio.currentTime || 0) - target) > 0.55) {
+      if (!audio.seeking && Math.abs((audio.currentTime || 0) - target) > 0.9) {
         try { audio.currentTime = target; } catch {}
       }
       if (shouldPlay && audio.paused) audio.play().catch(() => null);
@@ -488,8 +498,12 @@ export function renderCutPage(root, p) {
     if (video) video.pause();
     $("#cpNarration", root)?.pause();
     $("#cpBgmAudio", root)?.pause();
-    if (playTimer) { clearInterval(playTimer); playTimer = null; $("#cpPlay", root).innerHTML = icon("play", 22); }
+    if (playTimer) cancelAnimationFrame(playTimer);
+    playTimer = null;
+    const playButton = $("#cpPlay", root);
+    if (playButton) playButton.innerHTML = icon("play", 22);
   };
+  root.__cutStopPlay = stopPlay;
   const togglePlay = () => {
     if (playTimer) { stopPlay(); return; }
     if (!TL().length && !SUBS().length) { toast("时间轴还是空的"); return; }
@@ -498,11 +512,21 @@ export function renderCutPage(root, p) {
     if (video && !video.hidden && video.src) video.play().catch(() => null);
     syncPreviewAudio(true);
     $("#cpPlay", root).innerHTML = icon("pause", 22);
-    playTimer = setInterval(() => {
-      playheadT += 0.1;
-      if (playheadT >= totalDur()) { playheadT = totalDur(); stopPlay(); }
+    playStartedAt = performance.now();
+    playStartedT = playheadT;
+    const tick = now => {
+      if (!playTimer) return;
+      playheadT = playStartedT + Math.max(0, now - playStartedAt) / 1000;
+      if (playheadT >= totalDur()) {
+        playheadT = totalDur();
+        updatePlayhead();
+        stopPlay();
+        return;
+      }
       updatePlayhead();
-    }, 100);
+      playTimer = requestAnimationFrame(tick);
+    };
+    playTimer = requestAnimationFrame(tick);
   };
 
   /* ---------- 片段轨交互 ---------- */
@@ -873,7 +897,7 @@ export function renderCutPage(root, p) {
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("未检测到封面，正在自动生成");
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260714-v78-1");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260714-v79-1");
         await ensureVideoCover(p);
         toast("封面已自动生成并入库");
       } catch (err) {
