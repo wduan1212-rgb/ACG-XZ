@@ -1,5 +1,14 @@
 # Server Deployment Log
 
+## v77.1 - 2026-07-14
+
+- Source: `b5e11ad` (`fix: restore workshop product lookup`). The online entry reports `20260714-v77-2`.
+- Scope: replaced only `index.html`, `js/main.js`, `js/views/studio.js` and `js/views/chainWorkshop.js`. Production runtime data and all private configuration were excluded.
+- Cause and fix: the workshop used `primaryProducts()` without importing it, so the browser stopped before the LLM request. The missing import was added and the full entry-to-workshop cache chain was advanced together.
+- Backup and rollback: retained `pre-v77.1-20260714-155236`, including the four prior frontend files and a consistent SQLite checkpoint. Rollback restores frontend code only.
+- Result: health check and MiniMax-M3 test passed. A real browser executed the previously failing product lookup path without the missing-variable error, and loaded the new workshop cache URL with no console errors.
+- Data protection check: accounts 80, members 8, analytics links 21, metric snapshots 108, sessions 51 and voice presets 4 remained intact. No production collection was cleared or replaced.
+
 ## v77 - 2026-07-14
 
 - Source: `90295f1` (`v77 polish voice preview actions and transitions`), including the cumulative v73-v77 code and static assets. The online entry reports `20260714-v77-1`.
