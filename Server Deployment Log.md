@@ -1,5 +1,16 @@
 # Server Deployment Log
 
+## v82.3 - 2026-07-15
+
+- Source: `1a82804` (`v82.3 fix shared remote state and link replacement`). The online entry reports `20260715-v82-5`.
+- Scope: deployed tracked code and static resources from a clean target archive with explicit runtime exclusions and without delete-style synchronization. The production database, JSON/runtime state, uploads, composed media, accounts, members, assets, deliveries, remarks, drafts, analytics, environment configuration and authentication cache were preserved.
+- Backup and rollback: retained rollback point `v82.3-pre-20260715-133201`, containing the pre-deployment code/config snapshot, a consistent SQLite backup and runtime media checkpoints. Rollback must restore code/static resources only and must not replace current production business data.
+- Result: the complete server test suite passed 16/16, tracked JavaScript syntax checks and Python compilation passed, service restart succeeded, and the health endpoint remained available.
+- Data protection check: pre/post counts were identical: accounts 80, members 10, assets 2377, productions 426, jobs 670, analytics links 22, metric snapshots 108, sessions 52, uploads 2188 and composed media 109.
+- Role smoke: supplier-parent and assigned supplier-child logins both issued `GET /api/state`; the parent saw both isolated deliveries while the child saw only the assigned delivery. Administrator link forgery and child updates to an unassigned delivery were denied. Supplier-only download-state semantics remained intact.
+- Link replacement smoke: the modify dialog selected the full current URL, multi-URL input resolved to the last newly pasted URL, and the new URL became the single current link in the supplier row, creator snapshot and analytics link. The page updated locally without horizontal overflow, console errors or warnings.
+- Incident log: the ESM singleton and prefilled-link risks were already recorded in `Problem Document.md`; no additional production incident was introduced by this deployment.
+
 ## v77 - 2026-07-14
 
 - Source: `90295f1` (`v77 polish voice preview actions and transitions`), including the cumulative v73-v77 code and static assets. The online entry reports `20260714-v77-1`.
