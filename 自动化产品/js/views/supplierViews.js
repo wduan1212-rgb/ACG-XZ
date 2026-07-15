@@ -2,7 +2,7 @@ import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save } from "../core/store.js";
 import { emptyState, openModal, confirmModal, toast, promptModal } from "../ui/components.js";
-import * as remote from "../core/remote.js?v=20260715-v82-4";
+import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliveryViewsSummary } from "../domain/delivery.js";
 import { normalizeHomepageUrl } from "../domain/accounts.js";

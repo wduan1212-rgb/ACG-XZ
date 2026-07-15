@@ -120,7 +120,12 @@ export function supplierReturnModal({ title = "回传发布链接", platform = "
         </div>
       </div>`;
     document.body.appendChild(ov);
-    requestAnimationFrame(() => { ov.classList.add("open"); $("#retRaw", ov).focus(); });
+    requestAnimationFrame(() => {
+      ov.classList.add("open");
+      const input = $("#retRaw", ov);
+      input.focus();
+      if (value) input.select();
+    });
     let closed = false;
     const close = v => { if (closed) return; closed = true; ov.classList.remove("open"); setTimeout(() => ov.remove(), 200); res(v); };
     ov.addEventListener("click", e => {

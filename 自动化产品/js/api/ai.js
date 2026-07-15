@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260715-v82-4";
+import { llm, visionCopy } from "./llm.js?v=20260715-v82-5";
 import { DUMATE_BRIEF, PROMPT_FRAMEWORK, NO_DH_FRAMEWORK, DIR_POOL, TOPIC_POOL, STYLE_POOL } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";

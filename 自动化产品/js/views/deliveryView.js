@@ -11,11 +11,11 @@ import { ensureAnalyticsForAsset } from "../domain/analytics.js";
 import { openProductionDrawer } from "./prodDrawer.js";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
-import * as remote from "../core/remote.js?v=20260715-v82-4";
+import * as remote from "../core/remote.js";
 
 function extractUrl(text) {
-  const m = String(text || "").match(/https?:\/\/[^\s"'<>，。；、）】]+/);
-  return m ? m[0].trim() : "";
+  const matches = String(text || "").match(/https?:\/\/[^\s"'<>，。；、）】]+/g) || [];
+  return matches.length ? matches[matches.length - 1].trim() : "";
 }
 
 function extractShareTitle(text) {

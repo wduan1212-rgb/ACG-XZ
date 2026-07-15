@@ -1,0 +1,26 @@
+import re
+import unittest
+from pathlib import Path
+
+
+APP_DIR = Path(__file__).resolve().parents[2]
+
+
+class FrontendModuleIdentityTest(unittest.TestCase):
+    def test_remote_client_has_one_canonical_esm_url(self):
+        imports = []
+        for path in (APP_DIR / "js").rglob("*.js"):
+            source = path.read_text(encoding="utf-8")
+            for specifier in re.findall(r'from\s+["\']([^"\']*remote\.js(?:\?[^"\']*)?)["\']', source):
+                imports.append((path.relative_to(APP_DIR).as_posix(), specifier))
+
+        self.assertGreaterEqual(len(imports), 2)
+        self.assertTrue(all("?" not in specifier for _, specifier in imports), imports)
+
+    def test_supplier_link_parser_prefers_latest_pasted_url(self):
+        source = (APP_DIR / "js/views/deliveryView.js").read_text(encoding="utf-8")
+        self.assertIn("matches[matches.length - 1]", source)
+
+
+if __name__ == "__main__":
+    unittest.main()

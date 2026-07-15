@@ -7,7 +7,7 @@ import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
 import { toast, openLightbox, publishModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v82-4";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v82-5";
 import { reviewPreviewHtml } from "./prodDrawer.js";
 
 export function renderCopyPage(root, p) {
@@ -59,7 +59,7 @@ export function renderReviewPage(root, p) {
     wireStepper(root);
     const run = async () => {
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260715-v82-4");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260715-v82-5");
         await ensureVideoCover(p);
         if (root.isConnected) renderReviewPage(root, p);
       } catch (err) {
