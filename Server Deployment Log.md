@@ -1,5 +1,17 @@
 # Server Deployment Log
 
+## v84 - 2026-07-16
+
+- Source: `7756a08` (`v84 unify dashboard and editing workflows`). The online entry reports `20260715-v84-5`.
+- Scope: deployed exactly 29 changed application code and static files from a clean commit after a dry-run. No delete-style synchronization was used. The production database, runtime state, uploads, composed media, accounts, members, assets, deliveries, drafts, analytics, environment configuration, authentication cache and logs were excluded.
+- Backup and rollback: retained rollback point `v84-pre-20260716-011950`, containing the pre-deployment code snapshot, a consistent SQLite backup and runtime media checkpoints. Rollback must restore code/static resources only and must not replace current production business data.
+- Result: the production virtual environment passed the complete test suite 31/31, all JavaScript syntax checks and Python compilation passed, the private environment fingerprint stayed unchanged, service restart succeeded, and the health endpoint remained available.
+- Server dependency: the host initially had no CJK font file. Standard Noto CJK fonts were installed and the application font selector then returned a valid family and directory; a real one-second Chinese SRT burn-in with FFmpeg produced a valid video.
+- Provider config smoke: LLM, image, video, digital-human and TTS configuration endpoints all reported configured and reachable. No private provider value was changed.
+- Data protection check: pre/post counts were identical: accounts 80, members 12, assets 2523, productions 453, jobs 676, batches 62, analytics links 23, metric snapshots 108, sessions 55, voice presets 4, supplier bindings 52, supplier activity 28, uploads 2312 and composed media 140.
+- Browser smoke: administrator login loaded the composite dashboard with 80 accounts and no console errors. The merged assets/drafts route opened on the draft panel and showed 53 existing drafts; no archive, delete or generation action was performed.
+- Validation note: a first temporary test directory contained only the 29-file delta, so unchanged imports were absent and the test process stopped before production synchronization. Rebuilding the temporary directory from the complete current application plus the delta passed 31/31; production was not changed by the incomplete-stage attempt.
+
 ## v83 - 2026-07-15
 
 - Source: `9c9f594` (`v83 stabilize creative and editing workflows`). The online entry reports `20260715-v83-2`.
