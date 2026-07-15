@@ -1,5 +1,15 @@
 # Server Deployment Log
 
+## v83 - 2026-07-15
+
+- Source: `9c9f594` (`v83 stabilize creative and editing workflows`). The online entry reports `20260715-v83-2`.
+- Scope: deployed exactly 28 changed application code and static files from a clean commit archive after an rsync dry-run. No delete-style synchronization was used. The production database, runtime JSON/state, uploads, composed media, accounts, members, assets, deliveries, drafts, analytics, environment configuration, authentication cache and logs were excluded.
+- Backup and rollback: retained rollback point `v83-pre-20260715-174905`, containing the pre-deployment code/config snapshot, a consistent SQLite backup and runtime media checkpoints. Rollback must restore code/static resources only and must not replace current production business data.
+- Result: the server virtual environment passed the complete test suite 23/23, all deployed JavaScript syntax checks and Python compilation passed, the environment fingerprint stayed unchanged, service restart succeeded, and the health endpoint remained available.
+- Data protection check: pre/post counts were identical: accounts 80, members 12, assets 2488, productions 452, jobs 676, analytics links 23, metric snapshots 108, sessions 55, batches 61, voice presets 4, supplier bindings 52, supplier activity 28, uploads 2296 and composed media 138.
+- Browser smoke: administrator login loaded the production state and reported 80 accounts with no console errors. The creator settings member list omitted supplier-child accounts, the restored supplier parent remained present, and analytics displayed separate `account / published title` columns with the account filter available.
+- Incident log: the first post-sync test command used the system Python and stopped before service restart because project dependencies were unavailable there. The validation was rerun with the project virtual environment and passed 23/23; no service outage or business-data write occurred, so no additional product incident was added to `Problem Document.md`.
+
 ## v82.3 - 2026-07-15
 
 - Source: `1a82804` (`v82.3 fix shared remote state and link replacement`). The online entry reports `20260715-v82-5`.
