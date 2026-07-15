@@ -10,15 +10,27 @@ import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v82-5";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v83-2";
 
 let PPS = 40;
 const CLIP_SEC = 15;
+const COMPOSE_TIMEOUT_MS = 3 * 60 * 1000;
 const histories = new Map(); // productionId -> []
+const activeComposes = new Set();
+const activeAudioTiming = new Set();
 
 export function renderCutPage(root, p) {
   root.__cutStopPlay?.();
   root.__cutStopPlay = null;
+  if (p.artifacts.composing && !activeComposes.has(p.id)) {
+    p.artifacts.composing = false;
+    p.artifacts.composeError = "上次合成已中断，请重新点击下一步";
+    save("productions");
+  }
+  if (p.artifacts.audioTimingPending && !activeAudioTiming.has(p.id)) {
+    p.artifacts.audioTimingPending = false;
+    save("productions");
+  }
   const acc = accountById(p.accountId);
   const legacySubStyle = p.artifacts.subStyle
     && Number(p.artifacts.subStyle.size) === 13
@@ -47,6 +59,7 @@ export function renderCutPage(root, p) {
 
   const TL = () => p.artifacts.timeline || (p.artifacts.timeline = []);
   const SUBS = () => p.artifacts.subs || (p.artifacts.subs = []);
+  const isInfoFlow = () => p.artifacts?.boards?.materialMode === "infoFlow";
   const clipDur = c => Math.max(1, c.dur != null ? c.dur : CLIP_SEC);
   const clipStart = i => { let t = 0; for (let k = 0; k < i; k++) t += clipDur(TL()[k]); return t; };
   const clipsTotal = () => TL().reduce((s, c) => s + clipDur(c), 0);
@@ -164,11 +177,66 @@ export function renderCutPage(root, p) {
     return [...new Set([scriptLine, ...quoted].filter(Boolean))].join("，");
   }
 
-  async function alignCaptionsToAudio({ silent = false } = {}) {
+  function cleanEstimatedCaption(text = "") {
+    const value = cleanCaptionText(String(text || "")
+      .replace(/\\n/g, " ")
+      .replace(/^(?:声音|台词|角色|主角|旁白|画外音)(?:\s*[\/:|：]→?\s*)?/i, "")
+      .replace(/(?:声线锚点|说话像|运镜|镜头|画面|负面约束)[\s\S]*$/i, ""));
+    if (!value || value.length < 4) return "";
+    if (/^(?:声音|台词|角色|主角|旁白|画外音|镜头|画面)(?:\s|$)/.test(value)) return "";
+    if (/^(?:快节奏|生成9 16|生成短视频|统一视觉风格|禁止|不出现)/.test(value)) return "";
+    return value;
+  }
+
+  function estimatedInfoFlowLine(clip, index) {
+    const segment = (p.artifacts.boards?.infoFlow?.segments || [])[index] || {};
+    const prompt = String(segment.videoPrompt || segment.visual || "");
+    // 信息流提示词里还会出现界面标签、标题和导演说明；只有明确标注为
+    // 口播/台词/对白/旁白的内容才可以进入字幕，不能把任意引号文本当成说话内容。
+    const spoken = [...prompt.matchAll(/(?:(?:声音\s*\/\s*台词|口播|台词|对白|旁白|画外音)[^。；\n]{0,28}?|(?:角色|人物|用户)?(?:对镜头)?(?:说|吐槽|喊|回应)\s*)(?:[:：]\s*)?[“"「']([^“”"「」'\n]{4,90})[”"」']/g)]
+      .map(match => cleanEstimatedCaption(match[1]))
+      .filter(Boolean);
+    const labeled = [...prompt.matchAll(/(?:声音\s*\/\s*台词|口播|台词|对白|旁白|画外音)\s*[:：]\s*([^。；\n]{4,90})/g)]
+      .map(match => cleanEstimatedCaption(match[1]))
+      .filter(Boolean);
+    const scriptLine = cleanEstimatedCaption(p.artifacts.script.shots?.[index]?.line || "");
+    return [...new Set([scriptLine, ...spoken, ...labeled].filter(Boolean))].slice(0, 2).join("，");
+  }
+
+  function estimateInfoFlowCaptions({ force = false, silent = false } = {}) {
+    if (!isInfoFlow()) return false;
+    if (!force && p.artifacts.subTimingSource === "manual") return false;
+    const subs = [];
+    let cursor = 0;
+    TL().forEach((clip, index) => {
+      const end = cursor + clipDur(clip);
+      const line = estimatedInfoFlowLine(clip, index);
+      if (line) subs.push(...spreadCaption(line, cursor, end).map(cue => ({ ...cue, estimated: true })));
+      cursor = end;
+    });
+    if (!subs.length) return false;
+    p.artifacts.subs = normalizeCaptionTrack(subs);
+    p.artifacts.subTimingSource = "estimated-info-flow-v1";
+    p.artifacts.audioTimingSource = "estimated-info-flow-v1";
+    p.artifacts.finalVideoUrl = "";
+    p.artifacts.finalVideoCaptionSig = "";
+    save("productions");
+    drawTimeline();
+    if (!silent) toast(`已按信息流片段时长匹配 ${subs.length} 条字幕`);
+    return true;
+  }
+
+  async function alignCaptionsToAudio({ silent = false, force = false } = {}) {
+    if (isInfoFlow()) return estimateInfoFlowCaptions({ force, silent });
+    if (!force && p.artifacts.subTimingSource === "manual") return false;
     const clips = TL().map((clip, index) => ({ url: videoUrlForClip(clip), text: captionTextForClip(clip, index) })).filter(item => item.url && item.text);
     if (!clips.length) return false;
     if (p.artifacts.audioTimingPending) return false;
+    const attemptSig = JSON.stringify(clips);
+    if (!force && p.artifacts.audioTimingAttemptSig === attemptSig) return false;
+    p.artifacts.audioTimingAttemptSig = attemptSig;
     p.artifacts.audioTimingPending = true;
+    activeAudioTiming.add(p.id);
     save("productions");
     try {
       const res = await fetch("/api/video/audio-timing", {
@@ -178,7 +246,11 @@ export function renderCutPage(root, p) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok || !Array.isArray(data.cues) || !data.cues.length) throw new Error(data.detail || "未检测到可匹配的人声区间");
-      p.artifacts.subs = normalizeCaptionTrack(data.cues.map(cue => ({ ...cue, autoAligned: true })));
+      const cues = data.cues
+        .map(cue => ({ ...cue, text: cleanEstimatedCaption(cue.text), autoAligned: true }))
+        .filter(cue => cue.text);
+      if (!cues.length) throw new Error("未识别到可用的台词字幕");
+      p.artifacts.subs = normalizeCaptionTrack(cues);
       p.artifacts.subTimingSource = "audio-analysis-v3";
       p.artifacts.audioTimingSource = data.source || "audio-analysis-v3";
       p.artifacts.finalVideoUrl = "";
@@ -192,6 +264,7 @@ export function renderCutPage(root, p) {
       return false;
     } finally {
       p.artifacts.audioTimingPending = false;
+      activeAudioTiming.delete(p.id);
       save("productions");
     }
   }
@@ -206,7 +279,10 @@ export function renderCutPage(root, p) {
       seg.audioDuration = actual;
       seg.dur = actual;
     }
-    refreshCaptionAlignment({ force: true });
+    // 媒体 metadata 可能在用户手动改字幕后才到达；只能更新时长，不能覆盖手改轨道。
+    if (p.artifacts.subTimingSource === "manual") normalizeCaptionTrack();
+    else if (isInfoFlow()) estimateInfoFlowCaptions({ force: true, silent: true });
+    else refreshCaptionAlignment({ force: true });
     p.artifacts.finalVideoUrl = "";
     p.artifacts.finalVideoName = "";
     p.artifacts.composeError = "";
@@ -226,13 +302,18 @@ export function renderCutPage(root, p) {
     })).filter(c => c.url);
     if (!clips.length) return false;
     p.artifacts.composing = true;
+    p.artifacts.composingStartedAt = Date.now();
+    activeComposes.add(p.id);
     p.artifacts.composeError = "";
     save("productions");
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), COMPOSE_TIMEOUT_MS);
     try {
       const narrationMedia = await assetMedia(p.artifacts.audio?.assetId);
       const bgmMedia = await assetMedia(p.artifacts.bgm?.assetId);
       const res = await fetch("/api/video/compose", {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: p.artifacts.copy?.title || p.title || p.topic || "final",
@@ -259,13 +340,17 @@ export function renderCutPage(root, p) {
       p.artifacts.composeError = "";
       return true;
     } catch (err) {
-      p.artifacts.composeError = err?.message || "自动合成失败";
+      p.artifacts.composeError = err?.name === "AbortError"
+        ? "合成超过 3 分钟已停止，请重试"
+        : (err?.message || "自动合成失败");
       if (!automatic) toast(p.artifacts.composeError, "error");
       return false;
     } finally {
+      clearTimeout(timeout);
       p.artifacts.composing = false;
+      p.artifacts.composingStartedAt = 0;
+      activeComposes.delete(p.id);
       save("productions");
-      if (automatic && root.isConnected) renderCutPage(root, p);
     }
   }
 
@@ -340,7 +425,7 @@ export function renderCutPage(root, p) {
               <input type="range" id="cutBgmVol" min="5" max="60" step="5" value="${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}" />
               <em id="cutBgmVolV">${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}%</em>
             </div>
-            <button class="btn ghost block" id="tlFillSubs" title="从当前视频识别真实口播，并用脚本文字智能修正">${icon("type", 13)} 识别字幕</button>
+            <button class="btn ghost block" id="tlFillSubs" title="${isInfoFlow() ? "信息流没有独立口播音轨，按片段时长匹配台词" : "从当前视频识别真实口播，并用脚本文字智能修正"}">${icon("type", 13)} ${isInfoFlow() ? "按时间匹配字幕" : "识别字幕"}</button>
           </div>` : ""}
         </aside>
       </div>
@@ -392,7 +477,7 @@ export function renderCutPage(root, p) {
     const ct = $("#tlClipTrack", root); ct.style.width = W + "px";
     ct.innerHTML = TL().length ? TL().map((c, i) => `
       <div class="tl-clip ${c.id === selectedClipId ? "is-selected" : ""}" draggable="true" data-id="${c.id}" style="left:${clipStart(i) * PPS}px;width:${clipDur(c) * PPS - 4}px;--g:${gradFor(c.name)}">
-        ${videoUrlForClip(c) ? `<video class="tl-clip-preview" data-id="${esc(c.id)}" src="${esc(videoUrlForClip(c))}" muted playsinline preload="metadata"></video>` : ""}
+        ${videoUrlForClip(c) ? `<video class="tl-clip-preview" data-id="${esc(c.id)}" src="${esc(videoUrlForClip(c))}" muted playsinline preload="none"></video>` : ""}
         <span class="tl-trim l" data-trim="l" data-id="${c.id}" title="向右拖：裁掉开头"></span>
         <span class="tl-clip-name">${esc(c.name)}</span>
         <span class="tl-clip-dur">${clipDur(c)}s${c.trimIn ? ` · 裁头${c.trimIn}s` : ""}</span>
@@ -665,7 +750,10 @@ export function renderCutPage(root, p) {
     $("#tseStart", root).addEventListener("input", e => { snapOnce(); s.start = parseFloat(e.target.value) || 0; p.artifacts.subTimingSource = "manual"; normalizeCaptionTrack(); save("productions"); drawTimeline(); });
     $("#tseEnd", root).addEventListener("input", e => { snapOnce(); s.end = parseFloat(e.target.value) || 0; p.artifacts.subTimingSource = "manual"; normalizeCaptionTrack(); save("productions"); drawTimeline(); });
     $("#tseText", root).addEventListener("input", e => {
-      snapOnce(); s.text = e.target.value; save("productions");
+      snapOnce();
+      s.text = e.target.value;
+      p.artifacts.subTimingSource = "manual";
+      save("productions");
       const blk = $$(".tl-sub", root)[i];
       if (blk) blk.querySelector(".tl-sub-text").textContent = cleanCaptionText(e.target.value || "字幕");
       updatePlayhead();
@@ -742,10 +830,10 @@ export function renderCutPage(root, p) {
     snapshot();
     const button = $("#tlFillSubs", root);
     button.disabled = true;
-    button.innerHTML = `${icon("refresh", 13)} 识别中…`;
-    const aligned = await alignCaptionsToAudio();
+    button.innerHTML = `${icon("refresh", 13)} ${isInfoFlow() ? "匹配中…" : "识别中…"}`;
+    const aligned = await alignCaptionsToAudio({ force: true });
     button.disabled = false;
-    button.innerHTML = `${icon("type", 13)} 识别字幕`;
+    button.innerHTML = `${icon("type", 13)} ${isInfoFlow() ? "按时间匹配字幕" : "识别字幕"}`;
     if (aligned) return;
     let t = 0; const subs = [];
     const per = p.artifacts.audio?.perShot || [];
@@ -886,22 +974,37 @@ export function renderCutPage(root, p) {
     }
   });
 
-  $("#cutNext", root).addEventListener("click", async () => {
+  $("#cutNext", root).addEventListener("click", async event => {
+    const nextButton = event.currentTarget;
+    const resetNextButton = () => {
+      nextButton.disabled = false;
+      nextButton.innerHTML = `下一步：审核 ${icon("arrowRight", 13)}`;
+    };
     if (!TL().length) { toast("时间轴为空：请先等待视频片段生成完成"); return; }
     if (p.artifacts.composing) { toast("正在自动合成成片，请稍候"); return; }
+    const pendingVideoJobs = state.jobs.some(job => job.productionId === p.id
+      && job.kind === "video"
+      && ["queued", "submitted", "running"].includes(job.status));
+    if (pendingVideoJobs) { toast("仍有视频片段生成中，全部就绪后再合成成片"); return; }
     if (videoJobsComplete() && needsCompose()) {
-      composeFinal({ automatic: true });
-      toast("正在自动合成成片，请稍候");
-      return;
+      nextButton.disabled = true;
+      nextButton.innerHTML = `<span class="spin-dot"></span> 正在合成成片`;
+      const composed = await composeFinal({ automatic: false });
+      if (!composed) {
+        resetNextButton();
+        toast(p.artifacts.composeError || "成片合成失败，请重试", "error");
+        return;
+      }
     }
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("未检测到封面，正在自动生成");
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260715-v82-5");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260715-v83-2");
         await ensureVideoCover(p);
         toast("封面已自动生成并入库");
       } catch (err) {
         toast("封面自动生成失败：" + (err?.message || err), "error");
+        resetNextButton();
         return;
       }
     }
@@ -910,10 +1013,12 @@ export function renderCutPage(root, p) {
   });
 
   drawTimeline();
-  if (p.artifacts.subTimingSource !== "audio-analysis-v3" && TL().some(c => videoUrlForClip(c)) && !p.artifacts.audioTimingPending) {
-    queueMicrotask(() => alignCaptionsToAudio({ silent: true }));
-  }
-  if (needsCompose() && !p.artifacts.composing && !p.artifacts.composeError && videoJobsComplete()) {
-    queueMicrotask(() => composeFinal({ automatic: true }));
+  const timingSource = p.artifacts.subTimingSource || "";
+  if (timingSource !== "manual" && TL().some(c => videoUrlForClip(c)) && !p.artifacts.audioTimingPending) {
+    if (isInfoFlow() && timingSource !== "estimated-info-flow-v1") {
+      queueMicrotask(() => estimateInfoFlowCaptions({ silent: true }));
+    } else if (!isInfoFlow() && timingSource !== "audio-analysis-v3") {
+      queueMicrotask(() => alignCaptionsToAudio({ silent: true }));
+    }
   }
 }

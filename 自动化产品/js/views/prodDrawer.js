@@ -7,9 +7,9 @@ import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPrev
 import { STAGES, jobsOf } from "../domain/productions.js";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
-import { addAssetFromDataUrl } from "../domain/assets.js";
+import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260715-v82-5";
+import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260715-v83-2";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */
@@ -76,19 +76,63 @@ function openImageRefineModal(p, imageIndex, onDone) {
   const item = p?.artifacts?.images?.items?.[index];
   if (!item) return;
   const imageUrl = item.assetId ? urlFor(item.assetId) : "";
+  const imageArtifacts = p.artifacts.images || {};
+  let refIds = [...new Set((Object.prototype.hasOwnProperty.call(item, "refAssetIds")
+    ? item.refAssetIds
+    : imageArtifacts.usedRefAssetIds || imageArtifacts.usedSharedRefAssetIds || []).filter(Boolean))].slice(0, 8);
   openModal(`<div class="mp-head"><b>微调第 ${index + 1} 张图片</b><button class="icon-btn" data-close>${icon("x", 15)}</button></div>
     <div class="mp-body batch-image-editor">
       ${imageUrl ? `<img src="${esc(imageUrl)}" alt="第 ${index + 1} 张当前图片"/>` : ""}
-      <label class="field"><span>单张图片提示词</span><textarea class="input" id="pdImagePrompt" rows="9" placeholder="写清楚主体、构图、风格和画面文字">${esc(item.prompt || "")}</textarea></label>
+      <div class="batch-image-editor-fields">
+        <label class="field"><span>单张图片提示词</span><textarea class="input" id="pdImagePrompt" rows="9" placeholder="写清楚主体、构图、风格和画面文字">${esc(item.prompt || "")}</textarea></label>
+        <section class="batch-image-ref-section">
+          <div class="batch-image-ref-head"><span>本张参考图</span><label class="btn ghost sm">${icon("plus", 12)} 增加参考图<input id="pdImageRefAdd" type="file" accept="image/*" hidden></label></div>
+          <div class="batch-image-ref-list" id="pdImageRefList"></div>
+        </section>
+      </div>
       ${item.error ? `<p class="sc-error">${esc(item.error)}</p>` : ""}
     </div>
     <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="pdImageRegenerate">${icon("refresh", 13)} 保存并重新生成</button></div>`, {
     wide: true,
     onMount(panel, closeModal) {
+      const refList = panel.querySelector("#pdImageRefList");
+      const drawRefs = () => {
+        refList.innerHTML = refIds.length ? refIds.map((id, refIndex) => {
+          const asset = state.assets.find(entry => entry.id === id);
+          const src = asset ? urlFor(asset) : "";
+          return `<article class="batch-image-ref-card" data-ref-index="${refIndex}">
+            ${src ? `<img src="${esc(src)}" alt="${esc(asset?.name || `参考图 ${refIndex + 1}`)}">` : `<span class="muted">参考图不可用</span>`}
+            <div><b>${esc(asset?.name || `参考图 ${refIndex + 1}`)}</b><span>
+              <label class="link-btn">${icon("refresh", 11)} 替换<input type="file" accept="image/*" data-ref-replace="${refIndex}" hidden></label>
+              <button class="link-btn danger" type="button" data-ref-remove="${refIndex}">${icon("trash", 11)} 删除</button>
+            </span></div>
+          </article>`;
+        }).join("") : `<div class="batch-image-ref-empty">本张未使用参考图，重新生成时将仅使用提示词。</div>`;
+        panel.querySelectorAll("[data-ref-remove]").forEach(button => button.addEventListener("click", () => {
+          refIds.splice(Number(button.dataset.refRemove), 1);
+          drawRefs();
+        }));
+        panel.querySelectorAll("[data-ref-replace]").forEach(input => input.addEventListener("change", async event => {
+          const file = event.currentTarget.files?.[0];
+          if (!file) return;
+          const asset = await addAssetFromFile(p.accountId, file, { tags: ["参考图", "批量微调"], name: file.name.replace(/\.[^.]+$/, "") });
+          refIds[Number(event.currentTarget.dataset.refReplace)] = asset.id;
+          drawRefs();
+        }));
+      };
+      drawRefs();
+      panel.querySelector("#pdImageRefAdd")?.addEventListener("change", async event => {
+        const file = event.currentTarget.files?.[0];
+        if (!file || refIds.length >= 8) return;
+        const asset = await addAssetFromFile(p.accountId, file, { tags: ["参考图", "批量微调"], name: file.name.replace(/\.[^.]+$/, "") });
+        refIds.push(asset.id);
+        drawRefs();
+      });
       panel.querySelector("#pdImageRegenerate")?.addEventListener("click", async e => {
         const prompt = panel.querySelector("#pdImagePrompt")?.value.trim() || "";
         if (!prompt) { toast("请先填写图片提示词", "error"); return; }
         item.prompt = prompt;
+        item.refAssetIds = [...refIds];
         save("productions");
         const button = e.currentTarget;
         button.disabled = true;

@@ -6,7 +6,7 @@ globalThis.localStorage = {
   removeItem() {}
 };
 globalThis.window = {
-  location: { protocol: "http:", hostname: "localhost", port: "4173" }
+  location: { protocol: "http:", hostname: "127.0.0.1", port: process.env.ACG_TEST_PORT || "4173" }
 };
 
 const { enableServerProxyIfConfigured } = await import("../../js/api/llm.js");

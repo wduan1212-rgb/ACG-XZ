@@ -6,7 +6,7 @@ import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
 import { toast, confirmModal, promptModal, openModal } from "../ui/components.js";
 import { uid } from "../core/util.js";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260715-v82-5";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260715-v83-2";
 
 const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor", "supplier_parent"];
@@ -32,6 +32,7 @@ export const settingsView = {
     let requestsLoaded = false;
     const canReviewRequests = () => remote.isOn() && state.role === "admin";
     const draw = () => {
+      const visibleMembers = state.members.filter(member => member.role !== "supplier_child");
       root.innerHTML = `
         <div class="settings-page">
           <section class="card set-data product-library">
@@ -64,7 +65,7 @@ export const settingsView = {
             <div class="card-head"><b>成员账号</b><em>每人一个账号与权限，创作互不干扰；资产库与发布清单全员共享</em>
               <button class="btn primary sm" id="memAdd">${icon("plus", 13)} 添加成员</button></div>
             <div class="mem-list" id="memList">
-              ${state.members.map(m => `
+              ${visibleMembers.map(m => `
                 <div class="mem-row" data-mem="${m.id}">
                   <span class="ovt-main"><b>${esc(m.name)} ${m.id === state.ui.currentMemberId ? `<i class="mem-me">当前</i>` : ""}</b><em>@${esc(m.username)} · ${ROLE_DESC[m.role] || ROLE_LABEL[m.role] || m.role}</em></span>
                   <span class="mem-role tag ${m.role}">${ROLE_LABEL[m.role] || m.role}</span>

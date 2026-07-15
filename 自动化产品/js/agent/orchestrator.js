@@ -3,7 +3,7 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260715-v82-5";
+import { AI } from "../api/ai.js?v=20260715-v83-2";
 import { groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
@@ -1146,10 +1146,13 @@ export async function regenerateBatchImage(p, imageIndex) {
   if (!provider || provider.mock) throw new Error("图片生成服务当前不可用");
   const key = providerKeyFor("image", provider);
   const refGroups = imageRefGroupsFor(acc, batch, p);
-  const refs = [
-    ...(await imageRefsForIds(refGroups.shared, "shared")),
-    ...(await imageRefsForIds(refGroups.custom, "custom"))
-  ].slice(0, 8);
+  const hasItemRefOverride = Object.prototype.hasOwnProperty.call(item, "refAssetIds");
+  const refs = hasItemRefOverride
+    ? await imageRefsForIds(Array.isArray(item.refAssetIds) ? item.refAssetIds.slice(0, 8) : [], "custom")
+    : [
+        ...(await imageRefsForIds(refGroups.shared, "shared")),
+        ...(await imageRefsForIds(refGroups.custom, "custom"))
+      ].slice(0, 8);
   item.status = "loading";
   item.error = "";
   save("productions");

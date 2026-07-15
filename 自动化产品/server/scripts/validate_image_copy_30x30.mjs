@@ -6,10 +6,10 @@ globalThis.localStorage = {
   removeItem() {}
 };
 globalThis.window = {
-  location: { protocol: "http:", hostname: "localhost", port: "4173" }
+  location: { protocol: "http:", hostname: "127.0.0.1", port: process.env.ACG_TEST_PORT || "4173" }
 };
 
-const { enableServerProxyIfConfigured } = await import("../../js/api/llm.js?v=20260715-v82-4");
+const { enableServerProxyIfConfigured } = await import("../../js/api/llm.js?v=20260715-v83-2");
 const { AI } = await import("../../js/api/ai.js");
 
 if (!await enableServerProxyIfConfigured()) {

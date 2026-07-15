@@ -93,7 +93,7 @@ function remarkDot(asset) {
   return hasUnreadRemark(asset) ? `<i class="delivery-remark-dot" title="有未读备注"></i>` : "";
 }
 
-async function openDeliveryRemarks(asset, redraw) {
+async function openDeliveryRemarks(asset) {
   if (!asset) return;
   openModal(`<div class="mp-head delivery-chat-head"><div><b>发布沟通</b><em>${esc(asset.title || asset.name || "发布内容")}</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
     <div class="mp-body delivery-remark-modal"><div id="deliveryRemarkTimeline" class="delivery-remark-timeline"><p class="supplier-empty">正在读取消息…</p></div><label class="delivery-remark-reply"><span>发送消息</span><textarea class="input" id="deliveryRemarkText" rows="3" maxlength="1200" placeholder="输入消息，发送后双方会在同一条时间线上看到"></textarea></label></div>
@@ -120,7 +120,6 @@ async function openDeliveryRemarks(asset, redraw) {
             save("assets");
           }
           renderTimeline(asset.remarks || []);
-          redraw?.();
         } catch (error) {
           timeline.innerHTML = `<p class="delivery-remark-empty is-error">${esc(error?.message || "备注读取失败")}</p>`;
         }
@@ -148,7 +147,6 @@ async function openDeliveryRemarks(asset, redraw) {
           status.textContent = "已发送";
           status.className = "supplier-child-submit-status is-success";
           renderTimeline(asset.remarks || []);
-          redraw?.();
         } catch (error) {
           status.textContent = error?.message || "发送失败";
           status.className = "supplier-child-submit-status is-error";
@@ -429,7 +427,7 @@ export const deliveryView = {
           const act = b.dataset.dvact;
           if (act === "copy") copyText((asset.title || "") + "\n\n" + (asset.copy || ""), "已复制标题+文案");
           if (act === "download") { await downloadDelivery(asset, { markDownloaded: false }); toast("已下载 " + asset.name); }
-          if (act === "remarks") await openDeliveryRemarks(asset, draw);
+          if (act === "remarks") await openDeliveryRemarks(asset);
           if (act === "review") { const on = toggleAdminReviewed(asset); toast(on ? "已标记为「已审阅」" : "已取消「已审阅」"); draw(); }
           if (act === "delete") {
             const ok1 = await confirmModal({
@@ -617,7 +615,7 @@ export const deliveryView = {
       $$("[data-supremarks]", body).forEach(b => b.addEventListener("click", async event => {
         event.stopPropagation();
         const asset = state.assets.find(x => x.id === b.dataset.supremarks);
-        if (asset) await openDeliveryRemarks(asset, draw);
+        if (asset) await openDeliveryRemarks(asset);
       }));
       $$("tr[data-sup]", body).forEach(tr => tr.addEventListener("click", e => {
         if (e.target.closest("button,input,a")) return;

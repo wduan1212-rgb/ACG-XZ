@@ -7,15 +7,15 @@ import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, delete
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260715-v82-5";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260715-v83-2";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset } from "../domain/assets.js";
-import { renderScriptPage } from "./chainScript.js?v=20260715-v82-5";
-import { renderSlotsPage } from "./chainBoards.js?v=20260715-v82-5";
-import { renderPromptsPage } from "./chainPrompts.js?v=20260715-v82-5";
-import { renderRenderPage } from "./chainRender.js?v=20260715-v82-5";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260715-v82-5";
-import { renderCutPage } from "./chainCut.js?v=20260715-v82-5";
-import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260715-v82-5";
+import { renderScriptPage } from "./chainScript.js?v=20260715-v83-2";
+import { renderSlotsPage } from "./chainBoards.js?v=20260715-v83-2";
+import { renderPromptsPage } from "./chainPrompts.js?v=20260715-v83-2";
+import { renderRenderPage } from "./chainRender.js?v=20260715-v83-2";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260715-v83-2";
+import { renderCutPage } from "./chainCut.js?v=20260715-v83-2";
+import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260715-v83-2";
 
 export const studioView = {
   render(root, { page }) {
@@ -29,10 +29,10 @@ export const studioView = {
 
     // 链路页需要一个在制 production
     const p = activeProduction();
-    if (!p || p.accountId !== acc.id && !productionById(state.ui.activeProductionId)) {
+    if (!p || p.accountId !== acc.id) {
       const mine = productionsOf(acc.id).filter(x => x.stage !== "delivered");
       if (mine.length) { state.ui.activeProductionId = mine[0].id; save("meta"); }
-      else { toast("先开始一条新创作"); go("studio"); return; }
+      else { state.ui.activeProductionId = null; save("meta"); go("studio"); return; }
     }
     const prod = activeProduction();
     if (!prod) { go("studio"); return; }

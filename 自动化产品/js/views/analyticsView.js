@@ -14,6 +14,7 @@ let filter = "all";
 let platformFilter = "all";
 let timeFilter = "all";
 let productFilter = "all";
+let accountFilter = "all";
 let justOneStatus = null;
 let qaLog = [];
 let lastAnalyticsRemotePullAt = 0;
@@ -91,7 +92,8 @@ function rowHtml(r) {
   const err = ["failed", "unsupported"].includes(r.link.status) && r.link.error ? `<em class="da-error">${esc(r.link.error)}</em>` : "";
   const provider = providerLabel(r.link.provider);
   return `<tr data-link="${r.link.id}">
-    <td class="da-title"><b>${esc(title)}</b><em>${esc(r.acc?.name || "未归属账号")} · ${esc(r.link.platform || "")}${provider ? ` · ${esc(provider)}` : ""}</em>${err}</td>
+    <td class="da-account"><b>${esc(r.acc?.name || "未归属账号")}</b><em>${esc(r.link.platform || "")}${provider ? ` · ${esc(provider)}` : ""}</em></td>
+    <td class="da-title"><b>${esc(title)}</b>${err}</td>
     <td>${statusPill(r.link)}</td>
     <td class="num">${m ? fmt(m.likes) : "-"}</td>
     <td class="num">${m ? fmt(m.collects) : "-"}</td>
@@ -149,6 +151,8 @@ export const analyticsView = {
     const draw = () => {
       const rowsAll = analyticsRows();
       const productTags = [...new Set(rowsAll.map(productTagOf).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+      const accounts = [...new Map(rowsAll.filter(r => r.acc?.id).map(r => [r.acc.id, r.acc])).values()]
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-CN"));
       const rows = rowsAll.filter(r => {
         const statusMatch = filter === "all"
           || (filter === "todo" && !r.latest)
@@ -156,7 +160,8 @@ export const analyticsView = {
           || (filter === "risk" && (r.link.status === "failed" || r.link.status === "unsupported"));
         const platformMatch = platformFilter === "all" || r.link.platform === platformFilter;
         const productMatch = productFilter === "all" || productTagOf(r) === productFilter;
-        return statusMatch && platformMatch && productMatch && inTimeWindow(r);
+        const accountMatch = accountFilter === "all" || r.acc?.id === accountFilter;
+        return statusMatch && platformMatch && productMatch && accountMatch && inTimeWindow(r);
       });
       const s = analyticsSummary(rowsAll);
       const views = deliveryViewsSummary(platformFilter);
@@ -195,10 +200,15 @@ export const analyticsView = {
                   <option value="all">全部产品</option>
                   ${productTags.map(tag => `<option value="${esc(tag)}" ${productFilter === tag ? "selected" : ""}>${esc(tag)}</option>`).join("")}
                 </select>${icon("chevronDown", 12)}</label>
+                <label class="select-shell">${icon("users", 13)}<select id="daAccountFilter" aria-label="账号筛选">
+                  <option value="all">全部账号</option>
+                  ${accounts.map(acc => `<option value="${esc(acc.id)}" ${accountFilter === acc.id ? "selected" : ""}>${esc(acc.name || "未命名账号")}</option>`).join("")}
+                </select>${icon("chevronDown", 12)}</label>
               </div>
             </div>
             ${rows.length ? `<div class="da-table-wrap"><table class="da-table">
               <colgroup>
+                <col class="da-col-account">
                 <col class="da-col-title">
                 <col class="da-col-status">
                 <col class="da-col-num">
@@ -207,7 +217,7 @@ export const analyticsView = {
                 <col class="da-col-time">
                 <col class="da-col-action">
               </colgroup>
-              <thead><tr><th>内容</th><th>状态</th><th>赞</th><th>藏</th><th>评</th><th>快照</th><th></th></tr></thead>
+              <thead><tr><th>账号</th><th>发布标题</th><th>状态</th><th>赞</th><th>藏</th><th>评</th><th>快照</th><th></th></tr></thead>
               <tbody>${rows.map(rowHtml).join("")}</tbody>
             </table></div>` : emptyState("pulse", "还没有回链数据", "供应商在发布清单回传链接后，会自动进入这里。")}
           </section>
@@ -240,6 +250,7 @@ function wire(root, redraw) {
   $("#daPlatformFilter", root)?.addEventListener("change", e => { platformFilter = e.currentTarget.value; redraw(); });
   $("#daTimeFilter", root)?.addEventListener("change", e => { timeFilter = e.currentTarget.value; redraw(); });
   $("#daProductFilter", root)?.addEventListener("change", e => { productFilter = e.currentTarget.value; redraw(); });
+  $("#daAccountFilter", root)?.addEventListener("change", e => { accountFilter = e.currentTarget.value; redraw(); });
   $("#daRefreshMetrics", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
     syncExistingPublishedAssets();
     const res = await refreshAllAnalytics();

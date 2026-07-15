@@ -82,7 +82,8 @@
 .da-filter-selects { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: nowrap; }
 .da-filter-selects .select-shell, .da-filter-selects .btn { flex: 0 0 auto; white-space: nowrap; }
 .da-table-wrap { width: 100%; overflow-x: auto; }
-.da-table { width: 100%; border-collapse: collapse; min-width: 760px; table-layout: fixed; }
+.da-table { width: 100%; border-collapse: collapse; min-width: 860px; table-layout: fixed; }
+.da-col-account { width: 160px; }
 .da-col-title { width: auto; }
 .da-col-status { width: 92px; }
 .da-col-num { width: 70px; }
@@ -92,9 +93,9 @@
 .da-table th { text-align: left; font-size: 11px; color: var(--faint); font-weight: 750; padding: 8px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .da-table td { padding: 10px 8px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
 .da-table tr:last-child td { border-bottom: 0; }
-.da-title { min-width: 0; }
-.da-title b { display: block; width: 100%; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.da-title em { display: block; margin-top: 2px; font-style: normal; font-size: 11px; color: var(--faint); }
+.da-account, .da-title { min-width: 0; }
+.da-account b, .da-title b { display: block; width: 100%; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.da-account em { display: block; margin-top: 2px; font-style: normal; font-size: 11px; color: var(--faint); }
 .da-title .da-error { color: var(--danger); white-space: normal; max-width: 460px; line-height: 1.45; }
 .da-table .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; }
 .da-time { color: var(--faint); font-size: 11px; white-space: nowrap; }

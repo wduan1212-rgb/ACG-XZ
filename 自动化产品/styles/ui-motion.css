@@ -15,33 +15,15 @@
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
-.btn.primary::before,
-.btn.gen::before,
-.top-btn.top-primary::before {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  left: 50%;
-  bottom: -18px;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: #fff;
-  transform: translateX(-50%) scale(0);
-  transform-origin: 50% 100%;
-  transition: transform 320ms cubic-bezier(.2,.85,.24,1);
-}
 .btn.primary:hover,
 .btn.gen:hover,
 .top-btn.top-primary:hover {
-  color: #111318;
-  border-color: #111318;
-  transform: translateY(-1px);
-  box-shadow: none;
+  color: #fff;
+  border-color: #2a3038;
+  background: #252a31;
+  transform: none;
+  box-shadow: 0 4px 12px rgba(15,23,42,.12);
 }
-.btn.primary:hover::before,
-.btn.gen:hover::before,
-.top-btn.top-primary:hover::before { transform: translateX(-50%) scale(16); }
 .btn.gen::after { display: none; }
 .btn.primary > *, .btn.gen > *, .top-btn.top-primary > *,
 .btn.ghost > *, .chip > *, .seg-group button > *, .mode-tab > *,
@@ -69,27 +51,6 @@ body:not(.immersive) .chip,
   -webkit-backdrop-filter: none;
   transition: color 180ms ease, border-color 180ms ease, transform 180ms ease, background 180ms ease;
 }
-body:not(.immersive) .btn.ghost::before,
-body:not(.immersive) .chip::before,
-.seg-group button::before,
-.mode-tab::before,
-.vl-tabs button::before,
-.vl-mode-tabs button::before,
-.asset-library-tabs button::before,
-.supplier-filter-chips button::before {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  left: 50%;
-  bottom: -18px;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: #111318;
-  transform: translateX(-50%) scale(0);
-  transform-origin: 50% 100%;
-  transition: transform 300ms cubic-bezier(.2,.85,.24,1);
-}
 body:not(.immersive) .btn.ghost:hover,
 body:not(.immersive) .chip:hover,
 .seg-group button:hover,
@@ -98,20 +59,12 @@ body:not(.immersive) .chip:hover,
 .vl-mode-tabs button:hover,
 .asset-library-tabs button:hover,
 .supplier-filter-chips button:hover {
-  color: #fff;
-  border-color: #9da3ad;
-  background: #fff;
+  color: #111318;
+  border-color: #c8cdd5;
+  background: #f4f6f8;
   box-shadow: none;
-  transform: translateY(-1px);
+  transform: none;
 }
-body:not(.immersive) .btn.ghost:hover::before,
-body:not(.immersive) .chip:hover::before,
-.seg-group button:hover::before,
-.mode-tab:hover::before,
-.vl-tabs button:hover::before,
-.vl-mode-tabs button:hover::before,
-.asset-library-tabs button:hover::before,
-.supplier-filter-chips button:hover::before { transform: translateX(-50%) scale(16); }
 .seg-group button.is-active,
 .mode-tab.is-active,
 .vl-tabs button.is-active,
@@ -124,20 +77,13 @@ body:not(.immersive) .chip.on {
   background: #111318;
   box-shadow: none;
 }
-.seg-group button.is-active::before,
-.mode-tab.is-active::before,
-.vl-tabs button.is-active::before,
-.vl-mode-tabs button.is-active::before,
-.asset-library-tabs button.on::before,
-.supplier-filter-chips button.on::before,
-body:not(.immersive) .chip.on::before { background: #fff; }
 .seg-group button.is-active:hover,
 .mode-tab.is-active:hover,
 .vl-tabs button.is-active:hover,
 .vl-mode-tabs button.is-active:hover,
 .asset-library-tabs button.on:hover,
 .supplier-filter-chips button.on:hover,
-body:not(.immersive) .chip.on:hover { color: #111318; background: #111318; }
+body:not(.immersive) .chip.on:hover { color: #fff; background: #252a31; }
 
 /* ---------- Elastic native ranges ---------- */
 .elastic-range {
@@ -263,10 +209,10 @@ body.role-supplier .topbar { padding-inline: 24px; }
 body.role-supplier .view-root { padding-bottom: 34px; }
 
 /* ---------- Route motion ---------- */
-.view-root.view-motion-in > * { animation: viewMotionIn 300ms cubic-bezier(.2,.8,.24,1) both; }
+.view-root.view-motion-in > * { animation: viewMotionIn 220ms ease-out both; }
 @keyframes viewMotionIn {
-  from { opacity: 0; transform: translateY(8px) scale(.998); }
-  to { opacity: 1; transform: none; }
+  from { opacity: .32; }
+  to { opacity: 1; }
 }
 
 /* ---------- Galaxy login ---------- */
@@ -734,9 +680,9 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
 .sup-table td { padding: 8px 10px; }
 .sup-table .sup-name b { font-size: 11.5px; }
 .sup-table .sup-name em { margin-top: 1px; font-size: 10px; }
-.sup-table .btn.sm { min-height: 30px; padding: 4px 5px; }
-.sup-col-actions { width: 264px; }
-.sup-actions-inner { gap: 4px; }
+.sup-table .btn.sm { min-height: 30px; padding: 4px 7px; }
+.sup-col-actions { width: 286px; }
+.sup-actions-inner { gap: 8px; }
 
 .agent-avatar-mono {
   display: inline-grid;
@@ -1009,7 +955,7 @@ body:not(.immersive) .view-root .btn.gen {
 .dh-seg-actions .btn.gen:hover,
 body:not(.immersive) .view-root .btn.primary:hover,
 body:not(.immersive) .view-root .btn.gen:hover {
-  color: #111318 !important;
+  color: #fff !important;
 }
 .dh-video-placeholder {
   border-color: #cfd2d7;

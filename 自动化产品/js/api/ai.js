@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260715-v82-5";
+import { llm, visionCopy } from "./llm.js?v=20260715-v83-2";
 import { DUMATE_BRIEF, PROMPT_FRAMEWORK, NO_DH_FRAMEWORK, DIR_POOL, TOPIC_POOL, STYLE_POOL } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
@@ -1592,29 +1592,13 @@ function imageThemeAnchor(ctx = {}) {
     .replace(/#[^\s#]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  const subject = /工作流|流程|自动化/.test(raw)
-    ? "自动化工作流清单、可复用流程、执行步骤和结果对照"
-    : /对比|VS|vs|区别|差在哪|分工|边界|相比/.test(raw)
-      ? "工具对比、任务分工、适合场景和边界判断"
-      : /知识库|Obsidian|Notion|笔记|沉淀/.test(raw)
-        ? "知识库沉淀、资料整理、双链/标签和复盘流程"
-        : /表格|Excel|数据|报表|统计/.test(raw)
-          ? "表格整理、数据提取、指标卡片和可复核结果"
-          : /周报|会议|纪要|PPT|汇报/.test(raw)
-            ? "会议周报、汇报资料、待办提炼和交付结果"
-            : /文件|资料|PDF|Word|归档/.test(raw)
-              ? "文件资料归档、字段提取、整理前后变化"
-              : "";
   const sentence = body
     .split(/[。！？!?；;\n]+/)
     .map(x => cleanImagePromptSignal(x, 48))
     .find(x => x && !isStyleOnlyCue(x));
-  const cue = subject || sentence || cleanImagePromptSignal(body, 56) || title || "";
-  const line = title
-    ? `发布文案主题是「${completeImageText(title, 48)}」，本张必须围绕这个主题，不得改成其他选题；${cue ? `内容重点：${cue}。` : ""}`
-    : cue
-      ? `本张必须围绕「${cue}」展开，不得改成其他选题。`
-      : "";
+  // 只从用户最终文案提炼当前内容，不再用关键词映射成固定办公案例。
+  const cue = sentence || cleanImagePromptSignal(body, 72) || title || "";
+  const line = cue ? `主题内容：${cue}。` : title ? `主题内容：${completeImageText(title, 48)}。` : "";
   return { title, cue, line };
 }
 
@@ -1944,10 +1928,10 @@ function richImagePrompt(item, i, total, ctx) {
       : `文字以完整标题「${headline}」和一句短副标题为主，不得截断标题，必要时加入功能标签。`;
   const themeLine = theme.line ? `${theme.line}` : "";
   const promptBody = cleanImagePlanningWords(isCover
-    ? `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${themeLine}${productLine}${layoutLine}；${visualLine}；${textLine}】`
+    ? `${refPrefix}3:4竖版图片。${themeLine}${productLine}${layoutLine}；${visualLine}；${textLine}视觉风格：${imageStyle}。`
     : lightStyle
-    ? `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${themeLine}${productLine}${layoutLine}；${contentCue}${textLine}】`
-    : `${refPrefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${imageStyle}】图片具体内容：【${themeLine}${productLine}${layoutLine}；${visualLine}；${contentCue}${textLine}】`);
+    ? `${refPrefix}3:4竖版图片。${themeLine}${productLine}${layoutLine}；${contentCue}${textLine}视觉风格：${imageStyle}。`
+    : `${refPrefix}3:4竖版图片。${themeLine}${productLine}${layoutLine}；${visualLine}；${contentCue}${textLine}视觉风格：${imageStyle}。`);
   return {
     title,
     ui: item?.ui !== false,
@@ -1970,29 +1954,27 @@ function normalizeCopyDrivenImagePromptItems(items, ctx) {
   const beats = Array.isArray(ctx.contentBeats) && ctx.contentBeats.length
     ? ctx.contentBeats.slice(0, n)
     : copyContentBeats(copyTitle, copyBody, n);
-  const style = compactImageStyle(ctx.style || ctx.account?.styleProfile || "白底或浅色底，清晰层级，大留白，文字可读", 80);
+  const style = compactImageStyle(ctx.style || ctx.account?.styleProfile || "白底或浅色底，清晰层级，大留白", 32);
   return Array.from({ length: n }, (_, i) => {
     const item = src[i] || {};
     const beat = completeImageText(stripImagePlanningInstructions(beats[i] || copyTextForImagePlanning(ctx.copy) || ctx.topic || "本次文案内容"), 180);
     const title = i === 0 && copyTitle
       ? cleanImageDisplayTitle(copyTitle, copyTitle.slice(0, 36), 56)
       : cleanImageDisplayTitle(item.title || item.headline || beat, beat.slice(0, 36));
-    const raw = stripImagePlanningInstructions(String(item.prompt || "")
+    const raw = stripImagePlanningInstructions(stripPromptScaffold(String(item.prompt || "")
       .replace(/负面约束\s*[:：][\s\S]*$/g, "")
       .replace(/【图片提示词轻量产品校准】[\s\S]*$/g, "")
-      .trim());
+      .trim()));
     const related = promptMatchesAssignedCopy(raw, beat, i === 0 ? copyTitle : "");
     const generatedContent = related
       ? raw
-      : `画面核心内容：「${beat}」。用一个明确主视觉，配合相关动作、界面、数据卡和精炼短文字直接呈现。`;
+      : `画面直接呈现「${beat}」，用与这段信息对应的主体、动作、界面或数据结果完成表达。`;
     const anchor = i === 0 && copyTitle
-      ? `主标题完整显示「${copyTitle}」，简洁低噪点背景，单一强主视觉带明显纵深感，配一句概括正文核心的短副标题。`
-      : `画面聚焦「${beat}」。`;
+      ? `主标题完整显示「${copyTitle}」，简洁低噪点背景，单一强主视觉带明显纵深感。`
+      : "";
     const content = stripImagePlanningInstructions(`${anchor}${generatedContent}`);
     const prefix = ctx.styleRefName ? `请根据上传的参考图（${ctx.styleRefName}）的视觉语言。` : "";
-    const prompt = /【图片风格[:：]/.test(content)
-      ? `${prefix}${content}`
-      : `${prefix}生成小红书笔记风格3:4尺寸图片。【图片风格：${style}】图片具体内容：【${content}】`;
+    const prompt = `${prefix}3:4竖版图片。${content}${style ? `视觉风格：${style}。` : ""}`;
     return {
       title,
       ui: item.ui !== false,
@@ -2708,7 +2690,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
 第一张图默认是点击入口，优先冲击感和可点击性：用强标题、短副标题和简单视觉关系吸引点击。第一张负责概括正文的核心入口；第二张之后再按正文顺序展开具体信息。
 若内容过多，先在内部重新规划：把重要信息均匀分给 ${nImg} 张图，次要内容压成一句结论；若内容较少，只能把正文已有信息改写成例子、结果或边界提醒，不得补入正文之外的产品知识、默认案例或事实。
 同一批量任务的不同账号可以改变每张图的标题表达、主视觉和卡片顺序，但内容事实仍只能来自该账号最终正文。
-每条 prompt 输出正向主体，使用「生成小红书笔记风格3:4尺寸，【图片风格：...】，图片具体内容：【...】。」结构；如果有参考图，则在开头加入「请根据上传的参考图」。图片内容只来自最终发布文案；视觉效果只来自账号创作风格、账号模板和参考图。${safeStyle ? "账号创作风格（只决定视觉效果）：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `参考图（只作为视觉/构图参考，不提供内容主题）：${sanitizeXhsText(styleRefName)}。` : ""}${safeTpl ? `账号固定模板只作为配色、字体、布局和画面语言母版，模板文字和内容必须全部换成本次正文。` : ""}
+每条 prompt 必须是可直接交给图像模型的正向画面描述，不要复述任务、正文分段编号、信息密度策略或生成规则，不要输出「本张只展开」「不得换题」「正文第几部分」「内容唯一依据」等规划语言。图片内容只来自最终发布文案；视觉效果只来自账号创作风格、账号模板和参考图。账号风格最多提炼成一句简短的配色或画风说明，不得替用户改写画面内容。${safeStyle ? "账号创作风格（只决定视觉效果）：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `参考图（只作为视觉/构图参考，不提供内容主题）：${sanitizeXhsText(styleRefName)}。` : ""}${safeTpl ? `账号固定模板只作为配色、字体、布局和画面语言母版，模板文字和内容必须全部换成本次正文。` : ""}
 
 每条 prompt 保持精炼但足够具体。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。画面文字围绕主标题、短解释和必要标签组织，按内容复杂度自然取舍；第一张更简洁，后续图可适当增加信息。若账号风格是火柴人、简笔画、小人、漫画或手绘，则画面靠人物动作、表情、气泡和箭头讲解，文字更少，避免复杂表格和长文案。
 画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
