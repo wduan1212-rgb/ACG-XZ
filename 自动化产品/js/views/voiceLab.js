@@ -341,7 +341,11 @@ export const voiceLabView = {
       $(".vl-workbench", root)?.classList.add("is-switching-out");
       window.setTimeout(renderNext, 150);
     };
-    ensureProviderStatus(stableRerender);
+    ensureProviderStatus(() => {
+      if (!root.isConnected) return;
+      const status = $(".vl-mini-status b", root);
+      if (status) status.textContent = ttsProviderLabel();
+    });
     const s = labState();
     const selected = findVoiceOption(s.voiceId || "");
     const favCount = favoriteVoiceIds().size;

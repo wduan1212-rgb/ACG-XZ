@@ -10,7 +10,7 @@ import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, urlFor } from "../domain/assets.js";
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v83-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v84-3";
 
 let PPS = 40;
 const CLIP_SEC = 15;
@@ -56,14 +56,16 @@ export function renderCutPage(root, p) {
   let activeSubIdx = 0;
   let selectedClipId = null;
   let activeTrack = "";
+  let subtitleClipboard = null;
 
   const TL = () => p.artifacts.timeline || (p.artifacts.timeline = []);
   const SUBS = () => p.artifacts.subs || (p.artifacts.subs = []);
-  const isInfoFlow = () => p.artifacts?.boards?.materialMode === "infoFlow";
+  const isDigitalHuman = () => p.artifacts?.boards?.generationMode === "digitalHuman";
+  const usesEstimatedMaterialCaptions = () => !isDigitalHuman();
   const clipDur = c => Math.max(1, c.dur != null ? c.dur : CLIP_SEC);
   const clipStart = i => { let t = 0; for (let k = 0; k < i; k++) t += clipDur(TL()[k]); return t; };
   const clipsTotal = () => TL().reduce((s, c) => s + clipDur(c), 0);
-  const totalDur = () => Math.max(30, clipsTotal(), SUBS().reduce((m, s) => Math.max(m, s.end || 0), 0));
+  const totalDur = () => Math.max(1, clipsTotal());
   const jobForClip = c => c?.jobId ? state.jobs.find(j => j.id === c.jobId) : null;
   const digitalSegmentForClip = c => (p.artifacts?.boards?.digitalHuman?.segments || [])
     .find(seg => (c?.segmentId && seg.id === c.segmentId) || (c?.jobId && seg.videoJobId === c.jobId));
@@ -117,6 +119,7 @@ export function renderCutPage(root, p) {
   // Keep one caption lane readable: generated cues follow the finished clip duration,
   // while manual edits are clamped between adjacent cues instead of stacking.
   function normalizeCaptionTrack(subs = SUBS()) {
+    const videoEnd = totalDur();
     const digital = p.artifacts?.boards?.generationMode === "digitalHuman";
     const ranges = digital ? TL().map((clip, index) => ({
       index,
@@ -135,12 +138,84 @@ export function renderCutPage(root, p) {
         s.end = Math.round(Math.min(range.end - .05, s.start + duration) * 10) / 10;
         if (s.end <= s.start) s.end = Math.round(Math.min(range.end, s.start + .25) * 10) / 10;
       } else {
-        s.start = Math.round(Math.max(cursor, rawStart) * 10) / 10;
-        s.end = Math.round((s.start + duration) * 10) / 10;
+        s.start = Math.round(clamp(Math.max(cursor, rawStart), 0, Math.max(0, videoEnd - .25)) * 10) / 10;
+        s.end = Math.round(Math.min(videoEnd, s.start + duration) * 10) / 10;
       }
+      s.start = clamp(s.start, 0, Math.max(0, videoEnd - .05));
+      s.end = clamp(s.end, Math.min(videoEnd, s.start + .05), videoEnd);
       cursor = s.end + .1;
     });
+    for (let i = subs.length - 1; i >= 0; i--) {
+      if (!Number.isFinite(subs[i].start) || subs[i].start >= videoEnd || subs[i].end <= subs[i].start) subs.splice(i, 1);
+    }
     return subs;
+  }
+
+  function splitCaptionText(text = "") {
+    const value = String(text || "");
+    if (!value) return ["", ""];
+    const chars = [...value];
+    const middle = Math.max(1, Math.min(chars.length - 1, Math.ceil(chars.length / 2)));
+    return [chars.slice(0, middle).join("").trim(), chars.slice(middle).join("").trim()];
+  }
+
+  function activeCaptionAtPlayhead() {
+    const direct = SUBS().findIndex(s => playheadT > Number(s.start || 0) + .05 && playheadT < Number(s.end || 0) - .05);
+    if (direct >= 0) return direct;
+    const current = SUBS()[activeSubIdx];
+    return current && playheadT > Number(current.start || 0) + .05 && playheadT < Number(current.end || 0) - .05 ? activeSubIdx : -1;
+  }
+
+  function splitSubtitle({ keep = "both" } = {}) {
+    const i = activeCaptionAtPlayhead();
+    if (i < 0) { toast("把播放头放到要分割的字幕中间"); return false; }
+    const source = SUBS()[i];
+    const at = Math.round(playheadT * 10) / 10;
+    if (at <= source.start + .1 || at >= source.end - .1) { toast("播放头要落在字幕中间"); return false; }
+    snapshot();
+    const [leftText, rightText] = splitCaptionText(source.text || "");
+    const left = { ...source, end: at, text: leftText };
+    const right = { ...source, start: at, text: rightText };
+    const replacement = keep === "left" ? [left] : keep === "right" ? [right] : [left, right];
+    SUBS().splice(i, 1, ...replacement);
+    activeSubIdx = keep === "right" ? i : Math.min(i, SUBS().length - 1);
+    activeTrack = "sub";
+    p.artifacts.subTimingSource = "manual";
+    normalizeCaptionTrack();
+    save("productions");
+    drawTimeline();
+    toast(keep === "both" ? "已分割字幕" : keep === "left" ? "已分割并删除后段" : "已分割并删除前段");
+    return true;
+  }
+
+  function copySubtitle({ cut = false } = {}) {
+    const s = SUBS()[activeSubIdx];
+    if (!s) { toast("先选择一条字幕"); return; }
+    subtitleClipboard = { text: s.text || "", duration: Math.max(.5, Number(s.end || 0) - Number(s.start || 0)) };
+    if (cut) {
+      snapshot();
+      SUBS().splice(activeSubIdx, 1);
+      activeSubIdx = Math.max(0, Math.min(activeSubIdx, SUBS().length - 1));
+      p.artifacts.subTimingSource = "manual";
+      save("productions");
+      drawTimeline();
+    }
+    toast(cut ? "已剪切字幕" : "已复制字幕");
+  }
+
+  function pasteSubtitle() {
+    if (!subtitleClipboard) { toast("还没有复制字幕"); return; }
+    const end = totalDur();
+    const start = clamp(playheadT, 0, Math.max(0, end - .25));
+    snapshot();
+    SUBS().push({ start, end: Math.min(end, start + subtitleClipboard.duration), text: subtitleClipboard.text });
+    p.artifacts.subTimingSource = "manual";
+    normalizeCaptionTrack();
+    activeSubIdx = Math.max(0, SUBS().findIndex(s => Math.abs(s.start - start) < .06));
+    activeTrack = "sub";
+    save("productions");
+    drawTimeline();
+    toast("已粘贴到播放头");
   }
 
   function rebuildDigitalCaptions() {
@@ -158,8 +233,9 @@ export function renderCutPage(root, p) {
   }
 
   function refreshCaptionAlignment({ force = false } = {}) {
-    const digital = p.artifacts?.boards?.generationMode === "digitalHuman";
-    if (digital && (force || !SUBS().length || p.artifacts.subTimingSource !== "manual")) rebuildDigitalCaptions();
+    const digital = isDigitalHuman();
+    const protectedTiming = ["manual", "audio-analysis-v3"].includes(p.artifacts.subTimingSource || "");
+    if (digital && !protectedTiming && (force || !SUBS().length || p.artifacts.subTimingSource !== "clip-audio")) rebuildDigitalCaptions();
     else normalizeCaptionTrack();
   }
 
@@ -204,7 +280,7 @@ export function renderCutPage(root, p) {
   }
 
   function estimateInfoFlowCaptions({ force = false, silent = false } = {}) {
-    if (!isInfoFlow()) return false;
+    if (!usesEstimatedMaterialCaptions()) return false;
     if (!force && p.artifacts.subTimingSource === "manual") return false;
     const subs = [];
     let cursor = 0;
@@ -216,18 +292,18 @@ export function renderCutPage(root, p) {
     });
     if (!subs.length) return false;
     p.artifacts.subs = normalizeCaptionTrack(subs);
-    p.artifacts.subTimingSource = "estimated-info-flow-v1";
-    p.artifacts.audioTimingSource = "estimated-info-flow-v1";
+    p.artifacts.subTimingSource = "estimated-material-v2";
+    p.artifacts.audioTimingSource = "estimated-material-v2";
     p.artifacts.finalVideoUrl = "";
     p.artifacts.finalVideoCaptionSig = "";
     save("productions");
     drawTimeline();
-    if (!silent) toast(`已按信息流片段时长匹配 ${subs.length} 条字幕`);
+    if (!silent) toast(`已按素材片段时长匹配 ${subs.length} 条字幕`);
     return true;
   }
 
   async function alignCaptionsToAudio({ silent = false, force = false } = {}) {
-    if (isInfoFlow()) return estimateInfoFlowCaptions({ force, silent });
+    if (usesEstimatedMaterialCaptions()) return estimateInfoFlowCaptions({ force, silent });
     if (!force && p.artifacts.subTimingSource === "manual") return false;
     const clips = TL().map((clip, index) => ({ url: videoUrlForClip(clip), text: captionTextForClip(clip, index) })).filter(item => item.url && item.text);
     if (!clips.length) return false;
@@ -281,7 +357,7 @@ export function renderCutPage(root, p) {
     }
     // 媒体 metadata 可能在用户手动改字幕后才到达；只能更新时长，不能覆盖手改轨道。
     if (p.artifacts.subTimingSource === "manual") normalizeCaptionTrack();
-    else if (isInfoFlow()) estimateInfoFlowCaptions({ force: true, silent: true });
+    else if (usesEstimatedMaterialCaptions()) estimateInfoFlowCaptions({ force: true, silent: true });
     else refreshCaptionAlignment({ force: true });
     p.artifacts.finalVideoUrl = "";
     p.artifacts.finalVideoName = "";
@@ -388,6 +464,7 @@ export function renderCutPage(root, p) {
         <section class="cut-preview card dark">
           <div class="cp-screen" id="cpScreen">
             <video class="cp-video" id="cpVideo" playsinline preload="metadata"></video>
+            <video class="cp-video cp-video-next" id="cpVideoNext" playsinline preload="metadata" muted></video>
             <audio id="cpNarration" src="${esc(narrationPreviewUrl())}" preload="metadata"></audio>
             <audio id="cpBgmAudio" src="${esc(bgmPreviewUrl())}" preload="metadata" loop></audio>
             <div class="cp-frame" id="cpFrame"></div>
@@ -402,7 +479,7 @@ export function renderCutPage(root, p) {
           <div class="side-card card">
             <h3>${p.artifacts.composing ? "正在合成" : "交付"}</h3>
             ${p.artifacts.composeError ? `<p class="muted">${esc(p.artifacts.composeError)}</p>` : ""}
-            <button class="btn primary block" id="cutNext">下一步：审核 ${icon("arrowRight", 13)}</button>
+            <button class="btn primary block button-anthe" id="cutNext"><span>下一步：审核 ${icon("arrowRight", 13)}</span></button>
           </div>
           ${isVideoWorkshop(p) ? `
           <div class="side-card card">
@@ -425,7 +502,7 @@ export function renderCutPage(root, p) {
               <input type="range" id="cutBgmVol" min="5" max="60" step="5" value="${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}" />
               <em id="cutBgmVolV">${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}%</em>
             </div>
-            <button class="btn ghost block" id="tlFillSubs" title="${isInfoFlow() ? "信息流没有独立口播音轨，按片段时长匹配台词" : "从当前视频识别真实口播，并用脚本文字智能修正"}">${icon("type", 13)} ${isInfoFlow() ? "按时间匹配字幕" : "识别字幕"}</button>
+            <button class="btn ghost block" id="tlFillSubs" title="${usesEstimatedMaterialCaptions() ? "素材视频不依赖音轨识别，按片段时长精准匹配文案" : "从数字人视频识别真实口播，并用脚本文字智能修正"}">${icon("type", 13)} ${usesEstimatedMaterialCaptions() ? "按时间匹配字幕" : "识别字幕"}</button>
           </div>` : ""}
         </aside>
       </div>
@@ -439,6 +516,8 @@ export function renderCutPage(root, p) {
           <div class="tlt-actions">
             <button class="icon-btn sm tl-text-btn" id="tlAddSub" title="增加文字">T</button>
             <button class="icon-btn sm" id="tlSplit" title="在播放头处分割选中片段">${icon("split", 13)}</button>
+            <button class="icon-btn sm" id="tlSubSplit" title="在播放头处分割字幕">${icon("scissors", 13)}</button>
+            <button class="icon-btn sm" id="tlSubCopy" title="复制字幕">${icon("copy", 13)}</button>
             <button class="icon-btn sm" id="tlSrt" title="导出 SRT">${icon("download", 13)}</button>
             <button class="icon-btn sm" id="tlUndo" title="撤回">${icon("undo", 13)}</button>
             <span class="tl-zoom">
@@ -506,9 +585,20 @@ export function renderCutPage(root, p) {
     playheadT = clamp(playheadT, 0, totalDur());
     ph.style.left = (52 + playheadT * PPS) + "px";
     $("#cpTimecode", root).textContent = `${fmtTC(playheadT)} / ${fmtTC(totalDur())}`;
-    let label = "", grad = "", clip = null, clipBase = 0;
+    let label = "", grad = "", clip = null, clipBase = 0, clipIndex = -1;
     let acc2 = 0;
-    for (const c of TL()) { if (playheadT < acc2 + clipDur(c)) { label = c.name; grad = gradFor(c.name); clip = c; clipBase = acc2; break; } acc2 += clipDur(c); }
+    for (let index = 0; index < TL().length; index++) {
+      const c = TL()[index];
+      if (playheadT < acc2 + clipDur(c)) {
+        label = c.name;
+        grad = gradFor(c.name);
+        clip = c;
+        clipBase = acc2;
+        clipIndex = index;
+        break;
+      }
+      acc2 += clipDur(c);
+    }
     $("#cpClipLabel", root).textContent = label;
     const video = $("#cpVideo", root);
     const videoUrl = videoUrlForClip(clip);
@@ -533,6 +623,32 @@ export function renderCutPage(root, p) {
       video.load();
       video.hidden = true;
       $("#cpFrame", root).style.opacity = ".85";
+    }
+    const nextVideo = $("#cpVideoNext", root);
+    const nextClip = clipIndex >= 0 ? TL()[clipIndex + 1] : null;
+    const transition = isDigitalHuman() && nextClip ? 0.35 : 0;
+    const remaining = clip ? clipBase + clipDur(clip) - playheadT : Infinity;
+    const nextUrl = videoUrlForClip(nextClip);
+    if (nextVideo && transition > 0 && nextUrl && remaining <= transition && remaining >= 0) {
+      const transitionProgress = clamp((transition - remaining) / transition, 0, 1);
+      const nextLocalTime = Math.max(0, transitionProgress * transition + (nextClip?.trimIn || 0));
+      if (nextVideo.dataset.src !== nextUrl) {
+        nextVideo.dataset.src = nextUrl;
+        nextVideo.src = nextUrl;
+        nextVideo.addEventListener("loadedmetadata", () => {
+          if (Number.isFinite(nextVideo.duration)) nextVideo.currentTime = Math.min(nextLocalTime, Math.max(0, nextVideo.duration - 0.1));
+          if (playTimer) nextVideo.play().catch(() => null);
+        }, { once: true });
+      } else if (!nextVideo.seeking && Math.abs((nextVideo.currentTime || 0) - nextLocalTime) > .45) {
+        nextVideo.currentTime = Math.min(nextLocalTime, Math.max(0, (nextVideo.duration || nextLocalTime + 1) - 0.1));
+      }
+      nextVideo.style.opacity = String(transitionProgress);
+      nextVideo.hidden = false;
+      if (playTimer && nextVideo.paused) nextVideo.play().catch(() => null);
+    } else if (nextVideo) {
+      nextVideo.style.opacity = "0";
+      nextVideo.pause();
+      nextVideo.hidden = true;
     }
     $("#cpFrame", root).style.background = grad || "linear-gradient(135deg,#1a2540,#0c1322)";
     const sub = SUBS().find(s => playheadT >= (s.start || 0) && playheadT < (s.end || 0));
@@ -581,6 +697,7 @@ export function renderCutPage(root, p) {
   const stopPlay = () => {
     const video = $("#cpVideo", root);
     if (video) video.pause();
+    $("#cpVideoNext", root)?.pause();
     $("#cpNarration", root)?.pause();
     $("#cpBgmAudio", root)?.pause();
     if (playTimer) cancelAnimationFrame(playTimer);
@@ -595,6 +712,8 @@ export function renderCutPage(root, p) {
     if (playheadT >= totalDur() - 0.05) playheadT = 0;
     const video = $("#cpVideo", root);
     if (video && !video.hidden && video.src) video.play().catch(() => null);
+    const nextVideo = $("#cpVideoNext", root);
+    if (nextVideo && !nextVideo.hidden && nextVideo.src) nextVideo.play().catch(() => null);
     syncPreviewAudio(true);
     $("#cpPlay", root).innerHTML = icon("pause", 22);
     playStartedAt = performance.now();
@@ -738,6 +857,8 @@ export function renderCutPage(root, p) {
         <input class="input num" id="tseStart" type="number" min="0" step="0.5" value="${s.start}" /> →
         <input class="input num" id="tseEnd" type="number" min="0" step="0.5" value="${s.end}" /> 秒
         <textarea class="input grow" id="tseText" rows="1" placeholder="字幕文字，可换行">${esc(s.text || "")}</textarea>
+        <button class="btn ghost sm" id="tseSplitBefore" title="保留播放头后的字幕">删前段</button>
+        <button class="btn ghost sm" id="tseSplitAfter" title="保留播放头前的字幕">删后段</button>
         <button class="icon-btn sm" id="tseDelete" title="删除当前字幕">${icon("trash", 13)}</button>
       </div>
       <div class="tse-row style">
@@ -758,6 +879,8 @@ export function renderCutPage(root, p) {
       if (blk) blk.querySelector(".tl-sub-text").textContent = cleanCaptionText(e.target.value || "字幕");
       updatePlayhead();
     });
+    $("#tseSplitBefore", root).addEventListener("click", () => splitSubtitle({ keep: "right" }));
+    $("#tseSplitAfter", root).addEventListener("click", () => splitSubtitle({ keep: "left" }));
     $("#tseDelete", root).addEventListener("click", () => {
       snapshot();
       SUBS().splice(i, 1);
@@ -830,10 +953,10 @@ export function renderCutPage(root, p) {
     snapshot();
     const button = $("#tlFillSubs", root);
     button.disabled = true;
-    button.innerHTML = `${icon("refresh", 13)} ${isInfoFlow() ? "匹配中…" : "识别中…"}`;
+    button.innerHTML = `${icon("refresh", 13)} ${usesEstimatedMaterialCaptions() ? "匹配中…" : "识别中…"}`;
     const aligned = await alignCaptionsToAudio({ force: true });
     button.disabled = false;
-    button.innerHTML = `${icon("type", 13)} ${isInfoFlow() ? "按时间匹配字幕" : "识别字幕"}`;
+    button.innerHTML = `${icon("type", 13)} ${usesEstimatedMaterialCaptions() ? "按时间匹配字幕" : "识别字幕"}`;
     if (aligned) return;
     let t = 0; const subs = [];
     const per = p.artifacts.audio?.perShot || [];
@@ -860,14 +983,18 @@ export function renderCutPage(root, p) {
   });
   $("#tlAddSub", root).addEventListener("click", () => {
     snapshot();
-    const subs = SUBS(); const last = subs[subs.length - 1];
-    const st = last ? last.end : Math.round(playheadT);
-    subs.push({ start: st, end: st + 3, text: "" });
+    const subs = SUBS();
+    const videoEnd = totalDur();
+    const st = clamp(Math.round(playheadT * 10) / 10, 0, Math.max(0, videoEnd - .25));
+    subs.push({ start: st, end: Math.min(videoEnd, st + 2.5), text: "" });
     p.artifacts.subTimingSource = "manual";
     normalizeCaptionTrack(subs);
-    activeSubIdx = subs.length - 1;
+    activeSubIdx = Math.max(0, subs.findIndex(s => Math.abs(Number(s.start || 0) - st) < .06));
+    activeTrack = "sub";
     save("productions"); drawTimeline();
   });
+  $("#tlSubSplit", root).addEventListener("click", () => splitSubtitle());
+  $("#tlSubCopy", root).addEventListener("click", () => copySubtitle());
   $("#tlSplit", root).addEventListener("click", () => {
     const c = TL().find(x => x.id === selectedClipId);
     if (!c) { toast("先点选一个片段，再把播放头拖到分割点"); return; }
@@ -939,7 +1066,7 @@ export function renderCutPage(root, p) {
     cpSub.addEventListener("pointermove", move);
     cpSub.addEventListener("pointerup", up);
   });
-  // 键盘剪辑：Delete 删除当前选中片段或字幕，⌘Z 撤回。
+  // 键盘剪辑：Delete 删除；⌘Z 撤回；字幕支持 ⌘C / ⌘X / ⌘V。
   const keyHandler = e => {
     if (document.body.dataset.zone !== "studio" || !root.isConnected) return;
     const tag = (document.activeElement || {}).tagName;
@@ -947,6 +1074,12 @@ export function renderCutPage(root, p) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
       e.preventDefault(); undo();
       return;
+    }
+    if ((e.metaKey || e.ctrlKey) && activeTrack === "sub") {
+      const key = e.key.toLowerCase();
+      if (key === "c") { e.preventDefault(); copySubtitle(); return; }
+      if (key === "x") { e.preventDefault(); copySubtitle({ cut: true }); return; }
+      if (key === "v") { e.preventDefault(); pasteSubtitle(); return; }
     }
     if ((e.key === "Delete" || e.key === "Backspace") && activeTrack) {
       e.preventDefault();
@@ -978,7 +1111,7 @@ export function renderCutPage(root, p) {
     const nextButton = event.currentTarget;
     const resetNextButton = () => {
       nextButton.disabled = false;
-      nextButton.innerHTML = `下一步：审核 ${icon("arrowRight", 13)}`;
+      nextButton.innerHTML = `<span>下一步：审核 ${icon("arrowRight", 13)}</span>`;
     };
     if (!TL().length) { toast("时间轴为空：请先等待视频片段生成完成"); return; }
     if (p.artifacts.composing) { toast("正在自动合成成片，请稍候"); return; }
@@ -999,7 +1132,7 @@ export function renderCutPage(root, p) {
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("未检测到封面，正在自动生成");
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260715-v83-2");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260715-v84-3");
         await ensureVideoCover(p);
         toast("封面已自动生成并入库");
       } catch (err) {
@@ -1015,9 +1148,9 @@ export function renderCutPage(root, p) {
   drawTimeline();
   const timingSource = p.artifacts.subTimingSource || "";
   if (timingSource !== "manual" && TL().some(c => videoUrlForClip(c)) && !p.artifacts.audioTimingPending) {
-    if (isInfoFlow() && timingSource !== "estimated-info-flow-v1") {
+    if (usesEstimatedMaterialCaptions() && timingSource !== "estimated-material-v2") {
       queueMicrotask(() => estimateInfoFlowCaptions({ silent: true }));
-    } else if (!isInfoFlow() && timingSource !== "audio-analysis-v3") {
+    } else if (!usesEstimatedMaterialCaptions() && timingSource !== "audio-analysis-v3") {
       queueMicrotask(() => alignCaptionsToAudio({ silent: true }));
     }
   }

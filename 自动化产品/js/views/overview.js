@@ -5,14 +5,15 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, ownedBy, assetById } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
 import { STAGES, statusPill } from "../domain/productions.js";
-import { deliveredAssets } from "../domain/delivery.js";
+import { deliveredAssets, deliveryViewsSummary } from "../domain/delivery.js";
+import { analyticsRows, analyticsSummary } from "../domain/analytics.js";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260715-v83-2";
-import { LLM_CONFIG } from "../api/llm.js?v=20260715-v83-2";
+import { AI } from "../api/ai.js?v=20260715-v84-2";
+import { LLM_CONFIG } from "../api/llm.js?v=20260715-v84-2";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js";
 import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260715-v83-2";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260715-v84-2";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
@@ -143,6 +144,15 @@ export const overviewView = {
     const monthly = accounts.reduce((s, a) => s + (a.monthlyDone || 0), 0);
     const delivered = deliveredAssets();
     const pendingDl = delivered.filter(x => !x.asset.status || x.asset.status === "未下载").length;
+    const links = analyticsRows();
+    const analytics = analyticsSummary(links);
+    const views = deliveryViewsSummary();
+    const totalViews = Math.max(Number(analytics.totalViews || 0), Number(views.totalViews || 0));
+    const totalEngagement = Number(analytics.totalEngagement || 0);
+    const fmt = value => Number(value || 0).toLocaleString("zh-CN");
+    const memberId = state.ui.currentMemberId || "";
+    const remarked = delivered.filter(({ asset }) => (asset.remarks || []).length);
+    const unreadRemarks = remarked.filter(({ asset }) => Number(asset.latestRemarkAt || 0) > Number(asset.remarkReadAt?.[memberId] || 0));
 
     const stat = (key, label, n, sub, accent = "") => `
       <button class="ov-stat card ${accent}" data-ov-stat="${key}">
@@ -150,6 +160,7 @@ export const overviewView = {
       </button>`;
 
     const taskGroups = {
+      todo: { title: "待你处理", items: [...waiting, ...inReview, ...failed], type: "production" },
       waiting: { title: "等待上传", items: waiting, type: "production" },
       rendering: { title: "生成中", items: rendering, type: "production" },
       review: { title: "待审核", items: inReview, type: "production" },
@@ -201,69 +212,131 @@ export const overviewView = {
         }
       });
     };
+    const todoCount = waiting.length + inReview.length + failed.length;
+    const stagePipeline = [
+      ["在制", inflight.length, ""], ["生成", rendering.length, "rendering"], ["审核", inReview.length, "review"], ["交付", delivered.length, "recent"]
+    ];
+    const pipelineMax = Math.max(1, ...stagePipeline.map(([, value]) => value));
+    const xhsCount = delivered.filter(({ acc }) => acc?.platform === "小红书").length;
+    const videoCount = delivered.filter(({ acc }) => acc?.platform === "视频号").length;
+    const xhsShare = Math.round(xhsCount / Math.max(1, xhsCount + videoCount) * 100);
+    const recentDays = Array.from({ length: 7 }, (_, index) => {
+      const ts = Date.now() - (6 - index) * 864e5;
+      const key = dayKey(ts);
+      return { key, label: new Date(ts).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }), value: delivered.filter(({ asset }) => dayKey(asset.deliveredAt || asset.createdAt) === key).length };
+    });
+    const trendMax = Math.max(1, ...recentDays.map(item => item.value));
+    const trendPoints = recentDays.map((item, index) => ({
+      ...item,
+      x: 12 + index * 46,
+      y: 84 - Math.round(item.value / trendMax * 66)
+    }));
+    const trendCurve = trendPoints.reduce((path, point, index, points) => {
+      if (index === 0) return `M ${point.x} ${point.y}`;
+      const previous = points[index - 1];
+      const before = points[index - 2] || previous;
+      const after = points[index + 1] || point;
+      const control1X = previous.x + (point.x - before.x) / 6;
+      const control1Y = previous.y + (point.y - before.y) / 6;
+      const control2X = point.x - (after.x - previous.x) / 6;
+      const control2Y = point.y - (after.y - previous.y) / 6;
+      return `${path} C ${control1X.toFixed(2)} ${control1Y.toFixed(2)}, ${control2X.toFixed(2)} ${control2Y.toFixed(2)}, ${point.x} ${point.y}`;
+    }, "");
+    const topAccounts = analytics.accounts.length ? analytics.accounts.slice(0, 4) : accounts.slice().sort((a, b) => (b.monthlyDone || 0) - (a.monthlyDone || 0)).slice(0, 4).map(acc => ({ name: acc.name, count: acc.monthlyDone || 0, engagement: 0 }));
 
-    root.innerHTML = `
-      <div class="overview">
-        <div class="ov-hero card">
-          <div class="ovh-left">
-            <div class="eyebrow">星阵 · 内容生产工作台</div>
-            <h2>${greeting()}，今天从这里开始</h2>
-            <p>${accounts.length} 个账号 · ${inflight.length} 条在制 · 本月已交付 ${monthly} 条</p>
-          </div>
-          <div class="ovh-right">
-            <section class="ov-chat ov-chat-mini" id="ovChat">
-              <div class="ovc-head">
-                <span class="ovc-ava">${agentAvatar(24)}</span>
-                <div><b>数据问答</b><em>只读真实数据</em></div>
-              </div>
-              <div class="ovc-msgs" id="ovcMsgs"></div>
-              <div class="ovc-input">
-                <input id="ovcInput" placeholder="问问数据：昨天产出多少素材？" />
-                <button class="ovc-send" id="ovcSend" title="发送">${icon("send", 15)}</button>
-              </div>
-            </section>
-          </div>
-        </div>
+    const openDataDetail = key => {
+      if (["todo", "waiting", "rendering", "review", "failed", "supplier"].includes(key)) { openTaskGroup(key); return; }
+      const makeRow = (title, meta, action = "") => `<div class="overview-task-row"><span class="overview-task-main"><b>${esc(title)}</b><em>${esc(meta)}</em></span>${action}</div>`;
+      let title = "数据详情";
+      let rows = "";
+      if (key === "recent") {
+        title = `最近交付 · ${delivered.length} 条`;
+        rows = delivered.slice(0, 30).map(({ asset, acc }) => makeRow(asset.title || asset.name || "未命名交付", `${acc?.name || "未命名账号"} · ${asset.status || "未下载"} · ${timeAgo(asset.deliveredAt || asset.createdAt)}`, asset.productionId ? `<button class="btn ghost sm" data-ov-prod="${esc(asset.productionId)}">查看</button>` : "")).join("");
+      } else if (key === "links") {
+        title = `回传链接 · ${links.length} 条`;
+        rows = links.slice(0, 40).map(row => makeRow(row.link.title || row.asset?.title || row.asset?.name || "未命名内容", `${row.acc?.name || "未命名账号"} · ${row.latest ? "已有数据快照" : "仅回链"}`, row.link.url ? `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">打开链接</a>` : "")).join("");
+      } else if (key === "remarks") {
+        title = `发布沟通 · ${remarked.length} 条有备注`;
+        rows = remarked.slice(0, 30).map(({ asset, acc }) => makeRow(asset.title || asset.name || "未命名交付", `${acc?.name || "未命名账号"} · ${(asset.remarks || []).length} 条消息${Number(asset.latestRemarkAt || 0) > Number(asset.remarkReadAt?.[memberId] || 0) ? " · 有未读" : ""}`, `<button class="btn ghost sm" data-ov-route="delivery">查看沟通</button>`)).join("");
+      } else {
+        title = "账号数据表现";
+        rows = topAccounts.map(item => makeRow(item.name, `${item.count || 0} 条内容 · ${fmt(item.engagement || 0)} 次互动`)).join("");
+      }
+      openModal(`<div class="mp-head"><b>${esc(title)}</b><button class="icon-btn ghost" data-close title="关闭">${icon("x", 15)}</button></div><div class="overview-task-list">${rows || `<div class="overview-task-empty">暂无可展示的数据</div>`}</div>`, {
+        wide: true,
+        onMount(panel, close) {
+          panel.classList.add("overview-task-panel");
+          panel.addEventListener("click", event => {
+            const prodButton = event.target.closest("[data-ov-prod]");
+            if (prodButton) { close(); window.setTimeout(() => openProductionDrawer(prodButton.dataset.ovProd), 180); }
+            const routeButton = event.target.closest("[data-ov-route]");
+            if (routeButton) { close(); window.setTimeout(() => go(routeButton.dataset.ovRoute), 180); }
+          });
+        }
+      });
+    };
 
-        <div class="ov-stats">
-          ${stat("waiting", "等待上传", waiting.length, "上传补图后继续", waiting.length ? "warn" : "")}
-          ${stat("rendering", "生成中", rendering.length, "文案分镜 / 渲染", rendering.length ? "run" : "")}
-          ${stat("review", "待审核", inReview.length, "人工确认后交付", inReview.length ? "review" : "")}
-          ${stat("failed", "失败待重试", failed.length, "进入工作台处理", failed.length ? "fail" : "")}
-          ${stat("supplier", "供应商待下载", pendingDl, "发布清单可批量下载", "")}
-        </div>
-
-        <div class="ov-cols">
-          <section class="card ov-todo">
-            <div class="card-head"><b>待你处理</b><em>${waiting.length + inReview.length + failed.length} 项</em></div>
-            ${(waiting.length + inReview.length + failed.length) ? `
-            <div class="ov-todo-list ov-scroll">
-              ${[...inReview, ...waiting, ...failed].map(p => {
-                const acc = accountById(p.accountId);
-                const [label, cls] = statusPill(p);
-                return `<button class="ovt-row" data-prod="${p.id}">
-                  <span class="dot" style="background:${gradFor(acc?.name || "")}"></span>
-                  <span class="ovt-main"><b>${esc(p.artifacts.copy.title || p.title || p.topic || "未命名")}</b><em>${esc(acc?.name || "")} · ${(STAGES[p.stage] || {}).label || ""}</em></span>
-                  <span class="status-pill ${cls}">${label}</span>
-                </button>`;
-              }).join("")}
-            </div>` : emptyState("checkCircle", "没有待办", "需要人工介入的任务会出现在这里")}
+    root.innerHTML = `<div class="overview overview-dashboard overview-integrated">
+      <div class="overview-dashboard-layout">
+        <main class="overview-dashboard-main">
+          <section class="overview-kpi-strip" aria-label="关键指标">
+            <button class="overview-kpi-card" data-overview-detail="links"><span>回传链接</span><b>${fmt(links.length)}</b><em>${analytics.synced} 条有数据快照</em></button>
+            <button class="overview-kpi-card" data-overview-detail="analytics"><span>总互动</span><b>${fmt(totalEngagement)}</b><em>赞、藏、评与分享</em></button>
+            <button class="overview-kpi-card" data-overview-detail="analytics"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${views.deliveryCount} 条交付汇总</em></button>
+            <button class="overview-kpi-card" data-overview-detail="recent"><span>累计交付</span><b>${fmt(delivered.length)}</b><em>${pendingDl} 条供应商待下载</em></button>
           </section>
-
-          <section class="card ov-recent">
-            <div class="card-head"><b>最新交付</b><button class="link-btn" data-ov-go="delivery">发布清单 ${icon("arrowRight", 12)}</button></div>
-            ${delivered.length ? `<div class="ov-recent-list ov-scroll">
-              ${delivered.slice(0, 20).map(({ asset, acc }) => `
-                <div class="ovr-row" ${asset.productionId ? `data-prod="${asset.productionId}"` : ""}>
-                  ${realDeliveryThumb(asset, acc)}
-                  <span class="ovt-main"><b>${esc(asset.title || asset.name)}</b><em>${esc(acc.name)} · ${asset.publishedUrl ? "已发布 ✓" : asset.status || "未下载"}${asset.supplierNote ? ` · 备注：${esc(asset.supplierNote)}` : ""}</em></span>
-                  ${safeChip(acc?.platform, true)}
-                  <time>${timeAgo(asset.createdAt)}</time>
-                </div>`).join("")}
-            </div>` : emptyState("package", "还没有交付记录", "完成创作并审核交付后会汇总在这里")}
+          <section class="overview-viz-grid">
+            <article class="overview-viz-card overview-flow-card">
+              <header><b>生产流程</b><em>${accounts.length} 个账号 · 本月 ${monthly} 条</em></header>
+              <div class="overview-gantt">${stagePipeline.map(([label, value, detail]) => `<button ${detail ? `data-overview-detail="${detail}"` : ""} data-chart-tip="${esc(label)} · ${fmt(value)} 项"><span><b>${fmt(value)}</b><em>${label}</em></span><i><u style="--value:${Math.max(5, Math.round(value / pipelineMax * 100))}%"></u></i></button>`).join("")}</div>
+            </article>
+            <button class="overview-viz-card overview-donut-card" data-overview-detail="recent" aria-label="查看平台交付分布">
+              <header><b>平台分布</b><em>${delivered.length} 条交付</em></header>
+              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><i><b>${delivered.length}</b><em>总交付</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
+            </button>
+            <button class="overview-viz-card overview-trend-card" data-overview-detail="recent">
+              <header><b>近 7 日交付</b><em>点击查看明细</em></header>
+              <div class="overview-trend-line" aria-label="近七日交付折线图">
+                <svg viewBox="0 0 300 96" preserveAspectRatio="xMidYMid meet" role="img">
+                  <path class="grid" d="M12 18H288 M12 51H288 M12 84H288"/>
+                  <path class="trend-curve" d="${trendCurve}"/>
+                  ${trendPoints.map(item => `<circle cx="${item.x}" cy="${item.y}" r="3" tabindex="0" role="button" aria-label="${esc(item.key)} · ${item.value} 条" data-chart-tip="${esc(item.label)} · ${item.value} 条"><title>${esc(item.key)} · ${item.value} 条</title></circle>`).join("")}
+                </svg>
+                <div>${trendPoints.map(item => `<span><b>${item.value}</b><em>${esc(item.label)}</em></span>`).join("")}</div>
+              </div>
+            </button>
           </section>
-        </div>
-      </div>`;
+          <section class="overview-action-grid">
+            <button class="overview-action-card" data-overview-detail="todo"><span>${icon("checkCircle", 16)}</span><div><b>待你处理</b><em>${todoCount} 项 · 审核 ${inReview.length} / 失败 ${failed.length}</em></div><strong>${todoCount}</strong></button>
+            <button class="overview-action-card" data-overview-detail="recent"><span>${icon("package", 16)}</span><div><b>发布素材</b><em>最近交付与下载状态</em></div><strong>${delivered.length}</strong></button>
+            <button class="overview-action-card" data-overview-detail="remarks"><span>${icon("fileText", 16)}</span><div><b>发布沟通</b><em>${unreadRemarks.length} 条有未读消息</em></div><strong>${remarked.length}</strong></button>
+            <button class="overview-action-card" data-overview-detail="links"><span>${icon("link", 16)}</span><div><b>链接与数据</b><em>${analytics.pending} 条等待快照</em></div><strong>${links.length}</strong></button>
+          </section>
+          <section class="overview-account-strip"><header><b>账号表现</b><em>按互动与产量</em></header><div>${topAccounts.map((item, index) => `<button data-overview-detail="analytics"><i>${index + 1}</i><span><b>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`}</div></section>
+        </main>
+        <aside class="overview-dashboard-assistant"><section class="ov-chat" id="ovChat"><div class="ovc-head"><span class="ovc-ava">${agentAvatar(24)}</span><div><b>星阵数据助手</b><em>独立问答区 · 只读真实数据</em></div></div><div class="ovc-msgs" id="ovcMsgs"></div><div class="ovc-input"><input id="ovcInput" placeholder="问问数据：昨天产出多少素材？" /><button class="ovc-send" id="ovcSend" title="发送">${icon("send", 15)}</button></div></section></aside>
+      </div>
+      <div class="overview-chart-tooltip" id="overviewChartTooltip" role="status" aria-live="polite"></div>
+    </div>`;
+
+    root.querySelectorAll("[data-overview-detail]").forEach(button => button.addEventListener("click", () => openDataDetail(button.dataset.overviewDetail)));
+
+    const chartTooltip = $("#overviewChartTooltip", root);
+    const hideChartTooltip = () => chartTooltip?.classList.remove("is-visible");
+    const showChartTooltip = target => {
+      if (!chartTooltip || !target?.dataset.chartTip) return;
+      const rect = target.getBoundingClientRect();
+      chartTooltip.textContent = target.dataset.chartTip;
+      chartTooltip.style.left = `${Math.min(window.innerWidth - 16, Math.max(16, rect.left + rect.width / 2))}px`;
+      chartTooltip.style.top = `${Math.max(12, rect.top - 10)}px`;
+      chartTooltip.classList.add("is-visible");
+    };
+    root.querySelectorAll("[data-chart-tip]").forEach(target => {
+      target.addEventListener("pointerenter", () => showChartTooltip(target));
+      target.addEventListener("pointerleave", hideChartTooltip);
+      target.addEventListener("focus", () => showChartTooltip(target));
+      target.addEventListener("blur", hideChartTooltip);
+    });
 
     root.querySelectorAll("[data-ov-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.ovGo)));
     root.querySelectorAll("[data-ov-stat]").forEach(b => b.addEventListener("click", () => openTaskGroup(b.dataset.ovStat)));
@@ -300,8 +373,3 @@ export const overviewView = {
     drawChat();
   }
 };
-
-function greeting() {
-  const h = new Date().getHours();
-  return h < 6 ? "夜深了" : h < 12 ? "早上好" : h < 14 ? "中午好" : h < 18 ? "下午好" : "晚上好";
-}

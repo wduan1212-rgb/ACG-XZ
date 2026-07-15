@@ -5,34 +5,69 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260715-v83-2";
+import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260715-v84-2";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { createAccount, deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
 import { productTagLabel } from "./domain/delivery.js";
 import { XHS_ACCOUNT_SEED } from "./data/xhsAccountsSeed.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
-import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260715-v83-2";
+import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260715-v84-2";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260715-v83-2";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260715-v84-2";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
-import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260715-v83-2";
+import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260715-v84-2";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260715-v83-2";
+import { overviewView } from "./views/overview.js?v=20260715-v84-5";
 import { voiceLabView } from "./views/voiceLab.js?v=20260714-v77-1";
-import { agentView } from "./agent/view.js?v=20260715-v83-2";
-import { studioView } from "./views/studio.js?v=20260715-v83-2";
-import { assetsView } from "./views/assetsView.js?v=20260715-v83-2";
-import { deliveryView } from "./views/deliveryView.js?v=20260715-v83-2";
-import { analyticsView } from "./views/analyticsView.js?v=20260715-v83-2";
+import { agentView } from "./agent/view.js?v=20260715-v84-2";
+import { studioView } from "./views/studio.js?v=20260715-v84-3";
+import { assetsView } from "./views/assetsView.js?v=20260715-v84-2";
+import { deliveryView } from "./views/deliveryView.js?v=20260715-v84-3";
+import { analyticsView } from "./views/analyticsView.js?v=20260715-v84-2";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260715-v83-2";
+import { settingsView } from "./views/settings.js?v=20260715-v84-2";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260715-v83-2";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260715-v84-2";
 import { productionsOf } from "./domain/productions.js";
+
+const APP_BUILD_ID = "20260715-v84-5";
+let announcedBuildId = "";
+
+function showUpdateNotice(nextBuildId) {
+  if (!nextBuildId || nextBuildId === APP_BUILD_ID || announcedBuildId === nextBuildId) return;
+  announcedBuildId = nextBuildId;
+  document.querySelector("#appUpdateNotice")?.remove();
+  const node = document.createElement("aside");
+  node.id = "appUpdateNotice";
+  node.className = "app-update-notice";
+  node.innerHTML = `<div><b>发现新版本</b><span>刷新后即可使用最新功能</span></div><button data-update-refresh>刷新</button><button class="icon-btn ghost" data-update-close aria-label="关闭">${icon("x", 14)}</button>`;
+  document.body.appendChild(node);
+  requestAnimationFrame(() => node.classList.add("is-visible"));
+  const close = () => {
+    node.classList.remove("is-visible");
+    setTimeout(() => node.remove(), 220);
+  };
+  node.querySelector("[data-update-refresh]").addEventListener("click", () => location.reload());
+  node.querySelector("[data-update-close]").addEventListener("click", close);
+  setTimeout(close, 15000);
+}
+
+async function checkForAppUpdate() {
+  try {
+    const html = await fetch(`./index.html?update-check=${Date.now()}`, { cache: "no-store" }).then(r => r.ok ? r.text() : "");
+    const match = html.match(/js\/main\.js\?v=([^"']+)/);
+    if (match?.[1]) showUpdateNotice(match[1]);
+  } catch (e) {}
+}
+
+function installUpdateChecker() {
+  setTimeout(checkForAppUpdate, 30000);
+  setInterval(checkForAppUpdate, 180000);
+}
 
 /* ---------- 种子数据（首次使用且无迁移数据时） ---------- */
 function seedIfEmpty() {
@@ -162,16 +197,19 @@ async function applyAccountProfileSeed({ createMissing = true, quiet = false } =
       return;
     }
     if (!acc) return;
+    const preserveManualStyle = Boolean(acc.styleEditedAt);
     const patch = {
       mode: profile.mode,
       subType: profile.mode === "图文" ? "" : profile.subType,
-      styleProfile: profile.styleProfile,
       tone: profile.tone || acc.tone || "教程感",
       qtags: profile.qtags || acc.qtags || [],
-      imagePromptTemplate: profile.imagePromptTemplate || acc.imagePromptTemplate || "",
       voiceId: acc.voiceId || profile.voiceId || "",
       voiceName: acc.voiceName || profile.voiceName || ""
     };
+    if (!preserveManualStyle) {
+      patch.styleProfile = profile.styleProfile;
+      patch.imagePromptTemplate = profile.imagePromptTemplate || acc.imagePromptTemplate || "";
+    }
     const needs = Object.entries(patch).some(([k, v]) => JSON.stringify(acc[k] || (Array.isArray(v) ? [] : "")) !== JSON.stringify(v));
     if (needs) { Object.assign(acc, patch, { updatedAt: Date.now() }); changed++; }
   });
@@ -247,11 +285,11 @@ function showGate() {
   setTimeout(() => u && u.focus(), 80);
 }
 let gateMode = "login";
-function setGateMode(mode) {
-  gateMode = mode === "apply" ? "apply" : "login";
-  const apply = gateMode === "apply";
+let gateTransitionTimer = 0;
+function applyGateModeContent(mode) {
+  const apply = mode === "apply";
   const card = $(".lg-card");
-  if (card) card.dataset.mode = gateMode;
+  if (card) card.dataset.mode = mode;
   const nameField = $("#lgNameField"), roleField = $("#lgRoleField"), loginBtn = $("#lgLogin"), applyBtn = $("#lgApply"), hint = $("#lgHint"), title = $("#lgModeTitle");
   if (nameField) nameField.hidden = !apply;
   if (roleField) roleField.hidden = !apply;
@@ -263,18 +301,45 @@ function setGateMode(mode) {
     else loginBtn.textContent = label;
   }
   if (applyBtn) {
-    applyBtn.textContent = apply ? "申请中" : "申请账号";
+    const label = apply ? "返回登录" : "申请账号";
+    const labelNode = applyBtn.querySelector("span");
+    if (labelNode) labelNode.textContent = label;
+    else applyBtn.textContent = label;
     applyBtn.setAttribute("aria-pressed", apply ? "true" : "false");
     applyBtn.title = apply ? "返回登录" : "申请账号";
   }
   if (hint) hint.textContent = apply
     ? "填写资料，提交后等待管理员审批"
     : "使用星阵账号继续";
-  if (card) {
-    card.classList.remove("is-switching");
-    void card.offsetWidth;
-    card.classList.add("is-switching");
+}
+function setGateMode(mode) {
+  const nextMode = mode === "apply" ? "apply" : "login";
+  const card = $(".lg-card");
+  const modeLabel = $("#lgApply span");
+  const currentMode = card?.dataset.mode;
+  gateMode = nextMode;
+  window.clearTimeout(gateTransitionTimer);
+  if (!card || !currentMode || currentMode === nextMode || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+    card?.classList.remove("is-switching-out", "is-switching-in");
+    modeLabel?.classList.remove("is-dissolving", "is-gathering");
+    applyGateModeContent(nextMode);
+    return;
   }
+  card.classList.remove("is-switching-in");
+  card.classList.add("is-switching-out");
+  modeLabel?.classList.remove("is-gathering");
+  modeLabel?.classList.add("is-dissolving");
+  gateTransitionTimer = window.setTimeout(() => {
+    applyGateModeContent(nextMode);
+    card.classList.remove("is-switching-out");
+    card.classList.add("is-switching-in");
+    modeLabel?.classList.remove("is-dissolving");
+    modeLabel?.classList.add("is-gathering");
+    gateTransitionTimer = window.setTimeout(() => {
+      card.classList.remove("is-switching-in");
+      modeLabel?.classList.remove("is-gathering");
+    }, 440);
+  }, 230);
 }
 function playLoginBackground() {
   const video = $("#loginBgVideo");
@@ -438,7 +503,7 @@ function wireGate() {
   $("#lgLogin", gate).addEventListener("click", submit);
   $("#lgApply", gate).addEventListener("click", () => {
     setGateMode(gateMode === "apply" ? "login" : "apply");
-    setTimeout(() => (gateMode === "apply" ? $("#lgName") : $("#lgUser"))?.focus(), 40);
+    setTimeout(() => (gateMode === "apply" ? $("#lgName") : $("#lgUser"))?.focus(), 480);
   });
   gate.addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
 }
@@ -609,9 +674,7 @@ function paletteCommands() {
     { label: "批量创作", group: "导航", icon: "spark", run: () => go("agent") },
     { label: "单号创作", group: "导航", icon: "film", run: () => { allowStudioFromAgent(); go("studio"); } },
     { label: "整体资产", group: "导航", icon: "folder", run: () => go("assets") },
-    { label: "草稿箱", group: "导航", icon: "inbox", run: () => go("drafts") },
     { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") },
-    { label: "数据分析", group: "导航", icon: "pulse", run: () => go("analytics") },
     ...(state.role === "admin" ? [
       { label: "语音生成", group: "导航", icon: "mic", run: () => go("voice") },
       { label: "设置", group: "导航", icon: "gear", run: () => go("settings") },
@@ -670,6 +733,7 @@ async function boot() {
     initRouter();
     installSelectEnhancer();
     installUIEnhancements();
+    installUpdateChecker();
     initLoginBeams();
 
     // 外壳

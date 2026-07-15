@@ -3,11 +3,11 @@
 import { $, $$, esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { save, accountById, productById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260715-v83-2";
+import { AI } from "../api/ai.js?v=20260715-v84-2";
 import { setStage } from "../domain/productions.js";
 import { toast, withLoading } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v83-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v84-3";
 
 export function renderPromptsPage(root, p) {
   const acc = accountById(p.accountId);
@@ -20,7 +20,7 @@ export function renderPromptsPage(root, p) {
         <div class="page-head">
           <div><div class="eyebrow">视频链路 · 提示词</div>
           <h2>口播 + 画面拆成两段独立 15s 提示词</h2></div>
-          <button class="btn primary" id="cpNext">下一步：进入生成台 ${icon("arrowRight", 14)}</button>
+          <button class="btn primary button-anthe" id="cpNext"><span>下一步：进入生成台 ${icon("arrowRight", 14)}</span></button>
         </div>
         <div class="inhouse-controls">
           <button class="btn gen" id="cpGen">${icon("list", 15)} 生成分段提示词</button>

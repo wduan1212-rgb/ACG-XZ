@@ -3,7 +3,7 @@
 
 import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, notify, pullRemote, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
+import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
 import { platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
@@ -296,70 +296,55 @@ function supplierDetailHtml(asset, acc) {
   </tr>`;
 }
 
-let tab = "creator"; // creator | supplier
 let supFilters = { product: "all", type: "all", publisher: "all", account: "all", date: "all" };
-let creatorProductFilter = "all";
 let creatorRemarkFilter = "all";
-let lastDeliveryRemotePullAt = 0;
 
 export const deliveryView = {
   render(root) {
     const isSupplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
     const canUpdateViews = ["supplier_parent", "supplier_child"].includes(state.role);
-    const isAdmin = state.role === "admin";
-    if (isSupplierRole) tab = "supplier";
-    if (!isAdmin && !isSupplierRole) tab = "creator";
 
     const draw = () => {
       const all = sortDelivered(deliveredAssets());
       root.innerHTML = `
         <div class="delivery-page">
-          ${isAdmin ? `<div class="delivery-toolbar">
-            <div class="mode-tabs slim" data-active="${tab}">
-              <button class="mode-tab ${tab === "creator" ? "is-active" : ""}" data-dtab="creator">创作端视角<span>交付明细 · 全链路回看</span></button>
-              <button class="mode-tab ${tab === "supplier" ? "is-active" : ""}" data-dtab="supplier">供应商视角<span>他们看到的素材库</span></button>
-            </div>
-          </div>` : ""}
           <div id="dvBody"></div>
         </div>`;
 
       const body = $("#dvBody", root);
-      const renderActiveBody = () => {
-        if (tab === "creator") drawCreator(body, all);
-        else drawSupplier(body, all);
-      };
-      renderActiveBody();
-      $$("[data-dtab]", root).forEach(button => button.addEventListener("click", () => {
-        const next = button.dataset.dtab;
-        if (next === tab) return;
-        tab = next;
-        const scroll = document.querySelector(".main-scroll");
-        const beforeScroll = scroll?.scrollTop || 0;
-        $$("[data-dtab]", root).forEach(item => item.classList.toggle("is-active", item.dataset.dtab === tab));
-        $(".mode-tabs", root)?.setAttribute("data-active", tab);
-        const swap = () => {
-          renderActiveBody();
-          if (scroll) scroll.scrollTop = beforeScroll;
-          body.animate?.([{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "cubic-bezier(.2,.8,.2,1)" });
-        };
-        if (typeof body.animate !== "function") return swap();
-        body.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 90, easing: "ease-out" }).onfinish = swap;
-      }));
+      if (isSupplierRole) drawSupplier(body, all);
+      else drawCreator(body, all);
     };
 
     function drawCreator(body, all) {
       const seqMap = displaySeqMap(all);
       const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
-      const visible = all.filter(x => (creatorProductFilter === "all" || (x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))) === creatorProductFilter)
-        && (creatorRemarkFilter === "all" || hasUnreadRemark(x.asset)));
+      const publishers = [...new Set(all.map(x => publisherLabel(x.asset)))];
+      const canFilterPublisher = state.role === "admin";
+      if (!canFilterPublisher) supFilters.publisher = "all";
+      const accounts = [...new Map(all.map(x => [x.acc.id, x.acc])).values()];
+      const dates = [...new Set(all.map(x => dayKey(x.asset)))];
+      const noStructuredFilter = Object.values(supFilters).every(value => value === "all");
+      const visible = all.filter(x => {
+        const product = x.asset.productTag || productTagLabel(productById(x.asset.productId || ""));
+        return (supFilters.product === "all" || product === supFilters.product)
+          && (supFilters.type === "all" || x.acc.mode === supFilters.type)
+          && (supFilters.publisher === "all" || publisherLabel(x.asset) === supFilters.publisher)
+          && (supFilters.account === "all" || x.acc.id === supFilters.account)
+          && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date)
+          && (creatorRemarkFilter === "all" || hasUnreadRemark(x.asset));
+      });
       const groups = groupByDay(visible);
-      body.innerHTML = `<div class="creator-delivery-filters">
-          <button class="${creatorProductFilter === "all" ? "on" : ""}" data-creator-product="all">全部标签</button>
-          ${productTags.map(tag => `<button class="${creatorProductFilter === tag ? "on" : ""}" data-creator-product="${esc(tag)}">${esc(tag)}</button>`).join("")}
+      body.innerHTML = `<div class="supplier-filters creator-delivery-filters">
+          <label class="select-shell">${icon("package", 13)}<select data-creator-select="product"><option value="all">全部产品</option>${productTags.map(x => `<option value="${esc(x)}" ${supFilters.product === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+          <label class="select-shell">${icon("filter", 13)}<select data-creator-select="type"><option value="all">全部形式</option><option value="视频" ${supFilters.type === "视频" ? "selected" : ""}>视频</option><option value="图文" ${supFilters.type === "图文" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>
+          ${canFilterPublisher ? `<label class="select-shell">${icon("user", 13)}<select data-creator-select="publisher"><option value="all">全部发布人</option>${publishers.map(x => `<option value="${esc(x)}" ${supFilters.publisher === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>` : ""}
+          <label class="select-shell">${icon("users", 13)}<select data-creator-select="account"><option value="all">全部账号</option>${accounts.map(acc => `<option value="${esc(acc.id)}" ${supFilters.account === acc.id ? "selected" : ""}>${esc(acc.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+          <label class="select-shell">${icon("clock", 13)}<select data-creator-select="date"><option value="all">全部时间</option>${dates.map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <button class="creator-remark-filter ${creatorRemarkFilter === "unread" ? "on" : ""}" data-creator-remarks="unread">${icon("fileText", 12)} 最新备注${all.some(x => hasUnreadRemark(x.asset)) ? `<i class="delivery-remark-dot"></i>` : ""}</button>
         </div>` + (visible.length
-        ? `<div class="dv-layout ${creatorProductFilter === "all" && creatorRemarkFilter === "all" ? "" : "is-filtered"}">
-            ${creatorProductFilter === "all" && creatorRemarkFilter === "all" ? `<aside class="dv-date-nav" aria-label="发布时间轴">
+        ? `<div class="dv-layout ${noStructuredFilter && creatorRemarkFilter === "all" ? "" : "is-filtered"}">
+            ${noStructuredFilter && creatorRemarkFilter === "all" ? `<aside class="dv-date-nav" aria-label="发布时间轴">
               ${groups.map(g => `<button class="dv-date-link" data-day-jump="${esc(g.key)}"><span>${esc(dayLabel(g.key))}</span><em>${g.items.length}</em></button>`).join("")}
             </aside>` : ""}
             <div class="dv-flow">
@@ -380,12 +365,10 @@ export const deliveryView = {
               }).join("")}
             </div>
           </div>`
-        : emptyState("package", creatorProductFilter === "all" ? "还没有发布记录" : "这个标签下还没有发布记录", creatorProductFilter === "all" ? "在审核页点「定稿并发布」后，会按发布序号汇总在这里（未发布的内容在「草稿箱」）" : "切换其他标签，或返回全部标签查看时间轴"));
+        : emptyState("package", noStructuredFilter ? "还没有发布记录" : "当前筛选下还没有发布记录", noStructuredFilter ? "在审核页点「定稿并发布」后，会按发布序号汇总在这里（未发布的内容在「草稿箱」）" : "调整筛选条件，或恢复全部条件查看时间轴"));
 
-      $$("[data-creator-product]", body).forEach(button => button.addEventListener("click", () => {
-        const next = button.dataset.creatorProduct || "all";
-        if (next === creatorProductFilter) return;
-        creatorProductFilter = next;
+      $$("[data-creator-select]", body).forEach(select => select.addEventListener("change", () => {
+        supFilters[select.dataset.creatorSelect] = select.value;
         const height = body.offsetHeight;
         body.style.minHeight = `${height}px`;
         drawCreator(body, all);
@@ -647,11 +630,5 @@ export const deliveryView = {
     }
 
     draw();
-    if (remote.isOn() && Date.now() - lastDeliveryRemotePullAt > 1200) {
-      lastDeliveryRemotePullAt = Date.now();
-      pullRemote().then(ok => {
-        if (ok && root.isConnected) draw();
-      }).catch(() => {});
-    }
   }
 };

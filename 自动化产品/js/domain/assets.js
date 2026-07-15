@@ -277,6 +277,16 @@ export async function replaceAssetBlob(assetId, dataUrl) {
 
 export async function removeAsset(id) {
   const a = assetById(id); if (!a) return;
+  if (a.serverFileName && remote.isOn() && remote.hasToken()) {
+    const response = await fetch(`/api/files/${encodeURIComponent(a.serverFileName)}`, {
+      method: "DELETE",
+      headers: { "Authorization": "Bearer " + remote.getToken() }
+    });
+    if (!response.ok && response.status !== 404) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || data.error || `服务器文件删除失败 (${response.status})`);
+    }
+  }
   const scrub = value => {
     if (Array.isArray(value)) return value.filter(item => item !== id).map(scrub);
     if (!value || typeof value !== "object") return value === id ? null : value;
@@ -293,12 +303,6 @@ export async function removeAsset(id) {
   await db.delBlob(id);
   const u = urlCache.get(id);
   if (u) { URL.revokeObjectURL(u); urlCache.delete(id); }
-  if (a.serverFileName && remote.isOn() && remote.hasToken()) {
-    fetch(`/api/files/${encodeURIComponent(a.serverFileName)}`, {
-      method: "DELETE",
-      headers: { "Authorization": "Bearer " + remote.getToken() }
-    }).catch(() => null);
-  }
   save("assets", "accounts", "productions", "jobs");
   removeRemote("assets", id);
 }

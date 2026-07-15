@@ -3,7 +3,7 @@
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { toast, withLoading, emptyState } from "../ui/components.js";
-import { state, pullRemote } from "../core/store.js";
+import { state } from "../core/store.js";
 import {
   analyticsRows, analyticsSummary,
   syncExistingPublishedAssets, refreshAllAnalytics, refreshAnalyticsLink, justOneAnalyticsStatus
@@ -17,7 +17,6 @@ let productFilter = "all";
 let accountFilter = "all";
 let justOneStatus = null;
 let qaLog = [];
-let lastAnalyticsRemotePullAt = 0;
 
 const fmt = n => Number(n || 0).toLocaleString("zh-CN");
 const pct = n => ((Number(n || 0) * 100).toFixed(1) + "%");
@@ -146,7 +145,7 @@ function qaCard(rows) {
 }
 
 export const analyticsView = {
-  render(root) {
+  render(root, { embedded = false } = {}) {
     syncExistingPublishedAssets();
     const draw = () => {
       const rowsAll = analyticsRows();
@@ -167,14 +166,14 @@ export const analyticsView = {
       const views = deliveryViewsSummary(platformFilter);
       const canRefresh = state.role === "admin";
       root.innerHTML = `
-        <div class="analytics-page">
+        <div class="analytics-page ${embedded ? "is-embedded" : ""}">
           <section class="ov-stats da-stats">
             ${statCard("回传链接", s.total, `${s.synced} 条有历史快照`)}
             ${statCard("总互动", fmt(s.totalEngagement), "赞、藏、评合计", "review")}
             ${statCard("总播放量", fmt(views.totalViews), `${platformFilter === "all" ? "全平台" : platformFilter} · ${views.deliveryCount} 条交付`, "views")}
-            ${qaCard(rowsAll)}
+            ${embedded ? "" : qaCard(rowsAll)}
           </section>
-          ${justOneCard()}
+          ${embedded ? "" : justOneCard()}
 
           <section class="card da-table-card">
             <div class="da-table-head">
@@ -225,14 +224,6 @@ export const analyticsView = {
       wire(root, draw);
     };
     draw();
-    if (Date.now() - lastAnalyticsRemotePullAt > 1200) {
-      lastAnalyticsRemotePullAt = Date.now();
-      pullRemote().then(ok => {
-        if (!ok || !root.isConnected) return;
-        syncExistingPublishedAssets();
-        draw();
-      }).catch(() => {});
-    }
   }
 };
 

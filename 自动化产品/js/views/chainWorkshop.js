@@ -8,15 +8,15 @@ import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid 
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260715-v83-2";
+import { AI } from "../api/ai.js?v=20260715-v84-2";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260715-v83-2";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260715-v84-2";
 import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v83-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v84-3";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from "../domain/voices.js";
 
@@ -1215,7 +1215,7 @@ export function renderWorkshopPage(root, p) {
                 <button class="${!isDigitalHumanMode ? "on" : ""}" data-dh-mode="seedance">Seedance</button>
               </span>` : isDigital ? `<span class="tag ws-account-lock">${icon("lock", 11)} ${isDigitalHumanMode ? "数字人" : "Seedance"} · 管理员已固定</span>` : ""}
               <span style="display:inline-flex;gap:4px;align-items:center" title="所有分镜统一这个尺寸"><em class="muted" style="font-size:11px">尺寸</em>${rtBtn("9:16")}${rtBtn("16:9")}</span>
-              <button class="btn primary" id="wsNext">下一步：智能混剪 ${icon("arrowRight", 14)}</button>
+              <button class="btn primary button-anthe" id="wsNext"><span>下一步：智能混剪 ${icon("arrowRight", 14)}</span></button>
             </div>
           </div>
           ${isDigital && canConfigureAccount ? `<div class="refbar card" id="wsCharbar">

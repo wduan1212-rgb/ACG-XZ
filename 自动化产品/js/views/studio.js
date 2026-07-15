@@ -7,15 +7,15 @@ import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, delete
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260715-v83-2";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260715-v84-2";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset } from "../domain/assets.js";
-import { renderScriptPage } from "./chainScript.js?v=20260715-v83-2";
-import { renderSlotsPage } from "./chainBoards.js?v=20260715-v83-2";
-import { renderPromptsPage } from "./chainPrompts.js?v=20260715-v83-2";
-import { renderRenderPage } from "./chainRender.js?v=20260715-v83-2";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260715-v83-2";
-import { renderCutPage } from "./chainCut.js?v=20260715-v83-2";
-import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260715-v83-2";
+import { renderScriptPage } from "./chainScript.js?v=20260715-v84-3";
+import { renderSlotsPage } from "./chainBoards.js?v=20260715-v84-3";
+import { renderPromptsPage } from "./chainPrompts.js?v=20260715-v84-3";
+import { renderRenderPage } from "./chainRender.js?v=20260715-v84-2";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260715-v84-3";
+import { renderCutPage } from "./chainCut.js?v=20260715-v84-3";
+import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260715-v84-2";
 
 export const studioView = {
   render(root, { page }) {
@@ -109,6 +109,8 @@ function renderHome(root, acc) {
   const avatarUrl = acc.avatarAssetId ? urlFor(acc.avatarAssetId) : "";
   const styleRefUrl = acc.imageStyleAssetId ? urlFor(acc.imageStyleAssetId) : "";
   const charRefUrl = board ? urlFor(board) : "";
+  const showRoleRef = acc.mode === "视频" && acc.subType === "数字人";
+  const showStyleRef = acc.mode === "图文";
   const styleText = String(acc.styleProfile || acc.lockedStyle || "")
     .replace(/^整体风格\s*[:：]\s*/g, "")
     .replace(/^账号风格\s*[:：]\s*/g, "")
@@ -124,16 +126,6 @@ function renderHome(root, acc) {
               <span>头像</span>
               ${admin ? `<input type="file" accept="image/*" hidden id="shAvatarUp" />` : ""}
             </button>
-            ${acc.mode === "图文" ? `<button class="sh-ref-card style" type="button" data-sh-ref="style" title="${admin ? "拖入 / 上传成图风格参考" : "成图风格参考"}">
-              ${styleRefUrl ? `<img src="${styleRefUrl}" alt="成图风格参考"/>` : `<em>${icon("image", 16)}</em>`}
-              <span>风格</span>
-              ${admin ? `<input type="file" accept="image/*" hidden id="shStyleRefUp" />` : ""}
-            </button>` : ""}
-            ${acc.mode === "视频" ? `<button class="sh-ref-card style role" type="button" data-sh-ref="role" title="${admin ? "拖入 / 上传角色形象" : "角色形象"}">
-              ${charRefUrl ? `<img src="${charRefUrl}" alt="角色形象"/>` : `<em>${icon("user", 16)}</em>`}
-              <span>角色</span>
-              ${admin ? `<input type="file" accept="image/*" hidden id="shRoleRefUp" />` : ""}
-            </button>` : ""}
           </div>
           <div class="sh-meta">
             <h2>${esc(acc.name)}</h2>
@@ -145,6 +137,8 @@ function renderHome(root, acc) {
           ${acc.homepageUrl
             ? `<a class="btn ghost sh-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转主页</a>`
             : `<button class="btn ghost sh-homepage-link is-disabled" type="button" disabled title="管理员尚未填写主页链接">${icon("external", 13)} 跳转主页</button>`}
+          ${showRoleRef ? `<button class="btn ghost sm sh-ref-trigger ${!charRefUrl && !admin ? "is-disabled" : ""}" type="button" data-sh-ref="role" ${!charRefUrl && !admin ? "disabled" : ""} title="${charRefUrl ? "查看角色版；管理员可拖图到按钮上替换" : "管理员点击或拖入角色版"}">${charRefUrl ? `<img src="${charRefUrl}" alt="角色版"/>` : icon("user", 13)}<span>角色版</span>${admin ? `<input type="file" accept="image/*" hidden />` : ""}</button>` : ""}
+          ${showStyleRef ? `<button class="btn ghost sm sh-ref-trigger ${!styleRefUrl && !admin ? "is-disabled" : ""}" type="button" data-sh-ref="style" ${!styleRefUrl && !admin ? "disabled" : ""} title="${styleRefUrl ? "查看风格版；管理员可拖图到按钮上替换" : "管理员点击或拖入风格版"}">${styleRefUrl ? `<img src="${styleRefUrl}" alt="风格版"/>` : icon("image", 13)}<span>风格版</span>${admin ? `<input type="file" accept="image/*" hidden />` : ""}</button>` : ""}
           ${admin ? `<button class="icon-btn account-edit-trigger" data-sh="edit" title="编辑账号" aria-label="编辑账号">${icon("edit", 16)}</button><button class="icon-btn danger" data-sh="delete" title="删除账号" aria-label="删除账号">${icon("trash", 16)}</button>` : ""}
           <button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>
         </div>
@@ -319,8 +313,9 @@ function renderHome(root, acc) {
     if (admin) {
       const input = btn.querySelector("input[type=file]");
       btn.addEventListener("click", e => {
-        const img = btn.querySelector("img");
-        if (currentUrl && e.target.closest("img")) {
+        if (e.target.closest("input")) return;
+        const img = btn.querySelector("img") || btn;
+        if (currentUrl) {
           openLightbox(img, currentUrl, currentName);
           return;
         }

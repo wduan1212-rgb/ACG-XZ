@@ -7,7 +7,7 @@ import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
 import { toast, openLightbox, publishModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v83-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v84-3";
 import { reviewPreviewHtml } from "./prodDrawer.js";
 
 export function renderCopyPage(root, p) {
@@ -59,7 +59,7 @@ export function renderReviewPage(root, p) {
     wireStepper(root);
     const run = async () => {
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260715-v83-2");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260715-v84-3");
         await ensureVideoCover(p);
         if (root.isConnected) renderReviewPage(root, p);
       } catch (err) {
@@ -79,6 +79,48 @@ export function renderReviewPage(root, p) {
   const items = (isImg ? p.artifacts.images.items : p.artifacts.boards.items) || [];
   const visuals = items.filter(x => x.assetId);
   const deliveredState = p.stage === "delivered";
+  const coverAssetId = p.artifacts?.boards?.cover?.assetId || "";
+  const coverUrl = coverAssetId ? urlFor(coverAssetId) : "";
+  const publishBar = deliveredState
+    ? `<div class="review-banner ok card review-publish-bar">${icon("checkCircle", 18)}<div><b>已发布：${esc(p.delivery?.name || "")}${p.delivery?.pubSeq ? ` · #${String(p.delivery.pubSeq).padStart(3, "0")}` : ""}</b><em>发布清单与供应商端可见 · ${isImg ? "图集 zip + 文案.txt" : "成片 + 标题简介"}</em></div><button class="btn ghost" id="rvToDelivery">${icon("package", 14)} 去发布清单</button></div>`
+    : `<div class="review-banner card review-publish-bar">${icon("eye", 16)}<div><b>发布前自检</b><em>核对成片、封面与发布文案，确认无误后即可定稿发布</em></div>${canPub ? `<button class="btn primary" id="rvDeliver">${icon("package", 14)} 定稿并发布入供应商端</button>` : `<span class="muted">当前账号无发布权限</span>`}</div>`;
+
+  const videoReview = !isImg ? `
+    <div class="video-review-shell">
+      ${publishBar}
+      <div class="video-review-grid">
+        <section class="card video-review-panel video-review-final">
+          <div class="card-head"><b>合成成片</b><em>最终预览</em></div>
+          <div class="video-review-media">${reviewPreviewHtml(p) || `<div class="muted">成片尚未就绪</div>`}</div>
+        </section>
+        <section class="card video-review-panel video-review-cover">
+          <div class="card-head"><b>封面图</b><button class="link-btn" data-chain="workshop">去编辑 ${icon("arrowRight", 12)}</button></div>
+          ${coverUrl ? `<button class="video-review-cover-button" data-rv-cover><img src="${esc(coverUrl)}" alt="${esc(p.artifacts.copy.title || p.title || "视频封面")}"/></button>` : `<div class="muted">封面尚未生成</div>`}
+        </section>
+        <section class="card video-review-panel video-review-copy">
+          <div class="card-head"><b>标题与发布文案</b><button class="link-btn" data-chain="workshop">去编辑 ${icon("arrowRight", 12)}</button></div>
+          <div class="rv-copy"><b>${esc(p.artifacts.copy.title || "（未填标题）")}</b><pre>${esc(p.artifacts.copy.body || "（未填文案）")}</pre></div>
+        </section>
+      </div>
+    </div>` : "";
+
+  if (!isImg) {
+    root.innerHTML = `${stepperHtml(p, "review")}
+      <div class="chain-page solo review-page video-review-page"><div class="chain-main">${videoReview}</div></div>`;
+    wireStepper(root);
+    $("[data-rv-cover]", root)?.addEventListener("click", () => openLightbox($("[data-rv-cover] img", root), coverUrl, "视频封面"));
+    $$('[data-chain]', root).forEach(button => button.addEventListener("click", () => go("studio", button.dataset.chain)));
+    const publish = $("#rvDeliver", root);
+    if (publish) publish.addEventListener("click", async () => {
+      const result = await publishModal({ title: `定稿并发布「${p.artifacts.copy.title || p.title}」` });
+      if (result == null) return;
+      const asset = deliver(p, result);
+      toast(asset ? `已发布入供应商端 · #${String(asset.pubSeq).padStart(3, "0")}${asset.planDate ? ` · 计划 ${asset.planDate}` : ""}` : "发布失败");
+      renderReviewPage(root, p);
+    });
+    $("#rvToDelivery", root)?.addEventListener("click", () => go("delivery"));
+    return;
+  }
 
   root.innerHTML = `
     ${stepperHtml(p, "review")}

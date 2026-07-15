@@ -10,9 +10,9 @@ import {
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage
-} from "./orchestrator.js?v=20260715-v83-2";
-import { renderMessage, boardRow } from "./cards.js?v=20260715-v83-2";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260715-v83-2";
+} from "./orchestrator.js?v=20260715-v84-2";
+import { renderMessage, boardRow } from "./cards.js?v=20260715-v84-2";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260715-v84-2";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, removeAsset } from "../domain/assets.js";
@@ -159,6 +159,7 @@ export const agentView = {
               <div class="agw-input-card">
                 <textarea id="agwInput" rows="1" placeholder="描述量产需求，例如：选择3个久未发布的图文账号，每号3条…"></textarea>
                 <div class="agw-input-tools">
+                  <button class="icon-btn ghost" id="agwNewPanel" title="开启新量产面板">${icon("plus", 16)}</button>
                   <label class="icon-btn ghost" title="上传上传图片">
                     ${icon("upload", 16)}<input type="file" accept="image/*,video/*" multiple hidden id="agwUpload" />
                   </label>
@@ -473,7 +474,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260715-v83-2");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260715-v84-2");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -527,6 +528,11 @@ function wire(root) {
     }
   });
   $("#agwSend", root).addEventListener("click", send);
+  $("#agwNewPanel", root).addEventListener("click", () => {
+    const session = ensureSession();
+    addMsg(session, { role: "agent", type: "plan", payload: defaultPlan("新量产计划") });
+    renderMsgs(true);
+  });
   $("#agwUpload", root).addEventListener("change", async e => {
     const r = await routeMediaFiles(e.target.files);
     reportRoute(r);

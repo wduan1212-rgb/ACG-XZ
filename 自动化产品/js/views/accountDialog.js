@@ -5,7 +5,7 @@ import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
 import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260715-v83-2";
+import { AI } from "../api/ai.js?v=20260715-v84-2";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
 import { openModal, toast } from "../ui/components.js";
@@ -345,6 +345,7 @@ export function openAccountDialog(accountId = null) {
               subType: draft.mode === "图文" ? "" : draft.subType,
               position: "",
               styleProfile: draft.styleProfile.trim(),
+              styleEditedAt: Date.now(),
               voiceName: draft.voiceName.trim(),
               voiceId: draft.voiceId.trim(),
               voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
@@ -356,6 +357,7 @@ export function openAccountDialog(accountId = null) {
             acc = createAccount({
               name, platform: draft.platform, mode: draft.mode, subType: draft.subType,
               position: "", styleProfile: draft.styleProfile.trim(),
+              styleEditedAt: Date.now(),
               voiceName: draft.voiceName.trim(), voiceId: draft.voiceId.trim(),
               voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
               imagePromptTemplate: draft.imagePromptTemplate.trim(),

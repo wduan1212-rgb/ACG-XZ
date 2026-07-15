@@ -7,40 +7,41 @@ import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAs
 import { downloadAsset } from "../domain/delivery.js";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
 import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js";
-import { renderSupplierAccounts } from "./supplierViews.js?v=20260715-v83-2";
+import { renderSupplierAccounts } from "./supplierViews.js?v=20260715-v84-2";
 
-let fAcc = "all", fQ = "", fKind = "all", libraryMode = "shared", collapseInitialized = false;
+let fAcc = "all", fQ = "", fKind = "all", libraryMode = "drafts", collapseInitialized = false;
 const collapsedAcc = new Set();
 const isSharedAsset = a => !!a?.delivered || !!a?.shared;
 const assetKind = a => a.type === "视频" || (a.tags || []).some(t => /视频|成片/.test(t)) ? "视频" : "图文";
 const cleanName = s => String(s || "未命名").replace(/[\\/:*?"<>|#]+/g, "_").replace(/\s+/g, "_").slice(0, 60);
-const accountImageAssets = accountId => state.assets
-  .filter(a => isSharedAsset(a) && a.accountId === accountId && a.type === "图片" && !isAvatarAsset(a))
+const accountArchivableAssets = accountId => state.assets
+  .filter(a => isSharedAsset(a) && a.accountId === accountId && ["图片", "视频"].includes(a.type) && !isAvatarAsset(a))
   .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-const libraryLabels = { shared: "账号资产", bgm: "BGM 库", material: "剪辑素材库", voice: "语音素材库", reference: "总参考音频库" };
+const libraryLabels = { shared: "账号资产", drafts: "草稿箱", bgm: "BGM 库", material: "剪辑素材库", voice: "语音素材库", reference: "总参考音频库" };
+const libraryTabsHtml = () => `<div class="asset-library-tabs text-switch"><button class="${libraryMode === "shared" ? "on is-active" : ""}" data-library="shared">账号资产</button><button class="${libraryMode === "drafts" ? "on is-active" : ""}" data-library="drafts">草稿箱</button><button class="${libraryMode === "bgm" ? "on is-active" : ""}" data-library="bgm">BGM</button><button class="${libraryMode === "material" ? "on is-active" : ""}" data-library="material">剪辑素材</button><button class="${libraryMode === "voice" ? "on is-active" : ""}" data-library="voice">语音素材</button><button class="${libraryMode === "reference" ? "on is-active" : ""}" data-library="reference">参考音频</button></div>`;
 
-async function exportAndPurgeAccountImages(accountId) {
+async function exportAndPurgeAccountFiles(accountId) {
   const acc = accountById(accountId);
-  const imgs = accountImageAssets(accountId);
-  if (!imgs.length) { toast("这个账号暂无可清理的共享图片"); return 0; }
+  const files = accountArchivableAssets(accountId);
+  if (!files.length) { toast("这个账号暂无可归档的共享图片或视频"); return 0; }
   const ok = await confirmModal({
-    title: `导出并清空「${esc(acc?.name || "该账号")}」的共享图片？`,
-    body: `<p>将先下载 ${imgs.length} 张图片的压缩包，随后从整体资产和服务器文件中删除这些图片。视频成片、发布记录和账号资料不会删除。</p>`,
+    title: `导出并清空「${esc(acc?.name || "该账号")}」的共享文件？`,
+    body: `<p>将先下载 ${files.length} 个图片/视频文件的压缩包，随后从整体资产和服务器文件中删除这些文件。发布记录、账号资料、头像和音频不会删除。</p>`,
     okText: "导出并清空",
     danger: true
   });
   if (!ok) return 0;
   const entries = [];
-  for (let i = 0; i < imgs.length; i++) {
-    const a = imgs[i];
+  for (let i = 0; i < files.length; i++) {
+    const a = files[i];
     const d = await assetU8(a.id);
     if (d) entries.push({ name: `${String(i + 1).padStart(3, "0")}_${cleanName(a.name)}.${d.ext}`, u8: d.u8 });
   }
-  if (!entries.length) { toast("没有拿到可打包的图片文件，已取消清空", "error"); return 0; }
-  downloadBlob(`整体资产_${cleanName(acc?.name || accountId)}_图片归档_${Date.now()}.zip`, buildZipBlob(entries));
-  for (const a of imgs) await removeAsset(a.id);
-  toast(`已导出并清空 ${imgs.length} 张共享图片`);
-  return imgs.length;
+  if (!entries.length) { toast("没有拿到可打包的文件，已取消清空", "error"); return 0; }
+  downloadBlob(`整体资产_${cleanName(acc?.name || accountId)}_文件归档_${Date.now()}.zip`, buildZipBlob(entries));
+  for (const a of files) await removeAsset(a.id);
+  toast(`已导出并清空 ${files.length} 个共享文件`);
+  return files.length;
 }
 
 export const assetsView = {
@@ -61,6 +62,26 @@ export const assetsView = {
       root.classList.remove("drag-over");
       delete root.dataset.dropHint;
       $("#assetsTopDock")?.remove();
+      if (libraryMode === "drafts") {
+        root.innerHTML = `<div class="assets-page"><div class="page-head"><div><div class="eyebrow">整体资产</div><h2>草稿箱</h2></div><div class="head-actions">${libraryTabsHtml()}</div></div><div class="asset-mode-stage" id="assetDraftsHost"></div></div>`;
+        const topDock = $(".head-actions", root);
+        const topbar = document.querySelector(".topbar");
+        const topActions = document.querySelector(".top-actions");
+        if (topDock && topbar && topActions) {
+          topDock.id = "assetsTopDock";
+          topDock.classList.add("topbar-assets-dock");
+          topbar.insertBefore(topDock, topActions);
+        }
+        $$('[data-library]', $("#assetsTopDock") || root).forEach(button => button.addEventListener("click", () => {
+          libraryMode = button.dataset.library;
+          draw();
+        }));
+        import("./draftsView.js?v=20260715-v84-2").then(({ draftsView }) => {
+          const host = $("#assetDraftsHost", root);
+          if (host) draftsView.render(host);
+        });
+        return;
+      }
       let list = searchAssets({ accountId: fAcc, tag: "all", q: fQ, includeDelivered: true })
         .filter(a => !isAvatarAsset(a))
         .filter(a => libraryMode === "shared"
@@ -76,24 +97,21 @@ export const assetsView = {
       if (fKind === "video") list = list.filter(a => assetKind(a) === "视频");
       if (fKind === "image") list = list.filter(a => assetKind(a) === "图文");
       const accounts = state.accounts || [];
-      const selectedImageCount = fAcc === "all" ? 0 : accountImageAssets(fAcc).length;
+      const selectedFileCount = fAcc === "all" ? 0 : accountArchivableAssets(fAcc).length;
       if (!collapseInitialized) { state.accounts.forEach(a => collapsedAcc.add(a.id)); collapsedAcc.add("__none"); collapseInitialized = true; }
       root.innerHTML = `
         <div class="assets-page">
           <div class="page-head">
             <div><div class="eyebrow">整体资产</div><h2>${libraryLabels[libraryMode] || "账号资产"}</h2></div>
-            <div class="head-actions">
-              <div class="asset-library-tabs"><button class="${libraryMode === "shared" ? "on" : ""}" data-library="shared">${icon("package", 13)} 账号资产</button><button class="${libraryMode === "bgm" ? "on" : ""}" data-library="bgm">${icon("music", 13)} BGM</button><button class="${libraryMode === "material" ? "on" : ""}" data-library="material">${icon("film", 13)} 剪辑素材</button><button class="${libraryMode === "voice" ? "on" : ""}" data-library="voice">${icon("mic", 13)} 语音素材</button><button class="${libraryMode === "reference" ? "on" : ""}" data-library="reference">${icon("pulse", 13)} 参考音频</button></div>
-              <button class="btn ghost" data-go-delivery>${icon("package", 14)} 去发布清单</button>
-            </div>
+            <div class="head-actions">${libraryTabsHtml()}</div>
           </div>
           <div class="filter-bar card asset-smart-filters">
             <div class="fb-search">${icon("search", 14)}<input id="avSearch" placeholder="搜索素材名 / 标签" value="${esc(fQ)}" /></div>
             ${libraryMode !== "bgm" ? `<label class="select-shell">${icon("filter", 13)}<select id="avKind"><option value="all">全部形式</option><option value="video" ${fKind === "video" ? "selected" : ""}>视频</option><option value="image" ${fKind === "image" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>` : ""}
             <label class="select-shell account-select">${icon("users", 13)}<select id="avAccount"><option value="all">全部账号</option>${accounts.map(a => `<option value="${esc(a.id)}" ${fAcc === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
-            ${fAcc !== "all" ? `<button class="btn ghost asset-filter-action" data-export-del-acc="${esc(fAcc)}" ${selectedImageCount ? "" : "disabled"}>${icon("download", 14)} 导出并清空图片 ${selectedImageCount ? `(${selectedImageCount})` : ""}</button>` : ""}
+            ${fAcc !== "all" ? `<button class="btn ghost asset-filter-action" data-export-del-acc="${esc(fAcc)}" ${selectedFileCount ? "" : "disabled"}>${icon("download", 14)} 导出并清空文件 ${selectedFileCount ? `(${selectedFileCount})` : ""}</button>` : ""}
           </div>
-          <div id="avBody">
+          <div class="asset-mode-stage" id="avBody">
             ${renderBody(list)}
           </div>
         </div>`;
@@ -144,7 +162,7 @@ export const assetsView = {
         const acc = id === "__none" ? null : accountById(id);
         const items = byAcc.get(id);
         const collapsed = collapsedAcc.has(id);
-        const imgCount = acc ? accountImageAssets(id).length : 0;
+        const fileCount = acc ? accountArchivableAssets(id).length : 0;
         return `<section class="acc-sec ${collapsed ? "collapsed" : ""}">
           <div class="acc-sec-head">
             <button class="acc-sec-main" data-accsec="${id}">
@@ -153,7 +171,7 @@ export const assetsView = {
               ${acc ? `<span class="tag">${groupOf(acc)}</span>${platChip(acc.platform, true)}` : ""}
               <em>${items.length} 个</em>
             </button>
-            ${acc && imgCount ? `<button class="btn ghost sm" data-export-del-acc="${id}">${icon("download", 12)} 导出并清空图片 (${imgCount})</button>` : ""}
+            ${acc && fileCount ? `<button class="btn ghost sm" data-export-del-acc="${id}">${icon("download", 12)} 导出并清空文件 (${fileCount})</button>` : ""}
           </div>
           <div class="acc-sec-body" ${collapsed ? "hidden" : ""}><div class="asset-grid">${items.map(cardHtml).join("")}</div></div>
         </section>`;
@@ -196,11 +214,10 @@ export const assetsView = {
       } else {
         delete root.dataset.dropHint;
       }
-      $("#assetsTopDock [data-go-delivery]")?.addEventListener("click", () => { location.hash = "#/delivery"; });
       [...$$("[data-export-del-acc]", root), ...$$("#assetsTopDock [data-export-del-acc]")].forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();
         withLoading(e.currentTarget, async () => {
-          const n = await exportAndPurgeAccountImages(e.currentTarget.dataset.exportDelAcc);
+          const n = await exportAndPurgeAccountFiles(e.currentTarget.dataset.exportDelAcc);
           if (n) draw();
         }, "导出中…");
       }));

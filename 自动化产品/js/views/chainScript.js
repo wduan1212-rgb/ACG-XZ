@@ -3,7 +3,7 @@
 import { $, $$, esc, copyText, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260715-v83-2";
+import { AI } from "../api/ai.js?v=20260715-v84-2";
 import { STYLE_CHIP_BASE } from "../api/prompts.js";
 import { normalizeVideoTimes, setStage, isMaterial, estimateAudio } from "../domain/productions.js";
 import { getCreativeMemoryContext } from "../domain/analytics.js";
@@ -12,7 +12,7 @@ import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.
 import { fmtTC } from "../core/util.js";
 import { toast, withLoading, promptModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v83-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v84-3";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 
@@ -49,7 +49,7 @@ export function renderScriptPage(root, p) {
         <div class="page-head">
           <div><div class="eyebrow">${material ? "素材链路 · 脚本" : STAGES_LABEL(isImg)}</div>
           <h2>${isImg ? "AI 按创作内容生成小红书笔记图卡" : material ? "AI 生成素材号口播脚本（可长可短 · 有深度/有梗）" : "AI 生成真人口播脚本（分段工坊出片）"}</h2></div>
-          <button class="btn primary" id="csNext">下一步：${isImg ? "成图" : "文案分镜"} ${icon("arrowRight", 14)}</button>
+          <button class="btn primary button-anthe" id="csNext"><span>下一步：${isImg ? "成图" : "文案分镜"} ${icon("arrowRight", 14)}</span></button>
         </div>
 
         <div class="brief card">

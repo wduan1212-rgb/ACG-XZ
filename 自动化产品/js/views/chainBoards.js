@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260715-v83-2";
+import { AI } from "../api/ai.js?v=20260715-v84-2";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260715-v83-2";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260715-v84-2";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v83-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v84-3";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -287,7 +287,7 @@ export function renderSlotsPage(root, p, isImg) {
             <h2>${flowTitle} <span class="head-count">${got}/${items.length}</span></h2></div>
             ${isImg ? "" : `<div class="head-actions">
               ${isImg ? "" : `<button class="btn ghost" id="cbSkip">跳过此步 ${icon("arrowRight", 13)}</button>`}
-              <button class="btn primary" id="cbNext">下一步：${isImg ? "审核" : "提示词"} ${icon("arrowRight", 14)}</button>
+              <button class="btn primary button-anthe" id="cbNext"><span>下一步：${isImg ? "审核" : "提示词"} ${icon("arrowRight", 14)}</span></button>
             </div>`}
           </div>
 
@@ -296,7 +296,7 @@ export function renderSlotsPage(root, p, isImg) {
           ${trendPanel ? "" : singleImageMode ? `<div class="single-image-inline card image-mode-panel">
             <div class="copy-inline-head">
               <div><b>${icon("image", 14)} 单图创作</b><em>标题生成发布文案；提示词和账号视觉风格只负责生成这一张图片</em></div>
-              <div class="copy-inline-actions">${imageCreationSwitcher}<button class="btn gen sm" id="imgSingleRun">${icon("spark", 13)} 生成单图并写文案</button><button class="btn primary sm" id="cbNext">下一步：审核 ${icon("arrowRight", 14)}</button></div>
+              <div class="copy-inline-actions">${imageCreationSwitcher}<button class="btn gen sm" id="imgSingleRun">${icon("spark", 13)} 生成单图并写文案</button><button class="btn primary sm button-anthe" id="cbNext"><span>下一步：审核 ${icon("arrowRight", 14)}</span></button></div>
             </div>
             <label class="field">标题
               <input class="input" id="imgSingleTitle" value="${esc(A.singleTitle || C.title || "")}" required placeholder="必填标题：用于同步生成发布文案" />
@@ -311,7 +311,7 @@ export function renderSlotsPage(root, p, isImg) {
           </div>` : `<div class="copy-inline card image-mode-panel ${customCopyMode ? "is-custom-copy" : ""}">
             <div class="copy-inline-head">
               <div><b>${icon("image", 14)} 图文创作台</b><em>${customCopyMode ? "标题、正文和图卡提示词在这里一次准备" : "文案先生成，图卡提示词会轻量呼应；可在这里直接微调"}</em></div>
-              <div class="copy-inline-actions">${imageCreationSwitcher}<label class="image-count-select">${icon("image", 12)}<span>图片数量</span><select class="input" id="imgCount">${Array.from({ length: 12 }, (_, i) => i + 1).map(count => `<option value="${count}" ${count === Number(S.imageCount || DEFAULT_XHS_IMAGE_COUNT) ? "selected" : ""}>${count} 张</option>`).join("")}</select></label><button class="btn gen sm" id="imgFactoryGen">${icon("spark", 13)} 按文案生成图卡提示词</button><button class="btn primary sm" id="cbNext">下一步：审核 ${icon("arrowRight", 14)}</button></div>
+              <div class="copy-inline-actions">${imageCreationSwitcher}<label class="image-count-select">${icon("image", 12)}<span>图片数量</span><select class="input" id="imgCount">${Array.from({ length: 12 }, (_, i) => i + 1).map(count => `<option value="${count}" ${count === Number(S.imageCount || DEFAULT_XHS_IMAGE_COUNT) ? "selected" : ""}>${count} 张</option>`).join("")}</select></label><button class="btn gen sm" id="imgFactoryGen">${icon("spark", 13)} 按文案生成图卡提示词</button><button class="btn primary sm button-anthe" id="cbNext"><span>下一步：审核 ${icon("arrowRight", 14)}</span></button></div>
             </div>
             <label class="field">标题
               <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" required placeholder="${customCopyMode ? "必填标题：填写发布标题，图片封面会完整围绕它" : "必填标题：生成后可编辑"}" />

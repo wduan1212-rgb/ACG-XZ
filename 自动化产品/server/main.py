@@ -91,6 +91,18 @@ def load_env_local():
 
 load_env_local()
 
+
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default)) or default))
+    except (TypeError, ValueError):
+        return default
+
+
+# 上游达到并发上限时请求先在本服务排队，避免直接把 429/任务上限暴露给创作者。
+IMAGE_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3))
+VIDEO_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("VIDEO_SUBMIT_CONCURRENCY", 10))
+
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
 LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", (LLM_BASE_URL + "/v1/chat/completions") if LLM_BASE_URL else "https://api.minimaxi.com/v1/chat/completions")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
@@ -839,11 +851,12 @@ def _is_image_busy_error(detail: str) -> bool:
     )
 
 
-async def _post_json_with_retry(client: httpx.AsyncClient, endpoint: str, body: dict, headers: dict, retries: int = 8):
+async def _post_json_with_retry(client: httpx.AsyncClient, endpoint: str, body: dict, headers: dict, retries: int = 24):
     last_r = None
     last_data = None
     for attempt in range(retries + 1):
-        r = await client.post(endpoint, json=body, headers=headers)
+        async with IMAGE_SUBMIT_QUEUE:
+            r = await client.post(endpoint, json=body, headers=headers)
         last_r = r
         ctype = r.headers.get("content-type") or ""
         try:
@@ -859,6 +872,24 @@ async def _post_json_with_retry(client: httpx.AsyncClient, endpoint: str, body: 
             continue
         return r, data
     return last_r, last_data
+
+
+async def _post_image_form_with_retry(client: httpx.AsyncClient, endpoint: str, *, data, files, headers, retries: int = 24):
+    last_response = None
+    for attempt in range(retries + 1):
+        async with IMAGE_SUBMIT_QUEUE:
+            response = await client.post(endpoint, data=data, files=files, headers=headers)
+        last_response = response
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        detail = _http_detail(payload) if payload else response.text[:1000]
+        if response.status_code >= 400 and _is_image_busy_error(detail) and attempt < retries:
+            await asyncio.sleep(min(3 + attempt * 2, 12))
+            continue
+        return response
+    return last_response
 
 
 def _data_url_to_file(data_url: str, name: str = "reference.png") -> Tuple[str, bytes, str]:
@@ -1136,11 +1167,11 @@ async def image_generate(req: ImageGenerateReq):
             elif ref_files:
                 form = {"model": model, "prompt": prompt, "n": "1", "size": body["size"]}
                 file_parts = [("image", (name, blob, mime)) for name, blob, mime in ref_files]
-                r = await client.post(edit_endpoint, data=form, files=file_parts, headers=upload_headers)
+                r = await _post_image_form_with_retry(client, edit_endpoint, data=form, files=file_parts, headers=upload_headers)
                 data = r.json() if "json" in (r.headers.get("content-type") or "") else {}
                 if r.status_code >= 400:
                     file_parts = [("image[]", (name, blob, mime)) for name, blob, mime in ref_files]
-                    r = await client.post(edit_endpoint, data=form, files=file_parts, headers=upload_headers)
+                    r = await _post_image_form_with_retry(client, edit_endpoint, data=form, files=file_parts, headers=upload_headers)
                     data = r.json() if "json" in (r.headers.get("content-type") or "") else {}
                 if r.status_code >= 400:
                     detail = _http_detail(data) if data else r.text[:1000]
@@ -2009,6 +2040,37 @@ def _digital_human_transient_detail(data=None, status_code: int = 0) -> str:
     return str(data or f"OmniHuman 请求失败：status={status_code}")
 
 
+def _video_submit_busy(status_code: int = 0, data=None, text: str = "") -> bool:
+    raw = json.dumps(data, ensure_ascii=False) if isinstance(data, (dict, list)) else str(text or data or "")
+    return bool(
+        status_code in {429, 502, 503, 504} or
+        re.search(
+            r"Concurrent Limit|API Concurrent|Too Many Requests|rate.?limit|concurrenc|"
+            r"Gateway Time|timeout|timed out|任务上限|排队已满|并发|限流|网关超时|code.?[:=]?\s*1002",
+            raw,
+            re.I,
+        )
+    )
+
+
+async def _queued_video_post(client: httpx.AsyncClient, url: str, retries: int = 24, **kwargs):
+    """提交类视频请求共享本机队列；上游并发满时继续排队并退避重试。"""
+    last_response = None
+    for attempt in range(retries + 1):
+        async with VIDEO_SUBMIT_QUEUE:
+            response = await client.post(url, **kwargs)
+        last_response = response
+        try:
+            data = response.json()
+        except Exception:
+            data = None
+        if _video_submit_busy(response.status_code, data, response.text[:1200]) and attempt < retries:
+            await asyncio.sleep(min(3 + attempt * 2, 12))
+            continue
+        return response
+    return last_response
+
+
 async def _digital_human_submit(req: VideoSubmitReq, resolved_images, resolved_audios):
     if not _digital_human_configured():
         raise HTTPException(
@@ -2039,31 +2101,15 @@ async def _digital_human_submit(req: VideoSubmitReq, resolved_images, resolved_a
     raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     url = _digital_human_url("CVSubmitTask")
     headers = _volc_signed_headers("POST", url, raw)
-    data = {}
-    r = None
-    last_error = ""
-    for attempt in range(3):
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
-                r = await client.post(url, content=raw, headers=headers)
-            try:
-                data = r.json()
-            except Exception:
-                data = {"message": r.text[:1000]}
-            code = data.get("code") if isinstance(data, dict) else None
-            if r.status_code < 400 and code in (None, 10000, "10000"):
-                break
-            if not _digital_human_transient_error(r.status_code, data) or attempt >= 2:
-                break
-            last_error = _digital_human_transient_detail(data, r.status_code)
-            await asyncio.sleep(4 + attempt * 5)
-        except httpx.HTTPError as exc:
-            last_error = f"{exc.__class__.__name__} {exc}"
-            if attempt >= 2 or not _digital_human_transient_error(502, text=last_error):
-                raise HTTPException(502, f"无法连接 OmniHuman 智能视觉接口：{last_error}")
-            await asyncio.sleep(4 + attempt * 5)
-    if r is None:
-        raise HTTPException(502, last_error or "OmniHuman 提交失败")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
+            r = await _queued_video_post(client, url, content=raw, headers=headers)
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"无法连接 OmniHuman 智能视觉接口：{exc.__class__.__name__} {exc}")
+    try:
+        data = r.json()
+    except Exception:
+        data = {"message": r.text[:1000]}
     if r.status_code >= 400:
         raise HTTPException(r.status_code, _digital_human_transient_detail(data, r.status_code) or "OmniHuman 提交失败")
     code = data.get("code")
@@ -2255,7 +2301,7 @@ async def video_submit(req: VideoSubmitReq):
     }
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
-            r = await client.post(_video_submit_url(), json=payload, headers=headers)
+            r = await _queued_video_post(client, _video_submit_url(), json=payload, headers=headers)
             if r.status_code >= 400 and resolved_images:
                 try:
                     err_text = json.dumps(r.json(), ensure_ascii=False)
@@ -2272,7 +2318,7 @@ async def video_submit(req: VideoSubmitReq):
                         ),
                     }]
                     fallback_payload = _video_payload(req, fallback_content)
-                    r = await client.post(_video_submit_url(), json=fallback_payload, headers=headers)
+                    r = await _queued_video_post(client, _video_submit_url(), json=fallback_payload, headers=headers)
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"无法连接 Seedance（{SEEDANCE_BASE_URL}）：{exc.__class__.__name__} {exc}。请确认 SEEDANCE_BASE_URL 可达（内网地址需在内网/VPN）。")
     if r.status_code >= 400:
@@ -2426,6 +2472,39 @@ def _write_compose_srt(path: Path, subtitles: List[ComposeSubtitle]) -> bool:
         return False
     path.write_text("\n".join(rows), "utf-8")
     return True
+
+
+def _compose_subtitle_font() -> Tuple[str, str]:
+    """选取真实包含中文字符的字体，避免服务器烧录字幕变成方框。"""
+    configured_file = Path(os.getenv("SUBTITLE_FONT_FILE", "").strip()).expanduser()
+    configured_name = os.getenv("SUBTITLE_FONT_NAME", "").strip()
+    if configured_file.is_file():
+        return configured_name or "Noto Sans CJK SC", str(configured_file.parent)
+    candidates = [
+        ("Noto Sans CJK SC", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        ("Noto Sans CJK SC", "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf"),
+        ("Source Han Sans SC", "/usr/share/fonts/opentype/adobe-source-han-sans/SourceHanSansSC-Regular.otf"),
+        ("WenQuanYi Zen Hei", "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+        ("PingFang SC", "/System/Library/Fonts/PingFang.ttc"),
+        ("Heiti SC", "/System/Library/Fonts/STHeiti Medium.ttc"),
+    ]
+    for family, font_path in candidates:
+        path = Path(font_path)
+        if path.is_file():
+            return family, str(path.parent)
+    fc_match = shutil.which("fc-match")
+    if fc_match:
+        for family in ("Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Zen Hei"):
+            run = subprocess.run(
+                [fc_match, "-f", "%{family}|%{file}", family],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            found_family, _, found_file = (run.stdout or "").strip().partition("|")
+            if any(mark in found_family for mark in ("Noto Sans CJK", "Source Han Sans", "WenQuanYi")) and Path(found_file).is_file():
+                return found_family.split(",", 1)[0], str(Path(found_file).parent)
+    return configured_name or "Noto Sans CJK SC", ""
 
 
 def _shift_subtitles_for_transitions(subtitles: List[ComposeSubtitle], clips: List[ComposeClip], transition: float) -> List[ComposeSubtitle]:
@@ -2760,13 +2839,18 @@ async def video_compose(req: ComposeReq):
             ass_size = max(7.0, min(16.0, float(style.size or 11) * 0.82))
             ass_outline = max(0.0, min(2.0, float(style.stroke or 0) * 0.75))
             ass_margin = max(18, min(120, int(float(style.bottom or 22) * 2.88)))
+            font_name, fonts_dir = _compose_subtitle_font()
             force_style = (
-                f"FontSize={ass_size:.1f},Outline={ass_outline:.1f},Shadow=0,"
+                f"FontName={font_name},FontSize={ass_size:.1f},Outline={ass_outline:.1f},Shadow=0,"
                 f"Alignment=2,MarginV={ass_margin}"
             )
+            fonts_arg = ""
+            if fonts_dir:
+                escaped_fonts_dir = fonts_dir.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+                fonts_arg = f":fontsdir='{escaped_fonts_dir}'"
             subtitle_cmd = [
                 ffmpeg, "-y", "-i", str(mixed_path),
-                "-vf", f"subtitles='{srt_filter}':charenc=UTF-8:force_style='{force_style}'",
+                "-vf", f"subtitles='{srt_filter}':charenc=UTF-8{fonts_arg}:force_style='{force_style}'",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "copy", "-movflags", "+faststart", str(out_path)
             ]
             run = subprocess.run(subtitle_cmd, capture_output=True, text=True, timeout=900)
