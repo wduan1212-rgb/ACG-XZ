@@ -734,9 +734,9 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
 .sup-table td { padding: 8px 10px; }
 .sup-table .sup-name b { font-size: 11.5px; }
 .sup-table .sup-name em { margin-top: 1px; font-size: 10px; }
-.sup-table .btn.sm { min-height: 30px; padding: 5px 10px; }
-.sup-col-actions { width: 228px; }
-.sup-actions-inner { gap: 5px; }
+.sup-table .btn.sm { min-height: 30px; padding: 4px 5px; }
+.sup-col-actions { width: 264px; }
+.sup-actions-inner { gap: 4px; }
 
 .agent-avatar-mono {
   display: inline-grid;

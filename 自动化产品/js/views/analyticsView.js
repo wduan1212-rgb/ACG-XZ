@@ -3,7 +3,7 @@
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { toast, withLoading, emptyState } from "../ui/components.js";
-import { state } from "../core/store.js";
+import { state, pullRemote } from "../core/store.js";
 import {
   analyticsRows, analyticsSummary,
   syncExistingPublishedAssets, refreshAllAnalytics, refreshAnalyticsLink, justOneAnalyticsStatus
@@ -16,6 +16,7 @@ let timeFilter = "all";
 let productFilter = "all";
 let justOneStatus = null;
 let qaLog = [];
+let lastAnalyticsRemotePullAt = 0;
 
 const fmt = n => Number(n || 0).toLocaleString("zh-CN");
 const pct = n => ((Number(n || 0) * 100).toFixed(1) + "%");
@@ -214,6 +215,14 @@ export const analyticsView = {
       wire(root, draw);
     };
     draw();
+    if (Date.now() - lastAnalyticsRemotePullAt > 1200) {
+      lastAnalyticsRemotePullAt = Date.now();
+      pullRemote().then(ok => {
+        if (!ok || !root.isConnected) return;
+        syncExistingPublishedAssets();
+        draw();
+      }).catch(() => {});
+    }
   }
 };
 

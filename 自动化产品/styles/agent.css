@@ -346,12 +346,20 @@
 .agc-video-chain svg { flex: none; }
 .agc-override.is-video { border-color: rgba(45,212,191,.18); }
 .agc-override.is-custom-plan {
-  grid-template-columns: minmax(130px, .72fr) minmax(0, 3.5fr) 76px minmax(188px, auto);
+  grid-template-columns: minmax(120px, .65fr) minmax(360px, 2.4fr) 84px minmax(230px, 1.2fr);
   grid-template-areas:
     "name content imgcount refactions"
     "refhead refstate refstate refstate";
 }
-.agc-override.is-custom-plan .agc-account-copy { grid-template-columns: 66px minmax(190px, 1fr) minmax(112px, .46fr); align-items: center; }
+.agc-override.is-custom-plan .agc-account-copy {
+  grid-template-columns: 64px minmax(0, 1fr) 104px;
+  align-items: center;
+}
+.agc-override.is-custom-plan .agc-copy-fields {
+  min-height: 51px;
+  align-items: end;
+}
+.agc-override.is-custom-plan .agc-mini-count.img-count { width: 84px; }
 .agc-image-mode-switch {
   position: relative;
   isolation: isolate;
@@ -374,8 +382,15 @@
 .image-mode-backward .image-mode-panel { animation: agcImageModeBack 260ms cubic-bezier(.22,.75,.2,1) both; }
 @keyframes agcImageModeForward { from { opacity: .35; transform: translateX(12px); } to { opacity: 1; transform: none; } }
 @keyframes agcImageModeBack { from { opacity: .35; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
-.agc-account-copy.single-image-copy { grid-template-columns: 66px minmax(190px, 1fr) minmax(112px, .46fr) !important; }
+.agc-account-copy.single-image-copy { grid-template-columns: 64px minmax(0, 1fr) 104px !important; }
 .agc-copy-editor-btn { min-width: 0; height: 36px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 9px; border: 1px solid rgba(132,152,255,.24); border-radius: var(--r-sm); color: #AFC0FF; background: rgba(80,110,255,.08); font-size: 9.5px; font-weight: 800; white-space: nowrap; }
+.agc-override.is-custom-plan .agc-copy-editor-btn {
+  width: 104px;
+  max-width: 104px;
+  padding-inline: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .agc-copy-editor-btn.is-filled { color: #CFE0FF; border-color: rgba(109,168,255,.46); background: rgba(80,110,255,.16); }
 .agc-copy-editor-modal label { display: grid; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 750; }
 .agc-copy-editor-modal textarea { min-height: 300px; resize: vertical; line-height: 1.7; }

@@ -666,6 +666,17 @@ def upsert_docs(collection, items):
                     ):
                         if key not in it and key in existing:
                             it[key] = existing[key]
+                    # 供应商回传链接由专用原子接口维护。即使旧浏览器随后回推了一条
+                    # 含旧 publishedUrl/status 的完整资产，也不能把较新的回传结果覆盖掉。
+                    server_published_at = int(existing.get("publishedUpdatedAt") or existing.get("publishedAt") or 0)
+                    client_published_at = int(it.get("publishedUpdatedAt") or it.get("publishedAt") or 0)
+                    if server_published_at and server_published_at > client_published_at:
+                        for key in (
+                            "publishedUrl", "supplierNote", "publishedTitle", "publishedRawText",
+                            "publishedAt", "publishedUpdatedAt", "publishedUpdatedBy", "status",
+                        ):
+                            if key in existing:
+                                it[key] = existing[key]
                 conn.execute(
                     "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                     (collection, doc_id, it.get("ownerId"), ua, json.dumps(it, ensure_ascii=False)),
@@ -934,6 +945,171 @@ def mark_supplier_asset_downloaded(asset_id, member_id, role):
             )
             conn.commit()
             return item, None
+        finally:
+            conn.close()
+
+
+def _normalize_published_url(value):
+    raw = str(value or "").strip()
+    if not raw or any(ch.isspace() for ch in raw):
+        raise ValueError("invalid_published_url")
+    parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("invalid_published_url")
+    return parsed.geturl()
+
+
+def _published_platform(url, fallback=""):
+    value = str(url or "").lower()
+    if any(term in value for term in ("xiaohongshu", "xhslink", "xhs")):
+        return "小红书"
+    if any(term in value for term in ("weixin", "wechat", "channels", "finder", "video.qq.com")):
+        return "视频号"
+    if any(term in value for term in ("douyin", "iesdouyin")):
+        return "抖音"
+    return str(fallback or "未知平台")
+
+
+def update_supplier_asset_published_link(asset_id, published_url, note, title, raw_text, member_id, role):
+    """供应商回传发布链接：原子更新交付资产与当前数据分析链接。"""
+    if role not in {"supplier_parent", "supplier_child", "supplier"}:
+        return None, None, "forbidden"
+    try:
+        normalized = _normalize_published_url(published_url)
+    except ValueError:
+        return None, None, "invalid_url"
+    _ensure_db()
+    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
+    with _lock:
+        conn = _connect()
+        try:
+            asset_row = conn.execute(
+                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
+            ).fetchone()
+            if not asset_row:
+                return None, None, "not_found"
+            item = json.loads(asset_row[0])
+            if not item.get("delivered") and not item.get("shared"):
+                return None, None, "not_delivered"
+            if assigned is not None and item.get("accountId") not in assigned:
+                return None, None, "unassigned"
+
+            now = int(time.time() * 1000)
+            item["publishedUrl"] = normalized
+            item["supplierNote"] = str(note or "").strip()[:300]
+            if str(title or "").strip():
+                item["publishedTitle"] = str(title).strip()[:240]
+            item["publishedRawText"] = str(raw_text or "")[:500]
+            item["publishedAt"] = now
+            item["publishedUpdatedAt"] = now
+            item["publishedUpdatedBy"] = member_id
+            item["status"] = "已发布"
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("assets", str(asset_id), asset_row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+
+            account_platform = ""
+            account_id = str(item.get("accountId") or "")
+            if account_id:
+                account_row = conn.execute(
+                    "SELECT data FROM docs WHERE collection='accounts' AND id=?", (account_id,)
+                ).fetchone()
+                if account_row:
+                    try:
+                        account_platform = json.loads(account_row[0]).get("platform") or ""
+                    except Exception:
+                        account_platform = ""
+            platform = _published_platform(normalized, account_platform)
+            supported = platform in {"小红书", "视频号"}
+            pending_message = "等待数据接口同步；未配置时仅保留发布回链、历史快照和本地复盘。"
+
+            analytics_rows = conn.execute(
+                "SELECT id,data,owner_id FROM docs WHERE collection='analyticsLinks'"
+            ).fetchall()
+            candidates = []
+            for link_id, link_raw, link_owner in analytics_rows:
+                try:
+                    candidate = json.loads(link_raw)
+                except Exception:
+                    continue
+                if str(candidate.get("assetId") or "") == str(asset_id) and candidate.get("status") != "superseded":
+                    candidates.append((link_id, candidate, link_owner))
+            candidates.sort(key=lambda row: int(row[1].get("updatedAt") or row[1].get("createdAt") or 0), reverse=True)
+            current = candidates[0] if candidates else None
+
+            if current and str(current[1].get("url") or "") != normalized:
+                # 修改链接时直接覆盖当前分析条目，避免列表残留旧链接。旧快照不删除，
+                # 只转为孤立归档，防止旧播放数据错误显示在新链接名下。
+                current_link_id = current[0]
+                snapshot_rows = conn.execute(
+                    "SELECT id,data,owner_id FROM docs WHERE collection='metricSnapshots'"
+                ).fetchall()
+                for snapshot_id, snapshot_raw, snapshot_owner in snapshot_rows:
+                    try:
+                        snapshot = json.loads(snapshot_raw)
+                    except Exception:
+                        continue
+                    if str(snapshot.get("linkId") or "") != str(current_link_id):
+                        continue
+                    snapshot["archivedLinkId"] = current_link_id
+                    snapshot["linkId"] = f"archived:{current_link_id}:{now}"
+                    snapshot["archivedAt"] = now
+                    snapshot["updatedAt"] = now
+                    conn.execute(
+                        "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                        ("metricSnapshots", snapshot_id, snapshot_owner, now, json.dumps(snapshot, ensure_ascii=False)),
+                    )
+                for key in (
+                    "lastSnapshotId", "lastSyncedAt", "noteId", "objectId", "objectNonceId",
+                    "provider", "supersededAt",
+                ):
+                    current[1].pop(key, None)
+
+            if current:
+                link_id, link, link_owner = current
+                link.update({
+                    "url": normalized,
+                    "platform": platform,
+                    "accountId": item.get("accountId"),
+                    "productionId": item.get("productionId"),
+                    "assetId": item.get("id"),
+                    "title": item.get("publishedTitle") or item.get("title") or item.get("name") or "",
+                    "tags": item.get("tags") or [],
+                    "publishedAt": item.get("publishedAt") or now,
+                    "source": "supplier-return",
+                    "updatedAt": now,
+                })
+                if not link.get("lastSnapshotId"):
+                    link["status"] = "pending" if supported else "unsupported"
+                    link["error"] = pending_message if supported else "该平台暂未接入数据监测。"
+            else:
+                link_id = uuid.uuid4().hex[:12]
+                link_owner = None
+                link = {
+                    "id": link_id,
+                    "url": normalized,
+                    "platform": platform,
+                    "accountId": item.get("accountId"),
+                    "productionId": item.get("productionId"),
+                    "assetId": item.get("id"),
+                    "title": item.get("publishedTitle") or item.get("title") or item.get("name") or "",
+                    "tags": item.get("tags") or [],
+                    "publishedAt": item.get("publishedAt") or now,
+                    "noteId": "",
+                    "status": "pending" if supported else "unsupported",
+                    "error": pending_message if supported else "该平台暂未接入数据监测。",
+                    "source": "supplier-return",
+                    "createdAt": now,
+                    "updatedAt": now,
+                }
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("analyticsLinks", link_id, link_owner, now, json.dumps(link, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item, link, None
         finally:
             conn.close()
 

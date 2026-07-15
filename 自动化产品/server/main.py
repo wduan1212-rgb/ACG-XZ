@@ -3295,6 +3295,13 @@ class SupplierHomepageReq(BaseModel):
     homepageUrl: str = ""
 
 
+class SupplierPublishedLinkReq(BaseModel):
+    url: str = ""
+    note: str = ""
+    title: str = ""
+    rawText: str = ""
+
+
 class DeliveryRemarkReq(BaseModel):
     text: str = ""
 
@@ -3634,6 +3641,34 @@ def supplier_asset_downloaded(asset_id: str, me=Depends(require_member)):
     parent_id = me.get("parentId") or (me["id"] if me["role"] in {"supplier_parent", "supplier"} else "")
     store.add_supplier_activity(parent_id, me["id"] if me["role"] == "supplier_child" else "", me["id"], "download", item.get("accountId") or "", asset_id, "下载了交付素材")
     return {"ok": True, "asset": item}
+
+
+@app.put("/api/supplier/assets/{asset_id}/published-link")
+def supplier_asset_published_link(asset_id: str, req: SupplierPublishedLinkReq, me=Depends(require_member)):
+    item, analytics_link, err = store.update_supplier_asset_published_link(
+        asset_id, req.url, req.note, req.title, req.rawText, me["id"], me["role"]
+    )
+    if err == "forbidden":
+        raise HTTPException(403, "只有供应商账号可以回传发布链接")
+    if err == "unassigned":
+        raise HTTPException(403, "无权更新未分配账号的发布链接")
+    if err == "invalid_url":
+        raise HTTPException(400, "发布链接仅支持完整的 http:// 或 https:// 地址")
+    if err == "not_delivered":
+        raise HTTPException(400, "只能为已交付素材回传发布链接")
+    if err:
+        raise HTTPException(404, "交付素材不存在")
+    parent_id = me.get("parentId") or (me["id"] if me["role"] in {"supplier_parent", "supplier"} else "")
+    store.add_supplier_activity(
+        parent_id,
+        me["id"] if me["role"] == "supplier_child" else "",
+        me["id"],
+        "return_link",
+        item.get("accountId") or "",
+        asset_id,
+        "回传或更新了发布链接",
+    )
+    return {"ok": True, "asset": item, "analyticsLink": analytics_link}
 
 
 @app.put("/api/supplier/accounts/{account_id}/homepage")

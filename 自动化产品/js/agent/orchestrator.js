@@ -2,8 +2,8 @@
    会话/消息/批次全部持久化，刷新后 resumeActiveBatches() 接续 */
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
-import { uid, runPool, debounce } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260715-v82-1";
+import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
+import { AI } from "../api/ai.js?v=20260715-v82-4";
 import { groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
@@ -1271,7 +1271,7 @@ async function draftOne(p, batch) {
       p.artifacts.images.items = [{
         title: singleImageTitle,
         visual: singleImagePrompt,
-        prompt: `生成一张 3:4 竖版图片。图片内容只依据以下用户提示词：${singleImagePrompt}\n账号视觉风格：${style || acc.imagePromptTemplate || "保持账号既有视觉设计"}。账号风格只控制视觉设计，不得增加、删除或改写提示词内容。\n${IMAGE_NEGATIVE_PROMPT}`,
+        prompt: singleImageGenerationPrompt(singleImagePrompt, style || acc.imagePromptTemplate || ""),
         assetId: null,
         status: "idle"
       }];

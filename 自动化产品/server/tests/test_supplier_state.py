@@ -141,6 +141,129 @@ class SupplierStateTest(unittest.TestCase):
             self.assertGreater(updated["supplierDownloadedAt"], 0)
             self.assertEqual(updated["supplierDownloadedBy"], "supplier-parent")
 
+    def test_supplier_return_link_updates_creator_asset_and_active_analytics_atomically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("accounts", [{
+                "id": "account-1", "name": "测试账号", "platform": "小红书", "mode": "图文", "updatedAt": 100,
+            }])
+            store.upsert_docs("assets", [{
+                "id": "delivery-link-1",
+                "accountId": "account-1",
+                "productionId": "production-1",
+                "type": "图集",
+                "name": "交付图集",
+                "title": "发布标题",
+                "delivered": True,
+                "status": "已下载",
+                "supplierDownloadedAt": 80,
+                "supplierDownloadedBy": "supplier-parent",
+                "updatedAt": 100,
+            }])
+
+            denied, denied_link, err = store.update_supplier_asset_published_link(
+                "delivery-link-1", "https://www.xiaohongshu.com/explore/first", "", "", "",
+                "admin-1", "admin",
+            )
+            self.assertIsNone(denied)
+            self.assertIsNone(denied_link)
+            self.assertEqual(err, "forbidden")
+
+            first, first_link, err = store.update_supplier_asset_published_link(
+                "delivery-link-1", "https://www.xiaohongshu.com/explore/first", "首轮备注", "首轮标题", "分享文本",
+                "supplier-parent", "supplier_parent",
+            )
+            self.assertIsNone(err)
+            self.assertEqual(first["status"], "已发布")
+            self.assertEqual(first["supplierDownloadedAt"], 80)
+            self.assertEqual(first_link["assetId"], "delivery-link-1")
+            self.assertEqual(first_link["url"], first["publishedUrl"])
+            self.assertEqual(first_link["status"], "pending")
+
+            creator_snapshot = store.state_for("admin-1", "admin")
+            creator_asset = next(row for row in creator_snapshot["assets"] if row["id"] == "delivery-link-1")
+            creator_link = next(row for row in creator_snapshot["analyticsLinks"] if row["id"] == first_link["id"])
+            self.assertEqual(creator_asset["publishedUrl"], first["publishedUrl"])
+            self.assertEqual(creator_link["url"], first["publishedUrl"])
+
+            store.upsert_docs("metricSnapshots", [{
+                "id": "snapshot-first", "linkId": first_link["id"], "fetchedAt": 200,
+                "metrics": {"views": 100}, "updatedAt": 200,
+            }])
+            second, second_link, err = store.update_supplier_asset_published_link(
+                "delivery-link-1", "https://channels.weixin.qq.com/web/pages/feed?finderUserName=second",
+                "链接已修改", "修改后标题", "新的分享文本", "supplier-parent", "supplier_parent",
+            )
+            self.assertIsNone(err)
+            self.assertEqual(second_link["id"], first_link["id"])
+            self.assertEqual(second["publishedUrl"], second_link["url"])
+            self.assertEqual(second["status"], "已发布")
+            self.assertEqual(second["supplierDownloadedAt"], 80)
+
+            updated_snapshot = store.state_for("admin-1", "admin")
+            links = {row["id"]: row for row in updated_snapshot["analyticsLinks"]}
+            self.assertEqual(links[second_link["id"]]["status"], "pending")
+            self.assertEqual(len(links), 1)
+            archived_snapshot = next(row for row in updated_snapshot["metricSnapshots"] if row["id"] == "snapshot-first")
+            self.assertEqual(archived_snapshot["archivedLinkId"], first_link["id"])
+            self.assertNotEqual(archived_snapshot["linkId"], first_link["id"])
+
+            store.upsert_docs("assets", [{
+                **second,
+                "publishedUrl": "https://stale.example/old",
+                "publishedAt": 1,
+                "publishedUpdatedAt": 1,
+                "status": "已下载",
+                "updatedAt": second["updatedAt"] + 10,
+            }])
+            preserved = next(
+                row for row in store.state_for("admin-1", "admin")["assets"] if row["id"] == "delivery-link-1"
+            )
+            self.assertEqual(preserved["publishedUrl"], second["publishedUrl"])
+            self.assertEqual(preserved["status"], "已发布")
+
+    def test_supplier_child_only_sees_assigned_deliveries_and_can_return_their_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            parent = store.add_member("供应商母账号", "return_link_parent", "local-test-pin", "supplier_parent")
+            child = store.create_supplier_children(parent[0], [{
+                "name": "供应商子账号", "username": "return_link_child", "pin": "local-test-pin",
+            }])[0]
+            store.set_supplier_child_accounts(parent[0], child["id"], ["account-assigned"], parent[0])
+            store.upsert_docs("assets", [{
+                "id": "delivery-assigned", "accountId": "account-assigned", "name": "已分配素材",
+                "delivered": True, "updatedAt": 100,
+            }, {
+                "id": "delivery-unassigned", "accountId": "account-other", "name": "未分配素材",
+                "delivered": True, "updatedAt": 100,
+            }])
+
+            child_snapshot = store.state_for(child["id"], "supplier_child", parent[0])
+            child_asset_ids = {row["id"] for row in child_snapshot["assets"]}
+            self.assertIn("delivery-assigned", child_asset_ids)
+            self.assertNotIn("delivery-unassigned", child_asset_ids)
+
+            updated, link, err = store.update_supplier_asset_published_link(
+                "delivery-assigned", "https://www.xiaohongshu.com/explore/child-return", "", "", "",
+                child["id"], "supplier_child",
+            )
+            self.assertIsNone(err)
+            self.assertEqual(updated["publishedUpdatedBy"], child["id"])
+            self.assertEqual(link["assetId"], "delivery-assigned")
+
+            # 即使绕过前端直接请求，后端仍拒绝未分配素材，作为越权防护兜底。
+            denied, denied_link, err = store.update_supplier_asset_published_link(
+                "delivery-unassigned", "https://www.xiaohongshu.com/explore/blocked", "", "", "",
+                child["id"], "supplier_child",
+            )
+            self.assertIsNone(denied)
+            self.assertIsNone(denied_link)
+            self.assertEqual(err, "unassigned")
+
+            admin_snapshot = store.state_for("admin-1", "admin")
+            visible = next(row for row in admin_snapshot["assets"] if row["id"] == "delivery-assigned")
+            self.assertEqual(visible["publishedUrl"], updated["publishedUrl"])
+
     def test_supplier_admin_can_list_and_edit_all_supplier_members(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)

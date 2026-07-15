@@ -7,12 +7,12 @@ import { platChip, groupOf } from "../domain/accounts.js";
 import { STAGES, statusPill } from "../domain/productions.js";
 import { deliveredAssets } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260715-v82-1";
-import { LLM_CONFIG } from "../api/llm.js?v=20260715-v82-1";
+import { AI } from "../api/ai.js?v=20260715-v82-4";
+import { LLM_CONFIG } from "../api/llm.js?v=20260715-v82-4";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js";
 import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260715-v82-1";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260715-v82-4";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}

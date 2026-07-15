@@ -18,7 +18,9 @@ export function isAnalyticsSupported(url, platform = "") {
 }
 
 export function linkByAsset(assetId) {
-  return state.analyticsLinks.find(x => x.assetId === assetId) || null;
+  return state.analyticsLinks.find(x => x.assetId === assetId && x.status !== "superseded")
+    || state.analyticsLinks.find(x => x.assetId === assetId)
+    || null;
 }
 
 function isMockSnapshot(snapshot) {
@@ -41,7 +43,7 @@ export function ensureAnalyticsForAsset(asset, acc = null) {
   if (!asset?.publishedUrl) return null;
   const account = acc || accountById(asset.accountId);
   const platform = platformFromUrl(asset.publishedUrl, account?.platform);
-  let link = linkByAsset(asset.id) || state.analyticsLinks.find(x => x.url === asset.publishedUrl);
+  let link = linkByAsset(asset.id) || state.analyticsLinks.find(x => x.url === asset.publishedUrl && x.status !== "superseded");
   const base = {
     url: asset.publishedUrl,
     platform,
@@ -203,7 +205,7 @@ export async function justOneAnalyticsStatus() {
 }
 
 export function analyticsRows() {
-  return state.analyticsLinks.map(link => {
+  return state.analyticsLinks.filter(link => link.status !== "superseded").map(link => {
     const asset = assetById(link.assetId);
     const acc = accountById(link.accountId);
     const prod = productionById(link.productionId);

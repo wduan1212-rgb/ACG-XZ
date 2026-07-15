@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260715-v82-1";
+import { llm, visionCopy } from "./llm.js?v=20260715-v82-4";
 import { DUMATE_BRIEF, PROMPT_FRAMEWORK, NO_DH_FRAMEWORK, DIR_POOL, TOPIC_POOL, STYLE_POOL } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
@@ -548,13 +548,31 @@ function ensureImagePublishTags(copy = "", product = null, sourceText = "") {
     out = out.replace(/[ \t]+\n/g, "\n").replace(/ {2,}/g, " ").trim();
   }
   const existing = [...out.matchAll(/#[^\s#]+/g)].map(match => match[0]);
-  const missingProducts = productTags.filter(tag => !existing.includes(tag));
-  const genericTags = ["#AI办公", "#效率工具", "#工作流", "#AI工具"]
-    .filter(tag => !existing.includes(tag) && !missingProducts.includes(tag));
-  const genericNeeded = Math.max(0, 4 - existing.length - missingProducts.length);
-  const append = [...missingProducts, ...genericTags.slice(0, genericNeeded)];
-  if (append.length) out = `${out}\n${append.join(" ")}`.trim();
-  return out;
+  const genericTags = ["#AI办公", "#效率工具", "#工作流", "#AI工具"];
+  const orderedTags = [...new Set([...productTags, ...existing])].slice(0, 7);
+  genericTags.forEach(tag => {
+    if (orderedTags.length < 4 && !orderedTags.includes(tag)) orderedTags.push(tag);
+  });
+  const body = out
+    .replace(/#[^\s#]+/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/ {2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return `${body}\n${orderedTags.join(" ")}`.trim();
+}
+
+const IMAGE_COPY_CROWD_ADDRESS_RE = /兄弟们|家人们|姐妹们|宝子们|老铁们|集美们|亲们|各位宝宝|各位宝子|朋友们/;
+
+function assertProfessionalImageCopy(copy = "") {
+  const value = normalizeGeneratedEscapes(copy);
+  if (IMAGE_COPY_CROWD_ADDRESS_RE.test(value)) {
+    throw new Error("图文文案含直播式群体称呼，请改为专业表达");
+  }
+  if (/冲就完了|闭眼入|无脑冲|绝绝子|狠狠爱了|听我一句劝/.test(value)) {
+    throw new Error("图文文案含夸张直播话术，请改为可信测评表达");
+  }
+  return value;
 }
 
 function polishVideoBrandCopy(result = {}, product = null) {
@@ -2757,11 +2775,11 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const content = await llm([
-          { role: "system", content: `你是小红书图文正文写手。用户给出的标题是唯一内容主题，必须先理解标题在说什么，再写一篇与标题强相关的正文。不得把标题替换成泛化的 AI 办公、效率清单或其他常见模板；不得引入标题未指向的新产品、新选题或竞品关系。正文要回答标题承诺的问题，按自然段给出具体解释、场景、做法或结论，像真人经验分享，不把标题原样重复成第一句。最后一行给 4-7 个相关话题标签。账号信息只决定语气，不改变主题。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
+          { role: "system", content: `你是专业的小红书图文正文写手。用户给出的标题是唯一内容主题，必须先理解标题在说什么，再写一篇与标题强相关、可直接发布的干货正文。不得把标题替换成泛化的 AI 办公、效率清单或其他常见模板；不得引入标题未指向的新产品、新选题或竞品关系。正文必须自然保留标题中的主产品名、核心对象和任务关系词，不能把所有关键字都换成泛化同义词。内容优先采用三类可靠结构之一：测评类写结论、依据、适合谁与边界；教学类写前提、步骤、结果与避坑；种草类写使用场景、真实价值、选择理由与限制。正文要回答标题承诺的问题，给出具体做法、判断依据或可验证结果，语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签。账号信息只决定表达风格，不改变主题和专业度。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
           { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n请只围绕这个标题写正文。` }
         ], { json: true, temperature: attempt ? 0.72 : 0.92 });
         const data = sanitizeXhsObject(parseJSONLoose(content));
-        const copyText = ensureImagePublishTags(normalizeGeneratedEscapes(data.copy || data.body || ""), null, sourceTitle);
+        const copyText = ensureImagePublishTags(assertProfessionalImageCopy(data.copy || data.body || ""), null, sourceTitle);
         if (!copyText) throw new Error("模型没有返回与标题对应的正文");
         this.lastSource = "llm-title-copy";
         this.lastError = "";
@@ -2804,7 +2822,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const videoProductName = chineseProductDisplayName(product, "百度搭子");
     const sys = kind === "video"
       ? `你是短视频发布文案写手。根据用户主题、平台、产品和口播内容，写一个发布标题和简介。自由发挥，贴合主题即可；标题自然有点击欲，正文像真人发布后的补充说明。不要换题，不要把标题原样当正文第一句。最后一行给 4-7 个话题标签，包含「#${videoProductName}」。只输出 JSON：{"title":"...","copy":"..."}`
-      : `你是小红书笔记文案写手。根据用户主题和图卡内容，写一个发布标题和正文。自由发挥，贴合主题即可；正文像真实创作者的经验分享。不要换题，不要把标题原样当正文第一句。最后一行给 4-7 个话题标签。只输出 JSON：{"title":"...","copy":"..."}`;
+      : `你是专业的小红书图文文案写手。根据用户主题和图卡内容，写一个发布标题和正文。内容偏向测评、教学或可信种草：给出判断依据、具体步骤、真实结果、适用边界或选择建议，避免空泛口号。语气专业、清楚、克制，不要使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也不要使用“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。不要换题，不要把标题原样当正文第一句。最后一行给 4-7 个话题标签。只输出 JSON：{"title":"...","copy":"..."}`;
     const copyGroundRules = "只根据用户主题、已定内容、账号语气和当前产品写文案；主题优先，可以自然出现产品名，不要写成无关的固定模板。";
     try {
       const content = await llm([
@@ -2815,7 +2833,9 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       ], { json: true, temperature: 1.02 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.title || !d.copy) throw new Error("模型未返回 title/copy");
-      return this._ok(polishCopyResult(d, { topic: safeTopic, shots: safeShots, account, kind, product, batchVariant, avoidCopies }));
+      const polished = polishCopyResult(d, { topic: safeTopic, shots: safeShots, account, kind, product, batchVariant, avoidCopies });
+      if (kind === "image") polished.copy = assertProfessionalImageCopy(polished.copy);
+      return this._ok(polished);
     } catch (e) {
       this._fb(e);
       await delay(400);

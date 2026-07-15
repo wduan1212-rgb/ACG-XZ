@@ -1,18 +1,18 @@
 /* 链路 · 分镜（视频）/ 图文创作台（图文）：站内图片 API + 上传补图 */
 
-import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone } from "../core/util.js";
+import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260715-v82-1";
+import { AI } from "../api/ai.js?v=20260715-v82-4";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260715-v82-1";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260715-v82-4";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v82-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v82-4";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -794,8 +794,7 @@ export function renderSlotsPage(root, p, isImg) {
   function singleImagePrompt() {
     const content = String(A.singlePrompt || "").trim();
     if (!content) return "";
-    const visualStyle = String(acc.styleProfile || S.style || "清晰、克制、主体突出、文字可读").trim();
-    return `生成3:4竖版单张图片。【图片具体内容：${content}】【账号视觉风格：${visualStyle}】账号风格只决定视觉设计，不得改变、补写或删减图片内容。`;
+    return singleImageGenerationPrompt(content, acc.styleProfile || S.style || acc.imagePromptTemplate || "");
   }
 
   async function generateSingleImageWorkflow() {

@@ -3,7 +3,7 @@
 
 import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
+import { state, save, notify, pullRemote, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
 import { platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
@@ -11,7 +11,7 @@ import { ensureAnalyticsForAsset } from "../domain/analytics.js";
 import { openProductionDrawer } from "./prodDrawer.js";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
-import * as remote from "../core/remote.js?v=20260715-v82-1";
+import * as remote from "../core/remote.js?v=20260715-v82-4";
 
 function extractUrl(text) {
   const m = String(text || "").match(/https?:\/\/[^\s"'<>，。；、）】]+/);
@@ -207,7 +207,9 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
         <div class="dv-actions">
           <button class="btn ghost sm" data-dvact="copy">${icon("copy", 13)} 复制标题+文案</button>
           <button class="btn ghost sm" data-dvact="download">${icon("download", 13)} 下载 zip</button>
-          <button class="btn ghost sm" data-dvact="link">${icon("link", 13)} ${asset.publishedUrl ? "修改发布链接" : "登记发布链接"}</button>
+          ${asset.publishedUrl
+            ? `<a class="btn ghost sm" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 13)} 查看链接</a>`
+            : `<button class="btn ghost sm" disabled>${icon("link", 13)} 供应商未回传</button>`}
           <button class="btn ghost sm delivery-remark-button" data-dvact="remarks">${icon("fileText", 13)} 查看备注${remarkDot(asset)}</button>
           ${canMarkReviewed() ? `<button class="btn ghost sm" data-dvact="review">${icon("eye", 13)} ${asset.adminReviewed ? "取消已审阅" : "标记已审阅"}</button>` : ""}
           ${showRetract ? `<button class="btn ghost sm danger-soft" ${canRetract ? `data-dvact="delete"` : "disabled"} title="${esc(retractReason || "回撤到草稿/审核状态")}">${icon("trash", 13)} ${canRetract ? "回撤删除" : "已下载不可回撤"}</button>` : ""}
@@ -218,32 +220,49 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
   </div>`;
 }
 
-async function returnLinkFlow(asset, acc, redraw) {
+async function returnLinkFlow(asset, acc) {
   const ret = await supplierReturnModal({
     title: `回传发布链接 · ${asset.name}`,
     platform: acc?.platform || "平台",
     value: asset.publishedUrl || "",
     note: asset.supplierNote || ""
   });
-  if (ret == null) return;
+  if (ret == null) return false;
   const raw = ret.raw || "";
   const url = extractUrl(raw);
-  if (!url) { toast("没有识别到链接：请粘贴包含 http:// 或 https:// 的分享内容"); return; }
+  if (!url) { toast("没有识别到链接：请粘贴包含 http:// 或 https:// 的分享内容"); return false; }
   const shareTitle = extractShareTitle(raw);
-  asset.publishedUrl = url;
-  asset.supplierNote = String(ret.note || "").trim().slice(0, 300);
-  if (shareTitle) asset.publishedTitle = shareTitle;
-  asset.publishedRawText = String(raw || "").slice(0, 500);
-  asset.publishedAt = Date.now();
-  asset.status = "已发布";
-  save("assets");
-  notify("delivery", `「${asset.title || asset.name}」已发布`, `供应商回传了发布链接，链路闭环 ✓`);
-  ensureAnalyticsForAsset(asset, acc);
-  if (["supplier_parent", "supplier_child", "supplier"].includes(state.role) && remote.isOn()) {
-    remote.supplier.record({ action: "return_link", accountId: asset.accountId || "", assetId: asset.id, detail: `回传了「${asset.title || asset.name}」的发布链接` }).catch(() => {});
+  const payload = {
+    url,
+    note: String(ret.note || "").trim().slice(0, 300),
+    title: shareTitle || asset.publishedTitle || "",
+    rawText: String(raw || "").slice(0, 500)
+  };
+  if (remote.isOn()) {
+    try {
+      const result = await remote.supplier.returnLink(asset.id, payload);
+      Object.assign(asset, result.asset || {});
+    } catch (error) {
+      toast(error?.message || "发布链接回传失败", "error");
+      return false;
+    }
+  } else {
+    const now = Date.now();
+    asset.publishedUrl = url;
+    asset.supplierNote = payload.note;
+    if (payload.title) asset.publishedTitle = payload.title;
+    asset.publishedRawText = payload.rawText;
+    asset.publishedAt = now;
+    asset.publishedUpdatedAt = now;
+    asset.publishedUpdatedBy = state.ui.currentMemberId || "local";
+    asset.updatedAt = now;
+    asset.status = "已发布";
+    save("assets");
+    ensureAnalyticsForAsset(asset, acc);
   }
+  notify("delivery", `「${asset.title || asset.name}」已发布`, `供应商回传了发布链接，链路闭环 ✓`);
   toast("已记录发布链接，素材标记为「已发布」");
-  redraw();
+  return true;
 }
 
 function supplierDetailHtml(asset, acc) {
@@ -266,6 +285,9 @@ function supplierDetailHtml(asset, acc) {
             <span>${esc(dateOnly(asset.planDate) || "未计划")}</span>
             <span>${esc(asset.status || "未下载")}</span>
           </div>
+          <div class="sup-detail-link-slot">
+            ${asset.publishedUrl ? `<a class="btn ghost sm sup-detail-link" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转链接</a>` : ""}
+          </div>
         </div>
         ${ids.length ? `<div class="sup-detail-imgs">${ids.map((id, k) => {
           const u = urlFor(id);
@@ -280,6 +302,7 @@ let tab = "creator"; // creator | supplier
 let supFilters = { product: "all", type: "all", publisher: "all", account: "all", date: "all" };
 let creatorProductFilter = "all";
 let creatorRemarkFilter = "all";
+let lastDeliveryRemotePullAt = 0;
 
 export const deliveryView = {
   render(root) {
@@ -406,7 +429,6 @@ export const deliveryView = {
           const act = b.dataset.dvact;
           if (act === "copy") copyText((asset.title || "") + "\n\n" + (asset.copy || ""), "已复制标题+文案");
           if (act === "download") { await downloadDelivery(asset, { markDownloaded: false }); toast("已下载 " + asset.name); }
-          if (act === "link") await returnLinkFlow(asset, acc, draw);
           if (act === "remarks") await openDeliveryRemarks(asset, draw);
           if (act === "review") { const on = toggleAdminReviewed(asset); toast(on ? "已标记为「已审阅」" : "已取消「已审阅」"); draw(); }
           if (act === "delete") {
@@ -489,8 +511,13 @@ export const deliveryView = {
                 <td><span class="sup-status ${asset.status === "已发布" ? "pub" : supplierHasDownloaded(asset) ? "done" : ""}">${asset.publishedUrl ? "已发布 ✓" : supplierHasDownloaded(asset) ? "已下载" : "未下载"}</span></td>
                 <td class="sup-acts">
                   <div class="sup-actions-inner"><button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
+                  ${isSupplierRole && asset.publishedUrl ? `<a class="btn ghost sm sup-row-jump-link" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转链接</a>` : ""}
                   ${isSupplierRole ? `<button class="btn ghost sm delivery-remark-button" data-supremarks="${asset.id}">${icon("fileText", 13)} 备注${remarkDot(asset)}</button>` : ""}
-                  <button class="btn ${asset.publishedUrl ? "ghost" : "primary"} sm" data-suplink="${asset.id}">${icon("link", 13)} ${asset.publishedUrl ? "改链接" : "回传链接"}</button></div>
+                  ${isSupplierRole
+                    ? `<button class="btn ${asset.publishedUrl ? "ghost" : "primary"} sm" data-suplink="${asset.id}">${icon("link", 13)} ${asset.publishedUrl ? "改链接" : "回传链接"}</button>`
+                    : asset.publishedUrl
+                      ? `<a class="btn ghost sm" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 13)} 查看链接</a>`
+                      : `<button class="btn ghost sm" disabled>${icon("link", 13)} 暂无链接</button>`}</div>
                 </td>
               </tr>${supplierDetailHtml(asset, acc)}`;
             }).join("") + `<tr class="sup-empty-filter" ${visibleCount ? "hidden" : ""}><td colspan="9" class="sup-empty">当前筛选下暂无素材。</td></tr>` : `<tr><td colspan="9" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
@@ -567,7 +594,25 @@ export const deliveryView = {
         const a = state.assets.find(x => x.id === b.dataset.suplink);
         if (!a) return;
         const acc = accountById(a.accountId);
-        await returnLinkFlow(a, acc, draw);
+        const changed = await returnLinkFlow(a, acc);
+        if (!changed) return;
+        const row = b.closest("tr[data-sup]");
+        const status = row?.querySelector(".sup-status");
+        if (status) {
+          status.textContent = "已发布 ✓";
+          status.classList.add("pub");
+        }
+        let jumpLink = row?.querySelector(".sup-row-jump-link");
+        if (jumpLink) jumpLink.href = a.publishedUrl;
+        else {
+          const downloadButton = row?.querySelector(`[data-supdl="${CSS.escape(a.id)}"]`);
+          downloadButton?.insertAdjacentHTML("afterend", `<a class="btn ghost sm sup-row-jump-link" href="${esc(a.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转链接</a>`);
+        }
+        b.className = "btn ghost sm";
+        b.innerHTML = `${icon("link", 13)} 改链接`;
+        const detail = body.querySelector(`[data-sup-detail="${CSS.escape(a.id)}"]`);
+        const linkSlot = detail?.querySelector(".sup-detail-link-slot");
+        if (linkSlot) linkSlot.innerHTML = `<a class="btn ghost sm sup-detail-link" href="${esc(a.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转链接</a>`;
       }));
       $$("[data-supremarks]", body).forEach(b => b.addEventListener("click", async event => {
         event.stopPropagation();
@@ -604,5 +649,11 @@ export const deliveryView = {
     }
 
     draw();
+    if (remote.isOn() && Date.now() - lastDeliveryRemotePullAt > 1200) {
+      lastDeliveryRemotePullAt = Date.now();
+      pullRemote().then(ok => {
+        if (ok && root.isConnected) draw();
+      }).catch(() => {});
+    }
   }
 };

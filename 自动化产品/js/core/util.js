@@ -65,6 +65,35 @@ export function sanitizeProduct(str) {
 }
 export const cleanText = s => sanitizeProduct(stripEmoji(s));
 
+/* 单图创作只继承账号的颜色与画风，不继承布局、人物、文案或内容指令。 */
+export function compactSingleImageVisualStyle(source = "") {
+  const raw = String(source || "").replace(/\s+/g, " ");
+  const colors = [];
+  const add = value => { if (value && !colors.includes(value)) colors.push(value); };
+  (raw.match(/#[0-9A-Fa-f]{6}\b/g) || []).slice(0, 3).forEach(add);
+  const colorTerms = raw.match(/暖白|米白|纯白|黑白|深灰|浅灰|灰蓝|藏蓝|深蓝|浅蓝|天蓝|橙色|橘色|明黄|金色|绿色|青色|紫色|粉色|红色|黑色|白色/g) || [];
+  colorTerms.forEach(add);
+  const styles = [];
+  const styleTerms = [
+    "简笔画火柴人", "扁平插画", "手绘插画", "国风插画", "日系插画", "复古插画",
+    "摄影写实", "超写实", "赛博朋克", "像素画", "水彩", "油画", "漫画", "卡通",
+    "黏土", "2.5D", "3D", "波普", "线稿", "简笔画", "写实"
+  ];
+  styleTerms.forEach(term => {
+    if (raw.includes(term) && !styles.some(value => value.includes(term) || term.includes(value))) styles.push(term);
+  });
+  const parts = [];
+  if (colors.length) parts.push(`${colors.slice(0, 3).join("、")}配色`);
+  if (styles.length) parts.push(`${styles.slice(0, 2).join("、")}画风`);
+  return parts.length ? `${parts.join("，")}。` : "沿用账号的配色与画风。";
+}
+
+export function singleImageGenerationPrompt(content, styleSource = "") {
+  const body = String(content || "").trim();
+  if (!body) return "";
+  return `${body}\n视觉参考：${compactSingleImageVisualStyle(styleSource)}`;
+}
+
 /* 去掉口播里的引导式结尾（关注/点赞/三连/下期见…），利他向 */
 export function stripCTA(s) {
   let t = String(s || "");
