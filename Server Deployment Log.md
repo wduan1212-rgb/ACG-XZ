@@ -1,5 +1,16 @@
 # Server Deployment Log
 
+## v88 - 2026-07-16
+
+- Source: `f44d770` (`v88 align batch references and copy regeneration`), cumulatively including v86-v88. The online entry reports `20260716-v88-1`.
+- Scope: deployed exactly 34 modified tracked application code and static files from a clean worktree after checksum validation, complete staging tests and a file-only dry-run. No file deletion or directory metadata synchronization was used. Production database/runtime state, uploads, composed media, accounts, members, assets, deliveries, drafts, analytics, environment configuration, authentication cache and logs were excluded.
+- Backup and rollback: retained rollback point `v88-pre-20260716-164948`, containing the pre-deployment code snapshot, a consistent SQLite backup, upload/composed checkpoints, private environment backup and collection baseline. Rollback restores code/static resources only and must not replace current production business data.
+- Result: clean local, server staging and production environments all passed the complete test suite 43/43, all JavaScript syntax checks and Python compilation passed, the private environment fingerprint stayed unchanged, service restart and health checks passed, and recent service logs contained no error or traceback.
+- v87 browser smoke: administrator login loaded 80 accounts with no console error or warning. The BGM library showed two legacy account-bound assets as a flat shared library without an account filter; the editing-material library also used the shared view. No production asset was created, renamed, downloaded or deleted during validation.
+- v88 browser smoke: the batch workspace loaded the production task board, 50 image accounts, unified reference and per-account custom reference areas. Existing sessions and drafts remained readable. Explicit-reference/type-switch/title-regeneration behavior is covered by the production 43/43 regression suite; no live generation or task mutation was used for smoke testing.
+- Provider smoke: LLM, image, TTS, Seedance and digital-human configuration endpoints all reported configured and reachable. No private provider value was changed.
+- Data protection check: no protected collection or file count decreased. Accounts 80, members 12, analytics links 45, productions 465, jobs 679, batches 64, metric snapshots 108, sessions 56, voice presets 5, supplier bindings 52 and composed media 147 were preserved. Active users added one asset and one upload while validation was running; these valid production writes were retained.
+
 ## v85 - 2026-07-16
 
 - Source: `5f7a9ec` (`v85 stabilize audio mix and subtitle recognition`). The online main JavaScript and stylesheet entries report `20260716-v85-1`.
