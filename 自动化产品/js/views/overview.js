@@ -96,17 +96,29 @@ function offlineAnswer(q, s) {
   return `当前共 ${s.账号.length} 个账号；任务分布：${Object.entries(s.任务阶段分布).map(([k, v]) => `${k} ${v}`).join("、") || "暂无任务"}；累计交付 ${s.交付.总数} 条（已下载 ${s.交付.已下载}）。可以问我：昨天产出多少素材？供应商下载了多少？哪个账号产量最高？`;
 }
 
+function plainAssistantText(value = "") {
+  return String(value || "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/\*\*/g, "")
+    .replace(/`{1,3}([^`]*)`{1,3}/g, "$1")
+    .replace(/^\s*#{1,6}\s*/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 async function askData(q) {
   const stats = computeStats();
-  if (!LLM_CONFIG.apiKey) return offlineAnswer(q, stats);
+  if (!LLM_CONFIG.apiKey) return plainAssistantText(offlineAnswer(q, stats));
   try {
     const r = await AI.chat([
       { role: "system", content: `你是星阵内容工作台的数据助理，只负责"读数据回答问题"，绝不执行任何操作。只能依据下面这份 JSON 数据回答，数字必须与数据一致，数据里没有的就直说没有。回答用简洁中文，最多 3 行，不用 markdown。\n数据：${JSON.stringify(stats)}` },
       { role: "user", content: q }
     ]);
-    return (r || "").trim() || offlineAnswer(q, stats);
+    return plainAssistantText((r || "").trim() || offlineAnswer(q, stats));
   } catch (e) {
-    return offlineAnswer(q, stats);
+    return plainAssistantText(offlineAnswer(q, stats));
   }
 }
 
@@ -244,9 +256,13 @@ export const overviewView = {
     }, "");
     const topAccounts = analytics.accounts.length ? analytics.accounts.slice(0, 4) : accounts.slice().sort((a, b) => (b.monthlyDone || 0) - (a.monthlyDone || 0)).slice(0, 4).map(acc => ({ name: acc.name, count: acc.monthlyDone || 0, engagement: 0 }));
 
-    const openDataDetail = key => {
+    const openDataDetail = (key, accountName = "") => {
       if (["todo", "waiting", "rendering", "review", "failed", "supplier"].includes(key)) { openTaskGroup(key); return; }
-      const makeRow = (title, meta, action = "") => `<div class="overview-task-row"><span class="overview-task-main"><b>${esc(title)}</b><em>${esc(meta)}</em></span>${action}</div>`;
+      const metricText = row => {
+        const m = row?.latest?.metrics || {};
+        return `播放 ${fmt(m.views)} · 赞 ${fmt(m.likes)} · 藏 ${fmt(m.collects)} · 评 ${fmt(m.comments)}${Number(m.shares || 0) ? ` · 分享 ${fmt(m.shares)}` : ""}`;
+      };
+      const makeRow = (title, meta, action = "", metrics = "") => `<div class="overview-task-row${metrics ? " has-metrics" : ""}"><span class="overview-task-main"><b>${esc(title)}</b><em>${esc(meta)}</em>${metrics ? `<small>${esc(metrics)}</small>` : ""}</span>${action}</div>`;
       let title = "数据详情";
       let rows = "";
       if (key === "recent") {
@@ -254,13 +270,38 @@ export const overviewView = {
         rows = delivered.slice(0, 30).map(({ asset, acc }) => makeRow(asset.title || asset.name || "未命名交付", `${acc?.name || "未命名账号"} · ${asset.status || "未下载"} · ${timeAgo(asset.deliveredAt || asset.createdAt)}`, asset.productionId ? `<button class="btn ghost sm" data-ov-prod="${esc(asset.productionId)}">查看</button>` : "")).join("");
       } else if (key === "links") {
         title = `回传链接 · ${links.length} 条`;
-        rows = links.slice(0, 40).map(row => makeRow(row.link.title || row.asset?.title || row.asset?.name || "未命名内容", `${row.acc?.name || "未命名账号"} · ${row.latest ? "已有数据快照" : "仅回链"}`, row.link.url ? `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">打开链接</a>` : "")).join("");
+        rows = links.slice(0, 40).map(row => makeRow(
+          row.link.title || row.asset?.title || row.asset?.name || "未命名内容",
+          `${row.acc?.name || "未命名账号"} · ${row.link.platform || row.acc?.platform || "未知平台"} · ${row.latest ? "已有数据快照" : "仅回链"}`,
+          row.link.url ? `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">打开链接</a>` : "",
+          row.latest ? metricText(row) : "等待数据快照"
+        )).join("");
       } else if (key === "remarks") {
         title = `发布沟通 · ${remarked.length} 条有备注`;
         rows = remarked.slice(0, 30).map(({ asset, acc }) => makeRow(asset.title || asset.name || "未命名交付", `${acc?.name || "未命名账号"} · ${(asset.remarks || []).length} 条消息${Number(asset.latestRemarkAt || 0) > Number(asset.remarkReadAt?.[memberId] || 0) ? " · 有未读" : ""}`, `<button class="btn ghost sm" data-ov-route="delivery">查看沟通</button>`)).join("");
+      } else if (key === "dataQuality") {
+        const pendingRows = links.filter(row => !row.latest);
+        title = `数据完整度 · ${analytics.synced}/${links.length}`;
+        rows = pendingRows.slice(0, 40).map(row => makeRow(
+          row.link.title || row.asset?.title || row.asset?.name || "未命名内容",
+          `${row.acc?.name || "未命名账号"} · ${row.link.status === "failed" ? "同步失败" : "等待快照"}`,
+          row.link.url ? `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">查看链接</a>` : ""
+        )).join("");
       } else {
-        title = "账号数据表现";
-        rows = topAccounts.map(item => makeRow(item.name, `${item.count || 0} 条内容 · ${fmt(item.engagement || 0)} 次互动`)).join("");
+        const accountRows = accountName ? links.filter(row => (row.acc?.name || "未归属账号") === accountName) : links;
+        const scoped = accountRows.filter(row => row.latest);
+        const sum = field => scoped.reduce((total, row) => total + Number(row.latest?.metrics?.[field] || 0), 0);
+        title = accountName ? `${accountName} · 账号表现` : "互动与账号表现";
+        rows = `<div class="overview-detail-metrics">
+          <span><em>内容</em><b>${accountRows.length}</b></span><span><em>播放</em><b>${fmt(sum("views"))}</b></span>
+          <span><em>点赞</em><b>${fmt(sum("likes"))}</b></span><span><em>收藏</em><b>${fmt(sum("collects"))}</b></span>
+          <span><em>评论</em><b>${fmt(sum("comments"))}</b></span><span><em>分享</em><b>${fmt(sum("shares"))}</b></span>
+        </div>` + accountRows.slice(0, 40).map(row => makeRow(
+          row.link.title || row.asset?.title || row.asset?.name || "未命名内容",
+          `${row.acc?.name || "未命名账号"} · ${row.link.platform || row.acc?.platform || "未知平台"}`,
+          row.link.url ? `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">打开</a>` : "",
+          row.latest ? metricText(row) : "暂无数据快照"
+        )).join("");
       }
       openModal(`<div class="mp-head"><b>${esc(title)}</b><button class="icon-btn ghost" data-close title="关闭">${icon("x", 15)}</button></div><div class="overview-task-list">${rows || `<div class="overview-task-empty">暂无可展示的数据</div>`}</div>`, {
         wide: true,
@@ -281,8 +322,8 @@ export const overviewView = {
         <main class="overview-dashboard-main">
           <section class="overview-kpi-strip" aria-label="关键指标">
             <button class="overview-kpi-card" data-overview-detail="links"><span>回传链接</span><b>${fmt(links.length)}</b><em>${analytics.synced} 条有数据快照</em></button>
-            <button class="overview-kpi-card" data-overview-detail="analytics"><span>总互动</span><b>${fmt(totalEngagement)}</b><em>赞、藏、评与分享</em></button>
-            <button class="overview-kpi-card" data-overview-detail="analytics"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${views.deliveryCount} 条交付汇总</em></button>
+            <button class="overview-kpi-card" data-overview-detail="interactions"><span>总互动</span><b>${fmt(totalEngagement)}</b><em>赞、藏、评与分享</em></button>
+            <button class="overview-kpi-card" data-overview-detail="interactions"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${views.deliveryCount} 条交付汇总</em></button>
             <button class="overview-kpi-card" data-overview-detail="recent"><span>累计交付</span><b>${fmt(delivered.length)}</b><em>${pendingDl} 条供应商待下载</em></button>
           </section>
           <section class="overview-viz-grid">
@@ -308,11 +349,11 @@ export const overviewView = {
           </section>
           <section class="overview-action-grid">
             <button class="overview-action-card" data-overview-detail="todo"><span>${icon("checkCircle", 16)}</span><div><b>待你处理</b><em>${todoCount} 项 · 审核 ${inReview.length} / 失败 ${failed.length}</em></div><strong>${todoCount}</strong></button>
-            <button class="overview-action-card" data-overview-detail="recent"><span>${icon("package", 16)}</span><div><b>发布素材</b><em>最近交付与下载状态</em></div><strong>${delivered.length}</strong></button>
+            <button class="overview-action-card" data-overview-detail="interactions"><span>${icon("pulse", 16)}</span><div><b>互动构成</b><em>逐条查看赞、藏、评与播放</em></div><strong>${fmt(totalEngagement)}</strong></button>
             <button class="overview-action-card" data-overview-detail="remarks"><span>${icon("fileText", 16)}</span><div><b>发布沟通</b><em>${unreadRemarks.length} 条有未读消息</em></div><strong>${remarked.length}</strong></button>
-            <button class="overview-action-card" data-overview-detail="links"><span>${icon("link", 16)}</span><div><b>链接与数据</b><em>${analytics.pending} 条等待快照</em></div><strong>${links.length}</strong></button>
+            <button class="overview-action-card" data-overview-detail="dataQuality"><span>${icon("link", 16)}</span><div><b>数据完整度</b><em>${analytics.pending} 条等待快照</em></div><strong>${analytics.synced}/${links.length}</strong></button>
           </section>
-          <section class="overview-account-strip"><header><b>账号表现</b><em>按互动与产量</em></header><div>${topAccounts.map((item, index) => `<button data-overview-detail="analytics"><i>${index + 1}</i><span><b>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`}</div></section>
+          <section class="overview-account-strip"><header><b>账号表现</b><em>点击查看逐条数据</em></header><div>${topAccounts.map((item, index) => `<button data-overview-account="${esc(item.name)}"><i>${index + 1}</i><span><b>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`}</div></section>
         </main>
         <aside class="overview-dashboard-assistant"><section class="ov-chat" id="ovChat"><div class="ovc-head"><span class="ovc-ava">${agentAvatar(24)}</span><div><b>星阵数据助手</b><em>独立问答区 · 只读真实数据</em></div></div><div class="ovc-msgs" id="ovcMsgs"></div><div class="ovc-input"><input id="ovcInput" placeholder="问问数据：昨天产出多少素材？" /><button class="ovc-send" id="ovcSend" title="发送">${icon("send", 15)}</button></div></section></aside>
       </div>
@@ -320,6 +361,7 @@ export const overviewView = {
     </div>`;
 
     root.querySelectorAll("[data-overview-detail]").forEach(button => button.addEventListener("click", () => openDataDetail(button.dataset.overviewDetail)));
+    root.querySelectorAll("[data-overview-account]").forEach(button => button.addEventListener("click", () => openDataDetail("interactions", button.dataset.overviewAccount)));
 
     const chartTooltip = $("#overviewChartTooltip", root);
     const hideChartTooltip = () => chartTooltip?.classList.remove("is-visible");
@@ -350,7 +392,7 @@ export const overviewView = {
     const inputEl = $("#ovcInput", root);
     const drawChat = () => {
       msgsEl.innerHTML = chatLog.length
-        ? chatLog.map(m => `<div class="ovc-bubble ${m.role}">${esc(m.text).replace(/\n/g, "<br/>")}</div>`).join("") + (chatBusy ? `<div class="ovc-bubble agent typing"><i></i><i></i><i></i></div>` : "")
+        ? chatLog.map(m => `<div class="ovc-bubble ${m.role}">${esc(plainAssistantText(m.text)).replace(/\n/g, "<br/>")}</div>`).join("") + (chatBusy ? `<div class="ovc-bubble agent typing"><i></i><i></i><i></i></div>` : "")
         : `<div class="ovc-sugs">${CHAT_SUGS.map(q => `<button class="chip" data-ovq="${esc(q)}">${esc(q)}</button>`).join("")}</div>`;
       msgsEl.scrollTop = msgsEl.scrollHeight;
       msgsEl.querySelectorAll("[data-ovq]").forEach(b => b.addEventListener("click", () => { inputEl.value = b.dataset.ovq; send(); }));
@@ -365,7 +407,7 @@ export const overviewView = {
       drawChat();
       const a = await askData(q);
       chatBusy = false;
-      chatLog.push({ role: "agent", text: a });
+      chatLog.push({ role: "agent", text: plainAssistantText(a) });
       drawChat();
     };
     $("#ovcSend", root).addEventListener("click", send);

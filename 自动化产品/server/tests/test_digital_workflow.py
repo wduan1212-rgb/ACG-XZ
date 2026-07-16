@@ -40,17 +40,38 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
         self.assertIn('id="daAccountFilter"', source)
         self.assertIn("accountMatch", source)
 
-    def test_material_subtitles_use_estimation_and_digital_track_is_preserved(self):
+    def test_material_subtitles_use_stable_recognition_and_manual_track_is_preserved(self):
         source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
         self.assertIn('const usesEstimatedMaterialCaptions = () => !isDigitalHuman()', source)
-        self.assertIn('if (usesEstimatedMaterialCaptions()) return estimateInfoFlowCaptions', source)
+        self.assertIn('mode: isDigitalHuman() ? "digital-human" : "info-flow"', source)
+        self.assertIn('text: usesEstimatedMaterialCaptions() ? estimatedInfoFlowLine', source)
+        self.assertIn('subTimingSource = "audio-analysis-v4"', source)
         self.assertIn('subTimingSource = "estimated-material-v2"', source)
-        self.assertIn('["manual", "audio-analysis-v3"].includes', source)
-        self.assertIn('if (p.artifacts.subTimingSource === "manual") normalizeCaptionTrack()', source)
+        self.assertIn('["manual", "audio-analysis-v4"].includes', source)
+        self.assertIn('智能识别质量不足，已稳定回退到人声估时', source)
         self.assertIn('s.text = e.target.value;\n      p.artifacts.subTimingSource = "manual"', source)
         self.assertIn('只有明确标注为', source)
         self.assertNotIn('const promptLine = cleanEstimatedCaption(captionTextForClip', source)
         self.assertNotIn('const segmentLine = cleanEstimatedCaption(segment.caption', source)
+
+    def test_final_compose_tracks_bgm_and_preserves_clip_voice(self):
+        source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
+        backend = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
+        self.assertIn("finalVideoMixSig", source)
+        self.assertIn("p.artifacts.finalVideoMixSig !== mixSignature()", source)
+        self.assertIn("preserveClipAudio: isDigitalHuman()", source)
+        self.assertIn("def _media_has_audio", backend)
+        self.assertIn("amix=inputs=2:duration=longest", backend)
+        self.assertIn('time.time_ns()', backend)
+
+    def test_whisper_gibberish_guard_and_plain_dashboard_chat(self):
+        backend = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
+        overview = (APP_DIR / "js/views/overview.js").read_text(encoding="utf-8")
+        self.assertIn("def _usable_transcript_text", backend)
+        self.assertIn("□■▢▣�", backend)
+        self.assertIn("function plainAssistantText", overview)
+        self.assertIn('data-overview-account=', overview)
+        self.assertIn("逐条查看赞、藏、评与播放", overview)
 
     def test_cut_preview_has_digital_human_crossfade_layer(self):
         source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
@@ -148,8 +169,8 @@ console.log(result);
         self.assertIn("const preserveManualStyle = Boolean(acc.styleEditedAt)", main)
         self.assertIn("if (!preserveManualStyle)", main)
         self.assertIn("styleEditedAt: Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260715-v84-5"', main)
-        self.assertIn('js/main.js?v=20260715-v84-5', index)
+        self.assertIn('const APP_BUILD_ID = "20260716-v85-1"', main)
+        self.assertIn('js/main.js?v=20260716-v85-1', index)
 
 
 if __name__ == "__main__":

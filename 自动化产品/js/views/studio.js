@@ -14,7 +14,7 @@ import { renderSlotsPage } from "./chainBoards.js?v=20260715-v84-3";
 import { renderPromptsPage } from "./chainPrompts.js?v=20260715-v84-3";
 import { renderRenderPage } from "./chainRender.js?v=20260715-v84-2";
 import { renderWorkshopPage } from "./chainWorkshop.js?v=20260715-v84-3";
-import { renderCutPage } from "./chainCut.js?v=20260715-v84-3";
+import { renderCutPage } from "./chainCut.js?v=20260716-v85-1";
 import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260715-v84-2";
 
 export const studioView = {

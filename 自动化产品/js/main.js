@@ -21,7 +21,7 @@ import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge 
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260715-v84-2";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260715-v84-5";
+import { overviewView } from "./views/overview.js?v=20260716-v85-1";
 import { voiceLabView } from "./views/voiceLab.js?v=20260714-v77-1";
 import { agentView } from "./agent/view.js?v=20260715-v84-2";
 import { studioView } from "./views/studio.js?v=20260715-v84-3";
@@ -34,7 +34,7 @@ import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260715-v84-2";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260715-v84-5";
+const APP_BUILD_ID = "20260716-v85-1";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {

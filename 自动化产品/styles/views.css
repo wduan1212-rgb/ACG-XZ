@@ -3440,6 +3440,12 @@ button.overview-viz-card { cursor: pointer; }
 .overview-account-strip button em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .overview-account-strip button b { font-size: 10px; }
 .overview-account-strip button em { color: #8a9098; font-size: 8.5px; font-style: normal; }
+.overview-task-row.has-metrics { align-items: center; }
+.overview-task-main small { display: block; margin-top: 5px; color: #4f5660; font-size: 10px; font-weight: 700; line-height: 1.45; }
+.overview-detail-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+.overview-detail-metrics > span { min-width: 0; display: grid; gap: 4px; padding: 10px 11px; border: 1px solid #e1e5e9; border-radius: 4px; background: #f6f7f8; }
+.overview-detail-metrics em { color: #777e87; font-size: 9px; font-style: normal; }
+.overview-detail-metrics b { overflow: hidden; font-size: 16px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; }
 .overview-integrated .overview-dashboard-assistant { position: static; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid #dfe4ea; background: #fff; }
 .overview-integrated .overview-dashboard-assistant .ov-chat { width: 100%; height: 100%; min-height: 0; max-height: none; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; align-items: stretch; gap: 14px; padding: 16px 14px 14px; border: 0; border-radius: 0; background: #ffffff; box-shadow: none; }
 .overview-integrated .ovc-head { margin: 0; padding-bottom: 12px; border-bottom: 1px solid #e6e9ed; }
@@ -3473,6 +3479,7 @@ button.overview-viz-card { cursor: pointer; }
   .overview-integrated .overview-dashboard-layout { grid-template-columns: minmax(0, 1fr) minmax(260px, 29vw); }
   .overview-viz-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .overview-donut { width: 92px; }
+  .overview-detail-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {
   .overview-gantt button > i,

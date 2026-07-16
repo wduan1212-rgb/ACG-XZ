@@ -1264,6 +1264,7 @@ class ComposeReq(BaseModel):
     bgmDataUrl: str = ""
     bgmVolume: float = 0.25
     narrationVolume: float = 1.0
+    preserveClipAudio: bool = False
     transitionDuration: float = 0.0
     subtitleStyle: ComposeSubtitleStyle = ComposeSubtitleStyle()
     subtitles: List[ComposeSubtitle] = []
@@ -2593,6 +2594,90 @@ def _media_duration_from_ffmpeg(stderr: str) -> float:
     return int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3))
 
 
+def _media_has_audio(ffmpeg: str, path: Path) -> bool:
+    """Return whether a rendered base video has an audio stream.
+
+    Digital-human clips already contain the real narration.  The compose step
+    must detect that stream before adding BGM instead of replacing it.
+    """
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        sibling = Path(ffmpeg).with_name("ffprobe")
+        ffprobe = str(sibling) if sibling.is_file() else ""
+    if ffprobe:
+        run = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if run.returncode == 0:
+            return bool((run.stdout or "").strip())
+    run = subprocess.run([ffmpeg, "-hide_banner", "-i", str(path)], capture_output=True, text=True, timeout=30)
+    return bool(re.search(r"Stream\s+#.*?Audio:", run.stderr or ""))
+
+
+def _compose_audio_command(
+    ffmpeg: str,
+    base_path: Path,
+    mixed_path: Path,
+    total_dur: float,
+    narr_path: Path,
+    bgm_path: Path,
+    *,
+    has_base_audio: bool,
+    has_narr: bool,
+    has_bgm: bool,
+    preserve_clip_audio: bool,
+    narration_volume: float,
+    bgm_volume: float,
+) -> List[str]:
+    """Build a deterministic mix graph while keeping the original clip voice.
+
+    When `preserve_clip_audio` is true (digital human), the base video's audio
+    is the narration source.  An external narration asset is only a fallback.
+    BGM loops to the full video duration and never shortens the voice track.
+    """
+    command = [ffmpeg, "-y", "-i", str(base_path)]
+    narration_index = None
+    bgm_index = None
+    if has_narr:
+        narration_index = 1
+        command += ["-i", str(narr_path)]
+    if has_bgm:
+        bgm_index = 1 + int(has_narr)
+        command += ["-stream_loop", "-1", "-i", str(bgm_path)]
+
+    if preserve_clip_audio and has_base_audio:
+        voice_index = 0
+    elif narration_index is not None:
+        voice_index = narration_index
+    elif has_base_audio:
+        voice_index = 0
+    else:
+        voice_index = None
+
+    if voice_index is not None and bgm_index is not None:
+        command += [
+            "-filter_complex",
+            f"[{voice_index}:a]volume={narration_volume}[voice];"
+            f"[{bgm_index}:a]volume={bgm_volume}[music];"
+            "[voice][music]amix=inputs=2:duration=longest:dropout_transition=0,aresample=async=1:first_pts=0[a]",
+            "-map", "0:v:0", "-map", "[a]",
+        ]
+    elif voice_index is not None:
+        command += ["-map", "0:v:0", "-map", f"{voice_index}:a:0", "-filter:a", f"volume={narration_volume}"]
+    elif bgm_index is not None:
+        command += ["-map", "0:v:0", "-map", f"{bgm_index}:a:0", "-filter:a", f"volume={bgm_volume}"]
+    else:
+        command += ["-map", "0:v:0"]
+    command += [
+        "-c:v", "copy", "-c:a", "aac", "-t", f"{total_dur:.3f}",
+        "-movflags", "+faststart", str(mixed_path),
+    ]
+    return command
+
+
 def _speech_windows(stderr: str, duration: float) -> List[Tuple[float, float]]:
     silences = []
     pending = None
@@ -2661,11 +2746,36 @@ def _whisper_cpp_paths() -> Tuple[Optional[Path], Optional[Path]]:
     return (binary, model) if binary.is_file() and os.access(binary, os.X_OK) and model.is_file() else (None, None)
 
 
+def _clean_transcript_text(text: str) -> str:
+    value = str(text or "").replace("\\n", " ").replace("\ufffd", "")
+    value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", value)
+    value = re.sub(r"[□■▢▣�]+", "", value)
+    value = re.sub(r"(?:<\|[^>]+\|>|\[(?:音乐|掌声|笑声|静音|BLANK_AUDIO)\])", "", value, flags=re.I)
+    value = re.sub(r"\s+", "", value).strip("，。！？!?；;、| ")
+    return value
+
+
+def _usable_transcript_text(text: str) -> bool:
+    value = str(text or "")
+    if len(value) < 2 or len(value) > 80:
+        return False
+    if re.search(r"[□■▢▣�]", value):
+        return False
+    useful = re.findall(r"[\u3400-\u9fffA-Za-z0-9]", value)
+    if len(useful) / max(1, len(value)) < 0.62:
+        return False
+    if re.search(r"(?:感谢观看|请订阅|字幕\s*(?:由|by)|Amara\.org)", value, flags=re.I):
+        return False
+    return True
+
+
 def _correct_whisper_text(text: str, prompt: str) -> str:
-    recognized = re.sub(r"\s+", "", str(text or "")).strip("，。！？!?；; ")
+    recognized = _clean_transcript_text(text)
     recognized = recognized.replace("许求", "需求").replace("下班钱", "下班前").replace("硬牌", "硬排")
-    candidates = [re.sub(r"[\s，。！？!?；;]+", "", item) for item in _caption_chunks(prompt, max_len=14)]
+    candidates = [_clean_transcript_text(item) for item in _caption_chunks(prompt, max_len=14)]
     candidates = [item for item in candidates if 2 <= len(item) <= 20]
+    if not _usable_transcript_text(recognized):
+        return ""
     best = recognized
     best_ratio = 0.0
     for candidate in candidates:
@@ -2674,7 +2784,10 @@ def _correct_whisper_text(text: str, prompt: str) -> str:
         ratio = difflib.SequenceMatcher(None, recognized, candidate).ratio()
         if ratio > best_ratio:
             best, best_ratio = candidate, ratio
-    return best if best_ratio >= 0.72 else recognized
+    if candidates and best_ratio < 0.30:
+        return ""
+    corrected = best if best_ratio >= 0.72 else recognized
+    return corrected if _usable_transcript_text(corrected) else ""
 
 
 def _transcribe_with_whisper(ffmpeg: str, media_path: Path, workdir: Path, index: int, prompt: str = "") -> Tuple[List[dict], float]:
@@ -2767,7 +2880,7 @@ async def video_compose(req: ComposeReq):
     raw_total_dur = sum(float(c.dur or 0) for c in clips) or (len(clips) * 15)
     total_dur = max(0.5, raw_total_dur - transition * max(0, len(clips) - 1))
     COMPOSED_DIR.mkdir(parents=True, exist_ok=True)
-    out_name = f"{int(time.time())}_{hashlib.sha1((req.title or 'final').encode('utf-8')).hexdigest()[:8]}.mp4"
+    out_name = f"{time.time_ns()}_{uuid.uuid4().hex[:6]}_{hashlib.sha1((req.title or 'final').encode('utf-8')).hexdigest()[:8]}.mp4"
     out_path = COMPOSED_DIR / out_name
     with tempfile.TemporaryDirectory() as td:
         tdir = Path(td)
@@ -2808,27 +2921,21 @@ async def video_compose(req: ComposeReq):
                 raise HTTPException(502, "ffmpeg 合成失败：" + (run.stderr or run.stdout)[-800:])
         has_narr = narr_path.exists() and narr_path.stat().st_size > 0
         has_bgm = bgm_path.exists() and bgm_path.stat().st_size > 0
+        has_base_audio = _media_has_audio(ffmpeg, base_path)
         if not has_narr and not has_bgm:
             shutil.copyfile(base_path, mixed_path)
         else:
             vol = max(0.05, min(0.6, float(req.bgmVolume or 0.25)))
             narration_vol = max(0.0, min(1.0, float(req.narrationVolume if req.narrationVolume is not None else 1.0)))
-            audio_cmd = [ffmpeg, "-y", "-i", str(base_path)]
-            if has_narr:
-                audio_cmd += ["-i", str(narr_path)]
-            if has_bgm:
-                audio_cmd += ["-i", str(bgm_path)]
-            if has_narr and has_bgm:
-                audio_cmd += [
-                    "-filter_complex",
-                    f"[1:a]volume={narration_vol}[a1];[2:a]volume={vol}[a2];[a1][a2]amix=inputs=2:duration=shortest:dropout_transition=0[a]",
-                    "-map", "0:v:0", "-map", "[a]"
-                ]
-            elif has_narr:
-                audio_cmd += ["-map", "0:v:0", "-map", "1:a:0", "-filter:a", f"volume={narration_vol}"]
-            else:
-                audio_cmd += ["-map", "0:v:0", "-map", "1:a:0", "-filter:a", f"volume={vol}"]
-            audio_cmd += ["-c:v", "copy", "-c:a", "aac", "-shortest", "-t", f"{total_dur:.3f}", "-movflags", "+faststart", str(mixed_path)]
+            audio_cmd = _compose_audio_command(
+                ffmpeg, base_path, mixed_path, total_dur, narr_path, bgm_path,
+                has_base_audio=has_base_audio,
+                has_narr=has_narr,
+                has_bgm=has_bgm,
+                preserve_clip_audio=bool(req.preserveClipAudio),
+                narration_volume=narration_vol,
+                bgm_volume=vol,
+            )
             run = subprocess.run(audio_cmd, capture_output=True, text=True, timeout=900)
             if run.returncode != 0 or not mixed_path.exists():
                 raise HTTPException(502, "ffmpeg 混音失败：" + (run.stderr or run.stdout)[-800:])
