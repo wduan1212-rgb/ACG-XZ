@@ -10,9 +10,9 @@ import {
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage
-} from "./orchestrator.js?v=20260716-v86-1";
-import { renderMessage, boardRow } from "./cards.js?v=20260716-v86-1";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260716-v86-1";
+} from "./orchestrator.js?v=20260716-v88-1";
+import { renderMessage, boardRow } from "./cards.js?v=20260716-v88-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260716-v88-1";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, removeAsset } from "../domain/assets.js";
@@ -59,7 +59,14 @@ function applyPlanMode(payload) {
 
 function applyPlanKind(payload, kind) {
   const nextKind = normalizePlanKind(kind, payload.group);
+  const previousKind = normalizePlanKind(payload.contentKind, payload.group);
   const oldCount = (payload.accountIds || []).length || Number(payload.accountCount || 0) || 2;
+  if (previousKind !== nextKind) {
+    payload.sharedRefAssetId = null;
+    payload.sharedRefAssetIds = [];
+    payload.coverRefAssetIds = [];
+    payload.accountRefAssetIds = {};
+  }
   payload.contentKind = nextKind;
   payload.creativeMode = "custom";
   payload.group = planGroupForKind(nextKind);
@@ -474,7 +481,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260716-v86-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260716-v88-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;

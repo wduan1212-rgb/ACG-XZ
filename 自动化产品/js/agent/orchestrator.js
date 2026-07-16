@@ -3,7 +3,7 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260716-v86-1";
+import { AI } from "../api/ai.js?v=20260716-v88-1";
 import { groupOf } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
@@ -74,6 +74,18 @@ function enforcePlanKind(plan = {}) {
     plan.accountCounts = {};
   }
   plan.accountIds = (plan.accountIds || []).filter(id => accountMatchesKind(accountById(id), contentKind));
+  const selectedAccounts = new Set(plan.accountIds);
+  plan.accountRefAssetIds = Object.fromEntries(
+    Object.entries(plan.accountRefAssetIds || {})
+      .filter(([accountId]) => selectedAccounts.has(accountId))
+      .map(([accountId, ids]) => [accountId, [...new Set((Array.isArray(ids) ? ids : [ids]).filter(Boolean))].slice(0, 3)])
+  );
+  if (contentKind === "image") {
+    plan.coverRefAssetIds = [];
+  } else {
+    plan.sharedRefAssetId = null;
+    plan.sharedRefAssetIds = [];
+  }
   return plan;
 }
 
@@ -563,12 +575,7 @@ async function generateBatchInfoFlowStoryboards(p, batch, acc) {
   const provider = activeProviderFor("image");
   if (!provider || provider.mock) return false;
   const key = providerKeyFor("image", provider);
-  const refIds = [...new Set([
-    ...(Array.isArray(batch?.coverRefAssetIds) ? batch.coverRefAssetIds : []),
-    batch?.sharedRefAssetId,
-    ...(A.omniRefAssetIds || []),
-    ...(A.sceneRefAssetIds || [])
-  ].filter(Boolean))].slice(0, 9);
+  const refIds = batchVideoRefIds(batch, acc?.id);
   const refs = await imageRefsForIds(refIds, "infoflow");
   const prompts = (Array.isArray(back.storyboardPrompts) && back.storyboardPrompts.length
     ? back.storyboardPrompts
@@ -655,16 +662,24 @@ function ensureVideoCoverPrompt(p, product = null) {
     IMAGE_NEGATIVE_PROMPT
   ].filter(Boolean).join("\n");
   A.cover.status = A.cover.status || "idle";
-  A.cover.refAssetIds = Array.isArray(A.cover.refAssetIds) ? A.cover.refAssetIds.filter(Boolean).slice(0, 5) : [];
+  A.cover.refAssetIds = Array.isArray(A.cover.refAssetIds) ? A.cover.refAssetIds.filter(Boolean).slice(0, 8) : [];
+}
+
+function batchVideoRefIds(batch, accountId = "") {
+  const customRaw = batch?.accountRefAssetIds?.[accountId];
+  return [...new Set([
+    ...(Array.isArray(batch?.coverRefAssetIds) ? batch.coverRefAssetIds : []),
+    ...(Array.isArray(customRaw) ? customRaw : [customRaw])
+  ].filter(Boolean))].slice(0, 8);
 }
 
 function applyBatchCoverRefs(p, batch) {
   if (!p || p.mode === "图文") return;
-  const ids = [...new Set(Array.isArray(batch?.coverRefAssetIds) ? batch.coverRefAssetIds.filter(Boolean) : [])].slice(0, 5);
+  const ids = batchVideoRefIds(batch, p.accountId);
   if (!ids.length) return;
   const A = p.artifacts?.boards || (p.artifacts.boards = {});
   A.cover = A.cover || { prompt: "", assetId: null, refAssetIds: [], status: "idle", error: "" };
-  A.cover.refAssetIds = [...new Set([...(A.cover.refAssetIds || []), ...ids])].slice(0, 5);
+  A.cover.refAssetIds = [...new Set([...(A.cover.refAssetIds || []), ...ids])].slice(0, 8);
 }
 
 async function generateVideoCoverInHouse(p) {
@@ -964,7 +979,6 @@ async function dataUrlFromUrl(url) {
 }
 
 function imageRefGroupsFor(acc, batch, p) {
-  const A = p.artifacts.images || {};
   const uniq = arr => [...new Set(arr.filter(Boolean))];
   const shared = uniq([
     ...(Array.isArray(batch.sharedRefAssetIds) ? batch.sharedRefAssetIds : []),
@@ -972,13 +986,7 @@ function imageRefGroupsFor(acc, batch, p) {
   ]);
   const customRaw = batch.accountRefAssetIds?.[acc.id];
   const custom = uniq(Array.isArray(customRaw) ? customRaw : [customRaw]);
-  const sharedIds = uniq([
-    ...shared,
-    ...(Array.isArray(A.sharedRefAssetIds) ? A.sharedRefAssetIds : []),
-    A.sharedRefAssetId,
-    acc.imageStyleAssetId,
-    ...accountDefaultRefIds(acc)
-  ]).slice(0, 5);
+  const sharedIds = shared.slice(0, 5);
   const customIds = custom.slice(0, 3);
   return {
     shared: sharedIds,
@@ -1096,7 +1104,7 @@ async function generateBatchImagesInHouse(p, batch, acc) {
   A.usedSharedRefAssetIds = refGroups.shared;
   A.usedCustomRefAssetIds = refGroups.custom;
   A.usedRefAssetIds = refGroups.all;
-  const refs = [
+  const defaultRefs = [
     ...(await imageRefsForIds(refGroups.shared, "shared")),
     ...(await imageRefsForIds(refGroups.custom, "custom"))
   ].slice(0, 8);
@@ -1105,7 +1113,12 @@ async function generateBatchImagesInHouse(p, batch, acc) {
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (!it?.prompt) continue;
+    const hasItemRefOverride = Object.prototype.hasOwnProperty.call(it, "refAssetIds");
     if (it.assetId && it.status === "done") continue;
+    if (!hasItemRefOverride) it.refAssetIds = [...refGroups.all];
+    const refs = hasItemRefOverride
+      ? await imageRefsForIds(Array.isArray(it.refAssetIds) ? it.refAssetIds.slice(0, 8) : [], "custom")
+      : defaultRefs;
     it.status = "loading";
     save("productions");
     const req = await provider.submit({
@@ -1360,18 +1373,9 @@ async function draftOne(p, batch) {
         p.artifacts.script.source = "llm-custom-infoflow";
         p.artifacts.script.style = style;
         if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
-        if (batch.sharedRefAssetId && accountAssetsHas(acc.id, batch.sharedRefAssetId)) {
-          p.artifacts.boards.sharedRefAssetId = batch.sharedRefAssetId;
-        }
-        p.artifacts.boards.omniRefAssetIds = [...new Set([
-          ...(p.artifacts.boards.omniRefAssetIds || []),
-          ...accountDefaultRefIds(acc)
-        ])].slice(0, 9);
-        p.artifacts.boards.sceneRefAssetIds = [...new Set([
-          ...(p.artifacts.boards.sceneRefAssetIds || []),
-          batch.sharedRefAssetId,
-          ...(p.artifacts.boards.omniRefAssetIds || [])
-        ].filter(Boolean))].slice(0, 9);
+        const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
+        p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
+        p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
         applyBatchCoverRefs(p, batch);
         ensureVideoCoverPrompt(p, product);
         await generateVideoCoverInHouse(p);
@@ -1398,14 +1402,16 @@ async function draftOne(p, batch) {
         p.artifacts.script.style = style;
         Object.assign(p.artifacts.audio, estimateAudio(shots), { assetId: null, source: "estimate", lastError: "" });
         if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
-        if (batch.sharedRefAssetId && accountAssetsHas(acc.id, batch.sharedRefAssetId)) p.artifacts.boards.sharedRefAssetId = batch.sharedRefAssetId;
+        const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
+        p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
+        p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
         const units = buildMaterialUnits(p);
         const ures = await AI.generateUnitPrompts({
           units, shots, account: acc, style, product,
           hasNarrationAudio: false,
           hasVoiceRef: false,
           hasCharacterRef: !!acc?.charBoardAssetId,
-          hasSceneRef: !!(batch.sharedRefAssetId || p.artifacts.boards.sharedRefAssetId)
+          hasSceneRef: explicitVideoRefs.length > 0
         });
         units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
         applyBatchCoverRefs(p, batch);
@@ -1509,18 +1515,9 @@ async function draftOne(p, batch) {
       p.artifacts.script.source = "llm-infoflow";
       p.artifacts.script.style = style;
       if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
-      if (batch.sharedRefAssetId && accountAssetsHas(acc.id, batch.sharedRefAssetId)) {
-        p.artifacts.boards.sharedRefAssetId = batch.sharedRefAssetId;
-      }
-      p.artifacts.boards.omniRefAssetIds = [...new Set([
-        ...(p.artifacts.boards.omniRefAssetIds || []),
-        ...accountDefaultRefIds(acc)
-      ])].slice(0, 9);
-      p.artifacts.boards.sceneRefAssetIds = [...new Set([
-        ...(p.artifacts.boards.sceneRefAssetIds || []),
-        batch.sharedRefAssetId,
-        ...(p.artifacts.boards.omniRefAssetIds || [])
-      ].filter(Boolean))].slice(0, 9);
+      const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
+      p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
+      p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
       applyBatchCoverRefs(p, batch);
       ensureVideoCoverPrompt(p, product);
       await generateVideoCoverInHouse(p);
@@ -1600,15 +1597,16 @@ async function draftOne(p, batch) {
       // 视频号全自动：口播估时 → 按场景合并分镜单元 → 分段提示词 → 派发视频任务
       Object.assign(p.artifacts.audio, estimateAudio(p.artifacts.script.shots), { source: "estimate" });
       if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
-      // 批量统一参考图（所有账号共用 logo/产品界面）
-      if (batch.sharedRefAssetId && accountAssetsHas(acc.id, batch.sharedRefAssetId)) p.artifacts.boards.sharedRefAssetId = batch.sharedRefAssetId;
+      const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
+      p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
+      p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
       const units = buildMaterialUnits(p);
       const ures = await AI.generateUnitPrompts({
         units, shots: p.artifacts.script.shots, account: acc, style, product,
         hasNarrationAudio: false,
         hasVoiceRef: false,
         hasCharacterRef: !!acc?.charBoardAssetId,
-        hasSceneRef: !!(batch.sharedRefAssetId || p.artifacts.boards.sharedRefAssetId)
+        hasSceneRef: explicitVideoRefs.length > 0
       });
       units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
       const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide, trendPrep });
@@ -1635,10 +1633,6 @@ async function draftOne(p, batch) {
   } catch (e) {
     setStatus(p, "failed", "起草失败：" + (e.message || e));
   }
-}
-
-function accountAssetsHas(accId, assetId) {
-  return state.assets.some(a => a.id === assetId && a.accountId === accId);
 }
 
 function accountDefaultRefIds(acc) {
@@ -1730,17 +1724,17 @@ function supersedeUnitJobs(p, segIndex, prompt) {
 export function createUnitVideoJobs(p, onlyUnitIndex = null) {
   const units = buildMaterialUnits(p); // 重算确保与脚本同步
   const A = p.artifacts.boards;
-  // 全能参考素材：固定 logo + 界面图（omniRefAssetIds），兼容批量流程设的 sharedRefAssetId
+  // 单号工作台可沿用账号默认参考；批量任务只使用任务板明确选择并写入的参考图。
   const acc = accountById(p.accountId);
   A.omniRefAssetIds = A.omniRefAssetIds || [];
   A.sceneRefAssetIds = A.sceneRefAssetIds || [];
   if (!A.characterRefAssetId && acc?.charBoardAssetId) A.characterRefAssetId = acc.charBoardAssetId;
-  if (!A.omniRefAssetIds.length) A.omniRefAssetIds = accountDefaultRefIds(acc);
+  if (!A.omniRefAssetIds.length && !p.batchId) A.omniRefAssetIds = accountDefaultRefIds(acc);
   const characterRefId = A.characterRefAssetId || acc?.charBoardAssetId || null;
   const sceneRefs = [...new Set([
     ...(A.sceneRefAssetIds || []),
     ...(A.omniRefAssetIds || []).filter(id => id !== characterRefId),
-    A.sharedRefAssetId
+    !p.batchId ? A.sharedRefAssetId : null
   ].filter(Boolean))];
   const hasExternalVoice = !!p.artifacts.audio.assetId && ["tts", "upload"].includes(p.artifacts.audio.source);
   const productionReferenceAudioId = A.referenceAudioAssetId || null;

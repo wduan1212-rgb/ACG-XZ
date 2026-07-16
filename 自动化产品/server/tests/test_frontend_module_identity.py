@@ -30,8 +30,9 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260716-v87-2",
-            "prodDrawer.js": "v=20260716-v86-1",
+            "studio.js": "v=20260716-v88-1",
+            "prodDrawer.js": "v=20260716-v88-1",
+            "orchestrator.js": "v=20260716-v88-1",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)

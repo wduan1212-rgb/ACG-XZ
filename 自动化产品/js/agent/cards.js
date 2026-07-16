@@ -5,7 +5,7 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js?v=20260716-v86-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js?v=20260716-v88-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -219,7 +219,7 @@ const CARD = {
         </div>
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
       </div>
-      <div class="agc-custom-hint">${icon("spark", 13)} ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 图文可按账号选择文案组图或单图创作；内容只取当前输入，账号风格只控制视觉设计。</div>
+      <div class="agc-custom-hint">${icon("spark", 13)} ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 图文可按账号选择文案组图或单图创作；生成只使用本任务板已显示的参考图，账号风格只控制视觉设计。</div>
       ${(() => {
         const editable = !locked;
         const refKind = isImageKind ? "shared" : "cover";

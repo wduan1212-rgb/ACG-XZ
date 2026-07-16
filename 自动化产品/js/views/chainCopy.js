@@ -7,8 +7,8 @@ import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
 import { toast, openLightbox, publishModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260716-v87-2";
-import { reviewPreviewHtml } from "./prodDrawer.js?v=20260716-v86-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260716-v88-1";
+import { reviewPreviewHtml } from "./prodDrawer.js?v=20260716-v88-1";
 
 export function renderCopyPage(root, p) {
   const isImg = p.mode === "图文";
@@ -59,7 +59,7 @@ export function renderReviewPage(root, p) {
     wireStepper(root);
     const run = async () => {
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260716-v86-1");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260716-v88-1");
         await ensureVideoCover(p);
         if (root.isConnected) renderReviewPage(root, p);
       } catch (err) {

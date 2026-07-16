@@ -3,8 +3,7 @@
 import { $, $$, esc, copyText, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260716-v86-1";
-import { STYLE_CHIP_BASE } from "../api/prompts.js";
+import { AI } from "../api/ai.js?v=20260716-v88-1";
 import { normalizeVideoTimes, setStage, isMaterial, estimateAudio } from "../domain/productions.js";
 import { getCreativeMemoryContext } from "../domain/analytics.js";
 import { defaultTtsVoiceId, lookupTtsVoice, synthesizeTts, ttsApiConfigured, ttsProviderLabel, ttsVoicePresets } from "../api/providers.js";
@@ -12,7 +11,7 @@ import { addAssetFromDataUrl, addAssetFromFile, urlFor } from "../domain/assets.
 import { fmtTC } from "../core/util.js";
 import { toast, withLoading, promptModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260716-v87-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260716-v88-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 
@@ -226,8 +225,7 @@ export function renderScriptPage(root, p) {
     const box = $("#csChips", root); if (!box) return;
     const custom = acc.customStyleChips || [];
     const cur = ($("#csStyle", root).value || "").split(/[、,，]/).map(s => s.trim());
-    box.innerHTML = STYLE_CHIP_BASE.map(s => `<button class="chip ${cur.includes(s) ? "on" : ""}" data-style="${esc(s)}">${esc(s)}</button>`).join("")
-      + custom.map(s => `<button class="chip custom ${cur.includes(s) ? "on" : ""}" data-style="${esc(s)}">${esc(s)}<i data-x="${esc(s)}">×</i></button>`).join("")
+    box.innerHTML = custom.map(s => `<button class="chip custom ${cur.includes(s) ? "on" : ""}" data-style="${esc(s)}">${esc(s)}<i data-x="${esc(s)}">×</i></button>`).join("")
       + `<button class="chip add" data-add-chip>+ 自定义</button>`;
   }
 
@@ -278,7 +276,7 @@ export function renderScriptPage(root, p) {
         const v = await promptModal({ title: "自定义风格标签", placeholder: "例如：胶片质感风 / 奶油暖色风" });
         if (!v) return;
         acc.customStyleChips = acc.customStyleChips || [];
-        if (!acc.customStyleChips.includes(v) && !STYLE_CHIP_BASE.includes(v)) acc.customStyleChips.push(v);
+        if (!acc.customStyleChips.includes(v)) acc.customStyleChips.push(v);
         save("accounts"); renderChips();
         return;
       }

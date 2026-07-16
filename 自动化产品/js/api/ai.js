@@ -1,8 +1,8 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260715-v84-2";
-import { DUMATE_BRIEF, PROMPT_FRAMEWORK, NO_DH_FRAMEWORK, TOPIC_POOL, STYLE_POOL } from "./prompts.js";
+import { llm, visionCopy } from "./llm.js?v=20260716-v88-1";
+import { DUMATE_BRIEF, PROMPT_FRAMEWORK, NO_DH_FRAMEWORK } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
 import { getCreativeMemoryContext } from "../domain/analytics.js";
@@ -285,7 +285,7 @@ function fallbackRandomTopic({ account = {}, product = null, batchVariant = null
     "one-person-team": [`一个人也能像有个执行同事`, `${productName}当桌面执行搭子`],
     "calm-note": [`公开备忘：桌面AI怎么用`, `我把${productName}流程先存下`]
   };
-  const pool = [...(byVariant[v.key] || []), ...templates, ...TOPIC_POOL.map(x => `${productName}${x}`)];
+  const pool = [...(byVariant[v.key] || []), ...templates];
   const start = hashTextSeed(`${seed}:${account?.id || ""}:${v.key}`) % pool.length;
   for (let i = 0; i < pool.length; i++) {
     const picked = cleanRandomTopicText(pool[(start + i) % pool.length], 30);
@@ -2440,15 +2440,21 @@ export const AI = {
     const ours = productList.filter(p => p.owner === "ours");
     const comps = productList.filter(p => p.owner === "competitor").slice(0, 8);
     const offline = () => {
-      const t1 = pick(TOPIC_POOL), t2 = pick(TOPIC_POOL.filter(x => x !== t1)), t3 = pick(TOPIC_POOL);
       const own = pick(ours.length ? ours : productList) || { shortName: "本次产品" };
       const comp = pick(comps.length ? comps : productList.filter(p => p.id !== own.id)) || { shortName: "同类工具" };
       const ownName = productDisplayName(own);
       const compName = productDisplayName(comp, "同类工具");
+      const angles = [
+        ...(own.blogAngles || []),
+        ...(own.tutorialAngles || []),
+        ...(own.comparisonAngles || [])
+      ].map(x => cleanRandomTopicText(x, 24)).filter(Boolean);
+      const firstAngle = pick(angles) || `${ownName}真实任务实测`;
+      const secondAngle = pick(angles.filter(x => x !== firstAngle)) || `${ownName}使用边界`;
       return [
-        `给全部账号做「${ownName} ${t1}」`,
+        `给全部账号做「${firstAngle}」`,
         `给图文组做${ownName}和${compName}对比`,
-        `给素材号全自动出一批「${t3}」AI博主视角`
+        `给素材号做「${secondAngle}」功能演示`
       ];
     };
     try {
@@ -3016,10 +3022,11 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     } catch (e) {
       this._fb(e);
       const runSeed = seed || `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-      if (kind === "topic") return fallbackRandomTopic({ account, product, batchVariant, seed: runSeed, avoidTopics });
-      const pool = kind === "direction" ? TOPIC_POOL : kind === "style" ? STYLE_POOL : TOPIC_POOL;
-      const pick = pool[Math.floor(Math.random() * pool.length)];
-      return kind === "direction" ? pick.slice(0, 8) : pick;
+      if (kind === "style") {
+        return cleanText(account?.lockedStyle || account?.styleProfile || "白底清晰信息卡与真实办公截图组合风").slice(0, 24);
+      }
+      const topic = fallbackRandomTopic({ account, product, batchVariant, seed: runSeed, avoidTopics });
+      return kind === "direction" ? `${cleanRandomTopicText(topic, 16)}方向` : topic;
     }
   },
 

@@ -125,19 +125,3 @@ ${direction}。
 /* ---------- 素材号（无数字人）专用 ---------- */
 export const MATERIAL_VIDEO_NEG = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
 export const MATERIAL_IMAGE_NEG = "负面：无字幕花字、无二维码、无乱码密集小字。";
-
-/* 内置 BGM 库（音频 API / 真实曲库接入前的选配占位，粗剪时混入、音量低于口播） */
-export const BGM_POOL = [
-  { name: "轻快办公节拍", mood: "轻快" },
-  { name: "清晨阳光吉他", mood: "轻快" },
-  { name: "活泼跳跃电子", mood: "活泼" },
-  { name: "搞怪马林巴", mood: "活泼" },
-  { name: "沉稳知识钢琴", mood: "沉稳" },
-  { name: "低速叙事大提琴", mood: "沉稳" },
-  { name: "温暖治愈口琴", mood: "温暖" },
-  { name: "奶油慢拍钢琴", mood: "温暖" }
-];
-
-export const STYLE_CHIP_BASE = ["浅色 ins 风", "手账拼贴风", "极简办公风", "高级杂志感", "治愈手绘风", "商务科技感", "小红书种草风"];
-export const STYLE_POOL = [...STYLE_CHIP_BASE, "奶油暖色风", "黑白极简风", "清新水彩风", "胶片质感风", "可爱贴纸风"];
-export const TOPIC_POOL = ["一句话整理一周工作记录", "自动把会议录音转成纪要", "把杂乱文件夹一键归类", "从合同里快速提取关键信息", "下班前自动生成日报", "把聊天记录整理成待办", "一键汇总多份资料要点"];

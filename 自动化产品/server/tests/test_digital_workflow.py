@@ -228,8 +228,79 @@ console.log(JSON.stringify({
         self.assertIn("const preserveManualStyle = Boolean(acc.styleEditedAt)", main)
         self.assertIn("if (!preserveManualStyle)", main)
         self.assertIn("styleEditedAt: Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260716-v87-2"', main)
-        self.assertIn('js/main.js?v=20260716-v87-2', index)
+        self.assertIn('const APP_BUILD_ID = "20260716-v88-1"', main)
+        self.assertIn('js/main.js?v=20260716-v88-1', index)
+
+    def test_batch_reference_images_are_explicit_and_title_changes_refresh_copy(self):
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+        view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
+        boards = (APP_DIR / "js/views/chainBoards.js").read_text(encoding="utf-8")
+
+        image_refs = orchestrator.split("function imageRefGroupsFor", 1)[1].split("async function imageRefsForIds", 1)[0]
+        self.assertNotIn("accountDefaultRefIds", image_refs)
+        self.assertNotIn("imageStyleAssetId", image_refs)
+        self.assertIn("it.refAssetIds = [...refGroups.all]", orchestrator)
+        self.assertIn("function batchVideoRefIds", orchestrator)
+        self.assertIn("if (!A.omniRefAssetIds.length && !p.batchId)", orchestrator)
+        self.assertIn("!p.batchId ? A.sharedRefAssetId : null", orchestrator)
+        self.assertIn("payload.sharedRefAssetIds = []", view)
+        self.assertIn("payload.coverRefAssetIds = []", view)
+        self.assertIn("payload.accountRefAssetIds = {}", view)
+
+        self.assertIn("按标题生成正文与图卡提示词", boards)
+        self.assertIn("const titleChanged = Boolean(previousGeneratedTitle && previousGeneratedTitle !== title)", boards)
+        self.assertIn("if (!body || titleChanged)", boards)
+        self.assertIn("A.copyGeneratedForTitle = title", boards)
+
+        script = r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+const { state } = await import('./js/core/store.js');
+const { createProduction, buildMaterialUnits } = await import('./js/domain/productions.js');
+const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260716-v88-1');
+state.accounts = [{ id:'material-account', name:'素材号', mode:'视频', subType:'无数字人', platform:'视频号' }];
+state.assets = [{ id:'old-hidden-ref', accountId:'material-account', type:'图片', name:'旧产品统一参考', tags:['统一参考','产品'] }];
+state.productions = [];
+state.jobs = [];
+state.ui.currentMemberId = 'tester';
+const p = createProduction({ accountId:'material-account', topic:'测试', batchId:'batch-1' });
+p.artifacts.script.shots = [{ scene:1, idea:'演示', visual:'产品界面演示', line:'测试旁白', ui:true }];
+p.artifacts.audio.perShot = [{ dur:5 }];
+p.artifacts.audio.duration = 5;
+const units = buildMaterialUnits(p);
+units[0].videoPrompt = '9:16竖屏，5秒，展示产品界面。';
+p.artifacts.boards.omniRefAssetIds = [];
+p.artifacts.boards.sceneRefAssetIds = [];
+createUnitVideoJobs(p);
+console.log(JSON.stringify(state.jobs.map(job => job.refAssetIds)));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual("[[]]", result)
+
+    def test_placeholder_bgm_style_and_topic_pools_are_removed(self):
+        prompts = (APP_DIR / "js/api/prompts.js").read_text(encoding="utf-8")
+        ai = (APP_DIR / "js/api/ai.js").read_text(encoding="utf-8")
+        script = (APP_DIR / "js/views/chainScript.js").read_text(encoding="utf-8")
+        for stale in (
+            "BGM_POOL",
+            "STYLE_CHIP_BASE",
+            "STYLE_POOL",
+            "TOPIC_POOL",
+            "轻快办公节拍",
+            "一句话整理一周工作记录",
+            "小红书种草风",
+        ):
+            self.assertNotIn(stale, prompts + ai + script)
+        self.assertIn("own.blogAngles", ai)
+        self.assertIn("account?.lockedStyle || account?.styleProfile", ai)
 
 
 if __name__ == "__main__":

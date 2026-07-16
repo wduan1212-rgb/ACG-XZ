@@ -9,7 +9,7 @@ import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260716-v86-1";
+import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260716-v88-1";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */

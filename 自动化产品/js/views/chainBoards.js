@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260716-v86-1";
+import { AI } from "../api/ai.js?v=20260716-v88-1";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260716-v86-1";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260716-v88-1";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260716-v87-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260716-v88-1";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -311,7 +311,7 @@ export function renderSlotsPage(root, p, isImg) {
           </div>` : `<div class="copy-inline card image-mode-panel ${customCopyMode ? "is-custom-copy" : ""}">
             <div class="copy-inline-head">
               <div><b>${icon("image", 14)} 图文创作台</b><em>${customCopyMode ? "标题、正文和图卡提示词在这里一次准备" : "文案先生成，图卡提示词会轻量呼应；可在这里直接微调"}</em></div>
-              <div class="copy-inline-actions">${imageCreationSwitcher}<label class="image-count-select">${icon("image", 12)}<span>图片数量</span><select class="input" id="imgCount">${Array.from({ length: 12 }, (_, i) => i + 1).map(count => `<option value="${count}" ${count === Number(S.imageCount || DEFAULT_XHS_IMAGE_COUNT) ? "selected" : ""}>${count} 张</option>`).join("")}</select></label><button class="btn gen sm" id="imgFactoryGen">${icon("spark", 13)} 按文案生成图卡提示词</button><button class="btn primary sm button-anthe" id="cbNext"><span>下一步：审核 ${icon("arrowRight", 14)}</span></button></div>
+              <div class="copy-inline-actions">${imageCreationSwitcher}<label class="image-count-select">${icon("image", 12)}<span>图片数量</span><select class="input" id="imgCount">${Array.from({ length: 12 }, (_, i) => i + 1).map(count => `<option value="${count}" ${count === Number(S.imageCount || DEFAULT_XHS_IMAGE_COUNT) ? "selected" : ""}>${count} 张</option>`).join("")}</select></label><button class="btn gen sm" id="imgFactoryGen">${icon("spark", 13)} 按标题生成正文与图卡提示词</button><button class="btn primary sm button-anthe" id="cbNext"><span>下一步：审核 ${icon("arrowRight", 14)}</span></button></div>
             </div>
             <label class="field">标题
               <input class="input" id="imgCopyTitle" value="${esc(C.title || "")}" required placeholder="${customCopyMode ? "必填标题：填写发布标题，图片封面会完整围绕它" : "必填标题：生成后可编辑"}" />
@@ -873,10 +873,13 @@ export function renderSlotsPage(root, p, isImg) {
     S.trendGuide = "";
     if (C.referenceRewrite) delete C.referenceRewrite;
     const topic = title.slice(0, 80);
-    if (!body) {
+    const previousGeneratedTitle = String(A.copyGeneratedForTitle || S.title || p.title || "").trim();
+    const titleChanged = Boolean(previousGeneratedTitle && previousGeneratedTitle !== title);
+    if (!body || titleChanged) {
       const generatedCopy = await AI.generateImageCopyFromTitle({ title, account: acc });
       C.title = title;
       C.body = generatedCopy.copy || "";
+      A.copyGeneratedForTitle = title;
       title = (C.title || "").trim();
       body = (C.body || "").trim();
       if (!body) throw new Error("发布文案生成失败，请重试");
@@ -884,7 +887,7 @@ export function renderSlotsPage(root, p, isImg) {
       const bodyInput = $("#imgCopyBody", root);
       if (titleInput) titleInput.value = C.title;
       if (bodyInput) bodyInput.value = C.body;
-      toast(AI.sourceNote("已先生成发布文案，再拆解图卡提示词"));
+      toast(AI.sourceNote(titleChanged ? "标题已变化，已同步重写正文并生成图卡提示词" : "已先生成发布文案，再拆解图卡提示词"));
     }
     p.topic = topic;
     p.title = title || topic;
