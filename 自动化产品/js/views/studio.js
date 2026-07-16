@@ -7,14 +7,14 @@ import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, delete
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260715-v84-2";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260716-v86-1";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset } from "../domain/assets.js";
 import { renderScriptPage } from "./chainScript.js?v=20260715-v84-3";
 import { renderSlotsPage } from "./chainBoards.js?v=20260715-v84-3";
 import { renderPromptsPage } from "./chainPrompts.js?v=20260715-v84-3";
 import { renderRenderPage } from "./chainRender.js?v=20260715-v84-2";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260715-v84-3";
-import { renderCutPage } from "./chainCut.js?v=20260716-v85-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260716-v86-1";
+import { renderCutPage } from "./chainCut.js?v=20260716-v87-2";
 import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260715-v84-2";
 
 export const studioView = {

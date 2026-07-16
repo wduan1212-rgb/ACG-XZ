@@ -2,14 +2,12 @@
 
 import { state, save, notify, removeRemote } from "../core/store.js";
 import { uid, todayStamp, esc } from "../core/util.js";
+import { isGlobalEditingAsset } from "./assets.js";
 
-export const TAG_POOL = ["产品功能", "家庭管理", "职场效率", "创作者", "岗位垂类", "测评中立", "学生教培"];
 export const PLATFORM_CODE = { "小红书": "XHS", "视频号": "SPH", "抖音": "DY", "公众号": "GZH" };
 export const platformCode = p => PLATFORM_CODE[p] || "XHS";
 
 export const groupOf = a => a.mode === "图文" ? "图文组" : (a.subType === "数字人" ? "真人" : "素材");
-export const tagsOf = a => (a.qtags && a.qtags.length) ? a.qtags
-  : TAG_POOL.filter(t => ((a.styleProfile || "") + (a.name || "")).includes(t.slice(0, 2)));
 export const modeLabel = a => a.mode === "视频" ? (a.subType || "视频") : "图文";
 export function normalizeHomepageUrl(value = "") {
   let raw = String(value || "").trim();
@@ -24,8 +22,8 @@ export function appearanceAnchorFor(account = {}) {
   const key = `${account.id || ""}${account.name || ""}`;
   const n = [...key].reduce((a, c) => a + c.charCodeAt(0), 0) % 2;
   return n === 0
-    ? "同一位中国年轻职场女性数字人，26-30岁，气质干净专业但有亲和力；鹅蛋脸偏小，下颌线柔和清晰，额头饱满，发际线自然；自然平直眉，眉尾略收，杏眼偏圆，双眼皮自然，眼神专注但不锐利；鼻梁中等偏挺，鼻头圆润不过分尖；嘴唇厚薄适中，微笑时嘴角轻微上扬；肤色自然白皙偏暖，妆容清淡，唇色豆沙或浅玫瑰；黑棕色中长发，锁骨到肩下长度，三七分或自然中分，发尾微内扣；身形中等偏瘦，肩颈舒展，穿浅米色针织衫或白色衬衫，搭配深色简洁下装。"
-    : "同一位中国年轻职场男性数字人，27-32岁，气质理性松弛、像懂技术的同事；脸型为偏长的清瘦椭圆脸，下颌线利落但不锋利，额头开阔；眉毛自然偏浓，眼型细长偏内双，眼神稳定专注；鼻梁中等偏高，鼻翼自然；嘴唇偏薄，讲话时表情克制，有轻微吐槽感和理性幽默；肤色自然偏暖，皮肤质感真实不过度磨皮；黑色短发，侧分或自然蓬松，发际线自然；身形中等偏瘦，肩背挺直，穿浅蓝或白色衬衫、深色休闲外套或针织开衫。";
+    ? "同一位中国年轻女性数字人，26-30岁，气质干净专业但有亲和力；鹅蛋脸偏小，下颌线柔和清晰，额头饱满，发际线自然；自然平直眉，眉尾略收，杏眼偏圆，双眼皮自然，眼神专注但不锐利；鼻梁中等偏挺，鼻头圆润不过分尖；嘴唇厚薄适中，微笑时嘴角轻微上扬；肤色自然白皙偏暖，妆容清淡，唇色豆沙或浅玫瑰；黑棕色中长发，锁骨到肩下长度，三七分或自然中分，发尾微内扣；身形中等偏瘦，肩颈舒展，穿浅米色针织衫或白色衬衫，搭配深色简洁下装。"
+    : "同一位中国年轻男性数字人，27-32岁，气质理性松弛、像懂技术的朋友；脸型为偏长的清瘦椭圆脸，下颌线利落但不锋利，额头开阔；眉毛自然偏浓，眼型细长偏内双，眼神稳定专注；鼻梁中等偏高，鼻翼自然；嘴唇偏薄，讲话时表情克制，有轻微吐槽感和理性幽默；肤色自然偏暖，皮肤质感真实不过度磨皮；黑色短发，侧分或自然蓬松，发际线自然；身形中等偏瘦，肩背挺直，穿浅蓝或白色衬衫、深色休闲外套或针织开衫。";
 }
 
 export function platChip(p, sm = false) {
@@ -59,7 +57,6 @@ export function createAccount(data) {
     position: "",
     styleProfile: data.styleProfile || "",
     tone: data.tone || "教程感",
-    qtags: (data.qtags || []).filter(t => TAG_POOL.includes(t)),
     monthlyDone: 0, exportSeq: 0,
     charBoardAssetId: data.charBoardAssetId || null,
     voiceRefAssetId: data.voiceRefAssetId || null,
@@ -90,10 +87,17 @@ export function deleteAccount(id) {
   const a = state.accounts.find(x => x.id === id);
   if (!a) return false;
   const prodIds = state.productions.filter(p => p.accountId === id).map(p => p.id);
-  const assetIds = state.assets.filter(x => x.accountId === id).map(x => x.id);
+  const accountAssets = state.assets.filter(x => x.accountId === id);
+  const preservedGlobalAssets = accountAssets.filter(isGlobalEditingAsset);
+  const assetIds = accountAssets.filter(x => !isGlobalEditingAsset(x)).map(x => x.id);
+  preservedGlobalAssets.forEach(asset => {
+    asset.accountId = null;
+    asset.tags = (asset.tags || []).filter(tag => tag !== "账号素材");
+    asset.updatedAt = Date.now();
+  });
   state.accounts = state.accounts.filter(x => x.id !== id);
   state.productions = state.productions.filter(p => p.accountId !== id);
-  state.assets = state.assets.filter(x => x.accountId !== id);
+  state.assets = state.assets.filter(x => x.accountId !== id || isGlobalEditingAsset(x));
   if (state.ui.activeAccountId === id) state.ui.activeAccountId = state.accounts[0]?.id || null;
   save("accounts", "productions", "assets", "meta");
   removeRemote("accounts", id);

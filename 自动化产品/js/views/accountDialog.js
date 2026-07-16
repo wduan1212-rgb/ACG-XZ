@@ -5,7 +5,7 @@ import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
 import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260715-v84-2";
+import { AI } from "../api/ai.js?v=20260716-v86-1";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
 import { openModal, toast } from "../ui/components.js";
@@ -33,7 +33,6 @@ export function openAccountDialog(accountId = null) {
     avatarDataUrl: null,
     styleRefDataUrl: null,
     imagePromptTemplate: editing?.imagePromptTemplate || "",
-    qtags: new Set(editing?.qtags || []),
     charDataUrl: null,
     assets: [] // [{name, dataUrl}]
   };
@@ -351,7 +350,6 @@ export function openAccountDialog(accountId = null) {
               voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
               imagePromptTemplate: draft.imagePromptTemplate.trim(),
               homepageUrl,
-              qtags: [...draft.qtags]
             });
           } else {
             acc = createAccount({
@@ -362,7 +360,6 @@ export function openAccountDialog(accountId = null) {
               voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
               imagePromptTemplate: draft.imagePromptTemplate.trim(),
               homepageUrl,
-              qtags: [...draft.qtags]
             });
           }
           if (draft.avatarDataUrl) {

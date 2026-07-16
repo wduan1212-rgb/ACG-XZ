@@ -8,15 +8,15 @@ import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid 
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260715-v84-2";
+import { AI } from "../api/ai.js?v=20260716-v86-1";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260715-v84-2";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260716-v86-1";
 import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260715-v84-3";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260716-v87-2";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, voicePickerGroups } from "../domain/voices.js";
 
@@ -615,7 +615,7 @@ function infoFlowRoleAnchor(acc = {}) {
 function infoFlowVoiceAnchor(acc = {}) {
   const selected = compactInfoFlowText(acc.voiceName || acc.voiceId || "", 42);
   return [
-    `声线锚点：${selected ? `${selected}；` : ""}年轻职场朋友感，普通话清晰，音色干净偏明亮，语速约1.15到1.25倍，句尾自然下落，吐字有颗粒感。`,
+    `声线锚点：${selected ? `${selected}；` : ""}自然真实的中文讲解感，普通话清晰，音色干净，语速约1.15到1.25倍，句尾自然下落，吐字清楚。`,
     "说话像边操作边吐槽：开头有一点被任务追着跑的无奈，中段带明显惊喜，结尾给出确定结论；不要播音腔，不要机械念稿。"
   ].join(" ");
 }

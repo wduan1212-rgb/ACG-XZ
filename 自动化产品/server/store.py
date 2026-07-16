@@ -37,6 +37,20 @@ STORYBOARD_RISKY_TERMS = (
     ("真人" + "半身像", "动画角色半身"),
 )
 
+
+def _is_global_editing_asset(item):
+    if not isinstance(item, dict):
+        return False
+    tags = " ".join(str(tag or "") for tag in (item.get("tags") or []))
+    asset_type = str(item.get("type") or "")
+    if asset_type == "音频":
+        text = f"{tags} {item.get('name') or ''}"
+        return (
+            any(word.lower() in text.lower() for word in ("bgm", "音乐库", "配乐"))
+            and not any(word.lower() in text.lower() for word in ("口播", "语音", "tts", "数字人", "声线参考"))
+        )
+    return asset_type == "视频" and any(word in tags for word in ("剪辑素材", "视频素材", "素材库"))
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS docs(
   collection TEXT NOT NULL,
@@ -1220,7 +1234,7 @@ def state_for(member_id, role, parent_id=None):
                             continue
                         if role == "editor" and item.get("delivered") and item.get("byMemberId") and item.get("byMemberId") != member_id:
                             continue
-                        if role not in {"supplier_child", "supplier_parent", "editor", "admin"} and owner and owner != member_id and not item.get("delivered") and not item.get("shared"):
+                        if role not in {"supplier_child", "supplier_parent", "editor", "admin"} and owner and owner != member_id and not item.get("delivered") and not item.get("shared") and not _is_global_editing_asset(item):
                             continue
                     if col == "voicePresets" and owner and owner != member_id:
                         continue

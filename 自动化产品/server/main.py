@@ -1270,9 +1270,17 @@ class ComposeReq(BaseModel):
     subtitles: List[ComposeSubtitle] = []
 
 
+class AudioTimingHint(BaseModel):
+    text: str = ""
+    start: Optional[float] = None
+    end: Optional[float] = None
+
+
 class AudioTimingClip(BaseModel):
     url: str
     text: str = ""
+    hints: List[AudioTimingHint] = []
+    strict: bool = False
 
 
 class AudioTimingReq(BaseModel):
@@ -2790,7 +2798,134 @@ def _correct_whisper_text(text: str, prompt: str) -> str:
     return corrected if _usable_transcript_text(corrected) else ""
 
 
-def _transcribe_with_whisper(ffmpeg: str, media_path: Path, workdir: Path, index: int, prompt: str = "") -> Tuple[List[dict], float]:
+def _alignment_chars(text: str) -> List[str]:
+    return re.findall(r"[\u3400-\u9fffA-Za-z0-9]", _clean_transcript_text(text))
+
+
+def _whisper_timed_chars(payload: dict, duration: float) -> List[dict]:
+    """Expand whisper.cpp full-JSON tokens into timestamped characters.
+
+    Chinese subtitles have no reliable whitespace boundaries. Character-level
+    anchors let the known narration remain the content source while ASR only
+    supplies timing, matching OpenMontage's word-timestamp + correction split.
+    """
+    timed = []
+    for segment in payload.get("transcription") or []:
+        segment_offsets = segment.get("offsets") if isinstance(segment.get("offsets"), dict) else {}
+        segment_start = max(0.0, float(segment_offsets.get("from") or 0) / 1000)
+        segment_end = min(duration or 1e9, max(segment_start + 0.12, float(segment_offsets.get("to") or 0) / 1000))
+        tokens = segment.get("tokens") if isinstance(segment.get("tokens"), list) else []
+        rows = tokens or [{"text": segment.get("text") or "", "offsets": segment_offsets}]
+        for token in rows:
+            raw = _clean_transcript_text(token.get("text") if isinstance(token, dict) else "")
+            chars = _alignment_chars(raw)
+            if not chars or not _usable_transcript_text(raw if len(raw) >= 2 else "".join(chars) + "字"):
+                continue
+            offsets = token.get("offsets") if isinstance(token, dict) and isinstance(token.get("offsets"), dict) else {}
+            start = max(segment_start, float(offsets.get("from") or segment_start * 1000) / 1000)
+            end = min(segment_end, max(start + 0.06, float(offsets.get("to") or segment_end * 1000) / 1000))
+            span = max(0.06, end - start)
+            for char_index, char in enumerate(chars):
+                char_start = start + span * char_index / len(chars)
+                char_end = start + span * (char_index + 1) / len(chars)
+                timed.append({"char": char, "start": char_start, "end": char_end})
+    return timed
+
+
+def _hint_bounds(hint: AudioTimingHint, duration: float) -> Tuple[float, float]:
+    start = max(0.0, float(hint.start)) if hint.start is not None else 0.0
+    end = min(duration, float(hint.end)) if hint.end is not None and duration > 0 else duration
+    if end <= start:
+        end = duration if duration > start else start + 0.5
+    return start, end
+
+
+def _align_known_hint(hint: AudioTimingHint, timed_chars: List[dict], duration: float, *, strict: bool) -> List[dict]:
+    output_text = _clean_transcript_text(hint.text)
+    script_chars = _alignment_chars(output_text)
+    if len(script_chars) < 2:
+        return []
+    bound_start, bound_end = _hint_bounds(hint, duration)
+    padding = 0.22 if hint.start is not None or hint.end is not None else 0.0
+    candidates = [
+        item for item in timed_chars
+        if item["end"] >= bound_start - padding and item["start"] <= bound_end + padding
+    ]
+    recognized = [item["char"] for item in candidates]
+    if len(recognized) < 2:
+        return []
+    matcher = difflib.SequenceMatcher(None, script_chars, recognized, autojunk=False)
+    anchors = {}
+    matched = 0
+    for block in matcher.get_matching_blocks():
+        for step in range(block.size):
+            script_index = block.a + step
+            token = candidates[block.b + step]
+            anchors[script_index] = (token["start"], token["end"])
+            matched += 1
+    coverage = matched / max(1, len(script_chars))
+    ratio = matcher.ratio()
+    min_coverage = 0.58 if strict else 0.20
+    if matched < 2 or coverage < min_coverage or (strict and ratio < 0.45):
+        return []
+
+    chunks = _caption_chunks(output_text, max_len=12)
+    cues = []
+    script_cursor = 0
+    previous_end = bound_start
+    matched_starts = [value[0] for value in anchors.values()]
+    matched_ends = [value[1] for value in anchors.values()]
+    speech_start = max(bound_start, min(matched_starts) if matched_starts else bound_start)
+    speech_end = min(bound_end, max(matched_ends) if matched_ends else bound_end)
+    speech_span = max(0.35, speech_end - speech_start)
+    total_chars = max(1, len(script_chars))
+    for chunk in chunks:
+        chunk_chars = _alignment_chars(chunk)
+        if not chunk_chars:
+            continue
+        chunk_start_index = script_cursor
+        chunk_end_index = min(total_chars, chunk_start_index + len(chunk_chars))
+        script_cursor = chunk_end_index
+        chunk_anchors = [anchors[i] for i in range(chunk_start_index, chunk_end_index) if i in anchors]
+        if strict and not chunk_anchors and coverage < 0.52:
+            continue
+        if chunk_anchors:
+            start = min(item[0] for item in chunk_anchors) - 0.04
+            end = max(item[1] for item in chunk_anchors) + 0.18
+        else:
+            start = speech_start + speech_span * chunk_start_index / total_chars
+            end = speech_start + speech_span * chunk_end_index / total_chars
+        start = max(bound_start, previous_end, start)
+        end = min(bound_end, max(start + 0.26, end))
+        if end <= start + 0.05:
+            continue
+        cues.append({
+            "start": round(start, 2),
+            "end": round(end, 2),
+            "text": chunk,
+            "precise": True,
+        })
+        previous_end = end + 0.02
+    return cues
+
+
+def _align_known_hints(hints: List[AudioTimingHint], timed_chars: List[dict], duration: float, *, strict: bool) -> List[dict]:
+    cues = []
+    for hint in hints:
+        cues.extend(_align_known_hint(hint, timed_chars, duration, strict=strict))
+    return sorted(cues, key=lambda cue: (cue["start"], cue["end"]))
+
+
+def _transcribe_with_whisper(
+    ffmpeg: str,
+    media_path: Path,
+    workdir: Path,
+    index: int,
+    prompt: str = "",
+    hints: Optional[List[AudioTimingHint]] = None,
+    *,
+    strict: bool = False,
+) -> Tuple[List[dict], float]:
     binary, model = _whisper_cpp_paths()
     if not binary or not model:
         return [], 0.0
@@ -2803,7 +2938,10 @@ def _transcribe_with_whisper(ffmpeg: str, media_path: Path, workdir: Path, index
     if extract.returncode != 0 or not wav_path.exists():
         return [], duration
     output_prefix = workdir / f"whisper_{index:03d}"
-    command = [str(binary), "-m", str(model), "-f", str(wav_path), "-l", "zh", "-ml", "12", "-sow", "-oj", "-of", str(output_prefix), "-sns", "-np"]
+    command = [str(binary), "-m", str(model), "-f", str(wav_path), "-l", "zh", "-ml", "0", "-sow", "-ojf", "-of", str(output_prefix), "-sns", "-np"]
+    prompt_value = _clean_transcript_text(prompt)[:320]
+    if prompt_value:
+        command += ["--prompt", prompt_value]
     run = subprocess.run(
         command,
         capture_output=True, text=True, timeout=600
@@ -2815,20 +2953,16 @@ def _transcribe_with_whisper(ffmpeg: str, media_path: Path, workdir: Path, index
         payload = json.loads(output_path.read_text("utf-8"))
     except (OSError, json.JSONDecodeError):
         return [], duration
-    cues = []
-    for segment in payload.get("transcription") or []:
-        text = _correct_whisper_text(segment.get("text") or "", prompt)
-        offsets = segment.get("offsets") if isinstance(segment.get("offsets"), dict) else {}
-        start = max(0.0, float(offsets.get("from") or 0) / 1000)
-        end = min(duration or 1e9, max(start + 0.25, float(offsets.get("to") or 0) / 1000))
-        if text and end > start:
-            cues.append({"start": round(start, 2), "end": round(end, 2), "text": text})
-    return cues, duration
+    known_hints = [hint for hint in (hints or []) if _clean_transcript_text(hint.text)]
+    if not known_hints and prompt_value:
+        known_hints = [AudioTimingHint(text=prompt_value)]
+    timed_chars = _whisper_timed_chars(payload, duration)
+    return _align_known_hints(known_hints, timed_chars, duration, strict=strict), duration
 
 
 @app.post("/api/video/audio-timing")
 async def video_audio_timing(req: AudioTimingReq):
-    """Analyze real clip audio and align supplied narration text to speech windows."""
+    """Use known spoken text as a whitelist and real ASR tokens only as timing anchors."""
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
         raise HTTPException(501, "本机未安装 ffmpeg，无法分析视频音轨")
@@ -2840,9 +2974,17 @@ async def video_audio_timing(req: AudioTimingReq):
             for index, clip in enumerate((req.clips or [])[:24]):
                 path = tdir / f"timing_{index:03d}.mp4"
                 await _write_video_source(client, clip.url, path, f"下载字幕分析片段失败：{index + 1}")
-                whisper_cues, whisper_duration = _transcribe_with_whisper(ffmpeg, path, tdir, index, clip.text)
+                hints = clip.hints or ([AudioTimingHint(text=clip.text)] if clip.text else [])
+                whisper_cues, whisper_duration = _transcribe_with_whisper(
+                    ffmpeg, path, tdir, index, clip.text, hints, strict=clip.strict
+                )
                 if whisper_cues:
-                    cues.extend({**cue, "start": round(offset + cue["start"], 2), "end": round(offset + cue["end"], 2)} for cue in whisper_cues)
+                    cues.extend({
+                        **cue,
+                        "clipIndex": index,
+                        "start": round(offset + cue["start"], 2),
+                        "end": round(offset + cue["end"], 2),
+                    } for cue in whisper_cues)
                     offset += whisper_duration
                     continue
                 analyses = []
@@ -2856,13 +2998,21 @@ async def video_audio_timing(req: AudioTimingReq):
                         analyses.append((duration, _speech_windows(run.stderr, duration)))
                 duration = analyses[0][0] if analyses else 0
                 if duration <= 0:
+                    offset += whisper_duration
                     continue
-                chunks = _caption_chunks(clip.text)
+                if clip.strict:
+                    offset += duration
+                    continue
+                chunks = _caption_chunks("".join(hint.text for hint in hints) or clip.text)
                 candidates = [item[1] for item in analyses if item[1]]
                 windows = min(candidates, key=lambda rows: (abs(len(rows) - max(1, len(chunks))), -sum(end - start for start, end in rows))) if candidates else [(0.0, duration)]
-                cues.extend(_align_chunks_to_windows(chunks, windows, offset))
+                cues.extend({
+                    **cue,
+                    "clipIndex": index,
+                    "precise": False,
+                } for cue in _align_chunks_to_windows(chunks, windows, offset))
                 offset += duration
-    source = "whisper-cpp-base" if _whisper_cpp_paths()[0] else "ffmpeg-dialogue-vad-v3"
+    source = "whisper-script-forced-v1" if _whisper_cpp_paths()[0] else "ffmpeg-dialogue-vad-v3"
     return {"ok": True, "duration": round(offset, 2), "cues": cues, "source": source}
 
 

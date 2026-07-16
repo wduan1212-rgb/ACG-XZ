@@ -10,9 +10,9 @@ import {
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage
-} from "./orchestrator.js?v=20260715-v84-2";
-import { renderMessage, boardRow } from "./cards.js?v=20260715-v84-2";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260715-v84-2";
+} from "./orchestrator.js?v=20260716-v86-1";
+import { renderMessage, boardRow } from "./cards.js?v=20260716-v86-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260716-v86-1";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, removeAsset } from "../domain/assets.js";
@@ -474,7 +474,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260715-v84-2");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260716-v86-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;

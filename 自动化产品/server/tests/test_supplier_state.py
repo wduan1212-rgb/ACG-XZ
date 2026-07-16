@@ -14,6 +14,34 @@ main = importlib.import_module("main")
 
 
 class SupplierStateTest(unittest.TestCase):
+    def test_global_editing_assets_are_visible_across_creator_owners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("assets", [
+                {
+                    "id": "global-bgm",
+                    "ownerId": "creator-a",
+                    "accountId": "account-a",
+                    "name": "共享 BGM",
+                    "type": "音频",
+                    "tags": ["BGM", "音乐库"],
+                    "createdAt": 1,
+                },
+                {
+                    "id": "private-image",
+                    "ownerId": "creator-a",
+                    "accountId": "account-a",
+                    "name": "账号私有图",
+                    "type": "图片",
+                    "tags": ["账号素材"],
+                    "createdAt": 2,
+                },
+            ])
+            snapshot = store.state_for("creator-b", "creator")
+            visible = {item["id"] for item in snapshot["assets"]}
+            self.assertIn("global-bgm", visible)
+            self.assertNotIn("private-image", visible)
+
     def test_supplier_children_request_items_are_typed_models(self):
         req = main.SupplierChildrenReq(items=[{
             "name": "子账号",

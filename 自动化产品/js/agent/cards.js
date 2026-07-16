@@ -3,9 +3,9 @@
 import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
-import { platChip, groupOf, tagsOf, TAG_POOL, isAvatarAsset } from "../domain/accounts.js";
+import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js?v=20260715-v84-2";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js?v=20260716-v86-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -71,18 +71,6 @@ function zhCount(text) {
   return d[m[1]] || null;
 }
 
-function tagMatches(goal, tag) {
-  if (goal.includes(tag)) return true;
-  if (tag === "学生教培") return /学生党|学生|教培|学习|复习|校园/.test(goal);
-  if (tag === "职场效率") return /职场|办公|效率|打工|上班/.test(goal);
-  if (tag === "创作者") return /自媒体|创作者|博主|内容号|创作号|OPC|个人IP/.test(goal);
-  if (tag === "产品功能") return /产品功能|功能教程|产品教程|工具教程|功能演示/.test(goal);
-  if (tag === "家庭管理") return /家庭|家务|居家|亲子/.test(goal);
-  if (tag === "岗位垂类") return /岗位|运营|财务|法务|销售|人事|HR|设计|教师/.test(goal);
-  if (tag === "测评中立") return /测评|对比|横评|中立|避坑/.test(goal);
-  return false;
-}
-
 function normalizeSelectionPlan(p) {
   if (!p || p.status !== "pending" || !isPureAccountSelectionText(p.goal || "")) return false;
   let changed = false;
@@ -91,15 +79,13 @@ function normalizeSelectionPlan(p) {
   if (tailPick && p.pickFrom !== "end") { p.pickFrom = "end"; changed = true; }
   const lockedGroup = CONTENT_KIND_GROUP[p.contentKind || ""];
   const group = lockedGroup || (/图文|笔记|小红书图/.test(goal) ? "图文组" : (goal.includes("真人") || goal.includes("数字人")) ? "真人" : (goal.includes("素材") || goal.includes("无数字人")) ? "素材" : p.group || "all");
-  const explicitTags = TAG_POOL.filter(t => tagMatches(goal, t));
   if (p.topic || p.topicMode !== "fixed") { p.topic = ""; p.topicMode = "fixed"; changed = true; }
   if (group !== p.group) { p.group = group; changed = true; }
-  if (!explicitTags.length && (p.tags || []).length) { p.tags = []; changed = true; }
-  else if (explicitTags.length && explicitTags.join("|") !== (p.tags || []).join("|")) { p.tags = explicitTags; changed = true; }
+  if ((p.tags || []).length) { p.tags = []; changed = true; }
   const want = p.accountCount || zhCount(goal);
   if (/很久没发布|久未发布|长期没发|沉默|低活跃|不活跃|没更新/.test(goal)) { p.sort = "stale"; changed = true; }
   if (!p.manualAccountSelection) {
-    let matched = selectAccountsForPlan({ group: p.group, tags: p.tags || [], sort: p.sort || "", pickFrom: p.pickFrom || "", accountCount: want });
+    let matched = selectAccountsForPlan({ group: p.group, sort: p.sort || "", pickFrom: p.pickFrom || "", accountCount: want });
     const nextIds = matched.map(a => a.id);
     if (!(p.accountIds || []).length || (p.accountIds || []).some(id => !nextIds.includes(id))) { p.accountIds = nextIds; changed = true; }
   } else if (p.accountCount !== (p.accountIds || []).length) {
@@ -279,7 +265,7 @@ const CARD = {
         const imgAcc = isImageAcc(a);
         return `<button class="agc-acc ${on ? "on" : ""} ${imgAcc ? "is-image" : "is-video"}" data-pacc="${a.id}" ${locked ? "disabled" : ""}>
           <span class="agc-idx">#${String(idx + 1).padStart(2, "0")}</span>
-          <b>${esc(a.name)}</b><em>${groupOf(a)}${tagsOf(a).length ? " · " + tagsOf(a).slice(0, 2).join("/") : ""}</em>
+          <b>${esc(a.name)}</b><em>${groupOf(a)}</em>
           ${on ? icon("check", 13, "ok") : ""}
         </button>`;
       }).join("")}</div>

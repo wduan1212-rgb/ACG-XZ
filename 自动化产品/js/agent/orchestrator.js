@@ -3,8 +3,8 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260715-v84-2";
-import { groupOf, tagsOf, TAG_POOL } from "../domain/accounts.js";
+import { AI } from "../api/ai.js?v=20260716-v86-1";
+import { groupOf } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
@@ -135,15 +135,15 @@ function variantHash(str = "") {
 function batchVariantFor({ acc, batch, globalIndex = 0, itemIndex = 1, itemTotal = 1 }) {
   const offset = variantHash(`${batch?.id || ""}:${acc?.id || acc?.name || ""}:${itemIndex}`);
   const base = BATCH_CREATIVE_VARIANTS[(globalIndex + (offset % 5)) % BATCH_CREATIVE_VARIANTS.length];
-  const accTag = tagsOf(acc)[0] || groupOf(acc);
+  const accStyle = String(acc?.styleProfile || acc?.lockedStyle || groupOf(acc) || "当前账号").slice(0, 48);
   const repeated = itemTotal > 1 ? `同账号第 ${itemIndex}/${itemTotal} 条也要换例子和标题，不要复用上一条。` : "";
   return {
     ...base,
     index: globalIndex + 1,
     total: Math.max(1, batch?.plannedTotal || batch?.productionIds?.length || 1),
     accountName: acc?.name || "",
-    accountTag: accTag,
-    focus: `${base.focus}；结合账号标签「${accTag}」写不同例子。${repeated}`
+    accountTag: "",
+    focus: `${base.focus}；结合账号真实创作风格「${accStyle}」写不同例子。${repeated}`
   };
 }
 
@@ -252,7 +252,7 @@ function infoFlowRoleAnchor(acc = {}) {
 function infoFlowVoiceAnchor(acc = {}) {
   const selected = compactInfoFlowText(acc.voiceName || acc.voiceId || "", 42);
   return [
-    `声线锚点：${selected ? `${selected}；` : ""}年轻职场朋友感，普通话清晰，音色干净偏明亮，语速约1.15到1.25倍，句尾自然下落，吐字有颗粒感。`,
+    `声线锚点：${selected ? `${selected}；` : ""}自然真实的中文讲解感，普通话清晰，音色干净，语速约1.15到1.25倍，句尾自然下落，吐字清楚。`,
     "说话像边操作边吐槽：开头有一点被任务追着跑的无奈，中段带明显惊喜，结尾给出确定结论；不要播音腔，不要机械念稿。"
   ].join(" ");
 }
@@ -854,7 +854,7 @@ export function createBatch(plan, sessionId) {
     sharedRefAssetIds,                               // 批量统一参考图（所有账号共用 logo/产品界面，可多张）
     coverRefAssetIds,                                // 批量统一视频参考图：给封面和信息流 B 面分镜共用
     accountRefAssetIds: plan.accountRefAssetIds || {},// 单账号定制参考图
-    tags: plan.tags || [], group: plan.group || "all",
+    tags: [], group: plan.group || "all",
     accountIds: plan.accountIds || [],
     productionIds: [],
     phase: "drafting",         // drafting | awaiting_input | generating | review | done
@@ -905,10 +905,8 @@ function accountLastActivityAt(acc) {
   return Math.max(acc.lastPublishedAt || 0, acc.updatedAt || 0, acc.createdAt || 0, ...prodTimes, ...assetTimes);
 }
 
-export function matchAccounts({ tags = [], group = "all", sort = "" } = {}) {
-  const list = state.accounts.filter(a =>
-    (group === "all" || !group || groupOf(a) === group) &&
-    (!tags.length || tags.some(t => tagsOf(a).includes(t))));
+export function matchAccounts({ group = "all", sort = "" } = {}) {
+  const list = state.accounts.filter(a => group === "all" || !group || groupOf(a) === group);
   if (sort === "stale") {
     list.sort((a, b) => accountLastActivityAt(a) - accountLastActivityAt(b) || String(a.name || "").localeCompare(String(b.name || ""), "zh-Hans-CN"));
   }
@@ -945,7 +943,7 @@ export function defaultPlan(goal = "新量产计划") {
     accountImageCounts: {}, accountImageCreationModes: {}, accountImagePrompts: {},
     useOnlineTrends: false,
     imageCount: DEFAULT_XHS_IMAGE_COUNT,
-    style: params.style || "", tags: params.tags || [], group: params.group,
+    style: params.style || "", tags: [], group: params.group,
     sort: params.sort,
     pickFrom: params.pickFrom || "",
     accountCount: params.accountCount,
@@ -2181,7 +2179,7 @@ export async function handleUserText(text) {
     if (fb.sort) params.sort = fb.sort;
     if (fb.pickFrom) params.pickFrom = fb.pickFrom;
     if (isPureAccountSelection(text)) params.topic = "";
-    think("按分组、标签、活跃度匹配账号矩阵…", session.id);
+    think("按内容分组与活跃度匹配账号矩阵…", session.id);
     const matched = selectAccountsForPlan(params);
     const accountCount = Number(params.accountCount || params.count) || matched.length;
     const perAccountCount = Math.max(1, Math.min(12, Number(params.perAccountCount || 1) || 1));
@@ -2196,7 +2194,7 @@ export async function handleUserText(text) {
       accountCounts: {},
       accountImageCounts: {},
       imageCount: DEFAULT_XHS_IMAGE_COUNT,
-      style: params.style || "", tags: params.tags || [], group: params.group || "all",
+      style: params.style || "", tags: [], group: params.group || "all",
       sort: params.sort || "",
       pickFrom: params.pickFrom || "",
       accountCount, perAccountCount,
@@ -2220,7 +2218,7 @@ export function statusText() {
   const bs = activeBatches();
   if (!bs.length) {
     const n = state.productions.filter(p => ownedBy(p) && p.stage !== "delivered").length;
-    return n ? `当前没有进行中的批次，但有 ${n} 条在制任务散落在单号创作。一句话告诉我主题，我可以发起一批新的量产。` : "一切就绪。说出主题（可带标签/范围/风格），例如：「给所有职场效率账号做一期下班前自动生成日报，偏教程风」。";
+    return n ? `当前没有进行中的批次，但有 ${n} 条在制任务散落在单号创作。一句话告诉我主题，我可以发起一批新的量产。` : "一切就绪。说出主题（可带范围/风格），例如：「给全部图文账号做一期下班前自动生成日报，偏教程风」。";
   }
   return bs.map(b => {
     const prods = batchProds(b);

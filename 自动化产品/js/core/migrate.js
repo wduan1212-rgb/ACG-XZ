@@ -37,7 +37,7 @@ export async function migrateFromV4() {
         mode: oa.mode === "图文" ? "图文" : "视频",
         subType: oa.mode === "图文" ? "" : (oa.subType || "数字人"),
         position: oa.position || "（待补充定位）", tone: oa.tone || "教程感",
-        qtags: oa.qtags || [], monthlyDone: oa.monthlyDone || 0, exportSeq: oa.exportSeq || 0,
+        monthlyDone: oa.monthlyDone || 0, exportSeq: oa.exportSeq || 0,
         charBoardAssetId: null, lockedStyle: oa.lockedStyle || null,
         customStyleChips: oa.customStyleChips || [], createdAt: Date.now()
       };

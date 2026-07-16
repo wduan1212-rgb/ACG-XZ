@@ -5,7 +5,7 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260715-v84-2";
+import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260716-v86-1";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { createAccount, deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
@@ -15,26 +15,26 @@ import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountPro
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260715-v84-2";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260715-v84-2";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260716-v86-1";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260715-v84-2";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260716-v85-1";
+import { overviewView } from "./views/overview.js?v=20260716-v86-1";
 import { voiceLabView } from "./views/voiceLab.js?v=20260714-v77-1";
-import { agentView } from "./agent/view.js?v=20260715-v84-2";
-import { studioView } from "./views/studio.js?v=20260715-v84-3";
-import { assetsView } from "./views/assetsView.js?v=20260715-v84-2";
+import { agentView } from "./agent/view.js?v=20260716-v86-1";
+import { studioView } from "./views/studio.js?v=20260716-v87-2";
+import { assetsView } from "./views/assetsView.js?v=20260716-v87-2";
 import { deliveryView } from "./views/deliveryView.js?v=20260715-v84-3";
 import { analyticsView } from "./views/analyticsView.js?v=20260715-v84-2";
 import { draftsView } from "./views/draftsView.js";
 import { settingsView } from "./views/settings.js?v=20260715-v84-2";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260715-v84-2";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260716-v86-1";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260716-v85-1";
+const APP_BUILD_ID = "20260716-v87-2";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -74,9 +74,9 @@ function seedIfEmpty() {
   if (remote.isOn() && remote.hasToken()) return;
   if (state.accounts.length) return;
   const seeds = [
-    { name: "百度搭子图文教程 01", platform: "小红书", mode: "图文", position: "办公效率教程，围绕百度搭子文件整理 / 数据分析等功能，少广告腔、强操作演示", qtags: ["职场效率", "产品功能"] },
-    { name: "AI 办公口播号", platform: "视频号", mode: "视频", subType: "数字人", styleProfile: "数字人出镜讲职场效率，前段真人引入、后段产品演示，聚焦真实办公痛点", qtags: ["职场效率"] },
-    { name: "ACG 探场官", platform: "小红书", mode: "视频", subType: "无数字人", styleProfile: "探场体验官语气，现场探店 + 产品功能演示结合，活动现场素材二次创作", qtags: ["创作者", "测评中立"] }
+    { name: "百度搭子图文教程 01", platform: "小红书", mode: "图文", position: "围绕百度搭子文件整理 / 数据分析等真实功能，少广告腔、强操作演示" },
+    { name: "AI 办公口播号", platform: "视频号", mode: "视频", subType: "数字人", styleProfile: "数字人自然讲解真实任务，前段出镜引入、后段产品演示，聚焦具体操作和结果" },
+    { name: "ACG 探场官", platform: "小红书", mode: "视频", subType: "无数字人", styleProfile: "现场体验与产品功能演示结合，保留真实观察感，适合活动素材二次创作" }
   ];
   seeds.forEach(s => createAccount(s));
   state.ui.activeAccountId = state.accounts[0].id;
@@ -95,7 +95,6 @@ function ensureXhsSeedAccounts() {
     subType: s.subType,
     styleProfile: s.styleProfile,
     tone: s.tone,
-    qtags: s.qtags,
     voiceId: s.voiceId,
     voiceName: s.voiceName || s.voiceRefName || ""
   }));
@@ -114,7 +113,6 @@ function accountFromProfile(profile) {
     position: "",
     styleProfile: profile.styleProfile || "",
     tone: profile.tone || "教程感",
-    qtags: profile.qtags || [],
     monthlyDone: 0,
     exportSeq: 0,
     charBoardAssetId: null,
@@ -202,7 +200,6 @@ async function applyAccountProfileSeed({ createMissing = true, quiet = false } =
       mode: profile.mode,
       subType: profile.mode === "图文" ? "" : profile.subType,
       tone: profile.tone || acc.tone || "教程感",
-      qtags: profile.qtags || acc.qtags || [],
       voiceId: acc.voiceId || profile.voiceId || "",
       voiceName: acc.voiceName || profile.voiceName || ""
     };

@@ -44,15 +44,38 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
         source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
         self.assertIn('const usesEstimatedMaterialCaptions = () => !isDigitalHuman()', source)
         self.assertIn('mode: isDigitalHuman() ? "digital-human" : "info-flow"', source)
-        self.assertIn('text: usesEstimatedMaterialCaptions() ? estimatedInfoFlowLine', source)
-        self.assertIn('subTimingSource = "audio-analysis-v4"', source)
-        self.assertIn('subTimingSource = "estimated-material-v2"', source)
-        self.assertIn('["manual", "audio-analysis-v4"].includes', source)
-        self.assertIn('智能识别质量不足，已稳定回退到人声估时', source)
+        self.assertIn("timedSpeechHintsForClip", source)
+        self.assertIn("explicitSpeechLines", source)
+        self.assertIn("strict: usesEstimatedMaterialCaptions()", source)
+        self.assertIn('subTimingSource = "audio-analysis-v5"', source)
+        self.assertIn('source.startsWith("audio-analysis-v5")', source)
+        self.assertIn("没有在真实音轨中确认到提示词口播", source)
+        self.assertNotIn('subTimingSource = "estimated-material-v2"', source)
+        self.assertNotIn("estimateInfoFlowCaptions", source)
         self.assertIn('s.text = e.target.value;\n      p.artifacts.subTimingSource = "manual"', source)
-        self.assertIn('只有明确标注为', source)
-        self.assertNotIn('const promptLine = cleanEstimatedCaption(captionTextForClip', source)
-        self.assertNotIn('const segmentLine = cleanEstimatedCaption(segment.caption', source)
+        self.assertNotIn("script.shots?.[index]?.line", source)
+        self.assertNotIn("任意引号", source)
+
+    def test_old_account_classification_prompts_are_removed(self):
+        active_paths = [
+            APP_DIR / "js/api/prompts.js",
+            APP_DIR / "js/api/ai.js",
+            APP_DIR / "js/domain/accounts.js",
+            APP_DIR / "js/agent/intent.js",
+            APP_DIR / "js/agent/cards.js",
+            APP_DIR / "js/agent/orchestrator.js",
+            APP_DIR / "js/views/chainWorkshop.js",
+        ]
+        source = "\n".join(path.read_text(encoding="utf-8") for path in active_paths)
+        for stale in ("宝妈", "宝爸", "职场效率", "家庭管理", "学生教培", "岗位垂类", "TAG_POOL", "tagsOf("):
+            self.assertNotIn(stale, source)
+        self.assertNotIn("qtags", (APP_DIR / "js/api/ai.js").read_text(encoding="utf-8"))
+        for path in (
+            APP_DIR / "js/data/xhsAccountsSeed.js",
+            APP_DIR / "js/data/accountProfilesSeed.js",
+            APP_DIR / "js/core/migrate.js",
+        ):
+            self.assertNotIn("qtags", path.read_text(encoding="utf-8"), path)
 
     def test_final_compose_tracks_bgm_and_preserves_clip_voice(self):
         source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
@@ -135,6 +158,42 @@ console.log(result);
         self.assertNotIn("lastAnalyticsRemotePullAt", analytics)
         self.assertNotIn("ensureProviderStatus(stableRerender)", voice)
 
+    def test_global_bgm_and_editing_material_library_contract(self):
+        assets_view = (APP_DIR / "js/views/assetsView.js").read_text(encoding="utf-8")
+        cut = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
+        accounts = (APP_DIR / "js/domain/accounts.js").read_text(encoding="utf-8")
+        self.assertIn('const isGlobalLibrary = () => ["bgm", "material"].includes(libraryMode)', assets_view)
+        self.assertIn('searchAssets({ accountId: isGlobalLibrary() ? "all" : fAcc', assets_view)
+        self.assertIn('isGlobalLibrary() ? "" : `<label class="select-shell account-select">', assets_view)
+        self.assertIn("if (isGlobalLibrary()) return `<div class=\"asset-grid\">", assets_view)
+        self.assertIn("globalBgmAssets()", cut)
+        self.assertIn('optgroup label="共享 BGM 库"', cut)
+        self.assertIn("addAssetFromFile(null, file", cut)
+        self.assertIn("preservedGlobalAssets", accounts)
+
+        script = r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+const { state } = await import('./js/core/store.js');
+const { globalBgmAssets, isEditingMaterialAsset } = await import('./js/domain/assets.js');
+state.assets = [
+  { id:'bgm-other', type:'音频', tags:['BGM'], name:'跨账号共享曲', accountId:'another-account', createdAt:1 },
+  { id:'voice', type:'音频', tags:['口播音频'], name:'口播', accountId:'current-account', createdAt:2 },
+  { id:'material-other', type:'视频', tags:['剪辑素材'], name:'共享镜头', accountId:'another-account', createdAt:3 }
+];
+console.log(JSON.stringify({
+  bgm: globalBgmAssets().map(item => item.id),
+  material: isEditingMaterialAsset(state.assets[2])
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual('{"bgm":["bgm-other"],"material":true}', result)
+
     def test_v84_subtitle_editor_review_and_dashboard_contract(self):
         cut = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
         review = (APP_DIR / "js/views/chainCopy.js").read_text(encoding="utf-8")
@@ -169,8 +228,8 @@ console.log(result);
         self.assertIn("const preserveManualStyle = Boolean(acc.styleEditedAt)", main)
         self.assertIn("if (!preserveManualStyle)", main)
         self.assertIn("styleEditedAt: Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260716-v85-1"', main)
-        self.assertIn('js/main.js?v=20260716-v85-1', index)
+        self.assertIn('const APP_BUILD_ID = "20260716-v87-2"', main)
+        self.assertIn('js/main.js?v=20260716-v87-2', index)
 
 
 if __name__ == "__main__":

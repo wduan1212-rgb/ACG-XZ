@@ -8,6 +8,26 @@ import { uid, esc, gradFor, dataUrlToBlob, extOfMime } from "../core/util.js";
 const urlCache = new Map(); // assetId -> objectURL
 const IMAGE_PROCESS_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
+const assetTagText = asset => (asset?.tags || []).map(tag => String(tag || "").trim()).join(" ");
+export function isBgmAsset(asset) {
+  if (asset?.type !== "音频") return false;
+  const text = `${assetTagText(asset)} ${asset?.name || ""}`;
+  return /BGM|音乐库|配乐/i.test(text) && !/口播|语音|TTS|数字人|声线参考/i.test(text);
+}
+
+export function isEditingMaterialAsset(asset) {
+  if (asset?.type !== "视频") return false;
+  return /剪辑素材|视频素材|素材库/.test(assetTagText(asset));
+}
+
+export const isGlobalEditingAsset = asset => isBgmAsset(asset) || isEditingMaterialAsset(asset);
+
+export function globalBgmAssets() {
+  return state.assets
+    .filter(asset => isBgmAsset(asset) && !asset.delivered)
+    .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+}
+
 /* 全局上传编号：按上传先后顺序递增（资产库全员共享，统一编号排序） */
 function nextSeq() {
   state.ui.assetSeq = (state.ui.assetSeq || 0) + 1;
@@ -342,7 +362,7 @@ export function thumbHtml(a, cls = "") {
 export function searchAssets({ accountId = "all", tag = "all", q = "", includeDelivered = false } = {}) {
   const kw = q.trim().toLowerCase();
   return state.assets.filter(a => {
-    if (!a.delivered && !a.shared && !ownedBy(a)) return false;
+    if (!a.delivered && !a.shared && !ownedBy(a) && !isGlobalEditingAsset(a)) return false;
     if (!includeDelivered && a.delivered) return false;
     if (accountId !== "all" && a.accountId !== accountId) return false;
     if (tag !== "all" && !(a.tags || []).includes(tag)) return false;

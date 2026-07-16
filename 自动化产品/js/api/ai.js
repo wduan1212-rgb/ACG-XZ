@@ -2,10 +2,9 @@
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
 import { llm, visionCopy } from "./llm.js?v=20260715-v84-2";
-import { DUMATE_BRIEF, PROMPT_FRAMEWORK, NO_DH_FRAMEWORK, DIR_POOL, TOPIC_POOL, STYLE_POOL } from "./prompts.js";
+import { DUMATE_BRIEF, PROMPT_FRAMEWORK, NO_DH_FRAMEWORK, TOPIC_POOL, STYLE_POOL } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
-import { TAG_POOL } from "../domain/accounts.js";
 import { getCreativeMemoryContext } from "../domain/analytics.js";
 import { state } from "../core/store.js";
 import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js";
@@ -2441,22 +2440,21 @@ export const AI = {
     const ours = productList.filter(p => p.owner === "ours");
     const comps = productList.filter(p => p.owner === "competitor").slice(0, 8);
     const offline = () => {
-      const tags = [...new Set(accounts.flatMap(a => a.qtags || []))];
       const t1 = pick(TOPIC_POOL), t2 = pick(TOPIC_POOL.filter(x => x !== t1)), t3 = pick(TOPIC_POOL);
       const own = pick(ours.length ? ours : productList) || { shortName: "本次产品" };
       const comp = pick(comps.length ? comps : productList.filter(p => p.id !== own.id)) || { shortName: "同类工具" };
       const ownName = productDisplayName(own);
       const compName = productDisplayName(comp, "同类工具");
       return [
-        `给${tags.length ? "所有" + pick(tags) + "标签的" : "全部"}账号做「${ownName} ${t1}」`,
+        `给全部账号做「${ownName} ${t1}」`,
         `给图文组做${ownName}和${compName}对比`,
         `给素材号全自动出一批「${t3}」AI博主视角`
       ];
     };
     try {
       const content = await llm([
-        { role: "system", content: `根据账号矩阵和产品知识库，给内容量产 Agent 生成 3 条一句话指令建议。要求像真实 AI 博主选题：可以做教程、对比、测评、工具分工或场景清单；优先使用我们的产品，也可以引入竞品/同类产品做横向对比；主题每次新颖不重复；指明范围（全部 / 某标签 / 图文组 / 真人 / 素材号）；每条不超过 32 字；只输出 JSON：{"suggestions":["...","...","..."]}` },
-        { role: "user", content: `账号矩阵：${JSON.stringify(accounts.map(a => ({ 名称: a.name, 分组: a.mode === "图文" ? "图文组" : a.subType === "数字人" ? "真人" : "素材", 风格: (a.styleProfile || a.voiceName || a.lockedStyle || "").slice(0, 50), 标签: a.qtags || [] })))}\n产品知识库：${JSON.stringify(productList.map(p => ({ 名称: p.name, 身份: p.owner === "ours" ? "我们的产品" : "竞品", 类别: p.category, 选题角度: (p.blogAngles || p.tutorialAngles || []).slice(0, 3), 可对比: (p.comparisonAngles || []).slice(0, 2) })))}\n随机种子：${Math.random().toString(36).slice(2, 8)}` }
+        { role: "system", content: `根据账号矩阵和产品知识库，给内容量产 Agent 生成 3 条一句话指令建议。要求像真实 AI 博主选题：可以做教程、对比、测评、工具分工或场景清单；优先使用我们的产品，也可以引入竞品/同类产品做横向对比；主题每次新颖不重复；指明范围（全部 / 图文组 / 真人 / 素材号）；每条不超过 32 字；只输出 JSON：{"suggestions":["...","...","..."]}` },
+        { role: "user", content: `账号矩阵：${JSON.stringify(accounts.map(a => ({ 名称: a.name, 分组: a.mode === "图文" ? "图文组" : a.subType === "数字人" ? "真人" : "素材", 风格: (a.styleProfile || a.voiceName || a.lockedStyle || "").slice(0, 50) })))}\n产品知识库：${JSON.stringify(productList.map(p => ({ 名称: p.name, 身份: p.owner === "ours" ? "我们的产品" : "竞品", 类别: p.category, 选题角度: (p.blogAngles || p.tutorialAngles || []).slice(0, 3), 可对比: (p.comparisonAngles || []).slice(0, 2) })))}\n随机种子：${Math.random().toString(36).slice(2, 8)}` }
       ], { json: true, temperature: 1.2 });
       const d = parseJSONLoose(content);
       if (Array.isArray(d.suggestions) && d.suggestions.length >= 3) return this._ok(d.suggestions.slice(0, 3).map(s => String(s).slice(0, 40)));
@@ -2902,7 +2900,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const productName = chineseProductDisplayName(product);
     const accountVoice = copyAccountVoice(account, account?.styleProfile || account?.lockedStyle || "", safeTitle || safeCopy);
     const engines = [
-      "荒诞职场短剧：用一个意外事件把痛点推到极端，再自然回落到解决方案",
+      "荒诞任务短剧：用一个意外事件把痛点推到极端，再自然回落到解决方案",
       "视觉隐喻广告：把抽象任务具象成会失控的空间、道具或机关，用强运镜讲清冲突",
       "反常识对话：用两名角色立场冲突和一句反转建立钩子，台词短、狠、自然",
       "伪纪录片现场：像偶然拍到的真实办公事故，镜头有观察感，结尾突然给出可执行办法",
@@ -3005,7 +3003,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       }
       const trendGuideText = prep?.guide || await resolveTrendGuide({ topic: "", account, product: p, batchVariant, useOnlineTrends: false, kind: "image", seed: runSeed });
       const ask = kind === "direction"
-        ? `给我一个适合做「${productName}」产品教程短视频的目标人群方向，要主流、好理解、贴近大众（比如 职场白领 / 宝妈 / 大学生 / 老师 / 电商卖家 这类），不要冷门抽象概念。只回一个3-6字的词，不要标点不要解释。`
+        ? `给我一个适合做「${productName}」产品教程短视频的具体使用场景方向，必须对应一个真实任务或问题，不要按年龄、职业、家庭身份给用户分类。只回一个4-8字的场景短语，不要标点不要解释。`
         : kind === "style"
         ? `为小红书图文笔记配图想一个总视觉风格短语，参考当前创作风格「${account.styleProfile || "干净可读"}」。可以超出常见标签、有新鲜感但要好落地（例如：奶油色清晨书桌风 / 蓝白格子手帐风 / 低饱和莫兰迪办公风）。只回一个5-12字的风格短语，不要标点不要解释。`
         : `${currentProductLine(p)}\n给我一个「${productName}」相关的 AI 博主选题，贴合账号创作风格「${account.styleProfile || "办公效率人群"}」和账号名「${account.name || "未命名账号"}」。用户没有写创作内容，所以你要主动引入 1 个同类/互补工具做对比、组合、分工或妙用科普，不要只孤立介绍${productName}。${variantGuide ? `\n${variantGuide}` : ""}${avoidLine ? `\n同批已经出现过这些主题，必须避开，不要同义改写：\n${avoidLine}` : ""}${p?.id === "miaoda" ? "秒哒是无代码 AI 应用生成平台，选题必须围绕应用生成、H5/页面、原型、小工具、数据表/后台、非技术人验证想法；不要写文件整理、桌面自动操作、PDF/Word/Excel 转格式、会议纪要这类桌面执行能力，除非明确是“做一个应用来管理这些流程”。" : ""}${relLine}\n本地方向参考（只学选题角度，不照抄）：\n${trendGuideText}\n随机种子：${runSeed}。只回一句不超过22字的主题，不要标点不要解释。`;
@@ -3019,9 +3017,9 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       this._fb(e);
       const runSeed = seed || `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
       if (kind === "topic") return fallbackRandomTopic({ account, product, batchVariant, seed: runSeed, avoidTopics });
-      const pool = kind === "direction" ? DIR_POOL : kind === "style" ? STYLE_POOL : TOPIC_POOL;
+      const pool = kind === "direction" ? TOPIC_POOL : kind === "style" ? STYLE_POOL : TOPIC_POOL;
       const pick = pool[Math.floor(Math.random() * pool.length)];
-      return kind === "direction" ? pick + "方向" : pick;
+      return kind === "direction" ? pick.slice(0, 8) : pick;
     }
   },
 
@@ -3029,7 +3027,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
   async parseAccountsMd(text) {
     try {
       const content = await llm([
-        { role: "system", content: `把用户的 markdown 解析成账号数组。每个账号字段：name(必填)、platform(小红书|视频号)、mode(图文|视频)、subType(数字人|无数字人，仅视频)、styleProfile(创作风格/口播风格描述)、qtags(数组，仅限：${TAG_POOL.join("/")})。不再生成账号定位字段；缺失字段合理推断。只输出 JSON：{"accounts":[...]}` },
+        { role: "system", content: `把用户的 markdown 解析成账号数组。每个账号字段：name(必填)、platform(小红书|视频号)、mode(图文|视频)、subType(数字人|无数字人，仅视频)、styleProfile(创作风格/口播风格描述)。不要生成目标人群、职业、家庭身份或账号分类标签；缺失字段合理推断。只输出 JSON：{"accounts":[...]}` },
         { role: "user", content: text.slice(0, 6000) }
       ], { json: true, temperature: 0.2 });
       const d = parseJSONLoose(content);
@@ -3047,8 +3045,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
           mode: b.includes("图文") ? "图文" : "视频",
           subType: b.includes("无数字人") ? "无数字人" : "数字人",
           position: "",
-          styleProfile: (b.match(/(?:风格|口播风格|创作风格)[：:]\s*([^\n]+)/) || [])[1] || "",
-          qtags: TAG_POOL.filter(t => b.includes(t))
+          styleProfile: (b.match(/(?:风格|口播风格|创作风格)[：:]\s*([^\n]+)/) || [])[1] || ""
         };
       }).filter(Boolean);
     }
@@ -3262,8 +3259,8 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const key = `${account?.id || ""}${account?.name || ""}`;
     const n = [...key].reduce((a, c) => a + c.charCodeAt(0), 0) % 2;
     const anchors = [
-      `真人角色一致性要求：同一位中国年轻职场女性数字人，26-30岁，气质干净专业但有亲和力；鹅蛋脸偏小，下颌线柔和清晰，额头饱满，发际线自然；自然平直眉，眉尾略收，杏眼偏圆，双眼皮自然，眼神专注但不锐利；鼻梁中等偏挺，鼻头圆润不过分尖；嘴唇厚薄适中，微笑时嘴角轻微上扬；肤色自然白皙偏暖，妆容清淡，唇色豆沙或浅玫瑰；黑棕色中长发，锁骨到肩下长度，三七分或自然中分，发尾微内扣；身形中等偏瘦，肩颈舒展，穿浅米色针织衫或白色衬衫，搭配深色简洁下装。所有出现人物的镜头保持同一张脸、同一发型、同一服装、同一体态和同一表情习惯，不能换人、不能脸型漂移。`,
-      `真人角色一致性要求：同一位中国年轻职场男性数字人，27-32岁，气质理性松弛、像懂技术的同事；脸型为偏长的清瘦椭圆脸，下颌线利落但不锋利，额头开阔；眉毛自然偏浓，眼型细长偏内双，眼神稳定专注；鼻梁中等偏高，鼻翼自然；嘴唇偏薄，讲话时表情克制，有轻微吐槽感和理性幽默；肤色自然偏暖，皮肤质感真实不过度磨皮；黑色短发，侧分或自然蓬松，发际线自然；身形中等偏瘦，肩背挺直，穿浅蓝或白色衬衫、深色休闲外套或针织开衫。所有出现人物的镜头保持同一张脸、同一发型、同一服装、同一体态和同一表情习惯，不能换人、不能脸型漂移。`
+      `真人角色一致性要求：同一位中国年轻女性数字人，26-30岁，气质干净专业但有亲和力；鹅蛋脸偏小，下颌线柔和清晰，额头饱满，发际线自然；自然平直眉，眉尾略收，杏眼偏圆，双眼皮自然，眼神专注但不锐利；鼻梁中等偏挺，鼻头圆润不过分尖；嘴唇厚薄适中，微笑时嘴角轻微上扬；肤色自然白皙偏暖，妆容清淡，唇色豆沙或浅玫瑰；黑棕色中长发，锁骨到肩下长度，三七分或自然中分，发尾微内扣；身形中等偏瘦，肩颈舒展，穿浅米色针织衫或白色衬衫，搭配深色简洁下装。所有出现人物的镜头保持同一张脸、同一发型、同一服装、同一体态和同一表情习惯，不能换人、不能脸型漂移。`,
+      `真人角色一致性要求：同一位中国年轻男性数字人，27-32岁，气质理性松弛、像懂技术的朋友；脸型为偏长的清瘦椭圆脸，下颌线利落但不锋利，额头开阔；眉毛自然偏浓，眼型细长偏内双，眼神稳定专注；鼻梁中等偏高，鼻翼自然；嘴唇偏薄，讲话时表情克制，有轻微吐槽感和理性幽默；肤色自然偏暖，皮肤质感真实不过度磨皮；黑色短发，侧分或自然蓬松，发际线自然；身形中等偏瘦，肩背挺直，穿浅蓝或白色衬衫、深色休闲外套或针织开衫。所有出现人物的镜头保持同一张脸、同一发型、同一服装、同一体态和同一表情习惯，不能换人、不能脸型漂移。`
     ];
     return anchors[n];
   },

@@ -3,7 +3,7 @@
 import { $, $$, esc, buildZipBlob, downloadBlob, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
-import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile } from "../domain/assets.js";
+import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile, isBgmAsset, isEditingMaterialAsset } from "../domain/assets.js";
 import { downloadAsset } from "../domain/delivery.js";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
 import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js";
@@ -19,6 +19,7 @@ const accountArchivableAssets = accountId => state.assets
   .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 const libraryLabels = { shared: "账号资产", drafts: "草稿箱", bgm: "BGM 库", material: "剪辑素材库", voice: "语音素材库", reference: "总参考音频库" };
 const libraryTabsHtml = () => `<div class="asset-library-tabs text-switch"><button class="${libraryMode === "shared" ? "on is-active" : ""}" data-library="shared">账号资产</button><button class="${libraryMode === "drafts" ? "on is-active" : ""}" data-library="drafts">草稿箱</button><button class="${libraryMode === "bgm" ? "on is-active" : ""}" data-library="bgm">BGM</button><button class="${libraryMode === "material" ? "on is-active" : ""}" data-library="material">剪辑素材</button><button class="${libraryMode === "voice" ? "on is-active" : ""}" data-library="voice">语音素材</button><button class="${libraryMode === "reference" ? "on is-active" : ""}" data-library="reference">参考音频</button></div>`;
+const isGlobalLibrary = () => ["bgm", "material"].includes(libraryMode);
 
 async function exportAndPurgeAccountFiles(accountId) {
   const acc = accountById(accountId);
@@ -82,14 +83,14 @@ export const assetsView = {
         });
         return;
       }
-      let list = searchAssets({ accountId: fAcc, tag: "all", q: fQ, includeDelivered: true })
+      let list = searchAssets({ accountId: isGlobalLibrary() ? "all" : fAcc, tag: "all", q: fQ, includeDelivered: true })
         .filter(a => !isAvatarAsset(a))
         .filter(a => libraryMode === "shared"
           ? (includeAccountPrivate && fAcc !== "all" ? a.accountId === fAcc : isSharedAsset(a))
           : libraryMode === "bgm"
-            ? (a.type === "音频" && (a.tags || []).some(t => /bgm|配乐|音乐/i.test(t)) && !(a.tags || []).some(t => /口播|语音|tts/i.test(t)))
+            ? isBgmAsset(a)
             : libraryMode === "material"
-              ? (a.type === "视频" && (a.tags || []).some(t => /素材库|剪辑素材|视频素材/.test(t)))
+              ? isEditingMaterialAsset(a)
               : libraryMode === "voice"
                 ? (a.type === "音频" && (a.tags || []).some(t => /语音素材库|口播|tts/i.test(t)) && !(a.tags || []).some(t => /参考音频库/i.test(t)))
                 : (a.type === "音频" && (a.tags || []).some(t => /参考音频库|声线参考/i.test(t))))
@@ -107,9 +108,9 @@ export const assetsView = {
           </div>
           <div class="filter-bar card asset-smart-filters">
             <div class="fb-search">${icon("search", 14)}<input id="avSearch" placeholder="搜索素材名 / 标签" value="${esc(fQ)}" /></div>
-            ${libraryMode !== "bgm" ? `<label class="select-shell">${icon("filter", 13)}<select id="avKind"><option value="all">全部形式</option><option value="video" ${fKind === "video" ? "selected" : ""}>视频</option><option value="image" ${fKind === "image" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>` : ""}
-            <label class="select-shell account-select">${icon("users", 13)}<select id="avAccount"><option value="all">全部账号</option>${accounts.map(a => `<option value="${esc(a.id)}" ${fAcc === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
-            ${fAcc !== "all" ? `<button class="btn ghost asset-filter-action" data-export-del-acc="${esc(fAcc)}" ${selectedFileCount ? "" : "disabled"}>${icon("download", 14)} 导出并清空文件 ${selectedFileCount ? `(${selectedFileCount})` : ""}</button>` : ""}
+            ${isGlobalLibrary() ? "" : `<label class="select-shell">${icon("filter", 13)}<select id="avKind"><option value="all">全部形式</option><option value="video" ${fKind === "video" ? "selected" : ""}>视频</option><option value="image" ${fKind === "image" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>`}
+            ${isGlobalLibrary() ? "" : `<label class="select-shell account-select">${icon("users", 13)}<select id="avAccount"><option value="all">全部账号</option>${accounts.map(a => `<option value="${esc(a.id)}" ${fAcc === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>`}
+            ${!isGlobalLibrary() && fAcc !== "all" ? `<button class="btn ghost asset-filter-action" data-export-del-acc="${esc(fAcc)}" ${selectedFileCount ? "" : "disabled"}>${icon("download", 14)} 导出并清空文件 ${selectedFileCount ? `(${selectedFileCount})` : ""}</button>` : ""}
           </div>
           <div class="asset-mode-stage" id="avBody">
             ${renderBody(list)}
@@ -130,6 +131,7 @@ export const assetsView = {
       const acc = accountById(a.accountId);
       const kind = assetKind(a);
       const audioUrl = a.type === "音频" ? urlFor(a) : "";
+      const globalLabel = libraryMode === "bgm" ? "共享 BGM" : libraryMode === "material" ? "共享剪辑素材" : "";
       return `<div class="asset-card card ${a.type === "音频" ? "is-audio" : ""}" data-aid="${a.id}">
         <div class="ac-thumb">${a.type === "音频" && audioUrl ? `<div class="asset-audio-thumb">${icon("pulse", 22)}<audio controls preload="metadata" src="${esc(audioUrl)}"></audio></div>` : thumbHtml(a)}
           ${a.seq ? `<span class="ac-seq">${assetCode(a)}</span>` : ""}
@@ -137,20 +139,21 @@ export const assetsView = {
           <div class="ac-hover">
             <button class="ac-mini" data-aact="download" title="下载">${icon("download", 13)}</button>
             <button class="ac-mini" data-aact="rename" title="重命名">${icon("edit", 13)}</button>
-            <button class="ac-mini" data-aact="assign" title="分配到账号素材库">${icon("users", 13)}</button>
+            ${isGlobalLibrary() ? "" : `<button class="ac-mini" data-aact="assign" title="分配到账号素材库">${icon("users", 13)}</button>`}
             <button class="ac-mini" data-aact="tag" title="加标签">#</button>
             <button class="ac-mini danger" data-aact="del" title="删除">${icon("trash", 13)}</button>
           </div>
         </div>
         <div class="ac-body">
           <div class="ac-name" title="${esc(a.name)}">${esc(a.name)}</div>
-          <div class="ac-tags">${acc ? `<span class="tag">${esc(acc.name)}</span>${platChip(acc.platform, true)}` : `<span class="tag">公共素材池</span>`}<span class="tag">${esc(kind)}</span></div>
+          <div class="ac-tags">${globalLabel ? `<span class="tag">${globalLabel}</span>` : acc ? `<span class="tag">${esc(acc.name)}</span>${platChip(acc.platform, true)}` : `<span class="tag">公共素材池</span>`}<span class="tag">${esc(globalLabel ? a.type : kind)}</span></div>
         </div>
       </div>`;
     };
 
     function renderBody(list) {
       if (!list.length) return emptyState("folder", `${libraryLabels[libraryMode] || "资产库"}暂无内容`, libraryMode === "shared" ? "完成定稿发布后，内容会进入这里供团队共享和下载" : "可从上方拖入符合格式的文件");
+      if (isGlobalLibrary()) return `<div class="asset-grid">${list.map(cardHtml).join("")}</div>`;
       // 指定账号：直接平铺
       if (fAcc !== "all") return `<div class="asset-grid">${list.map(cardHtml).join("")}</div>`;
       // 全部账号：按账号分组，支持折叠
@@ -251,7 +254,7 @@ export const assetsView = {
           const name = await promptModal({ title: "重命名素材", value: a.name });
           if (name) { a.name = name; save("assets"); draw(); }
         });
-        card.querySelector('[data-aact="assign"]').addEventListener("click", () => {
+        card.querySelector('[data-aact="assign"]')?.addEventListener("click", () => {
           const options = state.accounts.map(acc => `<option value="${esc(acc.id)}" ${a.accountId === acc.id ? "selected" : ""}>${esc(acc.name)} · ${esc(acc.platform)}</option>`).join("");
           openModal(`<div class="mp-head"><b>分配素材库</b><button class="icon-btn" data-close>${icon("x", 15)}</button></div>
             <div class="mp-body"><p class="mp-sub">默认放在公共素材池；明确选择账号后，仅该账号和公共素材可在生产时调用。</p>

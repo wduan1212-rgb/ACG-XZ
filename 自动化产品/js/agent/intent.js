@@ -2,7 +2,6 @@
 
 import { llm } from "../api/llm.js?v=20260715-v84-2";
 import { parseJSONLoose } from "../core/util.js";
-import { TAG_POOL } from "../domain/accounts.js";
 
 export const INTENTS = ["plan_batch", "run_generation", "approve_all", "deliver_all", "retry_failed", "status_query"];
 
@@ -34,18 +33,6 @@ function firstNum(re, text) {
   return m ? zhNum(m[1]) : null;
 }
 
-function tagMatches(goal, tag) {
-  if (goal.includes(tag)) return true;
-  if (tag === "学生教培") return /学生党|学生|教培|学习|复习|校园/.test(goal);
-  if (tag === "职场效率") return /职场|办公|效率|打工|上班/.test(goal);
-  if (tag === "创作者") return /自媒体|创作者|博主|内容号|创作号|OPC|个人IP/.test(goal);
-  if (tag === "产品功能") return /产品功能|功能教程|产品教程|工具教程|功能演示/.test(goal);
-  if (tag === "家庭管理") return /家庭|家务|居家|亲子/.test(goal);
-  if (tag === "岗位垂类") return /岗位|运营|财务|法务|销售|人事|HR|设计|教师/.test(goal);
-  if (tag === "测评中立") return /测评|对比|横评|中立|避坑/.test(goal);
-  return false;
-}
-
 function selectionRange(goal = "") {
   const n = firstNum(/(?:最后|后|倒数|末尾)\s*([0-9]+|[两一二三四五六七八九十]+)\s*(个|只|家)?\s*(账号|号|图文|图文号|图文账号|素材号|真人号|数字人号)?/, goal);
   if (n) return { pickFrom: "end", accountCount: n };
@@ -55,7 +42,6 @@ function selectionRange(goal = "") {
 }
 
 export function parseGoalFallback(goal) {
-  const tags = TAG_POOL.filter(t => tagMatches(goal, t));
   const group = /图文|笔记|小红书图/.test(goal) ? "图文组"
     : (goal.includes("真人") || goal.includes("数字人")) ? "真人"
     : (goal.includes("素材") || goal.includes("无数字人")) ? "素材" : "all";
@@ -77,7 +63,7 @@ export function parseGoalFallback(goal) {
   else { const dm = goal.match(/(?:主题|关于|围绕|做一?期|出一?期|发一?条)\s*[是为：:]?\s*([^，,。、\d]{2,16})/); if (dm) topic = dm[1].trim(); }
   if (isPureAccountSelectionText(goal) && !qm) topic = "";
   return {
-    topic: topic.slice(0, 30), tags, group, style: styleM ? styleM[1] : "",
+    topic: topic.slice(0, 30), tags: [], group, style: styleM ? styleM[1] : "",
     count: range.accountCount || count, accountCount: range.accountCount || accountCount || count || null,
     perAccountCount: Math.max(1, perAccountCount || 1),
     sort, pickFrom: range.pickFrom || ""
@@ -103,7 +89,7 @@ export async function routeIntent(text, contextSummary = "") {
     const r = await llm([
       { role: "system", content: `你是内容生产工作台的指令路由器。把用户输入归类为一个 intent 并提取参数，只输出 JSON。
 可选 intent：
-- plan_batch：发起一批内容量产（提到主题/选号/做一期/量产/批量创作等）。params: {"topic":"创作主题","tags":[仅限:${TAG_POOL.join("/")}],"group":"图文组|真人|素材|all","style":"风格策略，可空","count":数字或null}
+- plan_batch：发起一批内容量产（提到主题/选号/做一期/量产/批量创作等）。params: {"topic":"创作主题","group":"图文组|真人|素材|all","style":"风格策略，可空","count":数字或null}
 - run_generation：开始/继续生成已就绪的任务。params:{}
 - approve_all：批量通过审核。params:{}
 - deliver_all：批量交付/定稿入库。params:{}
@@ -118,7 +104,7 @@ export async function routeIntent(text, contextSummary = "") {
     if (!INTENTS.includes(d.intent)) throw new Error("未知意图");
     if (d.intent === "plan_batch") {
       d.params = d.params || {};
-      d.params.tags = (d.params.tags || []).filter(t => TAG_POOL.includes(t));
+      d.params.tags = [];
       if (!d.params.topic) d.params = { ...parseGoalFallback(text), ...d.params, topic: parseGoalFallback(text).topic };
     }
     return d;
