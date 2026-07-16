@@ -10,7 +10,7 @@ export const STAGES = {
   boards: { label: "分镜", icon: "image" },
   images: { label: "图文创作台", icon: "image" },
   prompts: { label: "提示词", icon: "list" },
-  workshop: { label: "文案分镜", icon: "layers" },
+  workshop: { label: "视频制作", icon: "layers" },
   render: { label: "生成", icon: "film" },
   cut: { label: "剪辑", icon: "scissors" },
   copy: { label: "文案", icon: "type" },
@@ -20,6 +20,36 @@ export const STAGES = {
 
 export const isMaterial = p => p && p.mode === "视频" && p.subType === "无数字人";
 export const isVideoWorkshop = p => p && p.mode === "视频";
+
+/* 主平台的视频旧入口已退役：
+   - 数字人账号只允许数字人模型；
+   - 素材账号只允许信息流。
+   旧任务的 job / 资产 / 时间轴不删除，只记录旧模式值用于排障。 */
+export function enforceSupportedVideoMode(p) {
+  if (!isVideoWorkshop(p)) return false;
+  p.artifacts = p.artifacts || blankArtifacts();
+  const A = p.artifacts.boards || (p.artifacts.boards = blankArtifacts().boards);
+  let changed = false;
+  if (p.subType === "数字人") {
+    if (A.generationMode !== "digitalHuman") {
+      if (A.generationMode && !A.legacyGenerationMode) A.legacyGenerationMode = A.generationMode;
+      A.generationMode = "digitalHuman";
+      changed = true;
+    }
+  } else {
+    if (A.materialMode !== "infoFlow") {
+      if (A.materialMode && !A.legacyMaterialMode) A.legacyMaterialMode = A.materialMode;
+      A.materialMode = "infoFlow";
+      changed = true;
+    }
+    if (A.generationMode !== "infoFlow") {
+      if (A.generationMode && !A.legacyGenerationMode) A.legacyGenerationMode = A.generationMode;
+      A.generationMode = "infoFlow";
+      changed = true;
+    }
+  }
+  return changed;
+}
 
 function outputUrl(output) {
   if (!output) return "";
@@ -146,6 +176,10 @@ export function buildMaterialUnits(p) {
   if (A.materialMode === "infoFlow" && Array.isArray(A.infoFlow?.segments) && A.infoFlow.segments.length) {
     const old = A.units || [];
     const segments = A.infoFlow.segments.slice(0, 2);
+    const directVideoRefs = [...new Set([
+      ...(A.sceneRefAssetIds || []),
+      ...(A.omniRefAssetIds || []).filter(id => id !== A.characterRefAssetId)
+    ].filter(Boolean))].slice(0, 8);
     if (!(p.artifacts.audio.perShot || []).length) {
       p.artifacts.audio.perShot = segments.map(seg => ({ dur: Math.min(UNIT_MAX_SEC, Math.max(2, Number(seg.duration || 15))) }));
       p.artifacts.audio.duration = p.artifacts.audio.perShot.reduce((sum, x) => sum + x.dur, 0);
@@ -169,13 +203,13 @@ export function buildMaterialUnits(p) {
         scenes: [i + 1],
         shotIndexes: [i],
         label: seg.label || (i === 0 ? "前15s" : "后15s"),
-        needsImage: i > 0,
-        mode: i > 0 ? "i2v" : "t2v",
+        needsImage: directVideoRefs.length > 0,
+        mode: directVideoRefs.length ? "i2v" : "t2v",
         imagePrompt: prev.imagePrompt || "",
         videoPrompt: seg.videoPrompt || prev.videoPrompt || "",
         imageAssetId: prev.imageAssetId || null,
         refAssetId: prev.refAssetId || null,
-        refAssetIds: i > 0 ? [...new Set(seg.storyboardAssetIds || [])] : [],
+        refAssetIds: [...directVideoRefs],
         dur: Math.min(UNIT_MAX_SEC, Math.max(2, Number(seg.duration || 15))),
         status: prev.status || "idle",
         part: 1,
@@ -252,7 +286,8 @@ export function createProduction({ accountId, topic = "", origin = "manual", bat
   if (style) p.artifacts.script.style = style;
   p.artifacts.script.productId = productId || "dumate";
   if (acc.mode === "视频") {
-    p.artifacts.boards.generationMode = acc.subType === "数字人" ? "digitalHuman" : "seedance";
+    p.artifacts.boards.generationMode = acc.subType === "数字人" ? "digitalHuman" : "infoFlow";
+    p.artifacts.boards.materialMode = acc.subType === "数字人" ? p.artifacts.boards.materialMode : "infoFlow";
     p.artifacts.boards.digitalHuman = { provider: "", model: "", segments: [] };
   }
   state.productions.push(p);
@@ -413,6 +448,9 @@ export function autoAssemble(p) {
         id: old?.id || uid(),
         jobId: job?.id || seg.videoJobId || "",
         segmentId: seg.id || "",
+        audioAssetId: seg.audioAssetId || old?.audioAssetId || "",
+        audioDuration: Math.max(0, Number(seg.audioDuration || seg.dur || old?.audioDuration || 0)),
+        videoDuration: Math.max(0, Number(old?.videoDuration || 0)),
         name: job?.segName || old?.name || `数字人${String(i + 1).padStart(2, "0")}`,
         videoUrl: url,
         dur: Math.max(1, Math.round(Number(seg.audioDuration || seg.dur || job?.duration || old?.dur || 15) * 10) / 10),
@@ -427,6 +465,13 @@ export function autoAssemble(p) {
         p.artifacts.finalVideoUrl = "";
         p.artifacts.finalVideoName = "";
         p.artifacts.composeError = "";
+        if (p.artifacts.subTimingSource !== "manual") {
+          p.artifacts.subs = [];
+          p.artifacts.subTimingSource = "";
+          p.artifacts.audioTimingSource = "";
+          p.artifacts.audioTimingAttemptSig = "";
+          p.artifacts.audioTimingRevision = Number(p.artifacts.audioTimingRevision || 0) + 1;
+        }
       }
     }
     if (!(p.artifacts.subs || []).length) {
@@ -519,6 +564,9 @@ export function rebindUnitClip(p, unitIndex, job) {
     if (clip) {
       clip.jobId = job.id;
       clip.segmentId = seg.id || clip.segmentId || "";
+      clip.audioAssetId = seg.audioAssetId || "";
+      clip.audioDuration = Math.max(0, Number(seg.audioDuration || seg.dur || 0));
+      clip.videoDuration = 0;
       clip.videoUrl = url || clip.videoUrl || "";
       clip.trimIn = 0;
       clip.dur = Math.max(1, Math.round(Number(seg.audioDuration || seg.dur || job.duration || clip.dur || 15) * 10) / 10);
@@ -527,6 +575,9 @@ export function rebindUnitClip(p, unitIndex, job) {
         id: uid(),
         jobId: job.id,
         segmentId: seg.id || "",
+        audioAssetId: seg.audioAssetId || "",
+        audioDuration: Math.max(0, Number(seg.audioDuration || seg.dur || 0)),
+        videoDuration: 0,
         videoUrl: url,
         name: job.segName || `数字人${String(unitIndex + 1).padStart(2, "0")}`,
         dur: Math.max(1, Math.round(Number(seg.audioDuration || seg.dur || job.duration || 15) * 10) / 10),
@@ -542,6 +593,13 @@ export function rebindUnitClip(p, unitIndex, job) {
     p.artifacts.finalVideoUrl = "";
     p.artifacts.finalVideoName = "";
     p.artifacts.composeError = "";
+    if (p.artifacts.subTimingSource !== "manual") {
+      p.artifacts.subs = [];
+      p.artifacts.subTimingSource = "";
+      p.artifacts.audioTimingSource = "";
+      p.artifacts.audioTimingAttemptSig = "";
+      p.artifacts.audioTimingRevision = Number(p.artifacts.audioTimingRevision || 0) + 1;
+    }
     touch(p);
     save("productions");
     return;

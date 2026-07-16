@@ -237,9 +237,9 @@ export function urlFor(idOrAsset) {
 }
 
 /* 新增资产（dataUrl 形式进来 → 转 Blob 落库） */
-export async function addAssetFromDataUrl(accountId, { name, type = "图片", tags = [], dataUrl }) {
+export async function addAssetFromDataUrl(accountId, { name, type = "图片", tags = [], dataUrl, forceNew = false }) {
   const contentHash = dataUrl ? assetHashFromDataUrl(dataUrl) : "";
-  const dup = duplicateAssetByHash(contentHash, type);
+  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name });
   const a = { id: uid(), accountId, seq: nextSeq(), ownerId: state.ui.currentMemberId || null, name: name || "未命名素材", type, tags, createdAt: Date.now(), hasBlob: !!dataUrl, contentHash };
   if (dataUrl) {
@@ -260,12 +260,12 @@ export async function addAssetFromDataUrl(accountId, { name, type = "图片", ta
   return a;
 }
 
-export async function addAssetFromFile(accountId, file, { tags = [], name } = {}) {
+export async function addAssetFromFile(accountId, file, { tags = [], name, forceNew = false } = {}) {
   const type = file.type.startsWith("video/") ? "视频" : file.type.startsWith("audio/") ? "音频" : "图片";
   const assetName = name || file.name.replace(/\.[^.]+$/, "");
   const blob = type === "图片" ? await lightlyProcessImageBlob(file, file.name || assetName) : file;
   const contentHash = await assetHashFromBlob(blob);
-  const dup = duplicateAssetByHash(contentHash, type);
+  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name: assetName });
   const a = { id: uid(), accountId, seq: nextSeq(), ownerId: state.ui.currentMemberId || null, name: assetName, type, tags, createdAt: Date.now(), hasBlob: true, mime: file.type, contentHash };
   if (blob !== file) {

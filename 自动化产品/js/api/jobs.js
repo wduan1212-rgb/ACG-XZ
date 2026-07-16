@@ -49,14 +49,15 @@ function normalizeOutput(output) {
 }
 
 export function createJob({ kind = "video", productionId, segIndex = 0, segName = "", prompt, refAssetIds = [], ratio = "9:16", duration = 15, generateAudio = null, model = "", segmentId = "" }) {
+  const intendedRefAssetIds = [...new Set((refAssetIds || []).filter(Boolean))];
   const job = {
     id: uid(), kind, productionId, segIndex, segName,
-    prompt, refAssetIds, ratio, duration, generateAudio, model,
+    prompt, refAssetIds: intendedRefAssetIds, intendedRefAssetIds, ratio, duration, generateAudio, model,
     segmentId,
     provider: null, providerRef: null,
     status: "queued", progress: 0, attempts: 0,
     nextPollAt: 0, nextAttemptAt: 0,
-    output: null, error: null,
+    output: null, error: null, referenceReceipt: null,
     createdAt: Date.now(), updatedAt: Date.now()
   };
   state.jobs.push(job);
@@ -71,6 +72,7 @@ export function jobById(id) { return state.jobs.find(j => j.id === id); }
 export function retryJob(id) {
   const j = jobById(id); if (!j) return;
   j.status = "queued"; j.progress = 0; j.error = null; j.providerRef = null;
+  j.referenceReceipt = null;
   j.nextPollAt = 0; j.nextAttemptAt = 0;
   j.updatedAt = Date.now();
   save("jobs"); emit("job:update", j);
@@ -207,6 +209,7 @@ async function tick() {
       const r = await p.poll(j.providerRef);
       if (r.status === "succeeded") {
         j.status = "succeeded"; j.progress = 100; j.output = normalizeOutput(r.output); j.updatedAt = Date.now();
+        j.referenceReceipt = r.referenceReceipt || r.output?.referenceReceipt || j.referenceReceipt || null;
         j.nextPollAt = 0; j.error = null;
         save("jobs"); emit("job:update", j); syncJobToProduction(j); emit("job:done", j);
       } else if (r.status === "failed") {
@@ -268,8 +271,11 @@ async function tick() {
         const refs = await refsForJob(j);
         const key = providerKeyFor(j.kind, p);
         const endpoint = /^https?:\/\//.test(key?.provider || "") ? key.provider : key?.endpoint || "";
-        const { providerRef } = await p.submit({
+        const intendedRefAssetIds = [...new Set((j.intendedRefAssetIds || j.refAssetIds || []).filter(Boolean))];
+        j.intendedRefAssetIds = intendedRefAssetIds;
+        const { providerRef, referenceReceipt = null } = await p.submit({
           prompt: j.prompt, refs, ratio: j.ratio, duration: j.duration,
+          intendedRefAssetIds,
           generateAudio: j.generateAudio,
           model: j.model || key?.model || "",
           attempt: j.attempts - 1,
@@ -278,9 +284,11 @@ async function tick() {
           providerConfig: key || null
         });
         j.provider = p.id; j.providerRef = providerRef;
+        j.referenceReceipt = referenceReceipt;
         j.status = "submitted"; j.progress = 1; j.nextPollAt = Date.now() + pollDelayFor(j); j.updatedAt = Date.now();
         save("jobs"); emit("job:update", j); syncJobToProduction(j);
       } catch (e) {
+        if (e?.referenceReceipt) j.referenceReceipt = e.referenceReceipt;
         const msg = e.message || "提交失败";
         if (!scheduleSubmitRetry(j, msg)) failJob(j, msg);
       }

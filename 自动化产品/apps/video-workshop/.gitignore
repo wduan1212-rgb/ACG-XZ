@@ -1,0 +1,12 @@
+.env.local
+.venv/
+__pycache__/
+*.pyc
+*.log
+vendor/OpenMontage/.git/
+data/projects/*
+!data/projects/.gitkeep
+outputs/*
+!outputs/.gitkeep
+uploads/*
+!uploads/.gitkeep

@@ -1,6 +1,6 @@
-/* 小红书本地选题预案库
-   用途：外部检索能力移除后，为图文和视频提供稳定的本地四方向投放池。
-   这里只提供选题节奏，不覆盖用户创作内容。 */
+/* 小红书本地内容结构库
+   用途：用户明确填写标题后，为图文和视频提供结构与信息密度参考。
+   不生成默认选题，不覆盖用户创作内容。 */
 
 const OWN_PRODUCT_RE = /(Dumate|DuMate|MIAODA|百度搭子|百度秒哒|秒哒|搭子)/gi;
 export const MIN_TREND_INTERACTIONS = 100;
@@ -80,86 +80,10 @@ const DEFAULT_CREATIVE_DIRECTION_KEYS = [
   "beginner_reversal"
 ];
 
-const ONLINE_CODEX_TOPICS = {
-  comparison_choice: "Codex和其他产品对比相关",
-  ecosystem_combo: "Codex和其他产品联动相关",
-  worker_efficiency: "Codex提效相关",
-  beginner_reversal: "Codex体验测评教程相关"
-};
-
-const OFFLINE_PRODUCT_TOPIC_TAILS = {
-  comparison_choice: "和其他产品对比相关",
-  ecosystem_combo: "和其他产品联动相关",
-  worker_efficiency: "提效相关",
-  beginner_reversal: "体验测评教程相关"
-};
-
-export const DEFAULT_CREATIVE_DIRECTIONS = [
-  {
-    key: "comparison_choice",
-    name: "强对比选型",
-    topics: [
-      "Codex和同类工具对比相关",
-      "Codex和Claude Code怎么选相关",
-      "Codex和Cursor分工相关",
-      "AI Agent选型对比相关",
-      "代码智能体对比测评相关"
-    ]
-  },
-  {
-    key: "ecosystem_combo",
-    name: "联动绑定生态",
-    topics: [
-      "Codex和Obsidian联动相关",
-      "Codex和知识库工作流相关",
-      "AI和知识管理联动相关",
-      "Codex和内容创作流程相关",
-      "AI工具生态联动相关"
-    ]
-  },
-  {
-    key: "worker_efficiency",
-    name: "打工人效率场景",
-    topics: [
-      "Codex提效工作流相关",
-      "AI Agent办公提效相关",
-      "桌面智能体省时间相关",
-      "重复任务自动化相关",
-      "打工人AI提效相关"
-    ]
-  },
-  {
-    key: "beginner_reversal",
-    name: "小白反转入门",
-    topics: [
-      "Codex体验测评教程相关",
-      "Codex零门槛上手相关",
-      "国产Codex测评相关",
-      "AI工具小白教程相关",
-      "Codex真实使用体验相关"
-    ]
-  }
-];
-
 function defaultCreativeDirections() {
   return DEFAULT_CREATIVE_DIRECTION_KEYS
     .map(key => XHS_TREND_LIBRARY.find(x => x.key === key))
     .filter(Boolean);
-}
-
-function productCreativeTopics(product = null) {
-  const name = zhProductName(product);
-  return DEFAULT_CREATIVE_DIRECTION_KEYS.map(key => `${name}${OFFLINE_PRODUCT_TOPIC_TAILS[key] || "使用教程相关"}`);
-}
-
-function defaultTopicsForDirection(direction = null, product = null, useOnlineTrends = false) {
-  if (useOnlineTrends) {
-    const key = direction?.key || "worker_efficiency";
-    return [ONLINE_CODEX_TOPICS[key] || ONLINE_CODEX_TOPICS.worker_efficiency];
-  }
-  if (product) return productCreativeTopics(product);
-  const byKey = DEFAULT_CREATIVE_DIRECTIONS.find(x => x.key === direction?.key);
-  return byKey?.topics?.length ? byKey.topics : DEFAULT_CREATIVE_DIRECTION_KEYS.map(key => ONLINE_CODEX_TOPICS[key]);
 }
 
 const HOT_TITLE_PATTERNS = [
@@ -207,18 +131,6 @@ export function trendInteractionCount(value = "") {
   const n = Number(m[1]) || 0;
   const mul = /万|w/.test(s) ? 10000 : /千|k/.test(s) ? 1000 : 1;
   return Math.round(n * mul);
-}
-
-export function pickDefaultCreativeTopic({ seed = "", avoidTopics = [] } = {}) {
-  const avoid = new Set((avoidTopics || []).map(x => compactText(x, 80)));
-  const base = Math.abs(hashText(seed));
-  const directions = DEFAULT_CREATIVE_DIRECTIONS;
-  for (let i = 0; i < directions.length * 3; i++) {
-    const dir = directions[(base + i) % directions.length];
-    const topic = dir.topics[(Math.floor(base / 7) + i) % dir.topics.length];
-    if (topic && !avoid.has(compactText(topic, 80))) return topic;
-  }
-  return directions[base % directions.length].topics[base % directions[base % directions.length].topics.length];
 }
 
 function compactText(text = "", max = 180) {
@@ -304,16 +216,7 @@ function publicCategory(product) {
 }
 
 export function normalizeCreativeTopicForMode({ topic = "", product = null, useOnlineTrends = false, direction = null, seed = "" } = {}) {
-  const raw = compactText(topic, 80);
-  const cleanRaw = isSearchOnlyTopic(raw) || isInstructionLikeTopic(raw) ? "" : raw;
-  const dir = direction || chooseDirection({ topic: cleanRaw || raw, seed });
-  const key = dir?.key || "worker_efficiency";
-  if (useOnlineTrends) return ONLINE_CODEX_TOPICS[key] || ONLINE_CODEX_TOPICS.worker_efficiency;
-  if (cleanRaw && cleanRaw.length >= 4) return cleanRaw;
-  const topics = productCreativeTopics(product);
-  const byKey = DEFAULT_CREATIVE_DIRECTION_KEYS.indexOf(key);
-  if (byKey >= 0 && topics[byKey]) return topics[byKey];
-  return pick(topics, seed || key);
+  return compactText(topic, 80);
 }
 
 function stripOwnProductNames(text = "", product = null) {
@@ -486,11 +389,7 @@ export function buildTrendSearchQuery({ topic = "", account = {}, product = null
 }
 
 function topicFromInput({ topic = "", direction = null, product = null, useOnlineTrends = false, seed = 0 } = {}) {
-  const raw = compactText(topic, 120);
-  if (!useOnlineTrends && raw && raw.length >= 6 && !isSearchOnlyTopic(raw) && !isInstructionLikeTopic(raw)) return raw;
-  const topics = defaultTopicsForDirection(direction, product, useOnlineTrends);
-  const base = pick(topics, Number(seed) + Math.floor(Number(seed) / 11));
-  return base;
+  return compactText(topic, 120);
 }
 
 function inferTitleFromTopic(topic = "", product = null) {
@@ -705,7 +604,7 @@ function buildImageStrategy({ topic, product, direction, imageCount, onlineItems
         : `第1张低信息密度：一个大标题、一句短副标题、1-2 个简单视觉元素；第2张起再依次覆盖真实场景、工具分工/组合动作、可复核结果、边界或收藏结论。`,
     `如果主题里有同类工具，具体写清它负责哪一步、${zh}负责哪一步，用箭头、左右分工或场景卡表达。`,
     `文字轻量：普通风格以醒目主标题、短解释和必要标签为主；火柴人/漫画风格主要靠人物动作、气泡和箭头。`,
-    `内部取材方向：${ref?.title ? `参考热门标题钩子和结构节奏，改写成本次主题` : direction?.name || "本地四方向"}；画面只呈现本次内容本身。`
+    `内部结构方向：${ref?.title ? `参考热门标题钩子和结构节奏，改写成本次主题` : direction?.name || "本地内容结构"}；画面只呈现本次内容本身。`
   ];
   return parts.join("\n");
 }
@@ -738,17 +637,16 @@ export function buildTrendPrep({
   const referenceNote = items.length
     ? `参考了「${items.slice(0, 3).map(x => stripOwnProductNames(x.title, product)).filter(Boolean).join("」「")}」等热门笔记的标题钩子和内容结构，已重新改写。`
     : useOnlineTrends && normalizedItems.length
-    ? `本轮本地样本有 ${lowInteractionCount} 条互动低于 ${MIN_TREND_INTERACTIONS}，未纳入结构参考；改用本地四方向选题继续生成。`
-    : `使用本地四方向「${direction?.name || "AI办公选题"}」生成选题和文案结构。`;
+    ? `本轮本地样本有 ${lowInteractionCount} 条互动低于 ${MIN_TREND_INTERACTIONS}，未纳入结构参考；继续按用户标题和本地内容结构生成。`
+    : `围绕用户标题，参考本地结构「${direction?.name || "AI办公内容结构"}」组织文案与信息节奏。`;
   const source = useOnlineTrends && items.length ? "online" : "local";
   const referenceRewrite = buildReferenceRewrite({ items, title, copy, tags, product, source, referenceNote });
   const guideLines = [
-    `方向：${direction?.name || "AI办公选题"}`,
-    `参考说明：${referenceNote}`,
-    `预制标题：${title}`,
-    `创作内容：${creativeContent}`,
-    `文案骨架：${stripOwnProductNames(copy.split("\n").slice(0, 6).join(" / "), product)}`,
-    `图片策略：${imageStrategy}`,
+    `用户主题：${creativeContent}`,
+    `结构方向：${direction?.name || "按用户内容判断"}`,
+    `结构说明：${referenceNote}`,
+    direction?.structures?.length ? `可用节奏：${direction.structures.join("；")}` : "",
+    `信息策略：${imageStrategy}`,
     items.length ? `热门样本：${items.slice(0, 5).map((x, i) => `${i + 1}. ${stripOwnProductNames(x.title, product)}${x.likes ? `（${x.likes}）` : ""}${x.desc ? `｜可用摘要：${stripOwnProductNames(compactText(x.desc, 120), product)}` : ""}`).join("；")}` : ""
   ].filter(Boolean);
   return {

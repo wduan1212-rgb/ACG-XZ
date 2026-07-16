@@ -9,7 +9,7 @@ import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260716-v88-1";
+import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260717-v91-2";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */
@@ -67,7 +67,7 @@ function outputUrl(output) {
 
 function workshopPreviewHtml(p) {
   const ready = jobsOf(p).filter(j => j.status === "succeeded").map(j => ({ name: j.segName || `片段 ${Number(j.segIndex || 0) + 1}`, url: outputUrl(j.output) })).filter(x => x.url);
-  if (!ready.length) return `<div class="pd-empty compact">${icon("film", 20)}<p>视频生成后会直接在文案分镜阶段出现预览</p></div>`;
+  if (!ready.length) return `<div class="pd-empty compact">${icon("film", 20)}<p>视频生成后会直接在${p.subType === "数字人" ? "数字人制作" : "信息流制作"}阶段出现预览</p></div>`;
   return `<div class="pd-workshop-preview"><div class="pd-note">视频预览 ${ready.length} 段 · 可播放声音，点击放大查看</div><div class="pd-video-grid">${ready.map((item, i) => `<article><video src="${esc(item.url)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="${i}" data-video-url="${esc(item.url)}">${icon("eye", 12)} 放大</button><em>${esc(item.name)}</em></article>`).join("")}</div></div>`;
 }
 
@@ -77,9 +77,19 @@ function openImageRefineModal(p, imageIndex, onDone) {
   if (!item) return;
   const imageUrl = item.assetId ? urlFor(item.assetId) : "";
   const imageArtifacts = p.artifacts.images || {};
-  let refIds = [...new Set((Object.prototype.hasOwnProperty.call(item, "refAssetIds")
-    ? item.refAssetIds
-    : imageArtifacts.usedRefAssetIds || imageArtifacts.usedSharedRefAssetIds || []).filter(Boolean))].slice(0, 8);
+  const hasItemReferences = Object.prototype.hasOwnProperty.call(item, "refAssetIds");
+  const legacyAggregateRefs = [...new Set([
+    ...(imageArtifacts.usedRefAssetIds || []),
+    ...(imageArtifacts.usedSharedRefAssetIds || [])
+  ].filter(Boolean))];
+  let refIds = [...new Set((hasItemReferences ? item.refAssetIds : []).filter(Boolean))].slice(0, 8);
+  const referenceSourceText = item.referenceSource === "batch-plan"
+    ? "来源：本批任务板明确选择"
+    : item.referenceSource === "item"
+      ? "来源：本张图片微调选择"
+      : hasItemReferences
+        ? "来源：本张图片已保存选择"
+        : "本张图片没有可核验的单张参考记录";
   openModal(`<div class="mp-head"><b>微调第 ${index + 1} 张图片</b><button class="icon-btn" data-close>${icon("x", 15)}</button></div>
     <div class="mp-body batch-image-editor">
       ${imageUrl ? `<img src="${esc(imageUrl)}" alt="第 ${index + 1} 张当前图片"/>` : ""}
@@ -87,6 +97,7 @@ function openImageRefineModal(p, imageIndex, onDone) {
         <label class="field"><span>单张图片提示词</span><textarea class="input" id="pdImagePrompt" rows="9" placeholder="写清楚主体、构图、风格和画面文字">${esc(item.prompt || "")}</textarea></label>
         <section class="batch-image-ref-section">
           <div class="batch-image-ref-head"><span>本张参考图</span><label class="btn ghost sm">${icon("plus", 12)} 增加参考图<input id="pdImageRefAdd" type="file" accept="image/*" hidden></label></div>
+          <p class="muted">${esc(referenceSourceText)}${!hasItemReferences && legacyAggregateRefs.length ? "；检测到历史任务级引用，但不会自动带入本次微调" : ""}</p>
           <div class="batch-image-ref-list" id="pdImageRefList"></div>
         </section>
       </div>
@@ -133,6 +144,8 @@ function openImageRefineModal(p, imageIndex, onDone) {
         if (!prompt) { toast("请先填写图片提示词", "error"); return; }
         item.prompt = prompt;
         item.refAssetIds = [...refIds];
+        item.referenceSource = "item";
+        item.referenceSelectionId = "";
         save("productions");
         const button = e.currentTarget;
         button.disabled = true;
@@ -165,7 +178,7 @@ export function openProductionDrawer(pid, tab) {
       const render = () => {
         const acc = accountById(p.accountId);
         const tabs = [
-          [isImg ? "images" : "boards", isImg ? "图文创作台" : "文案分镜"],
+          [isImg ? "images" : "boards", isImg ? "图文创作台" : p.subType === "数字人" ? "数字人制作" : "信息流制作"],
           ...(isImg ? [] : [["render", "剪辑"]]),
           ["review", "审核"]
         ];
@@ -250,7 +263,12 @@ export function openProductionDrawer(pid, tab) {
         // 文案编辑
         const t = rootEl.querySelector("#pdCopyTitle"), c = rootEl.querySelector("#pdCopyBody");
         if (t) t.addEventListener("input", () => { p.artifacts.copy = p.artifacts.copy || {}; p.artifacts.copy.title = t.value; save("productions"); });
-        if (c) c.addEventListener("input", () => { p.artifacts.copy = p.artifacts.copy || {}; p.artifacts.copy.body = c.value; save("productions"); });
+        if (c) c.addEventListener("input", () => {
+          p.artifacts.copy = p.artifacts.copy || {};
+          p.artifacts.copy.body = c.value;
+          p.artifacts.copy.source = "manual";
+          save("productions");
+        });
         // 定稿发布（计划发布时间必填，备注可选）
         const dl = rootEl.querySelector("[data-pd-deliver]");
         if (dl) dl.addEventListener("click", async () => {
@@ -370,7 +388,7 @@ const TAB = {
     if (p.mode === "视频") {
       const units = p.artifacts.boards.units || [];
       if (!units.length) return `<div class="pd-empty">${icon("layers", 22)}<p>脚本起草后会按场景合并成分镜单元，进工坊编排</p></div>`;
-      return `<div class="pd-note">${units.length} 个分镜单元 · 文案分镜生成后直接预览视频，再进入剪辑</div>
+      return `<div class="pd-note">${units.length} 个分镜单元 · ${p.subType === "数字人" ? "数字人制作" : "信息流制作"}生成后直接预览视频，再进入剪辑</div>
         <div class="pd-units">${units.map((u, i) => {
           const jobs = jobsOf(p).filter(j => j.segIndex === i);
           const ok = jobs.some(j => j.status === "succeeded");

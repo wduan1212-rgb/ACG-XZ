@@ -1,7 +1,8 @@
 #!/bin/bash
 # Dumate Studio 一键启动（双击运行）
-# 当前版本使用共享后端：前端静态页 + /api/video + /api/db 都由 FastAPI 托管。
+# 当前版本使用共享后端，并在本机回环地址启动独立视频工坊 sidecar。
 cd "$(dirname "$0")"
+APP_DIR="$(pwd)"
 
 # Finder/Terminal 双击 .command 时通常不会加载 zsh 配置，
 # 需要手动补上 Homebrew 和常见 Python/Node 安装路径。
@@ -64,14 +65,33 @@ if missing:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "server/requirements.txt"])
 PY
 
+if [ ! -f "$APP_DIR/deploy/local_video_workshop.sh" ]; then
+  echo "缺少 deploy/local_video_workshop.sh，无法启动视频工坊。"
+  read -r -p "按回车退出..."
+  exit 1
+fi
+# shellcheck disable=SC1091
+. "$APP_DIR/deploy/local_video_workshop.sh"
+if ! prepare_local_video_workshop || ! start_local_video_workshop; then
+  read -r -p "按回车退出..."
+  exit 1
+fi
+trap stop_local_video_workshop EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+
 echo "Dumate Studio 共享后端启动中… http://localhost:${PORT}/#/overview  （Ctrl+C 退出）"
+echo "定制创作视频工坊已在 127.0.0.1:8765 就绪，不对局域网单独暴露。"
 echo "登录账号请联系管理员；新成员可在登录页提交账号申请。"
 ( sleep 2 && open "http://localhost:${PORT}/#/overview" ) &
 # 强制使用纯 Python 的 asyncio + h11，避开部分 macOS/Python 环境下
 # uvicorn 自动选择 httptools/uvloop 后在长轮询时触发 Segmentation fault: 11。
 python3 -m uvicorn server.main:app --host 0.0.0.0 --port "${PORT}" --loop asyncio --http h11
+MAIN_STATUS=$?
+stop_local_video_workshop
 
 echo ""
 echo "—— 服务端已退出 ——"
 echo "若上方有红色报错，请截图发给协作方定位。"
 read -r -p "按回车关闭窗口..."
+exit "$MAIN_STATUS"

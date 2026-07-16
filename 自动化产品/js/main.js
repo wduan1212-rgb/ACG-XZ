@@ -5,36 +5,36 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260716-v88-1";
+import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260717-v91-2";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
-import { createAccount, deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
+import { deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
 import { productTagLabel } from "./domain/delivery.js";
-import { XHS_ACCOUNT_SEED } from "./data/xhsAccountsSeed.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
-import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260716-v88-1";
+import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260717-v91-2";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260716-v88-1";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260717-v91-2";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
-import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260716-v88-1";
+import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260717-v91-2";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260716-v88-1";
-import { voiceLabView } from "./views/voiceLab.js?v=20260716-v88-1";
-import { agentView } from "./agent/view.js?v=20260716-v88-1";
-import { studioView } from "./views/studio.js?v=20260716-v88-1";
-import { assetsView } from "./views/assetsView.js?v=20260716-v88-1";
-import { deliveryView } from "./views/deliveryView.js?v=20260716-v88-1";
-import { analyticsView } from "./views/analyticsView.js?v=20260716-v88-1";
+import { overviewView } from "./views/overview.js?v=20260717-v91-2";
+import { voiceLabView } from "./views/voiceLab.js?v=20260717-v91-2";
+import { customCreationView } from "./views/customCreation.js?v=20260717-v91-2";
+import { agentView } from "./agent/view.js?v=20260717-v91-2";
+import { studioView } from "./views/studio.js?v=20260717-v91-2";
+import { assetsView } from "./views/assetsView.js?v=20260717-v91-2";
+import { deliveryView } from "./views/deliveryView.js?v=20260717-v91-2";
+import { analyticsView } from "./views/analyticsView.js?v=20260717-v91-2";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260716-v88-1";
+import { settingsView } from "./views/settings.js?v=20260717-v91-2";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260716-v88-1";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260717-v91-2";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260716-v88-1";
+const APP_BUILD_ID = "20260717-v91-2";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -67,40 +67,6 @@ async function checkForAppUpdate() {
 function installUpdateChecker() {
   setTimeout(checkForAppUpdate, 30000);
   setInterval(checkForAppUpdate, 180000);
-}
-
-/* ---------- 种子数据（首次使用且无迁移数据时） ---------- */
-function seedIfEmpty() {
-  if (remote.isOn() && remote.hasToken()) return;
-  if (state.accounts.length) return;
-  const seeds = [
-    { name: "百度搭子图文教程 01", platform: "小红书", mode: "图文", position: "围绕百度搭子文件整理 / 数据分析等真实功能，少广告腔、强操作演示" },
-    { name: "AI 办公口播号", platform: "视频号", mode: "视频", subType: "数字人", styleProfile: "数字人自然讲解真实任务，前段出镜引入、后段产品演示，聚焦具体操作和结果" },
-    { name: "ACG 探场官", platform: "小红书", mode: "视频", subType: "无数字人", styleProfile: "现场体验与产品功能演示结合，保留真实观察感，适合活动素材二次创作" }
-  ];
-  seeds.forEach(s => createAccount(s));
-  state.ui.activeAccountId = state.accounts[0].id;
-  save("accounts", "meta");
-}
-
-function ensureXhsSeedAccounts() {
-  if (remote.isOn() && remote.hasToken()) return;
-  const existing = new Set(state.accounts.map(a => `${a.platform}:${a.name}`));
-  const missing = XHS_ACCOUNT_SEED.filter(a => !existing.has(`${a.platform}:${a.name}`));
-  if (!missing.length) return;
-  missing.forEach(s => createAccount({
-    name: s.name,
-    platform: s.platform,
-    mode: s.mode,
-    subType: s.subType,
-    styleProfile: s.styleProfile,
-    tone: s.tone,
-    voiceId: s.voiceId,
-    voiceName: s.voiceName || s.voiceRefName || ""
-  }));
-  if (!state.ui.activeAccountId && state.accounts.length) state.ui.activeAccountId = state.accounts[0].id;
-  save("accounts", "meta");
-  setTimeout(() => toast(`已补齐小红书账号库：新增 ${missing.length} 个账号`), 800);
 }
 
 function accountFromProfile(profile) {
@@ -141,86 +107,20 @@ async function syncAccountsInChunks() {
   }
 }
 
-const accountSeedKey = a => `${a.platform || ""}:${a.name || ""}`;
-const isSeedManagedAccount = a => {
-  if (!a) return false;
-  if (a.mode === "视频") return true;
-  return a.platform === "小红书" && a.mode === "图文";
-};
-
-async function cleanupNonSeedAccounts() {
-  const seedKeys = new Set(ACCOUNT_PROFILE_SEED.map(accountSeedKey));
-  const seen = new Set();
-  const removed = [];
-  const kept = [];
-  (state.accounts || []).forEach(acc => {
-    const key = accountSeedKey(acc);
-    const managed = isSeedManagedAccount(acc);
-    if (managed && (!seedKeys.has(key) || seen.has(key))) {
-      removed.push(acc);
-      return;
-    }
-    if (managed) seen.add(key);
-    kept.push(acc);
-  });
-  if (!removed.length) return 0;
-  const removedIds = new Set(removed.map(a => a.id));
-  state.accounts = kept;
-  if (state.ui.activeAccountId && removedIds.has(state.ui.activeAccountId)) {
-    state.ui.activeAccountId = state.accounts[0]?.id || null;
-  }
+async function bootstrapAccountProfilesIfEmpty({ quiet = false } = {}) {
+  if ((state.accounts || []).length || state.ui.accountProfileVersion) return 0;
+  const rows = ACCOUNT_PROFILE_SEED.map(accountFromProfile);
+  state.accounts.push(...rows);
+  state.ui.accountProfileVersion = ACCOUNT_PROFILE_VERSION;
+  state.ui.activeAccountId = rows[0]?.id || null;
   if (remote.isOn() && remote.hasToken()) {
-    await Promise.all(removed.map(a => remote.deleteDoc("accounts", a.id)));
+    await syncAccountsInChunks();
+    save("meta");
+  } else {
+    save("accounts", "meta");
   }
-  return removed.length;
-}
-
-async function applyAccountProfileSeed({ createMissing = true, quiet = false } = {}) {
-  const seedKeys = new Set(ACCOUNT_PROFILE_SEED.map(accountSeedKey));
-  const hasAllSeedAccounts = ACCOUNT_PROFILE_SEED.every(profile =>
-    (state.accounts || []).some(acc => accountSeedKey(acc) === accountSeedKey(profile))
-  );
-  if (state.ui.accountProfileVersion === ACCOUNT_PROFILE_VERSION && hasAllSeedAccounts) return 0;
-  const removed = await cleanupNonSeedAccounts();
-  let changed = removed, created = 0;
-  ACCOUNT_PROFILE_SEED.forEach(profile => {
-    let acc = state.accounts.find(a => a.name === profile.name && a.platform === profile.platform);
-    if (!acc && createMissing) {
-      if (remote.isOn() && remote.hasToken()) {
-        state.accounts.push(accountFromProfile(profile));
-      } else {
-        createAccount(profile);
-      }
-      created++; changed++;
-      return;
-    }
-    if (!acc) return;
-    const preserveManualStyle = Boolean(acc.styleEditedAt);
-    const patch = {
-      mode: profile.mode,
-      subType: profile.mode === "图文" ? "" : profile.subType,
-      tone: profile.tone || acc.tone || "教程感",
-      voiceId: acc.voiceId || profile.voiceId || "",
-      voiceName: acc.voiceName || profile.voiceName || ""
-    };
-    if (!preserveManualStyle) {
-      patch.styleProfile = profile.styleProfile;
-      patch.imagePromptTemplate = profile.imagePromptTemplate || acc.imagePromptTemplate || "";
-    }
-    const needs = Object.entries(patch).some(([k, v]) => JSON.stringify(acc[k] || (Array.isArray(v) ? [] : "")) !== JSON.stringify(v));
-    if (needs) { Object.assign(acc, patch, { updatedAt: Date.now() }); changed++; }
-  });
-  if (changed || state.ui.accountProfileVersion !== ACCOUNT_PROFILE_VERSION) {
-    state.ui.accountProfileVersion = ACCOUNT_PROFILE_VERSION;
-    if (remote.isOn() && remote.hasToken()) {
-      await syncAccountsInChunks();
-      save("meta");
-    } else {
-      save("accounts", "meta");
-    }
-    if (!quiet) setTimeout(() => toast(`已同步账号风格：更新 ${Math.max(0, changed - created - removed)} 个，新增 ${created} 个，清理旧账号 ${removed} 个`), 900);
-  }
-  return changed;
+  if (!quiet && rows.length) setTimeout(() => toast(`已初始化账号库：${rows.length} 个账号`), 800);
+  return rows.length;
 }
 
 function normalizeDeliveredProductTags() {
@@ -422,11 +322,15 @@ async function enterRemote(member) {
   state.ui.currentMemberId = member.id;
   await pullRemote();
   if (!["supplier", "supplier_parent", "supplier_child"].includes(member.role)) {
-    await applyAccountProfileSeed({ createMissing: true });
+    await bootstrapAccountProfilesIfEmpty();
     normalizeDeliveredProductTags();
     normalizeDeliveredSharedAssets();
   }
   enterMember(member);
+  refreshProviderStatus().then(() => {
+    renderTopbar();
+    if (document.body.dataset.zone === "settings") render();
+  }).catch(e => console.warn("[providers]", e));
   resumeJobs(); resumeActiveBatches();
 }
 function shakeCard() {
@@ -612,7 +516,7 @@ function renderContextPanel() {
 }
 
 /* ---------- 顶栏 ---------- */
-const ZONE_TITLE = { overview: "首页", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
+const ZONE_TITLE = { overview: "首页", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
 function renderTopbar() {
   const zone = document.body.dataset.zone;
   const bc = $("#topCrumb");
@@ -626,13 +530,16 @@ function renderTopbar() {
   const acc = activeAccount();
   const { page } = parseHash();
   let crumb = ZONE_TITLE[zone] || "";
+  if (zone === "custom") {
+    crumb = `定制创作 / ${{ video: "视频工坊", canvas: "无限画布", voice: "语音生成" }[page || "video"] || "视频工坊"}`;
+  }
   if (zone === "assets" && ["supplier", "supplier_parent"].includes(state.role)) crumb = "全部账号";
   const shownPage = acc?.mode === "图文" && ["script", "copy"].includes(page)
     ? "images"
     : acc?.mode === "视频" && ["script", "boards", "prompts", "render", "copy"].includes(page)
       ? "workshop"
       : page;
-  if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: "文案分镜", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
+  if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: acc.subType === "数字人" ? "数字人制作" : "信息流制作", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
   bc.textContent = crumb;
   const oldStudioStepper = topbar?.querySelector(".chain-stepper");
   const studioStepper = zone === "studio" ? document.querySelector(".view-root .chain-stepper") : null;
@@ -672,8 +579,8 @@ function paletteCommands() {
     { label: "单号创作", group: "导航", icon: "film", run: () => { allowStudioFromAgent(); go("studio"); } },
     { label: "整体资产", group: "导航", icon: "folder", run: () => go("assets") },
     { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") },
+    { label: "定制创作", group: "导航", icon: "layers", run: () => go("custom", "video") },
     ...(state.role === "admin" ? [
-      { label: "语音生成", group: "导航", icon: "mic", run: () => go("voice") },
       { label: "设置", group: "导航", icon: "gear", run: () => go("settings") },
       { label: "创建账号", group: "操作", icon: "plus", run: () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })) }
     ] : [])
@@ -707,9 +614,7 @@ async function boot() {
     // 这里后台预热即可，避免旧 IndexedDB 把登录页/首页拖成白屏。
     preloadBlobUrls().catch(e => console.warn("[blob-preload]", e));
     if (!remote.isOn()) {
-      seedIfEmpty();
-      ensureXhsSeedAccounts();
-      await applyAccountProfileSeed({ createMissing: true });
+      await bootstrapAccountProfilesIfEmpty();
       normalizeDeliveredProductTags();
       normalizeDeliveredSharedAssets();
     }
@@ -719,6 +624,7 @@ async function boot() {
 
     // 注册路由
     registerView("overview", overviewView);
+    registerView("custom", customCreationView);
     registerView("voice", voiceLabView);
     registerView("agent", agentView);
     registerView("studio", studioView);
@@ -763,7 +669,7 @@ async function boot() {
         state.role = m.role; state.ui.currentMemberId = m.id;
         await pullRemote();
         if (!["supplier", "supplier_parent", "supplier_child"].includes(m.role)) {
-          await applyAccountProfileSeed({ createMissing: true });
+          await bootstrapAccountProfilesIfEmpty();
           normalizeDeliveredProductTags();
           normalizeDeliveredSharedAssets();
         }
@@ -786,10 +692,12 @@ async function boot() {
     setTimeout(() => ensureViewRendered("late startup"), 2200);
 
     // Provider 状态只影响按钮文案和真实 API 可用性，不应阻塞首屏。
-    refreshProviderStatus().then(() => {
-      renderTopbar();
-      if (document.body.dataset.zone === "settings") render();
-    }).catch(e => console.warn("[providers]", e));
+    if (entered) {
+      refreshProviderStatus().then(() => {
+        renderTopbar();
+        if (document.body.dataset.zone === "settings") render();
+      }).catch(e => console.warn("[providers]", e));
+    }
 
     // 恢复中断任务（state 已就绪后）
     const rj = resumeJobs();

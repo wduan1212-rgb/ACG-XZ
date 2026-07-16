@@ -3,9 +3,14 @@
    否则保持纯本地模式（serve.mjs 预览 / 离线），所有写操作自动 no-op，零影响。 */
 
 const TOKEN_KEY = "dumate.token";
+const tokenStorage = typeof localStorage !== "undefined"
+  ? localStorage
+  : { getItem() { return ""; }, setItem() {}, removeItem() {} };
 let _on = false;                                   // 是否处于服务端共享模式
-let _token = localStorage.getItem(TOKEN_KEY) || "";
+let _token = tokenStorage.getItem(TOKEN_KEY) || "";
 let _authBlocked = false;
+const _collectionSyncHolds = new Map();
+const _heldCollectionSnapshots = new Map();
 const FETCH_TIMEOUT_MS = 9000;
 
 /* 与服务端 store.COLLECTIONS 对齐：notifications/ui/apiKeys 是本地态，不入服务器 */
@@ -20,7 +25,7 @@ export const getToken = () => _token;
 export function setToken(t) {
   _token = t || "";
   if (t) _authBlocked = false;
-  if (t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY);
+  if (t) tokenStorage.setItem(TOKEN_KEY, t); else tokenStorage.removeItem(TOKEN_KEY);
 }
 
 async function fetchWithTimeout(path, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
@@ -42,8 +47,18 @@ async function req(path, { method = "GET", body, auth = true } = {}) {
   } catch (e) {
     throw new Error((e && e.name === "AbortError") ? "请求超时，请检查本地服务端" : (e.message || String(e)));
   }
-  if (res.status === 401) { _authBlocked = true; setToken(""); throw new Error("登录已过期，请重新登录"); }
-  if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 160));
+  if (res.status === 401) {
+    _authBlocked = true;
+    setToken("");
+    const error = new Error("HTTP 401 登录已过期，请重新登录");
+    error.status = 401;
+    throw error;
+  }
+  if (!res.ok) {
+    const error = new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 160));
+    error.status = res.status;
+    throw error;
+  }
   return res.status === 204 ? null : res.json();
 }
 
@@ -76,7 +91,39 @@ export function requestMember(payload) {
 /* 写穿透：整集合 upsert（服务端按 id 后写胜，绝不整表删）。关时/未登录时 no-op。 */
 export function putCollection(name, items) {
   if (!_on || !_token || _authBlocked || !SYNCED.has(name)) return Promise.resolve();
+  if ((_collectionSyncHolds.get(name) || 0) > 0) {
+    _heldCollectionSnapshots.set(name, JSON.parse(JSON.stringify(items || [])));
+    return Promise.resolve();
+  }
   return req("/api/db/" + name, { method: "PUT", body: { items: items || [] } }).catch(() => {});
+}
+export function holdCollectionSync(collections = [...SYNCED]) {
+  const names = [...new Set((collections || []).filter(name => SYNCED.has(name)))];
+  names.forEach(name => {
+    _collectionSyncHolds.set(name, (_collectionSyncHolds.get(name) || 0) + 1);
+  });
+  let released = false;
+  return ({ flush = true } = {}) => {
+    if (released) return;
+    released = true;
+    names.forEach(name => {
+      const next = Math.max(0, (_collectionSyncHolds.get(name) || 0) - 1);
+      if (next) {
+        _collectionSyncHolds.set(name, next);
+        return;
+      }
+      _collectionSyncHolds.delete(name);
+      const snapshot = _heldCollectionSnapshots.get(name);
+      _heldCollectionSnapshots.delete(name);
+      if (flush && snapshot) putCollection(name, snapshot);
+    });
+  };
+}
+/* 关键提交使用显式同步：错误交给调用方展示，不能像普通后台写穿透一样静默吞掉。 */
+export function syncCollection(name, items) {
+  if (!_on || !_token || _authBlocked) return Promise.reject(new Error("服务器登录已失效"));
+  if (!SYNCED.has(name)) return Promise.reject(new Error("该数据集合不允许同步"));
+  return req("/api/db/" + name, { method: "PUT", body: { items: items || [] } });
 }
 export function deleteDoc(name, id) {
   if (!_on || !_token || _authBlocked || !SYNCED.has(name) || id == null) return Promise.resolve();
@@ -119,4 +166,21 @@ export const deliveryRemarks = {
   list: (assetId) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks"),
   add: (assetId, text) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks", { method: "POST", body: { text } }),
   read: (assetId) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks/read", { method: "PUT" })
+};
+
+/* 定制创作项目使用专用 owner-scoped API，不进入 /api/state 的整集合写穿透。 */
+export const customProjects = {
+  list: (kind = "") => req("/api/custom-projects" + (kind ? "?kind=" + encodeURIComponent(kind) : "")),
+  get: (id) => req("/api/custom-projects/" + encodeURIComponent(id)),
+  create: (payload) => req("/api/custom-projects", { method: "POST", body: payload }),
+  update: (id, payload) => req("/api/custom-projects/" + encodeURIComponent(id), { method: "PUT", body: payload }),
+  publish: (id, payload) => req("/api/custom-projects/" + encodeURIComponent(id) + "/publish", {
+    method: "POST",
+    body: typeof payload === "string" ? { deliveryId: payload } : payload
+  }),
+  unpublish: (id, deliveryId) => req("/api/custom-projects/" + encodeURIComponent(id) + "/unpublish", {
+    method: "POST",
+    body: { deliveryId }
+  }),
+  remove: (id) => req("/api/custom-projects/" + encodeURIComponent(id), { method: "DELETE" })
 };

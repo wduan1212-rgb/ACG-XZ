@@ -1,7 +1,8 @@
 #!/bin/bash
 # Dumate Studio · 共享后端本地启动（双击运行）
-# 同时托管前端 + 共享后端：账号/任务/资产/数据/成员都存服务器（server/data.sqlite）。
+# 同时托管前端 + 共享后端；视频工坊 sidecar 始终只监听本机回环地址。
 cd "$(dirname "$0")"
+APP_DIR="$(pwd)"
 
 # Finder 双击 .command 时不会加载 ~/.zshrc，所以环境变量/Key 必须写在本文件里才生效。
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:$PATH"
@@ -83,7 +84,23 @@ if missing:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "server/requirements.txt"])
 PY
 
+if [ ! -f "$APP_DIR/deploy/local_video_workshop.sh" ]; then
+  echo "缺少 deploy/local_video_workshop.sh，无法启动视频工坊。"
+  read -r -p "按回车退出..."
+  exit 1
+fi
+# shellcheck disable=SC1091
+. "$APP_DIR/deploy/local_video_workshop.sh"
+if ! prepare_local_video_workshop || ! start_local_video_workshop; then
+  read -r -p "按回车退出..."
+  exit 1
+fi
+trap stop_local_video_workshop EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+
 echo "Dumate 共享后端启动中… http://localhost:${PORT}  （Ctrl+C 退出）"
+echo "主平台可供局域网访问；视频工坊只在 127.0.0.1:8765 供主服务调用。"
 echo "登录账号请联系管理员；新成员可在登录页提交账号申请。"
 echo "你已建的账号都存在 server/data.sqlite，不会因重启而清空。"
 ( sleep 2 && open "http://localhost:${PORT}" ) &
@@ -92,8 +109,11 @@ echo "你已建的账号都存在 server/data.sqlite，不会因重启而清空�
 # 强制使用纯 Python 的 asyncio + h11，避开部分 macOS/Python 环境下
 # uvicorn 自动选择 httptools/uvloop 后在长轮询时触发 Segmentation fault: 11。
 python3 -m uvicorn server.main:app --host 0.0.0.0 --port "${PORT}" --loop asyncio --http h11
+MAIN_STATUS=$?
+stop_local_video_workshop
 
 echo ""
 echo "—— 服务端已退出 ——"
 echo "若上方有红色报错，请截图发给协作方定位。"
 read -r -p "按回车关闭窗口..."
+exit "$MAIN_STATUS"

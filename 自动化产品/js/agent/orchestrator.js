@@ -3,28 +3,21 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260716-v88-1";
+import { AI } from "../api/ai.js?v=20260717-v91-2";
 import { groupOf } from "../domain/accounts.js";
-import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText } from "../domain/productions.js";
+import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
 import { addAssetFromDataUrl, addAssetFromFile, assetBlob, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
+import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { fileToDataUrl } from "../core/util.js";
-import { pickDefaultCreativeTopic } from "../data/xhsTrendLibrary.js";
+import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
 const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
-const INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS = 140000;
-const STORYBOARD_VISUAL_SCOPE_PROMPT = "分镜图只呈现产品界面、设备、流程卡、图标、手部局部或2.5D动画角色；人物仅用卡通轮廓、背影或局部动作，不画可识别人物肖像。";
-const STORYBOARD_RISKY_TERMS = [
-  ["写实" + "真人", "2.5D动画角色"],
-  ["真人" + "正脸", "动画角色侧影"],
-  ["真人" + "半身像", "动画角色半身"]
-];
 const COVER_STYLE_HINTS = [
   "波普风，大色块和强对比排版",
   "极简风，大留白和一个强视觉焦点",
@@ -62,6 +55,40 @@ function accountMatchesKind(acc, kind = "image") {
   return true;
 }
 
+function cleanPlanRefIds(value, limit) {
+  const list = Array.isArray(value) ? value : [value];
+  return [...new Set(list.filter(Boolean))].slice(0, limit);
+}
+
+export function resetPlanReferences(plan = {}) {
+  plan.referenceSelectionId = uid();
+  plan.sharedRefAssetId = null;
+  plan.sharedRefAssetIds = [];
+  plan.coverRefAssetIds = [];
+  plan.accountRefAssetIds = {};
+  return plan;
+}
+
+export function prunePlanReferences(plan = {}) {
+  const contentKind = normalizeContentKind(plan.contentKind, plan.group);
+  const selectedAccounts = new Set(plan.accountIds || []);
+  const shared = cleanPlanRefIds([
+    ...(Array.isArray(plan.sharedRefAssetIds) ? plan.sharedRefAssetIds : []),
+    plan.sharedRefAssetId
+  ], 5);
+  plan.sharedRefAssetIds = contentKind === "image" ? shared : [];
+  plan.sharedRefAssetId = plan.sharedRefAssetIds[0] || null;
+  plan.coverRefAssetIds = contentKind === "image" ? [] : cleanPlanRefIds(plan.coverRefAssetIds, 5);
+  plan.accountRefAssetIds = Object.fromEntries(
+    Object.entries(plan.accountRefAssetIds || {})
+      .filter(([accountId]) => selectedAccounts.has(accountId))
+      .map(([accountId, ids]) => [accountId, cleanPlanRefIds(ids, 3)])
+      .filter(([, ids]) => ids.length)
+  );
+  if (!plan.referenceSelectionId) plan.referenceSelectionId = uid();
+  return plan;
+}
+
 function enforcePlanKind(plan = {}) {
   const contentKind = normalizeContentKind(plan.contentKind, plan.group);
   plan.contentKind = contentKind;
@@ -74,19 +101,7 @@ function enforcePlanKind(plan = {}) {
     plan.accountCounts = {};
   }
   plan.accountIds = (plan.accountIds || []).filter(id => accountMatchesKind(accountById(id), contentKind));
-  const selectedAccounts = new Set(plan.accountIds);
-  plan.accountRefAssetIds = Object.fromEntries(
-    Object.entries(plan.accountRefAssetIds || {})
-      .filter(([accountId]) => selectedAccounts.has(accountId))
-      .map(([accountId, ids]) => [accountId, [...new Set((Array.isArray(ids) ? ids : [ids]).filter(Boolean))].slice(0, 3)])
-  );
-  if (contentKind === "image") {
-    plan.coverRefAssetIds = [];
-  } else {
-    plan.sharedRefAssetId = null;
-    plan.sharedRefAssetIds = [];
-  }
-  return plan;
+  return prunePlanReferences(plan);
 }
 
 const BATCH_CREATIVE_VARIANTS = [
@@ -165,13 +180,6 @@ function existingBatchCopies(batch, currentId) {
     .map(x => ({ title: x.artifacts.copy.title || x.title || "", copy: x.artifacts.copy.body || "" }));
 }
 
-function existingBatchTopics(batch, currentId) {
-  return batchProds(batch)
-    .filter(x => x.id !== currentId && (x.topic || x.artifacts?.script?.title))
-    .map(x => x.topic || x.artifacts.script.title || "")
-    .filter(Boolean);
-}
-
 function copyTags(body = "", fallback = []) {
   const tags = Array.from(String(body || "").matchAll(/#[\p{L}\p{N}_-]{2,}/gu)).map(m => m[0].replace(/^#/, ""));
   return [...new Set(tags.length ? tags : (fallback || []))].slice(0, 8);
@@ -226,31 +234,6 @@ function stripInfoFlowDirectorNotes(text = "") {
     .replace(/不要只出现抽象光效。?/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-function storyboardSafePrompt(text = "") {
-  const cleaned = sanitizeStoryboardText(text);
-  if (!cleaned) return STORYBOARD_VISUAL_SCOPE_PROMPT;
-  return `${cleaned}\n${STORYBOARD_VISUAL_SCOPE_PROMPT}`;
-}
-
-function sanitizeStoryboardText(text = "") {
-  let cleaned = String(text || "");
-  STORYBOARD_RISKY_TERMS.forEach(([from, to]) => { cleaned = cleaned.replaceAll(from, to); });
-  return cleaned.trim();
-}
-
-function touchInfoFlowProduction(p, info = null) {
-  if (info) info.updatedAt = Date.now();
-  touch(p);
-}
-
-function withTimeout(promise, ms, message) {
-  let timer = null;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function infoFlowRoleAnchor(acc = {}) {
@@ -415,15 +398,6 @@ function buildInfoFlowPublishCopy({ title, topic, productName, product }) {
   ].join("\n\n");
 }
 
-function buildInfoFlowStoryboards({ mainTopic, productName, focus, styleAnchor = "" }) {
-  const style = styleAnchor || "超写实真人信息流质感，真实自然光、真实材质、克制运镜，前后段保持同一色温和镜头语言";
-  const rule = `统一风格：${style}。B面分镜仅生成产品界面、桌面软件窗口和屏幕录制构图；禁止人物、正脸、手部、手指、人体部位、Q版角色、Q版手部和拟人化肢体。界面文字密度低，仅保留少量清晰简体中文，禁止乱码、花字、水印和二维码。`;
-  return [
-    `9:16竖屏分镜图1：${rule}主题是「${mainTopic}」。${productName}任务拆解界面近景，用简洁图形表达资料导入、步骤拆解和执行状态。`,
-    `9:16竖屏分镜图2：${rule}${productName}结果界面近景，原始资料、可改初版和复核清单形成清楚的三栏关系。`
-  ];
-}
-
 function pickBatchInfoFlowDirection(seed = "") {
   const s = String(seed || "");
   const sum = [...s].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
@@ -500,7 +474,7 @@ function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed =
   const copy = stripLeadingCopyTitle(customCopy || buildInfoFlowPublishCopy({ title: finalTitle, topic: mainTopic, productName, product }), finalTitle);
   const backBase = creativePlan?.backPrompt || buildInfoFlowBackBeat({ mainTopic: storyTopic, productName, focus, copyText: promptCue || copy, seed: variantSeed });
   const frontPrompt = creativePlan?.frontPrompt ? [creativePlan.frontPrompt, VIDEO_NEGATIVE_PROMPT].join("\n") : [
-    "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；前段不使用参考图，不出现产品logo和产品界面，重点拍人物、桌面、手机、电脑和任务压力。镜头每2-4秒切一次。",
+    "快节奏的信息流广告风格，生成9:16短视频前15秒钩子段。目标是用夸张、具体、可拍出来的办公剧情把观众停住；所选参考图直接用于人物、产品、场景与视觉风格一致性，但前段不出现产品logo和产品界面。镜头每2-4秒切一次。",
     roleAnchor,
     voiceAnchor,
     styleAnchor,
@@ -508,23 +482,20 @@ function buildBatchInfoFlowPlan({ topic = "", product = null, acc = null, seed =
     VIDEO_NEGATIVE_PROMPT
   ].join("\n");
   const backPrompt = creativePlan?.backPrompt ? [creativePlan.backPrompt, VIDEO_NEGATIVE_PROMPT].join("\n") : [
-    "快节奏的信息流广告风格，生成9:16短视频后15秒产品功能演示段。根据功能演示分镜图、产品logo和产品界面参考继续生成；画面要呼应前段冲突，口播直接讲操作动作和结果，不要使用自指式说明。",
+    "快节奏的信息流广告风格，生成9:16短视频后15秒产品功能演示段。直接使用所选产品、界面与场景参考图继续生成；画面要呼应前段冲突，口播直接讲操作动作和结果，不要使用自指式说明。",
     "B面仅展示真实产品界面、桌面软件窗口和屏幕录制式操作；禁止人物、手部、手指、人体部位、Q版角色和拟人化肢体。界面文字少而清楚，避免高密度文字。",
     voiceAnchor,
     styleAnchor,
     backBase,
     VIDEO_NEGATIVE_PROMPT
   ].join("\n");
-  const storyboards = (creativePlan?.storyboardPrompts || []).length
-    ? creativePlan.storyboardPrompts
-    : buildInfoFlowStoryboards({ mainTopic: storyTopic, productName, focus, styleAnchor });
   return {
     title: finalTitle,
     topic: mainTopic,
     copy,
     segments: [
-      { id: "front15", label: "前15s", title: "前15s钩子", duration: 15, caption: creativePlan?.creativeAngle || finalTitle, visual: frontBase, videoPrompt: frontPrompt, storyboardAssetIds: [] },
-      { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, caption: creativePlan?.creativeAngle ? `承接「${creativePlan.creativeAngle}」的冲突，用产品界面完成解决。` : `我把这件事交给${productName}，让它先拆步骤、跑资料、给出初版。`, visual: backBase, videoPrompt: backPrompt, storyboardPrompts: storyboards, storyboardAssetIds: [] }
+      { id: "front15", label: "前15s", title: "前15s钩子", duration: 15, caption: creativePlan?.creativeAngle || finalTitle, visual: frontBase, videoPrompt: frontPrompt },
+      { id: "back15", label: "后15s", title: "后15s功能演示", duration: 15, caption: creativePlan?.creativeAngle ? `承接「${creativePlan.creativeAngle}」的冲突，用产品界面完成解决。` : `我把这件事交给${productName}，让它先拆步骤、跑资料、给出初版。`, visual: backBase, videoPrompt: backPrompt }
     ]
   };
 }
@@ -543,13 +514,10 @@ function applyBatchInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
     ...(A.infoFlow || {}),
     status: "ready",
     error: "",
-    segments: (plan.segments || []).slice(0, 2).map((seg, i) => ({
+    segments: (plan.segments || []).slice(0, 2).map(seg => ({
       ...seg,
-      videoPrompt: stripInfoFlowDirectorNotes(seg.videoPrompt || ""),
-      storyboardPrompts: Array.isArray(seg.storyboardPrompts) ? seg.storyboardPrompts.map(sanitizeStoryboardText).filter(Boolean) : seg.storyboardPrompts,
-      storyboardAssetIds: i === 1 ? [...new Set(seg.storyboardAssetIds || [])] : []
-    })),
-    storyboards: []
+      videoPrompt: stripInfoFlowDirectorNotes(seg.videoPrompt || "")
+    }))
   };
   p.topic = plan.topic || p.topic || "";
   p.title = nextTitle;
@@ -564,73 +532,6 @@ function applyBatchInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
   });
   buildMaterialUnits(p);
   touch(p);
-}
-
-async function generateBatchInfoFlowStoryboards(p, batch, acc) {
-  const A = p.artifacts.boards || {};
-  const info = A.infoFlow || {};
-  const back = info.segments?.[1];
-  if (!back || (back.storyboardAssetIds || []).length) return true;
-  if (!imageApiConfigured()) return false;
-  const provider = activeProviderFor("image");
-  if (!provider || provider.mock) return false;
-  const key = providerKeyFor("image", provider);
-  const refIds = batchVideoRefIds(batch, acc?.id);
-  const refs = await imageRefsForIds(refIds, "infoflow");
-  const prompts = (Array.isArray(back.storyboardPrompts) && back.storyboardPrompts.length
-    ? back.storyboardPrompts
-    : buildBatchInfoFlowPlan({ topic: p.topic, product: productById(p.artifacts.script.productId || "dumate"), acc, seed: p.id }).segments[1].storyboardPrompts)
-    .map(sanitizeStoryboardText)
-    .filter(Boolean)
-    .slice(0, 2);
-  if (!prompts.length) return false;
-  back.storyboardPrompts = prompts;
-  const made = [];
-  info.status = "storyboarding";
-  info.error = "";
-  touchInfoFlowProduction(p, info);
-  save("productions");
-  try {
-    for (let i = 0; i < prompts.length; i++) {
-      const req = await withTimeout(provider.submit({
-        prompt: enrichBatchImagePrompt(`${storyboardSafePrompt(prompts[i])}\n画面必须是9:16竖版纯界面分镜图，仅展示产品界面和桌面软件窗口；禁止人物、手部、手指、人体部位、Q版角色和拟人化肢体。文字密度低，仅保留少量清晰界面文字，不要二维码，不要页码。`, refs),
-        refs,
-        ratio: "9:16",
-        apiKey: key?.secret,
-        endpoint: key?.provider,
-        model: key?.model || "custom-imagemodel-gt"
-      }), INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS, `第 ${i + 1} 张信息流分镜提交超时`);
-      const out = await withTimeout(provider.poll(req.providerRef), INFO_FLOW_STORYBOARD_GENERATE_TIMEOUT_MS, `第 ${i + 1} 张信息流分镜生成超时`);
-      if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || `第 ${i + 1} 张信息流分镜未返回结果`);
-      const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await withTimeout(dataUrlFromUrl(out.output.dataUrl), 45000, `第 ${i + 1} 张信息流分镜下载超时`);
-      const polished = await withTimeout(polishImageDataUrl(raw, `${p.id}-batch-infoflow-storyboard-${i + 1}`), 45000, `第 ${i + 1} 张信息流分镜处理超时`);
-      const a = await addAssetFromDataUrl(acc.id, {
-        name: `信息流功能演示分镜_${i + 1}_${(p.title || p.topic || "视频").slice(0, 10)}`,
-        tags: ["信息流分镜图", "功能演示分镜", "站内生成", "账号资产"],
-        dataUrl: polished
-      });
-      made.push(a.id);
-      touchInfoFlowProduction(p, info);
-      save("productions");
-    }
-    back.storyboardAssetIds = made.slice(0, 2);
-    info.storyboards = back.storyboardAssetIds;
-    info.status = "ready";
-    info.error = "";
-    touchInfoFlowProduction(p, info);
-    buildMaterialUnits(p);
-    save("productions");
-    return true;
-  } catch (err) {
-    info.status = "failed";
-    const raw = err.message || String(err);
-    info.error = /499|abort|cancel|断开|超时|timeout/i.test(raw)
-      ? "功能演示分镜生成超时或连接中断，请重试；如连续失败，可先手动上传分镜参考图。"
-      : raw;
-    touchInfoFlowProduction(p, info);
-    save("productions");
-    return false;
-  }
 }
 
 function referenceRewriteForCopy(trendPrep, copy) {
@@ -693,18 +594,21 @@ async function generateVideoCoverInHouse(p) {
   const key = providerKeyFor("image", provider);
   cover.status = "loading";
   cover.error = "";
+  cover.referenceReceipt = null;
   save("productions");
   try {
     const refs = await imageRefsForIds(cover.refAssetIds || [], "cover");
     const req = await provider.submit({
       prompt: enrichBatchImagePrompt(cover.prompt, refs),
       refs,
+      intendedRefAssetIds: cover.refAssetIds || [],
       ratio: "3:4",
       apiKey: key?.secret,
       endpoint: key?.provider,
       model: key?.model || "custom-imagemodel-gt"
     });
     const out = await provider.poll(req.providerRef);
+    cover.referenceReceipt = out.output?.referenceReceipt || req.referenceReceipt || null;
     if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || "封面图未返回结果");
     const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
     const title = (p.artifacts?.copy?.title || p.title || p.topic || "视频封面").trim();
@@ -722,6 +626,7 @@ async function generateVideoCoverInHouse(p) {
   } catch (err) {
     cover.status = "failed";
     cover.error = err.message || String(err);
+    if (err?.referenceReceipt) cover.referenceReceipt = err.referenceReceipt;
     save("productions");
     return false;
   }
@@ -835,6 +740,9 @@ export function createBatch(plan, sessionId) {
     plan.sharedRefAssetId
   ].filter(Boolean))];
   const coverRefAssetIds = [...new Set(Array.isArray(plan.coverRefAssetIds) ? plan.coverRefAssetIds.filter(Boolean) : [])].slice(0, 5);
+  const accountRefAssetIds = Object.fromEntries(
+    Object.entries(plan.accountRefAssetIds || {}).map(([accountId, ids]) => [accountId, [...ids]])
+  );
   const accountCustomCopyModes = { ...(plan.accountCustomCopyModes || {}) };
   (plan.accountIds || []).forEach(id => {
     if (accountCustomCopyModes[id] == null) accountCustomCopyModes[id] = plan.creativeMode === "custom";
@@ -846,7 +754,7 @@ export function createBatch(plan, sessionId) {
     goal: plan.goal || "",
     creativeMode: plan.creativeMode || "custom",
     contentKind: plan.contentKind || "image",
-    topic: (plan.content || "").trim() || (plan.topic || "").trim() || customTitles[0] || "自定义文案创作",
+    topic: (plan.content || "").trim() || (plan.topic || "").trim() || customTitles[0] || "",
     topicMode: "fixed",
     productId: plan.productId || "dumate",
     content: plan.content || "",
@@ -865,10 +773,11 @@ export function createBatch(plan, sessionId) {
     style: plan.style || "",
     accountCount: Number(plan.accountCount || plan.count) || null,
     perAccountCount: Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1)),
+    referenceSelectionId: plan.referenceSelectionId || uid(),
     sharedRefAssetId: sharedRefAssetIds[0] || null,  // 兼容旧字段
     sharedRefAssetIds,                               // 批量统一参考图（所有账号共用 logo/产品界面，可多张）
     coverRefAssetIds,                                // 批量统一视频参考图：给封面和信息流 B 面分镜共用
-    accountRefAssetIds: plan.accountRefAssetIds || {},// 单账号定制参考图
+    accountRefAssetIds,                              // 单账号定制参考图（批次快照，不与计划卡共享对象）
     tags: [], group: plan.group || "all",
     accountIds: plan.accountIds || [],
     productionIds: [],
@@ -1000,7 +909,8 @@ async function imageRefsForIds(ids, role = "shared") {
   for (const id of ids) {
     const a = state.assets.find(x => x.id === id);
     if (!a) continue;
-    const blob = await assetBlob(id);
+    let blob = null;
+    try { blob = await assetBlob(id); } catch (_) { blob = null; }
     const u = urlFor(a);
     let dataUrl = "";
     let publicUrl = "";
@@ -1115,32 +1025,51 @@ async function generateBatchImagesInHouse(p, batch, acc) {
     if (!it?.prompt) continue;
     const hasItemRefOverride = Object.prototype.hasOwnProperty.call(it, "refAssetIds");
     if (it.assetId && it.status === "done") continue;
-    if (!hasItemRefOverride) it.refAssetIds = [...refGroups.all];
+    if (!hasItemRefOverride) {
+      it.refAssetIds = [...refGroups.all];
+      it.referenceSource = "batch-plan";
+      it.referenceSelectionId = batch.referenceSelectionId || "";
+    } else if (!it.referenceSource) {
+      it.referenceSource = "item";
+    }
     const refs = hasItemRefOverride
       ? await imageRefsForIds(Array.isArray(it.refAssetIds) ? it.refAssetIds.slice(0, 8) : [], "custom")
       : defaultRefs;
+    const intendedRefAssetIds = Array.isArray(it.refAssetIds) ? it.refAssetIds.slice(0, 8) : [];
     it.status = "loading";
+    it.error = "";
+    it.referenceReceipt = null;
     save("productions");
-    const req = await provider.submit({
-      prompt: enrichBatchImagePrompt(it.prompt, refs),
-      refs,
-      ratio: "3:4",
-      apiKey: key?.secret,
-      endpoint: key?.provider,
-      model: key?.model || ""
-    });
-    const out = await provider.poll(req.providerRef);
-    if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || `第 ${i + 1} 张图片生成未返回结果`);
-    const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
-    const polished = await polishImageDataUrl(raw, `${p.id}-batch-${i}-${p.topic || ""}`);
-    const a = await addAssetFromDataUrl(acc.id, {
-      name: `站内笔记图${String(i + 1).padStart(2, "0")}_${(it.title || p.title || "").slice(0, 10)}`,
-      tags: ["笔记图", "站内生成", "发布前精修"],
-      dataUrl: polished
-    });
-    it.assetId = a.id;
-    it.status = "done";
-    save("productions");
+    try {
+      const req = await provider.submit({
+        prompt: enrichBatchImagePrompt(it.prompt, refs),
+        refs,
+        intendedRefAssetIds,
+        ratio: "3:4",
+        apiKey: key?.secret,
+        endpoint: key?.provider,
+        model: key?.model || ""
+      });
+      const out = await provider.poll(req.providerRef);
+      it.referenceReceipt = out.output?.referenceReceipt || req.referenceReceipt || null;
+      if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || `第 ${i + 1} 张图片生成未返回结果`);
+      const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
+      const polished = await polishImageDataUrl(raw, `${p.id}-batch-${i}-${p.topic || ""}`);
+      const a = await addAssetFromDataUrl(acc.id, {
+        name: `站内笔记图${String(i + 1).padStart(2, "0")}_${(it.title || p.title || "").slice(0, 10)}`,
+        tags: ["笔记图", "站内生成", "发布前精修"],
+        dataUrl: polished
+      });
+      it.assetId = a.id;
+      it.status = "done";
+      save("productions");
+    } catch (err) {
+      it.status = "failed";
+      it.error = err?.message || String(err);
+      if (err?.referenceReceipt) it.referenceReceipt = err.referenceReceipt;
+      save("productions");
+      throw err;
+    }
   }
   return items.length > 0 && items.every(x => x.assetId);
 }
@@ -1164,19 +1093,25 @@ export async function regenerateBatchImage(p, imageIndex) {
         ...(await imageRefsForIds(refGroups.shared, "shared")),
         ...(await imageRefsForIds(refGroups.custom, "custom"))
       ].slice(0, 8);
+  const intendedRefAssetIds = hasItemRefOverride
+    ? (Array.isArray(item.refAssetIds) ? item.refAssetIds.slice(0, 8) : [])
+    : refGroups.all;
   item.status = "loading";
   item.error = "";
+  item.referenceReceipt = null;
   save("productions");
   try {
     const req = await provider.submit({
       prompt: enrichBatchImagePrompt(item.prompt, refs),
       refs,
+      intendedRefAssetIds,
       ratio: "3:4",
       apiKey: key?.secret,
       endpoint: key?.provider,
       model: key?.model || ""
     });
     const out = await provider.poll(req.providerRef);
+    item.referenceReceipt = out.output?.referenceReceipt || req.referenceReceipt || null;
     if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || "图片生成未返回结果");
     const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
     const polished = await polishImageDataUrl(raw, `${p.id}-batch-regen-${Number(imageIndex)}-${p.topic || ""}`);
@@ -1196,6 +1131,7 @@ export async function regenerateBatchImage(p, imageIndex) {
   } catch (err) {
     item.status = "failed";
     item.error = err?.message || String(err);
+    if (err?.referenceReceipt) item.referenceReceipt = err.referenceReceipt;
     save("productions");
     throw err;
   }
@@ -1223,24 +1159,170 @@ async function runBatchImagesToReview(p, batch) {
   }
 }
 
+export function reconcileBatchDigitalSegments(p, acc) {
+  const A = p.artifacts.boards || (p.artifacts.boards = {});
+  const previous = Array.isArray(A.digitalHuman?.segments) ? A.digitalHuman.segments : [];
+  const planned = planDigitalNarrationSegments(p.artifacts.script.shots || []);
+  const claimed = new Set();
+  const characterRefAssetId = A.characterRefAssetId || acc?.charBoardAssetId || null;
+  const segments = planned.map(plan => {
+    let previousIndex = previous.findIndex((segment, index) =>
+      !claimed.has(index) && String(segment.line || "").trim() === String(plan.line || "").trim()
+    );
+    const exactLine = previousIndex >= 0;
+    if (previousIndex < 0) {
+      previousIndex = previous.findIndex((segment, index) =>
+        !claimed.has(index)
+        && (segment.shotIndexes || []).some(shotIndex => plan.shotIndexes.includes(shotIndex))
+      );
+    }
+    if (previousIndex >= 0) claimed.add(previousIndex);
+    const old = previousIndex >= 0 ? previous[previousIndex] : null;
+    const customCharacterRefAssetId = old?.customCharacterRefAssetId || "";
+    return {
+      id: old?.id || uid(),
+      shotIndexes: [...plan.shotIndexes],
+      dur: plan.dur,
+      line: plan.line,
+      characterRefAssetId: customCharacterRefAssetId || characterRefAssetId,
+      customCharacterRefAssetId,
+      audioAssetId: exactLine ? (old?.audioAssetId || null) : null,
+      audioDuration: exactLine ? Number(old?.audioDuration || 0) : 0,
+      voiceId: exactLine ? (old?.voiceId || "") : "",
+      status: exactLine && old?.audioAssetId ? "audioReady" : "pending",
+      videoJobId: exactLine ? (old?.videoJobId || null) : null,
+      videoStatus: exactLine ? (old?.videoStatus || "pending") : "pending",
+      videoPrompt: DIGITAL_HUMAN_FIXED_PROMPT,
+      videoOutput: exactLine ? (old?.videoOutput || null) : null,
+      videoError: exactLine ? (old?.videoError || "") : ""
+    };
+  });
+  A.digitalHuman = {
+    ...(A.digitalHuman || {}),
+    provider: A.digitalHuman?.provider || "reserved",
+    model: A.digitalHuman?.model || "digital-human-api-placeholder",
+    fixedPrompt: DIGITAL_HUMAN_FIXED_PROMPT,
+    segments
+  };
+  return segments;
+}
+
+export async function prepareBatchDigitalHuman(p, acc, deps = {}) {
+  enforceSupportedVideoMode(p);
+  const segments = reconcileBatchDigitalSegments(p, acc);
+  if (!segments.length) return { ready: false, error: "数字人口播为空，无法创建分段" };
+  const assetExists = deps.assetExists || (id => !!state.assets.find(asset => asset.id === id));
+  const characterMissing = segments.some(segment => !segment.characterRefAssetId || !assetExists(segment.characterRefAssetId));
+  if (characterMissing) return { ready: false, error: "数字人账号缺少角色形象，请先在账号主页上传角色版参考图" };
+  const voiceId = p.artifacts.audio.voiceId || acc?.voiceId || defaultTtsVoiceId() || "";
+  if (!voiceId) return { ready: false, error: "数字人账号缺少固定声线，请先在账号设置里选择声线" };
+  segments.forEach(segment => {
+    if (!segment.audioAssetId || segment.voiceId === voiceId) return;
+    segment.audioAssetId = null;
+    segment.audioDuration = 0;
+    segment.voiceId = "";
+    segment.status = "pending";
+    segment.videoJobId = null;
+    segment.videoStatus = "pending";
+    segment.videoOutput = null;
+  });
+  let isTtsConfigured = deps.ttsConfigured == null ? ttsApiConfigured() : !!deps.ttsConfigured;
+  if (deps.ttsConfigured == null && !isTtsConfigured) {
+    await refreshProviderStatus().catch(() => null);
+    isTtsConfigured = ttsApiConfigured();
+  }
+  if (!isTtsConfigured) return { ready: false, error: "服务器未配置 Minimax TTS，无法自动生成数字人口播" };
+  const synthesize = deps.synthesize || synthesizeTts;
+  const storeAudio = deps.storeAudio || (async ({ index, dataUrl }) => addAssetFromDataUrl(acc.id, {
+    name: `数字人口播_D${String(index + 1).padStart(2, "0")}_${(p.title || p.topic || "视频").slice(0, 8)}`,
+    type: "音频",
+    tags: ["口播音频", "Minimax", "数字人分段", "账号资产"],
+    dataUrl
+  }));
+  let total = 0;
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    if (segment.audioAssetId && assetExists(segment.audioAssetId)) {
+      total += Number(segment.audioDuration || segment.dur || 0);
+      continue;
+    }
+    try {
+      const output = await synthesize({ text: segment.line, voiceId, speed: 1.2 });
+      const asset = await storeAudio({ index, dataUrl: output.audioDataUrl, segment, output });
+      if (!asset?.id) throw new Error("口播音频保存失败");
+      segment.audioAssetId = asset.id;
+      segment.audioDuration = Math.round(Number(output.duration || segment.dur || 0) * 10) / 10;
+      segment.voiceId = output.voiceId || voiceId;
+      segment.status = "audioReady";
+      segment.videoStatus = "pending";
+      segment.videoJobId = null;
+      segment.videoOutput = null;
+      total += Number(segment.audioDuration || segment.dur || 0);
+      save("productions");
+    } catch (error) {
+      p.artifacts.audio.lastError = error?.message || "Minimax TTS 生成失败";
+      save("productions");
+      return { ready: false, error: `数字人第 ${index + 1} 段口播生成失败：${p.artifacts.audio.lastError}` };
+    }
+  }
+  const estimated = estimateAudio(p.artifacts.script.shots || []);
+  Object.assign(p.artifacts.audio, {
+    assetId: null,
+    perShot: estimated.perShot,
+    duration: Math.round(total * 10) / 10,
+    source: "tts-segments",
+    voiceId,
+    voiceRefAssetId: null,
+    lastError: "",
+    segmentsReady: true
+  });
+  p.artifacts.boards.digitalHuman.segments = segments;
+  save("productions");
+  return { ready: true, count: segments.length, duration: p.artifacts.audio.duration };
+}
+
+async function queueBatchDigitalHuman(p, batch, acc, product) {
+  const A = p.artifacts.boards;
+  A.characterRefAssetId = A.characterRefAssetId || acc?.charBoardAssetId || null;
+  applyBatchCoverRefs(p, batch);
+  ensureVideoCoverPrompt(p, product);
+  await generateVideoCoverInHouse(p);
+  const prepared = await prepareBatchDigitalHuman(p, acc);
+  if (!prepared.ready) {
+    A.digitalHuman = A.digitalHuman || { segments: [] };
+    A.digitalHuman.error = prepared.error;
+    setStage(p, "workshop", "needs_input");
+    setStatus(p, "needs_input", prepared.error);
+    save("productions");
+    return false;
+  }
+  A.digitalHuman.error = "";
+  setStage(p, "workshop", "running");
+  const queued = createUnitVideoJobs(p);
+  const active = jobsOf(p).some(job => ["queued", "submitted", "running"].includes(job.status));
+  if (!queued && !active) {
+    setStatus(p, "failed", "数字人口播和角色图已准备，但没有成功派发视频任务");
+    return false;
+  }
+  setStatus(p, "running");
+  return true;
+}
+
 /* ---------- 起草 ---------- */
 async function draftOne(p, batch) {
   const acc = accountById(p.accountId);
   if (!acc) { setStatus(p, "failed", "账号不存在"); return; }
   const isImg = p.mode === "图文";
+  if (!isImg) enforceSupportedVideoMode(p);
   const material = isMaterial(p);
   try {
     setStatus(p, "running");
-    // 主题 / 创作内容：支持批次总内容，也支持账号独立覆盖；为空时只从固定四方向短选题池里挑。
+    // 主题 / 创作内容只来自用户填写；账号资料仅提供风格，不再代替用户选题。
     const rawProductId = (batch.accountProductIds && batch.accountProductIds[acc.id]) || batch.productId || p.artifacts.script.productId || "dumate";
     const productId = primaryProductById(rawProductId)?.id || "dumate";
     p.artifacts.script.productId = productId;
     const contentOverride = ((batch.accountContents && batch.accountContents[acc.id]) || batch.content || "").trim();
-    const defaultTopic = pickDefaultCreativeTopic({
-      seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
-      avoidTopics: existingBatchTopics(batch, p.id)
-    });
-    let topic = contentOverride || (batch.topicMode === "random" ? (p.topic || defaultTopic) : batch.topic);
+    let topic = contentOverride || batch.topic || p.topic || "";
     const product = productById(productId);
     const style = acc.styleProfile || acc.lockedStyle || batch.style || "";
     const useOnlineTrends = false;
@@ -1255,7 +1337,6 @@ async function draftOne(p, batch) {
     p.artifacts.script.batchCreativeVariant = batchVariant;
     let trendPrep = null;
     let trendGuide = "";
-    if (!topic) topic = defaultTopic;
     p.topic = topic;
     p.artifacts.script.trendPrep = trendPrep;
     p.artifacts.script.trendGuide = trendGuide;
@@ -1300,7 +1381,11 @@ async function draftOne(p, batch) {
       try {
         const generatedCopy = await copyPromise;
         p.title = singleImageTitle;
-        p.artifacts.copy = { title: p.title, body: generatedCopy.copy || "" };
+        p.artifacts.copy = {
+          title: p.title,
+          body: generatedCopy.copy || "",
+          source: generatedCopy.source || AI.lastSource || "llm-title-copy"
+        };
         p.artifacts.script.title = p.title;
         p.artifacts.script.source = "single-image-title-copy";
         setStage(p, "review", "pending");
@@ -1310,15 +1395,15 @@ async function draftOne(p, batch) {
       }
       return;
     }
-    if (customCopyMode && ((isImg && !customCopyTitle) || (!isImg && !customCopyTitle && !customCopyBody))) {
-      setStatus(p, "failed", isImg ? "图文组图请先填写标题" : "自定义生产请先填写标题和文案");
+    if (customCopyMode && !customCopyTitle) {
+      setStatus(p, "failed", isImg ? "图文组图请先填写标题" : "视频生产请先填写标题");
       return;
     }
     if (customCopyMode && (customCopyTitle || customCopyBody)) {
-      const customTopic = (customCopyTitle || customCopyBody.split(/\n+/).find(Boolean) || topic || defaultTopic).slice(0, 80);
+      const customTopic = (customCopyTitle || topic).slice(0, 80);
       p.topic = customTopic;
       p.title = customCopyTitle || customTopic;
-      p.artifacts.copy = { title: p.title, body: customCopyBody };
+      p.artifacts.copy = { title: p.title, body: customCopyBody, source: customCopyBody ? "manual" : "" };
       let customVideoDraft = null;
       if (!isImg) {
         try {
@@ -1327,7 +1412,7 @@ async function draftOne(p, batch) {
             body: customCopyBody,
             account: acc,
             product,
-            mode: material && p.artifacts.boards?.materialMode === "infoFlow" ? "infoFlow" : material ? "material" : "digital"
+            mode: material && p.artifacts.boards?.materialMode === "infoFlow" ? "infoFlow" : "digital"
           });
           p.title = customCopyTitle || p.title || customVideoDraft.title;
           p.artifacts.copy = {
@@ -1379,13 +1464,6 @@ async function draftOne(p, batch) {
         applyBatchCoverRefs(p, batch);
         ensureVideoCoverPrompt(p, product);
         await generateVideoCoverInHouse(p);
-        const storyboardReady = await generateBatchInfoFlowStoryboards(p, batch, acc);
-        const back = p.artifacts.boards?.infoFlow?.segments?.[1];
-        if (!storyboardReady || !(back?.storyboardAssetIds || []).length) {
-          setStage(p, "workshop", "needs_input");
-          setStatus(p, "needs_input", "功能演示分镜未生成，请补充参考图或稍后重试分镜生成");
-          return;
-        }
         setStage(p, "workshop", "running");
         createUnitVideoJobs(p);
         return;
@@ -1405,6 +1483,10 @@ async function draftOne(p, batch) {
         const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
         p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
         p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
+        if (p.subType === "数字人") {
+          await queueBatchDigitalHuman(p, batch, acc, product);
+          return;
+        }
         const units = buildMaterialUnits(p);
         const ures = await AI.generateUnitPrompts({
           units, shots, account: acc, style, product,
@@ -1430,6 +1512,7 @@ async function draftOne(p, batch) {
           p.artifacts.copy.title = customCopyTitle || p.artifacts.copy.title;
           p.title = p.artifacts.copy.title;
           p.artifacts.copy.body = generatedCopy.copy || generatedCopy.body || "";
+          p.artifacts.copy.source = generatedCopy.source || AI.lastSource || "llm-title-copy";
         } catch (error) {
           setStatus(p, "failed", error?.message || "只填写标题时自动生成正文失败");
           return;
@@ -1461,8 +1544,10 @@ async function draftOne(p, batch) {
         useOnlineTrends: false,
         trendGuide: "",
         trendPrep: null,
-        copy: p.artifacts.copy
+        copy: p.artifacts.copy,
+        requireLlm: true
       });
+      p.artifacts.images.promptSource = AI.lastSource;
       const promptRows = imgPromptRes.shots || [];
       p.artifacts.images.items = shots.map((s, i) => ({
         title: promptRows[i]?.title || s.idea || `图片${i + 1}`,
@@ -1472,6 +1557,11 @@ async function draftOne(p, batch) {
         status: "idle"
       }));
       await runBatchImagesToReview(p, batch);
+      return;
+    }
+
+    if (!topic) {
+      setStatus(p, "failed", "请先填写标题");
       return;
     }
 
@@ -1521,13 +1611,6 @@ async function draftOne(p, batch) {
       applyBatchCoverRefs(p, batch);
       ensureVideoCoverPrompt(p, product);
       await generateVideoCoverInHouse(p);
-      const storyboardReady = await generateBatchInfoFlowStoryboards(p, batch, acc);
-      const back = p.artifacts.boards?.infoFlow?.segments?.[1];
-      if (!storyboardReady || !(back?.storyboardAssetIds || []).length) {
-        setStage(p, "workshop", "needs_input");
-        setStatus(p, "needs_input", "功能演示分镜未生成，请补充参考图或稍后重试分镜生成");
-        return;
-      }
       setStage(p, "workshop", "running");
       createUnitVideoJobs(p);
       return;
@@ -1567,7 +1650,7 @@ async function draftOne(p, batch) {
         trendGuide,
         trendPrep
       });
-      p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "" };
+      p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "", source: AI.lastSource || "" };
       const rw = referenceRewriteForCopy(trendPrep, p.artifacts.copy);
       if (rw) p.artifacts.copy.referenceRewrite = rw;
       const imgPromptRes = await AI.generateImagePrompts({
@@ -1585,6 +1668,7 @@ async function draftOne(p, batch) {
         trendPrep,
         copy: p.artifacts.copy
       });
+      p.artifacts.images.promptSource = AI.lastSource;
       const promptRows = imgPromptRes.shots || [];
       p.artifacts.images.items = p.artifacts.script.shots.map((s, i) => ({
         title: promptRows[i]?.title || `图片${i + 1}`,
@@ -1600,6 +1684,24 @@ async function draftOne(p, batch) {
       const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
       p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
       p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
+      if (p.subType === "数字人") {
+        const cp0 = await AI.generateCopy({
+          topic,
+          shots: p.artifacts.script.shots,
+          account: acc,
+          style,
+          kind: "video",
+          product,
+          batchVariant,
+          avoidCopies: existingBatchCopies(batch, p.id),
+          useOnlineTrends,
+          trendGuide,
+          trendPrep
+        });
+        p.artifacts.copy = { title: cp0.title || p.title, body: cp0.copy || "" };
+        await queueBatchDigitalHuman(p, batch, acc, product);
+        return;
+      }
       const units = buildMaterialUnits(p);
       const ures = await AI.generateUnitPrompts({
         units, shots: p.artifacts.script.shots, account: acc, style, product,
@@ -1722,6 +1824,7 @@ function supersedeUnitJobs(p, segIndex, prompt) {
 
 /* 素材号：按「分镜单元」派发视频任务（全能参考单元带固定 logo+界面图、文生视频单元纯文生；已成功的跳过） */
 export function createUnitVideoJobs(p, onlyUnitIndex = null) {
+  enforceSupportedVideoMode(p);
   const units = buildMaterialUnits(p); // 重算确保与脚本同步
   const A = p.artifacts.boards;
   // 单号工作台可沿用账号默认参考；批量任务只使用任务板明确选择并写入的参考图。
@@ -1847,9 +1950,16 @@ export async function startBatch(plan, session) {
     const imageCount = Math.max(1, Math.min(12, Number((plan.accountImageCounts || {})[acc.id] || defaultImageCount) || defaultImageCount));
     for (let i = 0; i < perAccountCount; i++) {
       const globalIndex = batch.productionIds.length;
-      const topic = plan.topicMode === "random" ? "" : (perAccountCount > 1 ? `${plan.topic} ${i + 1}/${perAccountCount}` : plan.topic);
+      const topic = String(
+        (plan.accountCopyTitles || {})[acc.id]
+        || (plan.accountContents || {})[acc.id]
+        || plan.content
+        || plan.topic
+        || ""
+      ).trim();
       const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId });
       if (p) {
+        p.referenceSelectionId = batch.referenceSelectionId || "";
         p.artifacts.script.imageCount = imageCount;
         p.batchItemIndex = i + 1;
         p.batchItemTotal = perAccountCount;

@@ -19,6 +19,7 @@ import hmac
 import base64
 import asyncio
 import socket
+import ipaddress
 import shutil
 import subprocess
 import tempfile
@@ -28,17 +29,18 @@ import re
 import inspect
 import difflib
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 try:
     from PIL import Image, ImageOps, ImageEnhance
@@ -74,6 +76,7 @@ ROOT = Path(__file__).resolve().parent
 FRONTEND_DIR = ROOT.parent          # index.html 所在目录
 DATA_FILE = Path(os.getenv("LEGACY_DATA_FILE", ROOT / "data.json"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", ROOT / "uploads"))
+CUSTOM_CANVAS_DIR = FRONTEND_DIR / "vendor" / "infinite-canvas"
 
 
 def load_env_local():
@@ -90,6 +93,22 @@ def load_env_local():
 
 
 load_env_local()
+
+VIDEO_WORKSHOP_ROOT = Path(
+    os.getenv("VIDEO_WORKSHOP_ROOT", FRONTEND_DIR / "apps" / "video-workshop")
+).expanduser().resolve()
+VIDEO_WORKSHOP_WEB_DIR = Path(
+    os.getenv("VIDEO_WORKSHOP_WEB_DIR", VIDEO_WORKSHOP_ROOT / "web")
+).expanduser().resolve()
+VIDEO_WORKSHOP_OUTPUT_DIR = Path(
+    os.getenv("VIDEO_WORKSHOP_OUTPUT_DIR", VIDEO_WORKSHOP_ROOT / "outputs")
+).expanduser().resolve()
+VIDEO_WORKSHOP_UPLOAD_DIR = Path(
+    os.getenv("VIDEO_WORKSHOP_UPLOAD_DIR", VIDEO_WORKSHOP_ROOT / "uploads")
+).expanduser().resolve()
+VIDEO_WORKSHOP_URL = os.getenv("VIDEO_WORKSHOP_URL", "http://127.0.0.1:8765").rstrip("/")
+VIDEO_WORKSHOP_TIMEOUT = float(os.getenv("VIDEO_WORKSHOP_TIMEOUT", "180") or "180")
+VIDEO_WORKSHOP_SESSION_COOKIE = "acg_custom_video_session"
 
 
 def _positive_env_int(name: str, default: int) -> int:
@@ -230,6 +249,16 @@ IMAGE_BASE_URL = os.getenv("IMAGE_BASE_URL", "https://tokenhub.tencentmaas.com/v
 IMAGE_ENDPOINT = os.getenv("IMAGE_ENDPOINT", "").strip()
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "custom-imagemodel-gt")
 IMAGE_MODE = os.getenv("IMAGE_MODE", "").strip().lower()
+IMAGE_CLIENT_ENDPOINT_ALLOWLIST = os.getenv(
+    "IMAGE_CLIENT_ENDPOINT_ALLOWLIST",
+    "",
+).strip()
+PROXY_FILE_MAX_BYTES = _positive_env_int(
+    "PROXY_FILE_MAX_BYTES",
+    256 * 1024 * 1024,
+)
+PROXY_FILE_TIMEOUT = float(os.getenv("PROXY_FILE_TIMEOUT", "180") or "180")
+PROXY_FILE_MAX_REDIRECTS = _positive_env_int("PROXY_FILE_MAX_REDIRECTS", 5)
 JUSTONE_API_KEY = (
     os.getenv("JUSTONE_API_KEY", "")
     or os.getenv("JUSTONE_API_TOKEN", "")
@@ -440,9 +469,27 @@ class ImageGenerateReq(BaseModel):
     prompt: str
     refs: List[ImageRef] = []
     ratio: str = "3:4"
+    strictRatio: bool = False
     endpoint: str = ""
     model: str = ""
     apiKey: str = ""
+
+
+def _member_from_authorization(authorization: str = ""):
+    token = str(authorization or "").replace("Bearer ", "").strip()
+    member_id = store.parse_token(token) if token else None
+    row = store.get_member(member_id) if member_id else None
+    if not row:
+        raise HTTPException(401, "未登录或登录已过期")
+    return store.member_public(row)
+
+
+def require_creator(authorization: str = Header(default="")):
+    """高成本创作能力只允许已登录的管理员或创作成员调用。"""
+    member = _member_from_authorization(authorization)
+    if member["role"] not in {"admin", "editor"}:
+        raise HTTPException(403, "当前账号不能使用创作能力")
+    return member
 
 
 def _clean_image_endpoint(endpoint: str = "") -> str:
@@ -452,6 +499,62 @@ def _clean_image_endpoint(endpoint: str = "") -> str:
     if endpoint.startswith("/api/image") or endpoint.startswith("/api/"):
         return ""
     return endpoint
+
+
+def _endpoint_hostname(value: str = "") -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else "//" + raw)
+    return (parsed.hostname or "").strip().lower().rstrip(".")
+
+
+def _endpoint_origin(value: str = "") -> Optional[Tuple[str, str, int]]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw if "://" in raw else "https://" + raw)
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if scheme not in {"http", "https"} or not host:
+        return None
+    try:
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError:
+        return None
+    return scheme, host, port
+
+
+def _allowed_client_image_origins() -> set:
+    origins = {("https", "tokenhub.tencentmaas.com", 443)}
+    for value in (IMAGE_ENDPOINT, IMAGE_BASE_URL):
+        origin = _endpoint_origin(value)
+        if origin:
+            origins.add(origin)
+    for value in IMAGE_CLIENT_ENDPOINT_ALLOWLIST.split(","):
+        origin = _endpoint_origin(value)
+        if origin:
+            origins.add(origin)
+    return origins
+
+
+def _validated_client_image_endpoint(endpoint: str = "") -> str:
+    cleaned = _clean_image_endpoint(endpoint)
+    if not cleaned:
+        return ""
+    parsed = urlparse(cleaned)
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not host
+        or parsed.username
+        or parsed.password
+    ):
+        raise HTTPException(400, "图片服务地址格式不安全")
+    origin = _endpoint_origin(cleaned)
+    if not origin or origin not in _allowed_client_image_origins():
+        raise HTTPException(403, "图片服务地址不在服务器白名单")
+    return cleaned
 
 
 def _image_endpoint(endpoint: str = "") -> str:
@@ -558,6 +661,19 @@ def _image_model_for_request(requested: str, endpoint: str) -> str:
         if not model or model.lower() in stale_aliases:
             return IMAGE_MODEL or "custom-imagemodel-gt"
     return model or IMAGE_MODEL
+
+
+def _image_request_config(req: ImageGenerateReq) -> Tuple[str, str, str]:
+    """服务器托管时完全忽略浏览器 Key/endpoint，避免平台 Key 被转发到外部地址。"""
+    if IMAGE_API_KEY:
+        endpoint = _image_endpoint()
+        return IMAGE_API_KEY, endpoint, _image_edit_endpoint()
+    api_key = str(req.apiKey or "").strip()
+    if not api_key:
+        raise HTTPException(500, "服务器未配置图片 API Key")
+    client_endpoint = _validated_client_image_endpoint(req.endpoint)
+    endpoint = _image_endpoint(client_endpoint)
+    return api_key, endpoint, _image_edit_endpoint(client_endpoint)
 
 
 def _maas_model_for_refs(requested: str, has_refs: bool) -> str:
@@ -940,7 +1056,7 @@ def _image_ref_to_data_url(blob: bytes, mime: str = "image/png") -> str:
 
 
 @app.get("/api/llm/config")
-def llm_config():
+def llm_config(_me=Depends(require_creator)):
     reachable, detail = _resolve_base(LLM_ENDPOINT)
     return {
         "ok": True,
@@ -957,7 +1073,7 @@ def llm_config():
 
 
 @app.post("/api/llm/test")
-async def llm_test():
+async def llm_test(_me=Depends(require_creator)):
     if not LLM_API_KEY:
         raise HTTPException(500, "服务器未配置 LLM_API_KEY")
     body = {
@@ -974,7 +1090,7 @@ async def llm_test():
 
 
 @app.post("/api/llm")
-async def llm_proxy(req: LLMReq):
+async def llm_proxy(req: LLMReq, _me=Depends(require_creator)):
     """前端 / CLI 统一从这里调模型，Key 只存在服务器环境变量里。"""
     if not LLM_API_KEY:
         raise HTTPException(500, "服务器未配置 LLM_API_KEY")
@@ -996,7 +1112,7 @@ async def llm_proxy(req: LLMReq):
 
 
 @app.post("/api/llm/vision-copy")
-async def llm_vision_copy(req: VisionCopyReq):
+async def llm_vision_copy(req: VisionCopyReq, _me=Depends(require_creator)):
     """单图创作：让已配置的视觉语言模型看最终成图，再写发布标题与正文。"""
     if not LLM_API_KEY:
         raise HTTPException(500, "服务器未配置语言模型")
@@ -1038,14 +1154,14 @@ async def llm_vision_copy(req: VisionCopyReq):
 
 
 @app.post("/api/chat/completions")
-async def chat_completions_proxy(req: Request):
+async def chat_completions_proxy(req: Request, _me=Depends(require_creator)):
     """OpenAI 兼容透传：前端语言模型 Provider 指到这里即可，免浏览器跨域、Key 藏服务器。
     请求体原样转发到 LLM_ENDPOINT，响应原样返回（保留 choices 结构供前端解析）。
-    优先用服务器环境变量 LLM_API_KEY（隐藏真实 Key）；未配置时回退请求头 Authorization（仅解决 CORS）。"""
+    只使用服务器环境变量 LLM_API_KEY；成员 Bearer token 仅用于平台身份校验。"""
     raw = await req.body()
-    auth = f"Bearer {LLM_API_KEY}" if LLM_API_KEY else req.headers.get("authorization", "")
-    if not auth:
-        raise HTTPException(500, "服务器未配置 LLM_API_KEY，且请求未携带 Authorization")
+    if not LLM_API_KEY:
+        raise HTTPException(500, "服务器未配置 LLM_API_KEY")
+    auth = f"Bearer {LLM_API_KEY}"
     try:
         body = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
     except Exception:
@@ -1061,7 +1177,7 @@ async def chat_completions_proxy(req: Request):
 
 
 @app.get("/api/image/config")
-def image_config():
+def image_config(_me=Depends(require_creator)):
     endpoint = _image_endpoint()
     reachable, detail = _resolve_base(endpoint)
     return {
@@ -1070,6 +1186,7 @@ def image_config():
         "reachable": reachable,
         "detail": detail,
         "model": IMAGE_MODEL,
+        "referenceReceipt": True,
         "mode": (
             "responses" if _image_is_responses_mode(endpoint=endpoint)
             else ("chat" if _image_is_chat_mode(endpoint=endpoint)
@@ -1081,19 +1198,19 @@ def image_config():
 
 
 @app.post("/api/image/generate")
-async def image_generate(req: ImageGenerateReq):
+async def image_generate(req: ImageGenerateReq, _me=Depends(require_creator)):
     """同源图片生成代理：解决浏览器跨域，并保留最多 5 张参考图。
-    本地测试可以由前端传 apiKey；服务器部署建议只配置 IMAGE_API_KEY。"""
-    api_key = req.apiKey or IMAGE_API_KEY
-    if not api_key:
-        raise HTTPException(500, "服务器未配置图片 API Key")
+    服务器托管模式只使用服务器配置；本地客户端 Key 模式仅允许白名单端点。"""
+    api_key, endpoint, edit_endpoint = _image_request_config(req)
     raw_prompt = (req.prompt or "").strip()
     if not raw_prompt:
         raise HTTPException(400, "图片提示词为空")
     prompt = _guard_image_prompt(raw_prompt)
-    ratio = _infer_image_ratio_from_prompt(raw_prompt, _normalize_image_ratio(req.ratio))
-    endpoint = _image_endpoint(req.endpoint)
-    edit_endpoint = _image_edit_endpoint(req.endpoint)
+    ratio = (
+        _normalize_image_ratio(req.ratio)
+        if req.strictRatio
+        else _infer_image_ratio_from_prompt(raw_prompt, _normalize_image_ratio(req.ratio))
+    )
     model = _image_model_for_request(req.model, endpoint)
     responses_mode = _image_is_responses_mode(model=model, endpoint=endpoint)
     maas_mode = (not responses_mode) and _image_is_maas_mode(model=model, endpoint=endpoint)
@@ -1277,7 +1394,12 @@ class AudioTimingHint(BaseModel):
 
 
 class AudioTimingClip(BaseModel):
-    url: str
+    url: str = ""
+    audioUrl: str = ""
+    audioDataUrl: str = ""
+    clipId: str = ""
+    trimIn: Optional[float] = 0
+    duration: Optional[float] = None
     text: str = ""
     hints: List[AudioTimingHint] = []
     strict: bool = False
@@ -1711,7 +1833,7 @@ async def _justone_post_form(path: str, params: dict) -> dict:
 
 
 @app.get("/api/analytics/justoneapi/config")
-def analytics_justone_config():
+def analytics_justone_config(_me=Depends(require_creator)):
     reachable, detail = _resolve_base(JUSTONE_BASE_URL)
     return {
         "ok": True,
@@ -1794,7 +1916,10 @@ async def _fetch_wechat_channels_metrics(req: AnalyticsJustOneReq):
 
 
 @app.post("/api/analytics/justoneapi/fetch")
-async def analytics_justone_fetch(req: AnalyticsJustOneReq):
+async def analytics_justone_fetch(
+    req: AnalyticsJustOneReq,
+    _me=Depends(require_creator),
+):
     platform = _analytics_platform(req)
     if platform == "视频号":
         return await _fetch_wechat_channels_metrics(req)
@@ -2200,7 +2325,7 @@ def _find_provider_ref(data: dict) -> str:
 
 
 @app.get("/api/video/config")
-def video_config():
+def video_config(_me=Depends(require_creator)):
     reachable, detail = _resolve_base(SEEDANCE_BASE_URL)
     dh_reachable, dh_detail = _resolve_base(DIGITAL_HUMAN_BASE_URL)
     return {
@@ -2232,7 +2357,7 @@ def video_ref(rid: str):
 
 
 @app.post("/api/video/submit")
-async def video_submit(req: VideoSubmitReq):
+async def video_submit(req: VideoSubmitReq, _me=Depends(require_creator)):
     is_digital_human = _is_digital_human_request(req)
     if not SEEDANCE_API_KEY and not is_digital_human:
         raise HTTPException(500, "服务器未配置 SEEDANCE_API_KEY")
@@ -2350,7 +2475,7 @@ async def video_submit(req: VideoSubmitReq):
 
 
 @app.get("/api/video/poll/{task_id}")
-async def video_poll(task_id: str):
+async def video_poll(task_id: str, _me=Depends(require_creator)):
     if _is_digital_human_task(task_id):
         return await _digital_human_poll(task_id)
     if not SEEDANCE_API_KEY:
@@ -2397,7 +2522,7 @@ async def video_poll(task_id: str):
 
 
 @app.post("/api/video/cancel/{task_id}")
-async def video_cancel(task_id: str):
+async def video_cancel(task_id: str, _me=Depends(require_creator)):
     if _is_digital_human_task(task_id):
         return {"ok": True}
     if SEEDANCE_API_KEY:
@@ -2407,21 +2532,143 @@ async def video_cancel(task_id: str):
     return {"ok": True}
 
 
-@app.post("/api/proxy/file")
-async def proxy_file(req: FileProxyReq):
-    """把远端生成结果转成同源下载，供前端打包 ZIP 使用。"""
-    url = (req.url or "").strip()
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "仅支持 http/https 文件地址")
+def _proxy_ip_blocked(value: str) -> bool:
     try:
-        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
-            r = await client.get(url, **_httpx_get_redirect_kwargs())
+        address = ipaddress.ip_address(str(value or "").split("%", 1)[0])
+    except ValueError:
+        return True
+    return not address.is_global
+
+
+def _validate_proxy_target(url: str) -> str:
+    target = str(url or "").strip()
+    parsed = urlparse(target)
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not host
+        or parsed.username
+        or parsed.password
+    ):
+        raise HTTPException(400, "仅支持安全的 http/https 文件地址")
+    if host == "localhost" or host.endswith((".localhost", ".local")):
+        raise HTTPException(403, "禁止访问本机或内网文件地址")
+    try:
+        direct_ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        direct_ip = None
+    if direct_ip is not None:
+        if _proxy_ip_blocked(str(direct_ip)):
+            raise HTTPException(403, "禁止访问私网、回环或链路本地地址")
+        return target
+    try:
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(
+                host,
+                parsed.port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+            if item and len(item) > 4 and item[4]
+        }
+    except (OSError, socket.gaierror):
+        raise HTTPException(400, "远端文件域名无法解析")
+    if not addresses or any(_proxy_ip_blocked(address) for address in addresses):
+        raise HTTPException(403, "禁止访问私网、回环或链路本地地址")
+    return target
+
+
+def _proxy_redirect_target(current_url: str, location: str) -> str:
+    if not str(location or "").strip():
+        raise HTTPException(502, "远端文件重定向缺少目标地址")
+    return _validate_proxy_target(urljoin(current_url, location))
+
+
+def _proxy_media_type(content_type: str, url: str = "") -> str:
+    media = str(content_type or "").split(";", 1)[0].strip().lower()
+    if (
+        media.startswith(("video/", "audio/", "image/"))
+        or media in {
+            "application/octet-stream",
+            "binary/octet-stream",
+            "application/mp4",
+            "application/vnd.apple.mpegurl",
+            "application/x-mpegurl",
+        }
+    ):
+        return media
+    if not media:
+        guessed = (mimetypes.guess_type(urlparse(url).path)[0] or "").lower()
+        if guessed.startswith(("video/", "audio/", "image/")):
+            return guessed
+    raise HTTPException(415, "远端响应不是允许的图片、音频或视频文件")
+
+
+async def _download_public_media(url: str) -> Tuple[bytes, str]:
+    current = _validate_proxy_target(url)
+    timeout = httpx.Timeout(PROXY_FILE_TIMEOUT, connect=min(12.0, PROXY_FILE_TIMEOUT))
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            trust_env=False,
+            follow_redirects=False,
+        ) as client:
+            for redirect_count in range(PROXY_FILE_MAX_REDIRECTS + 1):
+                async with client.stream(
+                    "GET",
+                    current,
+                    headers={
+                        "Accept": "video/*, audio/*, image/*, application/octet-stream",
+                        "Accept-Encoding": "identity",
+                    },
+                ) as response:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        if redirect_count >= PROXY_FILE_MAX_REDIRECTS:
+                            raise HTTPException(502, "远端文件重定向次数过多")
+                        current = _proxy_redirect_target(
+                            current,
+                            response.headers.get("location", ""),
+                        )
+                        continue
+                    if response.status_code >= 400:
+                        raise HTTPException(
+                            response.status_code,
+                            "远端文件下载失败",
+                        )
+                    media = _proxy_media_type(
+                        response.headers.get("content-type", ""),
+                        current,
+                    )
+                    raw_length = response.headers.get("content-length", "")
+                    if raw_length:
+                        try:
+                            if int(raw_length) > PROXY_FILE_MAX_BYTES:
+                                raise HTTPException(413, "远端文件超过代理大小上限")
+                        except ValueError:
+                            pass
+                    chunks = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > PROXY_FILE_MAX_BYTES:
+                            raise HTTPException(413, "远端文件超过代理大小上限")
+                        chunks.append(chunk)
+                    return b"".join(chunks), media
+    except HTTPException:
+        raise
     except httpx.HTTPError as exc:
-        raise HTTPException(502, f"远端文件下载失败：{exc.__class__.__name__} {exc}")
-    if r.status_code >= 400:
-        raise HTTPException(r.status_code, r.text[:300] or "远端文件下载失败")
-    media = r.headers.get("content-type", "application/octet-stream").split(";")[0]
-    return Response(content=r.content, media_type=media)
+        raise HTTPException(
+            502,
+            f"远端文件下载失败：{exc.__class__.__name__}",
+        )
+    raise HTTPException(502, "远端文件下载失败")
+
+
+@app.post("/api/proxy/file")
+async def proxy_file(req: FileProxyReq, _me=Depends(require_creator)):
+    """把远端生成结果转成同源下载，供前端打包 ZIP 使用。"""
+    content, media = await _download_public_media(req.url)
+    return Response(content=content, media_type=media)
 
 
 @app.get("/api/video/composed/{name}")
@@ -2539,6 +2786,28 @@ def _shift_subtitles_for_transitions(subtitles: List[ComposeSubtitle], clips: Li
     return shifted
 
 
+def _compose_clip_preprocess_command(
+    ffmpeg: str,
+    input_path: Path,
+    output_path: Path,
+    clip: ComposeClip,
+) -> List[str]:
+    trim = max(0.0, float(clip.trimIn or 0))
+    duration = max(0.0, float(clip.dur or 0))
+    command = [ffmpeg, "-y", "-i", str(input_path)]
+    if trim > 0:
+        command += ["-ss", f"{trim:.3f}"]
+    if duration > 0:
+        command += ["-t", f"{duration:.3f}"]
+    command += [
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-ar", "48000", "-avoid_negative_ts", "make_zero",
+        "-movflags", "+faststart", str(output_path),
+    ]
+    return command
+
+
 def _compose_with_xfade(ffmpeg: str, files: List[Path], clips: List[ComposeClip], output: Path, transition: float) -> bool:
     """Compose same-format digital-human clips with a short video/audio dissolve."""
     if transition <= 0 or len(files) < 2:
@@ -2600,6 +2869,37 @@ def _media_duration_from_ffmpeg(stderr: str) -> float:
     if not match:
         return 0.0
     return int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3))
+
+
+def _effective_media_duration(source_duration: float, trim_in: float = 0, duration_limit: Optional[float] = None) -> float:
+    trim = max(0.0, float(trim_in or 0))
+    source = max(0.0, float(source_duration or 0))
+    limit = max(0.0, float(duration_limit or 0))
+    available = max(0.0, source - trim) if source > 0 else 0.0
+    if limit > 0:
+        return min(limit, available) if source > 0 else limit
+    return available
+
+
+def _probe_media_duration(ffmpeg: str, path: Path) -> float:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        sibling = Path(ffmpeg).with_name("ffprobe")
+        ffprobe = str(sibling) if sibling.is_file() else ""
+    if ffprobe:
+        run = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        try:
+            if run.returncode == 0:
+                return max(0.0, float((run.stdout or "").strip()))
+        except (TypeError, ValueError):
+            pass
+    run = subprocess.run([ffmpeg, "-hide_banner", "-i", str(path)], capture_output=True, text=True, timeout=30)
+    return _media_duration_from_ffmpeg(run.stderr)
 
 
 def _media_has_audio(ffmpeg: str, path: Path) -> bool:
@@ -2754,6 +3054,11 @@ def _whisper_cpp_paths() -> Tuple[Optional[Path], Optional[Path]]:
     return (binary, model) if binary.is_file() and os.access(binary, os.X_OK) and model.is_file() else (None, None)
 
 
+def _whisper_model_supports_zh(model: Path) -> bool:
+    # whisper.cpp 的 *.en 模型只有英语词表，即使强制 -l zh 也会产生乱码或幻觉。
+    return not bool(re.search(r"(?:^|[._-])en(?:[._-]|$)", model.name.lower()))
+
+
 def _clean_transcript_text(text: str) -> str:
     value = str(text or "").replace("\\n", " ").replace("\ufffd", "")
     value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", value)
@@ -2840,6 +3145,43 @@ def _hint_bounds(hint: AudioTimingHint, duration: float) -> Tuple[float, float]:
     return start, end
 
 
+def _known_text_anchors(script_chars: List[str], candidates: List[dict]) -> Tuple[dict, set, float, float]:
+    recognized = [item["char"] for item in candidates]
+    matcher = difflib.SequenceMatcher(None, script_chars, recognized, autojunk=False)
+    anchors = {}
+    exact_indices = set()
+    for block in matcher.get_matching_blocks():
+        for step in range(block.size):
+            script_index = block.a + step
+            anchors[script_index] = (candidates[block.b + step]["start"], candidates[block.b + step]["end"])
+            exact_indices.add(script_index)
+
+    # Whisper 对中文同音字常以等长替换输出。只在替换块两端都有真实
+    # 完全匹配锚点时，才把块内 token 单调映射回来；绝不补首尾大段文本。
+    fuzzy_count = 0
+    opcodes = matcher.get_opcodes()
+    for opcode_index, (tag, a1, a2, b1, b2) in enumerate(opcodes):
+        if tag != "replace" or not (a2 > a1 and b2 > b1):
+            continue
+        left_bounded = opcode_index > 0 and opcodes[opcode_index - 1][0] == "equal"
+        right_bounded = opcode_index + 1 < len(opcodes) and opcodes[opcode_index + 1][0] == "equal"
+        script_span = a2 - a1
+        recognized_span = b2 - b1
+        if not (left_bounded and right_bounded) or max(script_span, recognized_span) > 8:
+            continue
+        if min(script_span, recognized_span) / max(script_span, recognized_span) < 0.62:
+            continue
+        for step in range(script_span):
+            script_index = a1 + step
+            recognized_index = b1 + min(recognized_span - 1, int(step * recognized_span / script_span))
+            token = candidates[recognized_index]
+            anchors.setdefault(script_index, (token["start"], token["end"]))
+            fuzzy_count += int(script_index not in exact_indices)
+    exact_coverage = len(exact_indices) / max(1, len(script_chars))
+    weighted_coverage = (len(exact_indices) + fuzzy_count * 0.55) / max(1, len(script_chars))
+    return anchors, exact_indices, exact_coverage, max(weighted_coverage, matcher.ratio())
+
+
 def _align_known_hint(hint: AudioTimingHint, timed_chars: List[dict], duration: float, *, strict: bool) -> List[dict]:
     output_text = _clean_transcript_text(hint.text)
     script_chars = _alignment_chars(output_text)
@@ -2854,19 +3196,10 @@ def _align_known_hint(hint: AudioTimingHint, timed_chars: List[dict], duration: 
     recognized = [item["char"] for item in candidates]
     if len(recognized) < 2:
         return []
-    matcher = difflib.SequenceMatcher(None, script_chars, recognized, autojunk=False)
-    anchors = {}
-    matched = 0
-    for block in matcher.get_matching_blocks():
-        for step in range(block.size):
-            script_index = block.a + step
-            token = candidates[block.b + step]
-            anchors[script_index] = (token["start"], token["end"])
-            matched += 1
-    coverage = matched / max(1, len(script_chars))
-    ratio = matcher.ratio()
-    min_coverage = 0.58 if strict else 0.20
-    if matched < 2 or coverage < min_coverage or (strict and ratio < 0.45):
+    anchors, exact_indices, exact_coverage, weighted_coverage = _known_text_anchors(script_chars, candidates)
+    min_exact_coverage = 0.38 if strict else 0.28
+    min_weighted_coverage = 0.56 if strict else 0.44
+    if len(exact_indices) < 2 or exact_coverage < min_exact_coverage or weighted_coverage < min_weighted_coverage:
         return []
 
     chunks = _caption_chunks(output_text, max_len=12)
@@ -2887,14 +3220,12 @@ def _align_known_hint(hint: AudioTimingHint, timed_chars: List[dict], duration: 
         chunk_end_index = min(total_chars, chunk_start_index + len(chunk_chars))
         script_cursor = chunk_end_index
         chunk_anchors = [anchors[i] for i in range(chunk_start_index, chunk_end_index) if i in anchors]
-        if strict and not chunk_anchors and coverage < 0.52:
+        chunk_exact = [i for i in range(chunk_start_index, chunk_end_index) if i in exact_indices]
+        min_chunk_anchors = max(2, int(len(chunk_chars) * (0.26 if strict else 0.18) + 0.999))
+        if len(chunk_anchors) < min_chunk_anchors or (strict and not chunk_exact):
             continue
-        if chunk_anchors:
-            start = min(item[0] for item in chunk_anchors) - 0.04
-            end = max(item[1] for item in chunk_anchors) + 0.18
-        else:
-            start = speech_start + speech_span * chunk_start_index / total_chars
-            end = speech_start + speech_span * chunk_end_index / total_chars
+        start = min(item[0] for item in chunk_anchors) - 0.04
+        end = max(item[1] for item in chunk_anchors) + 0.18
         start = max(bound_start, previous_end, start)
         end = min(bound_end, max(start + 0.26, end))
         if end <= start + 0.05:
@@ -2913,7 +3244,72 @@ def _align_known_hints(hints: List[AudioTimingHint], timed_chars: List[dict], du
     cues = []
     for hint in hints:
         cues.extend(_align_known_hint(hint, timed_chars, duration, strict=strict))
-    return sorted(cues, key=lambda cue: (cue["start"], cue["end"]))
+    ordered = sorted(cues, key=lambda cue: (cue["start"], cue["end"]))
+    normalized = []
+    previous_end = 0.0
+    for cue in ordered:
+        start = max(float(cue["start"]), previous_end)
+        end = min(float(duration), float(cue["end"]))
+        if end <= start + 0.05:
+            continue
+        normalized.append({
+            **cue,
+            "start": round(start, 2),
+            "end": round(end, 2),
+        })
+        previous_end = end + 0.02
+    return normalized
+
+
+def _vad_analysis_command(
+    ffmpeg: str,
+    media_path: Path,
+    *,
+    trim_in: float,
+    duration_limit: Optional[float],
+    threshold: str,
+) -> List[str]:
+    trim = max(0.0, float(trim_in or 0))
+    limit = max(0.0, float(duration_limit or 0))
+    filters = []
+    if trim > 0 or limit > 0:
+        atrim = f"atrim=start={trim:.3f}"
+        if limit > 0:
+            atrim += f":duration={limit:.3f}"
+        filters += [atrim, "asetpts=PTS-STARTPTS"]
+    filters += [
+        "highpass=f=150",
+        "lowpass=f=3800",
+        "afftdn=nf=-25",
+        f"silencedetect=noise={threshold}:d=0.16",
+    ]
+    return [
+        ffmpeg, "-hide_banner", "-i", str(media_path),
+        "-af", ",".join(filters), "-f", "null", "-",
+    ]
+
+
+async def _write_audio_timing_source(
+    client: httpx.AsyncClient,
+    clip: AudioTimingClip,
+    path: Path,
+    index: int,
+) -> str:
+    if str(clip.audioDataUrl or "").strip():
+        if not _write_data_url(path, clip.audioDataUrl):
+            raise HTTPException(400, f"字幕分析音频数据无效：{index + 1}")
+        return "direct-audio"
+    direct_url = str(clip.audioUrl or "").strip()
+    if direct_url:
+        if direct_url.startswith("data:"):
+            if not _write_data_url(path, direct_url):
+                raise HTTPException(400, f"字幕分析音频数据无效：{index + 1}")
+        elif not await _write_video_source(client, direct_url, path, f"下载字幕分析音频失败：{index + 1}"):
+            raise HTTPException(400, f"字幕分析音频地址无效：{index + 1}")
+        return "direct-audio"
+    if not await _write_video_source(client, clip.url, path, f"下载字幕分析片段失败：{index + 1}"):
+        raise HTTPException(400, f"字幕分析片段地址无效：{index + 1}")
+    return "video-audio"
 
 
 def _transcribe_with_whisper(
@@ -2925,28 +3321,52 @@ def _transcribe_with_whisper(
     hints: Optional[List[AudioTimingHint]] = None,
     *,
     strict: bool = False,
+    trim_in: float = 0,
+    duration_limit: Optional[float] = None,
 ) -> Tuple[List[dict], float]:
     binary, model = _whisper_cpp_paths()
-    if not binary or not model:
+    if not binary or not model or not _whisper_model_supports_zh(model):
         return [], 0.0
     wav_path = workdir / f"whisper_{index:03d}.wav"
-    extract = subprocess.run(
-        [ffmpeg, "-hide_banner", "-y", "-i", str(media_path), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav_path)],
-        capture_output=True, text=True, timeout=300
-    )
-    duration = _media_duration_from_ffmpeg(extract.stderr)
+    extract_command = [ffmpeg, "-hide_banner", "-y", "-i", str(media_path)]
+    trim = max(0.0, float(trim_in or 0))
+    limit = max(0.0, float(duration_limit or 0))
+    if trim > 0:
+        extract_command += ["-ss", f"{trim:.3f}"]
+    if limit > 0:
+        extract_command += ["-t", f"{limit:.3f}"]
+    extract_command += ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav_path)]
+    extract = subprocess.run(extract_command, capture_output=True, text=True, timeout=300)
+    source_duration = _media_duration_from_ffmpeg(extract.stderr)
+    duration = _effective_media_duration(source_duration, trim, limit)
     if extract.returncode != 0 or not wav_path.exists():
         return [], duration
+    if duration <= 0:
+        duration = _probe_media_duration(ffmpeg, wav_path)
     output_prefix = workdir / f"whisper_{index:03d}"
     command = [str(binary), "-m", str(model), "-f", str(wav_path), "-l", "zh", "-ml", "0", "-sow", "-ojf", "-of", str(output_prefix), "-sns", "-np"]
-    prompt_value = _clean_transcript_text(prompt)[:320]
-    if prompt_value:
-        command += ["--prompt", prompt_value]
+    force_cpu = os.getenv(
+        "ACG_WHISPER_FORCE_CPU",
+        "true" if sys.platform == "darwin" else "false",
+    ).strip().lower() not in {"0", "false", "no"}
+    if force_cpu:
+        command.append("-ng")
     run = subprocess.run(
         command,
         capture_output=True, text=True, timeout=600
     )
     output_path = output_prefix.with_suffix(".json")
+    if run.returncode != 0 and "-ng" not in command:
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        # 部分 Metal/CUDA 运行时能启动但在推理阶段崩溃。真实 Whisper
+        # 失败时仅重试一次 CPU，而不是悄悄降级为脚本文字均摊。
+        run = subprocess.run(
+            command + ["-ng"],
+            capture_output=True, text=True, timeout=600
+        )
     if run.returncode != 0 or not output_path.exists():
         return [], duration
     try:
@@ -2954,70 +3374,161 @@ def _transcribe_with_whisper(
     except (OSError, json.JSONDecodeError):
         return [], duration
     known_hints = [hint for hint in (hints or []) if _clean_transcript_text(hint.text)]
-    if not known_hints and prompt_value:
-        known_hints = [AudioTimingHint(text=prompt_value)]
+    known_text = _clean_transcript_text(prompt)[:320]
+    if not known_hints and known_text:
+        known_hints = [AudioTimingHint(text=known_text)]
     timed_chars = _whisper_timed_chars(payload, duration)
     return _align_known_hints(known_hints, timed_chars, duration, strict=strict), duration
 
 
 @app.post("/api/video/audio-timing")
-async def video_audio_timing(req: AudioTimingReq):
+async def video_audio_timing(
+    req: AudioTimingReq,
+    _me=Depends(require_creator),
+):
     """Use known spoken text as a whitelist and real ASR tokens only as timing anchors."""
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
         raise HTTPException(501, "本机未安装 ffmpeg，无法分析视频音轨")
     cues = []
+    clip_sources = []
     offset = 0.0
+    whisper_binary, whisper_model = _whisper_cpp_paths()
+    whisper_available = bool(whisper_binary and whisper_model and _whisper_model_supports_zh(whisper_model))
     with tempfile.TemporaryDirectory() as td:
         tdir = Path(td)
         async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(240.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
             for index, clip in enumerate((req.clips or [])[:24]):
-                path = tdir / f"timing_{index:03d}.mp4"
-                await _write_video_source(client, clip.url, path, f"下载字幕分析片段失败：{index + 1}")
+                path = tdir / f"timing_{index:03d}.media"
+                input_source = await _write_audio_timing_source(client, clip, path, index)
                 hints = clip.hints or ([AudioTimingHint(text=clip.text)] if clip.text else [])
+                trim = max(0.0, float(clip.trimIn or 0))
+                duration_limit = max(0.0, float(clip.duration or 0))
                 whisper_cues, whisper_duration = _transcribe_with_whisper(
-                    ffmpeg, path, tdir, index, clip.text, hints, strict=clip.strict
+                    ffmpeg,
+                    path,
+                    tdir,
+                    index,
+                    clip.text,
+                    hints,
+                    strict=clip.strict,
+                    trim_in=trim,
+                    duration_limit=duration_limit,
                 )
                 if whisper_cues:
                     cues.extend({
                         **cue,
                         "clipIndex": index,
+                        "clipId": clip.clipId,
+                        "engine": "whisper.cpp",
+                        "inputSource": input_source,
                         "start": round(offset + cue["start"], 2),
                         "end": round(offset + cue["end"], 2),
                     } for cue in whisper_cues)
+                    clip_sources.append({
+                        "clipIndex": index,
+                        "clipId": clip.clipId,
+                        "engine": "whisper.cpp",
+                        "inputSource": input_source,
+                        "duration": round(whisper_duration, 2),
+                        "cueCount": len(whisper_cues),
+                    })
                     offset += whisper_duration
                     continue
                 analyses = []
                 for threshold in ("-27dB", "-31dB", "-35dB"):
                     run = subprocess.run(
-                        [ffmpeg, "-hide_banner", "-i", str(path), "-af", f"highpass=f=150,lowpass=f=3800,afftdn=nf=-25,silencedetect=noise={threshold}:d=0.16", "-f", "null", "-"],
+                        _vad_analysis_command(
+                            ffmpeg,
+                            path,
+                            trim_in=trim,
+                            duration_limit=duration_limit,
+                            threshold=threshold,
+                        ),
                         capture_output=True, text=True, timeout=300
                     )
-                    duration = _media_duration_from_ffmpeg(run.stderr)
+                    duration = _effective_media_duration(
+                        _media_duration_from_ffmpeg(run.stderr),
+                        trim,
+                        duration_limit,
+                    )
                     if duration > 0:
                         analyses.append((duration, _speech_windows(run.stderr, duration)))
-                duration = analyses[0][0] if analyses else 0
+                duration = analyses[0][0] if analyses else whisper_duration
                 if duration <= 0:
-                    offset += whisper_duration
+                    duration = _effective_media_duration(_probe_media_duration(ffmpeg, path), trim, duration_limit)
+                if duration <= 0:
+                    clip_sources.append({
+                        "clipIndex": index,
+                        "clipId": clip.clipId,
+                        "engine": "none",
+                        "attemptedEngine": "whisper.cpp" if whisper_available else "none",
+                        "inputSource": input_source,
+                        "duration": 0,
+                        "cueCount": 0,
+                    })
                     continue
-                if clip.strict:
+                # 信息流严格模式和数字人的独立清晰音频都必须通过真实
+                # ASR token 锚点。Whisper 质量失败时拒绝，不再用 VAD 把
+                # 整段提示词平均铺满，避免导演说明混入口播字幕。
+                if clip.strict or input_source == "direct-audio":
+                    clip_sources.append({
+                        "clipIndex": index,
+                        "clipId": clip.clipId,
+                        "engine": "none",
+                        "attemptedEngine": "whisper.cpp" if whisper_available else "none",
+                        "inputSource": input_source,
+                        "duration": round(duration, 2),
+                        "cueCount": 0,
+                    })
                     offset += duration
                     continue
                 chunks = _caption_chunks("".join(hint.text for hint in hints) or clip.text)
                 candidates = [item[1] for item in analyses if item[1]]
                 windows = min(candidates, key=lambda rows: (abs(len(rows) - max(1, len(chunks))), -sum(end - start for start, end in rows))) if candidates else [(0.0, duration)]
+                vad_cues = _align_chunks_to_windows(chunks, windows, offset)
                 cues.extend({
                     **cue,
                     "clipIndex": index,
+                    "clipId": clip.clipId,
                     "precise": False,
-                } for cue in _align_chunks_to_windows(chunks, windows, offset))
+                    "engine": "ffmpeg-vad",
+                    "inputSource": input_source,
+                } for cue in vad_cues)
+                clip_sources.append({
+                    "clipIndex": index,
+                    "clipId": clip.clipId,
+                    "engine": "ffmpeg-vad" if vad_cues else "none",
+                    "attemptedEngine": "whisper.cpp" if whisper_available else "none",
+                    "inputSource": input_source,
+                    "duration": round(duration, 2),
+                    "cueCount": len(vad_cues),
+                })
                 offset += duration
-    source = "whisper-script-forced-v1" if _whisper_cpp_paths()[0] else "ffmpeg-dialogue-vad-v3"
-    return {"ok": True, "duration": round(offset, 2), "cues": cues, "source": source}
+    used_engines = sorted({item["engine"] for item in clip_sources if item.get("cueCount") and item.get("engine") != "none"})
+    engine = used_engines[0] if len(used_engines) == 1 else ("hybrid" if used_engines else "none")
+    input_sources = sorted({item["inputSource"] for item in clip_sources})
+    input_label = input_sources[0] if len(input_sources) == 1 else ("mixed-input" if input_sources else "no-input")
+    if engine == "whisper.cpp":
+        source = f"whisper-post-align-v2-{input_label}"
+    elif engine == "ffmpeg-vad":
+        source = f"ffmpeg-dialogue-vad-v4-{input_label}"
+    elif engine == "hybrid":
+        source = f"hybrid-audio-timing-v2-{input_label}"
+    else:
+        source = f"no-aligned-speech-v2-{input_label}"
+    return {
+        "ok": True,
+        "duration": round(offset, 2),
+        "cues": cues,
+        "engine": engine,
+        "source": source,
+        "clipSources": clip_sources,
+    }
 
 
 @app.post("/api/video/compose")
-async def video_compose(req: ComposeReq):
+async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
     """把时间轴上的 Seedance 片段拼成一个同源 mp4。
     本地/服务器都需要安装 ffmpeg；支持把口播与 BGM 混进成片。"""
     ffmpeg = _ffmpeg_bin()
@@ -3039,8 +3550,19 @@ async def video_compose(req: ComposeReq):
         bgm_path = tdir / "bgm.mp3"
         async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(240.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
             for i, c in enumerate(clips):
-                fp = tdir / f"clip_{i:03d}.mp4"
-                await _write_video_source(client, c.url, fp, f"下载片段失败：{c.name or i + 1}")
+                raw_fp = tdir / f"clip_raw_{i:03d}.mp4"
+                await _write_video_source(client, c.url, raw_fp, f"下载片段失败：{c.name or i + 1}")
+                fp = raw_fp
+                if float(c.trimIn or 0) > 0 or float(c.dur or 0) > 0:
+                    fp = tdir / f"clip_{i:03d}.mp4"
+                    preprocess = subprocess.run(
+                        _compose_clip_preprocess_command(ffmpeg, raw_fp, fp, c),
+                        capture_output=True,
+                        text=True,
+                        timeout=900,
+                    )
+                    if preprocess.returncode != 0 or not fp.exists() or fp.stat().st_size <= 0:
+                        raise HTTPException(502, "ffmpeg 裁切片段失败：" + (preprocess.stderr or preprocess.stdout)[-800:])
                 files.append(fp)
             if req.narrationDataUrl:
                 _write_data_url(narr_path, req.narrationDataUrl)
@@ -3259,8 +3781,18 @@ def _looks_like_voice_error(message: str) -> bool:
     )
 
 
+def require_tts_creator(authorization: str = Header(default="")):
+    """TTS 会消耗平台额度，只允许已登录的管理员或创作成员调用。"""
+    try:
+        return require_creator(authorization)
+    except HTTPException as exc:
+        if exc.status_code == 403:
+            raise HTTPException(403, "当前账号不能使用语音生成")
+        raise
+
+
 @app.get("/api/tts/config")
-def tts_config():
+def tts_config(_me=Depends(require_tts_creator)):
     reachable, detail = _resolve_base(MINIMAX_BASE_URL)
     return {
         "ok": True,
@@ -3277,7 +3809,7 @@ def tts_config():
 
 
 @app.post("/api/tts/test")
-async def tts_test():
+async def tts_test(_me=Depends(require_tts_creator)):
     if not MINIMAX_API_KEY:
         raise HTTPException(500, "服务器未配置 MINIMAX_API_KEY")
     if not MINIMAX_VOICE_ID:
@@ -3307,7 +3839,11 @@ async def tts_test():
 
 
 @app.get("/api/tts/voice/lookup")
-async def tts_voice_lookup(voiceId: str = "", test: bool = True):
+async def tts_voice_lookup(
+    voiceId: str = "",
+    test: bool = True,
+    _me=Depends(require_tts_creator),
+):
     voice_id = (voiceId or "").strip()
     if not voice_id:
         raise HTTPException(400, "请填写 Minimax voice_id")
@@ -3355,7 +3891,10 @@ async def tts_voice_lookup(voiceId: str = "", test: bool = True):
 
 
 @app.post("/api/tts/voice/design")
-async def tts_voice_design(req: VoiceDesignReq):
+async def tts_voice_design(
+    req: VoiceDesignReq,
+    _me=Depends(require_tts_creator),
+):
     if not MINIMAX_API_KEY:
         raise HTTPException(500, "服务器未配置 MINIMAX_API_KEY")
     prompt = (req.prompt or req.description or "").strip()
@@ -3397,7 +3936,10 @@ async def tts_voice_design(req: VoiceDesignReq):
 
 
 @app.post("/api/tts/generate")
-async def tts_generate(req: TtsReq):
+async def tts_generate(
+    req: TtsReq,
+    _me=Depends(require_tts_creator),
+):
     if not MINIMAX_API_KEY:
         raise HTTPException(500, "服务器未配置 MINIMAX_API_KEY")
     text = (req.text or "").strip()
@@ -3490,12 +4032,12 @@ class Account(BaseModel):
 
 
 @app.get("/api/accounts")
-def list_accounts():
+def list_accounts(_me=Depends(require_creator)):
     return load_db()["accounts"]
 
 
 @app.post("/api/accounts")
-def create_account(acc: Account):
+def create_account(acc: Account, _me=Depends(require_creator)):
     db = load_db()
     item = {"id": uuid.uuid4().hex[:8], "createdAt": int(time.time()),
             "monthlyDone": 0, "assets": [], **acc.dict()}
@@ -3505,7 +4047,7 @@ def create_account(acc: Account):
 
 
 @app.delete("/api/accounts/{acc_id}")
-def delete_account(acc_id: str):
+def delete_account(acc_id: str, _me=Depends(require_creator)):
     db = load_db()
     before = len(db["accounts"])
     db["accounts"] = [a for a in db["accounts"] if a["id"] != acc_id]
@@ -3525,7 +4067,11 @@ class Asset(BaseModel):
 
 
 @app.get("/api/assets")
-def list_assets(platform: Optional[str] = None, tag: Optional[str] = None):
+def list_assets(
+    platform: Optional[str] = None,
+    tag: Optional[str] = None,
+    _me=Depends(require_creator),
+):
     items = load_db()["assets"]
     if platform:
         items = [x for x in items if x.get("platform") == platform]
@@ -3535,7 +4081,7 @@ def list_assets(platform: Optional[str] = None, tag: Optional[str] = None):
 
 
 @app.post("/api/assets")
-def create_asset(asset: Asset):
+def create_asset(asset: Asset, _me=Depends(require_creator)):
     db = load_db()
     acc = next((a for a in db["accounts"] if a["id"] == asset.accountId), None)
     item = {"id": uuid.uuid4().hex[:8], "createdAt": int(time.time()),
@@ -3549,7 +4095,7 @@ def create_asset(asset: Asset):
 
 
 @app.post("/api/assets/{asset_id}/download")
-def mark_downloaded(asset_id: str):
+def mark_downloaded(asset_id: str, _me=Depends(require_creator)):
     db = load_db()
     for x in db["assets"]:
         if x["id"] == asset_id:
@@ -3597,6 +4143,68 @@ class LoginReq(BaseModel):
 
 class PutReq(BaseModel):
     items: list
+
+
+class CustomProjectReq(BaseModel):
+    kind: str = "video"
+    title: str = ""
+    appVersion: str = ""
+    projectState: dict = Field(default_factory=dict)
+    outputIds: list = Field(default_factory=list)
+    thumbnailId: str = ""
+    status: str = "draft"
+    publishedDeliveryId: str = ""
+
+
+class CustomProjectPublishReq(BaseModel):
+    deliveryId: str = ""
+    delivery: dict = Field(default_factory=dict)
+    assets: list = Field(default_factory=list)
+    account: dict = Field(default_factory=dict)
+
+
+class CustomCanvasAgentReq(BaseModel):
+    brief: str = ""
+    scene: str = "brand_kv"
+    size: str = "1920x1080"
+    references: List[dict] = Field(default_factory=list)
+    images: List[str] = Field(default_factory=list)
+
+
+class CustomCanvasGenerateReq(BaseModel):
+    palette: str = "default"
+    size: str = "1920x1080"
+    count: int = Field(default=1, ge=1, le=10)
+    startVariant: int = Field(default=1, ge=1, le=10000)
+    labelPrefix: str = "Draft"
+    prompt: str = ""
+    negativePrompt: str = ""
+    quality: str = "low"
+    references: List[str] = Field(default_factory=list)
+    mode: str = ""
+
+
+class CustomCanvasEnhanceReq(BaseModel):
+    image: str = ""
+    size: str = "1920x1080"
+    quality: str = "high"
+    mode: str = ""
+
+
+class CustomCanvasEditRegionReq(BaseModel):
+    image: str = ""
+    mask: str = ""
+    instruction: str = ""
+    width: int = Field(default=1920, ge=16, le=20000)
+    height: int = Field(default=1080, ge=16, le=20000)
+
+
+class CustomCanvasTransformReq(BaseModel):
+    image: str = ""
+    prompt: str = ""
+    size: str = "1024x1024"
+    fidelity: str = "high"
+    quality: str = "low"
 
 
 class MemberReq(BaseModel):
@@ -3662,11 +4270,7 @@ def _clean_role(role: str) -> str:
 
 
 def require_member(authorization: str = Header(default="")):
-    mid = store.parse_token(authorization.replace("Bearer ", "").strip())
-    row = store.get_member(mid) if mid else None
-    if not row:
-        raise HTTPException(401, "未登录或登录已过期")
-    return store.member_public(row)
+    return _member_from_authorization(authorization)
 
 
 def require_admin(me=Depends(require_member)):
@@ -3733,9 +4337,593 @@ def api_state(response: Response, me=Depends(require_member)):
     return data
 
 
+def _require_custom_creator(me):
+    if me["role"] not in {"admin", "editor"}:
+        raise HTTPException(403, "当前账号不能使用定制创作")
+    return me
+
+
+CUSTOM_CANVAS_PALETTES = {"tech", "business", "finance", "warm", "luxury", "default"}
+CUSTOM_CANVAS_NEGATIVE = "blurry, low resolution, distorted proportions, messy layout, garbled text, misspelled words, watermark"
+
+
+def _custom_canvas_parse_size(value: str, fallback: Tuple[int, int] = (1920, 1080)) -> Tuple[int, int]:
+    match = re.match(r"^\s*(\d{2,5})\s*[x×*]\s*(\d{2,5})\s*$", str(value or ""), flags=re.I)
+    if not match:
+        return fallback
+    width, height = int(match.group(1)), int(match.group(2))
+    if not (16 <= width <= 20000 and 16 <= height <= 20000):
+        return fallback
+    return width, height
+
+
+def _custom_canvas_ratio(value: str = "", width: int = 0, height: int = 0) -> str:
+    if width <= 0 or height <= 0:
+        width, height = _custom_canvas_parse_size(value)
+    target = width / max(1, height)
+    ratios = {
+        "1:1": 1.0,
+        "3:4": 3 / 4,
+        "9:16": 9 / 16,
+        "4:3": 4 / 3,
+        "16:9": 16 / 9,
+    }
+    return min(ratios, key=lambda key: abs(ratios[key] - target))
+
+
+def _custom_canvas_native_size(ratio: str) -> Tuple[int, int]:
+    return _custom_canvas_parse_size(_image_size(_normalize_image_ratio(ratio)), (1024, 1024))
+
+
+def _custom_canvas_data_url(value: str, label: str = "图片", max_chars: int = 24 * 1024 * 1024) -> str:
+    data_url = str(value or "").strip()
+    if not re.match(r"^data:image/(?:png|jpe?g|webp);base64,", data_url, flags=re.I):
+        raise HTTPException(400, f"{label}格式不支持，请使用 PNG、JPG 或 WebP")
+    if len(data_url) > max_chars:
+        raise HTTPException(413, f"{label}过大，请压缩后重试")
+    return data_url
+
+
+def _custom_canvas_image_refs(values: List[str]) -> List[ImageRef]:
+    refs = []
+    total = 0
+    for idx, value in enumerate((values or [])[:8], start=1):
+        data_url = _custom_canvas_data_url(value, f"第 {idx} 张参考图")
+        total += len(data_url)
+        if total > 48 * 1024 * 1024:
+            raise HTTPException(413, "参考图总大小过大，请减少数量或压缩后重试")
+        refs.append(ImageRef(
+            role="custom",
+            name=f"canvas-reference-{idx}.png",
+            mime=data_url[5:data_url.find(";")] if ";" in data_url else "image/png",
+            dataUrl=data_url,
+        ))
+    return refs
+
+
+def _custom_canvas_explicit_count(brief: str) -> int:
+    zh = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+    text = str(brief or "")
+    match = re.search(
+        r"(?:生成|出|来|做|给我|帮我做|帮我生成|同时生成)?\s*(\d+|[一两二三四五六七八九十])\s*"
+        r"(?:张|幅|版|款|种|个方向|个方案|方向|方案)",
+        text,
+    )
+    if not match:
+        return 1
+    value = int(match.group(1)) if match.group(1).isdigit() else zh.get(match.group(1), 1)
+    return max(1, min(10, value))
+
+
+def _custom_canvas_json_object(text: str) -> dict:
+    raw = _clean_llm_text(text)
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, flags=re.I)
+    if fenced:
+        raw = fenced.group(1).strip()
+    start, end = raw.find("{"), raw.rfind("}")
+    if start >= 0 and end > start:
+        raw = raw[start:end + 1]
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("模型没有返回 JSON 对象")
+    return parsed
+
+
+def _custom_canvas_variant_prompts(prompt: str, count: int, existing=None) -> List[str]:
+    variants = [
+        str(item or "").strip()
+        for item in (existing or [])
+        if isinstance(item, str) and str(item or "").strip()
+    ][:count]
+    directions = (
+        "保持主题与文案不变，采用主体居中、层级明确的构图。",
+        "保持主题与文案不变，采用左右错位和大留白构图。",
+        "保持主题与文案不变，采用近景主体与纵深背景构图。",
+        "保持主题与文案不变，采用网格化信息与重点聚焦构图。",
+        "保持主题与文案不变，采用强对角线动势构图。",
+    )
+    while len(variants) < count:
+        direction = directions[len(variants) % len(directions)]
+        variants.append(f"{prompt}\n第 {len(variants) + 1} 版：{direction}")
+    return variants
+
+
+def _custom_canvas_agent_fallback(req: CustomCanvasAgentReq) -> dict:
+    brief = str(req.brief or "").strip()
+    lower = brief.lower()
+    palette = "default"
+    for key, words in (
+        ("tech", ("科技", "智能", "ai", "未来", "数据", "算力")),
+        ("finance", ("金融", "银行", "投资", "理财", "财富")),
+        ("luxury", ("高端", "奢华", "旗舰", "黑金", "品质")),
+        ("warm", ("温暖", "节日", "公益", "关怀", "治愈")),
+        ("business", ("商务", "企业", "峰会", "发布会", "论坛")),
+    ):
+        if any(word in lower for word in words):
+            palette = key
+            break
+    scene_label = {
+        "enterprise_poster": "竖版企业海报",
+        "airport_screen": "机场大屏",
+        "banner": "横版网站 Banner",
+        "brand_kv": "品牌主视觉",
+    }.get(req.scene, "品牌主视觉")
+    references = ""
+    if req.references:
+        references = "参考随附图片中的真实主体、Logo、产品和视觉关系，保持其外观与文字原样，不虚构图片细节；"
+    topic = brief or "拟一版现代、专业、有清晰中文标题层级的商业视觉"
+    prompt = (
+        f"{references}生成一张 {req.size} 的完整{scene_label}。需求：{topic}。"
+        "画面主体明确，主标题和副标题层级清楚，构图完整，留白合理，商业级质感，中文文字准确可读。"
+    )
+    count = _custom_canvas_explicit_count(brief)
+    return {
+        "palette": palette,
+        "prompt": prompt,
+        "negativePrompt": CUSTOM_CANVAS_NEGATIVE,
+        "caption": "已按需求整理为可直接生成完整成图的提示词。",
+        "count": count,
+        **({"variants": _custom_canvas_variant_prompts(prompt, count)} if count > 1 else {}),
+    }
+
+
+async def _custom_canvas_agent_llm(req: CustomCanvasAgentReq) -> dict:
+    if not LLM_API_KEY:
+        raise RuntimeError("语言模型未配置")
+    fallback = _custom_canvas_agent_fallback(req)
+    images = []
+    for idx, value in enumerate((req.images or [])[:4], start=1):
+        try:
+            images.append(_custom_canvas_data_url(value, f"第 {idx} 张参考图", 12 * 1024 * 1024))
+        except HTTPException:
+            continue
+    labels = [
+        str(item.get("label") or "").strip()[:120]
+        for item in (req.references or [])[:8]
+        if isinstance(item, dict) and str(item.get("label") or "").strip()
+    ]
+    reference_note = ""
+    if labels or images:
+        reference_note = (
+            "\n存在参考图。必须忠实利用参考图中的真实主体、产品、Logo、文字和构图关系；"
+            "不要虚构看不到的细节，并在提示词中明确要求模型保持参考主体原样。"
+        )
+    system = "\n".join([
+        "你是星阵的资深商业视觉设计师，把用户需求整理成一条可直接生成完整成图的提示词。",
+        "只返回 JSON，不要 markdown：",
+        '{"palette":"tech|business|finance|warm|luxury|default","prompt":"完整提示词",'
+        '"negativePrompt":"英文负向词","caption":"一句话设计思路","count":1,"variants":[]}',
+        "提示词需写明目标尺寸、画面主体、构图、准确的画面文字及位置、配色与质感。",
+        "用户没有给标题时，拟一个 2 到 8 字的短主标题和一句副标题；不能把用户指令原话直接当作画面标题。",
+        "默认中文；只有用户明确要求英文时才使用英文。",
+        "count 仅根据用户明确要求的出图张数填写，最多 10；物体数量不等于出图张数。",
+        "多张时 variants 必须为独立完整提示词，保持主题和用户指定风格，只调整构图；用户没指定风格才可变化方向。",
+        "negativePrompt 最多 7 个英文词组，不要把 text、title、words 写入负向词。",
+    ])
+    user_text = (
+        f"需求：{str(req.brief or '').strip() or '拟一版有品质感的默认商业视觉'}\n"
+        f"场景：{req.scene}\n目标尺寸：{req.size}"
+        + (f"\n参考图名称：{'、'.join(labels)}" if labels else "")
+        + reference_note
+    )
+    can_see = bool(images and LLM_VISION_MODEL)
+    messages = [
+        {"role": "system", "content": system},
+        {
+            "role": "user",
+            "content": (
+                [{"type": "text", "text": user_text}]
+                + [{"type": "image_url", "image_url": {"url": image}} for image in images]
+                if can_see else user_text
+            ),
+        },
+    ]
+    body = {
+        "model": LLM_VISION_MODEL if can_see else LLM_MODEL,
+        "temperature": 0.7,
+        "messages": messages,
+        "response_format": {"type": "json_object"},
+    }
+    response = await _call_llm(body, force_deployed_model=not can_see)
+    if response.status_code >= 400:
+        raise _llm_error(response.status_code, _http_detail(response.json() if "json" in (response.headers.get("content-type") or "") else response.text[:800]))
+    data = response.json()
+    parsed = _custom_canvas_json_object(_deep_get(data, ("choices", 0, "message", "content"), default=""))
+    prompt = str(parsed.get("prompt") or fallback["prompt"]).strip()
+    palette = str(parsed.get("palette") or "default").strip()
+    if palette not in CUSTOM_CANVAS_PALETTES:
+        palette = "default"
+    count = _custom_canvas_explicit_count(req.brief)
+    result = {
+        "palette": palette,
+        "prompt": prompt,
+        "negativePrompt": str(parsed.get("negativePrompt") or CUSTOM_CANVAS_NEGATIVE).strip(),
+        "caption": str(parsed.get("caption") or fallback["caption"]).strip(),
+        "count": count,
+    }
+    if count > 1:
+        result["variants"] = _custom_canvas_variant_prompts(prompt, count, parsed.get("variants"))
+    return result
+
+
+async def _custom_canvas_generated_image(prompt: str, size: str, refs: List[ImageRef]) -> dict:
+    clean_prompt = str(prompt or "").strip()
+    if not clean_prompt:
+        raise HTTPException(400, "图片提示词为空")
+    if len(clean_prompt) > 12000:
+        raise HTTPException(400, "图片提示词过长")
+    ratio = _custom_canvas_ratio(size)
+    result = await image_generate(ImageGenerateReq(
+        prompt=f"{clean_prompt}\n最终输出画布：{size}，比例 {ratio}。",
+        refs=refs,
+        ratio=ratio,
+        strictRatio=True,
+    ))
+    used_refs = int(result.get("usedRefs") or 0)
+    if refs and used_refs < len(refs):
+        raise HTTPException(502, f"参考图未完整送达图片模型（实际使用 {used_refs}/{len(refs)}），本次已停止，避免错误出图")
+    output_ratio = _normalize_image_ratio(str(result.get("ratio") or ratio))
+    width, height = _custom_canvas_native_size(output_ratio)
+    return {
+        "dataUrl": result["dataUrl"],
+        "width": width,
+        "height": height,
+        "usedRefs": used_refs,
+        "skippedRefs": int(result.get("skippedRefs") or 0),
+        "model": result.get("model") or "",
+        "mode": result.get("mode") or "",
+    }
+
+
+async def _custom_canvas_mask_edit(req: CustomCanvasEditRegionReq) -> dict:
+    if not IMAGE_API_KEY:
+        raise HTTPException(500, "服务器未配置图片 API Key")
+    image = _custom_canvas_data_url(req.image, "待编辑图片")
+    mask = str(req.mask or "").strip()
+    if not re.match(r"^data:image/png;base64,", mask, flags=re.I):
+        raise HTTPException(400, "区域遮罩必须为 PNG")
+    if len(mask) > 24 * 1024 * 1024:
+        raise HTTPException(413, "区域遮罩过大，请缩小编辑范围后重试")
+    endpoint = _image_endpoint()
+    if not _image_is_maas_mode(model=IMAGE_MODEL, endpoint=endpoint):
+        raise HTTPException(501, "当前图片模型不支持精确遮罩编辑，已停止以避免改动框选区域之外的内容")
+    ratio = _custom_canvas_ratio(width=req.width, height=req.height)
+    ref_file = _data_url_to_file(image, "canvas-region-source.png")
+    prompt = (
+        f"仅在遮罩指定的编辑区域内：{str(req.instruction or '').strip() or '优化细节'}。"
+        "编辑区域之外的所有内容必须与原图完全一致，不得改动。"
+    )
+    model = _maas_model_for_refs(IMAGE_MODEL, True)
+    body = _maas_image_body(prompt, model, ratio, [ref_file])
+    body["mask"] = {"image_url": mask}
+    body["input_fidelity"] = "high"
+    body["quality"] = "low"
+    headers = {
+        "Authorization": "Bearer " + IMAGE_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Accept-Encoding": "identity",
+    }
+    request_endpoint = _maas_endpoint_for_refs(endpoint, True)
+    try:
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(
+            timeout=httpx.Timeout(180.0, connect=12.0),
+            trust_env=False,
+            follow_redirects=True,
+        )) as client:
+            response, data = await _post_json_with_retry(client, request_endpoint, body, headers)
+            if response.status_code >= 400:
+                raise HTTPException(response.status_code, _http_detail(data) or "区域编辑失败")
+            output = _image_from_response(data, "image/jpeg")
+            if not output:
+                raise HTTPException(502, "区域编辑没有返回图片")
+            output = await _generated_image_to_data_url(client, output, ratio)
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"无法连接区域编辑模型：{exc.__class__.__name__} {exc}")
+    width, height = _custom_canvas_native_size(ratio)
+    return {"dataUrl": output, "width": width, "height": height}
+
+
+@app.get("/api/custom-canvas/config")
+def custom_canvas_config(me=Depends(require_member)):
+    _require_custom_creator(me)
+    available = CUSTOM_CANVAS_DIR.is_dir() and (CUSTOM_CANVAS_DIR / "index.html").is_file()
+    published_projects = []
+    for item in store.list_custom_projects(me["id"], "canvas"):
+        state = item.get("projectState") if isinstance(item.get("projectState"), dict) else {}
+        source_project_id = str(state.get("sourceProjectId") or "").strip()
+        delivery_id = str(item.get("publishedDeliveryId") or "").strip()
+        if (
+            item.get("status") != "published"
+            or not source_project_id
+            or not delivery_id
+        ):
+            continue
+        published_projects.append({
+            "projectId": source_project_id[:180],
+            "deliveryId": delivery_id[:160],
+            "publishedAt": int(item.get("publishedAt") or item.get("updatedAt") or 0),
+            "itemIds": [
+                str(value)[:180]
+                for value in (state.get("publishedItemIds") or [])[:20]
+                if str(value or "").strip()
+            ],
+        })
+    return {
+        "ok": True,
+        "available": available,
+        "basePath": "/XZ-Design/",
+        "persistence": "browser-owner-scoped",
+        "ownerScope": "authenticated-member",
+        "storageNamespace": store.custom_canvas_storage_namespace(me["id"]),
+        "publishedProjects": published_projects,
+        "features": [
+            "agent",
+            "generate",
+            "references",
+            "enhance",
+            "mask-edit",
+            "transform",
+            "export-bridge",
+            "published-state",
+        ],
+    }
+
+
+@app.post("/api/custom-canvas/agent")
+async def custom_canvas_agent(req: CustomCanvasAgentReq, me=Depends(require_member)):
+    _require_custom_creator(me)
+    try:
+        return await _custom_canvas_agent_llm(req)
+    except Exception as exc:
+        print(f"[custom-canvas] agent fallback: {exc.__class__.__name__}: {str(exc)[:240]}", file=sys.stderr)
+        return _custom_canvas_agent_fallback(req)
+
+
+@app.post("/api/custom-canvas/generate")
+async def custom_canvas_generate(req: CustomCanvasGenerateReq, me=Depends(require_member)):
+    _require_custom_creator(me)
+    refs = _custom_canvas_image_refs(req.references)
+    prompt = str(req.prompt or "").strip()
+    negative = ", ".join(part.strip() for part in str(req.negativePrompt or "").split(",")[:7] if part.strip())
+    if negative:
+        prompt += f"\n画面中不要出现：{negative}。"
+    images = await asyncio.gather(*[
+        _custom_canvas_generated_image(prompt, req.size, refs)
+        for _ in range(req.count)
+    ])
+    prefix = str(req.labelPrefix or "Draft").strip()[:80] or "Draft"
+    output = []
+    for index, image in enumerate(images):
+        variant = req.startVariant + index
+        output.append({
+            "dataUrl": image["dataUrl"],
+            "width": image["width"],
+            "height": image["height"],
+            "label": f"{prefix} {variant:02d}",
+            "variant": variant,
+        })
+    receipt = images[0] if images else {}
+    return {
+        "images": output,
+        "source": "platform",
+        "usedRefs": receipt.get("usedRefs", 0),
+        "skippedRefs": receipt.get("skippedRefs", 0),
+        "model": receipt.get("model", ""),
+        "mode": receipt.get("mode", ""),
+    }
+
+
+@app.post("/api/custom-canvas/enhance")
+async def custom_canvas_enhance(req: CustomCanvasEnhanceReq, me=Depends(require_member)):
+    _require_custom_creator(me)
+    image = _custom_canvas_data_url(req.image, "待增强图片")
+    prompt = (
+        "以参考图为唯一内容来源，保持原图比例、构图、主体位置、品牌元素、全部文字与配色准确不变；"
+        "显著提升清晰度、边缘锐度、材质纹理、画面层次和远距离可读性，不新增元素、水印或文字。"
+    )
+    result = await _custom_canvas_generated_image(
+        prompt,
+        req.size,
+        _custom_canvas_image_refs([image]),
+    )
+    return {
+        "images": [{
+            "dataUrl": result["dataUrl"],
+            "width": result["width"],
+            "height": result["height"],
+        }],
+        "source": "platform",
+    }
+
+
+@app.post("/api/custom-canvas/edit-region")
+async def custom_canvas_edit_region(req: CustomCanvasEditRegionReq, me=Depends(require_member)):
+    _require_custom_creator(me)
+    return {"image": await _custom_canvas_mask_edit(req)}
+
+
+@app.post("/api/custom-canvas/transform")
+async def custom_canvas_transform(req: CustomCanvasTransformReq, me=Depends(require_member)):
+    _require_custom_creator(me)
+    image = _custom_canvas_data_url(req.image, "待处理图片")
+    prompt = str(req.prompt or "").strip() or "优化这张图"
+    fidelity = "high" if str(req.fidelity or "").lower() != "low" else "low"
+    prompt += (
+        "\n以参考图为核心，必须保留主体身份、Logo 与文字内容，允许按指令重组视觉风格。"
+        if fidelity == "high"
+        else "\n以参考图主体为内容来源，按指令进行明显的视觉风格变化。"
+    )
+    result = await _custom_canvas_generated_image(
+        prompt,
+        req.size,
+        _custom_canvas_image_refs([image]),
+    )
+    return {"image": {
+        "dataUrl": result["dataUrl"],
+        "width": result["width"],
+        "height": result["height"],
+    }}
+
+
+def _custom_project_error(error):
+    if error == "forbidden":
+        raise HTTPException(403, "无权访问其他成员的定制创作项目")
+    if error == "not_found":
+        raise HTTPException(404, "定制创作项目不存在")
+    raise HTTPException(400, "定制创作项目请求无效")
+
+
+def _save_custom_project(me, req, project_id=""):
+    _require_custom_creator(me)
+    payload = (
+        req.model_dump(exclude_unset=True)
+        if hasattr(req, "model_dump")
+        else req.dict(exclude_unset=True)
+    )
+    # “已发布”和交付单关联必须由后续原子发布接口写入，普通草稿保存不能伪造。
+    if payload.get("status") == "published" or "publishedDeliveryId" in payload:
+        raise HTTPException(400, "发布状态只能由定制创作发布接口更新")
+    try:
+        item, error = store.save_custom_project(me["id"], payload, project_id)
+    except ValueError as exc:
+        reason = str(exc)
+        messages = {
+            "invalid_custom_project_kind": "项目类型只支持视频工坊或无限画布",
+            "invalid_custom_project_status": "项目状态无效",
+            "custom_project_state_too_large": "项目状态过大，请先把图片或视频上传为独立输出文件",
+            "custom_project_binary_not_allowed": "项目状态不能内嵌 Base64 图片、视频或音频，请使用输出文件接口",
+        }
+        raise HTTPException(400, messages.get(reason, "定制创作项目保存失败"))
+    if error:
+        _custom_project_error(error)
+    return item
+
+
+@app.get("/api/custom-projects")
+def custom_projects_list(kind: str = "", me=Depends(require_member)):
+    _require_custom_creator(me)
+    try:
+        return {"items": store.list_custom_projects(me["id"], kind)}
+    except ValueError:
+        raise HTTPException(400, "项目类型只支持 video 或 canvas")
+
+
+@app.post("/api/custom-projects")
+def custom_projects_create(req: CustomProjectReq, me=Depends(require_member)):
+    return {"ok": True, "project": _save_custom_project(me, req)}
+
+
+@app.get("/api/custom-projects/{project_id}")
+def custom_projects_get(project_id: str, me=Depends(require_member)):
+    _require_custom_creator(me)
+    item, error = store.get_custom_project(project_id, me["id"])
+    if error:
+        _custom_project_error(error)
+    return {"project": item}
+
+
+@app.put("/api/custom-projects/{project_id}")
+def custom_projects_update(project_id: str, req: CustomProjectReq, me=Depends(require_member)):
+    return {"ok": True, "project": _save_custom_project(me, req, project_id)}
+
+
+@app.post("/api/custom-projects/{project_id}/publish")
+def custom_projects_publish(
+    project_id: str,
+    req: CustomProjectPublishReq,
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    payload = (
+        req.model_dump()
+        if hasattr(req, "model_dump")
+        else req.dict()
+    )
+    result, error = store.publish_custom_project_bundle(
+        project_id,
+        me["id"],
+        payload,
+    )
+    if error in {
+        "delivery_not_found",
+        "delivery_mismatch",
+        "delivery_asset_missing",
+        "delivery_asset_mismatch",
+        "delivery_asset_deleted",
+        "account_not_found",
+        "account_deleted",
+        "account_mode_mismatch",
+    }:
+        raise HTTPException(409, "交付记录尚未完整同步或与当前项目不匹配")
+    if error == "invalid_publish_request":
+        raise HTTPException(400, "缺少定制项目或交付记录编号")
+    if error:
+        _custom_project_error(error)
+    return {"ok": True, **result}
+
+
+@app.post("/api/custom-projects/{project_id}/unpublish")
+def custom_projects_unpublish(
+    project_id: str,
+    req: CustomProjectPublishReq,
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    result, error = store.unpublish_custom_project_delivery(
+        project_id,
+        me["id"],
+        req.deliveryId,
+    )
+    if error == "invalid_publish_request":
+        raise HTTPException(400, "缺少定制项目或交付记录编号")
+    if error == "delivery_already_published":
+        raise HTTPException(409, "供应商已回传发布链接或交付已标记为已发布，无法回撤")
+    if error == "delivery_already_downloaded":
+        raise HTTPException(409, "供应商已下载该交付，无法回撤")
+    if error in {"delivery_not_found", "delivery_mismatch"}:
+        raise HTTPException(409, "待回撤交付不存在或与当前项目不匹配")
+    if error:
+        _custom_project_error(error)
+    return {"ok": True, **result}
+
+
+@app.delete("/api/custom-projects/{project_id}")
+def custom_projects_delete(project_id: str, me=Depends(require_member)):
+    _require_custom_creator(me)
+    ok, error = store.delete_custom_project(project_id, me["id"])
+    if error:
+        _custom_project_error(error)
+    return {"ok": bool(ok)}
+
+
 @app.put("/api/db/{collection}")
 def api_put(collection: str, req: PutReq, me=Depends(require_member)):
-    """写穿透：按 id upsert（后写胜），绝不整表删，故不会冲掉他人数据。"""
+    """写穿透：管理员管理共享配置，创作者只能同步本人或关联交付的数据。"""
+    if collection in store.CUSTOM_COLLECTIONS:
+        raise HTTPException(403, "定制创作数据必须使用专用接口，禁止批量回推")
     if me["role"] in {"supplier_parent", "supplier_child"}:
         if collection != "assets":
             raise HTTPException(403, "供应商账号只能更新交付清单")
@@ -3746,22 +4934,48 @@ def api_put(collection: str, req: PutReq, me=Depends(require_member)):
             if assigned is not None and item.get("accountId") not in assigned:
                 raise HTTPException(403, "无权更新未分配账号的素材")
     try:
-        store.upsert_docs(collection, req.items)
+        result = {"written": len(req.items or []), "denied": 0}
+        if me["role"] in {"supplier_parent", "supplier_child"}:
+            result["written"] = store.upsert_docs(collection, req.items)
+        elif collection == "assets" and me["role"] in {"admin", "editor"}:
+            store.upsert_member_assets(me["id"], me["role"], req.items)
+        elif collection == "voicePresets":
+            store.upsert_voice_presets(me["id"], me["role"], req.items)
+        else:
+            result = store.upsert_member_collection(me["id"], me["role"], collection, req.items)
+    except PermissionError:
+        raise HTTPException(403, "当前账号无权修改该共享配置或其他成员的业务数据")
     except ValueError as exc:
         msg = str(exc)
         if msg.startswith("suspicious_account_bulk"):
             raise HTTPException(409, "检测到旧浏览器缓存正在批量回推账号，服务器已拒绝本次写入。请刷新页面后重新登录。")
         raise HTTPException(400, "未知集合")
-    return {"ok": True, "n": len(req.items)}
+    return {
+        "ok": True,
+        "n": int(result.get("written") or 0),
+        **({"denied": int(result.get("denied") or 0)} if result.get("denied") else {}),
+    }
 
 
 @app.delete("/api/db/{collection}/{doc_id}")
 def api_del(collection: str, doc_id: str, me=Depends(require_member)):
+    if collection in store.CUSTOM_COLLECTIONS:
+        raise HTTPException(403, "定制创作数据必须使用专用接口")
     if me["role"] in {"supplier_parent", "supplier_child"}:
         raise HTTPException(403, "供应商账号不能删除业务数据")
     try:
-        store.delete_doc(collection, doc_id)
-    except ValueError:
+        store.delete_member_doc(
+            collection,
+            doc_id,
+            me["id"],
+            me["role"],
+            protect_custom_delivery=True,
+        )
+    except PermissionError:
+        raise HTTPException(403, "当前账号无权删除该共享配置或其他成员的业务数据")
+    except ValueError as exc:
+        if str(exc) == "custom_delivery_requires_unpublish":
+            raise HTTPException(409, "定制创作交付必须通过项目回撤接口删除")
         raise HTTPException(400, "未知集合")
     return {"ok": True}
 
@@ -3821,11 +5035,13 @@ def _upload_path(name: str) -> Path:
 async def file_put(asset_id: str, req: Request, filename: str = "", mime: str = "", me=Depends(require_member)):
     """把资产二进制保存到服务端，返回所有成员可访问的同源 URL。
     不使用 multipart，避免老 Python/FastAPI 环境额外安装 python-multipart。"""
+    if not store.can_write_asset_file(asset_id, me["id"], me["role"]):
+        raise HTTPException(403, "不能覆盖其他成员的私有素材文件")
     data = await req.body()
     if not data:
         raise HTTPException(400, "文件为空")
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    stem = _safe_file_stem(asset_id)
+    stem = _safe_file_stem(f"{me['id']}--{asset_id}")
     for old in UPLOAD_DIR.glob(stem + ".*"):
         try:
             old.unlink()
@@ -3857,6 +5073,8 @@ def file_get(name: str, request: Request):
 
 @app.delete("/api/files/{name}")
 def file_delete(name: str, me=Depends(require_member)):
+    if not store.can_delete_asset_file(Path(name).name, me["id"], me["role"]):
+        raise HTTPException(403, "不能删除其他成员的私有素材文件")
     path = _upload_path(name)
     if path.exists():
         path.unlink()
@@ -4133,10 +5351,433 @@ def member_requests_reject(rid: str, me=Depends(require_member)):
     return {"ok": True}
 
 
+# =========================================================
+# 定制创作 · 视频工坊 sidecar
+# =========================================================
+def _custom_video_session_member(request: Request):
+    token = str(request.cookies.get(VIDEO_WORKSHOP_SESSION_COOKIE) or "").strip()
+    if not token:
+        token = str(request.headers.get("authorization") or "").replace("Bearer ", "").strip()
+    member_id = store.parse_token(token) if token else None
+    row = store.get_member(member_id) if member_id else None
+    if not row:
+        raise HTTPException(401, "视频工坊登录态已过期，请刷新定制创作页面")
+    member = store.member_public(row)
+    return _require_custom_creator(member)
+
+
+def _video_workshop_safe_path(root: Path, relative_path: str):
+    clean = str(relative_path or "").replace("\\", "/").lstrip("/")
+    path = (root / clean).resolve()
+    try:
+        common = os.path.commonpath((str(root.resolve()), str(path)))
+    except ValueError:
+        raise HTTPException(400, "视频工坊文件路径无效")
+    if common != str(root.resolve()):
+        raise HTTPException(400, "视频工坊文件路径无效")
+    return path
+
+
+def _video_workshop_owned_project(me, project_id: str):
+    project = store.find_custom_video_project(me["id"], str(project_id or "").strip())
+    if not project:
+        raise HTTPException(403, "无权访问其他成员的视频工坊项目")
+    return project
+
+
+def _rewrite_video_workshop_urls(value):
+    if isinstance(value, list):
+        return [_rewrite_video_workshop_urls(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _rewrite_video_workshop_urls(item) for key, item in value.items()}
+    if isinstance(value, str) and value.startswith(("/outputs/", "/uploads/")):
+        return "/custom-video" + value
+    return value
+
+
+def _sync_video_workshop_project(me, source):
+    mapped, error = store.sync_custom_video_project(me["id"], source)
+    if error == "forbidden":
+        raise HTTPException(403, "视频工坊项目归属冲突")
+    if error or not mapped:
+        raise HTTPException(500, "视频工坊项目映射失败")
+    project = _rewrite_video_workshop_urls(source)
+    project["_integration"] = {
+        "kind": "video",
+        "customProjectId": mapped["id"],
+        "workshopProjectId": str(source.get("id") or ""),
+        "publishedDeliveryId": str(mapped.get("publishedDeliveryId") or ""),
+        "publishedAt": int(mapped.get("publishedAt") or 0),
+        "publishedCount": max(0, int(mapped.get("publishedCount") or 0)),
+    }
+    return project
+
+
+async def _video_workshop_request(request: Request, api_path: str):
+    target = VIDEO_WORKSHOP_URL + "/api/" + api_path.lstrip("/")
+    body = await request.body()
+    headers = {"Accept": "application/json"}
+    content_type = request.headers.get("content-type")
+    if content_type:
+        headers["Content-Type"] = content_type
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(VIDEO_WORKSHOP_TIMEOUT, connect=8.0),
+            trust_env=False,
+        ) as client:
+            return await client.request(
+                request.method,
+                target,
+                content=body or None,
+                params=list(request.query_params.multi_items()),
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            503,
+            "视频工坊服务未运行。请启动独立 sidecar（默认 127.0.0.1:8765）后重试："
+            + f"{exc.__class__.__name__}",
+        )
+
+
+def _video_workshop_json_response(data, status_code=200):
+    return Response(
+        content=json.dumps(data, ensure_ascii=False),
+        status_code=status_code,
+        media_type="application/json",
+        headers=NO_CACHE_HEADERS,
+    )
+
+
+def _video_workshop_index_html():
+    index_path = _video_workshop_safe_path(VIDEO_WORKSHOP_WEB_DIR, "index.html")
+    if not index_path.is_file():
+        raise HTTPException(
+            503,
+            "视频工坊静态资源不存在，请部署“视频工坊产品试验”目录或设置 VIDEO_WORKSHOP_WEB_DIR",
+        )
+    html = index_path.read_text("utf-8")
+    html = re.sub(
+        r"<html\b",
+        '<html data-platform-embedded="true"',
+        html,
+        count=1,
+        flags=re.I,
+    )
+    app_match = re.search(
+        r'<script\s+src="(?P<src>/assets/app\.js[^"]*)"\s*></script>',
+        html,
+        flags=re.I,
+    )
+    app_src = "/custom-video/assets/app.js"
+    if app_match:
+        app_src = "/custom-video" + app_match.group("src")
+        html = html[:app_match.start()] + html[app_match.end():]
+    html = html.replace('="/assets/', '="/custom-video/assets/')
+    bootstrap = r"""
+    <script>
+    (() => {
+      const APP_SRC = __APP_SRC__;
+      const TOKEN_KEY = "dumate.token";
+      const LEGACY_PROJECT_KEY = "xingzhen-video-project";
+      const PROJECT_KEY_PREFIX = "xingzhen-video-project:";
+      const nativeFetch = window.fetch.bind(window);
+      let latestProject = null;
+
+      function fail(message) {
+        document.body.innerHTML =
+          '<main style="min-height:100vh;display:grid;place-items:center;background:#050505;color:#fff;font:15px system-ui;padding:32px;text-align:center">' +
+          '<div><strong style="display:block;font-size:20px;margin-bottom:12px">视频工坊暂不可用</strong><span style="color:#a5a5a5">' +
+          String(message || "请刷新后重试") + "</span></div></main>";
+      }
+
+      function titleFor(project) {
+        const named = String(project?.name || "").trim();
+        if (named && named !== "新会话") return named;
+        return String(project?.plan?.title || named || "未命名视频").trim();
+      }
+
+      function payloadFor(project, selectedOutput) {
+        const outputs = Array.isArray(project?.outputs) ? project.outputs : [];
+        const preferredRatio = String(project?.plan?.aspect_ratio || "");
+        const output = selectedOutput
+          || outputs.find(item => String(item?.aspectRatio || "") === preferredRatio)
+          || outputs[0]
+          || null;
+        const url = String(output?.url || output?.downloadUrl || "");
+        return {
+          kind: "video",
+          projectId: String(project?.id || ""),
+          title: titleFor(project),
+          videoUrl: url,
+          url,
+          downloadUrl: String(output?.downloadUrl || url),
+          aspectRatio: String(output?.aspectRatio || preferredRatio || "9:16"),
+          plan: project?.plan || null,
+          project,
+          status: String(project?.status || ""),
+        };
+      }
+
+      function publishProject(project, selectedOutput) {
+        if (!project || !project.id) return;
+        latestProject = project;
+        const payload = payloadFor(project, selectedOutput);
+        window.parent.postMessage(
+          { type: "custom-video:project", project, payload },
+          window.location.origin
+        );
+        if (payload.videoUrl && project.status === "succeeded") {
+          window.parent.postMessage(
+            { type: "custom-video:output", payload },
+            window.location.origin
+          );
+        }
+      }
+
+      function rewrittenUrl(input) {
+        if (typeof input !== "string") return input;
+        if (input.startsWith("/api/")) return "/custom-video" + input;
+        return input;
+      }
+
+      window.fetch = async (input, init = {}) => {
+        const response = await nativeFetch(rewrittenUrl(input), {
+          ...init,
+          credentials: "same-origin",
+        });
+        try {
+          const raw = typeof input === "string" ? input : String(input?.url || "");
+          if (/^\/api\/(?:chat|projects(?:\/|$))/.test(raw)) {
+            response.clone().json().then(data => {
+              if (data && data.id) publishProject(data);
+            }).catch(() => {});
+          }
+        } catch (_) {}
+        return response;
+      };
+
+      document.addEventListener("click", event => {
+        const button = event.target.closest?.("#outputTabs button");
+        if (!button || !latestProject) return;
+        window.setTimeout(() => {
+          const buttons = [...document.querySelectorAll("#outputTabs button")];
+          const index = Math.max(0, buttons.indexOf(button));
+          publishProject(latestProject, latestProject.outputs?.[index]);
+        }, 0);
+      });
+
+      async function boot() {
+        const token = String(localStorage.getItem(TOKEN_KEY) || "");
+        if (!token) {
+          fail("主平台登录已失效，请返回首页重新登录。");
+          return;
+        }
+        let sessionResponse;
+        try {
+          sessionResponse = await nativeFetch("/api/custom-video/session", {
+            method: "POST",
+            headers: { Authorization: "Bearer " + token },
+            credentials: "same-origin",
+            cache: "no-store",
+          });
+        } catch (_) {
+          fail("无法建立主平台会话，请检查本地服务。");
+          return;
+        }
+        const session = await sessionResponse.json().catch(() => ({}));
+        if (!sessionResponse.ok) {
+          fail(session.detail || "无权使用定制创作。");
+          return;
+        }
+        const allowed = new Set(Array.isArray(session.allowedProjectIds) ? session.allowedProjectIds : []);
+        const projectKey = PROJECT_KEY_PREFIX + String(session.memberId || "");
+        window.__XINGZHEN_VIDEO_PROJECT_KEY__ = projectKey;
+        let savedProjectId = String(localStorage.getItem(projectKey) || "");
+        const legacyProjectId = String(localStorage.getItem(LEGACY_PROJECT_KEY) || "");
+        if (!savedProjectId && legacyProjectId && allowed.has(legacyProjectId)) {
+          localStorage.setItem(projectKey, legacyProjectId);
+          savedProjectId = legacyProjectId;
+        }
+        localStorage.removeItem(LEGACY_PROJECT_KEY);
+        if (savedProjectId && !allowed.has(savedProjectId)) {
+          localStorage.removeItem(projectKey);
+        }
+        window.parent.postMessage({ type: "custom-video:ready" }, window.location.origin);
+        const script = document.createElement("script");
+        script.src = APP_SRC;
+        script.onerror = () => fail("视频工坊脚本加载失败。");
+        document.body.append(script);
+      }
+
+      boot();
+    })();
+    </script>
+    """.replace("__APP_SRC__", json.dumps(app_src))
+    return html.replace("</body>", bootstrap + "\n  </body>")
+
+
+@app.post("/api/custom-video/session")
+def custom_video_session(request: Request, me=Depends(require_member)):
+    _require_custom_creator(me)
+    token = str(request.headers.get("authorization") or "").replace("Bearer ", "").strip()
+    if not token or store.parse_token(token) != me["id"]:
+        raise HTTPException(401, "主平台登录态无效")
+    response = _video_workshop_json_response({
+        "ok": True,
+        "memberId": me["id"],
+        "allowedProjectIds": store.list_custom_video_project_ids(me["id"]),
+    })
+    response.set_cookie(
+        VIDEO_WORKSHOP_SESSION_COOKIE,
+        token,
+        max_age=store.TOKEN_TTL,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+        path="/custom-video",
+    )
+    return response
+
+
+@app.get("/custom-video")
+@app.get("/custom-video/")
+def custom_video_index():
+    return Response(
+        content=_video_workshop_index_html(),
+        media_type="text/html",
+        headers=NO_CACHE_HEADERS,
+    )
+
+
+@app.get("/custom-video/assets/{asset_path:path}")
+def custom_video_asset(asset_path: str):
+    path = _video_workshop_safe_path(VIDEO_WORKSHOP_WEB_DIR / "assets", asset_path)
+    if not path.is_file():
+        raise HTTPException(404, "视频工坊静态资源不存在")
+    return no_cache_file(path)
+
+
+@app.get("/custom-video/outputs/{file_path:path}")
+def custom_video_output(file_path: str, request: Request, me=Depends(_custom_video_session_member)):
+    parts = Path(str(file_path or "")).parts
+    if len(parts) < 2:
+        raise HTTPException(404, "视频成片不存在")
+    _video_workshop_owned_project(me, parts[0])
+    path = _video_workshop_safe_path(VIDEO_WORKSHOP_OUTPUT_DIR, file_path)
+    if not path.is_file():
+        raise HTTPException(404, "视频成片不存在或已被清理")
+    return ranged_file_response(request, path, media_type=_media_type_for_path(path), cache_seconds=300)
+
+
+@app.get("/custom-video/uploads/{file_path:path}")
+def custom_video_upload(file_path: str, request: Request, me=Depends(_custom_video_session_member)):
+    parts = Path(str(file_path or "")).parts
+    if len(parts) < 2:
+        raise HTTPException(404, "视频工坊附件不存在")
+    _video_workshop_owned_project(me, parts[0])
+    path = _video_workshop_safe_path(VIDEO_WORKSHOP_UPLOAD_DIR, file_path)
+    if not path.is_file():
+        raise HTTPException(404, "视频工坊附件不存在或已被清理")
+    return ranged_file_response(request, path, media_type=_media_type_for_path(path), cache_seconds=300)
+
+
+@app.api_route(
+    "/custom-video/api/{api_path:path}",
+    methods=["GET", "POST", "PATCH"],
+)
+async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_video_session_member)):
+    path = str(api_path or "").strip("/")
+    method = request.method.upper()
+    if path == "health" and method == "GET":
+        upstream = await _video_workshop_request(request, path)
+        return Response(
+            content=upstream.content,
+            status_code=upstream.status_code,
+            media_type="application/json",
+            headers=NO_CACHE_HEADERS,
+        )
+    if path == "projects" and method == "GET":
+        upstream = await _video_workshop_request(request, path)
+        if upstream.status_code >= 400:
+            return Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
+        try:
+            data = upstream.json()
+        except Exception:
+            raise HTTPException(502, "视频工坊项目列表返回异常")
+        mapped_projects = {}
+        for mapped in store.list_custom_projects(me["id"], "video"):
+            state = mapped.get("projectState") if isinstance(mapped.get("projectState"), dict) else {}
+            workshop_project_id = str(state.get("workshopProjectId") or "").strip()
+            if (
+                state.get("integration") == "video-workshop"
+                and workshop_project_id
+            ):
+                mapped_projects[workshop_project_id] = mapped
+        visible_items = []
+        for raw_item in data.get("items") or []:
+            if not isinstance(raw_item, dict):
+                continue
+            project_id = str(raw_item.get("id") or "").strip()
+            mapped = mapped_projects.get(project_id)
+            if not mapped:
+                continue
+            item = _rewrite_video_workshop_urls(raw_item)
+            item["_integration"] = {
+                "kind": "video",
+                "customProjectId": str(mapped.get("id") or ""),
+                "workshopProjectId": project_id,
+                "publishedDeliveryId": str(mapped.get("publishedDeliveryId") or ""),
+                "publishedAt": int(mapped.get("publishedAt") or 0),
+                "publishedCount": max(0, int(mapped.get("publishedCount") or 0)),
+            }
+            visible_items.append(item)
+        data["items"] = visible_items
+        return _video_workshop_json_response(data)
+
+    project_match = re.fullmatch(r"projects/([^/]+)(?:/(retry|cancel))?", path)
+    if project_match:
+        project_id = project_match.group(1)
+        _video_workshop_owned_project(me, project_id)
+        upstream = await _video_workshop_request(request, path)
+        if upstream.status_code >= 400:
+            return Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
+        try:
+            project = upstream.json()
+        except Exception:
+            raise HTTPException(502, "视频工坊项目返回异常")
+        return _video_workshop_json_response(_sync_video_workshop_project(me, project))
+
+    if path == "chat" and method == "POST":
+        try:
+            payload = json.loads((await request.body()).decode("utf-8"))
+        except Exception:
+            raise HTTPException(400, "视频工坊请求体不是合法 JSON")
+        existing_project_id = str(payload.get("projectId") or "").strip()
+        if existing_project_id:
+            _video_workshop_owned_project(me, existing_project_id)
+        upstream = await _video_workshop_request(request, path)
+        if upstream.status_code >= 400:
+            return Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
+        try:
+            project = upstream.json()
+        except Exception:
+            raise HTTPException(502, "视频工坊导演返回异常")
+        return _video_workshop_json_response(_sync_video_workshop_project(me, project))
+
+    raise HTTPException(404, "该视频工坊接口未开放给主平台")
+
+
 # ---------- 前端静态资源（仅暴露必要文件，不整目录托管，避免泄露 _backup_*/源码/方案文档） ----------
 app.mount("/js", NoCacheStaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
 app.mount("/styles", NoCacheStaticFiles(directory=str(FRONTEND_DIR / "styles")), name="styles")
 app.mount("/assets", NoCacheStaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
+if CUSTOM_CANVAS_DIR.is_dir():
+    app.mount(
+        "/XZ-Design",
+        NoCacheStaticFiles(directory=str(CUSTOM_CANVAS_DIR), html=True),
+        name="infinite-canvas",
+    )
 
 
 @app.get("/")

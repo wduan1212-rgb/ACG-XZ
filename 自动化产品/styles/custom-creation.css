@@ -1,0 +1,369 @@
+/* 定制创作：沉浸式外壳。子应用通过 iframe 隔离，规则只作用于 custom zone。 */
+body[data-zone="custom"] .view-root {
+  padding: 0;
+  overflow: hidden;
+  background: #f5f6f8;
+}
+
+.custom-creation-shell {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.custom-creation-header {
+  position: relative;
+  z-index: 10;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 0 18px;
+  background: #fff;
+  transition: color 240ms ease, background-color 240ms ease;
+}
+
+.custom-creation-header-spacer { min-width: 0; }
+
+/* 视频工坊使用深色沉浸顶栏；画布与语音继续保持主平台白色顶栏。 */
+.custom-creation-shell[data-custom-page="video"] .custom-creation-header {
+  color: rgba(255, 255, 255, .92);
+  background: #08090b;
+}
+.custom-creation-shell[data-custom-page="video"] .custom-creation-back {
+  color: rgba(255, 255, 255, .68);
+}
+.custom-creation-shell[data-custom-page="video"] .custom-creation-back:hover {
+  color: #fff;
+}
+.custom-creation-shell[data-custom-page="video"] .custom-creation-tab {
+  color: rgba(255, 255, 255, .48);
+}
+.custom-creation-shell[data-custom-page="video"] .custom-creation-tab:hover,
+.custom-creation-shell[data-custom-page="video"] .custom-creation-tab.is-active {
+  color: #fff;
+}
+.custom-creation-shell[data-custom-page="video"] .custom-creation-tab.is-locked:hover {
+  color: rgba(255, 255, 255, .72);
+}
+.custom-creation-shell[data-custom-page="video"] .custom-creation-tab small {
+  color: rgba(255, 255, 255, .42);
+}
+.custom-creation-shell[data-custom-page="video"] .custom-creation-indicator {
+  background: #fff;
+}
+
+.custom-creation-back {
+  justify-self: start;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 6px;
+  color: #737985;
+  font-size: 11.5px;
+  font-weight: 760;
+  transition: color 160ms ease, transform 160ms ease;
+}
+.custom-creation-back:hover { color: #111318; }
+.custom-creation-back:active { transform: translateX(-2px); }
+
+.custom-creation-tabs {
+  position: relative;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 34px;
+  min-width: 360px;
+}
+.custom-creation-tab {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 3px;
+  color: #9096a0;
+  font-size: 12px;
+  font-weight: 760;
+  white-space: nowrap;
+  transition: color 180ms ease, opacity 180ms ease;
+}
+.custom-creation-tab:hover,
+.custom-creation-tab.is-active { color: #111318; }
+.custom-creation-tab.is-locked { opacity: .46; }
+.custom-creation-tab.is-locked:hover { color: #59606b; opacity: .72; }
+.custom-creation-tab small {
+  color: #a3a8b1;
+  font-size: 8px;
+  font-weight: 700;
+}
+.custom-creation-tab:focus-visible,
+.custom-creation-back:focus-visible,
+.custom-publish-trigger:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, .42);
+  outline-offset: 2px;
+}
+.custom-creation-indicator {
+  position: absolute;
+  z-index: 2;
+  bottom: 6px;
+  left: 0;
+  width: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: #111318;
+  transform-origin: left center;
+  pointer-events: none;
+  transition:
+    width 420ms cubic-bezier(.22, 1, .36, 1),
+    transform 420ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.custom-creation-stage {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #f5f6f8;
+}
+.custom-tool-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.custom-tool-host.is-active {
+  animation: customToolEnter 280ms cubic-bezier(.16, 1, .3, 1) both;
+}
+.custom-tool-host[hidden] { display: none !important; }
+
+.custom-app-mount,
+.custom-app-mount > iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: #fff;
+}
+.custom-app-loading {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  color: #6f7681;
+  text-align: center;
+}
+.custom-app-loading b { color: #22262c; font-size: 13px; }
+.custom-app-loading em { font-size: 10.5px; font-style: normal; }
+.custom-app-loading.is-error { color: #b42318; }
+.custom-app-loading.is-error b { color: #7a271a; }
+
+.custom-publish-trigger {
+  position: absolute;
+  right: 22px;
+  bottom: 20px;
+  z-index: 12;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(17, 24, 39, .94);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, .22);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 12px;
+  font-weight: 800;
+  transition: transform 170ms ease, box-shadow 170ms ease, background 170ms ease;
+}
+.custom-publish-trigger:hover {
+  background: #111827;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, .28);
+  transform: translateY(-1px);
+}
+.custom-publish-trigger:active { transform: translateY(0) scale(.985); }
+.custom-publish-trigger[hidden] { display: none !important; }
+
+/* 语音生成只在内容区内部滚动，定制创作页面本身始终保持单屏。 */
+.custom-tool-host.is-voice {
+  height: 100%;
+  padding: 8px 12px 12px;
+  overflow: hidden;
+}
+.custom-tool-host.is-voice .voice-lab-page.is-embedded {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+}
+.custom-tool-host.is-voice .vl-workbench {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.custom-tool-host.is-voice .vl-workbench > .glass-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+.custom-tool-host.is-voice .vl-voice-list,
+.custom-tool-host.is-voice .vl-audio-library,
+.custom-tool-host.is-voice .vl-side-panel {
+  min-height: 0;
+}
+.custom-tool-host.is-voice .vl-side-panel {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.custom-tool-host.is-voice.vl-view-switching { overflow: hidden; }
+.custom-tool-host.is-voice .vl-editor-mode-tabs.is-switching { pointer-events: none; }
+
+/* 统一发布桥接弹窗。 */
+.custom-publish-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.custom-publish-head em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+}
+.custom-publish-body {
+  display: grid;
+  gap: 14px;
+  max-height: min(68vh, 680px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+.custom-publish-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.custom-publish-copy-field > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.custom-publish-copy-field textarea { resize: vertical; }
+.custom-publish-cover {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #f8fafc;
+}
+.custom-publish-cover-frame {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border: 1px dashed transparent;
+  background: #eef1f5;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+.custom-publish-cover-frame:hover,
+.custom-publish-cover-frame:focus-visible {
+  border-color: rgba(15, 23, 42, .28);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, .05);
+}
+.custom-publish-cover-frame.is-dragover {
+  border-color: var(--text);
+  background: #fff;
+  box-shadow: 0 0 0 4px rgba(15, 23, 42, .08);
+}
+.custom-publish-cover-frame.is-busy {
+  cursor: wait;
+  opacity: .72;
+}
+.custom-publish-cover-frame.is-disabled {
+  cursor: not-allowed;
+  opacity: .62;
+  pointer-events: none;
+}
+.custom-publish-cover-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.custom-publish-cover-frame > div {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 14px;
+  color: var(--muted);
+  text-align: center;
+}
+.custom-publish-cover-frame b { color: var(--text); font-size: 11px; }
+.custom-publish-cover-frame em { font-size: 9px; font-style: normal; line-height: 1.5; }
+.custom-publish-cover > div:last-child { display: grid; justify-items: start; gap: 8px; }
+.custom-publish-cover p { color: var(--muted); font-size: 11px; line-height: 1.65; }
+.custom-publish-status {
+  padding: 9px 11px;
+  border: 1px solid rgba(15, 23, 42, .07);
+  color: var(--muted);
+  background: #f8fafc;
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+@keyframes customToolEnter {
+  from { opacity: 0; transform: translate3d(0, 5px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@media (max-width: 860px) {
+  .custom-creation-header {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    padding-inline: 12px;
+  }
+  .custom-creation-header-spacer { display: none; }
+  .custom-creation-tabs { min-width: 0; gap: clamp(12px, 3vw, 26px); }
+  .custom-creation-back span { display: none; }
+  .custom-publish-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .custom-creation-shell { grid-template-rows: 44px minmax(0, 1fr); }
+  .custom-creation-header { padding-inline: 8px; }
+  .custom-creation-tabs { gap: 9px; }
+  .custom-creation-tab { font-size: 10.5px; }
+  .custom-creation-tab small { display: none; }
+  .custom-publish-trigger { right: 12px; bottom: 12px; }
+  .custom-tool-host.is-voice { padding: 6px; }
+  .custom-publish-cover { grid-template-columns: 112px minmax(0, 1fr); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .custom-creation-indicator { transition-duration: 1ms; }
+  .custom-tool-host { animation-duration: 1ms; transform: none; }
+}

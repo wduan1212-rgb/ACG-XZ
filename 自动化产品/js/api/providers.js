@@ -12,14 +12,24 @@
    } */
 
 import { state } from "../core/store.js";
+import * as remote from "../core/remote.js";
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { ACCOUNT_PROFILE_SEED } from "../data/accountProfilesSeed.js";
-import { XHS_ACCOUNT_SEED } from "../data/xhsAccountsSeed.js";
 
 const registry = new Map();
 const imageRuns = new Map();
 const serverVideo = { checked: false, failed: false, configured: false, reachable: true, provider: "", model: "", error: "" };
-const serverImage = { checked: false, failed: false, configured: false, reachable: true, provider: "", model: "", mode: "", error: "" };
+const serverImage = {
+  checked: false,
+  failed: false,
+  configured: false,
+  reachable: true,
+  provider: "",
+  model: "",
+  mode: "",
+  referenceReceipt: false,
+  error: ""
+};
 const serverTts = { checked: false, failed: false, configured: false, provider: "", model: "", voiceId: "", voices: [], error: "" };
 let providerStatusPromise = null;
 export function registerProvider(adapter) { registry.set(adapter.id, adapter); }
@@ -55,6 +65,11 @@ function apiCandidates(path) {
   return out;
 }
 
+function creatorAuthHeaders(headers = {}) {
+  const token = remote.getToken();
+  return token ? { ...headers, Authorization: `Bearer ${token}` } : { ...headers };
+}
+
 async function readResponsePayload(res) {
   const raw = await res.text().catch(() => "");
   if (!raw) return { data: null, message: `HTTP ${res.status}` };
@@ -76,7 +91,11 @@ async function fetchJsonWithTimeout(url, timeoutMs = 3500) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await fetch(candidate, { cache: "no-store", signal: ctrl.signal });
+      const res = await fetch(candidate, {
+        cache: "no-store",
+        headers: creatorAuthHeaders(),
+        signal: ctrl.signal
+      });
       const payload = await readResponsePayload(res);
       if (!res.ok) throw new Error(payload.message || ("HTTP " + res.status));
       return payload.data || {};
@@ -97,7 +116,7 @@ async function postJsonWithFallback(url, body, timeoutMs = 240000) {
     try {
       const res = await fetch(candidate, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: creatorAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
         signal: ctrl.signal
       });
@@ -199,6 +218,65 @@ function dataUrlFromImageResponse(data) {
   return item.url || data?.url || "";
 }
 
+function cleanRefIds(ids = []) {
+  return [...new Set((Array.isArray(ids) ? ids : []).map(x => String(x || "").trim()).filter(Boolean))].slice(0, 8);
+}
+
+export function normalizeImageReferenceReceipt(data = {}, refs = [], intendedRefAssetIds = []) {
+  const intendedIds = cleanRefIds(intendedRefAssetIds);
+  const preparedItems = (Array.isArray(refs) ? refs : []).filter(Boolean).slice(0, 8);
+  const preparedRefAssetIds = cleanRefIds(preparedItems.map(ref => ref?.id));
+  const locallySkippedRefAssetIds = intendedIds.filter(id => !preparedRefAssetIds.includes(id));
+  const preparedRefs = preparedItems.length;
+  const intendedRefs = Math.max(intendedIds.length, preparedRefs);
+  const rawUsed = Number(data?.usedRefs);
+  const rawSkipped = Number(data?.skippedRefs);
+  const receiptSupported = Number.isFinite(rawUsed);
+  const usedRefs = Number.isFinite(rawUsed) ? Math.max(0, Math.min(intendedRefs, Math.trunc(rawUsed))) : 0;
+  const serverSkippedRefs = Number.isFinite(rawSkipped) ? Math.max(0, Math.trunc(rawSkipped)) : 0;
+  const localSkippedRefs = Math.max(0, intendedRefs - preparedRefs);
+  const skippedRefs = Math.min(intendedRefs, Math.max(
+    0,
+    intendedRefs - usedRefs,
+    localSkippedRefs + serverSkippedRefs
+  ));
+  return {
+    intendedRefAssetIds: intendedIds,
+    preparedRefAssetIds,
+    locallySkippedRefAssetIds,
+    intendedRefs,
+    preparedRefs,
+    usedRefs,
+    skippedRefs,
+    localSkippedRefs,
+    serverSkippedRefs,
+    mode: String(data?.mode || serverImage.mode || ""),
+    model: String(data?.model || serverImage.model || ""),
+    ratio: String(data?.ratio || ""),
+    receiptSupported,
+    status: !intendedRefs ? "not-requested" : (usedRefs <= 0 ? "rejected" : (usedRefs < intendedRefs ? "partial" : "used"))
+  };
+}
+
+function imageReferenceReceiptUnavailableError(receipt) {
+  const error = new Error("当前图片服务版本未返回参考图使用回执。已停止生成，请等待服务器更新完成后刷新页面重试。");
+  error.code = "IMAGE_REFERENCE_RECEIPT_UNAVAILABLE";
+  error.referenceReceipt = receipt;
+  return error;
+}
+
+function imageReferenceNotUsedError(receipt) {
+  const intended = Number(receipt?.intendedRefs || 0);
+  const prepared = Number(receipt?.preparedRefs || 0);
+  const reason = prepared
+    ? "图片服务没有接收任何参考图"
+    : "所选参考图均无法从资产库读取";
+  const error = new Error(`已选择 ${intended} 张参考图，但${reason}。已停止生成，避免静默降级为无参考图。`);
+  error.code = "IMAGE_REFERENCE_NOT_USED";
+  error.referenceReceipt = receipt;
+  return error;
+}
+
 export function videoProviderLabel() {
   const label = /jimeng|ark|volc/i.test(serverVideo.provider || "") ? "即梦/方舟" : "Seedance";
   if (serverVideo.configured && serverVideo.reachable === false) return `${label} · 上游未连通`;
@@ -218,10 +296,7 @@ export function ttsVoicePresets() {
 }
 
 function voiceSeedRows() {
-  return [
-    ...(Array.isArray(ACCOUNT_PROFILE_SEED) ? ACCOUNT_PROFILE_SEED : []),
-    ...(Array.isArray(XHS_ACCOUNT_SEED) ? XHS_ACCOUNT_SEED : [])
-  ];
+  return Array.isArray(ACCOUNT_PROFILE_SEED) ? ACCOUNT_PROFILE_SEED : [];
 }
 
 export function findKnownTtsVoice(voiceId = "") {
@@ -273,7 +348,8 @@ export async function lookupTtsVoice(voiceId = "", { test = true } = {}) {
   let res;
   try {
     res = await fetch(`/api/tts/voice/lookup?voiceId=${encodeURIComponent(id)}&test=${test ? "true" : "false"}`, {
-      cache: "no-store"
+      cache: "no-store",
+      headers: creatorAuthHeaders()
     });
   } catch (e) {
     result.detail = "连不上本地服务端 /api/tts/voice/lookup：" + (e.message || e);
@@ -293,6 +369,15 @@ export async function lookupTtsVoice(voiceId = "", { test = true } = {}) {
 export async function refreshProviderStatus() {
   if (providerStatusPromise) return providerStatusPromise;
   providerStatusPromise = (async () => {
+  const reset = target => Object.assign(target, {
+    checked: true,
+    failed: false,
+    configured: false,
+    reachable: true,
+    provider: "",
+    model: "",
+    error: ""
+  });
   const load = async (url, target, unavailable) => {
     try {
       const data = await fetchJsonWithTimeout(url);
@@ -303,6 +388,7 @@ export async function refreshProviderStatus() {
       target.provider = data.provider || "";
       target.model = data.model || "";
       target.mode = data.mode || target.mode || "";
+      if ("referenceReceipt" in data) target.referenceReceipt = data.referenceReceipt === true;
       target.voiceId = data.voiceId || target.voiceId || "";
       target.voices = Array.isArray(data.voices) ? data.voices : target.voices || [];
       target.error = data.detail || "";
@@ -314,11 +400,24 @@ export async function refreshProviderStatus() {
       target.error = (e && e.name === "AbortError") ? unavailable + " timeout" : (e.message || String(e));
     }
   };
-  await Promise.all([
-    load("/api/video/config", serverVideo, "video config unavailable"),
-    load("/api/image/config", serverImage, "image config unavailable"),
-    load("/api/tts/config", serverTts, "tts config unavailable")
-  ]);
+  const creatorAccess = remote.hasToken() && (state.role === "admin" || state.role === "editor");
+  const loads = [];
+  if (creatorAccess) {
+    loads.push(
+      load("/api/video/config", serverVideo, "video config unavailable"),
+      load("/api/image/config", serverImage, "image config unavailable")
+    );
+    loads.push(load("/api/tts/config", serverTts, "tts config unavailable"));
+  } else {
+    reset(serverVideo);
+    reset(serverImage);
+    reset(serverTts);
+    serverImage.mode = "";
+    serverImage.referenceReceipt = false;
+    serverTts.voiceId = "";
+    serverTts.voices = [];
+  }
+  await Promise.all(loads);
   return { video: { ...serverVideo }, image: { ...serverImage }, tts: { ...serverTts } };
   })();
   try {
@@ -434,7 +533,7 @@ registerProvider({
     try {
       res = await fetch("/api/video/submit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: creatorAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ prompt, refs: cleanRefs, ratio, duration: duration || 15, generateAudio, model: model || "" })
       });
     } catch (e) {
@@ -445,7 +544,10 @@ registerProvider({
     return { providerRef: data.providerRef };
   },
   async poll(ref) {
-    const res = await fetch(`/api/video/poll/${encodeURIComponent(ref)}`, { cache: "no-store" });
+    const res = await fetch(`/api/video/poll/${encodeURIComponent(ref)}`, {
+      cache: "no-store",
+      headers: creatorAuthHeaders()
+    });
     const data = await readProviderJson(res);
     if (!res.ok) throw new Error(videoProviderError(data, res.status, "轮询"));
     return {
@@ -456,7 +558,10 @@ registerProvider({
     };
   },
   async cancel(ref) {
-    await fetch(`/api/video/cancel/${encodeURIComponent(ref)}`, { method: "POST" }).catch(() => null);
+    await fetch(`/api/video/cancel/${encodeURIComponent(ref)}`, {
+      method: "POST",
+      headers: creatorAuthHeaders()
+    }).catch(() => null);
   }
 });
 
@@ -489,13 +594,22 @@ registerProvider({
   kind: "image",
   label: "OpenAI-compatible Image",
   capabilities: { ratios: ["3:4", "9:16", "1:1"], refImages: true },
-  async submit({ prompt, refs = [], ratio = "3:4", apiKey, endpoint, model }) {
+  async submit({ prompt, refs = [], intendedRefAssetIds = [], ratio = "3:4", apiKey, endpoint, model }) {
     const ref = "img_" + Math.random().toString(36).slice(2, 10);
+    const intendedIds = cleanRefIds(intendedRefAssetIds);
+    const preparedRefs = (refs || []).slice(0, 8).filter(Boolean);
+    const preflightReceipt = normalizeImageReferenceReceipt({}, preparedRefs, intendedIds);
+    if (preflightReceipt.intendedRefs > 0 && preflightReceipt.preparedRefs === 0) {
+      throw imageReferenceNotUsedError(preflightReceipt);
+    }
     const useServer = serverImage.configured || endpoint === "/api/image" || !apiKey;
+    if (preflightReceipt.intendedRefs > 0 && useServer && serverImage.checked && serverImage.configured && !serverImage.referenceReceipt) {
+      throw imageReferenceReceiptUnavailableError(preflightReceipt);
+    }
     const body = {
       model: model || serverImage.model || "custom-imagemodel-gt",
       prompt,
-      refs: (refs || []).slice(0, 8).map(r => ({
+      refs: preparedRefs.map(r => ({
         role: r.role || "shared",
         name: r.name || "",
         mime: r.mime || "",
@@ -509,14 +623,21 @@ registerProvider({
     const { data } = await postJsonWithFallback("/api/image/generate", body);
     const output = data.dataUrl || dataUrlFromImageResponse(data);
     if (!output) throw new Error("图片 API 没有返回图片数据");
-    imageRuns.set(ref, { output, ts: Date.now() });
-    return { providerRef: ref };
+    const referenceReceipt = normalizeImageReferenceReceipt(data, preparedRefs, intendedIds);
+    if (referenceReceipt.intendedRefs > 0 && !referenceReceipt.receiptSupported) {
+      throw imageReferenceReceiptUnavailableError(referenceReceipt);
+    }
+    if (referenceReceipt.intendedRefs > 0 && referenceReceipt.usedRefs === 0) {
+      throw imageReferenceNotUsedError(referenceReceipt);
+    }
+    imageRuns.set(ref, { output, referenceReceipt, ts: Date.now() });
+    return { providerRef: ref, referenceReceipt };
   },
   async poll(ref) {
     const run = imageRuns.get(ref);
     if (!run) return { status: "failed", progress: 0, error: "图片任务结果不存在，请重试" };
     imageRuns.delete(ref);
-    return { status: "succeeded", progress: 100, output: { dataUrl: run.output } };
+    return { status: "succeeded", progress: 100, output: { dataUrl: run.output, referenceReceipt: run.referenceReceipt } };
   },
   async cancel(ref) { imageRuns.delete(ref); }
 });
@@ -566,7 +687,7 @@ export async function synthesizeTts({ text, voiceId, speed = 1.2, vol = 1, pitch
   try {
     res = await fetch("/api/tts/generate", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: creatorAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ text: cleanText, voiceId, speed, vol, pitch })
     });
   } catch (e) {
@@ -586,7 +707,7 @@ export async function designTtsVoice({ prompt, previewText, name = "" }) {
   try {
     res = await fetch("/api/tts/voice/design", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: creatorAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ prompt: cleanPrompt, previewText: cleanPreview, name: sanitizeXhsText(name) })
     });
   } catch (e) {

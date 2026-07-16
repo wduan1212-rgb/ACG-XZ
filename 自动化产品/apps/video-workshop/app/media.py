@@ -1,0 +1,854 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+import re
+import shutil
+import subprocess
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+
+ASPECTS: dict[str, tuple[int, int]] = {
+    "9:16": (720, 1280),
+    "16:9": (1280, 720),
+    "1:1": (960, 960),
+    "4:3": (960, 720),
+    "3:4": (720, 960),
+    "21:9": (1260, 540),
+}
+
+
+class MediaError(RuntimeError):
+    pass
+
+
+def _finite_number(value: Any, default: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def _binary(name: str) -> str:
+    value = shutil.which(name)
+    if not value:
+        raise MediaError(f"缺少 {name}，无法完成本地视频处理")
+    return value
+
+
+def _run_sync(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    process = subprocess.run(
+        command,
+        cwd=str(cwd) if cwd else None,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if process.returncode != 0:
+        detail = (process.stderr or process.stdout)[-2400:]
+        raise MediaError(f"媒体处理失败：{detail}")
+    return process
+
+
+async def run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    return await asyncio.to_thread(_run_sync, command, cwd)
+
+
+async def probe(path: Path) -> dict[str, Any]:
+    result = await run(
+        [
+            _binary("ffprobe"),
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration,size:stream=codec_type,codec_name,width,height,pix_fmt,r_frame_rate,sample_rate,channels,duration,start_time",
+            "-of",
+            "json",
+            str(path),
+        ]
+    )
+    data = json.loads(result.stdout)
+    streams = data.get("streams") or []
+    video = next((item for item in streams if item.get("codec_type") == "video"), {})
+    audio = next((item for item in streams if item.get("codec_type") == "audio"), {})
+    return {
+        "duration": round(float((data.get("format") or {}).get("duration") or 0), 3),
+        "videoDuration": round(float(video.get("duration") or 0), 3) if video else 0,
+        "audioDuration": round(float(audio.get("duration") or 0), 3) if audio else 0,
+        "size": int((data.get("format") or {}).get("size") or 0),
+        "width": video.get("width"),
+        "height": video.get("height"),
+        "pixelFormat": video.get("pix_fmt"),
+        "videoCodec": video.get("codec_name"),
+        "frameRate": video.get("r_frame_rate"),
+        "hasAudio": bool(audio),
+        "audioCodec": audio.get("codec_name"),
+        "sampleRate": audio.get("sample_rate"),
+    }
+
+
+async def extract_video_preview(source: Path, output: Path) -> dict[str, Any]:
+    info = await probe(source)
+    duration = float(info.get("duration") or 0)
+    seek = min(max(0.0, duration * 0.28), 3.0)
+    await run(
+        [
+            _binary("ffmpeg"),
+            "-y",
+            "-ss",
+            f"{seek:.3f}",
+            "-i",
+            str(source),
+            "-frames:v",
+            "1",
+            "-vf",
+            "scale=960:960:force_original_aspect_ratio=decrease",
+            "-q:v",
+            "3",
+            str(output),
+        ]
+    )
+    return info
+
+
+async def normalize_narration(source: Path, output: Path) -> dict[str, Any]:
+    await run(
+        [
+            _binary("ffmpeg"),
+            "-y",
+            "-i",
+            str(source),
+            "-vn",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            "-ar",
+            "48000",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+    )
+    return await probe(output)
+
+
+def _ass_time(seconds: float) -> str:
+    centiseconds = max(0, int(round(seconds * 100)))
+    hours, remainder = divmod(centiseconds, 360000)
+    minutes, remainder = divmod(remainder, 6000)
+    secs, cs = divmod(remainder, 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{cs:02d}"
+
+
+def _caption_chunks(text: str, max_chars: int) -> list[str]:
+    compact = re.sub(r"\s+", "", text.strip())
+    raw_phrases = [item for item in re.split(r"[，。！？；：、,.!?;:…]+", compact) if item]
+    phrases = [
+        "".join(character for character in phrase if not unicodedata.category(character).startswith("P"))
+        for phrase in raw_phrases
+    ]
+    phrases = [phrase for phrase in phrases if phrase]
+    clean = "".join(phrases)
+    chunks: list[str] = []
+    for phrase in phrases:
+        while len(phrase) > max_chars:
+            chunks.append(phrase[:max_chars])
+            phrase = phrase[max_chars:]
+        if phrase:
+            chunks.append(phrase)
+    return chunks or [clean]
+
+
+def write_ass(text: str, path: Path, aspect_ratio: str, speech_duration: float) -> list[dict[str, Any]]:
+    width, height = ASPECTS[aspect_ratio]
+    if aspect_ratio == "9:16":
+        font_size, outline, margin_v, max_chars = 48, 1.4, 330, 14
+    elif aspect_ratio == "16:9":
+        font_size, outline, margin_v, max_chars = 38, 1.25, 58, 24
+    else:
+        font_size, outline, margin_v, max_chars = 42, 1.35, 88, 18
+    chunks = _caption_chunks(text, max_chars)
+    weights = [max(2, len(item)) for item in chunks]
+    total_weight = sum(weights)
+    usable_duration = max(0.5, _finite_number(speech_duration, 0.5))
+    minimum_cue = min(0.55, usable_duration / len(chunks))
+    flexible_duration = max(0.0, usable_duration - minimum_cue * len(chunks))
+    cue_durations = [minimum_cue + flexible_duration * weight / total_weight for weight in weights]
+    cues = []
+    cursor = 0.0
+    for index, (chunk, duration) in enumerate(zip(chunks, cue_durations)):
+        if index == len(chunks) - 1:
+            end = usable_duration
+        else:
+            end = min(usable_duration, cursor + duration)
+        if end <= cursor:
+            break
+        safe_text = "".join(
+            character
+            for character in chunk.replace("{", "").replace("}", "").replace("\\", "")
+            if not unicodedata.category(character).startswith("P")
+        )
+        cues.append({"start": cursor, "end": end, "text": safe_text})
+        cursor = end
+
+    header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {width}
+PlayResY: {height}
+ScaledBorderAndShadow: yes
+WrapStyle: 2
+
+[V4+ Styles]
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Caption,PingFang SC,{font_size},&H00FFFFFF,&H00FFFFFF,&H94000000,&H00000000,-1,0,0,0,100,100,0,0,1,{outline},0.25,2,46,46,{margin_v},1
+
+[Events]
+Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+"""
+    lines = [header]
+    for index, cue in enumerate(cues):
+        if aspect_ratio == "9:16" and index % 3 == 1:
+            baseline = height - margin_v
+            animation = (
+                r"{\an2\fad(100,85)"
+                f"\\move({width // 2},{baseline + 12},{width // 2},{baseline},0,220)"
+                r"\fscx99\fscy99\t(0,220,\fscx100\fscy100)}"
+            )
+        elif index % 3 == 2:
+            animation = r"{\fad(105,85)\fsp3\t(0,240,\fsp0)}"
+        else:
+            animation = r"{\fad(110,90)\fscx96\fscy96\t(0,170,\fscx104\fscy104)\t(170,310,\fscx100\fscy100)}"
+        lines.append(
+            "Dialogue: 0,%s,%s,Caption,,0,0,0,,%s%s\n"
+            % (_ass_time(cue["start"]), _ass_time(cue["end"]), animation, cue["text"])
+        )
+    path.write_text("".join(lines), encoding="utf-8")
+    return cues
+
+
+def build_scene_timeline(
+    planned_durations: list[float | int],
+    total_duration: float,
+) -> tuple[list[dict[str, Any]], float]:
+    if not planned_durations:
+        raise MediaError("导演计划没有可用于合成的镜头")
+    total = max(0.5, _finite_number(total_duration, 0.5))
+    weights = [max(0.1, _finite_number(value, 1.0)) for value in planned_durations]
+    if len(weights) == 1:
+        return [{"sceneNumber": 1, "start": 0.0, "end": total, "duration": total}], 0.0
+
+    transition = min(0.35, max(0.01, total / (len(weights) * 3)))
+    for _ in range(3):
+        available = total + transition * (len(weights) - 1)
+        durations = [available * weight / sum(weights) for weight in weights]
+        transition = min(transition, max(0.01, min(durations) * 0.4))
+
+    available = total + transition * (len(weights) - 1)
+    durations = [available * weight / sum(weights) for weight in weights]
+    durations[-1] = available - sum(durations[:-1])
+    timeline: list[dict[str, Any]] = []
+    start = 0.0
+    for index, duration in enumerate(durations):
+        end = start + duration
+        timeline.append(
+            {
+                "sceneNumber": index + 1,
+                "start": start,
+                "end": end,
+                "duration": duration,
+            }
+        )
+        start = end - transition
+    timeline[-1]["end"] = total
+    timeline[-1]["duration"] = total - timeline[-1]["start"]
+    return timeline, transition
+
+
+async def _normalize_clip(
+    source: Path,
+    output: Path,
+    width: int,
+    height: int,
+    target_duration: float,
+) -> None:
+    filter_graph = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},fps=30,"
+        f"tpad=stop_mode=clone:stop_duration={target_duration:.6f},"
+        f"trim=duration={target_duration:.6f},setpts=PTS-STARTPTS,format=yuv420p"
+    )
+    await run(
+        [
+            _binary("ffmpeg"),
+            "-y",
+            "-i",
+            str(source),
+            "-vf",
+            filter_graph,
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "21",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+    )
+
+
+def _material_timeline(
+    assets: list[dict[str, Any]],
+    narration_text: str,
+    narration_duration: float,
+    scene_timeline: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    total_duration = max(0.5, _finite_number(narration_duration, 0.5))
+    text_length = max(1, len(narration_text))
+    scene_count = max(1, len(scene_timeline))
+    for index, asset in enumerate(assets):
+        scene_number = max(1, min(scene_count, int(_finite_number(asset.get("scene_number"), 1))))
+        scene = scene_timeline[scene_number - 1]
+        scene_start = max(0.0, float(scene["start"]))
+        scene_end = min(total_duration, float(scene["end"]))
+        scene_window = max(0.25, scene_end - scene_start)
+        padding = min(0.35, scene_window * 0.08)
+        requested_duration = max(0.5, _finite_number(asset.get("duration_sec"), 3.6))
+        duration = min(requested_duration, max(0.25, scene_window - padding * 2))
+        anchor = str(asset.get("narration_anchor") or "").strip()
+        anchor_index = narration_text.find(anchor) if anchor else -1
+        if anchor_index >= 0:
+            start = total_duration * anchor_index / text_length - 0.35
+        else:
+            same_scene_count = sum(1 for item in timeline if item["sceneNumber"] == scene_number)
+            start = scene_start + padding + same_scene_count * (duration + 0.3)
+        start = max(scene_start + padding, min(scene_end - padding - duration, start))
+        same_scene = [item for item in timeline if item["sceneNumber"] == scene_number]
+        if same_scene and start < same_scene[-1]["end"] + 0.3:
+            start = min(scene_end - padding - duration, same_scene[-1]["end"] + 0.3)
+        if start < scene_start or start + duration > scene_end + 0.01 or duration < 0.25:
+            continue
+        timeline.append(
+            {
+                **asset,
+                "index": index + 1,
+                "sceneNumber": scene_number,
+                "start": round(start, 3),
+                "end": round(start + duration, 3),
+                "duration": round(duration, 3),
+                "presentation": str(asset.get("presentation") or "auto"),
+                "position": str(asset.get("position") or "top-right"),
+                "scale": max(0.1, min(0.65, _finite_number(asset.get("scale"), 0.36))),
+                "positionExplicit": asset.get("position") is not None,
+                "scaleExplicit": asset.get("scale") is not None,
+            }
+        )
+    return sorted(timeline, key=lambda item: item["start"])
+
+
+async def _prepare_material_clip(
+    source: Path,
+    mime: str,
+    output: Path,
+    width: int,
+    height: int,
+    duration: float,
+    source_start: float,
+) -> None:
+    common_output = [
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "20",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        str(output),
+    ]
+    if mime.startswith("image/"):
+        frames = max(1, int(round(duration * 30)))
+        filters = (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},"
+            "zoompan=z='min(zoom+0.00055,1.055)':"
+            "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+            f"d={frames}:s={width}x{height}:fps=30,"
+            "setsar=1,format=yuv420p"
+        )
+        await run(
+            [
+                _binary("ffmpeg"),
+                "-y",
+                "-loop",
+                "1",
+                "-i",
+                str(source),
+                "-t",
+                f"{duration:.3f}",
+                "-vf",
+                filters,
+                *common_output,
+            ]
+        )
+        return
+
+    filters = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},fps=30,"
+        f"tpad=stop_mode=clone:stop_duration={duration:.3f},"
+        f"trim=duration={duration:.3f},setpts=PTS-STARTPTS,setsar=1,format=yuv420p"
+    )
+    await run(
+        [
+            _binary("ffmpeg"),
+            "-y",
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(source),
+            "-ss",
+            f"{max(0.0, source_start):.3f}",
+            "-t",
+            f"{duration:.3f}",
+            "-vf",
+            filters,
+            *common_output,
+        ]
+    )
+
+
+async def _apply_material_cutaways(
+    picture: Path,
+    assets: list[dict[str, Any]],
+    narration_text: str,
+    narration_duration: float,
+    scene_timeline: list[dict[str, Any]],
+    width: int,
+    height: int,
+    slug: str,
+    work_dir: Path,
+) -> tuple[Path, list[dict[str, Any]]]:
+    timeline = [
+        item
+        for item in _material_timeline(assets, narration_text, narration_duration, scene_timeline)
+        if Path(item["path"]).is_file()
+    ]
+    if not timeline:
+        return picture, []
+
+    for cue in timeline:
+        name = str(cue.get("name") or "").lower()
+        is_logo = str(cue.get("mime") or "").startswith("image/") and any(
+            marker in name for marker in ("logo", "标志", "徽标", "角标", "水印", "icon")
+        )
+        if cue.get("presentation") == "auto":
+            cue["presentation"] = (
+                "overlay"
+                if is_logo
+                else "pip"
+                if str(cue.get("mime") or "").startswith(("image/", "video/"))
+                else "cutaway"
+            )
+        if is_logo and cue["presentation"] == "overlay":
+            cue["scale"] = min(
+                0.3,
+                max(
+                    0.14,
+                    _finite_number(cue.get("scale"), 0.22)
+                    if cue.get("scaleExplicit")
+                    else 0.22,
+                ),
+            )
+            cue["position"] = (
+                cue.get("position")
+                if cue.get("positionExplicit")
+                and cue.get("position") in {"top-left", "top-right", "bottom-left", "bottom-right"}
+                else "top-left"
+            )
+
+    cutaways = [cue for cue in timeline if cue.get("presentation") == "cutaway"]
+    overlays = [cue for cue in timeline if cue.get("presentation") in {"overlay", "pip"}]
+    current_picture = picture
+
+    if cutaways:
+        prepared: list[Path] = []
+        for cue in cutaways:
+            output = work_dir / f"material-{slug}-{cue['index']:02d}.mp4"
+            await _prepare_material_clip(
+                Path(cue["path"]),
+                str(cue.get("mime") or ""),
+                output,
+                width,
+                height,
+                float(cue["duration"]),
+                float(cue.get("source_start_sec") or 0),
+            )
+            prepared.append(output)
+
+        cutaway_output = work_dir / f"picture-cutaways-{slug}.mp4"
+        command = [_binary("ffmpeg"), "-y", "-i", str(current_picture)]
+        for path in prepared:
+            command.extend(["-i", str(path)])
+
+        filters: list[str] = []
+        base = "[0:v]"
+        for index, cue in enumerate(cutaways, start=1):
+            fade_duration = min(0.2, float(cue["duration"]) / 4)
+            fade_out = max(fade_duration, float(cue["duration"]) - fade_duration)
+            filters.append(
+                f"[{index}:v]format=yuva420p,"
+                f"fade=t=in:st=0:d={fade_duration:.3f}:alpha=1,"
+                f"fade=t=out:st={fade_out:.3f}:d={fade_duration:.3f}:alpha=1,"
+                f"setpts=PTS+{float(cue['start']):.3f}/TB[m{index}]"
+            )
+            output_label = f"[v{index}]"
+            filters.append(
+                f"{base}[m{index}]overlay=0:0:eof_action=pass:shortest=0:format=auto{output_label}"
+            )
+            base = output_label
+
+        command.extend(
+            [
+                "-filter_complex",
+                ";".join(filters),
+                "-map",
+                base,
+                "-t",
+                f"{narration_duration:.6f}",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(cutaway_output),
+            ]
+        )
+        await run(command)
+        current_picture = cutaway_output
+
+    if overlays:
+        overlay_output = work_dir / f"picture-overlays-{slug}.mp4"
+        command = [_binary("ffmpeg"), "-y", "-i", str(current_picture)]
+        for cue in overlays:
+            if str(cue.get("mime") or "").startswith("image/"):
+                command.extend(["-loop", "1", "-i", str(Path(cue["path"]).resolve())])
+            else:
+                command.extend(["-stream_loop", "-1", "-i", str(Path(cue["path"]).resolve())])
+
+        filters = []
+        base = "[0:v]"
+        margin = max(20, int(round(width * 0.045)))
+        for index, cue in enumerate(overlays, start=1):
+            duration = float(cue["duration"])
+            start = float(cue["start"])
+            fade_duration = min(0.18, duration / 4)
+            fade_out = max(fade_duration, duration - fade_duration)
+            scale = max(0.1, min(0.65, _finite_number(cue.get("scale"), 0.22)))
+            target_width = max(72, int(round(width * scale)))
+            target_height = max(72, int(round(height * (0.28 if cue.get("presentation") == "overlay" else 0.42))))
+            trim = (
+                f"trim=duration={duration:.3f}"
+                if str(cue.get("mime") or "").startswith("image/")
+                else f"trim=start={max(0.0, _finite_number(cue.get('source_start_sec'), 0.0)):.3f}:duration={duration:.3f}"
+            )
+            filters.append(
+                f"[{index}:v]{trim},setpts=PTS-STARTPTS,"
+                f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
+                "format=rgba,"
+                f"fade=t=in:st=0:d={fade_duration:.3f}:alpha=1,"
+                f"fade=t=out:st={fade_out:.3f}:d={fade_duration:.3f}:alpha=1,"
+                f"setpts=PTS+{start:.3f}/TB[ov{index}]"
+            )
+            position = str(cue.get("position") or "top-right")
+            coordinates = {
+                "top-left": (str(margin), str(margin)),
+                "top-right": (f"W-w-{margin}", str(margin)),
+                "bottom-left": (str(margin), f"H-h-{margin}"),
+                "bottom-right": (f"W-w-{margin}", f"H-h-{margin}"),
+                "center": ("(W-w)/2", "(H-h)/2"),
+            }
+            x, y = coordinates.get(position, coordinates["top-right"])
+            output_label = f"[vo{index}]"
+            filters.append(
+                f"{base}[ov{index}]overlay=x={x}:y={y}:"
+                f"enable='between(t,{start:.3f},{float(cue['end']):.3f})':"
+                f"eof_action=pass:shortest=0:format=auto{output_label}"
+            )
+            base = output_label
+
+        command.extend(
+            [
+                "-filter_complex",
+                ";".join(filters),
+                "-map",
+                base,
+                "-t",
+                f"{narration_duration:.6f}",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(overlay_output),
+            ]
+        )
+        await run(command)
+        current_picture = overlay_output
+
+    public_timeline = [
+        {
+            key: cue.get(key)
+            for key in (
+                "asset_id",
+                "label",
+                "name",
+                "mime",
+                "sceneNumber",
+                "start",
+                "end",
+                "duration",
+                "presentation",
+                "position",
+                "scale",
+                "narration_anchor",
+                "reason",
+            )
+        }
+        for cue in timeline
+    ]
+    return current_picture, public_timeline
+
+
+async def compose_variant(
+    clip_paths: list[Path],
+    narration_path: Path,
+    narration_text: str,
+    aspect_ratio: str,
+    work_dir: Path,
+    material_assets: list[dict[str, Any]] | None = None,
+    scene_durations: list[float | int] | None = None,
+    bgm_path: Path | None = None,
+    bgm_volume: float = 0.12,
+    sfx_assets: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if not clip_paths:
+        raise MediaError("没有可用于合成的 Seedance 视频")
+    work_dir = work_dir.resolve()
+    clip_paths = [path.resolve() for path in clip_paths]
+    narration_path = narration_path.resolve()
+    width, height = ASPECTS[aspect_ratio]
+    slug = aspect_ratio.replace(":", "x")
+    audio_info = await probe(narration_path)
+    narration_duration = float(audio_info.get("duration") or 0)
+    if narration_duration <= 0:
+        raise MediaError("口播音频没有可用时长")
+    planned = list(scene_durations or [1] * len(clip_paths))
+    if len(planned) != len(clip_paths):
+        raise MediaError("镜头数量与导演时间计划不一致")
+    scene_timeline, transition_duration = build_scene_timeline(planned, narration_duration)
+    normalized = [work_dir / f"normalized-{slug}-{index + 1}.mp4" for index in range(len(clip_paths))]
+    await asyncio.gather(
+        *[
+            _normalize_clip(source, target, width, height, float(scene["duration"]))
+            for source, target, scene in zip(clip_paths, normalized, scene_timeline)
+        ]
+    )
+
+    if len(normalized) == 1:
+        picture = normalized[0]
+    else:
+        picture = work_dir / f"picture-{slug}.mp4"
+        command = [_binary("ffmpeg"), "-y"]
+        for path in normalized:
+            command.extend(["-i", str(path)])
+        filters: list[str] = []
+        current_label = "[0:v]"
+        current_duration = float(scene_timeline[0]["duration"])
+        for index in range(1, len(normalized)):
+            output_label = f"[vx{index}]"
+            transition_offset = max(0.0, current_duration - transition_duration)
+            filters.append(
+                f"{current_label}[{index}:v]xfade=transition=fade:"
+                f"duration={transition_duration:.6f}:offset={transition_offset:.6f}{output_label}"
+            )
+            current_label = output_label
+            current_duration += float(scene_timeline[index]["duration"]) - transition_duration
+        command.extend(
+            [
+                "-filter_complex",
+                ";".join(filters),
+                "-map",
+                current_label,
+                "-t",
+                f"{narration_duration:.6f}",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(picture),
+            ]
+        )
+        await run(command)
+
+    edited_picture, material_cues = await _apply_material_cutaways(
+        picture,
+        material_assets or [],
+        narration_text,
+        narration_duration,
+        scene_timeline,
+        width,
+        height,
+        slug,
+        work_dir,
+    )
+    captions_path = work_dir / f"captions-{slug}.ass"
+    cues = write_ass(narration_text, captions_path, aspect_ratio, audio_info["duration"])
+    sfx_cues = [
+        item
+        for item in _material_timeline(sfx_assets or [], narration_text, narration_duration, scene_timeline)
+        if Path(str(item.get("path") or "")).is_file()
+    ]
+    final_path = work_dir / f"final-{slug}.mp4"
+    command = [
+        _binary("ffmpeg"),
+        "-y",
+        "-i",
+        str(edited_picture),
+        "-i",
+        str(narration_path),
+    ]
+    filters = [
+        f"[0:v]ass={captions_path.name}[v]",
+        "[1:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,asetpts=PTS-STARTPTS[voicebase]",
+    ]
+    audio_labels = ["[voice]"]
+    input_index = 2
+    resolved_bgm = bgm_path.resolve() if bgm_path and bgm_path.is_file() else None
+    if resolved_bgm:
+        filters.append("[voicebase]asplit=2[voice][sidechain]")
+        command.extend(["-stream_loop", "-1", "-i", str(resolved_bgm)])
+        safe_bgm_volume = max(0.0, min(0.3, _finite_number(bgm_volume, 0.12)))
+        filters.append(
+            f"[{input_index}:a]aresample=48000,atrim=duration={narration_duration:.6f},"
+            f"asetpts=PTS-STARTPTS,volume={safe_bgm_volume:.4f}[music]"
+        )
+        filters.append(
+            "[music][sidechain]sidechaincompress=threshold=0.025:ratio=10:attack=15:release=500[ducked]"
+        )
+        audio_labels.append("[ducked]")
+        input_index += 1
+    else:
+        filters.append("[voicebase]anull[voice]")
+
+    for index, cue in enumerate(sfx_cues, start=1):
+        command.extend(["-i", str(Path(str(cue["path"])).resolve())])
+        source_start = max(0.0, _finite_number(cue.get("source_start_sec"), 0.0))
+        duration = max(0.1, _finite_number(cue.get("duration"), 1.0))
+        delay_ms = max(0, int(round(_finite_number(cue.get("start"), 0.0) * 1000)))
+        volume = max(0.0, min(1.5, _finite_number(cue.get("volume"), 0.72)))
+        label = f"[sfx{index}]"
+        filters.append(
+            f"[{input_index}:a]aresample=48000,atrim=start={source_start:.6f}:duration={duration:.6f},"
+            f"asetpts=PTS-STARTPTS,volume={volume:.4f},adelay={delay_ms}:all=1{label}"
+        )
+        audio_labels.append(label)
+        input_index += 1
+
+    if len(audio_labels) == 1:
+        filters.append("[voice]anull[a]")
+    else:
+        filters.append(
+            "".join(audio_labels)
+            + f"amix=inputs={len(audio_labels)}:duration=first:dropout_transition=0:normalize=0,"
+            "alimiter=limit=0.95[a]"
+        )
+    command.extend(
+        [
+            "-filter_complex",
+            ";".join(filters),
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+            "-t",
+            f"{narration_duration:.6f}",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-ar",
+            "48000",
+            "-movflags",
+            "+faststart",
+            str(final_path),
+        ]
+    )
+    await run(command, cwd=work_dir)
+    final_probe = await probe(final_path)
+    video_duration = float(final_probe.get("videoDuration") or final_probe.get("duration") or 0)
+    audio_duration = float(final_probe.get("audioDuration") or 0)
+    if audio_duration <= 0 or abs(video_duration - audio_duration) > 0.15:
+        raise MediaError(
+            f"成片音画时长不一致：视频 {video_duration:.3f} 秒，音频 {audio_duration:.3f} 秒"
+        )
+    return {
+        "path": final_path,
+        "aspectRatio": aspect_ratio,
+        "width": width,
+        "height": height,
+        "captions": captions_path,
+        "captionCues": cues,
+        "materialCues": material_cues,
+        "sfxCues": [
+            {
+                key: cue.get(key)
+                for key in ("asset_id", "label", "name", "start", "end", "duration", "narration_anchor", "volume")
+            }
+            for cue in sfx_cues
+        ],
+        "bgm": str(resolved_bgm) if resolved_bgm else "",
+        "sceneTimeline": [
+            {key: round(float(scene[key]), 3) if key != "sceneNumber" else scene[key] for key in ("sceneNumber", "start", "end", "duration")}
+            for scene in scene_timeline
+        ],
+        "probe": final_probe,
+    }

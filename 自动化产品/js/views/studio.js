@@ -7,15 +7,12 @@ import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, delete
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260716-v88-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260717-v91-2";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset } from "../domain/assets.js";
-import { renderScriptPage } from "./chainScript.js?v=20260716-v88-1";
-import { renderSlotsPage } from "./chainBoards.js?v=20260716-v88-1";
-import { renderPromptsPage } from "./chainPrompts.js?v=20260716-v88-1";
-import { renderRenderPage } from "./chainRender.js?v=20260716-v88-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260716-v88-1";
-import { renderCutPage } from "./chainCut.js?v=20260716-v88-1";
-import { renderCopyPage, renderReviewPage } from "./chainCopy.js?v=20260716-v88-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260717-v91-2";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260717-v91-2";
+import { renderCutPage } from "./chainCut.js?v=20260717-v91-2";
+import { renderReviewPage } from "./chainCopy.js?v=20260717-v91-2";
 
 export const studioView = {
   render(root, { page }) {
@@ -40,19 +37,14 @@ export const studioView = {
     if (prod.accountId !== state.ui.activeAccountId) { state.ui.activeAccountId = prod.accountId; save("meta"); }
 
     const PAGES = {
-      script: renderScriptPage,
-      boards: (r, p2) => renderSlotsPage(r, p2, false),
       images: (r, p2) => renderSlotsPage(r, p2, true),
-      prompts: renderPromptsPage,
       workshop: renderWorkshopPage,
-      render: renderRenderPage,
       cut: renderCutPage,
-      copy: renderCopyPage,
       review: renderReviewPage
     };
-    // 链路类型守卫：所有视频号的 分镜/提示词/生成 统一进工坊
+    // 链路类型守卫：旧脚本/分镜/提示词/生成入口仅保留历史文件，不再允许从主平台路由进入。
     let target = page;
-    if (prod.mode === "图文" && ["script", "copy"].includes(page)) target = "images";
+    if (prod.mode === "图文" && !["images", "review"].includes(page)) target = "images";
     if (isVideoWorkshop(prod) && ["script", "boards", "prompts", "render", "copy"].includes(page)) target = "workshop";
     if (!isVideoWorkshop(prod) && page === "workshop") target = "images";
     if (target !== page) { go("studio", target); return; }
@@ -74,9 +66,10 @@ export function stepperHtml(p, currentPage) {
       const done = stageDone(p, st);
       const cur = pageStage(currentPage) === st;
       const fail = cur && p.stageStatus === "failed";
+      const stageLabel = st === "workshop" ? (p.subType === "数字人" ? "数字人制作" : "信息流制作") : STAGES[st].label;
       return `<button class="cs-step ${cur ? "is-current" : ""} ${done ? "is-done" : ""} ${fail ? "is-fail" : ""}" data-chain="${stagePageName(st)}">
         <span class="cs-dot">${done && !cur ? icon("check", 11) : `<i>${i + 1}</i>`}</span>
-        <span class="cs-label">${STAGES[st].label}</span>
+        <span class="cs-label">${stageLabel}</span>
       </button>${i < flow.length - 1 ? `<span class="cs-link ${done ? "on" : ""}"></span>` : ""}`;
     }).join("")}
     <span class="cs-spacer"></span>
@@ -137,7 +130,7 @@ function renderHome(root, acc) {
           ${acc.homepageUrl
             ? `<a class="btn ghost sh-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转主页</a>`
             : `<button class="btn ghost sh-homepage-link is-disabled" type="button" disabled title="管理员尚未填写主页链接">${icon("external", 13)} 跳转主页</button>`}
-          ${showRoleRef ? `<button class="btn ghost sm sh-ref-trigger ${!charRefUrl && !admin ? "is-disabled" : ""}" type="button" data-sh-ref="role" ${!charRefUrl && !admin ? "disabled" : ""} title="${charRefUrl ? "查看角色版；管理员可拖图到按钮上替换" : "管理员点击或拖入角色版"}">${charRefUrl ? `<img src="${charRefUrl}" alt="角色版"/>` : icon("user", 13)}<span>角色版</span>${admin ? `<input type="file" accept="image/*" hidden />` : ""}</button>` : ""}
+          ${showRoleRef ? `<button class="btn ghost sm sh-ref-trigger ${charRefUrl ? "has-ref" : "is-empty"}" type="button" data-sh-ref="role" title="${charRefUrl ? "查看账号固定角色版" : "打开角色版"}">${charRefUrl ? `<img src="${charRefUrl}" alt="角色版"/>` : icon("user", 13)}<span>角色版</span></button>` : ""}
           ${showStyleRef ? `<button class="btn ghost sm sh-ref-trigger ${!styleRefUrl && !admin ? "is-disabled" : ""}" type="button" data-sh-ref="style" ${!styleRefUrl && !admin ? "disabled" : ""} title="${styleRefUrl ? "查看风格版；管理员可拖图到按钮上替换" : "管理员点击或拖入风格版"}">${styleRefUrl ? `<img src="${styleRefUrl}" alt="风格版"/>` : icon("image", 13)}<span>风格版</span>${admin ? `<input type="file" accept="image/*" hidden />` : ""}</button>` : ""}
           ${admin ? `<button class="icon-btn account-edit-trigger" data-sh="edit" title="编辑账号" aria-label="编辑账号">${icon("edit", 16)}</button><button class="icon-btn danger" data-sh="delete" title="删除账号" aria-label="删除账号">${icon("trash", 16)}</button>` : ""}
           <button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>
@@ -288,7 +281,7 @@ function renderHome(root, acc) {
   };
   root.querySelectorAll("[data-sh]").forEach(b => b.addEventListener("click", () => onAct[b.dataset.sh] && onAct[b.dataset.sh]()));
 
-  async function setHomeRef(kind, file) {
+  async function setHomeRef(kind, file, { rerender = true } = {}) {
     if (!admin || !file || !file.type.startsWith("image/")) return;
     const dataUrl = await fileToDataUrl(file);
     const name = kind === "avatar" ? `${acc.name}_头像` : kind === "role" ? `${acc.name}_角色形象` : `${acc.name}_成图风格参考`;
@@ -303,11 +296,50 @@ function renderHome(root, acc) {
     else acc.imageStyleAssetId = a.id;
     save("accounts");
     toast(kind === "avatar" ? "头像已更新" : kind === "role" ? "角色形象已更新" : "成图风格参考已更新");
-    renderHome(root, acc);
+    if (rerender) renderHome(root, acc);
+    return a;
+  }
+
+  function openRoleRefModal() {
+    const current = acc.charBoardAssetId ? state.assets.find(a => a.id === acc.charBoardAssetId) : null;
+    const currentUrl = current ? urlFor(current) : "";
+    openModal(`
+      <div class="mp-head"><div><b>${esc(acc.name)} · 角色版</b><em>${current ? "账号固定角色形象" : "尚未补充角色形象"}</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
+      <div class="sh-role-modal">
+        <button class="sh-role-drop ${currentUrl ? "has-image" : "is-empty"} ${admin ? "can-edit" : "is-locked"}" type="button" data-role-drop>
+          ${currentUrl
+            ? `<img src="${currentUrl}" alt="${esc(acc.name)}角色版"/><span>${admin ? "拖入或点击可由管理员替换" : "账号固定角色版"}</span>`
+            : `<i>${icon("user", 28)}</i><b>暂未设置角色版</b><span>${admin ? "拖入图片，或点击选择文件" : "请联系管理员补充角色版"}</span>`}
+        </button>
+        <p>${admin ? "保存后会固定到该数字人账号，单号与批量创作都会自动引用；只有管理员可以替换。" : "该角色版由管理员统一维护，普通成员只能查看。"}</p>
+        ${admin ? `<input type="file" accept="image/*" hidden data-role-file />` : ""}
+      </div>
+      <div class="mp-foot"><button class="btn ghost" data-close>关闭</button></div>
+    `, {
+      onMount(panel, close) {
+        const zone = panel.querySelector("[data-role-drop]");
+        if (!admin) return;
+        const input = panel.querySelector("[data-role-file]");
+        const commit = async file => {
+          if (!file) return;
+          const saved = await setHomeRef("role", file, { rerender: false });
+          if (!saved) return;
+          close();
+          renderHome(root, acc);
+        };
+        zone.addEventListener("click", () => input?.click());
+        input?.addEventListener("change", e => commit(e.target.files?.[0]));
+        wireDropZone(zone, files => commit(Array.from(files || []).find(file => file.type.startsWith("image/"))), { filesOnly: true });
+      }
+    });
   }
 
   root.querySelectorAll("[data-sh-ref]").forEach(btn => {
     const kind = btn.dataset.shRef;
+    if (kind === "role") {
+      btn.addEventListener("click", openRoleRefModal);
+      return;
+    }
     const currentUrl = kind === "avatar" ? avatarUrl : kind === "role" ? charRefUrl : styleRefUrl;
     const currentName = kind === "avatar" ? `${acc.name} 头像` : kind === "role" ? `${acc.name} 角色形象` : `${acc.name} 成图风格参考`;
     if (admin) {

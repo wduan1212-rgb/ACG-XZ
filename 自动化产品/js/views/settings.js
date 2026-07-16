@@ -6,7 +6,7 @@ import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
 import { toast, confirmModal, promptModal, openModal } from "../ui/components.js";
 import { uid } from "../core/util.js";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260716-v88-1";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260717-v91-2";
 
 const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor", "supplier_parent"];

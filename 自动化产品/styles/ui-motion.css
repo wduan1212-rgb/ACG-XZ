@@ -702,28 +702,90 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
 }
 .vl-voice-actions .icon-btn.is-active:hover { color: #fff; background: #000; }
 .vl-voice-card {
-  grid-template-columns: minmax(0, 1fr);
-  min-height: 64px;
-  padding-right: 112px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 6px 8px 6px 10px;
 }
-.vl-voice-card.is-mine { min-height: 72px; padding-right: 146px; }
-.vl-voice-card .vl-voice-core,
-.vl-voice-card > em,
-.vl-voice-card > i { min-width: 0; }
-.vl-voice-card > em {
-  max-width: 100%;
-  padding-right: 0;
+.vl-voice-card.is-mine { min-height: 48px; padding-right: 8px; }
+.vl-voice-card:active { transform: none; }
+.vl-voice-card:focus-visible {
+  outline: 2px solid rgba(17,19,24,.34);
+  outline-offset: -2px;
+}
+.vl-voice-card .vl-voice-core {
+  min-width: 0;
   overflow: hidden;
+  white-space: nowrap;
+}
+.vl-voice-core b { min-width: 0; }
+.vl-voice-source {
+  flex: none;
+  max-width: 58px;
+  overflow: hidden;
+  padding: 2px 5px;
+  border: 1px solid rgba(15,23,42,.08);
+  border-radius: 999px;
+  color: var(--faint);
+  background: rgba(255,255,255,.72);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 750;
+  line-height: 1.1;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .vl-voice-actions {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  bottom: auto;
-  transform: translateY(-50%);
+  position: static;
+  display: inline-flex;
+  overflow: hidden;
+  justify-self: end;
+  align-self: center;
+  gap: 0;
+  margin: 0;
+  border: 1px solid rgba(15,23,42,.10);
+  border-radius: 8px;
+  background: rgba(255,255,255,.68);
+  transform: none;
   flex-wrap: nowrap;
+}
+.vl-voice-actions .icon-btn.tiny {
+  flex: 0 0 25px;
+  width: 25px;
+  height: 25px;
+  border: 0;
+  border-right: 1px solid rgba(15,23,42,.09);
+  border-radius: 0;
+  color: #5e6673;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+  transition: color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+.vl-voice-actions .icon-btn.tiny:last-child { border-right: 0; }
+.vl-voice-actions .icon-btn.tiny:hover {
+  color: #111318;
+  background: #fff;
+  box-shadow: inset 0 -2px 0 rgba(17,19,24,.16);
+  transform: none;
+}
+.vl-voice-actions .icon-btn.tiny:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid rgba(17,19,24,.36);
+  outline-offset: -2px;
+}
+.vl-voice-actions .icon-btn.tiny.danger:hover {
+  color: #b42332;
+  background: #fff4f5;
+  box-shadow: inset 0 -2px 0 rgba(180,35,50,.22);
+}
+.vl-voice-actions .icon-btn.tiny.is-active,
+.vl-voice-actions .icon-btn.tiny.is-active:hover {
+  color: #fff;
+  background: #111318;
+  box-shadow: none;
 }
 
 .review-page { max-width: 1180px; }

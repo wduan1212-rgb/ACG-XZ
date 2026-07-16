@@ -5,7 +5,7 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan } from "./orchestrator.js?v=20260716-v88-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260717-v91-2";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -147,10 +147,18 @@ const CARD = {
   /* 计划卡：确认前可改主题/风格/标签/选号 */
   plan(m) {
     const p = m.payload;
-    const beforePlan = JSON.stringify({ creativeMode: p.creativeMode, contentKind: p.contentKind, group: p.group, accountIds: p.accountIds, perAccountCount: p.perAccountCount, content: p.content, topic: p.topic });
+    const planSnapshot = () => JSON.stringify({
+      creativeMode: p.creativeMode, contentKind: p.contentKind, group: p.group,
+      accountIds: p.accountIds, perAccountCount: p.perAccountCount, content: p.content, topic: p.topic,
+      referenceSelectionId: p.referenceSelectionId, sharedRefAssetId: p.sharedRefAssetId,
+      sharedRefAssetIds: p.sharedRefAssetIds, coverRefAssetIds: p.coverRefAssetIds,
+      accountRefAssetIds: p.accountRefAssetIds
+    });
+    const beforePlan = planSnapshot();
     const accountMatchesCurrentKind = normalizePlanKind(p);
     const normalized = normalizeSelectionPlan(p);
-    if (normalized || beforePlan !== JSON.stringify({ creativeMode: p.creativeMode, contentKind: p.contentKind, group: p.group, accountIds: p.accountIds, perAccountCount: p.perAccountCount, content: p.content, topic: p.topic })) save("sessions");
+    prunePlanReferences(p);
+    if (normalized || beforePlan !== planSnapshot()) save("sessions");
     const matched = (p.accountIds || []).map(accountById).filter(Boolean);
     const confirmed = p.status === "confirmed";
     const cancelled = p.status === "cancelled";
@@ -180,6 +188,9 @@ const CARD = {
         const singleImageTitle = ((p.accountSingleImageTitles || {})[a.id] || "").trim();
         const customCopyTitle = ((p.accountCopyTitles || {})[a.id] || "").trim();
         const customCopyBody = ((p.accountCopyBodies || {})[a.id] || "").trim();
+        const presetRefId = imgAcc ? a.imageStyleAssetId : (isRealKind ? a.charBoardAssetId : "");
+        const taskRefIds = (accountRefs[a.id] || []).slice(0, 3);
+        const presetRefHtml = presetRefId ? `<span class="agc-ref-origin is-preset">${imgAcc ? "账号长期风格图 · 只控制视觉风格，不并入本次任务参考图" : "账号长期角色图 · 真人/数字人生成时自动用于角色身份"}</span>${refChips([presetRefId], "", m.id, a.id)}` : "";
         const imageModeSwitch = imgAcc ? `<div class="agc-image-mode-switch" data-mode="${imageCreationMode}" aria-label="图文创作模式">
           <button type="button" class="${imageCreationMode === "copy" ? "is-active" : ""}" data-act="plan-image-mode" data-mid="${m.id}" data-account="${a.id}" data-mode="copy" title="文案组图" ${locked ? "disabled" : ""}>多</button>
           <button type="button" class="${imageCreationMode === "single" ? "is-active" : ""}" data-act="plan-image-mode" data-mid="${m.id}" data-account="${a.id}" data-mode="single" title="单图创作" ${locked ? "disabled" : ""}>单</button>
@@ -205,8 +216,12 @@ const CARD = {
         ${imgAcc && imageCreationMode !== "single" ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="1" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : (imgAcc ? "" : customMode ? "" : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`) }
         ${copyFields}
         <div class="agc-mini-ref">
-          <div class="agc-mini-head"><span>定制参考图</span><em>最多3张</em></div>
-          <div class="agc-ref-chips mini" data-ref-account="${a.id}">${refChips((accountRefs[a.id] || []).slice(0, 3), locked ? "" : "plan-custom-refremove", m.id, a.id)}</div>
+          <div class="agc-mini-head"><span>参考图</span><em>本次定制最多3张；长期配置会单独标记</em></div>
+          <div class="agc-ref-chips mini" data-ref-account="${a.id}">
+            ${presetRefHtml}
+            <span class="agc-ref-origin">本次任务</span>
+            ${refChips(taskRefIds, locked ? "" : "plan-custom-refremove", m.id, a.id)}
+          </div>
           ${locked ? "" : `<input type="file" accept="image/*" multiple hidden data-pacc-ref-up="${a.id}" data-mid="${m.id}" />`}
         </div>
       </div>`;
@@ -219,7 +234,7 @@ const CARD = {
         </div>
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
       </div>
-      <div class="agc-custom-hint">${icon("spark", 13)} ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 图文可按账号选择文案组图或单图创作；生成只使用本任务板已显示的参考图，账号风格只控制视觉设计。</div>
+      <div class="agc-custom-hint">${icon("spark", 13)} ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 新任务只使用任务板明确选择的参考图；账号长期风格图 / 角色图会在对应账号下单独标明。</div>
       ${(() => {
         const editable = !locked;
         const refKind = isImageKind ? "shared" : "cover";

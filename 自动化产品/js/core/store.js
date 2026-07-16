@@ -88,6 +88,10 @@ const PRODUCT_TERM_COLLECTIONS = [
   "accounts", "productions", "assets", "sessions", "batches", "jobs",
   "notifications", "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory", "voicePresets"
 ];
+/* 共享但按条授权的集合不能走普通整集合后台回推。
+   voicePresets 的新增/改名/删除由 domain/voices.js 显式等待服务端确认，
+   避免成员 A 的旧快照覆盖或阻断成员 B 已更新的共享音色。 */
+const EXPLICIT_REMOTE_COLLECTIONS = new Set(["voicePresets"]);
 const PRODUCT_TERM_SKIP_KEYS = /(^id$|Id$|Ids$|_id$|url$|Url$|URL$|dataUrl$|token$|secret$|apiKey$|password$|pin$|endpoint$|provider$)/;
 
 function normalizeProductTermsValue(value, key = "") {
@@ -115,7 +119,9 @@ async function normalizeProductTermsInState({ persistLocal = false, pushRemote =
   if (persistLocal) {
     for (const c of changed) {
       try { await db.replaceAll(c, JSON.parse(JSON.stringify(state[c] || []))); } catch { /* ignore */ }
-      if (pushRemote && remote.isOn()) remote.putCollection(c, JSON.parse(JSON.stringify(state[c] || [])));
+      if (pushRemote && remote.isOn() && !EXPLICIT_REMOTE_COLLECTIONS.has(c)) {
+        remote.putCollection(c, JSON.parse(JSON.stringify(state[c] || [])));
+      }
     }
   }
   return changed;
@@ -135,7 +141,9 @@ const persist = debounce(async () => {
       } else {
         const snap = JSON.parse(JSON.stringify(state[c] || []));
         await db.replaceAll(c, snap);
-        remote.putCollection(c, snap);   // 写穿透到共享后端（本地模式自动 no-op）
+        if (!EXPLICIT_REMOTE_COLLECTIONS.has(c)) {
+          remote.putCollection(c, snap);   // 写穿透到共享后端（本地模式自动 no-op）
+        }
       }
     } catch (e) { console.warn("持久化失败", c, e); }
   }
@@ -162,7 +170,9 @@ export async function persistNow() {
       } else {
         const snap = JSON.parse(JSON.stringify(state[c] || []));
         await db.replaceAll(c, snap);
-        if (syncDirty.has(c)) remote.putCollection(c, snap);
+        if (syncDirty.has(c) && !EXPLICIT_REMOTE_COLLECTIONS.has(c)) {
+          remote.putCollection(c, snap);
+        }
       }
     } catch (e) { /* 静默 */ }
   }
@@ -241,7 +251,10 @@ export async function loadAll() {
     if (migrated.length) {
       state.voicePresets.unshift(...migrated);
       await db.replaceAll("voicePresets", JSON.parse(JSON.stringify(state.voicePresets)));
-      if (remote.isOn()) remote.putCollection("voicePresets", JSON.parse(JSON.stringify(state.voicePresets)));
+      if (remote.isOn() && remote.hasToken()) {
+        remote.syncCollection("voicePresets", JSON.parse(JSON.stringify(migrated)))
+          .catch(e => console.warn("历史定制音色迁移同步失败", e));
+      }
     }
     delete state.ui.customVoices;
     db.metaSet("ui", JSON.parse(JSON.stringify(state.ui)));

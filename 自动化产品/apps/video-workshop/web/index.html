@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#050505" />
+    <title>星阵视频导演台</title>
+    <script>
+      (() => {
+        const embedded = (
+          new URLSearchParams(window.location.search).get("embed") === "1"
+          && window.parent !== window
+        );
+        if (embedded) document.documentElement.dataset.platformEmbedded = "true";
+      })();
+    </script>
+    <link rel="icon" type="image/png" href="/assets/xingzhen-logo-white.png" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260717-13" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <main class="app-shell">
+      <section class="start-view" id="startView" aria-labelledby="startTitle">
+        <aside class="start-history" id="startHistorySidebar" aria-label="历史项目">
+          <div class="history-heading">
+            <span>历史项目</span>
+            <button class="history-new" id="startHistoryNewButton" aria-label="新建会话" title="新建会话">
+              <i data-lucide="square-pen"></i>
+            </button>
+          </div>
+          <nav class="history-list" id="startHistoryList"></nav>
+        </aside>
+        <button class="icon-button quiet start-history-toggle" id="startHistoryToggleButton" aria-label="历史项目" title="历史项目">
+          <i data-lucide="panel-left"></i>
+        </button>
+        <div class="start-core">
+          <img class="brand-mark" src="/assets/xingzhen-logo-white.png" alt="星阵" />
+          <p class="brand-kicker">XINGZHEN VIDEO WORKSHOP</p>
+          <h1 id="startTitle">视频导演台</h1>
+          <form class="start-composer" id="startForm">
+            <div class="start-input-line" id="startDropZone">
+              <textarea id="startInput" rows="1" aria-label="描述想制作的视频"></textarea>
+              <button class="attachment-button" type="button" data-file-trigger aria-label="添加图片、视频或音频" title="添加图片、视频或音频">
+                <i data-lucide="paperclip"></i>
+              </button>
+              <button class="icon-button submit-button" type="submit" aria-label="开始创作" title="开始创作">
+                <i data-lucide="arrow-up"></i>
+              </button>
+              <div class="attachment-strip" data-attachment-strip></div>
+            </div>
+            <div class="skill-menu is-hidden" data-skill-menu></div>
+          </form>
+        </div>
+        <span class="corner-note">M3 DIRECTOR / VIDEO ENGINE</span>
+      </section>
+
+      <section class="studio-view is-hidden" id="studioView" aria-label="视频创作对话">
+        <header class="studio-header">
+          <div class="header-brand">
+            <button class="icon-button quiet back-button" id="backButton" aria-label="返回首页" title="返回首页">
+              <i data-lucide="arrow-left"></i>
+            </button>
+            <img src="/assets/xingzhen-logo-white.png" alt="" />
+            <div>
+              <strong>视频导演台</strong>
+              <span id="projectLabel">新项目</span>
+            </div>
+          </div>
+          <div class="header-actions">
+            <span class="service-state" id="serviceState"><b></b><span id="serviceStateText">服务检查中</span></span>
+          </div>
+        </header>
+
+        <div class="studio-body">
+          <aside class="history-sidebar" id="historySidebar" aria-label="历史会话">
+            <div class="history-heading">
+              <span>历史会话</span>
+              <button class="history-new" id="historyNewButton" aria-label="新建会话" title="新建会话">
+                <i data-lucide="square-pen"></i>
+              </button>
+            </div>
+            <nav class="history-list" id="historyList"></nav>
+          </aside>
+
+          <div class="conversation-pane">
+            <div class="conversation-column">
+              <div class="conversation" id="conversation" aria-live="polite"></div>
+              <section class="delivery is-hidden" id="delivery">
+                <div class="delivery-heading">
+                  <div>
+                    <span>DELIVERY</span>
+                    <h2>成片</h2>
+                  </div>
+                  <div class="delivery-actions">
+                    <button class="delivery-toggle-button" id="deliveryToggleButton" type="button" aria-expanded="true">
+                      <span>收起成片</span>
+                      <i data-lucide="chevron-up"></i>
+                    </button>
+                    <div class="segmented compact" id="outputTabs"></div>
+                    <button class="publish-output-button" id="publishOutputButton" type="button" hidden>
+                      <span>发布成片</span>
+                      <i data-lucide="arrow-up-right"></i>
+                    </button>
+                  </div>
+                </div>
+                <div class="delivery-body" id="deliveryBody">
+                  <div class="video-stage">
+                    <video id="outputVideo" controls playsinline></video>
+                    <span class="published-output-badge" id="publishedOutputBadge" hidden>
+                      <i data-lucide="check"></i>
+                      <span id="publishedOutputBadgeText">已发布</span>
+                    </span>
+                    <a class="icon-button download-button" id="downloadButton" href="#" download aria-label="下载成片" title="下载成片">
+                      <i data-lucide="download"></i>
+                    </a>
+                  </div>
+                  <div class="output-meta" id="outputMeta"></div>
+                </div>
+              </section>
+            </div>
+
+            <form class="chat-composer" id="chatForm">
+              <div class="attachment-strip" data-attachment-strip></div>
+              <div class="chat-input-line" id="chatDropZone">
+                <button class="attachment-button" type="button" data-file-trigger aria-label="添加图片、视频或音频" title="添加图片、视频或音频">
+                  <i data-lucide="paperclip"></i>
+                </button>
+                <textarea id="chatInput" rows="1" placeholder="告诉小星你的想法" aria-label="给小星发送消息"></textarea>
+                <button class="icon-button submit-button" type="submit" aria-label="发送" title="发送">
+                  <i data-lucide="arrow-up"></i>
+                </button>
+              </div>
+              <div class="skill-menu is-hidden" data-skill-menu></div>
+            </form>
+          </div>
+
+          <aside class="director-rail" aria-label="导演过程">
+            <div class="rail-heading">
+              <div>
+                <span>DIRECTOR LOG</span>
+                <h2>导演记录</h2>
+              </div>
+              <span id="progressNumber">0%</span>
+            </div>
+            <div class="progress-track"><span id="progressBar"></span></div>
+            <div class="event-list" id="eventList"></div>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <div class="drop-overlay" id="dropOverlay" aria-hidden="true">
+      <div class="drop-overlay-content">
+        <i data-lucide="file-up"></i>
+        <strong>松开添加创作素材</strong>
+        <span>图片 / 视频 / MP3 / WAV / M4A</span>
+      </div>
+    </div>
+    <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,.m4a" multiple hidden />
+    <div class="toast" id="toast" role="status"></div>
+    <script src="/assets/lucide.min.js"></script>
+    <script src="/assets/app.js?v=20260717-13"></script>
+  </body>
+</html>

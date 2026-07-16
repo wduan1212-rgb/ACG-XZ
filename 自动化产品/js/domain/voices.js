@@ -1,11 +1,34 @@
 import { myId, state, save } from "../core/store.js";
+import * as remote from "../core/remote.js";
 import { uid } from "../core/util.js";
 import { defaultTtsVoiceId, findKnownTtsVoice, ttsVoicePresets } from "../api/providers.js";
 
 function ensureVoiceMeta() {
   state.voicePresets = Array.isArray(state.voicePresets) ? state.voicePresets : [];
-  state.ui.favoriteVoiceIds = Array.isArray(state.ui.favoriteVoiceIds) ? state.ui.favoriteVoiceIds : [];
-  state.ui.voiceLab = state.ui.voiceLab || {};
+  state.ui.voiceByMember = state.ui.voiceByMember && typeof state.ui.voiceByMember === "object"
+    ? state.ui.voiceByMember
+    : {};
+  const memberId = myId() || "anonymous";
+  const bucket = state.ui.voiceByMember[memberId] && typeof state.ui.voiceByMember[memberId] === "object"
+    ? state.ui.voiceByMember[memberId]
+    : {};
+  if (!state.ui.voiceByMember[memberId]) {
+    bucket.favoriteVoiceIds = Array.isArray(state.ui.favoriteVoiceIds) ? state.ui.favoriteVoiceIds : [];
+    bucket.voiceLab = state.ui.voiceLab && typeof state.ui.voiceLab === "object" ? state.ui.voiceLab : {};
+    bucket.voicePreviewAssetIds = state.ui.voicePreviewAssetIds && typeof state.ui.voicePreviewAssetIds === "object"
+      ? state.ui.voicePreviewAssetIds
+      : {};
+    state.ui.voiceByMember[memberId] = bucket;
+    delete state.ui.favoriteVoiceIds;
+    delete state.ui.voiceLab;
+    delete state.ui.voicePreviewAssetIds;
+  }
+  bucket.favoriteVoiceIds = Array.isArray(bucket.favoriteVoiceIds) ? bucket.favoriteVoiceIds : [];
+  bucket.voiceLab = bucket.voiceLab && typeof bucket.voiceLab === "object" ? bucket.voiceLab : {};
+  bucket.voicePreviewAssetIds = bucket.voicePreviewAssetIds && typeof bucket.voicePreviewAssetIds === "object"
+    ? bucket.voicePreviewAssetIds
+    : {};
+  return bucket;
 }
 
 function cleanVoiceOption(item = {}, source = "system") {
@@ -17,6 +40,7 @@ function cleanVoiceOption(item = {}, source = "system") {
     name: String(item.name || item.label || voiceId).trim(),
     description: String(item.description || item.prompt || "").trim(),
     source,
+    ownerId: String(item.ownerId || "").trim(),
     createdAt: item.createdAt || 0,
     updatedAt: item.updatedAt || item.createdAt || 0,
     previewAudioDataUrl: item.previewAudioDataUrl || item.audioDataUrl || "",
@@ -24,13 +48,12 @@ function cleanVoiceOption(item = {}, source = "system") {
 }
 
 export function voiceMeta() {
-  ensureVoiceMeta();
-  return state.ui;
+  return ensureVoiceMeta();
 }
 
 export function favoriteVoiceIds() {
-  ensureVoiceMeta();
-  return new Set((state.ui.favoriteVoiceIds || []).filter(Boolean));
+  const meta = ensureVoiceMeta();
+  return new Set((meta.favoriteVoiceIds || []).filter(Boolean));
 }
 
 export function isFavoriteVoice(voiceId = "") {
@@ -43,7 +66,7 @@ export function setFavoriteVoice(voiceId = "", enabled = true) {
   const favs = favoriteVoiceIds();
   if (enabled) favs.add(id);
   else favs.delete(id);
-  state.ui.favoriteVoiceIds = [...favs];
+  ensureVoiceMeta().favoriteVoiceIds = [...favs];
   save("meta");
 }
 
@@ -59,10 +82,27 @@ export function customVoiceOptions() {
   ensureVoiceMeta();
   const current = myId();
   return (state.voicePresets || [])
-    .filter(v => !v.ownerId || !current || v.ownerId === current)
-    .map(x => cleanVoiceOption(x, "mine"))
+    .map(x => cleanVoiceOption(x, x.ownerId && current && x.ownerId === current ? "mine" : "shared"))
     .filter(Boolean)
     .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+}
+
+export function canManageCustomVoice(voice = {}) {
+  const ownerId = String(voice.ownerId || "").trim();
+  return state.role === "admin" || Boolean(ownerId && myId() && ownerId === myId());
+}
+
+async function syncOwnedVoicePreset(item) {
+  if (!remote.isOn()) return;
+  if (!remote.hasToken()) throw new Error("登录已过期，请重新登录后再保存音色");
+  /* 只能发送本次新增/修改的单条音色，禁止把共享列表中的他人旧快照回推。 */
+  await remote.syncCollection("voicePresets", [JSON.parse(JSON.stringify(item))]);
+}
+
+async function deleteOwnedVoicePreset(id) {
+  if (!remote.isOn()) return;
+  if (!remote.hasToken()) throw new Error("登录已过期，请重新登录后再删除音色");
+  await remote.deleteDoc("voicePresets", id);
 }
 
 export function systemVoiceOptions() {
@@ -88,12 +128,14 @@ export function findVoiceOption(voiceId = "") {
   return { voiceId: id, name: known?.name || id, source: known?.source || "custom" };
 }
 
-export function rememberCustomVoice(item = {}) {
+export async function rememberCustomVoice(item = {}) {
   const voiceId = String(item.voiceId || "").trim();
   if (!voiceId) return null;
   ensureVoiceMeta();
   const now = Date.now();
-  const current = state.voicePresets.find(v => v.voiceId === voiceId);
+  const existing = state.voicePresets.find(v => v.voiceId === voiceId);
+  if (existing && !canManageCustomVoice(existing)) return null;
+  const current = existing || null;
   const next = {
     id: current?.id || item.id || uid(),
     voiceId,
@@ -105,21 +147,26 @@ export function rememberCustomVoice(item = {}) {
     updatedAt: now,
     previewAudioDataUrl: item.previewAudioDataUrl || item.audioDataUrl || current?.previewAudioDataUrl || "",
   };
-  if (current) Object.assign(current, next);
+  await syncOwnedVoicePreset(next);
+  const latest = state.voicePresets.find(v => v.id === next.id || v.voiceId === voiceId);
+  if (latest) Object.assign(latest, next);
   else state.voicePresets.unshift(next);
   save("voicePresets");
   return next;
 }
 
-export function renameCustomVoice(voiceId = "", name = "") {
+export async function renameCustomVoice(voiceId = "", name = "") {
   const id = String(voiceId || "").trim();
   const nextName = String(name || "").trim().slice(0, 40);
   if (!id || !nextName) return null;
   ensureVoiceMeta();
-  const current = state.voicePresets.find(v => v.voiceId === id && (!v.ownerId || !myId() || v.ownerId === myId()));
-  if (!current) return null;
-  current.name = nextName;
-  current.updatedAt = Date.now();
+  const current = state.voicePresets.find(v => v.voiceId === id);
+  if (!current || !canManageCustomVoice(current)) return null;
+  const next = { ...current, name: nextName, updatedAt: Date.now() };
+  await syncOwnedVoicePreset(next);
+  const latest = state.voicePresets.find(v => v.id === current.id || v.voiceId === id);
+  if (!latest || !canManageCustomVoice(latest)) return null;
+  Object.assign(latest, next);
   (state.accounts || []).forEach(account => {
     if (account.voiceId === id) account.voiceName = nextName;
   });
@@ -127,18 +174,21 @@ export function renameCustomVoice(voiceId = "", name = "") {
     if (production?.artifacts?.audio?.voiceId === id) production.artifacts.audio.voiceName = nextName;
   });
   save("voicePresets", "accounts", "productions");
-  return cleanVoiceOption(current, "mine");
+  return cleanVoiceOption(latest, "mine");
 }
 
-export function deleteCustomVoice(voiceId = "") {
+export async function deleteCustomVoice(voiceId = "") {
   const id = String(voiceId || "").trim();
   if (!id) return false;
   ensureVoiceMeta();
-  const current = myId();
+  const target = state.voicePresets.find(v => v.voiceId === id);
+  if (!target || !canManageCustomVoice(target)) return false;
+  await deleteOwnedVoicePreset(target.id || id);
   const before = state.voicePresets.length;
-  state.voicePresets = state.voicePresets.filter(v => v.voiceId !== id || (v.ownerId && current && v.ownerId !== current));
+  state.voicePresets = state.voicePresets.filter(v => v.voiceId !== id);
   if (state.voicePresets.length === before) return false;
-  state.ui.favoriteVoiceIds = (state.ui.favoriteVoiceIds || []).filter(x => x !== id);
+  const meta = ensureVoiceMeta();
+  meta.favoriteVoiceIds = (meta.favoriteVoiceIds || []).filter(x => x !== id);
   (state.accounts || []).forEach(account => {
     if (account.voiceId === id) {
       account.voiceId = "";
@@ -173,7 +223,7 @@ export function voicePickerGroups({ selectedId = "", selectedName = "", includeD
   }
   const favoriteItems = [...favs].map(id => findVoiceOption(id)).filter(x => x?.voiceId);
   pushGroup("favorite", "收藏音色", "favorite", favoriteItems);
-  pushGroup("mine", "我的音色", "mine", customVoiceOptions());
+  pushGroup("mine", "定制音色", "shared", customVoiceOptions());
   pushGroup("system", "系统音色", "system", [
     ...(includeDefault ? [{ voiceId: "", name: "默认/手动声线", source: "default" }] : []),
     ...systemVoiceOptions()

@@ -8,7 +8,7 @@ import { platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260716-v88-1";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260717-v91-2";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
@@ -427,8 +427,12 @@ export const deliveryView = {
               danger: true
             });
             if (!ok2) return;
-            if (deleteDeliveryAsset(asset)) { toast("已回撤删除发布记录"); draw(); }
-            else toast("当前账号无权删除这条发布记录", "error");
+            try {
+              if (await deleteDeliveryAsset(asset)) { toast("已回撤删除发布记录"); draw(); }
+              else toast("当前账号无权删除这条发布记录", "error");
+            } catch (error) {
+              toast(error?.message || "回撤失败，请稍后重试", "error");
+            }
           }
           if (act === "prod" && asset.productionId && productionById(asset.productionId)) openProductionDrawer(asset.productionId);
         }));

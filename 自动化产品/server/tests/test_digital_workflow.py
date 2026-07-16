@@ -42,19 +42,122 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
 
     def test_material_subtitles_use_stable_recognition_and_manual_track_is_preserved(self):
         source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
+        workshop = (APP_DIR / "js/views/chainWorkshop.js").read_text(encoding="utf-8")
+        productions = (APP_DIR / "js/domain/productions.js").read_text(encoding="utf-8")
         self.assertIn('const usesEstimatedMaterialCaptions = () => !isDigitalHuman()', source)
         self.assertIn('mode: isDigitalHuman() ? "digital-human" : "info-flow"', source)
         self.assertIn("timedSpeechHintsForClip", source)
-        self.assertIn("explicitSpeechLines", source)
+        self.assertIn("extractStructuredSpokenCues", source)
         self.assertIn("strict: usesEstimatedMaterialCaptions()", source)
-        self.assertIn('subTimingSource = "audio-analysis-v5"', source)
-        self.assertIn('source.startsWith("audio-analysis-v5")', source)
-        self.assertIn("没有在真实音轨中确认到提示词口播", source)
+        self.assertIn('subTimingSource = "audio-analysis-v6"', source)
+        self.assertIn('subTimingSource = "prompt-timeline-v1"', source)
+        self.assertIn('audioTimingSource = "prompt-timeline-fallback"', source)
+        self.assertIn("promptTimelineCaptions", source)
+        self.assertIn('source.startsWith("audio-analysis-")', source)
+        self.assertIn("真实音轨未通过字幕校验", source)
+        self.assertIn("audioDataUrl: audio.dataUrl", source)
+        self.assertIn("audioTimingRevision", source)
+        self.assertIn("timingAttemptIsCurrent", source)
+        self.assertIn("clip.videoDuration = actual", source)
+        self.assertNotIn("seg.audioDuration = actual", source)
+        self.assertIn("invalidateDerivedMediaAfterDigitalAudioChange", workshop)
+        self.assertIn("const audioSignature =", workshop)
+        self.assertIn("audioAssetId: seg.audioAssetId", productions)
+        self.assertIn("videoDuration:", productions)
         self.assertNotIn('subTimingSource = "estimated-material-v2"', source)
         self.assertNotIn("estimateInfoFlowCaptions", source)
-        self.assertIn('s.text = e.target.value;\n      p.artifacts.subTimingSource = "manual"', source)
+        self.assertIn('s.text = e.target.value;\n      markCaptionTimingManual()', source)
         self.assertNotIn("script.shots?.[index]?.line", source)
         self.assertNotIn("任意引号", source)
+
+    def test_infoflow_caption_hints_only_accept_explicit_spoken_source(self):
+        script = r"""
+globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener:()=>{}, dispatchEvent:()=>{} };
+globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
+const m = await import('./js/views/chainCut.js');
+const input = `0-3s 声音/台词：镜头快速推进，必须高级。
+口播原话：“真正应该出现的口播”
+3-6s 台词：这是导演占位文本
+角色A说：“第二句真实对白”
+3-6s 台词：字幕跟随口播精准出现
+3-6s 声音/台词：不要使用机械播报感
+3-6s 旁白：无字幕，不生成花字
+随便引用“不要入字幕”`;
+console.log(JSON.stringify(m.extractStructuredSpokenCues(input, 6)));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(json.loads(result.stdout.strip()), [
+            {"text": "真正应该出现的口播", "start": 0, "end": 3},
+            {"text": "第二句真实对白", "start": 3, "end": 6},
+        ])
+
+    def test_infoflow_caption_hints_accept_natural_quoted_speech_without_ui_copy(self):
+        script = r"""
+globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener:()=>{}, dispatchEvent:()=>{} };
+globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
+const m = await import('./js/views/chainCut.js');
+const input = `0-2s：输入框显示：“三个版本，下班前”，这里只是界面文字。
+2-5s：他侧身躲闪，嘴角又急又无奈地说：“又压过来一摞，我还没理完上一摞。”
+5-9s：角色扒开文件，喘了一口气说：“资料要看，步骤要拆，结果还要能交。”
+9-12s：他皱着眉说：“三个版本，下班前。”
+12-15s：角色把头靠在文件上，闷声说：“先别理了，让它先跑一版。”
+禁止角色说：“这句是导演限制，不能成为字幕。”`;
+console.log(JSON.stringify(m.extractStructuredSpokenCues(input, 15)));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(json.loads(result.stdout.strip()), [
+            {"text": "又压过来一摞 我还没理完上一摞", "start": 2, "end": 5},
+            {"text": "资料要看 步骤要拆 结果还要能交", "start": 5, "end": 9},
+            {"text": "三个版本 下班前", "start": 9, "end": 12},
+            {"text": "先别理了 让它先跑一版", "start": 12, "end": 15},
+        ])
+
+    def test_infoflow_prompt_timeline_accepts_local_or_global_segment_ranges(self):
+        script = r"""
+globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener:()=>{}, dispatchEvent:()=>{} };
+globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
+const m = await import('./js/views/chainCut.js');
+const local = `0-3s：台词：“今天就把这件事做完。”
+3-7s：旁：“然后检查最终结果。”`;
+const global = `15-18秒：台词：“今天就把这件事做完。”
+18-22秒：旁：“然后检查最终结果。”`;
+console.log(JSON.stringify({
+  local: m.extractStructuredSpokenCues(local, 15),
+  global: m.extractStructuredSpokenCues(global, 15)
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        data = json.loads(result.stdout.strip())
+        expected = [
+            {"text": "今天就把这件事做完", "start": 0, "end": 3},
+            {"text": "然后检查最终结果", "start": 3, "end": 7},
+        ]
+        self.assertEqual(data["local"], expected)
+        self.assertEqual(data["global"], expected)
 
     def test_old_account_classification_prompts_are_removed(self):
         active_paths = [
@@ -70,8 +173,8 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
         for stale in ("宝妈", "宝爸", "职场效率", "家庭管理", "学生教培", "岗位垂类", "TAG_POOL", "tagsOf("):
             self.assertNotIn(stale, source)
         self.assertNotIn("qtags", (APP_DIR / "js/api/ai.js").read_text(encoding="utf-8"))
+        self.assertFalse((APP_DIR / "js/data/xhsAccountsSeed.js").exists())
         for path in (
-            APP_DIR / "js/data/xhsAccountsSeed.js",
             APP_DIR / "js/data/accountProfilesSeed.js",
             APP_DIR / "js/core/migrate.js",
         ):
@@ -96,11 +199,12 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
         self.assertIn('data-overview-account=', overview)
         self.assertIn("逐条查看赞、藏、评与播放", overview)
 
-    def test_cut_preview_has_digital_human_crossfade_layer(self):
+    def test_cut_preview_disables_digital_human_audio_crossfade(self):
         source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
         styles = (APP_DIR / "styles/views.css").read_text(encoding="utf-8")
         self.assertIn('id="cpVideoNext"', source)
-        self.assertIn('const transition = isDigitalHuman() && nextClip ? 0.35 : 0', source)
+        self.assertIn("const transition = 0", source)
+        self.assertIn("transitionDuration: 0", source)
         self.assertIn('.cp-video-next', styles)
 
     def test_image_prompt_pipeline_has_no_fixed_office_fallback(self):
@@ -221,15 +325,19 @@ console.log(JSON.stringify({
         self.assertIn('data-sh-ref="style"', studio)
         self.assertIn('id="agwNewPanel"', agent)
 
-    def test_v84_manual_account_style_survives_seed_sync(self):
+    def test_account_profile_seed_only_bootstraps_an_empty_account_store(self):
         main = (APP_DIR / "js/main.js").read_text(encoding="utf-8")
         dialog = (APP_DIR / "js/views/accountDialog.js").read_text(encoding="utf-8")
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
-        self.assertIn("const preserveManualStyle = Boolean(acc.styleEditedAt)", main)
-        self.assertIn("if (!preserveManualStyle)", main)
+        self.assertIn("async function bootstrapAccountProfilesIfEmpty", main)
+        self.assertIn("if ((state.accounts || []).length || state.ui.accountProfileVersion) return 0;", main)
+        self.assertNotIn("cleanupNonSeedAccounts", main)
+        self.assertNotIn("applyAccountProfileSeed", main)
+        self.assertNotIn("preserveManualStyle", main)
+        self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260716-v88-1"', main)
-        self.assertIn('js/main.js?v=20260716-v88-1', index)
+        self.assertIn('const APP_BUILD_ID = "20260717-v91-2"', main)
+        self.assertIn('js/main.js?v=20260717-v91-2', index)
 
     def test_batch_reference_images_are_explicit_and_title_changes_refresh_copy(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
@@ -243,13 +351,15 @@ console.log(JSON.stringify({
         self.assertIn("function batchVideoRefIds", orchestrator)
         self.assertIn("if (!A.omniRefAssetIds.length && !p.batchId)", orchestrator)
         self.assertIn("!p.batchId ? A.sharedRefAssetId : null", orchestrator)
-        self.assertIn("payload.sharedRefAssetIds = []", view)
-        self.assertIn("payload.coverRefAssetIds = []", view)
-        self.assertIn("payload.accountRefAssetIds = {}", view)
+        self.assertIn("resetPlanReferences(payload)", view)
+        self.assertIn("plan.sharedRefAssetIds = []", orchestrator)
+        self.assertIn("plan.coverRefAssetIds = []", orchestrator)
+        self.assertIn("plan.accountRefAssetIds = {}", orchestrator)
 
         self.assertIn("按标题生成正文与图卡提示词", boards)
         self.assertIn("const titleChanged = Boolean(previousGeneratedTitle && previousGeneratedTitle !== title)", boards)
-        self.assertIn("if (!body || titleChanged)", boards)
+        self.assertIn("const shouldGenerateBody = !body || titleChanged", boards)
+        self.assertIn("if (shouldGenerateBody)", boards)
         self.assertIn("A.copyGeneratedForTitle = title", boards)
 
         script = r"""
@@ -259,7 +369,7 @@ globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
 globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
 const { state } = await import('./js/core/store.js');
 const { createProduction, buildMaterialUnits } = await import('./js/domain/productions.js');
-const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260716-v88-1');
+const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260717-v91-2');
 state.accounts = [{ id:'material-account', name:'素材号', mode:'视频', subType:'无数字人', platform:'视频号' }];
 state.assets = [{ id:'old-hidden-ref', accountId:'material-account', type:'图片', name:'旧产品统一参考', tags:['统一参考','产品'] }];
 state.productions = [];
@@ -288,7 +398,6 @@ console.log(JSON.stringify(state.jobs.map(job => job.refAssetIds)));
     def test_placeholder_bgm_style_and_topic_pools_are_removed(self):
         prompts = (APP_DIR / "js/api/prompts.js").read_text(encoding="utf-8")
         ai = (APP_DIR / "js/api/ai.js").read_text(encoding="utf-8")
-        script = (APP_DIR / "js/views/chainScript.js").read_text(encoding="utf-8")
         for stale in (
             "BGM_POOL",
             "STYLE_CHIP_BASE",
@@ -298,9 +407,10 @@ console.log(JSON.stringify(state.jobs.map(job => job.refAssetIds)));
             "一句话整理一周工作记录",
             "小红书种草风",
         ):
-            self.assertNotIn(stale, prompts + ai + script)
-        self.assertIn("own.blogAngles", ai)
-        self.assertIn("account?.lockedStyle || account?.styleProfile", ai)
+            self.assertNotIn(stale, prompts + ai)
+        self.assertIn("PRODUCT_CATALOG_SEED", ai)
+        self.assertIn("relatedProducts", ai)
+        self.assertIn("account?.styleProfile || account?.lockedStyle", ai)
 
 
 if __name__ == "__main__":

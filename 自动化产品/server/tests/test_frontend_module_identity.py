@@ -30,15 +30,30 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260716-v88-1",
-            "prodDrawer.js": "v=20260716-v88-1",
-            "orchestrator.js": "v=20260716-v88-1",
+            "studio.js": "v=20260717-v91-2",
+            "prodDrawer.js": "v=20260717-v91-2",
+            "orchestrator.js": "v=20260717-v91-2",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
             self.assertGreaterEqual(len(imports), 2)
             queries = {specifier.partition("?")[2] for _, specifier in imports}
             self.assertEqual({expected_query}, queries, imports)
+
+    def test_modified_stylesheets_share_current_build_identity(self):
+        index = (APP_DIR / "index.html").read_text(encoding="utf-8")
+        for stylesheet in (
+            "components.css",
+            "views.css",
+            "agent.css",
+            "ui-motion.css",
+            "custom-creation.css",
+        ):
+            self.assertIn(
+                f"styles/{stylesheet}?v=20260717-v91-2",
+                index,
+                stylesheet,
+            )
 
     def test_supplier_link_parser_prefers_latest_pasted_url(self):
         source = (APP_DIR / "js/views/deliveryView.js").read_text(encoding="utf-8")

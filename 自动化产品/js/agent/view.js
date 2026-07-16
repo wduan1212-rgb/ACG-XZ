@@ -9,10 +9,10 @@ import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
-  templatePlan, defaultPlan, regenerateBatchImage
-} from "./orchestrator.js?v=20260716-v88-1";
-import { renderMessage, boardRow } from "./cards.js?v=20260716-v88-1";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260716-v88-1";
+  templatePlan, defaultPlan, regenerateBatchImage, resetPlanReferences, prunePlanReferences
+} from "./orchestrator.js?v=20260717-v91-2";
+import { renderMessage, boardRow } from "./cards.js?v=20260717-v91-2";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260717-v91-2";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, removeAsset } from "../domain/assets.js";
@@ -62,10 +62,7 @@ function applyPlanKind(payload, kind) {
   const previousKind = normalizePlanKind(payload.contentKind, payload.group);
   const oldCount = (payload.accountIds || []).length || Number(payload.accountCount || 0) || 2;
   if (previousKind !== nextKind) {
-    payload.sharedRefAssetId = null;
-    payload.sharedRefAssetIds = [];
-    payload.coverRefAssetIds = [];
-    payload.accountRefAssetIds = {};
+    resetPlanReferences(payload);
   }
   payload.contentKind = nextKind;
   payload.creativeMode = "custom";
@@ -481,7 +478,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260716-v88-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260717-v91-2");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -581,6 +578,7 @@ function wire(root) {
       m.payload.accountCount = m.payload.accountIds.length;
       m.payload.manualAccountSelection = true;
     }
+    prunePlanReferences(m.payload);
     save("sessions");
     rerenderPlanCard(m.id);
     return true;
@@ -661,6 +659,7 @@ function wire(root) {
         m.payload.accountIds = allSelected ? [] : pool.map(account => account.id);
         m.payload.accountCount = m.payload.accountIds.length;
         m.payload.manualAccountSelection = true;
+        prunePlanReferences(m.payload);
         save("sessions");
         rerenderPlanCard(m.id);
         toast(allSelected ? "已取消全选" : `已全选 ${pool.length} 个账号`);
@@ -675,6 +674,7 @@ function wire(root) {
         ["accountCopyTitles", "accountCopyBodies", "accountRefAssetIds", "accountImageCounts", "accountImageCreationModes", "accountImagePrompts", "accountSingleImageTitles", "accountCounts", "accountContents", "accountProductIds", "accountCustomCopyModes"].forEach(key => {
           if (m.payload[key]) delete m.payload[key][accountId];
         });
+        prunePlanReferences(m.payload);
         save("sessions");
         rerenderPlanCard(m.id);
         toast("已从本次计划取消该账号");
@@ -717,6 +717,7 @@ function wire(root) {
         m.payload.accountIds = picked;
         m.payload.accountCount = picked.length;
         m.payload.manualAccountSelection = true;
+        prunePlanReferences(m.payload);
         save("sessions");
         rerenderPlanCard(m.id);
         toast(`已随机选择 ${picked.length} 个账号`);
@@ -730,6 +731,7 @@ function wire(root) {
         m.payload.accountIds = accountIdsForKind(m.payload.contentKind, m.payload.accountIds || [], 0);
         m.payload.accountCount = m.payload.accountIds.length;
         applyPlanMode(m.payload);
+        prunePlanReferences(m.payload);
         if (!m.payload.accountIds.length) { toast("至少选择一个账号"); return; }
         const isCustomPlan = true;
         const missingCustom = isCustomPlan ? (m.payload.accountIds || []).filter(id => {
@@ -805,6 +807,7 @@ function wire(root) {
         if (m) {
           m.payload.sharedRefAssetId = null;
           m.payload.sharedRefAssetIds = [];
+          prunePlanReferences(m.payload);
           save("sessions");
           rerenderPlanCard(m.id);
         }
@@ -816,6 +819,7 @@ function wire(root) {
           const id = act.dataset.refid;
           m.payload.sharedRefAssetIds = (m.payload.sharedRefAssetIds || []).filter(x => x !== id);
           if (m.payload.sharedRefAssetId === id) m.payload.sharedRefAssetId = m.payload.sharedRefAssetIds[0] || null;
+          prunePlanReferences(m.payload);
           save("sessions");
           rerenderPlanCard(m.id);
         }
@@ -826,6 +830,7 @@ function wire(root) {
         if (m) {
           const id = act.dataset.refid;
           m.payload.coverRefAssetIds = (m.payload.coverRefAssetIds || []).filter(x => x !== id);
+          prunePlanReferences(m.payload);
           save("sessions");
           rerenderPlanCard(m.id);
         }
@@ -835,6 +840,7 @@ function wire(root) {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (m) {
           m.payload.coverRefAssetIds = [];
+          prunePlanReferences(m.payload);
           save("sessions");
           rerenderPlanCard(m.id);
         }
@@ -847,6 +853,7 @@ function wire(root) {
           const id = act.dataset.refid;
           m.payload.accountRefAssetIds = m.payload.accountRefAssetIds || {};
           m.payload.accountRefAssetIds[accountId] = (m.payload.accountRefAssetIds[accountId] || []).filter(x => x !== id);
+          prunePlanReferences(m.payload);
           save("sessions");
           rerenderPlanCard(m.id);
         }
@@ -960,6 +967,7 @@ function wire(root) {
       m.payload.accountImageCounts = m.payload.accountImageCounts || {};
       m.payload.accountImageCounts[aimg.dataset.paccImgcount] = Math.max(1, Math.min(12, Number(aimg.value || m.payload.imageCount || 4) || 4));
     }
+    prunePlanReferences(m.payload);
     save("sessions");
     if (f?.multiple || ar || acount || aimg || ["perAccountCount", "imageCount"].includes(f?.dataset.pf)) rerenderPlanCard(m.id);
   };
@@ -995,6 +1003,7 @@ async function setPlanRefs(mid, files, kind = "shared") {
     m.payload.sharedRefAssetIds = nextIds;
     m.payload.sharedRefAssetId = m.payload.sharedRefAssetIds[0] || null;
   }
+  prunePlanReferences(m.payload);
   save("sessions");
   rerenderPlanCard(m.id);
   toast(`已追加 ${newIds.length} 张${isCover ? "统一视频参考图" : "统一参考图"}`);
@@ -1112,6 +1121,7 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
               if (m.payload.sharedRefAssetId === id) m.payload.sharedRefAssetId = m.payload.sharedRefAssetIds[0] || null;
             }
             await removeAsset(id);
+            prunePlanReferences(m.payload);
             save("sessions");
             const card = panel.querySelector(`[data-asset-pick="${id}"]`);
             if (card) card.remove();
@@ -1142,6 +1152,7 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
             m.payload.sharedRefAssetIds = ids;
             m.payload.sharedRefAssetId = ids[0] || null;
           }
+          prunePlanReferences(m.payload);
           save("sessions");
           rerenderPlanCard(m.id);
           toast(ids.length ? `已选择 ${ids.length} 张参考图` : "已清空参考图选择");
@@ -1248,6 +1259,7 @@ async function setPlanCustomRefs(mid, accountId, files) {
     newIds.push(a.id);
   }
   m.payload.accountRefAssetIds = { ...oldMap, [accountId]: [...new Set([...oldIds, ...newIds])].slice(0, 3) };
+  prunePlanReferences(m.payload);
   save("sessions");
   rerenderPlanCard(m.id);
   toast(`已为该账号追加 ${newIds.length} 张定制参考图`);

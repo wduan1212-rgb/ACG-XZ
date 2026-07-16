@@ -2,6 +2,8 @@
    Provider 可填绝对地址，或同源相对路径 /api/chat/completions（走服务端代理，免 CORS + 藏 Key）；
    本地直连受 CORS 阻时也可起 proxy.py 并把 Provider 填成 http://localhost:8787/chat */
 
+import * as remote from "../core/remote.js";
+
 export const LLM_CONFIG = {
   endpoint: "https://api.minimaxi.com/v1/chat/completions",
   model: "MiniMax-M3",
@@ -12,7 +14,7 @@ window.XingzhenConfig = LLM_CONFIG; // 控制台可调试覆盖
 window.DumateConfig = LLM_CONFIG; // 兼容旧调试入口
 
 /* 部署模式：服务器配置了 LLM_API_KEY 时，前端默认走同源代理。
-   Authorization 里的占位值会被后端忽略，真实 Key 只在服务器环境变量中。 */
+   Authorization 只传平台登录 token；上游真实 Key 始终只在服务器环境变量中。 */
 export async function enableServerProxyIfConfigured() {
   const candidates = ["/api/health"];
   try {
@@ -43,13 +45,19 @@ export async function enableServerProxyIfConfigured() {
 
 /* 设置页保存的语言类 Key 覆盖默认配置 */
 export function applyKeyOverrides(apiKeys) {
+  // 生产环境探测到服务端托管配置后，以服务端为唯一语言模型入口。
+  // 否则浏览器里遗留的旧 key/provider 会把已经接通的同源代理重新覆盖掉，
+  // 表现为部分生成流程突然回退本地模板。
+  if (LLM_CONFIG.serverManaged) return false;
   const k = [...(apiKeys || [])].reverse().find(x => x.type === "language" && x.secret);
   if (k) {
     LLM_CONFIG.apiKey = k.secret;
     LLM_CONFIG.serverManaged = false;
     if (/^https?:\/\//.test(k.provider || "") || (k.provider || "").startsWith("/")) LLM_CONFIG.endpoint = k.provider;
     if (k.model) LLM_CONFIG.model = k.model;
+    return true;
   }
+  return false;
 }
 
 function cleanModelText(text = "") {
@@ -75,6 +83,10 @@ export async function llm(messages, { json = false, temperature = 0.7, signal, t
     body.thinking = { type: thinking === "enabled" ? "adaptive" : thinking };
   }
   if (!serverManaged && Number(maxTokens) > 0) body.max_tokens = Number(maxTokens);
+  const authKey = serverManaged ? remote.getToken() : LLM_CONFIG.apiKey;
+  if (!serverManaged && !authKey) throw new Error("未配置语言模型 Key");
+  const headers = { "Content-Type": "application/json" };
+  if (authKey) headers.Authorization = "Bearer " + authKey;
   const ctrl = signal ? null : new AbortController();
   const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
   let res;
@@ -82,7 +94,7 @@ export async function llm(messages, { json = false, temperature = 0.7, signal, t
     res = await fetch(ep, {
       method: "POST",
       signal: signal || ctrl.signal,
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + LLM_CONFIG.apiKey },
+      headers,
       body: JSON.stringify(body)
     });
   } catch (e) {
@@ -109,7 +121,10 @@ export async function visionCopy(imageDataUrl, accountStyle = "", { timeoutMs = 
     const res = await fetch("/api/llm/vision-copy", {
       method: "POST",
       signal: ctrl.signal,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(remote.getToken() ? { Authorization: `Bearer ${remote.getToken()}` } : {})
+      },
       body: JSON.stringify({ imageDataUrl, accountStyle })
     });
     if (!res.ok) throw new Error("HTTP " + res.status + "：" + (await res.text()).slice(0, 240));

@@ -1,14 +1,14 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260716-v88-1";
-import { DUMATE_BRIEF, PROMPT_FRAMEWORK, NO_DH_FRAMEWORK } from "./prompts.js";
+import { llm, visionCopy } from "./llm.js?v=20260717-v91-2";
+import { DUMATE_BRIEF } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
 import { getCreativeMemoryContext } from "../domain/analytics.js";
 import { state } from "../core/store.js";
 import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js";
-import { buildTrendGuide, buildTrendPrep, normalizeCreativeTopicForMode, pickDefaultCreativeTopic } from "../data/xhsTrendLibrary.js";
+import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 
@@ -46,7 +46,6 @@ const XHS_COPY_STYLE = `
 - 正文首句必须换写法：可以是实测结论、吐槽痛点、反常识观察、问题引入、收藏价值、避坑提醒。不要所有账号都用"说实话"或"打工人最烦"开头。
 - 正文骨架也要轮换：可以是完整实测复盘、场景叙述、对话式吐槽、避坑提醒、方法拆解、适合/不适合边界、工具分工表述；不要每次都写三点清单。
 - 批量生产最重要的是"像不同博主写的"：同一批里标题、第一句话、分点标签、例子、结尾标签不能像换词复读；如果主题相同，也要换成不同场景、不同切入、不同证据和不同表达节奏。
-- 没有用户明确内容时，必须主动发散真实 AI 博主选题：可以写桌面智能体 vs 聊天机器人、Codex/Obsidian/WorkBuddy/百度搭子的分工、打工人场景、创作者场景、知识库场景、资料整理场景、自动化流程场景。不要所有账号都写"整理资料从乱到顺"。
 - 内容要像 AI 博主：讲清功能分工、真实场景、操作动作、结果证据、适用人群和一个小技巧。可以带 1-2 个同类/互补产品做对比或组合，但主产品能力不能写混。
 - 标签组合用「品类词 + 场景词 + 流量词 + 品牌词」：例如 #AI工具 #桌面智能体 #效率工具 #自动化办公 #打工人效率。不要只写品牌词。
 - 标题、正文和话题标签可以自然出现当前主产品名；如果用户主题里有竞品/同类产品名，按对比/联动关系自然处理，不要改成空泛的“AI测试”“这个工具”。竞品或互补工具名只在对比/联动主题里自然出现。
@@ -208,39 +207,6 @@ function tooSimilarCopy(candidate = {}, avoidCopies = []) {
   });
 }
 
-function hashTextSeed(text = "") {
-  let h = 2166136261;
-  for (const ch of String(text || "")) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
-
-function tooSimilarTopic(topic = "", avoidTopics = []) {
-  const t = normalizeForDedupe(topic);
-  if (!t) return false;
-  return (avoidTopics || []).some(x => {
-    const y = normalizeForDedupe(x);
-    return y && (t === y || t.includes(y) || y.includes(t));
-  });
-}
-
-function cleanRandomTopicText(text = "", max = 30) {
-  const raw = sanitizeProduct(String(text || ""))
-    .replace(/[。.\n"'`“”「」]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (raw.length <= max) return raw;
-  const cut = raw.slice(0, max);
-  const stops = ["，", "、", "：", " vs ", " VS ", " 和 ", " 与 ", " + ", " / "]
-    .map(mark => cut.lastIndexOf(mark))
-    .filter(i => i > Math.floor(max * 0.55));
-  const stop = stops.length ? Math.max(...stops) : -1;
-  const candidate = stop > 0 ? cut.slice(0, stop) : cut;
-  return candidate
-    .replace(/[A-Za-z]{1,4}$/, "")
-    .replace(/[，、；：,.!?！？+\-/\s]*$/, "")
-    .trim() || raw.slice(0, max).trim();
-}
-
 function titleConflictsWithTopic(title = "", topic = "", shots = []) {
   const src = `${topic} ${(shots || []).map(s => `${s.idea || ""} ${s.line || ""} ${s.visual || ""}`).join(" ")}`;
   const t = String(title || "");
@@ -252,46 +218,6 @@ function titleConflictsWithTopic(title = "", topic = "", shots = []) {
     { re: /格式|转换|PDF|Word|Excel|表格|文件整理/, src: /格式|转换|PDF|Word|Excel|表格|文件整理|文件|归档/ }
   ];
   return groups.some(g => g.re.test(t) && !g.src.test(src));
-}
-
-function fallbackRandomTopic({ account = {}, product = null, batchVariant = null, seed = "", avoidTopics = [] }) {
-  const p = product || allProductsForAI().find(x => x.owner === "ours") || null;
-  const rel = relatedProducts(p, allProductsForAI(), 6).filter(x => x.id !== p?.id);
-  const productName = chineseProductDisplayName(p, "百度搭子");
-  const v = copyVariant(hashTextSeed(seed || account?.name || productName), batchVariant);
-  const relName = productDisplayName(rel[hashTextSeed(`${seed}:rel`) % Math.max(1, rel.length)] || null, "同类工具");
-  const accountCue = sanitizeXhsText((account?.name || account?.styleProfile || "AI博主").slice(0, 12));
-  const templates = [
-    `${productName}和${relName}怎么分工`,
-    `${accountCue}实测${productName}桌面执行`,
-    `不是资料从乱到顺这么简单`,
-    `${productName}把重复办公固定成流程`,
-    `${relName}负责沉淀 ${productName}负责执行`,
-    `一个人也能跑完办公流程`,
-    `别再把所有任务塞进聊天框`,
-    `从一条指令到可交付结果`,
-    `用${productName}整理一堆待处理文件`,
-    `${productName}适合哪些桌面任务`,
-    `AI工具分工别再混着用`,
-    `把周报资料先交给桌面智能体`
-  ];
-  const byVariant = {
-    "pain-relief": [`${accountCue}的办公急救流程`, `${productName}救回重复整理时间`],
-    "tool-division": [`${productName}和${relName}分工清楚点`, `AI工具不是都负责同一件事`],
-    "real-test": [`我试了${productName}这件小事`, `${productName}真实跑一次桌面任务`],
-    "template-save": [`这张${productName}流程卡能复用`, `一页纸存下桌面执行流程`],
-    "mistake-fix": [`别再一句话让AI全包`, `先说边界再让${productName}执行`],
-    "before-after": [`以前手动翻现在流程跑`, `同一堆资料处理前后对比`],
-    "one-person-team": [`一个人也能像有个执行同事`, `${productName}当桌面执行搭子`],
-    "calm-note": [`公开备忘：桌面AI怎么用`, `我把${productName}流程先存下`]
-  };
-  const pool = [...(byVariant[v.key] || []), ...templates];
-  const start = hashTextSeed(`${seed}:${account?.id || ""}:${v.key}`) % pool.length;
-  for (let i = 0; i < pool.length; i++) {
-    const picked = cleanRandomTopicText(pool[(start + i) % pool.length], 30);
-    if (picked && !tooSimilarTopic(picked, avoidTopics)) return picked;
-  }
-  return `${productName}${accountCue}效率笔记`.slice(0, 22);
 }
 
 function stripPromptMeta(text) {
@@ -717,29 +643,6 @@ function baseProductFacts(product) {
   return isDumateProduct(product) ? DUMATE_BRIEF + "\n\n" : "";
 }
 
-function trendReferenceForCopy(prep = null, product = null) {
-  const items = Array.isArray(prep?.referenceItems) ? prep.referenceItems.slice(0, 5) : [];
-  if (!items.length) return "";
-  return items.map((item, i) => {
-    const bits = [
-      `${i + 1}. 标题：${stripOwnProductMentions(item.title || "", product)}`,
-      item.author ? `作者：${sanitizeXhsText(item.author)}` : "",
-      item.likes ? `互动：${sanitizeXhsText(String(item.likes))}` : "",
-      item.desc ? `正文/摘要可用信息：${stripOwnProductMentions(sanitizeXhsText(item.desc).slice(0, 360), product)}` : "正文不可得：只能参考标题钩子、互动信号和选题方向。"
-    ].filter(Boolean);
-    return bits.join("\n");
-  }).join("\n\n");
-}
-
-function directReferenceCopyFromPrep(prep = null, product = null) {
-  if (prep?.source !== "online") return null;
-  const rw = prep?.referenceRewrite?.rewrite || {};
-  const title = sanitizeXhsText(stripOwnProductMentions(replaceReferenceToolNames(rw.title || prep?.title || "", product), product));
-  const copy = sanitizeXhsText(deTemplateCopy(stripOwnProductMentions(replaceReferenceToolNames(rw.copy || prep?.copy || "", product), product)));
-  if (!title || !copy) return null;
-  return sanitizeXhsObject({ title, copy });
-}
-
 function productListLine(list = []) {
   return list.map(p => `${productDisplayName(p, "同类工具")}（${sanitizeProduct(p.category || "同类工具")}）`).join("、");
 }
@@ -756,8 +659,7 @@ function productRelationLine(list = []) {
 }
 
 async function resolveTrendPrep({ topic = "", account = {}, product = null, batchVariant = null, useOnlineTrends = false, kind = "image", imageCount = DEFAULT_XHS_IMAGE_COUNT, seed = "" } = {}) {
-  const localOnly = false;
-  return buildTrendPrep({ topic, account, product, batchVariant, onlineItems: [], useOnlineTrends: localOnly, kind, imageCount, seed });
+  return buildTrendPrep({ topic, account, product, batchVariant, onlineItems: [], useOnlineTrends: false, kind, imageCount, seed });
 }
 
 async function resolveTrendGuide({ topic = "", account = {}, product = null, batchVariant = null, useOnlineTrends = false, kind = "image", imageCount = DEFAULT_XHS_IMAGE_COUNT, seed = "" } = {}) {
@@ -942,37 +844,6 @@ function currentProductLine(product) {
   const p = product || {};
   const aliases = productAliases(p).filter(x => !/^[a-z0-9_-]+$/i.test(x) || /dumate|codex|cursor|manus|trae|windsurf|openclaw|obsidian|workbuddy/i.test(x));
   return `当前产品已锁定：${productDisplayName(p)}${p.shortName ? `（短名：${productDisplayName(p)}）` : ""}。账号名、旧主题或历史素材里若出现其他产品名，只能当作旧数据，不得改写成本次产品。${aliases.length ? `选题可以不硬带产品名，但如果出现产品名，必须优先使用：${sanitizeProduct(aliases.join(" / "))}。` : ""}`;
-}
-
-function productTopicFallback(product, rel = []) {
-  const p = product || {};
-  const name = productDisplayName(p);
-  const source = [
-    ...(p.tutorialAngles || []),
-    ...(p.blogAngles || []),
-    ...(p.comparisonAngles || [])
-  ].filter(Boolean);
-  const base = source[(name.length + source.length) % Math.max(1, source.length)] || "真实使用流程复盘";
-  if (/对比|分工|区别/.test(base) && rel.length) {
-    const other = rel[0]?.shortName || rel[0]?.name || "同类工具";
-    return cleanRandomTopicText(`${name}和${productDisplayName(rel[0], other)}怎么分工`, 30);
-  }
-  return cleanRandomTopicText(`${name}${base}`.replace(/百度秒哒秒哒|秒哒秒哒/g, "秒哒"), 30);
-}
-
-function enforceCurrentProductTopic(topic, product, rel = []) {
-  const t = cleanRandomTopicText(topic, 30);
-  if (!product) return t;
-  const isMiaoda = /miaoda|百度秒哒|秒哒/i.test(`${product.id || ""} ${product.name || ""} ${product.shortName || ""}`);
-  const isDumate = isDumateProduct(product);
-  const wronglyDumate = !isDumate && /Dumate|百度搭子|搭子/.test(t);
-  const wronglyMiaoda = !isMiaoda && /百度秒哒|秒哒/.test(t);
-  const miaodaCapabilityLeak = isMiaoda
-    && /文件整理|乱文件|桌面|会议数据|会议纪要|合同|PDF|Word|Excel|归档|格式转换|本地文件/.test(t)
-    && !/应用|页面|H5|原型|小工具|CRM|后台|数据表|报名页/.test(t);
-  const dumateCapabilityLeak = isDumate && /聊天搭子|日常聊天|陪聊|聊天机器人|问答机器人|找餐厅|导航|点餐|探店/.test(t);
-  if (wronglyDumate || wronglyMiaoda || miaodaCapabilityLeak || dumateCapabilityLeak) return productTopicFallback(product, rel);
-  return t || productTopicFallback(product, rel);
 }
 
 function productBrief(product) {
@@ -1784,6 +1655,11 @@ function stripImagePlanningInstructions(text = "") {
     .trim();
 }
 
+function innerCardDensityVisual(beat = "") {
+  const core = completeImageText(stripImagePlanningInstructions(beat), 160) || "当前正文要点";
+  return `画面以「${core}」作为核心结论，下方排布 2—4 个层级分明的信息模块，分别呈现这段正文已有的具体动作、判断依据、证据、结果或适用边界；模块标题具体，关键词高亮，信息量明显高于封面但字号保持可读。`;
+}
+
 function promptMatchesAssignedCopy(prompt = "", beat = "", title = "") {
   const haystack = cleanText(prompt || "").toLowerCase();
   const source = cleanText(`${title} ${beat}`)
@@ -1877,12 +1753,12 @@ function richImagePrompt(item, i, total, ctx) {
   const contentCue = isCover
     ? `围绕「${oneBeat}」做大字标题页，画面留白。`
     : lightStyle
-    ? `围绕「${oneBeat}」用小人动作、表情和气泡表达，文字少量辅助。`
+    ? `${innerCardDensityVisual(oneBeat)}用小人动作、表情、气泡和箭头分别解释信息模块。`
     : canDense
-      ? `围绕「${oneBeat}」用一个文档/表格局部承载，信息分层清楚。`
+      ? `${innerCardDensityVisual(oneBeat)}用文档、表格或结果卡承载具体信息。`
       : density === "sparse"
-        ? `围绕「${oneBeat}」补一个真实例子。`
-        : `围绕「${oneBeat}」安排一个核心动作或结果，留白足，逻辑清楚。`;
+        ? `${innerCardDensityVisual(oneBeat)}优先把原文中的例子、动作和结果做成短卡片。`
+        : `${innerCardDensityVisual(oneBeat)}用流程、对照或清单关系组织这些信息。`;
   const title = fullCoverTitle || cleanImageDisplayTitle(stripInternalImageLabels(item?.title || ""), task.title);
   const relationCover = isCover && simpleRelationVisual(ctx);
   let headlineRaw = fullCoverTitle || (relationCover ? intent.main : deriveImageHeadline(item, i, intent, task));
@@ -1907,10 +1783,10 @@ function richImagePrompt(item, i, total, ctx) {
   const layoutLine = isCover
     ? "超大标题作为视觉中心，少量图标或箭头辅助，强对比"
     : lightStyle
-    ? "中央简笔画小人+电脑/文件小物件"
+    ? "顶部清楚标题+中央简笔画小人+2—4个气泡信息模块"
     : canDense
-      ? "大标题+局部文档/表格卡片，信息分层清楚"
-      : "大标题+一个主视觉卡片+一处结果提示";
+      ? "大标题+2—4个局部文档/表格/结果卡片，信息分层清楚"
+      : "大标题+2—4个动作、证据、结果或边界信息卡";
   const visualLine = isCover
     ? "干净背景，画面空旷有冲击"
     : lightStyle
@@ -1971,7 +1847,8 @@ function normalizeCopyDrivenImagePromptItems(items, ctx) {
     const anchor = i === 0 && copyTitle
       ? `主标题完整显示「${copyTitle}」，简洁低噪点背景，单一强主视觉带明显纵深感。`
       : "";
-    const content = stripImagePlanningInstructions(`${anchor}${generatedContent}`);
+    const density = i === 0 ? "" : innerCardDensityVisual(beat);
+    const content = stripImagePlanningInstructions(`${anchor}${generatedContent}${density}`);
     const prefix = ctx.styleRefName ? `请根据上传的参考图（${ctx.styleRefName}）的视觉语言。` : "";
     const prompt = `${prefix}3:4竖版图片。${content}${style ? `视觉风格：${style}。` : ""}`;
     return {
@@ -2133,7 +2010,7 @@ function parseCustomVideoDraftText(content = "", fallbackTitle = "") {
     visualPrompt: pick("visualPrompt")
   };
   if (!parsed.copy || !parsed.narration) {
-    throw new Error("模型未按标题/发布文案/口播/分镜提示四段返回");
+    throw new Error("模型未按标题/发布文案/口播/画面提示四段返回");
   }
   return parsed;
 }
@@ -2194,17 +2071,11 @@ export const AI = {
   _fb(e) { this.lastSource = "mock"; this.lastError = (e && e.message) || String(e || "网络/CORS"); },
 
   sourceNote(okMsg) {
-    if (this.lastSource === "llm") return okMsg;
+    if (/^llm(?:$|-)/.test(this.lastSource || "")) return okMsg;
     const err = this.lastError || "网络/CORS";
     const apiLike = /未配置|api.?key|authorization|401|403|鉴权|认证|unauthorized|forbidden/i.test(err);
-    return `${apiLike ? "语言模型接口未接通" : "模型生成未完成"}（${err}），已用本地模板`;
-  },
-
-  async trendGuide(opts = {}) {
-    return resolveTrendGuide(opts);
-  },
-  async trendPrep(opts = {}) {
-    return resolveTrendPrep(opts);
+    const fallbackNote = this.lastSource === "mock" ? "，已用本地模板" : "";
+    return `${apiLike ? "语言模型接口未接通" : "模型生成未完成"}（${err}）${fallbackNote}`;
   },
 
   memoryLine(account) {
@@ -2413,150 +2284,57 @@ export const AI = {
     return compactVideoPrompt(this._fbUnitVideo(u, shots, style, NEG, opts));
   },
 
-  /* ---------- 素材号：逐镜头视频提示词（旧版，保留兼容） ---------- */
-  async generateShotVideoPrompts({ shots, perShot = [], account, style = "", product = null }) {
-    const { MATERIAL_VIDEO_NEG } = await import("./prompts.js");
-    const productName = chineseProductDisplayName(product);
-    const fallback = (s, i) => cleanText(`这是一条${productName}产品视频的单镜头素材，9:16 竖屏，时长${Math.ceil(perShot[i]?.dur || 4)}秒，场景/产品界面混剪。画面内容：${s.visual || s.idea || "产品界面演示"}。镜头语言：${i % 2 ? "缓推" : "横移"}运镜、干净画面结构、明亮柔光${style ? `；整体风格：${style}` : ""}。${MATERIAL_VIDEO_NEG}`);
-    try {
-      const content = await llm([
-        { role: "system", content: baseProductFacts(product) + productBrief(product) + `\n\n你为素材混剪视频逐镜头生成视频提示词：每个镜头一条独立提示词，对应生成一段独立的视频素材片段。每条开头写明"9:16竖屏，时长N秒，场景/产品界面混剪"。画面具体到景别/机位运镜/界面文字/动效/光线，禁止抽象词。每条结尾都必须带上这段负面提示词："${MATERIAL_VIDEO_NEG}"。只输出 JSON：{"shots":[{"prompt":"..."}]}，数量与镜头数一致。` },
-        { role: "user", content: `账号创作风格：${account.styleProfile || style || "真实办公教程风"}\n${style ? `画面风格：${style}\n` : ""}共 ${shots.length} 个镜头（含各自时长）：\n${shots.map((s, i) => `${i + 1}. [${Math.ceil(perShot[i]?.dur || 4)}秒] ${s.visual || ""}`).join("\n")}` }
-      ], { json: true, temperature: 0.6 });
-      const d = parseJSONLoose(content);
-      if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
-      return this._ok({ shots: shots.map((s, i) => ({ prompt: cleanText((d.shots[i]?.prompt || "").trim()) || fallback(s, i) })) });
-    } catch (e) {
-      this._fb(e);
-      await delay(300);
-      return { shots: shots.map((s, i) => ({ prompt: fallback(s, i) })) };
-    }
-  },
-
-  /* ---------- 灵感建议：按账号矩阵随机生成量产指令（LLM 优先，离线真随机兜底） ---------- */
-  async suggestGoals({ accounts = [], products = null }) {
-    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-    const productList = products && products.length ? products : allProductsForAI();
-    const ours = productList.filter(p => p.owner === "ours");
-    const comps = productList.filter(p => p.owner === "competitor").slice(0, 8);
-    const offline = () => {
-      const own = pick(ours.length ? ours : productList) || { shortName: "本次产品" };
-      const comp = pick(comps.length ? comps : productList.filter(p => p.id !== own.id)) || { shortName: "同类工具" };
-      const ownName = productDisplayName(own);
-      const compName = productDisplayName(comp, "同类工具");
-      const angles = [
-        ...(own.blogAngles || []),
-        ...(own.tutorialAngles || []),
-        ...(own.comparisonAngles || [])
-      ].map(x => cleanRandomTopicText(x, 24)).filter(Boolean);
-      const firstAngle = pick(angles) || `${ownName}真实任务实测`;
-      const secondAngle = pick(angles.filter(x => x !== firstAngle)) || `${ownName}使用边界`;
-      return [
-        `给全部账号做「${firstAngle}」`,
-        `给图文组做${ownName}和${compName}对比`,
-        `给素材号做「${secondAngle}」功能演示`
-      ];
-    };
-    try {
-      const content = await llm([
-        { role: "system", content: `根据账号矩阵和产品知识库，给内容量产 Agent 生成 3 条一句话指令建议。要求像真实 AI 博主选题：可以做教程、对比、测评、工具分工或场景清单；优先使用我们的产品，也可以引入竞品/同类产品做横向对比；主题每次新颖不重复；指明范围（全部 / 图文组 / 真人 / 素材号）；每条不超过 32 字；只输出 JSON：{"suggestions":["...","...","..."]}` },
-        { role: "user", content: `账号矩阵：${JSON.stringify(accounts.map(a => ({ 名称: a.name, 分组: a.mode === "图文" ? "图文组" : a.subType === "数字人" ? "真人" : "素材", 风格: (a.styleProfile || a.voiceName || a.lockedStyle || "").slice(0, 50) })))}\n产品知识库：${JSON.stringify(productList.map(p => ({ 名称: p.name, 身份: p.owner === "ours" ? "我们的产品" : "竞品", 类别: p.category, 选题角度: (p.blogAngles || p.tutorialAngles || []).slice(0, 3), 可对比: (p.comparisonAngles || []).slice(0, 2) })))}\n随机种子：${Math.random().toString(36).slice(2, 8)}` }
-      ], { json: true, temperature: 1.2 });
-      const d = parseJSONLoose(content);
-      if (Array.isArray(d.suggestions) && d.suggestions.length >= 3) return this._ok(d.suggestions.slice(0, 3).map(s => String(s).slice(0, 40)));
-      throw new Error("空");
-    } catch (e) {
-      this._fb(e);
-      return offline();
-    }
-  },
-
-  /* ---------- 创作内容补全：空内容时先生成 brief，再拆图/脚本 ---------- */
+  /* ---------- 创作内容补全：只扩写用户明确输入，不替用户选择主题 ---------- */
   async generateCreativeBrief({ account, product = null, imageCount = DEFAULT_XHS_IMAGE_COUNT, userText = "", kind = "image", useOnlineTrends = false, trendGuide = "", trendPrep = null }) {
-    useOnlineTrends = false;
-    trendGuide = "";
-    trendPrep = null;
     const p = product || allProductsForAI().find(x => x.owner === "ours") || null;
     const rel = relatedProducts(p, allProductsForAI(), 5);
-    const productName = chineseProductDisplayName(p);
     const count = Math.max(1, Math.min(12, Number(imageCount) || DEFAULT_XHS_IMAGE_COUNT));
-    const emptyRunSeed = `${account?.id || account?.name || "account"}:${p?.id || "product"}:${kind}:${count}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-    const fixedEmptyTopic = normalizeCreativeTopicForMode({
-      topic: "",
-      product: p,
-      useOnlineTrends: false,
-      seed: emptyRunSeed
-    }) || pickDefaultCreativeTopic({ seed: emptyRunSeed });
     const rawUserText = sanitizeXhsText(cleanText(userText || ""));
-    const normalizedUserTopic = normalizeCreativeTopicForMode({
-      topic: rawUserText,
-      product: p,
-      useOnlineTrends: false,
-      seed: emptyRunSeed
-    });
-    const fallback = () => {
-      if (!userText) return fixedEmptyTopic;
-      const first = chineseProductDisplayName(rel[0], "同类工具");
-      const second = rel[1] ? chineseProductDisplayName(rel[1], "") : "";
-      if (p?.id === "miaoda") {
-        return `${productName}做无代码应用原型：从一个真实小需求切入，先讲非技术人为什么不想从零写代码，再对比 ${first}${second ? ` / ${second}` : ""} 这类工具的适用边界，重点展示用${productName}把需求拆成页面、数据表、后台和发布流程，最后总结适合快速验证想法的小技巧，拆成 ${count} 张图卡讲清楚。`;
-      }
-      return `${productName}和${first}组合做办公知识流：先讲资料分散、知识沉淀和桌面执行割裂的麻烦，再说明${first}更适合沉淀资料/结构化知识，${productName}更适合读取本地文件、整理资料、提取字段和生成可复用结果；中间用一个真实文件夹或项目资料场景演示分工，最后给出适合打工人复用的执行流程，拆成 ${count} 张图卡讲清楚。`;
-    };
-    if (!rawUserText) return this._ok(fixedEmptyTopic);
-    if (normalizedUserTopic && normalizedUserTopic !== rawUserText) return this._ok(normalizedUserTopic);
+    if (!rawUserText) throw new Error("请先填写发布标题或创作内容");
     if (rawUserText.length <= 80) return this._ok(rawUserText);
     try {
-      const prep = await resolveTrendPrep({ topic: userText, account, product: p, useOnlineTrends: false, kind, imageCount: count });
-      const trendGuideText = prep?.guide || await resolveTrendGuide({ topic: userText, account, product: p, useOnlineTrends: false, kind, imageCount: count });
       const accountVoice = copyAccountVoice(account, "", rawUserText);
       const content = await llm([
-        { role: "system", content: copyProductBrief(p) + `\n\n你是 AI 博主选题策划，负责在生成图卡结构/口播脚本前，先把用户的创作需求补全成一段可执行的「创作内容 brief」。只输出 JSON：{"brief":"..."}。` },
+        { role: "system", content: copyProductBrief(p) + `\n\n你负责把用户已经明确填写的标题或创作内容整理成可执行 brief。用户输入是唯一主题，不得另选题、换题或从账号资料推断内容方向。只输出 JSON：{"brief":"..."}。` },
         { role: "user", content: `${currentProductLine(p)}
 账号：${account?.name || "未命名账号"}
 ${kind === "video" ? `账号创作风格：${accountVoice}` : `账号创作风格：${accountVoice}`}
 内容形态：${kind === "video" ? "视频口播脚本" : `小红书图文，计划 ${count} 张图卡`}
-用户已写创作方向：${userText ? userText : "未填写"}
+用户已写标题/创作内容：${rawUserText}
 可参考/可组合的同类工具：
 ${productRelationLine(rel.slice(0, 2))}
-本地结构参考（只学内容节奏；不得覆盖用户主题）：
-${trendGuideText}
-${prep?.referenceNote ? `\n本地参考说明：${prep.referenceNote}` : ""}
-${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
 
 写作规则：
-1. 如果用户已写创作方向，必须优先服从用户方向，不要改成另一个主题。
-2. 如果用户未填写方向，请主动带 1-2 个同类或互补工具，做对比、组合、分工或妙用科普，让内容像 AI 博主经验，不像孤立宣传。
-3. 如果用户方向里提到竞品/同类产品，要识别它们的功能点，再解释它们和当前主产品如何分工、对比或组合；不能把竞品能力写成当前主产品能力。
-4. brief 要具体到能直接拆图/拆脚本：真实痛点、主产品做什么、参考工具做什么、前后变化、适合人群、可复制小技巧。
-5. 80-150 字，中文，不要编号，不要空泛营销词，不要强 CTA。` }
-      ], { json: true, temperature: userText ? 0.65 : 0.95 });
+1. 必须服从用户标题/内容，不得改成另一个主题。
+2. 只有用户输入明确提到同类工具时，才解释分工、对比或组合；不能自行植入。
+3. brief 要具体到能直接拆图/拆脚本，并且所有事实都能从用户输入或所选产品资料得到。
+4. 80-150 字，中文，不要编号，不要空泛营销词，不要强 CTA。` }
+      ], { json: true, temperature: 0.55 });
       const d = parseJSONLoose(content);
       const brief = trimCreativeBrief(d.brief || "");
       if (brief && brief.length >= 30) return this._ok(brief);
       throw new Error("模型未返回有效 brief");
     } catch (e) {
       this._fb(e);
-      return fallback();
+      return rawUserText;
     }
   },
 
   /* ---------- 脚本生成 ---------- */
   async generateScript({ topic, duration = 30, account, image, direction = "", style = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, imageTemplate = "", styleRefName = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null }) {
-    useOnlineTrends = false;
-    trendGuide = "";
-    trendPrep = null;
+    const requiredTopic = sanitizeXhsText(cleanText(topic || "")).trim();
+    if (!requiredTopic) throw new Error("请先填写发布标题或创作内容");
     const hasImageTemplate = image && String(imageTemplate || "").trim();
-    const mentionedTools = productsMentionedIn(`${topic}\n${direction}`, product, 4);
+    const mentionedTools = productsMentionedIn(`${requiredTopic}\n${direction}`, product, 4);
     const mentionedGuide = productRelationLine(mentionedTools);
     const dirText = image
       ? (direction ? `本次创作内容：${direction}。` : `本次创作内容：围绕主题自由发挥，每张图承担清晰信息点。`)
       : (direction ? `目标人群方向：${direction}（脚本语气、痛点、例子都贴合这个人群）。` : `人群方向：不限，自由发挥最合适的角度。`);
     const nImg = Math.max(1, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
     const variantGuide = batchVariantLine(batchVariant);
-    const prep = await resolveTrendPrep({ topic: `${topic}\n${direction}`, account, product, batchVariant, useOnlineTrends: false, kind: image ? "image" : "video", imageCount: nImg });
-    const trendGuideText = prep?.guide || await resolveTrendGuide({ topic: `${topic}\n${direction}`, account, product, batchVariant, useOnlineTrends: false, kind: image ? "image" : "video", imageCount: nImg });
-    const prepLine = prep ? `结构化选题预案：\n选题来源：本地投放方向（仅内部参考）\n预制创作内容：${prep.creativeContent || ""}\n图片/内容策略：${prep.imageStrategy || ""}\n预制标题方向：${prep.title || ""}\n预制文案骨架：${String(prep.copy || "").split(/\n/).slice(0, 8).join(" / ")}\n` : "";
+    const prep = await resolveTrendPrep({ topic: `${requiredTopic}\n${direction}`, account, product, batchVariant, useOnlineTrends: false, kind: image ? "image" : "video", imageCount: nImg });
+    const trendGuideText = prep?.guide || await resolveTrendGuide({ topic: `${requiredTopic}\n${direction}`, account, product, batchVariant, useOnlineTrends: false, kind: image ? "image" : "video", imageCount: nImg });
+    const prepLine = prep ? `结构化内容参考（只决定节奏，不得改写用户标题）：\n用户主题：${requiredTopic}\n结构方向：${prep.directionName || "按用户内容判断"}\n图片/内容策略：${prep.imageStrategy || ""}\n` : "";
     const sys = image
       ? `你是小红书图文笔记策划，为百度 ACG 市场部写「小红书笔记图卡内容表」，每行是笔记里的一张配图。严格围绕用户本次创作内容展开；账号只提供创作风格，不提供内容方向。
 先把用户创作内容整理成 ${nImg} 个信息节拍，每张图承担一个清楚的信息任务：观点、动作、证据、结果或边界。长内容要总结、取舍、分布，不要把所有信息塞进每一张图；短内容要补真实使用场景、结果证据或边界提醒。信息密度由内容判断：封面更轻，内页可以适当承载具体信息；模拟文档、表格、报告页时可以更细，但必须分层清楚、文字可读、重点明确。标题和图上文案要像真实笔记，具体、有信息量、能让人看懂功能和结果。图文没有口播，只有画面与图上文案。每行 idea 写清这张图唯一要传达的信息；visual 必须非常具体（画面布局/主视觉/界面里出现的具体文字/配色/光线/产品视觉位置），先在脑内把这张图具象化成真实画面再写，不要用电影感、高级感、种草感这类抽象词。内部结构词不要出现在 idea、visual、line 里。
@@ -2573,16 +2351,16 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       const content = await llm([
         { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys },
         { role: "user", content: image
-          ? `账号创作风格：${style || account.styleProfile || "干净可读的小红书图文风"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n${variantGuide ? `\n${variantGuide}\n` : ""}共生成 ${nImg} 张图。\n${style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}${prepLine}${mentionedGuide ? `本次创作内容里明确提到的同类/互补工具能力：\n${mentionedGuide}\n请把这些工具具体安排成组合流程、功能边界或对比卡，不要只挂名字。\n` : ""}本地结构参考（只学节奏，不覆盖主题）：\n${trendGuideText}\n主题：${topic}\n围绕本次宣传产品的真实功能延展教学，优先服从用户本次创作内容，不要强呼吁下载。${topicalHook(product)}`
-          : `账号创作风格：${account.styleProfile || style || "真实经验分享"}\n账号口播风格参考：${account.voiceName || account.styleProfile || style || account.tone || "自然、可信、有教程感"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n当前主产品：${chineseProductDisplayName(product, "百度搭子")}\n${dirText}\n${prepLine}视频号脚本只参考账号创作风格、账号口播风格、本次选题、产品真实功能和本地内容结构。\n本地结构参考（只学节奏，不要照抄）：\n${trendGuideText}\n主题：${topic}\n目标时长：${Math.min(60, duration || 55)}秒以内，最终不超过60秒。口播宁可少一点，保证每句都能自然读完。口播可以自然出现「${chineseProductDisplayName(product, "百度搭子")}」1-3次，尤其在讲工具能力、真实使用结果和结尾总结时不要刻意回避产品名。围绕本次宣传产品的真实功能延展教学，但要先用真实痛点切入、自然安利，不要孤立自嗨，不要强呼吁下载。${topicalHook(product)}${this.memoryLine(account)}` }
+          ? `账号创作风格：${style || account.styleProfile || "干净可读的小红书图文风"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n${dirText}\n${variantGuide ? `\n${variantGuide}\n` : ""}共生成 ${nImg} 张图。\n${style ? `图文总风格：${style}（所有画面统一这个视觉风格）。\n` : ""}${styleRefName ? `成图风格参考：${styleRefName}。\n` : ""}${hasImageTemplate ? `账号图文模板（只作为风格/结构母版，不要照抄示例变量）：\n${imageTemplate}\n` : ""}${prepLine}${mentionedGuide ? `本次创作内容里明确提到的同类/互补工具能力：\n${mentionedGuide}\n请把这些工具具体安排成组合流程、功能边界或对比卡，不要只挂名字。\n` : ""}本地结构参考（只学节奏，不覆盖主题）：\n${trendGuideText}\n主题：${requiredTopic}\n围绕本次宣传产品的真实功能延展教学，优先服从用户本次创作内容，不要强呼吁下载。${topicalHook(product)}`
+          : `账号创作风格：${account.styleProfile || style || "真实经验分享"}\n账号口播风格参考：${account.voiceName || account.styleProfile || style || account.tone || "自然、可信、有教程感"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n内容模式：${account.mode}\n当前主产品：${chineseProductDisplayName(product, "百度搭子")}\n${dirText}\n${prepLine}视频号脚本只参考账号创作风格、账号口播风格、本次选题、产品真实功能和本地内容结构。\n本地结构参考（只学节奏，不要照抄）：\n${trendGuideText}\n主题：${requiredTopic}\n目标时长：${Math.min(60, duration || 55)}秒以内，最终不超过60秒。口播宁可少一点，保证每句都能自然读完。口播可以自然出现「${chineseProductDisplayName(product, "百度搭子")}」1-3次，尤其在讲工具能力、真实使用结果和结尾总结时不要刻意回避产品名。围绕本次宣传产品的真实功能延展教学，但要先用真实痛点切入、自然安利，不要孤立自嗨，不要强呼吁下载。${topicalHook(product)}${this.memoryLine(account)}` }
       ], { json: true });
       const d = parseJSONLoose(content);
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
-      const normalized = normalizeScriptResult(d, { topic, image, imageCount: nImg, product });
+      const normalized = normalizeScriptResult(d, { topic: requiredTopic, image, imageCount: nImg, product });
       return this._ok(normalized);
     } catch (e) {
       this._fb(e);
-      return this._mockScript({ topic, account, image, imageCount: nImg, product });
+      return this._mockScript({ topic: requiredTopic, account, image, imageCount: nImg, product });
     }
   },
 
@@ -2600,44 +2378,6 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       this._fb(e);
       await delay(400);
       return { shots: shots.map(s => ({ ...s, idea: (s.idea || "") + `（按"${direction}"优化）` })) };
-    }
-  },
-
-  /* ---------- 视频提示词（两段式） ---------- */
-  _sceneGroups(shots, duration = 30) {
-    const scenes = Math.max(1, Math.round((duration || 30) / 30));
-    const per = Math.max(1, Math.ceil(shots.length / scenes));
-    const groups = [];
-    for (let i = 0; i < scenes; i++) {
-      const slice = shots.slice(i * per, (i + 1) * per);
-      const half = Math.ceil(slice.length / 2) || 1;
-      groups.push({ all: slice, front: slice.slice(0, half), back: slice.slice(half) });
-    }
-    return groups;
-  },
-
-  async generatePrompts({ shots, duration = 30, account, product = null }) {
-    const groups = this._sceneGroups(shots || [], duration);
-    const scenesText = groups.map((g, i) =>
-      `【场景${i + 1}】\n  第一段(0-15秒)对应脚本镜头：\n${(g.front.length ? g.front : g.all).map((x, j) => `   镜头${j + 1} 画面：${x.visual || ""}｜口播：${x.line || ""}`).join("\n") || "   （无）"}\n  第二段(0-15秒)对应脚本镜头：\n${(g.back.length ? g.back : g.all).map((x, j) => `   镜头${j + 1} 画面：${x.visual || ""}｜口播：${x.line || ""}`).join("\n") || "   （无）"}`
-    ).join("\n\n");
-    try {
-      const content = await llm([
-        { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + (account.subType === "无数字人" ? NO_DH_FRAMEWORK : PROMPT_FRAMEWORK) },
-        { role: "user", content: `账号创作风格：${account.styleProfile || account.voiceName || "真实经验分享"}\n语气：${account.tone || "教程感"}\n平台：${account.platform}\n\n以下是已确定的分镜脚本，严格据此改写（每段都是独立的0-15秒视频，不要写衔接性措辞）：\n${scenesText}\n\n请为每个场景输出 segA(第一段0-15秒) 与 segB(第二段0-15秒) 完整提示词。` }
-      ], { json: true, temperature: 0.6 });
-      const d = parseJSONLoose(content);
-      const prompts = (d.scenes || []).map((x, i) => ({
-        name: cleanText(x.title) || `场景 ${String(i + 1).padStart(2, "0")}`,
-        time: "0-15s",
-        front: this._ensureRenderPrompt(cleanText(x.segA || x.front), account),
-        back: this._ensureRenderPrompt(cleanText(x.segB || x.back), account), ui: x.ui !== false
-      }));
-      if (!prompts.length) throw new Error("模型未返回 scenes");
-      return this._ok({ prompts });
-    } catch (e) {
-      this._fb(e);
-      return this._mockPrompts({ groups, account, product });
     }
   },
 
@@ -2670,7 +2410,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
   },
 
   /* ---------- 图文：逐张图片提示词 ---------- */
-  async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, topic = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null, copy = null }) {
+  async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, topic = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null, copy = null, requireLlm = false }) {
     const tpl = String(imageTemplate || "").trim();
     const nImg = Math.max(1, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
     const safeTopic = sanitizeXhsText(cleanText(topic || ""));
@@ -2691,18 +2431,18 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     try {
       const content = await llm([
         { role: "system", content: `你是小红书笔记配图的图片提示词设计师。最终发布标题和正文是图片内容的唯一事实来源；账号资料只决定视觉设计，不决定图片讲什么。不得使用产品资料库、竞品关系、账号定位、历史模板、本地结构样本或默认办公案例补写内容。发布文案里明确出现的产品名、软件名和动作可以原样理解，但不能用你记忆中的产品介绍覆盖正文。禁止把发布标题换成另一个主题。先把正文完整理解并均匀规划为 ${nImg} 个不重复的信息节拍，再拆成 ${nImg} 张静态图片；每张承担正文中的一段具体信息，顺序合理，覆盖正文要点，不重复同一句。
-第一张图默认是点击入口，优先冲击感和可点击性：用强标题、短副标题和简单视觉关系吸引点击。第一张负责概括正文的核心入口；第二张之后再按正文顺序展开具体信息。
+第一张图默认是点击入口，优先冲击感和可点击性：用强标题、短副标题和简单视觉关系吸引点击。第一张负责概括正文的核心入口；第二张之后是干货承载页，按正文顺序展开具体信息。每张内页必须有 1 个清楚结论，并从该页分配到的正文里提炼 2—4 个具体支撑项，例如步骤、动作、判断依据、证据、结果、避坑或适用边界；不得为了凑数量补写正文外事实。
 若内容过多，先在内部重新规划：把重要信息均匀分给 ${nImg} 张图，次要内容压成一句结论；若内容较少，只能把正文已有信息改写成例子、结果或边界提醒，不得补入正文之外的产品知识、默认案例或事实。
 同一批量任务的不同账号可以改变每张图的标题表达、主视觉和卡片顺序，但内容事实仍只能来自该账号最终正文。
 每条 prompt 必须是可直接交给图像模型的正向画面描述，不要复述任务、正文分段编号、信息密度策略或生成规则，不要输出「本张只展开」「不得换题」「正文第几部分」「内容唯一依据」等规划语言。图片内容只来自最终发布文案；视觉效果只来自账号创作风格、账号模板和参考图。账号风格最多提炼成一句简短的配色或画风说明，不得替用户改写画面内容。${safeStyle ? "账号创作风格（只决定视觉效果）：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `参考图（只作为视觉/构图参考，不提供内容主题）：${sanitizeXhsText(styleRefName)}。` : ""}${safeTpl ? `账号固定模板只作为配色、字体、布局和画面语言母版，模板文字和内容必须全部换成本次正文。` : ""}
 
-每条 prompt 保持精炼但足够具体。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。画面文字围绕主标题、短解释和必要标签组织，按内容复杂度自然取舍；第一张更简洁，后续图可适当增加信息。若账号风格是火柴人、简笔画、小人、漫画或手绘，则画面靠人物动作、表情、气泡和箭头讲解，文字更少，避免复杂表格和长文案。
+每条 prompt 保持精炼但足够具体。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。画面文字围绕主标题、短解释和必要标签组织，按内容复杂度自然取舍；第一张保持简洁，第二张以后用 2—4 个层级明确的信息模块承载可操作干货，文字量明显高于封面但字号必须可读。若账号风格是火柴人、简笔画、小人、漫画或手绘，则用 2—4 组人物动作、表情、气泡和箭头分别解释信息模块，避免复杂表格和长段落。
 画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
 测评、对比或工具选择类选题用适合谁、不适合谁、任务边界、证据和组合方式表达，采用边界对照、场景分工和使用建议，不采用分数、星级、排行榜、打分表或评分卡。
 内部分类词只用于理解结构，最终 prompt 主体保持正向画面描述。不要套用任何默认产品卖点、默认办公清单或历史常用句式。
 
 只输出 JSON：{"shots":[{"title":"给操作员看的短标题，写具体功能或结果","prompt":"可直接给图像模型的提示词","ui":true}]}` },
-        { role: "user", content: `账号创作风格（只决定视觉设计）：${sanitizeXhsText(account.styleProfile || style || "")}\n${copyBrief ? `最终发布文案（图片内容唯一依据；标签已移除，不参与画面规划）：\n${copyBrief}\n\n已经按正文顺序确定的信息分配（必须逐张遵守，不能换题）：\n${contentBeats.map((beat, i) => `图${i + 1}：${beat}`).join("\n")}\n` : `发布文案暂缺，只能使用这次标题/脚本：\n${[safeTopic, safeScript].filter(Boolean).join("\n")}`}\n${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号视觉模板：\n${safeTpl}\n` : ""}请输出 ${nImg} 张图的完整提示词。图1必须是简洁、有冲击力、低噪点的封面；后续图片严格按上面的正文信息分配展开。` }
+        { role: "user", content: `账号创作风格（只决定视觉设计）：${sanitizeXhsText(account.styleProfile || style || "")}\n${copyBrief ? `最终发布文案（图片内容唯一依据；标签已移除，不参与画面规划）：\n${copyBrief}\n\n已经按正文顺序确定的信息分配（必须逐张遵守，不能换题）：\n${contentBeats.map((beat, i) => `图${i + 1}：${beat}`).join("\n")}\n` : `发布文案暂缺，只能使用这次标题/脚本：\n${[safeTopic, safeScript].filter(Boolean).join("\n")}`}\n${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号视觉模板：\n${safeTpl}\n` : ""}请输出 ${nImg} 张图的完整提示词。图1必须是简洁、有冲击力、低噪点的封面；图2及后续每张都必须有一个清楚结论和 2—4 个来自该页正文信息的具体支撑模块，提升干货密度但保持可读。` }
       ], { json: true, temperature: 0.8 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
@@ -2723,6 +2463,11 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       });
     } catch (e) {
       this._fb(e);
+      if (requireLlm) {
+        const detail = this.lastError || "语言模型未返回有效图卡提示词";
+        this.lastSource = "error";
+        throw new Error(`图卡提示词模型生成失败：${detail}`);
+      }
       await delay(400);
       const rows = String(safeScript || "").split(/\n+/).map(x => x.trim()).filter(Boolean);
       return {
@@ -2754,7 +2499,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     }
   },
 
-  async generateImageCopyFromTitle({ title = "", account = {} } = {}) {
+  async generateImageCopyFromTitle({ title = "", account = {}, product = null } = {}) {
     const sourceTitle = stripVisibleTextLabels(cleanText(title || "")).trim();
     if (!sourceTitle) throw new Error("请先填写发布标题");
     let lastError = null;
@@ -2762,18 +2507,20 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       try {
         const content = await llm([
           { role: "system", content: `你是专业的小红书图文正文写手。用户给出的标题是唯一内容主题，必须先理解标题在说什么，再写一篇与标题强相关、可直接发布的干货正文。不得把标题替换成泛化的 AI 办公、效率清单或其他常见模板；不得引入标题未指向的新产品、新选题或竞品关系。正文必须自然保留标题中的主产品名、核心对象和任务关系词，不能把所有关键字都换成泛化同义词。内容优先采用三类可靠结构之一：测评类写结论、依据、适合谁与边界；教学类写前提、步骤、结果与避坑；种草类写使用场景、真实价值、选择理由与限制。正文要回答标题承诺的问题，给出具体做法、判断依据或可验证结果，语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签。账号信息只决定表达风格，不改变主题和专业度。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
-          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n请只围绕这个标题写正文。` }
+          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。\n请只围绕这个标题写正文。` }
         ], { json: true, temperature: attempt ? 0.72 : 0.92 });
         const data = sanitizeXhsObject(parseJSONLoose(content));
         const copyText = ensureImagePublishTags(assertProfessionalImageCopy(data.copy || data.body || ""), null, sourceTitle);
         if (!copyText) throw new Error("模型没有返回与标题对应的正文");
         this.lastSource = "llm-title-copy";
         this.lastError = "";
-        return { title: sourceTitle, copy: copyText };
+        return { title: sourceTitle, copy: copyText, source: this.lastSource };
       } catch (error) {
         lastError = error;
       }
     }
+    this.lastSource = "error";
+    this.lastError = (lastError && lastError.message) || String(lastError || "标题文案生成失败");
     throw lastError || new Error("标题文案生成失败");
   },
 
@@ -2836,7 +2583,6 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     const productName = chineseProductDisplayName(product);
     const platform = account?.platform || "视频号";
     const accountVoice = copyAccountVoice(account, account?.styleProfile || account?.lockedStyle || "", safeTitle || safeBody);
-    const isMaterialMode = mode === "material";
     const isInfoFlowMode = mode === "infoFlow";
     const sys = [
       "你是短视频内容策划和发布文案写手。先理解用户标题/文案的真实意图，再写内容，不套固定模板。",
@@ -2844,15 +2590,13 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       "口播：比发布文案更长，用第一人称 我 的视角，口语化，有情绪和现场感，像 60-90 秒内能自然讲完的真人口播；不要照抄发布文案。",
       "如果只有标题，请补出文案和口播；如果正文含 #标签，标签只留在发布文案末尾，不进入口播或视频提示词。",
       "不要使用「」『』符号，不要输出思考过程。",
-      "只按四段输出，不要加解释：\n标题：...\n发布文案：...\n口播：...\n分镜提示：..."
+      "只按四段输出，不要加解释：\n标题：...\n发布文案：...\n口播：...\n画面提示：..."
     ].join("\n");
     const bodyNote = safeBody
       ? `用户已写文案：\n${safeBody}\n\n如果里面有 #标签，只把标签留给发布文案最后一行，不要写进口播和视频提示词。`
       : "用户未写正文：请根据标题补出发布文案和口播。";
-    const visualAsk = isMaterialMode
-      ? "分镜提示为必填，写成 120-220 个中文字符的功能演示分镜图参考提示：描述 3-4 个关键画面、产品界面、操作动作和结果；不要写口播台词、标签、第一镜/第二镜编号或时间码。这个字段不会作为视频提示词。"
-      : isInfoFlowMode
-        ? "分镜提示固定写：由后续信息流创意链路生成。不要在这里提前套用剧情、台词或视频提示词。"
+    const visualAsk = isInfoFlowMode
+        ? "画面提示固定写：由后续信息流创意链路生成。不要在这里提前套用剧情、台词或视频提示词。"
       : "visualPrompt 写成真人/数字人画面提示词：同一角色、办公室场景、自然讲述，可穿插产品界面和资料处理结果，不要写标签。";
     const messages = [
       { role: "system", content: sys },
@@ -2860,7 +2604,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
         `平台：${platform}`,
         `账号语气：${accountVoice}`,
         `主产品：${productName}`,
-        `生成类型：${isInfoFlowMode ? "信息流视频" : isMaterialMode ? "素材号/无数字人视频" : "真人/数字人视频"}`,
+        `生成类型：${isInfoFlowMode ? "信息流视频" : "真人/数字人视频"}`,
         `用户标题：${safeTitle || "未填写"}`,
         bodyNote,
         visualAsk,
@@ -2884,7 +2628,6 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       };
       if (!out.title) out.title = safeTitle || cleanCustomVideoText((out.copy || out.narration).split(/\n+/)[0] || "");
       if (!out.copy || !out.narration) throw new Error("模型未返回完整的发布文案和口播");
-      if (isMaterialMode && !out.visualPrompt) throw new Error("模型未返回素材号分镜提示，请重试");
       if (normalizeForDedupe(out.copy) === normalizeForDedupe(out.narration)) throw new Error("模型返回的发布文案和口播过于相似，请重试");
       if (!/我|咱|我们/.test(out.narration)) throw new Error("模型口播缺少第一人称视角，请重试");
       if (out.narration.length < Math.min(360, out.copy.length + 80)) throw new Error("模型口播长度不足，请重试");
@@ -2950,17 +2693,7 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
         plan.frontPrompt = `统一画面风格：${sharedStyle}。\n${plan.frontPrompt}`;
         plan.backPrompt = `统一画面风格：${sharedStyle}。\n${plan.backPrompt}`;
         assertInfoFlowCreativePlan(plan, previousPrompts);
-        const storyboardContent = await llm([
-          { role: "system", content: "你是产品界面分镜设计师。只根据用户给出的 B 面视频提示词，拆成 1-2 张能作为图生视频参考的 9:16 静态分镜图。只画产品界面、桌面软件窗口、文件、图标和流程卡；禁止人物、手部、手指、人体部位、Q版角色和拟人化肢体；界面文字少而清楚。不要增加 B 面提示词以外的新主题。只输出 JSON：{\"storyboards\":[\"提示词1\",\"提示词2\"]}" },
-          { role: "user", content: plan.backPrompt }
-        ], { json: true, temperature: 0.78, timeoutMs: 90000, thinking: "disabled", maxTokens: 2400 });
-        const storyboardData = sanitizeXhsObject(parseJSONLoose(storyboardContent));
-        const storyboardPrompts = (storyboardData.storyboards || storyboardData.prompts || [])
-          .map(value => cleanCustomVideoText(typeof value === "string" ? value : value?.prompt || "", { stripTags: true }))
-          .filter(value => value.length >= 60)
-          .slice(0, 2);
-        if (!storyboardPrompts.length) throw new Error("模型未返回 B 面分镜图提示词");
-        return this._ok({ ...plan, storyboardPrompts });
+        return this._ok(plan);
       } catch (error) {
         lastError = error;
       }
@@ -2968,66 +2701,6 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
     this.lastSource = "error";
     this.lastError = lastError?.message || String(lastError || "信息流创意生成失败");
     throw new Error(`信息流创意需要语言模型重新生成：${this.lastError}`);
-  },
-
-  async randomTitle({ topic, account, product = null, useOnlineTrends = false, trendGuide = "", trendPrep = null }) {
-    useOnlineTrends = false;
-    trendGuide = "";
-    trendPrep = null;
-    try {
-      const prep = await resolveTrendPrep({ topic, account, product, useOnlineTrends: false, kind: "image" });
-      if (prep?.title) return this._ok(stripOwnProductMentions(prep.title, product));
-      const trendGuideText = prep?.guide || await resolveTrendGuide({ topic, account, product, useOnlineTrends: false, kind: "image" });
-      const styleLine = `账号创作风格「${account?.styleProfile || account?.lockedStyle || "干净可读"}」`;
-      const productName = genericProductLabel(product);
-      const r = await llm([{ role: "user", content: `给小红书笔记起一个标题，主题「${topic || `${productName} 办公效率`}」，${styleLine}。参考这些本地结构方向找标题节奏，但必须围绕本次主题和当前主产品，不要换题：\n${trendGuideText}\n20字以内，口语化、有信息量，带1个以内贴合 emoji。可以自然出现当前主产品名，不要写成“AI测试”这种空泛标题。只回标题本身，不要引号不要解释。` }], { temperature: 1.1 });
-      const t = stripOwnProductMentions(String(r).trim().replace(/^["'「]|["'」]$/g, "").slice(0, 30), product);
-      if (t) return this._ok(t);
-      throw new Error("空");
-    } catch (e) {
-      this._fb(e);
-      return stripOwnProductMentions(this._mockCopy({ topic, shots: [], account, product }).title, product);
-    }
-  },
-
-  /* ---------- 随机骰子 ---------- */
-  async randomPick({ kind, account, product = null, batchVariant = null, seed = "", avoidTopics = [], useOnlineTrends = false, trendGuide = "", trendPrep = null }) {
-    useOnlineTrends = false;
-    trendGuide = "";
-    trendPrep = null;
-    try {
-      const runSeed = seed || `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-      const p = product || allProductsForAI().find(x => x.owner === "ours") || null;
-      const rel = relatedProducts(p, allProductsForAI(), 4);
-      const productName = chineseProductDisplayName(p);
-      const relLine = rel.length ? `可参考同类产品：${productListLine(rel)}。` : "";
-      const variantGuide = batchVariantLine(batchVariant);
-      const avoidLine = (avoidTopics || []).slice(-8).map((x, i) => `${i + 1}. ${sanitizeXhsText(x)}`).join("\n");
-      const prep = await resolveTrendPrep({ topic: "", account, product: p, batchVariant, useOnlineTrends: false, kind: "image", seed: runSeed });
-      if (kind === "topic" && prep?.creativeContent && !tooSimilarTopic(prep.creativeContent, avoidTopics)) {
-        return this._ok(enforceCurrentProductTopic(cleanRandomTopicText(prep.creativeContent, 30), p, rel));
-      }
-      const trendGuideText = prep?.guide || await resolveTrendGuide({ topic: "", account, product: p, batchVariant, useOnlineTrends: false, kind: "image", seed: runSeed });
-      const ask = kind === "direction"
-        ? `给我一个适合做「${productName}」产品教程短视频的具体使用场景方向，必须对应一个真实任务或问题，不要按年龄、职业、家庭身份给用户分类。只回一个4-8字的场景短语，不要标点不要解释。`
-        : kind === "style"
-        ? `为小红书图文笔记配图想一个总视觉风格短语，参考当前创作风格「${account.styleProfile || "干净可读"}」。可以超出常见标签、有新鲜感但要好落地（例如：奶油色清晨书桌风 / 蓝白格子手帐风 / 低饱和莫兰迪办公风）。只回一个5-12字的风格短语，不要标点不要解释。`
-        : `${currentProductLine(p)}\n给我一个「${productName}」相关的 AI 博主选题，贴合账号创作风格「${account.styleProfile || "办公效率人群"}」和账号名「${account.name || "未命名账号"}」。用户没有写创作内容，所以你要主动引入 1 个同类/互补工具做对比、组合、分工或妙用科普，不要只孤立介绍${productName}。${variantGuide ? `\n${variantGuide}` : ""}${avoidLine ? `\n同批已经出现过这些主题，必须避开，不要同义改写：\n${avoidLine}` : ""}${p?.id === "miaoda" ? "秒哒是无代码 AI 应用生成平台，选题必须围绕应用生成、H5/页面、原型、小工具、数据表/后台、非技术人验证想法；不要写文件整理、桌面自动操作、PDF/Word/Excel 转格式、会议纪要这类桌面执行能力，除非明确是“做一个应用来管理这些流程”。" : ""}${relLine}\n本地方向参考（只学选题角度，不照抄）：\n${trendGuideText}\n随机种子：${runSeed}。只回一句不超过22字的主题，不要标点不要解释。`;
-      const r = await llm([{ role: "user", content: ask }], { temperature: 1.0 });
-      const t = kind === "style"
-        ? String(r).trim().replace(/[。.\n"'`]/g, "").slice(0, 16)
-        : cleanRandomTopicText(r, 30);
-      if (t && (kind !== "topic" || !tooSimilarTopic(t, avoidTopics))) return this._ok(kind === "direction" ? (t.endsWith("方向") ? t : t + "方向") : kind === "topic" ? enforceCurrentProductTopic(t, p, rel) : t);
-      throw new Error("空");
-    } catch (e) {
-      this._fb(e);
-      const runSeed = seed || `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-      if (kind === "style") {
-        return cleanText(account?.lockedStyle || account?.styleProfile || "白底清晰信息卡与真实办公截图组合风").slice(0, 24);
-      }
-      const topic = fallbackRandomTopic({ account, product, batchVariant, seed: runSeed, avoidTopics });
-      return kind === "direction" ? `${cleanRandomTopicText(topic, 16)}方向` : topic;
-    }
   },
 
   /* ---------- md / 自然语言 → 批量账号 ---------- */
@@ -3270,67 +2943,6 @@ ${prep?.imageStrategy ? `\n图片策略预案：${prep.imageStrategy}` : ""}
       `真人角色一致性要求：同一位中国年轻男性数字人，27-32岁，气质理性松弛、像懂技术的朋友；脸型为偏长的清瘦椭圆脸，下颌线利落但不锋利，额头开阔；眉毛自然偏浓，眼型细长偏内双，眼神稳定专注；鼻梁中等偏高，鼻翼自然；嘴唇偏薄，讲话时表情克制，有轻微吐槽感和理性幽默；肤色自然偏暖，皮肤质感真实不过度磨皮；黑色短发，侧分或自然蓬松，发际线自然；身形中等偏瘦，肩背挺直，穿浅蓝或白色衬衫、深色休闲外套或针织开衫。所有出现人物的镜头保持同一张脸、同一发型、同一服装、同一体态和同一表情习惯，不能换人、不能脸型漂移。`
     ];
     return anchors[n];
-  },
-
-  _voiceAnchor(account) {
-    const tone = account?.tone || "专业、自然、可信";
-    return `口播声音要求：普通话清晰标准，音色干净自然，中音区稳定；语速中等，不抢话、不赶句，像在给同事讲一个真实有效的方法；情绪有解释感和轻微惊喜感，不机械播报，不夸张带货；整体语气为${tone}。`;
-  },
-
-  _ensureRenderPrompt(prompt, account) {
-    let out = cleanText(prompt || "")
-      .replace(/@参考音频[，,、\s]*/g, "")
-      .replace(/口播语气节奏参考上传音频[（(][^）)]*[）)]?/g, "口播音色与语气参考统一参考音频")
-      .replace(/参考上传音频/g, "参考统一参考音频")
-      .replace(/参考音频/g, "参考统一参考音频");
-    const neg = videoNegative();
-    if (account?.subType !== "无数字人") {
-      if (!account?.charBoardAssetId && !/外貌锚点|脸型|眉毛|眼型|鼻梁|发型|参考数字人图|角色参考图/.test(out)) out += `\n\n${this._humanAppearanceAnchor(account)}`;
-      if (account?.voiceRefAssetId) {
-        if (!/统一参考音频|参考声线|参考音色/.test(out)) out += `\n口播音色与语气参考统一参考音频；语速自然，不要把句子压缩到听不清。`;
-      } else if (!/口播声音要求|音色|语速|普通话/.test(out)) {
-        out += `\n${this._voiceAnchor(account)}`;
-      }
-    }
-    if (!/无字幕|不生成字幕|不要字幕/.test(out)) out += `\n${neg}`;
-    return cleanText(out);
-  },
-
-  async _mockPrompts({ groups, account, product = null }) {
-    await delay(500);
-    const productName = chineseProductDisplayName(product);
-    const NEG = "负面提示词：无字幕，不生成花字，不生成水印，不生成二维码。";
-    const dh = account.subType !== "无数字人";
-    const characterLine = account?.charBoardAssetId
-      ? "角色形象以参考数字人图为准，所有出镜镜头保持同一人物、同一服装、同一发型和同一表情习惯，不重新设计角色。"
-      : this._humanAppearanceAnchor(account);
-    const voiceLine = account?.voiceRefAssetId
-      ? "口播音色与语气参考统一参考音频；普通话清晰自然，语速中等，不要把句子压缩到听不清。"
-      : this._voiceAnchor(account);
-    const head = dh
-      ? `@参考数字人图，@参考产品界面与logo图，这是一条${productName}产品教程短视频，9:16竖屏，时长15秒。\n${characterLine}\n${voiceLine}`
-      : `@参考产品界面与logo图，这是一条${productName}产品教程短视频，9:16竖屏，时长15秒，场景/产品界面混剪，专业画外音旁白（无固定出镜人物）。`;
-    const voiceKey = dh ? "口播" : "画外音";
-    const defVisual = dh ? "数字人中近景，固定机位，柔和正面光，背景简洁办公桌" : "产品界面特写，缓推运镜，卡片滑入动效，浅蓝网格背景";
-    const seg = (arr) => {
-      const slots = ["0-3秒", "3-7秒", "7-11秒", "11-15秒"];
-      return (arr.length ? arr : [{}]).slice(0, 4).map((x, j) =>
-        `镜头${j + 1}｜${slots[j] || ""}｜画面：${x.visual || defVisual}；${voiceKey}：${x.line || ""}`).join("\n");
-    };
-    const uiOf = (arr) => arr.some(x => /UI|界面|屏幕|文件|数据|表格|卡片|演示/.test(x.visual || ""));
-    const prompts = groups.map((g, i) => {
-      const A = g.front.length ? g.front : g.all;
-      const B = g.back.length ? g.back : g.all;
-      const themeLine = `本条主题：${(account.styleProfile || account.voiceName || "真实办公教程").split("，")[0]}；场景：明亮办公桌前、暖色柔光(前后两段同一场景)；BGM：轻快办公背景乐(前后两段同一BGM)。`;
-      return {
-        name: `场景 ${String(i + 1).padStart(2, "0")}`,
-        time: "0-15s",
-        ui: uiOf(g.all),
-        front: this._ensureRenderPrompt(`${head}\n${themeLine}\n${seg(A)}\n${NEG}`, account),
-        back: this._ensureRenderPrompt(`${head}\n${themeLine}\n${seg(B)}\n${NEG}`, account)
-      };
-    });
-    return { prompts };
   },
 
   _mockCopy({ topic, shots, account, product = null, kind = "image", batchVariant = null, avoidCopies = [] }) {

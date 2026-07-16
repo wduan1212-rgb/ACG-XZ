@@ -204,14 +204,22 @@ export function publishModal({ title = "定稿并发布", okText = "定稿并发
 }
 
 /* ---------- 大弹层 / 抽屉 ---------- */
-export function openModal(html, { wide = false, onMount } = {}) {
+export function openModal(html, { wide = false, onMount, onBeforeClose, onClose } = {}) {
   const ov = document.createElement("div");
   ov.className = "modal-ov";
   ov.innerHTML = `<div class="modal-panel ${wide ? "wide" : ""}" role="dialog">${html}</div>`;
   document.body.appendChild(ov);
   requestAnimationFrame(() => ov.classList.add("open"));
   let closed = false;
-  const close = () => { if (closed) return; closed = true; document.removeEventListener("keydown", onKey); ov.classList.remove("open"); setTimeout(() => ov.remove(), 200); };
+  const close = () => {
+    if (closed) return;
+    if (onBeforeClose && onBeforeClose() === false) return;
+    closed = true;
+    document.removeEventListener("keydown", onKey);
+    ov.classList.remove("open");
+    try { onClose?.(); } catch (error) { console.warn("[modal-close]", error); }
+    setTimeout(() => ov.remove(), 200);
+  };
   ov.addEventListener("pointerdown", e => { if (e.target === ov) close(); });
   ov.addEventListener("click", e => { if (e.target.closest("[data-close]")) { e.preventDefault(); close(); } });
   const onKey = e => { if (e.key === "Escape") close(); };
@@ -357,45 +365,128 @@ export function updateNotifyBadge() {
 on("notify", updateNotifyBadge);
 
 /* ---------- ⌘K 命令面板 ---------- */
+function gooeyPaletteSupported() {
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return false;
+  const ua = navigator.userAgent || "";
+  const ios = /iPad|iPhone|iPod/.test(ua);
+  const safari = /Safari/.test(ua) && !/Chrome|CriOS|Edg|OPR/.test(ua);
+  return !ios && !safari;
+}
+
 export function openPalette(commands) {
   const exist = $("#palette");
-  if (exist) { exist.remove(); return; }
+  if (exist) { exist.__close?.(); return; }
+  const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const gooey = gooeyPaletteSupported();
+  const filterId = `gooey-palette-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   const ov = document.createElement("div");
   ov.id = "palette";
-  ov.className = "palette-ov";
+  ov.className = `palette-ov ${gooey ? "is-gooey" : "is-flat"}`;
   ov.innerHTML = `
-    <div class="palette">
-      <div class="pal-input-row">${icon("search", 16)}<input id="palInput" placeholder="搜索账号 / 任务 / 操作…" autocomplete="off" /></div>
-      <div class="pal-list" id="palList"></div>
+    ${gooey ? `<svg class="pal-goo-defs" width="0" height="0" aria-hidden="true"><defs>
+      <filter id="${filterId}">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
+        <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -15" result="goo" />
+        <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+      </filter>
+    </defs></svg>` : ""}
+    <div class="palette" role="dialog" aria-modal="true" aria-label="全局搜索">
+      <div class="pal-goo-layer" ${gooey ? `style="filter:url(#${filterId})"` : ""} aria-hidden="true"></div>
+      <div class="pal-input-row"><span class="pal-search-orb">${icon("search", 16)}</span><input id="palInput" role="combobox" aria-controls="palList" aria-expanded="true" aria-autocomplete="list" placeholder="搜索账号 / 任务 / 操作…" autocomplete="off" /></div>
+      <div class="pal-list" id="palList" role="listbox"></div>
       <div class="pal-foot"><span>↑↓ 选择 · Enter 执行 · Esc 关闭</span></div>
     </div>`;
   document.body.appendChild(ov);
   requestAnimationFrame(() => ov.classList.add("open"));
   const input = $("#palInput", ov);
   const list = $("#palList", ov);
+  const gooLayer = $(".pal-goo-layer", ov);
   let idx = 0, filtered = commands;
+  let closed = false;
+  const visibleCommands = () => filtered.slice(0, 12);
+  const syncGooGeometry = () => {
+    if (!gooLayer || !list) return;
+    gooLayer.style.setProperty("--pal-scroll", `${list.scrollTop}px`);
+    gooLayer.style.setProperty("--pal-list-height", `${list.clientHeight}px`);
+  };
+  const updateSelection = ({ scroll = false } = {}) => {
+    const shown = visibleCommands();
+    idx = shown.length ? Math.max(0, Math.min(idx, shown.length - 1)) : 0;
+    $$("[data-i]", list).forEach((item, i) => {
+      const selected = i === idx;
+      item.classList.toggle("is-active", selected);
+      item.setAttribute("aria-selected", selected ? "true" : "false");
+    });
+    $$(".pal-goo-result-bg", gooLayer).forEach((item, i) => item.classList.toggle("is-active", i === idx));
+    input.setAttribute("aria-activedescendant", shown.length ? `palOption${idx}` : "");
+    if (scroll && shown.length) {
+      list.querySelector(`[data-i="${idx}"]`)?.scrollIntoView({ block: "nearest" });
+      requestAnimationFrame(syncGooGeometry);
+    }
+  };
   const renderList = () => {
-    list.innerHTML = filtered.slice(0, 12).map((c, i) => `
-      <div class="pal-item ${i === idx ? "is-active" : ""}" data-i="${i}">
+    const shown = visibleCommands();
+    idx = shown.length ? Math.max(0, Math.min(idx, shown.length - 1)) : 0;
+    list.innerHTML = shown.map((c, i) => `
+      <div class="pal-item" data-i="${i}" id="palOption${i}" role="option" aria-selected="false" style="--pal-i:${i}">
         <span class="pi-ico">${icon(c.icon || "arrowRight", 15)}</span>
         <span class="pi-main"><b>${esc(c.label)}</b>${c.hint ? `<em>${esc(c.hint)}</em>` : ""}</span>
         ${c.group ? `<span class="pi-group">${esc(c.group)}</span>` : ""}
       </div>`).join("") || `<div class="np-empty">没有匹配项</div>`;
+    if (gooLayer) {
+      gooLayer.innerHTML = `<i class="pal-goo-input-bg"></i><span class="pal-goo-results-clip">${shown
+        .map((_, i) => `<i class="pal-goo-result-bg" style="--pal-i:${i}"></i>`)
+        .join("")}</span>`;
+    }
+    updateSelection();
+    requestAnimationFrame(syncGooGeometry);
   };
-  const close = () => { ov.classList.remove("open"); setTimeout(() => ov.remove(), 160); document.removeEventListener("keydown", onKey); };
-  const run = () => { const c = filtered[idx]; if (c) { close(); c.run(); } };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    ov.classList.remove("open");
+    document.removeEventListener("keydown", onKey);
+    window.removeEventListener("resize", syncGooGeometry);
+    setTimeout(() => {
+      ov.remove();
+      if (restoreFocus?.isConnected) restoreFocus.focus({ preventScroll: true });
+    }, 180);
+  };
+  ov.__close = close;
+  const run = () => { const c = visibleCommands()[idx]; if (c) { close(); c.run(); } };
   const onKey = e => {
+    if (e.isComposing) return;
     if (e.key === "Escape") { e.preventDefault(); close(); }
-    else if (e.key === "ArrowDown") { e.preventDefault(); idx = Math.min(filtered.length - 1, idx + 1); renderList(); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); idx = Math.max(0, idx - 1); renderList(); }
+    else if (e.key === "Tab") { e.preventDefault(); input.focus(); }
+    else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const shown = visibleCommands();
+      idx = shown.length ? Math.min(shown.length - 1, idx + 1) : 0;
+      updateSelection({ scroll: true });
+    }
+    else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      idx = Math.max(0, idx - 1);
+      updateSelection({ scroll: true });
+    }
     else if (e.key === "Enter") { e.preventDefault(); run(); }
   };
   document.addEventListener("keydown", onKey);
+  window.addEventListener("resize", syncGooGeometry);
   input.addEventListener("input", () => {
     const q = input.value.trim().toLowerCase();
     filtered = !q ? commands : commands.filter(c => (c.label + (c.hint || "") + (c.group || "")).toLowerCase().includes(q));
-    idx = 0; renderList();
+    idx = 0;
+    list.scrollTop = 0;
+    renderList();
   });
+  list.addEventListener("pointermove", e => {
+    const it = e.target.closest("[data-i]");
+    if (!it || Number(it.dataset.i) === idx) return;
+    idx = Number(it.dataset.i);
+    updateSelection();
+  });
+  list.addEventListener("scroll", syncGooGeometry, { passive: true });
   list.addEventListener("click", e => { const it = e.target.closest("[data-i]"); if (it) { idx = +it.dataset.i; run(); } });
   ov.addEventListener("click", e => { if (e.target === ov) close(); });
   input.focus();

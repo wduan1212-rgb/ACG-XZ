@@ -7,8 +7,8 @@ import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
 import { toast, openLightbox, publishModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260716-v88-1";
-import { reviewPreviewHtml } from "./prodDrawer.js?v=20260716-v88-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260717-v91-2";
+import { reviewPreviewHtml } from "./prodDrawer.js?v=20260717-v91-2";
 
 export function renderCopyPage(root, p) {
   const isImg = p.mode === "图文";
@@ -32,9 +32,9 @@ export function renderCopyPage(root, p) {
     <div class="chain-page solo">
       <div class="empty-state card">
         ${icon("layers", 24)}
-        <b>视频文案已合并到文案分镜</b>
+        <b>视频文案已合并到视频制作</b>
         <p>标题、简介、口播草稿和分镜现在在一个界面完成。</p>
-        <button class="btn primary" id="ccBackToWorkshop">回到文案分镜</button>
+        <button class="btn primary" id="ccBackToWorkshop">回到视频制作</button>
       </div>
     </div>`;
   wireStepper(root);
@@ -52,14 +52,14 @@ export function renderReviewPage(root, p) {
         <div class="empty-state card">
           ${icon("image", 24)}
           <b>${cover.status === "failed" ? "封面自动生成失败" : "正在补齐视频封面"}</b>
-          <p>${cover.status === "failed" ? esc(cover.error || "请重试或返回文案分镜手动上传封面") : "审核前必须有封面，生成完成后会自动进入审核。"}</p>
-          ${cover.status === "failed" ? `<button class="btn primary" id="rvRetryCover">重新生成封面</button><button class="btn ghost" id="rvBackWorkshop">返回文案分镜</button>` : `<span class="status-pill running">生成中</span>`}
+          <p>${cover.status === "failed" ? esc(cover.error || "请重试或返回视频制作手动上传封面") : "审核前必须有封面，生成完成后会自动进入审核。"}</p>
+          ${cover.status === "failed" ? `<button class="btn primary" id="rvRetryCover">重新生成封面</button><button class="btn ghost" id="rvBackWorkshop">返回视频制作</button>` : `<span class="status-pill running">生成中</span>`}
         </div>
       </div>`;
     wireStepper(root);
     const run = async () => {
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260716-v88-1");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260717-v91-2");
         await ensureVideoCover(p);
         if (root.isConnected) renderReviewPage(root, p);
       } catch (err) {
@@ -162,7 +162,7 @@ export function renderReviewPage(root, p) {
   const dl = $("#rvDeliver", root);
   if (dl) dl.addEventListener("click", async () => {
     if (!isImg && !p.artifacts?.boards?.cover?.assetId) {
-      toast("先回到文案分镜生成或上传封面图，再发布到供应商端");
+      toast("先回到视频制作生成或上传封面图，再发布到供应商端");
       return;
     }
     const r = await publishModal({ title: `定稿并发布「${p.artifacts.copy.title || p.title}」` });

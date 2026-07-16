@@ -1,7 +1,7 @@
 /* 发布清单：定稿入库（创作端） + 素材分发（供应商端）
    交付 = 内部定稿归档，产物进入交付库供供应商下载，不涉及任何平台发布 */
 
-import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, removeRemote } from "../core/store.js";
+import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
 import { setStage, touch } from "./productions.js";
@@ -107,6 +107,32 @@ function markPackImagesShared(p, productTag) {
   });
 }
 
+function markDeliveryCoverShared(coverAssetId, {
+  projectId = "",
+  productionId = "",
+  productId = "dumate",
+  productTag = "",
+  title = "",
+  source = "delivered-video"
+} = {}) {
+  const cover = assetById(coverAssetId);
+  if (!cover || cover.delivered || cover.type !== "图片") return;
+  cover.shared = true;
+  cover.sharedAt = Date.now();
+  cover.sharedSource = source;
+  if (projectId) cover.customProjectId = projectId;
+  if (productionId) cover.productionId = productionId;
+  cover.productId = productId || cover.productId || "dumate";
+  cover.productTag = productTag || cover.productTag || "";
+  cover.title = cover.title || title;
+  cover.tags = [...new Set([
+    ...(cover.tags || []),
+    "发布封面",
+    "共享素材",
+    ...(productTag ? [productTag] : [])
+  ])];
+}
+
 /* 发布交付：创作者自行定稿入库（无强制审核门槛），分配全局发布序号 + 记录发布账号/成员
    交付 = 内部定稿归档，产物进入交付库供供应商下载，不涉及任何平台发布 */
 export function deliver(p, opts = {}) {
@@ -142,6 +168,13 @@ export function deliver(p, opts = {}) {
     adminReviewed: false                          // 管理员「已审阅」标注（非强制门槛）
   };
   if (snapshot.type === "图集") markPackImagesShared(p, productTag);
+  else markDeliveryCoverShared(snapshot.coverAssetId, {
+    productionId: p.id,
+    productId: snapshot.productId,
+    productTag,
+    title: snapshot.title,
+    source: "delivered-production-video"
+  });
   state.assets.push(asset);
   acc.monthlyDone = (acc.monthlyDone || 0) + 1;
   p.delivery = { assetId: asset.id, name, at: Date.now(), pubSeq, planDate: asset.planDate, productTag, note: asset.publishNote, sourceUpdatedAt: asset.sourceUpdatedAt };
@@ -152,6 +185,177 @@ export function deliver(p, opts = {}) {
   persistNow();
   notify("delivery", `「${asset.title || name}」已发布`, `#${String(pubSeq).padStart(3, "0")} · ${name}${snapshot.type === "图集" ? ".zip" : ".mp4"} · 供应商端可见`);
   return asset;
+}
+
+/* 定制创作交付：视频工坊 / 无限画布先把成品写入账号资产，再复用发布清单与供应商端。
+   子应用草稿仍由 owner-scoped customProjects 管理，这里只接收已经物化到主平台资产库的输出。 */
+export function deliverCustomOutput(output = {}, opts = {}) {
+  const acc = accountById(output.accountId);
+  if (!acc) return null;
+  if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
+  const title = String(output.title || "").trim();
+  if (!title) { window.__toast && window.__toast("请先填写发布标题", "error"); return null; }
+  const kind = output.kind === "canvas" || output.type === "图集" ? "canvas" : "video";
+  const expectedMode = kind === "canvas" ? "图文" : "视频";
+  if (acc.mode !== expectedMode) {
+    window.__toast && window.__toast(`该成品只能提交到${expectedMode}账号`, "error");
+    return null;
+  }
+  const packAssetIds = [...new Set((output.packAssetIds || []).filter(Boolean))].slice(0, 20);
+  const videoUrl = String(output.videoUrl || "").trim();
+  if (kind === "canvas" && !packAssetIds.length) {
+    window.__toast && window.__toast("没有可提交的画布图片", "error");
+    return null;
+  }
+  if (kind === "video" && !videoUrl) {
+    window.__toast && window.__toast("没有可提交的视频成片", "error");
+    return null;
+  }
+  if (kind === "canvas") {
+    const validImages = packAssetIds.every(id => {
+      const image = assetById(id);
+      return !!image && image.type === "图片" && !image.delivered && image.accountId === acc.id;
+    });
+    if (!validImages) {
+      window.__toast && window.__toast("画布成品未完整写入当前发布账号，已停止提交", "error");
+      return null;
+    }
+  }
+  const sourceAsset = kind === "video" ? assetById(output.sourceAssetId) : null;
+  if (kind === "video" && (
+    !sourceAsset
+    || sourceAsset.type !== "视频"
+    || sourceAsset.delivered
+    || sourceAsset.accountId !== acc.id
+  )) {
+    window.__toast && window.__toast("视频成片未正确写入当前发布账号，已停止提交", "error");
+    return null;
+  }
+  const coverAsset = kind === "video" ? assetById(output.coverAssetId) : null;
+  if (kind === "video" && (
+    !coverAsset
+    || coverAsset.type !== "图片"
+    || coverAsset.delivered
+    || coverAsset.accountId !== acc.id
+  )) {
+    window.__toast && window.__toast("请先生成或选择封面", "error");
+    return null;
+  }
+
+  const planDate = normalizePlanDate(opts.planDate);
+  const productTag = String(opts.productTag || "定制创作").trim().slice(0, 20);
+  const projectId = String(output.customProjectId || output.projectId || "").trim();
+
+  acc.exportSeq = (acc.exportSeq || 0) + 1;
+  const name = insertProductTagBeforeDate(buildDeliveryName(acc, acc.exportSeq), productTag);
+  const mem = currentMember();
+  const pubSeq = (state.ui.deliverSeq = (state.ui.deliverSeq || 0) + 1);
+  const now = Date.now();
+  const type = kind === "canvas" ? "图集" : "视频";
+  const sourceItemIds = kind === "canvas"
+    ? [...new Set([
+        ...(output.sourceItemIds || []),
+        ...((output.items || []).map(item => item?.sourceItemId || ""))
+      ].map(value => String(value || "").trim()).filter(Boolean))].slice(0, 20)
+    : [];
+  const asset = {
+    id: uid(),
+    accountId: acc.id,
+    name,
+    type,
+    tags: [
+      "成片",
+      "定制创作",
+      kind === "canvas" ? "无限画布" : "视频工坊",
+      acc.mode,
+      acc.platform,
+      productTag,
+      ...(kind === "canvas" ? [`${packAssetIds.length}张组图`] : [])
+    ].filter(Boolean),
+    title,
+    copy: String(output.copy || ""),
+    packAssetIds: kind === "canvas" ? packAssetIds : [],
+    videoUrl: kind === "video" ? videoUrl : "",
+    clipJobIds: [],
+    clipUrls: [],
+    clips: kind === "video" ? 1 : 0,
+    subCount: Number(output.subCount || 0),
+    productId: String(output.productId || opts.productId || "dumate"),
+    productTag,
+    byAccount: acc.name,
+    coverAssetId: String(output.coverAssetId || (kind === "canvas" ? packAssetIds[0] || "" : "")),
+    createdAt: now,
+    deliveredAt: now,
+    delivered: true,
+    status: "未下载",
+    pubSeq,
+    planDate,
+    publishNote: String(opts.note || ""),
+    adminReviewed: false,
+    byMemberId: mem?.id || state.ui.currentMemberId || null,
+    byMemberName: mem?.name || "",
+    sourceCreatedAt: Number(output.createdAt || now),
+    sourceUpdatedAt: now,
+    customProjectId: projectId,
+    customOutputKind: kind,
+    sourceItemIds,
+    sourceAssetId: String(output.sourceAssetId || ""),
+    aspectRatio: String(output.aspectRatio || "")
+  };
+
+  if (kind === "canvas") {
+    packAssetIds.forEach((id, index) => {
+      const image = assetById(id);
+      if (!image || image.type !== "图片" || image.accountId !== acc.id) return;
+      image.shared = true;
+      image.sharedAt = now;
+      image.sharedSource = "delivered-custom-canvas";
+      image.customProjectId = projectId;
+      image.productId = asset.productId;
+      image.productTag = productTag;
+      image.title = image.title || title;
+      image.name = image.name || `画布发布图${String(index + 1).padStart(2, "0")}`;
+      image.tags = [...new Set([...(image.tags || []), "已发布生成图", "共享素材", "无限画布", productTag])];
+    });
+  } else {
+    markDeliveryCoverShared(asset.coverAssetId, {
+      projectId,
+      productId: asset.productId,
+      productTag,
+      title,
+      source: "delivered-custom-video"
+    });
+  }
+
+  state.assets.push(asset);
+  acc.monthlyDone = (acc.monthlyDone || 0) + 1;
+  if (!opts.deferCommit) commitCustomDelivery(asset);
+  return asset;
+}
+
+export function commitCustomDelivery(asset) {
+  if (!asset?.delivered || !asset.customProjectId) return null;
+  save("assets", "accounts", "meta");
+  persistNow();
+  notify(
+    "delivery",
+    `「${asset.title || asset.name}」已发布`,
+    `#${String(asset.pubSeq).padStart(3, "0")} · ${asset.name}${asset.type === "图集" ? ".zip" : ".mp4"} · 供应商端可见`
+  );
+  return asset;
+}
+
+export function discardCustomDelivery(asset) {
+  if (!asset?.delivered) return false;
+  const acc = accountById(asset.accountId);
+  state.assets = state.assets.filter(item => item.id !== asset.id);
+  if (acc && (acc.monthlyDone || 0) > 0) {
+    acc.monthlyDone = Math.max(0, acc.monthlyDone - 1);
+  }
+  if (acc && (acc.exportSeq || 0) > 0) {
+    acc.exportSeq = Math.max(0, acc.exportSeq - 1);
+  }
+  return true;
 }
 
 /* 管理员在发布清单标注/取消「已审阅」（仅记号，不阻断任何流程） */
@@ -201,8 +405,17 @@ export function supplierHasDownloaded(asset) {
   return !!asset?.supplierDownloadedAt || asset?.status === "已下载";
 }
 
-export function deleteDeliveryAsset(asset) {
+export async function deleteDeliveryAsset(asset) {
   if (!asset || !canDeleteDelivery(asset)) return false;
+  if (asset.customProjectId && remote.isOn()) {
+    if (!remote.hasToken()) throw new Error("登录已过期，请重新登录后再回撤");
+    await remote.customProjects.unpublish(asset.customProjectId, asset.id);
+    if (!await pullRemote()) {
+      throw new Error("服务器已处理回撤，但本地状态刷新失败，请保持页面并重试刷新");
+    }
+    notify("delivery", `「${asset.title || asset.name}」已回撤`, "发布清单记录已删除，定制项目已恢复为草稿/上一版本，原始账号素材保留");
+    return true;
+  }
   const acc = accountById(asset.accountId);
   const prod = state.productions.find(p => p.id === asset.productionId);
   const analyticsIds = state.analyticsLinks
@@ -279,7 +492,10 @@ async function remoteFileU8(url) {
       ? await fetch(url, { credentials: "same-origin" })
       : await fetch("/api/proxy/file", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            ...(remote.getToken() ? { Authorization: `Bearer ${remote.getToken()}` } : {})
+          },
           body: JSON.stringify({ url })
         });
     if (!res.ok) return null;

@@ -1,5 +1,5 @@
 /* hash 路由：#/zone 或 #/studio/<page>
-   zones: overview | voice | agent | studio | assets | drafts | delivery | analytics | settings */
+   zones: overview | custom | voice(兼容入口) | agent | studio | assets | drafts | delivery | analytics | settings */
 
 import { $, $$ } from "./util.js";
 import { state } from "./store.js";
@@ -35,7 +35,21 @@ export function allowStudioFromAgent(ms = 3000) {
 export function currentRoute() { return { ...current }; }
 
 export function render() {
+  const previous = { ...current };
   let { zone, page } = parseHash();
+  // 旧语音直链继续可用，但统一收口到“定制创作”外壳。
+  if (zone === "voice") {
+    zone = "custom";
+    page = "voice";
+  }
+  if (zone === "custom") {
+    if (!["video", "canvas", "voice"].includes(page)) page = "video";
+    const canonical = `#/custom/${page}`;
+    if (location.hash !== canonical) {
+      // 只规范 URL，不触发第二次 hashchange/render，避免子应用重复挂载和页面闪烁。
+      history.replaceState(null, "", canonical);
+    }
+  }
   if (zone === "studio" && current.zone === "agent" && Date.now() > allowStudioFromAgentUntil) {
     console.warn("[agent-route-lock] blocked hash studio navigation from batch workspace");
     zone = "agent"; page = null; location.hash = "#/agent";
@@ -44,12 +58,12 @@ export function render() {
   // 权限路由：供应商子账号只处理发布；供应商母账号可看首页、账号板、发布和设置。
   if (state.role === "supplier_child" && zone !== "delivery") { zone = "delivery"; page = null; location.hash = "#/delivery"; }
   if ((state.role === "supplier_parent" || state.role === "supplier") && !["overview", "assets", "delivery", "settings"].includes(zone)) { zone = "overview"; page = null; location.hash = "#/overview"; }
-  if (state.role !== "admin" && state.role !== "supplier_parent" && state.role !== "supplier" && (zone === "settings" || zone === "voice")) { zone = "overview"; page = null; location.hash = "#/overview"; }
+  if (state.role !== "admin" && state.role !== "supplier_parent" && state.role !== "supplier" && zone === "settings") { zone = "overview"; page = null; location.hash = "#/overview"; }
   if (!routes.has(zone)) { zone = "overview"; page = null; }
   current = { zone, page };
 
   document.body.dataset.zone = zone;
-  document.body.classList.toggle("immersive", zone === "agent");
+  document.body.classList.toggle("immersive", zone === "agent" || zone === "custom");
 
   // 导航高亮
   $$("[data-nav]").forEach(b => b.classList.toggle("is-active", b.dataset.nav === zone));
@@ -60,11 +74,22 @@ export function render() {
     console.error("[router] missing #viewRoot");
     return;
   }
-  root.__assetDropController?.abort();
-  root.__assetDropController = null;
-  root.classList.remove("drag-over");
-  delete root.dataset.dropHint;
-  root.scrollTop = 0;
+  const preserveCustomShell = previous.zone === "custom"
+    && zone === "custom"
+    && root.querySelector(".custom-creation-shell");
+  if (!preserveCustomShell) {
+    try {
+      root.__viewCleanup?.();
+    } catch (e) {
+      console.warn("[router-cleanup]", e);
+    }
+    root.__viewCleanup = null;
+    root.__assetDropController?.abort();
+    root.__assetDropController = null;
+    root.classList.remove("drag-over");
+    delete root.dataset.dropHint;
+    root.scrollTop = 0;
+  }
   try {
     view.render(root, { page });
   } catch (e) {

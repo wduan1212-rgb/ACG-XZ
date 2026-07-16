@@ -2,8 +2,14 @@
 
 import { uid } from "../core/util.js";
 import { state, save, notify, accountById, assetById, productionById } from "../core/store.js";
+import * as remote from "../core/remote.js";
 
 const ANALYTICS_PENDING_MESSAGE = "等待数据接口同步；未配置时仅保留发布回链、历史快照和本地复盘。";
+
+function creatorAuthHeaders(headers = {}) {
+  const token = remote.getToken();
+  return token ? { ...headers, Authorization: `Bearer ${token}` } : { ...headers };
+}
 
 export function platformFromUrl(url, fallback = "") {
   const s = String(url || "").toLowerCase();
@@ -117,7 +123,7 @@ export async function refreshAnalyticsLink(linkId) {
     const platform = platformFromUrl(link.url, link.platform);
     const res = await fetch("/api/analytics/justoneapi/fetch", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: creatorAuthHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         url: link.url,
         platform,
@@ -188,7 +194,10 @@ export async function refreshAllAnalytics({ staleOnly = false } = {}) {
 
 export async function justOneAnalyticsStatus() {
   try {
-    const res = await fetch("/api/analytics/justoneapi/config", { cache: "no-store" });
+    const res = await fetch("/api/analytics/justoneapi/config", {
+      cache: "no-store",
+      headers: creatorAuthHeaders()
+    });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
     return data;

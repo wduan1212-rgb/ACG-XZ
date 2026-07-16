@@ -6,8 +6,14 @@ server/data.json
 # 本地/服务器密钥配置，不入库
 .env
 .env.local
+# 本地 Python 环境、备份与日志不入库
+.venv/
+backups/
+logs/
 # Python 缓存
 __pycache__/
 **/__pycache__/
+# 子应用本地持久数据与模型缓存
+runtime/
 # 系统
 .DS_Store

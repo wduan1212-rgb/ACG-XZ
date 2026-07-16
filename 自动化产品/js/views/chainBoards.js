@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260716-v88-1";
+import { AI } from "../api/ai.js?v=20260717-v91-2";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260716-v88-1";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260717-v91-2";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260716-v88-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260717-v91-2";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -29,6 +29,17 @@ export function resizeImageSlots(items = [], count = DEFAULT_XHS_IMAGE_COUNT) {
     assetId: null,
     status: "idle"
   });
+}
+
+export function commitGeneratedImageToSlot(items, index, expectedSlot, result = {}) {
+  if (!Array.isArray(items) || items[index] !== expectedSlot || !result.assetId) return false;
+  expectedSlot.assetId = result.assetId;
+  expectedSlot.status = "done";
+  expectedSlot.error = "";
+  if (Object.prototype.hasOwnProperty.call(result, "referenceReceipt")) {
+    expectedSlot.referenceReceipt = result.referenceReceipt;
+  }
+  return true;
 }
 
 export function polishImageForPublish(dataUrl, seedText = "") {
@@ -89,6 +100,15 @@ export async function providerRefsFor(A) {
     }
   }
   return refs;
+}
+
+export function imageReferenceReceiptLabel(receipt) {
+  const intended = Number(receipt?.intendedRefs || 0);
+  if (!intended) return "";
+  const used = Number(receipt?.usedRefs || 0);
+  const skipped = Number(receipt?.skippedRefs || Math.max(0, intended - used));
+  const mode = String(receipt?.mode || "").trim();
+  return `参考图实际使用 ${used}/${intended}${skipped ? `，${skipped} 张未被接收` : ""}${mode ? ` · ${mode}` : ""}`;
 }
 
 function refNamesOf(A, extra = []) {
@@ -202,7 +222,7 @@ export function renderSlotsPage(root, p, isImg) {
       if (singlePrompt) A.singlePrompt = singlePrompt.value.trim();
       if (singleCopy) {
         const body = normalizeGeneratedLineBreaks(singleCopy.value);
-        p.artifacts.copy = { title: A.singleTitle || "", body };
+        p.artifacts.copy = { title: A.singleTitle || "", body, source: body ? "manual" : "" };
         A.singleResult = { ...p.artifacts.copy };
       }
       return;
@@ -357,11 +377,13 @@ export function renderSlotsPage(root, p, isImg) {
     const loading = it.status === "loading";
     const shownPrompt = img ? normalizeImageWorkshopText(it.prompt || "") : (it.prompt || "");
     const shownVisual = img ? normalizeImageWorkshopText(it.visual || "") : (it.visual || "");
+    const referenceReceiptLabel = imageReferenceReceiptLabel(it.referenceReceipt);
     return `<div class="slot-card card ${img ? "is-image-slot" : ""} ${loading ? "is-generating" : ""}" data-slot="${i}">
       <span class="sc-num">${i + 1}</span>
       <div class="sc-text">
         <div class="sc-line">${esc(it.title || "")}<em>${esc(shownVisual.slice(0, 60))}</em></div>
         <div class="sc-prompt" contenteditable="true" data-prompt="${i}" data-ph="点右侧按钮生成图片，或手写提示词">${esc(shownPrompt)}</div>
+        ${referenceReceiptLabel ? `<div class="${Number(it.referenceReceipt?.usedRefs || 0) > 0 ? "muted" : "sc-error"}">${esc(referenceReceiptLabel)}</div>` : ""}
         ${it.error ? `<div class="sc-error">${esc(it.error)}</div>` : ""}
       </div>
       <div class="sc-thumb" data-thumb="${i}">
@@ -461,11 +483,15 @@ export function renderSlotsPage(root, p, isImg) {
       });
       $("#imgFactoryGen", root)?.addEventListener("click", e => withLoading(e.currentTarget, generateImageWorkshop, "生成中…"));
       $("#imgCopyTitle", root)?.addEventListener("input", e => { p.artifacts.copy.title = e.target.value; save("productions"); });
-      $("#imgCopyBody", root)?.addEventListener("input", e => { p.artifacts.copy.body = e.target.value; save("productions"); });
+      $("#imgCopyBody", root)?.addEventListener("input", e => {
+        p.artifacts.copy.body = e.target.value;
+        p.artifacts.copy.source = "manual";
+        save("productions");
+      });
       $("#imgSingleTitle", root)?.addEventListener("input", e => { A.singleTitle = e.target.value; save("productions"); });
       $("#imgSinglePrompt", root)?.addEventListener("input", e => { A.singlePrompt = e.target.value; save("productions"); });
       $("#imgSingleCopy", root)?.addEventListener("input", e => {
-        p.artifacts.copy = { title: A.singleTitle || "", body: e.target.value };
+        p.artifacts.copy = { title: A.singleTitle || "", body: e.target.value, source: "manual" };
         A.singleResult = { ...p.artifacts.copy };
         save("productions");
       });
@@ -661,6 +687,7 @@ export function renderSlotsPage(root, p, isImg) {
       it.assetId = a.id;
     }
     it.status = "done";
+    it.referenceReceipt = null;
     save("productions");
     const complete = (A.items || []).every(x => x.assetId);
     if (complete && p.stageStatus === "needs_input") maybeAdvanceAfterInput(p);
@@ -685,6 +712,7 @@ export function renderSlotsPage(root, p, isImg) {
     if (runMode === "single") clearOtherLoadingSlots(i);
     fresh.status = "loading";
     fresh.error = "";
+    fresh.referenceReceipt = null;
     if (redraw && canRedrawCurrent()) draw();
     try {
       const provider = activeProviderFor("image");
@@ -693,15 +721,19 @@ export function renderSlotsPage(root, p, isImg) {
         throw new Error("图片 API 未接入：请配置站内图片服务，或使用槽位上传补图");
       } else {
         const finalPrompt = enrichPromptWithRefs(promptForImageModel(fresh.prompt), A);
+        const intendedRefAssetIds = refIdsOf(A);
+        const refs = await providerRefsFor(A);
         const r = await provider.submit({
           prompt: finalPrompt,
-          refs: await providerRefsFor(A),
+          refs,
+          intendedRefAssetIds,
           ratio: ratioFromImagePrompt(finalPrompt, "3:4"),
           apiKey: key?.secret,
           endpoint: key?.provider,
           model: key?.model || "custom-imagemodel-gt"
         });
         const out = await provider.poll(r.providerRef);
+        fresh.referenceReceipt = out.output?.referenceReceipt || r.referenceReceipt || null;
         if (!imageRunActive(runToken, runMode)) return;
         if (out.status !== "succeeded" || !out.output?.dataUrl) throw new Error(out.error || "图片生成未返回结果");
         const dataUrl = out.output.dataUrl.startsWith("data:")
@@ -713,14 +745,21 @@ export function renderSlotsPage(root, p, isImg) {
           tags: ["笔记图", "站内生成", "发布前精修"],
           dataUrl: polished
         });
-        fresh.assetId = a.id;
-        fresh.status = "done";
+        const committed = imageRunActive(runToken, runMode) && commitGeneratedImageToSlot(A.items, i, fresh, {
+          assetId: a.id,
+          referenceReceipt: fresh.referenceReceipt
+        });
+        if (!committed) {
+          await removeAsset(a.id);
+          return;
+        }
         if (!silent) toast(`第 ${i + 1} 张已生成并精修入库`);
       }
     } catch (e) {
       if (!imageRunActive(runToken, runMode)) return;
       fresh.status = "failed";
       fresh.error = e.message || String(e);
+      if (e?.referenceReceipt) fresh.referenceReceipt = e.referenceReceipt;
       toast("图片生成失败：" + fresh.error, "error");
     }
     save("productions");
@@ -779,6 +818,9 @@ export function renderSlotsPage(root, p, isImg) {
     });
     C.title = res.title || C.title || p.title || p.topic || "";
     C.body = res.copy || C.body || "";
+    C.source = res.source || AI.lastSource || "";
+    if (/^llm(?:$|-)/.test(C.source)) A.copyGeneratedForTitle = C.title;
+    else delete A.copyGeneratedForTitle;
     const titleInput = $("#imgCopyTitle", root);
     const bodyInput = $("#imgCopyBody", root);
     if (titleInput) titleInput.value = C.title;
@@ -836,7 +878,11 @@ export function renderSlotsPage(root, p, isImg) {
     }
     try {
       const generated = generatedCopyPromise ? await generatedCopyPromise : { title, copy: userCopy };
-      p.artifacts.copy = { title, body: normalizeGeneratedLineBreaks(generated.copy) };
+      p.artifacts.copy = {
+        title,
+        body: normalizeGeneratedLineBreaks(generated.copy),
+        source: userCopy ? "manual" : (generated.source || AI.lastSource || "llm-title-copy")
+      };
       p.title = title;
       p.topic = title;
       S.title = title;
@@ -875,10 +921,18 @@ export function renderSlotsPage(root, p, isImg) {
     const topic = title.slice(0, 80);
     const previousGeneratedTitle = String(A.copyGeneratedForTitle || S.title || p.title || "").trim();
     const titleChanged = Boolean(previousGeneratedTitle && previousGeneratedTitle !== title);
-    if (!body || titleChanged) {
+    const bodySource = String(C.source || "").trim();
+    // 旧任务没有来源字段，不能在标题未变化时贸然覆盖，避免误删历史人工正文。
+    // 用户修改标题时仍一律重写；新版本的模板正文会明确标为 mock/template。
+    const bodyWasManuallyWritten = bodySource === "manual" || (Boolean(body) && !bodySource);
+    const bodyWasModelGenerated = /^llm(?:$|-)/.test(bodySource) || A.copyGeneratedForTitle === title;
+    const bodyWasTemplateGenerated = /^(?:mock|template)(?:$|-)/.test(bodySource);
+    const shouldGenerateBody = !body || titleChanged || bodyWasTemplateGenerated || (!bodyWasManuallyWritten && !bodyWasModelGenerated);
+    if (shouldGenerateBody) {
       const generatedCopy = await AI.generateImageCopyFromTitle({ title, account: acc });
       C.title = title;
       C.body = generatedCopy.copy || "";
+      C.source = generatedCopy.source || AI.lastSource || "llm-title-copy";
       A.copyGeneratedForTitle = title;
       title = (C.title || "").trim();
       body = (C.body || "").trim();
@@ -887,7 +941,8 @@ export function renderSlotsPage(root, p, isImg) {
       const bodyInput = $("#imgCopyBody", root);
       if (titleInput) titleInput.value = C.title;
       if (bodyInput) bodyInput.value = C.body;
-      toast(AI.sourceNote(titleChanged ? "标题已变化，已同步重写正文并生成图卡提示词" : "已先生成发布文案，再拆解图卡提示词"));
+      save("productions");
+      toast(titleChanged ? "标题已变化，正文已由语言模型同步重写" : "正文已由语言模型生成，正在拆解图卡提示词");
     }
     p.topic = topic;
     p.title = title || topic;
@@ -911,8 +966,10 @@ export function renderSlotsPage(root, p, isImg) {
       useOnlineTrends: false,
       trendGuide: "",
       trendPrep: null,
-      copy: C
+      copy: C,
+      requireLlm: true
     });
+    A.promptSource = AI.lastSource;
     const promptRows = promptRes.shots || [];
     A.items = shots.map((s, i) => ({
       title: promptRows[i]?.title || s.idea || `图片${i + 1}`,
@@ -925,7 +982,7 @@ export function renderSlotsPage(root, p, isImg) {
     p.stageStatus = "pending";
     save("productions");
     if (canRedrawCurrent()) draw();
-    toast(AI.sourceNote("已按自定义文案生成图卡提示词"));
+    toast(AI.sourceNote(shouldGenerateBody ? "已由模型生成正文与图卡提示词" : "已按当前正文生成图卡提示词"));
   }
 
   draw();
