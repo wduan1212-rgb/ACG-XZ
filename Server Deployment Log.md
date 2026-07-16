@@ -1,5 +1,16 @@
 # Server Deployment Log
 
+## v85 - 2026-07-16
+
+- Source: `5f7a9ec` (`v85 stabilize audio mix and subtitle recognition`). The online main JavaScript and stylesheet entries report `20260716-v85-1`.
+- Scope: deployed exactly 9 changed application code and static files from a clean commit archive after a dry-run. No delete-style synchronization was used. The production database, runtime state, uploads, composed media, accounts, members, assets, deliveries, drafts, analytics, environment configuration, authentication cache and logs were excluded.
+- Backup and rollback: retained rollback point `v85-pre-20260716-120840`, containing the pre-deployment code snapshot, a consistent SQLite backup and upload/composed checkpoints. Rollback must restore code/static resources only and must not replace current production business data.
+- Result: the production virtual environment passed the complete test suite 35/35, all JavaScript syntax checks and Python compilation passed, the private environment fingerprint stayed unchanged, service restart and health checks passed, and post-restart service logs contained no error or traceback.
+- Audio/subtitle validation: a disposable real FFmpeg test preserved the digital-human clip voice, mixed a looping BGM, skipped duplicate external narration and produced a valid AAC audio stream. Information-flow subtitle quality guards, hallucination cleanup, recognition deduplication and manual-track protection passed the production test suite.
+- Browser smoke: administrator login loaded 80 accounts with no console error or warning. Account performance opened a per-content detail with title, platform, playback, likes, favorites, comments, shares and the publication link. The data assistant returned a plain-text answer without Markdown formatting.
+- Provider smoke: LLM, image, video/digital-human and TTS configuration endpoints all reported configured and reachable. No private provider value was changed.
+- Data protection check: no protected collection or file count decreased. Accounts 80, members 12, assets 2524, productions 452, jobs 676, batches 62, metric snapshots 108, sessions 55, voice presets 4, supplier bindings 52, uploads 2313 and composed media 142 were preserved. While validation was running, active users added 2 analytics links and 4 supplier download activities; these valid concurrent production writes were retained instead of being overwritten from the backup.
+
 ## v84 - 2026-07-16
 
 - Source: `7756a08` (`v84 unify dashboard and editing workflows`). The online entry reports `20260715-v84-5`.
