@@ -57,8 +57,12 @@ function deliverySnapshotFromProduction(p, acc, productTag = productTagFor(p)) {
   };
 }
 
-function isPublishedDelivery(asset) {
+export function supplierHasPublished(asset) {
   return !!asset?.publishedUrl || asset?.status === "已发布";
+}
+
+function isPublishedDelivery(asset) {
+  return supplierHasPublished(asset);
 }
 
 function purgeOpenDeliveryAssetsForProduction(p) {
@@ -403,6 +407,20 @@ export function deliveryRetractBlockReason(asset) {
 
 export function supplierHasDownloaded(asset) {
   return !!asset?.supplierDownloadedAt || asset?.status === "已下载";
+}
+
+export function matchesDeliveryStatusFilters(asset, filters = {}) {
+  const download = filters.download || "all";
+  const publish = filters.publish || "all";
+  const downloaded = supplierHasDownloaded(asset);
+  const published = supplierHasPublished(asset);
+  const downloadMatches = download === "all"
+    || (download === "downloaded" && downloaded)
+    || (download === "undownloaded" && !downloaded);
+  const publishMatches = publish === "all"
+    || (publish === "published" && published)
+    || (publish === "unpublished" && !published);
+  return downloadMatches && publishMatches;
 }
 
 export async function deleteDeliveryAsset(asset) {

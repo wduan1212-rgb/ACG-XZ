@@ -156,6 +156,7 @@ class CustomSubappDeploymentTest(unittest.TestCase):
             "apps/infinite-canvas-source/",
             "--exclude 'runtime/'",
             "--exclude 'server/data.sqlite*'",
+            "--exclude 'apps/video-workshop/.venv/'",
             "--exclude 'apps/video-workshop/data/projects/'",
             "不要使用 `--delete-excluded`",
             "不要映射 `8765`",

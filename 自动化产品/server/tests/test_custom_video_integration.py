@@ -147,8 +147,16 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260717-13", html)
-        self.assertIn("app.js?v=20260717-13", html)
+        self.assertIn("styles.css?v=20260717-15", html)
+        self.assertIn("app.js?v=20260717-15", html)
+        self.assertIn(
+            '<h1 class="brand-kicker brand-title" id="startTitle">'
+            "XINGZHEN VIDEO WORKSHOP</h1>",
+            html,
+        )
+        self.assertNotIn('<h1 id="startTitle">视频导演台</h1>', html)
+        self.assertIn(".start-core .brand-title", css)
+        self.assertIn("text-align: center", css)
         self.assertIn(
             'new URLSearchParams(window.location.search).get("embed") === "1"',
             html,
@@ -487,12 +495,19 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
 
         forbidden = (
             ".env.local",
-            ".venv",
             ".playwright-cli",
             "vendor/OpenMontage/.git",
         )
         for relative in forbidden:
             self.assertFalse((VIDEO_WORKSHOP_DIR / relative).exists(), relative)
+
+        # The sidecar launcher intentionally creates a local virtualenv in this
+        # directory.  Deployment safety is defined by the packaging boundary,
+        # not by requiring every developer checkout to delete its runtime.
+        sidecar_gitignore = (VIDEO_WORKSHOP_DIR / ".gitignore").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(".venv/", sidecar_gitignore)
         self.assertEqual(
             list((VIDEO_WORKSHOP_DIR / "data" / "projects").glob("*.json")),
             [],

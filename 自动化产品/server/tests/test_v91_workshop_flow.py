@@ -20,6 +20,13 @@ class V91WorkshopFlowTest(unittest.TestCase):
         self.assertNotIn("模型未返回 B 面分镜图提示词", ai)
         self.assertNotIn("没有人声就明确写", ai)
         self.assertNotIn("每个时间段必须明确口播原话", ai)
+        # 字幕只能旁路读取，不能重写或反向筛选原有创意提示词。
+        self.assertNotIn("实际原话必须统一写成中文双引号", ai)
+        self.assertNotIn(
+            "normalizeInfoFlowDialogueQuotes(cleanInfoFlowDirectorText(front",
+            ai,
+        )
+        self.assertNotIn("hasUnquotedInfoFlowDialogue(combined)", ai)
         self.assertIn("所选参考图直接随前后两段视频提交", workshop)
         self.assertIn('id="wsInfoPlan"', workshop)
         self.assertIn('id="wsInfoVideo"', workshop)

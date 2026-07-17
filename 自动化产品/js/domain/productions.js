@@ -160,9 +160,9 @@ function speechFromPrompt(text = "") {
     .filter(x => !/^(快节奏|目标是|统一视觉风格|角色外貌锚点|穿搭细节|表情变化|声线锚点|说话像|负面约束)/.test(x));
   sentenceParts.forEach(part => {
     let m;
-    const quoteRe = /[“"']([^“”"']{4,90})[”"']/g;
-    while ((m = quoteRe.exec(part))) add(m[1]);
-    const colon = part.match(/(?:口播原话|旁白|口播)\s*[:：]\s*([^。！？!?\n]{4,90}[。！？!?]?)/);
+    const quoteRe = /“([^”\n]{4,90})”|"([^"\n]{4,90})"|「([^」\n]{4,90})」|『([^』\n]{4,90})』|‘([^’\n]{4,90})’|'([^'\n]{4,90})'/g;
+    while ((m = quoteRe.exec(part))) add(m.slice(1).find(Boolean));
+    const colon = part.match(/(?:口播原话|台词(?:（[^）\n]{0,36}）|\([^\)\n]{0,36}\))?|旁白(?:（[^）\n]{0,36}）|\([^\)\n]{0,36}\))?|画外音(?:（[^）\n]{0,36}）|\([^\)\n]{0,36}\))?|口播)\s*[:：]\s*([^。！？!?\n]{4,90}[。！？!?]?)/);
     if (colon) add(colon[1]);
     if (!/(?:\d+\s*-\s*\d+\s*s|秒|镜头|画面)/i.test(part)) return;
     const natural = part.match(/(?:对镜头说|低声吐槽|小声说|点头说|口播收束|口播说|旁白一句|旁白点出|角色[^，。；;]{0,16}(?:说|吐槽|喊|念))\s*[“"']?([^“”"'。！？!?\n]{4,90})[”"']?/);
@@ -185,12 +185,13 @@ export function buildMaterialUnits(p) {
       p.artifacts.audio.duration = p.artifacts.audio.perShot.reduce((sum, x) => sum + x.dur, 0);
       p.artifacts.audio.source = p.artifacts.audio.source || "seedance-native";
     }
+    const sourcePrompts = segments.map(seg => String(seg.videoPrompt || seg.visual || ""));
     p.artifacts.script.shots = segments.map((seg, i) => ({
       time: i === 0 ? "0-15s" : "15-30s",
       scene: i + 1,
       idea: seg.title || seg.label || (i === 0 ? "前15s钩子" : "后15s功能演示"),
       visual: seg.visual || seg.videoPrompt || "",
-      line: speechFromPrompt(seg.videoPrompt || seg.visual || ""),
+      line: speechFromPrompt(sourcePrompts[i]),
       ui: i > 0
     }));
     A.units = segments.map((seg, i) => {
@@ -206,7 +207,7 @@ export function buildMaterialUnits(p) {
         needsImage: directVideoRefs.length > 0,
         mode: directVideoRefs.length ? "i2v" : "t2v",
         imagePrompt: prev.imagePrompt || "",
-        videoPrompt: seg.videoPrompt || prev.videoPrompt || "",
+        videoPrompt: sourcePrompts[i] || prev.videoPrompt || "",
         imageAssetId: prev.imageAssetId || null,
         refAssetId: prev.refAssetId || null,
         refAssetIds: [...directVideoRefs],

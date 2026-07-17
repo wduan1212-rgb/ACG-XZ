@@ -1,0 +1,312 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+APP_JS = ROOT / "web" / "assets" / "app.js"
+INDEX_HTML = ROOT / "web" / "index.html"
+
+
+def run_node(script: str) -> dict:
+    result = subprocess.run(
+        ["node", "--input-type=module"],
+        input=script,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise AssertionError(result.stderr or result.stdout)
+    return json.loads(result.stdout.strip())
+
+
+class WebClientRuntimeTest(unittest.TestCase):
+    def test_ordinary_http_without_random_uuid_keeps_attachments_and_chat_retryable(self):
+        source = APP_JS.read_text(encoding="utf-8")
+        script = f"""
+import vm from "node:vm";
+
+const appSource = {json.dumps(source)};
+const bootMarker = 'dom.startForm.addEventListener("submit"';
+const bootIndex = appSource.indexOf(bootMarker);
+if (bootIndex < 0) throw new Error("video workshop boot marker missing");
+
+class FakeClassList {{
+  constructor() {{ this.values = new Set(); }}
+  add(...items) {{ items.forEach((item) => this.values.add(item)); }}
+  remove(...items) {{ items.forEach((item) => this.values.delete(item)); }}
+  toggle(item, force) {{
+    const enabled = force === undefined ? !this.values.has(item) : Boolean(force);
+    if (enabled) this.values.add(item); else this.values.delete(item);
+    return enabled;
+  }}
+  contains(item) {{ return this.values.has(item); }}
+}}
+
+class FakeStyle {{
+  constructor() {{ this.values = {{}}; this.height = ""; }}
+  setProperty(key, value) {{ this.values[key] = value; }}
+}}
+
+class FakeElement {{
+  constructor(tagName = "div") {{
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.listeners = {{}};
+    this.classList = new FakeClassList();
+    this.style = new FakeStyle();
+    this.dataset = {{}};
+    this.textContent = "";
+    this.value = "";
+    this.disabled = false;
+    this.scrollHeight = 0;
+    this.scrollTop = 0;
+    this.clientHeight = 0;
+    this.submitButton = null;
+  }}
+  append(...items) {{ this.children.push(...items); }}
+  replaceChildren(...items) {{ this.children = [...items]; }}
+  addEventListener(type, handler) {{
+    (this.listeners[type] ||= []).push(handler);
+  }}
+  setAttribute(name, value) {{ this[name] = String(value); }}
+  querySelector(selector) {{
+    if (selector === "button[type='submit']" || selector === 'button[type="submit"]') {{
+      return this.submitButton;
+    }}
+    return null;
+  }}
+  querySelectorAll() {{ return []; }}
+  closest() {{ return null; }}
+  focus() {{}}
+  scrollIntoView() {{}}
+  scrollTo() {{}}
+}}
+class HTMLVideoElement extends FakeElement {{ constructor() {{ super("video"); }} }}
+class HTMLAudioElement extends FakeElement {{ constructor() {{ super("audio"); }} }}
+
+const elements = new Map();
+const elementFor = (selector) => {{
+  if (!elements.has(selector)) elements.set(selector, new FakeElement());
+  return elements.get(selector);
+}};
+const startForm = elementFor("#startForm");
+const chatForm = elementFor("#chatForm");
+startForm.submitButton = new FakeElement("button");
+chatForm.submitButton = new FakeElement("button");
+const attachmentStrip = new FakeElement();
+const startLine = elementFor(".start-input-line");
+
+const document = {{
+  body: new FakeElement("body"),
+  querySelector(selector) {{ return elementFor(selector); }},
+  querySelectorAll(selector) {{
+    return selector === "[data-attachment-strip]" ? [attachmentStrip] : [];
+  }},
+  createElement(tagName) {{
+    if (tagName === "video") return new HTMLVideoElement();
+    if (tagName === "audio") return new HTMLAudioElement();
+    return new FakeElement(tagName);
+  }},
+}};
+
+class FileReader {{
+  readAsDataURL(file) {{
+    queueMicrotask(() => {{
+      if (file.fail) {{
+        this.onerror?.(new Error("simulated file read failure"));
+        return;
+      }}
+      this.result = file.dataUrl || "data:image/png;base64,AA==";
+      this.onload?.();
+    }});
+  }}
+}}
+
+const windowObject = {{
+  __XINGZHEN_VIDEO_PROJECT_KEY__: "video-test-project",
+  location: {{ search: "", origin: "http://ordinary-http.test" }},
+  parent: null,
+  lucide: null,
+  addEventListener() {{}},
+  setTimeout() {{ return 1; }},
+  clearTimeout() {{}},
+  setInterval() {{ return 1; }},
+  clearInterval() {{}},
+  requestAnimationFrame(callback) {{ callback(); }},
+}};
+windowObject.parent = windowObject;
+
+const context = vm.createContext({{
+  console,
+  document,
+  window: windowObject,
+  localStorage: {{ getItem() {{ return ""; }}, setItem() {{}}, removeItem() {{}} }},
+  URLSearchParams,
+  FileReader,
+  HTMLVideoElement,
+  HTMLAudioElement,
+  queueMicrotask,
+  crypto: {{
+    calls: 0,
+    getRandomValues(bytes) {{
+      this.calls += 1;
+      for (let index = 0; index < bytes.length; index += 1) bytes[index] = index + this.calls;
+      return bytes;
+    }},
+    // randomUUID intentionally absent: ordinary HTTP / older embedded browser.
+  }},
+  fetch: async () => {{ throw new Error("fetch not installed"); }},
+}});
+
+const testExports = `
+renderConversation = (project) => {{ globalThis.__lastConversation = project; }};
+renderEvents = (project) => {{ globalThis.__lastEvents = project.events || []; }};
+renderProject = (project) => {{ state.project = project; state.projectId = project.id || state.projectId; }};
+enterStudio = () => {{}};
+refreshIcons = () => {{}};
+globalThis.__hooks = {{
+  state, dom, createClientId, addFiles, renderPendingRequest, sendMessage,
+  attachmentStrip: document.querySelectorAll("[data-attachment-strip]")[0],
+  failNextPendingRequest() {{
+    const originalRenderPendingRequest = renderPendingRequest;
+    renderPendingRequest = (...args) => {{
+      renderPendingRequest = originalRenderPendingRequest;
+      throw new Error("simulated synchronous preparation failure");
+    }};
+  }},
+}};
+`;
+vm.runInContext(appSource.slice(0, bootIndex) + testExports, context);
+const hooks = context.__hooks;
+
+const firstId = hooks.createClientId();
+const secondId = hooks.createClientId();
+if (!firstId || firstId === secondId) throw new Error("fallback client IDs are not unique");
+
+const goodFile = {{
+  name: "reference.png",
+  type: "image/png",
+  size: 128,
+  dataUrl: "data:image/png;base64,AAAA",
+}};
+const added = await hooks.addFiles([goodFile]);
+if (added !== 1 || hooks.state.attachments.length !== 1) throw new Error("attachment was not added");
+if (hooks.attachmentStrip.children.length !== 1) throw new Error("attachment preview was not rendered");
+if (!hooks.state.attachments[0].id) throw new Error("attachment client ID missing");
+
+const failingFile = {{ ...goodFile, name: "broken.png", fail: true }};
+const failedAdd = await hooks.addFiles([failingFile]);
+if (failedAdd !== 0) throw new Error("failed file unexpectedly added");
+if (!hooks.dom.toast.textContent.includes("读取失败")) throw new Error("file error was not toasted");
+failingFile.fail = false;
+const retryAdd = await hooks.addFiles([failingFile]);
+if (retryAdd !== 1) throw new Error("failed attachment could not be retried");
+
+const pendingId = hooks.renderPendingRequest("先预览 pending", [...hooks.state.attachments]);
+if (!pendingId || !hooks.state.project.messages.some((item) => item.kind === "pending")) {{
+  throw new Error("optimistic pending request was not rendered");
+}}
+
+hooks.state.project = null;
+hooks.state.projectId = "";
+hooks.state.attachments = [hooks.state.attachments[0]];
+const chatCalls = [];
+context.fetch = async (url, options) => {{
+  chatCalls.push({{ url, options }});
+  return {{
+    ok: true,
+    async json() {{ return {{ id: "project-success", status: "waiting", messages: [], events: [], outputs: [] }}; }},
+  }};
+}};
+await hooks.sendMessage("创建一条测试视频", true);
+if (chatCalls.length !== 1 || chatCalls[0].url !== "/api/chat") throw new Error("/api/chat was not requested");
+const sent = JSON.parse(chatCalls[0].options.body);
+if (sent.attachments.length !== 1 || sent.message !== "创建一条测试视频") throw new Error("chat payload is incomplete");
+if (hooks.state.busy) throw new Error("busy remained locked after success");
+
+hooks.state.attachments = [{{ ...sent.attachments[0], id: hooks.createClientId() }}];
+context.fetch = async () => {{ throw new Error("simulated chat network failure"); }};
+await hooks.sendMessage("失败后可重试", false);
+if (hooks.state.busy) throw new Error("busy remained locked after failure");
+if (hooks.dom.chatInput.disabled || hooks.dom.chatForm.submitButton.disabled) {{
+  throw new Error("composer remained disabled after failure");
+}}
+if (hooks.dom.chatInput.value !== "失败后可重试") throw new Error("failed message draft was not restored");
+if (hooks.state.attachments.length !== 1) throw new Error("failed request attachments were not restored");
+if (!hooks.dom.toast.textContent.includes("simulated chat network failure")) {{
+  throw new Error("chat failure was not toasted");
+}}
+const networkRetryDraft = hooks.dom.chatInput.value;
+const networkRestoredAttachments = hooks.state.attachments.length;
+
+const fetchCallsBeforeSyncFailure = chatCalls.length;
+hooks.state.project = null;
+hooks.state.projectId = "";
+hooks.state.attachments = [{{ ...sent.attachments[0], id: hooks.createClientId() }}];
+hooks.dom.startInput.value = "";
+hooks.failNextPendingRequest();
+await hooks.sendMessage("同步准备失败后可重试", true);
+if (chatCalls.length !== fetchCallsBeforeSyncFailure) {{
+  throw new Error("synchronous preparation failure unexpectedly reached /api/chat");
+}}
+if (hooks.state.busy) throw new Error("busy remained locked after synchronous preparation failure");
+if (hooks.dom.startInput.disabled || hooks.dom.startForm.submitButton.disabled) {{
+  throw new Error("start composer remained disabled after synchronous preparation failure");
+}}
+if (hooks.dom.startInput.value !== "同步准备失败后可重试") {{
+  throw new Error("synchronous failure draft was not restored");
+}}
+if (hooks.state.attachments.length !== 1) {{
+  throw new Error("synchronous failure attachments were not restored");
+}}
+if (!hooks.dom.toast.textContent.includes("simulated synchronous preparation failure")) {{
+  throw new Error("synchronous preparation failure was not toasted");
+}}
+
+console.log(JSON.stringify({{
+  firstId,
+  secondId,
+  previewCount: hooks.attachmentStrip.children.length,
+  pendingId,
+  chatCalls: chatCalls.length,
+  busyRecovered: hooks.state.busy === false,
+  retryDraft: networkRetryDraft,
+  restoredAttachments: networkRestoredAttachments,
+  syncFailureDraft: hooks.dom.startInput.value,
+  syncFailureRecovered: hooks.state.busy === false,
+}}));
+"""
+        result = run_node(script)
+        self.assertNotEqual(result["firstId"], result["secondId"])
+        self.assertGreaterEqual(result["previewCount"], 1)
+        self.assertTrue(result["pendingId"])
+        self.assertEqual(result["chatCalls"], 1)
+        self.assertTrue(result["busyRecovered"])
+        self.assertEqual(result["retryDraft"], "失败后可重试")
+        self.assertEqual(result["restoredAttachments"], 1)
+        self.assertEqual(result["syncFailureDraft"], "同步准备失败后可重试")
+        self.assertTrue(result["syncFailureRecovered"])
+
+    def test_all_client_ids_use_fallback_helper_and_event_paths_report_errors(self):
+        source = APP_JS.read_text(encoding="utf-8")
+        index = INDEX_HTML.read_text(encoding="utf-8")
+
+        self.assertIn("function createClientId()", source)
+        self.assertNotIn("crypto.randomUUID()", source)
+        self.assertEqual(source.count("id: createClientId()"), 1)
+        self.assertEqual(source.count("const pendingId = createClientId()"), 1)
+        self.assertIn('document.addEventListener("drop", async (event) => {', source)
+        self.assertIn('textarea.addEventListener("paste", async (event) => {', source)
+        self.assertIn('dom.fileInput.addEventListener("change", async () => {', source)
+        self.assertGreaterEqual(source.count("showAttachmentError(error)"), 4)
+        self.assertIn("app.js?v=20260717-15", index)
+        self.assertIn("styles.css?v=20260717-15", index)
+
+
+if __name__ == "__main__":
+    unittest.main()

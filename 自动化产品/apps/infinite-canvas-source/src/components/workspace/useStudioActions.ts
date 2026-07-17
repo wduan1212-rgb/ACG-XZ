@@ -15,7 +15,7 @@ import { parseSize } from "@/lib/sizing";
 import { useStore } from "@/lib/store";
 import { uid } from "@/lib/util";
 import { isImageItem } from "@/lib/types";
-import { parseCount } from "@/lib/agent";
+import { parseCount, prepareSingleImagePrompt } from "@/lib/agent";
 import type { PaletteKey } from "@/lib/agent";
 import type {
   CanvasItem,
@@ -198,11 +198,17 @@ export function useStudioActions(projectId: string) {
         const count = Math.max(1, Math.min(10, ar.count ?? 1));
         while (ids.length < count) ids.push(makePlaceholder());
 
+        // Output quantity controls concurrency only. Every upstream image call
+        // must describe one complete canvas, otherwise models often interpret
+        // “two posters / two styles” as a diptych inside each returned image.
+        const singlePrompt = prepareSingleImagePrompt(ar.prompt, count);
+
         // Agent mode + no user-pinned style → each image takes its own direction.
         const variants =
           agentOn && Array.isArray(ar.variants)
             ? ar.variants
                 .filter((v): v is string => typeof v === "string" && !!v.trim())
+                .map((v) => prepareSingleImagePrompt(v, count))
                 .slice(0, count)
             : [];
 
@@ -259,9 +265,9 @@ export function useStudioActions(projectId: string) {
           const startV = reserveDrafts(projectId, count);
           await Promise.allSettled(
             Array.from({ length: count }, (_, i) =>
-              callGenerate({ ...common, count: 1, startVariant: startV + i, prompt: ar.prompt }).then(
+              callGenerate({ ...common, count: 1, startVariant: startV + i, prompt: singlePrompt }).then(
                 (r) => {
-                  if (r[0]) fill(i, r[0], ar.prompt);
+                  if (r[0]) fill(i, r[0], singlePrompt);
                 },
               ),
             ),
@@ -271,9 +277,9 @@ export function useStudioActions(projectId: string) {
             ...common,
             count: 1,
             startVariant: reserveDrafts(projectId, 1),
-            prompt: ar.prompt,
+            prompt: singlePrompt,
           });
-          imgs.slice(0, ids.length).forEach((img, i) => fill(i, img, ar.prompt));
+          imgs.slice(0, ids.length).forEach((img, i) => fill(i, img, singlePrompt));
         }
         if (done.length === 0) throw new Error("未返回图片");
         const doneSet = new Set(done);
@@ -285,7 +291,7 @@ export function useStudioActions(projectId: string) {
           status: "done",
           palette: ar.palette,
           plan: {
-            prompt: ar.prompt,
+            prompt: singlePrompt,
             negativePrompt: ar.negativePrompt,
             referenceUsage: references.length ? `${references.length} 张参考图` : "",
             size,

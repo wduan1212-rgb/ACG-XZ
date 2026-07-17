@@ -1403,6 +1403,7 @@ class AudioTimingClip(BaseModel):
     text: str = ""
     hints: List[AudioTimingHint] = []
     strict: bool = False
+    trustedNarration: bool = False
 
 
 class AudioTimingReq(BaseModel):
@@ -3433,7 +3434,9 @@ async def video_audio_timing(
                         "duration": round(whisper_duration, 2),
                         "cueCount": len(whisper_cues),
                     })
-                    offset += whisper_duration
+                    # 后一片段必须从视频时间轴上的片段边界开始；口播音频
+                    # 比视频短时不能把后续字幕整体提前。
+                    offset += duration_limit or whisper_duration
                     continue
                 analyses = []
                 for threshold in ("-27dB", "-31dB", "-35dB"):
@@ -3467,11 +3470,19 @@ async def video_audio_timing(
                         "duration": 0,
                         "cueCount": 0,
                     })
+                    offset += duration_limit
                     continue
-                # 信息流严格模式和数字人的独立清晰音频都必须通过真实
-                # ASR token 锚点。Whisper 质量失败时拒绝，不再用 VAD 把
-                # 整段提示词平均铺满，避免导演说明混入口播字幕。
-                if clip.strict or input_source == "direct-audio":
+                # 信息流严格模式及普通直接音频仍必须通过真实 ASR token
+                # 锚点。唯一例外是数字人分段：它的独立 MP3 就是由对应
+                # segment.line 生成的真实口播，可在 Whisper 不可用时用 VAD 只做
+                # 时间定位。这个开关不能用于视频提示词或普通导演文本。
+                trusted_segment = bool(
+                    clip.trustedNarration
+                    and input_source == "direct-audio"
+                    and not clip.strict
+                    and any(_clean_transcript_text(hint.text) for hint in hints)
+                )
+                if clip.strict or (input_source == "direct-audio" and not trusted_segment):
                     clip_sources.append({
                         "clipIndex": index,
                         "clipId": clip.clipId,
@@ -3481,36 +3492,39 @@ async def video_audio_timing(
                         "duration": round(duration, 2),
                         "cueCount": 0,
                     })
-                    offset += duration
+                    offset += duration_limit or duration
                     continue
                 chunks = _caption_chunks("".join(hint.text for hint in hints) or clip.text)
                 candidates = [item[1] for item in analyses if item[1]]
                 windows = min(candidates, key=lambda rows: (abs(len(rows) - max(1, len(chunks))), -sum(end - start for start, end in rows))) if candidates else [(0.0, duration)]
                 vad_cues = _align_chunks_to_windows(chunks, windows, offset)
+                vad_engine = "ffmpeg-segment-vad" if trusted_segment else "ffmpeg-vad"
                 cues.extend({
                     **cue,
                     "clipIndex": index,
                     "clipId": clip.clipId,
                     "precise": False,
-                    "engine": "ffmpeg-vad",
+                    "engine": vad_engine,
                     "inputSource": input_source,
                 } for cue in vad_cues)
                 clip_sources.append({
                     "clipIndex": index,
                     "clipId": clip.clipId,
-                    "engine": "ffmpeg-vad" if vad_cues else "none",
+                    "engine": vad_engine if vad_cues else "none",
                     "attemptedEngine": "whisper.cpp" if whisper_available else "none",
                     "inputSource": input_source,
                     "duration": round(duration, 2),
                     "cueCount": len(vad_cues),
                 })
-                offset += duration
+                offset += duration_limit or duration
     used_engines = sorted({item["engine"] for item in clip_sources if item.get("cueCount") and item.get("engine") != "none"})
     engine = used_engines[0] if len(used_engines) == 1 else ("hybrid" if used_engines else "none")
     input_sources = sorted({item["inputSource"] for item in clip_sources})
     input_label = input_sources[0] if len(input_sources) == 1 else ("mixed-input" if input_sources else "no-input")
     if engine == "whisper.cpp":
         source = f"whisper-post-align-v2-{input_label}"
+    elif engine == "ffmpeg-segment-vad":
+        source = f"digital-segment-vad-v1-{input_label}"
     elif engine == "ffmpeg-vad":
         source = f"ffmpeg-dialogue-vad-v4-{input_label}"
     elif engine == "hybrid":
@@ -4404,15 +4418,71 @@ def _custom_canvas_image_refs(values: List[str]) -> List[ImageRef]:
 def _custom_canvas_explicit_count(brief: str) -> int:
     zh = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
     text = str(brief or "")
-    match = re.search(
-        r"(?:生成|出|来|做|给我|帮我做|帮我生成|同时生成)?\s*(\d+|[一两二三四五六七八九十])\s*"
-        r"(?:张|幅|版|款|种|个方向|个方案|方向|方案)",
-        text,
+    number = r"(\d+|[一两二三四五六七八九十])"
+    verb = r"(?:请|同时|再)?(?:帮我|给我)?(?:生成|创作|制作|设计|做|出|来)"
+    asset = r"(?:海报|图片|图像|设计|作品|成图|封面|主视觉)"
+    patterns = (
+        rf"{number}\s*(?:张|幅|版)\s*(?:{asset}|方案|方向)",
+        rf"{verb}\s*{number}\s*(?:张|幅|版)(?:\s*{asset})?",
+        rf"{verb}\s*{number}\s*(?:个\s*{asset}|款(?:\s*{asset})?|种(?:\s*(?:风格|方向|方案|设计|{asset}))?|个方向|个方案|方向|方案)",
+        rf"{verb}\s*{number}\s*(?:个|种)?\s*(?:(?:不同|不一样|各异|差异化)(?:的)?\s*(?:风格|方向|版本|方案)|(?:风格|方向|版本|方案)\s*(?:不同|不一样|各异|差异化)(?:的)?)\s*(?:的)?\s*{asset}",
     )
+    match = next((found for pattern in patterns if (found := re.search(pattern, text, flags=re.I))), None)
     if not match:
         return 1
     value = int(match.group(1)) if match.group(1).isdigit() else zh.get(match.group(1), 1)
     return max(1, min(10, value))
+
+
+CUSTOM_CANVAS_SINGLE_IMAGE_GUARD = "单次只生成一张完整成图，禁止拼图、分屏或并排展示多个方案、版本或风格。"
+
+
+def _custom_canvas_single_image_prompt(prompt: str, output_count: int) -> str:
+    """Remove only parallel-output directives from one image request."""
+    original = str(prompt or "").strip()
+    if not original or output_count <= 1:
+        return original
+    cleaned = re.sub(
+        r"((?:请|同时|再)?(?:帮我|给我)?(?:生成|创作|制作|设计|做|出|来))\s*"
+        r"(?:\d+|[一两二三四五六七八九十])\s*(?:张|幅|版|个|种)?\s*"
+        r"(?:(?:不同|不一样|各不相同|各异|差异化)(?:的)?\s*(?:风格|方向|版本|方案)|"
+        r"(?:风格|方向|版本|方案)\s*(?:不同|不一样|各不相同|各异|差异化))(?:的)?\s*"
+        r"(海报|图片|图像|设计|作品|成图|封面|主视觉)",
+        r"\1一张\2",
+        original,
+        flags=re.I,
+    )
+    cleaned = re.sub(
+        r"((?:请|同时|再)?(?:帮我|给我)?(?:生成|创作|制作|设计|做|出|来))\s*"
+        r"(?:\d+|[一两二三四五六七八九十])\s*"
+        r"(?:张|幅|版|个方向|个方案|方向|方案|种(?:风格|方向|方案|设计)?)"
+        r"(?:\s*(?:风格|方向|版本|方案)?\s*(?:不同|不一样|各不相同|各异|差异化)(?:的)?)?",
+        r"\1一张",
+        cleaned,
+        flags=re.I,
+    )
+    cleaned = re.sub(
+        r"(?:\d+|[一两二三四五六七八九十])\s*(?:个|种)?\s*"
+        r"(?:不同|不一样|各不相同|各异|差异化)(?:的)?\s*(?:风格|方向|版本|方案)(?:的)?\s*"
+        r"(海报|图片|图像|设计|作品|成图|封面|主视觉)",
+        r"一张\1",
+        cleaned,
+        flags=re.I,
+    )
+    cleaned = re.sub(
+        r"(?:\d+|[一两二三四五六七八九十])\s*(?:个|种)?\s*"
+        r"(?:风格|方向|版本|方案)\s*(?:不同|不一样|各不相同|各异|差异化)(?:的)?\s*"
+        r"(海报|图片|图像|设计|作品|成图|封面|主视觉)",
+        r"一张\1",
+        cleaned,
+        flags=re.I,
+    )
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip(" \t\r\n，,；;。")
+    if not cleaned:
+        cleaned = "生成一张完整成图"
+    if CUSTOM_CANVAS_SINGLE_IMAGE_GUARD not in cleaned:
+        cleaned = f"{cleaned}。{CUSTOM_CANVAS_SINGLE_IMAGE_GUARD}"
+    return cleaned
 
 
 def _custom_canvas_json_object(text: str) -> dict:
@@ -4431,10 +4501,11 @@ def _custom_canvas_json_object(text: str) -> dict:
 
 def _custom_canvas_variant_prompts(prompt: str, count: int, existing=None) -> List[str]:
     variants = [
-        str(item or "").strip()
+        _custom_canvas_single_image_prompt(item, count)
         for item in (existing or [])
         if isinstance(item, str) and str(item or "").strip()
     ][:count]
+    prompt = _custom_canvas_single_image_prompt(prompt, count)
     directions = (
         "保持主题与文案不变，采用主体居中、层级明确的构图。",
         "保持主题与文案不变，采用左右错位和大留白构图。",
@@ -4450,6 +4521,7 @@ def _custom_canvas_variant_prompts(prompt: str, count: int, existing=None) -> Li
 
 def _custom_canvas_agent_fallback(req: CustomCanvasAgentReq) -> dict:
     brief = str(req.brief or "").strip()
+    count = _custom_canvas_explicit_count(brief)
     lower = brief.lower()
     palette = "default"
     for key, words in (
@@ -4471,12 +4543,12 @@ def _custom_canvas_agent_fallback(req: CustomCanvasAgentReq) -> dict:
     references = ""
     if req.references:
         references = "参考随附图片中的真实主体、Logo、产品和视觉关系，保持其外观与文字原样，不虚构图片细节；"
-    topic = brief or "拟一版现代、专业、有清晰中文标题层级的商业视觉"
+    topic = _custom_canvas_single_image_prompt(brief, count) if brief else "拟一版现代、专业、有清晰中文标题层级的商业视觉"
     prompt = (
         f"{references}生成一张 {req.size} 的完整{scene_label}。需求：{topic}。"
         "画面主体明确，主标题和副标题层级清楚，构图完整，留白合理，商业级质感，中文文字准确可读。"
     )
-    count = _custom_canvas_explicit_count(brief)
+    prompt = _custom_canvas_single_image_prompt(prompt, count)
     return {
         "palette": palette,
         "prompt": prompt,
@@ -4517,6 +4589,7 @@ async def _custom_canvas_agent_llm(req: CustomCanvasAgentReq) -> dict:
         "用户没有给标题时，拟一个 2 到 8 字的短主标题和一句副标题；不能把用户指令原话直接当作画面标题。",
         "默认中文；只有用户明确要求英文时才使用英文。",
         "count 仅根据用户明确要求的出图张数填写，最多 10；物体数量不等于出图张数。",
+        "prompt 与 variants 的每一项都只能描述一张完整成图；不得把出图数量、多个版本或多个风格写入单项提示词，不得要求拼图、分屏或并排方案。",
         "多张时 variants 必须为独立完整提示词，保持主题和用户指定风格，只调整构图；用户没指定风格才可变化方向。",
         "negativePrompt 最多 7 个英文词组，不要把 text、title、words 写入负向词。",
     ])
@@ -4554,6 +4627,7 @@ async def _custom_canvas_agent_llm(req: CustomCanvasAgentReq) -> dict:
     if palette not in CUSTOM_CANVAS_PALETTES:
         palette = "default"
     count = _custom_canvas_explicit_count(req.brief)
+    prompt = _custom_canvas_single_image_prompt(prompt, count)
     result = {
         "palette": palette,
         "prompt": prompt,

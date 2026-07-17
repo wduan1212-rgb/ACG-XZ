@@ -92,6 +92,7 @@ class Settings:
 
     minimax_api_key: str = os.getenv("MINIMAX_API_KEY", "")
     minimax_base_url: str = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com").rstrip("/")
+    minimax_group_id: str = os.getenv("MINIMAX_GROUP_ID", "").strip()
     minimax_tts_model: str = os.getenv("MINIMAX_TTS_MODEL", "speech-2.8-hd")
     minimax_voice_id: str = os.getenv(
         "MINIMAX_VOICE_ID",

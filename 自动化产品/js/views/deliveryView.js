@@ -5,10 +5,10 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
 import { platChip } from "../domain/accounts.js";
-import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded } from "../domain/delivery.js";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260717-v91-2";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260717-v92-1";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
@@ -182,6 +182,7 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
   const contentAccount = asset.byAccount || acc.name;
   const publisher = publisherLabel(asset);
   const supplierDownloaded = supplierHasDownloaded(asset);
+  const supplierPublished = supplierHasPublished(asset);
   return `<div class="dv-item" style="--d:${i * 40}ms">
     <span class="dv-node${i === 0 ? " latest" : ""}"></span>
     <div class="dv-card card" data-aid="${asset.id}">
@@ -190,7 +191,7 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
         <span class="dv-main">
           <b>${seq ? `<span class="dv-seq">${seq}</span>` : ""}${esc(asset.title || asset.name)}</b>
           <span class="dv-meta">
-            <span class="dv-tagline">${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag pubby">发布人：${esc(publisher)}</span><span class="tag date">${icon("clock", 10)} ${esc(plan || dateOnly(asset.deliveredAt || asset.createdAt))}</span><span class="tag ${supplierDownloaded ? "supplier-downloaded" : "supplier-pending"}">${supplierDownloaded ? `${icon("checkCircle", 10)} 供应商已下载` : "供应商未下载"}</span><span class="tag ${asset.publishedUrl ? "pub" : ""}">${asset.publishedUrl ? `${icon("checkCircle", 10)} 已发布` : "待发布"}</span></span>
+            <span class="dv-tagline">${productTag ? `<span class="tag product" title="${esc(productTag)}">${esc(productTag)}</span>` : ""}<span class="tag pubby">发布人：${esc(publisher)}</span><span class="tag date">${icon("clock", 10)} ${esc(plan || dateOnly(asset.deliveredAt || asset.createdAt))}</span><span class="tag ${supplierDownloaded ? "supplier-downloaded" : "supplier-pending"}">${supplierDownloaded ? `${icon("checkCircle", 10)} 供应商已下载` : "供应商未下载"}</span><span class="tag ${supplierPublished ? "pub" : ""}">${supplierPublished ? `${icon("checkCircle", 10)} 已发布` : "待发布"}</span></span>
           </span>
         </span>
         <span class="dv-chev">${remarkDot(asset)}${icon("chevronDown", 14)}</span>
@@ -296,8 +297,24 @@ function supplierDetailHtml(asset, acc) {
   </tr>`;
 }
 
-let supFilters = { product: "all", type: "all", publisher: "all", account: "all", date: "all" };
+let supFilters = { product: "all", type: "all", publisher: "all", account: "all", date: "all", download: "all", publish: "all" };
 let creatorRemarkFilter = "all";
+
+function deliveryStatusFiltersHtml(scope) {
+  return `<div class="delivery-status-filters" aria-label="交付状态筛选" title="下载状态与发布状态可组合筛选；再次点击当前标签可取消">
+    <span class="delivery-status-group" role="group" aria-label="下载状态">
+      <em class="delivery-status-caption">下载</em>
+      <button class="delivery-status-chip ${supFilters.download === "downloaded" ? "on" : ""}" type="button" data-${scope}-status="download" data-status-value="downloaded" aria-pressed="${supFilters.download === "downloaded"}">已下载</button>
+      <button class="delivery-status-chip ${supFilters.download === "undownloaded" ? "on" : ""}" type="button" data-${scope}-status="download" data-status-value="undownloaded" aria-pressed="${supFilters.download === "undownloaded"}">未下载</button>
+    </span>
+    <i class="delivery-status-divider" aria-hidden="true"></i>
+    <span class="delivery-status-group" role="group" aria-label="发布状态">
+      <em class="delivery-status-caption">发布</em>
+      <button class="delivery-status-chip ${supFilters.publish === "published" ? "on" : ""}" type="button" data-${scope}-status="publish" data-status-value="published" aria-pressed="${supFilters.publish === "published"}">已发布</button>
+      <button class="delivery-status-chip ${supFilters.publish === "unpublished" ? "on" : ""}" type="button" data-${scope}-status="publish" data-status-value="unpublished" aria-pressed="${supFilters.publish === "unpublished"}">未发布</button>
+    </span>
+  </div>`;
+}
 
 export const deliveryView = {
   render(root) {
@@ -332,6 +349,7 @@ export const deliveryView = {
           && (supFilters.publisher === "all" || publisherLabel(x.asset) === supFilters.publisher)
           && (supFilters.account === "all" || x.acc.id === supFilters.account)
           && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date)
+          && matchesDeliveryStatusFilters(x.asset, supFilters)
           && (creatorRemarkFilter === "all" || hasUnreadRemark(x.asset));
       });
       const groups = groupByDay(visible);
@@ -341,6 +359,7 @@ export const deliveryView = {
           ${canFilterPublisher ? `<label class="select-shell">${icon("user", 13)}<select data-creator-select="publisher"><option value="all">全部发布人</option>${publishers.map(x => `<option value="${esc(x)}" ${supFilters.publisher === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>` : ""}
           <label class="select-shell">${icon("users", 13)}<select data-creator-select="account"><option value="all">全部账号</option>${accounts.map(acc => `<option value="${esc(acc.id)}" ${supFilters.account === acc.id ? "selected" : ""}>${esc(acc.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("clock", 13)}<select data-creator-select="date"><option value="all">全部时间</option>${dates.map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+          ${deliveryStatusFiltersHtml("creator")}
           <button class="creator-remark-filter ${creatorRemarkFilter === "unread" ? "on" : ""}" data-creator-remarks="unread">${icon("fileText", 12)} 最新备注${all.some(x => hasUnreadRemark(x.asset)) ? `<i class="delivery-remark-dot"></i>` : ""}</button>
         </div>` + (visible.length
         ? `<div class="dv-layout ${noStructuredFilter && creatorRemarkFilter === "all" ? "" : "is-filtered"}">
@@ -375,6 +394,13 @@ export const deliveryView = {
         const animation = body.animate?.([{ opacity: .55, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 160, easing: "cubic-bezier(.2,.8,.2,1)" });
         if (animation) animation.finished.finally(() => { body.style.minHeight = ""; });
         else body.style.minHeight = "";
+      }));
+
+      $$("[data-creator-status]", body).forEach(button => button.addEventListener("click", () => {
+        const dimension = button.dataset.creatorStatus;
+        const value = button.dataset.statusValue;
+        supFilters[dimension] = supFilters[dimension] === value ? "all" : value;
+        drawCreator(body, all);
       }));
 
       $$("[data-creator-remarks]", body).forEach(button => button.addEventListener("click", () => {
@@ -448,7 +474,8 @@ export const deliveryView = {
           && (supFilters.type === "all" || x.acc.mode === supFilters.type)
           && (supFilters.publisher === "all" || publisherLabel(x.asset) === supFilters.publisher)
           && (supFilters.account === "all" || x.acc.id === supFilters.account)
-          && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date);
+          && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date)
+          && matchesDeliveryStatusFilters(x.asset, supFilters);
       };
       const rows = all;
       const visibleCount = rows.filter(matchesFilters).length;
@@ -459,6 +486,7 @@ export const deliveryView = {
           <label class="select-shell">${icon("user", 13)}<select data-sup-select="publisher"><option value="all">全部发布人</option>${[...new Set(all.map(x => publisherLabel(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.publisher === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("users", 13)}<select data-sup-select="account"><option value="all">全部账号</option>${[...new Map(all.map(x => [x.acc.id, x.acc])).values()].map(acc => `<option value="${esc(acc.id)}" ${supFilters.account === acc.id ? "selected" : ""}>${esc(acc.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("clock", 13)}<select data-sup-select="date"><option value="all">全部时间</option>${[...new Set(all.map(x => dayKey(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+          ${deliveryStatusFiltersHtml("sup")}
           <button class="btn primary supplier-batch-download" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>
         </div>
         <div class="sup-table-wrap card">
@@ -493,7 +521,7 @@ export const deliveryView = {
                 <td>${canUpdateViews
                   ? `<button class="sup-views" data-supviews="${asset.id}" title="更新观看量">${Number(asset.viewCount || 0).toLocaleString()} ${icon("edit", 11)}</button>`
                   : `<span class="sup-views-readonly" title="供应商同步的观看量">${Number(asset.viewCount || 0).toLocaleString()}</span>`}</td>
-                <td><span class="sup-status ${asset.status === "已发布" ? "pub" : supplierHasDownloaded(asset) ? "done" : ""}">${asset.publishedUrl ? "已发布 ✓" : supplierHasDownloaded(asset) ? "已下载" : "未下载"}</span></td>
+                <td><span class="sup-status ${supplierHasPublished(asset) ? "pub" : supplierHasDownloaded(asset) ? "done" : ""}">${supplierHasPublished(asset) ? "已发布 ✓" : supplierHasDownloaded(asset) ? "已下载" : "未下载"}</span></td>
                 <td class="sup-acts">
                   <div class="sup-actions-inner"><button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
                   ${isSupplierRole && asset.publishedUrl ? `<a class="btn ghost sm sup-row-jump-link" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转链接</a>` : ""}
@@ -516,7 +544,8 @@ export const deliveryView = {
             && (supFilters.type === "all" || row.dataset.supType === supFilters.type)
             && (supFilters.publisher === "all" || row.dataset.supPublisher === supFilters.publisher)
             && (supFilters.account === "all" || row.dataset.supAccount === supFilters.account)
-            && (supFilters.date === "all" || row.dataset.supDate === supFilters.date);
+            && (supFilters.date === "all" || row.dataset.supDate === supFilters.date)
+            && matchesDeliveryStatusFilters(state.assets.find(asset => asset.id === row.dataset.sup), supFilters);
           const detail = body.querySelector(`[data-sup-detail="${CSS.escape(row.dataset.sup)}"]`);
           row.getAnimations?.().forEach(animation => animation.cancel());
           if (show) {
@@ -539,6 +568,12 @@ export const deliveryView = {
       $$("[data-sup-select]", body).forEach(b => b.addEventListener("change", () => {
         supFilters[b.dataset.supSelect] = b.value;
         applySupplierFilters();
+      }));
+      $$("[data-sup-status]", body).forEach(button => button.addEventListener("click", () => {
+        const dimension = button.dataset.supStatus;
+        const value = button.dataset.statusValue;
+        supFilters[dimension] = supFilters[dimension] === value ? "all" : value;
+        drawSupplier(body, all);
       }));
       $("#dvBatchDl", body)?.addEventListener("click", batchDl);
       const supAll = $("#supAll", body);
@@ -581,23 +616,7 @@ export const deliveryView = {
         const acc = accountById(a.accountId);
         const changed = await returnLinkFlow(a, acc);
         if (!changed) return;
-        const row = b.closest("tr[data-sup]");
-        const status = row?.querySelector(".sup-status");
-        if (status) {
-          status.textContent = "已发布 ✓";
-          status.classList.add("pub");
-        }
-        let jumpLink = row?.querySelector(".sup-row-jump-link");
-        if (jumpLink) jumpLink.href = a.publishedUrl;
-        else {
-          const downloadButton = row?.querySelector(`[data-supdl="${CSS.escape(a.id)}"]`);
-          downloadButton?.insertAdjacentHTML("afterend", `<a class="btn ghost sm sup-row-jump-link" href="${esc(a.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转链接</a>`);
-        }
-        b.className = "btn ghost sm";
-        b.innerHTML = `${icon("link", 13)} 改链接`;
-        const detail = body.querySelector(`[data-sup-detail="${CSS.escape(a.id)}"]`);
-        const linkSlot = detail?.querySelector(".sup-detail-link-slot");
-        if (linkSlot) linkSlot.innerHTML = `<a class="btn ghost sm sup-detail-link" href="${esc(a.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转链接</a>`;
+        draw();
       }));
       $$("[data-supremarks]", body).forEach(b => b.addEventListener("click", async event => {
         event.stopPropagation();
@@ -623,7 +642,7 @@ export const deliveryView = {
       const checkedIds = $$("tr[data-sup]", root).filter(tr => !tr.hidden && tr.querySelector(".sup-check")?.checked).map(tr => tr.dataset.sup);
       const pendingIds = $$("tr[data-sup]", root).filter(tr => {
         const a = state.assets.find(x => x.id === tr.dataset.sup);
-        return !tr.hidden && a && !a.publishedUrl && !supplierHasDownloaded(a);
+        return !tr.hidden && a && !supplierHasPublished(a) && !supplierHasDownloaded(a);
       }).map(tr => tr.dataset.sup);
       const ids = checkedIds.length ? checkedIds : pendingIds;
       if (!ids.length) { toast("当前筛选下没有未下载素材"); return; }

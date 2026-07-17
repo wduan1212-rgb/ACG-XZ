@@ -152,6 +152,15 @@ button {
   letter-spacing: 0;
 }
 
+.start-core .brand-title {
+  margin: 12px 0 50px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
 .start-composer {
   position: relative;
   text-align: left;
@@ -1537,6 +1546,11 @@ body.is-file-dragging .drop-overlay-content svg {
   .start-core h1 {
     margin-bottom: 38px;
     font-size: 30px;
+  }
+
+  .start-core .brand-title {
+    margin-bottom: 38px;
+    font-size: 10px;
   }
 
   .start-input-line textarea {

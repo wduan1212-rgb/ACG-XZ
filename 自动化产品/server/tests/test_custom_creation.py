@@ -853,6 +853,33 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn("await remote.customProjects.unpublish", delivery)
         self.assertIn("if (!await pullRemote())", delivery)
 
+    def test_image_review_is_compact_and_canvas_copy_is_single_line(self):
+        review = (APP_DIR / "js/views/chainCopy.js").read_text(encoding="utf-8")
+        image_review = review[review.index('root.innerHTML = `', review.index("if (!isImg)")) :]
+        self.assertIn("① 成图", image_review)
+        self.assertIn("② 发布文案", image_review)
+        self.assertNotIn("① 脚本", image_review)
+        self.assertNotIn("${reviewPreviewHtml(p)}", image_review)
+
+        publishing = (APP_DIR / "js/views/customPublish.js").read_text(encoding="utf-8")
+        helper_start = publishing.index("export function compactCanvasPublishCopy")
+        helper_end = publishing.index("\n}\n\nfunction outputItems", helper_start) + 2
+        helper_source = publishing[helper_start:helper_end].replace("export function", "function", 1)
+        script = f"""
+{helper_source}
+console.log(compactCanvasPublishCopy('第一段\\n第二段\\\\n第三段   结束'));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(result.stdout.strip(), "第一段 第二段 第三段 结束")
+        self.assertIn("copyInput.value = generatedCopy", publishing)
+        self.assertIn('rows="${kind === "canvas" ? 4 : 6}"', publishing)
+
     def test_custom_video_cover_defaults_to_digital_role_and_account_style(self):
         publishing = (
             APP_DIR / "js/views/customPublish.js"

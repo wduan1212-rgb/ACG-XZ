@@ -2175,6 +2175,9 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .review-banner b { display: block; font-size: 13px; }
 .review-banner em { font-style: normal; font-size: 11.5px; opacity: .85; }
 .review-sec { padding: 15px 16px 13px; margin-bottom: 12px; }
+.review-page:not(.video-review-page) .chain-main { max-width: 1120px; margin: 0 auto; }
+.review-page:not(.video-review-page) .review-banner { padding: 10px 14px; margin-bottom: 8px; }
+.review-page:not(.video-review-page) .review-sec { padding: 12px 14px 11px; margin-bottom: 8px; }
 .rv-shots { display: flex; flex-direction: column; }
 .rv-line { display: flex; gap: 10px; font-size: 12px; padding: 5px 0; border-bottom: 1px dashed var(--hairline); }
 .rv-line:last-child { border-bottom: 0; }
@@ -2341,6 +2344,16 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .creator-delivery-filters { display: flex; align-items: center; gap: 5px; margin-bottom: 10px; overflow-x: auto; scrollbar-width: none; }
 .creator-delivery-filters button { min-height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: rgba(255,255,255,.76); font-size: 11.5px; font-weight: 750; white-space: nowrap; cursor: pointer; }
 .creator-delivery-filters button.on { color: #fff; border-color: #171b22; background: #171b22; }
+.delivery-status-filters { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; padding: 3px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.76); }
+.delivery-status-group { display: inline-flex; align-items: center; gap: 3px; }
+.delivery-status-caption { padding: 0 3px; color: var(--faint); font-size: 10px; font-style: normal; font-weight: 750; }
+.delivery-status-divider { width: 1px; height: 18px; background: var(--line); }
+.delivery-status-chip { min-height: 26px; padding: 0 9px; border: 0; border-radius: 5px; color: var(--muted); background: transparent; font-size: 11.5px; font-weight: 750; white-space: nowrap; cursor: pointer; transition: color .16s ease, background .16s ease, transform .16s ease; }
+.delivery-status-chip:hover { color: var(--text); background: var(--soft); }
+.delivery-status-chip:active { transform: scale(.98); }
+.delivery-status-chip.on { color: #fff; background: #171b22; }
+.creator-delivery-filters .delivery-status-chip { min-height: 26px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent; }
+.creator-delivery-filters .delivery-status-chip.on { color: #fff; border-color: transparent; background: #171b22; }
 .dv-date-nav { position: sticky; top: 78px; display: flex; flex-direction: column; gap: 8px; padding: 8px 0 8px 14px; }
 .dv-date-nav::before { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; border-radius: 999px; background: linear-gradient(180deg, var(--brand), var(--line)); opacity: .28; }
 .dv-date-link { position: relative; border: 0; background: transparent; color: var(--muted); text-align: left; padding: 5px 6px 5px 8px; border-radius: 9px; cursor: pointer; transition: background var(--t-fast), color var(--t-fast); }

@@ -45,7 +45,8 @@ sudo apt-get install -y ffmpeg fonts-noto-cjk python3 python3-venv
 - 视频片段：`SEEDANCE_API_KEY`、`SEEDANCE_BASE_URL`、
   `SEEDANCE_MODEL`。
 - 无上传口播时的配音：`MINIMAX_API_KEY`、`MINIMAX_BASE_URL`、
-  `MINIMAX_TTS_MODEL`、`MINIMAX_VOICE_ID`。
+  `MINIMAX_TTS_MODEL`、`MINIMAX_VOICE_ID`；若平台设计音色使用了
+  `MINIMAX_GROUP_ID`，视频工坊必须沿用相同 GroupId 才能调用该音色。
 
 视频工坊会自动读取主产品根目录的 `.env.local`。进程和持久目录变量建议保持：
 

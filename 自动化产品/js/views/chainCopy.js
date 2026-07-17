@@ -7,8 +7,8 @@ import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
 import { toast, openLightbox, publishModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260717-v91-2";
-import { reviewPreviewHtml } from "./prodDrawer.js?v=20260717-v91-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260717-v92-1";
+import { reviewPreviewHtml } from "./prodDrawer.js?v=20260717-v92-1";
 
 export function renderCopyPage(root, p) {
   const isImg = p.mode === "图文";
@@ -59,7 +59,7 @@ export function renderReviewPage(root, p) {
     wireStepper(root);
     const run = async () => {
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260717-v91-2");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260717-v92-1");
         await ensureVideoCover(p);
         if (root.isConnected) renderReviewPage(root, p);
       } catch (err) {
@@ -75,7 +75,6 @@ export function renderReviewPage(root, p) {
     return;
   }
   const canPub = canDeliver();
-  const shots = p.artifacts.script.shots || [];
   const items = (isImg ? p.artifacts.images.items : p.artifacts.boards.items) || [];
   const visuals = items.filter(x => x.assetId);
   const deliveredState = p.stage === "delivered";
@@ -127,20 +126,10 @@ export function renderReviewPage(root, p) {
     <div class="chain-page solo review-page">
       <div class="chain-main">
         ${deliveredState ? `<div class="review-banner ok card review-publish-bar">${icon("checkCircle", 18)}<div><b>已发布：${esc(p.delivery?.name || "")}${p.delivery?.pubSeq ? ` · #${String(p.delivery.pubSeq).padStart(3, "0")}` : ""}</b><em>发布清单与供应商端可见 · ${isImg ? "图集 zip + 文案.txt" : "成片 + 标题简介"}</em></div><button class="btn ghost" id="rvToDelivery">${icon("package", 14)} 去发布清单</button></div>`
-        : `<div class="review-banner card review-publish-bar">${icon("eye", 16)}<div><b>发布前自检</b><em>核对下方成片预览、脚本与文案，确认无误后即可定稿发布</em></div>${canPub ? `<button class="btn primary" id="rvDeliver">${icon("package", 14)} 定稿并发布入供应商端</button>` : `<span class="muted">当前账号无发布权限</span>`}</div>`}
-
-        ${reviewPreviewHtml(p) ? `<section class="card review-sec">
-          <div class="card-head"><b>成片预览</b><em>${isImg ? "组图配图" : "9:16 成片构成"}</em></div>
-          ${reviewPreviewHtml(p)}
-        </section>` : ""}
+        : `<div class="review-banner card review-publish-bar">${icon("eye", 16)}<div><b>发布前自检</b><em>核对下方成图与发布文案，确认无误后即可定稿发布</em></div>${canPub ? `<button class="btn primary" id="rvDeliver">${icon("package", 14)} 定稿并发布入供应商端</button>` : `<span class="muted">当前账号无发布权限</span>`}</div>`}
 
         <section class="card review-sec">
-          <div class="card-head"><b>① 脚本</b><em>主题「${esc(p.topic)}」 · ${shots.length} ${isImg ? "张图卡" : "个镜头"}</em></div>
-          <div class="rv-shots">${shots.slice(0, 8).map((s, i) => `<div class="rv-line"><em>${esc(s.time || `#${i + 1}`)}</em><span>${esc(s.line || s.visual || s.idea || "")}</span></div>`).join("")}${shots.length > 8 ? `<div class="muted">… 共 ${shots.length} 条</div>` : ""}</div>
-        </section>
-
-        <section class="card review-sec">
-          <div class="card-head"><b>② ${isImg ? "成图" : "视觉素材"}</b><em>${visuals.length}/${items.length} 张</em></div>
+          <div class="card-head"><b>① 成图</b><em>${visuals.length}/${items.length} 张</em></div>
           ${visuals.length ? `<div class="cc-grid lg">${visuals.map((it, i) => `<div class="cc-thumb"><img src="${urlFor(it.assetId)}" data-rv-img/><span>${i + 1}</span></div>`).join("")}</div>` : `<div class="muted">没有视觉素材</div>`}
         </section>
 
@@ -150,7 +139,7 @@ export function renderReviewPage(root, p) {
         </section>`}
 
         <section class="card review-sec">
-          <div class="card-head"><b>${isImg ? "③" : "④"} 发布文案</b><button class="link-btn" data-chain="${isImg ? "images" : "workshop"}">去编辑 ${icon("arrowRight", 12)}</button></div>
+          <div class="card-head"><b>② 发布文案</b><button class="link-btn" data-chain="images">去编辑 ${icon("arrowRight", 12)}</button></div>
           <div class="rv-copy"><b>${esc(p.artifacts.copy.title || "（未填标题）")}</b><pre>${esc(p.artifacts.copy.body || "（未填文案）")}</pre></div>
         </section>
       </div>

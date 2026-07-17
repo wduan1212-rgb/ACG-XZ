@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260717-v91-2";
+import { llm, visionCopy } from "./llm.js?v=20260717-v92-1";
 import { DUMATE_BRIEF } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
@@ -1979,6 +1979,31 @@ function cleanCustomVideoText(text = "", { stripTags = false, title = "" } = {})
   return out.replace(/[“”]/g, "\"").trim();
 }
 
+/*
+ * 信息流导演稿是视频模型的执行指令，不是直接发布的小红书正文。
+ * 这里只做无损文本整理，避免内容合规替换把“第一扇门 / 电话亭”等
+ * 正常画面改成别的词，破坏已经生成好的创意与镜头语义。
+ */
+function cleanInfoFlowDirectorText(text = "", { stripTags = false } = {}) {
+  let out = String(text || "")
+    .replace(/\r/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (stripTags) out = out.replace(/#[^\s#]+/g, " ").replace(/[ \t]+/g, " ").trim();
+  return out;
+}
+
+function withSharedInfoFlowStyle(prompt = "", style = "") {
+  const fallback = "超写实商业广告质感，自然电影光影，真实材质，统一色彩与镜头语言";
+  const sharedStyle = cleanInfoFlowDirectorText(style || fallback, { stripTags: true })
+    .replace(/[。；;,，\s]+$/g, "")
+    .trim() || fallback;
+  const body = cleanInfoFlowDirectorText(prompt, { stripTags: true })
+    .replace(/^(?:\s*(?:统一)?画面风格\s*[:：][^\n]*(?:\n|$))+/i, "")
+    .trim();
+  return `统一画面风格：${sharedStyle}。${body ? `\n${body}` : ""}`;
+}
+
 function parseCustomVideoDraftText(content = "", fallbackTitle = "") {
   const raw = String(content || "").replace(/\r/g, "").trim();
   if (!raw) throw new Error("模型无有效返回");
@@ -2038,14 +2063,14 @@ function infoFlowSimilarity(left = "", right = "") {
 }
 
 function parseInfoFlowCreativePlan(content = "") {
-  const raw = sanitizeXhsObject(parseJSONLoose(content));
+  const raw = parseJSONLoose(content);
   const front = raw.frontPrompt || raw.front?.videoPrompt || raw.front?.prompt || raw.segments?.[0]?.videoPrompt || raw.segments?.[0]?.prompt || "";
   const back = raw.backPrompt || raw.back?.videoPrompt || raw.back?.prompt || raw.segments?.[1]?.videoPrompt || raw.segments?.[1]?.prompt || "";
   return {
-    creativeAngle: cleanCustomVideoText(raw.creativeAngle || raw.angle || raw.front?.creativeAngle || "全新信息流创意"),
-    visualStyle: cleanCustomVideoText(raw.visualStyle || raw.style || raw.front?.visualStyle || "超写实商业广告质感，自然电影光影，真实材质，统一色彩与镜头语言", { stripTags: true }),
-    frontPrompt: cleanCustomVideoText(front, { stripTags: true }),
-    backPrompt: cleanCustomVideoText(back, { stripTags: true })
+    creativeAngle: cleanInfoFlowDirectorText(raw.creativeAngle || raw.angle || raw.front?.creativeAngle || "全新信息流创意", { stripTags: true }),
+    visualStyle: cleanInfoFlowDirectorText(raw.visualStyle || raw.style || raw.front?.visualStyle || "超写实商业广告质感，自然电影光影，真实材质，统一色彩与镜头语言", { stripTags: true }),
+    frontPrompt: cleanInfoFlowDirectorText(front, { stripTags: true }),
+    backPrompt: cleanInfoFlowDirectorText(back, { stripTags: true })
   };
 }
 
@@ -2642,9 +2667,9 @@ ${productRelationLine(rel.slice(0, 2))}
   },
 
   async generateInfoFlowCreativePlan({ title = "", copy = "", narration = "", account = {}, product = null, previousPrompts = [] } = {}) {
-    const safeTitle = cleanCustomVideoText(title, { stripTags: true });
-    const safeCopy = cleanCustomVideoText(copy, { stripTags: true, title: safeTitle });
-    const safeNarration = cleanCustomVideoText(narration, { stripTags: true, title: safeTitle });
+    const safeTitle = cleanInfoFlowDirectorText(title, { stripTags: true });
+    const safeCopy = cleanInfoFlowDirectorText(copy, { stripTags: true });
+    const safeNarration = cleanInfoFlowDirectorText(narration, { stripTags: true });
     if (!safeTitle && !safeCopy) throw new Error("生成信息流提示词前需要标题或发布文案");
     const productName = chineseProductDisplayName(product);
     const accountVoice = copyAccountVoice(account, account?.styleProfile || account?.lockedStyle || "", safeTitle || safeCopy);
@@ -2660,7 +2685,9 @@ ${productRelationLine(rel.slice(0, 2))}
     for (let attempt = 0; attempt < 3; attempt++) {
       const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${attempt}`;
       const engine = engines[Math.floor(Math.random() * engines.length)];
-      const avoid = (previousPrompts || []).filter(Boolean).slice(-2).map((value, index) => `上一版${index + 1}（禁止复用其剧情、台词、道具和运镜）：${String(value).slice(0, 900)}`).join("\n");
+      const avoid = (previousPrompts || []).some(Boolean)
+        ? "当前任务存在旧稿；本次必须重新构思，不沿用旧稿剧情、台词、道具、角色身份或界面结构。"
+        : "";
       const system = [
         "你是顶级短视频创意导演。每次都要从标题和发布文案重新构思，不套用固定办公焦虑模板，不复用上一版台词或镜头。",
         "输出一组连续的 30 秒信息流创意，A 面 15 秒负责剧情钩子，B 面 15 秒负责产品界面演示。",
@@ -2690,8 +2717,8 @@ ${productRelationLine(rel.slice(0, 2))}
         ], { json: true, temperature: 1.15, timeoutMs: 90000, thinking: "disabled", maxTokens: 5200 });
         const plan = parseInfoFlowCreativePlan(content);
         const sharedStyle = plan.visualStyle || "超写实商业广告质感，自然电影光影，真实材质，统一色彩与镜头语言";
-        plan.frontPrompt = `统一画面风格：${sharedStyle}。\n${plan.frontPrompt}`;
-        plan.backPrompt = `统一画面风格：${sharedStyle}。\n${plan.backPrompt}`;
+        plan.frontPrompt = withSharedInfoFlowStyle(plan.frontPrompt, sharedStyle);
+        plan.backPrompt = withSharedInfoFlowStyle(plan.backPrompt, sharedStyle);
         assertInfoFlowCreativePlan(plan, previousPrompts);
         return this._ok(plan);
       } catch (error) {

@@ -8,16 +8,16 @@ import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid 
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260717-v91-2";
+import { AI } from "../api/ai.js?v=20260717-v92-1";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial, enforceSupportedVideoMode } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260717-v91-2";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260717-v92-1";
 import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260717-v91-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260717-v92-1";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, setFavoriteVoice, voicePickerGroups } from "../domain/voices.js";
 import {
@@ -384,7 +384,7 @@ const INFO_FLOW_DIRECTIONS = [
 ];
 
 function stripInfoFlowDirectorNotes(text = "") {
-  return String(text || "")
+  const cleaned = String(text || "")
     .split(/\n{2,}/)
     .filter(block => !/(?:功能演示分镜结构|分镜结构|第一镜|第二镜|第三镜|第四镜|第五镜|第六镜|前排镜|前景镜|后排镜|第[一二三四五六七八九十]+镜\s*[:：])/.test(block))
     .join("\n\n")
@@ -393,6 +393,7 @@ function stripInfoFlowDirectorNotes(text = "") {
     .replace(/不要只出现抽象光效。?/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  return cleaned;
 }
 
 function touchProduction(p, info = null) {
@@ -982,17 +983,6 @@ export function renderWorkshopPage(root, p) {
   A.sceneRefAssetIds = A.sceneRefAssetIds || [];
   if (!A.sceneRefAssetIds.length && A.omniRefAssetIds.length) A.sceneRefAssetIds = [...A.omniRefAssetIds];
   if (!A.characterRefAssetId && acc?.charBoardAssetId) A.characterRefAssetId = acc.charBoardAssetId;
-  if (!A.omniRefAssetIds.length && acc) {
-    const inferred = [];
-    if (acc.charBoardAssetId) inferred.push(acc.charBoardAssetId);
-    accAssets(acc.id).forEach(a => {
-      if (a.type !== "图片" || a.delivered) return;
-      const text = `${a.name || ""} ${(a.tags || []).join(" ")}`;
-      if (/全能参考|统一参考|角色|身份|logo|界面|产品/.test(text)) inferred.push(a.id);
-    });
-    A.omniRefAssetIds = [...new Set(inferred)].slice(0, 5);
-    if (!A.sceneRefAssetIds.length) A.sceneRefAssetIds = A.omniRefAssetIds.filter(id => id !== acc?.charBoardAssetId);
-  }
   A.ratio = A.ratio || "9:16";   // 全片统一尺寸（9:16 / 16:9）
 
   // 估时兜底 + 单元构建

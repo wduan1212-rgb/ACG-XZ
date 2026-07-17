@@ -1072,9 +1072,14 @@ class MiniMaxTTS:
         text: str,
         output_path: Path,
         target_duration_sec: float | None = None,
+        voice_id: str | None = None,
     ) -> dict[str, Any]:
         if not settings.minimax_api_key:
             raise ProviderError("MiniMax TTS API Key 未配置")
+        selected_voice_id = str(voice_id or settings.minimax_voice_id or "").strip()
+        if not selected_voice_id:
+            raise ProviderError("MiniMax TTS 音色 ID 未配置")
+        group_id = str(getattr(settings, "minimax_group_id", "") or "").strip()
         speed = _tts_speed_for_target(text, target_duration_sec)
         payload = {
             "model": settings.minimax_tts_model,
@@ -1083,7 +1088,7 @@ class MiniMaxTTS:
             "language_boost": "Chinese",
             "output_format": "hex",
             "voice_setting": {
-                "voice_id": settings.minimax_voice_id,
+                "voice_id": selected_voice_id,
                 "speed": speed,
                 "vol": 1,
                 "pitch": 0,
@@ -1098,6 +1103,7 @@ class MiniMaxTTS:
         async with _client(150) as client:
             response = await client.post(
                 f"{settings.minimax_base_url}/v1/t2a_v2",
+                params=({"GroupId": group_id} if group_id else None),
                 json=payload,
                 headers={
                     "Authorization": f"Bearer {settings.minimax_api_key}",
@@ -1127,7 +1133,7 @@ class MiniMaxTTS:
         return {
             "path": str(output_path),
             "durationMs": int((data.get("extra_info") or {}).get("audio_length") or 0),
-            "voiceId": settings.minimax_voice_id,
+            "voiceId": selected_voice_id,
             "model": settings.minimax_tts_model,
             "speed": speed,
             "targetDurationMs": (

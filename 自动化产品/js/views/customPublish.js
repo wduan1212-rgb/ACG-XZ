@@ -1,10 +1,10 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260717-v91-2";
+import { AI } from "../api/ai.js?v=20260717-v92-1";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260717-v91-2";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260717-v92-1";
 import { icon } from "../ui/icons.js";
 import { openModal, toast, withLoading } from "../ui/components.js";
 
@@ -21,6 +21,14 @@ function todayValue() {
 
 function outputKind(output = {}) {
   return output.kind === "canvas" || output.type === "图集" ? "canvas" : "video";
+}
+
+export function compactCanvasPublishCopy(value = "") {
+  return String(value || "")
+    .replace(/\\[nr]/g, " ")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function outputItems(output = {}) {
@@ -374,7 +382,9 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
   const initialTitle = kind === "video"
     ? ""
     : String(output.title || output.project?.name || "无限画布作品").trim();
-  const initialCopy = String(output.copy || "");
+  const initialCopy = kind === "canvas"
+    ? compactCanvasPublishCopy(output.copy || "")
+    : String(output.copy || "");
   let coverAssetId = "";
   let coverAccountId = "";
   let coverProductId = "";
@@ -414,7 +424,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       </label>
       <label class="field custom-publish-copy-field">
         <span>发布文案 <button class="link-btn" type="button" id="customPublishGenerateCopy">${icon("spark", 12)} 根据标题生成</button></span>
-        <textarea class="input" id="customPublishCopy" rows="6" placeholder="可自己填写，也可以根据标题生成">${esc(initialCopy)}</textarea>
+        <textarea class="input" id="customPublishCopy" rows="${kind === "canvas" ? 4 : 6}" placeholder="可自己填写，也可以根据标题生成">${esc(initialCopy)}</textarea>
       </label>
       ${kind === "video" ? `
         <section class="custom-publish-cover">
@@ -668,14 +678,17 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
               product
             })
             : await AI.generateImageCopyFromTitle({ title, account, product });
+          const generatedCopy = kind === "canvas"
+            ? compactCanvasPublishCopy(generated.copy || "")
+            : String(generated.copy || "");
           if (
             coverSource === "generated"
             && coverAssetId
-            && coverCopy !== String(generated.copy || "").trim()
+            && coverCopy !== generatedCopy.trim()
           ) {
             invalidateCover("发布文案已重新生成，请按新文案重新生成封面。");
           }
-          copyInput.value = generated.copy || "";
+          copyInput.value = generatedCopy;
           status.textContent = "文案已生成，可以继续手动修改。";
         }, "生成中…");
       });

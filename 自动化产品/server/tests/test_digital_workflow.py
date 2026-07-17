@@ -70,6 +70,66 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
         self.assertNotIn("script.shots?.[index]?.line", source)
         self.assertNotIn("任意引号", source)
 
+    def test_digital_segment_duration_fallback_uses_known_narration_only(self):
+        script = r"""
+globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener:()=>{}, dispatchEvent:()=>{} };
+globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
+const m = await import('./js/views/chainCut.js');
+const cues = m.buildDigitalSegmentDurationCaptions([
+  { id:'clip-1', segmentId:'seg-1', dur:5, audioDuration:3 },
+  { id:'clip-2', segmentId:'seg-2', dur:4, audioDuration:2 }
+], [
+  { id:'seg-1', line:'第一段清晰口播', videoPrompt:'绝不能进入字幕的导演说明' },
+  { id:'seg-2', line:'第二段清晰口播' }
+]);
+const split = m.buildDigitalSegmentDurationCaptions([
+  { id:'clip-a', segmentId:'seg-a', dur:5, trimIn:0, audioDuration:10 },
+  { id:'clip-b', segmentId:'seg-a', dur:5, trimIn:5, audioDuration:10 }
+], [{ id:'seg-a', line:'一二三四五六七八九十' }]);
+const semantic = m.buildDigitalSegmentDurationCaptions([
+  { id:'clip-semantic', segmentId:'seg-semantic', dur:6, audioDuration:6 }
+], [{ id:'seg-semantic', line:'声音很重要，打开镜头我们开始看画面。' }]);
+const alignedDigital = m.cleanAlignedCaptionText('声音很重要，打开镜头我们开始看画面。', true);
+const alignedInfoFlow = m.cleanAlignedCaptionText('声音很重要，打开镜头我们开始看画面。', false);
+console.log(JSON.stringify({ cues, split, semantic, alignedDigital, alignedInfoFlow }));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout.strip())
+        cues = payload["cues"]
+        self.assertEqual([cue["text"] for cue in cues], ["第一段清晰口播", "第二段清晰口播"])
+        self.assertEqual([(cue["start"], cue["end"]) for cue in cues], [(0, 3), (5, 7)])
+        self.assertTrue(all(cue["digitalSegmentDuration"] for cue in cues))
+        self.assertNotIn("导演说明", "".join(cue["text"] for cue in cues))
+        split = payload["split"]
+        self.assertEqual("".join(cue["text"] for cue in split), "一二三四五六七八九十")
+        self.assertEqual([cue["clipId"] for cue in split], ["clip-a", "clip-b"])
+        self.assertEqual([(cue["start"], cue["end"]) for cue in split], [(0, 5), (5, 10)])
+        semantic_text = "".join(cue["text"] for cue in payload["semantic"]).replace(" ", "")
+        self.assertEqual(semantic_text, "声音很重要打开镜头我们开始看画面")
+        self.assertEqual(
+            payload["alignedDigital"].replace(" ", ""),
+            "声音很重要打开镜头我们开始看画面",
+        )
+        self.assertNotEqual(payload["alignedInfoFlow"], payload["alignedDigital"])
+        source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
+        self.assertIn('subTimingSource = "digital-segment-duration-pending"', source)
+        self.assertIn('subTimingSource = "digital-segment-duration-v1"', source)
+        self.assertIn("trustedNarration", source)
+        digital_hint_start = source.index("function timedSpeechHintsForClip")
+        infoflow_start = source.index("const segments = p.artifacts.boards?.infoFlow", digital_hint_start)
+        hint_guard = source[digital_hint_start:infoflow_start]
+        self.assertIn("if (isDigitalHuman())", hint_guard)
+        self.assertIn("digitalSegmentDurationCuesForClip", hint_guard)
+        self.assertIn("cleanAlignedCaptionText(cue.text, isDigitalHuman())", source)
+
     def test_infoflow_caption_hints_only_accept_explicit_spoken_source(self):
         script = r"""
 globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
@@ -128,6 +188,203 @@ console.log(JSON.stringify(m.extractStructuredSpokenCues(input, 15)));
             {"text": "先别理了 让它先跑一版", "start": 12, "end": 15},
         ])
 
+    def test_infoflow_dialogue_quotes_support_variable_spoken_prefixes_only(self):
+        script = r"""
+globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener:()=>{}, dispatchEvent:()=>{} };
+globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
+const cut = await import('./js/views/chainCut.js');
+const input = `0-3s：角色皱眉说:"这份表怎么又乱了？"
+3-6s：口播自然扣回发布文案重点：“先把资料放到一起。”
+6-9s：输入框显示：“整理资料”，按钮写着“生成”
+9-12s：禁止角色说：“不应该出现”
+12-15s：老板来一句“最后检查结果。”
+15-18s：演员自言自语:"第三版到底是哪张图。"
+18-21s：他呼出一口气:"每次都像重新开始。"
+21-24s：领导的声音从画外传来:"月底报表今天必须交。"
+24-27s：员工：“直接开工。”
+27-30s：同事抬头：“这个版本可以。”
+30-33s：产品经理看镜头：“先核对口径。”
+33-36s：画面收束：“任务已完成”
+36-39s：镜头收束：“不应出现”
+39-42s：用户输入:"整理资料"
+42-45s：用户点击按钮:"开始生成"
+45-48s：角色外貌锚点:"鹅蛋脸"
+48-51s：用户：“这句是真实口播。”
+51-54s：小李扭头厉声:"这三个口径以哪个为准？"
+54-57s：老周压低声音:"先把定义对一遍。"
+57-60s：小李咬牙:"月底就要交了。"
+60-63s：文件夹"啪"地落下，小李扭头厉声:"前面的音效不能打乱台词配对。"
+63-66s：台词汇总：“直接开工。”“这个版本可以。”
+66-69s：角色A外观:"鹅蛋脸"
+69-72s：人物形象:"二十八岁职场人"
+72-75s：主角性格:"沉稳克制"
+75-78s：角色一致性:"保持同一服装"
+78-81s：人物镜头设计:"中景推进"
+81-84s：角色说话风格:"自然短促"
+84-87s：员工服饰:"白色衬衫"
+87-90s：界面把"口播要点"和“场控口令”拖入中央面板
+90-93s：右侧"口播/场控"栏高亮“提示：商品顺序已变更”
+93-96s：口播要点:"短促自然"
+96-99s：口播场控栏:"自然口语"
+99-102s：台词风格:"轻松幽默"
+102-105s：口播自然扣回重点:"这句是明确口播。"`;
+console.log(JSON.stringify({
+  unchanged: input,
+  cues: cut.extractStructuredSpokenCues(input, 105)
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout.strip())
+        self.assertIn('输入框显示：“整理资料”', payload["unchanged"])
+        self.assertIn('演员自言自语:"第三版到底是哪张图。"', payload["unchanged"])
+        self.assertEqual(payload["cues"], [
+            {"text": "这份表怎么又乱了", "start": 0, "end": 3},
+            {"text": "先把资料放到一起", "start": 3, "end": 6},
+            {"text": "最后检查结果", "start": 12, "end": 15},
+            {"text": "第三版到底是哪张图", "start": 15, "end": 18},
+            {"text": "每次都像重新开始", "start": 18, "end": 21},
+            {"text": "月底报表今天必须交", "start": 21, "end": 24},
+            {"text": "直接开工", "start": 24, "end": 27},
+            {"text": "这个版本可以", "start": 27, "end": 30},
+            {"text": "先核对口径", "start": 30, "end": 33},
+            {"text": "这句是真实口播", "start": 48, "end": 51},
+            {"text": "这三个口径以哪个为准", "start": 51, "end": 54},
+            {"text": "先把定义对一遍", "start": 54, "end": 57},
+            {"text": "月底就要交了", "start": 57, "end": 60},
+            {"text": "前面的音效不能打乱台词配对", "start": 60, "end": 63},
+            {"text": "这句是明确口播", "start": 102, "end": 105},
+        ])
+
+    def test_infoflow_dialogue_reads_raw_quote_variants_and_explicit_labels_without_rewriting(self):
+        script = r"""
+globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener:()=>{}, dispatchEvent:()=>{} };
+globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
+const cut = await import('./js/views/chainCut.js');
+
+const quotedTimeline = `0-3s：员工拨开纸页，“这份我没签字。”
+3-6s：主角喘气，“行，我自己收。”
+6-9s：员工点击按钮，“提交成功”弹出`;
+const explicitUnquoted = '0-3s：台词（员工，低声）：今天先核对字段。';
+const directSpeech = `0-3s：他抬头皱眉朝镜头方向脱口而出"这堆线索谁先跟谁后跟啊？"。
+3-6s：销售男子把卡片推开，摇头说"全是要跟的，哪个该先？"。`;
+const mannerSpeech = `0-3s：近景，手持跟拍她的视线：她蹲下捡起写着'缺货'的便签，声音急促：'这周一刚改过吧？'；
+3-6s：切换到'重复问题识别'面板微距特写：旁边弹出'负责人：店员A'。`;
+const colonTimeline = `0-3s：客户拍桌子：你给我个说法！
+3-6s：台词短促自然：先把口径对齐。
+6-9s：界面标题：提交成功。
+9-12s：光线：冷白顶光逐渐压低。
+12-15s：用户点击按钮：开始生成。
+15-18s：男声：先看证据。
+18-21s：陈力低声说：下周还是这张纸。
+21-24s：明确目标：收齐所有人进度。
+24-27s：主角状态面板：负责人店员A。
+27-30s：主角看着屏幕说：结果还是对不上。`;
+const nestedTimeline = `0-15秒，一镜到底：0-4秒，桌面散落文件；4-8秒，演员翻开文件；8-12秒，演员冲向会议室；12-15秒，演员回到工位。光线混合办公日光与顶灯，无转场，对白只有：怎么又是去年的项目名。`;
+const naturalVariants = `0-3s：小吴对着镜头念出原始口播，字数控制在18字以内：先拆开再追结果。
+3-6s：旁白收束「先停下来，按清单来」。
+6-9s：女职员贴在耳边说"行，我把酒店和会议都再改一版"。
+9-12s：对方举着U盘：'这个是昨天那个终版吧？'
+12-15s：阿骆推开椅子站起来：'那个是上周的终版。'
+15-18s：小董捡起主持稿抬头：'姐姐，你手里那份不是最终版。'
+18-21s：桌面摆满化妆品和提示牌，女主播皱眉说出'完了完了顺序全乱了'。`;
+const argumentativeColon = `0-3s：甲方语气冷静地提出方案：我把整理这事交给百度搭子就行了。
+3-6s：乙方身体前倾直接反驳：它怎么会懂那些乱七八糟的命名。`;
+const naturalUnquoted = `0-2s：女性职员猛地抬头，嘴唇微张说又来；
+2-5s：同事递来录音笔说刚结束的客户会议全程都在这里，她接过录音笔。
+5-8s：她动作僵硬地转身说我的桌面已经装不下了；
+8-11s：她肩膀压低说记一下周一上线前加三个字段。
+11-14s：她转头对镜头方向说谁来把这些东西放进同一个地方；
+14-17s：用户界面说明负责人字段已经更新。`;
+const metadataAndUi = `0-3s：台词风格：短促自然。
+3-6s：口播要点：先检查字段。
+6-9s：界面提出方案：自动归档。
+9-12s：界面显示一条聊天记录：用户说今天先核对字段。
+12-15s：主角看着屏幕说：这句是真实台词。
+15-18s：女设计师语气急促地说一句台词："这句只出现一次。"`;
+console.log(JSON.stringify({
+  cues: cut.extractStructuredSpokenCues(quotedTimeline, 9),
+  explicitUnquoted,
+  directSpeech,
+  explicitCues: cut.extractStructuredSpokenCues(explicitUnquoted, 3),
+  directCues: cut.extractStructuredSpokenCues(directSpeech, 6),
+  mannerCues: cut.extractStructuredSpokenCues(mannerSpeech, 6),
+  colonCues: cut.extractStructuredSpokenCues(colonTimeline, 30),
+  nestedCues: cut.extractStructuredSpokenCues(nestedTimeline, 15),
+  naturalCues: cut.extractStructuredSpokenCues(naturalVariants, 21),
+  argumentativeCues: cut.extractStructuredSpokenCues(argumentativeColon, 6),
+  naturalUnquotedCues: cut.extractStructuredSpokenCues(naturalUnquoted, 17),
+  metadataAndUiCues: cut.extractStructuredSpokenCues(metadataAndUi, 18)
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout.strip())
+        self.assertEqual(payload["cues"], [
+            {"text": "这份我没签字", "start": 0, "end": 3},
+            {"text": "行 我自己收", "start": 3, "end": 6},
+        ])
+        self.assertEqual(payload["explicitUnquoted"], '0-3s：台词（员工，低声）：今天先核对字段。')
+        self.assertIn('脱口而出"这堆线索谁先跟谁后跟啊？"', payload["directSpeech"])
+        self.assertEqual(payload["explicitCues"], [
+            {"text": "今天先核对字段", "start": 0, "end": 3},
+        ])
+        self.assertEqual(payload["directCues"], [
+            {"text": "这堆线索谁先跟谁后跟啊", "start": 0, "end": 3},
+            {"text": "全是要跟的 哪个该先", "start": 3, "end": 6},
+        ])
+        self.assertEqual(payload["mannerCues"], [
+            {"text": "这周一刚改过吧", "start": 0, "end": 3},
+        ])
+        self.assertEqual(payload["nestedCues"], [
+            {"text": "怎么又是去年的项目名", "start": 12, "end": 15},
+        ])
+        self.assertEqual(payload["naturalCues"], [
+            {"text": "先拆开再追结果", "start": 0, "end": 3},
+            {"text": "先停下来 按清单来", "start": 3, "end": 6},
+            {"text": "行 我把酒店和会议都再改一版", "start": 6, "end": 9},
+            {"text": "这个是昨天那个终版吧", "start": 9, "end": 12},
+            {"text": "那个是上周的终版", "start": 12, "end": 15},
+            {"text": "姐姐 你手里那份不是最终版", "start": 15, "end": 18},
+            {"text": "完了完了顺序全乱了", "start": 18, "end": 21},
+        ])
+        self.assertEqual(payload["argumentativeCues"], [
+            {"text": "我把整理这事交给百度搭子就行了", "start": 0, "end": 3},
+            {"text": "它怎么会懂那些乱七八糟的命名", "start": 3, "end": 6},
+        ])
+        self.assertEqual(payload["naturalUnquotedCues"], [
+            {"text": "又来", "start": 0, "end": 2},
+            {"text": "刚结束的客户会议全程都在这里", "start": 2, "end": 5},
+            {"text": "我的桌面已经装不下了", "start": 5, "end": 8},
+            {"text": "记一下周一上线前加三个字段", "start": 8, "end": 11},
+            {"text": "谁来把这些东西放进同一个地方", "start": 11, "end": 14},
+        ])
+        self.assertEqual(payload["metadataAndUiCues"], [
+            {"text": "这句是真实台词", "start": 12, "end": 15},
+            {"text": "这句只出现一次", "start": 15, "end": 18},
+        ])
+        self.assertEqual(payload["colonCues"], [
+            {"text": "你给我个说法", "start": 0, "end": 3},
+            {"text": "先把口径对齐", "start": 3, "end": 6},
+            {"text": "先看证据", "start": 15, "end": 18},
+            {"text": "下周还是这张纸", "start": 18, "end": 21},
+            {"text": "结果还是对不上", "start": 27, "end": 30},
+        ])
+
     def test_infoflow_prompt_timeline_accepts_local_or_global_segment_ranges(self):
         script = r"""
 globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
@@ -158,6 +415,181 @@ console.log(JSON.stringify({
         ]
         self.assertEqual(data["local"], expected)
         self.assertEqual(data["global"], expected)
+
+    def test_infoflow_director_source_avoids_raw_history_and_blind_style_prefix(self):
+        source = (APP_DIR / "js/api/ai.js").read_text(encoding="utf-8")
+        start = source.index("async generateInfoFlowCreativePlan")
+        end = source.index("/* ---------- md / 自然语言", start)
+        director = source[start:end]
+
+        # Feeding as much as 900 characters of each old prompt back to the LLM
+        # makes the previous plot act like a hidden continuation instruction.
+        self.assertNotIn("String(value).slice(0, 900)", director)
+        # Blindly prepending the style duplicates a model-supplied style line and
+        # creates `。。` when visualStyle already carries terminal punctuation.
+        self.assertNotIn(
+            'plan.frontPrompt = `统一画面风格：${sharedStyle}。\\n${plan.frontPrompt}`',
+            director,
+        )
+        self.assertNotIn(
+            'plan.backPrompt = `统一画面风格：${sharedStyle}。\\n${plan.backPrompt}`',
+            director,
+        )
+
+    def test_infoflow_original_quality_contract_is_not_tightened_by_subtitle_rules(self):
+        source = (APP_DIR / "js/api/ai.js").read_text(encoding="utf-8")
+        start = source.index("async generateInfoFlowCreativePlan")
+        end = source.index("/* ---------- md / 自然语言", start)
+        director = source[start:end]
+        cleaner_start = source.index("function cleanInfoFlowDirectorText")
+        cleaner_end = source.index("function withSharedInfoFlowStyle", cleaner_start)
+        cleaner = source[cleaner_start:cleaner_end]
+
+        self.assertIn("for (let attempt = 0; attempt < 3; attempt++)", director)
+        self.assertIn("temperature: 1.15", director)
+        self.assertIn("至少 4 个分时镜头；台词必须原创、短促、自然", director)
+        self.assertIn("例如超写实、电影纪实、夸张舞台广告或高质感三维界面", director)
+        for tightened in (
+            "按每秒不超过",
+            "全程无口播、旁白和对白",
+            "每面建议 320-650",
+            "人物身份只能从本次",
+            "visualStyle 单独返回",
+            "实际原话必须统一写成中文双引号",
+            "hasUnquotedInfoFlowDialogue",
+            "normalizeInfoFlowDialogueQuotes",
+        ):
+            self.assertNotIn(tightened, director)
+        self.assertNotIn("sanitizeXhsText", cleaner)
+
+    def test_infoflow_director_preserves_structure_and_summarizes_history(self):
+        script = r"""
+globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
+globalThis.location = { origin:'http://127.0.0.1:8787', protocol:'http:', hostname:'127.0.0.1', port:'8787', hash:'' };
+globalThis.window = { location:globalThis.location, addEventListener:()=>{}, dispatchEvent:()=>{} };
+globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
+
+let queue = [];
+let capturedBodies = [];
+globalThis.fetch = async (_url, options = {}) => {
+  capturedBodies.push(JSON.parse(options.body || '{}'));
+  const next = queue.shift();
+  if (!next) throw new Error('测试响应队列耗尽');
+  return {
+    ok: true,
+    status: 200,
+    text: async () => '',
+    json: async () => ({ choices:[{ message:{ content:JSON.stringify(next) } }] })
+  };
+};
+
+const { AI } = await import('./js/api/ai.js');
+window.XingzhenConfig.endpoint = '/api/chat/completions';
+window.XingzhenConfig.apiKey = 'unit-test-only';
+window.XingzhenConfig.serverManaged = true;
+
+const structuralResponse = {
+  creativeAngle: '任务卡空间错位',
+  visualStyle: '电影纪实质感。',
+  frontPrompt: `统一画面风格：电影纪实质感。
+0-3s：第一张任务卡从桌面边缘滑入，冷白顶光在纸面形成细长反光，特写→拉出，展示办公桌与散落资料的空间关系。
+3-7s：第一栏待办被蓝色便签逐项覆盖，侧面中景跟随便签移动，背景人物只保留模糊轮廓，文件夹沿桌角形成清晰纵深。
+7-11s：资料卡像多米诺骨牌连续倒下，低机位横移捕捉纸张、回形针和印章的真实材质，窗外自然光逐渐变暖，冲突持续升级。
+11-15s：所有卡片在桌面中央重新排成清单，俯拍镜头缓慢稳定下来，最后一张完成标记亮起，画面用干净留白完成反转。`,
+  backPrompt: `统一画面风格：电影纪实质感。
+0-3s：竖屏桌面录屏进入资料选择页，文件卡从左侧依次滑入中央工作区，鼠标轨迹短促明确，界面保持低文字密度和真实阴影。
+3-7s：右侧参数栏依次选择分类规则与输出格式，镜头只展示窗口、文件和流程卡，蓝色进度线沿底部平稳推进，按钮反馈清楚。
+7-11s：处理区把散乱资料转换为结构化清单与结果表格，局部放大字段对应关系，窗口层级、圆角和留白保持统一，不出现人物或手部。
+11-15s：完成页并排展示归档文件夹、复核清单和可导出报告，镜头轻微推近绿色完成状态，最后以清爽桌面窗口自然收束。`
+};
+
+const validRetryResponse = {
+  creativeAngle: '第二次合法方案',
+  visualStyle: '明亮纪实广告',
+  frontPrompt: `0-3s：文件柜突然弹开，彩色文件夹沿地面滑向办公桌，广角镜头快速后退建立异常事件，自然窗光照亮纸张纹理与空间纵深。
+3-6s：员工侧身避开文件夹，低机位跟拍鞋边和纸张移动，桌面上的计时器不断跳动，节奏紧张但动作关系清晰。
+6-10s：散乱文件围成旋转圆环，镜头绕桌半圈后停在中央空白任务卡，冷暖光线随旋转逐步过渡，冲突达到最高点。
+10-13s：任务卡自动展开为三步清单，所有文件按颜色进入对应收纳盒，中景稳定推进，纸张摩擦声逐渐减弱。
+13-15s：俯拍桌面恢复整洁，最后一个完成勾亮起，员工松一口气退到虚焦背景，画面以留白和自然光收束。`,
+  backPrompt: `0-3s：桌面应用打开文件选择窗口，多份资料卡依次进入任务区，竖屏录屏构图清晰，蓝白界面保持真实阴影与低文字密度。
+3-6s：规则面板选择分类字段和输出格式，鼠标轨迹从左向右移动，按钮反馈、下拉菜单与步骤编号依次亮起。
+6-10s：处理进度稳定前进，文件名、字段卡和结果表在三个窗口间流转，镜头局部放大关键状态但不展示人物或手部。
+10-13s：复核页面突出遗漏提醒与来源对应关系，两栏结果清楚对齐，完成状态逐项点亮，窗口层级保持一致。
+13-15s：导出页展示文件夹、清单和报告三种结果，镜头轻推绿色完成标记，界面自然淡出并回到整洁桌面。`
+};
+
+async function run(responses, previousPrompts = [], input = {}) {
+  queue = [...responses];
+  capturedBodies = [];
+  const result = await AI.generateInfoFlowCreativePlan({
+    title: input.title || '把零散资料整理成可复核结果',
+    copy: input.copy || '先明确材料范围，再检查字段和遗漏项。',
+    narration: input.narration || '我会先把材料放到一起，再核对字段和最终结果。',
+    account: { platform:'视频号', tone:'自然可信' },
+    previousPrompts
+  });
+  return { result, bodies:[...capturedBodies] };
+}
+
+const structural = await run([structuralResponse]);
+const structuralText = `${structural.result.frontPrompt}\n${structural.result.backPrompt}`;
+
+const historyDetail = '旧剧情完整镜头细节：红色雨伞绕着打印机旋转并撞倒咖啡杯。';
+const fullHistoryMarker = 'FULL_OLD_STORY_SHOULD_NOT_BE_SENT_TO_MODEL';
+const oldPrompt = `旧版关键词：雨伞、打印机、咖啡杯。\n${historyDetail.repeat(40)}\n${fullHistoryMarker}`;
+const history = await run([validRetryResponse], [oldPrompt]);
+const historyUser = history.bodies[0].messages.find(message => message.role === 'user')?.content || '';
+
+const firstStep = await run([validRetryResponse], [], {
+  title: '第一步先把资料范围说清楚',
+  copy: '第一步核对文件来源，第二步再检查遗漏项。',
+  narration: '我第一步会确认材料范围，然后再进入复核。'
+});
+const firstStepUser = firstStep.bodies[0].messages.find(message => message.role === 'user')?.content || '';
+
+console.log(JSON.stringify({
+  structural: {
+    keepsFirstImage: structuralText.includes('第一张'),
+    keepsFirstColumn: structuralText.includes('第一栏'),
+    keepsCameraArrow: structuralText.includes('特写→拉出'),
+    hasCorruptedOrdinal: /前排(?:张|栏)/.test(structuralText),
+    frontStyleCount: (structural.result.frontPrompt.match(/统一画面风格/g) || []).length,
+    backStyleCount: (structural.result.backPrompt.match(/统一画面风格/g) || []).length,
+    hasDoublePeriod: structuralText.includes('。。')
+  },
+  history: {
+    hasAvoidanceHint: /旧稿/.test(historyUser) && /重新构思|不沿用|避免重复/.test(historyUser),
+    includesFullMarker: historyUser.includes(fullHistoryMarker),
+    detailOccurrences: historyUser.split(historyDetail).length - 1,
+    requestLength: historyUser.length
+  },
+  inputFidelity: {
+    keepsFirstStep: firstStepUser.includes('第一步'),
+    hasCorruptedFirstStep: firstStepUser.includes('前排步')
+  }
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout.strip())
+        self.assertTrue(data["structural"]["keepsFirstImage"])
+        self.assertTrue(data["structural"]["keepsFirstColumn"])
+        self.assertTrue(data["structural"]["keepsCameraArrow"])
+        self.assertFalse(data["structural"]["hasCorruptedOrdinal"])
+        self.assertEqual(data["structural"]["frontStyleCount"], 1)
+        self.assertEqual(data["structural"]["backStyleCount"], 1)
+        self.assertFalse(data["structural"]["hasDoublePeriod"])
+        self.assertTrue(data["history"]["hasAvoidanceHint"])
+        self.assertFalse(data["history"]["includesFullMarker"])
+        self.assertLessEqual(data["history"]["detailOccurrences"], 1)
+        self.assertLess(data["history"]["requestLength"], 1200)
+        self.assertTrue(data["inputFidelity"]["keepsFirstStep"])
+        self.assertFalse(data["inputFidelity"]["hasCorruptedFirstStep"])
 
     def test_old_account_classification_prompts_are_removed(self):
         active_paths = [
@@ -336,8 +768,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260717-v91-2"', main)
-        self.assertIn('js/main.js?v=20260717-v91-2', index)
+        self.assertIn('const APP_BUILD_ID = "20260717-v92-1"', main)
+        self.assertIn('js/main.js?v=20260717-v92-1', index)
 
     def test_batch_reference_images_are_explicit_and_title_changes_refresh_copy(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
@@ -349,7 +781,8 @@ console.log(JSON.stringify({
         self.assertNotIn("imageStyleAssetId", image_refs)
         self.assertIn("it.refAssetIds = [...refGroups.all]", orchestrator)
         self.assertIn("function batchVideoRefIds", orchestrator)
-        self.assertIn("if (!A.omniRefAssetIds.length && !p.batchId)", orchestrator)
+        self.assertNotIn("accountDefaultRefIds", orchestrator)
+        self.assertNotIn("if (!A.omniRefAssetIds.length && !p.batchId)", orchestrator)
         self.assertIn("!p.batchId ? A.sharedRefAssetId : null", orchestrator)
         self.assertIn("resetPlanReferences(payload)", view)
         self.assertIn("plan.sharedRefAssetIds = []", orchestrator)
@@ -369,7 +802,7 @@ globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
 globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
 const { state } = await import('./js/core/store.js');
 const { createProduction, buildMaterialUnits } = await import('./js/domain/productions.js');
-const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260717-v91-2');
+const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260717-v92-1');
 state.accounts = [{ id:'material-account', name:'素材号', mode:'视频', subType:'无数字人', platform:'视频号' }];
 state.assets = [{ id:'old-hidden-ref', accountId:'material-account', type:'图片', name:'旧产品统一参考', tags:['统一参考','产品'] }];
 state.productions = [];

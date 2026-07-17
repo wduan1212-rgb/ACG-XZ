@@ -296,6 +296,35 @@ class VideoAudioTimingEndpointTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["cues"][0]["clipId"], "clean-mp3")
         self.assertEqual(result["cues"][0]["inputSource"], "direct-audio")
 
+    async def test_multi_clip_offsets_follow_video_timeline_not_short_audio(self):
+        req = AudioTimingReq(clips=[
+            AudioTimingClip(
+                clipId="segment-1",
+                audioUrl="/api/files/one.mp3",
+                duration=5,
+                text="第一段",
+            ),
+            AudioTimingClip(
+                clipId="segment-2",
+                audioUrl="/api/files/two.mp3",
+                duration=4,
+                text="第二段",
+            ),
+        ])
+        with patch("server.main._ffmpeg_bin", return_value="ffmpeg"), patch(
+            "server.main._write_audio_timing_source",
+            new=AsyncMock(return_value="direct-audio"),
+        ), patch(
+            "server.main._transcribe_with_whisper",
+            side_effect=[
+                ([{"start": 0.2, "end": 2.8, "text": "第一段", "precise": True}], 3.0),
+                ([{"start": 0.1, "end": 1.8, "text": "第二段", "precise": True}], 2.0),
+            ],
+        ), patch("server.main._whisper_cpp_paths", return_value=(Path("whisper-cli"), Path("ggml-base.bin"))):
+            result = await video_audio_timing(req)
+        self.assertEqual([(cue["start"], cue["end"]) for cue in result["cues"]], [(0.2, 2.8), (5.1, 6.8)])
+        self.assertEqual(result["duration"], 9.0)
+
     async def test_whisper_binary_presence_does_not_fake_engine_after_quality_reject(self):
         req = AudioTimingReq(clips=[
             AudioTimingClip(
@@ -321,6 +350,45 @@ class VideoAudioTimingEndpointTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["cues"], [])
         self.assertEqual(result["source"], "no-aligned-speech-v2-direct-audio")
         self.assertEqual(result["clipSources"][0]["attemptedEngine"], "whisper.cpp")
+
+    async def test_trusted_digital_segment_uses_vad_when_whisper_has_no_anchor(self):
+        req = AudioTimingReq(clips=[
+            AudioTimingClip(
+                clipId="digital-segment-1",
+                audioDataUrl="data:audio/mp3;base64,ZmFrZQ==",
+                duration=4,
+                text="第一句清晰口播，第二句继续说明。",
+                hints=[AudioTimingHint(text="第一句清晰口播，第二句继续说明。", start=0, end=4)],
+                strict=False,
+                trustedNarration=True,
+            )
+        ])
+        vad_result = SimpleNamespace(
+            returncode=0,
+            stderr=(
+                "Duration: 00:00:04.00\n"
+                "[silencedetect] silence_start: 0\n"
+                "[silencedetect] silence_end: 0.35\n"
+                "[silencedetect] silence_start: 3.30\n"
+            ),
+            stdout="",
+        )
+        with patch("server.main._ffmpeg_bin", return_value="ffmpeg"), patch(
+            "server.main._write_audio_timing_source",
+            new=AsyncMock(return_value="direct-audio"),
+        ), patch(
+            "server.main._transcribe_with_whisper",
+            return_value=([], 4.0),
+        ), patch(
+            "server.main._whisper_cpp_paths",
+            return_value=(Path("whisper-cli"), Path("ggml-base.bin")),
+        ), patch("server.main.subprocess.run", return_value=vad_result):
+            result = await video_audio_timing(req)
+        self.assertEqual(result["engine"], "ffmpeg-segment-vad")
+        self.assertEqual(result["source"], "digital-segment-vad-v1-direct-audio")
+        self.assertTrue(result["cues"])
+        self.assertEqual("".join(cue["text"] for cue in result["cues"]), "第一句清晰口播，第二句继续说明。")
+        self.assertTrue(all(0.35 <= cue["start"] < cue["end"] <= 3.30 for cue in result["cues"]))
 
 
 if __name__ == "__main__":

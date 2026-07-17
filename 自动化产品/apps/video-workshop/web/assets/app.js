@@ -80,7 +80,35 @@ const slashSkills = [
 
 let promptCycle = { index: 0, position: 0, deleting: false, timer: null, stopped: false };
 let toastTimer = null;
+let clientIdSequence = 0;
 const compositionStates = new WeakMap();
+
+function createClientId() {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") {
+    try {
+      return cryptoApi.randomUUID.call(cryptoApi);
+    } catch {
+      // Some embedded or ordinary-HTTP browsers expose the method but reject it.
+    }
+  }
+  if (typeof cryptoApi?.getRandomValues === "function") {
+    try {
+      const bytes = new Uint8Array(16);
+      cryptoApi.getRandomValues.call(cryptoApi, bytes);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0"));
+      return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+    } catch {
+      // Continue to a collision-resistant non-crypto client-only fallback.
+    }
+  }
+  clientIdSequence = (clientIdSequence + 1) % Number.MAX_SAFE_INTEGER;
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).slice(2, 12) || "0";
+  return `${timestamp}-${clientIdSequence.toString(36)}-${random}`;
+}
 
 function trackComposition(input) {
   const current = compositionStates.get(input);
@@ -179,6 +207,11 @@ function showToast(message) {
   toastTimer = window.setTimeout(() => dom.toast.classList.remove("show"), 2800);
 }
 
+function showAttachmentError(error, fallback = "附件处理失败，请重试") {
+  const detail = String(error?.message || "").trim();
+  showToast(detail ? `${fallback}：${detail}` : fallback);
+}
+
 function typePlaceholder() {
   if (promptCycle.stopped) return;
   const phrase = rotatingPrompts[promptCycle.index];
@@ -224,44 +257,56 @@ function fileToDataUrl(file) {
 }
 
 async function addFiles(fileList) {
-  const files = [...fileList].filter((file) => /^(?:image\/(?:png|jpeg|webp)|video\/(?:mp4|quicktime|webm)|audio\/(?:mpeg|mp3|wav|x-wav|mp4|x-m4a|m4a))$/.test(file.type));
-  if (!files.length) {
-    showToast("仅支持图片、MP4/MOV/WebM 与 MP3/WAV/M4A");
-    return;
-  }
-  const previousCount = state.attachments.length;
-  for (const file of files) {
-    const existingAssets = state.project?.assets || [];
-    if (existingAssets.length + state.attachments.length >= 8) {
-      showToast("每个项目最多添加 8 个附件");
-      break;
+  try {
+    const files = [...(fileList || [])].filter((file) => /^(?:image\/(?:png|jpeg|webp)|video\/(?:mp4|quicktime|webm)|audio\/(?:mpeg|mp3|wav|x-wav|mp4|x-m4a|m4a))$/.test(file.type));
+    if (!files.length) {
+      showToast("仅支持图片、MP4/MOV/WebM 与 MP3/WAV/M4A");
+      return 0;
     }
-    const isVideo = file.type.startsWith("video/");
-    const isAudio = file.type.startsWith("audio/");
-    const kind = isVideo ? "video/" : isAudio ? "audio/" : "image/";
-    const sizeLimit = isVideo || isAudio ? 40 * 1024 * 1024 : 6 * 1024 * 1024;
-    if (file.size > sizeLimit) {
-      showToast(`${file.name} 超过 ${isVideo || isAudio ? "40MB" : "6MB"}`);
-      continue;
+    const previousCount = state.attachments.length;
+    for (const file of files) {
+      const existingAssets = state.project?.assets || [];
+      if (existingAssets.length + state.attachments.length >= 8) {
+        showToast("每个项目最多添加 8 个附件");
+        break;
+      }
+      const isVideo = file.type.startsWith("video/");
+      const isAudio = file.type.startsWith("audio/");
+      const kind = isVideo ? "video/" : isAudio ? "audio/" : "image/";
+      const sizeLimit = isVideo || isAudio ? 40 * 1024 * 1024 : 6 * 1024 * 1024;
+      if (file.size > sizeLimit) {
+        showToast(`${file.name} 超过 ${isVideo || isAudio ? "40MB" : "6MB"}`);
+        continue;
+      }
+      const sameTypeCount = [...existingAssets, ...state.attachments]
+        .filter((item) => String(item.mime || "").startsWith(kind))
+        .length;
+      let dataUrl = "";
+      try {
+        dataUrl = await fileToDataUrl(file);
+      } catch (error) {
+        showAttachmentError(error, `${file.name || "附件"} 读取失败，请重试`);
+        continue;
+      }
+      state.attachments.push({
+        id: createClientId(),
+        label: `${isVideo ? "视频" : isAudio ? "音频" : "图"}${sameTypeCount + 1}`,
+        name: file.name,
+        mime: file.type,
+        dataUrl,
+      });
     }
-    const sameTypeCount = [...existingAssets, ...state.attachments]
-      .filter((item) => String(item.mime || "").startsWith(kind))
-      .length;
-    state.attachments.push({
-      id: crypto.randomUUID(),
-      label: `${isVideo ? "视频" : isAudio ? "音频" : "图"}${sameTypeCount + 1}`,
-      name: file.name,
-      mime: file.type,
-      dataUrl: await fileToDataUrl(file),
-    });
+    renderAttachments();
+    const addedCount = state.attachments.length - previousCount;
+    if (addedCount > 0) {
+      stopPlaceholderCycle();
+      showToast(`已添加 ${addedCount} 个创作素材`);
+    }
+    return addedCount;
+  } catch (error) {
+    showAttachmentError(error);
+    return 0;
   }
-  renderAttachments();
-  const addedCount = state.attachments.length - previousCount;
-  if (addedCount > 0) {
-    stopPlaceholderCycle();
-    showToast(`已添加 ${addedCount} 个创作素材`);
-  }
-  return addedCount;
 }
 
 function renderAttachments() {
@@ -1039,7 +1084,7 @@ function startPendingThoughts(token, attachments) {
 
 function renderPendingRequest(message, attachments) {
   const current = state.project && state.project.id === state.projectId ? state.project : {};
-  const pendingId = crypto.randomUUID();
+  const pendingId = createClientId();
   const optimisticProject = {
     ...current,
     id: state.projectId,
@@ -1122,19 +1167,22 @@ function renderPendingFailure(message, token) {
 }
 
 async function sendMessage(message, fromStart = false) {
-  if (state.busy || !message.trim()) return;
-  const cleanMessage = message.trim();
+  const cleanMessage = String(message || "").trim();
+  if (state.busy || !cleanMessage) return;
   const requestProjectId = state.projectId;
-  const requestAttachments = [...state.attachments];
+  let requestAttachments = [];
+  let pendingToken = "";
+  let requestAccepted = false;
   state.busy = true;
-  state.attachments = [];
-  renderAttachments();
-  dom.startInput.value = "";
-  dom.chatInput.value = "";
-  autoSize(dom.startInput);
-  autoSize(dom.chatInput);
-  const pendingToken = renderPendingRequest(cleanMessage, requestAttachments);
   try {
+    requestAttachments = [...state.attachments];
+    state.attachments = [];
+    renderAttachments();
+    dom.startInput.value = "";
+    dom.chatInput.value = "";
+    autoSize(dom.startInput);
+    autoSize(dom.chatInput);
+    pendingToken = renderPendingRequest(cleanMessage, requestAttachments);
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1147,19 +1195,49 @@ async function sendMessage(message, fromStart = false) {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || "导演请求失败");
+    requestAccepted = true;
     stopPendingThoughts();
     renderProject(data);
   } catch (error) {
     stopPendingThoughts();
-    const errorMessage = error.message || "请求失败";
-    renderPendingFailure(errorMessage, pendingToken);
+    const errorMessage = String(error?.message || error || "请求失败");
+    if (pendingToken) {
+      try {
+        renderPendingFailure(errorMessage, pendingToken);
+      } catch {
+        // The original failure still needs to unlock the composer and remain retryable.
+      }
+    }
+    if (!requestAccepted) {
+      const existingIds = new Set(state.attachments.map((item) => item.id));
+      state.attachments = [
+        ...requestAttachments.filter((item) => !existingIds.has(item.id)),
+        ...state.attachments,
+      ];
+      try {
+        renderAttachments();
+      } catch {
+        // A preview rendering failure must never keep the request lock active.
+      }
+      const retryInput = fromStart ? dom.startInput : dom.chatInput;
+      if (retryInput && !retryInput.value.trim()) {
+        retryInput.value = cleanMessage;
+        try {
+          autoSize(retryInput);
+        } catch {
+          // Text restoration is best effort; busy recovery is handled below.
+        }
+      }
+    }
     showToast(errorMessage);
   } finally {
     state.busy = false;
-    dom.startForm.querySelector("button[type='submit']").disabled = false;
+    const startSubmit = dom.startForm?.querySelector("button[type='submit']");
+    if (startSubmit) startSubmit.disabled = false;
     if (state.project?.status !== "running") {
       dom.chatInput.disabled = false;
-      dom.chatForm.querySelector("button[type='submit']").disabled = false;
+      const chatSubmit = dom.chatForm?.querySelector("button[type='submit']");
+      if (chatSubmit) chatSubmit.disabled = false;
     }
   }
 }
@@ -1288,7 +1366,11 @@ function installGlobalDropZone() {
     event.preventDefault();
     const files = event.dataTransfer.files;
     resetDragging();
-    await addFiles(files);
+    try {
+      await addFiles(files);
+    } catch (error) {
+      showAttachmentError(error);
+    }
   });
   window.addEventListener("blur", resetDragging);
   window.addEventListener("dragend", resetDragging);
@@ -1403,12 +1485,16 @@ dom.chatForm.addEventListener("submit", (event) => {
       form.requestSubmit();
     }
   });
-  textarea.addEventListener("paste", (event) => {
-    const mediaFiles = [...(event.clipboardData?.items || [])]
-      .filter((item) => item.kind === "file" && /^(?:image|video|audio)\//.test(item.type))
-      .map((item) => item.getAsFile())
-      .filter(Boolean);
-    if (mediaFiles.length) addFiles(mediaFiles);
+  textarea.addEventListener("paste", async (event) => {
+    try {
+      const mediaFiles = [...(event.clipboardData?.items || [])]
+        .filter((item) => item.kind === "file" && /^(?:image|video|audio)\//.test(item.type))
+        .map((item) => item.getAsFile())
+        .filter(Boolean);
+      if (mediaFiles.length) await addFiles(mediaFiles);
+    } catch (error) {
+      showAttachmentError(error);
+    }
   });
   textarea.addEventListener("blur", () => {
     window.setTimeout(() => textarea.closest("form")?.querySelector("[data-skill-menu]")?.classList.add("is-hidden"), 120);
@@ -1423,8 +1509,13 @@ document.querySelectorAll("[data-file-trigger]").forEach((button) => {
 });
 
 dom.fileInput.addEventListener("change", async () => {
-  await addFiles(dom.fileInput.files);
-  dom.fileInput.value = "";
+  try {
+    await addFiles(dom.fileInput.files);
+  } catch (error) {
+    showAttachmentError(error);
+  } finally {
+    dom.fileInput.value = "";
+  }
 });
 
 window.addEventListener("message", (event) => {

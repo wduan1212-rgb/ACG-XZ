@@ -77,11 +77,16 @@ class ChatRequest(BaseModel):
     projectId: str = ""
     message: str = Field(min_length=1, max_length=8000)
     aspectRatio: str = "9:16"
+    voiceId: str = Field(default="", max_length=180)
     attachments: list[Attachment] = Field(default_factory=list)
 
 
 class RenameProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
+
+
+class VoiceTestRequest(BaseModel):
+    voiceId: str = Field(default="", max_length=180)
 
 
 def _schedule(
@@ -466,6 +471,66 @@ def _infer_aspect_ratio(message: str) -> str:
     return max(matches, default=(-1, "9:16"))[1]
 
 
+_VOICE_ID_SAFE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@+()\- ]{0,179}$")
+_VOICE_ID_DIRECTIVE_RE = re.compile(
+    r"(?:音色\s*(?:ID|id)|voice[\s_-]*id\b)\s*(?:[:：=]|为|是)?\s*"
+    r"(?:[\"“'](?P<quoted>[^\"”'\r\n]{1,180})[\"”']|"
+    r"(?P<bare>[A-Za-z0-9][A-Za-z0-9_.:@+()\-]{0,179}))",
+    re.I,
+)
+
+
+def _normalize_voice_id(value: Any) -> str:
+    voice_id = str(value or "").strip()
+    if not voice_id:
+        return ""
+    if not _VOICE_ID_SAFE_RE.fullmatch(voice_id):
+        raise ValueError("音色 ID 包含不支持的字符")
+    return voice_id
+
+
+def _explicit_voice_id(message: str) -> str:
+    match = _VOICE_ID_DIRECTIVE_RE.search(str(message or ""))
+    if not match:
+        return ""
+    return _normalize_voice_id(match.group("quoted") or match.group("bare") or "")
+
+
+def _message_without_voice_id_directive(message: str) -> str:
+    cleaned = _VOICE_ID_DIRECTIVE_RE.sub("", str(message or ""))
+    cleaned = cleaned.strip(" \t\r\n,，;；。")
+    return cleaned or "请使用已指定音色按当前上下文继续制作"
+
+
+def _director_messages_without_voice_id_directives(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    director_messages = [dict(message) for message in messages]
+    for message in director_messages:
+        if message.get("role") != "user":
+            continue
+        message["content"] = _message_without_voice_id_directive(
+            strip_command(str(message.get("content") or ""))
+        )
+    return director_messages
+
+
+def _selected_voice_id(req: ChatRequest, project: dict[str, Any]) -> str:
+    plan = project.get("plan") if isinstance(project.get("plan"), dict) else {}
+    candidates = (
+        _explicit_voice_id(req.message),
+        req.voiceId,
+        project.get("voiceId"),
+        plan.get("voice_id"),
+        settings.minimax_voice_id,
+    )
+    for candidate in candidates:
+        voice_id = _normalize_voice_id(candidate)
+        if voice_id:
+            return voice_id
+    return ""
+
+
 def _apply_asset_plan(plan: dict[str, Any], assets: list[dict[str, Any]]) -> str:
     assignments = list(plan.get("asset_assignments") or [])
     by_id = {str(item.get("asset_id") or ""): item for item in assignments if isinstance(item, dict)}
@@ -655,6 +720,7 @@ async def health():
             "required": True,
             "model": settings.minimax_tts_model,
             "voiceId": settings.minimax_voice_id,
+            "groupIdConfigured": bool(getattr(settings, "minimax_group_id", "")),
         },
         "mediaTools": {
             "label": "本地视频合成",
@@ -980,6 +1046,16 @@ async def chat(req: ChatRequest):
         project = await asyncio.to_thread(create_project)
     if project.get("status") == "running":
         raise HTTPException(409, "当前项目仍在制作，请等待完成")
+    try:
+        selected_voice_id = _selected_voice_id(req, project)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    def remember_voice(item: dict[str, Any]) -> None:
+        item["voiceId"] = selected_voice_id
+
+    await asyncio.to_thread(mutate_project, project["id"], remember_voice)
+    project["voiceId"] = selected_voice_id
 
     previous_user_text = "\n".join(
         str(message.get("content") or "")
@@ -1072,11 +1148,9 @@ async def chat(req: ChatRequest):
         )
         return await asyncio.to_thread(load_project, project["id"])
     try:
-        director_messages = [dict(message) for message in project["messages"]]
-        for message in reversed(director_messages):
-            if message.get("role") == "user":
-                message["content"] = strip_command(str(message.get("content") or ""))
-                break
+        director_messages = _director_messages_without_voice_id_directives(
+            project["messages"]
+        )
         decision = await director.decide(
             director_messages,
             aspect_ratio,
@@ -1118,6 +1192,7 @@ async def chat(req: ChatRequest):
 
     plan = decision["plan"]
     plan["skill"] = SKILL_NAME
+    plan["voice_id"] = selected_voice_id
     asset_summary = _apply_asset_plan(plan, list(project.get("assets") or []))
     narration_asset = plan.get("narration_audio") or {}
     transcript_text = str((narration_asset.get("transcript") or {}).get("text") or "").strip()
@@ -1173,7 +1248,24 @@ async def test_director():
 
 
 @app.post("/api/test/voice")
-async def test_voice():
+async def test_voice(req: VoiceTestRequest = None):
+    try:
+        voice_id = _normalize_voice_id(
+            (req.voiceId if req is not None else "") or settings.minimax_voice_id
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if not voice_id:
+        raise HTTPException(400, "请填写音色 ID")
     target = settings.outputs_dir / "voice-smoke.mp3"
-    result = await tts.generate("星阵视频导演台，语音连接测试成功。", target)
-    return {"ok": True, "url": "/outputs/voice-smoke.mp3", "durationMs": result.get("durationMs", 0)}
+    result = await tts.generate(
+        "星阵视频导演台，语音连接测试成功。",
+        target,
+        voice_id=voice_id,
+    )
+    return {
+        "ok": True,
+        "url": "/outputs/voice-smoke.mp3",
+        "durationMs": result.get("durationMs", 0),
+        "voiceId": result.get("voiceId") or voice_id,
+    }

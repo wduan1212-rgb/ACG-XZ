@@ -157,6 +157,7 @@ class VideoPipeline:
                                 str(plan["narration"]),
                                 narration_path,
                                 target_duration_sec=requested_duration or None,
+                                voice_id=str(plan.get("voice_id") or "").strip() or None,
                             ),
                         )
                     )

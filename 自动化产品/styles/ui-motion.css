@@ -1225,15 +1225,16 @@ body:not(.immersive) .view-root .btn.gen:hover {
 .agc-ref-picked-head b { font-size: 10.5px; color: var(--d-muted); }
 .agc-ref-picked-head span { display: inline-flex; align-items: center; gap: 4px; color: var(--d-faint); font-size: 9.5px; }
 .agc-override.is-custom-plan {
+  grid-template-columns: minmax(148px, .72fr) minmax(0, 2.45fr) 76px minmax(176px, auto);
   grid-template-areas:
-    "name content imgcount"
-    "refhead refstate refstate";
+    "name content imgcount actions"
+    "refs refs refs refs";
 }
 .agc-override.is-custom-plan.is-video {
   grid-template-columns: minmax(148px, .72fr) minmax(0, 1fr) minmax(176px, auto);
   grid-template-areas:
     "name content actions"
-    "refhead refstate refstate";
+    "refs refs refs";
 }
 @media (max-width: 1400px) {
   .agc-override.is-custom-plan.is-video {
@@ -1241,7 +1242,7 @@ body:not(.immersive) .view-root .btn.gen:hover {
     grid-template-areas:
       "name actions"
       "content content"
-      "refhead refstate";
+      "refs refs";
   }
 }
 .agc-override[data-plan-custom-refdrop] { transition: border-color 160ms ease, background 160ms ease; }
@@ -1249,8 +1250,25 @@ body:not(.immersive) .view-root .btn.gen:hover {
   border-color: rgba(255,255,255,.52);
   background: rgba(255,255,255,.08);
 }
-.agc-mini-head { display: flex; align-items: center; gap: 6px; }
-.agc-mini-head em { flex: none; }
+.agc-mini-ref {
+  grid-area: refs;
+  display: grid;
+  grid-template-columns: minmax(180px, .7fr) minmax(0, 2.3fr);
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 9px;
+  border-top: 1px solid rgba(132,152,255,.10);
+}
+.agc-mini-ref .agc-mini-head,
+.agc-mini-ref .agc-ref-chips.mini {
+  grid-area: auto;
+  min-width: 0;
+  padding-top: 0;
+}
+.agc-mini-ref .agc-mini-head { display: grid; gap: 2px; align-self: center; }
+.agc-mini-ref .agc-mini-head::before { display: none; }
+.agc-mini-ref .agc-mini-head em { min-width: 0; line-height: 1.35; white-space: normal; }
 .agc-mini-pick {
   display: inline-flex;
   align-items: center;
@@ -1285,7 +1303,7 @@ body:not(.immersive) .view-root .btn.gen:hover {
   grid-template-columns: minmax(148px, .72fr) minmax(0, 2.45fr) 76px minmax(176px, auto);
   grid-template-areas:
     "name content imgcount actions"
-    "refhead refstate refstate refstate";
+    "refs refs refs refs";
 }
 .agc-override-actions {
   grid-area: actions;
@@ -1420,7 +1438,7 @@ body:not(.immersive) .view-root .btn.gen:hover {
     grid-template-areas:
       "name content imgcount"
       "actions actions actions"
-      "refhead refstate refstate";
+      "refs refs refs";
   }
   .agc-override-actions { justify-content: flex-end; }
   .agc-override.is-custom-plan.is-video {
@@ -1428,20 +1446,21 @@ body:not(.immersive) .view-root .btn.gen:hover {
     grid-template-areas:
       "name actions"
       "content content"
-      "refhead refstate";
+      "refs refs";
   }
 }
 
 @media (max-width: 640px) {
   .agc-override.is-custom-plan {
     grid-template-columns: 1fr;
-    grid-template-areas: "name" "content" "imgcount" "actions" "refhead" "refstate";
+    grid-template-areas: "name" "content" "imgcount" "actions" "refs";
   }
   .agc-override-actions { justify-content: flex-start; flex-wrap: wrap; }
   .agc-override.is-custom-plan.is-video {
     grid-template-columns: 1fr;
-    grid-template-areas: "name" "content" "actions" "refhead" "refstate";
+    grid-template-areas: "name" "content" "actions" "refs";
   }
+  .agc-mini-ref { grid-template-columns: 1fr; gap: 6px; }
 }
 
 .overview-task-panel { width: min(720px, calc(100vw - 32px)); }

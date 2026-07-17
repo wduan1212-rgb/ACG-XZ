@@ -156,17 +156,79 @@ const ZH_NUM: Record<string, number> = {
   一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
 };
 
+const SINGLE_IMAGE_GUARD = "单次只生成一张完整成图，禁止拼图、分屏或并排展示多个方案、版本或风格";
+
 /** Parse explicit output-count requests; object counts like "两个 logo" stay as prompt content. */
 export function parseCount(brief: string): number {
-  const explicit = brief.match(
-    /(?:生成|出|来|做|给我|帮我做|帮我生成|同时生成)\s*(\d+|[一两二三四五六七八九十])\s*(张|幅|版|款|种|个方向|方向)/,
-  );
-  const m =
-    explicit ??
-    brief.match(/(\d+|[一两二三四五六七八九十])\s*(张|幅|版|款|种|个方向|个方案|方向|方案)/);
+  const number = "(\\d+|[一两二三四五六七八九十])";
+  const verb = "(?:请|同时|再)?(?:帮我|给我)?(?:生成|创作|制作|设计|做|出|来)";
+  const asset = "(?:海报|图片|图像|设计|作品|成图|封面|主视觉)";
+  const patterns = [
+    // Without an output verb, require a concrete output noun. Bare scene
+    // quantities such as “两张发票 / 两张参考图” are not generation counts.
+    new RegExp(`${number}\\s*(?:张|幅|版)\\s*(?:${asset}|方案|方向)`, "i"),
+    // With an output verb, natural shorthand “生成两张” is unambiguous.
+    new RegExp(`${verb}\\s*${number}\\s*(?:张|幅|版)(?:\\s*${asset})?`, "i"),
+    // “做三种 / 创作两个海报” requires an output verb, avoiding “三款产品”.
+    new RegExp(`${verb}\\s*${number}\\s*(?:个\\s*${asset}|款(?:\\s*${asset})?|种(?:\\s*(?:风格|方向|方案|设计|${asset}))?|个方向|个方案|方向|方案)`, "i"),
+    // Natural requests such as “创作两个不同风格的海报”.
+    new RegExp(
+      `${verb}\\s*${number}\\s*(?:个|种)?\\s*(?:(?:不同|不一样|各异|差异化)(?:的)?\\s*(?:风格|方向|版本|方案)|(?:风格|方向|版本|方案)\\s*(?:不同|不一样|各异|差异化)(?:的)?)\\s*(?:的)?\\s*${asset}`,
+      "i",
+    ),
+  ];
+  const m = patterns.map((pattern) => brief.match(pattern)).find(Boolean);
   if (!m) return 1;
   const n = /\d+/.test(m[1]) ? parseInt(m[1], 10) : ZH_NUM[m[1]] ?? 1;
   return Math.max(1, Math.min(10, n));
+}
+
+/**
+ * Convert a multi-output instruction into the prompt for one upstream image
+ * request. Only output-count phrases are changed; scene quantities such as
+ * “两个产品 / 两个人 / 三个卖点” remain untouched.
+ */
+export function prepareSingleImagePrompt(prompt: string, outputCount: number): string {
+  const original = prompt.trim();
+  if (!original || outputCount <= 1) return original;
+
+  let cleaned = original
+    // Consume the complete modifier in both natural word orders so phrases
+    // such as “生成2张不同风格的海报” never degrade into “生成一张风格的海报”.
+    .replace(
+      /((?:请|同时|再)?(?:帮我|给我)?(?:生成|创作|制作|设计|做|出|来))\s*(?:\d+|[一两二三四五六七八九十])\s*(?:张|幅|版|个|种)?\s*(?:(?:不同|不一样|各不相同|各异|差异化)(?:的)?\s*(?:风格|方向|版本|方案)|(?:风格|方向|版本|方案)\s*(?:不同|不一样|各不相同|各异|差异化))(?:的)?\s*(海报|图片|图像|设计|作品|成图|封面|主视觉)/gi,
+      "$1一张$2",
+    )
+    // “创作两张风格不一样的海报” → “创作一张海报”.
+    .replace(
+      /((?:请|同时|再)?(?:帮我|给我)?(?:生成|创作|制作|设计|做|出|来))\s*(?:\d+|[一两二三四五六七八九十])\s*(?:张|幅|版|个方向|个方案|方向|方案|种(?:风格|方向|方案|设计)?)(?:\s*(?:风格|方向|版本|方案)?\s*(?:不同|不一样|各不相同|各异|差异化)(?:的)?)?/gi,
+      "$1一张",
+    )
+    // “创作两个不同风格的海报” and “创作两个风格不同的海报”.
+    .replace(
+      /(?:\d+|[一两二三四五六七八九十])\s*(?:个|种)?\s*(?:不同|不一样|各不相同|各异|差异化)(?:的)?\s*(?:风格|方向|版本|方案)(?:的)?\s*(海报|图片|图像|设计|作品|成图|封面|主视觉)/gi,
+      "一张$1",
+    )
+    .replace(
+      /(?:\d+|[一两二三四五六七八九十])\s*(?:个|种)?\s*(?:风格|方向|版本|方案)\s*(?:不同|不一样|各不相同|各异|差异化)(?:的)?\s*(海报|图片|图像|设计|作品|成图|封面|主视觉)/gi,
+      "一张$1",
+    )
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\s+([，。；、])/g, "$1")
+    .trim();
+
+  // The server may already have attached this guard to both the base prompt
+  // and a generated variant. Remove every copy first, then append one clean
+  // canonical guard at the end of the single-image request.
+  cleaned = cleaned
+    .split(SINGLE_IMAGE_GUARD)
+    .join("")
+    .replace(/。(?:[ \t\r\n]*。)+/g, "。")
+    .replace(/[。；;，,\s]+$/g, "")
+    .trim();
+
+  if (!cleaned) cleaned = "生成一张完整成图";
+  return `${cleaned}。${SINGLE_IMAGE_GUARD}。`;
 }
 
 /** Quality-neutral negatives: keep intended text, kill garbage. */

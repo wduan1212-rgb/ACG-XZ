@@ -24,6 +24,14 @@ python3 -m venv .venv
 `.env.local`，生产环境也可以直接注入环境变量，或用
 `FALLBACK_ENV` 指向服务器上的私密配置。
 
+无上传口播时，默认使用 `MINIMAX_VOICE_ID`。调用 `/api/chat`
+时也可传入 `voiceId`，或在用户文本中明确写出
+`音色ID：xxx` / `voice_id=xxx`；该 ID 会保存到导演计划并在重试时继续使用。
+如果主平台通过 `MINIMAX_GROUP_ID` 设计音色，sidecar 必须使用同一
+`MINIMAX_API_KEY` 和 `MINIMAX_GROUP_ID`；否则上游可能无法识别该定制音色。
+`POST /api/test/voice` 可用 `{"voiceId":"..."}` 做最小语音烟测，
+返回会回显实际使用的 `voiceId`；该接口会触发真实 TTS 请求，不应用于无限频测。
+
 ## 运行数据
 
 以下目录启动时自动创建，内容被 Git 忽略，部署时应映射到持久卷：

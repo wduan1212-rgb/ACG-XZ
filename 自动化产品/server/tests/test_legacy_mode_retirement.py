@@ -51,7 +51,7 @@ globalThis.window = { addEventListener:()=>{}, dispatchEvent:()=>{}, __toast:()=
 globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
 const { state } = await import('./js/core/store.js');
 const { createProduction, enforceSupportedVideoMode } = await import('./js/domain/productions.js');
-const { createUnitVideoJobs, prepareBatchDigitalHuman } = await import('./js/agent/orchestrator.js?v=20260717-v91-2');
+const { createUnitVideoJobs, prepareBatchDigitalHuman } = await import('./js/agent/orchestrator.js?v=20260717-v92-1');
 state.accounts = [
   { id:'dh', name:'数字人账号', mode:'视频', subType:'数字人', platform:'视频号', voiceId:'voice-test', charBoardAssetId:'char-1' },
   { id:'material', name:'素材账号', mode:'视频', subType:'无数字人', platform:'视频号' }

@@ -3,7 +3,7 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260717-v91-2";
+import { AI } from "../api/ai.js?v=20260717-v92-1";
 import { groupOf } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
@@ -225,7 +225,7 @@ function infoFlowCopyCue(copyText = "", fallback = "") {
 }
 
 function stripInfoFlowDirectorNotes(text = "") {
-  return String(text || "")
+  const cleaned = String(text || "")
     .split(/\n{2,}/)
     .filter(block => !/(?:功能演示分镜结构|分镜结构|第一镜|第二镜|第三镜|第四镜|第五镜|第六镜|前排镜|前景镜|后排镜|第[一二三四五六七八九十]+镜\s*[:：])/.test(block))
     .join("\n\n")
@@ -234,6 +234,7 @@ function stripInfoFlowDirectorNotes(text = "") {
     .replace(/不要只出现抽象光效。?/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+  return cleaned;
 }
 
 function infoFlowRoleAnchor(acc = {}) {
@@ -1737,18 +1738,6 @@ async function draftOne(p, batch) {
   }
 }
 
-function accountDefaultRefIds(acc) {
-  if (!acc) return [];
-  const out = [];
-  if (acc.charBoardAssetId) out.push(acc.charBoardAssetId);
-  state.assets.forEach(a => {
-    if (a.accountId !== acc.id || a.type !== "图片" || a.delivered) return;
-    const text = `${a.name || ""} ${(a.tags || []).join(" ")}`;
-    if (/全能参考|统一参考|角色|身份|logo|界面|产品/.test(text)) out.push(a.id);
-  });
-  return [...new Set(out)].slice(0, 5);
-}
-
 function digitalJobMatches(j, p, segIndex, segmentId = "") {
   if (!(j.productionId === p.id && j.kind === "video" && j.model === "__digital_human__")) return false;
   if (segmentId && j.segmentId) return j.segmentId === segmentId;
@@ -1827,12 +1816,11 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
   enforceSupportedVideoMode(p);
   const units = buildMaterialUnits(p); // 重算确保与脚本同步
   const A = p.artifacts.boards;
-  // 单号工作台可沿用账号默认参考；批量任务只使用任务板明确选择并写入的参考图。
+  // 单号和批量都只使用当前任务明确选择的场景参考；数字人角色板仍按账号身份配置单独处理。
   const acc = accountById(p.accountId);
   A.omniRefAssetIds = A.omniRefAssetIds || [];
   A.sceneRefAssetIds = A.sceneRefAssetIds || [];
   if (!A.characterRefAssetId && acc?.charBoardAssetId) A.characterRefAssetId = acc.charBoardAssetId;
-  if (!A.omniRefAssetIds.length && !p.batchId) A.omniRefAssetIds = accountDefaultRefIds(acc);
   const characterRefId = A.characterRefAssetId || acc?.charBoardAssetId || null;
   const sceneRefs = [...new Set([
     ...(A.sceneRefAssetIds || []),

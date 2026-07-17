@@ -1,5 +1,7 @@
 import importlib
+import json
 import re
+import subprocess
 import sys
 import unittest
 from contextlib import ExitStack
@@ -18,6 +20,45 @@ main = importlib.import_module("main")
 
 
 class CustomCanvasStaticIntegrationTest(unittest.TestCase):
+    def test_canvas_source_keeps_one_single_image_guard_per_request(self):
+        source_path = APP_DIR / "apps" / "infinite-canvas-source" / "src" / "lib" / "agent.ts"
+        source = source_path.read_text(encoding="utf-8")
+        constant_start = source.index("const SINGLE_IMAGE_GUARD")
+        constant_end = source.index("\n", constant_start) + 1
+        function_start = source.index("export function prepareSingleImagePrompt", constant_start)
+        function_end = source.index("\n}\n\n/** Quality-neutral", function_start) + 2
+        runnable = source[constant_start:constant_end] + source[function_start:function_end]
+        runnable = runnable.replace("export function", "function")
+        runnable = runnable.replace("prompt: string", "prompt")
+        runnable = runnable.replace("outputCount: number", "outputCount")
+        runnable = runnable.replace("): string {", ") {")
+        script = f"""
+{runnable}
+const duplicated = `生成一张海报。${{SINGLE_IMAGE_GUARD}}。\n${{SINGLE_IMAGE_GUARD}}。\n第 2 版：保持主题与文案不变。`;
+const guardOnly = `${{SINGLE_IMAGE_GUARD}}。${{SINGLE_IMAGE_GUARD}}。`;
+const normalized = prepareSingleImagePrompt(duplicated, 2);
+const fallback = prepareSingleImagePrompt(guardOnly, 2);
+console.log(JSON.stringify({{
+  normalized,
+  normalizedGuardCount: normalized.split(SINGLE_IMAGE_GUARD).length - 1,
+  fallback,
+  fallbackGuardCount: fallback.split(SINGLE_IMAGE_GUARD).length - 1
+}}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["normalizedGuardCount"], 1)
+        self.assertIn("第 2 版：保持主题与文案不变", payload["normalized"])
+        self.assertNotIn("。。", payload["normalized"])
+        self.assertEqual(payload["fallbackGuardCount"], 1)
+        self.assertTrue(payload["fallback"].startswith("生成一张完整成图。"))
+
     def test_current_canvas_build_is_vendored_with_platform_bridge(self):
         canvas_dir = APP_DIR / "vendor" / "infinite-canvas"
         self.assertTrue((canvas_dir / "index.html").is_file())
@@ -33,6 +74,8 @@ class CustomCanvasStaticIntegrationTest(unittest.TestCase):
         self.assertIn("publishedItemIds", chunks)
         self.assertIn("该图片已提交发布", chunks)
         self.assertIn("ai-design-canvas:v2:", chunks)
+        self.assertIn("单次只生成一张完整成图", chunks)
+        self.assertIn("禁止拼图、分屏或并排展示多个方案", chunks)
 
     def test_vendored_build_is_self_contained_and_all_index_assets_exist(self):
         canvas_dir = APP_DIR / "vendor" / "infinite-canvas"
@@ -194,6 +237,71 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["count"], 3)
         self.assertEqual(len(result["variants"]), 3)
         self.assertIn("保持其外观与文字原样", result["prompt"])
+
+    def test_parallel_output_count_is_not_sent_to_each_single_image(self):
+        result = main._custom_canvas_agent_fallback(main.CustomCanvasAgentReq(
+            brief="为这个logo创作两张风格不一样的海报",
+            scene="enterprise_poster",
+            size="1024x1024",
+            references=[{"label": "logo.png"}],
+        ))
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(len(result["variants"]), 2)
+        for prompt in [result["prompt"], *result["variants"]]:
+            self.assertNotIn("两张", prompt)
+            self.assertNotIn("风格不一样", prompt)
+            self.assertIn("单次只生成一张完整成图", prompt)
+            self.assertIn("禁止拼图", prompt)
+
+    def test_parallel_prompt_cleanup_preserves_scene_object_counts(self):
+        brief = "生成两张海报，画面展示两个产品、两个人和三个卖点"
+        self.assertEqual(main._custom_canvas_explicit_count(brief), 2)
+        cleaned = main._custom_canvas_single_image_prompt(brief, 2)
+        self.assertIn("生成一张海报", cleaned)
+        self.assertIn("两个产品", cleaned)
+        self.assertIn("两个人", cleaned)
+        self.assertIn("三个卖点", cleaned)
+        self.assertEqual(main._custom_canvas_explicit_count("海报展示三款产品和两个 logo"), 1)
+        self.assertEqual(main._custom_canvas_explicit_count("创作两个不同风格的海报"), 2)
+
+    def test_parallel_style_word_orders_clean_to_natural_single_image_requests(self):
+        cases = (
+            "生成2张不同风格的海报",
+            "帮我创作两张不同风格的海报",
+            "为这个logo创作两张风格不一样的海报",
+        )
+        for brief in cases:
+            with self.subTest(brief=brief):
+                self.assertEqual(main._custom_canvas_explicit_count(brief), 2)
+                cleaned = main._custom_canvas_single_image_prompt(brief, 2)
+                self.assertIn("一张海报", cleaned)
+                self.assertNotIn("一张风格", cleaned)
+                self.assertNotIn("不同风格", cleaned)
+                self.assertNotIn("风格不一样", cleaned)
+
+        preserved = main._custom_canvas_single_image_prompt(
+            "生成两张海报，画面有两个产品、两个人和三个卖点",
+            2,
+        )
+        self.assertIn("两个产品", preserved)
+        self.assertIn("两个人", preserved)
+        self.assertIn("三个卖点", preserved)
+
+    def test_scene_and_reference_quantities_are_not_parallel_output_counts(self):
+        single_output_briefs = (
+            "帮我生成海报，画面展示两张照片和三张卡片",
+            "设计封面，桌上放两张发票",
+            "用两张参考图生成海报",
+            "生成一张海报，画面中有两张照片",
+        )
+        for brief in single_output_briefs:
+            with self.subTest(brief=brief):
+                self.assertEqual(main._custom_canvas_explicit_count(brief), 1)
+
+        self.assertEqual(main._custom_canvas_explicit_count("生成两张"), 2)
+        self.assertEqual(main._custom_canvas_explicit_count("生成两张海报"), 2)
+        self.assertEqual(main._custom_canvas_explicit_count("三版方案"), 3)
 
     async def test_generation_forces_requested_ratio_and_requires_reference_receipt(self):
         captured = []

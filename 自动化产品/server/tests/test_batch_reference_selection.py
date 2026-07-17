@@ -122,8 +122,67 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn("账号长期角色图", cards)
         self.assertIn("真人/数字人生成时自动用于角色身份", cards)
         self.assertIn("prunePlanReferences(m.payload)", view)
-        self.assertIn("if (!A.omniRefAssetIds.length && !p.batchId)", orchestrator)
+        self.assertNotIn("accountDefaultRefIds", orchestrator)
+        self.assertNotIn("if (!A.omniRefAssetIds.length && !p.batchId)", orchestrator)
         self.assertIn("!p.batchId ? A.sharedRefAssetId : null", orchestrator)
+
+    def test_new_single_infoflow_does_not_inherit_account_asset_history(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+
+            const { state } = await import("./js/core/store.js");
+            const { createProduction, buildMaterialUnits } = await import("./js/domain/productions.js");
+            const { createUnitVideoJobs } = await import("./js/agent/orchestrator.js?v=20260717-v92-1");
+
+            state.accounts = [
+              { id:"material-a", name:"素材号", mode:"视频", subType:"无数字人", platform:"视频号" },
+              { id:"digital-a", name:"数字人号", mode:"视频", subType:"数字人", platform:"视频号", charBoardAssetId:"role-board" }
+            ];
+            state.assets = [
+              { id:"old-logo", accountId:"material-a", type:"图片", name:"旧 logo", tags:["全能参考","logo"] },
+              { id:"old-ui", accountId:"material-a", type:"图片", name:"旧界面图", tags:["统一参考","界面"] },
+              { id:"role-board", accountId:"digital-a", type:"图片", name:"角色板", tags:["角色板"] }
+            ];
+            state.productions = [];
+            state.jobs = [];
+            state.ui.currentMemberId = "tester";
+
+            const infoflow = createProduction({ accountId:"material-a", topic:"新任务" });
+            infoflow.artifacts.script.shots = [{ scene:1, idea:"开场", visual:"办公场景", line:"测试", ui:false }];
+            infoflow.artifacts.audio.perShot = [{ dur:5 }];
+            const units = buildMaterialUnits(infoflow);
+            units[0].videoPrompt = "9:16竖屏，办公场景。";
+            createUnitVideoJobs(infoflow);
+
+            const digital = createProduction({ accountId:"digital-a", topic:"数字人新任务" });
+            createUnitVideoJobs(digital);
+
+            console.log(JSON.stringify({
+              infoflowRefs: state.jobs.filter(job => job.productionId === infoflow.id).map(job => job.refAssetIds),
+              infoflowOmni: infoflow.artifacts.boards.omniRefAssetIds,
+              infoflowScene: infoflow.artifacts.boards.sceneRefAssetIds,
+              digitalRole: digital.artifacts.boards.characterRefAssetId
+            }));
+            """
+        )
+        self.assertEqual(result["infoflowRefs"], [[]])
+        self.assertEqual(result["infoflowOmni"], [])
+        self.assertEqual(result["infoflowScene"], [])
+        self.assertEqual(result["digitalRole"], "role-board")
+
+    def test_browser_title_and_batch_reference_layout_are_unambiguous(self):
+        index = (APP_DIR / "index.html").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles/ui-motion.css").read_text(encoding="utf-8")
+
+        self.assertIn("<title>星阵</title>", index)
+        self.assertNotIn("星阵 · 内容生产工作台", index)
+        self.assertIn(".agc-mini-ref {\n  grid-area: refs;\n  display: grid;", styles)
+        self.assertIn('"refs refs refs refs"', styles)
+        self.assertIn(".agc-mini-ref .agc-mini-head::before { display: none; }", styles)
 
 
 if __name__ == "__main__":
