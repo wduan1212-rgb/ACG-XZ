@@ -27,7 +27,6 @@ import mimetypes
 import io
 import re
 import inspect
-import difflib
 import sqlite3
 import sys
 from datetime import datetime, timezone
@@ -1452,29 +1451,6 @@ class ComposeReq(BaseModel):
     transitionDuration: float = 0.0
     subtitleStyle: ComposeSubtitleStyle = ComposeSubtitleStyle()
     subtitles: List[ComposeSubtitle] = []
-
-
-class AudioTimingHint(BaseModel):
-    text: str = ""
-    start: Optional[float] = None
-    end: Optional[float] = None
-
-
-class AudioTimingClip(BaseModel):
-    url: str = ""
-    audioUrl: str = ""
-    audioDataUrl: str = ""
-    clipId: str = ""
-    trimIn: Optional[float] = 0
-    duration: Optional[float] = None
-    text: str = ""
-    hints: List[AudioTimingHint] = []
-    strict: bool = False
-    trustedNarration: bool = False
-
-
-class AudioTimingReq(BaseModel):
-    clips: List[AudioTimingClip]
 
 
 def _video_status(data: dict) -> str:
@@ -2911,65 +2887,6 @@ def _compose_with_xfade(ffmpeg: str, files: List[Path], clips: List[ComposeClip]
     return run.returncode == 0 and output.exists() and output.stat().st_size > 0
 
 
-def _caption_chunks(text: str, max_len: int = 18) -> List[str]:
-    clean = re.sub(r"\s+", "", str(text or "").strip())
-    if not clean:
-        return []
-    chunks = []
-    for sentence in re.split(r"(?<=[，。！？!?；;])", clean):
-        sentence = sentence.strip()
-        while len(sentence) > max_len:
-            cut = max_len
-            for mark in ("，", "。", "！", "？", ";", "；"):
-                pos = sentence.rfind(mark, 0, max_len + 1)
-                if pos >= max(4, max_len // 2):
-                    cut = pos + 1
-                    break
-            chunks.append(sentence[:cut])
-            sentence = sentence[cut:]
-        if sentence:
-            chunks.append(sentence)
-    return chunks
-
-
-def _media_duration_from_ffmpeg(stderr: str) -> float:
-    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr or "")
-    if not match:
-        return 0.0
-    return int(match.group(1)) * 3600 + int(match.group(2)) * 60 + float(match.group(3))
-
-
-def _effective_media_duration(source_duration: float, trim_in: float = 0, duration_limit: Optional[float] = None) -> float:
-    trim = max(0.0, float(trim_in or 0))
-    source = max(0.0, float(source_duration or 0))
-    limit = max(0.0, float(duration_limit or 0))
-    available = max(0.0, source - trim) if source > 0 else 0.0
-    if limit > 0:
-        return min(limit, available) if source > 0 else limit
-    return available
-
-
-def _probe_media_duration(ffmpeg: str, path: Path) -> float:
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        sibling = Path(ffmpeg).with_name("ffprobe")
-        ffprobe = str(sibling) if sibling.is_file() else ""
-    if ffprobe:
-        run = subprocess.run(
-            [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        try:
-            if run.returncode == 0:
-                return max(0.0, float((run.stdout or "").strip()))
-        except (TypeError, ValueError):
-            pass
-    run = subprocess.run([ffmpeg, "-hide_banner", "-i", str(path)], capture_output=True, text=True, timeout=30)
-    return _media_duration_from_ffmpeg(run.stderr)
-
-
 def _media_has_audio(ffmpeg: str, path: Path) -> bool:
     """Return whether a rendered base video has an audio stream.
 
@@ -3052,560 +2969,6 @@ def _compose_audio_command(
         "-movflags", "+faststart", str(mixed_path),
     ]
     return command
-
-
-def _speech_windows(stderr: str, duration: float) -> List[Tuple[float, float]]:
-    silences = []
-    pending = None
-    for line in (stderr or "").splitlines():
-        start = re.search(r"silence_start:\s*([0-9.]+)", line)
-        end = re.search(r"silence_end:\s*([0-9.]+)", line)
-        if start:
-            pending = float(start.group(1))
-        if end:
-            silences.append((0.0 if pending is None else pending, float(end.group(1))))
-            pending = None
-    if pending is not None:
-        silences.append((pending, duration))
-    windows = []
-    cursor = 0.0
-    for start, end in silences:
-        if start - cursor >= 0.18:
-            windows.append((cursor, start))
-        cursor = max(cursor, end)
-    if duration - cursor >= 0.18:
-        windows.append((cursor, duration))
-    return windows or ([(0.0, duration)] if duration > 0 else [])
-
-
-def _align_chunks_to_windows(chunks: List[str], windows: List[Tuple[float, float]], offset: float) -> List[dict]:
-    if not chunks or not windows:
-        return []
-    timeline = [[start, end, max(0.1, end - start)] for start, end in windows if end - start >= 0.16]
-    if not timeline:
-        return []
-    # Keep every cue inside one detected speech window so it cannot bridge a
-    # silent pause and appear before the next spoken sentence.
-    counts = [0] * len(timeline)
-    if len(chunks) >= len(timeline):
-        for i in range(len(timeline)):
-            counts[i] = 1
-        remaining = len(chunks) - len(timeline)
-        weights = [item[2] for item in timeline]
-        while remaining > 0:
-            target = max(range(len(timeline)), key=lambda i: weights[i] / max(1, counts[i]))
-            counts[target] += 1
-            remaining -= 1
-    else:
-        selected = sorted(sorted(range(len(timeline)), key=lambda i: timeline[i][2], reverse=True)[:len(chunks)])
-        timeline = [timeline[i] for i in selected]
-        counts = [1] * len(timeline)
-    cues = []
-    chunk_index = 0
-    for (window_start, window_end, window_dur), count in zip(timeline, counts):
-        group = chunks[chunk_index:chunk_index + count]
-        chunk_index += count
-        chars = max(1, sum(len(text) for text in group))
-        cursor = window_start
-        for index, text in enumerate(group):
-            share = window_dur * len(text) / chars
-            cue_end = window_end if index == len(group) - 1 else min(window_end, cursor + max(0.38, share))
-            cues.append({"start": round(offset + cursor, 2), "end": round(offset + max(cursor + 0.32, cue_end), 2), "text": text})
-            cursor = cue_end
-    return cues
-
-
-def _whisper_cpp_paths() -> Tuple[Optional[Path], Optional[Path]]:
-    cache = Path.home() / ".cache" / "acg-xz" / "whisper.cpp"
-    binary = Path(os.getenv("ACG_WHISPER_BIN", cache / "build" / "bin" / "whisper-cli")).expanduser()
-    model = Path(os.getenv("ACG_WHISPER_MODEL", cache / "models" / "ggml-base.bin")).expanduser()
-    return (binary, model) if binary.is_file() and os.access(binary, os.X_OK) and model.is_file() else (None, None)
-
-
-def _whisper_model_supports_zh(model: Path) -> bool:
-    # whisper.cpp 的 *.en 模型只有英语词表，即使强制 -l zh 也会产生乱码或幻觉。
-    return not bool(re.search(r"(?:^|[._-])en(?:[._-]|$)", model.name.lower()))
-
-
-def _clean_transcript_text(text: str) -> str:
-    value = str(text or "").replace("\\n", " ").replace("\ufffd", "")
-    value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", value)
-    value = re.sub(r"[□■▢▣�]+", "", value)
-    value = re.sub(r"(?:<\|[^>]+\|>|\[(?:音乐|掌声|笑声|静音|BLANK_AUDIO)\])", "", value, flags=re.I)
-    value = re.sub(r"\s+", "", value).strip("，。！？!?；;、| ")
-    return value
-
-
-def _usable_transcript_text(text: str) -> bool:
-    value = str(text or "")
-    if len(value) < 2 or len(value) > 80:
-        return False
-    if re.search(r"[□■▢▣�]", value):
-        return False
-    useful = re.findall(r"[\u3400-\u9fffA-Za-z0-9]", value)
-    if len(useful) / max(1, len(value)) < 0.62:
-        return False
-    if re.search(r"(?:感谢观看|请订阅|字幕\s*(?:由|by)|Amara\.org)", value, flags=re.I):
-        return False
-    return True
-
-
-def _correct_whisper_text(text: str, prompt: str) -> str:
-    recognized = _clean_transcript_text(text)
-    recognized = recognized.replace("许求", "需求").replace("下班钱", "下班前").replace("硬牌", "硬排")
-    candidates = [_clean_transcript_text(item) for item in _caption_chunks(prompt, max_len=14)]
-    candidates = [item for item in candidates if 2 <= len(item) <= 20]
-    if not _usable_transcript_text(recognized):
-        return ""
-    best = recognized
-    best_ratio = 0.0
-    for candidate in candidates:
-        if abs(len(candidate) - len(recognized)) > 4:
-            continue
-        ratio = difflib.SequenceMatcher(None, recognized, candidate).ratio()
-        if ratio > best_ratio:
-            best, best_ratio = candidate, ratio
-    if candidates and best_ratio < 0.30:
-        return ""
-    corrected = best if best_ratio >= 0.72 else recognized
-    return corrected if _usable_transcript_text(corrected) else ""
-
-
-def _alignment_chars(text: str) -> List[str]:
-    return re.findall(r"[\u3400-\u9fffA-Za-z0-9]", _clean_transcript_text(text))
-
-
-def _whisper_timed_chars(payload: dict, duration: float) -> List[dict]:
-    """Expand whisper.cpp full-JSON tokens into timestamped characters.
-
-    Chinese subtitles have no reliable whitespace boundaries. Character-level
-    anchors let the known narration remain the content source while ASR only
-    supplies timing, matching OpenMontage's word-timestamp + correction split.
-    """
-    timed = []
-    for segment in payload.get("transcription") or []:
-        segment_offsets = segment.get("offsets") if isinstance(segment.get("offsets"), dict) else {}
-        segment_start = max(0.0, float(segment_offsets.get("from") or 0) / 1000)
-        segment_end = min(duration or 1e9, max(segment_start + 0.12, float(segment_offsets.get("to") or 0) / 1000))
-        tokens = segment.get("tokens") if isinstance(segment.get("tokens"), list) else []
-        rows = tokens or [{"text": segment.get("text") or "", "offsets": segment_offsets}]
-        for token in rows:
-            raw = _clean_transcript_text(token.get("text") if isinstance(token, dict) else "")
-            chars = _alignment_chars(raw)
-            if not chars or not _usable_transcript_text(raw if len(raw) >= 2 else "".join(chars) + "字"):
-                continue
-            offsets = token.get("offsets") if isinstance(token, dict) and isinstance(token.get("offsets"), dict) else {}
-            start = max(segment_start, float(offsets.get("from") or segment_start * 1000) / 1000)
-            end = min(segment_end, max(start + 0.06, float(offsets.get("to") or segment_end * 1000) / 1000))
-            span = max(0.06, end - start)
-            for char_index, char in enumerate(chars):
-                char_start = start + span * char_index / len(chars)
-                char_end = start + span * (char_index + 1) / len(chars)
-                timed.append({"char": char, "start": char_start, "end": char_end})
-    return timed
-
-
-def _hint_bounds(hint: AudioTimingHint, duration: float) -> Tuple[float, float]:
-    start = max(0.0, float(hint.start)) if hint.start is not None else 0.0
-    end = min(duration, float(hint.end)) if hint.end is not None and duration > 0 else duration
-    if end <= start:
-        end = duration if duration > start else start + 0.5
-    return start, end
-
-
-def _known_text_anchors(script_chars: List[str], candidates: List[dict]) -> Tuple[dict, set, float, float]:
-    recognized = [item["char"] for item in candidates]
-    matcher = difflib.SequenceMatcher(None, script_chars, recognized, autojunk=False)
-    anchors = {}
-    exact_indices = set()
-    for block in matcher.get_matching_blocks():
-        for step in range(block.size):
-            script_index = block.a + step
-            anchors[script_index] = (candidates[block.b + step]["start"], candidates[block.b + step]["end"])
-            exact_indices.add(script_index)
-
-    # Whisper 对中文同音字常以等长替换输出。只在替换块两端都有真实
-    # 完全匹配锚点时，才把块内 token 单调映射回来；绝不补首尾大段文本。
-    fuzzy_count = 0
-    opcodes = matcher.get_opcodes()
-    for opcode_index, (tag, a1, a2, b1, b2) in enumerate(opcodes):
-        if tag != "replace" or not (a2 > a1 and b2 > b1):
-            continue
-        left_bounded = opcode_index > 0 and opcodes[opcode_index - 1][0] == "equal"
-        right_bounded = opcode_index + 1 < len(opcodes) and opcodes[opcode_index + 1][0] == "equal"
-        script_span = a2 - a1
-        recognized_span = b2 - b1
-        if not (left_bounded and right_bounded) or max(script_span, recognized_span) > 8:
-            continue
-        if min(script_span, recognized_span) / max(script_span, recognized_span) < 0.62:
-            continue
-        for step in range(script_span):
-            script_index = a1 + step
-            recognized_index = b1 + min(recognized_span - 1, int(step * recognized_span / script_span))
-            token = candidates[recognized_index]
-            anchors.setdefault(script_index, (token["start"], token["end"]))
-            fuzzy_count += int(script_index not in exact_indices)
-    exact_coverage = len(exact_indices) / max(1, len(script_chars))
-    weighted_coverage = (len(exact_indices) + fuzzy_count * 0.55) / max(1, len(script_chars))
-    return anchors, exact_indices, exact_coverage, max(weighted_coverage, matcher.ratio())
-
-
-def _align_known_hint(hint: AudioTimingHint, timed_chars: List[dict], duration: float, *, strict: bool) -> List[dict]:
-    output_text = _clean_transcript_text(hint.text)
-    script_chars = _alignment_chars(output_text)
-    if len(script_chars) < 2:
-        return []
-    bound_start, bound_end = _hint_bounds(hint, duration)
-    padding = 0.22 if hint.start is not None or hint.end is not None else 0.0
-    candidates = [
-        item for item in timed_chars
-        if item["end"] >= bound_start - padding and item["start"] <= bound_end + padding
-    ]
-    recognized = [item["char"] for item in candidates]
-    if len(recognized) < 2:
-        return []
-    anchors, exact_indices, exact_coverage, weighted_coverage = _known_text_anchors(script_chars, candidates)
-    min_exact_coverage = 0.38 if strict else 0.28
-    min_weighted_coverage = 0.56 if strict else 0.44
-    if len(exact_indices) < 2 or exact_coverage < min_exact_coverage or weighted_coverage < min_weighted_coverage:
-        return []
-
-    chunks = _caption_chunks(output_text, max_len=12)
-    cues = []
-    script_cursor = 0
-    previous_end = bound_start
-    matched_starts = [value[0] for value in anchors.values()]
-    matched_ends = [value[1] for value in anchors.values()]
-    speech_start = max(bound_start, min(matched_starts) if matched_starts else bound_start)
-    speech_end = min(bound_end, max(matched_ends) if matched_ends else bound_end)
-    speech_span = max(0.35, speech_end - speech_start)
-    total_chars = max(1, len(script_chars))
-    for chunk in chunks:
-        chunk_chars = _alignment_chars(chunk)
-        if not chunk_chars:
-            continue
-        chunk_start_index = script_cursor
-        chunk_end_index = min(total_chars, chunk_start_index + len(chunk_chars))
-        script_cursor = chunk_end_index
-        chunk_anchors = [anchors[i] for i in range(chunk_start_index, chunk_end_index) if i in anchors]
-        chunk_exact = [i for i in range(chunk_start_index, chunk_end_index) if i in exact_indices]
-        min_chunk_anchors = max(2, int(len(chunk_chars) * (0.26 if strict else 0.18) + 0.999))
-        if len(chunk_anchors) < min_chunk_anchors or (strict and not chunk_exact):
-            continue
-        start = min(item[0] for item in chunk_anchors) - 0.04
-        end = max(item[1] for item in chunk_anchors) + 0.18
-        start = max(bound_start, previous_end, start)
-        end = min(bound_end, max(start + 0.26, end))
-        if end <= start + 0.05:
-            continue
-        cues.append({
-            "start": round(start, 2),
-            "end": round(end, 2),
-            "text": chunk,
-            "precise": True,
-        })
-        previous_end = end + 0.02
-    return cues
-
-
-def _align_known_hints(hints: List[AudioTimingHint], timed_chars: List[dict], duration: float, *, strict: bool) -> List[dict]:
-    cues = []
-    for hint in hints:
-        cues.extend(_align_known_hint(hint, timed_chars, duration, strict=strict))
-    ordered = sorted(cues, key=lambda cue: (cue["start"], cue["end"]))
-    normalized = []
-    previous_end = 0.0
-    for cue in ordered:
-        start = max(float(cue["start"]), previous_end)
-        end = min(float(duration), float(cue["end"]))
-        if end <= start + 0.05:
-            continue
-        normalized.append({
-            **cue,
-            "start": round(start, 2),
-            "end": round(end, 2),
-        })
-        previous_end = end + 0.02
-    return normalized
-
-
-def _vad_analysis_command(
-    ffmpeg: str,
-    media_path: Path,
-    *,
-    trim_in: float,
-    duration_limit: Optional[float],
-    threshold: str,
-) -> List[str]:
-    trim = max(0.0, float(trim_in or 0))
-    limit = max(0.0, float(duration_limit or 0))
-    filters = []
-    if trim > 0 or limit > 0:
-        atrim = f"atrim=start={trim:.3f}"
-        if limit > 0:
-            atrim += f":duration={limit:.3f}"
-        filters += [atrim, "asetpts=PTS-STARTPTS"]
-    filters += [
-        "highpass=f=150",
-        "lowpass=f=3800",
-        "afftdn=nf=-25",
-        f"silencedetect=noise={threshold}:d=0.16",
-    ]
-    return [
-        ffmpeg, "-hide_banner", "-i", str(media_path),
-        "-af", ",".join(filters), "-f", "null", "-",
-    ]
-
-
-async def _write_audio_timing_source(
-    client: httpx.AsyncClient,
-    clip: AudioTimingClip,
-    path: Path,
-    index: int,
-) -> str:
-    if str(clip.audioDataUrl or "").strip():
-        if not _write_data_url(path, clip.audioDataUrl):
-            raise HTTPException(400, f"字幕分析音频数据无效：{index + 1}")
-        return "direct-audio"
-    direct_url = str(clip.audioUrl or "").strip()
-    if direct_url:
-        if direct_url.startswith("data:"):
-            if not _write_data_url(path, direct_url):
-                raise HTTPException(400, f"字幕分析音频数据无效：{index + 1}")
-        elif not await _write_video_source(client, direct_url, path, f"下载字幕分析音频失败：{index + 1}"):
-            raise HTTPException(400, f"字幕分析音频地址无效：{index + 1}")
-        return "direct-audio"
-    if not await _write_video_source(client, clip.url, path, f"下载字幕分析片段失败：{index + 1}"):
-        raise HTTPException(400, f"字幕分析片段地址无效：{index + 1}")
-    return "video-audio"
-
-
-def _transcribe_with_whisper(
-    ffmpeg: str,
-    media_path: Path,
-    workdir: Path,
-    index: int,
-    prompt: str = "",
-    hints: Optional[List[AudioTimingHint]] = None,
-    *,
-    strict: bool = False,
-    trim_in: float = 0,
-    duration_limit: Optional[float] = None,
-) -> Tuple[List[dict], float]:
-    binary, model = _whisper_cpp_paths()
-    if not binary or not model or not _whisper_model_supports_zh(model):
-        return [], 0.0
-    wav_path = workdir / f"whisper_{index:03d}.wav"
-    extract_command = [ffmpeg, "-hide_banner", "-y", "-i", str(media_path)]
-    trim = max(0.0, float(trim_in or 0))
-    limit = max(0.0, float(duration_limit or 0))
-    if trim > 0:
-        extract_command += ["-ss", f"{trim:.3f}"]
-    if limit > 0:
-        extract_command += ["-t", f"{limit:.3f}"]
-    extract_command += ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(wav_path)]
-    extract = subprocess.run(extract_command, capture_output=True, text=True, timeout=300)
-    source_duration = _media_duration_from_ffmpeg(extract.stderr)
-    duration = _effective_media_duration(source_duration, trim, limit)
-    if extract.returncode != 0 or not wav_path.exists():
-        return [], duration
-    if duration <= 0:
-        duration = _probe_media_duration(ffmpeg, wav_path)
-    output_prefix = workdir / f"whisper_{index:03d}"
-    command = [str(binary), "-m", str(model), "-f", str(wav_path), "-l", "zh", "-ml", "0", "-sow", "-ojf", "-of", str(output_prefix), "-sns", "-np"]
-    force_cpu = os.getenv(
-        "ACG_WHISPER_FORCE_CPU",
-        "true" if sys.platform == "darwin" else "false",
-    ).strip().lower() not in {"0", "false", "no"}
-    if force_cpu:
-        command.append("-ng")
-    run = subprocess.run(
-        command,
-        capture_output=True, text=True, timeout=600
-    )
-    output_path = output_prefix.with_suffix(".json")
-    if run.returncode != 0 and "-ng" not in command:
-        try:
-            output_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        # 部分 Metal/CUDA 运行时能启动但在推理阶段崩溃。真实 Whisper
-        # 失败时仅重试一次 CPU，而不是悄悄降级为脚本文字均摊。
-        run = subprocess.run(
-            command + ["-ng"],
-            capture_output=True, text=True, timeout=600
-        )
-    if run.returncode != 0 or not output_path.exists():
-        return [], duration
-    try:
-        payload = json.loads(output_path.read_text("utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return [], duration
-    known_hints = [hint for hint in (hints or []) if _clean_transcript_text(hint.text)]
-    known_text = _clean_transcript_text(prompt)[:320]
-    if not known_hints and known_text:
-        known_hints = [AudioTimingHint(text=known_text)]
-    timed_chars = _whisper_timed_chars(payload, duration)
-    return _align_known_hints(known_hints, timed_chars, duration, strict=strict), duration
-
-
-@app.post("/api/video/audio-timing")
-async def video_audio_timing(
-    req: AudioTimingReq,
-    _me=Depends(require_creator),
-):
-    """Use known spoken text as a whitelist and real ASR tokens only as timing anchors."""
-    ffmpeg = _ffmpeg_bin()
-    if not ffmpeg:
-        raise HTTPException(501, "本机未安装 ffmpeg，无法分析视频音轨")
-    cues = []
-    clip_sources = []
-    offset = 0.0
-    whisper_binary, whisper_model = _whisper_cpp_paths()
-    whisper_available = bool(whisper_binary and whisper_model and _whisper_model_supports_zh(whisper_model))
-    with tempfile.TemporaryDirectory() as td:
-        tdir = Path(td)
-        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(240.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
-            for index, clip in enumerate((req.clips or [])[:24]):
-                path = tdir / f"timing_{index:03d}.media"
-                input_source = await _write_audio_timing_source(client, clip, path, index)
-                hints = clip.hints or ([AudioTimingHint(text=clip.text)] if clip.text else [])
-                trim = max(0.0, float(clip.trimIn or 0))
-                duration_limit = max(0.0, float(clip.duration or 0))
-                whisper_cues, whisper_duration = _transcribe_with_whisper(
-                    ffmpeg,
-                    path,
-                    tdir,
-                    index,
-                    clip.text,
-                    hints,
-                    strict=clip.strict,
-                    trim_in=trim,
-                    duration_limit=duration_limit,
-                )
-                if whisper_cues:
-                    cues.extend({
-                        **cue,
-                        "clipIndex": index,
-                        "clipId": clip.clipId,
-                        "engine": "whisper.cpp",
-                        "inputSource": input_source,
-                        "start": round(offset + cue["start"], 2),
-                        "end": round(offset + cue["end"], 2),
-                    } for cue in whisper_cues)
-                    clip_sources.append({
-                        "clipIndex": index,
-                        "clipId": clip.clipId,
-                        "engine": "whisper.cpp",
-                        "inputSource": input_source,
-                        "duration": round(whisper_duration, 2),
-                        "cueCount": len(whisper_cues),
-                    })
-                    # 后一片段必须从视频时间轴上的片段边界开始；口播音频
-                    # 比视频短时不能把后续字幕整体提前。
-                    offset += duration_limit or whisper_duration
-                    continue
-                analyses = []
-                for threshold in ("-27dB", "-31dB", "-35dB"):
-                    run = subprocess.run(
-                        _vad_analysis_command(
-                            ffmpeg,
-                            path,
-                            trim_in=trim,
-                            duration_limit=duration_limit,
-                            threshold=threshold,
-                        ),
-                        capture_output=True, text=True, timeout=300
-                    )
-                    duration = _effective_media_duration(
-                        _media_duration_from_ffmpeg(run.stderr),
-                        trim,
-                        duration_limit,
-                    )
-                    if duration > 0:
-                        analyses.append((duration, _speech_windows(run.stderr, duration)))
-                duration = analyses[0][0] if analyses else whisper_duration
-                if duration <= 0:
-                    duration = _effective_media_duration(_probe_media_duration(ffmpeg, path), trim, duration_limit)
-                if duration <= 0:
-                    clip_sources.append({
-                        "clipIndex": index,
-                        "clipId": clip.clipId,
-                        "engine": "none",
-                        "attemptedEngine": "whisper.cpp" if whisper_available else "none",
-                        "inputSource": input_source,
-                        "duration": 0,
-                        "cueCount": 0,
-                    })
-                    offset += duration_limit
-                    continue
-                # 信息流严格模式及普通直接音频仍必须通过真实 ASR token
-                # 锚点。唯一例外是数字人分段：它的独立 MP3 就是由对应
-                # segment.line 生成的真实口播，可在 Whisper 不可用时用 VAD 只做
-                # 时间定位。这个开关不能用于视频提示词或普通导演文本。
-                trusted_segment = bool(
-                    clip.trustedNarration
-                    and input_source == "direct-audio"
-                    and not clip.strict
-                    and any(_clean_transcript_text(hint.text) for hint in hints)
-                )
-                if clip.strict or (input_source == "direct-audio" and not trusted_segment):
-                    clip_sources.append({
-                        "clipIndex": index,
-                        "clipId": clip.clipId,
-                        "engine": "none",
-                        "attemptedEngine": "whisper.cpp" if whisper_available else "none",
-                        "inputSource": input_source,
-                        "duration": round(duration, 2),
-                        "cueCount": 0,
-                    })
-                    offset += duration_limit or duration
-                    continue
-                chunks = _caption_chunks("".join(hint.text for hint in hints) or clip.text)
-                candidates = [item[1] for item in analyses if item[1]]
-                windows = min(candidates, key=lambda rows: (abs(len(rows) - max(1, len(chunks))), -sum(end - start for start, end in rows))) if candidates else [(0.0, duration)]
-                vad_cues = _align_chunks_to_windows(chunks, windows, offset)
-                vad_engine = "ffmpeg-segment-vad" if trusted_segment else "ffmpeg-vad"
-                cues.extend({
-                    **cue,
-                    "clipIndex": index,
-                    "clipId": clip.clipId,
-                    "precise": False,
-                    "engine": vad_engine,
-                    "inputSource": input_source,
-                } for cue in vad_cues)
-                clip_sources.append({
-                    "clipIndex": index,
-                    "clipId": clip.clipId,
-                    "engine": vad_engine if vad_cues else "none",
-                    "attemptedEngine": "whisper.cpp" if whisper_available else "none",
-                    "inputSource": input_source,
-                    "duration": round(duration, 2),
-                    "cueCount": len(vad_cues),
-                })
-                offset += duration_limit or duration
-    used_engines = sorted({item["engine"] for item in clip_sources if item.get("cueCount") and item.get("engine") != "none"})
-    engine = used_engines[0] if len(used_engines) == 1 else ("hybrid" if used_engines else "none")
-    input_sources = sorted({item["inputSource"] for item in clip_sources})
-    input_label = input_sources[0] if len(input_sources) == 1 else ("mixed-input" if input_sources else "no-input")
-    if engine == "whisper.cpp":
-        source = f"whisper-post-align-v2-{input_label}"
-    elif engine == "ffmpeg-segment-vad":
-        source = f"digital-segment-vad-v1-{input_label}"
-    elif engine == "ffmpeg-vad":
-        source = f"ffmpeg-dialogue-vad-v4-{input_label}"
-    elif engine == "hybrid":
-        source = f"hybrid-audio-timing-v2-{input_label}"
-    else:
-        source = f"no-aligned-speech-v2-{input_label}"
-    return {
-        "ok": True,
-        "duration": round(offset, 2),
-        "cues": cues,
-        "engine": engine,
-        "source": source,
-        "clipSources": clip_sources,
-    }
 
 
 @app.post("/api/video/compose")
@@ -4113,29 +3476,21 @@ class Account(BaseModel):
 
 
 @app.get("/api/accounts")
-def list_accounts(_me=Depends(require_creator)):
-    return load_db()["accounts"]
+def list_accounts(response: Response, me=Depends(require_creator)):
+    """旧客户端兼容读；权威数据已统一来自 /api/state 的文档库。"""
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = '</api/state>; rel="successor-version"'
+    return store.state_for(me["id"], me["role"], me.get("parentId")).get("accounts", [])
 
 
 @app.post("/api/accounts")
 def create_account(acc: Account, _me=Depends(require_creator)):
-    db = load_db()
-    item = {"id": uuid.uuid4().hex[:8], "createdAt": int(time.time()),
-            "monthlyDone": 0, "assets": [], **acc.dict()}
-    db["accounts"].append(item)
-    save_db(db)
-    return item
+    raise HTTPException(410, "旧账号写入接口已停用，请使用 /api/db/accounts")
 
 
 @app.delete("/api/accounts/{acc_id}")
 def delete_account(acc_id: str, _me=Depends(require_creator)):
-    db = load_db()
-    before = len(db["accounts"])
-    db["accounts"] = [a for a in db["accounts"] if a["id"] != acc_id]
-    if len(db["accounts"]) == before:
-        raise HTTPException(404, "账号不存在")
-    save_db(db)
-    return {"ok": True}
+    raise HTTPException(410, "旧账号写入接口已停用，请使用 /api/db/accounts")
 
 
 # ---------- 素材（供应商端下载的成片） ----------
@@ -5495,6 +4850,43 @@ def member_requests_reject(rid: str, me=Depends(require_member)):
 # =========================================================
 # 定制创作 · 视频工坊 sidecar
 # =========================================================
+_VIDEO_PROJECT_INDEX_TTL_SEC = 5.0
+_VIDEO_PROJECT_INDEX_CACHE = {}
+
+
+def _video_workshop_project_index(member_id: str, force: bool = False):
+    key = str(member_id or "")
+    now = time.monotonic()
+    cached = _VIDEO_PROJECT_INDEX_CACHE.get(key)
+    if cached and not force and now - cached[0] < _VIDEO_PROJECT_INDEX_TTL_SEC:
+        return cached[1]
+    index = {}
+    for mapped in store.list_custom_projects(key, "video"):
+        state = mapped.get("projectState") if isinstance(mapped.get("projectState"), dict) else {}
+        workshop_project_id = str(state.get("workshopProjectId") or "").strip()
+        if state.get("integration") == "video-workshop" and workshop_project_id:
+            index[workshop_project_id] = mapped
+    _VIDEO_PROJECT_INDEX_CACHE[key] = (now, index)
+    return index
+
+
+def _video_workshop_preferred_voice(me):
+    presets = store.list_voice_presets()
+    own = [item for item in presets if item.get("ownerId") == str(me.get("id") or "")]
+    selected = (own or presets or [None])[0]
+    if selected:
+        return {
+            "voiceId": str(selected.get("voiceId") or "").strip(),
+            "name": str(selected.get("name") or selected.get("voiceId") or "").strip(),
+            "source": "designed",
+        }
+    return {
+        "voiceId": str(MINIMAX_VOICE_ID or "").strip(),
+        "name": "平台默认音色",
+        "source": "system",
+    }
+
+
 def _custom_video_session_member(request: Request):
     token = str(request.cookies.get(VIDEO_WORKSHOP_SESSION_COOKIE) or "").strip()
     if not token:
@@ -5520,7 +4912,7 @@ def _video_workshop_safe_path(root: Path, relative_path: str):
 
 
 def _video_workshop_owned_project(me, project_id: str):
-    project = store.find_custom_video_project(me["id"], str(project_id or "").strip())
+    project = _video_workshop_project_index(me["id"]).get(str(project_id or "").strip())
     if not project:
         raise HTTPException(403, "无权访问其他成员的视频工坊项目")
     return project
@@ -5542,6 +4934,7 @@ def _sync_video_workshop_project(me, source):
         raise HTTPException(403, "视频工坊项目归属冲突")
     if error or not mapped:
         raise HTTPException(500, "视频工坊项目映射失败")
+    _VIDEO_PROJECT_INDEX_CACHE.pop(str(me["id"]), None)
     project = _rewrite_video_workshop_urls(source)
     project["_integration"] = {
         "kind": "video",
@@ -5550,13 +4943,24 @@ def _sync_video_workshop_project(me, source):
         "publishedDeliveryId": str(mapped.get("publishedDeliveryId") or ""),
         "publishedAt": int(mapped.get("publishedAt") or 0),
         "publishedCount": max(0, int(mapped.get("publishedCount") or 0)),
+        "publishedVideoOutputs": (
+            dict((mapped.get("projectState") or {}).get("publishedVideoOutputs"))
+            if isinstance((mapped.get("projectState") or {}).get("publishedVideoOutputs"), dict)
+            else {}
+        ),
     }
     return project
 
 
-async def _video_workshop_request(request: Request, api_path: str):
+async def _video_workshop_request(
+    request: Request,
+    api_path: str,
+    *,
+    body_override=None,
+    params_override=None,
+):
     target = VIDEO_WORKSHOP_URL + "/api/" + api_path.lstrip("/")
-    body = await request.body()
+    body = await request.body() if body_override is None else body_override
     headers = {"Accept": "application/json"}
     content_type = request.headers.get("content-type")
     if content_type:
@@ -5570,7 +4974,7 @@ async def _video_workshop_request(request: Request, api_path: str):
                 request.method,
                 target,
                 content=body or None,
-                params=list(request.query_params.multi_items()),
+                params=(list(request.query_params.multi_items()) if params_override is None else params_override),
                 headers=headers,
             )
     except httpx.HTTPError as exc:
@@ -5581,12 +4985,21 @@ async def _video_workshop_request(request: Request, api_path: str):
         )
 
 
-def _video_workshop_json_response(data, status_code=200):
+def _video_workshop_timing(name: str, started: float):
+    duration_ms = max(0.0, (time.perf_counter() - started) * 1000)
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", str(name or "stage")) or "stage"
+    return f'{safe_name};dur={duration_ms:.1f}'
+
+
+def _video_workshop_json_response(data, status_code=200, server_timing=""):
+    headers = dict(NO_CACHE_HEADERS)
+    if server_timing:
+        headers["Server-Timing"] = server_timing
     return Response(
         content=json.dumps(data, ensure_ascii=False),
         status_code=status_code,
         media_type="application/json",
-        headers=NO_CACHE_HEADERS,
+        headers=headers,
     )
 
 
@@ -5654,6 +5067,8 @@ def _video_workshop_index_html():
           url,
           downloadUrl: String(output?.downloadUrl || url),
           aspectRatio: String(output?.aspectRatio || preferredRatio || "9:16"),
+          sourceDeliveryId: String(output?.deliveryId || project?.activeDeliveryId || ""),
+          sourceOutputId: String(output?.id || ""),
           plan: project?.plan || null,
           project,
           status: String(project?.status || ""),
@@ -5760,15 +5175,18 @@ def _video_workshop_index_html():
 
 @app.post("/api/custom-video/session")
 def custom_video_session(request: Request, me=Depends(require_member)):
+    started = time.perf_counter()
     _require_custom_creator(me)
     token = str(request.headers.get("authorization") or "").replace("Bearer ", "").strip()
     if not token or store.parse_token(token) != me["id"]:
         raise HTTPException(401, "主平台登录态无效")
+    allowed_project_ids = list(_video_workshop_project_index(me["id"]).keys())
     response = _video_workshop_json_response({
         "ok": True,
         "memberId": me["id"],
-        "allowedProjectIds": store.list_custom_video_project_ids(me["id"]),
-    })
+        "allowedProjectIds": allowed_project_ids,
+        "preferredVoice": _video_workshop_preferred_voice(me),
+    }, server_timing=_video_workshop_timing("session", started))
     response.set_cookie(
         VIDEO_WORKSHOP_SESSION_COOKIE,
         token,
@@ -5784,19 +5202,23 @@ def custom_video_session(request: Request, me=Depends(require_member)):
 @app.get("/custom-video")
 @app.get("/custom-video/")
 def custom_video_index():
+    started = time.perf_counter()
     return Response(
         content=_video_workshop_index_html(),
         media_type="text/html",
-        headers=NO_CACHE_HEADERS,
+        headers={**NO_CACHE_HEADERS, "Server-Timing": _video_workshop_timing("shell", started)},
     )
 
 
 @app.get("/custom-video/assets/{asset_path:path}")
 def custom_video_asset(asset_path: str, request: Request):
+    started = time.perf_counter()
     path = _video_workshop_safe_path(VIDEO_WORKSHOP_WEB_DIR / "assets", asset_path)
     if not path.is_file():
         raise HTTPException(404, "视频工坊静态资源不存在")
-    return version_aware_static_file(path, request)
+    response = version_aware_static_file(path, request)
+    response.headers["Server-Timing"] = _video_workshop_timing("static", started)
+    return response
 
 
 @app.get("/custom-video/outputs/{file_path:path}")
@@ -5828,6 +5250,7 @@ def custom_video_upload(file_path: str, request: Request, me=Depends(_custom_vid
     methods=["GET", "POST", "PATCH"],
 )
 async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_video_session_member)):
+    started = time.perf_counter()
     path = str(api_path or "").strip("/")
     method = request.method.upper()
     if path == "health" and method == "GET":
@@ -5836,25 +5259,30 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             content=upstream.content,
             status_code=upstream.status_code,
             media_type="application/json",
-            headers=NO_CACHE_HEADERS,
+            headers={**NO_CACHE_HEADERS, "Server-Timing": _video_workshop_timing("health", started)},
         )
     if path == "projects" and method == "GET":
-        upstream = await _video_workshop_request(request, path)
+        mapped_projects = _video_workshop_project_index(me["id"])
+        allowed_ids = sorted(mapped_projects)
+        if not allowed_ids:
+            page = max(1, int(request.query_params.get("page") or 1))
+            page_size = max(1, min(100, int(request.query_params.get("pageSize") or 60)))
+            return _video_workshop_json_response({
+                "items": [], "total": 0, "page": page, "pageSize": page_size, "hasMore": False,
+            }, server_timing=_video_workshop_timing("projects", started))
+        params = [
+            (key, value)
+            for key, value in request.query_params.multi_items()
+            if key != "projectIds"
+        ]
+        params.append(("projectIds", ",".join(allowed_ids)))
+        upstream = await _video_workshop_request(request, path, params_override=params)
         if upstream.status_code >= 400:
             return Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
         try:
             data = upstream.json()
         except Exception:
             raise HTTPException(502, "视频工坊项目列表返回异常")
-        mapped_projects = {}
-        for mapped in store.list_custom_projects(me["id"], "video"):
-            state = mapped.get("projectState") if isinstance(mapped.get("projectState"), dict) else {}
-            workshop_project_id = str(state.get("workshopProjectId") or "").strip()
-            if (
-                state.get("integration") == "video-workshop"
-                and workshop_project_id
-            ):
-                mapped_projects[workshop_project_id] = mapped
         visible_items = []
         for raw_item in data.get("items") or []:
             if not isinstance(raw_item, dict):
@@ -5871,10 +5299,18 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
                 "publishedDeliveryId": str(mapped.get("publishedDeliveryId") or ""),
                 "publishedAt": int(mapped.get("publishedAt") or 0),
                 "publishedCount": max(0, int(mapped.get("publishedCount") or 0)),
+                "publishedVideoOutputs": (
+                    dict((mapped.get("projectState") or {}).get("publishedVideoOutputs"))
+                    if isinstance((mapped.get("projectState") or {}).get("publishedVideoOutputs"), dict)
+                    else {}
+                ),
             }
             visible_items.append(item)
         data["items"] = visible_items
-        return _video_workshop_json_response(data)
+        return _video_workshop_json_response(
+            data,
+            server_timing=_video_workshop_timing("projects", started),
+        )
 
     project_match = re.fullmatch(r"projects/([^/]+)(?:/(retry|cancel))?", path)
     if project_match:
@@ -5887,7 +5323,10 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             project = upstream.json()
         except Exception:
             raise HTTPException(502, "视频工坊项目返回异常")
-        return _video_workshop_json_response(_sync_video_workshop_project(me, project))
+        return _video_workshop_json_response(
+            _sync_video_workshop_project(me, project),
+            server_timing=_video_workshop_timing("project", started),
+        )
 
     if path == "chat" and method == "POST":
         try:
@@ -5897,7 +5336,13 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
         existing_project_id = str(payload.get("projectId") or "").strip()
         if existing_project_id:
             _video_workshop_owned_project(me, existing_project_id)
-        upstream = await _video_workshop_request(request, path)
+        if not str(payload.get("voiceId") or "").strip():
+            payload["voiceId"] = _video_workshop_preferred_voice(me)["voiceId"]
+        upstream = await _video_workshop_request(
+            request,
+            path,
+            body_override=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        )
         if upstream.status_code >= 400:
             return Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
         try:

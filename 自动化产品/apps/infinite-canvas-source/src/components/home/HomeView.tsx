@@ -151,7 +151,8 @@ export function HomeView() {
     const visibleImage = visibleItems.find((i) => imageUrlOf(i));
     const hiddenReference = items.find((i) => i.type === "reference" && imageUrlOf(i));
     const anyImage = items.find((i) => imageUrlOf(i));
-    return imageUrlOf(visibleResult ?? visibleImage ?? hiddenReference ?? anyImage);
+    return imageUrlOf(visibleResult ?? visibleImage ?? hiddenReference ?? anyImage)
+      ?? projects.find((project) => project.id === id)?.thumbnailUrl;
   }
 
   function start(withBrief: boolean) {

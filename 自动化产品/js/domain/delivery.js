@@ -92,6 +92,41 @@ export function deliveryDisplaySequence(asset, fallback = 0) {
   return 0;
 }
 
+/* 供应商收到素材的制作时间，以交付记录真正进入供应商端的时间为准。
+   deliveredAt 是现行权威字段；createdAt 仅用于兼容没有 deliveredAt 的旧交付记录。
+   sourceCreatedAt 是创作任务建立时间，不能误当成素材提交时间。 */
+export function deliverySubmittedAt(asset = {}) {
+  for (const value of [asset?.deliveredAt, asset?.createdAt]) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+  }
+  return 0;
+}
+
+export function parseSupplierViewCount(value) {
+  const normalized = String(value ?? "").replace(/[,，\s]/g, "");
+  if (!normalized) return { ok: false, message: "请输入当前观看量" };
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) return { ok: false, message: "观看量必须是大于或等于 0 的数字" };
+  const number = Number(normalized);
+  if (!Number.isFinite(number) || number < 0 || number > Number.MAX_SAFE_INTEGER) {
+    return { ok: false, message: "观看量超出可填写范围" };
+  }
+  return { ok: true, value: Math.round(number) };
+}
+
+export function supplierViewCountPromptValue(asset = {}) {
+  const hasSavedMarker = Number(asset.viewsUpdatedAt || 0) > 0
+    || !!String(asset.viewsUpdatedBy || "").trim();
+  const number = Number(asset.viewCount || 0);
+  const hasLegacyNonZeroValue = Number.isFinite(number) && number > 0;
+  if (!hasSavedMarker && !hasLegacyNonZeroValue) return "";
+  return String(Number.isFinite(number) ? Math.max(0, Math.round(number)) : 0);
+}
+
 function isPublishedDelivery(asset) {
   return supplierHasPublished(asset);
 }
@@ -333,6 +368,8 @@ export function deliverCustomOutput(output = {}, opts = {}) {
     sourceUpdatedAt: now,
     customProjectId: projectId,
     customOutputKind: kind,
+    sourceDeliveryId: kind === "video" ? String(output.sourceDeliveryId || "").trim().slice(0, 180) : "",
+    sourceOutputId: kind === "video" ? String(output.sourceOutputId || "").trim().slice(0, 180) : "",
     sourceItemIds,
     sourceAssetId: String(output.sourceAssetId || ""),
     aspectRatio: String(output.aspectRatio || "")

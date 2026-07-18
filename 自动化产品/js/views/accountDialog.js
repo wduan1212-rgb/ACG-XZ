@@ -5,7 +5,7 @@ import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
 import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260718-v92-3";
+import { AI } from "../api/ai.js?v=20260718-v93-2";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
 import { openModal, toast } from "../ui/components.js";
@@ -31,7 +31,6 @@ export function openAccountDialog(accountId = null) {
     seedanceVoiceRefDataUrl: null,
     seedanceVoiceRefName: "",
     avatarDataUrl: null,
-    styleRefDataUrl: null,
     imagePromptTemplate: editing?.imagePromptTemplate || "",
     charDataUrl: null,
     assets: [] // [{name, dataUrl}]
@@ -51,7 +50,6 @@ export function openAccountDialog(accountId = null) {
         const isVideo = draft.mode === "视频";
         const isDH = isVideo && draft.subType === "数字人";
         const avatarUrl = draft.avatarDataUrl || (editing?.avatarAssetId ? urlFor(editing.avatarAssetId) : "");
-        const styleRefUrl = draft.styleRefDataUrl || (editing?.imageStyleAssetId ? urlFor(editing.imageStyleAssetId) : "");
         const voiceGroups = voicePickerGroups({ selectedId: draft.voiceId, selectedName: draft.voiceName });
         const referenceAudioAssets = productionAssets(editing?.id || "__new_account__")
           .filter(a => a.type === "音频" && (a.tags || []).some(t => /参考音频库|语音素材库|音色试听|口播/i.test(t)))
@@ -104,13 +102,6 @@ export function openAccountDialog(accountId = null) {
                 </label>
               </div>
               ${draft.mode === "图文" ? `
-              <div class="field full">
-                <span>成图风格参考 <em class="muted">拖入小图作为该账号图文风格预览，生成提示词时会引用它的风格方向</em></span>
-                <label class="ad-image-drop style-ref" id="adStyleRefDrop">
-                  ${styleRefUrl ? `<img src="${styleRefUrl}" alt="图文风格参考" />` : `${icon("image", 18)}<b>拖入 / 上传风格参考图</b>`}
-                  <input type="file" accept="image/*" hidden id="adStyleRefUp" />
-                </label>
-              </div>
               <label class="field full">图文提示词模板 <em class="muted" style="font-weight:500">站内逐图提示词会优先参考；产品名、主题、各图内容会按本次创作自动替换</em>
                 <textarea class="input" id="adImgTpl" rows="8" placeholder="粘贴你的图文模板提示词，例如：请独立分别生成6张独立图片……">${esc(draft.imagePromptTemplate)}</textarea>
               </label>` : ""}
@@ -143,9 +134,9 @@ export function openAccountDialog(accountId = null) {
               ` : ""}
             </div>
 
-            ${isVideo ? `
+            ${isDH ? `
             <div class="ad-block">
-              <div class="adb-head"><b>角色形象</b><em class="muted">拖入账号角色图；数字人会用它锁定人物形象，真人链路会作为角色风格参考</em></div>
+              <div class="adb-head"><b>数字人角色版</b><em class="muted">拖入账号角色图；只用于锁定该数字人的固定人物形象</em></div>
               <div class="ad-char-row">
                 <label class="btn ghost sm ad-char-drop" id="adCharDrop">${draft.charDataUrl || (editing && editing.charBoardAssetId) ? "✓ 已有角色形象 · 点击更换 / 可拖图" : "+ 上传角色形象 / 可拖图"}<input type="file" accept="image/*" hidden id="adCharUp" /></label>
                 ${draft.charDataUrl ? `<img class="ad-char-prev" src="${draft.charDataUrl}"/>` : ""}
@@ -264,25 +255,12 @@ export function openAccountDialog(accountId = null) {
           draw();
           toast("已选择账号头像");
         }
-        async function setStyleRef(file) {
-          if (!file || !file.type.startsWith("image/")) return;
-          draft.styleRefDataUrl = await fileToDataUrl(file);
-          draw();
-          toast("已选择图文风格参考图");
-        }
         const avatarUp = $("#adAvatarUp", root);
         if (avatarUp) avatarUp.addEventListener("change", e => setAvatar(e.target.files[0]));
         const avatarDrop = $("#adAvatarDrop", root);
         if (avatarDrop) {
           avatarDrop.addEventListener("click", () => $("#adAvatarUp", root)?.click());
           wireDropZone(avatarDrop, files => setAvatar(Array.from(files).find(f => f.type.startsWith("image/"))), { filesOnly: true });
-        }
-        const styleRefUp = $("#adStyleRefUp", root);
-        if (styleRefUp) styleRefUp.addEventListener("change", e => setStyleRef(e.target.files[0]));
-        const styleRefDrop = $("#adStyleRefDrop", root);
-        if (styleRefDrop) {
-          styleRefDrop.addEventListener("click", () => $("#adStyleRefUp", root)?.click());
-          wireDropZone(styleRefDrop, files => setStyleRef(Array.from(files).find(f => f.type.startsWith("image/"))), { filesOnly: true });
         }
         const charUp = $("#adCharUp", root);
         if (charUp) charUp.addEventListener("change", e => setCharBoard(e.target.files[0]));
@@ -367,12 +345,7 @@ export function openAccountDialog(accountId = null) {
             acc.avatarAssetId = aa.id;
             save("accounts");
           }
-          if (draft.styleRefDataUrl) {
-            const sa = await addAssetFromDataUrl(acc.id, { name: name + " 图文风格参考", tags: ["图文风格参考"], dataUrl: draft.styleRefDataUrl });
-            acc.imageStyleAssetId = sa.id;
-            save("accounts");
-          }
-          if (draft.charDataUrl) {
+          if (draft.charDataUrl && draft.mode === "视频" && draft.subType === "数字人") {
             const ca = await addAssetFromDataUrl(acc.id, { name: name + " 角色形象", tags: ["角色形象", "角色版"], dataUrl: draft.charDataUrl });
             acc.charBoardAssetId = ca.id;
           }

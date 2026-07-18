@@ -2,13 +2,39 @@ import { go } from "../core/router.js";
 import { state } from "../core/store.js";
 import { icon } from "../ui/icons.js";
 import { toast } from "../ui/components.js";
-import { voiceLabView } from "./voiceLab.js?v=20260718-v92-3";
+import { voiceLabView } from "./voiceLab.js?v=20260718-v93-2";
 
 const TOOLS = [
   { key: "video", label: "视频工坊", mountId: "customVideoMount" },
   { key: "canvas", label: "无限画布", mountId: "customCanvasMount" },
   { key: "voice", label: "语音生成", mountId: "customVoiceMount" }
 ];
+const CUSTOM_PERF_KEY = "xingzhen.customCreation.performance.v1";
+
+function perfNow() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function recordCustomPerformance(stage, startedAt, detail = {}) {
+  const entry = {
+    stage,
+    durationMs: Math.max(0, Math.round(perfNow() - Number(startedAt || 0))),
+    at: Date.now(),
+    ...detail
+  };
+  try {
+    const previous = JSON.parse(sessionStorage.getItem(CUSTOM_PERF_KEY) || "[]");
+    const items = Array.isArray(previous) ? previous.slice(-59) : [];
+    items.push(entry);
+    sessionStorage.setItem(CUSTOM_PERF_KEY, JSON.stringify(items));
+  } catch (_) {}
+  window.__xingzhenCustomPerformance = [
+    ...(Array.isArray(window.__xingzhenCustomPerformance) ? window.__xingzhenCustomPerformance.slice(-59) : []),
+    entry
+  ];
+  console.debug("[custom-performance]", entry);
+  return entry;
+}
 
 function normalizedPage(page) {
   return TOOLS.some(tool => tool.key === page) ? page : "video";
@@ -60,6 +86,7 @@ function hostsHtml(activePage) {
 
 export const customCreationView = {
   render(root, { page } = {}) {
+    const renderStarted = perfNow();
     const activePage = normalizedPage(page);
     const existing = root.__customCreationContext;
     if (existing?.shell?.isConnected) {
@@ -90,6 +117,7 @@ export const customCreationView = {
         </section>
       </div>
     `;
+    recordCustomPerformance("shell-render", renderStarted, { tool: activePage });
 
     const shell = root.querySelector(".custom-creation-shell");
     const stage = root.querySelector(".custom-creation-stage");
@@ -122,7 +150,7 @@ export const customCreationView = {
         toast(key === "canvas" ? "当前画布还没有可发布的图片" : "请先在视频工坊完成成片");
         return;
       }
-      const { openCustomPublish } = await import("./customPublish.js?v=20260718-v92-3");
+      const { openCustomPublish } = await import("./customPublish.js?v=20260718-v93-2");
       openCustomPublish(
         { ...output, kind: key === "canvas" ? "canvas" : "video" },
         {
@@ -136,6 +164,8 @@ export const customCreationView = {
             runtime?.markPublished?.({
               projectId: output.projectId || latest?.projectId || "",
               deliveryId: asset?.id || "",
+              sourceDeliveryId: output.sourceDeliveryId || "",
+              sourceOutputId: output.sourceOutputId || "",
               publishedAt: Date.now(),
               publishedCount,
               itemIds: (output.items || [])
@@ -160,14 +190,15 @@ export const customCreationView = {
     };
     const mountTool = async key => {
       if (key === "voice" || mountedTools.has(key)) return;
+      const mountStarted = perfNow();
       const host = root.querySelector(`[data-custom-tool-host="${key}"]`);
       const mountRoot = host?.querySelector(`[data-custom-app-mount="${key}"]`);
       if (!host || !mountRoot) return;
       mountedTools.set(key, { loading: true });
       try {
         const module = key === "video"
-          ? await import("./customVideoIntegration.js?v=20260718-v92-3")
-          : await import("./customCanvasIntegration.js?v=20260718-v92-3");
+          ? await import("./customVideoIntegration.js?v=20260718-v93-2")
+          : await import("./customCanvasIntegration.js?v=20260718-v93-2");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);
         const mounted = await mount(mountRoot, {
@@ -189,9 +220,11 @@ export const customCreationView = {
         });
         const latest = mounted?.latestOutput || mountedTools.get(key)?.getLatestOutput?.();
         if (latest) setLatestOutput(key, latest);
+        recordCustomPerformance("tool-mount", mountStarted, { tool: key, ok: true });
       } catch (error) {
         mountedTools.delete(key);
         showMountError(host, error?.message || error);
+        recordCustomPerformance("tool-mount", mountStarted, { tool: key, ok: false });
       }
     };
     const positionIndicator = tab => {
@@ -202,6 +235,7 @@ export const customCreationView = {
       indicator.style.transform = `translate3d(${tabRect.left - hostRect.left}px, 0, 0)`;
     };
     const activate = nextPage => {
+      const activateStarted = perfNow();
       const next = normalizedPage(nextPage);
       if (shell) shell.dataset.customPage = next;
       if (stage) {
@@ -226,11 +260,16 @@ export const customCreationView = {
       });
       const voiceHost = root.querySelector('[data-custom-tool-host="voice"]');
       if (next === "voice" && voiceHost && voiceHost.dataset.customMounted !== "true") {
+        const voiceStarted = perfNow();
         voiceLabView.render(voiceHost, { embedded: true });
         voiceHost.dataset.customMounted = "true";
+        recordCustomPerformance("tool-mount", voiceStarted, { tool: "voice", ok: true });
       }
       if (next !== "voice") mountTool(next);
-      requestAnimationFrame(() => positionIndicator(activeTab()));
+      requestAnimationFrame(() => {
+        positionIndicator(activeTab());
+        recordCustomPerformance("tab-activate", activateStarted, { tool: next });
+      });
     };
 
     root.querySelector("[data-custom-back]")?.addEventListener("click", () => go("overview"), { signal });
@@ -252,6 +291,13 @@ export const customCreationView = {
           ? tabs.length - 1
           : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
       tabs[nextIndex]?.focus();
+    }, { signal });
+    window.addEventListener("xingzhen:canvas-hydrated", event => {
+      const detail = event?.detail || {};
+      recordCustomPerformance("canvas-hydration", perfNow() - Number(detail.durationMs || 0), {
+        tool: "canvas",
+        projectCount: Number(detail.projectCount || 0)
+      });
     }, { signal });
     requestAnimationFrame(() => positionIndicator(activeTab()));
     if ("ResizeObserver" in window && tabsHost) {

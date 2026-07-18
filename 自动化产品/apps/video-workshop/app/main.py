@@ -9,7 +9,7 @@ import shutil
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -771,8 +771,18 @@ async def health():
 
 
 @app.get("/api/projects")
-async def project_list():
-    items = await asyncio.to_thread(list_project_summaries)
+async def project_list(
+    page: Optional[int] = None,
+    pageSize: Optional[int] = None,
+    projectIds: str = "",
+):
+    requested_ids = {
+        project_id.strip()
+        for project_id in str(projectIds or "").split(",")
+        if project_id.strip()
+    }
+    project_filter = requested_ids if projectIds else None
+    items = await asyncio.to_thread(list_project_summaries, project_filter)
     recovered = False
     for item in items:
         project_id = str(item.get("id") or "")
@@ -790,8 +800,21 @@ async def project_list():
                 continue
             recovered = True
     if recovered:
-        items = await asyncio.to_thread(list_project_summaries)
-    return {"items": items}
+        items = await asyncio.to_thread(list_project_summaries, project_filter)
+    total = len(items)
+    if page is None and pageSize is None:
+        # Backward compatibility for older standalone clients.
+        return {"items": items, "total": total}
+    current_page = max(1, int(page or 1))
+    page_size = max(1, min(100, int(pageSize or 60)))
+    start = (current_page - 1) * page_size
+    return {
+        "items": items[start:start + page_size],
+        "total": total,
+        "page": current_page,
+        "pageSize": page_size,
+        "hasMore": start + page_size < total,
+    }
 
 
 @app.get("/api/projects/{project_id}")

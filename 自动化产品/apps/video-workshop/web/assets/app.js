@@ -49,6 +49,10 @@ const dom = {
   outputMeta: document.querySelector("#outputMeta"),
   downloadButton: document.querySelector("#downloadButton"),
   publishOutputButton: document.querySelector("#publishOutputButton"),
+  historyDeliveryButton: document.querySelector("#historyDeliveryButton"),
+  historyDeliveryModal: document.querySelector("#historyDeliveryModal"),
+  historyDeliveryFilter: document.querySelector("#historyDeliveryFilter"),
+  historyDeliveryList: document.querySelector("#historyDeliveryList"),
   publishedOutputBadge: document.querySelector("#publishedOutputBadge"),
   publishedOutputBadgeText: document.querySelector("#publishedOutputBadgeText"),
   deliveryToggleButton: document.querySelector("#deliveryToggleButton"),
@@ -194,6 +198,33 @@ function publishedCountFor(project) {
     return Math.max(1, Math.floor(rawCount));
   }
   return project?._integration?.publishedDeliveryId ? 1 : 0;
+}
+
+function publishedOutputMap(project) {
+  const value = project?._integration?.publishedVideoOutputs;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function publicationForOutput(project, output) {
+  const outputId = String(output?.id || "").trim();
+  if (!outputId) return null;
+  const publication = publishedOutputMap(project)[outputId];
+  return publication && typeof publication === "object" ? publication : null;
+}
+
+function deliveryRowsFor(project) {
+  const rows = Array.isArray(project?.deliveries)
+    ? project.deliveries.filter(item => item && typeof item === "object")
+    : [];
+  if (rows.length) return rows;
+  const outputs = Array.isArray(project?.outputs) ? project.outputs : [];
+  return outputs.length ? [{
+    id: String(project?.activeDeliveryId || "legacy-current"),
+    title: String(project?.plan?.title || project?.name || "历史成片"),
+    createdAt: 0,
+    plan: project?.plan || null,
+    outputs,
+  }] : [];
 }
 
 function refreshIcons() {
@@ -684,15 +715,26 @@ function selectOutput(index, { forceReload = false } = {}) {
     span.textContent = value;
     dom.outputMeta.append(span);
   });
+  const outputId = String(output.id || "").trim();
+  const publication = outputId
+    ? state.project?._integration?.publishedVideoOutputs?.[outputId]
+    : null;
+  if (dom.publishedOutputBadge && dom.publishedOutputBadgeText) {
+    dom.publishedOutputBadge.hidden = !publication;
+    dom.publishedOutputBadgeText.textContent = "已发布";
+    dom.publishedOutputBadge.title = publication
+      ? `该成片已发布${publication.deliveryId ? ` · ${publication.deliveryId}` : ""}`
+      : "";
+  }
 }
 
-function selectedPublishPayload() {
+function publishPayloadForOutput(output, delivery = null) {
   const project = state.project;
-  const output = project?.outputs?.[state.outputIndex];
   const videoUrl = String(output?.url || output?.downloadUrl || "");
   if (project?.status !== "succeeded" || !project?.id || !videoUrl) return null;
   const title = String(
-    (project.name && project.name !== "新会话" ? project.name : "")
+    delivery?.title
+    || (project.name && project.name !== "新会话" ? project.name : "")
     || project.plan?.title
     || "未命名视频"
   ).trim() || "未命名视频";
@@ -704,11 +746,22 @@ function selectedPublishPayload() {
     url: videoUrl,
     downloadUrl: String(output.downloadUrl || videoUrl),
     aspectRatio: String(output.aspectRatio || project.plan?.aspect_ratio || "9:16"),
-    plan: project.plan || null,
+    sourceDeliveryId: String(output.deliveryId || delivery?.id || ""),
+    sourceOutputId: String(output.id || ""),
+    plan: delivery?.plan || project.plan || null,
     project,
     status: String(project.status || ""),
     publishedCount: publishedCountFor(project),
   };
+}
+
+function selectedPublishPayload() {
+  const project = state.project;
+  const output = project?.outputs?.[state.outputIndex];
+  const delivery = deliveryRowsFor(project).find(item =>
+    String(item?.id || "") === String(output?.deliveryId || project?.activeDeliveryId || "")
+  ) || null;
+  return publishPayloadForOutput(output, delivery);
 }
 
 function requestSelectedOutputPublish() {
@@ -731,10 +784,96 @@ function requestSelectedOutputPublish() {
   );
 }
 
+function requestOutputPublish(output, delivery) {
+  const payload = publishPayloadForOutput(output, delivery);
+  if (!payload) {
+    showToast("成片尚未完成，暂时不能发布");
+    return;
+  }
+  if (document.documentElement.dataset.platformEmbedded !== "true" || window.parent === window) {
+    showToast("请在主平台的定制创作中发布成片");
+    return;
+  }
+  window.parent.postMessage(
+    { type: "custom-video:publish-request", payload },
+    window.location.origin,
+  );
+}
+
+function closeHistoryDeliveryModal() {
+  dom.historyDeliveryModal.hidden = true;
+  document.body.classList.remove("history-delivery-open");
+}
+
+function renderHistoryDeliveryModal() {
+  const project = state.project;
+  const filter = String(dom.historyDeliveryFilter.value || "all");
+  const entries = deliveryRowsFor(project)
+    .slice(1)
+    .flatMap(delivery => (delivery.outputs || []).map(output => ({ delivery, output })))
+    .filter(({ output }) => {
+      const published = Boolean(publicationForOutput(project, output));
+      return filter === "all" || (filter === "published" ? published : !published);
+    });
+  dom.historyDeliveryList.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "history-delivery-empty";
+    empty.textContent = filter === "all" ? "当前还没有历史成片" : "没有符合筛选条件的成片";
+    dom.historyDeliveryList.append(empty);
+    return;
+  }
+  entries.forEach(({ delivery, output }) => {
+    const publication = publicationForOutput(project, output);
+    const card = document.createElement("article");
+    card.className = "history-delivery-card";
+    const video = document.createElement("video");
+    video.src = String(output.url || output.downloadUrl || "");
+    video.controls = true;
+    video.preload = "metadata";
+    video.playsInline = true;
+    const content = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = String(delivery.title || project?.plan?.title || "历史成片");
+    const meta = document.createElement("span");
+    const createdAt = Number(delivery.createdAt || 0);
+    meta.textContent = [
+      String(output.aspectRatio || delivery.aspectRatio || "9:16"),
+      createdAt ? new Date(createdAt).toLocaleString("zh-CN", { hour12: false }) : "历史版本",
+      publication ? "已发布" : "未发布",
+    ].join(" · ");
+    const actions = document.createElement("div");
+    actions.className = "history-delivery-card-actions";
+    const download = document.createElement("a");
+    download.href = String(output.downloadUrl || output.url || "#");
+    download.download = `xingzhen-history-${String(output.aspectRatio || "9:16").replace(":", "x")}.mp4`;
+    download.textContent = "下载";
+    const publish = document.createElement("button");
+    publish.type = "button";
+    publish.textContent = publication ? "已发布" : "发布";
+    publish.disabled = Boolean(publication);
+    publish.addEventListener("click", () => requestOutputPublish(output, delivery));
+    actions.append(download, publish);
+    content.append(title, meta, actions);
+    card.append(video, content);
+    dom.historyDeliveryList.append(card);
+  });
+}
+
+function openHistoryDeliveryModal() {
+  if (deliveryRowsFor(state.project).length <= 1) return;
+  dom.historyDeliveryFilter.value = "all";
+  renderHistoryDeliveryModal();
+  dom.historyDeliveryModal.hidden = false;
+  document.body.classList.add("history-delivery-open");
+  refreshIcons();
+}
+
 function renderDelivery(project) {
   const outputs = project.outputs || [];
   const publishedDeliveryId = String(project?._integration?.publishedDeliveryId || "");
   const publishedCount = publishedCountFor(project);
+  const deliveries = deliveryRowsFor(project);
   if (state.deliveryProjectId !== project.id) {
     state.deliveryProjectId = project.id;
     state.deliveryCollapsed = false;
@@ -755,6 +894,8 @@ function renderDelivery(project) {
     embedded: document.documentElement.dataset.platformEmbedded === "true",
     publishedDeliveryId,
     publishedCount,
+    publishedVideoOutputs: publishedOutputMap(project),
+    deliveryCount: deliveries.length,
     deliveryCollapsed: state.deliveryCollapsed,
     mediaSignature,
   });
@@ -764,6 +905,7 @@ function renderDelivery(project) {
   if (!outputs.length) {
     dom.delivery.classList.add("is-hidden");
     dom.publishOutputButton.hidden = true;
+    dom.historyDeliveryButton.hidden = true;
     dom.publishedOutputBadge.hidden = true;
     return;
   }
@@ -777,13 +919,7 @@ function renderDelivery(project) {
     "data-lucide",
     state.deliveryCollapsed ? "chevron-down" : "chevron-up",
   );
-  dom.publishedOutputBadge.hidden = publishedCount < 1;
-  dom.publishedOutputBadgeText.textContent = publishedCount > 0
-    ? `已发布 ${publishedCount}`
-    : "已发布";
-  dom.publishedOutputBadge.title = publishedCount > 0
-    ? `当前会话已有 ${publishedCount} 条有效发布${publishedDeliveryId ? ` · 最近 ${publishedDeliveryId}` : ""}`
-    : "";
+  dom.historyDeliveryButton.hidden = deliveries.length <= 1;
   dom.publishOutputButton.hidden = !(
     project.status === "succeeded"
     && document.documentElement.dataset.platformEmbedded === "true"
@@ -988,7 +1124,7 @@ async function loadHistory(force = false) {
   if (!force && now - state.historyLoadedAt < 4000) return;
   state.historyLoadedAt = now;
   try {
-    const response = await fetch("/api/projects", { cache: "no-store" });
+    const response = await fetch("/api/projects?page=1&pageSize=60", { cache: "no-store" });
     if (!response.ok) return;
     const data = await response.json();
     renderHistory(data.items || []);
@@ -1530,6 +1666,8 @@ window.addEventListener("message", (event) => {
   if (message.type !== "custom-video:published") return;
   const projectId = String(message.projectId || "").trim();
   const deliveryId = String(message.deliveryId || "").trim();
+  const sourceOutputId = String(message.sourceOutputId || "").trim();
+  const sourceDeliveryId = String(message.sourceDeliveryId || "").trim();
   if (!projectId || !deliveryId || state.project?.id !== projectId) return;
   const receivedCount = Number(message.publishedCount || 0);
   const publishedCount = Number.isFinite(receivedCount) && receivedCount > 0
@@ -1546,14 +1684,34 @@ window.addEventListener("message", (event) => {
     publishedDeliveryId: deliveryId,
     publishedAt: Number(message.publishedAt) || Date.now(),
     publishedCount,
+    publishedVideoOutputs: {
+      ...publishedOutputMap(state.project),
+      ...(sourceOutputId ? {
+        [sourceOutputId]: {
+          deliveryId,
+          sourceDeliveryId,
+          publishedAt: Number(message.publishedAt) || Date.now(),
+          publishedCount: 1,
+        },
+      } : {}),
+    },
   };
   state.outputSignature = "";
   renderDelivery(state.project);
+  if (!dom.historyDeliveryModal.hidden) renderHistoryDeliveryModal();
   state.historySignature = "";
   loadHistory(true);
 });
 
 dom.publishOutputButton.addEventListener("click", requestSelectedOutputPublish);
+dom.historyDeliveryButton.addEventListener("click", openHistoryDeliveryModal);
+dom.historyDeliveryFilter.addEventListener("change", renderHistoryDeliveryModal);
+document.querySelectorAll("[data-history-delivery-close]").forEach(button => {
+  button.addEventListener("click", closeHistoryDeliveryModal);
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !dom.historyDeliveryModal.hidden) closeHistoryDeliveryModal();
+});
 dom.deliveryToggleButton.addEventListener("click", () => {
   if (!state.project?.outputs?.length) return;
   state.deliveryCollapsed = !state.deliveryCollapsed;

@@ -47,28 +47,221 @@ function canvasStorageNamespace(): string {
 const canvasOwner =
   canvasStorageNamespace();
 const CANVAS_STORAGE_KEY = `ai-design-canvas:v2:${canvasOwner}`;
+const CANVAS_DB_NAME = `xingzhen-canvas:${canvasOwner}`;
+const CANVAS_DB_STORE = "project-state";
+const canvasBootStarted = typeof performance !== "undefined" ? performance.now() : 0;
+
+interface CanvasProjectState {
+  items: CanvasItem[];
+  messages: ChatMessage[];
+  viewport?: Viewport;
+}
+
+const loadedCanvasProjects = new Set<string>();
+const loadingCanvasProjects = new Map<string, Promise<CanvasProjectState | null>>();
+
+function localStorageGet(name: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(name) ?? memory.get(name) ?? null;
+  } catch {
+    return memory.get(name) ?? null;
+  }
+}
+
+function localStorageSet(name: string, value: string): void {
+  try {
+    globalThis.localStorage?.setItem(name, value);
+  } catch {
+    memory.set(name, value);
+  }
+}
+
+function localStorageRemove(name: string): void {
+  try {
+    globalThis.localStorage?.removeItem(name);
+  } catch {
+    memory.delete(name);
+  }
+}
+
+function openCanvasDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") {
+      reject(new Error("IndexedDB unavailable"));
+      return;
+    }
+    const request = indexedDB.open(CANVAS_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(CANVAS_DB_STORE)) {
+        request.result.createObjectStore(CANVAS_DB_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("IndexedDB open failed"));
+  });
+}
+
+function waitForTransaction(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error("IndexedDB transaction failed"));
+    transaction.onabort = () => reject(transaction.error || new Error("IndexedDB transaction aborted"));
+  });
+}
+
+async function readCanvasProject(projectId: string): Promise<CanvasProjectState | null> {
+  const db = await openCanvasDatabase();
+  try {
+    const transaction = db.transaction(CANVAS_DB_STORE, "readonly");
+    const completed = waitForTransaction(transaction);
+    const request = transaction.objectStore(CANVAS_DB_STORE).get(projectId);
+    const result = await new Promise<CanvasProjectState | undefined>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result as CanvasProjectState | undefined);
+      request.onerror = () => reject(request.error || new Error("IndexedDB read failed"));
+    });
+    await completed;
+    return result || null;
+  } finally {
+    db.close();
+  }
+}
+
+async function writeCanvasProjects(
+  states: Record<string, CanvasProjectState>,
+  liveProjectIds: string[],
+): Promise<void> {
+  const db = await openCanvasDatabase();
+  try {
+    const writeTransaction = db.transaction(CANVAS_DB_STORE, "readwrite");
+    const writeCompleted = waitForTransaction(writeTransaction);
+    const writeStore = writeTransaction.objectStore(CANVAS_DB_STORE);
+    for (const [projectId, payload] of Object.entries(states)) {
+      writeStore.put(payload, projectId);
+    }
+    await writeCompleted;
+
+    const scanTransaction = db.transaction(CANVAS_DB_STORE, "readonly");
+    const scanCompleted = waitForTransaction(scanTransaction);
+    const keysRequest = scanTransaction.objectStore(CANVAS_DB_STORE).getAllKeys();
+    const live = new Set(liveProjectIds);
+    const keys = await new Promise<IDBValidKey[]>((resolve, reject) => {
+      keysRequest.onsuccess = () => resolve(keysRequest.result);
+      keysRequest.onerror = () => reject(keysRequest.error || new Error("IndexedDB key scan failed"));
+    });
+    await scanCompleted;
+    const stale = keys.filter((key) => typeof key === "string" && !live.has(key));
+    if (stale.length) {
+      const deleteTransaction = db.transaction(CANVAS_DB_STORE, "readwrite");
+      const deleteCompleted = waitForTransaction(deleteTransaction);
+      const deleteStore = deleteTransaction.objectStore(CANVAS_DB_STORE);
+      for (const key of stale) deleteStore.delete(key);
+      await deleteCompleted;
+    }
+  } finally {
+    db.close();
+  }
+}
+
+async function deleteCanvasProjectState(projectId: string): Promise<void> {
+  const db = await openCanvasDatabase();
+  try {
+    const transaction = db.transaction(CANVAS_DB_STORE, "readwrite");
+    const completed = waitForTransaction(transaction);
+    transaction.objectStore(CANVAS_DB_STORE).delete(projectId);
+    await completed;
+  } finally {
+    db.close();
+  }
+}
+
+function usableSummaryThumbnail(items: CanvasItem[], existing?: string): string | undefined {
+  const candidate = items.find((item) => {
+    if (item.hidden || !("assetUrl" in item) || !item.assetUrl) return false;
+    if ("loading" in item && item.loading) return false;
+    return /^(?:https?:|\/)/.test(item.assetUrl);
+  });
+  const url = candidate && "assetUrl" in candidate ? candidate.assetUrl : existing;
+  return url && /^(?:https?:|\/)/.test(url) ? url : undefined;
+}
+
+type PersistedCanvasEnvelope = {
+  state?: Partial<AppState>;
+  version?: number;
+};
+
+async function splitCanvasPersistence(name: string, value: string): Promise<string> {
+  let envelope: PersistedCanvasEnvelope;
+  try {
+    envelope = JSON.parse(value) as PersistedCanvasEnvelope;
+  } catch {
+    localStorageSet(name, value);
+    return value;
+  }
+  const persisted = envelope.state;
+  if (!persisted || !Array.isArray(persisted.projects)) {
+    localStorageSet(name, value);
+    return value;
+  }
+
+  const itemsByProject = persisted.itemsByProject || {};
+  const messagesByProject = persisted.messagesByProject || {};
+  const viewportByProject = persisted.viewportByProject || {};
+  const projectStates: Record<string, CanvasProjectState> = {};
+  const summaryProjects = persisted.projects.map((project) => {
+    const hasItems = Object.prototype.hasOwnProperty.call(itemsByProject, project.id);
+    const hasMessages = Object.prototype.hasOwnProperty.call(messagesByProject, project.id);
+    const hasViewport = Object.prototype.hasOwnProperty.call(viewportByProject, project.id);
+    if (hasItems || hasMessages || hasViewport) {
+      projectStates[project.id] = {
+        items: itemsByProject[project.id] || [],
+        messages: messagesByProject[project.id] || [],
+        viewport: viewportByProject[project.id],
+      };
+    }
+    return {
+      ...project,
+      thumbnailUrl: usableSummaryThumbnail(itemsByProject[project.id] || [], project.thumbnailUrl),
+    };
+  });
+  const summary = JSON.stringify({
+    ...envelope,
+    state: {
+      ...persisted,
+      projects: summaryProjects,
+      itemsByProject: {},
+      messagesByProject: {},
+      viewportByProject: {},
+    },
+  });
+
+  if (!Object.keys(projectStates).length) {
+    localStorageSet(name, summary);
+    return summary;
+  }
+
+  try {
+    await writeCanvasProjects(projectStates, summaryProjects.map((project) => project.id));
+    localStorageSet(name, summary);
+    return summary;
+  } catch {
+    // Older browsers or private mode can disable IndexedDB. In that case retain
+    // the complete legacy payload so no project data is lost.
+    localStorageSet(name, value);
+    return value;
+  }
+}
+
 const safeStorage: StateStorage = {
   getItem: (name) => {
-    try {
-      return globalThis.localStorage?.getItem(name) ?? memory.get(name) ?? null;
-    } catch {
-      return memory.get(name) ?? null;
-    }
+    const value = localStorageGet(name);
+    if (!value) return null;
+    return splitCanvasPersistence(name, value);
   },
   setItem: (name, value) => {
-    try {
-      globalThis.localStorage?.setItem(name, value);
-    } catch {
-      // Quota exceeded or unavailable — keep in memory so the session still works.
-      memory.set(name, value);
-    }
+    return splitCanvasPersistence(name, value).then(() => undefined);
   },
   removeItem: (name) => {
-    try {
-      globalThis.localStorage?.removeItem(name);
-    } catch {
-      memory.delete(name);
-    }
+    localStorageRemove(name);
   },
 };
 
@@ -204,6 +397,7 @@ export const useStore = create<AppState>()(
 
       createProject: ({ name, scene, targetSize }) => {
         const id = uid("project");
+        loadedCanvasProjects.add(id);
         const now = Date.now();
         const project: Project = {
           id,
@@ -224,7 +418,10 @@ export const useStore = create<AppState>()(
         return id;
       },
 
-      deleteProject: (id) =>
+      deleteProject: (id) => {
+        loadedCanvasProjects.delete(id);
+        loadingCanvasProjects.delete(id);
+        void deleteCanvasProjectState(id).catch(() => undefined);
         set((s) => {
           const projects = s.projects.filter((p) => p.id !== id);
           const items = { ...s.itemsByProject };
@@ -239,7 +436,8 @@ export const useStore = create<AppState>()(
             messagesByProject: msgs,
             viewportByProject: vps,
           };
-        }),
+        });
+      },
 
       renameProject: (id, name) =>
         set((s) => ({
@@ -345,6 +543,47 @@ export const useStore = create<AppState>()(
           activeTool: "select",
           composerMode: "draft",
           composerSize: project?.targetSize ?? "1920x1080",
+        });
+        if (!project || loadedCanvasProjects.has(id)) return;
+        if (
+          Object.prototype.hasOwnProperty.call(get().itemsByProject, id)
+          || Object.prototype.hasOwnProperty.call(get().messagesByProject, id)
+        ) {
+          loadedCanvasProjects.add(id);
+          return;
+        }
+        let pending = loadingCanvasProjects.get(id);
+        if (!pending) {
+          pending = readCanvasProject(id).catch(() => null);
+          loadingCanvasProjects.set(id, pending);
+        }
+        void pending.then((payload) => {
+          loadingCanvasProjects.delete(id);
+          loadedCanvasProjects.add(id);
+          if (!payload || !get().projects.some((item) => item.id === id)) return;
+          set((s) => ({
+            itemsByProject: {
+              ...s.itemsByProject,
+              [id]: Object.prototype.hasOwnProperty.call(s.itemsByProject, id)
+                ? s.itemsByProject[id]
+                : payload.items || [],
+            },
+            messagesByProject: {
+              ...s.messagesByProject,
+              [id]: Object.prototype.hasOwnProperty.call(s.messagesByProject, id)
+                ? s.messagesByProject[id]
+                : payload.messages || [],
+            },
+            viewportByProject: payload.viewport
+              ? { ...s.viewportByProject, [id]: s.viewportByProject[id] || payload.viewport }
+              : s.viewportByProject,
+            draftCounter: {
+              ...s.draftCounter,
+              [id]: (payload.items || []).filter(
+                (item) => item.type === "generation" || item.type === "enhanced",
+              ).length,
+            },
+          }));
         });
       },
 
@@ -541,11 +780,13 @@ export const useStore = create<AppState>()(
     }),
     {
       name: CANVAS_STORAGE_KEY,
-      version: 2,
+      version: 3,
       migrate: (persisted, version) => {
         const s = persisted as Partial<AppState>;
         // v2: native mode became the default — reset the old opt-out once.
         if (version < 2) s.agentEnabled = false;
+        // v3 moves full project payloads to IndexedDB. The custom storage
+        // performs the actual split before Zustand hydrates this summary.
         return s as AppState;
       },
       storage: createJSONStorage(() => safeStorage),
@@ -562,12 +803,26 @@ export const useStore = create<AppState>()(
         if (state) {
           const counters: Record<string, number> = {};
           for (const [pid, items] of Object.entries(state.itemsByProject)) {
+            loadedCanvasProjects.add(pid);
             counters[pid] = items.filter(
               (i) => i.type === "generation" || i.type === "enhanced",
             ).length;
           }
           state.draftCounter = counters;
           state._hasHydrated = true;
+          if (typeof window !== "undefined") {
+            const elapsed = canvasBootStarted ? performance.now() - canvasBootStarted : 0;
+            const detail = { durationMs: Math.round(elapsed), projectCount: state.projects.length };
+            window.dispatchEvent(new CustomEvent("xingzhen:canvas-hydrated", { detail }));
+            if (window.parent !== window) {
+              window.parent.postMessage({
+                source: "xingzhen-canvas",
+                type: "performance",
+                stage: "hydration",
+                ...detail,
+              }, window.location.origin);
+            }
+          }
         }
       },
     },

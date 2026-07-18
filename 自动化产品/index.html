@@ -6,13 +6,13 @@
     <title>星阵</title>
     <link rel="icon" type="image/svg+xml" href="./assets/brand/xingzhen-favicon-black.svg?v=20260711-v71" />
     <link rel="stylesheet" href="./styles/tokens.css?v=20260711-v70" />
-    <link rel="stylesheet" href="./styles/base.css?v=20260718-v92-3" />
-    <link rel="stylesheet" href="./styles/components.css?v=20260718-v92-3" />
-    <link rel="stylesheet" href="./styles/views.css?v=20260718-v92-3" />
+    <link rel="stylesheet" href="./styles/base.css?v=20260718-v93-2" />
+    <link rel="stylesheet" href="./styles/components.css?v=20260718-v93-2" />
+    <link rel="stylesheet" href="./styles/views.css?v=20260718-v93-2" />
     <link rel="stylesheet" href="./styles/analytics.css?v=20260711-v70" />
-    <link rel="stylesheet" href="./styles/agent.css?v=20260718-v92-3" />
-    <link rel="stylesheet" href="./styles/ui-motion.css?v=20260718-v92-3" />
-    <link rel="stylesheet" href="./styles/custom-creation.css?v=20260718-v92-3" />
+    <link rel="stylesheet" href="./styles/agent.css?v=20260718-v93-2" />
+    <link rel="stylesheet" href="./styles/ui-motion.css?v=20260718-v93-2" />
+    <link rel="stylesheet" href="./styles/custom-creation.css?v=20260718-v93-2" />
     <script>
       (function () {
         try {
@@ -34,7 +34,7 @@
         <div class="lg-card" data-mode="login">
           <div class="lg-brand">
             <img class="lg-login-logo" src="./assets/brand/xingzhen-login-logo.png?v=20260710-v64" alt="星阵" />
-            <h1 id="lgModeTitle">登录</h1>
+            <h1 id="lgModeTitle" class="lg-mode-title" role="status" aria-live="polite" aria-atomic="true">登录</h1>
             <p id="lgHint">使用星阵账号继续</p>
           </div>
           <div class="lg-form">
@@ -58,20 +58,8 @@
                 <option value="supplier_child">供应商子账号</option>
               </select>
             </label>
-            <div class="lg-progress" id="lgProgress" role="status" aria-live="polite" aria-atomic="true" hidden>
-              <span class="lg-progress-mark" aria-hidden="true">
-                <i class="lg-progress-orbit"></i>
-                <i class="lg-progress-star"></i>
-              </span>
-              <span class="lg-progress-copy">
-                <strong id="lgProgressTitle">正在验证账号</strong>
-                <small id="lgProgressDetail">正在安全校验登录信息</small>
-              </span>
-              <i class="lg-progress-line" aria-hidden="true"></i>
-            </div>
             <button class="lg-login" id="lgLogin" type="button">
               <span class="lg-login-label">登录</span>
-              <span class="lg-login-spark" aria-hidden="true"><i></i></span>
             </button>
             <p class="lg-gate-error" id="lgGateError" role="alert" hidden></p>
           </div>
@@ -173,6 +161,6 @@
         }, 7000);
       })();
     </script>
-    <script type="module" src="./js/main.js?v=20260718-v92-3"></script>
+    <script type="module" src="./js/main.js?v=20260718-v93-2"></script>
   </body>
 </html>

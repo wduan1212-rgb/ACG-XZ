@@ -112,19 +112,60 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn('it.referenceSource = "batch-plan"', orchestrator)
         self.assertIn("it.referenceSelectionId = batch.referenceSelectionId", orchestrator)
 
-    def test_account_level_long_term_references_are_visible_and_distinct(self):
+    def test_only_digital_role_board_remains_as_long_term_image_reference(self):
         cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")
         view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
 
-        self.assertIn("账号长期风格图", cards)
-        self.assertIn("只控制视觉风格，不并入本次任务参考图", cards)
-        self.assertIn("账号长期角色图", cards)
-        self.assertIn("真人/数字人生成时自动用于角色身份", cards)
+        self.assertNotIn("账号长期风格图", cards)
+        self.assertNotIn("账号长期角色图", cards)
+        self.assertIn("数字人角色版", cards)
+        self.assertIn("锁定角色身份", cards)
         self.assertIn("prunePlanReferences(m.payload)", view)
         self.assertNotIn("accountDefaultRefIds", orchestrator)
         self.assertNotIn("if (!A.omniRefAssetIds.length && !p.batchId)", orchestrator)
         self.assertIn("!p.batchId ? A.sharedRefAssetId : null", orchestrator)
+
+    def test_creator_reference_delete_ui_matches_protected_asset_semantics(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+
+            const { state } = await import("./js/core/store.js");
+            const { canDeleteReferenceAsset } = await import("./js/domain/assets.js");
+            state.role = "editor";
+            state.ui.currentMemberId = "creator-b";
+            state.accounts = [{
+              id: "digital-a", mode: "视频", subType: "数字人",
+              charBoardAssetId: "role-board", imageStyleAssetId: "legacy-style"
+            }];
+            state.assets = [
+              { id: "own-ref", ownerId: "creator-b", type: "图片", tags: [] },
+              { id: "legacy-style", ownerId: "admin-a", type: "图片", tags: ["旧风格参考"] },
+              { id: "role-board", ownerId: "admin-a", type: "图片", tags: ["角色版"] },
+              { id: "published-image", ownerId: "creator-b", type: "图片", tags: ["已发布生成图"] },
+              { id: "delivery-cover", ownerId: "creator-b", type: "图片", tags: [] },
+              { id: "delivery", ownerId: "creator-b", delivered: true, coverAssetId: "delivery-cover", packAssetIds: [] }
+            ];
+            console.log(JSON.stringify({
+              own: canDeleteReferenceAsset(state.assets[0]),
+              legacy: canDeleteReferenceAsset(state.assets[1]),
+              role: canDeleteReferenceAsset(state.assets[2]),
+              published: canDeleteReferenceAsset(state.assets[3]),
+              dependency: canDeleteReferenceAsset(state.assets[4])
+            }));
+            """
+        )
+        self.assertEqual(result, {
+            "own": True,
+            "legacy": True,
+            "role": False,
+            "published": False,
+            "dependency": False,
+        })
 
     def test_new_single_infoflow_does_not_inherit_account_asset_history(self):
         result = self.run_node(
@@ -136,7 +177,7 @@ class BatchReferenceSelectionTest(unittest.TestCase):
 
             const { state } = await import("./js/core/store.js");
             const { createProduction, buildMaterialUnits } = await import("./js/domain/productions.js");
-            const { createUnitVideoJobs } = await import("./js/agent/orchestrator.js?v=20260718-v92-3");
+            const { createUnitVideoJobs } = await import("./js/agent/orchestrator.js?v=20260718-v93-2");
 
             state.accounts = [
               { id:"material-a", name:"素材号", mode:"视频", subType:"无数字人", platform:"视频号" },

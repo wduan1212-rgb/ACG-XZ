@@ -3,7 +3,7 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260718-v92-3";
+import { AI } from "../api/ai.js?v=20260718-v93-2";
 import { groupOf } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
@@ -1493,7 +1493,7 @@ async function draftOne(p, batch) {
           units, shots, account: acc, style, product,
           hasNarrationAudio: false,
           hasVoiceRef: false,
-          hasCharacterRef: !!acc?.charBoardAssetId,
+          hasCharacterRef: false,
           hasSceneRef: explicitVideoRefs.length > 0
         });
         units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
@@ -1531,7 +1531,6 @@ async function draftOne(p, batch) {
       p.artifacts.script.useOnlineTrends = false;
       p.artifacts.script.trendPrep = null;
       p.artifacts.script.trendGuide = "";
-      const styleRefName = acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : "";
       const imgPromptRes = await AI.generateImagePrompts({
         script: shotsToText(shots, true),
         account: acc,
@@ -1540,7 +1539,7 @@ async function draftOne(p, batch) {
         imageCount: count,
         product: null,
         topic: customTopic,
-        styleRefName,
+        styleRefName: "",
         batchVariant,
         useOnlineTrends: false,
         trendGuide: "",
@@ -1625,7 +1624,7 @@ async function draftOne(p, batch) {
         imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT, product,
         direction: isImg ? topic : "",
         imageTemplate: acc.imagePromptTemplate || "",
-        styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : "",
+        styleRefName: "",
         batchVariant: isImg ? batchVariant : null,
         useOnlineTrends,
         trendGuide,
@@ -1662,7 +1661,7 @@ async function draftOne(p, batch) {
         imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT,
         product,
         topic,
-        styleRefName: acc.imageStyleAssetId ? (state.assets.find(a => a.id === acc.imageStyleAssetId)?.name || "") : "",
+        styleRefName: "",
         batchVariant,
         useOnlineTrends,
         trendGuide,
@@ -1708,7 +1707,7 @@ async function draftOne(p, batch) {
         units, shots: p.artifacts.script.shots, account: acc, style, product,
         hasNarrationAudio: false,
         hasVoiceRef: false,
-        hasCharacterRef: !!acc?.charBoardAssetId,
+        hasCharacterRef: false,
         hasSceneRef: explicitVideoRefs.length > 0
       });
       units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
@@ -1820,8 +1819,8 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
   const acc = accountById(p.accountId);
   A.omniRefAssetIds = A.omniRefAssetIds || [];
   A.sceneRefAssetIds = A.sceneRefAssetIds || [];
-  if (!A.characterRefAssetId && acc?.charBoardAssetId) A.characterRefAssetId = acc.charBoardAssetId;
-  const characterRefId = A.characterRefAssetId || acc?.charBoardAssetId || null;
+  if (p.subType === "数字人" && !A.characterRefAssetId && acc?.charBoardAssetId) A.characterRefAssetId = acc.charBoardAssetId;
+  const characterRefId = p.subType === "数字人" ? (A.characterRefAssetId || acc?.charBoardAssetId || null) : null;
   const sceneRefs = [...new Set([
     ...(A.sceneRefAssetIds || []),
     ...(A.omniRefAssetIds || []).filter(id => id !== characterRefId),

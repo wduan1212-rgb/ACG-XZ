@@ -7,12 +7,12 @@ import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, delete
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260718-v92-3";
-import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260718-v92-3";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260718-v92-3";
-import { renderCutPage } from "./chainCut.js?v=20260718-v92-3";
-import { renderReviewPage } from "./chainCopy.js?v=20260718-v92-3";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260718-v93-2";
+import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
+import { renderSlotsPage } from "./chainBoards.js?v=20260718-v93-2";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260718-v93-2";
+import { renderCutPage } from "./chainCut.js?v=20260718-v93-2";
+import { renderReviewPage } from "./chainCopy.js?v=20260718-v93-2";
 
 export const studioView = {
   render(root, { page }) {
@@ -100,10 +100,8 @@ function renderHome(root, acc) {
   const admin = canManageAccounts();
   const accAssets = accountAssets(acc.id);
   const avatarUrl = acc.avatarAssetId ? urlFor(acc.avatarAssetId) : "";
-  const styleRefUrl = acc.imageStyleAssetId ? urlFor(acc.imageStyleAssetId) : "";
   const charRefUrl = board ? urlFor(board) : "";
   const showRoleRef = acc.mode === "视频" && acc.subType === "数字人";
-  const showStyleRef = acc.mode === "图文";
   const styleText = String(acc.styleProfile || acc.lockedStyle || "")
     .replace(/^整体风格\s*[:：]\s*/g, "")
     .replace(/^账号风格\s*[:：]\s*/g, "")
@@ -131,7 +129,6 @@ function renderHome(root, acc) {
             ? `<a class="btn ghost sh-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转主页</a>`
             : `<button class="btn ghost sh-homepage-link is-disabled" type="button" disabled title="管理员尚未填写主页链接">${icon("external", 13)} 跳转主页</button>`}
           ${showRoleRef ? `<button class="btn ghost sm sh-ref-trigger ${charRefUrl ? "has-ref" : "is-empty"}" type="button" data-sh-ref="role" title="${charRefUrl ? "查看账号固定角色版" : "打开角色版"}">${charRefUrl ? `<img src="${charRefUrl}" alt="角色版"/>` : icon("user", 13)}<span>角色版</span></button>` : ""}
-          ${showStyleRef ? `<button class="btn ghost sm sh-ref-trigger ${!styleRefUrl && !admin ? "is-disabled" : ""}" type="button" data-sh-ref="style" ${!styleRefUrl && !admin ? "disabled" : ""} title="${styleRefUrl ? "查看风格版；管理员可拖图到按钮上替换" : "管理员点击或拖入风格版"}">${styleRefUrl ? `<img src="${styleRefUrl}" alt="风格版"/>` : icon("image", 13)}<span>风格版</span>${admin ? `<input type="file" accept="image/*" hidden />` : ""}</button>` : ""}
           ${admin ? `<button class="icon-btn account-edit-trigger" data-sh="edit" title="编辑账号" aria-label="编辑账号">${icon("edit", 16)}</button><button class="icon-btn danger" data-sh="delete" title="删除账号" aria-label="删除账号">${icon("trash", 16)}</button>` : ""}
           <button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>
         </div>
@@ -232,7 +229,7 @@ function renderHome(root, acc) {
       <div class="account-assets-modal">${list.length ? list.map(a => `<article class="account-asset-item" data-account-asset="${a.id}">
         <button class="account-asset-preview" type="button" data-account-preview="${a.id}">${thumbHtml(a)}<span>${assetCode(a) || a.type}</span></button>
         <div><b>${esc(a.name || "未命名素材")}</b><em>${esc(a.type || "素材")}</em></div>
-        <button class="icon-btn sm danger" type="button" data-account-asset-del="${a.id}" title="删除账号资产">${icon("trash", 13)}</button>
+        ${canDeleteReferenceAsset(a) ? `<button class="icon-btn sm danger" type="button" data-account-asset-del="${a.id}" title="删除账号资产">${icon("trash", 13)}</button>` : `<span class="muted" title="已发布素材、交付依赖和数字人角色版不能由普通成员删除">已保护</span>`}
       </article>`).join("") : `<div class="vl-empty">该账号还没有资产</div>`}</div>
       <div class="mp-foot"><button class="btn ghost" data-close>关闭</button></div>`;
     openModal(html, { wide: true, onMount(panel) {
@@ -284,18 +281,17 @@ function renderHome(root, acc) {
   async function setHomeRef(kind, file, { rerender = true } = {}) {
     if (!admin || !file || !file.type.startsWith("image/")) return;
     const dataUrl = await fileToDataUrl(file);
-    const name = kind === "avatar" ? `${acc.name}_头像` : kind === "role" ? `${acc.name}_角色形象` : `${acc.name}_成图风格参考`;
-    const tags = kind === "avatar" ? ["账号头像"] : kind === "role" ? ["角色形象", "角色版"] : ["成图风格参考"];
+    const name = kind === "avatar" ? `${acc.name}_头像` : `${acc.name}_角色形象`;
+    const tags = kind === "avatar" ? ["账号头像"] : ["角色形象", "角色版"];
     const a = await addAssetFromDataUrl(acc.id, {
       name,
       tags,
       dataUrl
     });
     if (kind === "avatar") acc.avatarAssetId = a.id;
-    else if (kind === "role") acc.charBoardAssetId = a.id;
-    else acc.imageStyleAssetId = a.id;
+    else acc.charBoardAssetId = a.id;
     save("accounts");
-    toast(kind === "avatar" ? "头像已更新" : kind === "role" ? "角色形象已更新" : "成图风格参考已更新");
+    toast(kind === "avatar" ? "头像已更新" : "角色形象已更新");
     if (rerender) renderHome(root, acc);
     return a;
   }
@@ -340,8 +336,8 @@ function renderHome(root, acc) {
       btn.addEventListener("click", openRoleRefModal);
       return;
     }
-    const currentUrl = kind === "avatar" ? avatarUrl : kind === "role" ? charRefUrl : styleRefUrl;
-    const currentName = kind === "avatar" ? `${acc.name} 头像` : kind === "role" ? `${acc.name} 角色形象` : `${acc.name} 成图风格参考`;
+    const currentUrl = kind === "avatar" ? avatarUrl : charRefUrl;
+    const currentName = kind === "avatar" ? `${acc.name} 头像` : `${acc.name} 角色形象`;
     if (admin) {
       const input = btn.querySelector("input[type=file]");
       btn.addEventListener("click", e => {

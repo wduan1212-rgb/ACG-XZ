@@ -5,36 +5,36 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260718-v92-3";
+import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260718-v93-2";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
-import { deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
+import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
 import { productTagLabel } from "./domain/delivery.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
-import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260718-v92-3";
+import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260718-v93-2";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260718-v92-3";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260718-v93-2";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
-import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260718-v92-3";
+import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260718-v93-2";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260718-v92-3";
-import { voiceLabView } from "./views/voiceLab.js?v=20260718-v92-3";
-import { customCreationView } from "./views/customCreation.js?v=20260718-v92-3";
-import { agentView } from "./agent/view.js?v=20260718-v92-3";
-import { studioView } from "./views/studio.js?v=20260718-v92-3";
-import { assetsView } from "./views/assetsView.js?v=20260718-v92-3";
-import { deliveryView } from "./views/deliveryView.js?v=20260718-v92-3";
-import { analyticsView } from "./views/analyticsView.js?v=20260718-v92-3";
+import { overviewView } from "./views/overview.js?v=20260718-v93-2";
+import { voiceLabView } from "./views/voiceLab.js?v=20260718-v93-2";
+import { customCreationView } from "./views/customCreation.js?v=20260718-v93-2";
+import { agentView } from "./agent/view.js?v=20260718-v93-2";
+import { studioView } from "./views/studio.js?v=20260718-v93-2";
+import { assetsView } from "./views/assetsView.js?v=20260718-v93-2";
+import { deliveryView } from "./views/deliveryView.js?v=20260718-v93-2";
+import { analyticsView } from "./views/analyticsView.js?v=20260718-v93-2";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260718-v92-3";
+import { settingsView } from "./views/settings.js?v=20260718-v93-2";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260718-v92-3";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260718-v93-2";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260718-v92-3";
+const APP_BUILD_ID = "20260718-v93-2";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -185,21 +185,19 @@ function showGate() {
 }
 let gateMode = "login";
 let gateTransitionTimer = 0;
+let gateTitleTransitionTimer = 0;
 let gateBusy = false;
 const GATE_PHASES = {
   validating: {
-    title: "正在验证账号",
-    detail: "正在安全校验登录信息",
-    button: "验证中"
+    title: "正在验证账号权限…",
+    button: "请稍候"
   },
   syncing: {
-    title: "正在同步工作区",
-    detail: "正在加载账号、资产与创作记录",
-    button: "同步中"
+    title: "正在进入星阵…",
+    button: "即将进入"
   },
   applying: {
-    title: "正在提交申请",
-    detail: "正在安全送达账号申请",
+    title: "正在提交申请…",
     button: "提交中"
   }
 };
@@ -210,20 +208,24 @@ function setGateError(message = "") {
   error.hidden = !message;
 }
 function setGatePhase(phase = "validating") {
-  const progress = $("#lgProgress");
   const config = GATE_PHASES[phase] || GATE_PHASES.validating;
-  if (progress) progress.dataset.phase = phase;
-  const title = $("#lgProgressTitle"), detail = $("#lgProgressDetail"), label = $("#lgLogin .lg-login-label");
-  if (title) title.textContent = config.title;
-  if (detail) detail.textContent = config.detail;
+  const card = $(".lg-card"), title = $("#lgModeTitle"), label = $("#lgLogin .lg-login-label");
+  if (card) card.dataset.phase = phase;
+  if (title) {
+    window.clearTimeout(gateTitleTransitionTimer);
+    title.classList.remove("is-phase-entering");
+    title.textContent = config.title;
+    void title.offsetWidth;
+    title.classList.add("is-phase-entering");
+    gateTitleTransitionTimer = window.setTimeout(() => title.classList.remove("is-phase-entering"), 460);
+  }
   if (label) label.textContent = config.button;
 }
 function setGateBusy(busy, phase = "validating") {
   gateBusy = !!busy;
-  const gate = $("#loginGate"), card = $(".lg-card"), progress = $("#lgProgress"), loginBtn = $("#lgLogin"), applyBtn = $("#lgApply");
+  const gate = $("#loginGate"), card = $(".lg-card"), loginBtn = $("#lgLogin"), applyBtn = $("#lgApply");
   card?.classList.toggle("is-authenticating", gateBusy);
   card?.setAttribute("aria-busy", gateBusy ? "true" : "false");
-  if (progress) progress.hidden = !gateBusy;
   if (loginBtn) loginBtn.disabled = gateBusy;
   if (applyBtn) applyBtn.disabled = gateBusy;
   gate?.querySelectorAll(".lg-field input, .lg-field select").forEach(control => { control.disabled = gateBusy; });
@@ -254,7 +256,11 @@ function applyGateModeContent(mode) {
   const nameField = $("#lgNameField"), roleField = $("#lgRoleField"), loginBtn = $("#lgLogin"), applyBtn = $("#lgApply"), hint = $("#lgHint"), title = $("#lgModeTitle");
   if (nameField) nameField.hidden = !apply;
   if (roleField) roleField.hidden = !apply;
-  if (title) title.textContent = apply ? "申请" : "登录";
+  if (title) {
+    window.clearTimeout(gateTitleTransitionTimer);
+    title.classList.remove("is-phase-entering");
+    title.textContent = apply ? "申请" : "登录";
+  }
   if (loginBtn) {
     const label = apply ? "申请" : "登录";
     const labelNode = loginBtn.querySelector("span");
@@ -528,7 +534,7 @@ function renderContextPanel() {
   const prevScrollTop = panel.querySelector(".ctx-groups")?.scrollTop ?? state.ui.ctxScrollTop ?? 0;
   const q = (panel.dataset.q || "").toLowerCase();
   const f = a => a.name.toLowerCase().includes(q);
-  const accountIndex = new Map(state.accounts.map((a, i) => [a.id, i + 1]));
+  const accountIndex = accountDisplaySequenceMap(state.accounts);
   const groups = [
     { key: "图文组", list: state.accounts.filter(a => a.mode === "图文" && f(a)) },
     { key: "真人 · 数字人", list: state.accounts.filter(a => a.mode === "视频" && a.subType === "数字人" && f(a)) },

@@ -22,6 +22,38 @@ export function isEditingMaterialAsset(asset) {
 
 export const isGlobalEditingAsset = asset => isBgmAsset(asset) || isEditingMaterialAsset(asset);
 
+const assetIsDeliveryDependency = assetId => state.assets.some(item => item?.delivered && (
+  item.coverAssetId === assetId || (item.packAssetIds || []).includes(assetId)
+));
+
+export function isProtectedReferenceAsset(asset) {
+  if (!asset?.id) return true;
+  const text = `${asset.name || ""} ${assetTagText(asset)}`;
+  if (asset.delivered || asset.shared || /已发布生成图|站内生成|笔记图|共享素材/.test(text)) return true;
+  if (assetIsDeliveryDependency(asset.id)) return true;
+  if (state.accounts.some(account => account?.avatarAssetId === asset.id)) return true;
+  return state.accounts.some(account =>
+    account?.mode === "视频"
+    && account?.subType === "数字人"
+    && account?.charBoardAssetId === asset.id
+  );
+}
+
+/* 普通成员可删除自己上传的参考图，也可清理旧版管理员绑定的图文风格图。
+   数字人角色版、账号头像与任何已发布/交付依赖始终走受保护的管理链路。 */
+export function canDeleteReferenceAsset(asset) {
+  if (!asset?.id) return false;
+  const protectedAsset = isProtectedReferenceAsset(asset);
+  const isDigitalRoleBoard = state.accounts.some(account =>
+    account?.mode === "视频"
+    && account?.subType === "数字人"
+    && account?.charBoardAssetId === asset.id
+  );
+  if (protectedAsset) return state.role === "admin" && isDigitalRoleBoard;
+  if (state.role === "admin" || ownedBy(asset)) return true;
+  return state.role === "editor" && state.accounts.some(account => account?.imageStyleAssetId === asset.id);
+}
+
 export function globalBgmAssets() {
   return state.assets
     .filter(asset => isBgmAsset(asset) && !asset.delivered)

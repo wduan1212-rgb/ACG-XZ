@@ -7,6 +7,16 @@ import { isGlobalEditingAsset } from "./assets.js";
 export const PLATFORM_CODE = { "小红书": "XHS", "视频号": "SPH", "抖音": "DY", "公众号": "GZH" };
 export const platformCode = p => PLATFORM_CODE[p] || "XHS";
 
+/* 创作端与供应商端共用同一份完整账号顺序，不按筛选结果或角色可见卡片重新编号。
+   这是只读显示投影，不写回账号数据，也不引入历史数据迁移。 */
+export function accountDisplaySequenceMap(accounts = state.accounts) {
+  return new Map((accounts || []).map((account, index) => {
+    const projected = Number(account?.index || 0);
+    const sequence = Number.isSafeInteger(projected) && projected > 0 ? projected : index + 1;
+    return [account.id, sequence];
+  }));
+}
+
 export const groupOf = a => a.mode === "图文" ? "图文组" : (a.subType === "数字人" ? "真人" : "素材");
 export const modeLabel = a => a.mode === "视频" ? (a.subType || "视频") : "图文";
 export function normalizeHomepageUrl(value = "") {

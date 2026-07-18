@@ -30,9 +30,9 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260718-v92-3",
-            "prodDrawer.js": "v=20260718-v92-3",
-            "orchestrator.js": "v=20260718-v92-3",
+            "studio.js": "v=20260718-v93-2",
+            "prodDrawer.js": "v=20260718-v93-2",
+            "orchestrator.js": "v=20260718-v93-2",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
@@ -50,7 +50,7 @@ class FrontendModuleIdentityTest(unittest.TestCase):
             "custom-creation.css",
         ):
             self.assertIn(
-                f"styles/{stylesheet}?v=20260718-v92-3",
+                f"styles/{stylesheet}?v=20260718-v93-2",
                 index,
                 stylesheet,
             )

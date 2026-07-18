@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260718-v92-3";
+import { AI } from "../api/ai.js?v=20260718-v93-2";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
-import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset } from "../domain/assets.js";
+import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260718-v92-3";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260718-v93-2";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260718-v92-3";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260718-v93-2";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -521,7 +521,7 @@ export function renderSlotsPage(root, p, isImg) {
       if (!box.hidden) { box.hidden = true; return; }
       const assets = accountAssets(acc.id).filter(a => a.type === "图片");
       box.innerHTML = assets.length ? `<div class="ref-grid">${assets.map(a => `
-        <div class="ref-item ${refIdsOf(A).includes(a.id) ? "is-picked" : ""}" data-ref="${a.id}" role="button" tabindex="0">${thumbHtml(a)}<span>${esc(a.name)}</span>${/(已发布生成图|站内生成|笔记图)/.test((a.tags || []).join(" ")) ? "" : `<button class="ref-del" data-ref-del="${a.id}" title="删除参考图">${icon("trash", 11)}</button>`}</div>`).join("")}</div>`
+        <div class="ref-item ${refIdsOf(A).includes(a.id) ? "is-picked" : ""}" data-ref="${a.id}" role="button" tabindex="0">${thumbHtml(a)}<span>${esc(a.name)}</span>${canDeleteReferenceAsset(a) ? `<button class="ref-del" data-ref-del="${a.id}" title="删除参考图">${icon("trash", 11)}</button>` : ""}</div>`).join("")}</div>`
         : `<div class="muted" style="padding:10px">该账号还没有图片资产，先上传一张</div>`;
       box.hidden = false;
       box.querySelectorAll("[data-ref-del]").forEach(b => b.addEventListener("click", async e => {
@@ -594,13 +594,12 @@ export function renderSlotsPage(root, p, isImg) {
         if (!shots.length) { toast(isImg ? "先在图文创作台生成图卡结构" : "先回脚本页生成脚本"); return; }
         const sharedRefs = refAssetsOf(A);
         if (isImg) {
-          const styleRef = acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
           const res = await AI.generateImagePrompts({
             script: shotsToText(shots, true),
             account: acc,
             style: p.artifacts.script.style,
             imageTemplate: acc.imagePromptTemplate || "",
-            styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
+            styleRefName: refNamesOf(A).join("、"),
             imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || DEFAULT_XHS_IMAGE_COUNT,
             product: productById(p.artifacts.script.productId),
             topic: p.topic,
@@ -946,7 +945,6 @@ export function renderSlotsPage(root, p, isImg) {
     }
     p.topic = topic;
     p.title = title || topic;
-    const styleRef = acc.imageStyleAssetId ? state.assets.find(x => x.id === acc.imageStyleAssetId) : null;
     const style = acc.styleProfile || S.style || "";
     const shots = buildCustomCopyShots(C, count, null);
     S.direction = "";
@@ -959,7 +957,7 @@ export function renderSlotsPage(root, p, isImg) {
       account: acc,
       style,
       imageTemplate: acc.imagePromptTemplate || "",
-      styleRefName: refNamesOf(A, [styleRef?.name]).join("、"),
+      styleRefName: refNamesOf(A).join("、"),
       imageCount: count,
       product: null,
       topic,

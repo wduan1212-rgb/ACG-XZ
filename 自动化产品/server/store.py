@@ -52,8 +52,6 @@ STORYBOARD_RISKY_TERMS = (
 )
 ACCOUNT_REFERENCE_ASSET_FIELDS = (
     "avatarAssetId",
-    "charBoardAssetId",
-    "imageStyleAssetId",
     "voiceRefAssetId",
     "seedanceVoiceRefAssetId",
 )
@@ -74,14 +72,25 @@ def _is_global_editing_asset(item):
 
 
 def _account_reference_asset_ids(item):
-    """账号共享给创作者时，只同步账号显式绑定的参考资产，不扩散同账号其他私有资产。"""
+    """账号共享给创作者时，只同步账号必需的管理资产。
+
+    旧版 imageStyleAssetId 仅保留在原账号记录中供无损回滚，不再作为长期参考图
+    向创作者下发；数字人角色版仍是唯一生成链路会长期读取的图片。
+    """
     if not isinstance(item, dict):
         return set()
-    return {
+    ids = {
         str(item.get(field))
         for field in ACCOUNT_REFERENCE_ASSET_FIELDS
         if item.get(field)
     }
+    if (
+        item.get("mode") == "视频"
+        and item.get("subType") == "数字人"
+        and item.get("charBoardAssetId")
+    ):
+        ids.add(str(item.get("charBoardAssetId")))
+    return ids
 
 
 SCHEMA = """
@@ -797,6 +806,114 @@ def _asset_writable_by(conn, asset_id, actor):
     return _production_owned_by(conn, item.get("productionId"), actor)
 
 
+def _asset_reference_protection_locked(conn, asset_id, item):
+    """删除参考资产时的服务端保护线。
+
+    受保护项必须经对应业务链路撤回/替换，不允许普通资产删除直接破坏：
+    账号头像、数字人角色版、已发布生成图，以及交付记录的封面/图集依赖。
+    """
+    aid = str(asset_id or "")
+    if not aid:
+        return "missing"
+    text = " ".join([
+        str(item.get("name") or ""),
+        " ".join(str(tag or "") for tag in (item.get("tags") or [])),
+    ])
+    if item.get("delivered") or item.get("shared") or any(
+        marker in text for marker in ("已发布生成图", "站内生成", "笔记图", "共享素材")
+    ):
+        return "published_asset"
+
+    account_rows = conn.execute(
+        "SELECT data FROM docs WHERE collection='accounts'"
+    ).fetchall()
+    for (raw,) in account_rows:
+        try:
+            account = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if str(account.get("avatarAssetId") or "") == aid:
+            return "account_avatar"
+        if (
+            account.get("mode") == "视频"
+            and account.get("subType") == "数字人"
+            and str(account.get("charBoardAssetId") or "") == aid
+        ):
+            return "digital_role_board"
+
+    delivery_rows = conn.execute(
+        "SELECT data FROM docs WHERE collection='assets'"
+    ).fetchall()
+    for (raw,) in delivery_rows:
+        try:
+            delivery = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not delivery.get("delivered"):
+            continue
+        if str(delivery.get("coverAssetId") or "") == aid:
+            return "delivery_cover"
+        if aid in {str(value) for value in (delivery.get("packAssetIds") or []) if value}:
+            return "delivery_pack"
+    return ""
+
+
+def _legacy_style_reference_bound_locked(conn, asset_id):
+    """仅用于允许创作者清理旧版管理员绑定的图文风格图。"""
+    aid = str(asset_id or "")
+    rows = conn.execute("SELECT data FROM docs WHERE collection='accounts'").fetchall()
+    for (raw,) in rows:
+        try:
+            account = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if str(account.get("imageStyleAssetId") or "") == aid:
+            return True
+    return False
+
+
+def _editor_can_delete_reference_asset_locked(conn, asset_id, actor):
+    row = _doc_row_in_conn(conn, "assets", asset_id)
+    if not row:
+        return True
+    item = row[1]
+    if _asset_reference_protection_locked(conn, asset_id, item):
+        return False
+    if _stored_owner(row) == str(actor):
+        return True
+    return (
+        item.get("type") == "图片"
+        and _legacy_style_reference_bound_locked(conn, asset_id)
+    )
+
+
+def _clear_legacy_style_reference_locked(conn, asset_id):
+    """资产被允许删除时原子清除旧绑定，不触碰其他账号字段。"""
+    aid = str(asset_id or "")
+    rows = conn.execute(
+        "SELECT id,owner_id,updated_at,data FROM docs WHERE collection='accounts'"
+    ).fetchall()
+    for account_id, owner_id, updated_at, raw in rows:
+        try:
+            account = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if str(account.get("imageStyleAssetId") or "") != aid:
+            continue
+        account["imageStyleAssetId"] = None
+        account["updatedAt"] = max(int(account.get("updatedAt") or 0), int(time.time() * 1000))
+        conn.execute(
+            "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+            (
+                "accounts",
+                str(account_id),
+                owner_id,
+                max(int(updated_at or 0), int(account["updatedAt"])),
+                json.dumps(account, ensure_ascii=False),
+            ),
+        )
+
+
 def _analytics_link_writable_by(conn, link_id, actor):
     row = _doc_row_in_conn(conn, "analyticsLinks", link_id)
     if not row:
@@ -1012,6 +1129,41 @@ def upsert_voice_presets(owner_id, role, items):
         upsert_docs("voicePresets", allowed)
 
 
+def list_voice_presets():
+    """Return the shared custom-voice catalog for server-side integrations.
+
+    Preview audio can be large and is irrelevant to TTS routing, so this helper
+    deliberately returns only the safe metadata needed to select a voice ID.
+    """
+    rows = _fetchall(
+        "SELECT owner_id,data,updated_at FROM docs WHERE collection='voicePresets'"
+    )
+    presets = []
+    for owner_id, raw_data, updated_at in rows:
+        try:
+            item = json.loads(raw_data)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(item, dict):
+            continue
+        voice_id = str(item.get("voiceId") or "").strip()
+        if not voice_id:
+            continue
+        presets.append({
+            "id": str(item.get("id") or voice_id),
+            "voiceId": voice_id,
+            "name": str(item.get("name") or voice_id).strip()[:120],
+            "ownerId": str(item.get("ownerId") or owner_id or "").strip(),
+            "createdAt": int(item.get("createdAt") or 0),
+            "updatedAt": int(item.get("updatedAt") or updated_at or 0),
+        })
+    return sorted(
+        presets,
+        key=lambda item: (item["updatedAt"], item["createdAt"], item["id"]),
+        reverse=True,
+    )
+
+
 def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delivery=False):
     """通用删除同样执行 actor 校验，避免 DELETE 绕过 PUT 的权限矩阵。"""
     if collection not in COLLECTIONS:
@@ -1031,7 +1183,11 @@ def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delive
                 return
             allowed = False
             if collection in {"assets", "voicePresets"} | OWNER_SCOPED_GENERIC_COLLECTIONS:
-                allowed = _stored_owner(row) == actor
+                allowed = (
+                    _editor_can_delete_reference_asset_locked(conn, doc_id, actor)
+                    if collection == "assets"
+                    else _stored_owner(row) == actor
+                )
                 if collection == "insightReports" and not allowed:
                     allowed = _report_writable_by(conn, doc_id, actor)
                 elif collection == "creativeMemory" and not allowed:
@@ -1065,6 +1221,8 @@ def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delive
                         continue
                     if str(job.get("productionId") or "") == str(doc_id):
                         _delete_doc_in_conn(conn, "jobs", job_id)
+            if collection == "assets":
+                _clear_legacy_style_reference_locked(conn, doc_id)
             _delete_doc_in_conn(
                 conn,
                 collection,
@@ -1096,22 +1254,32 @@ def can_write_asset_file(asset_id, member_id, role):
 
 
 def can_delete_asset_file(filename, member_id, role):
-    """已登记文件只能由资产 owner 或管理员删除。"""
+    """文件删除与资产记录使用同一权限和交付保护规则。"""
     if role == "admin":
         return True
     if role != "editor":
         return False
     target = str(filename or "")
-    rows = _fetchall("SELECT owner_id,data FROM docs WHERE collection='assets'")
-    for owner_id, raw in rows:
+    _ensure_db()
+    with _lock:
+        conn = _connect()
         try:
-            item = json.loads(raw)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        file_name = str(item.get("serverFileName") or "")
-        file_url = str(item.get("fileUrl") or item.get("url") or "")
-        if file_name == target or file_url.endswith("/" + target):
-            return str(owner_id or item.get("ownerId") or "") == str(member_id)
+            rows = conn.execute(
+                "SELECT id,data FROM docs WHERE collection='assets'"
+            ).fetchall()
+            for asset_id, raw in rows:
+                try:
+                    item = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                file_name = str(item.get("serverFileName") or "")
+                file_url = str(item.get("fileUrl") or item.get("url") or "")
+                if file_name == target or file_url.endswith("/" + target):
+                    return _editor_can_delete_reference_asset_locked(
+                        conn, asset_id, member_id
+                    )
+        finally:
+            conn.close()
     return target.startswith(f"{member_id}--")
 
 
@@ -1769,12 +1937,28 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
             project["status"] = "published"
             project["publishedDeliveryId"] = did[:160]
             project["publishedAt"] = now
-            if kind == "canvas":
-                project_state = (
-                    dict(project.get("projectState"))
-                    if isinstance(project.get("projectState"), dict)
-                    else {}
-                )
+            project_state = (
+                dict(project.get("projectState"))
+                if isinstance(project.get("projectState"), dict)
+                else {}
+            )
+            if kind == "video":
+                source_output_id = str(delivery.get("sourceOutputId") or "").strip()[:180]
+                if source_output_id:
+                    published_outputs = (
+                        dict(project_state.get("publishedVideoOutputs"))
+                        if isinstance(project_state.get("publishedVideoOutputs"), dict)
+                        else {}
+                    )
+                    published_outputs[source_output_id] = {
+                        "deliveryId": did[:160],
+                        "sourceDeliveryId": str(delivery.get("sourceDeliveryId") or "").strip()[:180],
+                        "publishedAt": now,
+                        "publishedCount": 1,
+                    }
+                    project_state["publishedVideoOutputs"] = dict(list(published_outputs.items())[-200:])
+                    project["projectState"] = project_state
+            elif kind == "canvas":
                 project_state["publishedItemIds"] = sorted({
                     *[
                         str(value)[:180]
@@ -2037,6 +2221,25 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
                 ),
                 reverse=True,
             )
+            project_state = (
+                dict(project.get("projectState"))
+                if isinstance(project.get("projectState"), dict)
+                else {}
+            )
+            if project.get("kind") == "video":
+                published_video_outputs = {}
+                for candidate in candidates:
+                    source_output_id = str(candidate.get("sourceOutputId") or "").strip()[:180]
+                    if not source_output_id or source_output_id in published_video_outputs:
+                        continue
+                    published_video_outputs[source_output_id] = {
+                        "deliveryId": str(candidate.get("id") or "")[:160],
+                        "sourceDeliveryId": str(candidate.get("sourceDeliveryId") or "").strip()[:180],
+                        "publishedAt": int(candidate.get("deliveredAt") or candidate.get("createdAt") or now),
+                        "publishedCount": 1,
+                    }
+                project_state["publishedVideoOutputs"] = published_video_outputs
+                project["projectState"] = project_state
             if candidates:
                 project["status"] = "published"
                 project["publishedDeliveryId"] = str(candidates[0].get("id") or "")[:160]
@@ -2046,11 +2249,6 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
                     or now
                 )
                 if project.get("kind") == "canvas":
-                    project_state = (
-                        dict(project.get("projectState"))
-                        if isinstance(project.get("projectState"), dict)
-                        else {}
-                    )
                     project_state["publishedItemIds"] = sorted({
                         str(value)[:180]
                         for candidate in candidates
@@ -2063,11 +2261,6 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
                 project["publishedDeliveryId"] = ""
                 project.pop("publishedAt", None)
                 if project.get("kind") == "canvas":
-                    project_state = (
-                        dict(project.get("projectState"))
-                        if isinstance(project.get("projectState"), dict)
-                        else {}
-                    )
                     project_state.pop("publishedItemIds", None)
                     project["projectState"] = project_state
             project["updatedAt"] = now
@@ -2177,6 +2370,8 @@ def sync_custom_video_project(owner_id, workshop_project):
                 "aspectRatio": item.get("aspectRatio"),
                 "url": item.get("url"),
                 "downloadUrl": item.get("downloadUrl"),
+                "id": item.get("id"),
+                "deliveryId": item.get("deliveryId"),
                 "probe": item.get("probe"),
             }
             for item in raw_outputs[:20]
@@ -2206,6 +2401,8 @@ def sync_custom_video_project(owner_id, workshop_project):
             "kind": "video",
             "source": "video-workshop",
             "sourceProjectId": workshop_project_id,
+            "sourceDeliveryId": str(raw_output.get("deliveryId") or "")[:180],
+            "sourceOutputId": str(raw_output.get("id") or output_id)[:180],
             "name": str(raw_output.get("label") or f"视频成片 {index + 1}")[:160],
             "mime": "video/mp4",
             "url": _custom_video_proxy_url(source_url),
@@ -2251,6 +2448,11 @@ def sync_custom_video_project(owner_id, workshop_project):
             },
             "sourceUpdatedAt": str(source.get("updatedAt") or "")[:80],
             "syncSignature": sync_signature,
+            "publishedVideoOutputs": (
+                dict(existing_state.get("publishedVideoOutputs"))
+                if isinstance(existing_state.get("publishedVideoOutputs"), dict)
+                else {}
+            ),
         },
         "outputIds": [item["id"] for item in output_docs],
         "status": "published" if already_published else "draft",
@@ -2466,6 +2668,8 @@ def delete_doc(collection, doc_id, protect_custom_delivery=False):
     with _lock:
         conn = _connect()
         try:
+            if collection == "assets":
+                _clear_legacy_style_reference_locked(conn, doc_id)
             _delete_doc_in_conn(conn, collection, doc_id, protect_custom_delivery=protect_custom_delivery)
             conn.commit()
         finally:
@@ -2844,6 +3048,7 @@ def state_for(member_id, role, parent_id=None):
     supplier_avatar_asset_ids = set()
     editor_account_asset_ids = set()
     supplier_production_created_at = {}
+    account_projected_sequences = {}
     with _lock:
         conn = _connect()
         try:
@@ -2862,9 +3067,20 @@ def state_for(member_id, role, parent_id=None):
                 if role in {"supplier_parent", "supplier_child"} and col not in {"accounts", "assets"}:
                     out[col] = []
                     continue
-                rows = conn.execute("SELECT data, owner_id FROM docs WHERE collection=?", (col,)).fetchall()
+                account_order = " ORDER BY rowid" if col == "accounts" else ""
+                rows = conn.execute(
+                    f"SELECT data, owner_id FROM docs WHERE collection=?{account_order}", (col,)
+                ).fetchall()
                 items = []
-                if col == "assets":
+                if col == "accounts":
+                    decoded_rows = [(json.loads(data), owner) for data, owner in rows]
+                    account_projected_sequences = {
+                        str(item.get("id") or ""): index + 1
+                        for index, (item, _) in enumerate(decoded_rows)
+                        if item.get("id")
+                    }
+                    row_items = decoded_rows
+                elif col == "assets":
                     decoded_rows = [(json.loads(data), owner) for data, owner in rows]
                     delivery_projected_sequences = _projected_delivery_sequences([item for item, _ in decoded_rows])
                     row_items = decoded_rows
@@ -2886,11 +3102,14 @@ def state_for(member_id, role, parent_id=None):
                     if col == "accounts" and role in {"supplier_parent", "supplier_child"}:
                         if item.get("avatarAssetId"):
                             supplier_avatar_asset_ids.add(item.get("avatarAssetId"))
+                        projected_account_sequence = account_projected_sequences.get(str(item.get("id") or ""))
                         item = {
                             key: item.get(key) for key in (
-                                "id", "name", "platform", "mode", "index", "avatarAssetId", "avatarUrl", "homepageUrl"
+                                "id", "name", "platform", "mode", "avatarAssetId", "avatarUrl", "homepageUrl"
                             ) if item.get(key) is not None
                         }
+                        if projected_account_sequence:
+                            item["index"] = projected_account_sequence
                     if col == "productions":
                         if role == "supplier_child" and (item.get("stage") != "delivered" or item.get("accountId") not in assigned_account_ids):
                             continue

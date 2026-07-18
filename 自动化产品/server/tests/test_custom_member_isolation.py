@@ -30,6 +30,15 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
                 "imageStyleAssetId": "account-style-ref",
                 "voiceRefAssetId": "account-voice-ref",
                 "updatedAt": 100,
+            }, {
+                "id": "shared-infoflow-account",
+                "ownerId": "creator-a",
+                "name": "共享信息流账号",
+                "platform": "视频号",
+                "mode": "视频",
+                "subType": "无数字人",
+                "charBoardAssetId": "retired-infoflow-role",
+                "updatedAt": 100,
             }])
             store.upsert_docs("assets", [{
                 "id": "account-avatar",
@@ -51,6 +60,7 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
                 "accountId": "shared-digital-account",
                 "type": "图片",
                 "name": "账号风格参考图",
+                "serverFileName": "creator-a--style-ref.png",
                 "updatedAt": 103,
             }, {
                 "id": "account-voice-ref",
@@ -66,6 +76,13 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
                 "type": "图片",
                 "name": "A 的其他私有图片",
                 "updatedAt": 105,
+            }, {
+                "id": "retired-infoflow-role",
+                "ownerId": "creator-a",
+                "accountId": "shared-infoflow-account",
+                "type": "图片",
+                "name": "旧信息流长期角色图",
+                "updatedAt": 106,
             }])
 
             creator_b_state = store.state_for("creator-b", "editor")
@@ -78,7 +95,6 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
                 {
                     "account-avatar",
                     "account-role-board",
-                    "account-style-ref",
                     "account-voice-ref",
                 },
             )
@@ -109,12 +125,90 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
                 )
             )
 
-            # 供应商仍只取得既有的账号头像白名单，角色版、风格图和普通私有图均不放开。
+            # 旧版风格图不再下发或参与生成；旧页面缓存仍可由创作者
+            # 安全清理，文件与资产记录权限一致，并只清空这一个旧绑定。
+            self.assertTrue(
+                store.can_delete_asset_file(
+                    "creator-a--style-ref.png", "creator-b", "editor"
+                )
+            )
+            store.delete_member_doc(
+                "assets", "account-style-ref", "creator-b", "editor"
+            )
+            refreshed = store.state_for("creator-b", "editor")
+            account = next(
+                item for item in refreshed["accounts"]
+                if item["id"] == "shared-digital-account"
+            )
+            self.assertIsNone(account.get("imageStyleAssetId"))
+            self.assertNotIn(
+                "account-style-ref",
+                {item["id"] for item in store.state_for("creator-a", "editor")["assets"]},
+            )
+
+            # 供应商仍只取得既有的账号头像白名单，角色版和普通私有图均不放开。
             supplier_state = store.state_for("supplier-parent", "supplier_parent")
             self.assertEqual(
                 {item["id"] for item in supplier_state["assets"]},
                 {"account-avatar"},
             )
+
+    def test_creator_can_delete_normal_reference_but_not_role_or_delivery_dependencies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("accounts", [{
+                "id": "digital-account",
+                "ownerId": "admin-a",
+                "mode": "视频",
+                "subType": "数字人",
+                "charBoardAssetId": "role-board",
+            }])
+            store.upsert_docs("assets", [{
+                "id": "normal-ref",
+                "ownerId": "creator-b",
+                "type": "图片",
+                "serverFileName": "creator-b--normal.png",
+            }, {
+                "id": "role-board",
+                "ownerId": "creator-b",
+                "type": "图片",
+                "serverFileName": "creator-b--role.png",
+            }, {
+                "id": "delivery-cover",
+                "ownerId": "creator-b",
+                "type": "图片",
+                "serverFileName": "creator-b--cover.png",
+            }, {
+                "id": "delivery-item",
+                "ownerId": "creator-b",
+                "type": "图集",
+                "delivered": True,
+                "serverFileName": "creator-b--delivery.zip",
+                "coverAssetId": "delivery-cover",
+                "packAssetIds": ["delivery-cover"],
+            }])
+
+            self.assertTrue(store.can_delete_asset_file(
+                "creator-b--normal.png", "creator-b", "editor"
+            ))
+            self.assertFalse(store.can_delete_asset_file(
+                "creator-b--role.png", "creator-b", "editor"
+            ))
+            self.assertFalse(store.can_delete_asset_file(
+                "creator-b--cover.png", "creator-b", "editor"
+            ))
+            self.assertFalse(store.can_delete_asset_file(
+                "creator-b--delivery.zip", "creator-b", "editor"
+            ))
+
+            store.delete_member_doc(
+                "assets", "normal-ref", "creator-b", "editor"
+            )
+            for protected_id in ("role-board", "delivery-cover", "delivery-item"):
+                with self.assertRaises(PermissionError):
+                    store.delete_member_doc(
+                        "assets", protected_id, "creator-b", "editor"
+                    )
 
     def test_creator_snapshots_isolate_custom_projects_outputs_and_private_audio(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -12,7 +12,10 @@
 - `../../server/main.py` 中的 `/api/custom-canvas/*`：模型调用、权限和参考图回执。
 
 主平台模式使用同源 iframe 隔离 React、Zustand 和 CSS。画布项目以当前成员 ID
-作为浏览器存储命名空间；导出时通过 `postMessage` 发送
+作为浏览器存储命名空间；`localStorage` 只保存首页需要的项目摘要，完整
+节点、消息、视口和图片保存到按成员分仓的 IndexedDB，进入项目时才加载。
+历史 v2 数据会在浏览器内自动迁移；IndexedDB 不可用时保留完整旧数据兜底。
+导出时通过 `postMessage` 发送
 `xingzhen-canvas / output-ready`，再由主平台进入发布流程。
 
 ## 安装与验证

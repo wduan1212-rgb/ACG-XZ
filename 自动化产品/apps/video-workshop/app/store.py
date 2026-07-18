@@ -40,6 +40,7 @@ def create_project() -> dict[str, Any]:
         "assets": [],
         "plan": None,
         "outputs": [],
+        "deliveries": [],
         "error": "",
     }
     save_project(project)
@@ -66,11 +67,23 @@ def _project_summary(project: dict[str, Any], fallback_id: str) -> dict[str, Any
     }
 
 
-def list_project_summaries() -> list[dict[str, Any]]:
+def list_project_summaries(project_ids: set[str] | None = None) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     live_cache_keys: set[str] = set()
+    requested_ids = {
+        "".join(ch for ch in str(project_id or "") if ch.isalnum() or ch in "-_")
+        for project_id in (project_ids or set())
+        if str(project_id or "").strip()
+    }
     with _lock:
-        for path in settings.projects_dir.glob("*.json"):
+        paths = (
+            [_path(project_id) for project_id in sorted(requested_ids)]
+            if project_ids is not None
+            else list(settings.projects_dir.glob("*.json"))
+        )
+        for path in paths:
+            if not path.is_file():
+                continue
             cache_key = str(path.resolve())
             try:
                 stat = path.stat()
@@ -91,9 +104,10 @@ def list_project_summaries() -> list[dict[str, Any]]:
             _summary_cache[cache_key] = (*signature, summary)
             summaries.append(dict(summary))
 
-        for cache_key in tuple(_summary_cache):
-            if cache_key not in live_cache_keys:
-                _summary_cache.pop(cache_key, None)
+        if project_ids is None:
+            for cache_key in tuple(_summary_cache):
+                if cache_key not in live_cache_keys:
+                    _summary_cache.pop(cache_key, None)
     return sorted(summaries, key=lambda item: item["updatedAt"], reverse=True)
 
 

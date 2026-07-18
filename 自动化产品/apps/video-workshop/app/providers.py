@@ -514,7 +514,7 @@ class MiniMaxDirector:
 9. 附件编号使用“图1、视频1、音频1”。图片可以是 reference/material/both，视频只能是 material/unused，音频可以是 narration/bgm/sfx/unused；用户明确说法优先。
 10. material 只表示参与剪辑，presentation 决定呈现方式。Logo、品牌标志、透明图、角标必须用 overlay；普通图片和素材视频优先用 pip，让 AI 主画面与连续口播始终保留；只有用户明确要求替换画面或素材本身承担完整叙事时才用 cutaway。
 11. material、both 或 sfx 需要关联有效的 scene_number 和 narration_anchor，后端据此把素材放进对应口播位置。用途冲突且会显著改变成片时，再调用 ask_user 确认。
-12. audio_design 由内容需要决定。BGM 必须服从口播；可用 BGM 清单为 {bgm_options}。用户上传并指定的 BGM 优先，未指定具体曲目时 bgm_track_id 留空。
+12. BGM 必须服从口播。只要共享 BGM 清单非空且用户没有明确要求关闭配乐，audio_design.bgm_enabled 默认设为 true，并根据内容气质填写 bgm_mood；用户上传并指定的 BGM 优先，未指定具体曲目时 bgm_track_id 留空，由系统从共享库智能匹配。可用 BGM 清单为 {bgm_options}。
 {duration_instruction}
 
 内置视频制作工作流：
@@ -700,18 +700,22 @@ class MiniMaxDirector:
                     arguments,
                     requested_duration_sec,
                 )
+        latest_user_text = next(
+            (str(item.get("content") or "") for item in reversed(messages) if item.get("role") == "user"),
+            "",
+        )
+        explicit_no_bgm = bool(re.search(
+            r"(?:不要|不用|不加|关闭|移除|去掉).{0,6}(?:BGM|bgm|配乐|背景音乐|音乐)|无\s*(?:BGM|bgm|配乐|背景音乐)|纯口播",
+            latest_user_text,
+        ))
         raw_audio_design = arguments.get("audio_design") if isinstance(arguments.get("audio_design"), dict) else {}
         arguments["audio_design"] = {
-            "bgm_enabled": bool(raw_audio_design.get("bgm_enabled", True)),
+            "bgm_enabled": bool(bgm_catalog) and not explicit_no_bgm,
             "bgm_mood": str(raw_audio_design.get("bgm_mood") or arguments.get("tone") or "克制")[:120],
             "bgm_track_id": str(raw_audio_design.get("bgm_track_id") or "")[:120],
             "bgm_volume": max(0.03, min(0.3, _safe_float(raw_audio_design.get("bgm_volume"), 0.12))),
             "sound_note": str(raw_audio_design.get("sound_note") or "保持口播清晰，音乐只承担氛围。")[:300],
         }
-        latest_user_text = next(
-            (str(item.get("content") or "") for item in reversed(messages) if item.get("role") == "user"),
-            "",
-        )
         explicit_roles: dict[str, set[str]] = {}
         for match in re.finditer(
             r"((?:(?:图|视频|音频)\s*\d+\s*[、,，和及与/ ]*)+)\s*(?:是|作为|用作|当作)?\s*(参考|素材|剪辑|插入|成片|口播|旁白|配乐|背景音乐|音效)",

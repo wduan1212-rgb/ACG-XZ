@@ -96,7 +96,7 @@ class Settings:
     minimax_tts_model: str = os.getenv("MINIMAX_TTS_MODEL", "speech-2.8-hd")
     minimax_voice_id: str = os.getenv(
         "MINIMAX_VOICE_ID",
-        "moss_audio_ce44fc67-7ce3-11f0-8de5-96e35d26fb85",
+        "presenter_female",
     )
 
     asr_model: str = os.getenv("ASR_MODEL", "small")

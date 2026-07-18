@@ -802,6 +802,9 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn('previous.zone === "custom"', router)
         self.assertIn("hostsHtml(activePage)", shell)
         self.assertIn("root.__customCreationContext", shell)
+        self.assertIn("xingzhen.customCreation.performance.v1", shell)
+        self.assertIn('recordCustomPerformance("tool-mount"', shell)
+        self.assertIn('recordCustomPerformance("tab-activate"', shell)
         self.assertIn("forceNew: true", publishing)
         self.assertIn('kind: "video"', publishing)
         self.assertIn("AI.generateCopy({", publishing)
@@ -889,7 +892,7 @@ console.log(compactCanvasPublishCopy('第一段\\n第二段\\\\n第三段   结�
         self.assertIn("copyInput.value = generatedCopy", publishing)
         self.assertIn('rows="${kind === "canvas" ? 4 : 6}"', publishing)
 
-    def test_custom_video_cover_defaults_to_digital_role_and_account_style(self):
+    def test_custom_video_cover_defaults_to_digital_role_but_not_legacy_style_image(self):
         publishing = (
             APP_DIR / "js/views/customPublish.js"
         ).read_text(encoding="utf-8")
@@ -917,13 +920,13 @@ const refs = coverReferenceIds({{
   referenceAssetIds: ["legacy-ref"],
 }}, account);
 if (refs.roleRefAssetId !== "role-ref") throw new Error("digital role ref missing");
-if (JSON.stringify(refs.refAssetIds) !== JSON.stringify(["role-ref", "style-ref", "legacy-ref"])) {{
+if (JSON.stringify(refs.refAssetIds) !== JSON.stringify(["role-ref", "legacy-ref"])) {{
   throw new Error(`unexpected ref order: ${{JSON.stringify(refs.refAssetIds)}}`);
 }}
 const customRefs = coverReferenceIds({{
   coverRefAssetIds: "legacy-ref",
 }}, account, ["custom-ref"]);
-if (JSON.stringify(customRefs.refAssetIds) !== JSON.stringify(["role-ref", "custom-ref", "style-ref", "legacy-ref"])) {{
+if (JSON.stringify(customRefs.refAssetIds) !== JSON.stringify(["role-ref", "custom-ref", "legacy-ref"])) {{
   throw new Error(`custom ref was not prioritized: ${{JSON.stringify(customRefs.refAssetIds)}}`);
 }}
 const style = accountCoverStylePrompt(account);

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ class BgmTrack:
     name: str
     path: Path
     source: str
+    search_text: str = ""
 
     def public(self) -> dict[str, str]:
         return {"id": self.id, "name": self.name, "source": self.source}
@@ -32,6 +34,53 @@ class BgmLibrary(Protocol):
     def catalog(self) -> list[dict[str, str]]: ...
 
     def resolve(self, project_id: str, plan: dict[str, Any]) -> BgmTrack | None: ...
+
+
+_MOOD_GROUPS = (
+    ("轻快", "欢快", "活泼", "明亮", "轻松", "清新", "阳光", "办公"),
+    ("温暖", "温柔", "治愈", "舒缓", "柔和", "暖", "清晨"),
+    ("沉稳", "克制", "冷静", "商务", "专业", "知识", "叙事"),
+    ("科技", "未来", "电子", "数字", "节奏", "动感"),
+    ("紧张", "悬疑", "压迫", "危机", "冲突"),
+    ("高级", "质感", "杂志", "电影", "氛围"),
+)
+
+
+def _selection_context(plan: dict[str, Any]) -> str:
+    audio_design = plan.get("audio_design") if isinstance(plan.get("audio_design"), dict) else {}
+    return " ".join(
+        str(value or "").lower()
+        for value in (
+            audio_design.get("bgm_mood"),
+            audio_design.get("sound_note"),
+            plan.get("tone"),
+            plan.get("title"),
+            plan.get("core_message"),
+        )
+    )
+
+
+def _track_score(track: BgmTrack, context: str) -> int:
+    haystack = f"{track.name} {track.search_text}".lower()
+    score = 0
+    for group in _MOOD_GROUPS:
+        if any(word in context for word in group):
+            score += sum(3 for word in group if word in haystack)
+    # Names/tags often contain the exact requested mood (for example “轻快办公”).
+    for token in re.findall(r"[a-z0-9]{2,}|[\u4e00-\u9fff]{2,4}", context):
+        if token in haystack:
+            score += 1
+    return score
+
+
+def _pick_track(project_id: str, plan: dict[str, Any], tracks: list[BgmTrack]) -> BgmTrack:
+    context = _selection_context(plan)
+    scored = [(track, _track_score(track, context)) for track in tracks]
+    best_score = max((score for _, score in scored), default=0)
+    candidates = [track for track, score in scored if score == best_score]
+    seed = f"{project_id}|{plan.get('title')}|{context}"
+    index = int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16) % len(candidates)
+    return candidates[index]
 
 
 class LocalBgmLibrary:
@@ -72,9 +121,7 @@ class LocalBgmLibrary:
         requested = next((track for track in tracks if track.id == requested_id), None)
         if requested:
             return requested
-        seed = f"{project_id}|{plan.get('title')}|{audio_design.get('bgm_mood')}"
-        index = int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16) % len(tracks)
-        return tracks[index]
+        return _pick_track(project_id, plan, tracks)
 
 
 class PlatformBgmLibrary:
@@ -182,11 +229,14 @@ class PlatformBgmLibrary:
             if path is None:
                 continue
             seen.add(asset_id)
+            raw_tags = item.get("tags") or []
+            tags = raw_tags if isinstance(raw_tags, list) else [raw_tags]
             tracks.append(BgmTrack(
                 id=f"platform:{asset_id}",
                 name=str(item.get("name") or path.stem),
                 path=path,
                 source="platform",
+                search_text=" ".join(str(tag or "") for tag in tags),
             ))
         return sorted(tracks, key=lambda track: (track.name.casefold(), track.id))
 
@@ -216,9 +266,7 @@ class PlatformBgmLibrary:
         requested = next((track for track in tracks if track.id == requested_id), None)
         if requested:
             return requested
-        seed = f"{project_id}|{plan.get('title')}|{audio_design.get('bgm_mood')}"
-        index = int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16) % len(tracks)
-        return tracks[index]
+        return _pick_track(project_id, plan, tracks)
 
 
 bgm_library: BgmLibrary = PlatformBgmLibrary() if settings.bgm_source == "platform" else LocalBgmLibrary()

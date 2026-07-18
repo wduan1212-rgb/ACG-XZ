@@ -1,11 +1,11 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260718-v92-3";
+import { AI } from "../api/ai.js?v=20260718-v93-2";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260718-v92-3";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260718-v93-2";
 import { icon } from "../ui/icons.js";
 import { openLightbox, openModal, toast, withLoading } from "../ui/components.js";
 
@@ -220,13 +220,9 @@ function coverReferenceIds(output = {}, account = {}, extraReferenceAssetIds = [
     && assetById(account.charBoardAssetId)?.type === "图片"
     ? account.charBoardAssetId
     : "";
-  const styleRefAssetId = assetById(account.imageStyleAssetId)?.type === "图片"
-    ? account.imageStyleAssetId
-    : "";
   const ids = [
     roleRefAssetId,
     ...idList(extraReferenceAssetIds),
-    styleRefAssetId,
     ...idList(output.coverRefAssetIds),
     ...idList(output.referenceAssetIds)
   ];
@@ -872,7 +868,8 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
               account,
               style: account.styleProfile || account.lockedStyle || "",
               kind: "video",
-              product
+              product,
+              requireLlm: true
             })
             : await AI.generateImageCopyFromTitle({ title, account, product });
           const generatedCopy = kind === "canvas"

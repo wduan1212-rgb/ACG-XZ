@@ -5,7 +5,7 @@ import { emptyState, openModal, confirmModal, toast, promptModal } from "../ui/c
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliveryViewsSummary } from "../domain/delivery.js";
-import { normalizeHomepageUrl } from "../domain/accounts.js";
+import { accountDisplaySequenceMap, normalizeHomepageUrl } from "../domain/accounts.js";
 
 const accountAvatar = acc => {
   const avatar = acc?.avatarUrl || (acc?.avatarAssetId ? urlFor(acc.avatarAssetId) : "");
@@ -103,6 +103,7 @@ export async function renderSupplierAccounts(root) {
     const { children, bindings } = await supplierData();
     if (!onSupplierRoute("assets")) return;
     const childMap = new Map(children.map(x => [x.id, x]));
+    const accountSequence = accountDisplaySequenceMap(state.accounts);
     const platforms = [...new Set(state.accounts.map(x => x.platform).filter(Boolean))];
     const canEditHomepage = ["supplier", "supplier_parent"].includes(state.role);
     const homepageActionsHtml = acc => `<div class="supplier-homepage-actions" data-homepage-actions="${esc(acc.id)}">${acc.homepageUrl ? `<a class="btn ghost sm" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 查看主页</a>` : `<span>未填写主页</span>`}${canEditHomepage ? `<button class="btn ghost sm" type="button" data-homepage-edit="${esc(acc.id)}">${icon("edit", 12)} 编辑主页链接</button>` : ""}</div>`;
@@ -113,7 +114,8 @@ export async function renderSupplierAccounts(root) {
         const child = binding ? childMap.get(binding.childId) : null;
         const searchable = `${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase();
         const hidden = (supplierAccountQuery && !searchable.includes(supplierAccountQuery.toLowerCase())) || (supplierPlatform !== "all" && acc.platform !== supplierPlatform);
-        return `<article class="supplier-account" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")}</em></div><div class="supplier-account-controls">${homepageActionsHtml(acc)}<label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></article>`;
+        const sequence = accountSequence.get(acc.id) || 0;
+        return `<article class="supplier-account" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")}</em></div><div class="supplier-account-controls">${homepageActionsHtml(acc)}<label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></article>`;
       }).join("")}</div></div>`;
     const applyAccountFilters = () => {
       const cards = $$(".supplier-account", root);

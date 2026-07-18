@@ -656,112 +656,49 @@ body {
 }
 .lg-secondary:hover { color: #0A0F18; background: rgba(255,255,255,.72); }
 
-/* 登录等待态：轻量星芒轨道 + 分阶段反馈，不阻断错误阅读。 */
-.lg-card.is-authenticating {
-  border-color: rgba(255,255,255,.82);
-  box-shadow:
-    0 38px 100px rgba(15,23,42,.27),
-    0 0 0 1px rgba(47,128,255,.08),
-    0 0 58px rgba(47,128,255,.12),
-    inset 0 1px 0 rgba(255,255,255,.9);
+/* 登录内容直接悬浮在背景上，不使用整块面板外框。 */
+.login-gate .lg-card {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  overflow: visible;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
-.lg-card.is-authenticating::after { animation: lgCardBreath 2.4s ease-in-out infinite; }
-@keyframes lgCardBreath {
-  0%, 100% { opacity: .68; }
-  50% { opacity: 1; }
-}
-.lg-progress {
-  position: relative;
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
+.login-gate .lg-card::before,
+.login-gate .lg-card::after { display: none; }
+
+/* 登录等待态：过程只在主标题上反馈，保持界面克制、稳定。 */
+.lg-mode-title {
+  height: 29px;
+  display: flex;
   align-items: center;
-  gap: 11px;
-  min-height: 54px;
-  padding: 8px 12px 10px 9px;
-  overflow: hidden;
-  border: 1px solid rgba(15,23,42,.08);
-  border-radius: 15px;
-  background: linear-gradient(118deg, rgba(255,255,255,.74), rgba(241,246,253,.56));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.86), 0 12px 28px rgba(15,23,42,.06);
-  animation: lgProgressIn .34s cubic-bezier(.2,.75,.2,1) both;
+  justify-content: center;
+  transform-origin: 50% 58%;
+  text-wrap: balance;
 }
-.lg-progress[hidden] { display: none; }
-@keyframes lgProgressIn {
-  from { opacity: 0; transform: translateY(5px) scale(.985); }
+.lg-card.is-authenticating {
+  border-color: transparent;
+  box-shadow: none;
 }
-.lg-progress-mark {
-  position: relative;
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(47,128,255,.12), rgba(255,255,255,.56) 58%, transparent 60%);
-}
-.lg-progress-orbit {
-  position: absolute;
-  inset: 3px;
-  border: 1px solid rgba(15,23,42,.16);
-  border-top-color: rgba(47,128,255,.9);
-  border-right-color: rgba(47,128,255,.36);
-  border-radius: 50%;
-  animation: lgOrbitSpin 1.25s linear infinite;
-}
-.lg-progress-orbit::after {
-  content: "";
-  position: absolute;
-  width: 4px;
-  height: 4px;
-  top: 1px;
-  right: 3px;
-  border-radius: 50%;
-  background: #2f80ff;
-  box-shadow: 0 0 8px rgba(47,128,255,.78);
-}
-.lg-progress-star {
-  width: 8px;
-  height: 8px;
-  background: #0a0f18;
-  clip-path: polygon(50% 0, 61% 38%, 100% 50%, 61% 62%, 50% 100%, 39% 62%, 0 50%, 39% 38%);
-  animation: lgStarPulse 1.25s ease-in-out infinite;
-}
-@keyframes lgOrbitSpin { to { transform: rotate(360deg); } }
-@keyframes lgStarPulse { 50% { transform: scale(1.34); filter: drop-shadow(0 0 5px rgba(47,128,255,.48)); } }
-.lg-progress-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.lg-progress-copy strong {
-  color: #0a0f18;
-  font-size: 12.5px;
-  font-weight: 750;
+.lg-card.is-authenticating .lg-mode-title {
+  font-size: 18px;
   letter-spacing: .035em;
 }
-.lg-progress-copy small {
-  overflow: hidden;
-  color: rgba(15,23,42,.52);
-  font-size: 10.5px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.lg-mode-title.is-phase-entering {
+  animation: lgTitlePhaseIn .42s cubic-bezier(.22,.78,.22,1) both;
 }
-.lg-progress-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  overflow: hidden;
-  background: rgba(15,23,42,.05);
-}
-.lg-progress-line::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  width: 42%;
-  background: linear-gradient(90deg, transparent, #0a0f18 42%, #2f80ff 74%, transparent);
-  animation: lgLineTravel 1.45s cubic-bezier(.45,0,.25,1) infinite;
-}
-@keyframes lgLineTravel {
-  from { transform: translateX(-115%); }
-  to { transform: translateX(280%); }
+@keyframes lgTitlePhaseIn {
+  from {
+    opacity: 0;
+    transform: perspective(360px) rotateX(-34deg) translateY(4px);
+    filter: blur(2.5px);
+  }
+  to {
+    opacity: 1;
+    transform: perspective(360px) rotateX(0) translateY(0);
+    filter: blur(0);
+  }
 }
 .lg-login {
   position: relative;
@@ -771,53 +708,24 @@ body {
   gap: 9px;
   overflow: hidden;
 }
-.lg-login::before {
-  content: "";
-  position: absolute;
-  inset: -80% -36%;
-  opacity: 0;
-  pointer-events: none;
-  background: linear-gradient(105deg, transparent 38%, rgba(255,255,255,.30) 50%, transparent 62%);
-}
 .lg-login:disabled {
   cursor: wait;
-  opacity: 1;
+  opacity: .84;
   transform: none;
-  box-shadow: 0 16px 34px rgba(15,23,42,.26), 0 0 30px rgba(47,128,255,.18);
-}
-.lg-login:disabled::before { opacity: 1; animation: lgButtonSheen 1.5s ease-in-out infinite; }
-@keyframes lgButtonSheen {
-  from { transform: translateX(-72%); }
-  to { transform: translateX(72%); }
+  box-shadow: 0 14px 30px rgba(15,23,42,.22);
 }
 .lg-login-label { position: relative; z-index: 1; }
-.lg-login-spark {
-  position: relative;
-  z-index: 1;
-  display: none;
-  width: 16px;
-  height: 16px;
-  border: 1px solid rgba(255,255,255,.42);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: lgOrbitSpin .9s linear infinite;
-}
-.lg-login-spark i {
-  position: absolute;
-  width: 3px;
-  height: 3px;
-  top: 0;
-  right: 1px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 0 6px rgba(255,255,255,.92);
-}
-.lg-login:disabled .lg-login-spark { display: block; }
 .lg-secondary:disabled { cursor: wait; opacity: .46; }
 .lg-card.is-authenticating .lg-field { opacity: .64; }
 .lg-card.is-authenticating .lg-field input,
 .lg-card.is-authenticating .lg-field select { cursor: wait; }
+.lg-form { position: relative; }
 .lg-gate-error {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 9px);
+  left: 0;
+  right: 0;
   margin: 0;
   padding: 9px 11px;
   border: 1px solid rgba(190,38,51,.16);
@@ -830,7 +738,7 @@ body {
   animation: lgErrorIn .26s ease-out both;
 }
 .lg-gate-error[hidden] { display: none; }
-@keyframes lgErrorIn { from { opacity: 0; transform: translateY(-3px); } }
+@keyframes lgErrorIn { from { opacity: 0; } }
 
 @media (prefers-reduced-motion: reduce) {
   .lg-bg-video { display: none; }
@@ -838,13 +746,7 @@ body {
   .login-gate::after,
   .lg-stage *,
   .lg-particles i,
-  .lg-card.is-authenticating::after,
-  .lg-progress,
-  .lg-progress-orbit,
-  .lg-progress-star,
-  .lg-progress-line::after,
-  .lg-login:disabled::before,
-  .lg-login-spark,
+  .lg-mode-title.is-phase-entering,
   .lg-gate-error {
     animation: none !important;
   }

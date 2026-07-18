@@ -12,11 +12,11 @@ class LoginLoadingStateTest(unittest.TestCase):
         cls.main = (APP_DIR / "js/main.js").read_text(encoding="utf-8")
         cls.css = (APP_DIR / "styles/base.css").read_text(encoding="utf-8")
 
-    def test_login_card_exposes_accessible_phase_and_error_feedback(self):
-        self.assertIn('id="lgProgress" role="status" aria-live="polite"', self.index)
-        self.assertIn('id="lgProgressTitle">正在验证账号', self.index)
+    def test_login_title_exposes_accessible_phase_and_error_feedback(self):
+        self.assertIn('id="lgModeTitle" class="lg-mode-title" role="status" aria-live="polite" aria-atomic="true"', self.index)
         self.assertIn('id="lgGateError" role="alert"', self.index)
-        self.assertIn('class="lg-login-spark" aria-hidden="true"', self.index)
+        self.assertNotIn('id="lgProgress"', self.index)
+        self.assertNotIn('class="lg-login-spark"', self.index)
 
     def test_login_submission_is_guarded_and_always_unlocked(self):
         wire_gate = self.main.split("function wireGate()", 1)[1].split("function logout()", 1)[0]
@@ -40,6 +40,16 @@ class LoginLoadingStateTest(unittest.TestCase):
         self.assertIn("const synced = await pullRemote();", remote_entry)
         self.assertIn('if (!synced) throw new Error("请检查网络后重试");', remote_entry)
 
+    def test_login_title_has_short_process_copy_and_recovers_by_mode(self):
+        self.assertIn('title: "正在验证账号权限…"', self.main)
+        self.assertIn('title: "正在进入星阵…"', self.main)
+        self.assertIn('title: "正在提交申请…"', self.main)
+        phase = self.main.split("function setGatePhase", 1)[1].split("function setGateBusy", 1)[0]
+        self.assertIn('title.classList.add("is-phase-entering")', phase)
+        restore = self.main.split("function applyGateModeContent", 1)[1].split("function setGateMode", 1)[0]
+        self.assertIn('title.classList.remove("is-phase-entering")', restore)
+        self.assertIn('title.textContent = apply ? "申请" : "登录";', restore)
+
     def test_failed_sync_revokes_half_finished_identity_and_auto_resume_stays_gated(self):
         self.assertIn('if (phase === "syncing" && remote.isOn()) await clearPendingRemoteIdentity();', self.main)
         clear_identity = self.main.split("async function clearPendingRemoteIdentity()", 1)[1].split("function applyGateModeContent", 1)[0]
@@ -53,12 +63,41 @@ class LoginLoadingStateTest(unittest.TestCase):
         self.assertGreaterEqual(resume.count("await clearPendingRemoteIdentity();"), 2)
 
     def test_motion_is_lightweight_and_reduced_motion_safe(self):
-        self.assertIn(".lg-progress-orbit", self.css)
-        self.assertIn(".lg-progress-line::after", self.css)
+        waiting = self.css.split("登录等待态", 1)[1].split("@media (prefers-reduced-motion", 1)[0]
+        self.assertIn(".lg-mode-title.is-phase-entering", waiting)
+        self.assertIn("height: 29px", waiting)
+        self.assertIn("@keyframes lgTitlePhaseIn", waiting)
+        self.assertNotIn("lg-progress", waiting)
+        self.assertNotIn("lg-login-spark", waiting)
+        self.assertNotIn("lgButtonSheen", waiting)
         reduced = self.css.split("@media (prefers-reduced-motion: reduce)", 1)[1]
-        self.assertIn(".lg-progress-orbit", reduced)
-        self.assertIn(".lg-login-spark", reduced)
-        self.assertNotIn("url(", self.css.split("登录等待态", 1)[1].split("@media (prefers-reduced-motion", 1)[0])
+        self.assertIn(".lg-mode-title.is-phase-entering", reduced)
+        self.assertNotIn("url(", waiting)
+
+    def test_login_content_has_no_full_panel_frame(self):
+        frame = self.css.split("登录内容直接悬浮在背景上", 1)[1].split("登录等待态", 1)[0]
+        self.assertIn(".login-gate .lg-card", frame)
+        self.assertIn("background: transparent", frame)
+        self.assertIn("border-color: transparent", frame)
+        self.assertIn("box-shadow: none", frame)
+        self.assertIn("overflow: visible", frame)
+        self.assertIn("backdrop-filter: none", frame)
+        self.assertIn(".login-gate .lg-card::before", frame)
+        self.assertIn("display: none", frame)
+        busy = self.css.split(".lg-card.is-authenticating {", 1)[1].split("}", 1)[0]
+        self.assertIn("border-color: transparent", busy)
+        self.assertIn("box-shadow: none", busy)
+
+    def test_login_error_does_not_reflow_centered_content(self):
+        form = self.css.split(".lg-form { position: relative; }", 1)
+        self.assertEqual(len(form), 2)
+        error = form[1].split(".lg-gate-error {", 1)[1].split("}", 1)[0]
+        self.assertIn("position: absolute", error)
+        self.assertIn("top: calc(100% + 9px)", error)
+        self.assertIn("left: 0", error)
+        self.assertIn("right: 0", error)
+        error_motion = self.css.split("@keyframes lgErrorIn", 1)[1].split("}", 1)[0]
+        self.assertNotIn("transform", error_motion)
 
 
 if __name__ == "__main__":

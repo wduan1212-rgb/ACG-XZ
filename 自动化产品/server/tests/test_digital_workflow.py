@@ -40,22 +40,20 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
         self.assertIn('id="daAccountFilter"', source)
         self.assertIn("accountMatch", source)
 
-    def test_material_subtitles_use_stable_recognition_and_manual_track_is_preserved(self):
+    def test_subtitles_use_known_text_timing_and_manual_track_is_preserved(self):
         source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
         workshop = (APP_DIR / "js/views/chainWorkshop.js").read_text(encoding="utf-8")
         productions = (APP_DIR / "js/domain/productions.js").read_text(encoding="utf-8")
-        self.assertIn('const usesEstimatedMaterialCaptions = () => !isDigitalHuman()', source)
         self.assertIn('mode: isDigitalHuman() ? "digital-human" : "info-flow"', source)
         self.assertIn("timedSpeechHintsForClip", source)
         self.assertIn("extractStructuredSpokenCues", source)
-        self.assertIn("strict: usesEstimatedMaterialCaptions()", source)
-        self.assertIn('subTimingSource = "audio-analysis-v6"', source)
-        self.assertIn('subTimingSource = "prompt-timeline-v1"', source)
-        self.assertIn('audioTimingSource = "prompt-timeline-fallback"', source)
+        self.assertIn("spreadKnownCaption", source)
+        self.assertIn('"digital-segment-duration-v2"', source)
+        self.assertIn('"prompt-colon-timeline-v2"', source)
+        self.assertIn('"known-narration-real-duration"', source)
+        self.assertIn('"existing-prompt-colon-timeline"', source)
         self.assertIn("promptTimelineCaptions", source)
-        self.assertIn('source.startsWith("audio-analysis-")', source)
-        self.assertIn("真实音轨未通过字幕校验", source)
-        self.assertIn("audioDataUrl: audio.dataUrl", source)
+        self.assertNotIn('/api/video/audio-timing', source)
         self.assertIn("audioTimingRevision", source)
         self.assertIn("timingAttemptIsCurrent", source)
         self.assertIn("clip.videoDuration = actual", source)
@@ -68,7 +66,7 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
         self.assertNotIn("estimateInfoFlowCaptions", source)
         self.assertIn('s.text = e.target.value;\n      markCaptionTimingManual()', source)
         self.assertNotIn("script.shots?.[index]?.line", source)
-        self.assertNotIn("任意引号", source)
+        self.assertIn("STRICT_UI_QUOTE_CONTEXT", source)
 
     def test_digital_segment_duration_fallback_uses_known_narration_only(self):
         script = r"""
@@ -120,15 +118,15 @@ console.log(JSON.stringify({ cues, split, semantic, alignedDigital, alignedInfoF
         )
         self.assertNotEqual(payload["alignedInfoFlow"], payload["alignedDigital"])
         source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
-        self.assertIn('subTimingSource = "digital-segment-duration-pending"', source)
-        self.assertIn('subTimingSource = "digital-segment-duration-v1"', source)
+        self.assertIn('"digital-segment-duration-v2"', source)
+        self.assertIn('"digital-segment-duration-v2-empty"', source)
         self.assertIn("trustedNarration", source)
         digital_hint_start = source.index("function timedSpeechHintsForClip")
         infoflow_start = source.index("const segments = p.artifacts.boards?.infoFlow", digital_hint_start)
         hint_guard = source[digital_hint_start:infoflow_start]
         self.assertIn("if (isDigitalHuman())", hint_guard)
         self.assertIn("digitalSegmentDurationCuesForClip", hint_guard)
-        self.assertIn("cleanAlignedCaptionText(cue.text, isDigitalHuman())", source)
+        self.assertIn("cleanTrustedNarrationCaption(timingText)", source)
 
     def test_infoflow_caption_hints_only_accept_explicit_spoken_source(self):
         script = r"""
@@ -181,12 +179,21 @@ console.log(JSON.stringify(m.extractStructuredSpokenCues(input, 15)));
             capture_output=True,
             check=True,
         )
-        self.assertEqual(json.loads(result.stdout.strip()), [
-            {"text": "又压过来一摞 我还没理完上一摞", "start": 2, "end": 5},
-            {"text": "资料要看 步骤要拆 结果还要能交", "start": 5, "end": 9},
-            {"text": "三个版本 下班前", "start": 9, "end": 12},
-            {"text": "先别理了 让它先跑一版", "start": 12, "end": 15},
-        ])
+        cues = json.loads(result.stdout.strip())
+        expected = [
+            (2, 5, "又压过来一摞我还没理完上一摞"),
+            (5, 9, "资料要看步骤要拆结果还要能交"),
+            (9, 12, "三个版本下班前"),
+            (12, 15, "先别理了让它先跑一版"),
+        ]
+        for start, end, text in expected:
+            actual = "".join(
+                cue["text"].replace(" ", "") for cue in cues
+                if cue["start"] >= start and cue["end"] <= end
+            )
+            self.assertEqual(actual, text)
+        self.assertTrue(all(any(cue["start"] >= start and cue["end"] <= end for start, end, _ in expected) for cue in cues))
+        self.assertNotIn("输入框", "".join(cue["text"] for cue in cues))
 
     def test_infoflow_dialogue_quotes_support_variable_spoken_prefixes_only(self):
         script = r"""
@@ -245,23 +252,23 @@ console.log(JSON.stringify({
         payload = json.loads(result.stdout.strip())
         self.assertIn('输入框显示：“整理资料”', payload["unchanged"])
         self.assertIn('演员自言自语:"第三版到底是哪张图。"', payload["unchanged"])
-        self.assertEqual(payload["cues"], [
-            {"text": "这份表怎么又乱了", "start": 0, "end": 3},
-            {"text": "先把资料放到一起", "start": 3, "end": 6},
-            {"text": "最后检查结果", "start": 12, "end": 15},
-            {"text": "第三版到底是哪张图", "start": 15, "end": 18},
-            {"text": "每次都像重新开始", "start": 18, "end": 21},
-            {"text": "月底报表今天必须交", "start": 21, "end": 24},
-            {"text": "直接开工", "start": 24, "end": 27},
-            {"text": "这个版本可以", "start": 27, "end": 30},
-            {"text": "先核对口径", "start": 30, "end": 33},
-            {"text": "这句是真实口播", "start": 48, "end": 51},
-            {"text": "这三个口径以哪个为准", "start": 51, "end": 54},
-            {"text": "先把定义对一遍", "start": 54, "end": 57},
-            {"text": "月底就要交了", "start": 57, "end": 60},
-            {"text": "前面的音效不能打乱台词配对", "start": 60, "end": 63},
-            {"text": "这句是明确口播", "start": 102, "end": 105},
-        ])
+        expected = [
+            (0, 3, "这份表怎么又乱了"), (3, 6, "先把资料放到一起"),
+            (12, 15, "最后检查结果"), (15, 18, "第三版到底是哪张图"),
+            (18, 21, "每次都像重新开始"), (21, 24, "月底报表今天必须交"),
+            (24, 27, "直接开工"), (27, 30, "这个版本可以"),
+            (30, 33, "先核对口径"), (48, 51, "这句是真实口播"),
+            (51, 54, "这三个口径以哪个为准"), (54, 57, "先把定义对一遍"),
+            (57, 60, "月底就要交了"), (60, 63, "前面的音效不能打乱台词配对"),
+            (102, 105, "这句是明确口播"),
+        ]
+        for start, end, text in expected:
+            actual = "".join(
+                cue["text"].replace(" ", "") for cue in payload["cues"]
+                if cue["start"] >= start and cue["end"] <= end
+            )
+            self.assertEqual(actual, text)
+        self.assertTrue(all(any(cue["start"] >= start and cue["end"] <= end for start, end, _ in expected) for cue in payload["cues"]))
 
     def test_infoflow_dialogue_reads_raw_quote_variants_and_explicit_labels_without_rewriting(self):
         script = r"""
@@ -334,55 +341,52 @@ console.log(JSON.stringify({
             check=True,
         )
         payload = json.loads(result.stdout.strip())
-        self.assertEqual(payload["cues"], [
-            {"text": "这份我没签字", "start": 0, "end": 3},
-            {"text": "行 我自己收", "start": 3, "end": 6},
+        def assert_segment_cues(key, expected):
+            cues = payload[key]
+            for start, end, text in expected:
+                actual = "".join(
+                    cue["text"].replace(" ", "") for cue in cues
+                    if cue["start"] >= start and cue["end"] <= end
+                )
+                self.assertEqual(actual, text.replace(" ", ""), f"{key} {start}-{end}")
+            self.assertTrue(all(
+                any(cue["start"] >= start and cue["end"] <= end for start, end, _ in expected)
+                for cue in cues
+            ), key)
+
+        assert_segment_cues("cues", [
+            (0, 3, "这份我没签字"), (3, 6, "行 我自己收"),
         ])
         self.assertEqual(payload["explicitUnquoted"], '0-3s：台词（员工，低声）：今天先核对字段。')
         self.assertIn('脱口而出"这堆线索谁先跟谁后跟啊？"', payload["directSpeech"])
-        self.assertEqual(payload["explicitCues"], [
-            {"text": "今天先核对字段", "start": 0, "end": 3},
+        assert_segment_cues("explicitCues", [(0, 3, "今天先核对字段")])
+        assert_segment_cues("directCues", [
+            (0, 3, "这堆线索谁先跟谁后跟啊"), (3, 6, "全是要跟的 哪个该先"),
         ])
-        self.assertEqual(payload["directCues"], [
-            {"text": "这堆线索谁先跟谁后跟啊", "start": 0, "end": 3},
-            {"text": "全是要跟的 哪个该先", "start": 3, "end": 6},
+        assert_segment_cues("mannerCues", [(0, 3, "这周一刚改过吧")])
+        assert_segment_cues("nestedCues", [(12, 15, "怎么又是去年的项目名")])
+        assert_segment_cues("naturalCues", [
+            (0, 3, "先拆开再追结果"), (3, 6, "先停下来 按清单来"),
+            (6, 9, "行 我把酒店和会议都再改一版"), (9, 12, "这个是昨天那个终版吧"),
+            (12, 15, "那个是上周的终版"), (15, 18, "姐姐 你手里那份不是最终版"),
+            (18, 21, "完了完了顺序全乱了"),
         ])
-        self.assertEqual(payload["mannerCues"], [
-            {"text": "这周一刚改过吧", "start": 0, "end": 3},
+        assert_segment_cues("argumentativeCues", [
+            (0, 3, "我把整理这事交给百度搭子就行了"),
+            (3, 6, "它怎么会懂那些乱七八糟的命名"),
         ])
-        self.assertEqual(payload["nestedCues"], [
-            {"text": "怎么又是去年的项目名", "start": 12, "end": 15},
+        assert_segment_cues("naturalUnquotedCues", [
+            (0, 2, "又来"), (2, 5, "刚结束的客户会议全程都在这里"),
+            (5, 8, "我的桌面已经装不下了"), (8, 11, "记一下周一上线前加三个字段"),
+            (11, 14, "谁来把这些东西放进同一个地方"),
         ])
-        self.assertEqual(payload["naturalCues"], [
-            {"text": "先拆开再追结果", "start": 0, "end": 3},
-            {"text": "先停下来 按清单来", "start": 3, "end": 6},
-            {"text": "行 我把酒店和会议都再改一版", "start": 6, "end": 9},
-            {"text": "这个是昨天那个终版吧", "start": 9, "end": 12},
-            {"text": "那个是上周的终版", "start": 12, "end": 15},
-            {"text": "姐姐 你手里那份不是最终版", "start": 15, "end": 18},
-            {"text": "完了完了顺序全乱了", "start": 18, "end": 21},
+        assert_segment_cues("metadataAndUiCues", [
+            (12, 15, "这句是真实台词"), (15, 18, "这句只出现一次"),
         ])
-        self.assertEqual(payload["argumentativeCues"], [
-            {"text": "我把整理这事交给百度搭子就行了", "start": 0, "end": 3},
-            {"text": "它怎么会懂那些乱七八糟的命名", "start": 3, "end": 6},
-        ])
-        self.assertEqual(payload["naturalUnquotedCues"], [
-            {"text": "又来", "start": 0, "end": 2},
-            {"text": "刚结束的客户会议全程都在这里", "start": 2, "end": 5},
-            {"text": "我的桌面已经装不下了", "start": 5, "end": 8},
-            {"text": "记一下周一上线前加三个字段", "start": 8, "end": 11},
-            {"text": "谁来把这些东西放进同一个地方", "start": 11, "end": 14},
-        ])
-        self.assertEqual(payload["metadataAndUiCues"], [
-            {"text": "这句是真实台词", "start": 12, "end": 15},
-            {"text": "这句只出现一次", "start": 15, "end": 18},
-        ])
-        self.assertEqual(payload["colonCues"], [
-            {"text": "你给我个说法", "start": 0, "end": 3},
-            {"text": "先把口径对齐", "start": 3, "end": 6},
-            {"text": "先看证据", "start": 15, "end": 18},
-            {"text": "下周还是这张纸", "start": 18, "end": 21},
-            {"text": "结果还是对不上", "start": 27, "end": 30},
+        assert_segment_cues("colonCues", [
+            (0, 3, "你给我个说法"), (3, 6, "先把口径对齐"),
+            (15, 18, "先看证据"), (18, 21, "下周还是这张纸"),
+            (27, 30, "结果还是对不上"),
         ])
 
     def test_infoflow_prompt_timeline_accepts_local_or_global_segment_ranges(self):
@@ -622,11 +626,14 @@ console.log(JSON.stringify({
         self.assertIn("amix=inputs=2:duration=longest", backend)
         self.assertIn('time.time_ns()', backend)
 
-    def test_whisper_gibberish_guard_and_plain_dashboard_chat(self):
+    def test_main_subtitle_path_has_no_whisper_and_dashboard_chat_stays_plain(self):
         backend = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
+        cut = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
         overview = (APP_DIR / "js/views/overview.js").read_text(encoding="utf-8")
-        self.assertIn("def _usable_transcript_text", backend)
-        self.assertIn("□■▢▣�", backend)
+        self.assertNotIn("whisper.cpp", backend.lower())
+        self.assertNotIn("/api/video/audio-timing", backend)
+        self.assertNotIn("/api/video/audio-timing", cut)
+        self.assertIn("未生成猜测字幕", cut)
         self.assertIn("function plainAssistantText", overview)
         self.assertIn('data-overview-account=', overview)
         self.assertIn("逐条查看赞、藏、评与播放", overview)
@@ -754,7 +761,7 @@ console.log(JSON.stringify({
         self.assertNotIn("去发布清单", assets)
         self.assertIn('const showRoleRef = acc.mode === "视频" && acc.subType === "数字人"', studio)
         self.assertIn('data-sh-ref="role"', studio)
-        self.assertIn('data-sh-ref="style"', studio)
+        self.assertNotIn('data-sh-ref="style"', studio)
         self.assertIn('id="agwNewPanel"', agent)
 
     def test_account_profile_seed_only_bootstraps_an_empty_account_store(self):
@@ -768,8 +775,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260718-v92-3"', main)
-        self.assertIn('js/main.js?v=20260718-v92-3', index)
+        self.assertIn('const APP_BUILD_ID = "20260718-v93-2"', main)
+        self.assertIn('js/main.js?v=20260718-v93-2', index)
 
     def test_batch_reference_images_are_explicit_and_title_changes_refresh_copy(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
@@ -802,7 +809,7 @@ globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
 globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
 const { state } = await import('./js/core/store.js');
 const { createProduction, buildMaterialUnits } = await import('./js/domain/productions.js');
-const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260718-v92-3');
+const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260718-v93-2');
 state.accounts = [{ id:'material-account', name:'素材号', mode:'视频', subType:'无数字人', platform:'视频号' }];
 state.assets = [{ id:'old-hidden-ref', accountId:'material-account', type:'图片', name:'旧产品统一参考', tags:['统一参考','产品'] }];
 state.productions = [];

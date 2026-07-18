@@ -95,6 +95,23 @@ class CreatorProxySecurityTest(unittest.TestCase):
                 self.assertEqual(member["id"], f"{role}-id")
                 self.assertEqual(member["role"], role)
 
+    def test_legacy_account_routes_keep_read_compatibility_but_reject_writes(self):
+        me = {"id": "creator-a", "role": "editor", "parentId": None}
+        response = main.Response()
+        with patch.object(main.store, "state_for", return_value={
+            "accounts": [{"id": "account-a", "name": "现行账号"}],
+        }):
+            rows = main.list_accounts(response, me)
+        self.assertEqual(rows[0]["id"], "account-a")
+        self.assertEqual(response.headers.get("deprecation"), "true")
+
+        with self.assertRaises(HTTPException) as create_denied:
+            main.create_account(main.Account(name="旧客户端写入"), me)
+        self.assertEqual(create_denied.exception.status_code, 410)
+        with self.assertRaises(HTTPException) as delete_denied:
+            main.delete_account("account-a", me)
+        self.assertEqual(delete_denied.exception.status_code, 410)
+
     def test_all_costly_routes_require_creator_permission(self):
         paths = {
             "/api/llm/config",
@@ -111,7 +128,6 @@ class CreatorProxySecurityTest(unittest.TestCase):
             "/api/video/poll/{task_id}",
             "/api/video/cancel/{task_id}",
             "/api/proxy/file",
-            "/api/video/audio-timing",
             "/api/video/compose",
             "/api/accounts",
             "/api/accounts/{acc_id}",

@@ -57,6 +57,28 @@ def _sha256(path: Path) -> str:
 
 
 class VideoWorkshopPlatformBgmTest(unittest.TestCase):
+    def test_relevant_candidates_are_stably_randomized_per_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tracks = [
+                bgm_module.BgmTrack("light-a", "轻快办公节奏 A", root / "a.mp3", "platform", "轻快 明亮"),
+                bgm_module.BgmTrack("light-b", "轻快办公节奏 B", root / "b.mp3", "platform", "轻快 明亮"),
+                bgm_module.BgmTrack("calm", "沉稳叙事钢琴", root / "c.mp3", "platform", "沉稳 克制"),
+            ]
+            plan = {
+                "title": "轻松的办公效率短片",
+                "tone": "明亮轻快",
+                "audio_design": {"bgm_mood": "轻快"},
+            }
+            first = bgm_module._pick_track("same-project", plan, tracks)
+            self.assertEqual(first, bgm_module._pick_track("same-project", plan, tracks))
+            selected = {
+                bgm_module._pick_track(f"project-{index}", plan, tracks).id
+                for index in range(32)
+            }
+            self.assertEqual(selected, {"light-a", "light-b"})
+            self.assertNotIn("calm", selected)
+
     def _settings(self, database: Path, uploads: Path) -> SimpleNamespace:
         return SimpleNamespace(
             platform_data_db=database,

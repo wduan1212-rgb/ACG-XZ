@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260718-v92-3";
+import { llm, visionCopy } from "./llm.js?v=20260718-v93-2";
 import { DUMATE_BRIEF } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
@@ -2562,7 +2562,7 @@ ${productRelationLine(rel.slice(0, 2))}
   },
 
   /* ---------- 发布文案（交付包随附） ---------- */
-  async generateCopy({ topic, shots, account, style, kind = "image", product = null, batchVariant = null, avoidCopies = [], useOnlineTrends = false, trendGuide = "", trendPrep = null }) {
+  async generateCopy({ topic, shots, account, style, kind = "image", product = null, batchVariant = null, avoidCopies = [], useOnlineTrends = false, trendGuide = "", trendPrep = null, requireLlm = false }) {
     useOnlineTrends = false;
     trendGuide = "";
     trendPrep = null;
@@ -2596,6 +2596,11 @@ ${productRelationLine(rel.slice(0, 2))}
       return this._ok(polished);
     } catch (e) {
       this._fb(e);
+      if (requireLlm) {
+        this.lastSource = "error";
+        this.lastError = (e && e.message) || String(e || "语言模型生成失败");
+        throw e instanceof Error ? e : new Error(this.lastError);
+      }
       await delay(400);
       return sanitizeXhsObject(this._mockCopy({ topic: safeTopic, shots: safeShots, account, product, kind, batchVariant, avoidCopies }));
     }

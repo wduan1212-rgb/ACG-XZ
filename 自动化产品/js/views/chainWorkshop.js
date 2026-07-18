@@ -8,16 +8,16 @@ import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid 
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260718-v92-3";
+import { AI } from "../api/ai.js?v=20260718-v93-2";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial, enforceSupportedVideoMode } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260718-v92-3";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260718-v93-2";
 import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260718-v92-3";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260718-v93-2";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, setFavoriteVoice, voicePickerGroups } from "../domain/voices.js";
 import {
@@ -982,7 +982,8 @@ export function renderWorkshopPage(root, p) {
   if (!A.omniRefAssetIds.length && A.sharedRefAssetId) A.omniRefAssetIds = [A.sharedRefAssetId];
   A.sceneRefAssetIds = A.sceneRefAssetIds || [];
   if (!A.sceneRefAssetIds.length && A.omniRefAssetIds.length) A.sceneRefAssetIds = [...A.omniRefAssetIds];
-  if (!A.characterRefAssetId && acc?.charBoardAssetId) A.characterRefAssetId = acc.charBoardAssetId;
+  if (isDigital && !A.characterRefAssetId && acc?.charBoardAssetId) A.characterRefAssetId = acc.charBoardAssetId;
+  if (!isDigital) A.characterRefAssetId = null;
   A.ratio = A.ratio || "9:16";   // 全片统一尺寸（9:16 / 16:9）
 
   // 估时兜底 + 单元构建
@@ -1443,7 +1444,7 @@ export function renderWorkshopPage(root, p) {
       product: productById(p.artifacts.script.productId || "dumate"),
       hasNarrationAudio: isDigital ? false : (pureVideoByPolicy || hasAudio()),
       hasVoiceRef: false,
-      hasCharacterRef: !!(A.characterRefAssetId || acc?.charBoardAssetId),
+      hasCharacterRef: false,
       hasSceneRef: !!((A.sceneRefAssetIds || []).length || (A.omniRefAssetIds || []).filter(id => id !== A.characterRefAssetId).length)
     });
     units.forEach((u, i) => {

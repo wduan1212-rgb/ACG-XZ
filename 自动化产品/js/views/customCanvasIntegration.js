@@ -164,6 +164,19 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
 
   const onMessage = event => {
     if (!iframe || event.source !== iframe.contentWindow || event.origin !== window.location.origin) return;
+    if (
+      event.data?.source === CANVAS_SOURCE
+      && event.data?.type === "performance"
+      && event.data?.stage === "hydration"
+    ) {
+      window.dispatchEvent(new CustomEvent("xingzhen:canvas-hydrated", {
+        detail: {
+          durationMs: Math.max(0, Number(event.data.durationMs || 0)),
+          projectCount: Math.max(0, Number(event.data.projectCount || 0))
+        }
+      }));
+      return;
+    }
     const output = normalizeOutput(event.data);
     if (!output) return;
     publishOutput(output);

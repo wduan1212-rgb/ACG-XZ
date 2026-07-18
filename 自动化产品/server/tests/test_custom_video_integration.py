@@ -15,6 +15,87 @@ from test_store_tombstone import load_isolated_store
 
 
 class CustomVideoIntegrationTest(unittest.TestCase):
+    def test_video_outputs_keep_independent_publish_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            project, error = store.save_custom_project("creator-a", {
+                "kind": "video",
+                "title": "多成片独立发布",
+                "projectState": {
+                    "integration": "video-workshop",
+                    "workshopProjectId": "workshop-independent",
+                },
+            })
+            self.assertIsNone(error)
+            store.upsert_docs("accounts", [{
+                "id": "account-video",
+                "name": "视频账号",
+                "mode": "视频",
+                "monthlyDone": 0,
+                "exportSeq": 0,
+                "updatedAt": 1,
+            }])
+
+            def bundle(suffix):
+                delivery_id = f"delivery-{suffix}"
+                source_id = f"source-{suffix}"
+                cover_id = f"cover-{suffix}"
+                delivery = {
+                    "id": delivery_id,
+                    "ownerId": "creator-a",
+                    "accountId": "account-video",
+                    "type": "视频",
+                    "title": suffix,
+                    "delivered": True,
+                    "customProjectId": project["id"],
+                    "byMemberId": "creator-a",
+                    "sourceAssetId": source_id,
+                    "coverAssetId": cover_id,
+                    "videoUrl": f"/api/files/{source_id}",
+                    "sourceDeliveryId": f"workshop-delivery-{suffix}",
+                    "sourceOutputId": f"workshop-output-{suffix}",
+                }
+                return {
+                    "deliveryId": delivery_id,
+                    "delivery": delivery,
+                    "assets": [
+                        delivery,
+                        {"id": source_id, "ownerId": "creator-a", "accountId": "account-video", "type": "视频"},
+                        {"id": cover_id, "ownerId": "creator-a", "accountId": "account-video", "type": "图片"},
+                    ],
+                    "account": {"id": "account-video"},
+                }
+
+            first_bundle = bundle("first")
+            second_bundle = bundle("second")
+            first, first_error = store.publish_custom_project_bundle(
+                project["id"], "creator-a", first_bundle,
+            )
+            second, second_error = store.publish_custom_project_bundle(
+                project["id"], "creator-a", second_bundle,
+            )
+            self.assertIsNone(first_error)
+            self.assertIsNone(second_error)
+            published = second["project"]["projectState"]["publishedVideoOutputs"]
+            self.assertEqual(set(published), {
+                "workshop-output-first", "workshop-output-second",
+            })
+            self.assertEqual(
+                published["workshop-output-first"]["deliveryId"],
+                first_bundle["deliveryId"],
+            )
+            self.assertEqual(
+                published["workshop-output-second"]["deliveryId"],
+                second_bundle["deliveryId"],
+            )
+
+            retracted, retract_error = store.unpublish_custom_project_delivery(
+                project["id"], "creator-a", second_bundle["deliveryId"],
+            )
+            self.assertIsNone(retract_error)
+            remaining = retracted["project"]["projectState"]["publishedVideoOutputs"]
+            self.assertEqual(set(remaining), {"workshop-output-first"})
+
     def test_workshop_project_mapping_is_owner_scoped_and_metadata_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
@@ -111,7 +192,7 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertIn('@app.post("/api/custom-video/session")', backend)
         self.assertIn('@app.get("/custom-video/")', backend)
         self.assertIn('"/custom-video/api/{api_path:path}"', backend)
-        self.assertIn("store.find_custom_video_project", backend)
+        self.assertIn("_video_workshop_project_index", backend)
         self.assertIn("store.sync_custom_video_project", backend)
         self.assertIn('"custom-video:output"', backend)
         self.assertIn('data-platform-embedded="true"', backend)
@@ -147,8 +228,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260717-15", html)
-        self.assertIn("app.js?v=20260717-15", html)
+        self.assertIn("styles.css?v=20260718-16", html)
+        self.assertIn("app.js?v=20260718-16", html)
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",
@@ -205,6 +286,10 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             self.assertIn(token, javascript)
         self.assertIn("history-published-badge", css)
         self.assertIn("published-output-badge", css)
+        self.assertIn('id="historyDeliveryButton"', html)
+        self.assertIn('id="historyDeliveryFilter"', html)
+        self.assertIn("publishedOutputMap(project)", javascript)
+        self.assertIn("sourceOutputId", javascript)
         self.assertIn("delivery-toggle-button", css)
         self.assertIn("stop-production-button", css)
         self.assertIn('id="deliveryToggleButton"', html)
@@ -471,6 +556,26 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         self.assertIn('os.getenv("LLM_THINKING", "adaptive")', config)
         self.assertIn('os.getenv("LLM_MAX_TOKENS", "16000")', config)
         self.assertNotIn("sk-", config)
+
+    def test_video_publish_requires_live_llm_and_prefers_shared_designed_voice(self):
+        ai = (APP_DIR / "js/api/ai.js").read_text(encoding="utf-8")
+        publish = (APP_DIR / "js/views/customPublish.js").read_text(encoding="utf-8")
+        backend = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
+        store = (APP_DIR / "server/store.py").read_text(encoding="utf-8")
+        config = (VIDEO_WORKSHOP_DIR / "app/config.py").read_text(encoding="utf-8")
+
+        self.assertIn("requireLlm: true", publish)
+        self.assertIn("if (requireLlm)", ai)
+        self.assertIn("throw e instanceof Error", ai)
+        self.assertIn("def list_voice_presets():", store)
+        self.assertIn("def _video_workshop_preferred_voice(me):", backend)
+        self.assertIn('"preferredVoice": _video_workshop_preferred_voice(me)', backend)
+        self.assertIn(
+            'payload["voiceId"] = _video_workshop_preferred_voice(me)["voiceId"]',
+            backend,
+        )
+        self.assertIn('"presenter_female"', config)
+        self.assertNotIn("sk-api-", ai + publish + backend + store + config)
 
     def test_bundled_sidecar_contains_only_deployable_runtime(self):
         expected = (

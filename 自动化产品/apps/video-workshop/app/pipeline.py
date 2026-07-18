@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import re
+import shutil
+import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +17,7 @@ from .config import settings
 from .media import ASPECTS, build_scene_timeline, compose_variant, normalize_narration, probe
 from .openmontage_bridge import openmontage
 from .providers import ProviderError, seedance, tts
-from .store import add_event, add_message, mutate_project
+from .store import add_event, add_message, load_project, mutate_project
 
 
 def _generated_narration_matches_target(
@@ -26,6 +30,100 @@ def _generated_narration_matches_target(
         return True
     allowed_delta = max(1.5, target * 0.1)
     return actual > 0 and abs(actual - target) <= allowed_delta
+
+
+def _delivery_snapshot(
+    delivery_id: str,
+    plan: dict[str, Any],
+    outputs: list[dict[str, Any]],
+    *,
+    created_at: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": delivery_id,
+        "title": str(plan.get("title") or "未命名成片")[:120],
+        "createdAt": int(created_at or time.time() * 1000),
+        "aspectRatio": str(plan.get("aspect_ratio") or "9:16")[:24],
+        "plan": plan,
+        "outputs": outputs,
+        "publishedDeliveryId": "",
+        "publishedAt": 0,
+    }
+
+
+def _output_source_path(project_id: str, output: dict[str, Any]) -> Path | None:
+    raw_url = str(output.get("url") or output.get("downloadUrl") or "").split("?", 1)[0]
+    prefix = f"/outputs/{project_id}/"
+    if not raw_url.startswith(prefix):
+        return None
+    filename = raw_url[len(prefix):]
+    if not filename or Path(filename).name != filename:
+        return None
+    candidate = (settings.outputs_dir / project_id / filename).resolve()
+    root = (settings.outputs_dir / project_id).resolve()
+    if not candidate.is_relative_to(root) or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _ensure_legacy_delivery(project_id: str) -> None:
+    """Archive a pre-history project's current output before the next render overwrites it."""
+    project = load_project(project_id)
+    if not project:
+        return
+    current_outputs = [item for item in (project.get("outputs") or []) if isinstance(item, dict)]
+    if not current_outputs:
+        return
+    known_urls = {
+        str(output.get("url") or output.get("downloadUrl") or "")
+        for delivery in (project.get("deliveries") or [])
+        if isinstance(delivery, dict)
+        for output in (delivery.get("outputs") or [])
+        if isinstance(output, dict)
+    }
+    current_urls = {
+        str(output.get("url") or output.get("downloadUrl") or "")
+        for output in current_outputs
+    }
+    if current_urls and current_urls.issubset(known_urls):
+        return
+
+    fingerprint = hashlib.sha1(
+        json.dumps(sorted(current_urls), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:12]
+    delivery_id = f"legacy-{fingerprint}"
+    archived_outputs: list[dict[str, Any]] = []
+    for index, output in enumerate(current_outputs):
+        source = _output_source_path(project_id, output)
+        if source is None:
+            continue
+        target_name = f"delivery-{delivery_id}-{index + 1:02d}{source.suffix.lower() or '.mp4'}"
+        target = source.with_name(target_name)
+        if source != target and not target.is_file():
+            shutil.copy2(source, target)
+        archived = dict(output)
+        archived["id"] = str(archived.get("id") or f"{delivery_id}-{index + 1}")
+        archived["deliveryId"] = delivery_id
+        archived["url"] = f"/outputs/{project_id}/{target.name}"
+        archived["downloadUrl"] = archived["url"]
+        archived_outputs.append(archived)
+    if not archived_outputs:
+        return
+
+    snapshot = _delivery_snapshot(
+        delivery_id,
+        project.get("plan") if isinstance(project.get("plan"), dict) else {},
+        archived_outputs,
+        created_at=int(project.get("updatedAtEpoch") or project.get("createdAtEpoch") or time.time() * 1000),
+    )
+
+    def remember(item: dict[str, Any]) -> None:
+        deliveries = [row for row in (item.get("deliveries") or []) if isinstance(row, dict)]
+        if any(str(row.get("id") or "") == delivery_id for row in deliveries):
+            return
+        item["deliveries"] = [*deliveries, snapshot][-50:]
+
+    mutate_project(project_id, remember)
 
 
 class VideoPipeline:
@@ -102,6 +200,7 @@ class VideoPipeline:
         work_dir = settings.outputs_dir / project_id
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
+            await asyncio.to_thread(_ensure_legacy_delivery, project_id)
             scenes = [scene for scene in list(plan.get("scenes") or []) if isinstance(scene, dict)]
             if not scenes:
                 raise RuntimeError("导演计划没有可执行镜头")
@@ -386,11 +485,17 @@ class VideoPipeline:
             if failed_qa:
                 raise RuntimeError("成片质检未通过，请查看内部质检记录")
 
+            delivery_id = uuid.uuid4().hex[:16]
             outputs = []
-            for variant in variants:
-                filename = variant["path"].name
+            for output_index, variant in enumerate(variants, start=1):
+                source_path = Path(variant["path"])
+                filename = f"delivery-{delivery_id}-{output_index:02d}{source_path.suffix.lower() or '.mp4'}"
+                archived_path = source_path.with_name(filename)
+                await asyncio.to_thread(shutil.copy2, source_path, archived_path)
                 outputs.append(
                     {
+                        "id": f"{delivery_id}-{output_index}",
+                        "deliveryId": delivery_id,
                         "label": f"{variant['aspectRatio']} 成片",
                         "aspectRatio": variant["aspectRatio"],
                         "url": f"/outputs/{project_id}/{filename}",
@@ -413,11 +518,19 @@ class VideoPipeline:
                     }
                 )
 
+            delivery = _delivery_snapshot(delivery_id, plan, outputs)
+
             def complete(project: dict[str, Any]) -> None:
                 project["status"] = "succeeded"
                 project["phase"] = "delivery"
                 project["progress"] = 100
                 project["outputs"] = outputs
+                existing_deliveries = [
+                    item for item in (project.get("deliveries") or [])
+                    if isinstance(item, dict) and str(item.get("id") or "") != delivery_id
+                ]
+                project["deliveries"] = [delivery, *existing_deliveries][:50]
+                project["activeDeliveryId"] = delivery_id
                 project["qa"] = qa_results
                 project["production"] = {
                     "tts": tts_result,

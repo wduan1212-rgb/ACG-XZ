@@ -10,12 +10,12 @@ import {
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, resetPlanReferences, prunePlanReferences
-} from "./orchestrator.js?v=20260718-v92-3";
-import { renderMessage, boardRow } from "./cards.js?v=20260718-v92-3";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260718-v92-3";
+} from "./orchestrator.js?v=20260718-v93-2";
+import { renderMessage, boardRow } from "./cards.js?v=20260718-v93-2";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260718-v93-2";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
-import { urlFor, removeAsset } from "../domain/assets.js";
+import { urlFor, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { isAvatarAsset } from "../domain/accounts.js";
 
 let mounted = false;
@@ -478,7 +478,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260718-v92-3");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260718-v93-2");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -1078,7 +1078,7 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
           const u = urlFor(a);
           const on = selected.has(a.id);
           const source = sourceLabel(a);
-          const deletable = source !== "已发布生成图";
+          const deletable = canDeleteReferenceAsset(a);
           return `<div class="asset-pick-card ${on ? "on" : ""}" data-asset-pick="${a.id}" role="button" tabindex="0" title="${esc(a.name || "参考图")}">
             <span class="asset-pick-thumb">${u ? `<img src="${u}" alt="${esc(a.name || "参考图")}" />` : `<i>${esc((a.name || "图").slice(0, 1))}</i>`}</span>
             <b>${esc(a.name || "未命名图片")}</b>

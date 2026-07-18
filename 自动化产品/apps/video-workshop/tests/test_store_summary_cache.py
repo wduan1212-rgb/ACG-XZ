@@ -107,6 +107,26 @@ class ProjectSummaryCacheTest(unittest.TestCase):
         self.assertEqual(store.list_project_summaries(), [])
         self.assertEqual(store._summary_cache, {})
 
+    def test_requested_ids_read_only_owned_project_files(self):
+        owned_path = self.projects_dir / "owned.json"
+        other_path = self.projects_dir / "other.json"
+        owned_path.write_text(json.dumps(project("owned", "我的项目")), encoding="utf-8")
+        other_path.write_text(json.dumps(project("other", "其他成员项目")), encoding="utf-8")
+
+        original_loads = json.loads
+        parsed_payloads = []
+
+        def tracking_loads(value):
+            parsed_payloads.append(value)
+            return original_loads(value)
+
+        with patch.object(store.json, "loads", side_effect=tracking_loads):
+            items = store.list_project_summaries({"owned", "missing"})
+
+        self.assertEqual([item["id"] for item in items], ["owned"])
+        self.assertEqual(len(parsed_payloads), 1)
+        self.assertEqual(original_loads(parsed_payloads[0])["id"], "owned")
+
 
 if __name__ == "__main__":
     unittest.main()

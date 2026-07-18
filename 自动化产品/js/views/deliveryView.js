@@ -4,11 +4,11 @@
 import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
-import { platChip } from "../domain/accounts.js";
-import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
+import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260718-v92-3";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260718-v93-2";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
@@ -37,6 +37,14 @@ function dateFromTime(value) {
   const d = new Date(time);
   if (Number.isNaN(d.getTime())) return "";
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function dateTimeFromTime(value) {
+  const time = Number(value || 0);
+  if (!time) return "";
+  const d = new Date(time);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 let collapsedDays = new Set();
@@ -269,12 +277,14 @@ async function returnLinkFlow(asset, acc) {
   return true;
 }
 
-function supplierDetailHtml(asset, acc) {
+function supplierDetailHtml(asset, acc, accountSequence = 0) {
   const isImg = asset.type === "图集";
   const ids = isImg ? (asset.packAssetIds || []) : [];
   const title = asset.title || asset.name;
   const contentAccount = asset.byAccount || acc.name;
   const publisher = publisherLabel(asset);
+  const submittedAt = dateTimeFromTime(deliverySubmittedAt(asset));
+  const accountNumber = accountSequence > 0 ? `#${String(accountSequence).padStart(2, "0")}` : "未记录";
   return `<tr class="sup-detail-row" data-sup-detail="${asset.id}" hidden>
     <td colspan="9">
       <div class="sup-detail">
@@ -284,6 +294,8 @@ function supplierDetailHtml(asset, acc) {
           <div class="sup-detail-meta">
             <span>${esc(acc.platform || "平台")}</span>
             <span>内容账号：${esc(contentAccount)}</span>
+            <span>发布账号编号：${esc(accountNumber)}</span>
+            <span>制作时间：${esc(submittedAt || "未记录")}</span>
             <span>发布人：${esc(publisher)}</span>
             <span>${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记产品")}</span>
             <span>${esc(dateOnly(asset.planDate) || "未计划")}</span>
@@ -472,6 +484,7 @@ export const deliveryView = {
 
     function drawSupplier(body, all) {
       const seqMap = displaySeqMap(all);
+      const accountSequence = accountDisplaySequenceMap(state.accounts);
       const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
       const matchesFilters = x => {
         const ptag = x.asset.productTag || productTagLabel(productById(x.asset.productId || ""));
@@ -538,7 +551,7 @@ export const deliveryView = {
                       ? `<a class="btn ghost sm" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 13)} 查看链接</a>`
                       : `<button class="btn ghost sm" disabled>${icon("link", 13)} 暂无链接</button>`}</div>
                 </td>
-              </tr>${supplierDetailHtml(asset, acc)}`;
+              </tr>${supplierDetailHtml(asset, acc, accountSequence.get(acc.id) || 0)}`;
             }).join("") + `<tr class="sup-empty-filter" ${visibleCount ? "hidden" : ""}><td colspan="9" class="sup-empty">当前筛选下暂无素材。</td></tr>` : `<tr><td colspan="9" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
             </tbody>
           </table>
@@ -598,9 +611,14 @@ export const deliveryView = {
         e.stopPropagation();
         const a = state.assets.find(x => x.id === b.dataset.supviews);
         if (!a) return;
-        const value = await promptModal({ title: "更新观看量", value: String(a.viewCount || 0), placeholder: "请输入当前观看量" });
+        const value = await promptModal({ title: "更新观看量", value: supplierViewCountPromptValue(a), placeholder: "请输入当前观看量" });
         if (value == null) return;
-        const nextViews = Math.max(0, Math.round(Number(String(value).replace(/[,，\s]/g, "")) || 0));
+        const parsedViews = parseSupplierViewCount(value);
+        if (!parsedViews.ok) {
+          toast(parsedViews.message, "error");
+          return;
+        }
+        const nextViews = parsedViews.value;
         if (remote.isOn()) {
           try {
             const result = await remote.supplier.updateViews(a.id, nextViews);

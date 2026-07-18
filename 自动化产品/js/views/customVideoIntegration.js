@@ -28,6 +28,8 @@ function normalizedOutput(raw) {
     url: String(source.url || videoUrl),
     downloadUrl: String(source.downloadUrl || videoUrl),
     aspectRatio,
+    sourceDeliveryId: String(source.sourceDeliveryId || "").trim(),
+    sourceOutputId: String(source.sourceOutputId || "").trim(),
     plan,
     project,
     customProjectId: String(project?._integration?.customProjectId || source.customProjectId || ""),
@@ -100,6 +102,8 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
       output.videoUrl,
       output.aspectRatio,
       output.title,
+      output.sourceDeliveryId,
+      output.sourceOutputId,
       output.publishedDeliveryId,
       output.publishedCount,
     ]);
@@ -164,6 +168,8 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
     markPublished({
       projectId,
       deliveryId,
+      sourceDeliveryId = "",
+      sourceOutputId = "",
       publishedAt = Date.now(),
       publishedCount = 0,
     } = {}) {
@@ -181,6 +187,8 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
         type: "custom-video:published",
         projectId: sourceProjectId,
         deliveryId: publishedDeliveryId,
+        sourceDeliveryId: String(sourceDeliveryId || "").trim().slice(0, 180),
+        sourceOutputId: String(sourceOutputId || "").trim().slice(0, 180),
         publishedAt: Number(publishedAt) || Date.now(),
         publishedCount: Math.max(0, Math.floor(Number(publishedCount) || 0)),
       }, window.location.origin);

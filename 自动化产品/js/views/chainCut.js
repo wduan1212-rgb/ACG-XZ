@@ -5,21 +5,18 @@ import { $, $$, esc, gradFor, fmtTC, buildSRT, downloadBlob, clamp, spreadCaptio
 import { icon } from "../ui/icons.js";
 import { save, accountById, state } from "../core/store.js";
 import { autoAssemble, setStage, isVideoWorkshop } from "../domain/productions.js";
-import { isInfoFlowSpokenQuoteContext } from "../domain/infoFlowDialogue.js?v=20260718-v92-3";
 import { buildDeliveryName } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, globalBgmAssets, urlFor } from "../domain/assets.js";
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260718-v92-3";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260718-v93-2";
 
 let PPS = 40;
 const CLIP_SEC = 15;
 const COMPOSE_TIMEOUT_MS = 3 * 60 * 1000;
 const histories = new Map(); // productionId -> []
 const activeComposes = new Set();
-const activeAudioTiming = new Set();
-const activeAudioTimingTasks = new Map();
 
 export function cleanEstimatedCaption(text = "") {
   const value = cleanCaptionText(String(text || "")
@@ -49,78 +46,183 @@ export function cleanAlignedCaptionText(text = "", trustedNarration = false) {
     : cleanEstimatedCaption(text);
 }
 
-function structuredSpeechLines(text = "") {
+// 信息流字幕只旁路读取现有导演提示词里的时间段和真实说话内容。
+// 解析结果不会回写或约束提示词；界面文案、导演说明和负面要求会被排除。
+const STRICT_SPOKEN_SOURCE = /^(?:台词|口播|旁白|旁|画外音|对白|OS|VO|男声|女声|人声)(?:原话|原文|只有)?[^：:\n]{0,28}$/i;
+const STRICT_SPOKEN_METADATA = /(?:台词|口播|旁白|画外音|对白)(?:要点|场控(?:栏)?|风格|规范|要求|说明|策略|节奏|语气|声线|设计|结构|规则|提示|汇总|清单)/i;
+const STRICT_SPOKEN_ACTOR = /(?:角色(?:[A-Za-z0-9一二三四五六七八九十甲乙丙丁]{0,4})?|人物|主角|男主|女主|演员|博主|主播|室友|领导|老板|同事|朋友|客户|用户|职员|员工|店员|顾客|对方|产品经理|项目经理|经理|主管|主持人|记者|医生|老师|学生|工程师|设计师|运营|前台|男生|女生|男人|女人|男子|女子|他|她|两人|三人|众人)/;
+const STRICT_SPOKEN_VERB = /(?:说(?:出|道)?(?!话|明|法|辞|书)|喊|问(?!题|卷|号)|答道|回答(?:道)?|回应|反驳|提出(?:方案)?|质问|追问|强调|解释|补充|提醒|反问|吐槽|嘀咕|念出?|读出?|低语|收束|点出|脱口而出|开口|吼|同时说|回一句|来一句|自言自语)/i;
+const STRICT_ACTOR_ACTION = /(?:拍桌|抬头|转身|转头|回头|侧身|皱眉|咬牙|厉声|低声|轻声|压低声音|声音急促|声音低沉|沉声|笑着|哭着|呼出一口气|推开|扒开|拨开|举着|蹲下)/;
+const STRICT_DIRECTOR_OR_UI = /(?:画面|镜头|运镜|景别|机位|构图|光线|光源|色温|声音设计|音效|同期音|环境音|音乐|BGM|转场|字幕|花字|界面|屏幕|显示器|窗口|输入框|按钮|标题|标签|文字|卡片|表格|列表|字段|图标|侧栏|菜单|工具栏|面板|工作台|进度|状态|链接|风险|目标|阻碍|配色|材质|风格|服装|外貌|角色锚点|人物设定|导演|规则|要求|提示|负面|时长|比例|分镜|节奏|画幅|画质|背景|前景|道具|输入|点击|选择|拖拽|上传|下载|打开|关闭|填写|勾选|切换|复制|粘贴|提交|保存|确认)/i;
+const STRICT_SPOKEN_NEGATIVE = /(?:^|[，,。；;\n])\s*(?:禁止|不要|不得|避免|无需|不允许|不应|不能|无台词|无对白|无口播|无旁白)/i;
+const STRICT_REFERENCE_METADATA = /(?:外貌|外观|形象|性格|一致性|服装|服饰|角色设定|人物设定|镜头设计|说话风格|语言风格|声线|语气|表演要求|状态面板)/i;
+const STRICT_UI_QUOTE_CONTEXT = /(?:界面|屏幕|输入框|按钮|窗口|面板|标题|标签|文字|提示牌|便签|负责人|写着|标注|显示|弹出|输入|点击|拖入|高亮)[^。；;\n]{0,32}$/i;
+const QUOTED_SPEECH = /[“"「『‘']([^”"」』’'\n]{1,180})[”"」』’']/g;
+
+function strictInfoFlowSpeechLabel(raw = "") {
+  const label = String(raw || "")
+    .replace(/^\s*\d+(?:\.\d+)?\s*(?:-|\u2013|—|~|至|到)\s*\d+(?:\.\d+)?\s*(?:s|秒)?\s*/i, "")
+    .trim();
+  if (!label
+    || /\d\s*(?:s|秒)?$/i.test(label)
+    || /^(?:禁止|不要|不得|避免|无需|要求|提示)/.test(label)
+    || /(?:外貌|外观|形象|性格|一致性|服装|服饰|角色设定|人物设定|镜头设计|说话风格|语言风格|表演要求|状态面板|(?:声线|语气)(?:设定|要求|风格)|(?:角色|人物|台词|口播)(?:声线|语气))/.test(label)
+    || STRICT_SPOKEN_METADATA.test(label)) return false;
+  const source = STRICT_SPOKEN_SOURCE.test(label);
+  const actor = STRICT_SPOKEN_ACTOR.test(label);
+  const verb = STRICT_SPOKEN_VERB.test(label);
+  const namedActor = /(?:^|[，,\s])(?:小|老|阿)?[\u3400-\u9fff]{1,4}/.test(label) && (verb || STRICT_ACTOR_ACTION.test(label));
+  const startsAsDirector = /^(?:画面|镜头|运镜|界面|屏幕|输入框|按钮|窗口|面板|光线|音效|字幕|标题|标签|文字|卡片|字段)/.test(label);
+  if (STRICT_DIRECTOR_OR_UI.test(label) && !(source || actor || (verb && namedActor && !startsAsDirector))) return false;
+  return source || actor || namedActor || (verb && /[\u3400-\u9fff]/.test(label));
+}
+
+function strictSpeechAfterColon(value = "", colonIndex = 0) {
+  let body = String(value || "").slice(Number(colonIndex || 0) + 1).trimStart();
+  if (!body) return "";
+  const nestedColon = body.search(/[:：]/);
+  const firstStop = body.search(/[\n。！？!?；;]/);
+  if (nestedColon >= 0 && (firstStop < 0 || nestedColon < firstStop) && strictInfoFlowSpeechLabel(body.slice(0, nestedColon))) return "";
+  const quotePairs = { '“': '”', '"': '"', '「': '」', '『': '』', '‘': '’', "'": "'" };
+  const opener = body[0];
+  if (quotePairs[opener]) {
+    const end = body.indexOf(quotePairs[opener], 1);
+    if (end > 1) return body.slice(1, end);
+  }
+  const quoted = body.match(/[“"「『‘']([^”"」』’'\n]{1,160})[”"」』’']/);
+  if (quoted && Number(quoted.index || 0) <= 18) return quoted[1];
+  const line = body.split(/\n|(?=\d+(?:\.\d+)?\s*(?:-|\u2013|—|~|至|到)\s*\d+(?:\.\d+)?\s*(?:s|秒))/)[0];
+  return line.split(/(?<=[。！？!?；;])/)[0].split(
+    /[，,]\s*(?=(?:背景音|背景声|环境音|声音是|音效|光线|灯光|镜头|画面|运镜|转场|道具|界面|屏幕))/i,
+  )[0];
+}
+
+function strictStructuredSpeechLines(text = "") {
   const value = String(text || "");
   const lines = [];
-  const trimUnquotedSpeech = raw => String(raw || "").split(
-    /[，,]\s*(?=(?:背景音|背景声|环境音|声音是|音效|光线|灯光|镜头|画面|运镜|转场|纸张在|道具|暖黄|冷白|浅景深|特写|近景|中景|全景|手持|界面|屏幕|鼠标|光标))/i,
-  )[0];
-  const push = raw => {
-    const cleaned = cleanEstimatedCaption(String(raw || "")
-      .split(/(?:画面|镜头|运镜|景别|声音设计|音效|BGM)\s*[:：]/i)[0]);
-    if (!cleaned || /^(?:无台词|无对白|无口播|无旁白|无人物声音|无)$/i.test(cleaned) || /(?:导演|占位|提示词|生成要求|字幕(?:规则|跟随|精准|同步)|负面约束|必须高级|镜头快速|机械播报|无字幕|不生成花字|不要使用|声线|语气要求|语速要求)/.test(cleaned)) return;
-    lines.push(cleaned);
-  };
-  // 只旁路读取，不回写导演提示词。兼容模型原样输出的六类成对引号，
-  // 再用说话语境排除按钮、标题、界面字段和导演说明。
-  const quotedSpeech = /“([^”\n]{1,140})”|"([^"\n]{1,140})"|「([^」\n]{1,140})」|『([^』\n]{1,140})』|‘([^’\n]{1,140})’|'([^'\n]{1,140})'/g;
-  for (const match of value.matchAll(quotedSpeech)) {
-    if (!isInfoFlowSpokenQuoteContext(value, Number(match.index || 0))) continue;
-    push(match.slice(1).find(Boolean));
+  for (const match of value.matchAll(/[:：]/g)) {
+    const index = Number(match.index || 0);
+    const before = value.slice(Math.max(0, index - 180), index);
+    const boundary = Math.max(before.lastIndexOf("\n"), before.lastIndexOf("。"), before.lastIndexOf("；"), before.lastIndexOf(";"), before.lastIndexOf(":"), before.lastIndexOf("："));
+    const label = before.slice(boundary + 1).trim();
+    const labelTail = label.split(/[，,]/).pop()?.trim() || "";
+    if (STRICT_UI_QUOTE_CONTEXT.test(label) && !STRICT_SPOKEN_VERB.test(label)) continue;
+    if (!strictInfoFlowSpeechLabel(label) && !strictInfoFlowSpeechLabel(labelTail)) continue;
+    const raw = strictSpeechAfterColon(value, index).trim();
+    const textValue = cleanEstimatedCaption(raw);
+    if (!textValue
+      || /^(?:无台词|无对白|无口播|无旁白|无人物声音|无|不要|禁止|不得|避免|要求|提示)/i.test(textValue)
+      || /(?:导演|占位|提示词|生成要求|字幕(?:规则|跟随|精准|同步)|负面约束|镜头快速|机械播报|无字幕|不生成花字|声线|语气要求|语速要求)/.test(textValue)) continue;
+    lines.push({ raw, text: textValue });
   }
-  // 模型也会输出 `台词（角色，语气）：原话`。标签已明确时可读取
-  // 无引号原话；“无台词 / 声音要求 / 台词风格”等仍由 push 拦截。
-  const explicitOriginal = /(?:口播原话|台词原文|对白原文|旁白原文|画外音原文|台词(?:（[^）\n]{0,36}）|\([^\)\n]{0,36}\))?|对白(?:（[^）\n]{0,36}）|\([^\)\n]{0,36}\))?|旁白(?:（[^）\n]{0,36}）|\([^\)\n]{0,36}\))?|画外音(?:（[^）\n]{0,36}）|\([^\)\n]{0,36}\))?)\s*[:：]\s*(?![“"「『‘'])([^。！？!?；;:：\n]{2,140}[。！？!?]?)/g;
-  for (const match of value.matchAll(explicitOriginal)) push(trimUnquotedSpeech(match[1]));
-  // 原始高质量提示词常写成“客户拍桌子：你给我个说法！”或
-  // “台词短促自然：先核对口径”。只在冒号前含明确说话来源时取到
-  // 句末；画面、镜头、界面、按钮、光线、音效等导演字段一律排除。
-  const colonSource = value.replace(/^\s*\d+(?:\.\d+)?\s*(?:-|–|—|~|至|到)\s*\d+(?:\.\d+)?\s*(?:s|秒)\s*[:：]?\s*/i, "");
-  const colonSpeech = /([^：:\n。；;|]{1,60})[:：]\s*(?![“"「『‘'])([^：:。！？!?；;\n]{2,140}[。！？!?]?)/g;
-  const spokenSourceHint = /^(?:台词|口播|旁白|画外音|对白|OS|VO|男声|女声|人声)(?:原话|原文)?[^：:\n]{0,28}$/i;
-  const spokenMetadataLabel = /(?:台词|口播|旁白|画外音|对白)(?:要点|场控(?:栏)?|风格|规范|要求|说明|策略|节奏|语气|声线|设计|结构|规则|提示)/i;
-  const spokenVerbHint = /(?:说(?:出|道)?(?!话|明|法|辞|书)|喊|问(?!题|卷|号)|答道|回答(?:道)?|答(?=[:：，,\s]|$)|回应|反驳|质问|追问|强调|解释|提出(?:方案|观点|问题)?|补充|提醒|反问|吐槽|嘀咕|念出?|低语|收束|点出|脱口而出|开口|吼|同时说|回一句|来一句)/i;
-  const actorHint = /(?:角色|人物|主角|男主|女主|演员|博主|主播|室友|领导|老板|同事|朋友|客户|用户|职员|员工|店员|顾客|对方|经理|主管|主持人|记者|医生|老师|学生|工程师|设计师|运营|前台|男生|女生|男人|女人|男子|女子|他|她|两人|三人|众人)/;
-  // 标签中只要出现导演、画面或 UI 字段就不能仅凭“人物词”判定为
-  // 台词；只有同一标签还带有明确说话证据时才放行。例如
-  // “客户看着屏幕说：...”有效，而“客户状态面板：...”无效。
-  const directorFieldHint = /(?:画面|镜头|运镜|景别|机位|构图|特写|近景|中景|全景|远景|俯拍|仰拍|跟拍|手持|推镜|拉远|环绕|光线|光源|色温|声音设计|声音|音效|同期音|环境音|音乐|BGM|转场|字幕|花字|界面|屏幕|显示器|窗口|输入框|按钮|标题|标签|文字|卡片|表格|列表|字段|图标|侧栏|菜单|工具栏|面板|工作台|进度|状态|链接|风险|目标|阻碍|升级|反转|前奏|配色|材质|风格|动作|表情|服装|外貌|角色锚点|人物设定|导演|规则|要求|提示|负面|时长|比例|分镜|节奏|画幅|画质|背景|前景|道具)/i;
-  for (const match of colonSource.matchAll(colonSpeech)) {
-    const rawLabel = String(match[1] || "").trim();
-    const label = rawLabel.split(/[，,]/).pop().trim();
-    const body = String(match[2] || "").trim();
-    const sourceSpeech = spokenSourceHint.test(label) && !spokenMetadataLabel.test(label);
-    const verbSpeech = spokenVerbHint.test(label);
-    const explicitSpeech = sourceSpeech
-      || verbSpeech
-      || /(?:念出|说出)(?:原始)?口播/i.test(rawLabel);
-    if (!label || /\d\s*(?:s|秒)?$/.test(label)) continue;
-    if (spokenMetadataLabel.test(label)) continue;
-    if (directorFieldHint.test(label) && !(sourceSpeech || (verbSpeech && actorHint.test(label)))) continue;
-    if (!explicitSpeech && !actorHint.test(label)) continue;
-    if (/^(?:无台词|无对白|无口播|无旁白|无人物声音|无|不要|禁止|不得|避免|要求|提示)/i.test(body)) continue;
-    push(trimUnquotedSpeech(body));
+  const seen = new Set();
+  return lines.filter(line => {
+    const key = line.text.replace(/\s+/g, "");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function spokenContextBefore(value = "", index = 0) {
+  const prefix = String(value || "").slice(Math.max(0, Number(index || 0) - 180), Number(index || 0));
+  const boundary = Math.max(
+    prefix.lastIndexOf("\n"), prefix.lastIndexOf("。"), prefix.lastIndexOf("；"),
+    prefix.lastIndexOf(";"), prefix.lastIndexOf("！"), prefix.lastIndexOf("？"),
+  );
+  return prefix.slice(boundary + 1).trim();
+}
+
+function naturalTimelineSpeechLines(text = "") {
+  const value = String(text || "")
+    .replace(/^\s*\d+(?:\.\d+)?\s*(?:-|\u2013|—|~|至|到)\s*\d+(?:\.\d+)?\s*(?:s|秒)?\s*[，,:：]?\s*/i, "")
+    .trim();
+  if (!value) return [];
+  if (/^(?:(?:界面|屏幕|输入框|按钮|窗口|面板|右侧|左侧|工具栏|用户界面)(?:显示|写着|弹出|输入|点击|选择|拖拽|高亮|说明|把)|(?:切换到|打开|关闭)[^。；;\n]{0,32}(?:界面|屏幕|窗口|面板|按钮|页面))/i.test(value)) return [];
+  const lines = [];
+  for (const match of value.matchAll(QUOTED_SPEECH)) {
+    const index = Number(match.index || 0);
+    const context = spokenContextBefore(value, index);
+    const source = STRICT_SPOKEN_SOURCE.test(context);
+    const actorQuote = STRICT_SPOKEN_ACTOR.test(context);
+    const verb = STRICT_SPOKEN_VERB.test(context);
+    const namedActor = strictInfoFlowSpeechLabel(context);
+    const explicitSpeechTail = /(?:说(?:出|道)?|喊|问|答道|回答|回应|反驳|提出(?:方案)?|质问|追问|强调|解释|补充|提醒|吐槽|嘀咕|念出?|读出?|低语|点出|脱口而出|开口|吼|自言自语|声音急促|声音低沉|低声|轻声|厉声|旁白|台词|口播)\s*[:：]?\s*$/i.test(context);
+    const blocked = STRICT_SPOKEN_NEGATIVE.test(context)
+      || STRICT_SPOKEN_METADATA.test(context)
+      || STRICT_REFERENCE_METADATA.test(context)
+      || (STRICT_UI_QUOTE_CONTEXT.test(context) && !explicitSpeechTail)
+      || (STRICT_DIRECTOR_OR_UI.test(context) && !(source || actorQuote || namedActor));
+    if (blocked || !(source || actorQuote || verb || namedActor)) continue;
+    const raw = String(match[1] || "").trim();
+    const textValue = cleanEstimatedCaption(raw);
+    if (!textValue) continue;
+    lines.push({ raw, text: textValue });
   }
-  // 少数高质量原稿会自然写成“女职员转身说会议资料又散了”，没有
-  // 冒号或引号。仅在同一句存在明确人物主体和说话动词时读取，正文
-  // 到第一处句末或逗号为止；B 面的界面说明、按钮文字不会命中。
-  const unquotedValue = value.replace(/“[^”\n]*”|"[^"\n]*"|「[^」\n]*」|『[^』\n]*』|‘[^’\n]*’|'[^'\n]*'/g, matched => " ".repeat(matched.length));
-  const naturalUnquoted = /((?:(?:角色|人物|主角|男主|女主|演员|博主|主播|室友|领导|老板|同事|朋友|客户|用户|职员|员工|店员|顾客|对方|经理|主管|主持人|记者|医生|老师|学生|工程师|设计师|运营|前台|男生|女生|男人|女人|男子|女子|他|她|两人|三人|众人)[^，,。；;:：\n]{0,48}|(?:嘴唇微张|转身|转头|回头|侧身|肩膀压低|对镜头方向|抬头|低声|轻声|大声|急促|平静|冷静|笑着|哭着|皱眉)[^，,。；;:：\n]{0,22})(?:说出|说道|说(?!出|道|话|明|法|辞|书)|问(?!题|卷|号)(?:道)?|喊(?:道)?|回答(?:道)?|回应|反驳|质问|追问|强调|解释|吐槽|嘀咕))(?!\s*[:：“"「『‘'])([^，,。！？!?；;\n]{2,80}[。！？!?]?)/g;
-  for (const match of unquotedValue.matchAll(naturalUnquoted)) {
-    const subject = String(match[1] || "").trim();
-    const body = String(match[2] || "").trim();
-    if (!subject) continue;
-    const recent = unquotedValue
-      .slice(Math.max(0, Number(match.index || 0) - 140), Number(match.index || 0))
-      .split(/[。；;\n]/)
-      .pop()
+
+  // 高质量提示词并不总给台词加引号。只在明确说话动作之后读取同句内容，
+  // 并在后续动作或句末处停止，避免把导演描述一起塞进字幕。
+  const spokenVerb = new RegExp(STRICT_SPOKEN_VERB.source, "gi");
+  for (const match of value.matchAll(spokenVerb)) {
+    const index = Number(match.index || 0);
+    const context = spokenContextBefore(value, index + String(match[0] || "").length);
+    if (STRICT_SPOKEN_NEGATIVE.test(context) || STRICT_SPOKEN_METADATA.test(context)) continue;
+    const actor = strictInfoFlowSpeechLabel(context);
+    if (!actor) continue;
+    const afterVerb = value.slice(index + String(match[0] || "").length);
+    const nestedColon = afterVerb.search(/[:：]/);
+    const sentenceEnd = afterVerb.search(/[。！？!?；;\n]/);
+    if (nestedColon >= 0 && (sentenceEnd < 0 || nestedColon < sentenceEnd)) continue;
+    let raw = afterVerb
+      .replace(/^\s*(?:一句台词)?\s*[:：,，]?\s*/, "")
+      .split(/[。！？!?；;\n]/)[0]
+      .split(/[，,]\s*(?=(?:他|她|其|随后|同时|接着|镜头|画面|界面|屏幕|按钮|窗口)[^，,。；;]{0,36}(?:动作|转身|抬头|低头|接过|推开|打开|关闭|显示|弹出|切换|移动|进入))/)[0]
       .trim();
-    if (/(?:界面|屏幕|显示器|输入框|按钮|标题|标签|文字|卡片|面板|工作台|状态)[^。；;\n]{0,100}(?:显示|出现|写着|输入|弹出|提出)[^。；;\n]*[:：]\s*$/i.test(recent)) continue;
-    if (/^(?:[|｜/]|(?:一句|一段|几句)?(?:台词|口播|旁白|对白|原话|话)(?:\s|[:：]|$)|冷白|暖黄|光线|灯光|镜头|画面|运镜|转场|声音|音效|环境音)/i.test(body)) continue;
-    if (/^(?:无台词|无对白|无口播|无旁白|无人物声音|无|不要|禁止|不得|避免|要求|提示)/i.test(body)) continue;
-    push(trimUnquotedSpeech(body));
+    if (!raw || /^[“"「『‘']/.test(raw)) continue;
+    const textValue = cleanEstimatedCaption(raw);
+    if (!textValue) continue;
+    lines.push({ raw, text: textValue });
   }
-  return [...new Set(lines)];
+
+  const seen = new Set();
+  return lines.filter(line => {
+    const key = line.text.replace(/\s+/g, "");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function timedCaptionChunks(text = "", maxLen = 12) {
+  const raw = String(text || "").replace(/\\n/g, " ").trim();
+  const clauses = raw.split(/(?<=[，、。！？!?；;…])/).map(item => item.trim()).filter(Boolean);
+  const chunks = [];
+  (clauses.length ? clauses : [raw]).forEach(clause => {
+    const pause = /[。！？!?]”?$/.test(clause) ? 2.2 : /[，、；;…]”?$/.test(clause) ? 1.2 : .35;
+    let clean = cleanCaptionText(clause);
+    while (clean.length > maxLen) {
+      chunks.push({ text: clean.slice(0, maxLen), weight: maxLen + .25 });
+      clean = clean.slice(maxLen);
+    }
+    if (clean) chunks.push({ text: clean, weight: Math.max(1, [...clean].length) + pause });
+  });
+  return chunks;
+}
+
+export function spreadKnownCaption(text = "", start = 0, end = 0, maxLen = 12) {
+  const chunks = timedCaptionChunks(text, maxLen);
+  const from = Math.max(0, Number(start || 0));
+  const to = Math.max(from + .05, Number(end || 0));
+  if (!chunks.length) return [];
+  const totalWeight = chunks.reduce((sum, chunk) => sum + chunk.weight, 0) || 1;
+  let cursor = from;
+  return chunks.map((chunk, index) => {
+    const rawEnd = index === chunks.length - 1 ? to : cursor + (to - from) * chunk.weight / totalWeight;
+    const cueEnd = Math.min(to, Math.max(cursor + .05, rawEnd));
+    const cue = { text: chunk.text, start: Math.round(cursor * 100) / 100, end: Math.round(cueEnd * 100) / 100 };
+    cursor = cueEnd;
+    return cue;
+  }).filter(cue => cue.text && cue.end > cue.start);
 }
 
 // Only explicit spoken-source fields are eligible. Generic “声音/台词” director
@@ -129,30 +231,38 @@ export function extractStructuredSpokenCues(text = "", duration = 0) {
   const prompt = String(text || "");
   const limit = Math.max(0, Number(duration || 0));
   const markers = [...prompt.matchAll(/(\d+(?:\.\d+)?)\s*(?:-|–|—|~|至|到)\s*(\d+(?:\.\d+)?)\s*(?:s|秒)/gi)];
+  // 没有原始时间段就不猜时间。这样不会把汇总台词或导演说明
+  // 平均铺满整段视频。
+  if (!markers.length) return [];
   const markerStarts = markers.map(marker => Number(marker[1])).filter(Number.isFinite);
   const markerOffset = limit && markerStarts.length && Math.min(...markerStarts) >= limit - .01
     ? Math.min(...markerStarts)
     : 0;
   const cues = [];
-  if (markers.length) {
-    markers.forEach((marker, index) => {
-      const start = Math.max(0, Number(marker[1]) - markerOffset);
-      const rawEnd = Math.max(start, Number(marker[2]) - markerOffset);
-      const end = limit ? Math.min(limit, rawEnd) : rawEnd;
-      if (end <= start) return;
-      const blockEnd = markers[index + 1]?.index ?? prompt.length;
-      structuredSpeechLines(prompt.slice(marker.index, blockEnd))
-        .forEach(spoken => cues.push({ text: spoken, start, end }));
+  markers.forEach((marker, index) => {
+    const start = Math.max(0, Number(marker[1]) - markerOffset);
+    const rawEnd = Math.max(start, Number(marker[2]) - markerOffset);
+    const end = limit ? Math.min(limit, rawEnd) : rawEnd;
+    if (end <= start) return;
+    const blockEnd = markers[index + 1]?.index ?? prompt.length;
+    const block = prompt.slice(marker.index, blockEnd);
+    const spokenLines = [...strictStructuredSpeechLines(block), ...naturalTimelineSpeechLines(block)]
+      .filter((line, lineIndex, rows) => rows.findIndex(row => row.text.replace(/\s+/g, "") === line.text.replace(/\s+/g, "")) === lineIndex);
+    if (!spokenLines.length) return;
+    const weights = spokenLines.map(line => timedCaptionChunks(line.raw).reduce((sum, chunk) => sum + chunk.weight, 0) || 1);
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || 1;
+    let cursor = start;
+    spokenLines.forEach((spoken, lineIndex) => {
+      const lineEnd = lineIndex === spokenLines.length - 1
+        ? end
+        : Math.min(end, cursor + (end - start) * weights[lineIndex] / totalWeight);
+      cues.push(...spreadKnownCaption(spoken.raw, cursor, lineEnd));
+      cursor = lineEnd;
     });
-  } else {
-    structuredSpeechLines(prompt).forEach(spoken => cues.push({ text: spoken }));
-  }
-  // Director prompts sometimes append an aggregate `台词：“…”“…”` summary
-  // after the timed scenes. Keep the first timed occurrence of each sentence
-  // so that summary does not duplicate earlier captions at the final seconds.
+  });
   const seen = new Set();
   return cues.filter(cue => {
-    const key = String(cue.text || "").replace(/\s+/g, "").trim();
+    const key = `${Number(cue.start || 0).toFixed(2)}:${Number(cue.end || 0).toFixed(2)}:${String(cue.text || "").replace(/\s+/g, "").trim()}`;
     if (!cue.text || seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -180,7 +290,12 @@ export function digitalSegmentDurationCuesForClip(timeline = [], clipIndex = 0, 
   const segment = digitalSegmentAt(timeline, clipIndex, segments);
   // segment.line 是生成独立 MP3 时使用的可信 TTS 原文，只清乱码和
   // 标点，不套提示词过滤器，避免误删“声音 / 镜头 / 画面”等正常口播。
-  const text = cleanTrustedNarrationCaption(segment?.line || "");
+  const timingText = String(segment?.line || "")
+    .replace(/\\n/g, " ")
+    .replace(/[□■▢▣�\uFFFD]+/g, "")
+    .replace(/<\|[^>]+\|>/g, "")
+    .trim();
+  const text = cleanTrustedNarrationCaption(timingText);
   if (!text || !segment) return [];
   const segmentKey = String(segment.id || segment.videoJobId || "");
   const group = (timeline || []).map((item, index) => ({
@@ -191,26 +306,29 @@ export function digitalSegmentDurationCuesForClip(timeline = [], clipIndex = 0, 
     item.segment === segment
     || (segmentKey && String(item.segment.id || item.segment.videoJobId || "") === segmentKey)
   ));
-  const measured = [Number(segment.audioDuration || 0)]
+  const measuredAudio = [Number(segment.audioDuration || 0)]
     .concat(group.map(item => Number(item.clip.audioDuration || 0)))
     .filter(value => Number.isFinite(value) && value > 0);
-  const inferredEnd = Math.max(
-    Number(segment.dur || 0),
-    ...group.map(item => Math.max(0, Number(item.clip.trimIn || 0)) + Math.max(1, Number(item.clip.dur || 0) || 15))
-  );
-  const audioDuration = measured.length ? Math.max(...measured) : inferredEnd;
-  if (!(audioDuration > 0)) return [];
+  const measuredVideo = [Number(segment.videoDuration || 0)]
+    .concat(group.map(item => Number(item.clip.videoDuration || 0)))
+    .filter(value => Number.isFinite(value) && value > 0);
+  // 不再用分镜计划时长猜测口播时间。优先用生成 MP3 的实测时长，
+  // 旧成片没有音频时长时才用已加载视频的真实时长。
+  const sourceDuration = measuredAudio.length
+    ? Math.max(...measuredAudio)
+    : (measuredVideo.length ? Math.max(...measuredVideo) : 0);
+  if (!(sourceDuration > 0)) return [];
   const ranges = group.map(item => {
     const start = Math.max(0, Number(item.clip.trimIn || 0));
-    const duration = Math.max(1, Number(item.clip.dur || 0) || 15);
-    return { ...item, start, end: Math.min(audioDuration, start + duration) };
+    const duration = Math.max(.1, Number(item.clip.dur || item.clip.videoDuration || 0));
+    return { ...item, start, end: Math.min(sourceDuration, start + duration) };
   }).filter(item => item.end > item.start + .05);
   const target = ranges.find(item => item.index === clipIndex);
   if (!target) return [];
   const shortestRange = Math.min(...ranges.map(item => item.end - item.start));
-  const proportionalMaxLen = Math.ceil([...text].length * shortestRange / audioDuration);
+  const proportionalMaxLen = Math.ceil([...text].length * shortestRange / sourceDuration);
   const maxLen = Math.max(4, Math.min(12, proportionalMaxLen || 12));
-  const baseCues = spreadCaption(text, 0, audioDuration, maxLen);
+  const baseCues = spreadKnownCaption(timingText, 0, sourceDuration, maxLen);
   return baseCues.flatMap(cue => {
     let winner = null;
     let winnerOverlap = 0;
@@ -257,7 +375,7 @@ export function renderCutPage(root, p) {
     p.artifacts.composeError = "上次合成已中断，请重新点击下一步";
     save("productions");
   }
-  if (p.artifacts.audioTimingPending && !activeAudioTiming.has(p.id)) {
+  if (p.artifacts.audioTimingPending) {
     p.artifacts.audioTimingPending = false;
     save("productions");
   }
@@ -291,12 +409,12 @@ export function renderCutPage(root, p) {
   const TL = () => p.artifacts.timeline || (p.artifacts.timeline = []);
   const SUBS = () => p.artifacts.subs || (p.artifacts.subs = []);
   const isDigitalHuman = () => p.artifacts?.boards?.generationMode === "digitalHuman";
-  const usesEstimatedMaterialCaptions = () => !isDigitalHuman();
   const protectedCaptionTiming = () => {
     const source = p.artifacts.subTimingSource || "";
     return source === "manual"
       || source.startsWith("audio-analysis-")
-      || source.startsWith("digital-segment-duration-v1");
+      || source.startsWith("digital-segment-duration-v2")
+      || source.startsWith("prompt-colon-timeline-v2");
   };
   const clipDur = c => Math.max(1, c.dur != null ? c.dur : CLIP_SEC);
   const clipStart = i => { let t = 0; for (let k = 0; k < i; k++) t += clipDur(TL()[k]); return t; };
@@ -372,8 +490,6 @@ export function renderCutPage(root, p) {
     queuedCaptionRealignment = true;
     queueMicrotask(async () => {
       try {
-        const active = activeAudioTimingTasks.get(p.id);
-        if (active) await active;
         if (root.isConnected && p.artifacts.subTimingSource !== "manual") {
           await alignCaptionsToAudio({ silent: true });
         }
@@ -523,8 +639,8 @@ export function renderCutPage(root, p) {
       p.artifacts?.boards?.digitalHuman?.segments || []
     );
     p.artifacts.subs = normalizeCaptionTrack(subs);
-    p.artifacts.subTimingSource = "digital-segment-duration-pending";
-    p.artifacts.audioTimingSource = "digital-segment-duration-initial";
+    p.artifacts.subTimingSource = subs.length ? "digital-segment-duration-v2" : "digital-segment-duration-v2-empty";
+    p.artifacts.audioTimingSource = subs.length ? "known-narration-real-duration" : "missing-real-duration-or-narration";
   }
 
   function refreshCaptionAlignment({ force = false } = {}) {
@@ -533,7 +649,7 @@ export function renderCutPage(root, p) {
     if (digital && !protectedTiming && (
       force
       || !SUBS().length
-      || p.artifacts.subTimingSource !== "digital-segment-duration-pending"
+      || !p.artifacts.subTimingSource.startsWith("digital-segment-duration-v2")
     )) rebuildDigitalCaptions();
     else normalizeCaptionTrack();
   }
@@ -578,7 +694,7 @@ export function renderCutPage(root, p) {
           const localStart = clamp(Number(hint.start), 0, Math.max(0, duration - .05));
           const localEnd = clamp(Number(hint.end), localStart + .05, duration);
           if (!text || localEnd <= localStart) return;
-          cues.push(...spreadCaption(text, offset + localStart, offset + localEnd).map(cue => ({
+          cues.push(...spreadKnownCaption(text, offset + localStart, offset + localEnd).map(cue => ({
             ...cue,
             clipId: clip.id,
             clipIndex,
@@ -602,7 +718,7 @@ export function renderCutPage(root, p) {
       duration: clipDur(clip),
       text: hints.map(hint => hint.text).join("，"),
       hints,
-      strict: usesEstimatedMaterialCaptions(),
+      strict: !isDigitalHuman(),
       trustedNarration: Boolean(
         isDigitalHuman()
         && (clip.audioAssetId || seg?.audioAssetId)
@@ -624,122 +740,43 @@ export function renderCutPage(root, p) {
     && (allowExistingManual || p.artifacts.subTimingSource !== "manual")
   );
 
-  async function requestAudioTimingClips(descriptors) {
-    return (await Promise.all(descriptors.map(async item => {
-      const audio = item.audioAssetId ? await assetMedia(item.audioAssetId) : { dataUrl: "", url: "" };
-      return {
-        clipId: item.clipId,
-        url: item.videoUrl,
-        audioUrl: audio.url || "",
-        audioDataUrl: audio.dataUrl || "",
-        trimIn: item.trimIn,
-        duration: item.duration,
-        text: item.text,
-        hints: item.hints,
-        strict: item.strict,
-        trustedNarration: item.trustedNarration
-      };
-    }))).filter(item => item.url || item.audioUrl || item.audioDataUrl);
-  }
-
   async function alignCaptionsToAudio({ silent = false, force = false } = {}) {
-    if (!force && p.artifacts.subTimingSource === "manual") return false;
+    // 手工编辑的字幕永远最高优先：即使用户再点一次自动生成，也不覆盖。
+    if (p.artifacts.subTimingSource === "manual") {
+      if (!silent) toast("已保留手工编辑字幕，如需重建请先手工清空字幕轨");
+      return false;
+    }
     const descriptors = audioTimingDescriptors();
     if (!descriptors.length) return false;
-    if (p.artifacts.audioTimingPending) return await (activeAudioTimingTasks.get(p.id) || Promise.resolve(false));
     const requestRevision = Number(p.artifacts.audioTimingRevision || 0);
-    const manualAtStart = p.artifacts.subTimingSource === "manual";
     const attemptSig = audioTimingAttemptSignature(requestRevision);
     if (!force && p.artifacts.audioTimingAttemptSig === attemptSig) return false;
     p.artifacts.audioTimingAttemptSig = attemptSig;
-    p.artifacts.audioTimingPending = true;
-    activeAudioTiming.add(p.id);
-    let settleTimingTask;
-    let timingResult = false;
-    activeAudioTimingTasks.set(p.id, new Promise(resolve => { settleTimingTask = resolve; }));
+    const cues = isDigitalHuman()
+      ? buildDigitalSegmentDurationCaptions(TL(), p.artifacts?.boards?.digitalHuman?.segments || [])
+      : promptTimelineCaptions();
+    if (p.artifacts.subTimingSource === "manual" || !timingAttemptIsCurrent(attemptSig, requestRevision)) return false;
+    p.artifacts.subs = normalizeCaptionTrack(cues);
+    p.artifacts.subTimingSource = isDigitalHuman()
+      ? (cues.length ? "digital-segment-duration-v2" : "digital-segment-duration-v2-empty")
+      : (cues.length ? "prompt-colon-timeline-v2" : "prompt-colon-timeline-v2-empty");
+    p.artifacts.audioTimingSource = isDigitalHuman()
+      ? (cues.length ? "known-narration-real-duration" : "missing-real-duration-or-narration")
+      : (cues.length ? "existing-prompt-colon-timeline" : "no-explicit-colon-dialogue-timeline");
+    p.artifacts.audioTimingPending = false;
+    p.artifacts.finalVideoUrl = "";
+    p.artifacts.finalVideoCaptionSig = "";
     save("productions");
-    try {
-      const clips = await requestAudioTimingClips(descriptors);
-      if (!clips.length) throw new Error("未找到可识别的视频或口播音频");
-      if (!timingAttemptIsCurrent(attemptSig, requestRevision, { allowExistingManual: force && manualAtStart })) return false;
-      const res = await fetch("/api/video/audio-timing", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(remote.getToken() ? { Authorization: `Bearer ${remote.getToken()}` } : {})
-        },
-        body: JSON.stringify({ clips })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!timingAttemptIsCurrent(attemptSig, requestRevision, { allowExistingManual: force && manualAtStart })) return false;
-      if (!res.ok || !data.ok || !Array.isArray(data.cues) || !data.cues.length) throw new Error(data.detail || "未检测到可匹配的人声区间");
-      const cues = data.cues
-        .map(cue => ({
-          ...cue,
-          text: cleanAlignedCaptionText(cue.text, isDigitalHuman()),
-          autoAligned: true,
-          precise: cue.precise !== false
-        }))
-        .filter(cue => cue.text);
-      if (!cues.length) throw new Error("未识别到可用的台词字幕");
-      p.artifacts.subs = normalizeCaptionTrack(cues);
-      p.artifacts.subTimingSource = "audio-analysis-v6";
-      p.artifacts.audioTimingSource = data.source || "audio-analysis-v6";
-      p.artifacts.finalVideoUrl = "";
-      p.artifacts.finalVideoCaptionSig = "";
-      save("productions");
-      drawTimeline();
-      if (!silent) {
-        const directCount = (data.clipSources || []).filter(item => item.inputSource === "direct-audio").length;
-        toast(directCount
-          ? `已直接按 ${directCount} 段原始口播音频识别 ${cues.length} 条字幕`
-          : `已按真实视频人声识别 ${cues.length} 条字幕`);
-      }
-      timingResult = true;
-      return timingResult;
-    } catch (err) {
-      if (!timingAttemptIsCurrent(attemptSig, requestRevision, { allowExistingManual: force && manualAtStart })) return false;
-      const fallbackCues = isDigitalHuman()
-        ? buildDigitalSegmentDurationCaptions(TL(), p.artifacts?.boards?.digitalHuman?.segments || [])
-        : promptTimelineCaptions();
-      if (fallbackCues.length && (p.artifacts.subTimingSource !== "manual" || (force && manualAtStart))) {
-        p.artifacts.subs = normalizeCaptionTrack(fallbackCues);
-        if (isDigitalHuman()) {
-          p.artifacts.subTimingSource = "digital-segment-duration-v1";
-          p.artifacts.audioTimingSource = "digital-segment-duration-fallback";
-        } else {
-          p.artifacts.subTimingSource = "prompt-timeline-v1";
-          p.artifacts.audioTimingSource = "prompt-timeline-fallback";
-        }
-        p.artifacts.finalVideoUrl = "";
-        p.artifacts.finalVideoCaptionSig = "";
-        drawTimeline();
-        if (!silent) toast(isDigitalHuman()
-          ? `真实识别未通过，已按分段口播的实测时长生成 ${fallbackCues.length} 条字幕`
-          : `真实识别未通过，已按信息流提示词时间段生成 ${fallbackCues.length} 条字幕`);
-        timingResult = true;
-        return timingResult;
-      }
-      if (p.artifacts.subTimingSource !== "manual" || (force && manualAtStart)) {
-        p.artifacts.subs = [];
-        p.artifacts.subTimingSource = "audio-analysis-v6-empty";
-        p.artifacts.audioTimingSource = "no-aligned-speech";
-        p.artifacts.finalVideoUrl = "";
-        p.artifacts.finalVideoCaptionSig = "";
-        drawTimeline();
-      }
-      if (!silent) toast(isDigitalHuman()
-        ? `真实音轨未通过字幕校验，且没有可用的分段口播音频：${err?.message || err}`
-        : `真实音轨未通过字幕校验，且提示词没有可用的口播时间段：${err?.message || err}`, "error");
-      timingResult = false;
-      return timingResult;
-    } finally {
-      p.artifacts.audioTimingPending = false;
-      activeAudioTiming.delete(p.id);
-      activeAudioTimingTasks.delete(p.id);
-      settleTimingTask?.(timingResult);
-      save("productions");
+    drawTimeline();
+    if (!silent) {
+      if (cues.length) toast(isDigitalHuman()
+        ? `已按分段口播原文与实测时长生成 ${cues.length} 条字幕`
+        : `已按原提示词的冒号台词与时间段生成 ${cues.length} 条字幕`);
+      else toast(isDigitalHuman()
+        ? "没有可靠的分段口播原文或实测音视频时长，未生成猜测字幕"
+        : "提示词中没有可解析的“说话主体：台词”时间段，未生成猜测字幕", "error");
     }
+    return cues.length > 0;
   }
 
   function syncClipDurationFromMedia(clipId, duration) {
@@ -763,7 +800,10 @@ export function renderCutPage(root, p) {
     if (!durationChanged && Math.abs(previousVideoDuration - actual) < .05) return;
     // Video metadata is diagnostic only for digital-human clips. The original
     // narration duration remains the timing source and is never overwritten.
-    if (durationChanged && p.artifacts.subTimingSource !== "manual") {
+    const learnedRealDuration = isDigitalHuman()
+      && p.artifacts.subTimingSource === "digital-segment-duration-v2-empty"
+      && Math.abs(previousVideoDuration - actual) >= .05;
+    if ((durationChanged || learnedRealDuration) && p.artifacts.subTimingSource !== "manual") {
       invalidateDerivedCaptionTiming();
     }
     normalizeCaptionTrack();
@@ -929,7 +969,7 @@ export function renderCutPage(root, p) {
               <input type="range" id="cutBgmVol" min="5" max="60" step="5" value="${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}" />
               <em id="cutBgmVolV">${Math.round((p.artifacts.bgm?.volume ?? 0.25) * 100)}%</em>
             </div>
-            <button class="btn ghost block" id="tlFillSubs" title="优先识别真实音轨；数字人失败时按独立分段口播的人声窗口与实测时长对齐；信息流只读取已有明确口播时间段">${icon("type", 13)} 识别字幕</button>
+            <button class="btn ghost block" id="tlFillSubs" title="数字人按分段口播原文与实测时长对齐；信息流只读取原提示词中“说话主体：台词”的时间段">${icon("type", 13)} 生成字幕</button>
           </div>` : ""}
         </aside>
       </div>
@@ -1392,16 +1432,17 @@ export function renderCutPage(root, p) {
     save("productions");
   });
   $("#tlFillSubs", root).addEventListener("click", async () => {
-    const digitalSegments = p.artifacts.boards?.digitalHuman?.segments || [];
-    const rows = (p.artifacts.script.shots || []).filter(s => (s.line || "").trim());
-    if (!digitalSegments.length && !rows.length) { toast("还没有可匹配的口播内容"); return; }
+    if (p.artifacts.subTimingSource === "manual") {
+      toast("已保留手工编辑字幕，自动生成不会覆盖");
+      return;
+    }
     snapshot();
     const button = $("#tlFillSubs", root);
     button.disabled = true;
-    button.innerHTML = `${icon("refresh", 13)} 识别中…`;
+    button.innerHTML = `${icon("refresh", 13)} 生成中…`;
     const aligned = await alignCaptionsToAudio({ force: true });
     button.disabled = false;
-    button.innerHTML = `${icon("type", 13)} 识别字幕`;
+    button.innerHTML = `${icon("type", 13)} 生成字幕`;
     if (aligned) return;
   });
   $("#tlAddSub", root).addEventListener("click", () => {
@@ -1570,7 +1611,7 @@ export function renderCutPage(root, p) {
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("未检测到封面，正在自动生成");
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260718-v92-3");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260718-v93-2");
         await ensureVideoCover(p);
         toast("封面已自动生成并入库");
       } catch (err) {
