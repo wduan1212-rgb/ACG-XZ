@@ -5,36 +5,36 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260717-v92-1";
+import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260718-v92-3";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
 import { productTagLabel } from "./domain/delivery.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
-import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260717-v92-1";
+import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260718-v92-3";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260717-v92-1";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260718-v92-3";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
-import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260717-v92-1";
+import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260718-v92-3";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260717-v92-1";
-import { voiceLabView } from "./views/voiceLab.js?v=20260717-v92-1";
-import { customCreationView } from "./views/customCreation.js?v=20260717-v92-1";
-import { agentView } from "./agent/view.js?v=20260717-v92-1";
-import { studioView } from "./views/studio.js?v=20260717-v92-1";
-import { assetsView } from "./views/assetsView.js?v=20260717-v92-1";
-import { deliveryView } from "./views/deliveryView.js?v=20260717-v92-1";
-import { analyticsView } from "./views/analyticsView.js?v=20260717-v92-1";
+import { overviewView } from "./views/overview.js?v=20260718-v92-3";
+import { voiceLabView } from "./views/voiceLab.js?v=20260718-v92-3";
+import { customCreationView } from "./views/customCreation.js?v=20260718-v92-3";
+import { agentView } from "./agent/view.js?v=20260718-v92-3";
+import { studioView } from "./views/studio.js?v=20260718-v92-3";
+import { assetsView } from "./views/assetsView.js?v=20260718-v92-3";
+import { deliveryView } from "./views/deliveryView.js?v=20260718-v92-3";
+import { analyticsView } from "./views/analyticsView.js?v=20260718-v92-3";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260717-v92-1";
+import { settingsView } from "./views/settings.js?v=20260718-v92-3";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260717-v92-1";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260718-v92-3";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260717-v92-1";
+const APP_BUILD_ID = "20260718-v92-3";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -176,6 +176,8 @@ function showGate() {
   gate.hidden = false;
   document.body.classList.add("gated");
   playLoginBackground();
+  setGateBusy(false);
+  setGateError("");
   setGateMode("login");
   const u = $("#lgUser"), p = $("#lgPin"), n = $("#lgName");
   if (u) u.value = ""; if (p) p.value = ""; if (n) n.value = "";
@@ -183,6 +185,68 @@ function showGate() {
 }
 let gateMode = "login";
 let gateTransitionTimer = 0;
+let gateBusy = false;
+const GATE_PHASES = {
+  validating: {
+    title: "正在验证账号",
+    detail: "正在安全校验登录信息",
+    button: "验证中"
+  },
+  syncing: {
+    title: "正在同步工作区",
+    detail: "正在加载账号、资产与创作记录",
+    button: "同步中"
+  },
+  applying: {
+    title: "正在提交申请",
+    detail: "正在安全送达账号申请",
+    button: "提交中"
+  }
+};
+function setGateError(message = "") {
+  const error = $("#lgGateError");
+  if (!error) return;
+  error.textContent = String(message || "");
+  error.hidden = !message;
+}
+function setGatePhase(phase = "validating") {
+  const progress = $("#lgProgress");
+  const config = GATE_PHASES[phase] || GATE_PHASES.validating;
+  if (progress) progress.dataset.phase = phase;
+  const title = $("#lgProgressTitle"), detail = $("#lgProgressDetail"), label = $("#lgLogin .lg-login-label");
+  if (title) title.textContent = config.title;
+  if (detail) detail.textContent = config.detail;
+  if (label) label.textContent = config.button;
+}
+function setGateBusy(busy, phase = "validating") {
+  gateBusy = !!busy;
+  const gate = $("#loginGate"), card = $(".lg-card"), progress = $("#lgProgress"), loginBtn = $("#lgLogin"), applyBtn = $("#lgApply");
+  card?.classList.toggle("is-authenticating", gateBusy);
+  card?.setAttribute("aria-busy", gateBusy ? "true" : "false");
+  if (progress) progress.hidden = !gateBusy;
+  if (loginBtn) loginBtn.disabled = gateBusy;
+  if (applyBtn) applyBtn.disabled = gateBusy;
+  gate?.querySelectorAll(".lg-field input, .lg-field select").forEach(control => { control.disabled = gateBusy; });
+  if (gateBusy) setGatePhase(phase);
+  else applyGateModeContent(gateMode);
+}
+function gateRequestError(error, phase = "validating") {
+  const raw = String(error?.message || error || "").replace(/^HTTP\s+\d+\s+/, "").trim();
+  if (phase === "syncing") return `账号已验证，但工作区同步失败：${raw || "请检查网络后重试"}`;
+  if (error?.status === 401 || error?.status === 403) return "用户名或密码不对，再试一次";
+  if (/超时|timeout|abort/i.test(raw)) return "登录请求超时，请检查网络后重试";
+  return raw ? `登录服务暂时不可用：${raw}` : "登录服务暂时不可用，请稍后重试";
+}
+async function clearPendingRemoteIdentity() {
+  remote.logout();
+  state.role = null;
+  state.ui.currentMemberId = null;
+  document.documentElement.classList.remove("has-auth-token");
+  await Promise.allSettled([
+    db.metaSet("role", null),
+    db.metaSet("ui", JSON.parse(JSON.stringify(state.ui)))
+  ]);
+}
 function applyGateModeContent(mode) {
   const apply = mode === "apply";
   const card = $(".lg-card");
@@ -320,7 +384,8 @@ function enterMember(member) {
 async function enterRemote(member) {
   state.role = member.role;
   state.ui.currentMemberId = member.id;
-  await pullRemote();
+  const synced = await pullRemote();
+  if (!synced) throw new Error("请检查网络后重试");
   if (!["supplier", "supplier_parent", "supplier_child"].includes(member.role)) {
     await bootstrapAccountProfilesIfEmpty();
     normalizeDeliveredProductTags();
@@ -365,12 +430,15 @@ async function verifyLocalMemberPin(member, pin) {
 function wireGate() {
   const gate = $("#loginGate");
   const submitApply = async () => {
+    if (gateBusy) return;
     if (!remote.isOn()) { toast("当前是本地离线模式，申请账号需要共享后端服务"); shakeCard(); return; }
     const name = ($("#lgName").value || "").trim();
     const username = ($("#lgUser").value || "").trim();
     const pin = ($("#lgPin").value || "").trim();
     const role = ($("#lgRole").value || "editor").trim();
     if (!name || !username || !pin) { toast("请填写姓名、用户名和密码"); shakeCard(); return; }
+    setGateError("");
+    setGateBusy(true, "applying");
     try {
       await remote.requestMember({ name, username, pin, role });
       toast("申请已提交，等待管理员审批");
@@ -378,35 +446,66 @@ function wireGate() {
       $("#lgPin").value = "";
       $("#lgName").value = "";
     } catch (e) {
+      const message = (e.message || "申请提交失败").replace(/^HTTP\s+\d+\s+/, "");
       shakeCard();
-      toast((e.message || "申请提交失败").replace(/^HTTP\s+\d+\s+/, ""), "error");
+      setGateError(message);
+      toast(message, "error");
+    } finally {
+      setGateBusy(false);
     }
   };
   const submit = async () => {
+    if (gateBusy) return;
     if (gateMode === "apply") return submitApply();
     const username = ($("#lgUser").value || "").trim();
     const pin = ($("#lgPin").value || "").trim();
     if (!username || !pin) { toast("请填写用户名和密码"); shakeCard(); return; }
-    if (remote.isOn()) {
-      let member;
-      try { member = await remote.login(username, pin); }
-      catch (e) { $("#lgPin").value = ""; shakeCard(); toast("用户名或密码不对，再试一次", "error"); return; }
-      await enterRemote(member);
-    } else {
-      let member = null;
-      for (const m of state.members) {
-        if (m.username === username && await verifyLocalMemberPin(m, pin)) { member = m; break; }
+    let phase = "validating";
+    setGateError("");
+    setGateBusy(true, phase);
+    try {
+      if (remote.isOn()) {
+        const member = await remote.login(username, pin);
+        phase = "syncing";
+        setGatePhase(phase);
+        await enterRemote(member);
+      } else {
+        let member = null;
+        for (const m of state.members) {
+          if (m.username === username && await verifyLocalMemberPin(m, pin)) { member = m; break; }
+        }
+        if (!member) {
+          const error = new Error("用户名或密码不对，再试一次");
+          error.status = 401;
+          throw error;
+        }
+        phase = "syncing";
+        setGatePhase(phase);
+        enterMember(member);
       }
-      if (!member) { $("#lgPin").value = ""; shakeCard(); toast("用户名或密码不对，再试一次", "error"); return; }
-      enterMember(member);
+    } catch (e) {
+      if (phase === "syncing" && remote.isOn()) await clearPendingRemoteIdentity();
+      const message = gateRequestError(e, phase);
+      $("#lgPin").value = "";
+      shakeCard();
+      setGateError(message);
+      toast(message, "error");
+    } finally {
+      setGateBusy(false);
     }
   };
   $("#lgLogin", gate).addEventListener("click", submit);
   $("#lgApply", gate).addEventListener("click", () => {
+    if (gateBusy) return;
+    setGateError("");
     setGateMode(gateMode === "apply" ? "login" : "apply");
     setTimeout(() => (gateMode === "apply" ? $("#lgName") : $("#lgUser"))?.focus(), 480);
   });
-  gate.addEventListener("keydown", e => { if (e.key === "Enter") submit(); });
+  gate.addEventListener("keydown", e => {
+    if (e.key !== "Enter" || e.isComposing) return;
+    e.preventDefault();
+    submit();
+  });
 }
 function logout() {
   remote.logout();
@@ -667,18 +766,22 @@ async function boot() {
       const m = await remote.me();
       if (m) {
         state.role = m.role; state.ui.currentMemberId = m.id;
-        await pullRemote();
-        if (!["supplier", "supplier_parent", "supplier_child"].includes(m.role)) {
-          await bootstrapAccountProfilesIfEmpty();
-          normalizeDeliveredProductTags();
-          normalizeDeliveredSharedAssets();
+        const synced = await pullRemote();
+        if (synced) {
+          if (!["supplier", "supplier_parent", "supplier_child"].includes(m.role)) {
+            await bootstrapAccountProfilesIfEmpty();
+            normalizeDeliveredProductTags();
+            normalizeDeliveredSharedAssets();
+          }
+          save("meta");
+          document.documentElement.classList.add("has-auth-token");
+          pauseLoginBackground();
+          applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;
+        } else {
+          await clearPendingRemoteIdentity();
         }
-        save("meta");
-        document.documentElement.classList.add("has-auth-token");
-        pauseLoginBackground();
-        applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;
       } else {
-        remote.logout();
+        await clearPendingRemoteIdentity();
       }
     } else if (!remote.isOn() && state.role && state.ui.currentMemberId) {
       document.documentElement.classList.add("has-auth-token");

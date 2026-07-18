@@ -174,6 +174,29 @@ console.log(JSON.stringify({{
         self.assertIn("width:100%;height:100%;min-height:0", integration)
         self.assertNotIn("min-height:640px", integration)
 
+    def test_canvas_publish_reuses_image_polish_without_changing_direct_export(self):
+        publish = (APP_DIR / "js" / "views" / "customPublish.js").read_text(encoding="utf-8")
+        export = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "ExportModal.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            'import { polishImageForPublish } from "../domain/imagePolish.js";',
+            publish,
+        )
+        self.assertIn("const polishedDataUrl = await polishImageForPublish(", publish)
+        self.assertIn('"发布前精修"', publish)
+        self.assertIn("直接导出保持原图", publish)
+        self.assertIn("正在精修画布成品并准备原子提交", publish)
+        self.assertNotIn("polishImageForPublish", export)
+        self.assertNotIn("发布前精修", export)
+
     def test_canvas_config_returns_only_current_owner_published_sources(self):
         projects = [{
             "id": "canvas-a",

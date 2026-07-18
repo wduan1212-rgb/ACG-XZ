@@ -768,8 +768,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260717-v92-1"', main)
-        self.assertIn('js/main.js?v=20260717-v92-1', index)
+        self.assertIn('const APP_BUILD_ID = "20260718-v92-3"', main)
+        self.assertIn('js/main.js?v=20260718-v92-3', index)
 
     def test_batch_reference_images_are_explicit_and_title_changes_refresh_copy(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
@@ -802,7 +802,7 @@ globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
 globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
 const { state } = await import('./js/core/store.js');
 const { createProduction, buildMaterialUnits } = await import('./js/domain/productions.js');
-const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260717-v92-1');
+const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260718-v92-3');
 state.accounts = [{ id:'material-account', name:'素材号', mode:'视频', subType:'无数字人', platform:'视频号' }];
 state.assets = [{ id:'old-hidden-ref', accountId:'material-account', type:'图片', name:'旧产品统一参考', tags:['统一参考','产品'] }];
 state.productions = [];

@@ -5,7 +5,7 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260717-v92-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260718-v92-3";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;

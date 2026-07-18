@@ -136,7 +136,7 @@ class BatchReferenceSelectionTest(unittest.TestCase):
 
             const { state } = await import("./js/core/store.js");
             const { createProduction, buildMaterialUnits } = await import("./js/domain/productions.js");
-            const { createUnitVideoJobs } = await import("./js/agent/orchestrator.js?v=20260717-v92-1");
+            const { createUnitVideoJobs } = await import("./js/agent/orchestrator.js?v=20260718-v92-3");
 
             state.accounts = [
               { id:"material-a", name:"素材号", mode:"视频", subType:"无数字人", platform:"视频号" },

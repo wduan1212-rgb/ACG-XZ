@@ -258,18 +258,36 @@ class SupplierStateTest(unittest.TestCase):
                 "name": "供应商子账号", "username": "return_link_child", "pin": "local-test-pin",
             }])[0]
             store.set_supplier_child_accounts(parent[0], child["id"], ["account-assigned"], parent[0])
+            store.upsert_docs("accounts", [{
+                "id": "account-assigned", "name": "已分配账号", "platform": "小红书", "mode": "图文", "updatedAt": 80,
+            }, {
+                "id": "account-other", "name": "其他账号", "platform": "小红书", "mode": "图文", "updatedAt": 80,
+            }])
             store.upsert_docs("assets", [{
                 "id": "delivery-assigned", "accountId": "account-assigned", "name": "已分配素材",
-                "delivered": True, "updatedAt": 100,
+                "delivered": True, "pubSeq": 252, "updatedAt": 100,
             }, {
                 "id": "delivery-unassigned", "accountId": "account-other", "name": "未分配素材",
-                "delivered": True, "updatedAt": 100,
+                "delivered": True, "pubSeq": 251, "updatedAt": 100,
             }])
 
             child_snapshot = store.state_for(child["id"], "supplier_child", parent[0])
             child_asset_ids = {row["id"] for row in child_snapshot["assets"]}
             self.assertIn("delivery-assigned", child_asset_ids)
             self.assertNotIn("delivery-unassigned", child_asset_ids)
+            child_delivery = next(row for row in child_snapshot["assets"] if row["id"] == "delivery-assigned")
+            parent_delivery = next(
+                row for row in store.state_for(parent[0], "supplier_parent")["assets"]
+                if row["id"] == "delivery-assigned"
+            )
+            creator_delivery = next(
+                row for row in store.state_for("admin-1", "admin")["assets"]
+                if row["id"] == "delivery-assigned"
+            )
+            # 子账号看不到 #251，但同一素材仍必须保留权威序号 #252。
+            self.assertEqual(child_delivery["pubSeq"], 252)
+            self.assertEqual(parent_delivery["pubSeq"], child_delivery["pubSeq"])
+            self.assertEqual(creator_delivery["pubSeq"], child_delivery["pubSeq"])
 
             updated, link, err = store.update_supplier_asset_published_link(
                 "delivery-assigned", "https://www.xiaohongshu.com/explore/child-return", "", "", "",
@@ -277,7 +295,20 @@ class SupplierStateTest(unittest.TestCase):
             )
             self.assertIsNone(err)
             self.assertEqual(updated["publishedUpdatedBy"], child["id"])
+            self.assertEqual(updated["status"], "已发布")
+            self.assertEqual(updated["publishedUrl"], "https://www.xiaohongshu.com/explore/child-return")
             self.assertEqual(link["assetId"], "delivery-assigned")
+
+            # 模拟旧页面在回传接口完成后才到达的整条 assets 后台回推。
+            # 即使它的 updatedAt 较新，也不得清除服务端权威回传状态。
+            store.upsert_docs("assets", [{
+                **updated,
+                "publishedUrl": "",
+                "publishedAt": 0,
+                "publishedUpdatedAt": 0,
+                "status": "未下载",
+                "updatedAt": updated["updatedAt"] + 10,
+            }])
 
             # 即使绕过前端直接请求，后端仍拒绝未分配素材，作为越权防护兜底。
             denied, denied_link, err = store.update_supplier_asset_published_link(
@@ -288,9 +319,105 @@ class SupplierStateTest(unittest.TestCase):
             self.assertIsNone(denied_link)
             self.assertEqual(err, "unassigned")
 
-            admin_snapshot = store.state_for("admin-1", "admin")
-            visible = next(row for row in admin_snapshot["assets"] if row["id"] == "delivery-assigned")
-            self.assertEqual(visible["publishedUrl"], updated["publishedUrl"])
+            # 刷新/重登后各角色都从服务端重拉快照，回传态和序号仍一致。
+            refreshed_snapshots = [
+                store.state_for("admin-1", "admin"),
+                store.state_for(parent[0], "supplier_parent"),
+                store.state_for(child["id"], "supplier_child", parent[0]),
+            ]
+            for snapshot in refreshed_snapshots:
+                visible = next(row for row in snapshot["assets"] if row["id"] == "delivery-assigned")
+                self.assertEqual(visible["publishedUrl"], updated["publishedUrl"])
+                self.assertEqual(visible["status"], "已发布")
+                self.assertEqual(visible["pubSeq"], 252)
+
+    def test_legacy_delivery_sequence_projection_is_global_and_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            parent = store.add_member("供应商管理员", "legacy_seq_parent", "local-test-pin", "supplier_parent")
+            child = store.create_supplier_children(parent[0], [{
+                "name": "旧数据子账号", "username": "legacy_seq_child", "pin": "local-test-pin",
+            }])[0]
+            store.set_supplier_child_accounts(parent[0], child["id"], ["account-assigned"], parent[0])
+            store.upsert_docs("accounts", [{
+                "id": "account-assigned", "name": "已分配账号", "platform": "小红书", "mode": "图文", "updatedAt": 1,
+            }, {
+                "id": "account-hidden", "name": "未分配账号", "platform": "小红书", "mode": "图文", "updatedAt": 1,
+            }])
+            store.upsert_docs("assets", [{
+                "id": "legacy-assigned", "accountId": "account-assigned", "name": "旧交付一",
+                "delivered": True, "deliveredAt": 10, "updatedAt": 10,
+            }, {
+                "id": "legacy-hidden", "accountId": "account-hidden", "name": "旧交付二",
+                "delivered": True, "deliveredAt": 20, "updatedAt": 20,
+            }])
+
+            snapshots = [
+                store.state_for("admin-1", "admin"),
+                store.state_for(parent[0], "supplier_parent"),
+                store.state_for(child["id"], "supplier_child", parent[0]),
+            ]
+            sequences = []
+            for snapshot in snapshots:
+                item = next(row for row in snapshot["assets"] if row["id"] == "legacy-assigned")
+                sequences.append(item["projectedSeq"])
+                self.assertNotIn("pubSeq", item)
+            self.assertEqual(len(set(sequences)), 1)
+
+            # projectedSeq 只是 /api/state 投影，不写回生产资产记录。
+            conn = store._connect()
+            try:
+                raw = conn.execute(
+                    "SELECT data FROM docs WHERE collection='assets' AND id='legacy-assigned'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertNotIn("projectedSeq", __import__("json").loads(raw))
+
+            # 客户端若把快照整条回推，服务端仍会丢弃只读投影字段。
+            legacy_snapshot = next(
+                row for row in snapshots[0]["assets"] if row["id"] == "legacy-assigned"
+            )
+            store.upsert_docs("assets", [{**legacy_snapshot, "updatedAt": 30}])
+            conn = store._connect()
+            try:
+                raw = conn.execute(
+                    "SELECT data FROM docs WHERE collection='assets' AND id='legacy-assigned'"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+            self.assertNotIn("projectedSeq", __import__("json").loads(raw))
+
+    def test_state_projection_decodes_each_asset_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("assets", [{
+                "id": f"decode-once-{index}",
+                "accountId": "account-1",
+                "name": f"交付 {index}",
+                "delivered": True,
+                **({"pubSeq": index + 1} if index % 2 else {}),
+                "updatedAt": index + 1,
+            } for index in range(32)])
+
+            real_loads = store.json.loads
+            decoded_asset_ids = []
+
+            def counting_loads(raw, *args, **kwargs):
+                item = real_loads(raw, *args, **kwargs)
+                if isinstance(item, dict) and str(item.get("id") or "").startswith("decode-once-"):
+                    decoded_asset_ids.append(item["id"])
+                return item
+
+            store.json.loads = counting_loads
+            try:
+                snapshot = store.state_for("admin-1", "admin")
+            finally:
+                store.json.loads = real_loads
+
+            self.assertEqual(len([row for row in snapshot["assets"] if row["id"].startswith("decode-once-")]), 32)
+            self.assertEqual(len(decoded_asset_ids), 32)
+            self.assertEqual(len(set(decoded_asset_ids)), 32)
 
     def test_supplier_admin_can_list_and_edit_all_supplier_members(self):
         with tempfile.TemporaryDirectory() as tmp:

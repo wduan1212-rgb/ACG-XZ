@@ -61,6 +61,37 @@ export function supplierHasPublished(asset) {
   return !!asset?.publishedUrl || asset?.status === "已发布";
 }
 
+export function applySupplierReturnResponse(asset, response) {
+  const returned = response?.asset;
+  if (!asset || !returned || String(returned.id || "") !== String(asset.id || "")) return false;
+  Object.assign(asset, returned);
+  return supplierHasPublished(asset);
+}
+
+export function supplierReturnRowState(asset) {
+  const returned = supplierHasPublished(asset);
+  const hasLink = !!asset?.publishedUrl;
+  const downloaded = supplierHasDownloaded(asset);
+  return {
+    returned,
+    statusClass: returned ? "pub" : downloaded ? "done" : "",
+    statusText: returned ? "已回传 ✓" : downloaded ? "已下载" : "未下载",
+    actionClass: hasLink ? "ghost" : "primary",
+    actionText: hasLink ? "改链接" : "回传链接"
+  };
+}
+
+/* 发布清单的序号必须来自交付本身，不能按当前角色可见的子集重新连续编号。
+   pubSeq 是现行权威字段；projectedSeq 供服务端向旧记录投影稳定序号；
+   fallback 只保留纯本地旧数据的兼容显示。 */
+export function deliveryDisplaySequence(asset, fallback = 0) {
+  for (const value of [asset?.pubSeq, asset?.projectedSeq, fallback]) {
+    const seq = Number(value || 0);
+    if (Number.isSafeInteger(seq) && seq > 0) return seq;
+  }
+  return 0;
+}
+
 function isPublishedDelivery(asset) {
   return supplierHasPublished(asset);
 }
@@ -465,7 +496,13 @@ export function deliveredAssets() {
     if (acc) out.push({ asset: syncDeliveryAssetSnapshot(x), acc });
   });
   // 按发布序号（点击发布的先后）排序，最新在前
-  return out.sort((a, b) => (b.asset.pubSeq || b.asset.createdAt || 0) - (a.asset.pubSeq || a.asset.createdAt || 0));
+  return out.sort((a, b) => {
+    const aSeq = deliveryDisplaySequence(a.asset);
+    const bSeq = deliveryDisplaySequence(b.asset);
+    if (aSeq && bSeq && aSeq !== bSeq) return bSeq - aSeq;
+    if (aSeq !== bSeq) return bSeq ? 1 : -1;
+    return Number(b.asset.deliveredAt || b.asset.createdAt || 0) - Number(a.asset.deliveredAt || a.asset.createdAt || 0);
+  });
 }
 
 export function deliveryViewsSummary(platform = "all") {

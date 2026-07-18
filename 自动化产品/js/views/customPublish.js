@@ -1,12 +1,13 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260717-v92-1";
+import { AI } from "../api/ai.js?v=20260718-v92-3";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260717-v92-1";
+import { polishImageForPublish } from "../domain/imagePolish.js";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260718-v92-3";
 import { icon } from "../ui/icons.js";
-import { openModal, toast, withLoading } from "../ui/components.js";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js";
 
 let activeCustomPublishModal = null;
 
@@ -97,6 +98,15 @@ async function responseBlob(url) {
   return response.blob();
 }
 
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("读取画布图片失败"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 function safeFilename(name = "", fallback = "custom-output", mime = "") {
   const clean = String(name || fallback)
     .replace(/[\\/:*?"<>|]+/g, "-")
@@ -159,30 +169,28 @@ async function materializeCanvas(output, accountId, title) {
   try {
     for (let index = 0; index < rows.length; index++) {
       const item = rows[index] || {};
-      let asset;
-      if (item.dataUrl) {
-        asset = await addAssetFromDataUrl(accountId, {
-          name: item.name || `${title}_${String(index + 1).padStart(2, "0")}`,
-          type: "图片",
-          tags: ["定制创作", "无限画布", "画布成品", "账号资产"],
-          dataUrl: item.dataUrl,
-          forceNew: true
-        });
-      } else {
+      let sourceDataUrl = String(item.dataUrl || "");
+      if (!sourceDataUrl) {
         const sourceUrl = item.url || item.assetUrl || "";
         const blob = item.blob instanceof Blob ? item.blob : await responseBlob(sourceUrl);
-        const mime = blob.type || item.mime || "image/png";
-        const file = new File(
-          [blob],
-          safeFilename(item.name || `${title}_${index + 1}`, `${title}_${index + 1}`, mime),
-          { type: mime }
-        );
-        asset = await addAssetFromFile(accountId, file, {
-          name: item.name || `${title}_${String(index + 1).padStart(2, "0")}`,
-          tags: ["定制创作", "无限画布", "画布成品", "账号资产"],
-          forceNew: true
-        });
+        sourceDataUrl = await blobToDataUrl(blob);
       }
+      if (!/^data:image\/(?:png|jpe?g|webp);base64,/i.test(sourceDataUrl)) {
+        throw new Error(`第 ${index + 1} 张画布成品不是有效图片`);
+      }
+      // 无限画布仅在“发布”路径执行与图文工坊相同的轻量发布前精修。
+      // 子应用自己的“导出”路径不经过本函数，因此仍下载用户看到的原始成图。
+      const polishedDataUrl = await polishImageForPublish(
+        sourceDataUrl,
+        `${output.projectId || output.id || "canvas"}-publish-${item.sourceItemId || index}-${title}`
+      );
+      const asset = await addAssetFromDataUrl(accountId, {
+        name: item.name || `${title}_${String(index + 1).padStart(2, "0")}`,
+        type: "图片",
+        tags: ["定制创作", "无限画布", "画布成品", "发布前精修", "账号资产"],
+        dataUrl: polishedDataUrl,
+        forceNew: true
+      });
       if (asset?.id) ids.push(asset.id);
     }
   } catch (error) {
@@ -206,7 +214,7 @@ function accountCoverStylePrompt(account = {}) {
   return hints.length ? `账号视觉风格：${[...new Set(hints)].join("；").slice(0, 600)}` : "";
 }
 
-function coverReferenceIds(output = {}, account = {}) {
+function coverReferenceIds(output = {}, account = {}, extraReferenceAssetIds = []) {
   const idList = value => Array.isArray(value) ? value : (value ? [value] : []);
   const roleRefAssetId = account.subType === "数字人"
     && assetById(account.charBoardAssetId)?.type === "图片"
@@ -217,6 +225,7 @@ function coverReferenceIds(output = {}, account = {}) {
     : "";
   const ids = [
     roleRefAssetId,
+    ...idList(extraReferenceAssetIds),
     styleRefAssetId,
     ...idList(output.coverRefAssetIds),
     ...idList(output.referenceAssetIds)
@@ -227,10 +236,10 @@ function coverReferenceIds(output = {}, account = {}) {
   };
 }
 
-async function generateCover({ output, accountId, productId, title, copy }) {
+async function generateCover({ output, accountId, productId, title, copy, extraReferenceAssetIds = [] }) {
   const account = accountById(accountId);
   if (!account) throw new Error("请先选择发布账号");
-  const { roleRefAssetId, refAssetIds } = coverReferenceIds(output, account);
+  const { roleRefAssetId, refAssetIds } = coverReferenceIds(output, account, extraReferenceAssetIds);
   const projectId = String(output.projectId || output.id || Date.now());
   const temp = {
     id: `custom-cover-${projectId}`,
@@ -271,7 +280,26 @@ function coverPreviewHtml(assetId = "") {
   const url = asset ? urlFor(asset) : "";
   return url
     ? `<img src="${esc(url)}" alt="发布封面" />`
-    : `<div>${icon("image", 20)}<b>生成或拖入封面</b><em>可拖入图片直接作为封面；AI 生成会根据标题、账号风格和参考图完成。</em></div>`;
+    : `<div>${icon("image", 20)}<b>生成或拖入封面</b><em>这里展示最终封面；AI 参考图请拖入右侧参考区。</em></div>`;
+}
+
+function coverReferencePreviewHtml(assetIds = []) {
+  const rows = assetIds
+    .map(id => assetById(id))
+    .filter(asset => asset?.type === "图片")
+    .map(asset => {
+      const url = urlFor(asset);
+      return url ? `
+        <span class="custom-publish-cover-ref" data-cover-ref-id="${esc(asset.id)}">
+          <button type="button" class="custom-publish-cover-ref-preview" data-cover-ref-preview="${esc(asset.id)}" aria-label="放大预览参考图 ${esc(asset.name || "")}">
+            <img src="${esc(url)}" alt="${esc(asset.name || "封面参考图")}" />
+          </button>
+          <button type="button" class="custom-publish-cover-ref-remove" data-cover-ref-remove="${esc(asset.id)}" aria-label="移除参考图">${icon("x", 10)}</button>
+        </span>
+      ` : "";
+    })
+    .join("");
+  return rows || `<em>尚未添加自定义参考图</em>`;
 }
 
 async function ensureRemoteCustomProject(output, kind, title) {
@@ -392,7 +420,9 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
   let coverCopy = "";
   let coverSource = "";
   let coverBusy = false;
+  let coverReferenceAssetIds = [];
   const createdCoverIds = new Set();
+  const createdCoverReferenceIds = new Set();
   let pendingSubmission = null;
   let published = false;
   let releaseSyncHold = null;
@@ -428,19 +458,30 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       </label>
       ${kind === "video" ? `
         <section class="custom-publish-cover">
-          <div class="custom-publish-cover-frame" id="customPublishCoverPreview" role="button" tabindex="0" aria-label="点击选择封面图片，或将图片拖入此处">${coverPreviewHtml(coverAssetId)}</div>
+          <div class="custom-publish-cover-frame" id="customPublishCoverPreview" role="button" tabindex="0" aria-label="点击放大预览最终封面；也可将现成封面拖入此处">${coverPreviewHtml(coverAssetId)}</div>
           <input id="customPublishCoverFile" type="file" accept="image/png,image/jpeg,image/webp" hidden />
           <div>
             <b>发布封面</b>
-            <p id="customPublishCoverHint">沿用单号与批量创作的封面链路，根据标题、账号风格和视觉资料生成；也可把现成封面拖入左侧。</p>
-            <button class="btn ghost" type="button" id="customPublishGenerateCover">${icon("image", 13)} ${coverAssetId ? "重新生成封面" : "生成封面"}</button>
+            <p id="customPublishCoverHint">沿用单号与批量创作的封面链路，根据标题、账号风格和视觉资料生成。</p>
+            <div class="custom-publish-cover-reference-zone" id="customPublishCoverReferenceZone" role="button" tabindex="0" aria-label="点击选择或拖入 AI 封面参考图">
+              <span>${icon("upload", 13)} 点击或拖入 AI 封面参考图</span>
+              <small>最多 5 张；数字人角色版仍会优先作为默认参考</small>
+            </div>
+            <input id="customPublishCoverReferenceFile" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
+            <div class="custom-publish-cover-reference-list" id="customPublishCoverReferenceList">${coverReferencePreviewHtml(coverReferenceAssetIds)}</div>
+            <div class="custom-publish-cover-actions">
+              <button class="btn ghost" type="button" id="customPublishGenerateCover">${icon("image", 13)} ${coverAssetId ? "重新生成封面" : "生成封面"}</button>
+              <button class="btn ghost" type="button" id="customPublishUploadCover">${icon("upload", 13)} 上传现成封面</button>
+            </div>
           </div>
         </section>
       ` : ""}
       <label class="field"><span>备注</span>
         <input class="input" id="customPublishNote" maxlength="200" value="${esc(output.note || "")}" placeholder="例如：周五晚发布" />
       </label>
-      <div class="custom-publish-status" id="customPublishStatus">成品会在提交时复制到主平台资产库，子应用原项目不会被删除。</div>
+      <div class="custom-publish-status" id="customPublishStatus">${kind === "canvas"
+        ? "提交发布时会先执行与图文工坊相同的发布前精修，再复制到主平台资产库；直接导出保持原图。"
+        : "成品会在提交时复制到主平台资产库，子应用原项目不会被删除。"}</div>
     </div>
     <div class="mp-foot">
       <button class="btn ghost" type="button" data-close>取消</button>
@@ -449,6 +490,8 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
   `, {
     wide: true,
     onBeforeClose() {
+      // 预览层位于发布弹窗之上；按 Escape 时先只关闭预览，避免连带丢失未提交字段和临时参考图。
+      if (document.querySelector(".lightbox")) return false;
       if (coverBusy) {
         toast("封面正在处理中，请完成后再关闭发布设置。", "error");
         return false;
@@ -468,6 +511,10 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         removeAsset(id).catch(error => console.warn("[custom-cover-close]", error));
       });
       createdCoverIds.clear();
+      createdCoverReferenceIds.forEach(id => {
+        removeAsset(id).catch(error => console.warn("[custom-cover-reference-close]", error));
+      });
+      createdCoverReferenceIds.clear();
     },
     onMount(panel, close) {
       const accountInput = panel.querySelector("#customPublishAccount");
@@ -478,15 +525,23 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       const status = panel.querySelector("#customPublishStatus");
       const coverPreview = panel.querySelector("#customPublishCoverPreview");
       const coverFileInput = panel.querySelector("#customPublishCoverFile");
+      const coverReferenceZone = panel.querySelector("#customPublishCoverReferenceZone");
+      const coverReferenceFileInput = panel.querySelector("#customPublishCoverReferenceFile");
+      const coverReferenceList = panel.querySelector("#customPublishCoverReferenceList");
       const coverHint = panel.querySelector("#customPublishCoverHint");
       const submitButton = panel.querySelector("#customPublishSubmit");
       const setPendingMode = active => {
-        panel.querySelectorAll("input, select, textarea, #customPublishGenerateCopy, #customPublishGenerateCover")
+        panel.querySelectorAll("input, select, textarea, #customPublishGenerateCopy, #customPublishGenerateCover, #customPublishUploadCover")
           .forEach(control => { control.disabled = active; });
         panel.querySelectorAll("[data-close]").forEach(control => { control.disabled = active; });
         coverPreview?.classList.toggle("is-disabled", active);
         coverPreview?.setAttribute("aria-disabled", active ? "true" : "false");
         if (coverPreview) coverPreview.tabIndex = active ? -1 : 0;
+        coverReferenceZone?.classList.toggle("is-disabled", active);
+        coverReferenceZone?.setAttribute("aria-disabled", active ? "true" : "false");
+        if (coverReferenceZone) coverReferenceZone.tabIndex = active ? -1 : 0;
+        coverReferenceList?.classList.toggle("is-disabled", active);
+        coverReferenceList?.setAttribute("aria-disabled", active ? "true" : "false");
         if (!submitButton) return;
         submitButton.disabled = false;
         submitButton.innerHTML = active
@@ -497,6 +552,12 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         if (!assetId || !createdCoverIds.has(assetId)) return;
         removeAsset(assetId)
           .then(() => createdCoverIds.delete(assetId))
+          .catch(error => console.warn(reason, error));
+      };
+      const removeCreatedCoverReference = (assetId, reason) => {
+        if (!assetId || !createdCoverReferenceIds.has(assetId)) return;
+        removeAsset(assetId)
+          .then(() => createdCoverReferenceIds.delete(assetId))
           .catch(error => console.warn(reason, error));
       };
       const invalidateCover = message => {
@@ -520,8 +581,24 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
           && assetById(account.charBoardAssetId)?.type === "图片"
         );
         coverHint.textContent = hasRoleRef
-          ? "该数字人账号的角色形象会默认作为 AI 封面参考图；也可把现成封面拖入左侧。"
-          : "沿用单号与批量创作的封面链路，根据标题、账号风格和视觉资料生成；也可把现成封面拖入左侧。";
+          ? "该数字人账号的角色形象会默认作为 AI 封面参考图；下方仍可补充自定义参考图。"
+          : "沿用单号与批量创作的封面链路，根据标题、账号风格和下方参考图生成。";
+      };
+      const renderCoverReferences = () => {
+        if (!coverReferenceList) return;
+        coverReferenceList.innerHTML = coverReferencePreviewHtml(coverReferenceAssetIds);
+      };
+      const clearCoverReferences = message => {
+        const retiredIds = coverReferenceAssetIds.slice();
+        coverReferenceAssetIds = [];
+        renderCoverReferences();
+        retiredIds.forEach(id => removeCreatedCoverReference(id, "[custom-cover-reference-cleanup]"));
+        if (message && retiredIds.length) status.textContent = message;
+      };
+      const invalidateGeneratedCoverForReferences = () => {
+        if (coverSource === "generated" && coverAssetId) {
+          invalidateCover("AI 封面参考图已变化，请按当前参考图重新生成封面。");
+        }
       };
       const installCover = ({ assetId, source, title = "", copy = "", message = "" }) => {
         const retiredId = coverAssetId;
@@ -548,7 +625,10 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
           titleInput,
           copyInput,
           coverFileInput,
+          coverReferenceFileInput,
           panel.querySelector("#customPublishGenerateCopy"),
+          panel.querySelector("#customPublishGenerateCover"),
+          panel.querySelector("#customPublishUploadCover"),
           submitButton
         ].filter(Boolean);
         const previousDisabled = new Map(
@@ -557,6 +637,8 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         lockedControls.forEach(control => { control.disabled = true; });
         coverPreview?.classList.add("is-busy");
         coverPreview?.setAttribute("aria-busy", "true");
+        coverReferenceZone?.classList.add("is-busy");
+        coverReferenceZone?.setAttribute("aria-busy", "true");
         try {
           return await task();
         } finally {
@@ -566,6 +648,8 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
           });
           coverPreview?.classList.remove("is-busy", "is-dragover");
           coverPreview?.removeAttribute("aria-busy");
+          coverReferenceZone?.classList.remove("is-busy", "is-dragover");
+          coverReferenceZone?.removeAttribute("aria-busy");
         }
       };
       const useDroppedCover = async file => {
@@ -595,11 +679,53 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
           message: "已使用拖入图片作为封面；标题或文案变化不会替换这张手动封面。"
         });
       };
+      const addCoverReferences = async files => {
+        const account = accountById(accountInput.value);
+        if (!account) throw new Error("请先选择发布账号");
+        const candidates = [...(files || [])].filter(file => (
+          file instanceof File
+          && ["image/png", "image/jpeg", "image/webp"].includes(file.type)
+        ));
+        if (!candidates.length) throw new Error("请选择 PNG、JPG 或 WebP 参考图");
+        const roleRefReserved = (
+          account.subType === "数字人"
+          && assetById(account.charBoardAssetId)?.type === "图片"
+        ) ? 1 : 0;
+        const available = Math.max(0, 5 - roleRefReserved - coverReferenceAssetIds.length);
+        if (!available) throw new Error("封面参考图已达到上限");
+        const accepted = candidates.slice(0, available);
+        const addedIds = [];
+        status.textContent = `正在写入 ${accepted.length} 张封面参考图…`;
+        try {
+          for (const file of accepted) {
+            const asset = await addAssetFromFile(account.id, file, {
+              name: `封面参考_${file.name.replace(/\.[^.]+$/, "").slice(0, 24)}`,
+              tags: ["视频封面", "定制创作", "AI参考图", "临时素材"],
+              forceNew: true
+            });
+            if (!asset?.id || asset.type !== "图片") throw new Error("参考图写入失败");
+            addedIds.push(asset.id);
+            createdCoverReferenceIds.add(asset.id);
+          }
+        } catch (error) {
+          await Promise.all(addedIds.map(id => removeAsset(id).catch(() => {})));
+          addedIds.forEach(id => createdCoverReferenceIds.delete(id));
+          throw error;
+        }
+        invalidateGeneratedCoverForReferences();
+        coverReferenceAssetIds = [...coverReferenceAssetIds, ...addedIds];
+        renderCoverReferences();
+        const skipped = candidates.length - accepted.length;
+        status.textContent = skipped > 0
+          ? `已添加 ${accepted.length} 张参考图；受 5 张上限影响，另有 ${skipped} 张未加入。`
+          : `已添加 ${accepted.length} 张 AI 封面参考图；生成封面时会真实传入。`;
+      };
 
       accountInput.addEventListener("change", () => {
         if (coverAccountId && coverAccountId !== accountInput.value) {
           invalidateCover("发布账号已变化，请按新账号重新生成或拖入封面。");
         }
+        clearCoverReferences("发布账号已变化，已清除仅属于原账号的自定义封面参考图。");
         updateCoverHint();
       });
       productInput.addEventListener("change", () => {
@@ -622,12 +748,19 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       updateCoverHint();
 
       coverPreview?.addEventListener("click", () => {
-        if (!coverBusy) coverFileInput?.click();
+        if (coverBusy) return;
+        const asset = coverAssetId ? assetById(coverAssetId) : null;
+        const img = coverPreview.querySelector("img");
+        if (asset && img) openLightbox(img, urlFor(asset), asset.name || "发布封面");
+        else coverFileInput?.click();
       });
       coverPreview?.addEventListener("keydown", event => {
         if ((event.key === "Enter" || event.key === " ") && !coverBusy) {
           event.preventDefault();
-          coverFileInput?.click();
+          const asset = coverAssetId ? assetById(coverAssetId) : null;
+          const img = coverPreview.querySelector("img");
+          if (asset && img) openLightbox(img, urlFor(asset), asset.name || "发布封面");
+          else coverFileInput?.click();
         }
       });
       ["dragenter", "dragover"].forEach(type => {
@@ -658,6 +791,70 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
             status.textContent = error?.message || "封面上传失败";
             toast(error?.message || "封面上传失败", "error");
           });
+      });
+      panel.querySelector("#customPublishUploadCover")?.addEventListener("click", () => {
+        if (!coverBusy) coverFileInput?.click();
+      });
+
+      coverReferenceZone?.addEventListener("click", () => {
+        if (!coverBusy) coverReferenceFileInput?.click();
+      });
+      coverReferenceZone?.addEventListener("keydown", event => {
+        if ((event.key === "Enter" || event.key === " ") && !coverBusy) {
+          event.preventDefault();
+          coverReferenceFileInput?.click();
+        }
+      });
+      ["dragenter", "dragover"].forEach(type => {
+        coverReferenceZone?.addEventListener(type, event => {
+          event.preventDefault();
+          if (!coverBusy) coverReferenceZone.classList.add("is-dragover");
+        });
+      });
+      ["dragleave", "dragend"].forEach(type => {
+        coverReferenceZone?.addEventListener(type, () => coverReferenceZone.classList.remove("is-dragover"));
+      });
+      coverReferenceZone?.addEventListener("drop", event => {
+        event.preventDefault();
+        coverReferenceZone.classList.remove("is-dragover");
+        withCoverBusy(() => addCoverReferences(event.dataTransfer?.files))
+          .catch(error => {
+            status.textContent = error?.message || "封面参考图拖入失败";
+            toast(error?.message || "封面参考图拖入失败", "error");
+          });
+      });
+      coverReferenceFileInput?.addEventListener("change", () => {
+        const files = [...(coverReferenceFileInput.files || [])];
+        coverReferenceFileInput.value = "";
+        withCoverBusy(() => addCoverReferences(files))
+          .catch(error => {
+            status.textContent = error?.message || "封面参考图上传失败";
+            toast(error?.message || "封面参考图上传失败", "error");
+          });
+      });
+      coverReferenceList?.addEventListener("click", event => {
+        const removeButton = event.target.closest("[data-cover-ref-remove]");
+        if (removeButton) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (coverBusy) return;
+          if (pendingSubmission) {
+            toast("交付正在等待同步，不能再修改封面参考图。", "error");
+            return;
+          }
+          const assetId = removeButton.dataset.coverRefRemove || "";
+          coverReferenceAssetIds = coverReferenceAssetIds.filter(id => id !== assetId);
+          invalidateGeneratedCoverForReferences();
+          renderCoverReferences();
+          removeCreatedCoverReference(assetId, "[custom-cover-reference-remove]");
+          status.textContent = "已移除参考图；如需 AI 封面，请按当前参考图重新生成。";
+          return;
+        }
+        const previewButton = event.target.closest("[data-cover-ref-preview]");
+        if (!previewButton) return;
+        const asset = assetById(previewButton.dataset.coverRefPreview || "");
+        const img = previewButton.querySelector("img");
+        if (asset && img) openLightbox(img, urlFor(asset), asset.name || "封面参考图");
       });
 
       panel.querySelector("#customPublishGenerateCopy")?.addEventListener("click", event => {
@@ -704,7 +901,8 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
               accountId: accountInput.value,
               productId: productInput.value,
               title,
-              copy: copyInput.value.trim()
+              copy: copyInput.value.trim(),
+              extraReferenceAssetIds: coverReferenceAssetIds
             });
             if (!generated.assetId) throw new Error("封面生成没有返回图片");
             installCover({
@@ -713,8 +911,8 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
               title,
               copy: copyInput.value.trim(),
               message: generated.roleRefAssetId
-                ? "封面已生成，并已默认使用该数字人账号的角色形象作为参考图。"
-                : "封面已根据标题和账号风格生成并进入所选账号资产。"
+                ? `封面已生成，已默认使用数字人角色形象${coverReferenceAssetIds.length ? `及 ${coverReferenceAssetIds.length} 张自定义参考图` : ""}。`
+                : `封面已根据标题和账号风格生成${coverReferenceAssetIds.length ? `，并参考了 ${coverReferenceAssetIds.length} 张自定义图片` : ""}。`
             });
           });
         }, "生成中…");
@@ -761,7 +959,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
           if (!pendingSubmission) {
             status.textContent = kind === "video"
               ? "正在复制成片并准备原子提交…"
-              : "正在复制画布成品并准备原子提交…";
+              : "正在精修画布成品并准备原子提交…";
             const sharedMode = remote.isOn() && remote.hasToken();
             let materialized = null;
             let asset = null;

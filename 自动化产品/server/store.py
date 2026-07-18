@@ -682,6 +682,10 @@ def _upsert_docs_in_conn(conn, collection, items):
             continue
         # 授权层可能需要覆盖 ownerId；复制后写入，避免修改调用方的前端快照。
         it = dict(raw)
+        if collection == "assets":
+            # /api/state 为缺少 pubSeq 的旧交付物附加只读序号投影；
+            # 旧浏览器回推整条资产时不得将该投影固化到生产数据。
+            it.pop("projectedSeq", None)
         doc_id = str(it["id"])
         if doc_id in deleted_ids:
             continue
@@ -2791,6 +2795,45 @@ def _heal_production_runtime_state(item):
     return item, changed
 
 
+def _projected_delivery_sequences(asset_items):
+    """为缺少 pubSeq 的旧交付记录生成全局一致的只读序号投影。
+
+    投影基于全量交付物计算，不会因供应商子账号的可见子集而重新连续编号；
+    不写回 docs，因此不引入生产数据迁移或重写。现行记录仍以持久化 pubSeq 为权威值。
+    """
+    projected = {}
+    used = set()
+    legacy = []
+    for item in asset_items:
+        if not item.get("delivered"):
+            continue
+        doc_id = str(item.get("id") or "")
+        if not doc_id:
+            continue
+        try:
+            seq = int(item.get("pubSeq") or 0)
+        except (TypeError, ValueError):
+            seq = 0
+        if seq > 0:
+            projected[doc_id] = seq
+            used.add(seq)
+            continue
+        try:
+            delivered_at = int(item.get("deliveredAt") or item.get("createdAt") or item.get("updatedAt") or 0)
+        except (TypeError, ValueError):
+            delivered_at = 0
+        legacy.append((delivered_at, doc_id))
+
+    candidate = 1
+    for _, doc_id in sorted(legacy):
+        while candidate in used:
+            candidate += 1
+        projected[doc_id] = candidate
+        used.add(candidate)
+        candidate += 1
+    return projected
+
+
 def state_for(member_id, role, parent_id=None):
     """按成员可见性返回快照：创作端按人隔离，供应商子账号只取得已分配账号的交付物。"""
     _ensure_db()
@@ -2804,6 +2847,7 @@ def state_for(member_id, role, parent_id=None):
     with _lock:
         conn = _connect()
         try:
+            delivery_projected_sequences = {}
             if role in {"supplier_parent", "supplier_child"}:
                 production_rows = conn.execute("SELECT id, data FROM docs WHERE collection='productions'").fetchall()
                 for production_id, raw_data in production_rows:
@@ -2820,8 +2864,13 @@ def state_for(member_id, role, parent_id=None):
                     continue
                 rows = conn.execute("SELECT data, owner_id FROM docs WHERE collection=?", (col,)).fetchall()
                 items = []
-                for data, owner in rows:
-                    item = json.loads(data)
+                if col == "assets":
+                    decoded_rows = [(json.loads(data), owner) for data, owner in rows]
+                    delivery_projected_sequences = _projected_delivery_sequences([item for item, _ in decoded_rows])
+                    row_items = decoded_rows
+                else:
+                    row_items = ((json.loads(data), owner) for data, owner in rows)
+                for item, owner in row_items:
                     healed = False
                     if col == "productions":
                         item, healed = _heal_production_runtime_state(item)
@@ -2852,6 +2901,14 @@ def state_for(member_id, role, parent_id=None):
                         if role not in {"supplier_child", "supplier_parent", "editor", "admin"} and owner and owner != member_id:
                             continue
                     if col == "assets":
+                        try:
+                            persisted_delivery_seq = int(item.get("pubSeq") or 0)
+                        except (TypeError, ValueError):
+                            persisted_delivery_seq = 0
+                        if item.get("delivered") and persisted_delivery_seq <= 0:
+                            projected_seq = delivery_projected_sequences.get(str(item.get("id") or ""))
+                            if projected_seq:
+                                item["projectedSeq"] = projected_seq
                         if role in {"supplier_parent", "supplier_child"} and not item.get("sourceCreatedAt"):
                             item["sourceCreatedAt"] = supplier_production_created_at.get(str(item.get("productionId") or "")) or item.get("createdAt")
                         is_supplier_avatar = item.get("id") in supplier_avatar_asset_ids

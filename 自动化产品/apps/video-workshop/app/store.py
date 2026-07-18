@@ -12,6 +12,7 @@ from .config import settings
 
 
 _lock = threading.RLock()
+_summary_cache: dict[str, tuple[int, int, dict[str, Any]]] = {}
 
 
 def _now() -> str:
@@ -45,26 +46,54 @@ def create_project() -> dict[str, Any]:
     return project
 
 
+def _project_summary(project: dict[str, Any], fallback_id: str) -> dict[str, Any]:
+    first_user = next(
+        (
+            str(item.get("content") or "").strip()
+            for item in project.get("messages", [])
+            if item.get("role") == "user"
+        ),
+        "",
+    )
+    fallback_name = str(
+        (project.get("plan") or {}).get("title") or first_user or "新会话"
+    ).strip()
+    return {
+        "id": project.get("id") or fallback_id,
+        "name": str(project.get("name") or fallback_name)[:60],
+        "status": project.get("status") or "conversation",
+        "updatedAt": project.get("updatedAt") or project.get("createdAt") or "",
+    }
+
+
 def list_project_summaries() -> list[dict[str, Any]]:
-    summaries = []
-    for path in settings.projects_dir.glob("*.json"):
-        try:
-            project = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        first_user = next(
-            (str(item.get("content") or "").strip() for item in project.get("messages", []) if item.get("role") == "user"),
-            "",
-        )
-        fallback_name = str((project.get("plan") or {}).get("title") or first_user or "新会话").strip()
-        summaries.append(
-            {
-                "id": project.get("id") or path.stem,
-                "name": str(project.get("name") or fallback_name)[:60],
-                "status": project.get("status") or "conversation",
-                "updatedAt": project.get("updatedAt") or project.get("createdAt") or "",
-            }
-        )
+    summaries: list[dict[str, Any]] = []
+    live_cache_keys: set[str] = set()
+    with _lock:
+        for path in settings.projects_dir.glob("*.json"):
+            cache_key = str(path.resolve())
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            signature = (stat.st_mtime_ns, stat.st_size)
+            live_cache_keys.add(cache_key)
+            cached = _summary_cache.get(cache_key)
+            if cached and cached[:2] == signature:
+                summaries.append(dict(cached[2]))
+                continue
+            try:
+                project = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                _summary_cache.pop(cache_key, None)
+                continue
+            summary = _project_summary(project, path.stem)
+            _summary_cache[cache_key] = (*signature, summary)
+            summaries.append(dict(summary))
+
+        for cache_key in tuple(_summary_cache):
+            if cache_key not in live_cache_keys:
+                _summary_cache.pop(cache_key, None)
     return sorted(summaries, key=lambda item: item["updatedAt"], reverse=True)
 
 
@@ -83,6 +112,12 @@ def save_project(project: dict[str, Any]) -> dict[str, Any]:
     with _lock:
         tmp.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
+        stat = path.stat()
+        _summary_cache[str(path.resolve())] = (
+            stat.st_mtime_ns,
+            stat.st_size,
+            _project_summary(project, path.stem),
+        )
     return deepcopy(project)
 
 

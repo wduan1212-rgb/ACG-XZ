@@ -5,10 +5,10 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
 import { platChip } from "../domain/accounts.js";
-import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters } from "../domain/delivery.js";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260717-v92-1";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260718-v92-3";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
@@ -66,6 +66,9 @@ function displaySeqMap(all) {
   [...all]
     .sort((a, b) => deliveryTime(a.asset) - deliveryTime(b.asset))
     .forEach((x, i) => map.set(x.asset.id, i + 1));
+  // 以交付记录自带的全局序号覆盖角色可见子集的本地排名。
+  // 子账号未分配到其他素材时，序号允许不连续，但同一素材始终一致。
+  all.forEach(x => map.set(x.asset.id, deliveryDisplaySequence(x.asset, map.get(x.asset.id))));
   return map;
 }
 
@@ -240,7 +243,9 @@ async function returnLinkFlow(asset, acc) {
   if (remote.isOn()) {
     try {
       const result = await remote.supplier.returnLink(asset.id, payload);
-      Object.assign(asset, result.asset || {});
+      if (!applySupplierReturnResponse(asset, result)) {
+        throw new Error("服务端未返回完整的回传状态，请重试");
+      }
     } catch (error) {
       toast(error?.message || "发布链接回传失败", "error");
       return false;
@@ -510,6 +515,7 @@ export const deliveryView = {
             <tbody>${rows.length ? rows.map(item => {
               const { asset, acc } = item;
               const ptag = asset.productTag || productTagLabel(productById(asset.productId || ""));
+              const returnState = supplierReturnRowState(asset);
               return `
               <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-account="${esc(acc.id)}" data-sup-date="${esc(dayKey(asset))}" ${matchesFilters(item) ? "" : "hidden"}>
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
@@ -521,13 +527,13 @@ export const deliveryView = {
                 <td>${canUpdateViews
                   ? `<button class="sup-views" data-supviews="${asset.id}" title="更新观看量">${Number(asset.viewCount || 0).toLocaleString()} ${icon("edit", 11)}</button>`
                   : `<span class="sup-views-readonly" title="供应商同步的观看量">${Number(asset.viewCount || 0).toLocaleString()}</span>`}</td>
-                <td><span class="sup-status ${supplierHasPublished(asset) ? "pub" : supplierHasDownloaded(asset) ? "done" : ""}">${supplierHasPublished(asset) ? "已发布 ✓" : supplierHasDownloaded(asset) ? "已下载" : "未下载"}</span></td>
+                <td><span class="sup-status ${returnState.statusClass}">${returnState.statusText}</span></td>
                 <td class="sup-acts">
                   <div class="sup-actions-inner"><button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
                   ${isSupplierRole && asset.publishedUrl ? `<a class="btn ghost sm sup-row-jump-link" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转链接</a>` : ""}
                   ${isSupplierRole ? `<button class="btn ghost sm delivery-remark-button" data-supremarks="${asset.id}">${icon("fileText", 13)} 备注${remarkDot(asset)}</button>` : ""}
                   ${isSupplierRole
-                    ? `<button class="btn ${asset.publishedUrl ? "ghost" : "primary"} sm" data-suplink="${asset.id}">${icon("link", 13)} ${asset.publishedUrl ? "改链接" : "回传链接"}</button>`
+                    ? `<button class="btn ${returnState.actionClass} sm" data-suplink="${asset.id}">${icon("link", 13)} ${returnState.actionText}</button>`
                     : asset.publishedUrl
                       ? `<a class="btn ghost sm" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 13)} 查看链接</a>`
                       : `<button class="btn ghost sm" disabled>${icon("link", 13)} 暂无链接</button>`}</div>

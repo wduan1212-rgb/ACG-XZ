@@ -32,8 +32,8 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from urllib.parse import quote, urlencode, urljoin, urlparse
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
@@ -278,18 +278,77 @@ app = FastAPI(title="ACG 视频工具 API", version="0.1.0",
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-class NoCacheStaticFiles(StaticFiles):
-    async def get_response(self, path: str, scope):
-        response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        return response
-
-
 NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
 }
+
+IMMUTABLE_STATIC_MAX_AGE = 31536000
+IMMUTABLE_STATIC_EXTENSIONS = {
+    ".css",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".js",
+    ".mjs",
+    ".otf",
+    ".png",
+    ".svg",
+    ".ttf",
+    ".wasm",
+    ".webp",
+    ".woff",
+    ".woff2",
+}
+HASHED_STATIC_NAME_RE = re.compile(
+    r"(?:^|[-._/])[0-9a-f]{8,}(?=[-._/]|$)",
+    re.IGNORECASE,
+)
+
+
+def _static_cache_headers(path: Any, query_string: Any = b"") -> dict[str, str]:
+    """Cache only URLs whose identity changes when their bytes change.
+
+    HTML and unversioned assets deliberately remain revalidated on every visit.
+    The main frontend appends a release-specific ``?v=`` token to its JS/CSS
+    imports, while the vendored Next build uses content/build hashes in
+    ``_next/static``. Those URL families are safe to keep for a year.
+    """
+    normalized = str(path or "").replace("\\", "/").lstrip("/")
+    suffix = Path(normalized).suffix.lower()
+    if suffix not in IMMUTABLE_STATIC_EXTENSIONS:
+        return dict(NO_CACHE_HEADERS)
+
+    raw_query = (
+        query_string.decode("utf-8", errors="ignore")
+        if isinstance(query_string, (bytes, bytearray))
+        else str(query_string or "")
+    )
+    query = parse_qs(raw_query, keep_blank_values=True)
+    has_release_version = any(str(value).strip() for value in query.get("v", []))
+    is_next_static = normalized.startswith("_next/static/")
+    is_content_hashed = bool(HASHED_STATIC_NAME_RE.search(normalized))
+    if has_release_version or is_next_static or is_content_hashed:
+        return {
+            "Cache-Control": f"public, max-age={IMMUTABLE_STATIC_MAX_AGE}, immutable",
+        }
+    return dict(NO_CACHE_HEADERS)
+
+
+class VersionAwareStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        cache_headers = (
+            _static_cache_headers(path, scope.get("query_string", b""))
+            if response.status_code in {200, 206, 304}
+            else dict(NO_CACHE_HEADERS)
+        )
+        for name in ("Cache-Control", "Pragma"):
+            if name not in cache_headers and name in response.headers:
+                del response.headers[name]
+        response.headers.update(cache_headers)
+        return response
 
 
 def no_cache_file(path: Path, media_type: str = None):
@@ -297,6 +356,14 @@ def no_cache_file(path: Path, media_type: str = None):
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache"
     })
+
+
+def version_aware_static_file(path: Path, request: Request, media_type: str = None):
+    return FileResponse(
+        str(path),
+        media_type=media_type,
+        headers=_static_cache_headers(path.name, request.scope.get("query_string", b"")),
+    )
 
 
 def ranged_file_response(request: Request, path: Path, media_type: str = None, cache_seconds: int = 3600):
@@ -5725,11 +5792,11 @@ def custom_video_index():
 
 
 @app.get("/custom-video/assets/{asset_path:path}")
-def custom_video_asset(asset_path: str):
+def custom_video_asset(asset_path: str, request: Request):
     path = _video_workshop_safe_path(VIDEO_WORKSHOP_WEB_DIR / "assets", asset_path)
     if not path.is_file():
         raise HTTPException(404, "视频工坊静态资源不存在")
-    return no_cache_file(path)
+    return version_aware_static_file(path, request)
 
 
 @app.get("/custom-video/outputs/{file_path:path}")
@@ -5843,13 +5910,13 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
 
 
 # ---------- 前端静态资源（仅暴露必要文件，不整目录托管，避免泄露 _backup_*/源码/方案文档） ----------
-app.mount("/js", NoCacheStaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
-app.mount("/styles", NoCacheStaticFiles(directory=str(FRONTEND_DIR / "styles")), name="styles")
-app.mount("/assets", NoCacheStaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
+app.mount("/js", VersionAwareStaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
+app.mount("/styles", VersionAwareStaticFiles(directory=str(FRONTEND_DIR / "styles")), name="styles")
+app.mount("/assets", VersionAwareStaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
 if CUSTOM_CANVAS_DIR.is_dir():
     app.mount(
         "/XZ-Design",
-        NoCacheStaticFiles(directory=str(CUSTOM_CANVAS_DIR), html=True),
+        VersionAwareStaticFiles(directory=str(CUSTOM_CANVAS_DIR), html=True),
         name="infinite-canvas",
     )
 
@@ -5886,4 +5953,4 @@ def favicon_ico():
 
 @app.get("/logo.png")
 def logo():
-    return FileResponse(str(FRONTEND_DIR / "logo.png"))
+    return no_cache_file(FRONTEND_DIR / "logo.png", media_type="image/png")

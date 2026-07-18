@@ -16,12 +16,17 @@ class DeliveryStatusFiltersTest(unittest.TestCase):
             self.assertIn(f">{label}</button>", source)
         self.assertIn("matchesDeliveryStatusFilters(x.asset, supFilters)", source)
         self.assertIn("supplierHasPublished(asset)", source)
+        self.assertIn("const returnState = supplierReturnRowState(asset)", source)
+        self.assertIn("${returnState.statusText}", source)
+        self.assertIn("${returnState.actionText}", source)
+        self.assertIn("applySupplierReturnResponse(asset, result)", source)
+        self.assertIn("deliveryDisplaySequence(x.asset, map.get(x.asset.id))", source)
         self.assertIn("if (!changed) return;\n        draw();", source)
 
     def test_status_filter_semantics_reuse_download_and_publish_state(self):
         script = r"""
 globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
-const { matchesDeliveryStatusFilters } = await import('./js/domain/delivery.js');
+const { matchesDeliveryStatusFilters, deliveryDisplaySequence } = await import('./js/domain/delivery.js');
 const assets = [
   { id:'fresh', status:'未下载' },
   { id:'downloaded', status:'已下载', supplierDownloadedAt:10 },
@@ -35,7 +40,10 @@ console.log(JSON.stringify({
   published: ids({ download:'all', publish:'published' }),
   unpublished: ids({ download:'all', publish:'unpublished' }),
   downloadedUnpublished: ids({ download:'downloaded', publish:'unpublished' }),
-  undownloadedPublished: ids({ download:'undownloaded', publish:'published' })
+  undownloadedPublished: ids({ download:'undownloaded', publish:'published' }),
+  stableSequence: deliveryDisplaySequence({ pubSeq:252 }, 1),
+  projectedSequence: deliveryDisplaySequence({ projectedSeq:41 }, 1),
+  legacySequence: deliveryDisplaySequence({}, 7)
 }));
 """
         result = subprocess.run(
@@ -52,6 +60,58 @@ console.log(JSON.stringify({
         self.assertEqual(data["unpublished"], ["fresh", "downloaded"])
         self.assertEqual(data["downloadedUnpublished"], ["downloaded"])
         self.assertEqual(data["undownloadedPublished"], ["published-only"])
+        self.assertEqual(data["stableSequence"], 252)
+        self.assertEqual(data["projectedSequence"], 41)
+        self.assertEqual(data["legacySequence"], 7)
+
+    def test_return_link_response_updates_same_asset_and_rerender_model(self):
+        script = r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+const { applySupplierReturnResponse, supplierReturnRowState } = await import('./js/domain/delivery.js');
+const asset = { id:'delivery-252', pubSeq:252, status:'未下载', publishedUrl:'' };
+const state = { assets:[asset] };
+const before = state.assets[0];
+const remote = {
+  returnLink: async () => ({ asset: {
+    ...asset,
+    publishedUrl:'https://www.xiaohongshu.com/explore/returned',
+    publishedAt:200,
+    publishedUpdatedAt:200,
+    publishedUpdatedBy:'supplier-child',
+    status:'已发布',
+    updatedAt:200
+  } })
+};
+const response = await remote.returnLink(asset.id, { url:'https://www.xiaohongshu.com/explore/returned' });
+const changed = applySupplierReturnResponse(state.assets[0], response);
+const row = supplierReturnRowState(state.assets[0]);
+console.log(JSON.stringify({
+  changed,
+  sameReference: before === state.assets[0],
+  status: state.assets[0].status,
+  url: state.assets[0].publishedUrl,
+  statusText: row.statusText,
+  actionText: row.actionText,
+  statusClass: row.statusClass,
+  actionClass: row.actionClass
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        self.assertTrue(data["changed"])
+        self.assertTrue(data["sameReference"])
+        self.assertEqual(data["status"], "已发布")
+        self.assertEqual(data["url"], "https://www.xiaohongshu.com/explore/returned")
+        self.assertEqual(data["statusText"], "已回传 ✓")
+        self.assertEqual(data["actionText"], "改链接")
+        self.assertEqual(data["statusClass"], "pub")
+        self.assertEqual(data["actionClass"], "ghost")
 
 
 if __name__ == "__main__":

@@ -814,7 +814,16 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn("account.charBoardAssetId", publishing)
         self.assertIn("characterRefAssetId: roleRefAssetId || null", publishing)
         self.assertIn('id="customPublishCoverFile"', publishing)
+        self.assertIn('id="customPublishCoverReferenceFile"', publishing)
+        self.assertIn('id="customPublishCoverReferenceZone"', publishing)
         self.assertIn('coverPreview?.addEventListener("drop"', publishing)
+        self.assertIn('coverReferenceZone?.addEventListener("drop"', publishing)
+        self.assertIn("extraReferenceAssetIds: coverReferenceAssetIds", publishing)
+        self.assertIn("openLightbox(img, urlFor(asset)", publishing)
+        self.assertIn('if (document.querySelector(".lightbox")) return false;', publishing)
+        self.assertIn('coverReferenceList?.classList.toggle("is-disabled", active)', publishing)
+        self.assertIn('if (pendingSubmission) {', publishing)
+        self.assertIn("交付正在等待同步，不能再修改封面参考图", publishing)
         self.assertIn('source: "uploaded"', publishing)
         self.assertIn('if (source === "generated" || source === "uploaded") createdCoverIds.add(assetId)', publishing)
         self.assertIn("if (published && coverAssetId) createdCoverIds.delete(coverAssetId)", publishing)
@@ -892,6 +901,7 @@ const assets = new Map([
   ["role-ref", {{ id: "role-ref", type: "图片" }}],
   ["style-ref", {{ id: "style-ref", type: "图片" }}],
   ["legacy-ref", {{ id: "legacy-ref", type: "图片" }}],
+  ["custom-ref", {{ id: "custom-ref", type: "图片" }}],
 ]);
 function assetById(id) {{ return assets.get(id) || null; }}
 {helper_source}
@@ -909,6 +919,12 @@ const refs = coverReferenceIds({{
 if (refs.roleRefAssetId !== "role-ref") throw new Error("digital role ref missing");
 if (JSON.stringify(refs.refAssetIds) !== JSON.stringify(["role-ref", "style-ref", "legacy-ref"])) {{
   throw new Error(`unexpected ref order: ${{JSON.stringify(refs.refAssetIds)}}`);
+}}
+const customRefs = coverReferenceIds({{
+  coverRefAssetIds: "legacy-ref",
+}}, account, ["custom-ref"]);
+if (JSON.stringify(customRefs.refAssetIds) !== JSON.stringify(["role-ref", "custom-ref", "style-ref", "legacy-ref"])) {{
+  throw new Error(`custom ref was not prioritized: ${{JSON.stringify(customRefs.refAssetIds)}}`);
 }}
 const style = accountCoverStylePrompt(account);
 if (!style.includes("冷静真实的都市纪实风") || !style.includes("专业但自然")) {{

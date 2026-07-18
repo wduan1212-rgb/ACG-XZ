@@ -49,6 +49,41 @@ function serverFileUrl(a) {
   return u;
 }
 
+function managedServerFileUrl(a, url = "") {
+  const raw = String(url || "");
+  if (!raw) return false;
+  let pathname = "";
+  try {
+    const origin = globalThis.location?.origin || "http://local.invalid";
+    pathname = new URL(raw, origin).pathname;
+  } catch {
+    pathname = raw.split(/[?#]/, 1)[0];
+  }
+  return pathname.startsWith("/api/files/")
+    && (a?.storage === "server" || !!a?.serverFileName || raw.startsWith("/api/files/"));
+}
+
+function assetFileRevision(a) {
+  const at = Number(a?.blobUpdatedAt || a?.createdAt || 0);
+  const hash = String(a?.contentHash || "").replace(/[^a-zA-Z0-9._~-]/g, "").slice(0, 64);
+  return [at > 0 ? Math.trunc(at).toString(36) : "", hash].filter(Boolean).join("-");
+}
+
+function versionedServerFileUrl(a, url = "") {
+  if (!managedServerFileUrl(a, url)) return url;
+  const revision = assetFileRevision(a);
+  if (!revision) return url;
+  const hashAt = url.indexOf("#");
+  const fragment = hashAt >= 0 ? url.slice(hashAt) : "";
+  const withoutHash = hashAt >= 0 ? url.slice(0, hashAt) : url;
+  const queryAt = withoutHash.indexOf("?");
+  const path = queryAt >= 0 ? withoutHash.slice(0, queryAt) : withoutHash;
+  const params = new URLSearchParams(queryAt >= 0 ? withoutHash.slice(queryAt + 1) : "");
+  params.set("asset_rev", revision);
+  const query = params.toString();
+  return `${path}${query ? `?${query}` : ""}${fragment}`;
+}
+
 function fileNameFor(a, fallback = "") {
   const base = String(fallback || a.name || a.id || "asset");
   return base.includes(".") ? base : `${base}.${extOfMime(a.mime || "application/octet-stream")}`;
@@ -229,9 +264,9 @@ export function urlFor(idOrAsset) {
   const a = typeof idOrAsset === "string" ? assetById(idOrAsset) : idOrAsset;
   if (!a) return null;
   const remoteUrl = serverFileUrl(a);
-  if (remoteUrl && (remote.isOn() || !urlCache.has(a.id))) return remoteUrl;
+  if (remoteUrl && (remote.isOn() || !urlCache.has(a.id))) return versionedServerFileUrl(a, remoteUrl);
   if (urlCache.has(a.id)) return urlCache.get(a.id);
-  if (remoteUrl) return remoteUrl;
+  if (remoteUrl) return versionedServerFileUrl(a, remoteUrl);
   if (a.dataUrl) return a.dataUrl; // 兼容遗留小数据
   return null;
 }
@@ -285,12 +320,18 @@ export async function replaceAssetBlob(assetId, dataUrl) {
   const a = assetById(assetId); if (!a) return;
   const raw = dataUrlToBlob(dataUrl);
   const blob = a.type === "图片" ? await lightlyProcessImageBlob(raw, a.name) : raw;
+  const contentHash = await assetHashFromBlob(blob);
   await db.putBlob(a.id, blob);
   const old = urlCache.get(a.id);
   if (old) URL.revokeObjectURL(old);
   urlCache.set(a.id, URL.createObjectURL(blob));
   if (blob !== raw) a.processed = "clarity-filter-v2";
   await uploadServerFile(a, blob, a.name);
+  const previousRevision = Number(a.blobUpdatedAt || a.updatedAt || a.createdAt || 0);
+  const revisionAt = Math.max(Date.now(), previousRevision + 1);
+  a.contentHash = contentHash;
+  a.blobUpdatedAt = revisionAt;
+  a.updatedAt = revisionAt;
   a.hasBlob = true; delete a.dataUrl;
   save("assets");
 }
