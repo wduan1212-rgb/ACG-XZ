@@ -1,5 +1,15 @@
 # Server Deployment Log
 
+## v95 - 2026-07-19
+
+- Source: `09be746` (`docs: record v95 release commit`), including functional commit `9503008`. Production reports main cache `20260718-v94-1`, video workshop cache `20260719-17`, and infinite-canvas build `EjIfhNcQipNHVEUS6sYeu`.
+- Scope: deployed from a clean detached target worktree after local tests, sensitive-pattern scanning, isolated staging and an exact target-file hash manifest. The final sync updated 55 code/static files and removed 5 obsolete hashed static files. Production SQLite, accounts, members, assets, deliveries, uploads, composed media, canvas blobs, video-workshop runtime, model cache, authentication data and private environment files were excluded.
+- Backup and rollback: retained rollback point `v95-pre-20260719-193633`, containing a pre-deployment code archive, consistent SQLite backup, private-configuration checkpoint, service metadata, business-count baseline and a 2858-entry protected-file manifest. Rollback restores code only and must never replace newer business data.
+- Validation: the clean target passed the main suite 267/267 and video workshop suite 40/40, plus tracked JavaScript syntax, Python compilation, shell syntax and diff checks. Both production services are active; both health endpoints return 200; recent service logs contain zero severe application entries; all 55 deployed target files match the release manifest and all 5 obsolete files are absent.
+- Data protection check: SQLite integrity is `ok`; accounts 80, members 23, assets 2846, productions 541, jobs 692, batches 74, analytics links 75, metric snapshots 108, sessions 62, voice presets 5, supplier bindings 64, supplier activity 146, active canvas drafts 1 and canvas blob rows 6 match the deployment baseline. None of the 2858 protected files changed or disappeared, and both private environment files are byte-identical to the rollback checkpoint.
+- Browser smoke: the production administrator session loaded the main application and video workshop without a white screen or visible load failure. An existing infinite-canvas project reopened through `/XZ-Design/?embed=1#/project/...` after leaving and after a full platform refresh; the visible historical image nodes loaded successfully and the browser showed no 404 page.
+- Residual browser state: the inspected browser carries an unresolved local/server concurrent-edit conflict. The server project index returns a stable private thumbnail and retains the complete image draft, but the home-card thumbnail temporarily falls back to a placeholder after a full platform reload until that project is opened. No conflict-resolution button was pressed during smoke testing, because choosing either copy would alter user state; this is not production data loss.
+
 ## v94 - 2026-07-19
 
 - Source: `57641f6` (`docs: record v94 release commit`), including functional commit `77ce1de`. Production reports main cache `20260718-v94-1`, video workshop cache `20260718-16`, and infinite-canvas build `Cb3dOInBfODPy4nRJsfpy`.
