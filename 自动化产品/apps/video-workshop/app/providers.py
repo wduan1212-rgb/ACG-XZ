@@ -17,12 +17,6 @@ from .config import settings
 
 ProgressCallback = Callable[[str, str, int], Awaitable[None]]
 
-NARRATION_UNITS_PER_SECOND = 4.35
-DEFAULT_NARRATION_SPEED = 1.2
-MIN_NARRATION_SPEED = 1.05
-MAX_NARRATION_SPEED = 1.35
-
-
 def _safe_int(value: Any, default: int) -> int:
     try:
         return int(value)
@@ -59,40 +53,10 @@ def _explicit_duration_seconds(messages: list[dict[str, Any]]) -> int | None:
     return None
 
 
-def _narration_units(text: str) -> float:
-    cjk_count = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]", text))
-    latin_words = len(re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*", text))
-    return float(cjk_count) + float(latin_words) * 1.7
-
-
-def _narration_unit_bounds(target_duration_sec: float) -> tuple[float, float]:
-    duration = max(1.0, _safe_float(target_duration_sec, 1.0))
-    return (
-        duration * 3.7 * DEFAULT_NARRATION_SPEED,
-        duration * 4.95 * DEFAULT_NARRATION_SPEED,
-    )
-
-
-def _narration_needs_duration_repair(text: str, target_duration_sec: float) -> bool:
-    minimum, maximum = _narration_unit_bounds(target_duration_sec)
-    units = _narration_units(text)
-    return units < minimum or units > maximum
-
-
 def _tts_speed_for_target(text: str, target_duration_sec: float | None) -> float:
-    target = _safe_float(target_duration_sec, 0.0)
-    if target <= 0:
-        return DEFAULT_NARRATION_SPEED
-    estimated_duration = _narration_units(text) / NARRATION_UNITS_PER_SECOND
-    if estimated_duration <= 0:
-        return DEFAULT_NARRATION_SPEED
-    return round(
-        max(
-            MIN_NARRATION_SPEED,
-            min(MAX_NARRATION_SPEED, estimated_duration / target),
-        ),
-        3,
-    )
+    # Keep the platform voice model at its natural cadence.  The measured audio
+    # duration, not a requested duration or a fixed multiplier, drives editing.
+    return 1.0
 
 
 def _client(
@@ -609,22 +573,6 @@ class MiniMaxDirector:
         requested_duration_sec: int | None = None,
     ) -> str:
         bgm_options = json.dumps(bgm_catalog, ensure_ascii=False)
-        duration_instruction = ""
-        if requested_duration_sec:
-            preferred_units = round(
-                requested_duration_sec
-                * NARRATION_UNITS_PER_SECOND
-                * DEFAULT_NARRATION_SPEED
-            )
-            minimum_units, maximum_units = _narration_unit_bounds(requested_duration_sec)
-            duration_instruction = (
-                f"\n本轮用户明确要求成片约 {requested_duration_sec} 秒。"
-                f"duration_sec 必须填写 {requested_duration_sec}；若 input_mode=topic，"
-                f"口播应按自然中文语速写到约 {preferred_units} 个有效汉字，"
-                f"可接受范围约 {round(minimum_units)}-{round(maximum_units)} 个，"
-                "让有效内容真实覆盖目标时长，不能用长静音补足。"
-                "若使用用户上传口播音频，则原音频仍是唯一主时间线，不得拉伸或补写。"
-            )
         return f"""你是星阵视频工坊的总导演 Agent。这个工作台只服务定制化、高质量视频，你拥有叙事、口播、总时长、镜头数量、镜头节奏、视觉方案和声音设计的完整导演权。
 
 工作方式：
@@ -640,7 +588,6 @@ class MiniMaxDirector:
 10. material 只表示参与剪辑，presentation 决定呈现方式。Logo、品牌标志、透明图、角标必须用 overlay；普通图片和素材视频优先用 pip，让 AI 主画面与连续口播始终保留；只有用户明确要求替换画面或素材本身承担完整叙事时才用 cutaway。
 11. material、both 或 sfx 需要关联有效的 scene_number 和 narration_anchor，后端据此把素材放进对应口播位置。用途冲突且会显著改变成片时，再调用 ask_user 确认。
 12. BGM 必须服从口播。只要共享 BGM 清单非空且用户没有明确要求关闭配乐，audio_design.bgm_enabled 默认设为 true，并根据内容气质填写 bgm_mood；用户上传并指定的 BGM 优先，未指定具体曲目时 bgm_track_id 留空，由系统从共享库智能匹配。可用 BGM 清单为 {bgm_options}。
-{duration_instruction}
 
 内置视频制作工作流：
 {skill_context}
@@ -737,6 +684,7 @@ class MiniMaxDirector:
 
         name, arguments = call
         if name == "ask_user":
+            question = str(arguments.get("question") or "").strip()
             suggestions = [str(item)[:80] for item in list(arguments.get("suggestions") or []) if str(item).strip()][:3]
             if len(suggestions) < 2:
                 suggestions = (
@@ -746,7 +694,7 @@ class MiniMaxDirector:
                 )
             return {
                 "action": "ask",
-                "question": str(arguments.get("question") or "你最想让观众记住哪一句话？")[:240],
+                "question": question[:240] or "你最想让观众记住哪一句话？",
                 "missing": arguments.get("missing") or [],
                 "suggestions": suggestions,
             }
@@ -794,23 +742,6 @@ class MiniMaxDirector:
         arguments["input_mode"] = input_mode
         if requested_duration_sec:
             arguments["requested_duration_sec"] = requested_duration_sec
-            arguments["duration_sec"] = requested_duration_sec
-            if (
-                input_mode == "topic"
-                and not any(
-                    str((item.get("transcript") or {}).get("text") or "").strip()
-                    for item in attachments
-                    if isinstance(item, dict)
-                )
-                and _narration_needs_duration_repair(
-                    arguments["narration"],
-                    requested_duration_sec,
-                )
-            ):
-                arguments["narration"] = await self._repair_narration_duration(
-                    arguments,
-                    requested_duration_sec,
-                )
         latest_user_text = next(
             (str(item.get("content") or "") for item in reversed(messages) if item.get("role") == "user"),
             "",
@@ -946,98 +877,6 @@ class MiniMaxDirector:
                 arguments["narration"] = transcript_text
                 arguments["input_mode"] = "audio"
         return {"action": "produce", "plan": arguments}
-
-    async def _repair_narration_duration(
-        self,
-        plan: dict[str, Any],
-        target_duration_sec: int,
-    ) -> str:
-        preferred_units = round(
-            target_duration_sec
-            * NARRATION_UNITS_PER_SECOND
-            * DEFAULT_NARRATION_SPEED
-        )
-        minimum_units, maximum_units = _narration_unit_bounds(target_duration_sec)
-        repair_tool = {
-            "type": "function",
-            "function": {
-                "name": "repair_narration_duration",
-                "description": "只返回按目标时长校准后的完整口播。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "narration": {
-                            "type": "string",
-                            "description": "信息完整、自然可说、没有重复灌水的完整口播。",
-                        },
-                    },
-                    "required": ["narration"],
-                },
-            },
-        }
-        repair_context = {
-            "target_duration_sec": target_duration_sec,
-            "preferred_effective_units": preferred_units,
-            "acceptable_effective_units": [
-                round(minimum_units),
-                round(maximum_units),
-            ],
-            "title": str(plan.get("title") or ""),
-            "audience": str(plan.get("audience") or ""),
-            "tone": str(plan.get("tone") or ""),
-            "core_message": str(plan.get("core_message") or ""),
-            "current_narration": str(plan.get("narration") or ""),
-            "scene_purposes": [
-                str(scene.get("purpose") or "")
-                for scene in list(plan.get("scenes") or [])
-                if isinstance(scene, dict)
-            ],
-        }
-        payload = {
-            "model": settings.llm_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是口播时长校准编辑。保持原主题、事实边界、受众、语气与结论，"
-                        "通过补足必要解释、场景和转折或压缩冗余，使口播自然覆盖用户目标时长。"
-                        "不得重复句子、堆砌同义词、加入无依据数据，也不得用静音作为时长。"
-                        "只调用 repair_narration_duration。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(repair_context, ensure_ascii=False),
-                },
-            ],
-            "tools": [repair_tool],
-            "tool_choice": {
-                "type": "function",
-                "function": {"name": "repair_narration_duration"},
-            },
-            "temperature": 0.2,
-            "thinking": {"type": settings.llm_thinking},
-            "reasoning_split": True,
-            "max_completion_tokens": settings.llm_max_completion_tokens,
-        }
-        data = await _post_llm_json_with_retry(payload, label="口播时长校准")
-        try:
-            message = data["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise ProviderError("口播时长校准没有返回可用消息") from exc
-        call = self._tool_call(message)
-        if not call or call[0] != "repair_narration_duration":
-            raise ProviderError("口播时长校准没有返回结构化口播")
-        narration = str(call[1].get("narration") or "").strip()
-        if not narration:
-            raise ProviderError("口播时长校准返回了空内容")
-        if _narration_needs_duration_repair(narration, target_duration_sec):
-            actual_units = round(_narration_units(narration))
-            raise ProviderError(
-                f"口播时长校准后仍只有约 {actual_units} 个有效字，"
-                f"未覆盖用户明确的 {target_duration_sec} 秒；已停止制作，避免输出短片。"
-            )
-        return narration
 
     @staticmethod
     def _fallback_safe_rewrite(plan: dict[str, Any], scene_number: int) -> dict[str, str]:

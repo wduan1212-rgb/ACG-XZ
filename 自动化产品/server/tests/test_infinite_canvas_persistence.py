@@ -95,6 +95,31 @@ def test_canvas_thumbnail_selection_matches_home_and_persistence_rules():
           persistence.selectPersistentCanvasThumbnailUrl([], "/api/custom-canvas/blobs/abc"),
           "/api/custom-canvas/blobs/abc",
         );
+        const local = {{
+          id: "conflicted-project",
+          name: "local dirty title",
+          thumbnailUrl: undefined,
+          updatedAt: 200,
+          localOnly: {{ dirty: true, conflict: true }},
+        }};
+        const merged = persistence.mergeCanvasDisplayThumbnail(
+          local,
+          "/api/custom-canvas/blobs/server-thumbnail",
+        );
+        assert.deepEqual(merged, {{
+          ...local,
+          thumbnailUrl: "/api/custom-canvas/blobs/server-thumbnail",
+        }});
+        assert.deepEqual(
+          persistence.mergeCanvasDisplayThumbnail(merged, "/api/custom-canvas/blobs/server-thumbnail"),
+          merged,
+          "repeated refreshes must be idempotent",
+        );
+        assert.strictEqual(
+          persistence.mergeCanvasDisplayThumbnail(local, "data:image/png;base64,AA=="),
+          local,
+          "inline thumbnails must not mutate the conflicted local summary",
+        );
         """
     )
     result = subprocess.run(
@@ -475,6 +500,24 @@ def test_client_contract_gates_empty_canvas_and_matches_server_proxy():
     assert "未确认的空画布" in store
     assert "serverRefreshRequiredProjects" in store
     assert "stageServerSummary(serverProject)" in store
+    assert "mergeCanvasDisplayThumbnail" in store
+    dirty_reconciliation = store.split(
+        'if (decision === "keep-local-dirty")', 1
+    )[1].split('if (!originalLocalIds.has(projectId))', 1)[1].split(
+        'const localRevision = local.serverRevision', 1
+    )[0]
+    assert "stageServerDisplayThumbnail(serverProject)" in dirty_reconciliation
+    thumbnail_helper = store.split(
+        "const stageServerDisplayThumbnail", 1
+    )[1].split(
+        "Complete every legacy migration through the idempotent server", 1
+    )[0]
+    assert "thumbnailUrl" in thumbnail_helper
+    assert "mergeCanvasDisplayThumbnail" in thumbnail_helper
+    assert "mergeServerProject" not in thumbnail_helper
+    assert "serverRevisionByProject" not in thumbnail_helper
+    assert "projectDirtyByProject" not in thumbnail_helper
+    assert "serverRefreshRequiredProjects" not in thumbnail_helper
     clean_reconciliation = store.split(
         'if (decision === "install-server")', 1
     )[1].split("addItem: (projectId, item)", 1)[0]

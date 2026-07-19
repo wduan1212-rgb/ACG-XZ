@@ -17,6 +17,7 @@ import {
   pendingLegacyServerMigrationIds,
   readCanvasProject,
   readLegacyCanvasProject,
+  mergeCanvasDisplayThumbnail,
   selectCanvasThumbnailUrl,
   storeCanvasSummary,
   writeCanvasProjectVerified,
@@ -1103,6 +1104,28 @@ export const useStore = create<AppState>()(
             }
           };
 
+          const stageServerDisplayThumbnail = (
+            serverProject: Project & { revision?: number },
+          ) => {
+            // A dirty/conflicted local checkpoint remains authoritative.  The
+            // server thumbnail is safe display metadata, however, and prevents
+            // the home card falling back to a blank size placeholder after a
+            // full refresh.  Never merge project fields or revision state here.
+            const projectId = serverProject.id;
+            suppressedCanvasProjects.add(projectId);
+            try {
+              set((state) => ({
+                projects: state.projects.map((project) =>
+                  project.id === projectId
+                    ? mergeCanvasDisplayThumbnail(project, serverProject.thumbnailUrl)
+                    : project,
+                ),
+              }));
+            } finally {
+              suppressedCanvasProjects.delete(projectId);
+            }
+          };
+
           // Complete every legacy migration through the idempotent server
           // handshake before normal index reconciliation. A matching server ID
           // may only be an empty shell; GET+install here would destroy the
@@ -1191,6 +1214,8 @@ export const useStore = create<AppState>()(
                   requiresRefresh: false,
                   updateRevision: false,
                 });
+              } else {
+                stageServerDisplayThumbnail(serverProject);
               }
               const localRevision = local.serverRevision;
               const remoteIsNewer = Number(serverProject.revision || 0) > Number(localRevision || 0)

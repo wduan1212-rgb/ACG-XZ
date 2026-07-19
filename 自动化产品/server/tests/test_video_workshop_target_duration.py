@@ -43,49 +43,32 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-    def test_short_40_second_narration_is_rejected_before_production(self):
-        narration = (
-            "在这个什么都讲效率的时代，年轻人开始流行一种新的关系，叫搭子。"
-            "不是朋友，也不是同事，而是那个恰好和你想做的事一样的人。"
-            "咖啡搭子、饭搭子、健身搭子，一个人可以走得很快，"
-            "但两个人能走得更远。百度搭子，帮你找到那个陪你一起出发的人。"
-            "今天，你找搭子了吗？"
-        )
-        self.assertEqual(round(providers._narration_units(narration)), 108)
-        self.assertTrue(
-            providers._narration_needs_duration_repair(narration, 40)
-        )
-        minimum, maximum = providers._narration_unit_bounds(40)
-        self.assertEqual((round(minimum), round(maximum)), (178, 238))
+    def test_requested_duration_is_metadata_not_a_hard_narration_gate(self):
+        source = (VIDEO_WORKSHOP_DIR / "app" / "providers.py").read_text(encoding="utf-8")
+        self.assertNotIn("_repair_narration_duration", source)
+        self.assertNotIn("duration_sec 必须填写", source)
 
-    def test_tts_speed_only_makes_natural_small_adjustments(self):
+    def test_tts_uses_natural_speed_without_duration_forcing(self):
         short_text = "这是一段用于校准的口播。" * 6
         long_text = "这是一段用于校准的口播。" * 30
-        self.assertEqual(
-            providers._tts_speed_for_target(short_text, 40),
-            providers.MIN_NARRATION_SPEED,
-        )
-        self.assertEqual(
-            providers._tts_speed_for_target(long_text, 40),
-            providers.MAX_NARRATION_SPEED,
-        )
+        self.assertEqual(providers._tts_speed_for_target(short_text, 40), 1.0)
+        self.assertEqual(providers._tts_speed_for_target(long_text, 40), 1.0)
         self.assertEqual(
             providers._tts_speed_for_target(short_text, None),
-            providers.DEFAULT_NARRATION_SPEED,
+            1.0,
         )
 
     def test_scene_generation_duration_uses_real_narration_window(self):
         self.assertEqual(pipeline._scene_generation_duration(3.2), 4)
         self.assertEqual(pipeline._scene_generation_duration(8.01), 9)
         self.assertTrue(pipeline._clip_covers_target(7.9, 8.0))
-        self.assertFalse(pipeline._clip_covers_target(7.8, 8.0))
-        with self.assertRaisesRegex(RuntimeError, "Seedance 15 秒上限"):
-            pipeline._scene_generation_duration(15.4)
+        self.assertTrue(pipeline._clip_covers_target(7.8, 8.0))
+        self.assertEqual(pipeline._scene_generation_duration(15.4), 15)
 
-    async def test_media_rejects_materially_short_clip_instead_of_long_freeze(self):
+    async def test_media_retimes_short_clip_without_static_tail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with self.assertRaisesRegex(media.MediaError, "长时间静止尾帧"):
+            with patch.object(media, "run", AsyncMock()) as run:
                 await media._normalize_clip(
                     root / "scene.mp4",
                     root / "normalized.mp4",
@@ -94,6 +77,10 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
                     8.0,
                     source_duration=7.4,
                 )
+        command = run.await_args.args[0]
+        filter_graph = command[command.index("-vf") + 1]
+        self.assertIn("setpts=1.08108108*(PTS-STARTPTS)", filter_graph)
+        self.assertNotIn("tpad=stop_mode=clone", filter_graph)
 
     async def test_tts_payload_receives_target_aware_speed(self):
         captured = {}
@@ -132,46 +119,61 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
                 result = await providers.MiniMaxTTS().generate(
                     text,
                     output,
-                    target_duration_sec=40,
+                    target_duration_sec=None,
                 )
             self.assertTrue(output.is_file())
         self.assertEqual(captured["voice_setting"]["speed"], result["speed"])
-        self.assertGreaterEqual(result["speed"], providers.MIN_NARRATION_SPEED)
-        self.assertLessEqual(result["speed"], providers.MAX_NARRATION_SPEED)
-        self.assertEqual(result["targetDurationMs"], 40000)
+        self.assertEqual(result["speed"], 1.0)
+        self.assertEqual(result["targetDurationMs"], 0)
 
     def test_pipeline_keeps_uploaded_audio_as_the_main_timeline(self):
         source = (
             VIDEO_WORKSHOP_DIR / "app" / "pipeline.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'if not narration_source and str(plan.get("input_mode") or "") == "topic"',
-            source,
-        )
-        self.assertIn(
             "normalize_narration(narration_source, narration_path)",
             source,
         )
-        self.assertIn("避免用静音或异常语速补足", source)
+        self.assertIn("target_duration_sec=None", source)
+        self.assertNotIn("与用户要求的", source)
 
-    def test_media_timeline_uses_the_validated_speech_duration(self):
-        self.assertFalse(
-            pipeline._generated_narration_matches_target(24.696, 40)
-        )
-        self.assertTrue(
-            pipeline._generated_narration_matches_target(38.2, 40)
-        )
+    def test_media_timeline_uses_measured_speech_and_rebalances_long_scene(self):
         timeline, transition = build_scene_timeline(
-            [5, 8, 7, 8, 7, 5],
-            39.4,
+            [15, 8, 8, 8, 8, 6, 5],
+            58.0,
         )
         self.assertGreater(transition, 0)
         self.assertAlmostEqual(timeline[0]["start"], 0.0, places=6)
-        self.assertAlmostEqual(timeline[-1]["end"], 39.4, places=6)
+        self.assertAlmostEqual(timeline[-1]["end"], 58.0, places=6)
+        self.assertLessEqual(max(item["duration"] for item in timeline), 18.0)
+        self.assertTrue(
+            all(
+                pipeline._scene_generation_duration(item["duration"]) <= 15
+                for item in timeline
+            )
+        )
         self.assertAlmostEqual(
             sum(item["duration"] for item in timeline)
             - transition * (len(timeline) - 1),
-            39.4,
+            58.0,
+            places=5,
+        )
+
+    def test_near_limit_window_is_retimed_without_forcing_a_new_director_scene(self):
+        timeline, transition = build_scene_timeline([1], 16.1)
+        self.assertEqual(len(timeline), 1)
+        self.assertEqual(transition, 0)
+        self.assertAlmostEqual(timeline[0]["duration"], 16.1, places=6)
+        self.assertEqual(pipeline._scene_generation_duration(timeline[0]["duration"]), 15)
+
+    def test_very_long_window_is_split_only_as_a_backend_fallback(self):
+        timeline, transition = build_scene_timeline([1], 40.0)
+        self.assertGreater(len(timeline), 1)
+        self.assertLessEqual(max(item["duration"] for item in timeline), 18.0)
+        self.assertAlmostEqual(
+            sum(item["duration"] for item in timeline)
+            - transition * (len(timeline) - 1),
+            40.0,
             places=5,
         )
 
@@ -260,7 +262,7 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
             self.assertLess(order.index("probe-narration"), order.index("scene-1"))
             self.assertEqual(project["status"], "succeeded")
 
-    async def test_selective_scene_failure_keeps_previous_clip(self):
+    async def test_segmented_scene_replacement_stays_transactional(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             outputs_dir = root / "outputs"
@@ -278,11 +280,25 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
                 return project
 
             async def fake_probe(path):
-                return {"duration": 8.0 if Path(path).name == "narration.mp3" else 7.0}
+                return {"duration": 40.0 if Path(path).name == "narration.mp3" else 15.0}
 
             async def generate_scene(_prompt, _ratio, output_path, **_kwargs):
                 Path(output_path).write_bytes(b"too-short-candidate")
                 return {"path": str(output_path)}
+
+            async def compose(scene_paths, _narration_path, _text, _ratio, work_dir, **_kwargs):
+                final = Path(work_dir) / "final-9x16.mp4"
+                final.write_bytes(b"final")
+                return {
+                    "path": final,
+                    "aspectRatio": "9:16",
+                    "width": 720,
+                    "height": 1280,
+                    "probe": {"duration": 8.0},
+                    "captionCues": [],
+                    "materialCues": [],
+                    "sfxCues": [],
+                }
 
             generated = AsyncMock(side_effect=generate_scene)
             plan = {
@@ -290,7 +306,7 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
                 "narration": "保留原口播。",
                 "input_mode": "script",
                 "aspect_ratio": "9:16",
-                "scenes": [{"duration_sec": 8, "visual_prompt": "修改后的镜头"}],
+                "scenes": [{"duration_sec": 1, "visual_prompt": "修改后的镜头"}],
                 "audio_design": {},
             }
             with (
@@ -302,17 +318,20 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
                 patch.object(pipeline, "_ensure_legacy_delivery", return_value=None),
                 patch.object(pipeline.seedance, "generate", generated),
                 patch.object(pipeline, "probe", new=fake_probe),
+                patch.object(pipeline, "compose_variant", new=compose),
                 patch.object(pipeline.bgm_library, "resolve", return_value=None),
+                patch.object(pipeline.openmontage, "validate_composition", return_value={"success": True}),
+                patch.object(pipeline.openmontage, "inspect_video", return_value={"success": True}),
                 patch.object(pipeline, "mutate_project", side_effect=mutate),
                 patch.object(pipeline, "add_event"),
                 patch.object(pipeline, "add_message"),
             ):
                 await pipeline.VideoPipeline().run(project["id"], plan, retry_scene_number=1)
 
-            self.assertEqual(generated.await_count, 2)
-            self.assertEqual(old_scene.read_bytes(), b"previous-valid-scene")
+            self.assertEqual(generated.await_count, 1)
+            self.assertEqual(old_scene.read_bytes(), b"too-short-candidate")
             self.assertFalse(list(work_dir.glob("*.candidate.mp4")))
-            self.assertEqual(project["status"], "failed")
+            self.assertEqual(project["status"], "succeeded")
 
 
 if __name__ == "__main__":

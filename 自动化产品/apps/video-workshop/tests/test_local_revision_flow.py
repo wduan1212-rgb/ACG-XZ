@@ -82,6 +82,60 @@ class LocalRevisionRecognitionTests(unittest.TestCase):
             main._local_revision_request("让字幕恢复为原口播并重新合成", plan, [])["type"],
             "subtitle_layout",
         )
+        self.assertEqual(
+            main._local_revision_request("重新补一下镜头 现在有静止帧", plan, [])["type"],
+            "motion_recompose",
+        )
+        numbered_motion = main._local_revision_request(
+            "镜头2有静止帧，重做一下",
+            plan,
+            [],
+        )
+        self.assertEqual(numbered_motion["type"], "scene")
+        self.assertEqual(numbered_motion["sceneNumber"], 2)
+        self.assertIsNone(
+            main._local_revision_request("保留结尾定格，不要删除", plan, [])
+        )
+        self.assertIsNone(
+            main._local_revision_request("补镜头教程怎么做", plan, [])
+        )
+        self.assertIsNone(
+            main._local_revision_request("重新补充镜头语言，做一条新视频", plan, [])
+        )
+        self.assertIsNone(
+            main._local_revision_request("重新做一条3个镜头的视频", plan, [])
+        )
+        self.assertIsNone(
+            main._local_revision_request("重新生成2个视频，做不同版本", plan, [])
+        )
+        self.assertEqual(
+            main._local_revision_request("整个视频有静止尾帧，去掉它", plan, [])["type"],
+            "motion_recompose",
+        )
+
+    def test_continue_recovers_the_latest_actionable_revision(self):
+        project = _project()
+        project["messages"] = [
+            {"role": "user", "content": "重新补一下镜头 现在有静止帧"},
+            {"role": "assistant", "content": "信息够了，我会重新处理。", "kind": "question"},
+            {"role": "user", "content": "继续"},
+        ]
+        self.assertEqual(
+            main._revision_message_for_continuation(project, "继续"),
+            "重新补一下镜头 现在有静止帧",
+        )
+
+    def test_context_free_followup_replays_user_intent_without_forcing_director(self):
+        project = _project()
+        project["messages"] = [
+            {"role": "user", "content": "整体做一个新的自然版本，镜头由你判断"},
+            {"role": "assistant", "content": "我会先说明方案。", "kind": "question"},
+            {"role": "user", "content": "说啊"},
+        ]
+        self.assertEqual(
+            main._revision_message_for_continuation(project, "说啊"),
+            "整体做一个新的自然版本，镜头由你判断",
+        )
 
     def test_chinese_and_natural_scene_numbers_are_recognized(self):
         plan = {
@@ -123,6 +177,39 @@ class LocalRevisionRecognitionTests(unittest.TestCase):
 
 
 class LocalRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_motion_quality_request_reuses_plan_and_all_original_sources(self):
+        project = _project()
+
+        def mutate(_project_id, callback):
+            callback(project)
+            return project
+
+        original_plan = json.loads(json.dumps(project["plan"], ensure_ascii=False))
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(main, "settings", _local_sources(tmp, project)),
+                patch.object(main, "load_project", return_value=project),
+                patch.object(main, "mutate_project", side_effect=mutate),
+                patch.object(main, "add_message"),
+                patch.object(main, "add_event"),
+                patch.object(main.director, "decide", AsyncMock()) as decide,
+                patch.object(main.director, "revise_scene", AsyncMock()) as revise_scene,
+                patch.object(main, "_schedule", return_value=True) as schedule,
+            ):
+                result = await main._handle_local_revision(
+                    project,
+                    "重新补一下镜头 现在有静止帧",
+                    [],
+                )
+
+        self.assertEqual(result["plan"], original_plan)
+        decide.assert_not_awaited()
+        revise_scene.assert_not_awaited()
+        schedule.assert_called_once()
+        self.assertIsNone(schedule.call_args.kwargs["retry_scene_number"])
+        self.assertTrue(schedule.call_args.kwargs["recompose_only"])
+        self.assertEqual(project["revisionHistory"][0]["type"], "motion_timeline")
+
     async def test_scene_revision_schedules_only_the_requested_scene(self):
         project = _project()
 

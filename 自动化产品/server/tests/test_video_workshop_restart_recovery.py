@@ -163,6 +163,7 @@ class VideoWorkshopRestartRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         def record_schedule(project_id, plan, retry_scene_number=None):
             scheduled.append((project_id, retry_scene_number))
+            return True
 
         with patch.object(
             workshop_main,

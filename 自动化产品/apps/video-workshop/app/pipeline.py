@@ -18,7 +18,6 @@ from .bgm import bgm_library
 from .config import settings
 from .media import (
     ASPECTS,
-    MAX_CLONE_PAD_SECONDS,
     build_scene_timeline,
     compose_variant,
     normalize_narration,
@@ -29,32 +28,16 @@ from .providers import ProviderError, seedance, tts
 from .store import add_event, add_message, load_project, mutate_project
 
 
-def _generated_narration_matches_target(
-    actual_duration: float,
-    target_duration: float,
-) -> bool:
-    actual = max(0.0, float(actual_duration or 0))
-    target = max(0.0, float(target_duration or 0))
-    if target <= 0:
-        return True
-    allowed_delta = max(1.5, target * 0.1)
-    return actual > 0 and abs(actual - target) <= allowed_delta
-
-
 def _scene_generation_duration(target_duration: float) -> int:
     target = max(0.1, float(target_duration or 0.1))
-    if target > 15 + MAX_CLONE_PAD_SECONDS:
-        raise RuntimeError(
-            f"口播时间窗需要单镜头 {target:.2f} 秒，超过 Seedance 15 秒上限；"
-            "需要增加镜头后再制作，不使用静止尾帧拉长。"
-        )
     return max(4, min(15, int(math.ceil(target - 1e-6))))
 
 
 def _clip_covers_target(actual_duration: float, target_duration: float) -> bool:
     actual = max(0.0, float(actual_duration or 0))
-    target = max(0.0, float(target_duration or 0))
-    return actual > 0 and actual + MAX_CLONE_PAD_SECONDS >= target
+    # A non-empty generated clip is usable.  The media normalizer maps its
+    # continuous motion to the measured narration window without static padding.
+    return actual > 0
 
 
 async def _gather_cancel_on_error(*awaitables: Any) -> list[Any]:
@@ -267,8 +250,8 @@ class VideoPipeline:
             if recompose_only:
                 await self._event(
                     project_id,
-                    "正在复用原音画重新编排字幕",
-                    "本次不会调用视频生成或口播生成，只重新合成字幕版本。",
+                    "正在复用原音画重新合成",
+                    "本次不会调用视频生成或口播生成，只按真实口播时长重新建立音画时间线。",
                     20,
                 )
             elif retry_scene_number:
@@ -307,7 +290,7 @@ class VideoPipeline:
             tts_result: dict[str, Any] = {"path": str(narration_path), "reused": True}
             if recompose_only:
                 if not narration_path.is_file():
-                    raise RuntimeError("原口播文件不存在，无法只修改字幕")
+                    raise RuntimeError("原口播文件不存在，无法复用原音画重新合成")
             elif not retry_scene_number or not narration_path.is_file():
                 if narration_source:
                     await self._event(
@@ -324,11 +307,6 @@ class VideoPipeline:
                         "probe": normalized_probe,
                     }
                 else:
-                    requested_duration = (
-                        float(plan.get("requested_duration_sec") or 0)
-                        if str(plan.get("input_mode") or "") == "topic"
-                        else 0.0
-                    )
                     await self._event(
                         project_id,
                         "正在生成口播",
@@ -338,7 +316,7 @@ class VideoPipeline:
                     tts_result = await tts.generate(
                         str(plan["narration"]),
                         narration_path,
-                        target_duration_sec=requested_duration or None,
+                        target_duration_sec=None,
                         voice_id=str(plan.get("voice_id") or "").strip() or None,
                     )
 
@@ -346,32 +324,26 @@ class VideoPipeline:
             narration_duration = float(audio_info.get("duration") or 0)
             if narration_duration <= 0:
                 raise RuntimeError("口播音频没有可用时长")
-            requested_duration = (
-                float(plan.get("requested_duration_sec") or 0)
-                if not narration_source and str(plan.get("input_mode") or "") == "topic"
-                else 0.0
-            )
-            if requested_duration and not _generated_narration_matches_target(
-                narration_duration,
-                requested_duration,
-            ):
-                raise RuntimeError(
-                    f"生成口播实测 {narration_duration:.1f} 秒，"
-                    f"与用户要求的 {requested_duration:.0f} 秒偏差过大；"
-                    "已停止合成，避免用静音或异常语速补足。"
-                )
-
             scene_durations = [int(scene.get("duration_sec") or 8) for scene in scenes]
             scene_timeline, _transition_duration = build_scene_timeline(
                 scene_durations,
                 narration_duration,
             )
+            source_window_durations = [
+                max(
+                    float(item["duration"])
+                    for item in scene_timeline
+                    if int(item.get("sourceSceneNumber") or item["sceneNumber"])
+                    == source_index + 1
+                )
+                for source_index in range(len(scenes))
+            ]
             generation_durations = (
                 []
                 if recompose_only
                 else [
-                    _scene_generation_duration(float(item["duration"]))
-                    for item in scene_timeline
+                    _scene_generation_duration(duration)
+                    for duration in source_window_durations
                 ]
             )
             await self._event(
@@ -408,7 +380,7 @@ class VideoPipeline:
                         "target_path": target_path,
                         "candidate_path": candidate_path,
                         "had_existing": target_path.is_file(),
-                        "target_duration": float(scene_timeline[index]["duration"]),
+                        "target_duration": source_window_durations[index],
                         "duration_sec": duration_sec,
                     }
                 )
@@ -417,12 +389,12 @@ class VideoPipeline:
                 missing = [path.name for path in scene_paths if not path.is_file()]
                 if missing:
                     raise RuntimeError(
-                        "原镜头文件不完整，无法只修改字幕：" + "、".join(missing)
+                        "原镜头文件不完整，无法复用原音画重新合成：" + "、".join(missing)
                     )
                 await self._event(
                     project_id,
                     "原音画已复用",
-                    f"已保留口播和 {len(scene_paths)} 个镜头，只更新字幕轨与最终成片。",
+                    f"已保留口播和 {len(scene_paths)} 个镜头，只重新建立时间线与最终成片。",
                     24,
                 )
             elif retry_scene_number:
@@ -537,9 +509,9 @@ class VideoPipeline:
                 project_id,
                 "原音画读取完成" if recompose_only else "素材生成完成",
                 (
-                    f"口播与 {len(scenes)} 个原镜头均已读取，准备重新编排字幕。"
+                    f"口播与 {len(scenes)} 个原镜头均已读取，准备重新合成成片。"
                     if recompose_only
-                    else f"口播与 {len(scenes)} 个导演镜头均已通过时长校验，准备合成。"
+                    else f"口播与 {len(scenes)} 个导演镜头均已就绪，准备按真实口播时长合成。"
                 ),
                 62,
             )
@@ -549,7 +521,14 @@ class VideoPipeline:
                 "cuts": [
                     {
                         "id": f"scene-{index:02d}",
-                        "source": str(render_scene_paths[index - 1]),
+                        "sourceSceneNumber": int(
+                            scene.get("sourceSceneNumber") or scene["sceneNumber"]
+                        ),
+                        "source": str(
+                            render_scene_paths[
+                                int(scene.get("sourceSceneNumber") or scene["sceneNumber"]) - 1
+                            ]
+                        ),
                         "in_seconds": round(float(scene["start"]), 3),
                         "out_seconds": round(float(scene["end"]), 3),
                     }
@@ -716,8 +695,9 @@ class VideoPipeline:
                 candidate_path.replace(target_path)
                 temporary_scene_paths.discard(candidate_path)
             if delayed_replacements:
-                for index, cut in enumerate(composition["cuts"]):
-                    cut["source"] = str(scene_paths[index])
+                for cut in composition["cuts"]:
+                    source_number = int(cut.get("sourceSceneNumber") or 1)
+                    cut["source"] = str(scene_paths[source_number - 1])
                 composition_path.write_text(
                     json.dumps(composition, ensure_ascii=False, indent=2),
                     encoding="utf-8",

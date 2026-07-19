@@ -25,9 +25,6 @@ class MediaError(RuntimeError):
     pass
 
 
-MAX_CLONE_PAD_SECONDS = 0.12
-
-
 def _finite_number(value: Any, default: float) -> float:
     try:
         result = float(value)
@@ -260,26 +257,64 @@ def build_scene_timeline(
     if not planned_durations:
         raise MediaError("导演计划没有可用于合成的镜头")
     total = max(0.5, _finite_number(total_duration, 0.5))
-    weights = [max(0.1, _finite_number(value, 1.0)) for value in planned_durations]
-    if len(weights) == 1:
-        return [{"sceneNumber": 1, "start": 0.0, "end": total, "duration": total}], 0.0
+    source_weights = [max(0.1, _finite_number(value, 1.0)) for value in planned_durations]
+    part_counts = [1] * len(source_weights)
+    # A modest retime is visually smoother than splitting a nearly-valid
+    # logical shot into two repeated clips.  Seedance submissions themselves
+    # remain capped at 15 seconds by the provider boundary.
+    maximum_window = 18.0
 
-    transition = min(0.35, max(0.01, total / (len(weights) * 3)))
-    for _ in range(3):
-        available = total + transition * (len(weights) - 1)
-        durations = [available * weight / sum(weights) for weight in weights]
-        transition = min(transition, max(0.01, min(durations) * 0.4))
+    # Split only the technical render windows.  The logical director scenes and
+    # their relative rhythm stay untouched, while every Seedance-sized window
+    # remains producible after the real narration duration is known.
+    while True:
+        fragments = [
+            {
+                "sourceSceneNumber": source_index + 1,
+                "segmentNumber": segment_index + 1,
+                "segmentCount": part_counts[source_index],
+                "weight": source_weights[source_index] / part_counts[source_index],
+            }
+            for source_index in range(len(source_weights))
+            for segment_index in range(part_counts[source_index])
+        ]
+        count = len(fragments)
+        weight_sum = sum(float(item["weight"]) for item in fragments)
+        if count == 1:
+            transition = 0.0
+        else:
+            transition = min(0.35, max(0.0, total / (count * 3)))
+            # Crossfades consume overlapping source time.  Reduce the transition
+            # before splitting a scene whose only excess is that overlap.
+            largest_weight = max(float(item["weight"]) for item in fragments)
+            capacity_transition = (
+                maximum_window * weight_sum / largest_weight - total
+            ) / (count - 1)
+            if capacity_transition >= 0:
+                transition = min(transition, capacity_transition)
+        available = total + transition * (count - 1)
+        durations = [available * float(item["weight"]) / weight_sum for item in fragments]
+        offenders = {
+            int(item["sourceSceneNumber"]) - 1
+            for item, duration in zip(fragments, durations)
+            if duration > maximum_window + 1e-6
+        }
+        if not offenders:
+            break
+        for source_index in offenders:
+            part_counts[source_index] += 1
 
-    available = total + transition * (len(weights) - 1)
-    durations = [available * weight / sum(weights) for weight in weights]
     durations[-1] = available - sum(durations[:-1])
     timeline: list[dict[str, Any]] = []
     start = 0.0
-    for index, duration in enumerate(durations):
+    for index, (fragment, duration) in enumerate(zip(fragments, durations)):
         end = start + duration
         timeline.append(
             {
                 "sceneNumber": index + 1,
+                "sourceSceneNumber": fragment["sourceSceneNumber"],
+                "segmentNumber": fragment["segmentNumber"],
+                "segmentCount": fragment["segmentCount"],
                 "start": start,
                 "end": end,
                 "duration": duration,
@@ -306,27 +341,23 @@ async def _normalize_clip(
         raise MediaError(f"镜头 {source.name} 没有可用时长")
     required_duration = max(0.1, _finite_number(target_duration, 0.1))
     shortfall = required_duration - measured_duration
-    if shortfall > MAX_CLONE_PAD_SECONDS + 1e-6:
-        raise MediaError(
-            f"镜头 {source.name} 实测 {measured_duration:.3f} 秒，"
-            f"短于口播时间窗 {required_duration:.3f} 秒；"
-            "已停止合成，避免用长时间静止尾帧补齐。"
-        )
     filters = [
         f"scale={width}:{height}:force_original_aspect_ratio=increase",
         f"crop={width}:{height}",
-        "fps=30",
     ]
     if shortfall > 0:
-        # Only cover sub-frame/container rounding. Materially short clips are rejected above.
+        # Keep every frame moving.  A generated clip that is slightly shorter
+        # than its real narration window is slowed continuously instead of
+        # cloning the last frame or failing the production.
         filters.append(
-            "tpad=stop_mode=clone:"
-            f"stop_duration={min(MAX_CLONE_PAD_SECONDS, shortfall + 1 / 30):.6f}"
+            f"setpts={required_duration / measured_duration:.8f}*(PTS-STARTPTS)"
         )
+    else:
+        filters.append("setpts=PTS-STARTPTS")
     filters.extend(
         [
+            "fps=30",
             f"trim=duration={required_duration:.6f}",
-            "setpts=PTS-STARTPTS",
             "format=yuv420p",
         ]
     )
@@ -362,12 +393,25 @@ def _material_timeline(
     timeline: list[dict[str, Any]] = []
     total_duration = max(0.5, _finite_number(narration_duration, 0.5))
     text_length = max(1, len(narration_text))
-    scene_count = max(1, len(scene_timeline))
+    scene_count = max(
+        1,
+        max(
+            (int(_finite_number(item.get("sourceSceneNumber"), item.get("sceneNumber") or 1)) for item in scene_timeline),
+            default=1,
+        ),
+    )
     for index, asset in enumerate(assets):
         scene_number = max(1, min(scene_count, int(_finite_number(asset.get("scene_number"), 1))))
-        scene = scene_timeline[scene_number - 1]
-        scene_start = max(0.0, float(scene["start"]))
-        scene_end = min(total_duration, float(scene["end"]))
+        scene_fragments = [
+            item
+            for item in scene_timeline
+            if int(_finite_number(item.get("sourceSceneNumber"), item.get("sceneNumber") or 1))
+            == scene_number
+        ]
+        if not scene_fragments:
+            continue
+        scene_start = max(0.0, min(float(item["start"]) for item in scene_fragments))
+        scene_end = min(total_duration, max(float(item["end"]) for item in scene_fragments))
         scene_window = max(0.25, scene_end - scene_start)
         padding = min(0.35, scene_window * 0.08)
         requested_duration = max(0.5, _finite_number(asset.get("duration_sec"), 3.6))
@@ -722,6 +766,14 @@ async def compose_variant(
     scene_timeline, transition_duration = build_scene_timeline(planned, narration_duration)
     normalized = [work_dir / f"normalized-{slug}-{index + 1}.mp4" for index in range(len(clip_paths))]
     clip_infos = await asyncio.gather(*(probe(path) for path in clip_paths))
+    normalization_targets = [
+        max(
+            float(scene["duration"])
+            for scene in scene_timeline
+            if int(scene.get("sourceSceneNumber") or scene["sceneNumber"]) == source_index + 1
+        )
+        for source_index in range(len(clip_paths))
+    ]
     await asyncio.gather(
         *[
             _normalize_clip(
@@ -729,37 +781,48 @@ async def compose_variant(
                 target,
                 width,
                 height,
-                float(scene["duration"]),
+                target_duration,
                 float(info.get("duration") or 0),
             )
-            for source, target, scene, info in zip(
+            for source, target, target_duration, info in zip(
                 clip_paths,
                 normalized,
-                scene_timeline,
+                normalization_targets,
                 clip_infos,
             )
         ]
     )
+    physical_clips = [
+        normalized[int(scene.get("sourceSceneNumber") or scene["sceneNumber"]) - 1]
+        for scene in scene_timeline
+    ]
 
-    if len(normalized) == 1:
-        picture = normalized[0]
+    if len(physical_clips) == 1:
+        picture = physical_clips[0]
     else:
         picture = work_dir / f"picture-{slug}.mp4"
         command = [_binary("ffmpeg"), "-y"]
-        for path in normalized:
+        for path in physical_clips:
             command.extend(["-i", str(path)])
         filters: list[str] = []
-        current_label = "[0:v]"
-        current_duration = float(scene_timeline[0]["duration"])
-        for index in range(1, len(normalized)):
-            output_label = f"[vx{index}]"
-            transition_offset = max(0.0, current_duration - transition_duration)
+        if transition_duration <= 1e-6:
+            current_label = "[vconcat]"
             filters.append(
-                f"{current_label}[{index}:v]xfade=transition=fade:"
-                f"duration={transition_duration:.6f}:offset={transition_offset:.6f}{output_label}"
+                "".join(f"[{index}:v]" for index in range(len(physical_clips)))
+                + f"concat=n={len(physical_clips)}:v=1:a=0{current_label}"
             )
-            current_label = output_label
-            current_duration += float(scene_timeline[index]["duration"]) - transition_duration
+        else:
+            current_label = "[0:v]"
+            current_duration = float(scene_timeline[0]["duration"])
+            for index in range(1, len(physical_clips)):
+                output_label = f"[vx{index}]"
+                transition_offset = max(0.0, current_duration - transition_duration)
+                filters.append(
+                    f"{current_label}[{index}:v]xfade=transition=fade:"
+                    f"duration={transition_duration:.6f}:offset={transition_offset:.6f}{output_label}"
+                )
+                current_label = output_label
+                current_duration += float(scene_timeline[index]["duration"]) - transition_duration
         command.extend(
             [
                 "-filter_complex",
@@ -916,7 +979,22 @@ async def compose_variant(
         ],
         "bgm": str(resolved_bgm) if resolved_bgm else "",
         "sceneTimeline": [
-            {key: round(float(scene[key]), 3) if key != "sceneNumber" else scene[key] for key in ("sceneNumber", "start", "end", "duration")}
+            {
+                key: (
+                    scene[key]
+                    if key in {"sceneNumber", "sourceSceneNumber", "segmentNumber", "segmentCount"}
+                    else round(float(scene[key]), 3)
+                )
+                for key in (
+                    "sceneNumber",
+                    "sourceSceneNumber",
+                    "segmentNumber",
+                    "segmentCount",
+                    "start",
+                    "end",
+                    "duration",
+                )
+            }
             for scene in scene_timeline
         ],
         "probe": final_probe,

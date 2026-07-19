@@ -419,6 +419,18 @@ export function selectPersistentCanvasThumbnailUrl(
   return url && /^(?:https?:|\/)/.test(url) ? url : undefined;
 }
 
+export function mergeCanvasDisplayThumbnail(
+  localProject: Project,
+  serverThumbnailUrl?: string,
+): Project {
+  const thumbnailUrl = selectPersistentCanvasThumbnailUrl([], serverThumbnailUrl);
+  if (!thumbnailUrl || localProject.thumbnailUrl === thumbnailUrl) return localProject;
+  // Conflict reconciliation may use this helper only for presentation data.
+  // Spreading the local summary first preserves every local field and never
+  // advances revision, dirty state, or any full canvas payload.
+  return { ...localProject, thumbnailUrl };
+}
+
 function summaryEnvelope(envelope: PersistedCanvasEnvelope): string {
   const state = envelope.state;
   if (!state || !Array.isArray(state.projects)) return JSON.stringify(envelope);

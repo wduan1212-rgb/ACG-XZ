@@ -95,10 +95,10 @@ def _schedule(
     retry_scene_number: int | None = None,
     *,
     recompose_only: bool = False,
-) -> None:
+) -> bool:
     current = _project_tasks.get(project_id)
     if current is not None and not current.done():
-        return
+        return False
     run_options = {"retry_scene_number": retry_scene_number}
     if recompose_only:
         run_options["recompose_only"] = True
@@ -112,6 +112,7 @@ def _schedule(
             _project_tasks.pop(project_id, None)
 
     task.add_done_callback(clear)
+    return True
 
 
 def _retry_info(project: dict[str, Any]) -> dict[str, Any] | None:
@@ -186,7 +187,7 @@ def _requested_scene_number(text: str) -> int | None:
     patterns = (
         rf"(?:镜头|片段|视频)\s*(?:第\s*)?({number})(?:\s*(?:号|个))?",
         rf"第\s*({number})\s*(?:个|号)?\s*(?:镜头|片段|视频)",
-        rf"({number})\s*(?:号|个)\s*(?:镜头|片段|视频)",
+        rf"({number})\s*号\s*(?:镜头|片段|视频)",
     )
     for pattern in patterns:
         matched = re.search(pattern, text)
@@ -205,6 +206,15 @@ def _local_revision_request(
         return None
     text = re.sub(r"\s+", "", str(message or ""))
     if not text:
+        return None
+    scene_number = _requested_scene_number(text)
+    if scene_number is None and re.search(
+        r"新做|新生成|再做|另做|从头做|做一条新|做一个新|做不同版本|新视频|新成片",
+        text,
+    ):
+        # A new creative request in an existing conversation belongs to the
+        # director.  Never reinterpret quantities such as "3个镜头" as a
+        # request to mutate scene 3 of the previous delivery.
         return None
     revision_markers = (
         "修改",
@@ -312,9 +322,32 @@ def _local_revision_request(
             "instruction": str(message or "").strip(),
         }
 
-    if not any(marker in text for marker in revision_markers):
+    motion_issue_markers = (
+        "静止尾帧",
+        "静止帧",
+        "卡帧",
+        "画面不动",
+        "画面静止",
+        "缺镜头",
+        "少镜头",
+    )
+    has_revision_marker = any(marker in text for marker in revision_markers)
+    has_motion_issue = any(marker in text for marker in motion_issue_markers)
+    explicitly_remove_motion_issue = has_motion_issue and bool(
+        re.search(r"去掉|移除|删除|消除|避免|修复|解决|不要有|不能有|重新补|补一下", text)
+    )
+    has_motion_marker = (
+        explicitly_remove_motion_issue
+        and not ("保留" in text and "不要删除" in text)
+    )
+    if not has_revision_marker and not has_motion_marker:
         return None
-    number = _requested_scene_number(text)
+    number = scene_number
+    if number is None and has_motion_marker:
+        return {
+            "type": "motion_recompose",
+            "instruction": str(message or "").strip(),
+        }
     if number is None:
         return None
     scene_count = len([item for item in plan.get("scenes") or [] if isinstance(item, dict)])
@@ -347,6 +380,56 @@ def _local_revision_request(
         "sceneNumber": number,
         "instruction": str(message or "").strip(),
     }
+
+
+def _revision_message_for_continuation(
+    project: dict[str, Any],
+    current_message: str,
+) -> str:
+    compact = re.sub(r"\s+", "", str(current_message or "")).lower()
+    if compact not in {
+        "继续",
+        "继续制作",
+        "继续生成",
+        "确认继续",
+        "按这个做",
+        "执行吧",
+        "开始吧",
+        "什么",
+        "说啊",
+        "然后呢",
+    }:
+        return current_message
+    plan = project.get("plan") if isinstance(project.get("plan"), dict) else None
+    if plan is None:
+        return current_message
+    filler_messages = {
+        "继续",
+        "继续制作",
+        "继续生成",
+        "确认继续",
+        "按这个做",
+        "执行吧",
+        "开始吧",
+        "什么",
+        "说啊",
+        "然后呢",
+    }
+    messages = [item for item in project.get("messages") or [] if isinstance(item, dict)]
+    for item in reversed(messages[:-1]):
+        if item.get("role") != "user":
+            continue
+        candidate = str(item.get("content") or "").strip()
+        normalized = re.sub(r"\s+", "", candidate).lower()
+        if normalized in filler_messages:
+            continue
+        if _local_revision_request(candidate, plan, []):
+            return candidate
+        # Replaying the last meaningful user intent is safer than forwarding a
+        # context-free "继续/什么/说啊" to the director.  This does not add a
+        # prompt rule or force a tool; the director receives the user's own text.
+        return candidate
+    return current_message
 
 
 def _mark_orphaned_running_project(project_id: str) -> dict[str, Any]:
@@ -1119,7 +1202,8 @@ async def project_retry(project_id: str):
                 "已完成的口播和视频素材不会重复生成。",
                 kind="retry",
             )
-            _schedule(project_id, plan, retry_scene_number=scene_number)
+            if not _schedule(project_id, plan, retry_scene_number=scene_number):
+                raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
             return _project_response(await asyncio.to_thread(load_project, project_id))
 
     with _launching_project(project_id):
@@ -1206,7 +1290,8 @@ async def project_retry(project_id: str):
             f"{rewrite['public_thought']}本次只重试失败镜头，已成功的配音和视频素材会继续复用。",
             kind="retry",
         )
-        _schedule(project_id, plan, retry_scene_number=scene_number)
+        if not _schedule(project_id, plan, retry_scene_number=scene_number):
+            raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
         return _project_response(await asyncio.to_thread(load_project, project_id))
 
 
@@ -1393,6 +1478,21 @@ async def _handle_local_revision(
             event_detail = str(rewrite.get("change_summary") or assistant_text)
             retry_scene_number = scene_number
             recompose_only = False
+        elif revision_type == "motion_recompose":
+            revised_plan = dict(plan)
+            revision_record = {
+                "id": uuid.uuid4().hex[:16],
+                "type": "motion_timeline",
+                "instruction": str(revision.get("instruction") or "")[:1000],
+            }
+            assistant_text = (
+                "已保留原导演方案、口播和镜头素材。本次只按口播的真实时长重新建立"
+                "视频时间线，移除静止尾帧补时；旧成片仍保留在历史成片中。"
+            )
+            event_title = "视频时间线修订已锁定"
+            event_detail = "复用原音画，按真实口播时长重新编排连续运动画面。"
+            retry_scene_number = None
+            recompose_only = True
         else:
             subtitle_style = await director.revise_subtitle_style(
                 plan,
@@ -1425,6 +1525,8 @@ async def _handle_local_revision(
         )
         raise HTTPException(502, str(exc))
 
+    if _project_has_active_work(project_id):
+        raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
     with _launching_project(project_id):
         def mark_revision(item: dict[str, Any]) -> None:
             history = [row for row in item.get("revisionHistory") or [] if isinstance(row, dict)]
@@ -1453,12 +1555,13 @@ async def _handle_local_revision(
             assistant_text,
             kind="plan",
         )
-        _schedule(
+        if not _schedule(
             project_id,
             revised_plan,
             retry_scene_number=retry_scene_number,
             recompose_only=recompose_only,
-        )
+        ):
+            raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
     return await asyncio.to_thread(load_project, project_id)
 
 
@@ -1471,6 +1574,8 @@ async def chat(req: ChatRequest):
         project = await asyncio.to_thread(create_project)
     if project.get("status") == "running":
         raise HTTPException(409, "当前项目仍在制作，请等待完成")
+    if _project_has_active_work(str(project.get("id") or "")):
+        raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
     try:
         selected_voice_id = _selected_voice_id(req, project)
     except ValueError as exc:
@@ -1512,13 +1617,27 @@ async def chat(req: ChatRequest):
 
     await asyncio.to_thread(mutate_project, project["id"], name_from_first_message)
     project = await asyncio.to_thread(load_project, project["id"])
+    revision_message = _revision_message_for_continuation(project, req.message)
     revision_result = await _handle_local_revision(
         project,
-        req.message,
+        revision_message,
         saved_attachments,
     )
     if revision_result is not None:
         return revision_result
+    compact_message = re.sub(r"\s+", "", req.message).lower()
+    if compact_message in {
+        "继续",
+        "继续制作",
+        "继续生成",
+        "确认继续",
+        "按这个做",
+        "执行吧",
+        "开始吧",
+    }:
+        retryable = _retry_info(project)
+        if project.get("status") == "failed" and retryable:
+            return await project_retry(project["id"])
     try:
         await _transcribe_candidate(project["id"], req.message, saved_attachments)
     except TranscriptionError as exc:
@@ -1583,6 +1702,11 @@ async def chat(req: ChatRequest):
         director_messages = _director_messages_without_voice_id_directives(
             project["messages"]
         )
+        if revision_message != req.message:
+            for message in reversed(director_messages):
+                if message.get("role") == "user":
+                    message["content"] = revision_message
+                    break
         decision = await director.decide(
             director_messages,
             aspect_ratio,
@@ -1603,11 +1727,12 @@ async def chat(req: ChatRequest):
         raise HTTPException(502, str(exc))
 
     if decision["action"] == "ask":
+        question = str(decision.get("question") or "").strip()
         await asyncio.to_thread(
             add_message,
             project["id"],
             "assistant",
-            decision["question"],
+            question,
             kind="question",
             suggestions=decision.get("suggestions") or [],
         )
@@ -1642,6 +1767,8 @@ async def chat(req: ChatRequest):
             "brief",
         )
 
+    if _project_has_active_work(project["id"]):
+        raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
     with _launching_project(project["id"]):
         def mark_running(item: dict[str, Any]) -> None:
             item["status"] = "running"
@@ -1658,7 +1785,8 @@ async def chat(req: ChatRequest):
             f"信息够了。我会用“{plan['title']}”这个方向制作：{plan.get('director_note') or '镜头结构和节奏将按口播内容展开。'}",
             kind="plan",
         )
-        _schedule(project["id"], plan)
+        if not _schedule(project["id"], plan):
+            raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
         return await asyncio.to_thread(load_project, project["id"])
 
 
