@@ -93,13 +93,16 @@ def _schedule(
     project_id: str,
     plan: dict[str, Any],
     retry_scene_number: int | None = None,
+    *,
+    recompose_only: bool = False,
 ) -> None:
     current = _project_tasks.get(project_id)
     if current is not None and not current.done():
         return
-    task = asyncio.create_task(
-        pipeline.run(project_id, plan, retry_scene_number=retry_scene_number)
-    )
+    run_options = {"retry_scene_number": retry_scene_number}
+    if recompose_only:
+        run_options["recompose_only"] = True
+    task = asyncio.create_task(pipeline.run(project_id, plan, **run_options))
     _tasks.add(task)
     _project_tasks[project_id] = task
 
@@ -139,6 +142,211 @@ def _retry_info(project: dict[str, Any]) -> dict[str, Any] | None:
     if project_id and narration_exists and missing_scenes:
         return {"type": "resume_missing", "sceneNumber": missing_scenes[0]}
     return None
+
+
+_CHINESE_SCENE_NUMBERS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+}
+
+
+def _scene_number(value: str) -> int:
+    token = str(value or "").strip()
+    if token.isdigit():
+        return int(token)
+    direct = _CHINESE_SCENE_NUMBERS.get(token)
+    if direct is not None:
+        return direct
+    # 视频工坊通常只有少量镜头，但兼容“第十二个镜头、二十一号片段”
+    # 等自然表达。拒绝“一二”这类不规范串，避免猜错后修改错误镜头。
+    if token.count("十") == 1:
+        tens, units = token.split("十", 1)
+        if len(tens) > 1 or len(units) > 1:
+            return 0
+        tens_value = 1 if not tens else _CHINESE_SCENE_NUMBERS.get(tens, -1)
+        units_value = 0 if not units else _CHINESE_SCENE_NUMBERS.get(units, -1)
+        if 1 <= tens_value <= 9 and 0 <= units_value <= 9:
+            return tens_value * 10 + units_value
+    return 0
+
+
+def _requested_scene_number(text: str) -> int | None:
+    number = r"(?:[0-9]+|[零〇一二两三四五六七八九十]+)"
+    patterns = (
+        rf"(?:镜头|片段|视频)\s*(?:第\s*)?({number})(?:\s*(?:号|个))?",
+        rf"第\s*({number})\s*(?:个|号)?\s*(?:镜头|片段|视频)",
+        rf"({number})\s*(?:号|个)\s*(?:镜头|片段|视频)",
+    )
+    for pattern in patterns:
+        matched = re.search(pattern, text)
+        if matched:
+            return _scene_number(matched.group(1))
+    return None
+
+
+def _local_revision_request(
+    message: str,
+    plan: dict[str, Any] | None,
+    current_assets: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Recognize safe, local edits without turning ordinary chat into a rebuild."""
+    if not isinstance(plan, dict) or not plan.get("scenes") or current_assets:
+        return None
+    text = re.sub(r"\s+", "", str(message or ""))
+    if not text:
+        return None
+    revision_markers = (
+        "修改",
+        "调整",
+        "重做",
+        "重新生成",
+        "重新做",
+        "重新编排",
+        "替换",
+        "换掉",
+        "换一下",
+        "更换",
+        "改一下",
+        "改成",
+        "改为",
+        "变成",
+        "恢复",
+        "不满意",
+        "不对",
+        "不自然",
+        "有瑕疵",
+        "有问题",
+        "错了",
+    )
+
+    if "字幕" in text:
+        layout_markers = (
+            "字号",
+            "字体",
+            "太大",
+            "太小",
+            "大一点",
+            "小一点",
+            "放大",
+            "缩小",
+            "靠上",
+            "靠下",
+            "上移",
+            "下移",
+            "位置",
+            "排版",
+            "编排",
+            "分句",
+            "断句",
+            "每行",
+            "一行",
+            "两行",
+            "行数",
+            "动效",
+            "动画",
+            "颜色",
+            "描边",
+            "阴影",
+            "透明度",
+            "安全区",
+            "红色",
+            "白色",
+            "黄色",
+            "黑色",
+        )
+        has_layout_request = any(marker in text for marker in layout_markers)
+        changes_spoken_text = bool(
+            re.search(
+                r"字幕(?:文字|内容|文案|台词)(?:需要)?(?:修改|改|换|替换|变)(?:成|为)",
+                text,
+            )
+            or re.search(r"把字幕(?:文字|内容|文案|台词)(?:修改|改|换|替换)(?:成|为)", text)
+            or re.search(
+                r"字幕(?:文字|内容|文案|台词)?(?:和|与|跟)(?:口播|配音|声音)"
+                r"(?:不太一致|不太一样|不一致|不一样|不同|对不上|不匹配)",
+                text,
+            )
+            or any(
+                marker in text
+                for marker in (
+                    "替换字幕文字",
+                    "修改字幕文案",
+                    "修改字幕内容",
+                    "字幕文字不对",
+                    "字幕内容不对",
+                    "字幕文案不对",
+                    "字幕错了",
+                    "字幕有错",
+                    "字幕识别错",
+                    "字幕漏字",
+                    "字幕错字",
+                    "字幕多字",
+                    "字幕少字",
+                    "字幕不是口播",
+                )
+            )
+        )
+        if not changes_spoken_text and re.search(r"把字幕(?:修改|改|换|替换)(?:成|为)", text):
+            # “把字幕改成红色/小一点”属于样式；没有任何样式线索时，
+            # 视为要改字幕正文，先询问是否同步重做口播。
+            changes_spoken_text = not has_layout_request
+        if not (
+            changes_spoken_text
+            or has_layout_request
+            or any(marker in text for marker in revision_markers)
+        ):
+            return None
+        return {
+            "type": "subtitle_text" if changes_spoken_text else "subtitle_layout",
+            "instruction": str(message or "").strip(),
+        }
+
+    if not any(marker in text for marker in revision_markers):
+        return None
+    number = _requested_scene_number(text)
+    if number is None:
+        return None
+    scene_count = len([item for item in plan.get("scenes") or [] if isinstance(item, dict)])
+    if number < 1 or number > scene_count:
+        return {"type": "invalid_scene", "sceneNumber": number, "sceneCount": scene_count}
+    if any(
+        marker in text
+        for marker in (
+            "口播",
+            "旁白",
+            "配音",
+            "声音",
+            "音色",
+            "语速",
+            "时长",
+            "几秒",
+            "秒",
+            "BGM",
+            "bgm",
+            "背景音乐",
+        )
+    ):
+        return {
+            "type": "timeline_change",
+            "sceneNumber": number,
+            "sceneCount": scene_count,
+        }
+    return {
+        "type": "scene",
+        "sceneNumber": number,
+        "instruction": str(message or "").strip(),
+    }
 
 
 def _mark_orphaned_running_project(project_id: str) -> dict[str, Any]:
@@ -310,12 +518,15 @@ _ALLOWED_ATTACHMENT_MIMES = {
     "audio/x-m4a",
     "audio/m4a",
 }
+_MAX_ATTACHMENTS_PER_MESSAGE = 8
 
 
 def _decode_attachments(attachments: list[Attachment]) -> list[tuple[Attachment, str, bytes]]:
+    if len(attachments) > _MAX_ATTACHMENTS_PER_MESSAGE:
+        raise HTTPException(400, "每条消息最多添加 8 个附件")
     decoded: list[tuple[Attachment, str, bytes]] = []
     total_bytes = 0
-    for item in attachments[:8]:
+    for item in attachments:
         match = re.match(r"^data:((?:image|video|audio)/[a-zA-Z0-9.+-]+);base64,(.+)$", item.dataUrl, re.S)
         if not match:
             continue
@@ -340,14 +551,13 @@ def _decode_attachments(attachments: list[Attachment]) -> list[tuple[Attachment,
 def _save_attachments(
     project_id: str,
     decoded: list[tuple[Attachment, str, bytes]],
-    existing_assets: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     saved: list[dict[str, Any]] = []
     target_dir = settings.uploads_dir / project_id
     target_dir.mkdir(parents=True, exist_ok=True)
-    image_count = sum(1 for item in existing_assets if str(item.get("mime") or "").startswith("image/"))
-    video_count = sum(1 for item in existing_assets if str(item.get("mime") or "").startswith("video/"))
-    audio_count = sum(1 for item in existing_assets if str(item.get("mime") or "").startswith("audio/"))
+    image_count = 0
+    video_count = 0
+    audio_count = 0
     extensions = {
         "image/png": ".png",
         "image/jpeg": ".jpg",
@@ -652,9 +862,12 @@ def _narration_candidate(message: str, assets: list[dict[str, Any]]) -> dict[str
     return None
 
 
-async def _transcribe_candidate(project_id: str, message: str) -> str:
-    project = await asyncio.to_thread(load_project, project_id)
-    candidate = _narration_candidate(message, list((project or {}).get("assets") or []))
+async def _transcribe_candidate(
+    project_id: str,
+    message: str,
+    current_assets: list[dict[str, Any]],
+) -> str:
+    candidate = _narration_candidate(message, current_assets)
     if not candidate:
         return ""
     source = settings.uploads_dir / project_id / Path(str(candidate.get("url") or "")).name
@@ -672,6 +885,7 @@ async def _transcribe_candidate(project_id: str, message: str) -> str:
         source,
         settings.outputs_dir / project_id / "transcript",
     )
+    candidate["transcript"] = result
 
     def save_transcript(item: dict[str, Any]) -> None:
         for asset in item.get("assets") or []:
@@ -1062,8 +1276,196 @@ async def project_cancel(project_id: str):
     return _project_response(await asyncio.to_thread(load_project, project_id))
 
 
+async def _handle_local_revision(
+    project: dict[str, Any],
+    message: str,
+    current_assets: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    plan = project.get("plan") if isinstance(project.get("plan"), dict) else None
+    revision = _local_revision_request(message, plan, current_assets)
+    if not revision or plan is None:
+        return None
+
+    project_id = str(project.get("id") or "")
+    revision_type = str(revision.get("type") or "")
+    if revision_type == "invalid_scene":
+        scene_count = int(revision.get("sceneCount") or 0)
+        reply = f"当前只有 {scene_count} 个镜头，请告诉我要修改镜头 1 到镜头 {scene_count} 中的哪一个。"
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            reply,
+            kind="question",
+        )
+        return await asyncio.to_thread(load_project, project_id)
+    if revision_type == "timeline_change":
+        reply = (
+            "这项修改会改变口播或总时长，不能只替换一个镜头，否则音画会错位。"
+            "请确认要重新规划整条音画时间线；原成片会继续保留在历史成片中。"
+        )
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            reply,
+            kind="question",
+            suggestions=["确认重新规划整条视频", "只调整这个镜头画面", "保持口播和时长不变"],
+        )
+        return await asyncio.to_thread(load_project, project_id)
+    if revision_type == "subtitle_text":
+        reply = (
+            "字幕文字必须与原口播一致。如果这是识别、错字或漏字问题，可以让字幕恢复为原口播，"
+            "复用原音画重新合成；若要采用新的字幕文字，则需要同步修改并重做口播。"
+        )
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            reply,
+            kind="question",
+            suggestions=["让字幕恢复为原口播并重新合成", "确认同步修改并重做口播", "保持字幕内容不变"],
+        )
+        return await asyncio.to_thread(load_project, project_id)
+
+    scenes = [item for item in list(plan.get("scenes") or []) if isinstance(item, dict)]
+    work_dir = settings.outputs_dir / project_id
+    required_sources = [work_dir / "narration.mp3"]
+    if revision_type == "scene":
+        requested_number = int(revision.get("sceneNumber") or 0)
+        required_sources.extend(
+            work_dir / f"scene-{index:02d}.mp4"
+            for index in range(1, len(scenes) + 1)
+            if index != requested_number
+        )
+    else:
+        required_sources.extend(
+            work_dir / f"scene-{index:02d}.mp4"
+            for index in range(1, len(scenes) + 1)
+        )
+    missing_sources = [path.name for path in required_sources if not path.is_file()]
+    if missing_sources:
+        reply = (
+            "原成片的音画源文件不完整，不能安全执行局部修改，否则会意外重做口播或其他镜头。"
+            "请先恢复原素材，或确认重新制作完整视频。缺少："
+            + "、".join(missing_sources[:8])
+        )
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            reply,
+            kind="question",
+            suggestions=["重新制作完整视频", "保持现有成片不变"],
+        )
+        return await asyncio.to_thread(load_project, project_id)
+
+    try:
+        if revision_type == "scene":
+            scene_number = int(revision["sceneNumber"])
+            rewrite = await director.revise_scene(
+                plan,
+                scene_number,
+                str(revision.get("instruction") or ""),
+            )
+            scenes = [dict(item) for item in scenes]
+            original_prompt = str(scenes[scene_number - 1].get("visual_prompt") or "")
+            scenes[scene_number - 1]["visual_prompt"] = rewrite["visual_prompt"]
+            if rewrite.get("title"):
+                scenes[scene_number - 1]["title"] = rewrite["title"]
+            if rewrite.get("purpose"):
+                scenes[scene_number - 1]["purpose"] = rewrite["purpose"]
+            revised_plan = {**plan, "scenes": scenes}
+            revision_record = {
+                "id": uuid.uuid4().hex[:16],
+                "type": "scene",
+                "sceneNumber": scene_number,
+                "instruction": str(revision.get("instruction") or "")[:1000],
+                "originalPrompt": original_prompt,
+                "revisedPrompt": rewrite["visual_prompt"],
+                "summary": str(rewrite.get("change_summary") or "")[:300],
+            }
+            assistant_text = (
+                f"已按你的意见改写镜头 {scene_number}。本次只重新生成这一段，"
+                "其余镜头、原口播和配乐会继续复用；旧成片仍保留在历史成片中。"
+            )
+            event_title = f"镜头 {scene_number} 局部修订已锁定"
+            event_detail = str(rewrite.get("change_summary") or assistant_text)
+            retry_scene_number = scene_number
+            recompose_only = False
+        else:
+            subtitle_style = await director.revise_subtitle_style(
+                plan,
+                str(revision.get("instruction") or ""),
+            )
+            revised_plan = {**plan, "subtitle_style": subtitle_style}
+            revision_record = {
+                "id": uuid.uuid4().hex[:16],
+                "type": "subtitles",
+                "instruction": str(revision.get("instruction") or "")[:1000],
+                "subtitleStyle": subtitle_style,
+            }
+            assistant_text = (
+                "字幕编排已更新。本次不会重新生成镜头或口播，只复用原音画重新分句、"
+                "排版并合成；旧成片仍保留在历史成片中。"
+            )
+            event_title = "字幕局部修订已锁定"
+            event_detail = str(subtitle_style.get("public_summary") or assistant_text)
+            retry_scene_number = None
+            recompose_only = True
+    except ProviderError as exc:
+        await asyncio.to_thread(
+            add_event,
+            project_id,
+            "局部修订未完成",
+            str(exc),
+            "error",
+            None,
+            "brief",
+        )
+        raise HTTPException(502, str(exc))
+
+    with _launching_project(project_id):
+        def mark_revision(item: dict[str, Any]) -> None:
+            history = [row for row in item.get("revisionHistory") or [] if isinstance(row, dict)]
+            item["revisionHistory"] = [revision_record, *history][:50]
+            item["plan"] = revised_plan
+            item["status"] = "running"
+            item["phase"] = "production"
+            item["progress"] = 12
+            item["error"] = ""
+            item["retryable"] = None
+
+        await asyncio.to_thread(mutate_project, project_id, mark_revision)
+        await asyncio.to_thread(
+            add_event,
+            project_id,
+            event_title,
+            event_detail,
+            "running",
+            12,
+            "production",
+        )
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            assistant_text,
+            kind="plan",
+        )
+        _schedule(
+            project_id,
+            revised_plan,
+            retry_scene_number=retry_scene_number,
+            recompose_only=recompose_only,
+        )
+    return await asyncio.to_thread(load_project, project_id)
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
+    if len(req.attachments) > _MAX_ATTACHMENTS_PER_MESSAGE:
+        raise HTTPException(400, "每条消息最多添加 8 个附件")
     project = await asyncio.to_thread(load_project, req.projectId) if req.projectId else None
     if project is None:
         project = await asyncio.to_thread(create_project)
@@ -1088,8 +1490,7 @@ async def chat(req: ChatRequest):
     aspect_ratio = _infer_aspect_ratio(f"{previous_user_text}\n{req.message}")
     decoded_attachments = await asyncio.to_thread(_decode_attachments, req.attachments)
 
-    existing_assets = list(project.get("assets") or [])
-    saved_attachments = _save_attachments(project["id"], decoded_attachments, existing_assets)
+    saved_attachments = _save_attachments(project["id"], decoded_attachments)
     saved_attachments = await _enrich_saved_attachments(project["id"], saved_attachments)
 
     if saved_attachments:
@@ -1110,8 +1511,16 @@ async def chat(req: ChatRequest):
             item["name"] = req.message.strip().replace("\n", " ")[:28]
 
     await asyncio.to_thread(mutate_project, project["id"], name_from_first_message)
+    project = await asyncio.to_thread(load_project, project["id"])
+    revision_result = await _handle_local_revision(
+        project,
+        req.message,
+        saved_attachments,
+    )
+    if revision_result is not None:
+        return revision_result
     try:
-        await _transcribe_candidate(project["id"], req.message)
+        await _transcribe_candidate(project["id"], req.message, saved_attachments)
     except TranscriptionError as exc:
         question = f"{exc}。你可以重新上传音频，或同时粘贴口播文本继续。"
         await asyncio.to_thread(
@@ -1145,7 +1554,7 @@ async def chat(req: ChatRequest):
     director_assets = await asyncio.to_thread(
         _hydrate_assets_for_director,
         project["id"],
-        list(project.get("assets") or []),
+        saved_attachments,
     )
     missing_labels = _missing_asset_labels(req.message, director_assets)
     if missing_labels:
@@ -1216,7 +1625,7 @@ async def chat(req: ChatRequest):
     plan = decision["plan"]
     plan["skill"] = SKILL_NAME
     plan["voice_id"] = selected_voice_id
-    asset_summary = _apply_asset_plan(plan, list(project.get("assets") or []))
+    asset_summary = _apply_asset_plan(plan, saved_attachments)
     narration_asset = plan.get("narration_audio") or {}
     transcript_text = str((narration_asset.get("transcript") or {}).get("text") or "").strip()
     if transcript_text:

@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import asyncio
+import importlib
+import sys
+import tempfile
+import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+pipeline_module = importlib.import_module("app.pipeline")
+
+
+def _plan(scene_count: int = 1) -> dict:
+    return {
+        "title": "pipeline transaction test",
+        "narration": "transaction test narration",
+        "aspect_ratio": "9:16",
+        "scenes": [
+            {"duration_sec": 4, "visual_prompt": f"scene {index}"}
+            for index in range(1, scene_count + 1)
+        ],
+    }
+
+
+class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.outputs_dir = self.root / "outputs"
+        self.uploads_dir = self.root / "uploads"
+        self.outputs_dir.mkdir()
+        self.uploads_dir.mkdir()
+        self.project_id = "transaction-test"
+        self.work_dir = self.outputs_dir / self.project_id
+        self.project = {
+            "id": self.project_id,
+            "status": "running",
+            "phase": "production",
+            "progress": 10,
+            "outputs": [],
+            "deliveries": [],
+            "events": [],
+            "messages": [],
+        }
+        self.settings_patch = patch.object(
+            pipeline_module,
+            "settings",
+            SimpleNamespace(
+                outputs_dir=self.outputs_dir,
+                uploads_dir=self.uploads_dir,
+            ),
+        )
+        self.settings_patch.start()
+
+    async def asyncTearDown(self) -> None:
+        self.settings_patch.stop()
+        self.temp.cleanup()
+
+    def _mutate(self, _project_id: str, callback):
+        callback(self.project)
+        return self.project
+
+    async def _tts_generate(self, _text: str, output: Path, **_kwargs):
+        output.write_bytes(b"narration")
+        return {"path": str(output)}
+
+    async def _probe(self, path: Path) -> dict:
+        return {"duration": 4.0 if path.name == "narration.mp3" else 5.0}
+
+    async def _compose(self, *_args, **kwargs) -> dict:
+        output = Path(kwargs.get("work_dir") or _args[4]) / "render.mp4"
+        output.write_bytes(b"render")
+        return {
+            "path": str(output),
+            "aspectRatio": "9:16",
+            "width": 720,
+            "height": 1280,
+            "probe": {"duration": 4.0},
+            "captionCues": [],
+            "materialCues": [],
+            "sfxCues": [],
+        }
+
+    def _common_patches(self, instance: pipeline_module.VideoPipeline):
+        return (
+            patch.object(instance, "_event", AsyncMock()),
+            patch.object(pipeline_module, "load_project", return_value=self.project),
+            patch.object(pipeline_module, "mutate_project", side_effect=self._mutate),
+            patch.object(pipeline_module.tts, "generate", new=self._tts_generate),
+            patch.object(pipeline_module, "probe", new=self._probe),
+            patch.object(pipeline_module.bgm_library, "resolve", return_value=None),
+        )
+
+    async def test_qa_failure_keeps_existing_scene(self) -> None:
+        instance = pipeline_module.VideoPipeline()
+        self.work_dir.mkdir()
+        old_scene = self.work_dir / "scene-01.mp4"
+        old_scene.write_bytes(b"old-scene")
+
+        async def generate(_prompt, _aspect, output: Path, **_kwargs):
+            output.write_bytes(b"new-scene")
+            return {"path": str(output)}
+
+        inspect_video = Mock(return_value={"success": False, "error": "qa failed"})
+        with ExitStack() as stack:
+            for common_patch in self._common_patches(instance):
+                stack.enter_context(common_patch)
+            stack.enter_context(patch.object(pipeline_module.seedance, "generate", new=generate))
+            stack.enter_context(patch.object(pipeline_module, "compose_variant", new=self._compose))
+            stack.enter_context(patch.object(
+                pipeline_module.openmontage,
+                "validate_composition",
+                return_value={"success": True},
+            ))
+            stack.enter_context(patch.object(
+                pipeline_module.openmontage,
+                "inspect_video",
+                inspect_video,
+            ))
+            stack.enter_context(patch.object(pipeline_module, "add_event"))
+            stack.enter_context(patch.object(pipeline_module, "add_message"))
+            await instance.run(self.project_id, _plan())
+
+        self.assertEqual(old_scene.read_bytes(), b"old-scene")
+        self.assertEqual(self.project["status"], "failed")
+        inspect_video.assert_called_once()
+        self.assertEqual(list(self.work_dir.glob("*.candidate.mp4")), [])
+
+    async def test_notification_failure_does_not_undo_committed_delivery(self) -> None:
+        instance = pipeline_module.VideoPipeline()
+        self.work_dir.mkdir()
+        old_scene = self.work_dir / "scene-01.mp4"
+        old_scene.write_bytes(b"old-scene")
+
+        async def generate(_prompt, _aspect, output: Path, **_kwargs):
+            output.write_bytes(b"new-scene")
+            return {"path": str(output)}
+
+        add_event = Mock(side_effect=RuntimeError("event unavailable"))
+        add_message = Mock(side_effect=RuntimeError("message unavailable"))
+        with ExitStack() as stack:
+            for common_patch in self._common_patches(instance):
+                stack.enter_context(common_patch)
+            stack.enter_context(patch.object(pipeline_module.seedance, "generate", new=generate))
+            stack.enter_context(patch.object(pipeline_module, "compose_variant", new=self._compose))
+            stack.enter_context(patch.object(
+                pipeline_module.openmontage,
+                "validate_composition",
+                return_value={"success": True},
+            ))
+            stack.enter_context(patch.object(
+                pipeline_module.openmontage,
+                "inspect_video",
+                return_value={"success": True},
+            ))
+            stack.enter_context(patch.object(pipeline_module, "add_event", add_event))
+            stack.enter_context(patch.object(pipeline_module, "add_message", add_message))
+            await instance.run(self.project_id, _plan())
+
+        self.assertEqual(self.project["status"], "succeeded")
+        self.assertEqual(self.project["phase"], "delivery")
+        self.assertTrue(self.project["outputs"])
+        self.assertEqual(old_scene.read_bytes(), b"new-scene")
+        self.assertEqual(add_event.call_count, 1)
+        self.assertEqual(add_message.call_count, 1)
+        self.assertEqual(list(self.work_dir.glob("*.candidate.mp4")), [])
+        self.assertEqual(list(self.work_dir.glob(".*.backup")), [])
+
+    async def test_failed_candidate_cancels_and_reaps_siblings_before_cleanup(self) -> None:
+        instance = pipeline_module.VideoPipeline()
+        slow_started = asyncio.Event()
+        slow_reaped = asyncio.Event()
+
+        async def generate(_prompt, _aspect, output: Path, *, scene_number: int, **_kwargs):
+            output.write_bytes(f"candidate-{scene_number}".encode())
+            if scene_number == 1:
+                slow_started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    slow_reaped.set()
+                return {"path": str(output)}
+            await slow_started.wait()
+            raise RuntimeError("candidate failed")
+
+        with ExitStack() as stack:
+            for common_patch in self._common_patches(instance):
+                stack.enter_context(common_patch)
+            stack.enter_context(patch.object(pipeline_module.seedance, "generate", new=generate))
+            stack.enter_context(patch.object(pipeline_module, "add_event"))
+            stack.enter_context(patch.object(pipeline_module, "add_message"))
+            await instance.run(self.project_id, _plan(scene_count=2))
+
+        self.assertTrue(slow_reaped.is_set())
+        self.assertEqual(self.project["status"], "failed")
+        self.assertEqual(list(self.work_dir.glob("*.candidate.mp4")), [])
+        remaining = [
+            task
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task() and not task.done()
+        ]
+        self.assertEqual(remaining, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

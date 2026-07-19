@@ -170,7 +170,8 @@ renderProject = (project) => {{ state.project = project; state.projectId = proje
 enterStudio = () => {{}};
 refreshIcons = () => {{}};
 globalThis.__hooks = {{
-  state, dom, createClientId, addFiles, renderPendingRequest, sendMessage,
+  state, dom, createClientId, addFiles, renderAttachments, isolatePendingAttachments,
+  renderPendingRequest, sendMessage,
   attachmentStrip: document.querySelectorAll("[data-attachment-strip]")[0],
   failNextPendingRequest() {{
     const originalRenderPendingRequest = renderPendingRequest;
@@ -187,6 +188,16 @@ const hooks = context.__hooks;
 const firstId = hooks.createClientId();
 const secondId = hooks.createClientId();
 if (!firstId || firstId === secondId) throw new Error("fallback client IDs are not unique");
+
+hooks.state.projectId = "project-with-history";
+hooks.state.project = {{
+  id: "project-with-history",
+  assets: Array.from({{ length: 8 }}, (_, index) => ({{
+    asset_id: `old-${{index + 1}}`,
+    label: `旧图${{index + 1}}`,
+    mime: "image/png",
+  }})),
+}};
 
 const goodFile = {{
   name: "reference.png",
@@ -207,6 +218,22 @@ failingFile.fail = false;
 const retryAdd = await hooks.addFiles([failingFile]);
 if (retryAdd !== 1) throw new Error("failed attachment could not be retried");
 
+const fillFiles = Array.from({{ length: 6 }}, (_, index) => ({{
+  ...goodFile,
+  name: `reference-${{index + 3}}.png`,
+}}));
+const filled = await hooks.addFiles(fillFiles);
+if (filled !== 6 || hooks.state.attachments.length !== 8) {{
+  throw new Error("historical project assets incorrectly consumed the per-message attachment limit");
+}}
+if (hooks.state.attachments[0].label !== "图1" || hooks.state.attachments[7].label !== "图8") {{
+  throw new Error("per-message attachment labels did not start from 图1");
+}}
+const ninth = await hooks.addFiles([{{ ...goodFile, name: "reference-9.png" }}]);
+if (ninth !== 0 || hooks.state.attachments.length !== 8) {{
+  throw new Error("ninth attachment was not rejected for the current message");
+}}
+
 const pendingId = hooks.renderPendingRequest("先预览 pending", [...hooks.state.attachments]);
 if (!pendingId || !hooks.state.project.messages.some((item) => item.kind === "pending")) {{
   throw new Error("optimistic pending request was not rendered");
@@ -220,7 +247,16 @@ context.fetch = async (url, options) => {{
   chatCalls.push({{ url, options }});
   return {{
     ok: true,
-    async json() {{ return {{ id: "project-success", status: "waiting", messages: [], events: [], outputs: [] }}; }},
+    async json() {{
+      return {{
+        id: "project-success",
+        status: "waiting",
+        messages: [],
+        events: [],
+        outputs: [],
+        assets: Array.from({{ length: 8 }}, (_, index) => ({{ asset_id: `saved-${{index + 1}}` }})),
+      }};
+    }},
   }};
 }};
 await hooks.sendMessage("创建一条测试视频", true);
@@ -228,8 +264,19 @@ if (chatCalls.length !== 1 || chatCalls[0].url !== "/api/chat") throw new Error(
 const sent = JSON.parse(chatCalls[0].options.body);
 if (sent.attachments.length !== 1 || sent.message !== "创建一条测试视频") throw new Error("chat payload is incomplete");
 if (hooks.state.busy) throw new Error("busy remained locked after success");
+if (hooks.state.attachments.length !== 0) throw new Error("successful request did not clear its attachment queue");
 
-hooks.state.attachments = [{{ ...sent.attachments[0], id: hooks.createClientId() }}];
+const freshAdded = await hooks.addFiles([{{ ...goodFile, name: "next-round.png" }}]);
+if (freshAdded !== 1 || hooks.state.attachments[0].label !== "图1") {{
+  throw new Error("next message did not restart attachment numbering from 图1");
+}}
+const nextRoundAttachment = hooks.state.attachments[0];
+const isolatedCount = hooks.isolatePendingAttachments("project-other");
+if (isolatedCount !== 1 || hooks.state.attachments.length !== 0) {{
+  throw new Error("pending attachments crossed project boundaries");
+}}
+
+hooks.state.attachments = [{{ ...nextRoundAttachment, id: hooks.createClientId() }}];
 context.fetch = async () => {{ throw new Error("simulated chat network failure"); }};
 await hooks.sendMessage("失败后可重试", false);
 if (hooks.state.busy) throw new Error("busy remained locked after failure");
@@ -277,6 +324,9 @@ console.log(JSON.stringify({{
   busyRecovered: hooks.state.busy === false,
   retryDraft: networkRetryDraft,
   restoredAttachments: networkRestoredAttachments,
+  currentMessageLimit: filled + 2,
+  nextRoundLabel: nextRoundAttachment.label,
+  isolatedCount,
   syncFailureDraft: hooks.dom.startInput.value,
   syncFailureRecovered: hooks.state.busy === false,
 }}));
@@ -289,6 +339,9 @@ console.log(JSON.stringify({{
         self.assertTrue(result["busyRecovered"])
         self.assertEqual(result["retryDraft"], "失败后可重试")
         self.assertEqual(result["restoredAttachments"], 1)
+        self.assertEqual(result["currentMessageLimit"], 8)
+        self.assertEqual(result["nextRoundLabel"], "图1")
+        self.assertEqual(result["isolatedCount"], 1)
         self.assertEqual(result["syncFailureDraft"], "同步准备失败后可重试")
         self.assertTrue(result["syncFailureRecovered"])
 
@@ -304,8 +357,8 @@ console.log(JSON.stringify({{
         self.assertIn('textarea.addEventListener("paste", async (event) => {', source)
         self.assertIn('dom.fileInput.addEventListener("change", async () => {', source)
         self.assertGreaterEqual(source.count("showAttachmentError(error)"), 4)
-        self.assertIn("app.js?v=20260718-16", index)
-        self.assertIn("styles.css?v=20260718-16", index)
+        self.assertIn("app.js?v=20260719-17", index)
+        self.assertIn("styles.css?v=20260719-17", index)
 
 
 if __name__ == "__main__":

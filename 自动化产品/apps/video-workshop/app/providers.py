@@ -18,8 +18,9 @@ from .config import settings
 ProgressCallback = Callable[[str, str, int], Awaitable[None]]
 
 NARRATION_UNITS_PER_SECOND = 4.35
-MIN_NARRATION_SPEED = 0.85
-MAX_NARRATION_SPEED = 1.15
+DEFAULT_NARRATION_SPEED = 1.2
+MIN_NARRATION_SPEED = 1.05
+MAX_NARRATION_SPEED = 1.35
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -66,7 +67,10 @@ def _narration_units(text: str) -> float:
 
 def _narration_unit_bounds(target_duration_sec: float) -> tuple[float, float]:
     duration = max(1.0, _safe_float(target_duration_sec, 1.0))
-    return duration * 3.7, duration * 4.95
+    return (
+        duration * 3.7 * DEFAULT_NARRATION_SPEED,
+        duration * 4.95 * DEFAULT_NARRATION_SPEED,
+    )
 
 
 def _narration_needs_duration_repair(text: str, target_duration_sec: float) -> bool:
@@ -78,10 +82,10 @@ def _narration_needs_duration_repair(text: str, target_duration_sec: float) -> b
 def _tts_speed_for_target(text: str, target_duration_sec: float | None) -> float:
     target = _safe_float(target_duration_sec, 0.0)
     if target <= 0:
-        return 1.0
+        return DEFAULT_NARRATION_SPEED
     estimated_duration = _narration_units(text) / NARRATION_UNITS_PER_SECOND
     if estimated_duration <= 0:
-        return 1.0
+        return DEFAULT_NARRATION_SPEED
     return round(
         max(
             MIN_NARRATION_SPEED,
@@ -179,21 +183,37 @@ def _llm_message_usable(data: Any) -> bool:
     if not calls and message.get("function_call"):
         calls = [{"function": message["function_call"]}]
     if calls:
-        function = (calls[0] or {}).get("function") or {}
-        arguments = function.get("arguments") or "{}"
-        if isinstance(arguments, str):
-            try:
-                json.loads(arguments)
-            except json.JSONDecodeError:
-                match = re.search(r"\{.*\}", arguments, re.S)
-                if not match:
-                    return False
-                try:
-                    json.loads(match.group(0))
-                except json.JSONDecodeError:
-                    return False
+        if not isinstance(calls, list) or not isinstance(calls[0], dict):
+            return False
+        function = calls[0].get("function") or {}
+        if not isinstance(function, dict):
+            return False
+        try:
+            _decode_tool_arguments(function.get("arguments"))
+        except ProviderError:
+            return False
         return bool(function.get("name"))
     return bool(str(message.get("content") or "").strip())
+
+
+def _decode_tool_arguments(value: Any) -> dict[str, Any]:
+    """Decode one tool argument object without greedy brace recovery.
+
+    Function-call arguments are required to be a JSON object.  Treating a
+    malformed string as a partial object can silently route the wrong local
+    edit, so malformed or non-object values are retried and then surfaced.
+    """
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        raise ProviderError("MiniMax-M3 返回了无法解析的工具参数")
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ProviderError("MiniMax-M3 返回了无法解析的工具参数") from exc
+    if not isinstance(decoded, dict):
+        raise ProviderError("MiniMax-M3 工具参数必须是对象")
+    return decoded
 
 
 async def _post_llm_json_with_retry(
@@ -591,7 +611,11 @@ class MiniMaxDirector:
         bgm_options = json.dumps(bgm_catalog, ensure_ascii=False)
         duration_instruction = ""
         if requested_duration_sec:
-            preferred_units = round(requested_duration_sec * NARRATION_UNITS_PER_SECOND)
+            preferred_units = round(
+                requested_duration_sec
+                * NARRATION_UNITS_PER_SECOND
+                * DEFAULT_NARRATION_SPEED
+            )
             minimum_units, maximum_units = _narration_unit_bounds(requested_duration_sec)
             duration_instruction = (
                 f"\n本轮用户明确要求成片约 {requested_duration_sec} 秒。"
@@ -624,22 +648,20 @@ class MiniMaxDirector:
 
     @staticmethod
     def _tool_call(message: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+        if not isinstance(message, dict):
+            raise ProviderError("MiniMax-M3 返回了无法解析的工具调用")
         calls = message.get("tool_calls") or []
         if not calls and message.get("function_call"):
             calls = [{"function": message["function_call"]}]
         if not calls:
             return None
+        if not isinstance(calls, list) or not isinstance(calls[0], dict):
+            raise ProviderError("MiniMax-M3 返回了无法解析的工具调用")
         function = calls[0].get("function") or {}
+        if not isinstance(function, dict):
+            raise ProviderError("MiniMax-M3 返回了无法解析的工具调用")
         name = str(function.get("name") or "")
-        arguments = function.get("arguments") or "{}"
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except json.JSONDecodeError:
-                match = re.search(r"\{.*\}", arguments, re.S)
-                if not match:
-                    raise ProviderError("MiniMax-M3 返回了无法解析的工具参数")
-                arguments = json.loads(match.group(0))
+        arguments = _decode_tool_arguments(function.get("arguments"))
         return name, arguments
 
     async def decide(
@@ -930,7 +952,11 @@ class MiniMaxDirector:
         plan: dict[str, Any],
         target_duration_sec: int,
     ) -> str:
-        preferred_units = round(target_duration_sec * NARRATION_UNITS_PER_SECOND)
+        preferred_units = round(
+            target_duration_sec
+            * NARRATION_UNITS_PER_SECOND
+            * DEFAULT_NARRATION_SPEED
+        )
         minimum_units, maximum_units = _narration_unit_bounds(target_duration_sec)
         repair_tool = {
             "type": "function",
@@ -1132,6 +1158,218 @@ class MiniMaxDirector:
             }
         except (KeyError, IndexError, TypeError, ValueError, httpx.HTTPError, ProviderError):
             return self._fallback_safe_rewrite(plan, scene_number)
+
+    async def revise_scene(
+        self,
+        plan: dict[str, Any],
+        scene_number: int,
+        instruction: str,
+    ) -> dict[str, str]:
+        if not settings.llm_api_key:
+            raise ProviderError("导演语言模型未配置，无法局部修改镜头")
+        scenes = [item for item in list(plan.get("scenes") or []) if isinstance(item, dict)]
+        if scene_number < 1 or scene_number > len(scenes):
+            raise ProviderError("找不到需要修改的镜头")
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "revise_one_scene",
+                "description": "只返回指定镜头的修订结果。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "visual_prompt": {"type": "string"},
+                        "title": {"type": "string"},
+                        "purpose": {"type": "string"},
+                        "change_summary": {"type": "string"},
+                    },
+                    "required": ["visual_prompt", "title", "purpose", "change_summary"],
+                },
+            },
+        }
+        payload = {
+            "model": settings.llm_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是星阵视频工坊的镜头修订导演。必须调用 revise_one_scene，"
+                        "只修改用户指定的一个镜头，不改口播、总时长、画幅、其他镜头或整体事实。"
+                        "新 visual_prompt 必须是可独立提交给视频模型的完整中文提示词，"
+                        "执行用户意见，同时保持与相邻镜头的人物、场景、色彩、光线和运动连续。"
+                        "不得输出隐藏思维链、真实密钥、夸张承诺或无法验证的事实。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "instruction": str(instruction or "")[:2000],
+                            "title": str(plan.get("title") or ""),
+                            "aspect_ratio": str(plan.get("aspect_ratio") or "9:16"),
+                            "tone": str(plan.get("tone") or ""),
+                            "narration": str(plan.get("narration") or "")[:5000],
+                            "scene_number": scene_number,
+                            "scene": scenes[scene_number - 1],
+                            "previous_scene": scenes[scene_number - 2] if scene_number > 1 else None,
+                            "next_scene": scenes[scene_number] if scene_number < len(scenes) else None,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "tools": [tool],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "revise_one_scene"},
+            },
+            "temperature": 0.15,
+            "thinking": {"type": settings.llm_thinking},
+            "reasoning_split": True,
+            "max_completion_tokens": min(settings.llm_max_completion_tokens, 8000),
+        }
+        data = await _post_llm_json_with_retry(payload, label="镜头局部修订")
+        try:
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError("镜头局部修订没有返回可用消息") from exc
+        call = self._tool_call(message)
+        if not call or call[0] != "revise_one_scene":
+            raise ProviderError("镜头局部修订没有返回结构化结果")
+        arguments = call[1]
+        required_text = {
+            key: str(arguments.get(key) or "").strip()
+            for key in ("visual_prompt", "title", "purpose", "change_summary")
+        }
+        if any(not value for value in required_text.values()):
+            raise ProviderError("镜头局部修订返回字段不完整")
+        visual_prompt = required_text["visual_prompt"]
+        if len(visual_prompt) < 40:
+            raise ProviderError("镜头局部修订返回的画面提示词不完整")
+        return {
+            "visual_prompt": visual_prompt[:2400],
+            "title": required_text["title"][:120],
+            "purpose": required_text["purpose"][:300],
+            "change_summary": required_text["change_summary"][:300],
+        }
+
+    async def revise_subtitle_style(
+        self,
+        plan: dict[str, Any],
+        instruction: str,
+    ) -> dict[str, Any]:
+        if not settings.llm_api_key:
+            raise ProviderError("导演语言模型未配置，无法智能调整字幕编排")
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "revise_subtitle_style",
+                "description": "只返回字幕排版参数，不修改口播文字。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "font_scale": {"type": "number", "minimum": 0.7, "maximum": 1.4},
+                        "vertical_position": {
+                            "type": "string",
+                            "enum": ["higher", "default", "lower"],
+                        },
+                        "max_chars": {"type": "integer", "minimum": 7, "maximum": 32},
+                        "animation": {
+                            "type": "string",
+                            "enum": ["minimal", "dynamic"],
+                        },
+                        "public_summary": {"type": "string"},
+                    },
+                    "required": [
+                        "font_scale",
+                        "vertical_position",
+                        "max_chars",
+                        "animation",
+                        "public_summary",
+                    ],
+                },
+            },
+        }
+        default_max_chars = 14 if str(plan.get("aspect_ratio") or "9:16") == "9:16" else 24
+        payload = {
+            "model": settings.llm_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是短视频字幕排版导演。必须调用 revise_subtitle_style。"
+                        "只根据用户意见调整分句密度、字号比例、垂直位置和动效；"
+                        "不得改写、增删或猜测任何口播文字，不得要求重新生成视频。"
+                        "参数要克制并保证手机端安全区和可读性。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "instruction": str(instruction or "")[:2000],
+                            "aspect_ratio": str(plan.get("aspect_ratio") or "9:16"),
+                            "current_style": plan.get("subtitle_style") or {
+                                "font_scale": 1.0,
+                                "vertical_position": "default",
+                                "max_chars": default_max_chars,
+                                "animation": "dynamic",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "tools": [tool],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "revise_subtitle_style"},
+            },
+            "temperature": 0.1,
+            "thinking": {"type": settings.llm_thinking},
+            "reasoning_split": True,
+            "max_completion_tokens": min(settings.llm_max_completion_tokens, 4000),
+        }
+        data = await _post_llm_json_with_retry(payload, label="字幕局部修订")
+        try:
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProviderError("字幕局部修订没有返回可用消息") from exc
+        call = self._tool_call(message)
+        if not call or call[0] != "revise_subtitle_style":
+            raise ProviderError("字幕局部修订没有返回结构化结果")
+        arguments = call[1]
+        required = {
+            "font_scale",
+            "vertical_position",
+            "max_chars",
+            "animation",
+            "public_summary",
+        }
+        if not required.issubset(arguments):
+            raise ProviderError("字幕局部修订返回字段不完整")
+        font_scale = _safe_float(arguments.get("font_scale"), math.nan)
+        max_chars_value = _safe_int(arguments.get("max_chars"), -1)
+        vertical_position = str(arguments.get("vertical_position") or "")
+        animation = str(arguments.get("animation") or "")
+        public_summary = str(arguments.get("public_summary") or "").strip()
+        if not 0.7 <= font_scale <= 1.4:
+            raise ProviderError("字幕局部修订返回的字号参数无效")
+        if not 7 <= max_chars_value <= 32:
+            raise ProviderError("字幕局部修订返回的分句参数无效")
+        if vertical_position not in {"higher", "default", "lower"}:
+            raise ProviderError("字幕局部修订返回的位置参数无效")
+        if animation not in {"minimal", "dynamic"}:
+            raise ProviderError("字幕局部修订返回的动效参数无效")
+        if not public_summary:
+            raise ProviderError("字幕局部修订返回的说明为空")
+        return {
+            "font_scale": font_scale,
+            "vertical_position": vertical_position,
+            "max_chars": max_chars_value,
+            "animation": animation,
+            "public_summary": public_summary[:300],
+        }
 
 
 class MiniMaxTTS:

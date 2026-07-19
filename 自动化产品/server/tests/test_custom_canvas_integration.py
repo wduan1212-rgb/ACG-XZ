@@ -79,6 +79,60 @@ console.log(JSON.stringify({{
         self.assertIn("单次只生成一张完整成图", chunks)
         self.assertIn("禁止拼图、分屏或并排展示多个方案", chunks)
 
+    def test_static_canvas_links_keep_base_path_and_embed_query(self):
+        runtime = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "lib"
+            / "runtime.ts"
+        ).read_text(encoding="utf-8")
+        project_card = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "home"
+            / "ProjectCard.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('const query = IS_PLATFORM_EMBED ? "?embed=1" : "";', runtime)
+        self.assertIn('return `${basePath}/${query}#${route}`;', runtime)
+        self.assertIn('staticHashHref(`/project/${id}`)', runtime)
+        self.assertIn('staticHashHref("/")', runtime)
+        self.assertNotIn('IS_GITHUB_PAGES ? `/#/project/${id}`', runtime)
+        self.assertNotIn('IS_GITHUB_PAGES ? "/#/"', runtime)
+        self.assertEqual(project_card.count("href={projectHref(project.id)}"), 2)
+        self.assertEqual(project_card.count("onClick={openProject}"), 2)
+
+    def test_project_detail_selectors_keep_stable_empty_snapshots(self):
+        project_client = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "ProjectClient.tsx"
+        ).read_text(encoding="utf-8")
+        overlays = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "overlays.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("useStore(selectItems(projectId))", project_client)
+        self.assertIn("useStore(selectMessages(projectId))", project_client)
+        self.assertNotIn("state.itemsByProject[projectId] || []", project_client)
+        self.assertNotIn("state.messagesByProject[projectId] || []", project_client)
+        self.assertIn("useStore(selectItems(item.projectId))", overlays)
+
     def test_vendored_build_is_self_contained_and_all_index_assets_exist(self):
         canvas_dir = APP_DIR / "vendor" / "infinite-canvas"
         index = (canvas_dir / "index.html").read_text(encoding="utf-8")

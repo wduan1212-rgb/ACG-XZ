@@ -228,8 +228,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260718-16", html)
-        self.assertIn("app.js?v=20260718-16", html)
+        self.assertIn("styles.css?v=20260719-17", html)
+        self.assertIn("app.js?v=20260719-17", html)
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",
@@ -577,6 +577,20 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         )
         self.assertIn('"presenter_female"', config)
         self.assertNotIn("sk-api-", ai + publish + backend + store + config)
+
+    def test_video_publish_cover_is_locked_to_three_by_four(self):
+        workshop = (APP_DIR / "js/views/chainWorkshop.js").read_text(
+            encoding="utf-8"
+        )
+        ensure_cover = workshop.split(
+            "export async function ensureVideoCover(p)", 1
+        )[1].split("\nexport ", 1)[0]
+
+        self.assertIn('const ratio = "3:4";', ensure_cover)
+        self.assertIn("coverPromptFromCopy({", ensure_cover)
+        self.assertIn("ratio,", ensure_cover)
+        self.assertIn("provider.submit({", ensure_cover)
+        self.assertIn("provider.poll(submitted.providerRef)", ensure_cover)
 
     def test_video_publish_llm_does_not_silently_replace_invalid_copy(self):
         code = r"""

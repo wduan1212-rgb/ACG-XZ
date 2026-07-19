@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { Hydrated } from "@/components/Hydrated";
 import { Button, Spinner } from "@/components/ui";
-import { useStore } from "@/lib/store";
+import { selectItems, selectMessages, useStore } from "@/lib/store";
 import { Workspace } from "./Workspace";
 
 export function ProjectClient({ projectId }: { projectId: string }) {
@@ -17,8 +17,12 @@ export function ProjectClient({ projectId }: { projectId: string }) {
 function ProjectGate({ projectId }: { projectId: string }) {
   const project = useStore((state) => state.projects.find((item) => item.id === projectId));
   const projectExists = !!project;
-  const items = useStore((state) => state.itemsByProject[projectId] || []);
-  const messages = useStore((state) => state.messagesByProject[projectId] || []);
+  // React 19/useSyncExternalStore requires the selector snapshot to remain
+  // referentially stable while a historical project is still loading. A new
+  // `[]` on every render causes an infinite update loop before enterProject()
+  // can restore the server snapshot.
+  const items = useStore(selectItems(projectId));
+  const messages = useStore(selectMessages(projectId));
   const viewport = useStore((state) => state.viewportByProject[projectId]);
   const loadState = useStore((state) => state.projectLoadState[projectId] || "idle");
   const loadError = useStore((state) => state.projectLoadError[projectId] || "");

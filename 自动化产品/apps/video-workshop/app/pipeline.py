@@ -4,6 +4,8 @@ import asyncio
 import base64
 import hashlib
 import json
+import math
+import os
 import re
 import shutil
 import time
@@ -14,7 +16,14 @@ from typing import Any
 
 from .bgm import bgm_library
 from .config import settings
-from .media import ASPECTS, build_scene_timeline, compose_variant, normalize_narration, probe
+from .media import (
+    ASPECTS,
+    MAX_CLONE_PAD_SECONDS,
+    build_scene_timeline,
+    compose_variant,
+    normalize_narration,
+    probe,
+)
 from .openmontage_bridge import openmontage
 from .providers import ProviderError, seedance, tts
 from .store import add_event, add_message, load_project, mutate_project
@@ -30,6 +39,50 @@ def _generated_narration_matches_target(
         return True
     allowed_delta = max(1.5, target * 0.1)
     return actual > 0 and abs(actual - target) <= allowed_delta
+
+
+def _scene_generation_duration(target_duration: float) -> int:
+    target = max(0.1, float(target_duration or 0.1))
+    if target > 15 + MAX_CLONE_PAD_SECONDS:
+        raise RuntimeError(
+            f"口播时间窗需要单镜头 {target:.2f} 秒，超过 Seedance 15 秒上限；"
+            "需要增加镜头后再制作，不使用静止尾帧拉长。"
+        )
+    return max(4, min(15, int(math.ceil(target - 1e-6))))
+
+
+def _clip_covers_target(actual_duration: float, target_duration: float) -> bool:
+    actual = max(0.0, float(actual_duration or 0))
+    target = max(0.0, float(target_duration or 0))
+    return actual > 0 and actual + MAX_CLONE_PAD_SECONDS >= target
+
+
+async def _gather_cancel_on_error(*awaitables: Any) -> list[Any]:
+    """Fail fast without leaving sibling work running during caller cleanup."""
+    tasks = [asyncio.create_task(awaitable) for awaitable in awaitables]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
+async def _best_effort_thread_call(function: Any, *args: Any, **kwargs: Any) -> None:
+    """Run a post-commit notification without changing the committed outcome."""
+    try:
+        await asyncio.to_thread(function, *args, **kwargs)
+    except Exception:
+        pass
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _delivery_snapshot(
@@ -196,15 +249,29 @@ class VideoPipeline:
         project_id: str,
         plan: dict[str, Any],
         retry_scene_number: int | None = None,
+        *,
+        recompose_only: bool = False,
     ) -> None:
         work_dir = settings.outputs_dir / project_id
         work_dir.mkdir(parents=True, exist_ok=True)
+        temporary_scene_paths: set[Path] = set()
+        scene_backups: list[tuple[Path, Path]] = []
+        project_committed = False
         try:
             await asyncio.to_thread(_ensure_legacy_delivery, project_id)
             scenes = [scene for scene in list(plan.get("scenes") or []) if isinstance(scene, dict)]
             if not scenes:
                 raise RuntimeError("导演计划没有可执行镜头")
-            if retry_scene_number:
+            if retry_scene_number and recompose_only:
+                raise RuntimeError("不能同时重生成镜头并只重合成字幕")
+            if recompose_only:
+                await self._event(
+                    project_id,
+                    "正在复用原音画重新编排字幕",
+                    "本次不会调用视频生成或口播生成，只重新合成字幕版本。",
+                    20,
+                )
+            elif retry_scene_number:
                 await self._event(
                     project_id,
                     f"正在重试镜头 {retry_scene_number}",
@@ -237,58 +304,128 @@ class VideoPipeline:
                 narration_source = candidate if filename and candidate.is_file() else None
             selected_bgm = bgm_library.resolve(project_id, plan)
             audio_design = plan.get("audio_design") if isinstance(plan.get("audio_design"), dict) else {}
-            jobs: list[tuple[str, int | None, Any]] = []
             tts_result: dict[str, Any] = {"path": str(narration_path), "reused": True}
-            if not retry_scene_number or not narration_path.is_file():
+            if recompose_only:
+                if not narration_path.is_file():
+                    raise RuntimeError("原口播文件不存在，无法只修改字幕")
+            elif not retry_scene_number or not narration_path.is_file():
                 if narration_source:
-                    jobs.append(("narration", None, normalize_narration(narration_source, narration_path)))
+                    await self._event(
+                        project_id,
+                        "正在标准化口播音频",
+                        "先确认原音频的真实时长，再安排每个视频镜头。",
+                        16,
+                    )
+                    normalized_probe = await normalize_narration(narration_source, narration_path)
+                    tts_result = {
+                        "path": str(narration_path),
+                        "source": "uploaded",
+                        "sourceAssetId": narration_asset.get("asset_id") if narration_asset else "",
+                        "probe": normalized_probe,
+                    }
                 else:
                     requested_duration = (
                         float(plan.get("requested_duration_sec") or 0)
                         if str(plan.get("input_mode") or "") == "topic"
                         else 0.0
                     )
-                    jobs.append(
-                        (
-                            "tts",
-                            None,
-                            tts.generate(
-                                str(plan["narration"]),
-                                narration_path,
-                                target_duration_sec=requested_duration or None,
-                                voice_id=str(plan.get("voice_id") or "").strip() or None,
-                            ),
-                        )
+                    await self._event(
+                        project_id,
+                        "正在生成口播",
+                        "口播完成后会先测量真实时长，再提交对应长度的镜头。",
+                        16,
+                    )
+                    tts_result = await tts.generate(
+                        str(plan["narration"]),
+                        narration_path,
+                        target_duration_sec=requested_duration or None,
+                        voice_id=str(plan.get("voice_id") or "").strip() or None,
                     )
 
+            audio_info = await probe(narration_path)
+            narration_duration = float(audio_info.get("duration") or 0)
+            if narration_duration <= 0:
+                raise RuntimeError("口播音频没有可用时长")
+            requested_duration = (
+                float(plan.get("requested_duration_sec") or 0)
+                if not narration_source and str(plan.get("input_mode") or "") == "topic"
+                else 0.0
+            )
+            if requested_duration and not _generated_narration_matches_target(
+                narration_duration,
+                requested_duration,
+            ):
+                raise RuntimeError(
+                    f"生成口播实测 {narration_duration:.1f} 秒，"
+                    f"与用户要求的 {requested_duration:.0f} 秒偏差过大；"
+                    "已停止合成，避免用静音或异常语速补足。"
+                )
+
+            scene_durations = [int(scene.get("duration_sec") or 8) for scene in scenes]
+            scene_timeline, _transition_duration = build_scene_timeline(
+                scene_durations,
+                narration_duration,
+            )
+            generation_durations = (
+                []
+                if recompose_only
+                else [
+                    _scene_generation_duration(float(item["duration"]))
+                    for item in scene_timeline
+                ]
+            )
+            await self._event(
+                project_id,
+                "口播时间线已锁定",
+                f"口播实测 {narration_duration:.1f} 秒，"
+                f"已按真实时长编排 {len(scenes)} 个镜头。",
+                20,
+            )
+
+            scene_jobs: list[dict[str, Any]] = []
             for index, scene in enumerate(scenes):
                 scene_number = index + 1
                 should_generate = (
-                    not retry_scene_number
-                    or scene_number == retry_scene_number
-                    or not scene_paths[index].is_file()
+                    not recompose_only
+                    and (
+                        not retry_scene_number
+                        or scene_number == retry_scene_number
+                        or not scene_paths[index].is_file()
+                    )
                 )
                 if not should_generate:
                     continue
-                if retry_scene_number and scene_number == retry_scene_number:
-                    scene_paths[index].unlink(missing_ok=True)
-                jobs.append(
-                    (
-                        "scene",
-                        scene_number,
-                        seedance.generate(
-                            str(scene.get("visual_prompt") or ""),
-                            str(plan.get("aspect_ratio") or "9:16"),
-                            scene_paths[index],
-                            callback=callback,
-                            scene_number=scene_number,
-                            reference_images=reference_images,
-                            duration_sec=int(scene.get("duration_sec") or 8),
-                        ),
-                    )
+                target_path = scene_paths[index]
+                candidate_path = work_dir / (
+                    f".scene-{scene_number:02d}-{uuid.uuid4().hex[:10]}.candidate.mp4"
+                )
+                temporary_scene_paths.add(candidate_path)
+                duration_sec = generation_durations[index]
+                scene_jobs.append(
+                    {
+                        "scene_number": scene_number,
+                        "scene": scene,
+                        "target_path": target_path,
+                        "candidate_path": candidate_path,
+                        "had_existing": target_path.is_file(),
+                        "target_duration": float(scene_timeline[index]["duration"]),
+                        "duration_sec": duration_sec,
+                    }
                 )
 
-            if retry_scene_number:
+            if recompose_only:
+                missing = [path.name for path in scene_paths if not path.is_file()]
+                if missing:
+                    raise RuntimeError(
+                        "原镜头文件不完整，无法只修改字幕：" + "、".join(missing)
+                    )
+                await self._event(
+                    project_id,
+                    "原音画已复用",
+                    f"已保留口播和 {len(scene_paths)} 个镜头，只更新字幕轨与最终成片。",
+                    24,
+                )
+            elif retry_scene_number:
                 reused = []
                 if narration_path.is_file():
                     reused.append("口播")
@@ -306,69 +443,113 @@ class VideoPipeline:
             else:
                 await self._event(
                     project_id,
-                    "声音与画面并行生成",
-                    (
-                        f"用户口播音频正在标准化，{len(scenes)} 个视频镜头任务同时排队。"
-                        if narration_source
-                        else f"指定音色正在合成口播，{len(scenes)} 个视频镜头任务同时排队。"
-                    ),
-                    18,
+                    "画面正在并行生成",
+                    f"{len(scene_jobs)} 个镜头已按真实口播时长同时排队。",
+                    24,
                 )
 
-            results = await asyncio.gather(
-                *(job[2] for job in jobs),
-                return_exceptions=True,
-            )
-            failures: list[BaseException] = []
-            for (kind, _scene_number, _job), result in zip(jobs, results):
-                if isinstance(result, BaseException):
-                    failures.append(result)
-                elif kind == "tts":
-                    tts_result = result
-                elif kind == "narration":
-                    tts_result = {
-                        "path": str(narration_path),
-                        "source": "uploaded",
-                        "sourceAssetId": narration_asset.get("asset_id") if narration_asset else "",
-                        "probe": result,
-                    }
-            if failures:
-                raise failures[0]
-            await self._event(
-                project_id,
-                "素材生成完成",
-                f"口播与 {len(scenes)} 个导演镜头均已下载到本地，准备按真实口播时长建立时间线。",
-                62,
+            await _gather_cancel_on_error(
+                *(
+                    seedance.generate(
+                        str(job["scene"].get("visual_prompt") or ""),
+                        str(plan.get("aspect_ratio") or "9:16"),
+                        Path(job["candidate_path"]),
+                        callback=callback,
+                        scene_number=int(job["scene_number"]),
+                        reference_images=reference_images,
+                        duration_sec=int(job["duration_sec"]),
+                    )
+                    for job in scene_jobs
+                )
             )
 
-            audio_info = await probe(narration_path)
-            narration_duration = float(audio_info.get("duration") or 0)
-            if narration_duration <= 0:
-                raise RuntimeError("口播音频没有可用时长")
-            requested_duration = (
-                float(plan.get("requested_duration_sec") or 0)
-                if not narration_source and str(plan.get("input_mode") or "") == "topic"
-                else 0.0
-            )
-            if requested_duration:
-                if not _generated_narration_matches_target(
-                    narration_duration,
-                    requested_duration,
-                ):
+            async def validate_scene_candidate(job: dict[str, Any]) -> dict[str, Any]:
+                candidate_path = Path(job["candidate_path"])
+                info = await probe(candidate_path)
+                actual_duration = float(info.get("duration") or 0)
+                target_duration = float(job["target_duration"])
+                if _clip_covers_target(actual_duration, target_duration):
+                    return info
+                retry_duration = min(
+                    15,
+                    max(
+                        int(job["duration_sec"]) + 1,
+                        _scene_generation_duration(target_duration),
+                    ),
+                )
+                if retry_duration <= int(job["duration_sec"]):
                     raise RuntimeError(
-                        f"生成口播实测 {narration_duration:.1f} 秒，"
-                        f"与用户要求的 {requested_duration:.0f} 秒偏差过大；"
-                        "已停止合成，避免用静音或异常语速补足。"
+                        f"镜头 {job['scene_number']} 实测 {actual_duration:.2f} 秒，"
+                        f"无法覆盖 {target_duration:.2f} 秒口播时间窗；"
+                        "已停止合成，不使用长静止尾帧补齐。"
                     )
-            scene_durations = [int(scene.get("duration_sec") or 8) for scene in scenes]
-            scene_timeline, _transition_duration = build_scene_timeline(scene_durations, narration_duration)
+                await self._event(
+                    project_id,
+                    f"镜头 {job['scene_number']} 时长不足，正在单独重试",
+                    f"从 {job['duration_sec']} 秒调整为 {retry_duration} 秒，其他镜头不会重复生成。",
+                    58,
+                )
+                await seedance.generate(
+                    str(job["scene"].get("visual_prompt") or ""),
+                    str(plan.get("aspect_ratio") or "9:16"),
+                    candidate_path,
+                    callback=callback,
+                    scene_number=int(job["scene_number"]),
+                    reference_images=reference_images,
+                    duration_sec=retry_duration,
+                )
+                job["duration_sec"] = retry_duration
+                info = await probe(candidate_path)
+                actual_duration = float(info.get("duration") or 0)
+                if not _clip_covers_target(actual_duration, target_duration):
+                    failure_action = (
+                        "已保留旧镜头并停止合成。"
+                        if bool(job["had_existing"])
+                        else "已停止合成，可只继续缺失镜头。"
+                    )
+                    raise RuntimeError(
+                        f"镜头 {job['scene_number']} 重试后实测 {actual_duration:.2f} 秒，"
+                        f"仍无法覆盖 {target_duration:.2f} 秒口播时间窗；"
+                        + failure_action
+                    )
+                return info
+
+            if scene_jobs:
+                await _gather_cancel_on_error(
+                    *(validate_scene_candidate(job) for job in scene_jobs)
+                )
+
+            render_scene_paths = list(scene_paths)
+            delayed_replacements: list[tuple[Path, Path]] = []
+            for job in scene_jobs:
+                candidate_path = Path(job["candidate_path"])
+                target_path = Path(job["target_path"])
+                scene_index = int(job["scene_number"]) - 1
+                if bool(job["had_existing"]):
+                    render_scene_paths[scene_index] = candidate_path
+                    delayed_replacements.append((candidate_path, target_path))
+                else:
+                    candidate_path.replace(target_path)
+                    temporary_scene_paths.discard(candidate_path)
+                    render_scene_paths[scene_index] = target_path
+
+            await self._event(
+                project_id,
+                "原音画读取完成" if recompose_only else "素材生成完成",
+                (
+                    f"口播与 {len(scenes)} 个原镜头均已读取，准备重新编排字幕。"
+                    if recompose_only
+                    else f"口播与 {len(scenes)} 个导演镜头均已通过时长校验，准备合成。"
+                ),
+                62,
+            )
 
             composition = {
                 "render_runtime": "ffmpeg",
                 "cuts": [
                     {
                         "id": f"scene-{index:02d}",
-                        "source": str(scene_paths[index - 1]),
+                        "source": str(render_scene_paths[index - 1]),
                         "in_seconds": round(float(scene["start"]), 3),
                         "out_seconds": round(float(scene["end"]), 3),
                     }
@@ -393,6 +574,7 @@ class VideoPipeline:
                     "style": "phrase-animated",
                     "outline": "thin",
                     "safe_area": "responsive",
+                    "revision": plan.get("subtitle_style") or {},
                 },
                 "materials": [
                     {
@@ -454,7 +636,7 @@ class VideoPipeline:
                     70 + index * 7,
                 )
                 variant = await compose_variant(
-                    scene_paths,
+                    render_scene_paths,
                     narration_path,
                     str(plan["narration"]),
                     aspect_ratio,
@@ -464,6 +646,11 @@ class VideoPipeline:
                     bgm_path=selected_bgm.path if selected_bgm else None,
                     bgm_volume=float(audio_design.get("bgm_volume") or 0.12),
                     sfx_assets=sfx_assets,
+                    subtitle_style=(
+                        plan.get("subtitle_style")
+                        if isinstance(plan.get("subtitle_style"), dict)
+                        else None
+                    ),
                 )
                 variants.append(variant)
 
@@ -520,6 +707,22 @@ class VideoPipeline:
 
             delivery = _delivery_snapshot(delivery_id, plan, outputs)
 
+            for candidate_path, target_path in delayed_replacements:
+                backup_path = target_path.with_name(
+                    f".{target_path.name}.{uuid.uuid4().hex[:10]}.backup"
+                )
+                os.link(target_path, backup_path)
+                scene_backups.append((target_path, backup_path))
+                candidate_path.replace(target_path)
+                temporary_scene_paths.discard(candidate_path)
+            if delayed_replacements:
+                for index, cut in enumerate(composition["cuts"]):
+                    cut["source"] = str(scene_paths[index])
+                composition_path.write_text(
+                    json.dumps(composition, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
             def complete(project: dict[str, Any]) -> None:
                 project["status"] = "succeeded"
                 project["phase"] = "delivery"
@@ -548,7 +751,11 @@ class VideoPipeline:
                 project["retryable"] = None
 
             await asyncio.to_thread(mutate_project, project_id, complete)
-            await asyncio.to_thread(
+            project_committed = True
+            for _target_path, backup_path in scene_backups:
+                _unlink_quietly(backup_path)
+            scene_backups.clear()
+            await _best_effort_thread_call(
                 add_event,
                 project_id,
                 "成片与画幅质检完成",
@@ -557,7 +764,7 @@ class VideoPipeline:
                 100,
                 "delivery",
             )
-            await asyncio.to_thread(
+            await _best_effort_thread_call(
                 add_message,
                 project_id,
                 "assistant",
@@ -593,6 +800,15 @@ class VideoPipeline:
             )
             error_log = work_dir / "error.log"
             error_log.write_text(traceback.format_exc(), encoding="utf-8")
+        finally:
+            if not project_committed:
+                for target_path, backup_path in reversed(scene_backups):
+                    if backup_path.is_file():
+                        backup_path.replace(target_path)
+            for candidate_path in temporary_scene_paths:
+                _unlink_quietly(candidate_path)
+            for _target_path, backup_path in scene_backups:
+                _unlink_quietly(backup_path)
 
 
 pipeline = VideoPipeline()

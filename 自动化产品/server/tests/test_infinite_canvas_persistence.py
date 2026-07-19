@@ -63,6 +63,50 @@ def test_uid_survives_http_crypto_without_random_uuid():
     assert result.returncode == 0, result.stderr or result.stdout
 
 
+def test_canvas_thumbnail_selection_matches_home_and_persistence_rules():
+    module = (CANVAS_ROOT / "src" / "lib" / "canvasPersistence.ts").resolve().as_uri()
+    script = textwrap.dedent(
+        f"""
+        import assert from "node:assert/strict";
+        const persistence = await import({json.dumps(module)});
+        const base = {{
+          projectId: "p", position: {{ x: 0, y: 0 }},
+          size: {{ width: 10, height: 10 }}, z: 1, createdAt: 1,
+        }};
+        const items = [
+          {{ ...base, id: "hidden", type: "reference", hidden: true, assetUrl: "/hidden.png" }},
+          {{ ...base, id: "visible-ref", type: "reference", assetUrl: "/visible.png" }},
+          {{ ...base, id: "result", type: "generation", assetUrl: "/result.png", loading: false }},
+        ];
+        assert.equal(persistence.selectCanvasThumbnailUrl(items), "/result.png");
+        assert.equal(
+          persistence.selectCanvasThumbnailUrl([items[0]]),
+          "/hidden.png",
+          "hidden reference remains the final thumbnail fallback",
+        );
+        assert.equal(
+          persistence.selectPersistentCanvasThumbnailUrl([
+            {{ ...base, id: "data", type: "reference", assetUrl: "data:image/png;base64,AA==" }},
+          ]),
+          undefined,
+          "large data URLs must not enter the localStorage summary",
+        );
+        assert.equal(
+          persistence.selectPersistentCanvasThumbnailUrl([], "/api/custom-canvas/blobs/abc"),
+          "/api/custom-canvas/blobs/abc",
+        );
+        """
+    )
+    result = subprocess.run(
+        ["node", "--experimental-strip-types", "--input-type=module", "-e", script],
+        cwd=CANVAS_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_real_v92_two_phase_migration_and_empty_read_recovery():
     module = (CANVAS_ROOT / "src" / "lib" / "canvasPersistence.ts").resolve().as_uri()
     script = textwrap.dedent(
@@ -431,6 +475,11 @@ def test_client_contract_gates_empty_canvas_and_matches_server_proxy():
     assert "未确认的空画布" in store
     assert "serverRefreshRequiredProjects" in store
     assert "stageServerSummary(serverProject)" in store
+    clean_reconciliation = store.split(
+        'if (decision === "install-server")', 1
+    )[1].split("addItem: (projectId, item)", 1)[0]
+    assert "stageServerSummary(serverProject, {" in clean_reconciliation
+    assert "requiresRefresh: false" in clean_reconciliation
     assert 'projectLoadState[projectId] !== "ready"' in store
     assert "已阻止空画布写入" in store
     assert "重试恢复" in project_client

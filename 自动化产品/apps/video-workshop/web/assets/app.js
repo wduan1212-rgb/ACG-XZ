@@ -2,6 +2,7 @@ const PROJECT_STORAGE_KEY =
   window.__XINGZHEN_VIDEO_PROJECT_KEY__ || "xingzhen-video-project:standalone";
 const START_ON_HOME =
   new URLSearchParams(window.location.search).get("start") === "home";
+const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 const state = {
   // 主平台每次重新进入“定制创作”都从新建首页开始；历史项目仍保留在
   // 当前成员的列表中，用户主动选择后会在这个 iframe 会话里正常保持。
@@ -296,9 +297,8 @@ async function addFiles(fileList) {
     }
     const previousCount = state.attachments.length;
     for (const file of files) {
-      const existingAssets = state.project?.assets || [];
-      if (existingAssets.length + state.attachments.length >= 8) {
-        showToast("每个项目最多添加 8 个附件");
+      if (state.attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE) {
+        showToast("每条消息最多添加 8 个附件");
         break;
       }
       const isVideo = file.type.startsWith("video/");
@@ -309,7 +309,7 @@ async function addFiles(fileList) {
         showToast(`${file.name} 超过 ${isVideo || isAudio ? "40MB" : "6MB"}`);
         continue;
       }
-      const sameTypeCount = [...existingAssets, ...state.attachments]
+      const sameTypeCount = state.attachments
         .filter((item) => String(item.mime || "").startsWith(kind))
         .length;
       let dataUrl = "";
@@ -386,6 +386,17 @@ function renderAttachments() {
     startLine.classList.toggle("has-attachments", state.attachments.length > 0);
   }
   refreshIcons();
+}
+
+function isolatePendingAttachments(nextProjectId) {
+  const currentProjectId = String(state.projectId || "");
+  const targetProjectId = String(nextProjectId || "");
+  if (currentProjectId === targetProjectId || !state.attachments.length) return 0;
+  const removedCount = state.attachments.length;
+  state.attachments = [];
+  renderAttachments();
+  showToast(`已切换会话，${removedCount} 个未发送附件未带入新会话`);
+  return removedCount;
 }
 
 function enterStudio() {
@@ -1137,7 +1148,9 @@ async function loadProject(projectId, silent = false) {
   try {
     const response = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
     if (!response.ok) throw new Error("项目不存在");
-    renderProject(await response.json());
+    const project = await response.json();
+    isolatePendingAttachments(project.id);
+    renderProject(project);
   } catch (error) {
     if (!silent) showToast(error.message);
     if (responseIsMissing(error)) resetProject(false);

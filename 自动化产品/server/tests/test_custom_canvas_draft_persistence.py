@@ -211,13 +211,74 @@ class CustomCanvasDraftPersistenceTest(unittest.TestCase):
             encoded_index = json.dumps(index_items, ensure_ascii=False)
             self.assertNotIn("data:image", encoded_index)
             self.assertNotIn("custom-canvas-blob-v1", encoded_index)
-            self.assertNotIn("thumbnailUrl", index_items[0])
+            self.assertEqual(index_items[0]["thumbnailUrl"], stable_url)
             self.assertLess(len(encoded_index.encode("utf-8")), 10_000)
             denied, denied_error = store.get_custom_canvas_draft(
                 "creator-b", "canvas-local-1"
             )
             self.assertIsNone(denied)
             self.assertEqual(denied_error, "not_found")
+
+    def test_project_index_derives_light_thumbnail_without_reading_blob_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+
+            def image_item(item_id, item_type, suffix, *, hidden=False):
+                return {
+                    "id": item_id,
+                    "projectId": "canvas-thumbnails",
+                    "type": item_type,
+                    "assetUrl": "data:image/png;base64," + base64.b64encode(
+                        PNG_BYTES + suffix.encode("ascii")
+                    ).decode("ascii"),
+                    "position": {"x": 0, "y": 0},
+                    "size": {"width": 100, "height": 100},
+                    "z": 1,
+                    "createdAt": 10,
+                    "hidden": hidden,
+                }
+
+            payload = draft_payload(
+                "canvas-thumbnails",
+                items=[
+                    image_item("hidden-ref", "reference", "hidden", hidden=True),
+                    image_item("visible-ref", "reference", "visible"),
+                    image_item("visible-result", "generation", "result"),
+                ],
+            )
+            saved, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-thumbnails", payload
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "created")
+            result_url = next(
+                item["assetUrl"]
+                for item in saved["state"]["items"]
+                if item["id"] == "visible-result"
+            )
+            with patch.object(Path, "read_bytes", side_effect=AssertionError("blob bytes read")):
+                items, _ = store.list_custom_canvas_drafts("creator-a")
+            self.assertEqual(items[0]["thumbnailUrl"], result_url)
+            encoded = json.dumps(items, ensure_ascii=False)
+            self.assertNotIn("data:image", encoded)
+            self.assertNotIn("custom-canvas-blob-v1", encoded)
+            self.assertNotIn("items", items[0])
+            self.assertLess(len(encoded.encode("utf-8")), 10_000)
+
+            hidden_payload = draft_payload(
+                "canvas-hidden-thumbnail",
+                updated_at=200,
+                items=[image_item("hidden-only", "reference", "fallback", hidden=True)],
+            )
+            hidden_payload["items"][0]["projectId"] = "canvas-hidden-thumbnail"
+            hidden_saved, hidden_error, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-hidden-thumbnail", hidden_payload
+            )
+            self.assertIsNone(hidden_error)
+            hidden_url = hidden_saved["state"]["items"][0]["assetUrl"]
+            index, _ = store.list_custom_canvas_drafts("creator-a")
+            hidden_summary = next(item for item in index if item["id"] == "canvas-hidden-thumbnail")
+            self.assertEqual(hidden_summary["thumbnailUrl"], hidden_url)
 
     def test_stable_blob_url_round_trip_requires_same_owner(self):
         with tempfile.TemporaryDirectory() as tmp:

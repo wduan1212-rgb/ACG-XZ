@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "
 import { X } from "lucide-react";
 import { bestAssetUrlFor } from "@/lib/assetCache";
 import { ENHANCE_MODES } from "@/lib/constants";
-import { useStore } from "@/lib/store";
+import { selectItems, useStore } from "@/lib/store";
 import { cn } from "@/lib/util";
 import {
   isImageItem,
@@ -261,7 +261,7 @@ export function Lightbox({
   item: CanvasItem;
   onClose: () => void;
 }) {
-  const items = useStore((s) => s.itemsByProject[item.projectId] ?? []);
+  const items = useStore(selectItems(item.projectId));
   const [compare, setCompare] = useState(58);
   const compareRef = useRef<HTMLDivElement>(null);
   useEffect(() => {

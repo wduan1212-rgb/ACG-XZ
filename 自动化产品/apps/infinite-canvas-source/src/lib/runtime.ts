@@ -7,13 +7,22 @@ export function publicAsset(path: string): string {
   return `${BASE_PATH}${path}`;
 }
 
+function staticHashHref(path: string): string {
+  const route = path.startsWith("/") ? path : `/${path}`;
+  const basePath = BASE_PATH
+    ? `/${BASE_PATH.replace(/^\/+|\/+$/g, "")}`
+    : "";
+  const query = IS_PLATFORM_EMBED ? "?embed=1" : "";
+  return `${basePath}/${query}#${route}`;
+}
+
 export function homeHref(): string {
-  return IS_GITHUB_PAGES ? "/#/" : "/";
+  return IS_GITHUB_PAGES ? staticHashHref("/") : "/";
 }
 
 export function projectHref(projectId: string): string {
   const id = encodeURIComponent(projectId);
-  return IS_GITHUB_PAGES ? `/#/project/${id}` : `/project/${id}`;
+  return IS_GITHUB_PAGES ? staticHashHref(`/project/${id}`) : `/project/${id}`;
 }
 
 export function navigateToProject(

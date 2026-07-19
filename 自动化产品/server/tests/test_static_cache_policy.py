@@ -42,8 +42,12 @@ class StaticCachePolicyTest(unittest.TestCase):
         self.assert_immutable("/custom-video/assets/app.js?v=cache-policy-test")
 
     def test_next_static_build_assets_are_immutable_without_query_token(self):
+        main_chunks = sorted(
+            (main.CUSTOM_CANVAS_DIR / "_next" / "static" / "chunks").glob("main-*.js")
+        )
+        self.assertTrue(main_chunks, "infinite-canvas main chunk is missing")
         self.assert_immutable(
-            "/XZ-Design/_next/static/chunks/main-b76714ab6f4d052a.js"
+            "/XZ-Design/" + main_chunks[0].relative_to(main.CUSTOM_CANVAS_DIR).as_posix()
         )
         self.assert_immutable(
             "/XZ-Design/_next/static/media/723e11e5093b8e80.p.woff2"

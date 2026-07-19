@@ -17,6 +17,7 @@ import { useHydrated } from "@/components/Hydrated";
 import { ApiKeyButton } from "./ApiKeyButton";
 import { ProjectCard } from "./ProjectCard";
 import { rememberAssetSource } from "@/lib/assetCache";
+import { selectCanvasThumbnailUrl } from "@/lib/canvasPersistence";
 import { SIZE_GROUPS } from "@/lib/constants";
 import { footprintFor } from "@/lib/geometry";
 import { fileToDownscaledDataUrl } from "@/lib/image";
@@ -25,8 +26,6 @@ import { parseSize } from "@/lib/sizing";
 import { useStore } from "@/lib/store";
 import { cn, uid } from "@/lib/util";
 import {
-  isImageItem,
-  type CanvasItem,
   type Project,
   type ReferenceItem,
 } from "@/lib/types";
@@ -136,23 +135,12 @@ export function HomeView() {
     }
   }
 
-  function imageUrlOf(item?: CanvasItem): string | undefined {
-    if (!item || !isImageItem(item) || !item.assetUrl) return undefined;
-    if ("loading" in item && item.loading) return undefined;
-    return item.assetUrl;
-  }
-
   function thumbFor(id: string): string | undefined {
-    const items = itemsByProject[id] ?? [];
-    const visibleItems = items.filter((item) => !item.hidden);
-    const visibleResult = visibleItems.find(
-      (i) => (i.type === "generation" || i.type === "enhanced") && imageUrlOf(i),
+    const hasLoadedItems = Object.prototype.hasOwnProperty.call(itemsByProject, id);
+    return selectCanvasThumbnailUrl(
+      itemsByProject[id] ?? [],
+      hasLoadedItems ? undefined : projects.find((project) => project.id === id)?.thumbnailUrl,
     );
-    const visibleImage = visibleItems.find((i) => imageUrlOf(i));
-    const hiddenReference = items.find((i) => i.type === "reference" && imageUrlOf(i));
-    const anyImage = items.find((i) => imageUrlOf(i));
-    return imageUrlOf(visibleResult ?? visibleImage ?? hiddenReference ?? anyImage)
-      ?? projects.find((project) => project.id === id)?.thumbnailUrl;
   }
 
   function start(withBrief: boolean) {

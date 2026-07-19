@@ -25,6 +25,9 @@ class MediaError(RuntimeError):
     pass
 
 
+MAX_CLONE_PAD_SECONDS = 0.12
+
+
 def _finite_number(value: Any, default: float) -> float:
     try:
         result = float(value)
@@ -164,7 +167,13 @@ def _caption_chunks(text: str, max_chars: int) -> list[str]:
     return chunks or [clean]
 
 
-def write_ass(text: str, path: Path, aspect_ratio: str, speech_duration: float) -> list[dict[str, Any]]:
+def write_ass(
+    text: str,
+    path: Path,
+    aspect_ratio: str,
+    speech_duration: float,
+    subtitle_style: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     width, height = ASPECTS[aspect_ratio]
     if aspect_ratio == "9:16":
         font_size, outline, margin_v, max_chars = 48, 1.4, 330, 14
@@ -172,6 +181,17 @@ def write_ass(text: str, path: Path, aspect_ratio: str, speech_duration: float) 
         font_size, outline, margin_v, max_chars = 38, 1.25, 58, 24
     else:
         font_size, outline, margin_v, max_chars = 42, 1.35, 88, 18
+    style = subtitle_style if isinstance(subtitle_style, dict) else {}
+    font_scale = max(0.7, min(1.4, _finite_number(style.get("font_scale"), 1.0)))
+    font_size = max(22, min(72, int(round(font_size * font_scale))))
+    requested_max_chars = int(_finite_number(style.get("max_chars"), max_chars))
+    max_chars = max(7, min(32, requested_max_chars))
+    vertical_position = str(style.get("vertical_position") or "default")
+    if vertical_position == "higher":
+        margin_v = min(height - 120, margin_v + max(36, int(height * 0.075)))
+    elif vertical_position == "lower":
+        margin_v = max(36, margin_v - max(28, int(height * 0.06)))
+    animation_mode = str(style.get("animation") or "dynamic")
     chunks = _caption_chunks(text, max_chars)
     weights = [max(2, len(item)) for item in chunks]
     total_weight = sum(weights)
@@ -212,7 +232,9 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
     lines = [header]
     for index, cue in enumerate(cues):
-        if aspect_ratio == "9:16" and index % 3 == 1:
+        if animation_mode == "minimal":
+            animation = r"{\fad(80,70)}"
+        elif aspect_ratio == "9:16" and index % 3 == 1:
             baseline = height - margin_v
             animation = (
                 r"{\an2\fad(100,85)"
@@ -275,13 +297,40 @@ async def _normalize_clip(
     width: int,
     height: int,
     target_duration: float,
+    source_duration: float | None = None,
 ) -> None:
-    filter_graph = (
-        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},fps=30,"
-        f"tpad=stop_mode=clone:stop_duration={target_duration:.6f},"
-        f"trim=duration={target_duration:.6f},setpts=PTS-STARTPTS,format=yuv420p"
+    measured_duration = _finite_number(source_duration, 0.0)
+    if measured_duration <= 0:
+        measured_duration = float((await probe(source)).get("duration") or 0)
+    if measured_duration <= 0:
+        raise MediaError(f"镜头 {source.name} 没有可用时长")
+    required_duration = max(0.1, _finite_number(target_duration, 0.1))
+    shortfall = required_duration - measured_duration
+    if shortfall > MAX_CLONE_PAD_SECONDS + 1e-6:
+        raise MediaError(
+            f"镜头 {source.name} 实测 {measured_duration:.3f} 秒，"
+            f"短于口播时间窗 {required_duration:.3f} 秒；"
+            "已停止合成，避免用长时间静止尾帧补齐。"
+        )
+    filters = [
+        f"scale={width}:{height}:force_original_aspect_ratio=increase",
+        f"crop={width}:{height}",
+        "fps=30",
+    ]
+    if shortfall > 0:
+        # Only cover sub-frame/container rounding. Materially short clips are rejected above.
+        filters.append(
+            "tpad=stop_mode=clone:"
+            f"stop_duration={min(MAX_CLONE_PAD_SECONDS, shortfall + 1 / 30):.6f}"
+        )
+    filters.extend(
+        [
+            f"trim=duration={required_duration:.6f}",
+            "setpts=PTS-STARTPTS",
+            "format=yuv420p",
+        ]
     )
+    filter_graph = ",".join(filters)
     await run(
         [
             _binary("ffmpeg"),
@@ -654,6 +703,7 @@ async def compose_variant(
     bgm_path: Path | None = None,
     bgm_volume: float = 0.12,
     sfx_assets: list[dict[str, Any]] | None = None,
+    subtitle_style: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not clip_paths:
         raise MediaError("没有可用于合成的 Seedance 视频")
@@ -671,10 +721,23 @@ async def compose_variant(
         raise MediaError("镜头数量与导演时间计划不一致")
     scene_timeline, transition_duration = build_scene_timeline(planned, narration_duration)
     normalized = [work_dir / f"normalized-{slug}-{index + 1}.mp4" for index in range(len(clip_paths))]
+    clip_infos = await asyncio.gather(*(probe(path) for path in clip_paths))
     await asyncio.gather(
         *[
-            _normalize_clip(source, target, width, height, float(scene["duration"]))
-            for source, target, scene in zip(clip_paths, normalized, scene_timeline)
+            _normalize_clip(
+                source,
+                target,
+                width,
+                height,
+                float(scene["duration"]),
+                float(info.get("duration") or 0),
+            )
+            for source, target, scene, info in zip(
+                clip_paths,
+                normalized,
+                scene_timeline,
+                clip_infos,
+            )
         ]
     )
 
@@ -733,7 +796,13 @@ async def compose_variant(
         work_dir,
     )
     captions_path = work_dir / f"captions-{slug}.ass"
-    cues = write_ass(narration_text, captions_path, aspect_ratio, audio_info["duration"])
+    cues = write_ass(
+        narration_text,
+        captions_path,
+        aspect_ratio,
+        audio_info["duration"],
+        subtitle_style=subtitle_style,
+    )
     sfx_cues = [
         item
         for item in _material_timeline(sfx_assets or [], narration_text, narration_duration, scene_timeline)

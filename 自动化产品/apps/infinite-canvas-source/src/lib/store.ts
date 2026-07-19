@@ -17,6 +17,7 @@ import {
   pendingLegacyServerMigrationIds,
   readCanvasProject,
   readLegacyCanvasProject,
+  selectCanvasThumbnailUrl,
   storeCanvasSummary,
   writeCanvasProjectVerified,
   type CanvasProjectState,
@@ -214,7 +215,10 @@ function canvasProjectSnapshot(
     || !Object.prototype.hasOwnProperty.call(state.messagesByProject, projectId)
   ) return null;
   return {
-    project,
+    project: {
+      ...project,
+      thumbnailUrl: selectCanvasThumbnailUrl(state.itemsByProject[projectId] || []),
+    },
     items: state.itemsByProject[projectId] || [],
     messages: state.messagesByProject[projectId] || [],
     viewport: state.viewportByProject[projectId],
@@ -329,12 +333,7 @@ function scheduleCanvasProjectPersistence(
             if ((canvasMutationGeneration.get(projectId) || 0) !== generation) return;
             const current = canvasProjectSnapshot(get(), projectId, sent.clientUpdatedAt);
             if (!current) return;
-            const currentState: CanvasProjectState = {
-              items: current.items,
-              messages: current.messages,
-              viewport: current.viewport,
-            };
-            void writeCanvasProjectVerified(projectId, currentState, {
+            void writeCanvasProjectVerified(projectId, result.state, {
               allowEmpty: true,
               confirmEmpty,
               source: "server",
@@ -344,18 +343,26 @@ function scheduleCanvasProjectPersistence(
               serverRevision: Number(revision),
             }).then(() => {
               if ((canvasMutationGeneration.get(projectId) || 0) !== generation) return;
-              useStore.setState((latest) => ({
-                serverRevisionByProject: {
-                  ...latest.serverRevisionByProject,
-                  [projectId]: Number(revision),
-                },
-                projectDirtyByProject: { ...latest.projectDirtyByProject, [projectId]: false },
-                localUpdatedAtByProject: {
-                  ...latest.localUpdatedAtByProject,
-                  [projectId]: sent.clientUpdatedAt,
-                },
-                projectSyncError: { ...latest.projectSyncError, [projectId]: "" },
-              }));
+              suppressedCanvasProjects.add(projectId);
+              try {
+                useStore.setState((latest) => ({
+                  projects: latest.projects.map((project) =>
+                    project.id === projectId ? mergeServerProject(project, result.project) : project,
+                  ),
+                  serverRevisionByProject: {
+                    ...latest.serverRevisionByProject,
+                    [projectId]: Number(revision),
+                  },
+                  projectDirtyByProject: { ...latest.projectDirtyByProject, [projectId]: false },
+                  localUpdatedAtByProject: {
+                    ...latest.localUpdatedAtByProject,
+                    [projectId]: sent.clientUpdatedAt,
+                  },
+                  projectSyncError: { ...latest.projectSyncError, [projectId]: "" },
+                }));
+              } finally {
+                suppressedCanvasProjects.delete(projectId);
+              }
             }).catch((error) => {
               console.warn("[canvas-persistence] clean checkpoint failed:", error);
             });
@@ -494,6 +501,7 @@ function removeServerTombstonedProject(projectId: string): void {
 
 function mergeServerProject(local: Project, server: Project): Project {
   return {
+    ...local,
     ...server,
     publishedDeliveryId: local.publishedDeliveryId || server.publishedDeliveryId,
     publishedAt: local.publishedAt || server.publishedAt,
@@ -1244,6 +1252,14 @@ export const useStore = create<AppState>()(
                 stageServerSummary(serverProject);
               }
             } else if (Number.isFinite(serverProject.revision)) {
+              // Even when the IndexedDB draft is already current, the server
+              // index can carry newer lightweight metadata (notably the stable
+              // owner-scoped thumbnail URL added after older summaries were
+              // persisted). Merge that summary without reloading or replacing
+              // the verified canvas state.
+              stageServerSummary(serverProject, {
+                requiresRefresh: false,
+              });
               set((state) => ({
                 serverRevisionByProject: {
                   ...state.serverRevisionByProject,

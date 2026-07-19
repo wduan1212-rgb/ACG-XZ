@@ -1,4 +1,4 @@
-import type { CanvasItem, ChatMessage, Project } from "./types";
+import type { CanvasItem, ChatMessage, ImageItem, Project } from "./types";
 
 export interface Viewport {
   x: number;
@@ -386,14 +386,53 @@ export function readLegacyCanvasProject(projectId: string): CanvasProjectState |
   return null;
 }
 
+export function selectCanvasThumbnailUrl(
+  items: CanvasItem[],
+  fallback?: string,
+): string | undefined {
+  const usable = (item?: CanvasItem): string | undefined => {
+    if (!item || !["reference", "generation", "enhanced"].includes(item.type)) {
+      return undefined;
+    }
+    const imageItem = item as ImageItem;
+    if (!imageItem.assetUrl) return undefined;
+    if ("loading" in imageItem && imageItem.loading) return undefined;
+    return imageItem.assetUrl;
+  };
+  const visibleItems = items.filter((item) => !item.hidden);
+  const visibleResult = visibleItems.find(
+    (item) => (item.type === "generation" || item.type === "enhanced") && usable(item),
+  );
+  const visibleImage = visibleItems.find((item) => usable(item));
+  const hiddenReference = items.find(
+    (item) => item.type === "reference" && item.hidden && usable(item),
+  );
+  const anyImage = items.find((item) => usable(item));
+  return usable(visibleResult ?? visibleImage ?? hiddenReference ?? anyImage) ?? fallback;
+}
+
+export function selectPersistentCanvasThumbnailUrl(
+  items: CanvasItem[],
+  fallback?: string,
+): string | undefined {
+  const url = selectCanvasThumbnailUrl(items, fallback);
+  return url && /^(?:https?:|\/)/.test(url) ? url : undefined;
+}
+
 function summaryEnvelope(envelope: PersistedCanvasEnvelope): string {
   const state = envelope.state;
   if (!state || !Array.isArray(state.projects)) return JSON.stringify(envelope);
   const itemsByProject = state.itemsByProject || {};
-  const projects = state.projects.map((project) => ({
-    ...project,
-    thumbnailUrl: usableSummaryThumbnail(itemsByProject[project.id] || [], project.thumbnailUrl),
-  }));
+  const projects = state.projects.map((project) => {
+    const hasLoadedItems = Object.prototype.hasOwnProperty.call(itemsByProject, project.id);
+    return {
+      ...project,
+      thumbnailUrl: selectPersistentCanvasThumbnailUrl(
+        itemsByProject[project.id] || [],
+        hasLoadedItems ? undefined : project.thumbnailUrl,
+      ),
+    };
+  });
   return JSON.stringify({
     ...envelope,
     state: {
@@ -404,16 +443,6 @@ function summaryEnvelope(envelope: PersistedCanvasEnvelope): string {
       viewportByProject: {},
     },
   });
-}
-
-function usableSummaryThumbnail(items: CanvasItem[], existing?: string): string | undefined {
-  const candidate = items.find((item) => {
-    if (item.hidden || !("assetUrl" in item) || !item.assetUrl) return false;
-    if ("loading" in item && item.loading) return false;
-    return /^(?:https?:|\/)/.test(item.assetUrl);
-  });
-  const url = candidate && "assetUrl" in candidate ? candidate.assetUrl : existing;
-  return url && /^(?:https?:|\/)/.test(url) ? url : undefined;
 }
 
 function readMigrationManifest(): CanvasMigrationManifest | null {

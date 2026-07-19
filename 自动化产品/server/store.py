@@ -2266,7 +2266,45 @@ def _custom_canvas_project_response_locked(conn, owner_id, row, published_counts
     return project
 
 
-def _custom_canvas_light_project_summary(project):
+def _custom_canvas_thumbnail_url(value):
+    if isinstance(value, str) and re.match(r"^(?:https?:|/)", value):
+        return value[:2048]
+    if isinstance(value, dict) and value.get("$type") == CUSTOM_CANVAS_BLOB_REF_TYPE:
+        content_hash = str(value.get("contentHash") or "")
+        if re.fullmatch(r"[a-f0-9]{64}", content_hash):
+            return _custom_canvas_blob_url(content_hash)
+    return ""
+
+
+def _custom_canvas_draft_thumbnail(project, draft):
+    items = list((draft or {}).get("items") or []) if isinstance(draft, dict) else []
+
+    def usable(item):
+        if not isinstance(item, dict) or item.get("type") not in {
+            "reference", "generation", "enhanced",
+        }:
+            return ""
+        if item.get("loading"):
+            return ""
+        return _custom_canvas_thumbnail_url(item.get("assetUrl"))
+
+    visible = [item for item in items if isinstance(item, dict) and not item.get("hidden")]
+    groups = (
+        [item for item in visible if item.get("type") in {"generation", "enhanced"}],
+        visible,
+        [item for item in items if isinstance(item, dict)
+         and item.get("type") == "reference" and item.get("hidden")],
+        items,
+    )
+    for group in groups:
+        for item in group:
+            thumbnail = usable(item)
+            if thumbnail:
+                return thumbnail
+    return _custom_canvas_thumbnail_url((project or {}).get("thumbnailUrl"))
+
+
+def _custom_canvas_light_project_summary(project, draft=None):
     """列表只返回首页所需字段，不读取或暴露完整图片 Blob。"""
     source = project if isinstance(project, dict) else {}
     summary = {
@@ -2277,9 +2315,9 @@ def _custom_canvas_light_project_summary(project):
         )
         if source.get(key) is not None
     }
-    thumbnail = source.get("thumbnailUrl")
-    if isinstance(thumbnail, str) and re.match(r"^(?:https?:|/)", thumbnail):
-        summary["thumbnailUrl"] = thumbnail[:2048]
+    thumbnail = _custom_canvas_draft_thumbnail(source, draft)
+    if thumbnail:
+        summary["thumbnailUrl"] = thumbnail
     return summary
 
 
@@ -2293,13 +2331,19 @@ def _custom_canvas_payload_locked(conn, owner_id, row, published_counts=None):
     materialized = dict(row)
     materialized["project"] = project
     materialized["draft"] = draft
+    project_response = _custom_canvas_project_response_locked(
+        conn,
+        owner_id,
+        materialized,
+        published_counts,
+    )
+    thumbnail = _custom_canvas_draft_thumbnail(project, draft)
+    if thumbnail:
+        project_response["thumbnailUrl"] = thumbnail
+    else:
+        project_response.pop("thumbnailUrl", None)
     return {
-        "project": _custom_canvas_project_response_locked(
-            conn,
-            owner_id,
-            materialized,
-            published_counts,
-        ),
+        "project": project_response,
         "state": {
             "items": list(draft.get("items") or []),
             "messages": list(draft.get("messages") or []),
@@ -2341,7 +2385,8 @@ def list_custom_canvas_drafts(owner_id):
                     continue
                 display_row = dict(row)
                 display_row["project"] = _custom_canvas_light_project_summary(
-                    row["project"]
+                    row["project"],
+                    row["draft"],
                 )
                 items.append(_custom_canvas_project_response_locked(
                     conn,

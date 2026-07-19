@@ -31,6 +31,10 @@ export function ProjectCard({
   const [renaming, setRenaming] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [draft, setDraft] = useState(project.name);
+  const [failedThumbnail, setFailedThumbnail] = useState("");
+  const visibleThumbnail = thumbnailUrl && failedThumbnail !== thumbnailUrl
+    ? thumbnailUrl
+    : undefined;
 
   function commitRename() {
     const v = draft.trim();
@@ -58,18 +62,23 @@ export function ProjectCard({
       <a href={projectHref(project.id)} onClick={openProject} className="block">
         <div
           className="relative aspect-[16/10] w-full overflow-hidden"
-          style={{ background: SCENE_GRADIENT[project.scene] }}
+          style={{
+            background: visibleThumbnail
+              ? SCENE_GRADIENT[project.scene]
+              : "linear-gradient(135deg,#f6f7f9,#e9edf2)",
+          }}
         >
-          {thumbnailUrl ? (
+          {visibleThumbnail ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={thumbnailUrl}
+              src={visibleThumbnail}
               alt=""
+              onError={() => setFailedThumbnail(visibleThumbnail)}
               className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center">
-              <span className="font-mono text-[11px] tracking-wide text-white/40">
+              <span className="font-mono text-[11px] tracking-wide text-ink-3">
                 {project.targetSize}
               </span>
             </div>
