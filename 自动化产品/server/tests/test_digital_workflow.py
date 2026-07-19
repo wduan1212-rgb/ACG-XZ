@@ -49,9 +49,9 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
         self.assertIn("extractStructuredSpokenCues", source)
         self.assertIn("spreadKnownCaption", source)
         self.assertIn('"digital-segment-duration-v2"', source)
-        self.assertIn('"prompt-colon-timeline-v2"', source)
+        self.assertIn('"prompt-speech-timeline-v3"', source)
         self.assertIn('"known-narration-real-duration"', source)
-        self.assertIn('"existing-prompt-colon-timeline"', source)
+        self.assertIn('"existing-prompt-spoken-timeline"', source)
         self.assertIn("promptTimelineCaptions", source)
         self.assertNotIn('/api/video/audio-timing', source)
         self.assertIn("audioTimingRevision", source)
@@ -67,6 +67,49 @@ console.log(JSON.stringify(m.planDigitalNarrationSegments(shots).map(x => x.dur)
         self.assertIn('s.text = e.target.value;\n      markCaptionTimingManual()', source)
         self.assertNotIn("script.shots?.[index]?.line", source)
         self.assertIn("STRICT_UI_QUOTE_CONTEXT", source)
+
+    def test_infoflow_subtitles_are_manual_only_and_digital_default_is_15px(self):
+        source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
+        self.assertIn("if (!isDigitalHuman() || queuedCaptionRealignment", source)
+        self.assertIn("manualTrigger = false", source)
+        self.assertIn("if (!isDigitalHuman() && !manualTrigger)", source)
+        self.assertIn("alignCaptionsToAudio({ force: true, manualTrigger: true })", source)
+        self.assertIn('digitalCaptionMode ? 15 : 11', source)
+        self.assertIn("p.artifacts.subStyleUserEdited = true", source)
+        self.assertIn('信息流默认不自动生成字幕', source)
+
+    def test_digital_caption_track_is_monotonic_and_inside_clip_duration(self):
+        script = r"""
+globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener:()=>{}, dispatchEvent:()=>{} };
+globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
+const m = await import('./js/views/chainCut.js');
+const timeline = [
+  { id:'clip-1', segmentId:'seg-1', dur:3.2, audioDuration:3.2 },
+  { id:'clip-2', segmentId:'seg-2', dur:4.4, audioDuration:4.4 }
+];
+const cues = m.buildDigitalSegmentDurationCaptions(timeline, [
+  { id:'seg-1', line:'第一句很短。第二句接着说。' },
+  { id:'seg-2', line:'字母 AI 和 OpenClaw 也必须保持原文。最后一句。' }
+]);
+console.log(JSON.stringify(cues));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        cues = json.loads(result.stdout.strip())
+        self.assertGreaterEqual(len(cues), 2)
+        self.assertTrue(all(cue["start"] >= 0 and cue["end"] > cue["start"] for cue in cues))
+        self.assertTrue(all(cues[index]["end"] <= cues[index + 1]["start"] for index in range(len(cues) - 1)))
+        self.assertLessEqual(cues[-1]["end"], 7.6)
+        text = "".join(cue["text"] for cue in cues)
+        self.assertIn("AI", text)
+        self.assertIn("OpenClaw", text)
 
     def test_digital_segment_duration_fallback_uses_known_narration_only(self):
         script = r"""
@@ -270,7 +313,7 @@ console.log(JSON.stringify({
             self.assertEqual(actual, text)
         self.assertTrue(all(any(cue["start"] >= start and cue["end"] <= end for start, end, _ in expected) for cue in payload["cues"]))
 
-    def test_infoflow_dialogue_reads_raw_quote_variants_and_explicit_labels_without_rewriting(self):
+    def test_infoflow_dialogue_ignores_generic_colons_and_keeps_explicit_speech(self):
         script = r"""
 globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
 globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
@@ -359,14 +402,14 @@ console.log(JSON.stringify({
         ])
         self.assertEqual(payload["explicitUnquoted"], '0-3s：台词（员工，低声）：今天先核对字段。')
         self.assertIn('脱口而出"这堆线索谁先跟谁后跟啊？"', payload["directSpeech"])
-        assert_segment_cues("explicitCues", [(0, 3, "今天先核对字段")])
+        self.assertEqual(payload["explicitCues"], [])
         assert_segment_cues("directCues", [
             (0, 3, "这堆线索谁先跟谁后跟啊"), (3, 6, "全是要跟的 哪个该先"),
         ])
         assert_segment_cues("mannerCues", [(0, 3, "这周一刚改过吧")])
-        assert_segment_cues("nestedCues", [(12, 15, "怎么又是去年的项目名")])
+        self.assertEqual(payload["nestedCues"], [])
         assert_segment_cues("naturalCues", [
-            (0, 3, "先拆开再追结果"), (3, 6, "先停下来 按清单来"),
+            (3, 6, "先停下来 按清单来"),
             (6, 9, "行 我把酒店和会议都再改一版"), (9, 12, "这个是昨天那个终版吧"),
             (12, 15, "那个是上周的终版"), (15, 18, "姐姐 你手里那份不是最终版"),
             (18, 21, "完了完了顺序全乱了"),
@@ -383,11 +426,16 @@ console.log(JSON.stringify({
         assert_segment_cues("metadataAndUiCues", [
             (12, 15, "这句是真实台词"), (15, 18, "这句只出现一次"),
         ])
+        # 普通“标签：内容”不再作为信息流字幕依据；只有明确说话动作
+        # 后面的内容可以在用户手动点击匹配时进入字幕轨。
         assert_segment_cues("colonCues", [
-            (0, 3, "你给我个说法"), (3, 6, "先把口径对齐"),
-            (15, 18, "先看证据"), (18, 21, "下周还是这张纸"),
+            (18, 21, "下周还是这张纸"),
             (27, 30, "结果还是对不上"),
         ])
+        colon_text = "".join(cue["text"] for cue in payload["colonCues"])
+        self.assertNotIn("你给我个说法", colon_text)
+        self.assertNotIn("先把口径对齐", colon_text)
+        self.assertNotIn("先看证据", colon_text)
 
     def test_infoflow_prompt_timeline_accepts_local_or_global_segment_ranges(self):
         script = r"""
@@ -775,8 +823,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260718-v93-2"', main)
-        self.assertIn('js/main.js?v=20260718-v93-2', index)
+        self.assertIn('const APP_BUILD_ID = "20260718-v94-1"', main)
+        self.assertIn('js/main.js?v=20260718-v94-1', index)
 
     def test_batch_reference_images_are_explicit_and_title_changes_refresh_copy(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
@@ -809,7 +857,7 @@ globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
 globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
 const { state } = await import('./js/core/store.js');
 const { createProduction, buildMaterialUnits } = await import('./js/domain/productions.js');
-const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260718-v93-2');
+const { createUnitVideoJobs } = await import('./js/agent/orchestrator.js?v=20260718-v94-1');
 state.accounts = [{ id:'material-account', name:'素材号', mode:'视频', subType:'无数字人', platform:'视频号' }];
 state.assets = [{ id:'old-hidden-ref', accountId:'material-account', type:'图片', name:'旧产品统一参考', tags:['统一参考','产品'] }];
 state.productions = [];

@@ -27,6 +27,17 @@ interface ChatMessage {
 /** Optional vision-capable chat model (set MAAS_VISION_MODEL to enable). */
 export const VISION_MODEL = process.env.MAAS_VISION_MODEL ?? "";
 
+class ChatProviderError extends Error {
+  constructor(message: string, readonly retryable: boolean) {
+    super(message);
+    this.name = "ChatProviderError";
+  }
+}
+
+function isPermanentLimit(message: string): boolean {
+  return /余额|额度|insufficient|quota|credit/i.test(message);
+}
+
 /** Call the chat-completions endpoint and return the assistant text. */
 export async function chatComplete(
   messages: ChatMessage[],
@@ -34,8 +45,10 @@ export async function chatComplete(
 ): Promise<string> {
   try {
     return await chatOnce(messages, opts);
-  } catch {
-    // Upstream 502s are transient — one retry avoids falling back to the heuristic.
+  } catch (error) {
+    if (!(error instanceof ChatProviderError) || !error.retryable) throw error;
+    // A single retry absorbs transient transport/provider failures without
+    // retrying auth, configuration, balance or quota errors.
     return await chatOnce(messages, opts);
   }
 }
@@ -44,32 +57,39 @@ async function chatOnce(
   messages: ChatMessage[],
   opts: { temperature?: number; timeoutMs?: number; model?: string } = {},
 ): Promise<string> {
-  const res = await fetch(`${CHAT_BASE}/v1/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${CHAT_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: opts.model || TEXT_MODEL,
-      messages,
-      stream: false,
-      temperature: opts.temperature ?? 0.7,
-    }),
-    // Reasoning models (MiniMax-M3) think before answering — allow more time.
-    signal: AbortSignal.timeout(opts.timeoutMs ?? 90_000),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${CHAT_BASE}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${CHAT_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: opts.model || TEXT_MODEL,
+        messages,
+        stream: false,
+        temperature: opts.temperature ?? 0.7,
+      }),
+      // Reasoning models (MiniMax-M3) think before answering — allow more time.
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 90_000),
+    });
+  } catch (error) {
+    const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+    throw new ChatProviderError(timedOut ? "chat: request timed out" : "chat: network failure", !timedOut);
+  }
   const data = await res.json().catch(() => null);
   if (!res.ok || data?.error) {
-    throw new Error(
-      `chat ${res.status}: ${data?.error?.message ?? "request failed"}`,
-    );
+    const message = `chat ${res.status}: ${data?.error?.message ?? "request failed"}`;
+    const transient = [408, 425, 429, 500, 502, 503, 504].includes(res.status)
+      && !isPermanentLimit(message);
+    throw new ChatProviderError(message, transient);
   }
   const content = data?.choices?.[0]?.message?.content;
-  if (typeof content !== "string") throw new Error("chat: empty content");
+  if (typeof content !== "string") throw new ChatProviderError("chat: empty content", true);
   // Reasoning models (MiniMax-M3) prepend <think>…</think> — strip it.
   const clean = content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-  if (!clean) throw new Error("chat: empty content after reasoning");
+  if (!clean) throw new ChatProviderError("chat: empty content after reasoning", true);
   return clean;
 }
 

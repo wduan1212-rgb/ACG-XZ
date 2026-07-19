@@ -37,8 +37,14 @@ class LoginLoadingStateTest(unittest.TestCase):
         self.assertIn("账号已验证，但工作区同步失败", self.main)
         self.assertIn("登录请求超时，请检查网络后重试", self.main)
         remote_entry = self.main.split("async function enterRemote(member)", 1)[1].split("function shakeCard()", 1)[0]
-        self.assertIn("const synced = await pullRemote();", remote_entry)
-        self.assertIn('if (!synced) throw new Error("请检查网络后重试");', remote_entry)
+        self.assertIn("const bootstrap = await pullRemoteBootstrap();", remote_entry)
+        self.assertIn('if (!bootstrap.ok) throw new Error("请检查网络后重试");', remote_entry)
+        self.assertIn("enterMember(member);", remote_entry)
+        self.assertIn("continueRemoteHydration(member, bootstrap.complete);", remote_entry)
+        self.assertLess(
+            remote_entry.index("enterMember(member);"),
+            remote_entry.index("continueRemoteHydration(member, bootstrap.complete);")
+        )
 
     def test_login_title_has_short_process_copy_and_recovers_by_mode(self):
         self.assertIn('title: "正在验证账号权限…"', self.main)
@@ -58,9 +64,22 @@ class LoginLoadingStateTest(unittest.TestCase):
         self.assertIn("state.ui.currentMemberId = null;", clear_identity)
         self.assertIn("await Promise.allSettled([", clear_identity)
         resume = self.main.split("if (remote.isOn() && remote.hasToken())", 1)[1].split("else if (!remote.isOn()", 1)[0]
-        self.assertIn("const synced = await pullRemote();", resume)
-        self.assertIn("if (synced) {", resume)
+        self.assertIn("const bootstrap = await pullRemoteBootstrap();", resume)
+        self.assertIn("if (bootstrap.ok) {", resume)
+        self.assertIn("continueRemoteHydration(m, bootstrap.complete);", resume)
         self.assertGreaterEqual(resume.count("await clearPendingRemoteIdentity();"), 2)
+
+    def test_remote_login_records_auth_state_idb_and_first_render_without_payloads(self):
+        remote = (APP_DIR / "js/core/remote.js").read_text(encoding="utf-8")
+        store = (APP_DIR / "js/core/store.js").read_text(encoding="utf-8")
+        self.assertIn('metric: "auth"', remote)
+        self.assertIn('metric: "auth-resume"', remote)
+        self.assertIn('metric: "state"', remote)
+        self.assertIn('remote.recordPerformance("state-idb"', store)
+        self.assertIn('remote.recordPerformance("state-hydration"', store)
+        self.assertIn('remote.recordPerformance("first-render"', self.main)
+        self.assertIn("不记录用户名、token、请求体或业务数据", remote)
+        self.assertNotIn('PERFORMANCE_DETAIL_KEYS = new Set(["token"', remote)
 
     def test_motion_is_lightweight_and_reduced_motion_safe(self):
         waiting = self.css.split("登录等待态", 1)[1].split("@media (prefers-reduced-motion", 1)[0]

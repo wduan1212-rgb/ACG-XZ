@@ -108,6 +108,8 @@ VIDEO_WORKSHOP_UPLOAD_DIR = Path(
 VIDEO_WORKSHOP_URL = os.getenv("VIDEO_WORKSHOP_URL", "http://127.0.0.1:8765").rstrip("/")
 VIDEO_WORKSHOP_TIMEOUT = float(os.getenv("VIDEO_WORKSHOP_TIMEOUT", "180") or "180")
 VIDEO_WORKSHOP_SESSION_COOKIE = "acg_custom_video_session"
+CUSTOM_CANVAS_SESSION_COOKIE = "acg_custom_canvas_session"
+CUSTOM_CANVAS_SESSION_TTL = 30 * 60
 
 
 def _positive_env_int(name: str, default: int) -> int:
@@ -497,11 +499,32 @@ async def _call_llm(body: dict, auth_header: str = "", force_deployed_model: boo
         body["max_tokens"] = LLM_MAX_TOKENS
     elif _llm_is_minimax() and int(body.get("max_tokens") or 0) > 4096:
         body["max_tokens"] = 4096
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(LLM_TIMEOUT, connect=LLM_CONNECT_TIMEOUT), trust_env=False) as client:
-            return await client.post(LLM_ENDPOINT, json=body, headers=_llm_headers(auth_header))
-    except httpx.HTTPError as exc:
-        raise _llm_error(502, f"{exc.__class__.__name__}: {exc}")
+    transient_statuses = {408, 425, 429, 500, 502, 503, 504}
+    last_error = None
+    async with httpx.AsyncClient(timeout=httpx.Timeout(LLM_TIMEOUT, connect=LLM_CONNECT_TIMEOUT), trust_env=False) as client:
+        for attempt in range(2):
+            try:
+                response = await client.post(LLM_ENDPOINT, json=body, headers=_llm_headers(auth_header))
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.35)
+                    continue
+                raise _llm_error(502, f"{exc.__class__.__name__}: {exc}")
+            response_detail = response.text[:800].lower()
+            permanent_limit = any(marker in response_detail for marker in (
+                "余额", "额度", "insufficient", "quota", "credit",
+            ))
+            if response.status_code in transient_statuses and not permanent_limit and attempt == 0:
+                retry_after = response.headers.get("retry-after", "")
+                try:
+                    delay_seconds = min(1.6, max(0.1, float(retry_after)))
+                except (TypeError, ValueError):
+                    delay_seconds = 0.35
+                await asyncio.sleep(delay_seconds)
+                continue
+            return response
+    raise _llm_error(502, f"{last_error.__class__.__name__}: {last_error}" if last_error else "语言模型调用失败")
 
 
 class LLMReq(BaseModel):
@@ -3620,6 +3643,17 @@ class CustomCanvasGenerateReq(BaseModel):
     mode: str = ""
 
 
+class CustomCanvasProjectDraftReq(BaseModel):
+    project: dict
+    items: List[dict]
+    messages: List[dict]
+    viewport: Optional[dict] = None
+    clientUpdatedAt: int = 0
+    # 兼容首版客户端已发送的 true，以及带迁移来源说明的对象。
+    migration: Any = False
+    baseRevision: Optional[int] = None
+
+
 class CustomCanvasEnhanceReq(BaseModel):
     image: str = ""
     size: str = "1920x1080"
@@ -3760,16 +3794,27 @@ def member_request_create(req: MemberApplyReq):
 
 
 @app.get("/api/state")
-def api_state(response: Response, me=Depends(require_member)):
-    """按当前成员可见性返回全量快照（owned 按 owner 过滤、jobs 跟随、其余共享）。"""
+def api_state(response: Response, collections: str = "", me=Depends(require_member)):
+    """返回当前成员可见快照，支持登录首屏按集合轻量拉取。"""
     response.headers["Cache-Control"] = "no-store"
-    data = store.state_for(me["id"], me["role"], me.get("parentId"))
-    if me["role"] == "admin":
-        data["members"] = store.list_members()
-    elif me["role"] == "supplier_parent":
-        data["members"] = store.list_supplier_members()
-    else:
-        data["members"] = [me]
+    raw_names = [name.strip() for name in str(collections or "").split(",") if name.strip()]
+    requested_names = list(dict.fromkeys(raw_names[:32]))
+    requested_collections = [name for name in requested_names if name in store.COLLECTIONS]
+    filtered = bool(raw_names)
+    data = store.state_for(
+        me["id"],
+        me["role"],
+        me.get("parentId"),
+        requested_collections if filtered else None,
+    )
+    if not filtered or "members" in requested_names:
+        if me["role"] == "admin":
+            data["members"] = store.list_members()
+        elif me["role"] == "supplier_parent":
+            data["members"] = store.list_supplier_members()
+        else:
+            data["members"] = [me]
+    response.headers["X-Xingzhen-State-Mode"] = "partial" if filtered else "full"
     return data
 
 
@@ -4171,7 +4216,7 @@ def custom_canvas_config(me=Depends(require_member)):
         "ok": True,
         "available": available,
         "basePath": "/XZ-Design/",
-        "persistence": "browser-owner-scoped",
+        "persistence": "server-owner-scoped-with-browser-cache",
         "ownerScope": "authenticated-member",
         "storageNamespace": store.custom_canvas_storage_namespace(me["id"]),
         "publishedProjects": published_projects,
@@ -4184,8 +4229,182 @@ def custom_canvas_config(me=Depends(require_member)):
             "transform",
             "export-bridge",
             "published-state",
+            "server-draft-sync",
+            "verified-legacy-recovery",
         ],
     }
+
+
+def _custom_canvas_draft_value_error(exc):
+    reason = str(exc)
+    if reason in {
+        "custom_canvas_project_too_large",
+        "custom_canvas_draft_too_large",
+        "custom_canvas_blob_too_large",
+        "custom_canvas_total_blob_too_large",
+        "custom_canvas_payload_too_large",
+        "custom_canvas_too_many_items",
+        "custom_canvas_too_many_messages",
+        "custom_canvas_too_many_blobs",
+        "custom_canvas_owner_blob_quota",
+    }:
+        raise HTTPException(413, "无限画布草稿或图片过大，请减少节点后重试")
+    if reason in {
+        "unsupported_custom_canvas_image_type",
+        "unsupported_custom_canvas_data_url",
+        "invalid_custom_canvas_image",
+        "unsafe_custom_canvas_svg",
+    }:
+        raise HTTPException(415, "无限画布草稿只支持安全的 PNG、JPEG、WebP、GIF 或 SVG 图片")
+    if reason in {
+        "custom_canvas_blob_missing",
+        "custom_canvas_blob_conflict",
+        "invalid_custom_canvas_stored_state",
+        "invalid_custom_canvas_blob_ref",
+    }:
+        raise HTTPException(500, "无限画布草稿图片存储异常，请保留本地草稿并联系管理员")
+    raise HTTPException(400, "无限画布草稿数据格式无效")
+
+
+def _custom_canvas_draft_error(error):
+    if error == "not_found":
+        # 不区分“确实不存在”和“属于其他成员”，管理员也不能借此探测成员草稿。
+        raise HTTPException(404, "无限画布草稿不存在")
+    if error == "deleted":
+        raise HTTPException(410, "无限画布草稿已删除，旧标签页不能恢复该项目")
+    if error == "empty_snapshot":
+        raise HTTPException(409, "服务器已有图片或节点，已拒绝空草稿覆盖")
+    if error == "server_newer":
+        raise HTTPException(409, "服务器草稿更新，刷新后再继续编辑")
+    if error == "conflict":
+        raise HTTPException(409, "无限画布草稿版本冲突，刷新后再继续编辑")
+    raise HTTPException(400, "无限画布草稿请求无效")
+
+
+@app.post("/api/custom-canvas/session")
+def custom_canvas_session_create(
+    request: Request,
+    response: Response,
+    authorization: str = Header(default=""),
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    token = str(authorization or "").replace("Bearer ", "").strip()
+    # Keep the credential out of JSON, URLs and JavaScript-readable storage.
+    # The dependency above already validates it; this explicit check prevents a
+    # future refactor from minting a cookie for a different member object.
+    authenticated = _member_from_authorization(f"Bearer {token}")
+    if str(authenticated.get("id") or "") != str(me.get("id") or ""):
+        raise HTTPException(401, "登录状态不匹配")
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "")
+    is_https = (forwarded_proto.split(",", 1)[0].strip().lower() == "https") \
+        or request.url.scheme == "https"
+    response.set_cookie(
+        CUSTOM_CANVAS_SESSION_COOKIE,
+        token,
+        max_age=CUSTOM_CANVAS_SESSION_TTL,
+        httponly=True,
+        secure=is_https,
+        samesite="strict",
+        path="/api/custom-canvas/blobs",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {"ok": True, "expiresIn": CUSTOM_CANVAS_SESSION_TTL}
+
+
+@app.get("/api/custom-canvas/blobs/{content_hash}")
+def custom_canvas_blob_get(
+    content_hash: str,
+    request: Request,
+    authorization: str = Header(default=""),
+):
+    cookie_token = str(request.cookies.get(CUSTOM_CANVAS_SESSION_COOKIE) or "").strip()
+    header_token = str(authorization or "").replace("Bearer ", "").strip()
+    me = _member_from_authorization(f"Bearer {header_token or cookie_token}")
+    _require_custom_creator(me)
+    try:
+        blob, error = store.get_custom_canvas_blob(me["id"], content_hash)
+    except ValueError:
+        blob, error = None, "not_found"
+    # Missing hashes and hashes owned by another member are intentionally
+    # indistinguishable; the URL is not an ownership oracle.
+    if error or not blob:
+        raise HTTPException(404, "无限画布图片不存在")
+    response = ranged_file_response(
+        request,
+        blob["path"],
+        media_type=blob["mime"],
+        cache_seconds=31_536_000,
+    )
+    response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+    # The same content hash may exist in more than one owner namespace. Keep
+    # authenticated browser-cache variants separate across login sessions.
+    response.headers["Vary"] = "Cookie, Authorization"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    if blob["mime"] == "image/svg+xml":
+        response.headers["Content-Security-Policy"] = (
+            "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+        )
+    return response
+
+
+@app.get("/api/custom-canvas/projects")
+def custom_canvas_projects_list(me=Depends(require_member)):
+    _require_custom_creator(me)
+    try:
+        items, tombstones = store.list_custom_canvas_drafts(me["id"])
+    except ValueError as exc:
+        _custom_canvas_draft_value_error(exc)
+    return {"items": items, "tombstones": tombstones}
+
+
+@app.get("/api/custom-canvas/projects/{source_id}")
+def custom_canvas_projects_get(source_id: str, me=Depends(require_member)):
+    _require_custom_creator(me)
+    try:
+        result, error = store.get_custom_canvas_draft(me["id"], source_id)
+    except ValueError as exc:
+        _custom_canvas_draft_value_error(exc)
+    if error:
+        _custom_canvas_draft_error(error)
+    return result
+
+
+@app.put("/api/custom-canvas/projects/{source_id}")
+def custom_canvas_projects_put(
+    source_id: str,
+    req: CustomCanvasProjectDraftReq,
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    payload = (
+        req.model_dump()
+        if hasattr(req, "model_dump")
+        else req.dict()
+    )
+    try:
+        result, error, outcome = store.save_custom_canvas_draft(
+            me["id"],
+            source_id,
+            payload,
+        )
+    except ValueError as exc:
+        _custom_canvas_draft_value_error(exc)
+    if error:
+        _custom_canvas_draft_error(error)
+    return {**result, "outcome": outcome}
+
+
+@app.delete("/api/custom-canvas/projects/{source_id}")
+def custom_canvas_projects_delete(source_id: str, me=Depends(require_member)):
+    _require_custom_creator(me)
+    try:
+        tombstone, error = store.delete_custom_canvas_draft(me["id"], source_id)
+    except ValueError as exc:
+        _custom_canvas_draft_value_error(exc)
+    if error:
+        _custom_canvas_draft_error(error)
+    return {"ok": True, "tombstone": tombstone}
 
 
 @app.post("/api/custom-canvas/agent")

@@ -5,9 +5,11 @@ import { icon } from "../ui/icons.js";
 import { state, save, ownedBy, accountById, productionById } from "../core/store.js";
 import { STAGES, statusPill, deleteProduction } from "../domain/productions.js";
 import { urlFor } from "../domain/assets.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260718-v93-2";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260718-v94-1";
 import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
+
+const DRAFT_RENDER_BATCH = 24;
 
 function draftProductions() {
   return state.productions
@@ -22,7 +24,7 @@ function draftRowHtml(p, selected) {
   const u = cover ? urlFor(cover.assetId) : null;
   return `<div class="draft-row ${p.stageStatus === "failed" ? "fail" : ""}" data-draft="${p.id}">
     <input class="draft-check" type="checkbox" data-draft-check="${p.id}" ${selected.has(p.id) ? "checked" : ""} aria-label="选择草稿" />
-    <span class="draft-cover">${u ? `<img src="${u}"/>` : `<i class="draft-cover-empty">${icon(p.mode === "图文" ? "image" : "video", 15)}</i>`}</span>
+    <span class="draft-cover">${u ? `<img src="${u}" alt="" loading="lazy" decoding="async" fetchpriority="low"/>` : `<i class="draft-cover-empty">${icon(p.mode === "图文" ? "image" : "video", 15)}</i>`}</span>
     <span class="draft-main"><b>${esc(p.artifacts.copy.title || p.title || p.topic || "未命名创作")}</b><em>${STAGES[p.stage]?.label || p.stage} · ${timeAgo(p.updatedAt)}</em></span>
     <span class="status-pill ${cls}">${label}</span>
     <button class="btn ghost sm" data-draft-go="${p.id}">继续 ${icon("arrowRight", 12)}</button>
@@ -34,10 +36,12 @@ export const draftsView = {
   render(root) {
     const selected = new Set();
     const collapsed = new Set();
+    let visibleLimit = DRAFT_RENDER_BATCH;
     const draw = () => {
       const drafts = draftProductions();
+      const visibleDrafts = drafts.slice(0, visibleLimit);
       const byDate = new Map();
-      drafts.forEach(p => {
+      visibleDrafts.forEach(p => {
         const d = new Date(p.updatedAt || Date.now());
         const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         if (!byDate.has(key)) byDate.set(key, []);
@@ -60,9 +64,15 @@ export const draftsView = {
             <section class="draft-acc card ${collapsed.has(date) ? "collapsed" : ""}">
               <button class="draft-acc-head" data-draft-fold="${date}"><span class="draft-line-marker"></span><b>${date}</b><em>${list.length} 条</em>${icon("chevronDown", 14)}</button>
               <div class="draft-date-shell"><div class="draft-date-list">${list.map(p => draftRowHtml(p, selected)).join("")}</div></div>
-            </section>`).join("")}</div>`
+            </section>`).join("")}</div>
+            ${visibleDrafts.length < drafts.length ? `<div class="draft-load-more"><button class="btn ghost" type="button" data-draft-more>加载更多 <span>剩余 ${drafts.length - visibleDrafts.length} 条</span></button></div>` : ""}`
           : emptyState("inbox", "草稿箱是空的", "在批量创作 / 单号创作里发起的内容，未发布前都会先存放在这里。点「定稿并发布」后才进入发布清单。")}
         </div>`;
+
+      $("[data-draft-more]", root)?.addEventListener("click", () => {
+        visibleLimit += DRAFT_RENDER_BATCH;
+        draw();
+      });
 
       $("#draftBulkDelete", root)?.addEventListener("click", async () => {
         const ids = [...selected];

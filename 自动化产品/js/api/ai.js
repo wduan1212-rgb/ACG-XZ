@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260718-v93-2";
+import { llm, visionCopy } from "./llm.js?v=20260718-v94-1";
 import { DUMATE_BRIEF } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
@@ -532,15 +532,39 @@ function stripLeadingDuplicateTitle(copy = "", title = "") {
   return lines.join("\n").replace(/^\s*[:：,，.。!！?？-]+/, "").trim();
 }
 
-function polishCopyResult(result, { topic, shots, account, kind, product, batchVariant = null, avoidCopies = [] }) {
+function polishCopyResult(result, {
+  topic,
+  shots,
+  account,
+  kind,
+  product,
+  batchVariant = null,
+  avoidCopies = [],
+  allowSemanticFallback = true
+}) {
   const intent = inferCopyIntent({ topic, shots, account, product, useAccountPosition: kind === "video" });
   let title = sanitizeProduct(String(result?.title || "").trim());
   let copy = sanitizeProduct(String(result?.copy || "").trim());
-  if (!title || looksLikeRawBrief(title, topic) || titleConflictsWithTopic(title, topic, shots) || tooSimilarCopy({ title, copy: "" }, avoidCopies)) {
+  const invalidTitle = !title
+    || looksLikeRawBrief(title, topic)
+    || titleConflictsWithTopic(title, topic, shots)
+    || tooSimilarCopy({ title, copy: "" }, avoidCopies);
+  if (invalidTitle) {
+    if (!allowSemanticFallback) {
+      throw new Error("模型返回的发布标题无效或与当前主题不匹配，请重试");
+    }
     const pool = copyTitlePool(intent, kind, batchVariant);
     title = pool[Math.abs((topic || "").length + (shots || []).length) % pool.length];
   }
-  if (!copy || looksLikeRawBrief(copy.slice(0, 80), topic) || /想要宣传|画面风格|不要有页码|利他性强/.test(copy) || tooSimilarCopy({ title, copy }, avoidCopies)) {
+  const rawBriefCopy = /想要宣传|画面风格|不要有页码|利他性强/.test(copy);
+  const invalidCopy = !copy
+    || (allowSemanticFallback ? looksLikeRawBrief(copy.slice(0, 80), topic) : copy.length < 16)
+    || rawBriefCopy
+    || tooSimilarCopy({ title, copy }, avoidCopies);
+  if (invalidCopy) {
+    if (!allowSemanticFallback) {
+      throw new Error("模型返回的发布文案无效或与当前标题不匹配，请重试");
+    }
     copy = fallbackXhsCopy({ intent, shots, account, kind, batchVariant, product });
   }
   copy = deTemplateCopy(copy);
@@ -2582,28 +2606,52 @@ ${productRelationLine(rel.slice(0, 2))}
       ? `你是短视频发布文案写手。根据用户主题、平台、产品和口播内容，写一个发布标题和简介。自由发挥，贴合主题即可；标题自然有点击欲，正文像真人发布后的补充说明。不要换题，不要把标题原样当正文第一句。最后一行给 4-7 个话题标签，包含「#${videoProductName}」。只输出 JSON：{"title":"...","copy":"..."}`
       : `你是专业的小红书图文文案写手。根据用户主题和图卡内容，写一个发布标题和正文。内容偏向测评、教学或可信种草：给出判断依据、具体步骤、真实结果、适用边界或选择建议，避免空泛口号。语气专业、清楚、克制，不要使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也不要使用“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。不要换题，不要把标题原样当正文第一句。最后一行给 4-7 个话题标签。只输出 JSON：{"title":"...","copy":"..."}`;
     const copyGroundRules = "只根据用户主题、已定内容、账号语气和当前产品写文案；主题优先，可以自然出现产品名，不要写成无关的固定模板。";
-    try {
-      const content = await llm([
-        { role: "system", content: sys + "\n\n" + copyGroundRules },
-        { role: "user", content: kind === "video"
-          ? `平台：${account.platform}\n账号语气：${accountVoice}\n口播风格：${speechVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}已定口播内容：\n${script}\n${this.memoryLine(account)}`
-          : `平台：${account.platform}\n账号语气：${accountVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${offlineCopyLine}\n${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}图卡内容：\n${script}` }
-      ], { json: true, temperature: 1.02 });
-      const d = sanitizeXhsObject(parseJSONLoose(content));
-      if (!d.title || !d.copy) throw new Error("模型未返回 title/copy");
-      const polished = polishCopyResult(d, { topic: safeTopic, shots: safeShots, account, kind, product, batchVariant, avoidCopies });
-      if (kind === "image") polished.copy = assertProfessionalImageCopy(polished.copy);
-      return this._ok(polished);
-    } catch (e) {
-      this._fb(e);
-      if (requireLlm) {
-        this.lastSource = "error";
-        this.lastError = (e && e.message) || String(e || "语言模型生成失败");
-        throw e instanceof Error ? e : new Error(this.lastError);
+    const messages = [
+      { role: "system", content: sys + "\n\n" + copyGroundRules },
+      { role: "user", content: kind === "video"
+        ? `平台：${account.platform}\n账号语气：${accountVoice}\n口播风格：${speechVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}已定口播内容：\n${script}\n${this.memoryLine(account)}`
+        : `平台：${account.platform}\n账号语气：${accountVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${offlineCopyLine}\n${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}图卡内容：\n${script}` }
+    ];
+    let lastError = null;
+    const attempts = requireLlm ? 2 : 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        const content = await llm(messages, {
+          json: true,
+          temperature: attempt === 0 ? 1.02 : 0.72
+        });
+        const d = sanitizeXhsObject(parseJSONLoose(content));
+        if (!d.title || !d.copy) throw new Error("模型未返回 title/copy");
+        const polished = polishCopyResult(d, {
+          topic: safeTopic,
+          shots: safeShots,
+          account,
+          kind,
+          product,
+          batchVariant,
+          avoidCopies,
+          allowSemanticFallback: !requireLlm
+        });
+        if (kind === "image") polished.copy = assertProfessionalImageCopy(polished.copy);
+        return this._ok(polished);
+      } catch (error) {
+        lastError = error;
+        const message = (error && error.message) || String(error || "");
+        // JSON/transport retry is centralized in llm(); this layer retries only
+        // valid JSON that fails the publishing contract, avoiding duplicate calls.
+        const retryableModelOutput = /模型未返回 title\/copy|模型返回的发布标题无效|模型返回的发布文案无效/.test(message);
+        if (attempt + 1 < attempts && retryableModelOutput) await delay(240);
+        else break;
       }
-      await delay(400);
-      return sanitizeXhsObject(this._mockCopy({ topic: safeTopic, shots: safeShots, account, product, kind, batchVariant, avoidCopies }));
     }
+    this._fb(lastError);
+    if (requireLlm) {
+      this.lastSource = "error";
+      this.lastError = (lastError && lastError.message) || String(lastError || "语言模型生成失败");
+      throw lastError instanceof Error ? lastError : new Error(this.lastError);
+    }
+    await delay(400);
+    return sanitizeXhsObject(this._mockCopy({ topic: safeTopic, shots: safeShots, account, product, kind, batchVariant, avoidCopies }));
   },
 
   async generateCustomVideoDraft({ title = "", body = "", account = {}, product = null, mode = "digital" } = {}) {

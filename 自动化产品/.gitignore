@@ -3,6 +3,8 @@ server/data.sqlite
 server/data.sqlite-wal
 server/data.sqlite-shm
 server/data.json
+# 无限画布完整草稿中的图片二进制，是运行时持久数据，不随代码同步。
+server/canvas_blobs/
 # 本地/服务器密钥配置，不入库
 .env
 .env.local

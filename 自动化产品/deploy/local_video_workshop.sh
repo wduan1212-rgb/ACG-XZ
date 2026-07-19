@@ -19,6 +19,7 @@ prepare_local_video_workshop() {
   export BGM_SOURCE="${BGM_SOURCE:-platform}"
   export DATA_DB="${DATA_DB:-$APP_DIR/server/data.sqlite}"
   export UPLOAD_DIR="${UPLOAD_DIR:-$APP_DIR/server/uploads}"
+  export CUSTOM_CANVAS_BLOB_DIR="${CUSTOM_CANVAS_BLOB_DIR:-$APP_DIR/server/canvas_blobs}"
   export BGM_LIBRARY_DIR="${BGM_LIBRARY_DIR:-$APP_DIR/runtime/bgm-library}"
   export HF_HOME="$APP_DIR/runtime/model-cache"
 
@@ -27,6 +28,7 @@ prepare_local_video_workshop() {
     "$VIDEO_WORKSHOP_PROJECTS_DIR" \
     "$VIDEO_WORKSHOP_OUTPUT_DIR" \
     "$VIDEO_WORKSHOP_UPLOAD_DIR" \
+    "$CUSTOM_CANVAS_BLOB_DIR" \
     "$HF_HOME"
   if [ "$BGM_SOURCE" != "platform" ]; then
     mkdir -p "$BGM_LIBRARY_DIR"

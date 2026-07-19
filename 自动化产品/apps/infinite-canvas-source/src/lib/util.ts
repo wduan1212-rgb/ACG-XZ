@@ -5,12 +5,31 @@ export function cn(
   return parts.filter(Boolean).join(" ");
 }
 
+/** HTTP pages may expose `crypto` without exposing a callable randomUUID. */
+export function randomIdPart(): string {
+  const webCrypto = globalThis.crypto;
+  if (webCrypto && typeof webCrypto.randomUUID === "function") {
+    try {
+      return webCrypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    } catch {
+      // Continue to getRandomValues/fallback for partial browser shims.
+    }
+  }
+  if (webCrypto && typeof webCrypto.getRandomValues === "function") {
+    try {
+      const values = new Uint32Array(2);
+      webCrypto.getRandomValues(values);
+      return [...values].map((value) => value.toString(36).padStart(7, "0")).join("");
+    } catch {
+      // Extremely restricted webviews still get a non-throwing local fallback.
+    }
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
 /** Stable-ish unique id with an optional prefix. */
 export function uid(prefix = "id"): string {
-  const rnd =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID().slice(0, 8)
-      : Math.random().toString(36).slice(2, 10);
+  const rnd = randomIdPart();
   return `${prefix}_${Date.now().toString(36)}${rnd}`;
 }
 

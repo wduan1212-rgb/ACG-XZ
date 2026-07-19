@@ -158,6 +158,107 @@ class _RetryableDownloadError(RuntimeError):
     pass
 
 
+LLM_TRANSIENT_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+
+def _llm_permanent_limit(detail: str) -> bool:
+    value = str(detail or "").lower()
+    return any(marker in value for marker in (
+        "余额", "额度", "insufficient", "quota", "credit",
+    ))
+
+
+def _llm_message_usable(data: Any) -> bool:
+    try:
+        message = data["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    if not isinstance(message, dict):
+        return False
+    calls = message.get("tool_calls") or []
+    if not calls and message.get("function_call"):
+        calls = [{"function": message["function_call"]}]
+    if calls:
+        function = (calls[0] or {}).get("function") or {}
+        arguments = function.get("arguments") or "{}"
+        if isinstance(arguments, str):
+            try:
+                json.loads(arguments)
+            except json.JSONDecodeError:
+                match = re.search(r"\{.*\}", arguments, re.S)
+                if not match:
+                    return False
+                try:
+                    json.loads(match.group(0))
+                except json.JSONDecodeError:
+                    return False
+        return bool(function.get("name"))
+    return bool(str(message.get("content") or "").strip())
+
+
+async def _post_llm_json_with_retry(
+    payload: dict[str, Any],
+    *,
+    timeout: float = 150,
+    label: str = "MiniMax-M3",
+) -> dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {settings.llm_api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    last_detail = ""
+    for attempt in range(2):
+        try:
+            async with _client(timeout) as client:
+                response = await client.post(
+                    settings.llm_endpoint,
+                    json=payload,
+                    headers=headers,
+                )
+        except httpx.RequestError as exc:
+            last_detail = exc.__class__.__name__
+            if attempt == 0:
+                await asyncio.sleep(0.35)
+                continue
+            raise ProviderError(f"{label}请求失败：{last_detail}") from exc
+        detail = _json_error(response).strip()
+        if response.status_code >= 400:
+            last_detail = detail or f"HTTP {response.status_code}"
+            if (
+                attempt == 0
+                and response.status_code in LLM_TRANSIENT_STATUS
+                and not _llm_permanent_limit(last_detail)
+            ):
+                await asyncio.sleep(0.35)
+                continue
+            raise ProviderError(f"{label}请求失败：{last_detail}")
+        try:
+            data = response.json()
+        except (TypeError, ValueError) as exc:
+            last_detail = "返回内容不是合法 JSON"
+            if attempt == 0:
+                await asyncio.sleep(0.24)
+                continue
+            raise ProviderError(f"{label}请求失败：{last_detail}") from exc
+        base_resp = data.get("base_resp") if isinstance(data, dict) else None
+        if isinstance(base_resp, dict) and int(base_resp.get("status_code") or 0) != 0:
+            last_detail = str(base_resp.get("status_msg") or "模型返回错误")
+            transient = bool(re.search(r"繁忙|稍后|限流|频率|timeout|timed out|rate limit|too many", last_detail, re.I))
+            if attempt == 0 and transient and not _llm_permanent_limit(last_detail):
+                await asyncio.sleep(0.35)
+                continue
+            raise ProviderError(f"{label}请求失败：{last_detail}")
+        if _llm_message_usable(data):
+            return data
+        last_detail = "没有返回可用消息或工具参数"
+        if attempt == 0:
+            await asyncio.sleep(0.24)
+            continue
+        raise ProviderError(f"{label}请求失败：{last_detail}")
+    raise ProviderError(f"{label}请求失败：{last_detail or '未知错误'}")
+
+
 SEEDANCE_DOWNLOAD_ATTEMPTS = 4
 SEEDANCE_DOWNLOAD_TIMEOUT = httpx.Timeout(
     connect=30.0,
@@ -599,19 +700,7 @@ class MiniMaxDirector:
             "reasoning_split": True,
             "max_completion_tokens": settings.llm_max_completion_tokens,
         }
-        async with _client(150) as client:
-            response = await client.post(
-                settings.llm_endpoint,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.llm_api_key}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-            )
-        if response.status_code >= 400:
-            raise ProviderError(f"MiniMax-M3 请求失败：{_json_error(response)}")
-        data = response.json()
+        data = await _post_llm_json_with_retry(payload, label="MiniMax-M3")
         try:
             message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -905,21 +994,7 @@ class MiniMaxDirector:
             "reasoning_split": True,
             "max_completion_tokens": settings.llm_max_completion_tokens,
         }
-        async with _client(150) as client:
-            response = await client.post(
-                settings.llm_endpoint,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.llm_api_key}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-            )
-        if response.status_code >= 400:
-            raise ProviderError(
-                f"口播时长校准失败：{_json_error(response)}"
-            )
-        data = response.json()
+        data = await _post_llm_json_with_retry(payload, label="口播时长校准")
         try:
             message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -1025,19 +1100,8 @@ class MiniMaxDirector:
             "max_completion_tokens": min(settings.llm_max_completion_tokens, 8000),
         }
         try:
-            async with _client(150) as client:
-                response = await client.post(
-                    settings.llm_endpoint,
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {settings.llm_api_key}",
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                )
-            if response.status_code >= 400:
-                return self._fallback_safe_rewrite(plan, scene_number)
-            message = response.json()["choices"][0]["message"]
+            data = await _post_llm_json_with_retry(payload, label="安全重写")
+            message = data["choices"][0]["message"]
             call = self._tool_call(message)
             if not call or call[0] != "rewrite_scene_prompt":
                 return self._fallback_safe_rewrite(plan, scene_number)
@@ -1066,7 +1130,7 @@ class MiniMaxDirector:
                 "change_summary": str(arguments.get("change_summary") or "已降低视觉风险。")[:300],
                 "public_thought": str(arguments.get("public_thought") or "保留叙事功能，用更中性的视觉语言重新表达。")[:360],
             }
-        except (KeyError, IndexError, TypeError, ValueError, httpx.HTTPError):
+        except (KeyError, IndexError, TypeError, ValueError, httpx.HTTPError, ProviderError):
             return self._fallback_safe_rewrite(plan, scene_number)
 
 

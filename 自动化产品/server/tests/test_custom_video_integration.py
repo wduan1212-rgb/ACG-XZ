@@ -566,7 +566,8 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
 
         self.assertIn("requireLlm: true", publish)
         self.assertIn("if (requireLlm)", ai)
-        self.assertIn("throw e instanceof Error", ai)
+        self.assertIn("throw lastError instanceof Error", ai)
+        self.assertIn("retryableModelOutput", ai)
         self.assertIn("def list_voice_presets():", store)
         self.assertIn("def _video_workshop_preferred_voice(me):", backend)
         self.assertIn('"preferredVoice": _video_workshop_preferred_voice(me)', backend)
@@ -576,6 +577,96 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         )
         self.assertIn('"presenter_female"', config)
         self.assertNotIn("sk-api-", ai + publish + backend + store + config)
+
+    def test_video_publish_llm_does_not_silently_replace_invalid_copy(self):
+        code = r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+const modelReplies = [
+  {
+    title: '国产codex百度搭子自动管理你的知识库！',
+    copy: '想要宣传这个产品，画面风格高级。'
+  },
+  {
+    title: '国产codex百度搭子自动管理你的知识库！',
+    copy: '我把 Obsidian 里的项目资料交给桌面智能体读取，再按文件来源整理成可复核的知识卡片。实际使用时，我会保留原文链接和更新时间，方便检查遗漏，而不是让模型凭空补内容。\n#Obsidian #知识库 #AI工具 #百度搭子'
+  },
+  {
+    title: '国产codex百度搭子自动管理你的知识库！',
+    copy: '想要宣传这个产品，画面风格高级。'
+  },
+  {
+    title: '国产codex百度搭子自动管理你的知识库！',
+    copy: '想要宣传这个产品，画面风格高级。'
+  },
+  {
+    title: '国产codex百度搭子自动管理你的知识库！',
+    copy: '想要宣传这个产品，画面风格高级。'
+  }
+];
+let requestCount = 0;
+globalThis.fetch = async () => ({
+  ok: true,
+  json: async () => ({
+    choices: [{ message: { content: JSON.stringify(modelReplies[requestCount++]) } }]
+  }),
+  text: async () => ''
+});
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260718-v94-1');
+LLM_CONFIG.apiKey = 'server-managed';
+LLM_CONFIG.endpoint = '/api/chat/completions';
+LLM_CONFIG.serverManaged = true;
+const { AI } = await import('./js/api/ai.js?v=20260718-v94-1');
+const request = {
+  topic: '国产codex百度搭子自动管理你的知识库！',
+  shots: [],
+  account: { platform: '小红书', name: '视频账号', styleProfile: '专业、克制、可复核' },
+  kind: 'video',
+  product: { id: 'dumate', name: '百度搭子', shortName: '百度搭子' }
+};
+const valid = await AI.generateCopy({ ...request, requireLlm: true });
+const validSource = AI.lastSource;
+let strictError = '';
+try {
+  await AI.generateCopy({ ...request, requireLlm: true });
+} catch (error) {
+  strictError = error.message || String(error);
+}
+const strictSource = AI.lastSource;
+const legacy = await AI.generateCopy({ ...request, requireLlm: false });
+console.log(JSON.stringify({
+  valid,
+  validSource,
+  strictError,
+  strictSource,
+  legacy,
+  legacySource: AI.lastSource,
+  requestCount
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", code],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        payload = json.loads(result.stdout)
+        self.assertEqual("llm", payload["validSource"])
+        self.assertIn("Obsidian 里的项目资料", payload["valid"]["copy"])
+        self.assertNotIn("很多 AI 办公内容写得太满", payload["valid"]["copy"])
+        self.assertIn("模型返回的发布文案无效", payload["strictError"])
+        self.assertEqual("error", payload["strictSource"])
+        self.assertIn("很多 AI 办公内容写得太满", payload["legacy"]["copy"])
+        self.assertEqual("llm", payload["legacySource"])
+        self.assertEqual(5, payload["requestCount"])
+
+        publish = (APP_DIR / "js/views/customPublish.js").read_text(encoding="utf-8")
+        self.assertIn("const previousCopy = copyInput.value", publish)
+        self.assertIn("copyInput.value = previousCopy", publish)
+        self.assertIn("文案生成失败，已保留原文案。", publish)
 
     def test_bundled_sidecar_contains_only_deployable_runtime(self):
         expected = (

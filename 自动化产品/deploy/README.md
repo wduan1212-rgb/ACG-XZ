@@ -58,6 +58,7 @@ VIDEO_WORKSHOP_DATA_ROOT=/opt/dumate-studio/runtime/video-workshop
 BGM_SOURCE=platform
 DATA_DB=/opt/dumate-studio/server/data.sqlite
 UPLOAD_DIR=/opt/dumate-studio/server/uploads
+CUSTOM_CANVAS_BLOB_DIR=/opt/dumate-studio/server/canvas_blobs
 HF_HOME=/opt/dumate-studio/runtime/model-cache
 ```
 
@@ -66,6 +67,16 @@ HF_HOME=/opt/dumate-studio/runtime/model-cache
 服务器资产。`DATA_DB`、`UPLOAD_DIR` 必须与主服务保持完全一致；共享库为空
 时仍允许生成无 BGM 成片。只有需要切回独立目录曲库时才设置
 `BGM_SOURCE=local` 和 `BGM_LIBRARY_DIR`。
+
+无限画布会将草稿内的 data URL 图片拆分到
+`CUSTOM_CANVAS_BLOB_DIR`，项目 JSON 只保存内部引用。浏览器通过登录鉴权的
+`/api/custom-canvas/blobs/{hash}` 同源地址读取；不同成员即使知道 hash
+也无法读取对方图片。该目录和 `server/data.sqlite` 必须作为同一组持久
+数据保留；替换或删除草稿时只会回收当前成员已无实时草稿引用的私有
+blob，不会扫描或删除发布资产。
+子应用打开时会先以 Bearer 登录态调用 `POST /api/custom-canvas/session`，
+服务端只为 blob 路径设置短时 HttpOnly / SameSite 会话 Cookie，以便
+`img` 和 Canvas 同源加载图片。平台 token 不得放入 URL、项目 JSON 或日志。
 
 `ASR_MODEL=small` 会在首次转写时下载 faster-whisper 模型并缓存到
 `HF_HOME`。无外网服务器应提前把兼容的 CTranslate2 模型目录放到持久盘，
@@ -114,6 +125,7 @@ server/data.sqlite-*
 server/data.json
 server/uploads/
 server/composed/
+server/canvas_blobs/
 runtime/
 backups/
 logs/
@@ -137,6 +149,7 @@ rsync -av --delete \
   --exclude 'server/data.json' \
   --exclude 'server/uploads/' \
   --exclude 'server/composed/' \
+  --exclude 'server/canvas_blobs/' \
   --exclude 'runtime/' \
   --exclude 'backups/' \
   --exclude 'logs/' \

@@ -16,6 +16,7 @@ export function GithubPagesApp() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const hydrated = useStore((state) => state._hasHydrated);
   const syncPublishedProjects = useStore((state) => state.syncPublishedProjects);
+  const syncCanvasProjectIndex = useStore((state) => state.syncCanvasProjectIndex);
   const markProjectPublished = useStore((state) => state.markProjectPublished);
 
   useEffect(() => {
@@ -28,7 +29,8 @@ export function GithubPagesApp() {
   useEffect(() => {
     if (!hydrated) return;
     syncPublishedProjects(canvasPublishedProjectsFromBootstrap());
-  }, [hydrated, syncPublishedProjects]);
+    void syncCanvasProjectIndex();
+  }, [hydrated, syncCanvasProjectIndex, syncPublishedProjects]);
 
   useEffect(() => {
     const receivePublishedState = (event: MessageEvent) => {

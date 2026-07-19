@@ -3,6 +3,7 @@ server/data.sqlite-*
 server/data.json
 server/uploads/
 server/composed/
+server/canvas_blobs/
 server/logs/
 server/__pycache__/
 server/**/*.pyc

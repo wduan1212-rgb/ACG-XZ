@@ -67,7 +67,6 @@ import type {
 
 export function Workspace({ projectId }: { projectId: string }) {
   const project = useStore((s) => s.projects.find((p) => p.id === projectId));
-  const enterProject = useStore((s) => s.enterProject);
   const addItem = useStore((s) => s.addItem);
   const updateItem = useStore((s) => s.updateItem);
   const removeItems = useStore((s) => s.removeItems);
@@ -129,7 +128,8 @@ export function Workspace({ projectId }: { projectId: string }) {
   );
 
   useEffect(() => {
-    enterProject(projectId);
+    // ProjectClient mounts Workspace only after the owner-scoped project state
+    // has been independently read back and verified.
     // Brief + reference images handed off from the homepage hero.
     const refsKey = `aidc:refs:${projectId}`;
     const refsRaw = sessionStorage.getItem(refsKey);
@@ -148,7 +148,7 @@ export function Workspace({ projectId }: { projectId: string }) {
       generate(pending);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, enterProject]);
+  }, [projectId]);
 
   useEffect(() => {
     for (const item of reactiveItems) {

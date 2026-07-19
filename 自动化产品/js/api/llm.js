@@ -68,6 +68,27 @@ function cleanModelText(text = "") {
     .trim();
 }
 
+const TRANSIENT_LLM_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+function jsonModelTextIsValid(text = "") {
+  let source = String(text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+  const start = source.indexOf("{");
+  const end = source.lastIndexOf("}");
+  if (start >= 0 && end > start) source = source.slice(start, end + 1);
+  try {
+    const value = JSON.parse(source);
+    return !!value && typeof value === "object" && !Array.isArray(value);
+  } catch (_) {
+    return false;
+  }
+}
+
+function retryDelayMs(response = null) {
+  const retryAfter = Number(response?.headers?.get?.("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(1600, retryAfter * 1000);
+  return 320;
+}
+
 export async function llm(messages, { json = false, temperature = 0.7, signal, timeoutMs = 45000, thinking = "", maxTokens = 0 } = {}) {
   if (!LLM_CONFIG.apiKey) throw new Error("未配置语言模型 Key");
   const ep = LLM_CONFIG.endpoint || "";
@@ -87,31 +108,78 @@ export async function llm(messages, { json = false, temperature = 0.7, signal, t
   if (!serverManaged && !authKey) throw new Error("未配置语言模型 Key");
   const headers = { "Content-Type": "application/json" };
   if (authKey) headers.Authorization = "Bearer " + authKey;
-  const ctrl = signal ? null : new AbortController();
-  const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
-  let res;
-  try {
-    res = await fetch(ep, {
-      method: "POST",
-      signal: signal || ctrl.signal,
-      headers,
-      body: JSON.stringify(body)
-    });
-  } catch (e) {
-    if (e && e.name === "AbortError") throw new Error(`语言模型请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
-    throw e;
-  } finally {
-    if (timer) clearTimeout(timer);
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ctrl = signal ? null : new AbortController();
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+    let res = null;
+    try {
+      res = await fetch(ep, {
+        method: "POST",
+        signal: signal || ctrl.signal,
+        headers,
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        const detail = (await res.text()).slice(0, 220);
+        const error = new Error("HTTP " + res.status + "：" + detail);
+        // 同源代理已经在服务端重试临时上游错误；浏览器不再叠加提交。
+        const permanentLimit = /余额|额度|insufficient|quota|credit/i.test(detail);
+        const canRetryHttp = !serverManaged && !permanentLimit && TRANSIENT_LLM_STATUS.has(res.status) && attempt === 0;
+        if (!canRetryHttp) throw error;
+        lastError = error;
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs(res)));
+        continue;
+      }
+      const d = await res.json();
+      // MiniMax / 部分国产模型：HTTP 200 但错误码藏在 base_resp 里（被吞掉就表现为"一直失败"，这里显式抛出真实原因）
+      if (d.base_resp && Number(d.base_resp.status_code) !== 0) {
+        const providerMessage = String(d.base_resp.status_msg || "调用失败");
+        const providerError = new Error(`模型返回错误 ${d.base_resp.status_code}：${providerMessage}`);
+        const transientProviderError = /繁忙|稍后|限流|频率|timeout|timed out|rate limit|too many/i.test(providerMessage)
+          && !/余额|额度|insufficient|quota|credit/i.test(providerMessage);
+        if (attempt === 0 && transientProviderError) {
+          lastError = providerError;
+          await new Promise(resolve => setTimeout(resolve, 320));
+          continue;
+        }
+        throw providerError;
+      }
+      const content = cleanModelText(d.choices?.[0]?.message?.content);
+      if (content == null || content === "") {
+        lastError = new Error("模型无有效返回：" + JSON.stringify(d).slice(0, 200));
+        if (attempt === 0) {
+          await new Promise(resolve => setTimeout(resolve, 240));
+          continue;
+        }
+        throw lastError;
+      }
+      if (json && !jsonModelTextIsValid(content)) {
+        lastError = new SyntaxError("模型返回了无法解析的 JSON");
+        if (attempt === 0) {
+          await new Promise(resolve => setTimeout(resolve, 240));
+          continue;
+        }
+        throw lastError;
+      }
+      return content;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        throw new Error(`语言模型请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+      }
+      lastError = error;
+      const retryableClientFailure = !signal && attempt === 0
+        && (!res || (res.ok && error instanceof SyntaxError));
+      if (retryableClientFailure) {
+        await new Promise(resolve => setTimeout(resolve, 320));
+        continue;
+      }
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
-  if (!res.ok) throw new Error("HTTP " + res.status + "：" + (await res.text()).slice(0, 220));
-  const d = await res.json();
-  // MiniMax / 部分国产模型：HTTP 200 但错误码藏在 base_resp 里（被吞掉就表现为"一直失败"，这里显式抛出真实原因）
-  if (d.base_resp && Number(d.base_resp.status_code) !== 0) {
-    throw new Error(`模型返回错误 ${d.base_resp.status_code}：${d.base_resp.status_msg || "调用失败"}`);
-  }
-  const content = cleanModelText(d.choices?.[0]?.message?.content);
-  if (content == null || content === "") throw new Error("模型无有效返回：" + JSON.stringify(d).slice(0, 200));
-  return content;
+  throw lastError || new Error("语言模型调用失败");
 }
 
 export async function visionCopy(imageDataUrl, accountStyle = "", { timeoutMs = 90000 } = {}) {

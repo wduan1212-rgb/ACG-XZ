@@ -1,11 +1,11 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260718-v93-2";
+import { AI } from "../api/ai.js?v=20260718-v94-1";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260718-v93-2";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260718-v94-1";
 import { icon } from "../ui/icons.js";
 import { openLightbox, openModal, toast, withLoading } from "../ui/components.js";
 
@@ -855,35 +855,42 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
 
       panel.querySelector("#customPublishGenerateCopy")?.addEventListener("click", event => {
         withLoading(event.currentTarget, async () => {
-          const title = titleInput.value.trim();
-          if (!title) throw new Error("请先填写发布标题");
-          const account = accountById(accountInput.value);
-          if (!account) throw new Error("请先选择发布账号");
-          status.textContent = "正在根据标题生成发布文案…";
-          const product = productById(productInput.value);
-          const generated = kind === "video"
-            ? await AI.generateCopy({
-              topic: title,
-              shots: spokenShots(output),
-              account,
-              style: account.styleProfile || account.lockedStyle || "",
-              kind: "video",
-              product,
-              requireLlm: true
-            })
-            : await AI.generateImageCopyFromTitle({ title, account, product });
-          const generatedCopy = kind === "canvas"
-            ? compactCanvasPublishCopy(generated.copy || "")
-            : String(generated.copy || "");
-          if (
-            coverSource === "generated"
-            && coverAssetId
-            && coverCopy !== generatedCopy.trim()
-          ) {
-            invalidateCover("发布文案已重新生成，请按新文案重新生成封面。");
+          const previousCopy = copyInput.value;
+          try {
+            const title = titleInput.value.trim();
+            if (!title) throw new Error("请先填写发布标题");
+            const account = accountById(accountInput.value);
+            if (!account) throw new Error("请先选择发布账号");
+            status.textContent = "正在根据标题生成发布文案…";
+            const product = productById(productInput.value);
+            const generated = kind === "video"
+              ? await AI.generateCopy({
+                topic: title,
+                shots: spokenShots(output),
+                account,
+                style: account.styleProfile || account.lockedStyle || "",
+                kind: "video",
+                product,
+                requireLlm: true
+              })
+              : await AI.generateImageCopyFromTitle({ title, account, product });
+            const generatedCopy = kind === "canvas"
+              ? compactCanvasPublishCopy(generated.copy || "")
+              : String(generated.copy || "");
+            if (
+              coverSource === "generated"
+              && coverAssetId
+              && coverCopy !== generatedCopy.trim()
+            ) {
+              invalidateCover("发布文案已重新生成，请按新文案重新生成封面。");
+            }
+            copyInput.value = generatedCopy;
+            status.textContent = "文案已生成，可以继续手动修改。";
+          } catch (error) {
+            copyInput.value = previousCopy;
+            status.textContent = "文案生成失败，已保留原文案。";
+            throw error;
           }
-          copyInput.value = generatedCopy;
-          status.textContent = "文案已生成，可以继续手动修改。";
         }, "生成中…");
       });
 

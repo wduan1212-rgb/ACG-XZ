@@ -179,15 +179,57 @@ export async function persistNow() {
 }
 
 /* ---- 启动装载 ---- */
+export async function loadIdentityCache() {
+  const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const [membersMeta, productMeta, apiKeysMeta, uiMeta, roleMeta, notifications] = await Promise.all([
+    db.metaGet("members").catch(() => []),
+    db.metaGet("products").catch(() => []),
+    db.metaGet("apiKeys").catch(() => []),
+    db.metaGet("ui").catch(() => null),
+    db.metaGet("role").catch(() => null),
+    db.getAll("notifications").catch(() => [])
+  ]);
+  state.members = membersMeta || [];
+  state.products = productMeta || [];
+  state.apiKeys = apiKeysMeta || [];
+  if (uiMeta) Object.assign(state.ui, uiMeta);
+  state.role = roleMeta || null;
+  state.notifications = notifications || [];
+  state.notifications.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  remote.recordPerformance("local-identity-load", {
+    durationMs: Math.max(0, Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt)),
+    collections: ["meta", "notifications"],
+    collectionCount: 2,
+    phase: "startup",
+    ok: true
+  });
+}
+
 export async function loadAll() {
-  for (const c of db.collections) state[c] = await db.getAll(c);
-  state.members = (await db.metaGet("members")) || [];
-  const productMeta = (await db.metaGet("products")) || [];
+  const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const [collectionRows, membersMeta, productMetaRaw, apiKeysMeta, uiMeta, roleMeta] = await Promise.all([
+    Promise.all(db.collections.map(c => db.getAll(c).catch(() => []))),
+    db.metaGet("members").catch(() => []),
+    db.metaGet("products").catch(() => []),
+    db.metaGet("apiKeys").catch(() => []),
+    db.metaGet("ui").catch(() => null),
+    db.metaGet("role").catch(() => null)
+  ]);
+  db.collections.forEach((c, index) => { state[c] = collectionRows[index] || []; });
+  state.members = membersMeta || [];
+  const productMeta = productMetaRaw || [];
   if (!state.products.length && productMeta.length) state.products = productMeta;
-  state.apiKeys = (await db.metaGet("apiKeys")) || [];
-  const ui = await db.metaGet("ui");
+  state.apiKeys = apiKeysMeta || [];
+  const ui = uiMeta;
   if (ui) Object.assign(state.ui, ui);
-  state.role = (await db.metaGet("role")) || null;
+  state.role = roleMeta || null;
+  remote.recordPerformance("local-idb-load", {
+    durationMs: Math.max(0, Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt)),
+    collections: db.collections,
+    collectionCount: db.collections.length,
+    phase: "startup",
+    ok: true
+  });
   if (state.role === "studio") state.role = "admin"; // 旧身份迁移
   if (state.role === "reviewer") state.role = "editor"; // 审核员已并入创作成员（含发布权）
   // 历史成员里的 reviewer 统一迁移为 editor
@@ -293,6 +335,322 @@ export async function removeRemoteAsync(collection, ...ids) {
   await Promise.all(ids.filter(id => id != null).map(id => remote.deleteDoc(collection, id)));
 }
 
+/* 登录只等待账号、产品和音色等首屏关键集合；其余集合在进入首页后分组同步。
+   分组请求兼容旧服务：若服务端忽略 collections 并返回了全量快照，客户端只消费一次，
+   不会继续重复下载同一份大状态。 */
+export const REMOTE_BOOTSTRAP_COLLECTIONS = ["accounts", "products", "voicePresets"];
+export const REMOTE_SUPPLIER_BOOTSTRAP_COLLECTIONS = ["accounts", "products"];
+export const REMOTE_DEFERRED_COLLECTION_GROUPS = [
+  ["productions", "sessions", "batches", "jobs"],
+  ["assets"],
+  ["analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory"]
+];
+const REMOTE_STATE_COLLECTIONS = [...remote.SYNCED];
+let remoteSyncGeneration = 0;
+let remoteBootstrapContext = null;
+let remoteHydrationRun = null;
+const remoteHydrationState = {
+  memberId: "",
+  pending: new Set(),
+  failed: new Set()
+};
+
+function resetRemoteHydrationState(memberId = "") {
+  remoteHydrationState.memberId = String(memberId || "");
+  remoteHydrationState.pending = new Set();
+  remoteHydrationState.failed = new Set();
+}
+
+function announceRemoteHydrationState() {
+  emit("remote:hydration-state", {
+    memberId: remoteHydrationState.memberId,
+    pending: [...remoteHydrationState.pending],
+    failed: [...remoteHydrationState.failed]
+  });
+}
+
+export function remoteCollectionHydrationState(collections = []) {
+  const wanted = new Set((collections || []).filter(Boolean));
+  return {
+    pending: [...remoteHydrationState.pending].filter(name => wanted.has(name)),
+    failed: [...remoteHydrationState.failed].filter(name => wanted.has(name))
+  };
+}
+
+function isRemoteSyncCurrent(generation, memberId) {
+  return generation === remoteSyncGeneration
+    && !!remote.hasToken()
+    && state.ui.currentMemberId === memberId;
+}
+
+/* 退出或切换账号时立即使旧请求失效。已进入 IndexedDB 事务的单次写入
+   无法中途取消，但新账号后创建的同 store 事务会在其后覆盖；旧链路不会再启动下一次写入。 */
+export function cancelRemoteHydration() {
+  remoteSyncGeneration += 1;
+  remoteBootstrapContext = null;
+  remoteHydrationRun = null;
+  resetRemoteHydrationState();
+}
+
+export function remoteBootstrapCollectionsForRole(role = state.role) {
+  return ["supplier", "supplier_parent", "supplier_child"].includes(role)
+    ? REMOTE_SUPPLIER_BOOTSTRAP_COLLECTIONS
+    : REMOTE_BOOTSTRAP_COLLECTIONS;
+}
+
+function cloneRemoteRows(value) {
+  return JSON.parse(JSON.stringify(value || []));
+}
+
+function returnedRemoteCollections(snap) {
+  return REMOTE_STATE_COLLECTIONS.filter(name => Array.isArray(snap?.[name]));
+}
+
+function applyRemoteSnapshot(snap, requested = REMOTE_STATE_COLLECTIONS) {
+  const applied = [];
+  requested.forEach(name => {
+    if (!Array.isArray(snap?.[name])) return;
+    state[name] = cloneRemoteRows(snap[name]);
+    applied.push(name);
+  });
+  if (Array.isArray(snap?.members)) state.members = cloneRemoteRows(snap.members);
+  state.notifications.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  state.sessions.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return applied;
+}
+
+function idleTurn() {
+  return new Promise(resolve => {
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(() => resolve(), { timeout: 120 });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+function retryPause(ms = 420) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchRemoteStateGroup(collections, isCurrent = () => true) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    if (!isCurrent()) {
+      const cancelled = new Error("工作区同步已取消");
+      cancelled.code = "remote-sync-cancelled";
+      throw cancelled;
+    }
+    try {
+      return await remote.getState(["members", ...collections]);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2 && isCurrent()) await retryPause();
+    }
+  }
+  throw lastError || new Error("工作区同步失败");
+}
+
+async function cacheRemoteSnapshot(snap, collections, phase = "background", isCurrent = () => true) {
+  const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  for (const name of collections) {
+    if (!Array.isArray(snap?.[name])) continue;
+    if (!isCurrent()) return false;
+    await idleTurn();
+    if (!isCurrent()) return false;
+    const rows = cloneRemoteRows(snap[name]);
+    try { await db.replaceAll(name, rows); } catch (_) { /* 本地缓存失败不影响服务端权威状态 */ }
+  }
+  if (Array.isArray(snap?.members) && isCurrent()) {
+    await db.metaSet("members", cloneRemoteRows(snap.members)).catch(() => null);
+  }
+  if (!isCurrent()) return false;
+  const endedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  remote.recordPerformance("state-idb", {
+    durationMs: Math.max(0, Math.round(endedAt - startedAt)),
+    collections,
+    collectionCount: collections.length,
+    phase,
+    ok: true
+  });
+  return true;
+}
+
+function clearRemoteMemoryBeforeLogin() {
+  REMOTE_STATE_COLLECTIONS.forEach(name => { state[name] = []; });
+  state.members = [];
+}
+
+/* 返回 { ok, complete }：complete=true 表示旧服务忽略了筛选并已返回全量，
+   或所有同步集合已随首包返回，因此无需再发后台分组请求。 */
+export async function pullRemoteBootstrap() {
+  if (!remote.isOn() || !remote.hasToken()) return { ok: false, complete: false };
+  const memberId = state.ui.currentMemberId;
+  const generation = ++remoteSyncGeneration;
+  remoteBootstrapContext = null;
+  resetRemoteHydrationState(memberId);
+  REMOTE_STATE_COLLECTIONS.forEach(name => remoteHydrationState.pending.add(name));
+  clearRemoteMemoryBeforeLogin();
+  let snap;
+  const bootstrapCollections = remoteBootstrapCollectionsForRole();
+  try {
+    snap = await remote.getState(["members", ...bootstrapCollections]);
+  } catch {
+    resetRemoteHydrationState();
+    return { ok: false, complete: false };
+  }
+  if (!isRemoteSyncCurrent(generation, memberId)) return { ok: false, complete: false };
+  const returned = returnedRemoteCollections(snap);
+  const requested = new Set(bootstrapCollections);
+  const serverReturnedExtra = returned.some(name => !requested.has(name));
+  const applied = applyRemoteSnapshot(snap, serverReturnedExtra ? returned : bootstrapCollections);
+  const complete = REMOTE_STATE_COLLECTIONS.every(name => returned.includes(name));
+  remoteBootstrapContext = {
+    generation,
+    memberId,
+    complete,
+    applied: new Set(applied)
+  };
+  remoteHydrationState.pending = new Set(
+    REMOTE_STATE_COLLECTIONS.filter(name => !remoteBootstrapContext.applied.has(name))
+  );
+  remoteHydrationState.failed.clear();
+  announceRemoteHydrationState();
+  void cacheRemoteSnapshot(
+    snap,
+    applied,
+    "bootstrap",
+    () => isRemoteSyncCurrent(generation, memberId)
+  ).catch(() => null);
+
+  const supplierReadOnly = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+  if (!supplierReadOnly) await ensureProductsSeed();
+  if (!isRemoteSyncCurrent(generation, memberId)) return { ok: false, complete: false };
+  emit("change", { collections: applied, phase: "bootstrap" });
+  return { ok: true, complete };
+}
+
+/* 登录后的重集合同步。调用方不要 await 它来打开登录门；可通过 onProgress 渐进刷新
+   首页/草稿/发布清单，编辑器和定制创作页面不会被强制重挂载。 */
+export function hydrateRemoteInBackground({ memberId = state.ui.currentMemberId, onProgress } = {}) {
+  const context = remoteBootstrapContext;
+  if (!context || context.memberId !== memberId || !isRemoteSyncCurrent(context.generation, memberId)) {
+    return Promise.resolve(false);
+  }
+  if (remoteHydrationRun?.generation === context.generation) return remoteHydrationRun.promise;
+  const { generation } = context;
+  const bootstrapCollectionsApplied = new Set(context.applied);
+  const isCurrent = () => isRemoteSyncCurrent(generation, memberId);
+  remoteHydrationState.memberId = String(memberId || "");
+  remoteHydrationState.failed.clear();
+  remoteHydrationState.pending = new Set(
+    REMOTE_STATE_COLLECTIONS.filter(name => !bootstrapCollectionsApplied.has(name))
+  );
+  announceRemoteHydrationState();
+  let keepContextForRetry = false;
+  const promise = (async () => {
+    const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const appliedAll = new Set();
+    try {
+      if (context.complete) {
+        REMOTE_STATE_COLLECTIONS.forEach(name => appliedAll.add(name));
+      } else {
+        for (const group of REMOTE_DEFERRED_COLLECTION_GROUPS) {
+          const pendingGroup = group.filter(name => !bootstrapCollectionsApplied.has(name));
+          if (!pendingGroup.length) continue;
+          if (!isCurrent()) return false;
+          const snap = await fetchRemoteStateGroup(pendingGroup, isCurrent);
+          if (!isCurrent()) return false;
+          const returned = returnedRemoteCollections(snap);
+          const requested = new Set(pendingGroup);
+          const serverReturnedExtra = returned.some(name => !requested.has(name) && !bootstrapCollectionsApplied.has(name));
+          const remainingBeforeApply = REMOTE_STATE_COLLECTIONS.filter(name => !bootstrapCollectionsApplied.has(name));
+          const serverReturnedAllRemaining = remainingBeforeApply.every(name => returned.includes(name));
+          const names = serverReturnedExtra ? returned : pendingGroup;
+          const applied = applyRemoteSnapshot(snap, names);
+          applied.forEach(name => {
+            appliedAll.add(name);
+            bootstrapCollectionsApplied.add(name);
+            context.applied.add(name);
+            remoteHydrationState.pending.delete(name);
+            remoteHydrationState.failed.delete(name);
+          });
+          announceRemoteHydrationState();
+          emit("change", { collections: applied, phase: "background" });
+          try { onProgress?.({ collections: applied, complete: false }); } catch (_) {}
+          // 本地缓存只是离线副本，不能阻塞下一组服务端数据请求或页面水合。
+          // generation/member 守卫仍会阻止切换账号后的旧快照继续落盘。
+          void cacheRemoteSnapshot(snap, applied, "background", isCurrent).catch(() => null);
+          if (!isCurrent()) return false;
+          if (serverReturnedAllRemaining) break;
+        }
+      }
+
+      if (!isCurrent()) return false;
+      const supplierReadOnly = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+      if (!supplierReadOnly) {
+        await ensureProductsSeed();
+        // 登录后的后台水合只维护本地缓存，不把快照二次回推服务端。
+        await normalizeProductTermsInState({ persistLocal: true, pushRemote: false });
+      }
+      if (!isCurrent()) return false;
+      const endedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+      remote.recordPerformance("state-hydration", {
+        durationMs: Math.max(0, Math.round(endedAt - startedAt)),
+        collections: [...appliedAll],
+        collectionCount: appliedAll.size,
+        phase: "background",
+        ok: true
+      });
+      emit("remote:hydrated", { collections: [...appliedAll], complete: true });
+      remoteHydrationState.pending.clear();
+      remoteHydrationState.failed.clear();
+      announceRemoteHydrationState();
+      try { onProgress?.({ collections: [...appliedAll], complete: true }); } catch (_) {}
+      return true;
+    } catch (error) {
+      if (error?.code === "remote-sync-cancelled" || !isCurrent()) return false;
+      remote.recordPerformance("state-hydration", {
+        durationMs: Math.max(0, Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt)),
+        collections: [...appliedAll],
+        collectionCount: appliedAll.size,
+        phase: "background",
+        ok: false
+      });
+      console.warn("后台工作区同步失败", error);
+      keepContextForRetry = true;
+      const failedCollections = REMOTE_STATE_COLLECTIONS.filter(name => !bootstrapCollectionsApplied.has(name));
+      remoteHydrationState.pending.clear();
+      remoteHydrationState.failed = new Set(failedCollections);
+      announceRemoteHydrationState();
+      emit("remote:hydration-error", {
+        collections: failedCollections,
+        retryable: true
+      });
+      try {
+        onProgress?.({
+          collections: failedCollections,
+          complete: false,
+          error: true,
+          retryable: true
+        });
+      } catch (_) {}
+      return false;
+    } finally {
+      if (!keepContextForRetry && remoteBootstrapContext?.generation === generation) remoteBootstrapContext = null;
+      if (remoteHydrationRun?.generation === generation) remoteHydrationRun = null;
+    }
+  })();
+  remoteHydrationRun = { generation, promise };
+  return promise;
+}
+
+export function retryRemoteHydration({ onProgress } = {}) {
+  const memberId = state.ui.currentMemberId;
+  if (!remoteBootstrapContext || !memberId || !remote.hasToken()) return Promise.resolve(false);
+  return hydrateRemoteInBackground({ memberId, onProgress });
+}
+
 /* 登录后从服务端拉全量快照覆盖本地 + 回写 IndexedDB 缓存（离线可用）。
    共享模式下服务器是权威源：绝不把本机旧缓存当作 localOnly 回推。
    这样 A 删除账号/资产后，B 的旧 IndexedDB 不会在下次刷新时把它复活。
@@ -301,24 +659,14 @@ export async function pullRemote() {
   if (!remote.isOn() || !remote.hasToken()) return false;
   let snap;
   try { snap = await remote.getState(); } catch { return false; }
-  for (const c of db.collections) {
-    if (!Array.isArray(snap[c])) continue;        // 服务器没返回该集合（如 notifications）→ 本地保持不动
-    state[c] = JSON.parse(JSON.stringify(snap[c] || []));
-  }
-  if (Array.isArray(snap.members)) state.members = snap.members;
-  for (const c of db.collections) {
-    if (!Array.isArray(snap[c])) continue;
-    try { await db.replaceAll(c, JSON.parse(JSON.stringify(state[c] || []))); } catch (e) { /* 缓存失败不致命 */ }
-  }
+  const applied = applyRemoteSnapshot(snap, db.collections);
+  await cacheRemoteSnapshot(snap, applied, "explicit");
   const supplierReadOnly = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
   if (!supplierReadOnly) {
     await ensureProductsSeed();
     await normalizeProductTermsInState({ persistLocal: true, pushRemote: true });
     if (Array.isArray(snap.products) && !snap.products.length) remote.putCollection("products", state.products);
   }
-  if (Array.isArray(snap.members)) db.metaSet("members", JSON.parse(JSON.stringify(state.members)));
-  state.notifications.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  state.sessions.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   emit("change", { collections: db.collections });
   return true;
 }

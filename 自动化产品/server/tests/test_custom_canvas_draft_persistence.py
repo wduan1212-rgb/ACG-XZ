@@ -1,0 +1,803 @@
+import base64
+import hashlib
+import importlib
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from fastapi import HTTPException, Response
+from starlette.requests import Request
+
+
+SERVER_DIR = Path(__file__).resolve().parents[1]
+TEST_DIR = Path(__file__).resolve().parent
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
+if str(TEST_DIR) not in sys.path:
+    sys.path.insert(0, str(TEST_DIR))
+
+from test_store_tombstone import load_isolated_store
+
+
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("ascii")
+
+
+def load_canvas_store(tmpdir):
+    os.environ["CUSTOM_CANVAS_BLOB_DIR"] = str(Path(tmpdir) / "canvas_blobs")
+    return load_isolated_store(tmpdir)
+
+
+def draft_payload(
+    source_id="canvas-local-1",
+    *,
+    updated_at=100,
+    items=None,
+    messages=None,
+    migration=False,
+    base_revision=None,
+):
+    payload = {
+        "project": {
+            "id": source_id,
+            "name": "权威画布草稿",
+            "scene": "brand_kv",
+            "targetSize": "1024x1024",
+            "createdAt": 10,
+            "updatedAt": updated_at,
+        },
+        "items": [
+            {
+                "id": "image-node-1",
+                "projectId": source_id,
+                "type": "reference",
+                "assetUrl": PNG_DATA_URL,
+                "position": {"x": 0, "y": 0},
+                "size": {"width": 100, "height": 100},
+                "z": 1,
+                "createdAt": 10,
+            }
+        ] if items is None else items,
+        "messages": [{"id": "message-1", "role": "user", "text": "保留图片", "createdAt": 11}]
+        if messages is None else messages,
+        "viewport": {"x": 2, "y": 3, "zoom": 1},
+        "clientUpdatedAt": updated_at,
+        "migration": migration,
+    }
+    if base_revision is not None:
+        payload["baseRevision"] = base_revision
+    return payload
+
+
+class CustomCanvasDraftPersistenceTest(unittest.TestCase):
+    def test_http_contract_accepts_structured_migration_and_returns_source_aliases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            main = importlib.import_module("main")
+            request = main.CustomCanvasProjectDraftReq(**draft_payload(
+                "canvas-route",
+                migration={"source": "local-v2", "version": 1},
+            ))
+            with patch.object(main, "store", store):
+                saved = main.custom_canvas_projects_put(
+                    "canvas-route",
+                    request,
+                    me={"id": "creator-a", "role": "editor"},
+                )
+                index = main.custom_canvas_projects_list(
+                    me={"id": "creator-a", "role": "editor"},
+                )
+                deleted = main.custom_canvas_projects_delete(
+                    "canvas-route",
+                    me={"id": "creator-a", "role": "editor"},
+                )
+                index_after = main.custom_canvas_projects_list(
+                    me={"id": "creator-a", "role": "editor"},
+                )
+            self.assertEqual(saved["project"]["sourceId"], "canvas-route")
+            self.assertEqual(index["items"][0]["sourceId"], "canvas-route")
+            self.assertTrue(deleted["ok"])
+            self.assertEqual(index_after["tombstones"][0]["sourceId"], "canvas-route")
+
+    def test_unsafe_svg_data_url_is_rejected_before_disk_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            unsafe = draft_payload(items=[{
+                "id": "unsafe-svg",
+                "type": "reference",
+                "assetUrl": "data:image/svg+xml,%3Csvg%20onload%3D%22alert(1)%22%3E%3C/svg%3E",
+            }])
+            with self.assertRaisesRegex(ValueError, "unsafe_custom_canvas_svg"):
+                store.save_custom_canvas_draft(
+                    "creator-a", "canvas-unsafe", unsafe
+                )
+            self.assertEqual(
+                store._fetchone("SELECT COUNT(*) FROM custom_canvas_blobs")[0],
+                0,
+            )
+
+    def test_multi_image_migration_larger_than_eight_megabytes_is_supported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            large_items = []
+            for index in range(3):
+                # 模拟多张 1024/1536 生成图：总原始图片超过 8MB，但每张仍受单图上限保护。
+                image = PNG_BYTES + bytes([index]) + (b"\0" * (3 * 1024 * 1024))
+                data_url = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
+                large_items.append({
+                    "id": f"large-image-{index}",
+                    "projectId": "canvas-large",
+                    "type": "generation",
+                    "assetUrl": data_url,
+                    "position": {"x": index * 20, "y": 0},
+                    "size": {"width": 1024, "height": 1024},
+                    "z": index,
+                    "createdAt": 10 + index,
+                })
+            payload = draft_payload(
+                "canvas-large",
+                items=large_items,
+                migration={"source": "local-v2", "version": 1},
+            )
+            saved, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-large", payload
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "created")
+            returned_urls = [item["assetUrl"] for item in saved["state"]["items"]]
+            self.assertEqual(len(returned_urls), 3)
+            self.assertTrue(all(
+                value.startswith("/api/custom-canvas/blobs/")
+                for value in returned_urls
+            ))
+            self.assertNotIn("data:image", json.dumps(saved, ensure_ascii=False))
+            self.assertLess(len(json.dumps(saved).encode("utf-8")), 20_000)
+            self.assertGreater(
+                store._fetchone(
+                    "SELECT SUM(size) FROM custom_canvas_blobs WHERE owner_id=?",
+                    ("creator-a",),
+                )[0],
+                8 * 1024 * 1024,
+            )
+
+    def test_owner_scoped_data_url_is_private_blob_and_returns_stable_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            payload = draft_payload(migration=True)
+            payload["project"]["thumbnailUrl"] = PNG_DATA_URL
+            result, error, outcome = store.save_custom_canvas_draft(
+                "creator-a",
+                "canvas-local-1",
+                payload,
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "created")
+            self.assertEqual(result["project"]["revision"], 1)
+            stable_url = result["state"]["items"][0]["assetUrl"]
+            self.assertRegex(
+                stable_url,
+                r"^/api/custom-canvas/blobs/[a-f0-9]{64}$",
+            )
+            self.assertEqual(result["project"]["thumbnailUrl"], stable_url)
+            self.assertNotIn("data:image", json.dumps(result, ensure_ascii=False))
+
+            stored = store._fetchone(
+                "SELECT draft_json FROM custom_canvas_drafts WHERE owner_id=? AND source_project_id=?",
+                ("creator-a", "canvas-local-1"),
+            )[0]
+            self.assertNotIn("data:image", stored)
+            self.assertIn("custom-canvas-blob-v1", stored)
+            blob_row = store._fetchone(
+                "SELECT owner_id,mime,size,stored_name FROM custom_canvas_blobs",
+            )
+            self.assertEqual(blob_row[:3], ("creator-a", "image/png", len(PNG_BYTES)))
+            private_path = Path(tmp) / "canvas_blobs" / blob_row[3]
+            self.assertTrue(private_path.is_file())
+            self.assertEqual(private_path.read_bytes(), PNG_BYTES)
+
+            fetched, fetch_error = store.get_custom_canvas_draft(
+                "creator-a", "canvas-local-1"
+            )
+            self.assertIsNone(fetch_error)
+            self.assertEqual(fetched["state"]["items"][0]["assetUrl"], stable_url)
+            self.assertEqual(fetched["project"]["thumbnailUrl"], stable_url)
+            index_items, _ = store.list_custom_canvas_drafts("creator-a")
+            encoded_index = json.dumps(index_items, ensure_ascii=False)
+            self.assertNotIn("data:image", encoded_index)
+            self.assertNotIn("custom-canvas-blob-v1", encoded_index)
+            self.assertNotIn("thumbnailUrl", index_items[0])
+            self.assertLess(len(encoded_index.encode("utf-8")), 10_000)
+            denied, denied_error = store.get_custom_canvas_draft(
+                "creator-b", "canvas-local-1"
+            )
+            self.assertIsNone(denied)
+            self.assertEqual(denied_error, "not_found")
+
+    def test_stable_blob_url_round_trip_requires_same_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            created, error, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-roundtrip", draft_payload("canvas-roundtrip")
+            )
+            self.assertIsNone(error)
+            stable_url = created["state"]["items"][0]["assetUrl"]
+
+            update = draft_payload(
+                "canvas-roundtrip",
+                updated_at=200,
+                base_revision=1,
+            )
+            update["items"][0]["assetUrl"] = stable_url
+            saved, save_error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-roundtrip", update
+            )
+            self.assertIsNone(save_error)
+            self.assertEqual(outcome, "updated")
+            self.assertEqual(saved["state"]["items"][0]["assetUrl"], stable_url)
+
+            forged = draft_payload("canvas-forged")
+            forged["items"][0]["assetUrl"] = stable_url
+            with self.assertRaisesRegex(ValueError, "invalid_custom_canvas_blob_ref"):
+                store.save_custom_canvas_draft(
+                    "creator-b", "canvas-forged", forged
+                )
+            self.assertEqual(len(store.list_custom_canvas_drafts("creator-b")[0]), 0)
+
+    def test_blob_route_is_owner_scoped_and_does_not_expose_storage_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            result, _, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-route-blob", draft_payload("canvas-route-blob")
+            )
+            stable_url = result["state"]["items"][0]["assetUrl"]
+            digest = stable_url.rsplit("/", 1)[-1]
+            request = Request({
+                "type": "http",
+                "method": "GET",
+                "path": stable_url,
+                "query_string": b"",
+                "headers": [(b"cookie", b"acg_custom_canvas_session=signed-owner-token")],
+            })
+            main = importlib.import_module("main")
+            creator_a = {"id": "creator-a", "role": "editor"}
+            with patch.object(main, "store", store), patch.object(
+                main, "_member_from_authorization", return_value=creator_a
+            ) as authenticate:
+                response = main.custom_canvas_blob_get(
+                    digest,
+                    request,
+                    authorization="",
+                )
+                authenticate.assert_called_with("Bearer signed-owner-token")
+                self.assertEqual(response.media_type, "image/png")
+                self.assertEqual(
+                    response.headers["cache-control"],
+                    "private, max-age=31536000, immutable",
+                )
+                self.assertEqual(response.headers["vary"], "Cookie, Authorization")
+                self.assertNotIn(str(tmp), stable_url)
+                self.assertNotIn("creator-a", stable_url)
+                ranged_request = Request({
+                    "type": "http",
+                    "method": "GET",
+                    "path": stable_url,
+                    "query_string": b"",
+                    "headers": [
+                        (b"range", b"bytes=0-3"),
+                        (b"cookie", b"acg_custom_canvas_session=signed-owner-token"),
+                    ],
+                })
+                ranged = main.custom_canvas_blob_get(
+                    digest,
+                    ranged_request,
+                    authorization="",
+                )
+                self.assertEqual(ranged.status_code, 206)
+                self.assertEqual(ranged.headers["content-range"], f"bytes 0-3/{len(PNG_BYTES)}")
+                self.assertEqual(ranged.headers["accept-ranges"], "bytes")
+            with patch.object(main, "store", store), patch.object(
+                main,
+                "_member_from_authorization",
+                return_value={"id": "creator-b", "role": "editor"},
+            ):
+                with self.assertRaises(HTTPException) as denied:
+                    main.custom_canvas_blob_get(
+                        digest,
+                        request,
+                        authorization="",
+                    )
+            self.assertEqual(denied.exception.status_code, 404)
+
+    def test_canvas_session_cookie_is_http_only_scoped_and_https_aware(self):
+        main = importlib.import_module("main")
+        request = Request({
+            "type": "http",
+            "scheme": "https",
+            "server": ("example.test", 443),
+            "method": "POST",
+            "path": "/api/custom-canvas/session",
+            "query_string": b"",
+            "headers": [],
+        })
+        response = Response()
+        member = {"id": "creator-a", "role": "editor"}
+        with patch.object(main, "_member_from_authorization", return_value=member) as authenticate:
+            result = main.custom_canvas_session_create(
+                request,
+                response,
+                authorization="Bearer signed-owner-token",
+                me=member,
+            )
+        self.assertTrue(result["ok"])
+        authenticate.assert_called_with("Bearer signed-owner-token")
+        cookie = response.headers["set-cookie"]
+        self.assertIn("acg_custom_canvas_session=signed-owner-token", cookie)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=strict", cookie)
+        self.assertIn("Secure", cookie)
+        self.assertIn("Path=/api/custom-canvas/blobs", cookie)
+        self.assertNotIn("signed-owner-token", json.dumps(result))
+
+    def test_replaced_and_deleted_drafts_gc_only_their_owner_orphans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            first_a, _, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-gc", draft_payload("canvas-gc")
+            )
+            store.save_custom_canvas_draft(
+                "creator-b", "canvas-gc", draft_payload("canvas-gc")
+            )
+            first_hash = first_a["state"]["items"][0]["assetUrl"].rsplit("/", 1)[-1]
+            first_a_row = store._fetchone(
+                "SELECT stored_name FROM custom_canvas_blobs WHERE owner_id=? AND content_hash=?",
+                ("creator-a", first_hash),
+            )
+            first_a_path = Path(tmp) / "canvas_blobs" / first_a_row[0]
+
+            second_bytes = PNG_BYTES + b"replacement"
+            second_url = "data:image/png;base64," + base64.b64encode(second_bytes).decode("ascii")
+            replacement = draft_payload(
+                "canvas-gc", updated_at=200, base_revision=1
+            )
+            replacement["items"][0]["assetUrl"] = second_url
+            second_a, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-gc", replacement
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "updated")
+            second_hash = second_a["state"]["items"][0]["assetUrl"].rsplit("/", 1)[-1]
+            self.assertNotEqual(first_hash, second_hash)
+            self.assertFalse(first_a_path.exists())
+            self.assertEqual(store._fetchone(
+                "SELECT COUNT(*) FROM custom_canvas_blobs WHERE owner_id=? AND content_hash=?",
+                ("creator-a", first_hash),
+            )[0], 0)
+            self.assertEqual(store._fetchone(
+                "SELECT COUNT(*) FROM custom_canvas_blobs WHERE owner_id=? AND content_hash=?",
+                ("creator-b", first_hash),
+            )[0], 1)
+
+            store.delete_custom_canvas_draft("creator-a", "canvas-gc")
+            self.assertEqual(store._fetchone(
+                "SELECT COUNT(*) FROM custom_canvas_blobs WHERE owner_id=?",
+                ("creator-a",),
+            )[0], 0)
+            self.assertEqual(store._fetchone(
+                "SELECT COUNT(*) FROM custom_canvas_blobs WHERE owner_id=?",
+                ("creator-b",),
+            )[0], 1)
+
+    def test_failed_save_removes_only_blob_file_created_by_that_attempt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            source_id = "canvas-rollback-new-file"
+            project_id = store._custom_canvas_project_id("creator-a", source_id)
+            store._ensure_db()
+            conn = store._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO deleted_docs(collection,id,deleted_at)
+                    VALUES('customProjects',?,?)
+                    """,
+                    (project_id, 100),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            result, error, outcome = store.save_custom_canvas_draft(
+                "creator-a",
+                source_id,
+                draft_payload(source_id),
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(error, "deleted")
+            self.assertEqual(outcome, "rejected")
+            self.assertEqual(store._fetchone(
+                "SELECT COUNT(*) FROM custom_canvas_blobs WHERE owner_id=?",
+                ("creator-a",),
+            )[0], 0)
+            blob_root = Path(tmp) / "canvas_blobs"
+            self.assertEqual(
+                [path for path in blob_root.rglob("*") if path.is_file()],
+                [],
+            )
+
+    def test_failed_save_never_deletes_preexisting_untracked_blob_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            source_id = "canvas-rollback-existing-file"
+            owner_id = "creator-a"
+            content_hash = hashlib.sha256(
+                b"image/png\0" + PNG_BYTES
+            ).hexdigest()
+            stored_name = store._custom_canvas_blob_relative_path(
+                owner_id,
+                content_hash,
+                "image/png",
+            )
+            preexisting = Path(tmp) / "canvas_blobs" / stored_name
+            preexisting.parent.mkdir(parents=True, exist_ok=True)
+            preexisting.write_bytes(PNG_BYTES)
+
+            project_id = store._custom_canvas_project_id(owner_id, source_id)
+            store._ensure_db()
+            conn = store._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO deleted_docs(collection,id,deleted_at)
+                    VALUES('customProjects',?,?)
+                    """,
+                    (project_id, 100),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            result, error, outcome = store.save_custom_canvas_draft(
+                owner_id,
+                source_id,
+                draft_payload(source_id),
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(error, "deleted")
+            self.assertEqual(outcome, "rejected")
+            self.assertTrue(preexisting.is_file())
+            self.assertEqual(preexisting.read_bytes(), PNG_BYTES)
+            self.assertEqual(store._fetchone(
+                "SELECT COUNT(*) FROM custom_canvas_blobs WHERE owner_id=?",
+                (owner_id,),
+            )[0], 0)
+
+    def test_same_source_isolated_by_owner_and_admin_route_cannot_cross_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            first, _, _ = store.save_custom_canvas_draft(
+                "creator-a", "shared-local-id", draft_payload("shared-local-id")
+            )
+            second, _, _ = store.save_custom_canvas_draft(
+                "creator-b", "shared-local-id", draft_payload("shared-local-id")
+            )
+            self.assertNotEqual(
+                first["project"]["customProjectId"],
+                second["project"]["customProjectId"],
+            )
+            owner_hash = hashlib.sha256(b"creator-a").hexdigest()[:16]
+            self.assertIn(owner_hash, first["project"]["customProjectId"])
+            self.assertEqual(len(store.list_custom_canvas_drafts("creator-a")[0]), 1)
+            self.assertEqual(len(store.list_custom_canvas_drafts("creator-b")[0]), 1)
+
+            main = importlib.import_module("main")
+            with patch.object(main, "store", store):
+                with self.assertRaises(HTTPException) as denied:
+                    main.custom_canvas_projects_get(
+                        "shared-local-id",
+                        me={"id": "admin-member", "role": "admin"},
+                    )
+            self.assertEqual(denied.exception.status_code, 404)
+
+    def test_migration_is_idempotent_existing_live_wins_and_normal_update_uses_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            initial = draft_payload(migration=True)
+            created, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", initial
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "created")
+
+            unchanged, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", initial
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "unchanged")
+            self.assertEqual(unchanged["project"]["revision"], 1)
+
+            migration_change = draft_payload(
+                updated_at=300,
+                migration=True,
+                messages=[{"id": "new", "role": "user", "text": "旧端新内容", "createdAt": 300}],
+            )
+            authoritative, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", migration_change
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "server-newer")
+            self.assertEqual(authoritative["state"]["messages"][0]["id"], "message-1")
+            self.assertEqual(authoritative["project"]["revision"], 1)
+
+            missing_base = draft_payload(updated_at=200, messages=[])
+            result, error, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", missing_base
+            )
+            self.assertIsNone(result)
+            self.assertEqual(error, "conflict")
+
+            update = draft_payload(updated_at=200, messages=[], base_revision=1)
+            updated, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", update
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "updated")
+            self.assertEqual(updated["project"]["revision"], 2)
+
+            stale = draft_payload(
+                updated_at=150,
+                messages=[{"id": "stale", "role": "user", "text": "过期", "createdAt": 150}],
+                base_revision=2,
+            )
+            result, error, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", stale
+            )
+            self.assertIsNone(result)
+            self.assertEqual(error, "server_newer")
+
+    def test_nonempty_migration_fills_empty_server_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            shell, error, outcome = store.save_custom_canvas_draft(
+                "creator-a",
+                "canvas-local-1",
+                draft_payload(items=[], messages=[]),
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "created")
+            self.assertEqual(shell["state"]["items"], [])
+            self.assertEqual(shell["state"]["messages"], [])
+
+            migrated, error, outcome = store.save_custom_canvas_draft(
+                "creator-a",
+                "canvas-local-1",
+                draft_payload(updated_at=200, migration=True),
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "updated")
+            self.assertEqual(migrated["project"]["revision"], 2)
+            self.assertEqual(migrated["state"]["items"][0]["id"], "image-node-1")
+            self.assertEqual(migrated["state"]["messages"][0]["id"], "message-1")
+
+    def test_nonempty_server_wins_over_rich_and_empty_migrations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            created, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", draft_payload()
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "created")
+
+            rich_migration = draft_payload(
+                updated_at=200,
+                migration=True,
+                items=[{
+                    "id": "legacy-image",
+                    "projectId": "canvas-local-1",
+                    "type": "reference",
+                    "assetUrl": PNG_DATA_URL,
+                }],
+                messages=[{
+                    "id": "legacy-message",
+                    "role": "user",
+                    "text": "旧端内容",
+                    "createdAt": 200,
+                }],
+            )
+            for migration in (
+                rich_migration,
+                draft_payload(
+                    updated_at=300,
+                    migration=True,
+                    items=[],
+                    messages=[],
+                ),
+            ):
+                authoritative, save_error, save_outcome = store.save_custom_canvas_draft(
+                    "creator-a", "canvas-local-1", migration
+                )
+                self.assertIsNone(save_error)
+                self.assertEqual(save_outcome, "server-newer")
+                self.assertEqual(authoritative["project"]["revision"], 1)
+                self.assertEqual(
+                    authoritative["state"]["items"][0]["id"],
+                    created["state"]["items"][0]["id"],
+                )
+                self.assertEqual(
+                    authoritative["state"]["messages"][0]["id"],
+                    created["state"]["messages"][0]["id"],
+                )
+
+    def test_nonempty_server_draft_rejects_empty_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", draft_payload()
+            )
+            empty = draft_payload(
+                updated_at=200,
+                items=[],
+                messages=[],
+                base_revision=1,
+            )
+            result, error, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", empty
+            )
+            self.assertIsNone(result)
+            self.assertEqual(error, "empty_snapshot")
+            current, _ = store.get_custom_canvas_draft("creator-a", "canvas-local-1")
+            self.assertEqual(len(current["state"]["items"]), 1)
+            self.assertEqual(current["project"]["revision"], 1)
+
+    def test_message_only_server_draft_rejects_empty_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            message_only = draft_payload(
+                "canvas-message-only",
+                items=[],
+                messages=[{"id": "m1", "role": "user", "text": "保留对话"}],
+            )
+            store.save_custom_canvas_draft(
+                "creator-a", "canvas-message-only", message_only
+            )
+            empty = draft_payload(
+                "canvas-message-only",
+                updated_at=200,
+                items=[],
+                messages=[],
+                base_revision=1,
+            )
+            result, error, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-message-only", empty
+            )
+            self.assertIsNone(result)
+            self.assertEqual(error, "empty_snapshot")
+            current, _ = store.get_custom_canvas_draft(
+                "creator-a", "canvas-message-only"
+            )
+            self.assertEqual(current["state"]["messages"][0]["text"], "保留对话")
+
+    def test_delete_leaves_tombstone_and_stale_put_cannot_resurrect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", draft_payload()
+            )
+            tombstone, error = store.delete_custom_canvas_draft(
+                "creator-a", "canvas-local-1"
+            )
+            self.assertIsNone(error)
+            self.assertEqual(tombstone["revision"], 2)
+
+            items, tombstones = store.list_custom_canvas_drafts("creator-a")
+            self.assertEqual(items, [])
+            self.assertEqual(tombstones[0]["sourceProjectId"], "canvas-local-1")
+            self.assertEqual(tombstones[0]["revision"], 2)
+            missing, get_error = store.get_custom_canvas_draft(
+                "creator-a", "canvas-local-1"
+            )
+            self.assertIsNone(missing)
+            self.assertEqual(get_error, "deleted")
+
+            for migration in (False, True):
+                result, save_error, _ = store.save_custom_canvas_draft(
+                    "creator-a",
+                    "canvas-local-1",
+                    draft_payload(updated_at=9999999999999, migration=migration),
+                )
+                self.assertIsNone(result)
+                self.assertEqual(save_error, "deleted")
+
+    def test_delete_before_first_put_writes_tombstone_and_blocks_late_create(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            tombstone, error = store.delete_custom_canvas_draft(
+                "creator-a", "canvas-race"
+            )
+            self.assertIsNone(error)
+            self.assertEqual(tombstone["revision"], 1)
+
+            items, tombstones = store.list_custom_canvas_drafts("creator-a")
+            self.assertEqual(items, [])
+            self.assertEqual(tombstones[0]["sourceProjectId"], "canvas-race")
+
+            result, save_error, outcome = store.save_custom_canvas_draft(
+                "creator-a",
+                "canvas-race",
+                draft_payload("canvas-race", updated_at=9999999999999),
+            )
+            self.assertIsNone(result)
+            self.assertEqual(save_error, "deleted")
+            self.assertEqual(outcome, "deleted")
+
+    def test_existing_published_custom_project_is_reused_without_losing_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            published, error = store.save_custom_project("creator-a", {
+                "kind": "canvas",
+                "title": "已发布画布",
+                "status": "published",
+                "publishedDeliveryId": "delivery-published",
+                "projectState": {
+                    "sourceProjectId": "canvas-published",
+                    "publishedItemIds": ["image-node-1"],
+                },
+            })
+            self.assertIsNone(error)
+            published["publishedAt"] = 123456
+            published["updatedAt"] += 1
+            store.upsert_docs("customProjects", [published])
+            store.upsert_docs("assets", [{
+                "id": "delivery-published",
+                "ownerId": "creator-a",
+                "customProjectId": published["id"],
+                "byMemberId": "creator-a",
+                "delivered": True,
+                "type": "图集",
+                "updatedAt": 200,
+            }])
+
+            saved, save_error, _ = store.save_custom_canvas_draft(
+                "creator-a",
+                "canvas-published",
+                draft_payload("canvas-published"),
+            )
+            self.assertIsNone(save_error)
+            self.assertEqual(saved["project"]["customProjectId"], published["id"])
+            self.assertEqual(saved["project"]["status"], "published")
+            self.assertEqual(
+                saved["project"]["publishedDeliveryId"], "delivery-published"
+            )
+            self.assertEqual(saved["project"]["publishedAt"], 123456)
+            self.assertEqual(saved["project"]["publishedItemIds"], ["image-node-1"])
+            self.assertEqual(saved["project"]["publishedCount"], 1)
+            project_count = store._fetchone(
+                "SELECT COUNT(*) FROM docs WHERE collection='customProjects' AND owner_id=?",
+                ("creator-a",),
+            )[0]
+            self.assertEqual(project_count, 1)
+
+            updated_payload = draft_payload(
+                "canvas-published",
+                updated_at=300,
+                base_revision=1,
+                messages=[],
+            )
+            updated, update_error, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-published", updated_payload
+            )
+            self.assertIsNone(update_error)
+            self.assertEqual(updated["project"]["publishedDeliveryId"], "delivery-published")
+            self.assertEqual(updated["project"]["publishedItemIds"], ["image-node-1"])
+            self.assertEqual(updated["project"]["publishedCount"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

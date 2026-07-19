@@ -80,8 +80,27 @@ function messageHtml(title, body, tone = "loading") {
 }
 
 async function checkAvailability(token, signal) {
+  // 画布图片使用同源 <img>/canvas 加载，浏览器不会为这些请求附加
+  // localStorage 中的平台 Bearer。先建立仅限画布私有图片路径的 HttpOnly
+  // 成员会话，历史图片的稳定 URL 才能在不暴露 token 的前提下正常显示。
+  const sessionResponse = await fetch("/api/custom-canvas/session", {
+    method: "POST",
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { Authorization: `Bearer ${token}` },
+    signal
+  });
+  if (!sessionResponse.ok) {
+    let sessionData = {};
+    try { sessionData = await sessionResponse.json(); } catch (_) {}
+    const detail = typeof sessionData.detail === "string"
+      ? sessionData.detail
+      : `HTTP ${sessionResponse.status}`;
+    throw new Error(detail);
+  }
   const response = await fetch("/api/custom-canvas/config", {
     cache: "no-store",
+    credentials: "same-origin",
     headers: { Authorization: `Bearer ${token}` },
     signal
   });

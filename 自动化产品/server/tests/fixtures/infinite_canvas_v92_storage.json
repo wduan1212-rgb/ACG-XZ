@@ -1,0 +1,135 @@
+{
+  "version": 2,
+  "state": {
+    "projects": [
+      {
+        "id": "fixture-project-a",
+        "name": "百度搭子参考图海报",
+        "scene": "brand_kv",
+        "targetSize": "1080x1920",
+        "createdAt": 1784300000000,
+        "updatedAt": 1784300300000,
+        "cost": 0.08,
+        "generations": 1,
+        "failures": 0
+      },
+      {
+        "id": "fixture-project-b",
+        "name": "知识库管理横版",
+        "scene": "enterprise_poster",
+        "targetSize": "1920x1080",
+        "createdAt": 1784301000000,
+        "updatedAt": 1784301500000,
+        "cost": 0.12,
+        "generations": 1,
+        "failures": 0
+      }
+    ],
+    "itemsByProject": {
+      "fixture-project-a": [
+        {
+          "id": "fixture-reference-a",
+          "projectId": "fixture-project-a",
+          "type": "reference",
+          "position": { "x": 20, "y": 40 },
+          "size": { "width": 240, "height": 320 },
+          "z": 10,
+          "createdAt": 1784300010000,
+          "hidden": true,
+          "assetUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2dXQAAAAASUVORK5CYII=",
+          "naturalWidth": 1080,
+          "naturalHeight": 1440,
+          "source": "upload",
+          "label": "用户上传参考图"
+        },
+        {
+          "id": "fixture-generation-a",
+          "projectId": "fixture-project-a",
+          "type": "generation",
+          "position": { "x": 320, "y": 40 },
+          "size": { "width": 270, "height": 480 },
+          "z": 20,
+          "createdAt": 1784300250000,
+          "assetUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mNk+M/wHwAF/gL+6uR+AAAAAElFTkSuQmCC",
+          "naturalWidth": 1080,
+          "naturalHeight": 1920,
+          "label": "海报 01",
+          "mode": "final",
+          "quality": "high",
+          "jobId": "fixture-job-a",
+          "provenance": {
+            "brief": "根据参考图创作一张百度搭子海报",
+            "prompt": "蓝白色科技感，单张海报构图",
+            "size": "1080x1920",
+            "quality": "high"
+          }
+        }
+      ],
+      "fixture-project-b": [
+        {
+          "id": "fixture-generation-b",
+          "projectId": "fixture-project-b",
+          "type": "generation",
+          "position": { "x": -120, "y": 80 },
+          "size": { "width": 480, "height": 270 },
+          "z": 12,
+          "createdAt": 1784301400000,
+          "assetUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+          "naturalWidth": 1920,
+          "naturalHeight": 1080,
+          "label": "横版成图 01",
+          "mode": "review",
+          "quality": "medium",
+          "jobId": "fixture-job-b",
+          "provenance": {
+            "brief": "国产 Codex 自动管理知识库",
+            "prompt": "清晰的单一主视觉，信息密度高",
+            "size": "1920x1080",
+            "quality": "medium"
+          }
+        }
+      ]
+    },
+    "messagesByProject": {
+      "fixture-project-a": [
+        {
+          "id": "fixture-message-a-user",
+          "role": "user",
+          "text": "根据这张参考图创作海报",
+          "createdAt": 1784300020000,
+          "references": [{ "itemId": "fixture-reference-a", "usage": "style" }]
+        },
+        {
+          "id": "fixture-message-a-agent",
+          "role": "agent",
+          "text": "已按参考图的色彩与主体关系生成。",
+          "createdAt": 1784300260000,
+          "resultItemIds": ["fixture-generation-a"],
+          "status": "done"
+        }
+      ],
+      "fixture-project-b": [
+        {
+          "id": "fixture-message-b-user",
+          "role": "user",
+          "text": "为国产 Codex 自动管理知识库做一张横版图",
+          "createdAt": 1784301100000
+        },
+        {
+          "id": "fixture-message-b-agent",
+          "role": "agent",
+          "text": "已生成一张横版主视觉。",
+          "createdAt": 1784301410000,
+          "resultItemIds": ["fixture-generation-b"],
+          "status": "done"
+        }
+      ]
+    },
+    "viewportByProject": {
+      "fixture-project-a": { "x": 186.5, "y": 92.25, "zoom": 0.82 },
+      "fixture-project-b": { "x": 420, "y": 216, "zoom": 1.15 }
+    },
+    "customSizes": ["1080x1920", "1920x1080"],
+    "agentEnabled": false
+  }
+}

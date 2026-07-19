@@ -3,38 +3,38 @@
 import { $, $$, esc, uid } from "./core/util.js";
 import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
-import { state, save, saveMembers, on, loadAll, persistNow, pullRemote, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
+import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260718-v93-2";
+import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260718-v94-1";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
 import { productTagLabel } from "./domain/delivery.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
-import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260718-v93-2";
+import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260718-v94-1";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260718-v93-2";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260718-v94-1";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
-import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260718-v93-2";
+import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260718-v94-1";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260718-v93-2";
-import { voiceLabView } from "./views/voiceLab.js?v=20260718-v93-2";
-import { customCreationView } from "./views/customCreation.js?v=20260718-v93-2";
-import { agentView } from "./agent/view.js?v=20260718-v93-2";
-import { studioView } from "./views/studio.js?v=20260718-v93-2";
-import { assetsView } from "./views/assetsView.js?v=20260718-v93-2";
-import { deliveryView } from "./views/deliveryView.js?v=20260718-v93-2";
-import { analyticsView } from "./views/analyticsView.js?v=20260718-v93-2";
+import { overviewView } from "./views/overview.js?v=20260718-v94-1";
+import { voiceLabView } from "./views/voiceLab.js?v=20260718-v94-1";
+import { customCreationView } from "./views/customCreation.js?v=20260718-v94-1";
+import { agentView } from "./agent/view.js?v=20260718-v94-1";
+import { studioView } from "./views/studio.js?v=20260718-v94-1";
+import { assetsView } from "./views/assetsView.js?v=20260718-v94-1";
+import { deliveryView } from "./views/deliveryView.js?v=20260718-v94-1";
+import { analyticsView } from "./views/analyticsView.js?v=20260718-v94-1";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260718-v93-2";
+import { settingsView } from "./views/settings.js?v=20260718-v94-1";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260718-v93-2";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260718-v94-1";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260718-v93-2";
+const APP_BUILD_ID = "20260718-v94-1";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -240,6 +240,7 @@ function gateRequestError(error, phase = "validating") {
   return raw ? `登录服务暂时不可用：${raw}` : "登录服务暂时不可用，请稍后重试";
 }
 async function clearPendingRemoteIdentity() {
+  cancelRemoteHydration();
   remote.logout();
   state.role = null;
   state.ui.currentMemberId = null;
@@ -386,23 +387,115 @@ function enterMember(member) {
   render();
   toast(`欢迎回来 · ${esc(member.name)}（${ROLE_LABEL[member.role] || ""}）`);
 }
-/* 共享后端登录：先拉服务端全量快照覆盖本地，再复用本地 enter 逻辑 */
+
+let hydrationRenderQueued = false;
+function renderHydrationProgress() {
+  if (hydrationRenderQueued) return;
+  hydrationRenderQueued = true;
+  requestAnimationFrame(() => {
+    hydrationRenderQueued = false;
+    const zone = parseHash().zone;
+    // 不在后台同步时重挂编辑器、批量台或子应用，避免打断输入与生成任务。
+    if (["overview", "assets", "drafts", "delivery", "analytics"].includes(zone)
+      || document.querySelector("[data-remote-hydration-gate]")) render();
+  });
+}
+
+function hydrationCollectionsForView(zone) {
+  const supplier = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+  if (zone === "overview") return supplier ? ["assets"] : ["productions", "assets"];
+  if (zone === "assets" || zone === "delivery") return ["assets"];
+  if (zone === "drafts") return ["productions"];
+  if (zone === "analytics") return ["assets", "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory"];
+  if (zone === "agent") return ["productions", "sessions", "batches", "jobs", "assets"];
+  if (zone === "studio") return ["productions", "jobs", "assets"];
+  return [];
+}
+
+function hydrationAwareView(zone, view) {
+  return {
+    ...view,
+    render(root, params) {
+      const required = hydrationCollectionsForView(zone);
+      const status = remoteCollectionHydrationState(required);
+      if (!remote.isOn() || !remote.hasToken() || (!status.pending.length && !status.failed.length)) {
+        view.render(root, params);
+        return;
+      }
+      const failed = status.failed.length > 0;
+      root.innerHTML = `<section class="remote-hydration-gate" data-remote-hydration-gate aria-live="polite">
+        <div class="remote-hydration-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div><span>${failed ? "工作区同步中断" : "正在同步工作区"}</span>
+        <h2>${failed ? "没有把未加载的数据伪装成空内容" : "历史内容正在安全恢复"}</h2>
+        <p>${failed ? "服务器数据没有被本地空状态覆盖。请重试同步后再查看本页。" : "页面将在所需数据到达后自动显示，不会先闪现 0 条或空列表。"}</p>
+        ${failed ? `<button class="btn primary" type="button" data-remote-hydration-retry>${icon("refresh", 14)} 重新同步</button>` : `<em>正在加载 ${status.pending.length} 组必要数据…</em>`}
+        </div>
+      </section>`;
+      root.querySelector("[data-remote-hydration-retry]")?.addEventListener("click", async event => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        button.textContent = "正在重试…";
+        const run = retryRemoteHydration({ onProgress: renderHydrationProgress });
+        renderHydrationProgress();
+        const ok = await run;
+        renderHydrationProgress();
+        if (!ok) toast("工作区同步仍未完成，请检查网络后重试。服务器数据未被修改。", "error");
+      });
+    }
+  };
+}
+
+function recordFirstRender(startedAt, source) {
+  requestAnimationFrame(() => remote.recordPerformance("first-render", {
+    durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    source,
+    ok: true
+  }));
+}
+
+function continueRemoteHydration(member, alreadyComplete = false) {
+  const run = alreadyComplete
+    ? Promise.resolve(true)
+    : hydrateRemoteInBackground({
+        memberId: member.id,
+        onProgress: progress => {
+          if (progress?.error) {
+            toast("部分工作区数据同步失败，已自动重试。请刷新页面再试，本地空态不会回写服务器。", "error");
+            return;
+          }
+          renderHydrationProgress();
+        }
+      });
+  void run.then(synced => {
+    if (!synced || state.ui.currentMemberId !== member.id || !remote.hasToken()) return;
+    if (!["supplier", "supplier_parent", "supplier_child"].includes(member.role)) {
+      normalizeDeliveredProductTags();
+      normalizeDeliveredSharedAssets();
+    }
+    renderHydrationProgress();
+    refreshProviderStatus().then(() => {
+      renderTopbar();
+      if (document.body.dataset.zone === "settings") render();
+    }).catch(e => console.warn("[providers]", e));
+    resumeJobs();
+    resumeActiveBatches();
+  });
+}
+
+/* 共享后端登录：只等首屏关键集合就进入平台，资产、任务与分析在后台分组同步。 */
 async function enterRemote(member) {
+  const entryStartedAt = performance.now();
   state.role = member.role;
   state.ui.currentMemberId = member.id;
-  const synced = await pullRemote();
-  if (!synced) throw new Error("请检查网络后重试");
+  const bootstrap = await pullRemoteBootstrap();
+  if (!bootstrap.ok) throw new Error("请检查网络后重试");
+  if (!state.members.some(item => item.id === member.id)) state.members.unshift(member);
   if (!["supplier", "supplier_parent", "supplier_child"].includes(member.role)) {
     await bootstrapAccountProfilesIfEmpty();
-    normalizeDeliveredProductTags();
-    normalizeDeliveredSharedAssets();
   }
   enterMember(member);
-  refreshProviderStatus().then(() => {
-    renderTopbar();
-    if (document.body.dataset.zone === "settings") render();
-  }).catch(e => console.warn("[providers]", e));
-  resumeJobs(); resumeActiveBatches();
+  recordFirstRender(entryStartedAt, "login");
+  continueRemoteHydration(member, bootstrap.complete);
 }
 function shakeCard() {
   const card = $(".lg-card");
@@ -514,6 +607,7 @@ function wireGate() {
   });
 }
 function logout() {
+  cancelRemoteHydration();
   remote.logout();
   state.role = null;
   state.ui.currentMemberId = null;
@@ -708,9 +802,13 @@ function paletteCommands() {
 async function boot() {
   try {
     await db.open();
-    await loadAll();
+    // 服务器模式先只读取很小的身份/UI 元数据。账号、资产、任务等业务集合
+    // 由服务端权威快照在登录后分组水合，避免本机旧的 7MB+ IndexedDB
+    // 缓存阻塞登录页。纯本地模式仍完整装载并执行历史迁移。
+    await loadIdentityCache();
     await remote.init();              // 探测是否由共享后端托管（决定走远端还是本地模式）
-    const mig = await migrateFromV4();
+    if (!remote.isOn()) await loadAll();
+    const mig = remote.isOn() ? { migrated: false } : await migrateFromV4();
     if (mig.migrated) {
       await persistNow();
       setTimeout(() => toast(`已从旧版迁移：${mig.counts.accounts} 账号 / ${mig.counts.productions} 任务 / ${mig.counts.assets} 资产（旧数据保留可回退）`), 800);
@@ -728,15 +826,15 @@ async function boot() {
     applyKeyOverrides(state.apiKeys);
 
     // 注册路由
-    registerView("overview", overviewView);
+    registerView("overview", hydrationAwareView("overview", overviewView));
     registerView("custom", customCreationView);
     registerView("voice", voiceLabView);
-    registerView("agent", agentView);
-    registerView("studio", studioView);
-    registerView("assets", assetsView);
-    registerView("drafts", draftsView);
-    registerView("delivery", deliveryView);
-    registerView("analytics", analyticsView);
+    registerView("agent", hydrationAwareView("agent", agentView));
+    registerView("studio", hydrationAwareView("studio", studioView));
+    registerView("assets", hydrationAwareView("assets", assetsView));
+    registerView("drafts", hydrationAwareView("drafts", draftsView));
+    registerView("delivery", hydrationAwareView("delivery", deliveryView));
+    registerView("analytics", hydrationAwareView("analytics", analyticsView));
     registerView("settings", settingsView);
     initRouter();
     installSelectEnhancer();
@@ -769,20 +867,22 @@ async function boot() {
     // 进入：远端共享模式凭 token 自动续登；本地模式凭本地 role/member
     let entered = false;
     if (remote.isOn() && remote.hasToken()) {
+      const resumeStartedAt = performance.now();
       const m = await remote.me();
       if (m) {
         state.role = m.role; state.ui.currentMemberId = m.id;
-        const synced = await pullRemote();
-        if (synced) {
+        const bootstrap = await pullRemoteBootstrap();
+        if (bootstrap.ok) {
+          if (!state.members.some(item => item.id === m.id)) state.members.unshift(m);
           if (!["supplier", "supplier_parent", "supplier_child"].includes(m.role)) {
             await bootstrapAccountProfilesIfEmpty();
-            normalizeDeliveredProductTags();
-            normalizeDeliveredSharedAssets();
           }
           save("meta");
           document.documentElement.classList.add("has-auth-token");
           pauseLoginBackground();
           applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;
+          recordFirstRender(resumeStartedAt, "resume");
+          continueRemoteHydration(m, bootstrap.complete);
         } else {
           await clearPendingRemoteIdentity();
         }
@@ -808,10 +908,13 @@ async function boot() {
       }).catch(e => console.warn("[providers]", e));
     }
 
-    // 恢复中断任务（state 已就绪后）
-    const rj = resumeJobs();
-    const rb = resumeActiveBatches();
-    if (rj || rb) setTimeout(() => toast(`已恢复中断的工作：${rb ? `${rb} 条起草接续 · ` : ""}${rj ? `${rj} 个渲染任务重新排队` : ""}`.replace(/ · $/, "")), 1200);
+    // 远端重任务集合由 continueRemoteHydration 在后台同步完成后恢复；
+    // 本地模式仍可以立即恢复。
+    if (entered && !remote.isOn()) {
+      const rj = resumeJobs();
+      const rb = resumeActiveBatches();
+      if (rj || rb) setTimeout(() => toast(`已恢复中断的工作：${rb ? `${rb} 条起草接续 · ` : ""}${rj ? `${rj} 个渲染任务重新排队` : ""}`.replace(/ · $/, "")), 1200);
+    }
 
     // 兜底保存
     window.addEventListener("beforeunload", persistNow);

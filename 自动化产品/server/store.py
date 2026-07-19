@@ -8,15 +8,28 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
 import uuid
 from pathlib import Path
 from threading import Lock
-from urllib.parse import urlparse
+from urllib.parse import unquote_to_bytes, urlparse
 
 DB_PATH = Path(os.getenv("DATA_DB", Path(__file__).resolve().parent / "data.sqlite"))
+CUSTOM_CANVAS_BLOB_DIR = Path(
+    os.getenv("CUSTOM_CANVAS_BLOB_DIR", DB_PATH.parent / "canvas_blobs")
+)
+
+
+def _positive_env_int(name, default, minimum=1):
+    try:
+        return max(int(minimum), int(os.getenv(name, default)))
+    except (TypeError, ValueError, OverflowError):
+        return int(default)
+
+
 DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME") or bytes.fromhex("61646d696e").decode()
 DEFAULT_SUPPLIER_USERNAME = os.getenv("DEFAULT_SUPPLIER_USERNAME") or bytes.fromhex("676f6e6779696e677368616e67").decode()
 DEFAULT_ADMIN_PIN_HASH = os.getenv("DEFAULT_ADMIN_PIN_HASH") or "pbkdf2$120000$737461722d61727261792d61646d696e2d7631$1d5f7e973e925fb41415dd6b322a3e8d6e3ab272e0c8ce8961393abd9af8edba"
@@ -44,6 +57,32 @@ OWNER_SCOPED_GENERIC_COLLECTIONS = {
 CUSTOM_PROJECT_KINDS = {"video", "canvas"}
 CUSTOM_PROJECT_STATUSES = {"draft", "published", "archived"}
 MAX_CUSTOM_PROJECT_STATE_BYTES = 2 * 1024 * 1024
+MAX_CUSTOM_CANVAS_PROJECT_BYTES = _positive_env_int(
+    "CUSTOM_CANVAS_PROJECT_JSON_MAX_BYTES", 2 * 1024 * 1024, 256 * 1024
+)
+MAX_CUSTOM_CANVAS_DRAFT_BYTES = _positive_env_int(
+    "CUSTOM_CANVAS_DRAFT_JSON_MAX_BYTES", 64 * 1024 * 1024, 1024 * 1024
+)
+MAX_CUSTOM_CANVAS_BLOB_BYTES = _positive_env_int(
+    "CUSTOM_CANVAS_BLOB_MAX_BYTES", 64 * 1024 * 1024, 1024 * 1024
+)
+MAX_CUSTOM_CANVAS_TOTAL_BLOB_BYTES = _positive_env_int(
+    "CUSTOM_CANVAS_PROJECT_BLOBS_MAX_BYTES", 512 * 1024 * 1024, 64 * 1024 * 1024
+)
+MAX_CUSTOM_CANVAS_OWNER_BLOB_BYTES = _positive_env_int(
+    "CUSTOM_CANVAS_OWNER_BLOBS_MAX_BYTES", 2 * 1024 * 1024 * 1024, 512 * 1024 * 1024
+)
+MAX_CUSTOM_CANVAS_ITEMS = 600
+MAX_CUSTOM_CANVAS_MESSAGES = 800
+MAX_CUSTOM_CANVAS_BLOBS = 240
+CUSTOM_CANVAS_IMAGE_MIMES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/svg+xml": ".svg",
+}
+CUSTOM_CANVAS_BLOB_REF_TYPE = "custom-canvas-blob-v1"
 INFO_FLOW_STORYBOARD_TIMEOUT_MS = 4 * 60 * 1000
 STORYBOARD_RISKY_TERMS = (
     ("写实" + "真人", "2.5D动画角色"),
@@ -108,6 +147,32 @@ CREATE TABLE IF NOT EXISTS deleted_docs(
   id         TEXT NOT NULL,
   deleted_at INTEGER NOT NULL,
   PRIMARY KEY(collection, id)
+);
+CREATE TABLE IF NOT EXISTS custom_canvas_drafts(
+  owner_id          TEXT NOT NULL,
+  source_project_id TEXT NOT NULL,
+  custom_project_id TEXT NOT NULL,
+  revision          INTEGER NOT NULL DEFAULT 1,
+  client_updated_at INTEGER NOT NULL DEFAULT 0,
+  server_updated_at INTEGER NOT NULL DEFAULT 0,
+  content_hash      TEXT NOT NULL,
+  project_json      TEXT NOT NULL,
+  draft_json        TEXT NOT NULL,
+  deleted_at        INTEGER,
+  PRIMARY KEY(owner_id, source_project_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_canvas_draft_project
+  ON custom_canvas_drafts(custom_project_id);
+CREATE INDEX IF NOT EXISTS idx_custom_canvas_draft_owner_updated
+  ON custom_canvas_drafts(owner_id, server_updated_at DESC);
+CREATE TABLE IF NOT EXISTS custom_canvas_blobs(
+  owner_id     TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  mime         TEXT NOT NULL,
+  size         INTEGER NOT NULL,
+  stored_name  TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY(owner_id, content_hash)
 );
 CREATE TABLE IF NOT EXISTS members(
   id         TEXT PRIMARY KEY,
@@ -1432,6 +1497,1120 @@ def custom_canvas_storage_namespace(owner_id):
     """
     digest = hashlib.sha256(f"xingzhen-canvas:{owner_id}".encode("utf-8")).hexdigest()[:24]
     return f"member-{digest}"
+
+
+def _custom_canvas_source_id(value):
+    source_id = str(value or "").strip()
+    if (
+        not source_id
+        or len(source_id) > 180
+        or any(ord(char) < 32 for char in source_id)
+    ):
+        raise ValueError("invalid_custom_canvas_source_id")
+    return source_id
+
+
+def _custom_canvas_json(value, *, limit, error):
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("invalid_custom_canvas_payload")
+    if len(encoded.encode("utf-8")) > limit:
+        raise ValueError(error)
+    return encoded
+
+
+def _custom_canvas_client_time(value, project, now):
+    candidate = value
+    if candidate in (None, "", 0, "0") and isinstance(project, dict):
+        candidate = project.get("updatedAt")
+    if candidate in (None, "", 0, "0"):
+        return now
+    try:
+        parsed = int(float(candidate))
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("invalid_custom_canvas_client_time")
+    if parsed < 0 or parsed > 9_999_999_999_999_999:
+        raise ValueError("invalid_custom_canvas_client_time")
+    return parsed
+
+
+def _custom_canvas_validate_image_bytes(mime, data):
+    if not data or len(data) > MAX_CUSTOM_CANVAS_BLOB_BYTES:
+        raise ValueError("custom_canvas_blob_too_large")
+    if mime == "image/png" and not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("invalid_custom_canvas_image")
+    if mime == "image/jpeg" and not data.startswith(b"\xff\xd8\xff"):
+        raise ValueError("invalid_custom_canvas_image")
+    if mime == "image/webp" and not (len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"):
+        raise ValueError("invalid_custom_canvas_image")
+    if mime == "image/gif" and not data.startswith((b"GIF87a", b"GIF89a")):
+        raise ValueError("invalid_custom_canvas_image")
+    if mime == "image/svg+xml":
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("invalid_custom_canvas_image")
+        lowered = text.lower()
+        if "<svg" not in lowered:
+            raise ValueError("invalid_custom_canvas_image")
+        if (
+            "<script" in lowered
+            or "javascript:" in lowered
+            or "<foreignobject" in lowered
+            or re.search(r"\son[a-z0-9_-]+\s*=", lowered)
+        ):
+            raise ValueError("unsafe_custom_canvas_svg")
+
+
+def _custom_canvas_parse_data_image(value):
+    if not isinstance(value, str) or not value.lower().startswith("data:image/"):
+        return None
+    if "," not in value:
+        raise ValueError("invalid_custom_canvas_image")
+    header, payload = value[5:].split(",", 1)
+    parts = [part.strip() for part in header.split(";")]
+    mime = (parts[0] or "").lower()
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    if mime not in CUSTOM_CANVAS_IMAGE_MIMES:
+        raise ValueError("unsupported_custom_canvas_image_type")
+    parameters = [part.lower() for part in parts[1:] if part]
+    for parameter in parameters:
+        if parameter == "base64" or parameter == "utf8" or parameter.startswith("charset="):
+            continue
+        raise ValueError("unsupported_custom_canvas_image_type")
+    if len(payload) > MAX_CUSTOM_CANVAS_BLOB_BYTES * 4:
+        raise ValueError("custom_canvas_blob_too_large")
+    try:
+        if "base64" in parameters:
+            compact = re.sub(r"\s+", "", payload)
+            data = base64.b64decode(compact, validate=True)
+        else:
+            if mime != "image/svg+xml":
+                raise ValueError("invalid_custom_canvas_image")
+            data = unquote_to_bytes(payload)
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError("invalid_custom_canvas_image")
+    _custom_canvas_validate_image_bytes(mime, data)
+    content_hash = hashlib.sha256(mime.encode("ascii") + b"\0" + data).hexdigest()
+    return {
+        "contentHash": content_hash,
+        "mime": mime,
+        "size": len(data),
+        "data": data,
+    }
+
+
+def _custom_canvas_blob_url(content_hash):
+    digest = str(content_hash or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError("invalid_custom_canvas_blob_ref")
+    return f"/api/custom-canvas/blobs/{digest}"
+
+
+def _custom_canvas_parse_blob_url(value):
+    """Recognize only the same-origin URL shape emitted by this service.
+
+    Ownership is deliberately validated later inside the database transaction;
+    accepting an arbitrary absolute URL here could turn another member's hash
+    into a stored reference.
+    """
+    if not isinstance(value, str):
+        return None
+    matched = re.fullmatch(
+        r"/api/custom-canvas/blobs/([a-f0-9]{64})",
+        value.strip(),
+    )
+    if not matched:
+        return None
+    return {
+        "$type": CUSTOM_CANVAS_BLOB_REF_TYPE,
+        "contentHash": matched.group(1),
+    }
+
+
+def _custom_canvas_replace_data_images(value, blob_specs, stats, depth=0):
+    if depth > 48:
+        raise ValueError("custom_canvas_payload_too_deep")
+    stats["nodes"] += 1
+    if stats["nodes"] > 120_000:
+        raise ValueError("custom_canvas_payload_too_large")
+    if isinstance(value, str):
+        stable_ref = _custom_canvas_parse_blob_url(value)
+        if stable_ref:
+            return stable_ref
+        parsed = _custom_canvas_parse_data_image(value)
+        if parsed:
+            digest = parsed["contentHash"]
+            if digest not in blob_specs:
+                if len(blob_specs) >= MAX_CUSTOM_CANVAS_BLOBS:
+                    raise ValueError("custom_canvas_too_many_blobs")
+                stats["blobBytes"] += parsed["size"]
+                if stats["blobBytes"] > MAX_CUSTOM_CANVAS_TOTAL_BLOB_BYTES:
+                    raise ValueError("custom_canvas_total_blob_too_large")
+                blob_specs[digest] = parsed
+            return {
+                "$type": CUSTOM_CANVAS_BLOB_REF_TYPE,
+                "contentHash": digest,
+                "mime": parsed["mime"],
+            }
+        if re.match(r"^data:[a-z0-9.+-]+/", value, flags=re.I):
+            raise ValueError("unsupported_custom_canvas_data_url")
+        return value
+    if isinstance(value, list):
+        return [
+            _custom_canvas_replace_data_images(item, blob_specs, stats, depth + 1)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            str(key): _custom_canvas_replace_data_images(item, blob_specs, stats, depth + 1)
+            for key, item in value.items()
+        }
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    raise ValueError("invalid_custom_canvas_payload")
+
+
+def _custom_canvas_blob_relative_path(owner_id, content_hash, mime):
+    owner_scope = hashlib.sha256(
+        f"canvas-blob:{owner_id}".encode("utf-8")
+    ).hexdigest()[:24]
+    extension = CUSTOM_CANVAS_IMAGE_MIMES.get(mime)
+    if not extension or not re.fullmatch(r"[a-f0-9]{64}", str(content_hash or "")):
+        raise ValueError("invalid_custom_canvas_blob_ref")
+    return f"{owner_scope}/{content_hash}{extension}"
+
+
+def _custom_canvas_blob_path(stored_name):
+    root = CUSTOM_CANVAS_BLOB_DIR.expanduser().resolve()
+    path = (root / str(stored_name or "")).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        raise ValueError("invalid_custom_canvas_blob_ref")
+    return path
+
+
+def _persist_custom_canvas_blobs_locked(
+    conn,
+    owner_id,
+    blob_specs,
+    now,
+    created_files=None,
+):
+    """Persist this request's decoded images and track new filesystem writes.
+
+    SQLite cannot roll back files written with ``os.replace``.  The caller
+    therefore owns ``created_files`` and cleans those paths after a failed
+    transaction.  Only paths that did not exist before this attempt are
+    recorded; repairing an existing database row or reusing a pre-existing
+    orphan must never make that file eligible for rollback deletion.
+    """
+    owner = str(owner_id)
+    rollback_files = created_files if created_files is not None else []
+    new_bytes = 0
+    for content_hash, spec in blob_specs.items():
+        if not conn.execute(
+            "SELECT 1 FROM custom_canvas_blobs WHERE owner_id=? AND content_hash=?",
+            (owner, content_hash),
+        ).fetchone():
+            new_bytes += int(spec["size"])
+    current_bytes = int(conn.execute(
+        "SELECT COALESCE(SUM(size),0) FROM custom_canvas_blobs WHERE owner_id=?",
+        (owner,),
+    ).fetchone()[0] or 0)
+    if current_bytes + new_bytes > MAX_CUSTOM_CANVAS_OWNER_BLOB_BYTES:
+        raise ValueError("custom_canvas_owner_blob_quota")
+    for content_hash, spec in blob_specs.items():
+        stored_name = _custom_canvas_blob_relative_path(
+            owner_id,
+            content_hash,
+            spec["mime"],
+        )
+        row = conn.execute(
+            "SELECT mime,size,stored_name FROM custom_canvas_blobs WHERE owner_id=? AND content_hash=?",
+            (owner, content_hash),
+        ).fetchone()
+        if row and (
+            str(row[0]) != spec["mime"]
+            or int(row[1]) != int(spec["size"])
+            or str(row[2]) != stored_name
+        ):
+            raise ValueError("custom_canvas_blob_conflict")
+        path = _custom_canvas_blob_path(stored_name)
+        path_existed = path.exists()
+        if not path_existed:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+            try:
+                temporary.write_bytes(spec["data"])
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, path)
+                if not row:
+                    # Append immediately after the atomic filesystem write so
+                    # even a later INSERT failure can be cleaned by the caller.
+                    rollback_files.append((str(content_hash), stored_name))
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+        if not row:
+            conn.execute(
+                """
+                INSERT INTO custom_canvas_blobs(
+                  owner_id,content_hash,mime,size,stored_name,created_at
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    owner,
+                    content_hash,
+                    spec["mime"],
+                    int(spec["size"]),
+                    stored_name,
+                    now,
+                ),
+            )
+
+
+def _custom_canvas_collect_blob_hashes(value, output):
+    if isinstance(value, list):
+        for item in value:
+            _custom_canvas_collect_blob_hashes(item, output)
+    elif isinstance(value, dict):
+        if value.get("$type") == CUSTOM_CANVAS_BLOB_REF_TYPE:
+            digest = str(value.get("contentHash") or "")
+            if not re.fullmatch(r"[a-f0-9]{64}", digest):
+                raise ValueError("invalid_custom_canvas_blob_ref")
+            output.add(digest)
+        else:
+            for item in value.values():
+                _custom_canvas_collect_blob_hashes(item, output)
+
+
+def _custom_canvas_materialize_blob_refs(value, blob_urls):
+    if isinstance(value, list):
+        return [
+            _custom_canvas_materialize_blob_refs(item, blob_urls)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        if value.get("$type") == CUSTOM_CANVAS_BLOB_REF_TYPE:
+            digest = str(value.get("contentHash") or "")
+            if digest not in blob_urls:
+                raise ValueError("custom_canvas_blob_missing")
+            return blob_urls[digest]
+        return {
+            key: _custom_canvas_materialize_blob_refs(item, blob_urls)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _custom_canvas_validate_blob_refs_locked(
+    conn,
+    owner_id,
+    *payloads,
+    pending_hashes=None,
+):
+    hashes = set()
+    for payload in payloads:
+        _custom_canvas_collect_blob_hashes(payload, hashes)
+    if not hashes:
+        return
+    pending = {
+        str(content_hash)
+        for content_hash in (pending_hashes or ())
+        if re.fullmatch(r"[a-f0-9]{64}", str(content_hash))
+    }
+    rows = conn.execute(
+        """
+        SELECT content_hash
+        FROM custom_canvas_blobs
+        WHERE owner_id=? AND content_hash IN (%s)
+        """ % ",".join("?" for _ in hashes),
+        (str(owner_id), *sorted(hashes)),
+    ).fetchall()
+    owned = {str(row[0]) for row in rows}
+    if owned | pending != hashes:
+        raise ValueError("invalid_custom_canvas_blob_ref")
+
+
+def _custom_canvas_cleanup_rolled_back_blobs_locked(
+    conn,
+    owner_id,
+    created_files,
+):
+    """Best-effort cleanup for files created by a rolled-back transaction.
+
+    A path is unlinked only when this exact request created it and no committed
+    owner/hash row exists after rollback.  This deliberately preserves files
+    that existed before the request, including recoverable orphan files.
+    """
+    owner = str(owner_id)
+    root = CUSTOM_CANVAS_BLOB_DIR.expanduser().resolve()
+    for content_hash, stored_name in created_files:
+        try:
+            committed = conn.execute(
+                """
+                SELECT 1
+                FROM custom_canvas_blobs
+                WHERE owner_id=? AND content_hash=?
+                """,
+                (owner, str(content_hash)),
+            ).fetchone()
+            if committed:
+                continue
+            path = _custom_canvas_blob_path(stored_name)
+            path.unlink(missing_ok=True)
+            if path.parent != root:
+                try:
+                    path.parent.rmdir()
+                except OSError:
+                    pass
+        except (OSError, ValueError, sqlite3.Error):
+            # A leaked unreferenced file is safer than masking the original
+            # save failure or risking deletion outside the private blob root.
+            pass
+
+
+def _custom_canvas_materialize_payloads_locked(conn, owner_id, *payloads):
+    hashes = set()
+    for payload in payloads:
+        _custom_canvas_collect_blob_hashes(payload, hashes)
+    blob_urls = {}
+    if hashes:
+        rows = conn.execute(
+            """
+            SELECT content_hash,mime,size,stored_name
+            FROM custom_canvas_blobs
+            WHERE owner_id=? AND content_hash IN (%s)
+            """ % ",".join("?" for _ in hashes),
+            (str(owner_id), *sorted(hashes)),
+        ).fetchall()
+        for content_hash, mime, size, stored_name in rows:
+            path = _custom_canvas_blob_path(stored_name)
+            if not path.is_file():
+                raise ValueError("custom_canvas_blob_missing")
+            if path.stat().st_size != int(size):
+                raise ValueError("custom_canvas_blob_missing")
+            if str(mime) not in CUSTOM_CANVAS_IMAGE_MIMES:
+                raise ValueError("invalid_custom_canvas_blob_ref")
+            blob_urls[str(content_hash)] = _custom_canvas_blob_url(content_hash)
+        if set(blob_urls) != hashes:
+            raise ValueError("custom_canvas_blob_missing")
+    return [
+        _custom_canvas_materialize_blob_refs(payload, blob_urls)
+        for payload in payloads
+    ]
+
+
+def _custom_canvas_gc_blobs_locked(conn, owner_id):
+    """Delete only this owner's blob rows no longer used by a live draft.
+
+    The caller commits the database transaction before unlinking the returned
+    files. This makes a failed transaction harmless; a failed unlink merely
+    leaves an unreferenced file that a later maintenance pass can remove.
+    """
+    owner = str(owner_id)
+    referenced = set()
+    rows = conn.execute(
+        """
+        SELECT project_json,draft_json
+        FROM custom_canvas_drafts
+        WHERE owner_id=? AND deleted_at IS NULL
+        """,
+        (owner,),
+    ).fetchall()
+    for project_json, draft_json in rows:
+        try:
+            project = json.loads(project_json)
+            draft = json.loads(draft_json)
+        except (TypeError, json.JSONDecodeError):
+            # Corrupt live state must block GC, otherwise its still-needed
+            # images could be removed before an administrator can recover it.
+            raise ValueError("invalid_custom_canvas_stored_state")
+        _custom_canvas_collect_blob_hashes(project, referenced)
+        _custom_canvas_collect_blob_hashes(draft, referenced)
+
+    blob_rows = conn.execute(
+        "SELECT content_hash,stored_name FROM custom_canvas_blobs WHERE owner_id=?",
+        (owner,),
+    ).fetchall()
+    orphaned = [
+        (str(content_hash), str(stored_name))
+        for content_hash, stored_name in blob_rows
+        if str(content_hash) not in referenced
+    ]
+    if orphaned:
+        conn.executemany(
+            "DELETE FROM custom_canvas_blobs WHERE owner_id=? AND content_hash=?",
+            [(owner, content_hash) for content_hash, _ in orphaned],
+        )
+    return [stored_name for _, stored_name in orphaned]
+
+
+def _custom_canvas_unlink_orphans(stored_names):
+    for stored_name in stored_names:
+        try:
+            path = _custom_canvas_blob_path(stored_name)
+            path.unlink(missing_ok=True)
+            parent = path.parent
+            if parent != CUSTOM_CANVAS_BLOB_DIR.expanduser().resolve():
+                try:
+                    parent.rmdir()
+                except OSError:
+                    pass
+        except (OSError, ValueError):
+            # Database state remains authoritative; an orphan file is safer
+            # than failing or rolling back a successful user save.
+            pass
+
+
+def get_custom_canvas_blob(owner_id, content_hash):
+    digest = str(content_hash or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", digest):
+        return None, "not_found"
+    _ensure_db()
+    owner = str(owner_id or "")
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT mime,size,stored_name
+                FROM custom_canvas_blobs
+                WHERE owner_id=? AND content_hash=?
+                """,
+                (owner, digest),
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            mime, size, stored_name = str(row[0]), int(row[1]), str(row[2])
+            path = _custom_canvas_blob_path(stored_name)
+            if mime not in CUSTOM_CANVAS_IMAGE_MIMES or not path.is_file():
+                return None, "not_found"
+            if path.stat().st_size != size:
+                return None, "not_found"
+            return {"path": path, "mime": mime, "size": size}, None
+        finally:
+            conn.close()
+
+
+def _custom_canvas_draft_row_locked(conn, owner_id, source_project_id):
+    row = conn.execute(
+        """
+        SELECT custom_project_id,revision,client_updated_at,server_updated_at,
+               content_hash,project_json,draft_json,deleted_at
+        FROM custom_canvas_drafts
+        WHERE owner_id=? AND source_project_id=?
+        """,
+        (str(owner_id), str(source_project_id)),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        project = json.loads(row[5])
+        draft = json.loads(row[6])
+    except (TypeError, json.JSONDecodeError):
+        raise ValueError("invalid_custom_canvas_stored_state")
+    if not isinstance(project, dict) or not isinstance(draft, dict):
+        raise ValueError("invalid_custom_canvas_stored_state")
+    return {
+        "ownerId": str(owner_id),
+        "sourceProjectId": str(source_project_id),
+        "customProjectId": str(row[0] or ""),
+        "revision": int(row[1] or 0),
+        "clientUpdatedAt": int(row[2] or 0),
+        "serverUpdatedAt": int(row[3] or 0),
+        "contentHash": str(row[4] or ""),
+        "project": project,
+        "draft": draft,
+        "deletedAt": int(row[7] or 0),
+    }
+
+
+def _custom_canvas_project_id(owner_id, source_project_id):
+    owner_hash = hashlib.sha256(str(owner_id).encode("utf-8")).hexdigest()[:16]
+    source_hash = hashlib.sha256(str(source_project_id).encode("utf-8")).hexdigest()[:24]
+    return f"canvas-{owner_hash}-{source_hash}"
+
+
+def _custom_canvas_sanitized_project(project, source_project_id, client_updated_at):
+    clean = dict(project if isinstance(project, dict) else {})
+    for key in (
+        "ownerId", "customProjectId", "revision", "clientUpdatedAt",
+        "serverUpdatedAt", "contentHash", "deletedAt", "status",
+        "publishedDeliveryId", "publishedAt", "publishedItemIds",
+        "publishedCount", "publishedVideoOutputs",
+    ):
+        clean.pop(key, None)
+    clean["id"] = str(source_project_id)
+    clean["updatedAt"] = int(client_updated_at)
+    if "name" in clean:
+        clean["name"] = str(clean.get("name") or "").strip()[:160] or "未命名项目"
+    return clean
+
+
+def _prepare_custom_canvas_draft(source_project_id, payload):
+    incoming = payload if isinstance(payload, dict) else {}
+    project = incoming.get("project")
+    items = incoming.get("items")
+    messages = incoming.get("messages")
+    viewport = incoming.get("viewport")
+    if not isinstance(project, dict):
+        raise ValueError("invalid_custom_canvas_project")
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise ValueError("invalid_custom_canvas_items")
+    if not isinstance(messages, list) or any(not isinstance(item, dict) for item in messages):
+        raise ValueError("invalid_custom_canvas_messages")
+    if viewport is None:
+        viewport = {}
+    if not isinstance(viewport, dict):
+        raise ValueError("invalid_custom_canvas_viewport")
+    if len(items) > MAX_CUSTOM_CANVAS_ITEMS:
+        raise ValueError("custom_canvas_too_many_items")
+    if len(messages) > MAX_CUSTOM_CANVAS_MESSAGES:
+        raise ValueError("custom_canvas_too_many_messages")
+
+    now = int(time.time() * 1000)
+    client_updated_at = _custom_canvas_client_time(
+        incoming.get("clientUpdatedAt"),
+        project,
+        now,
+    )
+    sanitized_project = _custom_canvas_sanitized_project(
+        project,
+        source_project_id,
+        client_updated_at,
+    )
+    blob_specs = {}
+    stats = {"nodes": 0, "blobBytes": 0}
+    transformed = _custom_canvas_replace_data_images(
+        {
+            "project": sanitized_project,
+            "draft": {
+                "items": items,
+                "messages": messages,
+                "viewport": viewport,
+            },
+        },
+        blob_specs,
+        stats,
+    )
+    project_json = _custom_canvas_json(
+        transformed["project"],
+        limit=MAX_CUSTOM_CANVAS_PROJECT_BYTES,
+        error="custom_canvas_project_too_large",
+    )
+    draft_json = _custom_canvas_json(
+        transformed["draft"],
+        limit=MAX_CUSTOM_CANVAS_DRAFT_BYTES,
+        error="custom_canvas_draft_too_large",
+    )
+    content_hash = hashlib.sha256(
+        (project_json + "\n" + draft_json).encode("utf-8")
+    ).hexdigest()
+    base_revision = incoming.get("baseRevision")
+    if base_revision is not None:
+        try:
+            base_revision = int(base_revision)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("invalid_custom_canvas_revision")
+        if base_revision < 0:
+            raise ValueError("invalid_custom_canvas_revision")
+    return {
+        "project": transformed["project"],
+        "draft": transformed["draft"],
+        "projectJson": project_json,
+        "draftJson": draft_json,
+        "contentHash": content_hash,
+        "clientUpdatedAt": client_updated_at,
+        "baseRevision": base_revision,
+        "migration": bool(incoming.get("migration")),
+        "blobSpecs": blob_specs,
+        "now": now,
+    }
+
+
+def _ensure_custom_canvas_project_locked(
+    conn,
+    owner_id,
+    source_project_id,
+    project,
+    revision,
+    now,
+    preferred_id="",
+):
+    owner = str(owner_id)
+    matched = _find_custom_project_by_source_locked(
+        conn,
+        owner,
+        "canvas",
+        {source_project_id},
+    )
+    custom_project_id = str(
+        (matched or {}).get("id")
+        or preferred_id
+        or _custom_canvas_project_id(owner, source_project_id)
+    )
+    existing_row = _custom_project_row(custom_project_id, conn)
+    existing = dict(matched or {})
+    if existing_row:
+        stored_owner, stored_item = existing_row
+        if stored_owner != owner:
+            return None, "not_found"
+        existing = dict(stored_item)
+    elif conn.execute(
+        "SELECT 1 FROM deleted_docs WHERE collection='customProjects' AND id=?",
+        (custom_project_id,),
+    ).fetchone():
+        return None, "deleted"
+
+    state = (
+        dict(existing.get("projectState"))
+        if isinstance(existing.get("projectState"), dict)
+        else {}
+    )
+    state.update({
+        "integration": "infinite-canvas",
+        "sourceProjectId": str(source_project_id),
+        "draftRevision": int(revision),
+        "draftUpdatedAt": int(now),
+    })
+    title = str(
+        project.get("name")
+        or project.get("title")
+        or existing.get("title")
+        or "未命名画布项目"
+    ).strip()[:120] or "未命名画布项目"
+    item = {
+        **existing,
+        "id": custom_project_id,
+        "ownerId": owner,
+        "kind": "canvas",
+        "title": title,
+        "appVersion": str(
+            project.get("appVersion")
+            or existing.get("appVersion")
+            or "infinite-canvas-server-draft-v1"
+        ).strip()[:80],
+        "projectState": state,
+        "outputIds": list(existing.get("outputIds") or [])[:200],
+        "thumbnailId": str(existing.get("thumbnailId") or "")[:160],
+        "status": str(existing.get("status") or "draft"),
+        "publishedDeliveryId": str(existing.get("publishedDeliveryId") or "")[:160],
+        "createdAt": int(existing.get("createdAt") or project.get("createdAt") or now),
+        "updatedAt": int(now),
+    }
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data)
+        VALUES('customProjects',?,?,?,?)
+        """,
+        (
+            custom_project_id,
+            owner,
+            int(now),
+            json.dumps(item, ensure_ascii=False),
+        ),
+    )
+    return item, None
+
+
+def _custom_canvas_project_response_locked(conn, owner_id, row, published_counts=None):
+    project = dict(row["project"])
+    custom_row = _custom_project_row(row["customProjectId"], conn)
+    custom_project = None
+    if custom_row and custom_row[0] == str(owner_id):
+        custom_project = custom_row[1]
+    if published_counts is None:
+        published_counts = _published_custom_delivery_counts_locked(conn, owner_id)
+    project.update({
+        "id": row["sourceProjectId"],
+        "sourceId": row["sourceProjectId"],
+        "sourceProjectId": row["sourceProjectId"],
+        "customProjectId": row["customProjectId"],
+        "revision": row["revision"],
+        "clientUpdatedAt": row["clientUpdatedAt"],
+        "serverUpdatedAt": row["serverUpdatedAt"],
+        "contentHash": row["contentHash"],
+        "publishedCount": published_counts.get(row["customProjectId"], 0),
+    })
+    if custom_project:
+        custom_state = (
+            custom_project.get("projectState")
+            if isinstance(custom_project.get("projectState"), dict)
+            else {}
+        )
+        project["status"] = str(custom_project.get("status") or "draft")
+        delivery_id = str(custom_project.get("publishedDeliveryId") or "")
+        if delivery_id:
+            project["publishedDeliveryId"] = delivery_id
+        if custom_project.get("publishedAt"):
+            project["publishedAt"] = int(custom_project.get("publishedAt") or 0)
+        published_item_ids = [
+            str(value)[:180]
+            for value in (custom_state.get("publishedItemIds") or [])[:200]
+            if str(value or "").strip()
+        ]
+        if published_item_ids:
+            project["publishedItemIds"] = published_item_ids
+    return project
+
+
+def _custom_canvas_light_project_summary(project):
+    """列表只返回首页所需字段，不读取或暴露完整图片 Blob。"""
+    source = project if isinstance(project, dict) else {}
+    summary = {
+        key: source.get(key)
+        for key in (
+            "id", "name", "title", "scene", "targetSize", "createdAt",
+            "updatedAt", "cost", "generations", "failures", "appVersion",
+        )
+        if source.get(key) is not None
+    }
+    thumbnail = source.get("thumbnailUrl")
+    if isinstance(thumbnail, str) and re.match(r"^(?:https?:|/)", thumbnail):
+        summary["thumbnailUrl"] = thumbnail[:2048]
+    return summary
+
+
+def _custom_canvas_payload_locked(conn, owner_id, row, published_counts=None):
+    project, draft = _custom_canvas_materialize_payloads_locked(
+        conn,
+        owner_id,
+        row["project"],
+        row["draft"],
+    )
+    materialized = dict(row)
+    materialized["project"] = project
+    materialized["draft"] = draft
+    return {
+        "project": _custom_canvas_project_response_locked(
+            conn,
+            owner_id,
+            materialized,
+            published_counts,
+        ),
+        "state": {
+            "items": list(draft.get("items") or []),
+            "messages": list(draft.get("messages") or []),
+            "viewport": dict(draft.get("viewport") or {}),
+        },
+    }
+
+
+def list_custom_canvas_drafts(owner_id):
+    _ensure_db()
+    owner = str(owner_id or "")
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT source_project_id
+                FROM custom_canvas_drafts
+                WHERE owner_id=?
+                ORDER BY server_updated_at DESC, source_project_id
+                """,
+                (owner,),
+            ).fetchall()
+            published_counts = _published_custom_delivery_counts_locked(conn, owner)
+            items = []
+            tombstones = []
+            for (source_project_id,) in rows:
+                row = _custom_canvas_draft_row_locked(conn, owner, source_project_id)
+                if not row:
+                    continue
+                if row["deletedAt"]:
+                    tombstones.append({
+                        "sourceId": row["sourceProjectId"],
+                        "sourceProjectId": row["sourceProjectId"],
+                        "revision": row["revision"],
+                        "clientUpdatedAt": row["clientUpdatedAt"],
+                        "deletedAt": row["deletedAt"],
+                    })
+                    continue
+                display_row = dict(row)
+                display_row["project"] = _custom_canvas_light_project_summary(
+                    row["project"]
+                )
+                items.append(_custom_canvas_project_response_locked(
+                    conn,
+                    owner,
+                    display_row,
+                    published_counts,
+                ))
+            return items, tombstones
+        finally:
+            conn.close()
+
+
+def get_custom_canvas_draft(owner_id, source_project_id):
+    source_id = _custom_canvas_source_id(source_project_id)
+    _ensure_db()
+    owner = str(owner_id or "")
+    with _lock:
+        conn = _connect()
+        try:
+            row = _custom_canvas_draft_row_locked(conn, owner, source_id)
+            if not row:
+                return None, "not_found"
+            if row["deletedAt"]:
+                return None, "deleted"
+            return _custom_canvas_payload_locked(conn, owner, row), None
+        finally:
+            conn.close()
+
+
+def save_custom_canvas_draft(owner_id, source_project_id, payload):
+    source_id = _custom_canvas_source_id(source_project_id)
+    prepared = _prepare_custom_canvas_draft(source_id, payload)
+    _ensure_db()
+    owner = str(owner_id or "")
+    with _lock:
+        conn = _connect()
+        created_blob_files = []
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = _custom_canvas_draft_row_locked(conn, owner, source_id)
+            if existing and existing["deletedAt"]:
+                conn.rollback()
+                return None, "deleted", "deleted"
+            if existing and existing["contentHash"] == prepared["contentHash"]:
+                result = _custom_canvas_payload_locked(conn, owner, existing)
+                conn.rollback()
+                return result, None, "unchanged"
+            if existing:
+                old_items = existing["draft"].get("items")
+                old_messages = existing["draft"].get("messages")
+                new_items = prepared["draft"].get("items")
+                new_messages = prepared["draft"].get("messages")
+                migration_fill = False
+                if prepared["migration"]:
+                    # A previously-created server shell must not hide a richer
+                    # verified legacy canvas forever.  This is the only
+                    # migration overwrite allowed: once the server contains a
+                    # node or message it remains authoritative.
+                    server_has_content = bool(old_items) or bool(old_messages)
+                    migration_has_content = bool(new_items) or bool(new_messages)
+                    if server_has_content or not migration_has_content:
+                        result = _custom_canvas_payload_locked(conn, owner, existing)
+                        conn.rollback()
+                        return result, None, "server-newer"
+                    migration_fill = True
+                if not migration_fill:
+                    if (
+                        prepared["baseRevision"] is None
+                        or prepared["baseRevision"] != existing["revision"]
+                    ):
+                        conn.rollback()
+                        return None, "conflict", "conflict"
+                    # 相同时间戳但内容不同也不能猜测覆盖顺序；同内容已在上方幂等返回。
+                    if prepared["clientUpdatedAt"] <= existing["clientUpdatedAt"]:
+                        conn.rollback()
+                        return None, "server_newer", "server-newer"
+                    server_has_content = bool(old_items) or bool(old_messages)
+                    incoming_has_content = bool(new_items) or bool(new_messages)
+                    if server_has_content and not incoming_has_content:
+                        conn.rollback()
+                        return None, "empty_snapshot", "rejected"
+                revision = existing["revision"] + 1
+                custom_project_id = existing["customProjectId"]
+            else:
+                if prepared["baseRevision"] not in (None, 0):
+                    conn.rollback()
+                    return None, "conflict", "conflict"
+                revision = 1
+                custom_project_id = ""
+
+            # Reject forged stable URLs before writing any new data URL blob.
+            # Hashes decoded from this request are allowed as pending until the
+            # transaction inserts their owner-scoped rows below.
+            _custom_canvas_validate_blob_refs_locked(
+                conn,
+                owner,
+                prepared["project"],
+                prepared["draft"],
+                pending_hashes=prepared["blobSpecs"],
+            )
+            _persist_custom_canvas_blobs_locked(
+                conn,
+                owner,
+                prepared["blobSpecs"],
+                prepared["now"],
+                created_blob_files,
+            )
+            _custom_canvas_validate_blob_refs_locked(
+                conn,
+                owner,
+                prepared["project"],
+                prepared["draft"],
+            )
+            custom_project, project_error = _ensure_custom_canvas_project_locked(
+                conn,
+                owner,
+                source_id,
+                prepared["project"],
+                revision,
+                prepared["now"],
+                custom_project_id,
+            )
+            if project_error:
+                conn.rollback()
+                _custom_canvas_cleanup_rolled_back_blobs_locked(
+                    conn,
+                    owner,
+                    created_blob_files,
+                )
+                return None, project_error, "rejected"
+            custom_project_id = custom_project["id"]
+            conn.execute(
+                """
+                INSERT INTO custom_canvas_drafts(
+                  owner_id,source_project_id,custom_project_id,revision,
+                  client_updated_at,server_updated_at,content_hash,
+                  project_json,draft_json,deleted_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,NULL)
+                ON CONFLICT(owner_id,source_project_id) DO UPDATE SET
+                  custom_project_id=excluded.custom_project_id,
+                  revision=excluded.revision,
+                  client_updated_at=excluded.client_updated_at,
+                  server_updated_at=excluded.server_updated_at,
+                  content_hash=excluded.content_hash,
+                  project_json=excluded.project_json,
+                  draft_json=excluded.draft_json,
+                  deleted_at=NULL
+                """,
+                (
+                    owner,
+                    source_id,
+                    custom_project_id,
+                    revision,
+                    prepared["clientUpdatedAt"],
+                    prepared["now"],
+                    prepared["contentHash"],
+                    prepared["projectJson"],
+                    prepared["draftJson"],
+                ),
+            )
+            orphaned_files = _custom_canvas_gc_blobs_locked(conn, owner)
+            stored = _custom_canvas_draft_row_locked(conn, owner, source_id)
+            result = _custom_canvas_payload_locked(conn, owner, stored)
+            conn.commit()
+            _custom_canvas_unlink_orphans(orphaned_files)
+            return result, None, "created" if not existing else "updated"
+        except Exception:
+            conn.rollback()
+            _custom_canvas_cleanup_rolled_back_blobs_locked(
+                conn,
+                owner,
+                created_blob_files,
+            )
+            raise
+        finally:
+            conn.close()
+
+
+def delete_custom_canvas_draft(owner_id, source_project_id):
+    source_id = _custom_canvas_source_id(source_project_id)
+    _ensure_db()
+    owner = str(owner_id or "")
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = _custom_canvas_draft_row_locked(conn, owner, source_id)
+            if not row:
+                # DELETE can race the first autosave from another browser/tab.
+                # Persist a tombstone even when the PUT has not arrived yet so
+                # the later request receives 410 instead of recreating the draft.
+                now = int(time.time() * 1000)
+                project = {"id": source_id, "updatedAt": now}
+                draft = {"items": [], "messages": [], "viewport": {}}
+                project_json = _custom_canvas_json(
+                    project,
+                    limit=MAX_CUSTOM_CANVAS_PROJECT_BYTES,
+                    error="custom_canvas_project_too_large",
+                )
+                draft_json = _custom_canvas_json(
+                    draft,
+                    limit=MAX_CUSTOM_CANVAS_DRAFT_BYTES,
+                    error="custom_canvas_draft_too_large",
+                )
+                content_hash = hashlib.sha256(
+                    (project_json + "\n" + draft_json).encode("utf-8")
+                ).hexdigest()
+                conn.execute(
+                    """
+                    INSERT INTO custom_canvas_drafts(
+                      owner_id,source_project_id,custom_project_id,revision,
+                      client_updated_at,server_updated_at,content_hash,
+                      project_json,draft_json,deleted_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        owner,
+                        source_id,
+                        _custom_canvas_project_id(owner, source_id),
+                        1,
+                        now,
+                        now,
+                        content_hash,
+                        project_json,
+                        draft_json,
+                        now,
+                    ),
+                )
+                orphaned_files = _custom_canvas_gc_blobs_locked(conn, owner)
+                conn.commit()
+                _custom_canvas_unlink_orphans(orphaned_files)
+                return {
+                    "sourceId": source_id,
+                    "sourceProjectId": source_id,
+                    "revision": 1,
+                    "deletedAt": now,
+                }, None
+            if row["deletedAt"]:
+                conn.rollback()
+                return {
+                    "sourceId": source_id,
+                    "sourceProjectId": source_id,
+                    "revision": row["revision"],
+                    "deletedAt": row["deletedAt"],
+                }, None
+            now = int(time.time() * 1000)
+            revision = row["revision"] + 1
+            conn.execute(
+                """
+                UPDATE custom_canvas_drafts
+                SET revision=?,server_updated_at=?,deleted_at=?
+                WHERE owner_id=? AND source_project_id=?
+                """,
+                (revision, now, now, owner, source_id),
+            )
+            orphaned_files = _custom_canvas_gc_blobs_locked(conn, owner)
+            conn.commit()
+            _custom_canvas_unlink_orphans(orphaned_files)
+            return {
+                "sourceId": source_id,
+                "sourceProjectId": source_id,
+                "revision": revision,
+                "deletedAt": now,
+            }, None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def get_custom_project(project_id, owner_id):
@@ -3038,9 +4217,25 @@ def _projected_delivery_sequences(asset_items):
     return projected
 
 
-def state_for(member_id, role, parent_id=None):
-    """按成员可见性返回快照：创作端按人隔离，供应商子账号只取得已分配账号的交付物。"""
+def state_for(member_id, role, parent_id=None, collections=None):
+    """按成员可见性返回快照。
+
+    ``collections`` 为 ``None`` 时保持历史全量语义；传入集合时只返回所需
+    集合。过滤 assets/jobs 所需的 accounts/productions 会在服务端内部读取，
+    但不会混入响应，避免轻量登录又退化成全量下载。
+    """
     _ensure_db()
+    requested = None if collections is None else {
+        str(name) for name in collections if str(name) in COLLECTIONS
+    }
+    scan_collections = set(COLLECTIONS if requested is None else requested)
+    if requested is not None:
+        if "jobs" in requested:
+            scan_collections.add("productions")
+        if "assets" in requested:
+            scan_collections.update({"accounts", "productions"})
+        if role == "supplier_child" and "analyticsLinks" in requested:
+            scan_collections.update({"accounts", "productions", "assets"})
     out = {}
     visible_prod_ids = set()
     assigned_account_ids = supplier_account_ids_for_child(member_id) if role == "supplier_child" else set()
@@ -3064,6 +4259,8 @@ def state_for(member_id, role, parent_id=None):
                         continue
                     supplier_production_created_at[str(production_id)] = production.get("createdAt")
             for col in COLLECTIONS:
+                if col not in scan_collections:
+                    continue
                 if role in {"supplier_parent", "supplier_child"} and col not in {"accounts", "assets"}:
                     out[col] = []
                     continue
@@ -3162,7 +4359,10 @@ def state_for(member_id, role, parent_id=None):
             conn.commit()
         finally:
             conn.close()
-    out["jobs"] = [j for j in out.get("jobs", []) if j.get("productionId") in visible_prod_ids]
-    if role == "supplier_child":
+    if requested is None or "jobs" in requested:
+        out["jobs"] = [j for j in out.get("jobs", []) if j.get("productionId") in visible_prod_ids]
+    if role == "supplier_child" and (requested is None or "analyticsLinks" in requested):
         out["analyticsLinks"] = [x for x in out.get("analyticsLinks", []) if x.get("assetId") in visible_asset_ids]
+    if requested is not None:
+        out = {name: out.get(name, []) for name in requested}
     return out

@@ -13,6 +13,7 @@ export VIDEO_WORKSHOP_URL="${VIDEO_WORKSHOP_URL:-http://127.0.0.1:${VIDEO_WORKSH
 export VIDEO_WORKSHOP_PROJECTS_DIR="${VIDEO_WORKSHOP_PROJECTS_DIR:-/data/video-workshop/projects}"
 export VIDEO_WORKSHOP_OUTPUT_DIR="${VIDEO_WORKSHOP_OUTPUT_DIR:-/data/video-workshop/outputs}"
 export VIDEO_WORKSHOP_UPLOAD_DIR="${VIDEO_WORKSHOP_UPLOAD_DIR:-/data/video-workshop/uploads}"
+export CUSTOM_CANVAS_BLOB_DIR="${CUSTOM_CANVAS_BLOB_DIR:-/data/canvas_blobs}"
 export BGM_SOURCE="${BGM_SOURCE:-platform}"
 export BGM_LIBRARY_DIR="${BGM_LIBRARY_DIR:-/data/bgm-library}"
 export HF_HOME="${HF_HOME:-/data/model-cache}"
@@ -33,6 +34,7 @@ mkdir -p \
   "$VIDEO_WORKSHOP_PROJECTS_DIR" \
   "$VIDEO_WORKSHOP_OUTPUT_DIR" \
   "$VIDEO_WORKSHOP_UPLOAD_DIR" \
+  "$CUSTOM_CANVAS_BLOB_DIR" \
   "$HF_HOME"
 if [ "$BGM_SOURCE" != "platform" ]; then
   mkdir -p "$BGM_LIBRARY_DIR"

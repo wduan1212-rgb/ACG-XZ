@@ -21,6 +21,7 @@ DATA_DB_PATH="${DATA_DB:-$APP_DIR/server/data.sqlite}"
 LEGACY_DATA_PATH="${LEGACY_DATA_FILE:-$APP_DIR/server/data.json}"
 UPLOAD_DIR_PATH="${UPLOAD_DIR:-$APP_DIR/server/uploads}"
 COMPOSED_DIR_PATH="${COMPOSED_DIR:-$APP_DIR/server/composed}"
+CUSTOM_CANVAS_BLOB_DIR_PATH="${CUSTOM_CANVAS_BLOB_DIR:-$APP_DIR/server/canvas_blobs}"
 
 # Keep sidecar runtime data outside the code directories so a code-only rsync
 # cannot replace projects, uploads, outputs or the shared BGM library.
@@ -39,6 +40,7 @@ export BGM_SOURCE BGM_LIBRARY_DIR HF_HOME
 # opens these paths read-only when BGM_SOURCE=platform.
 export DATA_DB="$DATA_DB_PATH"
 export UPLOAD_DIR="$UPLOAD_DIR_PATH"
+export CUSTOM_CANVAS_BLOB_DIR="$CUSTOM_CANVAS_BLOB_DIR_PATH"
 
 MAIN_VENV="$APP_DIR/.venv"
 VIDEO_VENV="$VIDEO_APP_DIR/.venv"
@@ -65,6 +67,7 @@ mkdir -p \
   "$VIDEO_WORKSHOP_PROJECTS_DIR" \
   "$VIDEO_WORKSHOP_OUTPUT_DIR" \
   "$VIDEO_WORKSHOP_UPLOAD_DIR" \
+  "$CUSTOM_CANVAS_BLOB_DIR_PATH" \
   "$HF_HOME"
 if [ "$BGM_SOURCE" != "platform" ]; then
   mkdir -p "$BGM_LIBRARY_DIR"
@@ -116,6 +119,13 @@ backup_runtime_data() {
     find "$COMPOSED_DIR_PATH" -maxdepth 1 -type f -print | sort > "$dir/composed.manifest"
     if [ "${BACKUP_MEDIA:-0}" = "1" ]; then
       tar -C "$(dirname "$COMPOSED_DIR_PATH")" -czf "$dir/composed.tgz" "$(basename "$COMPOSED_DIR_PATH")"
+    fi
+  fi
+  if [ -d "$CUSTOM_CANVAS_BLOB_DIR_PATH" ]; then
+    find "$CUSTOM_CANVAS_BLOB_DIR_PATH" -type f -print | sort > "$dir/canvas-blobs.manifest"
+    if [ "${BACKUP_CANVAS_MEDIA:-${BACKUP_MEDIA:-0}}" = "1" ]; then
+      tar -C "$(dirname "$CUSTOM_CANVAS_BLOB_DIR_PATH")" -czf "$dir/canvas-blobs.tgz" \
+        "$(basename "$CUSTOM_CANVAS_BLOB_DIR_PATH")"
     fi
   fi
 

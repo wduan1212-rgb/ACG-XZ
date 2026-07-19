@@ -7,7 +7,7 @@ import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAs
 import { downloadAsset } from "../domain/delivery.js";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
 import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js";
-import { renderSupplierAccounts } from "./supplierViews.js?v=20260718-v93-2";
+import { renderSupplierAccounts } from "./supplierViews.js?v=20260718-v94-1";
 
 let fAcc = "all", fQ = "", fKind = "all", libraryMode = "drafts", collapseInitialized = false;
 const collapsedAcc = new Set();
@@ -77,7 +77,7 @@ export const assetsView = {
           libraryMode = button.dataset.library;
           draw();
         }));
-        import("./draftsView.js?v=20260718-v93-2").then(({ draftsView }) => {
+        import("./draftsView.js?v=20260718-v94-1").then(({ draftsView }) => {
           const host = $("#assetDraftsHost", root);
           if (host) draftsView.render(host);
         });

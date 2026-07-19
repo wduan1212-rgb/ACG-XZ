@@ -12,6 +12,11 @@ let _authBlocked = false;
 const _collectionSyncHolds = new Map();
 const _heldCollectionSnapshots = new Map();
 const FETCH_TIMEOUT_MS = 9000;
+const PERFORMANCE_KEY = "xingzhen.remote.performance.v1";
+const PERFORMANCE_DETAIL_KEYS = new Set([
+  "durationMs", "ttfbMs", "bodyMs", "parseMs", "bodyChars", "status",
+  "collections", "collectionCount", "phase", "source", "ok"
+]);
 
 /* 与服务端 store.COLLECTIONS 对齐：notifications/ui/apiKeys 是本地态，不入服务器 */
 export const SYNCED = new Set([
@@ -28,6 +33,41 @@ export function setToken(t) {
   if (t) tokenStorage.setItem(TOKEN_KEY, t); else tokenStorage.removeItem(TOKEN_KEY);
 }
 
+function perfNow() {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+/* 只记录耗时、集合名和数量，不记录用户名、token、请求体或业务数据。 */
+export function recordPerformance(stage, detail = {}) {
+  const safeDetail = {};
+  Object.entries(detail || {}).forEach(([key, value]) => {
+    if (!PERFORMANCE_DETAIL_KEYS.has(key)) return;
+    if (Array.isArray(value)) {
+      safeDetail[key] = value.map(item => String(item || "").slice(0, 40)).slice(0, 20);
+    } else if (["string", "number", "boolean"].includes(typeof value)) {
+      safeDetail[key] = typeof value === "string" ? value.slice(0, 80) : value;
+    }
+  });
+  const entry = { stage: String(stage || "unknown").slice(0, 60), at: Date.now(), ...safeDetail };
+  try {
+    const previous = JSON.parse(sessionStorage.getItem(PERFORMANCE_KEY) || "[]");
+    const rows = Array.isArray(previous) ? previous.slice(-79) : [];
+    rows.push(entry);
+    sessionStorage.setItem(PERFORMANCE_KEY, JSON.stringify(rows));
+  } catch (_) {}
+  if (typeof window !== "undefined") {
+    window.__xingzhenRemotePerformance = [
+      ...(Array.isArray(window.__xingzhenRemotePerformance) ? window.__xingzhenRemotePerformance.slice(-79) : []),
+      entry
+    ];
+    if (typeof CustomEvent === "function" && typeof window.dispatchEvent === "function") {
+      window.dispatchEvent(new CustomEvent("xingzhen:remote-performance", { detail: entry }));
+    }
+  }
+  console.debug("[remote-performance]", entry);
+  return entry;
+}
+
 async function fetchWithTimeout(path, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -38,16 +78,30 @@ async function fetchWithTimeout(path, options = {}, timeoutMs = FETCH_TIMEOUT_MS
   }
 }
 
-async function req(path, { method = "GET", body, auth = true } = {}) {
+async function req(path, { method = "GET", body, auth = true, metric = "", metricDetail = {} } = {}) {
+  const startedAt = perfNow();
   const headers = { "Content-Type": "application/json", "Cache-Control": "no-cache" };
   if (auth && _token) headers.Authorization = "Bearer " + _token;
   let res;
   try {
     res = await fetchWithTimeout(path, { method, headers, body: body != null ? JSON.stringify(body) : undefined });
   } catch (e) {
+    if (metric) recordPerformance(metric, {
+      ...metricDetail,
+      durationMs: Math.max(0, Math.round(perfNow() - startedAt)),
+      ok: false
+    });
     throw new Error((e && e.name === "AbortError") ? "请求超时，请检查本地服务端" : (e.message || String(e)));
   }
+  const ttfbMs = Math.max(0, perfNow() - startedAt);
   if (res.status === 401) {
+    if (metric) recordPerformance(metric, {
+      ...metricDetail,
+      durationMs: Math.max(0, Math.round(perfNow() - startedAt)),
+      ttfbMs: Math.round(ttfbMs),
+      status: res.status,
+      ok: false
+    });
     _authBlocked = true;
     setToken("");
     const error = new Error("HTTP 401 登录已过期，请重新登录");
@@ -55,11 +109,58 @@ async function req(path, { method = "GET", body, auth = true } = {}) {
     throw error;
   }
   if (!res.ok) {
+    if (metric) recordPerformance(metric, {
+      ...metricDetail,
+      durationMs: Math.max(0, Math.round(perfNow() - startedAt)),
+      ttfbMs: Math.round(ttfbMs),
+      status: res.status,
+      ok: false
+    });
     const error = new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 160));
     error.status = res.status;
     throw error;
   }
-  return res.status === 204 ? null : res.json();
+  if (res.status === 204) {
+    if (metric) recordPerformance(metric, {
+      ...metricDetail,
+      durationMs: Math.max(0, Math.round(perfNow() - startedAt)),
+      ttfbMs: Math.round(ttfbMs),
+      status: res.status,
+      ok: true
+    });
+    return null;
+  }
+  if (!metric) return res.json();
+  const bodyStartedAt = perfNow();
+  const text = await res.text();
+  const bodyMs = Math.max(0, perfNow() - bodyStartedAt);
+  const parseStartedAt = perfNow();
+  let parsed;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch (error) {
+    recordPerformance(metric, {
+      ...metricDetail,
+      durationMs: Math.max(0, Math.round(perfNow() - startedAt)),
+      ttfbMs: Math.round(ttfbMs),
+      bodyMs: Math.round(bodyMs),
+      bodyChars: text.length,
+      status: res.status,
+      ok: false
+    });
+    throw error;
+  }
+  recordPerformance(metric, {
+    ...metricDetail,
+    durationMs: Math.max(0, Math.round(perfNow() - startedAt)),
+    ttfbMs: Math.round(ttfbMs),
+    bodyMs: Math.round(bodyMs),
+    parseMs: Math.max(0, Math.round(perfNow() - parseStartedAt)),
+    bodyChars: text.length,
+    status: res.status,
+    ok: true
+  });
+  return parsed;
 }
 
 /* 启动探测：应用是否由共享后端托管 */
@@ -72,17 +173,40 @@ export async function init() {
 }
 
 export async function login(username, pin) {
-  const r = await req("/api/auth/login", { method: "POST", auth: false, body: { username, pin } });
+  const r = await req("/api/auth/login", {
+    method: "POST",
+    auth: false,
+    body: { username, pin },
+    metric: "auth"
+  });
   setToken(r.token);
   return r.member;
 }
 export async function me() {
   if (!_token) return null;
-  try { return await req("/api/auth/me"); } catch { return null; }
+  try { return await req("/api/auth/me", { metric: "auth-resume" }); } catch { return null; }
 }
 export function logout() { setToken(""); }
 
-export function getState() { return req("/api/state"); }
+export function getState(collections = []) {
+  const allowed = new Set(["members", ...SYNCED]);
+  const names = [...new Set(
+    (Array.isArray(collections) ? collections : [])
+      .map(name => String(name || "").trim())
+      .filter(name => allowed.has(name))
+  )];
+  const query = names.length
+    ? `?collections=${encodeURIComponent(names.join(","))}`
+    : "";
+  return req(`/api/state${query}`, {
+    metric: "state",
+    metricDetail: {
+      phase: names.length ? "partial" : "full",
+      collections: names,
+      collectionCount: names.length
+    }
+  });
+}
 
 export function requestMember(payload) {
   return req("/api/member-requests", { method: "POST", auth: false, body: payload });

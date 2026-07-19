@@ -462,8 +462,8 @@ class CustomMemberIsolationFrontendContractTest(unittest.TestCase):
         canvas_host = (
             APP_DIR / "js" / "views" / "customCanvasIntegration.js"
         ).read_text(encoding="utf-8")
-        canvas_store = (
-            APP_DIR / "apps" / "infinite-canvas-source" / "src" / "lib" / "store.ts"
+        canvas_persistence = (
+            APP_DIR / "apps" / "infinite-canvas-source" / "src" / "lib" / "canvasPersistence.ts"
         ).read_text(encoding="utf-8")
         video_app = (
             APP_DIR / "apps" / "video-workshop" / "web" / "assets" / "app.js"
@@ -476,8 +476,9 @@ class CustomMemberIsolationFrontendContractTest(unittest.TestCase):
         self.assertIn("config.storageNamespace", canvas_host)
         self.assertIn('kind: "xingzhen-canvas-bootstrap"', canvas_host)
         self.assertNotIn("owner=${encodeURIComponent", canvas_host)
-        self.assertIn("JSON.parse(window.name", canvas_store)
-        self.assertNotIn('get("owner")', canvas_store)
+        self.assertIn("JSON.parse(window.name", canvas_persistence)
+        self.assertIn("storageNamespace", canvas_persistence)
+        self.assertNotIn('get("owner")', canvas_persistence)
         self.assertIn("window.__XINGZHEN_VIDEO_PROJECT_KEY__", video_app)
         self.assertIn('PROJECT_KEY_PREFIX + String(session.memberId || "")', backend)
         self.assertIn('"storageNamespace": store.custom_canvas_storage_namespace(me["id"])', backend)

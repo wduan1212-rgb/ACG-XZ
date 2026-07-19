@@ -1,0 +1,543 @@
+import type { CanvasItem, ChatMessage, Project } from "./types";
+
+export interface Viewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface CanvasProjectState {
+  items: CanvasItem[];
+  messages: ChatMessage[];
+  viewport?: Viewport;
+}
+
+interface StoredCanvasProject {
+  schema: 1 | 2;
+  state: CanvasProjectState;
+  verifiedAt: number;
+  confirmedEmpty: boolean;
+  source: "local" | "legacy" | "server";
+  dirty?: boolean;
+  conflicted?: boolean;
+  clientUpdatedAt?: number;
+  serverRevision?: number;
+}
+
+interface PersistedCanvasEnvelope {
+  state?: {
+    projects?: Project[];
+    itemsByProject?: Record<string, CanvasItem[]>;
+    messagesByProject?: Record<string, ChatMessage[]>;
+    viewportByProject?: Record<string, Viewport>;
+    [key: string]: unknown;
+  };
+  version?: number;
+  [key: string]: unknown;
+}
+
+export interface CanvasProjectReadResult {
+  state: CanvasProjectState;
+  confirmedEmpty: boolean;
+  source: StoredCanvasProject["source"] | "unversioned";
+  dirty: boolean;
+  conflicted: boolean;
+  clientUpdatedAt: number;
+  serverRevision?: number;
+}
+
+export function decideCanvasServerReconciliation(
+  local: CanvasProjectReadResult | null,
+  serverRevision: number,
+  serverUpdatedAt: number,
+): "install-server" | "keep-local-dirty" | "keep-local-clean" {
+  if (!local) return "install-server";
+  if (local.dirty) return "keep-local-dirty";
+  if (
+    Number(serverRevision || 0) > Number(local.serverRevision || 0)
+    || Number(serverUpdatedAt || 0) > Number(local.clientUpdatedAt || 0)
+  ) return "install-server";
+  return "keep-local-clean";
+}
+
+export function canInstallCanvasCanonical(
+  expectedGeneration: number | undefined,
+  currentGeneration: number,
+  expectedClientUpdatedAt: number | undefined,
+  latestLocal: CanvasProjectReadResult | null,
+): boolean {
+  if (
+    Number.isFinite(expectedGeneration)
+    && currentGeneration !== Number(expectedGeneration)
+  ) return false;
+  if (
+    Number.isFinite(expectedClientUpdatedAt)
+    && latestLocal?.dirty
+    && latestLocal.clientUpdatedAt > Number(expectedClientUpdatedAt)
+  ) return false;
+  return true;
+}
+
+interface CanvasMigrationManifest {
+  version: 1;
+  migratedAt: number;
+  projectIds: string[];
+  serverSyncedProjectIds?: string[];
+}
+
+const memory = new Map<string, string>();
+
+export function canvasStorageNamespace(): string {
+  if (typeof window === "undefined") return "anonymous";
+  try {
+    const bootstrap = JSON.parse(window.name || "{}") as {
+      kind?: string;
+      storageNamespace?: string;
+    };
+    if (bootstrap.kind === "xingzhen-canvas-bootstrap") {
+      const namespace = String(bootstrap.storageNamespace || "")
+        .replace(/[^\w-]/g, "")
+        .slice(0, 80);
+      if (namespace) return namespace;
+    }
+  } catch {
+    // Standalone mode receives an isolated anonymous namespace.
+  }
+  return "anonymous";
+}
+
+export const CANVAS_OWNER = canvasStorageNamespace();
+export const CANVAS_STORAGE_KEY = `ai-design-canvas:v2:${CANVAS_OWNER}`;
+export const CANVAS_LEGACY_BACKUP_KEY = `${CANVAS_STORAGE_KEY}:legacy-backup`;
+export const CANVAS_MIGRATION_KEY = `${CANVAS_STORAGE_KEY}:migration-v1`;
+const OWNER_SCOPED_LEGACY_KEYS = [
+  CANVAS_LEGACY_BACKUP_KEY,
+  CANVAS_STORAGE_KEY,
+  `ai-design-canvas:v1:${CANVAS_OWNER}`,
+  `ai-design-canvas:${CANVAS_OWNER}`,
+];
+const CANVAS_DB_NAME = `xingzhen-canvas:${CANVAS_OWNER}`;
+const CANVAS_DB_STORE = "project-state";
+
+let localStorageFallbackMode = false;
+let persistenceWarning = "";
+
+export function getCanvasPersistenceWarning(): string {
+  return persistenceWarning;
+}
+
+export function localCanvasGet(name: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(name) ?? memory.get(name) ?? null;
+  } catch {
+    return memory.get(name) ?? null;
+  }
+}
+
+export function localCanvasSet(name: string, value: string): void {
+  try {
+    globalThis.localStorage?.setItem(name, value);
+  } catch {
+    memory.set(name, value);
+  }
+}
+
+export function localCanvasRemove(name: string): void {
+  try {
+    globalThis.localStorage?.removeItem(name);
+  } catch {
+    memory.delete(name);
+  }
+}
+
+function durableLocalStorageValue(name: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(name) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDurableLocalExact(name: string, value: string): boolean {
+  const existing = durableLocalStorageValue(name);
+  if (existing === value) return true;
+  try {
+    globalThis.localStorage?.setItem(name, value);
+    return globalThis.localStorage?.getItem(name) === value;
+  } catch {
+    return false;
+  }
+}
+
+/** Small coordination records (migration progress and delete tombstones) must
+ * survive reload; callers may not treat the in-memory quota fallback as a
+ * completed durable write. */
+export function writeDurableCanvasValue(name: string, value: string): boolean {
+  return writeDurableLocalExact(name, value);
+}
+
+function writeDurableBackup(raw: string): boolean {
+  return writeDurableLocalExact(CANVAS_LEGACY_BACKUP_KEY, raw);
+}
+
+function openCanvasDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === "undefined") {
+      reject(new Error("IndexedDB unavailable"));
+      return;
+    }
+    const request = indexedDB.open(CANVAS_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(CANVAS_DB_STORE)) {
+        request.result.createObjectStore(CANVAS_DB_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("IndexedDB open failed"));
+  });
+}
+
+function waitForTransaction(transaction: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || new Error("IndexedDB transaction failed"));
+    transaction.onabort = () => reject(transaction.error || new Error("IndexedDB transaction aborted"));
+  });
+}
+
+function isCanvasProjectState(value: unknown): value is CanvasProjectState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Partial<CanvasProjectState>;
+  return Array.isArray(state.items) && Array.isArray(state.messages)
+    && (!state.viewport || (
+      Number.isFinite(state.viewport.x)
+      && Number.isFinite(state.viewport.y)
+      && Number.isFinite(state.viewport.zoom)
+    ));
+}
+
+export function isCanvasProjectEmpty(state: CanvasProjectState): boolean {
+  // A viewport is only a UI shell. Treating it as user content allowed an old
+  // browser tab to turn an otherwise empty placeholder into an authoritative
+  // draft and overwrite a richer server copy.
+  return state.items.length === 0 && state.messages.length === 0;
+}
+
+function stateFingerprint(state: CanvasProjectState): string {
+  // IndexedDB uses structured clone and preserves JSON-safe application data.
+  // Comparing a separately-read value catches aborted/quota-limited writes.
+  return JSON.stringify(state);
+}
+
+export async function readCanvasProject(
+  projectId: string,
+): Promise<CanvasProjectReadResult | null> {
+  const db = await openCanvasDatabase();
+  try {
+    const transaction = db.transaction(CANVAS_DB_STORE, "readonly");
+    const completed = waitForTransaction(transaction);
+    const request = transaction.objectStore(CANVAS_DB_STORE).get(projectId);
+    const raw = await new Promise<unknown>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("IndexedDB read failed"));
+    });
+    await completed;
+    if (!raw) return null;
+    const record = raw as Partial<StoredCanvasProject>;
+    if ((record.schema === 1 || record.schema === 2) && isCanvasProjectState(record.state)) {
+      return {
+        state: record.state,
+        confirmedEmpty: record.confirmedEmpty === true,
+        source: record.source || "local",
+        dirty: typeof record.dirty === "boolean" ? record.dirty : record.source !== "server",
+        conflicted: record.conflicted === true,
+        clientUpdatedAt: Number(record.clientUpdatedAt || record.verifiedAt || 0),
+        serverRevision: Number.isFinite(record.serverRevision)
+          ? Number(record.serverRevision)
+          : undefined,
+      };
+    }
+    if (isCanvasProjectState(raw)) {
+      return {
+        state: raw,
+        // Old unversioned empty records are ambiguous and must go through recovery.
+        confirmedEmpty: !isCanvasProjectEmpty(raw),
+        source: "unversioned",
+        dirty: true,
+        conflicted: false,
+        clientUpdatedAt: 0,
+        serverRevision: undefined,
+      };
+    }
+    throw new Error("IndexedDB project payload is invalid");
+  } finally {
+    db.close();
+  }
+}
+
+export async function writeCanvasProjectVerified(
+  projectId: string,
+  state: CanvasProjectState,
+  options: {
+    allowEmpty: boolean;
+    /** Only an explicit new draft or a server-authoritative empty draft may
+     * become a trusted empty checkpoint. Ambiguous legacy shells stay
+     * recoverable even when a viewport has already been persisted. */
+    confirmEmpty?: boolean;
+    source?: StoredCanvasProject["source"];
+    dirty?: boolean;
+    conflicted?: boolean;
+    clientUpdatedAt?: number;
+    serverRevision?: number;
+  },
+): Promise<void> {
+  if (!projectId || !isCanvasProjectState(state)) {
+    throw new Error("画布数据格式无效");
+  }
+  if (isCanvasProjectEmpty(state) && !options.allowEmpty) {
+    throw new Error("画布尚未恢复，已阻止空数据覆盖");
+  }
+  const record: StoredCanvasProject = {
+    schema: 2,
+    state,
+    verifiedAt: Date.now(),
+    confirmedEmpty: isCanvasProjectEmpty(state) && options.confirmEmpty === true,
+    source: options.source || "local",
+    dirty: options.dirty ?? options.source !== "server",
+    conflicted: options.conflicted === true,
+    clientUpdatedAt: Number(options.clientUpdatedAt || Date.now()),
+    serverRevision: Number.isFinite(options.serverRevision)
+      ? Number(options.serverRevision)
+      : undefined,
+  };
+  const db = await openCanvasDatabase();
+  try {
+    const transaction = db.transaction(CANVAS_DB_STORE, "readwrite");
+    const completed = waitForTransaction(transaction);
+    transaction.objectStore(CANVAS_DB_STORE).put(record, projectId);
+    await completed;
+  } finally {
+    db.close();
+  }
+
+  // Deliberately reopen the database: validation must be independent from the
+  // write transaction and its in-memory value.
+  const readback = await readCanvasProject(projectId);
+  if (
+    !readback
+    || stateFingerprint(readback.state) !== stateFingerprint(state)
+    || readback.confirmedEmpty !== record.confirmedEmpty
+    || readback.dirty !== record.dirty
+    || readback.conflicted !== record.conflicted
+    || readback.clientUpdatedAt !== record.clientUpdatedAt
+    || readback.serverRevision !== record.serverRevision
+  ) {
+    throw new Error("IndexedDB 写入校验失败");
+  }
+}
+
+export async function deleteCanvasProjectState(projectId: string): Promise<void> {
+  const db = await openCanvasDatabase();
+  try {
+    const transaction = db.transaction(CANVAS_DB_STORE, "readwrite");
+    const completed = waitForTransaction(transaction);
+    transaction.objectStore(CANVAS_DB_STORE).delete(projectId);
+    await completed;
+  } finally {
+    db.close();
+  }
+}
+
+function parseEnvelope(raw: string | null): PersistedCanvasEnvelope | null {
+  if (!raw) return null;
+  try {
+    const envelope = JSON.parse(raw) as PersistedCanvasEnvelope;
+    return envelope && typeof envelope === "object" ? envelope : null;
+  } catch {
+    return null;
+  }
+}
+
+function stateFromEnvelope(
+  envelope: PersistedCanvasEnvelope | null,
+  projectId: string,
+): CanvasProjectState | null {
+  const state = envelope?.state;
+  if (!state) return null;
+  const items = state.itemsByProject || {};
+  const messages = state.messagesByProject || {};
+  const viewports = state.viewportByProject || {};
+  const hasAny = Object.prototype.hasOwnProperty.call(items, projectId)
+    || Object.prototype.hasOwnProperty.call(messages, projectId)
+    || Object.prototype.hasOwnProperty.call(viewports, projectId);
+  if (!hasAny) return null;
+  return {
+    items: items[projectId] || [],
+    messages: messages[projectId] || [],
+    viewport: viewports[projectId],
+  };
+}
+
+export function readLegacyCanvasProject(projectId: string): CanvasProjectState | null {
+  for (const key of OWNER_SCOPED_LEGACY_KEYS) {
+    const payload = stateFromEnvelope(parseEnvelope(localCanvasGet(key)), projectId);
+    if (payload) return payload;
+  }
+  return null;
+}
+
+function summaryEnvelope(envelope: PersistedCanvasEnvelope): string {
+  const state = envelope.state;
+  if (!state || !Array.isArray(state.projects)) return JSON.stringify(envelope);
+  const itemsByProject = state.itemsByProject || {};
+  const projects = state.projects.map((project) => ({
+    ...project,
+    thumbnailUrl: usableSummaryThumbnail(itemsByProject[project.id] || [], project.thumbnailUrl),
+  }));
+  return JSON.stringify({
+    ...envelope,
+    state: {
+      ...state,
+      projects,
+      itemsByProject: {},
+      messagesByProject: {},
+      viewportByProject: {},
+    },
+  });
+}
+
+function usableSummaryThumbnail(items: CanvasItem[], existing?: string): string | undefined {
+  const candidate = items.find((item) => {
+    if (item.hidden || !("assetUrl" in item) || !item.assetUrl) return false;
+    if ("loading" in item && item.loading) return false;
+    return /^(?:https?:|\/)/.test(item.assetUrl);
+  });
+  const url = candidate && "assetUrl" in candidate ? candidate.assetUrl : existing;
+  return url && /^(?:https?:|\/)/.test(url) ? url : undefined;
+}
+
+function readMigrationManifest(): CanvasMigrationManifest | null {
+  try {
+    const parsed = JSON.parse(localCanvasGet(CANVAS_MIGRATION_KEY) || "null") as CanvasMigrationManifest;
+    return parsed?.version === 1 && Array.isArray(parsed.projectIds) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function legacyMigrationProjectIds(): string[] {
+  return readMigrationManifest()?.projectIds || [];
+}
+
+export function markLegacyProjectServerSynced(projectId: string): void {
+  const manifest = readMigrationManifest();
+  if (!manifest || !manifest.projectIds.includes(projectId)) return;
+  const synced = new Set(manifest.serverSyncedProjectIds || []);
+  synced.add(projectId);
+  const next = JSON.stringify({
+    ...manifest,
+    serverSyncedProjectIds: [...synced],
+  });
+  if (!writeDurableLocalExact(CANVAS_MIGRATION_KEY, next)) {
+    localStorageFallbackMode = true;
+    persistenceWarning = "画布迁移进度未能持久保存，原始数据仍保留；释放浏览器空间后会继续同步。";
+  }
+}
+
+export function pendingLegacyServerMigrationIds(): string[] {
+  const manifest = readMigrationManifest();
+  if (!manifest) return [];
+  const synced = new Set(manifest.serverSyncedProjectIds || []);
+  return manifest.projectIds.filter((id) => !synced.has(id));
+}
+
+export async function migrateLegacyCanvasEnvelope(name: string, raw: string): Promise<string> {
+  const envelope = parseEnvelope(raw);
+  const state = envelope?.state;
+  if (!envelope || !state || !Array.isArray(state.projects)) {
+    localCanvasSet(name, raw);
+    return raw;
+  }
+  const projectStates = new Map<string, CanvasProjectState>();
+  for (const project of state.projects) {
+    const payload = stateFromEnvelope(envelope, project.id);
+    if (payload) projectStates.set(project.id, payload);
+  }
+  if (!projectStates.size) {
+    localCanvasSet(name, raw);
+    return raw;
+  }
+
+  // The exact owner-scoped legacy envelope is immutable recovery material.
+  // A volatile memory fallback is not enough here: only a durable, read-back
+  // verified backup permits the original full key to be summarized.
+  if (!writeDurableBackup(raw)) {
+    localStorageFallbackMode = true;
+    persistenceWarning = "本地存储空间不足，旧画布仍保留在原存储中，暂未迁移。清理浏览器空间后可重试。";
+    // Never rewrite/delete the original full key while backup verification fails.
+    return raw;
+  }
+  try {
+    for (const [projectId, payload] of projectStates) {
+      const existing = await readCanvasProject(projectId).catch(() => null);
+      const incomingIsEmpty = isCanvasProjectEmpty(payload);
+      const existingIsUseful = !!existing && !isCanvasProjectEmpty(existing.state);
+      const incomingUpdatedAt = Number(
+        state.projects.find((project) => project.id === projectId)?.updatedAt || 0,
+      );
+      if (existing?.source === "server") continue;
+      // Re-running migration never replaces a richer verified record with an
+      // empty legacy shell or an equal/newer per-project dirty checkpoint.
+      if (existingIsUseful && incomingIsEmpty) continue;
+      if (
+        existingIsUseful
+        && existing?.dirty
+        && Number(existing.clientUpdatedAt || 0) >= incomingUpdatedAt
+      ) continue;
+      await writeCanvasProjectVerified(projectId, payload, {
+        allowEmpty: true,
+        source: "legacy",
+        dirty: true,
+        clientUpdatedAt: incomingUpdatedAt || Date.now(),
+      });
+    }
+    const previous = readMigrationManifest();
+    const ids = new Set([...(previous?.projectIds || []), ...projectStates.keys()]);
+    const manifestRaw = JSON.stringify({
+      version: 1,
+      migratedAt: previous?.migratedAt || Date.now(),
+      projectIds: [...ids],
+      serverSyncedProjectIds: previous?.serverSyncedProjectIds || [],
+    } satisfies CanvasMigrationManifest);
+    if (!writeDurableLocalExact(CANVAS_MIGRATION_KEY, manifestRaw)) {
+      localStorageFallbackMode = true;
+      persistenceWarning = "画布迁移进度未能持久保存，原始数据仍保留；释放浏览器空间后可重试。";
+      return raw;
+    }
+    const summary = summaryEnvelope(envelope);
+    if (!writeDurableLocalExact(name, summary)) {
+      localStorageFallbackMode = true;
+      persistenceWarning = "画布摘要未能持久保存，原始数据仍保留；释放浏览器空间后可重试。";
+      return raw;
+    }
+    return summary;
+  } catch {
+    // Private browsing / quota errors keep the complete envelope in place.
+    localStorageFallbackMode = true;
+    localCanvasSet(name, raw);
+    return raw;
+  }
+}
+
+export function storeCanvasSummary(name: string, raw: string): void {
+  if (localStorageFallbackMode) {
+    localCanvasSet(name, raw);
+    return;
+  }
+  const envelope = parseEnvelope(raw);
+  if (!envelope) {
+    localCanvasSet(name, raw);
+    return;
+  }
+  localCanvasSet(name, summaryEnvelope(envelope));
+}

@@ -38,6 +38,7 @@ RUN chmod +x ./deploy/docker_entrypoint.sh \
     && mkdir -p \
        /data/uploads \
        /data/composed \
+       /data/canvas_blobs \
        /data/video-workshop/projects \
        /data/video-workshop/outputs \
        /data/video-workshop/uploads \
@@ -51,6 +52,7 @@ ENV LLM_API_KEY="" \
     LEGACY_DATA_FILE="/data/data.json" \
     UPLOAD_DIR="/data/uploads" \
     COMPOSED_DIR="/data/composed" \
+    CUSTOM_CANVAS_BLOB_DIR="/data/canvas_blobs" \
     HOST="0.0.0.0" \
     PORT="8787" \
     VIDEO_WORKSHOP_HOST="127.0.0.1" \

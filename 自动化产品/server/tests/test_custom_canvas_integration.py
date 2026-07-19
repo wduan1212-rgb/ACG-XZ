@@ -140,6 +140,13 @@ console.log(JSON.stringify({{
             if line.startswith(("MAAS_API_KEY=", "MAAS_CHAT_API_KEY=")):
                 self.assertEqual(line.split("=", 1)[1], "")
 
+    def test_canvas_language_model_retries_only_transient_failures(self):
+        source = (APP_DIR / "apps/infinite-canvas-source/src/lib/maas.ts").read_text(encoding="utf-8")
+        self.assertIn("class ChatProviderError", source)
+        self.assertIn("!isPermanentLimit(message)", source)
+        self.assertIn("if (!(error instanceof ChatProviderError) || !error.retryable) throw error", source)
+        self.assertNotIn("catch {\n    // Upstream 502s are transient", source)
+
     def test_source_provenance_and_dependency_licenses_are_mapped(self):
         source_dir = APP_DIR / "apps" / "infinite-canvas-source"
         provenance = (source_dir / "SOURCE_PROVENANCE.md").read_text(encoding="utf-8")
@@ -178,6 +185,13 @@ console.log(JSON.stringify({{
         self.assertNotIn("safeText(value.dataUrl", integration)
         self.assertIn('event.source !== iframe.contentWindow', integration)
         self.assertIn('event.origin !== window.location.origin', integration)
+        self.assertIn('fetch("/api/custom-canvas/session"', integration)
+        self.assertIn('method: "POST"', integration)
+        self.assertIn('credentials: "same-origin"', integration)
+        self.assertLess(
+            integration.index('fetch("/api/custom-canvas/session"'),
+            integration.index('fetch("/api/custom-canvas/config"'),
+        )
         self.assertIn("width:100%;height:100%;min-height:0", integration)
         self.assertNotIn("min-height:640px", integration)
 
