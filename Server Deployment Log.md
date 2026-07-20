@@ -1,5 +1,13 @@
 # Server Deployment Log
 
+## v103.4 - 2026-07-20
+
+- Source: `32c6d1c` (`fix: self-heal shared language model proxy`). Production main cache is `20260720-v103-4`.
+- Incident: late-loaded custom-creation modules could retain a different cached language-model client and falsely report that no language-model key was configured, despite the server-managed model being available.
+- Scope: deployed an exact 27-file code/static archive only. The update adds one same-origin health probe before a late client reports a missing key, and unifies the module cache identity across the main application and custom creation entries.
+- Validation: main health reports language-model configuration available; video-workshop health reports director, video and voice services ready. The deployed entry, custom-publish import and runtime late-module proxy smoke all serve the v103.4 behavior.
+- Data protection: a code rollback archive and consistent SQLite backup were created before restart. Database table-count digest is unchanged after deployment; no runtime data, uploads, composed media, canvas blobs, video-workshop runtime or private environment file was synchronized or modified.
+
 ## v103.3 - 2026-07-20
 
 - Source: `f28e610` (`fix: compact oversized image references`), following the v103.2 same-origin API correction. Production main cache is `20260720-v103-3`.
