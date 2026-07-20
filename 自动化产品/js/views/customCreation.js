@@ -150,7 +150,7 @@ export const customCreationView = {
         toast(key === "canvas" ? "当前画布还没有可发布的图片" : "请先在视频工坊完成成片");
         return;
       }
-      const { openCustomPublish } = await import("./customPublish.js?v=20260720-v97-1");
+      const { openCustomPublish } = await import("./customPublish.js?v=20260720-v103-1");
       openCustomPublish(
         { ...output, kind: key === "canvas" ? "canvas" : "video" },
         {

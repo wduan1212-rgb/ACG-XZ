@@ -593,8 +593,11 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         self.assertIn("coverPromptFromCopy({", ensure_cover)
         self.assertIn("ratio,", ensure_cover)
         self.assertIn("provider.submit({", ensure_cover)
+        self.assertIn("strictRatio: true", ensure_cover)
         self.assertIn("provider.poll(submitted.providerRef)", ensure_cover)
         self.assertIn("画幅要求：竖版 3:4", publishing)
+        providers = (APP_DIR / "js/api/providers.js").read_text(encoding="utf-8")
+        self.assertIn("strictRatio: strictRatio === true", providers)
 
     def test_video_publish_llm_does_not_silently_replace_invalid_copy(self):
         code = r"""

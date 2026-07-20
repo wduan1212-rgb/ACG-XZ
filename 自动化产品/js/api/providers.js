@@ -594,7 +594,7 @@ registerProvider({
   kind: "image",
   label: "OpenAI-compatible Image",
   capabilities: { ratios: ["3:4", "9:16", "1:1"], refImages: true },
-  async submit({ prompt, refs = [], intendedRefAssetIds = [], ratio = "3:4", apiKey, endpoint, model }) {
+  async submit({ prompt, refs = [], intendedRefAssetIds = [], ratio = "3:4", strictRatio = false, apiKey, endpoint, model }) {
     const ref = "img_" + Math.random().toString(36).slice(2, 10);
     const intendedIds = cleanRefIds(intendedRefAssetIds);
     const preparedRefs = (refs || []).slice(0, 8).filter(Boolean);
@@ -617,6 +617,9 @@ registerProvider({
         dataUrl: r.dataUrl || ""
       })),
       ratio,
+      // 发布封面等需要确定成图画幅的调用，不能再被提示词里的“竖屏 / 9:16”等
+      // 叙述覆盖。普通图片创作仍保持服务端的提示词画幅推断。
+      strictRatio: strictRatio === true,
       endpoint: useServer ? "" : endpoint,
       apiKey: useServer ? "" : apiKey
     };

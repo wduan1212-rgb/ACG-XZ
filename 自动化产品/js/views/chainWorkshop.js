@@ -924,6 +924,9 @@ export async function ensureVideoCover(p) {
       refs,
       intendedRefAssetIds: cover.refAssetIds || [],
       ratio,
+      // 视频成片可继续是 9:16；这里只锁定最终发布封面的原生画幅。
+      // 必须传到图片代理，不能仅依赖提示词中的“3:4”。
+      strictRatio: true,
       apiKey: key?.secret,
       endpoint: key?.provider,
       model: key?.model || "custom-imagemodel-gt"

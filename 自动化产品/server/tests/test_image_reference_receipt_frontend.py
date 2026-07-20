@@ -195,6 +195,49 @@ class ImageReferenceReceiptFrontendTest(unittest.TestCase):
         self.assertEqual(result["submitReceipt"]["status"], "used")
         self.assertEqual(result["pollReceipt"], result["submitReceipt"])
 
+    def test_cover_can_lock_native_ratio_without_changing_normal_image_calls(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            const bodies = [];
+            globalThis.fetch = async (_url, options = {}) => {
+              bodies.push(JSON.parse(options.body));
+              return {
+                ok: true,
+                status: 200,
+                async text() {
+                  return JSON.stringify({
+                    ok: true,
+                    dataUrl: "data:image/png;base64,AA==",
+                    mode: "gpt-maas",
+                    ratio: "3:4"
+                  });
+                }
+              };
+            };
+            const { getProvider } = await import("./自动化产品/js/api/providers.js");
+            const provider = getProvider("openai-image");
+            await provider.submit({
+              prompt: "视频封面，内容上下文仍包含 9:16 竖屏视频",
+              ratio: "3:4",
+              strictRatio: true,
+              apiKey: "key",
+              endpoint: "https://example.invalid/v1/images/generations"
+            });
+            await provider.submit({
+              prompt: "普通图片创作",
+              ratio: "3:4",
+              apiKey: "key",
+              endpoint: "https://example.invalid/v1/images/generations"
+            });
+            console.log(JSON.stringify(bodies));
+            """
+        )
+        self.assertEqual(result[0]["ratio"], "3:4")
+        self.assertTrue(result[0]["strictRatio"])
+        self.assertEqual(result[1]["ratio"], "3:4")
+        self.assertFalse(result[1]["strictRatio"])
+
     def test_digital_cover_no_longer_retries_without_references(self):
         source = (APP_DIR / "js/views/chainWorkshop.js").read_text(encoding="utf-8")
         self.assertNotIn("runCover([], false)", source)
