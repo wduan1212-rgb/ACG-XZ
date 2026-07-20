@@ -244,10 +244,18 @@ export const overviewView = {
         todayPlatformMap.set(key, current);
       });
     const todayPlatformRows = [...todayPlatformMap.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
-    const todayPlatformPreview = todayPlatformRows.slice(0, 6).map(item => `${item.name} · ${item.platform} ${item.count} 条`);
-    const todayPlatformTooltip = todayPlatformPreview.length
-      ? `今日平台交付 · ${todayPlatformPreview.join("；")}${todayPlatformRows.length > 6 ? "；… 点击查看全部" : ""}`
-      : "今日暂无小红书或视频号交付";
+    const todayPlatformSummary = platform => {
+      const rows = todayPlatformRows.filter(item => item.platform === platform);
+      const preview = rows.slice(0, 6).map(item => `${item.name} ${item.count} 条`);
+      return {
+        rows,
+        tooltip: preview.length
+          ? `今日${platform}交付 · ${preview.join("；")}${rows.length > 6 ? "；… 点击查看全部" : ""}`
+          : `今日暂无${platform}交付`
+      };
+    };
+    const todayXhs = todayPlatformSummary("小红书");
+    const todayVideo = todayPlatformSummary("视频号");
     const recentDays = Array.from({ length: 7 }, (_, index) => {
       const ts = Date.now() - (6 - index) * 864e5;
       const key = dayKey(ts);
@@ -298,7 +306,7 @@ export const overviewView = {
     };
     const accountPageHtml = page => (accountPages[page] || []).map((item, index) => `<button data-overview-account="${esc(item.name)}" data-overview-account-id="${esc(item.accountId || "")}">${accountAvatarHtml(item)}<span><b><i>${page * 4 + index + 1}</i>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`;
 
-    const openDataDetail = (key, accountName = "", initialRecentFilter = null, accountId = "") => {
+    const openDataDetail = (key, accountName = "", initialRecentFilter = null, accountId = "", platform = "") => {
       if (["todo", "waiting", "rendering", "review", "failed", "supplier"].includes(key)) { openTaskGroup(key); return; }
       const metricText = row => {
         const m = row?.latest?.metrics || {};
@@ -310,11 +318,12 @@ export const overviewView = {
       let recentFilter = null;
       let recentDetailHtml = null;
       if (key === "todayPlatforms") {
-        title = `今日平台交付 · ${todayPlatformRows.length} 个账号`;
-        rows = todayPlatformRows.map(item => makeRow(
+        const platformRows = platform ? todayPlatformRows.filter(item => item.platform === platform) : todayPlatformRows;
+        title = platform ? `今日${platform}交付 · ${platformRows.length} 个账号` : `今日平台交付 · ${platformRows.length} 个账号`;
+        rows = platformRows.map(item => makeRow(
           item.name,
           `${item.platform} · 今日交付 ${item.count} 条`
-        )).join("") || `<div class="overview-task-empty">今日暂无小红书或视频号交付</div>`;
+        )).join("") || `<div class="overview-task-empty">今日暂无${platform || "小红书或视频号"}交付</div>`;
       } else if (key === "recent") {
         const dayOptions = recentDays.slice().reverse();
         const monthOptions = [...new Set(delivered
@@ -419,10 +428,10 @@ export const overviewView = {
             <button class="overview-kpi-card" data-overview-detail="recent"><span>累计交付</span><b>${fmt(delivered.length)}</b><em>${pendingDl} 条供应商待下载</em></button>
           </section>
           <section class="overview-viz-grid">
-            <button class="overview-viz-card overview-donut-card" data-overview-detail="todayPlatforms" data-chart-tip="${esc(todayPlatformTooltip)}" aria-label="查看今日小红书与视频号交付明细">
+            <article class="overview-viz-card overview-donut-card" aria-label="平台分布，悬停或聚焦扇区查看今日账号交付，点击查看对应平台明细">
               <header><b>平台分布</b><em>${delivered.length} 条交付</em></header>
-              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><i><b>${delivered.length}</b><em>总交付</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
-            </button>
+              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="overview-donut-track" cx="70" cy="70" r="51" pathLength="100"/><circle class="overview-donut-segment is-xhs" cx="70" cy="70" r="51" pathLength="100" style="--segment:${xhsShare};--offset:0" data-overview-detail="todayPlatforms" data-overview-platform="小红书" data-chart-tip="${esc(todayXhs.tooltip)}" tabindex="0" role="button" aria-label="小红书 ${xhsCount} 条交付，查看今日小红书交付明细"/><circle class="overview-donut-segment is-video" cx="70" cy="70" r="51" pathLength="100" style="--segment:${100 - xhsShare};--offset:${-xhsShare}" data-overview-detail="todayPlatforms" data-overview-platform="视频号" data-chart-tip="${esc(todayVideo.tooltip)}" tabindex="0" role="button" aria-label="视频号 ${videoCount} 条交付，查看今日视频号交付明细"/></svg><i><b>${delivered.length}</b><em>总交付</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
+            </article>
             <article class="overview-viz-card overview-trend-card">
               <header><span class="overview-trend-title"><b>近 7 日交付</b><em>总交付 · 图文 / 视频</em></span><span class="overview-trend-actions"><button class="overview-trend-nav" type="button" data-trend-scroll-by="-260" aria-label="向左查看日期">‹</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="260" aria-label="向右查看日期">›</button><button class="overview-trend-detail" type="button" data-overview-detail="recent">查看明细</button></span></header>
               <div class="overview-trend-scroll" data-trend-scroll tabindex="0" aria-label="近七日交付趋势，可横向查看日期">
@@ -452,7 +461,19 @@ export const overviewView = {
       <div class="overview-chart-tooltip" id="overviewChartTooltip" role="status" aria-live="polite"></div>
     </div>`;
 
-    root.querySelectorAll("[data-overview-detail]").forEach(button => button.addEventListener("click", () => openDataDetail(button.dataset.overviewDetail)));
+    root.querySelectorAll("[data-overview-detail]").forEach(button => {
+      const openDetail = event => {
+        event?.preventDefault();
+        event?.stopPropagation();
+        openDataDetail(button.dataset.overviewDetail, "", null, "", button.dataset.overviewPlatform || "");
+      };
+      button.addEventListener("click", openDetail);
+      if (button.getAttribute("role") === "button") {
+        button.addEventListener("keydown", event => {
+          if (event.key === "Enter" || event.key === " ") openDetail(event);
+        });
+      }
+    });
     const wireAccountButtons = host => host.querySelectorAll("[data-overview-account]").forEach(button => button.addEventListener("click", () => openDataDetail("interactions", button.dataset.overviewAccount, null, button.dataset.overviewAccountId || "")));
     wireAccountButtons(root);
     root.querySelectorAll("[data-trend-date]").forEach(target => {

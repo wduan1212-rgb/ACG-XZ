@@ -21,13 +21,13 @@ import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge 
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260718-v94-1";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260720-v101-1";
+import { overviewView } from "./views/overview.js?v=20260720-v102-1";
 import { voiceLabView } from "./views/voiceLab.js?v=20260718-v94-1";
 import { customCreationView } from "./views/customCreation.js?v=20260720-v97-1";
 import { agentView } from "./agent/view.js?v=20260718-v94-1";
 import { studioView } from "./views/studio.js?v=20260718-v94-1";
 import { assetsView } from "./views/assetsView.js?v=20260718-v94-1";
-import { deliveryView } from "./views/deliveryView.js?v=20260720-v101-1";
+import { deliveryView } from "./views/deliveryView.js?v=20260720-v102-1";
 import { analyticsView } from "./views/analyticsView.js?v=20260718-v94-1";
 import { draftsView } from "./views/draftsView.js";
 import { settingsView } from "./views/settings.js?v=20260718-v94-1";
@@ -35,7 +35,7 @@ import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260718-v94-1";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260720-v101-1";
+const APP_BUILD_ID = "20260720-v102-1";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
