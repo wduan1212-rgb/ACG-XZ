@@ -357,8 +357,29 @@ console.log(JSON.stringify({{
         self.assertIn('textarea.addEventListener("paste", async (event) => {', source)
         self.assertIn('dom.fileInput.addEventListener("change", async () => {', source)
         self.assertGreaterEqual(source.count("showAttachmentError(error)"), 4)
-        self.assertIn("app.js?v=20260719-17", index)
-        self.assertIn("styles.css?v=20260719-17", index)
+        self.assertIn("app.js?v=20260720-18", index)
+        self.assertIn("styles.css?v=20260720-18", index)
+
+    def test_progress_poll_does_not_reload_unchanged_delivery_media(self):
+        source = APP_JS.read_text(encoding="utf-8")
+        render_delivery = source.split("function renderDelivery(project)", 1)[1].split(
+            "const productionHeartbeatStages", 1
+        )[0]
+        media_signature = render_delivery.split(
+            "const mediaSignature =", 1
+        )[1].split("const mediaChanged", 1)[0]
+
+        self.assertNotIn("project.updatedAt", media_signature)
+        for output_field in (
+            'item.id || ""',
+            "item.url",
+            "item.aspectRatio",
+            "item.probe?.duration",
+            'item.updatedAt || ""',
+        ):
+            self.assertIn(output_field, render_delivery)
+        self.assertIn("const mediaChanged = mediaSignature !== state.outputMediaSignature", render_delivery)
+        self.assertIn("{ forceReload: mediaChanged }", render_delivery)
 
 
 if __name__ == "__main__":

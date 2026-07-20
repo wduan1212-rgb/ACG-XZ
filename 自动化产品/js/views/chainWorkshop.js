@@ -8,16 +8,16 @@ import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid 
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260720-v103-4";
+import { AI } from "../api/ai.js?v=20260720-v104-1";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial, enforceSupportedVideoMode } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260720-v103-4";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260720-v104-1";
 import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260720-v103-4";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260720-v104-1";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, setFavoriteVoice, voicePickerGroups } from "../domain/voices.js";
 import {
@@ -29,6 +29,7 @@ import {
 } from "../domain/digitalHuman.js";
 
 let liveRoot = null, liveProd = null, liveDraw = null, wired = false;
+const liveJobUiSignatures = new Map();
 const COVER_LOADING_TIMEOUT_MS = 8 * 60 * 1000;
 const COVER_GENERATE_TIMEOUT_MS = 140000;
 const COVER_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -93,6 +94,56 @@ function outputUrl(output) {
     }
   }
   return "";
+}
+
+function liveJobUiSignature(job) {
+  return JSON.stringify([
+    job?.status || "",
+    outputUrl(job?.output),
+    job?.error || "",
+    job?.referenceReceipt || null,
+  ]);
+}
+
+function updateLiveJobProgress(job) {
+  if (!liveRoot || !["queued", "submitted", "running"].includes(job?.status || "")) return false;
+  const progress = Math.max(1, Math.min(99, Math.round(Number(job.progress || 1))));
+
+  if (job.model === "__digital_human__") {
+    const cards = $$('[data-dh-seg]', liveRoot);
+    const card = cards.find(el => el.dataset.dhSeg === String(job.segmentId || ""))
+      || cards[Number(job.segIndex || 0)];
+    const placeholder = card?.querySelector(".dh-video-placeholder");
+    const bar = placeholder?.querySelector("i > b");
+    if (!card || !placeholder || !bar) return false;
+    card.classList.add("is-generating");
+    const status = card.querySelector(".dh-status");
+    if (status) {
+      status.className = "dh-status running";
+      status.textContent = "生成中";
+    }
+    const detail = placeholder.querySelector("em");
+    if (detail) detail.textContent = `${job.status === "queued" ? "已进入队列" : job.status === "submitted" ? "已提交上游" : "正在轮询成片"} · ${progress}%`;
+    bar.style.width = `${progress}%`;
+    return true;
+  }
+
+  const card = liveRoot.querySelector(`[data-ws="${Number(job.segIndex || 0)}"]`);
+  const infoFlowState = card?.querySelector(".if-card-actions > span");
+  const infoFlowPlaceholder = card?.querySelector(".if-video-placeholder > em");
+  if (card?.classList.contains("if-segment-row") && infoFlowState && infoFlowPlaceholder) {
+    const label = job.status === "queued" ? "排队中" : `生成 ${progress}%`;
+    infoFlowState.textContent = label;
+    infoFlowPlaceholder.textContent = label;
+    return true;
+  }
+  const running = card?.querySelector(".wsj.run");
+  const bar = running?.querySelector(".wsj-bar > b");
+  if (!card || !running || !bar) return false;
+  const textNode = [...running.childNodes].find(node => node.nodeType === 3);
+  if (textNode) textNode.nodeValue = job.status === "queued" ? " 排队中" : ` 渲染 ${progress}%`;
+  bar.style.width = `${progress}%`;
+  return true;
 }
 
 async function videoServerConfig() {
@@ -1331,7 +1382,7 @@ export function renderWorkshopPage(root, p) {
           const regenLabel = video.failed ? "重试本段" : video.done ? "重生本段" : "生成本段";
           const stateText = video.busy ? (video.status === "queued" ? "排队中" : `生成 ${Math.max(1, Math.round(video.job?.progress || 1))}%`) : video.done ? "已生成" : video.failed ? "生成失败" : "等待生成";
           const err = video.failed && video.job?.error ? String(video.job.error || "").slice(0, 100) : "";
-          return `<div class="if-segment-row ${i === 1 ? "back" : "front"}">
+          return `<div class="if-segment-row ${i === 1 ? "back" : "front"}" data-ws="${i}">
             <div class="if-segment-copy">
               <div class="if-card-top">
                 <span>${esc(seg.label || (i === 0 ? "前15s" : "后15s"))}</span>
@@ -2713,6 +2764,13 @@ export function renderWorkshopPage(root, p) {
       if (document.body.dataset.zone !== "studio") return;
       if (currentRoute().page !== "workshop") return;
       if (liveProd.id !== state.ui.activeProductionId) return;
+      const uiSignature = liveJobUiSignature(j);
+      const previousUiSignature = liveJobUiSignatures.get(j.id);
+      liveJobUiSignatures.set(j.id, uiSignature);
+      // The first active event builds the loading UI. Later poll updates only
+      // patch progress in place so existing audio/video/cover nodes keep their
+      // playback and loading state. Terminal or structural changes still draw.
+      if (previousUiSignature && ["queued", "submitted", "running"].includes(j.status) && updateLiveJobProgress(j)) return;
       (liveDraw || draw)();
     });
   }

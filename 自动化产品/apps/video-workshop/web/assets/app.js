@@ -889,16 +889,18 @@ function renderDelivery(project) {
     state.deliveryProjectId = project.id;
     state.deliveryCollapsed = false;
   }
-  const mediaSignature = JSON.stringify({
-    updatedAt: project.updatedAt || "",
-    outputs: outputs.map((item) => [
+  // Project progress updates change project.updatedAt on every poll. Reload the
+  // player only when an output itself changes, otherwise an active task makes
+  // an already rendered video repeatedly blank and restart.
+  const mediaSignature = JSON.stringify(
+    outputs.map((item) => [
       item.id || "",
       item.url,
       item.aspectRatio,
       item.probe?.duration,
       item.updatedAt || "",
     ]),
-  });
+  );
   const mediaChanged = mediaSignature !== state.outputMediaSignature;
   const signature = JSON.stringify({
     status: project.status,

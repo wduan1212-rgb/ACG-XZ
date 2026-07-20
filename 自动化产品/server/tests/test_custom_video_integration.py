@@ -228,8 +228,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260719-17", html)
-        self.assertIn("app.js?v=20260719-17", html)
+        self.assertIn("styles.css?v=20260720-18", html)
+        self.assertIn("app.js?v=20260720-18", html)
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",
@@ -599,6 +599,26 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         providers = (APP_DIR / "js/api/providers.js").read_text(encoding="utf-8")
         self.assertIn("strictRatio: strictRatio === true", providers)
 
+    def test_workshop_poll_progress_preserves_existing_media_nodes(self):
+        workshop = (APP_DIR / "js/views/chainWorkshop.js").read_text(
+            encoding="utf-8"
+        )
+        handler = workshop.split('on("job:update", j => {', 1)[1].split(
+            "\n    });", 1
+        )[0]
+
+        self.assertIn("const liveJobUiSignatures = new Map()", workshop)
+        self.assertIn("function updateLiveJobProgress(job)", workshop)
+        self.assertIn('job.model === "__digital_human__"', workshop)
+        self.assertIn('data-ws="${i}"', workshop)
+        self.assertIn("updateLiveJobProgress(j)) return", handler)
+        self.assertLess(
+            handler.index("updateLiveJobProgress(j)) return"),
+            handler.index("(liveDraw || draw)()"),
+        )
+        self.assertIn('["queued", "submitted", "running"]', handler)
+        self.assertIn("bar.style.width", workshop)
+
     def test_video_publish_llm_does_not_silently_replace_invalid_copy(self):
         code = r"""
 globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
@@ -635,11 +655,11 @@ globalThis.fetch = async () => ({
   }),
   text: async () => ''
 });
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260720-v103-4');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260720-v104-1');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260720-v103-4');
+const { AI } = await import('./js/api/ai.js?v=20260720-v104-1');
 const request = {
   topic: '国产codex百度搭子自动管理你的知识库！',
   shots: [],
