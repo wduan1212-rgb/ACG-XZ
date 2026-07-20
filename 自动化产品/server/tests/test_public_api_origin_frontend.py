@@ -61,6 +61,35 @@ class PublicApiOriginFrontendTest(unittest.TestCase):
         self.assertEqual(result["calls"], ["/api/health"])
         self.assertFalse(result["enabled"])
 
+    def test_late_loaded_llm_module_self_heals_from_same_origin_proxy(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.window = { location: {
+              origin: "https://team.example", protocol: "https:", hostname: "team.example", port: ""
+            }};
+            const calls = [];
+            globalThis.fetch = async (url) => {
+              calls.push(String(url));
+              if (url === "/api/health") {
+                return { ok: true, async json() { return { llm_configured: true, llm_model: "server-model" }; } };
+              }
+              return {
+                ok: true,
+                async json() { return { choices: [{ message: { content: "同源代理已接通" } }] }; },
+                async text() { return ""; }
+              };
+            };
+            const { llm, LLM_CONFIG } = await import("./自动化产品/js/api/llm.js?v=late-module-test");
+            const content = await llm([{ role: "user", content: "test" }]);
+            console.log(JSON.stringify({ calls, content, endpoint: LLM_CONFIG.endpoint, serverManaged: LLM_CONFIG.serverManaged }));
+            """
+        )
+        self.assertEqual(result["calls"], ["/api/health", "/api/chat/completions"])
+        self.assertEqual(result["content"], "同源代理已接通")
+        self.assertEqual(result["endpoint"], "/api/chat/completions")
+        self.assertTrue(result["serverManaged"])
+
 
 if __name__ == "__main__":
     unittest.main()

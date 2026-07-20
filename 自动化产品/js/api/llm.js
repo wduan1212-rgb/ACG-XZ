@@ -13,6 +13,8 @@ export const LLM_CONFIG = {
 window.XingzhenConfig = LLM_CONFIG; // 控制台可调试覆盖
 window.DumateConfig = LLM_CONFIG; // 兼容旧调试入口
 
+let serverProxyProbe = null;
+
 /* 部署模式：服务器配置了 LLM_API_KEY 时，前端默认走同源代理。
    Authorization 只传平台登录 token；上游真实 Key 始终只在服务器环境变量中。 */
 export async function enableServerProxyIfConfigured() {
@@ -42,6 +44,19 @@ export async function enableServerProxyIfConfigured() {
     }
   }
   return false;
+}
+
+async function ensureServerProxyForRequest() {
+  if (LLM_CONFIG.apiKey || LLM_CONFIG.serverManaged) return !!LLM_CONFIG.apiKey;
+  // 子应用可能晚于主应用加载，且旧的版本化模块会拥有独立的 ESM 状态。
+  // 在真正报“未配置”前自行探测一次同源服务，避免初始化顺序造成假失败。
+  if (!serverProxyProbe) {
+    serverProxyProbe = enableServerProxyIfConfigured().finally(() => {
+      serverProxyProbe = null;
+    });
+  }
+  await serverProxyProbe;
+  return !!LLM_CONFIG.apiKey;
 }
 
 /* 设置页保存的语言类 Key 覆盖默认配置 */
@@ -91,6 +106,7 @@ function retryDelayMs(response = null) {
 }
 
 export async function llm(messages, { json = false, temperature = 0.7, signal, timeoutMs = 45000, thinking = "", maxTokens = 0 } = {}) {
+  await ensureServerProxyForRequest();
   if (!LLM_CONFIG.apiKey) throw new Error("未配置语言模型 Key");
   const ep = LLM_CONFIG.endpoint || "";
   // In deployed mode the server owns model, thinking, and output limits.
