@@ -1,5 +1,14 @@
 # Server Deployment Log
 
+## v104 - 2026-07-20
+
+- Source: `08051bf`, including functional commit `b56b018`. Production main cache is `20260720-v104-1`; video-workshop cache is `20260720-18`.
+- Scope: deployed an exact 28-file code/static archive from a clean detached target worktree. No file was added or deleted, and no delete-style synchronization was used. Production SQLite, accounts, members, assets, deliveries, uploads, composed media, canvas blobs, infinite-canvas drafts, video-workshop runtime, model cache, authentication state and private environment files were excluded.
+- Backup and rollback: retained rollback point `v104-20260720-192346` with a pre-deployment code archive, consistent SQLite backup, business-count baseline and protected-runtime fingerprints. Rollback restores code/static files only and must not replace newer production business data.
+- Validation: main and video-workshop services are active, both health endpoints pass, recent error-level service logs are empty, all 28 target hashes match and both production cache markers match v104. SQLite integrity is `ok`; no existing business table decreased; protected runtime metrics and private-environment fingerprints are unchanged.
+- Browser smoke: an existing authenticated production session loaded the main application, drafts, video workshop and infinite canvas with zero console errors or warnings. The existing workshop delivery kept the same video node and source with ready state 4 during observation. Infinite-canvas project hash routes were intact, all 5 visible canvas images loaded, and all 15 visible draft images loaded. No generation, publishing, deletion, conflict resolution or other business write was triggered.
+- Compatibility: the v103.4 same-origin language-model proxy self-heal remains present, the video-workshop cover stays constrained to 3:4, and infinite-canvas historical routes and thumbnails remain available. Provider secrets and production configuration were not changed.
+
 ## v103.4 - 2026-07-20
 
 - Source: `32c6d1c` (`fix: self-heal shared language model proxy`). Production main cache is `20260720-v103-4`.
