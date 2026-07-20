@@ -1,5 +1,6 @@
 import base64
 import importlib
+import io
 import sys
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -41,6 +42,49 @@ class ImageMaasRoutingTest(unittest.TestCase):
         result = main._image_from_response({"data": [{"b64_json": encoded}]}, "image/jpeg")
         self.assertTrue(result.startswith("data:image/jpeg;base64,"))
         self.assertEqual(base64.b64decode(result.split(",", 1)[1]), raw)
+
+    def test_large_reference_images_are_compacted_under_shared_provider_budget(self):
+        if main.Image is None:
+            self.skipTest("Pillow is required for reference-image compaction")
+        image = main.Image.effect_noise((2600, 1900), 100).convert("RGB")
+        source = io.BytesIO()
+        image.save(source, format="PNG", optimize=True)
+        original = source.getvalue()
+        self.assertGreater(main._image_ref_data_url_size(original, "image/png"), main.IMAGE_REFERENCE_MAX_DATA_URL_BYTES)
+
+        refs, changed = main._compact_image_ref_files([
+            ("reference-a.png", original, "image/png"),
+            ("reference-b.png", original, "image/png"),
+            ("reference-c.png", original, "image/png"),
+        ])
+
+        self.assertEqual(len(refs), 3)
+        self.assertEqual(changed, 3)
+        self.assertLessEqual(
+            sum(main._image_ref_data_url_size(blob, mime) for _, blob, mime in refs),
+            main.IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES,
+        )
+        for _, blob, mime in refs:
+            self.assertEqual(mime, "image/jpeg")
+            self.assertLessEqual(main._image_ref_data_url_size(blob, mime), main.IMAGE_REFERENCE_MAX_DATA_URL_BYTES)
+
+    def test_reference_compaction_has_an_ffmpeg_fallback_without_pillow(self):
+        if main.Image is None:
+            self.skipTest("The fallback path is already active without Pillow")
+        if not main.shutil.which("ffmpeg"):
+            self.skipTest("ffmpeg is required for fallback coverage")
+        image = main.Image.effect_noise((1800, 1400), 100).convert("RGB")
+        source = io.BytesIO()
+        image.save(source, format="PNG", optimize=True)
+        with patch.object(main, "Image", None):
+            blob, mime, changed = main._compact_image_reference(
+                source.getvalue(),
+                "image/png",
+                700_000,
+            )
+        self.assertTrue(changed)
+        self.assertEqual(mime, "image/jpeg")
+        self.assertLessEqual(main._image_ref_data_url_size(blob, mime), 700_000)
 
 
 class _FakeResponse:

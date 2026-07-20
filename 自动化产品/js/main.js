@@ -12,7 +12,7 @@ import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appear
 import { productTagLabel } from "./domain/delivery.js";
 import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
-import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260720-v103-2";
+import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260720-v103-3";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
 import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260718-v94-1";
@@ -35,7 +35,7 @@ import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260718-v94-1";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260720-v103-2";
+const APP_BUILD_ID = "20260720-v103-3";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {

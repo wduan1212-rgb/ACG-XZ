@@ -3,7 +3,7 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260720-v103-2";
+import { AI } from "../api/ai.js?v=20260720-v103-3";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";

@@ -8,7 +8,7 @@ import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid 
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260720-v103-2";
+import { AI } from "../api/ai.js?v=20260720-v103-3";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial, enforceSupportedVideoMode } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";

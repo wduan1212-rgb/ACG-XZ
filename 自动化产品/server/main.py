@@ -122,6 +122,10 @@ def _positive_env_int(name: str, default: int) -> int:
 # 上游达到并发上限时请求先在本服务排队，避免直接把 429/任务上限暴露给创作者。
 IMAGE_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3))
 VIDEO_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("VIDEO_SUBMIT_CONCURRENCY", 10))
+# Keep data-URL reference images comfortably below the upstream 10 MB request cap.
+# These are encoded-data budgets because JSON payloads carry base64 strings, not raw files.
+IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES = _positive_env_int("IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES", 7_200_000)
+IMAGE_REFERENCE_MAX_DATA_URL_BYTES = _positive_env_int("IMAGE_REFERENCE_MAX_DATA_URL_BYTES", 2_400_000)
 
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
 LLM_ENDPOINT = os.getenv("LLM_ENDPOINT", (LLM_BASE_URL + "/v1/chat/completions") if LLM_BASE_URL else "https://api.minimaxi.com/v1/chat/completions")
@@ -941,14 +945,14 @@ def _normalize_generated_image_blob(blob: bytes, mime: str, ratio: str) -> Tuple
     if not blob or Image is None:
         return blob, mime or "image/png"
     try:
-        im = Image.open(BytesIO(blob))
+        im = Image.open(io.BytesIO(blob))
         im = ImageOps.exif_transpose(im) if ImageOps else im
         im = im.convert("RGB")
         if ImageEnhance:
             im = ImageEnhance.Color(im).enhance(1.03)
             im = ImageEnhance.Contrast(im).enhance(1.02)
             im = ImageEnhance.Sharpness(im).enhance(1.02)
-        out = BytesIO()
+        out = io.BytesIO()
         im.save(out, format="PNG", optimize=True)
         return out.getvalue(), "image/png"
     except Exception:
@@ -1144,6 +1148,98 @@ def _image_ref_to_data_url(blob: bytes, mime: str = "image/png") -> str:
     return "data:%s;base64,%s" % (mime or "image/png", base64.b64encode(blob).decode("ascii"))
 
 
+def _image_ref_data_url_size(blob: bytes, mime: str = "image/png") -> int:
+    """Return the serialized byte cost of a data-URL image reference."""
+    prefix = "data:%s;base64," % (mime or "image/png")
+    return len(prefix.encode("ascii")) + 4 * ((len(blob) + 2) // 3)
+
+
+def _compact_image_reference(blob: bytes, mime: str, max_data_url_bytes: int) -> Tuple[bytes, str, bool]:
+    """Shrink a raster reference without dropping it from the model request."""
+    if _image_ref_data_url_size(blob, mime) <= max_data_url_bytes:
+        return blob, mime, False
+    if Image is None:
+        return _compact_image_reference_with_ffmpeg(blob, max_data_url_bytes)
+    try:
+        source = Image.open(io.BytesIO(blob))
+        source = ImageOps.exif_transpose(source) if ImageOps else source
+        if source.mode in {"RGBA", "LA"}:
+            background = Image.new("RGB", source.size, "white")
+            alpha = source.getchannel("A") if "A" in source.getbands() else None
+            background.paste(source.convert("RGB"), mask=alpha)
+            source = background
+        else:
+            source = source.convert("RGB")
+    except Exception as exc:
+        raise HTTPException(400, "参考图无法读取或压缩：%s" % exc.__class__.__name__)
+
+    longest = max(source.size or (1, 1))
+    max_edge = min(longest, 2048)
+    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+    while max_edge >= 320:
+        scale = min(1.0, max_edge / float(longest))
+        if scale < 1.0:
+            size = (max(1, round(source.width * scale)), max(1, round(source.height * scale)))
+            image = source.resize(size, resampling)
+        else:
+            image = source
+        for quality in (86, 80, 74, 68, 60, 52):
+            out = io.BytesIO()
+            image.save(out, format="JPEG", quality=quality, optimize=True, progressive=True)
+            compacted = out.getvalue()
+            if _image_ref_data_url_size(compacted, "image/jpeg") <= max_data_url_bytes:
+                return compacted, "image/jpeg", True
+        max_edge = int(max_edge * 0.72)
+    raise HTTPException(413, "参考图压缩后仍超过图片模型的请求上限；请减少参考图数量后重试")
+
+
+def _compact_image_reference_with_ffmpeg(blob: bytes, max_data_url_bytes: int) -> Tuple[bytes, str, bool]:
+    """Production fallback for hosts that intentionally omit Pillow from their venv."""
+    if not shutil.which("ffmpeg"):
+        raise HTTPException(413, "参考图过大，服务器缺少图片压缩能力；请减少参考图数量后重试")
+    for max_edge in (2048, 1600, 1280, 960, 720, 512, 384, 320):
+        for quality in (4, 7, 10, 14, 18, 23, 28, 31):
+            try:
+                result = subprocess.run(
+                    [
+                        "ffmpeg", "-v", "error", "-nostdin", "-i", "pipe:0", "-frames:v", "1",
+                        "-vf", "scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease" % (max_edge, max_edge),
+                        "-q:v", str(quality), "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+                    ],
+                    input=blob,
+                    capture_output=True,
+                    timeout=20,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            compacted = result.stdout or b""
+            if _looks_like_image_blob(compacted) and _image_ref_data_url_size(compacted, "image/jpeg") <= max_data_url_bytes:
+                return compacted, "image/jpeg", True
+    raise HTTPException(413, "参考图压缩后仍超过图片模型的请求上限；请减少参考图数量后重试")
+
+
+def _compact_image_ref_files(ref_files: List[Tuple[str, bytes, str]]) -> Tuple[List[Tuple[str, bytes, str]], int]:
+    """Apply a shared payload budget across all references before calling providers."""
+    active = list(ref_files[:8])
+    if not active:
+        return active, 0
+    per_ref_budget = min(
+        IMAGE_REFERENCE_MAX_DATA_URL_BYTES,
+        max(96_000, IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES // len(active)),
+    )
+    compacted = []
+    changed = 0
+    for name, blob, mime in active:
+        next_blob, next_mime, did_compact = _compact_image_reference(blob, mime, per_ref_budget)
+        compacted.append((name, next_blob, next_mime))
+        changed += int(did_compact)
+    total_size = sum(_image_ref_data_url_size(blob, mime) for _, blob, mime in compacted)
+    if total_size > IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES:
+        raise HTTPException(413, "参考图总大小超过图片模型请求上限；请减少参考图数量后重试")
+    return compacted, changed
+
+
 @app.get("/api/llm/config")
 def llm_config(_me=Depends(require_creator)):
     reachable, detail = _resolve_base(LLM_ENDPOINT)
@@ -1327,6 +1423,7 @@ async def image_generate(req: ImageGenerateReq, _me=Depends(require_creator)):
     try:
         async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
             ref_files = await _collect_image_ref_files(client, req.refs or [])
+            ref_files, compacted_refs = _compact_image_ref_files(ref_files)
             skipped_refs = max(0, len(req.refs or []) - len(ref_files))
             if maas_mode:
                 used_refs = min(len(ref_files), 8)
@@ -1412,6 +1509,7 @@ async def image_generate(req: ImageGenerateReq, _me=Depends(require_creator)):
         "model": model,
         "usedRefs": used_refs,
         "skippedRefs": skipped_refs,
+        "compressedRefs": compacted_refs,
         "ratio": ratio,
         "mode": "responses" if responses_mode else ("chat" if chat_mode else ("gpt-maas" if maas_mode else "images"))
     }

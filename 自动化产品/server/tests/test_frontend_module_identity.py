@@ -45,7 +45,7 @@ class FrontendModuleIdentityTest(unittest.TestCase):
             imports = self._module_imports(module_name)
             self.assertGreaterEqual(len(imports), 2)
             queries = {specifier.partition("?")[2] for _, specifier in imports}
-            self.assertEqual({"v=20260720-v103-2"}, queries, imports)
+            self.assertEqual({"v=20260720-v103-3"}, queries, imports)
 
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
