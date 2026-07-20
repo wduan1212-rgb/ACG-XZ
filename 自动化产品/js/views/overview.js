@@ -11,7 +11,7 @@ import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260718-v94-1";
 import { LLM_CONFIG } from "../api/llm.js?v=20260718-v94-1";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260718-v94-1";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260720-v98-1";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260720-v99-1";
 import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { renderSupplierOverview } from "./supplierViews.js?v=20260718-v94-1";
@@ -235,7 +235,15 @@ export const overviewView = {
     const recentDays = Array.from({ length: 7 }, (_, index) => {
       const ts = Date.now() - (6 - index) * 864e5;
       const key = dayKey(ts);
-      return { key, label: new Date(ts).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }), value: delivered.filter(({ asset }) => dayKey(asset.deliveredAt || asset.createdAt) === key).length };
+      const dayDeliveries = delivered.filter(({ asset }) => dayKey(asset.deliveredAt || asset.createdAt) === key);
+      const video = dayDeliveries.filter(({ asset, acc }) => acc?.mode === "视频" || asset?.type === "视频").length;
+      return {
+        key,
+        label: new Date(ts).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }),
+        value: dayDeliveries.length,
+        video,
+        image: Math.max(0, dayDeliveries.length - video)
+      };
     });
     const trendMax = Math.max(1, ...recentDays.map(item => item.value));
     const trendPoints = recentDays.map((item, index) => ({
@@ -254,16 +262,27 @@ export const overviewView = {
       const control2Y = point.y - (after.y - previous.y) / 6;
       return `${path} C ${control1X.toFixed(2)} ${control1Y.toFixed(2)}, ${control2X.toFixed(2)} ${control2Y.toFixed(2)}, ${point.x} ${point.y}`;
     }, "");
+    const trendArea = trendPoints.length
+      ? `${trendCurve} L ${trendPoints[trendPoints.length - 1].x} 94 L ${trendPoints[0].x} 94 Z`
+      : "";
     const accountPerformance = analytics.accounts.length
-      ? analytics.accounts
+      ? analytics.accounts.map(item => ({
+        ...item,
+        accountId: links.find(row => row.acc?.name === item.name)?.acc?.id || accounts.find(account => account.name === item.name)?.id || ""
+      }))
       : accounts.slice()
         .sort((a, b) => (b.monthlyDone || 0) - (a.monthlyDone || 0))
-        .map(acc => ({ name: acc.name, count: acc.monthlyDone || 0, engagement: 0 }));
+        .map(acc => ({ id: acc.id, accountId: acc.id, name: acc.name, count: acc.monthlyDone || 0, engagement: 0 }));
     const accountPages = Array.from({ length: Math.max(1, Math.ceil(accountPerformance.length / 4)) }, (_, page) => accountPerformance.slice(page * 4, page * 4 + 4));
     accountCarouselPage %= accountPages.length;
-    const accountPageHtml = page => (accountPages[page] || []).map((item, index) => `<button data-overview-account="${esc(item.name)}"><i>${page * 4 + index + 1}</i><span><b>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`;
+    const accountAvatarHtml = item => {
+      const account = accounts.find(candidate => candidate.id === item.accountId) || accounts.find(candidate => candidate.name === item.name);
+      const avatarUrl = account?.avatarAssetId ? urlFor(account.avatarAssetId) : (account?.avatarUrl || "");
+      return `<span class="overview-account-avatar">${avatarUrl ? `<img src="${esc(avatarUrl)}" alt=""/>` : `<i>${esc(String(item.name || "账").trim().slice(0, 1) || "账")}</i>`}</span>`;
+    };
+    const accountPageHtml = page => (accountPages[page] || []).map((item, index) => `<button data-overview-account="${esc(item.name)}" data-overview-account-id="${esc(item.accountId || "")}">${accountAvatarHtml(item)}<span><b><i>${page * 4 + index + 1}</i>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`;
 
-    const openDataDetail = (key, accountName = "", initialRecentFilter = null) => {
+    const openDataDetail = (key, accountName = "", initialRecentFilter = null, accountId = "") => {
       if (["todo", "waiting", "rendering", "review", "failed", "supplier"].includes(key)) { openTaskGroup(key); return; }
       const metricText = row => {
         const m = row?.latest?.metrics || {};
@@ -324,8 +343,11 @@ export const overviewView = {
         const accountRows = accountName ? links.filter(row => (row.acc?.name || "未归属账号") === accountName) : links;
         const scoped = accountRows.filter(row => row.latest);
         const sum = field => scoped.reduce((total, row) => total + Number(row.latest?.metrics?.[field] || 0), 0);
+        const account = accountId ? accounts.find(item => item.id === accountId) : accounts.find(item => item.name === accountName);
+        const homepageUrl = account?.homepageUrl || "";
+        const homepageAction = accountName ? `<div class="overview-account-detail-actions">${homepageUrl ? `<a class="btn primary sm" href="${esc(homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 跳转主页</a>` : `<button class="btn ghost sm" type="button" disabled title="该账号尚未填写主页链接">${icon("link", 12)} 跳转主页</button>`}</div>` : "";
         title = accountName ? `${accountName} · 账号表现` : "互动与账号表现";
-        rows = `<div class="overview-detail-metrics">
+        rows = homepageAction + `<div class="overview-detail-metrics">
           <span><em>内容</em><b>${accountRows.length}</b></span><span><em>播放</em><b>${fmt(sum("views"))}</b></span>
           <span><em>点赞</em><b>${fmt(sum("likes"))}</b></span><span><em>收藏</em><b>${fmt(sum("collects"))}</b></span>
           <span><em>评论</em><b>${fmt(sum("comments"))}</b></span><span><em>分享</em><b>${fmt(sum("shares"))}</b></span>
@@ -380,13 +402,15 @@ export const overviewView = {
               <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><i><b>${delivered.length}</b><em>总交付</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
             </button>
             <article class="overview-viz-card overview-trend-card">
-              <header><b>近 7 日交付</b><span class="overview-trend-actions"><button class="overview-trend-nav" type="button" data-trend-scroll-by="-260" aria-label="向左查看日期">‹</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="260" aria-label="向右查看日期">›</button><button class="overview-trend-detail" type="button" data-overview-detail="recent">查看明细</button></span></header>
+              <header><span class="overview-trend-title"><b>近 7 日交付</b><em>总交付 · 图文 / 视频</em></span><span class="overview-trend-actions"><button class="overview-trend-nav" type="button" data-trend-scroll-by="-260" aria-label="向左查看日期">‹</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="260" aria-label="向右查看日期">›</button><button class="overview-trend-detail" type="button" data-overview-detail="recent">查看明细</button></span></header>
               <div class="overview-trend-scroll" data-trend-scroll tabindex="0" aria-label="近七日交付趋势，可横向查看日期">
                 <div class="overview-trend-line">
                 <svg viewBox="0 0 564 106" preserveAspectRatio="xMidYMid meet" role="img">
+                  <defs><linearGradient id="overviewTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e5485d" stop-opacity=".28"/><stop offset="1" stop-color="#e5485d" stop-opacity="0"/></linearGradient></defs>
                   <path class="grid" d="M24 18H540 M24 56H540 M24 94H540"/>
+                  <path class="trend-area" d="${trendArea}"/>
                   <path class="trend-curve" d="${trendCurve}"/>
-                  ${trendPoints.map(item => `<circle cx="${item.x}" cy="${item.y}" r="3.4" tabindex="0" role="button" aria-label="${esc(item.key)} · ${item.value} 条，查看当天明细" data-chart-tip="${esc(item.label)} · ${item.value} 条" data-trend-date="${esc(item.key)}"><title>${esc(item.key)} · ${item.value} 条</title></circle>`).join("")}
+                  ${trendPoints.map(item => `<circle cx="${item.x}" cy="${item.y}" r="3.4" tabindex="0" role="button" aria-label="${esc(item.key)} · 总交付 ${item.value} 条，图文 ${item.image} 条，视频 ${item.video} 条，查看当天明细" data-chart-tip="${esc(item.label)} · 总交付 ${item.value} · 图文 ${item.image} · 视频 ${item.video}" data-trend-date="${esc(item.key)}"><title>${esc(item.key)} · 总交付 ${item.value} · 图文 ${item.image} · 视频 ${item.video}</title></circle>`).join("")}
                 </svg>
                 <div>${trendPoints.map(item => `<button type="button" data-trend-date="${esc(item.key)}"><b>${item.value}</b><em>${esc(item.label)}</em></button>`).join("")}</div>
                 </div>
@@ -407,7 +431,7 @@ export const overviewView = {
     </div>`;
 
     root.querySelectorAll("[data-overview-detail]").forEach(button => button.addEventListener("click", () => openDataDetail(button.dataset.overviewDetail)));
-    const wireAccountButtons = host => host.querySelectorAll("[data-overview-account]").forEach(button => button.addEventListener("click", () => openDataDetail("interactions", button.dataset.overviewAccount)));
+    const wireAccountButtons = host => host.querySelectorAll("[data-overview-account]").forEach(button => button.addEventListener("click", () => openDataDetail("interactions", button.dataset.overviewAccount, null, button.dataset.overviewAccountId || "")));
     wireAccountButtons(root);
     root.querySelectorAll("[data-trend-date]").forEach(target => {
       const openTrendDate = event => {

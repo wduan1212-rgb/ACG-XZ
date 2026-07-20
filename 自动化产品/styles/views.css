@@ -3489,9 +3489,9 @@ body[data-zone="overview"] .view-root::after { display: none !important; }
 .overview-viz-card,
 .overview-action-card,
 .overview-account-strip {
-  border: 1px solid #dfe5ec;
+  border: 1px solid #dbe2f0;
   border-radius: 8px;
-  background: linear-gradient(145deg, #ffffff 0%, #fbfcfe 100%);
+  background: linear-gradient(145deg, #ffffff 0%, #f8faff 100%);
   box-shadow: none;
 }
 .overview-kpi-card,
@@ -3502,17 +3502,22 @@ body[data-zone="overview"] .view-root::after { display: none !important; }
   font: inherit;
 }
 .overview-kpi-card { position: relative; min-height: 86px; padding: 13px 15px; overflow: hidden; text-align: left; cursor: pointer; transition: border-color 180ms ease, background 180ms ease, transform 180ms ease; }
-.overview-kpi-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: #90a6bb; opacity: .74; }
-.overview-kpi-card:nth-child(2)::before { background: #a69ab8; }
-.overview-kpi-card:nth-child(3)::before { background: #8ca8a5; }
-.overview-kpi-card:nth-child(4)::before { background: #b9a18e; }
+.overview-kpi-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: #2d67dc; opacity: .94; }
+.overview-kpi-card:nth-child(2)::before { background: #e5485d; }
+.overview-kpi-card:nth-child(3)::before { background: #537ed9; }
+.overview-kpi-card:nth-child(4)::before { background: #d95669; }
+.overview-kpi-card:first-child { border-color: #315fc8; color: #fff; background: linear-gradient(135deg, #1f4eb7 0%, #3974e6 100%); box-shadow: 0 12px 24px rgba(43,94,203,.2); }
+.overview-kpi-card:first-child::before { background: rgba(255,255,255,.8); }
+.overview-kpi-card:first-child span,
+.overview-kpi-card:first-child em { color: rgba(255,255,255,.8); }
 .overview-kpi-card span { display: block; color: #5f6670; font-size: 11px; font-weight: 700; }
 .overview-kpi-card b { display: block; margin-top: 5px; font-size: clamp(21px, 2.1vw, 30px); line-height: 1; letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
 .overview-kpi-card em { display: block; margin-top: 7px; overflow: hidden; color: #8a9098; font-size: 10px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .overview-kpi-card:hover,
 .overview-viz-card:hover,
 .overview-action-card:hover,
-.overview-account-strip button:hover { border-color: #aeb4bc; background: #fff; transform: translateY(-1px); }
+.overview-account-strip button:hover { border-color: #8ba9ed; background: #fff; transform: translateY(-1px); }
+.overview-kpi-card:first-child:hover { border-color: #315fc8; background: linear-gradient(135deg, #1f4eb7 0%, #3974e6 100%); }
 .overview-viz-grid { min-height: 0; display: grid; grid-template-columns: minmax(244px, .78fr) minmax(0, 1.72fr); gap: 10px; }
 .overview-viz-card { min-width: 0; min-height: 0; padding: 13px 14px; text-align: left; transition: border-color 180ms ease, background 180ms ease, transform 180ms ease; }
 button.overview-viz-card { cursor: pointer; }
@@ -3535,18 +3540,20 @@ button.overview-viz-card { cursor: pointer; }
 .overview-gantt button:focus-visible u { background: #505862; transform: scaleX(.86); box-shadow: 0 -5px 16px rgba(31,37,44,.16); }
 .overview-donut-card { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .overview-donut-wrap { min-height: 158px; display: flex; align-items: center; justify-content: center; gap: 18px; }
-.overview-donut { position: relative; width: 140px; aspect-ratio: 1; display: grid; place-items: center; flex: none; border-radius: 50%; background: conic-gradient(#526c88 0 var(--share), #c8d2dc var(--share) 100%); }
+.overview-donut { position: relative; width: 140px; aspect-ratio: 1; display: grid; place-items: center; flex: none; border-radius: 50%; background: conic-gradient(#3269e2 0 var(--share), #e75a6c var(--share) 100%); box-shadow: 0 10px 24px rgba(50,105,226,.12); }
 .overview-donut::after { content: ""; position: absolute; inset: 23px; border-radius: 50%; background: #fafafa; }
 .overview-donut > i { position: relative; z-index: 1; display: grid; place-items: center; gap: 1px; font-style: normal; }
 .overview-donut > i b { font-size: 22px; }
 .overview-donut > i em { color: #8a9098; font-size: 9px; font-style: normal; }
 .overview-donut-wrap > div { display: grid; gap: 9px; }
 .overview-donut-wrap p { display: grid; grid-template-columns: 8px auto auto; align-items: center; gap: 6px; margin: 0; color: #6d737c; font-size: 9.5px; }
-.overview-donut-wrap p > i { width: 7px; height: 7px; border-radius: 50%; background: #cfd3d8; }
-.overview-donut-wrap p > i.is-dark { background: #526c88; }
+.overview-donut-wrap p > i { width: 7px; height: 7px; border-radius: 50%; background: #e75a6c; }
+.overview-donut-wrap p > i.is-dark { background: #3269e2; }
 .overview-donut-wrap p b { color: #191c21; }
 .overview-trend-card { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .overview-trend-card { overflow: hidden; }
+.overview-trend-title { display: grid; gap: 2px; }
+.overview-trend-title em { color: #8893a3; font-size: 8.5px; font-style: normal; }
 .overview-trend-actions { display: inline-flex; align-items: center; gap: 4px; }
 .overview-trend-nav,
 .overview-trend-detail,
@@ -3562,10 +3569,11 @@ button.overview-viz-card { cursor: pointer; }
 .overview-trend-line { width: max(100%, 648px); min-height: 142px; display: grid; grid-template-rows: minmax(104px, 1fr) auto; align-content: center; gap: 4px; padding: 9px 0; }
 .overview-trend-line svg { width: 100%; height: 100%; min-height: 94px; overflow: visible; }
 .overview-trend-line .grid { fill: none; stroke: #e6eaf0; stroke-width: 1; vector-effect: non-scaling-stroke; }
-.overview-trend-line .trend-curve { fill: none; stroke: #526c88; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
-.overview-trend-line circle { fill: #ffffff; stroke: #526c88; stroke-width: 1.7; vector-effect: non-scaling-stroke; transform-box: fill-box; transform-origin: center; cursor: pointer; transition: transform 180ms ease, fill 180ms ease, stroke 180ms ease, filter 180ms ease; }
+.overview-trend-line .trend-area { fill: url(#overviewTrendFill); pointer-events: none; }
+.overview-trend-line .trend-curve { fill: none; stroke: #e5485d; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.overview-trend-line circle { fill: #ffffff; stroke: #e5485d; stroke-width: 1.7; vector-effect: non-scaling-stroke; transform-box: fill-box; transform-origin: center; cursor: pointer; transition: transform 180ms ease, fill 180ms ease, stroke 180ms ease, filter 180ms ease; }
 .overview-trend-line circle:hover,
-.overview-trend-line circle:focus-visible { fill: #526c88; stroke: #ffffff; transform: scale(1.7); filter: drop-shadow(0 0 4px rgba(82,108,136,.32)); outline: none; }
+.overview-trend-line circle:focus-visible { fill: #e5485d; stroke: #ffffff; transform: scale(1.7); filter: drop-shadow(0 0 5px rgba(229,72,93,.38)); outline: none; }
 .overview-trend-line > div { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
 .overview-trend-line > div > button { min-width: 0; display: grid; gap: 1px; padding: 2px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: center; cursor: pointer; }
 .overview-trend-line > div > button:hover,
@@ -3587,17 +3595,22 @@ button.overview-viz-card { cursor: pointer; }
 .overview-action-card > div b { font-size: 11px; }
 .overview-action-card > div em { overflow: hidden; color: #8a9098; font-size: 9px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 .overview-action-card > strong { font-size: 20px; font-variant-numeric: tabular-nums; }
-.overview-account-strip { min-height: 70px; padding: 10px 12px; overflow: hidden; }
+.overview-account-strip { min-height: 76px; padding: 10px 12px; overflow: hidden; }
 .overview-account-viewport { margin-top: 8px; overflow: hidden; }
 .overview-account-page { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; opacity: 1; transform: translateY(0); transition: opacity 150ms ease, transform 150ms ease; }
 .overview-account-page.is-switching { opacity: 0; transform: translateY(-5px); }
-.overview-account-strip button { min-width: 0; display: flex; align-items: center; gap: 7px; padding: 0; border: 0; background: transparent; text-align: left; cursor: pointer; transition: color 180ms ease; }
-.overview-account-strip button > i { width: 20px; height: 20px; display: grid; place-items: center; flex: none; color: #6f7680; background: #eceef0; font-size: 9px; font-style: normal; }
+.overview-account-strip button { min-width: 0; display: flex; align-items: center; gap: 7px; padding: 3px 5px; border: 1px solid transparent; border-radius: 7px; background: transparent; text-align: left; cursor: pointer; transition: color 180ms ease, border-color 180ms ease, background 180ms ease, transform 180ms ease; }
+.overview-account-avatar { width: 27px; height: 27px; display: grid; place-items: center; flex: none; overflow: hidden; border: 1px solid #d8e1f2; border-radius: 50%; background: linear-gradient(145deg, #e7efff, #f7f9ff); }
+.overview-account-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.overview-account-avatar i { color: #3769cb; font-size: 11px; font-style: normal; font-weight: 800; }
 .overview-account-strip button > span { min-width: 0; display: grid; gap: 1px; }
 .overview-account-strip button b,
 .overview-account-strip button em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.overview-account-strip button b { font-size: 10px; }
+.overview-account-strip button b { display: flex; align-items: center; gap: 4px; font-size: 10px; }
+.overview-account-strip button b i { width: 13px; height: 13px; display: grid; place-items: center; flex: none; border-radius: 4px; color: #fff; background: #3d70d8; font-size: 7px; font-style: normal; }
 .overview-account-strip button em { color: #8a9098; font-size: 8.5px; font-style: normal; }
+.overview-account-detail-actions { display: flex; justify-content: flex-end; margin: 0 0 10px; }
+.overview-account-detail-actions .btn[disabled] { border-color: #e1e5eb; color: #a9b0ba; background: #f6f7f9; cursor: not-allowed; opacity: 1; }
 .overview-task-row.has-metrics { align-items: center; }
 .overview-task-main small { display: block; margin-top: 5px; color: #4f5660; font-size: 10px; font-weight: 700; line-height: 1.45; }
 .overview-detail-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }

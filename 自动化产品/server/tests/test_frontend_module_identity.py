@@ -50,7 +50,7 @@ class FrontendModuleIdentityTest(unittest.TestCase):
             "custom-creation.css",
         ):
             self.assertIn(
-                f"styles/{stylesheet}?v=20260720-v98-1",
+                f"styles/{stylesheet}?v=20260720-v99-1",
                 index,
                 stylesheet,
             )
