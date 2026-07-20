@@ -39,12 +39,17 @@ function fixedApiOrigin() {
   return "http://127.0.0.1:8787";
 }
 
-function sameApiOrigin() {
+function browserHttpOrigin() {
   try {
     const loc = window.location;
-    if (loc && /^https?:$/.test(loc.protocol) && loc.port === "8787") return loc.origin;
+    const origin = String(loc?.origin || "");
+    if (loc && /^https?:$/.test(loc.protocol) && /^https?:\/\//.test(origin)) return origin;
   } catch (_) {}
-  return fixedApiOrigin();
+  return "";
+}
+
+function sameApiOrigin() {
+  return browserHttpOrigin() || fixedApiOrigin();
 }
 
 function apiUrl(path) {
@@ -57,10 +62,12 @@ function apiUrl(path) {
 function apiCandidates(path) {
   const p = String(path || "");
   if (!p.startsWith("/") || /^https?:\/\//.test(p)) return [p];
+  // A deployed page must only call its own server. Falling through to a
+  // visitor's loopback address makes shared model APIs work on one computer
+  // and fail for every other member.
+  if (browserHttpOrigin()) return [p];
   const out = [p];
-  const same = sameApiOrigin() + p;
   const fixed = fixedApiOrigin() + p;
-  if (!out.includes(same)) out.push(same);
   if (!out.includes(fixed)) out.push(fixed);
   return out;
 }
@@ -125,9 +132,14 @@ async function postJsonWithFallback(url, body, timeoutMs = 240000) {
       lastError = new Error(payload.message || `HTTP ${res.status}`);
       if (![404, 405].includes(res.status)) throw lastError;
     } catch (e) {
+      const localBackend = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(candidate);
       const msg = e?.name === "AbortError"
         ? `API 请求超时：${candidate}`
-        : (/failed to fetch/i.test(e?.message || "") ? `无法连接 API：${candidate}。请确认本地 8787 服务已启动、服务端路由可访问。` : (e?.message || String(e)));
+        : (/failed to fetch/i.test(e?.message || "")
+          ? (localBackend
+            ? `无法连接 API：${candidate}。请确认本地 8787 服务已启动、服务端路由可访问。`
+            : `无法连接服务端 API：${candidate}。请确认当前平台服务可访问。`)
+          : (e?.message || String(e)));
       lastError = new Error(msg);
     } finally {
       clearTimeout(timer);

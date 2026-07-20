@@ -635,11 +635,11 @@ globalThis.fetch = async () => ({
   }),
   text: async () => ''
 });
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260718-v94-1');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260720-v103-2');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260718-v94-1');
+const { AI } = await import('./js/api/ai.js?v=20260720-v103-2');
 const request = {
   topic: '国产codex百度搭子自动管理你的知识库！',
   shots: [],

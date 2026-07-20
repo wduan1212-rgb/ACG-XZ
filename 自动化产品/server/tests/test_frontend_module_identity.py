@@ -40,6 +40,13 @@ class FrontendModuleIdentityTest(unittest.TestCase):
             queries = {specifier.partition("?")[2] for _, specifier in imports}
             self.assertEqual({expected_query}, queries, imports)
 
+    def test_llm_client_and_consumers_share_current_cache_identity(self):
+        for module_name in ("llm.js", "ai.js"):
+            imports = self._module_imports(module_name)
+            self.assertGreaterEqual(len(imports), 2)
+            queries = {specifier.partition("?")[2] for _, specifier in imports}
+            self.assertEqual({"v=20260720-v103-2"}, queries, imports)
+
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         for stylesheet in (

@@ -19,7 +19,8 @@ export async function enableServerProxyIfConfigured() {
   const candidates = ["/api/health"];
   try {
     const loc = window.location;
-    if (loc?.protocol === "http:" && loc.hostname && loc.port !== "8787") {
+    const localPreview = /^(?:localhost|127\.0\.0\.1|\[::1\])$/i.test(String(loc?.hostname || ""));
+    if (loc?.protocol === "http:" && localPreview && loc.port !== "8787") {
       candidates.push("http://127.0.0.1:8787/api/health");
     }
   } catch (_) {}
