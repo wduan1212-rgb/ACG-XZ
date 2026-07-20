@@ -104,7 +104,7 @@ function remarkDot(asset) {
   return hasUnreadRemark(asset) ? `<i class="delivery-remark-dot" title="有未读备注"></i>` : "";
 }
 
-async function openDeliveryRemarks(asset) {
+export async function openDeliveryRemarks(asset) {
   if (!asset) return;
   openModal(`<div class="mp-head delivery-chat-head"><div><b>发布沟通</b><em>${esc(asset.title || asset.name || "发布内容")}</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
     <div class="mp-body delivery-remark-modal"><div id="deliveryRemarkTimeline" class="delivery-remark-timeline"><p class="supplier-empty">正在读取消息…</p></div><label class="delivery-remark-reply"><span>发送消息</span><textarea class="input" id="deliveryRemarkText" rows="3" maxlength="1200" placeholder="输入消息，发送后双方会在同一条时间线上看到"></textarea></label></div>

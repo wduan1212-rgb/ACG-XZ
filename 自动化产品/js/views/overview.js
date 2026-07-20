@@ -11,6 +11,7 @@ import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260718-v94-1";
 import { LLM_CONFIG } from "../api/llm.js?v=20260718-v94-1";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260718-v94-1";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260720-v98-1";
 import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { renderSupplierOverview } from "./supplierViews.js?v=20260718-v94-1";
@@ -18,6 +19,9 @@ import { renderSupplierOverview } from "./supplierViews.js?v=20260718-v94-1";
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
 let chatBusy = false;
+let accountCarouselPage = 0;
+let accountCarouselTimer = null;
+let accountCarouselTransitionTimer = null;
 
 const dayKey = ts => { const d = new Date(ts); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
 const safeAccount = a => ({
@@ -225,10 +229,6 @@ export const overviewView = {
       });
     };
     const todoCount = waiting.length + inReview.length + failed.length;
-    const stagePipeline = [
-      ["在制", inflight.length, ""], ["生成", rendering.length, "rendering"], ["审核", inReview.length, "review"], ["交付", delivered.length, "recent"]
-    ];
-    const pipelineMax = Math.max(1, ...stagePipeline.map(([, value]) => value));
     const xhsCount = delivered.filter(({ acc }) => acc?.platform === "小红书").length;
     const videoCount = delivered.filter(({ acc }) => acc?.platform === "视频号").length;
     const xhsShare = Math.round(xhsCount / Math.max(1, xhsCount + videoCount) * 100);
@@ -254,7 +254,14 @@ export const overviewView = {
       const control2Y = point.y - (after.y - previous.y) / 6;
       return `${path} C ${control1X.toFixed(2)} ${control1Y.toFixed(2)}, ${control2X.toFixed(2)} ${control2Y.toFixed(2)}, ${point.x} ${point.y}`;
     }, "");
-    const topAccounts = analytics.accounts.length ? analytics.accounts.slice(0, 4) : accounts.slice().sort((a, b) => (b.monthlyDone || 0) - (a.monthlyDone || 0)).slice(0, 4).map(acc => ({ name: acc.name, count: acc.monthlyDone || 0, engagement: 0 }));
+    const accountPerformance = analytics.accounts.length
+      ? analytics.accounts
+      : accounts.slice()
+        .sort((a, b) => (b.monthlyDone || 0) - (a.monthlyDone || 0))
+        .map(acc => ({ name: acc.name, count: acc.monthlyDone || 0, engagement: 0 }));
+    const accountPages = Array.from({ length: Math.max(1, Math.ceil(accountPerformance.length / 4)) }, (_, page) => accountPerformance.slice(page * 4, page * 4 + 4));
+    accountCarouselPage %= accountPages.length;
+    const accountPageHtml = page => (accountPages[page] || []).map((item, index) => `<button data-overview-account="${esc(item.name)}"><i>${page * 4 + index + 1}</i><span><b>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`;
 
     const openDataDetail = (key, accountName = "", initialRecentFilter = null) => {
       if (["todo", "waiting", "rendering", "review", "failed", "supplier"].includes(key)) { openTaskGroup(key); return; }
@@ -304,7 +311,7 @@ export const overviewView = {
         )).join("");
       } else if (key === "remarks") {
         title = `发布沟通 · ${remarked.length} 条有备注`;
-        rows = remarked.slice(0, 30).map(({ asset, acc }) => makeRow(asset.title || asset.name || "未命名交付", `${acc?.name || "未命名账号"} · ${(asset.remarks || []).length} 条消息${Number(asset.latestRemarkAt || 0) > Number(asset.remarkReadAt?.[memberId] || 0) ? " · 有未读" : ""}`, `<button class="btn ghost sm" data-ov-route="delivery">查看沟通</button>`)).join("");
+        rows = remarked.slice(0, 30).map(({ asset, acc }) => makeRow(asset.title || asset.name || "未命名交付", `${acc?.name || "未命名账号"} · ${(asset.remarks || []).length} 条消息${Number(asset.latestRemarkAt || 0) > Number(asset.remarkReadAt?.[memberId] || 0) ? " · 有未读" : ""}`, `<button class="btn ghost sm" data-ov-remarks="${esc(asset.id)}">查看沟通</button>`)).join("");
       } else if (key === "dataQuality") {
         const pendingRows = links.filter(row => !row.latest);
         title = `数据完整度 · ${analytics.synced}/${links.length}`;
@@ -346,6 +353,11 @@ export const overviewView = {
             }
             const prodButton = event.target.closest("[data-ov-prod]");
             if (prodButton) { close(); window.setTimeout(() => openProductionDrawer(prodButton.dataset.ovProd), 180); }
+            const remarksButton = event.target.closest("[data-ov-remarks]");
+            if (remarksButton) {
+              const asset = assetById(remarksButton.dataset.ovRemarks);
+              if (asset) { close(); window.setTimeout(() => openDeliveryRemarks(asset), 160); }
+            }
             const routeButton = event.target.closest("[data-ov-route]");
             if (routeButton) { close(); window.setTimeout(() => go(routeButton.dataset.ovRoute), 180); }
           });
@@ -363,10 +375,6 @@ export const overviewView = {
             <button class="overview-kpi-card" data-overview-detail="recent"><span>累计交付</span><b>${fmt(delivered.length)}</b><em>${pendingDl} 条供应商待下载</em></button>
           </section>
           <section class="overview-viz-grid">
-            <article class="overview-viz-card overview-flow-card">
-              <header><b>生产流程</b><em>${accounts.length} 个账号 · 本月 ${monthly} 条</em></header>
-              <div class="overview-gantt">${stagePipeline.map(([label, value, detail]) => `<button ${detail ? `data-overview-detail="${detail}"` : ""} data-chart-tip="${esc(label)} · ${fmt(value)} 项"><span><b>${fmt(value)}</b><em>${label}</em></span><i><u style="--value:${Math.max(5, Math.round(value / pipelineMax * 100))}%"></u></i></button>`).join("")}</div>
-            </article>
             <button class="overview-viz-card overview-donut-card" data-overview-detail="recent" aria-label="查看平台交付分布">
               <header><b>平台分布</b><em>${delivered.length} 条交付</em></header>
               <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><i><b>${delivered.length}</b><em>总交付</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
@@ -391,7 +399,7 @@ export const overviewView = {
             <button class="overview-action-card" data-overview-detail="remarks"><span>${icon("fileText", 16)}</span><div><b>发布沟通</b><em>${unreadRemarks.length} 条有未读消息</em></div><strong>${remarked.length}</strong></button>
             <button class="overview-action-card" data-overview-detail="dataQuality"><span>${icon("link", 16)}</span><div><b>数据完整度</b><em>${analytics.pending} 条等待快照</em></div><strong>${analytics.synced}/${links.length}</strong></button>
           </section>
-          <section class="overview-account-strip"><header><b>账号表现</b><em>点击查看逐条数据</em></header><div>${topAccounts.map((item, index) => `<button data-overview-account="${esc(item.name)}"><i>${index + 1}</i><span><b>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`}</div></section>
+          <section class="overview-account-strip"><header><b>账号表现</b><em>${accountPerformance.length > 4 ? "每 4 秒切换下一组账号" : "点击查看逐条数据"}</em></header><div class="overview-account-viewport" data-account-carousel><div class="overview-account-page">${accountPageHtml(accountCarouselPage)}</div></div></section>
         </main>
         <aside class="overview-dashboard-assistant"><section class="ov-chat" id="ovChat"><div class="ovc-head"><span class="ovc-ava">${agentAvatar(24)}</span><div><b>星阵数据助手</b><em>独立问答区 · 只读真实数据</em></div></div><div class="ovc-msgs" id="ovcMsgs"></div><div class="ovc-input"><input id="ovcInput" placeholder="问问数据：昨天产出多少素材？" /><button class="ovc-send" id="ovcSend" title="发送">${icon("send", 15)}</button></div></section></aside>
       </div>
@@ -399,7 +407,8 @@ export const overviewView = {
     </div>`;
 
     root.querySelectorAll("[data-overview-detail]").forEach(button => button.addEventListener("click", () => openDataDetail(button.dataset.overviewDetail)));
-    root.querySelectorAll("[data-overview-account]").forEach(button => button.addEventListener("click", () => openDataDetail("interactions", button.dataset.overviewAccount)));
+    const wireAccountButtons = host => host.querySelectorAll("[data-overview-account]").forEach(button => button.addEventListener("click", () => openDataDetail("interactions", button.dataset.overviewAccount)));
+    wireAccountButtons(root);
     root.querySelectorAll("[data-trend-date]").forEach(target => {
       const openTrendDate = event => {
         event.preventDefault();
@@ -432,6 +441,34 @@ export const overviewView = {
       target.addEventListener("focus", () => showChartTooltip(target));
       target.addEventListener("blur", hideChartTooltip);
     });
+
+    window.clearInterval(accountCarouselTimer);
+    window.clearTimeout(accountCarouselTransitionTimer);
+    accountCarouselTimer = null;
+    accountCarouselTransitionTimer = null;
+    const accountCarousel = root.querySelector("[data-account-carousel]");
+    const rotateAccounts = () => {
+      if (!accountCarousel || accountPages.length < 2) return;
+      const page = accountCarousel.querySelector(".overview-account-page");
+      if (!page) return;
+      page.classList.add("is-switching");
+      accountCarouselTransitionTimer = window.setTimeout(() => {
+        accountCarouselPage = (accountCarouselPage + 1) % accountPages.length;
+        page.innerHTML = accountPageHtml(accountCarouselPage);
+        wireAccountButtons(page);
+        page.classList.remove("is-switching");
+        accountCarouselTransitionTimer = null;
+      }, 150);
+    };
+    if (accountPages.length > 1 && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      accountCarouselTimer = window.setInterval(rotateAccounts, 4200);
+    }
+    root.__viewCleanup = () => {
+      window.clearInterval(accountCarouselTimer);
+      window.clearTimeout(accountCarouselTransitionTimer);
+      accountCarouselTimer = null;
+      accountCarouselTransitionTimer = null;
+    };
 
     root.querySelectorAll("[data-ov-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.ovGo)));
     root.querySelectorAll("[data-ov-stat]").forEach(b => b.addEventListener("click", () => openTaskGroup(b.dataset.ovStat)));
