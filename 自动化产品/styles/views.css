@@ -3530,9 +3530,9 @@ button.overview-viz-card { cursor: pointer; }
 .overview-gantt button:hover u,
 .overview-gantt button:focus-visible u { background: #505862; transform: scaleX(.86); box-shadow: 0 -5px 16px rgba(31,37,44,.16); }
 .overview-donut-card { display: grid; grid-template-rows: auto minmax(0, 1fr); }
-.overview-donut-wrap { min-height: 132px; display: flex; align-items: center; justify-content: center; gap: 16px; }
-.overview-donut { position: relative; width: 112px; aspect-ratio: 1; display: grid; place-items: center; flex: none; border-radius: 50%; background: conic-gradient(#252a31 0 var(--share), #cfd3d8 var(--share) 100%); }
-.overview-donut::after { content: ""; position: absolute; inset: 19px; border-radius: 50%; background: #fafafa; }
+.overview-donut-wrap { min-height: 158px; display: flex; align-items: center; justify-content: center; gap: 18px; }
+.overview-donut { position: relative; width: 140px; aspect-ratio: 1; display: grid; place-items: center; flex: none; border-radius: 50%; background: conic-gradient(#252a31 0 var(--share), #cfd3d8 var(--share) 100%); }
+.overview-donut::after { content: ""; position: absolute; inset: 23px; border-radius: 50%; background: #fafafa; }
 .overview-donut > i { position: relative; z-index: 1; display: grid; place-items: center; gap: 1px; font-style: normal; }
 .overview-donut > i b { font-size: 22px; }
 .overview-donut > i em { color: #8a9098; font-size: 9px; font-style: normal; }
@@ -3542,7 +3542,20 @@ button.overview-viz-card { cursor: pointer; }
 .overview-donut-wrap p > i.is-dark { background: #252a31; }
 .overview-donut-wrap p b { color: #191c21; }
 .overview-trend-card { display: grid; grid-template-rows: auto minmax(0, 1fr); }
-.overview-trend-line { min-height: 132px; display: grid; grid-template-rows: minmax(94px, 1fr) auto; gap: 4px; padding-top: 9px; }
+.overview-trend-card { overflow: hidden; }
+.overview-trend-actions { display: inline-flex; align-items: center; gap: 4px; }
+.overview-trend-nav,
+.overview-trend-detail,
+.overview-detail-filter { border: 1px solid #dce1e8; background: #fff; color: #59616d; font: inherit; cursor: pointer; transition: border-color 160ms ease, color 160ms ease, background 160ms ease, transform 160ms ease; }
+.overview-trend-nav { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border-radius: 7px; font-size: 17px; line-height: 1; }
+.overview-trend-detail { padding: 4px 7px; border-radius: 7px; font-size: 9px; font-weight: 700; }
+.overview-trend-nav:hover,
+.overview-trend-detail:hover,
+.overview-detail-filter:hover { border-color: #9ca5b0; color: #1f252d; transform: translateY(-1px); }
+.overview-trend-scroll { min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: #cbd1d9 transparent; }
+.overview-trend-scroll::-webkit-scrollbar { height: 5px; }
+.overview-trend-scroll::-webkit-scrollbar-thumb { border-radius: 99px; background: #cbd1d9; }
+.overview-trend-line { width: max(100%, 564px); min-height: 142px; display: grid; grid-template-rows: minmax(104px, 1fr) auto; gap: 4px; padding-top: 9px; }
 .overview-trend-line svg { width: 100%; height: 100%; min-height: 94px; overflow: visible; }
 .overview-trend-line .grid { fill: none; stroke: #e6eaf0; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .overview-trend-line .trend-curve { fill: none; stroke: #313740; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
@@ -3550,9 +3563,19 @@ button.overview-viz-card { cursor: pointer; }
 .overview-trend-line circle:hover,
 .overview-trend-line circle:focus-visible { fill: #313740; stroke: #ffffff; transform: scale(1.7); filter: drop-shadow(0 0 4px rgba(49,55,64,.42)); outline: none; }
 .overview-trend-line > div { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
-.overview-trend-line span { min-width: 0; display: grid; gap: 1px; text-align: center; }
-.overview-trend-line span b { font-size: 8.5px; font-variant-numeric: tabular-nums; }
-.overview-trend-line span em { overflow: hidden; color: #8a9098; font-size: 8px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.overview-trend-line > div > button { min-width: 0; display: grid; gap: 1px; padding: 2px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: center; cursor: pointer; }
+.overview-trend-line > div > button:hover,
+.overview-trend-line > div > button:focus-visible { background: #f0f3f6; outline: none; }
+.overview-trend-line > div b { font-size: 8.5px; font-variant-numeric: tabular-nums; }
+.overview-trend-line > div em { overflow: hidden; color: #8a9098; font-size: 8px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.overview-detail-filter-section { display: grid; gap: 10px; padding: 2px 0 12px; border-bottom: 1px solid #edf0f3; }
+.overview-detail-filter-section > div { display: flex; align-items: flex-start; gap: 10px; }
+.overview-detail-filter-section > div > b { flex: 0 0 42px; padding-top: 5px; color: #6b737f; font-size: 11px; }
+.overview-detail-filter-tags { display: flex; flex: 1; flex-wrap: wrap; gap: 6px; }
+.overview-detail-filter-tags > em { padding: 5px 0; color: #9299a4; font-size: 11px; font-style: normal; }
+.overview-detail-filter { padding: 4px 8px; border-radius: 999px; font-size: 10px; }
+.overview-detail-filter.is-active { border-color: #252a31; background: #252a31; color: #fff; }
+.overview-detail-summary { padding: 11px 0 4px; color: #6b737f; font-size: 11px; font-weight: 700; }
 .overview-action-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .overview-action-card { min-width: 0; min-height: 64px; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 10px 12px; text-align: left; cursor: pointer; transition: border-color 180ms ease, background 180ms ease, transform 180ms ease; }
 .overview-action-card > span { width: 30px; height: 30px; display: grid; place-items: center; color: #31363d; background: #eceef0; }
@@ -3607,7 +3630,7 @@ button.overview-viz-card { cursor: pointer; }
 @media (max-width: 1180px) {
   .overview-integrated .overview-dashboard-layout { grid-template-columns: minmax(0, 1fr) minmax(260px, 29vw); }
   .overview-viz-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .overview-donut { width: 92px; }
+  .overview-donut { width: 116px; }
   .overview-detail-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (prefers-reduced-motion: reduce) {

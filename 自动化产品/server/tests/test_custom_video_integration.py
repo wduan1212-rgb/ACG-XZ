@@ -582,6 +582,9 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         workshop = (APP_DIR / "js/views/chainWorkshop.js").read_text(
             encoding="utf-8"
         )
+        publishing = (APP_DIR / "js/views/customPublish.js").read_text(
+            encoding="utf-8"
+        )
         ensure_cover = workshop.split(
             "export async function ensureVideoCover(p)", 1
         )[1].split("\nexport ", 1)[0]
@@ -591,6 +594,7 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         self.assertIn("ratio,", ensure_cover)
         self.assertIn("provider.submit({", ensure_cover)
         self.assertIn("provider.poll(submitted.providerRef)", ensure_cover)
+        self.assertIn("画幅要求：竖版 3:4", publishing)
 
     def test_video_publish_llm_does_not_silently_replace_invalid_copy(self):
         code = r"""

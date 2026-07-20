@@ -211,7 +211,9 @@ function accountCoverStylePrompt(account = {}) {
     .filter(value => typeof value === "string")
     .map(value => value.trim())
     .filter(Boolean);
-  return hints.length ? `账号视觉风格：${[...new Set(hints)].join("；").slice(0, 600)}` : "";
+  const style = hints.length ? `账号视觉风格：${[...new Set(hints)].join("；").slice(0, 600)}\n` : "";
+  // 仅用于视频工坊发布封面；底层生成仍沿用单号/批量的封面链路与 ratio 参数。
+  return `${style}画幅要求：竖版 3:4，适合作为视频发布封面，主体和标题信息保持在安全可见区域。`;
 }
 
 function coverReferenceIds(output = {}, account = {}, extraReferenceAssetIds = []) {

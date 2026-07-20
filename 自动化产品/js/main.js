@@ -10,6 +10,7 @@ import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
 import { productTagLabel } from "./domain/delivery.js";
+import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260718-v94-1";
 import { refreshProviderStatus } from "./api/providers.js";
@@ -20,9 +21,9 @@ import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge 
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260718-v94-1";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260718-v94-1";
+import { overviewView } from "./views/overview.js?v=20260720-v97-1";
 import { voiceLabView } from "./views/voiceLab.js?v=20260718-v94-1";
-import { customCreationView } from "./views/customCreation.js?v=20260718-v94-1";
+import { customCreationView } from "./views/customCreation.js?v=20260720-v97-1";
 import { agentView } from "./agent/view.js?v=20260718-v94-1";
 import { studioView } from "./views/studio.js?v=20260718-v94-1";
 import { assetsView } from "./views/assetsView.js?v=20260718-v94-1";
@@ -34,7 +35,7 @@ import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260718-v94-1";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260718-v94-1";
+const APP_BUILD_ID = "20260720-v97-1";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -716,6 +717,31 @@ function renderContextPanel() {
 
 /* ---------- 顶栏 ---------- */
 const ZONE_TITLE = { overview: "首页", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
+
+async function syncHomepageAnalytics(button) {
+  if (button.disabled) return;
+  const label = button.querySelector("span");
+  const originalLabel = label?.textContent || "同步数据";
+  button.disabled = true;
+  button.classList.add("is-loading");
+  if (label) label.textContent = "同步中…";
+  try {
+    // 与数据分析页保持同一条 JustOne 同步链路：先补齐已回传素材，再逐条拉取快照。
+    syncExistingPublishedAssets();
+    const result = await refreshAllAnalytics();
+    if (!result.total) toast("还没有可刷新的小红书或视频号回链");
+    else if (result.failed.length) toast(`已同步 ${result.ok}/${result.total} 条，${result.failed.length} 条待处理`, "error");
+    else toast(`已同步 ${result.ok}/${result.total} 条数据快照`);
+    if (document.body.dataset.zone === "overview") render();
+  } catch (error) {
+    toast(`同步数据失败：${error?.message || error || "请稍后重试"}`, "error");
+  } finally {
+    button.disabled = false;
+    button.classList.remove("is-loading");
+    if (label) label.textContent = originalLabel;
+  }
+}
+
 function renderTopbar() {
   const zone = document.body.dataset.zone;
   const bc = $("#topCrumb");
@@ -758,7 +784,18 @@ function renderTopbar() {
     newAccBtn.addEventListener("click", () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })));
     actions.insertBefore(newAccBtn, $("#topSearch"));
   }
+  let syncDataBtn = $("#topSyncAnalytics");
+  if (!syncDataBtn && actions && newAccBtn) {
+    syncDataBtn = document.createElement("button");
+    syncDataBtn.id = "topSyncAnalytics";
+    syncDataBtn.className = "top-btn";
+    syncDataBtn.title = "手动从 JustOne 同步已回传内容的数据快照";
+    syncDataBtn.innerHTML = `${icon("refresh", 13)} <span>同步数据</span>`;
+    syncDataBtn.addEventListener("click", () => syncHomepageAnalytics(syncDataBtn));
+    actions.insertBefore(syncDataBtn, newAccBtn);
+  }
   if (newAccBtn) newAccBtn.hidden = !(zone === "overview" && state.role === "admin");
+  if (syncDataBtn) syncDataBtn.hidden = !(zone === "overview" && state.role === "admin");
 }
 
 /* ---------- ⌘K ---------- */

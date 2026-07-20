@@ -240,8 +240,8 @@ export const overviewView = {
     const trendMax = Math.max(1, ...recentDays.map(item => item.value));
     const trendPoints = recentDays.map((item, index) => ({
       ...item,
-      x: 12 + index * 46,
-      y: 84 - Math.round(item.value / trendMax * 66)
+      x: 24 + index * 86,
+      y: 94 - Math.round(item.value / trendMax * 70)
     }));
     const trendCurve = trendPoints.reduce((path, point, index, points) => {
       if (index === 0) return `M ${point.x} ${point.y}`;
@@ -256,7 +256,7 @@ export const overviewView = {
     }, "");
     const topAccounts = analytics.accounts.length ? analytics.accounts.slice(0, 4) : accounts.slice().sort((a, b) => (b.monthlyDone || 0) - (a.monthlyDone || 0)).slice(0, 4).map(acc => ({ name: acc.name, count: acc.monthlyDone || 0, engagement: 0 }));
 
-    const openDataDetail = (key, accountName = "") => {
+    const openDataDetail = (key, accountName = "", initialRecentFilter = null) => {
       if (["todo", "waiting", "rendering", "review", "failed", "supplier"].includes(key)) { openTaskGroup(key); return; }
       const metricText = row => {
         const m = row?.latest?.metrics || {};
@@ -265,9 +265,35 @@ export const overviewView = {
       const makeRow = (title, meta, action = "", metrics = "") => `<div class="overview-task-row${metrics ? " has-metrics" : ""}"><span class="overview-task-main"><b>${esc(title)}</b><em>${esc(meta)}</em>${metrics ? `<small>${esc(metrics)}</small>` : ""}</span>${action}</div>`;
       let title = "数据详情";
       let rows = "";
+      let recentFilter = null;
+      let recentDetailHtml = null;
       if (key === "recent") {
-        title = `最近交付 · ${delivered.length} 条`;
-        rows = delivered.slice(0, 30).map(({ asset, acc }) => makeRow(asset.title || asset.name || "未命名交付", `${acc?.name || "未命名账号"} · ${asset.status || "未下载"} · ${timeAgo(asset.deliveredAt || asset.createdAt)}`, asset.productionId ? `<button class="btn ghost sm" data-ov-prod="${esc(asset.productionId)}">查看</button>` : "")).join("");
+        const dayOptions = recentDays.slice().reverse();
+        const monthOptions = [...new Set(delivered
+          .map(({ asset }) => dayKey(asset?.deliveredAt || asset?.createdAt || 0).slice(0, 7))
+          .filter(value => /^\d{4}-\d{2}$/.test(value)))].slice(0, 6);
+        recentFilter = initialRecentFilter?.type === "day" || initialRecentFilter?.type === "month"
+          ? initialRecentFilter
+          : { type: "all", value: "" };
+        recentDetailHtml = () => {
+          const scoped = delivered.filter(({ asset }) => {
+            const date = dayKey(asset?.deliveredAt || asset?.createdAt || 0);
+            if (recentFilter.type === "day") return date === recentFilter.value;
+            if (recentFilter.type === "month") return date.startsWith(recentFilter.value);
+            return true;
+          });
+          const filterButton = (type, value, label) => `<button type="button" class="overview-detail-filter${recentFilter.type === type && recentFilter.value === value ? " is-active" : ""}" data-recent-filter-type="${type}" data-recent-filter-value="${esc(value)}">${esc(label)}</button>`;
+          const dayFilters = dayOptions.map(item => filterButton("day", item.key, item.label)).join("");
+          const monthFilters = monthOptions.map(value => filterButton("month", value, `${Number(value.slice(5))} 月`)).join("");
+          const list = scoped.slice(0, 50).map(({ asset, acc }) => makeRow(
+            asset.title || asset.name || "未命名交付",
+            `${acc?.name || "未命名账号"} · ${asset.status || "未下载"} · ${timeAgo(asset.deliveredAt || asset.createdAt)}`,
+            asset.productionId ? `<button class="btn ghost sm" data-ov-prod="${esc(asset.productionId)}">查看</button>` : ""
+          )).join("");
+          return `<section class="overview-detail-filter-section"><div><b>按日期</b><span class="overview-detail-filter-tags">${filterButton("all", "", "全部")}${dayFilters}</span></div><div><b>按月份</b><span class="overview-detail-filter-tags">${monthFilters || `<em>暂无月度交付</em>`}</span></div></section><div class="overview-detail-summary">${recentFilter.type === "all" ? "全部交付" : recentFilter.type === "day" ? recentFilter.value : `${recentFilter.value} 月`} · ${scoped.length} 条</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该时间范围暂无交付</div>`}</div>`;
+        };
+        title = "交付明细";
+        rows = `<div data-recent-detail-content>${recentDetailHtml()}</div>`;
       } else if (key === "links") {
         title = `回传链接 · ${links.length} 条`;
         rows = links.slice(0, 40).map(row => makeRow(
@@ -308,6 +334,16 @@ export const overviewView = {
         onMount(panel, close) {
           panel.classList.add("overview-task-panel");
           panel.addEventListener("click", event => {
+            const recentFilterButton = event.target.closest("[data-recent-filter-type]");
+            if (key === "recent" && recentFilterButton && recentFilter && recentDetailHtml) {
+              recentFilter = {
+                type: recentFilterButton.dataset.recentFilterType,
+                value: recentFilterButton.dataset.recentFilterValue || ""
+              };
+              const target = panel.querySelector("[data-recent-detail-content]");
+              if (target) target.innerHTML = recentDetailHtml();
+              return;
+            }
             const prodButton = event.target.closest("[data-ov-prod]");
             if (prodButton) { close(); window.setTimeout(() => openProductionDrawer(prodButton.dataset.ovProd), 180); }
             const routeButton = event.target.closest("[data-ov-route]");
@@ -335,17 +371,19 @@ export const overviewView = {
               <header><b>平台分布</b><em>${delivered.length} 条交付</em></header>
               <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><i><b>${delivered.length}</b><em>总交付</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
             </button>
-            <button class="overview-viz-card overview-trend-card" data-overview-detail="recent">
-              <header><b>近 7 日交付</b><em>点击查看明细</em></header>
-              <div class="overview-trend-line" aria-label="近七日交付折线图">
-                <svg viewBox="0 0 300 96" preserveAspectRatio="xMidYMid meet" role="img">
-                  <path class="grid" d="M12 18H288 M12 51H288 M12 84H288"/>
+            <article class="overview-viz-card overview-trend-card">
+              <header><b>近 7 日交付</b><span class="overview-trend-actions"><button class="overview-trend-nav" type="button" data-trend-scroll-by="-260" aria-label="向左查看日期">‹</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="260" aria-label="向右查看日期">›</button><button class="overview-trend-detail" type="button" data-overview-detail="recent">查看明细</button></span></header>
+              <div class="overview-trend-scroll" data-trend-scroll tabindex="0" aria-label="近七日交付趋势，可横向查看日期">
+                <div class="overview-trend-line">
+                <svg viewBox="0 0 564 106" preserveAspectRatio="xMidYMid meet" role="img">
+                  <path class="grid" d="M24 18H540 M24 56H540 M24 94H540"/>
                   <path class="trend-curve" d="${trendCurve}"/>
-                  ${trendPoints.map(item => `<circle cx="${item.x}" cy="${item.y}" r="3" tabindex="0" role="button" aria-label="${esc(item.key)} · ${item.value} 条" data-chart-tip="${esc(item.label)} · ${item.value} 条"><title>${esc(item.key)} · ${item.value} 条</title></circle>`).join("")}
+                  ${trendPoints.map(item => `<circle cx="${item.x}" cy="${item.y}" r="3.4" tabindex="0" role="button" aria-label="${esc(item.key)} · ${item.value} 条，查看当天明细" data-chart-tip="${esc(item.label)} · ${item.value} 条" data-trend-date="${esc(item.key)}"><title>${esc(item.key)} · ${item.value} 条</title></circle>`).join("")}
                 </svg>
-                <div>${trendPoints.map(item => `<span><b>${item.value}</b><em>${esc(item.label)}</em></span>`).join("")}</div>
+                <div>${trendPoints.map(item => `<button type="button" data-trend-date="${esc(item.key)}"><b>${item.value}</b><em>${esc(item.label)}</em></button>`).join("")}</div>
+                </div>
               </div>
-            </button>
+            </article>
           </section>
           <section class="overview-action-grid">
             <button class="overview-action-card" data-overview-detail="todo"><span>${icon("checkCircle", 16)}</span><div><b>待你处理</b><em>${todoCount} 项 · 审核 ${inReview.length} / 失败 ${failed.length}</em></div><strong>${todoCount}</strong></button>
@@ -362,6 +400,21 @@ export const overviewView = {
 
     root.querySelectorAll("[data-overview-detail]").forEach(button => button.addEventListener("click", () => openDataDetail(button.dataset.overviewDetail)));
     root.querySelectorAll("[data-overview-account]").forEach(button => button.addEventListener("click", () => openDataDetail("interactions", button.dataset.overviewAccount)));
+    root.querySelectorAll("[data-trend-date]").forEach(target => {
+      const openTrendDate = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        openDataDetail("recent", "", { type: "day", value: target.dataset.trendDate });
+      };
+      target.addEventListener("click", openTrendDate);
+      target.addEventListener("keydown", event => {
+        if (event.key === "Enter" || event.key === " ") openTrendDate(event);
+      });
+    });
+    const trendScroller = root.querySelector("[data-trend-scroll]");
+    root.querySelectorAll("[data-trend-scroll-by]").forEach(button => button.addEventListener("click", () => {
+      trendScroller?.scrollBy({ left: Number(button.dataset.trendScrollBy || 0), behavior: "smooth" });
+    }));
 
     const chartTooltip = $("#overviewChartTooltip", root);
     const hideChartTooltip = () => chartTooltip?.classList.remove("is-visible");
