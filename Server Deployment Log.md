@@ -1,5 +1,13 @@
 # Server Deployment Log
 
+## v103.3 - 2026-07-20
+
+- Source: `f28e610` (`fix: compact oversized image references`), following the v103.2 same-origin API correction. Production main cache is `20260720-v103-3`.
+- Scope: deployed exactly 16 committed code/static files from a commit archive. No delete-style synchronization was used; SQLite, business collections, uploads, composed media, canvas blobs, video-workshop runtime, model cache, authentication state and private environment files were preserved.
+- Backup and rollback: retained a pre-deployment code and runtime snapshot with a table-count baseline. Rollback restores code/static resources only and must never replace newer production business data.
+- Validation: the main service is active, health check passes, the static entry serves v103.3 and SQLite integrity is `ok`. All database table counts matched the pre-deployment baseline.
+- Image reliability: public browser calls remain same-origin instead of falling back to a member's loopback service. Oversized PNG/JPEG references are now compacted before an upstream request, with a shared encoded payload budget below the upstream limit. This host has no Pillow in the service environment, so the verified FFmpeg fallback is active. No provider key or private environment value was changed, and no live image-generation task was created for validation.
+
 ## v95 - 2026-07-19
 
 - Source: `09be746` (`docs: record v95 release commit`), including functional commit `9503008`. Production reports main cache `20260718-v94-1`, video workshop cache `20260719-17`, and infinite-canvas build `EjIfhNcQipNHVEUS6sYeu`.
