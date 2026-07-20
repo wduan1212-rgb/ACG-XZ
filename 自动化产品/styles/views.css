@@ -3502,12 +3502,7 @@ body[data-zone="overview"] .view-root::after { display: none !important; }
   font: inherit;
 }
 .overview-kpi-card { position: relative; min-height: 86px; padding: 13px 15px; overflow: hidden; text-align: left; cursor: pointer; transition: border-color 180ms ease, background 180ms ease, transform 180ms ease; }
-.overview-kpi-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: #2d67dc; opacity: .94; }
-.overview-kpi-card:nth-child(2)::before { background: #e5485d; }
-.overview-kpi-card:nth-child(3)::before { background: #537ed9; }
-.overview-kpi-card:nth-child(4)::before { background: #d95669; }
 .overview-kpi-card:first-child { border-color: #315fc8; color: #fff; background: linear-gradient(135deg, #1f4eb7 0%, #3974e6 100%); box-shadow: 0 12px 24px rgba(43,94,203,.2); }
-.overview-kpi-card:first-child::before { background: rgba(255,255,255,.8); }
 .overview-kpi-card:first-child span,
 .overview-kpi-card:first-child em { color: rgba(255,255,255,.8); }
 .overview-kpi-card span { display: block; color: #5f6670; font-size: 11px; font-weight: 700; }
@@ -3590,7 +3585,17 @@ button.overview-viz-card { cursor: pointer; }
 .overview-detail-summary { padding: 11px 0 4px; color: #6b737f; font-size: 11px; font-weight: 700; }
 .overview-action-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .overview-action-card { min-width: 0; min-height: 64px; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 10px 12px; text-align: left; cursor: pointer; transition: border-color 180ms ease, background 180ms ease, transform 180ms ease; }
-.overview-action-card > span { width: 30px; height: 30px; display: grid; place-items: center; color: #31363d; background: #eceef0; }
+.overview-action-icon { width: 30px; height: 30px; display: grid; place-items: center; color: #31363d; }
+.overview-action-icon svg { overflow: visible; }
+.overview-action-card:hover .overview-action-icon { color: #2d61d4; }
+.overview-action-card:hover .overview-action-icon.is-check svg path:nth-child(2) { animation: overview-check-draw 560ms cubic-bezier(.2,.8,.2,1); }
+.overview-action-card:hover .overview-action-icon.is-pulse svg path { animation: overview-pulse-draw 850ms ease-in-out infinite; }
+.overview-action-card:hover .overview-action-icon.is-note svg path:nth-child(n + 3) { animation: overview-note-write 760ms ease-in-out infinite alternate; }
+.overview-action-card:hover .overview-action-icon.is-link svg { transform-box: fill-box; transform-origin: center; animation: overview-link-turn 1.2s linear infinite; }
+@keyframes overview-check-draw { from { stroke-dasharray: 16; stroke-dashoffset: 16; } to { stroke-dasharray: 16; stroke-dashoffset: 0; } }
+@keyframes overview-pulse-draw { 0% { stroke-dasharray: 28; stroke-dashoffset: 28; opacity: .55; } 52% { stroke-dasharray: 28; stroke-dashoffset: 0; opacity: 1; } 100% { stroke-dasharray: 28; stroke-dashoffset: -28; opacity: .55; } }
+@keyframes overview-note-write { 0%, 28% { opacity: .2; transform: scaleX(.25); transform-origin: left center; } 68%, 100% { opacity: 1; transform: scaleX(1); transform-origin: left center; } }
+@keyframes overview-link-turn { to { transform: rotate(360deg); } }
 .overview-action-card > div { min-width: 0; display: grid; gap: 3px; }
 .overview-action-card > div b { font-size: 11px; }
 .overview-action-card > div em { overflow: hidden; color: #8a9098; font-size: 9px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
@@ -3656,7 +3661,9 @@ button.overview-viz-card { cursor: pointer; }
   .overview-gantt button > i,
   .overview-gantt button u,
   .overview-trend-line circle,
-  .overview-chart-tooltip { transition: none !important; }
+  .overview-chart-tooltip,
+  .overview-action-icon,
+  .overview-action-icon * { transition: none !important; animation: none !important; }
 }
 
 /* v69 local QA: continuous workspaces and aligned operational tables */

@@ -11,7 +11,7 @@ import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260718-v94-1";
 import { LLM_CONFIG } from "../api/llm.js?v=20260718-v94-1";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260718-v94-1";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260720-v99-1";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260720-v101-1";
 import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
 import { renderSupplierOverview } from "./supplierViews.js?v=20260718-v94-1";
@@ -232,6 +232,22 @@ export const overviewView = {
     const xhsCount = delivered.filter(({ acc }) => acc?.platform === "小红书").length;
     const videoCount = delivered.filter(({ acc }) => acc?.platform === "视频号").length;
     const xhsShare = Math.round(xhsCount / Math.max(1, xhsCount + videoCount) * 100);
+    const todayKey = dayKey(Date.now());
+    const todayPlatformMap = new Map();
+    delivered
+      .filter(({ asset }) => dayKey(asset?.deliveredAt || asset?.createdAt) === todayKey)
+      .filter(({ acc }) => ["小红书", "视频号"].includes(acc?.platform))
+      .forEach(({ acc }) => {
+        const key = `${acc.id || acc.name}::${acc.platform}`;
+        const current = todayPlatformMap.get(key) || { accountId: acc.id || "", name: acc.name || "未命名账号", platform: acc.platform, count: 0 };
+        current.count += 1;
+        todayPlatformMap.set(key, current);
+      });
+    const todayPlatformRows = [...todayPlatformMap.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
+    const todayPlatformPreview = todayPlatformRows.slice(0, 6).map(item => `${item.name} · ${item.platform} ${item.count} 条`);
+    const todayPlatformTooltip = todayPlatformPreview.length
+      ? `今日平台交付 · ${todayPlatformPreview.join("；")}${todayPlatformRows.length > 6 ? "；… 点击查看全部" : ""}`
+      : "今日暂无小红书或视频号交付";
     const recentDays = Array.from({ length: 7 }, (_, index) => {
       const ts = Date.now() - (6 - index) * 864e5;
       const key = dayKey(ts);
@@ -293,7 +309,13 @@ export const overviewView = {
       let rows = "";
       let recentFilter = null;
       let recentDetailHtml = null;
-      if (key === "recent") {
+      if (key === "todayPlatforms") {
+        title = `今日平台交付 · ${todayPlatformRows.length} 个账号`;
+        rows = todayPlatformRows.map(item => makeRow(
+          item.name,
+          `${item.platform} · 今日交付 ${item.count} 条`
+        )).join("") || `<div class="overview-task-empty">今日暂无小红书或视频号交付</div>`;
+      } else if (key === "recent") {
         const dayOptions = recentDays.slice().reverse();
         const monthOptions = [...new Set(delivered
           .map(({ asset }) => dayKey(asset?.deliveredAt || asset?.createdAt || 0).slice(0, 7))
@@ -397,7 +419,7 @@ export const overviewView = {
             <button class="overview-kpi-card" data-overview-detail="recent"><span>累计交付</span><b>${fmt(delivered.length)}</b><em>${pendingDl} 条供应商待下载</em></button>
           </section>
           <section class="overview-viz-grid">
-            <button class="overview-viz-card overview-donut-card" data-overview-detail="recent" aria-label="查看平台交付分布">
+            <button class="overview-viz-card overview-donut-card" data-overview-detail="todayPlatforms" data-chart-tip="${esc(todayPlatformTooltip)}" aria-label="查看今日小红书与视频号交付明细">
               <header><b>平台分布</b><em>${delivered.length} 条交付</em></header>
               <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><i><b>${delivered.length}</b><em>总交付</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
             </button>
@@ -418,10 +440,10 @@ export const overviewView = {
             </article>
           </section>
           <section class="overview-action-grid">
-            <button class="overview-action-card" data-overview-detail="todo"><span>${icon("checkCircle", 16)}</span><div><b>待你处理</b><em>${todoCount} 项 · 审核 ${inReview.length} / 失败 ${failed.length}</em></div><strong>${todoCount}</strong></button>
-            <button class="overview-action-card" data-overview-detail="interactions"><span>${icon("pulse", 16)}</span><div><b>互动构成</b><em>逐条查看赞、藏、评与播放</em></div><strong>${fmt(totalEngagement)}</strong></button>
-            <button class="overview-action-card" data-overview-detail="remarks"><span>${icon("fileText", 16)}</span><div><b>发布沟通</b><em>${unreadRemarks.length} 条有未读消息</em></div><strong>${remarked.length}</strong></button>
-            <button class="overview-action-card" data-overview-detail="dataQuality"><span>${icon("link", 16)}</span><div><b>数据完整度</b><em>${analytics.pending} 条等待快照</em></div><strong>${analytics.synced}/${links.length}</strong></button>
+            <button class="overview-action-card" data-overview-detail="todo"><span class="overview-action-icon is-check">${icon("checkCircle", 16)}</span><div><b>待你处理</b><em>${todoCount} 项 · 审核 ${inReview.length} / 失败 ${failed.length}</em></div><strong>${todoCount}</strong></button>
+            <button class="overview-action-card" data-overview-detail="interactions"><span class="overview-action-icon is-pulse">${icon("pulse", 16)}</span><div><b>互动构成</b><em>逐条查看赞、藏、评与播放</em></div><strong>${fmt(totalEngagement)}</strong></button>
+            <button class="overview-action-card" data-overview-detail="remarks"><span class="overview-action-icon is-note">${icon("fileText", 16)}</span><div><b>发布沟通</b><em>${unreadRemarks.length} 条有未读消息</em></div><strong>${remarked.length}</strong></button>
+            <button class="overview-action-card" data-overview-detail="dataQuality"><span class="overview-action-icon is-link">${icon("link", 16)}</span><div><b>数据完整度</b><em>${analytics.pending} 条等待快照</em></div><strong>${analytics.synced}/${links.length}</strong></button>
           </section>
           <section class="overview-account-strip"><header><b>账号表现</b><em>${accountPerformance.length > 4 ? "每 4 秒切换下一组账号" : "点击查看逐条数据"}</em></header><div class="overview-account-viewport" data-account-carousel><div class="overview-account-page">${accountPageHtml(accountCarouselPage)}</div></div></section>
         </main>
