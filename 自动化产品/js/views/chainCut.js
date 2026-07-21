@@ -10,7 +10,7 @@ import { addAssetFromFile, assetBlob, globalBgmAssets, urlFor } from "../domain/
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260720-v104-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260721-v105-1";
 
 let PPS = 40;
 const CLIP_SEC = 15;
@@ -416,14 +416,6 @@ export function renderCutPage(root, p) {
     });
     return { dataUrl, url };
   };
-  const videoJobsComplete = () => {
-    const digital = p.artifacts?.boards?.digitalHuman?.segments || [];
-    if (p.artifacts?.boards?.generationMode === "digitalHuman") {
-      return digital.length > 0 && digital.every(seg => !!(seg.videoOutput?.url || seg.videoOutput?.videoUrl));
-    }
-    const jobs = state.jobs.filter(job => job.productionId === p.id && job.kind === "video");
-    return jobs.length > 0 && jobs.every(job => job.status === "succeeded");
-  };
   const captionSignature = () => JSON.stringify({
     cues: SUBS().map(s => [s.start, s.end, cleanCaptionText(s.text || "")]),
     style: p.artifacts.subStyle
@@ -442,6 +434,18 @@ export function renderCutPage(root, p) {
     p.artifacts.finalVideoMixSig = "";
     p.artifacts.composeError = "";
   };
+  const legacyInfoFlowCaptions = !isDigitalHuman()
+    && p.artifacts.subTimingSource !== "manual"
+    && !String(p.artifacts.subTimingSource || "").endsWith("-manual")
+    && SUBS().length > 0;
+  if (legacyInfoFlowCaptions) {
+    p.artifacts.subs = [];
+    p.artifacts.subTimingSource = "";
+    p.artifacts.audioTimingSource = "";
+    p.artifacts.audioTimingAttemptSig = "";
+    invalidateFinalMix();
+    save("productions");
+  }
   const bumpAudioTimingRevision = () => {
     p.artifacts.audioTimingRevision = Number(p.artifacts.audioTimingRevision || 0) + 1;
     return p.artifacts.audioTimingRevision;
@@ -733,7 +737,7 @@ export function renderCutPage(root, p) {
     p.artifacts.subs = normalizeCaptionTrack(cues);
     p.artifacts.subTimingSource = isDigitalHuman()
       ? (cues.length ? "digital-segment-duration-v2" : "digital-segment-duration-v2-empty")
-      : (cues.length ? "prompt-speech-timeline-v3" : "prompt-speech-timeline-v3-empty");
+      : (cues.length ? "prompt-speech-timeline-v3-manual" : "prompt-speech-timeline-v3-empty-manual");
     p.artifacts.audioTimingSource = isDigitalHuman()
       ? (cues.length ? "known-narration-real-duration" : "missing-real-duration-or-narration")
       : (cues.length ? "existing-prompt-spoken-timeline" : "no-explicit-spoken-dialogue-timeline");
@@ -1005,12 +1009,15 @@ export function renderCutPage(root, p) {
       </div>`).join("") : `<div class="tl-empty">生成完成的片段会自动加入时间轴</div>`;
 
     const stk = $("#tlSubTrack", root); stk.style.width = W + "px";
-    stk.innerHTML = SUBS().map((s, i) => `
-      <div class="tl-sub ${i === activeSubIdx ? "is-active" : ""}" data-i="${i}" style="left:${(s.start || 0) * PPS}px;width:${Math.max(24, ((s.end || 0) - (s.start || 0)) * PPS - 2)}px">
+    stk.innerHTML = SUBS().map((s, i) => {
+      const cueWidth = Math.max(6, ((s.end || 0) - (s.start || 0)) * PPS - 2);
+      return `
+      <div class="tl-sub ${cueWidth < 28 ? "is-compact" : ""} ${i === activeSubIdx ? "is-active" : ""}" data-i="${i}" style="left:${(s.start || 0) * PPS}px;width:${cueWidth}px">
         <span class="tl-sub-text">${esc(cleanCaptionText(s.text || "字幕"))}</span>
         <span class="tl-sub-resize left" data-i="${i}" data-side="left" title="拖动字幕开始时间"></span>
         <span class="tl-sub-resize right" data-i="${i}" data-side="right" title="拖动字幕结束时间"></span>
-      </div>`).join("");
+      </div>`;
+    }).join("");
 
     $$(".tl-clip-preview", root).forEach(video => video.addEventListener("loadedmetadata", () => {
       if (!Number.isFinite(video.duration) || video.duration <= 0) return;
@@ -1574,7 +1581,7 @@ export function renderCutPage(root, p) {
     if (!protectedCaptionTiming()) {
       await alignCaptionsToAudio({ silent: true });
     }
-    if (videoJobsComplete() && needsCompose()) {
+    if (needsCompose()) {
       nextButton.disabled = true;
       nextButton.innerHTML = `<span class="spin-dot"></span> 正在合成成片`;
       const composed = await composeFinal({ automatic: false });
@@ -1587,7 +1594,7 @@ export function renderCutPage(root, p) {
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("未检测到封面，正在自动生成");
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260720-v104-1");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260721-v105-1");
         await ensureVideoCover(p);
         toast("封面已自动生成并入库");
       } catch (err) {

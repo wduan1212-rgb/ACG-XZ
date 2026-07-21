@@ -209,6 +209,10 @@ export function deliver(p, opts = {}) {
   const acc = accountById(p.accountId);
   if (!acc) return null;
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
+  if (p.mode === "视频" && !String(p.artifacts?.finalVideoUrl || "").trim()) {
+    window.__toast && window.__toast("完整成片尚未合成，请先回到剪辑台完成合成", "error");
+    return null;
+  }
   const planDate = normalizePlanDate(opts.planDate);
   const productTag = String(opts.productTag || "").trim().slice(0, 20);
   if (!productTag) { window.__toast && window.__toast("请在发布弹窗填写产品标签", "error"); return null; }
@@ -632,9 +636,7 @@ async function deliveryEntries(asset, folder = "") {
       .map(x => state.jobs.find(j => j.id === x.jobId)?.output?.url)
       .filter(Boolean);
     const finalUrl = asset.videoUrl || prod?.artifacts?.finalVideoUrl || "";
-    const urls = finalUrl
-      ? [finalUrl]
-      : [...new Set([...(asset.clipUrls || []), ...timelineUrls].filter(Boolean))];
+    const urls = finalUrl ? [finalUrl] : [];
     let got = 0;
     for (let i = 0; i < urls.length; i++) {
       const d = await remoteFileU8(urls[i]);
@@ -647,7 +649,8 @@ async function deliveryEntries(asset, folder = "") {
       entries.push({ name: `${base}视频下载链接.txt`, u8: encText(urls.map((u, i) => `${i + 1}. ${u}`).join("\n")) });
     }
     if (!got && !urls.length) {
-      entries.push({ name: `${base}视频说明.txt`, u8: encText(`当前交付记录还没有真实视频回链。\n构成：${asset.clips || 0} 段成片拼接${asset.subCount ? ` · ${asset.subCount} 条字幕` : ""}`) });
+      const sourceCount = new Set([...(asset.clipUrls || []), ...timelineUrls].filter(Boolean)).size;
+      entries.push({ name: `${base}视频说明.txt`, u8: encText(`当前交付记录缺少已合成的单一成片，未把 ${sourceCount || asset.clips || 0} 段源视频冒充成片写入压缩包。请回到创作端剪辑台重新合成后再发布。`) });
     }
   }
   return entries;

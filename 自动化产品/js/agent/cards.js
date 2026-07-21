@@ -3,9 +3,9 @@
 import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
-import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
+import { platChip, groupOf, isAvatarAsset, accountCreatedToday } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260720-v104-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260721-v105-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -207,7 +207,7 @@ const CARD = {
           </div>`}
         </div>`;
         return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"} ${customMode ? "is-custom-plan" : ""}" ${locked ? "" : `data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}"`}>
-        <div class="agc-override-name"><b>${esc(a.name)}</b><span>${esc(groupOf(a))} · ${esc(a.platform || a.mode || "账号")}</span></div>
+        <div class="agc-override-name"><b>${esc(a.name)}</b><span>${accountCreatedToday(a.id) ? `<span class="status-pill ok">已创作</span> ` : ""}${esc(groupOf(a))} · ${esc(a.platform || a.mode || "账号")}</span></div>
         ${locked ? "" : `<div class="agc-override-actions">
           <button data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="custom" data-ref-account="${a.id}">${icon("image", 11)} 从资产选择</button>
           <button data-act="plan-remove-account" data-mid="${m.id}" data-account="${a.id}">${icon("x", 10)} 取消选择</button>
@@ -280,7 +280,7 @@ const CARD = {
         const imgAcc = isImageAcc(a);
         return `<button class="agc-acc ${on ? "on" : ""} ${imgAcc ? "is-image" : "is-video"}" data-pacc="${a.id}" ${locked ? "disabled" : ""}>
           <span class="agc-idx">#${String(idx + 1).padStart(2, "0")}</span>
-          <b>${esc(a.name)}</b><em>${groupOf(a)}</em>
+          <b>${esc(a.name)}</b><em>${accountCreatedToday(a.id) ? `<span class="status-pill ok">已创作</span> ` : ""}${groupOf(a)}</em>
           ${on ? icon("check", 13, "ok") : ""}
         </button>`;
       }).join("")}</div>

@@ -517,6 +517,8 @@ export function autoAssemble(p) {
 export function autoMixMaterial(p) {
   const acc = accountById(p.accountId);
   const shots = p.artifacts.script.shots || [];
+  const isInfoFlow = p.artifacts.boards?.materialMode === "infoFlow"
+    || p.artifacts.boards?.generationMode === "infoFlow";
   if (!(p.artifacts.audio.perShot || []).length && shots.length) {
     Object.assign(p.artifacts.audio, estimateAudio(shots), { source: p.artifacts.audio.source || "estimate" });
   }
@@ -539,9 +541,17 @@ export function autoMixMaterial(p) {
     if (line) subs.push(...spreadCaption(line, t, t + d));
     t += d;
   });
-  p.artifacts.subs = subs;
+  // 信息流默认保持空字幕轨；只有用户在剪辑台主动点击“匹配字幕”后才建立字幕。
+  // 同时保护已经人工编辑的字幕，自动拼时间轴不能覆盖手工轨。
+  if (p.artifacts.subTimingSource !== "manual") {
+    p.artifacts.subs = isInfoFlow ? [] : subs;
+    if (isInfoFlow) {
+      p.artifacts.subTimingSource = "";
+      p.artifacts.audioTimingSource = "";
+      p.artifacts.audioTimingAttemptSig = "";
+    }
+  }
   const hasExternalVoice = !!p.artifacts.audio.assetId && ["tts", "upload"].includes(p.artifacts.audio.source);
-  const isInfoFlow = p.artifacts.boards?.materialMode === "infoFlow";
   if (isInfoFlow) {
     p.artifacts.bgm = null;
   } else if (!hasExternalVoice && p.artifacts.bgm?.auto) {

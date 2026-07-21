@@ -92,6 +92,9 @@ export function Workspace({ projectId }: { projectId: string }) {
     !!selectedImage.assetUrl &&
     !selectedImage.hidden &&
     !("loading" in selectedImage && selectedImage.loading);
+  const selectedImages = selection
+    .map((id) => reactiveItems.find((item) => item.id === id))
+    .filter((item): item is ImageItem => !!item && isImageItem(item) && !!item.assetUrl && !item.hidden && !("loading" in item && item.loading));
   const selectedMark =
     selection.length === 1
       ? reactiveItems.find(
@@ -110,6 +113,7 @@ export function Workspace({ projectId }: { projectId: string }) {
   const [publishNotice, setPublishNotice] = useState("");
   const [publishing, setPublishing] = useState(false);
   const publishNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const imageClipboard = useRef<ImageItem[]>([]);
 
   const showPublishNotice = useCallback((message: string) => {
     setPublishNotice(message);
@@ -399,6 +403,51 @@ export function Workspace({ projectId }: { projectId: string }) {
     [projectId, addItem, setSelection, addReference, centerWorld],
   );
 
+  const pasteCopiedImages = useCallback(() => {
+    if (!imageClipboard.current.length) return false;
+    const ids: string[] = [];
+    imageClipboard.current.forEach((source, index) => {
+      const item: ImageItem = {
+        ...source,
+        id: uid("item"),
+        projectId,
+        position: { x: source.position.x + 32 + index * 10, y: source.position.y + 32 + index * 10 },
+        z: source.z + 1 + index,
+        createdAt: Date.now() + index,
+        label: `${source.label || "图片"} 副本`,
+      };
+      addItem(projectId, item);
+      ids.push(item.id);
+    });
+    setSelection(ids);
+    return true;
+  }, [addItem, projectId, setSelection]);
+
+  const batchExportSelection = useCallback(async () => {
+    if (!selectedImages.length) return;
+    showPublishNotice(`正在导出 ${selectedImages.length} 张图片…`);
+    for (let index = 0; index < selectedImages.length; index++) {
+      const item = selectedImages[index];
+      const rendered = await renderCanvasOutput({
+        imageItem: item,
+        marks: overlappingMarksFor(item, reactiveItems),
+        targetWidth: item.naturalWidth,
+        targetHeight: item.naturalHeight,
+        mime: "image/png",
+      });
+      const href = URL.createObjectURL(rendered.blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = `${(item.label || project?.name || "无限画布作品").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80)}-${index + 1}.png`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(href), 4000);
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+    }
+    showPublishNotice(`已导出 ${selectedImages.length} 张选中图片。`);
+  }, [project?.name, reactiveItems, selectedImages, showPublishNotice]);
+
   const addTextMark = useCallback(() => {
     const c = centerWorld();
     const size = { width: 220, height: 90 };
@@ -521,6 +570,22 @@ export function Workspace({ projectId }: { projectId: string }) {
       if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t.isContentEditable)
         return;
       const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key.toLowerCase() === "c") {
+        const images = useStore.getState().selection
+          .map((id) => (useStore.getState().itemsByProject[projectId] ?? []).find((item) => item.id === id))
+          .filter((item): item is ImageItem => !!item && isImageItem(item));
+        if (images.length) {
+          e.preventDefault();
+          imageClipboard.current = images.map((item) => ({ ...item, position: { ...item.position }, size: { ...item.size } }));
+          showPublishNotice(`已复制 ${images.length} 张图片，可按 Command+V 粘贴。`);
+          const firstUrl = images[0]?.assetUrl;
+          if (firstUrl && navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+            void fetch(firstUrl).then((response) => response.blob()).then((blob) => navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })])).catch(() => {});
+          }
+        }
+        return;
+      }
+      if (meta && e.key.toLowerCase() === "v") return;
       if (meta && e.key.toLowerCase() === "a") {
         e.preventDefault();
         setSelection((useStore.getState().itemsByProject[projectId] ?? []).map((i) => i.id));
@@ -540,11 +605,35 @@ export function Workspace({ projectId }: { projectId: string }) {
         setTool("hand");
       } else if (e.key.toLowerCase() === "t") {
         addTextMark();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        const images = (useStore.getState().itemsByProject[projectId] ?? []).filter((item): item is ImageItem => !item.hidden && isImageItem(item));
+        if (!images.length) return;
+        e.preventDefault();
+        const currentId = useStore.getState().selection.find((id) => images.some((item) => item.id === id));
+        const currentIndex = Math.max(0, images.findIndex((item) => item.id === currentId));
+        const offset = e.key === "ArrowRight" ? 1 : -1;
+        setSelection([images[(currentIndex + offset + images.length) % images.length].id]);
+      }
+    };
+    const onPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable) return;
+      const imageFiles = Array.from(e.clipboardData?.files || []).filter((file) => file.type.startsWith("image/"));
+      if (imageFiles.length) {
+        e.preventDefault();
+        void addUploadedFiles(imageFiles, false);
+      } else if (pasteCopiedImages()) {
+        e.preventDefault();
+        showPublishNotice(`已粘贴 ${imageClipboard.current.length} 张图片。`);
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [projectId, setSelection, clearSelection, removeItems, setTool, addTextMark]);
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("paste", onPaste);
+    };
+  }, [projectId, setSelection, clearSelection, removeItems, setTool, addTextMark, addUploadedFiles, pasteCopiedImages, showPublishNotice]);
 
   if (!project) {
     return (
@@ -606,9 +695,10 @@ export function Workspace({ projectId }: { projectId: string }) {
     <div className="flex h-full w-full flex-col">
       <TopBar
         projectId={projectId}
-        onExport={() => selectedImageReady && selectedImage && setExportItem(selectedImage)}
+        onExport={() => selectedImages.length === 1 ? setExportItem(selectedImages[0]) : void batchExportSelection()}
         onPublish={requestPublish}
-        canExport={selectedImageReady}
+        canExport={selectedImages.length > 0}
+        exportCount={selectedImages.length}
         canPublish={selectedImageReady}
         publishing={publishing}
         publishNotice={publishNotice}

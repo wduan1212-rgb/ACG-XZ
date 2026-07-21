@@ -586,7 +586,7 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
             encoding="utf-8"
         )
         ensure_cover = workshop.split(
-            "export async function ensureVideoCover(p)", 1
+            "export async function ensureVideoCover(p,", 1
         )[1].split("\nexport ", 1)[0]
 
         self.assertIn('const ratio = "3:4";', ensure_cover)
@@ -655,11 +655,11 @@ globalThis.fetch = async () => ({
   }),
   text: async () => ''
 });
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260720-v104-1');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260721-v105-1');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260720-v104-1');
+const { AI } = await import('./js/api/ai.js?v=20260721-v105-1');
 const request = {
   topic: '国产codex百度搭子自动管理你的知识库！',
   shots: [],

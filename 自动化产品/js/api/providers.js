@@ -717,13 +717,18 @@ export async function designTtsVoice({ prompt, previewText, name = "" }) {
   if (!serverTts.configured) throw new Error("服务器未配置 Minimax TTS");
   const cleanPrompt = sanitizeXhsText(prompt);
   const cleanPreview = sanitizeXhsText(previewText);
+  const gender = /女声|女生|女性|少女|姐姐|御姐|female|woman|girl/i.test(cleanPrompt)
+    ? "female"
+    : /男声|男生|男性|少年|大叔|male|man|boy/i.test(cleanPrompt)
+      ? "male"
+      : "";
   if (!cleanPrompt) throw new Error("请先填写音色设计描述");
   let res;
   try {
     res = await fetch("/api/tts/voice/design", {
       method: "POST",
       headers: creatorAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ prompt: cleanPrompt, previewText: cleanPreview, name: sanitizeXhsText(name) })
+      body: JSON.stringify({ prompt: cleanPrompt, previewText: cleanPreview, name: sanitizeXhsText(name), gender })
     });
   } catch (e) {
     throw new Error("连不上本地服务端 /api/tts/voice/design —— 请确认用 start-shared.command（python 服务端）打开、且改完后已重启它（" + (e.message || e) + "）");

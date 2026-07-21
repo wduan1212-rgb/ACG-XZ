@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260720-v104-1";
+import { llm, visionCopy } from "./llm.js?v=20260721-v105-1";
 import { DUMATE_BRIEF } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
@@ -2690,28 +2690,39 @@ ${productRelationLine(rel.slice(0, 2))}
       ].join("\n") }
     ];
     try {
-      let content = "";
-      try {
-        content = await llm(messages, { temperature: 0.9, timeoutMs: 90000, thinking: "disabled", maxTokens: 4096 });
-      } catch (err) {
-        if (!/模型无有效返回|finish_reason|length|JSON|四段/.test(err?.message || String(err))) throw err;
-        content = await llm(messages, { temperature: 0.9, timeoutMs: 90000, thinking: "disabled", maxTokens: 4096 });
+      let lastContractError = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const retryHint = attempt && lastContractError
+            ? [{ role: "user", content: `上一版没有通过完整性校验：${lastContractError.message}。请保持原主题和创意质量，重新完整输出四段，尤其补足自然口播；不要解释校验过程。` }]
+            : [];
+          const content = await llm([...messages, ...retryHint], {
+            temperature: attempt ? 0.82 : 0.9,
+            timeoutMs: 90000,
+            thinking: "disabled",
+            maxTokens: 4096
+          });
+          const d = parseCustomVideoDraftText(content, safeTitle);
+          const out = {
+            title: cleanCustomVideoText(d.title || safeTitle || ""),
+            copy: ensureVideoBrandTags(cleanCustomVideoText(d.copy || safeBody || "", { title: d.title || safeTitle }), product),
+            narration: cleanCustomVideoText(d.narration || "", { stripTags: true, title: d.title || safeTitle }),
+            visualPrompt: cleanCustomVideoText(d.visualPrompt || "", { stripTags: true, title: d.title || safeTitle })
+          };
+          if (!out.title) out.title = safeTitle || cleanCustomVideoText((out.copy || out.narration).split(/\n+/)[0] || "");
+          if (!out.copy || !out.narration) throw new Error("模型未返回完整的发布文案和口播");
+          if (normalizeForDedupe(out.copy) === normalizeForDedupe(out.narration)) throw new Error("模型返回的发布文案和口播过于相似，请重试");
+          if (!/我|咱|我们/.test(out.narration)) throw new Error("模型口播缺少第一人称视角，请重试");
+          if (out.narration.length < Math.min(360, out.copy.length + 80)) throw new Error("模型口播长度不足，请重试");
+          if (/本条围绕|这条围绕|本文围绕|本期围绕/.test(`${out.copy}\n${out.narration}`)) throw new Error("模型文案仍含元话术，请重试");
+          if (/^(哎|嘿|诶|欸|跟你说|我跟你说|说个事|你感受一下|家人们|兄弟们|姐妹们)/.test(out.copy.trim())) throw new Error("模型发布文案过于口语化，请重试");
+          return this._ok(out);
+        } catch (error) {
+          lastContractError = error instanceof Error ? error : new Error(String(error || "语言模型调用失败"));
+          if (attempt === 0) await delay(180);
+        }
       }
-      const d = parseCustomVideoDraftText(content, safeTitle);
-      const out = {
-        title: cleanCustomVideoText(d.title || safeTitle || ""),
-        copy: ensureVideoBrandTags(cleanCustomVideoText(d.copy || safeBody || "", { title: d.title || safeTitle }), product),
-        narration: cleanCustomVideoText(d.narration || "", { stripTags: true, title: d.title || safeTitle }),
-        visualPrompt: cleanCustomVideoText(d.visualPrompt || "", { stripTags: true, title: d.title || safeTitle })
-      };
-      if (!out.title) out.title = safeTitle || cleanCustomVideoText((out.copy || out.narration).split(/\n+/)[0] || "");
-      if (!out.copy || !out.narration) throw new Error("模型未返回完整的发布文案和口播");
-      if (normalizeForDedupe(out.copy) === normalizeForDedupe(out.narration)) throw new Error("模型返回的发布文案和口播过于相似，请重试");
-      if (!/我|咱|我们/.test(out.narration)) throw new Error("模型口播缺少第一人称视角，请重试");
-      if (out.narration.length < Math.min(360, out.copy.length + 80)) throw new Error("模型口播长度不足，请重试");
-      if (/本条围绕|这条围绕|本文围绕|本期围绕/.test(`${out.copy}\n${out.narration}`)) throw new Error("模型文案仍含元话术，请重试");
-      if (/^(哎|嘿|诶|欸|跟你说|我跟你说|说个事|你感受一下|家人们|兄弟们|姐妹们)/.test(out.copy.trim())) throw new Error("模型发布文案过于口语化，请重试");
-      return this._ok(out);
+      throw lastContractError || new Error("语言模型调用失败");
     } catch (e) {
       this.lastSource = "error";
       this.lastError = (e && e.message) || String(e || "语言模型调用失败");

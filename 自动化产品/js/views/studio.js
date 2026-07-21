@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, timeAgo, wireDropZone, fileToDataUrl } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, activeAccount, activeProduction, productionById, canManageAccounts } from "../core/store.js";
-import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount } from "../domain/accounts.js";
+import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, accountCreatedToday } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260720-v104-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260721-v105-1";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260720-v104-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260720-v104-1";
-import { renderCutPage } from "./chainCut.js?v=20260720-v104-1";
-import { renderReviewPage } from "./chainCopy.js?v=20260720-v104-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260721-v105-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260721-v105-1";
+import { renderCutPage } from "./chainCut.js?v=20260721-v105-1";
+import { renderReviewPage } from "./chainCopy.js?v=20260721-v105-1";
 
 export const studioView = {
   render(root, { page }) {
@@ -125,6 +125,7 @@ function renderHome(root, acc) {
           </div>
         </div>
         <div class="sh-actions">
+          ${accountCreatedToday(acc.id) ? `<span class="status-pill ok" title="该账号今天已经交付过内容">今日已创作</span>` : ""}
           ${acc.homepageUrl
             ? `<a class="btn ghost sh-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转主页</a>`
             : `<button class="btn ghost sh-homepage-link is-disabled" type="button" disabled title="管理员尚未填写主页链接">${icon("external", 13)} 跳转主页</button>`}
@@ -163,11 +164,13 @@ function renderHome(root, acc) {
       <section class="sh-delivered card">
         <div class="card-head"><b>最近交付</b><button class="link-btn" data-sh="delivery">发布清单 ${icon("arrowRight", 12)}</button></div>
         ${delivered.length ? `<div class="sh-dl-grid">${delivered.map(p => {
-          const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
-          const cover = items.find(x => x.assetId);
-          const u = cover ? urlFor(cover.assetId) : null;
+          const imageAssetId = (p.artifacts?.images?.items || []).find(x => x.assetId)?.assetId || "";
+          const deliveryAsset = state.assets.find(asset => asset.id === p.delivery?.assetId || asset.productionId === p.id);
+          const videoCoverAssetId = p.artifacts?.boards?.cover?.assetId || deliveryAsset?.coverAssetId || "";
+          const previewAssetId = p.mode === "图文" ? imageAssetId : videoCoverAssetId;
+          const u = previewAssetId ? urlFor(previewAssetId) : null;
           return `<button class="sh-dl" data-prod="${p.id}">
-            ${u ? `<img src="${u}"/>` : `<i style="background:${gradFor(p.title || p.id)}">${p.mode === "图文" ? "图" : "▶"}</i>`}
+            ${u ? `<img src="${u}" alt="${esc(p.artifacts.copy.title || p.title || "最近交付")}" loading="lazy" decoding="async"/>` : `<i style="background:${gradFor(p.title || p.id)}">${p.mode === "图文" ? "图" : "▶"}</i>`}
             <b>${esc(p.artifacts.copy.title || p.title)}</b><em>${esc(p.delivery?.name || "")}</em>
           </button>`;
         }).join("")}</div>` : `<div class="muted" style="padding:6px 2px">还没有交付记录</div>`}

@@ -12,6 +12,7 @@ export function TopBar({
   onExport,
   onPublish,
   canExport,
+  exportCount,
   canPublish,
   publishing,
   publishNotice,
@@ -20,6 +21,7 @@ export function TopBar({
   onExport: () => void;
   onPublish: () => void;
   canExport: boolean;
+  exportCount: number;
   canPublish: boolean;
   publishing: boolean;
   publishNotice: string;
@@ -85,7 +87,7 @@ export function TopBar({
           {publishNotice || (!canPublish ? "请先选中一张图片后发布" : "")}
         </span>
         <Button variant="secondary" onClick={onExport} disabled={!canExport}>
-          <Download size={15} /> 导出
+          <Download size={15} /> {exportCount > 1 ? `批量导出 ${exportCount} 张` : "导出"}
         </Button>
         <Button
           variant="primary"

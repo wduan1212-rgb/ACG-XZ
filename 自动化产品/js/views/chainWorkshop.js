@@ -8,16 +8,16 @@ import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid 
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260720-v104-1";
+import { AI } from "../api/ai.js?v=20260721-v105-1";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial, enforceSupportedVideoMode } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260720-v104-1";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260721-v105-1";
 import { toast, withLoading, openLightbox } from "../ui/components.js";
 import { go, currentRoute } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260720-v104-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260721-v105-1";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, setFavoriteVoice, voicePickerGroups } from "../domain/voices.js";
 import {
@@ -363,24 +363,29 @@ function digitalSegmentsFromShots(p, acc) {
   const globalChar = A.characterRefAssetId || acc?.charBoardAssetId || null;
   segments.forEach(seg => {
     let oldIndex = old.findIndex((x, i) => !claimedOld.has(i) && String(x.line || "").trim() === String(seg.line || "").trim());
+    const matchedByLine = oldIndex >= 0;
     if (oldIndex < 0) oldIndex = old.findIndex((x, i) => !claimedOld.has(i) && (x.shotIndexes || []).some(index => seg.shotIndexes.includes(index)));
     if (oldIndex >= 0) claimedOld.add(oldIndex);
     const oldSeg = oldIndex >= 0 ? old[oldIndex] : null;
     if (oldSeg?.id) seg.id = oldSeg.id;
     if (oldSeg?.customCharacterRefAssetId) seg.customCharacterRefAssetId = oldSeg.customCharacterRefAssetId;
-    if (oldSeg?.audioAssetId) seg.audioAssetId = oldSeg.audioAssetId;
-    if (oldSeg?.audioDuration) seg.audioDuration = oldSeg.audioDuration;
-    if (oldSeg?.voiceId) seg.voiceId = oldSeg.voiceId;
-    if (oldSeg?.status) seg.status = oldSeg.status;
-    if (oldSeg?.videoJobId) seg.videoJobId = oldSeg.videoJobId;
-    if (oldSeg?.videoStatus) seg.videoStatus = oldSeg.videoStatus;
-    if (oldSeg?.videoPrompt) seg.videoPrompt = oldSeg.videoPrompt;
-    if (oldSeg?.providerRef) seg.providerRef = oldSeg.providerRef;
-    if (oldSeg?.videoOutput) seg.videoOutput = oldSeg.videoOutput;
-    if (oldSeg?.videoError) seg.videoError = oldSeg.videoError;
-    if (oldSeg?.videoProgress) seg.videoProgress = oldSeg.videoProgress;
-    if (oldSeg?.videoQueuedAt) seg.videoQueuedAt = oldSeg.videoQueuedAt;
-    if (oldSeg?.videoUpdatedAt) seg.videoUpdatedAt = oldSeg.videoUpdatedAt;
+    // 镜头位置相同只代表角色参考可以延续，不代表口播内容相同。
+    // 逐字一致时才复用旧音频/视频，避免用户改稿后仍播放自动生成的旧口播。
+    if (matchedByLine) {
+      if (oldSeg?.audioAssetId) seg.audioAssetId = oldSeg.audioAssetId;
+      if (oldSeg?.audioDuration) seg.audioDuration = oldSeg.audioDuration;
+      if (oldSeg?.voiceId) seg.voiceId = oldSeg.voiceId;
+      if (oldSeg?.status) seg.status = oldSeg.status;
+      if (oldSeg?.videoJobId) seg.videoJobId = oldSeg.videoJobId;
+      if (oldSeg?.videoStatus) seg.videoStatus = oldSeg.videoStatus;
+      if (oldSeg?.videoPrompt) seg.videoPrompt = oldSeg.videoPrompt;
+      if (oldSeg?.providerRef) seg.providerRef = oldSeg.providerRef;
+      if (oldSeg?.videoOutput) seg.videoOutput = oldSeg.videoOutput;
+      if (oldSeg?.videoError) seg.videoError = oldSeg.videoError;
+      if (oldSeg?.videoProgress) seg.videoProgress = oldSeg.videoProgress;
+      if (oldSeg?.videoQueuedAt) seg.videoQueuedAt = oldSeg.videoQueuedAt;
+      if (oldSeg?.videoUpdatedAt) seg.videoUpdatedAt = oldSeg.videoUpdatedAt;
+    }
     seg.dur = Math.round(Math.min(DIGITAL_SEGMENT_MAX_SEC, seg.dur) * 10) / 10;
     seg.characterRefAssetId = seg.customCharacterRefAssetId || globalChar || null;
   });
@@ -939,12 +944,12 @@ function inferWorkshopProductFromCopy(title = "", body = "", fallback = null) {
   return hit || fallback || primaryProductById("dumate") || productById("dumate");
 }
 
-export async function ensureVideoCover(p) {
+export async function ensureVideoCover(p, { force = false, onStatus = null } = {}) {
   if (!p || p.mode !== "视频") return true;
   const acc = accountById(p.accountId);
   if (!acc) throw new Error("账号不存在，无法生成封面");
   const cover = coverState(p);
-  if (cover.assetId && assetById(cover.assetId)) return true;
+  if (!force && cover.assetId && assetById(cover.assetId)) return true;
   if (cover.status === "loading") throw new Error("封面正在生成，请稍候");
   const title = (p.artifacts.copy?.title || p.title || p.topic || "").trim();
   if (!title) throw new Error("缺少发布标题，无法自动生成封面");
@@ -964,6 +969,7 @@ export async function ensureVideoCover(p) {
   cover.referenceReceipt = null;
   cover.updatedAt = Date.now();
   save("productions");
+  if (typeof onStatus === "function") onStatus();
   try {
     const provider = activeProviderFor("image");
     const key = providerKeyFor("image", provider);
@@ -2287,8 +2293,7 @@ export function renderWorkshopPage(root, p) {
       const cover = coverState(p);
       cover.prompt = ($("#wsCoverPrompt", root)?.value || cover.prompt || "").trim();
       try {
-        draw();
-        await ensureVideoCover(p);
+        await ensureVideoCover(p, { force: true, onStatus: draw });
         toast("封面图已生成并入库");
       } catch (err) {
         toast("封面生成失败：" + (err?.message || err), "error");
@@ -2595,6 +2600,7 @@ export function renderWorkshopPage(root, p) {
     }
 
     $("#wsDhVideoAll", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      syncNarrationFromEditor({ silent: true });
       const voiceId = (p.artifacts.audio.voiceId || acc?.voiceId || defaultTtsVoiceId() || "").trim();
       const audio = await ensureDigitalAudioForVideo(voiceId);
       applyDigitalFixedPrompts();
@@ -2635,10 +2641,14 @@ export function renderWorkshopPage(root, p) {
       draw();
     }, { once: true }));
     $$("[data-dh-video]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
-      if (prepareDigitalVideoSegments([b.dataset.dhVideo])) {
-        if (!await ensureDigitalHumanCanSubmit([b.dataset.dhVideo])) { draw(); return; }
+      const requestedIndex = digitalSegmentsForDisplay(p, acc).findIndex(x => x.id === b.dataset.dhVideo);
+      syncNarrationFromEditor({ silent: true });
+      const syncedSegments = persistDigitalSegmentsForCurrentState(p, acc);
+      const requestedId = (requestedIndex >= 0 ? syncedSegments[requestedIndex]?.id : "") || b.dataset.dhVideo;
+      if (prepareDigitalVideoSegments([requestedId])) {
+        if (!await ensureDigitalHumanCanSubmit([requestedId])) { draw(); return; }
         const segs = digitalSegmentsForDisplay(p, acc);
-        const i = segs.findIndex(x => x.id === b.dataset.dhVideo);
+        const i = segs.findIndex(x => x.id === requestedId);
         const n = i >= 0 ? createUnitVideoJobs(p, i) : 0;
         if (p.stage === "workshop") setStatus(p, "running");
         save("productions");
@@ -2647,9 +2657,13 @@ export function renderWorkshopPage(root, p) {
       }
     }, "生成中…")));
     $$("[data-dh-regen]", root).forEach(b => b.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      const requestedIndex = digitalSegmentsForDisplay(p, acc).findIndex(x => x.id === b.dataset.dhRegen);
+      syncNarrationFromEditor({ silent: true });
+      const syncedSegments = persistDigitalSegmentsForCurrentState(p, acc);
+      const requestedId = (requestedIndex >= 0 ? syncedSegments[requestedIndex]?.id : "") || b.dataset.dhRegen;
       const voiceId = (p.artifacts.audio.voiceId || acc?.voiceId || defaultTtsVoiceId() || "").trim();
       try {
-        const out = await synthesizeOneDigitalSegment(b.dataset.dhRegen, voiceId);
+        const out = await synthesizeOneDigitalSegment(requestedId, voiceId);
         applyDigitalFixedPrompts();
         save("productions");
         toast(out.count ? `已重新生成该段口播：${fmtTC(out.duration || 0)}` : "已重算该段口播估时");

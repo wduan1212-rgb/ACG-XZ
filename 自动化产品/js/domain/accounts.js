@@ -19,6 +19,18 @@ export function accountDisplaySequenceMap(accounts = state.accounts) {
 
 export const groupOf = a => a.mode === "图文" ? "图文组" : (a.subType === "数字人" ? "真人" : "素材");
 export const modeLabel = a => a.mode === "视频" ? (a.subType || "视频") : "图文";
+export function accountCreatedToday(accountId, now = Date.now()) {
+  const today = new Date(now);
+  const sameLocalDay = value => {
+    const time = typeof value === "string" ? Date.parse(value) : Number(value || 0);
+    if (!Number.isFinite(time) || time <= 0) return false;
+    const date = new Date(time);
+    return date.getFullYear() === today.getFullYear()
+      && date.getMonth() === today.getMonth()
+      && date.getDate() === today.getDate();
+  };
+  return state.assets.some(asset => asset.delivered && asset.accountId === accountId && sameLocalDay(asset.deliveredAt || asset.createdAt));
+}
 export function normalizeHomepageUrl(value = "") {
   let raw = String(value || "").trim();
   if (!raw) return "";

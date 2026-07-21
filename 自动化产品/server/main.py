@@ -3220,6 +3220,7 @@ class VoiceDesignReq(BaseModel):
     description: str = ""
     previewText: str = ""
     name: str = ""
+    gender: str = ""
 
 
 def _known_voice_name(voice_id: str) -> str:
@@ -3466,8 +3467,15 @@ async def tts_voice_design(
     if not prompt:
         raise HTTPException(400, "请填写音色设计描述")
     preview_text = (req.previewText or "这是一段用于试听新音色的中文口播。语气自然，节奏清楚，适合内容创作。").strip()
+    gender = (req.gender or "").strip().lower()
+    gender_anchor = ""
+    if gender == "female":
+        gender_anchor = "必须生成女性声线；不要生成男性、少年男性或中性偏男性声线。"
+    elif gender == "male":
+        gender_anchor = "必须生成男性声线；不要生成女性或中性偏女性声线。"
+    anchored_prompt = f"{gender_anchor}\n{prompt}".strip()
     payload = {
-        "prompt": prompt[:1200],
+        "prompt": anchored_prompt[:1200],
         "preview_text": preview_text[:2000],
     }
     try:

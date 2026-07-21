@@ -31,7 +31,7 @@ interface DragData {
 
 const SNAP_PX = 6; // screen-px snap threshold
 
-type GestureMode = "idle" | "pan" | "drag" | "resize";
+type GestureMode = "idle" | "pan" | "drag" | "resize" | "select";
 type Corner = "nw" | "ne" | "sw" | "se";
 /** Resize handles: corners, side stretch (text), and the rotate knob. */
 type Handle = Corner | "e" | "w" | "rot";
@@ -54,6 +54,7 @@ interface Gesture {
   startX: number;
   startY: number;
   moved: boolean;
+  additive?: boolean;
 }
 
 const MIN_ZOOM = 0.08;
@@ -99,6 +100,7 @@ export function Canvas({
     h: null,
   });
   const [editing, setEditing] = useState<{ id: string; draft: string } | null>(null);
+  const [selectionBox, setSelectionBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const updateItem = useStore((s) => s.updateItem);
   const resizeData = useRef<ResizeData | null>(null);
   const moveItemsTo = useStore((s) => s.moveItemsTo);
@@ -231,6 +233,12 @@ export function Canvas({
       if (g.mode === "pan") {
         const cur = useStore.getState().viewportByProject[projectId]!;
         setViewport(projectId, { ...cur, x: cur.x + dx, y: cur.y + dy });
+      } else if (g.mode === "select") {
+        const host = containerRef.current?.getBoundingClientRect();
+        if (!host) return;
+        const left = Math.min(g.startX, e.clientX) - host.left;
+        const top = Math.min(g.startY, e.clientY) - host.top;
+        setSelectionBox({ left, top, width: Math.abs(e.clientX - g.startX), height: Math.abs(e.clientY - g.startY) });
       } else if (g.mode === "resize") {
         const rd = resizeData.current;
         if (!rd) return;
@@ -311,9 +319,28 @@ export function Canvas({
         setGuides({ v: bestX ? bestX.at : null, h: bestY ? bestY.at : null });
       }
     };
-    const onUp = () => {
+    const onUp = (e: PointerEvent) => {
       const g = gesture.current;
       if (g.mode === "pan" && !g.moved && !spaceDown.current) clearSelection();
+      if (g.mode === "select") {
+        const host = containerRef.current?.getBoundingClientRect();
+        const vpNow = useStore.getState().viewportByProject[projectId] ?? { x: 0, y: 0, zoom: 1 };
+        if (host && g.moved) {
+          const x1 = (Math.min(g.startX, e.clientX) - host.left - vpNow.x) / vpNow.zoom;
+          const y1 = (Math.min(g.startY, e.clientY) - host.top - vpNow.y) / vpNow.zoom;
+          const x2 = (Math.max(g.startX, e.clientX) - host.left - vpNow.x) / vpNow.zoom;
+          const y2 = (Math.max(g.startY, e.clientY) - host.top - vpNow.y) / vpNow.zoom;
+          const picked = (useStore.getState().itemsByProject[projectId] ?? [])
+            .filter((item) => !item.hidden && isImageItem(item))
+            .filter((item) => item.position.x < x2 && item.position.x + item.size.width > x1 && item.position.y < y2 && item.position.y + item.size.height > y1)
+            .map((item) => item.id);
+          const current = g.additive ? useStore.getState().selection : [];
+          setSelection([...new Set([...current, ...picked])]);
+        } else if (!g.additive) {
+          clearSelection();
+        }
+        setSelectionBox(null);
+      }
       g.mode = "idle";
       g.moved = false;
       dragData.current = null;
@@ -326,19 +353,24 @@ export function Canvas({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [projectId, setViewport, moveItemsTo, clearSelection, updateItem]);
+  }, [projectId, setViewport, moveItemsTo, clearSelection, setSelection, updateItem]);
 
   function onContainerPointerDown(e: RPointerEvent) {
-    // Empty-canvas drag always pans (Lovart-style).
     userAdjusted.current = true;
+    const selecting = activeTool === "select" && !spaceDown.current && e.button === 0;
     gesture.current = {
-      mode: "pan",
+      mode: selecting ? "select" : "pan",
       lastX: e.clientX,
       lastY: e.clientY,
       startX: e.clientX,
       startY: e.clientY,
       moved: false,
+      additive: e.shiftKey,
     };
+    if (selecting) {
+      const host = containerRef.current?.getBoundingClientRect();
+      setSelectionBox({ left: e.clientX - (host?.left || 0), top: e.clientY - (host?.top || 0), width: 0, height: 0 });
+    }
   }
 
   function onItemPointerDown(e: RPointerEvent, item: CanvasItem) {
@@ -593,6 +625,13 @@ export function Canvas({
             <span className="text-[11px] text-ink-3">生成结果会自动出现在这里</span>
           </div>
         </div>
+      )}
+
+      {selectionBox && (
+        <div
+          className="pointer-events-none absolute z-30 border border-accent bg-[var(--color-accent-weak)]"
+          style={selectionBox}
+        />
       )}
 
       <ViewportControls

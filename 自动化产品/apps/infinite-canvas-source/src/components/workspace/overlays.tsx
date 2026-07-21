@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { Lock, Unlock, X } from "lucide-react";
 import { bestAssetUrlFor } from "@/lib/assetCache";
 import { ENHANCE_MODES } from "@/lib/constants";
 import { selectItems, useStore } from "@/lib/store";
@@ -98,6 +98,7 @@ export function EnhanceMenu({
   const [width, setWidth] = useState(String(item.naturalWidth));
   const [height, setHeight] = useState(String(item.naturalHeight));
   const [dpi, setDpi] = useState("72");
+  const [ratioLocked, setRatioLocked] = useState(true);
   const customSize = parseCustomSize(width, height, unit, dpi);
   const customValid = !!customSize && customSize.width >= 64 && customSize.height >= 64;
   const sourceAspect = item.naturalWidth / item.naturalHeight;
@@ -111,6 +112,24 @@ export function EnhanceMenu({
       : targetMode === "original"
         ? "原图修复"
         : "模式默认";
+
+  function changeWidth(value: string) {
+    const clean = value.replace(/[^\d.]/g, "").slice(0, 7);
+    setWidth(clean);
+    const numeric = Number(clean);
+    if (ratioLocked && Number.isFinite(numeric) && numeric > 0) {
+      setHeight(String(Math.max(1, Math.round((numeric / sourceAspect) * 100) / 100)));
+    }
+  }
+
+  function changeHeight(value: string) {
+    const clean = value.replace(/[^\d.]/g, "").slice(0, 7);
+    setHeight(clean);
+    const numeric = Number(clean);
+    if (ratioLocked && Number.isFinite(numeric) && numeric > 0) {
+      setWidth(String(Math.max(1, Math.round((numeric * sourceAspect) * 100) / 100)));
+    }
+  }
 
   function pick(op: EnhanceOp) {
     if (targetMode === "custom") {
@@ -187,15 +206,23 @@ export function EnhanceMenu({
               <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-1">
                 <input
                   value={width}
-                  onChange={(e) => setWidth(e.target.value.replace(/[^\d.]/g, "").slice(0, 7))}
+                  onChange={(e) => changeWidth(e.target.value)}
                   className="h-8 min-w-0 w-full rounded-[var(--radius-sm)] border border-line bg-white px-2 text-[13px] text-ink outline-none focus:border-accent"
                   inputMode="decimal"
                   aria-label="目标宽度"
                 />
-                <span className="text-[12px] text-ink-3">×</span>
+                <button
+                  type="button"
+                  onClick={() => setRatioLocked((value) => !value)}
+                  className={cn("flex h-7 w-7 items-center justify-center rounded-full transition-colors", ratioLocked ? "bg-ink text-white" : "bg-fill text-ink-3 hover:bg-line")}
+                  title={ratioLocked ? "已锁定原图比例" : "点击锁定原图比例"}
+                  aria-label={ratioLocked ? "解除尺寸比例锁定" : "锁定尺寸比例"}
+                >
+                  {ratioLocked ? <Lock size={12} /> : <Unlock size={12} />}
+                </button>
                 <input
                   value={height}
-                  onChange={(e) => setHeight(e.target.value.replace(/[^\d.]/g, "").slice(0, 7))}
+                  onChange={(e) => changeHeight(e.target.value)}
                   className="h-8 min-w-0 w-full rounded-[var(--radius-sm)] border border-line bg-white px-2 text-[13px] text-ink outline-none focus:border-accent"
                   inputMode="decimal"
                   aria-label="目标高度"

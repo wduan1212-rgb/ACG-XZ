@@ -1,13 +1,14 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260720-v104-1";
+import { AI } from "../api/ai.js?v=20260721-v105-1";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260720-v104-1";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260721-v105-1";
 import { icon } from "../ui/icons.js";
 import { openLightbox, openModal, toast, withLoading } from "../ui/components.js";
+import { accountCreatedToday, groupOf } from "../domain/accounts.js";
 
 let activeCustomPublishModal = null;
 
@@ -50,13 +51,13 @@ function outputItems(output = {}) {
 
 function eligibleAccounts(kind) {
   const expectedMode = kind === "canvas" ? "图文" : "视频";
-  return state.accounts.filter(account => account.mode === expectedMode);
+  return state.accounts.filter(account => account.mode === expectedMode && (kind !== "video" || groupOf(account) === "素材"));
 }
 
 function accountOptions(accounts, selectedId = "") {
   return accounts.map(account => `
     <option value="${esc(account.id)}" ${account.id === selectedId ? "selected" : ""}>
-      ${esc(account.name)} · ${esc(account.platform || "")} · ${esc(account.mode || "")}
+      ${accountCreatedToday(account.id) ? "【今日已创作】" : ""}${esc(account.name)} · ${esc(account.platform || "")} · ${esc(account.mode || "")}
     </option>
   `).join("");
 }
@@ -388,7 +389,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
   const kind = outputKind(output);
   const accounts = eligibleAccounts(kind);
   if (!accounts.length) {
-    toast(`请先创建至少一个${kind === "video" ? "视频" : "图文"}账号`, "error");
+    toast(`请先创建至少一个${kind === "video" ? "素材" : "图文"}账号`, "error");
     return null;
   }
   const products = state.products.filter(product => product?.id);
