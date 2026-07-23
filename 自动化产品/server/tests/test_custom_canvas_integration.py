@@ -20,6 +20,34 @@ main = importlib.import_module("main")
 
 
 class CustomCanvasStaticIntegrationTest(unittest.TestCase):
+    def test_homepage_first_generation_uses_the_new_project_size(self):
+        workspace = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "Workspace.tsx"
+        ).read_text(encoding="utf-8")
+        actions = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "useStudioActions.ts"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("generate(pending, { size: project?.targetSize })", workspace)
+        self.assertIn('async (brief: string, options: { size?: string } = {})', actions)
+        self.assertIn(
+            "const size = options.size || state.composerSize || project.targetSize",
+            actions,
+        )
+        self.assertNotIn("generate(pending);", workspace)
+
     def test_canvas_source_keeps_one_single_image_guard_per_request(self):
         source_path = APP_DIR / "apps" / "infinite-canvas-source" / "src" / "lib" / "agent.ts"
         source = source_path.read_text(encoding="utf-8")

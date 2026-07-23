@@ -6,7 +6,7 @@ import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
 import { toast, confirmModal, promptModal, openModal } from "../ui/components.js";
 import { uid } from "../core/util.js";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260721-v105-1";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260723-v115-3";
 
 const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor", "supplier_parent"];
@@ -30,7 +30,10 @@ export const settingsView = {
     if (["supplier", "supplier_parent"].includes(state.role)) { renderSupplierSettings(root); return; }
     let memberRequests = [];
     let requestsLoaded = false;
+    let apiUsageRows = [];
+    let apiUsageLoaded = false;
     const canReviewRequests = () => remote.isOn() && state.role === "admin";
+    const canSeeApiUsage = () => remote.isOn() && state.role === "admin";
     const draw = () => {
       const visibleMembers = state.members.filter(member => member.role !== "supplier_child");
       root.innerHTML = `
@@ -75,6 +78,15 @@ export const settingsView = {
             </div>
           </section>
 
+          ${canSeeApiUsage() ? `<section class="card set-data api-usage-panel">
+            <div class="card-head"><b>创作者接口用量</b><em>仅统计服务端上游真实返回的 LLM token；不等同于图像 / 视频 / 语音或供应商账单积分</em>
+              <button class="btn ghost sm" id="apiUsageRefresh">${icon("pulse", 13)} 刷新</button></div>
+            <div class="api-usage-table">
+              <div class="api-usage-row api-usage-label"><span>创作者</span><span>调用</span><span>输入 token</span><span>输出 token</span><span>合计</span><span>最近调用</span></div>
+              ${!apiUsageLoaded ? `<div class="muted" style="padding:12px 2px">正在读取用量...</div>` : apiUsageRows.map(row => `<div class="api-usage-row"><span><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "")}</em></span><span>${Number(row.calls || 0).toLocaleString("zh-CN")}</span><span>${Number(row.promptTokens || 0).toLocaleString("zh-CN")}</span><span>${Number(row.completionTokens || 0).toLocaleString("zh-CN")}</span><strong>${Number(row.totalTokens || 0).toLocaleString("zh-CN")}</strong><time>${row.lastUsedAt ? new Date(row.lastUsedAt).toLocaleString("zh-CN", { hour12: false }) : "暂无"}</time></div>`).join("") || `<div class="muted" style="padding:12px 2px">暂未收到上游可统计的 token 用量；新调用会在成功后自动记录。</div>`}
+            </div>
+          </section>` : ""}
+
         </div>`;
       wire();
     };
@@ -88,6 +100,19 @@ export const settingsView = {
       } catch (e) {
         requestsLoaded = true;
         toast("读取成员申请失败：" + (e.message || e));
+        draw();
+      }
+    }
+
+    async function loadApiUsage() {
+      if (!canSeeApiUsage()) return;
+      try {
+        const result = await remote.admin.llmUsage();
+        apiUsageRows = Array.isArray(result?.rows) ? result.rows : [];
+      } catch (e) {
+        toast("读取接口用量失败：" + (e.message || e));
+      } finally {
+        apiUsageLoaded = true;
         draw();
       }
     }
@@ -153,6 +178,11 @@ export const settingsView = {
         toast("产品已删除");
       }));
       $("#reqRefresh", root)?.addEventListener("click", () => loadRequests());
+      $("#apiUsageRefresh", root)?.addEventListener("click", () => {
+        apiUsageLoaded = false;
+        draw();
+        loadApiUsage();
+      });
       $$("[data-rapprove]", root).forEach(b => b.addEventListener("click", async () => {
         const req = memberRequests.find(x => x.id === b.dataset.rapprove);
         const ok = await confirmModal({ title: `通过「${req?.name || "成员"}」的账号申请？`, body: `将创建登录账号 @${req?.username || ""}。`, okText: "通过申请" });
@@ -247,5 +277,6 @@ export const settingsView = {
 
     draw();
     loadRequests();
+    loadApiUsage();
   }
 };

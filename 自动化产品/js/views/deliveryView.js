@@ -3,12 +3,12 @@
 
 import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, notify, accountById, productionById, canMarkReviewed, productById } from "../core/store.js";
+import { state, save, notify, accountById, productionById, canMarkReviewed, productById, currentMember } from "../core/store.js";
 import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260721-v105-1";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260723-v115-3";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
@@ -85,7 +85,13 @@ function seqText(seq) {
 }
 
 function publisherLabel(asset) {
-  return asset.byMemberName || "未记录";
+  const production = productionById(asset?.productionId);
+  const memberId = asset?.byMemberId || production?.ownerId || "";
+  return state.members.find(member => member.id === memberId)?.name || asset?.byMemberName || "未记录";
+}
+
+function supplierReturnTime(asset) {
+  return dateTimeFromTime(asset?.publishedUpdatedAt || asset?.publishedAt || 0);
 }
 
 function sortDelivered(all) {
@@ -210,7 +216,7 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
       <div class="dv-detail" hidden>
         <div class="dv-detail-facts"><span>内容账号：${esc(contentAccount)}</span><span>平台：${esc(acc.platform || "平台")}</span><span>文件：${esc(asset.name)}${isImg ? ".zip" : ".mp4"}</span></div>
         ${asset.planDate || asset.publishNote ? `<div class="dv-pubmeta">${plan ? `<span>${icon("clock", 12)} 计划发布：<b>${esc(plan)}</b></span>` : ""}${asset.publishNote ? `<span>${icon("fileText", 12)} 备注：${esc(asset.publishNote)}</span>` : ""}</div>` : ""}
-        ${asset.publishedUrl ? `<div class="dv-published">${icon("link", 13)} 发布链接：<a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${esc(asset.publishedUrl.slice(0, 64))}${asset.publishedUrl.length > 64 ? "…" : ""}</a><em>${asset.publishedAt ? timeAgo(asset.publishedAt) + "回传" : ""}</em></div>` : ""}
+        ${asset.publishedUrl ? `<div class="dv-published">${icon("link", 13)} 发布链接：<a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${esc(asset.publishedUrl.slice(0, 64))}${asset.publishedUrl.length > 64 ? "…" : ""}</a><em>回传时间：${esc(supplierReturnTime(asset) || "未记录")}</em></div>` : ""}
         ${asset.supplierNote ? `<div class="dv-supplier-note">${icon("fileText", 13)} 供应商备注：${esc(asset.supplierNote)}</div>` : ""}
         ${asset.copy ? `<pre class="dv-copy">${esc(asset.copy)}</pre>` : ""}
         ${isImg && (asset.packAssetIds || []).length ? `<div class="cc-grid">${asset.packAssetIds.map((id, k) => { const uu = urlFor(id); return uu ? `<div class="cc-thumb"><img src="${uu}" data-dvimg/><span>${k + 1}</span></div>` : ""; }).join("")}</div>` : ""}
@@ -296,6 +302,7 @@ function supplierDetailHtml(asset, acc, accountSequence = 0) {
             <span>内容账号：${esc(contentAccount)}</span>
             <span>发布账号编号：${esc(accountNumber)}</span>
             <span>制作时间：${esc(submittedAt || "未记录")}</span>
+            <span>回传时间：${esc(supplierReturnTime(asset) || "未回传")}</span>
             <span>发布人：${esc(publisher)}</span>
             <span>${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记产品")}</span>
             <span>${esc(dateOnly(asset.planDate) || "未计划")}</span>
@@ -337,6 +344,10 @@ export const deliveryView = {
   render(root) {
     const isSupplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
     const canUpdateViews = ["supplier_parent", "supplier_child"].includes(state.role);
+    if (!isSupplierRole) {
+      // 团队交付对创作成员可见，但每次进入发布清单先聚焦当前发布人。
+      supFilters.publisher = currentMember()?.name || "all";
+    }
 
     const draw = () => {
       const all = sortDelivered(deliveredAssets());
@@ -353,8 +364,9 @@ export const deliveryView = {
     function drawCreator(body, all) {
       const seqMap = displaySeqMap(all);
       const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
-      const publishers = [...new Set(all.map(x => publisherLabel(x.asset)))];
-      const canFilterPublisher = state.role === "admin";
+      const selfPublisher = currentMember()?.name || "";
+      const publishers = [...new Set([...all.map(x => publisherLabel(x.asset)), selfPublisher].filter(Boolean))];
+      const canFilterPublisher = ["admin", "editor"].includes(state.role);
       if (!canFilterPublisher) supFilters.publisher = "all";
       const accounts = [...new Map(all.map(x => [x.acc.id, x.acc])).values()];
       const dates = [...new Set(all.map(x => dayKey(x.asset)))];
@@ -505,6 +517,7 @@ export const deliveryView = {
           <label class="select-shell">${icon("users", 13)}<select data-sup-select="account"><option value="all">全部账号</option>${[...new Map(all.map(x => [x.acc.id, x.acc])).values()].map(acc => `<option value="${esc(acc.id)}" ${supFilters.account === acc.id ? "selected" : ""}>${esc(acc.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("clock", 13)}<select data-sup-select="date"><option value="all">全部时间</option>${[...new Set(all.map(x => dayKey(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           ${deliveryStatusFiltersHtml("sup")}
+          <span class="supplier-selection-count" id="dvSelectedCount" hidden>已选 <b>0</b> 条</span>
           <button class="btn primary supplier-batch-download" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>
         </div>
         <div class="sup-table-wrap card">
@@ -530,7 +543,7 @@ export const deliveryView = {
               const ptag = asset.productTag || productTagLabel(productById(asset.productId || ""));
               const returnState = supplierReturnRowState(asset);
               return `
-              <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-account="${esc(acc.id)}" data-sup-date="${esc(dayKey(asset))}" ${matchesFilters(item) ? "" : "hidden"}>
+              <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-account="${esc(acc.id)}" data-sup-date="${esc(dayKey(asset))}" data-sup-visible="${matchesFilters(item) ? "1" : "0"}" ${matchesFilters(item) ? "" : "hidden"}>
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
                 <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}${remarkDot(asset)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}<span class="sup-date-line">${dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt) ? `<em class="sup-created">${icon("calendar", 10)} 创作 ${esc(dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt))}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}</span>${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
@@ -556,6 +569,21 @@ export const deliveryView = {
             </tbody>
           </table>
         </div>`;
+      const visibleSupplierRows = () => $$("tr[data-sup]", body).filter(row => row.dataset.supVisible === "1");
+      const updateSupplierSelection = () => {
+        const visible = visibleSupplierRows();
+        const selected = visible.filter(row => $(".sup-check", row)?.checked);
+        const count = $("#dvSelectedCount", body);
+        if (count) {
+          count.hidden = selected.length === 0;
+          count.innerHTML = `已选 <b>${selected.length}</b> 条`;
+        }
+        const selectAll = $("#supAll", body);
+        if (selectAll) {
+          selectAll.checked = visible.length > 0 && selected.length === visible.length;
+          selectAll.indeterminate = selected.length > 0 && selected.length < visible.length;
+        }
+      };
       const applySupplierFilters = () => {
         let shown = 0;
         $$("tr[data-sup]", body).forEach(row => {
@@ -565,6 +593,7 @@ export const deliveryView = {
             && (supFilters.account === "all" || row.dataset.supAccount === supFilters.account)
             && (supFilters.date === "all" || row.dataset.supDate === supFilters.date)
             && matchesDeliveryStatusFilters(state.assets.find(asset => asset.id === row.dataset.sup), supFilters);
+          row.dataset.supVisible = show ? "1" : "0";
           const detail = body.querySelector(`[data-sup-detail="${CSS.escape(row.dataset.sup)}"]`);
           row.getAnimations?.().forEach(animation => animation.cancel());
           if (show) {
@@ -583,6 +612,7 @@ export const deliveryView = {
         });
         const empty = $(".sup-empty-filter", body);
         if (empty) empty.hidden = shown > 0;
+        updateSupplierSelection();
       };
       $$("[data-sup-select]", body).forEach(b => b.addEventListener("change", () => {
         supFilters[b.dataset.supSelect] = b.value;
@@ -596,10 +626,13 @@ export const deliveryView = {
       }));
       $("#dvBatchDl", body)?.addEventListener("click", batchDl);
       const supAll = $("#supAll", body);
-      if (supAll) supAll.addEventListener("change", e => $$("tr[data-sup]", body).filter(row => !row.hidden).forEach(row => {
+      if (supAll) supAll.addEventListener("change", e => visibleSupplierRows().forEach(row => {
         const checkbox = $(".sup-check", row);
         if (checkbox) checkbox.checked = e.target.checked;
       }));
+      $$(".sup-check", body).forEach(checkbox => checkbox.addEventListener("change", updateSupplierSelection));
+      supAll?.addEventListener("change", updateSupplierSelection);
+      updateSupplierSelection();
       $$("[data-supdl]", body).forEach(b => b.addEventListener("click", async () => {
         const a = state.assets.find(x => x.id === b.dataset.supdl);
         if (a) {
@@ -663,10 +696,10 @@ export const deliveryView = {
     }
 
     async function batchDl() {
-      const checkedIds = $$("tr[data-sup]", root).filter(tr => !tr.hidden && tr.querySelector(".sup-check")?.checked).map(tr => tr.dataset.sup);
+      const checkedIds = $$("tr[data-sup]", root).filter(tr => tr.dataset.supVisible === "1" && tr.querySelector(".sup-check")?.checked).map(tr => tr.dataset.sup);
       const pendingIds = $$("tr[data-sup]", root).filter(tr => {
         const a = state.assets.find(x => x.id === tr.dataset.sup);
-        return !tr.hidden && a && !supplierHasPublished(a) && !supplierHasDownloaded(a);
+        return tr.dataset.supVisible === "1" && a && !supplierHasPublished(a) && !supplierHasDownloaded(a);
       }).map(tr => tr.dataset.sup);
       const ids = checkedIds.length ? checkedIds : pendingIds;
       if (!ids.length) { toast("当前筛选下没有未下载素材"); return; }

@@ -5,7 +5,8 @@ import { emptyState, openModal, confirmModal, toast, promptModal } from "../ui/c
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliveryViewsSummary } from "../domain/delivery.js";
-import { accountDisplaySequenceMap, normalizeHomepageUrl } from "../domain/accounts.js";
+import { accountDisplaySequenceMap, isAccountDisabled, isNewAccount, normalizeHomepageUrl } from "../domain/accounts.js";
+import { openAccountDialog } from "./accountDialog.js";
 
 const accountAvatar = acc => {
   const avatar = acc?.avatarUrl || (acc?.avatarAssetId ? urlFor(acc.avatarAssetId) : "");
@@ -17,6 +18,7 @@ let supplierAccountQuery = "";
 let supplierPlatform = "all";
 let supplierActivityType = "all";
 let supplierActivityDays = "all";
+let supplierActivityCarouselPage = 0;
 let supplierViewsPlatform = "all";
 const onSupplierRoute = zone => document.body.dataset.zone === zone;
 
@@ -33,6 +35,77 @@ function supplierActivityTimestamp(item = {}) {
   return Date.parse(item.createdAt || "") || 0;
 }
 
+function supplierLinkHtml(value = "") {
+  const source = String(value || "");
+  const urlPattern = /https?:\/\/[^\s<>“”"']+/gi;
+  let cursor = 0;
+  let html = "";
+  for (const match of source.matchAll(urlPattern)) {
+    const start = match.index || 0;
+    html += esc(source.slice(cursor, start)).replace(/\n/g, "<br/>");
+    let url = match[0];
+    const trailing = url.match(/[，。！？；：,!?;:)”》」]+$/)?.[0] || "";
+    if (trailing) url = url.slice(0, -trailing.length);
+    html += `<a class="supplier-data-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>${esc(trailing)}`;
+    cursor = start + match[0].length;
+  }
+  return html + esc(source.slice(cursor)).replace(/\n/g, "<br/>");
+}
+
+function supplierDeliveryTime(asset = {}) {
+  return Number(asset.publishedUpdatedAt || asset.publishedAt || asset.returnedAt || asset.deliveredAt || asset.createdAt || 0);
+}
+
+function supplierDateKey(timestamp) {
+  const date = new Date(Number(timestamp || 0));
+  if (!Number.isFinite(date.getTime())) return "";
+  const pad = value => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function supplierOverviewRows() {
+  return state.assets.filter(asset => asset?.delivered).map(asset => ({
+    asset,
+    account: state.accounts.find(item => item.id === asset.accountId) || {},
+    timestamp: supplierDeliveryTime(asset),
+  }));
+}
+
+function smoothTrendPath(points = []) {
+  if (!points.length) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  return points.slice(1).reduce((path, point, index) => {
+    const previous = points[index];
+    const midX = (previous.x + point.x) / 2;
+    return `${path} C ${midX} ${previous.y}, ${midX} ${point.y}, ${point.x} ${point.y}`;
+  }, `M ${points[0].x} ${points[0].y}`);
+}
+
+function supplierDataAnswer(question, rows) {
+  const q = String(question || "").trim();
+  const published = rows.filter(item => item.asset.publishedUrl);
+  const today = supplierDateKey(Date.now());
+  const todayRows = published.filter(item => supplierDateKey(item.timestamp) === today);
+  if (/链接/.test(q)) {
+    const candidates = (/今天/.test(q) ? todayRows : published).slice(0, 12);
+    return candidates.length
+      ? `${/今天/.test(q) ? "今天" : "当前"}已回传链接 ${candidates.length} 条：\n${candidates.map((item, index) => `${index + 1}. ${item.account.name || item.asset.title || "未命名账号"}：${item.asset.publishedUrl}`).join("\n")}`
+      : "当前筛选范围内还没有已回传链接。";
+  }
+  if (/播放|观看/.test(q)) {
+    const total = rows.reduce((sum, item) => sum + Number(item.asset.views || item.asset.viewCount || 0), 0);
+    return `当前可见交付累计播放量为 ${total.toLocaleString("zh-CN")}。点击左侧数据卡可以查看对应内容明细。`;
+  }
+  if (/今天|今日/.test(q)) return `今天交付 ${rows.filter(item => supplierDateKey(item.timestamp) === today).length} 条，其中已回传链接 ${todayRows.length} 条。`;
+  if (/账号/.test(q)) {
+    const counts = new Map();
+    published.forEach(item => counts.set(item.account.name || "未命名账号", (counts.get(item.account.name || "未命名账号") || 0) + 1));
+    const ranking = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    return ranking.length ? `已发布账号排行：${ranking.map(([name, count]) => `${name} ${count} 条`).join("；")}。` : "当前还没有可统计的已发布账号。";
+  }
+  return `当前共有 ${rows.length} 条交付内容，其中 ${published.length} 条已回传链接、${rows.length - published.length} 条待回传。`;
+}
+
 async function supplierData(includeMembers = false) {
   const [members, children, bindings, activity] = await Promise.all([
     includeMembers ? remote.supplier.members() : Promise.resolve([]), remote.supplier.children(), remote.supplier.bindings(), remote.supplier.activity()
@@ -45,39 +118,133 @@ export async function renderSupplierOverview(root) {
   try {
     const { children, bindings, activity } = await supplierData();
     if (!onSupplierRoute("overview")) return;
-    const delivered = state.assets.filter(a => a.delivered);
-    const published = delivered.filter(a => a.publishedUrl);
+    const rows = supplierOverviewRows();
+    const delivered = rows.map(item => item.asset);
+    const publishedRows = rows.filter(item => item.asset.publishedUrl);
+    const published = publishedRows.map(item => item.asset);
     const views = deliveryViewsSummary(supplierViewsPlatform);
+    const platformCounts = new Map();
+    publishedRows.forEach(item => {
+      const platform = item.account.platform || "其他";
+      platformCounts.set(platform, (platformCounts.get(platform) || 0) + 1);
+    });
+    const xhsCount = platformCounts.get("小红书") || 0;
+    const sphCount = platformCounts.get("视频号") || 0;
+    const platformTotal = Math.max(1, xhsCount + sphCount);
+    const days = Array.from({ length: 7 }, (_, offset) => {
+      const date = new Date();
+      date.setHours(0, 0, 0, 0);
+      date.setDate(date.getDate() - (6 - offset));
+      const key = supplierDateKey(date.getTime());
+      const items = rows.filter(item => supplierDateKey(item.timestamp) === key);
+      return { key, label: `${date.getMonth() + 1}/${date.getDate()}`, count: items.length, items };
+    });
+    const maxDaily = Math.max(1, ...days.map(item => item.count));
+    const trendPoints = days.map((item, index) => ({
+      x: 8 + index * 14,
+      y: 88 - item.count / maxDaily * 68,
+    }));
+    const trendPath = smoothTrendPath(trendPoints);
+    const trendAreaPath = `${trendPath} L ${trendPoints.at(-1).x} 88 L ${trendPoints[0].x} 88 Z`;
+    const activityCutoff = supplierActivityDays === "all" ? 0 : Date.now() - Number(supplierActivityDays) * 86400000;
+    const visibleActivity = activity.filter(item => (
+      (supplierActivityType === "all" || supplierActivityKind(item) === supplierActivityType)
+      && (!activityCutoff || supplierActivityTimestamp(item) >= activityCutoff)
+    ));
+    const activityPageSize = 3;
+    const activityPages = Math.max(1, Math.ceil(visibleActivity.length / activityPageSize));
+    supplierActivityCarouselPage = Math.min(Math.max(0, supplierActivityCarouselPage), activityPages - 1);
+    const carouselActivity = visibleActivity.slice(
+      supplierActivityCarouselPage * activityPageSize,
+      supplierActivityCarouselPage * activityPageSize + activityPageSize
+    );
     root.innerHTML = `<div class="supplier-shell">
-      <div class="page-head"><div><div class="eyebrow">供应商首页</div><h2>账号分配与发布进度</h2></div><button class="btn primary" id="supplierOverviewChildAdd">${icon("plus", 14)} 批量建立子账号</button></div>
-      <div class="supplier-stats">
-        <div><b>${children.length}</b><span>子账号</span></div><div><b>${bindings.length}</b><span>已分配账号</span></div>
-        <div><b>${delivered.length}</b><span>待发布内容</span></div><div><b>${published.length}</b><span>已回传链接</span></div>
-        <div class="supplier-views-stat"><b id="supplierViewsTotal">${Number(views.totalViews || 0).toLocaleString("zh-CN")}</b><span>总播放量 · ${esc(supplierViewsPlatform === "all" ? "全平台" : supplierViewsPlatform)}</span><div class="supplier-stat-switch"><button class="${supplierViewsPlatform === "all" ? "on" : ""}" data-views-platform="all">全部</button><button class="${supplierViewsPlatform === "小红书" ? "on" : ""}" data-views-platform="小红书">小红书</button><button class="${supplierViewsPlatform === "视频号" ? "on" : ""}" data-views-platform="视频号">视频号</button></div></div>
+      <div class="page-head supplier-overview-head"><div><div class="eyebrow">供应商首页</div><h2>账号分配与发布进度</h2></div><div class="supplier-overview-actions"><label>${icon("search", 14)}<input id="supplierOverviewSearch" placeholder="搜索账号或已交付内容" /></label><button class="btn primary" id="supplierOverviewChildAdd">${icon("plus", 14)} 批量建立子账号</button></div></div>
+      <div class="supplier-dashboard-grid">
+        <div class="supplier-dashboard-main">
+          <div class="supplier-dashboard-stats">
+            <button class="is-accent" data-supplier-detail="published"><span>已发布</span><b>${published.length}</b><em>以回传链接为准</em></button>
+            <button data-supplier-detail="children"><span>子账号</span><b>${children.length}</b><em>${bindings.length} 个账号已分配</em></button>
+            <button data-supplier-detail="delivery"><span>全部交付</span><b>${delivered.length}</b><em>${Math.max(0, delivered.length - published.length)} 条待回传</em></button>
+            <button data-supplier-detail="views"><span>总播放量</span><b id="supplierViewsTotal">${Number(views.totalViews || 0).toLocaleString("zh-CN")}</b><em>${esc(supplierViewsPlatform === "all" ? "全平台" : supplierViewsPlatform)}</em></button>
+          </div>
+          <div class="supplier-dashboard-visuals">
+            <button class="card supplier-platform-chart" data-supplier-detail="platform"><span class="supplier-chart-title">平台发布构成</span><span class="supplier-donut" style="--xhs:${xhsCount / platformTotal * 360}deg"><i><b>${published.length}</b><em>已发布</em></i></span><span class="supplier-platform-legend"><i class="xhs"></i>小红书 ${xhsCount}<i class="sph"></i>视频号 ${sphCount}</span></button>
+            <button class="card supplier-trend-chart" data-supplier-detail="trend"><span class="supplier-chart-title">近 7 日交付</span><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="近七日交付趋势"><defs><linearGradient id="supplierTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef476f" stop-opacity=".34"/><stop offset="1" stop-color="#ef476f" stop-opacity="0"/></linearGradient></defs><path d="${trendAreaPath}" fill="url(#supplierTrendFill)"/><path d="${trendPath}" fill="none" stroke="#e83e62" stroke-width="2.2" vector-effect="non-scaling-stroke"/>${trendPoints.map((point, index) => `<circle cx="${point.x}" cy="${point.y}" r="2.1" data-day="${esc(days[index].key)}"/>`).join("")}</svg><span class="supplier-trend-labels">${days.map(item => `<i><b>${item.count}</b><em>${item.label}</em></i>`).join("")}</span></button>
+          </div>
+          <section class="card supplier-activity"><div class="card-head supplier-activity-head"><b>最近操作</b>
+            ${activity.length ? `<div class="supplier-activity-filters"><label class="select-shell">${icon("filter", 12)}<select id="supplierActivityType"><option value="all">全部操作</option><option value="views" ${supplierActivityType === "views" ? "selected" : ""}>编辑观看量</option><option value="link" ${supplierActivityType === "link" ? "selected" : ""}>回传链接</option><option value="download" ${supplierActivityType === "download" ? "selected" : ""}>下载素材</option><option value="other" ${supplierActivityType === "other" ? "selected" : ""}>其他操作</option></select>${icon("chevronDown", 11)}</label><label class="select-shell">${icon("clock", 12)}<select id="supplierActivityDays"><option value="all">全部时间</option><option value="7" ${supplierActivityDays === "7" ? "selected" : ""}>近 7 天</option><option value="30" ${supplierActivityDays === "30" ? "selected" : ""}>近 30 天</option></select>${icon("chevronDown", 11)}</label><button class="btn ghost sm" type="button" id="supplierActivityAll">查看全部</button></div>` : ""}</div>
+            ${activity.length ? `<div class="supplier-activity-carousel">${carouselActivity.map(x => `<article class="supplier-log"><i></i><span><b>${esc(x.memberName || "成员")}</b><em>${esc(x.detail || x.action || "更新了发布内容")}</em></span><time>${timeAgo(x.createdAt)}</time></article>`).join("") || `<p class="supplier-activity-empty">当前筛选下暂无操作</p>`}</div><div class="supplier-activity-pagination"><button class="icon-btn sm" type="button" data-supplier-activity-page="prev" ${supplierActivityCarouselPage <= 0 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button><span>${visibleActivity.length ? `${supplierActivityCarouselPage + 1} / ${activityPages}` : "0 / 0"}</span><button class="icon-btn sm" type="button" data-supplier-activity-page="next" ${supplierActivityCarouselPage >= activityPages - 1 ? "disabled" : ""}>${icon("chevronRight", 13)}</button></div>` : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
+          </section>
+        </div>
+        <aside class="card supplier-data-assistant"><header><span>${icon("bot", 18)}</span><div><b>星阵数据助手</b><em>供应商数据只读问答</em></div></header><div class="supplier-data-messages" id="supplierDataMessages"><div class="supplier-data-bubble agent">可以问我今天交付、回传链接、账号发布排行和播放量。</div></div><div class="supplier-data-suggestions"><button>今天交付多少？</button><button>给我回传链接</button><button>哪个账号发布最多？</button></div><form id="supplierDataForm"><input id="supplierDataInput" placeholder="问问供应商数据…"/><button class="icon-btn primary" title="发送">${icon("send", 14)}</button></form></aside>
       </div>
-      <section class="card supplier-activity"><div class="card-head supplier-activity-head"><b>最近操作</b>
-        ${activity.length ? `<div class="supplier-activity-filters">
-          <label class="select-shell">${icon("filter", 12)}<select id="supplierActivityType"><option value="all">全部操作</option><option value="views" ${supplierActivityType === "views" ? "selected" : ""}>编辑观看量</option><option value="link" ${supplierActivityType === "link" ? "selected" : ""}>回传链接</option><option value="download" ${supplierActivityType === "download" ? "selected" : ""}>下载素材</option><option value="other" ${supplierActivityType === "other" ? "selected" : ""}>其他操作</option></select>${icon("chevronDown", 11)}</label>
-          <label class="select-shell">${icon("clock", 12)}<select id="supplierActivityDays"><option value="all">全部时间</option><option value="7" ${supplierActivityDays === "7" ? "selected" : ""}>近 7 天</option><option value="30" ${supplierActivityDays === "30" ? "selected" : ""}>近 30 天</option></select>${icon("chevronDown", 11)}</label>
-        </div>` : ""}</div>
-        ${activity.length ? activity.slice(0, 60).map(x => `<div class="supplier-log" data-activity-kind="${supplierActivityKind(x)}" data-activity-ts="${supplierActivityTimestamp(x)}"><i></i><span><b>${esc(x.memberName || "成员")}</b><em>${esc(x.detail || x.action || "更新了发布内容")}</em></span><time>${timeAgo(x.createdAt)}</time></div>`).join("") + `<p class="supplier-activity-empty" hidden>当前筛选下暂无操作</p>` : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
-      </section>
     </div>`;
-    const applyActivityFilters = () => {
-      const cutoff = supplierActivityDays === "all" ? 0 : Date.now() - Number(supplierActivityDays) * 86400000;
-      let visible = 0;
-      $$("[data-activity-kind]", root).forEach(row => {
-        const show = (supplierActivityType === "all" || row.dataset.activityKind === supplierActivityType)
-          && (!cutoff || Number(row.dataset.activityTs || 0) >= cutoff);
-        row.hidden = !show;
-        if (show) visible += 1;
-      });
-      const empty = $(".supplier-activity-empty", root);
-      if (empty) empty.hidden = visible > 0;
+    const openSupplierRows = (title, selectedRows) => {
+      const body = selectedRows.map(({ asset, account, timestamp }) => `<div class="supplier-dashboard-detail-row"><span><b>${esc(asset.title || asset.name || "未命名内容")}</b><em>${esc(account.name || "未命名账号")} · ${esc(account.platform || "")}</em></span><time>${timestamp ? new Date(timestamp).toLocaleString("zh-CN", { hour12: false }) : "暂无时间"}</time>${asset.publishedUrl ? `<a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">打开链接</a>` : `<i>未回传</i>`}</div>`).join("");
+      openModal(`<div class="mp-head"><b>${esc(title)} · ${selectedRows.length} 条</b><button class="icon-btn ghost" data-close>${icon("x", 15)}</button></div><div class="supplier-dashboard-detail-list">${body || `<p class="supplier-activity-empty">暂无数据</p>`}</div>`, { wide: true });
     };
-    $("#supplierActivityType", root)?.addEventListener("change", e => { supplierActivityType = e.currentTarget.value; applyActivityFilters(); });
-    $("#supplierActivityDays", root)?.addEventListener("change", e => { supplierActivityDays = e.currentTarget.value; applyActivityFilters(); });
-    applyActivityFilters();
+    const openActivityModal = () => {
+      let kind = supplierActivityType;
+      let days = supplierActivityDays;
+      const filtered = () => {
+        const cutoff = days === "all" ? 0 : Date.now() - Number(days) * 86400000;
+        return activity.filter(item => (
+          (kind === "all" || supplierActivityKind(item) === kind)
+          && (!cutoff || supplierActivityTimestamp(item) >= cutoff)
+        ));
+      };
+      openModal(`<div class="supplier-activity-modal" id="supplierActivityModal"></div>`, { wide: true, onMount(panel) {
+        const drawModal = () => {
+          const rows = filtered();
+          panel.innerHTML = `<div class="mp-head"><b>全部最近操作 · ${rows.length} 条</b><button class="icon-btn ghost" data-close>${icon("x", 15)}</button></div><div class="supplier-activity-modal-tools"><label class="select-shell">${icon("filter", 12)}<select id="supplierModalActivityType"><option value="all" ${kind === "all" ? "selected" : ""}>全部操作</option><option value="views" ${kind === "views" ? "selected" : ""}>编辑观看量</option><option value="link" ${kind === "link" ? "selected" : ""}>回传链接</option><option value="download" ${kind === "download" ? "selected" : ""}>下载素材</option><option value="other" ${kind === "other" ? "selected" : ""}>其他操作</option></select>${icon("chevronDown", 11)}</label><label class="select-shell">${icon("clock", 12)}<select id="supplierModalActivityDays"><option value="all" ${days === "all" ? "selected" : ""}>全部时间</option><option value="7" ${days === "7" ? "selected" : ""}>近 7 天</option><option value="30" ${days === "30" ? "selected" : ""}>近 30 天</option></select>${icon("chevronDown", 11)}</label></div><div class="supplier-dashboard-detail-list">${rows.map(item => `<article class="supplier-log"><i></i><span><b>${esc(item.memberName || "成员")}</b><em>${esc(item.detail || item.action || "更新了发布内容")}</em></span><time>${supplierActivityTimestamp(item) ? new Date(supplierActivityTimestamp(item)).toLocaleString("zh-CN", { hour12: false }) : "暂无时间"}</time></article>`).join("") || `<p class="supplier-activity-empty">当前筛选下暂无操作</p>`}</div>`;
+          $("#supplierModalActivityType", panel)?.addEventListener("change", event => { kind = event.currentTarget.value; drawModal(); });
+          $("#supplierModalActivityDays", panel)?.addEventListener("change", event => { days = event.currentTarget.value; drawModal(); });
+        };
+        drawModal();
+      }});
+    };
+    $$('[data-supplier-detail]', root).forEach(button => button.addEventListener("click", () => {
+      const key = button.dataset.supplierDetail;
+      if (key === "children") return openModal(`<div class="mp-head"><b>子账号 · ${children.length}</b><button class="icon-btn ghost" data-close>${icon("x", 15)}</button></div><div class="supplier-dashboard-detail-list">${children.map(item => `<div class="supplier-dashboard-detail-row"><span><b>${esc(item.name || item.username || "未命名成员")}</b><em>${esc(item.username || "")}</em></span></div>`).join("")}</div>`, { wide: true });
+      if (key === "published") return openSupplierRows("已回传链接", publishedRows);
+      if (key === "delivery") return openSupplierRows("全部交付", rows);
+      if (key === "platform") return openSupplierRows("平台发布构成", publishedRows);
+      if (key === "trend") return openSupplierRows("近 7 日交付", days.flatMap(item => item.items));
+      if (key === "views") return openSupplierRows("播放数据内容", rows);
+    }));
+    const sendSupplierQuestion = question => {
+      const q = String(question || "").trim();
+      if (!q) return;
+      const messages = $("#supplierDataMessages", root);
+      messages.insertAdjacentHTML("beforeend", `<div class="supplier-data-bubble user">${esc(q)}</div><div class="supplier-data-bubble agent">${supplierLinkHtml(supplierDataAnswer(q, rows))}</div>`);
+      messages.scrollTop = messages.scrollHeight;
+      const input = $("#supplierDataInput", root); if (input) input.value = "";
+    };
+    $("#supplierDataForm", root)?.addEventListener("submit", event => { event.preventDefault(); sendSupplierQuestion($("#supplierDataInput", root)?.value); });
+    $$(".supplier-data-suggestions button", root).forEach(button => button.addEventListener("click", () => sendSupplierQuestion(button.textContent)));
+    $("#supplierActivityType", root)?.addEventListener("change", event => {
+      supplierActivityType = event.currentTarget.value;
+      supplierActivityCarouselPage = 0;
+      renderSupplierOverview(root);
+    });
+    $("#supplierActivityDays", root)?.addEventListener("change", event => {
+      supplierActivityDays = event.currentTarget.value;
+      supplierActivityCarouselPage = 0;
+      renderSupplierOverview(root);
+    });
+    $$('[data-supplier-activity-page]', root).forEach(button => button.addEventListener("click", () => {
+      supplierActivityCarouselPage += button.dataset.supplierActivityPage === "next" ? 1 : -1;
+      renderSupplierOverview(root);
+    }));
+    $("#supplierActivityAll", root)?.addEventListener("click", openActivityModal);
+    $("#supplierOverviewSearch", root)?.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      const query = String(event.currentTarget.value || "").trim().toLowerCase();
+      const matches = !query ? rows : rows.filter(({ asset, account }) => `${asset.title || ""} ${asset.name || ""} ${account.name || ""} ${account.platform || ""}`.toLowerCase().includes(query));
+      openSupplierRows(query ? `搜索「${query}」` : "全部交付", matches);
+    });
     $$('[data-views-platform]', root).forEach(button => button.addEventListener("click", () => {
       const next = button.dataset.viewsPlatform || "all";
       if (next === supplierViewsPlatform) return;
@@ -108,15 +275,67 @@ export async function renderSupplierAccounts(root) {
     const canEditHomepage = ["supplier", "supplier_parent"].includes(state.role);
     const homepageActionsHtml = acc => `<div class="supplier-homepage-actions" data-homepage-actions="${esc(acc.id)}">${acc.homepageUrl ? `<a class="btn ghost sm" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 查看主页</a>` : `<span>未填写主页</span>`}${canEditHomepage ? `<button class="btn ghost sm" type="button" data-homepage-edit="${esc(acc.id)}">${icon("edit", 12)} 编辑主页链接</button>` : ""}</div>`;
     root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div>
-      <div class="supplier-account-tools"><label>${icon("search", 14)}<input id="supplierAccountSearch" value="${esc(supplierAccountQuery)}" placeholder="搜索账号" /></label><div class="supplier-filter-chips"><button class="${supplierPlatform === "all" ? "on" : ""}" data-supplier-platform="all">全部平台</button>${platforms.map(x => `<button class="${supplierPlatform === x ? "on" : ""}" data-supplier-platform="${esc(x)}">${esc(x)}</button>`).join("")}</div></div>
+      <div class="supplier-account-tools"><label>${icon("search", 14)}<input id="supplierAccountSearch" value="${esc(supplierAccountQuery)}" placeholder="搜索账号" /></label>${canEditHomepage ? `<button class="btn primary" id="supplierContentAccountAdd">${icon("plus", 14)} 新建账号</button>` : ""}<div class="supplier-filter-chips"><button class="${supplierPlatform === "all" ? "on" : ""}" data-supplier-platform="all">全部平台</button>${platforms.map(x => `<button class="${supplierPlatform === x ? "on" : ""}" data-supplier-platform="${esc(x)}">${esc(x)}</button>`).join("")}</div></div>
       <div class="supplier-account-grid">${state.accounts.map(acc => {
         const binding = bindings.find(x => x.accountId === acc.id);
         const child = binding ? childMap.get(binding.childId) : null;
         const searchable = `${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase();
         const hidden = (supplierAccountQuery && !searchable.includes(supplierAccountQuery.toLowerCase())) || (supplierPlatform !== "all" && acc.platform !== supplierPlatform);
         const sequence = accountSequence.get(acc.id) || 0;
-        return `<article class="supplier-account" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")}</em></div><div class="supplier-account-controls">${homepageActionsHtml(acc)}<label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></article>`;
+        const disabled = isAccountDisabled(acc);
+        const fresh = isNewAccount(acc);
+        return `<article class="supplier-account${disabled ? " is-disabled" : ""}${fresh ? " is-new-account" : ""}" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)} ${fresh ? `<i class="supplier-new-account-badge">新</i>` : ""}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")} ${disabled ? `· <strong>已停用</strong>` : ""}</em></div><div class="supplier-account-controls">${canEditHomepage ? `<div class="supplier-content-account-actions"><button class="btn ghost sm" type="button" data-content-account-edit="${esc(acc.id)}">${icon("edit", 12)} 编辑账号</button><button class="btn ghost sm${disabled ? " restore" : " danger"}" type="button" data-content-account-status="${esc(acc.id)}">${disabled ? "恢复账号" : "停用账号"}</button></div>` : ""}${homepageActionsHtml(acc)}<label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage && !disabled ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></article>`;
       }).join("")}</div></div>`;
+    $("#supplierContentAccountAdd", root)?.addEventListener("click", () => openAccountDialog());
+    $$('[data-content-account-edit]', root).forEach(button => button.addEventListener("click", () => openAccountDialog(button.dataset.contentAccountEdit)));
+    $$('[data-content-account-status]', root).forEach(button => button.addEventListener("click", async () => {
+      const account = state.accounts.find(item => item.id === button.dataset.contentAccountStatus);
+      if (!account || !canEditHomepage) return;
+      const disabled = isAccountDisabled(account);
+      if (!disabled && !await confirmModal({
+        title: `停用账号「${esc(account.name)}」？`,
+        body: "历史素材、任务和发布数据都会保留；批量创作不再显示该账号，之后可随时恢复。",
+        okText: "确认停用",
+        danger: true,
+      })) return;
+      const snapshot = JSON.parse(JSON.stringify(account));
+      const releaseCollectionSync = remote.isOn()
+        ? remote.holdCollectionSync(["accounts"])
+        : null;
+      const nextStatus = disabled ? "active" : "disabled";
+      const idleLabel = button.textContent;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.textContent = disabled ? "正在恢复…" : "正在停用…";
+      try {
+        const payload = { ...account, status: nextStatus };
+        if (nextStatus === "active") delete payload.disabledAt;
+        else payload.disabledAt = Date.now();
+        const result = await remote.supplier.updateAccount(account.id, payload, []);
+        Object.assign(account, result.account || payload);
+        account.status = nextStatus;
+        if (nextStatus === "active") delete account.disabledAt;
+        else account.disabledAt = Number(account.disabledAt || payload.disabledAt || Date.now());
+        if (nextStatus === "disabled" && state.ui.activeAccountId === account.id) {
+          state.ui.activeAccountId = state.accounts.find(item => item.id !== account.id && !isAccountDisabled(item))?.id || null;
+          state.ui.activeProductionId = null;
+          save("meta");
+        }
+        save("accounts");
+        releaseCollectionSync?.({ flush: false });
+        toast(disabled ? "账号已恢复" : "账号已停用");
+        await renderSupplierAccounts(root);
+      } catch (error) {
+        releaseCollectionSync?.({ flush: false });
+        Object.keys(account).forEach(key => delete account[key]);
+        Object.assign(account, snapshot);
+        save("accounts");
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+        button.textContent = idleLabel;
+        toast(error?.message || "账号状态更新失败", "error");
+      }
+    }));
     const applyAccountFilters = () => {
       const cards = $$(".supplier-account", root);
       const before = new Map(cards.filter(card => !card.hidden).map(card => [card, card.getBoundingClientRect()]));
@@ -245,9 +464,10 @@ function createChildrenDialog(onDone) {
 
 function assignDialog(child, bindings, onDone) {
   const selected = new Set(bindings.filter(x => x.childId === child.id).map(x => x.accountId));
-  const platforms = [...new Set(state.accounts.map(acc => acc.platform).filter(Boolean))];
+  const assignableAccounts = state.accounts.filter(acc => !isAccountDisabled(acc));
+  const platforms = [...new Set(assignableAccounts.map(acc => acc.platform).filter(Boolean))];
   openModal(`<div class="mp-head"><b>分配账号 · ${esc(child.name)}</b><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
-    <div class="mp-body"><div class="supplier-assign-tools"><label>${icon("search", 13)}<input id="supplierAssignSearch" placeholder="搜索账号" /></label><div class="supplier-filter-chips"><button class="on" type="button" data-assign-platform="all">全部</button>${platforms.map(platform => `<button type="button" data-assign-platform="${esc(platform)}">${esc(platform)}</button>`).join("")}</div></div><div class="supplier-assign-list">${state.accounts.map(acc => `<label data-assign-row data-search="${esc(`${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase())}" data-platform="${esc(acc.platform || "")}"><input type="checkbox" value="${esc(acc.id)}" ${selected.has(acc.id) ? "checked" : ""}/><span class="supplier-account-avatar small">${accountAvatar(acc)}</span><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")}</em></label>`).join("")}</div><p class="supplier-assign-empty" hidden>当前筛选下没有账号</p></div>
+    <div class="mp-body"><div class="supplier-assign-tools"><label>${icon("search", 13)}<input id="supplierAssignSearch" placeholder="搜索账号" /></label><div class="supplier-filter-chips"><button class="on" type="button" data-assign-platform="all">全部</button>${platforms.map(platform => `<button type="button" data-assign-platform="${esc(platform)}">${esc(platform)}</button>`).join("")}</div></div><div class="supplier-assign-list">${assignableAccounts.map(acc => `<label data-assign-row data-search="${esc(`${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase())}" data-platform="${esc(acc.platform || "")}"><input type="checkbox" value="${esc(acc.id)}" ${selected.has(acc.id) ? "checked" : ""}/><span class="supplier-account-avatar small">${accountAvatar(acc)}</span><b>${esc(acc.name)}</b><em>${esc(acc.platform || "平台")}</em></label>`).join("")}</div><p class="supplier-assign-empty" hidden>当前筛选下没有可分配账号</p></div>
     <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="supplierAssignSave">保存分配</button></div>`, { onMount(panel, close) {
       let query = "";
       let platform = "all";

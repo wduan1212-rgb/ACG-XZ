@@ -3,9 +3,9 @@
 import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
-import { platChip, groupOf, isAvatarAsset, accountCreatedToday } from "../domain/accounts.js";
+import { platChip, groupOf, isAvatarAsset, accountCreatedToday, isAccountDisabled } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260721-v105-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260723-v115-3";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -30,6 +30,7 @@ function normalizePlanKind(p) {
     p.accountCounts = {};
   }
   const match = a => {
+    if (!a || isAccountDisabled(a)) return false;
     const g = groupOf(a);
     if (p.contentKind === "image") return a?.mode === "图文" || g === "图文组";
     if (p.contentKind === "material") return a?.mode === "视频" && g === "素材";
@@ -361,15 +362,20 @@ const CARD = {
     const rows = inReview.map(p => {
       const acc = accountById(p.accountId);
       const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
-      const cover = items.find(x => x.assetId);
-      const coverUrl = cover ? urlFor(cover.assetId) : null;
+      const coverAssetId = p.mode === "图文"
+        ? items.find(x => x.assetId)?.assetId
+        : p.artifacts.boards?.cover?.assetId;
+      const coverUrl = coverAssetId ? urlFor(coverAssetId) : null;
+      const finalVideoUrl = p.mode === "视频" ? String(p.artifacts?.finalVideoUrl || "").trim() : "";
       const editableBoards = p.mode === "图文" ? items.map((item, index) => {
         const src = item.assetId ? urlFor(item.assetId) : "";
         return `<button class="agr-board ${item.status === "loading" ? "is-loading" : ""}" type="button" data-act="batch-image-edit" data-pid="${p.id}" data-image-index="${index}" title="编辑第 ${index + 1} 张提示词并重新生成">${src ? `<img src="${src}" alt="第 ${index + 1} 张"/>` : `<i>${index + 1}</i>`}<span>${icon("sliders", 9)} 微调</span></button>`;
       }).join("") : "";
       return `<div class="agr-row">
-        ${editableBoards ? `<span class="agr-board-strip">${editableBoards}</span>` : `<span class="agr-cover">${coverUrl ? `<img src="${coverUrl}"/>` : `<i style="background:${gradFor(p.title)}">片</i>`}</span>`}
+        ${editableBoards ? `<span class="agr-board-strip">${editableBoards}</span>` : `<span class="agr-cover ${finalVideoUrl ? "is-video" : ""}">${finalVideoUrl ? `<video src="${esc(finalVideoUrl)}" poster="${esc(coverUrl || "")}" muted playsinline preload="metadata"></video>` : coverUrl ? `<img src="${coverUrl}" alt="视频封面"/>` : `<i style="background:${gradFor(p.title)}">封面</i>`}</span>`}
         <span class="agr-main"><b>${esc(p.artifacts.copy.title || p.title || p.topic)}</b><em>${esc(acc?.name || "")} · ${p.mode}</em></span>
+        ${p.mode === "视频" ? `<button class="link-btn" data-act="batch-cover-edit" data-pid="${p.id}">${icon("sliders", 11)} 微调封面</button>
+        <button class="link-btn" data-act="batch-video-regenerate" data-pid="${p.id}">${icon("refresh", 11)} 重新生成视频</button>` : ""}
         <button class="link-btn" data-act="open-prod" data-pid="${p.id}">查看</button>
         ${canPub ? `<button class="btn primary sm" data-act="prod-deliver" data-pid="${p.id}">定稿发布</button>` : ""}
       </div>`;
@@ -452,7 +458,12 @@ export function boardRow(p) {
     sub = `<span class="mb-sub fail-text">${esc((p.error || "失败").slice(0, 18))}</span>`;
   }
   const TYPE = p.mode === "图文" ? ["图文", "img"] : p.subType === "无数字人" ? ["素材", "mat"] : ["真人", "dh"];
+  const previewAssetId = p.mode === "图文"
+    ? p.artifacts.images?.items?.find(item => item.assetId)?.assetId
+    : p.artifacts.boards?.cover?.assetId;
+  const previewUrl = previewAssetId ? urlFor(previewAssetId) : "";
   return `<div class="mb-row ${p.stageStatus === "running" ? "is-running" : ""}" data-act="open-prod" data-pid="${p.id}" data-dropprod="${p.id}" role="button">
+    ${previewUrl ? `<span class="mb-preview"><img src="${previewUrl}" alt="${p.mode === "图文" ? "首图" : "视频封面"}"/></span>` : ""}
     <div class="mb-top">
       <span class="mb-type ${TYPE[1]}">${esc(TYPE[0])}</span>
       <b>${esc(acc?.name || "")}</b>
@@ -461,5 +472,6 @@ export function boardRow(p) {
     </div>
     <div class="mb-title">${esc(p.artifacts.copy.title || p.title || p.topic || "未命名")}</div>
     <div class="mb-dots">${dots}${sub}</div>
+    ${p.mode === "视频" ? `<div class="mb-actions"><button type="button" data-act="batch-cover-edit" data-pid="${p.id}">${icon("sliders", 10)} 封面</button><button type="button" data-act="batch-video-regenerate" data-pid="${p.id}">${icon("refresh", 10)} 重生视频</button></div>` : ""}
   </div>`;
 }

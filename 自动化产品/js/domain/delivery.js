@@ -28,7 +28,9 @@ function memberNameById(id) {
 }
 
 function publisherNameFor(asset, prod = null) {
-  return asset?.byMemberName || memberNameById(asset?.byMemberId) || memberNameById(prod?.ownerId) || "";
+  // byMemberName is a historical snapshot.  Prefer the current member name
+  // so Settings renames are reflected everywhere without rewriting history.
+  return memberNameById(asset?.byMemberId) || memberNameById(prod?.ownerId) || asset?.byMemberName || "";
 }
 
 function deliverySnapshotFromProduction(p, acc, productTag = productTagFor(p)) {

@@ -202,6 +202,37 @@ nextjs-portal {
   animation: fade-in 0.15s var(--ease-out-soft);
 }
 
+/* Directional image transition for lightbox keyboard/button navigation. */
+@keyframes lightbox-switch-next {
+  from {
+    opacity: 0.18;
+    transform: translateX(22px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes lightbox-switch-previous {
+  from {
+    opacity: 0.18;
+    transform: translateX(-22px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.lightbox-switch-next {
+  animation: lightbox-switch-next 0.24s var(--ease-out-soft);
+}
+
+.lightbox-switch-previous {
+  animation: lightbox-switch-previous 0.24s var(--ease-out-soft);
+}
+
 /* Staggered rise-in for the welcome headline */
 @keyframes rise {
   from {
@@ -245,7 +276,9 @@ nextjs-portal {
   .animate-pop,
   .animate-fade,
   .animate-rise,
-  .animate-indeterminate {
+  .animate-indeterminate,
+  .lightbox-switch-next,
+  .lightbox-switch-previous {
     animation: none;
     opacity: 1;
   }

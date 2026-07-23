@@ -89,6 +89,10 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
             "sfxCues": [],
         }
 
+    async def _retime(self, source: Path, output: Path, speed: float) -> dict:
+        output.write_bytes(Path(source).read_bytes())
+        return {"duration": 3.333, "videoDuration": 3.333, "audioDuration": 3.333, "speed": speed}
+
     def _common_patches(self, instance: pipeline_module.VideoPipeline):
         return (
             patch.object(instance, "_event", AsyncMock()),
@@ -96,6 +100,7 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(pipeline_module, "mutate_project", side_effect=self._mutate),
             patch.object(pipeline_module.tts, "generate", new=self._tts_generate),
             patch.object(pipeline_module, "probe", new=self._probe),
+            patch.object(pipeline_module, "retime_video", new=self._retime),
             patch.object(pipeline_module.bgm_library, "resolve", return_value=None),
         )
 
@@ -179,6 +184,24 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
         slow_started = asyncio.Event()
         slow_reaped = asyncio.Event()
 
+        async def probe_two_scene_timeline(path: Path) -> dict:
+            # Keep both logical scenes in the render queue; a four-second
+            # narration can legitimately collapse this synthetic fixture into
+            # one technical unit before the cancellation behavior is reached.
+            return {"duration": 8.0 if path.name == "narration.mp3" else 5.0}
+
+        timed_scenes = [
+            {
+                "title": f"镜头 {index}",
+                "duration_sec": 4,
+                "visual_prompt": f"scene {index}",
+                "narration_excerpt": "transaction " if index == 1 else "test narration",
+                "visual_beats": [],
+                "purpose": "test cancellation",
+            }
+            for index in (1, 2)
+        ]
+
         async def generate(_prompt, _aspect, output: Path, *, scene_number: int, **_kwargs):
             output.write_bytes(f"candidate-{scene_number}".encode())
             if scene_number == 1:
@@ -194,6 +217,17 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
         with ExitStack() as stack:
             for common_patch in self._common_patches(instance):
                 stack.enter_context(common_patch)
+            stack.enter_context(patch.object(pipeline_module, "probe", new=probe_two_scene_timeline))
+            stack.enter_context(patch.object(
+                pipeline_module.director,
+                "lock_timed_visual_plan",
+                AsyncMock(return_value={
+                    "scenes": timed_scenes,
+                    "minimum_units": 2,
+                    "public_summary": "two-scene cancellation fixture",
+                    "asset_placements": [],
+                }),
+            ))
             stack.enter_context(patch.object(pipeline_module.seedance, "generate", new=generate))
             stack.enter_context(patch.object(pipeline_module, "add_event"))
             stack.enter_context(patch.object(pipeline_module, "add_message"))
@@ -208,6 +242,50 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
             if task is not asyncio.current_task() and not task.done()
         ]
         self.assertEqual(remaining, [])
+
+    async def test_speed_version_uses_preserved_source_without_regenerating(self) -> None:
+        instance = pipeline_module.VideoPipeline()
+        self.work_dir.mkdir()
+        source_path = self.work_dir / "delivery-source.mp4"
+        source_path.write_bytes(b"original-render")
+        self.project["status"] = "succeeded"
+        self.project["deliveries"] = [
+            {
+                "id": "delivery-old",
+                "outputs": [
+                    {
+                        "id": "output-old",
+                        "deliveryId": "delivery-old",
+                        "aspectRatio": "9:16",
+                        "url": f"/outputs/{self.project_id}/delivery-fast.mp4",
+                        "retimeSourceUrl": f"/outputs/{self.project_id}/{source_path.name}",
+                        "probe": {"duration": 8.0},
+                    }
+                ],
+            }
+        ]
+
+        async def retime(source: Path, output: Path, speed: float) -> dict:
+            self.assertEqual(source, source_path.resolve())
+            self.assertEqual(speed, 1.5)
+            output.write_bytes(source.read_bytes())
+            return {"duration": 5.333, "videoDuration": 5.333, "audioDuration": 5.333}
+
+        with (
+            patch.object(pipeline_module, "load_project", return_value=self.project),
+            patch.object(pipeline_module, "mutate_project", side_effect=self._mutate),
+            patch.object(pipeline_module, "retime_video", new=retime),
+            patch.object(pipeline_module, "add_message") as add_message,
+            patch.object(pipeline_module.seedance, "generate", AsyncMock()) as generate,
+            patch.object(pipeline_module.tts, "generate", AsyncMock()) as tts_generate,
+        ):
+            output = await instance.create_speed_version(self.project_id, "output-old", 1.5)
+
+        self.assertEqual(output["speed"], 1.5)
+        self.assertTrue((self.work_dir / Path(output["url"]).name).is_file())
+        generate.assert_not_awaited()
+        tts_generate.assert_not_awaited()
+        add_message.assert_called_once()
 
 
 if __name__ == "__main__":

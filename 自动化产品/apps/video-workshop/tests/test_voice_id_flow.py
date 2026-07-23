@@ -250,13 +250,16 @@ class VoiceIdChatPersistenceTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "add_message"),
             patch.object(main, "add_event"),
             patch.object(main.director, "decide", AsyncMock(return_value=decision)),
-            patch.object(main, "_schedule"),
+            patch.object(main.pipeline, "run", AsyncMock()),
         ):
-            result = await main.chat(
+            accepted = await main.chat(
                 main.ChatRequest(
                     message="做一条产品片，音色ID：designed_voice_persist",
                 )
             )
+            self.assertEqual("running", accepted["status"])
+            await main._project_tasks["project-voice-test"]
+            result = project
 
         self.assertEqual(result["voiceId"], "designed_voice_persist")
         self.assertEqual(

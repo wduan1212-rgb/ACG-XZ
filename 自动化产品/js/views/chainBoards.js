@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260721-v105-1";
+import { AI } from "../api/ai.js?v=20260723-v115-3";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260721-v105-1";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260723-v115-3";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260721-v105-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260723-v115-3";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -53,18 +53,35 @@ export async function urlToDataUrl(url) {
   return await fileToDataUrl(blob);
 }
 
+function normalizeRefIds(ids = []) {
+  return [...new Set((ids || []).filter(Boolean))].slice(0, MAX_IMAGE_REFS);
+}
+
 function refIdsOf(A) {
   const ids = Array.isArray(A.sharedRefAssetIds) ? A.sharedRefAssetIds.filter(Boolean) : [];
   if (A.sharedRefAssetId && !ids.includes(A.sharedRefAssetId)) ids.unshift(A.sharedRefAssetId);
-  return [...new Set(ids)].slice(0, MAX_IMAGE_REFS);
+  return normalizeRefIds(ids);
+}
+
+function refAssetsForIds(ids = []) {
+  return normalizeRefIds(ids).map(id => state.assets.find(x => x.id === id)).filter(Boolean);
 }
 
 function refAssetsOf(A) {
-  return refIdsOf(A).map(id => state.assets.find(x => x.id === id)).filter(Boolean);
+  return refAssetsForIds(refIdsOf(A));
+}
+
+/**
+ * 单张定制参考优先，同时保留统一参考作为不足五张时的补充。
+ * 这样单图的拖入参考不会改变同一生产单的其他图，也不会破坏旧生产单。
+ */
+export function imageReferenceIdsForSlot(A, item = {}) {
+  const itemIds = normalizeRefIds(item?.refAssetIds);
+  return itemIds.length ? normalizeRefIds([...itemIds, ...refIdsOf(A)]) : refIdsOf(A);
 }
 
 function setRefIds(A, ids) {
-  const clean = [...new Set((ids || []).filter(Boolean))].slice(0, MAX_IMAGE_REFS);
+  const clean = normalizeRefIds(ids);
   A.sharedRefAssetIds = clean;
   A.sharedRefAssetId = clean[0] || null; // 兼容旧字段/旧部署
 }
@@ -74,9 +91,9 @@ function appendRefId(A, id) {
   setRefIds(A, [...refIdsOf(A), id]);
 }
 
-export async function providerRefsFor(A) {
+export async function providerRefsFor(A, refIds = refIdsOf(A)) {
   const refs = [];
-  for (const a of refAssetsOf(A)) {
+  for (const a of refAssetsForIds(refIds)) {
     const u = urlFor(a);
     let dataUrl = "";
     let publicUrl = "";
@@ -111,12 +128,12 @@ export function imageReferenceReceiptLabel(receipt) {
   return `参考图实际使用 ${used}/${intended}${skipped ? `，${skipped} 张未被接收` : ""}${mode ? ` · ${mode}` : ""}`;
 }
 
-function refNamesOf(A, extra = []) {
-  return [...refAssetsOf(A).map(a => a.name), ...extra].filter(Boolean).slice(0, MAX_IMAGE_REFS);
+function refNamesOf(A, extra = [], refIds = refIdsOf(A)) {
+  return [...refAssetsForIds(refIds).map(a => a.name), ...extra].filter(Boolean).slice(0, MAX_IMAGE_REFS);
 }
 
-export function enrichPromptWithRefs(prompt, A) {
-  const names = refNamesOf(A);
+export function enrichPromptWithRefs(prompt, A, refIds = refIdsOf(A)) {
+  const names = refNamesOf(A, [], refIds);
   if (!names.length) return prompt || "";
   const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
   const refNote = `参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），以本次提示词的主题和文字内容为准。`;
@@ -378,11 +395,21 @@ export function renderSlotsPage(root, p, isImg) {
     const shownPrompt = img ? normalizeImageWorkshopText(it.prompt || "") : (it.prompt || "");
     const shownVisual = img ? normalizeImageWorkshopText(it.visual || "") : (it.visual || "");
     const referenceReceiptLabel = imageReferenceReceiptLabel(it.referenceReceipt);
+    const customRefIds = normalizeRefIds(it.refAssetIds);
+    const customRefs = refAssetsForIds(customRefIds);
+    const allowSlotRefs = img && !p.batchId;
     return `<div class="slot-card card ${img ? "is-image-slot" : ""} ${loading ? "is-generating" : ""}" data-slot="${i}">
       <span class="sc-num">${i + 1}</span>
       <div class="sc-text">
         <div class="sc-line">${esc(it.title || "")}<em>${esc(shownVisual.slice(0, 60))}</em></div>
         <div class="sc-prompt" contenteditable="true" data-prompt="${i}" data-ph="点右侧按钮生成图片，或手写提示词">${esc(shownPrompt)}</div>
+        ${allowSlotRefs ? `<div class="sc-slot-refbar" data-slot-ref-drop="${i}">
+          <span class="sc-slot-ref-label">本张定制参考图</span>
+          <div class="sc-slot-ref-list">${customRefs.length
+            ? customRefs.map(a => `<span class="sc-slot-ref-chip">${thumbHtml(a)}<span>${esc(a.name)}</span><button type="button" class="ref-x" data-slot-ref-rm="${i}:${a.id}" title="移除此图参考">${icon("x", 10)}</button></span>`).join("")
+            : `<em>未设置，默认沿用统一参考图</em>`}</div>
+          <label class="btn ghost sm sc-slot-ref-upload">${icon("upload", 12)} 拖入 / 上传<input type="file" accept="image/*" multiple hidden data-slot-ref-up="${i}" /></label>
+        </div>` : ""}
         ${referenceReceiptLabel ? `<div class="${Number(it.referenceReceipt?.usedRefs || 0) > 0 ? "muted" : "sc-error"}">${esc(referenceReceiptLabel)}</div>` : ""}
         ${it.error ? `<div class="sc-error">${esc(it.error)}</div>` : ""}
       </div>
@@ -556,6 +583,63 @@ export function renderSlotsPage(root, p, isImg) {
       draw();
     }
 
+    async function setSlotRefsFromFiles(index, files) {
+      if (!isImg) return;
+      const item = A.items?.[index];
+      const imgs = Array.from(files || []).filter(file => file?.type?.startsWith("image/"));
+      if (!item || !imgs.length) return;
+      const nextIds = normalizeRefIds(item.refAssetIds);
+      let added = 0;
+      for (const file of imgs) {
+        if (nextIds.length >= MAX_IMAGE_REFS) break;
+        const dataUrl = await fileToDataUrl(file);
+        const asset = await addAssetFromDataUrl(acc.id, {
+          name: file.name.replace(/\.[^.]+$/, "") || `图${index + 1} 定制参考`,
+          tags: ["参考图", "单张定制参考图"],
+          dataUrl
+        });
+        nextIds.push(asset.id);
+        added += 1;
+      }
+      if (!added) {
+        toast(`本张最多 ${MAX_IMAGE_REFS} 张定制参考图`, "error");
+        return;
+      }
+      item.refAssetIds = normalizeRefIds(nextIds);
+      item.referenceSource = "slot";
+      save("productions");
+      toast(`已为第 ${index + 1} 张添加 ${added} 张定制参考图`);
+      draw();
+    }
+
+    $$('[data-slot-ref-up]', root).forEach(input => input.addEventListener("change", async event => {
+      try {
+        await setSlotRefsFromFiles(Number(input.dataset.slotRefUp), event.target.files);
+      } catch (error) {
+        toast(error?.message || "添加定制参考图失败", "error");
+      } finally {
+        event.target.value = "";
+      }
+    }));
+    $$('[data-slot-ref-drop]', root).forEach(zone => wireDropZone(zone, async files => {
+      try {
+        await setSlotRefsFromFiles(Number(zone.dataset.slotRefDrop), files);
+      } catch (error) {
+        toast(error?.message || "添加定制参考图失败", "error");
+      }
+    }, { filesOnly: true }));
+    $$('[data-slot-ref-rm]', root).forEach(button => button.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const [rawIndex, assetId] = String(button.dataset.slotRefRm || "").split(":");
+      const item = A.items?.[Number(rawIndex)];
+      if (!item || !assetId) return;
+      item.refAssetIds = normalizeRefIds((item.refAssetIds || []).filter(id => id !== assetId));
+      if (!item.refAssetIds.length) delete item.referenceSource;
+      save("productions");
+      draw();
+    }));
+
     $("#cbGenAllImages", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
         const runToken = startImageRun("all");
         const items = A.items || [];
@@ -607,7 +691,10 @@ export function renderSlotsPage(root, p, isImg) {
           });
           A.items = (res.shots || []).map((s, i) => ({
             title: s.title || `图${i + 1}`, visual: (shots[i] || {}).visual || "", prompt: s.prompt || "", ui: !!s.ui,
-            assetId: (A.items[i] || {}).assetId || null, status: (A.items[i] || {}).assetId ? "done" : "idle"
+            assetId: (A.items[i] || {}).assetId || null,
+            refAssetIds: normalizeRefIds((A.items[i] || {}).refAssetIds),
+            referenceSource: (A.items[i] || {}).referenceSource || "",
+            status: (A.items[i] || {}).assetId ? "done" : "idle"
           }));
         } else {
           const res = await AI.generateStoryboardPrompts({ shots, account: acc, style: p.artifacts.script.style, sharedRefName: sharedRefs.map(x => x.name).join("、"), product: productById(p.artifacts.script.productId || "dumate") });
@@ -719,9 +806,9 @@ export function renderSlotsPage(root, p, isImg) {
       if (!imageApiConfigured() || provider?.mock) {
         throw new Error("图片 API 未接入：请配置站内图片服务，或使用槽位上传补图");
       } else {
-        const finalPrompt = enrichPromptWithRefs(promptForImageModel(fresh.prompt), A);
-        const intendedRefAssetIds = refIdsOf(A);
-        const refs = await providerRefsFor(A);
+        const intendedRefAssetIds = imageReferenceIdsForSlot(A, fresh);
+        const finalPrompt = enrichPromptWithRefs(promptForImageModel(fresh.prompt), A, intendedRefAssetIds);
+        const refs = await providerRefsFor(A, intendedRefAssetIds);
         const r = await provider.submit({
           prompt: finalPrompt,
           refs,

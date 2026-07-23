@@ -2,11 +2,25 @@ import re
 import unittest
 from pathlib import Path
 
+from server.main import _tts_payload, _voice_design_prompt
+
 
 APP_DIR = Path(__file__).resolve().parents[2]
 
 
 class VoiceLabLayoutContractTest(unittest.TestCase):
+    def test_voice_design_preserves_lifestyle_and_emotional_semantics(self):
+        prompt = "温柔、生活化、像朋友聊天，语速舒缓，适合日常分享"
+        anchored = _voice_design_prompt(prompt, "female")
+        self.assertIn("必须生成女性声线", anchored)
+        for phrase in ("温柔", "生活化", "像朋友聊天", "语速舒缓", "日常分享"):
+            self.assertIn(phrase, anchored)
+        self.assertIn("完整保留并共同执行", anchored)
+
+    def test_main_platform_tts_accepts_the_existing_one_point_two_speed(self):
+        payload = _tts_payload("这是一段稳定性验证口播", "voice-id", speed=1.2)
+        self.assertEqual(payload["voice_setting"]["speed"], 1.2)
+
     def test_mode_switch_lives_inside_editor_header_without_provider_caption(self):
         source = (APP_DIR / "js" / "views" / "voiceLab.js").read_text(encoding="utf-8")
 

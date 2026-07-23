@@ -259,8 +259,8 @@ class ImageReferenceReceiptFrontendTest(unittest.TestCase):
         providers = (APP_DIR / "js/api/providers.js").read_text(encoding="utf-8")
         server = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
 
-        self.assertIn("const intendedRefAssetIds = refIdsOf(A)", boards)
-        self.assertIn("const refs = await providerRefsFor(A)", boards)
+        self.assertIn("const intendedRefAssetIds = imageReferenceIdsForSlot(A, fresh)", boards)
+        self.assertIn("const refs = await providerRefsFor(A, intendedRefAssetIds)", boards)
         self.assertIn("dataUrl = await urlToDataUrl(u)", boards)
         self.assertIn("intendedRefAssetIds,", boards)
 

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sys
 import tempfile
@@ -18,7 +19,94 @@ from app import media, pipeline, providers
 from app.media import build_scene_timeline
 
 
+async def fake_retime_video(source, output, speed):
+    Path(output).write_bytes(Path(source).read_bytes())
+    return {"duration": 8.0, "videoDuration": 8.0, "audioDuration": 8.0, "speed": speed}
+
+
 class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
+    def test_director_pacing_guidance_is_explicitly_optional(self):
+        prompt = providers.MiniMaxDirector()._system_prompt(
+            "9:16",
+            "",
+            [],
+        )
+        self.assertIn("先做叙事镜头计划，再做内部剪辑决定", prompt)
+        self.assertIn("不按固定数量、固定秒数或等间隔凑数", prompt)
+        self.assertIn("一个技术片段可以通过清晰的时间结构包含多次内部镜头变化", prompt)
+        self.assertNotIn("约 2 到 4 秒", prompt)
+        self.assertNotIn("一句口播两个镜头", prompt)
+
+    def test_seedance_pacing_hint_only_applies_to_longer_render_units(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            units = pipeline._render_units(
+                [
+                    {"visual_prompt": "人物在桌面操作工具"},
+                    {"visual_prompt": "人物停下思考"},
+                ],
+                [
+                    {"sceneNumber": 1, "duration": 12.0},
+                    {"sceneNumber": 2, "duration": 6.0},
+                ],
+                Path(tmp),
+            )
+        fast_hint = units[0]["scene"]["visual_prompt"]
+        short_hint = units[1]["scene"]["visual_prompt"]
+        self.assertIn("剪辑判断（非硬性）", fast_hint)
+        self.assertIn("列举、反差、动作、证据与情绪转折", fast_hint)
+        self.assertIn("不要等间隔切换", fast_hint)
+        self.assertNotIn("剪辑判断（非硬性）", short_hint)
+
+    def test_long_logical_scene_uses_distinct_render_units(self):
+        timeline, _ = build_scene_timeline([1], 40.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            units = pipeline._render_units(
+                [{"visual_prompt": "一个人物沿着走廊向前"}],
+                timeline,
+                Path(tmp),
+            )
+        self.assertGreater(len(units), 1)
+        self.assertEqual(len({str(item["target_path"]) for item in units}), len(units))
+        self.assertTrue(all("独立视觉节拍" in item["scene"]["visual_prompt"] for item in units))
+        self.assertTrue(all("不要复用" in item["scene"]["visual_prompt"] for item in units))
+
+    async def test_seedance_queue_never_exceeds_ten_active_jobs(self):
+        active = 0
+        maximum = 0
+        gate = asyncio.Event()
+
+        async def job():
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            if maximum >= 10:
+                gate.set()
+            await gate.wait()
+            await asyncio.sleep(0)
+            active -= 1
+
+        await pipeline._gather_bounded(*(job() for _ in range(24)), limit=10)
+        self.assertEqual(maximum, 10)
+
+    async def test_final_retime_changes_audio_and_video_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.mp4"
+            source.write_bytes(b"video")
+            with (
+                patch.object(media, "run", AsyncMock()) as run,
+                patch.object(
+                    media,
+                    "probe",
+                    AsyncMock(return_value={"duration": 10.0, "videoDuration": 10.0, "audioDuration": 10.0}),
+                ),
+            ):
+                await media.retime_video(source, root / "speed.mp4", 1.2)
+        command = run.await_args.args[0]
+        graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("setpts=PTS/1.200000", graph)
+        self.assertIn("atempo=1.200000", graph)
+
     def test_explicit_duration_parser_ignores_script_timeline_ranges(self):
         self.assertEqual(
             providers._explicit_duration_seconds(
@@ -47,6 +135,7 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
         source = (VIDEO_WORKSHOP_DIR / "app" / "providers.py").read_text(encoding="utf-8")
         self.assertNotIn("_repair_narration_duration", source)
         self.assertNotIn("duration_sec 必须填写", source)
+        self.assertIn("不要套用固定镜头数量或固定拆句公式", source)
 
     def test_tts_uses_natural_speed_without_duration_forcing(self):
         short_text = "这是一段用于校准的口播。" * 6
@@ -142,7 +231,7 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
             [15, 8, 8, 8, 8, 6, 5],
             58.0,
         )
-        self.assertGreater(transition, 0)
+        self.assertGreaterEqual(transition, 0)
         self.assertAlmostEqual(timeline[0]["start"], 0.0, places=6)
         self.assertAlmostEqual(timeline[-1]["end"], 58.0, places=6)
         self.assertLessEqual(max(item["duration"] for item in timeline), 18.0)
@@ -159,17 +248,17 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
             places=5,
         )
 
-    def test_near_limit_window_is_retimed_without_forcing_a_new_director_scene(self):
+    def test_over_limit_window_is_split_without_changing_the_director_scene(self):
         timeline, transition = build_scene_timeline([1], 16.1)
-        self.assertEqual(len(timeline), 1)
-        self.assertEqual(transition, 0)
-        self.assertAlmostEqual(timeline[0]["duration"], 16.1, places=6)
-        self.assertEqual(pipeline._scene_generation_duration(timeline[0]["duration"]), 15)
+        self.assertEqual(len(timeline), 2)
+        self.assertGreater(transition, 0)
+        self.assertTrue(all(item["sourceSceneNumber"] == 1 for item in timeline))
+        self.assertLessEqual(max(item["duration"] for item in timeline), 15.0)
 
     def test_very_long_window_is_split_only_as_a_backend_fallback(self):
         timeline, transition = build_scene_timeline([1], 40.0)
         self.assertGreater(len(timeline), 1)
-        self.assertLessEqual(max(item["duration"] for item in timeline), 18.0)
+        self.assertLessEqual(max(item["duration"] for item in timeline), 15.0)
         self.assertAlmostEqual(
             sum(item["duration"] for item in timeline)
             - transition * (len(timeline) - 1),
@@ -249,6 +338,7 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
                 patch.object(pipeline.seedance, "generate", new=generate_scene),
                 patch.object(pipeline, "probe", new=fake_probe),
                 patch.object(pipeline, "compose_variant", new=compose),
+                patch.object(pipeline, "retime_video", new=fake_retime_video),
                 patch.object(pipeline.bgm_library, "resolve", return_value=None),
                 patch.object(pipeline.openmontage, "validate_composition", return_value={"success": True}),
                 patch.object(pipeline.openmontage, "inspect_video", return_value={"success": True}),
@@ -258,7 +348,11 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
             ):
                 await pipeline.VideoPipeline().run(project["id"], plan)
 
-            self.assertEqual(submitted, [6, 6])
+            # 时序导演可以把 10 秒口播保留为一个有内部镜头变化的技术单元，
+            # 也可以拆成多个单元；这里验证生产约束，不把智能节奏重新锁成固定等分。
+            self.assertTrue(submitted)
+            self.assertTrue(all(4 <= duration <= 15 for duration in submitted))
+            self.assertGreaterEqual(sum(submitted), 10)
             self.assertLess(order.index("probe-narration"), order.index("scene-1"))
             self.assertEqual(project["status"], "succeeded")
 
@@ -272,7 +366,10 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
             uploads_dir.mkdir()
             (work_dir / "narration.mp3").write_bytes(b"narration")
             old_scene = work_dir / "scene-01.mp4"
-            old_scene.write_bytes(b"previous-valid-scene")
+            old_scene.write_bytes(b"previous-legacy-scene")
+            old_parts = [work_dir / f"scene-01-part-{index:02d}.mp4" for index in range(1, 4)]
+            for old_part in old_parts:
+                old_part.write_bytes(b"previous-valid-scene")
             project = {"id": "selective", "messages": [], "deliveries": [], "outputs": []}
 
             def mutate(_project_id, callback):
@@ -319,6 +416,7 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
                 patch.object(pipeline.seedance, "generate", generated),
                 patch.object(pipeline, "probe", new=fake_probe),
                 patch.object(pipeline, "compose_variant", new=compose),
+                patch.object(pipeline, "retime_video", new=fake_retime_video),
                 patch.object(pipeline.bgm_library, "resolve", return_value=None),
                 patch.object(pipeline.openmontage, "validate_composition", return_value={"success": True}),
                 patch.object(pipeline.openmontage, "inspect_video", return_value={"success": True}),
@@ -328,8 +426,9 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
             ):
                 await pipeline.VideoPipeline().run(project["id"], plan, retry_scene_number=1)
 
-            self.assertEqual(generated.await_count, 1)
-            self.assertEqual(old_scene.read_bytes(), b"too-short-candidate")
+            self.assertEqual(generated.await_count, 3)
+            self.assertEqual(old_scene.read_bytes(), b"previous-legacy-scene")
+            self.assertTrue(all(path.read_bytes() == b"too-short-candidate" for path in old_parts))
             self.assertFalse(list(work_dir.glob("*.candidate.mp4")))
             self.assertEqual(project["status"], "succeeded")
 

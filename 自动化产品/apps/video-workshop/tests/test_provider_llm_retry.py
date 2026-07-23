@@ -81,6 +81,22 @@ class ProviderLlmRetryTest(unittest.IsolatedAsyncioTestCase):
         await self._call()
         self.assertEqual(2, _Client.calls)
 
+    async def test_two_empty_messages_are_retried_before_a_usable_tool_call(self):
+        _Client.calls = 0
+        _Client.responses = [
+            _Response(200, {"choices": [{"message": {}}]}),
+            _Response(200, {"choices": [{"message": {"content": ""}}]}),
+            _Response(200, _tool_payload()),
+        ]
+
+        result = await self._call()
+
+        self.assertEqual(3, _Client.calls)
+        self.assertEqual(
+            "start_video_production",
+            result["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        )
+
     async def test_auth_and_permanent_quota_errors_do_not_retry(self):
         for response in (
             _Response(401, {"error": "invalid token"}, "invalid token"),
@@ -92,6 +108,29 @@ class ProviderLlmRetryTest(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(providers.ProviderError):
                     await self._call()
                 self.assertEqual(1, _Client.calls)
+
+    def test_seedance_payload_adds_text_negative_once_without_director_explanation(self):
+        prompt = "真实办公室中人物快速整理资料，镜头自然推进。"
+        payload = providers.SeedanceVideo.build_payload(prompt, "9:16")
+        submitted = payload["content"][0]["text"]
+        self.assertIn(providers._SEEDANCE_TEXT_NEGATIVE, submitted)
+        self.assertEqual(1, submitted.count(providers._SEEDANCE_TEXT_NEGATIVE))
+        self.assertNotIn("后期", submitted)
+        repeated = providers.SeedanceVideo.build_payload(submitted, "9:16")["content"][0]["text"]
+        self.assertEqual(submitted, repeated)
+
+    def test_seedance_payload_removes_narration_but_keeps_intentional_short_ui_copy(self):
+        prompt = (
+            "本段对应口播原文：用百度搭子做自媒体，必装的十个 Skill。\n"
+            "年轻创作者在真实工作台前整理相机、手机和采访素材。"
+            "右侧界面按钮写着‘开始整理’，短标签清晰可读。"
+        )
+        submitted = providers.SeedanceVideo.build_payload(prompt, "9:16")["content"][0]["text"]
+        self.assertIn("年轻创作者在真实工作台前整理相机、手机和采访素材", submitted)
+        self.assertNotIn("本段对应口播原文", submitted)
+        self.assertNotIn("用百度搭子做自媒体", submitted)
+        self.assertIn("开始整理", submitted)
+        self.assertEqual(1, submitted.count(providers._SEEDANCE_TEXT_NEGATIVE))
 
 
 if __name__ == "__main__":

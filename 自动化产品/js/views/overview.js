@@ -8,13 +8,13 @@ import { STAGES, statusPill } from "../domain/productions.js";
 import { deliveredAssets, deliveryViewsSummary } from "../domain/delivery.js";
 import { analyticsRows, analyticsSummary } from "../domain/analytics.js";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260721-v105-1";
-import { LLM_CONFIG } from "../api/llm.js?v=20260721-v105-1";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260721-v105-1";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260721-v105-1";
+import { AI } from "../api/ai.js?v=20260723-v115-3";
+import { LLM_CONFIG } from "../api/llm.js?v=20260723-v115-3";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v115-3";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260723-v115-3";
 import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260721-v105-1";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260723-v115-3";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
@@ -23,7 +23,19 @@ let accountCarouselPage = 0;
 let accountCarouselTimer = null;
 let accountCarouselTransitionTimer = null;
 
-const dayKey = ts => { const d = new Date(ts); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+const dayKey = ts => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const weekRange = ts => {
+  const d = new Date(ts || Date.now());
+  d.setHours(0, 0, 0, 0);
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  return {
+    key: dayKey(monday.getTime()),
+    label: `${monday.getMonth() + 1}/${monday.getDate()}-${sunday.getMonth() + 1}/${sunday.getDate()}`
+  };
+};
 const safeAccount = a => ({
   ...(a || {}),
   id: (a && a.id) || "",
@@ -112,6 +124,24 @@ function plainAssistantText(value = "") {
     .trim();
 }
 
+function assistantMessageHtml(value = "") {
+  const source = plainAssistantText(value);
+  const urlPattern = /https?:\/\/[^\s<>“”"']+/gi;
+  let cursor = 0;
+  let html = "";
+  for (const match of source.matchAll(urlPattern)) {
+    const start = match.index || 0;
+    html += esc(source.slice(cursor, start)).replace(/\n/g, "<br/>");
+    let url = match[0];
+    const trailing = url.match(/[，。！？；：,!?;:)”》」]+$/)?.[0] || "";
+    if (trailing) url = url.slice(0, -trailing.length);
+    html += `<a class="ovc-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>${esc(trailing)}`;
+    cursor = start + match[0].length;
+  }
+  html += esc(source.slice(cursor)).replace(/\n/g, "<br/>");
+  return html;
+}
+
 async function askData(q) {
   const stats = computeStats();
   if (!LLM_CONFIG.apiKey) return plainAssistantText(offlineAnswer(q, stats));
@@ -159,6 +189,7 @@ export const overviewView = {
     const failed = inflight.filter(p => p.stageStatus === "failed");
     const monthly = accounts.reduce((s, a) => s + (a.monthlyDone || 0), 0);
     const delivered = deliveredAssets();
+    const published = delivered.filter(({ asset }) => !!asset.publishedUrl);
     const pendingDl = delivered.filter(x => !x.asset.status || x.asset.status === "未下载").length;
     const links = analyticsRows();
     const analytics = analyticsSummary(links);
@@ -324,32 +355,52 @@ export const overviewView = {
           item.name,
           `${item.platform} · 今日交付 ${item.count} 条`
         )).join("") || `<div class="overview-task-empty">今日暂无${platform || "小红书或视频号"}交付</div>`;
-      } else if (key === "recent") {
+      } else if (key === "recent" || key === "published") {
+        const isPublished = key === "published";
+        const source = isPublished ? published : delivered;
         const dayOptions = recentDays.slice().reverse();
-        const monthOptions = [...new Set(delivered
+        const monthOptions = [...new Set(source
           .map(({ asset }) => dayKey(asset?.deliveredAt || asset?.createdAt || 0).slice(0, 7))
           .filter(value => /^\d{4}-\d{2}$/.test(value)))].slice(0, 6);
-        recentFilter = initialRecentFilter?.type === "day" || initialRecentFilter?.type === "month"
+        const weekOptions = [...new Map(source.map(({ asset }) => {
+          const time = asset?.publishedUpdatedAt || asset?.publishedAt || asset?.deliveredAt || asset?.createdAt || 0;
+          const range = weekRange(time);
+          return [range.key, range];
+        })).values()].sort((a, b) => b.key.localeCompare(a.key)).slice(0, 8);
+        const allowedFilters = isPublished ? new Set(["day", "week"]) : new Set(["day", "month"]);
+        recentFilter = allowedFilters.has(initialRecentFilter?.type)
           ? initialRecentFilter
           : { type: "all", value: "" };
         recentDetailHtml = () => {
-          const scoped = delivered.filter(({ asset }) => {
-            const date = dayKey(asset?.deliveredAt || asset?.createdAt || 0);
+          const scoped = source.filter(({ asset }) => {
+            const time = isPublished
+              ? (asset?.publishedUpdatedAt || asset?.publishedAt || asset?.deliveredAt || asset?.createdAt || 0)
+              : (asset?.deliveredAt || asset?.createdAt || 0);
+            const date = dayKey(time);
             if (recentFilter.type === "day") return date === recentFilter.value;
             if (recentFilter.type === "month") return date.startsWith(recentFilter.value);
+            if (recentFilter.type === "week") return weekRange(time).key === recentFilter.value;
             return true;
           });
           const filterButton = (type, value, label) => `<button type="button" class="overview-detail-filter${recentFilter.type === type && recentFilter.value === value ? " is-active" : ""}" data-recent-filter-type="${type}" data-recent-filter-value="${esc(value)}">${esc(label)}</button>`;
           const dayFilters = dayOptions.map(item => filterButton("day", item.key, item.label)).join("");
           const monthFilters = monthOptions.map(value => filterButton("month", value, `${Number(value.slice(5))} 月`)).join("");
+          const weekFilters = weekOptions.map(item => filterButton("week", item.key, item.label)).join("");
           const list = scoped.slice(0, 50).map(({ asset, acc }) => makeRow(
             asset.title || asset.name || "未命名交付",
-            `${acc?.name || "未命名账号"} · ${asset.status || "未下载"} · ${timeAgo(asset.deliveredAt || asset.createdAt)}`,
+            `${acc?.name || "未命名账号"} · ${isPublished ? "已发布" : (asset.status || "未下载")} · ${timeAgo(isPublished ? (asset.publishedUpdatedAt || asset.publishedAt || asset.deliveredAt || asset.createdAt) : (asset.deliveredAt || asset.createdAt))}`,
             asset.productionId ? `<button class="btn ghost sm" data-ov-prod="${esc(asset.productionId)}">查看</button>` : ""
           )).join("");
-          return `<section class="overview-detail-filter-section"><div><b>按日期</b><span class="overview-detail-filter-tags">${filterButton("all", "", "全部")}${dayFilters}</span></div><div><b>按月份</b><span class="overview-detail-filter-tags">${monthFilters || `<em>暂无月度交付</em>`}</span></div></section><div class="overview-detail-summary">${recentFilter.type === "all" ? "全部交付" : recentFilter.type === "day" ? recentFilter.value : `${recentFilter.value} 月`} · ${scoped.length} 条</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该时间范围暂无交付</div>`}</div>`;
+          const secondary = isPublished
+            ? `<div><b>按周</b><span class="overview-detail-filter-tags">${weekFilters || `<em>暂无周发布</em>`}</span></div>`
+            : `<div><b>按月份</b><span class="overview-detail-filter-tags">${monthFilters || `<em>暂无月度交付</em>`}</span></div>`;
+          const scopeLabel = recentFilter.type === "all"
+            ? (isPublished ? "全部发布" : "全部交付")
+            : recentFilter.type === "month" ? `${recentFilter.value} 月`
+              : recentFilter.type === "week" ? `本周起始 ${recentFilter.value}` : recentFilter.value;
+          return `<section class="overview-detail-filter-section"><div><b>按日期</b><span class="overview-detail-filter-tags">${filterButton("all", "", "全部")}${dayFilters}</span></div>${secondary}</section><div class="overview-detail-summary">${scopeLabel} · ${scoped.length} 条</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该时间范围暂无${isPublished ? "发布" : "交付"}</div>`}</div>`;
         };
-        title = "交付明细";
+        title = isPublished ? "发布数量明细" : "交付明细";
         rows = `<div data-recent-detail-content>${recentDetailHtml()}</div>`;
       } else if (key === "links") {
         title = `回传链接 · ${links.length} 条`;
@@ -395,7 +446,7 @@ export const overviewView = {
           panel.classList.add("overview-task-panel");
           panel.addEventListener("click", event => {
             const recentFilterButton = event.target.closest("[data-recent-filter-type]");
-            if (key === "recent" && recentFilterButton && recentFilter && recentDetailHtml) {
+            if (["recent", "published"].includes(key) && recentFilterButton && recentFilter && recentDetailHtml) {
               recentFilter = {
                 type: recentFilterButton.dataset.recentFilterType,
                 value: recentFilterButton.dataset.recentFilterValue || ""
@@ -422,7 +473,7 @@ export const overviewView = {
       <div class="overview-dashboard-layout">
         <main class="overview-dashboard-main">
           <section class="overview-kpi-strip" aria-label="关键指标">
-            <button class="overview-kpi-card" data-overview-detail="links"><span>回传链接</span><b>${fmt(links.length)}</b><em>${analytics.synced} 条有数据快照</em></button>
+            <button class="overview-kpi-card" data-overview-detail="published"><span>发布数量</span><b>${fmt(published.length)}</b><em>${published.filter(({ asset }) => dayKey(asset.publishedUpdatedAt || asset.publishedAt || 0) === dayKey(Date.now())).length} 条今日发布</em></button>
             <button class="overview-kpi-card" data-overview-detail="interactions"><span>总互动</span><b>${fmt(totalEngagement)}</b><em>赞、藏、评与分享</em></button>
             <button class="overview-kpi-card" data-overview-detail="interactions"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${views.deliveryCount} 条交付汇总</em></button>
             <button class="overview-kpi-card" data-overview-detail="recent"><span>累计交付</span><b>${fmt(delivered.length)}</b><em>${pendingDl} 条供应商待下载</em></button>
@@ -549,7 +600,7 @@ export const overviewView = {
     const inputEl = $("#ovcInput", root);
     const drawChat = () => {
       msgsEl.innerHTML = chatLog.length
-        ? chatLog.map(m => `<div class="ovc-bubble ${m.role}">${esc(plainAssistantText(m.text)).replace(/\n/g, "<br/>")}</div>`).join("") + (chatBusy ? `<div class="ovc-bubble agent typing"><i></i><i></i><i></i></div>` : "")
+        ? chatLog.map(m => `<div class="ovc-bubble ${m.role}">${assistantMessageHtml(m.text)}</div>`).join("") + (chatBusy ? `<div class="ovc-bubble agent typing"><i></i><i></i><i></i></div>` : "")
         : `<div class="ovc-sugs">${CHAT_SUGS.map(q => `<button class="chip" data-ovq="${esc(q)}">${esc(q)}</button>`).join("")}</div>`;
       msgsEl.scrollTop = msgsEl.scrollHeight;
       msgsEl.querySelectorAll("[data-ovq]").forEach(b => b.addEventListener("click", () => { inputEl.value = b.dataset.ovq; send(); }));

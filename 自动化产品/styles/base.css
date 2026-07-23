@@ -129,6 +129,18 @@ body:not(.role-admin) .rail-item[data-nav="voice"] { display: none; }
 .ctx-acc.is-active .ctx-idx.xhs { color: #C2255C; border-color: rgba(214,51,108,.35); background: #FFF0F4; }
 .ctx-acc.is-active .ctx-idx.sph { color: #087F5B; border-color: rgba(8,127,91,.35); background: #E6FCF5; }
 .ctx-acc .ctx-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
+.ctx-acc.is-disabled { opacity: .58; filter: saturate(.55); }
+.ctx-acc.is-disabled .ctx-name { text-decoration: line-through; text-decoration-color: rgba(100,116,139,.48); }
+.ctx-new-badge {
+  display: inline-grid; place-items: center; min-width: 17px; height: 17px; margin-left: 6px;
+  border-radius: 999px; background: rgba(37,99,235,.11); color: #2563eb;
+  font-size: 9px; font-style: normal; vertical-align: 1px;
+  animation: ctx-new-account-pulse 2.4s ease-in-out infinite;
+}
+@keyframes ctx-new-account-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(37,99,235,0); transform: translateY(0); }
+  45% { box-shadow: 0 0 0 5px rgba(37,99,235,.08); transform: translateY(-1px); }
+}
 .ctx-acc em { font-style: normal; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .ctx-del {
   width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center;
@@ -483,6 +495,23 @@ body:not(.role-admin) .rail-item[data-nav="voice"] { display: none; }
 }
 .lg-field select { appearance: none; cursor: pointer; color-scheme: light; }
 .lg-field input::placeholder { color: #91a1b5; }
+.lg-real-name-hint {
+  flex: none;
+  color: #5f7898;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: .02em;
+  opacity: .68;
+  animation: lgRealNameHint 2.8s ease-in-out infinite;
+}
+@keyframes lgRealNameHint {
+  0%, 100% { opacity: .52; transform: translateX(0); }
+  45% { opacity: .92; transform: translateX(-2px); }
+  58% { opacity: .78; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lg-real-name-hint { animation: none; }
+}
 .lg-login {
   margin-top: 4px;
   background: linear-gradient(135deg, #1a8dff, #1567d8 52%, #132f72);

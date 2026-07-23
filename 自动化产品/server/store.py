@@ -217,6 +217,19 @@ CREATE TABLE IF NOT EXISTS supplier_activity(
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_supplier_activity_parent ON supplier_activity(parent_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS llm_usage_events(
+  id                TEXT PRIMARY KEY,
+  member_id         TEXT NOT NULL,
+  member_name       TEXT NOT NULL,
+  feature           TEXT NOT NULL,
+  model             TEXT,
+  prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens      INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_events_member_created
+  ON llm_usage_events(member_id, created_at DESC);
 """
 
 _lock = Lock()
@@ -670,6 +683,68 @@ def list_supplier_activity(parent_id, include_all=False, limit=80):
                 rows = conn.execute("SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at FROM supplier_activity WHERE parent_id=? ORDER BY created_at DESC LIMIT ?", (parent_id, limit)).fetchall()
             members = {r[0]: r[1] for r in conn.execute("SELECT id,name FROM members").fetchall()}
             return [{"id": r[0], "parentId": r[1], "childId": r[2], "memberId": r[3], "memberName": members.get(r[3], "成员"), "action": r[4], "accountId": r[5], "assetId": r[6], "detail": r[7] or "", "createdAt": r[8]} for r in rows]
+        finally:
+            conn.close()
+
+
+# ---------- 语言模型用量（仅记录上游响应中可核验的 token 字段） ----------
+def _usage_int(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def record_llm_usage(member_id, member_name, feature, model, usage):
+    """持久化一次已成功的语言模型调用的 token 用量。
+
+    上游未返回 usage 时不写入，避免将猜测值误标为 API 积分或账单金额。
+    """
+    source = usage if isinstance(usage, dict) else {}
+    prompt = _usage_int(source.get("prompt_tokens", source.get("input_tokens")))
+    completion = _usage_int(source.get("completion_tokens", source.get("output_tokens")))
+    total = _usage_int(source.get("total_tokens")) or prompt + completion
+    if not (prompt or completion or total):
+        return False
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "INSERT INTO llm_usage_events(id,member_id,member_name,feature,model,prompt_tokens,completion_tokens,total_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:16], str(member_id or ""), str(member_name or "成员")[:120],
+                    str(feature or "通用调用")[:80], str(model or "")[:160], prompt, completion, total,
+                    int(time.time() * 1000),
+                ),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+
+def llm_usage_summary():
+    """管理员只读汇总；列出管理员与创作成员，即使尚无可统计调用。"""
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                "SELECT m.id,m.name,m.username,m.role,"
+                "COALESCE(SUM(u.prompt_tokens),0) AS prompt_tokens,"
+                "COALESCE(SUM(u.completion_tokens),0) AS completion_tokens,"
+                "COALESCE(SUM(u.total_tokens),0) AS total_tokens,"
+                "COUNT(u.id) AS calls,MAX(u.created_at) AS last_used_at "
+                "FROM members m LEFT JOIN llm_usage_events u ON u.member_id=m.id "
+                "WHERE m.role IN ('admin','editor') "
+                "GROUP BY m.id,m.name,m.username,m.role ORDER BY total_tokens DESC,m.created_at ASC"
+            ).fetchall()
+            return [{
+                "memberId": row[0], "memberName": row[1], "username": row[2], "role": row[3],
+                "promptTokens": int(row[4] or 0), "completionTokens": int(row[5] or 0),
+                "totalTokens": int(row[6] or 0), "calls": int(row[7] or 0), "lastUsedAt": row[8],
+            } for row in rows]
         finally:
             conn.close()
 
@@ -1303,6 +1378,13 @@ def can_write_asset_file(asset_id, member_id, role):
     """文件上传覆盖前检查同 ID 资产归属；新 ID 可由当前创作者创建。"""
     if role == "admin":
         return True
+    if role in {"supplier_parent", "supplier"}:
+        # 供应商管理员只能为之后由专用账号 API 绑定的新资产上传文件；
+        # 已存在的资产仍不允许从通用文件口覆盖。
+        return not bool(_fetchone(
+            "SELECT 1 FROM docs WHERE collection='assets' AND id=?",
+            (str(asset_id),),
+        ))
     if role != "editor":
         return False
     row = _fetchone(
@@ -3981,6 +4063,118 @@ def update_supplier_account_homepage(account_id, homepage_url, member_id, role):
             conn.close()
 
 
+SUPPLIER_ACCOUNT_FIELDS = {
+    "name", "platform", "mode", "subType", "position", "styleProfile", "tone",
+    "monthlyDone", "exportSeq", "charBoardAssetId", "voiceRefAssetId",
+    "seedanceVoiceRefAssetId", "voiceId", "voiceName", "avatarAssetId",
+    "imageStyleAssetId", "imagePromptTemplate", "homepageUrl", "appearanceAnchor",
+    "lockedStyle", "customStyleChips", "status",
+}
+SUPPLIER_ACCOUNT_ASSET_FIELDS = {
+    "id", "accountId", "seq", "ownerId", "name", "type", "tags", "createdAt",
+    "updatedAt", "hasBlob", "contentHash", "fileUrl", "url", "mime", "size",
+    "serverFileName", "storage", "processed", "blobUpdatedAt",
+}
+
+
+def _supplier_account_patch(data):
+    source = data if isinstance(data, dict) else {}
+    patch = {key: source.get(key) for key in SUPPLIER_ACCOUNT_FIELDS if key in source}
+    patch["name"] = str(patch.get("name") or "").strip()
+    patch["platform"] = str(patch.get("platform") or "小红书").strip()
+    patch["mode"] = "图文" if patch.get("mode") == "图文" else "视频"
+    patch["subType"] = "" if patch["mode"] == "图文" else (
+        "无数字人" if patch.get("subType") == "无数字人" else "数字人"
+    )
+    if patch.get("homepageUrl") is not None:
+        patch["homepageUrl"] = _normalize_homepage_url(patch.get("homepageUrl"))
+    if patch.get("status") not in {"active", "disabled"}:
+        patch["status"] = "active"
+    return patch
+
+
+def _supplier_account_assets(account_id, assets, member_id):
+    safe_assets = []
+    for raw in assets or []:
+        if not isinstance(raw, dict) or not raw.get("id"):
+            continue
+        item = {key: raw.get(key) for key in SUPPLIER_ACCOUNT_ASSET_FIELDS if key in raw}
+        item["id"] = str(raw.get("id"))
+        item["accountId"] = str(account_id)
+        item["ownerId"] = None
+        server_name = str(item.get("serverFileName") or "")
+        file_url = str(item.get("fileUrl") or item.get("url") or "")
+        if not server_name.startswith(f"{member_id}--") or not file_url.startswith("/api/files/"):
+            continue
+        item["supplierManagedBy"] = member_id
+        safe_assets.append(item)
+    return safe_assets
+
+
+def upsert_supplier_account(account_id, data, assets, member_id, *, create=False):
+    """供应商管理员专用账号写入。
+
+    只合并白名单业务字段，停用为可逆状态，永不删除历史产品、交付和资产。
+    """
+    try:
+        patch = _supplier_account_patch(data)
+    except ValueError:
+        return None, "invalid_url"
+    if not patch.get("name"):
+        return None, "invalid"
+    _ensure_db()
+    now = int(time.time() * 1000)
+    requested_id = str(account_id or "")
+    doc_id = requested_id if re.fullmatch(r"[A-Za-z0-9_-]{6,80}", requested_id) else uuid.uuid4().hex[:10]
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT data FROM docs WHERE collection='accounts' AND id=?", (doc_id,)
+            ).fetchone()
+            if create and row:
+                return None, "exists"
+            if not create and not row:
+                return None, "not_found"
+            existing = json.loads(row[0]) if row else {}
+            candidate = {**existing, **patch, "id": doc_id}
+            semantic_key = _account_semantic_key(candidate)
+            duplicate = _existing_account_keys(conn).get(semantic_key) if semantic_key else None
+            if duplicate and duplicate != doc_id:
+                return None, "duplicate"
+            if not existing:
+                candidate.setdefault("createdAt", now)
+                candidate.setdefault("monthlyDone", 0)
+                candidate.setdefault("exportSeq", 0)
+            candidate["updatedAt"] = now
+            candidate["supplierManagedAt"] = now
+            candidate["supplierManagedBy"] = member_id
+            if candidate.get("status") == "disabled":
+                candidate["disabledAt"] = existing.get("disabledAt") or now
+                candidate["disabledBy"] = member_id
+            else:
+                candidate["status"] = "active"
+                candidate.pop("disabledAt", None)
+                candidate.pop("disabledBy", None)
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("accounts", doc_id, None, now, json.dumps(candidate, ensure_ascii=False)),
+            )
+            persisted_assets = []
+            for asset in _supplier_account_assets(doc_id, assets, member_id):
+                asset.setdefault("createdAt", now)
+                asset["updatedAt"] = max(now, int(asset.get("updatedAt") or 0))
+                conn.execute(
+                    "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                    ("assets", asset["id"], None, asset["updatedAt"], json.dumps(asset, ensure_ascii=False)),
+                )
+                persisted_assets.append(asset)
+            conn.commit()
+            return {"account": candidate, "assets": persisted_assets}, None
+        finally:
+            conn.close()
+
+
 def mark_supplier_asset_downloaded(asset_id, member_id, role):
     """只有真实供应商下载会写入供应商下载状态；创作端下载不经过此函数。"""
     if role not in {"supplier_parent", "supplier_child", "supplier"}:
@@ -4287,6 +4481,7 @@ def state_for(member_id, role, parent_id=None, collections=None):
     visible_asset_ids = set()
     supplier_avatar_asset_ids = set()
     editor_account_asset_ids = set()
+    editor_delivery_asset_ids = set()
     supplier_production_created_at = {}
     account_projected_sequences = {}
     with _lock:
@@ -4325,6 +4520,16 @@ def state_for(member_id, role, parent_id=None, collections=None):
                 elif col == "assets":
                     decoded_rows = [(json.loads(data), owner) for data, owner in rows]
                     delivery_projected_sequences = _projected_delivery_sequences([item for item, _ in decoded_rows])
+                    if role == "editor":
+                        for delivery, _ in decoded_rows:
+                            if not delivery.get("delivered"):
+                                continue
+                            editor_delivery_asset_ids.update(
+                                str(asset_id) for asset_id in [
+                                    delivery.get("coverAssetId"),
+                                    *(delivery.get("packAssetIds") or []),
+                                ] if asset_id
+                            )
                     row_items = decoded_rows
                 else:
                     row_items = ((json.loads(data), owner) for data, owner in rows)
@@ -4342,14 +4547,19 @@ def state_for(member_id, role, parent_id=None, collections=None):
                     if col == "accounts" and role == "editor":
                         editor_account_asset_ids.update(_account_reference_asset_ids(item))
                     if col == "accounts" and role in {"supplier_parent", "supplier_child"}:
+                        # 供应商账号看板只需要账号头像。数字人角色版、参考声线和
+                        # 其他创作侧管理资产不属于交付依赖，不能随账号快照向供应商
+                        # 扩散；创作者侧仍通过上面的显式白名单获得必要资产。
                         if item.get("avatarAssetId"):
-                            supplier_avatar_asset_ids.add(item.get("avatarAssetId"))
+                            supplier_avatar_asset_ids.add(str(item.get("avatarAssetId")))
                         projected_account_sequence = account_projected_sequences.get(str(item.get("id") or ""))
-                        item = {
-                            key: item.get(key) for key in (
-                                "id", "name", "platform", "mode", "avatarAssetId", "avatarUrl", "homepageUrl"
-                            ) if item.get(key) is not None
-                        }
+                        if role == "supplier_child":
+                            item = {
+                                key: item.get(key) for key in (
+                                    "id", "name", "platform", "mode", "subType", "avatarAssetId",
+                                    "avatarUrl", "homepageUrl", "status", "disabledAt",
+                                ) if item.get(key) is not None
+                            }
                         if projected_account_sequence:
                             item["index"] = projected_account_sequence
                     if col == "productions":
@@ -4377,8 +4587,6 @@ def state_for(member_id, role, parent_id=None, collections=None):
                             continue
                         if role == "supplier_parent" and not is_supplier_avatar and not item.get("delivered") and not item.get("shared"):
                             continue
-                        if role == "editor" and item.get("delivered") and item.get("byMemberId") and item.get("byMemberId") != member_id:
-                            continue
                         if (
                             role == "editor"
                             and not item.get("delivered")
@@ -4386,6 +4594,7 @@ def state_for(member_id, role, parent_id=None, collections=None):
                             and owner != member_id
                             and not _is_global_editing_asset(item)
                             and str(item.get("id") or "") not in editor_account_asset_ids
+                            and str(item.get("id") or "") not in editor_delivery_asset_ids
                         ):
                             continue
                         if role not in {"supplier_child", "supplier_parent", "editor", "admin"} and owner and owner != member_id and not item.get("delivered") and not item.get("shared") and not _is_global_editing_asset(item):

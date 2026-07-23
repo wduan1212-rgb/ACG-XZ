@@ -2,17 +2,19 @@
 
 import { $, $$, esc, fileToDataUrl, todayStamp, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, accountById } from "../core/store.js";
+import { state, save, persistNow, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
 import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260721-v105-1";
+import { AI } from "../api/ai.js?v=20260723-v115-3";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
 import { openModal, toast } from "../ui/components.js";
 import { go, render as routerRender } from "../core/router.js";
+import * as remote from "../core/remote.js";
 
 export function openAccountDialog(accountId = null) {
-  if (state.role !== "admin") {
+  const isSupplierManager = ["supplier", "supplier_parent"].includes(state.role);
+  if (state.role !== "admin" && !isSupplierManager) {
     toast("仅管理员可创建或编辑账号", "error");
     return;
   }
@@ -60,7 +62,7 @@ export function openAccountDialog(accountId = null) {
             <button class="icon-btn" data-close>${icon("x", 16)}</button>
           </div>
           <div class="ad-body">
-            ${editing ? "" : `
+            ${editing || isSupplierManager ? "" : `
             <div class="ad-batch" id="adBatch">
               <div class="adb-drop-core">${icon("fileText", 20)}</div>
               <div class="adb-drop-text">
@@ -88,20 +90,21 @@ export function openAccountDialog(accountId = null) {
                   <button type="button" class="${draft.subType === "无数字人" ? "is-active" : ""}" data-v="无数字人">${icon("layers", 14)}无数字人<span class="seg-sub">场景/界面混剪</span></button>
                 </div>
               </label>` : ""}
-              <label class="field full">创作风格 <em class="muted" style="font-weight:500">账号自带的固定风格：量产/随机主题时自动使用，不必每次填</em>
+              ${!isSupplierManager ? `<label class="field full">创作风格 <em class="muted" style="font-weight:500">账号自带的固定风格：量产/随机主题时自动使用，不必每次填</em>
                 <input class="input" id="adStyle" value="${esc(draft.styleProfile)}" placeholder="例如：白底极简种草风 / 口播犀利有梗 / 深度测评冷静叙事" /></label>
+              ` : ""}
               <label class="field full">账号主页链接 <em class="muted" style="font-weight:500">创作端与供应商端共享同一链接</em>
                 <div class="ad-homepage-row"><input class="input" id="adHomepageUrl" value="${esc(draft.homepageUrl)}" placeholder="https://..." /><button class="btn ghost sm" type="button" id="adHomepageView">${icon("link", 13)} 查看主页</button></div>
               </label>
               <div class="field full">
-                <span>账号头像 <em class="muted">仅管理员可维护，可点击或拖图替换</em></span>
+                <span>账号头像 <em class="muted">管理员可维护，可点击或拖图替换</em></span>
                 <label class="ad-image-drop avatar" id="adAvatarDrop">
                   ${avatarUrl ? `<img src="${avatarUrl}" alt="账号头像" />` : `<i class="account-avatar-fallback">${icon("user", 18)}</i>`}
                   <b>拖入 / 上传头像</b>
                   <input type="file" accept="image/*" hidden id="adAvatarUp" />
                 </label>
               </div>
-              ${draft.mode === "图文" ? `
+              ${draft.mode === "图文" && !isSupplierManager ? `
               <label class="field full">图文提示词模板 <em class="muted" style="font-weight:500">站内逐图提示词会优先参考；产品名、主题、各图内容会按本次创作自动替换</em>
                 <textarea class="input" id="adImgTpl" rows="8" placeholder="粘贴你的图文模板提示词，例如：请独立分别生成6张独立图片……">${esc(draft.imagePromptTemplate)}</textarea>
               </label>` : ""}
@@ -164,7 +167,7 @@ export function openAccountDialog(accountId = null) {
 
       const wire = () => {
         $("#adName", root).addEventListener("input", e => { draft.name = e.target.value; refreshNaming(); });
-        $("#adStyle", root).addEventListener("input", e => { draft.styleProfile = e.target.value; });
+        $("#adStyle", root)?.addEventListener("input", e => { draft.styleProfile = e.target.value; });
         $("#adHomepageUrl", root)?.addEventListener("input", e => { draft.homepageUrl = e.target.value; });
         $("#adHomepageView", root)?.addEventListener("click", () => {
           try {
@@ -297,6 +300,7 @@ export function openAccountDialog(accountId = null) {
         }
 
         $("#adConfirm", root).addEventListener("click", async () => {
+          const confirmButton = $("#adConfirm", root);
           const name = draft.name.trim();
           if (!name) { toast("请填写账号名称"); return; }
           let homepageUrl = "";
@@ -304,59 +308,85 @@ export function openAccountDialog(accountId = null) {
           catch (err) { toast(err.message || "主页链接格式不正确", "error"); return; }
           const isDH = draft.mode === "视频" && draft.subType === "数字人";
           if (isDH && !editing && !draft.charDataUrl) { toast("数字人账号请先上传角色形象"); return; }
-
-          let seedanceVoiceRefAssetId = draft.seedanceVoiceRefAssetId || "";
-          if (draft.seedanceVoiceRefDataUrl) {
-            const ref = await addAssetFromDataUrl(null, {
-              name: draft.seedanceVoiceRefName || `${name} 参考音频`,
-              type: "音频",
-              tags: ["参考音频库", "声线参考"],
-              dataUrl: draft.seedanceVoiceRefDataUrl
-            });
-            seedanceVoiceRefAssetId = ref.id;
-          }
-          let acc;
-          if (editing) {
-            acc = updateAccount(editing.id, {
+          const accountSnapshot = editing ? JSON.parse(JSON.stringify(editing)) : null;
+          const beforeAssetIds = new Set(state.assets.map(asset => asset.id));
+          // 供应商账号走专用 API。先拦住通用集合的延迟回写，避免它在专用请求
+          // 成功后又以旧快照触发一次无权限的 /api/db/accounts 请求。
+          const releaseSupplierCollectionSync = isSupplierManager && remote.isOn()
+            ? remote.holdCollectionSync(["accounts", "assets"])
+            : null;
+          confirmButton.disabled = true;
+          confirmButton.textContent = editing ? "正在保存…" : "正在创建…";
+          let acc = null;
+          try {
+            let seedanceVoiceRefAssetId = draft.seedanceVoiceRefAssetId || "";
+            if (draft.seedanceVoiceRefDataUrl) {
+              const ref = await addAssetFromDataUrl(null, {
+                name: draft.seedanceVoiceRefName || `${name} 参考音频`,
+                type: "音频",
+                tags: ["参考音频库", "声线参考"],
+                dataUrl: draft.seedanceVoiceRefDataUrl
+              });
+              seedanceVoiceRefAssetId = ref.id;
+            }
+            const patch = {
               name, platform: draft.platform, mode: draft.mode,
               subType: draft.mode === "图文" ? "" : draft.subType,
-              position: "",
-              styleProfile: draft.styleProfile.trim(),
-              styleEditedAt: Date.now(),
-              voiceName: draft.voiceName.trim(),
+              position: "", styleProfile: isSupplierManager ? (editing?.styleProfile || "") : draft.styleProfile.trim(),
+              styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now(), voiceName: draft.voiceName.trim(),
               voiceId: draft.voiceId.trim(),
               voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
-              imagePromptTemplate: draft.imagePromptTemplate.trim(),
-              homepageUrl,
-            });
-          } else {
-            acc = createAccount({
-              name, platform: draft.platform, mode: draft.mode, subType: draft.subType,
-              position: "", styleProfile: draft.styleProfile.trim(),
-              styleEditedAt: Date.now(),
-              voiceName: draft.voiceName.trim(), voiceId: draft.voiceId.trim(),
-              voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
-              imagePromptTemplate: draft.imagePromptTemplate.trim(),
-              homepageUrl,
-            });
-          }
-          if (draft.avatarDataUrl) {
-            const aa = await addAssetFromDataUrl(acc.id, { name: name + " 账号头像", tags: ["头像"], dataUrl: draft.avatarDataUrl });
-            acc.avatarAssetId = aa.id;
+              imagePromptTemplate: isSupplierManager ? (editing?.imagePromptTemplate || "") : draft.imagePromptTemplate.trim(), homepageUrl,
+              status: editing?.status === "disabled" ? "disabled" : "active",
+            };
+            acc = editing ? updateAccount(editing.id, patch) : createAccount(patch);
+            if (draft.avatarDataUrl) {
+              const aa = await addAssetFromDataUrl(acc.id, { name: name + " 账号头像", tags: ["头像"], dataUrl: draft.avatarDataUrl });
+              acc.avatarAssetId = aa.id;
+            }
+            if (draft.charDataUrl && draft.mode === "视频" && draft.subType === "数字人") {
+              const ca = await addAssetFromDataUrl(acc.id, { name: name + " 角色形象", tags: ["角色形象", "角色版"], dataUrl: draft.charDataUrl });
+              acc.charBoardAssetId = ca.id;
+            }
+            for (const a of draft.assets) {
+              await addAssetFromDataUrl(acc.id, { name: a.name, tags: [], dataUrl: a.dataUrl });
+            }
             save("accounts");
+            if (isSupplierManager && remote.isOn()) {
+              const newAssets = state.assets.filter(asset => !beforeAssetIds.has(asset.id));
+              const result = editing
+                ? await remote.supplier.updateAccount(acc.id, acc, newAssets)
+                : await remote.supplier.createAccount(acc, newAssets);
+              Object.assign(acc, result.account || {});
+              (result.assets || []).forEach(serverAsset => {
+                const local = state.assets.find(asset => asset.id === serverAsset.id);
+                if (local) Object.assign(local, serverAsset);
+              });
+              save("accounts", "assets");
+            }
+            // 把本地快照落盘时仍保持同步拦截；供应商端的数据已经由上面的
+            // 显式 API 确认，不能再走通用集合写入。
+            if (releaseSupplierCollectionSync) await persistNow();
+            state.ui.activeAccountId = acc.id;
+            save("meta");
+            close();
+            toast(`账号「${name}」${editing ? "已更新" : "已创建"}`);
+            if (!isSupplierManager) go("studio");
+            routerRender();
+          } catch (error) {
+            if (editing && accountSnapshot) Object.assign(editing, accountSnapshot);
+            if (!editing && acc) state.accounts = state.accounts.filter(item => item.id !== acc.id);
+            state.assets = state.assets.filter(asset => beforeAssetIds.has(asset.id));
+            save("accounts", "assets");
+            if (releaseSupplierCollectionSync) await persistNow();
+            confirmButton.disabled = false;
+            confirmButton.textContent = editing ? "保存修改" : "创建并进入创作空间";
+            toast(error?.message || "账号保存失败", "error");
+          } finally {
+            // 专用 API 已负责服务器同步；释放时丢弃被拦截的通用整集合快照，
+            // 以免覆盖其它账号或制造一次无权限写入。
+            releaseSupplierCollectionSync?.({ flush: false });
           }
-          if (draft.charDataUrl && draft.mode === "视频" && draft.subType === "数字人") {
-            const ca = await addAssetFromDataUrl(acc.id, { name: name + " 角色形象", tags: ["角色形象", "角色版"], dataUrl: draft.charDataUrl });
-            acc.charBoardAssetId = ca.id;
-          }
-          for (const a of draft.assets) await addAssetFromDataUrl(acc.id, { name: a.name, tags: [], dataUrl: a.dataUrl });
-          save("accounts");
-          state.ui.activeAccountId = acc.id;
-          save("meta");
-          close();
-          toast(`账号「${name}」${editing ? "已更新" : "已创建"}`);
-          go("studio");
-          routerRender();
         });
       };
 
@@ -365,8 +395,8 @@ export function openAccountDialog(accountId = null) {
   });
 }
 
-/* 全局开口：任何视图 dispatch open-account-dialog 即可唤起（仅管理员） */
+/* 全局开口：平台管理员与供应商管理员共用同一完整账号编辑器。 */
 document.addEventListener("open-account-dialog", e => {
-  if (state.role !== "admin") { toast("只有管理员可以创建 / 编辑账号"); return; }
+  if (!["admin", "supplier", "supplier_parent"].includes(state.role)) { toast("只有管理员可以创建 / 编辑账号"); return; }
   openAccountDialog(e.detail?.accountId || null);
 });

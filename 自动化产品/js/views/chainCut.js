@@ -10,7 +10,7 @@ import { addAssetFromFile, assetBlob, globalBgmAssets, urlFor } from "../domain/
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260721-v105-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260723-v115-3";
 
 let PPS = 40;
 const CLIP_SEC = 15;
@@ -431,6 +431,8 @@ export function renderCutPage(root, p) {
   const invalidateFinalMix = () => {
     p.artifacts.finalVideoUrl = "";
     p.artifacts.finalVideoName = "";
+    p.artifacts.finalVideoBaseUrl = "";
+    p.artifacts.finalVideoVersions = [];
     p.artifacts.finalVideoMixSig = "";
     p.artifacts.composeError = "";
   };
@@ -1594,7 +1596,7 @@ export function renderCutPage(root, p) {
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("未检测到封面，正在自动生成");
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260721-v105-1");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260723-v115-3");
         await ensureVideoCover(p);
         toast("封面已自动生成并入库");
       } catch (err) {

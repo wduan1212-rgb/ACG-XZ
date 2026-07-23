@@ -225,6 +225,109 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn('"refs refs refs refs"', styles)
         self.assertIn(".agc-mini-ref .agc-mini-head::before { display: none; }", styles)
 
+    def test_batch_video_reference_contract_separates_cover_and_scene_inputs(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+
+            const { batchCoverRefIds, batchSceneRefIds } = await import("./js/agent/orchestrator.js");
+            const base = {
+              coverRefAssetIds: ["shared-cover"],
+              accountRefAssetIds: { "account-a": ["custom-cover"] }
+            };
+            console.log(JSON.stringify({
+              digitalCover: batchCoverRefIds({ ...base, contentKind: "real" }, "account-a"),
+              digitalScene: batchSceneRefIds({ ...base, contentKind: "real" }, "account-a"),
+              infoCover: batchCoverRefIds({ ...base, contentKind: "material" }, "account-a"),
+              infoScene: batchSceneRefIds({ ...base, contentKind: "material" }, "account-a")
+            }));
+            """
+        )
+        self.assertEqual(result["digitalCover"], ["shared-cover", "custom-cover"])
+        self.assertEqual(result["digitalScene"], [])
+        self.assertEqual(result["infoCover"], ["shared-cover", "custom-cover"])
+        self.assertEqual(result["infoScene"], ["shared-cover", "custom-cover"])
+
+    def test_each_digital_human_cover_uses_only_its_own_locked_character_board(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+
+            const { state } = await import("./js/core/store.js");
+            const { applyBatchCoverRefs, batchSceneRefIds } = await import("./js/agent/orchestrator.js");
+            state.accounts = [
+              { id: "digital-a", mode: "视频", subType: "数字人", charBoardAssetId: "role-a" },
+              { id: "digital-b", mode: "视频", subType: "数字人", charBoardAssetId: "role-b" }
+            ];
+            const batch = {
+              contentKind: "real",
+              coverRefAssetIds: ["shared-cover"],
+              accountRefAssetIds: {
+                "digital-a": ["custom-a"],
+                "digital-b": ["custom-b"]
+              }
+            };
+            const make = id => ({
+              mode: "视频", subType: "数字人", accountId: id,
+              artifacts: { boards: { cover: { refAssetIds: [] } } }
+            });
+            const a = make("digital-a");
+            const b = make("digital-b");
+            applyBatchCoverRefs(a, batch);
+            applyBatchCoverRefs(b, batch);
+            console.log(JSON.stringify({
+              coverA: a.artifacts.boards.cover.refAssetIds,
+              coverB: b.artifacts.boards.cover.refAssetIds,
+              videoA: batchSceneRefIds(batch, "digital-a"),
+              videoB: batchSceneRefIds(batch, "digital-b")
+            }));
+            """
+        )
+        self.assertEqual(result["coverA"], ["shared-cover", "custom-a", "role-a"])
+        self.assertEqual(result["coverB"], ["shared-cover", "custom-b", "role-b"])
+        self.assertEqual(result["videoA"], [])
+        self.assertEqual(result["videoB"], [])
+
+    def test_batch_video_board_exposes_cover_refine_and_video_regeneration(self):
+        cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")
+        view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+
+        self.assertIn('p.artifacts.boards?.cover?.assetId', cards)
+        self.assertIn('data-act="batch-cover-edit"', cards)
+        self.assertIn('data-act="batch-video-regenerate"', cards)
+        self.assertIn('case "batch-cover-edit"', view)
+        self.assertIn('case "batch-video-regenerate"', view)
+        self.assertIn("export async function regenerateBatchVideoCover", orchestrator)
+        self.assertIn("export async function regenerateBatchVideo", orchestrator)
+        self.assertIn("await regenerateBatchVideo(p)", view)
+        self.assertIn('id="batchCoverRefAdd"', view)
+        self.assertIn('data-cover-ref-remove', view)
+        self.assertIn("regenerateBatchVideoCover(p, prompt, refIds)", view)
+        self.assertIn("await draftOne(p, batch)", orchestrator)
+        self.assertIn('p.subType === "数字人" ? account?.charBoardAssetId : null', orchestrator)
+
+    def test_batch_confirm_has_visible_busy_state_and_sync_error_recovery(self):
+        view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
+        self.assertIn('act.setAttribute("aria-busy", "true")', view)
+        self.assertIn('act.innerHTML = `${icon("loader", 14)} 正在启动…`', view)
+        self.assertIn('toast(err?.message ? `批量任务启动失败：${err.message}`', view)
+        self.assertIn('act.removeAttribute("aria-busy")', view)
+
+    def test_video_review_prefers_composed_output_and_uses_larger_preview(self):
+        drawer = (APP_DIR / "js/views/prodDrawer.js").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles/views.css").read_text(encoding="utf-8")
+        self.assertIn('const composedUrl = String(p.artifacts?.finalVideoUrl || "").trim()', drawer)
+        self.assertIn("已剪辑完整成片", drawer)
+        self.assertIn("pd-workshop-preview is-composed", drawer)
+        self.assertIn(".pd-review .rv-preview.vid .rvp-screen { width: 184px; }", styles)
+
 
 if __name__ == "__main__":
     unittest.main()

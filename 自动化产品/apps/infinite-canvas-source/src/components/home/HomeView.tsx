@@ -10,7 +10,9 @@ import {
   FolderOpen,
   Home,
   ImagePlus,
+  Lock,
   Plus,
+  Unlock,
   X,
 } from "lucide-react";
 import { useHydrated } from "@/components/Hydrated";
@@ -36,6 +38,16 @@ interface RefImg {
   width: number;
   height: number;
   name: string;
+}
+
+function clipboardImageFiles(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const files = Array.from(data.items || [])
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => !!file);
+  if (files.length) return files;
+  return Array.from(data.files || []).filter((file) => file.type.startsWith("image/"));
 }
 
 const WELCOME = "欢迎使用星阵无限画布，开始设计！";
@@ -267,6 +279,12 @@ export function HomeView() {
                 <textarea
                   value={brief}
                   onChange={(e) => setBrief(e.target.value)}
+                  onPaste={(e) => {
+                    const images = clipboardImageFiles(e.clipboardData);
+                    if (!images.length) return;
+                    e.preventDefault();
+                    void attachFiles(images);
+                  }}
                   onKeyDown={(e) => {
                     if (e.nativeEvent.isComposing) return;
                     if (e.key === "Enter" && !e.shiftKey) {
@@ -326,6 +344,7 @@ export function HomeView() {
                             <div>
                               <div className="mb-1.5 text-[11px] font-medium text-ink-3">自定义</div>
                               <CustomSizeInput
+                                baseSize={size}
                                 onCommit={(v) => {
                                   setSize(v);
                                   setSizeOpen(false);
@@ -595,22 +614,71 @@ function StarLogo({ size = 44 }: { size?: number }) {
   );
 }
 
-function CustomSizeInput({ onCommit }: { onCommit: (v: string) => void }) {
-  const [v, setV] = useState("");
-  const valid = !!parseSize(v);
+function CustomSizeInput({
+  baseSize,
+  onCommit,
+}: {
+  baseSize: string;
+  onCommit: (v: string) => void;
+}) {
+  const initial = parseSize(baseSize) || { width: 1080, height: 1920 };
+  const ratio = initial.width / initial.height;
+  const [width, setWidth] = useState(String(initial.width));
+  const [height, setHeight] = useState(String(initial.height));
+  const [locked, setLocked] = useState(true);
+  const value = `${width}x${height}`;
+  const valid = !!parseSize(value);
+
+  function changeWidth(next: string) {
+    const clean = next.replace(/\D/g, "").slice(0, 5);
+    setWidth(clean);
+    const numeric = Number(clean);
+    if (locked && numeric > 0) setHeight(String(Math.max(1, Math.round(numeric / ratio))));
+  }
+
+  function changeHeight(next: string) {
+    const clean = next.replace(/\D/g, "").slice(0, 5);
+    setHeight(clean);
+    const numeric = Number(clean);
+    if (locked && numeric > 0) setWidth(String(Math.max(1, Math.round(numeric * ratio))));
+  }
+
   return (
-    <div className="flex gap-1.5">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-center gap-1.5">
       <input
-        value={v}
-        onChange={(e) => setV(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && valid && onCommit(v.trim())}
-        placeholder="宽x高（px），如 2560x1440"
-        className="h-8 flex-1 rounded-[var(--radius-sm)] border border-line bg-white px-2.5 font-mono text-[12px] text-ink outline-none focus:border-accent"
+        value={width}
+        onChange={(e) => changeWidth(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && valid && onCommit(value)}
+        aria-label="自定义宽度"
+        placeholder="宽"
+        inputMode="numeric"
+        className="h-8 min-w-0 rounded-[var(--radius-sm)] border border-line bg-white px-2 font-mono text-[12px] text-ink outline-none focus:border-accent"
       />
       <button
-        onClick={() => valid && onCommit(v.trim())}
+        type="button"
+        onClick={() => setLocked((current) => !current)}
+        aria-label={locked ? "解除自定义尺寸比例锁定" : "锁定自定义尺寸比例"}
+        title={locked ? "已按当前画幅锁定比例" : "点击锁定当前画幅比例"}
+        className={cn(
+          "flex h-7 w-7 items-center justify-center rounded-full transition-colors",
+          locked ? "bg-ink text-white" : "bg-fill text-ink-3 hover:bg-line",
+        )}
+      >
+        {locked ? <Lock size={12} /> : <Unlock size={12} />}
+      </button>
+      <input
+        value={height}
+        onChange={(e) => changeHeight(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && valid && onCommit(value)}
+        aria-label="自定义高度"
+        placeholder="高"
+        inputMode="numeric"
+        className="h-8 min-w-0 rounded-[var(--radius-sm)] border border-line bg-white px-2 font-mono text-[12px] text-ink outline-none focus:border-accent"
+      />
+      <button
+        onClick={() => valid && onCommit(value)}
         disabled={!valid}
-        className="h-8 rounded-[var(--radius-sm)] border border-line px-2.5 text-[12px] text-ink-2 hover:bg-fill disabled:opacity-40"
+        className="h-8 rounded-[var(--radius-sm)] border border-line px-2 text-[12px] text-ink-2 hover:bg-fill disabled:opacity-40"
       >
         使用
       </button>

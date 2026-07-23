@@ -122,6 +122,98 @@ def _positive_env_int(name: str, default: int) -> int:
 # 上游达到并发上限时请求先在本服务排队，避免直接把 429/任务上限暴露给创作者。
 IMAGE_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3))
 VIDEO_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("VIDEO_SUBMIT_CONCURRENCY", 10))
+VIDEO_TASK_CONCURRENCY = _positive_env_int("VIDEO_TASK_CONCURRENCY", 10)
+VIDEO_TASK_LEASE_SECONDS = _positive_env_int("VIDEO_TASK_LEASE_SECONDS", 2 * 60 * 60)
+
+
+class VideoTaskGate:
+    """单进程服务内的跨成员 FIFO 视频任务闸门。
+
+    槽位从上游任务提交前一直持有到轮询终态或取消；与只保护 HTTP POST
+    的 VIDEO_SUBMIT_QUEUE 配合，避免多个创作者合计超过 Seedance/数字人上限。
+    当前部署脚本使用单个 uvicorn worker，因此这里覆盖整台主服务。
+    """
+
+    def __init__(self, limit: int, lease_seconds: int):
+        self.limit = max(1, int(limit))
+        self.lease_seconds = max(60, int(lease_seconds))
+        self._condition = asyncio.Condition()
+        self._leases: Dict[str, Dict[str, Any]] = {}
+        self._task_tokens: Dict[str, str] = {}
+        self._next_ticket = 0
+        self._serving_ticket = 0
+        self._cancelled_tickets = set()
+
+    def _advance_cancelled_locked(self):
+        while self._serving_ticket in self._cancelled_tickets:
+            self._cancelled_tickets.discard(self._serving_ticket)
+            self._serving_ticket += 1
+
+    def _drop_stale_locked(self):
+        cutoff = time.monotonic() - self.lease_seconds
+        stale = [token for token, lease in self._leases.items() if float(lease.get("acquiredAt") or 0) < cutoff]
+        for token in stale:
+            task_id = str(self._leases.pop(token, {}).get("taskId") or "")
+            if task_id and self._task_tokens.get(task_id) == token:
+                self._task_tokens.pop(task_id, None)
+
+    async def acquire(self) -> str:
+        async with self._condition:
+            ticket = self._next_ticket
+            self._next_ticket += 1
+            try:
+                while True:
+                    self._drop_stale_locked()
+                    self._advance_cancelled_locked()
+                    if ticket == self._serving_ticket and len(self._leases) < self.limit:
+                        token = uuid.uuid4().hex
+                        self._leases[token] = {"acquiredAt": time.monotonic(), "taskId": ""}
+                        self._serving_ticket += 1
+                        self._advance_cancelled_locked()
+                        self._condition.notify_all()
+                        return token
+                    await self._condition.wait()
+            except asyncio.CancelledError:
+                # 浏览器离开或请求主动取消时跳过对应票号，避免后续成员永久卡队。
+                self._cancelled_tickets.add(ticket)
+                self._advance_cancelled_locked()
+                self._condition.notify_all()
+                raise
+
+    async def register(self, token: str, task_id: str):
+        async with self._condition:
+            lease = self._leases.get(token)
+            if not lease:
+                return
+            clean_task_id = str(task_id or "")
+            lease["taskId"] = clean_task_id
+            if clean_task_id:
+                self._task_tokens[clean_task_id] = token
+
+    async def release_token(self, token: str):
+        async with self._condition:
+            lease = self._leases.pop(token, None)
+            task_id = str((lease or {}).get("taskId") or "")
+            if task_id and self._task_tokens.get(task_id) == token:
+                self._task_tokens.pop(task_id, None)
+            self._condition.notify_all()
+
+    async def release_task(self, task_id: str):
+        async with self._condition:
+            clean_task_id = str(task_id or "")
+            token = self._task_tokens.pop(clean_task_id, None)
+            if token:
+                self._leases.pop(token, None)
+            self._condition.notify_all()
+
+    async def snapshot(self) -> Dict[str, int]:
+        async with self._condition:
+            self._drop_stale_locked()
+            self._advance_cancelled_locked()
+            return {"active": len(self._leases), "limit": self.limit, "waiting": max(0, self._next_ticket - self._serving_ticket)}
+
+
+VIDEO_TASK_GATE = VideoTaskGate(VIDEO_TASK_CONCURRENCY, VIDEO_TASK_LEASE_SECONDS)
 # Keep data-URL reference images comfortably below the upstream 10 MB request cap.
 # These are encoded-data budgets because JSON payloads carry base64 strings, not raw files.
 IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES = _positive_env_int("IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES", 7_200_000)
@@ -1257,6 +1349,21 @@ def llm_config(_me=Depends(require_creator)):
     }
 
 
+def _record_llm_usage(member, response_data, feature, fallback_model=""):
+    """Best-effort 记录可核验 token；统计故障绝不能影响创作结果。"""
+    usage = response_data.get("usage") if isinstance(response_data, dict) else None
+    if not isinstance(usage, dict):
+        return
+    try:
+        store.record_llm_usage(
+            member.get("id"), member.get("name"), feature,
+            response_data.get("model") or fallback_model, usage,
+        )
+    except Exception:
+        # 统计是旁路能力，不让 SQLite 暂时忙或旧数据表影响生产调用。
+        pass
+
+
 @app.post("/api/llm/test")
 async def llm_test(_me=Depends(require_creator)):
     if not LLM_API_KEY:
@@ -1293,6 +1400,7 @@ async def llm_proxy(req: LLMReq, _me=Depends(require_creator)):
     content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
     if not content:
         raise _llm_error(502, "模型无有效返回")
+    _record_llm_usage(_me, data, "通用文案", LLM_MODEL)
     return {"content": content}
 
 
@@ -1335,6 +1443,7 @@ async def llm_vision_copy(req: VisionCopyReq, _me=Depends(require_creator)):
     content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
     if not content:
         raise HTTPException(502, "视觉模型没有返回文案")
+    _record_llm_usage(_me, data, "成图文案", LLM_VISION_MODEL or LLM_MODEL)
     return {"content": content}
 
 
@@ -1358,6 +1467,10 @@ async def chat_completions_proxy(req: Request, _me=Depends(require_creator)):
         except Exception:
             detail = r.text[:800]
         raise _llm_error(r.status_code, detail)
+    try:
+        _record_llm_usage(_me, r.json(), "兼容代理", body.get("model") or LLM_MODEL)
+    except Exception:
+        pass
     return Response(content=r.content, status_code=r.status_code, media_type="application/json")
 
 
@@ -1572,6 +1685,12 @@ class ComposeReq(BaseModel):
     transitionDuration: float = 0.0
     subtitleStyle: ComposeSubtitleStyle = ComposeSubtitleStyle()
     subtitles: List[ComposeSubtitle] = []
+
+
+class VideoSpeedReq(BaseModel):
+    sourceUrl: str
+    speed: float = Field(ge=1.2, le=2.0)
+    title: str = "speed-version"
 
 
 def _video_status(data: dict) -> str:
@@ -2490,9 +2609,10 @@ def _find_provider_ref(data: dict) -> str:
 
 
 @app.get("/api/video/config")
-def video_config(_me=Depends(require_creator)):
+async def video_config(_me=Depends(require_creator)):
     reachable, detail = _resolve_base(SEEDANCE_BASE_URL)
     dh_reachable, dh_detail = _resolve_base(DIGITAL_HUMAN_BASE_URL)
+    queue_state = await VIDEO_TASK_GATE.snapshot()
     return {
         "ok": True,
         "provider": _video_provider_name(),
@@ -2509,6 +2629,7 @@ def video_config(_me=Depends(require_creator)):
         "baseUrl": _public_base(SEEDANCE_BASE_URL),
         "digitalHumanBaseUrl": _public_base(DIGITAL_HUMAN_BASE_URL),
         "publicBaseConfigured": bool(PUBLIC_BASE_URL),
+        "taskQueue": queue_state,
     }
 
 
@@ -2554,7 +2675,14 @@ async def video_submit(req: VideoSubmitReq, _me=Depends(require_creator)):
         elif ref.dataUrl or (ref.url or "").startswith(("http://localhost", "https://localhost", "http://127.0.0.1", "https://127.0.0.1")):
             unresolved_local_images.append(ref.name or f"图{i + 1}")
     if is_digital_human:
-        return await _digital_human_submit(req, resolved_images, resolved_audios)
+        lease_token = await VIDEO_TASK_GATE.acquire()
+        try:
+            result = await _digital_human_submit(req, resolved_images, resolved_audios)
+            await VIDEO_TASK_GATE.register(lease_token, result.get("providerRef") or "")
+            return result
+        except Exception:
+            await VIDEO_TASK_GATE.release_token(lease_token)
+            raise
     resolved_images = resolved_images[:9]
     resolved_videos = resolved_videos[:3]
     resolved_audios = resolved_audios[:3]
@@ -2598,6 +2726,7 @@ async def video_submit(req: VideoSubmitReq, _me=Depends(require_creator)):
         "Accept": "application/json",
         "Accept-Encoding": "identity",
     }
+    lease_token = await VIDEO_TASK_GATE.acquire()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
             r = await _queued_video_post(client, _video_submit_url(), json=payload, headers=headers)
@@ -2619,6 +2748,7 @@ async def video_submit(req: VideoSubmitReq, _me=Depends(require_creator)):
                     fallback_payload = _video_payload(req, fallback_content)
                     r = await _queued_video_post(client, _video_submit_url(), json=fallback_payload, headers=headers)
     except httpx.HTTPError as exc:
+        await VIDEO_TASK_GATE.release_token(lease_token)
         raise HTTPException(502, f"无法连接 Seedance（{SEEDANCE_BASE_URL}）：{exc.__class__.__name__} {exc}。请确认 SEEDANCE_BASE_URL 可达（内网地址需在内网/VPN）。")
     if r.status_code >= 400:
         try:
@@ -2631,18 +2761,28 @@ async def video_submit(req: VideoSubmitReq, _me=Depends(require_creator)):
             )
         except Exception:
             detail = _normalize_provider_error(r.text[:800])
+        await VIDEO_TASK_GATE.release_token(lease_token)
         raise HTTPException(r.status_code, detail)
-    data = r.json()
+    try:
+        data = r.json()
+    except Exception as exc:
+        await VIDEO_TASK_GATE.release_token(lease_token)
+        raise HTTPException(502, f"Seedance 返回了无法解析的任务响应：{exc.__class__.__name__}")
     provider_ref = _find_provider_ref(data)
     if not provider_ref:
+        await VIDEO_TASK_GATE.release_token(lease_token)
         raise HTTPException(502, {"detail": "Seedance 已返回结果，但没有任务 ID；请检查模型/接口返回结构。", "raw": data})
+    await VIDEO_TASK_GATE.register(lease_token, provider_ref)
     return {"ok": True, "provider": _video_provider_name(), "providerRef": provider_ref, "raw": data}
 
 
 @app.get("/api/video/poll/{task_id}")
 async def video_poll(task_id: str, _me=Depends(require_creator)):
     if _is_digital_human_task(task_id):
-        return await _digital_human_poll(task_id)
+        result = await _digital_human_poll(task_id)
+        if result.get("status") in {"succeeded", "failed"}:
+            await VIDEO_TASK_GATE.release_task(task_id)
+        return result
     if not SEEDANCE_API_KEY:
         raise HTTPException(500, "服务器未配置 SEEDANCE_API_KEY")
     headers = {"Authorization": f"Bearer {SEEDANCE_API_KEY}", "Accept": "application/json", "Accept-Encoding": "identity"}
@@ -2676,7 +2816,7 @@ async def video_poll(task_id: str, _me=Depends(require_creator)):
         stable_url, _ = await _cache_generated_video_output(video_url, "seedance")
         if stable_url:
             output = {"url": stable_url, "label": "Seedance 片段已生成"}
-    return {
+    result = {
         "ok": True,
         "status": status,
         "progress": _video_progress(data, status),
@@ -2684,16 +2824,21 @@ async def video_poll(task_id: str, _me=Depends(require_creator)):
         "error": error,
         "raw": data,
     }
+    if status in {"succeeded", "failed"}:
+        await VIDEO_TASK_GATE.release_task(task_id)
+    return result
 
 
 @app.post("/api/video/cancel/{task_id}")
 async def video_cancel(task_id: str, _me=Depends(require_creator)):
     if _is_digital_human_task(task_id):
+        await VIDEO_TASK_GATE.release_task(task_id)
         return {"ok": True}
     if SEEDANCE_API_KEY:
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
             await client.delete(_video_poll_url(task_id),
                                 headers={"Authorization": f"Bearer {SEEDANCE_API_KEY}"})
+    await VIDEO_TASK_GATE.release_task(task_id)
     return {"ok": True}
 
 
@@ -3205,6 +3350,53 @@ async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
     return {"ok": True, "url": f"/api/video/composed/{out_name}", "name": out_name}
 
 
+@app.post("/api/video/speed-version")
+async def video_speed_version(req: VideoSpeedReq, _me=Depends(require_creator)):
+    """Create a derived final-video version without rerunning generation or TTS."""
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise HTTPException(501, "本机未安装 ffmpeg，无法生成变速版本。")
+    source = str(req.sourceUrl or "").split("?", 1)[0]
+    prefix = "/api/video/composed/"
+    if not source.startswith(prefix):
+        raise HTTPException(400, "只能调整平台已经合成的本地成片")
+    source_name = Path(source[len(prefix):]).name
+    source_path = (COMPOSED_DIR / source_name).resolve()
+    if not source_name or source_path.parent != COMPOSED_DIR.resolve() or not source_path.is_file():
+        raise HTTPException(404, "原成片不存在")
+    rate = max(1.2, min(2.0, float(req.speed)))
+    out_name = (
+        f"{time.time_ns()}_{uuid.uuid4().hex[:6]}_speed_{rate:.1f}_"
+        f"{hashlib.sha1((req.title or 'speed-version').encode('utf-8')).hexdigest()[:8]}.mp4"
+    ).replace(".", "p", 1)
+    out_path = COMPOSED_DIR / out_name
+    has_audio = _media_has_audio(ffmpeg, source_path)
+    if has_audio:
+        command = [
+            ffmpeg, "-y", "-i", str(source_path),
+            "-filter_complex", f"[0:v]setpts=PTS/{rate:.6f}[v];[0:a]atempo={rate:.6f}[a]",
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(out_path),
+        ]
+    else:
+        command = [
+            ffmpeg, "-y", "-i", str(source_path), "-vf", f"setpts=PTS/{rate:.6f}",
+            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_path),
+        ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=900)
+    if result.returncode != 0 or not out_path.is_file() or out_path.stat().st_size <= 0:
+        raise HTTPException(502, "ffmpeg 变速处理失败：" + (result.stderr or result.stdout)[-800:])
+    return {
+        "ok": True,
+        "url": f"/api/video/composed/{out_name}",
+        "name": out_name,
+        "speed": rate,
+        "sourceUrl": source,
+    }
+
+
 # ---------- TTS 代理：MiniMax ----------
 class TtsReq(BaseModel):
     text: str
@@ -3456,6 +3648,20 @@ async def tts_voice_lookup(
     return result
 
 
+def _voice_design_prompt(prompt: str, gender: str = "") -> str:
+    gender = (gender or "").strip().lower()
+    gender_anchor = ""
+    if gender == "female":
+        gender_anchor = "必须生成女性声线；不要生成男性、少年男性或中性偏男性声线。"
+    elif gender == "male":
+        gender_anchor = "必须生成男性声线；不要生成女性或中性偏女性声线。"
+    semantic_anchor = (
+        "以下用户描述中的性别、年龄感、情绪、生活化程度、音色质感、语速与使用场景"
+        "都是同等重要的音色条件；完整保留并共同执行，不要只满足其中一项。"
+    )
+    return f"{gender_anchor}\n{semantic_anchor}\n用户音色描述：{prompt}".strip()
+
+
 @app.post("/api/tts/voice/design")
 async def tts_voice_design(
     req: VoiceDesignReq,
@@ -3467,13 +3673,7 @@ async def tts_voice_design(
     if not prompt:
         raise HTTPException(400, "请填写音色设计描述")
     preview_text = (req.previewText or "这是一段用于试听新音色的中文口播。语气自然，节奏清楚，适合内容创作。").strip()
-    gender = (req.gender or "").strip().lower()
-    gender_anchor = ""
-    if gender == "female":
-        gender_anchor = "必须生成女性声线；不要生成男性、少年男性或中性偏男性声线。"
-    elif gender == "male":
-        gender_anchor = "必须生成男性声线；不要生成女性或中性偏女性声线。"
-    anchored_prompt = f"{gender_anchor}\n{prompt}".strip()
+    anchored_prompt = _voice_design_prompt(prompt, req.gender)
     payload = {
         "prompt": anchored_prompt[:1200],
         "preview_text": preview_text[:2000],
@@ -3820,6 +4020,11 @@ class SupplierHomepageReq(BaseModel):
     homepageUrl: str = ""
 
 
+class SupplierAccountReq(BaseModel):
+    account: dict = Field(default_factory=dict)
+    assets: List[dict] = Field(default_factory=list)
+
+
 class SupplierPublishedLinkReq(BaseModel):
     url: str = ""
     note: str = ""
@@ -3872,6 +4077,15 @@ def auth_login(req: LoginReq):
 @app.get("/api/auth/me")
 def auth_me(me=Depends(require_member)):
     return me
+
+
+@app.get("/api/admin/llm-usage")
+def admin_llm_usage(_me=Depends(require_admin)):
+    """管理员可见的、由上游 usage 字段回传的 token 汇总。
+
+    这不是供应商账单或现金积分：图像、视频、语音及未返回 usage 的调用不会被猜测计入。
+    """
+    return {"rows": store.llm_usage_summary(), "kind": "verified_llm_tokens"}
 
 
 @app.post("/api/member-requests")
@@ -5063,6 +5277,36 @@ def supplier_account_homepage(account_id: str, req: SupplierHomepageReq, me=Depe
     return {"ok": True, "account": item}
 
 
+def _supplier_account_error(err):
+    if err == "invalid_url":
+        raise HTTPException(400, "主页链接仅支持 http:// 或 https://")
+    if err == "invalid":
+        raise HTTPException(400, "账号名称必填")
+    if err in {"duplicate", "exists"}:
+        raise HTTPException(409, "同平台、同形式的同名账号已存在")
+    raise HTTPException(404, "账号不存在")
+
+
+@app.post("/api/supplier/accounts")
+def supplier_account_create(req: SupplierAccountReq, me=Depends(require_supplier_parent)):
+    result, err = store.upsert_supplier_account(
+        str(req.account.get("id") or ""), req.account, req.assets, me["id"], create=True
+    )
+    if err:
+        _supplier_account_error(err)
+    return {"ok": True, **result}
+
+
+@app.put("/api/supplier/accounts/{account_id}")
+def supplier_account_update(account_id: str, req: SupplierAccountReq, me=Depends(require_supplier_parent)):
+    result, err = store.upsert_supplier_account(
+        account_id, req.account, req.assets, me["id"], create=False
+    )
+    if err:
+        _supplier_account_error(err)
+    return {"ok": True, **result}
+
+
 def _remark_http_error(err):
     if err == "forbidden":
         raise HTTPException(403, "无权查看或回复这条发布内容")
@@ -5637,10 +5881,36 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             server_timing=_video_workshop_timing("projects", started),
         )
 
-    project_match = re.fullmatch(r"projects/([^/]+)(?:/(retry|cancel))?", path)
+    if path == "projects" and method == "POST":
+        upstream = await _video_workshop_request(request, path)
+        if upstream.status_code >= 400:
+            return Response(
+                content=upstream.content,
+                status_code=upstream.status_code,
+                media_type="application/json",
+            )
+        try:
+            project = upstream.json()
+        except Exception:
+            raise HTTPException(502, "视频工坊新会话返回异常")
+        # Bind the empty conversation to the current member immediately.  The
+        # first chat request then uses the same owner-scoped project instead of
+        # creating an unindexed sidecar project that appears only after polling.
+        return _video_workshop_json_response(
+            _sync_video_workshop_project(me, project),
+            server_timing=_video_workshop_timing("project-create", started),
+        )
+
+    project_match = re.fullmatch(
+        r"projects/([^/]+)(?:/(retry|cancel|speed-version))?",
+        path,
+    )
     if project_match:
         project_id = project_match.group(1)
+        project_action = str(project_match.group(2) or "")
         _video_workshop_owned_project(me, project_id)
+        if project_action == "speed-version" and method != "POST":
+            raise HTTPException(405, "视频工坊变速接口只接受 POST")
         upstream = await _video_workshop_request(request, path)
         if upstream.status_code >= 400:
             return Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
@@ -5648,6 +5918,11 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             project = upstream.json()
         except Exception:
             raise HTTPException(502, "视频工坊项目返回异常")
+        if project_action == "speed-version":
+            return _video_workshop_json_response(
+                _rewrite_video_workshop_urls(project),
+                server_timing=_video_workshop_timing("speed-version", started),
+            )
         return _video_workshop_json_response(
             _sync_video_workshop_project(me, project),
             server_timing=_video_workshop_timing("project", started),

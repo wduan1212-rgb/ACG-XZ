@@ -2,7 +2,7 @@ import { go } from "../core/router.js";
 import { state } from "../core/store.js";
 import { icon } from "../ui/icons.js";
 import { toast } from "../ui/components.js";
-import { voiceLabView } from "./voiceLab.js?v=20260721-v105-1";
+import { voiceLabView } from "./voiceLab.js?v=20260723-v115-3";
 
 const TOOLS = [
   { key: "video", label: "视频工坊", mountId: "customVideoMount" },
@@ -150,7 +150,7 @@ export const customCreationView = {
         toast(key === "canvas" ? "当前画布还没有可发布的图片" : "请先在视频工坊完成成片");
         return;
       }
-      const { openCustomPublish } = await import("./customPublish.js?v=20260721-v105-1");
+      const { openCustomPublish } = await import("./customPublish.js?v=20260723-v115-3");
       openCustomPublish(
         { ...output, kind: key === "canvas" ? "canvas" : "video" },
         {
@@ -197,8 +197,8 @@ export const customCreationView = {
       mountedTools.set(key, { loading: true });
       try {
         const module = key === "video"
-          ? await import("./customVideoIntegration.js?v=20260721-v105-1")
-          : await import("./customCanvasIntegration.js?v=20260721-v105-1");
+          ? await import("./customVideoIntegration.js?v=20260723-v115-3")
+          : await import("./customCanvasIntegration.js?v=20260723-v115-3");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);
         const mounted = await mount(mountRoot, {

@@ -18,7 +18,9 @@ const state = {
   outputSignature: "",
   outputMediaSignature: "",
   historySignature: "",
+  historyItems: [],
   historyLoadedAt: 0,
+  historyLoadEpoch: 0,
   pendingThoughtTimer: null,
   pendingRequestToken: "",
   pendingScrollMessageId: "",
@@ -27,6 +29,8 @@ const state = {
   productionHeartbeatTimer: null,
   productionHeartbeatProjectId: "",
   productionHeartbeatStartedAt: 0,
+  productionHeartbeatStageIndex: -1,
+  projectLoadEpoch: 0,
 };
 
 const dom = {
@@ -54,6 +58,9 @@ const dom = {
   historyDeliveryModal: document.querySelector("#historyDeliveryModal"),
   historyDeliveryFilter: document.querySelector("#historyDeliveryFilter"),
   historyDeliveryList: document.querySelector("#historyDeliveryList"),
+  speedVersionControl: document.querySelector("#speedVersionControl"),
+  speedVersionSelect: document.querySelector("#speedVersionSelect"),
+  speedVersionButton: document.querySelector("#speedVersionButton"),
   publishedOutputBadge: document.querySelector("#publishedOutputBadge"),
   publishedOutputBadgeText: document.querySelector("#publishedOutputBadgeText"),
   deliveryToggleButton: document.querySelector("#deliveryToggleButton"),
@@ -597,7 +604,27 @@ function createLiveProductionIndicator(project) {
   ring.setAttribute("aria-hidden", "true");
   const text = document.createElement("span");
   text.className = "production-live-text";
-  text.textContent = assistantText(project.events?.at(-1)?.title || "制作任务正在运行");
+  const title = document.createElement("span");
+  title.className = "production-live-title";
+  title.textContent = assistantText(project.events?.at(-1)?.title || "制作任务正在运行");
+  const detail = document.createElement("span");
+  detail.className = "production-live-detail";
+  const separator = document.createElement("span");
+  separator.className = "production-live-separator";
+  separator.textContent = "·";
+  const stageWindow = document.createElement("span");
+  stageWindow.className = "production-live-stage-window";
+  stageWindow.dataset.stage = productionHeartbeatStages[0];
+  stageWindow.setAttribute("aria-live", "polite");
+  const stage = document.createElement("span");
+  stage.className = "production-live-stage is-current";
+  stage.textContent = productionHeartbeatStages[0];
+  stageWindow.append(stage);
+  const elapsed = document.createElement("span");
+  elapsed.className = "production-live-elapsed";
+  elapsed.textContent = "1 秒";
+  detail.append(separator, stageWindow, elapsed);
+  text.append(title, detail);
   content.append(ring, text);
   const actions = document.createElement("div");
   actions.className = "message-actions";
@@ -684,8 +711,10 @@ function renderEvents(project) {
   const progress = Number(project.progress || 0);
   dom.progressNumber.textContent = `${progress}%`;
   dom.progressBar.style.width = `${progress}%`;
-  const liveText = document.querySelector(".production-live-text");
-  if (liveText && events.length) liveText.textContent = assistantText(events.at(-1).title || "制作任务正在运行");
+  const liveTitle = document.querySelector(".production-live-title");
+  if (liveTitle && events.length) {
+    liveTitle.textContent = assistantText(events.at(-1).title || "制作任务正在运行");
+  }
 }
 
 function selectOutput(index, { forceReload = false } = {}) {
@@ -713,6 +742,7 @@ function selectOutput(index, { forceReload = false } = {}) {
   const probe = output.probe || {};
   const values = [
     output.aspectRatio,
+    `${Number(output.speed || 1).toFixed(1)}x`,
     `${probe.width || "-"} × ${probe.height || "-"}`,
     `${probe.duration || "-"}s`,
     `${output.captionCueCount || 0} 组动效字幕`,
@@ -811,6 +841,36 @@ function requestOutputPublish(output, delivery) {
   );
 }
 
+async function createSpeedVersion(output, speed, trigger) {
+  if (!state.projectId || !output?.id) return;
+  const previousText = trigger?.textContent || "";
+  if (trigger) {
+    trigger.disabled = true;
+    trigger.textContent = "处理中…";
+  }
+  try {
+    const response = await fetch(`/api/projects/${state.projectId}/speed-version`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ outputId: output.id, speed: Number(speed) }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.detail || "生成变速版本失败");
+    closeHistoryDeliveryModal();
+    state.outputSignature = "";
+    state.outputMediaSignature = "";
+    await loadProject(state.projectId, true);
+    showToast(`新的 ${Number(speed).toFixed(1)} 倍速成片已生成`);
+  } catch (error) {
+    showToast(error.message || "生成变速版本失败");
+  } finally {
+    if (trigger) {
+      trigger.disabled = false;
+      trigger.textContent = previousText;
+    }
+  }
+}
+
 function closeHistoryDeliveryModal() {
   dom.historyDeliveryModal.hidden = true;
   document.body.classList.remove("history-delivery-open");
@@ -850,6 +910,7 @@ function renderHistoryDeliveryModal() {
     const createdAt = Number(delivery.createdAt || 0);
     meta.textContent = [
       String(output.aspectRatio || delivery.aspectRatio || "9:16"),
+      `${Number(output.speed || 1).toFixed(1)}x`,
       createdAt ? new Date(createdAt).toLocaleString("zh-CN", { hour12: false }) : "历史版本",
       publication ? "已发布" : "未发布",
     ].join(" · ");
@@ -864,7 +925,20 @@ function renderHistoryDeliveryModal() {
     publish.textContent = publication ? "已发布" : "发布";
     publish.disabled = Boolean(publication);
     publish.addEventListener("click", () => requestOutputPublish(output, delivery));
-    actions.append(download, publish);
+    const speedSelect = document.createElement("select");
+    speedSelect.className = "history-speed-select";
+    [1.2, 1.3, 1.5, 1.8, 2].forEach(rate => {
+      const option = document.createElement("option");
+      option.value = String(rate);
+      option.textContent = `${rate.toFixed(1)}x`;
+      if (Math.abs(rate - Number(output.speed || 1.2)) < 0.01) option.selected = true;
+      speedSelect.append(option);
+    });
+    const speedButton = document.createElement("button");
+    speedButton.type = "button";
+    speedButton.textContent = "另存变速版";
+    speedButton.addEventListener("click", () => createSpeedVersion(output, speedSelect.value, speedButton));
+    actions.append(download, speedSelect, speedButton, publish);
     content.append(title, meta, actions);
     card.append(video, content);
     dom.historyDeliveryList.append(card);
@@ -920,6 +994,7 @@ function renderDelivery(project) {
     dom.publishOutputButton.hidden = true;
     dom.historyDeliveryButton.hidden = true;
     dom.publishedOutputBadge.hidden = true;
+    dom.speedVersionControl.hidden = true;
     return;
   }
   dom.delivery.classList.remove("is-hidden");
@@ -933,6 +1008,7 @@ function renderDelivery(project) {
     state.deliveryCollapsed ? "chevron-down" : "chevron-up",
   );
   dom.historyDeliveryButton.hidden = deliveries.length <= 1;
+  dom.speedVersionControl.hidden = project.status !== "succeeded";
   dom.publishOutputButton.hidden = !(
     project.status === "succeeded"
     && document.documentElement.dataset.platformEmbedded === "true"
@@ -960,11 +1036,41 @@ const productionHeartbeatStages = [
   "任务连接正常",
 ];
 
+function rotateProductionHeartbeatStage(nextText) {
+  const stageWindow = document.querySelector(".production-live-stage-window");
+  if (!stageWindow || stageWindow.dataset.stage === nextText) return;
+  stageWindow.dataset.stage = nextText;
+  const current = stageWindow.querySelector(".production-live-stage.is-current");
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  if (!current || reducedMotion) {
+    stageWindow.replaceChildren();
+    const replacement = document.createElement("span");
+    replacement.className = "production-live-stage is-current";
+    replacement.textContent = nextText;
+    stageWindow.append(replacement);
+    return;
+  }
+  const next = document.createElement("span");
+  next.className = "production-live-stage is-next";
+  next.textContent = nextText;
+  stageWindow.append(next);
+  window.requestAnimationFrame(() => {
+    current.classList.remove("is-current");
+    current.classList.add("is-leaving");
+    next.classList.remove("is-next");
+    next.classList.add("is-current");
+  });
+  const cleanup = () => current.remove();
+  next.addEventListener("transitionend", cleanup, { once: true });
+  window.setTimeout(cleanup, 520);
+}
+
 function stopProductionHeartbeat() {
   window.clearInterval(state.productionHeartbeatTimer);
   state.productionHeartbeatTimer = null;
   state.productionHeartbeatProjectId = "";
   state.productionHeartbeatStartedAt = 0;
+  state.productionHeartbeatStageIndex = -1;
 }
 
 function startProductionHeartbeat(project) {
@@ -972,19 +1078,23 @@ function startProductionHeartbeat(project) {
   stopProductionHeartbeat();
   state.productionHeartbeatProjectId = project.id;
   state.productionHeartbeatStartedAt = Date.now();
-  let index = 0;
-  state.productionHeartbeatTimer = window.setInterval(() => {
+  state.productionHeartbeatStageIndex = -1;
+  const tick = () => {
     if (state.project?.id !== project.id || state.project?.status !== "running") {
       stopProductionHeartbeat();
       return;
     }
-    const liveText = document.querySelector(".production-live-text");
-    if (!liveText) return;
-    const latestTitle = assistantText(state.project.events?.at(-1)?.title || "制作任务正在运行");
     const elapsed = Math.max(1, Math.round((Date.now() - state.productionHeartbeatStartedAt) / 1000));
-    liveText.textContent = `${latestTitle} · ${productionHeartbeatStages[index % productionHeartbeatStages.length]} ${elapsed} 秒`;
-    index += 1;
-  }, 3000);
+    const elapsedText = document.querySelector(".production-live-elapsed");
+    if (elapsedText) elapsedText.textContent = `${elapsed} 秒`;
+    const stageIndex = Math.floor((elapsed - 1) / 6) % productionHeartbeatStages.length;
+    if (stageIndex !== state.productionHeartbeatStageIndex) {
+      state.productionHeartbeatStageIndex = stageIndex;
+      rotateProductionHeartbeatStage(productionHeartbeatStages[stageIndex]);
+    }
+  };
+  tick();
+  state.productionHeartbeatTimer = window.setInterval(tick, 1000);
 }
 
 function renderProject(project) {
@@ -1114,6 +1224,7 @@ function populateHistoryList(list, items) {
 }
 
 function renderHistory(items) {
+  state.historyItems = Array.isArray(items) ? [...items] : [];
   const signature = JSON.stringify({
     activeProjectId: state.projectId,
     items: items.map((project) => [
@@ -1132,28 +1243,75 @@ function renderHistory(items) {
   refreshIcons();
 }
 
+function upsertHistoryProject(project) {
+  if (!project?.id) return;
+  const summary = {
+    id: project.id,
+    name: project.name || "新会话",
+    status: project.status || "conversation",
+    updatedAt: project.updatedAt || project.createdAt || new Date().toISOString(),
+    _integration: project._integration || {},
+  };
+  const items = [
+    summary,
+    ...state.historyItems.filter((item) => item.id !== summary.id),
+  ];
+  state.historySignature = "";
+  renderHistory(items);
+}
+
 async function loadHistory(force = false) {
   const now = Date.now();
   if (!force && now - state.historyLoadedAt < 4000) return;
   state.historyLoadedAt = now;
+  const requestEpoch = ++state.historyLoadEpoch;
   try {
     const response = await fetch("/api/projects?page=1&pageSize=60", { cache: "no-store" });
     if (!response.ok) return;
     const data = await response.json();
+    if (requestEpoch !== state.historyLoadEpoch) return;
     renderHistory(data.items || []);
   } catch {
     // History is secondary to the active creation flow.
   }
 }
 
+async function createNewConversation() {
+  if (state.busy) return;
+  resetProject(false);
+  state.busy = true;
+  try {
+    const response = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    const project = await response.json().catch(() => ({}));
+    if (!response.ok || !project?.id) {
+      throw new Error(project.detail || "新建会话失败");
+    }
+    renderProject(project);
+    upsertHistoryProject(project);
+    void loadHistory(true);
+    dom.chatInput.focus();
+  } catch (error) {
+    resetProject(true);
+    showToast(error?.message || "新建会话失败");
+  } finally {
+    state.busy = false;
+  }
+}
+
 async function loadProject(projectId, silent = false) {
+  const requestEpoch = ++state.projectLoadEpoch;
   try {
     const response = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
     if (!response.ok) throw new Error("项目不存在");
     const project = await response.json();
+    if (requestEpoch !== state.projectLoadEpoch) return;
     isolatePendingAttachments(project.id);
     renderProject(project);
   } catch (error) {
+    if (requestEpoch !== state.projectLoadEpoch) return;
     if (!silent) showToast(error.message);
     if (responseIsMissing(error)) resetProject(false);
   }
@@ -1458,11 +1616,13 @@ async function stopProject(button) {
 }
 
 function resetProject(showStart = true) {
+  state.projectLoadEpoch += 1;
   window.clearTimeout(state.pollTimer);
   stopPendingThoughts();
   stopProductionHeartbeat();
   state.projectId = "";
   state.project = null;
+  state.busy = false;
   state.attachments = [];
   state.outputIndex = 0;
   state.messageSignature = "";
@@ -1474,6 +1634,12 @@ function resetProject(showStart = true) {
   state.deliveryCollapsed = false;
   localStorage.removeItem(PROJECT_STORAGE_KEY);
   renderAttachments();
+  dom.conversation.replaceChildren();
+  dom.eventList.replaceChildren();
+  dom.delivery.classList.add("is-hidden");
+  dom.projectLabel.textContent = "新项目";
+  dom.chatInput.disabled = false;
+  dom.chatForm.querySelector("button[type='submit']").disabled = false;
   if (showStart) {
     dom.studioView.classList.add("is-hidden");
     dom.startView.classList.remove("is-hidden");
@@ -1724,6 +1890,10 @@ dom.historyDeliveryFilter.addEventListener("change", renderHistoryDeliveryModal)
 document.querySelectorAll("[data-history-delivery-close]").forEach(button => {
   button.addEventListener("click", closeHistoryDeliveryModal);
 });
+dom.speedVersionButton.addEventListener("click", () => {
+  const output = state.project?.outputs?.[state.outputIndex] || state.project?.outputs?.[0];
+  if (output) createSpeedVersion(output, dom.speedVersionSelect.value, dom.speedVersionButton);
+});
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && !dom.historyDeliveryModal.hidden) closeHistoryDeliveryModal();
 });
@@ -1735,10 +1905,10 @@ dom.deliveryToggleButton.addEventListener("click", () => {
   refreshIcons();
 });
 dom.backButton.addEventListener("click", () => resetProject(true));
-dom.historyNewButton.addEventListener("click", () => resetProject(true));
+dom.historyNewButton.addEventListener("click", createNewConversation);
 dom.startHistoryNewButton.addEventListener("click", () => {
   dom.startView.classList.remove("history-open");
-  resetProject(true);
+  createNewConversation();
 });
 dom.startHistoryToggleButton.addEventListener("click", () => {
   dom.startView.classList.toggle("history-open");

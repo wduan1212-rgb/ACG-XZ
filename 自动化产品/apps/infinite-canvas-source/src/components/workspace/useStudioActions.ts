@@ -38,15 +38,6 @@ function labelForItem(itemId: string, items: CanvasItem[]): string {
   return "参考图";
 }
 
-function visibleAnchorFor(projectId: string, size: Size, items: CanvasItem[]): { x: number; y: number } {
-  const host = document.querySelector<HTMLElement>("[data-canvas-host]");
-  const vp = useStore.getState().viewportByProject[projectId];
-  if (!host || !vp) return anchorFor(items);
-  const centerX = (host.clientWidth / 2 - vp.x) / vp.zoom;
-  const centerY = (host.clientHeight / 2 - vp.y) / vp.zoom;
-  return { x: centerX - size.width / 2, y: centerY - size.height / 2 };
-}
-
 export function useStudioActions(projectId: string) {
   const addMessage = useStore((s) => s.addMessage);
   const updateMessage = useStore((s) => s.updateMessage);
@@ -90,11 +81,15 @@ export function useStudioActions(projectId: string) {
 
   /** One-shot: request → LLM writes a complete-poster prompt → one image on the canvas. */
   const generate = useCallback(
-    async (brief: string) => {
+    async (brief: string, options: { size?: string } = {}) => {
       const state = useStore.getState();
       const project = state.projects.find((p) => p.id === projectId);
       if (!project) return;
-      const size = state.composerSize || project.targetSize;
+      // Homepage handoff may reach this callback before ProjectClient's
+      // enterProject effect has copied targetSize into the shared composer.
+      // An explicit handoff size is authoritative only for that first request;
+      // normal in-workspace requests continue to use the live composer value.
+      const size = options.size || state.composerSize || project.targetSize;
       const items = state.itemsByProject[projectId] ?? [];
 
       // Effective references: explicit chips first; otherwise the selected image —
@@ -149,7 +144,11 @@ export function useStudioActions(projectId: string) {
       const fp = footprintFor(target.width, target.height, 340);
       const makePlaceholder = (): string => {
         const cur = (useStore.getState().itemsByProject[projectId] ?? []).filter((item) => !item.hidden);
-        const pos = findFreeSpot(cur, visibleAnchorFor(projectId, fp, cur), fp, 28);
+        // A new task follows the current content, independent of pan/zoom.
+        // Each additional result then advances from the newly enlarged bounds,
+        // producing a stable left-to-right sequence instead of a viewport-based
+        // spiral that appears random after the user moves the canvas.
+        const pos = findFreeSpot(cur, anchorFor(cur), fp, 28);
         const phId = uid("item");
         const ph: GenerationItem = {
           id: phId,

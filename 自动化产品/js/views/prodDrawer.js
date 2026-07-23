@@ -9,7 +9,7 @@ import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260721-v105-1";
+import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260723-v115-3";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */
@@ -66,6 +66,10 @@ function outputUrl(output) {
 }
 
 function workshopPreviewHtml(p) {
+  const composedUrl = String(p.artifacts?.finalVideoUrl || "").trim();
+  if (composedUrl) {
+    return `<div class="pd-workshop-preview is-composed"><div class="pd-note">已剪辑完整成片 · 可播放声音，点击放大查看</div><div class="pd-video-grid"><article><video src="${esc(composedUrl)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="0" data-video-url="${esc(composedUrl)}">${icon("eye", 12)} 放大</button><em>完整成片</em></article></div></div>`;
+  }
   const ready = jobsOf(p).filter(j => j.status === "succeeded").map(j => ({ name: j.segName || `片段 ${Number(j.segIndex || 0) + 1}`, url: outputUrl(j.output) })).filter(x => x.url);
   if (!ready.length) return `<div class="pd-empty compact">${icon("film", 20)}<p>视频生成后会直接在${p.subType === "数字人" ? "数字人制作" : "信息流制作"}阶段出现预览</p></div>`;
   return `<div class="pd-workshop-preview"><div class="pd-note">视频预览 ${ready.length} 段 · 可播放声音，点击放大查看</div><div class="pd-video-grid">${ready.map((item, i) => `<article><video src="${esc(item.url)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="${i}" data-video-url="${esc(item.url)}">${icon("eye", 12)} 放大</button><em>${esc(item.name)}</em></article>`).join("")}</div></div>`;

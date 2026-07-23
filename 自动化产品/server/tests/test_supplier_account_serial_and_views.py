@@ -19,7 +19,7 @@ class SupplierAccountSerialAndViewsTest(unittest.TestCase):
         self.assertIn('class="supplier-account-sequence"', source)
         self.assertRegex(
             source,
-            r'<article class="supplier-account"[^>]*><span class="supplier-account-sequence">',
+            r'<article class="supplier-account[^\"]*"[^>]*><span class="supplier-account-sequence">',
         )
 
         script = r"""

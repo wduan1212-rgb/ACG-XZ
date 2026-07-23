@@ -100,6 +100,34 @@ class SingleImageSlotIsolationTest(unittest.TestCase):
         self.assertIn("commitGeneratedImageToSlot(A.items, i, fresh", source)
         self.assertIn("await removeAsset(a.id)", source)
 
+    def test_single_creation_slot_reference_is_scoped_to_the_requested_image(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+
+            const { imageReferenceIdsForSlot } = await import(
+              "./js/views/chainBoards.js?v=slot-reference-isolation"
+            );
+            const shared = { sharedRefAssetIds: ["uniform-a", "uniform-b"] };
+            const first = imageReferenceIdsForSlot(shared, { refAssetIds: ["custom-first"] });
+            const second = imageReferenceIdsForSlot(shared, { refAssetIds: ["custom-second", "uniform-b"] });
+            const inherited = imageReferenceIdsForSlot(shared, {});
+            console.log(JSON.stringify({ first, second, inherited }));
+            """
+        )
+
+        self.assertEqual(["custom-first", "uniform-a", "uniform-b"], result["first"])
+        self.assertEqual(["custom-second", "uniform-b", "uniform-a"], result["second"])
+        self.assertEqual(["uniform-a", "uniform-b"], result["inherited"])
+
+        source = (APP_DIR / "js/views/chainBoards.js").read_text(encoding="utf-8")
+        self.assertIn('const allowSlotRefs = img && !p.batchId', source)
+        self.assertIn('data-slot-ref-drop="${i}"', source)
+        self.assertIn("imageReferenceIdsForSlot(A, fresh)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

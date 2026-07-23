@@ -5,37 +5,37 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260721-v105-1";
+import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260723-v115-3";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
-import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor } from "./domain/accounts.js";
+import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
 import { productTagLabel } from "./domain/delivery.js";
 import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
-import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260721-v105-1";
+import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260723-v115-3";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260721-v105-1";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260723-v115-3";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
-import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260721-v105-1";
+import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v115-3";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260721-v105-1";
-import { voiceLabView } from "./views/voiceLab.js?v=20260721-v105-1";
-import { customCreationView } from "./views/customCreation.js?v=20260721-v105-1";
-import { agentView } from "./agent/view.js?v=20260721-v105-1";
-import { studioView } from "./views/studio.js?v=20260721-v105-1";
-import { assetsView } from "./views/assetsView.js?v=20260721-v105-1";
-import { deliveryView } from "./views/deliveryView.js?v=20260721-v105-1";
-import { analyticsView } from "./views/analyticsView.js?v=20260721-v105-1";
+import { overviewView } from "./views/overview.js?v=20260723-v115-3";
+import { voiceLabView } from "./views/voiceLab.js?v=20260723-v115-3";
+import { customCreationView } from "./views/customCreation.js?v=20260723-v115-3";
+import { agentView } from "./agent/view.js?v=20260723-v115-3";
+import { studioView } from "./views/studio.js?v=20260723-v115-3";
+import { assetsView } from "./views/assetsView.js?v=20260723-v115-3";
+import { deliveryView } from "./views/deliveryView.js?v=20260723-v115-3";
+import { analyticsView } from "./views/analyticsView.js?v=20260723-v115-3";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260721-v105-1";
+import { settingsView } from "./views/settings.js?v=20260723-v115-3";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260721-v105-1";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260723-v115-3";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260721-v105-1";
+const APP_BUILD_ID = "20260723-v115-3";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -630,10 +630,22 @@ function renderContextPanel() {
   const q = (panel.dataset.q || "").toLowerCase();
   const f = a => a.name.toLowerCase().includes(q);
   const accountIndex = accountDisplaySequenceMap(state.accounts);
+  if (isAccountDisabled(state.accounts.find(account => account.id === state.ui.activeAccountId))) {
+    state.ui.activeAccountId = state.accounts.find(account => !isAccountDisabled(account))?.id || null;
+    state.ui.activeProductionId = null;
+    save("meta");
+  }
+  if (!state.ui.disabledAccountGroupInitialized) {
+    collapsedGroups.add("已停用账号");
+    state.ui.disabledAccountGroupInitialized = true;
+    state.ui.collapsedGroups = [...collapsedGroups];
+    save("meta");
+  }
   const groups = [
-    { key: "图文组", list: state.accounts.filter(a => a.mode === "图文" && f(a)) },
-    { key: "真人 · 数字人", list: state.accounts.filter(a => a.mode === "视频" && a.subType === "数字人" && f(a)) },
-    { key: "素材 · 无数字人", list: state.accounts.filter(a => a.mode === "视频" && a.subType !== "数字人" && f(a)) }
+    { key: "图文组", list: state.accounts.filter(a => !isAccountDisabled(a) && a.mode === "图文" && f(a)) },
+    { key: "真人 · 数字人", list: state.accounts.filter(a => !isAccountDisabled(a) && a.mode === "视频" && a.subType === "数字人" && f(a)) },
+    { key: "素材 · 无数字人", list: state.accounts.filter(a => !isAccountDisabled(a) && a.mode === "视频" && a.subType !== "数字人" && f(a)) },
+    { key: "已停用账号", list: state.accounts.filter(a => isAccountDisabled(a) && f(a)), disabled: true }
   ];
   panel.innerHTML = `
     <div class="ctx-head">
@@ -647,9 +659,9 @@ function renderContextPanel() {
         return `<div class="ctx-group">
           <button class="ctx-gtitle" data-g="${esc(g.key)}"><span class="chev ${collapsed ? "closed" : ""}">${icon("chevronDown", 12)}</span>${esc(g.key)}<em>${g.list.length}</em></button>
           ${collapsed ? "" : g.list.map(a => `
-            <div class="ctx-acc ${a.id === state.ui.activeAccountId ? "is-active" : ""}" data-acc="${a.id}" role="button" tabindex="0">
+            <div class="ctx-acc ${a.id === state.ui.activeAccountId ? "is-active" : ""}${isAccountDisabled(a) ? " is-disabled" : ""}${isNewAccount(a) ? " is-new-account" : ""}" data-acc="${a.id}" role="button" tabindex="${isAccountDisabled(a) ? "-1" : "0"}" aria-disabled="${isAccountDisabled(a) ? "true" : "false"}">
               <span class="ctx-idx ${platformCode(a.platform).toLowerCase()}" title="${esc(a.platform || "")}">#${String(accountIndex.get(a.id) || 0).padStart(2, "0")}</span>
-              <span class="ctx-name" title="${esc(a.name)}">${esc(a.name)}</span>
+              <span class="ctx-name" title="${esc(a.name)}">${esc(a.name)}${isNewAccount(a) ? `<i class="ctx-new-badge">新</i>` : ""}</span>
               <em>${a.monthlyDone || 0}</em>
               ${state.role === "admin" ? `<button class="ctx-del" data-acc-del="${a.id}" title="删除账号">${icon("trash", 12)}</button>` : ""}
             </div>`).join("")}
@@ -689,6 +701,12 @@ function renderContextPanel() {
     renderContextPanel();
   }));
   const openAcc = id => {
+    const account = state.accounts.find(item => item.id === id);
+    if (!account) return;
+    if (isAccountDisabled(account)) {
+      toast("该账号已停用，恢复后才能继续创作", "error");
+      return;
+    }
     state.ui.ctxScrollTop = $(".ctx-groups", panel)?.scrollTop || state.ui.ctxScrollTop || 0;
     state.ui.activeAccountId = id;
     state.ui.activeProductionId = null;

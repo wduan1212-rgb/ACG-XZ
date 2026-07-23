@@ -1,3 +1,6 @@
+import shlex
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -83,6 +86,8 @@ class CustomSubappDeploymentTest(unittest.TestCase):
             'exec "$VIDEO_WORKSHOP_PYTHON" run.py',
             'http://127.0.0.1:8765/api/health',
             "stop_local_video_workshop()",
+            "start_local_video_workshop_watchdog()",
+            "LOCAL_VIDEO_WORKSHOP_INSTANCE",
         ):
             self.assertIn(token, helper)
         self.assertNotIn('VIDEO_WORKSHOP_HOST="0.0.0.0"', helper)
@@ -101,6 +106,8 @@ class CustomSubappDeploymentTest(unittest.TestCase):
             self.assertIn("start_local_video_workshop", launcher)
             self.assertIn("trap stop_local_video_workshop EXIT", launcher)
             self.assertIn("stop_local_video_workshop", launcher)
+            self.assertIn("start_local_video_workshop_watchdog", launcher)
+            self.assertIn('wait "$MAIN_PID"', launcher)
             self.assertIn(browser_url, launcher)
             self.assertIn(
                 'python3 -m uvicorn server.main:app --host 0.0.0.0 --port "${PORT}"',
@@ -111,6 +118,41 @@ class CustomSubappDeploymentTest(unittest.TestCase):
         self.assertIn("127.0.0.1:8765", guide)
         self.assertIn("退出 `8787` 主服务或按 `Ctrl+C`", guide)
         self.assertIn("保存在 `runtime/`", guide)
+
+    def test_old_local_launcher_cannot_stop_replaced_sidecar_instance(self):
+        """A stale Finder/Terminal launcher may still run its EXIT trap.
+
+        The instance marker is the safety boundary: when launcher A is closing
+        after launcher B took ownership of the shared port, A may stop its own
+        child but must leave B's recorded child alone.
+        """
+        helper = APP_DIR / "deploy" / "local_video_workshop.sh"
+        with tempfile.TemporaryDirectory() as tmp:
+            script = f'''
+                set -e
+                APP_DIR={shlex.quote(tmp)}
+                mkdir -p "$APP_DIR/logs"
+                . {shlex.quote(str(helper))}
+                LOCAL_VIDEO_WORKSHOP_INSTANCE="launcher-a"
+                sleep 20 &
+                old_pid=$!
+                LOCAL_VIDEO_WORKSHOP_PID="$old_pid"
+                sleep 20 &
+                replacement_pid=$!
+                printf '%s %s\\n' "$replacement_pid" "launcher-b" > "$VIDEO_WORKSHOP_PID_FILE"
+                stop_local_video_workshop
+                ! kill -0 "$old_pid" 2>/dev/null
+                kill -0 "$replacement_pid" 2>/dev/null
+                kill "$replacement_pid"
+                wait "$replacement_pid" 2>/dev/null || true
+            '''
+            subprocess.run(
+                ["bash", "-lc", script],
+                check=True,
+                timeout=10,
+                capture_output=True,
+                text=True,
+            )
 
     def test_docker_image_bundles_runtime_without_secrets_or_user_data(self):
         dockerfile = (APP_DIR / "server" / "Dockerfile").read_text(encoding="utf-8")

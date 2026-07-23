@@ -39,7 +39,7 @@ export function SizePlanBadge({
         )}
       >
         <Icon size={12} />
-        {plan.direct ? "可直接生成" : plan.tile ? "需分块超分" : "需适配"}
+        {plan.direct ? "可直接生成" : plan.tile ? "需分块超分" : "自动适配"}
       </span>
       {showSummary && (
         <span className="text-[12px] leading-5 text-ink-2">{plan.summary}</span>

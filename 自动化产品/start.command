@@ -86,7 +86,11 @@ echo "登录账号请联系管理员；新成员可在登录页提交账号申�
 ( sleep 2 && open "http://localhost:${PORT}/#/overview" ) &
 # 强制使用纯 Python 的 asyncio + h11，避开部分 macOS/Python 环境下
 # uvicorn 自动选择 httptools/uvloop 后在长轮询时触发 Segmentation fault: 11。
-python3 -m uvicorn server.main:app --host 0.0.0.0 --port "${PORT}" --loop asyncio --http h11
+# 主服务与 sidecar 具有明确实例归属；sidecar 意外退出时仅本实例看门狗重启它。
+python3 -m uvicorn server.main:app --host 0.0.0.0 --port "${PORT}" --loop asyncio --http h11 &
+MAIN_PID=$!
+start_local_video_workshop_watchdog "$MAIN_PID"
+wait "$MAIN_PID"
 MAIN_STATUS=$?
 stop_local_video_workshop
 

@@ -268,6 +268,11 @@ export const memberRequests = {
   reject: (id) => req("/api/member-requests/" + encodeURIComponent(id) + "/reject", { method: "POST" })
 };
 
+/* 管理员用量看板：服务端只汇总上游真实返回的 LLM token。 */
+export const admin = {
+  llmUsage: () => req("/api/admin/llm-usage")
+};
+
 /* 供应商母账号：子账号、内容账号绑定与操作记录均由服务端授权。 */
 export const supplier = {
   members: () => req("/api/supplier/members"),
@@ -283,7 +288,9 @@ export const supplier = {
   updateViews: (assetId, viewCount) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/views", { method: "PUT", body: { viewCount } }),
   markDownloaded: (assetId) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/downloaded", { method: "PUT" }),
   returnLink: (assetId, data) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/published-link", { method: "PUT", body: data }),
-  updateHomepage: (accountId, homepageUrl) => req("/api/supplier/accounts/" + encodeURIComponent(accountId) + "/homepage", { method: "PUT", body: { homepageUrl } })
+  updateHomepage: (accountId, homepageUrl) => req("/api/supplier/accounts/" + encodeURIComponent(accountId) + "/homepage", { method: "PUT", body: { homepageUrl } }),
+  createAccount: (account, assets = []) => req("/api/supplier/accounts", { method: "POST", body: { account, assets } }),
+  updateAccount: (accountId, account, assets = []) => req("/api/supplier/accounts/" + encodeURIComponent(accountId), { method: "PUT", body: { account, assets } })
 };
 
 export const deliveryRemarks = {

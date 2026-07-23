@@ -45,6 +45,7 @@ import {
 import { findFreeSpot, footprintFor } from "@/lib/geometry";
 import { downscaleDataUrl, fileToDownscaledDataUrl, upscaleDataUrl } from "@/lib/image";
 import { homeHref } from "@/lib/runtime";
+import { buildStoreZip } from "@/lib/storeZip";
 import {
   buildCanvasPublishRequest,
   postCanvasPublishRequest,
@@ -149,7 +150,7 @@ export function Workspace({ projectId }: { projectId: string }) {
     const pending = sessionStorage.getItem(key);
     if (pending !== null) {
       sessionStorage.removeItem(key);
-      generate(pending);
+      generate(pending, { size: project?.targetSize });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
@@ -426,27 +427,36 @@ export function Workspace({ projectId }: { projectId: string }) {
   const batchExportSelection = useCallback(async () => {
     if (!selectedImages.length) return;
     showPublishNotice(`正在导出 ${selectedImages.length} 张图片…`);
-    for (let index = 0; index < selectedImages.length; index++) {
-      const item = selectedImages[index];
-      const rendered = await renderCanvasOutput({
-        imageItem: item,
-        marks: overlappingMarksFor(item, reactiveItems),
-        targetWidth: item.naturalWidth,
-        targetHeight: item.naturalHeight,
-        mime: "image/png",
-      });
-      const href = URL.createObjectURL(rendered.blob);
+    try {
+      const entries = await Promise.all(
+        selectedImages.map(async (item, index) => {
+          const rendered = await renderCanvasOutput({
+            imageItem: item,
+            marks: overlappingMarksFor(item, reactiveItems),
+            targetWidth: item.naturalWidth,
+            targetHeight: item.naturalHeight,
+            mime: "image/png",
+          });
+          const baseName = (item.label || project?.name || "无限画布作品")
+            .replace(/[\\/:*?"<>|]+/g, "-")
+            .slice(0, 80);
+          return { name: `${baseName}-${index + 1}.png`, blob: rendered.blob };
+        }),
+      );
+      const zip = await buildStoreZip(entries);
+      const href = URL.createObjectURL(zip);
       const anchor = document.createElement("a");
       anchor.href = href;
-      anchor.download = `${(item.label || project?.name || "无限画布作品").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80)}-${index + 1}.png`;
+      anchor.download = `${(project?.name || "无限画布作品").replace(/[\\/:*?"<>|]+/g, "-").slice(0, 80)}-${selectedImages.length}张.zip`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(href), 4000);
-      await new Promise((resolve) => window.setTimeout(resolve, 100));
+      showPublishNotice(`已导出 ${selectedImages.length} 张选中图片。`);
+    } catch (error) {
+      showPublishNotice(error instanceof Error ? `批量导出失败：${error.message}` : "批量导出失败，请重试。");
     }
-    showPublishNotice(`已导出 ${selectedImages.length} 张选中图片。`);
-  }, [project?.name, reactiveItems, selectedImages, showPublishNotice]);
+  }, [project, reactiveItems, selectedImages, showPublishNotice]);
 
   const addTextMark = useCallback(() => {
     const c = centerWorld();
@@ -569,6 +579,10 @@ export function Workspace({ projectId }: { projectId: string }) {
       const t = e.target as HTMLElement;
       if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t.isContentEditable)
         return;
+      // The lightbox owns Escape and arrow navigation while it is open. Letting
+      // the canvas handler update selection at the same time creates two active
+      // image states and can leave the enlarged picture visually unchanged.
+      if (lightbox) return;
       const meta = e.metaKey || e.ctrlKey;
       if (meta && e.key.toLowerCase() === "c") {
         const images = useStore.getState().selection
@@ -633,7 +647,7 @@ export function Workspace({ projectId }: { projectId: string }) {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("paste", onPaste);
     };
-  }, [projectId, setSelection, clearSelection, removeItems, setTool, addTextMark, addUploadedFiles, pasteCopiedImages, showPublishNotice]);
+  }, [projectId, setSelection, clearSelection, removeItems, setTool, addTextMark, addUploadedFiles, pasteCopiedImages, showPublishNotice, lightbox]);
 
   if (!project) {
     return (
@@ -772,7 +786,15 @@ export function Workspace({ projectId }: { projectId: string }) {
           onClose={() => setEnhanceMenu(null)}
         />
       )}
-      {lightbox && <Lightbox item={lightbox} onClose={() => setLightbox(null)} />}
+      {lightbox && (
+        <Lightbox
+          item={lightbox}
+          onClose={() => setLightbox(null)}
+          onActiveChange={(nextItem) => {
+            setSelection([nextItem.id]);
+          }}
+        />
+      )}
       {styleItem && (
         <StyleModal
           item={styleItem}

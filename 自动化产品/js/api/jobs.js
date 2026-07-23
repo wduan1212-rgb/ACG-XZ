@@ -6,8 +6,11 @@ import { uid } from "../core/util.js";
 import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
 
-const CONCURRENCY = 4;
-const DIGITAL_HUMAN_CONCURRENCY = 10;
+const IMAGE_CONCURRENCY = 4;
+const VIDEO_CONCURRENCY = 10;
+// 信息流每条通常会占用 2 个 Seedance 任务，最多并行 8 段（约 4 条成片），
+// 给同一队列中的数字人或其他视频任务保留余量。数字人独占时仍可使用全部 10 槽。
+const STANDARD_VIDEO_CONCURRENCY = 8;
 const TICK_MS = 1000;
 const DEFAULT_POLL_MS = 8000;
 const DIGITAL_HUMAN_POLL_MS = 12000;
@@ -106,6 +109,40 @@ function delayedQueuedJobs() {
 
 function isDigitalHumanJob(j) {
   return j?.kind === "video" && j?.model === "__digital_human__";
+}
+
+function isVideoJob(j) {
+  return j?.kind === "video";
+}
+
+export function selectQueuedJobs(active = [], queued = []) {
+  const activeImages = active.filter(j => !isVideoJob(j)).length;
+  const activeVideos = active.filter(isVideoJob).length;
+  const activeStandardVideos = active.filter(j => isVideoJob(j) && !isDigitalHumanJob(j)).length;
+  const imageSlots = Math.max(0, IMAGE_CONCURRENCY - activeImages);
+  const videoSlots = Math.max(0, VIDEO_CONCURRENCY - activeVideos);
+  const standardVideoSlots = Math.max(0, STANDARD_VIDEO_CONCURRENCY - activeStandardVideos);
+  const limit = imageSlots + videoSlots;
+  let imagePicked = 0;
+  let videoPicked = 0;
+  let standardVideoPicked = 0;
+  const candidates = [];
+  for (const job of queued) {
+    if (candidates.length >= limit) break;
+    if (!isVideoJob(job)) {
+      if (imagePicked >= imageSlots) continue;
+      imagePicked += 1;
+    } else {
+      if (videoPicked >= videoSlots) continue;
+      if (!isDigitalHumanJob(job)) {
+        if (standardVideoPicked >= standardVideoSlots) continue;
+        standardVideoPicked += 1;
+      }
+      videoPicked += 1;
+    }
+    candidates.push(job);
+  }
+  return candidates;
 }
 
 function isLegacyMockVideoJob(j) {
@@ -238,26 +275,8 @@ async function tick() {
   }
   // 2) 队列补位
   const active = activeJobs();
-  const activeDigital = active.filter(isDigitalHumanJob).length;
-  const activeStandard = active.length - activeDigital;
-  const standardSlots = Math.max(0, CONCURRENCY - activeStandard);
-  const digitalSlots = Math.max(0, DIGITAL_HUMAN_CONCURRENCY - activeDigital);
-  const slots = standardSlots + digitalSlots;
-  if (slots > 0) {
-    let digitalPicked = 0;
-    let standardPicked = 0;
-    const candidates = [];
-    for (const j of queuedJobs()) {
-      if (candidates.length >= slots) break;
-      if (isDigitalHumanJob(j)) {
-        if (digitalPicked >= digitalSlots) continue;
-        digitalPicked++;
-      } else {
-        if (standardPicked >= standardSlots) continue;
-        standardPicked++;
-      }
-      candidates.push(j);
-    }
+  const candidates = selectQueuedJobs(active, queuedJobs());
+  if (candidates.length) {
     const submitCandidate = async j => {
       try {
         const p = await providerReadyForSubmit(j.kind);
@@ -293,7 +312,7 @@ async function tick() {
         if (!scheduleSubmitRetry(j, msg)) failJob(j, msg);
       }
     };
-    // 数字人上游允许 10 并发；同一轮候选项并行提交，避免 UI 看起来仍在逐个排队。
+    // 浏览器内先按类型补位；服务端还会对所有成员执行全局 FIFO 保护。
     await Promise.allSettled(candidates.map(submitCandidate));
   }
   // 3) 空转时停表

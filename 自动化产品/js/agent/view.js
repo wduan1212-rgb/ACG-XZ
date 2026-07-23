@@ -9,14 +9,15 @@ import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
-  templatePlan, defaultPlan, regenerateBatchImage, resetPlanReferences, prunePlanReferences
-} from "./orchestrator.js?v=20260721-v105-1";
-import { renderMessage, boardRow } from "./cards.js?v=20260721-v105-1";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260721-v105-1";
+  templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
+  resetPlanReferences, prunePlanReferences
+} from "./orchestrator.js?v=20260723-v115-3";
+import { renderMessage, boardRow } from "./cards.js?v=20260723-v115-3";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260723-v115-3";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
-import { urlFor, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { isAvatarAsset } from "../domain/accounts.js";
+import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
+import { groupOf, isAvatarAsset } from "../domain/accounts.js";
 
 let mounted = false;
 let rootEl = null;
@@ -478,7 +479,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260721-v105-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260723-v115-3");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -726,52 +727,54 @@ function wire(root) {
       case "plan-confirm": {
         const { session: ownerSession, msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
-        m.payload.contentKind = normalizePlanKind(m.payload.contentKind, m.payload.group);
-        m.payload.group = planGroupForKind(m.payload.contentKind);
-        m.payload.accountIds = accountIdsForKind(m.payload.contentKind, m.payload.accountIds || [], 0);
-        m.payload.accountCount = m.payload.accountIds.length;
-        applyPlanMode(m.payload);
-        prunePlanReferences(m.payload);
-        if (!m.payload.accountIds.length) { toast("至少选择一个账号"); return; }
-        const isCustomPlan = true;
-        const missingCustom = isCustomPlan ? (m.payload.accountIds || []).filter(id => {
-          const acc = state.accounts.find(a => a.id === id);
-          const imageAccount = acc?.mode === "图文" || groupOf(acc) === "图文组";
-          if (imageAccount && (m.payload.accountImageCreationModes || {})[id] === "single") {
-            return !String((m.payload.accountSingleImageTitles || {})[id] || "").trim()
-              || !String((m.payload.accountImagePrompts || {})[id] || "").trim();
-          }
-          const title = ((m.payload.accountCopyTitles || {})[id] || "").trim();
-          const body = ((m.payload.accountCopyBodies || {})[id] || "").trim();
-          return imageAccount ? !title : (!title && !body);
-        }) : [];
-        if (missingCustom.length) {
-          const names = missingCustom
-            .slice(0, 3)
-            .map(id => state.accounts.find(a => a.id === id)?.name || "未命名账号")
-            .join("、");
-          toast(`图文组图需填写标题；单图需填写标题和提示词：${names}${missingCustom.length > 3 ? "等" : ""}`);
-          return;
-        }
-        if (m.payload.contentKind === "real") {
-          const missingRole = (m.payload.accountIds || []).filter(id => !state.accounts.find(a => a.id === id)?.charBoardAssetId);
-          if (missingRole.length) {
-            const names = missingRole.slice(0, 3).map(id => state.accounts.find(a => a.id === id)?.name || "未命名账号").join("、");
-            toast(`真人视频请先上传角色形象：${names}${missingRole.length > 3 ? "等" : ""}`);
-            return;
-          }
-        }
         const runSession = ownerSession || s;
-        state.ui.activeSessionId = runSession.id;
-        m.payload.status = "starting";
-        m.payload.startedAt = Date.now();
-        state.ui.activeProductionId = null;
-        state.ui.returnTo = null;
-        save("sessions", "meta");
-        renderMsgs(true);
         try {
+          // 准备、校验、启动必须处于同一个异常边界；任何同步错误都要给用户反馈并解锁按钮。
+          m.payload.contentKind = normalizePlanKind(m.payload.contentKind, m.payload.group);
+          m.payload.group = planGroupForKind(m.payload.contentKind);
+          m.payload.accountIds = accountIdsForKind(m.payload.contentKind, m.payload.accountIds || [], 0);
+          m.payload.accountCount = m.payload.accountIds.length;
+          applyPlanMode(m.payload);
+          prunePlanReferences(m.payload);
+          if (!m.payload.accountIds.length) throw new Error("至少选择一个账号");
+          const missingCustom = (m.payload.accountIds || []).filter(id => {
+            const acc = state.accounts.find(a => a.id === id);
+            const imageAccount = acc?.mode === "图文" || groupOf(acc) === "图文组";
+            if (imageAccount && (m.payload.accountImageCreationModes || {})[id] === "single") {
+              return !String((m.payload.accountSingleImageTitles || {})[id] || "").trim()
+                || !String((m.payload.accountImagePrompts || {})[id] || "").trim();
+            }
+            const title = String((m.payload.accountCopyTitles || {})[id] || "").trim();
+            const body = String((m.payload.accountCopyBodies || {})[id] || "").trim();
+            return imageAccount ? !title : (!title && !body);
+          });
+          if (missingCustom.length) {
+            const names = missingCustom
+              .slice(0, 3)
+              .map(id => state.accounts.find(a => a.id === id)?.name || "未命名账号")
+              .join("、");
+            throw new Error(`图文组图需填写标题；单图需填写标题和提示词：${names}${missingCustom.length > 3 ? "等" : ""}`);
+          }
+          if (m.payload.contentKind === "real") {
+            const missingRole = (m.payload.accountIds || []).filter(id => !state.accounts.find(a => a.id === id)?.charBoardAssetId);
+            if (missingRole.length) {
+              const names = missingRole.slice(0, 3).map(id => state.accounts.find(a => a.id === id)?.name || "未命名账号").join("、");
+              throw new Error(`真人视频请先上传角色形象：${names}${missingRole.length > 3 ? "等" : ""}`);
+            }
+          }
+          act.disabled = true;
+          act.setAttribute("aria-busy", "true");
+          act.innerHTML = `${icon("loader", 14)} 正在启动…`;
+          state.ui.activeSessionId = runSession.id;
+          m.payload.status = "starting";
+          m.payload.startedAt = Date.now();
+          state.ui.activeProductionId = null;
+          state.ui.returnTo = null;
+          save("sessions", "meta");
+          // 先让浏览器绘制“正在启动”，再创建任务；不要提前整段重绘并销毁刚点击的按钮。
+          await new Promise(resolve => requestAnimationFrame(resolve));
           const batch = await startBatch({ ...m.payload, goal: m.payload.goal, planMessageId: m.id }, runSession);
-          if (!batch) throw new Error("batch not created");
+          if (!batch?.productionIds?.length) throw new Error("没有成功创建批量内容任务");
           m.payload.status = "confirmed";
           m.payload.batchId = batch.id;
           delete m.payload.startedAt;
@@ -785,7 +788,13 @@ function wire(root) {
           save("sessions");
           renderMsgs(true);
           renderBoard();
-          toast("批量任务启动失败，请检查本地 API 或稍后重试", "error");
+          toast(err?.message ? `批量任务启动失败：${err.message}` : "批量任务启动失败，请检查本地 API 或稍后重试", "error");
+        } finally {
+          if (m.payload.status === "pending" && act.isConnected) {
+            act.disabled = false;
+            act.removeAttribute("aria-busy");
+            act.innerHTML = `${icon("spark", 14)} 确认执行`;
+          }
         }
         break;
       }
@@ -860,6 +869,21 @@ function wire(root) {
         break;
       }
       case "batch-image-edit": if (p) openBatchImageEditor(p, act.dataset.imageIndex); break;
+      case "batch-cover-edit": if (p) openBatchVideoCoverEditor(p); break;
+      case "batch-video-regenerate": {
+        if (!p) break;
+        const ok = await confirmModal({ title: `重新生成「${p.artifacts.copy.title || p.title || "视频"}」？`, body: "会保留文案、口播、封面和参考图，只重新派发视频画面任务。", okText: "重新生成" });
+        if (!ok) break;
+        try {
+          const n = await regenerateBatchVideo(p);
+          toast(`已重新派发 ${n} 个视频单元`);
+          refreshLiveCards();
+          renderBoard();
+        } catch (err) {
+          toast(err?.message || "视频重新生成失败", "error");
+        }
+        break;
+      }
       case "open-prod": if (p) openProductionDrawer(p.id); break;
       case "batch-generate": if (batch) { const n = startGeneration(batch); toast(n ? `已派发 ${n} 个渲染任务` : "没有就绪任务"); } break;
       case "batch-retry": if (batch) { const n = retryFailedIn(batch); toast(n ? `正在重试 ${n} 个失败任务` : "没有失败任务"); } break;
@@ -1236,6 +1260,85 @@ function openBatchImageEditor(p, imageIndex) {
           button.disabled = false;
           button.innerHTML = `${icon("refresh", 13)} 重试生成`;
           toast(err?.message || "重新生成失败", "error");
+        }
+      });
+    }
+  });
+}
+
+function openBatchVideoCoverEditor(p) {
+  const cover = p?.artifacts?.boards?.cover;
+  if (!cover) { toast("当前任务还没有封面配置", "error"); return; }
+  const imageUrl = cover.assetId ? urlFor(cover.assetId) : "";
+  let refIds = [...new Set((cover.refAssetIds || []).filter(Boolean))].slice(0, 8);
+  openModal(`<div class="mp-head"><b>微调视频封面</b><button class="icon-btn" data-close>${icon("x", 15)}</button></div>
+    <div class="mp-body batch-image-editor">
+      ${imageUrl ? `<img src="${esc(imageUrl)}" alt="当前视频封面"/>` : ""}
+      <div class="batch-image-editor-fields">
+        <label class="field"><span>封面提示词</span><textarea class="input" id="batchCoverPrompt" rows="9" placeholder="写清楚封面标题、主体、构图和风格；输出固定为 3:4">${esc(cover.prompt || "")}</textarea></label>
+        <section class="batch-image-ref-section">
+          <div class="batch-image-ref-head"><span>本次封面参考图</span><label class="btn ghost sm">${icon("plus", 12)} 拖拽 / 增加<input id="batchCoverRefAdd" type="file" accept="image/*" multiple hidden></label></div>
+          <p class="muted">可删除旧参考图或拖入新图；修改只作用于这张封面。</p>
+          <div class="batch-image-ref-list" id="batchCoverRefList"></div>
+        </section>
+      </div>
+      ${cover.error ? `<p class="sc-error">${esc(cover.error)}</p>` : ""}
+    </div>
+    <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="batchCoverRegenerate">${icon("refresh", 13)} 保存并重新生成</button></div>`, {
+    wide: true,
+    onMount(panel, close) {
+      const refList = panel.querySelector("#batchCoverRefList");
+      const addFiles = async files => {
+        const images = Array.from(files || []).filter(file => file?.type?.startsWith("image/")).slice(0, Math.max(0, 8 - refIds.length));
+        for (const file of images) {
+          const asset = await addAssetFromFile(p.accountId, file, { tags: ["参考图", "视频封面微调"], name: file.name.replace(/\.[^.]+$/, "") });
+          refIds.push(asset.id);
+        }
+        refIds = [...new Set(refIds)].slice(0, 8);
+        drawRefs();
+      };
+      const drawRefs = () => {
+        refList.innerHTML = refIds.length ? refIds.map((id, index) => {
+          const asset = state.assets.find(item => item.id === id);
+          const src = asset ? urlFor(asset) : "";
+          return `<article class="batch-image-ref-card">
+            ${src ? `<img src="${esc(src)}" alt="${esc(asset?.name || `参考图 ${index + 1}`)}">` : `<span class="muted">参考图不可用</span>`}
+            <div><b>${esc(asset?.name || `参考图 ${index + 1}`)}</b><span><button class="link-btn danger" type="button" data-cover-ref-remove="${index}">${icon("trash", 11)} 取消参考</button></span></div>
+          </article>`;
+        }).join("") : `<div class="batch-image-ref-empty">未使用参考图，可拖入图片后再生成。</div>`;
+        panel.querySelectorAll("[data-cover-ref-remove]").forEach(button => button.addEventListener("click", () => {
+          refIds.splice(Number(button.dataset.coverRefRemove), 1);
+          drawRefs();
+        }));
+      };
+      drawRefs();
+      panel.querySelector("#batchCoverRefAdd")?.addEventListener("change", event => addFiles(event.currentTarget.files));
+      const dropTarget = panel.querySelector(".batch-image-ref-section");
+      ["dragenter", "dragover"].forEach(name => dropTarget?.addEventListener(name, event => {
+        event.preventDefault();
+        dropTarget.classList.add("drag-over");
+      }));
+      ["dragleave", "drop"].forEach(name => dropTarget?.addEventListener(name, event => {
+        event.preventDefault();
+        dropTarget.classList.remove("drag-over");
+      }));
+      dropTarget?.addEventListener("drop", event => addFiles(event.dataTransfer?.files));
+      panel.querySelector("#batchCoverRegenerate")?.addEventListener("click", async event => {
+        const prompt = panel.querySelector("#batchCoverPrompt")?.value.trim() || "";
+        if (!prompt) { toast("请先填写封面提示词", "error"); return; }
+        const button = event.currentTarget;
+        button.disabled = true;
+        button.textContent = "重新生成中…";
+        try {
+          await regenerateBatchVideoCover(p, prompt, refIds);
+          close();
+          toast("视频封面已重新生成");
+          refreshLiveCards();
+          renderBoard();
+        } catch (err) {
+          button.disabled = false;
+          button.innerHTML = `${icon("refresh", 13)} 重试生成`;
+          toast(err?.message || "封面重新生成失败", "error");
         }
       });
     }

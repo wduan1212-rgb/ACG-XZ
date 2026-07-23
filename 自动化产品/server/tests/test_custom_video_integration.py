@@ -194,6 +194,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertIn('"/custom-video/api/{api_path:path}"', backend)
         self.assertIn("_video_workshop_project_index", backend)
         self.assertIn("store.sync_custom_video_project", backend)
+        self.assertIn('if path == "projects" and method == "POST"', backend)
+        self.assertIn('_video_workshop_timing("project-create", started)', backend)
         self.assertIn('"custom-video:output"', backend)
         self.assertIn('data-platform-embedded="true"', backend)
         self.assertNotIn("from 视频工坊产品试验", backend)
@@ -206,7 +208,14 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertIn("onOutput(listener)", integration)
         self.assertIn("markPublished(", integration)
         self.assertIn("publishedCount", integration)
-        self.assertIn("(retry|cancel)", backend)
+        self.assertIn("(retry|cancel|speed-version)", backend)
+        self.assertIn('project_action == "speed-version"', backend)
+        self.assertIn('project_action == "speed-version" and method != "POST"', backend)
+        self.assertLess(
+            backend.index('project_action == "speed-version" and method != "POST"'),
+            backend.index("upstream = await _video_workshop_request(request, path)", backend.index("project_match =")),
+        )
+        self.assertIn('_video_workshop_timing("speed-version", started)', backend)
         for field in (
             "kind: \"video\"",
             "projectId",
@@ -228,8 +237,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260720-18", html)
-        self.assertIn("app.js?v=20260720-18", html)
+        self.assertIn("styles.css?v=20260722-25", html)
+        self.assertIn("app.js?v=20260722-25", html)
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",
@@ -655,11 +664,11 @@ globalThis.fetch = async () => ({
   }),
   text: async () => ''
 });
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260721-v105-1');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260723-v115-3');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260721-v105-1');
+const { AI } = await import('./js/api/ai.js?v=20260723-v115-3');
 const request = {
   topic: '国产codex百度搭子自动管理你的知识库！',
   shots: [],

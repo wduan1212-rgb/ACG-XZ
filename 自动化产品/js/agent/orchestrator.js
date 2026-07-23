@@ -3,8 +3,8 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260721-v105-1";
-import { groupOf } from "../domain/accounts.js";
+import { AI } from "../api/ai.js?v=20260723-v115-3";
+import { groupOf, isAccountDisabled } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
@@ -14,6 +14,7 @@ import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFo
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { fileToDataUrl } from "../core/util.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
+import * as remote from "../core/remote.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -567,7 +568,7 @@ function ensureVideoCoverPrompt(p, product = null) {
   A.cover.refAssetIds = Array.isArray(A.cover.refAssetIds) ? A.cover.refAssetIds.filter(Boolean).slice(0, 8) : [];
 }
 
-function batchVideoRefIds(batch, accountId = "") {
+export function batchCoverRefIds(batch, accountId = "") {
   const customRaw = batch?.accountRefAssetIds?.[accountId];
   return [...new Set([
     ...(Array.isArray(batch?.coverRefAssetIds) ? batch.coverRefAssetIds : []),
@@ -575,20 +576,30 @@ function batchVideoRefIds(batch, accountId = "") {
   ].filter(Boolean))].slice(0, 8);
 }
 
-function applyBatchCoverRefs(p, batch) {
+export function batchSceneRefIds(batch, accountId = "") {
+  // 信息流允许把任务参考图同时交给视频和封面；真人/数字人视频只接收角色版与口播音频，
+  // 任务里的统一/定制参考图仅用于封面，避免产品图或风格图污染角色生成。
+  return batch?.contentKind === "material" ? batchCoverRefIds(batch, accountId) : [];
+}
+
+export function applyBatchCoverRefs(p, batch) {
   if (!p || p.mode === "图文") return;
-  const ids = batchVideoRefIds(batch, p.accountId);
+  const account = accountById(p.accountId);
+  const ids = [...new Set([
+    ...batchCoverRefIds(batch, p.accountId),
+    p.subType === "数字人" ? account?.charBoardAssetId : null
+  ].filter(Boolean))].slice(0, 8);
   if (!ids.length) return;
   const A = p.artifacts?.boards || (p.artifacts.boards = {});
   A.cover = A.cover || { prompt: "", assetId: null, refAssetIds: [], status: "idle", error: "" };
   A.cover.refAssetIds = [...new Set([...(A.cover.refAssetIds || []), ...ids])].slice(0, 8);
 }
 
-async function generateVideoCoverInHouse(p) {
+async function generateVideoCoverInHouse(p, { force = false } = {}) {
   if (!p || p.mode === "图文") return false;
   const A = p.artifacts?.boards || {};
   const cover = A.cover || null;
-  if (!cover?.prompt || cover.assetId || cover.status === "loading") return false;
+  if (!cover?.prompt || (!force && cover.assetId) || cover.status === "loading") return false;
   if (!imageApiConfigured()) return false;
   const provider = activeProviderFor("image");
   if (!provider || provider.mock) return false;
@@ -614,12 +625,16 @@ async function generateVideoCoverInHouse(p) {
     const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
     const title = (p.artifacts?.copy?.title || p.title || p.topic || "视频封面").trim();
     const polished = await polishImageDataUrl(raw, `${p.id}-batch-cover-${title}`);
-    const a = await addAssetFromDataUrl(p.accountId, {
-      name: `视频封面_${title.slice(0, 12)}`,
-      tags: ["视频封面", "站内生成", "批量封面", "账号资产"],
-      dataUrl: polished
-    });
-    cover.assetId = a.id;
+    if (force && cover.assetId) {
+      await replaceAssetBlob(cover.assetId, polished);
+    } else {
+      const a = await addAssetFromDataUrl(p.accountId, {
+        name: `视频封面_${title.slice(0, 12)}`,
+        tags: ["视频封面", "站内生成", "批量封面", "账号资产"],
+        dataUrl: polished
+      });
+      cover.assetId = a.id;
+    }
     cover.status = "done";
     cover.error = "";
     save("productions");
@@ -631,6 +646,19 @@ async function generateVideoCoverInHouse(p) {
     save("productions");
     return false;
   }
+}
+
+export async function regenerateBatchVideoCover(p, prompt = "", refAssetIds = null) {
+  if (!p || p.mode === "图文" || !p.batchId) throw new Error("当前任务不是批量视频任务");
+  const cover = p.artifacts?.boards?.cover;
+  if (!cover) throw new Error("当前任务还没有封面配置");
+  const nextPrompt = String(prompt || cover.prompt || "").trim();
+  if (!nextPrompt) throw new Error("请先填写封面提示词");
+  cover.prompt = nextPrompt;
+  if (Array.isArray(refAssetIds)) cover.refAssetIds = [...new Set(refAssetIds.filter(Boolean))].slice(0, 8);
+  const ok = await generateVideoCoverInHouse(p, { force: true });
+  if (!ok) throw new Error(cover.error || "封面重新生成失败");
+  return cover;
 }
 
 /* ---------- 会话 ---------- */
@@ -831,7 +859,7 @@ function accountLastActivityAt(acc) {
 }
 
 export function matchAccounts({ group = "all", sort = "" } = {}) {
-  const list = state.accounts.filter(a => group === "all" || !group || groupOf(a) === group);
+  const list = state.accounts.filter(a => !isAccountDisabled(a) && (group === "all" || !group || groupOf(a) === group));
   if (sort === "stale") {
     list.sort((a, b) => accountLastActivityAt(a) - accountLastActivityAt(b) || String(a.name || "").localeCompare(String(b.name || ""), "zh-Hans-CN"));
   }
@@ -1284,6 +1312,7 @@ export async function prepareBatchDigitalHuman(p, acc, deps = {}) {
 
 async function queueBatchDigitalHuman(p, batch, acc, product) {
   const A = p.artifacts.boards;
+  p.artifacts.subStyle = { ...(p.artifacts.subStyle || {}), size: 15 };
   A.characterRefAssetId = A.characterRefAssetId || acc?.charBoardAssetId || null;
   applyBatchCoverRefs(p, batch);
   ensureVideoCoverPrompt(p, product);
@@ -1459,7 +1488,7 @@ async function draftOne(p, batch) {
         p.artifacts.script.source = "llm-custom-infoflow";
         p.artifacts.script.style = style;
         if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
-        const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
+        const explicitVideoRefs = batchSceneRefIds(batch, acc.id);
         p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
         p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
         applyBatchCoverRefs(p, batch);
@@ -1481,7 +1510,7 @@ async function draftOne(p, batch) {
         p.artifacts.script.style = style;
         Object.assign(p.artifacts.audio, estimateAudio(shots), { assetId: null, source: "estimate", lastError: "" });
         if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
-        const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
+        const explicitVideoRefs = batchSceneRefIds(batch, acc.id);
         p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
         p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
         if (p.subType === "数字人") {
@@ -1605,7 +1634,7 @@ async function draftOne(p, batch) {
       p.artifacts.script.source = "llm-infoflow";
       p.artifacts.script.style = style;
       if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
-      const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
+      const explicitVideoRefs = batchSceneRefIds(batch, acc.id);
       p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
       p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
       applyBatchCoverRefs(p, batch);
@@ -1681,7 +1710,7 @@ async function draftOne(p, batch) {
       // 视频号全自动：口播估时 → 按场景合并分镜单元 → 分段提示词 → 派发视频任务
       Object.assign(p.artifacts.audio, estimateAudio(p.artifacts.script.shots), { source: "estimate" });
       if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
-      const explicitVideoRefs = batchVideoRefIds(batch, acc.id);
+      const explicitVideoRefs = batchSceneRefIds(batch, acc.id);
       p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
       p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
       if (p.subType === "数字人") {
@@ -1764,6 +1793,72 @@ function outputUrl(output) {
     }
   }
   return "";
+}
+
+export async function composeBatchFinalVideo(p) {
+  if (!p?.artifacts || p.mode !== "视频") return false;
+  if (p.artifacts.finalVideoUrl) return true;
+  if (p.artifacts.composing) return false;
+  const clips = (p.artifacts.timeline || []).map(clip => {
+    const job = state.jobs.find(item => item.id === clip.jobId);
+    return {
+      url: clip.videoUrl || outputUrl(job?.output),
+      name: clip.name || job?.segName || "",
+      dur: Math.max(.5, Number(clip.dur || job?.duration || 15)),
+      trimIn: Math.max(0, Number(clip.trimIn || 0))
+    };
+  }).filter(clip => clip.url);
+  if (!clips.length || clips.length !== (p.artifacts.timeline || []).length) {
+    p.artifacts.composeError = "片段已生成，但有视频地址尚未就绪，无法合成完整成片";
+    save("productions");
+    return false;
+  }
+  p.artifacts.composing = true;
+  p.artifacts.composingStartedAt = Date.now();
+  p.artifacts.composeError = "";
+  save("productions");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3 * 60 * 1000);
+  try {
+    const response = await fetch("/api/video/compose", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(remote.getToken() ? { Authorization: `Bearer ${remote.getToken()}` } : {})
+      },
+      body: JSON.stringify({
+        title: p.artifacts.copy?.title || p.title || p.topic || "batch-final",
+        clips,
+        preserveClipAudio: true,
+        transitionDuration: 0,
+        subtitleStyle: p.artifacts.subStyle || { size: 15, stroke: 1, bottom: 22 },
+        subtitles: (p.artifacts.subs || []).filter(item => String(item.text || "").trim()).map(item => ({
+          start: Number(item.start || 0),
+          end: Number(item.end || 0),
+          text: String(item.text || "").trim()
+        }))
+      })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok || !data.url) throw new Error(data.detail || data.error || `合成失败 (${response.status})`);
+    p.artifacts.finalVideoUrl = data.url;
+    p.artifacts.finalVideoName = data.name || "";
+    p.artifacts.finalVideoTimelineSig = JSON.stringify(clips.map(clip => [clip.url, clip.dur, clip.trimIn]));
+    p.artifacts.finalVideoCaptionSig = JSON.stringify((p.artifacts.subs || []).map(item => [item.start, item.end, item.text]));
+    p.artifacts.composeError = "";
+    return true;
+  } catch (error) {
+    p.artifacts.composeError = error?.name === "AbortError"
+      ? "批量成片合成超过 3 分钟，请重试"
+      : (error?.message || "批量成片合成失败");
+    return false;
+  } finally {
+    clearTimeout(timer);
+    p.artifacts.composing = false;
+    p.artifacts.composingStartedAt = 0;
+    save("productions");
+  }
 }
 
 function latestDigitalJob(p, segIndex, segmentId = "") {
@@ -1911,6 +2006,64 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
 /* 兼容旧调用名 */
 export const createShotVideoJobs = createUnitVideoJobs;
 
+export async function regenerateBatchVideo(p) {
+  if (!p || p.mode === "图文" || !p.batchId) throw new Error("当前任务不是批量视频任务");
+  const currentJobs = jobsOf(p).filter(job => job.kind === "video" && !job.superseded);
+  if (currentJobs.some(job => ["queued", "submitted", "running"].includes(job.status))) {
+    throw new Error("当前视频仍在生成，请完成后再重新生成");
+  }
+  const batch = batchById(p.batchId);
+  if (!batch) throw new Error("原批次不存在，无法恢复视频任务");
+  const hasPreparedUnits = Boolean(
+    (p.artifacts?.boards?.units || []).some(unit => String(unit?.videoPrompt || "").trim())
+    || (p.artifacts?.boards?.infoFlow?.segments || []).some(segment => String(segment?.videoPrompt || "").trim())
+    || (p.artifacts?.boards?.digitalHuman?.segments || []).some(segment => String(segment?.videoPrompt || segment?.narration || "").trim())
+  );
+  if (!hasPreparedUnits) {
+    // The original failure happened before Seedance and left no executable
+    // units. Re-run the preserved title/copy plan instead of replacing the
+    // useful drafting error with a misleading "no video unit" message.
+    const previousError = String(p.error || "");
+    setStage(p, "script", "running");
+    setStatus(p, "running");
+    await draftOne(p, batch);
+    const recoveredJobs = jobsOf(p).filter(job =>
+      job.kind === "video" && !job.superseded
+      && ["queued", "submitted", "running", "succeeded"].includes(job.status)
+    );
+    if (!recoveredJobs.length) {
+      const detail = String(p.error || previousError || "视频计划重新起草后仍未形成可执行单元");
+      if (!p.error) setStatus(p, "failed", detail);
+      throw new Error(detail);
+    }
+    evaluate(p.batchId);
+    return recoveredJobs.length;
+  }
+  currentJobs.forEach(job => { job.superseded = true; });
+  const segments = p.artifacts?.boards?.digitalHuman?.segments || [];
+  segments.forEach(segment => {
+    segment.videoJobId = null;
+    segment.videoStatus = "pending";
+    segment.videoOutput = null;
+    segment.videoError = "";
+  });
+  p.artifacts.finalVideoUrl = "";
+  p.artifacts.finalVideoName = "";
+  p.artifacts.finalVideoCaptionSig = "";
+  p.artifacts.finalVideoTimelineSig = "";
+  p.artifacts.finalVideoMixSig = "";
+  setStage(p, "workshop", "running");
+  setStatus(p, "running");
+  save("jobs", "productions");
+  const queued = createUnitVideoJobs(p);
+  if (!queued) {
+    const detail = String(p.error || "视频单元已经保留，但本次没有成功派发生成任务");
+    setStatus(p, "failed", detail);
+    throw new Error(detail);
+  }
+  return queued;
+}
+
 function setBatchPhase(batch, phase) {
   if (!batch || batch.phase === phase) return;
   batch.phase = phase;
@@ -2056,7 +2209,19 @@ export function retryFailedIn(batch) {
     else if (jobStage) {
       const failed = jobsOf(p).filter(j => j.status === "failed");
       if (failed.length) failed.forEach(j => retryJob(j.id));
-      else if (p.stage === "workshop") createUnitVideoJobs(p);
+      else if (p.stage === "workshop") {
+        const prepared = (p.artifacts?.boards?.units || []).some(unit => String(unit?.videoPrompt || "").trim())
+          || (p.artifacts?.boards?.infoFlow?.segments || []).some(segment => String(segment?.videoPrompt || "").trim())
+          || (p.artifacts?.boards?.digitalHuman?.segments || []).some(segment => String(segment?.videoPrompt || segment?.narration || "").trim());
+        if (!prepared) {
+          setStage(p, "script", "running");
+          setStatus(p, "running");
+          draftOne(p, batch).then(() => evaluate(batch.id));
+          n++;
+          return;
+        }
+        createUnitVideoJobs(p);
+      }
       setStatus(p, "running"); n++;
     } else { setStatus(p, "pending"); n++; }
   });
@@ -2107,8 +2272,20 @@ export function evaluate(batchId) {
     const active = jobs.some(j => ["queued", "submitted", "running"].includes(j.status));
     if (allOk) {
       const r = autoAssemble(p);
-      setStage(p, "review", "pending");
-      notify("agent", `「${p.title || p.topic}」渲染完成`, `已智能${isVideoWorkshop(p) ? "混剪" : "拼接"} ${r.clips} 段 + ${r.subs} 条字幕${r.bgm ? ` · BGM「${r.bgm}」` : ""}，进入待审核`);
+      if (p.artifacts.finalVideoUrl) {
+        setStage(p, "review", "pending");
+        notify("agent", `「${p.title || p.topic}」渲染完成`, `已合成为 1 个完整视频：${r.clips} 段 + ${r.subs} 条字幕${r.bgm ? ` · BGM「${r.bgm}」` : ""}，进入待审核`);
+      } else if (!p.artifacts.composing) {
+        composeBatchFinalVideo(p).then(ok => {
+          if (ok) {
+            setStage(p, "review", "pending");
+            notify("agent", `「${p.title || p.topic}」成片完成`, `已合成为 1 个完整视频：${r.clips} 段 + ${r.subs} 条字幕，进入待审核`);
+          } else {
+            setStatus(p, "failed", p.artifacts.composeError || "视频片段已生成，但完整成片合成失败");
+          }
+          evaluate(batch.id);
+        });
+      }
     } else if (anyFail && !active) {
       setStatus(p, "failed", jobs.find(j => j.status === "failed")?.error || "部分片段生成失败");
     }
@@ -2130,8 +2307,8 @@ export function evaluate(batchId) {
       const pend = prods.filter(p => (p.mode === "视频" && p.stage === "render" && p.stageStatus !== "running") || (p.stage === "workshop" && p.stageStatus !== "running"));
       const allInhouse = pend.length > 0 && pend.every(p => p.stage === "workshop");
       emitOnce("gen_kick", () => agentSay(allInhouse
-        ? "脚本就绪，自动开始批量生成分镜视频（站内分镜 · 并发 2，其余排队）。"
-        : "分镜全部上传完成，自动开始批量渲染（并发 2，其余排队）。"));
+        ? "脚本就绪，自动开始批量生成分镜视频（统一视频任务队列，超出上游并发容量时自动排队）。"
+        : "分镜全部上传完成，自动开始批量渲染（统一视频任务队列，超出上游并发容量时自动排队）。"));
       startGeneration(batch);
     } else {
       batch.phase = "generating";

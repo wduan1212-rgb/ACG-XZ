@@ -89,24 +89,30 @@ class VoiceTestRequest(BaseModel):
     voiceId: str = Field(default="", max_length=180)
 
 
-def _schedule(
-    project_id: str,
-    plan: dict[str, Any],
-    retry_scene_number: int | None = None,
-    *,
-    recompose_only: bool = False,
-) -> bool:
+class SpeedVersionRequest(BaseModel):
+    outputId: str = Field(min_length=1, max_length=180)
+    speed: float = Field(ge=1.2, le=2.0)
+
+
+def _track_project_task(project_id: str, awaitable: Any) -> bool:
     current = _project_tasks.get(project_id)
     if current is not None and not current.done():
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
         return False
-    run_options = {"retry_scene_number": retry_scene_number}
-    if recompose_only:
-        run_options["recompose_only"] = True
-    task = asyncio.create_task(pipeline.run(project_id, plan, **run_options))
+    task = asyncio.create_task(awaitable)
     _tasks.add(task)
     _project_tasks[project_id] = task
 
     def clear(completed: asyncio.Task[Any]) -> None:
+        # Consume unexpected task exceptions so a detached browser request can
+        # never turn them into an unobserved asyncio warning. Expected provider
+        # and pipeline failures are persisted by their own handlers.
+        if not completed.cancelled():
+            try:
+                completed.exception()
+            except Exception:
+                pass
         _tasks.discard(completed)
         if _project_tasks.get(project_id) is completed:
             _project_tasks.pop(project_id, None)
@@ -115,11 +121,70 @@ def _schedule(
     return True
 
 
+def _schedule(
+    project_id: str,
+    plan: dict[str, Any],
+    retry_scene_number: int | None = None,
+    *,
+    recompose_only: bool = False,
+) -> bool:
+    run_options = {"retry_scene_number": retry_scene_number}
+    if recompose_only:
+        run_options["recompose_only"] = True
+    return _track_project_task(
+        project_id,
+        _run_pipeline_with_auto_policy(project_id, plan, **run_options),
+    )
+
+
+def _latest_actionable_failure(project: dict[str, Any]) -> str:
+    """Recover the last unfinished pipeline error even after a chat reply reset the shell state."""
+    direct = str(project.get("error") or "").strip()
+    if direct:
+        return direct
+    for message in reversed(project.get("messages") or []):
+        if message.get("role") != "assistant":
+            continue
+        kind = str(message.get("kind") or "")
+        if kind == "delivery":
+            break
+        if kind == "error":
+            return str(message.get("content") or "").strip()
+    return ""
+
+
+def _is_continue_request(message: str) -> bool:
+    compact = re.sub(r"[\s，。！？、,.!?]+", "", str(message or "")).lower()
+    if compact in {
+        "继续",
+        "继续制作",
+        "继续生成",
+        "继续合成",
+        "继续执行",
+        "继续完成",
+        "确认继续",
+        "按这个做",
+        "执行吧",
+        "开始吧",
+        "没关系继续",
+        "没关系继续合成",
+        "不用管继续",
+        "不用管继续合成",
+    }:
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?:没关系|不用管|无所谓|这个误差没关系)?(?:请)?继续(?:制作|生成|合成|执行|完成)?",
+            compact,
+        )
+    )
+
+
 def _retry_info(project: dict[str, Any]) -> dict[str, Any] | None:
     scenes = list((project.get("plan") or {}).get("scenes") or [])
     scene_count = len(scenes)
     retryable = project.get("retryable")
-    if isinstance(retryable, dict) and retryable.get("type") in {"safe_rewrite", "resume_missing"}:
+    if isinstance(retryable, dict) and retryable.get("type") in {"safe_rewrite", "resume_missing", "recompose"}:
         scene_number = int(retryable.get("sceneNumber") or 0)
         if 1 <= scene_number <= scene_count:
             result = {"type": retryable["type"], "sceneNumber": scene_number}
@@ -127,7 +192,7 @@ def _retry_info(project: dict[str, Any]) -> dict[str, Any] | None:
             if reason:
                 result["reason"] = reason
             return result
-    error = str(project.get("error") or "")
+    error = _latest_actionable_failure(project)
     match = re.search(r"第\s*(\d+)\s*段", error)
     reason = _policy_failure_reason(error)
     if match and reason:
@@ -142,6 +207,14 @@ def _retry_info(project: dict[str, Any]) -> dict[str, Any] | None:
     ]
     if project_id and narration_exists and missing_scenes:
         return {"type": "resume_missing", "sceneNumber": missing_scenes[0]}
+    if (
+        project_id
+        and narration_exists
+        and scene_count
+        and not missing_scenes
+        and any(marker in error for marker in ("音画时长不一致", "合成前检查失败", "成片质检未通过"))
+    ):
+        return {"type": "recompose", "sceneNumber": 1}
     return None
 
 
@@ -824,7 +897,49 @@ def _selected_voice_id(req: ChatRequest, project: dict[str, Any]) -> str:
     return ""
 
 
-def _apply_asset_plan(plan: dict[str, Any], assets: list[dict[str, Any]]) -> str:
+def _explicit_asset_role_overrides(
+    instruction: str,
+    assets: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Honor explicit attachment roles even when the director drifts.
+
+    This is deliberately narrow: only numbered references and an explicit
+    "other images are editing material" instruction are normalized here.
+    Creative placement remains owned by the director.
+    """
+    text = re.sub(r"\s+", "", str(instruction or ""))
+    overrides: dict[str, str] = {}
+    if not text:
+        return overrides
+    for asset in assets:
+        label = re.sub(r"\s+", "", str(asset.get("label") or ""))
+        if not label:
+            continue
+        clauses = [
+            clause
+            for clause in re.split(r"[，,。；;！!？?\n]+", text)
+            if label in clause
+        ]
+        if any(re.search(r"参考|作为.*(?:生成|视频).*参考", clause) for clause in clauses):
+            overrides[label] = "reference"
+        if any(re.search(r"剪辑素材|作为.*素材|放到.*合适", clause) for clause in clauses):
+            overrides[label] = "material"
+    if re.search(r"(?:其他|其余|剩下|余下)(?:的)?(?:图片|图).*?(?:剪辑素材|作为素材|放到合适)", text):
+        explicit_references = {label for label, role in overrides.items() if role == "reference"}
+        for asset in assets:
+            if str(asset.get("media_type") or "") != "image":
+                continue
+            label = re.sub(r"\s+", "", str(asset.get("label") or ""))
+            if label and label not in explicit_references:
+                overrides[label] = "material"
+    return overrides
+
+
+def _apply_asset_plan(
+    plan: dict[str, Any],
+    assets: list[dict[str, Any]],
+    instruction: str = "",
+) -> str:
     assignments = list(plan.get("asset_assignments") or [])
     by_id = {str(item.get("asset_id") or ""): item for item in assignments if isinstance(item, dict)}
     by_label = {str(item.get("label") or ""): item for item in assignments if isinstance(item, dict)}
@@ -844,6 +959,7 @@ def _apply_asset_plan(plan: dict[str, Any], assets: list[dict[str, Any]]) -> str
         "sfx": "局部音效",
         "unused": "暂不使用",
     }
+    explicit_roles = _explicit_asset_role_overrides(instruction, assets)
 
     def safe_number(value: Any, default: float) -> float:
         try:
@@ -856,8 +972,13 @@ def _apply_asset_plan(plan: dict[str, Any], assets: list[dict[str, Any]]) -> str
     for index, asset in enumerate(assets):
         assignment = by_id.get(str(asset.get("asset_id") or "")) or by_label.get(str(asset.get("label") or "")) or {}
         media_type = str(asset.get("media_type") or "")
-        default_role = "reference" if media_type == "image" else "material" if media_type == "video" else "narration"
-        role = str(assignment.get("role") or default_role)
+        # Missing director output must not silently turn every uploaded image
+        # into a generation reference. Explicit user instructions are applied
+        # below, while otherwise the director owns whether an image is useful
+        # and which logical scene should receive it.
+        default_role = "unused" if media_type == "image" else "material" if media_type == "video" else "narration"
+        label = re.sub(r"\s+", "", str(asset.get("label") or ""))
+        role = explicit_roles.get(label) or str(assignment.get("role") or default_role)
         allowed_roles = {
             "image": {"reference", "material", "both", "unused"},
             "video": {"material", "unused"},
@@ -897,7 +1018,17 @@ def _apply_asset_plan(plan: dict[str, Any], assets: list[dict[str, Any]]) -> str
         normalized.append(merged)
         summary_parts.append(f"{asset.get('label')}：{role_labels[role]}")
         if role in {"reference", "both"} and str(asset.get("mime") or "").startswith("image/"):
-            reference_images.append({key: asset[key] for key in ("asset_id", "label", "name", "mime", "url") if key in asset})
+            # Keep the director-selected logical scene on the reference.  The
+            # pipeline will attach it only to render units derived from that
+            # scene instead of forcing the same image onto every shot.
+            reference_images.append({
+                key: merged[key]
+                for key in (
+                    "asset_id", "label", "name", "mime", "url",
+                    "scene_number", "narration_anchor", "reason",
+                )
+                if key in merged
+            })
         if role in {"material", "both"} and media_type in {"image", "video"}:
             material_assets.append(merged)
         if role == "narration" and media_type == "audio" and not narration_assets:
@@ -915,6 +1046,106 @@ def _apply_asset_plan(plan: dict[str, Any], assets: list[dict[str, Any]]) -> str
     if bgm_assets:
         plan.setdefault("audio_design", {})["bgm_enabled"] = True
     return "；".join(summary_parts)
+
+
+_AUTO_POLICY_REWRITE_LIMIT = 2
+
+
+async def _run_pipeline_with_auto_policy(
+    project_id: str,
+    plan: dict[str, Any],
+    retry_scene_number: int | None = None,
+    *,
+    recompose_only: bool = False,
+) -> None:
+    """Run media production and recover bounded policy-review failures.
+
+    Provider/network failures stay visible and manually retryable. Only an
+    identified copyright/safety rejection is rewritten automatically, and
+    only the rejected scene is regenerated.
+    """
+    await pipeline.run(
+        project_id,
+        plan,
+        retry_scene_number=retry_scene_number,
+        recompose_only=recompose_only,
+    )
+    if recompose_only:
+        return
+    for _ in range(_AUTO_POLICY_REWRITE_LIMIT):
+        project = await asyncio.to_thread(load_project, project_id)
+        if not project or project.get("status") != "failed":
+            return
+        retryable = _retry_info(project)
+        if not retryable or retryable.get("type") != "safe_rewrite":
+            return
+        history = list(project.get("autoPolicyRewrites") or [])
+        if len(history) >= _AUTO_POLICY_REWRITE_LIMIT:
+            return
+        current_plan = project.get("plan")
+        if not isinstance(current_plan, dict) or not current_plan.get("scenes"):
+            return
+        scene_number = int(retryable.get("sceneNumber") or 0)
+        if not 1 <= scene_number <= len(current_plan["scenes"]):
+            return
+        reason = str(retryable.get("reason") or "safety")
+        is_copyright = reason == "copyright"
+        await asyncio.to_thread(
+            add_event,
+            project_id,
+            f"自动改写镜头 {scene_number}",
+            "镜头未通过审核，导演正在保留叙事作用并改写后继续制作。",
+            "running",
+            max(18, min(58, int(project.get("progress") or 18))),
+            "recovery",
+        )
+        try:
+            rewrite = await director.rewrite_scene_for_safety(
+                current_plan,
+                scene_number,
+                reason,
+            )
+        except ProviderError as exc:
+            await asyncio.to_thread(
+                add_event,
+                project_id,
+                "自动改写未完成",
+                str(exc),
+                "error",
+                None,
+                "error",
+            )
+            return
+        original_prompt = str(current_plan["scenes"][scene_number - 1].get("visual_prompt") or "")
+        current_plan["scenes"][scene_number - 1]["visual_prompt"] = rewrite["visual_prompt"]
+        history.append(
+            {
+                "attempt": len(history) + 1,
+                "sceneNumber": scene_number,
+                "reason": reason,
+                "originalPrompt": original_prompt,
+                "rewrittenPrompt": rewrite["visual_prompt"],
+                "changeSummary": rewrite["change_summary"],
+            }
+        )
+
+        def save_rewrite(item: dict[str, Any]) -> None:
+            item["plan"] = current_plan
+            item["autoPolicyRewrites"] = history
+            item["status"] = "running"
+            item["phase"] = "production"
+            item["error"] = ""
+            item["retryable"] = None
+
+        await asyncio.to_thread(mutate_project, project_id, save_rewrite)
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            f"镜头 {scene_number} 未通过审核，已自动完成{'原创' if is_copyright else '安全'}改写并继续制作，无需手动确认。",
+            kind="retry",
+        )
+        await pipeline.run(project_id, current_plan, retry_scene_number=scene_number)
 
 
 def _missing_asset_labels(message: str, assets: list[dict[str, Any]]) -> list[str]:
@@ -1114,6 +1345,18 @@ async def project_list(
     }
 
 
+@app.post("/api/projects")
+async def project_create():
+    """Create a durable empty conversation before its first message.
+
+    The client uses this endpoint when the user presses “new conversation” so
+    the history entry is immediately real, not a temporary row that only
+    appears after the first director request finishes.
+    """
+    project = await asyncio.to_thread(create_project)
+    return _project_response(project)
+
+
 @app.get("/api/projects/{project_id}")
 async def project_detail(project_id: str):
     project = await asyncio.to_thread(load_project, project_id)
@@ -1146,6 +1389,19 @@ async def project_rename(project_id: str, req: RenameProjectRequest):
     return {"ok": True, "id": project_id, "name": project["name"]}
 
 
+@app.post("/api/projects/{project_id}/speed-version")
+async def project_speed_version(project_id: str, req: SpeedVersionRequest):
+    if _project_has_active_work(project_id):
+        raise HTTPException(409, "当前项目仍在制作，请等待完成后再调整速度")
+    try:
+        output = await pipeline.create_speed_version(project_id, req.outputId, req.speed)
+    except KeyError:
+        raise HTTPException(404, "项目不存在")
+    except (MediaError, RuntimeError, ValueError) as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "output": output}
+
+
 @app.post("/api/projects/{project_id}/retry")
 async def project_retry(project_id: str):
     project = await asyncio.to_thread(load_project, project_id)
@@ -1164,14 +1420,14 @@ async def project_retry(project_id: str):
     if _project_has_active_work(project_id):
         raise HTTPException(409, "当前项目正在处理")
     retryable = _retry_info(project)
-    if project.get("status") != "failed" or not retryable:
+    if not retryable:
         raise HTTPException(409, "当前失败不支持安全改写重试")
     plan = project.get("plan")
     if not isinstance(plan, dict) or not plan.get("scenes"):
         raise HTTPException(409, "导演计划不完整，无法恢复")
 
     scene_number = int(retryable["sceneNumber"])
-    previous_error = str(project.get("error") or "")
+    previous_error = _latest_actionable_failure(project)
     previous_progress = int(project.get("progress") or 0)
     is_copyright_rewrite = retryable.get("reason") == "copyright"
 
@@ -1203,6 +1459,36 @@ async def project_retry(project_id: str):
                 kind="retry",
             )
             if not _schedule(project_id, plan, retry_scene_number=scene_number):
+                raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
+            return _project_response(await asyncio.to_thread(load_project, project_id))
+
+    if retryable.get("type") == "recompose":
+        with _launching_project(project_id):
+            def mark_recomposing(item: dict[str, Any]) -> None:
+                item["status"] = "running"
+                item["phase"] = "recovery"
+                item["progress"] = max(72, min(94, previous_progress))
+                item["error"] = ""
+                item["retryable"] = None
+
+            await asyncio.to_thread(mutate_project, project_id, mark_recomposing)
+            await asyncio.to_thread(
+                add_event,
+                project_id,
+                "正在继续合成成片",
+                "保留现有口播和全部镜头，只重新执行字幕、合成与成片检查。",
+                "running",
+                max(72, min(94, previous_progress)),
+                "recovery",
+            )
+            await asyncio.to_thread(
+                add_message,
+                project_id,
+                "assistant",
+                "已继续实际制作任务：现有口播和镜头全部保留，正在重新合成并检查成片。",
+                kind="retry",
+            )
+            if not _schedule(project_id, plan, recompose_only=True):
                 raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
             return _project_response(await asyncio.to_thread(load_project, project_id))
 
@@ -1565,6 +1851,164 @@ async def _handle_local_revision(
     return await asyncio.to_thread(load_project, project_id)
 
 
+async def _run_director_production(
+    project_id: str,
+    *,
+    aspect_ratio: str,
+    director_assets: list[dict[str, Any]],
+    saved_attachments: list[dict[str, Any]],
+    revision_message: str,
+    original_message: str,
+    selected_voice_id: str,
+) -> None:
+    """Finish director planning and production independently of the browser request."""
+    try:
+        project = await asyncio.to_thread(load_project, project_id)
+        if project is None:
+            return
+        director_messages = _director_messages_without_voice_id_directives(
+            project["messages"]
+        )
+        if revision_message != original_message:
+            for message in reversed(director_messages):
+                if message.get("role") == "user":
+                    message["content"] = revision_message
+                    break
+        decision = await director.decide(
+            director_messages,
+            aspect_ratio,
+            director_assets,
+            skill_context=director_context(),
+            bgm_catalog=bgm_library.catalog(),
+        )
+        if decision["action"] == "ask":
+            question = str(decision.get("question") or "").strip()
+            await asyncio.to_thread(
+                add_message,
+                project_id,
+                "assistant",
+                question,
+                kind="question",
+                suggestions=decision.get("suggestions") or [],
+            )
+            await asyncio.to_thread(
+                add_event,
+                project_id,
+                "等待补充关键信息",
+                "导演只保留了一个会显著影响成片的问题。",
+                "waiting",
+                6,
+                "brief",
+            )
+
+            def mark_waiting(item: dict[str, Any]) -> None:
+                item["status"] = "conversation"
+                item["phase"] = "brief"
+                item["progress"] = 6
+                item["error"] = ""
+
+            await asyncio.to_thread(mutate_project, project_id, mark_waiting)
+            return
+
+        plan = decision["plan"]
+        plan["skill"] = SKILL_NAME
+        plan["voice_id"] = selected_voice_id
+        asset_summary = _apply_asset_plan(plan, saved_attachments, original_message)
+        narration_asset = plan.get("narration_audio") or {}
+        transcript_text = str((narration_asset.get("transcript") or {}).get("text") or "").strip()
+        if transcript_text:
+            plan["narration"] = transcript_text
+            plan["input_mode"] = "audio"
+        if asset_summary:
+            await asyncio.to_thread(
+                add_event,
+                project_id,
+                "附件用途已确认",
+                asset_summary,
+                "running",
+                8,
+                "brief",
+            )
+
+        def mark_running(item: dict[str, Any]) -> None:
+            item["status"] = "running"
+            item["phase"] = "production"
+            item["progress"] = 10
+            item["plan"] = plan
+            item["error"] = ""
+
+        await asyncio.to_thread(mutate_project, project_id, mark_running)
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            f"信息够了。我会用“{plan['title']}”这个方向制作：{plan.get('director_note') or '镜头结构和节奏将按口播内容展开。'}",
+            kind="plan",
+        )
+        # Stay in the same detached server task for the whole lifecycle. A tab
+        # switch or iframe unmount can no longer interrupt planning or prevent
+        # the already accepted plan from entering the media pipeline.
+        await _run_pipeline_with_auto_policy(project_id, plan)
+    except asyncio.CancelledError:
+        raise
+    except ProviderError as exc:
+        detail = str(exc)
+        await asyncio.to_thread(
+            add_event,
+            project_id,
+            "导演连接失败",
+            detail,
+            "error",
+            None,
+            "brief",
+        )
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            f"导演请求没有完成：{detail}。你可以直接重试，已上传附件和本轮消息均已保留。",
+            kind="error",
+        )
+
+        def mark_retryable(item: dict[str, Any]) -> None:
+            item["status"] = "conversation"
+            item["phase"] = "brief"
+            item["progress"] = 4
+            item["error"] = ""
+
+        await asyncio.to_thread(mutate_project, project_id, mark_retryable)
+    except Exception as exc:
+        detail = f"{exc.__class__.__name__}: {str(exc).strip() or '未知异常'}"
+        await asyncio.to_thread(
+            add_event,
+            project_id,
+            "导演任务异常",
+            detail,
+            "error",
+            None,
+            "brief",
+        )
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            "导演任务没有完成，已保留本轮消息和附件。你可以直接重试。",
+            kind="error",
+        )
+
+        def mark_unexpected_retryable(item: dict[str, Any]) -> None:
+            item["status"] = "conversation"
+            item["phase"] = "brief"
+            item["progress"] = 4
+            item["error"] = ""
+
+        await asyncio.to_thread(
+            mutate_project,
+            project_id,
+            mark_unexpected_retryable,
+        )
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     if len(req.attachments) > _MAX_ATTACHMENTS_PER_MESSAGE:
@@ -1617,6 +2061,14 @@ async def chat(req: ChatRequest):
 
     await asyncio.to_thread(mutate_project, project["id"], name_from_first_message)
     project = await asyncio.to_thread(load_project, project["id"])
+    retryable = _retry_info(project)
+    if (
+        _is_continue_request(req.message)
+        and retryable
+        and project.get("status") != "running"
+        and not _project_has_active_work(project["id"])
+    ):
+        return await project_retry(project["id"])
     revision_message = _revision_message_for_continuation(project, req.message)
     revision_result = await _handle_local_revision(
         project,
@@ -1625,18 +2077,9 @@ async def chat(req: ChatRequest):
     )
     if revision_result is not None:
         return revision_result
-    compact_message = re.sub(r"\s+", "", req.message).lower()
-    if compact_message in {
-        "继续",
-        "继续制作",
-        "继续生成",
-        "确认继续",
-        "按这个做",
-        "执行吧",
-        "开始吧",
-    }:
+    if _is_continue_request(req.message):
         retryable = _retry_info(project)
-        if project.get("status") == "failed" and retryable:
+        if retryable:
             return await project_retry(project["id"])
     try:
         await _transcribe_candidate(project["id"], req.message, saved_attachments)
@@ -1698,96 +2141,33 @@ async def chat(req: ChatRequest):
             "brief",
         )
         return await asyncio.to_thread(load_project, project["id"])
-    try:
-        director_messages = _director_messages_without_voice_id_directives(
-            project["messages"]
-        )
-        if revision_message != req.message:
-            for message in reversed(director_messages):
-                if message.get("role") == "user":
-                    message["content"] = revision_message
-                    break
-        decision = await director.decide(
-            director_messages,
-            aspect_ratio,
-            director_assets,
-            skill_context=director_context(),
-            bgm_catalog=bgm_library.catalog(),
-        )
-    except ProviderError as exc:
-        await asyncio.to_thread(
-            add_event,
-            project["id"],
-            "导演连接失败",
-            str(exc),
-            "error",
-            None,
-            "brief",
-        )
-        raise HTTPException(502, str(exc))
-
-    if decision["action"] == "ask":
-        question = str(decision.get("question") or "").strip()
-        await asyncio.to_thread(
-            add_message,
-            project["id"],
-            "assistant",
-            question,
-            kind="question",
-            suggestions=decision.get("suggestions") or [],
-        )
-        await asyncio.to_thread(
-            add_event,
-            project["id"],
-            "等待补充关键信息",
-            "导演只保留了一个会显著影响成片的问题。",
-            "waiting",
-            6,
-            "brief",
-        )
-        return await asyncio.to_thread(load_project, project["id"])
-
-    plan = decision["plan"]
-    plan["skill"] = SKILL_NAME
-    plan["voice_id"] = selected_voice_id
-    asset_summary = _apply_asset_plan(plan, saved_attachments)
-    narration_asset = plan.get("narration_audio") or {}
-    transcript_text = str((narration_asset.get("transcript") or {}).get("text") or "").strip()
-    if transcript_text:
-        plan["narration"] = transcript_text
-        plan["input_mode"] = "audio"
-    if asset_summary:
-        await asyncio.to_thread(
-            add_event,
-            project["id"],
-            "附件用途已确认",
-            asset_summary,
-            "running",
-            8,
-            "brief",
-        )
-
     if _project_has_active_work(project["id"]):
         raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
     with _launching_project(project["id"]):
-        def mark_running(item: dict[str, Any]) -> None:
+        def mark_directing(item: dict[str, Any]) -> None:
             item["status"] = "running"
-            item["phase"] = "production"
-            item["progress"] = 10
-            item["plan"] = plan
+            item["phase"] = "brief"
+            item["progress"] = 4
             item["error"] = ""
 
-        await asyncio.to_thread(mutate_project, project["id"], mark_running)
-        await asyncio.to_thread(
-            add_message,
+        await asyncio.to_thread(mutate_project, project["id"], mark_directing)
+        if not _track_project_task(
             project["id"],
-            "assistant",
-            f"信息够了。我会用“{plan['title']}”这个方向制作：{plan.get('director_note') or '镜头结构和节奏将按口播内容展开。'}",
-            kind="plan",
-        )
-        if not _schedule(project["id"], plan):
+            _run_director_production(
+                project["id"],
+                aspect_ratio=aspect_ratio,
+                director_assets=director_assets,
+                saved_attachments=saved_attachments,
+                revision_message=revision_message,
+                original_message=req.message,
+                selected_voice_id=selected_voice_id,
+            ),
+        ):
             raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
-        return await asyncio.to_thread(load_project, project["id"])
+    # The request is acknowledged as soon as its durable server task exists.
+    # Director planning, media generation and composition continue even if the
+    # user switches tabs, closes the iframe or navigates to another project.
+    return await asyncio.to_thread(load_project, project["id"])
 
 
 @app.post("/api/test/director")

@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, timeAgo, wireDropZone, fileToDataUrl } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, activeAccount, activeProduction, productionById, canManageAccounts } from "../core/store.js";
-import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, accountCreatedToday } from "../domain/accounts.js";
+import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, accountCreatedToday, isAccountDisabled } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260721-v105-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v115-3";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260721-v105-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260721-v105-1";
-import { renderCutPage } from "./chainCut.js?v=20260721-v105-1";
-import { renderReviewPage } from "./chainCopy.js?v=20260721-v105-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260723-v115-3";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260723-v115-3";
+import { renderCutPage } from "./chainCut.js?v=20260723-v115-3";
+import { renderReviewPage } from "./chainCopy.js?v=20260723-v115-3";
 
 export const studioView = {
   render(root, { page }) {
@@ -102,6 +102,7 @@ function renderHome(root, acc) {
   const avatarUrl = acc.avatarAssetId ? urlFor(acc.avatarAssetId) : "";
   const charRefUrl = board ? urlFor(board) : "";
   const showRoleRef = acc.mode === "视频" && acc.subType === "数字人";
+  const disabledAccount = isAccountDisabled(acc);
   const styleText = String(acc.styleProfile || acc.lockedStyle || "")
     .replace(/^整体风格\s*[:：]\s*/g, "")
     .replace(/^账号风格\s*[:：]\s*/g, "")
@@ -131,7 +132,9 @@ function renderHome(root, acc) {
             : `<button class="btn ghost sh-homepage-link is-disabled" type="button" disabled title="管理员尚未填写主页链接">${icon("external", 13)} 跳转主页</button>`}
           ${showRoleRef ? `<button class="btn ghost sm sh-ref-trigger ${charRefUrl ? "has-ref" : "is-empty"}" type="button" data-sh-ref="role" title="${charRefUrl ? "查看账号固定角色版" : "打开角色版"}">${charRefUrl ? `<img src="${charRefUrl}" alt="角色版"/>` : icon("user", 13)}<span>角色版</span></button>` : ""}
           ${admin ? `<button class="icon-btn account-edit-trigger" data-sh="edit" title="编辑账号" aria-label="编辑账号">${icon("edit", 16)}</button><button class="icon-btn danger" data-sh="delete" title="删除账号" aria-label="删除账号">${icon("trash", 16)}</button>` : ""}
-          <button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>
+          ${disabledAccount
+            ? `<button class="btn ghost is-disabled" type="button" disabled title="账号已停用，历史数据仍可查看">账号已停用</button>`
+            : `<button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>`}
         </div>
       </header>
 

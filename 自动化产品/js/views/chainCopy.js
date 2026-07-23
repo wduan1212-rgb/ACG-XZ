@@ -2,13 +2,14 @@
 
 import { $, $$, esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { canDeliver } from "../core/store.js";
+import { canDeliver, save } from "../core/store.js";
+import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
 import { toast, openLightbox, publishModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260721-v105-1";
-import { reviewPreviewHtml } from "./prodDrawer.js?v=20260721-v105-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260723-v115-3";
+import { reviewPreviewHtml } from "./prodDrawer.js?v=20260723-v115-3";
 
 export function renderCopyPage(root, p) {
   const isImg = p.mode === "图文";
@@ -59,7 +60,7 @@ export function renderReviewPage(root, p) {
     wireStepper(root);
     const run = async () => {
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260721-v105-1");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260723-v115-3");
         await ensureVideoCover(p);
         if (root.isConnected) renderReviewPage(root, p);
       } catch (err) {
@@ -78,6 +79,9 @@ export function renderReviewPage(root, p) {
   const items = (isImg ? p.artifacts.images.items : p.artifacts.boards.items) || [];
   const visuals = items.filter(x => x.assetId);
   const deliveredState = p.stage === "delivered";
+  const speedVersions = Array.isArray(p.artifacts?.finalVideoVersions)
+    ? p.artifacts.finalVideoVersions.filter(item => item?.url)
+    : [];
   const coverAssetId = p.artifacts?.boards?.cover?.assetId || "";
   const coverUrl = coverAssetId ? urlFor(coverAssetId) : "";
   const publishBar = deliveredState
@@ -91,6 +95,8 @@ export function renderReviewPage(root, p) {
         <section class="card video-review-panel video-review-final">
           <div class="card-head"><b>合成成片</b><em>最终预览</em></div>
           <div class="video-review-media">${reviewPreviewHtml(p) || `<div class="muted">成片尚未就绪</div>`}</div>
+          ${p.artifacts?.finalVideoUrl ? `<div class="video-speed-tools"><select class="input sm" id="rvVideoSpeed" aria-label="调整成片速度"><option value="1.2">1.2x</option><option value="1.3">1.3x</option><option value="1.5">1.5x</option><option value="1.8">1.8x</option><option value="2">2.0x</option></select><button class="btn ghost sm" id="rvVideoSpeedRun">另存变速版</button></div>` : ""}
+          ${speedVersions.length ? `<div class="video-speed-versions"><span>成片版本</span>${speedVersions.map(item => `<button type="button" class="link-btn" data-rv-speed-version="${esc(item.url)}">${Number(item.speed || 1).toFixed(1)}x</button>`).join("")}</div>` : ""}
         </section>
         <section class="card video-review-panel video-review-cover">
           <div class="card-head"><b>封面图</b><button class="link-btn" data-chain="workshop">去编辑 ${icon("arrowRight", 12)}</button></div>
@@ -109,6 +115,45 @@ export function renderReviewPage(root, p) {
     wireStepper(root);
     $("[data-rv-cover]", root)?.addEventListener("click", () => openLightbox($("[data-rv-cover] img", root), coverUrl, "视频封面"));
     $$('[data-chain]', root).forEach(button => button.addEventListener("click", () => go("studio", button.dataset.chain)));
+    $$('[data-rv-speed-version]', root).forEach(button => button.addEventListener("click", () => {
+      p.artifacts.finalVideoUrl = button.dataset.rvSpeedVersion || p.artifacts.finalVideoUrl;
+      save("productions");
+      renderReviewPage(root, p);
+    }));
+    $("#rvVideoSpeedRun", root)?.addEventListener("click", async event => {
+      const button = event.currentTarget;
+      const speed = Number($("#rvVideoSpeed", root)?.value || 1.2);
+      const sourceUrl = String(p.artifacts.finalVideoBaseUrl || p.artifacts.finalVideoUrl || "");
+      if (!sourceUrl) return;
+      button.disabled = true;
+      button.textContent = "处理中…";
+      try {
+        const response = await fetch("/api/video/speed-version", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(remote.getToken() ? { Authorization: `Bearer ${remote.getToken()}` } : {}),
+          },
+          body: JSON.stringify({ sourceUrl, speed, title: p.artifacts.copy?.title || p.title || "speed-version" }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) throw new Error(data.detail || "生成变速版本失败");
+        p.artifacts.finalVideoBaseUrl = sourceUrl;
+        p.artifacts.finalVideoUrl = data.url;
+        p.artifacts.finalVideoName = data.name || "";
+        p.artifacts.finalVideoVersions = [
+          { url: data.url, name: data.name || "", speed: data.speed, createdAt: Date.now() },
+          ...speedVersions.filter(item => item.url !== data.url),
+        ].slice(0, 12);
+        save("productions");
+        toast(`已生成新的 ${speed.toFixed(1)} 倍速成片`);
+        renderReviewPage(root, p);
+      } catch (error) {
+        toast(error.message || "生成变速版本失败", "error");
+        button.disabled = false;
+        button.textContent = "另存变速版";
+      }
+    });
     const publish = $("#rvDeliver", root);
     if (publish) publish.addEventListener("click", async () => {
       const result = await publishModal({ title: `定稿并发布「${p.artifacts.copy.title || p.title}」` });

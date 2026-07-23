@@ -19,6 +19,11 @@ export function accountDisplaySequenceMap(accounts = state.accounts) {
 
 export const groupOf = a => a.mode === "图文" ? "图文组" : (a.subType === "数字人" ? "真人" : "素材");
 export const modeLabel = a => a.mode === "视频" ? (a.subType || "视频") : "图文";
+export const isAccountDisabled = account => account?.status === "disabled" || Number(account?.disabledAt || 0) > 0;
+export function isNewAccount(account, now = Date.now()) {
+  const createdAt = typeof account?.createdAt === "string" ? Date.parse(account.createdAt) : Number(account?.createdAt || 0);
+  return Number.isFinite(createdAt) && createdAt > 0 && now >= createdAt && now - createdAt < 24 * 60 * 60 * 1000;
+}
 export function accountCreatedToday(accountId, now = Date.now()) {
   const today = new Date(now);
   const sameLocalDay = value => {

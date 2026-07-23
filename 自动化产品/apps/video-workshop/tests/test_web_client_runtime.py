@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = ROOT / "web" / "assets" / "app.js"
 INDEX_HTML = ROOT / "web" / "index.html"
+STYLES_CSS = ROOT / "web" / "assets" / "styles.css"
 
 
 def run_node(script: str) -> dict:
@@ -357,8 +358,41 @@ console.log(JSON.stringify({{
         self.assertIn('textarea.addEventListener("paste", async (event) => {', source)
         self.assertIn('dom.fileInput.addEventListener("change", async () => {', source)
         self.assertGreaterEqual(source.count("showAttachmentError(error)"), 4)
-        self.assertIn("app.js?v=20260720-18", index)
-        self.assertIn("styles.css?v=20260720-18", index)
+        self.assertIn("app.js?v=20260722-25", index)
+        self.assertIn("styles.css?v=20260722-25", index)
+
+    def test_new_conversation_is_created_and_inserted_into_history_immediately(self):
+        source = APP_JS.read_text(encoding="utf-8")
+
+        self.assertIn('const response = await fetch("/api/projects", {', source)
+        self.assertIn('method: "POST"', source)
+        self.assertIn("upsertHistoryProject(project);", source)
+        self.assertIn(
+            'dom.historyNewButton.addEventListener("click", createNewConversation);',
+            source,
+        )
+        self.assertIn("historyLoadEpoch", source)
+
+    def test_production_heartbeat_uses_one_owner_and_rolls_only_the_stage_copy(self):
+        source = APP_JS.read_text(encoding="utf-8")
+        styles = STYLES_CSS.read_text(encoding="utf-8")
+        render_events = source.split("function renderEvents(project)", 1)[1].split(
+            "function selectOutput", 1
+        )[0]
+        heartbeat = source.split("const productionHeartbeatStages", 1)[1].split(
+            "function renderProject", 1
+        )[0]
+
+        self.assertIn('className = "production-live-title"', source)
+        self.assertIn('className = "production-live-stage-window"', source)
+        self.assertIn('className = "production-live-elapsed"', source)
+        self.assertNotIn("liveText.textContent", render_events)
+        self.assertIn("rotateProductionHeartbeatStage", heartbeat)
+        self.assertNotIn('querySelector(".production-live-title")', heartbeat)
+        self.assertIn("Math.floor((elapsed - 1) / 6)", heartbeat)
+        self.assertIn("window.setInterval(tick, 1000)", heartbeat)
+        self.assertIn(".production-live-stage.is-leaving", styles)
+        self.assertIn("font-variant-numeric: tabular-nums", styles)
 
     def test_progress_poll_does_not_reload_unchanged_delivery_media(self):
         source = APP_JS.read_text(encoding="utf-8")

@@ -110,6 +110,7 @@ export function planSize(target: Size): SizePlan {
   let upscale = 1;
   let crop = false;
   let tile = false;
+  let alignmentOnly = false;
 
   if (oversized) {
     // Master fits within the generation ceiling; upscale back up afterwards.
@@ -148,13 +149,15 @@ export function planSize(target: Size): SizePlan {
       text: `比例 ${ratioLabel(W, H)} 超过 3:1，先生成 ${MAX_RATIO}:1 母版再裁切。`,
     });
   } else if (!aligned) {
-    // Just needs alignment: round up to an aligned master, then crop.
+    // The model requires an 8px grid.  This is a tiny centered output
+    // adaptation, not a creative crop or a change of the user's composition.
     masterLong = ceilUnit(longest);
     masterShort = ceilUnit(shortest);
     crop = true;
+    alignmentOnly = true;
     warnings.push({
       level: "warn",
-      text: `宽高需为 8 的倍数，已对齐到合规母版后裁切。`,
+      text: `模型按 8 像素网格生成，将从合规母版居中精确适配；保持主体构图并按目标尺寸输出。`,
     });
   } else {
     // Direct generation.
@@ -171,7 +174,7 @@ export function planSize(target: Size): SizePlan {
   } else {
     steps.push(`生成母版 ${formatSize(master)}`);
     if (upscale > 1) steps.push(tile ? `分块 ${upscale}x 超分` : `${upscale}x 超分`);
-    if (crop) steps.push(`裁切为 ${W}×${H}`);
+    if (crop) steps.push(alignmentOnly ? `精确适配为 ${W}×${H}` : `裁切为 ${W}×${H}`);
   }
 
   let level: RiskLevel = "ok";

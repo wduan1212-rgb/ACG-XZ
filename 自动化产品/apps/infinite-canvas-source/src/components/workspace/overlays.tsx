@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
-import { Lock, Unlock, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { ChevronLeft, ChevronRight, Lock, Unlock, X } from "lucide-react";
 import { bestAssetUrlFor } from "@/lib/assetCache";
 import { ENHANCE_MODES } from "@/lib/constants";
 import { selectItems, useStore } from "@/lib/store";
@@ -284,29 +284,63 @@ function parseCustomSize(
 export function Lightbox({
   item,
   onClose,
+  onActiveChange,
 }: {
   item: CanvasItem;
   onClose: () => void;
+  onActiveChange?: (item: ImageItem) => void;
 }) {
   const items = useStore(selectItems(item.projectId));
+  const imageItems = useMemo(
+    () =>
+      items.filter(
+        (candidate): candidate is ImageItem =>
+          isImageItem(candidate) && !candidate.hidden && !!candidate.assetUrl,
+      ),
+    [items],
+  );
+  const [activeId, setActiveId] = useState(item.id);
+  const [switchDirection, setSwitchDirection] = useState<"next" | "previous" | null>(null);
   const [compare, setCompare] = useState(58);
   const compareRef = useRef<HTMLDivElement>(null);
+
+  const navigate = useCallback((offset: number) => {
+    if (imageItems.length < 2) return;
+    const index = Math.max(0, imageItems.findIndex((candidate) => candidate.id === activeId));
+    const nextItem = imageItems[(index + offset + imageItems.length) % imageItems.length];
+    setSwitchDirection(offset > 0 ? "next" : "previous");
+    setActiveId(nextItem.id);
+    onActiveChange?.(nextItem);
+    setCompare(58);
+  }, [activeId, imageItems, onActiveChange]);
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        navigate(e.key === "ArrowRight" ? 1 : -1);
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [navigate, onClose]);
 
-  if (!isImageItem(item)) return null;
+  const activeItem = imageItems.find((candidate) => candidate.id === activeId) || item;
+  if (!isImageItem(activeItem)) return null;
   const beforeItem =
-    item.type === "enhanced"
-      ? items.find((it) => it.id === item.parentItemId)
+    activeItem.type === "enhanced"
+      ? items.find((it) => it.id === activeItem.parentItemId)
       : undefined;
   const beforeUrl =
     beforeItem && isImageItem(beforeItem) ? bestAssetUrlFor(beforeItem) : undefined;
   const metrics =
-    item.type === "enhanced" ? item.provenance.enhanceMetrics : undefined;
+    activeItem.type === "enhanced" ? activeItem.provenance.enhanceMetrics : undefined;
   const delta = metrics?.sharpnessDeltaPct ?? 0;
+  const switchClass = switchDirection
+    ? `lightbox-switch-${switchDirection}`
+    : "animate-fade";
 
   function moveDivider(e: PointerEvent<HTMLDivElement>) {
     const rect = compareRef.current?.getBoundingClientRect();
@@ -327,9 +361,34 @@ export function Lightbox({
       >
         <X size={18} />
       </button>
+      {imageItems.length > 1 && (
+        <>
+          <button
+            className="absolute left-5 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white backdrop-blur transition hover:scale-105 hover:bg-white/20"
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(-1);
+            }}
+            aria-label="上一张图片"
+          >
+            <ChevronLeft size={22} />
+          </button>
+          <button
+            className="absolute right-5 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white backdrop-blur transition hover:scale-105 hover:bg-white/20"
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(1);
+            }}
+            aria-label="下一张图片"
+          >
+            <ChevronRight size={22} />
+          </button>
+        </>
+      )}
       <div className="flex max-h-full max-w-full flex-col items-center gap-3">
         {beforeUrl ? (
           <div
+            key={activeItem.id}
             ref={compareRef}
             onClick={(e) => e.stopPropagation()}
             onPointerDown={(e) => {
@@ -339,7 +398,8 @@ export function Lightbox({
             onPointerMove={(e) => {
               if (e.buttons === 1) moveDivider(e);
             }}
-            className="relative max-h-[80vh] max-w-full cursor-ew-resize overflow-hidden rounded-[var(--radius-md)] shadow-2xl"
+            className={`relative max-h-[80vh] max-w-full ${switchClass} cursor-ew-resize overflow-hidden rounded-[var(--radius-md)] shadow-2xl`}
+            onAnimationEnd={() => setSwitchDirection(null)}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -354,8 +414,8 @@ export function Lightbox({
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={item.assetUrl}
-                alt={item.label}
+                src={bestAssetUrlFor(activeItem)}
+                alt={activeItem.label}
                 draggable={false}
                 className="h-full w-full select-none object-cover"
               />
@@ -392,17 +452,25 @@ export function Lightbox({
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={item.assetUrl}
-            alt={item.label}
+            key={activeItem.id}
+            src={bestAssetUrlFor(activeItem)}
+            alt={activeItem.label}
             onClick={(e) => e.stopPropagation()}
-            className="max-h-[80vh] max-w-full rounded-[var(--radius-md)] object-contain shadow-2xl"
+            className={`max-h-[80vh] max-w-full ${switchClass} rounded-[var(--radius-md)] object-contain shadow-2xl`}
+            onAnimationEnd={() => setSwitchDirection(null)}
           />
         )}
         <div className="flex items-center gap-3 text-[13px] text-white/80">
-          <span className="font-medium text-white">{item.label}</span>
+          <span className="font-medium text-white">{activeItem.label}</span>
           <span className="font-mono text-white/60">
-            {item.naturalWidth}×{item.naturalHeight}
+            {activeItem.naturalWidth}×{activeItem.naturalHeight}
           </span>
+          {imageItems.length > 1 && (
+            <span className="text-white/50">
+              {imageItems.findIndex((candidate) => candidate.id === activeItem.id) + 1}/{imageItems.length}
+              ・左右键切换
+            </span>
+          )}
         </div>
       </div>
     </div>

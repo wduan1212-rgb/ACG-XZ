@@ -1,14 +1,14 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260721-v105-1";
+import { AI } from "../api/ai.js?v=20260723-v115-3";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260721-v105-1";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260723-v115-3";
 import { icon } from "../ui/icons.js";
 import { openLightbox, openModal, toast, withLoading } from "../ui/components.js";
-import { accountCreatedToday, groupOf } from "../domain/accounts.js";
+import { accountCreatedToday, groupOf, isAccountDisabled } from "../domain/accounts.js";
 
 let activeCustomPublishModal = null;
 
@@ -51,7 +51,7 @@ function outputItems(output = {}) {
 
 function eligibleAccounts(kind) {
   const expectedMode = kind === "canvas" ? "图文" : "视频";
-  return state.accounts.filter(account => account.mode === expectedMode && (kind !== "video" || groupOf(account) === "素材"));
+  return state.accounts.filter(account => !isAccountDisabled(account) && account.mode === expectedMode && (kind !== "video" || groupOf(account) === "素材"));
 }
 
 function accountOptions(accounts, selectedId = "") {

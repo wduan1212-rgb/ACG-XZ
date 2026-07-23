@@ -136,7 +136,13 @@ class ChatAttachmentScopeTests(unittest.IsolatedAsyncioTestCase):
                 "narration": "只使用本轮图片制作。",
                 "aspect_ratio": "9:16",
                 "scenes": [{"duration_sec": 5, "visual_prompt": "本轮图片场景"}],
-                "asset_assignments": [],
+                "asset_assignments": [{
+                    "asset_id": "current-image",
+                    "label": "图1",
+                    "role": "reference",
+                    "scene_number": 1,
+                    "reason": "本轮指定图片只用于对应场景",
+                }],
             },
         }
         transcription = AsyncMock(return_value="")
@@ -156,15 +162,18 @@ class ChatAttachmentScopeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main.director, "decide", director),
             patch.object(main, "director_context", return_value=""),
             patch.object(main.bgm_library, "catalog", return_value=[]),
-            patch.object(main, "_schedule"),
+            patch.object(main.pipeline, "run", AsyncMock()),
         ):
-            result = await main.chat(
+            accepted = await main.chat(
                 main.ChatRequest(
                     projectId="turn-project",
                     message="使用图1制作新版本",
                     attachments=[image_attachment("current.png")],
                 )
             )
+            self.assertEqual("running", accepted["status"])
+            await main._project_tasks["turn-project"]
+            result = project
 
         self.assertEqual(
             [item["asset_id"] for item in project["assets"]],

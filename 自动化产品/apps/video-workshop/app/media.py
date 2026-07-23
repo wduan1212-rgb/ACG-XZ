@@ -19,10 +19,27 @@ ASPECTS: dict[str, tuple[int, int]] = {
     "3:4": (720, 960),
     "21:9": (1260, 540),
 }
+AV_SYNC_BASE_TOLERANCE_SECONDS = 3.0
+AV_SYNC_MAX_TOLERANCE_SECONDS = 5.0
+AV_SYNC_RELATIVE_TOLERANCE = 0.03
 
 
 class MediaError(RuntimeError):
     pass
+
+
+def _assert_av_sync(video_duration: float, audio_duration: float, label: str) -> None:
+    """Allow bounded encoding drift while still rejecting a visibly broken timeline."""
+    longest = max(video_duration, audio_duration, 0.0)
+    tolerance = min(
+        AV_SYNC_MAX_TOLERANCE_SECONDS,
+        max(AV_SYNC_BASE_TOLERANCE_SECONDS, longest * AV_SYNC_RELATIVE_TOLERANCE),
+    )
+    if audio_duration <= 0 or abs(video_duration - audio_duration) > tolerance:
+        raise MediaError(
+            f"{label}音画时长不一致：视频 {video_duration:.3f} 秒，音频 {audio_duration:.3f} 秒"
+            f"（允许误差 {tolerance:.3f} 秒）"
+        )
 
 
 def _finite_number(value: Any, default: float) -> float:
@@ -259,10 +276,11 @@ def build_scene_timeline(
     total = max(0.5, _finite_number(total_duration, 0.5))
     source_weights = [max(0.1, _finite_number(value, 1.0)) for value in planned_durations]
     part_counts = [1] * len(source_weights)
-    # A modest retime is visually smoother than splitting a nearly-valid
-    # logical shot into two repeated clips.  Seedance submissions themselves
-    # remain capped at 15 seconds by the provider boundary.
-    maximum_window = 18.0
+    # Keep the director's semantic scene plan intact, but never stretch one
+    # generated source past Seedance's native 15-second window.  Longer real
+    # narration windows become independent visual beats downstream instead of
+    # replaying or slowing a single generated clip.
+    maximum_window = 15.0
 
     # Split only the technical render windows.  The logical director scenes and
     # their relative rhythm stay untouched, while every Seedance-sized window
@@ -384,6 +402,72 @@ async def _normalize_clip(
     )
 
 
+async def retime_video(
+    source: Path,
+    output: Path,
+    speed: float,
+) -> dict[str, Any]:
+    """Create a new final-video version by retiming existing picture and audio."""
+    rate = max(1.0, min(2.0, _finite_number(speed, 1.0)))
+    source = source.resolve()
+    output = output.resolve()
+    if not source.is_file():
+        raise MediaError("找不到需要变速的成片")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    source_info = await probe(source)
+    source_video_duration = float(
+        source_info.get("videoDuration") or source_info.get("duration") or 0
+    )
+    source_audio_duration = float(source_info.get("audioDuration") or 0)
+    if source_video_duration <= 0 or source_audio_duration <= 0:
+        raise MediaError("原成片缺少可用的视频轨或音频轨")
+    target_duration = source_audio_duration / rate
+    # 口播是最终时间轴。视频轨按自己的实测时长做极小比例校正，
+    # 避免 AAC / MP4 尾帧舍入累计成可见的音画差，也不靠静止尾帧补齐。
+    video_rate = source_video_duration / target_duration
+    await run(
+        [
+            _binary("ffmpeg"),
+            "-y",
+            "-i",
+            str(source),
+            "-filter_complex",
+            (
+                f"[0:v]setpts=PTS/{video_rate:.8f},fps=30,"
+                f"trim=duration={target_duration:.6f}[v];"
+                f"[0:a]atempo={rate:.6f},apad,"
+                f"atrim=duration={target_duration:.6f}[a]"
+            ),
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-ar",
+            "48000",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+    )
+    result = await probe(output)
+    video_duration = float(result.get("videoDuration") or result.get("duration") or 0)
+    audio_duration = float(result.get("audioDuration") or 0)
+    _assert_av_sync(video_duration, audio_duration, "变速成片")
+    return result
+
+
 def _material_timeline(
     assets: list[dict[str, Any]],
     narration_text: str,
@@ -417,12 +501,18 @@ def _material_timeline(
         requested_duration = max(0.5, _finite_number(asset.get("duration_sec"), 3.6))
         duration = min(requested_duration, max(0.25, scene_window - padding * 2))
         anchor = str(asset.get("narration_anchor") or "").strip()
-        anchor_index = narration_text.find(anchor) if anchor else -1
-        if anchor_index >= 0:
-            start = total_duration * anchor_index / text_length - 0.35
+        scene_excerpt = str(asset.get("scene_narration_excerpt") or "").strip()
+        local_anchor_index = scene_excerpt.find(anchor) if anchor and scene_excerpt else -1
+        if local_anchor_index >= 0:
+            local_ratio = local_anchor_index / max(1, len(scene_excerpt))
+            start = scene_start + scene_window * local_ratio - 0.25
         else:
-            same_scene_count = sum(1 for item in timeline if item["sceneNumber"] == scene_number)
-            start = scene_start + padding + same_scene_count * (duration + 0.3)
+            anchor_index = narration_text.find(anchor) if anchor else -1
+            if anchor_index >= 0:
+                start = total_duration * anchor_index / text_length - 0.35
+            else:
+                same_scene_count = sum(1 for item in timeline if item["sceneNumber"] == scene_number)
+                start = scene_start + padding + same_scene_count * (duration + 0.3)
         start = max(scene_start + padding, min(scene_end - padding - duration, start))
         same_scene = [item for item in timeline if item["sceneNumber"] == scene_number]
         if same_scene and start < same_scene[-1]["end"] + 0.3:
@@ -958,10 +1048,7 @@ async def compose_variant(
     final_probe = await probe(final_path)
     video_duration = float(final_probe.get("videoDuration") or final_probe.get("duration") or 0)
     audio_duration = float(final_probe.get("audioDuration") or 0)
-    if audio_duration <= 0 or abs(video_duration - audio_duration) > 0.15:
-        raise MediaError(
-            f"成片音画时长不一致：视频 {video_duration:.3f} 秒，音频 {audio_duration:.3f} 秒"
-        )
+    _assert_av_sync(video_duration, audio_duration, "成片")
     return {
         "path": final_path,
         "aspectRatio": aspect_ratio,

@@ -179,7 +179,13 @@ class VideoWorkshopRestartRecoveryTest(unittest.IsolatedAsyncioTestCase):
         gate = asyncio.Event()
         starts = 0
 
-        async def fake_run(project_id, plan, retry_scene_number=None):
+        async def fake_run(
+            project_id,
+            plan,
+            retry_scene_number=None,
+            *,
+            recompose_only=False,
+        ):
             nonlocal starts
             starts += 1
             await gate.wait()
