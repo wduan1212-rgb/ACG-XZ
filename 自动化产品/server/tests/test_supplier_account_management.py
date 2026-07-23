@@ -104,6 +104,11 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertIn('scheduleSupplierActivityCarousel(root, visibleActivity, activityPages)', source)
         self.assertIn('xingzhen:supplier-data-assistant:', source)
         self.assertIn('loadSupplierAssistantHistory()', source)
+        self.assertIn('id="supplierTodayLinks"', source)
+        self.assertIn('supplierTodayLinksAnswer(rows)', source)
+        self.assertIn('data-copy-supplier-link=', source)
+        self.assertIn('copyText(button.dataset.copySupplierLink', source)
+        self.assertIn('accountDisplaySequenceMap(state.accounts)', source)
         motion = (APP_DIR / "styles/ui-motion.css").read_text(encoding="utf-8")
         self.assertIn('grid-template-columns: 64px minmax(0, 1fr)', motion)
         self.assertNotIn('Supplier-only bottom dock', motion)
@@ -118,6 +123,8 @@ class SupplierAccountManagementTests(unittest.TestCase):
             supplier_css,
         )
         self.assertIn("height: auto; display: grid; grid-template-rows", supplier_css)
+        self.assertIn(".supplier-today-links", supplier_css)
+        self.assertIn(".supplier-data-copy", supplier_css)
 
     def test_disabled_accounts_are_not_selectable_for_single_creation(self):
         source = (APP_DIR / "js/main.js").read_text(encoding="utf-8")

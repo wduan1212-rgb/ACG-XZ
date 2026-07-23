@@ -6,7 +6,7 @@ import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
 import { toast, confirmModal, promptModal, openModal } from "../ui/components.js";
 import { uid } from "../core/util.js";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260723-v117-3";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260723-v117-5";
 
 const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor", "supplier_parent"];
@@ -32,9 +32,15 @@ export const settingsView = {
     let requestsLoaded = false;
     let apiUsageRows = [];
     let apiUsageLoaded = false;
+    let apiUsageLoading = false;
     let productLibraryOpen = false;
     const canReviewRequests = () => remote.isOn() && state.role === "admin";
     const canSeeApiUsage = () => remote.isOn() && state.role === "admin";
+    const apiUsageSummaryHtml = () => !apiUsageLoaded
+      ? `<div class="muted api-usage-empty">正在读取用量...</div>`
+      : apiUsageRows.length
+        ? `<div class="api-usage-summary-grid">${apiUsageRows.map(row => `<article class="api-usage-summary-card"><span class="api-usage-member"><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "")}</em></span><span class="api-usage-total"><b>${Number(row.totalTokens || 0).toLocaleString("zh-CN")}</b><em>Token 合计</em></span><span class="api-usage-meta">${Number(row.calls || 0).toLocaleString("zh-CN")} 次 · 输入 ${Number(row.promptTokens || 0).toLocaleString("zh-CN")} · 输出 ${Number(row.completionTokens || 0).toLocaleString("zh-CN")}</span><button class="icon-btn sm api-member-detail" data-usage-member="${esc(row.memberId || "")}" title="查看 ${esc(row.memberName || "成员")} 的接口明细">${icon("eye", 13)}</button></article>`).join("")}</div>`
+        : `<div class="muted api-usage-empty">暂未收到上游可统计的 token 用量；历史调用若未被服务端记录，无法可靠追溯或估算。</div>`;
     const draw = () => {
       const visibleMembers = state.members.filter(member => member.role !== "supplier_child");
       root.innerHTML = `
@@ -66,25 +72,21 @@ export const settingsView = {
             </div>
           </section>
 
-          ${canSeeApiUsage() ? `<section class="card set-data api-usage-panel">
-            <div class="card-head"><span><b>创作者接口用量</b><em>仅统计服务端上游真实返回的 LLM token；点账号可查看其 API 明细</em></span>
-              <span class="api-usage-actions"><button class="btn ghost sm" id="apiUsageDetails">${icon("list", 13)} 查看 API 明细</button><button class="btn ghost sm" id="apiUsageRefresh">${icon("pulse", 13)} 刷新</button></span></div>
-            <div class="api-usage-table">
-              <div class="api-usage-row api-usage-label"><span>创作者</span><span>调用</span><span>输入</span><span>输出</span><span>合计</span><span>明细</span></div>
-              ${!apiUsageLoaded ? `<div class="muted" style="padding:12px 2px">正在读取用量...</div>` : apiUsageRows.map(row => `<div class="api-usage-row"><span><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "")}</em></span><span>${Number(row.calls || 0).toLocaleString("zh-CN")}</span><span>${Number(row.promptTokens || 0).toLocaleString("zh-CN")}</span><span>${Number(row.completionTokens || 0).toLocaleString("zh-CN")}</span><strong>${Number(row.totalTokens || 0).toLocaleString("zh-CN")}</strong><button class="btn ghost sm api-member-detail" data-usage-member="${esc(row.memberId || "")}" title="查看 ${esc(row.memberName || "成员")} 的接口明细">${icon("eye", 13)} 查看</button></div>`).join("") || `<div class="muted" style="padding:12px 2px">暂未收到上游可统计的 token 用量；新调用会在成功后自动记录。</div>`}
-            </div>
+          ${canSeeApiUsage() ? `<section class="card set-data api-usage-panel" id="apiUsagePanel">
+            <div class="card-head"><span><b>创作者接口用量</b><em>仅统计服务端上游真实返回的 LLM token；历史未记录的调用不会被猜测补写</em></span>
+              <span class="api-usage-actions"><button class="btn ghost sm" id="apiUsageDetails">${icon("list", 13)} 查看 API 明细</button><button class="btn ghost sm" id="apiUsageRefresh" ${apiUsageLoading ? "disabled" : ""}>${icon("pulse", 13)} ${apiUsageLoading ? "刷新中…" : "刷新"}</button></span></div>
+            <div class="api-usage-table">${apiUsageSummaryHtml()}</div>
           </section>` : ""}
 
           <section class="card set-data product-library ${productLibraryOpen ? "is-open" : ""}">
             <div class="card-head"><span><b>产品库</b><em>${state.products.length} 个产品事实与视觉边界；默认收起，避免占用设置看板</em></span>
               <span class="product-library-actions"><button class="btn ghost sm" id="prodLibraryToggle">${icon(productLibraryOpen ? "chevronUp" : "chevronDown", 13)} ${productLibraryOpen ? "收起" : "展开"}</button><button class="btn primary sm" id="prodAdd">${icon("plus", 13)} 添加产品</button></span></div>
-            ${productLibraryOpen ? `<div class="prod-list">
+            ${productLibraryOpen ? `<div class="prod-list product-library-grid">
               ${state.products.map(p => `
-                <div class="key-row product-row">
+                <article class="product-row product-library-card">
                   <span class="ovt-main"><b>${esc(p.name)}</b><em>${esc(p.category || "未分类")} · ${esc((p.brief || "").slice(0, 80))}${(p.brief || "").length > 80 ? "…" : ""}</em></span>
-                  <button class="icon-btn sm" data-pedit="${p.id}" title="编辑">${icon("edit", 13)}</button>
-                  <button class="icon-btn sm danger" data-pdel="${p.id}" title="删除" ${state.products.length <= 1 ? "disabled" : ""}>${icon("trash", 13)}</button>
-                </div>`).join("")}
+                  <span class="product-library-card-actions"><button class="icon-btn sm" data-pedit="${p.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-pdel="${p.id}" title="删除" ${state.products.length <= 1 ? "disabled" : ""}>${icon("trash", 13)}</button></span>
+                </article>`).join("")}
             </div>` : ""}
           </section>
 
@@ -105,8 +107,25 @@ export const settingsView = {
       }
     }
 
-    async function loadApiUsage() {
+    function refreshApiUsagePanel() {
+      const panel = $("#apiUsagePanel", root);
+      if (!panel) return;
+      const table = $(".api-usage-table", panel);
+      if (table) table.innerHTML = apiUsageSummaryHtml();
+      const refresh = $("#apiUsageRefresh", panel);
+      if (refresh) {
+        refresh.disabled = apiUsageLoading;
+        refresh.innerHTML = `${icon("pulse", 13)} ${apiUsageLoading ? "刷新中…" : "刷新"}`;
+      }
+      wireApiUsageMemberButtons(panel);
+    }
+
+    async function loadApiUsage({ inPlace = false } = {}) {
       if (!canSeeApiUsage()) return;
+      if (inPlace) {
+        apiUsageLoading = true;
+        refreshApiUsagePanel();
+      }
       try {
         const result = await remote.admin.llmUsage();
         apiUsageRows = Array.isArray(result?.rows) ? result.rows : [];
@@ -114,7 +133,9 @@ export const settingsView = {
         toast("读取接口用量失败：" + (e.message || e));
       } finally {
         apiUsageLoaded = true;
-        draw();
+        apiUsageLoading = false;
+        if (inPlace) refreshApiUsagePanel();
+        else draw();
       }
     }
 
@@ -150,6 +171,7 @@ export const settingsView = {
         });
       }});
     };
+    const wireApiUsageMemberButtons = scope => $$('[data-usage-member]', scope).forEach(button => button.addEventListener("click", () => openApiUsageDetails(button.dataset.usageMember || "")));
 
     function wire() {
       const productDialog = (item) => {
@@ -213,13 +235,9 @@ export const settingsView = {
         toast("产品已删除");
       }));
       $("#reqRefresh", root)?.addEventListener("click", () => loadRequests());
-      $("#apiUsageRefresh", root)?.addEventListener("click", () => {
-        apiUsageLoaded = false;
-        draw();
-        loadApiUsage();
-      });
+      $("#apiUsageRefresh", root)?.addEventListener("click", () => loadApiUsage({ inPlace: true }));
       $("#apiUsageDetails", root)?.addEventListener("click", openApiUsageDetails);
-      $$('[data-usage-member]', root).forEach(button => button.addEventListener("click", () => openApiUsageDetails(button.dataset.usageMember || "")));
+      wireApiUsageMemberButtons(root);
       $$("[data-rapprove]", root).forEach(b => b.addEventListener("click", async () => {
         const req = memberRequests.find(x => x.id === b.dataset.rapprove);
         const ok = await confirmModal({ title: `通过「${req?.name || "成员"}」的账号申请？`, body: `将创建登录账号 @${req?.username || ""}。`, okText: "通过申请" });

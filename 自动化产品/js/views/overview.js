@@ -8,13 +8,13 @@ import { STAGES, statusPill } from "../domain/productions.js";
 import { deliveredAssets, deliveryViewsSummary } from "../domain/delivery.js";
 import { analyticsRows, analyticsSummary } from "../domain/analytics.js";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260723-v117-3";
-import { LLM_CONFIG } from "../api/llm.js?v=20260723-v117-3";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v117-3";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260723-v117-3";
+import { AI } from "../api/ai.js?v=20260723-v117-5";
+import { LLM_CONFIG } from "../api/llm.js?v=20260723-v117-5";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v117-5";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260723-v117-5";
 import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260723-v117-3";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260723-v117-5";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}

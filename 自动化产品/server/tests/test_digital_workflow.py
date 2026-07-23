@@ -734,6 +734,11 @@ console.log(result);
         self.assertIn("data-ref-remove", drawer)
         self.assertIn('hasOwnProperty.call(item, "refAssetIds")', orchestrator)
         self.assertIn('member.role !== "supplier_child"', settings)
+        self.assertIn('id="apiUsagePanel"', settings)
+        self.assertIn('loadApiUsage({ inPlace: true })', settings)
+        self.assertIn('refreshApiUsagePanel()', settings)
+        self.assertIn('api-usage-summary-grid', settings)
+        self.assertIn('product-library-grid', settings)
         self.assertIn("<th>账号</th><th>发布标题</th>", analytics)
 
     def test_v84_assets_delivery_and_stable_first_render(self):
@@ -851,8 +856,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260723-v117-3"', main)
-        self.assertIn('js/main.js?v=20260723-v117-3', index)
+        self.assertIn('const APP_BUILD_ID = "20260723-v117-5"', main)
+        self.assertIn('js/main.js?v=20260723-v117-5', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)

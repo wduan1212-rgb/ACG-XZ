@@ -1,4 +1,4 @@
-import { $, $$, esc, timeAgo } from "../core/util.js";
+import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save } from "../core/store.js";
 import { emptyState, openModal, confirmModal, toast } from "../ui/components.js";
@@ -93,7 +93,7 @@ function supplierLinkHtml(value = "") {
     let url = match[0];
     const trailing = url.match(/[，。！？；：,!?;:)”》」]+$/)?.[0] || "";
     if (trailing) url = url.slice(0, -trailing.length);
-    html += `<a class="supplier-data-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>${esc(trailing)}`;
+    html += `<span class="supplier-data-link-wrap"><a class="supplier-data-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a><button class="supplier-data-copy" type="button" data-copy-supplier-link="${esc(url)}" title="复制链接">${icon("copy", 12)}<span>复制</span></button></span>${esc(trailing)}`;
     cursor = start + match[0].length;
   }
   return html + esc(source.slice(cursor)).replace(/\n/g, "<br/>");
@@ -146,6 +146,19 @@ function supplierOverviewRows() {
   }));
 }
 
+function supplierTodayLinksAnswer(rows) {
+  const today = supplierDateKey(Date.now());
+  const accountNumbers = accountDisplaySequenceMap(state.accounts);
+  const todayRows = rows.filter(item => item.asset.publishedUrl && supplierDateKey(item.timestamp) === today);
+  return todayRows.length
+    ? `今日已回传链接 ${todayRows.length} 条：\n${todayRows.map((item, index) => {
+      const accountNumber = accountNumbers.get(item.account.id);
+      const marker = accountNumber ? `#${String(accountNumber).padStart(2, "0")}` : `#${String(index + 1).padStart(2, "0")}`;
+      return `${marker} ${item.account.name || item.asset.title || "未命名账号"}：${item.asset.publishedUrl}`;
+    }).join("\n")}`
+    : "今天还没有供应商账号回传链接。";
+}
+
 function smoothTrendPath(points = []) {
   if (!points.length) return "";
   if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
@@ -161,10 +174,12 @@ function supplierDataAnswer(question, rows) {
   const published = rows.filter(item => item.asset.publishedUrl);
   const today = supplierDateKey(Date.now());
   const todayRows = published.filter(item => supplierDateKey(item.timestamp) === today);
+  if (/今日回传链接/.test(q)) return supplierTodayLinksAnswer(rows);
   if (/链接/.test(q)) {
-    const candidates = (/今天/.test(q) ? todayRows : published).slice(0, 12);
+    const todayOnly = /今天|今日/.test(q);
+    const candidates = (todayOnly ? todayRows : published).slice(0, 12);
     return candidates.length
-      ? `${/今天/.test(q) ? "今天" : "当前"}已回传链接 ${candidates.length} 条：\n${candidates.map((item, index) => `${index + 1}. ${item.account.name || item.asset.title || "未命名账号"}：${item.asset.publishedUrl}`).join("\n")}`
+      ? `${todayOnly ? "今天" : "当前"}已回传链接 ${candidates.length} 条：\n${candidates.map((item, index) => `${index + 1}. ${item.account.name || item.asset.title || "未命名账号"}：${item.asset.publishedUrl}`).join("\n")}`
       : "当前筛选范围内还没有已回传链接。";
   }
   if (/播放|观看/.test(q)) {
@@ -252,7 +267,7 @@ export async function renderSupplierOverview(root) {
             ${activity.length ? `<div class="supplier-activity-carousel" id="supplierActivityCarousel">${supplierActivityItemsHtml(carouselActivity)}</div><div class="supplier-activity-pagination"><button class="icon-btn sm" type="button" data-supplier-activity-page="prev" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button><span id="supplierActivityPage">${visibleActivity.length ? `${supplierActivityCarouselPage + 1} / ${activityPages}` : "0 / 0"}</span><button class="icon-btn sm" type="button" data-supplier-activity-page="next" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronRight", 13)}</button></div>` : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
           </section>
         </div>
-        <aside class="card supplier-data-assistant"><header><span>${icon("bot", 18)}</span><div><b>星阵数据助手</b><em>供应商数据只读问答</em></div></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button>今天交付多少？</button><button>给我回传链接</button><button>哪个账号发布最多？</button></div><form id="supplierDataForm"><input id="supplierDataInput" placeholder="问问供应商数据…"/><button class="icon-btn primary" title="发送">${icon("send", 14)}</button></form></aside>
+        <aside class="card supplier-data-assistant"><header><span>${icon("bot", 18)}</span><div><b>星阵数据助手</b><em>供应商数据只读问答</em></div><button class="btn ghost sm supplier-today-links" id="supplierTodayLinks" type="button">${icon("link", 13)} 今日回传链接</button></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button>今天交付多少？</button><button>给我回传链接</button><button>哪个账号发布最多？</button></div><form id="supplierDataForm"><input id="supplierDataInput" placeholder="问问供应商数据…"/><button class="icon-btn primary" title="发送">${icon("send", 14)}</button></form></aside>
       </div>
     </div>`;
     const openSupplierRows = (title, selectedRows) => {
@@ -296,11 +311,17 @@ export async function renderSupplierOverview(root) {
       assistantHistory.splice(0, assistantHistory.length, ...nextHistory);
       saveSupplierAssistantHistory(assistantHistory);
       messages.innerHTML = supplierAssistantMessagesHtml(assistantHistory);
+      wireSupplierLinkCopies(messages);
       messages.scrollTop = messages.scrollHeight;
       const input = $("#supplierDataInput", root); if (input) input.value = "";
     };
+    const wireSupplierLinkCopies = scope => $$('[data-copy-supplier-link]', scope).forEach(button => button.addEventListener("click", () => {
+      copyText(button.dataset.copySupplierLink || "", "已复制回传链接");
+    }));
+    wireSupplierLinkCopies(root);
     $("#supplierDataForm", root)?.addEventListener("submit", event => { event.preventDefault(); sendSupplierQuestion($("#supplierDataInput", root)?.value); });
     $$(".supplier-data-suggestions button", root).forEach(button => button.addEventListener("click", () => sendSupplierQuestion(button.textContent)));
+    $("#supplierTodayLinks", root)?.addEventListener("click", () => sendSupplierQuestion("今日回传链接"));
     $("#supplierActivityType", root)?.addEventListener("change", event => {
       supplierActivityType = event.currentTarget.value;
       supplierActivityCarouselPage = 0;

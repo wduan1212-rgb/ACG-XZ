@@ -52,6 +52,17 @@ function clipboardImageFiles(data: DataTransfer | null): File[] {
 
 const WELCOME = "欢迎使用星阵无限画布，开始设计！";
 
+function aspectRatioLabel(width: number, height: number): string {
+  const ratio = Math.max(1, width) / Math.max(1, height);
+  const common = [
+    [1, 1], [3, 4], [4, 3], [9, 16], [16, 9], [16, 10], [32, 9],
+  ] as const;
+  const matched = common.find(([w, h]) => Math.abs(ratio - w / h) / (w / h) < 0.015);
+  if (matched) return `${matched[0]}:${matched[1]}`;
+  const longSideRatio = ratio >= 1 ? ratio : 1 / ratio;
+  return ratio >= 1 ? `约 ${longSideRatio.toFixed(2)}:1` : `约 1:${longSideRatio.toFixed(2)}`;
+}
+
 /** Rotating example prompts, typed & deleted like a live cursor. */
 const PH_PHRASES = [
   "做一张小红书封面：秋日咖啡上新，暖棕色调，标题「秋天第一杯」",
@@ -195,9 +206,13 @@ export function HomeView() {
 
   const sizeLabel = (() => {
     for (const g of SIZE_GROUPS)
-      for (const s of g.sizes) if (`${s.w}x${s.h}` === size) return `${s.label} ${s.w}×${s.h}`;
-    return size.replace("x", "×");
+      for (const s of g.sizes) if (`${s.w}x${s.h}` === size) return `${s.label} ${s.w}×${s.h} · ${aspectRatioLabel(s.w, s.h)}`;
+    const parsed = parseSize(size);
+    return parsed
+      ? `${parsed.width}×${parsed.height} · ${aspectRatioLabel(parsed.width, parsed.height)}`
+      : size.replace("x", "×");
   })();
+  const primaryReference = refs[0];
 
   return (
     <div
@@ -310,6 +325,31 @@ export function HomeView() {
                       {sizeOpen && (
                         <div className="surface-popover absolute bottom-10 left-0 z-40 w-[340px] p-3 animate-pop">
                           <div className="max-h-64 space-y-3 overflow-y-auto pr-1">
+                            <div>
+                              <div className="mb-1.5 text-[11px] font-medium text-ink-3">参考图</div>
+                              <button
+                                type="button"
+                                disabled={!primaryReference}
+                                onClick={() => {
+                                  if (!primaryReference) return;
+                                  setSize(`${primaryReference.width}x${primaryReference.height}`);
+                                  setSizeOpen(false);
+                                }}
+                                title={primaryReference
+                                  ? `采用第 1 张参考图的原始尺寸：${primaryReference.width}×${primaryReference.height}`
+                                  : "请先添加参考图"}
+                                className="flex w-full items-center justify-between rounded-[var(--radius-sm)] border border-line px-2.5 py-2 text-left text-[11px] transition-colors enabled:hover:bg-fill disabled:cursor-not-allowed disabled:opacity-45"
+                              >
+                                <span className="inline-flex items-center gap-1.5 font-medium text-ink-2">
+                                  <ImagePlus size={13} /> 按参考图尺寸
+                                </span>
+                                <span className="font-mono text-[10px] text-ink-3">
+                                  {primaryReference
+                                    ? `${primaryReference.width}×${primaryReference.height} · ${aspectRatioLabel(primaryReference.width, primaryReference.height)}`
+                                    : "先添加参考图"}
+                                </span>
+                              </button>
+                            </div>
                             {SIZE_GROUPS.map((g) => (
                               <div key={g.group}>
                                 <div className="mb-1.5 text-[11px] font-medium text-ink-3">{g.group}</div>
@@ -333,7 +373,7 @@ export function HomeView() {
                                       >
                                         {s.label}{" "}
                                         <span className="font-mono text-[10px] opacity-70">
-                                          {s.w}×{s.h}
+                                          {s.w}×{s.h} · {aspectRatioLabel(s.w, s.h)}
                                         </span>
                                       </button>
                                     );
@@ -342,7 +382,7 @@ export function HomeView() {
                               </div>
                             ))}
                             <div>
-                              <div className="mb-1.5 text-[11px] font-medium text-ink-3">自定义</div>
+                              <div className="mb-1.5 text-[11px] font-medium text-ink-3">自定义尺寸（单位：像素 px）</div>
                               <CustomSizeInput
                                 baseSize={size}
                                 onCommit={(v) => {
@@ -645,15 +685,18 @@ function CustomSizeInput({
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-center gap-1.5">
-      <input
-        value={width}
-        onChange={(e) => changeWidth(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && valid && onCommit(value)}
-        aria-label="自定义宽度"
-        placeholder="宽"
-        inputMode="numeric"
-        className="h-8 min-w-0 rounded-[var(--radius-sm)] border border-line bg-white px-2 font-mono text-[12px] text-ink outline-none focus:border-accent"
-      />
+      <label className="flex h-8 min-w-0 items-center rounded-[var(--radius-sm)] border border-line bg-white focus-within:border-accent">
+        <input
+          value={width}
+          onChange={(e) => changeWidth(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && valid && onCommit(value)}
+          aria-label="自定义宽度（像素）"
+          placeholder="宽"
+          inputMode="numeric"
+          className="min-w-0 flex-1 bg-transparent px-2 font-mono text-[12px] text-ink outline-none"
+        />
+        <span className="pr-1.5 font-mono text-[10px] text-ink-3">px</span>
+      </label>
       <button
         type="button"
         onClick={() => setLocked((current) => !current)}
@@ -666,15 +709,18 @@ function CustomSizeInput({
       >
         {locked ? <Lock size={12} /> : <Unlock size={12} />}
       </button>
-      <input
-        value={height}
-        onChange={(e) => changeHeight(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && valid && onCommit(value)}
-        aria-label="自定义高度"
-        placeholder="高"
-        inputMode="numeric"
-        className="h-8 min-w-0 rounded-[var(--radius-sm)] border border-line bg-white px-2 font-mono text-[12px] text-ink outline-none focus:border-accent"
-      />
+      <label className="flex h-8 min-w-0 items-center rounded-[var(--radius-sm)] border border-line bg-white focus-within:border-accent">
+        <input
+          value={height}
+          onChange={(e) => changeHeight(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && valid && onCommit(value)}
+          aria-label="自定义高度（像素）"
+          placeholder="高"
+          inputMode="numeric"
+          className="min-w-0 flex-1 bg-transparent px-2 font-mono text-[12px] text-ink outline-none"
+        />
+        <span className="pr-1.5 font-mono text-[10px] text-ink-3">px</span>
+      </label>
       <button
         onClick={() => valid && onCommit(value)}
         disabled={!valid}
