@@ -93,6 +93,8 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertIn('$("#topSupplierSettingsChildAdd")', source)
         self.assertIn('id="supplierRequestRefresh"', source)
         self.assertIn('编辑账号（含主页链接）', source)
+        self.assertIn('supplier-account-control-row', source)
+        self.assertNotIn('主页链接请在编辑账号中填写', source)
         self.assertNotIn('data-homepage-edit=', source)
         self.assertIn('class="supplier-member-grid"', source)
         self.assertIn('id="supplierActivityAll"', source)

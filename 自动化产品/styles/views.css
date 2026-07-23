@@ -3541,9 +3541,10 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .supplier-filter-chips { display: flex; align-items: center; gap: 5px; overflow-x: auto; }
 .supplier-filter-chips button { white-space: nowrap; min-height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: var(--surface); font-weight: 700; cursor: pointer; }
 .supplier-filter-chips button.on { color: #fff; border-color: var(--ink); background: var(--ink); }
-.supplier-inline-assign { min-width: 112px; display: grid; gap: 3px; color: var(--faint); font-size: 9px; }
+.supplier-inline-assign { min-width: 0; flex: 1 1 112px; display: flex; align-items: center; gap: 5px; color: var(--faint); font-size: 9px; white-space: nowrap; }
 .supplier-inline-assign select { width: 100%; min-width: 0; height: 32px; padding: 0 26px 0 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--text); background: var(--surface); font: inherit; font-size: 11px; font-weight: 700; }
 .supplier-account-controls { min-width: 0; display: grid; gap: 5px; }
+.supplier-account-control-row { min-width: 0; display: flex; align-items: center; gap: 6px; }
 .supplier-content-account-actions { display: flex; align-items: center; gap: 5px; }
 .supplier-content-account-actions .icon-btn.restore { color: #9c3142; border-color: rgba(201,55,78,.23); background: rgba(255,255,255,.66); }
 .supplier-homepage-link, .supplier-homepage-empty { min-width: 0; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #3158aa; font-size: 10px; line-height: 1.25; }
