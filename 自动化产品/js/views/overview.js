@@ -227,18 +227,32 @@ export const overviewView = {
     const pendingDl = delivered.filter(x => !x.asset.status || x.asset.status === "未下载").length;
     const links = analyticsRows();
     const analytics = analyticsSummary(links);
-    const viewRows = links.map(row => {
-      const manualViews = Math.max(0, Number(row.asset?.viewCount || 0));
-      const manualUpdatedAt = Number(row.asset?.viewsUpdatedAt || 0);
-      const hasUpdatedViews = !!row.latest || manualUpdatedAt > 0 || manualViews > 0;
+    const analyticsByAssetId = new Map(links
+      .filter(row => row.asset?.id)
+      .map(row => [row.asset.id, row]));
+    // 总播放量以供应商逐条保存的 viewCount 为唯一口径。接口快照只补充链接信息，
+    // 不能让没有 analyticsLinks 的历史人工回填从总数和明细中消失。
+    const viewRows = delivered.map(({ asset, acc }) => {
+      const analyticsRow = analyticsByAssetId.get(asset.id);
+      const manualViews = Math.max(0, Number(asset.viewCount || 0));
+      const manualUpdatedAt = Number(asset.viewsUpdatedAt || 0);
+      const hasUpdatedViews = manualUpdatedAt > 0 || manualViews > 0;
       return {
-        ...row,
-        views: row.latest ? Math.max(0, Number(row.latest.metrics?.views || 0)) : manualViews,
-        updatedAt: Number(row.latest?.fetchedAt || row.asset?.viewsUpdatedAt || row.link?.lastSyncedAt || row.link?.updatedAt || 0),
-        sourceLabel: row.latest ? "接口同步" : "供应商回填",
+        asset,
+        acc,
+        link: analyticsRow?.link || (asset.publishedUrl ? {
+          url: asset.publishedUrl,
+          title: asset.publishedTitle || asset.title || asset.name || "",
+          platform: acc?.platform || "未知平台",
+          publishedAt: asset.publishedAt || asset.publishedUpdatedAt || 0
+        } : null),
+        latest: analyticsRow?.latest || null,
+        views: manualViews,
+        updatedAt: Number(asset.viewsUpdatedAt || asset.publishedUpdatedAt || asset.publishedAt || asset.deliveredAt || asset.createdAt || 0),
+        sourceLabel: manualUpdatedAt > 0 ? "供应商填写" : "历史填写",
         hasUpdatedViews
       };
-    }).filter(row => row.link?.url && row.hasUpdatedViews);
+    }).filter(row => row.hasUpdatedViews);
     const totalViews = viewRows.reduce((sum, row) => sum + row.views, 0);
     const totalEngagement = Number(analytics.totalEngagement || 0);
     const fmt = value => Number(value || 0).toLocaleString("zh-CN");
@@ -423,13 +437,13 @@ export const overviewView = {
         title = isPublished ? "发布数量明细" : "交付明细";
         rows = `<div data-recent-detail-content>${recentDetailHtml()}</div>`;
       } else if (key === "views") {
-        const platforms = [...new Set(viewRows.map(row => row.link.platform || row.acc?.platform || "未知平台"))];
+        const platforms = [...new Set(viewRows.map(row => row.link?.platform || row.acc?.platform || "未知平台"))];
         viewFilter = { platform: "all", period: "all", start: "", end: "" };
         viewDetailHtml = () => {
           const now = Date.now();
           const scoped = viewRows.filter(row => {
-            const platformName = row.link.platform || row.acc?.platform || "未知平台";
-            const date = dayKey(row.updatedAt || row.link.publishedAt || row.asset?.publishedAt || 0);
+            const platformName = row.link?.platform || row.acc?.platform || "未知平台";
+            const date = dayKey(row.updatedAt || row.asset?.viewsUpdatedAt || row.asset?.publishedAt || row.asset?.deliveredAt || 0);
             if (viewFilter.platform !== "all" && platformName !== viewFilter.platform) return false;
             if (viewFilter.period === "7") return row.updatedAt >= now - 7 * 864e5;
             if (viewFilter.period === "30") return row.updatedAt >= now - 30 * 864e5;
@@ -441,22 +455,22 @@ export const overviewView = {
           const platformButtons = [filterButton("platform", "all", "全部平台"), ...platforms.map(platformName => filterButton("platform", platformName, platformName))].join("");
           const periodButtons = [filterButton("period", "all", "全部时间"), filterButton("period", "7", "近 7 天"), filterButton("period", "30", "近 30 天")].join("");
           const list = scoped.map(row => {
-            const platformName = row.link.platform || row.acc?.platform || "未知平台";
+            const platformName = row.link?.platform || row.acc?.platform || "未知平台";
             const updated = row.updatedAt ? timeAgo(row.updatedAt) : "暂无更新时间";
-            const sourceMetrics = row.latest
-              ? metricText(row)
-              : `播放 ${fmt(row.views)} · 供应商回填`;
+            const sourceMetrics = `播放 ${fmt(row.views)} · ${row.sourceLabel}`;
             return makeRow(
-              row.link.title || row.asset?.title || row.asset?.name || "未命名内容",
+              row.link?.title || row.asset?.title || row.asset?.name || "未命名内容",
               `${row.acc?.name || "未命名账号"} · ${platformName} · ${row.sourceLabel} · ${updated}`,
-              `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">查看链接</a>`,
+              row.link?.url
+                ? `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">查看链接</a>`
+                : `<span class="overview-detail-muted">未填写回传链接</span>`,
               sourceMetrics
             );
           }).join("");
           const scopeLabel = viewFilter.period === "all" ? "全部时间" : viewFilter.period === "custom" ? `${viewFilter.start || "开始"} 至 ${viewFilter.end || "今天"}` : `近 ${viewFilter.period} 天`;
-          return `<section class="overview-detail-filter-section"><div><b>按平台</b><span class="overview-detail-filter-tags">${platformButtons}</span></div><div><b>按日期</b><span class="overview-detail-filter-tags">${periodButtons}</span></div><div class="overview-detail-custom-range"><b>自定义时间</b><label>开始<input type="date" data-view-custom-date="start" value="${esc(viewFilter.start)}"/></label><label>结束<input type="date" data-view-custom-date="end" value="${esc(viewFilter.end)}"/></label><button class="overview-detail-filter${viewFilter.period === "custom" ? " is-active" : ""}" type="button" data-view-filter-kind="period" data-view-filter-value="custom">应用</button></div></section><div class="overview-detail-summary">${scopeLabel} · ${scoped.length} 条已同步链接 · 播放 ${fmt(total)}</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该筛选范围没有已更新播放量的回传链接</div>`}</div>`;
+          return `<section class="overview-detail-filter-section"><div><b>按平台</b><span class="overview-detail-filter-tags">${platformButtons}</span></div><div><b>按日期</b><span class="overview-detail-filter-tags">${periodButtons}</span></div><div class="overview-detail-custom-range"><b>自定义时间</b><label>开始<input type="date" data-view-custom-date="start" value="${esc(viewFilter.start)}"/></label><label>结束<input type="date" data-view-custom-date="end" value="${esc(viewFilter.end)}"/></label><button class="overview-detail-filter${viewFilter.period === "custom" ? " is-active" : ""}" type="button" data-view-filter-kind="period" data-view-filter-value="custom">应用</button></div></section><div class="overview-detail-summary">${scopeLabel} · ${scoped.length} 条供应商填写记录 · 播放 ${fmt(total)}</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该筛选范围没有供应商填写的播放量</div>`}</div>`;
         };
-        title = `总播放量明细 · ${viewRows.length} 条已更新链接`;
+        title = `总播放量明细 · ${viewRows.length} 条供应商填写记录`;
         rows = `<div data-view-detail-content>${viewDetailHtml()}</div>`;
       } else if (key === "links") {
         title = `回传链接 · ${links.length} 条`;
@@ -559,7 +573,7 @@ export const overviewView = {
           <section class="overview-kpi-strip" aria-label="关键指标">
             <button class="overview-kpi-card" data-overview-detail="published"><span>发布数量</span><b>${fmt(published.length)}</b><em>${published.filter(({ asset }) => dayKey(asset.publishedUpdatedAt || asset.publishedAt || 0) === dayKey(Date.now())).length} 条今日发布</em></button>
             <button class="overview-kpi-card" data-overview-detail="interactions"><span>总互动</span><b>${fmt(totalEngagement)}</b><em>赞、藏、评与分享</em></button>
-            <button class="overview-kpi-card" data-overview-detail="views"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${viewRows.length} 条已更新链接</em></button>
+            <button class="overview-kpi-card" data-overview-detail="views"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${viewRows.length} 条供应商填写记录</em></button>
             <button class="overview-kpi-card" data-overview-detail="recent"><span>累计交付</span><b>${fmt(delivered.length)}</b><em>${pendingDl} 条供应商待下载</em></button>
           </section>
           <section class="overview-viz-grid">
