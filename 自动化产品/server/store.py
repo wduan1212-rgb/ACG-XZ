@@ -4184,6 +4184,16 @@ def upsert_supplier_account(account_id, data, assets, member_id, *, create=False
                 return None, "not_found"
             existing = json.loads(row[0]) if row else {}
             candidate = {**existing, **patch, "id": doc_id}
+            # SQLite INSERT OR REPLACE 会生成新 rowid；供应商看板不能用该物理顺序
+            # 重新编号。首次受供应商管理时固化当前投影编号，新建账号取下一个编号。
+            candidate["index"] = _account_sequence(existing.get("index")) or (
+                _projected_account_sequences([
+                    json.loads(raw_data)
+                    for (raw_data,) in conn.execute(
+                        "SELECT data FROM docs WHERE collection='accounts' ORDER BY rowid"
+                    ).fetchall()
+                ]).get(doc_id, 0) if existing else _next_account_sequence(conn)
+            )
             semantic_key = _account_semantic_key(candidate)
             duplicate = _existing_account_keys(conn).get(semantic_key) if semantic_key else None
             if duplicate and duplicate != doc_id:
@@ -4502,6 +4512,55 @@ def _projected_delivery_sequences(asset_items):
     return projected
 
 
+def _account_sequence(value):
+    """读取账号的稳定编号；无效或缺失编号返回 0。"""
+    try:
+        sequence = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return sequence if sequence > 0 else 0
+
+
+def _projected_account_sequences(account_items):
+    """为账号生成稳定编号，旧数据仍按初始顺序补位。
+
+    已持久化编号优先。旧账号没有编号时，按原始行顺序占用尚未被持久化账号
+    使用的位置；这样某个旧账号在停用 / 恢复写回后，即使 SQLite rowid 改变，
+    其他账号也不会与它重号或整体换号。
+    """
+    projected = {}
+    claimed = set()
+    for item in account_items or []:
+        account_id = str((item or {}).get("id") or "")
+        sequence = _account_sequence((item or {}).get("index"))
+        if account_id and sequence and sequence not in claimed:
+            projected[account_id] = sequence
+            claimed.add(sequence)
+    next_sequence = 1
+    for item in account_items or []:
+        account_id = str((item or {}).get("id") or "")
+        if not account_id or account_id in projected:
+            continue
+        while next_sequence in claimed:
+            next_sequence += 1
+        projected[account_id] = next_sequence
+        claimed.add(next_sequence)
+        next_sequence += 1
+    return projected
+
+
+def _next_account_sequence(conn):
+    rows = conn.execute("SELECT data FROM docs WHERE collection='accounts' ORDER BY rowid").fetchall()
+    items = []
+    for (raw_data,) in rows:
+        try:
+            items.append(json.loads(raw_data))
+        except (TypeError, json.JSONDecodeError):
+            continue
+    projected = _projected_account_sequences(items)
+    return max(projected.values(), default=0) + 1
+
+
 def state_for(member_id, role, parent_id=None, collections=None):
     """按成员可见性返回快照。
 
@@ -4557,11 +4616,9 @@ def state_for(member_id, role, parent_id=None, collections=None):
                 items = []
                 if col == "accounts":
                     decoded_rows = [(json.loads(data), owner) for data, owner in rows]
-                    account_projected_sequences = {
-                        str(item.get("id") or ""): index + 1
-                        for index, (item, _) in enumerate(decoded_rows)
-                        if item.get("id")
-                    }
+                    account_projected_sequences = _projected_account_sequences(
+                        [item for item, _ in decoded_rows]
+                    )
                     row_items = decoded_rows
                 elif col == "assets":
                     decoded_rows = [(json.loads(data), owner) for data, owner in rows]

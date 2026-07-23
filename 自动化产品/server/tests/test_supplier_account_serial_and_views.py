@@ -64,6 +64,42 @@ console.log(JSON.stringify(accounts.map(account => [account.id, sequence.get(acc
             }])
             self.assertNotIn("index", next(account for account in creator_state["accounts"] if account["id"] == "account-b"))
 
+    def test_supplier_account_number_survives_disable_and_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("accounts", [
+                {"id": "account-a", "name": "账号 A", "platform": "小红书", "mode": "图文"},
+                {"id": "account-b", "name": "账号 B", "platform": "视频号", "mode": "视频"},
+                {"id": "account-c", "name": "账号 C", "platform": "小红书", "mode": "图文"},
+            ])
+            before = {
+                account["id"]: account["index"]
+                for account in store.state_for("supplier-parent", "supplier_parent")["accounts"]
+            }
+            account_b = next(
+                account for account in store.state_for("supplier-parent", "supplier_parent")["accounts"]
+                if account["id"] == "account-b"
+            )
+            disabled, error = store.upsert_supplier_account(
+                "account-b", {**account_b, "status": "disabled"}, [], "supplier-parent", create=False
+            )
+            self.assertIsNone(error)
+            disabled_numbers = {
+                account["id"]: account["index"]
+                for account in store.state_for("supplier-parent", "supplier_parent")["accounts"]
+            }
+            restored, error = store.upsert_supplier_account(
+                "account-b", {**disabled["account"], "status": "active"}, [], "supplier-parent", create=False
+            )
+            self.assertIsNone(error)
+            restored_numbers = {
+                account["id"]: account["index"]
+                for account in store.state_for("supplier-parent", "supplier_parent")["accounts"]
+            }
+            self.assertEqual(before, {"account-a": 1, "account-b": 2, "account-c": 3})
+            self.assertEqual(disabled_numbers, before)
+            self.assertEqual(restored_numbers, before)
+
     def test_view_count_dialog_starts_empty_and_zero_remains_valid(self):
         source = (APP_DIR / "js/views/deliveryView.js").read_text(encoding="utf-8")
         self.assertIn('value: supplierViewCountPromptValue(a)', source)
