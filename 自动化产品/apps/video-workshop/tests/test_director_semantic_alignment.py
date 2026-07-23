@@ -534,7 +534,15 @@ class DirectorSemanticAlignmentTests(unittest.IsolatedAsyncioTestCase):
             "core_message": "保持完整",
             "narration": "这是一段需要根据真实音频时长精简的口播内容。" * 40,
         }
-        with patch.object(providers, "_post_llm_json_with_retry", AsyncMock(return_value=response)) as mocked:
+        with (
+            patch.object(providers, "settings", SimpleNamespace(
+                llm_api_key="test-key",
+                llm_model="MiniMax-M3",
+                llm_thinking="disabled",
+                llm_max_completion_tokens=12000,
+            )),
+            patch.object(providers, "_post_llm_json_with_retry", AsyncMock(return_value=response)) as mocked,
+        ):
             revised = await providers.MiniMaxDirector().revise_narration_duration(
                 plan,
                 measured_duration=300,

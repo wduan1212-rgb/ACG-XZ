@@ -93,6 +93,15 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
         output.write_bytes(Path(source).read_bytes())
         return {"duration": 3.333, "videoDuration": 3.333, "audioDuration": 3.333, "speed": speed}
 
+    async def _lock_timed_visual_plan(self, plan: dict, narration_duration: float) -> dict:
+        """Keep transaction fixtures offline while matching the timed-director contract."""
+        return {
+            "scenes": [dict(scene) for scene in plan.get("scenes") or []],
+            "minimum_units": 1,
+            "public_summary": f"transaction fixture for {narration_duration:.1f}s narration",
+            "asset_placements": [],
+        }
+
     def _common_patches(self, instance: pipeline_module.VideoPipeline):
         return (
             patch.object(instance, "_event", AsyncMock()),
@@ -102,6 +111,11 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(pipeline_module, "probe", new=self._probe),
             patch.object(pipeline_module, "retime_video", new=self._retime),
             patch.object(pipeline_module.bgm_library, "resolve", return_value=None),
+            patch.object(
+                pipeline_module.director,
+                "lock_timed_visual_plan",
+                new=AsyncMock(side_effect=self._lock_timed_visual_plan),
+            ),
         )
 
     async def test_qa_failure_keeps_existing_scene(self) -> None:
