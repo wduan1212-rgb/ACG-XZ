@@ -3994,6 +3994,13 @@ class MemberReq(BaseModel):
     parentId: str = ""
 
 
+class MemberProfileReq(BaseModel):
+    name: str = ""
+    username: str = ""
+    pin: str = ""
+    avatarUrl: str = ""
+
+
 class SupplierChildReq(BaseModel):
     name: str = ""
     username: str = ""
@@ -5142,6 +5149,68 @@ def file_delete(name: str, me=Depends(require_member)):
 @app.get("/api/members")
 def members_list(me=Depends(require_admin)):
     return store.list_members()
+
+
+@app.get("/api/members/me")
+def member_profile_get(me=Depends(require_member)):
+    """当前登录者的公开资料；不暴露口令哈希。"""
+    return me
+
+
+@app.put("/api/members/me")
+def member_profile_update(req: MemberProfileReq, me=Depends(require_member)):
+    name = req.name.strip()
+    username = req.username.strip()
+    if not name or not username:
+        raise HTTPException(400, "姓名和账号不能为空")
+    existing = store.get_member_by_username(username)
+    if existing and existing[0] != me["id"]:
+        raise HTTPException(409, "用户名已存在")
+    avatar_url = str(req.avatarUrl or "").strip()
+    if avatar_url and not avatar_url.startswith("/api/member-avatars/"):
+        raise HTTPException(400, "头像地址无效")
+    row = store.update_member(
+        me["id"], name=name, username=username, pin=req.pin or None, avatar_url=avatar_url,
+    )
+    if not row:
+        raise HTTPException(404, "成员不存在")
+    return store.member_public(row)
+
+
+@app.put("/api/members/me/avatar")
+async def member_profile_avatar_upload(req: Request, filename: str = "", mime: str = "", me=Depends(require_member)):
+    """仅当前登录者可以上传自己的小头像，不接触通用资产库。"""
+    content_type = (mime or req.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if content_type not in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+        raise HTTPException(400, "头像仅支持 PNG、JPG、WebP 或 GIF")
+    data = await req.body()
+    if not data:
+        raise HTTPException(400, "头像文件为空")
+    if len(data) > 2 * 1024 * 1024:
+        raise HTTPException(413, "头像请控制在 2MB 以内")
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    stem = _safe_file_stem(f"member-avatar-{me['id']}")
+    for old in UPLOAD_DIR.glob(stem + ".*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    stored = stem + _safe_ext(filename, content_type)
+    _upload_path(stored).write_bytes(data)
+    avatar_url = "/api/member-avatars/" + stored
+    row = store.update_member(me["id"], avatar_url=avatar_url)
+    return {"ok": True, "avatarUrl": avatar_url, "member": store.member_public(row)}
+
+
+@app.get("/api/member-avatars/{name}")
+def member_profile_avatar_get(name: str, request: Request):
+    safe_name = Path(name).name
+    if not safe_name.startswith("member-avatar-"):
+        raise HTTPException(404, "头像不存在")
+    path = _upload_path(safe_name)
+    if not path.exists():
+        raise HTTPException(404, "头像不存在")
+    return ranged_file_response(request, path, media_type=_media_type_for_path(path))
 
 
 @app.get("/api/supplier/children")

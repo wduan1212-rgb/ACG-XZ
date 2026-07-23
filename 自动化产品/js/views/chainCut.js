@@ -10,7 +10,7 @@ import { addAssetFromFile, assetBlob, globalBgmAssets, urlFor } from "../domain/
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260723-v117-5";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260723-v117-7";
 
 let PPS = 40;
 const CLIP_SEC = 15;
@@ -1596,7 +1596,7 @@ export function renderCutPage(root, p) {
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("未检测到封面，正在自动生成");
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260723-v117-5");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260723-v117-7");
         await ensureVideoCover(p);
         toast("封面已自动生成并入库");
       } catch (err) {

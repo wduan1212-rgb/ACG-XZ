@@ -262,6 +262,29 @@ export const members = {
   remove: (id) => req("/api/members/" + id, { method: "DELETE" })
 };
 
+export const memberProfile = {
+  get: () => req("/api/members/me"),
+  update: (profile) => req("/api/members/me", { method: "PUT", body: profile }),
+  async uploadAvatar(file) {
+    if (!_on || !_token) throw new Error("服务器登录已失效");
+    const type = String(file?.type || "").toLowerCase();
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(type)) throw new Error("头像仅支持 PNG、JPG、WebP 或 GIF");
+    if (Number(file?.size || 0) > 2 * 1024 * 1024) throw new Error("头像请控制在 2MB 以内");
+    const query = new URLSearchParams({ filename: String(file?.name || "avatar"), mime: type });
+    const res = await fetchWithTimeout("/api/members/me/avatar?" + query.toString(), {
+      method: "PUT",
+      headers: { "Content-Type": type, "Authorization": "Bearer " + _token, "Cache-Control": "no-cache" },
+      body: file,
+    });
+    if (!res.ok) {
+      let message = "头像上传失败";
+      try { message = (await res.json()).detail || message; } catch (_) {}
+      throw new Error(`HTTP ${res.status} ${message}`);
+    }
+    return res.json();
+  }
+};
+
 export const memberRequests = {
   list: (status = "pending") => req("/api/member-requests" + (status ? "?status=" + encodeURIComponent(status) : "")),
   approve: (id) => req("/api/member-requests/" + encodeURIComponent(id) + "/approve", { method: "POST" }),

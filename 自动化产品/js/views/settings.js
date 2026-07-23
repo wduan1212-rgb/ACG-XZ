@@ -1,12 +1,11 @@
 /* 设置：成员、角色与产品资料。运行服务配置只保留在服务端。 */
 
-import { $, $$, esc } from "../core/util.js";
+import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
 import { toast, confirmModal, promptModal, openModal } from "../ui/components.js";
-import { uid } from "../core/util.js";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260723-v117-5";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260723-v117-7";
 
 const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor", "supplier_parent"];
@@ -25,8 +24,69 @@ function productFromText(text = {}) {
   };
 }
 
+function renderCreatorProfile(root) {
+  const member = state.members.find(item => item.id === state.ui.currentMemberId) || {};
+  let avatarUrl = member.avatarUrl || "";
+  const initials = String(member.name || member.username || "我").trim().slice(0, 1) || "我";
+  const avatarHtml = () => avatarUrl
+    ? `<img src="${esc(avatarUrl)}" alt="当前头像"/>`
+    : `<span>${esc(initials)}</span>`;
+  root.innerHTML = `<div class="creator-profile-page">
+    <section class="card creator-profile-card">
+      <div class="creator-profile-heading"><span class="creator-profile-avatar" id="creatorProfileAvatar">${avatarHtml()}</span><span><b>我的</b><em>仅可编辑自己的姓名、账号、密码和头像；保存后管理员后台会同步显示。</em></span></div>
+      <form class="creator-profile-form" id="creatorProfileForm">
+        <label class="field">头像
+          <label class="creator-avatar-upload"><input id="creatorProfileAvatarFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"/><span>${icon("upload", 13)} 更换头像</span><em>PNG / JPG / WebP / GIF，2MB 以内</em></label>
+        </label>
+        <label class="field">姓名<input class="input" id="creatorProfileName" value="${esc(member.name || "")}" maxlength="60" required /></label>
+        <label class="field">账号<input class="input" id="creatorProfileUsername" value="${esc(member.username || "")}" maxlength="60" required /></label>
+        <label class="field full">新密码<input class="input" id="creatorProfilePin" type="password" autocomplete="new-password" placeholder="留空则不修改密码" maxlength="120" /></label>
+        <div class="creator-profile-actions full"><span>账号资料不会影响已有创作、素材或发布记录。</span><button class="btn primary" id="creatorProfileSave" type="submit">${icon("check", 14)} 保存我的资料</button></div>
+      </form>
+    </section>
+  </div>`;
+  const avatar = $("#creatorProfileAvatar", root);
+  $("#creatorProfileAvatarFile", root)?.addEventListener("change", async event => {
+    const file = event.currentTarget.files?.[0];
+    if (!file) return;
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type)) { toast("头像仅支持 PNG、JPG、WebP 或 GIF"); return; }
+    if (file.size > 2 * 1024 * 1024) { toast("头像请控制在 2MB 以内"); return; }
+    try {
+      avatarUrl = remote.isOn()
+        ? (await remote.memberProfile.uploadAvatar(file)).avatarUrl
+        : await fileToDataUrl(file);
+      if (avatar) avatar.innerHTML = avatarHtml();
+    } catch (error) {
+      toast("头像上传失败：" + (error?.message || error));
+    }
+  });
+  $("#creatorProfileForm", root)?.addEventListener("submit", async event => {
+    event.preventDefault();
+    const name = $("#creatorProfileName", root)?.value.trim() || "";
+    const username = $("#creatorProfileUsername", root)?.value.trim() || "";
+    const pin = $("#creatorProfilePin", root)?.value.trim() || "";
+    if (!name || !username) { toast("请填写姓名和账号"); return; }
+    const saveButton = $("#creatorProfileSave", root);
+    if (saveButton) saveButton.disabled = true;
+    try {
+      const saved = remote.isOn()
+        ? await remote.memberProfile.update({ name, username, pin, avatarUrl })
+        : { ...member, name, username, avatarUrl };
+      state.members = state.members.map(item => item.id === saved.id ? saved : item);
+      saveMembers();
+      $("#creatorProfilePin", root).value = "";
+      toast("我的资料已保存，管理员后台已同步");
+    } catch (error) {
+      toast("保存失败：" + (error?.message || error));
+    } finally {
+      if (saveButton) saveButton.disabled = false;
+    }
+  });
+}
+
 export const settingsView = {
   render(root) {
+    if (state.role === "editor") { renderCreatorProfile(root); return; }
     if (["supplier", "supplier_parent"].includes(state.role)) { renderSupplierSettings(root); return; }
     let memberRequests = [];
     let requestsLoaded = false;
@@ -64,7 +124,7 @@ export const settingsView = {
             <div class="settings-member-grid" id="memList">
               ${visibleMembers.map(m => `
                 <article class="settings-member-card" data-mem="${m.id}">
-                  <span class="settings-member-avatar ${m.role}">${icon(m.role === "admin" ? "shield" : "user", 14)}</span>
+                  <span class="settings-member-avatar ${m.role}">${m.avatarUrl ? `<img src="${esc(m.avatarUrl)}" alt="${esc(m.name)} 的头像"/>` : icon(m.role === "admin" ? "shield" : "user", 14)}</span>
                   <span class="ovt-main"><b>${esc(m.name)} ${m.id === state.ui.currentMemberId ? `<i class="mem-me">当前</i>` : ""}</b><em>@${esc(m.username)} · ${ROLE_DESC[m.role] || ROLE_LABEL[m.role] || m.role}</em></span>
                   <span class="mem-role tag ${m.role}">${ROLE_LABEL[m.role] || m.role}</span>
                   <span class="settings-member-actions"><button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-mdel="${m.id}" title="删除" ${m.id === state.ui.currentMemberId ? "disabled" : ""}>${icon("trash", 13)}</button></span>

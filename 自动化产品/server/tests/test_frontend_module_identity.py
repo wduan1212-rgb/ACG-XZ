@@ -30,9 +30,9 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260723-v117-5",
-            "prodDrawer.js": "v=20260723-v117-5",
-            "orchestrator.js": "v=20260723-v117-5",
+            "studio.js": "v=20260723-v117-7",
+            "prodDrawer.js": "v=20260723-v117-7",
+            "orchestrator.js": "v=20260723-v117-7",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
@@ -45,11 +45,11 @@ class FrontendModuleIdentityTest(unittest.TestCase):
             imports = self._module_imports(module_name)
             self.assertGreaterEqual(len(imports), 2)
             queries = {specifier.partition("?")[2] for _, specifier in imports}
-            self.assertEqual({"v=20260723-v117-5"}, queries, imports)
+            self.assertEqual({"v=20260723-v117-7"}, queries, imports)
 
     def test_custom_publish_is_loaded_with_the_current_module_identity(self):
         source = (APP_DIR / "js/views/customCreation.js").read_text(encoding="utf-8")
-        self.assertIn('import("./customPublish.js?v=20260723-v117-5")', source)
+        self.assertIn('import("./customPublish.js?v=20260723-v117-7")', source)
 
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
@@ -61,7 +61,7 @@ class FrontendModuleIdentityTest(unittest.TestCase):
             "custom-creation.css",
         ):
             self.assertIn(
-                f"styles/{stylesheet}?v=20260723-v117-5",
+                f"styles/{stylesheet}?v=20260723-v117-7",
                 index,
                 stylesheet,
             )

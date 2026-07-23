@@ -739,6 +739,9 @@ console.log(result);
         self.assertIn('refreshApiUsagePanel()', settings)
         self.assertIn('api-usage-summary-grid', settings)
         self.assertIn('product-library-grid', settings)
+        self.assertIn('renderCreatorProfile(root)', settings)
+        self.assertIn('remote.memberProfile.uploadAvatar(file)', settings)
+        self.assertIn('管理员后台会同步显示', settings)
         self.assertIn("<th>账号</th><th>发布标题</th>", analytics)
 
     def test_v84_assets_delivery_and_stable_first_render(self):
@@ -856,8 +859,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260723-v117-5"', main)
-        self.assertIn('js/main.js?v=20260723-v117-5', index)
+        self.assertIn('const APP_BUILD_ID = "20260723-v117-7"', main)
+        self.assertIn('js/main.js?v=20260723-v117-7', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)

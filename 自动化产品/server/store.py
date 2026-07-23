@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS members(
   pin_hash   TEXT NOT NULL,
   role       TEXT NOT NULL,
   parent_id  TEXT,
+  avatar_url TEXT,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS member_requests(
@@ -299,6 +300,8 @@ def _ensure_db():
             member_cols = {r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
             if "parent_id" not in member_cols:
                 conn.execute("ALTER TABLE members ADD COLUMN parent_id TEXT")
+            if "avatar_url" not in member_cols:
+                conn.execute("ALTER TABLE members ADD COLUMN avatar_url TEXT")
             # 旧版 supplier 无子账号概念，安全迁移为供应商母账号。
             conn.execute("UPDATE members SET role='supplier_parent' WHERE role='supplier'")
             _seed_admin_locked(conn)
@@ -395,7 +398,12 @@ def _seed_admin():
 
 
 def _member_public(row):
-    return {"id": row[0], "name": row[1], "username": row[2], "role": row[4], "parentId": row[5] if len(row) > 6 else None, "createdAt": row[6] if len(row) > 6 else row[5]}
+    return {
+        "id": row[0], "name": row[1], "username": row[2], "role": row[4],
+        "parentId": row[5] if len(row) > 7 else None,
+        "avatarUrl": row[6] if len(row) > 7 else "",
+        "createdAt": row[7] if len(row) > 7 else row[5],
+    }
 
 
 def add_member(name, username, pin, role, parent_id=None):
@@ -419,19 +427,19 @@ def add_member_with_hash(name, username, pin_hash, role, parent_id=None):
 
 
 def get_member(mid):
-    return _fetchone("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members WHERE id=?", (mid,))
+    return _fetchone("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members WHERE id=?", (mid,))
 
 
 def get_member_by_username(username):
-    return _fetchone("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members WHERE username=?", (username,))
+    return _fetchone("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members WHERE username=?", (username,))
 
 
 def list_members():
-    rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members ORDER BY created_at")
+    rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members ORDER BY created_at")
     return [_member_public(r) for r in rows]
 
 
-def update_member(mid, name=None, username=None, role=None, pin=None, parent_id=None):
+def update_member(mid, name=None, username=None, role=None, pin=None, parent_id=None, avatar_url=None):
     sets, vals = [], []
     if name is not None:
         sets.append("name=?"); vals.append(name)
@@ -441,6 +449,8 @@ def update_member(mid, name=None, username=None, role=None, pin=None, parent_id=
         sets.append("role=?"); vals.append(role)
     if parent_id is not None:
         sets.append("parent_id=?"); vals.append(parent_id or None)
+    if avatar_url is not None:
+        sets.append("avatar_url=?"); vals.append(str(avatar_url or "")[:600])
     if pin:
         sets.append("pin_hash=?"); vals.append(hash_pin(pin))
     if sets:
@@ -553,16 +563,16 @@ def approve_member_request(rid, reviewer_id, parent_id=None):
 # ---------- 供应商组织：母账号可管理子账号并分配内容账号 ----------
 def list_supplier_children(parent_id, include_all=False):
     if include_all:
-        rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members WHERE role='supplier_child' ORDER BY created_at")
+        rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members WHERE role='supplier_child' ORDER BY created_at")
     else:
-        rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members WHERE role='supplier_child' AND parent_id=? ORDER BY created_at", (parent_id,))
+        rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members WHERE role='supplier_child' AND parent_id=? ORDER BY created_at", (parent_id,))
     return [_member_public(r) for r in rows]
 
 
 def list_supplier_members():
     """供应商管理员共享同一组织视图：可见全部管理员与子账号。"""
     rows = _fetchall(
-        "SELECT id,name,username,pin_hash,role,parent_id,created_at FROM members "
+        "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members "
         "WHERE role IN ('supplier_parent','supplier_child') "
         "ORDER BY CASE role WHEN 'supplier_parent' THEN 0 ELSE 1 END, created_at"
     )

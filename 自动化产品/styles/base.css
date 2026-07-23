@@ -43,7 +43,6 @@ body.gated .app-shell { filter: blur(8px) saturate(.9); pointer-events: none; us
 body.role-supplier .ctx-panel { display: none !important; }
 body.role-supplier-child .rail-item:not([data-nav="delivery"]):not(#navLogout) { display: none; }
 body.role-supplier-parent .rail-item:not([data-nav="overview"]):not([data-nav="assets"]):not([data-nav="delivery"]):not([data-nav="settings"]):not(#navLogout) { display: none; }
-body.role-editor .rail-item[data-nav="settings"] { display: none; }
 body:not(.role-admin) .rail-item[data-nav="voice"] { display: none; }
 
 /* 导航栏 */

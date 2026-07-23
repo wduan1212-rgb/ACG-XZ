@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowUp,
+  ClipboardPaste,
   ChevronDown,
   ChevronRight,
   Clock3,
@@ -48,6 +49,20 @@ function clipboardImageFiles(data: DataTransfer | null): File[] {
     .filter((file): file is File => !!file);
   if (files.length) return files;
   return Array.from(data.files || []).filter((file) => file.type.startsWith("image/"));
+}
+
+async function readClipboardImageFiles(): Promise<File[]> {
+  if (!navigator.clipboard?.read) return [];
+  const items = await navigator.clipboard.read();
+  const files: File[] = [];
+  for (const item of items) {
+    for (const type of item.types.filter((value) => value.startsWith("image/"))) {
+      const blob = await item.getType(type);
+      const extension = type === "image/jpeg" ? "jpg" : type.split("/")[1] || "png";
+      files.push(new File([blob], `剪贴板图片-${files.length + 1}.${extension}`, { type }));
+    }
+  }
+  return files;
 }
 
 const WELCOME = "欢迎使用星阵无限画布，开始设计！";
@@ -118,6 +133,8 @@ export function HomeView() {
   const [refs, setRefs] = useState<RefImg[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [clipboardBusy, setClipboardBusy] = useState(false);
+  const [clipboardHint, setClipboardHint] = useState("");
   const sizeRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const typed = useTypewriter();
@@ -155,6 +172,23 @@ export function HomeView() {
       } catch {
         /* skip */
       }
+    }
+  }
+
+  async function pasteClipboardReferences() {
+    setClipboardBusy(true);
+    try {
+      const files = await readClipboardImageFiles();
+      if (!files.length) {
+        setClipboardHint("剪贴板中没有图片，可复制图片后重试");
+        return;
+      }
+      await attachFiles(files);
+      setClipboardHint(`已从剪贴板添加 ${files.length} 张参考图`);
+    } catch {
+      setClipboardHint("无法读取剪贴板，请在输入框内按 Command / Ctrl + V 粘贴");
+    } finally {
+      setClipboardBusy(false);
     }
   }
 
@@ -212,7 +246,6 @@ export function HomeView() {
       ? `${parsed.width}×${parsed.height} · ${aspectRatioLabel(parsed.width, parsed.height)}`
       : size.replace("x", "×");
   })();
-  const primaryReference = refs[0];
 
   return (
     <div
@@ -299,6 +332,7 @@ export function HomeView() {
                     if (!images.length) return;
                     e.preventDefault();
                     void attachFiles(images);
+                    setClipboardHint(`已从剪贴板添加 ${images.length} 张参考图`);
                   }}
                   onKeyDown={(e) => {
                     if (e.nativeEvent.isComposing) return;
@@ -326,29 +360,30 @@ export function HomeView() {
                         <div className="surface-popover absolute bottom-10 left-0 z-40 w-[340px] p-3 animate-pop">
                           <div className="max-h-64 space-y-3 overflow-y-auto pr-1">
                             <div>
-                              <div className="mb-1.5 text-[11px] font-medium text-ink-3">参考图</div>
-                              <button
-                                type="button"
-                                disabled={!primaryReference}
-                                onClick={() => {
-                                  if (!primaryReference) return;
-                                  setSize(`${primaryReference.width}x${primaryReference.height}`);
-                                  setSizeOpen(false);
-                                }}
-                                title={primaryReference
-                                  ? `采用第 1 张参考图的原始尺寸：${primaryReference.width}×${primaryReference.height}`
-                                  : "请先添加参考图"}
-                                className="flex w-full items-center justify-between rounded-[var(--radius-sm)] border border-line px-2.5 py-2 text-left text-[11px] transition-colors enabled:hover:bg-fill disabled:cursor-not-allowed disabled:opacity-45"
-                              >
-                                <span className="inline-flex items-center gap-1.5 font-medium text-ink-2">
-                                  <ImagePlus size={13} /> 按参考图尺寸
-                                </span>
-                                <span className="font-mono text-[10px] text-ink-3">
-                                  {primaryReference
-                                    ? `${primaryReference.width}×${primaryReference.height} · ${aspectRatioLabel(primaryReference.width, primaryReference.height)}`
-                                    : "先添加参考图"}
-                                </span>
-                              </button>
+                              <div className="mb-1.5 text-[11px] font-medium text-ink-3">按参考图尺寸</div>
+                              {refs.length ? <div className="space-y-1">
+                                {refs.map((reference, index) => (
+                                  <button
+                                    key={`${reference.name}-${index}`}
+                                    type="button"
+                                    onClick={() => {
+                                      setSize(`${reference.width}x${reference.height}`);
+                                      setSizeOpen(false);
+                                    }}
+                                    title={`采用第 ${index + 1} 张参考图的原始尺寸：${reference.width}×${reference.height}`}
+                                    className="flex w-full items-center justify-between rounded-[var(--radius-sm)] border border-line px-2.5 py-2 text-left text-[11px] transition-colors hover:bg-fill"
+                                  >
+                                    <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-ink-2">
+                                      <ImagePlus size={13} /> <span className="truncate">参考图 {index + 1}{reference.name ? ` · ${reference.name}` : ""}</span>
+                                    </span>
+                                    <span className="ml-2 shrink-0 font-mono text-[10px] text-ink-3">
+                                      {reference.width}×{reference.height} · {aspectRatioLabel(reference.width, reference.height)}
+                                    </span>
+                                  </button>
+                                ))}
+                              </div> : <button type="button" disabled className="flex w-full items-center justify-between rounded-[var(--radius-sm)] border border-line px-2.5 py-2 text-left text-[11px] opacity-45">
+                                <span className="inline-flex items-center gap-1.5 font-medium text-ink-2"><ImagePlus size={13} /> 先添加参考图</span>
+                              </button>}
                             </div>
                             {SIZE_GROUPS.map((g) => (
                               <div key={g.group}>
@@ -402,6 +437,15 @@ export function HomeView() {
                     >
                       <ImagePlus size={14} /> 参考图
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => void pasteClipboardReferences()}
+                      disabled={clipboardBusy}
+                      className="inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-[12px] text-ink-2 hover:bg-fill hover:text-ink disabled:opacity-45"
+                      title="从剪贴板粘贴图片作为参考图（也可在输入框按 Command / Ctrl + V）"
+                    >
+                      <ClipboardPaste size={14} /> {clipboardBusy ? "读取中…" : "粘贴参考图"}
+                    </button>
                   </div>
 
                   <button
@@ -412,6 +456,7 @@ export function HomeView() {
                     开始创作 <ArrowUp size={15} />
                   </button>
                 </div>
+                {clipboardHint && <p className="px-3 pb-1 text-[10px] text-ink-3">{clipboardHint}</p>}
               </div>
             </div>
           </section>

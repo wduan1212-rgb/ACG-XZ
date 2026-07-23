@@ -62,12 +62,15 @@ class CustomCanvasStaticIntegrationTest(unittest.TestCase):
         self.assertIn("[3, 4]", source)
         self.assertIn("[9, 16]", source)
         self.assertIn("按参考图尺寸", source)
-        self.assertIn("setSize(`${primaryReference.width}x${primaryReference.height}`)", source)
-        self.assertEqual(1, source.count("setSize(`${primaryReference.width}x${primaryReference.height}`)"))
-        self.assertNotIn("useEffect(() => setSize(`${primaryReference.width}x${primaryReference.height}`)", source)
+        self.assertIn("refs.map((reference, index)", source)
+        self.assertIn("setSize(`${reference.width}x${reference.height}`)", source)
+        self.assertNotIn("useEffect(() => setSize(`${reference.width}x${reference.height}`)", source)
         self.assertIn("自定义尺寸（单位：像素 px）", source)
         self.assertIn("自定义宽度（像素）", source)
         self.assertIn("自定义高度（像素）", source)
+        self.assertIn("readClipboardImageFiles", source)
+        self.assertIn("粘贴参考图", source)
+        self.assertIn('e.key === "Enter" && !e.shiftKey', source)
 
     def test_canvas_source_keeps_one_single_image_guard_per_request(self):
         source_path = APP_DIR / "apps" / "infinite-canvas-source" / "src" / "lib" / "agent.ts"
@@ -406,7 +409,7 @@ console.log(JSON.stringify({{
         )
         self.assertIn("width:100%;height:100%;min-height:0", integration)
         self.assertNotIn("min-height:640px", integration)
-        self.assertIn('iframe.src = "/XZ-Design/?embed=1&v=20260723-v117-5#/"', integration)
+        self.assertIn('iframe.src = "/XZ-Design/?embed=1&v=20260723-v117-7#/"', integration)
 
     def test_canvas_publish_reuses_image_polish_without_changing_direct_export(self):
         publish = (APP_DIR / "js" / "views" / "customPublish.js").read_text(encoding="utf-8")

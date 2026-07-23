@@ -5,37 +5,37 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260723-v117-5";
+import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260723-v117-7";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
 import { productTagLabel } from "./domain/delivery.js";
 import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
-import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260723-v117-5";
+import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260723-v117-7";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260723-v117-5";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260723-v117-7";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js";
-import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-5";
+import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-7";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260723-v117-5";
-import { voiceLabView } from "./views/voiceLab.js?v=20260723-v117-5";
-import { customCreationView } from "./views/customCreation.js?v=20260723-v117-5";
-import { agentView } from "./agent/view.js?v=20260723-v117-5";
-import { studioView } from "./views/studio.js?v=20260723-v117-5";
-import { assetsView } from "./views/assetsView.js?v=20260723-v117-5";
-import { deliveryView } from "./views/deliveryView.js?v=20260723-v117-5";
-import { analyticsView } from "./views/analyticsView.js?v=20260723-v117-5";
+import { overviewView } from "./views/overview.js?v=20260723-v117-7";
+import { voiceLabView } from "./views/voiceLab.js?v=20260723-v117-7";
+import { customCreationView } from "./views/customCreation.js?v=20260723-v117-7";
+import { agentView } from "./agent/view.js?v=20260723-v117-7";
+import { studioView } from "./views/studio.js?v=20260723-v117-7";
+import { assetsView } from "./views/assetsView.js?v=20260723-v117-7";
+import { deliveryView } from "./views/deliveryView.js?v=20260723-v117-7";
+import { analyticsView } from "./views/analyticsView.js?v=20260723-v117-7";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260723-v117-5";
+import { settingsView } from "./views/settings.js?v=20260723-v117-7";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260723-v117-5";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260723-v117-7";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260723-v117-5";
+const APP_BUILD_ID = "20260723-v117-7";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -338,7 +338,7 @@ function applyRoleClasses() {
     overview: parent ? "首页" : "首页",
     assets: parent ? "全部账号" : "整体资产",
     delivery: "发布清单",
-    settings: "设置"
+    settings: state.role === "editor" ? "我的" : "设置"
   };
   Object.entries(labels).forEach(([zone, label]) => {
     const item = document.querySelector(`[data-nav="${zone}"]`);
@@ -772,7 +772,7 @@ function renderTopbar() {
   if (assetsDock && zone !== "assets") assetsDock.remove();
   const acc = activeAccount();
   const { page } = parseHash();
-  let crumb = ZONE_TITLE[zone] || "";
+  let crumb = zone === "settings" && state.role === "editor" ? "我的" : (ZONE_TITLE[zone] || "");
   if (zone === "custom") {
     crumb = `定制创作 / ${{ video: "视频工坊", canvas: "无限画布", voice: "语音生成" }[page || "video"] || "视频工坊"}`;
   }
@@ -860,6 +860,8 @@ function paletteCommands() {
     ...(state.role === "admin" ? [
       { label: "设置", group: "导航", icon: "gear", run: () => go("settings") },
       { label: "创建账号", group: "操作", icon: "plus", run: () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })) }
+    ] : state.role === "editor" ? [
+      { label: "我的", group: "导航", icon: "user", run: () => go("settings") }
     ] : [])
   ];
   const cmds = [...nav];

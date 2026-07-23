@@ -146,17 +146,20 @@ function supplierOverviewRows() {
   }));
 }
 
-function supplierTodayLinksAnswer(rows) {
+function supplierTodayLinkLines(rows) {
   const today = supplierDateKey(Date.now());
   const accountNumbers = accountDisplaySequenceMap(state.accounts);
-  const todayRows = rows.filter(item => item.asset.publishedUrl && supplierDateKey(item.timestamp) === today);
-  return todayRows.length
-    ? `今日已回传链接 ${todayRows.length} 条：\n${todayRows.map((item, index) => {
+  return rows.filter(item => item.asset.publishedUrl && supplierDateKey(item.timestamp) === today)
+    .map((item, index) => {
       const accountNumber = accountNumbers.get(item.account.id);
       const marker = accountNumber ? `#${String(accountNumber).padStart(2, "0")}` : `#${String(index + 1).padStart(2, "0")}`;
       return `${marker} ${item.account.name || item.asset.title || "未命名账号"}：${item.asset.publishedUrl}`;
-    }).join("\n")}`
-    : "今天还没有供应商账号回传链接。";
+    });
+}
+
+function supplierTodayLinksAnswer(rows) {
+  const lines = supplierTodayLinkLines(rows);
+  return lines.length ? `今日已回传链接 ${lines.length} 条：\n${lines.join("\n")}` : "今天还没有供应商账号回传链接。";
 }
 
 function smoothTrendPath(points = []) {
@@ -267,7 +270,7 @@ export async function renderSupplierOverview(root) {
             ${activity.length ? `<div class="supplier-activity-carousel" id="supplierActivityCarousel">${supplierActivityItemsHtml(carouselActivity)}</div><div class="supplier-activity-pagination"><button class="icon-btn sm" type="button" data-supplier-activity-page="prev" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button><span id="supplierActivityPage">${visibleActivity.length ? `${supplierActivityCarouselPage + 1} / ${activityPages}` : "0 / 0"}</span><button class="icon-btn sm" type="button" data-supplier-activity-page="next" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronRight", 13)}</button></div>` : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
           </section>
         </div>
-        <aside class="card supplier-data-assistant"><header><span>${icon("bot", 18)}</span><div><b>星阵数据助手</b><em>供应商数据只读问答</em></div><button class="btn ghost sm supplier-today-links" id="supplierTodayLinks" type="button">${icon("link", 13)} 今日回传链接</button></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button>今天交付多少？</button><button>给我回传链接</button><button>哪个账号发布最多？</button></div><form id="supplierDataForm"><input id="supplierDataInput" placeholder="问问供应商数据…"/><button class="icon-btn primary" title="发送">${icon("send", 14)}</button></form></aside>
+        <aside class="card supplier-data-assistant"><header><span>${icon("bot", 18)}</span><div><b>星阵数据助手</b><em>供应商数据只读问答</em></div><span class="supplier-today-link-actions"><button class="btn ghost sm supplier-today-links" id="supplierTodayLinks" type="button">${icon("link", 13)} 今日回传</button><button class="icon-btn sm" id="supplierTodayLinksCopyAll" type="button" title="复制今日全部回传链接">${icon("copy", 13)}</button></span></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button>今天交付多少？</button><button>给我回传链接</button><button>哪个账号发布最多？</button></div><form id="supplierDataForm"><input id="supplierDataInput" placeholder="问问供应商数据…"/><button class="icon-btn primary" title="发送">${icon("send", 14)}</button></form></aside>
       </div>
     </div>`;
     const openSupplierRows = (title, selectedRows) => {
@@ -320,8 +323,18 @@ export async function renderSupplierOverview(root) {
     }));
     wireSupplierLinkCopies(root);
     $("#supplierDataForm", root)?.addEventListener("submit", event => { event.preventDefault(); sendSupplierQuestion($("#supplierDataInput", root)?.value); });
+    $("#supplierDataInput", root)?.addEventListener("keydown", event => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      sendSupplierQuestion(event.currentTarget.value);
+    });
     $$(".supplier-data-suggestions button", root).forEach(button => button.addEventListener("click", () => sendSupplierQuestion(button.textContent)));
     $("#supplierTodayLinks", root)?.addEventListener("click", () => sendSupplierQuestion("今日回传链接"));
+    $("#supplierTodayLinksCopyAll", root)?.addEventListener("click", () => {
+      const lines = supplierTodayLinkLines(rows);
+      if (!lines.length) { toast("今天还没有可复制的回传链接"); return; }
+      copyText(`今日回传链接 ${lines.length} 条：\n${lines.join("\n")}`, "已复制今日全部回传链接");
+    });
     $("#supplierActivityType", root)?.addEventListener("change", event => {
       supplierActivityType = event.currentTarget.value;
       supplierActivityCarouselPage = 0;
