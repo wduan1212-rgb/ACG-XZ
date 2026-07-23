@@ -41,6 +41,7 @@ console.log(JSON.stringify({
   unpublished: ids({ download:'all', publish:'unpublished' }),
   downloadedUnpublished: ids({ download:'downloaded', publish:'unpublished' }),
   undownloadedPublished: ids({ download:'undownloaded', publish:'published' }),
+  globalSequence: deliveryDisplaySequence({ globalSeq:274, pubSeq:1 }, 7),
   stableSequence: deliveryDisplaySequence({ pubSeq:252 }, 1),
   projectedSequence: deliveryDisplaySequence({ projectedSeq:41 }, 1),
   legacySequence: deliveryDisplaySequence({}, 7)
@@ -60,6 +61,7 @@ console.log(JSON.stringify({
         self.assertEqual(data["unpublished"], ["fresh", "downloaded"])
         self.assertEqual(data["downloadedUnpublished"], ["downloaded"])
         self.assertEqual(data["undownloadedPublished"], ["published-only"])
+        self.assertEqual(data["globalSequence"], 274)
         self.assertEqual(data["stableSequence"], 252)
         self.assertEqual(data["projectedSequence"], 41)
         self.assertEqual(data["legacySequence"], 7)

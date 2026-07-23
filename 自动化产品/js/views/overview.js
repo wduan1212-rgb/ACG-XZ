@@ -5,16 +5,16 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, ownedBy, assetById } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
 import { STAGES, statusPill } from "../domain/productions.js";
-import { deliveredAssets, deliveryViewsSummary } from "../domain/delivery.js";
+import { deliveredAssets } from "../domain/delivery.js";
 import { analyticsRows, analyticsSummary } from "../domain/analytics.js";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260723-v117-7";
-import { LLM_CONFIG } from "../api/llm.js?v=20260723-v117-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v117-7";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260723-v117-7";
+import { AI } from "../api/ai.js?v=20260723-v117-8";
+import { LLM_CONFIG } from "../api/llm.js?v=20260723-v117-8";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v117-8";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260723-v117-8";
 import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260723-v117-7";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260723-v117-9";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
@@ -22,8 +22,42 @@ let chatBusy = false;
 let accountCarouselPage = 0;
 let accountCarouselTimer = null;
 let accountCarouselTransitionTimer = null;
+let overviewTrendWindow = { kind: "days", days: 7, start: "", end: "" };
 
 const dayKey = ts => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+function overviewTrendModel(delivered = []) {
+  const trendEnd = new Date();
+  trendEnd.setHours(0, 0, 0, 0);
+  const customTrendStart = overviewTrendWindow.start ? new Date(`${overviewTrendWindow.start}T00:00:00`) : null;
+  const customTrendEnd = overviewTrendWindow.end ? new Date(`${overviewTrendWindow.end}T00:00:00`) : null;
+  const trendStart = overviewTrendWindow.kind === "custom" && customTrendStart && customTrendEnd && customTrendStart <= customTrendEnd
+    ? customTrendStart
+    : new Date(trendEnd.getTime() - ((overviewTrendWindow.days || 7) - 1) * 864e5);
+  const trendDayCount = Math.max(1, Math.round((trendEnd - trendStart) / 864e5) + 1);
+  const recentDays = Array.from({ length: trendDayCount }, (_, index) => {
+    const ts = trendStart.getTime() + index * 864e5;
+    const key = dayKey(ts);
+    const dayDeliveries = delivered.filter(({ asset }) => dayKey(asset.deliveredAt || asset.createdAt) === key);
+    const video = dayDeliveries.filter(({ asset, acc }) => acc?.mode === "视频" || asset?.type === "视频").length;
+    return { key, label: new Date(ts).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }), value: dayDeliveries.length, video, image: Math.max(0, dayDeliveries.length - video) };
+  });
+  const trendMax = Math.max(1, ...recentDays.map(item => item.value));
+  const trendPoints = recentDays.map((item, index) => ({ ...item, x: 24 + index * 80, y: 94 - Math.round(item.value / trendMax * 70) }));
+  const trendCurve = trendPoints.reduce((path, point, index, points) => {
+    if (index === 0) return `M ${point.x} ${point.y}`;
+    const previous = points[index - 1]; const before = points[index - 2] || previous; const after = points[index + 1] || point;
+    return `${path} C ${(previous.x + (point.x - before.x) / 6).toFixed(2)} ${(previous.y + (point.y - before.y) / 6).toFixed(2)}, ${(point.x - (after.x - previous.x) / 6).toFixed(2)} ${(point.y - (after.y - previous.y) / 6).toFixed(2)}, ${point.x} ${point.y}`;
+  }, "");
+  const trendChartWidth = Math.max(564, trendPoints.length * 80);
+  const trendArea = trendPoints.length ? `${trendCurve} L ${trendPoints.at(-1).x} 94 L ${trendPoints[0].x} 94 Z` : "";
+  return { recentDays, trendPoints, trendCurve, trendChartWidth, trendArea };
+}
+
+function overviewTrendCardContent(model) {
+  const { trendPoints, trendCurve, trendChartWidth, trendArea } = model;
+  const title = overviewTrendWindow.kind === "custom" ? "自定义时间交付" : `近 ${overviewTrendWindow.days} 日交付`;
+  return `<header><span class="overview-trend-title"><b>${title}</b><em>总交付 · 图文 / 视频</em></span><span class="overview-trend-actions"><button class="overview-trend-detail" type="button" data-overview-trend-window="7">7日</button><button class="overview-trend-detail" type="button" data-overview-trend-window="30">30日</button><button class="overview-trend-detail" type="button" data-overview-trend-window="custom">自定义</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="-260" aria-label="向左查看日期">‹</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="260" aria-label="向右查看日期">›</button><button class="overview-trend-detail" type="button" data-overview-trend-detail>查看明细</button></span></header><div class="overview-trend-scroll" data-trend-scroll tabindex="0" aria-label="交付趋势，可横向查看日期"><div class="overview-trend-line" style="--trend-points:${trendPoints.length}; --trend-chart-width:${trendChartWidth}px"><svg viewBox="0 0 ${trendChartWidth} 106" preserveAspectRatio="xMidYMid meet" role="img"><defs><linearGradient id="overviewTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e5485d" stop-opacity=".28"/><stop offset="1" stop-color="#e5485d" stop-opacity="0"/></linearGradient></defs><path class="grid" d="M24 18H540 M24 56H540 M24 94H540"/><path class="trend-area" d="${trendArea}"/><path class="trend-curve" d="${trendCurve}"/>${trendPoints.map(item => `<circle cx="${item.x}" cy="${item.y}" r="3.4" tabindex="0" role="button" aria-label="${esc(item.key)} · 总交付 ${item.value} 条，图文 ${item.image} 条，视频 ${item.video} 条，查看当天明细" data-chart-tip="${esc(item.label)} · 总交付 ${item.value} · 图文 ${item.image} · 视频 ${item.video}" data-trend-date="${esc(item.key)}"><title>${esc(item.key)} · 总交付 ${item.value} · 图文 ${item.image} · 视频 ${item.video}</title></circle>`).join("")}</svg><div>${trendPoints.map(item => `<button type="button" data-trend-date="${esc(item.key)}"><b>${item.value}</b><em>${esc(item.label)}</em></button>`).join("")}</div></div></div>`;
+}
 const weekRange = ts => {
   const d = new Date(ts || Date.now());
   d.setHours(0, 0, 0, 0);
@@ -193,8 +227,19 @@ export const overviewView = {
     const pendingDl = delivered.filter(x => !x.asset.status || x.asset.status === "未下载").length;
     const links = analyticsRows();
     const analytics = analyticsSummary(links);
-    const views = deliveryViewsSummary();
-    const totalViews = Math.max(Number(analytics.totalViews || 0), Number(views.totalViews || 0));
+    const viewRows = links.map(row => {
+      const manualViews = Math.max(0, Number(row.asset?.viewCount || 0));
+      const manualUpdatedAt = Number(row.asset?.viewsUpdatedAt || 0);
+      const hasUpdatedViews = !!row.latest || manualUpdatedAt > 0 || manualViews > 0;
+      return {
+        ...row,
+        views: row.latest ? Math.max(0, Number(row.latest.metrics?.views || 0)) : manualViews,
+        updatedAt: Number(row.latest?.fetchedAt || row.asset?.viewsUpdatedAt || row.link?.lastSyncedAt || row.link?.updatedAt || 0),
+        sourceLabel: row.latest ? "接口同步" : "供应商回填",
+        hasUpdatedViews
+      };
+    }).filter(row => row.link?.url && row.hasUpdatedViews);
+    const totalViews = viewRows.reduce((sum, row) => sum + row.views, 0);
     const totalEngagement = Number(analytics.totalEngagement || 0);
     const fmt = value => Number(value || 0).toLocaleString("zh-CN");
     const memberId = state.ui.currentMemberId || "";
@@ -287,39 +332,8 @@ export const overviewView = {
     };
     const todayXhs = todayPlatformSummary("小红书");
     const todayVideo = todayPlatformSummary("视频号");
-    const recentDays = Array.from({ length: 7 }, (_, index) => {
-      const ts = Date.now() - (6 - index) * 864e5;
-      const key = dayKey(ts);
-      const dayDeliveries = delivered.filter(({ asset }) => dayKey(asset.deliveredAt || asset.createdAt) === key);
-      const video = dayDeliveries.filter(({ asset, acc }) => acc?.mode === "视频" || asset?.type === "视频").length;
-      return {
-        key,
-        label: new Date(ts).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }),
-        value: dayDeliveries.length,
-        video,
-        image: Math.max(0, dayDeliveries.length - video)
-      };
-    });
-    const trendMax = Math.max(1, ...recentDays.map(item => item.value));
-    const trendPoints = recentDays.map((item, index) => ({
-      ...item,
-      x: 24 + index * 86,
-      y: 94 - Math.round(item.value / trendMax * 70)
-    }));
-    const trendCurve = trendPoints.reduce((path, point, index, points) => {
-      if (index === 0) return `M ${point.x} ${point.y}`;
-      const previous = points[index - 1];
-      const before = points[index - 2] || previous;
-      const after = points[index + 1] || point;
-      const control1X = previous.x + (point.x - before.x) / 6;
-      const control1Y = previous.y + (point.y - before.y) / 6;
-      const control2X = point.x - (after.x - previous.x) / 6;
-      const control2Y = point.y - (after.y - previous.y) / 6;
-      return `${path} C ${control1X.toFixed(2)} ${control1Y.toFixed(2)}, ${control2X.toFixed(2)} ${control2Y.toFixed(2)}, ${point.x} ${point.y}`;
-    }, "");
-    const trendArea = trendPoints.length
-      ? `${trendCurve} L ${trendPoints[trendPoints.length - 1].x} 94 L ${trendPoints[0].x} 94 Z`
-      : "";
+    let trendModel = overviewTrendModel(delivered);
+    let { recentDays, trendPoints, trendCurve, trendChartWidth, trendArea } = trendModel;
     const accountPerformance = analytics.accounts.length
       ? analytics.accounts.map(item => ({
         ...item,
@@ -337,6 +351,7 @@ export const overviewView = {
     };
     const accountPageHtml = page => (accountPages[page] || []).map((item, index) => `<button data-overview-account="${esc(item.name)}" data-overview-account-id="${esc(item.accountId || "")}">${accountAvatarHtml(item)}<span><b><i>${page * 4 + index + 1}</i>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`;
 
+    let refreshOverviewTrend = () => render(root);
     const openDataDetail = (key, accountName = "", initialRecentFilter = null, accountId = "", platform = "") => {
       if (["todo", "waiting", "rendering", "review", "failed", "supplier"].includes(key)) { openTaskGroup(key); return; }
       const metricText = row => {
@@ -348,6 +363,8 @@ export const overviewView = {
       let rows = "";
       let recentFilter = null;
       let recentDetailHtml = null;
+      let viewFilter = null;
+      let viewDetailHtml = null;
       if (key === "todayPlatforms") {
         const platformRows = platform ? todayPlatformRows.filter(item => item.platform === platform) : todayPlatformRows;
         title = platform ? `今日${platform}交付 · ${platformRows.length} 个账号` : `今日平台交付 · ${platformRows.length} 个账号`;
@@ -367,7 +384,7 @@ export const overviewView = {
           const range = weekRange(time);
           return [range.key, range];
         })).values()].sort((a, b) => b.key.localeCompare(a.key)).slice(0, 8);
-        const allowedFilters = isPublished ? new Set(["day", "week"]) : new Set(["day", "month"]);
+        const allowedFilters = isPublished ? new Set(["day", "week"]) : new Set(["day", "month", "range"]);
         recentFilter = allowedFilters.has(initialRecentFilter?.type)
           ? initialRecentFilter
           : { type: "all", value: "" };
@@ -379,6 +396,7 @@ export const overviewView = {
             const date = dayKey(time);
             if (recentFilter.type === "day") return date === recentFilter.value;
             if (recentFilter.type === "month") return date.startsWith(recentFilter.value);
+            if (recentFilter.type === "range") return (!recentFilter.start || date >= recentFilter.start) && (!recentFilter.end || date <= recentFilter.end);
             if (recentFilter.type === "week") return weekRange(time).key === recentFilter.value;
             return true;
           });
@@ -394,14 +412,52 @@ export const overviewView = {
           const secondary = isPublished
             ? `<div><b>按周</b><span class="overview-detail-filter-tags">${weekFilters || `<em>暂无周发布</em>`}</span></div>`
             : `<div><b>按月份</b><span class="overview-detail-filter-tags">${monthFilters || `<em>暂无月度交付</em>`}</span></div>`;
+          const customRange = !isPublished ? `<div class="overview-detail-custom-range"><b>自定义时间</b><label>开始<input type="date" data-recent-custom-date="start" value="${esc(recentFilter.start || "")}"/></label><label>结束<input type="date" data-recent-custom-date="end" value="${esc(recentFilter.end || "")}"/></label><button class="btn primary sm" type="button" data-apply-overview-trend-range>应用到趋势图</button></div>` : "";
           const scopeLabel = recentFilter.type === "all"
             ? (isPublished ? "全部发布" : "全部交付")
             : recentFilter.type === "month" ? `${recentFilter.value} 月`
-              : recentFilter.type === "week" ? `本周起始 ${recentFilter.value}` : recentFilter.value;
-          return `<section class="overview-detail-filter-section"><div><b>按日期</b><span class="overview-detail-filter-tags">${filterButton("all", "", "全部")}${dayFilters}</span></div>${secondary}</section><div class="overview-detail-summary">${scopeLabel} · ${scoped.length} 条</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该时间范围暂无${isPublished ? "发布" : "交付"}</div>`}</div>`;
+              : recentFilter.type === "week" ? `本周起始 ${recentFilter.value}`
+                : recentFilter.type === "range" ? `${recentFilter.start || "开始"} 至 ${recentFilter.end || "今天"}` : recentFilter.value;
+          return `<section class="overview-detail-filter-section"><div><b>按日期</b><span class="overview-detail-filter-tags">${filterButton("all", "", "全部")}${dayFilters}</span></div>${secondary}${customRange}</section><div class="overview-detail-summary">${scopeLabel} · ${scoped.length} 条</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该时间范围暂无${isPublished ? "发布" : "交付"}</div>`}</div>`;
         };
         title = isPublished ? "发布数量明细" : "交付明细";
         rows = `<div data-recent-detail-content>${recentDetailHtml()}</div>`;
+      } else if (key === "views") {
+        const platforms = [...new Set(viewRows.map(row => row.link.platform || row.acc?.platform || "未知平台"))];
+        viewFilter = { platform: "all", period: "all", start: "", end: "" };
+        viewDetailHtml = () => {
+          const now = Date.now();
+          const scoped = viewRows.filter(row => {
+            const platformName = row.link.platform || row.acc?.platform || "未知平台";
+            const date = dayKey(row.updatedAt || row.link.publishedAt || row.asset?.publishedAt || 0);
+            if (viewFilter.platform !== "all" && platformName !== viewFilter.platform) return false;
+            if (viewFilter.period === "7") return row.updatedAt >= now - 7 * 864e5;
+            if (viewFilter.period === "30") return row.updatedAt >= now - 30 * 864e5;
+            if (viewFilter.period === "custom") return (!viewFilter.start || date >= viewFilter.start) && (!viewFilter.end || date <= viewFilter.end);
+            return true;
+          });
+          const total = scoped.reduce((sum, row) => sum + row.views, 0);
+          const filterButton = (kind, value, label) => `<button type="button" class="overview-detail-filter${viewFilter[kind] === value ? " is-active" : ""}" data-view-filter-kind="${esc(kind)}" data-view-filter-value="${esc(value)}">${esc(label)}</button>`;
+          const platformButtons = [filterButton("platform", "all", "全部平台"), ...platforms.map(platformName => filterButton("platform", platformName, platformName))].join("");
+          const periodButtons = [filterButton("period", "all", "全部时间"), filterButton("period", "7", "近 7 天"), filterButton("period", "30", "近 30 天")].join("");
+          const list = scoped.map(row => {
+            const platformName = row.link.platform || row.acc?.platform || "未知平台";
+            const updated = row.updatedAt ? timeAgo(row.updatedAt) : "暂无更新时间";
+            const sourceMetrics = row.latest
+              ? metricText(row)
+              : `播放 ${fmt(row.views)} · 供应商回填`;
+            return makeRow(
+              row.link.title || row.asset?.title || row.asset?.name || "未命名内容",
+              `${row.acc?.name || "未命名账号"} · ${platformName} · ${row.sourceLabel} · ${updated}`,
+              `<a class="btn ghost sm" href="${esc(row.link.url)}" target="_blank" rel="noopener noreferrer">查看链接</a>`,
+              sourceMetrics
+            );
+          }).join("");
+          const scopeLabel = viewFilter.period === "all" ? "全部时间" : viewFilter.period === "custom" ? `${viewFilter.start || "开始"} 至 ${viewFilter.end || "今天"}` : `近 ${viewFilter.period} 天`;
+          return `<section class="overview-detail-filter-section"><div><b>按平台</b><span class="overview-detail-filter-tags">${platformButtons}</span></div><div><b>按日期</b><span class="overview-detail-filter-tags">${periodButtons}</span></div><div class="overview-detail-custom-range"><b>自定义时间</b><label>开始<input type="date" data-view-custom-date="start" value="${esc(viewFilter.start)}"/></label><label>结束<input type="date" data-view-custom-date="end" value="${esc(viewFilter.end)}"/></label><button class="overview-detail-filter${viewFilter.period === "custom" ? " is-active" : ""}" type="button" data-view-filter-kind="period" data-view-filter-value="custom">应用</button></div></section><div class="overview-detail-summary">${scopeLabel} · ${scoped.length} 条已同步链接 · 播放 ${fmt(total)}</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该筛选范围没有已更新播放量的回传链接</div>`}</div>`;
+        };
+        title = `总播放量明细 · ${viewRows.length} 条已更新链接`;
+        rows = `<div data-view-detail-content>${viewDetailHtml()}</div>`;
       } else if (key === "links") {
         title = `回传链接 · ${links.length} 条`;
         rows = links.slice(0, 40).map(row => makeRow(
@@ -445,6 +501,13 @@ export const overviewView = {
         onMount(panel, close) {
           panel.classList.add("overview-task-panel");
           panel.addEventListener("click", event => {
+            const viewFilterButton = event.target.closest("[data-view-filter-kind]");
+            if (key === "views" && viewFilterButton && viewFilter && viewDetailHtml) {
+              viewFilter = { ...viewFilter, [viewFilterButton.dataset.viewFilterKind]: viewFilterButton.dataset.viewFilterValue || "all" };
+              const target = panel.querySelector("[data-view-detail-content]");
+              if (target) target.innerHTML = viewDetailHtml();
+              return;
+            }
             const recentFilterButton = event.target.closest("[data-recent-filter-type]");
             if (["recent", "published"].includes(key) && recentFilterButton && recentFilter && recentDetailHtml) {
               recentFilter = {
@@ -464,6 +527,27 @@ export const overviewView = {
             }
             const routeButton = event.target.closest("[data-ov-route]");
             if (routeButton) { close(); window.setTimeout(() => go(routeButton.dataset.ovRoute), 180); }
+            const applyTrendRange = event.target.closest("[data-apply-overview-trend-range]");
+            if (applyTrendRange && recentFilter?.start && recentFilter?.end) {
+              if (recentFilter.start > recentFilter.end) return;
+              overviewTrendWindow = { kind: "custom", days: 0, start: recentFilter.start, end: recentFilter.end };
+              close();
+              refreshOverviewTrend();
+            }
+          });
+          panel.addEventListener("change", event => {
+            const viewDate = event.target.closest("[data-view-custom-date]");
+            if (key === "views" && viewDate && viewFilter && viewDetailHtml) {
+              viewFilter = { ...viewFilter, [viewDate.dataset.viewCustomDate]: viewDate.value };
+              const target = panel.querySelector("[data-view-detail-content]");
+              if (target) target.innerHTML = viewDetailHtml();
+              return;
+            }
+            const input = event.target.closest("[data-recent-custom-date]");
+            if (!input || !recentFilter || !recentDetailHtml) return;
+            recentFilter = { ...recentFilter, type: "range", [input.dataset.recentCustomDate]: input.value };
+            const target = panel.querySelector("[data-recent-detail-content]");
+            if (target) target.innerHTML = recentDetailHtml();
           });
         }
       });
@@ -475,7 +559,7 @@ export const overviewView = {
           <section class="overview-kpi-strip" aria-label="关键指标">
             <button class="overview-kpi-card" data-overview-detail="published"><span>发布数量</span><b>${fmt(published.length)}</b><em>${published.filter(({ asset }) => dayKey(asset.publishedUpdatedAt || asset.publishedAt || 0) === dayKey(Date.now())).length} 条今日发布</em></button>
             <button class="overview-kpi-card" data-overview-detail="interactions"><span>总互动</span><b>${fmt(totalEngagement)}</b><em>赞、藏、评与分享</em></button>
-            <button class="overview-kpi-card" data-overview-detail="interactions"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${views.deliveryCount} 条交付汇总</em></button>
+            <button class="overview-kpi-card" data-overview-detail="views"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${viewRows.length} 条已更新链接</em></button>
             <button class="overview-kpi-card" data-overview-detail="recent"><span>累计交付</span><b>${fmt(delivered.length)}</b><em>${pendingDl} 条供应商待下载</em></button>
           </section>
           <section class="overview-viz-grid">
@@ -483,21 +567,7 @@ export const overviewView = {
               <header><b>平台分布</b><em>${delivered.length} 条交付</em></header>
               <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="overview-donut-track" cx="70" cy="70" r="51" pathLength="100"/><circle class="overview-donut-segment is-xhs" cx="70" cy="70" r="51" pathLength="100" style="--segment:${xhsShare};--offset:0" data-overview-detail="todayPlatforms" data-overview-platform="小红书" data-chart-tip="${esc(todayXhs.tooltip)}" tabindex="0" role="button" aria-label="小红书 ${xhsCount} 条交付，查看今日小红书交付明细"/><circle class="overview-donut-segment is-video" cx="70" cy="70" r="51" pathLength="100" style="--segment:${100 - xhsShare};--offset:${-xhsShare}" data-overview-detail="todayPlatforms" data-overview-platform="视频号" data-chart-tip="${esc(todayVideo.tooltip)}" tabindex="0" role="button" aria-label="视频号 ${videoCount} 条交付，查看今日视频号交付明细"/></svg><i><b>${delivered.length}</b><em>总交付</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
             </article>
-            <article class="overview-viz-card overview-trend-card">
-              <header><span class="overview-trend-title"><b>近 7 日交付</b><em>总交付 · 图文 / 视频</em></span><span class="overview-trend-actions"><button class="overview-trend-nav" type="button" data-trend-scroll-by="-260" aria-label="向左查看日期">‹</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="260" aria-label="向右查看日期">›</button><button class="overview-trend-detail" type="button" data-overview-detail="recent">查看明细</button></span></header>
-              <div class="overview-trend-scroll" data-trend-scroll tabindex="0" aria-label="近七日交付趋势，可横向查看日期">
-                <div class="overview-trend-line">
-                <svg viewBox="0 0 564 106" preserveAspectRatio="xMidYMid meet" role="img">
-                  <defs><linearGradient id="overviewTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e5485d" stop-opacity=".28"/><stop offset="1" stop-color="#e5485d" stop-opacity="0"/></linearGradient></defs>
-                  <path class="grid" d="M24 18H540 M24 56H540 M24 94H540"/>
-                  <path class="trend-area" d="${trendArea}"/>
-                  <path class="trend-curve" d="${trendCurve}"/>
-                  ${trendPoints.map(item => `<circle cx="${item.x}" cy="${item.y}" r="3.4" tabindex="0" role="button" aria-label="${esc(item.key)} · 总交付 ${item.value} 条，图文 ${item.image} 条，视频 ${item.video} 条，查看当天明细" data-chart-tip="${esc(item.label)} · 总交付 ${item.value} · 图文 ${item.image} · 视频 ${item.video}" data-trend-date="${esc(item.key)}"><title>${esc(item.key)} · 总交付 ${item.value} · 图文 ${item.image} · 视频 ${item.video}</title></circle>`).join("")}
-                </svg>
-                <div>${trendPoints.map(item => `<button type="button" data-trend-date="${esc(item.key)}"><b>${item.value}</b><em>${esc(item.label)}</em></button>`).join("")}</div>
-                </div>
-              </div>
-            </article>
+            <article class="overview-viz-card overview-trend-card">${overviewTrendCardContent(trendModel)}</article>
           </section>
           <section class="overview-action-grid">
             <button class="overview-action-card" data-overview-detail="todo"><span class="overview-action-icon is-check">${icon("checkCircle", 16)}</span><div><b>待你处理</b><em>${todoCount} 项 · 审核 ${inReview.length} / 失败 ${failed.length}</em></div><strong>${todoCount}</strong></button>
@@ -507,7 +577,7 @@ export const overviewView = {
           </section>
           <section class="overview-account-strip"><header><b>账号表现</b><em>${accountPerformance.length > 4 ? "每 4 秒切换下一组账号" : "点击查看逐条数据"}</em></header><div class="overview-account-viewport" data-account-carousel><div class="overview-account-page">${accountPageHtml(accountCarouselPage)}</div></div></section>
         </main>
-        <aside class="overview-dashboard-assistant"><section class="ov-chat" id="ovChat"><div class="ovc-head"><span class="ovc-ava">${agentAvatar(24)}</span><div><b>星阵数据助手</b><em>独立问答区 · 只读真实数据</em></div></div><div class="ovc-msgs" id="ovcMsgs"></div><div class="ovc-input"><input id="ovcInput" placeholder="问问数据：昨天产出多少素材？" /><button class="ovc-send" id="ovcSend" title="发送">${icon("send", 15)}</button></div></section></aside>
+        <aside class="overview-dashboard-assistant"><section class="ov-chat" id="ovChat"><div class="ovc-head"><span class="ovc-ava">${agentAvatar(24)}</span><div><b>星阵数据助手</b><em>独立问答区 · 只读真实数据</em></div></div><div class="ovc-msgs" id="ovcMsgs"></div><div class="ovc-input"><input id="ovcInput" name="overviewDataQuestion" autocomplete="off" aria-label="向数据助手提问" placeholder="问问数据：昨天产出多少素材？" /><button class="ovc-send" id="ovcSend" type="button" title="发送" aria-label="发送数据问题">${icon("send", 15)}</button></div></section></aside>
       </div>
       <div class="overview-chart-tooltip" id="overviewChartTooltip" role="status" aria-live="polite"></div>
     </div>`;
@@ -527,22 +597,6 @@ export const overviewView = {
     });
     const wireAccountButtons = host => host.querySelectorAll("[data-overview-account]").forEach(button => button.addEventListener("click", () => openDataDetail("interactions", button.dataset.overviewAccount, null, button.dataset.overviewAccountId || "")));
     wireAccountButtons(root);
-    root.querySelectorAll("[data-trend-date]").forEach(target => {
-      const openTrendDate = event => {
-        event.preventDefault();
-        event.stopPropagation();
-        openDataDetail("recent", "", { type: "day", value: target.dataset.trendDate });
-      };
-      target.addEventListener("click", openTrendDate);
-      target.addEventListener("keydown", event => {
-        if (event.key === "Enter" || event.key === " ") openTrendDate(event);
-      });
-    });
-    const trendScroller = root.querySelector("[data-trend-scroll]");
-    root.querySelectorAll("[data-trend-scroll-by]").forEach(button => button.addEventListener("click", () => {
-      trendScroller?.scrollBy({ left: Number(button.dataset.trendScrollBy || 0), behavior: "smooth" });
-    }));
-
     const chartTooltip = $("#overviewChartTooltip", root);
     const hideChartTooltip = () => chartTooltip?.classList.remove("is-visible");
     const showChartTooltip = target => {
@@ -553,12 +607,43 @@ export const overviewView = {
       chartTooltip.style.top = `${Math.max(12, rect.top - 10)}px`;
       chartTooltip.classList.add("is-visible");
     };
-    root.querySelectorAll("[data-chart-tip]").forEach(target => {
-      target.addEventListener("pointerenter", () => showChartTooltip(target));
-      target.addEventListener("pointerleave", hideChartTooltip);
-      target.addEventListener("focus", () => showChartTooltip(target));
-      target.addEventListener("blur", hideChartTooltip);
-    });
+    const wireOverviewTrend = () => {
+      const chart = root.querySelector(".overview-trend-card");
+      if (!chart) return;
+      const range = { type: "range", start: trendModel.recentDays[0]?.key || "", end: trendModel.recentDays.at(-1)?.key || "" };
+      chart.querySelectorAll("[data-overview-trend-window]").forEach(button => button.addEventListener("click", () => {
+        const next = button.dataset.overviewTrendWindow;
+        if (next === "custom") return openDataDetail("recent", "", { type: "range", start: overviewTrendWindow.start || range.start, end: overviewTrendWindow.end || range.end });
+        overviewTrendWindow = { kind: "days", days: Number(next), start: "", end: "" };
+        refreshOverviewTrend();
+      }));
+      chart.querySelector("[data-overview-trend-detail]")?.addEventListener("click", () => openDataDetail("recent", "", range));
+      chart.querySelectorAll("[data-trend-date]").forEach(target => {
+        const openTrendDate = event => { event.preventDefault(); event.stopPropagation(); openDataDetail("recent", "", { type: "day", value: target.dataset.trendDate }); };
+        target.addEventListener("click", openTrendDate);
+        target.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") openTrendDate(event); });
+      });
+      const trendScroller = chart.querySelector("[data-trend-scroll]");
+      chart.querySelectorAll("[data-trend-scroll-by]").forEach(button => button.addEventListener("click", () => trendScroller?.scrollBy({ left: Number(button.dataset.trendScrollBy || 0), behavior: "smooth" })));
+      chart.querySelectorAll("[data-chart-tip]").forEach(target => {
+        target.addEventListener("pointerenter", () => showChartTooltip(target));
+        target.addEventListener("pointerleave", hideChartTooltip);
+        target.addEventListener("focus", () => showChartTooltip(target));
+        target.addEventListener("blur", hideChartTooltip);
+      });
+    };
+    refreshOverviewTrend = () => {
+      const chart = root.querySelector(".overview-trend-card");
+      if (!chart) return;
+      trendModel = overviewTrendModel(delivered);
+      ({ recentDays, trendPoints, trendCurve, trendChartWidth, trendArea } = trendModel);
+      chart.innerHTML = overviewTrendCardContent(trendModel);
+      chart.classList.remove("is-trend-switching");
+      void chart.offsetWidth;
+      chart.classList.add("is-trend-switching");
+      wireOverviewTrend();
+    };
+    wireOverviewTrend();
 
     window.clearInterval(accountCarouselTimer);
     window.clearTimeout(accountCarouselTransitionTimer);

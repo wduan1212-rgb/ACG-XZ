@@ -5022,6 +5022,12 @@ def api_put(collection: str, req: PutReq, me=Depends(require_member)):
     }
 
 
+@app.post("/api/admin/deliveries/reconcile-sequences")
+def reconcile_delivery_sequences(me=Depends(require_admin)):
+    """管理员受控执行一次历史发布编号校准。"""
+    return {"ok": True, **store.reconcile_delivery_sequences()}
+
+
 @app.delete("/api/db/{collection}/{doc_id}")
 def api_del(collection: str, doc_id: str, me=Depends(require_member)):
     if collection in store.CUSTOM_COLLECTIONS:

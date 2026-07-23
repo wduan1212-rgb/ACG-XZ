@@ -122,13 +122,22 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertNotIn("await persistNow()", source)
         supplier_css = (APP_DIR / "styles/views.css").read_text(encoding="utf-8")
         self.assertIn(
-            ".supplier-data-assistant { position: sticky; top: 0; align-self: stretch;",
+            ".supplier-data-assistant { position: relative; top: auto; align-self: start; margin: 0; height: 100%; min-height: 0;",
             supplier_css,
         )
-        self.assertIn("height: auto; display: grid; grid-template-rows", supplier_css)
+        self.assertIn("--supplier-dashboard-height: clamp(480px, calc(100dvh - 104px), 680px);", supplier_css)
+        self.assertIn(".supplier-dashboard-grid > .supplier-data-assistant { align-self: start; height: var(--supplier-dashboard-height); min-height: 0; margin-block: 0; }", supplier_css)
+        self.assertIn(".supplier-dashboard-main { min-width: 0; display: grid; align-content: start; height: var(--supplier-dashboard-height);", supplier_css)
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr) auto auto;", supplier_css)
+        self.assertIn(".supplier-data-messages { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain;", supplier_css)
         self.assertIn(".supplier-today-links", supplier_css)
         self.assertIn(".supplier-today-link-actions", supplier_css)
         self.assertIn(".supplier-data-copy", supplier_css)
+        self.assertIn(".supplier-donut-segment.is-xhs", supplier_css)
+        self.assertIn(".supplier-trend-scroll", supplier_css)
+        self.assertIn('data-supplier-platform="小红书"', source)
+        self.assertIn('data-supplier-trend-window="30"', source)
+        self.assertIn("openSupplierTrendDetail", source)
 
     def test_disabled_accounts_are_not_selectable_for_single_creation(self):
         source = (APP_DIR / "js/main.js").read_text(encoding="utf-8")

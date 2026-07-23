@@ -363,6 +363,10 @@ class SupplierStateTest(unittest.TestCase):
                 sequences.append(item["projectedSeq"])
                 self.assertNotIn("pubSeq", item)
             self.assertEqual(len(set(sequences)), 1)
+            self.assertEqual(
+                {next(row for row in snapshot["assets"] if row["id"] == "legacy-assigned")["globalSeq"] for snapshot in snapshots},
+                {1},
+            )
 
             # projectedSeq 只是 /api/state 投影，不写回生产资产记录。
             conn = store._connect()
@@ -387,6 +391,55 @@ class SupplierStateTest(unittest.TestCase):
             finally:
                 conn.close()
             self.assertNotIn("projectedSeq", __import__("json").loads(raw))
+
+    def test_delivery_sequence_reconciliation_is_global_across_creators_and_suppliers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            parent = store.add_member("供应商管理员", "sequence_parent", "local-test-pin", "supplier_parent")
+            child = store.create_supplier_children(parent[0], [{
+                "name": "供应商子账号", "username": "sequence_child", "pin": "local-test-pin",
+            }])[0]
+            store.set_supplier_child_accounts(parent[0], child["id"], ["account-assigned"], parent[0])
+            store.upsert_docs("accounts", [{
+                "id": "account-assigned", "name": "已分配账号", "platform": "小红书", "mode": "图文", "updatedAt": 1,
+            }, {
+                "id": "account-other", "name": "其他创作者账号", "platform": "视频号", "mode": "视频", "updatedAt": 1,
+            }])
+            # 历史数据模拟两个发布人各自从 #001 开始，且较新的记录错误写成 #274。
+            store.upsert_docs("assets", [{
+                "id": "first-delivery", "accountId": "account-assigned", "name": "先发布的内容",
+                "delivered": True, "deliveredAt": 100, "pubSeq": 1,
+                "publishedUrl": "https://example.test/first", "updatedAt": 100,
+            }, {
+                "id": "second-delivery", "accountId": "account-other", "name": "后发布的内容",
+                "delivered": True, "deliveredAt": 200, "pubSeq": 274, "updatedAt": 200,
+            }])
+
+            migrated = store.reconcile_delivery_sequences()
+            self.assertEqual(migrated, {"migrated": True, "updated": 1, "total": 2})
+            self.assertEqual(
+                store.reconcile_delivery_sequences(),
+                {"migrated": False, "updated": 0, "total": 2},
+            )
+
+            admin_assets = {row["id"]: row for row in store.state_for("admin-1", "admin")["assets"]}
+            parent_assets = {row["id"]: row for row in store.state_for(parent[0], "supplier_parent")["assets"]}
+            child_assets = {row["id"]: row for row in store.state_for(child["id"], "supplier_child", parent[0])["assets"]}
+            self.assertEqual(admin_assets["first-delivery"]["pubSeq"], 1)
+            self.assertEqual(admin_assets["second-delivery"]["pubSeq"], 2)
+            self.assertEqual(parent_assets["second-delivery"]["pubSeq"], 2)
+            self.assertEqual(child_assets["first-delivery"]["pubSeq"], 1)
+            self.assertEqual(parent_assets["second-delivery"]["globalSeq"], 2)
+            self.assertEqual(child_assets["first-delivery"]["globalSeq"], 1)
+            self.assertEqual(admin_assets["first-delivery"]["publishedUrl"], "https://example.test/first")
+
+            # 校准后，旧前端即便携带了自己的大号计数，新交付也必须领到全局下一号。
+            store.upsert_docs("assets", [{
+                "id": "third-delivery", "accountId": "account-assigned", "name": "新交付",
+                "delivered": True, "deliveredAt": 300, "pubSeq": 999, "updatedAt": 300,
+            }])
+            after_new = {row["id"]: row for row in store.state_for("admin-1", "admin")["assets"]}
+            self.assertEqual(after_new["third-delivery"]["pubSeq"], 3)
 
     def test_state_projection_decodes_each_asset_once(self):
         with tempfile.TemporaryDirectory() as tmp:

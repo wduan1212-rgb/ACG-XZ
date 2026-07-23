@@ -302,15 +302,14 @@ export async function loadAll() {
     db.metaSet("ui", JSON.parse(JSON.stringify(state.ui)));
   }
   if (state.ui.assetSeq == null) state.ui.assetSeq = state.assets.filter(a => !a.delivered).length;
-  // 发布序号回填：历史已发布资产补 pubSeq（按发布/创建先后），让发布清单「序号」有意义
+  // 历史发布序号由服务端统一投影 / 受控迁移；浏览器绝不能从可见子集写回
+  // pubSeq，否则不同创作者或供应商会把同一全局账本改成个人计数。
   {
     const delivered = state.assets.filter(a => a.delivered);
-    const need = delivered.filter(a => a.pubSeq == null)
-      .sort((a, b) => (a.deliveredAt || a.createdAt || 0) - (b.deliveredAt || b.createdAt || 0));
-    let seq = Math.max(state.ui.deliverSeq || 0, delivered.reduce((m, a) => Math.max(m, a.pubSeq || 0), 0));
-    need.forEach(a => { a.pubSeq = ++seq; if (!a.deliveredAt) a.deliveredAt = a.createdAt; if (!a.byAccount) { const ac = accountById(a.accountId); a.byAccount = ac ? ac.name : ""; } });
-    state.ui.deliverSeq = seq;
-    if (need.length) db.replaceAll("assets", JSON.parse(JSON.stringify(state.assets)));
+    state.ui.deliverSeq = Math.max(
+      state.ui.deliverSeq || 0,
+      delivered.reduce((max, asset) => Math.max(max, Number(asset.pubSeq || asset.projectedSeq || 0)), 0)
+    );
   }
   // 当前成员失效时清空（要求重新登录）
   if (state.ui.currentMemberId && !state.members.find(m => m.id === state.ui.currentMemberId)) {

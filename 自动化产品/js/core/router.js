@@ -58,7 +58,8 @@ export function render() {
   // 权限路由：供应商子账号只处理发布；供应商母账号可看首页、账号板、发布和设置。
   if (state.role === "supplier_child" && zone !== "delivery") { zone = "delivery"; page = null; location.hash = "#/delivery"; }
   if ((state.role === "supplier_parent" || state.role === "supplier") && !["overview", "assets", "delivery", "settings"].includes(zone)) { zone = "overview"; page = null; location.hash = "#/overview"; }
-  if (state.role !== "admin" && state.role !== "supplier_parent" && state.role !== "supplier" && zone === "settings") { zone = "overview"; page = null; location.hash = "#/overview"; }
+  // 创作成员的 settings 是“我的”个人资料页；管理员和供应商管理员仍保留各自设置看板。
+  if (!["admin", "editor", "supplier_parent", "supplier"].includes(state.role) && zone === "settings") { zone = "overview"; page = null; location.hash = "#/overview"; }
   if (!routes.has(zone)) { zone = "overview"; page = null; }
   current = { zone, page };
 

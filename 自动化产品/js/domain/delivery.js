@@ -83,11 +83,11 @@ export function supplierReturnRowState(asset) {
   };
 }
 
-/* 发布清单的序号必须来自交付本身，不能按当前角色可见的子集重新连续编号。
-   pubSeq 是现行权威字段；projectedSeq 供服务端向旧记录投影稳定序号；
-   fallback 只保留纯本地旧数据的兼容显示。 */
+/* 发布清单的序号必须来自所有交付物的统一时间线，不能按当前角色可见的子集
+   重新连续编号。globalSeq 是服务端给所有角色的只读全局投影；pubSeq 是迁移
+   后的持久化账本字段；projectedSeq 仅兼容尚未校准的旧记录。 */
 export function deliveryDisplaySequence(asset, fallback = 0) {
-  for (const value of [asset?.pubSeq, asset?.projectedSeq, fallback]) {
+  for (const value of [asset?.globalSeq, asset?.pubSeq, asset?.projectedSeq, fallback]) {
     const seq = Number(value || 0);
     if (Number.isSafeInteger(seq) && seq > 0) return seq;
   }

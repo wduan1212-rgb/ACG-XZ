@@ -886,9 +886,10 @@ def _upsert_docs_in_conn(conn, collection, items):
         # 授权层可能需要覆盖 ownerId；复制后写入，避免修改调用方的前端快照。
         it = dict(raw)
         if collection == "assets":
-            # /api/state 为缺少 pubSeq 的旧交付物附加只读序号投影；
-            # 旧浏览器回推整条资产时不得将该投影固化到生产数据。
+            # /api/state 附加的序号字段都只读；旧浏览器回推整条资产时不得
+            # 将投影或全局显示序号固化回生产数据。
             it.pop("projectedSeq", None)
+            it.pop("globalSeq", None)
         doc_id = str(it["id"])
         if doc_id in deleted_ids:
             continue
@@ -928,6 +929,15 @@ def _upsert_docs_in_conn(conn, collection, items):
                 ):
                     if key in existing:
                         it[key] = existing[key]
+            # 发布清单编号是全局账本字段。完成历史校准后，任何旧浏览器的
+            # 整条快照回推都不能把服务端已经确认的编号改回按个人计数的旧值。
+            if existing.get("delivered"):
+                existing_pub_seq = _int_at_least_zero(existing.get("pubSeq"))
+                if existing_pub_seq:
+                    it["pubSeq"] = existing_pub_seq
+        elif collection == "assets" and it.get("delivered") and _delivery_sequences_reconciled(conn):
+            # 新交付也必须由共享账本分配编号，不能信任旧前端的本地计数器。
+            it["pubSeq"] = _next_delivery_pub_seq(conn)
         conn.execute(
             "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
             (collection, doc_id, it.get("ownerId"), ua, json.dumps(it, ensure_ascii=False)),
@@ -3034,10 +3044,29 @@ def _custom_delivery_dependencies(kind, delivery):
     return pack_ids, set(pack_ids)
 
 
-def _next_custom_delivery_pub_seq(conn):
-    row = conn.execute("SELECT v FROM meta WHERE k='custom_delivery_pub_seq'").fetchone()
-    current = _int_at_least_zero(row[0] if row else 0)
-    # 兼容历史资产和旧版前端分配的编号；meta 只能前进，不能因回撤而复用。
+def _delivery_sequences_reconciled(conn):
+    row = conn.execute("SELECT v FROM meta WHERE k='delivery_pub_seq_reconciled_v2'").fetchone()
+    return str(row[0] if row else "") == "1"
+
+
+def _delivery_sequence_time(item):
+    """交付编号只按交付进入发布清单的时间排序，不以供应商回传时间重排。"""
+    for value in (item.get("deliveredAt"), item.get("createdAt"), item.get("updatedAt")):
+        numeric = _int_at_least_zero(value)
+        if numeric:
+            return numeric
+    return 0
+
+
+def _next_delivery_pub_seq(conn):
+    """从服务端唯一账本预留下一条发布编号，供所有创作者共享。"""
+    row = conn.execute("SELECT v FROM meta WHERE k='delivery_pub_seq'").fetchone()
+    legacy_row = conn.execute("SELECT v FROM meta WHERE k='custom_delivery_pub_seq'").fetchone()
+    current = max(
+        _int_at_least_zero(row[0] if row else 0),
+        _int_at_least_zero(legacy_row[0] if legacy_row else 0),
+    )
+    # 兼容已写入的历史资产；账本只能前进，不能因回撤而复用。
     for (raw,) in conn.execute(
         "SELECT data FROM docs WHERE collection='assets'"
     ).fetchall():
@@ -3049,10 +3078,85 @@ def _next_custom_delivery_pub_seq(conn):
             current = max(current, _int_at_least_zero(item.get("pubSeq")))
     value = current + 1
     conn.execute(
+        "INSERT OR REPLACE INTO meta(k,v) VALUES('delivery_pub_seq',?)",
+        (str(value),),
+    )
+    # 保留旧 key，避免仍在运行的旧定制交付流程倒退或重复领号。
+    conn.execute(
         "INSERT OR REPLACE INTO meta(k,v) VALUES('custom_delivery_pub_seq',?)",
         (str(value),),
     )
     return value
+
+
+def _next_custom_delivery_pub_seq(conn):
+    """兼容旧调用名；定制创作与常规交付共用同一发布编号账本。"""
+    return _next_delivery_pub_seq(conn)
+
+
+def reconcile_delivery_sequences():
+    """一次性把历史交付按真实交付时间校准为全局连续编号。
+
+    这是受控迁移：仅修改 delivered 资产的 ``pubSeq`` 和用于并发保护的
+    ``updatedAt``，不触碰账号、文件、素材、回传链接或供应商状态。迁移完成后
+    写入版本标记，重复调用只返回结果而不会再次改写历史编号。
+    """
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            if _delivery_sequences_reconciled(conn):
+                total = 0
+                for (raw,) in conn.execute("SELECT data FROM docs WHERE collection='assets'").fetchall():
+                    try:
+                        total += 1 if json.loads(raw).get("delivered") else 0
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                return {"migrated": False, "updated": 0, "total": total}
+
+            rows = conn.execute(
+                "SELECT id,owner_id,data FROM docs WHERE collection='assets'"
+            ).fetchall()
+            delivered = []
+            for doc_id, owner_id, raw in rows:
+                try:
+                    item = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if item.get("delivered"):
+                    delivered.append((str(doc_id), owner_id, item))
+
+            delivered.sort(key=lambda entry: (_delivery_sequence_time(entry[2]), entry[0]))
+            now = int(time.time() * 1000)
+            updated = 0
+            for sequence, (doc_id, owner_id, item) in enumerate(delivered, start=1):
+                if _int_at_least_zero(item.get("pubSeq")) == sequence:
+                    continue
+                item["pubSeq"] = sequence
+                item.pop("projectedSeq", None)
+                item["updatedAt"] = max(_int_at_least_zero(item.get("updatedAt")), now)
+                conn.execute(
+                    "UPDATE docs SET updated_at=?, data=? WHERE collection='assets' AND id=?",
+                    (item["updatedAt"], json.dumps(item, ensure_ascii=False), doc_id),
+                )
+                updated += 1
+
+            last_sequence = len(delivered)
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(k,v) VALUES('delivery_pub_seq',?)",
+                (str(last_sequence),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(k,v) VALUES('custom_delivery_pub_seq',?)",
+                (str(last_sequence),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(k,v) VALUES('delivery_pub_seq_reconciled_v2','1')"
+            )
+            conn.commit()
+            return {"migrated": True, "updated": updated, "total": last_sequence}
+        finally:
+            conn.close()
 
 
 def _custom_publish_result(project, account, delivery):
@@ -4522,6 +4626,22 @@ def _projected_delivery_sequences(asset_items):
     return projected
 
 
+def _global_delivery_sequences(asset_items):
+    """按所有交付的真实交付时间计算同一套全局显示序号。
+
+    该只读投影让管理员、创作者与供应商子账号即使只看见自己的子集，也会显示
+    同一个编号；受控迁移完成后它会与持久化 pubSeq 完全一致。
+    """
+    delivered = []
+    for item in asset_items:
+        if not item.get("delivered"):
+            continue
+        doc_id = str(item.get("id") or "")
+        if doc_id:
+            delivered.append((_delivery_sequence_time(item), doc_id))
+    return {doc_id: sequence for sequence, (_, doc_id) in enumerate(sorted(delivered), start=1)}
+
+
 def _account_sequence(value):
     """读取账号的稳定编号；无效或缺失编号返回 0。"""
     try:
@@ -4599,6 +4719,7 @@ def state_for(member_id, role, parent_id=None, collections=None):
     editor_delivery_asset_ids = set()
     supplier_production_created_at = {}
     account_projected_sequences = {}
+    delivery_global_sequences = {}
     with _lock:
         conn = _connect()
         try:
@@ -4633,6 +4754,7 @@ def state_for(member_id, role, parent_id=None, collections=None):
                 elif col == "assets":
                     decoded_rows = [(json.loads(data), owner) for data, owner in rows]
                     delivery_projected_sequences = _projected_delivery_sequences([item for item, _ in decoded_rows])
+                    delivery_global_sequences = _global_delivery_sequences([item for item, _ in decoded_rows])
                     if role == "editor":
                         for delivery, _ in decoded_rows:
                             if not delivery.get("delivered"):
@@ -4689,6 +4811,10 @@ def state_for(member_id, role, parent_id=None, collections=None):
                             persisted_delivery_seq = int(item.get("pubSeq") or 0)
                         except (TypeError, ValueError):
                             persisted_delivery_seq = 0
+                        if item.get("delivered"):
+                            global_seq = delivery_global_sequences.get(str(item.get("id") or ""))
+                            if global_seq:
+                                item["globalSeq"] = global_seq
                         if item.get("delivered") and persisted_delivery_seq <= 0:
                             projected_seq = delivery_projected_sequences.get(str(item.get("id") or ""))
                             if projected_seq:

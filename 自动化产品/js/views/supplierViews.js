@@ -21,6 +21,7 @@ let supplierActivityDays = "all";
 let supplierActivityCarouselPage = 0;
 let supplierActivityCarouselTimer = 0;
 let supplierViewsPlatform = "all";
+let supplierTrendWindow = { kind: "days", days: 7, start: "", end: "" };
 const SUPPLIER_ACTIVITY_PAGE_SIZE = 3;
 const SUPPLIER_ASSISTANT_HISTORY_PREFIX = "xingzhen:supplier-data-assistant:";
 const onSupplierRoute = zone => document.body.dataset.zone === zone;
@@ -172,6 +173,36 @@ function smoothTrendPath(points = []) {
   }, `M ${points[0].x} ${points[0].y}`);
 }
 
+function supplierTrendModel(rows = []) {
+  const trendEnd = new Date();
+  trendEnd.setHours(0, 0, 0, 0);
+  const customTrendStart = supplierTrendWindow.start ? new Date(`${supplierTrendWindow.start}T00:00:00`) : null;
+  const customTrendEnd = supplierTrendWindow.end ? new Date(`${supplierTrendWindow.end}T00:00:00`) : null;
+  const trendStart = supplierTrendWindow.kind === "custom" && customTrendStart && customTrendEnd && customTrendStart <= customTrendEnd
+    ? customTrendStart
+    : new Date(trendEnd.getTime() - ((supplierTrendWindow.days || 7) - 1) * 864e5);
+  const trendDayCount = Math.max(1, Math.round((trendEnd - trendStart) / 864e5) + 1);
+  const days = Array.from({ length: trendDayCount }, (_, offset) => {
+    const date = new Date(trendStart.getTime() + offset * 864e5);
+    const key = supplierDateKey(date.getTime());
+    const items = rows.filter(item => supplierDateKey(item.timestamp) === key);
+    return { key, label: `${date.getMonth() + 1}/${date.getDate()}`, count: items.length, items };
+  });
+  const maxDaily = Math.max(1, ...days.map(item => item.count));
+  const points = days.map((item, index) => ({
+    x: 8 + index * (84 / Math.max(1, days.length - 1)),
+    y: 88 - item.count / maxDaily * 68,
+  }));
+  const path = smoothTrendPath(points);
+  return { days, points, path, areaPath: `${path} L ${points.at(-1).x} 88 L ${points[0].x} 88 Z` };
+}
+
+function supplierTrendCardContent(model) {
+  const { days, points, path, areaPath } = model;
+  const title = supplierTrendWindow.kind === "custom" ? "自定义时间交付" : `近 ${supplierTrendWindow.days} 日交付`;
+  return `<header><span class="supplier-chart-title">${title}</span><span class="supplier-trend-actions"><button type="button" data-supplier-trend-window="7">7日</button><button type="button" data-supplier-trend-window="30">30日</button><button type="button" data-supplier-trend-window="custom">自定义</button></span></header><div class="supplier-trend-scroll"><div class="supplier-trend-canvas" style="--supplier-trend-points:${days.length}"><div class="supplier-trend-plot"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="交付趋势"><defs><linearGradient id="supplierTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef476f" stop-opacity=".34"/><stop offset="1" stop-color="#ef476f" stop-opacity="0"/></linearGradient></defs><path d="${areaPath}" fill="url(#supplierTrendFill)"/><path d="${path}" fill="none" stroke="#e83e62" stroke-width="2.2" vector-effect="non-scaling-stroke"/></svg>${points.map((point, index) => `<span class="supplier-trend-node" style="--x:${point.x}%;--y:${point.y}%" data-supplier-trend-date="${esc(days[index].key)}" tabindex="0" role="button" aria-label="${esc(`${days[index].label} 共 ${days[index].count} 条交付，查看明细`)}"><i>${days[index].count} 条交付</i></span>`).join("")}</div><span class="supplier-trend-labels">${days.map(item => `<i><b>${item.count}</b><em>${item.label}</em></i>`).join("")}</span></div></div>`;
+}
+
 function supplierDataAnswer(question, rows) {
   const q = String(question || "").trim();
   const published = rows.filter(item => item.asset.publishedUrl);
@@ -225,21 +256,7 @@ export async function renderSupplierOverview(root) {
     const xhsCount = platformCounts.get("小红书") || 0;
     const sphCount = platformCounts.get("视频号") || 0;
     const platformTotal = Math.max(1, xhsCount + sphCount);
-    const days = Array.from({ length: 7 }, (_, offset) => {
-      const date = new Date();
-      date.setHours(0, 0, 0, 0);
-      date.setDate(date.getDate() - (6 - offset));
-      const key = supplierDateKey(date.getTime());
-      const items = rows.filter(item => supplierDateKey(item.timestamp) === key);
-      return { key, label: `${date.getMonth() + 1}/${date.getDate()}`, count: items.length, items };
-    });
-    const maxDaily = Math.max(1, ...days.map(item => item.count));
-    const trendPoints = days.map((item, index) => ({
-      x: 8 + index * 14,
-      y: 88 - item.count / maxDaily * 68,
-    }));
-    const trendPath = smoothTrendPath(trendPoints);
-    const trendAreaPath = `${trendPath} L ${trendPoints.at(-1).x} 88 L ${trendPoints[0].x} 88 Z`;
+    let trendModel = supplierTrendModel(rows);
     const activityCutoff = supplierActivityDays === "all" ? 0 : Date.now() - Number(supplierActivityDays) * 86400000;
     const visibleActivity = activity.filter(item => (
       (supplierActivityType === "all" || supplierActivityKind(item) === supplierActivityType)
@@ -262,20 +279,43 @@ export async function renderSupplierOverview(root) {
             <button data-supplier-detail="views"><span>总播放量</span><b id="supplierViewsTotal">${Number(views.totalViews || 0).toLocaleString("zh-CN")}</b><em>${esc(supplierViewsPlatform === "all" ? "全平台" : supplierViewsPlatform)}</em></button>
           </div>
           <div class="supplier-dashboard-visuals">
-            <button class="card supplier-platform-chart" data-supplier-detail="platform"><span class="supplier-chart-title">平台发布构成</span><span class="supplier-donut" style="--xhs:${xhsCount / platformTotal * 360}deg"><i><b>${published.length}</b><em>已发布</em></i></span><span class="supplier-platform-legend"><i class="xhs"></i>小红书 ${xhsCount}<i class="sph"></i>视频号 ${sphCount}</span></button>
-            <section class="card supplier-trend-chart" data-supplier-detail="trend" role="button" tabindex="0"><span class="supplier-chart-title">近 7 日交付</span><div class="supplier-trend-plot"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="近七日交付趋势"><defs><linearGradient id="supplierTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef476f" stop-opacity=".34"/><stop offset="1" stop-color="#ef476f" stop-opacity="0"/></linearGradient></defs><path d="${trendAreaPath}" fill="url(#supplierTrendFill)"/><path d="${trendPath}" fill="none" stroke="#e83e62" stroke-width="2.2" vector-effect="non-scaling-stroke"/></svg>${trendPoints.map((point, index) => `<span class="supplier-trend-node" style="--x:${point.x}%;--y:${point.y}%" data-day="${esc(days[index].key)}" tabindex="0" aria-label="${esc(`${days[index].label} 共 ${days[index].count} 条交付`)}"><i>${days[index].count} 条交付</i></span>`).join("")}</div><span class="supplier-trend-labels">${days.map(item => `<i><b>${item.count}</b><em>${item.label}</em></i>`).join("")}</span></section>
+            <section class="card supplier-platform-chart" aria-label="平台发布构成，可分别查看小红书与视频号"><span class="supplier-chart-title">平台发布构成</span><span class="supplier-donut"><svg viewBox="0 0 160 160" aria-hidden="true"><circle class="supplier-donut-track" cx="80" cy="80" r="58" pathLength="100"/><circle class="supplier-donut-segment is-xhs" cx="80" cy="80" r="58" pathLength="100" style="--segment:${xhsCount / platformTotal * 100};--offset:0" data-supplier-platform="小红书" tabindex="0" role="button" aria-label="小红书已发布 ${xhsCount} 条，查看明细"><title>小红书 ${xhsCount} 条，点击查看明细</title></circle><circle class="supplier-donut-segment is-video" cx="80" cy="80" r="58" pathLength="100" style="--segment:${sphCount / platformTotal * 100};--offset:${-xhsCount / platformTotal * 100}" data-supplier-platform="视频号" tabindex="0" role="button" aria-label="视频号已发布 ${sphCount} 条，查看明细"><title>视频号 ${sphCount} 条，点击查看明细</title></circle></svg><i data-supplier-donut-total="${published.length}"><b>${published.length}</b><em>已发布</em></i></span><span class="supplier-platform-legend"><button type="button" data-supplier-platform="小红书"><i class="xhs"></i>小红书 ${xhsCount}</button><button type="button" data-supplier-platform="视频号"><i class="sph"></i>视频号 ${sphCount}</button></span></section>
+            <section class="card supplier-trend-chart" data-supplier-detail="trend" role="button" tabindex="0">${supplierTrendCardContent(trendModel)}</section>
           </div>
           <section class="card supplier-activity"><div class="card-head supplier-activity-head"><b>最近操作</b>
             ${activity.length ? `<div class="supplier-activity-filters"><label class="select-shell">${icon("filter", 12)}<select id="supplierActivityType"><option value="all">全部操作</option><option value="views" ${supplierActivityType === "views" ? "selected" : ""}>编辑观看量</option><option value="link" ${supplierActivityType === "link" ? "selected" : ""}>回传链接</option><option value="download" ${supplierActivityType === "download" ? "selected" : ""}>下载素材</option><option value="other" ${supplierActivityType === "other" ? "selected" : ""}>其他操作</option></select>${icon("chevronDown", 11)}</label><label class="select-shell">${icon("clock", 12)}<select id="supplierActivityDays"><option value="all">全部时间</option><option value="7" ${supplierActivityDays === "7" ? "selected" : ""}>近 7 天</option><option value="30" ${supplierActivityDays === "30" ? "selected" : ""}>近 30 天</option></select>${icon("chevronDown", 11)}</label><button class="btn ghost sm" type="button" id="supplierActivityAll">查看全部</button></div>` : ""}</div>
             ${activity.length ? `<div class="supplier-activity-carousel" id="supplierActivityCarousel">${supplierActivityItemsHtml(carouselActivity)}</div><div class="supplier-activity-pagination"><button class="icon-btn sm" type="button" data-supplier-activity-page="prev" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button><span id="supplierActivityPage">${visibleActivity.length ? `${supplierActivityCarouselPage + 1} / ${activityPages}` : "0 / 0"}</span><button class="icon-btn sm" type="button" data-supplier-activity-page="next" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronRight", 13)}</button></div>` : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
           </section>
         </div>
-        <aside class="card supplier-data-assistant"><header><span>${icon("bot", 18)}</span><div><b>星阵数据助手</b><em>供应商数据只读问答</em></div><span class="supplier-today-link-actions"><button class="btn ghost sm supplier-today-links" id="supplierTodayLinks" type="button">${icon("link", 13)} 今日回传</button><button class="icon-btn sm" id="supplierTodayLinksCopyAll" type="button" title="复制今日全部回传链接">${icon("copy", 13)}</button></span></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button>今天交付多少？</button><button>给我回传链接</button><button>哪个账号发布最多？</button></div><form id="supplierDataForm"><input id="supplierDataInput" placeholder="问问供应商数据…"/><button class="icon-btn primary" title="发送">${icon("send", 14)}</button></form></aside>
+        <aside class="card supplier-data-assistant"><header><span class="supplier-data-assistant-icon">${icon("bot", 18)}</span><div><b>星阵数据助手</b><em>供应商数据只读问答</em></div><span class="supplier-today-link-actions"><button class="btn ghost sm supplier-today-links" id="supplierTodayLinks" type="button">${icon("link", 13)} 今日回传</button><button class="icon-btn sm" id="supplierTodayLinksCopyAll" type="button" title="复制今日全部回传链接" aria-label="复制今日全部回传链接">${icon("copy", 13)}</button></span></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button type="button">今天交付多少？</button><button type="button">给我回传链接</button><button type="button">哪个账号发布最多？</button></div><form id="supplierDataForm"><input id="supplierDataInput" name="supplierDataQuestion" autocomplete="off" aria-label="向供应商数据助手提问" placeholder="问问供应商数据…"/><button class="icon-btn primary" type="submit" title="发送" aria-label="发送供应商数据问题">${icon("send", 14)}</button></form></aside>
       </div>
     </div>`;
     const openSupplierRows = (title, selectedRows) => {
       const body = selectedRows.map(({ asset, account, timestamp }) => `<div class="supplier-dashboard-detail-row"><span><b>${esc(asset.title || asset.name || "未命名内容")}</b><em>${esc(account.name || "未命名账号")} · ${esc(account.platform || "")}</em></span><time>${timestamp ? new Date(timestamp).toLocaleString("zh-CN", { hour12: false }) : "暂无时间"}</time>${asset.publishedUrl ? `<a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">打开链接</a>` : `<i>未回传</i>`}</div>`).join("");
       openModal(`<div class="mp-head"><b>${esc(title)} · ${selectedRows.length} 条</b><button class="icon-btn ghost" data-close>${icon("x", 15)}</button></div><div class="supplier-dashboard-detail-list">${body || `<p class="supplier-activity-empty">暂无数据</p>`}</div>`, { wide: true });
+    };
+    let refreshSupplierTrend = () => renderSupplierOverview(root);
+    const openSupplierTrendDetail = (initialStart = trendModel.days[0]?.key || "", initialEnd = trendModel.days.at(-1)?.key || "") => {
+      let start = initialStart;
+      let end = initialEnd;
+      openModal(`<div class="supplier-trend-detail-modal" id="supplierTrendDetailModal"></div>`, { wide: true, onMount(panel, close) {
+        const draw = () => {
+          const scoped = rows.filter(item => {
+            const date = supplierDateKey(item.timestamp);
+            return (!start || date >= start) && (!end || date <= end);
+          });
+          panel.innerHTML = `<div class="mp-head"><b>交付趋势明细 · ${scoped.length} 条</b><button class="icon-btn ghost" data-close aria-label="关闭">${icon("x", 15)}</button></div><div class="supplier-trend-detail-tools"><label>开始<input type="date" id="supplierTrendStart" value="${esc(start)}"/></label><label>结束<input type="date" id="supplierTrendEnd" value="${esc(end)}"/></label><button class="btn primary sm" type="button" id="supplierTrendApply">应用到图表</button></div><div class="supplier-dashboard-detail-list">${scoped.map(({ asset, account, timestamp }) => `<div class="supplier-dashboard-detail-row"><span><b>${esc(asset.title || asset.name || "未命名内容")}</b><em>${esc(account.name || "未命名账号")} · ${esc(account.platform || "")}</em></span><time>${timestamp ? new Date(timestamp).toLocaleString("zh-CN", { hour12: false }) : "暂无时间"}</time>${asset.publishedUrl ? `<a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">打开链接</a>` : `<i>未回传</i>`}</div>`).join("") || `<p class="supplier-activity-empty">该时间范围暂无交付</p>`}</div>`;
+          $("#supplierTrendStart", panel)?.addEventListener("change", event => { start = event.currentTarget.value; draw(); });
+          $("#supplierTrendEnd", panel)?.addEventListener("change", event => { end = event.currentTarget.value; draw(); });
+          $("#supplierTrendApply", panel)?.addEventListener("click", () => {
+            if (start && end && start > end) { toast("结束日期不能早于开始日期"); return; }
+            supplierTrendWindow = { kind: "custom", days: 0, start, end };
+            close();
+            refreshSupplierTrend();
+          });
+        };
+        draw();
+      }});
     };
     const openActivityModal = () => {
       let kind = supplierActivityType;
@@ -297,15 +337,64 @@ export async function renderSupplierOverview(root) {
         drawModal();
       }});
     };
+    const wireSupplierTrend = () => {
+      const chart = $(".supplier-trend-chart", root);
+      if (!chart) return;
+      const openChart = event => {
+        if (event.target.closest("button, [data-supplier-trend-date]")) return;
+        event.preventDefault();
+        openSupplierTrendDetail();
+      };
+      chart.addEventListener("click", openChart);
+      chart.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") openChart(event); });
+      $$('[data-supplier-trend-window]', chart).forEach(button => button.addEventListener("click", event => {
+        event.preventDefault(); event.stopPropagation();
+        const next = button.dataset.supplierTrendWindow;
+        if (next === "custom") return openSupplierTrendDetail(supplierTrendWindow.start || trendModel.days[0]?.key || "", supplierTrendWindow.end || trendModel.days.at(-1)?.key || "");
+        supplierTrendWindow = { kind: "days", days: Number(next), start: "", end: "" };
+        refreshSupplierTrend();
+      }));
+      $$('[data-supplier-trend-date]', chart).forEach(target => {
+        const open = event => { event.preventDefault(); event.stopPropagation(); openSupplierTrendDetail(target.dataset.supplierTrendDate, target.dataset.supplierTrendDate); };
+        target.addEventListener("click", open);
+        target.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") open(event); });
+      });
+    };
+    refreshSupplierTrend = () => {
+      const chart = $(".supplier-trend-chart", root);
+      if (!chart) return;
+      trendModel = supplierTrendModel(rows);
+      chart.innerHTML = supplierTrendCardContent(trendModel);
+      chart.classList.remove("is-trend-switching");
+      void chart.offsetWidth;
+      chart.classList.add("is-trend-switching");
+      wireSupplierTrend();
+    };
     $$('[data-supplier-detail]', root).forEach(button => button.addEventListener("click", () => {
       const key = button.dataset.supplierDetail;
       if (key === "children") return openModal(`<div class="mp-head"><b>子账号 · ${children.length}</b><button class="icon-btn ghost" data-close>${icon("x", 15)}</button></div><div class="supplier-dashboard-detail-list">${children.map(item => `<div class="supplier-dashboard-detail-row"><span><b>${esc(item.name || item.username || "未命名成员")}</b><em>${esc(item.username || "")}</em></span></div>`).join("")}</div>`, { wide: true });
       if (key === "published") return openSupplierRows("已回传链接", publishedRows);
       if (key === "delivery") return openSupplierRows("全部交付", rows);
       if (key === "platform") return openSupplierRows("平台发布构成", publishedRows);
-      if (key === "trend") return openSupplierRows("近 7 日交付", days.flatMap(item => item.items));
+      if (key === "trend") return;
       if (key === "views") return openSupplierRows("播放数据内容", rows);
     }));
+    const openSupplierPlatform = platform => openSupplierRows(`${platform}已发布`, publishedRows.filter(item => item.account.platform === platform));
+    $$('[data-supplier-platform]', root).forEach(target => {
+      const open = event => { event.preventDefault(); event.stopPropagation(); openSupplierPlatform(target.dataset.supplierPlatform); };
+      target.addEventListener("click", open);
+      target.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") open(event); });
+      target.addEventListener("pointerenter", () => {
+        const count = target.dataset.supplierPlatform === "小红书" ? xhsCount : sphCount;
+        const center = $("[data-supplier-donut-total]", root);
+        if (center) center.innerHTML = `<b>${count}</b><em>${esc(target.dataset.supplierPlatform)}</em>`;
+      });
+      target.addEventListener("pointerleave", () => {
+        const center = $("[data-supplier-donut-total]", root);
+        if (center) center.innerHTML = `<b>${published.length}</b><em>已发布</em>`;
+      });
+    });
+    wireSupplierTrend();
     const sendSupplierQuestion = question => {
       const q = String(question || "").trim();
       if (!q) return;

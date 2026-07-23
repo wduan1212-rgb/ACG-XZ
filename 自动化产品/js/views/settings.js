@@ -5,7 +5,7 @@ import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
 import { toast, confirmModal, promptModal, openModal } from "../ui/components.js";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260723-v117-7";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260723-v117-9";
 
 const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor", "supplier_parent"];
@@ -33,21 +33,25 @@ function renderCreatorProfile(root) {
     : `<span>${esc(initials)}</span>`;
   root.innerHTML = `<div class="creator-profile-page">
     <section class="card creator-profile-card">
-      <div class="creator-profile-heading"><span class="creator-profile-avatar" id="creatorProfileAvatar">${avatarHtml()}</span><span><b>我的</b><em>仅可编辑自己的姓名、账号、密码和头像；保存后管理员后台会同步显示。</em></span></div>
-      <form class="creator-profile-form" id="creatorProfileForm">
-        <label class="field">头像
-          <label class="creator-avatar-upload"><input id="creatorProfileAvatarFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"/><span>${icon("upload", 13)} 更换头像</span><em>PNG / JPG / WebP / GIF，2MB 以内</em></label>
+      <div class="creator-profile-heading">
+        <label class="creator-avatar-drop" id="creatorProfileAvatarDrop" title="点击或拖入图片修改头像">
+          <span class="creator-profile-avatar" id="creatorProfileAvatar">${avatarHtml()}</span>
+          <span class="creator-avatar-edit">${icon("upload", 12)} 更换头像</span>
+          <input id="creatorProfileAvatarFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif"/>
         </label>
-        <label class="field">姓名<input class="input" id="creatorProfileName" value="${esc(member.name || "")}" maxlength="60" required /></label>
-        <label class="field">账号<input class="input" id="creatorProfileUsername" value="${esc(member.username || "")}" maxlength="60" required /></label>
-        <label class="field full">新密码<input class="input" id="creatorProfilePin" type="password" autocomplete="new-password" placeholder="留空则不修改密码" maxlength="120" /></label>
-        <div class="creator-profile-actions full"><span>账号资料不会影响已有创作、素材或发布记录。</span><button class="btn primary" id="creatorProfileSave" type="submit">${icon("check", 14)} 保存我的资料</button></div>
+        <b>我的资料</b><em>头像、昵称、账号和密码只会修改自己；管理员后台会同步显示。</em>
+      </div>
+      <form class="creator-profile-form" id="creatorProfileForm">
+        <label class="creator-profile-line"><span>昵称</span><input class="input" id="creatorProfileName" value="${esc(member.name || "")}" maxlength="60" required /></label>
+        <label class="creator-profile-line"><span>账号</span><input class="input" id="creatorProfileUsername" value="${esc(member.username || "")}" maxlength="60" required /></label>
+        <label class="creator-profile-line"><span>新密码</span><input class="input" id="creatorProfilePin" type="password" autocomplete="new-password" placeholder="留空则不修改密码" maxlength="120" /></label>
+        <div class="creator-profile-actions"><span>支持点击或拖入 PNG / JPG / WebP / GIF 图片（2MB 以内）。</span><button class="btn primary" id="creatorProfileSave" type="submit">${icon("check", 14)} 保存我的资料</button></div>
       </form>
     </section>
   </div>`;
   const avatar = $("#creatorProfileAvatar", root);
-  $("#creatorProfileAvatarFile", root)?.addEventListener("change", async event => {
-    const file = event.currentTarget.files?.[0];
+  const avatarDrop = $("#creatorProfileAvatarDrop", root);
+  const updateAvatar = async file => {
     if (!file) return;
     if (!/^image\/(png|jpeg|webp|gif)$/.test(file.type)) { toast("头像仅支持 PNG、JPG、WebP 或 GIF"); return; }
     if (file.size > 2 * 1024 * 1024) { toast("头像请控制在 2MB 以内"); return; }
@@ -59,6 +63,14 @@ function renderCreatorProfile(root) {
     } catch (error) {
       toast("头像上传失败：" + (error?.message || error));
     }
+  };
+  $("#creatorProfileAvatarFile", root)?.addEventListener("change", event => updateAvatar(event.currentTarget.files?.[0]));
+  avatarDrop?.addEventListener("dragover", event => { event.preventDefault(); avatarDrop.classList.add("is-dragging"); });
+  avatarDrop?.addEventListener("dragleave", () => avatarDrop.classList.remove("is-dragging"));
+  avatarDrop?.addEventListener("drop", event => {
+    event.preventDefault();
+    avatarDrop.classList.remove("is-dragging");
+    updateAvatar(event.dataTransfer?.files?.[0]);
   });
   $("#creatorProfileForm", root)?.addEventListener("submit", async event => {
     event.preventDefault();
