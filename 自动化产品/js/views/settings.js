@@ -6,7 +6,7 @@ import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
 import { toast, confirmModal, promptModal, openModal } from "../ui/components.js";
 import { uid } from "../core/util.js";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260723-v115-3";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260723-v117-1";
 
 const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor", "supplier_parent"];
@@ -32,27 +32,15 @@ export const settingsView = {
     let requestsLoaded = false;
     let apiUsageRows = [];
     let apiUsageLoaded = false;
+    let productLibraryOpen = false;
     const canReviewRequests = () => remote.isOn() && state.role === "admin";
     const canSeeApiUsage = () => remote.isOn() && state.role === "admin";
     const draw = () => {
       const visibleMembers = state.members.filter(member => member.role !== "supplier_child");
       root.innerHTML = `
         <div class="settings-page">
-          <section class="card set-data product-library">
-            <div class="card-head"><b>产品库</b><em>仅提供产品事实、界面与视觉边界参考，不直接决定标题和文案</em>
-              <button class="btn primary sm" id="prodAdd">${icon("plus", 13)} 添加产品</button></div>
-            <div class="prod-list">
-              ${state.products.map(p => `
-                <div class="key-row product-row">
-                  <span class="ovt-main"><b>${esc(p.name)}</b><em>${esc(p.category || "未分类")} · ${esc((p.brief || "").slice(0, 80))}${(p.brief || "").length > 80 ? "…" : ""}</em></span>
-                  <button class="icon-btn sm" data-pedit="${p.id}" title="编辑">${icon("edit", 13)}</button>
-                  <button class="icon-btn sm danger" data-pdel="${p.id}" title="删除" ${state.products.length <= 1 ? "disabled" : ""}>${icon("trash", 13)}</button>
-                </div>`).join("")}
-            </div>
-          </section>
-
           ${canReviewRequests() ? `<section class="card set-data member-requests">
-            <div class="card-head"><b>成员申请</b><em>${requestsLoaded ? `${memberRequests.length} 条待审批` : "正在读取申请"}</em>
+            <div class="card-head"><span><b>${icon("users", 14)} 成员申请看板</b><em>${requestsLoaded ? `${memberRequests.length} 条待审批` : "正在读取申请"}</em></span>
               <button class="btn ghost sm" id="reqRefresh">${icon("pulse", 13)} 刷新</button></div>
             <div class="mem-list">
               ${!requestsLoaded ? `<div class="muted" style="padding:8px 2px">正在读取申请...</div>` : memberRequests.length ? memberRequests.map(r => `
@@ -65,27 +53,40 @@ export const settingsView = {
           </section>` : ""}
 
           <section class="card set-data member-accounts">
-            <div class="card-head"><b>成员账号</b><em>每人一个账号与权限，创作互不干扰；资产库与发布清单全员共享</em>
+            <div class="card-head"><span><b>成员账号</b><em>按身份着色；多人同屏管理，创作和数据权限仍按账号隔离</em></span>
               <button class="btn primary sm" id="memAdd">${icon("plus", 13)} 添加成员</button></div>
-            <div class="mem-list" id="memList">
+            <div class="settings-member-grid" id="memList">
               ${visibleMembers.map(m => `
-                <div class="mem-row" data-mem="${m.id}">
+                <article class="settings-member-card" data-mem="${m.id}">
+                  <span class="settings-member-avatar ${m.role}">${icon(m.role === "admin" ? "shield" : "user", 14)}</span>
                   <span class="ovt-main"><b>${esc(m.name)} ${m.id === state.ui.currentMemberId ? `<i class="mem-me">当前</i>` : ""}</b><em>@${esc(m.username)} · ${ROLE_DESC[m.role] || ROLE_LABEL[m.role] || m.role}</em></span>
                   <span class="mem-role tag ${m.role}">${ROLE_LABEL[m.role] || m.role}</span>
-                  <button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button>
-                  <button class="icon-btn sm danger" data-mdel="${m.id}" title="删除" ${m.id === state.ui.currentMemberId ? "disabled" : ""}>${icon("trash", 13)}</button>
-                </div>`).join("")}
+                  <span class="settings-member-actions"><button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-mdel="${m.id}" title="删除" ${m.id === state.ui.currentMemberId ? "disabled" : ""}>${icon("trash", 13)}</button></span>
+                </article>`).join("")}
             </div>
           </section>
 
           ${canSeeApiUsage() ? `<section class="card set-data api-usage-panel">
-            <div class="card-head"><b>创作者接口用量</b><em>仅统计服务端上游真实返回的 LLM token；不等同于图像 / 视频 / 语音或供应商账单积分</em>
-              <button class="btn ghost sm" id="apiUsageRefresh">${icon("pulse", 13)} 刷新</button></div>
+            <div class="card-head"><span><b>创作者接口用量</b><em>仅统计服务端上游真实返回的 LLM token；点账号可查看其 API 明细</em></span>
+              <span class="api-usage-actions"><button class="btn ghost sm" id="apiUsageDetails">${icon("list", 13)} 查看 API 明细</button><button class="btn ghost sm" id="apiUsageRefresh">${icon("pulse", 13)} 刷新</button></span></div>
             <div class="api-usage-table">
-              <div class="api-usage-row api-usage-label"><span>创作者</span><span>调用</span><span>输入 token</span><span>输出 token</span><span>合计</span><span>最近调用</span></div>
-              ${!apiUsageLoaded ? `<div class="muted" style="padding:12px 2px">正在读取用量...</div>` : apiUsageRows.map(row => `<div class="api-usage-row"><span><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "")}</em></span><span>${Number(row.calls || 0).toLocaleString("zh-CN")}</span><span>${Number(row.promptTokens || 0).toLocaleString("zh-CN")}</span><span>${Number(row.completionTokens || 0).toLocaleString("zh-CN")}</span><strong>${Number(row.totalTokens || 0).toLocaleString("zh-CN")}</strong><time>${row.lastUsedAt ? new Date(row.lastUsedAt).toLocaleString("zh-CN", { hour12: false }) : "暂无"}</time></div>`).join("") || `<div class="muted" style="padding:12px 2px">暂未收到上游可统计的 token 用量；新调用会在成功后自动记录。</div>`}
+              <div class="api-usage-row api-usage-label"><span>创作者</span><span>调用</span><span>输入</span><span>输出</span><span>合计</span><span>明细</span></div>
+              ${!apiUsageLoaded ? `<div class="muted" style="padding:12px 2px">正在读取用量...</div>` : apiUsageRows.map(row => `<div class="api-usage-row"><span><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "")}</em></span><span>${Number(row.calls || 0).toLocaleString("zh-CN")}</span><span>${Number(row.promptTokens || 0).toLocaleString("zh-CN")}</span><span>${Number(row.completionTokens || 0).toLocaleString("zh-CN")}</span><strong>${Number(row.totalTokens || 0).toLocaleString("zh-CN")}</strong><button class="btn ghost sm api-member-detail" data-usage-member="${esc(row.memberId || "")}" title="查看 ${esc(row.memberName || "成员")} 的接口明细">${icon("eye", 13)} 查看</button></div>`).join("") || `<div class="muted" style="padding:12px 2px">暂未收到上游可统计的 token 用量；新调用会在成功后自动记录。</div>`}
             </div>
           </section>` : ""}
+
+          <section class="card set-data product-library ${productLibraryOpen ? "is-open" : ""}">
+            <div class="card-head"><span><b>产品库</b><em>${state.products.length} 个产品事实与视觉边界；默认收起，避免占用设置看板</em></span>
+              <span class="product-library-actions"><button class="btn ghost sm" id="prodLibraryToggle">${icon(productLibraryOpen ? "chevronUp" : "chevronDown", 13)} ${productLibraryOpen ? "收起" : "展开"}</button><button class="btn primary sm" id="prodAdd">${icon("plus", 13)} 添加产品</button></span></div>
+            ${productLibraryOpen ? `<div class="prod-list">
+              ${state.products.map(p => `
+                <div class="key-row product-row">
+                  <span class="ovt-main"><b>${esc(p.name)}</b><em>${esc(p.category || "未分类")} · ${esc((p.brief || "").slice(0, 80))}${(p.brief || "").length > 80 ? "…" : ""}</em></span>
+                  <button class="icon-btn sm" data-pedit="${p.id}" title="编辑">${icon("edit", 13)}</button>
+                  <button class="icon-btn sm danger" data-pdel="${p.id}" title="删除" ${state.products.length <= 1 ? "disabled" : ""}>${icon("trash", 13)}</button>
+                </div>`).join("")}
+            </div>` : ""}
+          </section>
 
         </div>`;
       wire();
@@ -116,6 +117,39 @@ export const settingsView = {
         draw();
       }
     }
+
+    const usageNumber = value => Number(value || 0).toLocaleString("zh-CN");
+    const usageTime = value => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "暂无";
+    const apiUsageDetailsHtml = (details, member = null) => {
+      const allEvents = Array.isArray(details?.events) ? details.events : [];
+      const events = member ? allEvents.filter(row => row.memberId === member.memberId) : allEvents;
+      const apiRows = member ? [...events.reduce((map, row) => {
+        const key = `${row.feature || "通用调用"}::${row.model || "上游未回传模型"}`;
+        const current = map.get(key) || { feature: row.feature, model: row.model, calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, lastUsedAt: 0 };
+        current.calls += 1;
+        current.promptTokens += Number(row.promptTokens || 0);
+        current.completionTokens += Number(row.completionTokens || 0);
+        current.totalTokens += Number(row.totalTokens || 0);
+        current.lastUsedAt = Math.max(Number(current.lastUsedAt || 0), Number(row.createdAt || 0));
+        map.set(key, current);
+        return map;
+      }, new Map()).values()].sort((a, b) => b.totalTokens - a.totalTokens) : (Array.isArray(details?.apiRows) ? details.apiRows : []);
+      const apiTable = apiRows.length ? apiRows.map(row => `<div class="api-detail-row api-detail-api-row"><span><b>${esc(row.feature || "通用调用")}</b><em>${esc(row.model || "上游未回传模型")}</em></span><span>${usageNumber(row.calls)}</span><span>${usageNumber(row.promptTokens)}</span><span>${usageNumber(row.completionTokens)}</span><strong>${usageNumber(row.totalTokens)}</strong><time>${usageTime(row.lastUsedAt)}</time></div>`).join("") : `<p class="muted api-detail-empty">暂未收到上游可核验的 token 用量。</p>`;
+      const eventTable = events.length ? events.map(row => `<div class="api-detail-row api-detail-event-row"><span><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "未知账号")}</em></span><span><b>${esc(row.feature || "通用调用")}</b><em>${esc(row.model || "上游未回传模型")}</em></span><span>${usageNumber(row.promptTokens)}</span><span>${usageNumber(row.completionTokens)}</span><strong>${usageNumber(row.totalTokens)}</strong><time>${usageTime(row.createdAt)}</time></div>`).join("") : `<p class="muted api-detail-empty">暂无调用记录。</p>`;
+      return `<section class="api-detail-section"><div class="api-detail-title"><b>按 API / 模型汇总</b><em>每一项来自服务端收到的真实 usage 字段</em></div><div class="api-detail-table"><div class="api-detail-row api-detail-label"><span>调用类型 / 模型</span><span>调用</span><span>输入</span><span>输出</span><span>合计</span><span>最近调用</span></div>${apiTable}</div></section><section class="api-detail-section"><div class="api-detail-title"><b>最近调用记录</b><em>最多展示最近 120 笔；不含未返回 token 的请求</em></div><div class="api-detail-table api-detail-events"><div class="api-detail-row api-detail-label api-detail-event-row"><span>创作者</span><span>调用类型 / 模型</span><span>输入</span><span>输出</span><span>合计</span><span>时间</span></div>${eventTable}</div></section>`;
+    };
+    const openApiUsageDetails = (memberId = "") => {
+      const member = apiUsageRows.find(row => row.memberId === memberId) || null;
+      openModal(`<div class="mp-head"><div><b>${member ? `${esc(member.memberName || "成员")} · 接口 Token 用量` : "接口 Token 用量明细"}</b><em>仅展示上游已返回 usage 的语言模型调用</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div><div class="api-usage-detail-body"><div class="muted" style="padding:12px 2px">正在读取 API 明细...</div></div>`, { wide: true, onMount(panel) {
+        panel.classList.add("api-usage-modal");
+        const body = $(".api-usage-detail-body", panel);
+        remote.admin.llmUsageDetails().then(details => {
+          if (body) body.innerHTML = apiUsageDetailsHtml(details, member);
+        }).catch(error => {
+          if (body) body.innerHTML = `<p class="muted api-detail-empty">读取明细失败：${esc(error?.message || String(error))}</p>`;
+        });
+      }});
+    };
 
     function wire() {
       const productDialog = (item) => {
@@ -166,6 +200,7 @@ export const settingsView = {
         }});
       };
       $("#prodAdd", root)?.addEventListener("click", () => productDialog(null));
+      $("#prodLibraryToggle", root)?.addEventListener("click", () => { productLibraryOpen = !productLibraryOpen; draw(); });
       $$("[data-pedit]", root).forEach(b => b.addEventListener("click", () => productDialog(state.products.find(p => p.id === b.dataset.pedit))));
       $$("[data-pdel]", root).forEach(b => b.addEventListener("click", async () => {
         const p = state.products.find(x => x.id === b.dataset.pdel);
@@ -183,6 +218,8 @@ export const settingsView = {
         draw();
         loadApiUsage();
       });
+      $("#apiUsageDetails", root)?.addEventListener("click", openApiUsageDetails);
+      $$('[data-usage-member]', root).forEach(button => button.addEventListener("click", () => openApiUsageDetails(button.dataset.usageMember || "")));
       $$("[data-rapprove]", root).forEach(b => b.addEventListener("click", async () => {
         const req = memberRequests.find(x => x.id === b.dataset.rapprove);
         const ok = await confirmModal({ title: `通过「${req?.name || "成员"}」的账号申请？`, body: `将创建登录账号 @${req?.username || ""}。`, okText: "通过申请" });

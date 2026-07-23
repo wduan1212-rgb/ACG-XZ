@@ -5,7 +5,7 @@ import { icon } from "../ui/icons.js";
 import { state, save, persistNow, accountById } from "../core/store.js";
 import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
 import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260723-v115-3";
+import { AI } from "../api/ai.js?v=20260723-v117-1";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
 import { openModal, toast } from "../ui/components.js";
@@ -108,7 +108,7 @@ export function openAccountDialog(accountId = null) {
               <label class="field full">图文提示词模板 <em class="muted" style="font-weight:500">站内逐图提示词会优先参考；产品名、主题、各图内容会按本次创作自动替换</em>
                 <textarea class="input" id="adImgTpl" rows="8" placeholder="粘贴你的图文模板提示词，例如：请独立分别生成6张独立图片……">${esc(draft.imagePromptTemplate)}</textarea>
               </label>` : ""}
-              ${isVideo ? `
+              ${isVideo && !isSupplierManager ? `
               <div class="field full ad-voice-config">
                 <span>${isDH ? "固定口播声线" : "口播声线"}</span>
                 <div class="ad-voice-row">
@@ -137,7 +137,7 @@ export function openAccountDialog(accountId = null) {
               ` : ""}
             </div>
 
-            ${isDH ? `
+            ${isDH && !isSupplierManager ? `
             <div class="ad-block">
               <div class="adb-head"><b>数字人角色版</b><em class="muted">拖入账号角色图；只用于锁定该数字人的固定人物形象</em></div>
               <div class="ad-char-row">
@@ -146,12 +146,12 @@ export function openAccountDialog(accountId = null) {
               </div>
             </div>` : ""}
 
-            <div class="ad-block">
+            ${!isSupplierManager ? `<div class="ad-block">
               <div class="adb-head"><b>账号图片资产</b><em class="muted">创建即绑定，生成时可 @ 调用</em>
                 <label class="btn ghost sm">+ 添加图片<input type="file" accept="image/*" multiple hidden id="adAssets" /></label>
               </div>
               <div class="ad-asset-grid" id="adAssetGrid">${draft.assets.map((a, i) => `<div class="ad-thumb"><img src="${a.dataUrl}"/><button class="ref-x" data-ax="${i}">${icon("x", 10)}</button></div>`).join("")}</div>
-            </div>
+            </div>` : ""}
 
             <div class="ad-naming">素材命名规则：<b>${platformCode(draft.platform)}-${esc((draft.name || "账号名").replace(/\s+/g, ""))}-${draft.mode === "视频" ? esc(draft.subType) : "图文"}-001-${todayStamp()}</b></div>
           </div>
@@ -267,9 +267,10 @@ export function openAccountDialog(accountId = null) {
         }
         const charUp = $("#adCharUp", root);
         if (charUp) charUp.addEventListener("change", e => setCharBoard(e.target.files[0]));
-        wireDropZone($("#adCharDrop", root), files => setCharBoard(Array.from(files).find(f => f.type.startsWith("image/")), "已拖入角色形象"), { filesOnly: true });
+        const charDrop = $("#adCharDrop", root);
+        if (charDrop) wireDropZone(charDrop, files => setCharBoard(Array.from(files).find(f => f.type.startsWith("image/")), "已拖入角色形象"), { filesOnly: true });
 
-        $("#adAssets", root).addEventListener("change", async e => {
+        $("#adAssets", root)?.addEventListener("change", async e => {
           for (const f of Array.from(e.target.files)) draft.assets.push({ name: f.name.replace(/\.[^.]+$/, ""), dataUrl: await fileToDataUrl(f) });
           draw();
         });
@@ -307,7 +308,7 @@ export function openAccountDialog(accountId = null) {
           try { homepageUrl = normalizeHomepageUrl(draft.homepageUrl); }
           catch (err) { toast(err.message || "主页链接格式不正确", "error"); return; }
           const isDH = draft.mode === "视频" && draft.subType === "数字人";
-          if (isDH && !editing && !draft.charDataUrl) { toast("数字人账号请先上传角色形象"); return; }
+          if (isDH && !editing && !draft.charDataUrl && !isSupplierManager) { toast("数字人账号请先上传角色形象"); return; }
           const accountSnapshot = editing ? JSON.parse(JSON.stringify(editing)) : null;
           const beforeAssetIds = new Set(state.assets.map(asset => asset.id));
           // 供应商账号走专用 API。先拦住通用集合的延迟回写，避免它在专用请求
@@ -333,9 +334,9 @@ export function openAccountDialog(accountId = null) {
               name, platform: draft.platform, mode: draft.mode,
               subType: draft.mode === "图文" ? "" : draft.subType,
               position: "", styleProfile: isSupplierManager ? (editing?.styleProfile || "") : draft.styleProfile.trim(),
-              styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now(), voiceName: draft.voiceName.trim(),
-              voiceId: draft.voiceId.trim(),
-              voiceRefAssetId: draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null,
+              styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now(), voiceName: isSupplierManager ? (editing?.voiceName || "") : draft.voiceName.trim(),
+              voiceId: isSupplierManager ? (editing?.voiceId || "") : draft.voiceId.trim(),
+              voiceRefAssetId: isSupplierManager ? (editing?.voiceRefAssetId || editing?.seedanceVoiceRefAssetId || null) : (draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null),
               imagePromptTemplate: isSupplierManager ? (editing?.imagePromptTemplate || "") : draft.imagePromptTemplate.trim(), homepageUrl,
               status: editing?.status === "disabled" ? "disabled" : "active",
             };
@@ -348,7 +349,7 @@ export function openAccountDialog(accountId = null) {
               const ca = await addAssetFromDataUrl(acc.id, { name: name + " 角色形象", tags: ["角色形象", "角色版"], dataUrl: draft.charDataUrl });
               acc.charBoardAssetId = ca.id;
             }
-            for (const a of draft.assets) {
+            if (!isSupplierManager) for (const a of draft.assets) {
               await addAssetFromDataUrl(acc.id, { name: a.name, tags: [], dataUrl: a.dataUrl });
             }
             save("accounts");

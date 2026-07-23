@@ -59,6 +59,43 @@ export async function callGenerate(
   return data.images;
 }
 
+/**
+ * One reference image is the edit target; optional remaining images are only
+ * style/context donors. Keeping this separate from callGenerate prevents an
+ * editing request from being reinterpreted as a fresh multi-reference image.
+ */
+export async function callTransform(opts: {
+  image: string;
+  prompt: string;
+  size: string;
+  fidelity?: "high" | "low";
+  quality?: string;
+  references?: string[];
+}): Promise<{ dataUrl: string; width: number; height: number }> {
+  if (IS_GITHUB_PAGES && !IS_PLATFORM_EMBED) {
+    const images = await callGenerate({
+      palette: "default",
+      size: opts.size,
+      count: 1,
+      startVariant: 1,
+      labelPrefix: "编辑",
+      prompt: opts.prompt,
+      quality: opts.quality ?? "low",
+      references: [opts.image, ...(opts.references ?? [])],
+    });
+    const image = images[0];
+    if (!image) throw new Error("编辑未返回图片");
+    return image;
+  }
+  const res = await platformFetch("/transform", {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.image) throw new Error(data.error || "编辑失败");
+  return data.image as { dataUrl: string; width: number; height: number };
+}
+
 export async function callEnhance(opts: {
   image: string;
   size: string;

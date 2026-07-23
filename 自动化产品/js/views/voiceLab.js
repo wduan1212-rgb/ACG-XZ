@@ -156,6 +156,7 @@ function toolPanelHtml(mode, s, selected) {
   return `<aside class="vl-side-panel vl-console glass-panel">
     <div class="vl-section-head compact">
       <div><b>${icon("mic", 16)} 调试台</b><em>当前：${esc(selected.name || "默认/手动声线")}</em></div>
+      <button class="btn primary sm" id="vlGenerate">${icon("spark", 14)} 生成音频</button>
     </div>
     ${runtimeAudioSlotHtml()}
     <div class="vl-current-voice">
@@ -309,17 +310,23 @@ export const voiceLabView = {
         : document.querySelector(".main-scroll");
       const scrollTop = scroll?.scrollTop || 0;
       const oldHeight = root.getBoundingClientRect().height;
+      // The text editor is deliberately kept as the same DOM node.  Switching
+      // between synthesis/design/manage only replaces the two side panels, so
+      // a long in-progress script never blinks, loses focus, or resets IME.
+      const stableEditor = $(".vl-editor", root);
       root.style.minHeight = `${oldHeight}px`;
       root.classList.add("vl-view-switching");
 
       const renderNext = () => {
         this.render(root, { embedded });
+        const nextEditor = $(".vl-editor", root);
+        if (stableEditor && nextEditor) nextEditor.replaceWith(stableEditor);
         const nextHeight = root.getBoundingClientRect().height;
         root.style.minHeight = `${Math.max(oldHeight, nextHeight)}px`;
         if (scroll) scroll.scrollTop = scrollTop;
         requestAnimationFrame(() => {
           if (scroll) scroll.scrollTop = scrollTop;
-          $(".vl-workbench", root)?.classList.add("is-switching-in");
+          $$(".vl-library, .vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-in"));
         });
         window.setTimeout(() => {
           if (scroll) scroll.scrollTop = scrollTop;
@@ -327,6 +334,7 @@ export const voiceLabView = {
           root.classList.remove("vl-view-switching");
           delete root.dataset.vlSwitching;
           dock?.classList.remove("is-switching");
+          $$(".vl-library, .vl-side-panel", root).forEach(panel => panel.classList.remove("is-panel-switching-in"));
         }, nextMode ? 340 : 40);
       };
 
@@ -340,7 +348,7 @@ export const voiceLabView = {
       $$('[data-vl-mode]', dock).forEach(button => button.classList.toggle("is-active", button.dataset.vlMode === nextMode));
       const liquid = $(".vl-mode-liquid", dock);
       if (liquid) liquid.style.setProperty("--i", String(Math.max(0, ["tts", "design", "library"].indexOf(nextMode))));
-      $(".vl-workbench", root)?.classList.add("is-switching-out");
+      $$(".vl-library, .vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-out"));
       window.setTimeout(renderNext, 150);
     };
     ensureProviderStatus();
@@ -371,8 +379,7 @@ export const voiceLabView = {
           <div class="vl-section-head">
             <div><b>${icon("type", 16)} 文本转语音</b></div>
             <div class="vl-editor-head-actions">
-              <nav class="vl-mode-tabs vl-editor-mode-tabs" aria-label="语音生成模式">${modeTabs(mode)}</nav>
-              <button class="btn primary" id="vlGenerate">${icon("spark", 15)} 生成音频</button>
+              <span class="vl-mode-switch-label">切换模式</span><nav class="vl-mode-tabs vl-editor-mode-tabs" aria-label="语音生成模式">${modeTabs(mode)}</nav>
             </div>
           </div>
           <div class="vl-textbox-wrap ${s.text ? "has-value" : ""}">

@@ -3981,6 +3981,9 @@ class CustomCanvasTransformReq(BaseModel):
     size: str = "1024x1024"
     fidelity: str = "high"
     quality: str = "low"
+    # The first `image` remains the only editable source. Extra images may be
+    # supplied as visual/style donors for a targeted multi-reference edit.
+    references: List[str] = Field(default_factory=list)
 
 
 class MemberReq(BaseModel):
@@ -4086,6 +4089,12 @@ def admin_llm_usage(_me=Depends(require_admin)):
     这不是供应商账单或现金积分：图像、视频、语音及未返回 usage 的调用不会被猜测计入。
     """
     return {"rows": store.llm_usage_summary(), "kind": "verified_llm_tokens"}
+
+
+@app.get("/api/admin/llm-usage/details")
+def admin_llm_usage_details(_me=Depends(require_admin)):
+    """管理员只读查看模型 API 汇总和最近真实 token 调用。"""
+    return {**store.llm_usage_details(), "kind": "verified_llm_tokens"}
 
 
 @app.post("/api/member-requests")
@@ -4806,15 +4815,29 @@ async def custom_canvas_transform(req: CustomCanvasTransformReq, me=Depends(requ
     image = _custom_canvas_data_url(req.image, "待处理图片")
     prompt = str(req.prompt or "").strip() or "优化这张图"
     fidelity = "high" if str(req.fidelity or "").lower() != "low" else "low"
+    # Preserve the target-first order: the image model sees the editable source
+    # first, then any user-selected style donors. This is deliberately not the
+    # generic generate route, where multiple references can become a new blend.
+    style_refs = [
+        value for value in (req.references or [])[:7]
+        if str(value or "").strip() and str(value or "").strip() != image
+    ]
+    refs = _custom_canvas_image_refs([image, *style_refs])
     prompt += (
-        "\n以参考图为核心，必须保留主体身份、Logo 与文字内容，允许按指令重组视觉风格。"
+        "\n第一张输入图是唯一待编辑的原图，必须保留主体身份、Logo 与文字内容；"
+        "不要生成与原图无关的新图、拼图或多图合成。"
+        "后续输入图仅作为视觉/风格参照，不能替代第一张原图。"
+        if style_refs
+        else "\n以第一张输入图为核心，必须保留主体身份、Logo 与文字内容；不要生成与原图无关的新图、拼图或多图合成。"
+    ) + (
+        "允许按指令重组视觉风格。"
         if fidelity == "high"
-        else "\n以参考图主体为内容来源，按指令进行明显的视觉风格变化。"
+        else "以第一张输入图主体为内容来源，按指令进行明显的视觉风格变化。"
     )
     result = await _custom_canvas_generated_image(
         prompt,
         req.size,
-        _custom_canvas_image_refs([image]),
+        refs,
     )
     return {"image": {
         "dataUrl": result["dataUrl"],

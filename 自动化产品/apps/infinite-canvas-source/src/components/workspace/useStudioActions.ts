@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { callAgent, callEnhance, callGenerate } from "@/lib/api";
+import { callAgent, callEnhance, callGenerate, callTransform } from "@/lib/api";
 import { bestAssetUrlFor } from "@/lib/assetCache";
 import {
   downscaleDataUrl,
@@ -16,6 +16,7 @@ import { useStore } from "@/lib/store";
 import { uid } from "@/lib/util";
 import { isImageItem } from "@/lib/types";
 import { parseCount, prepareSingleImagePrompt } from "@/lib/agent";
+import { planReferenceEdits } from "@/lib/referenceEditPlan";
 import type { PaletteKey } from "@/lib/agent";
 import type {
   CanvasItem,
@@ -23,6 +24,7 @@ import type {
   EnhanceRunOptions,
   EnhancedItem,
   GenerationItem,
+  ImageItem,
   Quality,
   QueueTask,
   Size,
@@ -110,18 +112,23 @@ export function useStudioActions(projectId: string) {
       // Also keep tiny copies (≤512) for a vision-capable LLM to actually see.
       const refUrls: string[] = [];
       const agentImages: string[] = [];
+      const referenceImageById = new Map<string, string>();
       for (const r of references) {
         const it = items.find((i) => i.id === r.itemId);
         if (!it || !isImageItem(it)) continue;
         const u = it.assetUrl;
         if (!u.startsWith("data:image/") || u.startsWith("data:image/svg")) continue;
         try {
-          refUrls.push((await downscaleDataUrl(u, 1280, 0.85)).dataUrl);
+          const image = (await downscaleDataUrl(u, 1280, 0.85)).dataUrl;
+          refUrls.push(image);
+          referenceImageById.set(r.itemId, image);
           agentImages.push((await downscaleDataUrl(u, 512, 0.75)).dataUrl);
         } catch {
           refUrls.push(u);
+          referenceImageById.set(r.itemId, u);
         }
       }
+      const referenceEditPlan = planReferenceEdits(brief, references.length);
 
       addMessage(projectId, {
         id: uid("msg"),
@@ -138,6 +145,142 @@ export function useStudioActions(projectId: string) {
         createdAt: Date.now(),
         status: "thinking",
       });
+
+      const editTargets = (referenceEditPlan?.targetIndexes ?? [])
+        .map((index) => ({ index, reference: references[index] }))
+        .map(({ index, reference }) => ({
+          index,
+          source: reference ? items.find((item) => item.id === reference.itemId) : undefined,
+        }))
+        .filter((target): target is { index: number; source: ImageItem } => !!target.source && isImageItem(target.source));
+
+      if (referenceEditPlan && editTargets.length > 0) {
+        const targetNames = editTargets.map(({ index }) => `图 ${index + 1}`).join("、");
+        const isParallel = editTargets.length > 1;
+        const makeEditPlaceholder = (source: ImageItem, index: number) => {
+          const cur = (useStore.getState().itemsByProject[projectId] ?? []).filter((item) => !item.hidden);
+          const fp = footprintFor(source.naturalWidth, source.naturalHeight, 340);
+          const position = findFreeSpot(
+            cur,
+            { x: source.position.x + source.size.width + 40, y: source.position.y },
+            fp,
+            28,
+          );
+          const id = uid("item");
+          addItem(projectId, {
+            id,
+            projectId,
+            type: "generation",
+            position,
+            size: fp,
+            z: source.z + 1,
+            createdAt: Date.now(),
+            assetUrl: "",
+            naturalWidth: source.naturalWidth,
+            naturalHeight: source.naturalHeight,
+            label: `图 ${index + 1} · 编辑中`,
+            mode: "final",
+            quality: POSTER_QUALITY,
+            jobId: id,
+            loading: true,
+            provenance: {
+              brief,
+              references,
+              fromItemId: source.id,
+              targetedReferenceIndex: index + 1,
+            },
+          } as GenerationItem);
+          return id;
+        };
+
+        const jobs = editTargets.map(({ source, index }) => ({
+          source,
+          index,
+          id: makeEditPlaceholder(source, index),
+          task: startTask("generate", `编辑图 ${index + 1}`),
+        }));
+        setSelection(jobs.map((job) => job.id));
+        updateMessage(projectId, agentMsgId, {
+          text: isParallel
+            ? `已识别为同时编辑 ${targetNames}：会为每张图建立独立并发任务，并保留未指定的内容。`
+            : `已识别为只编辑 ${targetNames}：其余已选图片仅作为视觉参照，不会单独生成。`,
+          status: "thinking",
+        });
+
+        const completed: string[] = [];
+        const failed: number[] = [];
+        await Promise.all(
+          jobs.map(async (job) => {
+            try {
+              const sourceImage =
+                referenceImageById.get(job.source.id) ??
+                (await downscaleDataUrl(bestAssetUrlFor(job.source), 1280, 0.85)).dataUrl;
+              const styleReferences = [...referenceImageById.entries()]
+                .filter(([itemId]) => itemId !== job.source.id)
+                .map(([, image]) => image)
+                .slice(0, 7);
+              const image = await callTransform({
+                image: sourceImage,
+                references: styleReferences,
+                prompt: [
+                  `这是对已选图 ${job.index + 1} 的定向编辑。`,
+                  brief.trim(),
+                  "仅处理第一张输入图；未明确要求改动的主体、文字、版式和元素必须保持不变。",
+                ].join("\n"),
+                size: `${job.source.naturalWidth}x${job.source.naturalHeight}`,
+                fidelity: "high",
+                quality: POSTER_QUALITY,
+              });
+              updateItem(projectId, job.id, {
+                assetUrl: image.dataUrl,
+                naturalWidth: image.width,
+                naturalHeight: image.height,
+                label: `图 ${job.index + 1} · 已按指令编辑`,
+                loading: false,
+              } as Partial<CanvasItem>);
+              completed.push(job.id);
+              job.task.stop({
+                status: "completed",
+                progress: 1,
+                cost: QUALITY_COST[POSTER_QUALITY],
+                resultItemIds: [job.id],
+                label: `图 ${job.index + 1} · 已完成`,
+              });
+            } catch (error) {
+              failed.push(job.index);
+              removeItems(projectId, [job.id]);
+              job.task.stop({
+                status: "failed",
+                progress: 1,
+                error: error instanceof Error ? error.message : "编辑失败",
+                label: `图 ${job.index + 1} · 编辑失败`,
+              });
+            }
+          }),
+        );
+
+        if (completed.length > 0) {
+          const cost = +(QUALITY_COST[POSTER_QUALITY] * completed.length).toFixed(4);
+          recordGeneration(projectId, cost, completed.length);
+          setSelection(completed);
+          updateMessage(projectId, agentMsgId, {
+            text:
+              failed.length > 0
+                ? `${targetNames} 已完成 ${completed.length} 张；图 ${failed.map((index) => index + 1).join("、")} 未完成，可单独重试。`
+                : `${targetNames} 已分别完成定向编辑。每张结果都以自身原图为编辑源，未输出无关新图。`,
+            status: "done",
+            resultItemIds: completed,
+          });
+        } else {
+          setSelection([]);
+          updateMessage(projectId, agentMsgId, {
+            text: "定向编辑未完成，已保留原参考图且没有产出无关新图，请稍后重试。",
+            status: "error",
+          });
+          recordFailure(projectId);
+        }
+        return;
+      }
 
       // Placeholder cards so results "appear" on the canvas while generating.
       const target = parseSize(size) ?? { width: 1080, height: 1920 };

@@ -107,6 +107,115 @@ console.log(JSON.stringify({{
         self.assertIn("单次只生成一张完整成图", chunks)
         self.assertIn("禁止拼图、分屏或并排展示多个方案", chunks)
 
+    def test_multi_reference_chat_edits_use_a_targeted_transform_contract(self):
+        planner = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "lib"
+            / "referenceEditPlan.ts"
+        ).read_text(encoding="utf-8")
+        actions = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "useStudioActions.ts"
+        ).read_text(encoding="utf-8")
+        api = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "lib"
+            / "api.ts"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("planReferenceEdits", planner)
+        self.assertIn("Explicit targets take priority", planner)
+        self.assertIn("ALL_REFERENCE_WORDS", planner)
+        self.assertIn("planReferenceEdits(brief, references.length)", actions)
+        self.assertIn("Promise.all(", actions)
+        self.assertIn("callTransform({", actions)
+        self.assertIn("targetedReferenceIndex", actions)
+        self.assertIn("references: styleReferences", actions)
+        self.assertIn("export async function callTransform", api)
+
+    def test_multi_reference_planner_recognizes_ten_edit_rounds_before_dispatch(self):
+        """Ten deterministic intent rounds cover target-only and parallel tasks.
+
+        This test intentionally exercises the exact source planner but never
+        sends a model request or writes canvas state.  It protects the handoff
+        boundary: classification/task dispatch can be verified locally without
+        creating user-facing images.
+        """
+        source = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "lib"
+            / "referenceEditPlan.ts"
+        ).read_text(encoding="utf-8")
+        runnable = re.sub(
+            r"export interface ReferenceEditPlan\s*\{.*?\n\}\n\n",
+            "",
+            source,
+            flags=re.S,
+        )
+        runnable = runnable.replace("export function", "function")
+        runnable = runnable.replace(
+            "function chineseNumber(value: string): number | null {",
+            "function chineseNumber(value) {",
+        )
+        runnable = runnable.replace(
+            "const values: Record<string, number> = {", "const values = {"
+        )
+        runnable = runnable.replace(
+            "function addIndex(targets: Set<number>, value: number | null, count: number) {",
+            "function addIndex(targets, value, count) {",
+        )
+        runnable = runnable.replace("new Set<number>()", "new Set()")
+        runnable = runnable.replace(
+            "function planReferenceEdits(brief: string, referenceCount: number): ReferenceEditPlan | null {",
+            "function planReferenceEdits(brief, referenceCount) {",
+        )
+        cases = [
+            {"brief": "图2修改为暖色纸感，其他不变", "count": 2, "targets": [1]},
+            {"brief": "将图2的背景调整为图1的浅蓝色，其余不变", "count": 2, "targets": [1]},
+            {"brief": "以图1的浅蓝背景统一图2的视觉底色，保留原主体与文字", "count": 2, "targets": [1]},
+            {"brief": "把这两个参考图都换成暖色纸感", "count": 2, "targets": [0, 1]},
+            {"brief": "两个参考图分别优化质感", "count": 2, "targets": [0, 1]},
+            {"brief": "所有参考图同时调整成商务蓝", "count": 3, "targets": [0, 1, 2]},
+            {"brief": "每张参考图都换成极简风", "count": 3, "targets": [0, 1, 2]},
+            {"brief": "图1和图3都编辑成黑金风格", "count": 3, "targets": [0, 2]},
+            {"brief": "统一图2的配色为蓝色", "count": 2, "targets": [1]},
+            {"brief": "把图1、图2都改为胶片风格", "count": 2, "targets": [0, 1]},
+        ]
+        script = (
+            runnable
+            + "\nconst cases = "
+            + json.dumps(cases, ensure_ascii=False)
+            + ";\nconsole.log(JSON.stringify(cases.map(item => ({ ...item, plan: planReferenceEdits(item.brief, item.count) }))));\n"
+        )
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        rounds = json.loads(result.stdout)
+        self.assertEqual(len(rounds), 10)
+        for round_ in rounds:
+            self.assertIsNotNone(round_["plan"], round_["brief"])
+            self.assertEqual(round_["plan"]["targetIndexes"], round_["targets"], round_["brief"])
+            expected_mode = "parallel" if len(round_["targets"]) > 1 else "single"
+            self.assertEqual(round_["plan"]["mode"], expected_mode, round_["brief"])
+
     def test_static_canvas_links_keep_base_path_and_embed_query(self):
         runtime = (
             APP_DIR
@@ -276,6 +385,7 @@ console.log(JSON.stringify({{
         )
         self.assertIn("width:100%;height:100%;min-height:0", integration)
         self.assertNotIn("min-height:640px", integration)
+        self.assertIn('iframe.src = "/XZ-Design/?embed=1&v=20260723-v117-1#/"', integration)
 
     def test_canvas_publish_reuses_image_polish_without_changing_direct_export(self):
         publish = (APP_DIR / "js" / "views" / "customPublish.js").read_text(encoding="utf-8")
@@ -507,6 +617,29 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["body"]["input_fidelity"], "high")
         self.assertEqual(len(captured["body"]["images"]), 1)
         self.assertTrue(captured["endpoint"].endswith("/aiart/gtimage"))
+
+    async def test_targeted_transform_keeps_target_first_and_style_donors_after_it(self):
+        target = "data:image/png;base64,TARGET"
+        donor = "data:image/png;base64,DONOR"
+        request = main.CustomCanvasTransformReq(
+            image=target,
+            references=[donor],
+            prompt="将图2的背景调整为图1的浅蓝色",
+            size="1242x1660",
+        )
+        with patch.object(
+            main,
+            "_custom_canvas_generated_image",
+            new=AsyncMock(return_value={"dataUrl": "data:image/png;base64,RESULT", "width": 1152, "height": 1536}),
+        ) as generate:
+            result = await main.custom_canvas_transform(request, me={"id": "creator", "role": "editor"})
+
+        self.assertEqual(result["image"]["dataUrl"], "data:image/png;base64,RESULT")
+        prompt, _size, refs = generate.await_args.args
+        self.assertEqual([ref.dataUrl for ref in refs], [target, donor])
+        self.assertIn("第一张输入图是唯一待编辑的原图", prompt)
+        self.assertIn("后续输入图仅作为视觉/风格参照", prompt)
+        self.assertIn("不要生成与原图无关的新图", prompt)
 
     def test_config_is_creator_only_and_reports_export_bridge(self):
         result = main.custom_canvas_config(me={"id": "creator", "role": "editor"})

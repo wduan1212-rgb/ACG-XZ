@@ -23,20 +23,99 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertIn('draft.mode === "图文" && !isSupplierManager', source)
         self.assertIn('styleProfile: isSupplierManager ? (editing?.styleProfile || "")', source)
         self.assertIn('imagePromptTemplate: isSupplierManager ? (editing?.imagePromptTemplate || "")', source)
+        self.assertIn('${isVideo && !isSupplierManager ? `', source)
+        self.assertIn('${isDH && !isSupplierManager ? `', source)
+        self.assertIn('${!isSupplierManager ? `<div class="ad-block">', source)
+        self.assertIn('$("#adAssets", root)?.addEventListener', source)
+        self.assertIn('if (charDrop) wireDropZone', source)
+
+    def test_supplier_account_assets_only_accept_avatar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            base = {
+                "id": "supplier-upload-01",
+                "accountId": "supplier-account-01",
+                "serverFileName": "supplier-parent-a--account-image.png",
+                "fileUrl": "/api/files/supplier-parent-a--account-image.png",
+            }
+            self.assertEqual([], store._supplier_account_assets("supplier-account-01", [{**base, "tags": ["账号资产"]}], "supplier-parent-a"))
+            accepted = store._supplier_account_assets("supplier-account-01", [{**base, "tags": ["头像"]}], "supplier-parent-a")
+            self.assertEqual(1, len(accepted))
+            self.assertEqual("supplier-account-01", accepted[0]["accountId"])
+
+    def test_supplier_account_patch_preserves_voice_and_character_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("accounts", [{
+                "id": "supplier-private-01",
+                "name": "已有数字人账号",
+                "platform": "视频号",
+                "mode": "视频",
+                "subType": "数字人",
+                "charBoardAssetId": "creator-role-board",
+                "voiceId": "creator-voice-id",
+                "voiceName": "创作者专属声线",
+                "voiceRefAssetId": "creator-voice-reference",
+                "status": "active",
+            }])
+            result, error = store.upsert_supplier_account(
+                "supplier-private-01",
+                {
+                    "name": "供应商更新后的名称",
+                    "platform": "视频号",
+                    "mode": "视频",
+                    "subType": "数字人",
+                    "charBoardAssetId": "supplier-role-board",
+                    "voiceId": "supplier-voice-id",
+                    "voiceName": "供应商声线",
+                    "voiceRefAssetId": "supplier-voice-reference",
+                },
+                [],
+                "supplier-parent-a",
+                create=False,
+            )
+            self.assertIsNone(error)
+            self.assertEqual("供应商更新后的名称", result["account"]["name"])
+            self.assertEqual("creator-role-board", result["account"]["charBoardAssetId"])
+            self.assertEqual("creator-voice-id", result["account"]["voiceId"])
+            self.assertEqual("创作者专属声线", result["account"]["voiceName"])
+            self.assertEqual("creator-voice-reference", result["account"]["voiceRefAssetId"])
 
     def test_supplier_dashboard_keeps_account_tools_and_activity_history_interactive(self):
         source = (APP_DIR / "js/views/supplierViews.js").read_text(encoding="utf-8")
-        self.assertIn('id="supplierContentAccountAdd"', source)
-        self.assertIn('id="supplierOverviewSearch"', source)
-        self.assertIn('id="supplierOverviewChildAdd"', source)
+        main_source = (APP_DIR / "js/main.js").read_text(encoding="utf-8")
+        self.assertIn('id="topSupplierOverviewSearch"', main_source)
+        self.assertIn('id="topSupplierOverviewChildAdd"', main_source)
+        self.assertIn('id="topSupplierAccountSearch"', main_source)
+        self.assertIn('id="topSupplierContentAccountAdd"', main_source)
+        self.assertIn('id="topSupplierSettingsChildAdd"', main_source)
+        self.assertIn('$("#topSupplierContentAccountAdd")', source)
+        self.assertIn('$("#topSupplierSettingsChildAdd")', source)
+        self.assertIn('id="supplierRequestRefresh"', source)
+        self.assertIn('编辑账号（含主页链接）', source)
+        self.assertNotIn('data-homepage-edit=', source)
+        self.assertIn('class="supplier-member-grid"', source)
         self.assertIn('id="supplierActivityAll"', source)
         self.assertIn('data-supplier-activity-page="prev"', source)
         self.assertIn('openActivityModal', source)
+        self.assertIn('updateSupplierActivityCarousel', source)
+        self.assertIn('scheduleSupplierActivityCarousel(root, visibleActivity, activityPages)', source)
+        self.assertIn('xingzhen:supplier-data-assistant:', source)
+        self.assertIn('loadSupplierAssistantHistory()', source)
+        motion = (APP_DIR / "styles/ui-motion.css").read_text(encoding="utf-8")
+        self.assertIn('grid-template-columns: 64px minmax(0, 1fr)', motion)
+        self.assertNotIn('Supplier-only bottom dock', motion)
         self.assertIn('账号已恢复', source)
         self.assertIn('恢复账号', source)
         self.assertIn('holdCollectionSync(["accounts"])', source)
-        self.assertIn('button.textContent = disabled ? "正在恢复…" : "正在停用…"', source)
+        self.assertIn('button.innerHTML = `<span class="spin-dot"', source)
         self.assertNotIn("await persistNow()", source)
+        supplier_css = (APP_DIR / "styles/views.css").read_text(encoding="utf-8")
+        self.assertIn(
+            ".supplier-data-assistant { position: sticky; top: 0; align-self: stretch;",
+            supplier_css,
+        )
+        self.assertIn("height: auto; display: grid; grid-template-rows", supplier_css)
 
     def test_disabled_accounts_are_not_selectable_for_single_creation(self):
         source = (APP_DIR / "js/main.js").read_text(encoding="utf-8")
@@ -46,9 +125,12 @@ class SupplierAccountManagementTests(unittest.TestCase):
 
     def test_supplier_delivery_list_reports_visible_selection_count(self):
         source = (APP_DIR / "js/views/deliveryView.js").read_text(encoding="utf-8")
+        motion = (APP_DIR / "styles/ui-motion.css").read_text(encoding="utf-8")
         self.assertIn('id="dvSelectedCount"', source)
         self.assertIn("updateSupplierSelection", source)
         self.assertIn('data-sup-visible="${matchesFilters(item) ? "1" : "0"}"', source)
+        self.assertIn("position: fixed;", motion)
+        self.assertIn(".supplier-filters .supplier-selection-count", motion)
 
     def test_registration_name_field_requests_real_name(self):
         html = (APP_DIR / "index.html").read_text(encoding="utf-8")

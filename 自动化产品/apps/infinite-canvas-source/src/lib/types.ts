@@ -58,6 +58,8 @@ export interface Provenance {
   size?: string; // "1536x1024"
   quality?: Quality;
   fromItemId?: string; // produced as a "similar" variation of this item
+  /** 1-based attached-reference position used by a targeted chat edit. */
+  targetedReferenceIndex?: number;
   enhancedFrom?: string; // produced by enhancing this item
   enhanceMetrics?: {
     sharpnessBefore: number;

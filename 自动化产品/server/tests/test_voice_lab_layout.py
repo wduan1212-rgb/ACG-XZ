@@ -23,10 +23,17 @@ class VoiceLabLayoutContractTest(unittest.TestCase):
 
     def test_mode_switch_lives_inside_editor_header_without_provider_caption(self):
         source = (APP_DIR / "js" / "views" / "voiceLab.js").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles" / "views.css").read_text(encoding="utf-8")
 
         self.assertIn('class="vl-editor-head-actions"', source)
         self.assertIn('class="vl-mode-tabs vl-editor-mode-tabs"', source)
+        self.assertIn('class="vl-mode-switch-label">切换模式', source)
+        self.assertIn('<button class="btn primary sm" id="vlGenerate">', source)
         self.assertIn('wireVoiceDock($(".vl-editor-mode-tabs", root), stableRerender)', source)
+        self.assertIn('const stableEditor = $(".vl-editor", root);', source)
+        self.assertIn('if (stableEditor && nextEditor) nextEditor.replaceWith(stableEditor);', source)
+        self.assertIn('.vl-library.is-panel-switching-out', styles)
+        self.assertIn('.vl-side-panel.is-panel-switching-in', styles)
         self.assertNotIn("vl-embedded-dock", source)
         self.assertNotIn("vl-mini-status", source)
         self.assertNotIn("voice_design / t2a_v2", source)

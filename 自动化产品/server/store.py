@@ -749,6 +749,50 @@ def llm_usage_summary():
             conn.close()
 
 
+def llm_usage_details(limit=120):
+    """管理员用的调用明细：按功能 / 模型汇总，并保留最近可核验的原始记录。
+
+    明细只来自上游响应的 usage 字段；不把图片、视频、语音或没有 usage 的请求估算成 token。
+    """
+    try:
+        limit = max(1, min(int(limit or 120), 500))
+    except (TypeError, ValueError, OverflowError):
+        limit = 120
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            api_rows = conn.execute(
+                "SELECT feature,COALESCE(model,''),COUNT(id) AS calls,"
+                "COALESCE(SUM(prompt_tokens),0),COALESCE(SUM(completion_tokens),0),"
+                "COALESCE(SUM(total_tokens),0) AS total_tokens,MAX(created_at) AS last_used_at "
+                "FROM llm_usage_events "
+                "GROUP BY feature,COALESCE(model,'') "
+                "ORDER BY total_tokens DESC,last_used_at DESC,feature ASC"
+            ).fetchall()
+            events = conn.execute(
+                "SELECT u.id,u.member_id,u.member_name,COALESCE(m.username,''),u.feature,"
+                "COALESCE(u.model,''),u.prompt_tokens,u.completion_tokens,u.total_tokens,u.created_at "
+                "FROM llm_usage_events u LEFT JOIN members m ON m.id=u.member_id "
+                "ORDER BY u.created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return {
+                "apiRows": [{
+                    "feature": row[0], "model": row[1], "calls": int(row[2] or 0),
+                    "promptTokens": int(row[3] or 0), "completionTokens": int(row[4] or 0),
+                    "totalTokens": int(row[5] or 0), "lastUsedAt": row[6],
+                } for row in api_rows],
+                "events": [{
+                    "id": row[0], "memberId": row[1], "memberName": row[2], "username": row[3],
+                    "feature": row[4], "model": row[5], "promptTokens": int(row[6] or 0),
+                    "completionTokens": int(row[7] or 0), "totalTokens": int(row[8] or 0), "createdAt": row[9],
+                } for row in events],
+            }
+        finally:
+            conn.close()
+
+
 def reject_member_request(rid, reviewer_id):
     _ensure_db()
     with _lock:
@@ -4065,8 +4109,7 @@ def update_supplier_account_homepage(account_id, homepage_url, member_id, role):
 
 SUPPLIER_ACCOUNT_FIELDS = {
     "name", "platform", "mode", "subType", "position", "styleProfile", "tone",
-    "monthlyDone", "exportSeq", "charBoardAssetId", "voiceRefAssetId",
-    "seedanceVoiceRefAssetId", "voiceId", "voiceName", "avatarAssetId",
+    "monthlyDone", "exportSeq", "avatarAssetId",
     "imageStyleAssetId", "imagePromptTemplate", "homepageUrl", "appearanceAnchor",
     "lockedStyle", "customStyleChips", "status",
 }
@@ -4094,9 +4137,12 @@ def _supplier_account_patch(data):
 
 
 def _supplier_account_assets(account_id, assets, member_id):
+    """供应商只能随账号上传头像，不能借账号管理入口写入通用资产库。"""
     safe_assets = []
     for raw in assets or []:
         if not isinstance(raw, dict) or not raw.get("id"):
+            continue
+        if "头像" not in {str(tag).strip() for tag in raw.get("tags") or []}:
             continue
         item = {key: raw.get(key) for key in SUPPLIER_ACCOUNT_ASSET_FIELDS if key in raw}
         item["id"] = str(raw.get("id"))

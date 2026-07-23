@@ -231,7 +231,10 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
         ? config.publishedProjects
         : []
     });
-    iframe.src = "/XZ-Design/?embed=1#/";
+    // Cache-bust the iframe entry alongside the main application build. The
+    // canvas itself continues to own hashed chunk URLs; this only prevents a
+    // browser from reusing an old entry document after a safe static rebuild.
+    iframe.src = "/XZ-Design/?embed=1&v=20260723-v117-1#/";
     iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-downloads allow-forms allow-modals");
     iframe.setAttribute("allow", "clipboard-read; clipboard-write");
     iframe.referrerPolicy = "same-origin";

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from app import main, media
 
 
-class MediaSyncToleranceTests(unittest.TestCase):
+class MediaSyncToleranceTests(unittest.IsolatedAsyncioTestCase):
     def test_container_rounding_does_not_block_delivery(self) -> None:
         media._assert_av_sync(92.600, 92.449, "变速成片")
 
@@ -19,6 +19,37 @@ class MediaSyncToleranceTests(unittest.TestCase):
     def test_visible_audio_video_divergence_still_fails(self) -> None:
         with self.assertRaisesRegex(media.MediaError, "音画时长不一致"):
             media._assert_av_sync(92.600, 86.000, "变速成片")
+
+    async def test_visible_divergence_is_auto_repaired_against_narration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "delivery.mp4"
+            output.write_bytes(b"original")
+            repaired_output = Path(tmp) / "delivery-sync-repair.mp4"
+            probes = iter((
+                {"duration": 92.6, "videoDuration": 92.6, "audioDuration": 86.0},
+                {"duration": 86.0, "videoDuration": 86.0, "audioDuration": 86.0},
+            ))
+            commands = []
+
+            async def fake_probe(_path):
+                return next(probes)
+
+            async def fake_run(command, _cwd=None):
+                commands.append(command)
+                repaired_output.write_bytes(b"repaired")
+
+            with (
+                patch.object(media, "probe", new=fake_probe),
+                patch.object(media, "run", new=fake_run),
+                patch.object(media, "_binary", side_effect=lambda value: value),
+            ):
+                result = await media._repair_av_sync(output, "成片")
+
+            self.assertTrue(result["syncRepaired"])
+            self.assertEqual(b"repaired", output.read_bytes())
+            self.assertFalse(repaired_output.exists())
+            self.assertIn("setpts=PTS/1.07674419", commands[0][commands[0].index("-filter_complex") + 1])
+            self.assertIn("trim=duration=86.000000", commands[0][commands[0].index("-filter_complex") + 1])
 
     def test_finished_scenes_can_retry_from_recompose_stage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

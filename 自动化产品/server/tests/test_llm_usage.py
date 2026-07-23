@@ -35,6 +35,13 @@ class LlmUsageStoreTest(unittest.TestCase):
         self.assertEqual(65, row["completionTokens"])
         self.assertEqual(215, row["totalTokens"])
 
+        details = store.llm_usage_details()
+        by_api = {(item["feature"], item["model"]): item for item in details["apiRows"]}
+        self.assertEqual(165, by_api[("通用文案", "m3")]["totalTokens"])
+        self.assertEqual(50, by_api[("成图文案", "vision")]["totalTokens"])
+        self.assertEqual(2, len(details["events"]))
+        self.assertEqual("成图文案", details["events"][0]["feature"])
+
     def test_recording_failure_cannot_break_a_model_response(self):
         member = {"id": "editor-1", "name": "创作者甲"}
         with patch.object(main.store, "record_llm_usage", side_effect=RuntimeError("db busy")):

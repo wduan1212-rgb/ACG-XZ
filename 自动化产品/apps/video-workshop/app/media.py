@@ -22,6 +22,8 @@ ASPECTS: dict[str, tuple[int, int]] = {
 AV_SYNC_BASE_TOLERANCE_SECONDS = 3.0
 AV_SYNC_MAX_TOLERANCE_SECONDS = 5.0
 AV_SYNC_RELATIVE_TOLERANCE = 0.03
+AV_SYNC_AUTO_REPAIR_MIN_VIDEO_RATE = 0.25
+AV_SYNC_AUTO_REPAIR_MAX_VIDEO_RATE = 4.0
 
 
 class MediaError(RuntimeError):
@@ -40,6 +42,51 @@ def _assert_av_sync(video_duration: float, audio_duration: float, label: str) ->
             f"{label}音画时长不一致：视频 {video_duration:.3f} 秒，音频 {audio_duration:.3f} 秒"
             f"（允许误差 {tolerance:.3f} 秒）"
         )
+
+
+async def _repair_av_sync(path: Path, label: str) -> dict[str, Any]:
+    """Keep narration as the source of truth and repair a mismatched picture track once."""
+    current = await probe(path)
+    video_duration = float(current.get("videoDuration") or current.get("duration") or 0)
+    audio_duration = float(current.get("audioDuration") or 0)
+    try:
+        _assert_av_sync(video_duration, audio_duration, label)
+        current["syncRepaired"] = False
+        return current
+    except MediaError as original_error:
+        video_rate = video_duration / audio_duration if audio_duration > 0 else 0
+        if not (AV_SYNC_AUTO_REPAIR_MIN_VIDEO_RATE <= video_rate <= AV_SYNC_AUTO_REPAIR_MAX_VIDEO_RATE):
+            raise MediaError(
+                f"{original_error}；已尝试按口播重校画面，但源片轨道比例超出安全修复范围"
+            ) from original_error
+        repaired_path = path.with_name(f"{path.stem}-sync-repair{path.suffix}")
+        try:
+            await run(
+                [
+                    _binary("ffmpeg"), "-y", "-i", str(path),
+                    "-filter_complex",
+                    (
+                        f"[0:v]setpts=PTS/{video_rate:.8f},fps=30,"
+                        f"trim=duration={audio_duration:.6f}[v];"
+                        f"[0:a]asetpts=PTS-STARTPTS,apad,"
+                        f"atrim=duration={audio_duration:.6f}[a]"
+                    ),
+                    "-map", "[v]", "-map", "[a]",
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+                    "-movflags", "+faststart", str(repaired_path),
+                ]
+            )
+            repaired = await probe(repaired_path)
+            repaired_video = float(repaired.get("videoDuration") or repaired.get("duration") or 0)
+            repaired_audio = float(repaired.get("audioDuration") or 0)
+            _assert_av_sync(repaired_video, repaired_audio, label)
+            repaired_path.replace(path)
+            repaired["syncRepaired"] = True
+            return repaired
+        finally:
+            if repaired_path.exists():
+                repaired_path.unlink()
 
 
 def _finite_number(value: Any, default: float) -> float:
@@ -461,11 +508,7 @@ async def retime_video(
             str(output),
         ]
     )
-    result = await probe(output)
-    video_duration = float(result.get("videoDuration") or result.get("duration") or 0)
-    audio_duration = float(result.get("audioDuration") or 0)
-    _assert_av_sync(video_duration, audio_duration, "变速成片")
-    return result
+    return await _repair_av_sync(output, "变速成片")
 
 
 def _material_timeline(
@@ -1045,10 +1088,7 @@ async def compose_variant(
         ]
     )
     await run(command, cwd=work_dir)
-    final_probe = await probe(final_path)
-    video_duration = float(final_probe.get("videoDuration") or final_probe.get("duration") or 0)
-    audio_duration = float(final_probe.get("audioDuration") or 0)
-    _assert_av_sync(video_duration, audio_duration, "成片")
+    final_probe = await _repair_av_sync(final_path, "成片")
     return {
         "path": final_path,
         "aspectRatio": aspect_ratio,

@@ -1135,6 +1135,13 @@ class VideoPipeline:
                         else None
                     ),
                 )
+                if (variant.get("probe") or {}).get("syncRepaired"):
+                    await self._event(
+                        project_id,
+                        "已自动重校合成时间线",
+                        "检测到成片编码偏差，已保持口播不变并按口播时间线重对齐画面。",
+                        77,
+                    )
                 variants.append(variant)
 
             await self._event(
@@ -1158,6 +1165,13 @@ class VideoPipeline:
                     DEFAULT_DELIVERY_SPEED,
                 )
                 variant["speed"] = DEFAULT_DELIVERY_SPEED
+                if variant["probe"].get("syncRepaired"):
+                    await self._event(
+                        project_id,
+                        "已自动重校音画节奏",
+                        "检测到明显编码偏差，已保持口播不变并按口播时间线重对齐画面。",
+                        86,
+                    )
 
             qa_results = []
             for variant in variants:

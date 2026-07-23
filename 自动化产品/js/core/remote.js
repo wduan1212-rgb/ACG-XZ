@@ -270,7 +270,8 @@ export const memberRequests = {
 
 /* 管理员用量看板：服务端只汇总上游真实返回的 LLM token。 */
 export const admin = {
-  llmUsage: () => req("/api/admin/llm-usage")
+  llmUsage: () => req("/api/admin/llm-usage"),
+  llmUsageDetails: () => req("/api/admin/llm-usage/details")
 };
 
 /* 供应商母账号：子账号、内容账号绑定与操作记录均由服务端授权。 */
