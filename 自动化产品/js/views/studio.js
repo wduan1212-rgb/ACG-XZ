@@ -7,12 +7,12 @@ import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, delete
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v117-2";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v117-3";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260723-v117-2";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260723-v117-2";
-import { renderCutPage } from "./chainCut.js?v=20260723-v117-2";
-import { renderReviewPage } from "./chainCopy.js?v=20260723-v117-2";
+import { renderSlotsPage } from "./chainBoards.js?v=20260723-v117-3";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260723-v117-3";
+import { renderCutPage } from "./chainCut.js?v=20260723-v117-3";
+import { renderReviewPage } from "./chainCopy.js?v=20260723-v117-3";
 
 export const studioView = {
   render(root, { page }) {

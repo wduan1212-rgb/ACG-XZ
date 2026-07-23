@@ -1954,12 +1954,12 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .vl-output-spinner { width: 24px; height: 24px; border: 2px solid rgba(37,99,235,.16); border-top-color: var(--brand); border-radius: 50%; animation: vlOutputSpin .8s linear infinite; }
 @keyframes vlOutputSpin { to { transform: rotate(360deg); } }
 .view-root.vl-view-switching { overflow-anchor: none; }
-.vl-library.is-panel-switching-out, .vl-side-panel.is-panel-switching-out { pointer-events: none; animation: vlPanelOut 150ms cubic-bezier(.4,0,1,1) both; }
-.vl-library.is-panel-switching-in, .vl-side-panel.is-panel-switching-in { animation: vlPanelIn 300ms cubic-bezier(.16,1,.3,1) both; }
+.vl-side-panel.is-panel-switching-out { pointer-events: none; animation: vlPanelOut 150ms cubic-bezier(.4,0,1,1) both; }
+.vl-side-panel.is-panel-switching-in { animation: vlPanelIn 300ms cubic-bezier(.16,1,.3,1) both; }
 .topbar-voice-dock.is-switching { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
-  .vl-library.is-panel-switching-out, .vl-side-panel.is-panel-switching-out,
-  .vl-library.is-panel-switching-in, .vl-side-panel.is-panel-switching-in { animation-duration: 1ms; transform: none; }
+  .vl-side-panel.is-panel-switching-out,
+  .vl-side-panel.is-panel-switching-in { animation-duration: 1ms; transform: none; }
 }
 .vl-design-confirm { display: flex; justify-content: flex-end; gap: 7px; margin-top: 8px; }
 .vl-saved-note { margin-top: 10px; padding: 9px 0; color: var(--text); font-size: 12px; font-weight: 800; border-top: 1px solid var(--hairline); }

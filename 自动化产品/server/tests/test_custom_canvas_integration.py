@@ -385,7 +385,7 @@ console.log(JSON.stringify({{
         )
         self.assertIn("width:100%;height:100%;min-height:0", integration)
         self.assertNotIn("min-height:640px", integration)
-        self.assertIn('iframe.src = "/XZ-Design/?embed=1&v=20260723-v117-2#/"', integration)
+        self.assertIn('iframe.src = "/XZ-Design/?embed=1&v=20260723-v117-3#/"', integration)
 
     def test_canvas_publish_reuses_image_polish_without_changing_direct_export(self):
         publish = (APP_DIR / "js" / "views" / "customPublish.js").read_text(encoding="utf-8")

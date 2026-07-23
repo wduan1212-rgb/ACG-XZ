@@ -310,10 +310,11 @@ export const voiceLabView = {
         : document.querySelector(".main-scroll");
       const scrollTop = scroll?.scrollTop || 0;
       const oldHeight = root.getBoundingClientRect().height;
-      // The text editor is deliberately kept as the same DOM node.  Switching
-      // between synthesis/design/manage only replaces the two side panels, so
-      // a long in-progress script never blinks, loses focus, or resets IME.
+      // The text editor and left voice library are deliberately kept as the
+      // same DOM nodes. Switching modes only replaces the right tool panel,
+      // so the library does not blink/reset and a long script keeps its IME.
       const stableEditor = $(".vl-editor", root);
+      const stableLibrary = nextMode ? $(".vl-library", root) : null;
       root.style.minHeight = `${oldHeight}px`;
       root.classList.add("vl-view-switching");
 
@@ -321,12 +322,14 @@ export const voiceLabView = {
         this.render(root, { embedded });
         const nextEditor = $(".vl-editor", root);
         if (stableEditor && nextEditor) nextEditor.replaceWith(stableEditor);
+        const nextLibrary = $(".vl-library", root);
+        if (stableLibrary && nextLibrary) nextLibrary.replaceWith(stableLibrary);
         const nextHeight = root.getBoundingClientRect().height;
         root.style.minHeight = `${Math.max(oldHeight, nextHeight)}px`;
         if (scroll) scroll.scrollTop = scrollTop;
         requestAnimationFrame(() => {
           if (scroll) scroll.scrollTop = scrollTop;
-          $$(".vl-library, .vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-in"));
+          $$(".vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-in"));
         });
         window.setTimeout(() => {
           if (scroll) scroll.scrollTop = scrollTop;
@@ -334,7 +337,7 @@ export const voiceLabView = {
           root.classList.remove("vl-view-switching");
           delete root.dataset.vlSwitching;
           dock?.classList.remove("is-switching");
-          $$(".vl-library, .vl-side-panel", root).forEach(panel => panel.classList.remove("is-panel-switching-in"));
+          $$(".vl-side-panel", root).forEach(panel => panel.classList.remove("is-panel-switching-in"));
         }, nextMode ? 340 : 40);
       };
 
@@ -348,7 +351,7 @@ export const voiceLabView = {
       $$('[data-vl-mode]', dock).forEach(button => button.classList.toggle("is-active", button.dataset.vlMode === nextMode));
       const liquid = $(".vl-mode-liquid", dock);
       if (liquid) liquid.style.setProperty("--i", String(Math.max(0, ["tts", "design", "library"].indexOf(nextMode))));
-      $$(".vl-library, .vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-out"));
+      $$(".vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-out"));
       window.setTimeout(renderNext, 150);
     };
     ensureProviderStatus();

@@ -5,7 +5,7 @@ import { icon } from "../ui/icons.js";
 import { state, save, ownedBy, accountById, productionById } from "../core/store.js";
 import { STAGES, statusPill, deleteProduction } from "../domain/productions.js";
 import { urlFor } from "../domain/assets.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v117-2";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v117-3";
 import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js";
 import { go } from "../core/router.js";
 
