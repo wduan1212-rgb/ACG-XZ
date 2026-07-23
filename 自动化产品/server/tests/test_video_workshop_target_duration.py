@@ -327,6 +327,23 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
                 ],
                 "audio_design": {},
             }
+            timed_plan = {
+                "scenes": [
+                    {
+                        "duration_sec": 5,
+                        "visual_prompt": "镜头一：桌面上的工具与人物手部操作",
+                        "visual_identity": "动作证据开场",
+                    },
+                    {
+                        "duration_sec": 5,
+                        "visual_prompt": "镜头二：人物抬头确认结果，画面切到完成状态",
+                        "visual_identity": "结果确认收束",
+                    },
+                ],
+                "minimum_units": 1,
+                "public_summary": "已按 10 秒真实口播锁定两个独立视觉段。",
+                "asset_placements": [],
+            }
             with (
                 patch.object(
                     pipeline,
@@ -342,6 +359,11 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
                 patch.object(pipeline.bgm_library, "resolve", return_value=None),
                 patch.object(pipeline.openmontage, "validate_composition", return_value={"success": True}),
                 patch.object(pipeline.openmontage, "inspect_video", return_value={"success": True}),
+                patch.object(
+                    pipeline.director,
+                    "lock_timed_visual_plan",
+                    new=AsyncMock(return_value=timed_plan),
+                ) as lock_timed_visual_plan,
                 patch.object(pipeline, "mutate_project", side_effect=mutate),
                 patch.object(pipeline, "add_event"),
                 patch.object(pipeline, "add_message"),
@@ -354,6 +376,7 @@ class VideoWorkshopTargetDurationTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(4 <= duration <= 15 for duration in submitted))
             self.assertGreaterEqual(sum(submitted), 10)
             self.assertLess(order.index("probe-narration"), order.index("scene-1"))
+            lock_timed_visual_plan.assert_awaited_once_with(plan, 10.0)
             self.assertEqual(project["status"], "succeeded")
 
     async def test_segmented_scene_replacement_stays_transactional(self):
