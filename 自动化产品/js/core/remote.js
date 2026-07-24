@@ -312,6 +312,7 @@ export const supplier = {
   updateViews: (assetId, viewCount) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/views", { method: "PUT", body: { viewCount } }),
   markDownloaded: (assetId) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/downloaded", { method: "PUT" }),
   returnLink: (assetId, data) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/published-link", { method: "PUT", body: data }),
+  ask: (question) => req("/api/supplier/assistant", { method: "POST", body: { question }, metric: "supplier-assistant" }),
   updateHomepage: (accountId, homepageUrl) => req("/api/supplier/accounts/" + encodeURIComponent(accountId) + "/homepage", { method: "PUT", body: { homepageUrl } }),
   createAccount: (account, assets = []) => req("/api/supplier/accounts", { method: "POST", body: { account, assets } }),
   updateAccount: (accountId, account, assets = []) => req("/api/supplier/accounts/" + encodeURIComponent(accountId), { method: "PUT", body: { account, assets } })

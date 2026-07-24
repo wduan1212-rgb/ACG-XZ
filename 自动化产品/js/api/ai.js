@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260723-v117-8";
+import { llm, visionCopy } from "./llm.js?v=20260724-v117-16";
 import { DUMATE_BRIEF } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
@@ -99,6 +99,32 @@ async function requestImageReferencePlan({ title = "", body = "", cards = [], re
     source: String(result?.source || "unknown"),
     model: String(result?.model || ""),
     cards: normalizeReferencePlanCards(result?.cards, safeRefs, safeCards)
+  };
+}
+
+async function requestImageCopyReferenceBrief({ title = "", refs = [] } = {}) {
+  const safeRefs = (refs || []).filter(ref => ref?.id && (ref?.dataUrl || ref?.url)).slice(0, 8);
+  if (!String(title || "").trim() || !safeRefs.length || !remote.isOn() || !remote.getToken()) {
+    return { source: "unavailable", brief: "" };
+  }
+  const response = await fetch("/api/llm/image-copy-reference-brief", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + remote.getToken() },
+    body: JSON.stringify({
+      title: String(title || "").slice(0, 500),
+      // 这里只交统一参考图。单图定制参考只进入它所属图卡的后续规划。
+      refs: safeRefs.map(ref => ({
+        id: String(ref.id), role: "shared", name: String(ref.name || "统一参考图").slice(0, 160),
+        mime: String(ref.mime || ""), url: String(ref.url || ""), dataUrl: String(ref.dataUrl || "")
+      }))
+    })
+  });
+  if (!response.ok) throw new Error(`文案参考图分析失败：HTTP ${response.status} ${(await response.text()).slice(0, 160)}`);
+  const result = await response.json();
+  return {
+    source: String(result?.source || "unknown"),
+    model: String(result?.model || ""),
+    brief: String(result?.brief || "").replace(/\s+/g, " ").trim().slice(0, 420)
   };
 }
 
@@ -1882,7 +1908,9 @@ function richImagePrompt(item, i, total, ctx) {
   const imageStyle = ctx.style
     ? compactImageStyle(ctx.style, isCover ? 24 : lightStyle ? 32 : 38)
     : "白底或浅色底，圆角卡片，大留白，真实办公截图质感，蓝紫点缀，文字大而清楚。";
-  const refPrefix = ctx.styleRefName
+  // 已有逐图参考图规划时，不能再把全量附件名称写进每一张提示词；
+  // 否则即使附件实际只会提交给一张图，文字也会误导图片模型去混合全部素材。
+  const refPrefix = ctx.styleRefName && !(ctx.referencePlans || []).length
     ? `请根据上传的参考图（${ctx.styleRefName}）。`
     : "";
   const relationCore = conciseRelationLine(ctx, item);
@@ -1966,7 +1994,9 @@ function normalizeCopyDrivenImagePromptItems(items, ctx) {
       : "";
     const density = i === 0 ? "" : innerCardDensityVisual(beat);
     const content = stripImagePlanningInstructions(`${anchor}${generatedContent}${density}`);
-    const prefix = ctx.styleRefName ? `请根据上传的参考图（${ctx.styleRefName}）的视觉语言。` : "";
+    const prefix = ctx.styleRefName && !(ctx.referencePlans || []).length
+      ? `请根据上传的参考图（${ctx.styleRefName}）的视觉语言。`
+      : "";
     const referencePlan = promptReferencePlanAt(ctx.referencePlans, i);
     const prompt = `${prefix}3:4竖版图片。${content}${style ? `视觉风格：${style}。` : ""}`;
     return {
@@ -2218,6 +2248,16 @@ export const AI = {
     } catch (error) {
       // 规划是增强层。视觉模型暂不可用或网络波动时，继续沿用原有真实附件传图链路。
       return { source: "fallback", cards: [], error: error?.message || String(error) };
+    }
+  },
+
+  /* 正文尚为空时，先让视觉模型从统一参考图提炼与标题有关的内容线索。
+     这不是图片提示词，也不接收单图定制参考；最终正文仍由 MiniMax-M3 完整写作。 */
+  async prepareImageCopyReferenceContext(input = {}) {
+    try {
+      return await requestImageCopyReferenceBrief(input);
+    } catch (error) {
+      return { source: "fallback", brief: "", error: error?.message || String(error) };
     }
   },
 
@@ -2584,6 +2624,10 @@ ${productRelationLine(rel.slice(0, 2))}
     const contentBeats = hasCopyBrief ? copyContentBeats(copyTitle, copyBody, nImg) : [];
     const promptReferencePlans = normalizePromptReferencePlans(referencePlans, nImg);
     const referencePlanBrief = visualReferencePlanBrief(promptReferencePlans);
+    // Per-card reference plans are authoritative. Do not also inject every
+    // shared reference name into each model prompt.
+    const modelStyleRefName = promptReferencePlans.length ? "" : styleRefName;
+    styleRefName = modelStyleRefName;
     try {
       const content = await llm([
         { role: "system", content: `你是小红书笔记配图的图片提示词设计师。最终发布标题和正文是图片内容的唯一事实来源；账号资料只决定视觉设计，不决定图片讲什么。不得使用产品资料库、竞品关系、账号定位、历史模板、本地结构样本或默认办公案例补写内容。发布文案里明确出现的产品名、软件名和动作可以原样理解，但不能用你记忆中的产品介绍覆盖正文。禁止把发布标题换成另一个主题。先把正文完整理解并均匀规划为 ${nImg} 个不重复的信息节拍，再拆成 ${nImg} 张静态图片；每张承担正文中的一段具体信息，顺序合理，覆盖正文要点，不重复同一句。
@@ -2657,15 +2701,16 @@ ${productRelationLine(rel.slice(0, 2))}
     }
   },
 
-  async generateImageCopyFromTitle({ title = "", account = {}, product = null } = {}) {
+  async generateImageCopyFromTitle({ title = "", account = {}, product = null, referenceContext = "" } = {}) {
     const sourceTitle = stripVisibleTextLabels(cleanText(title || "")).trim();
     if (!sourceTitle) throw new Error("请先填写发布标题");
+    const visualContext = String(referenceContext || "").replace(/\s+/g, " ").trim().slice(0, 420);
     let lastError = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const content = await llm([
-          { role: "system", content: `你是专业的小红书图文正文写手。用户给出的标题是唯一内容主题，必须先理解标题在说什么，再写一篇与标题强相关、可直接发布的干货正文。不得把标题替换成泛化的 AI 办公、效率清单或其他常见模板；不得引入标题未指向的新产品、新选题或竞品关系。正文必须自然保留标题中的主产品名、核心对象和任务关系词，不能把所有关键字都换成泛化同义词。内容优先采用三类可靠结构之一：测评类写结论、依据、适合谁与边界；教学类写前提、步骤、结果与避坑；种草类写使用场景、真实价值、选择理由与限制。正文要回答标题承诺的问题，给出具体做法、判断依据或可验证结果，语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签。账号信息只决定表达风格，不改变主题和专业度。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
-          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。\n请只围绕这个标题写正文。` }
+          { role: "system", content: `你是专业的小红书图文正文写手。用户给出的标题是唯一内容主题，必须先理解标题在说什么，再写一篇与标题强相关、可直接发布的干货正文。不得把标题替换成泛化的 AI 办公、效率清单或其他常见模板；不得引入标题未指向的新产品、新选题或竞品关系。正文必须自然保留标题中的主产品名、核心对象和任务关系词，不能把所有关键字都换成泛化同义词。内容优先采用三类可靠结构之一：测评类写结论、依据、适合谁与边界；教学类写前提、步骤、结果与避坑；种草类写使用场景、真实价值、选择理由与限制。正文要回答标题承诺的问题，给出具体做法、判断依据或可验证结果，语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签。账号信息只决定表达风格，不改变主题和专业度。若提供视觉编辑摘要，它来自用户上传的统一参考图：只能用来选择与标题直接相关的真实场景、证据或功能关系；不要逐项描述图片外观，也不要据此改变标题主题或编造能力。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
+          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。${visualContext ? `\n统一参考图的内容关联摘要（只在与标题直接相关时吸收，不要复述图片细节）：${visualContext}` : ""}\n请只围绕这个标题写正文。` }
         ], { json: true, temperature: attempt ? 0.72 : 0.92 });
         const data = sanitizeXhsObject(parseJSONLoose(content));
         const copyText = ensureImagePublishTags(assertProfessionalImageCopy(data.copy || data.body || ""), null, sourceTitle);
@@ -2695,13 +2740,14 @@ ${productRelationLine(rel.slice(0, 2))}
   },
 
   /* ---------- 发布文案（交付包随附） ---------- */
-  async generateCopy({ topic, shots, account, style, kind = "image", product = null, batchVariant = null, avoidCopies = [], useOnlineTrends = false, trendGuide = "", trendPrep = null, requireLlm = false }) {
+  async generateCopy({ topic, shots, account, style, kind = "image", product = null, batchVariant = null, avoidCopies = [], useOnlineTrends = false, trendGuide = "", trendPrep = null, referenceContext = "", requireLlm = false }) {
     useOnlineTrends = false;
     trendGuide = "";
     trendPrep = null;
     const safeTopic = sanitizeXhsText(cleanText(topic || ""));
     const safeShots = sanitizeXhsObject(JSON.parse(JSON.stringify(shots || [])));
     const safeStyle = sanitizeXhsText(cleanText(style || ""));
+    const visualContext = String(referenceContext || "").replace(/\s+/g, " ").trim().slice(0, 420);
     const accountVoice = copyAccountVoice(account, safeStyle, safeTopic);
     const speechVoice = copyAccountVoice(account, account?.voiceName || safeStyle, safeTopic);
     const intent = inferCopyIntent({ topic: safeTopic, shots: safeShots, account, product, useAccountPosition: false });
@@ -2719,7 +2765,7 @@ ${productRelationLine(rel.slice(0, 2))}
       { role: "system", content: sys + "\n\n" + copyGroundRules },
       { role: "user", content: kind === "video"
         ? `平台：${account.platform}\n账号语气：${accountVoice}\n口播风格：${speechVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}已定口播内容：\n${script}\n${this.memoryLine(account)}`
-        : `平台：${account.platform}\n账号语气：${accountVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${offlineCopyLine}\n${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}图卡内容：\n${script}` }
+        : `平台：${account.platform}\n账号语气：${accountVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${offlineCopyLine}\n${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}${visualContext ? `统一参考图的内容关联摘要（仅在和主题直接相关时作为场景、证据或功能关系；不要复述图片细节或编造能力）：${visualContext}\n` : ""}图卡内容：\n${script}` }
     ];
     let lastError = null;
     const attempts = requireLlm ? 2 : 1;

@@ -13,8 +13,10 @@ def run_node(script: str) -> dict:
         cwd=APP_DIR,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
     )
+    if result.returncode:
+        raise AssertionError(result.stderr or result.stdout)
     return json.loads(result.stdout.strip())
 
 
@@ -63,11 +65,11 @@ globalThis.fetch = async () => ({
   }),
   text: async () => ''
 });
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260723-v117-8');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-16');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260723-v117-8');
+const { AI } = await import('./js/api/ai.js?v=20260724-v117-16');
 const out = await AI.generateImageCopyFromTitle({
   title: '资料整理怎么避免漏文件',
   account: { tone: '专业、清楚、有具体信息' }
@@ -92,9 +94,10 @@ globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem()
 globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
 globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
 globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
-let request = {};
+const requests = [];
 globalThis.fetch = async (_url, options = {}) => {
-  request = JSON.parse(options.body || '{}');
+  const request = JSON.parse(options.body || '{}');
+  requests.push(request);
   return {
     ok: true,
     json: async () => ({
@@ -103,17 +106,17 @@ globalThis.fetch = async (_url, options = {}) => {
     text: async () => ''
   };
 };
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260723-v117-8');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-16');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260723-v117-8');
+const { AI } = await import('./js/api/ai.js?v=20260724-v117-16');
 await AI.generateImageCopyFromTitle({
   title: '资料整理怎么避免漏文件',
   account: { tone: '专业、清楚、有具体信息' },
   product: { id: 'product-a', name: '产品甲', shortName: '甲工具' }
 });
-const userPrompt = String(request.messages?.[1]?.content || '');
+const userPrompt = String(requests[0]?.messages?.[1]?.content || '');
 console.log(JSON.stringify({
   includesSelectedProduct: userPrompt.includes('所选产品：甲工具'),
   includesBoundary: userPrompt.includes('标题没有谈到该产品时不得强行植入'),
@@ -137,11 +140,11 @@ globalThis.fetch = async () => ({
   status: 503,
   text: async () => 'temporary upstream failure'
 });
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260723-v117-8');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-16');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260723-v117-8');
+const { AI } = await import('./js/api/ai.js?v=20260724-v117-16');
 let error = '';
 try {
   await AI.generateImagePrompts({
@@ -191,11 +194,11 @@ globalThis.fetch = async (_url, options = {}) => {
     text: async () => ''
   };
 };
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260723-v117-8');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-16');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260723-v117-8');
+const { AI } = await import('./js/api/ai.js?v=20260724-v117-16');
 const generated = await AI.generateImageCopyFromTitle({
   title: '客户访谈怎么整理成可复用报告',
   account: { tone: '专业、清楚、有具体信息' }
@@ -245,6 +248,55 @@ console.log(JSON.stringify({
 
         drawer = (APP_DIR / "js/views/prodDrawer.js").read_text(encoding="utf-8")
         self.assertIn('p.artifacts.copy.source = "manual"', drawer)
+
+    def test_title_copy_uses_short_vision_context_without_repeating_all_reference_names_in_prompts(self):
+        result = run_node(
+            r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+const requests = [];
+globalThis.fetch = async (_url, options = {}) => {
+  const request = JSON.parse(options.body || '{}');
+  requests.push(request);
+  const system = String(request.messages?.[0]?.content || '');
+  const content = system.includes('小红书笔记配图的图片提示词设计师')
+    ? JSON.stringify({ shots:[{ title:'封面', prompt:'清晰的工作台流程卡片，主标题置于上方。' }] })
+    : JSON.stringify({ copy:'把资料放进工作台后，先确认目标，再按步骤生成初版。\n#内容工作流 #AI工具 #创作方法 #百度搭子' });
+  return {
+    ok: true,
+    json: async () => ({ choices: [{ message: { content } }] }),
+    text: async () => ''
+  };
+};
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-16');
+LLM_CONFIG.apiKey = 'server-managed';
+LLM_CONFIG.endpoint = '/api/chat/completions';
+LLM_CONFIG.serverManaged = true;
+const { AI } = await import('./js/api/ai.js?v=reference-copy-context-test');
+const out = await AI.generateImageCopyFromTitle({
+  title: '百度搭子怎么把创作流程跑起来',
+  account: { tone: '清楚、专业' },
+  referenceContext: '可围绕创作工作台中从资料输入、任务推进到成片输出的连续流程组织正文。'
+});
+const prompts = await AI.generateImagePrompts({
+  script: '图1｜封面｜图上文案：跑通创作流程',
+  account: { styleProfile: '清晰卡片' }, imageCount: 1,
+  copy: { title: out.title, body: out.copy },
+  referencePlans: [{ index:0, referenceIds:['r1'], instruction:'将附件1作为中部产品操作证据，旁边保留标题。' }],
+  styleRefName: 'logo、主界面、自媒体套件、视频生成过程', requireLlm: true
+});
+console.log(JSON.stringify({
+  copyUsesContext: String(requests[0]?.messages?.[1]?.content || '').includes('从资料输入、任务推进到成片输出'),
+  promptDoesNotRepeatAllNames: !String(prompts.shots?.[0]?.prompt || '').includes('logo、主界面、自媒体套件、视频生成过程'),
+  promptKeepsPlacement: String(prompts.shots?.[0]?.prompt || '').includes('附件使用：将附件1作为中部产品操作证据')
+}));
+"""
+        )
+        self.assertTrue(result["copyUsesContext"])
+        self.assertTrue(result["promptDoesNotRepeatAllNames"])
+        self.assertTrue(result["promptKeepsPlacement"])
 
 
 if __name__ == "__main__":

@@ -1,11 +1,17 @@
 import json
 import subprocess
+import importlib
+import sys
 import textwrap
 import unittest
 from pathlib import Path
 
 
 APP_DIR = Path(__file__).resolve().parents[2]
+SERVER_DIR = APP_DIR / "server"
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
+main = importlib.import_module("main")
 
 
 class BatchReferenceSelectionTest(unittest.TestCase):
@@ -118,10 +124,16 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         server = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
         self.assertIn("prepareBatchImageReferencePlan", orchestrator)
         self.assertIn("ensureBatchImageReferencePlan", orchestrator)
-        self.assertIn("item.referenceSource = \"batch-vision-plan\"", orchestrator)
+        self.assertIn('"batch-vision-plan" : "batch-balanced-plan"', orchestrator)
         self.assertIn("imageRefsForSelection(intendedRefAssetIds, refGroups)", orchestrator)
         self.assertIn("enrichBatchImagePrompt(it.prompt, refs, it.referenceInstruction)", orchestrator)
         self.assertIn("referencePlans: imageReferencePlan.cards", orchestrator)
+        self.assertIn("prepareBatchImageCopyReferenceContext", orchestrator)
+        self.assertIn("balancedReferenceFallback", orchestrator)
+        self.assertIn('item.referenceSource = A.referencePlan?.source === "vision" ? "batch-vision-plan" : "batch-balanced-plan"', orchestrator)
+        self.assertIn('const isPlannedBatch = ["batch-vision-plan", "batch-balanced-plan"].includes(it.referenceSource);', orchestrator)
+        self.assertIn("if (card) {", orchestrator)
+        self.assertIn("referenceContext: copyReferenceBrief.brief", orchestrator)
         self.assertLess(
             orchestrator.index("const imageReferencePlan = await prepareBatchImageReferencePlan"),
             orchestrator.index("const imgPromptRes = await AI.generateImagePrompts")
@@ -130,6 +142,27 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn("附件使用：${use}", ai)
         self.assertIn("/api/llm/image-reference-plan", ai)
         self.assertIn("标有“仅可用于图X”的定制参考必须分配给该图", server)
+        self.assertIn("非 Logo 的截图、产品图、海报或文件图通常只应作为一张图的", server)
+        self.assertIn("_trim_broadcast_reference_plan", server)
+        self.assertIn("参考图「%s」（附件%d）", server)
+        self.assertIn('/api/llm/image-copy-reference-brief', server)
+        self.assertIn("最终正文仍由 MiniMax-M3 完整写作", ai)
+
+    def test_server_rejects_all_to_all_reference_broadcast_but_keeps_partial_reuse(self):
+        cards = [
+            {"index": 0, "referenceIds": ["r1", "r2"]},
+            {"index": 1, "referenceIds": ["r1", "r2"]},
+        ]
+        trimmed = main._trim_broadcast_reference_plan(cards, ["r1", "r2"])
+        self.assertEqual(["r1"], trimmed[0]["referenceIds"])
+        self.assertEqual(["r2"], trimmed[1]["referenceIds"])
+
+        partial = [
+            {"index": 0, "referenceIds": ["r1"]},
+            {"index": 1, "referenceIds": ["r1"]},
+            {"index": 2, "referenceIds": []},
+        ]
+        self.assertEqual(partial, main._trim_broadcast_reference_plan(partial, ["r1"]))
 
     def test_only_digital_role_board_remains_as_long_term_image_reference(self):
         cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")

@@ -22,6 +22,7 @@ let supplierActivityCarouselPage = 0;
 let supplierActivityCarouselTimer = 0;
 let supplierViewsPlatform = "all";
 let supplierTrendWindow = { kind: "days", days: 7, start: "", end: "" };
+let supplierAssistantPending = false;
 const SUPPLIER_ACTIVITY_PAGE_SIZE = 3;
 const SUPPLIER_ASSISTANT_HISTORY_PREFIX = "xingzhen:supplier-data-assistant:";
 const onSupplierRoute = zone => document.body.dataset.zone === zone;
@@ -206,21 +207,25 @@ function supplierTrendCardContent(model) {
 function supplierDataAnswer(question, rows) {
   const q = String(question || "").trim();
   const published = rows.filter(item => item.asset.publishedUrl);
-  const today = supplierDateKey(Date.now());
-  const todayRows = published.filter(item => supplierDateKey(item.timestamp) === today);
+  const base = new Date();
+  base.setHours(0, 0, 0, 0);
+  const dateFor = offset => supplierDateKey(base.getTime() + offset * 86400000);
+  const targetDate = /前天/.test(q) ? dateFor(-2) : /昨天|昨日/.test(q) ? dateFor(-1) : /今天|今日/.test(q) ? dateFor(0) : "";
+  const scoped = targetDate ? rows.filter(item => supplierDateKey(item.timestamp) === targetDate) : rows;
+  const scopedPublished = scoped.filter(item => item.asset.publishedUrl);
+  const dayLabel = targetDate === dateFor(0) ? "今天" : targetDate === dateFor(-1) ? "昨天" : targetDate === dateFor(-2) ? "前天" : "当前";
   if (/今日回传链接/.test(q)) return supplierTodayLinksAnswer(rows);
   if (/链接/.test(q)) {
-    const todayOnly = /今天|今日/.test(q);
-    const candidates = (todayOnly ? todayRows : published).slice(0, 12);
+    const candidates = scopedPublished.slice(0, 12);
     return candidates.length
-      ? `${todayOnly ? "今天" : "当前"}已回传链接 ${candidates.length} 条：\n${candidates.map((item, index) => `${index + 1}. ${item.account.name || item.asset.title || "未命名账号"}：${item.asset.publishedUrl}`).join("\n")}`
+      ? `${dayLabel}已回传链接 ${scopedPublished.length} 条：\n${candidates.map((item, index) => `${index + 1}. ${item.account.name || item.asset.title || "未命名账号"}：${item.asset.publishedUrl}`).join("\n")}`
       : "当前筛选范围内还没有已回传链接。";
   }
   if (/播放|观看/.test(q)) {
-    const total = rows.reduce((sum, item) => sum + Number(item.asset.views || item.asset.viewCount || 0), 0);
-    return `当前可见交付累计播放量为 ${total.toLocaleString("zh-CN")}。点击左侧数据卡可以查看对应内容明细。`;
+    const total = scoped.reduce((sum, item) => sum + Number(item.asset.views || item.asset.viewCount || 0), 0);
+    return `${targetDate ? dayLabel : "当前可见交付"}累计播放量为 ${total.toLocaleString("zh-CN")}。点击左侧数据卡可以查看对应内容明细。`;
   }
-  if (/今天|今日/.test(q)) return `今天交付 ${rows.filter(item => supplierDateKey(item.timestamp) === today).length} 条，其中已回传链接 ${todayRows.length} 条。`;
+  if (targetDate && /交付|内容|多少|几条|数量|条/.test(q)) return `${dayLabel}交付 ${scoped.length} 条，其中已回传链接 ${scopedPublished.length} 条。`;
   if (/账号/.test(q)) {
     const counts = new Map();
     published.forEach(item => counts.set(item.account.name || "未命名账号", (counts.get(item.account.name || "未命名账号") || 0) + 1));
@@ -395,17 +400,36 @@ export async function renderSupplierOverview(root) {
       });
     });
     wireSupplierTrend();
-    const sendSupplierQuestion = question => {
+    const sendSupplierQuestion = async question => {
       const q = String(question || "").trim();
-      if (!q) return;
+      if (!q || supplierAssistantPending) return;
+      supplierAssistantPending = true;
       const messages = $("#supplierDataMessages", root);
-      const nextHistory = [...assistantHistory, { role: "user", content: q }, { role: "agent", content: supplierDataAnswer(q, rows) }].slice(-40);
+      const nextHistory = [...assistantHistory, { role: "user", content: q }, { role: "agent", content: "正在读取当前可见供应商数据…" }].slice(-40);
       assistantHistory.splice(0, assistantHistory.length, ...nextHistory);
       saveSupplierAssistantHistory(assistantHistory);
       messages.innerHTML = supplierAssistantMessagesHtml(assistantHistory);
       wireSupplierLinkCopies(messages);
       messages.scrollTop = messages.scrollHeight;
       const input = $("#supplierDataInput", root); if (input) input.value = "";
+      const submit = $("#supplierDataForm button", root); if (submit) submit.disabled = true;
+      try {
+        const response = remote.isOn() ? await remote.supplier.ask(q) : null;
+        const answer = String(response?.answer || supplierDataAnswer(q, rows)).trim() || supplierDataAnswer(q, rows);
+        assistantHistory[assistantHistory.length - 1].content = answer;
+      } catch (_) {
+        assistantHistory[assistantHistory.length - 1].content = supplierDataAnswer(q, rows);
+        toast("数据助手服务暂时不可用，已使用当前页面数据回答");
+      } finally {
+        supplierAssistantPending = false;
+        saveSupplierAssistantHistory(assistantHistory);
+        if (messages?.isConnected) {
+          messages.innerHTML = supplierAssistantMessagesHtml(assistantHistory);
+          wireSupplierLinkCopies(messages);
+          messages.scrollTop = messages.scrollHeight;
+        }
+        if (submit?.isConnected) submit.disabled = false;
+      }
     };
     const wireSupplierLinkCopies = scope => $$('[data-copy-supplier-link]', scope).forEach(button => button.addEventListener("click", () => {
       copyText(button.dataset.copySupplierLink || "", "已复制回传链接");

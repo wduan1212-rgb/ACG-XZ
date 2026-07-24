@@ -61,6 +61,41 @@ class DirectorSemanticAlignmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["a2", "a3"], [item["asset_id"] for item in plan["material_assets"]])
         self.assertTrue(all(item["presentation"] == "pip" for item in plan["material_assets"]))
 
+    def test_logo_can_be_semantic_reference_or_center_reveal_without_corner_override(self):
+        assets = [{
+            "asset_id": "logo-1", "label": "图1", "name": "百度搭子-logo.png",
+            "media_type": "image", "mime": "image/png", "url": "/uploads/p/logo.png",
+        }]
+        plan = {
+            "scenes": [{"visual_prompt": "口播提到百度搭子时展示品牌"}],
+            "asset_assignments": [{
+                "asset_id": "logo-1", "label": "图1", "role": "both",
+                "presentation": "cutaway", "position": "center", "scale": 0.5,
+                "scene_number": 1, "narration_anchor": "百度搭子",
+            }],
+        }
+        main._apply_asset_plan(plan, assets, "做一条介绍百度搭子的视频，口播会提到百度搭子。")
+        assignment = plan["asset_assignments"][0]
+        self.assertEqual("cutaway", assignment["presentation"])
+        self.assertEqual("center", assignment["position"])
+        self.assertEqual(["logo-1"], [item["asset_id"] for item in plan["reference_images"]])
+        self.assertEqual(["logo-1"], [item["asset_id"] for item in plan["material_assets"]])
+
+    def test_explicit_corner_request_is_the_only_logo_corner_override(self):
+        assets = [{
+            "asset_id": "logo-1", "label": "图1", "name": "百度搭子-logo.png",
+            "media_type": "image", "mime": "image/png", "url": "/uploads/p/logo.png",
+        }]
+        plan = {"scenes": [{"visual_prompt": "品牌提示"}], "asset_assignments": [{
+            "asset_id": "logo-1", "label": "图1", "role": "material",
+            "presentation": "cutaway", "position": "center", "scale": 0.52,
+        }]}
+        main._apply_asset_plan(plan, assets, "把图1作为右上角标显示。")
+        assignment = plan["asset_assignments"][0]
+        self.assertEqual("overlay", assignment["presentation"])
+        self.assertEqual("top-right", assignment["position"])
+        self.assertLessEqual(assignment["scale"], 0.3)
+
     def test_reference_images_are_scoped_to_director_selected_scene(self):
         with tempfile.TemporaryDirectory() as directory:
             uploads = Path(directory)

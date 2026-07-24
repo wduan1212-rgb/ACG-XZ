@@ -1,0 +1,130 @@
+import asyncio
+import importlib
+import sys
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
+
+
+SERVER_DIR = Path(__file__).resolve().parents[1]
+APP_DIR = SERVER_DIR.parent
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
+
+main = importlib.import_module("main")
+
+
+class FakeLlmResponse:
+    status_code = 200
+
+    def json(self):
+        return {
+            "model": "MiniMax-M3",
+            "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+            "choices": [{"message": {"content": "最近两天交付节奏较稳定，昨天回传链接占比更高。"}}],
+        }
+
+
+class SupplierDataAssistantTest(unittest.TestCase):
+    def setUp(self):
+        self.member = {"id": "supplier-parent", "role": "supplier_parent", "parentId": None, "name": "供应商"}
+        self.now = datetime(2026, 7, 24, 10, 0, tzinfo=timezone.utc)
+        self.scoped_state = {
+            "accounts": [
+                {"id": "account-a", "name": "账号 A", "platform": "小红书"},
+                {"id": "account-b", "name": "账号 B", "platform": "视频号"},
+            ],
+            "assets": [
+                {"id": "delivery-yesterday-a", "delivered": True, "accountId": "account-a", "title": "昨天图文 A", "deliveredAt": "2026-07-23T10:00:00+08:00", "publishedUrl": "https://example.test/a", "views": 31, "globalSeq": 12},
+                {"id": "delivery-yesterday-b", "delivered": True, "accountId": "account-b", "title": "昨天视频 B", "deliveredAt": "2026-07-23T11:00:00+08:00", "views": 8, "globalSeq": 13},
+                {"id": "delivery-today", "delivered": True, "accountId": "account-a", "title": "今天图文", "deliveredAt": "2026-07-24T09:00:00+08:00", "publishedUrl": "https://example.test/today", "views": 17, "globalSeq": 14},
+                {"id": "private-draft", "delivered": False, "accountId": "account-a", "title": "不应进入问答", "createdAt": "2026-07-24T09:00:00+08:00"},
+            ],
+        }
+
+    def _snapshot(self):
+        return main._supplier_assistant_snapshot(self.member, self.scoped_state, self.now)
+
+    def test_yesterday_delivery_is_an_authoritative_date_fact_not_generic_total(self):
+        snapshot = self._snapshot()
+        answer = main._supplier_assistant_fact_answer("昨天交付多少条", snapshot)
+        self.assertEqual("昨天交付 2 条，其中已回传链接 1 条。", answer)
+        self.assertNotIn("当前共有", answer)
+        self.assertNotIn("不应进入问答", str(snapshot))
+
+    def test_returned_links_and_views_respect_the_requested_date(self):
+        snapshot = self._snapshot()
+        links = main._supplier_assistant_fact_answer("昨天回传链接", snapshot)
+        self.assertIn("昨天已回传链接 1 条", links)
+        self.assertIn("https://example.test/a", links)
+        self.assertNotIn("https://example.test/today", links)
+        self.assertEqual("昨天交付内容累计播放量为 39。", main._supplier_assistant_fact_answer("昨天播放量", snapshot))
+
+    def test_snapshot_uses_the_same_server_authorized_scope_as_supplier_state(self):
+        child = {"id": "supplier-child", "role": "supplier_child", "parentId": "supplier-parent", "name": "子账号"}
+        visible = {
+            "accounts": [{"id": "account-b", "name": "账号 B", "platform": "视频号"}],
+            "assets": [self.scoped_state["assets"][1]],
+        }
+        with patch.object(main.store, "state_for", return_value=visible) as state_for:
+            snapshot = main._supplier_assistant_snapshot(child, now=self.now)
+        state_for.assert_called_once_with("supplier-child", "supplier_child", "supplier-parent", ["accounts", "assets"])
+        self.assertEqual(["账号 B"], [item["account"] for item in snapshot["deliveries"]])
+        self.assertNotIn("账号 A", str(snapshot))
+
+    def test_open_question_calls_deployed_llm_with_authorized_snapshot_only(self):
+        snapshot = self._snapshot()
+        record = Mock()
+        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
+            main, "_call_llm", new=AsyncMock(return_value=FakeLlmResponse())
+        ) as call_llm, patch.object(main, "_record_llm_usage", record):
+            result = asyncio.run(main._supplier_assistant_answer("总结最近两天的交付节奏", snapshot, self.member))
+        self.assertEqual("llm", result["source"])
+        self.assertEqual("MiniMax-M3", result["model"])
+        self.assertIn("昨天回传链接占比更高", result["answer"])
+        body = call_llm.await_args.args[0]
+        self.assertEqual("MiniMax-M3", body["model"])
+        self.assertIn("2026-07-23", body["messages"][1]["content"])
+        self.assertNotIn("不应进入问答", body["messages"][1]["content"])
+        record.assert_called_once()
+
+    def test_date_fact_uses_m3_with_authoritative_result_but_raw_links_stay_server_side(self):
+        snapshot = self._snapshot()
+        record = Mock()
+        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
+            main, "_call_llm", new=AsyncMock(return_value=FakeLlmResponse())
+        ) as call_llm, patch.object(main, "_record_llm_usage", record):
+            result = asyncio.run(main._supplier_assistant_answer("昨天交付多少条", snapshot, self.member))
+        self.assertEqual("llm", result["source"])
+        self.assertTrue(result["answer"].startswith("昨天交付 2 条，其中已回传链接 1 条。"))
+        body = call_llm.await_args.args[0]
+        self.assertIn("authoritativeAnswer", body["messages"][1]["content"])
+        self.assertIn("昨天交付 2 条，其中已回传链接 1 条。", body["messages"][1]["content"])
+        self.assertNotIn("https://example.test/a", body["messages"][1]["content"])
+        record.assert_called_once()
+
+        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
+            main, "_call_llm", new=AsyncMock(return_value=FakeLlmResponse())
+        ) as call_llm:
+            links = asyncio.run(main._supplier_assistant_answer("昨天回传链接", snapshot, self.member))
+        self.assertEqual("facts", links["source"])
+        self.assertIn("https://example.test/a", links["answer"])
+        call_llm.assert_not_awaited()
+
+    def test_route_is_member_authenticated_and_supplier_only(self):
+        route = next(route for route in main.app.routes if getattr(route, "path", "") == "/api/supplier/assistant")
+        dependencies = {dependency.call for dependency in route.dependant.dependencies}
+        self.assertIn(main.require_member, dependencies)
+
+    def test_frontend_calls_the_server_assistant_and_keeps_a_date_fallback(self):
+        remote = (APP_DIR / "js/core/remote.js").read_text(encoding="utf-8")
+        view = (APP_DIR / "js/views/supplierViews.js").read_text(encoding="utf-8")
+        self.assertIn('ask: (question) => req("/api/supplier/assistant"', remote)
+        self.assertIn("await remote.supplier.ask(q)", view)
+        self.assertIn("/昨天|昨日/", view)
+        self.assertIn("supplierAssistantPending", view)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -305,6 +306,44 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
                 {item["id"] for item in state_b["voicePresets"]},
                 expected_presets,
             )
+
+    def test_mixed_asset_snapshot_persists_owned_rows_and_skips_foreign_mutations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_member_assets("creator-a", "editor", [{
+                "id": "shared-delivery",
+                "type": "图集",
+                "name": "A 的已交付内容",
+                "delivered": True,
+                "updatedAt": 100,
+            }])
+
+            result = store.upsert_member_assets("creator-b", "editor", [{
+                "id": "shared-delivery",
+                "ownerId": "creator-a",
+                "type": "图集",
+                "name": "B 的陈旧快照修改",
+                "delivered": True,
+                "updatedAt": 101,
+            }, {
+                "id": "creator-b-new-delivery",
+                "type": "图集",
+                "name": "B 的新交付内容",
+                "delivered": True,
+                "updatedAt": 101,
+            }])
+
+            self.assertEqual({"written": 1, "denied": 1}, result)
+            shared = store._fetchone(
+                "SELECT owner_id,data FROM docs WHERE collection='assets' AND id='shared-delivery'"
+            )
+            self.assertEqual("creator-a", shared[0])
+            self.assertEqual("A 的已交付内容", json.loads(shared[1])["name"])
+            created = store._fetchone(
+                "SELECT owner_id,data FROM docs WHERE collection='assets' AND id='creator-b-new-delivery'"
+            )
+            self.assertEqual("creator-b", created[0])
+            self.assertEqual("B 的新交付内容", json.loads(created[1])["name"])
 
     def test_private_asset_and_shared_voice_mutations_are_owner_checked(self):
         with tempfile.TemporaryDirectory() as tmp:

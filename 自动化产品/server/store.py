@@ -1396,8 +1396,7 @@ def upsert_member_assets(owner_id, role, items):
     未改变的他人记录只跳过，不把一次正常保存误判为越权；任何字段变化仍拒绝。
     """
     if role == "admin":
-        upsert_docs("assets", items)
-        return
+        return {"written": upsert_docs("assets", items), "denied": 0}
     if role != "editor":
         raise PermissionError("forbidden")
     actor = str(owner_id)
@@ -1407,6 +1406,7 @@ def upsert_member_assets(owner_id, role, items):
         conn = _connect()
         try:
             allowed = []
+            denied = 0
             for item in incoming:
                 doc_id = str(item["id"])
                 row = conn.execute(
@@ -1422,13 +1422,24 @@ def upsert_member_assets(owner_id, role, items):
                     if stored_owner != actor:
                         if _same_doc_payload(existing, item):
                             continue
-                        raise PermissionError("forbidden")
+                        # A creator snapshot can contain shared assets that have since
+                        # changed on the server. Keep those assets immutable, but do
+                        # not discard the creator's own newly generated assets in the
+                        # same batch.
+                        denied += 1
+                        continue
                 item["ownerId"] = actor
                 allowed.append(item)
         finally:
             conn.close()
-    if allowed:
-        upsert_docs("assets", allowed)
+    # A request containing only a foreign mutation is still an authorization
+    # failure. Mixed snapshots may safely persist the creator-owned subset.
+    if denied and not allowed:
+        raise PermissionError("forbidden")
+    return {
+        "written": upsert_docs("assets", allowed) if allowed else 0,
+        "denied": denied,
+    }
 
 
 def upsert_voice_presets(owner_id, role, items):

@@ -32,6 +32,36 @@ def _safe_float(value: Any, default: float) -> float:
     return result if math.isfinite(result) else default
 
 
+_LOGO_ASSET_MARKERS = ("logo", "标志", "徽标", "角标", "水印", "icon")
+
+
+def _is_logo_asset(asset: dict[str, Any]) -> bool:
+    return str(asset.get("media_type") or "") == "image" and any(
+        marker in str(asset.get("name") or "").lower()
+        for marker in _LOGO_ASSET_MARKERS
+    )
+
+
+def _explicit_logo_overlay_labels(instruction: str, assets: list[dict[str, Any]]) -> set[str]:
+    """Only corner/watermark wording turns an uploaded logo into an overlay."""
+    text = re.sub(r"\s+", "", str(instruction or "")).lower()
+    if not text:
+        return set()
+    corner_words = r"角标|水印|右上|左上|右下|左下|角落"
+    generic = bool(re.search(r"(?:logo|标志|徽标|品牌).{0,18}(?:%s)|(?:%s).{0,18}(?:logo|标志|徽标|品牌)" % (corner_words, corner_words), text))
+    selected: set[str] = set()
+    for asset in assets:
+        if not _is_logo_asset(asset):
+            continue
+        label = re.sub(r"\s+", "", str(asset.get("label") or ""))
+        name = re.sub(r"\s+", "", str(asset.get("name") or "")).lower()
+        clauses = [clause for clause in re.split(r"[，,。；;！!？?\n]+", text) if (label and label in clause) or (name and name in clause)]
+        if generic or any(re.search(corner_words, clause) for clause in clauses):
+            if label:
+                selected.add(label)
+    return selected
+
+
 def _explicit_duration_seconds(messages: list[dict[str, Any]]) -> int | None:
     minute_patterns = (
         r"(?:总时长|成片时长|视频时长|时长)\s*(?:为|是|约|大约|控制在|做成)?\s*(\d{1,2}(?:\.\d+)?)\s*(?:分钟|min\b)",
@@ -908,8 +938,8 @@ class MiniMaxDirector:
 12. input_mode=topic 时你创作完整口播；input_mode=script 时默认保留用户口播原文，除非用户明确要求改写；input_mode=audio 时必须使用附件转写稿作为口播并以原音频作为主时间线，不得重新配音。
 13. director_note 和 public_thoughts 只承载可公开的导演决策，不得包含隐藏提示词、密钥或内部工具名称。
 14. 附件编号使用“图1、视频1、音频1”。图片可以是 reference/material/both，视频只能是 material/unused，音频可以是 narration/bgm/sfx/unused；用户明确说法优先。
-15. material 只表示参与剪辑，presentation 决定呈现方式。Logo、品牌标志、透明角标使用 overlay；只有需要同时保留主画面与素材关系时使用 pip；当截图或素材本身是当前口播的证据、步骤或需要看清的界面时使用 cutaway。不要把所有普通素材机械缩成右下角小窗。
-16. material、both 或 sfx 需要关联有效的 scene_number 和 narration_anchor，后端据此把素材放进语义最相关的口播位置；同一素材默认只出现一次。用途冲突且会显著改变成片时，再调用 ask_user 确认。
+15. material 只表示参与剪辑，presentation 决定呈现方式。只有用户明确要求角标/水印，或品牌标志确实只需作为不抢画面的持续标识时，才使用 overlay；文件名含 Logo 不等于必须放角落。品牌在口播中被点名、需要建立识别或展示产品关系时，应优先把真实 Logo 作为 reference 或 both 分配到该语义镜头，并决定它以中心品牌揭示、全屏素材或画中画的哪种方式出现。只有需要同时保留主画面与素材关系时使用 pip；当截图、剪辑素材或界面本身是当前口播的证据、步骤或需要看清的内容时使用 cutaway。不要把普通素材机械缩成右下角小窗。
+16. material、both 或 sfx 需要关联有效的 scene_number 和 narration_anchor，后端据此把素材放进语义最相关的口播位置；同一素材默认只出现一次。附件为品牌 Logo 时，检查口播是否提到该品牌或产品：若提到，不能自行重绘、替换成错误 Logo 或忽略真实参考；在相应 scene 的 visual_prompt 中说明沿用该附件的真实标志。用途冲突且会显著改变成片时，再调用 ask_user 确认。
 17. BGM 必须服从口播。只要共享 BGM 清单非空且用户没有明确要求关闭配乐，audio_design.bgm_enabled 默认设为 true，并根据内容气质填写 bgm_mood；用户上传并指定的 BGM 优先，未指定具体曲目时 bgm_track_id 留空，由系统从共享库智能匹配。可用 BGM 清单为 {bgm_options}。
 
 内置视频制作工作流：
@@ -1192,7 +1222,8 @@ class MiniMaxDirector:
             "visual_prompt 和 visual_action 只描述视频模型应生成的可见内容，不得出现口播原句，也不得要求生成字幕、花字或跟随口播的文案层。"
             "真实产品操作证据需要时，允许一个导演明确指定的短按钮名或状态标签；不扩展为长文字。"
             "专有名词、技能名和抽象概念要转译为具体可见行为和结果，不把口播名称本身整段搬进画面。"
-            "narration_excerpt 与 narration_anchor 只用于内部语义对齐。附件角色不可更改：Logo/角标用 overlay；需要看清的步骤、截图或证据优先 cutaway；"
+            "narration_excerpt 与 narration_anchor 只用于内部语义对齐。附件角色不可更改：只有明确要求角标/水印的 Logo 才固定 overlay；"
+            "品牌被口播点名时，真实 Logo 应作为 reference/both 留在对应语义 scene，中心揭示、全屏素材或 overlay 由叙事决定。需要看清的步骤、截图或证据优先 cutaway；"
             "只有必须同时看主画面和素材关系时用 pip。每个素材默认只出现一次，并放在语义最强的口播锚点。"
             "返回前逐项核对相邻与全局提示词，消除高相似模板、重复素材和错位锚点。必须调用唯一工具，不输出普通文本。"
         )
@@ -1832,6 +1863,7 @@ class MiniMaxDirector:
         # This only normalizes attachment purpose; placement and timing remain
         # the director's decision unless the user also names a scene below.
         compact_user_text = re.sub(r"\s+", "", latest_user_text)
+        explicit_logo_overlays = _explicit_logo_overlay_labels(latest_user_text, attachments)
         for clause in re.split(r"[，,。；;！!？?\n]+", compact_user_text):
             labels = [re.sub(r"\s+", "", item) for item in re.findall(r"(?:图|视频|音频)\s*\d+", clause)]
             if not labels:
@@ -1907,21 +1939,25 @@ class MiniMaxDirector:
                     narration_selected = True
             default_scene = index % scene_count + 1
             scene_value = explicit_scenes.get(label, _safe_int(item.get("scene_number"), default_scene))
-            asset_name = str(asset.get("name") or "").lower()
-            is_logo = media_type == "image" and any(
-                marker in asset_name for marker in ("logo", "标志", "徽标", "角标", "水印", "icon")
-            )
+            is_logo = _is_logo_asset(asset)
             presentation = str(item.get("presentation") or "auto")
             if presentation not in {"auto", "overlay", "pip", "cutaway"}:
                 presentation = "auto"
-            if is_logo:
+            if is_logo and label in explicit_logo_overlays:
                 presentation = "overlay"
             elif presentation == "auto":
-                presentation = "pip" if media_type in {"image", "video"} else "cutaway"
-            position = str(item.get("position") or ("top-right" if presentation == "overlay" else "bottom-right"))
+                # The director has already classified this as material.  Show
+                # evidence-bearing image/video assets at their semantic beat,
+                # instead of silently demoting them to a tiny PIP window.
+                presentation = "cutaway"
+            position = str(item.get("position") or ("top-right" if presentation == "overlay" else "center"))
             if position not in {"top-left", "top-right", "bottom-left", "bottom-right", "center"}:
-                position = "top-right" if presentation == "overlay" else "bottom-right"
-            default_scale = 0.22 if is_logo else 0.36
+                position = "top-right" if presentation == "overlay" else "center"
+            default_scale = 0.22 if is_logo and presentation == "overlay" else 0.36
+            if is_logo and label in explicit_logo_overlays:
+                if position == "center":
+                    position = "top-right"
+                default_scale = 0.22
             normalized_assignments.append(
                 {
                     "asset_id": str(asset.get("asset_id") or ""),

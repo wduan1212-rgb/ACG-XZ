@@ -680,27 +680,25 @@ async def _apply_material_cutaways(
             marker in name for marker in ("logo", "标志", "徽标", "角标", "水印", "icon")
         )
         if cue.get("presentation") == "auto":
-            cue["presentation"] = (
-                "overlay"
-                if is_logo
-                else "pip"
-                if str(cue.get("mime") or "").startswith(("image/", "video/"))
-                else "cutaway"
-            )
+            # Legacy/partial plans must not turn a filename containing "logo"
+            # into a permanent corner bug.  Director-selected overlay survives;
+            # otherwise a material is shown as a real semantic cutaway.
+            cue["presentation"] = "cutaway"
         if is_logo and cue["presentation"] == "overlay":
+            centered = cue.get("position") == "center"
             cue["scale"] = min(
-                0.3,
+                0.65 if centered else 0.3,
                 max(
                     0.14,
-                    _finite_number(cue.get("scale"), 0.22)
+                    _finite_number(cue.get("scale"), 0.42 if centered else 0.22)
                     if cue.get("scaleExplicit")
-                    else 0.22,
+                    else (0.42 if centered else 0.22),
                 ),
             )
             cue["position"] = (
                 cue.get("position")
                 if cue.get("positionExplicit")
-                and cue.get("position") in {"top-left", "top-right", "bottom-left", "bottom-right"}
+                and cue.get("position") in {"top-left", "top-right", "bottom-left", "bottom-right", "center"}
                 else "top-left"
             )
 

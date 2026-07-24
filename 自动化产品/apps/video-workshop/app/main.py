@@ -935,6 +935,41 @@ def _explicit_asset_role_overrides(
     return overrides
 
 
+_LOGO_ASSET_MARKERS = ("logo", "标志", "徽标", "角标", "水印", "icon")
+
+
+def _is_logo_asset(asset: dict[str, Any]) -> bool:
+    return str(asset.get("media_type") or "") == "image" and any(
+        marker in str(asset.get("name") or "").lower()
+        for marker in _LOGO_ASSET_MARKERS
+    )
+
+
+def _explicit_logo_overlay_labels(instruction: str, assets: list[dict[str, Any]]) -> set[str]:
+    """Return only logos the user explicitly requested as a corner/watermark.
+
+    A filename containing `logo` is not itself an instruction to turn it into a
+    permanent corner bug.  The director may instead use it as a full-frame
+    brand reveal or as generation reference at the narration's brand mention.
+    """
+    text = re.sub(r"\s+", "", str(instruction or "")).lower()
+    if not text:
+        return set()
+    corner_words = r"角标|水印|右上|左上|右下|左下|角落"
+    generic = bool(re.search(r"(?:logo|标志|徽标|品牌).{0,18}(?:%s)|(?:%s).{0,18}(?:logo|标志|徽标|品牌)" % (corner_words, corner_words), text))
+    selected: set[str] = set()
+    for asset in assets:
+        if not _is_logo_asset(asset):
+            continue
+        label = re.sub(r"\s+", "", str(asset.get("label") or ""))
+        name = re.sub(r"\s+", "", str(asset.get("name") or "")).lower()
+        clauses = [clause for clause in re.split(r"[，,。；;！!？?\n]+", text) if (label and label in clause) or (name and name in clause)]
+        if generic or any(re.search(corner_words, clause) for clause in clauses):
+            if label:
+                selected.add(label)
+    return selected
+
+
 def _apply_asset_plan(
     plan: dict[str, Any],
     assets: list[dict[str, Any]],
@@ -960,6 +995,7 @@ def _apply_asset_plan(
         "unused": "暂不使用",
     }
     explicit_roles = _explicit_asset_role_overrides(instruction, assets)
+    explicit_logo_overlays = _explicit_logo_overlay_labels(instruction, assets)
 
     def safe_number(value: Any, default: float) -> float:
         try:
@@ -1001,11 +1037,8 @@ def _apply_asset_plan(
             "volume": max(0.0, min(1.5, safe_number(assignment.get("volume"), 0.72 if role == "sfx" else 1.0))),
             "reason": str(assignment.get("reason") or role_labels[role])[:220],
         }
-        asset_name = str(asset.get("name") or "").lower()
-        is_logo = media_type == "image" and any(
-            marker in asset_name for marker in ("logo", "标志", "徽标", "角标", "水印", "icon")
-        )
-        if is_logo:
+        is_logo = _is_logo_asset(asset)
+        if is_logo and label in explicit_logo_overlays:
             merged["presentation"] = "overlay"
             merged["position"] = (
                 merged["position"]
@@ -1014,7 +1047,9 @@ def _apply_asset_plan(
             )
             merged["scale"] = min(0.3, max(0.14, safe_number(assignment.get("scale"), 0.22)))
         elif merged["presentation"] not in {"overlay", "pip", "cutaway"}:
-            merged["presentation"] = "pip" if media_type in {"image", "video"} else "cutaway"
+            # A screenshot/clip that contributes evidence should normally be
+            # seen at the semantic anchor, not shrunk into a generic corner.
+            merged["presentation"] = "cutaway"
         normalized.append(merged)
         summary_parts.append(f"{asset.get('label')}：{role_labels[role]}")
         if role in {"reference", "both"} and str(asset.get("mime") or "").startswith("image/"):

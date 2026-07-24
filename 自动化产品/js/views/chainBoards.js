@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260724-v117-13";
+import { AI } from "../api/ai.js?v=20260724-v117-16";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260724-v117-13";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260724-v117-16";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-13";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-16";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -301,11 +301,29 @@ export function renderSlotsPage(root, p, isImg) {
     return (cards || []).map((_, index) => ({
       index,
       referenceIds: normalizeRefIds([
-        ...sharedIds,
+        // 视觉模型暂不可用时不把所有统一参考图混入每一张。多图按图卡
+        // 轮转，单图仍可维持整组视觉一致性；单图定制参考始终只留在本图。
+        ...(sharedIds.length <= 1 ? sharedIds : [sharedIds[index % sharedIds.length]]),
         ...normalizeRefIds((previousItems[index] || {}).refAssetIds)
       ]),
       instruction: ""
     }));
+  }
+
+  async function prepareSharedReferencesForCopy(title = "") {
+    const refs = await providerRefsFor(A, refIdsOf(A));
+    const signature = JSON.stringify({ title: String(title || "").trim(), refs: refs.map(ref => ref.id) });
+    if (A.copyReferenceBrief?.signature === signature) return A.copyReferenceBrief;
+    const result = await AI.prepareImageCopyReferenceContext({ title, refs });
+    const brief = {
+      signature,
+      source: result.source || "unavailable",
+      model: result.model || "",
+      brief: String(result.brief || "").trim(),
+      at: Date.now()
+    };
+    A.copyReferenceBrief = brief;
+    return brief;
   }
 
   function applyPromptReferencePlan(items = A.items || [], planCards = [], source = "fallback") {
@@ -423,7 +441,7 @@ export function renderSlotsPage(root, p, isImg) {
         account: acc,
         style: p.artifacts.script.style || S.style || acc.styleProfile || "",
         imageTemplate: acc.imagePromptTemplate || "",
-        styleRefName: refNamesOf(A).join("、"),
+        styleRefName: "",
         imageCount: cards.length,
         product: productById(p.artifacts.script.productId),
         topic: p.topic,
@@ -881,7 +899,7 @@ export function renderSlotsPage(root, p, isImg) {
             account: acc,
             style: p.artifacts.script.style,
             imageTemplate: acc.imagePromptTemplate || "",
-            styleRefName: refNamesOf(A).join("、"),
+            styleRefName: "",
             imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || DEFAULT_XHS_IMAGE_COUNT,
             product: productById(p.artifacts.script.productId),
             topic: p.topic,
@@ -1219,7 +1237,14 @@ export function renderSlotsPage(root, p, isImg) {
     const bodyWasTemplateGenerated = /^(?:mock|template)(?:$|-)/.test(bodySource);
     const shouldGenerateBody = !body || titleChanged || bodyWasTemplateGenerated || (!bodyWasManuallyWritten && !bodyWasModelGenerated);
     if (shouldGenerateBody) {
-      const generatedCopy = await AI.generateImageCopyFromTitle({ title, account: acc });
+      // 无正文时先让视觉模型把“标题与统一参考图”的可用内容关系整理出来；
+      // 单图定制参考不会参与正文，仍只在它所属图卡的提示词阶段生效。
+      const copyReferenceBrief = await prepareSharedReferencesForCopy(title);
+      const generatedCopy = await AI.generateImageCopyFromTitle({
+        title,
+        account: acc,
+        referenceContext: copyReferenceBrief.brief
+      });
       C.title = title;
       C.body = generatedCopy.copy || "";
       C.source = generatedCopy.source || AI.lastSource || "llm-title-copy";
@@ -1250,7 +1275,7 @@ export function renderSlotsPage(root, p, isImg) {
       account: acc,
       style,
       imageTemplate: acc.imagePromptTemplate || "",
-      styleRefName: refNamesOf(A).join("、"),
+      styleRefName: "",
       imageCount: count,
       product: null,
       topic,
