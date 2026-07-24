@@ -178,7 +178,7 @@ function normalizeMetrics(m = {}) {
 }
 
 export async function refreshAllAnalytics({ staleOnly = false } = {}) {
-  const rows = state.analyticsLinks.filter(link => isAnalyticsSupported(link.url, link.platform));
+  const rows = state.analyticsLinks.filter(link => link.status !== "superseded" && isAnalyticsSupported(link.url, link.platform));
   const picked = staleOnly
     ? rows.filter(link => !latestSnapshot(link.id) || Date.now() - latestSnapshot(link.id).fetchedAt > 1000 * 60 * 60 * 24)
     : rows;

@@ -66,8 +66,14 @@ export function supplierHasPublished(asset) {
 export function applySupplierReturnResponse(asset, response) {
   const returned = response?.asset;
   if (!asset || !returned || String(returned.id || "") !== String(asset.id || "")) return false;
+  if (returned.publishedClearedAt && !returned.publishedUrl) {
+    for (const key of ["publishedUrl", "supplierNote", "publishedTitle", "publishedRawText", "publishedAt"]) delete asset[key];
+  }
   Object.assign(asset, returned);
-  return supplierHasPublished(asset);
+  // A successful clear-link response intentionally returns the same asset
+  // without publishedUrl.  Identity is the acknowledgement; published state
+  // is not, otherwise the UI would report a valid clear as a failed request.
+  return true;
 }
 
 export function supplierReturnRowState(asset) {

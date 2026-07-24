@@ -7,10 +7,10 @@ import { save, accountById, state } from "../core/store.js";
 import { autoAssemble, setStage, isVideoWorkshop } from "../domain/productions.js";
 import { buildDeliveryName } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, globalBgmAssets, urlFor } from "../domain/assets.js";
-import { toast, openVideoPreview } from "../ui/components.js";
+import { toast, openVideoPreview } from "../ui/components.js?v=20260724-v117-21";
 import { go } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-18";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-21";
 
 let PPS = 40;
 const CLIP_SEC = 15;

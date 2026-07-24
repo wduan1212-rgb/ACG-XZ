@@ -5,11 +5,11 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById, currentMember } from "../core/store.js";
 import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
-import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js?v=20260724-v117-21";
 import { urlFor } from "../domain/assets.js";
-import { ensureAnalyticsForAsset } from "../domain/analytics.js";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260724-v117-18";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js";
+import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260724-v117-21";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260724-v117-21";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260724-v117-21";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
 
@@ -244,16 +244,22 @@ async function returnLinkFlow(asset, acc) {
     note: asset.supplierNote || ""
   });
   if (ret == null) return false;
+  const clearing = !!ret.clear;
   const raw = ret.raw || "";
-  const url = extractUrl(raw);
-  if (!url) { toast("没有识别到链接：请粘贴包含 http:// 或 https:// 的分享内容"); return false; }
-  const shareTitle = extractShareTitle(raw);
-  const payload = {
-    url,
-    note: String(ret.note || "").trim().slice(0, 300),
-    title: shareTitle || asset.publishedTitle || "",
-    rawText: String(raw || "").slice(0, 500)
-  };
+  let payload;
+  if (clearing) {
+    payload = { clear: true };
+  } else {
+    const url = extractUrl(raw);
+    if (!url) { toast("没有识别到链接：请粘贴包含 http:// 或 https:// 的分享内容"); return false; }
+    const shareTitle = extractShareTitle(raw);
+    payload = {
+      url,
+      note: String(ret.note || "").trim().slice(0, 300),
+      title: shareTitle || asset.publishedTitle || "",
+      rawText: String(raw || "").slice(0, 500)
+    };
+  }
   if (remote.isOn()) {
     try {
       const result = await remote.supplier.returnLink(asset.id, payload);
@@ -266,20 +272,35 @@ async function returnLinkFlow(asset, acc) {
     }
   } else {
     const now = Date.now();
-    asset.publishedUrl = url;
-    asset.supplierNote = payload.note;
-    if (payload.title) asset.publishedTitle = payload.title;
-    asset.publishedRawText = payload.rawText;
-    asset.publishedAt = now;
+    if (clearing) {
+      delete asset.publishedUrl;
+      delete asset.supplierNote;
+      delete asset.publishedTitle;
+      delete asset.publishedRawText;
+      delete asset.publishedAt;
+      asset.publishedClearedAt = now;
+      asset.status = asset.supplierDownloadedAt ? "已下载" : "未下载";
+    } else {
+      asset.publishedUrl = payload.url;
+      asset.supplierNote = payload.note;
+      if (payload.title) asset.publishedTitle = payload.title;
+      asset.publishedRawText = payload.rawText;
+      asset.publishedAt = now;
+      asset.status = "已发布";
+      ensureAnalyticsForAsset(asset, acc);
+    }
     asset.publishedUpdatedAt = now;
     asset.publishedUpdatedBy = state.ui.currentMemberId || "local";
     asset.updatedAt = now;
-    asset.status = "已发布";
     save("assets");
-    ensureAnalyticsForAsset(asset, acc);
   }
-  notify("delivery", `「${asset.title || asset.name}」已发布`, `供应商回传了发布链接，链路闭环 ✓`);
-  toast("已记录发布链接，素材标记为「已发布」");
+  if (clearing) {
+    notify("delivery", `「${asset.title || asset.name}」已清除回传链接`, "已恢复为未回传状态，历史数据仅保留存档。");
+    toast("已清除回传链接，素材恢复为未回传状态");
+  } else {
+    notify("delivery", `「${asset.title || asset.name}」已发布`, `供应商回传了发布链接，链路闭环 ✓`);
+    toast("已记录发布链接，素材标记为「已发布」");
+  }
   return true;
 }
 

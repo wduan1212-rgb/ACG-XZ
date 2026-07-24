@@ -248,6 +248,40 @@ class SupplierStateTest(unittest.TestCase):
                 row for row in store.state_for("admin-1", "admin")["assets"] if row["id"] == "delivery-link-1"
             )
             self.assertEqual(preserved["publishedUrl"], second["publishedUrl"])
+
+            # 误传链接必须可以显式清除：不删除历史快照，只把当前分析链接
+            # 归档，资产恢复为未回传但保留已下载状态。
+            cleared, archived_link, err = store.clear_supplier_asset_published_link(
+                "delivery-link-1", "supplier-parent", "supplier_parent",
+            )
+            self.assertIsNone(err)
+            self.assertIsNotNone(archived_link)
+            self.assertNotIn("publishedUrl", cleared)
+            self.assertEqual(cleared["status"], "已下载")
+            self.assertGreater(cleared["publishedClearedAt"], 0)
+            cleared_snapshot = store.state_for("admin-1", "admin")
+            cleared_asset = next(row for row in cleared_snapshot["assets"] if row["id"] == "delivery-link-1")
+            self.assertNotIn("publishedUrl", cleared_asset)
+            cleared_link = next(row for row in cleared_snapshot["analyticsLinks"] if row["id"] == archived_link["id"])
+            self.assertEqual(cleared_link["status"], "superseded")
+            archived_snapshot = next(row for row in cleared_snapshot["metricSnapshots"] if row["id"] == "snapshot-first")
+            self.assertTrue(archived_snapshot.get("archivedLinkId"))
+
+            # 旧浏览器随后推回带错误 URL 的整条快照时，服务端的清除标记
+            # 仍然优先，不能把已清除的链接复活。
+            store.upsert_docs("assets", [{
+                **cleared,
+                "publishedUrl": "https://stale.example/returned-again",
+                "publishedAt": 1,
+                "publishedUpdatedAt": 1,
+                "status": "已发布",
+                "updatedAt": cleared["updatedAt"] + 10,
+            }])
+            after_stale_push = next(
+                row for row in store.state_for("admin-1", "admin")["assets"] if row["id"] == "delivery-link-1"
+            )
+            self.assertNotIn("publishedUrl", after_stale_push)
+            self.assertEqual(after_stale_push["status"], "已下载")
             self.assertEqual(preserved["status"], "已发布")
 
     def test_supplier_child_only_sees_assigned_deliveries_and_can_return_their_links(self):

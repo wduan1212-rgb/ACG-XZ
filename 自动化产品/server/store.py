@@ -1060,10 +1060,16 @@ def _upsert_docs_in_conn(conn, collection, items):
             if server_published_at and server_published_at > client_published_at:
                 for key in (
                     "publishedUrl", "supplierNote", "publishedTitle", "publishedRawText",
-                    "publishedAt", "publishedUpdatedAt", "publishedUpdatedBy", "status",
+                    "publishedAt", "publishedUpdatedAt", "publishedUpdatedBy", "publishedClearedAt", "status",
                 ):
                     if key in existing:
                         it[key] = existing[key]
+                    else:
+                        # A supplier may explicitly clear a mistaken return
+                        # link.  Do not let an older full-client snapshot put
+                        # that URL back merely because the cleared record no
+                        # longer carries the optional published fields.
+                        it.pop(key, None)
             # 发布清单编号是全局账本字段。完成历史校准后，任何旧浏览器的
             # 整条快照回推都不能把服务端已经确认的编号改回按个人计数的旧值。
             if existing.get("delivered"):
@@ -4687,6 +4693,69 @@ def update_supplier_asset_published_link(asset_id, published_url, note, title, r
             )
             conn.commit()
             return item, link, None
+        finally:
+            conn.close()
+
+
+def clear_supplier_asset_published_link(asset_id, member_id, role):
+    """Clear a mistaken supplier return link without deleting its history.
+
+    The delivery remains downloaded/delivered, while prior analytics records
+    become archived (`superseded`) so they cannot be refreshed or counted as
+    the current link.  Existing metric snapshots stay intact for audit.
+    """
+    if role not in {"supplier_parent", "supplier_child", "supplier"}:
+        return None, None, "forbidden"
+    _ensure_db()
+    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
+    with _lock:
+        conn = _connect()
+        try:
+            asset_row = conn.execute(
+                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
+            ).fetchone()
+            if not asset_row:
+                return None, None, "not_found"
+            item = json.loads(asset_row[0])
+            if not item.get("delivered") and not item.get("shared"):
+                return None, None, "not_delivered"
+            if assigned is not None and item.get("accountId") not in assigned:
+                return None, None, "unassigned"
+
+            now = int(time.time() * 1000)
+            for key in ("publishedUrl", "supplierNote", "publishedTitle", "publishedRawText", "publishedAt"):
+                item.pop(key, None)
+            item["publishedUpdatedAt"] = now
+            item["publishedUpdatedBy"] = member_id
+            item["publishedClearedAt"] = now
+            item["status"] = "已下载" if item.get("supplierDownloadedAt") else "未下载"
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("assets", str(asset_id), asset_row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+
+            archived_link = None
+            for link_id, link_raw, link_owner in conn.execute(
+                "SELECT id,data,owner_id FROM docs WHERE collection='analyticsLinks'"
+            ).fetchall():
+                try:
+                    link = json.loads(link_raw)
+                except Exception:
+                    continue
+                if str(link.get("assetId") or "") != str(asset_id) or link.get("status") == "superseded":
+                    continue
+                link["status"] = "superseded"
+                link["supersededAt"] = now
+                link["updatedAt"] = now
+                link["error"] = "供应商已清除回传链接；历史数据仅保留存档。"
+                conn.execute(
+                    "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                    ("analyticsLinks", link_id, link_owner, now, json.dumps(link, ensure_ascii=False)),
+                )
+                archived_link = link
+            conn.commit()
+            return item, archived_link, None
         finally:
             conn.close()
 

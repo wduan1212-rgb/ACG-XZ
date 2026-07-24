@@ -63,6 +63,7 @@ class ImageReferenceGroundingTest(unittest.TestCase):
             ("这次安利的不是泛泛的桌面工具", "明确宣传百度搭子的自媒体套件及其真实创作流程"),
         ]
         refs = self._refs()
+        required_terms = ["百度搭子", "自媒体套件", "视频生成"]
         cards = [
             main.ImageReferencePlanCard(index=index, title=f"图{index + 1}", prompt=f"围绕第{index + 1}个信息点展开")
             for index in range(4)
@@ -70,27 +71,35 @@ class ImageReferenceGroundingTest(unittest.TestCase):
         with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(main, "LLM_MODEL", "MiniMax-M3"), patch.object(main, "LLM_VISION_MODEL", ""), patch.object(main, "_collect_image_ref_files", new=self._collect_patch()), patch.object(main, "_compact_image_ref_files", side_effect=lambda files: (files, 0)), patch.object(main, "_record_llm_usage", Mock()):
             for round_index, (title, anchor) in enumerate(cases):
                 with self.subTest(round=round_index + 1, stage="copy"):
-                    with patch.object(main, "_call_llm", new=AsyncMock(return_value=JsonLlmResponse({"brief": anchor}))) as call_llm:
+                    with patch.object(main, "_call_llm", new=AsyncMock(return_value=JsonLlmResponse({
+                        "brief": anchor,
+                        "requiredTerms": required_terms,
+                    }))) as call_llm:
                         brief = asyncio.run(main.llm_image_copy_reference_brief(
                             main.ImageCopyReferenceBriefReq(title=title, refs=refs), self.member
                         ))
                     self.assertEqual("vision", brief["source"])
                     self.assertEqual("MiniMax-M3", brief["model"])
                     self.assertEqual(anchor, brief["brief"])
+                    self.assertEqual(required_terms, brief["requiredTerms"])
                     request_body = call_llm.await_args.args[0]
                     self.assertEqual("MiniMax-M3", request_body["model"])
                     self.assertEqual(5, len(request_body["messages"][1]["content"]))
                     self.assertIn("自媒体套件", request_body["messages"][1]["content"][0]["text"])
 
-                assignments = [refs[(round_index + index) % len(refs)] for index in range(4)]
+                # Intentionally reproduce the bad response from the reported
+                # UI: a logo is repeatedly selected while two supplied shared
+                # materials are completely omitted.  The server must repair it
+                # into one primary home per shared reference before prompts or
+                # image requests are allowed to continue.
                 plan_payload = {
                     "cards": [
                         {
                             "index": index,
-                            "referenceIds": [ref.id],
-                            "instruction": f"参考图「{ref.name}」完整放在本页中心主体区，旁侧保留本页文字层级。",
+                            "referenceIds": ["logo"] if index < 3 else ["logo", "suite"],
+                            "instruction": "参考图作为本页品牌或主素材放在画面中心。",
                         }
-                        for index, ref in enumerate(assignments)
+                        for index in range(4)
                     ]
                 }
                 with self.subTest(round=round_index + 1, stage="routing"):
@@ -100,13 +109,52 @@ class ImageReferenceGroundingTest(unittest.TestCase):
                         ))
                     self.assertEqual("vision", plan["source"])
                     self.assertEqual(4, len(plan["cards"]))
+                    assigned_ids = []
                     for index, card in enumerate(plan["cards"]):
-                        self.assertEqual([assignments[index].id], card["referenceIds"])
-                        self.assertIn(assignments[index].name, card["instruction"])
+                        self.assertEqual(index, card["index"])
+                        self.assertTrue(card["referenceIds"])
+                        assigned_ids.extend(card["referenceIds"])
+                        for ref_id in card["referenceIds"]:
+                            self.assertIn(next(ref.name for ref in refs if ref.id == ref_id), card["instruction"])
                         self.assertRegex(card["instruction"], r"中心|上半部|右侧|左侧|主体")
+                    self.assertEqual(sorted(ref.id for ref in refs), sorted(assigned_ids))
                     request_body = call_llm.await_args.args[0]
                     self.assertEqual("MiniMax-M3", request_body["model"])
                     self.assertEqual(5, len(request_body["messages"][1]["content"]))
+
+                # Fewer requested images must not make the extra uniform
+                # references disappear.  This represents the concrete 2-card
+                # / 5-reference case: one card may carry several materials,
+                # but every attachment still needs an explicit role and place.
+                five_refs = refs + [main.ImageRef(
+                    id="evidence", name="内容生产流程证据", role="shared", dataUrl="data:image/png;base64,cG5n"
+                )]
+                two_cards = [
+                    main.ImageReferencePlanCard(index=index, title=f"双图{index + 1}", prompt="围绕已确认主题展开")
+                    for index in range(2)
+                ]
+                two_card_payload = {
+                    "cards": [
+                        {"index": 0, "referenceIds": ["logo"], "instruction": "Logo 放在画面角落。"},
+                        {"index": 1, "referenceIds": ["logo"], "instruction": "Logo 放在画面角落。"},
+                    ]
+                }
+                with self.subTest(round=round_index + 1, stage="two_cards_five_refs"):
+                    with patch.object(main, "_call_llm", new=AsyncMock(return_value=JsonLlmResponse(two_card_payload))) as call_llm:
+                        two_card_plan = asyncio.run(main.llm_image_reference_plan(
+                            main.ImageReferencePlanReq(title=title, body=f"正文主题锚点：{anchor}", cards=two_cards, refs=five_refs), self.member
+                        ))
+                    self.assertEqual(2, len(two_card_plan["cards"]))
+                    two_card_assigned = [ref_id for card in two_card_plan["cards"] for ref_id in card["referenceIds"]]
+                    self.assertEqual(sorted(ref.id for ref in five_refs), sorted(two_card_assigned))
+                    for card in two_card_plan["cards"]:
+                        self.assertTrue(card["referenceIds"])
+                        for ref_id in card["referenceIds"]:
+                            ref_name = next(ref.name for ref in five_refs if ref.id == ref_id)
+                            self.assertIn(ref_name, card["instruction"])
+                        self.assertRegex(card["instruction"], r"中心|上半部|右侧|左侧|主体")
+                    request_body = call_llm.await_args.args[0]
+                    self.assertEqual(6, len(request_body["messages"][1]["content"]))
 
     def test_client_sequence_requires_real_reference_grounding_before_prompts(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
@@ -124,8 +172,28 @@ class ImageReferenceGroundingTest(unittest.TestCase):
         self.assertNotIn("AI.generateScript", image_pipeline)
         self.assertIn("参考图未完成视觉识别，已停止生成", ai)
         self.assertIn("统一参考图未完成内容识别，已停止按标题生成泛化文案", ai)
+        self.assertIn("正文未覆盖统一参考图确认的核心主题", ai)
         self.assertIn("if re.fullmatch(r\"minimax[\\s_-]*m3\"", server)
-        self.assertIn("非 Logo 的截图、产品图、海报或文件图通常只应作为一张图的", server)
+        self.assertIn("非 Logo 的截图、产品图、海报", server)
+        self.assertIn("每一张统一参考图都必须至少分配给一张图", server)
+
+    def test_m3_compatibility_reply_without_json_terms_uses_named_theme_guard(self):
+        refs = self._refs()
+        summary = "百度搭子的自媒体套件把内容创作和视频生成流程串在一起，标题应宣传这套真实工作流。"
+        brief, terms, source = main._copy_reference_brief_fields(
+            json.dumps({"summary": summary}, ensure_ascii=False), refs
+        )
+        self.assertEqual(summary, brief)
+        self.assertEqual("reference-name-fallback", source)
+        self.assertIn("百度搭子", terms)
+        self.assertIn("自媒体套件", terms)
+        self.assertIn("视频生成", terms)
+
+        raw_reply = "内容关联摘要：百度搭子的自媒体套件与视频生成能力是本次宣传主题。\n核心主题词：百度搭子、自媒体套件、视频生成"
+        raw_brief, raw_terms, raw_source = main._copy_reference_brief_fields(raw_reply, refs)
+        self.assertIn("自媒体套件", raw_brief)
+        self.assertEqual(["百度搭子", "自媒体套件", "视频生成"], raw_terms)
+        self.assertEqual("vision", raw_source)
 
 
 if __name__ == "__main__":

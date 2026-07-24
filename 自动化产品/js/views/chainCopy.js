@@ -5,11 +5,11 @@ import { icon } from "../ui/icons.js";
 import { canDeliver, save } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
-import { deliver } from "../domain/delivery.js";
-import { toast, openLightbox, publishModal } from "../ui/components.js";
+import { deliver } from "../domain/delivery.js?v=20260724-v117-21";
+import { toast, openLightbox, publishModal } from "../ui/components.js?v=20260724-v117-21";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-18";
-import { reviewPreviewHtml } from "./prodDrawer.js?v=20260724-v117-18";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-21";
+import { reviewPreviewHtml } from "./prodDrawer.js?v=20260724-v117-21";
 
 export function renderCopyPage(root, p) {
   const isImg = p.mode === "图文";

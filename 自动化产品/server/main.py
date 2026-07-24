@@ -1541,14 +1541,19 @@ def _reference_plan_instruction(value: str, reference_ids: List[str], refs_by_id
     return "%s：%s" % (named, instruction)
 
 
-def _trim_broadcast_reference_plan(cards: List[dict], shared_ids: List[str]) -> List[dict]:
-    """Repair an unsafe visual-plan failure mode: every attachment on every card.
+def _reference_name_is_logo(ref_name: str) -> bool:
+    # Asset names are often concatenated Chinese labels such as
+    # ``logo百度搭子``. Word-boundary matching misses those because Chinese
+    # characters count as word characters in Python's Unicode regex mode.
+    return bool(re.search(r"logo|icon|标志|品牌标", str(ref_name or ""), re.I))
 
-    A shared reference can intentionally appear on multiple pages.  What must
-    not pass through is the all-to-all broadcast produced by a failed planner;
-    it makes every generated note look unrelated to its assigned information.
-    Keep one deterministic primary card for such a reference and preserve all
-    custom (slot-bound) references unchanged.
+
+def _trim_broadcast_reference_plan(cards: List[dict], shared_ids: List[str]) -> List[dict]:
+    """Legacy narrow broadcast repair, retained for callers and regression tests.
+
+    The complete planner below supersedes this helper by also guaranteeing
+    coverage for every uploaded shared reference.  Keeping this small helper
+    preserves the independently useful all-to-all guard for legacy consumers.
     """
     if len(cards) < 2:
         return cards
@@ -1563,6 +1568,174 @@ def _trim_broadcast_reference_plan(cards: List[dict], shared_ids: List[str]) -> 
                 continue
             card["referenceIds"] = [item for item in card.get("referenceIds") or [] if str(item) != str(ref_id)]
     return cards
+
+
+def _default_reference_plan_instruction(reference_ids: List[str], refs_by_id: dict, index: int, total: int) -> str:
+    """Create a short, usable placement instruction after deterministic repair.
+
+    The vision planner can decide a better placement.  This only runs when its
+    answer omitted a required shared reference or broadcast one reference to
+    every page, so retaining the old instruction would describe attachments
+    that no longer belong to the card.
+    """
+    positions = ("画面中心主体区", "画面右侧主体区", "画面左侧主体区", "画面上半部主体区")
+    parts = []
+    for ref_offset, ref_id in enumerate(reference_ids):
+        ref = refs_by_id.get(str(ref_id))
+        if not ref:
+            continue
+        _, ref_name = ref
+        # A single card can carry several uniform references when the user
+        # asks for fewer images than attachments.  Give each one a distinct
+        # placement so the generator is not told to stack five materials in
+        # exactly the same spot.
+        position = positions[(index + ref_offset) % len(positions)]
+        if _reference_name_is_logo(ref_name):
+            parts.append("作为品牌识别元素完整保留在%s，不替代本页主素材" % position)
+        else:
+            parts.append("作为本页主素材完整保留在%s，围绕它组织本页文字与信息卡" % position)
+    if not parts:
+        return ""
+    return "；".join(parts)
+
+
+def _balance_shared_reference_plan(cards: List[dict], card_indexes: List[int], shared_ids: List[str], refs_by_id: dict) -> List[dict]:
+    """Give every shared reference one deterministic primary card.
+
+    Uniform references are intentional task inputs, not optional style hints.
+    The model may choose a supplemental reuse, but each shared asset must first
+    have one primary home.  When there are enough cards, keeping one primary
+    home per asset also prevents a repeatedly attached logo from crowding out
+    product screenshots, process evidence, or other supplied materials.
+    Custom slot-bound references are never removed here.
+    """
+    indexes = sorted({int(index) for index in card_indexes})
+    if not indexes:
+        return cards
+    shared = [str(ref_id) for ref_id in shared_ids if str(ref_id)]
+    shared_set = set(shared)
+    by_index = {}
+    for card in cards:
+        try:
+            index = int(card.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if index not in indexes or index in by_index:
+            continue
+        by_index[index] = {
+            "index": index,
+            "referenceIds": list(dict.fromkeys(str(item) for item in (card.get("referenceIds") or []) if str(item))),
+            "instruction": str(card.get("instruction") or ""),
+        }
+    for index in indexes:
+        by_index.setdefault(index, {"index": index, "referenceIds": [], "instruction": ""})
+
+    # Decide the primary owner of each shared reference using the visual
+    # planner's candidates first, but spread owners across cards whenever the
+    # input has enough cards.  This repairs both omission and logo-only plans.
+    owners = {}
+    owner_load = {index: 0 for index in indexes}
+    for ref_id in shared:
+        candidates = [
+            index for index in indexes
+            if ref_id in by_index[index]["referenceIds"]
+        ]
+        pool = candidates or indexes
+        owner = min(pool, key=lambda index: (owner_load[index], len(by_index[index]["referenceIds"]), index))
+        owners[ref_id] = owner
+        owner_load[owner] += 1
+
+    for index in indexes:
+        card = by_index[index]
+        previous_ids = list(card["referenceIds"])
+        # Preserve any custom reference.  Shared references are reconstructed
+        # from their primary owners, guaranteeing complete use without an
+        # accidental all-to-all attachment broadcast.
+        retained = [ref_id for ref_id in previous_ids if ref_id not in shared_set]
+        assigned = [ref_id for ref_id in shared if owners.get(ref_id) == index]
+        next_ids = list(dict.fromkeys(retained + assigned))[:8]
+        if next_ids != previous_ids:
+            card["referenceIds"] = next_ids
+            card["instruction"] = _reference_plan_instruction(
+                _default_reference_plan_instruction(next_ids, refs_by_id, index, len(indexes)),
+                next_ids,
+                refs_by_id,
+            )
+    return [by_index[index] for index in indexes]
+
+
+def _clean_reference_terms(value) -> List[str]:
+    """Sanitize compact semantic anchors returned by the visual editor."""
+    if isinstance(value, str):
+        value = re.split(r"[，,、；;\n]+", value)
+    terms = []
+    for item in (value if isinstance(value, list) else []):
+        term = re.sub(r"\s+", " ", str(item or "")).strip(" ，,。；;：:")
+        if not term or len(term) > 32 or term in terms:
+            continue
+        # Purely generic labels do not prove that the final copy understood a
+        # product theme.  Let the visual model return only meaningful anchors.
+        if term in {"logo", "主界面", "截图", "参考图", "图片"}:
+            continue
+        terms.append(term)
+        if len(terms) >= 4:
+            break
+    return terms
+
+
+def _reference_name_terms(refs: List[ImageRef]) -> List[str]:
+    """Conservative semantic terms available from supplied asset labels.
+
+    MiniMax-M3's compatibility endpoint does not enforce JSON mode. When it
+    returns a valid visual summary but omits the optional terms array, these
+    user-provided names are safer than discarding the visual result and falling
+    back to a title-only article. Generic filenames are excluded.
+    """
+    terms = []
+    ignored = {"", "图片", "截图", "参考图", "统一参考图", "主界面", "界面", "logo", "icon"}
+    for ref in refs:
+        name = re.sub(r"\.(?:png|jpe?g|webp|gif|bmp)$", "", str(ref.name or ""), flags=re.I)
+        name = re.sub(r"^(?:logo|icon)[\s_\-]*", "", name, flags=re.I)
+        name = re.sub(r"(?:思考过程|过程截图)$", "", name).strip(" _-—·，,。；;：:")
+        name = name.replace("流程证据", "流程").replace("界面截图", "界面")
+        name = re.sub(r"\s+", " ", name).strip()
+        if name in ignored or len(name) < 2 or name in terms:
+            continue
+        terms.append(name[:32])
+    return terms[:4]
+
+
+def _copy_reference_brief_fields(value, refs: List[ImageRef]) -> Tuple[str, List[str], str]:
+    """Parse MiniMax JSON and its common non-JSON compatibility replies."""
+    raw = _clean_llm_text(str(value or ""))
+    parsed = _image_reference_plan_json(raw)
+    brief_value = ""
+    terms_value = []
+    if parsed:
+        brief_value = (
+            parsed.get("brief") or parsed.get("summary") or parsed.get("contentBrief")
+            or parsed.get("content_brief") or parsed.get("内容关联摘要") or ""
+        )
+        terms_value = (
+            parsed.get("requiredTerms") or parsed.get("required_terms") or parsed.get("terms")
+            or parsed.get("主题词") or parsed.get("核心主题词") or []
+        )
+    else:
+        # MiniMax-M3 may honor the fields semantically while omitting JSON
+        # mode. Accept only an explicit summary/term layout, never arbitrary
+        # chatty text as a visual-grounding success.
+        brief_match = re.search(r"(?:内容关联摘要|摘要|brief)\s*[:：]\s*(.+?)(?=\n\s*(?:核心主题词|主题词|required\s*terms?)\s*[:：]|\Z)", raw, flags=re.I | re.S)
+        terms_match = re.search(r"(?:核心主题词|主题词|required\s*terms?)\s*[:：]\s*(.+)$", raw, flags=re.I | re.S)
+        if brief_match:
+            brief_value = brief_match.group(1)
+            terms_value = terms_match.group(1) if terms_match else []
+    brief = _clean_copy_reference_brief(brief_value)
+    terms = _clean_reference_terms(terms_value)
+    if brief and not terms:
+        fallback_terms = _reference_name_terms(refs)
+        if fallback_terms:
+            return brief, fallback_terms, "reference-name-fallback"
+    return brief, terms, "vision"
 
 
 def _clean_copy_reference_brief(value: str) -> str:
@@ -1614,11 +1787,14 @@ async def llm_image_copy_reference_brief(req: ImageCopyReferenceBriefReq, _me=De
         "给后续文案写手一段简短的‘内容关联摘要’。先判断标题是入口口号还是已经说清主题；"
         "若附件明确呈现品牌、产品、功能套件、界面流程或成果证据，而标题较泛化，必须把"
         "可确认的宣传重点作为正文锚点，同时保留标题的点击入口，不能再写成泛化的桌面整理、"
-        "效率工具或默认办公案例。摘要用于决定正文的真实使用场景、证据、功能关系和叙事角度，"
-        "而不是复述图片长相。只保留与标题直接相关、从附件可确认的信息；无关附件可以忽略。"
-        "不得编造产品能力、数据、人物身份或图片中看不到的事实。不要写配色、构图、物体清单、"
-        "图片编号或‘参考图显示’等描述；不超过180字。"
-        "只输出 JSON：{\"brief\":\"...\"}。"
+        "效率工具或默认办公案例。所有统一参考图都是用户为同一任务主动提供的必用素材：必须先"
+        "判断它们共同说明的产品、功能套件、流程或成果证据，再把它们组织为同一个宣传主题，"
+        "不能只看 logo 而忽略套件、流程、界面等其他附件。摘要用于决定正文的真实使用场景、"
+        "证据、功能关系和叙事角度，而不是复述图片长相。不得编造产品能力、数据、人物身份或"
+        "图片中看不到的事实。不要写配色、构图、物体清单、图片编号或‘参考图显示’等描述；"
+        "brief 不超过180字。requiredTerms 返回 2—4 个必须自然出现在正文里的核心产品/功能主题词，"
+        "只选视觉上可确认、非泛化的词。"
+        "只输出 JSON：{\"brief\":\"...\",\"requiredTerms\":[\"...\"]}。"
     )
     content = [{"type": "text", "text": "发布标题：%s\n统一参考图：\n%s" % (title[:500], ref_lines)}]
     content.extend({"type": "image_url", "image_url": {"url": _image_ref_to_data_url(blob, mime)}} for _, (_, blob, mime) in seen)
@@ -1638,10 +1814,24 @@ async def llm_image_copy_reference_brief(req: ImageCopyReferenceBriefReq, _me=De
             detail = response.text[:500]
         raise _llm_error(response.status_code, detail)
     data = response.json()
-    parsed = _image_reference_plan_json(_deep_get(data, ("choices", 0, "message", "content"), default=""))
-    brief = _clean_copy_reference_brief(parsed.get("brief") or "")
+    brief, required_terms, terms_source = _copy_reference_brief_fields(
+        _deep_get(data, ("choices", 0, "message", "content"), default=""),
+        [ref for ref, _ in seen],
+    )
+    if not brief or not required_terms:
+        # An empty semantic anchor is not a harmless degraded result: it would
+        # send the downstream copy writer back to generic title templates.
+        reason = "模型没有返回可解析的内容关联摘要" if not brief else "模型没有返回可确认的参考图主题词"
+        return {"ok": True, "source": "vision-incomplete", "brief": "", "requiredTerms": [], "reason": reason}
     _record_llm_usage(_me, data, "图文文案参考", vision_model)
-    return {"ok": True, "source": "vision", "model": data.get("model") or vision_model, "brief": brief}
+    return {
+        "ok": True,
+        "source": "vision",
+        "model": data.get("model") or vision_model,
+        "brief": brief,
+        "requiredTerms": required_terms,
+        "termsSource": terms_source,
+    }
 
 
 @app.post("/api/llm/image-reference-plan")
@@ -1687,16 +1877,16 @@ async def llm_image_reference_plan(req: ImageReferencePlanReq, _me=Depends(requi
     )
     system = (
         "你是图文生产中的参考图编排器。请先看附件，再根据发布标题、正文与每张图的图卡规划，"
-        "决定每张图真正需要的附件。统一参考图不是每张图都要使用：先判断每张附件是品牌标识、"
-        "完整主素材、证据截图还是风格辅助。非 Logo 的截图、产品图、海报或文件图通常只应作为一张图的"
-        "完整主素材，围绕它排版；只有确实承担同一叙事证据时才可分配给另一张，绝不能把所有附件发给所有图。"
-        "Logo 也只在品牌识别或口播/标题提及品牌的页面使用，不要无条件重复。"
+        "决定每张图真正需要的附件。每一张统一参考图都必须至少分配给一张图，且当图卡数不少于"
+        "统一参考图数时，默认一张附件只归属一张主图；不要让 logo 反复挤占其它附件的位置。先判断"
+        "每张附件是品牌标识、完整主素材、证据截图还是流程/界面证据。非 Logo 的截图、产品图、海报或文件图通常只应作为一张图的完整主素材，围绕它排版；只有确实承担同一叙事证据时才可分配给另一张，"
+        "绝不能把所有附件发给所有图。Logo 也只在品牌识别或标题提及品牌的页面使用，不要无条件重复。"
         "标有“仅可用于图X”的定制参考必须分配给该图，绝不能分给其他图。不要重写提示词，不要编造正文之外的事实，"
         "不要详细复述附件里的颜色、物体、人物或文字，避免与附件本身重复造成图片模型混乱。"
         "instruction 会交给语言模型生成完整图卡提示词，只写“附件如何用、放在哪里、保留什么”；非 Logo 主素材要明确“完整保留”，"
         "例如“作为右侧完整主体图，左侧保留本页结论与步骤卡”。一句话且不超过55字。"
         "只输出 JSON：{\"cards\":[{\"index\":0,\"referenceIds\":[\"附件id\"],\"instruction\":\"附件1作为…\"}]}。"
-        "没有必要使用附件的图卡也必须返回空 referenceIds。"
+        "返回 cards 时必须覆盖全部图卡，并确保每一个统一附件 id 至少出现一次。"
     )
     user_text = (
         "发布标题：%s\n发布正文：%s\n\n可用附件：\n%s\n\n图卡：\n%s" % (
@@ -1760,9 +1950,11 @@ async def llm_image_reference_plan(req: ImageReferencePlanReq, _me=Depends(requi
             "referenceIds": ids[:8],
             "instruction": _reference_plan_instruction(item.get("instruction") or "", ids[:8], refs_by_id),
         })
-    output = _trim_broadcast_reference_plan(
+    output = _balance_shared_reference_plan(
         output,
+        [card.index for card in cards],
         [str(ref.id) for ref, _ in seen if int(ref.slotIndex) < 0],
+        refs_by_id,
     )
     _record_llm_usage(_me, data, "参考图编排", vision_model)
     return {"ok": True, "source": "vision", "model": data.get("model") or vision_model, "cards": output}
@@ -4369,6 +4561,7 @@ class SupplierPublishedLinkReq(BaseModel):
     note: str = ""
     title: str = ""
     rawText: str = ""
+    clear: bool = False
 
 
 class DeliveryRemarkReq(BaseModel):
@@ -5981,9 +6174,14 @@ def supplier_asset_downloaded(asset_id: str, me=Depends(require_member)):
 
 @app.put("/api/supplier/assets/{asset_id}/published-link")
 def supplier_asset_published_link(asset_id: str, req: SupplierPublishedLinkReq, me=Depends(require_member)):
-    item, analytics_link, err = store.update_supplier_asset_published_link(
-        asset_id, req.url, req.note, req.title, req.rawText, me["id"], me["role"]
-    )
+    if req.clear:
+        item, analytics_link, err = store.clear_supplier_asset_published_link(
+            asset_id, me["id"], me["role"]
+        )
+    else:
+        item, analytics_link, err = store.update_supplier_asset_published_link(
+            asset_id, req.url, req.note, req.title, req.rawText, me["id"], me["role"]
+        )
     if err == "forbidden":
         raise HTTPException(403, "只有供应商账号可以回传发布链接")
     if err == "unassigned":
@@ -5999,10 +6197,10 @@ def supplier_asset_published_link(asset_id: str, req: SupplierPublishedLinkReq, 
         parent_id,
         me["id"] if me["role"] == "supplier_child" else "",
         me["id"],
-        "return_link",
+        "clear_link" if req.clear else "return_link",
         item.get("accountId") or "",
         asset_id,
-        "回传或更新了发布链接",
+        "清除了回传发布链接" if req.clear else "回传或更新了发布链接",
     )
     return {"ok": True, "asset": item, "analyticsLink": analytics_link}
 

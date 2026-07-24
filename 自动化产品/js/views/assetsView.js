@@ -4,10 +4,10 @@ import { $, $$, esc, buildZipBlob, downloadBlob, wireDropZone } from "../core/ut
 import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
 import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile, isBgmAsset, isEditingMaterialAsset } from "../domain/assets.js";
-import { downloadAsset } from "../domain/delivery.js";
+import { downloadAsset } from "../domain/delivery.js?v=20260724-v117-21";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js";
-import { renderSupplierAccounts } from "./supplierViews.js?v=20260724-v117-18";
+import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260724-v117-21";
+import { renderSupplierAccounts } from "./supplierViews.js?v=20260724-v117-21";
 
 let fAcc = "all", fQ = "", fKind = "all", libraryMode = "drafts", collapseInitialized = false;
 const collapsedAcc = new Set();

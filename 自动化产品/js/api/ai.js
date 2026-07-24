@@ -1,11 +1,11 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260724-v117-18";
+import { llm, visionCopy } from "./llm.js?v=20260724-v117-21";
 import { DUMATE_BRIEF } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
-import { getCreativeMemoryContext } from "../domain/analytics.js";
+import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260724-v117-21";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js";
@@ -56,6 +56,24 @@ function visualReferencePlanBrief(plans = []) {
   return `\n视觉参考图前置规划（视觉模型已看过真实附件；此规划决定附件将随哪张图提交）：\n${used
     .map(plan => `图${Number(plan.index) + 1}：已选 ${plan.referenceIds.length} 张附件；附件使用：${plan.instruction}`)
     .join("\n")}\n`;
+}
+
+function normalizeReferenceTerms(value) {
+  const terms = [];
+  (Array.isArray(value) ? value : []).forEach(item => {
+    const term = String(item || "").replace(/\s+/g, " ").trim().slice(0, 32);
+    if (!term || terms.includes(term) || ["logo", "主界面", "截图", "参考图", "图片"].includes(term)) return;
+    terms.push(term);
+  });
+  return terms.slice(0, 4);
+}
+
+function imageCopyContainsReferenceTerms(copy = "", terms = []) {
+  const normalized = String(copy || "").toLowerCase().replace(/[\s\p{P}\p{S}_]+/gu, "");
+  return (terms || []).every(term => {
+    const needle = String(term || "").toLowerCase().replace(/[\s\p{P}\p{S}_]+/gu, "");
+    return !needle || normalized.includes(needle);
+  });
 }
 
 function appendReferencePlacement(prompt = "", instruction = "") {
@@ -124,7 +142,9 @@ async function requestImageCopyReferenceBrief({ title = "", refs = [] } = {}) {
   return {
     source: String(result?.source || "unknown"),
     model: String(result?.model || ""),
-    brief: String(result?.brief || "").replace(/\s+/g, " ").trim().slice(0, 420)
+    brief: String(result?.brief || "").replace(/\s+/g, " ").trim().slice(0, 420),
+    requiredTerms: normalizeReferenceTerms(result?.requiredTerms),
+    reason: String(result?.reason || "").trim().slice(0, 160)
   };
 }
 
@@ -2264,8 +2284,9 @@ export const AI = {
     const hasReferences = Array.isArray(input?.refs) && input.refs.some(ref => ref?.id && (ref?.dataUrl || ref?.url));
     try {
       const result = await requestImageCopyReferenceBrief(input);
-      if (hasReferences && (result?.source !== "vision" || !String(result?.brief || "").trim())) {
-        throw new Error("统一参考图未完成内容识别，已停止按标题生成泛化文案");
+      if (hasReferences && (result?.source !== "vision" || !String(result?.brief || "").trim() || !(result?.requiredTerms || []).length)) {
+        const reason = String(result?.reason || "").trim();
+        throw new Error(reason ? `统一参考图未完成内容识别：${reason}` : "统一参考图未完成内容识别，已停止按标题生成泛化文案");
       }
       return result;
     } catch (error) {
@@ -2714,20 +2735,24 @@ ${productRelationLine(rel.slice(0, 2))}
     }
   },
 
-  async generateImageCopyFromTitle({ title = "", account = {}, product = null, referenceContext = "" } = {}) {
+  async generateImageCopyFromTitle({ title = "", account = {}, product = null, referenceContext = "", referenceTerms = [] } = {}) {
     const sourceTitle = stripVisibleTextLabels(cleanText(title || "")).trim();
     if (!sourceTitle) throw new Error("请先填写发布标题");
     const visualContext = String(referenceContext || "").replace(/\s+/g, " ").trim().slice(0, 420);
+    const requiredTerms = normalizeReferenceTerms(referenceTerms);
     let lastError = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const content = await llm([
-          { role: "system", content: `你是专业的小红书图文正文写手。先理解标题是点击入口还是完整主题；再写一篇与标题和已确认视觉主题都强相关、可直接发布的干货正文。不得写成泛化的 AI 办公、效率清单、桌面整理或其他常见模板；不得引入无法从标题、视觉摘要或产品事实确认的新能力。视觉编辑摘要来自用户上传的统一参考图：当它确认了品牌、产品、功能套件、界面流程或成果证据，而标题只是泛化入口时，正文必须以该确认的宣传重点为主线，同时保留标题的点击承诺；不要把它降级成泛化同义词。正文自然保留标题中的主产品名、核心对象和任务关系词；内容采用测评、教学或可信种草结构，给出判断依据、具体步骤、真实结果、适用边界或选择建议。不要逐项描述图片外观，不要把附件文字逐字复述，也不要编造能力。语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签。账号信息只决定表达风格，不改变主题和专业度。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
-          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。${visualContext ? `\n统一参考图确认的内容关联摘要（这是正文主题锚点，不是让你复述图片细节）：${visualContext}` : ""}\n请先确定真实宣传重点，再写正文。` }
+          { role: "system", content: `你是专业的小红书图文正文写手。先理解标题是点击入口还是完整主题；再写一篇与标题和已确认视觉主题都强相关、可直接发布的干货正文。不得写成泛化的 AI 办公、效率清单、桌面整理或其他常见模板；不得引入无法从标题、视觉摘要或产品事实确认的新能力。视觉编辑摘要来自用户上传的统一参考图：当它确认了品牌、产品、功能套件、界面流程或成果证据，而标题只是泛化入口时，正文必须以该确认的宣传重点为主线，同时保留标题的点击承诺；不要把它降级成泛化同义词。正文必须自然覆盖视觉编辑给出的核心主题词，不能只提 logo 或只写一个泛化功能。正文自然保留标题中的主产品名、核心对象和任务关系词；内容采用测评、教学或可信种草结构，给出判断依据、具体步骤、真实结果、适用边界或选择建议。不要逐项描述图片外观，不要把附件文字逐字复述，也不要编造能力。语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签。账号信息只决定表达风格，不改变主题和专业度。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
+          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。${visualContext ? `\n统一参考图确认的内容关联摘要（这是正文主题锚点，不是让你复述图片细节）：${visualContext}` : ""}${requiredTerms.length ? `\n正文必须自然覆盖的视觉主题词：${requiredTerms.join("、")}。` : ""}\n请先确定真实宣传重点，再写正文。` }
         ], { json: true, temperature: attempt ? 0.72 : 0.92 });
         const data = sanitizeXhsObject(parseJSONLoose(content));
         const copyText = ensureImagePublishTags(assertProfessionalImageCopy(data.copy || data.body || ""), null, sourceTitle);
         if (!copyText) throw new Error("模型没有返回与标题对应的正文");
+        if (requiredTerms.length && !imageCopyContainsReferenceTerms(copyText, requiredTerms)) {
+          throw new Error("正文未覆盖统一参考图确认的核心主题，已停止生成泛化文案");
+        }
         this.lastSource = "llm-title-copy";
         this.lastError = "";
         return { title: sourceTitle, copy: copyText, source: this.lastSource };

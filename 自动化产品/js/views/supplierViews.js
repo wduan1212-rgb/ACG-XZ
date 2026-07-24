@@ -1,10 +1,10 @@
 import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save } from "../core/store.js";
-import { emptyState, openModal, confirmModal, toast } from "../ui/components.js";
+import { emptyState, openModal, confirmModal, toast } from "../ui/components.js?v=20260724-v117-21";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
-import { deliveryViewsSummary } from "../domain/delivery.js";
+import { deliveryViewsSummary } from "../domain/delivery.js?v=20260724-v117-21";
 import { accountDisplaySequenceMap, isAccountDisabled, isNewAccount } from "../domain/accounts.js";
 import { openAccountDialog } from "./accountDialog.js";
 

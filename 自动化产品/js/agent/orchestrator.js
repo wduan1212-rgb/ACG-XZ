@@ -3,11 +3,11 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260724-v117-18";
+import { AI } from "../api/ai.js?v=20260724-v117-21";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver } from "../domain/delivery.js";
+import { deliver } from "../domain/delivery.js?v=20260724-v117-21";
 import { addAssetFromDataUrl, addAssetFromFile, assetBlob, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
@@ -986,6 +986,9 @@ function enrichBatchImagePrompt(prompt, refs, referenceInstruction = "") {
 
 function referencePlanSignature(p, items, refs) {
   const source = JSON.stringify({
+    // Bump when the meaning of a reference plan changes; old persisted plans
+    // may have been valid under a previous optional-reference policy.
+    policy: "shared-primary-coverage-v2",
     title: p.title || p.topic || "",
     body: p.artifacts?.copy?.body || p.artifacts?.copy?.copy || "",
     items: (items || []).map(item => [item?.title || "", item?.prompt || ""]),
@@ -1027,7 +1030,7 @@ async function prepareBatchImageCopyReferenceContext(p, batch, acc, title = "") 
   const A = p.artifacts.images;
   const refGroups = imageRefGroupsFor(acc, batch, p);
   const refs = await imageRefsForIds(refGroups.shared, "shared");
-  const signature = JSON.stringify({ title: String(title || "").trim(), refs: refs.map(ref => ref.id) });
+  const signature = JSON.stringify({ policy: "copy-visual-grounding-v2", title: String(title || "").trim(), refs: refs.map(ref => ref.id) });
   if (A.copyReferenceBrief?.signature === signature) return A.copyReferenceBrief;
   const result = await AI.prepareImageCopyReferenceContext({ title, refs });
   const brief = {
@@ -1035,10 +1038,21 @@ async function prepareBatchImageCopyReferenceContext(p, batch, acc, title = "") 
     source: result.source || "unavailable",
     model: result.model || "",
     brief: String(result.brief || "").trim(),
+    requiredTerms: Array.isArray(result.requiredTerms) ? [...new Set(result.requiredTerms.map(term => String(term || "").trim()).filter(Boolean))].slice(0, 4) : [],
     at: Date.now()
   };
   A.copyReferenceBrief = brief;
   return brief;
+}
+
+function assertSharedReferencePlanCoverage(cards = [], sharedIds = []) {
+  const required = [...new Set((sharedIds || []).map(id => String(id || "")).filter(Boolean))];
+  if (!required.length) return;
+  const assigned = new Set((cards || []).flatMap(card => card?.referenceIds || []).map(id => String(id || "")));
+  const missing = required.filter(id => !assigned.has(id));
+  if (missing.length) {
+    throw new Error(`统一参考图尚未全部逐图分配（缺少 ${missing.length} 张），已停止生成以避免遗漏素材`);
+  }
 }
 
 async function prepareBatchImageReferencePlan(p, batch, acc, draftCards = []) {
@@ -1084,6 +1098,10 @@ async function prepareBatchImageReferencePlan(p, batch, acc, draftCards = []) {
     }
     return balancedReferenceFallback(cards, refs)[index] || { index, referenceIds: [], instruction: "" };
   });
+  // The backend supplies a primary home for every uniform reference.  Keep a
+  // second boundary check on the client so an old/stale service cannot quietly
+  // turn intentional task materials back into optional decorations.
+  assertSharedReferencePlanCoverage(plannedCards, refGroups.shared);
   A.referencePlan = {
     signature,
     source: visionPlanned ? "vision" : plan.source || "fallback",
@@ -1711,7 +1729,8 @@ async function draftOne(p, batch) {
           const generatedCopy = await AI.generateImageCopyFromTitle({
             title: p.artifacts.copy.title || customTopic,
             account: acc,
-            referenceContext: copyReferenceBrief.brief
+            referenceContext: copyReferenceBrief.brief,
+            referenceTerms: copyReferenceBrief.requiredTerms
           });
           p.artifacts.copy.title = customCopyTitle || p.artifacts.copy.title;
           p.title = p.artifacts.copy.title;
@@ -1838,7 +1857,8 @@ async function draftOne(p, batch) {
           title: requestedTitle,
           account: acc,
           product,
-          referenceContext: copyReferenceBrief.brief
+          referenceContext: copyReferenceBrief.brief,
+          referenceTerms: copyReferenceBrief.requiredTerms
         });
         p.artifacts.copy = {
           title: generatedCopy.title || requestedTitle,

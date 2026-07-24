@@ -5,16 +5,16 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, ownedBy, assetById } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
 import { STAGES, statusPill } from "../domain/productions.js";
-import { deliveredAssets } from "../domain/delivery.js";
-import { analyticsRows, analyticsSummary } from "../domain/analytics.js";
+import { deliveredAssets } from "../domain/delivery.js?v=20260724-v117-21";
+import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=20260724-v117-21";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260724-v117-18";
-import { LLM_CONFIG } from "../api/llm.js?v=20260724-v117-18";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260724-v117-18";
+import { AI } from "../api/ai.js?v=20260724-v117-21";
+import { LLM_CONFIG } from "../api/llm.js?v=20260724-v117-21";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260724-v117-21";
 import { openDeliveryRemarks } from "./deliveryView.js?v=20260723-v117-8";
-import { emptyState, openModal } from "../ui/components.js";
+import { emptyState, openModal } from "../ui/components.js?v=20260724-v117-21";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260724-v117-18";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260724-v117-21";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}

@@ -1,7 +1,7 @@
 import { go } from "../core/router.js";
 import { state } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { toast } from "../ui/components.js";
+import { toast } from "../ui/components.js?v=20260724-v117-21";
 import { voiceLabView } from "./voiceLab.js?v=20260723-v117-8";
 
 const TOOLS = [
@@ -150,7 +150,7 @@ export const customCreationView = {
         toast(key === "canvas" ? "当前画布还没有可发布的图片" : "请先在视频工坊完成成片");
         return;
       }
-      const { openCustomPublish } = await import("./customPublish.js?v=20260724-v117-18");
+      const { openCustomPublish } = await import("./customPublish.js?v=20260724-v117-21");
       openCustomPublish(
         { ...output, kind: key === "canvas" ? "canvas" : "video" },
         {

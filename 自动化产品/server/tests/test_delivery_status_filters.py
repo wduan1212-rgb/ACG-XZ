@@ -115,6 +115,36 @@ console.log(JSON.stringify({
         self.assertEqual(data["statusClass"], "pub")
         self.assertEqual(data["actionClass"], "ghost")
 
+    def test_clear_link_response_keeps_same_asset_and_restores_unreturned_row(self):
+        script = r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+const { applySupplierReturnResponse, supplierReturnRowState } = await import('./js/domain/delivery.js');
+const asset = {
+  id:'delivery-252', pubSeq:252, status:'已发布', supplierDownloadedAt:100,
+  publishedUrl:'https://www.xiaohongshu.com/explore/mistake', publishedUpdatedAt:200
+};
+const returned = {
+  id:'delivery-252', pubSeq:252, status:'已下载', supplierDownloadedAt:100,
+  publishedUpdatedAt:300, publishedClearedAt:300
+};
+const changed = applySupplierReturnResponse(asset, { asset: returned });
+const row = supplierReturnRowState(asset);
+console.log(JSON.stringify({ changed, url: asset.publishedUrl || '', status: asset.status, statusText: row.statusText, actionText: row.actionText }));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        self.assertTrue(data["changed"])
+        self.assertEqual(data["url"], "")
+        self.assertEqual(data["status"], "已下载")
+        self.assertEqual(data["statusText"], "已下载")
+        self.assertEqual(data["actionText"], "回传链接")
+
 
 if __name__ == "__main__":
     unittest.main()
