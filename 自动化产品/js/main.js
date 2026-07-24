@@ -23,19 +23,19 @@ import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { overviewView } from "./views/overview.js?v=20260724-v117-21";
 import { voiceLabView } from "./views/voiceLab.js?v=20260723-v117-8";
-import { customCreationView } from "./views/customCreation.js?v=20260724-v117-22";
+import { customCreationView } from "./views/customCreation.js?v=20260724-v117-23";
 import { agentView } from "./agent/view.js?v=20260724-v117-21";
 import { studioView } from "./views/studio.js?v=20260724-v117-21";
 import { assetsView } from "./views/assetsView.js?v=20260724-v117-21";
 import { deliveryView } from "./views/deliveryView.js?v=20260724-v117-21";
 import { analyticsView } from "./views/analyticsView.js?v=20260724-v117-21";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260724-v117-22";
+import { settingsView } from "./views/settings.js?v=20260724-v117-23";
 import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260724-v117-21";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260724-v117-22";
+const APP_BUILD_ID = "20260724-v117-23";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {

@@ -281,7 +281,7 @@ export const QUICK_ACTIONS: QuickAction[] = [
     id: "resize",
     label: "适配新尺寸",
     en: "Adapt to New Size",
-    instruction: "将当前方向适配到新的目标尺寸，给出尺寸转译与裁切建议。",
+    instruction: "将完整画面适配到新的目标尺寸，不裁切、不补模糊背景，保持主体、版式与内容不变。",
     needsSelection: true,
   },
 ];

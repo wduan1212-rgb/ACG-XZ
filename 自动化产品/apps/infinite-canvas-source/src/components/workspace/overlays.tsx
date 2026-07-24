@@ -232,7 +232,7 @@ export function EnhanceMenu({
                 {customSize ? (
                   <>
                     预计输出 {customSize.width}×{customSize.height}px
-                    {aspectChanged ? " · 比例不同会裁切到目标尺寸" : ""}
+                    {aspectChanged ? " · 比例不同会完整适配到目标尺寸" : ""}
                   </>
                 ) : (
                   "请输入有效尺寸"

@@ -10,7 +10,7 @@ import type { Size } from "./types";
 // 655360–8294400. The size planner targets exactly these.
 export const GEN_MULTIPLE = 16; // generation dims must be multiples of this
 export const GEN_MAX_SIDE = 3840; // max longest side for direct generation
-export const MAX_RATIO = 3; // long:short ratio before master+crop is advised
+export const MAX_RATIO = 3; // long:short ratio before master+full-frame adaptation is required
 export const TILE_SIDE = 7680; // beyond this longest side ⇒ tile upscale
 export const MIN_PIXELS = 655360; // API minimum total pixels for a master
 export const MAX_PIXELS = 8294400; // API maximum total pixels for a master
@@ -46,7 +46,7 @@ export interface SizePlan {
   master: Size;
   direct: boolean; // target can be generated directly
   upscale: number; // 1 | 2 | 4 post-upscale factor
-  crop: boolean; // crop master (post-upscale) down to exact target
+  adapt: boolean; // resize the complete master to the exact target without crop/fill
   tile: boolean; // use tile / block super-resolution
   level: RiskLevel;
   warnings: SizeWarning[];
@@ -108,9 +108,8 @@ export function planSize(target: Size): SizePlan {
   let masterLong: number;
   let masterShort: number;
   let upscale = 1;
-  let crop = false;
+  let adapt = false;
   let tile = false;
-  let alignmentOnly = false;
 
   if (oversized) {
     // Master fits within the generation ceiling; upscale back up afterwards.
@@ -133,28 +132,29 @@ export function planSize(target: Size): SizePlan {
     if (tooWide) {
       warnings.push({
         level: "warn",
-        text: `比例 ${ratioLabel(W, H)} 超过 3:1，母版按 ${MAX_RATIO}:1 生成后裁切。`,
+        text: `比例 ${ratioLabel(W, H)} 超过 3:1，将完整画面放入 ${MAX_RATIO}:1 合规母版，返回后完整适配到目标像素。`,
       });
     }
 
-    // Upscaled master won't land exactly on a wider target → crop to exact.
-    crop = masterLong * upscale !== longest || masterShort * upscale !== shortest;
+    // The transport master differs from the requested pixels, so the full
+    // returned frame is resized to the exact target without crop or fill.
+    adapt = masterLong * upscale !== longest || masterShort * upscale !== shortest;
   } else if (tooWide) {
-    // Within size limits but too wide: generate a 16-aligned 3:1 master, then crop.
+    // Within size limits but too wide: use a legal 3:1 transport master, then
+    // resize the complete returned frame to the requested pixels.
     masterLong = ceilUnit(longest);
     masterShort = ceilUnit(masterLong / MAX_RATIO);
-    crop = true;
+    adapt = true;
     warnings.push({
       level: "warn",
-      text: `比例 ${ratioLabel(W, H)} 超过 3:1，先生成 ${MAX_RATIO}:1 母版再裁切。`,
+      text: `比例 ${ratioLabel(W, H)} 超过 3:1，将完整画面放入 ${MAX_RATIO}:1 合规母版，返回后完整适配到目标像素。`,
     });
   } else if (!aligned) {
     // The model requires an 8px grid.  This is a tiny centered output
     // adaptation, not a creative crop or a change of the user's composition.
     masterLong = ceilUnit(longest);
     masterShort = ceilUnit(shortest);
-    crop = true;
-    alignmentOnly = true;
+    adapt = true;
     warnings.push({
       level: "warn",
       text: `模型按 8 像素网格生成，将从合规母版居中精确适配；保持主体构图并按目标尺寸输出。`,
@@ -174,7 +174,7 @@ export function planSize(target: Size): SizePlan {
   } else {
     steps.push(`生成母版 ${formatSize(master)}`);
     if (upscale > 1) steps.push(tile ? `分块 ${upscale}x 超分` : `${upscale}x 超分`);
-    if (crop) steps.push(alignmentOnly ? `精确适配为 ${W}×${H}` : `裁切为 ${W}×${H}`);
+    if (adapt) steps.push(`完整适配为 ${W}×${H}`);
   }
 
   let level: RiskLevel = "ok";
@@ -192,7 +192,7 @@ export function planSize(target: Size): SizePlan {
     master,
     direct,
     upscale,
-    crop,
+    adapt,
     tile,
     level,
     warnings,
