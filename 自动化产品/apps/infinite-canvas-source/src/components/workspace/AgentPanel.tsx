@@ -31,6 +31,7 @@ export function AgentPanel({
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const hasManualSizeSelection = useRef(false);
 
   const firstRefItem = references.length > 0 ? items.find((i) => i.id === references[0].itemId) : undefined;
   const firstRef =
@@ -39,7 +40,7 @@ export function AgentPanel({
   // Attaching the first reference defaults the output size to match it.
   const firstRefId = firstRef?.id ?? null;
   useEffect(() => {
-    if (!firstRefId || !firstRef) return;
+    if (!firstRefId || !firstRef || hasManualSizeSelection.current) return;
     setComposerSize(`${firstRef.naturalWidth}x${firstRef.naturalHeight}`);
     setProjectSize(projectId, `${firstRef.naturalWidth}x${firstRef.naturalHeight}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -77,6 +78,15 @@ export function AgentPanel({
           if (!dragOver) setDragOver(true);
         }}
         onDragLeave={() => setDragOver(false)}
+        onPaste={(e) => {
+          const images = Array.from(e.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+          if (!images.length) return;
+          // Let normal text paste stay in the prompt; image paste becomes a
+          // reference image without bubbling into the canvas duplicate-paste handler.
+          e.preventDefault();
+          e.stopPropagation();
+          onAttachFiles(images);
+        }}
         className={cn(
           "shrink-0 border-t p-3 transition-colors",
           dragOver ? "border-accent bg-[var(--color-accent-weak)]" : "border-line bg-[#fcfcfc]",
@@ -144,6 +154,7 @@ export function AgentPanel({
                   firstRef ? { width: firstRef.naturalWidth, height: firstRef.naturalHeight } : undefined
                 }
                 onChange={(v) => {
+                  hasManualSizeSelection.current = true;
                   setComposerSize(v);
                   setProjectSize(projectId, v);
                 }}

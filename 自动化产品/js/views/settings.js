@@ -108,11 +108,40 @@ export const settingsView = {
     let productLibraryOpen = false;
     const canReviewRequests = () => remote.isOn() && state.role === "admin";
     const canSeeApiUsage = () => remote.isOn() && state.role === "admin";
-    const apiUsageSummaryHtml = () => !apiUsageLoaded
-      ? `<div class="muted api-usage-empty">正在读取用量...</div>`
-      : apiUsageRows.length
-        ? `<div class="api-usage-summary-grid">${apiUsageRows.map(row => `<article class="api-usage-summary-card"><span class="api-usage-member"><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "")}</em></span><span class="api-usage-models"><span><b>${Number(row.totalTokens || 0).toLocaleString("zh-CN")}</b><em>语言 Token</em></span><span><b>${Number(row.imageCalls || 0).toLocaleString("zh-CN")}</b><em>图片调用 · ${Number(row.imageOutputs || 0).toLocaleString("zh-CN")} 张</em></span><span><b>${Number(row.videoCalls || 0).toLocaleString("zh-CN")}</b><em>视频调用 · ${Number(row.videoOutputs || 0).toLocaleString("zh-CN")} 任务</em></span></span><span class="api-usage-meta">语言 ${Number(row.calls || 0).toLocaleString("zh-CN")} 次 · 输入 ${Number(row.promptTokens || 0).toLocaleString("zh-CN")} · 输出 ${Number(row.completionTokens || 0).toLocaleString("zh-CN")}</span><button class="icon-btn sm api-member-detail" data-usage-member="${esc(row.memberId || "")}" title="查看 ${esc(row.memberName || "成员")} 的接口明细">${icon("eye", 13)}</button></article>`).join("")}</div>`
-        : `<div class="muted api-usage-empty">暂未收到已记录的模型调用。历史图片、视频调用若当时没有服务端账本，无法可靠追溯或估算。</div>`;
+    const usageNumber = value => Number(value || 0).toLocaleString("zh-CN");
+    const apiUsageSummaryHtml = () => {
+      if (!apiUsageLoaded) return `<div class="muted api-usage-empty">正在读取用量...</div>`;
+      if (!apiUsageRows.length) return `<div class="muted api-usage-empty">暂未收到已记录的模型调用。历史图片、视频调用若当时没有服务端账本，无法可靠追溯或估算。</div>`;
+      const activeRows = apiUsageRows
+        .filter(row => Number(row.totalTokens || 0) || Number(row.imageCalls || 0) || Number(row.videoCalls || 0))
+        .sort((a, b) => (Number(b.totalTokens || 0) + Number(b.imageCalls || 0) + Number(b.videoCalls || 0)) - (Number(a.totalTokens || 0) + Number(a.imageCalls || 0) + Number(a.videoCalls || 0)));
+      const quietRows = apiUsageRows.filter(row => !activeRows.includes(row));
+      const totals = apiUsageRows.reduce((sum, row) => ({
+        tokens: sum.tokens + Number(row.totalTokens || 0),
+        imageOutputs: sum.imageOutputs + Number(row.imageOutputs || 0),
+        videoOutputs: sum.videoOutputs + Number(row.videoOutputs || 0),
+      }), { tokens: 0, imageOutputs: 0, videoOutputs: 0 });
+      const memberRow = row => `<article class="api-usage-summary-row">
+        <span class="api-usage-member"><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "")}</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.totalTokens)}</b><em>语言 Token · ${usageNumber(row.calls)} 次</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.imageOutputs)}</b><em>图片输出 · ${usageNumber(row.imageCalls)} 次</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.videoOutputs)}</b><em>视频任务 · ${usageNumber(row.videoCalls)} 次</em></span>
+        <button class="icon-btn sm api-member-detail" data-usage-member="${esc(row.memberId || "")}" title="查看 ${esc(row.memberName || "成员")} 的接口明细">${icon("eye", 13)}</button>
+      </article>`;
+      return `<div class="api-usage-overview">
+        <div class="api-usage-kpis">
+          <span class="api-usage-kpi"><b>${usageNumber(totals.tokens)}</b><em>语言 Token</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(totals.imageOutputs)}</b><em>图片输出</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(totals.videoOutputs)}</b><em>视频任务</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(activeRows.length)}</b><em>有用量成员</em></span>
+        </div>
+        <div class="api-usage-summary-list">
+          <div class="api-usage-summary-label"><span>创作者</span><span>语言模型</span><span>图片模型</span><span>视频模型</span><span>明细</span></div>
+          ${activeRows.length ? activeRows.map(memberRow).join("") : `<div class="muted api-usage-empty">暂未产生用量；成员明细仍可从“查看 API 明细”中查看。</div>`}
+        </div>
+        ${quietRows.length ? `<details class="api-usage-zero-members"><summary>未产生用量的成员（${quietRows.length}）</summary><div class="api-usage-summary-list is-quiet">${quietRows.map(memberRow).join("")}</div></details>` : ""}
+      </div>`;
+    };
     const draw = () => {
       const visibleMembers = state.members.filter(member => member.role !== "supplier_child");
       root.innerHTML = `
@@ -211,7 +240,6 @@ export const settingsView = {
       }
     }
 
-    const usageNumber = value => Number(value || 0).toLocaleString("zh-CN");
     const usageTime = value => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "暂无";
     const apiUsageDetailsHtml = (details, member = null) => {
       const events = Array.isArray(details?.events) ? details.events : [];

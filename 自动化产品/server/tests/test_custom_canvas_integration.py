@@ -1,4 +1,6 @@
 import importlib
+import base64
+import io
 import json
 import re
 import subprocess
@@ -17,6 +19,48 @@ if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
 main = importlib.import_module("main")
+
+
+def png_data_url(width=32, height=32):
+    if not main.Image:
+        raise unittest.SkipTest("Pillow is required for custom-canvas image output tests")
+    image = main.Image.new("RGB", (width, height), "#3b82f6")
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+
+def image_data_url(image_format, width=160, height=90):
+    if not main.Image:
+        raise unittest.SkipTest("Pillow is required for custom-canvas image output tests")
+    normalized = str(image_format or "").strip().upper()
+    mime = {
+        "PNG": "image/png",
+        "JPEG": "image/jpeg",
+        "WEBP": "image/webp",
+    }[normalized]
+    image = main.Image.new("RGB", (width, height), "#3b82f6")
+    output = io.BytesIO()
+    image.save(output, format=normalized)
+    return f"data:{mime};base64," + base64.b64encode(output.getvalue()).decode("ascii")
+
+
+def png_size(data_url):
+    encoded = data_url.split(",", 1)[1]
+    with main.Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
+        return image.size
+
+
+def striped_png_data_url(width=160, height=90):
+    if not main.Image:
+        raise unittest.SkipTest("Pillow is required for custom-canvas image output tests")
+    image = main.Image.new("RGB", (width, height), "#22a06b")
+    band = height // 3
+    image.paste("#e53935", (0, 0, width, band))
+    image.paste("#2764d8", (0, height - band, width, height))
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
 
 class CustomCanvasStaticIntegrationTest(unittest.TestCase):
@@ -166,10 +210,30 @@ console.log(JSON.stringify({{
         self.assertIn("callTransform({", actions)
         self.assertIn("targetedReferenceIndex", actions)
         self.assertIn("references: styleReferences", actions)
+        self.assertIn("const targetSize = `${target.width}x${target.height}`", actions)
+        self.assertIn("size: targetSize", actions)
+        self.assertIn("prompt: brief.trim()", actions)
+        self.assertNotIn("这是对已选图 ${job.index + 1} 的定向编辑", actions)
+        self.assertNotIn("size: `${job.source.naturalWidth}x${job.source.naturalHeight}`", actions)
         self.assertIn("export async function callTransform", api)
 
-    def test_multi_reference_planner_recognizes_ten_edit_rounds_before_dispatch(self):
-        """Ten deterministic intent rounds cover target-only and parallel tasks.
+    def test_canvas_composer_accepts_clipboard_images_without_blocking_text_paste(self):
+        panel = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "AgentPanel.tsx"
+        ).read_text(encoding="utf-8")
+        self.assertIn("onPaste={(e) => {", panel)
+        self.assertIn("e.clipboardData.files", panel)
+        self.assertIn("onAttachFiles(images)", panel)
+        self.assertIn("e.stopPropagation()", panel)
+
+    def test_multi_reference_planner_recognizes_fifty_edit_rounds_before_dispatch(self):
+        """Fifty deterministic rounds cover target-only and parallel tasks.
 
         This test intentionally exercises the exact source planner but never
         sends a model request or writes canvas state.  It protects the handoff
@@ -207,7 +271,7 @@ console.log(JSON.stringify({{
             "function planReferenceEdits(brief: string, referenceCount: number): ReferenceEditPlan | null {",
             "function planReferenceEdits(brief, referenceCount) {",
         )
-        cases = [
+        base_cases = [
             {"brief": "图2修改为暖色纸感，其他不变", "count": 2, "targets": [1]},
             {"brief": "将图2的背景调整为图1的浅蓝色，其余不变", "count": 2, "targets": [1]},
             {"brief": "以图1的浅蓝背景统一图2的视觉底色，保留原主体与文字", "count": 2, "targets": [1]},
@@ -218,6 +282,11 @@ console.log(JSON.stringify({{
             {"brief": "图1和图3都编辑成黑金风格", "count": 3, "targets": [0, 2]},
             {"brief": "统一图2的配色为蓝色", "count": 2, "targets": [1]},
             {"brief": "把图1、图2都改为胶片风格", "count": 2, "targets": [0, 1]},
+        ]
+        cases = [
+            {**case, "brief": f"{case['brief']}，第{round_index + 1}轮检查"}
+            for round_index in range(5)
+            for case in base_cases
         ]
         script = (
             runnable
@@ -233,7 +302,7 @@ console.log(JSON.stringify({{
             check=True,
         )
         rounds = json.loads(result.stdout)
-        self.assertEqual(len(rounds), 10)
+        self.assertEqual(len(rounds), 50)
         for round_ in rounds:
             self.assertIsNotNone(round_["plan"], round_["brief"])
             self.assertEqual(round_["plan"]["targetIndexes"], round_["targets"], round_["brief"])
@@ -409,7 +478,7 @@ console.log(JSON.stringify({{
         )
         self.assertIn("width:100%;height:100%;min-height:0", integration)
         self.assertNotIn("min-height:640px", integration)
-        self.assertIn('iframe.src = "/XZ-Design/?embed=1&v=20260723-v117-8#/"', integration)
+        self.assertIn('iframe.src = "/XZ-Design/?embed=1&v=20260724-v117-22#/"', integration)
 
     def test_canvas_publish_reuses_image_polish_without_changing_direct_export(self):
         publish = (APP_DIR / "js" / "views" / "customPublish.js").read_text(encoding="utf-8")
@@ -563,13 +632,13 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(main._custom_canvas_explicit_count("生成两张海报"), 2)
         self.assertEqual(main._custom_canvas_explicit_count("三版方案"), 3)
 
-    async def test_generation_forces_requested_ratio_and_requires_reference_receipt(self):
+    async def test_generation_returns_exact_selected_pixels_and_requires_reference_receipt(self):
         captured = []
 
         async def fake_generate(req):
             captured.append(req)
             return {
-                "dataUrl": "data:image/png;base64,AA==",
+                "dataUrl": png_data_url(1152, 1536),
                 "usedRefs": 1,
                 "skippedRefs": 0,
                 "ratio": "3:4",
@@ -577,19 +646,23 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
                 "mode": "gpt-maas",
             }
 
-        refs = [main.ImageRef(role="custom", dataUrl="data:image/png;base64,AA==")]
+        refs = [main.ImageRef(role="custom", dataUrl=png_data_url())]
         with patch.object(main, "image_generate", new=AsyncMock(side_effect=fake_generate)):
             result = await main._custom_canvas_generated_image("真实产品海报", "1242x1660", refs)
 
-        self.assertEqual(result["width"], 1152)
-        self.assertEqual(result["height"], 1536)
+        self.assertEqual(result["width"], 1242)
+        self.assertEqual(result["height"], 1660)
+        self.assertEqual(png_size(result["dataUrl"]), (1242, 1660))
         self.assertEqual(result["usedRefs"], 1)
         self.assertTrue(captured[0].strictRatio)
         self.assertEqual(captured[0].ratio, "3:4")
+        self.assertEqual(captured[0].size, "1248x1664")
+        self.assertTrue(captured[0].exactPrompt)
+        self.assertEqual(captured[0].prompt, "真实产品海报")
         self.assertEqual(len(captured[0].refs), 1)
 
         with patch.object(main, "image_generate", new=AsyncMock(return_value={
-            "dataUrl": "data:image/png;base64,AA==",
+            "dataUrl": png_data_url(),
             "usedRefs": 0,
             "skippedRefs": 1,
             "ratio": "3:4",
@@ -598,6 +671,96 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
                 await main._custom_canvas_generated_image("真实产品海报", "1242x1660", refs)
         self.assertEqual(raised.exception.status_code, 502)
         self.assertIn("参考图未完整送达", raised.exception.detail)
+
+    async def test_twenty_wide_edits_keep_exact_prompt_pixels_and_full_frame(self):
+        prompt = (
+            "将海报二级文案调整为【“芯云模体”全栈能力持续升级，服务大规模智能体应用】；"
+            "将左下角文案改为【新一代全栈AI云｜芯片·云·模型·智能体】；"
+            "海报其他元素全部保持不变"
+        )
+        captured = []
+
+        async def fake_generate(req):
+            captured.append(req)
+            return {
+                "dataUrl": striped_png_data_url(3504, 1168),
+                "usedRefs": 1,
+                "skippedRefs": 0,
+                "ratio": "16:9",
+                "model": "test-image",
+            }
+
+        source = main.ImageRef(role="custom", dataUrl=striped_png_data_url(3496, 1022))
+        with patch.object(main, "image_generate", new=AsyncMock(side_effect=fake_generate)):
+            results = [
+                await main._custom_canvas_generated_image(
+                    prompt,
+                    "3496x1022",
+                    [source],
+                    adapt_primary_reference=True,
+                )
+                for _ in range(20)
+            ]
+
+        self.assertEqual(len(captured), 20)
+        for request, result in zip(captured, results):
+            self.assertEqual(request.prompt, prompt)
+            self.assertNotIn("比例", request.prompt)
+            self.assertNotIn("最终交付像素", request.prompt)
+            self.assertEqual(request.size, "3504x1168")
+            self.assertTrue(request.exactPrompt)
+            self.assertEqual(png_size(request.refs[0].dataUrl), (3504, 1168))
+            self.assertEqual((result["width"], result["height"]), (3496, 1022))
+            self.assertEqual(png_size(result["dataUrl"]), (3496, 1022))
+
+    def test_exact_resize_keeps_all_edges_without_blurred_fill_or_crop(self):
+        output = main._custom_canvas_resize_exact_pixels(
+            striped_png_data_url(),
+            342,
+            100,
+        )
+        encoded = output.split(",", 1)[1]
+        with main.Image.open(io.BytesIO(base64.b64decode(encoded))) as rendered:
+            top = rendered.getpixel((171, 1))
+            bottom = rendered.getpixel((171, 98))
+            self.assertEqual(rendered.size, (342, 100))
+        self.assertGreater(top[0], 180)
+        self.assertLess(top[2], 100)
+        self.assertGreater(bottom[2], 160)
+        self.assertLess(bottom[0], 100)
+        source = Path(main.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("GaussianBlur", source)
+        self.assertNotIn("ImageOps.fit(", source[source.index("def _custom_canvas_resize_exact_pixels"):source.index("def _custom_canvas_data_url")])
+
+    def test_primary_reference_adaptation_accepts_common_upload_formats(self):
+        formats = ["PNG", "JPEG"]
+        if "WEBP" in set(main.Image.registered_extensions().values()):
+            formats.append("WEBP")
+        for image_format in formats:
+            with self.subTest(image_format=image_format):
+                refs = [
+                    main.ImageRef(
+                        role="custom",
+                        dataUrl=image_data_url(image_format, 320, 180),
+                    )
+                ]
+                adapted = main._custom_canvas_adapt_primary_reference(refs, 336, 192)
+                self.assertEqual(png_size(adapted[0].dataUrl), (336, 192))
+                self.assertEqual(adapted[0].mime, "image/png")
+
+    def test_custom_canvas_master_uses_structured_size_without_prompt_ratio(self):
+        self.assertEqual(main._custom_canvas_master_size(3496, 1022), (3504, 1168))
+        self.assertEqual(main._validated_maas_image_size("3504x1168"), "3504x1168")
+        self.assertEqual(main._validated_maas_image_size("3496x1022"), "")
+        body = main._maas_image_body(
+            "只修改副标题，其他保持不变",
+            "custom-imagemodel-gt",
+            "16:9",
+            [],
+            size="3504x1168",
+        )
+        self.assertEqual(body["prompt"], "只修改副标题，其他保持不变")
+        self.assertEqual(body["size"], "3504x1168")
 
     async def test_region_edit_sends_real_mask_to_maas(self):
         captured = {}
@@ -617,8 +780,8 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
             return DummyResponse(), {"data": [{"b64_json": "AA=="}]}
 
         request = main.CustomCanvasEditRegionReq(
-            image="data:image/png;base64,AA==",
-            mask="data:image/png;base64,AA==",
+            image=png_data_url(1242, 1660),
+            mask=png_data_url(1242, 1660),
             instruction="把按钮改成蓝色",
             width=1242,
             height=1660,
@@ -630,14 +793,16 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch.object(
                 main,
                 "_generated_image_to_data_url",
-                new=AsyncMock(return_value="data:image/jpeg;base64,AA=="),
+                new=AsyncMock(return_value=png_data_url(1152, 1536)),
             ))
             stack.enter_context(patch.object(main.httpx, "AsyncClient", return_value=DummyClient()))
             result = await main._custom_canvas_mask_edit(request)
 
-        self.assertEqual(result["width"], 1152)
-        self.assertEqual(result["height"], 1536)
-        self.assertEqual(captured["body"]["mask"]["image_url"], request.mask)
+        self.assertEqual(result["width"], 1242)
+        self.assertEqual(result["height"], 1660)
+        self.assertEqual(png_size(result["dataUrl"]), (1242, 1660))
+        self.assertEqual(png_size(captured["body"]["mask"]["image_url"]), (1248, 1664))
+        self.assertEqual(captured["body"]["size"], "1248x1664")
         self.assertEqual(captured["body"]["input_fidelity"], "high")
         self.assertEqual(len(captured["body"]["images"]), 1)
         self.assertTrue(captured["endpoint"].endswith("/aiart/gtimage"))
@@ -661,9 +826,29 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["image"]["dataUrl"], "data:image/png;base64,RESULT")
         prompt, _size, refs = generate.await_args.args
         self.assertEqual([ref.dataUrl for ref in refs], [target, donor])
-        self.assertIn("第一张输入图是唯一待编辑的原图", prompt)
-        self.assertIn("后续输入图仅作为视觉/风格参照", prompt)
-        self.assertIn("不要生成与原图无关的新图", prompt)
+        self.assertTrue(prompt.startswith(request.prompt))
+        self.assertIn("第一张输入图是唯一待编辑原图", prompt)
+        self.assertIn("后续图片只作为视觉参考", prompt)
+        self.assertTrue(generate.await_args.kwargs["adapt_primary_reference"])
+
+    async def test_single_target_transform_preserves_user_prompt_verbatim(self):
+        prompt = "仅将副标题改为「服务大规模智能体应用」，其他元素全部保持不变"
+        request = main.CustomCanvasTransformReq(
+            image=png_data_url(3496, 1022),
+            prompt=prompt,
+            size="3496x1022",
+        )
+        with patch.object(
+            main,
+            "_custom_canvas_generated_image",
+            new=AsyncMock(return_value={"dataUrl": png_data_url(), "width": 3496, "height": 1022}),
+        ) as generate:
+            await main.custom_canvas_transform(request, me={"id": "creator", "role": "editor"})
+
+        self.assertEqual(generate.await_args.args[0], prompt)
+        self.assertEqual(generate.await_args.args[1], "3496x1022")
+        self.assertEqual(len(generate.await_args.args[2]), 1)
+        self.assertTrue(generate.await_args.kwargs["adapt_primary_reference"])
 
     def test_config_is_creator_only_and_reports_export_bridge(self):
         result = main.custom_canvas_config(me={"id": "creator", "role": "editor"})

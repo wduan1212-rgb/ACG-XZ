@@ -198,7 +198,7 @@ export const customCreationView = {
       try {
         const module = key === "video"
           ? await import("./customVideoIntegration.js?v=20260723-v117-8")
-          : await import("./customCanvasIntegration.js?v=20260723-v117-8");
+          : await import("./customCanvasIntegration.js?v=20260724-v117-22");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);
         const mounted = await mount(mountRoot, {

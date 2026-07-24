@@ -29,6 +29,7 @@ import re
 import inspect
 import sqlite3
 import sys
+import math
 from datetime import date as calendar_date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -658,6 +659,10 @@ class ImageGenerateReq(BaseModel):
     refs: List[ImageRef] = []
     ratio: str = "3:4"
     strictRatio: bool = False
+    # MaaS accepts legal custom pixel sizes. Custom Canvas uses this transport
+    # field so dimensions never have to be written into the user's prompt.
+    size: str = ""
+    exactPrompt: bool = False
     endpoint: str = ""
     model: str = ""
     apiKey: str = ""
@@ -915,6 +920,33 @@ def _image_size(ratio: str) -> str:
     return "1152x1536"
 
 
+def _validated_maas_image_size(value: str) -> str:
+    """Return a legal MaaS pixel size or an empty string.
+
+    This is deliberately a request-field validator, not prompt engineering.
+    The provider currently accepts 16px-aligned canvases, a maximum 3840px
+    side, a maximum 3:1 aspect ratio, and a bounded pixel budget.
+    """
+    match = re.fullmatch(r"\s*(\d{2,5})\s*[x×*]\s*(\d{2,5})\s*", str(value or ""))
+    if not match:
+        return ""
+    width, height = int(match.group(1)), int(match.group(2))
+    shortest = min(width, height)
+    longest = max(width, height)
+    pixels = width * height
+    if (
+        width % 16
+        or height % 16
+        or longest > 3840
+        or shortest < 16
+        or longest / max(1, shortest) > 3.0 + 1e-6
+        or pixels < 655_360
+        or pixels > 8_294_400
+    ):
+        return ""
+    return f"{width}x{height}"
+
+
 def _normalize_image_ratio(ratio: str) -> str:
     value = (ratio or "3:4").strip()
     return value if value in ("3:4", "9:16", "1:1", "16:9", "4:3") else "3:4"
@@ -1129,7 +1161,14 @@ def _responses_input(prompt: str, ref_files: List[Tuple[str, bytes, str]]):
     return [{"role": "user", "content": content}]
 
 
-def _maas_image_body(prompt: str, model: str, ratio: str, ref_files: List[Tuple[str, bytes, str]]):
+def _maas_image_body(
+    prompt: str,
+    model: str,
+    ratio: str,
+    ref_files: List[Tuple[str, bytes, str]],
+    *,
+    size: str = "",
+):
     # TokenHub Image2 defaults to a square canvas unless the native legal size is
     # sent explicitly. Keep this as a model-side canvas request, not a postprocess
     # crop/pad/resize step.
@@ -1137,7 +1176,7 @@ def _maas_image_body(prompt: str, model: str, ratio: str, ref_files: List[Tuple[
         "model": model,
         "prompt": prompt,
         "n": 1,
-        "size": _image_size(ratio),
+        "size": _validated_maas_image_size(size) or _image_size(ratio),
         "response_format": "b64_json",
         "output_format": "jpeg",
         "logo_add": 0,
@@ -2016,7 +2055,7 @@ async def image_generate(req: ImageGenerateReq, _me=Depends(require_creator)):
     raw_prompt = (req.prompt or "").strip()
     if not raw_prompt:
         raise HTTPException(400, "图片提示词为空")
-    prompt = _guard_image_prompt(raw_prompt)
+    prompt = raw_prompt if req.exactPrompt else _guard_image_prompt(raw_prompt)
     ratio = (
         _normalize_image_ratio(req.ratio)
         if req.strictRatio
@@ -2054,10 +2093,16 @@ async def image_generate(req: ImageGenerateReq, _me=Depends(require_creator)):
             if maas_mode:
                 used_refs = min(len(ref_files), 8)
                 maas_prompt = prompt
-                if used_refs:
+                if used_refs and not req.exactPrompt:
                     maas_prompt += "\n\n参考随消息附带的 %d 张参考图；以本次提示词的主题和文字内容为准。" % used_refs
                 maas_model = _maas_model_for_refs(req.model or model, bool(ref_files))
-                maas_body = _maas_image_body(maas_prompt, maas_model, ratio, ref_files)
+                maas_body = _maas_image_body(
+                    maas_prompt,
+                    maas_model,
+                    ratio,
+                    ref_files,
+                    size=req.size,
+                )
                 request_endpoint = _maas_endpoint_for_refs(endpoint, bool(ref_files))
                 r, data = await _post_json_with_retry(client, request_endpoint, maas_body, json_headers)
             elif responses_mode:
@@ -5029,6 +5074,131 @@ def _custom_canvas_native_size(ratio: str) -> Tuple[int, int]:
     return _custom_canvas_parse_size(_image_size(_normalize_image_ratio(ratio)), (1024, 1024))
 
 
+def _custom_canvas_master_size(width: int, height: int) -> Tuple[int, int]:
+    """Translate an arbitrary target into a legal MaaS transport canvas.
+
+    The selected pixels remain the output contract. This master is never added
+    to the prompt and never exposed as a creative instruction.
+    """
+    target = _custom_canvas_parse_size(f"{width}x{height}", (0, 0))
+    if not target[0] or not target[1]:
+        raise HTTPException(400, "最终图片尺寸无效")
+
+    def ceil_unit(value: float) -> int:
+        return max(16, int(math.ceil(value / 16.0) * 16))
+
+    landscape = target[0] >= target[1]
+    longest, shortest = max(target), min(target)
+    if longest > 3840:
+        scale = 3840 / longest
+        master_long = 3840
+        master_short = max(ceil_unit(shortest * scale), ceil_unit(master_long / 3))
+    elif longest / max(1, shortest) > 3.0 + 1e-6:
+        master_long = ceil_unit(longest)
+        master_short = ceil_unit(master_long / 3)
+    else:
+        master_long = ceil_unit(longest)
+        master_short = ceil_unit(shortest)
+
+    master = (
+        (master_long, master_short)
+        if landscape
+        else (master_short, master_long)
+    )
+    pixels = master[0] * master[1]
+    if pixels < 655_360:
+        factor = math.sqrt(655_360 / max(1, pixels))
+        master = (ceil_unit(master[0] * factor), ceil_unit(master[1] * factor))
+    elif pixels > 8_294_400:
+        factor = math.sqrt(8_294_400 / pixels)
+        master = (
+            max(16, int(math.floor(master[0] * factor / 16.0) * 16)),
+            max(16, int(math.floor(master[1] * factor / 16.0) * 16)),
+        )
+    if not _validated_maas_image_size(f"{master[0]}x{master[1]}"):
+        raise HTTPException(400, "所选尺寸无法转换为图片模型支持的安全画布")
+    return master
+
+
+def _custom_canvas_resize_exact_pixels(data_url: str, width: int, height: int) -> str:
+    """Resize the complete result to exact output pixels without crop or fill."""
+    target = _custom_canvas_parse_size(f"{width}x{height}", (0, 0))
+    if not target[0] or not target[1]:
+        raise HTTPException(400, "最终图片尺寸无效")
+    if not Image:
+        raise HTTPException(500, "服务器缺少图片尺寸处理能力，无法保证所选像素尺寸")
+    value = _custom_canvas_data_url(data_url, "图片模型结果", max_chars=48 * 1024 * 1024)
+    try:
+        _header, encoded = value.split(",", 1)
+        raw = base64.b64decode(encoded, validate=True)
+        with Image.open(io.BytesIO(raw)) as opened:
+            source = opened.convert("RGB")
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            fitted = source if source.size == target else source.resize(target, resampling)
+        output = io.BytesIO()
+        fitted.save(output, format="PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"图片模型结果无法按所选尺寸输出：{exc.__class__.__name__}")
+
+
+def _custom_canvas_resize_mask(data_url: str, width: int, height: int) -> str:
+    """Resize a PNG edit mask without softening its selected boundary."""
+    target = _custom_canvas_parse_size(f"{width}x{height}", (0, 0))
+    value = str(data_url or "").strip()
+    if not target[0] or not target[1] or not re.match(r"^data:image/png;base64,", value, flags=re.I):
+        raise HTTPException(400, "区域遮罩尺寸或格式无效")
+    if not Image:
+        raise HTTPException(500, "服务器缺少图片尺寸处理能力")
+    try:
+        encoded = value.split(",", 1)[1]
+        raw = base64.b64decode(encoded, validate=True)
+        with Image.open(io.BytesIO(raw)) as opened:
+            mask = opened.convert("RGBA")
+            resampling = getattr(getattr(Image, "Resampling", Image), "NEAREST")
+            mask = mask if mask.size == target else mask.resize(target, resampling)
+        output = io.BytesIO()
+        mask.save(output, format="PNG", optimize=True)
+        return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, f"区域遮罩无法适配图片模型画布：{exc.__class__.__name__}")
+
+
+def _custom_canvas_adapt_primary_reference(
+    refs: List[ImageRef],
+    width: int,
+    height: int,
+) -> List[ImageRef]:
+    """Use a reversible transport aspect for the editable source image.
+
+    Ultra-wide source images cannot be submitted directly to MaaS. Resizing the
+    full source into the legal master avoids provider-created blur bars and
+    keeps every edge available to the edit model. The result is resized back to
+    the user's exact output pixels afterwards.
+    """
+    if not refs:
+        return refs
+    first = refs[0]
+    data_url = str(first.dataUrl or "").strip()
+    if not data_url:
+        return refs
+    adapted = _custom_canvas_resize_exact_pixels(data_url, width, height)
+    replacement = ImageRef(
+        id=first.id,
+        role=first.role,
+        slotIndex=first.slotIndex,
+        name=first.name,
+        mime="image/png",
+        url="",
+        dataUrl=adapted,
+    )
+    return [replacement, *refs[1:]]
+
+
 def _custom_canvas_data_url(value: str, label: str = "图片", max_chars: int = 24 * 1024 * 1024) -> str:
     data_url = str(value or "").strip()
     if not re.match(r"^data:image/(?:png|jpe?g|webp);base64,", data_url, flags=re.I):
@@ -5280,26 +5450,45 @@ async def _custom_canvas_agent_llm(req: CustomCanvasAgentReq) -> dict:
     return result
 
 
-async def _custom_canvas_generated_image(prompt: str, size: str, refs: List[ImageRef]) -> dict:
+async def _custom_canvas_generated_image(
+    prompt: str,
+    size: str,
+    refs: List[ImageRef],
+    *,
+    adapt_primary_reference: bool = False,
+) -> dict:
     clean_prompt = str(prompt or "").strip()
     if not clean_prompt:
         raise HTTPException(400, "图片提示词为空")
     if len(clean_prompt) > 12000:
         raise HTTPException(400, "图片提示词过长")
-    ratio = _custom_canvas_ratio(size)
+    width, height = _custom_canvas_parse_size(size)
+    master_width, master_height = _custom_canvas_master_size(width, height)
+    master_size = f"{master_width}x{master_height}"
+    ratio = _custom_canvas_ratio(width=width, height=height)
+    request_refs = (
+        _custom_canvas_adapt_primary_reference(refs, master_width, master_height)
+        if adapt_primary_reference
+        else refs
+    )
     result = await image_generate(ImageGenerateReq(
-        prompt=f"{clean_prompt}\n最终输出画布：{size}，比例 {ratio}。",
-        refs=refs,
+        prompt=clean_prompt,
+        refs=request_refs,
         ratio=ratio,
         strictRatio=True,
+        size=master_size,
+        exactPrompt=True,
     ))
     used_refs = int(result.get("usedRefs") or 0)
-    if refs and used_refs < len(refs):
-        raise HTTPException(502, f"参考图未完整送达图片模型（实际使用 {used_refs}/{len(refs)}），本次已停止，避免错误出图")
-    output_ratio = _normalize_image_ratio(str(result.get("ratio") or ratio))
-    width, height = _custom_canvas_native_size(output_ratio)
+    if request_refs and used_refs < len(request_refs):
+        raise HTTPException(502, f"参考图未完整送达图片模型（实际使用 {used_refs}/{len(request_refs)}），本次已停止，避免错误出图")
+    exact_data_url = _custom_canvas_resize_exact_pixels(
+        result["dataUrl"],
+        width,
+        height,
+    )
     return {
-        "dataUrl": result["dataUrl"],
+        "dataUrl": exact_data_url,
         "width": width,
         "height": height,
         "usedRefs": used_refs,
@@ -5322,13 +5511,17 @@ async def _custom_canvas_mask_edit(req: CustomCanvasEditRegionReq) -> dict:
     if not _image_is_maas_mode(model=IMAGE_MODEL, endpoint=endpoint):
         raise HTTPException(501, "当前图片模型不支持精确遮罩编辑，已停止以避免改动框选区域之外的内容")
     ratio = _custom_canvas_ratio(width=req.width, height=req.height)
+    master_width, master_height = _custom_canvas_master_size(req.width, req.height)
+    master_size = f"{master_width}x{master_height}"
+    image = _custom_canvas_resize_exact_pixels(image, master_width, master_height)
+    mask = _custom_canvas_resize_mask(mask, master_width, master_height)
     ref_file = _data_url_to_file(image, "canvas-region-source.png")
     prompt = (
         f"仅在遮罩指定的编辑区域内：{str(req.instruction or '').strip() or '优化细节'}。"
         "编辑区域之外的所有内容必须与原图完全一致，不得改动。"
     )
     model = _maas_model_for_refs(IMAGE_MODEL, True)
-    body = _maas_image_body(prompt, model, ratio, [ref_file])
+    body = _maas_image_body(prompt, model, ratio, [ref_file], size=master_size)
     body["mask"] = {"image_url": mask}
     body["input_fidelity"] = "high"
     body["quality"] = "low"
@@ -5356,8 +5549,8 @@ async def _custom_canvas_mask_edit(req: CustomCanvasEditRegionReq) -> dict:
         raise
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"无法连接区域编辑模型：{exc.__class__.__name__} {exc}")
-    width, height = _custom_canvas_native_size(ratio)
-    return {"dataUrl": output, "width": width, "height": height}
+    output = _custom_canvas_resize_exact_pixels(output, req.width, req.height)
+    return {"dataUrl": output, "width": req.width, "height": req.height}
 
 
 @app.get("/api/custom-canvas/config")
@@ -5636,6 +5829,7 @@ async def custom_canvas_enhance(req: CustomCanvasEnhanceReq, me=Depends(require_
         prompt,
         req.size,
         _custom_canvas_image_refs([image]),
+        adapt_primary_reference=True,
     )
     return {
         "images": [{
@@ -5667,21 +5861,21 @@ async def custom_canvas_transform(req: CustomCanvasTransformReq, me=Depends(requ
         if str(value or "").strip() and str(value or "").strip() != image
     ]
     refs = _custom_canvas_image_refs([image, *style_refs])
-    prompt += (
-        "\n第一张输入图是唯一待编辑的原图，必须保留主体身份、Logo 与文字内容；"
-        "不要生成与原图无关的新图、拼图或多图合成。"
-        "后续输入图仅作为视觉/风格参照，不能替代第一张原图。"
-        if style_refs
-        else "\n以第一张输入图为核心，必须保留主体身份、Logo 与文字内容；不要生成与原图无关的新图、拼图或多图合成。"
-    ) + (
-        "允许按指令重组视觉风格。"
-        if fidelity == "high"
-        else "以第一张输入图主体为内容来源，按指令进行明显的视觉风格变化。"
-    )
+    # A one-image edit is intentionally literal: the model receives the user's
+    # words unchanged and the selected image as its only high-fidelity input.
+    # Role clarification is needed only when extra style donors are attached.
+    if style_refs:
+        prompt += (
+            "\n第一张输入图是唯一待编辑原图；后续图片只作为视觉参考，"
+            "不要把它们拼入成图或替代第一张图。"
+        )
+        if fidelity == "low":
+            prompt += "按用户要求明显转换视觉风格，但保持第一张图的内容主体。"
     result = await _custom_canvas_generated_image(
         prompt,
         req.size,
         refs,
+        adapt_primary_reference=True,
     )
     return {"image": {
         "dataUrl": result["dataUrl"],

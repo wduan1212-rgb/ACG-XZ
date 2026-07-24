@@ -92,6 +92,8 @@ export function useStudioActions(projectId: string) {
       // An explicit handoff size is authoritative only for that first request;
       // normal in-workspace requests continue to use the live composer value.
       const size = options.size || state.composerSize || project.targetSize;
+      const target = parseSize(size) ?? { width: 1080, height: 1920 };
+      const targetSize = `${target.width}x${target.height}`;
       const items = state.itemsByProject[projectId] ?? [];
 
       // Effective references: explicit chips first; otherwise the selected image —
@@ -159,7 +161,7 @@ export function useStudioActions(projectId: string) {
         const isParallel = editTargets.length > 1;
         const makeEditPlaceholder = (source: ImageItem, index: number) => {
           const cur = (useStore.getState().itemsByProject[projectId] ?? []).filter((item) => !item.hidden);
-          const fp = footprintFor(source.naturalWidth, source.naturalHeight, 340);
+          const fp = footprintFor(target.width, target.height, 340);
           const position = findFreeSpot(
             cur,
             { x: source.position.x + source.size.width + 40, y: source.position.y },
@@ -176,8 +178,8 @@ export function useStudioActions(projectId: string) {
             z: source.z + 1,
             createdAt: Date.now(),
             assetUrl: "",
-            naturalWidth: source.naturalWidth,
-            naturalHeight: source.naturalHeight,
+            naturalWidth: target.width,
+            naturalHeight: target.height,
             label: `图 ${index + 1} · 编辑中`,
             mode: "final",
             quality: POSTER_QUALITY,
@@ -222,12 +224,11 @@ export function useStudioActions(projectId: string) {
               const image = await callTransform({
                 image: sourceImage,
                 references: styleReferences,
-                prompt: [
-                  `这是对已选图 ${job.index + 1} 的定向编辑。`,
-                  brief.trim(),
-                  "仅处理第一张输入图；未明确要求改动的主体、文字、版式和元素必须保持不变。",
-                ].join("\n"),
-                size: `${job.source.naturalWidth}x${job.source.naturalHeight}`,
+                // A single-image edit is already unambiguous from the selected
+                // reference. Preserve the user's wording exactly; multi-image
+                // role separation is handled by the transform endpoint.
+                prompt: brief.trim(),
+                size: targetSize,
                 fidelity: "high",
                 quality: POSTER_QUALITY,
               });
@@ -283,7 +284,6 @@ export function useStudioActions(projectId: string) {
       }
 
       // Placeholder cards so results "appear" on the canvas while generating.
-      const target = parseSize(size) ?? { width: 1080, height: 1920 };
       const fp = footprintFor(target.width, target.height, 340);
       const makePlaceholder = (): string => {
         const cur = (useStore.getState().itemsByProject[projectId] ?? []).filter((item) => !item.hidden);
