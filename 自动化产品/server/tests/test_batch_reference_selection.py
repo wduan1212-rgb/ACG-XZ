@@ -112,6 +112,25 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn('it.referenceSource = "batch-plan"', orchestrator)
         self.assertIn("it.referenceSelectionId = batch.referenceSelectionId", orchestrator)
 
+    def test_batch_first_generation_plans_references_before_writing_full_prompts(self):
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+        ai = (APP_DIR / "js/api/ai.js").read_text(encoding="utf-8")
+        server = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
+        self.assertIn("prepareBatchImageReferencePlan", orchestrator)
+        self.assertIn("ensureBatchImageReferencePlan", orchestrator)
+        self.assertIn("item.referenceSource = \"batch-vision-plan\"", orchestrator)
+        self.assertIn("imageRefsForSelection(intendedRefAssetIds, refGroups)", orchestrator)
+        self.assertIn("enrichBatchImagePrompt(it.prompt, refs, it.referenceInstruction)", orchestrator)
+        self.assertIn("referencePlans: imageReferencePlan.cards", orchestrator)
+        self.assertLess(
+            orchestrator.index("const imageReferencePlan = await prepareBatchImageReferencePlan"),
+            orchestrator.index("const imgPromptRes = await AI.generateImagePrompts")
+        )
+        self.assertIn("依据这份规划和既有完整规格重新生成", ai)
+        self.assertIn("附件使用：${use}", ai)
+        self.assertIn("/api/llm/image-reference-plan", ai)
+        self.assertIn("标有“仅可用于图X”的定制参考必须分配给该图", server)
+
     def test_only_digital_role_board_remains_as_long_term_image_reference(self):
         cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")
         view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")

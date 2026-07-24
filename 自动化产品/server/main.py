@@ -643,7 +643,10 @@ class AnalyticsJustOneReq(BaseModel):
 
 
 class ImageRef(BaseModel):
+    id: str = ""
     role: str = "shared"
+    # 仅参考图编排使用：-1 为统一参考；非负值表示只能供指定图卡使用。
+    slotIndex: int = -1
     name: str = ""
     mime: str = ""
     url: str = ""
@@ -658,6 +661,19 @@ class ImageGenerateReq(BaseModel):
     endpoint: str = ""
     model: str = ""
     apiKey: str = ""
+
+
+class ImageReferencePlanCard(BaseModel):
+    index: int
+    title: str = ""
+    prompt: str = ""
+
+
+class ImageReferencePlanReq(BaseModel):
+    title: str = ""
+    body: str = ""
+    cards: List[ImageReferencePlanCard] = []
+    refs: List[ImageRef] = []
 
 
 def _member_from_authorization(authorization: str = ""):
@@ -1364,6 +1380,20 @@ def _record_llm_usage(member, response_data, feature, fallback_model=""):
         pass
 
 
+def _record_model_api_usage(member, api_type, feature, model, output_units=1, unit_label="任务"):
+    """Best-effort 记录已成功提交/返回的非 Token 模型调用。
+
+    与 _record_llm_usage 一样完全旁路：SQLite 临时繁忙不能影响已成功的图片或视频创作。
+    """
+    try:
+        store.record_api_usage(
+            member.get("id"), member.get("name"), api_type, feature, model,
+            output_units=output_units, unit_label=unit_label,
+        )
+    except Exception:
+        pass
+
+
 @app.post("/api/llm/test")
 async def llm_test(_me=Depends(require_creator)):
     if not LLM_API_KEY:
@@ -1445,6 +1475,138 @@ async def llm_vision_copy(req: VisionCopyReq, _me=Depends(require_creator)):
         raise HTTPException(502, "视觉模型没有返回文案")
     _record_llm_usage(_me, data, "成图文案", LLM_VISION_MODEL or LLM_MODEL)
     return {"content": content}
+
+
+def _image_reference_plan_json(value) -> dict:
+    text = _clean_llm_text(str(value or ""))
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
+    start, end = text.find("{"), text.rfind("}")
+    if start >= 0 and end > start:
+        text = text[start:end + 1]
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _clean_reference_instruction(value: str) -> str:
+    """只保留附件用途与版面位置，防止把视觉识别又展开成冗长图像描述。"""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"(?:详细描述|画面细节|视觉细节)[:：]?.*$", "", text, flags=re.I)
+    return text[:220]
+
+
+@app.post("/api/llm/image-reference-plan")
+async def llm_image_reference_plan(req: ImageReferencePlanReq, _me=Depends(require_creator)):
+    """视觉模型先为整组图卡分配参考图；其短规划会进入后续完整提示词生成。"""
+    cards = [card for card in (req.cards or [])[:12] if 0 <= int(card.index) < 24]
+    refs = [ref for ref in (req.refs or [])[:8] if str(ref.id or "").strip()]
+    if not cards or not refs:
+        return {"ok": True, "source": "no-references", "cards": []}
+    # 只有明确配置视觉模型时才声称“看过参考图”。MiniMax-M3 继续负责原有图卡提示词，
+    # 未配置视觉模型时保留现有的附图生成链路，不能把名称推断伪装成视觉理解。
+    if not LLM_VISION_MODEL or not LLM_API_KEY:
+        return {"ok": True, "source": "vision-unavailable", "cards": []}
+    seen = []
+    try:
+        async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(45.0, connect=8.0), trust_env=False, follow_redirects=True)) as client:
+            for ref in refs:
+                files = await _collect_image_ref_files(client, [ref])
+                if not files:
+                    continue
+                compacted, _ = _compact_image_ref_files(files[:1])
+                if compacted:
+                    seen.append((ref, compacted[0]))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, "参考图规划无法读取附件：%s" % exc.__class__.__name__)
+    if not seen:
+        return {"ok": True, "source": "references-unavailable", "cards": []}
+    ref_lines = "\n".join(
+        "附件%d：id=%s；类型=%s；名称=%s%s" % (
+            index + 1, ref.id, ref.role or "shared", ref.name or "参考图",
+            ("；仅可用于图%d" % (int(ref.slotIndex) + 1)) if int(ref.slotIndex) >= 0 else "",
+        )
+        for index, (ref, _) in enumerate(seen)
+    )
+    card_lines = "\n".join(
+        "图%d（index=%d）：标题=%s；图卡规划=%s" % (
+            i + 1, card.index, str(card.title or "")[:120], str(card.prompt or "")[:1300],
+        )
+        for i, card in enumerate(cards)
+    )
+    system = (
+        "你是图文生产中的参考图编排器。请先看附件，再根据发布标题、正文与每张图的图卡规划，"
+        "决定每张图真正需要的附件。统一参考图可以只分配给需要它的两张或更多图；"
+        "标有“仅可用于图X”的定制参考必须分配给该图，绝不能分给其他图。不要重写提示词，不要编造正文之外的事实，"
+        "不要详细复述附件里的颜色、物体、人物或文字，避免与附件本身重复造成图片模型混乱。"
+        "instruction 会交给语言模型生成完整图卡提示词，只写“附件如何用、放在哪里、保留什么”，"
+        "一句话且不超过55字；例如“将附件1作为右侧主体图，左侧保留本页结论与步骤卡”。"
+        "只输出 JSON：{\"cards\":[{\"index\":0,\"referenceIds\":[\"附件id\"],\"instruction\":\"附件1作为…\"}]}。"
+        "没有必要使用附件的图卡也必须返回空 referenceIds。"
+    )
+    user_text = (
+        "发布标题：%s\n发布正文：%s\n\n可用附件：\n%s\n\n图卡：\n%s" % (
+            str(req.title or "")[:500], str(req.body or "")[:3000], ref_lines, card_lines,
+        )
+    )
+    content = [{"type": "text", "text": user_text}]
+    content.extend({"type": "image_url", "image_url": {"url": _image_ref_to_data_url(blob, mime)}} for _, (_, blob, mime) in seen)
+    body = {
+        "model": LLM_VISION_MODEL,
+        "temperature": 0.15,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": content},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    response = await _call_llm(body, force_deployed_model=False)
+    if response.status_code >= 400:
+        try:
+            detail = _http_detail(response.json())
+        except Exception:
+            detail = response.text[:500]
+        raise _llm_error(response.status_code, detail)
+    data = response.json()
+    parsed = _image_reference_plan_json(_deep_get(data, ("choices", 0, "message", "content"), default=""))
+    valid_indexes = {card.index for card in cards}
+    allowed_ids_by_card = {
+        card.index: {str(ref.id) for ref, _ in seen if int(ref.slotIndex) < 0 or int(ref.slotIndex) == card.index}
+        for card in cards
+    }
+    required_ids_by_card = {
+        card.index: [str(ref.id) for ref, _ in seen if int(ref.slotIndex) == card.index]
+        for card in cards
+    }
+    output = []
+    for item in (parsed.get("cards") if isinstance(parsed.get("cards"), list) else []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if index not in valid_indexes:
+            continue
+        ids = []
+        allowed_ids = allowed_ids_by_card.get(index, set())
+        for ref_id in item.get("referenceIds") if isinstance(item.get("referenceIds"), list) else []:
+            ref_id = str(ref_id or "")
+            if ref_id in allowed_ids and ref_id not in ids:
+                ids.append(ref_id)
+        for ref_id in required_ids_by_card.get(index, []):
+            if ref_id not in ids:
+                ids.append(ref_id)
+        output.append({
+            "index": index,
+            "referenceIds": ids[:8],
+            "instruction": _clean_reference_instruction(item.get("instruction") or ""),
+        })
+    _record_llm_usage(_me, data, "参考图编排", LLM_VISION_MODEL)
+    return {"ok": True, "source": "vision", "model": LLM_VISION_MODEL, "cards": output}
 
 
 @app.post("/api/chat/completions")
@@ -1616,6 +1778,8 @@ async def image_generate(req: ImageGenerateReq, _me=Depends(require_creator)):
         raise
     except Exception as exc:
         raise HTTPException(502, "图片 API 返回已收到，但服务端解析失败：%s %s" % (exc.__class__.__name__, str(exc)[:240]))
+    # 只在图片已完整返回后记一次“张”数；不会把它换算为 token、积分或现金成本。
+    _record_model_api_usage(_me, "image", "图片生成", model, output_units=1, unit_label="张")
     return {
         "ok": True,
         "dataUrl": output,
@@ -2679,6 +2843,7 @@ async def video_submit(req: VideoSubmitReq, _me=Depends(require_creator)):
         try:
             result = await _digital_human_submit(req, resolved_images, resolved_audios)
             await VIDEO_TASK_GATE.register(lease_token, result.get("providerRef") or "")
+            _record_model_api_usage(_me, "video", "数字人视频生成", DIGITAL_HUMAN_MODEL, output_units=1, unit_label="任务")
             return result
         except Exception:
             await VIDEO_TASK_GATE.release_token(lease_token)
@@ -2773,6 +2938,7 @@ async def video_submit(req: VideoSubmitReq, _me=Depends(require_creator)):
         await VIDEO_TASK_GATE.release_token(lease_token)
         raise HTTPException(502, {"detail": "Seedance 已返回结果，但没有任务 ID；请检查模型/接口返回结构。", "raw": data})
     await VIDEO_TASK_GATE.register(lease_token, provider_ref)
+    _record_model_api_usage(_me, "video", "视频生成", req.model or SEEDANCE_MODEL, output_units=1, unit_label="任务")
     return {"ok": True, "provider": _video_provider_name(), "providerRef": provider_ref, "raw": data}
 
 
@@ -4091,17 +4257,22 @@ def auth_me(me=Depends(require_member)):
 
 @app.get("/api/admin/llm-usage")
 def admin_llm_usage(_me=Depends(require_admin)):
-    """管理员可见的、由上游 usage 字段回传的 token 汇总。
-
-    这不是供应商账单或现金积分：图像、视频、语音及未返回 usage 的调用不会被猜测计入。
-    """
-    return {"rows": store.llm_usage_summary(), "kind": "verified_llm_tokens"}
+    """管理员真实模型调用账本：语言 Token 与图片/视频调用分开展示。"""
+    return {
+        "rows": store.model_usage_summary(),
+        "kind": "verified_model_usage",
+        "note": "语言仅统计上游返回的 Token；图片和视频仅记录实际成功调用，不估算历史消耗。",
+    }
 
 
 @app.get("/api/admin/llm-usage/details")
-def admin_llm_usage_details(_me=Depends(require_admin)):
-    """管理员只读查看模型 API 汇总和最近真实 token 调用。"""
-    return {**store.llm_usage_details(), "kind": "verified_llm_tokens"}
+def admin_llm_usage_details(memberId: str = "", _me=Depends(require_admin)):
+    """管理员只读查看某成员或全体的模型调用明细。"""
+    return {
+        **store.model_usage_details(member_id=memberId),
+        "kind": "verified_model_usage",
+        "note": "图片和视频是成功调用/输出单位，不是 Token；历史未记录调用不会估算补写。",
+    }
 
 
 @app.post("/api/member-requests")

@@ -3,16 +3,16 @@
 import { $, $$, esc, gradFor, fileToDataUrl, wireDropZone, singleImageGenerationPrompt } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productById, primaryProducts, primaryProductById } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260723-v117-8";
+import { AI } from "../api/ai.js?v=20260724-v117-13";
 import { setStage, shotsToText } from "../domain/productions.js";
 import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260723-v117-8";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260724-v117-13";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260723-v117-8";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-13";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -77,13 +77,27 @@ function refAssetsOf(A) {
  */
 export function imageReferenceIdsForSlot(A, item = {}) {
   const itemIds = normalizeRefIds(item?.refAssetIds);
-  return itemIds.length ? normalizeRefIds([...itemIds, ...refIdsOf(A)]) : refIdsOf(A);
+  // 已完成的视觉规划优先：它既保留本张定制参考，也允许统一参考只路由到真正需要的图卡。
+  if (["shared-vision-plan", "slot-vision-plan"].includes(String(item?.referenceSource || ""))
+    && Array.isArray(item?.plannedRefAssetIds)) {
+    return normalizeRefIds(item.plannedRefAssetIds);
+  }
+  // 本张定制参考由用户显式给出，优先于自动规划；统一参考仍作为补充附件。
+  if (itemIds.length) return normalizeRefIds([...itemIds, ...refIdsOf(A)]);
+  // 统一参考可由视觉模型按图卡选择；空数组同样是有意“不使用参考图”的结果。
+  if (Array.isArray(item?.plannedRefAssetIds)) return normalizeRefIds(item.plannedRefAssetIds);
+  return refIdsOf(A);
 }
 
 function setRefIds(A, ids) {
   const clean = normalizeRefIds(ids);
   A.sharedRefAssetIds = clean;
   A.sharedRefAssetId = clean[0] || null; // 兼容旧字段/旧部署
+  delete A.referencePlan;
+  (A.items || []).forEach(item => {
+    delete item.plannedRefAssetIds;
+    delete item.referenceInstruction;
+  });
 }
 
 function appendRefId(A, id) {
@@ -132,11 +146,13 @@ function refNamesOf(A, extra = [], refIds = refIdsOf(A)) {
   return [...refAssetsForIds(refIds).map(a => a.name), ...extra].filter(Boolean).slice(0, MAX_IMAGE_REFS);
 }
 
-export function enrichPromptWithRefs(prompt, A, refIds = refIdsOf(A)) {
+export function enrichPromptWithRefs(prompt, A, refIds = refIdsOf(A), referenceInstruction = "") {
   const names = refNamesOf(A, [], refIds);
   if (!names.length) return prompt || "";
   const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
-  const refNote = `参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），以本次提示词的主题和文字内容为准。`;
+  const useNote = String(referenceInstruction || "").replace(/\s+/g, " ").trim().slice(0, 220);
+  const hasPlacement = /附件使用\s*[:：]/.test(body);
+  const refNote = `参考图：本次提供 ${names.length} 张参考图（${names.join("、")}），以本次提示词的主题和文字内容为准。${useNote && !hasPlacement ? `\n附件使用：${useNote}` : ""}`;
   return `${body}\n\n${refNote}\n\n${IMAGE_NEGATIVE_PROMPT}`.trim();
 }
 
@@ -249,6 +265,180 @@ export function renderSlotsPage(root, p, isImg) {
     const body = $("#imgCopyBody", root);
     if (title) C.title = title.value.trim();
     if (body) C.body = body.value.trim();
+  }
+
+  function referencePlanSignature(items, refs) {
+    const source = JSON.stringify({
+      title: p.artifacts.copy?.title || p.title || p.topic || "",
+      body: p.artifacts.copy?.body || p.artifacts.copy?.copy || "",
+      // 使用图卡草案而不是最终图片提示词，确保编排发生在提示词生成之前。
+      items: (items || []).map(item => [item?.title || item?.idea || "", item?.visual || item?.line || item?.prompt || ""]),
+      refs: (refs || []).map(ref => [ref.id, ref.role, ref.slotIndex])
+    });
+    let hash = 2166136261;
+    for (let i = 0; i < source.length; i++) hash = Math.imul(hash ^ source.charCodeAt(i), 16777619);
+    return `ref-plan-${(hash >>> 0).toString(36)}`;
+  }
+
+  async function referenceCandidatesForCards(draftCards = [], previousItems = A.items || []) {
+    const sharedIds = refIdsOf(A);
+    const customById = new Map();
+    (previousItems || []).forEach((item, index) => {
+      normalizeRefIds(item?.refAssetIds).forEach(id => {
+        if (!sharedIds.includes(id) && !customById.has(id)) customById.set(id, index);
+      });
+    });
+    const allIds = normalizeRefIds([...sharedIds, ...customById.keys()]);
+    const refs = await providerRefsFor(A, allIds);
+    return refs.map(ref => {
+      const slotIndex = customById.has(ref.id) ? customById.get(ref.id) : -1;
+      return { ...ref, role: slotIndex >= 0 ? "custom" : "shared", slotIndex };
+    });
+  }
+
+  function fallbackPlanForCards(cards = [], refs = [], previousItems = A.items || []) {
+    const sharedIds = refs.filter(ref => ref.role !== "custom").map(ref => ref.id);
+    return (cards || []).map((_, index) => ({
+      index,
+      referenceIds: normalizeRefIds([
+        ...sharedIds,
+        ...normalizeRefIds((previousItems[index] || {}).refAssetIds)
+      ]),
+      instruction: ""
+    }));
+  }
+
+  function applyPromptReferencePlan(items = A.items || [], planCards = [], source = "fallback") {
+    const byIndex = new Map((planCards || []).map(card => [Number(card.index), card]));
+    (items || []).forEach((item, index) => {
+      if (!item) return;
+      const card = byIndex.get(index);
+      if (source === "vision" && card) {
+        item.plannedRefAssetIds = normalizeRefIds(card.referenceIds);
+        item.referenceInstruction = card.instruction || "";
+        item.referenceSource = normalizeRefIds(item.refAssetIds).length ? "slot-vision-plan" : "shared-vision-plan";
+      } else {
+        delete item.plannedRefAssetIds;
+        delete item.referenceInstruction;
+        if (!item.referenceSource || /vision-plan/.test(item.referenceSource)) delete item.referenceSource;
+      }
+    });
+  }
+
+  async function prepareReferencesForPromptCards(draftCards = [], previousItems = A.items || []) {
+    if (!isImg || !draftCards.length) return { source: "no-references", cards: [] };
+    const refs = await referenceCandidatesForCards(draftCards, previousItems);
+    if (!refs.length) {
+      A.referencePlan = { signature: "", source: "no-references", model: "", cards: [], at: Date.now() };
+      return { source: "no-references", cards: [] };
+    }
+    const signature = referencePlanSignature(draftCards, refs);
+    if (A.referencePlan?.signature === signature && Array.isArray(A.referencePlan?.cards)) {
+      return { source: A.referencePlan.source || "fallback", cards: A.referencePlan.cards };
+    }
+    const result = await AI.planImageReferenceUsage({
+      title: p.artifacts.copy?.title || p.title || p.topic || "",
+      body: p.artifacts.copy?.body || p.artifacts.copy?.copy || "",
+      cards: draftCards.map((item, index) => ({
+        index,
+        title: item?.title || item?.idea || `图${index + 1}`,
+        prompt: item?.visual || item?.line || item?.prompt || ""
+      })),
+      refs
+    });
+    const byIndex = new Map((result.cards || []).map(card => [Number(card.index), card]));
+    const vision = result.source === "vision" && byIndex.size > 0;
+    const fallbackCards = fallbackPlanForCards(draftCards, refs, previousItems);
+    const fallbackByIndex = new Map(fallbackCards.map(card => [card.index, card]));
+    const cards = vision
+      ? draftCards.map((_, index) => {
+        const card = byIndex.get(index);
+        // 模型输出被截断时，缺失的图卡不能被误判为“刻意不使用附件”。
+        return card ? {
+          index,
+          referenceIds: normalizeRefIds(card.referenceIds),
+          instruction: card.instruction || ""
+        } : (fallbackByIndex.get(index) || { index, referenceIds: [], instruction: "" });
+      })
+      : fallbackCards;
+    A.referencePlan = { signature, source: vision ? "vision" : result.source || "fallback", model: result.model || "", cards, at: Date.now() };
+    return { source: A.referencePlan.source, cards };
+  }
+
+  async function planCustomReferencesForSlot(item, index) {
+    const itemIds = normalizeRefIds(item?.refAssetIds);
+    if (!itemIds.length) {
+      return {
+        ids: imageReferenceIdsForSlot(A, item),
+        instruction: item?.referenceInstruction || ""
+      };
+    }
+    const candidateIds = imageReferenceIdsForSlot(A, item);
+    const refs = (await providerRefsFor(A, candidateIds)).map(ref => ({
+      ...ref,
+      role: itemIds.includes(ref.id) ? "custom" : "shared",
+      slotIndex: itemIds.includes(ref.id) ? index : -1
+    }));
+    const result = await AI.planImageReferenceUsage({
+      title: p.artifacts.copy?.title || p.title || p.topic || "",
+      body: p.artifacts.copy?.body || p.artifacts.copy?.copy || "",
+      cards: [{ index, title: item?.title || `图${index + 1}`, prompt: item?.prompt || "" }],
+      refs
+    });
+    const card = (result.cards || []).find(entry => Number(entry.index) === index);
+    if (result.source === "vision" && card) {
+      // 用户刚添加的定制图对本图是强约束；即使规划模型漏选也不能在提交时丢失。
+      item.plannedRefAssetIds = normalizeRefIds([...itemIds, ...normalizeRefIds(card.referenceIds)]);
+      item.referenceInstruction = card.instruction || "";
+      item.referenceSource = "slot-vision-plan";
+      return { ids: item.plannedRefAssetIds, instruction: item.referenceInstruction };
+    }
+    return { ids: candidateIds, instruction: item?.referenceInstruction || "" };
+  }
+
+  async function refreshPromptForReferencePlan(item, index, referencePlan) {
+    // 定制参考是用户刚刚针对单张图添加的输入。提示词没有被人工改写时，
+    // 重新按“整组同规格图卡 + 本图附件角色”生成这一张，而不是在旧提示词末尾补一句。
+    if (!isImg || !item?.referencePromptNeedsRefresh || item.promptUserEdited || !referencePlan?.instruction) return;
+    const cards = (A.items || []).map((current, cardIndex) => ({
+      idea: current?.title || `图${cardIndex + 1}`,
+      visual: current?.visual || current?.prompt || "",
+      line: current?.title || ""
+    }));
+    if (!cards.length) return;
+    const referencePlans = cards.map((_, cardIndex) => {
+      const current = A.items[cardIndex] || {};
+      if (cardIndex === index) {
+        return { index, referenceIds: referencePlan.ids, instruction: referencePlan.instruction };
+      }
+      return {
+        index: cardIndex,
+        referenceIds: imageReferenceIdsForSlot(A, current),
+        instruction: current.referenceInstruction || ""
+      };
+    });
+    try {
+      const res = await AI.generateImagePrompts({
+        script: shotsToText(cards, true),
+        account: acc,
+        style: p.artifacts.script.style || S.style || acc.styleProfile || "",
+        imageTemplate: acc.imagePromptTemplate || "",
+        styleRefName: refNamesOf(A).join("、"),
+        imageCount: cards.length,
+        product: productById(p.artifacts.script.productId),
+        topic: p.topic,
+        copy: p.artifacts.copy,
+        referencePlans,
+        requireLlm: true
+      });
+      const nextPrompt = (res.shots || [])[index]?.prompt;
+      if (nextPrompt) {
+        item.prompt = nextPrompt;
+        item.referencePromptNeedsRefresh = false;
+      }
+    } catch (_) {
+      // 参考图仍会以真实附件提交；下次点击可再尝试按规划重写完整提示词。
+    }
   }
 
   function splitCopyBeats(title = "", body = "", count = DEFAULT_XHS_IMAGE_COUNT) {
@@ -607,6 +797,9 @@ export function renderSlotsPage(root, p, isImg) {
       }
       item.refAssetIds = normalizeRefIds(nextIds);
       item.referenceSource = "slot";
+      item.referencePromptNeedsRefresh = true;
+      delete item.plannedRefAssetIds;
+      delete item.referenceInstruction;
       save("productions");
       toast(`已为第 ${index + 1} 张添加 ${added} 张定制参考图`);
       draw();
@@ -636,6 +829,9 @@ export function renderSlotsPage(root, p, isImg) {
       if (!item || !assetId) return;
       item.refAssetIds = normalizeRefIds((item.refAssetIds || []).filter(id => id !== assetId));
       if (!item.refAssetIds.length) delete item.referenceSource;
+      item.referencePromptNeedsRefresh = true;
+      delete item.plannedRefAssetIds;
+      delete item.referenceInstruction;
       save("productions");
       draw();
     }));
@@ -678,6 +874,8 @@ export function renderSlotsPage(root, p, isImg) {
         if (!shots.length) { toast(isImg ? "先在图文创作台生成图卡结构" : "先回脚本页生成脚本"); return; }
         const sharedRefs = refAssetsOf(A);
         if (isImg) {
+          const previousItems = A.items || [];
+          const referencePlan = await prepareReferencesForPromptCards(shots, previousItems);
           const res = await AI.generateImagePrompts({
             script: shotsToText(shots, true),
             account: acc,
@@ -687,7 +885,8 @@ export function renderSlotsPage(root, p, isImg) {
             imageCount: p.artifacts.script.imageCount || (A.items || []).length || shots.length || DEFAULT_XHS_IMAGE_COUNT,
             product: productById(p.artifacts.script.productId),
             topic: p.topic,
-            copy: p.artifacts.copy
+            copy: p.artifacts.copy,
+            referencePlans: referencePlan.cards
           });
           A.items = (res.shots || []).map((s, i) => ({
             title: s.title || `图${i + 1}`, visual: (shots[i] || {}).visual || "", prompt: s.prompt || "", ui: !!s.ui,
@@ -696,6 +895,7 @@ export function renderSlotsPage(root, p, isImg) {
             referenceSource: (A.items[i] || {}).referenceSource || "",
             status: (A.items[i] || {}).assetId ? "done" : "idle"
           }));
+          applyPromptReferencePlan(A.items, referencePlan.cards, referencePlan.source);
         } else {
           const res = await AI.generateStoryboardPrompts({ shots, account: acc, style: p.artifacts.script.style, sharedRefName: sharedRefs.map(x => x.name).join("、"), product: productById(p.artifacts.script.productId || "dumate") });
           A.items = shots.map((s, i) => ({
@@ -712,7 +912,7 @@ export function renderSlotsPage(root, p, isImg) {
     // 槽位编辑/上传/站内生成
     $$("[data-prompt]", root).forEach(el => el.addEventListener("blur", () => {
       const it = A.items[+el.dataset.prompt];
-      if (it) { it.prompt = el.textContent.trim(); save("productions"); }
+      if (it) { it.prompt = el.textContent.trim(); it.promptUserEdited = true; save("productions"); }
     }));
     $$("[data-up]", root).forEach(inp => inp.addEventListener("change", async e => {
       const f = e.target.files[0]; if (!f) return;
@@ -806,8 +1006,12 @@ export function renderSlotsPage(root, p, isImg) {
       if (!imageApiConfigured() || provider?.mock) {
         throw new Error("图片 API 未接入：请配置站内图片服务，或使用槽位上传补图");
       } else {
-        const intendedRefAssetIds = imageReferenceIdsForSlot(A, fresh);
-        const finalPrompt = enrichPromptWithRefs(promptForImageModel(fresh.prompt), A, intendedRefAssetIds);
+        const referencePlan = await planCustomReferencesForSlot(fresh, i);
+        await refreshPromptForReferencePlan(fresh, i, referencePlan);
+        const intendedRefAssetIds = referencePlan.ids;
+        const finalPrompt = enrichPromptWithRefs(
+          promptForImageModel(fresh.prompt), A, intendedRefAssetIds, referencePlan.instruction
+        );
         const refs = await providerRefsFor(A, intendedRefAssetIds);
         const r = await provider.submit({
           prompt: finalPrompt,
@@ -1039,6 +1243,8 @@ export function renderSlotsPage(root, p, isImg) {
     S.title = p.title;
     S.source = "custom-copy";
     S.style = style;
+    const previousItems = A.items || [];
+    const referencePlan = await prepareReferencesForPromptCards(shots, previousItems);
     const promptRes = await AI.generateImagePrompts({
       script: shotsToText(shots, true),
       account: acc,
@@ -1052,6 +1258,7 @@ export function renderSlotsPage(root, p, isImg) {
       trendGuide: "",
       trendPrep: null,
       copy: C,
+      referencePlans: referencePlan.cards,
       requireLlm: true
     });
     A.promptSource = AI.lastSource;
@@ -1060,9 +1267,13 @@ export function renderSlotsPage(root, p, isImg) {
       title: promptRows[i]?.title || s.idea || `图片${i + 1}`,
       visual: s.visual || "",
       prompt: promptRows[i]?.prompt || "",
-      assetId: (A.items[i] || {}).assetId || null,
-      status: (A.items[i] || {}).assetId ? "done" : "idle"
+      refAssetIds: normalizeRefIds((previousItems[i] || {}).refAssetIds),
+      referenceSource: (previousItems[i] || {}).referenceSource || "",
+      promptUserEdited: false,
+      assetId: (previousItems[i] || {}).assetId || null,
+      status: (previousItems[i] || {}).assetId ? "done" : "idle"
     }));
+    applyPromptReferencePlan(A.items, referencePlan.cards, referencePlan.source);
     p.stage = "images";
     p.stageStatus = "pending";
     save("productions");

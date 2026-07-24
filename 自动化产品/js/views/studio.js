@@ -9,7 +9,7 @@ import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openMo
 import { go } from "../core/router.js";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260723-v117-8";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260723-v117-8";
+import { renderSlotsPage } from "./chainBoards.js?v=20260724-v117-13";
 import { renderWorkshopPage } from "./chainWorkshop.js?v=20260723-v117-8";
 import { renderCutPage } from "./chainCut.js?v=20260723-v117-8";
 import { renderReviewPage } from "./chainCopy.js?v=20260723-v117-8";

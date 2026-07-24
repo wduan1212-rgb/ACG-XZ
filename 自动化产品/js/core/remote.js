@@ -291,10 +291,10 @@ export const memberRequests = {
   reject: (id) => req("/api/member-requests/" + encodeURIComponent(id) + "/reject", { method: "POST" })
 };
 
-/* 管理员用量看板：服务端只汇总上游真实返回的 LLM token。 */
+/* 管理员用量看板：语言 Token 与实际图片/视频调用分账展示。 */
 export const admin = {
   llmUsage: () => req("/api/admin/llm-usage"),
-  llmUsageDetails: () => req("/api/admin/llm-usage/details")
+  llmUsageDetails: (memberId = "") => req("/api/admin/llm-usage/details" + (memberId ? "?memberId=" + encodeURIComponent(memberId) : ""))
 };
 
 /* 供应商母账号：子账号、内容账号绑定与操作记录均由服务端授权。 */

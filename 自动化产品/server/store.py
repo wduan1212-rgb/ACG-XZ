@@ -231,6 +231,20 @@ CREATE TABLE IF NOT EXISTS llm_usage_events(
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_events_member_created
   ON llm_usage_events(member_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS api_usage_events(
+  id           TEXT PRIMARY KEY,
+  member_id    TEXT NOT NULL,
+  member_name  TEXT NOT NULL,
+  api_type     TEXT NOT NULL,
+  feature      TEXT NOT NULL,
+  model        TEXT,
+  calls        INTEGER NOT NULL DEFAULT 1,
+  output_units INTEGER NOT NULL DEFAULT 1,
+  unit_label   TEXT NOT NULL DEFAULT '任务',
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_api_usage_events_member_created
+  ON api_usage_events(member_id, created_at DESC);
 """
 
 _lock = Lock()
@@ -759,7 +773,80 @@ def llm_usage_summary():
             conn.close()
 
 
-def llm_usage_details(limit=120):
+def record_api_usage(member_id, member_name, api_type, feature, model, output_units=1, unit_label="任务"):
+    """记录一次已被上游接受的非 Token 模型调用。
+
+    图片、视频等接口通常不会返回可核验的 token usage，因而只记录真实成功请求和
+    实际输出单位，绝不把调用次数换算或伪装成 token / 金额。
+    """
+    kind = str(api_type or "").strip().lower()
+    if kind not in {"image", "video", "voice"}:
+        return False
+    try:
+        units = max(0, int(output_units or 0))
+    except (TypeError, ValueError, OverflowError):
+        units = 0
+    if units <= 0:
+        return False
+    label = str(unit_label or "任务").strip()[:24] or "任务"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "INSERT INTO api_usage_events(id,member_id,member_name,api_type,feature,model,calls,output_units,unit_label,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:16], str(member_id or ""), str(member_name or "成员")[:120],
+                    kind, str(feature or "模型调用")[:80], str(model or "")[:160], 1, units, label,
+                    int(time.time() * 1000),
+                ),
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+
+def model_usage_summary():
+    """按成员汇总真实语言 Token 与非 Token 的图片/视频调用账本。"""
+    rows = {row["memberId"]: row for row in llm_usage_summary()}
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            api_rows = conn.execute(
+                "SELECT m.id,m.name,m.username,m.role,u.api_type,"
+                "COALESCE(SUM(u.calls),0),COALESCE(SUM(u.output_units),0),MAX(u.created_at) "
+                "FROM members m LEFT JOIN api_usage_events u ON u.member_id=m.id "
+                "WHERE m.role IN ('admin','editor') "
+                "GROUP BY m.id,m.name,m.username,m.role,u.api_type"
+            ).fetchall()
+        finally:
+            conn.close()
+    for member_id, member_name, username, role, api_type, calls, outputs, last_used_at in api_rows:
+        row = rows.setdefault(member_id, {
+            "memberId": member_id, "memberName": member_name, "username": username, "role": role,
+            "promptTokens": 0, "completionTokens": 0, "totalTokens": 0, "calls": 0, "lastUsedAt": None,
+        })
+        if not api_type:
+            continue
+        prefix = {"image": "image", "video": "video", "voice": "voice"}.get(api_type, "")
+        if not prefix:
+            continue
+        row[f"{prefix}Calls"] = int(calls or 0)
+        row[f"{prefix}Outputs"] = int(outputs or 0)
+        row[f"{prefix}LastUsedAt"] = last_used_at
+    for row in rows.values():
+        for key in ("imageCalls", "imageOutputs", "videoCalls", "videoOutputs", "voiceCalls", "voiceOutputs"):
+            row.setdefault(key, 0)
+    return sorted(rows.values(), key=lambda row: (
+        -int(row.get("totalTokens") or 0),
+        -(int(row.get("imageCalls") or 0) + int(row.get("videoCalls") or 0) + int(row.get("voiceCalls") or 0)),
+        str(row.get("memberName") or ""),
+    ))
+
+
+def llm_usage_details(limit=120, member_id=""):
     """管理员用的调用明细：按功能 / 模型汇总，并保留最近可核验的原始记录。
 
     明细只来自上游响应的 usage 字段；不把图片、视频、语音或没有 usage 的请求估算成 token。
@@ -768,6 +855,9 @@ def llm_usage_details(limit=120):
         limit = max(1, min(int(limit or 120), 500))
     except (TypeError, ValueError, OverflowError):
         limit = 120
+    member_id = str(member_id or "").strip()
+    where = "WHERE u.member_id=?" if member_id else ""
+    params = (member_id,) if member_id else ()
     _ensure_db()
     with _lock:
         conn = _connect()
@@ -776,16 +866,17 @@ def llm_usage_details(limit=120):
                 "SELECT feature,COALESCE(model,''),COUNT(id) AS calls,"
                 "COALESCE(SUM(prompt_tokens),0),COALESCE(SUM(completion_tokens),0),"
                 "COALESCE(SUM(total_tokens),0) AS total_tokens,MAX(created_at) AS last_used_at "
-                "FROM llm_usage_events "
+                "FROM llm_usage_events u " + where + " "
                 "GROUP BY feature,COALESCE(model,'') "
                 "ORDER BY total_tokens DESC,last_used_at DESC,feature ASC"
+                , params
             ).fetchall()
             events = conn.execute(
                 "SELECT u.id,u.member_id,u.member_name,COALESCE(m.username,''),u.feature,"
                 "COALESCE(u.model,''),u.prompt_tokens,u.completion_tokens,u.total_tokens,u.created_at "
-                "FROM llm_usage_events u LEFT JOIN members m ON m.id=u.member_id "
+                "FROM llm_usage_events u LEFT JOIN members m ON m.id=u.member_id " + where + " "
                 "ORDER BY u.created_at DESC LIMIT ?",
-                (limit,),
+                (*params, limit),
             ).fetchall()
             return {
                 "apiRows": [{
@@ -801,6 +892,50 @@ def llm_usage_details(limit=120):
             }
         finally:
             conn.close()
+
+
+def model_usage_details(member_id="", limit=120):
+    """管理员明细：语言 Token 与实际图片/视频调用分开展示。"""
+    try:
+        limit = max(1, min(int(limit or 120), 500))
+    except (TypeError, ValueError, OverflowError):
+        limit = 120
+    details = llm_usage_details(limit, member_id)
+    member_id = str(member_id or "").strip()
+    _ensure_db()
+    where = "WHERE u.member_id=?" if member_id else ""
+    params = (member_id,) if member_id else ()
+    with _lock:
+        conn = _connect()
+        try:
+            api_rows = conn.execute(
+                "SELECT u.api_type,u.feature,COALESCE(u.model,''),COUNT(u.id),"
+                "COALESCE(SUM(u.calls),0),COALESCE(SUM(u.output_units),0),u.unit_label,MAX(u.created_at) "
+                "FROM api_usage_events u " + where + " "
+                "GROUP BY u.api_type,u.feature,COALESCE(u.model,''),u.unit_label "
+                "ORDER BY MAX(u.created_at) DESC,u.api_type ASC,u.feature ASC",
+                params,
+            ).fetchall()
+            events = conn.execute(
+                "SELECT u.id,u.member_id,u.member_name,COALESCE(m.username,''),u.api_type,u.feature,"
+                "COALESCE(u.model,''),u.calls,u.output_units,u.unit_label,u.created_at "
+                "FROM api_usage_events u LEFT JOIN members m ON m.id=u.member_id " + where + " "
+                "ORDER BY u.created_at DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+    details["assetApiRows"] = [{
+        "apiType": row[0], "feature": row[1], "model": row[2], "events": int(row[3] or 0),
+        "calls": int(row[4] or 0), "outputUnits": int(row[5] or 0), "unitLabel": row[6] or "任务",
+        "lastUsedAt": row[7],
+    } for row in api_rows]
+    details["assetEvents"] = [{
+        "id": row[0], "memberId": row[1], "memberName": row[2], "username": row[3],
+        "apiType": row[4], "feature": row[5], "model": row[6], "calls": int(row[7] or 0),
+        "outputUnits": int(row[8] or 0), "unitLabel": row[9] or "任务", "createdAt": row[10],
+    } for row in events]
+    return details
 
 
 def reject_member_request(rid, reviewer_id):

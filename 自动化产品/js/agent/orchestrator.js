@@ -3,7 +3,7 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260723-v117-8";
+import { AI } from "../api/ai.js?v=20260724-v117-13";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
@@ -933,6 +933,10 @@ function imageRefGroupsFor(acc, batch, p) {
   };
 }
 
+function imageRefRoleForId(id, refGroups) {
+  return (refGroups.custom || []).includes(id) ? "custom" : "shared";
+}
+
 async function imageRefsForIds(ids, role = "shared") {
   const refs = [];
   for (const id of ids) {
@@ -956,7 +960,17 @@ async function imageRefsForIds(ids, role = "shared") {
   return refs;
 }
 
-function enrichBatchImagePrompt(prompt, refs) {
+async function imageRefsForSelection(ids, refGroups) {
+  const selected = [...new Set((ids || []).filter(Boolean))].slice(0, 8);
+  const shared = selected.filter(id => imageRefRoleForId(id, refGroups) === "shared");
+  const custom = selected.filter(id => imageRefRoleForId(id, refGroups) === "custom");
+  return [
+    ...(await imageRefsForIds(shared, "shared")),
+    ...(await imageRefsForIds(custom, "custom"))
+  ].slice(0, 8);
+}
+
+function enrichBatchImagePrompt(prompt, refs, referenceInstruction = "") {
   if (!refs.length) return prompt || "";
   const shared = refs.filter(r => r.role !== "custom");
   const custom = refs.filter(r => r.role === "custom");
@@ -964,8 +978,112 @@ function enrichBatchImagePrompt(prompt, refs) {
   const customNames = custom.map(r => r.name).filter(Boolean).slice(0, 3).join("、");
   const customNote = custom.length ? `\n定制参考图：另提供 ${custom.length} 张本账号专属参考图（${customNames}）。` : "";
   const body = String(prompt || "").replace(/负面约束\s*[:：][\s\S]*$/g, "").trim();
-  const refNote = `参考图：本次提供 ${refs.length} 张参考图（${[sharedNames, customNames].filter(Boolean).join("、")}），以本次提示词的主题和文字内容为准。${customNote}`;
+  const useNote = String(referenceInstruction || "").replace(/\s+/g, " ").trim().slice(0, 220);
+  const hasPlacement = /附件使用\s*[:：]/.test(body);
+  const refNote = `参考图：本次提供 ${refs.length} 张参考图（${[sharedNames, customNames].filter(Boolean).join("、")}），以本次提示词的主题和文字内容为准。${useNote && !hasPlacement ? `\n附件使用：${useNote}` : ""}${customNote}`;
   return `${body}\n\n${refNote}\n\n${IMAGE_NEGATIVE_PROMPT}`.trim();
+}
+
+function referencePlanSignature(p, items, refs) {
+  const source = JSON.stringify({
+    title: p.title || p.topic || "",
+    body: p.artifacts?.copy?.body || p.artifacts?.copy?.copy || "",
+    items: (items || []).map(item => [item?.title || "", item?.prompt || ""]),
+    refs: (refs || []).map(ref => [ref.id, ref.role])
+  });
+  let hash = 2166136261;
+  for (let i = 0; i < source.length; i++) hash = Math.imul(hash ^ source.charCodeAt(i), 16777619);
+  return `ref-plan-${(hash >>> 0).toString(36)}`;
+}
+
+async function prepareBatchImageReferencePlan(p, batch, acc, draftCards = []) {
+  const A = p.artifacts.images;
+  const refGroups = imageRefGroupsFor(acc, batch, p);
+  const refs = [
+    ...(await imageRefsForIds(refGroups.shared, "shared")),
+    ...(await imageRefsForIds(refGroups.custom, "custom"))
+  ].slice(0, 8);
+  A.usedSharedRefAssetIds = refGroups.shared;
+  A.usedCustomRefAssetIds = refGroups.custom;
+  A.usedRefAssetIds = refGroups.all;
+  const cards = (draftCards || []).map((item, index) => ({
+    index,
+    title: item?.title || item?.idea || `图${index + 1}`,
+    // 这里是由标题/正文拆出的图卡草案，不是已经写好的最终图片提示词。
+    prompt: item?.visual || item?.line || item?.prompt || ""
+  }));
+  if (!refs.length || !cards.length) {
+    A.referencePlan = { signature: "", source: "no-references", model: "", cards: [], at: Date.now() };
+    return { refGroups, refs, cards: [] };
+  }
+  const signature = referencePlanSignature(p, cards, refs);
+  if (A.referencePlan?.signature === signature && Array.isArray(A.referencePlan?.cards)) {
+    return { refGroups, refs, cards: A.referencePlan.cards };
+  }
+  const plan = await AI.planImageReferenceUsage({
+    title: p.artifacts?.copy?.title || p.title || p.topic || "",
+    body: p.artifacts?.copy?.body || p.artifacts?.copy?.copy || "",
+    cards,
+    refs
+  });
+  const byIndex = new Map((plan.cards || []).map(card => [Number(card.index), card]));
+  const visionPlanned = plan.source === "vision" && byIndex.size > 0;
+  const plannedCards = cards.map((_, index) => {
+    const card = byIndex.get(index);
+    if (visionPlanned && card) {
+      return {
+        index,
+        referenceIds: [...new Set(card.referenceIds || [])].slice(0, 8),
+        instruction: card.instruction || ""
+      };
+    }
+    // 视觉模型不可用时不假装看过附件：继续保持现有真实附件传图，全部统一图可作为回退附件。
+    return { index, referenceIds: [...refGroups.all], instruction: "" };
+  });
+  A.referencePlan = {
+    signature,
+    source: visionPlanned ? "vision" : plan.source || "fallback",
+    model: plan.model || "",
+    cards: plannedCards,
+    at: Date.now()
+  };
+  return { refGroups, refs, cards: plannedCards };
+}
+
+function applyBatchImageReferencePlan(p, batch, refGroups, items = []) {
+  const A = p.artifacts.images;
+  const planByIndex = new Map((A.referencePlan?.cards || []).map(card => [Number(card.index), card]));
+  const isVisionPlan = A.referencePlan?.source === "vision";
+  const isManual = item => Object.prototype.hasOwnProperty.call(item || {}, "refAssetIds")
+    && !["batch-plan", "batch-vision-plan", ""].includes(String(item?.referenceSource || ""));
+  (items || []).forEach((item, index) => {
+    if (!item || isManual(item)) return;
+    const card = planByIndex.get(index);
+    if (isVisionPlan && card) {
+      // 空数组也是规划器明确决定“本图不提交附件”的有效结果。
+      item.refAssetIds = [...new Set(card.referenceIds || [])].slice(0, 8);
+      item.referenceInstruction = card.instruction || "";
+      item.referenceSource = "batch-vision-plan";
+    } else {
+      item.refAssetIds = [...refGroups.all];
+      item.referenceInstruction = "";
+      item.referenceSource = "batch-plan";
+    }
+    item.referenceSelectionId = batch.referenceSelectionId || "";
+  });
+}
+
+async function ensureBatchImageReferencePlan(p, batch, acc, refGroups, defaultRefs) {
+  const A = p.artifacts.images;
+  const items = A.items || [];
+  if (!defaultRefs.length || !items.length) return;
+  // 正常流程已经在生成完整提示词前完成视觉规划；这里仅把既有计划落到图卡，
+  // 或为历史任务提供不声称视觉理解的安全回退，绝不在提示词写完后再重排它。
+  if (!Array.isArray(A.referencePlan?.cards) || !A.referencePlan.cards.length) {
+    A.referencePlan = { signature: "", source: "fallback", model: "", cards: [], at: Date.now() };
+  }
+  applyBatchImageReferencePlan(p, batch, refGroups, items);
+  save("productions");
 }
 
 function splitBatchCopyBeats(title = "", body = "", count = DEFAULT_XHS_IMAGE_COUNT) {
@@ -1048,6 +1166,7 @@ async function generateBatchImagesInHouse(p, batch, acc) {
     ...(await imageRefsForIds(refGroups.custom, "custom"))
   ].slice(0, 8);
   const items = A.items || [];
+  await ensureBatchImageReferencePlan(p, batch, acc, refGroups, defaultRefs);
   setStage(p, "images", "running");
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
@@ -1061,17 +1180,25 @@ async function generateBatchImagesInHouse(p, batch, acc) {
     } else if (!it.referenceSource) {
       it.referenceSource = "item";
     }
-    const refs = hasItemRefOverride
-      ? await imageRefsForIds(Array.isArray(it.refAssetIds) ? it.refAssetIds.slice(0, 8) : [], "custom")
+    const isVisionPlan = it.referenceSource === "batch-vision-plan";
+    const isBatchDefault = it.referenceSource === "batch-plan";
+    // 单张后来追加的定制图只影响该图，但不把批次统一参考静默丢掉；
+    // 视觉规划则按它明确选出的子集提交（包括有意留空的图卡）。
+    const intendedRefAssetIds = isVisionPlan
+      ? (Array.isArray(it.refAssetIds) ? it.refAssetIds.slice(0, 8) : [])
+      : (hasItemRefOverride && !isBatchDefault
+        ? [...new Set([...(Array.isArray(it.refAssetIds) ? it.refAssetIds : []), ...refGroups.shared])].slice(0, 8)
+        : [...refGroups.all]);
+    const refs = (hasItemRefOverride || isVisionPlan)
+      ? await imageRefsForSelection(intendedRefAssetIds, refGroups)
       : defaultRefs;
-    const intendedRefAssetIds = Array.isArray(it.refAssetIds) ? it.refAssetIds.slice(0, 8) : [];
     it.status = "loading";
     it.error = "";
     it.referenceReceipt = null;
     save("productions");
     try {
       const req = await provider.submit({
-        prompt: enrichBatchImagePrompt(it.prompt, refs),
+        prompt: enrichBatchImagePrompt(it.prompt, refs, it.referenceInstruction),
         refs,
         intendedRefAssetIds,
         ratio: "3:4",
@@ -1560,6 +1687,9 @@ async function draftOne(p, batch) {
       p.artifacts.script.useOnlineTrends = false;
       p.artifacts.script.trendPrep = null;
       p.artifacts.script.trendGuide = "";
+      // 先用标题、正文、图卡草案和真实统一/定制参考图完成逐图路由，
+      // 再把附件职责输入 MiniMax-M3 的完整提示词生成。
+      const imageReferencePlan = await prepareBatchImageReferencePlan(p, batch, acc, shots);
       const imgPromptRes = await AI.generateImagePrompts({
         script: shotsToText(shots, true),
         account: acc,
@@ -1574,6 +1704,7 @@ async function draftOne(p, batch) {
         trendGuide: "",
         trendPrep: null,
         copy: p.artifacts.copy,
+        referencePlans: imageReferencePlan.cards,
         requireLlm: true
       });
       p.artifacts.images.promptSource = AI.lastSource;
@@ -1585,6 +1716,7 @@ async function draftOne(p, batch) {
         assetId: null,
         status: "idle"
       }));
+      applyBatchImageReferencePlan(p, batch, imageReferencePlan.refGroups, p.artifacts.images.items);
       await runBatchImagesToReview(p, batch);
       return;
     }
@@ -1682,6 +1814,8 @@ async function draftOne(p, batch) {
       p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "", source: AI.lastSource || "" };
       const rw = referenceRewriteForCopy(trendPrep, p.artifacts.copy);
       if (rw) p.artifacts.copy.referenceRewrite = rw;
+      // 注意这里必须发生在完整提示词生成之前：统一参考图只会随实际需要的图卡提交。
+      const imageReferencePlan = await prepareBatchImageReferencePlan(p, batch, acc, p.artifacts.script.shots);
       const imgPromptRes = await AI.generateImagePrompts({
         script: shotsToText(p.artifacts.script.shots, true),
         account: acc,
@@ -1695,7 +1829,8 @@ async function draftOne(p, batch) {
         useOnlineTrends,
         trendGuide,
         trendPrep,
-        copy: p.artifacts.copy
+        copy: p.artifacts.copy,
+        referencePlans: imageReferencePlan.cards
       });
       p.artifacts.images.promptSource = AI.lastSource;
       const promptRows = imgPromptRes.shots || [];
@@ -1706,6 +1841,7 @@ async function draftOne(p, batch) {
         assetId: null,
         status: "idle"
       }));
+      applyBatchImageReferencePlan(p, batch, imageReferencePlan.refGroups, p.artifacts.images.items);
     } else {
       // 视频号全自动：口播估时 → 按场景合并分镜单元 → 分段提示词 → 派发视频任务
       Object.assign(p.artifacts.audio, estimateAudio(p.artifacts.script.shots), { source: "estimate" });

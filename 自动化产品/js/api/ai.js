@@ -7,10 +7,100 @@ import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
 import { getCreativeMemoryContext } from "../domain/analytics.js";
 import { state } from "../core/store.js";
+import * as remote from "../core/remote.js";
 import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
+
+function normalizeReferencePlanCards(value, refs = [], cards = []) {
+  const allowedIds = new Set((refs || []).map(ref => String(ref?.id || "")).filter(Boolean));
+  const allowedIndexes = new Set((cards || []).map(card => Number(card?.index)).filter(Number.isFinite));
+  const byIndex = new Map();
+  (Array.isArray(value) ? value : []).forEach(item => {
+    const index = Number(item?.index);
+    if (!allowedIndexes.has(index) || byIndex.has(index)) return;
+    const referenceIds = [...new Set((Array.isArray(item?.referenceIds) ? item.referenceIds : [])
+      .map(id => String(id || ""))
+      .filter(id => allowedIds.has(id)))].slice(0, 8);
+    const instruction = String(item?.instruction || "")
+      .replace(/\s+/g, " ").trim().slice(0, 220);
+    byIndex.set(index, { index, referenceIds, instruction });
+  });
+  return [...byIndex.values()].sort((a, b) => a.index - b.index);
+}
+
+/* 视觉规划返回的是“哪张附件给哪张图、在画面哪里承担什么角色”，而不是
+   对附件内容的文字复述。这里把它收敛成提示词生成可消费的稳定输入。 */
+function normalizePromptReferencePlans(value, imageCount = DEFAULT_XHS_IMAGE_COUNT) {
+  const max = Math.max(1, Math.min(12, Number(imageCount) || DEFAULT_XHS_IMAGE_COUNT));
+  const byIndex = new Map();
+  (Array.isArray(value) ? value : []).forEach((item, fallbackIndex) => {
+    const index = Number.isFinite(Number(item?.index)) ? Number(item.index) : fallbackIndex;
+    if (index < 0 || index >= max || byIndex.has(index)) return;
+    const referenceIds = [...new Set((Array.isArray(item?.referenceIds) ? item.referenceIds : [])
+      .map(id => String(id || "").trim()).filter(Boolean))].slice(0, 8);
+    const instruction = String(item?.instruction || "").replace(/\s+/g, " ").trim().slice(0, 220);
+    byIndex.set(index, { index, referenceIds, instruction });
+  });
+  return [...byIndex.values()].sort((a, b) => a.index - b.index);
+}
+
+function promptReferencePlanAt(plans = [], index = 0) {
+  return (plans || []).find(plan => Number(plan?.index) === Number(index)) || { index, referenceIds: [], instruction: "" };
+}
+
+function visualReferencePlanBrief(plans = []) {
+  const used = (plans || []).filter(plan => plan?.referenceIds?.length && plan?.instruction);
+  if (!used.length) return "";
+  return `\n视觉参考图前置规划（视觉模型已看过真实附件；此规划决定附件将随哪张图提交）：\n${used
+    .map(plan => `图${Number(plan.index) + 1}：已选 ${plan.referenceIds.length} 张附件；附件使用：${plan.instruction}`)
+    .join("\n")}\n`;
+}
+
+function appendReferencePlacement(prompt = "", instruction = "") {
+  const use = String(instruction || "").replace(/\s+/g, " ").trim().slice(0, 220);
+  if (!use || /附件使用\s*[:：]/.test(String(prompt || ""))) return String(prompt || "");
+  const text = String(prompt || "").trim();
+  if (!text) return `附件使用：${use}。`;
+  if (/负面约束\s*[:：]/.test(text)) {
+    return text.replace(/\s*(负面约束\s*[:：])/, `\n附件使用：${use}。\n$1`);
+  }
+  return `${text}\n附件使用：${use}。`;
+}
+
+async function requestImageReferencePlan({ title = "", body = "", cards = [], refs = [] } = {}) {
+  const safeRefs = (refs || []).filter(ref => ref?.id && (ref?.dataUrl || ref?.url)).slice(0, 8);
+  const safeCards = (cards || []).map((card, index) => ({
+    index: Number.isFinite(Number(card?.index)) ? Number(card.index) : index,
+    title: String(card?.title || "").slice(0, 160),
+    prompt: String(card?.prompt || "").slice(0, 2200),
+  })).slice(0, 12);
+  if (!safeRefs.length || !safeCards.length || !remote.isOn() || !remote.getToken()) {
+    return { source: "unavailable", cards: [] };
+  }
+  const response = await fetch("/api/llm/image-reference-plan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + remote.getToken() },
+    body: JSON.stringify({
+      title: String(title || "").slice(0, 500),
+      body: String(body || "").slice(0, 3000),
+      cards: safeCards,
+      refs: safeRefs.map(ref => ({
+        id: String(ref.id), role: String(ref.role || "shared"), name: String(ref.name || "参考图").slice(0, 160),
+        slotIndex: Number.isFinite(Number(ref.slotIndex)) ? Number(ref.slotIndex) : -1,
+        mime: String(ref.mime || ""), url: String(ref.url || ""), dataUrl: String(ref.dataUrl || "")
+      }))
+    })
+  });
+  if (!response.ok) throw new Error(`参考图编排失败：HTTP ${response.status} ${(await response.text()).slice(0, 160)}`);
+  const result = await response.json();
+  return {
+    source: String(result?.source || "unknown"),
+    model: String(result?.model || ""),
+    cards: normalizeReferencePlanCards(result?.cards, safeRefs, safeCards)
+  };
+}
 
 /* 选题"和当下结合、自然安利"指引（脚本类共用）：避免孤立自嗨、硬塞产品名。
    注：模型不能调用外部检索，这里用的是它知识里的常青热点/话题方向，不保证是今天的最新事件。 */
@@ -1826,6 +1916,7 @@ function richImagePrompt(item, i, total, ctx) {
       ? `画面文字围绕完整标题「${headline}」展开，不得截断标题，并配合文案提炼的关键说明自然排布。`
       : `文字以完整标题「${headline}」和一句短副标题为主，不得截断标题，必要时加入功能标签。`;
   const themeLine = theme.line ? `${theme.line}` : "";
+  const referencePlan = promptReferencePlanAt(ctx.referencePlans, i);
   const promptBody = cleanImagePlanningWords(isCover
     ? `${refPrefix}3:4竖版图片。${themeLine}${productLine}${layoutLine}；${visualLine}；${textLine}视觉风格：${imageStyle}。`
     : lightStyle
@@ -1834,7 +1925,9 @@ function richImagePrompt(item, i, total, ctx) {
   return {
     title,
     ui: item?.ui !== false,
-    prompt: normalizeImageSizeText(stripVisibleTextLabels(sanitizeOwnProductForGeneratedText(`${promptBody}${minimalImageNegative()}`)))
+    prompt: normalizeImageSizeText(stripVisibleTextLabels(sanitizeOwnProductForGeneratedText(
+      appendReferencePlacement(`${promptBody}${minimalImageNegative()}`, referencePlan.instruction)
+    )))
   };
 }
 
@@ -1874,11 +1967,12 @@ function normalizeCopyDrivenImagePromptItems(items, ctx) {
     const density = i === 0 ? "" : innerCardDensityVisual(beat);
     const content = stripImagePlanningInstructions(`${anchor}${generatedContent}${density}`);
     const prefix = ctx.styleRefName ? `请根据上传的参考图（${ctx.styleRefName}）的视觉语言。` : "";
+    const referencePlan = promptReferencePlanAt(ctx.referencePlans, i);
     const prompt = `${prefix}3:4竖版图片。${content}${style ? `视觉风格：${style}。` : ""}`;
     return {
       title,
       ui: item.ui !== false,
-      prompt: normalizeImageSizeText(`${prompt}${minimalImageNegative()}`)
+      prompt: normalizeImageSizeText(appendReferencePlacement(`${prompt}${minimalImageNegative()}`, referencePlan.instruction))
     };
   });
 }
@@ -2115,6 +2209,17 @@ function assertInfoFlowCreativePlan(plan, previousPrompts = []) {
 export const AI = {
   lastSource: "mock",
   lastError: "",
+
+  /* 视觉模型先负责“哪个附件给哪张图、如何放置”的短规划；随后图卡提示词
+     依据这份规划和既有完整规格重新生成，避免把附件内容再长篇复述一遍。 */
+  async planImageReferenceUsage(input = {}) {
+    try {
+      return await requestImageReferencePlan(input);
+    } catch (error) {
+      // 规划是增强层。视觉模型暂不可用或网络波动时，继续沿用原有真实附件传图链路。
+      return { source: "fallback", cards: [], error: error?.message || String(error) };
+    }
+  },
 
   _ok(d) { this.lastSource = "llm"; this.lastError = ""; return d; },
   _fb(e) { this.lastSource = "mock"; this.lastError = (e && e.message) || String(e || "网络/CORS"); },
@@ -2459,7 +2564,7 @@ ${productRelationLine(rel.slice(0, 2))}
   },
 
   /* ---------- 图文：逐张图片提示词 ---------- */
-  async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, topic = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null, copy = null, requireLlm = false }) {
+  async generateImagePrompts({ script, account, style, imageTemplate = "", styleRefName = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, topic = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null, copy = null, referencePlans = [], requireLlm = false }) {
     const tpl = String(imageTemplate || "").trim();
     const nImg = Math.max(1, Math.min(12, imageCount || DEFAULT_XHS_IMAGE_COUNT));
     const safeTopic = sanitizeXhsText(cleanText(topic || ""));
@@ -2477,13 +2582,15 @@ ${productRelationLine(rel.slice(0, 2))}
     const copyBrief = [copyTitle ? `标题：${copyTitle}` : "", copyBody ? `正文：${copyBody.slice(0, 2800)}` : ""].filter(Boolean).join("\n");
     const hasCopyBrief = !!copyBrief;
     const contentBeats = hasCopyBrief ? copyContentBeats(copyTitle, copyBody, nImg) : [];
+    const promptReferencePlans = normalizePromptReferencePlans(referencePlans, nImg);
+    const referencePlanBrief = visualReferencePlanBrief(promptReferencePlans);
     try {
       const content = await llm([
         { role: "system", content: `你是小红书笔记配图的图片提示词设计师。最终发布标题和正文是图片内容的唯一事实来源；账号资料只决定视觉设计，不决定图片讲什么。不得使用产品资料库、竞品关系、账号定位、历史模板、本地结构样本或默认办公案例补写内容。发布文案里明确出现的产品名、软件名和动作可以原样理解，但不能用你记忆中的产品介绍覆盖正文。禁止把发布标题换成另一个主题。先把正文完整理解并均匀规划为 ${nImg} 个不重复的信息节拍，再拆成 ${nImg} 张静态图片；每张承担正文中的一段具体信息，顺序合理，覆盖正文要点，不重复同一句。
 第一张图默认是点击入口，优先冲击感和可点击性：用强标题、短副标题和简单视觉关系吸引点击。第一张负责概括正文的核心入口；第二张之后是干货承载页，按正文顺序展开具体信息。每张内页必须有 1 个清楚结论，并从该页分配到的正文里提炼 2—4 个具体支撑项，例如步骤、动作、判断依据、证据、结果、避坑或适用边界；不得为了凑数量补写正文外事实。
 若内容过多，先在内部重新规划：把重要信息均匀分给 ${nImg} 张图，次要内容压成一句结论；若内容较少，只能把正文已有信息改写成例子、结果或边界提醒，不得补入正文之外的产品知识、默认案例或事实。
 同一批量任务的不同账号可以改变每张图的标题表达、主视觉和卡片顺序，但内容事实仍只能来自该账号最终正文。
-每条 prompt 必须是可直接交给图像模型的正向画面描述，不要复述任务、正文分段编号、信息密度策略或生成规则，不要输出「本张只展开」「不得换题」「正文第几部分」「内容唯一依据」等规划语言。图片内容只来自最终发布文案；视觉效果只来自账号创作风格、账号模板和参考图。账号风格最多提炼成一句简短的配色或画风说明，不得替用户改写画面内容。${safeStyle ? "账号创作风格（只决定视觉效果）：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `参考图（只作为视觉/构图参考，不提供内容主题）：${sanitizeXhsText(styleRefName)}。` : ""}${safeTpl ? `账号固定模板只作为配色、字体、布局和画面语言母版，模板文字和内容必须全部换成本次正文。` : ""}
+每条 prompt 必须是可直接交给图像模型的正向画面描述，不要复述任务、正文分段编号、信息密度策略或生成规则，不要输出「本张只展开」「不得换题」「正文第几部分」「内容唯一依据」等规划语言。图片内容只来自最终发布文案；视觉效果只来自账号创作风格、账号模板和参考图。账号风格最多提炼成一句简短的配色或画风说明，不得替用户改写画面内容。若下方给出某图的“附件使用”，它已经基于真实参考图、标题和正文完成前置规划：必须把这句作为该图的构图/主体/版式执行要求，写进完整提示词的画面描述；但绝对不要把附件里的颜色、人物、物体或文字展开复述，避免与实际附图重复冲突。没有附件规划的图不要虚构附件。${safeStyle ? "账号创作风格（只决定视觉效果）：" + cleanImagePlanningWords(safeStyle) + "。" : "默认白底极简、蓝紫品牌色、圆角卡片排版、大留白、真实截图质感。"}${styleRefName ? `参考图（只作为视觉/构图参考，不提供内容主题）：${sanitizeXhsText(styleRefName)}。` : ""}${safeTpl ? `账号固定模板只作为配色、字体、布局和画面语言母版，模板文字和内容必须全部换成本次正文。` : ""}
 
 每条 prompt 保持精炼但足够具体。说清：画面布局、主视觉、关键界面/文件/数据卡片、画面里允许出现的短文字、光线与颜色。画面文字围绕主标题、短解释和必要标签组织，按内容复杂度自然取舍；第一张保持简洁，第二张以后用 2—4 个层级明确的信息模块承载可操作干货，文字量明显高于封面但字号必须可读。若账号风格是火柴人、简笔画、小人、漫画或手绘，则用 2—4 组人物动作、表情、气泡和箭头分别解释信息模块，避免复杂表格和长段落。
 画面文字必须写具体功能、动作或结果，例如「资料自动归类」「字段一眼识别」「报告可直接用」，不能写空泛定位。
@@ -2491,7 +2598,7 @@ ${productRelationLine(rel.slice(0, 2))}
 内部分类词只用于理解结构，最终 prompt 主体保持正向画面描述。不要套用任何默认产品卖点、默认办公清单或历史常用句式。
 
 只输出 JSON：{"shots":[{"title":"给操作员看的短标题，写具体功能或结果","prompt":"可直接给图像模型的提示词","ui":true}]}` },
-        { role: "user", content: `账号创作风格（只决定视觉设计）：${sanitizeXhsText(account.styleProfile || style || "")}\n${copyBrief ? `最终发布文案（图片内容唯一依据；标签已移除，不参与画面规划）：\n${copyBrief}\n\n已经按正文顺序确定的信息分配（必须逐张遵守，不能换题）：\n${contentBeats.map((beat, i) => `图${i + 1}：${beat}`).join("\n")}\n` : `发布文案暂缺，只能使用这次标题/脚本：\n${[safeTopic, safeScript].filter(Boolean).join("\n")}`}\n${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号视觉模板：\n${safeTpl}\n` : ""}请输出 ${nImg} 张图的完整提示词。图1必须是简洁、有冲击力、低噪点的封面；图2及后续每张都必须有一个清楚结论和 2—4 个来自该页正文信息的具体支撑模块，提升干货密度但保持可读。` }
+        { role: "user", content: `账号创作风格（只决定视觉设计）：${sanitizeXhsText(account.styleProfile || style || "")}\n${copyBrief ? `最终发布文案（图片内容唯一依据；标签已移除，不参与画面规划）：\n${copyBrief}\n\n已经按正文顺序确定的信息分配（必须逐张遵守，不能换题）：\n${contentBeats.map((beat, i) => `图${i + 1}：${beat}`).join("\n")}\n` : `发布文案暂缺，只能使用这次标题/脚本：\n${[safeTopic, safeScript].filter(Boolean).join("\n")}`}\n${referencePlanBrief}${styleRefName ? `风格参考图：${sanitizeXhsText(styleRefName)}\n` : ""}${safeTpl ? `账号视觉模板：\n${safeTpl}\n` : ""}请输出 ${nImg} 张图的完整提示词。图1必须是简洁、有冲击力、低噪点的封面；图2及后续每张都必须有一个清楚结论和 2—4 个来自该页正文信息的具体支撑模块，提升干货密度但保持可读。` }
       ], { json: true, temperature: 0.8 });
       const d = sanitizeXhsObject(parseJSONLoose(content));
       if (!d.shots || !d.shots.length) throw new Error("模型未返回 shots");
@@ -2507,6 +2614,7 @@ ${productRelationLine(rel.slice(0, 2))}
           product,
           copy: copyForPrompt,
           contentBeats,
+          referencePlans: promptReferencePlans,
           trendPrep: null
         })
       });
@@ -2542,6 +2650,7 @@ ${productRelationLine(rel.slice(0, 2))}
           product,
           copy: copyForPrompt,
           contentBeats,
+          referencePlans: promptReferencePlans,
           trendPrep: null
         })
       };

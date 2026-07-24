@@ -11,7 +11,7 @@ import {
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences
-} from "./orchestrator.js?v=20260723-v117-8";
+} from "./orchestrator.js?v=20260724-v117-13";
 import { renderMessage, boardRow } from "./cards.js?v=20260723-v117-8";
 import { openProductionDrawer } from "../views/prodDrawer.js?v=20260723-v117-8";
 import { deliver } from "../domain/delivery.js";
@@ -479,7 +479,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260723-v117-8");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260724-v117-13");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;

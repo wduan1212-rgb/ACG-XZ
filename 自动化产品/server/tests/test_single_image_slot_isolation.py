@@ -126,7 +126,17 @@ class SingleImageSlotIsolationTest(unittest.TestCase):
         source = (APP_DIR / "js/views/chainBoards.js").read_text(encoding="utf-8")
         self.assertIn('const allowSlotRefs = img && !p.batchId', source)
         self.assertIn('data-slot-ref-drop="${i}"', source)
-        self.assertIn("imageReferenceIdsForSlot(A, fresh)", source)
+        self.assertIn("planCustomReferencesForSlot(fresh, i)", source)
+
+    def test_shared_and_slot_references_plan_before_prompt_and_keep_single_slot_isolated(self):
+        source = (APP_DIR / "js/views/chainBoards.js").read_text(encoding="utf-8")
+        self.assertIn("prepareReferencesForPromptCards", source)
+        self.assertIn("planCustomReferencesForSlot", source)
+        self.assertIn("refreshPromptForReferencePlan", source)
+        self.assertIn("slotIndex: itemIds.includes(ref.id) ? index : -1", source)
+        self.assertIn("附件使用：${useNote}", source)
+        self.assertIn("referencePlans: referencePlan.cards", source)
+        self.assertIn("const referencePlan = await planCustomReferencesForSlot(fresh, i)", source)
 
 
 if __name__ == "__main__":
