@@ -1,5 +1,50 @@
 # Server Deployment Log
 
+## v117.23 - 2026-07-24
+
+- Source: controlled commit `57d1275`. Production main cache is `20260724-v117-23`; infinite-canvas build is `KUHu0JKubL-tLCqpqdIyX`; video-workshop static files were unchanged.
+- Scope: deployed exactly 34 code/static files from a clean detached target worktree. The archive roots were limited to application code and static resources; SQLite, accounts, members, assets, deliveries, drafts, analytics, uploads, composed media, canvas blobs, video-workshop runtime, model cache, authentication state and private environment files were excluded. No delete-style synchronization, migration, reconcile or business write was used.
+- Validation: all 34 production hashes match the deployment manifest. Main service and video-workshop sidecar are active and healthy; SQLite integrity is `ok`. The main suite passed 354/354, video-workshop passed 92/92, and infinite-canvas sizing regression passed 41/41, including the prior 20 repeated single-reference runs and 50 complex multi-reference planner rounds.
+- Browser smoke: a production 3496×1022 historical project opened read-only with its exact-size output node intact. The size planner reports `3504×1168 → 3496×1022` as full-frame adaptation, with no crop or blurred-background instruction. Browser console reported zero errors and zero warnings. No model generation or project mutation was triggered.
+- Data protection: every tracked business collection count matched the pre-deployment baseline, including accounts 80, assets 3721, productions 700, jobs 776, members 65 and custom projects 72. Protected upload, composed-media and canvas-blob file/byte metrics were unchanged, and the private-environment fingerprint remained byte-identical.
+- Rollback and retention: created and verified rollback point `v117.23-pre-20260724-173927`, including an exact code/static archive and a consistent SQLite checkpoint. After verification, the oldest pure code/static rollback set was removed so exactly the newest five deployment rollback sets remain. Database, uploads, composed media, canvas blobs, video-workshop runtime, authentication and private configuration were not rotated or deleted.
+
+## v117.21 - 2026-07-24
+
+- Source: controlled commit `f483f8e`. Production main cache was refreshed and verified as `20260724-v117-21`; video-workshop static files were unchanged.
+- Scope: deployed exactly 34 changed runtime code/static files from a clean detached target worktree. Tests, documents, local state, SQLite, business collections, uploads, composed media, canvas blobs, video-workshop runtime, model cache, authentication data and private environment files were all excluded. No delete-style synchronization was used.
+- Validation: target file hashes match the deployment manifest. Main service and video-workshop sidecar are active and both correct `/api/health` checks pass. SQLite integrity is `ok`; every tracked business collection count and every protected-directory file/byte metric matched its pre-deployment baseline. The existing authenticated browser session loaded the target cache and image-workshop route with no application console error.
+- Supplier link handling: the deployed manifest includes the controlled clear-link UI and atomic server/store handling. This acceptance was source/static and read-only only; no supplier account, link, delivery, analytics or other business record was changed.
+- Rollback and retention: created a fresh code/static rollback point and separate consistent SQLite snapshot. The first restart-check cycle safely restored the same code backup because the checker used the sidecar's obsolete health path; the correct `/api/health` route was then verified and the final manifest applied successfully. No production data or private configuration was touched. One verified code/static rollback set is currently present, below the five-version retention limit, so no rotation was required.
+
+## v117.12 - 2026-07-23
+
+- Source: `942ebec` hotfix from the controlled deployment branch. Production main cache was refreshed and verified as `20260723-v117-12`; the video-workshop cache remains `20260722-25`.
+- Scope: deployed exactly three code/static files from a clean detached target worktree: the main entry and two main-platform modules. Tests and project records were excluded, and no delete-style synchronization was used.
+- Validation: both services are active and both health checks pass. Production file hashes match the three-file archive; SQLite integrity is `ok`. A real authenticated administrator page shows a nonzero total playback figure and its read-only detail view includes historical supplier-entered playback records, rather than filtering them out for lack of analytics links.
+- Data protection and rollback: created a fresh code/static rollback point and separate consistent SQLite snapshot. Private-environment fingerprint is unchanged. During the deployment window, one asset, one custom project and one upload arrived through concurrent normal business activity; no collection decreased and no protected data was overwritten. The delivery-sequence migration was not executed. There are 3 code/static rollback sets, below the five-version retention limit, so no rotation was needed.
+
+## v117.11 - 2026-07-23
+
+- Source: `5111913` from the controlled deployment branch. Production main cache was refreshed and verified as `20260723-v117-11`; the video-workshop cache remains `20260722-25`.
+- Scope: deployed an exact 29-file code/static archive from a clean detached target worktree. No delete-style synchronization was used, and all protected database, business, runtime, authentication and private-environment paths were excluded.
+- Validation: main service and video-workshop sidecar are active; both health checks pass. SQLite integrity is `ok`; protected runtime metrics and the private-environment fingerprint are unchanged. The asset collection advanced by 2 concurrent business writes during the deployment window, with no collection decrease or local-state replacement. An authenticated administrator browser session loaded the target cache, homepage and playback detail drawer without an application failure.
+- Migration and rollback: created a fresh code/static rollback point and separate consistent SQLite snapshot. There are 2 code/static rollback sets, below the five-version retention limit, so no rotation was needed. The one-time delivery-sequence reconciliation was not executed: the only endpoint is administrator-authenticated and there is no safe front-end controlled action available, so authentication was not bypassed. Rollback must restore only code/static files, never newer business data.
+
+## v117.7 - 2026-07-23
+
+- Source: `defe1c2` from the controlled deployment branch. Production main cache was refreshed and verified as `20260723-v117-7`.
+- Scope: deployed from a clean detached target worktree. The exact app code/static manifest contained 69 changed or added paths only; no delete-style directory synchronization was used. A nullable member-avatar schema column is added idempotently by service startup when absent.
+- Validation: main service and video-workshop sidecar are active; both health checks pass. A real production supplier-admin page loaded the new cache, showed the daily returned-links assistant and copy-all entry, and had no application console error or warning. No supplier account, link, project, canvas or asset write was performed during acceptance.
+- Data protection and rollback: created a fresh code/static rollback point and separate consistent SQLite snapshot. During the restart window the live `docs` collection advanced by two normal concurrent business writes; SQLite remained healthy, so rollback was intentionally not used. The deployment manifest excluded all protected business/runtime/configuration paths. Current code/static rollback count is within the five-version retention limit; no rotation was needed.
+
+## v117.5 - 2026-07-23
+
+- Source: `4789521` (`test: isolate timed director pipeline fixtures`), cumulative v117 deployment target. Production main cache is `20260723-v117-3`; video-workshop cache is `20260722-25`; the infinite-canvas static closure matches the target build.
+- Scope: deployed from a clean detached target worktree after full no-private-environment validation. Exactly 123 code/static files were synchronized, and only 7 superseded tracked hashed static files were removed by explicit path. No delete-style directory synchronization was used.
+- Validation: the main suite passed 324 tests and the video-workshop suite passed 90 tests, with Python, JavaScript, Shell and diff checks also passing. Main service and video-workshop sidecar are healthy. Browser smoke in an existing administrator session loaded the homepage, video-workshop historical-project list and infinite-canvas project library without white screen, application error or warning; all 10 visible canvas thumbnails loaded.
+- Data protection and rollback: the deployment created a new code/static rollback backup and a separate data snapshot. Database collection baselines, protected runtime directory fingerprints and private-environment fingerprint were identical before and after deployment; SQLite integrity is `ok`. Code/static rollback retention was evaluated after validating the new backup: 3 recent backups exist, so no rotation was needed. Business data and data snapshots were not rotated.
+
 ## v104 - 2026-07-20
 
 - Source: `08051bf`, including functional commit `b56b018`. Production main cache is `20260720-v104-1`; video-workshop cache is `20260720-18`.
@@ -24,6 +69,22 @@
 - Backup and rollback: retained a pre-deployment code and runtime snapshot with a table-count baseline. Rollback restores code/static resources only and must never replace newer production business data.
 - Validation: the main service is active, health check passes, the static entry serves v103.3 and SQLite integrity is `ok`. All database table counts matched the pre-deployment baseline.
 - Image reliability: public browser calls remain same-origin instead of falling back to a member's loopback service. Oversized PNG/JPEG references are now compacted before an upstream request, with a shared encoded payload budget below the upstream limit. This host has no Pillow in the service environment, so the verified FFmpeg fallback is active. No provider key or private environment value was changed, and no live image-generation task was created for validation.
+
+## v102 - 2026-07-20
+
+- Source: `ad4eebe`, cumulatively including the v97-v102 homepage dashboard chain from the v96 production baseline. Production main cache is `20260720-v102-1`.
+- Scope: deployed from a clean detached target worktree after local Python, JavaScript and diff validation. The final exact-file synchronization changed 7 code/static files without delete-style synchronization. SQLite, business collections, uploads, composed media, canvas blobs, video-workshop runtime, model cache, authentication state and private environment files were excluded.
+- Backup and rollback: retained rollback point `v102-pre-20260720-133138`, containing a pre-deployment code archive, consistent SQLite backup and protected runtime baseline. Rollback restores code/static files only and must never replace newer business data.
+- Validation: main service and video-workshop sidecar are active, both health endpoints are healthy, production static resources serve the target cache marker, and SQLite integrity is `ok`. Protected collection counts were unchanged: accounts 80, analytics links 76, assets 2864, batches 75, custom outputs 6, custom projects 5, jobs 692, metric snapshots 108, productions 543, products 12 and voice presets 6. Sessions advanced from 62 to 63 during deployment through concurrent normal activity. Upload, composed-media and canvas-blob file counts and byte totals are unchanged.
+- Browser smoke: an existing authenticated production session loaded the dashboard and target resources. The platform donut rendered separate Xiaohongshu and video-channel sectors; keyboard opening the Xiaohongshu sector showed only that platform's two current-day account deliveries. No generation, publish, deletion, synchronization or other business write was triggered. Console noise was limited to a browser-extension message-channel warning, with no application-script error observed.
+
+## v96 - 2026-07-19
+
+- Source: `9b9ecf6`, including functional commit `6e865b2`. Production keeps main cache `20260718-v94-1` and video-workshop cache `20260719-17`; infinite canvas now serves build `kUskuLna5GU9XqKHhMh6P`.
+- Scope: deployed from a clean detached target worktree after local main, video-workshop and targeted regression validation. The final exact-file sync updated 49 code/static files without delete-style synchronization. SQLite, accounts, members, assets, deliveries, uploads, composed media, canvas blobs, video-workshop runtime, model cache, authentication state and private environment files were excluded.
+- Backup and rollback: retained rollback point `v96-pre-20260719-224753`, including pre-deployment code archive, consistent SQLite backup, protected runtime manifest and baseline. Rollback restores code/static files only and must never replace newer business data.
+- Validation: both production services are active and both health endpoints are healthy. Target hashes match for the v96 video-workshop service files and the new infinite-canvas build assets. SQLite integrity is `ok`; pre/post business counts are identical: accounts 80, members 23, assets 2846, productions 541, jobs 692, batches 74, analytics links 75, metric snapshots 108, sessions 62, voice presets 5, canvas drafts 2 and canvas blob rows 6.
+- Browser smoke: an existing administrator session showed the video-workshop text input and enabled creation entry without a busy lock. An existing infinite-canvas project reopened in embedded mode and visibly loaded three historical image nodes. No media-generation, publishing, conflict-resolution or other write action was triggered during the smoke test.
 
 ## v95 - 2026-07-19
 
