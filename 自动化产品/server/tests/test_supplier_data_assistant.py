@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
+from fastapi import HTTPException
+
 
 SERVER_DIR = Path(__file__).resolve().parents[1]
 APP_DIR = SERVER_DIR.parent
@@ -23,6 +25,17 @@ class FakeLlmResponse:
             "model": "MiniMax-M3",
             "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
             "choices": [{"message": {"content": "最近两天交付节奏较稳定，昨天回传链接占比更高。"}}],
+        }
+
+
+class FakeGreetingResponse:
+    status_code = 200
+
+    def json(self):
+        return {
+            "model": "MiniMax-M3",
+            "usage": {"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
+            "choices": [{"message": {"content": "你好！我是星阵数据助手，可以帮你查询交付、回传链接、账号排行和播放量。"}}],
         }
 
 
@@ -89,7 +102,7 @@ class SupplierDataAssistantTest(unittest.TestCase):
         self.assertNotIn("不应进入问答", body["messages"][1]["content"])
         record.assert_called_once()
 
-    def test_date_fact_uses_m3_with_authoritative_result_but_raw_links_stay_server_side(self):
+    def test_date_fact_and_link_question_both_use_m3_but_raw_links_stay_server_side(self):
         snapshot = self._snapshot()
         record = Mock()
         with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
@@ -108,21 +121,46 @@ class SupplierDataAssistantTest(unittest.TestCase):
             main, "_call_llm", new=AsyncMock(return_value=FakeLlmResponse())
         ) as call_llm:
             links = asyncio.run(main._supplier_assistant_answer("昨天回传链接", snapshot, self.member))
-        self.assertEqual("facts", links["source"])
+        self.assertEqual("llm", links["source"])
         self.assertIn("https://example.test/a", links["answer"])
-        call_llm.assert_not_awaited()
+        body = call_llm.await_args.args[0]
+        self.assertIn("完整链接清单将由系统附在回答下方", body["messages"][1]["content"])
+        self.assertNotIn("https://example.test/a", body["messages"][1]["content"])
+
+    def test_greeting_is_a_model_turn_instead_of_a_local_statistics_fallback(self):
+        snapshot = self._snapshot()
+        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
+            main, "_call_llm", new=AsyncMock(return_value=FakeGreetingResponse())
+        ) as call_llm:
+            result = asyncio.run(main._supplier_assistant_answer("你好", snapshot, self.member))
+        self.assertEqual("llm", result["source"])
+        self.assertEqual("你好！我是星阵数据助手，可以帮你查询交付、回传链接、账号排行和播放量。", result["answer"])
+        self.assertNotIn("当前共有", result["answer"])
+        self.assertIn("遇到问候或闲聊时", call_llm.await_args.args[0]["messages"][0]["content"])
+
+    def test_unavailable_model_is_reported_instead_of_returning_a_local_rule_answer(self):
+        snapshot = self._snapshot()
+        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
+            main, "_call_llm", new=AsyncMock(side_effect=RuntimeError("provider unavailable"))
+        ):
+            with self.assertRaises(HTTPException) as error:
+                asyncio.run(main._supplier_assistant_answer("你好", snapshot, self.member))
+        self.assertEqual(503, error.exception.status_code)
+        self.assertIn("语言模型暂时不可用", str(error.exception.detail))
 
     def test_route_is_member_authenticated_and_supplier_only(self):
         route = next(route for route in main.app.routes if getattr(route, "path", "") == "/api/supplier/assistant")
         dependencies = {dependency.call for dependency in route.dependant.dependencies}
         self.assertIn(main.require_member, dependencies)
 
-    def test_frontend_calls_the_server_assistant_and_keeps_a_date_fallback(self):
+    def test_frontend_only_accepts_server_m3_answers_and_never_uses_browser_rule_fallback(self):
         remote = (APP_DIR / "js/core/remote.js").read_text(encoding="utf-8")
         view = (APP_DIR / "js/views/supplierViews.js").read_text(encoding="utf-8")
         self.assertIn('ask: (question) => req("/api/supplier/assistant"', remote)
         self.assertIn("await remote.supplier.ask(q)", view)
-        self.assertIn("/昨天|昨日/", view)
+        self.assertIn('response?.source !== "llm"', view)
+        self.assertIn("语言模型暂时不可用，本次未使用本地规则回答", view)
+        self.assertNotIn("function supplierDataAnswer", view)
         self.assertIn("supplierAssistantPending", view)
 
 

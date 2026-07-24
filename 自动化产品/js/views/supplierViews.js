@@ -204,37 +204,6 @@ function supplierTrendCardContent(model) {
   return `<header><span class="supplier-chart-title">${title}</span><span class="supplier-trend-actions"><button type="button" data-supplier-trend-window="7">7日</button><button type="button" data-supplier-trend-window="30">30日</button><button type="button" data-supplier-trend-window="custom">自定义</button></span></header><div class="supplier-trend-scroll"><div class="supplier-trend-canvas" style="--supplier-trend-points:${days.length}"><div class="supplier-trend-plot"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="交付趋势"><defs><linearGradient id="supplierTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef476f" stop-opacity=".34"/><stop offset="1" stop-color="#ef476f" stop-opacity="0"/></linearGradient></defs><path d="${areaPath}" fill="url(#supplierTrendFill)"/><path d="${path}" fill="none" stroke="#e83e62" stroke-width="2.2" vector-effect="non-scaling-stroke"/></svg>${points.map((point, index) => `<span class="supplier-trend-node" style="--x:${point.x}%;--y:${point.y}%" data-supplier-trend-date="${esc(days[index].key)}" tabindex="0" role="button" aria-label="${esc(`${days[index].label} 共 ${days[index].count} 条交付，查看明细`)}"><i>${days[index].count} 条交付</i></span>`).join("")}</div><span class="supplier-trend-labels">${days.map(item => `<i><b>${item.count}</b><em>${item.label}</em></i>`).join("")}</span></div></div>`;
 }
 
-function supplierDataAnswer(question, rows) {
-  const q = String(question || "").trim();
-  const published = rows.filter(item => item.asset.publishedUrl);
-  const base = new Date();
-  base.setHours(0, 0, 0, 0);
-  const dateFor = offset => supplierDateKey(base.getTime() + offset * 86400000);
-  const targetDate = /前天/.test(q) ? dateFor(-2) : /昨天|昨日/.test(q) ? dateFor(-1) : /今天|今日/.test(q) ? dateFor(0) : "";
-  const scoped = targetDate ? rows.filter(item => supplierDateKey(item.timestamp) === targetDate) : rows;
-  const scopedPublished = scoped.filter(item => item.asset.publishedUrl);
-  const dayLabel = targetDate === dateFor(0) ? "今天" : targetDate === dateFor(-1) ? "昨天" : targetDate === dateFor(-2) ? "前天" : "当前";
-  if (/今日回传链接/.test(q)) return supplierTodayLinksAnswer(rows);
-  if (/链接/.test(q)) {
-    const candidates = scopedPublished.slice(0, 12);
-    return candidates.length
-      ? `${dayLabel}已回传链接 ${scopedPublished.length} 条：\n${candidates.map((item, index) => `${index + 1}. ${item.account.name || item.asset.title || "未命名账号"}：${item.asset.publishedUrl}`).join("\n")}`
-      : "当前筛选范围内还没有已回传链接。";
-  }
-  if (/播放|观看/.test(q)) {
-    const total = scoped.reduce((sum, item) => sum + Number(item.asset.views || item.asset.viewCount || 0), 0);
-    return `${targetDate ? dayLabel : "当前可见交付"}累计播放量为 ${total.toLocaleString("zh-CN")}。点击左侧数据卡可以查看对应内容明细。`;
-  }
-  if (targetDate && /交付|内容|多少|几条|数量|条/.test(q)) return `${dayLabel}交付 ${scoped.length} 条，其中已回传链接 ${scopedPublished.length} 条。`;
-  if (/账号/.test(q)) {
-    const counts = new Map();
-    published.forEach(item => counts.set(item.account.name || "未命名账号", (counts.get(item.account.name || "未命名账号") || 0) + 1));
-    const ranking = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 6);
-    return ranking.length ? `已发布账号排行：${ranking.map(([name, count]) => `${name} ${count} 条`).join("；")}。` : "当前还没有可统计的已发布账号。";
-  }
-  return `当前共有 ${rows.length} 条交付内容，其中 ${published.length} 条已回传链接、${rows.length - published.length} 条待回传。`;
-}
-
 async function supplierData(includeMembers = false) {
   const [members, children, bindings, activity] = await Promise.all([
     includeMembers ? remote.supplier.members() : Promise.resolve([]), remote.supplier.children(), remote.supplier.bindings(), remote.supplier.activity()
@@ -414,12 +383,19 @@ export async function renderSupplierOverview(root) {
       const input = $("#supplierDataInput", root); if (input) input.value = "";
       const submit = $("#supplierDataForm button", root); if (submit) submit.disabled = true;
       try {
-        const response = remote.isOn() ? await remote.supplier.ask(q) : null;
-        const answer = String(response?.answer || supplierDataAnswer(q, rows)).trim() || supplierDataAnswer(q, rows);
+        if (!remote.isOn()) throw new Error("供应商数据助手需要连接星阵服务端");
+        const response = await remote.supplier.ask(q);
+        if (response?.source !== "llm") throw new Error("供应商数据助手没有返回语言模型回答");
+        const answer = String(response.answer || "").trim();
+        if (!answer) throw new Error("供应商数据助手没有返回语言模型回答");
         assistantHistory[assistantHistory.length - 1].content = answer;
       } catch (_) {
-        assistantHistory[assistantHistory.length - 1].content = supplierDataAnswer(q, rows);
-        toast("数据助手服务暂时不可用，已使用当前页面数据回答");
+        // 不再用浏览器里的规则统计冒充模型答复；用户应能清楚分辨
+        // “M3 的真实回答”与“服务暂时不可用”。
+        assistantHistory[assistantHistory.length - 1].content = remote.isOn()
+          ? "星阵数据助手暂时无法连接语言模型，请稍后重试。"
+          : "当前页面没有连接星阵服务端，暂时无法使用语言模型问答。";
+        toast("语言模型暂时不可用，本次未使用本地规则回答", "error");
       } finally {
         supplierAssistantPending = false;
         saveSupplierAssistantHistory(assistantHistory);

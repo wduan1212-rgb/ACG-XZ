@@ -14,7 +14,7 @@ import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260724-v117
 import { openDeliveryRemarks } from "./deliveryView.js?v=20260723-v117-8";
 import { emptyState, openModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260724-v117-15";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260724-v117-17";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
