@@ -3,7 +3,7 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260724-v117-16";
+import { AI } from "../api/ai.js?v=20260724-v117-18";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
@@ -1717,6 +1717,7 @@ async function draftOne(p, batch) {
           p.title = p.artifacts.copy.title;
           p.artifacts.copy.body = generatedCopy.copy || generatedCopy.body || "";
           p.artifacts.copy.source = generatedCopy.source || AI.lastSource || "llm-title-copy";
+          p.artifacts.copy.referenceBrief = copyReferenceBrief;
         } catch (error) {
           setStatus(p, "failed", error?.message || "只填写标题时自动生成正文失败");
           return;
@@ -1725,7 +1726,7 @@ async function draftOne(p, batch) {
       const count = Math.max(1, Math.min(12, Number(
         p.artifacts.script.imageCount || batch.accountImageCounts?.[acc.id] || batch.imageCount || DEFAULT_XHS_IMAGE_COUNT
       ) || DEFAULT_XHS_IMAGE_COUNT));
-      const shots = buildBatchCustomCopyShots(p.artifacts.copy, count, null);
+      const shots = buildBatchCustomCopyShots(p.artifacts.copy, count, product);
       p.artifacts.script.imageCount = count;
       p.artifacts.script.shots = shots;
       p.artifacts.script.title = p.title;
@@ -1743,7 +1744,7 @@ async function draftOne(p, batch) {
         style,
         imageTemplate: acc.imagePromptTemplate || "",
         imageCount: count,
-        product: null,
+        product,
         topic: customTopic,
         styleRefName: "",
         batchVariant,
@@ -1824,16 +1825,83 @@ async function draftOne(p, batch) {
       return;
     }
 
+    if (isImg) {
+      /* 图文的顺序必须固定为：标题 + 统一参考图看主题 -> 正文 -> 图卡 ->
+         全部统一/定制参考图逐图分配 -> 完整提示词。不能先按泛化标题写脚本，
+         再让参考图只是给已经跑偏的内容做装饰。用户已经给正文时保留正文，只从
+         “图卡之后”的参考图分配步骤继续。 */
+      const requestedTitle = p.artifacts.copy.title || p.title || topic;
+      const hasProvidedCopy = !!String(p.artifacts.copy.body || "").trim();
+      if (!hasProvidedCopy) {
+        const copyReferenceBrief = await prepareBatchImageCopyReferenceContext(p, batch, acc, requestedTitle);
+        const generatedCopy = await AI.generateImageCopyFromTitle({
+          title: requestedTitle,
+          account: acc,
+          product,
+          referenceContext: copyReferenceBrief.brief
+        });
+        p.artifacts.copy = {
+          title: generatedCopy.title || requestedTitle,
+          body: generatedCopy.copy || generatedCopy.body || "",
+          source: generatedCopy.source || AI.lastSource || "llm-title-copy",
+          referenceBrief: copyReferenceBrief
+        };
+      } else {
+        p.artifacts.copy.title = requestedTitle;
+      }
+      p.title = p.artifacts.copy.title || requestedTitle;
+      const count = Math.max(1, Math.min(12, Number(
+        p.artifacts.script.imageCount || batch.accountImageCounts?.[acc.id] || batch.imageCount || DEFAULT_XHS_IMAGE_COUNT
+      ) || DEFAULT_XHS_IMAGE_COUNT));
+      const imageShots = buildBatchCustomCopyShots(p.artifacts.copy, count, product);
+      p.artifacts.script.imageCount = count;
+      p.artifacts.script.shots = imageShots;
+      p.artifacts.script.title = p.title;
+      p.artifacts.script.source = hasProvidedCopy ? "provided-copy" : "title-reference-copy";
+      p.artifacts.script.style = style;
+      p.artifacts.script.useOnlineTrends = false;
+      p.artifacts.script.trendPrep = null;
+      p.artifacts.script.trendGuide = "";
+      // 正文确定后才让视觉模型看全部统一/定制参考图，逐图指定附件用途和位置。
+      const imageReferencePlan = await prepareBatchImageReferencePlan(p, batch, acc, imageShots);
+      const imgPromptRes = await AI.generateImagePrompts({
+        script: shotsToText(imageShots, true),
+        account: acc,
+        style,
+        imageTemplate: acc.imagePromptTemplate || "",
+        imageCount: count,
+        product,
+        topic: p.title,
+        styleRefName: "",
+        batchVariant,
+        copy: p.artifacts.copy,
+        referencePlans: imageReferencePlan.cards,
+        requireLlm: true
+      });
+      p.artifacts.images.promptSource = AI.lastSource;
+      const promptRows = imgPromptRes.shots || [];
+      p.artifacts.images.items = imageShots.map((s, i) => ({
+        title: promptRows[i]?.title || `图片${i + 1}`,
+        visual: s.visual || "",
+        prompt: promptRows[i]?.prompt || "",
+        assetId: null,
+        status: "idle"
+      }));
+      applyBatchImageReferencePlan(p, batch, imageReferencePlan.refGroups, p.artifacts.images.items);
+      await runBatchImagesToReview(p, batch);
+      return;
+    }
+
     const sres = material
       ? await AI.generateMaterialScript({ topic, account: acc, style, product })
       : await AI.generateScript({
         topic,
-        duration: isImg ? 0 : 55, account: acc, image: isImg, style: isImg ? style : "",
+        duration: 55, account: acc, image: false, style: "",
         imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT, product,
-        direction: isImg ? topic : "",
+        direction: "",
         imageTemplate: acc.imagePromptTemplate || "",
         styleRefName: "",
-        batchVariant: isImg ? batchVariant : null,
+        batchVariant: null,
         useOnlineTrends,
         trendGuide,
         trendPrep
@@ -1844,63 +1912,13 @@ async function draftOne(p, batch) {
     p.artifacts.script.style = style;
     p.title = sres.title || topic;
 
-    if (isImg) {
-      // 正文先吸收标题与统一参考图的真实关联；图卡草案只用于后续拆图，
-      // 不再反过来决定正文主题。
-      const copyReferenceBrief = await prepareBatchImageCopyReferenceContext(p, batch, acc, topic);
-      const cp = await AI.generateCopy({
-        topic,
-        shots: p.artifacts.script.shots,
-        account: acc,
-        style,
-        kind: "image",
-        product,
-        batchVariant,
-        avoidCopies: existingBatchCopies(batch, p.id),
-        useOnlineTrends,
-        trendGuide,
-        trendPrep,
-        referenceContext: copyReferenceBrief.brief
-      });
-      p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "", source: AI.lastSource || "" };
-      const rw = referenceRewriteForCopy(trendPrep, p.artifacts.copy);
-      if (rw) p.artifacts.copy.referenceRewrite = rw;
-      // 注意这里必须发生在完整提示词生成之前：统一参考图只会随实际需要的图卡提交。
-      const imageReferencePlan = await prepareBatchImageReferencePlan(p, batch, acc, p.artifacts.script.shots);
-      const imgPromptRes = await AI.generateImagePrompts({
-        script: shotsToText(p.artifacts.script.shots, true),
-        account: acc,
-        style,
-        imageTemplate: acc.imagePromptTemplate || "",
-        imageCount: p.artifacts.script.imageCount || DEFAULT_XHS_IMAGE_COUNT,
-        product,
-        topic,
-        styleRefName: "",
-        batchVariant,
-        useOnlineTrends,
-        trendGuide,
-        trendPrep,
-        copy: p.artifacts.copy,
-        referencePlans: imageReferencePlan.cards
-      });
-      p.artifacts.images.promptSource = AI.lastSource;
-      const promptRows = imgPromptRes.shots || [];
-      p.artifacts.images.items = p.artifacts.script.shots.map((s, i) => ({
-        title: promptRows[i]?.title || `图片${i + 1}`,
-        visual: s.visual || "",
-        prompt: promptRows[i]?.prompt || "",
-        assetId: null,
-        status: "idle"
-      }));
-      applyBatchImageReferencePlan(p, batch, imageReferencePlan.refGroups, p.artifacts.images.items);
-    } else {
-      // 视频号全自动：口播估时 → 按场景合并分镜单元 → 分段提示词 → 派发视频任务
-      Object.assign(p.artifacts.audio, estimateAudio(p.artifacts.script.shots), { source: "estimate" });
-      if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
-      const explicitVideoRefs = batchSceneRefIds(batch, acc.id);
-      p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
-      p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
-      if (p.subType === "数字人") {
+    // 视频号全自动：口播估时 → 按场景合并分镜单元 → 分段提示词 → 派发视频任务
+    Object.assign(p.artifacts.audio, estimateAudio(p.artifacts.script.shots), { source: "estimate" });
+    if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
+    const explicitVideoRefs = batchSceneRefIds(batch, acc.id);
+    p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
+    p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
+    if (p.subType === "数字人") {
         const cp0 = await AI.generateCopy({
           topic,
           shots: p.artifacts.script.shots,
@@ -1917,37 +1935,24 @@ async function draftOne(p, batch) {
         p.artifacts.copy = { title: cp0.title || p.title, body: cp0.copy || "" };
         await queueBatchDigitalHuman(p, batch, acc, product);
         return;
-      }
-      const units = buildMaterialUnits(p);
-      const ures = await AI.generateUnitPrompts({
+    }
+    const units = buildMaterialUnits(p);
+    const ures = await AI.generateUnitPrompts({
         units, shots: p.artifacts.script.shots, account: acc, style, product,
         hasNarrationAudio: false,
         hasVoiceRef: false,
         hasCharacterRef: false,
         hasSceneRef: explicitVideoRefs.length > 0
-      });
-      units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
-      const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide, trendPrep });
-      p.artifacts.copy = { title: cp0.title || p.title, body: cp0.copy || "" };
-      applyBatchCoverRefs(p, batch);
-      ensureVideoCoverPrompt(p, product);
-      await generateVideoCoverInHouse(p);
-      setStage(p, "workshop", "running");
-      createUnitVideoJobs(p);   // t2v 单元直接生成；i2v 单元无图时也先出片占位，回工坊可补图重生成
-      return;
-    }
-    if (!isImg) {
-      const cp = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant: null, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide, trendPrep });
-      p.artifacts.copy = { title: cp.title || p.title, body: cp.copy || "" };
-      applyBatchCoverRefs(p, batch);
-      ensureVideoCoverPrompt(p, product);
-      await generateVideoCoverInHouse(p);
-    }
-    if (isImg) {
-      await runBatchImagesToReview(p, batch);
-    } else {
-      setStage(p, "boards", "needs_input");
-    }
+    });
+    units.forEach((u, i) => { u.imagePrompt = (ures.units[i] || {}).imagePrompt || ""; u.videoPrompt = (ures.units[i] || {}).videoPrompt || ""; });
+    const cp0 = await AI.generateCopy({ topic, shots: p.artifacts.script.shots, account: acc, style, kind: "video", product, batchVariant, avoidCopies: existingBatchCopies(batch, p.id), useOnlineTrends, trendGuide, trendPrep });
+    p.artifacts.copy = { title: cp0.title || p.title, body: cp0.copy || "" };
+    applyBatchCoverRefs(p, batch);
+    ensureVideoCoverPrompt(p, product);
+    await generateVideoCoverInHouse(p);
+    setStage(p, "workshop", "running");
+    createUnitVideoJobs(p);   // t2v 单元直接生成；i2v 单元无图时也先出片占位，回工坊可补图重生成
+    return;
   } catch (e) {
     setStatus(p, "failed", "起草失败：" + (e.message || e));
   }

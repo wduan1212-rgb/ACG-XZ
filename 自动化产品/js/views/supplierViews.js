@@ -125,7 +125,7 @@ function saveSupplierAssistantHistory(history) {
 }
 
 function supplierAssistantMessagesHtml(history = []) {
-  const messages = history.length ? history : [{ role: "agent", content: "可以问我今天交付、回传链接、账号发布排行和播放量。" }];
+  const messages = history.length ? history : [{ role: "agent", content: "你好，我是数据助手。可以查询交付、回传链接、下载记录、账号排行和播放量。" }];
   return messages.map(message => `<div class="supplier-data-bubble ${message.role}">${message.role === "agent" ? supplierLinkHtml(message.content) : esc(message.content)}</div>`).join("");
 }
 
@@ -261,7 +261,7 @@ export async function renderSupplierOverview(root) {
             ${activity.length ? `<div class="supplier-activity-carousel" id="supplierActivityCarousel">${supplierActivityItemsHtml(carouselActivity)}</div><div class="supplier-activity-pagination"><button class="icon-btn sm" type="button" data-supplier-activity-page="prev" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button><span id="supplierActivityPage">${visibleActivity.length ? `${supplierActivityCarouselPage + 1} / ${activityPages}` : "0 / 0"}</span><button class="icon-btn sm" type="button" data-supplier-activity-page="next" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronRight", 13)}</button></div>` : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
           </section>
         </div>
-        <aside class="card supplier-data-assistant"><header><span class="supplier-data-assistant-icon">${icon("bot", 18)}</span><div><b>星阵数据助手</b><em>供应商数据只读问答</em></div><span class="supplier-today-link-actions"><button class="btn ghost sm supplier-today-links" id="supplierTodayLinks" type="button">${icon("link", 13)} 今日回传</button><button class="icon-btn sm" id="supplierTodayLinksCopyAll" type="button" title="复制今日全部回传链接" aria-label="复制今日全部回传链接">${icon("copy", 13)}</button></span></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button type="button">今天交付多少？</button><button type="button">给我回传链接</button><button type="button">哪个账号发布最多？</button></div><form id="supplierDataForm"><input id="supplierDataInput" name="supplierDataQuestion" autocomplete="off" aria-label="向供应商数据助手提问" placeholder="问问供应商数据…"/><button class="icon-btn primary" type="submit" title="发送" aria-label="发送供应商数据问题">${icon("send", 14)}</button></form></aside>
+        <aside class="card supplier-data-assistant"><header><span class="supplier-data-assistant-icon">${icon("bot", 18)}</span><div><b>数据助手</b><em>当前供应商数据只读问答</em></div><span class="supplier-today-link-actions"><button class="btn ghost sm supplier-today-links" id="supplierTodayLinks" type="button">${icon("link", 13)} 今日回传</button><button class="icon-btn sm" id="supplierTodayLinksCopyAll" type="button" title="复制今日全部回传链接" aria-label="复制今日全部回传链接">${icon("copy", 13)}</button></span></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button type="button">今天交付多少？</button><button type="button">谁下载过？</button><button type="button">给我回传链接</button></div><form id="supplierDataForm"><input id="supplierDataInput" name="supplierDataQuestion" autocomplete="off" aria-label="向数据助手提问" placeholder="问问数据…"/><button class="icon-btn primary" type="submit" title="发送" aria-label="发送数据问题">${icon("send", 14)}</button></form></aside>
       </div>
     </div>`;
     const openSupplierRows = (title, selectedRows) => {
@@ -374,7 +374,7 @@ export async function renderSupplierOverview(root) {
       if (!q || supplierAssistantPending) return;
       supplierAssistantPending = true;
       const messages = $("#supplierDataMessages", root);
-      const nextHistory = [...assistantHistory, { role: "user", content: q }, { role: "agent", content: "正在读取当前可见供应商数据…" }].slice(-40);
+      const nextHistory = [...assistantHistory, { role: "user", content: q }, { role: "agent", content: "正在读取数据…" }].slice(-40);
       assistantHistory.splice(0, assistantHistory.length, ...nextHistory);
       saveSupplierAssistantHistory(assistantHistory);
       messages.innerHTML = supplierAssistantMessagesHtml(assistantHistory);
@@ -383,17 +383,17 @@ export async function renderSupplierOverview(root) {
       const input = $("#supplierDataInput", root); if (input) input.value = "";
       const submit = $("#supplierDataForm button", root); if (submit) submit.disabled = true;
       try {
-        if (!remote.isOn()) throw new Error("供应商数据助手需要连接星阵服务端");
+        if (!remote.isOn()) throw new Error("数据助手需要连接星阵服务端");
         const response = await remote.supplier.ask(q);
-        if (response?.source !== "llm") throw new Error("供应商数据助手没有返回语言模型回答");
+        if (response?.source !== "llm") throw new Error("数据助手没有返回语言模型回答");
         const answer = String(response.answer || "").trim();
-        if (!answer) throw new Error("供应商数据助手没有返回语言模型回答");
+        if (!answer) throw new Error("数据助手没有返回语言模型回答");
         assistantHistory[assistantHistory.length - 1].content = answer;
       } catch (_) {
         // 不再用浏览器里的规则统计冒充模型答复；用户应能清楚分辨
         // “M3 的真实回答”与“服务暂时不可用”。
         assistantHistory[assistantHistory.length - 1].content = remote.isOn()
-          ? "星阵数据助手暂时无法连接语言模型，请稍后重试。"
+          ? "数据助手暂时无法连接语言模型，请稍后重试。"
           : "当前页面没有连接星阵服务端，暂时无法使用语言模型问答。";
         toast("语言模型暂时不可用，本次未使用本地规则回答", "error");
       } finally {

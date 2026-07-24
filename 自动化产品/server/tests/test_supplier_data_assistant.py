@@ -35,7 +35,7 @@ class FakeGreetingResponse:
         return {
             "model": "MiniMax-M3",
             "usage": {"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
-            "choices": [{"message": {"content": "你好！我是星阵数据助手，可以帮你查询交付、回传链接、账号排行和播放量。"}}],
+            "choices": [{"message": {"content": "你好！我是数据助手，可以帮你查询交付、回传链接、下载记录、账号排行和播放量。"}}],
         }
 
 
@@ -49,15 +49,16 @@ class SupplierDataAssistantTest(unittest.TestCase):
                 {"id": "account-b", "name": "账号 B", "platform": "视频号"},
             ],
             "assets": [
-                {"id": "delivery-yesterday-a", "delivered": True, "accountId": "account-a", "title": "昨天图文 A", "deliveredAt": "2026-07-23T10:00:00+08:00", "publishedUrl": "https://example.test/a", "views": 31, "globalSeq": 12},
+                {"id": "delivery-yesterday-a", "delivered": True, "accountId": "account-a", "title": "昨天图文 A", "deliveredAt": "2026-07-23T10:00:00+08:00", "publishedUrl": "https://example.test/a", "views": 31, "globalSeq": 12, "supplierDownloadedBy": "supplier-child-a", "supplierDownloadedAt": "2026-07-23T12:00:00+08:00"},
                 {"id": "delivery-yesterday-b", "delivered": True, "accountId": "account-b", "title": "昨天视频 B", "deliveredAt": "2026-07-23T11:00:00+08:00", "views": 8, "globalSeq": 13},
                 {"id": "delivery-today", "delivered": True, "accountId": "account-a", "title": "今天图文", "deliveredAt": "2026-07-24T09:00:00+08:00", "publishedUrl": "https://example.test/today", "views": 17, "globalSeq": 14},
                 {"id": "private-draft", "delivered": False, "accountId": "account-a", "title": "不应进入问答", "createdAt": "2026-07-24T09:00:00+08:00"},
             ],
         }
 
-    def _snapshot(self):
-        return main._supplier_assistant_snapshot(self.member, self.scoped_state, self.now)
+    def _snapshot(self, children=None):
+        with patch.object(main.store, "list_supplier_children", return_value=list(children or [])):
+            return main._supplier_assistant_snapshot(self.member, self.scoped_state, self.now)
 
     def test_yesterday_delivery_is_an_authoritative_date_fact_not_generic_total(self):
         snapshot = self._snapshot()
@@ -73,6 +74,15 @@ class SupplierDataAssistantTest(unittest.TestCase):
         self.assertIn("https://example.test/a", links)
         self.assertNotIn("https://example.test/today", links)
         self.assertEqual("昨天交付内容累计播放量为 39。", main._supplier_assistant_fact_answer("昨天播放量", snapshot))
+
+    def test_download_question_returns_only_authorized_actor_and_delivery_rows(self):
+        snapshot = self._snapshot(children=[{"id": "supplier-child-a", "name": "子账号甲"}])
+        answer = main._supplier_assistant_fact_answer("昨天谁下载过", snapshot)
+        self.assertIn("昨天共有 1 条下载记录", answer)
+        self.assertIn("#012", answer)
+        self.assertIn("昨天图文 A", answer)
+        self.assertIn("子账号甲", answer)
+        self.assertNotIn("账号 B", answer)
 
     def test_snapshot_uses_the_same_server_authorized_scope_as_supplier_state(self):
         child = {"id": "supplier-child", "role": "supplier_child", "parentId": "supplier-parent", "name": "子账号"}
@@ -134,7 +144,7 @@ class SupplierDataAssistantTest(unittest.TestCase):
         ) as call_llm:
             result = asyncio.run(main._supplier_assistant_answer("你好", snapshot, self.member))
         self.assertEqual("llm", result["source"])
-        self.assertEqual("你好！我是星阵数据助手，可以帮你查询交付、回传链接、账号排行和播放量。", result["answer"])
+        self.assertEqual("你好！我是数据助手，可以帮你查询交付、回传链接、下载记录、账号排行和播放量。", result["answer"])
         self.assertNotIn("当前共有", result["answer"])
         self.assertIn("遇到问候或闲聊时", call_llm.await_args.args[0]["messages"][0]["content"])
 
@@ -162,6 +172,8 @@ class SupplierDataAssistantTest(unittest.TestCase):
         self.assertIn("语言模型暂时不可用，本次未使用本地规则回答", view)
         self.assertNotIn("function supplierDataAnswer", view)
         self.assertIn("supplierAssistantPending", view)
+        self.assertIn("正在读取数据…", view)
+        self.assertIn("数据助手", view)
 
 
 if __name__ == "__main__":

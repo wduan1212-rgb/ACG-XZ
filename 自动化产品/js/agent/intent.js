@@ -1,6 +1,6 @@
 /* 意图路由：正则快通道（离线可用） + LLM 路由（带上下文，多轮可懂） */
 
-import { llm } from "../api/llm.js?v=20260724-v117-16";
+import { llm } from "../api/llm.js?v=20260724-v117-18";
 import { parseJSONLoose } from "../core/util.js";
 
 export const INTENTS = ["plan_batch", "run_generation", "approve_all", "deliver_all", "retry_failed", "status_query"];

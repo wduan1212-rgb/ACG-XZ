@@ -7,7 +7,7 @@ import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAs
 import { downloadAsset } from "../domain/delivery.js";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
 import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js";
-import { renderSupplierAccounts } from "./supplierViews.js?v=20260724-v117-17";
+import { renderSupplierAccounts } from "./supplierViews.js?v=20260724-v117-18";
 
 let fAcc = "all", fQ = "", fKind = "all", libraryMode = "drafts", collapseInitialized = false;
 const collapsedAcc = new Set();

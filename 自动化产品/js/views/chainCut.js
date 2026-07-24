@@ -10,7 +10,7 @@ import { addAssetFromFile, assetBlob, globalBgmAssets, urlFor } from "../domain/
 import { toast, openVideoPreview } from "../ui/components.js";
 import { go } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-16";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-18";
 
 let PPS = 40;
 const CLIP_SEC = 15;

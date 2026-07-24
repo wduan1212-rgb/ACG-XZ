@@ -1,7 +1,7 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260724-v117-16";
+import { llm, visionCopy } from "./llm.js?v=20260724-v117-18";
 import { DUMATE_BRIEF } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
@@ -2243,20 +2243,33 @@ export const AI = {
   /* 视觉模型先负责“哪个附件给哪张图、如何放置”的短规划；随后图卡提示词
      依据这份规划和既有完整规格重新生成，避免把附件内容再长篇复述一遍。 */
   async planImageReferenceUsage(input = {}) {
+    const hasReferences = Array.isArray(input?.refs) && input.refs.some(ref => ref?.id && (ref?.dataUrl || ref?.url));
     try {
-      return await requestImageReferencePlan(input);
+      const result = await requestImageReferencePlan(input);
+      if (hasReferences && result?.source !== "vision") {
+        throw new Error("参考图未完成视觉识别，已停止生成以避免未看图就分配附件");
+      }
+      return result;
     } catch (error) {
-      // 规划是增强层。视觉模型暂不可用或网络波动时，继续沿用原有真实附件传图链路。
-      return { source: "fallback", cards: [], error: error?.message || String(error) };
+      // 有参考图时，视觉编排是正文与逐图提示词的前提。不能把“未看图”降级成
+      // 全量广播或标题模板；没有参考图的旧路径才允许正常继续。
+      if (hasReferences) throw error;
+      return { source: "no-references", cards: [], error: error?.message || String(error) };
     }
   },
 
   /* 正文尚为空时，先让视觉模型从统一参考图提炼与标题有关的内容线索。
      这不是图片提示词，也不接收单图定制参考；最终正文仍由 MiniMax-M3 完整写作。 */
   async prepareImageCopyReferenceContext(input = {}) {
+    const hasReferences = Array.isArray(input?.refs) && input.refs.some(ref => ref?.id && (ref?.dataUrl || ref?.url));
     try {
-      return await requestImageCopyReferenceBrief(input);
+      const result = await requestImageCopyReferenceBrief(input);
+      if (hasReferences && (result?.source !== "vision" || !String(result?.brief || "").trim())) {
+        throw new Error("统一参考图未完成内容识别，已停止按标题生成泛化文案");
+      }
+      return result;
     } catch (error) {
+      if (hasReferences) throw error;
       return { source: "fallback", brief: "", error: error?.message || String(error) };
     }
   },
@@ -2709,8 +2722,8 @@ ${productRelationLine(rel.slice(0, 2))}
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const content = await llm([
-          { role: "system", content: `你是专业的小红书图文正文写手。用户给出的标题是唯一内容主题，必须先理解标题在说什么，再写一篇与标题强相关、可直接发布的干货正文。不得把标题替换成泛化的 AI 办公、效率清单或其他常见模板；不得引入标题未指向的新产品、新选题或竞品关系。正文必须自然保留标题中的主产品名、核心对象和任务关系词，不能把所有关键字都换成泛化同义词。内容优先采用三类可靠结构之一：测评类写结论、依据、适合谁与边界；教学类写前提、步骤、结果与避坑；种草类写使用场景、真实价值、选择理由与限制。正文要回答标题承诺的问题，给出具体做法、判断依据或可验证结果，语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签。账号信息只决定表达风格，不改变主题和专业度。若提供视觉编辑摘要，它来自用户上传的统一参考图：只能用来选择与标题直接相关的真实场景、证据或功能关系；不要逐项描述图片外观，也不要据此改变标题主题或编造能力。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
-          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。${visualContext ? `\n统一参考图的内容关联摘要（只在与标题直接相关时吸收，不要复述图片细节）：${visualContext}` : ""}\n请只围绕这个标题写正文。` }
+          { role: "system", content: `你是专业的小红书图文正文写手。先理解标题是点击入口还是完整主题；再写一篇与标题和已确认视觉主题都强相关、可直接发布的干货正文。不得写成泛化的 AI 办公、效率清单、桌面整理或其他常见模板；不得引入无法从标题、视觉摘要或产品事实确认的新能力。视觉编辑摘要来自用户上传的统一参考图：当它确认了品牌、产品、功能套件、界面流程或成果证据，而标题只是泛化入口时，正文必须以该确认的宣传重点为主线，同时保留标题的点击承诺；不要把它降级成泛化同义词。正文自然保留标题中的主产品名、核心对象和任务关系词；内容采用测评、教学或可信种草结构，给出判断依据、具体步骤、真实结果、适用边界或选择建议。不要逐项描述图片外观，不要把附件文字逐字复述，也不要编造能力。语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签。账号信息只决定表达风格，不改变主题和专业度。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
+          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。${visualContext ? `\n统一参考图确认的内容关联摘要（这是正文主题锚点，不是让你复述图片细节）：${visualContext}` : ""}\n请先确定真实宣传重点，再写正文。` }
         ], { json: true, temperature: attempt ? 0.72 : 0.92 });
         const data = sanitizeXhsObject(parseJSONLoose(content));
         const copyText = ensureImagePublishTags(assertProfessionalImageCopy(data.copy || data.body || ""), null, sourceTitle);

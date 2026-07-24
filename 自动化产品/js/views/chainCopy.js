@@ -8,8 +8,8 @@ import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
 import { toast, openLightbox, publishModal } from "../ui/components.js";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-16";
-import { reviewPreviewHtml } from "./prodDrawer.js?v=20260724-v117-16";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260724-v117-18";
+import { reviewPreviewHtml } from "./prodDrawer.js?v=20260724-v117-18";
 
 export function renderCopyPage(root, p) {
   const isImg = p.mode === "图文";
