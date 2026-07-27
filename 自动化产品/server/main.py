@@ -6352,6 +6352,20 @@ def supplier_asset_views(asset_id: str, req: SupplierViewsReq, me=Depends(requir
     return {"ok": True, "asset": item}
 
 
+@app.put("/api/supplier/accounts/{account_id}/views")
+def supplier_account_views(account_id: str, req: SupplierViewsReq, me=Depends(require_member)):
+    item, err = store.update_supplier_account_views(account_id, req.viewCount, me["id"], me["role"])
+    if err == "forbidden":
+        raise HTTPException(403, "只有供应商母账号可以更新账号总播放量")
+    if err:
+        raise HTTPException(404, "账号不存在")
+    parent_id = me.get("parentId") or me["id"]
+    store.add_supplier_activity(
+        parent_id, "", me["id"], "update_account_views", account_id, "", "更新了账号总播放量"
+    )
+    return {"ok": True, "account": item}
+
+
 @app.put("/api/supplier/assets/{asset_id}/downloaded")
 def supplier_asset_downloaded(asset_id: str, me=Depends(require_member)):
     item, err = store.mark_supplier_asset_downloaded(asset_id, me["id"], me["role"])

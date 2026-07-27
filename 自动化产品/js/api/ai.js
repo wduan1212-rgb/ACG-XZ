@@ -1,11 +1,11 @@
 /* AI 生成服务（脚本 / 提示词 / 文案 / 解析）：LLM 优先，失败回退本地模板
    每次调用记录 lastSource: "llm" | "mock"，UI 据此明确标注产物来源 */
 
-import { llm, visionCopy } from "./llm.js?v=20260724-v117-21";
+import { llm, visionCopy } from "./llm.js?v=20260727-v118-7";
 import { DUMATE_BRIEF } from "./prompts.js";
 import { cleanText, sanitizeProduct, stripCTA, parseJSONLoose, delay } from "../core/util.js";
 import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsGuard.js";
-import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260724-v117-21";
+import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js";
@@ -899,6 +899,7 @@ function normalizeOwnProductNoise(text = "", current = "百度搭子") {
   if (current) {
     const escaped = escapeRegExp(current);
     out = out
+      .replace(new RegExp(`${escaped}\\s*[（(]\\s*${escaped}\\s*[）)]`, "g"), current)
       .replace(new RegExp(`(?:${escaped}[!！~～、，,。\\s]*){2,}`, "g"), current)
       .replace(new RegExp(`${escaped}(?:\\s*${escaped})+`, "g"), current)
       .replace(new RegExp(`(${escaped})和\\1`, "g"), `${current}和同类工具`)
@@ -2748,7 +2749,10 @@ ${productRelationLine(rel.slice(0, 2))}
           { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。${visualContext ? `\n统一参考图确认的内容关联摘要（这是正文主题锚点，不是让你复述图片细节）：${visualContext}` : ""}${requiredTerms.length ? `\n正文必须自然覆盖的视觉主题词：${requiredTerms.join("、")}。` : ""}\n请先确定真实宣传重点，再写正文。` }
         ], { json: true, temperature: attempt ? 0.72 : 0.92 });
         const data = sanitizeXhsObject(parseJSONLoose(content));
-        const copyText = ensureImagePublishTags(assertProfessionalImageCopy(data.copy || data.body || ""), null, sourceTitle);
+        const copyText = normalizeOwnProductNoise(
+          ensureImagePublishTags(assertProfessionalImageCopy(data.copy || data.body || ""), null, sourceTitle),
+          chineseProductDisplayName(product, "百度搭子"),
+        );
         if (!copyText) throw new Error("模型没有返回与标题对应的正文");
         if (requiredTerms.length && !imageCopyContainsReferenceTerms(copyText, requiredTerms)) {
           throw new Error("正文未覆盖统一参考图确认的核心主题，已停止生成泛化文案");

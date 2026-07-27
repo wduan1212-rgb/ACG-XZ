@@ -1,16 +1,16 @@
 /* JobRunner：生成任务队列（持久化 / 并发控制 / 轮询 / 重试 / 取消 / 刷新恢复）
    所有"生成"动作（站内视频、站内图片）都经由 job，UI 订阅 job 事件渲染状态 */
 
-import { state, save, emit, productionById, notify, assetById } from "../core/store.js";
+import { state, saveIncremental, emit, productionById, notify, assetById } from "../core/store.js";
 import { uid } from "../core/util.js";
 import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
 
 const IMAGE_CONCURRENCY = 4;
-const VIDEO_CONCURRENCY = 10;
-// 信息流每条通常会占用 2 个 Seedance 任务，最多并行 8 段（约 4 条成片），
-// 给同一队列中的数字人或其他视频任务保留余量。数字人独占时仍可使用全部 10 槽。
-const STANDARD_VIDEO_CONCURRENCY = 8;
+// 浏览器只维持 3 个受控视频槽。数字人与信息流都可能由一条 production
+// 拆成 3-4 个片段；把 10 槽全部铺满会同时放大轮询、DOM 与持久化压力。
+const VIDEO_CONCURRENCY = 3;
+const STANDARD_VIDEO_CONCURRENCY = 3;
 const TICK_MS = 1000;
 const DEFAULT_POLL_MS = 8000;
 const DIGITAL_HUMAN_POLL_MS = 12000;
@@ -18,6 +18,8 @@ const DIGITAL_HUMAN_MAX_POLL_MS = 20000;
 const DIGITAL_HUMAN_MAX_ATTEMPTS = 3;
 let timer = null;
 let ticking = false;
+const persistJob = job => saveIncremental("jobs", job);
+const persistProduction = production => saveIncremental("productions", production);
 
 function outputUrl(output) {
   if (!output) return "";
@@ -64,7 +66,7 @@ export function createJob({ kind = "video", productionId, segIndex = 0, segName 
     createdAt: Date.now(), updatedAt: Date.now()
   };
   state.jobs.push(job);
-  save("jobs");
+  persistJob(job);
   emit("job:update", job);
   ensureRunning();
   return job;
@@ -78,7 +80,7 @@ export function retryJob(id) {
   j.referenceReceipt = null;
   j.nextPollAt = 0; j.nextAttemptAt = 0;
   j.updatedAt = Date.now();
-  save("jobs"); emit("job:update", j);
+  persistJob(j); emit("job:update", j);
   syncJobToProduction(j);
   ensureRunning();
 }
@@ -90,7 +92,7 @@ export async function cancelJob(id) {
     try { if (p) await p.cancel(j.providerRef); } catch (e) { /* 忽略 */ }
   }
   j.status = "canceled"; j.updatedAt = Date.now();
-  save("jobs"); emit("job:update", j);
+  persistJob(j); emit("job:update", j);
   syncJobToProduction(j);
 }
 
@@ -182,7 +184,7 @@ function scheduleSubmitRetry(j, message) {
     j.error = readableProviderError(message);
     j.nextAttemptAt = Date.now() + nextDelayFor(j);
     j.updatedAt = Date.now();
-    save("jobs"); emit("job:update", j); syncJobToProduction(j);
+    persistJob(j); emit("job:update", j); syncJobToProduction(j);
     return true;
   }
   return false;
@@ -218,16 +220,33 @@ function syncJobToProduction(j) {
   const p = productionById(j.productionId);
   const seg = ensureDigitalSegmentForJob(p, j);
   if (!seg) return;
-  seg.videoJobId = j.id;
-  if (j.segmentId) seg.id = j.segmentId;
-  seg.videoStatus = j.status;
-  seg.videoProgress = j.progress || 0;
-  seg.providerRef = j.providerRef || "";
-  seg.videoOutput = normalizeOutput(j.output);
-  seg.videoError = j.error || "";
-  seg.videoUpdatedAt = j.updatedAt || Date.now();
-  p.updatedAt = Date.now();
-  save("productions");
+  const next = {
+    videoJobId: j.id,
+    id: j.segmentId || seg.id,
+    videoStatus: j.status,
+    videoProgress: j.progress || 0,
+    providerRef: j.providerRef || "",
+    videoOutput: normalizeOutput(j.output),
+    videoError: j.error || ""
+  };
+  const prevOutput = JSON.stringify(seg.videoOutput || null);
+  const nextOutput = JSON.stringify(next.videoOutput || null);
+  const changed = seg.videoJobId !== next.videoJobId
+    || (j.segmentId && seg.id !== next.id)
+    || seg.videoStatus !== next.videoStatus
+    || Number(seg.videoProgress || 0) !== Number(next.videoProgress || 0)
+    || String(seg.providerRef || "") !== next.providerRef
+    || prevOutput !== nextOutput
+    || String(seg.videoError || "") !== next.videoError;
+  if (!changed) return;
+  const structuralChange = seg.videoStatus !== next.videoStatus
+    || prevOutput !== nextOutput
+    || String(seg.videoError || "") !== next.videoError;
+  Object.assign(seg, next);
+  // 只在终态、输出或错误结构真实变化时刷新 production 时间戳；
+  // 普通轮询进度不能把媒体节点误判成新输出。
+  if (structuralChange) p.updatedAt = Date.now();
+  persistProduction(p);
   emit("production:update", p);
 }
 
@@ -248,7 +267,7 @@ async function tick() {
         j.status = "succeeded"; j.progress = 100; j.output = normalizeOutput(r.output); j.updatedAt = Date.now();
         j.referenceReceipt = r.referenceReceipt || r.output?.referenceReceipt || j.referenceReceipt || null;
         j.nextPollAt = 0; j.error = null;
-        save("jobs"); emit("job:update", j); syncJobToProduction(j); emit("job:done", j);
+        persistJob(j); emit("job:update", j); syncJobToProduction(j); emit("job:done", j);
       } else if (r.status === "failed") {
         const msg = r.error || "生成失败";
         if (!scheduleSubmitRetry(j, msg)) failJob(j, msg);
@@ -257,19 +276,20 @@ async function tick() {
         j.nextPollAt = Date.now() + pollDelayFor(j);
         if (r.progress !== j.progress || j.status !== "running") {
           j.progress = r.progress; j.status = "running"; j.updatedAt = Date.now();
-          save("jobs"); emit("job:update", j); syncJobToProduction(j);
-        } else {
-          j.updatedAt = Date.now();
-          save("jobs");
+          persistJob(j); emit("job:update", j); syncJobToProduction(j);
         }
       }
     } catch (e) {
       const msg = e.message || "轮询失败";
       if (isTransientProviderError(msg)) {
-        j.error = readableProviderError(msg);
+        const readable = readableProviderError(msg);
+        const changed = j.error !== readable;
+        j.error = readable;
         j.nextPollAt = Date.now() + pollDelayFor(j);
-        j.updatedAt = Date.now();
-        save("jobs"); emit("job:update", j); syncJobToProduction(j);
+        if (changed) {
+          j.updatedAt = Date.now();
+          persistJob(j); emit("job:update", j); syncJobToProduction(j);
+        }
       } else failJob(j, msg);
     }
   }
@@ -286,7 +306,7 @@ async function tick() {
         j.progress = Math.max(1, j.progress || 1);
         j.error = null;
         j.updatedAt = Date.now();
-        save("jobs"); emit("job:update", j); syncJobToProduction(j);
+        persistJob(j); emit("job:update", j); syncJobToProduction(j);
         const refs = await refsForJob(j);
         const key = providerKeyFor(j.kind, p);
         const endpoint = /^https?:\/\//.test(key?.provider || "") ? key.provider : key?.endpoint || "";
@@ -305,7 +325,7 @@ async function tick() {
         j.provider = p.id; j.providerRef = providerRef;
         j.referenceReceipt = referenceReceipt;
         j.status = "submitted"; j.progress = 1; j.nextPollAt = Date.now() + pollDelayFor(j); j.updatedAt = Date.now();
-        save("jobs"); emit("job:update", j); syncJobToProduction(j);
+        persistJob(j); emit("job:update", j); syncJobToProduction(j);
       } catch (e) {
         if (e?.referenceReceipt) j.referenceReceipt = e.referenceReceipt;
         const msg = e.message || "提交失败";
@@ -347,7 +367,7 @@ async function refsForJob(j) {
 
 function failJob(j, msg) {
   j.status = "failed"; j.error = readableProviderError(msg); j.nextPollAt = 0; j.nextAttemptAt = 0; j.updatedAt = Date.now();
-  save("jobs"); emit("job:update", j); syncJobToProduction(j); emit("job:done", j);
+  persistJob(j); emit("job:update", j); syncJobToProduction(j); emit("job:done", j);
   const p = productionById(j.productionId);
   notify("job", `生成失败：${j.segName || "片段"}`, `${p ? p.title || p.topic : ""} · ${j.error}`);
 }
@@ -362,7 +382,7 @@ function stop() { clearInterval(timer); timer = null; }
 /* 启动恢复：刷新前在跑/排队的任务 → 重新排队（mock 引擎无法续断点；真实引擎可凭 providerRef 续 poll） */
 export function resumeJobs() {
   let n = 0;
-  let touched = false;
+  const touched = [];
   state.jobs.forEach(j => {
     if (j.status === "submitted" || j.status === "running") {
       if (isLegacyMockVideoJob(j)) {
@@ -371,16 +391,16 @@ export function resumeJobs() {
         j.nextPollAt = 0;
         j.updatedAt = Date.now();
         syncJobToProduction(j);
-        touched = true;
+        touched.push(j);
         return;
       }
-      if (!j.providerRef) { j.status = "queued"; j.progress = 0; n++; }
+      if (!j.providerRef) { j.status = "queued"; j.progress = 0; j.updatedAt = Date.now(); n++; touched.push(j); }
       // 已持久化 provider 的真实任务保留引用，按原 provider 继续轮询。
-      if (!j.nextPollAt) { j.nextPollAt = Date.now() + pollDelayFor(j); touched = true; }
+      if (!j.nextPollAt) j.nextPollAt = Date.now() + pollDelayFor(j);
       syncJobToProduction(j);
     }
   });
-  if (n || touched) save("jobs");
+  if (touched.length) saveIncremental("jobs", touched);
   if (queuedJobs().length || delayedQueuedJobs().length || activeJobs().length) ensureRunning();
   return n;
 }

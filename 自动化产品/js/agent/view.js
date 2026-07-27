@@ -4,17 +4,18 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260724-v117-21";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260727-v118-7";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences
-} from "./orchestrator.js?v=20260724-v117-21";
+} from "./orchestrator.js?v=20260727-v118-7";
 import { renderMessage, boardRow } from "./cards.js?v=20260723-v117-8";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260724-v117-21";
-import { deliver } from "../domain/delivery.js?v=20260724-v117-21";
+import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260727-v118-7";
+import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { groupOf, isAvatarAsset } from "../domain/accounts.js";
@@ -211,30 +212,39 @@ export const agentView = {
         thinkingBySession.set(sessionId, cur);
         isLive() && renderThinking();
       });
-      on("batch:update", () => schedule(true));
-      on("job:update", () => schedule(false));
-      on("production:update", () => schedule(true));
-      on("change", () => schedule(false, true));
+      on("batch:update", () => schedule({ cards: true, structural: true }));
+      on("job:update", job => schedule({ productionId: job?.productionId || "" }));
+      on("production:update", production => schedule({ cards: true, productionId: production?.id || "" }));
+      on("change", () => schedule());
     }
   }
 };
 
 const isLive = () => document.body.dataset.zone === "agent" && rootEl && rootEl.isConnected;
 
-/* 高频事件用 rAF 合并，避免一帧内多次重建导致闪烁 */
-let _raf = 0, _needCards = false, _needBoard = false;
-function schedule(cards = false, phaseOnly = false) {
+/* 高频事件用 rAF 合并。普通轮询只更新对应任务行，不能重建整个任务板。 */
+let _raf = 0, _needCards = false, _needStructure = false;
+const _needRows = new Set();
+function schedule({ cards = false, structural = false, productionId = "" } = {}) {
   if (!isLive()) return;
   if (cards) _needCards = true;
-  if (!phaseOnly) _needBoard = true;
+  if (structural) _needStructure = true;
+  if (productionId) _needRows.add(productionId);
   if (_raf) return;
   _raf = requestAnimationFrame(() => {
     _raf = 0;
     if (!isLive()) return;
     if (_needCards) refreshLiveCards();
-    if (_needBoard) renderBoard();
+    if (_needStructure) renderBoard();
+    else {
+      let missing = false;
+      _needRows.forEach(id => { if (!updateBoardRow(id)) missing = true; });
+      updateBoardGroups();
+      if (missing) renderBoard();
+    }
     renderPhase();
-    _needCards = _needBoard = false;
+    _needCards = _needStructure = false;
+    _needRows.clear();
   });
 }
 
@@ -411,10 +421,55 @@ function rerenderPlanCard(mid, direction = "") {
   restorePlanScroll(snap, fresh);
 }
 
+function freshBoardRow(production) {
+  const host = document.createElement("div");
+  host.innerHTML = boardRow(production);
+  return host.firstElementChild;
+}
+
+function selectorValue(value) {
+  const text = String(value || "");
+  return globalThis.CSS?.escape ? CSS.escape(text) : text.replace(/["\\]/g, "\\$&");
+}
+
+function updateBoardRow(productionId) {
+  const row = document.querySelector(`#agwBoard [data-pid="${selectorValue(productionId)}"]`);
+  const production = productionById(productionId);
+  if (!row || !production) return false;
+  return patchBoardRow(row, freshBoardRow(production));
+}
+
+function updateBoardGroups() {
+  const board = $("#agwBoard");
+  if (!board) return;
+  const groups = currentSessionBatches();
+  const total = groups.reduce((sum, b) => sum + (b.productionIds || []).length, 0);
+  const boardCount = board.querySelector(".agw-board-head em");
+  if (boardCount) boardCount.textContent = `本会话 · ${total} 条`;
+  const PH = { drafting: "起草", awaiting_input: "待上传", generating: "生成", review: "待审", done: "完成" };
+  groups.forEach(b => {
+    const group = board.querySelector(`[data-batchid="${selectorValue(b.id)}"]`);
+    if (!group) return;
+    const prods = batchProds(b);
+    const done = prods.filter(p => p.stage === "delivered").length;
+    const topic = group.querySelector(".mb-ghead > b");
+    const stat = group.querySelector(".mb-gstat");
+    if (topic) topic.textContent = b.topic || "";
+    if (stat) stat.textContent = `${PH[b.phase] || b.phase} · ${done}/${prods.length}`;
+  });
+}
+
 function renderBoard() {
   const el = $("#agwBoard"); if (!el) return;
   // 任务看板按当前会话独立
   const groups = currentSessionBatches();
+  const structureKey = boardStructureKey(groups);
+  if (el.dataset.structureKey === structureKey && el.childElementCount) {
+    groups.forEach(b => batchProds(b).forEach(p => updateBoardRow(p.id)));
+    updateBoardGroups();
+    return;
+  }
+  el.dataset.structureKey = structureKey;
   const total = groups.reduce((s, b) => s + (b.productionIds || []).length, 0);
   if (!groups.length) {
     el.innerHTML = `<div class="agw-board-head"><b>任务看板</b><em>本会话</em></div>
@@ -426,7 +481,7 @@ function renderBoard() {
       const prods = batchProds(b);
       const done = prods.filter(p => p.stage === "delivered").length;
       const PH = { drafting: "起草", awaiting_input: "待上传", generating: "生成", review: "待审", done: "完成" };
-      return `<div class="mb-group">
+      return `<div class="mb-group" data-batchid="${b.id}">
         <div class="mb-ghead">
           <b>${esc(b.topic)}</b>
           <span class="mb-gstat">${PH[b.phase] || b.phase} · ${done}/${prods.length}</span>
@@ -479,7 +534,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260724-v117-21");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260727-v118-7");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -500,7 +555,11 @@ async function routeFilesToProduction(p, files) {
 function renderPhase() {
   const el = $("#agwPhase"); if (!el) return;
   const bs = currentSessionBatches().filter(b => b.phase !== "done");
-  if (!bs.length) { el.innerHTML = `<span class="agw-idle">空闲 · 等待新目标</span>`; return; }
+  if (!bs.length) {
+    const html = `<span class="agw-idle">空闲 · 等待新目标</span>`;
+    if (el.innerHTML !== html) el.innerHTML = html;
+    return;
+  }
   const c = { draft: 0, wait: 0, gen: 0, review: 0, done: 0, fail: 0 };
   bs.forEach(b => batchProds(b).forEach(p => {
     if (p.stageStatus === "failed") c.fail++;
@@ -511,7 +570,8 @@ function renderPhase() {
     else c.draft++;
   }));
   const chip = (label, n, cls) => n ? `<span class="phase-chip ${cls}">${label} ${n}</span>` : "";
-  el.innerHTML = chip("起草", c.draft, "draft") + chip("待上传", c.wait, "wait") + chip("生成", c.gen, "gen") + chip("待审", c.review, "review") + chip("失败", c.fail, "fail") + chip("已交付", c.done, "done");
+  const html = chip("起草", c.draft, "draft") + chip("待上传", c.wait, "wait") + chip("生成", c.gen, "gen") + chip("待审", c.review, "review") + chip("失败", c.fail, "fail") + chip("已交付", c.done, "done");
+  if (el.innerHTML !== html) el.innerHTML = html;
 }
 
 /* ---------- 事件 ---------- */

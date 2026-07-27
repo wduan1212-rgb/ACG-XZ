@@ -108,7 +108,7 @@ class BatchFrontendRegressionTest(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
-    def test_browser_queue_reserves_four_infoflow_productions_and_shares_ten_video_slots(self):
+    def test_browser_queue_uses_three_controlled_video_slots_for_infoflow_and_digital_human(self):
         result = self.run_node(
             """
             globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
@@ -121,18 +121,17 @@ class BatchFrontendRegressionTest(unittest.TestCase):
             const digital = Array.from({ length: 12 }, (_, i) => make(`d${i + 1}`, "__digital_human__"));
             const mixed = selectQueuedJobs([], [...info.slice(0, 8), ...digital]);
             const digitalOnly = selectQueuedJobs([], digital);
-            const withEightInfo = selectQueuedJobs(info.slice(0, 8), digital);
+            const withTwoInfo = selectQueuedJobs(info.slice(0, 2), digital);
             console.log(JSON.stringify({
               mixed: mixed.map(x => x.id),
               digitalOnly: digitalOnly.map(x => x.id),
-              withEightInfo: withEightInfo.map(x => x.id)
+              withTwoInfo: withTwoInfo.map(x => x.id)
             }));
             """
         )
-        self.assertEqual(result["mixed"][:8], [f"i{i}" for i in range(1, 9)])
-        self.assertEqual(len(result["mixed"]), 10)
-        self.assertEqual(len(result["digitalOnly"]), 10)
-        self.assertEqual(len(result["withEightInfo"]), 2)
+        self.assertEqual(result["mixed"], ["i1", "i2", "i3"])
+        self.assertEqual(len(result["digitalOnly"]), 3)
+        self.assertEqual(result["withTwoInfo"], ["d1"])
 
     def test_infoflow_and_digital_batch_compose_one_final_video(self):
         result = self.run_node(

@@ -121,6 +121,7 @@ class V105DetailFixesTest(unittest.TestCase):
         self.assertIn("buildStoreZip(entries)", workspace)
         self.assertIn('type: "application/zip"', store_zip)
         self.assertIn("findFreeSpot(cur, anchorFor(cur), fp, 28)", studio_actions)
+        self.assertIn("findFreeSpot(items, anchorFor(items), fp, 28)", workspace)
         self.assertNotIn("visibleAnchorFor", studio_actions)
         self.assertIn('type GestureMode = "idle" | "pan" | "drag" | "resize" | "select"', canvas)
         self.assertIn("setSelection([...new Set([...current, ...picked])])", canvas)

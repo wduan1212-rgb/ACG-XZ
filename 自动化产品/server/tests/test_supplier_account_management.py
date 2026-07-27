@@ -86,7 +86,8 @@ class SupplierAccountManagementTests(unittest.TestCase):
         main_source = (APP_DIR / "js/main.js").read_text(encoding="utf-8")
         self.assertIn('id="topSupplierOverviewSearch"', main_source)
         self.assertIn('id="topSupplierOverviewChildAdd"', main_source)
-        self.assertIn('id="topSupplierAccountSearch"', main_source)
+        self.assertNotIn('id="topSupplierAccountSearch"', main_source)
+        self.assertNotIn('supplierAccountQuery', source)
         self.assertIn('id="topSupplierContentAccountAdd"', main_source)
         self.assertIn('id="topSupplierSettingsChildAdd"', main_source)
         self.assertIn('$("#topSupplierContentAccountAdd")', source)
@@ -101,6 +102,7 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertIn('data-supplier-activity-page="prev"', source)
         self.assertIn('openActivityModal', source)
         self.assertIn('updateSupplierActivityCarousel', source)
+        self.assertIn('if (!carousel.isConnected || !page) return;', source)
         self.assertIn('scheduleSupplierActivityCarousel(root, visibleActivity, activityPages)', source)
         self.assertIn('xingzhen:supplier-data-assistant:', source)
         self.assertIn('loadSupplierAssistantHistory()', source)
@@ -138,6 +140,15 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertIn('data-supplier-platform="小红书"', source)
         self.assertIn('data-supplier-trend-window="30"', source)
         self.assertIn("openSupplierTrendDetail", source)
+
+    def test_product_library_toggle_updates_only_its_local_panel(self):
+        source = (APP_DIR / "js/views/settings.js").read_text(encoding="utf-8")
+        start = source.index('$("#prodLibraryToggle", root)?.addEventListener')
+        end = source.index('$$("[data-pedit]"', start)
+        block = source[start:end]
+        self.assertIn("list.hidden = !productLibraryOpen", block)
+        self.assertIn('setAttribute("aria-expanded"', block)
+        self.assertNotIn("draw()", block)
 
     def test_disabled_accounts_are_not_selectable_for_single_creation(self):
         source = (APP_DIR / "js/main.js").read_text(encoding="utf-8")
@@ -220,6 +231,43 @@ class SupplierAccountManagementTests(unittest.TestCase):
             _, second_error = store.upsert_supplier_account("supplier-a2", payload, [], "supplier-parent-a", create=True)
             self.assertIsNone(first_error)
             self.assertEqual("duplicate", second_error)
+
+    def test_account_total_views_override_is_independent_from_content_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("accounts", [{
+                "id": "account-views",
+                "name": "播放量账号",
+                "platform": "视频号",
+                "mode": "视频",
+            }])
+            store.upsert_docs("assets", [{
+                "id": "delivery-a",
+                "accountId": "account-views",
+                "delivered": True,
+                "viewCount": 12,
+            }, {
+                "id": "delivery-b",
+                "accountId": "account-views",
+                "delivered": True,
+                "viewCount": 18,
+            }])
+
+            updated, error = store.update_supplier_account_views(
+                "account-views", 100, "supplier-parent-a", "supplier_parent"
+            )
+            self.assertIsNone(error)
+            self.assertEqual(100, updated["totalViewCountOverride"])
+            self.assertEqual("supplier-parent-a", updated["totalViewsUpdatedBy"])
+            assets = {item["id"]: item for item in store.state_for("supplier-parent-a", "supplier_parent")["assets"]}
+            self.assertEqual(12, assets["delivery-a"]["viewCount"])
+            self.assertEqual(18, assets["delivery-b"]["viewCount"])
+
+            denied, denied_error = store.update_supplier_account_views(
+                "account-views", 200, "supplier-child-a", "supplier_child"
+            )
+            self.assertIsNone(denied)
+            self.assertEqual("forbidden", denied_error)
 
 
 if __name__ == "__main__":

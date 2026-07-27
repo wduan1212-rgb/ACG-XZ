@@ -175,6 +175,27 @@ console.log(JSON.stringify({
         self.assertEqual(data["neverUseTaskCreation"], 0)
         self.assertGreater(data["isoLegacy"], 0)
 
+    def test_account_total_views_entry_is_compact_and_does_not_replace_single_rows(self):
+        supplier = (APP_DIR / "js/views/supplierViews.js").read_text(encoding="utf-8")
+        overview = (APP_DIR / "js/views/overview.js").read_text(encoding="utf-8")
+        delivery = (APP_DIR / "js/domain/delivery.js").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles/views.css").read_text(encoding="utf-8")
+        motion_styles = (APP_DIR / "styles/ui-motion.css").read_text(encoding="utf-8")
+        self.assertIn("data-content-account-views=", supplier)
+        self.assertIn("updateAccountViews(account.id, next)", supplier)
+        self.assertIn("单条播放量保持不变", supplier)
+        self.assertIn('value: summary.hasOverride ? String(summary.total) : ""', supplier)
+        self.assertIn('placeholder: "请输入账号累计播放量"', supplier)
+        self.assertIn("totalViewCountOverride", overview)
+        self.assertIn("单条合计", overview)
+        self.assertIn("totalViewCountOverride", delivery)
+        self.assertIn(".supplier-account-total-views", styles)
+        self.assertIn(".supplier-account-control-row { min-width: 0; display: flex;", styles)
+        self.assertIn("flex: 0 0 76px", styles)
+        self.assertIn("justify-content: flex-end", styles)
+        self.assertIn("grid-template-columns: 34px minmax(0, 1fr) 202px", motion_styles)
+        self.assertIn(".supplier-account-control-row { min-width: 0; display: flex;", motion_styles)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -129,6 +129,41 @@ async function normalizeProductTermsInState({ persistLocal = false, pushRemote =
 
 /* ---- 持久化：标脏集合，防抖落盘 ---- */
 const dirty = new Set();
+const incrementalDirty = new Map();
+let incrementalTimer = 0;
+async function flushIncremental() {
+  if (incrementalTimer) {
+    globalThis.clearTimeout(incrementalTimer);
+    incrementalTimer = 0;
+  }
+  const batches = [...incrementalDirty.entries()];
+  incrementalDirty.clear();
+  for (const [collection, docs] of batches) {
+    const items = [...docs.values()].map(item => JSON.parse(JSON.stringify(item)));
+    if (!items.length) continue;
+    try {
+      await db.putMany(collection, items);
+      if (!EXPLICIT_REMOTE_COLLECTIONS.has(collection)) remote.putDocuments(collection, items);
+    } catch (e) {
+      console.warn("增量持久化失败", collection, e);
+    }
+  }
+}
+
+/* Job 轮询等高频状态只合并变化文档；同一文档在 700ms 窗口内只写最后状态。 */
+export function saveIncremental(collection, ...items) {
+  if (!db.collections.includes(collection)) return;
+  const docs = incrementalDirty.get(collection) || new Map();
+  items.flat().filter(item => item?.id).forEach(item => docs.set(String(item.id), item));
+  incrementalDirty.set(collection, docs);
+  if (typeof globalThis.setTimeout === "function") {
+    if (incrementalTimer) globalThis.clearTimeout(incrementalTimer);
+    incrementalTimer = globalThis.setTimeout(flushIncremental, 700);
+  } else {
+    void flushIncremental();
+  }
+  emit("change", { collections: [collection], incremental: true });
+}
 const persist = debounce(async () => {
   const list = [...dirty]; dirty.clear();
   for (const c of list) {
@@ -156,6 +191,7 @@ export function save(...collections) {
 }
 
 export async function persistNow() {
+  await flushIncremental();
   const syncDirty = new Set(dirty);
   db.collections.forEach(c => dirty.add(c)); dirty.add("meta");
   const list = [...dirty]; dirty.clear();

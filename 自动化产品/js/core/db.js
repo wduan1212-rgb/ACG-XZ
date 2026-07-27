@@ -55,6 +55,21 @@ export const db = {
     });
   },
 
+  /* 高频轮询只增量写入变化文档，避免 clear + 全集合重放。 */
+  putMany(store, items) {
+    return new Promise((res, rej) => {
+      if (!_db) return res();
+      const tx = _db.transaction(store, "readwrite");
+      const os = tx.objectStore(store);
+      (items || []).forEach(it => {
+        if (!it?.id) return;
+        try { os.put(it); } catch (e) { /* 跳过不可克隆项 */ }
+      });
+      tx.oncomplete = res;
+      tx.onerror = () => rej(tx.error);
+    });
+  },
+
   metaGet(key) {
     return new Promise((res, rej) => {
       if (!_db) return res(undefined);

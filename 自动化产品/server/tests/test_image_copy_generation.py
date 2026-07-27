@@ -21,6 +21,39 @@ def run_node(script: str) -> dict:
 
 
 class ImageCopyGenerationTest(unittest.TestCase):
+    def test_generated_copy_removes_only_exact_repeated_product_parentheses(self):
+        result = run_node(
+            r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+globalThis.fetch = async () => ({
+  ok: true,
+  json: async () => ({
+    choices: [{ message: { content: JSON.stringify({
+      copy:'百度搭子（百度搭子）可以整理资料；百度搭子（桌面端）仍保留有意义的说明。\\n#百度搭子 #效率工具'
+    }) } }]
+  }),
+  text: async () => ''
+});
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
+LLM_CONFIG.apiKey = 'server-managed';
+LLM_CONFIG.endpoint = '/api/chat/completions';
+LLM_CONFIG.serverManaged = true;
+const { AI } = await import('./js/api/ai.js?v=copy-dedupe-test');
+const out = await AI.generateImageCopyFromTitle({
+  title:'桌面智能体真实体验',
+  account:{ tone:'自然真实' },
+  product:{ id:'dumate', name:'百度搭子', shortName:'百度搭子' }
+});
+console.log(JSON.stringify({ copy:out.copy }));
+"""
+        )
+        self.assertIn("百度搭子可以整理资料", result["copy"])
+        self.assertNotIn("百度搭子（百度搭子）", result["copy"])
+        self.assertIn("百度搭子（桌面端）", result["copy"])
+
     def test_server_managed_llm_cannot_be_overridden_by_stale_browser_key(self):
         result = run_node(
             r"""
@@ -65,11 +98,11 @@ globalThis.fetch = async () => ({
   }),
   text: async () => ''
 });
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-21');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260724-v117-21');
+const { AI } = await import('./js/api/ai.js?v=20260727-v118-7');
 const out = await AI.generateImageCopyFromTitle({
   title: '资料整理怎么避免漏文件',
   account: { tone: '专业、清楚、有具体信息' }
@@ -106,11 +139,11 @@ globalThis.fetch = async (_url, options = {}) => {
     text: async () => ''
   };
 };
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-21');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260724-v117-21');
+const { AI } = await import('./js/api/ai.js?v=20260727-v118-7');
 await AI.generateImageCopyFromTitle({
   title: '资料整理怎么避免漏文件',
   account: { tone: '专业、清楚、有具体信息' },
@@ -140,11 +173,11 @@ globalThis.fetch = async () => ({
   status: 503,
   text: async () => 'temporary upstream failure'
 });
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-21');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260724-v117-21');
+const { AI } = await import('./js/api/ai.js?v=20260727-v118-7');
 let error = '';
 try {
   await AI.generateImagePrompts({
@@ -194,11 +227,11 @@ globalThis.fetch = async (_url, options = {}) => {
     text: async () => ''
   };
 };
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-21');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;
-const { AI } = await import('./js/api/ai.js?v=20260724-v117-21');
+const { AI } = await import('./js/api/ai.js?v=20260727-v118-7');
 const generated = await AI.generateImageCopyFromTitle({
   title: '客户访谈怎么整理成可复用报告',
   account: { tone: '专业、清楚、有具体信息' }
@@ -270,7 +303,7 @@ globalThis.fetch = async (_url, options = {}) => {
     text: async () => ''
   };
 };
-const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260724-v117-21');
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
 LLM_CONFIG.apiKey = 'server-managed';
 LLM_CONFIG.endpoint = '/api/chat/completions';
 LLM_CONFIG.serverManaged = true;

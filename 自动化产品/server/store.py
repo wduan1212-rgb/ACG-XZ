@@ -4326,6 +4326,35 @@ def update_supplier_asset_views(asset_id, view_count, member_id, role):
             conn.close()
 
 
+def update_supplier_account_views(account_id, view_count, member_id, role):
+    """供应商母账号保存账号累计播放量；不拆分、不回写任何单条素材。"""
+    if role not in {"supplier_parent", "supplier"}:
+        return None, "forbidden"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT data,owner_id FROM docs WHERE collection='accounts' AND id=?", (str(account_id),)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            item = json.loads(row[0])
+            now = int(time.time() * 1000)
+            item["totalViewCountOverride"] = max(0, int(view_count or 0))
+            item["totalViewsUpdatedAt"] = now
+            item["totalViewsUpdatedBy"] = member_id
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("accounts", str(account_id), row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item, None
+        finally:
+            conn.close()
+
+
 def _normalize_homepage_url(value):
     raw = str(value or "").strip()
     if not raw:

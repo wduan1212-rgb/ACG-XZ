@@ -221,6 +221,11 @@ export function putCollection(name, items) {
   }
   return req("/api/db/" + name, { method: "PUT", body: { items: items || [] } }).catch(() => {});
 }
+/* 语义化别名：服务端 PUT 是按 id upsert，可安全发送单文档或小批量，
+   调用方无需为了一个轮询进度回推整个集合。 */
+export function putDocuments(name, items) {
+  return putCollection(name, items);
+}
 export function holdCollectionSync(collections = [...SYNCED]) {
   const names = [...new Set((collections || []).filter(name => SYNCED.has(name)))];
   names.forEach(name => {
@@ -310,6 +315,7 @@ export const supplier = {
   activity: () => req("/api/supplier/activity"),
   record: (data) => req("/api/supplier/activity", { method: "POST", body: data }),
   updateViews: (assetId, viewCount) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/views", { method: "PUT", body: { viewCount } }),
+  updateAccountViews: (accountId, viewCount) => req("/api/supplier/accounts/" + encodeURIComponent(accountId) + "/views", { method: "PUT", body: { viewCount } }),
   markDownloaded: (assetId) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/downloaded", { method: "PUT" }),
   returnLink: (assetId, data) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/published-link", { method: "PUT", body: data }),
   ask: (question) => req("/api/supplier/assistant", { method: "POST", body: { question }, metric: "supplier-assistant" }),

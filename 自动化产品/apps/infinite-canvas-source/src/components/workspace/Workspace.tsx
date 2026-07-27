@@ -42,7 +42,7 @@ import {
   overlappingMarksFor,
   renderCanvasOutput,
 } from "@/lib/canvasOutput";
-import { findFreeSpot, footprintFor } from "@/lib/geometry";
+import { anchorFor, findFreeSpot, footprintFor } from "@/lib/geometry";
 import { downscaleDataUrl, fileToDownscaledDataUrl, upscaleDataUrl } from "@/lib/image";
 import { homeHref } from "@/lib/runtime";
 import { buildStoreZip } from "@/lib/storeZip";
@@ -372,10 +372,12 @@ export function Workspace({ projectId }: { projectId: string }) {
         try {
           const { dataUrl, originalDataUrl, width, height } = await fileToDownscaledDataUrl(file);
           const fp = footprintFor(width, height, 320);
-          const c = centerWorld();
-          const anchor = { x: c.x - fp.width / 2, y: c.y - fp.height / 2 };
           const items = (useStore.getState().itemsByProject[projectId] ?? []).filter((it) => !it.hidden);
-          const pos = findFreeSpot(items, anchor, fp, 28);
+          // Imported and clipboard images join the same deterministic strip as
+          // generated results. Re-read the store for every file so a multi-file
+          // drop advances one card at a time instead of reusing one viewport
+          // anchor and producing a spiral that looks random.
+          const pos = findFreeSpot(items, anchorFor(items), fp, 28);
           const name = file.name.replace(/\.[^.]+$/, "").slice(0, 18) || "参考图";
           const item: ReferenceItem = {
             id: uid("item"),
@@ -401,7 +403,7 @@ export function Workspace({ projectId }: { projectId: string }) {
         }
       }
     },
-    [projectId, addItem, setSelection, addReference, centerWorld],
+    [projectId, addItem, setSelection, addReference],
   );
 
   const pasteCopiedImages = useCallback(() => {

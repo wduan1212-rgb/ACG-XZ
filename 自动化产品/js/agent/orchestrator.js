@@ -3,11 +3,11 @@
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260724-v117-21";
+import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver } from "../domain/delivery.js?v=20260724-v117-21";
+import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
 import { addAssetFromDataUrl, addAssetFromFile, assetBlob, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";

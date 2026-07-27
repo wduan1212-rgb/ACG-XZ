@@ -1,10 +1,10 @@
 import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save } from "../core/store.js";
-import { emptyState, openModal, confirmModal, toast } from "../ui/components.js?v=20260724-v117-21";
+import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260727-v118-7";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
-import { deliveryViewsSummary } from "../domain/delivery.js?v=20260724-v117-21";
+import { deliveryViewsSummary } from "../domain/delivery.js?v=20260727-v118-7";
 import { accountDisplaySequenceMap, isAccountDisabled, isNewAccount } from "../domain/accounts.js";
 import { openAccountDialog } from "./accountDialog.js";
 
@@ -14,7 +14,6 @@ const accountAvatar = acc => {
     ? `<img src="${esc(avatar)}" alt=""/>`
     : `<span class="supplier-avatar-fallback">${icon("user", 18)}</span>`;
 };
-let supplierAccountQuery = "";
 let supplierPlatform = "all";
 let supplierActivityType = "all";
 let supplierActivityDays = "all";
@@ -42,9 +41,11 @@ function updateSupplierActivityCarousel(root, activity, pageCount, { animate = f
   const carousel = $("#supplierActivityCarousel", root);
   if (!carousel) return;
   const replace = () => {
+    const page = $("#supplierActivityPage", root);
+    if (!carousel.isConnected || !page) return;
     const start = supplierActivityCarouselPage * SUPPLIER_ACTIVITY_PAGE_SIZE;
     carousel.innerHTML = supplierActivityItemsHtml(activity.slice(start, start + SUPPLIER_ACTIVITY_PAGE_SIZE));
-    $("#supplierActivityPage", root).textContent = activity.length ? `${supplierActivityCarouselPage + 1} / ${pageCount}` : "0 / 0";
+    page.textContent = activity.length ? `${supplierActivityCarouselPage + 1} / ${pageCount}` : "0 / 0";
     $$('[data-supplier-activity-page]', root).forEach(button => { button.disabled = pageCount <= 1; });
     carousel.classList.remove("is-leaving");
     if (!animate || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return;
@@ -145,7 +146,7 @@ function supplierOverviewRows() {
     asset,
     account: state.accounts.find(item => item.id === asset.accountId) || {},
     timestamp: supplierDeliveryTime(asset),
-  }));
+  })).sort((a, b) => b.timestamp - a.timestamp || String(b.asset.id || "").localeCompare(String(a.asset.id || "")));
 }
 
 function supplierTodayLinkLines(rows) {
@@ -482,20 +483,62 @@ export async function renderSupplierAccounts(root) {
     const childMap = new Map(children.map(x => [x.id, x]));
     const accountSequence = accountDisplaySequenceMap(state.accounts);
     const canEditHomepage = ["supplier", "supplier_parent"].includes(state.role);
+    const deliveredAssets = state.assets.filter(asset => asset && (asset.delivered || asset.shared));
+    const accountViewSummary = account => {
+      const derived = deliveredAssets
+        .filter(asset => asset.accountId === account.id)
+        .reduce((sum, asset) => sum + Math.max(0, Number(asset.viewCount || 0)), 0);
+      const hasOverride = account.totalViewCountOverride !== undefined
+        && account.totalViewCountOverride !== null
+        && account.totalViewCountOverride !== "";
+      return {
+        derived,
+        total: hasOverride ? Math.max(0, Number(account.totalViewCountOverride || 0)) : derived,
+        hasOverride,
+      };
+    };
     root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div>
       <div class="supplier-account-grid">${state.accounts.map(acc => {
         const binding = bindings.find(x => x.accountId === acc.id);
         const child = binding ? childMap.get(binding.childId) : null;
         const searchable = `${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase();
-        const hidden = (supplierAccountQuery && !searchable.includes(supplierAccountQuery.toLowerCase())) || (supplierPlatform !== "all" && acc.platform !== supplierPlatform);
+        const hidden = supplierPlatform !== "all" && acc.platform !== supplierPlatform;
         const sequence = accountSequence.get(acc.id) || 0;
         const disabled = isAccountDisabled(acc);
         const fresh = isNewAccount(acc);
-        return `<article class="supplier-account${disabled ? " is-disabled" : ""}${fresh ? " is-new-account" : ""}" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)} ${fresh ? `<i class="supplier-new-account-badge">新</i>` : ""}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")} ${disabled ? `· <strong>已停用</strong>` : ""}</em></div><div class="supplier-account-controls">${acc.homepageUrl ? `<a class="supplier-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 主页链接</a>` : ""}<div class="supplier-account-control-row">${canEditHomepage ? `<div class="supplier-content-account-actions"><button class="icon-btn sm" type="button" data-content-account-edit="${esc(acc.id)}" title="编辑账号（含主页链接）">${icon("edit", 13)}</button><button class="icon-btn sm${disabled ? " restore" : " danger"}" type="button" data-content-account-status="${esc(acc.id)}" title="${disabled ? "恢复账号" : "停用账号"}">${icon(disabled ? "unlock" : "lock", 13)}</button></div>` : ""}<label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage && !disabled ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></div></article>`;
+        const viewSummary = accountViewSummary(acc);
+        return `<article class="supplier-account${disabled ? " is-disabled" : ""}${fresh ? " is-new-account" : ""}" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)} ${fresh ? `<i class="supplier-new-account-badge">新</i>` : ""}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")} ${disabled ? `· <strong>已停用</strong>` : ""}</em></div><div class="supplier-account-controls">${acc.homepageUrl ? `<a class="supplier-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 主页链接</a>` : ""}<div class="supplier-account-control-row">${canEditHomepage ? `<div class="supplier-content-account-actions"><button class="supplier-account-total-views${viewSummary.hasOverride ? " is-manual" : ""}" type="button" data-content-account-views="${esc(acc.id)}" title="编辑账号累计播放量；当前${viewSummary.hasOverride ? "为手动总数" : "由单条自动汇总"}">${icon("pulse", 12)} ${Number(viewSummary.total).toLocaleString("zh-CN")}</button><button class="icon-btn sm" type="button" data-content-account-edit="${esc(acc.id)}" title="编辑账号（含主页链接）">${icon("edit", 13)}</button><button class="icon-btn sm${disabled ? " restore" : " danger"}" type="button" data-content-account-status="${esc(acc.id)}" title="${disabled ? "恢复账号" : "停用账号"}">${icon(disabled ? "unlock" : "lock", 13)}</button></div>` : ""}<label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage && !disabled ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></div></article>`;
       }).join("")}</div></div>`;
     const topAccountAdd = $("#topSupplierContentAccountAdd");
     if (topAccountAdd) topAccountAdd.onclick = () => openAccountDialog();
     $$('[data-content-account-edit]', root).forEach(button => button.addEventListener("click", () => openAccountDialog(button.dataset.contentAccountEdit)));
+    $$('[data-content-account-views]', root).forEach(button => button.addEventListener("click", async () => {
+      const account = state.accounts.find(item => item.id === button.dataset.contentAccountViews);
+      if (!account || !canEditHomepage) return;
+      const summary = accountViewSummary(account);
+      const value = await promptModal({
+        title: `编辑「${account.name}」累计播放量`,
+        value: summary.hasOverride ? String(summary.total) : "",
+        placeholder: "请输入账号累计播放量",
+        okText: "保存总播放量",
+      });
+      if (value === null) return;
+      const next = Number(String(value).replace(/[,，\s]/g, ""));
+      if (!Number.isFinite(next) || next < 0 || !Number.isInteger(next)) {
+        toast("请输入不小于 0 的整数", "error");
+        return;
+      }
+      button.disabled = true;
+      try {
+        const result = await remote.supplier.updateAccountViews(account.id, next);
+        Object.assign(account, result.account || { totalViewCountOverride: next });
+        toast("账号总播放量已更新；单条播放量保持不变");
+        await renderSupplierAccounts(root);
+      } catch (error) {
+        button.disabled = false;
+        toast(error?.message || "账号总播放量更新失败", "error");
+      }
+    }));
     $$('[data-content-account-status]', root).forEach(button => button.addEventListener("click", async () => {
       const account = state.accounts.find(item => item.id === button.dataset.contentAccountStatus);
       if (!account || !canEditHomepage) return;
@@ -547,10 +590,8 @@ export async function renderSupplierAccounts(root) {
     const applyAccountFilters = () => {
       const cards = $$(".supplier-account", root);
       const before = new Map(cards.filter(card => !card.hidden).map(card => [card, card.getBoundingClientRect()]));
-      const query = supplierAccountQuery.trim().toLowerCase();
       cards.forEach(card => {
-        card.hidden = !!query && !card.dataset.accountSearch.includes(query)
-          || supplierPlatform !== "all" && card.dataset.accountPlatform !== supplierPlatform;
+        card.hidden = supplierPlatform !== "all" && card.dataset.accountPlatform !== supplierPlatform;
       });
       $$('[data-top-supplier-platform]').forEach(button => button.classList.toggle("is-active", button.dataset.topSupplierPlatform === supplierPlatform));
       requestAnimationFrame(() => cards.filter(card => !card.hidden).forEach(card => {
@@ -562,14 +603,6 @@ export async function renderSupplierAccounts(root) {
         if (dx || dy) card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 210, easing: "cubic-bezier(.2,.8,.2,1)" });
       }));
     };
-    let composing = false;
-    const topAccountSearch = $("#topSupplierAccountSearch");
-    if (topAccountSearch) {
-      topAccountSearch.value = supplierAccountQuery;
-      topAccountSearch.oncompositionstart = () => { composing = true; };
-      topAccountSearch.oncompositionend = e => { composing = false; supplierAccountQuery = e.currentTarget.value; applyAccountFilters(); };
-      topAccountSearch.oninput = e => { if (!composing && !e.isComposing) { supplierAccountQuery = e.currentTarget.value; applyAccountFilters(); } };
-    }
     $$('[data-top-supplier-platform]').forEach(button => { button.onclick = () => { supplierPlatform = button.dataset.topSupplierPlatform || "all"; applyAccountFilters(); }; });
     applyAccountFilters();
     $$("[data-account-assign]", root).forEach(sel => sel.addEventListener("change", async () => {

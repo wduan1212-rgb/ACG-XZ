@@ -556,8 +556,22 @@ export function deliveredAssets() {
 
 export function deliveryViewsSummary(platform = "all") {
   const rows = deliveredAssets().filter(({ acc }) => platform === "all" || acc.platform === platform);
+  const rowsByAccount = new Map();
+  rows.forEach(row => {
+    const key = row.acc?.id || row.asset?.accountId || "";
+    if (!rowsByAccount.has(key)) rowsByAccount.set(key, []);
+    rowsByAccount.get(key).push(row);
+  });
+  const totalViews = [...rowsByAccount.entries()].reduce((sum, [accountId, accountRows]) => {
+    const account = accountById(accountId);
+    const derived = accountRows.reduce((subtotal, { asset }) => subtotal + Math.max(0, Number(asset.viewCount || 0)), 0);
+    const hasOverride = account?.totalViewCountOverride !== undefined
+      && account?.totalViewCountOverride !== null
+      && account?.totalViewCountOverride !== "";
+    return sum + (hasOverride ? Math.max(0, Number(account.totalViewCountOverride || 0)) : derived);
+  }, 0);
   return {
-    totalViews: rows.reduce((sum, { asset }) => sum + Math.max(0, Number(asset.viewCount || 0)), 0),
+    totalViews,
     deliveryCount: rows.length
   };
 }

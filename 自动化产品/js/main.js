@@ -5,37 +5,37 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260724-v117-21";
+import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260727-v118-7";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
-import { productTagLabel } from "./domain/delivery.js?v=20260724-v117-21";
-import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js?v=20260724-v117-21";
+import { productTagLabel } from "./domain/delivery.js?v=20260727-v118-7";
+import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js?v=20260727-v118-7";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
-import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260724-v117-21";
+import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260727-v118-7";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260724-v117-21";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260727-v118-7";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
-import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260724-v117-21";
+import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260724-v117-21";
+import { overviewView } from "./views/overview.js?v=20260727-v118-7";
 import { voiceLabView } from "./views/voiceLab.js?v=20260723-v117-8";
-import { customCreationView } from "./views/customCreation.js?v=20260724-v117-23";
-import { agentView } from "./agent/view.js?v=20260724-v117-21";
-import { studioView } from "./views/studio.js?v=20260724-v117-21";
-import { assetsView } from "./views/assetsView.js?v=20260724-v117-21";
-import { deliveryView } from "./views/deliveryView.js?v=20260724-v117-21";
-import { analyticsView } from "./views/analyticsView.js?v=20260724-v117-21";
+import { customCreationView } from "./views/customCreation.js?v=20260727-v118-7";
+import { agentView } from "./agent/view.js?v=20260727-v118-7";
+import { studioView } from "./views/studio.js?v=20260727-v118-7";
+import { assetsView } from "./views/assetsView.js?v=20260727-v118-7";
+import { deliveryView } from "./views/deliveryView.js?v=20260727-v118-7";
+import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260724-v117-23";
+import { settingsView } from "./views/settings.js?v=20260727-v118-7";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260724-v117-21";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260727-v118-7";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260724-v117-23";
+const APP_BUILD_ID = "20260727-v118-7";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -829,7 +829,7 @@ function renderTopbar() {
       supplierTools.dataset.zone = zone;
       const platforms = [...new Set(state.accounts.map(account => account.platform).filter(Boolean))];
       if (zone === "assets") {
-        supplierTools.innerHTML = `<label class="top-supplier-search">${icon("search", 14)}<input id="topSupplierAccountSearch" placeholder="搜索账号" /></label><button class="top-btn top-primary" id="topSupplierContentAccountAdd">${icon("plus", 13)} <span>新建账号</span></button><div class="top-supplier-platforms"><button class="top-btn is-active" type="button" data-top-supplier-platform="all">全部平台</button>${platforms.map(platform => `<button class="top-btn" type="button" data-top-supplier-platform="${esc(platform)}">${esc(platform)}</button>`).join("")}</div>`;
+        supplierTools.innerHTML = `<button class="top-btn top-primary" id="topSupplierContentAccountAdd">${icon("plus", 13)} <span>新建账号</span></button><div class="top-supplier-platforms"><button class="top-btn is-active" type="button" data-top-supplier-platform="all">全部平台</button>${platforms.map(platform => `<button class="top-btn" type="button" data-top-supplier-platform="${esc(platform)}">${esc(platform)}</button>`).join("")}</div>`;
       } else if (zone === "settings") {
         supplierTools.innerHTML = `<button class="top-btn top-primary" id="topSupplierSettingsChildAdd">${icon("plus", 13)} <span>批量建立子账号</span></button>`;
       } else {

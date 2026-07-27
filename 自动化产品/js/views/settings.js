@@ -3,9 +3,9 @@
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260724-v117-21";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260727-v118-7";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260724-v117-21";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260727-v118-7";
 
 const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor", "supplier_parent"];
@@ -182,13 +182,13 @@ export const settingsView = {
           <section class="card set-data product-library ${productLibraryOpen ? "is-open" : ""}">
             <div class="card-head"><span><b>产品库</b><em>${state.products.length} 个产品事实与视觉边界；默认收起，避免占用设置看板</em></span>
               <span class="product-library-actions"><button class="btn ghost sm" id="prodLibraryToggle">${icon(productLibraryOpen ? "chevronUp" : "chevronDown", 13)} ${productLibraryOpen ? "收起" : "展开"}</button><button class="btn primary sm" id="prodAdd">${icon("plus", 13)} 添加产品</button></span></div>
-            ${productLibraryOpen ? `<div class="prod-list product-library-grid">
+            <div class="prod-list product-library-grid" ${productLibraryOpen ? "" : "hidden"}>
               ${state.products.map(p => `
                 <article class="product-row product-library-card">
                   <span class="ovt-main"><b>${esc(p.name)}</b><em>${esc(p.category || "未分类")} · ${esc((p.brief || "").slice(0, 80))}${(p.brief || "").length > 80 ? "…" : ""}</em></span>
                   <span class="product-library-card-actions"><button class="icon-btn sm" data-pedit="${p.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-pdel="${p.id}" title="删除" ${state.products.length <= 1 ? "disabled" : ""}>${icon("trash", 13)}</button></span>
                 </article>`).join("")}
-            </div>` : ""}
+            </div>
           </section>
 
         </div>`;
@@ -315,7 +315,15 @@ export const settingsView = {
         }});
       };
       $("#prodAdd", root)?.addEventListener("click", () => productDialog(null));
-      $("#prodLibraryToggle", root)?.addEventListener("click", () => { productLibraryOpen = !productLibraryOpen; draw(); });
+      $("#prodLibraryToggle", root)?.addEventListener("click", event => {
+        productLibraryOpen = !productLibraryOpen;
+        const section = event.currentTarget.closest(".product-library");
+        const list = $(".product-library-grid", section);
+        section?.classList.toggle("is-open", productLibraryOpen);
+        if (list) list.hidden = !productLibraryOpen;
+        event.currentTarget.innerHTML = `${icon(productLibraryOpen ? "chevronUp" : "chevronDown", 13)} ${productLibraryOpen ? "收起" : "展开"}`;
+        event.currentTarget.setAttribute("aria-expanded", String(productLibraryOpen));
+      });
       $$("[data-pedit]", root).forEach(b => b.addEventListener("click", () => productDialog(state.products.find(p => p.id === b.dataset.pedit))));
       $$("[data-pdel]", root).forEach(b => b.addEventListener("click", async () => {
         const p = state.products.find(x => x.id === b.dataset.pdel);
