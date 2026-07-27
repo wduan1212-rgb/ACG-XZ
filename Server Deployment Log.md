@@ -1,5 +1,15 @@
 # Server Deployment Log
 
+## v119 - 2026-07-27
+
+- Source: controlled commit `fefd1b7`. Production main cache is `20260727-v119-4`; video-workshop and infinite-canvas static closures were intentionally unchanged.
+- Scope: deployed exactly 12 audited main-platform runtime code/static files, including the fixed client manifest and two versioned installers, from a clean detached target worktree. Tests, documents, local state, SQLite, accounts, members, assets, deliveries, drafts, analytics, uploads, composed media, canvas projects/blobs, video-workshop runtime, model cache, authentication and private environment files were excluded. No delete-style synchronization, migration, reconcile, backfill, restore or business write was used.
+- Validation: all 12 production hashes match the release manifest. Main service and video-workshop sidecar are active and healthy; SQLite `quick_check` is `ok`; recent main-service error-level journal count is zero. The clean target passed main 369/369 and video-workshop 92/92 tests, plus JavaScript, Python, Shell, diff, whitelist-route and installer-hash checks.
+- Client distribution: manifest and both installer HEAD responses return the approved content type, attachment filename and byte length. Re-hashing each complete production HTTP download stream matched the approved SHA-256. The authenticated browser showed the client entry above settings, a working hover bridge, both system guides and a four-step modal without internal overflow; no download was started during acceptance.
+- Browser smoke: production loaded `v119-4` with no horizontal overflow or application console error/warning. The publication donut used the same 186 returned-link records as the top publication metric; keyboard activation opened the Xiaohongshu account publication detail. The current batch board displayed real same-origin image covers for completed video deliveries; visible decoded covers were valid, and no generation, publication, deletion, cancellation or retry was triggered.
+- Data protection: no protected collection decreased and accounts remained at 80. During the deployment window normal production activity added 4 analytics links, 1 asset, 5 supplier activity rows and 1 composed file; video-workshop runtime and model-cache files also increased. These writes were preserved. Upload and canvas-blob metrics did not decrease, and the private-environment fingerprint remained byte-identical.
+- Rollback and retention: created and verified pure code/static rollback point `v119-pre-20260727-153633` plus a separate consistent SQLite snapshot. Five pure code/static rollback sets now remain, exactly at the retention limit, so no set was removed. Business/runtime snapshots are never part of this rotation; rollback must restore code/static files only and must not replace newer production data.
+
 ## v118 - 2026-07-27
 
 - Source: controlled commit `37c5194`. Production main cache is `20260727-v118-7`; infinite-canvas build is `1lusSDhjMfp40zIG_fwT9`; video-workshop static files were unchanged.
