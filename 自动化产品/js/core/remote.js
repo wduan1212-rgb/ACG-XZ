@@ -346,3 +346,8 @@ export const customProjects = {
   }),
   remove: (id) => req("/api/custom-projects/" + encodeURIComponent(id), { method: "DELETE" })
 };
+
+/* 无限画布项目索引：只读轻量摘要，供统一工作区左侧项目栏使用。 */
+export const customCanvasProjects = {
+  list: () => req("/api/custom-canvas/projects")
+};

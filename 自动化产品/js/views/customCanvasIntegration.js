@@ -129,12 +129,40 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
   if (!(host instanceof HTMLElement)) throw new TypeError("无限画布挂载点无效");
   host.__customCanvasCleanup?.();
 
+  const mountOptions = arguments[1] && typeof arguments[1] === "object"
+    ? arguments[1]
+    : {};
+  let currentProjectId = safeText(mountOptions.projectId, "", 180);
   const controller = new AbortController();
   latestOutput = null;
   const token = localStorage.getItem(TOKEN_KEY)?.trim() || "";
   const unsubscribeOutput = typeof onOutput === "function" ? subscribeCanvasOutput(onOutput) : () => {};
   let iframe = null;
   let disposed = false;
+  let iframeReady = false;
+
+  const projectHash = projectId => {
+    const value = safeText(projectId, "", 180);
+    return value ? `#/project/${encodeURIComponent(value)}` : "#/";
+  };
+
+  const openProject = projectId => {
+    const nextProjectId = safeText(projectId, "", 180);
+    if (!nextProjectId || disposed) return false;
+    currentProjectId = nextProjectId;
+    if (!iframe) return true;
+    const nextHash = projectHash(nextProjectId);
+    if (!iframeReady) {
+      iframe.src = `/XZ-Design/?embed=1&v=20260727-v118-7${nextHash}`;
+      return true;
+    }
+    try {
+      iframe.contentWindow.location.hash = nextHash.slice(1);
+    } catch (_) {
+      iframe.src = `/XZ-Design/?embed=1&v=20260727-v118-7${nextHash}`;
+    }
+    return true;
+  };
 
   const cleanup = () => {
     if (disposed) return;
@@ -143,6 +171,7 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
     unsubscribeOutput();
     window.removeEventListener("message", onMessage);
     iframe?.remove();
+    delete host.dataset.customCanvasWorkspace;
     if (host.__customCanvasCleanup === cleanup) delete host.__customCanvasCleanup;
   };
 
@@ -150,6 +179,14 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
     cleanup,
     destroy: cleanup,
     getLatestOutput: () => cloneOutput(latestOutput),
+    getCurrentProjectId: () => currentProjectId,
+    openProject,
+    reload() {
+      if (disposed || !iframe) return false;
+      iframeReady = false;
+      iframe.src = `/XZ-Design/?embed=1&v=20260727-v118-7${projectHash(currentProjectId)}`;
+      return true;
+    },
     markPublished({
       projectId,
       deliveryId,
@@ -239,8 +276,18 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
     iframe.setAttribute("allow", "clipboard-read; clipboard-write");
     iframe.referrerPolicy = "same-origin";
     iframe.style.cssText = "display:block;width:100%;height:100%;min-height:0;border:0;border-radius:0;background:#f7f7f5;";
+    iframe.addEventListener("load", () => {
+      iframeReady = true;
+      host.dispatchEvent(new CustomEvent("custom-canvas:workspace-ready", {
+        detail: { projectId: currentProjectId },
+      }));
+    });
+    if (currentProjectId) {
+      iframe.src = `/XZ-Design/?embed=1&v=20260727-v118-7${projectHash(currentProjectId)}`;
+    }
     window.addEventListener("message", onMessage);
     host.replaceChildren(iframe);
+    host.dataset.customCanvasWorkspace = "true";
   } catch (error) {
     if (disposed || error?.name === "AbortError") return integration;
     host.innerHTML = messageHtml(

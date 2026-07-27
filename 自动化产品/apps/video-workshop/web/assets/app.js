@@ -2,6 +2,19 @@ const PROJECT_STORAGE_KEY =
   window.__XINGZHEN_VIDEO_PROJECT_KEY__ || "xingzhen-video-project:standalone";
 const START_ON_HOME =
   new URLSearchParams(window.location.search).get("start") === "home";
+const WORKSPACE_MODE =
+  typeof window.parent !== "undefined"
+  && window.parent !== window
+  && (
+    new URLSearchParams(window.location.search).get("workspace") === "1"
+    || (
+      typeof document !== "undefined"
+      && document.documentElement?.dataset?.platformEmbedded === "true"
+    )
+  );
+if (WORKSPACE_MODE && typeof document !== "undefined") {
+  document.documentElement.dataset.platformWorkspace = "true";
+}
 const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 const state = {
   // 主平台每次重新进入“定制创作”都从新建首页开始；历史项目仍保留在
@@ -1240,6 +1253,18 @@ function renderHistory(items) {
   state.historySignature = signature;
 
   [dom.startHistoryList, dom.historyList].forEach((list) => populateHistoryList(list, items));
+  if (WORKSPACE_MODE) {
+    window.parent.postMessage({
+      type: "custom-video:workspace-projects",
+      projects: state.historyItems.map(project => ({
+        id: String(project?.id || ""),
+        name: historyItemName(project),
+        status: String(project?.status || "conversation"),
+        updatedAt: project?.updatedAt || project?.createdAt || "",
+        publishedCount: publishedCountFor(project),
+      })).filter(project => project.id),
+    }, window.location.origin);
+  }
   refreshIcons();
 }
 
@@ -1844,6 +1869,30 @@ window.addEventListener("message", (event) => {
     return;
   }
   const message = event.data && typeof event.data === "object" ? event.data : {};
+  if (
+    WORKSPACE_MODE
+    && message.scope === "video"
+    && message.type === "workspace:open"
+  ) {
+    const projectId = String(message.projectId || "").trim().slice(0, 180);
+    if (!projectId || projectId === state.projectId) return;
+    state.messageSignature = "";
+    state.eventSignature = "";
+    state.outputSignature = "";
+    state.outputMediaSignature = "";
+    state.historyLoadedAt = 0;
+    state.outputIndex = 0;
+    void loadProject(projectId);
+    return;
+  }
+  if (
+    WORKSPACE_MODE
+    && message.scope === "video"
+    && message.type === "workspace:create"
+  ) {
+    void createNewConversation();
+    return;
+  }
   if (message.type !== "custom-video:published") return;
   const projectId = String(message.projectId || "").trim();
   const deliveryId = String(message.deliveryId || "").trim();
@@ -1920,3 +1969,9 @@ typePlaceholder();
 checkHealth();
 loadHistory(true);
 if (state.projectId) loadProject(state.projectId, true);
+if (WORKSPACE_MODE) {
+  window.parent.postMessage({
+    type: "custom-video:workspace-ready",
+    projectId: state.projectId,
+  }, window.location.origin);
+}

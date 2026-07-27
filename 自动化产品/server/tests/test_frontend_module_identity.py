@@ -55,10 +55,10 @@ class FrontendModuleIdentityTest(unittest.TestCase):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
             "components.css": "v=20260723-v117-8",
-            "views.css": "v=20260727-v118-7",
-            "agent.css": "v=20260727-v119-1",
+            "views.css": "v=20260727-v120-shell-2",
+            "agent.css": "v=20260727-v120-shell-2",
             "ui-motion.css": "v=20260727-v118-7",
-            "custom-creation.css": "v=20260723-v117-8",
+            "custom-creation.css": "v=20260727-v120-shell-2",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():

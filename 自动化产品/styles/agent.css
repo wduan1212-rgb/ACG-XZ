@@ -1046,3 +1046,36 @@
 .agc-random .link-btn {
   color: #AFCFFF;
 }
+
+/* ---------- v120 统一工作区适配 ----------
+   全局上下文栏接管会话导航；批量生产只保留沉浸式对话与任务看板。
+   选择器限定在 workspace-shell-v2，旧版独立工作台保持原样。 */
+body.workspace-shell-v2[data-zone="agent"] .view-root {
+  padding: 0;
+  overflow: hidden;
+  background: #05070D;
+}
+body.workspace-shell-v2[data-zone="agent"] .agent-shell {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+body.workspace-shell-v2[data-zone="agent"] .agw-top,
+body.workspace-shell-v2[data-zone="agent"] .agw-sessions {
+  display: none;
+}
+body.workspace-shell-v2[data-zone="agent"] .agw-body {
+  grid-template-columns: minmax(0, 1fr) 392px;
+}
+body.workspace-shell-v2[data-zone="agent"] .agent-shell.board-hidden .agw-body {
+  grid-template-columns: minmax(0, 1fr) 0;
+}
+
+@media (max-width: 1180px) {
+  body.workspace-shell-v2[data-zone="agent"] .agw-body {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+  body.workspace-shell-v2[data-zone="agent"] .agent-shell.board-hidden .agw-body {
+    grid-template-columns: minmax(0, 1fr) 0;
+  }
+}

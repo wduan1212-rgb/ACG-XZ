@@ -58,7 +58,9 @@ class ClientDistributionTest(unittest.TestCase):
         main_source = (APP_DIR / "js/main.js").read_text(encoding="utf-8")
         entry = index.split('id="clientRailEntry"', 1)[1].split('data-nav="settings"', 1)[0]
         self.assertNotIn("data-nav", entry)
-        self.assertIn("clientDistribution.js?v=20260727-v119-4", main_source)
+        self.assertIn("clientDistribution.js?v=20260727-v120-shell-2", main_source)
+        self.assertIn('new CustomEvent("client-distribution:open")', main_source)
+        self.assertIn('document.addEventListener("client-distribution:open"', source)
         self.assertNotIn("../core/store.js", source)
         self.assertNotIn("../core/remote.js", source)
         self.assertIn("__ACG_XZ_DESKTOP_GUARD__", source)

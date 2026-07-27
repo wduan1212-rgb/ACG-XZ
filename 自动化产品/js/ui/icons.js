@@ -102,6 +102,14 @@ export function brandGlyph(size = 28) {
   return `<img class="brand-glyph-img" src="./assets/brand/xingzhen-icon.png" alt="星阵" width="${size}" height="${size}" />`;
 }
 
+/* 统一工作区品牌标：浅色界面使用黑标，深色界面使用白标；不改变旧版 brandGlyph。 */
+export function workspaceBrandGlyph(size = 28, tone = "light") {
+  const pixelSize = Number.isFinite(Number(size)) ? Math.max(1, Math.round(Number(size))) : 28;
+  const normalizedTone = tone === "dark" ? "dark" : "light";
+  const fileTone = normalizedTone === "dark" ? "white" : "black";
+  return `<img class="workspace-brand-glyph workspace-brand-glyph-${normalizedTone}" src="./assets/brand/xingzhen-mark-${fileTone}.png" alt="星阵" width="${pixelSize}" height="${pixelSize}" decoding="async" />`;
+}
+
 export function agentAvatar(size = 34) {
   const glyph = Math.max(14, Math.round(size * .58));
   return `<span class="agent-avatar-mono" style="width:${size}px;height:${size}px">${icon("bot", glyph)}</span>`;

@@ -65,6 +65,15 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
   }
   mounted.get(host)?.destroy?.();
 
+  const mountOptions = arguments[1] && typeof arguments[1] === "object"
+    ? arguments[1]
+    : {};
+  const initialProjectId = String(mountOptions.projectId || "")
+    .trim()
+    .slice(0, 180);
+  const onProjects = typeof mountOptions.onProjects === "function"
+    ? mountOptions.onProjects
+    : null;
   const frame = document.createElement("iframe");
   const entryUrl = "/custom-video/?embed=1&start=home";
   frame.src = entryUrl;
@@ -86,13 +95,36 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
   ].join(";");
   host.replaceChildren(frame);
   host.dataset.customVideoMounted = "true";
+  host.dataset.customVideoWorkspace = "true";
 
   let latestOutput = null;
   let latestProject = null;
   let latestSignature = "";
+  let currentProjectId = initialProjectId;
+  let workspaceReady = false;
+  let pendingCreate = false;
   let destroyed = false;
   const listeners = new Set();
   if (typeof onOutput === "function") listeners.add(onOutput);
+
+  const postWorkspaceAction = (type, payload = {}) => {
+    if (destroyed || !workspaceReady || !frame.contentWindow) return false;
+    frame.contentWindow.postMessage({
+      type,
+      scope: "video",
+      ...payload,
+    }, window.location.origin);
+    return true;
+  };
+
+  const openProject = projectId => {
+    const nextProjectId = String(projectId || "").trim().slice(0, 180);
+    if (!nextProjectId) return false;
+    currentProjectId = nextProjectId;
+    pendingCreate = false;
+    if (!workspaceReady) return true;
+    return postWorkspaceAction("workspace:open", { projectId: nextProjectId });
+  };
 
   const emitOutput = raw => {
     const output = normalizedOutput(raw);
@@ -122,10 +154,35 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
   const receive = event => {
     if (destroyed || event.origin !== window.location.origin || event.source !== frame.contentWindow) return;
     const message = event.data && typeof event.data === "object" ? event.data : {};
+    if (message.type === "custom-video:workspace-ready") {
+      workspaceReady = true;
+      if (pendingCreate) {
+        pendingCreate = false;
+        postWorkspaceAction("workspace:create");
+      } else if (currentProjectId) {
+        openProject(currentProjectId);
+      }
+      return;
+    }
+    if (message.type === "custom-video:workspace-projects") {
+      const projects = Array.isArray(message.projects) ? message.projects : [];
+      if (onProjects) {
+        try {
+          onProjects(projects);
+        } catch (error) {
+          console.error("视频工坊 onProjects 回调失败", error);
+        }
+      }
+      window.dispatchEvent(new CustomEvent("xingzhen:video-projects", {
+        detail: { projects },
+      }));
+      return;
+    }
     if (message.type === "custom-video:project") {
       latestProject = message.project && typeof message.project === "object"
         ? message.project
         : (message.payload?.project || null);
+      currentProjectId = String(latestProject?.id || currentProjectId || "").trim();
       if (message.payload?.videoUrl && latestProject?.status === "succeeded") {
         emitOutput(message.payload);
       }
@@ -154,6 +211,16 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
     frame,
     getLatestOutput: () => latestOutput,
     getProject: () => latestProject,
+    getCurrentProjectId: () => currentProjectId,
+    openProject,
+    createProject() {
+      currentProjectId = "";
+      if (!workspaceReady) {
+        pendingCreate = true;
+        return true;
+      }
+      return postWorkspaceAction("workspace:create");
+    },
     onOutput(listener) {
       if (typeof listener !== "function") return () => {};
       listeners.add(listener);
@@ -163,7 +230,10 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
       return () => listeners.delete(listener);
     },
     reload() {
-      if (!destroyed) frame.src = entryUrl + "&ts=" + Date.now();
+      if (!destroyed) {
+        workspaceReady = false;
+        frame.src = entryUrl + "&ts=" + Date.now();
+      }
     },
     markPublished({
       projectId,
@@ -201,6 +271,7 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
       listeners.clear();
       if (frame.isConnected) frame.remove();
       delete host.dataset.customVideoMounted;
+      delete host.dataset.customVideoWorkspace;
       if (mounted.get(host) === integration) mounted.delete(host);
     },
   };

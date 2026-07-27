@@ -181,6 +181,9 @@ export function initClientDistribution() {
     state = resolveClientEntryState(manifest, desktop);
     entry.dataset.clientAction = state.action;
     label.textContent = state.label;
+    document.querySelectorAll("[data-client-entry-label]").forEach(node => {
+      node.textContent = state.label;
+    });
     button.title = state.title;
     button.setAttribute("aria-haspopup", state.action === "refresh" ? "false" : "dialog");
   };
@@ -191,6 +194,13 @@ export function initClientDistribution() {
     if (!entry.contains(event.relatedTarget)) button.setAttribute("aria-expanded", "false");
   });
   button.addEventListener("click", () => {
+    if (state.action === "refresh") {
+      location.reload();
+      return;
+    }
+    openClientGuide(manifest, selectedSystem(desktop), desktop);
+  });
+  document.addEventListener("client-distribution:open", () => {
     if (state.action === "refresh") {
       location.reload();
       return;

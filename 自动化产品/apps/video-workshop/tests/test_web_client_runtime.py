@@ -358,8 +358,8 @@ console.log(JSON.stringify({{
         self.assertIn('textarea.addEventListener("paste", async (event) => {', source)
         self.assertIn('dom.fileInput.addEventListener("change", async () => {', source)
         self.assertGreaterEqual(source.count("showAttachmentError(error)"), 4)
-        self.assertIn("app.js?v=20260722-25", index)
-        self.assertIn("styles.css?v=20260722-25", index)
+        self.assertIn("app.js?v=20260727-v120-shell-2", index)
+        self.assertIn("styles.css?v=20260727-v120-shell-2", index)
 
     def test_new_conversation_is_created_and_inserted_into_history_immediately(self):
         source = APP_JS.read_text(encoding="utf-8")

@@ -1,9 +1,9 @@
 /* 应用入口：装载数据 → 迁移 → 恢复任务 → 外壳 → 路由 */
 
 import { $, $$, esc, uid } from "./core/util.js";
-import { icon, brandGlyph } from "./ui/icons.js";
+import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260727-v120-shell-2";
 import { db } from "./core/db.js";
-import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
+import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
 import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260727-v118-7";
 import { migrateFromV4 } from "./core/migrate.js";
@@ -16,28 +16,54 @@ import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
 import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260727-v118-7";
-import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
+import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js?v=20260727-v120-shell-2";
 import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { initClientDistribution } from "./ui/clientDistribution.js?v=20260727-v119-4";
-import { overviewView } from "./views/overview.js?v=20260727-v119-3";
+import { initClientDistribution } from "./ui/clientDistribution.js?v=20260727-v120-shell-2";
+import { overviewView } from "./views/overview.js?v=20260727-v120-shell-2";
 import { voiceLabView } from "./views/voiceLab.js?v=20260723-v117-8";
-import { customCreationView } from "./views/customCreation.js?v=20260727-v118-7";
-import { agentView } from "./agent/view.js?v=20260727-v119-1";
+import { customCreationView } from "./views/customCreation.js?v=20260727-v120-shell-2";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260727-v120-shell-2";
 import { studioView } from "./views/studio.js?v=20260727-v118-7";
 import { assetsView } from "./views/assetsView.js?v=20260727-v118-7";
 import { deliveryView } from "./views/deliveryView.js?v=20260727-v118-7";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
 import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260727-v118-7";
+import { settingsView } from "./views/settings.js?v=20260727-v120-shell-2";
 import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260727-v118-7";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260727-v119-4";
+const APP_BUILD_ID = "20260727-v120-shell-2";
 let announcedBuildId = "";
+const WORKSPACE_SHELL_STORAGE_KEY = "xingzhen.workspaceShell";
+let workspaceSwitcherGlobalWired = false;
+let workspaceContextFrame = 0;
+const workspaceProjectLists = {
+  video: { items: [], loading: false, loadedAt: 0, error: "" },
+  canvas: { items: [], loading: false, loadedAt: 0, error: "" },
+};
+
+function workspaceShellEnabled() {
+  const forcedMode = new URLSearchParams(location.search).get("workspace");
+  if (forcedMode === "legacy") return false;
+  if (forcedMode === "v2") return true;
+  try {
+    return localStorage.getItem(WORKSPACE_SHELL_STORAGE_KEY) !== "legacy";
+  } catch (_) {
+    return true;
+  }
+}
+
+function applyWorkspaceShellMode() {
+  const enabled = workspaceShellEnabled();
+  document.body.classList.toggle("workspace-shell-v2", enabled);
+  if (!enabled) document.body.classList.remove("workspace-context-open");
+}
+
+applyWorkspaceShellMode();
 
 function showUpdateNotice(nextBuildId) {
   if (!nextBuildId || nextBuildId === APP_BUILD_ID || announcedBuildId === nextBuildId) return;
@@ -329,6 +355,7 @@ function pauseLoginBackground() {
   if (video && !video.paused) video.pause();
 }
 function applyRoleClasses() {
+  applyWorkspaceShellMode();
   document.body.classList.toggle("role-supplier", state.role === "supplier" || state.role === "supplier_parent" || state.role === "supplier_child");
   document.body.classList.toggle("role-supplier-parent", state.role === "supplier" || state.role === "supplier_parent");
   document.body.classList.toggle("role-supplier-child", state.role === "supplier_child");
@@ -339,7 +366,7 @@ function applyRoleClasses() {
     overview: parent ? "首页" : "首页",
     assets: parent ? "全部账号" : "整体资产",
     delivery: "发布清单",
-    settings: state.role === "editor" ? "我的" : "设置"
+    settings: workspaceShellEnabled() ? "我的" : (state.role === "editor" ? "我的" : "设置")
   };
   Object.entries(labels).forEach(([zone, label]) => {
     const item = document.querySelector(`[data-nav="${zone}"]`);
@@ -620,7 +647,657 @@ function logout() {
 
 /* ---------- 上下文面板（创作空间 = 账号列表） ---------- */
 const collapsedGroups = new Set(state.ui.collapsedGroups || []);
+
+function shortRelativeTime(time) {
+  const n = Number(time || 0);
+  if (!n) return "刚刚";
+  const diff = Date.now() - n;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.max(1, Math.round(diff / 60_000))} 分钟前`;
+  if (diff < 86_400_000) return `${Math.max(1, Math.round(diff / 3_600_000))} 小时前`;
+  return `${Math.max(1, Math.round(diff / 86_400_000))} 天前`;
+}
+
+function workspaceNavItems() {
+  const supplierChild = state.role === "supplier_child";
+  const supplierParent = state.role === "supplier" || state.role === "supplier_parent";
+  if (supplierChild) {
+    return [
+      { key: "delivery", label: "发布与数据", zone: "delivery", iconName: "package" }
+    ];
+  }
+  if (supplierParent) {
+    return [
+      { key: "overview", label: "首页", zone: "overview", iconName: "grid" },
+      { key: "assets", label: "全部账号", zone: "assets", iconName: "users" },
+      { key: "delivery", label: "发布与数据", zone: "delivery", iconName: "package" }
+    ];
+  }
+  return [
+    { key: "overview", label: "首页", zone: "overview", iconName: "grid" },
+    { key: "studio", label: "单号创作", zone: "studio", iconName: "film" },
+    { key: "agent", label: "批量生产", zone: "agent", iconName: "spark" },
+    { key: "custom-video", label: "视频工坊", zone: "custom", page: "video", iconName: "film" },
+    { key: "custom-canvas", label: "无限画布", zone: "custom", page: "canvas", iconName: "layers" },
+    { key: "assets", label: "整体资产", zone: "assets", iconName: "folder" },
+    { key: "delivery", label: "发布与数据", zone: "delivery", iconName: "package" }
+  ];
+}
+
+function workspaceCurrentItem() {
+  const { zone, page, resourceId } = parseHash();
+  const items = workspaceNavItems();
+  if (zone === "settings") {
+    return {
+      key: page === "profile" || state.role === "editor" ? "profile" : "settings",
+      label: page === "profile" || state.role === "editor" ? "我的资料" : "管理设置",
+      zone: "settings",
+      page,
+      iconName: page === "profile" || state.role === "editor" ? "user" : "gear"
+    };
+  }
+  if (zone === "custom") return items.find(item => item.zone === "custom" && item.page === (page || "video")) || items.find(item => item.zone === "custom");
+  return items.find(item => item.zone === zone) || items[0];
+}
+
+function closeWorkspaceSwitcher() {
+  const wrap = $("#workspaceSwitcher");
+  const button = $("#workspaceSwitchButton");
+  if (!wrap || !button) return;
+  wrap.classList.remove("is-open");
+  button.setAttribute("aria-expanded", "false");
+}
+
+function closeWorkspaceAccountMenu({ restoreFocus = false } = {}) {
+  const wrap = $("#workspaceAccount");
+  const button = $("#workspaceAccountButton");
+  if (!wrap || !button) return;
+  wrap.classList.remove("is-open");
+  button.setAttribute("aria-expanded", "false");
+  if (restoreFocus) button.focus();
+}
+
+function setWorkspaceContextOpen(open) {
+  document.body.classList.toggle("workspace-context-open", !!open);
+  $("#workspaceContextToggle")?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function openWorkspaceItem(item) {
+  if (!item) return;
+  closeWorkspaceSwitcher();
+  setWorkspaceContextOpen(false);
+  if (item.zone === "studio") allowStudioFromAgent();
+  go(item.zone, item.page || null);
+}
+
+function renderWorkspaceSwitcher() {
+  if (!workspaceShellEnabled()) {
+    $("#workspaceSwitcher")?.remove();
+    $("#workspaceContextToggle")?.remove();
+    let restore = $("#workspaceShellRestore");
+    const topbar = document.querySelector(".topbar");
+    const crumb = $("#topCrumb");
+    if (!restore && topbar && crumb) {
+      restore = document.createElement("button");
+      restore.id = "workspaceShellRestore";
+      restore.className = "top-btn workspace-shell-restore";
+      restore.type = "button";
+      restore.innerHTML = `${icon("layers", 13)} <span>新版工作区</span>`;
+      restore.addEventListener("click", () => {
+        localStorage.setItem(WORKSPACE_SHELL_STORAGE_KEY, "v2");
+        applyWorkspaceShellMode();
+        render();
+      });
+      topbar.insertBefore(restore, crumb);
+    }
+    return;
+  }
+  $("#workspaceShellRestore")?.remove();
+  const topbar = document.querySelector(".topbar");
+  const crumb = $("#topCrumb");
+  const host = $("#workspaceSwitcherHost");
+  if (!topbar || !crumb || !host) return;
+  if (!workspaceSwitcherGlobalWired) {
+    workspaceSwitcherGlobalWired = true;
+    document.addEventListener("click", event => {
+      if (!event.target.closest?.("#workspaceSwitcher")) closeWorkspaceSwitcher();
+      if (!event.target.closest?.("#workspaceAccount")) closeWorkspaceAccountMenu();
+      if (document.body.classList.contains("workspace-context-open")
+        && !event.target.closest?.("#ctxPanel")
+        && !event.target.closest?.("#workspaceContextToggle")) {
+        setWorkspaceContextOpen(false);
+      }
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape") {
+        closeWorkspaceSwitcher();
+        closeWorkspaceAccountMenu({ restoreFocus: true });
+        setWorkspaceContextOpen(false);
+      }
+    });
+  }
+  const items = workspaceNavItems();
+  const current = workspaceCurrentItem() || items[0];
+  let wrap = $("#workspaceSwitcher");
+  if (!wrap) {
+    wrap = document.createElement("div");
+    wrap.id = "workspaceSwitcher";
+    wrap.className = "workspace-switcher";
+    host.appendChild(wrap);
+  } else if (wrap.parentElement !== host) {
+    host.appendChild(wrap);
+  }
+  let contextToggle = $("#workspaceContextToggle");
+  if (!contextToggle) {
+    contextToggle = document.createElement("button");
+    contextToggle.id = "workspaceContextToggle";
+    contextToggle.className = "workspace-context-toggle";
+    contextToggle.type = "button";
+    contextToggle.title = "打开当前工作区列表";
+    contextToggle.setAttribute("aria-controls", "ctxPanel");
+    contextToggle.setAttribute("aria-expanded", "false");
+    contextToggle.innerHTML = icon("list", 17);
+    contextToggle.addEventListener("click", event => {
+      event.stopPropagation();
+      setWorkspaceContextOpen(!document.body.classList.contains("workspace-context-open"));
+    });
+    topbar.insertBefore(contextToggle, topbar.firstChild);
+  }
+  const brandTone = document.body.dataset.zone === "agent" ? "dark" : "light";
+  wrap.innerHTML = `
+    <button class="workspace-switch-button" id="workspaceSwitchButton" type="button" aria-haspopup="menu" aria-expanded="false">
+      ${workspaceBrandGlyph(30, brandTone)}
+      <span class="workspace-switch-copy"><b>星阵</b><em>${esc(current?.label || "工作区")}</em></span>
+      ${icon("chevronDown", 13)}
+    </button>
+    <div class="workspace-menu" id="workspaceSwitchMenu" role="menu" aria-label="切换工作区">
+      <div class="workspace-menu-kicker">切换功能</div>
+      ${items.map(item => `
+        <button type="button" role="menuitem" class="${item.key === current?.key ? "is-active" : ""}" data-ws-switch="${esc(item.key)}">
+          ${icon(item.iconName || "grid", 15)}
+          <span><b>${esc(item.label)}</b><em>${esc(workspaceItemHint(item))}</em></span>
+          ${item.key === current?.key ? icon("check", 14) : ""}
+        </button>
+      `).join("")}
+    </div>
+  `;
+  const button = $("#workspaceSwitchButton", wrap);
+  const menu = $("#workspaceSwitchMenu", wrap);
+  button?.addEventListener("click", event => {
+    event.stopPropagation();
+    const open = wrap.classList.toggle("is-open");
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    if (open) setTimeout(() => menu?.querySelector("[role='menuitem']")?.focus(), 0);
+  });
+  menu?.addEventListener("click", event => event.stopPropagation());
+  menu?.addEventListener("keydown", event => {
+    const options = [...menu.querySelectorAll("[role='menuitem']")];
+    const index = options.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const next = event.key === "ArrowDown"
+        ? (index + 1 + options.length) % options.length
+        : (index - 1 + options.length) % options.length;
+      options[next]?.focus();
+    }
+  });
+  menu?.querySelectorAll("[data-ws-switch]").forEach(itemButton => {
+    itemButton.addEventListener("click", () => {
+      const item = items.find(candidate => candidate.key === itemButton.dataset.wsSwitch);
+      openWorkspaceItem(item);
+    });
+  });
+}
+
+function workspaceItemHint(item = {}) {
+  if (item.key === "overview") return "数据看板与待处理";
+  if (item.key === "studio") return "账号与单条内容";
+  if (item.key === "agent") return "批次、队列、交付";
+  if (item.key === "custom-video") return "会话、素材、成片";
+  if (item.key === "custom-canvas") return "项目、画布、导出";
+  if (item.key === "assets") return "素材与账号资源";
+  if (item.key === "delivery") return "发布、回传与数据";
+  if (item.key === "settings") return item.label === "我的" ? "资料与偏好" : "成员、权限、用量";
+  return "打开工作区";
+}
+
+function normalizeWorkspaceProject(kind, raw = {}) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const project = source.project && typeof source.project === "object" ? source.project : {};
+  const projectState = source.projectState && typeof source.projectState === "object" ? source.projectState : {};
+  const nestedProject = projectState.project && typeof projectState.project === "object"
+    ? projectState.project
+    : {};
+  const id = kind === "canvas"
+    ? String(source.sourceProjectId || source.sourceId || source.id || project.id || "").trim()
+    : String(
+        source.sourceProjectId
+        || projectState.workshopProjectId
+        || projectState.sourceProjectId
+        || nestedProject.id
+        || source.workshopProjectId
+        || ""
+      ).trim();
+  if (!id) return null;
+  const title = String(
+    source.name
+    || source.title
+    || project.name
+    || project.title
+    || nestedProject.name
+    || nestedProject.title
+    || (kind === "canvas" ? "未命名画布" : "新视频会话")
+  ).trim();
+  const rawUpdatedAt = (
+    source.serverUpdatedAt
+    || source.updatedAt
+    || source.clientUpdatedAt
+    || project.updatedAt
+    || nestedProject.updatedAt
+    || source.createdAt
+    || project.createdAt
+    || nestedProject.createdAt
+    || 0
+  );
+  const numericUpdatedAt = Number(rawUpdatedAt || 0);
+  const updatedAt = Number.isFinite(numericUpdatedAt) && numericUpdatedAt > 0
+    ? numericUpdatedAt
+    : (Date.parse(String(rawUpdatedAt || "")) || 0);
+  return {
+    id: id.slice(0, 180),
+    title: title.slice(0, 180) || (kind === "canvas" ? "未命名画布" : "新视频会话"),
+    updatedAt,
+    status: String(source.status || nestedProject.status || "draft").trim().slice(0, 40),
+    publishedCount: Math.max(0, Math.floor(Number(source.publishedCount || 0) || 0)),
+  };
+}
+
+function setWorkspaceProjects(kind, items = []) {
+  const target = workspaceProjectLists[kind];
+  if (!target) return;
+  const normalized = (Array.isArray(items) ? items : [])
+    .map(item => normalizeWorkspaceProject(kind, item))
+    .filter(Boolean)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  const unique = [];
+  const seen = new Set();
+  normalized.forEach(item => {
+    if (seen.has(item.id)) return;
+    seen.add(item.id);
+    unique.push(item);
+  });
+  target.items = unique;
+  target.loading = false;
+  target.loadedAt = Date.now();
+  target.error = "";
+  scheduleWorkspaceContextRender();
+}
+
+async function loadWorkspaceProjects(kind, { force = false } = {}) {
+  const target = workspaceProjectLists[kind];
+  if (!target || target.loading) return;
+  if (!force && target.loadedAt && Date.now() - target.loadedAt < 12_000) return;
+  if (!remote.isOn() || !remote.hasToken()) {
+    target.loadedAt = Date.now();
+    return;
+  }
+  target.loading = true;
+  target.error = "";
+  scheduleWorkspaceContextRender();
+  try {
+    if (kind === "canvas") {
+      const result = await remote.customCanvasProjects.list();
+      setWorkspaceProjects("canvas", result?.items);
+      return;
+    }
+    // 视频工坊的 iframe 会在挂载后回传完整项目索引。这里先用主服务中
+    // 已保存的轻量映射作首屏兜底，不能再误用批量生产的 state.sessions。
+    const result = await remote.customProjects.list("video");
+    setWorkspaceProjects("video", result?.items);
+  } catch (error) {
+    target.loading = false;
+    target.loadedAt = Date.now();
+    target.error = String(error?.message || "项目读取失败");
+    scheduleWorkspaceContextRender();
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("xingzhen:video-projects", event => {
+    setWorkspaceProjects("video", event.detail?.projects);
+  });
+}
+
+function contextRow({ title, meta = "", tag = "", action = "", zone = "", page = "", id = "", active = false } = {}) {
+  return `
+    <button class="wsctx-row${active ? " is-active" : ""}" type="button" ${active ? `aria-current="page"` : ""} ${zone ? `data-ws-go="${esc(zone)}"` : ""} ${page ? `data-ws-page="${esc(page)}"` : ""} ${id ? `data-ws-id="${esc(id)}"` : ""}>
+      <span>
+        <b>${esc(title || "未命名")}</b>
+        ${meta ? `<em>${esc(meta)}</em>` : ""}
+      </span>
+      ${tag ? `<i>${esc(tag)}</i>` : ""}
+      ${action ? `<strong>${esc(action)}</strong>` : ""}
+    </button>
+  `;
+}
+
+function accountContextRow(account, accountIndex) {
+  const disabled = isAccountDisabled(account);
+  const platformClass = platformCode(account.platform).toLowerCase();
+  const number = `#${String(accountIndex.get(account.id) || 0).padStart(2, "0")}`;
+  return `
+    <button class="wsctx-row wsctx-account-row${account.id === state.ui.activeAccountId ? " is-active" : ""}${disabled ? " is-disabled" : ""}"
+      type="button"
+      ${account.id === state.ui.activeAccountId ? `aria-current="page"` : ""}
+      aria-disabled="${disabled ? "true" : "false"}"
+      data-ws-go="studio"
+      data-ws-id="${esc(account.id)}"
+      ${disabled ? `data-ws-disabled="true"` : ""}>
+      <span class="wsctx-account-number ${esc(platformClass)}" title="${esc(account.platform || "")}">${esc(number)}</span>
+      <span class="wsctx-account-copy">
+        <b title="${esc(account.name || "")}">${esc(account.name || "未命名账号")}</b>
+        <em>${esc(account.platform || "")}${account.mode ? ` · ${esc(account.mode)}` : ""}</em>
+      </span>
+      <strong>${Number(account.monthlyDone || 0)}</strong>
+    </button>
+  `;
+}
+
+function workspaceAccountMarkup() {
+  const member = currentMember() || {};
+  const name = member.name || member.username || "我的";
+  const clientLabel = $("#clientRailLabel")?.textContent?.trim() || "客户端";
+  const initial = String(name).trim().slice(0, 1) || "我";
+  const avatar = member.avatarUrl
+    ? `<img src="${esc(member.avatarUrl)}" alt="" />`
+    : `<span>${esc(initial)}</span>`;
+  const canOpenProfile = ["admin", "editor", "supplier", "supplier_parent"].includes(state.role);
+  const canOpenManagement = ["admin", "supplier", "supplier_parent"].includes(state.role);
+  const managementLabel = state.role === "admin" ? "管理设置" : "供应商设置";
+  return `
+    <button class="workspace-account-button" id="workspaceAccountButton" type="button" aria-haspopup="menu" aria-expanded="false">
+      <span class="workspace-account-avatar">${avatar}</span>
+      <span class="workspace-account-copy"><b>${esc(name)}</b><em>${esc(ROLE_LABEL[state.role] || state.role || "当前账号")}</em></span>
+      ${icon("more", 16)}
+    </button>
+    <div class="workspace-account-menu" id="workspaceAccountMenu" role="menu" aria-label="账号与客户端">
+      <div class="workspace-account-summary">
+        <span class="workspace-account-avatar lg">${avatar}</span>
+        <span><b>${esc(name)}</b><em>${esc(member.username ? `@${member.username}` : (ROLE_LABEL[state.role] || "当前账号"))}</em></span>
+      </div>
+      ${canOpenProfile ? `<button type="button" role="menuitem" data-account-action="profile">${icon("user", 16)}<span>我的资料</span></button>` : ""}
+      <button type="button" role="menuitem" data-account-action="client">${icon("download", 16)}<span data-client-entry-label>${esc(clientLabel)}</span></button>
+      ${canOpenManagement ? `<button type="button" role="menuitem" data-account-action="settings">${icon("gear", 16)}<span>${esc(managementLabel)}</span></button>` : ""}
+      <button type="button" role="menuitem" data-account-action="legacy">${icon("undo", 16)}<span>使用旧版界面</span></button>
+      <div class="workspace-account-separator" role="separator"></div>
+      <button type="button" role="menuitem" class="is-danger" data-account-action="logout">${icon("logout", 16)}<span>退出登录</span></button>
+    </div>
+  `;
+}
+
+function ensureWorkspaceContextShell(panel) {
+  if (panel.querySelector(".workspace-context-shell")) return;
+  panel.innerHTML = `
+    <div class="workspace-context-shell">
+      <header class="workspace-context-brand">
+        <div id="workspaceSwitcherHost"></div>
+        <button class="workspace-context-close" id="workspaceContextClose" type="button" aria-label="关闭当前工作区列表">${icon("x", 16)}</button>
+      </header>
+      <div class="wsctx-groups" id="workspaceContextList"></div>
+      <footer class="workspace-account" id="workspaceAccount">${workspaceAccountMarkup()}</footer>
+    </div>
+  `;
+  if (panel.dataset.workspaceShellWired === "1") return;
+  panel.dataset.workspaceShellWired = "1";
+  panel.addEventListener("click", event => {
+    if (event.target.closest("#workspaceContextClose")) {
+      setWorkspaceContextOpen(false);
+      return;
+    }
+    const accountButton = event.target.closest("#workspaceAccountButton");
+    if (accountButton) {
+      event.stopPropagation();
+      const account = $("#workspaceAccount", panel);
+      const open = account?.classList.toggle("is-open");
+      accountButton.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) setTimeout(() => $("#workspaceAccountMenu", panel)?.querySelector("[role='menuitem']")?.focus(), 0);
+      return;
+    }
+    const accountAction = event.target.closest("[data-account-action]")?.dataset.accountAction;
+    if (accountAction) {
+      event.stopPropagation();
+      closeWorkspaceAccountMenu();
+      if (accountAction === "profile") go("settings", "profile");
+      else if (accountAction === "settings") go("settings");
+      else if (accountAction === "client") document.dispatchEvent(new CustomEvent("client-distribution:open"));
+      else if (accountAction === "legacy") {
+        localStorage.setItem(WORKSPACE_SHELL_STORAGE_KEY, "legacy");
+        applyWorkspaceShellMode();
+        render();
+      } else if (accountAction === "logout") logout();
+      return;
+    }
+    const routeButton = event.target.closest("[data-ws-go]");
+    if (!routeButton) return;
+    const targetZone = routeButton.dataset.wsGo || "overview";
+    const targetPage = routeButton.dataset.wsPage || null;
+    const targetId = routeButton.dataset.wsId || "";
+    if (targetZone === "studio") {
+      if (routeButton.dataset.wsDisabled === "true") {
+        toast("该账号已停用，恢复后才能继续创作", "error");
+        return;
+      }
+      if (targetId) {
+        state.ui.activeAccountId = targetId;
+        state.ui.activeProductionId = null;
+        save("meta");
+      }
+      allowStudioFromAgent();
+    }
+    if (targetZone === "agent" && targetId) {
+      if (!openAgentSession(targetId)) {
+        toast("这个量产会话已不可用，请刷新列表后重试", "error");
+        return;
+      }
+    }
+    setWorkspaceContextOpen(false);
+    go(
+      targetZone,
+      targetPage,
+      targetZone === "custom" && targetId ? targetId : null
+    );
+  });
+  panel.addEventListener("keydown", event => {
+    if (!event.target.closest("#workspaceAccountMenu")) return;
+    const options = [...$("#workspaceAccountMenu", panel).querySelectorAll("[role='menuitem']")];
+    const index = options.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const next = event.key === "ArrowDown"
+        ? (index + 1 + options.length) % options.length
+        : (index - 1 + options.length) % options.length;
+      options[next]?.focus();
+    }
+  });
+}
+
+function scheduleWorkspaceContextRender() {
+  if (!workspaceShellEnabled() || workspaceContextFrame) return;
+  workspaceContextFrame = requestAnimationFrame(() => {
+    workspaceContextFrame = 0;
+    renderWorkspaceContextPanel();
+  });
+}
+
+function renderWorkspaceContextPanel() {
+  const panel = $("#ctxPanel");
+  if (!panel) return;
+  const { zone, page } = parseHash();
+  panel.hidden = false;
+  document.body.classList.add("has-panel");
+  ensureWorkspaceContextShell(panel);
+
+  const supplier = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+  const myProductions = state.productions.filter(ownedBy);
+  const deliveredAssets = state.assets.filter(asset => asset.delivered && (state.role !== "editor" || ownedBy(asset)));
+  const activeBatchesList = state.batches
+    .filter(batch => ownedBy(batch))
+    .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
+  const sessions = state.sessions
+    .filter(ownedBy)
+    .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
+  const rowsByZone = () => {
+    if (zone === "overview") {
+      const pending = myProductions
+        .filter(p => p.stage !== "delivered")
+        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+        .slice(0, 8);
+      const recent = deliveredAssets
+        .sort((a, b) => Number(b.deliveredAt || b.createdAt || 0) - Number(a.deliveredAt || a.createdAt || 0))
+        .slice(0, 6);
+      return [
+        { title: "待处理任务", rows: pending.map(p => contextRow({ title: p.artifacts?.copy?.title || p.title || p.topic || "在制任务", meta: shortRelativeTime(p.updatedAt || p.createdAt), tag: p.stageStatus || "进行中", zone: "studio" })) },
+        { title: "最近访问", rows: recent.map(a => contextRow({ title: a.title || a.name || "已交付内容", meta: shortRelativeTime(a.deliveredAt || a.createdAt), tag: a.platform || "", zone: "delivery" })) }
+      ];
+    }
+    if (zone === "studio") {
+      const accountIndex = accountDisplaySequenceMap(state.accounts);
+      return [
+        {
+          title: "图文组",
+          rows: state.accounts
+            .filter(account => !isAccountDisabled(account) && account.mode === "图文")
+            .map(account => accountContextRow(account, accountIndex))
+        },
+        {
+          title: "真人数字人",
+          rows: state.accounts
+            .filter(account => !isAccountDisabled(account) && account.mode === "视频" && account.subType === "数字人")
+            .map(account => accountContextRow(account, accountIndex))
+        },
+        {
+          title: "素材无数字人",
+          rows: state.accounts
+            .filter(account => !isAccountDisabled(account) && account.mode === "视频" && account.subType !== "数字人")
+            .map(account => accountContextRow(account, accountIndex))
+        },
+        {
+          title: "已停用账号",
+          rows: state.accounts
+            .filter(isAccountDisabled)
+            .map(account => accountContextRow(account, accountIndex))
+        }
+      ];
+    }
+    if (zone === "agent") {
+      return [
+        {
+          title: "生产批次",
+          rows: activeBatchesList.slice(0, 48).map(b => {
+            const total = (b.productionIds || []).length;
+            const failed = (b.productionIds || []).map(id => state.productions.find(p => p.id === id)).filter(p => p?.stageStatus === "failed").length;
+            return contextRow({ title: b.topic || "未命名批次", meta: `${total} 条 · 失败 ${failed} · ${shortRelativeTime(b.updatedAt || b.createdAt)}`, tag: b.phase === "done" ? "完成" : "进行中", zone: "agent" });
+          })
+        },
+        {
+          title: "量产会话",
+          rows: sessions.slice(0, 24).map(s => contextRow({ title: s.title || "新量产计划", meta: shortRelativeTime(s.updatedAt || s.createdAt), zone: "agent", id: s.id, active: s.id === state.ui.activeSessionId }))
+        }
+      ];
+    }
+    if (zone === "custom") {
+      if (page === "video") {
+        void loadWorkspaceProjects("video");
+        const projectList = workspaceProjectLists.video;
+        return [{
+          title: projectList.loading && !projectList.items.length ? "正在读取视频项目…" : "视频项目",
+          rows: [
+            contextRow({
+              title: "新建视频会话",
+              meta: "从空白创作开始",
+              action: "新建",
+              zone: "custom",
+              page: "video",
+              id: "__new__",
+            }),
+            ...projectList.items.slice(0, 60).map(project => contextRow({
+              title: project.title,
+              meta: shortRelativeTime(project.updatedAt),
+              tag: project.publishedCount ? `已发布 ${project.publishedCount}` : "",
+              zone: "custom",
+              page: "video",
+              id: project.id,
+              active: project.id === resourceId
+            }))
+          ]
+        }];
+      }
+      if (page === "canvas") {
+        void loadWorkspaceProjects("canvas");
+        const projectList = workspaceProjectLists.canvas;
+        return [{
+          title: projectList.loading && !projectList.items.length ? "正在读取画布项目…" : "画布项目",
+          rows: projectList.items.slice(0, 80).map(project => contextRow({
+            title: project.title,
+            meta: shortRelativeTime(project.updatedAt),
+            tag: project.publishedCount ? `已发布 ${project.publishedCount}` : "",
+            zone: "custom",
+            page: "canvas",
+            id: project.id,
+            active: project.id === resourceId
+          }))
+        }];
+      }
+      return [{
+        title: "语音工作区",
+        rows: [contextRow({ title: "音色与合成", meta: "继续管理音色、试听和生成", active: true, zone: "custom", page: "voice" })]
+      }];
+    }
+    if (zone === "assets") {
+      const types = ["图片", "视频", "音频", "产品", "品牌素材"];
+      return [{ title: supplier ? "账号筛选" : "资产分类", rows: types.map(type => contextRow({ title: type, meta: `${state.assets.filter(a => a.type === type || (type === "品牌素材" && (a.tags || []).includes("品牌素材"))).length} 项`, zone: "assets" })) }];
+    }
+    if (zone === "delivery") {
+      const rows = deliveredAssets
+        .sort((a, b) => Number(b.deliveredAt || b.createdAt || 0) - Number(a.deliveredAt || a.createdAt || 0))
+        .slice(0, 18)
+        .map(a => contextRow({ title: a.title || a.name || "已交付内容", meta: `${a.platform || "平台"} · ${shortRelativeTime(a.deliveredAt || a.createdAt)}`, tag: a.returnLink ? "已回传" : "待回传", zone: "delivery" }));
+      return [{ title: "发布项目", rows }];
+    }
+    if (zone === "settings") {
+      const me = currentMember();
+      return [{
+        title: page === "profile" || state.role === "editor" ? "个人资料" : "管理",
+        rows: [
+          contextRow({ title: me?.name || "我的资料", meta: state.role ? ROLE_LABEL[state.role] || state.role : "未登录", tag: "我的", active: page === "profile" || state.role === "editor", zone: "settings", page: "profile" }),
+          ...(["admin", "supplier", "supplier_parent"].includes(state.role) ? [contextRow({ title: state.role === "admin" ? "管理设置" : "供应商设置", meta: state.role === "admin" ? "成员、供应商、用量和产品库" : "子账号与供应商账号", active: page !== "profile", zone: "settings" })] : [])
+        ]
+      }];
+    }
+    return [{ title: "上下文", rows: [] }];
+  };
+
+  const groups = rowsByZone();
+  const list = $("#workspaceContextList", panel);
+  if (list) {
+    const previousScrollTop = list.scrollTop;
+    list.innerHTML = groups.map(group => `
+      <section class="wsctx-group">
+        <div class="wsctx-title"><b>${esc(group.title)}</b>${group.rows.length ? `<em>${group.rows.length}</em>` : ""}</div>
+        ${group.rows.length ? group.rows.join("") : `<p class="wsctx-empty">暂无匹配内容</p>`}
+      </section>
+    `).join("");
+    list.scrollTop = previousScrollTop;
+  }
+  const account = $("#workspaceAccount", panel);
+  if (account && !account.classList.contains("is-open")) account.innerHTML = workspaceAccountMarkup();
+}
+
 function renderContextPanel() {
+  if (workspaceShellEnabled()) {
+    renderWorkspaceContextPanel();
+    return;
+  }
   const panel = $("#ctxPanel");
   const zone = document.body.dataset.zone;
   const show = zone === "studio" && !["supplier", "supplier_parent", "supplier_child"].includes(state.role);
@@ -785,12 +1462,17 @@ function renderTopbar() {
       : page;
   if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: acc.subType === "数字人" ? "数字人制作" : "信息流制作", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
   bc.textContent = crumb;
-  const oldStudioStepper = topbar?.querySelector(".chain-stepper");
-  const studioStepper = zone === "studio" ? document.querySelector(".view-root .chain-stepper") : null;
-  if (oldStudioStepper && oldStudioStepper !== studioStepper) oldStudioStepper.remove();
-  if (studioStepper && topbar && actions) {
-    topbar.classList.add("studio-topbar-active");
-    topbar.insertBefore(studioStepper, actions);
+  renderWorkspaceSwitcher();
+  if (!workspaceShellEnabled()) {
+    const oldStudioStepper = topbar?.querySelector(".chain-stepper");
+    const studioStepper = zone === "studio" ? document.querySelector(".view-root .chain-stepper") : null;
+    if (oldStudioStepper && oldStudioStepper !== studioStepper) oldStudioStepper.remove();
+    if (studioStepper && topbar && actions) {
+      topbar.classList.add("studio-topbar-active");
+      topbar.insertBefore(studioStepper, actions);
+    } else {
+      topbar?.classList.remove("studio-topbar-active");
+    }
   } else {
     topbar?.classList.remove("studio-topbar-active");
   }
@@ -941,7 +1623,11 @@ async function boot() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(paletteCommands()); }
     });
     window.addEventListener("view:rendered", () => { renderContextPanel(); renderTopbar(); });
-    on("change", () => { if (document.body.dataset.zone === "studio") renderContextPanel(); updateNotifyBadge(); });
+    on("change", () => {
+      if (workspaceShellEnabled()) scheduleWorkspaceContextRender();
+      else if (document.body.dataset.zone === "studio") renderContextPanel();
+      updateNotifyBadge();
+    });
     updateNotifyBadge();
 
     // 登录分流（三身份 + 口令）

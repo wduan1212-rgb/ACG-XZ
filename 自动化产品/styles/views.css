@@ -3763,7 +3763,7 @@ body[data-zone="overview"] .view-root::after { display: none !important; }
   overflow: hidden;
   padding-right: 12px;
 }
-.overview-kpi-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.overview-kpi-strip { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 
 .supplier-account-total-views {
   display: inline-flex;

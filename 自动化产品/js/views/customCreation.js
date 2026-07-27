@@ -85,12 +85,12 @@ function hostsHtml(activePage) {
 }
 
 export const customCreationView = {
-  render(root, { page } = {}) {
+  render(root, { page, resourceId } = {}) {
     const renderStarted = perfNow();
     const activePage = normalizedPage(page);
     const existing = root.__customCreationContext;
     if (existing?.shell?.isConnected) {
-      existing.activate(activePage);
+      existing.activate(activePage, resourceId);
       return;
     }
 
@@ -99,6 +99,10 @@ export const customCreationView = {
     const { signal } = controller;
     let resizeObserver = null;
     const mountedTools = new Map();
+    const pendingProjectIds = new Map();
+    if (resourceId && ["video", "canvas"].includes(activePage)) {
+      pendingProjectIds.set(activePage, String(resourceId));
+    }
 
     root.innerHTML = `
       <div class="custom-creation-shell" data-custom-page="${activePage}">
@@ -197,8 +201,8 @@ export const customCreationView = {
       mountedTools.set(key, { loading: true });
       try {
         const module = key === "video"
-          ? await import("./customVideoIntegration.js?v=20260723-v117-8")
-          : await import("./customCanvasIntegration.js?v=20260724-v117-22");
+          ? await import("./customVideoIntegration.js?v=20260727-v120-shell-2")
+          : await import("./customCanvasIntegration.js?v=20260727-v120-shell-2");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);
         const mounted = await mount(mountRoot, {
@@ -216,8 +220,25 @@ export const customCreationView = {
             : null,
           markPublished: typeof mounted?.markPublished === "function"
             ? payload => mounted.markPublished(payload)
-            : null
+            : null,
+          openProject: typeof mounted?.openProject === "function"
+            ? projectId => mounted.openProject(projectId)
+            : null,
+          createProject: typeof mounted?.createProject === "function"
+            ? () => mounted.createProject()
+            : null,
         });
+        const pendingProjectId = pendingProjectIds.get(key);
+        if (
+          pendingProjectId === "__new__"
+          && mountedTools.get(key)?.createProject
+        ) {
+          pendingProjectIds.delete(key);
+          mountedTools.get(key).createProject();
+        } else if (pendingProjectId && mountedTools.get(key)?.openProject) {
+          pendingProjectIds.delete(key);
+          mountedTools.get(key).openProject(pendingProjectId);
+        }
         const latest = mounted?.latestOutput || mountedTools.get(key)?.getLatestOutput?.();
         if (latest) setLatestOutput(key, latest);
         recordCustomPerformance("tool-mount", mountStarted, { tool: key, ok: true });
@@ -234,9 +255,16 @@ export const customCreationView = {
       indicator.style.width = `${tabRect.width}px`;
       indicator.style.transform = `translate3d(${tabRect.left - hostRect.left}px, 0, 0)`;
     };
-    const activate = nextPage => {
+    const activate = (nextPage, nextResourceId = null) => {
       const activateStarted = perfNow();
       const next = normalizedPage(nextPage);
+      if (nextResourceId && ["video", "canvas"].includes(next)) {
+        const projectId = String(nextResourceId);
+        const runtime = mountedTools.get(next);
+        if (projectId === "__new__" && runtime?.createProject) runtime.createProject();
+        else if (runtime?.openProject) runtime.openProject(projectId);
+        else pendingProjectIds.set(next, projectId);
+      }
       if (shell) shell.dataset.customPage = next;
       if (stage) {
         stage.dataset.customStage = next;
@@ -306,7 +334,7 @@ export const customCreationView = {
     }
 
     root.__customCreationContext = { shell, activate };
-    activate(activePage);
+    activate(activePage, resourceId);
 
     root.__viewCleanup = () => {
       controller.abort();

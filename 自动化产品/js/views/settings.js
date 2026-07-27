@@ -97,8 +97,8 @@ function renderCreatorProfile(root) {
 }
 
 export const settingsView = {
-  render(root) {
-    if (state.role === "editor") { renderCreatorProfile(root); return; }
+  render(root, { page } = {}) {
+    if (page === "profile" || state.role === "editor") { renderCreatorProfile(root); return; }
     if (["supplier", "supplier_parent"].includes(state.role)) { renderSupplierSettings(root); return; }
     let memberRequests = [];
     let requestsLoaded = false;

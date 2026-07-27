@@ -167,7 +167,7 @@ class FrontendPerformanceTest(unittest.TestCase):
         self.assertIn('fetchpriority="low"', self.drafts)
 
     def test_custom_tools_mount_only_when_activated(self):
-        activate = self.custom.split("const activate = nextPage =>", 1)[1].split(
+        activate = self.custom.split("const activate = (nextPage, nextResourceId = null) =>", 1)[1].split(
             "root.querySelector(\"[data-custom-back]\")", 1
         )[0]
         self.assertIn('if (next !== "voice") mountTool(next);', activate)

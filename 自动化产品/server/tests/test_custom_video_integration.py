@@ -237,8 +237,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260722-25", html)
-        self.assertIn("app.js?v=20260722-25", html)
+        self.assertIn("styles.css?v=20260727-v120-shell-2", html)
+        self.assertIn("app.js?v=20260727-v120-shell-2", html)
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",

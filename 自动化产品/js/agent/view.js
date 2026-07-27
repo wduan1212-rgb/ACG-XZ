@@ -222,6 +222,31 @@ export const agentView = {
 
 const isLive = () => document.body.dataset.zone === "agent" && rootEl && rootEl.isConnected;
 
+/**
+ * 统一工作区左侧上下文栏使用的会话打开适配器。
+ * 只允许切换到当前用户可见的真实会话，避免外部调用直接写入任意 session id。
+ */
+export function openAgentSession(id) {
+  const sessionId = String(id || "").trim();
+  if (!sessionId) return false;
+  const session = mySessions().find(item => item.id === sessionId);
+  if (!session) return false;
+  if (state.ui.activeSessionId === sessionId) return true;
+  state.ui.activeSessionId = sessionId;
+  save("meta");
+  if (isLive()) {
+    renderSessions();
+    renderMsgs(true);
+    renderBoard();
+    renderPhase();
+  }
+  return true;
+}
+
+if (typeof window !== "undefined") {
+  window.openAgentSession = openAgentSession;
+}
+
 /* 高频事件用 rAF 合并。普通轮询只更新对应任务行，不能重建整个任务板。 */
 let _raf = 0, _needCards = false, _needStructure = false;
 const _needRows = new Set();
@@ -675,7 +700,7 @@ function wire(root) {
     }
 
     const sess = e.target.closest("[data-session]");
-    if (sess) { state.ui.activeSessionId = sess.dataset.session; save("meta"); renderSessions(); renderMsgs(true); renderBoard(); renderPhase(); return; }
+    if (sess) { openAgentSession(sess.dataset.session); return; }
 
     // 固定流程模板：一键生成计划卡（每号随机主题）
     const tpl = e.target.closest("[data-tpl]");

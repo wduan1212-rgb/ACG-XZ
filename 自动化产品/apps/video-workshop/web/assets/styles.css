@@ -1860,3 +1860,68 @@ body.is-file-dragging .drop-overlay-content svg {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* 主平台统一工作区：主壳接管项目列表与一级导航，子应用只保留创作区。 */
+html[data-platform-workspace="true"] .start-view {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+html[data-platform-workspace="true"] .start-view::after,
+html[data-platform-workspace="true"] .start-history,
+html[data-platform-workspace="true"] .start-history-toggle,
+html[data-platform-workspace="true"] .brand-mark,
+html[data-platform-workspace="true"] .brand-kicker,
+html[data-platform-workspace="true"] .brand-title,
+html[data-platform-workspace="true"] .corner-note,
+html[data-platform-workspace="true"] .studio-header,
+html[data-platform-workspace="true"] .history-sidebar {
+  display: none !important;
+}
+
+html[data-platform-workspace="true"] .start-core {
+  grid-column: 1;
+  grid-row: 1;
+  top: 0;
+  left: 0;
+  width: min(760px, calc(100% - 64px));
+}
+
+html[data-platform-workspace="true"] .start-core h1 {
+  margin: 0 0 34px;
+  font-size: clamp(26px, 4vw, 38px);
+}
+
+html[data-platform-workspace="true"] .studio-view {
+  grid-template-rows: minmax(0, 1fr) !important;
+}
+
+html[data-platform-workspace="true"] .studio-body,
+html[data-platform-workspace="true"] .studio-view.history-collapsed .studio-body {
+  grid-template-columns: minmax(0, 1fr) clamp(260px, 28vw, 320px) !important;
+}
+
+html[data-platform-workspace="true"] .conversation-pane {
+  grid-column: 1;
+}
+
+html[data-platform-workspace="true"] .director-rail {
+  grid-column: 2;
+}
+
+@media (max-width: 980px) {
+  html[data-platform-workspace="true"] .studio-body,
+  html[data-platform-workspace="true"] .studio-view.history-collapsed .studio-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  html[data-platform-workspace="true"] .director-rail {
+    display: none;
+  }
+
+  html[data-platform-workspace="true"] .conversation-pane {
+    display: block;
+    grid-column: 1;
+  }
+}

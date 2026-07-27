@@ -614,8 +614,6 @@ export const overviewView = {
       <div class="overview-dashboard-layout">
         <main class="overview-dashboard-main">
           <section class="overview-kpi-strip" aria-label="关键指标">
-            <button class="overview-kpi-card" data-overview-detail="published"><span>发布数量</span><b>${fmt(published.length)}</b><em>${published.filter(({ asset }) => dayKey(asset.publishedUpdatedAt || asset.publishedAt || 0) === dayKey(Date.now())).length} 条今日发布</em></button>
-            <button class="overview-kpi-card" data-overview-detail="interactions"><span>总互动</span><b>${fmt(totalEngagement)}</b><em>赞、藏、评与分享</em></button>
             <button class="overview-kpi-card" data-overview-detail="views"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${accountViewRows.length} 个账号累计</em></button>
           </section>
           <section class="overview-viz-grid">
