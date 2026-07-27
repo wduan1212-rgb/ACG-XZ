@@ -1,0 +1,173 @@
+/* 客户端下载 / 更新入口。样式与业务页面隔离，失败时不改变应用外壳尺寸。 */
+
+.client-rail-entry {
+  position: relative;
+  width: 50px;
+}
+
+.client-rail-entry > .rail-item { width: 50px; }
+
+body.role-supplier-child #clientRailButton,
+body.role-supplier-parent #clientRailButton {
+  display: flex;
+}
+
+.client-rail-flyout {
+  position: absolute;
+  left: 58px;
+  bottom: 0;
+  z-index: 90;
+  width: 206px;
+  display: grid;
+  gap: 5px;
+  padding: 9px;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 14px;
+  color: #f8fafc;
+  background: rgba(9, 9, 10, .96);
+  box-shadow: 0 18px 48px rgba(0,0,0,.34);
+  backdrop-filter: blur(18px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-8px) scale(.97);
+  transform-origin: left bottom;
+  transition: opacity 170ms ease, transform 210ms cubic-bezier(.2,.8,.2,1), visibility 170ms step-end;
+}
+
+.client-rail-flyout::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 100%;
+  bottom: 0;
+  width: 10px;
+}
+
+.client-rail-entry:hover .client-rail-flyout,
+.client-rail-entry:focus-within .client-rail-flyout {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: none;
+  transition-timing-function: ease, cubic-bezier(.2,.8,.2,1), step-start;
+}
+
+.client-rail-entry[data-client-action="refresh"] .client-rail-flyout {
+  display: none;
+}
+
+.client-flyout-title {
+  padding: 2px 7px 5px;
+  color: rgba(255,255,255,.5);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .04em;
+}
+
+.client-rail-flyout button {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  color: rgba(255,255,255,.76);
+  text-align: left;
+  transition: color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.client-rail-flyout button:hover,
+.client-rail-flyout button:focus-visible {
+  color: #fff;
+  background: rgba(255,255,255,.09);
+  outline: none;
+  transform: translateX(2px);
+}
+
+.client-rail-flyout button b { font-size: 12px; }
+.client-rail-flyout button em { overflow: hidden; color: rgba(255,255,255,.45); font-size: 9.5px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+
+.modal-panel.client-guide-panel {
+  width: min(720px, calc(100vw - 32px));
+  max-height: none;
+  padding: 0;
+  overflow: hidden;
+}
+
+.client-guide {
+  padding: 14px;
+  overflow: hidden;
+}
+
+.client-guide-close-row { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+
+.client-guide-steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.client-guide-step {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 82%, var(--soft));
+}
+.client-guide-step > i {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: #fff;
+  background: #111318;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+.client-guide-step > div { min-width: 0; display: grid; align-content: start; gap: 5px; }
+.client-guide-step b { font-size: 12.5px; }
+.client-guide-step em { color: var(--faint); font-size: 10.5px; font-style: normal; line-height: 1.5; }
+.client-guide-step p { color: var(--muted); font-size: 11.5px; line-height: 1.65; }
+.client-guide-step.is-warning { border-color: rgba(217,119,6,.2); background: #fffaf0; }
+.client-guide-step.is-warning > i { background: #9a5b11; }
+
+.client-system-tabs {
+  width: fit-content;
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--soft);
+}
+.client-system-tabs button {
+  min-width: 92px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+.client-system-tabs button.is-active { color: #fff; background: #111318; }
+.client-system-tabs button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+.client-download-action {
+  width: fit-content;
+  margin-top: 3px;
+  text-decoration: none;
+}
+.client-download-state { min-height: 16px; color: #087f5b; font-size: 10.5px; }
+@media (max-width: 1080px) {
+  .client-rail-flyout { width: 190px; }
+}
+
+@media (max-width: 720px) {
+  .client-guide { padding: 12px; }
+  .client-guide-steps { grid-template-columns: 1fr; }
+  .client-system-tabs { width: 100%; }
+  .client-system-tabs button { flex: 1; min-width: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .client-rail-flyout,
+  .client-rail-flyout button { transition: none !important; }
+}

@@ -360,33 +360,31 @@ export const overviewView = {
       });
     };
     const todoCount = waiting.length + inReview.length + failed.length;
-    const xhsCount = delivered.filter(({ acc }) => acc?.platform === "小红书").length;
-    const videoCount = delivered.filter(({ acc }) => acc?.platform === "视频号").length;
+    const xhsCount = published.filter(({ acc }) => acc?.platform === "小红书").length;
+    const videoCount = published.filter(({ acc }) => acc?.platform === "视频号").length;
     const xhsShare = Math.round(xhsCount / Math.max(1, xhsCount + videoCount) * 100);
-    const todayKey = dayKey(Date.now());
-    const todayPlatformMap = new Map();
-    delivered
-      .filter(({ asset }) => dayKey(asset?.deliveredAt || asset?.createdAt) === todayKey)
+    const publishedPlatformMap = new Map();
+    published
       .filter(({ acc }) => ["小红书", "视频号"].includes(acc?.platform))
       .forEach(({ acc }) => {
         const key = `${acc.id || acc.name}::${acc.platform}`;
-        const current = todayPlatformMap.get(key) || { accountId: acc.id || "", name: acc.name || "未命名账号", platform: acc.platform, count: 0 };
+        const current = publishedPlatformMap.get(key) || { accountId: acc.id || "", name: acc.name || "未命名账号", platform: acc.platform, count: 0 };
         current.count += 1;
-        todayPlatformMap.set(key, current);
+        publishedPlatformMap.set(key, current);
       });
-    const todayPlatformRows = [...todayPlatformMap.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
-    const todayPlatformSummary = platform => {
-      const rows = todayPlatformRows.filter(item => item.platform === platform);
+    const publishedPlatformRows = [...publishedPlatformMap.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh-CN"));
+    const publishedPlatformSummary = platform => {
+      const rows = publishedPlatformRows.filter(item => item.platform === platform);
       const preview = rows.slice(0, 6).map(item => `${item.name} ${item.count} 条`);
       return {
         rows,
         tooltip: preview.length
-          ? `今日${platform}交付 · ${preview.join("；")}${rows.length > 6 ? "；… 点击查看全部" : ""}`
-          : `今日暂无${platform}交付`
+          ? `${platform}已发布 · ${preview.join("；")}${rows.length > 6 ? "；… 点击查看全部" : ""}`
+          : `暂无${platform}发布`
       };
     };
-    const todayXhs = todayPlatformSummary("小红书");
-    const todayVideo = todayPlatformSummary("视频号");
+    const publishedXhs = publishedPlatformSummary("小红书");
+    const publishedVideo = publishedPlatformSummary("视频号");
     const publishedTimestamp = ({ asset }) => asset?.publishedUpdatedAt || asset?.publishedAt || asset?.deliveredAt || asset?.createdAt || 0;
     let trendModel = overviewTrendModel(published, { timestamp: publishedTimestamp });
     let { recentDays, trendPoints, trendCurve, trendChartWidth, trendArea } = trendModel;
@@ -421,13 +419,13 @@ export const overviewView = {
       let recentDetailHtml = null;
       let viewFilter = null;
       let viewDetailHtml = null;
-      if (key === "todayPlatforms") {
-        const platformRows = platform ? todayPlatformRows.filter(item => item.platform === platform) : todayPlatformRows;
-        title = platform ? `今日${platform}交付 · ${platformRows.length} 个账号` : `今日平台交付 · ${platformRows.length} 个账号`;
+      if (key === "publishedPlatforms") {
+        const platformRows = platform ? publishedPlatformRows.filter(item => item.platform === platform) : publishedPlatformRows;
+        title = platform ? `${platform}发布分布 · ${platformRows.length} 个账号` : `发布平台分布 · ${platformRows.length} 个账号`;
         rows = platformRows.map(item => makeRow(
           item.name,
-          `${item.platform} · 今日交付 ${item.count} 条`
-        )).join("") || `<div class="overview-task-empty">今日暂无${platform || "小红书或视频号"}交付</div>`;
+          `${item.platform} · 已发布 ${item.count} 条`
+        )).join("") || `<div class="overview-task-empty">暂无${platform || "小红书或视频号"}发布</div>`;
       } else if (key === "recent" || key === "published") {
         const isPublished = key === "published";
         const source = [...(isPublished ? published : delivered)].sort((a, b) => {
@@ -621,9 +619,9 @@ export const overviewView = {
             <button class="overview-kpi-card" data-overview-detail="views"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${accountViewRows.length} 个账号累计</em></button>
           </section>
           <section class="overview-viz-grid">
-            <article class="overview-viz-card overview-donut-card" aria-label="平台分布，悬停或聚焦扇区查看今日账号交付，点击查看对应平台明细">
-              <header><b>平台分布</b><em>${delivered.length} 条交付</em></header>
-              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="overview-donut-track" cx="70" cy="70" r="51" pathLength="100"/><circle class="overview-donut-segment is-xhs" cx="70" cy="70" r="51" pathLength="100" style="--segment:${xhsShare};--offset:0" data-overview-detail="todayPlatforms" data-overview-platform="小红书" data-chart-tip="${esc(todayXhs.tooltip)}" tabindex="0" role="button" aria-label="小红书 ${xhsCount} 条交付，查看今日小红书交付明细"/><circle class="overview-donut-segment is-video" cx="70" cy="70" r="51" pathLength="100" style="--segment:${100 - xhsShare};--offset:${-xhsShare}" data-overview-detail="todayPlatforms" data-overview-platform="视频号" data-chart-tip="${esc(todayVideo.tooltip)}" tabindex="0" role="button" aria-label="视频号 ${videoCount} 条交付，查看今日视频号交付明细"/></svg><i><b>${delivered.length}</b><em>总交付</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
+            <article class="overview-viz-card overview-donut-card" aria-label="发布分布，悬停或聚焦扇区查看各平台发布数量，点击查看对应账号明细">
+              <header><b>发布分布</b><em>${published.length} 条发布</em></header>
+              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="overview-donut-track" cx="70" cy="70" r="51" pathLength="100"/><circle class="overview-donut-segment is-xhs" cx="70" cy="70" r="51" pathLength="100" style="--segment:${xhsShare};--offset:0" data-overview-detail="publishedPlatforms" data-overview-platform="小红书" data-chart-tip="${esc(publishedXhs.tooltip)}" tabindex="0" role="button" aria-label="小红书 ${xhsCount} 条发布，查看小红书发布明细"/><circle class="overview-donut-segment is-video" cx="70" cy="70" r="51" pathLength="100" style="--segment:${100 - xhsShare};--offset:${-xhsShare}" data-overview-detail="publishedPlatforms" data-overview-platform="视频号" data-chart-tip="${esc(publishedVideo.tooltip)}" tabindex="0" role="button" aria-label="视频号 ${videoCount} 条发布，查看视频号发布明细"/></svg><i><b>${published.length}</b><em>已发布</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
             </article>
             <article class="overview-viz-card overview-trend-card">${overviewTrendCardContent(trendModel)}</article>
           </section>

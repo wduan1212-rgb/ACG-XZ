@@ -16,6 +16,20 @@ class V105DetailFixesTest(unittest.TestCase):
         self.assertIn("deliveryAsset?.coverAssetId", studio)
         self.assertIn('loading="lazy" decoding="async"', studio)
 
+    def test_completed_batch_prefers_video_cover_then_first_frame(self):
+        cards = self.read("js/agent/cards.js")
+        styles = self.read("styles/agent.css")
+        results = cards.split("results(m)", 1)[1].split("/* 错误卡 */", 1)[0]
+        self.assertIn("p.artifacts?.boards?.cover?.assetId", results)
+        self.assertIn("deliveryAsset?.coverAssetId", results)
+        self.assertIn("p.artifacts?.finalVideoUrl", results)
+        self.assertIn('aria-label="视频首帧"', results)
+        self.assertLess(
+            results.index("coverUrl"),
+            results.index("finalVideoUrl"),
+        )
+        self.assertIn(".agres-item video", styles)
+
     def test_digital_human_edit_does_not_reuse_old_audio(self):
         workshop = self.read("js/views/chainWorkshop.js")
         segment_merge = workshop.split("function digitalSegmentsFromShots", 1)[1].split(

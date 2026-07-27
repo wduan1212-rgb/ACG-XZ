@@ -56,9 +56,10 @@ class FrontendModuleIdentityTest(unittest.TestCase):
         expected_versions = {
             "components.css": "v=20260723-v117-8",
             "views.css": "v=20260727-v118-7",
-            "agent.css": "v=20260723-v117-8",
+            "agent.css": "v=20260727-v119-1",
             "ui-motion.css": "v=20260727-v118-7",
             "custom-creation.css": "v=20260723-v117-8",
+            "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():
             self.assertIn(

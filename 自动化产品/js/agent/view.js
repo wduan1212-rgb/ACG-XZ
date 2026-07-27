@@ -12,7 +12,7 @@ import {
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences
 } from "./orchestrator.js?v=20260727-v118-7";
-import { renderMessage, boardRow } from "./cards.js?v=20260723-v117-8";
+import { renderMessage, boardRow } from "./cards.js?v=20260727-v119-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
 import { openProductionDrawer } from "../views/prodDrawer.js?v=20260727-v118-7";
 import { deliver } from "../domain/delivery.js?v=20260727-v118-7";

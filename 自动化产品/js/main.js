@@ -21,10 +21,11 @@ import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge 
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { overviewView } from "./views/overview.js?v=20260727-v118-7";
+import { initClientDistribution } from "./ui/clientDistribution.js?v=20260727-v119-4";
+import { overviewView } from "./views/overview.js?v=20260727-v119-3";
 import { voiceLabView } from "./views/voiceLab.js?v=20260723-v117-8";
 import { customCreationView } from "./views/customCreation.js?v=20260727-v118-7";
-import { agentView } from "./agent/view.js?v=20260727-v118-7";
+import { agentView } from "./agent/view.js?v=20260727-v119-1";
 import { studioView } from "./views/studio.js?v=20260727-v118-7";
 import { assetsView } from "./views/assetsView.js?v=20260727-v118-7";
 import { deliveryView } from "./views/deliveryView.js?v=20260727-v118-7";
@@ -35,7 +36,7 @@ import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260727-v118-7";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260727-v118-7";
+const APP_BUILD_ID = "20260727-v119-4";
 let announcedBuildId = "";
 
 function showUpdateNotice(nextBuildId) {
@@ -919,6 +920,7 @@ async function boot() {
     initRouter();
     installSelectEnhancer();
     installUIEnhancements();
+    initClientDistribution();
     installUpdateChecker();
     initLoginBeams();
 

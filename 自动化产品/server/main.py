@@ -77,6 +77,17 @@ FRONTEND_DIR = ROOT.parent          # index.html 所在目录
 DATA_FILE = Path(os.getenv("LEGACY_DATA_FILE", ROOT / "data.json"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", ROOT / "uploads"))
 CUSTOM_CANVAS_DIR = FRONTEND_DIR / "vendor" / "infinite-canvas"
+CLIENT_DOWNLOAD_DIR = FRONTEND_DIR / "downloads" / "client"
+CLIENT_INSTALLERS = {
+    ("0.2.0", "星阵_0.2.0_universal.dmg"): {
+        "media_type": "application/x-apple-diskimage",
+        "download_name": "xingzhen_0.2.0_universal.dmg",
+    },
+    ("0.2.0", "星阵_0.2.0_x64-setup.exe"): {
+        "media_type": "application/vnd.microsoft.portable-executable",
+        "download_name": "xingzhen_0.2.0_x64-setup.exe",
+    },
+}
 
 
 def load_env_local():
@@ -7103,6 +7114,70 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
 
 
 # ---------- 前端静态资源（仅暴露必要文件，不整目录托管，避免泄露 _backup_*/源码/方案文档） ----------
+
+
+@app.get("/downloads/client/manifest.json")
+def client_download_manifest():
+    manifest = CLIENT_DOWNLOAD_DIR / "manifest.json"
+    if not manifest.is_file():
+        raise HTTPException(404, "客户端版本清单不存在")
+    return no_cache_file(manifest, media_type="application/json")
+
+
+@app.head("/downloads/client/manifest.json")
+def client_download_manifest_head():
+    manifest = CLIENT_DOWNLOAD_DIR / "manifest.json"
+    if not manifest.is_file():
+        raise HTTPException(404, "客户端版本清单不存在")
+    return Response(
+        status_code=200,
+        media_type="application/json",
+        headers={
+            **NO_CACHE_HEADERS,
+            "Content-Length": str(manifest.stat().st_size),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _client_installer_response(version: str, filename: str, head_only: bool = False):
+    metadata = CLIENT_INSTALLERS.get((str(version or ""), str(filename or "")))
+    if not metadata:
+        raise HTTPException(404, "客户端安装包不存在")
+    package = CLIENT_DOWNLOAD_DIR / version / filename
+    if not package.is_file() or package.parent.resolve() != (CLIENT_DOWNLOAD_DIR / version).resolve():
+        raise HTTPException(404, "客户端安装包不存在")
+    ascii_name = metadata["download_name"]
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Disposition": (
+            f'attachment; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(filename)}"
+        ),
+        "Content-Length": str(package.stat().st_size),
+        "X-Content-Type-Options": "nosniff",
+    }
+    if head_only:
+        return Response(status_code=200, media_type=metadata["media_type"], headers=headers)
+    return FileResponse(
+        str(package),
+        media_type=metadata["media_type"],
+        filename=filename,
+        headers=headers,
+    )
+
+
+@app.get("/downloads/client/{version}/{filename}")
+def client_installer_download(version: str, filename: str):
+    return _client_installer_response(version, filename)
+
+
+@app.head("/downloads/client/{version}/{filename}")
+def client_installer_download_head(version: str, filename: str):
+    return _client_installer_response(version, filename, head_only=True)
+
+
 app.mount("/js", VersionAwareStaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
 app.mount("/styles", VersionAwareStaticFiles(directory=str(FRONTEND_DIR / "styles")), name="styles")
 app.mount("/assets", VersionAwareStaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")

@@ -400,11 +400,22 @@ const CARD = {
       <div class="agc-head">${icon("checkCircle", 15)}<b>批次完成</b><span class="agc-state ok">${done.length}/${prods.length} 已交付</span></div>
       <div class="agres-grid">${done.map(p => {
         const acc = accountById(p.accountId);
-        const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
-        const cover = items.find(x => x.assetId);
-        const u = cover ? urlFor(cover.assetId) : null;
+        const imageItems = p.artifacts?.images?.items || [];
+        const deliveryAsset = state.assets.find(asset => asset.id === p.delivery?.assetId);
+        const coverAssetId = p.mode === "图文"
+          ? imageItems.find(item => item.assetId)?.assetId
+          : (p.artifacts?.boards?.cover?.assetId || deliveryAsset?.coverAssetId || "");
+        const coverUrl = coverAssetId ? urlFor(coverAssetId) : "";
+        const finalVideoUrl = p.mode === "视频"
+          ? String(p.artifacts?.finalVideoUrl || deliveryAsset?.videoUrl || "").trim()
+          : "";
+        const media = coverUrl
+          ? `<img src="${esc(coverUrl)}" alt="${p.mode === "视频" ? "视频封面" : "图文首图"}" loading="lazy" decoding="async"/>`
+          : finalVideoUrl
+            ? `<video src="${esc(finalVideoUrl)}" muted playsinline preload="metadata" aria-label="视频首帧"></video>`
+            : `<i style="background:${gradFor(p.title)}"></i>`;
         return `<button class="agres-item" data-act="open-prod" data-pid="${p.id}">
-          ${u ? `<img src="${u}"/>` : `<i style="background:${gradFor(p.title)}"></i>`}
+          ${media}
           <b>${esc(p.artifacts.copy.title || p.title)}</b><em>${esc(acc?.name || "")} · ${esc(p.delivery?.name || "")}</em>
         </button>`;
       }).join("")}</div>

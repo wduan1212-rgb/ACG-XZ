@@ -10,9 +10,10 @@
     <link rel="stylesheet" href="./styles/components.css?v=20260723-v117-8" />
     <link rel="stylesheet" href="./styles/views.css?v=20260727-v118-7" />
     <link rel="stylesheet" href="./styles/analytics.css?v=20260711-v70" />
-    <link rel="stylesheet" href="./styles/agent.css?v=20260723-v117-8" />
+    <link rel="stylesheet" href="./styles/agent.css?v=20260727-v119-1" />
     <link rel="stylesheet" href="./styles/ui-motion.css?v=20260727-v118-7" />
     <link rel="stylesheet" href="./styles/custom-creation.css?v=20260723-v117-8" />
+    <link rel="stylesheet" href="./styles/client-download.css?v=20260727-v119-4" />
     <script>
       (function () {
         try {
@@ -99,6 +100,17 @@
           </button>
         </div>
         <div class="rail-bottom">
+          <div class="client-rail-entry" id="clientRailEntry">
+            <button class="rail-item" id="clientRailButton" type="button" title="下载客户端" aria-haspopup="dialog" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="M4 4h16v11H4zM8 20h8M12 15v5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 7v5m0 0l-2-2m2 2l2-2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span id="clientRailLabel">客户端</span>
+            </button>
+            <div class="client-rail-flyout" id="clientRailFlyout" role="menu" aria-label="选择客户端系统">
+              <span class="client-flyout-title">选择安装系统</span>
+              <button type="button" role="menuitem" data-client-os="macos"><b>macOS</b><em>Intel + Apple 芯片</em></button>
+              <button type="button" role="menuitem" data-client-os="windows"><b>Windows</b><em>Windows 10 / 11 x64</em></button>
+            </div>
+          </div>
           <button class="rail-item" data-nav="settings" title="设置">
             <svg viewBox="0 0 24 24" width="19" height="19"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-2.94.67 2 2 0 11-3.96 0 1.65 1.65 0 00-2.94-.67l-.06.06a2 2 0 11-2.83-2.83l.06-.06A1.65 1.65 0 004.6 13a2 2 0 110-3.96 1.65 1.65 0 00.67-2.94l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 002.94-.67 2 2 0 113.96 0 1.65 1.65 0 002.94.67l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.67 2.94 2 2 0 110 3.96z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
             <span>设置</span>
@@ -162,6 +174,6 @@
         }, 7000);
       })();
     </script>
-    <script type="module" src="./js/main.js?v=20260727-v118-7"></script>
+    <script type="module" src="./js/main.js?v=20260727-v119-4"></script>
   </body>
 </html>

@@ -621,7 +621,7 @@
 .agres-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .agres-item { text-align: left; border: 1px solid var(--ag-line); border-radius: var(--r-md); overflow: hidden; background: rgba(255, 255, 255, .03); transition: all var(--t-fast); }
 .agres-item:hover { border-color: rgba(132, 152, 255, .45); transform: translateY(-2px); }
-.agres-item img, .agres-item i { width: 100%; height: 74px; object-fit: cover; display: block; }
+.agres-item img, .agres-item video, .agres-item i { width: 100%; height: 74px; object-fit: cover; display: block; }
 .agres-item b { display: block; font-size: 10.5px; color: var(--d-text); padding: 6px 8px 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agres-item em { display: block; font-style: normal; font-size: 9px; color: var(--d-faint); padding: 0 8px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

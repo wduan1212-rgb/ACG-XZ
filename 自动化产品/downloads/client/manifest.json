@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "latestVersion": "0.2.0",
+  "releasedAt": "2026-07-27",
+  "platforms": {
+    "macos": {
+      "label": "macOS",
+      "filename": "星阵_0.2.0_universal.dmg",
+      "downloadUrl": "/downloads/client/0.2.0/%E6%98%9F%E9%98%B5_0.2.0_universal.dmg",
+      "sha256": "d9d8e9b9f0e0585aaa409b91dc5e078e1fa903dea384f0a119fd09757d06b632",
+      "compatibility": "Intel macOS 10.15+；Apple Silicon macOS 11+",
+      "signature": "ad-hoc 签名，未公证",
+      "installGuide": "首次打开若被系统拦截，请进入“系统设置 → 隐私与安全性”，在安全提示处点击“仍要打开”。"
+    },
+    "windows": {
+      "label": "Windows",
+      "filename": "星阵_0.2.0_x64-setup.exe",
+      "downloadUrl": "/downloads/client/0.2.0/%E6%98%9F%E9%98%B5_0.2.0_x64-setup.exe",
+      "sha256": "2c3668c1d5e4f5c5dd49cb2374e330056203464c95cf125e1308885d7d1e477f",
+      "compatibility": "Windows 10 / 11 x64",
+      "signature": "未代码签名",
+      "installGuide": "若 Windows SmartScreen 提示保护电脑，请点击“更多信息”，确认发布包名称后选择“仍要运行”。"
+    }
+  }
+}
