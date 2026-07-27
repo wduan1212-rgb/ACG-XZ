@@ -1,5 +1,14 @@
 # Server Deployment Log
 
+## v118 - 2026-07-27
+
+- Source: controlled commit `37c5194`. Production main cache is `20260727-v118-7`; infinite-canvas build is `1lusSDhjMfp40zIG_fwT9`; video-workshop static files were unchanged.
+- Scope: deployed exactly 63 runtime code/static files from a clean detached target worktree. Tests, documents, local state, SQLite, accounts, members, assets, deliveries, playback values, drafts, analytics, uploads, composed media, canvas projects/blobs, video-workshop runtime, model cache, authentication and private environment files were excluded. No delete-style synchronization, reconcile, migration, backfill, restore or business write was used.
+- Validation: all 63 target hashes match the release manifest. Main service and video-workshop sidecar are active and healthy; SQLite integrity is `ok`; recent error-level service journals are empty. The clean target passed main 364/364 and video-workshop 92/92 tests, changed JavaScript syntax checks, Python compilation and diff checks.
+- Browser smoke: an authenticated production administrator session refreshed to `v118-7`. The dashboard used returned-link publication counts, grouped total playback across 51 accounts, aligned platform distribution with the metric grid and had no horizontal overflow. Interaction metrics stayed on each row's right side with the open action at the far right. A real 12-production digital-human batch rendered 12 stable cover URLs; two polling observations produced identical row/media signatures. Infinite canvas loaded the target build with recent projects and thumbnails. Console reported zero errors and zero warnings. No task was generated, deleted, cancelled, retried or migrated.
+- Data protection: no protected collection decreased. The consistent backup baseline had 879 jobs and post-deployment had 887 because normal production tasks continued during the window; these writes were preserved. Uploads, composed media, canvas blobs, video-workshop runtime, model cache and private-environment fingerprints were unchanged.
+- Rollback and retention: created and verified pure code/static rollback point `v118-pre-20260727-123403` plus a separate consistent SQLite snapshot. Four pure code/static rollback sets remain, below the five-version retention limit, so no set was removed. Business/runtime snapshots are not part of this rotation.
+
 ## v117.23 - 2026-07-24
 
 - Source: controlled commit `57d1275`. Production main cache is `20260724-v117-23`; infinite-canvas build is `KUHu0JKubL-tLCqpqdIyX`; video-workshop static files were unchanged.
