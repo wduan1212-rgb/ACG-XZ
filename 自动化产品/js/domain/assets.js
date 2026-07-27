@@ -7,6 +7,71 @@ import { uid, esc, gradFor, dataUrlToBlob, extOfMime } from "../core/util.js";
 
 const urlCache = new Map(); // assetId -> objectURL
 const IMAGE_PROCESS_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const FILE_MIME_BY_EXTENSION = Object.freeze({
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+  ogg: "audio/ogg",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  gif: "image/gif",
+});
+const GENERIC_BINARY_MIMES = new Set([
+  "application/octet-stream",
+  "application/binary",
+  "binary/octet-stream",
+]);
+
+function validAssetMime(value) {
+  const mime = String(value || "").trim().toLowerCase().split(";", 1)[0];
+  return mime && !GENERIC_BINARY_MIMES.has(mime) ? mime : "";
+}
+
+function assetMimeFromFilename(name = "") {
+  const extension = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || "";
+  return FILE_MIME_BY_EXTENSION[extension] || "";
+}
+
+export function inferAssetFileMime(file) {
+  return validAssetMime(file?.type)
+    || assetMimeFromFilename(file?.name)
+    || "application/octet-stream";
+}
+
+function resolvedAssetBlobMime(blob, fallbackMime = "", filename = "") {
+  return validAssetMime(blob?.type)
+    || validAssetMime(fallbackMime)
+    || assetMimeFromFilename(filename)
+    || "application/octet-stream";
+}
+
+export function normalizeAssetBlobMime(blob, fallbackMime = "", filename = "") {
+  if (!(blob instanceof Blob)) return blob;
+  const current = validAssetMime(blob.type);
+  const resolved = resolvedAssetBlobMime(blob, fallbackMime, filename);
+  if (current || resolved === "application/octet-stream") return blob;
+  return blob.slice(0, blob.size, resolved);
+}
+
+export function assetTypeForFile(file) {
+  const mime = inferAssetFileMime(file);
+  if (mime.startsWith("video/")) return "视频";
+  if (mime.startsWith("audio/")) return "音频";
+  return "图片";
+}
+
+export function inferAssetFileMeta(file) {
+  return {
+    mime: inferAssetFileMime(file),
+    type: assetTypeForFile(file),
+  };
+}
 
 const assetTagText = asset => (asset?.tags || []).map(tag => String(tag || "").trim()).join(" ");
 export function isBgmAsset(asset) {
@@ -267,7 +332,9 @@ async function lightlyProcessImageBlob(blob, seed = "") {
 
 async function uploadServerFile(a, blob, filename = "") {
   if (!remote.isOn() || !remote.hasToken() || !(blob instanceof Blob)) return null;
-  const mime = blob.type || a.mime || "application/octet-stream";
+  const mime = resolvedAssetBlobMime(blob, a.mime, filename || a.serverFileName || a.name);
+  const uploadBlob = normalizeAssetBlobMime(blob, mime, filename || a.serverFileName || a.name);
+  a.mime = mime;
   const qs = new URLSearchParams({ filename: fileNameFor(a, filename), mime });
   const res = await fetch(`/api/files/${encodeURIComponent(a.id)}?${qs.toString()}`, {
     method: "PUT",
@@ -275,14 +342,14 @@ async function uploadServerFile(a, blob, filename = "") {
       "Content-Type": mime,
       "Authorization": "Bearer " + remote.getToken()
     },
-    body: blob
+    body: uploadBlob
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.fileUrl) throw new Error(data.detail || data.error || `文件上传服务器失败 (${res.status})`);
   a.fileUrl = data.fileUrl;
   a.url = data.fileUrl;
-  a.mime = data.mime || mime;
-  a.size = data.size || blob.size || a.size || 0;
+  a.mime = validAssetMime(data.mime) || mime;
+  a.size = data.size || uploadBlob.size || a.size || 0;
   a.serverFileName = data.name || "";
   a.hasBlob = true;
   a.storage = "server";
@@ -312,10 +379,16 @@ export async function addAssetFromDataUrl(accountId, { name, type = "图片", ta
   if (dataUrl) {
     try {
       const raw = dataUrlToBlob(dataUrl);
-      const blob = type === "图片" ? await lightlyProcessImageBlob(raw, name || a.name) : raw;
+      const sourceBlob = normalizeAssetBlobMime(
+        raw,
+        inferAssetFileMime({ name: name || a.name, type: raw.type }),
+        name || a.name
+      );
+      const blob = type === "图片" ? await lightlyProcessImageBlob(sourceBlob, name || a.name) : sourceBlob;
+      a.mime = resolvedAssetBlobMime(blob, sourceBlob.type, name || a.name);
       await db.putBlob(a.id, blob);
       urlCache.set(a.id, URL.createObjectURL(blob));
-      if (blob !== raw) a.processed = "clarity-filter-v2";
+      if (blob !== sourceBlob) a.processed = "clarity-filter-v2";
       await uploadServerFile(a, blob, name || a.name);
     } catch (e) {
       if (remote.isOn() && remote.hasToken()) throw e;
@@ -328,16 +401,28 @@ export async function addAssetFromDataUrl(accountId, { name, type = "图片", ta
 }
 
 export async function addAssetFromFile(accountId, file, { tags = [], name, forceNew = false } = {}) {
-  const type = file.type.startsWith("video/") ? "视频" : file.type.startsWith("audio/") ? "音频" : "图片";
+  const { mime, type } = inferAssetFileMeta(file);
   const assetName = name || file.name.replace(/\.[^.]+$/, "");
-  const blob = type === "图片" ? await lightlyProcessImageBlob(file, file.name || assetName) : file;
+  const sourceBlob = normalizeAssetBlobMime(file, mime, file.name || assetName);
+  const blob = type === "图片" ? await lightlyProcessImageBlob(sourceBlob, file.name || assetName) : sourceBlob;
   const contentHash = await assetHashFromBlob(blob);
   const dup = forceNew ? null : duplicateAssetByHash(contentHash, type);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name: assetName });
-  const a = { id: uid(), accountId, seq: nextSeq(), ownerId: state.ui.currentMemberId || null, name: assetName, type, tags, createdAt: Date.now(), hasBlob: true, mime: file.type, contentHash };
-  if (blob !== file) {
+  const a = {
+    id: uid(),
+    accountId,
+    seq: nextSeq(),
+    ownerId: state.ui.currentMemberId || null,
+    name: assetName,
+    type,
+    tags,
+    createdAt: Date.now(),
+    hasBlob: true,
+    mime: resolvedAssetBlobMime(blob, mime, file.name || assetName),
+    contentHash
+  };
+  if (blob !== sourceBlob) {
     a.processed = "clarity-filter-v2";
-    a.mime = blob.type || a.mime;
   }
   await db.putBlob(a.id, blob);
   urlCache.set(a.id, URL.createObjectURL(blob));
@@ -351,13 +436,15 @@ export async function addAssetFromFile(accountId, file, { tags = [], name, force
 export async function replaceAssetBlob(assetId, dataUrl) {
   const a = assetById(assetId); if (!a) return;
   const raw = dataUrlToBlob(dataUrl);
-  const blob = a.type === "图片" ? await lightlyProcessImageBlob(raw, a.name) : raw;
+  const sourceBlob = normalizeAssetBlobMime(raw, a.mime, a.serverFileName || a.name);
+  const blob = a.type === "图片" ? await lightlyProcessImageBlob(sourceBlob, a.name) : sourceBlob;
+  a.mime = resolvedAssetBlobMime(blob, a.mime, a.serverFileName || a.name);
   const contentHash = await assetHashFromBlob(blob);
   await db.putBlob(a.id, blob);
   const old = urlCache.get(a.id);
   if (old) URL.revokeObjectURL(old);
   urlCache.set(a.id, URL.createObjectURL(blob));
-  if (blob !== raw) a.processed = "clarity-filter-v2";
+  if (blob !== sourceBlob) a.processed = "clarity-filter-v2";
   await uploadServerFile(a, blob, a.name);
   const previousRevision = Number(a.blobUpdatedAt || a.updatedAt || a.createdAt || 0);
   const revisionAt = Math.max(Date.now(), previousRevision + 1);
@@ -409,7 +496,12 @@ export async function assetBlob(id) {
   try {
     const res = await fetch(u, { cache: "no-store" });
     if (!res.ok) return null;
-    const blob = await res.blob();
+    const fetchedBlob = await res.blob();
+    const blob = normalizeAssetBlobMime(
+      fetchedBlob,
+      a?.mime,
+      a?.serverFileName || a?.name || ""
+    );
     await db.putBlob(id, blob).catch(() => null);
     if (!urlCache.has(id)) urlCache.set(id, URL.createObjectURL(blob));
     return blob;
@@ -421,7 +513,12 @@ export async function assetBlob(id) {
 export async function assetU8(id) {
   const b = await assetBlob(id);
   if (!b) return null;
-  return { u8: new Uint8Array(await b.arrayBuffer()), ext: extOfMime(b.type || "image/png") };
+  const a = assetById(id);
+  const mime = resolvedAssetBlobMime(b, a?.mime, a?.serverFileName || a?.name || "");
+  return {
+    u8: new Uint8Array(await b.arrayBuffer()),
+    ext: extOfMime(mime)
+  };
 }
 
 /* 缩略 html：没有可视帧时使用统一黑白媒体占位。 */

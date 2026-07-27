@@ -28,10 +28,19 @@ class FrontendModuleIdentityTest(unittest.TestCase):
         self.assertGreaterEqual(len(imports), 2)
         self.assertTrue(all("?" not in specifier for _, specifier in imports), imports)
 
+    def test_router_has_one_canonical_esm_url(self):
+        imports = self._module_imports("router.js")
+        self.assertGreaterEqual(len(imports), 2)
+        self.assertTrue(all("?" not in specifier for _, specifier in imports), imports)
+
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260727-v118-7",
-            "prodDrawer.js": "v=20260727-v118-7",
+            "studio.js": "v=20260727-v120-shell-8",
+            "prodDrawer.js": "v=20260727-v120-shell-8",
+            "deliveryView.js": "v=20260727-v120-shell-8",
+            "draftsView.js": "v=20260727-v120-shell-8",
+            "voiceLab.js": "v=20260727-v120-shell-8",
+            "chainWorkshop.js": "v=20260727-v120-shell-8",
             "orchestrator.js": "v=20260727-v118-7",
         }
         for module_name, expected_query in expected.items():
@@ -49,16 +58,17 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_custom_publish_is_loaded_with_the_current_module_identity(self):
         source = (APP_DIR / "js/views/customCreation.js").read_text(encoding="utf-8")
-        self.assertIn('import("./customPublish.js?v=20260727-v118-7")', source)
+        self.assertIn('import("./customPublish.js?v=20260727-v120-shell-8")', source)
 
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
+            "base.css": "v=20260727-v120-shell-8",
             "components.css": "v=20260723-v117-8",
-            "views.css": "v=20260727-v120-shell-2",
-            "agent.css": "v=20260727-v120-shell-2",
+            "views.css": "v=20260727-v120-shell-8",
+            "agent.css": "v=20260727-v120-shell-8",
             "ui-motion.css": "v=20260727-v118-7",
-            "custom-creation.css": "v=20260727-v120-shell-2",
+            "custom-creation.css": "v=20260727-v120-shell-8",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():
@@ -68,15 +78,23 @@ class FrontendModuleIdentityTest(unittest.TestCase):
                 stylesheet,
             )
 
-    def test_overview_platform_card_uses_same_three_column_grid_as_kpis(self):
+    def test_overview_publish_distribution_is_narrower_than_trend_chart(self):
         source = (APP_DIR / "styles/views.css").read_text(encoding="utf-8")
         self.assertIn(
-            ".overview-viz-grid { min-height: 0; display: grid; "
-            "grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }",
+            "--overview-data-columns: repeat(3, minmax(0, 1fr));",
             source,
         )
         self.assertIn(
-            ".overview-viz-grid > .overview-trend-card { grid-column: span 2; }",
+            ".overview-viz-grid { min-height: 0; display: grid; "
+            "grid-template-columns: var(--overview-data-columns); gap: var(--overview-data-gap); }",
+            source,
+        )
+        self.assertIn(
+            ".overview-viz-grid > .overview-donut-card { grid-column: 1; }",
+            source,
+        )
+        self.assertIn(
+            ".overview-viz-grid > .overview-trend-card { grid-column: 2 / span 2; }",
             source,
         )
 

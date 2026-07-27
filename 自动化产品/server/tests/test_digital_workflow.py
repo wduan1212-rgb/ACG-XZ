@@ -761,14 +761,19 @@ console.log(result);
         self.assertNotIn("lastAnalyticsRemotePullAt", analytics)
         self.assertNotIn("ensureProviderStatus(stableRerender)", voice)
 
-    def test_global_bgm_and_editing_material_library_contract(self):
+    def test_global_asset_library_contract(self):
         assets_view = (APP_DIR / "js/views/assetsView.js").read_text(encoding="utf-8")
         cut = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
         accounts = (APP_DIR / "js/domain/accounts.js").read_text(encoding="utf-8")
-        self.assertIn('const isGlobalLibrary = () => ["bgm", "material"].includes(libraryMode)', assets_view)
+        self.assertIn(
+            'const isGlobalLibrary = () => ["bgm", "material", "voice", "reference"].includes(libraryMode)',
+            assets_view,
+        )
         self.assertIn('searchAssets({ accountId: isGlobalLibrary() ? "all" : fAcc', assets_view)
         self.assertIn('isGlobalLibrary() ? "" : `<label class="select-shell account-select">', assets_view)
         self.assertIn("if (isGlobalLibrary()) return `<div class=\"asset-grid\">", assets_view)
+        self.assertIn('a.type === "音频"', assets_view)
+        self.assertIn("私有语音/参考音频仍由 searchAssets 的 ownedBy 边界隔离", assets_view)
         self.assertIn("globalBgmAssets()", cut)
         self.assertIn('optgroup label="共享 BGM 库"', cut)
         self.assertIn("addAssetFromFile(null, file", cut)
@@ -796,6 +801,151 @@ console.log(JSON.stringify({
             check=True,
         ).stdout.strip()
         self.assertEqual('{"bgm":["bgm-other"],"material":true}', result)
+
+    def test_empty_or_generic_mime_media_uses_filename_fallback(self):
+        script = r"""
+const storage = new Map();
+globalThis.localStorage = {
+  getItem(key){ return storage.get(key) || ""; },
+  setItem(key, value){ storage.set(key, String(value)); },
+  removeItem(key){ storage.delete(key); }
+};
+globalThis.sessionStorage = { getItem(){ return null; }, setItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){} };
+
+let uploadRequest = null;
+globalThis.fetch = async (input, options = {}) => {
+  const url = String(input);
+  const method = String(options.method || "GET").toUpperCase();
+  if (url === "/api/health") {
+    return new Response(JSON.stringify({ ok:true }), {
+      status:200,
+      headers:{ "Content-Type":"application/json" }
+    });
+  }
+  if (url.startsWith("/api/files/") && method === "PUT") {
+    const parsed = new URL(url, globalThis.location.origin);
+    uploadRequest = {
+      headerMime: options.headers["Content-Type"],
+      bodyMime: options.body.type,
+      queryMime: parsed.searchParams.get("mime"),
+    };
+    return new Response(JSON.stringify({
+      fileUrl:"/api/files/voice.m4a",
+      mime:"application/octet-stream",
+      name:"voice.m4a",
+      size:options.body.size
+    }), {
+      status:200,
+      headers:{ "Content-Type":"application/json" }
+    });
+  }
+  if (url.startsWith("/api/files/") && method === "GET") {
+    return new Response(
+      new Blob([new Uint8Array([9, 8, 7])], { type:"application/octet-stream" }),
+      { status:200, headers:{ "Content-Type":"application/octet-stream" } }
+    );
+  }
+  return new Response("{}", {
+    status:200,
+    headers:{ "Content-Type":"application/json" }
+  });
+};
+
+const { db } = await import('./js/core/db.js');
+const remote = await import('./js/core/remote.js');
+const { state } = await import('./js/core/store.js');
+const {
+  addAssetFromFile,
+  assetBlob,
+  assetU8,
+  inferAssetFileMeta
+} = await import('./js/domain/assets.js');
+const cases = [
+  { name:'voice.mp3', type:'' },
+  { name:'voice.wav', type:'' },
+  { name:'voice.m4a', type:'application/octet-stream' },
+  { name:'clip.mp4', type:'' },
+  { name:'clip.mov', type:'' },
+  { name:'fake.mp3', type:'video/mp4' }
+];
+
+const blobs = new Map();
+db.putBlob = async (id, blob) => { blobs.set(id, blob); };
+db.getBlob = async id => blobs.get(id) || null;
+state.assets = [];
+state.ui.assetSeq = 0;
+state.ui.currentMemberId = "member-mime-test";
+remote.setToken("test-token");
+await remote.init();
+
+const file = new File(
+  [new Uint8Array([1, 2, 3, 4])],
+  "voice.m4a",
+  { type:"application/octet-stream" }
+);
+const asset = await addAssetFromFile(null, file, {
+  tags:["参考音频库"],
+  forceNew:true
+});
+const storedAfterAdd = blobs.get(asset.id);
+
+blobs.delete(asset.id);
+const fetchedBlob = await assetBlob(asset.id);
+const storedAfterFetch = blobs.get(asset.id);
+
+// 兼容旧 IndexedDB：即使库里仍残留通用 MIME，导出也必须使用有效的资产 MIME。
+blobs.set(
+  asset.id,
+  new Blob([new Uint8Array([5, 6])], { type:"application/octet-stream" })
+);
+const exported = await assetU8(asset.id);
+
+console.log(JSON.stringify({
+  inferred: cases.map(inferAssetFileMeta),
+  storedAfterAddMime: storedAfterAdd.type,
+  uploadRequest,
+  assetMime: asset.mime,
+  fetchedMime: fetchedBlob.type,
+  storedAfterFetchMime: storedAfterFetch.type,
+  exportExt: exported.ext,
+  exportBytes: Array.from(exported.u8),
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        payload = json.loads(result)
+        self.assertEqual(
+            [
+                {"mime": "audio/mpeg", "type": "音频"},
+                {"mime": "audio/wav", "type": "音频"},
+                {"mime": "audio/mp4", "type": "音频"},
+                {"mime": "video/mp4", "type": "视频"},
+                {"mime": "video/quicktime", "type": "视频"},
+                {"mime": "video/mp4", "type": "视频"},
+            ],
+            payload["inferred"],
+        )
+        self.assertEqual("audio/mp4", payload["storedAfterAddMime"])
+        self.assertEqual(
+            {
+                "headerMime": "audio/mp4",
+                "bodyMime": "audio/mp4",
+                "queryMime": "audio/mp4",
+            },
+            payload["uploadRequest"],
+        )
+        self.assertEqual("audio/mp4", payload["assetMime"])
+        self.assertEqual("audio/mp4", payload["fetchedMime"])
+        self.assertEqual("audio/mp4", payload["storedAfterFetchMime"])
+        self.assertEqual("mp4", payload["exportExt"])
+        self.assertEqual([5, 6], payload["exportBytes"])
 
     def test_v84_subtitle_editor_review_and_dashboard_contract(self):
         cut = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
@@ -855,10 +1005,17 @@ console.log(JSON.stringify({
         self.assertIn('data-overview-platform="视频号"', overview)
         self.assertIn("overview-donut-segment is-xhs", overview)
         self.assertIn("overview-donut-segment is-video", overview)
-        self.assertIn("overview-action-icon is-check", overview)
+        self.assertNotIn("overview-kpi-strip", overview)
+        self.assertNotIn("overview-kpi-card", overview)
+        self.assertNotIn('data-overview-detail="todo"', overview)
+        self.assertIn("const accountPageSize = 16", overview)
+        self.assertLess(overview.index("overview-action-grid"), overview.index("overview-viz-grid"))
+        self.assertLess(overview.index("overview-viz-grid"), overview.index("overview-account-strip"))
+        self.assertIn("overview-action-icon is-views", overview)
+        self.assertIn('${icon("eye", 16)}', overview)
         self.assertIn("overview-action-icon is-pulse", overview)
         self.assertIn("overview-action-icon is-note", overview)
-        self.assertIn("overview-action-icon is-link", overview)
+        self.assertNotIn("overview-action-icon is-link", overview)
         self.assertNotIn("data-dashboard-mode", overview)
         self.assertNotIn("analyticsView.render(host, { embedded: true })", overview)
         self.assertIn('data-library="drafts"', assets)
@@ -880,8 +1037,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260727-v120-shell-2"', main)
-        self.assertIn('js/main.js?v=20260727-v120-shell-2', index)
+        self.assertIn('const APP_BUILD_ID = "20260727-v120-shell-8"', main)
+        self.assertIn('js/main.js?v=20260727-v120-shell-8', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)

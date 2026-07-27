@@ -2,7 +2,7 @@
 body[data-zone="custom"] .view-root {
   padding: 0;
   overflow: hidden;
-  background: #f5f6f8;
+  background: #fff;
 }
 
 .custom-creation-shell {
@@ -30,32 +30,32 @@ body[data-zone="custom"] .view-root {
 
 .custom-creation-header-spacer { min-width: 0; }
 
-/* 视频工坊使用深色沉浸顶栏；画布与语音继续保持主平台白色顶栏。 */
+/* 三个定制工具共用同一白色外壳；子应用不再制造第二套深色导航。 */
 .custom-creation-shell[data-custom-page="video"] .custom-creation-header {
-  color: rgba(255, 255, 255, .92);
-  background: #08090b;
+  color: #262624;
+  background: #fff;
 }
 .custom-creation-shell[data-custom-page="video"] .custom-creation-back {
-  color: rgba(255, 255, 255, .68);
+  color: #73736d;
 }
 .custom-creation-shell[data-custom-page="video"] .custom-creation-back:hover {
-  color: #fff;
+  color: #171716;
 }
 .custom-creation-shell[data-custom-page="video"] .custom-creation-tab {
-  color: rgba(255, 255, 255, .48);
+  color: #92928d;
 }
 .custom-creation-shell[data-custom-page="video"] .custom-creation-tab:hover,
 .custom-creation-shell[data-custom-page="video"] .custom-creation-tab.is-active {
-  color: #fff;
+  color: #171716;
 }
 .custom-creation-shell[data-custom-page="video"] .custom-creation-tab.is-locked:hover {
-  color: rgba(255, 255, 255, .72);
+  color: #61615c;
 }
 .custom-creation-shell[data-custom-page="video"] .custom-creation-tab small {
-  color: rgba(255, 255, 255, .42);
+  color: #a0a09a;
 }
 .custom-creation-shell[data-custom-page="video"] .custom-creation-indicator {
-  background: #fff;
+  background: #171716;
 }
 
 .custom-creation-back {
@@ -132,7 +132,7 @@ body[data-zone="custom"] .view-root {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #f5f6f8;
+  background: #fff;
 }
 .custom-tool-host {
   position: relative;
@@ -237,6 +237,324 @@ body[data-zone="custom"] .view-root {
 }
 .custom-tool-host.is-voice.vl-view-switching { overflow: hidden; }
 .custom-tool-host.is-voice .vl-editor-mode-tabs.is-switching { pointer-events: none; }
+
+/* 真实音色库节点挂载在稳定的统一左栏宿主中。 */
+body.workspace-shell-v2 .workspace-context-tool-host.is-voice-library {
+  padding: 2px 5px 8px;
+  overflow: hidden;
+}
+body.workspace-shell-v2 .workspace-context-tool-host.is-voice-library > .vl-library {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 4px 1px 0;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-section-head {
+  margin: 0 5px 7px;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-section-head b {
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-section-head em {
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-tabs {
+  min-height: 38px;
+  flex-basis: 38px;
+  gap: 3px;
+  padding-bottom: 5px;
+  margin-bottom: 6px;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-tabs button {
+  height: 31px;
+  padding-inline: 3px;
+  border-radius: 7px;
+  font-size: 10.5px;
+  font-weight: 450;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-filters {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin: 5px 0 7px;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-filters label {
+  height: 31px;
+  gap: 4px;
+  padding-inline: 5px;
+  border-color: #e2e2de;
+  border-radius: 7px;
+  background: #f7f7f5;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-filters select {
+  font-size: 10.5px;
+  font-weight: 430;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-list {
+  flex: 1;
+  min-height: 0;
+  gap: 3px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-card {
+  min-height: 62px;
+  padding: 7px 8px;
+  border-radius: 7px;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-card.is-mine {
+  padding-right: 8px;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-core b {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-source {
+  display: none;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-card .vl-voice-actions {
+  position: static;
+  max-width: none;
+  gap: 0;
+  transform: none;
+  flex-wrap: nowrap;
+}
+
+/* 语音调试台把预览作为主视觉，参数稳定收在右栏底部。 */
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console {
+  display: flex;
+  flex-direction: column;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-slot {
+  position: relative;
+  min-height: clamp(270px, 42vh, 410px);
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1 1 auto;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(87, 112, 255, .055), transparent 44%),
+    #fff;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty,
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading {
+  position: relative;
+  height: 100%;
+  min-height: 210px;
+  overflow: hidden;
+  background: rgba(250, 250, 248, .7);
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty:not(.is-error)::before,
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading::before {
+  content: "";
+  position: absolute;
+  width: 76px;
+  height: 76px;
+  border: 1px solid rgba(85, 104, 220, .11);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(96, 116, 228, .07), transparent 68%);
+  animation: vlOutputAmbient 3.2s ease-in-out infinite;
+  pointer-events: none;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty > *,
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading > * {
+  position: relative;
+  z-index: 1;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty:not(.is-error) svg {
+  animation: vlOutputIconBreathe 2.8s ease-in-out infinite;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading {
+  animation: vlOutputWaiting 2.2s ease-in-out infinite;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-slot .vl-player {
+  min-height: 100%;
+  align-content: center;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-current-voice {
+  flex: 0 0 auto;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-voice-parameters {
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding-top: 14px;
+}
+@keyframes vlOutputAmbient {
+  0%, 100% { opacity: .45; transform: scale(.82); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+@keyframes vlOutputIconBreathe {
+  0%, 100% { opacity: .62; transform: translateY(1px) scale(.96); }
+  50% { opacity: 1; transform: translateY(-2px) scale(1.04); }
+}
+@keyframes vlOutputWaiting {
+  0%, 100% { border-color: rgba(15, 23, 42, .11); }
+  50% { border-color: rgba(76, 96, 220, .23); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty::before,
+  body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading,
+  body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading::before,
+  body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty svg {
+    animation: none;
+  }
+}
+
+@media (min-width: 901px) {
+  body.workspace-shell-v2 .custom-tool-host.is-voice.is-active {
+    animation: none;
+    transform: none;
+  }
+  body.workspace-shell-v2 .custom-tool-host.is-voice .vl-workbench {
+    grid-template-columns: minmax(0, 1.25fr) minmax(280px, .68fr);
+    border-color: transparent;
+    background: #fff;
+  }
+  body.workspace-shell-v2 .custom-tool-host.is-voice .vl-editor {
+    grid-column: 1;
+    background: #fff;
+  }
+  body.workspace-shell-v2 .custom-tool-host.is-voice .vl-side-panel {
+    grid-column: 2;
+    background: #fff;
+  }
+  body.workspace-shell-v2 .custom-tool-host.is-voice .vl-side-panel > .vl-section-head:first-child {
+    padding-right: 58px;
+  }
+}
+
+/* 无限画布把常用视图控制放入主站上下文栏，子应用只保留创作画布。 */
+.workspace-context-shell.has-canvas-context-tools {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+.workspace-context-shell.has-canvas-context-tools > .canvas-context-tools { grid-row: 3; }
+.workspace-context-shell.has-canvas-context-tools > .workspace-account { grid-row: 4; }
+.canvas-context-tools {
+  margin: 0 4px 8px;
+  padding: 9px 7px 7px;
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #ececea;
+  color: #777771;
+}
+.canvas-context-tools > span {
+  font-size: 10.5px;
+  font-weight: 450;
+}
+.canvas-context-portal {
+  min-height: 154px;
+  display: grid;
+  place-items: center;
+}
+.canvas-context-portal .canvas-viewport-controls--portal {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.canvas-context-portal .canvas-viewport-minimap {
+  position: relative;
+  width: 196px;
+  height: 116px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #deded9;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 4px 14px rgba(18, 18, 16, .055);
+  cursor: crosshair;
+  touch-action: none;
+}
+.canvas-context-portal .canvas-viewport-grid {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, .035) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(0, 0, 0, .035) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+.canvas-context-portal .canvas-viewport-item,
+.canvas-context-portal .canvas-viewport-window {
+  position: absolute;
+}
+.canvas-context-portal .canvas-viewport-item {
+  border-radius: 2px;
+}
+.canvas-context-portal .canvas-viewport-item.is-image { background: rgba(20, 20, 18, .16); }
+.canvas-context-portal .canvas-viewport-item.is-text { background: rgba(74, 96, 244, .22); }
+.canvas-context-portal .canvas-viewport-item.is-shape {
+  border: 1px solid rgba(20, 20, 18, .24);
+}
+.canvas-context-portal .canvas-viewport-item.is-other { background: rgba(20, 20, 18, .10); }
+.canvas-context-portal .canvas-viewport-window {
+  border: 1px solid rgba(20, 20, 18, .28);
+  background: rgba(255, 255, 255, .22);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .72);
+}
+.canvas-context-portal .canvas-viewport-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid #deded9;
+  border-radius: 9px;
+  background: #f4f4f1;
+  box-shadow: 0 3px 10px rgba(18, 18, 16, .04);
+}
+.canvas-context-portal .canvas-viewport-button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  color: #4f4f4a;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+.canvas-context-portal .canvas-viewport-button:hover,
+.canvas-context-portal .canvas-viewport-button:focus-visible {
+  outline: 0;
+  color: #171716;
+  background: #e7e7e2;
+  transform: translateY(-1px);
+}
+.canvas-context-portal .canvas-viewport-button svg {
+  width: 14px;
+  height: 14px;
+}
+.canvas-context-portal .canvas-viewport-zoom {
+  min-width: 54px;
+  padding: 0 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-align: center;
+}
+.canvas-context-portal .canvas-viewport-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: #d8d8d3;
+}
 
 /* 统一发布桥接弹窗。 */
 .custom-publish-head > div {

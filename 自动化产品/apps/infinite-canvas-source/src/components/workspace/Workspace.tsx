@@ -44,7 +44,7 @@ import {
 } from "@/lib/canvasOutput";
 import { anchorFor, findFreeSpot, footprintFor } from "@/lib/geometry";
 import { downscaleDataUrl, fileToDownscaledDataUrl, upscaleDataUrl } from "@/lib/image";
-import { homeHref } from "@/lib/runtime";
+import { homeHref, IS_PLATFORM_EMBED } from "@/lib/runtime";
 import { buildStoreZip } from "@/lib/storeZip";
 import {
   buildCanvasPublishRequest,
@@ -709,16 +709,18 @@ export function Workspace({ projectId }: { projectId: string }) {
 
   return (
     <div className="flex h-full w-full flex-col">
-      <TopBar
-        projectId={projectId}
-        onExport={() => selectedImages.length === 1 ? setExportItem(selectedImages[0]) : void batchExportSelection()}
-        onPublish={requestPublish}
-        canExport={selectedImages.length > 0}
-        exportCount={selectedImages.length}
-        canPublish={selectedImageReady}
-        publishing={publishing}
-        publishNotice={publishNotice}
-      />
+      {!IS_PLATFORM_EMBED && (
+        <TopBar
+          projectId={projectId}
+          onExport={() => selectedImages.length === 1 ? setExportItem(selectedImages[0]) : void batchExportSelection()}
+          onPublish={requestPublish}
+          canExport={selectedImages.length > 0}
+          exportCount={selectedImages.length}
+          canPublish={selectedImageReady}
+          publishing={publishing}
+          publishNotice={publishNotice}
+        />
+      )}
       <div className="flex min-h-0 flex-1">
         <div
           className="relative min-w-0 flex-1"

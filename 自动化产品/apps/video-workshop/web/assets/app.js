@@ -1875,7 +1875,15 @@ window.addEventListener("message", (event) => {
     && message.type === "workspace:open"
   ) {
     const projectId = String(message.projectId || "").trim().slice(0, 180);
-    if (!projectId || projectId === state.projectId) return;
+    // 只有当前项目已经完整渲染时才忽略重复打开。若此前请求中断、
+    // ready 消息发生竞态或项目只写入了 ID，允许同一 ID 再次触发加载。
+    if (
+      !projectId
+      || (
+        projectId === state.projectId
+        && state.project?.id === projectId
+      )
+    ) return;
     state.messageSignature = "";
     state.eventSignature = "";
     state.outputSignature = "";

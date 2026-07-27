@@ -21,6 +21,34 @@ export interface CanvasPublishedProject {
   itemIds?: string[];
 }
 
+export interface CanvasContextPortal {
+  id: string;
+  nonce: string;
+}
+
+export function canvasContextPortalFromBootstrap(): CanvasContextPortal | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const bootstrap = JSON.parse(window.name || "{}") as {
+      kind?: string;
+      contextPortalId?: unknown;
+      contextPortalNonce?: unknown;
+    };
+    if (bootstrap.kind !== "xingzhen-canvas-bootstrap") return null;
+    const id = String(bootstrap.contextPortalId || "").trim();
+    const nonce = String(bootstrap.contextPortalNonce || "").trim();
+    if (
+      !/^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(id)
+      || !/^[A-Za-z0-9_-]{12,96}$/.test(nonce)
+    ) {
+      return null;
+    }
+    return { id, nonce };
+  } catch {
+    return null;
+  }
+}
+
 export function canvasPublishedProjectsFromBootstrap(): CanvasPublishedProject[] {
   if (typeof window === "undefined") return [];
   try {

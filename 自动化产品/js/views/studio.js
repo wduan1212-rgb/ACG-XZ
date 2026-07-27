@@ -7,12 +7,12 @@ import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, delete
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260727-v118-7";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260727-v120-shell-8";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260727-v118-7";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260723-v117-8";
-import { renderCutPage } from "./chainCut.js?v=20260723-v117-8";
-import { renderReviewPage } from "./chainCopy.js?v=20260723-v117-8";
+import { renderSlotsPage } from "./chainBoards.js?v=20260727-v120-shell-8";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260727-v120-shell-8";
+import { renderCutPage } from "./chainCut.js?v=20260727-v120-shell-8";
+import { renderReviewPage } from "./chainCopy.js?v=20260727-v120-shell-8";
 
 export const studioView = {
   render(root, { page }) {
@@ -55,13 +55,17 @@ export const studioView = {
 };
 
 /* ---------- 链路 stepper（链路页共用头部） ---------- */
-const RETURN_LABEL = { agent: "返回批量创作", delivery: "返回发布清单", overview: "返回首页", assets: "返回整体资产", drafts: "返回草稿箱", studio: "返回账号主页" };
+const RETURN_LABEL = { agent: "返回批量生产", delivery: "返回发布清单", overview: "返回首页", assets: "返回整体资产", drafts: "返回草稿箱", studio: "返回账号主页" };
 
 export function stepperHtml(p, currentPage) {
   const flow = flowOf(p);
   const rt = state.ui.returnTo;
   return `<div class="chain-stepper">
-    ${rt ? `<button class="cs-back" data-cs-back>${icon("arrowLeft", 14)} ${RETURN_LABEL[rt.zone] || "返回"}</button>` : ""}
+    <button class="cs-back" data-cs-back>${icon("arrowLeft", 14)} ${rt ? (RETURN_LABEL[rt.zone] || "返回") : "返回账号主页"}</button>
+    ${rt?.zone === "agent" ? `<button class="cs-step cs-origin is-done" data-cs-back title="返回批量生产">
+      <span class="cs-dot">${icon("check", 11)}</span>
+      <span class="cs-label">批量生产</span>
+    </button><span class="cs-link on"></span>` : ""}
     ${flow.map((st, i) => {
       const done = stageDone(p, st);
       const cur = pageStage(currentPage) === st;
@@ -81,12 +85,11 @@ const stagePageName = st => st;
 
 export function wireStepper(root) {
   $$("[data-chain]", root).forEach(b => b.addEventListener("click", () => go("studio", b.dataset.chain)));
-  const back = $("[data-cs-back]", root);
-  if (back) back.addEventListener("click", () => {
+  $$("[data-cs-back]", root).forEach(back => back.addEventListener("click", () => {
     const rt = state.ui.returnTo;
     state.ui.returnTo = null; save("meta");
-    if (rt && rt.zone) go(rt.zone, rt.page); else history.back();
-  });
+    if (rt && rt.zone) go(rt.zone, rt.page, rt.resourceId); else go("studio");
+  }));
 }
 
 /* ---------- 账号主页 ---------- */

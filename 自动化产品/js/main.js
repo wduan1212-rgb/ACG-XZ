@@ -1,7 +1,7 @@
 /* 应用入口：装载数据 → 迁移 → 恢复任务 → 外壳 → 路由 */
 
 import { $, $$, esc, uid } from "./core/util.js";
-import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260727-v120-shell-2";
+import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260727-v120-shell-8";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
@@ -16,45 +16,40 @@ import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
 import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260727-v118-7";
-import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js?v=20260727-v120-shell-2";
-import { toast, confirmModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
+import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
+import { toast, confirmModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { initClientDistribution } from "./ui/clientDistribution.js?v=20260727-v120-shell-2";
-import { overviewView } from "./views/overview.js?v=20260727-v120-shell-2";
-import { voiceLabView } from "./views/voiceLab.js?v=20260723-v117-8";
-import { customCreationView } from "./views/customCreation.js?v=20260727-v120-shell-2";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260727-v120-shell-2";
-import { studioView } from "./views/studio.js?v=20260727-v118-7";
-import { assetsView } from "./views/assetsView.js?v=20260727-v118-7";
-import { deliveryView } from "./views/deliveryView.js?v=20260727-v118-7";
+import { initClientDistribution } from "./ui/clientDistribution.js?v=20260727-v120-shell-8";
+import { overviewView } from "./views/overview.js?v=20260727-v120-shell-8";
+import { voiceLabView } from "./views/voiceLab.js?v=20260727-v120-shell-8";
+import { customCreationView } from "./views/customCreation.js?v=20260727-v120-shell-8";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260727-v120-shell-8";
+import { studioView } from "./views/studio.js?v=20260727-v120-shell-8";
+import { assetsView } from "./views/assetsView.js?v=20260727-v120-shell-8";
+import { deliveryView } from "./views/deliveryView.js?v=20260727-v120-shell-8";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js";
-import { settingsView } from "./views/settings.js?v=20260727-v120-shell-2";
+import { draftsView } from "./views/draftsView.js?v=20260727-v120-shell-8";
+import { settingsView } from "./views/settings.js?v=20260727-v120-shell-8";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260727-v118-7";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260727-v120-shell-8";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260727-v120-shell-2";
+const APP_BUILD_ID = "20260727-v120-shell-8";
 let announcedBuildId = "";
-const WORKSPACE_SHELL_STORAGE_KEY = "xingzhen.workspaceShell";
+const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 let workspaceSwitcherGlobalWired = false;
 let workspaceContextFrame = 0;
+let workspaceUtilityDockWired = false;
+let workspaceProjectOpenRequest = 0;
 const workspaceProjectLists = {
-  video: { items: [], loading: false, loadedAt: 0, error: "" },
-  canvas: { items: [], loading: false, loadedAt: 0, error: "" },
+  video: { items: [], loading: false, loadedAt: 0, error: "", pending: null },
+  canvas: { items: [], loading: false, loadedAt: 0, error: "", pending: null },
 };
 
 function workspaceShellEnabled() {
-  const forcedMode = new URLSearchParams(location.search).get("workspace");
-  if (forcedMode === "legacy") return false;
-  if (forcedMode === "v2") return true;
-  try {
-    return localStorage.getItem(WORKSPACE_SHELL_STORAGE_KEY) !== "legacy";
-  } catch (_) {
-    return true;
-  }
+  return true;
 }
 
 function applyWorkspaceShellMode() {
@@ -663,14 +658,14 @@ function workspaceNavItems() {
   const supplierParent = state.role === "supplier" || state.role === "supplier_parent";
   if (supplierChild) {
     return [
-      { key: "delivery", label: "发布与数据", zone: "delivery", iconName: "package" }
+      { key: "delivery", label: "发布清单", zone: "delivery", iconName: "package" }
     ];
   }
   if (supplierParent) {
     return [
       { key: "overview", label: "首页", zone: "overview", iconName: "grid" },
       { key: "assets", label: "全部账号", zone: "assets", iconName: "users" },
-      { key: "delivery", label: "发布与数据", zone: "delivery", iconName: "package" }
+      { key: "delivery", label: "发布清单", zone: "delivery", iconName: "package" }
     ];
   }
   return [
@@ -679,8 +674,9 @@ function workspaceNavItems() {
     { key: "agent", label: "批量生产", zone: "agent", iconName: "spark" },
     { key: "custom-video", label: "视频工坊", zone: "custom", page: "video", iconName: "film" },
     { key: "custom-canvas", label: "无限画布", zone: "custom", page: "canvas", iconName: "layers" },
+    { key: "custom-voice", label: "语音生成", zone: "custom", page: "voice", iconName: "mic" },
     { key: "assets", label: "整体资产", zone: "assets", iconName: "folder" },
-    { key: "delivery", label: "发布与数据", zone: "delivery", iconName: "package" }
+    { key: "delivery", label: "发布清单", zone: "delivery", iconName: "package" }
   ];
 }
 
@@ -724,34 +720,28 @@ function setWorkspaceContextOpen(open) {
 
 function openWorkspaceItem(item) {
   if (!item) return;
+  const openRequest = ++workspaceProjectOpenRequest;
   closeWorkspaceSwitcher();
   setWorkspaceContextOpen(false);
   if (item.zone === "studio") allowStudioFromAgent();
+  if (item.zone === "custom" && ["video", "canvas"].includes(item.page)) {
+    const latestProject = workspaceProjectLists[item.page]?.items?.[0];
+    if (latestProject) {
+      go(item.zone, item.page, latestProject.id);
+      return;
+    }
+    const routeAtRequest = location.hash;
+    void loadWorkspaceProjects(item.page, { force: true }).then(items => {
+      if (openRequest !== workspaceProjectOpenRequest || location.hash !== routeAtRequest) return;
+      const project = items?.[0] || workspaceProjectLists[item.page]?.items?.[0];
+      go(item.zone, item.page, project?.id || null);
+    });
+    return;
+  }
   go(item.zone, item.page || null);
 }
 
 function renderWorkspaceSwitcher() {
-  if (!workspaceShellEnabled()) {
-    $("#workspaceSwitcher")?.remove();
-    $("#workspaceContextToggle")?.remove();
-    let restore = $("#workspaceShellRestore");
-    const topbar = document.querySelector(".topbar");
-    const crumb = $("#topCrumb");
-    if (!restore && topbar && crumb) {
-      restore = document.createElement("button");
-      restore.id = "workspaceShellRestore";
-      restore.className = "top-btn workspace-shell-restore";
-      restore.type = "button";
-      restore.innerHTML = `${icon("layers", 13)} <span>新版工作区</span>`;
-      restore.addEventListener("click", () => {
-        localStorage.setItem(WORKSPACE_SHELL_STORAGE_KEY, "v2");
-        applyWorkspaceShellMode();
-        render();
-      });
-      topbar.insertBefore(restore, crumb);
-    }
-    return;
-  }
   $("#workspaceShellRestore")?.remove();
   const topbar = document.querySelector(".topbar");
   const crumb = $("#topCrumb");
@@ -762,6 +752,10 @@ function renderWorkspaceSwitcher() {
     document.addEventListener("click", event => {
       if (!event.target.closest?.("#workspaceSwitcher")) closeWorkspaceSwitcher();
       if (!event.target.closest?.("#workspaceAccount")) closeWorkspaceAccountMenu();
+      if (!event.target.closest?.("#workspaceUtilityDock")) {
+        $("#workspaceUtilityDock")?.classList.remove("is-open");
+        $("#topActionsToggle")?.setAttribute("aria-expanded", "false");
+      }
       if (document.body.classList.contains("workspace-context-open")
         && !event.target.closest?.("#ctxPanel")
         && !event.target.closest?.("#workspaceContextToggle")) {
@@ -772,6 +766,8 @@ function renderWorkspaceSwitcher() {
       if (event.key === "Escape") {
         closeWorkspaceSwitcher();
         closeWorkspaceAccountMenu({ restoreFocus: true });
+        $("#workspaceUtilityDock")?.classList.remove("is-open");
+        $("#topActionsToggle")?.setAttribute("aria-expanded", "false");
         setWorkspaceContextOpen(false);
       }
     });
@@ -811,11 +807,10 @@ function renderWorkspaceSwitcher() {
       ${icon("chevronDown", 13)}
     </button>
     <div class="workspace-menu" id="workspaceSwitchMenu" role="menu" aria-label="切换工作区">
-      <div class="workspace-menu-kicker">切换功能</div>
       ${items.map(item => `
         <button type="button" role="menuitem" class="${item.key === current?.key ? "is-active" : ""}" data-ws-switch="${esc(item.key)}">
           ${icon(item.iconName || "grid", 15)}
-          <span><b>${esc(item.label)}</b><em>${esc(workspaceItemHint(item))}</em></span>
+          <span><b>${esc(item.label)}</b></span>
           ${item.key === current?.key ? icon("check", 14) : ""}
         </button>
       `).join("")}
@@ -849,18 +844,6 @@ function renderWorkspaceSwitcher() {
   });
 }
 
-function workspaceItemHint(item = {}) {
-  if (item.key === "overview") return "数据看板与待处理";
-  if (item.key === "studio") return "账号与单条内容";
-  if (item.key === "agent") return "批次、队列、交付";
-  if (item.key === "custom-video") return "会话、素材、成片";
-  if (item.key === "custom-canvas") return "项目、画布、导出";
-  if (item.key === "assets") return "素材与账号资源";
-  if (item.key === "delivery") return "发布、回传与数据";
-  if (item.key === "settings") return item.label === "我的" ? "资料与偏好" : "成员、权限、用量";
-  return "打开工作区";
-}
-
 function normalizeWorkspaceProject(kind, raw = {}) {
   const source = raw && typeof raw === "object" ? raw : {};
   const project = source.project && typeof source.project === "object" ? source.project : {};
@@ -876,6 +859,7 @@ function normalizeWorkspaceProject(kind, raw = {}) {
         || projectState.sourceProjectId
         || nestedProject.id
         || source.workshopProjectId
+        || source.id
         || ""
       ).trim();
   if (!id) return null;
@@ -912,12 +896,47 @@ function normalizeWorkspaceProject(kind, raw = {}) {
   };
 }
 
+function workspaceVideoMemberKey() {
+  return String(currentMember()?.id || state.ui.currentMemberId || state.role || "local").trim();
+}
+
+function workspaceHiddenVideoProjectIds() {
+  try {
+    const payload = JSON.parse(localStorage.getItem(WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY) || "{}");
+    const items = payload && typeof payload === "object"
+      ? payload[workspaceVideoMemberKey()]
+      : [];
+    return new Set(Array.isArray(items) ? items.map(String) : []);
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function hideWorkspaceVideoProject(projectId) {
+  const id = String(projectId || "").trim();
+  if (!id) return;
+  try {
+    const payload = JSON.parse(localStorage.getItem(WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY) || "{}");
+    const next = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+    const key = workspaceVideoMemberKey();
+    const items = new Set(Array.isArray(next[key]) ? next[key].map(String) : []);
+    items.add(id);
+    next[key] = [...items].slice(-240);
+    localStorage.setItem(WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY, JSON.stringify(next));
+  } catch (_) {}
+  const target = workspaceProjectLists.video;
+  target.items = target.items.filter(item => item.id !== id);
+  target.loadedAt = Date.now();
+}
+
 function setWorkspaceProjects(kind, items = []) {
   const target = workspaceProjectLists[kind];
   if (!target) return;
+  const hiddenVideoIds = kind === "video" ? workspaceHiddenVideoProjectIds() : null;
   const normalized = (Array.isArray(items) ? items : [])
     .map(item => normalizeWorkspaceProject(kind, item))
     .filter(Boolean)
+    .filter(item => !hiddenVideoIds?.has(item.id))
     .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
   const unique = [];
   const seen = new Set();
@@ -931,46 +950,93 @@ function setWorkspaceProjects(kind, items = []) {
   target.loadedAt = Date.now();
   target.error = "";
   scheduleWorkspaceContextRender();
+  const route = parseHash();
+  if (
+    workspaceShellEnabled()
+    && route.zone === "custom"
+    && route.page === kind
+    && !route.resourceId
+    && unique[0]?.id
+  ) {
+    queueMicrotask(() => {
+      const latestRoute = parseHash();
+      if (
+        latestRoute.zone === "custom"
+        && latestRoute.page === kind
+        && !latestRoute.resourceId
+      ) {
+        go("custom", kind, unique[0].id);
+      }
+    });
+  }
 }
 
 async function loadWorkspaceProjects(kind, { force = false } = {}) {
   const target = workspaceProjectLists[kind];
-  if (!target || target.loading) return;
-  if (!force && target.loadedAt && Date.now() - target.loadedAt < 12_000) return;
+  if (!target) return [];
+  if (target.pending) return target.pending;
+  if (!force && target.loadedAt && Date.now() - target.loadedAt < 12_000) return target.items;
   if (!remote.isOn() || !remote.hasToken()) {
     target.loadedAt = Date.now();
-    return;
+    return target.items;
   }
   target.loading = true;
   target.error = "";
   scheduleWorkspaceContextRender();
-  try {
-    if (kind === "canvas") {
-      const result = await remote.customCanvasProjects.list();
-      setWorkspaceProjects("canvas", result?.items);
-      return;
+  const pending = (async () => {
+    try {
+      if (kind === "canvas") {
+        const result = await remote.customCanvasProjects.list();
+        setWorkspaceProjects("canvas", result?.items);
+        return target.items;
+      }
+      // 视频工坊的 iframe 会在挂载后回传完整项目索引。这里先用主服务中
+      // 已保存的轻量映射作首屏兜底，不能再误用批量生产的 state.sessions。
+      const result = await remote.customProjects.list("video");
+      setWorkspaceProjects("video", result?.items);
+      return target.items;
+    } catch (error) {
+      target.loading = false;
+      target.loadedAt = Date.now();
+      target.error = String(error?.message || "项目读取失败");
+      scheduleWorkspaceContextRender();
+      return target.items;
     }
-    // 视频工坊的 iframe 会在挂载后回传完整项目索引。这里先用主服务中
-    // 已保存的轻量映射作首屏兜底，不能再误用批量生产的 state.sessions。
-    const result = await remote.customProjects.list("video");
-    setWorkspaceProjects("video", result?.items);
-  } catch (error) {
-    target.loading = false;
-    target.loadedAt = Date.now();
-    target.error = String(error?.message || "项目读取失败");
-    scheduleWorkspaceContextRender();
-  }
+  })();
+  target.pending = pending;
+  const items = await pending;
+  if (target.pending === pending) target.pending = null;
+  return items;
 }
 
 if (typeof window !== "undefined") {
   window.addEventListener("xingzhen:video-projects", event => {
     setWorkspaceProjects("video", event.detail?.projects);
   });
+  window.addEventListener("xingzhen:video-published", event => {
+    const projectId = String(event.detail?.projectId || "").trim();
+    const publishedCount = Math.max(
+      0,
+      Math.floor(Number(event.detail?.publishedCount || 0) || 0)
+    );
+    if (!projectId || !publishedCount) return;
+    const target = workspaceProjectLists.video;
+    const project = target.items.find(item => item.id === projectId);
+    if (!project) return;
+    project.publishedCount = Math.max(project.publishedCount || 0, publishedCount);
+    scheduleWorkspaceContextRender();
+  });
+  window.addEventListener("xingzhen:asset-library-model", () => {
+    if (parseHash().zone === "assets") scheduleWorkspaceContextRender();
+  });
+  window.addEventListener("xingzhen:delivery-filter-model", () => {
+    if (parseHash().zone === "delivery") scheduleWorkspaceContextRender();
+  });
 }
 
-function contextRow({ title, meta = "", tag = "", action = "", zone = "", page = "", id = "", active = false } = {}) {
+function contextRow({ title, meta = "", tag = "", action = "", zone = "", page = "", id = "", active = false, attrs = "", className = "" } = {}) {
   return `
-    <button class="wsctx-row${active ? " is-active" : ""}" type="button" ${active ? `aria-current="page"` : ""} ${zone ? `data-ws-go="${esc(zone)}"` : ""} ${page ? `data-ws-page="${esc(page)}"` : ""} ${id ? `data-ws-id="${esc(id)}"` : ""}>
+    <button class="wsctx-row${className ? ` ${esc(className)}` : ""}${active ? " is-active" : ""}" type="button" ${active ? `aria-current="page"` : ""} ${zone ? `data-ws-go="${esc(zone)}"` : ""} ${page ? `data-ws-page="${esc(page)}"` : ""} ${id ? `data-ws-id="${esc(id)}"` : ""} ${attrs}>
       <span>
         <b>${esc(title || "未命名")}</b>
         ${meta ? `<em>${esc(meta)}</em>` : ""}
@@ -978,6 +1044,23 @@ function contextRow({ title, meta = "", tag = "", action = "", zone = "", page =
       ${tag ? `<i>${esc(tag)}</i>` : ""}
       ${action ? `<strong>${esc(action)}</strong>` : ""}
     </button>
+  `;
+}
+
+function videoProjectContextRow(project, resourceId) {
+  return `
+    <div class="wsctx-row-shell">
+      ${contextRow({
+        title: project.title,
+        tag: `已发布 ${project.publishedCount || 0}`,
+        zone: "custom",
+        page: "video",
+        id: project.id,
+        active: project.id === resourceId,
+        className: "wsctx-video-project"
+      })}
+      <button class="wsctx-row-delete" type="button" data-video-project-remove="${esc(project.id)}" data-video-project-title="${esc(project.title)}" aria-label="删除视频会话 ${esc(project.title)}" title="删除会话">${icon("trash", 14)}</button>
+    </div>
   `;
 }
 
@@ -996,10 +1079,48 @@ function accountContextRow(account, accountIndex) {
       <span class="wsctx-account-number ${esc(platformClass)}" title="${esc(account.platform || "")}">${esc(number)}</span>
       <span class="wsctx-account-copy">
         <b title="${esc(account.name || "")}">${esc(account.name || "未命名账号")}</b>
-        <em>${esc(account.platform || "")}${account.mode ? ` · ${esc(account.mode)}` : ""}</em>
       </span>
       <strong>${Number(account.monthlyDone || 0)}</strong>
     </button>
+  `;
+}
+
+function deliveryFilterControls(model = {}) {
+  const fields = Array.isArray(model.fields) ? model.fields : [];
+  const active = fields.some(field => String(field.value || "all") !== "all");
+  return `
+    <div class="wsctx-filter-stack">
+      ${fields.map(field => {
+        const key = esc(field.key || "");
+        const label = esc(field.label || "");
+        const options = Array.isArray(field.options) ? field.options : [];
+        if (field.type === "select") {
+          return `
+            <label class="wsctx-filter-select">
+              <span>${label}</span>
+              <select data-ws-delivery-select="${key}" aria-label="${label}">
+                ${options.map(option => `<option value="${esc(option.value)}" ${String(option.value) === String(field.value) ? "selected" : ""}>${esc(option.label)}</option>`).join("")}
+              </select>
+              ${icon("chevronDown", 11)}
+            </label>
+          `;
+        }
+        return `
+          <div class="wsctx-filter-choice" role="group" aria-label="${label}">
+            <span>${label}</span>
+            <div>
+              ${options.map(option => `
+                <button type="button"
+                  class="${String(option.value) === String(field.value) ? "is-active" : ""}"
+                  data-ws-delivery-choice="${key}"
+                  data-ws-delivery-value="${esc(option.value)}">${esc(option.label)}</button>
+              `).join("")}
+            </div>
+          </div>
+        `;
+      }).join("")}
+      ${active ? `<button class="wsctx-filter-reset" type="button" data-ws-delivery-reset>${icon("undo", 12)} 清除筛选</button>` : ""}
+    </div>
   `;
 }
 
@@ -1013,6 +1134,7 @@ function workspaceAccountMarkup() {
     : `<span>${esc(initial)}</span>`;
   const canOpenProfile = ["admin", "editor", "supplier", "supplier_parent"].includes(state.role);
   const canOpenManagement = ["admin", "supplier", "supplier_parent"].includes(state.role);
+  const canSendFeedback = ["admin", "editor"].includes(state.role);
   const managementLabel = state.role === "admin" ? "管理设置" : "供应商设置";
   return `
     <button class="workspace-account-button" id="workspaceAccountButton" type="button" aria-haspopup="menu" aria-expanded="false">
@@ -1027,12 +1149,34 @@ function workspaceAccountMarkup() {
       </div>
       ${canOpenProfile ? `<button type="button" role="menuitem" data-account-action="profile">${icon("user", 16)}<span>我的资料</span></button>` : ""}
       <button type="button" role="menuitem" data-account-action="client">${icon("download", 16)}<span data-client-entry-label>${esc(clientLabel)}</span></button>
+      ${canSendFeedback ? `<button type="button" role="menuitem" data-account-action="feedback">${icon("fileText", 16)}<span>意见反馈</span></button>` : ""}
       ${canOpenManagement ? `<button type="button" role="menuitem" data-account-action="settings">${icon("gear", 16)}<span>${esc(managementLabel)}</span></button>` : ""}
-      <button type="button" role="menuitem" data-account-action="legacy">${icon("undo", 16)}<span>使用旧版界面</span></button>
       <div class="workspace-account-separator" role="separator"></div>
       <button type="button" role="menuitem" class="is-danger" data-account-action="logout">${icon("logout", 16)}<span>退出登录</span></button>
     </div>
   `;
+}
+
+function openWorkspaceFeedbackModal() {
+  const email = "wduan1212@gmail.com";
+  openModal(`
+    <section class="workspace-feedback-dialog" aria-labelledby="workspaceFeedbackTitle">
+      <button class="workspace-feedback-close" type="button" data-close aria-label="关闭">${icon("x", 18)}</button>
+      <span class="workspace-feedback-icon">${icon("fileText", 20)}</span>
+      <h2 id="workspaceFeedbackTitle">欢迎反馈意见</h2>
+      <p>使用中遇到问题，或有任何功能建议，都欢迎通过下面的邮箱告诉我们。</p>
+      <a class="workspace-feedback-email" href="mailto:${email}">${email}</a>
+      <div class="workspace-feedback-actions">
+        <button class="btn" type="button" data-close>稍后反馈</button>
+        <a class="btn primary" href="mailto:${email}">发送邮件</a>
+      </div>
+    </section>
+  `, {
+    onMount(panel) {
+      panel.classList.add("workspace-feedback-panel");
+      panel.querySelector(".workspace-feedback-email")?.focus();
+    },
+  });
 }
 
 function ensureWorkspaceContextShell(panel) {
@@ -1044,12 +1188,13 @@ function ensureWorkspaceContextShell(panel) {
         <button class="workspace-context-close" id="workspaceContextClose" type="button" aria-label="关闭当前工作区列表">${icon("x", 16)}</button>
       </header>
       <div class="wsctx-groups" id="workspaceContextList"></div>
+      <div class="workspace-context-tool-host" id="workspaceContextToolHost" hidden></div>
       <footer class="workspace-account" id="workspaceAccount">${workspaceAccountMarkup()}</footer>
     </div>
   `;
   if (panel.dataset.workspaceShellWired === "1") return;
   panel.dataset.workspaceShellWired = "1";
-  panel.addEventListener("click", event => {
+  panel.addEventListener("click", async event => {
     if (event.target.closest("#workspaceContextClose")) {
       setWorkspaceContextOpen(false);
       return;
@@ -1070,11 +1215,65 @@ function ensureWorkspaceContextShell(panel) {
       if (accountAction === "profile") go("settings", "profile");
       else if (accountAction === "settings") go("settings");
       else if (accountAction === "client") document.dispatchEvent(new CustomEvent("client-distribution:open"));
-      else if (accountAction === "legacy") {
-        localStorage.setItem(WORKSPACE_SHELL_STORAGE_KEY, "legacy");
-        applyWorkspaceShellMode();
-        render();
-      } else if (accountAction === "logout") logout();
+      else if (accountAction === "feedback") openWorkspaceFeedbackModal();
+      else if (accountAction === "logout") logout();
+      return;
+    }
+    const videoRemove = event.target.closest("[data-video-project-remove]");
+    if (videoRemove) {
+      event.stopPropagation();
+      const projectId = String(videoRemove.dataset.videoProjectRemove || "").trim();
+      const projectTitle = String(videoRemove.dataset.videoProjectTitle || "新会话").trim();
+      if (!projectId) return;
+      const ok = await confirmModal({
+        title: `删除视频会话「${projectTitle}」？`,
+        body: "会从当前 v120 工作区会话列表移除，不影响已发布内容。",
+        danger: true,
+        okText: "删除会话"
+      });
+      if (!ok) return;
+      hideWorkspaceVideoProject(projectId);
+      const route = parseHash();
+      const nextProject = workspaceProjectLists.video.items[0];
+      if (route.zone === "custom" && route.page === "video" && route.resourceId === projectId) {
+        go("custom", "video", nextProject?.id || "__new__");
+      }
+      renderWorkspaceContextPanel();
+      toast("视频会话已删除");
+      return;
+    }
+    const groupButton = event.target.closest("[data-ws-group]");
+    if (groupButton) {
+      event.stopPropagation();
+      const groupKey = String(groupButton.dataset.wsGroup || "");
+      if (!groupKey) return;
+      if (collapsedGroups.has(groupKey)) collapsedGroups.delete(groupKey);
+      else collapsedGroups.add(groupKey);
+      state.ui.collapsedGroups = [...collapsedGroups];
+      save("meta");
+      renderWorkspaceContextPanel();
+      return;
+    }
+    const libraryButton = event.target.closest("[data-ws-library]");
+    if (libraryButton) {
+      event.stopPropagation();
+      const library = String(libraryButton.dataset.wsLibrary || "");
+      assetsView.setLibraryMode?.(library);
+      return;
+    }
+    const deliveryChoice = event.target.closest("[data-ws-delivery-choice]");
+    if (deliveryChoice) {
+      event.stopPropagation();
+      deliveryView.setFilter?.(
+        deliveryChoice.dataset.wsDeliveryChoice,
+        deliveryChoice.dataset.wsDeliveryValue,
+        { toggle: true }
+      );
+      return;
+    }
+    if (event.target.closest("[data-ws-delivery-reset]")) {
+      event.stopPropagation();
+      deliveryView.resetFilters?.();
       return;
     }
     const routeButton = event.target.closest("[data-ws-go]");
@@ -1100,6 +1299,10 @@ function ensureWorkspaceContextShell(panel) {
         return;
       }
     }
+    if (routeButton.dataset.wsReturnBatch === "true") {
+      state.ui.returnTo = null;
+      save("meta");
+    }
     setWorkspaceContextOpen(false);
     go(
       targetZone,
@@ -1119,6 +1322,11 @@ function ensureWorkspaceContextShell(panel) {
       options[next]?.focus();
     }
   });
+  panel.addEventListener("change", event => {
+    const select = event.target.closest?.("[data-ws-delivery-select]");
+    if (!select) return;
+    deliveryView.setFilter?.(select.dataset.wsDeliverySelect, select.value);
+  });
 }
 
 function scheduleWorkspaceContextRender() {
@@ -1132,10 +1340,38 @@ function scheduleWorkspaceContextRender() {
 function renderWorkspaceContextPanel() {
   const panel = $("#ctxPanel");
   if (!panel) return;
-  const { zone, page } = parseHash();
+  const { zone, page, resourceId } = parseHash();
   panel.hidden = false;
   document.body.classList.add("has-panel");
   ensureWorkspaceContextShell(panel);
+  const contextList = $("#workspaceContextList", panel);
+  const contextToolHost = $("#workspaceContextToolHost", panel);
+  const contextShell = $(".workspace-context-shell", panel);
+  const canvasContextTools = $(".canvas-context-tools", panel);
+  const activeContextTool = zone === "custom" && page === "voice"
+    ? "voice"
+    : zone === "custom" && page === "canvas"
+      ? "canvas"
+      : "";
+  panel.dataset.contextToolOwner = activeContextTool;
+  if (contextList) contextList.hidden = activeContextTool === "voice";
+  if (contextToolHost) {
+    contextToolHost.hidden = activeContextTool !== "voice";
+    contextToolHost.dataset.contextToolOwner = activeContextTool === "voice" ? "voice" : "";
+  }
+  if (canvasContextTools) {
+    canvasContextTools.hidden = activeContextTool !== "canvas";
+    contextShell?.classList.toggle("has-canvas-context-tools", activeContextTool === "canvas");
+  } else if (activeContextTool !== "canvas") {
+    contextShell?.classList.remove("has-canvas-context-tools");
+  }
+
+  if (zone === "studio" && !state.ui.workspaceDisabledGroupInitialized) {
+    collapsedGroups.add("ws:studio:disabled");
+    state.ui.workspaceDisabledGroupInitialized = true;
+    state.ui.collapsedGroups = [...collapsedGroups];
+    save("meta");
+  }
 
   const supplier = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
   const myProductions = state.productions.filter(ownedBy);
@@ -1156,91 +1392,93 @@ function renderWorkspaceContextPanel() {
         .sort((a, b) => Number(b.deliveredAt || b.createdAt || 0) - Number(a.deliveredAt || a.createdAt || 0))
         .slice(0, 6);
       return [
-        { title: "待处理任务", rows: pending.map(p => contextRow({ title: p.artifacts?.copy?.title || p.title || p.topic || "在制任务", meta: shortRelativeTime(p.updatedAt || p.createdAt), tag: p.stageStatus || "进行中", zone: "studio" })) },
-        { title: "最近访问", rows: recent.map(a => contextRow({ title: a.title || a.name || "已交付内容", meta: shortRelativeTime(a.deliveredAt || a.createdAt), tag: a.platform || "", zone: "delivery" })) }
+        { key: "pending", title: "待处理任务", rows: pending.map(p => contextRow({ title: p.artifacts?.copy?.title || p.title || p.topic || "在制任务", zone: "studio" })) },
+        { key: "recent", title: "最近访问", rows: recent.map(a => contextRow({ title: a.title || a.name || "已交付内容", zone: "delivery" })) }
       ];
     }
     if (zone === "studio") {
       const accountIndex = accountDisplaySequenceMap(state.accounts);
-      return [
+      const groups = [
         {
+          key: "text",
           title: "图文组",
           rows: state.accounts
             .filter(account => !isAccountDisabled(account) && account.mode === "图文")
             .map(account => accountContextRow(account, accountIndex))
         },
         {
+          key: "avatar",
           title: "真人数字人",
           rows: state.accounts
             .filter(account => !isAccountDisabled(account) && account.mode === "视频" && account.subType === "数字人")
             .map(account => accountContextRow(account, accountIndex))
         },
         {
+          key: "feed",
           title: "素材无数字人",
           rows: state.accounts
             .filter(account => !isAccountDisabled(account) && account.mode === "视频" && account.subType !== "数字人")
             .map(account => accountContextRow(account, accountIndex))
         },
         {
+          key: "disabled",
           title: "已停用账号",
+          defaultCollapsed: true,
           rows: state.accounts
             .filter(isAccountDisabled)
             .map(account => accountContextRow(account, accountIndex))
         }
       ];
+      const returnTo = state.ui.returnTo;
+      if (returnTo?.zone === "agent") {
+        groups.unshift({
+          key: "batch-return",
+          title: "上一步",
+          rows: [contextRow({
+            title: "返回批量生产",
+            action: "返回",
+            zone: "agent",
+            id: returnTo.resourceId || "",
+            attrs: 'data-ws-return-batch="true"',
+            className: "wsctx-return-action"
+          })]
+        });
+      }
+      return groups;
     }
     if (zone === "agent") {
-      return [
-        {
-          title: "生产批次",
-          rows: activeBatchesList.slice(0, 48).map(b => {
-            const total = (b.productionIds || []).length;
-            const failed = (b.productionIds || []).map(id => state.productions.find(p => p.id === id)).filter(p => p?.stageStatus === "failed").length;
-            return contextRow({ title: b.topic || "未命名批次", meta: `${total} 条 · 失败 ${failed} · ${shortRelativeTime(b.updatedAt || b.createdAt)}`, tag: b.phase === "done" ? "完成" : "进行中", zone: "agent" });
-          })
-        },
-        {
-          title: "量产会话",
-          rows: sessions.slice(0, 24).map(s => contextRow({ title: s.title || "新量产计划", meta: shortRelativeTime(s.updatedAt || s.createdAt), zone: "agent", id: s.id, active: s.id === state.ui.activeSessionId }))
-        }
-      ];
+      const sessionRows = sessions.slice(0, 48).map(s => contextRow({
+        title: s.title || "新量产计划",
+        zone: "agent",
+        id: s.id,
+        active: s.id === state.ui.activeSessionId
+      }));
+      const fallbackRows = activeBatchesList.slice(0, 48).map(b => contextRow({
+        title: b.topic || "未命名批次",
+        zone: "agent"
+      }));
+      return [{ key: "sessions", title: "生产会话", rows: sessionRows.length ? sessionRows : fallbackRows }];
     }
     if (zone === "custom") {
       if (page === "video") {
         void loadWorkspaceProjects("video");
         const projectList = workspaceProjectLists.video;
         return [{
-          title: projectList.loading && !projectList.items.length ? "正在读取视频项目…" : "视频项目",
-          rows: [
-            contextRow({
-              title: "新建视频会话",
-              meta: "从空白创作开始",
-              action: "新建",
-              zone: "custom",
-              page: "video",
-              id: "__new__",
-            }),
-            ...projectList.items.slice(0, 60).map(project => contextRow({
-              title: project.title,
-              meta: shortRelativeTime(project.updatedAt),
-              tag: project.publishedCount ? `已发布 ${project.publishedCount}` : "",
-              zone: "custom",
-              page: "video",
-              id: project.id,
-              active: project.id === resourceId
-            }))
-          ]
+          key: "projects",
+          title: projectList.loading && !projectList.items.length ? "正在读取历史会话…" : "历史会话",
+          collapsible: false,
+          headerAction: `<button class="wsctx-title-add" type="button" data-ws-go="custom" data-ws-page="video" data-ws-id="__new__" aria-label="新建视频会话" title="新建视频会话">${icon("plus", 13)}</button>`,
+          rows: projectList.items.slice(0, 60).map(project => videoProjectContextRow(project, resourceId))
         }];
       }
       if (page === "canvas") {
         void loadWorkspaceProjects("canvas");
         const projectList = workspaceProjectLists.canvas;
         return [{
+          key: "projects",
           title: projectList.loading && !projectList.items.length ? "正在读取画布项目…" : "画布项目",
           rows: projectList.items.slice(0, 80).map(project => contextRow({
             title: project.title,
-            meta: shortRelativeTime(project.updatedAt),
-            tag: project.publishedCount ? `已发布 ${project.publishedCount}` : "",
             zone: "custom",
             page: "canvas",
             id: project.id,
@@ -1248,29 +1486,35 @@ function renderWorkspaceContextPanel() {
           }))
         }];
       }
-      return [{
-        title: "语音工作区",
-        rows: [contextRow({ title: "音色与合成", meta: "继续管理音色、试听和生成", active: true, zone: "custom", page: "voice" })]
-      }];
+      return [];
     }
     if (zone === "assets") {
-      const types = ["图片", "视频", "音频", "产品", "品牌素材"];
-      return [{ title: supplier ? "账号筛选" : "资产分类", rows: types.map(type => contextRow({ title: type, meta: `${state.assets.filter(a => a.type === type || (type === "品牌素材" && (a.tags || []).includes("品牌素材"))).length} 项`, zone: "assets" })) }];
+      if (supplier) {
+        return [{ key: "accounts", title: "账号", rows: state.accounts.map((account, index) => contextRow({ title: account.name || `账号 ${index + 1}`, zone: "assets" })) }];
+      }
+      const model = assetsView.getLibraryModel?.() || { value: "drafts", options: [] };
+      return [{
+        key: "libraries",
+        title: "资产分类",
+        rows: (model.options || []).map(option => contextRow({
+          title: option.shortLabel || option.label,
+          active: option.key === model.value,
+          attrs: `data-ws-library="${esc(option.key)}"`
+        }))
+      }];
     }
     if (zone === "delivery") {
-      const rows = deliveredAssets
-        .sort((a, b) => Number(b.deliveredAt || b.createdAt || 0) - Number(a.deliveredAt || a.createdAt || 0))
-        .slice(0, 18)
-        .map(a => contextRow({ title: a.title || a.name || "已交付内容", meta: `${a.platform || "平台"} · ${shortRelativeTime(a.deliveredAt || a.createdAt)}`, tag: a.returnLink ? "已回传" : "待回传", zone: "delivery" }));
-      return [{ title: "发布项目", rows }];
+      const model = deliveryView.getFilterModel?.() || { fields: [] };
+      return [{ key: "filters", title: "筛选", rows: [deliveryFilterControls(model)] }];
     }
     if (zone === "settings") {
       const me = currentMember();
       return [{
+        key: "settings",
         title: page === "profile" || state.role === "editor" ? "个人资料" : "管理",
         rows: [
-          contextRow({ title: me?.name || "我的资料", meta: state.role ? ROLE_LABEL[state.role] || state.role : "未登录", tag: "我的", active: page === "profile" || state.role === "editor", zone: "settings", page: "profile" }),
-          ...(["admin", "supplier", "supplier_parent"].includes(state.role) ? [contextRow({ title: state.role === "admin" ? "管理设置" : "供应商设置", meta: state.role === "admin" ? "成员、供应商、用量和产品库" : "子账号与供应商账号", active: page !== "profile", zone: "settings" })] : [])
+          contextRow({ title: me?.name || "我的资料", active: page === "profile" || state.role === "editor", zone: "settings", page: "profile" }),
+          ...(["admin", "supplier", "supplier_parent"].includes(state.role) ? [contextRow({ title: state.role === "admin" ? "管理设置" : "供应商设置", active: page !== "profile", zone: "settings" })] : [])
         ]
       }];
     }
@@ -1281,12 +1525,27 @@ function renderWorkspaceContextPanel() {
   const list = $("#workspaceContextList", panel);
   if (list) {
     const previousScrollTop = list.scrollTop;
-    list.innerHTML = groups.map(group => `
-      <section class="wsctx-group">
-        <div class="wsctx-title"><b>${esc(group.title)}</b>${group.rows.length ? `<em>${group.rows.length}</em>` : ""}</div>
-        ${group.rows.length ? group.rows.join("") : `<p class="wsctx-empty">暂无匹配内容</p>`}
+    list.innerHTML = groups.map((group, index) => {
+      const groupKey = `ws:${zone}:${group.key || index}`;
+      const collapsible = group.collapsible !== false;
+      const collapsed = collapsible && collapsedGroups.has(groupKey);
+      return `
+      <section class="wsctx-group${collapsed ? " is-collapsed" : ""}">
+        ${collapsible ? `
+          <button class="wsctx-title" type="button" data-ws-group="${esc(groupKey)}" aria-expanded="${collapsed ? "false" : "true"}">
+            <b>${esc(group.title)}</b>
+            <span class="wsctx-title-chevron">${icon("chevronDown", 11)}</span>
+          </button>
+        ` : `
+          <div class="wsctx-title wsctx-title-static">
+            <b>${esc(group.title)}</b>
+            ${group.headerAction || ""}
+          </div>
+        `}
+        ${collapsed ? "" : (group.rows.length ? group.rows.join("") : `<p class="wsctx-empty">暂无匹配内容</p>`)}
       </section>
-    `).join("");
+    `;
+    }).join("");
     list.scrollTop = previousScrollTop;
   }
   const account = $("#workspaceAccount", panel);
@@ -1441,7 +1700,8 @@ async function syncHomepageAnalytics(button) {
 function renderTopbar() {
   const zone = document.body.dataset.zone;
   const bc = $("#topCrumb");
-  const actions = $(".top-actions");
+  const actionDock = $(".top-actions");
+  const actions = $("#topActionsPanel") || actionDock;
   const topbar = document.querySelector(".topbar");
   const voiceDock = $("#voiceTopDock");
   const assetsDock = $("#assetsTopDock");
@@ -1467,9 +1727,9 @@ function renderTopbar() {
     const oldStudioStepper = topbar?.querySelector(".chain-stepper");
     const studioStepper = zone === "studio" ? document.querySelector(".view-root .chain-stepper") : null;
     if (oldStudioStepper && oldStudioStepper !== studioStepper) oldStudioStepper.remove();
-    if (studioStepper && topbar && actions) {
+    if (studioStepper && topbar && actionDock) {
       topbar.classList.add("studio-topbar-active");
-      topbar.insertBefore(studioStepper, actions);
+      topbar.insertBefore(studioStepper, actionDock);
     } else {
       topbar?.classList.remove("studio-topbar-active");
     }
@@ -1520,6 +1780,18 @@ function renderTopbar() {
       }
     }
   }
+  if (!workspaceUtilityDockWired) {
+    const toggle = $("#topActionsToggle");
+    const dock = $("#workspaceUtilityDock");
+    if (toggle && dock) {
+      workspaceUtilityDockWired = true;
+      toggle.addEventListener("click", event => {
+        event.stopPropagation();
+        const open = dock.classList.toggle("is-open");
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+    }
+  }
 }
 
 /* ---------- ⌘K ---------- */
@@ -1536,6 +1808,7 @@ function paletteCommands() {
   ] : [
     { label: "首页", group: "导航", icon: "grid", run: () => go("overview") },
     { label: "批量创作", group: "导航", icon: "spark", run: () => go("agent") },
+    { label: "语音生成", group: "导航", icon: "mic", run: () => go("custom", "voice") },
     { label: "单号创作", group: "导航", icon: "film", run: () => { allowStudioFromAgent(); go("studio"); } },
     { label: "整体资产", group: "导航", icon: "folder", run: () => go("assets") },
     { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") },

@@ -237,8 +237,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260727-v120-shell-2", html)
-        self.assertIn("app.js?v=20260727-v120-shell-2", html)
+        self.assertIn("styles.css?v=20260727-v120-shell-6", html)
+        self.assertIn("app.js?v=20260727-v120-shell-6", html)
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",
@@ -254,6 +254,71 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertIn(
             'document.documentElement.dataset.platformEmbedded = "true"',
             html,
+        )
+        self.assertIn(
+            'document.documentElement.dataset.platformWorkspace = "true"',
+            html,
+        )
+        self.assertIn('document.querySelector(\'meta[name="theme-color"]\')?.setAttribute("content", "#ffffff")', html)
+        self.assertIn('html[data-platform-workspace="true"] {', html)
+        self.assertIn("--bg: #ffffff", html)
+        self.assertIn("--surface: #ffffff", html)
+        self.assertIn("--surface-raised: #ffffff", html)
+        self.assertIn('html[data-platform-workspace="true"] .start-history,', html)
+        self.assertIn('html[data-platform-workspace="true"] .history-sidebar', html)
+        self.assertIn('html[data-platform-workspace="true"] .chat-composer', html)
+        self.assertIn('html[data-platform-workspace="true"] .director-rail', html)
+        self.assertIn("background: #ffffff", html)
+        self.assertRegex(
+            html,
+            r'html\[data-platform-workspace="true"\]\s+#outputTabs\s+button\.active,\s*'
+            r'html\[data-platform-workspace="true"\]\s+#outputTabs\s+button\.active:hover\s*'
+            r'\{[^}]*background:\s*#242422;[^}]*color:\s*#ffffff;',
+        )
+        self.assertRegex(
+            html,
+            r'html\[data-platform-workspace="true"\]\s+#outputTabs\s+button:hover:not\(\.active\)\s*'
+            r'\{[^}]*background:\s*#f3f3f0;[^}]*color:\s*#242422;',
+        )
+        self.assertRegex(
+            html,
+            r'html\[data-platform-workspace="true"\]\s+#outputTabs\s+button:focus-visible\s*'
+            r'\{[^}]*box-shadow:\s*inset\s+0\s+0\s+0\s+2px\s+#9d9d97;',
+        )
+        inline_bootstrap = html.split("<script>", 1)[1].split("</script>", 1)[0]
+        embed_bootstrap_check = f"""
+function runBootstrap(search, framed) {{
+  const document = {{
+    documentElement: {{ dataset: {{}} }},
+    querySelector: () => ({{ setAttribute() {{}} }}),
+  }};
+  const window = {{ location: {{ search }} }};
+  window.parent = framed ? {{}} : window;
+  (() => {{
+{inline_bootstrap}
+  }})();
+  return document.documentElement.dataset;
+}}
+const embedded = runBootstrap("?embed=1", true);
+if (embedded.platformEmbedded !== "true"
+    || embedded.platformWorkspace !== "true") {{
+  throw new Error(`embedded flags missing: ${{JSON.stringify(embedded)}}`);
+}}
+for (const candidate of [
+  runBootstrap("?embed=1", false),
+  runBootstrap("", true),
+]) {{
+  if ("platformEmbedded" in candidate || "platformWorkspace" in candidate) {{
+    throw new Error(`standalone flags leaked: ${{JSON.stringify(candidate)}}`);
+  }}
+}}
+"""
+        subprocess.run(
+            ["node", "-e", embed_bootstrap_check],
+            cwd=VIDEO_WORKSHOP_DIR,
+            check=True,
+            capture_output=True,
+            text=True,
         )
         self.assertIn('id="serviceStateText"', html)
         self.assertIn('id="publishOutputButton"', html)
@@ -295,6 +360,14 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             self.assertIn(token, javascript)
         self.assertIn("history-published-badge", css)
         self.assertIn("published-output-badge", css)
+        self.assertIn(
+            'html[data-platform-workspace="true"] .start-history',
+            css,
+        )
+        self.assertIn(
+            'html[data-platform-workspace="true"] .history-sidebar',
+            css,
+        )
         self.assertIn('id="historyDeliveryButton"', html)
         self.assertIn('id="historyDeliveryFilter"', html)
         self.assertIn("publishedOutputMap(project)", javascript)
@@ -402,6 +475,63 @@ if (!value.includes("<img src=x onerror=alert(1)>")) {{
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
         self.assertIn('const entryUrl = "/custom-video/?embed=1&start=home"', integration)
+        self.assertIn('"background:#fff"', integration)
+        self.assertLess(
+            integration.index('window.addEventListener("message", receive)'),
+            integration.index("frame.src = entryUrl"),
+            "iframe must not start before the workspace-ready listener is installed",
+        )
+        bridge_order_check = f"""
+const source = {json.dumps(integration)};
+let messageBridgeInstalled = false;
+class FakeElement {{}}
+globalThis.Element = FakeElement;
+const frame = {{
+  contentWindow: {{ postMessage() {{}} }},
+  style: {{}},
+  setAttribute() {{}},
+  isConnected: false,
+  remove() {{}},
+  set src(value) {{
+    if (!messageBridgeInstalled) {{
+      throw new Error("iframe navigation started before message bridge");
+    }}
+    this.currentSrc = value;
+  }},
+}};
+globalThis.document = {{
+  createElement(tag) {{
+    if (tag !== "iframe") throw new Error(`unexpected element ${{tag}}`);
+    return frame;
+  }},
+}};
+globalThis.window = {{
+  location: {{ origin: "http://workspace.test" }},
+  addEventListener(type) {{
+    if (type === "message") messageBridgeInstalled = true;
+  }},
+  removeEventListener() {{}},
+}};
+const moduleUrl = "data:text/javascript;base64,"
+  + Buffer.from(source, "utf8").toString("base64");
+const {{ mountCustomVideo }} = await import(moduleUrl);
+const host = new FakeElement();
+host.dataset = {{}};
+host.replaceChildren = child => {{
+  if (child !== frame) throw new Error("wrong iframe mounted");
+}};
+mountCustomVideo(host, {{ projectId: "history-project-1" }});
+if (frame.currentSrc !== "/custom-video/?embed=1&start=home") {{
+  throw new Error(`unexpected iframe source ${{frame.currentSrc}}`);
+}}
+"""
+        subprocess.run(
+            ["node", "--input-type=module", "-e", bridge_order_check],
+            cwd=VIDEO_WORKSHOP_DIR,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         self.assertIn(
             'new URLSearchParams(window.location.search).get("start") === "home"',
             javascript,
@@ -412,6 +542,7 @@ if (!value.includes("<img src=x onerror=alert(1)>")) {{
         )
         self.assertIn("localStorage.setItem(PROJECT_STORAGE_KEY, project.id)", javascript)
         self.assertIn("loadProject(project.id)", javascript)
+        self.assertIn("state.project?.id === projectId", javascript)
 
         bootstrap = javascript[:javascript.index("const dom =")]
         home_check = f"""

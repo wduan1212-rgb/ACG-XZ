@@ -3,7 +3,7 @@ import { myId, state, save } from "../core/store.js";
 import { icon } from "../ui/icons.js";
 import { confirmModal, promptModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260727-v118-7";
 import { designTtsVoice, refreshProviderStatus, synthesizeTts } from "../api/providers.js";
-import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
+import { addAssetFromDataUrl, addAssetFromFile, inferAssetFileMime, removeAsset, urlFor } from "../domain/assets.js";
 import { canManageCustomVoice, deleteCustomVoice, favoriteVoiceIds, findVoiceOption, isFavoriteVoice, rememberCustomVoice, renameCustomVoice, setFavoriteVoice, toggleFavoriteVoice, voiceListByTab, voiceMeta } from "../domain/voices.js";
 
 let runtimeAudio = null;
@@ -14,6 +14,7 @@ let previewingVoiceId = "";
 const voicePreviewCache = new Map();
 let providerStatusLoaded = false;
 let providerRefreshPromise = null;
+const providerRefreshCallbacks = new Set();
 let runtimeMemberId = "";
 const VOICE_PREVIEW_TEXT = "这是当前音色试听，语气自然，适合口播内容。";
 
@@ -167,7 +168,7 @@ function toolPanelHtml(mode, s, selected) {
         <button class="btn ghost sm" id="vlCopyCurrent">${icon("copy", 13)} 复制 ID</button>
       </div>
     </div>
-    <div class="vl-sliders">
+    <div class="vl-sliders vl-voice-parameters">
       <label>语速 <span>${Number(s.speed ?? 1.2).toFixed(1)}</span><input id="vlSpeed" type="range" min="0.5" max="2" step="0.1" value="${esc(s.speed ?? 1.2)}" /></label>
       <label>音量 <span>${Number(s.vol || 1).toFixed(1)}</span><input id="vlVol" type="range" min="0.5" max="2" step="0.1" value="${esc(s.vol || 1)}" /></label>
       <label>声调 <span>${Number(s.pitch || 0)}</span><input id="vlPitch" type="range" min="-12" max="12" step="1" value="${esc(s.pitch || 0)}" /></label>
@@ -290,71 +291,101 @@ async function previewVoice(voiceId, s) {
 }
 
 function ensureProviderStatus(renderAgain) {
-  if (providerStatusLoaded || providerRefreshPromise) return;
+  if (providerStatusLoaded) return;
+  if (typeof renderAgain === "function") providerRefreshCallbacks.add(renderAgain);
+  if (providerRefreshPromise) return;
   providerRefreshPromise = refreshProviderStatus()
     .catch(() => null)
     .finally(() => {
       providerStatusLoaded = true;
       providerRefreshPromise = null;
-      renderAgain?.();
+      const callbacks = [...providerRefreshCallbacks];
+      providerRefreshCallbacks.clear();
+      callbacks.forEach(callback => callback());
     });
 }
 
 export const voiceLabView = {
   render(root, { embedded = false } = {}) {
     ensureRuntimeMemberScope();
+    const activeMemberId = myId() || "anonymous";
+    const workspaceLibraryHost = embedded && document.body.classList.contains("workspace-shell-v2")
+      ? document.getElementById("workspaceContextToolHost")
+      : null;
+    if (
+      workspaceLibraryHost
+      && workspaceLibraryHost.dataset.voiceMemberId
+      && workspaceLibraryHost.dataset.voiceMemberId !== activeMemberId
+    ) {
+      workspaceLibraryHost.replaceChildren();
+    }
+    const libraryNode = () => (
+      workspaceLibraryHost?.querySelector(".vl-library")
+      || $(".vl-library", root)
+    );
+    const voiceQuery = selector => $(selector, root) || libraryNode()?.querySelector(selector) || null;
+    const voiceQueryAll = selector => [
+      ...new Set([
+        ...$$(selector, root),
+        ...(libraryNode()?.querySelectorAll(selector) || [])
+      ])
+    ];
     const stableRerender = (nextMode = "", dock = null) => {
-      if (root.dataset.vlSwitching === "true") return;
-      const scroll = embedded
-        ? root.closest(".custom-creation-stage")
-        : document.querySelector(".main-scroll");
-      const scrollTop = scroll?.scrollTop || 0;
-      const oldHeight = root.getBoundingClientRect().height;
-      // The text editor and left voice library are deliberately kept as the
-      // same DOM nodes. Switching modes only replaces the right tool panel,
-      // so the library does not blink/reset and a long script keeps its IME.
-      const stableEditor = $(".vl-editor", root);
-      const stableLibrary = nextMode ? $(".vl-library", root) : null;
-      root.style.minHeight = `${oldHeight}px`;
-      root.classList.add("vl-view-switching");
+      if (root.dataset.vlSwitching === "true") return Promise.resolve(false);
+      return new Promise(resolve => {
+        const scroll = embedded
+          ? root.closest(".custom-creation-stage")
+          : document.querySelector(".main-scroll");
+        const scrollTop = scroll?.scrollTop || 0;
+        const oldHeight = root.getBoundingClientRect().height;
+        // Keep the editor and the real left-rail library as stable DOM nodes.
+        // The right-side mode panel may change without resetting an IME,
+        // scroll position, filters, or selected voice.
+        const stableEditor = $(".vl-editor", root);
+        const stableLibrary = nextMode ? libraryNode() : null;
+        root.style.minHeight = `${oldHeight}px`;
+        root.classList.add("vl-view-switching");
 
-      const renderNext = () => {
-        this.render(root, { embedded });
-        const nextEditor = $(".vl-editor", root);
-        if (stableEditor && nextEditor) nextEditor.replaceWith(stableEditor);
-        const nextLibrary = $(".vl-library", root);
-        if (stableLibrary && nextLibrary) nextLibrary.replaceWith(stableLibrary);
-        const nextHeight = root.getBoundingClientRect().height;
-        root.style.minHeight = `${Math.max(oldHeight, nextHeight)}px`;
-        if (scroll) scroll.scrollTop = scrollTop;
-        requestAnimationFrame(() => {
+        const renderNext = () => {
+          this.render(root, { embedded });
+          const nextEditor = $(".vl-editor", root);
+          if (stableEditor && nextEditor) nextEditor.replaceWith(stableEditor);
+          const nextLibrary = libraryNode();
+          if (stableLibrary && nextLibrary && stableLibrary !== nextLibrary) {
+            nextLibrary.replaceWith(stableLibrary);
+          }
+          const nextHeight = root.getBoundingClientRect().height;
+          root.style.minHeight = `${Math.max(oldHeight, nextHeight)}px`;
           if (scroll) scroll.scrollTop = scrollTop;
-          $$(".vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-in"));
-        });
-        window.setTimeout(() => {
-          if (scroll) scroll.scrollTop = scrollTop;
-          root.style.minHeight = "";
-          root.classList.remove("vl-view-switching");
-          delete root.dataset.vlSwitching;
-          dock?.classList.remove("is-switching");
-          $$(".vl-side-panel", root).forEach(panel => panel.classList.remove("is-panel-switching-in"));
-        }, nextMode ? 340 : 40);
-      };
+          requestAnimationFrame(() => {
+            if (scroll) scroll.scrollTop = scrollTop;
+            $$(".vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-in"));
+          });
+          window.setTimeout(() => {
+            if (scroll) scroll.scrollTop = scrollTop;
+            root.style.minHeight = "";
+            root.classList.remove("vl-view-switching");
+            delete root.dataset.vlSwitching;
+            dock?.classList.remove("is-switching");
+            $$(".vl-side-panel", root).forEach(panel => panel.classList.remove("is-panel-switching-in"));
+          }, nextMode ? 340 : 40);
+          resolve(true);
+        };
 
-      if (!nextMode) {
-        renderNext();
-        return;
-      }
+        if (!nextMode) {
+          renderNext();
+          return;
+        }
 
-      root.dataset.vlSwitching = "true";
-      dock?.classList.add("is-switching");
-      $$('[data-vl-mode]', dock).forEach(button => button.classList.toggle("is-active", button.dataset.vlMode === nextMode));
-      const liquid = $(".vl-mode-liquid", dock);
-      if (liquid) liquid.style.setProperty("--i", String(Math.max(0, ["tts", "design", "library"].indexOf(nextMode))));
-      $$(".vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-out"));
-      window.setTimeout(renderNext, 150);
+        root.dataset.vlSwitching = "true";
+        dock?.classList.add("is-switching");
+        $$('[data-vl-mode]', dock).forEach(button => button.classList.toggle("is-active", button.dataset.vlMode === nextMode));
+        const liquid = $(".vl-mode-liquid", dock);
+        if (liquid) liquid.style.setProperty("--i", String(Math.max(0, ["tts", "design", "library"].indexOf(nextMode))));
+        $$(".vl-side-panel", root).forEach(panel => panel.classList.add("is-panel-switching-out"));
+        window.setTimeout(renderNext, 150);
+      });
     };
-    ensureProviderStatus();
     const s = labState();
     const selected = findVoiceOption(s.voiceId || "");
     const favCount = favoriteVoiceIds().size;
@@ -411,7 +442,7 @@ export const voiceLabView = {
     textEl?.addEventListener("change", syncText);
     textEl?.addEventListener("blur", syncText);
     const syncFavoriteUi = (voiceId, favorite) => {
-      $$(`[data-vl-fav="${CSS.escape(voiceId)}"]`, root).forEach(button => {
+      voiceQueryAll(`[data-vl-fav="${CSS.escape(voiceId)}"]`).forEach(button => {
         button.title = favorite ? "取消收藏" : "收藏音色";
         button.classList.toggle("is-active", favorite);
         button.closest(".vl-voice-card")?.classList.toggle("is-fav", favorite);
@@ -420,10 +451,10 @@ export const voiceLabView = {
         const current = $("#vlFavCurrent", root);
         if (current) current.innerHTML = `${icon("star", 13)} ${favorite ? "已收藏" : "收藏"}`;
       }
-      const counter = $("[data-vl-favorite-count]", root);
+      const counter = voiceQuery("[data-vl-favorite-count]");
       if (counter) counter.textContent = String(favoriteVoiceIds().size);
       if ((labState().tab || "system") === "favorite" && !favorite) {
-        const card = $(`[data-vl-voice="${CSS.escape(voiceId)}"]`, root);
+        const card = voiceQuery(`[data-vl-voice="${CSS.escape(voiceId)}"]`);
         if (card) {
           const height = card.offsetHeight;
           card.animate(
@@ -435,7 +466,7 @@ export const voiceLabView = {
     };
     const syncSelectedVoiceUi = (voiceId, previewing = false) => {
       const voice = findVoiceOption(voiceId || "");
-      $$('[data-vl-voice]', root).forEach(card => {
+      voiceQueryAll('[data-vl-voice]').forEach(card => {
         const active = card.dataset.vlVoice === voiceId;
         card.classList.toggle("is-active", active);
         card.classList.toggle("is-previewing", active && previewing);
@@ -495,7 +526,7 @@ export const voiceLabView = {
     });
 
     const refreshVoiceList = () => {
-      const list = $(".vl-voice-list", root);
+      const list = voiceQuery(".vl-voice-list");
       if (!list) return;
       list.innerHTML = voiceListHtml(labState().tab || "system", labState().voiceId || "", labState());
       list.animate?.([{ opacity: .45, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 150, easing: "cubic-bezier(.2,.8,.2,1)" });
@@ -504,7 +535,7 @@ export const voiceLabView = {
       const next = b.dataset.vlTab || "system";
       if (next === labState().tab) return;
       saveLabPatch({ tab: next });
-      $$("[data-vl-tab]", root).forEach(button => button.classList.toggle("is-active", button.dataset.vlTab === next));
+      voiceQueryAll("[data-vl-tab]").forEach(button => button.classList.toggle("is-active", button.dataset.vlTab === next));
       refreshVoiceList();
     }));
     [["vlVoiceGender", "voiceGender"], ["vlVoiceLocale", "voiceLocale"]].forEach(([id, key]) => {
@@ -515,7 +546,11 @@ export const voiceLabView = {
     });
     const selectAndPreview = async (voiceId) => {
       const id = String(voiceId || "").trim();
+      const previousMode = labState().mode || "tts";
       saveLabPatch({ voiceId: id, mode: "tts" });
+      if (previousMode !== "tts") {
+        await stableRerender("tts", $(".vl-editor-mode-tabs", root));
+      }
       if (!id) {
         toast("已切换默认声线");
         syncSelectedVoiceUi("");
@@ -581,7 +616,7 @@ export const voiceLabView = {
             if (!deleted) throw new Error("该音色不属于当前账号或已被删除");
             return true;
           });
-          const counter = $("[data-vl-favorite-count]", root);
+          const counter = voiceQuery("[data-vl-favorite-count]");
           if (counter) counter.textContent = String(favoriteVoiceIds().size);
           toast("已删除我的音色");
         } catch (err) {
@@ -628,7 +663,7 @@ export const voiceLabView = {
         toast("已删除语音素材");
       }));
       const addReferenceFile = async file => {
-        if (!file || !file.type.startsWith("audio/")) { toast("请拖入音频文件", "error"); return; }
+        if (!file || !inferAssetFileMime(file).startsWith("audio/")) { toast("请拖入音频文件", "error"); return; }
         await addAssetFromFile(null, file, { tags: ["参考音频库", "声线参考"], name: file.name.replace(/\.[^.]+$/, "") });
         const current = $(".vl-audio-library", root);
         if (current) {
@@ -639,7 +674,7 @@ export const voiceLabView = {
       };
       $("#vlReferenceUpload", root)?.addEventListener("change", e => addReferenceFile(e.currentTarget.files[0]));
       const drop = $("#vlReferenceDrop", root);
-      if (drop) wireDropZone(drop, files => addReferenceFile(Array.from(files).find(file => file.type.startsWith("audio/"))), { filesOnly: true });
+      if (drop) wireDropZone(drop, files => addReferenceFile(Array.from(files).find(file => inferAssetFileMime(file).startsWith("audio/"))), { filesOnly: true });
     };
     wireAudioLibrary();
     const wireDesignCandidate = () => {
@@ -669,7 +704,7 @@ export const voiceLabView = {
           if (!saved) throw new Error("该 voice_id 已属于其他成员，不能覆盖");
           setFavoriteVoice(saved.voiceId, true);
           saveLabPatch({ voiceId: saved.voiceId, tab: "mine", mode: "design", designName: "" });
-          $$("[data-vl-tab]", root).forEach(tab => tab.classList.toggle("is-active", tab.dataset.vlTab === "mine"));
+          voiceQueryAll("[data-vl-tab]").forEach(tab => tab.classList.toggle("is-active", tab.dataset.vlTab === "mine"));
           refreshVoiceList();
           const result = $("#vlDesignResult", root);
           if (result) result.innerHTML = `<div class="vl-saved-note">${icon("check", 13)} 已保存到我的音色</div>`;
@@ -729,5 +764,15 @@ export const voiceLabView = {
       }
       toast("音色候选已生成，试听后确认是否保存");
     }, "设计中…"));
+    const renderedLibrary = $(".vl-library", root);
+    if (workspaceLibraryHost && renderedLibrary) {
+      workspaceLibraryHost.dataset.voiceMemberId = activeMemberId;
+      workspaceLibraryHost.classList.add("is-voice-library");
+      workspaceLibraryHost.replaceChildren(renderedLibrary);
+      root.dataset.workspaceVoiceLibrary = "true";
+    } else {
+      delete root.dataset.workspaceVoiceLibrary;
+    }
+    ensureProviderStatus(refreshVoiceList);
   }
 };

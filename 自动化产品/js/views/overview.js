@@ -10,8 +10,8 @@ import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=202607
 import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260727-v118-7";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260723-v117-8";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260727-v120-shell-8";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260727-v120-shell-8";
 import { emptyState, openModal } from "../ui/components.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
 import { renderSupplierOverview } from "./supplierViews.js?v=20260727-v118-7";
@@ -24,7 +24,61 @@ let accountCarouselTimer = null;
 let accountCarouselTransitionTimer = null;
 let overviewTrendWindow = { kind: "days", days: 7, start: "", end: "" };
 
+function overviewAccountPerformance(accounts = [], analyticsAccounts = []) {
+  const snapshotsByName = new Map(
+    analyticsAccounts
+      .filter(Boolean)
+      .map(item => [String(item.name || "").trim(), item])
+      .filter(([name]) => name)
+  );
+  const numberOrZero = value => Math.max(0, Number(value || 0) || 0);
+  return accounts
+    .filter(Boolean)
+    .map(account => {
+      const name = String(account.name || "未命名账号").trim() || "未命名账号";
+      const snapshot = snapshotsByName.get(name) || null;
+      return {
+        ...(snapshot || {}),
+        id: account.id || "",
+        accountId: account.id || "",
+        name,
+        count: snapshot
+          ? numberOrZero(snapshot.count)
+          : numberOrZero(account.count ?? account.monthlyDone ?? 0),
+        engagement: snapshot ? numberOrZero(snapshot.engagement) : 0,
+        hasSnapshot: Boolean(snapshot),
+      };
+    })
+    .sort((a, b) => Number(b.hasSnapshot) - Number(a.hasSnapshot)
+      || numberOrZero(b.score) - numberOrZero(a.score)
+      || numberOrZero(b.count) - numberOrZero(a.count)
+      || a.name.localeCompare(b.name, "zh-CN"));
+}
+
 const dayKey = ts => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+function overviewTrendGeometry(pointCount = 0, {
+  minWidth = 564,
+  pointWidth = 80,
+  labelGap = 3,
+} = {}) {
+  const count = Math.max(1, Math.floor(Number(pointCount) || 0));
+  const width = Math.max(minWidth, count * pointWidth);
+  const gap = Math.max(0, Number(labelGap) || 0);
+  const columnWidth = Math.max(0, (width - gap * (count - 1)) / count);
+  const positions = Array.from({ length: count }, (_, index) => Number(
+    (columnWidth / 2 + index * (columnWidth + gap)).toFixed(3)
+  ));
+  return {
+    count,
+    width,
+    gap,
+    columnWidth,
+    positions,
+    gridStart: count === 1 ? 0 : positions[0],
+    gridEnd: count === 1 ? width : positions.at(-1),
+  };
+}
+
 function overviewTrendModel(rows = [], {
   timestamp = ({ asset }) => asset?.deliveredAt || asset?.createdAt || 0,
 } = {}) {
@@ -44,21 +98,31 @@ function overviewTrendModel(rows = [], {
     return { key, label: new Date(ts).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }), value: dayRows.length, video, image: Math.max(0, dayRows.length - video) };
   });
   const trendMax = Math.max(1, ...recentDays.map(item => item.value));
-  const trendPoints = recentDays.map((item, index) => ({ ...item, x: 24 + index * 80, y: 94 - Math.round(item.value / trendMax * 70) }));
+  const trendGeometry = overviewTrendGeometry(recentDays.length);
+  const trendPoints = recentDays.map((item, index) => ({ ...item, x: trendGeometry.positions[index], y: 94 - Math.round(item.value / trendMax * 70) }));
   const trendCurve = trendPoints.reduce((path, point, index, points) => {
     if (index === 0) return `M ${point.x} ${point.y}`;
     const previous = points[index - 1]; const before = points[index - 2] || previous; const after = points[index + 1] || point;
     return `${path} C ${(previous.x + (point.x - before.x) / 6).toFixed(2)} ${(previous.y + (point.y - before.y) / 6).toFixed(2)}, ${(point.x - (after.x - previous.x) / 6).toFixed(2)} ${(point.y - (after.y - previous.y) / 6).toFixed(2)}, ${point.x} ${point.y}`;
   }, "");
-  const trendChartWidth = Math.max(564, trendPoints.length * 80);
+  const trendChartWidth = trendGeometry.width;
   const trendArea = trendPoints.length ? `${trendCurve} L ${trendPoints.at(-1).x} 94 L ${trendPoints[0].x} 94 Z` : "";
-  return { recentDays, trendPoints, trendCurve, trendChartWidth, trendArea };
+  return {
+    recentDays,
+    trendPoints,
+    trendCurve,
+    trendChartWidth,
+    trendArea,
+    trendGridStart: trendGeometry.gridStart,
+    trendGridEnd: trendGeometry.gridEnd,
+    trendLabelGap: trendGeometry.gap,
+  };
 }
 
 function overviewTrendCardContent(model) {
-  const { trendPoints, trendCurve, trendChartWidth, trendArea } = model;
+  const { trendPoints, trendCurve, trendChartWidth, trendArea, trendGridStart, trendGridEnd, trendLabelGap } = model;
   const title = overviewTrendWindow.kind === "custom" ? "自定义时间发布" : `近 ${overviewTrendWindow.days} 日发布`;
-  return `<header><span class="overview-trend-title"><b>${title}</b><em>回传链接 · 图文 / 视频</em></span><span class="overview-trend-actions"><button class="overview-trend-detail" type="button" data-overview-trend-window="7">7日</button><button class="overview-trend-detail" type="button" data-overview-trend-window="30">30日</button><button class="overview-trend-detail" type="button" data-overview-trend-window="custom">自定义</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="-260" aria-label="向左查看日期">‹</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="260" aria-label="向右查看日期">›</button><button class="overview-trend-detail" type="button" data-overview-trend-detail>查看明细</button></span></header><div class="overview-trend-scroll" data-trend-scroll tabindex="0" aria-label="发布趋势，可横向查看日期"><div class="overview-trend-line" style="--trend-points:${trendPoints.length}; --trend-chart-width:${trendChartWidth}px"><svg viewBox="0 0 ${trendChartWidth} 106" preserveAspectRatio="xMidYMid meet" role="img"><defs><linearGradient id="overviewTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e5485d" stop-opacity=".28"/><stop offset="1" stop-color="#e5485d" stop-opacity="0"/></linearGradient></defs><path class="grid" d="M24 18H540 M24 56H540 M24 94H540"/><path class="trend-area" d="${trendArea}"/><path class="trend-curve" d="${trendCurve}"/>${trendPoints.map(item => `<circle cx="${item.x}" cy="${item.y}" r="3.4" tabindex="0" role="button" aria-label="${esc(item.key)} · 发布 ${item.value} 条，图文 ${item.image} 条，视频 ${item.video} 条，查看当天明细" data-chart-tip="${esc(item.label)} · 发布 ${item.value} · 图文 ${item.image} · 视频 ${item.video}" data-trend-date="${esc(item.key)}"><title>${esc(item.key)} · 发布 ${item.value} · 图文 ${item.image} · 视频 ${item.video}</title></circle>`).join("")}</svg><div>${trendPoints.map(item => `<button type="button" data-trend-date="${esc(item.key)}"><b>${item.value}</b><em>${esc(item.label)}</em></button>`).join("")}</div></div></div>`;
+  return `<header><span class="overview-trend-title"><b>${title}</b><em>回传链接 · 图文 / 视频</em></span><span class="overview-trend-actions"><button class="overview-trend-detail" type="button" data-overview-trend-window="7">7日</button><button class="overview-trend-detail" type="button" data-overview-trend-window="30">30日</button><button class="overview-trend-detail" type="button" data-overview-trend-window="custom">自定义</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="-260" aria-label="向左查看日期">‹</button><button class="overview-trend-nav" type="button" data-trend-scroll-by="260" aria-label="向右查看日期">›</button><button class="overview-trend-detail" type="button" data-overview-trend-detail>查看明细</button></span></header><div class="overview-trend-scroll" data-trend-scroll tabindex="0" aria-label="发布趋势，可横向查看日期"><div class="overview-trend-line" style="--trend-points:${trendPoints.length}; --trend-chart-width:${trendChartWidth}px"><svg viewBox="0 0 ${trendChartWidth} 106" preserveAspectRatio="xMidYMid meet" role="img"><defs><linearGradient id="overviewTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e5485d" stop-opacity=".28"/><stop offset="1" stop-color="#e5485d" stop-opacity="0"/></linearGradient></defs><path class="grid" d="M${trendGridStart} 18H${trendGridEnd} M${trendGridStart} 56H${trendGridEnd} M${trendGridStart} 94H${trendGridEnd}"/><path class="trend-area" d="${trendArea}"/><path class="trend-curve" d="${trendCurve}"/>${trendPoints.map(item => `<circle cx="${item.x}" cy="${item.y}" r="3.4" tabindex="0" role="button" aria-label="${esc(item.key)} · 发布 ${item.value} 条，图文 ${item.image} 条，视频 ${item.video} 条，查看当天明细" data-chart-tip="${esc(item.label)} · 发布 ${item.value} · 图文 ${item.image} · 视频 ${item.video}" data-trend-date="${esc(item.key)}"><title>${esc(item.key)} · 发布 ${item.value} · 图文 ${item.image} · 视频 ${item.video}</title></circle>`).join("")}</svg><div style="gap:${trendLabelGap}px">${trendPoints.map(item => `<button type="button" data-trend-date="${esc(item.key)}"><b>${item.value}</b><em>${esc(item.label)}</em></button>`).join("")}</div></div></div>`;
 }
 const weekRange = ts => {
   const d = new Date(ts || Date.now());
@@ -191,8 +255,6 @@ async function askData(q) {
     return plainAssistantText(offlineAnswer(q, stats));
   }
 }
-
-const CHAT_SUGS = ["昨天产出了多少素材？", "供应商下载了多少？", "哪个账号本月产量最高？", "还有多少在等审核？"];
 
 function firstAccountImage(accountId) {
   return [...state.assets]
@@ -359,7 +421,6 @@ export const overviewView = {
         }
       });
     };
-    const todoCount = waiting.length + inReview.length + failed.length;
     const xhsCount = published.filter(({ acc }) => acc?.platform === "小红书").length;
     const videoCount = published.filter(({ acc }) => acc?.platform === "视频号").length;
     const xhsShare = Math.round(xhsCount / Math.max(1, xhsCount + videoCount) * 100);
@@ -388,22 +449,19 @@ export const overviewView = {
     const publishedTimestamp = ({ asset }) => asset?.publishedUpdatedAt || asset?.publishedAt || asset?.deliveredAt || asset?.createdAt || 0;
     let trendModel = overviewTrendModel(published, { timestamp: publishedTimestamp });
     let { recentDays, trendPoints, trendCurve, trendChartWidth, trendArea } = trendModel;
-    const accountPerformance = analytics.accounts.length
-      ? analytics.accounts.map(item => ({
-        ...item,
-        accountId: links.find(row => row.acc?.name === item.name)?.acc?.id || accounts.find(account => account.name === item.name)?.id || ""
-      }))
-      : accounts.slice()
-        .sort((a, b) => (b.monthlyDone || 0) - (a.monthlyDone || 0))
-        .map(acc => ({ id: acc.id, accountId: acc.id, name: acc.name, count: acc.monthlyDone || 0, engagement: 0 }));
-    const accountPages = Array.from({ length: Math.max(1, Math.ceil(accountPerformance.length / 4)) }, (_, page) => accountPerformance.slice(page * 4, page * 4 + 4));
+    const accountPerformance = overviewAccountPerformance(accounts, analytics.accounts);
+    const accountPageSize = 16;
+    const accountPages = Array.from(
+      { length: Math.max(1, Math.ceil(accountPerformance.length / accountPageSize)) },
+      (_, page) => accountPerformance.slice(page * accountPageSize, page * accountPageSize + accountPageSize)
+    );
     accountCarouselPage %= accountPages.length;
     const accountAvatarHtml = item => {
       const account = accounts.find(candidate => candidate.id === item.accountId) || accounts.find(candidate => candidate.name === item.name);
       const avatarUrl = account?.avatarAssetId ? urlFor(account.avatarAssetId) : (account?.avatarUrl || "");
       return `<span class="overview-account-avatar">${avatarUrl ? `<img src="${esc(avatarUrl)}" alt=""/>` : `<i>${esc(String(item.name || "账").trim().slice(0, 1) || "账")}</i>`}</span>`;
     };
-    const accountPageHtml = page => (accountPages[page] || []).map((item, index) => `<button data-overview-account="${esc(item.name)}" data-overview-account-id="${esc(item.accountId || "")}">${accountAvatarHtml(item)}<span><b><i>${page * 4 + index + 1}</i>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`;
+    const accountPageHtml = page => (accountPages[page] || []).map((item, index) => `<button data-overview-account="${esc(item.name)}" data-overview-account-id="${esc(item.accountId || "")}">${accountAvatarHtml(item)}<span><b><i>${page * accountPageSize + index + 1}</i>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`;
 
     let refreshOverviewTrend = () => render(root);
     const openDataDetail = (key, accountName = "", initialRecentFilter = null, accountId = "", platform = "") => {
@@ -613,23 +671,19 @@ export const overviewView = {
     root.innerHTML = `<div class="overview overview-dashboard overview-integrated">
       <div class="overview-dashboard-layout">
         <main class="overview-dashboard-main">
-          <section class="overview-kpi-strip" aria-label="关键指标">
-            <button class="overview-kpi-card" data-overview-detail="views"><span>总播放量</span><b>${fmt(totalViews)}</b><em>${accountViewRows.length} 个账号累计</em></button>
+          <section class="overview-action-grid" aria-label="关键指标">
+            <button class="overview-action-card" data-overview-detail="views"><span class="overview-action-icon is-views">${icon("eye", 16)}</span><div><b>总播放量</b><em>${accountViewRows.length} 个账号累计</em></div><strong>${fmt(totalViews)}</strong></button>
+            <button class="overview-action-card" data-overview-detail="interactions"><span class="overview-action-icon is-pulse">${icon("pulse", 16)}</span><div><b>互动构成</b><em>逐条查看赞、藏、评与播放</em></div><strong>${fmt(totalEngagement)}</strong></button>
+            <button class="overview-action-card" data-overview-detail="remarks"><span class="overview-action-icon is-note">${icon("fileText", 16)}</span><div><b>发布沟通</b><em>${unreadRemarks.length} 条有未读消息</em></div><strong>${remarked.length}</strong></button>
           </section>
           <section class="overview-viz-grid">
             <article class="overview-viz-card overview-donut-card" aria-label="发布分布，悬停或聚焦扇区查看各平台发布数量，点击查看对应账号明细">
               <header><b>发布分布</b><em>${published.length} 条发布</em></header>
-              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="overview-donut-track" cx="70" cy="70" r="51" pathLength="100"/><circle class="overview-donut-segment is-xhs" cx="70" cy="70" r="51" pathLength="100" style="--segment:${xhsShare};--offset:0" data-overview-detail="publishedPlatforms" data-overview-platform="小红书" data-chart-tip="${esc(publishedXhs.tooltip)}" tabindex="0" role="button" aria-label="小红书 ${xhsCount} 条发布，查看小红书发布明细"/><circle class="overview-donut-segment is-video" cx="70" cy="70" r="51" pathLength="100" style="--segment:${100 - xhsShare};--offset:${-xhsShare}" data-overview-detail="publishedPlatforms" data-overview-platform="视频号" data-chart-tip="${esc(publishedVideo.tooltip)}" tabindex="0" role="button" aria-label="视频号 ${videoCount} 条发布，查看视频号发布明细"/></svg><i><b>${published.length}</b><em>已发布</em></i></span><div><p><i class="is-dark"></i>小红书 <b>${xhsCount}</b></p><p><i></i>视频号 <b>${videoCount}</b></p></div></div>
+              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="overview-donut-track" cx="70" cy="70" r="51" pathLength="100"/><circle class="overview-donut-segment is-xhs" cx="70" cy="70" r="51" pathLength="100" style="--segment:${xhsShare};--offset:0" data-overview-detail="publishedPlatforms" data-overview-platform="小红书" data-chart-tip="${esc(publishedXhs.tooltip)}" tabindex="0" role="button" aria-label="小红书 ${xhsCount} 条发布，查看小红书发布明细"/><circle class="overview-donut-segment is-video" cx="70" cy="70" r="51" pathLength="100" style="--segment:${100 - xhsShare};--offset:${-xhsShare}" data-overview-detail="publishedPlatforms" data-overview-platform="视频号" data-chart-tip="${esc(publishedVideo.tooltip)}" tabindex="0" role="button" aria-label="视频号 ${videoCount} 条发布，查看视频号发布明细"/></svg><i><b>${published.length}</b><em>已发布</em></i></span></div>
             </article>
             <article class="overview-viz-card overview-trend-card">${overviewTrendCardContent(trendModel)}</article>
           </section>
-          <section class="overview-action-grid">
-            <button class="overview-action-card" data-overview-detail="todo"><span class="overview-action-icon is-check">${icon("checkCircle", 16)}</span><div><b>待你处理</b><em>${todoCount} 项 · 审核 ${inReview.length} / 失败 ${failed.length}</em></div><strong>${todoCount}</strong></button>
-            <button class="overview-action-card" data-overview-detail="interactions"><span class="overview-action-icon is-pulse">${icon("pulse", 16)}</span><div><b>互动构成</b><em>逐条查看赞、藏、评与播放</em></div><strong>${fmt(totalEngagement)}</strong></button>
-            <button class="overview-action-card" data-overview-detail="remarks"><span class="overview-action-icon is-note">${icon("fileText", 16)}</span><div><b>发布沟通</b><em>${unreadRemarks.length} 条有未读消息</em></div><strong>${remarked.length}</strong></button>
-            <button class="overview-action-card" data-overview-detail="dataQuality"><span class="overview-action-icon is-link">${icon("link", 16)}</span><div><b>数据完整度</b><em>${analytics.pending} 条等待快照</em></div><strong>${analytics.synced}/${links.length}</strong></button>
-          </section>
-          <section class="overview-account-strip"><header><b>账号表现</b><em>${accountPerformance.length > 4 ? "每 4 秒切换下一组账号" : "点击查看逐条数据"}</em></header><div class="overview-account-viewport" data-account-carousel><div class="overview-account-page">${accountPageHtml(accountCarouselPage)}</div></div></section>
+          <section class="overview-account-strip"><header><b>账号表现</b><em>${accountPerformance.length > accountPageSize ? "每 4 秒切换下一组账号" : "点击查看逐条数据"}</em></header><div class="overview-account-viewport" data-account-carousel><div class="overview-account-page">${accountPageHtml(accountCarouselPage)}</div></div></section>
         </main>
         <aside class="overview-dashboard-assistant"><section class="ov-chat" id="ovChat"><div class="ovc-head"><span class="ovc-ava">${agentAvatar(24)}</span><div><b>星阵数据助手</b><em>独立问答区 · 只读真实数据</em></div></div><div class="ovc-msgs" id="ovcMsgs"></div><div class="ovc-input"><input id="ovcInput" name="overviewDataQuestion" autocomplete="off" aria-label="向数据助手提问" placeholder="问问数据：昨天产出多少素材？" /><button class="ovc-send" id="ovcSend" type="button" title="发送" aria-label="发送数据问题">${icon("send", 15)}</button></div></section></aside>
       </div>
@@ -740,9 +794,8 @@ export const overviewView = {
     const drawChat = () => {
       msgsEl.innerHTML = chatLog.length
         ? chatLog.map(m => `<div class="ovc-bubble ${m.role}">${assistantMessageHtml(m.text)}</div>`).join("") + (chatBusy ? `<div class="ovc-bubble agent typing"><i></i><i></i><i></i></div>` : "")
-        : `<div class="ovc-sugs">${CHAT_SUGS.map(q => `<button class="chip" data-ovq="${esc(q)}">${esc(q)}</button>`).join("")}</div>`;
+        : `<p class="ovc-empty-guide">可以直接询问发布、播放、互动或账号表现</p>`;
       msgsEl.scrollTop = msgsEl.scrollHeight;
-      msgsEl.querySelectorAll("[data-ovq]").forEach(b => b.addEventListener("click", () => { inputEl.value = b.dataset.ovq; send(); }));
     };
     const send = async () => {
       const q = inputEl.value.trim();

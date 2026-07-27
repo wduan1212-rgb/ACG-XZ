@@ -64,6 +64,59 @@ def striped_png_data_url(width=160, height=90):
 
 
 class CustomCanvasStaticIntegrationTest(unittest.TestCase):
+    def test_embed_root_never_renders_home_before_project_hash_resolves(self):
+        source = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "GithubPagesApp.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("HomeView", source)
+        self.assertIn("if (!projectId)", source)
+        self.assertIn("data-canvas-project-opening", source)
+        self.assertIn("正在打开画布", source)
+        self.assertIn("bg-white", source)
+        vendored_index = (
+            APP_DIR / "vendor" / "infinite-canvas" / "index.html"
+        ).read_text(encoding="utf-8")
+        self.assertIn("正在打开画布", vendored_index)
+        self.assertNotIn("欢迎使用星阵无限画布", vendored_index)
+
+    def test_embed_workspace_releases_the_internal_topbar_height(self):
+        workspace = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "Workspace.tsx"
+        ).read_text(encoding="utf-8")
+        project_client = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "ProjectClient.tsx"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("homeHref, IS_PLATFORM_EMBED", workspace)
+        self.assertIn("{!IS_PLATFORM_EMBED && (", workspace)
+        self.assertIn("<TopBar", workspace)
+        self.assertLess(
+            workspace.index("{!IS_PLATFORM_EMBED && ("),
+            workspace.index("<TopBar"),
+        )
+        self.assertIn(
+            '!IS_PLATFORM_EMBED && <div className="h-14 shrink-0 border-b border-line bg-page" />',
+            project_client,
+        )
+
     def test_homepage_first_generation_uses_the_new_project_size(self):
         workspace = (
             APP_DIR
@@ -451,9 +504,33 @@ console.log(JSON.stringify({{
     def test_host_module_is_isolated_and_exposes_output_bridge(self):
         integration = (APP_DIR / "js" / "views" / "customCanvasIntegration.js").read_text(encoding="utf-8")
         self.assertIn(
-            "export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {})",
+            "{ onOutput, onPublishRequest, projectId = \"\" } = {}",
             integration,
         )
+        self.assertIn(
+            'let currentProjectId = safeText(projectId, "", 180)',
+            integration,
+        )
+        self.assertIn('fetch("/api/custom-canvas/projects"', integration)
+        self.assertIn("currentProjectId = await loadRecentProjectId(token, controller.signal)", integration)
+        self.assertIn('childDocument.documentElement.dataset.platformWorkspace = "true"', integration)
+        self.assertIn('style.id = "xingzhenCanvasEmbedStyle"', integration)
+        self.assertIn('button[aria-label="返回"]', integration)
+        self.assertIn('a[href$="#/"]', integration)
+        self.assertIn('dock.dataset.canvasContextTools = "true"', integration)
+        self.assertIn('class="canvas-context-portal"', integration)
+        self.assertIn('data-canvas-context-portal="${canvasContextPortalNonce}"', integration)
+        self.assertIn("contextPortalId: canvasContextPortalId", integration)
+        self.assertIn("contextPortalNonce: canvasContextPortalNonce", integration)
+        self.assertNotIn("data-canvas-control=", integration)
+        self.assertNotIn("dataset.platformCanvasControls", integration)
+        self.assertLess(
+            integration.index("installCanvasContextTools();\n    iframe ="),
+            integration.index('iframe.name = JSON.stringify(canvasBootstrap)'),
+        )
+        self.assertIn('childWindow.addEventListener("hashchange", keepProjectRoute)', integration)
+        self.assertIn("childWindow.location.replace(projectHash(currentProjectId))", integration)
+        self.assertIn("removeCanvasRouteGuard()", integration)
         self.assertIn("export function getLatestOutput()", integration)
         self.assertIn("export function subscribeCanvasOutput", integration)
         self.assertIn("subscribeCanvasOutput(onOutput)", integration)
@@ -478,7 +555,44 @@ console.log(JSON.stringify({{
         )
         self.assertIn("width:100%;height:100%;min-height:0", integration)
         self.assertNotIn("min-height:640px", integration)
-        self.assertIn('iframe.src = "/XZ-Design/?embed=1&v=20260727-v118-7#/"', integration)
+        self.assertIn("background:#fff", integration)
+        self.assertIn("data-custom-canvas-loading", integration)
+        self.assertIn("data-custom-canvas-empty", integration)
+        self.assertIn("if (!currentProjectId) {", integration)
+        self.assertIn("host.innerHTML = emptyCanvasHtml()", integration)
+        self.assertIn("if (!iframe) return mountCanvasFrame()", integration)
+        self.assertIn(
+            "iframe.src = `/XZ-Design/?embed=1&v=20260727-v120-shell-8${projectHash(currentProjectId)}`",
+            integration,
+        )
+        self.assertIn('return value ? `#/project/${encodeURIComponent(value)}` : "#/"', integration)
+        self.assertNotIn(
+            'iframe.src = "/XZ-Design/?embed=1&v=20260727-v120-shell-8#/"',
+            integration,
+        )
+        source = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "Canvas.tsx"
+        ).read_text(encoding="utf-8")
+        bridge = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "lib"
+            / "platformBridge.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn("createPortal(controls, contextPortal.target)", source)
+        self.assertIn('data-canvas-viewport-controls={portaled ? "context" : "canvas"}', source)
+        self.assertIn('className="canvas-viewport-minimap', source)
+        self.assertIn("setViewport(projectId", source)
+        self.assertIn("canvasContextPortalFromBootstrap", bridge)
+        self.assertIn("contextPortalNonce", bridge)
 
     def test_canvas_publish_reuses_image_polish_without_changing_direct_export(self):
         publish = (APP_DIR / "js" / "views" / "customPublish.js").read_text(encoding="utf-8")

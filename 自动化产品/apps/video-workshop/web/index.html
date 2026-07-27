@@ -11,11 +11,185 @@
           new URLSearchParams(window.location.search).get("embed") === "1"
           && window.parent !== window
         );
-        if (embedded) document.documentElement.dataset.platformEmbedded = "true";
+        if (embedded) {
+          document.documentElement.dataset.platformEmbedded = "true";
+          document.documentElement.dataset.platformWorkspace = "true";
+          document.querySelector('meta[name="theme-color"]')?.setAttribute("content", "#ffffff");
+        }
       })();
     </script>
     <link rel="icon" type="image/png" href="/assets/xingzhen-logo-white.png" />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260727-v120-shell-2" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260727-v120-shell-6" />
+    <style>
+      /* 主平台嵌入态由外层工作区负责一级导航，内部只保留创作、素材与成片能力。 */
+      html[data-platform-workspace="true"] {
+        color-scheme: light;
+        --bg: #ffffff;
+        --surface: #ffffff;
+        --surface-raised: #ffffff;
+        --line: #ddddda;
+        --line-soft: #ececea;
+        --text: #242422;
+        --muted: #73736d;
+        --faint: #969690;
+        --white: #242422;
+      }
+
+      html[data-platform-workspace="true"],
+      html[data-platform-workspace="true"] body,
+      html[data-platform-workspace="true"] .app-shell,
+      html[data-platform-workspace="true"] .start-view,
+      html[data-platform-workspace="true"] .studio-view,
+      html[data-platform-workspace="true"] .conversation-pane {
+        background: #ffffff;
+      }
+
+      html[data-platform-workspace="true"] .noise {
+        display: none;
+      }
+
+      html[data-platform-workspace="true"] .start-history,
+      html[data-platform-workspace="true"] .start-history-toggle,
+      html[data-platform-workspace="true"] .history-sidebar {
+        display: none !important;
+      }
+
+      html[data-platform-workspace="true"] .message-content,
+      html[data-platform-workspace="true"] .retry-button,
+      html[data-platform-workspace="true"] .stop-production-button,
+      html[data-platform-workspace="true"] .thinking-step strong,
+      html[data-platform-workspace="true"] .event-item strong {
+        color: #343431;
+      }
+
+      html[data-platform-workspace="true"] .message.pending .message-content,
+      html[data-platform-workspace="true"] .production-live .message-content,
+      html[data-platform-workspace="true"] .production-live-detail,
+      html[data-platform-workspace="true"] .production-live-elapsed,
+      html[data-platform-workspace="true"] .thinking-summary summary,
+      html[data-platform-workspace="true"] .suggestion-actions button,
+      html[data-platform-workspace="true"] .delivery-toggle-button {
+        color: #6f6f69;
+      }
+
+      html[data-platform-workspace="true"] .message.user .message-content,
+      html[data-platform-workspace="true"] .suggestion-actions button:hover,
+      html[data-platform-workspace="true"] .retry-button:hover:not(:disabled),
+      html[data-platform-workspace="true"] .stop-production-button:hover:not(:disabled) {
+        border-color: #ddddda;
+        background: #f3f3f0;
+        color: #242422;
+      }
+
+      html[data-platform-workspace="true"] .activity-ring {
+        border-color: #b7b7b1;
+        border-top-color: #3f3f3b;
+      }
+
+      html[data-platform-workspace="true"] .conversation-column {
+        scrollbar-color: #d3d3ce transparent;
+      }
+
+      html[data-platform-workspace="true"] .submit-button {
+        border-color: #242422;
+        background: #242422;
+        color: #ffffff;
+      }
+
+      html[data-platform-workspace="true"] .submit-button:hover:not(:disabled) {
+        background: #111110;
+        color: #ffffff;
+      }
+
+      html[data-platform-workspace="true"] .submit-button svg {
+        color: #ffffff;
+        stroke: #ffffff !important;
+      }
+
+      html[data-platform-workspace="true"] .submit-button:disabled {
+        border-color: #d8d8d3;
+        background: #d8d8d3;
+        color: #777771;
+      }
+
+      html[data-platform-workspace="true"] .submit-button:disabled svg {
+        color: #777771;
+        stroke: #777771 !important;
+      }
+
+      html[data-platform-workspace="true"] .director-rail {
+        border-left-color: #e6e6e3;
+        background: #ffffff;
+      }
+
+      html[data-platform-workspace="true"] .chat-composer {
+        border-top-color: #ececea;
+        background: rgb(255 255 255 / 94%);
+      }
+
+      html[data-platform-workspace="true"] .start-input-line,
+      html[data-platform-workspace="true"] .chat-input-line {
+        border-bottom-color: #d8d8d4;
+      }
+
+      html[data-platform-workspace="true"] .publish-output-button {
+        border-color: #242422;
+        background: #242422;
+        color: #ffffff;
+      }
+
+      html[data-platform-workspace="true"] .publish-output-button:hover {
+        background: #111110;
+      }
+
+      html[data-platform-workspace="true"] #outputTabs {
+        border-color: #d8d8d3;
+        background: #ffffff;
+      }
+
+      html[data-platform-workspace="true"] #outputTabs button {
+        border-right-color: #d8d8d3;
+        background: #ffffff;
+        color: #6f6f69;
+        transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+      }
+
+      html[data-platform-workspace="true"] #outputTabs button:hover:not(.active) {
+        background: #f3f3f0;
+        color: #242422;
+      }
+
+      html[data-platform-workspace="true"] #outputTabs button.active,
+      html[data-platform-workspace="true"] #outputTabs button.active:hover {
+        background: #242422;
+        color: #ffffff;
+      }
+
+      html[data-platform-workspace="true"] #outputTabs button:focus-visible {
+        box-shadow: inset 0 0 0 2px #9d9d97;
+      }
+
+      html[data-platform-workspace="true"] .history-delivery-panel {
+        border-color: #ddddda;
+        background: rgb(255 255 255 / 98%);
+        box-shadow: 0 28px 80px rgb(0 0 0 / 18%);
+      }
+
+      html[data-platform-workspace="true"] .history-delivery-card {
+        border-color: #e1e1dd;
+        background: #ffffff;
+        box-shadow: none;
+      }
+
+      html[data-platform-workspace="true"] .history-delivery-card strong,
+      html[data-platform-workspace="true"] .history-delivery-card-actions a,
+      html[data-platform-workspace="true"] .history-delivery-card-actions button,
+      html[data-platform-workspace="true"] .history-speed-select,
+      html[data-platform-workspace="true"] .speed-version-control select,
+      html[data-platform-workspace="true"] .speed-version-control button {
+        color: #343431;
+      }
+    </style>
   </head>
   <body>
     <div class="noise" aria-hidden="true"></div>
@@ -190,6 +364,6 @@
     <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,.m4a" multiple hidden />
     <div class="toast" id="toast" role="status"></div>
     <script src="/assets/lucide.min.js"></script>
-    <script src="/assets/app.js?v=20260727-v120-shell-2"></script>
+    <script src="/assets/app.js?v=20260727-v120-shell-6"></script>
   </body>
 </html>

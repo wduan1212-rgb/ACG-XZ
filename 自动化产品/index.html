@@ -6,13 +6,13 @@
     <title>星阵</title>
     <link rel="icon" type="image/svg+xml" href="./assets/brand/xingzhen-favicon-black.svg?v=20260711-v71" />
     <link rel="stylesheet" href="./styles/tokens.css?v=20260711-v70" />
-    <link rel="stylesheet" href="./styles/base.css?v=20260727-v120-shell-2" />
+    <link rel="stylesheet" href="./styles/base.css?v=20260727-v120-shell-8" />
     <link rel="stylesheet" href="./styles/components.css?v=20260723-v117-8" />
-    <link rel="stylesheet" href="./styles/views.css?v=20260727-v120-shell-2" />
+    <link rel="stylesheet" href="./styles/views.css?v=20260727-v120-shell-8" />
     <link rel="stylesheet" href="./styles/analytics.css?v=20260711-v70" />
-    <link rel="stylesheet" href="./styles/agent.css?v=20260727-v120-shell-2" />
+    <link rel="stylesheet" href="./styles/agent.css?v=20260727-v120-shell-8" />
     <link rel="stylesheet" href="./styles/ui-motion.css?v=20260727-v118-7" />
-    <link rel="stylesheet" href="./styles/custom-creation.css?v=20260727-v120-shell-2" />
+    <link rel="stylesheet" href="./styles/custom-creation.css?v=20260727-v120-shell-8" />
     <link rel="stylesheet" href="./styles/client-download.css?v=20260727-v119-4" />
     <script>
       (function () {
@@ -127,15 +127,20 @@
       <div class="main-col">
         <header class="topbar">
           <div class="top-crumb" id="topCrumb">首页</div>
-          <div class="top-actions">
-            <button class="top-btn" id="topSearch" title="搜索（⌘K）">
-              <svg viewBox="0 0 24 24" width="15" height="15"><path d="M21 21l-4.3-4.3M11 19a8 8 0 110-16 8 8 0 010 16z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-              <span>搜索</span><kbd>⌘K</kbd>
+          <div class="top-actions" id="workspaceUtilityDock">
+            <button class="top-btn icon workspace-utility-toggle" id="topActionsToggle" type="button" aria-controls="topActionsPanel" aria-expanded="false" aria-label="打开页面操作">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
             </button>
-            <button class="top-btn icon" id="topBell" title="通知中心">
-              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M18 8a6 6 0 10-12 0c0 7-3 8-3 8h18s-3-1-3-8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.3 21a2 2 0 003.4 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-              <em class="badge" id="notifyBadge" hidden></em>
-            </button>
+            <div class="top-actions-panel" id="topActionsPanel">
+              <button class="top-btn" id="topSearch" title="搜索（⌘K）">
+                <svg viewBox="0 0 24 24" width="15" height="15"><path d="M21 21l-4.3-4.3M11 19a8 8 0 110-16 8 8 0 010 16z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                <span>搜索</span><kbd>⌘K</kbd>
+              </button>
+              <button class="top-btn icon" id="topBell" title="通知中心">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path d="M18 8a6 6 0 10-12 0c0 7-3 8-3 8h18s-3-1-3-8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M10.3 21a2 2 0 003.4 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                <em class="badge" id="notifyBadge" hidden></em>
+              </button>
+            </div>
           </div>
         </header>
         <main class="view-root" id="viewRoot"></main>
@@ -174,6 +179,6 @@
         }, 7000);
       })();
     </script>
-    <script type="module" src="./js/main.js?v=20260727-v120-shell-2"></script>
+    <script type="module" src="./js/main.js?v=20260727-v120-shell-8"></script>
   </body>
 </html>

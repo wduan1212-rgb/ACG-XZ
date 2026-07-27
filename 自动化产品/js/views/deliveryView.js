@@ -8,7 +8,7 @@ import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js?v=20260727-v118-7";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260727-v118-7";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260727-v120-shell-8";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260727-v118-7";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
@@ -342,8 +342,127 @@ function supplierDetailHtml(asset, acc, accountSequence = 0) {
   </tr>`;
 }
 
-let supFilters = { product: "all", type: "all", publisher: "all", account: "all", date: "all", download: "all", publish: "all" };
+const deliveryFilterDefaults = Object.freeze({ product: "all", type: "all", publisher: "all", account: "all", date: "all", download: "all", publish: "all" });
+const deliveryFilterKeys = new Set(Object.keys(deliveryFilterDefaults));
+let supFilters = { ...deliveryFilterDefaults };
 let creatorRemarkFilter = "all";
+let activeDeliveryController = null;
+
+const filterOption = (value, label) => ({ value, label });
+const withAllOption = (label, options) => [filterOption("all", label), ...options];
+
+export function getDeliveryFilterModel() {
+  const all = sortDelivered(deliveredAssets());
+  const isSupplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+  const canFilterPublisher = isSupplierRole || ["admin", "editor"].includes(state.role);
+  const selfPublisher = isSupplierRole ? "" : String(currentMember()?.name || "").trim();
+  const products = [...new Set(all
+    .map(item => item.asset.productTag || productTagLabel(productById(item.asset.productId || "")))
+    .filter(Boolean))];
+  const publishers = [...new Set([
+    ...all.map(item => publisherLabel(item.asset)),
+    selfPublisher,
+  ].filter(Boolean))];
+  const accounts = [...new Map(all.map(item => [item.acc.id, item.acc])).values()];
+  const dates = [...new Set(all.map(item => dayKey(item.asset)))];
+  const fields = [
+    {
+      key: "product",
+      label: "产品",
+      type: "select",
+      value: supFilters.product,
+      options: withAllOption("全部产品", products.map(value => filterOption(value, value))),
+    },
+    {
+      key: "type",
+      label: "形式",
+      type: "select",
+      value: supFilters.type,
+      options: [filterOption("all", "全部形式"), filterOption("视频", "视频"), filterOption("图文", "图文")],
+    },
+    ...(canFilterPublisher ? [{
+      key: "publisher",
+      label: "发布人",
+      type: "select",
+      value: supFilters.publisher,
+      options: withAllOption("全部发布人", publishers.map(value => filterOption(value, value))),
+    }] : []),
+    {
+      key: "account",
+      label: "账号",
+      type: "select",
+      value: supFilters.account,
+      options: withAllOption("全部账号", accounts.map(account => filterOption(account.id, account.name || "未命名账号"))),
+    },
+    {
+      key: "date",
+      label: "时间",
+      type: "select",
+      value: supFilters.date,
+      options: withAllOption("全部时间", dates.map(value => filterOption(value, dayLabel(value)))),
+    },
+    {
+      key: "download",
+      label: "下载",
+      type: "choice",
+      value: supFilters.download,
+      options: [filterOption("all", "全部"), filterOption("downloaded", "已下载"), filterOption("undownloaded", "未下载")],
+    },
+    {
+      key: "publish",
+      label: "发布",
+      type: "choice",
+      value: supFilters.publish,
+      options: [filterOption("all", "全部"), filterOption("published", "已发布"), filterOption("unpublished", "未发布")],
+    },
+    ...(!isSupplierRole ? [{
+      key: "remarks",
+      label: "备注",
+      type: "choice",
+      value: creatorRemarkFilter,
+      options: [filterOption("all", "全部"), filterOption("unread", "最新备注")],
+    }] : []),
+  ];
+  return {
+    role: state.role || "",
+    supplier: isSupplierRole,
+    values: { ...supFilters, remarks: creatorRemarkFilter },
+    fields,
+  };
+}
+
+function emitDeliveryFilterModel() {
+  if (typeof window === "undefined" || typeof window.CustomEvent !== "function") return;
+  window.dispatchEvent(new CustomEvent("xingzhen:delivery-filter-model", {
+    detail: getDeliveryFilterModel(),
+  }));
+}
+
+export function setDeliveryFilter(key, value, { toggle = false, redraw = true } = {}) {
+  const normalizedKey = String(key || "").trim();
+  const normalizedValue = String(value || "all").trim() || "all";
+  if (normalizedKey === "remarks") {
+    if (!["all", "unread"].includes(normalizedValue)) return getDeliveryFilterModel();
+    creatorRemarkFilter = toggle && creatorRemarkFilter === normalizedValue ? "all" : normalizedValue;
+  } else {
+    if (!deliveryFilterKeys.has(normalizedKey)) return getDeliveryFilterModel();
+    if (normalizedKey === "type" && !["all", "视频", "图文"].includes(normalizedValue)) return getDeliveryFilterModel();
+    if (normalizedKey === "download" && !["all", "downloaded", "undownloaded"].includes(normalizedValue)) return getDeliveryFilterModel();
+    if (normalizedKey === "publish" && !["all", "published", "unpublished"].includes(normalizedValue)) return getDeliveryFilterModel();
+    supFilters[normalizedKey] = toggle && supFilters[normalizedKey] === normalizedValue ? "all" : normalizedValue;
+  }
+  if (redraw && activeDeliveryController?.draw) activeDeliveryController.draw();
+  emitDeliveryFilterModel();
+  return getDeliveryFilterModel();
+}
+
+export function resetDeliveryFilters({ redraw = true } = {}) {
+  supFilters = { ...deliveryFilterDefaults };
+  creatorRemarkFilter = "all";
+  if (redraw && activeDeliveryController?.draw) activeDeliveryController.draw();
+  emitDeliveryFilterModel();
+  return getDeliveryFilterModel();
+}
 
 function deliveryStatusFiltersHtml(scope) {
   return `<div class="delivery-status-filters" aria-label="交付状态筛选" title="下载状态与发布状态可组合筛选；再次点击当前标签可取消">
@@ -362,6 +481,9 @@ function deliveryStatusFiltersHtml(scope) {
 }
 
 export const deliveryView = {
+  getFilterModel: getDeliveryFilterModel,
+  setFilter: setDeliveryFilter,
+  resetFilters: resetDeliveryFilters,
   render(root) {
     const isSupplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
     const canUpdateViews = ["supplier_parent", "supplier_child"].includes(state.role);
@@ -403,7 +525,7 @@ export const deliveryView = {
           && (creatorRemarkFilter === "all" || hasUnreadRemark(x.asset));
       });
       const groups = groupByDay(visible);
-      body.innerHTML = `<div class="supplier-filters creator-delivery-filters">
+      body.innerHTML = `<div class="supplier-filters creator-delivery-filters"><div class="delivery-filter-controls">
           <label class="select-shell">${icon("package", 13)}<select data-creator-select="product"><option value="all">全部产品</option>${productTags.map(x => `<option value="${esc(x)}" ${supFilters.product === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("filter", 13)}<select data-creator-select="type"><option value="all">全部形式</option><option value="视频" ${supFilters.type === "视频" ? "selected" : ""}>视频</option><option value="图文" ${supFilters.type === "图文" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>
           ${canFilterPublisher ? `<label class="select-shell">${icon("user", 13)}<select data-creator-select="publisher"><option value="all">全部发布人</option>${publishers.map(x => `<option value="${esc(x)}" ${supFilters.publisher === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>` : ""}
@@ -411,7 +533,7 @@ export const deliveryView = {
           <label class="select-shell">${icon("clock", 13)}<select data-creator-select="date"><option value="all">全部时间</option>${dates.map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           ${deliveryStatusFiltersHtml("creator")}
           <button class="creator-remark-filter ${creatorRemarkFilter === "unread" ? "on" : ""}" data-creator-remarks="unread">${icon("fileText", 12)} 最新备注${all.some(x => hasUnreadRemark(x.asset)) ? `<i class="delivery-remark-dot"></i>` : ""}</button>
-        </div>` + (visible.length
+        </div></div>` + (visible.length
         ? `<div class="dv-layout ${noStructuredFilter && creatorRemarkFilter === "all" ? "" : "is-filtered"}">
             ${noStructuredFilter && creatorRemarkFilter === "all" ? `<aside class="dv-date-nav" aria-label="发布时间轴">
               ${groups.map(g => `<button class="dv-date-link" data-day-jump="${esc(g.key)}"><span>${esc(dayLabel(g.key))}</span><em>${g.items.length}</em></button>`).join("")}
@@ -437,7 +559,7 @@ export const deliveryView = {
         : emptyState("package", noStructuredFilter ? "还没有发布记录" : "当前筛选下还没有发布记录", noStructuredFilter ? "在审核页点「定稿并发布」后，会按发布序号汇总在这里（未发布的内容在「草稿箱」）" : "调整筛选条件，或恢复全部条件查看时间轴"));
 
       $$("[data-creator-select]", body).forEach(select => select.addEventListener("change", () => {
-        supFilters[select.dataset.creatorSelect] = select.value;
+        setDeliveryFilter(select.dataset.creatorSelect, select.value, { redraw: false });
         const height = body.offsetHeight;
         body.style.minHeight = `${height}px`;
         drawCreator(body, all);
@@ -449,12 +571,12 @@ export const deliveryView = {
       $$("[data-creator-status]", body).forEach(button => button.addEventListener("click", () => {
         const dimension = button.dataset.creatorStatus;
         const value = button.dataset.statusValue;
-        supFilters[dimension] = supFilters[dimension] === value ? "all" : value;
+        setDeliveryFilter(dimension, value, { toggle: true, redraw: false });
         drawCreator(body, all);
       }));
 
       $$("[data-creator-remarks]", body).forEach(button => button.addEventListener("click", () => {
-        creatorRemarkFilter = creatorRemarkFilter === "unread" ? "all" : "unread";
+        setDeliveryFilter("remarks", "unread", { toggle: true, redraw: false });
         drawCreator(body, all);
       }));
 
@@ -532,12 +654,14 @@ export const deliveryView = {
       const visibleCount = rows.filter(matchesFilters).length;
       body.innerHTML = `
         <div class="supplier-filters">
+          <div class="delivery-filter-controls">
           <label class="select-shell">${icon("package", 13)}<select data-sup-select="product"><option value="all">全部产品</option>${productTags.map(x => `<option value="${esc(x)}" ${supFilters.product === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("filter", 13)}<select data-sup-select="type"><option value="all">全部形式</option><option value="视频" ${supFilters.type === "视频" ? "selected" : ""}>视频</option><option value="图文" ${supFilters.type === "图文" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("user", 13)}<select data-sup-select="publisher"><option value="all">全部发布人</option>${[...new Set(all.map(x => publisherLabel(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.publisher === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("users", 13)}<select data-sup-select="account"><option value="all">全部账号</option>${[...new Map(all.map(x => [x.acc.id, x.acc])).values()].map(acc => `<option value="${esc(acc.id)}" ${supFilters.account === acc.id ? "selected" : ""}>${esc(acc.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("clock", 13)}<select data-sup-select="date"><option value="all">全部时间</option>${[...new Set(all.map(x => dayKey(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           ${deliveryStatusFiltersHtml("sup")}
+          </div>
           <span class="supplier-selection-count" id="dvSelectedCount" hidden>已选 <b>0</b> 条</span>
           <button class="btn primary supplier-batch-download" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>
         </div>
@@ -636,13 +760,13 @@ export const deliveryView = {
         updateSupplierSelection();
       };
       $$("[data-sup-select]", body).forEach(b => b.addEventListener("change", () => {
-        supFilters[b.dataset.supSelect] = b.value;
+        setDeliveryFilter(b.dataset.supSelect, b.value, { redraw: false });
         applySupplierFilters();
       }));
       $$("[data-sup-status]", body).forEach(button => button.addEventListener("click", () => {
         const dimension = button.dataset.supStatus;
         const value = button.dataset.statusValue;
-        supFilters[dimension] = supFilters[dimension] === value ? "all" : value;
+        setDeliveryFilter(dimension, value, { toggle: true, redraw: false });
         drawSupplier(body, all);
       }));
       $("#dvBatchDl", body)?.addEventListener("click", batchDl);
@@ -730,6 +854,11 @@ export const deliveryView = {
       draw();
     }
 
+    activeDeliveryController = { root, draw };
+    root.__viewCleanup = () => {
+      if (activeDeliveryController?.root === root) activeDeliveryController = null;
+    };
     draw();
+    emitDeliveryFilterModel();
   }
 };

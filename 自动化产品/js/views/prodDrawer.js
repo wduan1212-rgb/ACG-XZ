@@ -209,6 +209,7 @@ export function openProductionDrawer(pid, tab) {
         // 去工作台微调：按当前页签路由到对应可编辑节点（再在那里重新生成）
         rootEl.querySelectorAll('[data-pd="workbench"]').forEach(wb => wb.addEventListener("click", async () => {
           const from = currentRoute();
+          const targetPage = tabStage(p, curTab);
           if (from.zone === "agent") {
             const ok = await confirmModal({
               title: "进入单号工坊？",
@@ -216,14 +217,19 @@ export function openProductionDrawer(pid, tab) {
               okText: "进入微调"
             });
             if (!ok) return;
+            // 在关闭抽屉前建立一次性路由许可，避免 Agent 工作区的路由锁拦截本次显式跳转。
+            allowStudioFromAgent();
           }
           state.ui.activeAccountId = p.accountId;
           state.ui.activeProductionId = p.id;
-          state.ui.returnTo = from;   // 记住来处，工作台里给「返回」按钮用
+          state.ui.returnTo = {
+            zone: from.zone || "agent",
+            page: from.page || null,
+            resourceId: from.resourceId || null
+          };   // 记住来处，工作台里给「返回」按钮用
           save("meta");
           close();
-          if (from.zone === "agent") allowStudioFromAgent();
-          go("studio", tabStage(p, curTab));
+          go("studio", targetPage);
         }));
         // 脚本编辑
         rootEl.querySelectorAll("[data-shot-field]").forEach(td => td.addEventListener("blur", () => {

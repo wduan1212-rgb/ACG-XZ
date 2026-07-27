@@ -9,8 +9,25 @@ const read = relativePath => readFileSync(resolve(appRoot, relativePath), "utf8"
 
 const indexHtml = read("index.html");
 const baseCss = read("styles/base.css");
+const viewsCss = read("styles/views.css");
+const agentCss = read("styles/agent.css");
+const customCreationCss = read("styles/custom-creation.css");
 const mainJs = read("js/main.js");
+const agentViewJs = read("js/agent/view.js");
+const chainBoardsJs = read("js/views/chainBoards.js");
 const iconsJs = read("js/ui/icons.js");
+const voiceLabJs = read("js/views/voiceLab.js");
+const prodDrawerJs = read("js/views/prodDrawer.js");
+const studioJs = read("js/views/studio.js");
+const canvasIntegrationJs = read("js/views/customCanvasIntegration.js");
+const canvasSourceTsx = read("apps/infinite-canvas-source/src/components/workspace/Canvas.tsx");
+const canvasBridgeTs = read("apps/infinite-canvas-source/src/lib/platformBridge.ts");
+const canvasRootTsx = read("apps/infinite-canvas-source/src/components/GithubPagesApp.tsx");
+const canvasWorkspaceTsx = read("apps/infinite-canvas-source/src/components/workspace/Workspace.tsx");
+const canvasProjectClientTsx = read("apps/infinite-canvas-source/src/components/workspace/ProjectClient.tsx");
+const videoWorkshopHtml = read("apps/video-workshop/web/index.html");
+const customVideoIntegrationJs = read("js/views/customVideoIntegration.js");
+const customCreationJs = read("js/views/customCreation.js");
 
 function section(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -42,6 +59,27 @@ test("workspace v2 removes the legacy black primary navigation rail", () => {
   );
 });
 
+test("v120 is the only workspace shell and uses the release-list label", () => {
+  const items = section(mainJs, "function workspaceNavItems()", "function workspaceCurrentItem()");
+  assert.match(mainJs, /function workspaceShellEnabled\(\)\s*\{\s*return true;\s*\}/s);
+  assert.match(items, /label:\s*"发布清单"/);
+  assert.doesNotMatch(items, /发布与数据/);
+  assert.doesNotMatch(mainJs, /使用旧版界面/);
+  assert.doesNotMatch(mainJs, /data-account-action="legacy"/);
+  assert.doesNotMatch(mainJs, /workspace=legacy/);
+});
+
+test("workspace brand keeps product and current feature on one line", () => {
+  assert.match(
+    baseCss,
+    /\.workspace-switch-copy\s*\{[^}]*display\s*:\s*flex\s*;[^}]*align-items\s*:\s*baseline\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /\.workspace-switch-copy\s+em\s*\{[^}]*color\s*:\s*#92928d\s*;/s,
+  );
+});
+
 test("single-account workspace lists every account group without a 40-account cap", () => {
   const studioRows = section(mainJs, 'if (zone === "studio") {', 'if (zone === "agent") {');
   assert.doesNotMatch(studioRows, /\.slice\(\s*0\s*,\s*40\s*\)/);
@@ -62,10 +100,63 @@ test("batch-session context rows open the selected real session", () => {
   assert.match(routeHandler, /openAgentSession\s*\(\s*targetId\s*\)/);
 });
 
-test("workspace v2 never moves the studio chain stepper into the floating topbar", () => {
+test("batch refinement uses the canonical router and keeps a visible return path", () => {
+  assert.match(mainJs, /from\s+"\.\/core\/router\.js"/);
+  assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
+  assert.match(prodDrawerJs, /from\s+"\.\.\/core\/router\.js"/);
+  const workbenchRoute = section(
+    prodDrawerJs,
+    "rootEl.querySelectorAll('[data-pd=\"workbench\"]')",
+    "// 脚本编辑",
+  );
+  assert.match(workbenchRoute, /allowStudioFromAgent\(\)/);
+  assert.match(workbenchRoute, /state\.ui\.returnTo\s*=\s*\{/);
+  assert.match(workbenchRoute, /go\("studio",\s*targetPage\)/);
+  assert.ok(
+    workbenchRoute.indexOf("allowStudioFromAgent()") < workbenchRoute.indexOf('go("studio", targetPage)'),
+    "explicit batch-to-studio permission must be established before navigation",
+  );
+  assert.match(studioJs, /agent:\s*"返回批量生产"/);
+  assert.match(studioJs, /rt\?\.zone\s*===\s*"agent"[\s\S]*?<span class="cs-label">批量生产<\/span>/);
+  assert.match(studioJs, /\$\$\("\[data-cs-back\]",\s*root\)\.forEach/);
+  assert.match(studioJs, /if\s*\(rt\s*&&\s*rt\.zone\)\s*go\(rt\.zone,\s*rt\.page,\s*rt\.resourceId\)/);
+  assert.match(mainJs, /title:\s*"上一步"[\s\S]*?title:\s*"返回批量生产"[\s\S]*?data-ws-return-batch="true"/);
+  assert.match(mainJs, /routeButton\.dataset\.wsReturnBatch\s*===\s*"true"/);
+  assert.match(
+    viewsCss,
+    /body\.workspace-shell-v2\[data-zone="studio"\]\s+\.view-root\s*>\s*\.chain-stepper\s*\{[^}]*position\s*:\s*sticky\s*;[^}]*display\s*:\s*flex\s*!important\s*;/s,
+  );
+});
+
+test("batch panels keep scrolling while hiding rails and omit the covered session label", () => {
+  assert.doesNotMatch(agentViewJs, /本会话/);
+  assert.match(
+    agentCss,
+    /\.agw-msgs,[\s\S]*?\.agw-sessions,[\s\S]*?\.agc-accs\s*\{[^}]*scrollbar-width\s*:\s*none\s*;/s,
+  );
+  assert.match(
+    viewsCss,
+    /\.pd-body\s*\{[^}]*overflow-y\s*:\s*auto\s*;[^}]*scrollbar-width\s*:\s*none\s*;/s,
+  );
+  assert.match(viewsCss, /\.pd-body::-(?:webkit|Webkit)-scrollbar\s*\{[^}]*display\s*:\s*none\s*;/s);
+});
+
+test("unified reference drop zone has visible hover and drop motion", () => {
+  assert.match(chainBoardsJs, /class="refbar-drop-cue"/);
+  assert.match(chainBoardsJs, /拖入统一参考图/);
+  assert.match(viewsCss, /\.refbar\.img-ref-generation:hover\s*\{[^}]*transform\s*:\s*translateY\(-1px\)/s);
+  assert.match(viewsCss, /\.refbar\.drag-over\s*\{[^}]*scale\(1\.006\)/s);
+  assert.match(viewsCss, /@keyframes\s+refbarDropBounce/);
+});
+
+test("topbar actions render inside the nested action dock while the legacy stepper stays outside it", () => {
   const renderTopbar = section(mainJs, "function renderTopbar()", "function paletteCommands()");
+  assert.match(renderTopbar, /const actionDock\s*=\s*\$\("\.top-actions"\)/);
+  assert.match(renderTopbar, /const actions\s*=\s*\$\("#topActionsPanel"\)\s*\|\|\s*actionDock/);
+  assert.match(renderTopbar, /actions\.insertBefore\(newAccBtn,\s*\$\("#topSearch"\)\)/);
+
   const legacyGuard = renderTopbar.indexOf("if (!workspaceShellEnabled())");
-  const insertion = renderTopbar.indexOf("topbar.insertBefore(studioStepper, actions)");
+  const insertion = renderTopbar.indexOf("topbar.insertBefore(studioStepper, actionDock)");
   assert.ok(legacyGuard >= 0, "chain-stepper relocation must be guarded by legacy-shell mode");
   assert.ok(insertion > legacyGuard, "chain-stepper relocation escaped the legacy-shell guard");
   assert.match(
@@ -74,18 +165,349 @@ test("workspace v2 never moves the studio chain stepper into the floating topbar
   );
 });
 
-test("all modified workspace-shell resources use a v120 cache marker", () => {
-  assert.match(indexHtml, /styles\/base\.css\?v=20260727-v120[^"]*/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260727-v120[^"]*/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260727-v120[^"]*/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260727-v120[^"]*/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260727-v120[^"]*"/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260727-v120[^"]*"/);
-  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260727-v120[^"]*"/);
+test("workspace switcher exposes voice generation without rendering gray item hints", () => {
+  const items = section(mainJs, "function workspaceNavItems()", "function workspaceCurrentItem()");
+  assert.match(
+    items,
+    /\{\s*key:\s*"custom-voice",\s*label:\s*"语音生成",\s*zone:\s*"custom",\s*page:\s*"voice",\s*iconName:\s*"mic"\s*\}/,
+  );
+
+  const switcher = section(mainJs, "function renderWorkspaceSwitcher()", "function normalizeWorkspaceProject");
+  assert.match(switcher, /<span><b>\$\{esc\(item\.label\)\}<\/b><\/span>/);
+  assert.doesNotMatch(switcher, /workspaceItemHint\(item\)/);
+  assert.doesNotMatch(switcher, /workspace-menu-kicker/);
+
+  const commands = section(mainJs, "function paletteCommands()", "async function boot()");
+  assert.match(commands, /\{\s*label:\s*"语音生成"[^}]*go\("custom",\s*"voice"\)/s);
+});
+
+test("voice generation moves the real voice library into the unified left context column", () => {
+  const contextShell = section(
+    mainJs,
+    "function ensureWorkspaceContextShell(panel)",
+    "function scheduleWorkspaceContextRender()",
+  );
+  assert.match(contextShell, /id="workspaceContextToolHost"\s+hidden/);
+  const contextRender = section(mainJs, "function renderWorkspaceContextPanel()", "function renderContextPanel()");
+  assert.match(contextRender, /activeContextTool\s*=\s*zone\s*===\s*"custom"\s*&&\s*page\s*===\s*"voice"/s);
+  assert.match(contextRender, /contextList\.hidden\s*=\s*activeContextTool\s*===\s*"voice"/);
+  assert.match(contextRender, /contextToolHost\.hidden\s*=\s*activeContextTool\s*!==\s*"voice"/);
+  assert.match(voiceLabJs, /document\.getElementById\("workspaceContextToolHost"\)/);
+  assert.match(voiceLabJs, /workspaceLibraryHost\.replaceChildren\(renderedLibrary\)/);
+  assert.match(voiceLabJs, /workspaceLibraryHost\.dataset\.voiceMemberId\s*=\s*activeMemberId/);
+  assert.match(voiceLabJs, /const stableLibrary\s*=\s*nextMode\s*\?\s*libraryNode\(\)\s*:\s*null/);
+  assert.match(voiceLabJs, /nextLibrary\.replaceWith\(stableLibrary\)/);
+  assert.match(voiceLabJs, /await stableRerender\("tts"/);
+  assert.match(voiceLabJs, /ensureProviderStatus\(refreshVoiceList\)/);
+  assert.equal(
+    [...voiceLabJs.matchAll(/voiceQueryAll\("\[data-vl-tab\]"\)\.forEach/g)].length,
+    2,
+  );
+  assert.doesNotMatch(customCreationCss, /\.vl-library\s*\{[^}]*position\s*:\s*fixed/s);
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.custom-tool-host\.is-voice\s+\.vl-workbench\s*\{[^}]*grid-template-columns\s*:\s*minmax\(0,\s*1\.25fr\)\s+minmax\(280px,\s*\.68fr\)\s*;[^}]*background\s*:\s*#fff\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.workspace-context-tool-host\.is-voice-library\s*>\s*\.vl-library\s*\{[^}]*height\s*:\s*100%\s*;[^}]*background\s*:\s*#fff\s*;[^}]*display\s*:\s*flex\s*;[^}]*overflow\s*:\s*hidden\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.custom-tool-host\.is-voice\.is-active\s*\{[^}]*animation\s*:\s*none\s*;[^}]*transform\s*:\s*none\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.workspace-context-tool-host\s+\.vl-voice-list\s*\{[^}]*flex\s*:\s*1\s*;[^}]*overflow-y\s*:\s*auto\s*;[^}]*scrollbar-width\s*:\s*none\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.workspace-context-tool-host\s+\.vl-voice-filters\s*\{[^}]*grid-template-columns\s*:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.workspace-context-tool-host\s+\.vl-voice-card\s*\{[^}]*padding\s*:\s*7px\s+8px\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.workspace-context-tool-host\s+\.vl-voice-card\s+\.vl-voice-actions\s*\{[^}]*position\s*:\s*static\s*;[^}]*max-width\s*:\s*none\s*;[^}]*transform\s*:\s*none\s*;/s,
+  );
+  assert.doesNotMatch(customCreationCss, /\.workspace-context-tool-host[^}]*padding-right\s*:\s*(?:80|128)px/s);
+  assert.match(voiceLabJs, /class="vl-sliders vl-voice-parameters"/);
+  assert.match(
+    customCreationCss,
+    /\.custom-tool-host\.is-voice\s+\.vl-console\s+\.vl-output-slot\s*\{[^}]*min-height\s*:\s*clamp\(270px,\s*42vh,\s*410px\)\s*;[^}]*flex\s*:\s*1\s+1\s+auto\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /\.custom-tool-host\.is-voice\s+\.vl-console\s+\.vl-voice-parameters\s*\{[^}]*margin-top\s*:\s*auto\s*;[^}]*padding-top\s*:\s*14px\s*;/s,
+  );
+  assert.match(customCreationCss, /@keyframes\s+vlOutputAmbient/);
+  assert.match(customCreationCss, /@keyframes\s+vlOutputWaiting/);
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.custom-tool-host\.is-voice\s+\.vl-side-panel\s*>\s*\.vl-section-head:first-child\s*\{[^}]*padding-right\s*:\s*58px\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.custom-tool-host\.is-voice\s+\.vl-editor\s*\{[^}]*background\s*:\s*#fff\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /body\.workspace-shell-v2\s+\.custom-tool-host\.is-voice\s+\.vl-side-panel\s*\{[^}]*background\s*:\s*#fff\s*;/s,
+  );
+});
+
+test("canvas embed avoids the legacy home and moves view controls into the context column", () => {
+  assert.doesNotMatch(canvasRootTsx, /HomeView/);
+  assert.match(canvasRootTsx, /data-canvas-project-opening/);
+  assert.match(canvasRootTsx, /正在打开画布/);
+  assert.match(canvasWorkspaceTsx, /import\s*\{\s*homeHref,\s*IS_PLATFORM_EMBED\s*\}\s*from\s*"@\/lib\/runtime"/);
+  assert.match(canvasWorkspaceTsx, /\{!IS_PLATFORM_EMBED\s*&&\s*\(\s*<TopBar/s);
+  assert.match(
+    canvasProjectClientTsx,
+    /\{!IS_PLATFORM_EMBED\s*&&\s*<div className="h-14 shrink-0 border-b border-line bg-page"\s*\/>\}/,
+  );
+  assert.match(canvasIntegrationJs, /if\s*\(!currentProjectId\)\s*\{\s*host\.innerHTML\s*=\s*emptyCanvasHtml\(\)/s);
+  assert.match(canvasIntegrationJs, /if\s*\(!iframe\)\s*return\s+mountCanvasFrame\(\)/);
+  assert.match(canvasIntegrationJs, /a\[href\$="#\/"\]/);
+  assert.match(canvasIntegrationJs, /contextPortalId:\s*canvasContextPortalId/);
+  assert.match(canvasIntegrationJs, /contextPortalNonce:\s*canvasContextPortalNonce/);
+  assert.match(canvasIntegrationJs, /class="canvas-context-portal"/);
+  assert.match(canvasIntegrationJs, /data-canvas-context-portal="\$\{canvasContextPortalNonce\}"/);
+  assert.doesNotMatch(canvasIntegrationJs, /data-canvas-control=/);
+  assert.doesNotMatch(canvasIntegrationJs, /dataset\.platformCanvasControls/);
+  assert.match(canvasIntegrationJs, /background:#fff/);
+  assert.match(canvasSourceTsx, /createPortal\(controls,\s*contextPortal\.target\)/);
+  assert.match(canvasSourceTsx, /data-canvas-viewport-controls=\{portaled\s*\?\s*"context"\s*:\s*"canvas"\}/);
+  assert.match(canvasSourceTsx, /className="canvas-viewport-minimap/);
+  assert.match(canvasBridgeTs, /contextPortalId/);
+  assert.match(canvasBridgeTs, /contextPortalNonce/);
+  assert.match(
+    customCreationCss,
+    /\.workspace-context-shell\.has-canvas-context-tools\s*\{[^}]*grid-template-rows\s*:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s+auto\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /\.canvas-context-tools\s*\{[^}]*border-top\s*:\s*1px\s+solid\s+#ececea\s*;/s,
+  );
+  assert.match(
+    customCreationCss,
+    /\.canvas-context-portal\s+\.canvas-viewport-minimap\s*\{[^}]*width\s*:\s*196px\s*;[^}]*height\s*:\s*116px\s*;/s,
+  );
+  const ownerSwitch = section(mainJs, "function renderWorkspaceContextPanel()", "if (zone === \"studio\"");
+  assert.match(ownerSwitch, /canvasContextTools\.hidden\s*=\s*activeContextTool\s*!==\s*"canvas"/);
+});
+
+test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
+  assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
+  assert.match(videoWorkshopHtml, /20260727-v120-shell-6/);
+  assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
+  assert.match(
+    videoWorkshopHtml,
+    /html\[data-platform-workspace="true"\]\s+\.start-history,[\s\S]*?html\[data-platform-workspace="true"\]\s+\.history-sidebar\s*\{[^}]*display\s*:\s*none\s*!important\s*;/s,
+  );
+  assert.match(videoWorkshopHtml, /--bg:\s*#ffffff/);
+  assert.match(videoWorkshopHtml, /--surface:\s*#ffffff/);
+  assert.match(customVideoIntegrationJs, /"background:#fff"/);
+  assert.ok(
+    customVideoIntegrationJs.indexOf('window.addEventListener("message", receive)')
+      < customVideoIntegrationJs.indexOf("frame.src = entryUrl"),
+    "video iframe must start after the workspace message bridge is installed",
+  );
+  assert.match(customCreationJs, /const routedProjectId\s*=\s*initialProjectId\s*&&\s*initialProjectId\s*!==\s*"__new__"/);
+  assert.match(customCreationJs, /projectId:\s*routedProjectId/);
+  const normalizer = section(mainJs, "function normalizeWorkspaceProject", "function setWorkspaceProjects");
+  assert.match(normalizer, /source\.id/);
+  const videoRows = section(mainJs, 'if (page === "video") {', 'if (page === "canvas") {');
+  assert.match(videoRows, /title:[^,\n]*"历史会话"/);
+  assert.match(videoRows, /collapsible:\s*false/);
+  assert.match(videoRows, /class="wsctx-title-add"[\s\S]*?data-ws-id="__new__"/);
+  assert.doesNotMatch(videoRows, /title:\s*"新建视频会话"/);
+  assert.match(videoRows, /videoProjectContextRow\(project,\s*resourceId\)/);
+  assert.match(mainJs, /tag:\s*`已发布\s+\$\{project\.publishedCount\s*\|\|\s*0\}`/);
+  assert.match(mainJs, /data-video-project-remove=/);
+  assert.match(mainJs, /hideWorkspaceVideoProject\(projectId\)/);
+  assert.match(baseCss, /\.wsctx-row-delete\s*\{[^}]*opacity:\s*0\s*;[^}]*pointer-events:\s*none\s*;/s);
+  assert.match(baseCss, /\.wsctx-row-shell:hover\s+\.wsctx-row-delete,[\s\S]*?opacity:\s*1\s*;[^}]*pointer-events:\s*auto\s*;/s);
+  assert.match(baseCss, /\.wsctx-video-project\.is-active\s*\{[^}]*background:\s*transparent\s*;/s);
+  assert.match(videoWorkshopHtml, /\.submit-button\s*\{[^}]*background:\s*#242422;[^}]*color:\s*#ffffff;/s);
+  assert.match(videoWorkshopHtml, /\.submit-button\s+svg\s*\{[^}]*stroke:\s*#ffffff\s*!important\s*;/s);
+  assert.match(mainJs, /"xingzhen:video-published"/);
+});
+
+test("asset and publishing workspaces adapt their controls into the context sidebar", () => {
+  const sidebarRows = section(mainJs, 'if (zone === "assets") {', 'if (zone === "settings") {');
+  assert.match(sidebarRows, /assetsView\.getLibraryModel\?\.\(\)/);
+  assert.match(sidebarRows, /data-ws-library=/);
+  assert.match(sidebarRows, /deliveryView\.getFilterModel\?\.\(\)/);
+  assert.match(sidebarRows, /deliveryFilterControls\(model\)/);
+  const deliveryRows = section(mainJs, 'if (zone === "delivery") {', 'if (zone === "settings") {');
+  assert.doesNotMatch(deliveryRows, /title:\s*"发布项目"/);
+  assert.doesNotMatch(deliveryRows, /deliveredAssets/);
+
+  const shellHandlers = section(
+    mainJs,
+    "function ensureWorkspaceContextShell(panel)",
+    "function scheduleWorkspaceContextRender()",
+  );
+  assert.match(shellHandlers, /assetsView\.setLibraryMode\?\.\(library\)/);
+  assert.match(shellHandlers, /deliveryView\.setFilter\?\.\(/);
+  assert.match(shellHandlers, /deliveryView\.resetFilters\?\.\(\)/);
+  assert.match(shellHandlers, /data-ws-delivery-select/);
+
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\[data-zone="assets"\]\s+#assetsTopDock,[^{]*body\.workspace-shell-v2\[data-zone="delivery"\]\s+\.creator-delivery-filters[^{]*\{[^}]*display\s*:\s*none\s*!important\s*;/s,
+  );
+});
+
+test("unified workspace visual hierarchy stays flat without hiding functional controls", () => {
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2:not\(\[data-zone="agent"\]\)\s+\.main-col,[^{]*body\.workspace-shell-v2:not\(\[data-zone="agent"\]\)\s+\.view-root\s*\{[^}]*background\s*:\s*#fff\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\[data-zone="studio"\]\s+\.studio-home\s*>\s*\.card,[^{]*\.chain-main\s*>\s*\.card:not\(\.dark\),[^{]*\.chain-side\s*>\s*\.card\s*\{[^}]*border-color\s*:\s*transparent\s*;[^}]*border-radius\s*:\s*0\s*;[^}]*background\s*:\s*#fff\s*;[^}]*box-shadow\s*:\s*none\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\[data-zone="studio"\]\s+\.studio-home\s*>\s*\.card\s*\+\s*\.card\s*\{[^}]*border-top\s*:\s*1px solid #ececea\s*;/s,
+  );
+  assert.doesNotMatch(
+    baseCss,
+    /body\.workspace-shell-v2\[data-zone="studio"\][^{]*\{[^}]*(?:display\s*:\s*none|visibility\s*:\s*hidden|pointer-events\s*:\s*none)/s,
+  );
+});
+
+test("batch divider is removed and the asset draft timeline uses a fine gray gradient", () => {
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\[data-zone="agent"\]\s+\.ctx-panel,[^{]*body\.workspace-shell-v2\[data-zone="agent"\]\.has-panel\s+\.ctx-panel\s*\{[^}]*border-right-color\s*:\s*transparent\s*;[^}]*box-shadow\s*:\s*none\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\[data-zone="assets"\]\s+\.draft-timeline::before\s*\{[^}]*width\s*:\s*1px\s*;[^}]*background\s*:\s*linear-gradient\([^}]*rgba\(126,\s*126,\s*121,\s*\.48\)[^}]*\)\s*;[^}]*box-shadow\s*:\s*none\s*;/s,
+  );
+});
+
+test("hamburger utility dock owns and reveals the nested top actions", () => {
+  const topbar = section(indexHtml, '<header class="topbar">', "</header>");
+  const dockStart = topbar.indexOf('<div class="top-actions" id="workspaceUtilityDock">');
+  const toggleStart = topbar.indexOf('id="topActionsToggle"');
+  const panelStart = topbar.indexOf('<div class="top-actions-panel" id="topActionsPanel">');
+  const searchStart = topbar.indexOf('id="topSearch"');
+  assert.ok(dockStart >= 0, "missing utility dock");
+  assert.ok(toggleStart > dockStart, "hamburger toggle must be nested in the utility dock");
+  assert.ok(panelStart > toggleStart, "action panel must follow the hamburger toggle");
+  assert.ok(searchStart > panelStart, "top actions must be nested in the action panel");
+  assert.match(topbar, /id="topActionsToggle"[^>]*aria-controls="topActionsPanel"[^>]*aria-expanded="false"/);
+  assert.match(topbar, /<path d="M5 7h14M5 12h14M5 17h14"/);
+
+  const renderTopbar = section(mainJs, "function renderTopbar()", "function paletteCommands()");
+  assert.match(renderTopbar, /const dock\s*=\s*\$\("#workspaceUtilityDock"\)/);
+  assert.match(renderTopbar, /dock\.classList\.toggle\("is-open"\)/);
+  assert.match(renderTopbar, /toggle\.setAttribute\("aria-expanded",\s*open\s*\?\s*"true"\s*:\s*"false"\)/);
+
+  assert.match(baseCss, /\.workspace-utility-toggle\s*\{[^}]*display\s*:\s*none\s*;/s);
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\s+\.workspace-utility-toggle\s*\{[^}]*display\s*:\s*grid\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\s+\.top-actions-panel\s*\{[^}]*opacity\s*:\s*0\s*;[^}]*visibility\s*:\s*hidden\s*;[^}]*pointer-events\s*:\s*none\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\s+\.top-actions\.is-open\s+\.top-actions-panel\s*\{[^}]*opacity\s*:\s*1\s*;[^}]*visibility\s*:\s*visible\s*;[^}]*pointer-events\s*:\s*auto\s*;/s,
+  );
+});
+
+test("workspace menu and context groups stay compact and collapsible", () => {
+  assert.match(
+    baseCss,
+    /\.workspace-context-brand\s+\.workspace-menu\s*\{[^}]*width\s*:\s*100%\s*;[^}]*padding\s*:\s*6px\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /\.workspace-context-brand\s+\.workspace-menu button\s*\{[^}]*min-height\s*:\s*36px\s*;[^}]*padding\s*:\s*5px 8px\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\s+\.wsctx-title\s*\{[^}]*height\s*:\s*24px\s*;[^}]*font-size\s*:\s*10\.5px\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\s+\.wsctx-row\s*\{[^}]*min-height\s*:\s*35px\s*;[^}]*padding\s*:\s*5px 8px\s*;/s,
+  );
+
+  const contextRender = section(mainJs, "function renderWorkspaceContextPanel()", "function renderContextPanel()");
+  assert.match(contextRender, /const collapsible\s*=\s*group\.collapsible\s*!==\s*false/);
+  assert.match(contextRender, /const collapsed\s*=\s*collapsible\s*&&\s*collapsedGroups\.has\(groupKey\)/);
+  assert.match(contextRender, /data-ws-group=/);
+  assert.match(contextRender, /aria-expanded=/);
+  assert.match(contextRender, /wsctx-title-chevron/);
+  assert.match(contextRender, /wsctx-title-static/);
+});
+
+test("creator and administrator account menus expose the lightweight feedback dialog", () => {
+  const accountMarkup = section(mainJs, "function workspaceAccountMarkup()", "function openWorkspaceFeedbackModal()");
+  assert.match(accountMarkup, /const canSendFeedback\s*=\s*\["admin",\s*"editor"\]\.includes\(state\.role\)/);
+  assert.match(accountMarkup, /data-account-action="feedback"/);
+  assert.match(accountMarkup, />意见反馈</);
+
+  const feedback = section(mainJs, "function openWorkspaceFeedbackModal()", "function ensureWorkspaceContextShell");
+  assert.match(feedback, /wduan1212@gmail\.com/);
+  assert.match(feedback, />欢迎反馈意见</);
+  assert.match(feedback, /mailto:\$\{email\}/);
+  assert.match(feedback, /workspace-feedback-panel/);
+
+  assert.match(
+    baseCss,
+    /\.modal-panel\.workspace-feedback-panel\s*\{[^}]*width\s*:\s*min\(430px,[^}]*border-radius\s*:\s*20px\s*;/s,
+  );
+});
+
+test("supplier and narrow-screen shells keep the unified context layout", () => {
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\.role-supplier\s+\.app-shell,[^{]*body\.workspace-shell-v2\.role-supplier-child\.has-panel\s+\.app-shell\s*\{[^}]*grid-template-columns\s*:\s*var\(--workspace-context-width\)\s+minmax\(0,\s*1fr\)\s*;[^}]*padding-bottom\s*:\s*0\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.workspace-context-brand\s+\.workspace-menu\s*\{[^}]*position\s*:\s*absolute\s*;[^}]*top\s*:\s*calc\(100%\s*\+\s*4px\)\s*;/s,
+  );
+});
+
+test("canvas and video switches wait for the real latest project before routing", () => {
+  const opener = section(mainJs, "function openWorkspaceItem(item)", "function renderWorkspaceSwitcher()");
+  assert.match(opener, /loadWorkspaceProjects\(item\.page,\s*\{\s*force:\s*true\s*\}\)\.then\(items\s*=>/);
+  assert.match(opener, /const project\s*=\s*items\?\.\[0\]\s*\|\|/);
+  assert.match(opener, /go\(item\.zone,\s*item\.page,\s*project\?\.id\s*\|\|\s*null\)/);
+  const load = section(mainJs, "async function loadWorkspaceProjects", "if (typeof window !==");
+  assert.match(load, /if\s*\(target\.pending\)\s*return target\.pending/);
+  assert.match(load, /target\.pending\s*=\s*pending/);
+});
+
+test("all modified workspace-shell resources use the final shell-8 cache marker", () => {
+  assert.doesNotMatch(indexHtml, /v120-shell-3/);
+  assert.doesNotMatch(mainJs, /v120-shell-3/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260727-v120-shell-8"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260727-v120-shell-8"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260727-v120-shell-8"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260727-v120-shell-8"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260727-v120-shell-8"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260727-v120-shell-8"/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260727-v120-shell-8"/);
+  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260727-v120-shell-8"/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260727-v120-shell-8"/);
+  assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 
 test("dark batch workspace selects the white brand logo", () => {
-  const switcher = section(mainJs, "function renderWorkspaceSwitcher()", "function workspaceItemHint");
+  const switcher = section(mainJs, "function renderWorkspaceSwitcher()", "function normalizeWorkspaceProject");
   assert.match(switcher, /zone\s*===\s*"agent"/);
   assert.match(switcher, /["']dark["']/);
   assert.match(switcher, /workspaceBrandGlyph\s*\(/);

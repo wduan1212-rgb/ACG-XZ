@@ -12,7 +12,7 @@ import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/pr
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260727-v118-7";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260727-v118-7";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260727-v118-7";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260727-v120-shell-8";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -568,6 +568,7 @@ export function renderSlotsPage(root, p, isImg) {
           ${trendPanel}</div>` : ""}
 
           <div class="refbar card img-ref-generation" id="cbRefbar">
+            <span class="refbar-drop-cue" aria-hidden="true">${icon("upload", 18)}<b>拖入统一参考图</b><em>松手即可加入</em></span>
             <div class="refbar-left">
               <b>${icon("star", 13)} 统一参考图</b>
               <em>生成和上传补图都会保留这些参考（最多 5 张：logo / 角色版 / 界面截图）· 可拖图到此</em>

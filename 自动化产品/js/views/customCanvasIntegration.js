@@ -79,6 +79,19 @@ function messageHtml(title, body, tone = "loading") {
   `;
 }
 
+function emptyCanvasHtml() {
+  return `
+    <div data-custom-canvas-empty role="status" style="
+      box-sizing:border-box;display:flex;min-height:220px;height:100%;align-items:center;justify-content:center;
+      padding:32px;background:#fff;text-align:center;">
+      <div style="max-width:460px">
+        <strong style="display:block;color:#252523;font-size:16px;font-weight:560;line-height:1.5">暂无画布项目</strong>
+        <span style="display:block;margin-top:7px;color:#85857f;font-size:13px;line-height:1.7">请从左侧项目列表新建或打开画布。</span>
+      </div>
+    </div>
+  `;
+}
+
 async function checkAvailability(token, signal) {
   // 画布图片使用同源 <img>/canvas 加载，浏览器不会为这些请求附加
   // localStorage 中的平台 Bearer。先建立仅限画布私有图片路径的 HttpOnly
@@ -114,6 +127,45 @@ async function checkAvailability(token, signal) {
   return data;
 }
 
+async function loadRecentProjectId(token, signal) {
+  const response = await fetch("/api/custom-canvas/projects", {
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { Authorization: `Bearer ${token}` },
+    signal
+  });
+  if (!response.ok) return "";
+  let data = {};
+  try { data = await response.json(); } catch (_) {}
+  const projects = Array.isArray(data.items) ? data.items : [];
+  const timeValue = raw => {
+    const numeric = Number(raw || 0);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    return Date.parse(String(raw || "")) || 0;
+  };
+  const timestamp = item => {
+    const project = item?.project && typeof item.project === "object" ? item.project : {};
+    return Math.max(
+      timeValue(item?.serverUpdatedAt),
+      timeValue(item?.clientUpdatedAt),
+      timeValue(item?.updatedAt),
+      timeValue(project.updatedAt)
+    );
+  };
+  const projectId = item => safeText(
+    item?.sourceId
+    || item?.sourceProjectId
+    || item?.project?.id
+    || item?.id,
+    "",
+    180
+  );
+  return projects
+    .filter(item => projectId(item))
+    .sort((left, right) => timestamp(right) - timestamp(left))
+    .map(projectId)[0] || "";
+}
+
 export function getLatestOutput() {
   return cloneOutput(latestOutput);
 }
@@ -125,14 +177,14 @@ export function subscribeCanvasOutput(listener, { immediate = false } = {}) {
   return () => subscribers.delete(listener);
 }
 
-export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {}) {
+export async function mountCustomCanvas(
+  host,
+  { onOutput, onPublishRequest, projectId = "" } = {}
+) {
   if (!(host instanceof HTMLElement)) throw new TypeError("无限画布挂载点无效");
   host.__customCanvasCleanup?.();
 
-  const mountOptions = arguments[1] && typeof arguments[1] === "object"
-    ? arguments[1]
-    : {};
-  let currentProjectId = safeText(mountOptions.projectId, "", 180);
+  let currentProjectId = safeText(projectId, "", 180);
   const controller = new AbortController();
   latestOutput = null;
   const token = localStorage.getItem(TOKEN_KEY)?.trim() || "";
@@ -140,26 +192,185 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
   let iframe = null;
   let disposed = false;
   let iframeReady = false;
+  let canvasBootstrap = null;
+  let canvasContextTools = null;
+  let canvasContextPortal = null;
+  let canvasContextShell = null;
+  let canvasContextInstallFrame = 0;
+  let canvasContextInstallAttempts = 0;
+  let messageListenerInstalled = false;
+  let removeCanvasRouteGuard = () => {};
+  const canvasContextToken = (
+    globalThis.crypto?.randomUUID?.()
+    || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  ).replace(/[^A-Za-z0-9_-]/g, "");
+  const canvasContextPortalId = `canvasContextPortal_${canvasContextToken}`.slice(0, 80);
+  const canvasContextPortalNonce = `canvasPortal_${canvasContextToken}`.slice(0, 96);
 
   const projectHash = projectId => {
     const value = safeText(projectId, "", 180);
     return value ? `#/project/${encodeURIComponent(value)}` : "#/";
   };
 
+  const projectIdFromHash = value => {
+    let decoded = "";
+    try {
+      decoded = decodeURIComponent(String(value || "").replace(/^#/, ""));
+    } catch (_) {
+      return "";
+    }
+    return safeText(decoded.match(/^\/project\/([^/?#]+)/)?.[1], "", 180);
+  };
+
+  const installCanvasRouteGuard = () => {
+    removeCanvasRouteGuard();
+    removeCanvasRouteGuard = () => {};
+    if (!iframe?.contentWindow) return;
+    const childWindow = iframe.contentWindow;
+    let childDocument = null;
+    try {
+      childDocument = childWindow.document;
+      childDocument.documentElement.dataset.platformWorkspace = "true";
+      if (!childDocument.querySelector("#xingzhenCanvasEmbedStyle")) {
+        const style = childDocument.createElement("style");
+        style.id = "xingzhenCanvasEmbedStyle";
+        style.textContent = `
+          button[aria-label="返回"],
+          a[aria-label="返回"],
+          a[href$="#/"],
+          [data-home-action] {
+            display: none !important;
+          }
+          header:has(button[aria-label="返回"]) > div:last-child {
+            padding-right: 58px !important;
+          }
+        `;
+        childDocument.head.appendChild(style);
+      }
+    } catch (_) {
+      return;
+    }
+    let restoring = false;
+    const keepProjectRoute = () => {
+      if (disposed || restoring) return;
+      const visibleProjectId = projectIdFromHash(childWindow.location.hash);
+      if (visibleProjectId) {
+        currentProjectId = visibleProjectId;
+        return;
+      }
+      if (!currentProjectId) return;
+      restoring = true;
+      childWindow.location.replace(projectHash(currentProjectId));
+      queueMicrotask(() => { restoring = false; });
+    };
+    childWindow.addEventListener("hashchange", keepProjectRoute);
+    keepProjectRoute();
+    removeCanvasRouteGuard = () => {
+      childWindow.removeEventListener("hashchange", keepProjectRoute);
+    };
+  };
+
+  const removeCanvasContextTools = () => {
+    window.cancelAnimationFrame(canvasContextInstallFrame);
+    canvasContextInstallFrame = 0;
+    canvasContextInstallAttempts = 0;
+    canvasContextPortal?.replaceChildren();
+    canvasContextPortal = null;
+    canvasContextTools?.remove();
+    canvasContextTools = null;
+    canvasContextShell?.classList.remove("has-canvas-context-tools");
+    canvasContextShell = null;
+  };
+
+  const installCanvasContextTools = () => {
+    if (
+      canvasContextTools?.isConnected
+      && canvasContextPortal?.isConnected
+      && canvasContextPortal.id === canvasContextPortalId
+    ) {
+      return true;
+    }
+    if (!document.body.classList.contains("workspace-shell-v2")) return false;
+    const shell = document.querySelector("#ctxPanel .workspace-context-shell");
+    const footer = shell?.querySelector(".workspace-account");
+    if (!shell || !footer) {
+      canvasContextInstallAttempts += 1;
+      if (!disposed && canvasContextInstallAttempts < 180) {
+        canvasContextInstallFrame = window.requestAnimationFrame(installCanvasContextTools);
+      }
+      return false;
+    }
+    removeCanvasContextTools();
+    const dock = document.createElement("section");
+    dock.className = "canvas-context-tools";
+    dock.dataset.canvasContextTools = "true";
+    dock.setAttribute("aria-label", "画布小地图与视图控制");
+    dock.innerHTML = `
+      <span>画布小地图</span>
+      <div
+        class="canvas-context-portal"
+        id="${canvasContextPortalId}"
+        data-canvas-context-portal="${canvasContextPortalNonce}"
+        aria-label="当前画布小地图"
+      ></div>
+    `;
+    shell.insertBefore(dock, footer);
+    const isCanvasRoute = /^#\/custom\/canvas(?:\/|$)/.test(window.location.hash || "");
+    dock.hidden = !isCanvasRoute;
+    shell.classList.toggle("has-canvas-context-tools", isCanvasRoute);
+    canvasContextTools = dock;
+    canvasContextPortal = dock.querySelector(".canvas-context-portal");
+    canvasContextShell = shell;
+    canvasContextInstallAttempts = 0;
+    return true;
+  };
+
+  const mountCanvasFrame = () => {
+    if (disposed || !currentProjectId || !canvasBootstrap) return false;
+    iframeReady = false;
+    installCanvasContextTools();
+    iframe = document.createElement("iframe");
+    iframe.title = "星阵无限画布";
+    iframe.name = JSON.stringify(canvasBootstrap);
+    // Cache-bust the iframe entry alongside the main application build. The
+    // canvas itself continues to own hashed chunk URLs; this only prevents a
+    // browser from reusing an old entry document after a safe static rebuild.
+    iframe.src = `/XZ-Design/?embed=1&v=20260727-v120-shell-8${projectHash(currentProjectId)}`;
+    iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-downloads allow-forms allow-modals");
+    iframe.setAttribute("allow", "clipboard-read; clipboard-write");
+    iframe.referrerPolicy = "same-origin";
+    iframe.style.cssText = "display:block;width:100%;height:100%;min-height:0;border:0;border-radius:0;background:#fff;";
+    iframe.addEventListener("load", () => {
+      iframeReady = true;
+      installCanvasRouteGuard();
+      installCanvasContextTools();
+      host.dispatchEvent(new CustomEvent("custom-canvas:workspace-ready", {
+        detail: { projectId: currentProjectId },
+      }));
+    });
+    if (!messageListenerInstalled) {
+      window.addEventListener("message", onMessage);
+      messageListenerInstalled = true;
+    }
+    host.replaceChildren(iframe);
+    host.dataset.customCanvasWorkspace = "true";
+    return true;
+  };
+
   const openProject = projectId => {
     const nextProjectId = safeText(projectId, "", 180);
     if (!nextProjectId || disposed) return false;
     currentProjectId = nextProjectId;
-    if (!iframe) return true;
+    if (!iframe) return mountCanvasFrame();
     const nextHash = projectHash(nextProjectId);
     if (!iframeReady) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260727-v118-7${nextHash}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260727-v120-shell-8${nextHash}`;
       return true;
     }
     try {
       iframe.contentWindow.location.hash = nextHash.slice(1);
     } catch (_) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260727-v118-7${nextHash}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260727-v120-shell-8${nextHash}`;
     }
     return true;
   };
@@ -169,7 +380,9 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
     disposed = true;
     controller.abort();
     unsubscribeOutput();
-    window.removeEventListener("message", onMessage);
+    if (messageListenerInstalled) window.removeEventListener("message", onMessage);
+    removeCanvasRouteGuard();
+    removeCanvasContextTools();
     iframe?.remove();
     delete host.dataset.customCanvasWorkspace;
     if (host.__customCanvasCleanup === cleanup) delete host.__customCanvasCleanup;
@@ -184,7 +397,7 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
     reload() {
       if (disposed || !iframe) return false;
       iframeReady = false;
-      iframe.src = `/XZ-Design/?embed=1&v=20260727-v118-7${projectHash(currentProjectId)}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260727-v120-shell-8${projectHash(currentProjectId)}`;
       return true;
     },
     markPublished({
@@ -246,7 +459,7 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
   };
 
   host.__customCanvasCleanup = cleanup;
-  host.innerHTML = messageHtml("正在启动无限画布", "加载隔离运行时和当前账号的本地项目…");
+  host.innerHTML = '<div data-custom-canvas-loading role="status" aria-label="正在打开最近画布" style="height:100%;background:#fff"></div>';
 
   if (!token) {
     host.innerHTML = messageHtml("无限画布需要登录", "请重新登录主平台后再进入定制创作。", "error");
@@ -258,36 +471,26 @@ export async function mountCustomCanvas(host, { onOutput, onPublishRequest } = {
     if (disposed) return integration;
     const storageNamespace = safeText(config.storageNamespace, "", 80).replace(/[^\w-]/g, "");
     if (!storageNamespace) throw new Error("服务端没有返回当前成员的画布分仓");
+    if (!currentProjectId) {
+      currentProjectId = await loadRecentProjectId(token, controller.signal);
+    }
+    if (disposed) return integration;
 
-    iframe = document.createElement("iframe");
-    iframe.title = "星阵无限画布";
-    iframe.name = JSON.stringify({
+    canvasBootstrap = {
       kind: "xingzhen-canvas-bootstrap",
       storageNamespace,
+      contextPortalId: canvasContextPortalId,
+      contextPortalNonce: canvasContextPortalNonce,
       publishedProjects: Array.isArray(config.publishedProjects)
         ? config.publishedProjects
         : []
-    });
-    // Cache-bust the iframe entry alongside the main application build. The
-    // canvas itself continues to own hashed chunk URLs; this only prevents a
-    // browser from reusing an old entry document after a safe static rebuild.
-    iframe.src = "/XZ-Design/?embed=1&v=20260727-v118-7#/";
-    iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-downloads allow-forms allow-modals");
-    iframe.setAttribute("allow", "clipboard-read; clipboard-write");
-    iframe.referrerPolicy = "same-origin";
-    iframe.style.cssText = "display:block;width:100%;height:100%;min-height:0;border:0;border-radius:0;background:#f7f7f5;";
-    iframe.addEventListener("load", () => {
-      iframeReady = true;
-      host.dispatchEvent(new CustomEvent("custom-canvas:workspace-ready", {
-        detail: { projectId: currentProjectId },
-      }));
-    });
-    if (currentProjectId) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260727-v118-7${projectHash(currentProjectId)}`;
+    };
+    if (!currentProjectId) {
+      host.innerHTML = emptyCanvasHtml();
+      host.dataset.customCanvasWorkspace = "true";
+      return integration;
     }
-    window.addEventListener("message", onMessage);
-    host.replaceChildren(iframe);
-    host.dataset.customCanvasWorkspace = "true";
+    mountCanvasFrame();
   } catch (error) {
     if (disposed || error?.name === "AbortError") return integration;
     host.innerHTML = messageHtml(

@@ -14,7 +14,7 @@ import {
 } from "./orchestrator.js?v=20260727-v118-7";
 import { renderMessage, boardRow } from "./cards.js?v=20260727-v119-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260727-v118-7";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260727-v120-shell-8";
 import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
@@ -470,7 +470,7 @@ function updateBoardGroups() {
   const groups = currentSessionBatches();
   const total = groups.reduce((sum, b) => sum + (b.productionIds || []).length, 0);
   const boardCount = board.querySelector(".agw-board-head em");
-  if (boardCount) boardCount.textContent = `本会话 · ${total} 条`;
+  if (boardCount) boardCount.textContent = `${total} 条`;
   const PH = { drafting: "起草", awaiting_input: "待上传", generating: "生成", review: "待审", done: "完成" };
   groups.forEach(b => {
     const group = board.querySelector(`[data-batchid="${selectorValue(b.id)}"]`);
@@ -497,11 +497,11 @@ function renderBoard() {
   el.dataset.structureKey = structureKey;
   const total = groups.reduce((s, b) => s + (b.productionIds || []).length, 0);
   if (!groups.length) {
-    el.innerHTML = `<div class="agw-board-head"><b>任务看板</b><em>本会话</em></div>
-      <div class="agw-board-empty">${icon("kanban", 22)}<p>本会话发起量产后，每条任务的流水线出现在这里。阶段圆点实时点亮，点任务看详情，拖图直接上传。</p></div>`;
+    el.innerHTML = `<div class="agw-board-head"><b>任务看板</b><em>0 条</em></div>
+      <div class="agw-board-empty">${icon("kanban", 22)}<p>发起量产后，每条任务的流水线出现在这里。阶段圆点实时点亮，点任务看详情，拖图直接上传。</p></div>`;
     return;
   }
-  el.innerHTML = `<div class="agw-board-head"><b>任务看板</b><em>本会话 · ${total} 条</em></div>` +
+  el.innerHTML = `<div class="agw-board-head"><b>任务看板</b><em>${total} 条</em></div>` +
     groups.map(b => {
       const prods = batchProds(b);
       const done = prods.filter(p => p.stage === "delivered").length;

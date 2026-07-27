@@ -9,6 +9,45 @@ APP_DIR = Path(__file__).resolve().parents[2]
 
 
 class VoiceLabLayoutContractTest(unittest.TestCase):
+    def test_embedded_voice_library_keeps_filters_and_names_visible(self):
+        source = (APP_DIR / "js" / "views" / "voiceLab.js").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles" / "custom-creation.css").read_text(encoding="utf-8")
+
+        self.assertEqual(
+            source.count('voiceQueryAll("[data-vl-tab]").forEach'),
+            2,
+        )
+        self.assertIn(
+            "grid-template-columns: repeat(2, minmax(0, 1fr));",
+            styles,
+        )
+        self.assertIn(
+            "body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-core b",
+            styles,
+        )
+        self.assertIn("flex: 1 1 auto;", styles)
+        self.assertIn("padding: 7px 8px;", styles)
+        self.assertNotIn("padding: 7px 80px 7px 8px;", styles)
+        self.assertNotIn("padding-right: 128px;", styles)
+        self.assertIn("position: static;", styles)
+
+    def test_embedded_debug_console_expands_preview_and_pins_parameters(self):
+        source = (APP_DIR / "js" / "views" / "voiceLab.js").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles" / "custom-creation.css").read_text(encoding="utf-8")
+
+        self.assertIn('class="vl-sliders vl-voice-parameters"', source)
+        self.assertIn("min-height: clamp(270px, 42vh, 410px);", styles)
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr);", styles)
+        self.assertIn(
+            "body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-voice-parameters",
+            styles,
+        )
+        self.assertIn("margin-top: auto;", styles)
+        self.assertIn("@keyframes vlOutputAmbient", styles)
+        self.assertIn("@keyframes vlOutputIconBreathe", styles)
+        self.assertIn("@keyframes vlOutputWaiting", styles)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", styles)
+
     def test_voice_design_preserves_lifestyle_and_emotional_semantics(self):
         prompt = "温柔、生活化、像朋友聊天，语速舒缓，适合日常分享"
         anchored = _voice_design_prompt(prompt, "female")
@@ -32,8 +71,11 @@ class VoiceLabLayoutContractTest(unittest.TestCase):
         self.assertIn('wireVoiceDock($(".vl-editor-mode-tabs", root), stableRerender)', source)
         self.assertIn('const stableEditor = $(".vl-editor", root);', source)
         self.assertIn('if (stableEditor && nextEditor) nextEditor.replaceWith(stableEditor);', source)
-        self.assertIn('const stableLibrary = nextMode ? $(".vl-library", root) : null;', source)
-        self.assertIn('if (stableLibrary && nextLibrary) nextLibrary.replaceWith(stableLibrary);', source)
+        self.assertIn('document.getElementById("workspaceContextToolHost")', source)
+        self.assertIn('const stableLibrary = nextMode ? libraryNode() : null;', source)
+        self.assertIn('if (stableLibrary && nextLibrary && stableLibrary !== nextLibrary) {', source)
+        self.assertIn('nextLibrary.replaceWith(stableLibrary);', source)
+        self.assertIn('workspaceLibraryHost.replaceChildren(renderedLibrary);', source)
         self.assertNotIn('.vl-library.is-panel-switching-out', styles)
         self.assertIn('.vl-side-panel.is-panel-switching-in', styles)
         self.assertNotIn("vl-embedded-dock", source)

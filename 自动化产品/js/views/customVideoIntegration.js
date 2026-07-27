@@ -76,7 +76,6 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
     : null;
   const frame = document.createElement("iframe");
   const entryUrl = "/custom-video/?embed=1&start=home";
-  frame.src = entryUrl;
   frame.title = "星阵视频工坊";
   frame.loading = "eager";
   frame.referrerPolicy = "same-origin";
@@ -91,7 +90,7 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
     "height:100%",
     "min-height:0",
     "border:0",
-    "background:#050505",
+    "background:#fff",
   ].join(";");
   host.replaceChildren(frame);
   host.dataset.customVideoMounted = "true";
@@ -206,6 +205,10 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
     }
   };
   window.addEventListener("message", receive);
+  // 先安装同源消息桥，再启动 iframe。否则本地静态资源命中缓存时，
+  // 子应用可能在监听器安装前发出 workspace-ready，后续会话点击便会
+  // 永远滞留在 pending 的项目 ID，无法真正发送 workspace:open。
+  frame.src = entryUrl;
 
   const integration = {
     frame,

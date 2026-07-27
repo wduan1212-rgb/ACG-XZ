@@ -9,12 +9,15 @@ import {
   useState,
   type PointerEvent as RPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { Map, Maximize, Minus, Plus } from "lucide-react";
 import { CanvasItemView, cardChrome, type CardCallbacks } from "./cards";
 import { contentBounds } from "@/lib/geometry";
 import { useStore } from "@/lib/store";
 import { clamp, cn } from "@/lib/util";
 import { isImageItem, type CanvasItem, type Vec2 } from "@/lib/types";
+import { canvasContextPortalFromBootstrap } from "@/lib/platformBridge";
+import { IS_PLATFORM_EMBED } from "@/lib/runtime";
 
 /** Edge/center lines of a rect used for snap matching. */
 interface SnapEdges {
@@ -60,6 +63,49 @@ interface Gesture {
 const MIN_ZOOM = 0.08;
 const MAX_ZOOM = 4;
 
+function useCanvasContextPortal() {
+  const [state, setState] = useState<{
+    expectsPortal: boolean;
+    target: HTMLElement | null;
+  }>({
+    // The embed build starts without right-side controls so the old floating
+    // minimap cannot flash before the parent workspace target is discovered.
+    expectsPortal: IS_PLATFORM_EMBED,
+    target: null,
+  });
+
+  useEffect(() => {
+    const config = canvasContextPortalFromBootstrap();
+    if (!IS_PLATFORM_EMBED || !config || window.parent === window) {
+      setState({ expectsPortal: false, target: null });
+      return;
+    }
+    let frame = 0;
+    let attempts = 0;
+    const findTarget = () => {
+      try {
+        const target = window.parent.document.getElementById(config.id);
+        if (
+          target
+          && target.dataset.canvasContextPortal === config.nonce
+        ) {
+          setState({ expectsPortal: true, target });
+          return;
+        }
+      } catch {
+        setState({ expectsPortal: false, target: null });
+        return;
+      }
+      attempts += 1;
+      if (attempts < 180) frame = window.requestAnimationFrame(findTarget);
+    };
+    findTarget();
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  return state;
+}
+
 export function Canvas({
   projectId,
   onMenu,
@@ -80,6 +126,7 @@ export function Canvas({
   const toggleSelection = useStore((s) => s.toggleSelection);
   const bringToFront = useStore((s) => s.bringToFront);
   const addReference = useStore((s) => s.addReference);
+  const contextPortal = useCanvasContextPortal();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture>({
@@ -634,7 +681,8 @@ export function Canvas({
         />
       )}
 
-      <ViewportControls
+      {(() => {
+        const controls = <ViewportControls
         projectId={projectId}
         items={visibleItems}
         zoom={vp.zoom}
@@ -647,7 +695,11 @@ export function Canvas({
           userAdjusted.current = false;
           fitToContent();
         }}
-      />
+        portaled={Boolean(contextPortal.target)}
+      />;
+        if (contextPortal.target) return createPortal(controls, contextPortal.target);
+        return contextPortal.expectsPortal ? null : controls;
+      })()}
     </div>
   );
 }
@@ -662,6 +714,7 @@ function ViewportControls({
   onZoomIn,
   onZoomOut,
   onFit,
+  portaled = false,
 }: {
   projectId: string;
   items: CanvasItem[];
@@ -672,6 +725,7 @@ function ViewportControls({
   onZoomIn: () => void;
   onZoomOut: () => void;
   onFit: () => void;
+  portaled?: boolean;
 }) {
   const [mapOpen, setMapOpen] = useState(true);
   const mapRef = useRef<HTMLDivElement>(null);
@@ -728,7 +782,13 @@ function ViewportControls({
   }
 
   return (
-    <div className="absolute bottom-4 left-4 flex flex-col gap-2">
+    <div
+      className={cn(
+        "canvas-viewport-controls flex flex-col gap-2",
+        portaled ? "canvas-viewport-controls--portal" : "absolute bottom-4 left-4",
+      )}
+      data-canvas-viewport-controls={portaled ? "context" : "canvas"}
+    >
       {mapOpen && (
         <div
           ref={mapRef}
@@ -742,22 +802,30 @@ function ViewportControls({
             e.stopPropagation();
             moveFromMini(e.clientX, e.clientY);
           }}
-          className="surface-popover relative h-[116px] w-[196px] overflow-hidden bg-white/92 p-0"
+          className="canvas-viewport-minimap surface-popover relative h-[116px] w-[196px] overflow-hidden bg-white/92 p-0"
           aria-label="画布小地图"
         >
-          <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(0,0,0,0.035)_1px,transparent_1px),linear-gradient(0deg,rgba(0,0,0,0.035)_1px,transparent_1px)] bg-[length:20px_20px]" />
+          <div className="canvas-viewport-grid absolute inset-0 bg-[linear-gradient(90deg,rgba(0,0,0,0.035)_1px,transparent_1px),linear-gradient(0deg,rgba(0,0,0,0.035)_1px,transparent_1px)] bg-[length:20px_20px]" />
           {items.map((item) => {
             const r = toMini({ ...item.position, ...item.size });
+            const kind = isImageItem(item)
+              ? "image"
+              : item.type === "text"
+                ? "text"
+                : item.type === "shape"
+                  ? "shape"
+                  : "other";
             return (
               <div
                 key={item.id}
                 className={cn(
-                  "absolute rounded-[2px]",
-                  isImageItem(item)
+                  "canvas-viewport-item absolute rounded-[2px]",
+                  `is-${kind}`,
+                  kind === "image"
                     ? "bg-ink/16"
-                    : item.type === "text"
+                    : kind === "text"
                       ? "bg-accent/22"
-                      : item.type === "shape"
+                      : kind === "shape"
                         ? "border border-ink/24"
                         : "bg-ink/10",
                 )}
@@ -766,16 +834,16 @@ function ViewportControls({
             );
           })}
           <div
-            className="absolute border border-ink/18 bg-white/20 shadow-[0_0_0_1px_rgba(255,255,255,0.6)_inset]"
+            className="canvas-viewport-window absolute border border-ink/18 bg-white/20 shadow-[0_0_0_1px_rgba(255,255,255,0.6)_inset]"
             style={viewMini}
           />
         </div>
       )}
-      <div className="surface-popover flex items-center gap-0.5 p-1">
+      <div className="canvas-viewport-toolbar surface-popover flex items-center gap-0.5 p-1">
         <button
           onClick={() => setMapOpen((v) => !v)}
           className={cn(
-            "flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink",
+            "canvas-viewport-button flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink",
             mapOpen && "bg-fill text-ink",
           )}
           aria-label="小地图"
@@ -784,29 +852,29 @@ function ViewportControls({
         </button>
         <button
           onClick={onZoomOut}
-          className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink"
+          className="canvas-viewport-button flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink"
           aria-label="缩小"
         >
           <Minus size={15} />
         </button>
         <button
           onClick={onFit}
-          className="min-w-[54px] rounded-[var(--radius-sm)] px-1.5 text-center font-mono text-[12px] text-ink-2 hover:bg-fill hover:text-ink"
+          className="canvas-viewport-button canvas-viewport-zoom min-w-[54px] rounded-[var(--radius-sm)] px-1.5 text-center font-mono text-[12px] text-ink-2 hover:bg-fill hover:text-ink"
           title="适应内容"
         >
           {Math.round(zoom * 100)}%
         </button>
         <button
           onClick={onZoomIn}
-          className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink"
+          className="canvas-viewport-button flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink"
           aria-label="放大"
         >
           <Plus size={15} />
         </button>
-        <div className="mx-0.5 h-4 w-px bg-line" />
+        <div className="canvas-viewport-divider mx-0.5 h-4 w-px bg-line" />
         <button
           onClick={onFit}
-          className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink"
+          className="canvas-viewport-button flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink"
           aria-label="适应内容"
         >
           <Maximize size={14} />

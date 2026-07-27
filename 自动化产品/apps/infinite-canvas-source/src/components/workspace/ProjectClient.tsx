@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { Hydrated } from "@/components/Hydrated";
 import { Button, Spinner } from "@/components/ui";
+import { IS_PLATFORM_EMBED } from "@/lib/runtime";
 import { selectItems, selectMessages, useStore } from "@/lib/store";
 import { Workspace } from "./Workspace";
 
@@ -110,7 +111,7 @@ function ProjectGate({ projectId }: { projectId: string }) {
 function WorkspaceSkeleton({ label = "" }: { label?: string }) {
   return (
     <div className="flex h-full w-full flex-col">
-      <div className="h-14 shrink-0 border-b border-line bg-page" />
+      {!IS_PLATFORM_EMBED && <div className="h-14 shrink-0 border-b border-line bg-page" />}
       <div className="flex min-h-0 flex-1">
         <div className="w-14 shrink-0 border-r border-line bg-page" />
         <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 canvas-dots">

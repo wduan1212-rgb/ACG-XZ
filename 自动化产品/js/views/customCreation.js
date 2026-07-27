@@ -2,7 +2,7 @@ import { go } from "../core/router.js";
 import { state } from "../core/store.js";
 import { icon } from "../ui/icons.js";
 import { toast } from "../ui/components.js?v=20260727-v118-7";
-import { voiceLabView } from "./voiceLab.js?v=20260723-v117-8";
+import { voiceLabView } from "./voiceLab.js?v=20260727-v120-shell-8";
 
 const TOOLS = [
   { key: "video", label: "视频工坊", mountId: "customVideoMount" },
@@ -154,7 +154,7 @@ export const customCreationView = {
         toast(key === "canvas" ? "当前画布还没有可发布的图片" : "请先在视频工坊完成成片");
         return;
       }
-      const { openCustomPublish } = await import("./customPublish.js?v=20260727-v118-7");
+      const { openCustomPublish } = await import("./customPublish.js?v=20260727-v120-shell-8");
       openCustomPublish(
         { ...output, kind: key === "canvas" ? "canvas" : "video" },
         {
@@ -164,6 +164,14 @@ export const customCreationView = {
             if (latest && asset?.id) latest.publishedDeliveryId = asset.id;
             if (latest && Number(publishedCount) > 0) {
               latest.publishedCount = Math.floor(Number(publishedCount));
+            }
+            if (key === "video" && Number(publishedCount) > 0) {
+              window.dispatchEvent(new CustomEvent("xingzhen:video-published", {
+                detail: {
+                  projectId: output.projectId || latest?.projectId || "",
+                  publishedCount: Math.floor(Number(publishedCount)),
+                },
+              }));
             }
             runtime?.markPublished?.({
               projectId: output.projectId || latest?.projectId || "",
@@ -201,11 +209,17 @@ export const customCreationView = {
       mountedTools.set(key, { loading: true });
       try {
         const module = key === "video"
-          ? await import("./customVideoIntegration.js?v=20260727-v120-shell-2")
-          : await import("./customCanvasIntegration.js?v=20260727-v120-shell-2");
+          ? await import("./customVideoIntegration.js?v=20260727-v120-shell-8")
+          : await import("./customCanvasIntegration.js?v=20260727-v120-shell-8");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);
+        const initialProjectId = pendingProjectIds.get(key);
+        const routedProjectId = initialProjectId && initialProjectId !== "__new__"
+          ? initialProjectId
+          : "";
+        if (routedProjectId) pendingProjectIds.delete(key);
         const mounted = await mount(mountRoot, {
+          projectId: routedProjectId,
           onOutput: payload => setLatestOutput(key, payload),
           onPublishRequest: payload => requestPublishFor(key, payload),
           ownerId: state.ui.currentMemberId || ""

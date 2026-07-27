@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { HomeView } from "@/components/home/HomeView";
 import { ProjectClient } from "@/components/workspace/ProjectClient";
 import { canvasPublishedProjectsFromBootstrap } from "@/lib/platformBridge";
 import { useStore } from "@/lib/store";
@@ -64,5 +63,17 @@ export function GithubPagesApp() {
     return () => window.removeEventListener("message", receivePublishedState);
   }, [markProjectPublished]);
 
-  return projectId ? <ProjectClient projectId={projectId} /> : <HomeView />;
+  if (!projectId) {
+    return (
+      <div
+        className="flex h-full w-full items-center justify-center bg-white text-[13px] text-ink-3"
+        role="status"
+        data-canvas-project-opening
+      >
+        正在打开画布…
+      </div>
+    );
+  }
+
+  return <ProjectClient projectId={projectId} />;
 }
