@@ -193,7 +193,8 @@ console.log(JSON.stringify({
         self.assertIn(".supplier-account-control-row { min-width: 0; display: flex;", styles)
         self.assertIn("flex: 0 0 76px", styles)
         self.assertIn("justify-content: flex-end", styles)
-        self.assertIn("grid-template-columns: 34px minmax(0, 1fr) 202px", motion_styles)
+        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", motion_styles)
+        self.assertIn("grid-template-columns: auto 34px minmax(0, 1fr) auto", motion_styles)
         self.assertIn(".supplier-account-control-row { min-width: 0; display: flex;", motion_styles)
 
 
