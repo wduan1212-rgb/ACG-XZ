@@ -26,9 +26,14 @@ const canvasRootTsx = read("apps/infinite-canvas-source/src/components/GithubPag
 const canvasWorkspaceTsx = read("apps/infinite-canvas-source/src/components/workspace/Workspace.tsx");
 const canvasProjectClientTsx = read("apps/infinite-canvas-source/src/components/workspace/ProjectClient.tsx");
 const videoWorkshopHtml = read("apps/video-workshop/web/index.html");
+const videoWorkshopJs = read("apps/video-workshop/web/assets/app.js");
+const videoWorkshopCss = read("apps/video-workshop/web/assets/styles.css");
 const customVideoIntegrationJs = read("js/views/customVideoIntegration.js");
 const customCreationJs = read("js/views/customCreation.js");
+const chainWorkshopJs = read("js/views/chainWorkshop.js");
 const settingsJs = read("js/views/settings.js");
+const supplierViewsJs = read("js/views/supplierViews.js");
+const deliveryViewJs = read("js/views/deliveryView.js");
 
 function section(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -305,7 +310,7 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260727-v120-shell-6/);
+  assert.match(videoWorkshopHtml, /20260728-v120-shell-7/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -330,14 +335,75 @@ test("video workshop is white, has no duplicate history rail, and exposes publis
   assert.doesNotMatch(videoRows, /title:\s*"新建视频会话"/);
   assert.match(videoRows, /videoProjectContextRow\(project,\s*resourceId\)/);
   assert.match(mainJs, /tag:\s*`已发布\s+\$\{project\.publishedCount\s*\|\|\s*0\}`/);
-  assert.match(mainJs, /data-video-project-remove=/);
-  assert.match(mainJs, /hideWorkspaceVideoProject\(projectId\)/);
-  assert.match(baseCss, /\.wsctx-row-delete\s*\{[^}]*opacity:\s*0\s*;[^}]*pointer-events:\s*none\s*;/s);
-  assert.match(baseCss, /\.wsctx-row-shell:hover\s+\.wsctx-row-delete,[\s\S]*?opacity:\s*1\s*;[^}]*pointer-events:\s*auto\s*;/s);
+  assert.match(mainJs, /data-session-menu-toggle/);
+  assert.match(mainJs, /data-session-action="rename"/);
+  assert.match(mainJs, /data-session-action="favorite"/);
+  assert.match(mainJs, /data-session-action="move"/);
+  assert.match(mainJs, /data-session-action="delete"/);
+  assert.match(mainJs, /data-session-create-group="video"/);
+  assert.match(mainJs, /data-session-create-group="batch"/);
+  assert.match(mainJs, /data-session-group-action="rename"/);
+  assert.match(mainJs, /data-session-group-action="delete"/);
+  assert.match(mainJs, /function renameWorkspaceSessionGroup/);
+  assert.match(mainJs, /function deleteWorkspaceSessionGroup/);
+  assert.match(mainJs, /groups\.forEach\(group\s*=>\s*append\([^;]*keepEmpty:\s*true/s);
+  assert.match(mainJs, /postVideoWorkspaceAction\("workspace:rename"/);
+  assert.match(mainJs, /hideWorkspaceVideoProject\(id\)/);
+  assert.match(baseCss, /\.wsctx-row-more\s*\{[^}]*opacity:\s*0\s*;[^}]*pointer-events:\s*none\s*;/s);
+  assert.match(baseCss, /\.wsctx-row-shell:hover\s+\.wsctx-row-more,[\s\S]*?opacity:\s*1\s*;[^}]*pointer-events:\s*auto\s*;/s);
+  assert.match(baseCss, /\.wsctx-row-menu\s*\{[^}]*display:\s*none\s*;/s);
+  assert.match(baseCss, /\.wsctx-row-shell\.is-menu-open\s+\.wsctx-row-menu\s*\{[^}]*display:\s*grid\s*;/s);
   assert.match(baseCss, /\.wsctx-video-project\.is-active\s*\{[^}]*background:\s*transparent\s*;/s);
+  assert.match(baseCss, /\.wsctx-row-shell:hover,[\s\S]*?background:\s*#efefec\s*;/s);
   assert.match(videoWorkshopHtml, /\.submit-button\s*\{[^}]*background:\s*#242422;[^}]*color:\s*#ffffff;/s);
   assert.match(videoWorkshopHtml, /\.submit-button\s+svg\s*\{[^}]*stroke:\s*#ffffff\s*!important\s*;/s);
+  assert.match(videoWorkshopHtml, /class="chat-composer-actions"/);
+  assert.match(videoWorkshopHtml, /class="attachment-strip"\s+data-attachment-strip/);
+  assert.match(videoWorkshopJs, /className\s*=\s*"message-copy"/);
+  assert.match(videoWorkshopJs, /message\.type\s*===\s*"workspace:rename"/);
   assert.match(mainJs, /"xingzhen:video-published"/);
+});
+
+test("video workshop uses a full-workspace drop glow and unified white delivery controls", () => {
+  assert.ok(
+    videoWorkshopHtml.indexOf('id="outputTabs"') < videoWorkshopHtml.indexOf('id="deliveryToggleButton"'),
+    "the aspect-ratio control should be the first item in the delivery toolbar",
+  );
+  assert.match(videoWorkshopHtml, /id="speedVersionSelect"[^>]*hidden/);
+  assert.match(videoWorkshopHtml, /class="delivery-speed-menu"\s+id="deliverySpeedMenu"/);
+  assert.match(videoWorkshopHtml, /id="historyDeliveryFilter"[^>]*hidden/);
+  assert.match(videoWorkshopHtml, /class="delivery-speed-menu history-filter-menu"\s+id="historyDeliveryFilterMenu"/);
+  assert.match(videoWorkshopHtml, /\.toast\s*\{[^}]*background:\s*#ffffff;[^}]*color:\s*#242422;/s);
+  assert.match(videoWorkshopCss, /\.delivery-actions\s*\{[^}]*border-radius:\s*999px;[^}]*background:\s*#0d0d0c;/s);
+  assert.match(videoWorkshopCss, /\.drop-overlay::before\s*\{[^}]*inset:\s*18px;[^}]*border-radius:\s*26px;/s);
+  assert.match(videoWorkshopCss, /body\.is-file-dragging\s+\.app-shell\s*\{[^}]*opacity:\s*1;[^}]*filter:\s*none;/s);
+  assert.match(videoWorkshopCss, /\.delivery-speed-menu\s*>\s*div\s*\{[^}]*background:\s*#ffffff;/s);
+  assert.match(videoWorkshopCss, /\.delivery-actions\s*\{[^}]*font-family:\s*Inter,[^}]*font-size:\s*12px;[^}]*font-weight:\s*540;/s);
+  assert.match(videoWorkshopCss, /\.chat-composer\s*\{[^}]*padding:\s*76px[^;]*;[^}]*backdrop-filter:\s*none;/s);
+  assert.match(videoWorkshopJs, /function selectSpeedVersion\(value\)/);
+  assert.match(videoWorkshopJs, /function selectHistoryDeliveryFilter\(value\)/);
+});
+
+test("batch history uses the same non-collapsible grouped session controls", () => {
+  const batchRows = section(mainJs, 'if (zone === "agent") {', 'if (zone === "custom") {');
+  assert.match(batchRows, /title:\s*"历史会话"/);
+  assert.match(batchRows, /collapsible:\s*false/);
+  assert.match(batchRows, /data-batch-session-create/);
+  assert.match(batchRows, /data-session-create-group="batch"/);
+  assert.doesNotMatch(batchRows, /title:\s*"生产会话"/);
+  assert.match(
+    baseCss,
+    /body\.workspace-shell-v2\[data-zone="agent"\]\s+\.wsctx-row-shell:hover,[\s\S]*?background:\s*rgba\(255,255,255,\.055\);/s,
+  );
+});
+
+test("reference targets animate subtly and custom copy aligns with the cover editor", () => {
+  assert.match(chainWorkshopJs, /class="refbar card reference-attention"\s+id="wsRefbar"/);
+  assert.match(chainWorkshopJs, /class="infoflow-ref-row reference-attention"\s+id="wsInfoFlowRefs"/);
+  assert.match(viewsCss, /\.reference-attention\s*\{[^}]*animation:\s*referenceAttentionBreath/s);
+  assert.match(viewsCss, /#wsBriefbar\.no-narration\s+\.ws-brief-fields\s*\{[^}]*grid-template-rows:\s*auto\s+356px/s);
+  assert.match(viewsCss, /#wsBriefbar\.no-narration\s+\.ws-copy-fields\s*\{[^}]*height:\s*356px/s);
+  assert.match(viewsCss, /#wsBriefbar\.no-narration\s+\.ws-cover-inline\s*\{[^}]*height:\s*356px/s);
 });
 
 test("asset and publishing workspaces adapt their controls into the context sidebar", () => {
@@ -527,6 +593,30 @@ test("supplier and narrow-screen shells keep the unified context layout", () => 
   );
 });
 
+test("supplier workspaces move account and delivery tools into the left context", () => {
+  const contextRows = section(mainJs, "function renderWorkspaceContextPanel()", "function renderContextPanel()");
+  assert.match(contextRows, /supplierContextSearch\("accounts",\s*"搜索账号"\)/);
+  assert.match(contextRows, /data-ws-supplier-account-create/);
+  assert.match(mainJs, /data-ws-supplier-favorite/);
+  assert.match(contextRows, /supplierAccountCollator\.compare/);
+  assert.match(contextRows, /supplierContextSearch\("delivery",\s*"搜索账号或素材"\)/);
+  assert.match(contextRows, /data-ws-supplier-batch-download/);
+  assert.match(contextRows, /title:\s*"账号申请"/);
+  assert.match(contextRows, /title:\s*"全部账号"/);
+  assert.doesNotMatch(mainJs, /id="topSupplierOverviewSearch"/);
+
+  assert.match(supplierViewsJs, /const activePage\s*=\s*page === "accounts"\s*\?\s*"accounts"\s*:\s*"requests"/);
+  assert.match(supplierViewsJs, /supplier-dashboard-stats/);
+  assert.match(deliveryViewJs, /new Intl\.Collator\("zh-CN-u-co-pinyin"/);
+  assert.match(deliveryViewJs, /setSupplierDeliveryQuery/);
+  assert.match(deliveryViewJs, /batchDownloadSupplierDelivery/);
+  assert.doesNotMatch(deliveryViewJs, /id="dvBatchDl"/);
+
+  assert.match(viewsCss, /\.supplier-dashboard-stats\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/s);
+  assert.match(viewsCss, /\.supplier-dashboard-visuals\s*\{[^}]*grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+minmax\(440px,\s*2fr\)/s);
+  assert.match(viewsCss, /\.sup-actions-inner\s*\{[^}]*border-radius:\s*999px/s);
+});
+
 test("canvas and video switches wait for the real latest project before routing", () => {
   const opener = section(mainJs, "function openWorkspaceItem(item)", "function renderWorkspaceSwitcher()");
   assert.match(opener, /loadWorkspaceProjects\(item\.page,\s*\{\s*force:\s*true\s*\}\)\.then\(items\s*=>/);
@@ -537,18 +627,18 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final shell-10 cache marker", () => {
+test("all modified workspace-shell resources use the final shell-12 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-10"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-10"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-10"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-10"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-10"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-10"/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-10"/);
-  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-10"/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-10"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-12"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-12"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-12"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-12"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-12"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-12"/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-12"/);
+  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-12"/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-12"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

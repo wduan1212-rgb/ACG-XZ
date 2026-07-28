@@ -127,7 +127,7 @@ export const assetsView = {
         $$('[data-library]', $("#assetsTopDock") || root).forEach(button => button.addEventListener("click", () => {
           setAssetLibraryMode(button.dataset.library);
         }));
-        import("./draftsView.js?v=20260728-v120-shell-10").then(({ draftsView }) => {
+        import("./draftsView.js?v=20260728-v120-shell-12").then(({ draftsView }) => {
           const host = $("#assetDraftsHost", root);
           if (host) draftsView.render(host);
         });
@@ -267,13 +267,23 @@ export const assetsView = {
         const tags = libraryMode === "bgm" ? ["BGM", "音乐"]
           : libraryMode === "material" ? ["剪辑素材", "共享剪辑素材", `${type}素材`]
             : libraryMode === "voice" ? ["语音素材库"] : ["参考音频库", "声线参考"];
-        await addAssetFromFile(null, file, { tags });
+        try {
+          await addAssetFromFile(null, file, {
+            tags,
+            rejectDuplicateName: true,
+            libraryLabel: libraryLabels[libraryMode] || "当前素材库",
+          });
+        } catch (error) {
+          toast(error?.message || "素材加入失败，请稍后重试", "error");
+          return false;
+        }
         toast(
           ["bgm", "material"].includes(libraryMode)
             ? `已加入${libraryLabels[libraryMode]} · 公共素材池`
             : `已加入我的${libraryLabels[libraryMode]}`
         );
         draw();
+        return true;
       };
       if (libraryMode !== "shared") {
         const controller = new AbortController();

@@ -8,7 +8,7 @@ import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js?v=20260727-v118-7";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260728-v120-shell-10";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260728-v120-shell-12";
 import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260727-v118-7";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
@@ -347,6 +347,11 @@ const deliveryFilterKeys = new Set(Object.keys(deliveryFilterDefaults));
 let supFilters = { ...deliveryFilterDefaults };
 let creatorRemarkFilter = "all";
 let activeDeliveryController = null;
+let supplierDeliveryQuery = "";
+const supplierAccountCollator = new Intl.Collator("zh-CN-u-co-pinyin", {
+  numeric: true,
+  sensitivity: "base",
+});
 
 const filterOption = (value, label) => ({ value, label });
 const withAllOption = (label, options) => [filterOption("all", label), ...options];
@@ -363,7 +368,8 @@ export function getDeliveryFilterModel() {
     ...all.map(item => publisherLabel(item.asset)),
     selfPublisher,
   ].filter(Boolean))];
-  const accounts = [...new Map(all.map(item => [item.acc.id, item.acc])).values()];
+  const accounts = [...new Map(all.map(item => [item.acc.id, item.acc])).values()]
+    .sort((a, b) => supplierAccountCollator.compare(a.name || "", b.name || ""));
   const dates = [...new Set(all.map(item => dayKey(item.asset)))];
   const fields = [
     {
@@ -464,6 +470,16 @@ export function resetDeliveryFilters({ redraw = true } = {}) {
   return getDeliveryFilterModel();
 }
 
+export function setSupplierDeliveryQuery(value, { redraw = true } = {}) {
+  supplierDeliveryQuery = String(value || "").trim().toLowerCase();
+  if (redraw && activeDeliveryController?.draw) activeDeliveryController.draw();
+  return supplierDeliveryQuery;
+}
+
+export async function batchDownloadSupplierDelivery() {
+  return activeDeliveryController?.batchDl?.();
+}
+
 function deliveryStatusFiltersHtml(scope) {
   return `<div class="delivery-status-filters" aria-label="交付状态筛选" title="下载状态与发布状态可组合筛选；再次点击当前标签可取消">
     <span class="delivery-status-group" role="group" aria-label="下载状态">
@@ -484,6 +500,8 @@ export const deliveryView = {
   getFilterModel: getDeliveryFilterModel,
   setFilter: setDeliveryFilter,
   resetFilters: resetDeliveryFilters,
+  setQuery: setSupplierDeliveryQuery,
+  batchDownload: batchDownloadSupplierDelivery,
   render(root) {
     const isSupplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
     const canUpdateViews = ["supplier_parent", "supplier_child"].includes(state.role);
@@ -641,6 +659,12 @@ export const deliveryView = {
       const seqMap = displaySeqMap(all);
       const accountSequence = accountDisplaySequenceMap(state.accounts);
       const productTags = [...new Set(all.map(x => x.asset.productTag || productTagLabel(productById(x.asset.productId || ""))).filter(Boolean))];
+      const supplierAccounts = [...new Map(all.map(x => [x.acc.id, x.acc])).values()]
+        .sort((a, b) => supplierAccountCollator.compare(a.name || "", b.name || ""));
+      const searchValue = item => {
+        const product = item.asset.productTag || productTagLabel(productById(item.asset.productId || ""));
+        return `${item.asset.name || ""} ${item.asset.title || ""} ${item.acc.name || ""} ${item.acc.platform || ""} ${publisherLabel(item.asset)} ${product}`.toLowerCase();
+      };
       const matchesFilters = x => {
         const ptag = x.asset.productTag || productTagLabel(productById(x.asset.productId || ""));
         return (supFilters.product === "all" || ptag === supFilters.product)
@@ -648,7 +672,8 @@ export const deliveryView = {
           && (supFilters.publisher === "all" || publisherLabel(x.asset) === supFilters.publisher)
           && (supFilters.account === "all" || x.acc.id === supFilters.account)
           && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date)
-          && matchesDeliveryStatusFilters(x.asset, supFilters);
+          && matchesDeliveryStatusFilters(x.asset, supFilters)
+          && (!supplierDeliveryQuery || searchValue(x).includes(supplierDeliveryQuery));
       };
       const rows = all;
       const visibleCount = rows.filter(matchesFilters).length;
@@ -658,12 +683,11 @@ export const deliveryView = {
           <label class="select-shell">${icon("package", 13)}<select data-sup-select="product"><option value="all">全部产品</option>${productTags.map(x => `<option value="${esc(x)}" ${supFilters.product === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("filter", 13)}<select data-sup-select="type"><option value="all">全部形式</option><option value="视频" ${supFilters.type === "视频" ? "selected" : ""}>视频</option><option value="图文" ${supFilters.type === "图文" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("user", 13)}<select data-sup-select="publisher"><option value="all">全部发布人</option>${[...new Set(all.map(x => publisherLabel(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.publisher === x ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
-          <label class="select-shell">${icon("users", 13)}<select data-sup-select="account"><option value="all">全部账号</option>${[...new Map(all.map(x => [x.acc.id, x.acc])).values()].map(acc => `<option value="${esc(acc.id)}" ${supFilters.account === acc.id ? "selected" : ""}>${esc(acc.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
+          <label class="select-shell">${icon("users", 13)}<select data-sup-select="account"><option value="all">全部账号</option>${supplierAccounts.map(acc => `<option value="${esc(acc.id)}" ${supFilters.account === acc.id ? "selected" : ""}>${esc(acc.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           <label class="select-shell">${icon("clock", 13)}<select data-sup-select="date"><option value="all">全部时间</option>${[...new Set(all.map(x => dayKey(x.asset)))].map(x => `<option value="${esc(x)}" ${supFilters.date === x ? "selected" : ""}>${esc(dayLabel(x))}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>
           ${deliveryStatusFiltersHtml("sup")}
           </div>
           <span class="supplier-selection-count" id="dvSelectedCount" hidden>已选 <b>0</b> 条</span>
-          <button class="btn primary supplier-batch-download" id="dvBatchDl">${icon("download", 14)} 批量下载未下载</button>
         </div>
         <div class="sup-table-wrap card">
           <table class="sup-table">
@@ -688,7 +712,7 @@ export const deliveryView = {
               const ptag = asset.productTag || productTagLabel(productById(asset.productId || ""));
               const returnState = supplierReturnRowState(asset);
               return `
-              <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-account="${esc(acc.id)}" data-sup-date="${esc(dayKey(asset))}" data-sup-visible="${matchesFilters(item) ? "1" : "0"}" ${matchesFilters(item) ? "" : "hidden"}>
+              <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-account="${esc(acc.id)}" data-sup-date="${esc(dayKey(asset))}" data-sup-search="${esc(searchValue(item))}" data-sup-visible="${matchesFilters(item) ? "1" : "0"}" ${matchesFilters(item) ? "" : "hidden"}>
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
                 <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}${remarkDot(asset)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}<span class="sup-date-line">${dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt) ? `<em class="sup-created">${icon("calendar", 10)} 创作 ${esc(dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt))}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}</span>${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
@@ -737,7 +761,8 @@ export const deliveryView = {
             && (supFilters.publisher === "all" || row.dataset.supPublisher === supFilters.publisher)
             && (supFilters.account === "all" || row.dataset.supAccount === supFilters.account)
             && (supFilters.date === "all" || row.dataset.supDate === supFilters.date)
-            && matchesDeliveryStatusFilters(state.assets.find(asset => asset.id === row.dataset.sup), supFilters);
+            && matchesDeliveryStatusFilters(state.assets.find(asset => asset.id === row.dataset.sup), supFilters)
+            && (!supplierDeliveryQuery || row.dataset.supSearch.includes(supplierDeliveryQuery));
           row.dataset.supVisible = show ? "1" : "0";
           const detail = body.querySelector(`[data-sup-detail="${CSS.escape(row.dataset.sup)}"]`);
           row.getAnimations?.().forEach(animation => animation.cancel());
@@ -769,7 +794,6 @@ export const deliveryView = {
         setDeliveryFilter(dimension, value, { toggle: true, redraw: false });
         drawSupplier(body, all);
       }));
-      $("#dvBatchDl", body)?.addEventListener("click", batchDl);
       const supAll = $("#supAll", body);
       if (supAll) supAll.addEventListener("change", e => visibleSupplierRows().forEach(row => {
         const checkbox = $(".sup-check", row);
@@ -854,7 +878,7 @@ export const deliveryView = {
       draw();
     }
 
-    activeDeliveryController = { root, draw };
+    activeDeliveryController = { root, draw, batchDl };
     root.__viewCleanup = () => {
       if (activeDeliveryController?.root === root) activeDeliveryController = null;
     };

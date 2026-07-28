@@ -1,11 +1,11 @@
 /* 应用入口：装载数据 → 迁移 → 恢复任务 → 外壳 → 路由 */
 
 import { $, $$, esc, uid } from "./core/util.js";
-import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260728-v120-shell-10";
+import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260728-v120-shell-12";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions } from "./agent/orchestrator.js?v=20260727-v118-7";
+import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260727-v118-7";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
@@ -17,32 +17,35 @@ import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
 import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260727-v118-7";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
-import { toast, confirmModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
+import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-10";
-import { overviewView } from "./views/overview.js?v=20260728-v120-shell-10";
-import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-10";
-import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-10";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-10";
-import { studioView } from "./views/studio.js?v=20260728-v120-shell-10";
-import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-10";
-import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-10";
+import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-12";
+import { overviewView } from "./views/overview.js?v=20260728-v120-shell-12";
+import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-12";
+import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-12";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-12";
+import { studioView } from "./views/studio.js?v=20260728-v120-shell-12";
+import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-12";
+import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-12";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-10";
-import { settingsView } from "./views/settings.js?v=20260728-v120-shell-10";
+import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-12";
+import { settingsView } from "./views/settings.js?v=20260728-v120-shell-12";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-10";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-12";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260728-v120-shell-10";
+const APP_BUILD_ID = "20260728-v120-shell-12";
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
+const WORKSPACE_VIDEO_META_KEY = "xingzhen.workspaceVideoMeta";
 let workspaceSwitcherGlobalWired = false;
 let workspaceContextFrame = 0;
 let workspaceUtilityDockWired = false;
 let workspaceProjectOpenRequest = 0;
+let workspaceSupplierChildren = [];
+let workspaceSupplierBindings = [];
 const workspaceProjectLists = {
   video: { items: [], loading: false, loadedAt: 0, error: "", pending: null },
   canvas: { items: [], loading: false, loadedAt: 0, error: "", pending: null },
@@ -900,6 +903,147 @@ function workspaceVideoMemberKey() {
   return String(currentMember()?.id || state.ui.currentMemberId || state.role || "local").trim();
 }
 
+function readWorkspaceVideoMeta() {
+  try {
+    const payload = JSON.parse(localStorage.getItem(WORKSPACE_VIDEO_META_KEY) || "{}");
+    const member = payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload[workspaceVideoMemberKey()]
+      : null;
+    return {
+      groups: Array.isArray(member?.groups)
+        ? [...new Set(member.groups.map(group => String(group || "").trim()).filter(Boolean))].slice(0, 40)
+        : [],
+      projects: member?.projects && typeof member.projects === "object" && !Array.isArray(member.projects)
+        ? member.projects
+        : {},
+    };
+  } catch (_) {
+    return { groups: [], projects: {} };
+  }
+}
+
+function writeWorkspaceVideoMeta(nextMember) {
+  try {
+    const payload = JSON.parse(localStorage.getItem(WORKSPACE_VIDEO_META_KEY) || "{}");
+    const next = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+    next[workspaceVideoMemberKey()] = {
+      groups: [...new Set((nextMember.groups || []).map(group => String(group || "").trim()).filter(Boolean))].slice(0, 40),
+      projects: nextMember.projects && typeof nextMember.projects === "object" ? nextMember.projects : {},
+    };
+    localStorage.setItem(WORKSPACE_VIDEO_META_KEY, JSON.stringify(next));
+  } catch (_) {}
+}
+
+function workspaceVideoProjectMeta(projectId) {
+  const id = String(projectId || "").trim();
+  const raw = readWorkspaceVideoMeta().projects[id];
+  return raw && typeof raw === "object"
+    ? {
+        favorite: Boolean(raw.favorite),
+        group: String(raw.group || "").trim().slice(0, 48),
+        title: String(raw.title || "").trim().slice(0, 180),
+      }
+    : { favorite: false, group: "", title: "" };
+}
+
+function updateWorkspaceVideoProjectMeta(projectId, patch = {}) {
+  const id = String(projectId || "").trim();
+  if (!id) return;
+  const member = readWorkspaceVideoMeta();
+  member.projects[id] = {
+    ...(member.projects[id] || {}),
+    ...patch,
+  };
+  writeWorkspaceVideoMeta(member);
+}
+
+function workspaceSessionGroups(kind) {
+  if (kind === "video") return readWorkspaceVideoMeta().groups;
+  return Array.isArray(state.ui.batchSessionGroups)
+    ? [...new Set(state.ui.batchSessionGroups.map(group => String(group || "").trim()).filter(Boolean))].slice(0, 40)
+    : [];
+}
+
+function addWorkspaceSessionGroup(kind, name) {
+  const group = String(name || "").trim().slice(0, 48);
+  if (!group) return "";
+  const groups = workspaceSessionGroups(kind);
+  if (!groups.includes(group)) groups.push(group);
+  if (kind === "video") {
+    const member = readWorkspaceVideoMeta();
+    member.groups = groups;
+    writeWorkspaceVideoMeta(member);
+  } else {
+    state.ui.batchSessionGroups = groups;
+    save("meta");
+  }
+  return group;
+}
+
+function renameWorkspaceSessionGroup(kind, currentName, nextName) {
+  const current = String(currentName || "").trim().slice(0, 48);
+  const next = String(nextName || "").trim().slice(0, 48);
+  if (!current || !next || current === next) return false;
+  const groups = workspaceSessionGroups(kind);
+  if (groups.includes(next)) {
+    toast(`分组「${next}」已存在`);
+    return false;
+  }
+  if (kind === "video") {
+    const member = readWorkspaceVideoMeta();
+    member.groups = groups.map(group => group === current ? next : group);
+    Object.values(member.projects).forEach(project => {
+      if (String(project?.group || "").trim() === current) project.group = next;
+    });
+    writeWorkspaceVideoMeta(member);
+  } else {
+    state.ui.batchSessionGroups = groups.map(group => group === current ? next : group);
+    state.sessions
+      .filter(session => ownedBy(session) && String(session.group || "").trim() === current)
+      .forEach(session => {
+        session.group = next;
+        session.updatedAt = Date.now();
+      });
+    save("sessions", "meta");
+  }
+  return true;
+}
+
+function deleteWorkspaceSessionGroup(kind, groupName) {
+  const target = String(groupName || "").trim().slice(0, 48);
+  if (!target) return false;
+  const groups = workspaceSessionGroups(kind).filter(group => group !== target);
+  if (kind === "video") {
+    const member = readWorkspaceVideoMeta();
+    member.groups = groups;
+    Object.values(member.projects).forEach(project => {
+      if (String(project?.group || "").trim() === target) project.group = "";
+    });
+    writeWorkspaceVideoMeta(member);
+  } else {
+    state.ui.batchSessionGroups = groups;
+    state.sessions
+      .filter(session => ownedBy(session) && String(session.group || "").trim() === target)
+      .forEach(session => {
+        session.group = "";
+        session.updatedAt = Date.now();
+      });
+    save("sessions", "meta");
+  }
+  return true;
+}
+
+function postVideoWorkspaceAction(type, payload = {}) {
+  const frame = document.querySelector('iframe[title="星阵视频工坊"]');
+  if (!frame?.contentWindow) return false;
+  frame.contentWindow.postMessage({
+    type,
+    scope: "video",
+    ...payload,
+  }, window.location.origin);
+  return true;
+}
+
 function workspaceHiddenVideoProjectIds() {
   try {
     const payload = JSON.parse(localStorage.getItem(WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY) || "{}");
@@ -1032,6 +1176,11 @@ if (typeof window !== "undefined") {
   window.addEventListener("xingzhen:delivery-filter-model", () => {
     if (parseHash().zone === "delivery") scheduleWorkspaceContextRender();
   });
+  window.addEventListener("xingzhen:supplier-children", event => {
+    workspaceSupplierChildren = Array.isArray(event.detail?.children) ? event.detail.children : [];
+    workspaceSupplierBindings = Array.isArray(event.detail?.bindings) ? event.detail.bindings : [];
+    if (["overview", "settings"].includes(parseHash().zone)) scheduleWorkspaceContextRender();
+  });
 }
 
 function contextRow({ title, meta = "", tag = "", action = "", zone = "", page = "", id = "", active = false, attrs = "", className = "" } = {}) {
@@ -1047,21 +1196,175 @@ function contextRow({ title, meta = "", tag = "", action = "", zone = "", page =
   `;
 }
 
-function videoProjectContextRow(project, resourceId) {
+const supplierAccountCollator = new Intl.Collator("zh-CN-u-co-pinyin", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+function supplierWorkspaceQuery(scope) {
+  const queries = state.ui.supplierWorkspaceQueries || {};
+  return String(queries[scope] || "");
+}
+
+function setSupplierWorkspaceQuery(scope, value) {
+  state.ui.supplierWorkspaceQueries = {
+    ...(state.ui.supplierWorkspaceQueries || {}),
+    [scope]: String(value || ""),
+  };
+}
+
+function supplierContextSearch(scope, placeholder) {
   return `
-    <div class="wsctx-row-shell">
+    <label class="wsctx-search wsctx-supplier-search">
+      ${icon("search", 13)}
+      <input type="search" data-ws-supplier-search="${esc(scope)}" value="${esc(supplierWorkspaceQuery(scope))}" placeholder="${esc(placeholder)}" autocomplete="off" />
+    </label>
+  `;
+}
+
+function supplierFavoriteAccountIds() {
+  return new Set((state.ui.supplierFavoriteAccountIds || []).map(String));
+}
+
+function supplierAccountContextRow(account, index) {
+  const favorites = supplierFavoriteAccountIds();
+  const favorite = favorites.has(String(account.id));
+  const query = supplierWorkspaceQuery("accounts").trim().toLowerCase();
+  const searchValue = `${account.name || ""} ${account.platform || ""} ${account.mode || ""}`.toLowerCase();
+  const selected = String(state.ui.supplierSelectedAccountId || "") === String(account.id);
+  return `
+    <div class="wsctx-supplier-account-shell${selected ? " is-active" : ""}"
+      data-supplier-search-target="accounts"
+      data-supplier-search-value="${esc(searchValue)}"
+      ${query && !searchValue.includes(query) ? "hidden" : ""}>
       ${contextRow({
-        title: project.title,
+        title: account.name || `账号 ${index + 1}`,
+        meta: account.platform || "",
+        zone: "assets",
+        id: account.id,
+        active: selected,
+        attrs: `data-ws-supplier-account="${esc(account.id)}"`,
+        className: "wsctx-supplier-account-row",
+      })}
+      <button class="wsctx-supplier-favorite${favorite ? " is-active" : ""}" type="button"
+        data-ws-supplier-favorite="${esc(account.id)}"
+        aria-pressed="${favorite ? "true" : "false"}"
+        aria-label="${favorite ? "取消收藏" : "收藏"}${esc(account.name || "账号")}"
+        title="${favorite ? "取消收藏" : "收藏账号"}">${icon("star", 13)}</button>
+    </div>
+  `;
+}
+
+function supplierChildContextRow(child, index) {
+  const query = supplierWorkspaceQuery("children").trim().toLowerCase();
+  const searchValue = `${child.name || ""} ${child.username || ""}`.toLowerCase();
+  const assigned = workspaceSupplierBindings.filter(binding => binding.childId === child.id).length;
+  return contextRow({
+    title: child.name || child.username || `子账号 ${index + 1}`,
+    meta: child.username ? `@${child.username}` : "",
+    tag: `${assigned} 个账号`,
+    zone: "settings",
+    page: "accounts",
+    attrs: `data-supplier-search-target="children" data-supplier-search-value="${esc(searchValue)}" ${query && !searchValue.includes(query) ? "hidden" : ""}`,
+    className: "wsctx-supplier-child-row",
+  });
+}
+
+function videoProjectContextRow(project, resourceId) {
+  const meta = workspaceVideoProjectMeta(project.id);
+  const title = meta.title || project.title;
+  return `
+    <div class="wsctx-row-shell" data-session-shell="video" data-session-id="${esc(project.id)}">
+      ${contextRow({
+        title,
         tag: `已发布 ${project.publishedCount || 0}`,
         zone: "custom",
         page: "video",
         id: project.id,
         active: project.id === resourceId,
-        className: "wsctx-video-project"
+        className: `wsctx-video-project${meta.favorite ? " is-favorite" : ""}`,
+        attrs: meta.favorite ? `data-session-favorite="true"` : ""
       })}
-      <button class="wsctx-row-delete" type="button" data-video-project-remove="${esc(project.id)}" data-video-project-title="${esc(project.title)}" aria-label="删除视频会话 ${esc(project.title)}" title="删除会话">${icon("trash", 14)}</button>
+      ${workspaceSessionMenu({
+        kind: "video",
+        id: project.id,
+        title,
+        favorite: meta.favorite,
+        currentGroup: meta.group,
+        groups: workspaceSessionGroups("video"),
+      })}
     </div>
   `;
+}
+
+function batchSessionContextRow(session) {
+  return `
+    <div class="wsctx-row-shell" data-session-shell="batch" data-session-id="${esc(session.id)}">
+      ${contextRow({
+        title: session.title || "新量产计划",
+        zone: "agent",
+        id: session.id,
+        active: session.id === state.ui.activeSessionId,
+        className: `wsctx-batch-session${session.favorite ? " is-favorite" : ""}`,
+        attrs: session.favorite ? `data-session-favorite="true"` : ""
+      })}
+      ${workspaceSessionMenu({
+        kind: "batch",
+        id: session.id,
+        title: session.title || "新量产计划",
+        favorite: Boolean(session.favorite),
+        currentGroup: String(session.group || ""),
+        groups: workspaceSessionGroups("batch"),
+      })}
+    </div>
+  `;
+}
+
+function workspaceSessionMenu({ kind, id, title, favorite, currentGroup = "", groups = [] } = {}) {
+  const label = kind === "video" ? "视频会话" : "批量会话";
+  const groupChoices = [
+    `<button type="button" role="menuitem" class="${!currentGroup ? "is-current" : ""}" data-session-action="move" data-session-kind="${esc(kind)}" data-session-id="${esc(id)}" data-session-group="">未分组</button>`,
+    ...groups.map(group => `<button type="button" role="menuitem" class="${group === currentGroup ? "is-current" : ""}" data-session-action="move" data-session-kind="${esc(kind)}" data-session-id="${esc(id)}" data-session-group="${esc(group)}">${esc(group)}</button>`),
+  ].join("");
+  return `
+    <button class="wsctx-row-more" type="button" data-session-menu-toggle aria-haspopup="menu" aria-expanded="false" aria-label="${esc(title)}的更多操作" title="更多操作">${icon("more", 15)}</button>
+    <div class="wsctx-row-menu" role="menu" aria-label="${esc(label)}操作">
+      <button type="button" role="menuitem" data-session-action="rename" data-session-kind="${esc(kind)}" data-session-id="${esc(id)}" data-session-title="${esc(title)}">${icon("edit", 13)}<span>重命名</span></button>
+      <button type="button" role="menuitem" data-session-action="favorite" data-session-kind="${esc(kind)}" data-session-id="${esc(id)}">${icon("star", 13)}<span>${favorite ? "取消收藏" : "收藏"}</span></button>
+      <div class="wsctx-menu-label">${icon("folder", 12)}<span>移动到分组</span></div>
+      <div class="wsctx-menu-groups">${groupChoices}</div>
+      <div class="wsctx-menu-divider"></div>
+      <button type="button" role="menuitem" class="is-danger" data-session-action="delete" data-session-kind="${esc(kind)}" data-session-id="${esc(id)}" data-session-title="${esc(title)}">${icon("trash", 13)}<span>删除</span></button>
+    </div>
+  `;
+}
+
+function groupedWorkspaceRows(items, groups, getGroup, rowFor, kind) {
+  const sorted = [...items].sort((a, b) => {
+    const favoriteDelta = Number(Boolean(b.favorite)) - Number(Boolean(a.favorite));
+    if (favoriteDelta) return favoriteDelta;
+    return Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0);
+  });
+  const rows = [];
+  const append = (label, list, { keepEmpty = false } = {}) => {
+    if (!list.length && !keepEmpty) return;
+    if (label) rows.push(`
+      <div class="wsctx-subgroup">
+        <span>${icon("folder", 11)} ${esc(label)}</span>
+        <span class="wsctx-subgroup-actions">
+          <em>${list.length}</em>
+          <button type="button" data-session-group-action="rename" data-session-kind="${esc(kind)}" data-session-group="${esc(label)}" aria-label="重命名分组「${esc(label)}」" title="重命名分组">${icon("edit", 11)}</button>
+          <button type="button" data-session-group-action="delete" data-session-kind="${esc(kind)}" data-session-group="${esc(label)}" aria-label="删除分组「${esc(label)}」" title="删除分组">${icon("trash", 11)}</button>
+        </span>
+      </div>`);
+    rows.push(...list.map(rowFor));
+  };
+  append("", sorted.filter(item => !getGroup(item)));
+  groups.forEach(group => append(group, sorted.filter(item => getGroup(item) === group), { keepEmpty: true }));
+  const known = new Set(groups);
+  const orphanGroups = [...new Set(sorted.map(getGroup).filter(group => group && !known.has(group)))];
+  orphanGroups.forEach(group => append(group, sorted.filter(item => getGroup(item) === group)));
+  return rows;
 }
 
 function accountContextRow(account, accountIndex) {
@@ -1219,27 +1522,162 @@ function ensureWorkspaceContextShell(panel) {
       else if (accountAction === "logout") logout();
       return;
     }
-    const videoRemove = event.target.closest("[data-video-project-remove]");
-    if (videoRemove) {
+    const sessionMenuToggle = event.target.closest("[data-session-menu-toggle]");
+    if (sessionMenuToggle) {
       event.stopPropagation();
-      const projectId = String(videoRemove.dataset.videoProjectRemove || "").trim();
-      const projectTitle = String(videoRemove.dataset.videoProjectTitle || "新会话").trim();
-      if (!projectId) return;
-      const ok = await confirmModal({
-        title: `删除视频会话「${projectTitle}」？`,
-        body: "会从当前 v120 工作区会话列表移除，不影响已发布内容。",
-        danger: true,
-        okText: "删除会话"
+      const shell = sessionMenuToggle.closest("[data-session-shell]");
+      const opening = !shell?.classList.contains("is-menu-open");
+      panel.querySelectorAll("[data-session-shell].is-menu-open").forEach(item => {
+        if (item !== shell) {
+          item.classList.remove("is-menu-open");
+          item.querySelector("[data-session-menu-toggle]")?.setAttribute("aria-expanded", "false");
+        }
       });
-      if (!ok) return;
-      hideWorkspaceVideoProject(projectId);
-      const route = parseHash();
-      const nextProject = workspaceProjectLists.video.items[0];
-      if (route.zone === "custom" && route.page === "video" && route.resourceId === projectId) {
-        go("custom", "video", nextProject?.id || "__new__");
-      }
+      shell?.classList.toggle("is-menu-open", opening);
+      sessionMenuToggle.setAttribute("aria-expanded", opening ? "true" : "false");
+      return;
+    }
+    const createGroupButton = event.target.closest("[data-session-create-group]");
+    if (createGroupButton) {
+      event.stopPropagation();
+      const kind = createGroupButton.dataset.sessionCreateGroup === "video" ? "video" : "batch";
+      const name = await promptModal({
+        title: kind === "video" ? "新建视频会话分组" : "新建批量会话分组",
+        placeholder: "例如：7 月投放、品牌项目",
+        okText: "新建分组"
+      });
+      if (!name) return;
+      const group = addWorkspaceSessionGroup(kind, name);
+      if (!group) return;
       renderWorkspaceContextPanel();
-      toast("视频会话已删除");
+      toast(`已新建分组「${group}」`);
+      return;
+    }
+    const groupActionButton = event.target.closest("[data-session-group-action]");
+    if (groupActionButton) {
+      event.stopPropagation();
+      const kind = groupActionButton.dataset.sessionKind === "video" ? "video" : "batch";
+      const action = String(groupActionButton.dataset.sessionGroupAction || "");
+      const group = String(groupActionButton.dataset.sessionGroup || "").trim().slice(0, 48);
+      if (!group) return;
+      if (action === "rename") {
+        const nextName = await promptModal({
+          title: `重命名分组「${group}」`,
+          value: group,
+          placeholder: "输入新的分组名称",
+          okText: "保存"
+        });
+        if (!nextName || nextName === group) return;
+        if (!renameWorkspaceSessionGroup(kind, group, nextName)) return;
+        renderWorkspaceContextPanel();
+        toast(`分组已重命名为「${String(nextName).trim().slice(0, 48)}」`);
+        return;
+      }
+      if (action === "delete") {
+        const ok = await confirmModal({
+          title: `删除分组「${group}」？`,
+          body: "分组内的会话会移回未分组，不会删除任何会话或已发布内容。",
+          danger: true,
+          okText: "删除分组"
+        });
+        if (!ok || !deleteWorkspaceSessionGroup(kind, group)) return;
+        renderWorkspaceContextPanel();
+        toast(`分组「${group}」已删除`);
+      }
+      return;
+    }
+    const batchCreateButton = event.target.closest("[data-batch-session-create]");
+    if (batchCreateButton) {
+      event.stopPropagation();
+      const session = newSession();
+      renderWorkspaceContextPanel();
+      setWorkspaceContextOpen(false);
+      go("agent", null, session?.id || null);
+      return;
+    }
+    const sessionAction = event.target.closest("[data-session-action]");
+    if (sessionAction) {
+      event.stopPropagation();
+      const kind = sessionAction.dataset.sessionKind === "video" ? "video" : "batch";
+      const action = String(sessionAction.dataset.sessionAction || "");
+      const id = String(sessionAction.dataset.sessionId || "").trim();
+      const title = String(sessionAction.dataset.sessionTitle || "新会话").trim();
+      if (!id) return;
+      if (action === "rename") {
+        const nextTitle = await promptModal({
+          title: "重命名会话",
+          value: title,
+          placeholder: "输入会话名称",
+          okText: "保存"
+        });
+        if (!nextTitle || nextTitle === title) return;
+        if (kind === "video") {
+          updateWorkspaceVideoProjectMeta(id, { title: nextTitle });
+          const project = workspaceProjectLists.video.items.find(item => item.id === id);
+          if (project) project.title = nextTitle;
+          postVideoWorkspaceAction("workspace:rename", { projectId: id, name: nextTitle });
+        } else {
+          renameSession(id, nextTitle);
+        }
+        renderWorkspaceContextPanel();
+        toast("会话已重命名");
+        return;
+      }
+      if (action === "favorite") {
+        if (kind === "video") {
+          const meta = workspaceVideoProjectMeta(id);
+          updateWorkspaceVideoProjectMeta(id, { favorite: !meta.favorite });
+        } else {
+          const session = state.sessions.find(item => item.id === id && ownedBy(item));
+          if (session) {
+            session.favorite = !session.favorite;
+            session.updatedAt = Date.now();
+            save("sessions");
+          }
+        }
+        renderWorkspaceContextPanel();
+        return;
+      }
+      if (action === "move") {
+        const group = String(sessionAction.dataset.sessionGroup || "").trim().slice(0, 48);
+        if (group) addWorkspaceSessionGroup(kind, group);
+        if (kind === "video") {
+          updateWorkspaceVideoProjectMeta(id, { group });
+        } else {
+          const session = state.sessions.find(item => item.id === id && ownedBy(item));
+          if (session) {
+            session.group = group;
+            session.updatedAt = Date.now();
+            save("sessions");
+          }
+        }
+        renderWorkspaceContextPanel();
+        toast(group ? `已移动到「${group}」` : "已移出分组");
+        return;
+      }
+      if (action === "delete") {
+        const ok = await confirmModal({
+          title: `删除会话「${title}」？`,
+          body: kind === "video"
+            ? "会从当前 v120 工作区会话列表移除，不影响已发布内容。"
+            : "这个批量会话会被删除，已交付内容不受影响。",
+          danger: true,
+          okText: "删除会话"
+        });
+        if (!ok) return;
+        if (kind === "video") {
+          hideWorkspaceVideoProject(id);
+          const route = parseHash();
+          const nextProject = workspaceProjectLists.video.items[0];
+          if (route.zone === "custom" && route.page === "video" && route.resourceId === id) {
+            go("custom", "video", nextProject?.id || "__new__");
+          }
+        } else {
+          await deleteSession(id);
+        }
+        renderWorkspaceContextPanel();
+        toast("会话已删除");
+      }
       return;
     }
     const groupButton = event.target.closest("[data-ws-group]");
@@ -1259,6 +1697,33 @@ function ensureWorkspaceContextShell(panel) {
       event.stopPropagation();
       const library = String(libraryButton.dataset.wsLibrary || "");
       assetsView.setLibraryMode?.(library);
+      return;
+    }
+    const supplierFavorite = event.target.closest("[data-ws-supplier-favorite]");
+    if (supplierFavorite) {
+      event.stopPropagation();
+      const accountId = String(supplierFavorite.dataset.wsSupplierFavorite || "");
+      const favorites = supplierFavoriteAccountIds();
+      if (favorites.has(accountId)) favorites.delete(accountId);
+      else favorites.add(accountId);
+      state.ui.supplierFavoriteAccountIds = [...favorites];
+      save("meta");
+      renderWorkspaceContextPanel();
+      return;
+    }
+    if (event.target.closest("[data-ws-supplier-account-create]")) {
+      event.stopPropagation();
+      document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} }));
+      return;
+    }
+    if (event.target.closest("[data-ws-supplier-child-create]")) {
+      event.stopPropagation();
+      document.dispatchEvent(new CustomEvent("xingzhen:supplier-create-children"));
+      return;
+    }
+    if (event.target.closest("[data-ws-supplier-batch-download]")) {
+      event.stopPropagation();
+      deliveryView.batchDownload?.();
       return;
     }
     const deliveryChoice = event.target.closest("[data-ws-delivery-choice]");
@@ -1281,6 +1746,15 @@ function ensureWorkspaceContextShell(panel) {
     const targetZone = routeButton.dataset.wsGo || "overview";
     const targetPage = routeButton.dataset.wsPage || null;
     const targetId = routeButton.dataset.wsId || "";
+    const supplierAccountId = routeButton.dataset.wsSupplierAccount;
+    if (supplierAccountId) {
+      const account = state.accounts.find(item => String(item.id) === String(supplierAccountId));
+      state.ui.supplierSelectedAccountId = supplierAccountId;
+      setSupplierWorkspaceQuery("accounts", account?.name || "");
+      document.dispatchEvent(new CustomEvent("xingzhen:supplier-account-query", {
+        detail: { query: account?.name || "" },
+      }));
+    }
     if (targetZone === "studio") {
       if (routeButton.dataset.wsDisabled === "true") {
         toast("该账号已停用，恢复后才能继续创作", "error");
@@ -1326,6 +1800,23 @@ function ensureWorkspaceContextShell(panel) {
     const select = event.target.closest?.("[data-ws-delivery-select]");
     if (!select) return;
     deliveryView.setFilter?.(select.dataset.wsDeliverySelect, select.value);
+  });
+  panel.addEventListener("input", event => {
+    const input = event.target.closest?.("[data-ws-supplier-search]");
+    if (!input) return;
+    const scope = String(input.dataset.wsSupplierSearch || "");
+    const query = String(input.value || "");
+    setSupplierWorkspaceQuery(scope, query);
+    const normalized = query.trim().toLowerCase();
+    panel.querySelectorAll(`[data-supplier-search-target="${CSS.escape(scope)}"]`).forEach(row => {
+      row.hidden = Boolean(normalized) && !String(row.dataset.supplierSearchValue || "").includes(normalized);
+    });
+    if (scope === "accounts") {
+      state.ui.supplierSelectedAccountId = "";
+      document.dispatchEvent(new CustomEvent("xingzhen:supplier-account-query", { detail: { query } }));
+    } else if (scope === "delivery") {
+      deliveryView.setQuery?.(query);
+    }
   });
 }
 
@@ -1384,6 +1875,23 @@ function renderWorkspaceContextPanel() {
     .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
   const rowsByZone = () => {
     if (zone === "overview") {
+      if (supplier) {
+        return [{
+          key: "supplier-children",
+          title: "子账号",
+          collapsible: false,
+          headerAction: `
+            <button class="wsctx-title-add" type="button" data-ws-supplier-child-create
+              aria-label="批量建立子账号" title="批量建立子账号">${icon("plus", 13)}</button>`,
+          rows: [
+            supplierContextSearch("children", "搜索子账号"),
+            ...workspaceSupplierChildren
+              .slice()
+              .sort((a, b) => supplierAccountCollator.compare(a.name || a.username || "", b.name || b.username || ""))
+              .map(supplierChildContextRow),
+          ],
+        }];
+      }
       const pending = myProductions
         .filter(p => p.stage !== "delivered")
         .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
@@ -1447,28 +1955,60 @@ function renderWorkspaceContextPanel() {
       return groups;
     }
     if (zone === "agent") {
-      const sessionRows = sessions.slice(0, 48).map(s => contextRow({
-        title: s.title || "新量产计划",
-        zone: "agent",
-        id: s.id,
-        active: s.id === state.ui.activeSessionId
-      }));
+      const batchGroups = workspaceSessionGroups("batch");
+      const sessionRows = groupedWorkspaceRows(
+        sessions.slice(0, 80),
+        batchGroups,
+        session => String(session.group || ""),
+        session => batchSessionContextRow(session),
+        "batch"
+      );
       const fallbackRows = activeBatchesList.slice(0, 48).map(b => contextRow({
         title: b.topic || "未命名批次",
         zone: "agent"
       }));
-      return [{ key: "sessions", title: "生产会话", rows: sessionRows.length ? sessionRows : fallbackRows }];
+      return [{
+        key: "sessions",
+        title: "历史会话",
+        collapsible: false,
+        headerAction: `
+          <span class="wsctx-title-actions">
+            <button class="wsctx-title-add" type="button" data-batch-session-create aria-label="新建批量会话" title="新建会话">${icon("plus", 13)}</button>
+            <button class="wsctx-title-add" type="button" data-session-create-group="batch" aria-label="新建批量会话分组" title="新建分组">${icon("folder", 13)}</button>
+          </span>`,
+        rows: sessionRows.length ? sessionRows : fallbackRows
+      }];
     }
     if (zone === "custom") {
       if (page === "video") {
         void loadWorkspaceProjects("video");
         const projectList = workspaceProjectLists.video;
+        const videoGroups = workspaceSessionGroups("video");
+        const decoratedProjects = projectList.items.slice(0, 100).map(project => {
+          const meta = workspaceVideoProjectMeta(project.id);
+          return {
+            ...project,
+            favorite: meta.favorite,
+            group: meta.group,
+            title: meta.title || project.title,
+          };
+        });
         return [{
           key: "projects",
           title: projectList.loading && !projectList.items.length ? "正在读取历史会话…" : "历史会话",
           collapsible: false,
-          headerAction: `<button class="wsctx-title-add" type="button" data-ws-go="custom" data-ws-page="video" data-ws-id="__new__" aria-label="新建视频会话" title="新建视频会话">${icon("plus", 13)}</button>`,
-          rows: projectList.items.slice(0, 60).map(project => videoProjectContextRow(project, resourceId))
+          headerAction: `
+            <span class="wsctx-title-actions">
+              <button class="wsctx-title-add" type="button" data-ws-go="custom" data-ws-page="video" data-ws-id="__new__" aria-label="新建视频会话" title="新建视频会话">${icon("plus", 13)}</button>
+              <button class="wsctx-title-add" type="button" data-session-create-group="video" aria-label="新建视频会话分组" title="新建分组">${icon("folder", 13)}</button>
+            </span>`,
+          rows: groupedWorkspaceRows(
+            decoratedProjects,
+            videoGroups,
+            project => project.group,
+            project => videoProjectContextRow(project, resourceId),
+            "video"
+          )
         }];
       }
       if (page === "canvas") {
@@ -1490,7 +2030,23 @@ function renderWorkspaceContextPanel() {
     }
     if (zone === "assets") {
       if (supplier) {
-        return [{ key: "accounts", title: "账号", rows: state.accounts.map((account, index) => contextRow({ title: account.name || `账号 ${index + 1}`, zone: "assets" })) }];
+        const favorites = supplierFavoriteAccountIds();
+        const accounts = state.accounts.slice().sort((a, b) => {
+          const favoriteDelta = Number(favorites.has(String(b.id))) - Number(favorites.has(String(a.id)));
+          return favoriteDelta || supplierAccountCollator.compare(a.name || "", b.name || "");
+        });
+        return [{
+          key: "accounts",
+          title: "账号",
+          collapsible: false,
+          headerAction: `
+            <button class="wsctx-title-add" type="button" data-ws-supplier-account-create
+              aria-label="新建账号" title="新建账号">${icon("plus", 13)}</button>`,
+          rows: [
+            supplierContextSearch("accounts", "搜索账号"),
+            ...accounts.map(supplierAccountContextRow),
+          ],
+        }];
       }
       const model = assetsView.getLibraryModel?.() || { value: "drafts", options: [] };
       return [{
@@ -1505,7 +2061,18 @@ function renderWorkspaceContextPanel() {
     }
     if (zone === "delivery") {
       const model = deliveryView.getFilterModel?.() || { fields: [] };
-      return [{ key: "filters", title: "筛选", rows: [deliveryFilterControls(model)] }];
+      return [
+        ...(supplier ? [{
+          key: "delivery-tools",
+          title: "发布清单",
+          collapsible: false,
+          rows: [
+            supplierContextSearch("delivery", "搜索账号或素材"),
+            `<button class="wsctx-supplier-primary-action" type="button" data-ws-supplier-batch-download>${icon("download", 13)}<span>批量下载未下载</span></button>`,
+          ],
+        }] : []),
+        { key: "filters", title: "筛选", rows: [deliveryFilterControls(model)] },
+      ];
     }
     if (zone === "settings") {
       const me = currentMember();
@@ -1539,12 +2106,18 @@ function renderWorkspaceContextPanel() {
           ]
         }];
       }
+      const supplierSettingsPage = page === "accounts" ? "accounts" : "requests";
       return [{
         key: "settings",
-        title: "管理",
+        title: "供应商设置",
+        collapsible: false,
+        headerAction: supplierSettingsPage === "accounts"
+          ? `<button class="wsctx-title-add" type="button" data-ws-supplier-child-create aria-label="批量建立子账号" title="批量建立子账号">${icon("plus", 13)}</button>`
+          : "",
         rows: [
-          contextRow({ title: "供应商设置", active: true, zone: "settings" })
-        ]
+          contextRow({ title: "账号申请", active: supplierSettingsPage === "requests", zone: "settings", page: "requests" }),
+          contextRow({ title: "全部账号", active: supplierSettingsPage === "accounts", zone: "settings", page: "accounts" }),
+        ],
       }];
     }
     return [{ title: "上下文", rows: [] }];
@@ -1789,7 +2362,7 @@ function renderTopbar() {
   if (newAccBtn) newAccBtn.hidden = !(zone === "overview" && state.role === "admin");
   if (syncDataBtn) syncDataBtn.hidden = !(zone === "overview" && state.role === "admin");
   const supplierParent = ["supplier", "supplier_parent"].includes(state.role);
-  const supplierToolbarZone = supplierParent && ["overview", "assets", "settings"].includes(zone);
+  const supplierToolbarZone = supplierParent && zone === "assets";
   let supplierTools = $("#topSupplierOverviewTools");
   if (!supplierTools && actions) {
     supplierTools = document.createElement("div");
@@ -1803,11 +2376,9 @@ function renderTopbar() {
       supplierTools.dataset.zone = zone;
       const platforms = [...new Set(state.accounts.map(account => account.platform).filter(Boolean))];
       if (zone === "assets") {
-        supplierTools.innerHTML = `<button class="top-btn top-primary" id="topSupplierContentAccountAdd">${icon("plus", 13)} <span>新建账号</span></button><div class="top-supplier-platforms"><button class="top-btn is-active" type="button" data-top-supplier-platform="all">全部平台</button>${platforms.map(platform => `<button class="top-btn" type="button" data-top-supplier-platform="${esc(platform)}">${esc(platform)}</button>`).join("")}</div>`;
-      } else if (zone === "settings") {
-        supplierTools.innerHTML = `<button class="top-btn top-primary" id="topSupplierSettingsChildAdd">${icon("plus", 13)} <span>批量建立子账号</span></button>`;
+        supplierTools.innerHTML = `<div class="top-supplier-platforms"><button class="top-btn is-active" type="button" data-top-supplier-platform="all">全部平台</button>${platforms.map(platform => `<button class="top-btn" type="button" data-top-supplier-platform="${esc(platform)}">${esc(platform)}</button>`).join("")}</div>`;
       } else {
-        supplierTools.innerHTML = `<label class="top-supplier-search">${icon("search", 14)}<input id="topSupplierOverviewSearch" placeholder="搜索账号或已交付内容" /></label><button class="top-btn top-primary" id="topSupplierOverviewChildAdd">${icon("plus", 13)} <span>批量建立子账号</span></button>`;
+        supplierTools.innerHTML = "";
       }
     }
   }

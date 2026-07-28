@@ -104,8 +104,9 @@ export const settingsView = {
       return;
     }
     if (["supplier", "supplier_parent"].includes(state.role)) {
-      root.dataset.settingsView = "supplier";
-      renderSupplierSettings(root);
+      const supplierPage = page === "accounts" ? "accounts" : "requests";
+      root.dataset.settingsView = `supplier-${supplierPage}`;
+      renderSupplierSettings(root, { page: supplierPage });
       return;
     }
     const managementPages = new Set(["members", "products", "usage", "requests"]);

@@ -271,6 +271,24 @@ function duplicateAssetByHash(hash, type = "图片", tags = []) {
   ) || null;
 }
 
+function normalizedAssetLibraryName(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase();
+}
+
+function duplicateAssetByName(name, tags = []) {
+  const normalizedName = normalizedAssetLibraryName(name);
+  if (!normalizedName) return null;
+  const role = incomingAssetLibraryRole(tags);
+  return state.assets.find(asset =>
+    normalizedAssetLibraryName(asset?.name) === normalizedName
+    && assetMatchesLibraryRole(asset, role)
+  ) || null;
+}
+
 function seededRand(seed) {
   let t = seed >>> 0;
   return () => {
@@ -444,9 +462,18 @@ export async function addAssetFromDataUrl(accountId, { name, type = "图片", ta
   return a;
 }
 
-export async function addAssetFromFile(accountId, file, { tags = [], name, forceNew = false } = {}) {
+export async function addAssetFromFile(accountId, file, {
+  tags = [],
+  name,
+  forceNew = false,
+  rejectDuplicateName = false,
+  libraryLabel = "当前素材库",
+} = {}) {
   const { mime, type } = inferAssetFileMeta(file);
   const assetName = name || file.name.replace(/\.[^.]+$/, "");
+  if (rejectDuplicateName && duplicateAssetByName(assetName, tags)) {
+    throw new Error(`“${String(assetName).trim()}”已存在于${String(libraryLabel || "当前素材库")}，请重命名文件后再添加`);
+  }
   const sourceBlob = normalizeAssetBlobMime(file, mime, file.name || assetName);
   const blob = type === "图片" ? await lightlyProcessImageBlob(sourceBlob, file.name || assetName) : sourceBlob;
   const contentHash = await assetHashFromBlob(blob);

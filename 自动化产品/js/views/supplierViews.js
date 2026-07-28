@@ -22,9 +22,33 @@ let supplierActivityCarouselTimer = 0;
 let supplierViewsPlatform = "all";
 let supplierTrendWindow = { kind: "days", days: 7, start: "", end: "" };
 let supplierAssistantPending = false;
+let supplierAccountFilterQuery = "";
+let activeSupplierAccountController = null;
+let activeSupplierOverviewController = null;
+let activeSupplierSettingsController = null;
 const SUPPLIER_ACTIVITY_PAGE_SIZE = 3;
 const SUPPLIER_ASSISTANT_HISTORY_PREFIX = "xingzhen:supplier-data-assistant:";
 const onSupplierRoute = zone => document.body.dataset.zone === zone;
+
+function emitSupplierChildren(children = [], bindings = []) {
+  if (typeof window === "undefined" || typeof window.CustomEvent !== "function") return;
+  window.dispatchEvent(new CustomEvent("xingzhen:supplier-children", {
+    detail: { children, bindings },
+  }));
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("xingzhen:supplier-account-query", event => {
+    supplierAccountFilterQuery = String(event.detail?.query || "").trim().toLowerCase();
+    activeSupplierAccountController?.applyFilters?.();
+  });
+  document.addEventListener("xingzhen:supplier-create-children", () => {
+    const controller = onSupplierRoute("settings")
+      ? activeSupplierSettingsController
+      : activeSupplierOverviewController;
+    createChildrenDialog(() => controller?.refresh?.());
+  });
+}
 
 function clearSupplierActivityCarousel() {
   if (supplierActivityCarouselTimer) window.clearTimeout(supplierActivityCarouselTimer);
@@ -218,6 +242,7 @@ export async function renderSupplierOverview(root) {
   try {
     const { children, bindings, activity } = await supplierData();
     if (!onSupplierRoute("overview")) return;
+    emitSupplierChildren(children, bindings);
     const rows = supplierOverviewRows();
     const delivered = rows.map(item => item.asset);
     const publishedRows = rows.filter(item => item.asset.publishedUrl);
@@ -249,7 +274,6 @@ export async function renderSupplierOverview(root) {
         <div class="supplier-dashboard-main">
           <div class="supplier-dashboard-stats">
             <button class="is-accent" data-supplier-detail="published"><span>已发布</span><b>${published.length}</b><em>以回传链接为准</em></button>
-            <button data-supplier-detail="children"><span>子账号</span><b>${children.length}</b><em>${bindings.length} 个账号已分配</em></button>
             <button data-supplier-detail="delivery"><span>全部交付</span><b>${delivered.length}</b><em>${Math.max(0, delivered.length - published.length)} 条待回传</em></button>
             <button data-supplier-detail="views"><span>总播放量</span><b id="supplierViewsTotal">${Number(views.totalViews || 0).toLocaleString("zh-CN")}</b><em>${esc(supplierViewsPlatform === "all" ? "全平台" : supplierViewsPlatform)}</em></button>
           </div>
@@ -347,7 +371,6 @@ export async function renderSupplierOverview(root) {
     };
     $$('[data-supplier-detail]', root).forEach(button => button.addEventListener("click", () => {
       const key = button.dataset.supplierDetail;
-      if (key === "children") return openModal(`<div class="mp-head"><b>子账号 · ${children.length}</b><button class="icon-btn ghost" data-close>${icon("x", 15)}</button></div><div class="supplier-dashboard-detail-list">${children.map(item => `<div class="supplier-dashboard-detail-row"><span><b>${esc(item.name || item.username || "未命名成员")}</b><em>${esc(item.username || "")}</em></span></div>`).join("")}</div>`, { wide: true });
       if (key === "published") return openSupplierRows("已回传链接", publishedRows);
       if (key === "delivery") return openSupplierRows("全部交付", rows);
       if (key === "platform") return openSupplierRows("平台发布构成", publishedRows);
@@ -443,17 +466,6 @@ export async function renderSupplierOverview(root) {
       scheduleSupplierActivityCarousel(root, visibleActivity, activityPages);
     }));
     $("#supplierActivityAll", root)?.addEventListener("click", openActivityModal);
-    const searchOverviewRows = rawQuery => {
-      const query = String(rawQuery || "").trim().toLowerCase();
-      const matches = !query ? rows : rows.filter(({ asset, account }) => `${asset.title || ""} ${asset.name || ""} ${account.name || ""} ${account.platform || ""}`.toLowerCase().includes(query));
-      openSupplierRows(query ? `搜索「${query}」` : "全部交付", matches);
-    };
-    const topSearch = $("#topSupplierOverviewSearch");
-    if (topSearch) topSearch.onkeydown = event => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      searchOverviewRows(event.currentTarget.value);
-    };
     $$('[data-views-platform]', root).forEach(button => button.addEventListener("click", () => {
       const next = button.dataset.viewsPlatform || "all";
       if (next === supplierViewsPlatform) return;
@@ -466,8 +478,10 @@ export async function renderSupplierOverview(root) {
       if (label) label.textContent = `总播放量 · ${next === "all" ? "全平台" : next}`;
       total?.animate?.([{ opacity: .35, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 180, easing: "cubic-bezier(.2,.8,.2,1)" });
     }));
-    const topChildAdd = $("#topSupplierOverviewChildAdd");
-    if (topChildAdd) topChildAdd.onclick = () => createChildrenDialog(() => renderSupplierOverview(root));
+    activeSupplierOverviewController = {
+      root,
+      refresh: () => renderSupplierOverview(root),
+    };
     scheduleSupplierActivityCarousel(root, visibleActivity, activityPages);
   } catch (e) {
     if (!onSupplierRoute("overview")) return;
@@ -480,6 +494,7 @@ export async function renderSupplierAccounts(root) {
   try {
     const { children, bindings } = await supplierData();
     if (!onSupplierRoute("assets")) return;
+    emitSupplierChildren(children, bindings);
     const childMap = new Map(children.map(x => [x.id, x]));
     const accountSequence = accountDisplaySequenceMap(state.accounts);
     const canEditHomepage = ["supplier", "supplier_parent"].includes(state.role);
@@ -502,15 +517,16 @@ export async function renderSupplierAccounts(root) {
         const binding = bindings.find(x => x.accountId === acc.id);
         const child = binding ? childMap.get(binding.childId) : null;
         const searchable = `${acc.name} ${acc.platform} ${acc.mode}`.toLowerCase();
-        const hidden = supplierPlatform !== "all" && acc.platform !== supplierPlatform;
+        const hidden = (
+          (supplierPlatform !== "all" && acc.platform !== supplierPlatform)
+          || (supplierAccountFilterQuery && !searchable.includes(supplierAccountFilterQuery))
+        );
         const sequence = accountSequence.get(acc.id) || 0;
         const disabled = isAccountDisabled(acc);
         const fresh = isNewAccount(acc);
         const viewSummary = accountViewSummary(acc);
         return `<article class="supplier-account${disabled ? " is-disabled" : ""}${fresh ? " is-new-account" : ""}" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)} ${fresh ? `<i class="supplier-new-account-badge">新</i>` : ""}</b><em>${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")} ${disabled ? `· <strong>已停用</strong>` : ""}</em></div><div class="supplier-account-controls">${acc.homepageUrl ? `<a class="supplier-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 主页链接</a>` : ""}<div class="supplier-account-control-row">${canEditHomepage ? `<div class="supplier-content-account-actions"><button class="supplier-account-total-views${viewSummary.hasOverride ? " is-manual" : ""}" type="button" data-content-account-views="${esc(acc.id)}" title="编辑账号累计播放量；当前${viewSummary.hasOverride ? "为手动总数" : "由单条自动汇总"}">${icon("pulse", 12)} ${Number(viewSummary.total).toLocaleString("zh-CN")}</button><button class="icon-btn sm" type="button" data-content-account-edit="${esc(acc.id)}" title="编辑账号（含主页链接）">${icon("edit", 13)}</button><button class="icon-btn sm${disabled ? " restore" : " danger"}" type="button" data-content-account-status="${esc(acc.id)}" title="${disabled ? "恢复账号" : "停用账号"}">${icon(disabled ? "unlock" : "lock", 13)}</button></div>` : ""}<label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage && !disabled ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></div></article>`;
-      }).join("")}</div></div>`;
-    const topAccountAdd = $("#topSupplierContentAccountAdd");
-    if (topAccountAdd) topAccountAdd.onclick = () => openAccountDialog();
+      }).join("")}</div><p class="supplier-account-filter-empty" hidden>没有匹配的账号</p></div>`;
     $$('[data-content-account-edit]', root).forEach(button => button.addEventListener("click", () => openAccountDialog(button.dataset.contentAccountEdit)));
     $$('[data-content-account-views]', root).forEach(button => button.addEventListener("click", async () => {
       const account = state.accounts.find(item => item.id === button.dataset.contentAccountViews);
@@ -591,8 +607,13 @@ export async function renderSupplierAccounts(root) {
       const cards = $$(".supplier-account", root);
       const before = new Map(cards.filter(card => !card.hidden).map(card => [card, card.getBoundingClientRect()]));
       cards.forEach(card => {
-        card.hidden = supplierPlatform !== "all" && card.dataset.accountPlatform !== supplierPlatform;
+        card.hidden = (
+          (supplierPlatform !== "all" && card.dataset.accountPlatform !== supplierPlatform)
+          || (supplierAccountFilterQuery && !card.dataset.accountSearch.includes(supplierAccountFilterQuery))
+        );
       });
+      const empty = $(".supplier-account-filter-empty", root);
+      if (empty) empty.hidden = cards.some(card => !card.hidden);
       $$('[data-top-supplier-platform]').forEach(button => button.classList.toggle("is-active", button.dataset.topSupplierPlatform === supplierPlatform));
       requestAnimationFrame(() => cards.filter(card => !card.hidden).forEach(card => {
         const oldRect = before.get(card);
@@ -605,6 +626,14 @@ export async function renderSupplierAccounts(root) {
     };
     $$('[data-top-supplier-platform]').forEach(button => { button.onclick = () => { supplierPlatform = button.dataset.topSupplierPlatform || "all"; applyAccountFilters(); }; });
     applyAccountFilters();
+    activeSupplierAccountController = {
+      root,
+      applyFilters: applyAccountFilters,
+      refresh: () => renderSupplierAccounts(root),
+    };
+    root.__viewCleanup = () => {
+      if (activeSupplierAccountController?.root === root) activeSupplierAccountController = null;
+    };
     $$("[data-account-assign]", root).forEach(sel => sel.addEventListener("change", async () => {
       const accountId = sel.dataset.accountAssign;
       const childId = sel.value;
@@ -746,24 +775,24 @@ function editSupplierMemberDialog(member, onDone) {
     }});
 }
 
-export async function renderSupplierSettings(root) {
-  root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">设置</div><h2>供应商账号与账号分配</h2></div></div><div class="supplier-loading">正在读取...</div></div>`;
+export async function renderSupplierSettings(root, { page } = {}) {
+  const activePage = page === "accounts" ? "accounts" : "requests";
+  const pageTitle = activePage === "accounts" ? "全部供应商账号" : "子账号申请";
+  root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">设置</div><h2>${pageTitle}</h2></div></div><div class="supplier-loading">正在读取...</div></div>`;
   const draw = async () => {
     try {
       const [{ members, children, bindings }, allRequests] = await Promise.all([supplierData(true), remote.memberRequests.list("pending")]);
       const requests = (allRequests || []).filter(request => request.role === "supplier_child");
       if (!onSupplierRoute("settings")) return;
+      emitSupplierChildren(children, bindings);
       root.innerHTML = `<div class="supplier-shell">
-        <div class="page-head"><div><div class="eyebrow">设置</div><h2>供应商账号与账号分配</h2></div></div>
-        <section class="card supplier-requests supplier-settings-panel"><div class="card-head"><span><b>${icon("inbox", 14)} 子账号申请</b><em>${requests.length} 条待处理 · 与创作端申请看板实时一致</em></span><button class="btn ghost sm" id="supplierRequestRefresh">${icon("refresh", 13)} 刷新</button></div>
+        <div class="page-head"><div><div class="eyebrow">设置</div><h2>${pageTitle}</h2></div></div>
+        ${activePage === "requests" ? `<section class="card supplier-requests supplier-settings-panel"><div class="card-head"><span><b>${icon("inbox", 14)} 子账号申请</b><em>${requests.length} 条待处理 · 与创作端申请看板实时一致</em></span><button class="btn ghost sm" id="supplierRequestRefresh">${icon("refresh", 13)} 刷新</button></div>
           ${requests.length ? requests.map(r => `<div class="supplier-child-row"><span class="mem-ava supplier-member-fallback">${icon("user", 15)}</span><span><b>${esc(r.name)}</b><em>@${esc(r.username)} · ${r.createdAt ? timeAgo(r.createdAt) : "刚刚"}</em></span><button class="btn primary sm" data-supplier-approve="${r.id}">通过</button><button class="btn ghost sm danger" data-supplier-reject="${r.id}">拒绝</button></div>`).join("") : `<p class="supplier-empty">暂无待处理申请</p>`}
-        </section>
-        <section class="card supplier-children supplier-settings-panel"><div class="card-head"><span><b>全部供应商账号</b><em>管理员可维护所有管理员与子账号；子账号可单独分配自媒体账号</em></span></div>
+        </section>` : `<section class="card supplier-children supplier-settings-panel"><div class="card-head"><span><b>全部供应商账号</b><em>管理员可维护所有管理员与子账号；子账号可单独分配自媒体账号</em></span></div>
           ${members.length ? `<div class="supplier-member-grid">${members.map(member => { const isChild = member.role === "supplier_child"; const n = isChild ? bindings.filter(x => x.childId === member.id).length : 0; return `<div class="supplier-child-row supplier-member-row"><span class="mem-ava supplier-member-fallback">${icon(isChild ? "user" : "shield", 15)}</span><span><b>${esc(member.name)}</b><em>@${esc(member.username)} · ${isChild ? `子账号 · 已分配 ${n} 个账号` : "供应商管理员"}</em></span><button class="btn ghost sm" data-supplier-edit="${member.id}">${icon("edit", 13)} 编辑账号</button>${isChild ? `<button class="btn ghost sm" data-supplier-assign="${member.id}">${icon("grid", 13)} 分配账号</button><button class="icon-btn sm danger" data-supplier-delete="${member.id}" title="删除">${icon("trash", 13)}</button>` : ""}</div>`; }).join("")}</div>` : emptyState("users", "还没有供应商账号", "可批量建立，或审批子账号申请")}
-        </section>
+        </section>`}
       </div>`;
-      const topChildAdd = $("#topSupplierSettingsChildAdd");
-      if (topChildAdd) topChildAdd.onclick = () => createChildrenDialog(draw);
       $("#supplierRequestRefresh", root)?.addEventListener("click", event => {
         const button = event.currentTarget;
         button.disabled = true;
@@ -778,6 +807,10 @@ export async function renderSupplierSettings(root) {
         const c = children.find(x => x.id === b.dataset.supplierDelete);
         if (await confirmModal({ title: `删除子账号「${esc(c?.name || "") }」？`, danger: true, okText: "删除" })) { await remote.supplier.removeChild(b.dataset.supplierDelete); toast("子账号已删除"); draw(); }
       }));
+      activeSupplierSettingsController = { root, refresh: draw };
+      root.__viewCleanup = () => {
+        if (activeSupplierSettingsController?.root === root) activeSupplierSettingsController = null;
+      };
     } catch (e) {
       if (!onSupplierRoute("settings")) return;
       root.innerHTML = `<div class="supplier-shell">${emptyState("x", "供应商设置读取失败", esc(e.message || e))}</div>`;

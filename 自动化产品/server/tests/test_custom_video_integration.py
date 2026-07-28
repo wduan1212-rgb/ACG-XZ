@@ -237,8 +237,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260727-v120-shell-6", html)
-        self.assertIn("app.js?v=20260727-v120-shell-6", html)
+        self.assertIn("styles.css?v=20260728-v120-shell-7", html)
+        self.assertIn("app.js?v=20260728-v120-shell-7", html)
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",
@@ -269,6 +269,13 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertIn('html[data-platform-workspace="true"] .chat-composer', html)
         self.assertIn('html[data-platform-workspace="true"] .director-rail', html)
         self.assertIn("background: #ffffff", html)
+        self.assertIn('class="chat-composer-actions"', html)
+        self.assertIn('class="attachment-strip" data-attachment-strip', html)
+        self.assertIn('copyButton.className = "message-copy"', javascript)
+        self.assertIn('message.type === "workspace:rename"', javascript)
+        self.assertIn("navigator.clipboard.writeText(copyValue)", javascript)
+        self.assertIn(".chat-input-line:has(textarea:not(:placeholder-shown))", css)
+        self.assertIn(".chat-input-line > .attachment-strip .attachment-chip", css)
         self.assertRegex(
             html,
             r'html\[data-platform-workspace="true"\]\s+#outputTabs\s+button\.active,\s*'

@@ -17,7 +17,7 @@ import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260727-v118-7"
 import { toast, withLoading, openLightbox } from "../ui/components.js?v=20260727-v118-7";
 import { go, currentRoute } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260728-v120-shell-10";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260728-v120-shell-12";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, setFavoriteVoice, voicePickerGroups } from "../domain/voices.js";
 import {
@@ -1176,7 +1176,7 @@ export function renderWorkshopPage(root, p) {
             </div>
           </div>` : ""}
 
-          ${!isDigitalHumanMode && !activeInfoFlowMode ? `<div class="refbar card" id="wsRefbar">
+          ${!isDigitalHumanMode && !activeInfoFlowMode ? `<div class="refbar card reference-attention" id="wsRefbar">
             <div class="refbar-left">
               <b>${icon("star", 13)} 场景 / 产品参考图</b>
               <em>${esc(product?.shortName || "产品")} logo、界面、场景光线与桌面风格从这里参考；支持拖拽图片，只影响画面参考</em>
@@ -1367,7 +1367,7 @@ export function renderWorkshopPage(root, p) {
         </div>
       </div>
       ${infoFlow.error ? `<div class="sc-error">${esc(infoFlow.error)}</div>` : ""}
-      <div class="infoflow-ref-row" id="wsInfoFlowRefs">
+      <div class="infoflow-ref-row reference-attention" id="wsInfoFlowRefs">
         <div>
           <b>${icon("star", 13)} 产品 / 界面参考</b>
           <em>${esc(product?.shortName || "产品")} logo、界面、角色和场景从这里参考；提交时会直接带入前后两段视频。</em>

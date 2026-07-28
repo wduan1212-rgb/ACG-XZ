@@ -1045,6 +1045,55 @@ console.log(JSON.stringify({
         self.assertEqual(["参考音频库", "声线参考"], payload["referenceTags"])
         self.assertEqual(["BGM", "音乐"], payload["bgmTags"])
 
+    def test_asset_library_rejects_duplicate_name_with_precise_error(self):
+        script = r"""
+globalThis.localStorage = { getItem(){ return ""; }, setItem(){}, removeItem(){} };
+globalThis.sessionStorage = { getItem(){ return ""; }, setItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){} };
+
+const { state } = await import('./js/core/store.js');
+const { addAssetFromFile } = await import('./js/domain/assets.js');
+state.assets = [{
+  id:'existing-bgm',
+  name:'晨光配乐',
+  type:'音频',
+  tags:['BGM', '音乐'],
+  ownerId:'drop-owner'
+}];
+state.ui.currentMemberId = 'drop-owner';
+let message = '';
+try {
+  await addAssetFromFile(null, new File(
+    [new Uint8Array([1, 2, 3])],
+    '  晨光配乐.mp3',
+    { type:'audio/mpeg' }
+  ), {
+    tags:['BGM', '音乐'],
+    rejectDuplicateName:true,
+    libraryLabel:'BGM 库'
+  });
+} catch (error) {
+  message = error.message;
+}
+console.log(JSON.stringify({ message, assetCount:state.assets.length }));
+"""
+        payload = json.loads(subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip())
+        self.assertEqual(1, payload["assetCount"])
+        self.assertEqual(
+            "“晨光配乐”已存在于BGM 库，请重命名文件后再添加",
+            payload["message"],
+        )
+        assets_view = (APP_DIR / "js/views/assetsView.js").read_text(encoding="utf-8")
+        self.assertIn("rejectDuplicateName: true", assets_view)
+        self.assertIn('toast(error?.message || "素材加入失败，请稍后重试", "error")', assets_view)
+
     def test_asset_library_real_file_drop_classifies_bgm_video_and_image(self):
         script = r"""
 const storage = new Map();
@@ -1237,8 +1286,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260728-v120-shell-10"', main)
-        self.assertIn('js/main.js?v=20260728-v120-shell-10', index)
+        self.assertIn('const APP_BUILD_ID = "20260728-v120-shell-12"', main)
+        self.assertIn('js/main.js?v=20260728-v120-shell-12', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)

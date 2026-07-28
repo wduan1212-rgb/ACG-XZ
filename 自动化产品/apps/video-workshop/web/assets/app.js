@@ -70,9 +70,13 @@ const dom = {
   historyDeliveryButton: document.querySelector("#historyDeliveryButton"),
   historyDeliveryModal: document.querySelector("#historyDeliveryModal"),
   historyDeliveryFilter: document.querySelector("#historyDeliveryFilter"),
+  historyDeliveryFilterMenu: document.querySelector("#historyDeliveryFilterMenu"),
+  historyDeliveryFilterLabel: document.querySelector("#historyDeliveryFilterLabel"),
   historyDeliveryList: document.querySelector("#historyDeliveryList"),
   speedVersionControl: document.querySelector("#speedVersionControl"),
   speedVersionSelect: document.querySelector("#speedVersionSelect"),
+  deliverySpeedMenu: document.querySelector("#deliverySpeedMenu"),
+  speedVersionLabel: document.querySelector("#speedVersionLabel"),
   speedVersionButton: document.querySelector("#speedVersionButton"),
   publishedOutputBadge: document.querySelector("#publishedOutputBadge"),
   publishedOutputBadgeText: document.querySelector("#publishedOutputBadgeText"),
@@ -262,6 +266,28 @@ function showToast(message) {
 function showAttachmentError(error, fallback = "附件处理失败，请重试") {
   const detail = String(error?.message || "").trim();
   showToast(detail ? `${fallback}：${detail}` : fallback);
+}
+
+function selectSpeedVersion(value) {
+  const normalized = String(value || "1.2");
+  const option = [...dom.speedVersionSelect.options].find(item => item.value === normalized);
+  if (!option) return;
+  dom.speedVersionSelect.value = normalized;
+  dom.speedVersionLabel.textContent = option.textContent;
+  dom.deliverySpeedMenu?.querySelectorAll("[data-speed-value]").forEach(button => {
+    button.setAttribute("aria-checked", String(button.dataset.speedValue === normalized));
+  });
+}
+
+function selectHistoryDeliveryFilter(value) {
+  const normalized = ["published", "unpublished"].includes(String(value)) ? String(value) : "all";
+  const option = [...dom.historyDeliveryFilter.options].find(item => item.value === normalized);
+  if (!option) return;
+  dom.historyDeliveryFilter.value = normalized;
+  if (dom.historyDeliveryFilterLabel) dom.historyDeliveryFilterLabel.textContent = option.textContent;
+  dom.historyDeliveryFilterMenu?.querySelectorAll("[data-history-filter-value]").forEach(button => {
+    button.setAttribute("aria-checked", String(button.dataset.historyFilterValue === normalized));
+  });
 }
 
 function typePlaceholder() {
@@ -600,6 +626,29 @@ function createMessage(message, isRetryTarget = false) {
         .join(" · ");
       article.append(assetPlan);
     }
+  }
+  const copyValue = message.role === "assistant"
+    ? assistantText(message.content)
+    : publicText(message.content);
+  if (message.kind !== "pending" && String(copyValue || "").trim()) {
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "message-copy";
+    copyButton.setAttribute("aria-label", "复制这条消息");
+    copyButton.title = "复制";
+    const copyIcon = document.createElement("i");
+    copyIcon.dataset.lucide = "copy";
+    copyButton.append(copyIcon);
+    copyButton.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(copyValue);
+        copyButton.title = "已复制";
+        showToast("已复制消息");
+      } catch (_) {
+        showToast("复制失败，请手动选择文字");
+      }
+    });
+    article.append(copyButton);
   }
   return article;
 }
@@ -960,7 +1009,7 @@ function renderHistoryDeliveryModal() {
 
 function openHistoryDeliveryModal() {
   if (deliveryRowsFor(state.project).length <= 1) return;
-  dom.historyDeliveryFilter.value = "all";
+  selectHistoryDeliveryFilter("all");
   renderHistoryDeliveryModal();
   dom.historyDeliveryModal.hidden = false;
   document.body.classList.add("history-delivery-open");
@@ -1901,6 +1950,29 @@ window.addEventListener("message", (event) => {
     void createNewConversation();
     return;
   }
+  if (
+    WORKSPACE_MODE
+    && message.scope === "video"
+    && message.type === "workspace:rename"
+  ) {
+    const projectId = String(message.projectId || "").trim().slice(0, 180);
+    const name = String(message.name || "").trim().slice(0, 180);
+    if (!projectId || !name) return;
+    void (async () => {
+      try {
+        await renameHistoryProject(projectId, name);
+        if (state.project?.id === projectId) {
+          state.project.name = name;
+          upsertHistoryProject(state.project);
+        }
+        state.historySignature = "";
+        await loadHistory(true);
+      } catch (error) {
+        showToast(error?.message || "会话重命名失败");
+      }
+    })();
+    return;
+  }
   if (message.type !== "custom-video:published") return;
   const projectId = String(message.projectId || "").trim();
   const deliveryId = String(message.deliveryId || "").trim();
@@ -1951,7 +2023,28 @@ dom.speedVersionButton.addEventListener("click", () => {
   const output = state.project?.outputs?.[state.outputIndex] || state.project?.outputs?.[0];
   if (output) createSpeedVersion(output, dom.speedVersionSelect.value, dom.speedVersionButton);
 });
+dom.deliverySpeedMenu?.querySelectorAll("[data-speed-value]").forEach(button => {
+  button.addEventListener("click", () => {
+    selectSpeedVersion(button.dataset.speedValue);
+    dom.deliverySpeedMenu.open = false;
+  });
+});
+dom.historyDeliveryFilterMenu?.querySelectorAll("[data-history-filter-value]").forEach(button => {
+  button.addEventListener("click", () => {
+    selectHistoryDeliveryFilter(button.dataset.historyFilterValue);
+    dom.historyDeliveryFilterMenu.open = false;
+    renderHistoryDeliveryModal();
+  });
+});
+document.addEventListener("click", event => {
+  if (!event.target.closest("#deliverySpeedMenu") && dom.deliverySpeedMenu) dom.deliverySpeedMenu.open = false;
+  if (!event.target.closest("#historyDeliveryFilterMenu") && dom.historyDeliveryFilterMenu) {
+    dom.historyDeliveryFilterMenu.open = false;
+  }
+});
 document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && dom.deliverySpeedMenu) dom.deliverySpeedMenu.open = false;
+  if (event.key === "Escape" && dom.historyDeliveryFilterMenu) dom.historyDeliveryFilterMenu.open = false;
   if (event.key === "Escape" && !dom.historyDeliveryModal.hidden) closeHistoryDeliveryModal();
 });
 dom.deliveryToggleButton.addEventListener("click", () => {
