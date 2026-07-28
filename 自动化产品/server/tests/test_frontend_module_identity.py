@@ -37,7 +37,7 @@ class FrontendModuleIdentityTest(unittest.TestCase):
         expected = {
             "studio.js": "v=20260728-v120-shell-13",
             "prodDrawer.js": "v=20260728-v120-shell-13",
-            "deliveryView.js": "v=20260728-v120-shell-20",
+            "deliveryView.js": "v=20260728-v120-shell-21",
             "supplierViews.js": "v=20260728-v120-shell-20",
             "draftsView.js": "v=20260728-v120-shell-13",
             "voiceLab.js": "v=20260728-v120-shell-13",
@@ -64,12 +64,12 @@ class FrontendModuleIdentityTest(unittest.TestCase):
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
-            "base.css": "v=20260728-v120-shell-20",
+            "base.css": "v=20260728-v120-shell-21",
             "components.css": "v=20260723-v117-8",
-            "views.css": "v=20260728-v120-shell-20",
-            "agent.css": "v=20260728-v120-shell-20",
-            "ui-motion.css": "v=20260728-v120-shell-20",
-            "custom-creation.css": "v=20260728-v120-shell-20",
+            "views.css": "v=20260728-v120-shell-21",
+            "agent.css": "v=20260728-v120-shell-21",
+            "ui-motion.css": "v=20260728-v120-shell-21",
+            "custom-creation.css": "v=20260728-v120-shell-21",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():
