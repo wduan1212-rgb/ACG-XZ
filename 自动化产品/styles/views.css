@@ -3722,9 +3722,8 @@ body.workspace-shell-v2[data-zone="delivery"] .supplier-filters {
 .supplier-trend-node:hover, .supplier-trend-node:focus-visible { background: #e83e62; transform: translate(-50%, -50%) scale(1.22); }
 .supplier-trend-node i { position: absolute; left: 50%; bottom: calc(100% + 8px); width: max-content; max-width: 150px; padding: 5px 7px; border-radius: 7px; color: #fff; background: #202735; box-shadow: 0 7px 20px rgba(15,23,42,.18); font-size: 10px; font-style: normal; line-height: 1; opacity: 0; pointer-events: none; transform: translate(-50%, 4px); transition: opacity .16s ease, transform .16s ease; }
 .supplier-trend-node:hover i, .supplier-trend-node:focus-visible i { opacity: 1; transform: translate(-50%, 0); }
-.supplier-trend-labels { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-top: -5px; }
-.supplier-trend-labels { grid-template-columns: repeat(var(--supplier-trend-points, 7), minmax(0, 1fr)); }
-.supplier-trend-labels i { display: grid; text-align: center; font-style: normal; }
+.supplier-trend-labels { position: relative; display: block; height: 28px; margin-top: -5px; }
+.supplier-trend-labels i { position: absolute; left: var(--x); display: grid; width: 42px; text-align: center; font-style: normal; transform: translateX(-50%); }
 .supplier-trend-labels b { font-size: 10px; }
 .supplier-trend-labels em { color: var(--faint); font-size: 9px; font-style: normal; }
 .supplier-trend-chart > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -4447,7 +4446,7 @@ button.overview-viz-card { cursor: pointer; }
   transition: background-color 180ms ease, box-shadow 180ms ease;
 }
 .supplier-platform-chart .supplier-donut {
-  margin-top: 38px;
+  margin-top: 64px;
 }
 .supplier-trend-chart .supplier-trend-scroll {
   padding-top: 18px;

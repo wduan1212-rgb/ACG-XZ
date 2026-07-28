@@ -89,6 +89,12 @@ test("workspace brand keeps product and current feature on one line", () => {
   );
 });
 
+test("supplier and creator settings share the centered symmetric gear icon", () => {
+  assert.match(iconsJs, /gear:\s*'M9\.594 3\.94[^']*\|M15 12a3 3 0 11-6 0 3 3 0 016 0z'/s);
+  assert.match(mainJs, /data-account-action="settings"[^`]*icon\("gear",\s*16\)/s);
+  assert.match(mainJs, /label:\s*"设置"[^}]*icon:\s*"gear"/s);
+});
+
 test("single-account workspace lists every account group without a 40-account cap", () => {
   const studioRows = section(mainJs, 'if (zone === "studio") {', 'if (zone === "agent") {');
   assert.doesNotMatch(studioRows, /\.slice\(\s*0\s*,\s*40\s*\)/);
@@ -646,8 +652,10 @@ test("supplier workspaces move account and delivery tools into the left context"
   assert.match(uiMotionCss, /\.supplier-account\s*\{[^}]*grid-template-columns:\s*auto\s+34px\s+minmax\(0,\s*1fr\)\s+auto;[^}]*grid-template-rows:\s*auto/s);
   assert.match(uiMotionCss, /\.supplier-account-sequence\s*\{[^}]*position:\s*static;[^}]*justify-self:\s*start/s);
   assert.match(uiMotionCss, /\.supplier-account-controls\s*\{[^}]*grid-column:\s*auto;[^}]*align-items:\s*center/s);
-  assert.match(viewsCss, /\.supplier-platform-chart\s+\.supplier-donut\s*\{[^}]*margin-top:\s*38px/s);
+  assert.match(viewsCss, /\.supplier-platform-chart\s+\.supplier-donut\s*\{[^}]*margin-top:\s*64px/s);
   assert.match(viewsCss, /\.supplier-trend-chart\s+\.supplier-trend-scroll\s*\{[^}]*padding-top:\s*18px/s);
+  assert.match(supplierViewsJs, /supplier-trend-labels[^`]*days\.map\(\(item,\s*index\)\s*=>\s*`<i style="--x:\$\{points\[index\]\.x\}%"/s);
+  assert.match(viewsCss, /\.supplier-trend-labels i\s*\{[^}]*position:\s*absolute;[^}]*left:\s*var\(--x\);[^}]*transform:\s*translateX\(-50%\)/s);
   assert.match(viewsCss, /\.sup-actions-inner\s*\{[^}]*border-radius:\s*999px/s);
   assert.match(viewsCss, /\.sup-acts\s+\.sup-actions-inner\s+\.btn\.primary\s*\{[^}]*color:\s*#fff;[^}]*background:\s*#171b22/s);
 });
