@@ -119,6 +119,13 @@ class VideoWorkshopPlatformBgmTest(unittest.TestCase):
                     "fileUrl": "/api/files/bgm-two.wav",
                 },
                 {
+                    "id": "voice-named-bgm",
+                    "type": "音频",
+                    "name": "语音_070435",
+                    "tags": ["BGM", "音乐"],
+                    "serverFileName": "bgm-one.mp3",
+                },
+                {
                     "id": "voice",
                     "type": "音频",
                     "name": "数字人口播 BGM",
@@ -176,7 +183,11 @@ class VideoWorkshopPlatformBgmTest(unittest.TestCase):
 
             self.assertEqual(
                 {item["id"] for item in catalog},
-                {"platform:bgm-one", "platform:bgm-two"},
+                {
+                    "platform:bgm-one",
+                    "platform:bgm-two",
+                    "platform:voice-named-bgm",
+                },
             )
             self.assertTrue(all(item["source"] == "platform" for item in catalog))
             self.assertTrue(all("path" not in item for item in catalog))

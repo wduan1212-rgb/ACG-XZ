@@ -5,7 +5,7 @@ import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260727-v118-7";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260728-v120-shell-9";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260728-v120-shell-10";
 import { icon } from "../ui/icons.js";
 import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260727-v118-7";
 import { accountCreatedToday, groupOf, isAccountDisabled } from "../domain/accounts.js";

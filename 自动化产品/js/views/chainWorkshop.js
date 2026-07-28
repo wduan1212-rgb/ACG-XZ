@@ -17,7 +17,7 @@ import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260727-v118-7"
 import { toast, withLoading, openLightbox } from "../ui/components.js?v=20260727-v118-7";
 import { go, currentRoute } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260728-v120-shell-9";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260728-v120-shell-10";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, setFavoriteVoice, voicePickerGroups } from "../domain/voices.js";
 import {

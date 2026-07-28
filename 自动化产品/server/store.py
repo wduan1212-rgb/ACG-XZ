@@ -102,12 +102,22 @@ def _is_global_editing_asset(item):
     tags = " ".join(str(tag or "") for tag in (item.get("tags") or []))
     asset_type = str(item.get("type") or "")
     if asset_type == "音频":
-        text = f"{tags} {item.get('name') or ''}"
+        explicit_bgm = any(word.lower() in tags.lower() for word in ("bgm", "音乐库", "配乐"))
+        explicit_voice = any(
+            word.lower() in tags.lower()
+            for word in ("口播", "语音", "参考音频库", "tts", "数字人", "声线参考")
+        )
+        if explicit_bgm:
+            return not explicit_voice
+        name = str(item.get("name") or "")
+        text = f"{tags} {name}"
         return (
-            any(word.lower() in text.lower() for word in ("bgm", "音乐库", "配乐"))
+            any(word.lower() in name.lower() for word in ("bgm", "音乐库", "配乐"))
             and not any(word.lower() in text.lower() for word in ("口播", "语音", "tts", "数字人", "声线参考"))
         )
-    return asset_type == "视频" and any(word in tags for word in ("剪辑素材", "视频素材", "素材库"))
+    return asset_type in {"图片", "视频"} and any(
+        word in tags for word in ("剪辑素材", "共享剪辑素材", "图片素材", "视频素材", "素材库")
+    )
 
 
 def _account_reference_asset_ids(item):

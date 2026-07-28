@@ -138,12 +138,15 @@ class PlatformBgmLibrary:
             return False
         raw_tags = item.get("tags") or []
         tags = raw_tags if isinstance(raw_tags, list) else [raw_tags]
-        text = " ".join([
-            str(item.get("name") or ""),
-            *(str(tag or "") for tag in tags),
-        ]).lower()
+        tag_text = " ".join(str(tag or "") for tag in tags).lower()
+        explicit_bgm = any(marker in tag_text for marker in PLATFORM_BGM_MARKERS)
+        explicit_voice = any(marker in tag_text for marker in PLATFORM_BGM_EXCLUDES)
+        if explicit_bgm:
+            return not explicit_voice
+        name = str(item.get("name") or "").lower()
+        text = f"{tag_text} {name}"
         return (
-            any(marker in text for marker in PLATFORM_BGM_MARKERS)
+            any(marker in name for marker in PLATFORM_BGM_MARKERS)
             and not any(marker in text for marker in PLATFORM_BGM_EXCLUDES)
         )
 

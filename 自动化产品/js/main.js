@@ -1,7 +1,7 @@
 /* 应用入口：装载数据 → 迁移 → 恢复任务 → 外壳 → 路由 */
 
 import { $, $$, esc, uid } from "./core/util.js";
-import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260728-v120-shell-9";
+import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260728-v120-shell-10";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
@@ -21,22 +21,22 @@ import { toast, confirmModal, openModal, openPalette, toggleNotifyPanel, updateN
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-9";
-import { overviewView } from "./views/overview.js?v=20260728-v120-shell-9";
-import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-9";
-import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-9";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-9";
-import { studioView } from "./views/studio.js?v=20260728-v120-shell-9";
-import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-9";
-import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-9";
+import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-10";
+import { overviewView } from "./views/overview.js?v=20260728-v120-shell-10";
+import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-10";
+import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-10";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-10";
+import { studioView } from "./views/studio.js?v=20260728-v120-shell-10";
+import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-10";
+import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-10";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-9";
-import { settingsView } from "./views/settings.js?v=20260728-v120-shell-9";
+import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-10";
+import { settingsView } from "./views/settings.js?v=20260728-v120-shell-10";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-9";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-10";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260728-v120-shell-9";
+const APP_BUILD_ID = "20260728-v120-shell-10";
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 let workspaceSwitcherGlobalWired = false;

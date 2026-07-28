@@ -562,12 +562,12 @@ console.log(JSON.stringify({{
         self.assertIn("host.innerHTML = emptyCanvasHtml()", integration)
         self.assertIn("if (!iframe) return mountCanvasFrame()", integration)
         self.assertIn(
-            "iframe.src = `/XZ-Design/?embed=1&v=20260728-v120-shell-9${projectHash(currentProjectId)}`",
+            "iframe.src = `/XZ-Design/?embed=1&v=20260728-v120-shell-10${projectHash(currentProjectId)}`",
             integration,
         )
         self.assertIn('return value ? `#/project/${encodeURIComponent(value)}` : "#/"', integration)
         self.assertNotIn(
-            'iframe.src = "/XZ-Design/?embed=1&v=20260728-v120-shell-9#/"',
+            'iframe.src = "/XZ-Design/?embed=1&v=20260728-v120-shell-10#/"',
             integration,
         )
         source = (

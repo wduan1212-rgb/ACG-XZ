@@ -35,12 +35,12 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260728-v120-shell-9",
-            "prodDrawer.js": "v=20260728-v120-shell-9",
-            "deliveryView.js": "v=20260728-v120-shell-9",
-            "draftsView.js": "v=20260728-v120-shell-9",
-            "voiceLab.js": "v=20260728-v120-shell-9",
-            "chainWorkshop.js": "v=20260728-v120-shell-9",
+            "studio.js": "v=20260728-v120-shell-10",
+            "prodDrawer.js": "v=20260728-v120-shell-10",
+            "deliveryView.js": "v=20260728-v120-shell-10",
+            "draftsView.js": "v=20260728-v120-shell-10",
+            "voiceLab.js": "v=20260728-v120-shell-10",
+            "chainWorkshop.js": "v=20260728-v120-shell-10",
             "orchestrator.js": "v=20260727-v118-7",
         }
         for module_name, expected_query in expected.items():
@@ -58,17 +58,17 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_custom_publish_is_loaded_with_the_current_module_identity(self):
         source = (APP_DIR / "js/views/customCreation.js").read_text(encoding="utf-8")
-        self.assertIn('import("./customPublish.js?v=20260728-v120-shell-9")', source)
+        self.assertIn('import("./customPublish.js?v=20260728-v120-shell-10")', source)
 
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
-            "base.css": "v=20260728-v120-shell-9",
+            "base.css": "v=20260728-v120-shell-10",
             "components.css": "v=20260723-v117-8",
-            "views.css": "v=20260728-v120-shell-9",
-            "agent.css": "v=20260728-v120-shell-9",
+            "views.css": "v=20260728-v120-shell-10",
+            "agent.css": "v=20260728-v120-shell-10",
             "ui-motion.css": "v=20260727-v118-7",
-            "custom-creation.css": "v=20260728-v120-shell-9",
+            "custom-creation.css": "v=20260728-v120-shell-10",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():

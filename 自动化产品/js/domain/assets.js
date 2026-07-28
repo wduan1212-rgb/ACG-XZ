@@ -34,10 +34,18 @@ const GENERIC_BINARY_MIMES = new Set([
   "application/binary",
   "binary/octet-stream",
 ]);
+const CANONICAL_MIME_ALIASES = Object.freeze({
+  "audio/mp3": "audio/mpeg",
+  "audio/x-mp3": "audio/mpeg",
+  "audio/mpeg3": "audio/mpeg",
+  "audio/x-mpeg-3": "audio/mpeg",
+  "audio/mpg": "audio/mpeg",
+});
 
 function validAssetMime(value) {
   const mime = String(value || "").trim().toLowerCase().split(";", 1)[0];
-  return mime && !GENERIC_BINARY_MIMES.has(mime) ? mime : "";
+  if (!mime || GENERIC_BINARY_MIMES.has(mime)) return "";
+  return CANONICAL_MIME_ALIASES[mime] || mime;
 }
 
 function assetMimeFromFilename(name = "") {
@@ -60,9 +68,10 @@ function resolvedAssetBlobMime(blob, fallbackMime = "", filename = "") {
 
 export function normalizeAssetBlobMime(blob, fallbackMime = "", filename = "") {
   if (!(blob instanceof Blob)) return blob;
+  const declared = String(blob.type || "").trim().toLowerCase().split(";", 1)[0];
   const current = validAssetMime(blob.type);
   const resolved = resolvedAssetBlobMime(blob, fallbackMime, filename);
-  if (current || resolved === "application/octet-stream") return blob;
+  if ((current && current === declared) || resolved === "application/octet-stream") return blob;
   return blob.slice(0, blob.size, resolved);
 }
 
@@ -83,8 +92,12 @@ export function inferAssetFileMeta(file) {
 const assetTagText = asset => (asset?.tags || []).map(tag => String(tag || "").trim()).join(" ");
 export function isBgmAsset(asset) {
   if (asset?.type !== "音频") return false;
-  const text = `${assetTagText(asset)} ${asset?.name || ""}`;
-  return /BGM|音乐库|配乐/i.test(text) && !/口播|语音|TTS|数字人|声线参考/i.test(text);
+  const tags = assetTagText(asset);
+  const explicitBgm = /BGM|音乐库|配乐/i.test(tags);
+  const explicitVoice = /口播|语音|参考音频库|TTS|数字人|声线参考/i.test(tags);
+  if (explicitBgm) return !explicitVoice;
+  const name = String(asset?.name || "");
+  return /BGM|音乐库|配乐/i.test(name) && !/口播|语音|TTS|数字人|声线参考/i.test(`${tags} ${name}`);
 }
 
 export function isEditingMaterialAsset(asset) {
@@ -229,9 +242,33 @@ function mergeAssetMeta(existing, { accountId, tags = [], name = "" } = {}) {
   return existing;
 }
 
-function duplicateAssetByHash(hash, type = "图片") {
+function incomingAssetLibraryRole(tags = []) {
+  const text = (tags || []).map(tag => String(tag || "")).join(" ");
+  if (/参考音频库|声线参考/i.test(text)) return "reference-audio";
+  if (/语音素材库|口播|TTS/i.test(text)) return "voice-audio";
+  if (/BGM|音乐库|配乐/i.test(text)) return "bgm";
+  if (/剪辑素材|共享剪辑素材|图片素材|视频素材|素材库/.test(text)) return "editing-material";
+  return "";
+}
+
+function assetMatchesLibraryRole(asset, role) {
+  if (!role) return true;
+  const tags = assetTagText(asset);
+  if (role === "bgm") return isBgmAsset(asset);
+  if (role === "editing-material") return isEditingMaterialAsset(asset);
+  if (role === "reference-audio") return /参考音频库|声线参考/i.test(tags);
+  if (role === "voice-audio") return /语音素材库|口播|TTS/i.test(tags) && !/参考音频库|声线参考/i.test(tags);
+  return true;
+}
+
+function duplicateAssetByHash(hash, type = "图片", tags = []) {
   if (!hash) return null;
-  return state.assets.find(a => a.type === type && a.contentHash === hash) || null;
+  const role = incomingAssetLibraryRole(tags);
+  return state.assets.find(a =>
+    a.type === type
+    && a.contentHash === hash
+    && assetMatchesLibraryRole(a, role)
+  ) || null;
 }
 
 function seededRand(seed) {
@@ -380,7 +417,7 @@ export function urlFor(idOrAsset) {
 /* 新增资产（dataUrl 形式进来 → 转 Blob 落库） */
 export async function addAssetFromDataUrl(accountId, { name, type = "图片", tags = [], dataUrl, forceNew = false }) {
   const contentHash = dataUrl ? assetHashFromDataUrl(dataUrl) : "";
-  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type);
+  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type, tags);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name });
   const a = { id: uid(), accountId, seq: nextSeq(), ownerId: state.ui.currentMemberId || null, name: name || "未命名素材", type, tags, createdAt: Date.now(), hasBlob: !!dataUrl, contentHash };
   if (dataUrl) {
@@ -413,7 +450,7 @@ export async function addAssetFromFile(accountId, file, { tags = [], name, force
   const sourceBlob = normalizeAssetBlobMime(file, mime, file.name || assetName);
   const blob = type === "图片" ? await lightlyProcessImageBlob(sourceBlob, file.name || assetName) : sourceBlob;
   const contentHash = await assetHashFromBlob(blob);
-  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type);
+  const dup = forceNew ? null : duplicateAssetByHash(contentHash, type, tags);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name: assetName });
   const a = {
     id: uid(),

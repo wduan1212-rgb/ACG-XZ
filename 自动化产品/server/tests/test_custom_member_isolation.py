@@ -255,6 +255,19 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
                 "type": "音频",
                 "tags": ["BGM", "音乐库"],
                 "updatedAt": 22,
+            }, {
+                "id": "shared-bgm-with-voice-name",
+                "ownerId": "creator-a",
+                "type": "音频",
+                "name": "语音_070435",
+                "tags": ["BGM", "音乐"],
+                "updatedAt": 23,
+            }, {
+                "id": "shared-editing-image",
+                "ownerId": "creator-a",
+                "type": "图片",
+                "tags": ["剪辑素材", "共享剪辑素材", "图片素材"],
+                "updatedAt": 24,
             }])
             store.upsert_docs("voicePresets", [{
                 "id": "preset-a",
@@ -291,11 +304,21 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
             )
             self.assertEqual(
                 {item["id"] for item in state_a["assets"]},
-                {"voice-a", "shared-bgm"},
+                {
+                    "voice-a",
+                    "shared-bgm",
+                    "shared-bgm-with-voice-name",
+                    "shared-editing-image",
+                },
             )
             self.assertEqual(
                 {item["id"] for item in state_b["assets"]},
-                {"voice-b", "shared-bgm"},
+                {
+                    "voice-b",
+                    "shared-bgm",
+                    "shared-bgm-with-voice-name",
+                    "shared-editing-image",
+                },
             )
             expected_presets = {"preset-a", "preset-b"}
             self.assertEqual(

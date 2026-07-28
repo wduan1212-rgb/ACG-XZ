@@ -55,7 +55,10 @@ export function setAssetLibraryMode(nextMode, { redraw = true, resetKind = true 
   if (!assetLibraryKeys.has(normalized)) return getAssetLibraryModel();
   const changed = normalized !== libraryMode;
   libraryMode = normalized;
-  if (changed && resetKind) fKind = "all";
+  if (changed && resetKind) {
+    fKind = "all";
+    fQ = "";
+  }
   if (redraw && activeAssetsController?.draw) activeAssetsController.draw();
   emitAssetLibraryModel();
   return getAssetLibraryModel();
@@ -124,7 +127,7 @@ export const assetsView = {
         $$('[data-library]', $("#assetsTopDock") || root).forEach(button => button.addEventListener("click", () => {
           setAssetLibraryMode(button.dataset.library);
         }));
-        import("./draftsView.js?v=20260728-v120-shell-9").then(({ draftsView }) => {
+        import("./draftsView.js?v=20260728-v120-shell-10").then(({ draftsView }) => {
           const host = $("#assetDraftsHost", root);
           if (host) draftsView.render(host);
         });

@@ -10,8 +10,8 @@ import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=202607
 import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260728-v120-shell-9";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260728-v120-shell-9";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260728-v120-shell-10";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260728-v120-shell-10";
 import { emptyState, openModal } from "../ui/components.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
 import { renderSupplierOverview } from "./supplierViews.js?v=20260727-v118-7";

@@ -965,6 +965,86 @@ console.log(JSON.stringify({
         self.assertEqual("mp4", payload["exportExt"])
         self.assertEqual([5, 6], payload["exportBytes"])
 
+    def test_mp3_alias_and_cross_library_dedup_keep_bgm_visible(self):
+        script = r"""
+globalThis.localStorage = { getItem(){ return ""; }, setItem(){}, removeItem(){} };
+globalThis.sessionStorage = { getItem(){ return ""; }, setItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){} };
+
+const { db } = await import('./js/core/db.js');
+const { state } = await import('./js/core/store.js');
+const {
+  addAssetFromFile,
+  globalBgmAssets,
+  inferAssetFileMeta,
+  isBgmAsset
+} = await import('./js/domain/assets.js');
+
+const blobs = new Map();
+db.putBlob = async (id, blob) => { blobs.set(id, blob); };
+db.replaceAll = async () => {};
+state.assets = [];
+state.accounts = [];
+state.ui.assetSeq = 0;
+state.ui.currentMemberId = 'drop-owner';
+
+const bytes = new Uint8Array([1, 2, 3, 4]);
+const reference = await addAssetFromFile(null, new File(
+  [bytes],
+  '语音_070435.mp3',
+  { type:'audio/mp3' }
+), { tags:['参考音频库', '声线参考'] });
+const bgm = await addAssetFromFile(null, new File(
+  [bytes],
+  '语音_070435.mp3',
+  { type:'audio/x-mp3' }
+), { tags:['BGM', '音乐'] });
+const repeated = await addAssetFromFile(null, new File(
+  [bytes],
+  '语音_070435.mp3',
+  { type:'audio/mpeg' }
+), { tags:['BGM', '音乐'] });
+
+console.log(JSON.stringify({
+  inferred: [
+    inferAssetFileMeta({ name:'track.mp3', type:'audio/mp3' }),
+    inferAssetFileMeta({ name:'track.mp3', type:'audio/x-mp3' })
+  ],
+  assetCount: state.assets.length,
+  separateLibraryAssets: reference.id !== bgm.id,
+  repeatedBgmReused: repeated.id === bgm.id,
+  bgmVisible: isBgmAsset(bgm),
+  bgmIds: globalBgmAssets().map(asset => asset.id),
+  storedMime: blobs.get(bgm.id)?.type || '',
+  referenceTags: reference.tags,
+  bgmTags: bgm.tags
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        payload = json.loads(result)
+        self.assertEqual(
+            [
+                {"mime": "audio/mpeg", "type": "音频"},
+                {"mime": "audio/mpeg", "type": "音频"},
+            ],
+            payload["inferred"],
+        )
+        self.assertEqual(2, payload["assetCount"])
+        self.assertTrue(payload["separateLibraryAssets"])
+        self.assertTrue(payload["repeatedBgmReused"])
+        self.assertTrue(payload["bgmVisible"])
+        self.assertEqual(1, len(payload["bgmIds"]))
+        self.assertEqual("audio/mpeg", payload["storedMime"])
+        self.assertEqual(["参考音频库", "声线参考"], payload["referenceTags"])
+        self.assertEqual(["BGM", "音乐"], payload["bgmTags"])
+
     def test_asset_library_real_file_drop_classifies_bgm_video_and_image(self):
         script = r"""
 const storage = new Map();
@@ -1157,8 +1237,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260728-v120-shell-9"', main)
-        self.assertIn('js/main.js?v=20260728-v120-shell-9', index)
+        self.assertIn('const APP_BUILD_ID = "20260728-v120-shell-10"', main)
+        self.assertIn('js/main.js?v=20260728-v120-shell-10', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)

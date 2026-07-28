@@ -193,6 +193,67 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(self.work_dir.glob("*.candidate.mp4")), [])
         self.assertEqual(list(self.work_dir.glob(".*.backup")), [])
 
+    async def test_selected_platform_bgm_reaches_compose_and_delivery(self) -> None:
+        instance = pipeline_module.VideoPipeline()
+        selected_path = self.root / "shared-bgm.mp3"
+        selected_path.write_bytes(b"shared-bgm")
+        selected_bgm = SimpleNamespace(
+            id="platform:bgm-test",
+            name="共享测试配乐",
+            path=selected_path,
+            source="platform",
+        )
+        compose_calls = []
+
+        async def generate(_prompt, _aspect, output: Path, **_kwargs):
+            output.write_bytes(b"new-scene")
+            return {"path": str(output)}
+
+        async def compose_with_bgm(*args, **kwargs):
+            compose_calls.append({
+                "bgm_path": kwargs.get("bgm_path"),
+                "bgm_volume": kwargs.get("bgm_volume"),
+            })
+            return await self._compose(*args, **kwargs)
+
+        plan = _plan()
+        plan["audio_design"] = {
+            "bgm_enabled": True,
+            "bgm_track_id": selected_bgm.id,
+            "bgm_volume": 0.18,
+        }
+        with ExitStack() as stack:
+            for common_patch in self._common_patches(instance):
+                stack.enter_context(common_patch)
+            stack.enter_context(patch.object(
+                pipeline_module.bgm_library,
+                "resolve",
+                return_value=selected_bgm,
+            ))
+            stack.enter_context(patch.object(pipeline_module.seedance, "generate", new=generate))
+            stack.enter_context(patch.object(pipeline_module, "compose_variant", new=compose_with_bgm))
+            stack.enter_context(patch.object(
+                pipeline_module.openmontage,
+                "validate_composition",
+                return_value={"success": True},
+            ))
+            stack.enter_context(patch.object(
+                pipeline_module.openmontage,
+                "inspect_video",
+                return_value={"success": True},
+            ))
+            stack.enter_context(patch.object(pipeline_module, "add_event"))
+            stack.enter_context(patch.object(pipeline_module, "add_message"))
+            await instance.run(self.project_id, plan)
+
+        self.assertEqual(
+            [{"bgm_path": selected_path, "bgm_volume": 0.18}],
+            compose_calls,
+        )
+        self.assertEqual("platform:bgm-test", self.project["production"]["bgm"]["id"])
+        self.assertEqual("platform", self.project["production"]["bgm"]["source"])
+        self.assertEqual("platform:bgm-test", self.project["outputs"][0]["bgm"]["id"])
+
     async def test_failed_candidate_cancels_and_reaps_siblings_before_cleanup(self) -> None:
         instance = pipeline_module.VideoPipeline()
         slow_started = asyncio.Event()

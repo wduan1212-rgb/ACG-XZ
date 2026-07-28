@@ -537,18 +537,18 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final shell-9 cache marker", () => {
+test("all modified workspace-shell resources use the final shell-10 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-9"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-9"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-9"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-9"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-9"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-9"/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-9"/);
-  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-9"/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-9"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-10"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-10"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-10"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-10"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-10"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-10"/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-10"/);
+  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-10"/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-10"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 
