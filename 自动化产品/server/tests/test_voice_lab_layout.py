@@ -26,10 +26,12 @@ class VoiceLabLayoutContractTest(unittest.TestCase):
             styles,
         )
         self.assertIn("flex: 1 1 auto;", styles)
-        self.assertIn("padding: 7px 8px;", styles)
+        self.assertIn("min-height: 40px;", styles)
+        self.assertIn("padding: 4px 5px 4px 7px;", styles)
+        self.assertIn("font-size: 11.5px;", styles)
+        self.assertIn("font-weight: 420;", styles)
         self.assertNotIn("padding: 7px 80px 7px 8px;", styles)
         self.assertNotIn("padding-right: 128px;", styles)
-        self.assertIn("position: static;", styles)
 
     def test_embedded_debug_console_expands_preview_and_pins_parameters(self):
         source = (APP_DIR / "js" / "views" / "voiceLab.js").read_text(encoding="utf-8")
@@ -47,6 +49,18 @@ class VoiceLabLayoutContractTest(unittest.TestCase):
         self.assertIn("@keyframes vlOutputIconBreathe", styles)
         self.assertIn("@keyframes vlOutputWaiting", styles)
         self.assertIn("@media (prefers-reduced-motion: reduce)", styles)
+        self.assertRegex(
+            styles,
+            r"\.vl-output-slot\s*\{[^}]*border:\s*1px solid rgba\(15,\s*23,\s*42,\s*\.07\);[^}]*border-radius:\s*12px;",
+        )
+        self.assertRegex(
+            styles,
+            r"\.vl-output-empty,\s*\n[^{}]*\.vl-output-loading\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;",
+        )
+        self.assertRegex(
+            styles,
+            r"\.vl-output-slot \.vl-player\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;",
+        )
 
     def test_voice_design_preserves_lifestyle_and_emotional_semantics(self):
         prompt = "温柔、生活化、像朋友聊天，语速舒缓，适合日常分享"
@@ -83,9 +97,9 @@ class VoiceLabLayoutContractTest(unittest.TestCase):
         self.assertNotIn("voice_design / t2a_v2", source)
         self.assertNotIn("ttsProviderLabel", source)
 
-    def test_voice_card_has_only_one_preview_action_and_layout_reserves_its_row(self):
+    def test_voice_card_exposes_only_three_dot_trigger_and_permission_aware_menu(self):
         source = (APP_DIR / "js" / "views" / "voiceLab.js").read_text(encoding="utf-8")
-        motion = (APP_DIR / "styles" / "ui-motion.css").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles" / "custom-creation.css").read_text(encoding="utf-8")
         card_match = re.search(
             r"function voiceCard\(.*?\n}\n\nfunction classifyVoice",
             source,
@@ -93,14 +107,45 @@ class VoiceLabLayoutContractTest(unittest.TestCase):
         )
 
         self.assertIsNotNone(card_match)
-        self.assertEqual(card_match.group(0).count('data-vl-preview="'), 1)
-        self.assertIn("position: static;", motion)
-        self.assertIn("justify-self: end;", motion)
-        self.assertIn("transform: none;", motion)
+        card = card_match.group(0)
+        markup = card[card.index("return `<div"):]
+        visible_markup, menu_markup = markup.split(
+            '<span class="vl-voice-menu-popover"',
+            1,
+        )
+        self.assertEqual(visible_markup.count("<button"), 1)
+        self.assertEqual(card.count('data-vl-menu-toggle="'), 1)
+        self.assertEqual(card.count('data-vl-preview="'), 1)
+        self.assertIn('icon("more", 14)', visible_markup)
+        self.assertIn('aria-haspopup="menu"', visible_markup)
+        self.assertIn('role="menu"', menu_markup)
+        for action in (
+            "data-vl-preview",
+            "data-vl-fav",
+            "data-vl-rename",
+            "data-vl-delete-voice",
+            "data-vl-copy",
+        ):
+            self.assertIn(action, menu_markup if action not in {"data-vl-rename", "data-vl-delete-voice"} else card)
+        self.assertIn("canManageCustomVoice(v)", card)
+        self.assertIn('role="menuitemcheckbox"', card)
+        self.assertIn(".vl-voice-menu-popover[hidden]", styles)
+        self.assertIn("position: fixed;", styles)
+
+    def test_voice_action_menu_supports_click_outside_escape_and_arrow_keys(self):
+        source = (APP_DIR / "js" / "views" / "voiceLab.js").read_text(encoding="utf-8")
+
+        self.assertIn('action?.matches("[data-vl-menu-toggle]")', source)
+        self.assertIn('document.addEventListener("pointerdown", onPointerDown, true)', source)
+        self.assertIn('document.addEventListener("focusin", onFocusIn, true)', source)
+        self.assertIn('document.addEventListener("keydown", onKeyDown, true)', source)
+        self.assertIn('if (event.key !== "Escape") return;', source)
+        self.assertIn('["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)', source)
+        self.assertIn('voiceList?.addEventListener("scroll", () => closeVoiceMenus()', source)
 
     def test_voice_ids_stay_copyable_without_being_rendered_in_cards(self):
         source = (APP_DIR / "js" / "views" / "voiceLab.js").read_text(encoding="utf-8")
-        motion = (APP_DIR / "styles" / "ui-motion.css").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles" / "custom-creation.css").read_text(encoding="utf-8")
         card_match = re.search(
             r"function voiceCard\(.*?\n}\n\nfunction classifyVoice",
             source,
@@ -112,9 +157,9 @@ class VoiceLabLayoutContractTest(unittest.TestCase):
         self.assertIn('data-vl-copy="${esc(v.voiceId)}"', card_match.group(0))
         self.assertIn("copyText(action.dataset.vlCopy)", source)
         self.assertNotIn("中间写口播，右侧调参数，左侧选音色", source)
-        self.assertIn("grid-template-columns: minmax(0, 1fr) auto;", motion)
-        self.assertIn(".vl-voice-actions .icon-btn.tiny", motion)
-        self.assertIn("width: 25px;", motion)
+        self.assertIn(".vl-voice-menu-item", styles)
+        self.assertIn("width: 176px;", styles)
+        self.assertNotIn('class="vl-voice-actions"', card_match.group(0))
 
 
 if __name__ == "__main__":

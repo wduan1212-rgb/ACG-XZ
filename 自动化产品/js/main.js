@@ -1,7 +1,7 @@
 /* 应用入口：装载数据 → 迁移 → 恢复任务 → 外壳 → 路由 */
 
 import { $, $$, esc, uid } from "./core/util.js";
-import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260727-v120-shell-8";
+import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260728-v120-shell-9";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
@@ -21,22 +21,22 @@ import { toast, confirmModal, openModal, openPalette, toggleNotifyPanel, updateN
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { initClientDistribution } from "./ui/clientDistribution.js?v=20260727-v120-shell-8";
-import { overviewView } from "./views/overview.js?v=20260727-v120-shell-8";
-import { voiceLabView } from "./views/voiceLab.js?v=20260727-v120-shell-8";
-import { customCreationView } from "./views/customCreation.js?v=20260727-v120-shell-8";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260727-v120-shell-8";
-import { studioView } from "./views/studio.js?v=20260727-v120-shell-8";
-import { assetsView } from "./views/assetsView.js?v=20260727-v120-shell-8";
-import { deliveryView } from "./views/deliveryView.js?v=20260727-v120-shell-8";
+import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-9";
+import { overviewView } from "./views/overview.js?v=20260728-v120-shell-9";
+import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-9";
+import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-9";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-9";
+import { studioView } from "./views/studio.js?v=20260728-v120-shell-9";
+import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-9";
+import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-9";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js?v=20260727-v120-shell-8";
-import { settingsView } from "./views/settings.js?v=20260727-v120-shell-8";
+import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-9";
+import { settingsView } from "./views/settings.js?v=20260728-v120-shell-9";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260727-v120-shell-8";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-9";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260727-v120-shell-8";
+const APP_BUILD_ID = "20260728-v120-shell-9";
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 let workspaceSwitcherGlobalWired = false;
@@ -1509,12 +1509,41 @@ function renderWorkspaceContextPanel() {
     }
     if (zone === "settings") {
       const me = currentMember();
+      const managementPages = new Set(["members", "products", "usage", "requests"]);
+      const activeManagementPage = managementPages.has(page) ? page : "members";
+      if (page === "profile" || state.role === "editor") {
+        return [{
+          key: "profile",
+          title: "个人资料",
+          collapsible: false,
+          rows: [
+            contextRow({
+              title: me?.name || "我的资料",
+              active: true,
+              zone: "settings",
+              page: "profile"
+            })
+          ]
+        }];
+      }
+      if (state.role === "admin") {
+        return [{
+          key: "management",
+          title: "管理设置",
+          collapsible: false,
+          rows: [
+            contextRow({ title: "成员账号", active: activeManagementPage === "members", zone: "settings", page: "members" }),
+            contextRow({ title: "产品库", active: activeManagementPage === "products", zone: "settings", page: "products" }),
+            contextRow({ title: "模型用量", active: activeManagementPage === "usage", zone: "settings", page: "usage" }),
+            contextRow({ title: "成员申请", active: activeManagementPage === "requests", zone: "settings", page: "requests" })
+          ]
+        }];
+      }
       return [{
         key: "settings",
-        title: page === "profile" || state.role === "editor" ? "个人资料" : "管理",
+        title: "管理",
         rows: [
-          contextRow({ title: me?.name || "我的资料", active: page === "profile" || state.role === "editor", zone: "settings", page: "profile" }),
-          ...(["admin", "supplier", "supplier_parent"].includes(state.role) ? [contextRow({ title: state.role === "admin" ? "管理设置" : "供应商设置", active: page !== "profile", zone: "settings" })] : [])
+          contextRow({ title: "供应商设置", active: true, zone: "settings" })
         ]
       }];
     }
@@ -1746,14 +1775,16 @@ function renderTopbar() {
     actions.insertBefore(newAccBtn, $("#topSearch"));
   }
   let syncDataBtn = $("#topSyncAnalytics");
-  if (!syncDataBtn && actions && newAccBtn) {
+  if (!syncDataBtn && actions) {
     syncDataBtn = document.createElement("button");
     syncDataBtn.id = "topSyncAnalytics";
     syncDataBtn.className = "top-btn";
     syncDataBtn.title = "手动从 JustOne 同步已回传内容的数据快照";
     syncDataBtn.innerHTML = `${icon("refresh", 13)} <span>同步数据</span>`;
     syncDataBtn.addEventListener("click", () => syncHomepageAnalytics(syncDataBtn));
-    actions.insertBefore(syncDataBtn, newAccBtn);
+    const syncAnchor = [newAccBtn, $("#topSearch")]
+      .find(node => node?.parentElement === actions) || null;
+    actions.insertBefore(syncDataBtn, syncAnchor);
   }
   if (newAccBtn) newAccBtn.hidden = !(zone === "overview" && state.role === "admin");
   if (syncDataBtn) syncDataBtn.hidden = !(zone === "overview" && state.role === "admin");

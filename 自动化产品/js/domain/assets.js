@@ -14,13 +14,20 @@ const FILE_MIME_BY_EXTENSION = Object.freeze({
   aac: "audio/aac",
   ogg: "audio/ogg",
   mp4: "video/mp4",
+  m4v: "video/x-m4v",
   mov: "video/quicktime",
   webm: "video/webm",
+  avi: "video/x-msvideo",
+  mkv: "video/x-matroska",
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   webp: "image/webp",
   gif: "image/gif",
+  bmp: "image/bmp",
+  avif: "image/avif",
+  heic: "image/heic",
+  svg: "image/svg+xml",
 });
 const GENERIC_BINARY_MIMES = new Set([
   "application/octet-stream",
@@ -81,8 +88,8 @@ export function isBgmAsset(asset) {
 }
 
 export function isEditingMaterialAsset(asset) {
-  if (asset?.type !== "视频") return false;
-  return /剪辑素材|视频素材|素材库/.test(assetTagText(asset));
+  if (!["图片", "视频"].includes(asset?.type)) return false;
+  return /剪辑素材|共享剪辑素材|图片素材|视频素材|素材库/.test(assetTagText(asset));
 }
 
 export const isGlobalEditingAsset = asset => isBgmAsset(asset) || isEditingMaterialAsset(asset);

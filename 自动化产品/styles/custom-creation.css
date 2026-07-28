@@ -303,7 +303,7 @@ body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-filters select {
 body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-list {
   flex: 1;
   min-height: 0;
-  gap: 3px;
+  gap: 2px;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -315,29 +315,131 @@ body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-list::-webkit-scr
   height: 0;
 }
 body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-card {
-  min-height: 62px;
-  padding: 7px 8px;
-  border-radius: 7px;
+  min-height: 40px;
+  gap: 5px;
+  padding: 4px 5px 4px 7px;
+  border-radius: 6px;
+  overflow: visible;
 }
 body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-card.is-mine {
-  padding-right: 8px;
+  min-height: 40px;
+  padding-right: 5px;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-core {
+  gap: 6px;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-core > svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  opacity: .76;
 }
 body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-core b {
   min-width: 0;
   flex: 1 1 auto;
+  font-size: 11.5px;
+  font-weight: 420;
+  line-height: 1.35;
 }
 body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-source {
   display: none;
 }
-body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-card .vl-voice-actions {
-  position: static;
-  max-width: none;
-  gap: 0;
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu {
+  position: relative;
+  display: grid;
+  place-items: center;
+  justify-self: end;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-toggle.icon-btn.tiny {
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
+  border: 0;
+  border-radius: 6px;
+  color: #777b82;
+  background: transparent;
+  box-shadow: none;
   transform: none;
-  flex-wrap: nowrap;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-toggle.icon-btn.tiny:hover,
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-toggle.icon-btn.tiny[aria-expanded="true"] {
+  color: #15171b;
+  background: rgba(15, 23, 42, .065);
+  box-shadow: none;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-toggle.icon-btn.tiny:focus-visible {
+  outline: 2px solid rgba(17, 19, 24, .28);
+  outline-offset: 1px;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-popover {
+  position: fixed;
+  z-index: 1600;
+  width: 176px;
+  display: grid;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid rgba(15, 23, 42, .09);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .98);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, .16), 0 2px 8px rgba(15, 23, 42, .07);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-popover[hidden] {
+  display: none;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-popover.is-open {
+  animation: vlVoiceMenuIn 130ms cubic-bezier(.2, .8, .2, 1) both;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-item {
+  width: 100%;
+  min-height: 31px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  color: #34373d;
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 430;
+  text-align: left;
+  cursor: pointer;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-item svg {
+  flex: none;
+  color: #727780;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-item:hover,
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-item:focus-visible {
+  outline: 0;
+  color: #111318;
+  background: rgba(15, 23, 42, .06);
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-item.is-active {
+  color: #1f4f9a;
+  background: rgba(31, 79, 154, .07);
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-item.danger {
+  color: #ae2e3b;
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-item.danger:hover,
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-item.danger:focus-visible {
+  background: rgba(174, 46, 59, .075);
+}
+body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-separator {
+  height: 1px;
+  margin: 3px 6px;
+  background: rgba(15, 23, 42, .08);
+}
+@keyframes vlVoiceMenuIn {
+  from { opacity: 0; transform: translateY(-3px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* 语音调试台把预览作为主视觉，参数稳定收在右栏底部。 */
+/* 语音调试台把预览整合成单层主区域，参数稳定收在右栏底部。 */
 body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console {
   display: flex;
   flex-direction: column;
@@ -347,9 +449,21 @@ body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-slot {
   min-height: clamp(270px, 42vh, 410px);
   grid-template-rows: auto minmax(0, 1fr);
   flex: 1 1 auto;
+  gap: 0;
+  margin-bottom: 10px;
+  padding: 14px 16px 16px;
+  border: 1px solid rgba(15, 23, 42, .07);
+  border-radius: 12px;
   background:
-    radial-gradient(circle at 50% 42%, rgba(87, 112, 255, .055), transparent 44%),
-    #fff;
+    radial-gradient(circle at 50% 45%, rgba(87, 112, 255, .045), transparent 46%),
+    #fbfbfa;
+  box-shadow: none;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-title {
+  padding-bottom: 10px;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-title b {
+  font-weight: 520;
 }
 body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty,
 body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading {
@@ -357,7 +471,14 @@ body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loadin
   height: 100%;
   min-height: 210px;
   overflow: hidden;
-  background: rgba(250, 250, 248, .7);
+  padding: 20px 12px 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty.is-error {
+  border: 0;
+  background: transparent;
 }
 body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty:not(.is-error)::before,
 body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading::before {
@@ -385,6 +506,12 @@ body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loadin
 body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-slot .vl-player {
   min-height: 100%;
   align-content: center;
+  gap: 10px;
+  padding: 18px 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-current-voice {
   flex: 0 0 auto;
@@ -403,10 +530,11 @@ body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-voice-paramet
   50% { opacity: 1; transform: translateY(-2px) scale(1.04); }
 }
 @keyframes vlOutputWaiting {
-  0%, 100% { border-color: rgba(15, 23, 42, .11); }
-  50% { border-color: rgba(76, 96, 220, .23); }
+  0%, 100% { background-color: transparent; }
+  50% { background-color: rgba(76, 96, 220, .025); }
 }
 @media (prefers-reduced-motion: reduce) {
+  body.workspace-shell-v2 .workspace-context-tool-host .vl-voice-menu-popover.is-open,
   body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-empty::before,
   body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading,
   body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-output-loading::before,

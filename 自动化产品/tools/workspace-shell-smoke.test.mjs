@@ -28,6 +28,7 @@ const canvasProjectClientTsx = read("apps/infinite-canvas-source/src/components/
 const videoWorkshopHtml = read("apps/video-workshop/web/index.html");
 const customVideoIntegrationJs = read("js/views/customVideoIntegration.js");
 const customCreationJs = read("js/views/customCreation.js");
+const settingsJs = read("js/views/settings.js");
 
 function section(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -226,12 +227,15 @@ test("voice generation moves the real voice library into the unified left contex
   );
   assert.match(
     customCreationCss,
-    /body\.workspace-shell-v2\s+\.workspace-context-tool-host\s+\.vl-voice-card\s*\{[^}]*padding\s*:\s*7px\s+8px\s*;/s,
+    /body\.workspace-shell-v2\s+\.workspace-context-tool-host\s+\.vl-voice-card\s*\{[^}]*min-height\s*:\s*40px\s*;[^}]*padding\s*:\s*4px\s+5px\s+4px\s+7px\s*;/s,
   );
   assert.match(
     customCreationCss,
-    /body\.workspace-shell-v2\s+\.workspace-context-tool-host\s+\.vl-voice-card\s+\.vl-voice-actions\s*\{[^}]*position\s*:\s*static\s*;[^}]*max-width\s*:\s*none\s*;[^}]*transform\s*:\s*none\s*;/s,
+    /body\.workspace-shell-v2\s+\.workspace-context-tool-host\s+\.vl-voice-menu-toggle\.icon-btn\.tiny\s*\{[^}]*background\s*:\s*transparent\s*;[^}]*transform\s*:\s*none\s*;/s,
   );
+  assert.match(voiceLabJs, /data-vl-menu-toggle=/);
+  assert.match(voiceLabJs, /class="vl-voice-menu-popover"/);
+  assert.doesNotMatch(voiceLabJs, /class="vl-voice-actions"/);
   assert.doesNotMatch(customCreationCss, /\.workspace-context-tool-host[^}]*padding-right\s*:\s*(?:80|128)px/s);
   assert.match(voiceLabJs, /class="vl-sliders vl-voice-parameters"/);
   assert.match(
@@ -452,6 +456,48 @@ test("workspace menu and context groups stay compact and collapsible", () => {
   assert.match(contextRender, /wsctx-title-static/);
 });
 
+test("administrator settings use four isolated context routes while profile stays separate", () => {
+  const settingsContext = section(
+    mainJs,
+    'if (zone === "settings") {\n      const me = currentMember();',
+    'return [{ title: "上下文", rows: [] }];',
+  );
+  assert.match(settingsContext, /page === "profile"\s*\|\|\s*state\.role === "editor"/);
+  assert.match(settingsContext, /title:\s*"个人资料"/);
+  assert.match(settingsContext, /state\.role === "admin"/);
+  for (const [title, page] of [
+    ["成员账号", "members"],
+    ["产品库", "products"],
+    ["模型用量", "usage"],
+    ["成员申请", "requests"],
+  ]) {
+    assert.match(settingsContext, new RegExp(`title:\\s*"${title}"[\\s\\S]*?page:\\s*"${page}"`));
+  }
+  const settingsDraw = section(settingsJs, "const draw = () => {", "async function loadRequests()");
+  assert.match(settingsDraw, /managementPage === "members"/);
+  assert.match(settingsDraw, /managementPage === "products"/);
+  assert.match(settingsDraw, /managementPage === "usage"/);
+  assert.match(settingsDraw, /managementPage === "requests"/);
+  assert.match(settingsJs, /if \(managementPage === "requests"\) loadRequests\(\)/);
+  assert.match(settingsJs, /if \(managementPage === "usage"\) loadApiUsage\(\)/);
+  assert.match(
+    viewsCss,
+    /body\.workspace-shell-v2\[data-zone="settings"\]\s+\.view-root\[data-settings-view="profile"\]\s*\{[^}]*display:\s*grid\s*;/s,
+  );
+  assert.match(
+    viewsCss,
+    /\.creator-profile-page\s*\{[^}]*align-items:\s*center\s*;[^}]*min-height:\s*100%\s*;[^}]*margin:\s*0 auto\s*;/s,
+  );
+});
+
+test("administrator overview sync action is created independently from the new-account button", () => {
+  const renderTopbar = section(mainJs, "function renderTopbar()", "function paletteCommands()");
+  assert.match(renderTopbar, /if\s*\(!syncDataBtn\s*&&\s*actions\)\s*\{/);
+  assert.doesNotMatch(renderTopbar, /if\s*\(!syncDataBtn\s*&&\s*actions\s*&&\s*newAccBtn\)/);
+  assert.match(renderTopbar, /syncDataBtn\.hidden\s*=\s*!\(zone === "overview"\s*&&\s*state\.role === "admin"\)/);
+  assert.match(renderTopbar, /const syncAnchor\s*=\s*\[newAccBtn,\s*\$\("#topSearch"\)\]/);
+});
+
 test("creator and administrator account menus expose the lightweight feedback dialog", () => {
   const accountMarkup = section(mainJs, "function workspaceAccountMarkup()", "function openWorkspaceFeedbackModal()");
   assert.match(accountMarkup, /const canSendFeedback\s*=\s*\["admin",\s*"editor"\]\.includes\(state\.role\)/);
@@ -491,18 +537,18 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final shell-8 cache marker", () => {
+test("all modified workspace-shell resources use the final shell-9 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260727-v120-shell-8"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260727-v120-shell-8"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260727-v120-shell-8"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260727-v120-shell-8"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260727-v120-shell-8"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260727-v120-shell-8"/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260727-v120-shell-8"/);
-  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260727-v120-shell-8"/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260727-v120-shell-8"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-9"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-9"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-9"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-9"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-9"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-9"/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-9"/);
+  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-9"/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-9"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

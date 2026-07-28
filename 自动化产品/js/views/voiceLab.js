@@ -16,6 +16,7 @@ let providerStatusLoaded = false;
 let providerRefreshPromise = null;
 const providerRefreshCallbacks = new Set();
 let runtimeMemberId = "";
+let dismissVoiceMenu = null;
 const VOICE_PREVIEW_TEXT = "这是当前音色试听，语气自然，适合口播内容。";
 
 function ensureRuntimeMemberScope() {
@@ -189,13 +190,23 @@ function voiceCard(v, selectedId) {
   const fav = isFavoriteVoice(v.voiceId);
   const active = v.voiceId === selectedId;
   const previewing = previewingVoiceId === v.voiceId;
+  const menuId = `vl-voice-menu-${encodeURIComponent(String(v.voiceId || "voice"))}`;
+  const manageActions = canManageCustomVoice(v)
+    ? `<span class="vl-voice-menu-separator" role="separator"></span>
+      <button class="vl-voice-menu-item" type="button" role="menuitem" data-vl-rename="${esc(v.voiceId)}">${icon("edit", 13)}<span>编辑名称</span></button>
+      <button class="vl-voice-menu-item danger" type="button" role="menuitem" data-vl-delete-voice="${esc(v.voiceId)}">${icon("trash", 13)}<span>删除音色</span></button>`
+    : "";
   return `<div class="vl-voice-card ${v.source === "mine" ? "is-mine" : ""} ${active ? "is-active" : ""} ${fav ? "is-fav" : ""} ${previewing ? "is-previewing" : ""}" role="button" tabindex="0" data-vl-voice="${esc(v.voiceId)}" title="点击选择并试听">
     <span class="vl-voice-core">${icon(active ? "check" : "mic", 15)}<b>${esc(v.name || "未命名音色")}</b>${v.source === "system" ? "" : `<i class="vl-voice-source">${esc(sourceLabel(v.source))}</i>`}</span>
-    <span class="vl-voice-actions" role="group" aria-label="${esc(v.name || "当前音色")}操作">
-      <button class="icon-btn tiny" type="button" title="试听音色" data-vl-preview="${esc(v.voiceId)}">${icon(previewing ? "pause" : "play", 13)}</button>
-      <button class="icon-btn tiny ${fav ? "is-active" : ""}" type="button" title="${fav ? "取消收藏" : "收藏音色"}" data-vl-fav="${esc(v.voiceId)}">${icon("star", 13)}</button>
-      ${canManageCustomVoice(v) ? `<button class="icon-btn tiny" type="button" title="修改音色名称" data-vl-rename="${esc(v.voiceId)}">${icon("edit", 13)}</button><button class="icon-btn tiny danger" type="button" title="删除定制音色" data-vl-delete-voice="${esc(v.voiceId)}">${icon("trash", 13)}</button>` : ""}
-      <button class="icon-btn tiny" type="button" title="复制 voice_id" data-vl-copy="${esc(v.voiceId)}">${icon("copy", 13)}</button>
+    <span class="vl-voice-menu">
+      <button class="icon-btn tiny vl-voice-menu-toggle" type="button" title="更多操作" aria-label="${esc(v.name || "当前音色")}更多操作" aria-haspopup="menu" aria-expanded="false" aria-controls="${esc(menuId)}" data-vl-menu-toggle="${esc(v.voiceId)}">${icon("more", 14)}</button>
+      <span class="vl-voice-menu-popover" id="${esc(menuId)}" role="menu" aria-label="${esc(v.name || "当前音色")}操作" hidden>
+        <button class="vl-voice-menu-item" type="button" role="menuitem" title="试听音色" data-vl-preview="${esc(v.voiceId)}">${icon(previewing ? "pause" : "play", 13)}<span data-vl-action-label>${previewing ? "正在试听" : "试听音色"}</span></button>
+        <button class="vl-voice-menu-item ${fav ? "is-active" : ""}" type="button" role="menuitemcheckbox" aria-checked="${fav ? "true" : "false"}" title="${fav ? "取消收藏" : "收藏音色"}" data-vl-fav="${esc(v.voiceId)}">${icon("star", 13)}<span data-vl-action-label>${fav ? "取消收藏" : "收藏音色"}</span></button>
+        ${manageActions}
+        <span class="vl-voice-menu-separator" role="separator"></span>
+        <button class="vl-voice-menu-item" type="button" role="menuitem" title="复制 voice_id" data-vl-copy="${esc(v.voiceId)}">${icon("copy", 13)}<span>复制 voice_id</span></button>
+      </span>
     </span>
   </div>`;
 }
@@ -308,6 +319,10 @@ function ensureProviderStatus(renderAgain) {
 export const voiceLabView = {
   render(root, { embedded = false } = {}) {
     ensureRuntimeMemberScope();
+    if (dismissVoiceMenu) {
+      dismissVoiceMenu();
+      dismissVoiceMenu = null;
+    }
     const activeMemberId = myId() || "anonymous";
     const workspaceLibraryHost = embedded && document.body.classList.contains("workspace-shell-v2")
       ? document.getElementById("workspaceContextToolHost")
@@ -444,8 +459,11 @@ export const voiceLabView = {
     const syncFavoriteUi = (voiceId, favorite) => {
       voiceQueryAll(`[data-vl-fav="${CSS.escape(voiceId)}"]`).forEach(button => {
         button.title = favorite ? "取消收藏" : "收藏音色";
+        button.setAttribute("aria-checked", favorite ? "true" : "false");
         button.classList.toggle("is-active", favorite);
         button.closest(".vl-voice-card")?.classList.toggle("is-fav", favorite);
+        const label = button.querySelector("[data-vl-action-label]");
+        if (label) label.textContent = favorite ? "取消收藏" : "收藏音色";
       });
       if (selected.voiceId === voiceId) {
         const current = $("#vlFavCurrent", root);
@@ -473,6 +491,12 @@ export const voiceLabView = {
         const core = card.querySelector(".vl-voice-core");
         const glyph = core?.querySelector("svg");
         if (glyph) glyph.outerHTML = icon(active ? "check" : "mic", 15);
+        const previewAction = card.querySelector("[data-vl-preview]");
+        const isCurrentPreview = active && previewing;
+        if (previewAction) {
+          previewAction.title = isCurrentPreview ? "正在试听" : "试听音色";
+          previewAction.innerHTML = `${icon(isCurrentPreview ? "pause" : "play", 13)}<span data-vl-action-label>${isCurrentPreview ? "正在试听" : "试听音色"}</span>`;
+        }
       });
       const current = $(".vl-current-voice", root);
       const name = voice.name || "默认/手动声线";
@@ -525,9 +549,78 @@ export const voiceLabView = {
       });
     });
 
+    const closeVoiceMenus = ({ restoreFocus = false } = {}) => {
+      let focusTarget = null;
+      voiceQueryAll(".vl-voice-menu-popover.is-open").forEach(menu => {
+        const toggle = menu.closest(".vl-voice-menu")?.querySelector("[data-vl-menu-toggle]");
+        if (!focusTarget) focusTarget = toggle;
+        menu.hidden = true;
+        menu.classList.remove("is-open");
+        menu.style.removeProperty("left");
+        menu.style.removeProperty("top");
+        toggle?.setAttribute("aria-expanded", "false");
+      });
+      if (dismissVoiceMenu) {
+        const cleanup = dismissVoiceMenu;
+        dismissVoiceMenu = null;
+        cleanup();
+      }
+      if (restoreFocus) focusTarget?.focus();
+    };
+    const openVoiceMenu = (toggle, focusPosition = "first") => {
+      const menu = toggle?.closest(".vl-voice-menu")?.querySelector(".vl-voice-menu-popover");
+      if (!menu) return;
+      closeVoiceMenus();
+      menu.hidden = false;
+      menu.classList.add("is-open");
+      toggle.setAttribute("aria-expanded", "true");
+
+      const toggleRect = toggle.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const menuWidth = menuRect.width || 176;
+      const menuHeight = menuRect.height || 160;
+      const left = Math.max(8, Math.min(toggleRect.right - menuWidth, window.innerWidth - menuWidth - 8));
+      const below = toggleRect.bottom + 6;
+      const top = below + menuHeight <= window.innerHeight - 8
+        ? below
+        : Math.max(8, toggleRect.top - menuHeight - 6);
+      menu.style.left = `${Math.round(left)}px`;
+      menu.style.top = `${Math.round(top)}px`;
+
+      const onPointerDown = event => {
+        if (event.target.closest?.(".vl-voice-menu")) return;
+        closeVoiceMenus();
+      };
+      const onFocusIn = event => {
+        if (event.target.closest?.(".vl-voice-menu")) return;
+        closeVoiceMenus();
+      };
+      const onKeyDown = event => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        closeVoiceMenus({ restoreFocus: true });
+      };
+      const onViewportChange = () => closeVoiceMenus();
+      document.addEventListener("pointerdown", onPointerDown, true);
+      document.addEventListener("focusin", onFocusIn, true);
+      document.addEventListener("keydown", onKeyDown, true);
+      window.addEventListener("resize", onViewportChange, { passive: true });
+      dismissVoiceMenu = () => {
+        document.removeEventListener("pointerdown", onPointerDown, true);
+        document.removeEventListener("focusin", onFocusIn, true);
+        document.removeEventListener("keydown", onKeyDown, true);
+        window.removeEventListener("resize", onViewportChange);
+      };
+
+      const items = [...menu.querySelectorAll('[role^="menuitem"]:not([disabled])')];
+      const target = focusPosition === "last" ? items.at(-1) : items[0];
+      target?.focus();
+    };
     const refreshVoiceList = () => {
       const list = voiceQuery(".vl-voice-list");
       if (!list) return;
+      closeVoiceMenus();
       list.innerHTML = voiceListHtml(labState().tab || "system", labState().voiceId || "", labState());
       list.animate?.([{ opacity: .45, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }], { duration: 150, easing: "cubic-bezier(.2,.8,.2,1)" });
     };
@@ -575,20 +668,41 @@ export const voiceLabView = {
         mountRuntimePlayer();
       }
     };
-    $(".vl-voice-list", root)?.addEventListener("click", async e => {
+    const voiceList = voiceQuery(".vl-voice-list");
+    voiceList?.addEventListener("click", async e => {
       const action = e.target.closest("button");
-      if (action?.dataset.vlPreview) { e.stopPropagation(); selectAndPreview(action.dataset.vlPreview); return; }
+      if (action?.matches("[data-vl-menu-toggle]")) {
+        e.stopPropagation();
+        const expanded = action.getAttribute("aria-expanded") === "true";
+        if (expanded) closeVoiceMenus({ restoreFocus: true });
+        else openVoiceMenu(action);
+        return;
+      }
+      if (action?.dataset.vlPreview) {
+        e.stopPropagation();
+        closeVoiceMenus();
+        selectAndPreview(action.dataset.vlPreview);
+        return;
+      }
       if (action?.dataset.vlFav) {
         e.stopPropagation();
+        closeVoiceMenus();
         const id = action.dataset.vlFav;
         const next = toggleFavoriteVoice(id);
         toast(next ? "已收藏音色" : "已取消收藏");
         syncFavoriteUi(id, next);
         return;
       }
-      if (action?.dataset.vlCopy) { e.stopPropagation(); copyText(action.dataset.vlCopy); toast("已复制 voice_id"); return; }
+      if (action?.dataset.vlCopy) {
+        e.stopPropagation();
+        closeVoiceMenus();
+        copyText(action.dataset.vlCopy);
+        toast("已复制 voice_id");
+        return;
+      }
       if (action?.dataset.vlRename) {
         e.stopPropagation();
+        closeVoiceMenus();
         const voice = findVoiceOption(action.dataset.vlRename);
         const name = await promptModal({ title: "修改我的音色名称", placeholder: "输入声线名称", value: voice.name || "", okText: "保存" });
         if (name == null) return;
@@ -606,6 +720,7 @@ export const voiceLabView = {
       }
       if (action?.dataset.vlDeleteVoice) {
         e.stopPropagation();
+        closeVoiceMenus();
         const voice = findVoiceOption(action.dataset.vlDeleteVoice);
         const ok = await confirmModal({ title: "删除我的音色？", body: `<p>将删除“${esc(voice.name)}”，使用该音色的账号会恢复为默认声线。</p>`, okText: "删除", danger: true });
         if (!ok) return;
@@ -624,10 +739,37 @@ export const voiceLabView = {
         }
         return;
       }
+      if (e.target.closest(".vl-voice-menu-popover")) {
+        e.stopPropagation();
+        return;
+      }
       const card = e.target.closest("[data-vl-voice]");
       if (card) selectAndPreview(card.dataset.vlVoice || "");
     });
-    $(".vl-voice-list", root)?.addEventListener("keydown", e => {
+    voiceList?.addEventListener("keydown", e => {
+      const toggle = e.target.closest("[data-vl-menu-toggle]");
+      if (toggle && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+        e.preventDefault();
+        openVoiceMenu(toggle, e.key === "ArrowUp" ? "last" : "first");
+        return;
+      }
+      const menuItem = e.target.closest('.vl-voice-menu-popover [role^="menuitem"]');
+      if (menuItem && ["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+        const menu = menuItem.closest(".vl-voice-menu-popover");
+        const items = [...menu.querySelectorAll('[role^="menuitem"]:not([disabled])')];
+        if (!items.length) return;
+        e.preventDefault();
+        const currentIndex = Math.max(0, items.indexOf(menuItem));
+        const nextIndex = e.key === "Home"
+          ? 0
+          : e.key === "End"
+            ? items.length - 1
+            : e.key === "ArrowDown"
+              ? (currentIndex + 1) % items.length
+              : (currentIndex - 1 + items.length) % items.length;
+        items[nextIndex]?.focus();
+        return;
+      }
       if (e.key !== "Enter" && e.key !== " ") return;
       if (e.target.closest("button")) return;
       const card = e.target.closest("[data-vl-voice]");
@@ -635,6 +777,7 @@ export const voiceLabView = {
       e.preventDefault();
       selectAndPreview(card.dataset.vlVoice || "");
     });
+    voiceList?.addEventListener("scroll", () => closeVoiceMenus(), { passive: true });
     $("#vlFavCurrent", root)?.addEventListener("click", () => {
       const currentId = labState().voiceId || "";
       if (!currentId) { toast("默认声线无需收藏"); return; }

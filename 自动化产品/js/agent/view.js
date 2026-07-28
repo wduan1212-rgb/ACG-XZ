@@ -14,7 +14,7 @@ import {
 } from "./orchestrator.js?v=20260727-v118-7";
 import { renderMessage, boardRow } from "./cards.js?v=20260727-v119-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260727-v120-shell-8";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260728-v120-shell-9";
 import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";

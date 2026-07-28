@@ -3,7 +3,7 @@
 import { $, $$, esc, buildZipBlob, downloadBlob, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById } from "../core/store.js";
-import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile, inferAssetFileMime, isBgmAsset, isEditingMaterialAsset } from "../domain/assets.js";
+import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile, inferAssetFileMeta, isBgmAsset, isEditingMaterialAsset } from "../domain/assets.js";
 import { downloadAsset } from "../domain/delivery.js?v=20260727-v118-7";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
 import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260727-v118-7";
@@ -124,7 +124,7 @@ export const assetsView = {
         $$('[data-library]', $("#assetsTopDock") || root).forEach(button => button.addEventListener("click", () => {
           setAssetLibraryMode(button.dataset.library);
         }));
-        import("./draftsView.js?v=20260727-v120-shell-8").then(({ draftsView }) => {
+        import("./draftsView.js?v=20260728-v120-shell-9").then(({ draftsView }) => {
           const host = $("#assetDraftsHost", root);
           if (host) draftsView.render(host);
         });
@@ -255,13 +255,14 @@ export const assetsView = {
       $("#avAccount", root)?.addEventListener("change", e => { fAcc = e.currentTarget.value; includeAccountPrivate = false; draw(); });
       const uploadLibraryFile = async file => {
         if (!file) return;
-        const mime = inferAssetFileMime(file);
+        const { mime, type } = inferAssetFileMeta(file);
         const isMp3 = mime === "audio/mpeg" && /\.mp3$/i.test(file.name || "");
+        const isEditingMaterial = ["图片", "视频"].includes(type) && /^(image|video)\//.test(mime);
         if (libraryMode === "bgm" && !isMp3) { toast("BGM 库仅支持 MP3 格式", "error"); return; }
-        if (libraryMode === "material" && !mime.startsWith("video/")) { toast("剪辑素材库仅支持视频格式", "error"); return; }
+        if (libraryMode === "material" && !isEditingMaterial) { toast("剪辑素材库仅支持视频或图片格式", "error"); return; }
         if (["voice", "reference"].includes(libraryMode) && !mime.startsWith("audio/")) { toast("请拖入音频文件", "error"); return; }
         const tags = libraryMode === "bgm" ? ["BGM", "音乐"]
-          : libraryMode === "material" ? ["剪辑素材", "视频素材"]
+          : libraryMode === "material" ? ["剪辑素材", "共享剪辑素材", `${type}素材`]
             : libraryMode === "voice" ? ["语音素材库"] : ["参考音频库", "声线参考"];
         await addAssetFromFile(null, file, { tags });
         toast(
@@ -274,7 +275,7 @@ export const assetsView = {
       if (libraryMode !== "shared") {
         const controller = new AbortController();
         root.__assetDropController = controller;
-        root.dataset.dropHint = libraryMode === "bgm" ? "松手加入 BGM 库 · 仅 MP3" : libraryMode === "material" ? "松手加入剪辑素材库 · 仅视频" : "松手加入音频库";
+        root.dataset.dropHint = libraryMode === "bgm" ? "松手加入 BGM 库 · 仅 MP3" : libraryMode === "material" ? "松手加入剪辑素材库 · 视频或图片" : "松手加入音频库";
         wireDropZone(root, async files => { for (const file of Array.from(files || [])) await uploadLibraryFile(file); }, { filesOnly: true, signal: controller.signal });
       } else {
         delete root.dataset.dropHint;

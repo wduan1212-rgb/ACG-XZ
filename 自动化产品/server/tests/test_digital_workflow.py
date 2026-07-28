@@ -744,6 +744,11 @@ console.log(result);
         self.assertIn('renderCreatorProfile(root)', settings)
         self.assertIn('remote.memberProfile.uploadAvatar(file)', settings)
         self.assertIn('管理员后台会同步显示', settings)
+        self.assertIn('const managementPages = new Set(["members", "products", "usage", "requests"])', settings)
+        for management_page in ("members", "products", "usage", "requests"):
+            self.assertIn(f'managementPage === "{management_page}"', settings)
+        self.assertIn('if (managementPage === "requests") loadRequests()', settings)
+        self.assertIn('if (managementPage === "usage") loadApiUsage()', settings)
         self.assertIn('["admin", "editor", "supplier_parent", "supplier"].includes(state.role)', router)
         self.assertIn("<th>账号</th><th>发布标题</th>", analytics)
 
@@ -778,19 +783,28 @@ console.log(result);
         self.assertIn('optgroup label="共享 BGM 库"', cut)
         self.assertIn("addAssetFromFile(null, file", cut)
         self.assertIn("preservedGlobalAssets", accounts)
+        self.assertIn("inferAssetFileMeta", assets_view)
+        self.assertIn('const isEditingMaterial = ["图片", "视频"].includes(type)', assets_view)
+        self.assertIn('["剪辑素材", "共享剪辑素材", `${type}素材`]', assets_view)
+        self.assertIn("松手加入剪辑素材库 · 视频或图片", assets_view)
 
         script = r"""
 globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
 const { state } = await import('./js/core/store.js');
-const { globalBgmAssets, isEditingMaterialAsset } = await import('./js/domain/assets.js');
+const { globalBgmAssets, isEditingMaterialAsset, searchAssets } = await import('./js/domain/assets.js');
+state.ui.currentMemberId = 'current-member';
 state.assets = [
-  { id:'bgm-other', type:'音频', tags:['BGM'], name:'跨账号共享曲', accountId:'another-account', createdAt:1 },
-  { id:'voice', type:'音频', tags:['口播音频'], name:'口播', accountId:'current-account', createdAt:2 },
-  { id:'material-other', type:'视频', tags:['剪辑素材'], name:'共享镜头', accountId:'another-account', createdAt:3 }
+  { id:'bgm-other', type:'音频', tags:['BGM'], name:'跨账号共享曲', accountId:'another-account', ownerId:'other-member', createdAt:1 },
+  { id:'voice', type:'音频', tags:['口播音频'], name:'口播', accountId:'current-account', ownerId:'other-member', createdAt:2 },
+  { id:'material-other', type:'视频', tags:['剪辑素材'], name:'共享镜头', accountId:'another-account', ownerId:'other-member', createdAt:3 },
+  { id:'material-image', type:'图片', tags:['共享剪辑素材', '图片素材'], name:'共享画面', accountId:'another-account', ownerId:'other-member', createdAt:4 },
+  { id:'plain-image', type:'图片', tags:[], name:'他人私有图片', accountId:'another-account', ownerId:'other-member', createdAt:5 }
 ];
 console.log(JSON.stringify({
   bgm: globalBgmAssets().map(item => item.id),
-  material: isEditingMaterialAsset(state.assets[2])
+  materialVideo: isEditingMaterialAsset(state.assets[2]),
+  materialImage: isEditingMaterialAsset(state.assets[3]),
+  globallyVisible: searchAssets({ accountId:'all' }).map(item => item.id)
 }));
 """
         result = subprocess.run(
@@ -800,7 +814,11 @@ console.log(JSON.stringify({
             capture_output=True,
             check=True,
         ).stdout.strip()
-        self.assertEqual('{"bgm":["bgm-other"],"material":true}', result)
+        self.assertEqual(
+            '{"bgm":["bgm-other"],"materialVideo":true,"materialImage":true,'
+            '"globallyVisible":["bgm-other","material-other","material-image"]}',
+            result,
+        )
 
     def test_empty_or_generic_mime_media_uses_filename_fallback(self):
         script = r"""
@@ -947,6 +965,108 @@ console.log(JSON.stringify({
         self.assertEqual("mp4", payload["exportExt"])
         self.assertEqual([5, 6], payload["exportBytes"])
 
+    def test_asset_library_real_file_drop_classifies_bgm_video_and_image(self):
+        script = r"""
+const storage = new Map();
+globalThis.localStorage = {
+  getItem(key){ return storage.get(key) || ""; },
+  setItem(key, value){ storage.set(key, String(value)); },
+  removeItem(key){ storage.delete(key); }
+};
+globalThis.sessionStorage = { getItem(){ return null; }, setItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){} };
+
+const { db } = await import('./js/core/db.js');
+const { state } = await import('./js/core/store.js');
+const {
+  addAssetFromFile,
+  inferAssetFileMeta,
+  isBgmAsset,
+  isEditingMaterialAsset,
+  searchAssets
+} = await import('./js/domain/assets.js');
+
+const blobs = new Map();
+db.putBlob = async (id, blob) => { blobs.set(id, blob); };
+db.getBlob = async id => blobs.get(id) || null;
+db.replaceAll = async () => {};
+
+state.assets = [];
+state.accounts = [];
+state.ui.assetSeq = 0;
+state.ui.currentMemberId = 'drop-owner';
+
+const droppedFiles = [
+  new File([new Uint8Array([1, 2, 3])], 'track.mp3', { type:'application/octet-stream' }),
+  new File([new Uint8Array([4, 5, 6])], 'clip.mov', { type:'' }),
+  new File([new Uint8Array([7, 8, 9])], 'poster.gif', { type:'application/octet-stream' })
+];
+
+for (const file of droppedFiles) {
+  const meta = inferAssetFileMeta(file);
+  const tags = meta.type === '音频'
+    ? ['BGM', '音乐']
+    : ['剪辑素材', '共享剪辑素材', `${meta.type}素材`];
+  await addAssetFromFile(null, file, { tags, forceNew:true });
+}
+
+state.assets.forEach(asset => { asset.ownerId = 'other-member'; });
+console.log(JSON.stringify({
+  assets: state.assets.map(asset => ({
+    name: asset.name,
+    type: asset.type,
+    mime: asset.mime,
+    tags: asset.tags,
+    storedMime: blobs.get(asset.id)?.type || '',
+    bgm: isBgmAsset(asset),
+    material: isEditingMaterialAsset(asset)
+  })),
+  globallyVisible: searchAssets({ accountId:'all' }).map(asset => asset.name)
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        payload = json.loads(result)
+        self.assertEqual(
+            [
+                {
+                    "name": "track",
+                    "type": "音频",
+                    "mime": "audio/mpeg",
+                    "tags": ["BGM", "音乐"],
+                    "storedMime": "audio/mpeg",
+                    "bgm": True,
+                    "material": False,
+                },
+                {
+                    "name": "clip",
+                    "type": "视频",
+                    "mime": "video/quicktime",
+                    "tags": ["剪辑素材", "共享剪辑素材", "视频素材"],
+                    "storedMime": "video/quicktime",
+                    "bgm": False,
+                    "material": True,
+                },
+                {
+                    "name": "poster",
+                    "type": "图片",
+                    "mime": "image/gif",
+                    "tags": ["剪辑素材", "共享剪辑素材", "图片素材"],
+                    "storedMime": "image/gif",
+                    "bgm": False,
+                    "material": True,
+                },
+            ],
+            payload["assets"],
+        )
+        self.assertEqual(["track", "clip", "poster"], payload["globallyVisible"])
+
     def test_v84_subtitle_editor_review_and_dashboard_contract(self):
         cut = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
         review = (APP_DIR / "js/views/chainCopy.js").read_text(encoding="utf-8")
@@ -1037,11 +1157,14 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260727-v120-shell-8"', main)
-        self.assertIn('js/main.js?v=20260727-v120-shell-8', index)
+        self.assertIn('const APP_BUILD_ID = "20260728-v120-shell-9"', main)
+        self.assertIn('js/main.js?v=20260728-v120-shell-9', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)
+        self.assertIn("if (!syncDataBtn && actions) {", main)
+        self.assertNotIn("if (!syncDataBtn && actions && newAccBtn) {", main)
+        self.assertIn('syncDataBtn.hidden = !(zone === "overview" && state.role === "admin")', main)
 
     def test_batch_reference_images_are_explicit_and_title_changes_refresh_copy(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")

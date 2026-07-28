@@ -98,14 +98,25 @@ function renderCreatorProfile(root) {
 
 export const settingsView = {
   render(root, { page } = {}) {
-    if (page === "profile" || state.role === "editor") { renderCreatorProfile(root); return; }
-    if (["supplier", "supplier_parent"].includes(state.role)) { renderSupplierSettings(root); return; }
+    if (page === "profile" || state.role === "editor") {
+      root.dataset.settingsView = "profile";
+      renderCreatorProfile(root);
+      return;
+    }
+    if (["supplier", "supplier_parent"].includes(state.role)) {
+      root.dataset.settingsView = "supplier";
+      renderSupplierSettings(root);
+      return;
+    }
+    const managementPages = new Set(["members", "products", "usage", "requests"]);
+    const managementPage = managementPages.has(page) ? page : "members";
+    root.dataset.settingsView = managementPage;
     let memberRequests = [];
     let requestsLoaded = false;
     let apiUsageRows = [];
     let apiUsageLoaded = false;
     let apiUsageLoading = false;
-    let productLibraryOpen = false;
+    let productLibraryOpen = managementPage === "products";
     const canReviewRequests = () => remote.isOn() && state.role === "admin";
     const canSeeApiUsage = () => remote.isOn() && state.role === "admin";
     const usageNumber = value => Number(value || 0).toLocaleString("zh-CN");
@@ -145,12 +156,12 @@ export const settingsView = {
     const draw = () => {
       const visibleMembers = state.members.filter(member => member.role !== "supplier_child");
       root.innerHTML = `
-        <div class="settings-page">
-          ${canReviewRequests() ? `<section class="card set-data member-requests">
+        <div class="settings-page" data-settings-page="${managementPage}">
+          ${managementPage === "requests" ? `<section class="card set-data member-requests">
             <div class="card-head"><span><b>${icon("users", 14)} 成员申请看板</b><em>${requestsLoaded ? `${memberRequests.length} 条待审批` : "正在读取申请"}</em></span>
-              <button class="btn ghost sm" id="reqRefresh">${icon("pulse", 13)} 刷新</button></div>
+              ${canReviewRequests() ? `<button class="btn ghost sm" id="reqRefresh">${icon("pulse", 13)} 刷新</button>` : ""}</div>
             <div class="mem-list">
-              ${!requestsLoaded ? `<div class="muted" style="padding:8px 2px">正在读取申请...</div>` : memberRequests.length ? memberRequests.map(r => `
+              ${!canReviewRequests() ? `<div class="muted" style="padding:8px 2px">成员申请仅在管理员连接主服务后可用。</div>` : !requestsLoaded ? `<div class="muted" style="padding:8px 2px">正在读取申请...</div>` : memberRequests.length ? memberRequests.map(r => `
                 <div class="mem-row">
                   <span class="ovt-main"><b>${esc(r.name)}</b><em>@${esc(r.username)} · 申请角色：${ROLE_LABEL[r.role] || r.role} · ${r.createdAt ? new Date(r.createdAt).toLocaleString() : ""}</em></span>
                   <button class="btn primary sm" data-rapprove="${r.id}">${icon("check", 13)} 通过</button>
@@ -159,7 +170,7 @@ export const settingsView = {
             </div>
           </section>` : ""}
 
-          <section class="card set-data member-accounts">
+          ${managementPage === "members" ? `<section class="card set-data member-accounts">
             <div class="card-head"><span><b>成员账号</b><em>按身份着色；多人同屏管理，创作和数据权限仍按账号隔离</em></span>
               <button class="btn primary sm" id="memAdd">${icon("plus", 13)} 添加成员</button></div>
             <div class="settings-member-grid" id="memList">
@@ -171,15 +182,15 @@ export const settingsView = {
                   <span class="settings-member-actions"><button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-mdel="${m.id}" title="删除" ${m.id === state.ui.currentMemberId ? "disabled" : ""}>${icon("trash", 13)}</button></span>
                 </article>`).join("")}
             </div>
-          </section>
-
-          ${canSeeApiUsage() ? `<section class="card set-data api-usage-panel" id="apiUsagePanel">
-            <div class="card-head"><span><b>创作者模型用量</b><em>语言显示真实 Token；图片/视频显示成功调用与输出单位，不估算历史消耗</em></span>
-              <span class="api-usage-actions"><button class="btn ghost sm" id="apiUsageDetails">${icon("list", 13)} 查看 API 明细</button><button class="btn ghost sm" id="apiUsageRefresh" ${apiUsageLoading ? "disabled" : ""}>${icon("pulse", 13)} ${apiUsageLoading ? "刷新中…" : "刷新"}</button></span></div>
-            <div class="api-usage-table">${apiUsageSummaryHtml()}</div>
           </section>` : ""}
 
-          <section class="card set-data product-library ${productLibraryOpen ? "is-open" : ""}">
+          ${managementPage === "usage" ? `<section class="card set-data api-usage-panel" id="apiUsagePanel">
+            <div class="card-head"><span><b>创作者模型用量</b><em>语言显示真实 Token；图片/视频显示成功调用与输出单位，不估算历史消耗</em></span>
+              ${canSeeApiUsage() ? `<span class="api-usage-actions"><button class="btn ghost sm" id="apiUsageDetails">${icon("list", 13)} 查看 API 明细</button><button class="btn ghost sm" id="apiUsageRefresh" ${apiUsageLoading ? "disabled" : ""}>${icon("pulse", 13)} ${apiUsageLoading ? "刷新中…" : "刷新"}</button></span>` : ""}</div>
+            <div class="api-usage-table">${canSeeApiUsage() ? apiUsageSummaryHtml() : `<div class="muted api-usage-empty">模型用量仅在管理员连接主服务后可用。</div>`}</div>
+          </section>` : ""}
+
+          ${managementPage === "products" ? `<section class="card set-data product-library ${productLibraryOpen ? "is-open" : ""}">
             <div class="card-head"><span><b>产品库</b><em>${state.products.length} 个产品事实与视觉边界；默认收起，避免占用设置看板</em></span>
               <span class="product-library-actions"><button class="btn ghost sm" id="prodLibraryToggle">${icon(productLibraryOpen ? "chevronUp" : "chevronDown", 13)} ${productLibraryOpen ? "收起" : "展开"}</button><button class="btn primary sm" id="prodAdd">${icon("plus", 13)} 添加产品</button></span></div>
             <div class="prod-list product-library-grid" ${productLibraryOpen ? "" : "hidden"}>
@@ -189,7 +200,7 @@ export const settingsView = {
                   <span class="product-library-card-actions"><button class="icon-btn sm" data-pedit="${p.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-pdel="${p.id}" title="删除" ${state.products.length <= 1 ? "disabled" : ""}>${icon("trash", 13)}</button></span>
                 </article>`).join("")}
             </div>
-          </section>
+          </section>` : ""}
 
         </div>`;
       wire();
@@ -432,7 +443,7 @@ export const settingsView = {
     }
 
     draw();
-    loadRequests();
-    loadApiUsage();
+    if (managementPage === "requests") loadRequests();
+    if (managementPage === "usage") loadApiUsage();
   }
 };
