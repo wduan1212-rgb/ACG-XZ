@@ -357,7 +357,15 @@ export const customProjects = {
   remove: (id) => req("/api/custom-projects/" + encodeURIComponent(id), { method: "DELETE" })
 };
 
-/* 无限画布项目索引：只读轻量摘要，供统一工作区左侧项目栏使用。 */
+/* 无限画布项目：复用 owner-scoped 草稿接口，供统一工作区读取、重命名与删除。 */
 export const customCanvasProjects = {
-  list: () => req("/api/custom-canvas/projects")
+  list: () => req("/api/custom-canvas/projects"),
+  get: (id) => req("/api/custom-canvas/projects/" + encodeURIComponent(id)),
+  update: (id, payload) => req("/api/custom-canvas/projects/" + encodeURIComponent(id), {
+    method: "PUT",
+    body: payload
+  }),
+  remove: (id) => req("/api/custom-canvas/projects/" + encodeURIComponent(id), {
+    method: "DELETE"
+  })
 };

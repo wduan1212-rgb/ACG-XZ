@@ -9,7 +9,7 @@ import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
-import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260728-v120-shell-20";
+import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260728-v120-shell-21";
 import { buildSupplierSearchResults } from "./domain/supplierSearch.js";
 import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js?v=20260727-v118-7";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
@@ -20,24 +20,24 @@ import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260727-v118-7";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
-import { initLoginBeams } from "./ui/loginBeams.js?v=20260728-v120-shell-20";
+import { initLoginBeams } from "./ui/loginBeams.js?v=20260728-v120-shell-21";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
-import { overviewView } from "./views/overview.js?v=20260728-v120-shell-20";
+import { overviewView } from "./views/overview.js?v=20260728-v120-shell-21";
 import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-13";
 import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-13";
 import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-13";
 import { studioView } from "./views/studio.js?v=20260728-v120-shell-13";
-import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-20";
-import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-20";
+import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-21";
+import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-21";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
 import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-13";
-import { settingsView } from "./views/settings.js?v=20260728-v120-shell-20";
+import { settingsView } from "./views/settings.js?v=20260728-v120-shell-21";
 import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-13";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260728-v120-shell-20";
+const APP_BUILD_ID = "20260728-v120-shell-21";
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 const WORKSPACE_VIDEO_META_KEY = "xingzhen.workspaceVideoMeta";
@@ -1134,6 +1134,61 @@ function postVideoWorkspaceAction(type, payload = {}) {
   return true;
 }
 
+function postCanvasWorkspaceAction(type, payload = {}) {
+  const frame = document.querySelector('iframe[title="星阵无限画布"]');
+  if (!frame?.contentWindow) return false;
+  frame.contentWindow.postMessage({
+    type,
+    scope: "canvas",
+    ...payload,
+  }, window.location.origin);
+  return true;
+}
+
+async function renameWorkspaceCanvasProject(projectId, nextTitle) {
+  const id = String(projectId || "").trim();
+  const title = String(nextTitle || "").trim().slice(0, 160);
+  if (!id || !title) throw new Error("画布名称不能为空");
+  const snapshot = await remote.customCanvasProjects.get(id);
+  const project = snapshot?.project && typeof snapshot.project === "object"
+    ? snapshot.project
+    : {};
+  const projectState = snapshot?.state && typeof snapshot.state === "object"
+    ? snapshot.state
+    : {};
+  const updatedAt = Math.max(
+    Date.now(),
+    Number(project.clientUpdatedAt || 0) + 1,
+    Number(project.updatedAt || 0) + 1
+  );
+  const result = await remote.customCanvasProjects.update(id, {
+    project: {
+      ...project,
+      id,
+      name: title,
+      title,
+      updatedAt,
+    },
+    items: Array.isArray(projectState.items) ? projectState.items : [],
+    messages: Array.isArray(projectState.messages) ? projectState.messages : [],
+    viewport: projectState.viewport && typeof projectState.viewport === "object"
+      ? projectState.viewport
+      : undefined,
+    clientUpdatedAt: updatedAt,
+    baseRevision: Number(project.revision || 0),
+  });
+  const item = workspaceProjectLists.canvas.items.find(candidate => candidate.id === id);
+  if (item) {
+    item.title = title;
+    item.updatedAt = Number(result?.project?.updatedAt || updatedAt);
+  }
+  postCanvasWorkspaceAction("custom-canvas:workspace-index-changed", {
+    action: "rename",
+    projectId: id,
+  });
+  return result;
+}
+
 function workspaceHiddenVideoProjectIds() {
   try {
     const payload = JSON.parse(localStorage.getItem(WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY) || "{}");
@@ -1387,6 +1442,26 @@ function videoProjectContextRow(project, resourceId) {
   `;
 }
 
+function canvasProjectContextRow(project, resourceId) {
+  const active = project.id === resourceId;
+  return `
+    <div class="wsctx-row-shell wsctx-canvas-project-shell${active ? " is-active" : ""}" data-session-shell="canvas" data-session-id="${esc(project.id)}">
+      ${contextRow({
+        title: project.title,
+        zone: "custom",
+        page: "canvas",
+        id: project.id,
+        active,
+        className: "wsctx-canvas-project"
+      })}
+      ${workspaceCanvasProjectMenu({
+        id: project.id,
+        title: project.title,
+      })}
+    </div>
+  `;
+}
+
 function batchSessionContextRow(session) {
   return `
     <div class="wsctx-row-shell" data-session-shell="batch" data-session-id="${esc(session.id)}">
@@ -1406,6 +1481,16 @@ function batchSessionContextRow(session) {
         currentGroup: String(session.group || ""),
         groups: workspaceSessionGroups("batch"),
       })}
+    </div>
+  `;
+}
+
+function workspaceCanvasProjectMenu({ id, title } = {}) {
+  return `
+    <button class="wsctx-row-more" type="button" data-session-menu-toggle aria-haspopup="menu" aria-expanded="false" aria-label="${esc(title)}的更多操作" title="更多操作">${icon("more", 15)}</button>
+    <div class="wsctx-row-menu" role="menu" aria-label="画布项目操作">
+      <button type="button" role="menuitem" data-session-action="rename" data-session-kind="canvas" data-session-id="${esc(id)}" data-session-title="${esc(title)}">${icon("edit", 13)}<span>重命名</span></button>
+      <button type="button" role="menuitem" class="is-danger" data-session-action="delete" data-session-kind="canvas" data-session-id="${esc(id)}" data-session-title="${esc(title)}">${icon("trash", 13)}<span>删除</span></button>
     </div>
   `;
 }
@@ -1708,32 +1793,42 @@ function ensureWorkspaceContextShell(panel) {
     const sessionAction = event.target.closest("[data-session-action]");
     if (sessionAction) {
       event.stopPropagation();
-      const kind = sessionAction.dataset.sessionKind === "video" ? "video" : "batch";
+      const rawKind = String(sessionAction.dataset.sessionKind || "");
+      const kind = rawKind === "video" ? "video" : rawKind === "canvas" ? "canvas" : "batch";
       const action = String(sessionAction.dataset.sessionAction || "");
       const id = String(sessionAction.dataset.sessionId || "").trim();
       const title = String(sessionAction.dataset.sessionTitle || "新会话").trim();
       if (!id) return;
       if (action === "rename") {
         const nextTitle = await promptModal({
-          title: "重命名会话",
+          title: kind === "canvas" ? "重命名画布" : "重命名会话",
           value: title,
-          placeholder: "输入会话名称",
+          placeholder: kind === "canvas" ? "输入画布名称" : "输入会话名称",
           okText: "保存"
         });
-        if (!nextTitle || nextTitle === title) return;
-        if (kind === "video") {
-          updateWorkspaceVideoProjectMeta(id, { title: nextTitle });
-          const project = workspaceProjectLists.video.items.find(item => item.id === id);
-          if (project) project.title = nextTitle;
-          postVideoWorkspaceAction("workspace:rename", { projectId: id, name: nextTitle });
-        } else {
-          renameSession(id, nextTitle);
+        const normalizedTitle = String(nextTitle || "").trim().slice(0, kind === "canvas" ? 160 : 180);
+        if (!normalizedTitle || normalizedTitle === title) return;
+        try {
+          if (kind === "video") {
+            updateWorkspaceVideoProjectMeta(id, { title: normalizedTitle });
+            const project = workspaceProjectLists.video.items.find(item => item.id === id);
+            if (project) project.title = normalizedTitle;
+            postVideoWorkspaceAction("workspace:rename", { projectId: id, name: normalizedTitle });
+          } else if (kind === "canvas") {
+            await renameWorkspaceCanvasProject(id, normalizedTitle);
+          } else {
+            renameSession(id, normalizedTitle);
+          }
+        } catch (error) {
+          toast(error?.message || "画布重命名失败，请稍后重试", "error");
+          return;
         }
         renderWorkspaceContextPanel();
-        toast("会话已重命名");
+        toast(kind === "canvas" ? "画布已重命名" : "会话已重命名");
         return;
       }
       if (action === "favorite") {
+        if (kind === "canvas") return;
         if (kind === "video") {
           const meta = workspaceVideoProjectMeta(id);
           updateWorkspaceVideoProjectMeta(id, { favorite: !meta.favorite });
@@ -1749,6 +1844,7 @@ function ensureWorkspaceContextShell(panel) {
         return;
       }
       if (action === "move") {
+        if (kind === "canvas") return;
         const group = String(sessionAction.dataset.sessionGroup || "").trim().slice(0, 48);
         if (group) addWorkspaceSessionGroup(kind, group);
         if (kind === "video") {
@@ -1767,26 +1863,47 @@ function ensureWorkspaceContextShell(panel) {
       }
       if (action === "delete") {
         const ok = await confirmModal({
-          title: `删除会话「${title}」？`,
-          body: kind === "video"
-            ? "会从当前 v120 工作区会话列表移除，不影响已发布内容。"
-            : "这个批量会话会被删除，已交付内容不受影响。",
+          title: kind === "canvas" ? `删除画布「${title}」？` : `删除会话「${title}」？`,
+          body: kind === "canvas"
+            ? "画布草稿、对话记录和生成节点会从当前账号的画布项目中删除，已发布内容不受影响。"
+            : kind === "video"
+              ? "会从当前 v120 工作区会话列表移除，不影响已发布内容。"
+              : "这个批量会话会被删除，已交付内容不受影响。",
           danger: true,
-          okText: "删除会话"
+          okText: kind === "canvas" ? "删除画布" : "删除会话"
         });
         if (!ok) return;
-        if (kind === "video") {
-          hideWorkspaceVideoProject(id);
-          const route = parseHash();
-          const nextProject = workspaceProjectLists.video.items[0];
-          if (route.zone === "custom" && route.page === "video" && route.resourceId === id) {
-            go("custom", "video", nextProject?.id || "__new__");
+        try {
+          if (kind === "video") {
+            hideWorkspaceVideoProject(id);
+            const route = parseHash();
+            const nextProject = workspaceProjectLists.video.items[0];
+            if (route.zone === "custom" && route.page === "video" && route.resourceId === id) {
+              go("custom", "video", nextProject?.id || "__new__");
+            }
+          } else if (kind === "canvas") {
+            await remote.customCanvasProjects.remove(id);
+            workspaceProjectLists.canvas.items = workspaceProjectLists.canvas.items
+              .filter(project => project.id !== id);
+            workspaceProjectLists.canvas.loadedAt = Date.now();
+            postCanvasWorkspaceAction("custom-canvas:workspace-index-changed", {
+              action: "delete",
+              projectId: id,
+            });
+            const route = parseHash();
+            const nextProject = workspaceProjectLists.canvas.items[0];
+            if (route.zone === "custom" && route.page === "canvas" && route.resourceId === id && nextProject?.id) {
+              go("custom", "canvas", nextProject.id);
+            }
+          } else {
+            await deleteSession(id);
           }
-        } else {
-          await deleteSession(id);
+        } catch (error) {
+          toast(error?.message || "画布删除失败，请稍后重试", "error");
+          return;
         }
         renderWorkspaceContextPanel();
-        toast("会话已删除");
+        toast(kind === "canvas" ? "画布已删除" : "会话已删除");
       }
       return;
     }
@@ -2136,13 +2253,8 @@ function renderWorkspaceContextPanel() {
         return [{
           key: "projects",
           title: projectList.loading && !projectList.items.length ? "正在读取画布项目…" : "画布项目",
-          rows: projectList.items.slice(0, 80).map(project => contextRow({
-            title: project.title,
-            zone: "custom",
-            page: "canvas",
-            id: project.id,
-            active: project.id === resourceId
-          }))
+          collapsible: false,
+          rows: projectList.items.slice(0, 80).map(project => canvasProjectContextRow(project, resourceId))
         }];
       }
       return [];

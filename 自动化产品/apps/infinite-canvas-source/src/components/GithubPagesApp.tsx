@@ -43,6 +43,10 @@ export function GithubPagesApp() {
       const message = event.data && typeof event.data === "object"
         ? event.data as Record<string, unknown>
         : {};
+      if (message.type === "custom-canvas:workspace-index-changed") {
+        void syncCanvasProjectIndex();
+        return;
+      }
       if (message.type !== "custom-canvas:published") return;
       const sourceProjectId = String(message.projectId || "").trim().slice(0, 180);
       const deliveryId = String(message.deliveryId || "").trim().slice(0, 160);
@@ -61,7 +65,7 @@ export function GithubPagesApp() {
     };
     window.addEventListener("message", receivePublishedState);
     return () => window.removeEventListener("message", receivePublishedState);
-  }, [markProjectPublished]);
+  }, [markProjectPublished, syncCanvasProjectIndex]);
 
   if (!projectId) {
     return (

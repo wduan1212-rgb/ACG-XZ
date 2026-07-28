@@ -93,6 +93,20 @@ class CustomCanvasDraftPersistenceTest(unittest.TestCase):
                 index = main.custom_canvas_projects_list(
                     me={"id": "creator-a", "role": "editor"},
                 )
+                renamed_payload = draft_payload(
+                    "canvas-route",
+                    updated_at=101,
+                    base_revision=saved["project"]["revision"],
+                )
+                renamed_payload["project"]["name"] = "已重命名画布"
+                renamed = main.custom_canvas_projects_put(
+                    "canvas-route",
+                    main.CustomCanvasProjectDraftReq(**renamed_payload),
+                    me={"id": "creator-a", "role": "editor"},
+                )
+                index_after_rename = main.custom_canvas_projects_list(
+                    me={"id": "creator-a", "role": "editor"},
+                )
                 deleted = main.custom_canvas_projects_delete(
                     "canvas-route",
                     me={"id": "creator-a", "role": "editor"},
@@ -102,6 +116,9 @@ class CustomCanvasDraftPersistenceTest(unittest.TestCase):
                 )
             self.assertEqual(saved["project"]["sourceId"], "canvas-route")
             self.assertEqual(index["items"][0]["sourceId"], "canvas-route")
+            self.assertEqual(renamed["project"]["name"], "已重命名画布")
+            self.assertEqual(renamed["state"]["messages"][0]["text"], "保留图片")
+            self.assertEqual(index_after_rename["items"][0]["name"], "已重命名画布")
             self.assertTrue(deleted["ok"])
             self.assertEqual(index_after["tombstones"][0]["sourceId"], "canvas-route")
 

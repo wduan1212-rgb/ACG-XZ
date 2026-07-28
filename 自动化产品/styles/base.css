@@ -1810,6 +1810,9 @@ body.workspace-shell-v2 .wsctx-row-shell:focus-within,
 body.workspace-shell-v2 .wsctx-row-shell.is-menu-open {
   background: #efefec;
 }
+body.workspace-shell-v2 .wsctx-canvas-project-shell.is-active {
+  background: #e8e8e5;
+}
 body.workspace-shell-v2 .wsctx-row-shell .wsctx-row {
   min-width: 0;
   background: transparent;
@@ -1925,6 +1928,12 @@ body.workspace-shell-v2 .wsctx-row-shell .wsctx-video-project.is-active {
 }
 body.workspace-shell-v2 .wsctx-row-shell:hover .wsctx-video-project,
 body.workspace-shell-v2 .wsctx-row-shell .wsctx-video-project:focus-visible {
+  background: transparent;
+}
+body.workspace-shell-v2 .wsctx-row-shell .wsctx-canvas-project,
+body.workspace-shell-v2 .wsctx-row-shell .wsctx-canvas-project.is-active,
+body.workspace-shell-v2 .wsctx-row-shell:hover .wsctx-canvas-project,
+body.workspace-shell-v2 .wsctx-row-shell .wsctx-canvas-project:focus-visible {
   background: transparent;
 }
 body.workspace-shell-v2 .wsctx-row[data-session-favorite="true"] > span > b::before {
