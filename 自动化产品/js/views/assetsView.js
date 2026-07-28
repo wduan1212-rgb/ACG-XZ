@@ -127,7 +127,7 @@ export const assetsView = {
         $$('[data-library]', $("#assetsTopDock") || root).forEach(button => button.addEventListener("click", () => {
           setAssetLibraryMode(button.dataset.library);
         }));
-        import("./draftsView.js?v=20260728-v120-shell-12").then(({ draftsView }) => {
+        import("./draftsView.js?v=20260728-v120-shell-13").then(({ draftsView }) => {
           const host = $("#assetDraftsHost", root);
           if (host) draftsView.render(host);
         });

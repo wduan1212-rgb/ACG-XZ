@@ -601,6 +601,7 @@ test("supplier workspaces move account and delivery tools into the left context"
   assert.match(contextRows, /supplierAccountCollator\.compare/);
   assert.match(contextRows, /supplierContextSearch\("delivery",\s*"搜索账号或素材"\)/);
   assert.match(contextRows, /data-ws-supplier-batch-download/);
+  assert.match(contextRows, /wsctx-supplier-delivery-tools/);
   assert.match(contextRows, /title:\s*"账号申请"/);
   assert.match(contextRows, /title:\s*"全部账号"/);
   assert.doesNotMatch(mainJs, /id="topSupplierOverviewSearch"/);
@@ -614,6 +615,10 @@ test("supplier workspaces move account and delivery tools into the left context"
 
   assert.match(viewsCss, /\.supplier-dashboard-stats\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/s);
   assert.match(viewsCss, /\.supplier-dashboard-visuals\s*\{[^}]*grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+minmax\(440px,\s*2fr\)/s);
+  assert.match(viewsCss, /\.supplier-account-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/s);
+  assert.match(viewsCss, /\.supplier-dashboard-main\s*\{[^}]*grid-template-rows:\s*auto\s+repeat\(2,\s*minmax\(0,\s*1fr\)\)/s);
+  assert.match(baseCss, /\.wsctx-supplier-search\s*\{[^}]*display:\s*flex;[^}]*border-radius:\s*12px/s);
+  assert.match(baseCss, /\.wsctx-supplier-delivery-tools\s*\{[^}]*display:\s*grid;[^}]*gap:\s*8px/s);
   assert.match(viewsCss, /\.sup-actions-inner\s*\{[^}]*border-radius:\s*999px/s);
 });
 
@@ -627,18 +632,19 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final shell-12 cache marker", () => {
+test("all modified workspace-shell resources use the final shell-13 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-12"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-12"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-12"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-12"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-12"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-12"/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-12"/);
-  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-12"/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-12"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-13"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-13"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-13"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260728-v120-shell-13"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-13"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-13"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-13"/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-13"/);
+  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-13"/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-13"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

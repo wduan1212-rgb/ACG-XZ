@@ -532,17 +532,18 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
 
 /* Supplier account board: denser rows and a consistently aligned assign control. */
 .supplier-account-grid {
-  grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   view-transition-name: none;
 }
 .supplier-account-grid.is-switching { animation: supplierGridIn 160ms ease-out both; }
 @keyframes supplierGridIn { from { opacity: .76; } to { opacity: 1; } }
 .supplier-account {
   position: relative;
-  grid-template-columns: 34px minmax(0, 1fr) 202px;
-  gap: 9px;
-  min-height: 76px;
-  padding: 18px 11px 9px;
+  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  gap: 7px 9px;
+  min-height: 92px;
+  padding: 18px 10px 8px;
 }
 .supplier-account-avatar { width: 34px; height: 34px; border-radius: 50%; }
 .supplier-account-avatar.small { width: 28px; height: 28px; }
@@ -576,7 +577,7 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
   font: 700 9px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   letter-spacing: .02em;
 }
-.supplier-account-controls { min-width: 0; display: grid; gap: 6px; align-content: center; }
+.supplier-account-controls { grid-column: 1 / -1; min-width: 0; display: flex; align-items: flex-end; justify-content: space-between; gap: 6px; }
 .supplier-account-control-row { min-width: 0; display: flex; align-items: flex-end; justify-content: flex-end; gap: 5px; }
 .supplier-content-account-actions { min-width: 0; justify-content: flex-end; }
 .supplier-homepage-actions { min-width: 0; display: grid; gap: 4px; margin: 0; }
@@ -628,7 +629,13 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
   .delivery-toolbar .mode-tabs { width: 100%; }
   .delivery-toolbar > .btn { align-self: flex-end; }
   .supplier-filters .supplier-selection-count { position: static; align-self: flex-end; }
-  .supplier-account { grid-template-columns: 34px minmax(0, 1fr) 202px; }
+  .supplier-account { grid-template-columns: 34px minmax(0, 1fr); }
+}
+@media (max-width: 1380px) {
+  .supplier-account-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .supplier-account-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ---------- v71 r3: stable local interactions and monochrome refinement ---------- */

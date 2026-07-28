@@ -7,12 +7,12 @@ import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, delete
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
 import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260728-v120-shell-12";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260728-v120-shell-13";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260728-v120-shell-12";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260728-v120-shell-12";
-import { renderCutPage } from "./chainCut.js?v=20260728-v120-shell-12";
-import { renderReviewPage } from "./chainCopy.js?v=20260728-v120-shell-12";
+import { renderSlotsPage } from "./chainBoards.js?v=20260728-v120-shell-13";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260728-v120-shell-13";
+import { renderCutPage } from "./chainCut.js?v=20260728-v120-shell-13";
+import { renderReviewPage } from "./chainCopy.js?v=20260728-v120-shell-13";
 
 export const studioView = {
   render(root, { page }) {

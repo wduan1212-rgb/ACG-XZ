@@ -1,7 +1,7 @@
 /* 应用入口：装载数据 → 迁移 → 恢复任务 → 外壳 → 路由 */
 
 import { $, $$, esc, uid } from "./core/util.js";
-import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260728-v120-shell-12";
+import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260728-v120-shell-13";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
@@ -21,22 +21,22 @@ import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyP
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
-import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-12";
-import { overviewView } from "./views/overview.js?v=20260728-v120-shell-12";
-import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-12";
-import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-12";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-12";
-import { studioView } from "./views/studio.js?v=20260728-v120-shell-12";
-import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-12";
-import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-12";
+import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
+import { overviewView } from "./views/overview.js?v=20260728-v120-shell-13";
+import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-13";
+import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-13";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-13";
+import { studioView } from "./views/studio.js?v=20260728-v120-shell-13";
+import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-13";
+import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-13";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-12";
-import { settingsView } from "./views/settings.js?v=20260728-v120-shell-12";
+import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-13";
+import { settingsView } from "./views/settings.js?v=20260728-v120-shell-13";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-12";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-13";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260728-v120-shell-12";
+const APP_BUILD_ID = "20260728-v120-shell-13";
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 const WORKSPACE_VIDEO_META_KEY = "xingzhen.workspaceVideoMeta";
@@ -1239,7 +1239,7 @@ function supplierAccountContextRow(account, index) {
       ${query && !searchValue.includes(query) ? "hidden" : ""}>
       ${contextRow({
         title: account.name || `账号 ${index + 1}`,
-        meta: account.platform || "",
+        meta: "",
         zone: "assets",
         id: account.id,
         active: selected,
@@ -2067,8 +2067,10 @@ function renderWorkspaceContextPanel() {
           title: "发布清单",
           collapsible: false,
           rows: [
-            supplierContextSearch("delivery", "搜索账号或素材"),
-            `<button class="wsctx-supplier-primary-action" type="button" data-ws-supplier-batch-download>${icon("download", 13)}<span>批量下载未下载</span></button>`,
+            `<div class="wsctx-supplier-delivery-tools">
+              ${supplierContextSearch("delivery", "搜索账号或素材")}
+              <button class="wsctx-supplier-primary-action" type="button" data-ws-supplier-batch-download>${icon("download", 13)}<span>批量下载未下载</span></button>
+            </div>`,
           ],
         }] : []),
         { key: "filters", title: "筛选", rows: [deliveryFilterControls(model)] },

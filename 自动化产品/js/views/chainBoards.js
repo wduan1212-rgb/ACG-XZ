@@ -12,7 +12,7 @@ import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/pr
 import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260727-v118-7";
 import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260727-v118-7";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260728-v120-shell-12";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260728-v120-shell-13";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;

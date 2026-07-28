@@ -2643,7 +2643,51 @@ body.workspace-shell-v2 .wsctx-supplier-favorite.is-active {
   color: #315fd5;
 }
 body.workspace-shell-v2 .wsctx-supplier-search {
-  margin: 0 4px 5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  height: 40px;
+  margin: 0 4px 8px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid #dfdfda;
+  border-radius: 12px;
+  background: #f4f4f1;
+  color: #8c8c86;
+}
+body.workspace-shell-v2 .wsctx-supplier-search:focus-within {
+  border-color: #c9c9c3;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(24,24,22,.045);
+}
+body.workspace-shell-v2 .wsctx-supplier-search svg {
+  flex: 0 0 auto;
+}
+body.workspace-shell-v2 .wsctx-supplier-search input {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+  appearance: none;
+  font-size: 13px;
+  line-height: 1;
+}
+body.workspace-shell-v2 .wsctx-supplier-delivery-tools {
+  margin: 0 4px 10px;
+  display: grid;
+  gap: 8px;
+}
+body.workspace-shell-v2 .wsctx-supplier-delivery-tools .wsctx-supplier-search {
+  width: 100%;
+  height: 40px;
+  margin: 0;
 }
 body.workspace-shell-v2 .wsctx-supplier-primary-action {
   display: flex;
@@ -2660,6 +2704,21 @@ body.workspace-shell-v2 .wsctx-supplier-primary-action {
   font: inherit;
   cursor: pointer;
   transition: background-color 140ms ease, transform 140ms ease;
+}
+body.workspace-shell-v2 .wsctx-supplier-delivery-tools .wsctx-supplier-primary-action {
+  width: 100%;
+  min-height: 38px;
+  margin: 0;
+  border-radius: 12px;
+  color: #fff;
+  background: #20201e;
+  justify-content: center;
+}
+body.workspace-shell-v2 .wsctx-supplier-delivery-tools .wsctx-supplier-primary-action:hover,
+body.workspace-shell-v2 .wsctx-supplier-delivery-tools .wsctx-supplier-primary-action:focus-visible {
+  color: #fff;
+  background: #343431;
+  transform: translateY(-1px);
 }
 body.workspace-shell-v2 .wsctx-supplier-primary-action:hover,
 body.workspace-shell-v2 .wsctx-supplier-primary-action:focus-visible {
