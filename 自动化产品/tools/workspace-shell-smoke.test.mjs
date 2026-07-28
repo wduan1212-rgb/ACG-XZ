@@ -9,10 +9,12 @@ const read = relativePath => readFileSync(resolve(appRoot, relativePath), "utf8"
 
 const indexHtml = read("index.html");
 const baseCss = read("styles/base.css");
+const componentsCss = read("styles/components.css");
 const viewsCss = read("styles/views.css");
 const agentCss = read("styles/agent.css");
 const customCreationCss = read("styles/custom-creation.css");
 const mainJs = read("js/main.js");
+const componentsJs = read("js/ui/components.js");
 const agentViewJs = read("js/agent/view.js");
 const chainBoardsJs = read("js/views/chainBoards.js");
 const iconsJs = read("js/ui/icons.js");
@@ -602,6 +604,14 @@ test("supplier workspaces move account and delivery tools into the left context"
   assert.match(contextRows, /supplierContextSearch\("delivery",\s*"搜索账号或素材"\)/);
   assert.match(contextRows, /data-ws-supplier-batch-download/);
   assert.match(contextRows, /wsctx-supplier-delivery-tools/);
+  assert.match(mainJs, /buildSupplierSearchResults\(\{/);
+  assert.match(mainJs, /delivered:\s*deliveredAssets\(\)/);
+  assert.match(mainJs, /group:\s*"相关素材"/);
+  assert.match(mainJs, /group:\s*"账号"/);
+  assert.match(mainJs, /import\s*\{\s*buildSupplierSearchResults\s*\}/);
+  assert.match(mainJs, /deliveryView\.focusAsset\?\.\(asset\.id/);
+  assert.match(mainJs, /openPalette\(paletteCommands,\s*\{/);
+  assert.match(mainJs, /event\.target\.closest\?\.\("\[data-ws-supplier-search\]"\)/);
   assert.match(contextRows, /title:\s*"账号申请"/);
   assert.match(contextRows, /title:\s*"全部账号"/);
   assert.doesNotMatch(mainJs, /id="topSupplierOverviewSearch"/);
@@ -615,11 +625,27 @@ test("supplier workspaces move account and delivery tools into the left context"
 
   assert.match(viewsCss, /\.supplier-dashboard-stats\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/s);
   assert.match(viewsCss, /\.supplier-dashboard-visuals\s*\{[^}]*grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+minmax\(440px,\s*2fr\)/s);
-  assert.match(viewsCss, /\.supplier-account-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/s);
+  assert.match(viewsCss, /\.supplier-account-platform-tabs\s*\{[^}]*display:\s*inline-flex;[^}]*border-radius:\s*12px/s);
+  assert.match(viewsCss, /\.supplier-account-platform-tabs button\.is-active\s*\{[^}]*background:\s*#fff;[^}]*box-shadow:/s);
+  assert.match(viewsCss, /\.supplier-account-grid\s*\{[^}]*display:\s*block;[^}]*border:\s*0;[^}]*background:\s*transparent/s);
   assert.match(viewsCss, /\.supplier-dashboard-main\s*\{[^}]*grid-template-rows:\s*auto\s+repeat\(2,\s*minmax\(0,\s*1fr\)\)/s);
   assert.match(baseCss, /\.wsctx-supplier-search\s*\{[^}]*display:\s*flex;[^}]*border-radius:\s*12px/s);
   assert.match(baseCss, /\.wsctx-supplier-delivery-tools\s*\{[^}]*display:\s*grid;[^}]*gap:\s*8px/s);
+  assert.match(baseCss, /role-supplier\s+\.palette-ov\s+\.pal-item[\s\S]*animation:\s*none/s);
+  assert.match(componentsJs, /typeof commandSource === "function"/);
+  assert.match(componentsJs, /data-pal-more/);
+  assert.match(componentsCss, /\.pal-more\s*\{[^}]*min-height:\s*38px/s);
+  assert.match(supplierViewsJs, /focusAccount\(state\.ui\.supplierSelectedAccountId\)/);
+  assert.match(deliveryViewJs, /focusSupplierDeliveryAsset/);
+  assert.match(supplierViewsJs, /data-supplier-platform-filter/);
+  assert.match(supplierViewsJs, /accountPlatformCounts/);
+  assert.match(supplierViewsJs, /applyAccountFilters\(\{\s*animate:\s*true\s*\}\)/);
+  assert.match(viewsCss, /\.supplier-account\s*\{[^}]*grid-template-columns:\s*36px\s+minmax\(180px,\s*1fr\)\s+auto/s);
+  assert.match(viewsCss, /\.supplier-account-controls\s*\{[^}]*min-width:\s*max-content;[^}]*display:\s*flex/s);
+  assert.match(viewsCss, /\.supplier-platform-chart\s+\.supplier-donut\s*\{[^}]*margin-top:\s*38px/s);
+  assert.match(viewsCss, /\.supplier-trend-chart\s+\.supplier-trend-scroll\s*\{[^}]*padding-top:\s*18px/s);
   assert.match(viewsCss, /\.sup-actions-inner\s*\{[^}]*border-radius:\s*999px/s);
+  assert.match(viewsCss, /\.sup-acts\s+\.sup-actions-inner\s+\.btn\.primary\s*\{[^}]*color:\s*#fff;[^}]*background:\s*#171b22/s);
 });
 
 test("canvas and video switches wait for the real latest project before routing", () => {

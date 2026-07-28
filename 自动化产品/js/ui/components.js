@@ -377,11 +377,17 @@ function gooeyPaletteSupported() {
   return !ios && !safari;
 }
 
-export function openPalette(commands) {
+export function openPalette(commandSource, options = {}) {
   const exist = $("#palette");
   if (exist) { exist.__close?.(); return; }
   const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const gooey = gooeyPaletteSupported();
+  const resolveCommands = query => {
+    const commands = typeof commandSource === "function"
+      ? commandSource(query)
+      : commandSource;
+    return Array.isArray(commands) ? commands : [];
+  };
   const filterId = `gooey-palette-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   const ov = document.createElement("div");
   ov.id = "palette";
@@ -396,7 +402,7 @@ export function openPalette(commands) {
     </defs></svg>` : ""}
     <div class="palette" role="dialog" aria-modal="true" aria-label="全局搜索">
       <div class="pal-goo-layer" ${gooey ? `style="filter:url(#${filterId})"` : ""} aria-hidden="true"></div>
-      <div class="pal-input-row"><span class="pal-search-orb">${icon("search", 16)}</span><input id="palInput" role="combobox" aria-controls="palList" aria-expanded="true" aria-autocomplete="list" placeholder="搜索账号 / 任务 / 操作…" autocomplete="off" /></div>
+      <div class="pal-input-row"><span class="pal-search-orb">${icon("search", 16)}</span><input id="palInput" role="combobox" aria-controls="palList" aria-expanded="true" aria-autocomplete="list" placeholder="${esc(options.placeholder || "搜索账号 / 任务 / 操作…")}" autocomplete="off" /></div>
       <div class="pal-list" id="palList" role="listbox"></div>
       <div class="pal-foot"><span>↑↓ 选择 · Enter 执行 · Esc 关闭</span></div>
     </div>`;
@@ -405,9 +411,10 @@ export function openPalette(commands) {
   const input = $("#palInput", ov);
   const list = $("#palList", ov);
   const gooLayer = $(".pal-goo-layer", ov);
-  let idx = 0, filtered = commands;
+  let idx = 0, filtered = resolveCommands("");
+  let visibleLimit = 12;
   let closed = false;
-  const visibleCommands = () => filtered.slice(0, 12);
+  const visibleCommands = () => filtered.slice(0, visibleLimit);
   const syncGooGeometry = () => {
     if (!gooLayer || !list) return;
     gooLayer.style.setProperty("--pal-scroll", `${list.scrollTop}px`);
@@ -430,13 +437,17 @@ export function openPalette(commands) {
   };
   const renderList = () => {
     const shown = visibleCommands();
+    const hiddenCount = Math.max(0, filtered.length - shown.length);
     idx = shown.length ? Math.max(0, Math.min(idx, shown.length - 1)) : 0;
-    list.innerHTML = shown.map((c, i) => `
+    list.innerHTML = (shown.map((c, i) => `
       <div class="pal-item" data-i="${i}" id="palOption${i}" role="option" aria-selected="false" style="--pal-i:${i}">
         <span class="pi-ico">${icon(c.icon || "arrowRight", 15)}</span>
         <span class="pi-main"><b>${esc(c.label)}</b>${c.hint ? `<em>${esc(c.hint)}</em>` : ""}</span>
         ${c.group ? `<span class="pi-group">${esc(c.group)}</span>` : ""}
-      </div>`).join("") || `<div class="np-empty">没有匹配项</div>`;
+      </div>`).join("")
+      + (hiddenCount
+        ? `<button class="pal-more" type="button" data-pal-more>还有 ${hiddenCount} 条结果，展开更多</button>`
+        : "")) || `<div class="np-empty">没有匹配项</div>`;
     if (gooLayer) {
       gooLayer.innerHTML = `<i class="pal-goo-input-bg"></i><span class="pal-goo-results-clip">${shown
         .map((_, i) => `<i class="pal-goo-result-bg" style="--pal-i:${i}"></i>`)
@@ -479,8 +490,13 @@ export function openPalette(commands) {
   window.addEventListener("resize", syncGooGeometry);
   input.addEventListener("input", () => {
     const q = input.value.trim().toLowerCase();
-    filtered = !q ? commands : commands.filter(c => (c.label + (c.hint || "") + (c.group || "")).toLowerCase().includes(q));
+    const commands = resolveCommands(q);
+    filtered = !q ? commands : commands.filter(c => (
+      c.searchText
+      || `${c.label || ""} ${c.hint || ""} ${c.group || ""}`
+    ).toLowerCase().includes(q));
     idx = 0;
+    visibleLimit = 12;
     list.scrollTop = 0;
     renderList();
   });
@@ -491,7 +507,15 @@ export function openPalette(commands) {
     updateSelection();
   });
   list.addEventListener("scroll", syncGooGeometry, { passive: true });
-  list.addEventListener("click", e => { const it = e.target.closest("[data-i]"); if (it) { idx = +it.dataset.i; run(); } });
+  list.addEventListener("click", e => {
+    if (e.target.closest("[data-pal-more]")) {
+      visibleLimit += 12;
+      renderList();
+      return;
+    }
+    const it = e.target.closest("[data-i]");
+    if (it) { idx = +it.dataset.i; run(); }
+  });
   ov.addEventListener("click", e => { if (e.target === ov) close(); });
   input.focus();
   renderList();

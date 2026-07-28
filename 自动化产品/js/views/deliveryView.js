@@ -348,6 +348,7 @@ let supFilters = { ...deliveryFilterDefaults };
 let creatorRemarkFilter = "all";
 let activeDeliveryController = null;
 let supplierDeliveryQuery = "";
+let supplierDeliveryFocusId = "";
 const supplierAccountCollator = new Intl.Collator("zh-CN-u-co-pinyin", {
   numeric: true,
   sensitivity: "base",
@@ -476,6 +477,12 @@ export function setSupplierDeliveryQuery(value, { redraw = true } = {}) {
   return supplierDeliveryQuery;
 }
 
+export function focusSupplierDeliveryAsset(assetId, { redraw = true } = {}) {
+  supplierDeliveryFocusId = String(assetId || "");
+  if (redraw && activeDeliveryController?.draw) activeDeliveryController.draw();
+  return supplierDeliveryFocusId;
+}
+
 export async function batchDownloadSupplierDelivery() {
   return activeDeliveryController?.batchDl?.();
 }
@@ -501,6 +508,7 @@ export const deliveryView = {
   setFilter: setDeliveryFilter,
   resetFilters: resetDeliveryFilters,
   setQuery: setSupplierDeliveryQuery,
+  focusAsset: focusSupplierDeliveryAsset,
   batchDownload: batchDownloadSupplierDelivery,
   render(root) {
     const isSupplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
@@ -856,6 +864,17 @@ export const deliveryView = {
         detail.hidden = !detail.hidden;
         tr.classList.toggle("open", !detail.hidden);
       }));
+      if (supplierDeliveryFocusId) {
+        const focusId = supplierDeliveryFocusId;
+        supplierDeliveryFocusId = "";
+        requestAnimationFrame(() => {
+          const row = body.querySelector(`tr[data-sup="${CSS.escape(focusId)}"]`);
+          if (!row || row.hidden) return;
+          row.scrollIntoView({ block: "center", behavior: "smooth" });
+          row.classList.add("is-search-focus");
+          window.setTimeout(() => row.classList.remove("is-search-focus"), 1800);
+        });
+      }
       $$("[data-supimg]", body).forEach(b => b.addEventListener("click", e => {
         e.stopPropagation();
         const a = state.assets.find(x => x.id === b.dataset.supimg);

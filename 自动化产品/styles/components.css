@@ -405,6 +405,23 @@ input[type="range"] { accent-color: var(--brand); }
 .pi-main b { font-size: 13px; display: block; }
 .pi-main em { font-style: normal; font-size: 11px; color: var(--faint); }
 .pi-group { font-size: 10px; color: var(--faint); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; }
+.pal-more {
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  color: var(--muted);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.pal-more:hover,
+.pal-more:focus-visible {
+  color: var(--text);
+  background: var(--soft);
+  outline: 0;
+}
 .pal-foot {
   margin-top: 3px; padding: 8px 16px;
   border: 1px solid var(--line); border-radius: 12px;

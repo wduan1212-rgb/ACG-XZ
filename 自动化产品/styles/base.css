@@ -2720,6 +2720,43 @@ body.workspace-shell-v2 .wsctx-supplier-delivery-tools .wsctx-supplier-primary-a
   background: #343431;
   transform: translateY(-1px);
 }
+body.workspace-shell-v2.role-supplier .palette-ov.is-gooey .palette {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+body.workspace-shell-v2.role-supplier .palette-ov .pal-goo-layer,
+body.workspace-shell-v2.role-supplier .palette-ov .pal-goo-defs {
+  display: none;
+}
+body.workspace-shell-v2.role-supplier .palette-ov .pal-list,
+body.workspace-shell-v2.role-supplier .palette-ov .pal-foot {
+  background: var(--surface);
+}
+body.workspace-shell-v2.role-supplier .palette-ov .pal-item,
+body.workspace-shell-v2.role-supplier .palette-ov .pal-search-orb {
+  opacity: 1;
+  filter: none;
+  transform: none;
+  animation: none;
+}
+body.workspace-shell-v2.role-supplier .palette-ov,
+body.workspace-shell-v2.role-supplier-child .palette-ov {
+  align-items: flex-start;
+  padding-top: 9vh;
+}
+body.workspace-shell-v2.role-supplier .palette-ov .palette,
+body.workspace-shell-v2.role-supplier-child .palette-ov .palette {
+  width: min(720px, calc(100vw - 40px));
+  transform: none;
+  transition: none;
+}
+body.workspace-shell-v2.role-supplier .palette-ov .pal-list,
+body.workspace-shell-v2.role-supplier-child .palette-ov .pal-list {
+  margin-top: 0;
+  overscroll-behavior: contain;
+}
 body.workspace-shell-v2 .wsctx-supplier-primary-action:hover,
 body.workspace-shell-v2 .wsctx-supplier-primary-action:focus-visible {
   background: #343431;

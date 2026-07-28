@@ -9,7 +9,8 @@ import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
-import { productTagLabel } from "./domain/delivery.js?v=20260727-v118-7";
+import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260727-v118-7";
+import { buildSupplierSearchResults } from "./domain/supplierSearch.js";
 import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js?v=20260727-v118-7";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260727-v118-7";
@@ -1785,6 +1786,10 @@ function ensureWorkspaceContextShell(panel) {
     );
   });
   panel.addEventListener("keydown", event => {
+    if (event.target.closest?.("[data-ws-supplier-search]")) {
+      event.stopPropagation();
+      return;
+    }
     if (!event.target.closest("#workspaceAccountMenu")) return;
     const options = [...$("#workspaceAccountMenu", panel).querySelectorAll("[role='menuitem']")];
     const index = options.indexOf(document.activeElement);
@@ -2400,8 +2405,10 @@ function renderTopbar() {
 
 /* ---------- ⌘K ---------- */
 function paletteCommands() {
+  const rawQuery = arguments[0] || "";
   const supplierChild = state.role === "supplier_child";
   const supplierParent = state.role === "supplier" || state.role === "supplier_parent";
+  const query = String(rawQuery || "").trim().toLowerCase();
   const nav = supplierChild ? [
     { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") }
   ] : supplierParent ? [
@@ -2425,7 +2432,56 @@ function paletteCommands() {
     ] : [])
   ];
   const cmds = [...nav];
-  if (supplierChild || supplierParent) return cmds;
+  if (supplierChild || supplierParent) {
+    const supplierResults = buildSupplierSearchResults({
+      accounts: supplierParent ? state.accounts : [],
+      delivered: deliveredAssets(),
+      query,
+      productLabelFor: asset => productTagLabel(productById(asset?.productId || "")),
+    });
+    if (supplierParent) {
+      supplierResults.accounts
+        .slice()
+        .sort((a, b) => supplierAccountCollator.compare(a.account.name || "", b.account.name || ""))
+        .forEach(({ account, searchText }) => {
+          cmds.push({
+            label: account.name || "未命名账号",
+            hint: account.username ? `@${account.username}` : "前往全部账号",
+            searchText,
+            group: "账号",
+            icon: "user",
+            run: () => {
+              const accountQuery = account.name || "";
+              state.ui.supplierSelectedAccountId = account.id;
+              setSupplierWorkspaceQuery("accounts", accountQuery);
+              go("assets");
+              setTimeout(() => document.dispatchEvent(new CustomEvent(
+                "xingzhen:supplier-account-query",
+                { detail: { query: accountQuery, accountId: account.id, resetPlatform: true } },
+              )), 0);
+            },
+          });
+        });
+    }
+    supplierResults.assets.forEach(({ asset, acc, searchText }) => {
+      const assetQuery = asset.title || asset.name || acc.name || "";
+      cmds.push({
+        label: asset.title || asset.name || "未命名内容",
+        hint: `${acc.name || "未命名账号"} · 前往发布清单`,
+        searchText,
+        group: "相关素材",
+        icon: asset.type === "图集" ? "image" : "film",
+        run: () => {
+          setSupplierWorkspaceQuery("delivery", assetQuery);
+          deliveryView.resetFilters?.({ redraw: false });
+          deliveryView.setQuery?.(assetQuery, { redraw: false });
+          deliveryView.focusAsset?.(asset.id, { redraw: false });
+          go("delivery");
+        },
+      });
+    });
+    return cmds;
+  }
   state.accounts.forEach(a => cmds.push({
     label: a.name, hint: (a.styleProfile || a.voiceName || "").slice(0, 24), group: "账号", icon: "user",
     run: () => { state.ui.activeAccountId = a.id; state.ui.activeProductionId = null; save("meta"); allowStudioFromAgent(); go("studio"); }
@@ -2436,6 +2492,13 @@ function paletteCommands() {
     run: () => openProductionDrawer(p.id)
   }));
   return cmds;
+}
+
+function openGlobalPalette() {
+  const supplier = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+  openPalette(paletteCommands, {
+    placeholder: supplier ? "搜索账号或已交付素材…" : "搜索账号 / 任务 / 操作…",
+  });
 }
 
 /* ---------- 启动 ---------- */
@@ -2491,13 +2554,13 @@ async function boot() {
       go(b.dataset.nav);
     }));
     $("#navLogout").addEventListener("click", logout);
-    $("#topSearch").addEventListener("click", () => openPalette(paletteCommands()));
+    $("#topSearch").addEventListener("click", openGlobalPalette);
     document.addEventListener("click", e => {
       if (e.target.closest("[data-open-create-account]")) document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} }));
     });
     $("#topBell").addEventListener("click", e => toggleNotifyPanel(e.currentTarget));
     document.addEventListener("keydown", e => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPalette(paletteCommands()); }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openGlobalPalette(); }
     });
     window.addEventListener("view:rendered", () => { renderContextPanel(); renderTopbar(); });
     on("change", () => {

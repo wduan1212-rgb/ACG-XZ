@@ -40,7 +40,9 @@ function emitSupplierChildren(children = [], bindings = []) {
 if (typeof document !== "undefined") {
   document.addEventListener("xingzhen:supplier-account-query", event => {
     supplierAccountFilterQuery = String(event.detail?.query || "").trim().toLowerCase();
+    if (event.detail?.resetPlatform) supplierPlatform = "all";
     activeSupplierAccountController?.applyFilters?.();
+    activeSupplierAccountController?.focusAccount?.(event.detail?.accountId);
   });
   document.addEventListener("xingzhen:supplier-create-children", () => {
     const controller = onSupplierRoute("settings")
@@ -499,6 +501,16 @@ export async function renderSupplierAccounts(root) {
     const accountSequence = accountDisplaySequenceMap(state.accounts);
     const canEditHomepage = ["supplier", "supplier_parent"].includes(state.role);
     const deliveredAssets = state.assets.filter(asset => asset && (asset.delivered || asset.shared));
+    const accountPlatformCounts = state.accounts.reduce((counts, account) => {
+      const platform = account.platform || "其他";
+      counts.set(platform, (counts.get(platform) || 0) + 1);
+      return counts;
+    }, new Map());
+    const accountPlatformTabs = [
+      ["all", "全部账号", state.accounts.length],
+      ["小红书", "小红书", accountPlatformCounts.get("小红书") || 0],
+      ["视频号", "视频号", accountPlatformCounts.get("视频号") || 0],
+    ];
     const accountViewSummary = account => {
       const derived = deliveredAssets
         .filter(asset => asset.accountId === account.id)
@@ -513,6 +525,7 @@ export async function renderSupplierAccounts(root) {
       };
     };
     root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div>
+      <nav class="supplier-account-platform-tabs" aria-label="按平台筛选账号">${accountPlatformTabs.map(([value, label, count]) => `<button type="button" data-supplier-platform-filter="${esc(value)}" class="${supplierPlatform === value ? "is-active" : ""}" aria-pressed="${supplierPlatform === value ? "true" : "false"}"><span>${esc(label)}</span><em>${count}</em></button>`).join("")}</nav>
       <div class="supplier-account-grid">${state.accounts.map(acc => {
         const binding = bindings.find(x => x.accountId === acc.id);
         const child = binding ? childMap.get(binding.childId) : null;
@@ -603,8 +616,9 @@ export async function renderSupplierAccounts(root) {
         toast(error?.message || "账号状态更新失败", "error");
       }
     }));
-    const applyAccountFilters = () => {
+    const applyAccountFilters = ({ animate = false } = {}) => {
       const cards = $$(".supplier-account", root);
+      const list = $(".supplier-account-grid", root);
       const before = new Map(cards.filter(card => !card.hidden).map(card => [card, card.getBoundingClientRect()]));
       cards.forEach(card => {
         card.hidden = (
@@ -615,20 +629,59 @@ export async function renderSupplierAccounts(root) {
       const empty = $(".supplier-account-filter-empty", root);
       if (empty) empty.hidden = cards.some(card => !card.hidden);
       $$('[data-top-supplier-platform]').forEach(button => button.classList.toggle("is-active", button.dataset.topSupplierPlatform === supplierPlatform));
+      $$('[data-supplier-platform-filter]', root).forEach(button => {
+        const active = button.dataset.supplierPlatformFilter === supplierPlatform;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+      if (animate && list && !window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+        list.classList.remove("is-switching");
+        void list.offsetWidth;
+        list.classList.add("is-switching");
+        window.setTimeout(() => list.classList.remove("is-switching"), 320);
+      }
       requestAnimationFrame(() => cards.filter(card => !card.hidden).forEach(card => {
         const oldRect = before.get(card);
-        if (!oldRect) return card.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: "ease-out" });
+        if (!oldRect) return card.animate(
+          [{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }],
+          { duration: 240, easing: "cubic-bezier(.16,.84,.34,1)" },
+        );
         const nextRect = card.getBoundingClientRect();
         const dx = oldRect.left - nextRect.left;
         const dy = oldRect.top - nextRect.top;
-        if (dx || dy) card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }], { duration: 210, easing: "cubic-bezier(.2,.8,.2,1)" });
+        if (dx || dy) card.animate(
+          [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }],
+          { duration: 260, easing: "cubic-bezier(.16,.84,.34,1)" },
+        );
       }));
     };
-    $$('[data-top-supplier-platform]').forEach(button => { button.onclick = () => { supplierPlatform = button.dataset.topSupplierPlatform || "all"; applyAccountFilters(); }; });
+    const focusAccount = accountId => {
+      const id = String(accountId || "");
+      if (!id) return;
+      requestAnimationFrame(() => {
+        const card = root.querySelector(`[data-account-id="${CSS.escape(id)}"]`);
+        if (!card || card.hidden) return;
+        card.scrollIntoView({ block: "center", behavior: "smooth" });
+        card.classList.add("is-search-focus");
+        window.setTimeout(() => card.classList.remove("is-search-focus"), 1800);
+      });
+    };
+    const selectAccountPlatform = next => {
+      const value = next || "all";
+      if (value === supplierPlatform) return;
+      supplierPlatform = value;
+      applyAccountFilters({ animate: true });
+    };
+    $$('[data-top-supplier-platform]').forEach(button => { button.onclick = () => selectAccountPlatform(button.dataset.topSupplierPlatform); });
+    $$('[data-supplier-platform-filter]', root).forEach(button => {
+      button.addEventListener("click", () => selectAccountPlatform(button.dataset.supplierPlatformFilter));
+    });
     applyAccountFilters();
+    focusAccount(state.ui.supplierSelectedAccountId);
     activeSupplierAccountController = {
       root,
       applyFilters: applyAccountFilters,
+      focusAccount,
       refresh: () => renderSupplierAccounts(root),
     };
     root.__viewCleanup = () => {
