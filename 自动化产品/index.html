@@ -6,13 +6,13 @@
     <title>星阵</title>
     <link rel="icon" type="image/svg+xml" href="./assets/brand/xingzhen-favicon-black.svg?v=20260711-v71" />
     <link rel="stylesheet" href="./styles/tokens.css?v=20260711-v70" />
-    <link rel="stylesheet" href="./styles/base.css?v=20260728-v120-shell-13" />
+    <link rel="stylesheet" href="./styles/base.css?v=20260728-v120-shell-16" />
     <link rel="stylesheet" href="./styles/components.css?v=20260723-v117-8" />
-    <link rel="stylesheet" href="./styles/views.css?v=20260728-v120-shell-13" />
+    <link rel="stylesheet" href="./styles/views.css?v=20260728-v120-shell-16" />
     <link rel="stylesheet" href="./styles/analytics.css?v=20260711-v70" />
-    <link rel="stylesheet" href="./styles/agent.css?v=20260728-v120-shell-13" />
-    <link rel="stylesheet" href="./styles/ui-motion.css?v=20260728-v120-shell-13" />
-    <link rel="stylesheet" href="./styles/custom-creation.css?v=20260728-v120-shell-13" />
+    <link rel="stylesheet" href="./styles/agent.css?v=20260728-v120-shell-16" />
+    <link rel="stylesheet" href="./styles/ui-motion.css?v=20260728-v120-shell-16" />
+    <link rel="stylesheet" href="./styles/custom-creation.css?v=20260728-v120-shell-16" />
     <link rel="stylesheet" href="./styles/client-download.css?v=20260727-v119-4" />
     <script>
       (function () {
@@ -27,45 +27,72 @@
 
     <!-- 开屏 · 三身份口令登录 -->
     <div id="loginGate" class="login-gate">
-      <canvas class="lg-beams" id="lgBeams" aria-hidden="true"></canvas>
-      <div class="lg-wordmark" aria-hidden="true">星阵</div>
-      <button class="lg-secondary link-elara" id="lgApply" type="button" aria-pressed="false"><span>申请账号</span></button>
+      <div class="lg-auth-shell">
+        <section class="lg-visual" aria-label="星阵创作平台">
+          <canvas class="lg-beams" id="lgBeams" aria-hidden="true"></canvas>
+          <div class="lg-visual-shade" aria-hidden="true"></div>
+          <img class="lg-visual-logo" src="./assets/brand/xingzhen-login-logo.png?v=20260710-v64" alt="星阵" />
+          <div class="lg-visual-copy">
+            <span>创作 · 管理 · 交付</span>
+            <h2>让灵感成为<br />可交付的作品</h2>
+            <p>统一管理账号、素材与生成流程。</p>
+          </div>
+        </section>
 
-      <div class="lg-center">
-        <div class="lg-card" data-mode="login">
-          <div class="lg-brand">
-            <img class="lg-login-logo" src="./assets/brand/xingzhen-login-logo.png?v=20260710-v64" alt="星阵" />
-            <h1 id="lgModeTitle" class="lg-mode-title" role="status" aria-live="polite" aria-atomic="true">登录</h1>
-            <p id="lgHint">使用星阵账号继续</p>
+        <section class="lg-center">
+          <div class="lg-card" data-mode="login">
+            <div class="lg-brand">
+              <h1 id="lgModeTitle" class="lg-mode-title" role="status" aria-live="polite" aria-atomic="true">登录</h1>
+              <p id="lgHint">登录后继续你的工作区</p>
+            </div>
+            <div class="lg-form">
+              <div class="lg-provider-actions" id="lgProviderActions">
+                <button class="lg-provider-btn" id="lgGoogle" type="button">
+                  <img class="lg-provider-icon" src="./assets/brand/google-g-mark.png" alt="" aria-hidden="true" />
+                  <span>使用 Google 快速登录</span>
+                </button>
+                <button class="lg-provider-btn" id="lgPhone" type="button">
+                  <img class="lg-provider-icon" src="./assets/brand/phone-mark.svg" alt="" aria-hidden="true" />
+                  <span>使用手机验证</span>
+                </button>
+              </div>
+              <div class="lg-divider" id="lgDivider"><span>或使用星阵账号</span></div>
+              <label class="lg-field" id="lgUserField">
+                <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M12 11a4 4 0 100-8 4 4 0 000 8z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+                <input id="lgUser" type="text" autocomplete="username" placeholder="用户名" />
+              </label>
+              <label class="lg-field" id="lgPinField">
+                <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M5 11h14v10H5z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 11V7a4 4 0 018 0v4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span>
+                <input id="lgPin" type="password" autocomplete="current-password" placeholder="密码" />
+              </label>
+              <label class="lg-field lg-apply-only" id="lgNameField" hidden>
+                <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M4 20c1.4-3.4 4.2-5.2 8-5.2s6.6 1.8 8 5.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M12 12a4 4 0 100-8 4 4 0 000 8z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span>
+                <input id="lgName" type="text" autocomplete="name" placeholder="姓名 / 昵称" />
+                <small class="lg-real-name-hint">请使用真实姓名</small>
+              </label>
+              <label class="lg-field lg-apply-only" id="lgRoleField" hidden>
+                <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
+                <select id="lgRole">
+                  <option value="editor">创作成员</option>
+                  <option value="supplier_parent">供应商管理员</option>
+                  <option value="supplier_child">供应商子账号</option>
+                </select>
+              </label>
+              <label class="lg-field lg-forgot-only" id="lgForgotNameField" hidden>
+                <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M4 20c1.4-3.4 4.2-5.2 8-5.2s6.6 1.8 8 5.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M12 12a4 4 0 100-8 4 4 0 000 8z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span>
+                <input id="lgForgotName" type="text" autocomplete="name" placeholder="填写你的姓名" />
+              </label>
+              <button class="lg-login" id="lgLogin" type="button">
+                <span class="lg-login-label">登录</span>
+              </button>
+              <div class="lg-form-helper" id="lgFormHelper">
+                <button class="lg-inline-link" id="lgForgot" type="button">忘记密码？</button>
+              </div>
+              <p class="lg-gate-error" id="lgGateError" role="alert" hidden></p>
+              <p class="lg-apply-prompt" id="lgApplyPrompt"><span id="lgApplyLead">还没有账号？</span><button class="lg-inline-link" id="lgApply" type="button" aria-pressed="false"><span>申请账号</span></button></p>
+            </div>
           </div>
-          <div class="lg-form">
-            <label class="lg-field">
-              <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M12 11a4 4 0 100-8 4 4 0 000 8z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
-              <input id="lgUser" type="text" autocomplete="username" placeholder="用户名" />
-            </label>
-            <label class="lg-field">
-              <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M5 11h14v10H5z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M8 11V7a4 4 0 018 0v4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span>
-              <input id="lgPin" type="password" autocomplete="current-password" placeholder="密码" />
-            </label>
-            <label class="lg-field lg-apply-only" id="lgNameField" hidden>
-              <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M4 20c1.4-3.4 4.2-5.2 8-5.2s6.6 1.8 8 5.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M12 12a4 4 0 100-8 4 4 0 000 8z" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></span>
-              <input id="lgName" type="text" autocomplete="name" placeholder="姓名 / 昵称" />
-              <small class="lg-real-name-hint">请使用真实姓名</small>
-            </label>
-            <label class="lg-field lg-apply-only" id="lgRoleField" hidden>
-              <span class="lgf-ico"><svg viewBox="0 0 24 24" width="17" height="17"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span>
-              <select id="lgRole">
-                <option value="editor">创作成员</option>
-                <option value="supplier_parent">供应商管理员</option>
-                <option value="supplier_child">供应商子账号</option>
-              </select>
-            </label>
-            <button class="lg-login" id="lgLogin" type="button">
-              <span class="lg-login-label">登录</span>
-            </button>
-            <p class="lg-gate-error" id="lgGateError" role="alert" hidden></p>
-          </div>
-        </div>
+        </section>
       </div>
     </div>
 
@@ -179,6 +206,6 @@
         }, 7000);
       })();
     </script>
-    <script type="module" src="./js/main.js?v=20260728-v120-shell-13"></script>
+    <script type="module" src="./js/main.js?v=20260728-v120-shell-16"></script>
   </body>
 </html>

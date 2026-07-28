@@ -1,76 +1,64 @@
+/* React Bits Silk shader, ported from React Three Fiber to the platform's
+   existing dependency-free WebGL login canvas.
+   Copyright (c) 2026 David Haz
+   MIT + Commons Clause License Condition v1.0:
+   https://github.com/DavidHDev/react-bits */
 const VERTEX_SHADER = `
 attribute vec2 aPosition;
+varying vec2 vUv;
+varying vec3 vPosition;
+
 void main() {
+  vPosition = vec3(aPosition, 0.0);
+  vUv = aPosition * 0.5 + 0.5;
   gl_Position = vec4(aPosition, 0.0, 1.0);
 }`;
 
 const FRAGMENT_SHADER = `
 precision highp float;
-uniform vec2 uResolution;
-uniform vec2 uMouse;
-uniform float uMouseActive;
+
+varying vec2 vUv;
+varying vec3 vPosition;
+
 uniform float uTime;
+uniform vec3  uColor;
+uniform float uSpeed;
+uniform float uScale;
+uniform float uRotation;
+uniform float uNoiseIntensity;
 
-float hash21(vec2 p) {
-  p = fract(p * vec2(123.34, 456.21));
-  p += dot(p, p + 45.32);
-  return fract(p.x * p.y);
+const float e = 2.71828182845904523536;
+
+float noise(vec2 texCoord) {
+  float G = e;
+  vec2  r = (G * sin(G * texCoord));
+  return fract(r.x * r.y * (1.0 + texCoord.x));
 }
 
-mat2 rotate2d(float angle) {
-  float s = sin(angle), c = cos(angle);
-  return mat2(c, -s, s, c);
-}
-
-float starLayer(vec2 uv, float scale, float seed, float time) {
-  vec2 gridUv = uv * scale;
-  vec2 cell = floor(gridUv);
-  vec2 local = fract(gridUv) - 0.5;
-  float rnd = hash21(cell + seed);
-  vec2 offset = vec2(hash21(cell + seed + 7.2), hash21(cell + seed + 19.4)) - 0.5;
-  local -= offset * 0.62;
-  float radius = mix(0.015, 0.11, pow(rnd, 10.0));
-  float dist = length(local);
-  float glow = smoothstep(radius, 0.0, dist);
-  glow += radius / max(dist, 0.012) * smoothstep(0.34, 0.07, dist) * 0.22;
-  float rays = max(0.0, 1.0 - abs(local.x * local.y) * 520.0) * smoothstep(0.06, 0.0, dist);
-  float twinkle = 0.68 + 0.32 * sin(time * (0.55 + rnd) + rnd * 18.0);
-  return (glow + rays * 0.4) * step(0.79, rnd) * twinkle;
+vec2 rotateUvs(vec2 uv, float angle) {
+  float c = cos(angle);
+  float s = sin(angle);
+  mat2  rot = mat2(c, -s, s, c);
+  return rot * uv;
 }
 
 void main() {
-  vec2 uv = gl_FragCoord.xy / max(uResolution.xy, vec2(1.0));
-  vec2 p = uv - 0.5;
-  p.x *= uResolution.x / max(uResolution.y, 1.0);
+  float rnd        = noise(gl_FragCoord.xy);
+  vec2  uv         = rotateUvs(vUv * uScale, uRotation);
+  vec2  tex        = uv * uScale;
+  float tOffset    = uSpeed * uTime;
 
-  vec2 mouse = uMouse;
-  mouse.x *= uResolution.x / max(uResolution.y, 1.0);
-  vec2 delta = p - mouse;
-  float lens = exp(-dot(delta, delta) * 7.5) * uMouseActive;
-  p += normalize(delta + vec2(0.0001)) * lens * 0.055;
+  tex.y += 0.03 * sin(8.0 * tex.x - tOffset);
 
-  float radius = length(p);
-  float angle = atan(p.y, p.x);
-  float spiral = angle + radius * 2.3 - uTime * 0.035;
-  vec2 galaxyUv = rotate2d(spiral * 0.065) * p;
+  float pattern = 0.6 +
+                  0.4 * sin(5.0 * (tex.x + tex.y +
+                                   cos(3.0 * tex.x + 5.0 * tex.y) +
+                                   0.02 * tOffset) +
+                           sin(20.0 * (tex.x + tex.y - 0.1 * tOffset)));
 
-  float stars = 0.0;
-  stars += starLayer(galaxyUv + vec2(uTime * 0.003, 0.0), 18.0, 1.0, uTime) * 0.70;
-  stars += starLayer(galaxyUv - vec2(0.0, uTime * 0.004), 29.0, 11.0, uTime) * 0.54;
-  stars += starLayer(galaxyUv + vec2(uTime * 0.006), 43.0, 29.0, uTime) * 0.38;
-
-  float band = exp(-pow(abs(sin(spiral * 1.42)) * 1.45 + radius * 0.72, 2.0) * 2.0);
-  float core = exp(-radius * 5.2);
-  float dust = hash21(floor((galaxyUv + uTime * 0.0008) * 240.0)) * 0.035;
-  vec3 nebula = mix(vec3(0.035, 0.055, 0.13), vec3(0.19, 0.09, 0.28), smoothstep(-0.5, 0.6, galaxyUv.x));
-  vec3 color = vec3(0.004, 0.006, 0.018);
-  color += nebula * band * (0.22 + core * 0.5);
-  color += vec3(0.56, 0.68, 1.0) * stars;
-  color += vec3(0.23, 0.46, 0.95) * lens * 0.045;
-  color += dust;
-  float vignette = smoothstep(0.98, 0.18, length((uv - 0.5) * vec2(0.82, 1.0)));
-  color *= 0.50 + vignette * 0.62;
-  gl_FragColor = vec4(pow(clamp(color, 0.0, 1.0), vec3(0.82)), 1.0);
+  vec4 col = vec4(uColor, 1.0) * vec4(pattern) - rnd / 15.0 * uNoiseIntensity;
+  col.a = 1.0;
+  gl_FragColor = col;
 }`;
 
 function compile(gl, type, source) {
@@ -88,12 +76,12 @@ function compile(gl, type, source) {
 export function initLoginBeams() {
   const canvas = document.querySelector("#lgBeams");
   const gate = document.querySelector("#loginGate");
-  if (!canvas || !gate || canvas.dataset.galaxyReady) return;
-  canvas.dataset.galaxyReady = "1";
+  if (!canvas || !gate || canvas.dataset.silkReady) return;
+  canvas.dataset.silkReady = "1";
 
   const gl = canvas.getContext("webgl", { alpha: false, antialias: false, powerPreference: "low-power" });
   if (!gl) {
-    gate.classList.add("galaxy-fallback");
+    gate.classList.add("beams-fallback");
     return;
   }
 
@@ -112,14 +100,21 @@ export function initLoginBeams() {
     gl.enableVertexAttribArray(position);
     gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
 
-    const resolution = gl.getUniformLocation(program, "uResolution");
     const time = gl.getUniformLocation(program, "uTime");
-    const mouse = gl.getUniformLocation(program, "uMouse");
-    const mouseActive = gl.getUniformLocation(program, "uMouseActive");
+    const color = gl.getUniformLocation(program, "uColor");
+    const speed = gl.getUniformLocation(program, "uSpeed");
+    const scale = gl.getUniformLocation(program, "uScale");
+    const rotation = gl.getUniformLocation(program, "uRotation");
+    const noiseIntensity = gl.getUniformLocation(program, "uNoiseIntensity");
+    gl.uniform3f(color, 0.92, 0.92, 0.92);
+    gl.uniform1f(speed, 5);
+    gl.uniform1f(scale, 1.28);
+    gl.uniform1f(rotation, 0.08);
+    gl.uniform1f(noiseIntensity, 1.4);
+
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let frame = 0;
     let start = performance.now();
-    let targetX = 0, targetY = 0, currentX = 0, currentY = 0, activity = 0;
 
     const resize = () => {
       const dpr = Math.min(window.devicePixelRatio || 1, 1.35);
@@ -132,25 +127,10 @@ export function initLoginBeams() {
       }
     };
 
-    const onPointerMove = event => {
-      if (reducedMotion.matches) return;
-      const rect = canvas.getBoundingClientRect();
-      targetX = ((event.clientX - rect.left) / Math.max(rect.width, 1) - 0.5) * 2;
-      targetY = (0.5 - (event.clientY - rect.top) / Math.max(rect.height, 1)) * 2;
-      activity = 1;
-    };
-    gate.addEventListener("pointermove", onPointerMove, { passive: true });
-    gate.addEventListener("pointerleave", () => { targetX = 0; targetY = 0; activity = 0; }, { passive: true });
-
     const draw = now => {
       frame = 0;
       resize();
-      currentX += (targetX - currentX) * 0.055;
-      currentY += (targetY - currentY) * 0.055;
-      gl.uniform2f(resolution, canvas.width, canvas.height);
-      gl.uniform2f(mouse, currentX, currentY);
-      gl.uniform1f(mouseActive, reducedMotion.matches ? 0 : activity);
-      gl.uniform1f(time, reducedMotion.matches ? 0 : (now - start) / 1000);
+      gl.uniform1f(time, reducedMotion.matches ? 0 : (now - start) / 10000);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       if (!gate.hidden && !reducedMotion.matches && !document.hidden) frame = requestAnimationFrame(draw);
     };
@@ -168,10 +148,10 @@ export function initLoginBeams() {
     document.addEventListener("visibilitychange", sync);
     window.addEventListener("resize", sync, { passive: true });
     reducedMotion.addEventListener?.("change", sync);
-    canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); gate.classList.add("galaxy-fallback"); }, false);
+    canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); gate.classList.add("beams-fallback"); }, false);
     sync();
   } catch (error) {
-    console.warn("[login-galaxy]", error);
-    gate.classList.add("galaxy-fallback");
+    console.warn("[login-silk]", error);
+    gate.classList.add("beams-fallback");
   }
 }

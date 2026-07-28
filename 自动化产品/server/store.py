@@ -206,6 +206,14 @@ CREATE TABLE IF NOT EXISTS member_requests(
   reviewed_at INTEGER,
   reviewed_by TEXT
 );
+CREATE TABLE IF NOT EXISTS password_reset_requests(
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  status     TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_password_reset_requests_status_created
+  ON password_reset_requests(status, created_at DESC);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS supplier_account_bindings(
   parent_id  TEXT NOT NULL,
@@ -554,6 +562,60 @@ def list_member_requests(status=None):
 def username_has_pending_request(username):
     row = _fetchone("SELECT id FROM member_requests WHERE username=? AND status='pending'", (username,))
     return bool(row)
+
+
+# ---------- 密码找回申请 ----------
+def _password_reset_request_public(row):
+    return {
+        "id": row[0],
+        "name": row[1],
+        "status": row[2],
+        "createdAt": row[3],
+    }
+
+
+def add_password_reset_request(name):
+    clean_name = re.sub(r"\s+", " ", str(name or "")).strip()[:80]
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            # Repeated clicks within ten minutes should not flood the admin bell.
+            row = conn.execute(
+                "SELECT id,name,status,created_at FROM password_reset_requests "
+                "WHERE name=? AND status='pending' AND created_at>=? ORDER BY created_at DESC LIMIT 1",
+                (clean_name, now - 10 * 60 * 1000),
+            ).fetchone()
+            if not row:
+                rid = uuid.uuid4().hex[:12]
+                conn.execute(
+                    "INSERT INTO password_reset_requests(id,name,status,created_at) VALUES(?,?,?,?)",
+                    (rid, clean_name, "pending", now),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT id,name,status,created_at FROM password_reset_requests WHERE id=?",
+                    (rid,),
+                ).fetchone()
+        finally:
+            conn.close()
+    return _password_reset_request_public(row)
+
+
+def list_password_reset_requests(status="pending"):
+    _ensure_db()
+    if status:
+        rows = _fetchall(
+            "SELECT id,name,status,created_at FROM password_reset_requests "
+            "WHERE status=? ORDER BY created_at DESC",
+            (status,),
+        )
+    else:
+        rows = _fetchall(
+            "SELECT id,name,status,created_at FROM password_reset_requests ORDER BY created_at DESC"
+        )
+    return [_password_reset_request_public(row) for row in rows]
 
 
 def approve_member_request(rid, reviewer_id, parent_id=None):

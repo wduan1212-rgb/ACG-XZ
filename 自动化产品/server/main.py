@@ -4632,6 +4632,10 @@ class MemberApplyReq(BaseModel):
     message: str = ""
 
 
+class PasswordResetReq(BaseModel):
+    name: str = ""
+
+
 def _clean_role(role: str) -> str:
     if role == "supplier":
         return "supplier_parent"
@@ -5020,6 +5024,24 @@ def member_request_create(req: MemberApplyReq):
         "status": row[5],
         "createdAt": row[7],
     }}
+
+
+@app.post("/api/password-reset-requests")
+def password_reset_request_create(req: PasswordResetReq):
+    name = re.sub(r"\s+", " ", str(req.name or "")).strip()
+    if not name:
+        raise HTTPException(400, "请填写你的姓名")
+    if len(name) > 80:
+        raise HTTPException(400, "姓名不能超过 80 个字")
+    # Public response deliberately does not reveal whether the name matches an
+    # existing account; the administrator receives the durable request.
+    store.add_password_reset_request(name)
+    return {"ok": True, "message": "申请已发送，管理员会在通知中心收到消息"}
+
+
+@app.get("/api/password-reset-requests")
+def password_reset_requests_list(_me=Depends(require_admin)):
+    return store.list_password_reset_requests("pending")
 
 
 @app.get("/api/state")

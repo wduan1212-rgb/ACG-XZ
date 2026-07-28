@@ -63,12 +63,12 @@ class FrontendModuleIdentityTest(unittest.TestCase):
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
-            "base.css": "v=20260728-v120-shell-13",
+            "base.css": "v=20260728-v120-shell-16",
             "components.css": "v=20260723-v117-8",
-            "views.css": "v=20260728-v120-shell-13",
-            "agent.css": "v=20260728-v120-shell-13",
-            "ui-motion.css": "v=20260728-v120-shell-13",
-            "custom-creation.css": "v=20260728-v120-shell-13",
+            "views.css": "v=20260728-v120-shell-16",
+            "agent.css": "v=20260728-v120-shell-16",
+            "ui-motion.css": "v=20260728-v120-shell-16",
+            "custom-creation.css": "v=20260728-v120-shell-16",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():

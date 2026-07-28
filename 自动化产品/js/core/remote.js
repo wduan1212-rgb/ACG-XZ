@@ -212,6 +212,15 @@ export function requestMember(payload) {
   return req("/api/member-requests", { method: "POST", auth: false, body: payload });
 }
 
+export const passwordReset = {
+  request: (name) => req("/api/password-reset-requests", {
+    method: "POST",
+    auth: false,
+    body: { name }
+  }),
+  list: () => req("/api/password-reset-requests")
+};
+
 /* 写穿透：整集合 upsert（服务端按 id 后写胜，绝不整表删）。关时/未登录时 no-op。 */
 export function putCollection(name, items) {
   if (!_on || !_token || _authBlocked || !SYNCED.has(name)) return Promise.resolve();

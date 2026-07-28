@@ -1590,3 +1590,322 @@ body:not(.immersive) .view-root .btn.primary.button-anthe:hover::before { clip-p
   #lgApply.lg-secondary.link-elara > span.is-dissolving,
   #lgApply.lg-secondary.link-elara > span.is-gathering { transition: none !important; animation: none !important; filter: none !important; transform: none !important; }
 }
+
+/* v120 · Auth 2 full-screen split gate. Left visual ports the React Bits Silk shader.
+   Source: David Haz / react-bits, MIT + Commons Clause License Condition v1.0. */
+.login-gate {
+  padding: 0;
+  background: #09090a;
+}
+.login-gate::before,
+.login-gate::after { display: none; }
+.lg-auth-shell {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(460px, .88fr);
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  box-shadow: none;
+}
+.lg-visual {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  color: #fff;
+  background: #0b0b0d;
+  isolation: isolate;
+}
+.lg-visual .lg-beams {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+}
+.lg-visual-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(5, 5, 7, .04), rgba(5, 5, 7, .09) 48%, rgba(5, 5, 7, .75)),
+    radial-gradient(ellipse at 70% 20%, transparent 0 28%, rgba(5, 5, 7, .32) 100%);
+}
+.lg-visual-logo {
+  position: absolute;
+  z-index: 2;
+  left: clamp(34px, 4.2vw, 72px);
+  top: clamp(34px, 4.5vw, 70px);
+  display: block;
+  width: clamp(86px, 8vw, 118px);
+  height: auto;
+  filter: grayscale(1) brightness(0) invert(1);
+}
+.lg-visual-copy {
+  position: absolute;
+  z-index: 2;
+  left: clamp(34px, 4.2vw, 72px);
+  right: clamp(34px, 4.2vw, 72px);
+  bottom: clamp(46px, 6vw, 88px);
+  max-width: 540px;
+}
+.lg-visual-copy > span {
+  display: inline-flex;
+  margin-bottom: 16px;
+  color: rgba(255, 255, 255, .58);
+  font-size: 11px;
+  font-weight: 480;
+  letter-spacing: .18em;
+}
+.lg-visual-copy h2 {
+  margin: 0;
+  color: #fff;
+  font-size: clamp(36px, 3.25vw, 52px);
+  font-weight: 620;
+  line-height: 1.06;
+  letter-spacing: -.045em;
+}
+.lg-visual-copy p {
+  margin: 16px 0 0;
+  color: rgba(255, 255, 255, .60);
+  font-size: 12px;
+  font-weight: 380;
+}
+.login-gate .lg-center {
+  position: relative;
+  inset: auto;
+  top: auto;
+  width: auto;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: clamp(34px, 5vw, 84px) clamp(42px, 5.5vw, 92px);
+  overflow: auto;
+  align-items: stretch;
+  justify-content: center;
+  color: #111318;
+  background: #fff;
+  animation: none;
+  scrollbar-width: none;
+}
+.login-gate .lg-center::-webkit-scrollbar { display: none; }
+.login-gate .lg-card {
+  width: 100%;
+  max-width: 460px;
+  margin: auto;
+  padding: 0;
+  color: #111318;
+}
+.login-gate .lg-brand {
+  margin-bottom: 30px;
+  text-align: left;
+}
+.login-gate .lg-login-logo { display: none; }
+.login-gate .lg-brand h1 {
+  height: auto;
+  min-height: 48px;
+  justify-content: flex-start;
+  color: #111318;
+  font-size: clamp(34px, 2.8vw, 42px);
+  font-weight: 610;
+  line-height: 1.05;
+  letter-spacing: -.045em;
+}
+.login-gate .lg-brand p {
+  min-height: 20px;
+  margin-top: 12px;
+  color: #898c92;
+  font-size: 13px;
+  font-weight: 380;
+  letter-spacing: 0;
+}
+.login-gate .lg-card[data-mode="login"] .lg-brand p { display: none; }
+.login-gate .lg-form { gap: 14px; }
+.login-gate [hidden] { display: none !important; }
+.lg-provider-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+.lg-provider-btn {
+  display: flex;
+  min-height: 56px;
+  padding: 0 20px;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  border: 1px solid #d9dadd;
+  border-radius: 20px;
+  color: #23252a;
+  background: #f7f7f6;
+  font-size: 14px;
+  font-weight: 560;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+.lg-provider-icon {
+  display: block;
+  width: 19px;
+  height: 19px;
+  flex: 0 0 19px;
+  object-fit: contain;
+}
+.lg-provider-btn:hover {
+  border-color: #bfc1c5;
+  background: #eeeeec;
+  transform: translateY(-1px);
+}
+.lg-divider {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin: 8px 0;
+  color: #97999f;
+  font-size: 13px;
+  line-height: 1;
+}
+.lg-divider::before,
+.lg-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #e2e2df;
+}
+.login-gate .lg-field {
+  min-height: 56px;
+  padding: 0 20px;
+  border: 1px solid #d9dadd;
+  border-radius: 20px;
+  color: #7c8088;
+  background: #f7f7f6;
+  box-shadow: none;
+  transform: none;
+}
+.login-gate .lg-field::after { display: none; }
+.login-gate .lg-field:focus-within {
+  border-color: #85888e;
+  box-shadow: 0 0 0 4px rgba(17, 19, 24, .07);
+  transform: none;
+}
+.login-gate .lgf-ico { color: #7e8289; }
+.login-gate .lg-field input,
+.login-gate .lg-field select {
+  min-width: 0;
+  padding: 15px 0;
+  color: #111318;
+  font-size: 14px;
+  font-weight: 420;
+}
+.login-gate .lg-field input::placeholder { color: #96999f; }
+.login-gate .lg-field select { color-scheme: light; }
+.login-gate .lg-field .smart-select-trigger {
+  min-height: 54px;
+  color: #111318;
+}
+.login-gate .lg-field .smart-select-trigger > span { color: #111318; }
+.login-gate .lg-field .smart-select-trigger > i { border-color: #757980; }
+.login-gate .lg-real-name-hint {
+  color: #777b84;
+  animation: none;
+}
+.lg-form-helper {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+}
+.lg-inline-link {
+  padding: 2px 0;
+  border: 0;
+  color: #5368df;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 540;
+}
+.lg-inline-link:hover { color: #394fcf; text-decoration: underline; }
+.login-gate .lg-login {
+  min-height: 56px;
+  margin-top: 2px;
+  border: 1px solid #111318;
+  border-radius: 20px;
+  color: #fff;
+  background: #111318;
+  box-shadow: none;
+  font-size: 15px;
+}
+.login-gate .lg-login::before { display: none; }
+.login-gate .lg-login:hover {
+  color: #fff;
+  background: #24262b;
+  box-shadow: none;
+  transform: translateY(-1px);
+}
+.login-gate .lg-login:disabled {
+  background: #2c2e33;
+  box-shadow: none;
+}
+.lg-apply-prompt {
+  margin: 2px 0 0;
+  color: #8d9096;
+  font-size: 13px;
+  text-align: center;
+}
+.lg-apply-prompt .lg-inline-link { margin-left: 5px; }
+.login-gate .lg-gate-error {
+  position: static;
+  margin: 0;
+  border: 0;
+  border-radius: 12px;
+  color: #a32735;
+  background: #fff2f3;
+}
+.login-gate .lg-card[data-mode="apply"] .lg-provider-actions,
+.login-gate .lg-card[data-mode="apply"] .lg-divider,
+.login-gate .lg-card[data-mode="forgot"] .lg-provider-actions,
+.login-gate .lg-card[data-mode="forgot"] .lg-divider,
+.login-gate .lg-card[data-mode="forgot"] #lgUserField,
+.login-gate .lg-card[data-mode="forgot"] #lgPinField,
+.login-gate .lg-card[data-mode="forgot"] .lg-form-helper { display: none; }
+.login-gate .lg-card.is-switching-out > * {
+  opacity: 0;
+  filter: blur(8px);
+  transform: scale(.985);
+}
+.login-gate .lg-card.is-switching-in > * { animation-duration: 360ms; }
+
+@media (max-height: 760px) and (min-width: 901px) {
+  .login-gate .lg-center { padding-block: 28px; }
+  .login-gate .lg-brand { margin-bottom: 24px; }
+  .login-gate .lg-form { gap: 11px; }
+  .lg-provider-btn,
+  .login-gate .lg-field,
+  .login-gate .lg-login { min-height: 56px; }
+  .login-gate .lg-field input,
+  .login-gate .lg-field select { padding-block: 14px; }
+}
+
+@media (max-width: 900px) {
+  .login-gate { background: #fff; }
+  .lg-auth-shell {
+    grid-template-columns: 1fr;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+  .lg-visual { display: none; }
+  .login-gate .lg-center { padding: 34px 24px; }
+  .login-gate .lg-card { max-width: 520px; }
+}
+
+@media (max-width: 480px) {
+  .login-gate .lg-center { padding-inline: 20px; }
+  .login-gate .lg-brand h1 { font-size: 34px; }
+  .lg-provider-btn,
+  .login-gate .lg-field,
+  .login-gate .lg-login { min-height: 58px; border-radius: 19px; }
+}

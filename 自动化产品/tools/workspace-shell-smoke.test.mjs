@@ -15,6 +15,8 @@ const uiMotionCss = read("styles/ui-motion.css");
 const agentCss = read("styles/agent.css");
 const customCreationCss = read("styles/custom-creation.css");
 const mainJs = read("js/main.js");
+const remoteJs = read("js/core/remote.js");
+const loginBeamsJs = read("js/ui/loginBeams.js");
 const componentsJs = read("js/ui/components.js");
 const agentViewJs = read("js/agent/view.js");
 const chainBoardsJs = read("js/views/chainBoards.js");
@@ -45,6 +47,29 @@ function section(source, startMarker, endMarker) {
   assert.notEqual(end, -1, `missing section end: ${endMarker}`);
   return source.slice(start, end);
 }
+
+test("login gate uses the Silk split visual and keeps alternate auth actions honest", () => {
+  assert.match(indexHtml, /class="lg-auth-shell"/);
+  assert.match(indexHtml, /class="lg-visual"/);
+  assert.match(indexHtml, /id="lgGoogle"[^>]*>[\s\S]*google-g-mark\.png[\s\S]*使用 Google 快速登录[\s\S]*<\/button>/);
+  assert.match(indexHtml, /id="lgPhone"[^>]*>[\s\S]*phone-mark\.svg[\s\S]*使用手机验证[\s\S]*<\/button>/);
+  assert.match(indexHtml, /id="lgForgot"[^>]*>忘记密码/);
+  assert.match(indexHtml, /id="lgApply"[^>]*aria-pressed="false"/);
+  assert.doesNotMatch(indexHtml, /class="lg-login-logo"/);
+  assert.match(uiMotionCss, /Auth 2 full-screen split gate/);
+  assert.match(uiMotionCss, /grid-template-columns:\s*minmax\(0,\s*1\.12fr\)\s+minmax\(460px,\s*\.88fr\)/);
+  assert.match(uiMotionCss, /\.lg-auth-shell\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*border-radius:\s*0;/s);
+  assert.match(uiMotionCss, /\.lg-provider-actions\s*\{[^}]*grid-template-columns:\s*1fr;/s);
+  assert.match(loginBeamsJs, /React Bits Silk shader/);
+  assert.match(loginBeamsJs, /uniform float uNoiseIntensity/);
+
+  const wireGate = section(mainJs, "function wireGate()", "function logout()");
+  assert.match(wireGate, /remote\.passwordReset\.request\(name\)/);
+  assert.match(wireGate, /暂不支持，等待功能上线/);
+  assert.match(mainJs, /async function syncAdminPasswordResetNotifications\(\)/);
+  assert.match(mainJs, /收到密码重置申请/);
+  assert.match(remoteJs, /\/api\/password-reset-requests/);
+});
 
 test("left context list scrolls while its scrollbar remains hidden", () => {
   assert.match(
@@ -670,19 +695,21 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final shell-13 cache marker", () => {
+test("all modified workspace-shell resources use the final shell-16 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-13"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-13"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-13"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260728-v120-shell-13"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-13"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-13"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-16"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-16"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-16"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260728-v120-shell-16"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-16"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-16"/);
   assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-13"/);
   assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-13"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-13"/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-13"/);
+  assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260728-v120-shell-16/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-16"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

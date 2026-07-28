@@ -20,7 +20,7 @@ import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260727-v118-7";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
-import { initLoginBeams } from "./ui/loginBeams.js";
+import { initLoginBeams } from "./ui/loginBeams.js?v=20260728-v120-shell-16";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
 import { overviewView } from "./views/overview.js?v=20260728-v120-shell-13";
@@ -37,7 +37,7 @@ import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-13";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260728-v120-shell-13";
+const APP_BUILD_ID = "20260728-v120-shell-16";
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 const WORKSPACE_VIDEO_META_KEY = "xingzhen.workspaceVideoMeta";
@@ -206,8 +206,8 @@ function showGate() {
   setGateBusy(false);
   setGateError("");
   setGateMode("login");
-  const u = $("#lgUser"), p = $("#lgPin"), n = $("#lgName");
-  if (u) u.value = ""; if (p) p.value = ""; if (n) n.value = "";
+  const u = $("#lgUser"), p = $("#lgPin"), n = $("#lgName"), forgotName = $("#lgForgotName");
+  if (u) u.value = ""; if (p) p.value = ""; if (n) n.value = ""; if (forgotName) forgotName.value = "";
   setTimeout(() => u && u.focus(), 80);
 }
 let gateMode = "login";
@@ -226,6 +226,10 @@ const GATE_PHASES = {
   applying: {
     title: "正在提交申请…",
     button: "提交中"
+  },
+  resetting: {
+    title: "正在通知管理员…",
+    button: "发送中"
   }
 };
 function setGateError(message = "") {
@@ -255,6 +259,10 @@ function setGateBusy(busy, phase = "validating") {
   card?.setAttribute("aria-busy", gateBusy ? "true" : "false");
   if (loginBtn) loginBtn.disabled = gateBusy;
   if (applyBtn) applyBtn.disabled = gateBusy;
+  ["#lgForgot", "#lgGoogle", "#lgPhone"].forEach(selector => {
+    const control = $(selector, gate);
+    if (control) control.disabled = gateBusy;
+  });
   gate?.querySelectorAll(".lg-field input, .lg-field select").forEach(control => { control.disabled = gateBusy; });
   if (gateBusy) setGatePhase(phase);
   else applyGateModeContent(gateMode);
@@ -279,36 +287,46 @@ async function clearPendingRemoteIdentity() {
 }
 function applyGateModeContent(mode) {
   const apply = mode === "apply";
+  const forgot = mode === "forgot";
   const card = $(".lg-card");
   if (card) card.dataset.mode = mode;
-  const nameField = $("#lgNameField"), roleField = $("#lgRoleField"), loginBtn = $("#lgLogin"), applyBtn = $("#lgApply"), hint = $("#lgHint"), title = $("#lgModeTitle");
+  const nameField = $("#lgNameField"), roleField = $("#lgRoleField"), forgotNameField = $("#lgForgotNameField");
+  const userField = $("#lgUserField"), pinField = $("#lgPinField"), formHelper = $("#lgFormHelper");
+  const loginBtn = $("#lgLogin"), applyBtn = $("#lgApply"), applyLead = $("#lgApplyLead"), hint = $("#lgHint"), title = $("#lgModeTitle");
   if (nameField) nameField.hidden = !apply;
   if (roleField) roleField.hidden = !apply;
+  if (forgotNameField) forgotNameField.hidden = !forgot;
+  if (userField) userField.hidden = forgot;
+  if (pinField) pinField.hidden = forgot;
+  if (formHelper) formHelper.hidden = mode !== "login";
   if (title) {
     window.clearTimeout(gateTitleTransitionTimer);
     title.classList.remove("is-phase-entering");
-    title.textContent = apply ? "申请" : "登录";
+    title.textContent = apply ? "申请账号" : forgot ? "找回密码" : "登录";
   }
   if (loginBtn) {
-    const label = apply ? "申请" : "登录";
+    const label = apply ? "提交申请" : forgot ? "通知管理员" : "登录";
     const labelNode = loginBtn.querySelector("span");
     if (labelNode) labelNode.textContent = label;
     else loginBtn.textContent = label;
   }
   if (applyBtn) {
-    const label = apply ? "返回登录" : "申请账号";
+    const label = apply || forgot ? "返回登录" : "申请账号";
     const labelNode = applyBtn.querySelector("span");
     if (labelNode) labelNode.textContent = label;
     else applyBtn.textContent = label;
-    applyBtn.setAttribute("aria-pressed", apply ? "true" : "false");
-    applyBtn.title = apply ? "返回登录" : "申请账号";
+    applyBtn.setAttribute("aria-pressed", mode !== "login" ? "true" : "false");
+    applyBtn.title = mode !== "login" ? "返回登录" : "申请账号";
   }
+  if (applyLead) applyLead.textContent = mode === "login" ? "还没有账号？" : "";
   if (hint) hint.textContent = apply
     ? "填写资料，提交后等待管理员审批"
-    : "使用星阵账号继续";
+    : forgot
+      ? "填写你的姓名，管理员会在通知中心收到申请"
+      : "登录后继续你的工作区";
 }
 function setGateMode(mode) {
-  const nextMode = mode === "apply" ? "apply" : "login";
+  const nextMode = ["apply", "forgot"].includes(mode) ? mode : "login";
   const card = $(".lg-card");
   const modeLabel = $("#lgApply span");
   const currentMode = card?.dataset.mode;
@@ -401,6 +419,45 @@ function ensureViewRendered(reason = "startup") {
   }, 350);
 }
 
+async function syncAdminPasswordResetNotifications() {
+  if (!remote.isOn() || !remote.hasToken() || state.role !== "admin") return false;
+  try {
+    const rows = await remote.passwordReset.list();
+    const known = new Map(state.notifications.map(item => [item.passwordResetRequestId, item]));
+    let changed = false;
+    (Array.isArray(rows) ? rows : []).forEach(row => {
+      const requestId = String(row.id || "");
+      if (!requestId) return;
+      const existing = known.get(requestId);
+      const next = {
+        id: existing?.id || `password-reset-${requestId}`,
+        ts: Number(row.createdAt || Date.now()),
+        kind: "account",
+        title: "收到密码重置申请",
+        body: `${String(row.name || "未署名用户")} 请求管理员协助重置密码`,
+        read: existing?.read === true,
+        passwordResetRequestId: requestId
+      };
+      if (existing) {
+        Object.assign(existing, next);
+      } else {
+        state.notifications.push(next);
+        changed = true;
+      }
+    });
+    if (changed) {
+      state.notifications.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
+      if (state.notifications.length > 60) state.notifications.length = 60;
+      save("notifications");
+      updateNotifyBadge();
+    }
+    return true;
+  } catch (error) {
+    console.warn("[password-reset-notifications]", error);
+    return false;
+  }
+}
+
 function enterMember(member) {
   document.documentElement.classList.remove("auth-booting");
   state.role = member.role;
@@ -413,6 +470,7 @@ function enterMember(member) {
   applyRoleClasses();
   go(member.role === "supplier_child" ? "delivery" : "overview");
   render();
+  void syncAdminPasswordResetNotifications();
   toast(`欢迎回来 · ${esc(member.name)}（${ROLE_LABEL[member.role] || ""}）`);
 }
 
@@ -556,6 +614,27 @@ async function verifyLocalMemberPin(member, pin) {
 }
 function wireGate() {
   const gate = $("#loginGate");
+  const submitForgot = async () => {
+    if (gateBusy) return;
+    if (!remote.isOn()) { toast("当前是本地离线模式，找回密码需要连接共享后端服务"); shakeCard(); return; }
+    const name = ($("#lgForgotName").value || "").trim();
+    if (!name) { toast("请填写你的姓名"); shakeCard(); return; }
+    setGateError("");
+    setGateBusy(true, "resetting");
+    try {
+      await remote.passwordReset.request(name);
+      toast("申请已发送，管理员会在通知中心收到消息");
+      $("#lgForgotName").value = "";
+      setGateMode("login");
+    } catch (e) {
+      const message = (e.message || "申请发送失败").replace(/^HTTP\s+\d+\s+/, "");
+      shakeCard();
+      setGateError(message);
+      toast(message, "error");
+    } finally {
+      setGateBusy(false);
+    }
+  };
   const submitApply = async () => {
     if (gateBusy) return;
     if (!remote.isOn()) { toast("当前是本地离线模式，申请账号需要共享后端服务"); shakeCard(); return; }
@@ -584,6 +663,7 @@ function wireGate() {
   const submit = async () => {
     if (gateBusy) return;
     if (gateMode === "apply") return submitApply();
+    if (gateMode === "forgot") return submitForgot();
     const username = ($("#lgUser").value || "").trim();
     const pin = ($("#lgPin").value || "").trim();
     if (!username || !pin) { toast("请填写用户名和密码"); shakeCard(); return; }
@@ -625,8 +705,17 @@ function wireGate() {
   $("#lgApply", gate).addEventListener("click", () => {
     if (gateBusy) return;
     setGateError("");
-    setGateMode(gateMode === "apply" ? "login" : "apply");
+    setGateMode(gateMode === "login" ? "apply" : "login");
     setTimeout(() => (gateMode === "apply" ? $("#lgName") : $("#lgUser"))?.focus(), 480);
+  });
+  $("#lgForgot", gate).addEventListener("click", () => {
+    if (gateBusy) return;
+    setGateError("");
+    setGateMode("forgot");
+    setTimeout(() => $("#lgForgotName")?.focus(), 480);
+  });
+  [$("#lgGoogle", gate), $("#lgPhone", gate)].forEach(button => {
+    button?.addEventListener("click", () => toast("暂不支持，等待功能上线"));
   });
   gate.addEventListener("keydown", e => {
     if (e.key !== "Enter" || e.isComposing) return;
@@ -2558,7 +2647,10 @@ async function boot() {
     document.addEventListener("click", e => {
       if (e.target.closest("[data-open-create-account]")) document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} }));
     });
-    $("#topBell").addEventListener("click", e => toggleNotifyPanel(e.currentTarget));
+    $("#topBell").addEventListener("click", async e => {
+      await syncAdminPasswordResetNotifications();
+      toggleNotifyPanel(e.currentTarget);
+    });
     document.addEventListener("keydown", e => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openGlobalPalette(); }
     });
@@ -2589,6 +2681,7 @@ async function boot() {
           document.documentElement.classList.add("has-auth-token");
           pauseLoginBackground();
           applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;
+          void syncAdminPasswordResetNotifications();
           recordFirstRender(resumeStartedAt, "resume");
           continueRemoteHydration(m, bootstrap.complete);
         } else {
