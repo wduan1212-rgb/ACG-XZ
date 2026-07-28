@@ -16,6 +16,7 @@ import {
   Layers,
   Palette,
   Scan,
+  Send,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -759,6 +760,8 @@ export function Workspace({ projectId }: { projectId: string }) {
                 onSimilar={() => generateSimilar(selectedImage)}
                 onPreview={() => setLightbox(selectedImage)}
                 onExport={() => setExportItem(selectedImage)}
+                onPublish={requestPublish}
+                publishing={publishing}
                 onDelete={() => removeItems(projectId, [selectedImage.id])}
               />
             )}
@@ -935,6 +938,8 @@ function SelectionQuickBar({
   onSimilar,
   onPreview,
   onExport,
+  onPublish,
+  publishing,
   onDelete,
 }: {
   item: ImageItem;
@@ -945,6 +950,8 @@ function SelectionQuickBar({
   onSimilar: () => void;
   onPreview: () => void;
   onExport: () => void;
+  onPublish: () => void;
+  publishing: boolean;
   onDelete: () => void;
 }) {
   const vp = viewport ?? { x: 0, y: 0, zoom: 1 };
@@ -981,6 +988,16 @@ function SelectionQuickBar({
       </button>
       <button title="导出" onClick={onExport} className={btn}>
         <Download size={14} />
+      </button>
+      <button
+        type="button"
+        title={publishing ? "正在准备发布…" : "发布"}
+        aria-label={publishing ? "正在准备发布" : "发布"}
+        onClick={onPublish}
+        disabled={publishing}
+        className={`${btn} disabled:cursor-wait disabled:opacity-45`}
+      >
+        <Send size={14} />
       </button>
       <div className="mx-0.5 h-4 w-px bg-line" />
       <button
