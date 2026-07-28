@@ -4,7 +4,7 @@ import { state, save } from "../core/store.js";
 import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260727-v118-7";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
-import { deliveryViewsSummary } from "../domain/delivery.js?v=20260727-v118-7";
+import { deliveryViewsSummary } from "../domain/delivery.js?v=20260728-v120-shell-19";
 import { accountDisplaySequenceMap, isAccountDisabled, isNewAccount } from "../domain/accounts.js";
 import { openAccountDialog } from "./accountDialog.js";
 
@@ -26,7 +26,7 @@ let supplierAccountFilterQuery = "";
 let activeSupplierAccountController = null;
 let activeSupplierOverviewController = null;
 let activeSupplierSettingsController = null;
-const SUPPLIER_ACTIVITY_PAGE_SIZE = 3;
+const SUPPLIER_ACTIVITY_PAGE_SIZE = 4;
 const SUPPLIER_ASSISTANT_HISTORY_PREFIX = "xingzhen:supplier-data-assistant:";
 const onSupplierRoute = zone => document.body.dataset.zone === zone;
 
@@ -100,7 +100,7 @@ function scheduleSupplierActivityCarousel(root, activity, pageCount) {
 
 function supplierActivityKind(item = {}) {
   const text = `${item.action || ""} ${item.detail || ""}`;
-  if (/观看量|播放量|浏览量|观看|播放/.test(text)) return "views";
+  if (/观看量|播放量|浏览量|曝光量|观看|播放|曝光/.test(text)) return "views";
   if (/回传|发布链接|链接/.test(text)) return "link";
   if (/下载|领取素材|领取内容/.test(text)) return "download";
   return "other";
@@ -284,7 +284,7 @@ export async function renderSupplierOverview(root) {
             <section class="card supplier-trend-chart" data-supplier-detail="trend" role="button" tabindex="0">${supplierTrendCardContent(trendModel)}</section>
           </div>
           <section class="card supplier-activity"><div class="card-head supplier-activity-head"><b>最近操作</b>
-            ${activity.length ? `<div class="supplier-activity-filters"><label class="select-shell">${icon("filter", 12)}<select id="supplierActivityType"><option value="all">全部操作</option><option value="views" ${supplierActivityType === "views" ? "selected" : ""}>编辑观看量</option><option value="link" ${supplierActivityType === "link" ? "selected" : ""}>回传链接</option><option value="download" ${supplierActivityType === "download" ? "selected" : ""}>下载素材</option><option value="other" ${supplierActivityType === "other" ? "selected" : ""}>其他操作</option></select>${icon("chevronDown", 11)}</label><label class="select-shell">${icon("clock", 12)}<select id="supplierActivityDays"><option value="all">全部时间</option><option value="7" ${supplierActivityDays === "7" ? "selected" : ""}>近 7 天</option><option value="30" ${supplierActivityDays === "30" ? "selected" : ""}>近 30 天</option></select>${icon("chevronDown", 11)}</label><button class="btn ghost sm" type="button" id="supplierActivityAll">查看全部</button></div>` : ""}</div>
+            ${activity.length ? `<div class="supplier-activity-filters"><label class="select-shell">${icon("filter", 12)}<select id="supplierActivityType"><option value="all">全部操作</option><option value="views" ${supplierActivityType === "views" ? "selected" : ""}>观看 / 曝光</option><option value="link" ${supplierActivityType === "link" ? "selected" : ""}>回传链接</option><option value="download" ${supplierActivityType === "download" ? "selected" : ""}>下载素材</option><option value="other" ${supplierActivityType === "other" ? "selected" : ""}>其他操作</option></select>${icon("chevronDown", 11)}</label><label class="select-shell">${icon("clock", 12)}<select id="supplierActivityDays"><option value="all">全部时间</option><option value="7" ${supplierActivityDays === "7" ? "selected" : ""}>近 7 天</option><option value="30" ${supplierActivityDays === "30" ? "selected" : ""}>近 30 天</option></select>${icon("chevronDown", 11)}</label><button class="btn ghost sm" type="button" id="supplierActivityAll">查看全部</button></div>` : ""}</div>
             ${activity.length ? `<div class="supplier-activity-carousel" id="supplierActivityCarousel">${supplierActivityItemsHtml(carouselActivity)}</div><div class="supplier-activity-pagination"><button class="icon-btn sm" type="button" data-supplier-activity-page="prev" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button><span id="supplierActivityPage">${visibleActivity.length ? `${supplierActivityCarouselPage + 1} / ${activityPages}` : "0 / 0"}</span><button class="icon-btn sm" type="button" data-supplier-activity-page="next" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronRight", 13)}</button></div>` : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
           </section>
         </div>
@@ -331,7 +331,7 @@ export async function renderSupplierOverview(root) {
       openModal(`<div class="supplier-activity-modal" id="supplierActivityModal"></div>`, { wide: true, onMount(panel) {
         const drawModal = () => {
           const rows = filtered();
-          panel.innerHTML = `<div class="mp-head"><b>全部最近操作 · ${rows.length} 条</b><button class="icon-btn ghost" data-close>${icon("x", 15)}</button></div><div class="supplier-activity-modal-tools"><label class="select-shell">${icon("filter", 12)}<select id="supplierModalActivityType"><option value="all" ${kind === "all" ? "selected" : ""}>全部操作</option><option value="views" ${kind === "views" ? "selected" : ""}>编辑观看量</option><option value="link" ${kind === "link" ? "selected" : ""}>回传链接</option><option value="download" ${kind === "download" ? "selected" : ""}>下载素材</option><option value="other" ${kind === "other" ? "selected" : ""}>其他操作</option></select>${icon("chevronDown", 11)}</label><label class="select-shell">${icon("clock", 12)}<select id="supplierModalActivityDays"><option value="all" ${days === "all" ? "selected" : ""}>全部时间</option><option value="7" ${days === "7" ? "selected" : ""}>近 7 天</option><option value="30" ${days === "30" ? "selected" : ""}>近 30 天</option></select>${icon("chevronDown", 11)}</label></div><div class="supplier-dashboard-detail-list">${rows.map(item => `<article class="supplier-log"><i></i><span><b>${esc(item.memberName || "成员")}</b><em>${esc(item.detail || item.action || "更新了发布内容")}</em></span><time>${supplierActivityTimestamp(item) ? new Date(supplierActivityTimestamp(item)).toLocaleString("zh-CN", { hour12: false }) : "暂无时间"}</time></article>`).join("") || `<p class="supplier-activity-empty">当前筛选下暂无操作</p>`}</div>`;
+          panel.innerHTML = `<div class="mp-head"><b>全部最近操作 · ${rows.length} 条</b><button class="icon-btn ghost" data-close>${icon("x", 15)}</button></div><div class="supplier-activity-modal-tools"><label class="select-shell">${icon("filter", 12)}<select id="supplierModalActivityType"><option value="all" ${kind === "all" ? "selected" : ""}>全部操作</option><option value="views" ${kind === "views" ? "selected" : ""}>观看 / 曝光</option><option value="link" ${kind === "link" ? "selected" : ""}>回传链接</option><option value="download" ${kind === "download" ? "selected" : ""}>下载素材</option><option value="other" ${kind === "other" ? "selected" : ""}>其他操作</option></select>${icon("chevronDown", 11)}</label><label class="select-shell">${icon("clock", 12)}<select id="supplierModalActivityDays"><option value="all" ${days === "all" ? "selected" : ""}>全部时间</option><option value="7" ${days === "7" ? "selected" : ""}>近 7 天</option><option value="30" ${days === "30" ? "selected" : ""}>近 30 天</option></select>${icon("chevronDown", 11)}</label></div><div class="supplier-dashboard-detail-list">${rows.map(item => `<article class="supplier-log"><i></i><span><b>${esc(item.memberName || "成员")}</b><em>${esc(item.detail || item.action || "更新了发布内容")}</em></span><time>${supplierActivityTimestamp(item) ? new Date(supplierActivityTimestamp(item)).toLocaleString("zh-CN", { hour12: false }) : "暂无时间"}</time></article>`).join("") || `<p class="supplier-activity-empty">当前筛选下暂无操作</p>`}</div>`;
           $("#supplierModalActivityType", panel)?.addEventListener("change", event => { kind = event.currentTarget.value; drawModal(); });
           $("#supplierModalActivityDays", panel)?.addEventListener("change", event => { days = event.currentTarget.value; drawModal(); });
         };
@@ -515,14 +515,7 @@ export async function renderSupplierAccounts(root) {
       const derived = deliveredAssets
         .filter(asset => asset.accountId === account.id)
         .reduce((sum, asset) => sum + Math.max(0, Number(asset.viewCount || 0)), 0);
-      const hasOverride = account.totalViewCountOverride !== undefined
-        && account.totalViewCountOverride !== null
-        && account.totalViewCountOverride !== "";
-      return {
-        derived,
-        total: hasOverride ? Math.max(0, Number(account.totalViewCountOverride || 0)) : derived,
-        hasOverride,
-      };
+      return { derived, total: derived };
     };
     root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div>
       <nav class="supplier-account-platform-tabs" aria-label="按平台筛选账号">${accountPlatformTabs.map(([value, label, count]) => `<button type="button" data-supplier-platform-filter="${esc(value)}" class="${supplierPlatform === value ? "is-active" : ""}" aria-pressed="${supplierPlatform === value ? "true" : "false"}"><span>${esc(label)}</span><em>${count}</em></button>`).join("")}</nav>
@@ -538,36 +531,9 @@ export async function renderSupplierAccounts(root) {
         const disabled = isAccountDisabled(acc);
         const fresh = isNewAccount(acc);
         const viewSummary = accountViewSummary(acc);
-        return `<article class="supplier-account${disabled ? " is-disabled" : ""}${fresh ? " is-new-account" : ""}" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)} ${fresh ? `<i class="supplier-new-account-badge">新</i>` : ""}</b>${disabled ? `<em class="supplier-account-status"><strong>已停用</strong></em>` : ""}</div><div class="supplier-account-controls">${acc.homepageUrl ? `<a class="supplier-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 主页链接</a>` : ""}<div class="supplier-account-control-row">${canEditHomepage ? `<div class="supplier-content-account-actions"><button class="supplier-account-total-views${viewSummary.hasOverride ? " is-manual" : ""}" type="button" data-content-account-views="${esc(acc.id)}" title="编辑账号累计播放量；当前${viewSummary.hasOverride ? "为手动总数" : "由单条自动汇总"}">${icon("pulse", 12)} ${Number(viewSummary.total).toLocaleString("zh-CN")}</button><button class="icon-btn sm" type="button" data-content-account-edit="${esc(acc.id)}" title="编辑账号（含主页链接）">${icon("edit", 13)}</button><button class="icon-btn sm${disabled ? " restore" : " danger"}" type="button" data-content-account-status="${esc(acc.id)}" title="${disabled ? "恢复账号" : "停用账号"}">${icon(disabled ? "unlock" : "lock", 13)}</button></div>` : ""}<label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage && !disabled ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></div></article>`;
+        return `<article class="supplier-account${disabled ? " is-disabled" : ""}${fresh ? " is-new-account" : ""}" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)} ${fresh ? `<i class="supplier-new-account-badge">新</i>` : ""}</b>${disabled ? `<em class="supplier-account-status"><strong>已停用</strong></em>` : ""}</div><div class="supplier-account-controls">${acc.homepageUrl ? `<a class="supplier-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 主页链接</a>` : ""}<div class="supplier-account-control-row"><div class="supplier-content-account-actions"><span class="supplier-account-total-views" title="由该账号全部交付内容的观看量自动汇总">${icon("pulse", 12)} ${Number(viewSummary.total).toLocaleString("zh-CN")}</span>${canEditHomepage ? `<button class="icon-btn sm" type="button" data-content-account-edit="${esc(acc.id)}" title="编辑账号（含主页链接）">${icon("edit", 13)}</button><button class="icon-btn sm${disabled ? " restore" : " danger"}" type="button" data-content-account-status="${esc(acc.id)}" title="${disabled ? "恢复账号" : "停用账号"}">${icon(disabled ? "unlock" : "lock", 13)}</button>` : ""}</div><label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage && !disabled ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></div></article>`;
       }).join("")}</div><p class="supplier-account-filter-empty" hidden>没有匹配的账号</p></div>`;
     $$('[data-content-account-edit]', root).forEach(button => button.addEventListener("click", () => openAccountDialog(button.dataset.contentAccountEdit)));
-    $$('[data-content-account-views]', root).forEach(button => button.addEventListener("click", async () => {
-      const account = state.accounts.find(item => item.id === button.dataset.contentAccountViews);
-      if (!account || !canEditHomepage) return;
-      const summary = accountViewSummary(account);
-      const value = await promptModal({
-        title: `编辑「${account.name}」累计播放量`,
-        value: summary.hasOverride ? String(summary.total) : "",
-        placeholder: "请输入账号累计播放量",
-        okText: "保存总播放量",
-      });
-      if (value === null) return;
-      const next = Number(String(value).replace(/[,，\s]/g, ""));
-      if (!Number.isFinite(next) || next < 0 || !Number.isInteger(next)) {
-        toast("请输入不小于 0 的整数", "error");
-        return;
-      }
-      button.disabled = true;
-      try {
-        const result = await remote.supplier.updateAccountViews(account.id, next);
-        Object.assign(account, result.account || { totalViewCountOverride: next });
-        toast("账号总播放量已更新；单条播放量保持不变");
-        await renderSupplierAccounts(root);
-      } catch (error) {
-        button.disabled = false;
-        toast(error?.message || "账号总播放量更新失败", "error");
-      }
-    }));
     $$('[data-content-account-status]', root).forEach(button => button.addEventListener("click", async () => {
       const account = state.accounts.find(item => item.id === button.dataset.contentAccountStatus);
       if (!account || !canEditHomepage) return;

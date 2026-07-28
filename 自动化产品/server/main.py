@@ -4599,6 +4599,10 @@ class SupplierViewsReq(BaseModel):
     viewCount: int = 0
 
 
+class SupplierExposureReq(BaseModel):
+    exposureCount: int = 0
+
+
 class SupplierHomepageReq(BaseModel):
     homepageUrl: str = ""
 
@@ -6382,6 +6386,28 @@ def supplier_asset_views(asset_id: str, req: SupplierViewsReq, me=Depends(requir
         raise HTTPException(404, "交付素材不存在")
     parent_id = me.get("parentId") or (me["id"] if me["role"] == "supplier_parent" else "")
     store.add_supplier_activity(parent_id, me["id"] if me["role"] == "supplier_child" else "", me["id"], "update_views", item.get("accountId") or "", asset_id, "更新了观看量")
+    return {"ok": True, "asset": item}
+
+
+@app.put("/api/supplier/assets/{asset_id}/exposure")
+def supplier_asset_exposure(asset_id: str, req: SupplierExposureReq, me=Depends(require_member)):
+    item, err = store.update_supplier_asset_exposure(asset_id, req.exposureCount, me["id"], me["role"])
+    if err == "forbidden":
+        raise HTTPException(403, "只有供应商账号可以更新曝光量")
+    if err == "unassigned":
+        raise HTTPException(403, "无权更新未分配账号的曝光量")
+    if err:
+        raise HTTPException(404, "交付素材不存在")
+    parent_id = me.get("parentId") or (me["id"] if me["role"] == "supplier_parent" else "")
+    store.add_supplier_activity(
+        parent_id,
+        me["id"] if me["role"] == "supplier_child" else "",
+        me["id"],
+        "update_exposure",
+        item.get("accountId") or "",
+        asset_id,
+        "更新了曝光量",
+    )
     return {"ok": True, "asset": item}
 
 

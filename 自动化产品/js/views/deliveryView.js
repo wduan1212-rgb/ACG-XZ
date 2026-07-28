@@ -5,7 +5,7 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById, currentMember } from "../core/store.js";
 import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
-import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js?v=20260727-v118-7";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js?v=20260728-v120-shell-19";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
 import { openProductionDrawer } from "./prodDrawer.js?v=20260728-v120-shell-13";
@@ -92,6 +92,20 @@ function publisherLabel(asset) {
 
 function supplierReturnTime(asset) {
   return dateTimeFromTime(asset?.publishedUpdatedAt || asset?.publishedAt || 0);
+}
+
+function creationDay(asset) {
+  return dateFromTime(productionById(asset?.productionId)?.createdAt || asset?.sourceCreatedAt || asset?.createdAt);
+}
+
+function supplierReturnDay(asset) {
+  return dateFromTime(asset?.publishedUpdatedAt || asset?.publishedAt || 0);
+}
+
+function matchesDateRange(day, start, end) {
+  if (!start && !end) return true;
+  if (!day) return false;
+  return (!start || day >= start) && (!end || day <= end);
 }
 
 function sortDelivered(all) {
@@ -342,8 +356,21 @@ function supplierDetailHtml(asset, acc, accountSequence = 0) {
   </tr>`;
 }
 
-const deliveryFilterDefaults = Object.freeze({ product: "all", type: "all", publisher: "all", account: "all", date: "all", download: "all", publish: "all" });
+const deliveryFilterDefaults = Object.freeze({
+  product: "all",
+  type: "all",
+  publisher: "all",
+  account: "all",
+  date: "all",
+  download: "all",
+  publish: "all",
+  returnedFrom: "",
+  returnedTo: "",
+  createdFrom: "",
+  createdTo: "",
+});
 const deliveryFilterKeys = new Set(Object.keys(deliveryFilterDefaults));
+const deliveryDateRangeKeys = new Set(["returnedFrom", "returnedTo", "createdFrom", "createdTo"]);
 let supFilters = { ...deliveryFilterDefaults };
 let creatorRemarkFilter = "all";
 let activeDeliveryController = null;
@@ -401,13 +428,13 @@ export function getDeliveryFilterModel() {
       value: supFilters.account,
       options: withAllOption("全部账号", accounts.map(account => filterOption(account.id, account.name || "未命名账号"))),
     },
-    {
+    ...(!isSupplierRole ? [{
       key: "date",
       label: "时间",
       type: "select",
       value: supFilters.date,
       options: withAllOption("全部时间", dates.map(value => filterOption(value, dayLabel(value)))),
-    },
+    }] : []),
     {
       key: "download",
       label: "下载",
@@ -435,6 +462,24 @@ export function getDeliveryFilterModel() {
     supplier: isSupplierRole,
     values: { ...supFilters, remarks: creatorRemarkFilter },
     fields,
+    ranges: isSupplierRole ? [
+      {
+        key: "returned",
+        label: "回传链接时间",
+        startKey: "returnedFrom",
+        endKey: "returnedTo",
+        start: supFilters.returnedFrom,
+        end: supFilters.returnedTo,
+      },
+      {
+        key: "created",
+        label: "创作时间",
+        startKey: "createdFrom",
+        endKey: "createdTo",
+        start: supFilters.createdFrom,
+        end: supFilters.createdTo,
+      },
+    ] : [],
   };
 }
 
@@ -447,12 +492,15 @@ function emitDeliveryFilterModel() {
 
 export function setDeliveryFilter(key, value, { toggle = false, redraw = true } = {}) {
   const normalizedKey = String(key || "").trim();
-  const normalizedValue = String(value || "all").trim() || "all";
+  const normalizedValue = deliveryDateRangeKeys.has(normalizedKey)
+    ? String(value || "").trim()
+    : (String(value || "all").trim() || "all");
   if (normalizedKey === "remarks") {
     if (!["all", "unread"].includes(normalizedValue)) return getDeliveryFilterModel();
     creatorRemarkFilter = toggle && creatorRemarkFilter === normalizedValue ? "all" : normalizedValue;
   } else {
     if (!deliveryFilterKeys.has(normalizedKey)) return getDeliveryFilterModel();
+    if (deliveryDateRangeKeys.has(normalizedKey) && normalizedValue && !/^\d{4}-\d{2}-\d{2}$/.test(normalizedValue)) return getDeliveryFilterModel();
     if (normalizedKey === "type" && !["all", "视频", "图文"].includes(normalizedValue)) return getDeliveryFilterModel();
     if (normalizedKey === "download" && !["all", "downloaded", "undownloaded"].includes(normalizedValue)) return getDeliveryFilterModel();
     if (normalizedKey === "publish" && !["all", "published", "unpublished"].includes(normalizedValue)) return getDeliveryFilterModel();
@@ -539,7 +587,9 @@ export const deliveryView = {
       if (!canFilterPublisher) supFilters.publisher = "all";
       const accounts = [...new Map(all.map(x => [x.acc.id, x.acc])).values()];
       const dates = [...new Set(all.map(x => dayKey(x.asset)))];
-      const noStructuredFilter = Object.values(supFilters).every(value => value === "all");
+      const noStructuredFilter = Object.entries(supFilters).every(([key, value]) => (
+        deliveryDateRangeKeys.has(key) ? value === "" : value === "all"
+      ));
       const visible = all.filter(x => {
         const product = x.asset.productTag || productTagLabel(productById(x.asset.productId || ""));
         return (supFilters.product === "all" || product === supFilters.product)
@@ -547,6 +597,8 @@ export const deliveryView = {
           && (supFilters.publisher === "all" || publisherLabel(x.asset) === supFilters.publisher)
           && (supFilters.account === "all" || x.acc.id === supFilters.account)
           && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date)
+          && matchesDateRange(creationDay(x.asset), supFilters.createdFrom, supFilters.createdTo)
+          && matchesDateRange(supplierReturnDay(x.asset), supFilters.returnedFrom, supFilters.returnedTo)
           && matchesDeliveryStatusFilters(x.asset, supFilters)
           && (creatorRemarkFilter === "all" || hasUnreadRemark(x.asset));
       });
@@ -680,6 +732,8 @@ export const deliveryView = {
           && (supFilters.publisher === "all" || publisherLabel(x.asset) === supFilters.publisher)
           && (supFilters.account === "all" || x.acc.id === supFilters.account)
           && (supFilters.date === "all" || dayKey(x.asset) === supFilters.date)
+          && matchesDateRange(creationDay(x.asset), supFilters.createdFrom, supFilters.createdTo)
+          && matchesDateRange(supplierReturnDay(x.asset), supFilters.returnedFrom, supFilters.returnedTo)
           && matchesDeliveryStatusFilters(x.asset, supFilters)
           && (!supplierDeliveryQuery || searchValue(x).includes(supplierDeliveryQuery));
       };
@@ -707,13 +761,14 @@ export const deliveryView = {
               <col class="sup-col-account" />
               <col class="sup-col-platform" />
               <col class="sup-col-tags" />
+              <col class="sup-col-exposure" />
               <col class="sup-col-status" />
               <col class="sup-col-actions" />
             </colgroup>
             <thead><tr>
               <th class="c-check"><input type="checkbox" id="supAll" /></th>
               <th class="c-seq">序号</th>
-              <th>素材名</th><th>产品</th><th>发布人</th><th>平台</th><th>观看量</th><th>状态</th><th></th>
+              <th>素材名</th><th>产品</th><th>发布人</th><th>平台</th><th>观看量</th><th>曝光量</th><th>状态</th><th></th>
             </tr></thead>
             <tbody>${rows.length ? rows.map(item => {
               const { asset, acc } = item;
@@ -730,6 +785,9 @@ export const deliveryView = {
                 <td>${canUpdateViews
                   ? `<button class="sup-views" data-supviews="${asset.id}" title="更新观看量">${Number(asset.viewCount || 0).toLocaleString()} ${icon("edit", 11)}</button>`
                   : `<span class="sup-views-readonly" title="供应商同步的观看量">${Number(asset.viewCount || 0).toLocaleString()}</span>`}</td>
+                <td>${canUpdateViews
+                  ? `<button class="sup-views sup-exposure" data-supexposure="${asset.id}" title="更新曝光量">${Number(asset.exposureCount || 0).toLocaleString()} ${icon("edit", 11)}</button>`
+                  : `<span class="sup-views-readonly" title="供应商同步的曝光量">${Number(asset.exposureCount || 0).toLocaleString()}</span>`}</td>
                 <td><span class="sup-status ${returnState.statusClass}">${returnState.statusText}</span></td>
                 <td class="sup-acts">
                   <div class="sup-actions-inner"><button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
@@ -742,7 +800,7 @@ export const deliveryView = {
                       : `<button class="btn ghost sm" disabled>${icon("link", 13)} 暂无链接</button>`}</div>
                 </td>
               </tr>${supplierDetailHtml(asset, acc, accountSequence.get(acc.id) || 0)}`;
-            }).join("") + `<tr class="sup-empty-filter" ${visibleCount ? "hidden" : ""}><td colspan="9" class="sup-empty">当前筛选下暂无素材。</td></tr>` : `<tr><td colspan="9" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
+            }).join("") + `<tr class="sup-empty-filter" ${visibleCount ? "hidden" : ""}><td colspan="10" class="sup-empty">当前筛选下暂无素材。</td></tr>` : `<tr><td colspan="10" class="sup-empty">暂无成片素材。创作端发布后会按发布序号 + 产品标签自动进入这里。</td></tr>`}
             </tbody>
           </table>
         </div>`;
@@ -764,12 +822,15 @@ export const deliveryView = {
       const applySupplierFilters = () => {
         let shown = 0;
         $$("tr[data-sup]", body).forEach(row => {
+          const asset = state.assets.find(item => item.id === row.dataset.sup);
           const show = (supFilters.product === "all" || row.dataset.supProduct === supFilters.product)
             && (supFilters.type === "all" || row.dataset.supType === supFilters.type)
             && (supFilters.publisher === "all" || row.dataset.supPublisher === supFilters.publisher)
             && (supFilters.account === "all" || row.dataset.supAccount === supFilters.account)
             && (supFilters.date === "all" || row.dataset.supDate === supFilters.date)
-            && matchesDeliveryStatusFilters(state.assets.find(asset => asset.id === row.dataset.sup), supFilters)
+            && matchesDateRange(creationDay(asset), supFilters.createdFrom, supFilters.createdTo)
+            && matchesDateRange(supplierReturnDay(asset), supFilters.returnedFrom, supFilters.returnedTo)
+            && matchesDeliveryStatusFilters(asset, supFilters)
             && (!supplierDeliveryQuery || row.dataset.supSearch.includes(supplierDeliveryQuery));
           row.dataset.supVisible = show ? "1" : "0";
           const detail = body.querySelector(`[data-sup-detail="${CSS.escape(row.dataset.sup)}"]`);
@@ -843,6 +904,36 @@ export const deliveryView = {
           save("assets");
         }
         toast("观看量已更新"); draw();
+      }));
+      $$("[data-supexposure]", body).forEach(b => b.addEventListener("click", async e => {
+        e.stopPropagation();
+        const a = state.assets.find(x => x.id === b.dataset.supexposure);
+        if (!a) return;
+        const currentExposure = Math.max(0, Number(a.exposureCount || 0));
+        const value = await promptModal({ title: "更新曝光量", value: currentExposure > 0 ? String(currentExposure) : "", placeholder: "请输入当前曝光量" });
+        if (value == null) return;
+        const parsedExposure = parseSupplierViewCount(value);
+        if (!parsedExposure.ok) {
+          toast(parsedExposure.message.replace("观看量", "曝光量"), "error");
+          return;
+        }
+        const nextExposure = parsedExposure.value;
+        if (remote.isOn()) {
+          try {
+            const result = await remote.supplier.updateExposure(a.id, nextExposure);
+            Object.assign(a, result.asset || {});
+          } catch (err) {
+            toast(err?.message || "曝光量更新失败", "error");
+            return;
+          }
+        } else {
+          a.exposureCount = nextExposure;
+          a.exposureUpdatedAt = Date.now();
+          a.exposureUpdatedBy = state.ui.currentMemberId;
+          save("assets");
+        }
+        toast("曝光量已更新");
+        draw();
       }));
       $$("[data-suplink]", body).forEach(b => b.addEventListener("click", async () => {
         const a = state.assets.find(x => x.id === b.dataset.suplink);

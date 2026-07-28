@@ -1122,6 +1122,7 @@ def _upsert_docs_in_conn(conn, collection, items):
                 "remarks", "remarkReadAt", "latestRemarkAt",
                 "supplierDownloadedAt", "supplierDownloadedBy",
                 "viewsUpdatedAt", "viewsUpdatedBy", "viewCount",
+                "exposureUpdatedAt", "exposureUpdatedBy", "exposureCount",
             ):
                 if key not in it and key in existing:
                     it[key] = existing[key]
@@ -3587,6 +3588,7 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
                 "supplierDownloadedAt", "supplierDownloadedBy",
                 "remarks", "remarkReadAt", "latestRemarkAt",
                 "viewsUpdatedAt", "viewsUpdatedBy", "viewCount",
+                "exposureUpdatedAt", "exposureUpdatedBy", "exposureCount",
             ):
                 delivery.pop(key, None)
             delivery.update({
@@ -4387,6 +4389,40 @@ def update_supplier_asset_views(asset_id, view_count, member_id, role):
             item["viewCount"] = max(0, int(view_count or 0))
             item["viewsUpdatedAt"] = now
             item["viewsUpdatedBy"] = member_id
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("assets", str(asset_id), row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item, None
+        finally:
+            conn.close()
+
+
+def update_supplier_asset_exposure(asset_id, exposure_count, member_id, role):
+    """供应商曝光量专用写入：权限与单条素材观看量保持一致，且不影响观看量汇总。"""
+    if role not in {"supplier_parent", "supplier_child"}:
+        return None, "forbidden"
+    _ensure_db()
+    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            item = json.loads(row[0])
+            if not item.get("delivered") and not item.get("shared"):
+                return None, "not_delivered"
+            if assigned is not None and item.get("accountId") not in assigned:
+                return None, "unassigned"
+            now = int(time.time() * 1000)
+            item["exposureCount"] = max(0, int(exposure_count or 0))
+            item["exposureUpdatedAt"] = now
+            item["exposureUpdatedBy"] = member_id
             item["updatedAt"] = now
             conn.execute(
                 "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",

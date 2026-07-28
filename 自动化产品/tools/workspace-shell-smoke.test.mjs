@@ -53,6 +53,7 @@ test("login gate uses the Silk split visual and keeps alternate auth actions hon
   assert.match(indexHtml, /class="lg-visual"/);
   assert.match(indexHtml, /id="lgGoogle"[^>]*>[\s\S]*google-g-mark\.png[\s\S]*使用 Google 快速登录[\s\S]*<\/button>/);
   assert.match(indexHtml, /id="lgPhone"[^>]*>[\s\S]*phone-mark\.svg[\s\S]*使用手机验证[\s\S]*<\/button>/);
+  assert.ok(indexHtml.indexOf('id="lgPhone"') < indexHtml.indexOf('id="lgGoogle"'));
   assert.match(indexHtml, /id="lgForgot"[^>]*>忘记密码/);
   assert.match(indexHtml, /id="lgApply"[^>]*aria-pressed="false"/);
   assert.doesNotMatch(indexHtml, /class="lg-login-logo"/);
@@ -459,6 +460,10 @@ test("asset and publishing workspaces adapt their controls into the context side
   assert.match(shellHandlers, /deliveryView\.setFilter\?\.\(/);
   assert.match(shellHandlers, /deliveryView\.resetFilters\?\.\(\)/);
   assert.match(shellHandlers, /data-ws-delivery-select/);
+  assert.match(shellHandlers, /data-ws-delivery-date/);
+  assert.match(mainJs, /class="wsctx-filter-range"/);
+  assert.match(deliveryViewJs, /回传链接时间/);
+  assert.match(deliveryViewJs, /创作时间/);
 
   assert.match(
     baseCss,
@@ -653,7 +658,15 @@ test("supplier workspaces move account and delivery tools into the left context"
   assert.match(deliveryViewJs, /new Intl\.Collator\("zh-CN-u-co-pinyin"/);
   assert.match(deliveryViewJs, /setSupplierDeliveryQuery/);
   assert.match(deliveryViewJs, /batchDownloadSupplierDelivery/);
+  assert.match(deliveryViewJs, /matchesDateRange\(creationDay\(x\.asset\),\s*supFilters\.createdFrom,\s*supFilters\.createdTo\)/);
+  assert.match(deliveryViewJs, /matchesDateRange\(supplierReturnDay\(x\.asset\),\s*supFilters\.returnedFrom,\s*supFilters\.returnedTo\)/);
+  assert.match(deliveryViewJs, /data-supexposure=/);
+  assert.match(deliveryViewJs, /remote\.supplier\.updateExposure/);
+  assert.match(deliveryViewJs, /value:\s*currentExposure\s*>\s*0\s*\?\s*String\(currentExposure\)\s*:\s*""/);
   assert.doesNotMatch(deliveryViewJs, /id="dvBatchDl"/);
+  assert.match(supplierViewsJs, /const SUPPLIER_ACTIVITY_PAGE_SIZE = 4;/);
+  assert.doesNotMatch(supplierViewsJs, /data-content-account-views=/);
+  assert.match(supplierViewsJs, /由该账号全部交付内容的观看量自动汇总/);
 
   assert.match(viewsCss, /\.supplier-dashboard-stats\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/s);
   assert.match(viewsCss, /\.supplier-dashboard-visuals\s*\{[^}]*grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+minmax\(440px,\s*2fr\)/s);
@@ -695,21 +708,23 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final shell-16 cache marker", () => {
+test("all modified workspace-shell resources use the final shell-19 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-16"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-16"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-16"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260728-v120-shell-16"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-16"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-16"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-13"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-19"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-19"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-19"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260728-v120-shell-19"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-19"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-19"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-19"/);
+  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260728-v120-shell-19"/);
+  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260728-v120-shell-19"/);
   assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-13"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-13"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
-  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260728-v120-shell-16/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-16"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260728-v120-shell-19/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-19"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

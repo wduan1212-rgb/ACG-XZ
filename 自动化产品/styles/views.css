@@ -2607,6 +2607,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .sup-col-platform { width: 68px; }
 .sup-col-kind { width: 72px; }
 .sup-col-tags { width: 70px; }
+.sup-col-exposure { width: 70px; }
 .sup-col-status { width: 70px; }
 .sup-col-actions { width: 286px; }
 .sup-table th { text-align: left; padding: 11px 13px; font-size: 10.5px; color: var(--faint); letter-spacing: .05em; border-bottom: 1px solid var(--line); background: var(--soft); white-space: nowrap; }
@@ -2632,7 +2633,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .sup-tags .tag { flex: 0 0 auto; max-width: 58px; padding: 1px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sup-tags .tag.more { max-width: none; padding-inline: 5px; color: var(--faint); background: var(--soft); }
 /* 平台 / 形式 / 发布账号列不换行，状态与平台标签更整齐 */
-.sup-table td:nth-child(4), .sup-table td:nth-child(5), .sup-table td:nth-child(6), .sup-table td:nth-child(7) { white-space: nowrap; }
+.sup-table td:nth-child(4), .sup-table td:nth-child(5), .sup-table td:nth-child(6), .sup-table td:nth-child(7), .sup-table td:nth-child(8) { white-space: nowrap; }
 .sup-table td:nth-child(5) b, .sup-by { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sup-table .chip { white-space: nowrap; }
 .sup-empty { text-align: center; color: var(--faint); padding: 34px !important; }
@@ -3961,9 +3962,8 @@ body[data-zone="overview"] .view-root::after { display: none !important; }
   color: #2d5fcd;
   font-size: 12px;
   font-weight: 700;
+  cursor: default;
 }
-.supplier-account-total-views:hover { background: #dfeaff; border-color: #8cadfb; }
-.supplier-account-total-views.is-manual { background: #fff4df; border-color: #f0c778; color: #9a6300; }
 .overview-viz-card,
 .overview-action-card,
 .overview-account-strip {

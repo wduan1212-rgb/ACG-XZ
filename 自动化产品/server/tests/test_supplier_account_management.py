@@ -295,6 +295,30 @@ class SupplierAccountManagementTests(unittest.TestCase):
             self.assertIsNone(denied)
             self.assertEqual("forbidden", denied_error)
 
+    def test_supplier_asset_exposure_is_independent_and_permission_scoped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("assets", [{
+                "id": "delivery-exposure",
+                "accountId": "account-exposure",
+                "delivered": True,
+                "viewCount": 23,
+            }])
+
+            updated, error = store.update_supplier_asset_exposure(
+                "delivery-exposure", 456, "supplier-parent-a", "supplier_parent"
+            )
+            self.assertIsNone(error)
+            self.assertEqual(456, updated["exposureCount"])
+            self.assertEqual(23, updated["viewCount"])
+            self.assertEqual("supplier-parent-a", updated["exposureUpdatedBy"])
+
+            denied, denied_error = store.update_supplier_asset_exposure(
+                "delivery-exposure", 999, "creator-a", "editor"
+            )
+            self.assertIsNone(denied)
+            self.assertEqual("forbidden", denied_error)
+
 
 if __name__ == "__main__":
     unittest.main()

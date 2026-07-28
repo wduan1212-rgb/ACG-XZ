@@ -563,12 +563,8 @@ export function deliveryViewsSummary(platform = "all") {
     rowsByAccount.get(key).push(row);
   });
   const totalViews = [...rowsByAccount.entries()].reduce((sum, [accountId, accountRows]) => {
-    const account = accountById(accountId);
     const derived = accountRows.reduce((subtotal, { asset }) => subtotal + Math.max(0, Number(asset.viewCount || 0)), 0);
-    const hasOverride = account?.totalViewCountOverride !== undefined
-      && account?.totalViewCountOverride !== null
-      && account?.totalViewCountOverride !== "";
-    return sum + (hasOverride ? Math.max(0, Number(account.totalViewCountOverride || 0)) : derived);
+    return sum + derived;
   }, 0);
   return {
     totalViews,

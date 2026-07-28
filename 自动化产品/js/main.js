@@ -9,7 +9,7 @@ import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
-import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260727-v118-7";
+import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260728-v120-shell-19";
 import { buildSupplierSearchResults } from "./domain/supplierSearch.js";
 import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js?v=20260727-v118-7";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
@@ -20,24 +20,24 @@ import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260727-v118-7";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
 import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
-import { initLoginBeams } from "./ui/loginBeams.js?v=20260728-v120-shell-16";
+import { initLoginBeams } from "./ui/loginBeams.js?v=20260728-v120-shell-19";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
-import { overviewView } from "./views/overview.js?v=20260728-v120-shell-13";
+import { overviewView } from "./views/overview.js?v=20260728-v120-shell-19";
 import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-13";
 import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-13";
 import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-13";
 import { studioView } from "./views/studio.js?v=20260728-v120-shell-13";
-import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-13";
-import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-13";
+import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-19";
+import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-19";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
 import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-13";
-import { settingsView } from "./views/settings.js?v=20260728-v120-shell-13";
+import { settingsView } from "./views/settings.js?v=20260728-v120-shell-19";
 import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-13";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260728-v120-shell-16";
+const APP_BUILD_ID = "20260728-v120-shell-19";
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 const WORKSPACE_VIDEO_META_KEY = "xingzhen.workspaceVideoMeta";
@@ -1480,9 +1480,29 @@ function accountContextRow(account, accountIndex) {
 
 function deliveryFilterControls(model = {}) {
   const fields = Array.isArray(model.fields) ? model.fields : [];
-  const active = fields.some(field => String(field.value || "all") !== "all");
+  const ranges = Array.isArray(model.ranges) ? model.ranges : [];
+  const active = fields.some(field => String(field.value || "all") !== "all")
+    || ranges.some(range => range.start || range.end);
   return `
     <div class="wsctx-filter-stack">
+      ${ranges.map(range => `
+        <fieldset class="wsctx-filter-range">
+          <legend>${esc(range.label || "")}</legend>
+          <div>
+            <input type="date"
+              value="${esc(range.start || "")}"
+              max="${esc(range.end || "")}"
+              data-ws-delivery-date="${esc(range.startKey || "")}"
+              aria-label="${esc(range.label || "")}开始日期" />
+            <i aria-hidden="true">—</i>
+            <input type="date"
+              value="${esc(range.end || "")}"
+              min="${esc(range.start || "")}"
+              data-ws-delivery-date="${esc(range.endKey || "")}"
+              aria-label="${esc(range.label || "")}结束日期" />
+          </div>
+        </fieldset>
+      `).join("")}
       ${fields.map(field => {
         const key = esc(field.key || "");
         const label = esc(field.label || "");
@@ -1891,6 +1911,11 @@ function ensureWorkspaceContextShell(panel) {
     }
   });
   panel.addEventListener("change", event => {
+    const dateInput = event.target.closest?.("[data-ws-delivery-date]");
+    if (dateInput) {
+      deliveryView.setFilter?.(dateInput.dataset.wsDeliveryDate, dateInput.value);
+      return;
+    }
     const select = event.target.closest?.("[data-ws-delivery-select]");
     if (!select) return;
     deliveryView.setFilter?.(select.dataset.wsDeliverySelect, select.value);

@@ -2477,6 +2477,50 @@ body.workspace-shell-v2 .workspace-account {
   gap: 6px;
   padding: 2px 4px 6px;
 }
+.wsctx-filter-range {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 7px;
+  border: 0;
+  border-radius: 8px;
+  background: #f3f3f0;
+}
+.wsctx-filter-range legend {
+  padding: 0;
+  color: #696963;
+  font-size: 10.5px;
+}
+.wsctx-filter-range > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+.wsctx-filter-range input {
+  width: 100%;
+  min-width: 0;
+  height: 29px;
+  padding: 0 4px;
+  border: 1px solid #deded8;
+  border-radius: 6px;
+  outline: 0;
+  background: #fff;
+  color: #252522;
+  font: inherit;
+  font-size: 9.5px;
+}
+.wsctx-filter-range input:focus {
+  border-color: #9fb7eb;
+  box-shadow: 0 0 0 2px rgba(49,95,213,.08);
+}
+.wsctx-filter-range i {
+  color: #999992;
+  font-size: 9px;
+  font-style: normal;
+}
 .wsctx-filter-select {
   min-height: 32px;
   display: grid;

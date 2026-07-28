@@ -5,16 +5,16 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, ownedBy, assetById } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
 import { STAGES, statusPill } from "../domain/productions.js";
-import { deliveredAssets } from "../domain/delivery.js?v=20260727-v118-7";
+import { deliveredAssets } from "../domain/delivery.js?v=20260728-v120-shell-19";
 import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=20260727-v118-7";
 import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260728-v120-shell-13";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260728-v120-shell-13";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260728-v120-shell-19";
 import { emptyState, openModal } from "../ui/components.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260727-v118-7";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260728-v120-shell-19";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
@@ -326,11 +326,7 @@ export const overviewView = {
     const accountViewRows = accounts.map(acc => {
       const rows = viewRowsByAccount.get(acc.id) || [];
       const derivedViews = rows.reduce((sum, row) => sum + row.views, 0);
-      const hasOverride = acc.totalViewCountOverride !== undefined
-        && acc.totalViewCountOverride !== null
-        && acc.totalViewCountOverride !== "";
       const updatedAt = Math.max(
-        Number(acc.totalViewsUpdatedAt || 0),
         ...rows.map(row => Number(row.updatedAt || 0)),
         0,
       );
@@ -338,12 +334,11 @@ export const overviewView = {
         acc,
         rows,
         derivedViews,
-        views: hasOverride ? Math.max(0, Number(acc.totalViewCountOverride || 0)) : derivedViews,
-        hasOverride,
+        views: derivedViews,
         updatedAt,
         platform: acc.platform || "未知平台",
       };
-    }).filter(row => row.rows.length || row.hasOverride);
+    }).filter(row => row.rows.length);
     const unassignedRows = viewRowsByAccount.get("") || [];
     if (unassignedRows.length) {
       accountViewRows.push({
@@ -351,7 +346,6 @@ export const overviewView = {
         rows: unassignedRows,
         derivedViews: unassignedRows.reduce((sum, row) => sum + row.views, 0),
         views: unassignedRows.reduce((sum, row) => sum + row.views, 0),
-        hasOverride: false,
         updatedAt: Math.max(...unassignedRows.map(row => Number(row.updatedAt || 0)), 0),
         platform: "未知平台",
       });
@@ -558,10 +552,10 @@ export const overviewView = {
           const periodButtons = [filterButton("period", "all", "全部时间"), filterButton("period", "7", "近 7 天"), filterButton("period", "30", "近 30 天")].join("");
           const list = scoped.map(row => {
             const updated = row.updatedAt ? timeAgo(row.updatedAt) : "暂无更新时间";
-            const sourceMetrics = `累计播放 ${fmt(row.views)} · ${row.hasOverride ? "账号总数手动填写" : `单条合计 ${row.rows.length} 条`}`;
+            const sourceMetrics = `累计播放 ${fmt(row.views)} · 单条合计 ${row.rows.length} 条`;
             return makeRow(
               row.acc?.name || "未命名账号",
-              `${row.platform} · ${row.hasOverride ? `手动总数；单条合计 ${fmt(row.derivedViews)}` : "由已填写单条播放量自动汇总"} · ${updated}`,
+              `${row.platform} · 由已填写单条播放量自动汇总 · ${updated}`,
               row.acc?.homepageUrl
                 ? `<a class="btn ghost sm" href="${esc(row.acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">账号主页</a>`
                 : "",

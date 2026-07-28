@@ -324,6 +324,7 @@ export const supplier = {
   activity: () => req("/api/supplier/activity"),
   record: (data) => req("/api/supplier/activity", { method: "POST", body: data }),
   updateViews: (assetId, viewCount) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/views", { method: "PUT", body: { viewCount } }),
+  updateExposure: (assetId, exposureCount) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/exposure", { method: "PUT", body: { exposureCount } }),
   updateAccountViews: (accountId, viewCount) => req("/api/supplier/accounts/" + encodeURIComponent(accountId) + "/views", { method: "PUT", body: { viewCount } }),
   markDownloaded: (assetId) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/downloaded", { method: "PUT" }),
   returnLink: (assetId, data) => req("/api/supplier/assets/" + encodeURIComponent(assetId) + "/published-link", { method: "PUT", body: data }),
