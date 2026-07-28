@@ -4,7 +4,7 @@ import { state, save } from "../core/store.js";
 import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260727-v118-7";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
-import { deliveryViewsSummary } from "../domain/delivery.js?v=20260728-v120-shell-19";
+import { deliveryViewsSummary } from "../domain/delivery.js?v=20260728-v120-shell-20";
 import { accountDisplaySequenceMap, isAccountDisabled, isNewAccount } from "../domain/accounts.js";
 import { openAccountDialog } from "./accountDialog.js";
 

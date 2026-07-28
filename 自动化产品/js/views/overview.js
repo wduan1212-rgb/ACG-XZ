@@ -5,16 +5,16 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, ownedBy, assetById } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
 import { STAGES, statusPill } from "../domain/productions.js";
-import { deliveredAssets } from "../domain/delivery.js?v=20260728-v120-shell-19";
+import { deliveredAssets } from "../domain/delivery.js?v=20260728-v120-shell-20";
 import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=20260727-v118-7";
 import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260728-v120-shell-13";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260728-v120-shell-19";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260728-v120-shell-20";
 import { emptyState, openModal } from "../ui/components.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260728-v120-shell-19";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260728-v120-shell-20";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}

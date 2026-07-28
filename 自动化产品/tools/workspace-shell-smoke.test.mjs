@@ -708,23 +708,23 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final shell-19 cache marker", () => {
+test("all modified workspace-shell resources use the final shell-20 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-19"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-19"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-19"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260728-v120-shell-19"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-19"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-19"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-19"/);
-  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260728-v120-shell-19"/);
-  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260728-v120-shell-19"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-20"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-20"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-20"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260728-v120-shell-20"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-20"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-20"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-20"/);
+  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260728-v120-shell-20"/);
+  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260728-v120-shell-20"/);
   assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-13"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-13"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
-  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260728-v120-shell-19/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-19"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260728-v120-shell-20/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-20"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 
