@@ -4365,23 +4365,22 @@ button.overview-viz-card { cursor: pointer; }
   font-weight: 560;
 }
 .supplier-account-grid {
-  display: block;
-  overflow-x: auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
   border: 0;
   background: transparent;
-  scrollbar-width: none;
 }
-.supplier-account-grid::-webkit-scrollbar { display: none; }
 .supplier-account-grid.is-switching { transform-origin: 50% 0; }
 .supplier-account-copy > em:not(.supplier-account-status) { display: none; }
 .supplier-account {
   position: relative;
   width: 100%;
-  min-width: 680px;
-  grid-template-columns: 36px minmax(180px, 1fr) auto;
+  min-width: 0;
+  grid-template-columns: auto 34px minmax(0, 1fr) auto;
   min-height: 54px;
-  gap: 10px;
-  padding: 8px 6px;
+  gap: 8px;
+  padding: 9px 8px;
   border-right: 0;
   border-bottom: 1px solid rgba(148,163,184,.16);
   border-radius: 0;
@@ -4516,10 +4515,10 @@ button.overview-viz-card { cursor: pointer; }
   .supplier-dashboard-main { height: auto; }
   .supplier-dashboard-main { grid-template-rows: auto; overflow: visible; }
   .supplier-data-assistant { min-height: 420px; border-left: 0; border-top: 1px solid #dfe4ea; }
-  .supplier-account-grid { overflow-x: auto; }
+  .supplier-account-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (min-width: 901px) and (max-width: 1380px) {
-  .supplier-account { min-width: 640px; }
+  .supplier-account-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .ovc-send, .agw-send { background: #171b22; box-shadow: 0 6px 16px rgba(15,23,42,.16); }
