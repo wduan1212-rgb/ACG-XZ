@@ -1,12 +1,13 @@
 const PROJECT_STORAGE_KEY =
   window.__XINGZHEN_VIDEO_PROJECT_KEY__ || "xingzhen-video-project:standalone";
-const START_ON_HOME =
-  new URLSearchParams(window.location.search).get("start") === "home";
+const SEARCH_PARAMS = new URLSearchParams(window.location.search);
+const START_ON_HOME = SEARCH_PARAMS.get("start") === "home";
+const INITIAL_PROJECT_ID = String(SEARCH_PARAMS.get("project") || "").trim().slice(0, 180);
 const WORKSPACE_MODE =
   typeof window.parent !== "undefined"
   && window.parent !== window
   && (
-    new URLSearchParams(window.location.search).get("workspace") === "1"
+    SEARCH_PARAMS.get("workspace") === "1"
     || (
       typeof document !== "undefined"
       && document.documentElement?.dataset?.platformEmbedded === "true"
@@ -17,9 +18,11 @@ if (WORKSPACE_MODE && typeof document !== "undefined") {
 }
 const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 const state = {
-  // 主平台每次重新进入“定制创作”都从新建首页开始；历史项目仍保留在
-  // 当前成员的列表中，用户主动选择后会在这个 iframe 会话里正常保持。
-  projectId: START_ON_HOME ? "" : localStorage.getItem(PROJECT_STORAGE_KEY) || "",
+  // 统一工作区由外层路由决定当前会话，不读取子应用自己的最近项目，
+  // 避免进入视频工坊时先闪出旧首页或错误的历史项目。
+  projectId: WORKSPACE_MODE
+    ? INITIAL_PROJECT_ID
+    : (START_ON_HOME ? "" : localStorage.getItem(PROJECT_STORAGE_KEY) || ""),
   project: null,
   attachments: [],
   ratio: "9:16",
@@ -261,6 +264,36 @@ function showToast(message) {
   dom.toast.textContent = message;
   dom.toast.classList.add("show");
   toastTimer = window.setTimeout(() => dom.toast.classList.remove("show"), 2800);
+}
+
+async function copyText(value) {
+  const text = String(value || "");
+  if (!text) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (_) {
+    // 同源 iframe 也可能因浏览器权限策略拒绝 Clipboard API，继续走兼容回退。
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.setAttribute("aria-hidden", "true");
+  textarea.style.cssText = "position:fixed;inset:-9999px auto auto -9999px;opacity:0;pointer-events:none";
+  document.body.append(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  let copied = false;
+  try {
+    copied = Boolean(document.execCommand?.("copy"));
+  } catch (_) {
+    copied = false;
+  } finally {
+    textarea.remove();
+  }
+  return copied;
 }
 
 function showAttachmentError(error, fallback = "附件处理失败，请重试") {
@@ -640,11 +673,10 @@ function createMessage(message, isRetryTarget = false) {
     copyIcon.dataset.lucide = "copy";
     copyButton.append(copyIcon);
     copyButton.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(copyValue);
+      if (await copyText(copyValue)) {
         copyButton.title = "已复制";
         showToast("已复制消息");
-      } catch (_) {
+      } else {
         showToast("复制失败，请手动选择文字");
       }
     });
@@ -1286,7 +1318,26 @@ function populateHistoryList(list, items) {
 }
 
 function renderHistory(items) {
-  state.historyItems = Array.isArray(items) ? [...items] : [];
+  const incoming = [];
+  const seen = new Set();
+  (Array.isArray(items) ? items : []).forEach(project => {
+    const id = String(project?.id || "");
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    incoming.push(project);
+  });
+  if (!state.historyItems.length) {
+    state.historyItems = incoming;
+  } else {
+    const previousIds = new Set(state.historyItems.map(project => String(project?.id || "")));
+    const incomingById = new Map(incoming.map(project => [String(project.id), project]));
+    const added = incoming.filter(project => !previousIds.has(String(project.id)));
+    const retained = state.historyItems
+      .filter(project => incomingById.has(String(project?.id || "")))
+      .map(project => incomingById.get(String(project.id)));
+    state.historyItems = [...added, ...retained];
+  }
+  items = state.historyItems;
   const signature = JSON.stringify({
     activeProjectId: state.projectId,
     items: items.map((project) => [
@@ -1326,10 +1377,10 @@ function upsertHistoryProject(project) {
     updatedAt: project.updatedAt || project.createdAt || new Date().toISOString(),
     _integration: project._integration || {},
   };
-  const items = [
-    summary,
-    ...state.historyItems.filter((item) => item.id !== summary.id),
-  ];
+  const existingIndex = state.historyItems.findIndex((item) => item.id === summary.id);
+  const items = existingIndex >= 0
+    ? state.historyItems.map((item, index) => index === existingIndex ? summary : item)
+    : [summary, ...state.historyItems];
   state.historySignature = "";
   renderHistory(items);
 }
@@ -1714,7 +1765,10 @@ function resetProject(showStart = true) {
   dom.projectLabel.textContent = "新项目";
   dom.chatInput.disabled = false;
   dom.chatForm.querySelector("button[type='submit']").disabled = false;
-  if (showStart) {
+  if (WORKSPACE_MODE) {
+    enterStudio();
+    dom.chatInput.focus();
+  } else if (showStart) {
     dom.studioView.classList.add("is-hidden");
     dom.startView.classList.remove("is-hidden");
     dom.startInput.focus();
@@ -2069,6 +2123,7 @@ refreshIcons();
 typePlaceholder();
 checkHealth();
 loadHistory(true);
+if (WORKSPACE_MODE) enterStudio();
 if (state.projectId) loadProject(state.projectId, true);
 if (WORKSPACE_MODE) {
   window.parent.postMessage({

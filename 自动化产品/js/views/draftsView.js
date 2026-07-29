@@ -6,7 +6,7 @@ import { state, save, ownedBy, accountById, productionById } from "../core/store
 import { STAGES, statusPill, deleteProduction } from "../domain/productions.js";
 import { urlFor } from "../domain/assets.js";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260728-v120-shell-13";
-import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js?v=20260727-v118-7";
+import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js?v=20260729-v121-shell-22";
 import { go } from "../core/router.js";
 
 const DRAFT_RENDER_BATCH = 24;

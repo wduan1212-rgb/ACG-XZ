@@ -4483,6 +4483,10 @@ class PutReq(BaseModel):
     items: list
 
 
+class PublishTagReq(BaseModel):
+    label: str = ""
+
+
 class CustomProjectReq(BaseModel):
     kind: str = "video"
     title: str = ""
@@ -6050,6 +6054,22 @@ def custom_projects_delete(project_id: str, me=Depends(require_member)):
     if error:
         _custom_project_error(error)
     return {"ok": bool(ok)}
+
+
+@app.get("/api/publish-tags")
+def publish_tags_list(me=Depends(require_member)):
+    return {"items": store.list_publish_tags()}
+
+
+@app.post("/api/publish-tags")
+def publish_tags_create(req: PublishTagReq, me=Depends(require_member)):
+    if me["role"] not in {"admin", "editor"}:
+        raise HTTPException(403, "当前账号无权新增发布标签")
+    try:
+        item = store.create_publish_tag(req.label, me["id"])
+    except ValueError:
+        raise HTTPException(400, "标签不能为空")
+    return {"item": item}
 
 
 @app.put("/api/db/{collection}")

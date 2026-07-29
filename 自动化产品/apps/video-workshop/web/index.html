@@ -19,7 +19,7 @@
       })();
     </script>
     <link rel="icon" type="image/png" href="/assets/xingzhen-logo-white.png" />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260728-v120-shell-7" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260729-v121-shell-8" />
     <style>
       /* 主平台嵌入态由外层工作区负责一级导航，内部只保留创作、素材与成片能力。 */
       html[data-platform-workspace="true"] {
@@ -50,6 +50,14 @@
 
       html[data-platform-workspace="true"] .noise {
         display: none;
+      }
+
+      html[data-platform-workspace="true"] .start-view {
+        display: none !important;
+      }
+
+      html[data-platform-workspace="true"] .studio-view {
+        display: grid !important;
       }
 
       html[data-platform-workspace="true"] .start-history,
@@ -467,6 +475,6 @@
     <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,.m4a" multiple hidden />
     <div class="toast" id="toast" role="status"></div>
     <script src="/assets/lucide.min.js"></script>
-    <script src="/assets/app.js?v=20260728-v120-shell-7"></script>
+    <script src="/assets/app.js?v=20260729-v121-shell-8"></script>
   </body>
 </html>

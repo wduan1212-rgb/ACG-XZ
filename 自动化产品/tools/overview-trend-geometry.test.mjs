@@ -109,6 +109,12 @@ test("发布分布保持左窄右宽且环图只保留中心总数", () => {
   assert.doesNotMatch(overviewSource, /小红书 <b>\$\{xhsCount\}<\/b>/);
   assert.doesNotMatch(overviewSource, /视频号 <b>\$\{videoCount\}<\/b>/);
   assert.doesNotMatch(viewsCss, /\.overview-donut-wrap > div|\.overview-donut-wrap p/);
+  assert.match(viewsCss, /\.overview-donut > svg \{[^}]*overflow: hidden;/);
+  assert.match(viewsCss, /\.supplier-donut > svg \{[^}]*overflow: hidden;/);
+  assert.match(viewsCss, /\.overview-donut-segment:focus-visible \{[^}]*stroke-width: 16;/);
+  assert.match(viewsCss, /\.supplier-donut-segment:hover,[^}]*\{[^}]*stroke-width: 20;/);
+  assert.doesNotMatch(viewsCss, /\.overview-donut-segment[^}]*transform:\s*scale/);
+  assert.doesNotMatch(viewsCss, /\.supplier-donut-segment[^}]*transform:\s*scale/);
 });
 
 test("数据助手删除建议问题并在空白区显示居中引导", () => {

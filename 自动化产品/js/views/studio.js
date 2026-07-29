@@ -5,7 +5,7 @@ import { icon } from "../ui/icons.js";
 import { state, save, activeAccount, activeProduction, productionById, canManageAccounts } from "../core/store.js";
 import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, accountCreatedToday, isAccountDisabled } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
-import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260727-v118-7";
+import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260729-v121-shell-22";
 import { go } from "../core/router.js";
 import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260728-v120-shell-13";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";

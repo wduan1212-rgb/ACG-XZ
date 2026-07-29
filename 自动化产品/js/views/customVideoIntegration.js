@@ -75,7 +75,9 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
     ? mountOptions.onProjects
     : null;
   const frame = document.createElement("iframe");
-  const entryUrl = "/custom-video/?embed=1&start=home";
+  const entryParams = new URLSearchParams({ embed: "1", workspace: "1" });
+  if (initialProjectId) entryParams.set("project", initialProjectId);
+  const entryUrl = `/custom-video/?${entryParams.toString()}`;
   frame.title = "星阵视频工坊";
   frame.loading = "eager";
   frame.referrerPolicy = "same-origin";

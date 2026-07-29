@@ -201,7 +201,9 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertNotIn("from 视频工坊产品试验", backend)
 
         self.assertIn("export function mountCustomVideo(", integration)
-        self.assertIn('const entryUrl = "/custom-video/?embed=1&start=home"', integration)
+        self.assertIn('const entryParams = new URLSearchParams({ embed: "1", workspace: "1" })', integration)
+        self.assertIn('entryParams.set("project", initialProjectId)', integration)
+        self.assertIn('const entryUrl = `/custom-video/?${entryParams.toString()}`', integration)
         self.assertIn("frame.src = entryUrl", integration)
         self.assertIn('frame.src = entryUrl + "&ts="', integration)
         self.assertIn("getLatestOutput:", integration)
@@ -237,8 +239,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260728-v120-shell-7", html)
-        self.assertIn("app.js?v=20260728-v120-shell-7", html)
+        self.assertIn("styles.css?v=20260729-v121-shell-8", html)
+        self.assertIn("app.js?v=20260729-v121-shell-8", html)
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",
@@ -273,7 +275,9 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertIn('class="attachment-strip" data-attachment-strip', html)
         self.assertIn('copyButton.className = "message-copy"', javascript)
         self.assertIn('message.type === "workspace:rename"', javascript)
-        self.assertIn("navigator.clipboard.writeText(copyValue)", javascript)
+        self.assertIn("async function copyText(value)", javascript)
+        self.assertIn('document.execCommand?.("copy")', javascript)
+        self.assertIn("if (await copyText(copyValue))", javascript)
         self.assertIn(".chat-input-line:has(textarea:not(:placeholder-shown))", css)
         self.assertIn(".chat-input-line > .attachment-strip .attachment-chip", css)
         self.assertRegex(
@@ -474,14 +478,16 @@ if (!value.includes("<img src=x onerror=alert(1)>")) {{
         self.assertIn("content.textContent =", javascript)
         self.assertNotIn("content.innerHTML =", javascript)
 
-    def test_embedded_entry_starts_on_home_without_erasing_history_selection(self):
+    def test_embedded_entry_opens_the_routed_project_without_rendering_the_old_home(self):
         integration = (
             APP_DIR / "js/views/customVideoIntegration.js"
         ).read_text(encoding="utf-8")
         javascript = (
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
-        self.assertIn('const entryUrl = "/custom-video/?embed=1&start=home"', integration)
+        self.assertIn('const entryParams = new URLSearchParams({ embed: "1", workspace: "1" })', integration)
+        self.assertIn('entryParams.set("project", initialProjectId)', integration)
+        self.assertIn('const entryUrl = `/custom-video/?${entryParams.toString()}`', integration)
         self.assertIn('"background:#fff"', integration)
         self.assertLess(
             integration.index('window.addEventListener("message", receive)'),
@@ -528,7 +534,7 @@ host.replaceChildren = child => {{
   if (child !== frame) throw new Error("wrong iframe mounted");
 }};
 mountCustomVideo(host, {{ projectId: "history-project-1" }});
-if (frame.currentSrc !== "/custom-video/?embed=1&start=home") {{
+if (frame.currentSrc !== "/custom-video/?embed=1&workspace=1&project=history-project-1") {{
   throw new Error(`unexpected iframe source ${{frame.currentSrc}}`);
 }}
 """
@@ -540,13 +546,17 @@ if (frame.currentSrc !== "/custom-video/?embed=1&start=home") {{
             text=True,
         )
         self.assertIn(
-            'new URLSearchParams(window.location.search).get("start") === "home"',
+            'const START_ON_HOME = SEARCH_PARAMS.get("start") === "home"',
             javascript,
         )
         self.assertIn(
-            'projectId: START_ON_HOME ? "" : localStorage.getItem(PROJECT_STORAGE_KEY) || ""',
+            'projectId: WORKSPACE_MODE',
             javascript,
         )
+        self.assertIn("if (WORKSPACE_MODE) enterStudio();", javascript)
+        self.assertIn('html[data-platform-workspace="true"] .start-view', (
+            VIDEO_WORKSHOP_DIR / "web/index.html"
+        ).read_text(encoding="utf-8"))
         self.assertIn("localStorage.setItem(PROJECT_STORAGE_KEY, project.id)", javascript)
         self.assertIn("loadProject(project.id)", javascript)
         self.assertIn("state.project?.id === projectId", javascript)
@@ -555,17 +565,15 @@ if (frame.currentSrc !== "/custom-video/?embed=1&start=home") {{
         home_check = f"""
 global.window = {{
   __XINGZHEN_VIDEO_PROJECT_KEY__: "member-project-key",
-  location: {{ search: "?embed=1&start=home" }},
+  location: {{ search: "?embed=1&workspace=1&project=history-project-1" }},
+  parent: {{}},
 }};
 global.localStorage = {{
-  getItem(key) {{
-    if (key !== "member-project-key") throw new Error("wrong storage key");
-    return "remembered-project";
-  }},
+  getItem() {{ throw new Error("workspace mode must not read the standalone project"); }},
 }};
 {bootstrap}
-if (state.projectId !== "") {{
-  throw new Error(`embedded entry restored ${{state.projectId}} instead of home`);
+if (state.projectId !== "history-project-1") {{
+  throw new Error(`embedded entry did not restore the routed project: ${{state.projectId}}`);
 }}
 """
         subprocess.run(

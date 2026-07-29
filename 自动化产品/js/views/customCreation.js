@@ -1,7 +1,7 @@
 import { go } from "../core/router.js";
 import { state } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { toast } from "../ui/components.js?v=20260727-v118-7";
+import { toast } from "../ui/components.js?v=20260729-v121-shell-22";
 import { voiceLabView } from "./voiceLab.js?v=20260728-v120-shell-13";
 
 const TOOLS = [
@@ -209,7 +209,7 @@ export const customCreationView = {
       mountedTools.set(key, { loading: true });
       try {
         const module = key === "video"
-          ? await import("./customVideoIntegration.js?v=20260728-v120-shell-13")
+          ? await import("./customVideoIntegration.js?v=20260729-v121-shell-22")
           : await import("./customCanvasIntegration.js?v=20260728-v120-shell-13");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);

@@ -2,7 +2,7 @@
 
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { toast, withLoading, emptyState } from "../ui/components.js?v=20260727-v118-7";
+import { toast, withLoading, emptyState } from "../ui/components.js?v=20260729-v121-shell-22";
 import { state } from "../core/store.js";
 import {
   analyticsRows, analyticsSummary,

@@ -1178,6 +1178,66 @@ def upsert_docs(collection, items):
             conn.close()
 
 
+def list_publish_tags():
+    """独立共享发布标签，不混入前端全量状态集合。"""
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                "SELECT data FROM docs WHERE collection='publishTags' ORDER BY updated_at ASC, rowid ASC"
+            ).fetchall()
+            items = []
+            for (raw,) in rows:
+                try:
+                    item = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                label = re.sub(r"\s+", " ", str(item.get("label") or "")).strip()[:20]
+                if label:
+                    items.append({**item, "label": label})
+            return items
+        finally:
+            conn.close()
+
+
+def create_publish_tag(label, member_id):
+    clean = re.sub(r"\s+", " ", str(label or "")).strip()[:20]
+    if not clean:
+        raise ValueError("empty_publish_tag")
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                "SELECT data FROM docs WHERE collection='publishTags'"
+            ).fetchall()
+            wanted = clean.casefold()
+            for (raw,) in rows:
+                try:
+                    existing = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if str(existing.get("label") or "").strip().casefold() == wanted:
+                    return existing
+            now = int(time.time() * 1000)
+            item = {
+                "id": f"publish-tag-{uuid.uuid4().hex[:12]}",
+                "label": clean,
+                "createdBy": str(member_id or ""),
+                "createdAt": now,
+                "updatedAt": now,
+            }
+            conn.execute(
+                "INSERT INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("publishTags", item["id"], None, now, json.dumps(item, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item
+        finally:
+            conn.close()
+
+
 def _same_doc_payload(left, right):
     try:
         return json.dumps(left, ensure_ascii=False, sort_keys=True, separators=(",", ":")) == json.dumps(

@@ -181,7 +181,7 @@ test("preview uses the v120 video shell and assets without replacing the v119 AP
       })();</script>
       <style>.workspace-v120-video { background: #fff; }</style>
     </head><body><main class="workspace-v120-video">v120 video</main>
-      <script src="/assets/app.js?v=20260728-v120-shell-7"></script>
+      <script src="/assets/app.js?v=20260729-v121-shell-8"></script>
     </body></html>`
   );
   await writeFile(join(videoAssets, "app.js"), "window.__videoBuild = 'v120';");
@@ -221,13 +221,13 @@ test("preview uses the v120 video shell and assets without replacing the v119 AP
   assert.match(shell.body, /data-platform-embedded="true"/);
   assert.match(shell.body, /workspace-v120-video/);
   assert.match(shell.body, /platformWorkspace/);
-  assert.match(shell.body, /20260728-v120-shell-7/);
+  assert.match(shell.body, /20260729-v121-shell-8/);
   assert.doesNotMatch(shell.body, />v119 video</);
   assert.equal(seen.at(-1), "/custom-video/?embed=1&start=home");
 
   const asset = await request({
     port: previewPort,
-    path: "/custom-video/assets/app.js?v=20260728-v120-shell-7"
+    path: "/custom-video/assets/app.js?v=20260729-v121-shell-8"
   });
   assert.equal(asset.status, 200);
   assert.equal(asset.body, "window.__videoBuild = 'v120';");

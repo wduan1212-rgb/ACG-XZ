@@ -57,6 +57,12 @@ class FrontendModuleIdentityTest(unittest.TestCase):
             queries = {specifier.partition("?")[2] for _, specifier in imports}
             self.assertEqual({"v=20260727-v118-7"}, queries, imports)
 
+    def test_shared_ui_components_have_one_cache_identity(self):
+        imports = self._module_imports("components.js")
+        self.assertGreaterEqual(len(imports), 2)
+        queries = {specifier.partition("?")[2] for _, specifier in imports}
+        self.assertEqual({"v=20260729-v121-shell-22"}, queries, imports)
+
     def test_custom_publish_is_loaded_with_the_current_module_identity(self):
         source = (APP_DIR / "js/views/customCreation.js").read_text(encoding="utf-8")
         self.assertIn('import("./customPublish.js?v=20260728-v120-shell-13")', source)
@@ -64,12 +70,12 @@ class FrontendModuleIdentityTest(unittest.TestCase):
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
-            "base.css": "v=20260728-v120-shell-21",
+            "base.css": "v=20260729-v121-shell-22",
             "components.css": "v=20260723-v117-8",
-            "views.css": "v=20260728-v120-shell-21",
-            "agent.css": "v=20260728-v120-shell-21",
-            "ui-motion.css": "v=20260728-v120-shell-21",
-            "custom-creation.css": "v=20260728-v120-shell-21",
+            "views.css": "v=20260729-v121-shell-22",
+            "agent.css": "v=20260729-v121-shell-22",
+            "ui-motion.css": "v=20260729-v121-shell-22",
+            "custom-creation.css": "v=20260729-v121-shell-22",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():

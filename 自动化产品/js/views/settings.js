@@ -3,7 +3,7 @@
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260727-v118-7";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260729-v121-shell-22";
 import * as remote from "../core/remote.js";
 import { renderSupplierSettings } from "./supplierViews.js?v=20260728-v120-shell-20";
 

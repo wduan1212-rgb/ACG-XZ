@@ -3,7 +3,7 @@
 import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
-import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260727-v118-7";
+import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260729-v121-shell-22";
 import { STAGES, jobsOf } from "../domain/productions.js";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";

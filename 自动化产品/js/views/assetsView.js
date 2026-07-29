@@ -6,7 +6,7 @@ import { state, save, accountById } from "../core/store.js";
 import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile, inferAssetFileMeta, isBgmAsset, isEditingMaterialAsset } from "../domain/assets.js";
 import { downloadAsset } from "../domain/delivery.js?v=20260728-v120-shell-20";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260727-v118-7";
+import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260729-v121-shell-22";
 import { renderSupplierAccounts } from "./supplierViews.js?v=20260728-v120-shell-20";
 
 let fAcc = "all", fQ = "", fKind = "all", libraryMode = "drafts", collapseInitialized = false;

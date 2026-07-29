@@ -3,6 +3,7 @@
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "./icons.js";
 import { state, save, on } from "../core/store.js";
+import * as remote from "../core/remote.js";
 
 /* ---------- toast ---------- */
 let toastTimer;
@@ -168,9 +169,50 @@ function normalizeDateValue(value = "") {
   return raw.slice(0, 10).replace(/\//g, "-");
 }
 
+function normalizePublishTag(value = "") {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 20);
+}
+
+function knownPublishTags(seed = "") {
+  const values = [
+    seed,
+    ...(state.assets || []).map(asset => asset?.productTag),
+    ...(state.products || []).flatMap(product => [product?.shortName, product?.name]),
+  ];
+  const out = [];
+  const seen = new Set();
+  values.forEach(value => {
+    const label = normalizePublishTag(value);
+    const key = label.toLocaleLowerCase();
+    if (!label || seen.has(key)) return;
+    seen.add(key);
+    out.push(label);
+  });
+  return out;
+}
+
+function replacePublishTagOptions(select, values, selected = "") {
+  const current = normalizePublishTag(selected || select.value);
+  const rows = [];
+  const seen = new Set();
+  [current, ...values].forEach(value => {
+    const label = normalizePublishTag(value);
+    const key = label.toLocaleLowerCase();
+    if (!label || seen.has(key)) return;
+    seen.add(key);
+    rows.push(label);
+  });
+  select.innerHTML = [
+    '<option value="">请选择标签</option>',
+    ...rows.map(label => `<option value="${esc(label)}">${esc(label)}</option>`),
+  ].join("");
+  select.value = current && rows.includes(current) ? current : "";
+}
+
 export function publishModal({ title = "定稿并发布", okText = "定稿并发布", date = "", productTag = "", note = "" } = {}) {
   return new Promise(res => {
     const defaultDate = normalizeDateValue(date);
+    const initialTags = knownPublishTags(productTag);
     const ov = document.createElement("div");
     ov.className = "modal-ov";
     ov.innerHTML = `
@@ -179,7 +221,22 @@ export function publishModal({ title = "定稿并发布", okText = "定稿并发
         <div class="mp-body">
           <p class="mp-sub">定稿后入供应商端，按发布序号可见可下载。计划发布日期默认今天，可按需调整：</p>
           <label class="field"><span>计划发布日期（必填）</span><input class="input" type="date" id="pubDate" value="${esc(defaultDate)}" required /></label>
-          <label class="field"><span>产品标签（必填）</span><input class="input" id="pubProductTag" value="${esc(productTag)}" maxlength="20" placeholder="例如：百度搭子" required /></label>
+          <label class="field">
+            <span>产品标签（必填）</span>
+            <div class="publish-tag-picker">
+              <select class="input" id="pubProductTag" required>
+                <option value="">请选择标签</option>
+                ${initialTags.map(label => `<option value="${esc(label)}" ${normalizePublishTag(productTag) === label ? "selected" : ""}>${esc(label)}</option>`).join("")}
+              </select>
+              <button class="btn ghost" type="button" data-publish-tag-add>新增标签</button>
+            </div>
+            <div class="publish-tag-create" data-publish-tag-create hidden>
+              <input class="input" id="pubNewProductTag" maxlength="20" placeholder="输入新标签名称" />
+              <button class="btn primary" type="button" data-publish-tag-save>保存并选中</button>
+              <button class="btn ghost" type="button" data-publish-tag-cancel>取消</button>
+            </div>
+            <small class="publish-tag-status" data-publish-tag-status>共享标签正在同步</small>
+          </label>
           <label class="field"><span>备注（可选，几句话）</span><textarea class="input" id="pubNote" rows="2" placeholder="例如：周五晚高峰发，配合活动话题">${esc(note)}</textarea></label>
         </div>
         <div class="mp-foot">
@@ -188,18 +245,68 @@ export function publishModal({ title = "定稿并发布", okText = "定稿并发
         </div>
       </div>`;
     document.body.appendChild(ov);
+    const select = $("#pubProductTag", ov);
+    const creator = ov.querySelector("[data-publish-tag-create]");
+    const newTagInput = $("#pubNewProductTag", ov);
+    const status = ov.querySelector("[data-publish-tag-status]");
     requestAnimationFrame(() => ov.classList.add("open"));
+    remote.publishTags.list()
+      .then(result => {
+        const shared = (result?.items || []).map(item => item?.label);
+        replacePublishTagOptions(select, [...initialTags, ...shared], normalizePublishTag(productTag));
+        status.textContent = "平台共享标签";
+      })
+      .catch(() => {
+        status.textContent = "暂时使用当前已有标签";
+      });
     let closed = false;
     const close = v => { if (closed) return; closed = true; ov.classList.remove("open"); setTimeout(() => ov.remove(), 200); res(v); };
     ov.addEventListener("click", e => {
       if (e.target === ov) return close(null);
+      if (e.target.closest("[data-publish-tag-add]")) {
+        creator.hidden = false;
+        newTagInput.focus();
+        return;
+      }
+      if (e.target.closest("[data-publish-tag-cancel]")) {
+        creator.hidden = true;
+        newTagInput.value = "";
+        return;
+      }
+      const saveTagButton = e.target.closest("[data-publish-tag-save]");
+      if (saveTagButton) {
+        const label = normalizePublishTag(newTagInput.value);
+        if (!label) {
+          toast("请输入标签名称", "error");
+          newTagInput.focus();
+          return;
+        }
+        saveTagButton.disabled = true;
+        remote.publishTags.create(label)
+          .then(result => {
+            const saved = normalizePublishTag(result?.item?.label || label);
+            const values = [...select.options].map(option => option.value).filter(Boolean);
+            replacePublishTagOptions(select, [...values, saved], saved);
+            creator.hidden = true;
+            newTagInput.value = "";
+            status.textContent = "已保存为平台共享标签";
+            toast("标签已新增，所有成员均可选择");
+          })
+          .catch(error => {
+            toast(error?.message || "新增标签失败", "error");
+          })
+          .finally(() => {
+            saveTagButton.disabled = false;
+          });
+        return;
+      }
       const b = e.target.closest("[data-r]");
       if (!b) return;
       if (b.dataset.r === "1") {
         const planDate = normalizeDateValue($("#pubDate", ov).value || "");
         if (!planDate) { toast("请先填写计划发布日期", "error"); $("#pubDate", ov).focus(); return; }
-        const nextProductTag = $("#pubProductTag", ov).value.trim().slice(0, 20);
-        if (!nextProductTag) { toast("请填写产品标签", "error"); $("#pubProductTag", ov).focus(); return; }
+        const nextProductTag = normalizePublishTag(select.value);
+        if (!nextProductTag) { toast("请选择产品标签", "error"); select.focus(); return; }
         close({ planDate, productTag: nextProductTag, note: $("#pubNote", ov).value.trim() });
       }
       else close(null);

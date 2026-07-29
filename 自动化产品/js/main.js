@@ -18,14 +18,14 @@ import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
 import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260727-v118-7";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
-import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260727-v118-7";
+import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260729-v121-shell-22";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js?v=20260728-v120-shell-21";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
 import { overviewView } from "./views/overview.js?v=20260728-v120-shell-21";
 import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-13";
-import { customCreationView } from "./views/customCreation.js?v=20260728-v120-shell-13";
+import { customCreationView } from "./views/customCreation.js?v=20260729-v121-shell-22";
 import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-13";
 import { studioView } from "./views/studio.js?v=20260728-v120-shell-13";
 import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-21";
@@ -37,7 +37,7 @@ import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-13";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260728-v120-shell-21";
+const APP_BUILD_ID = "20260729-v121-shell-22";
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 const WORKSPACE_VIDEO_META_KEY = "xingzhen.workspaceVideoMeta";
@@ -1225,8 +1225,7 @@ function setWorkspaceProjects(kind, items = []) {
   const normalized = (Array.isArray(items) ? items : [])
     .map(item => normalizeWorkspaceProject(kind, item))
     .filter(Boolean)
-    .filter(item => !hiddenVideoIds?.has(item.id))
-    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+    .filter(item => !hiddenVideoIds?.has(item.id));
   const unique = [];
   const seen = new Set();
   normalized.forEach(item => {
@@ -1234,7 +1233,17 @@ function setWorkspaceProjects(kind, items = []) {
     seen.add(item.id);
     unique.push(item);
   });
-  target.items = unique;
+  if (!target.items.length) {
+    target.items = unique;
+  } else {
+    const previousIds = new Set(target.items.map(item => item.id));
+    const incomingById = new Map(unique.map(item => [item.id, item]));
+    const newItems = unique.filter(item => !previousIds.has(item.id));
+    const retainedItems = target.items
+      .filter(item => incomingById.has(item.id))
+      .map(item => incomingById.get(item.id));
+    target.items = [...newItems, ...retainedItems];
+  }
   target.loading = false;
   target.loadedAt = Date.now();
   target.error = "";
@@ -1418,15 +1427,16 @@ function supplierChildContextRow(child, index) {
 function videoProjectContextRow(project, resourceId) {
   const meta = workspaceVideoProjectMeta(project.id);
   const title = meta.title || project.title;
+  const active = project.id === resourceId;
   return `
-    <div class="wsctx-row-shell" data-session-shell="video" data-session-id="${esc(project.id)}">
+    <div class="wsctx-row-shell wsctx-video-project-shell${active ? " is-active" : ""}" data-session-shell="video" data-session-id="${esc(project.id)}">
       ${contextRow({
         title,
         tag: `已发布 ${project.publishedCount || 0}`,
         zone: "custom",
         page: "video",
         id: project.id,
-        active: project.id === resourceId,
+        active,
         className: `wsctx-video-project${meta.favorite ? " is-favorite" : ""}`,
         attrs: meta.favorite ? `data-session-favorite="true"` : ""
       })}
@@ -1516,9 +1526,7 @@ function workspaceSessionMenu({ kind, id, title, favorite, currentGroup = "", gr
 
 function groupedWorkspaceRows(items, groups, getGroup, rowFor, kind) {
   const sorted = [...items].sort((a, b) => {
-    const favoriteDelta = Number(Boolean(b.favorite)) - Number(Boolean(a.favorite));
-    if (favoriteDelta) return favoriteDelta;
-    return Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0);
+    return Number(Boolean(b.favorite)) - Number(Boolean(a.favorite));
   });
   const rows = [];
   const append = (label, list, { keepEmpty = false } = {}) => {
@@ -1683,6 +1691,7 @@ function ensureWorkspaceContextShell(panel) {
     <div class="workspace-context-shell">
       <header class="workspace-context-brand">
         <div id="workspaceSwitcherHost"></div>
+        <div class="workspace-context-actions" id="workspaceContextActions"></div>
         <button class="workspace-context-close" id="workspaceContextClose" type="button" aria-label="关闭当前工作区列表">${icon("x", 16)}</button>
       </header>
       <div class="wsctx-groups" id="workspaceContextList"></div>
@@ -1690,6 +1699,10 @@ function ensureWorkspaceContextShell(panel) {
       <footer class="workspace-account" id="workspaceAccount">${workspaceAccountMarkup()}</footer>
     </div>
   `;
+  const contextActions = panel.querySelector("#workspaceContextActions");
+  [$("#topSearch"), $("#topBell")].forEach(button => {
+    if (button && contextActions) contextActions.append(button);
+  });
   if (panel.dataset.workspaceShellWired === "1") return;
   panel.dataset.workspaceShellWired = "1";
   panel.addEventListener("click", async event => {
@@ -2578,7 +2591,7 @@ function renderTopbar() {
     newAccBtn.className = "top-btn top-primary";
     newAccBtn.innerHTML = `${icon("plus", 13)} <span>新建账号</span>`;
     newAccBtn.addEventListener("click", () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })));
-    actions.insertBefore(newAccBtn, $("#topSearch"));
+    actions.appendChild(newAccBtn);
   }
   let syncDataBtn = $("#topSyncAnalytics");
   if (!syncDataBtn && actions) {
@@ -2588,7 +2601,7 @@ function renderTopbar() {
     syncDataBtn.title = "手动从 JustOne 同步已回传内容的数据快照";
     syncDataBtn.innerHTML = `${icon("refresh", 13)} <span>同步数据</span>`;
     syncDataBtn.addEventListener("click", () => syncHomepageAnalytics(syncDataBtn));
-    const syncAnchor = [newAccBtn, $("#topSearch")]
+    const syncAnchor = [newAccBtn]
       .find(node => node?.parentElement === actions) || null;
     actions.insertBefore(syncDataBtn, syncAnchor);
   }
@@ -2601,7 +2614,7 @@ function renderTopbar() {
     supplierTools = document.createElement("div");
     supplierTools.id = "topSupplierOverviewTools";
     supplierTools.className = "top-supplier-tools";
-    actions.insertBefore(supplierTools, $("#topSearch"));
+    actions.insertBefore(supplierTools, actions.firstElementChild || null);
   }
   if (supplierTools) {
     supplierTools.hidden = !supplierToolbarZone;

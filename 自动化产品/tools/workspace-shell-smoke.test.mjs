@@ -190,11 +190,11 @@ test("unified reference drop zone has visible hover and drop motion", () => {
   assert.match(viewsCss, /@keyframes\s+refbarDropBounce/);
 });
 
-test("topbar actions render inside the nested action dock while the legacy stepper stays outside it", () => {
+test("topbar business actions render inside the nested action dock while the legacy stepper stays outside it", () => {
   const renderTopbar = section(mainJs, "function renderTopbar()", "function paletteCommands()");
   assert.match(renderTopbar, /const actionDock\s*=\s*\$\("\.top-actions"\)/);
   assert.match(renderTopbar, /const actions\s*=\s*\$\("#topActionsPanel"\)\s*\|\|\s*actionDock/);
-  assert.match(renderTopbar, /actions\.insertBefore\(newAccBtn,\s*\$\("#topSearch"\)\)/);
+  assert.match(renderTopbar, /actions\.appendChild\(newAccBtn\)/);
 
   const legacyGuard = renderTopbar.indexOf("if (!workspaceShellEnabled())");
   const insertion = renderTopbar.indexOf("topbar.insertBefore(studioStepper, actionDock)");
@@ -345,7 +345,7 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260728-v120-shell-7/);
+  assert.match(videoWorkshopHtml, /20260729-v121-shell-8/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -388,7 +388,23 @@ test("video workshop is white, has no duplicate history rail, and exposes publis
   assert.match(baseCss, /\.wsctx-row-shell:hover\s+\.wsctx-row-more,[\s\S]*?opacity:\s*1\s*;[^}]*pointer-events:\s*auto\s*;/s);
   assert.match(baseCss, /\.wsctx-row-menu\s*\{[^}]*display:\s*none\s*;/s);
   assert.match(baseCss, /\.wsctx-row-shell\.is-menu-open\s+\.wsctx-row-menu\s*\{[^}]*display:\s*grid\s*;/s);
-  assert.match(baseCss, /\.wsctx-video-project\.is-active\s*\{[^}]*background:\s*transparent\s*;/s);
+  assert.match(
+    baseCss,
+    /\.wsctx-canvas-project-shell\.is-active,[\s\S]*?\.wsctx-video-project-shell\.is-active\s*\{[^}]*background:\s*#e8e8e5\s*;/s,
+  );
+  assert.match(
+    baseCss,
+    /\.wsctx-canvas-project-shell\.is-active::before,[\s\S]*?\.wsctx-video-project-shell\.is-active::before\s*\{[^}]*animation:\s*workspace-current-session\s+2\.8s\s+ease-in-out\s+infinite\s*;/s,
+  );
+  const projectSetter = section(mainJs, "function setWorkspaceProjects", "async function loadWorkspaceProjects");
+  assert.match(projectSetter, /const retainedItems\s*=\s*target\.items/);
+  assert.match(projectSetter, /target\.items\s*=\s*\[\.\.\.newItems,\s*\.\.\.retainedItems\]/);
+  assert.doesNotMatch(projectSetter, /updatedAt.*sort|sort\(.*updatedAt/s);
+  const groupedRows = section(mainJs, "function groupedWorkspaceRows", "function accountContextRow");
+  assert.doesNotMatch(groupedRows, /updatedAt/);
+  assert.match(videoWorkshopJs, /const retained\s*=\s*state\.historyItems/);
+  assert.match(videoWorkshopJs, /state\.historyItems\s*=\s*\[\.\.\.added,\s*\.\.\.retained\]/);
+  assert.match(videoWorkshopJs, /existingIndex\s*>=\s*0[\s\S]*?state\.historyItems\.map/s);
   assert.match(baseCss, /\.wsctx-row-shell:hover,[\s\S]*?background:\s*#efefec\s*;/s);
   assert.match(videoWorkshopHtml, /\.submit-button\s*\{[^}]*background:\s*#242422;[^}]*color:\s*#ffffff;/s);
   assert.match(videoWorkshopHtml, /\.submit-button\s+svg\s*\{[^}]*stroke:\s*#ffffff\s*!important\s*;/s);
@@ -511,36 +527,32 @@ test("batch divider is removed and the asset draft timeline uses a fine gray gra
   );
 });
 
-test("hamburger utility dock owns and reveals the nested top actions", () => {
+test("workspace brand owns compact search and notification actions without a hamburger", () => {
   const topbar = section(indexHtml, '<header class="topbar">', "</header>");
   const dockStart = topbar.indexOf('<div class="top-actions" id="workspaceUtilityDock">');
-  const toggleStart = topbar.indexOf('id="topActionsToggle"');
   const panelStart = topbar.indexOf('<div class="top-actions-panel" id="topActionsPanel">');
   const searchStart = topbar.indexOf('id="topSearch"');
   assert.ok(dockStart >= 0, "missing utility dock");
-  assert.ok(toggleStart > dockStart, "hamburger toggle must be nested in the utility dock");
-  assert.ok(panelStart > toggleStart, "action panel must follow the hamburger toggle");
+  assert.ok(panelStart > dockStart, "action panel must remain in the utility dock");
   assert.ok(searchStart > panelStart, "top actions must be nested in the action panel");
-  assert.match(topbar, /id="topActionsToggle"[^>]*aria-controls="topActionsPanel"[^>]*aria-expanded="false"/);
-  assert.match(topbar, /<path d="M5 7h14M5 12h14M5 17h14"/);
-
-  const renderTopbar = section(mainJs, "function renderTopbar()", "function paletteCommands()");
-  assert.match(renderTopbar, /const dock\s*=\s*\$\("#workspaceUtilityDock"\)/);
-  assert.match(renderTopbar, /dock\.classList\.toggle\("is-open"\)/);
-  assert.match(renderTopbar, /toggle\.setAttribute\("aria-expanded",\s*open\s*\?\s*"true"\s*:\s*"false"\)/);
+  assert.doesNotMatch(topbar, /id="topActionsToggle"/);
+  const contextShell = section(mainJs, "function ensureWorkspaceContextShell", "function renderWorkspaceContextPanel");
+  assert.match(contextShell, /id="workspaceContextActions"/);
+  assert.match(contextShell, /\[\$\("#topSearch"\),\s*\$\("#topBell"\)\]\.forEach/);
+  assert.match(contextShell, /contextActions\.append\(button\)/);
 
   assert.match(baseCss, /\.workspace-utility-toggle\s*\{[^}]*display\s*:\s*none\s*;/s);
   assert.match(
     baseCss,
-    /body\.workspace-shell-v2\s+\.workspace-utility-toggle\s*\{[^}]*display\s*:\s*grid\s*;/s,
+    /body\.workspace-shell-v2\s+\.workspace-utility-toggle\s*\{[^}]*display\s*:\s*none\s*!important\s*;/s,
   );
   assert.match(
     baseCss,
-    /body\.workspace-shell-v2\s+\.top-actions-panel\s*\{[^}]*opacity\s*:\s*0\s*;[^}]*visibility\s*:\s*hidden\s*;[^}]*pointer-events\s*:\s*none\s*;/s,
+    /body\.workspace-shell-v2\s+\.top-actions-panel\s*\{[^}]*position\s*:\s*static\s*;[^}]*opacity\s*:\s*1\s*;[^}]*visibility\s*:\s*visible\s*;[^}]*pointer-events\s*:\s*auto\s*;/s,
   );
   assert.match(
     baseCss,
-    /body\.workspace-shell-v2\s+\.top-actions\.is-open\s+\.top-actions-panel\s*\{[^}]*opacity\s*:\s*1\s*;[^}]*visibility\s*:\s*visible\s*;[^}]*pointer-events\s*:\s*auto\s*;/s,
+    /\.workspace-context-actions #topSearch span,[^{]*\.workspace-context-actions #topSearch kbd\s*\{[^}]*display\s*:\s*none\s*;/s,
   );
 });
 
@@ -610,7 +622,7 @@ test("administrator overview sync action is created independently from the new-a
   assert.match(renderTopbar, /if\s*\(!syncDataBtn\s*&&\s*actions\)\s*\{/);
   assert.doesNotMatch(renderTopbar, /if\s*\(!syncDataBtn\s*&&\s*actions\s*&&\s*newAccBtn\)/);
   assert.match(renderTopbar, /syncDataBtn\.hidden\s*=\s*!\(zone === "overview"\s*&&\s*state\.role === "admin"\)/);
-  assert.match(renderTopbar, /const syncAnchor\s*=\s*\[newAccBtn,\s*\$\("#topSearch"\)\]/);
+  assert.match(renderTopbar, /const syncAnchor\s*=\s*\[newAccBtn\]/);
 });
 
 test("creator and administrator account menus expose the lightweight feedback dialog", () => {
@@ -718,24 +730,26 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final shell-21 cache marker", () => {
+test("all modified workspace-shell resources use the final v121 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260728-v120-shell-21"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260728-v120-shell-21"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260728-v120-shell-21"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260728-v120-shell-21"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260728-v120-shell-21"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260728-v120-shell-21"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260729-v121-shell-22"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260729-v121-shell-22"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260729-v121-shell-22"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260729-v121-shell-22"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260729-v121-shell-22"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260729-v121-shell-22"/);
   assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-21"/);
   assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260728-v120-shell-21"/);
   assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260728-v120-shell-21"/);
+  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260729-v121-shell-22"/);
+  assert.match(mainJs, /ui\/components\.js\?v=20260729-v121-shell-22/);
   assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-13"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-13"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
   assert.doesNotMatch(mainJs, /core\/remote\.js\?v=/);
   assert.match(mainJs, /ui\/loginBeams\.js\?v=20260728-v120-shell-21/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260728-v120-shell-21"/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260729-v121-shell-22"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

@@ -3695,14 +3695,14 @@ body.workspace-shell-v2[data-zone="delivery"] .supplier-filters {
 .supplier-chart-title { display: block; font-weight: 750; font-size: 14px; }
 .supplier-donut { position: relative; display: grid; place-items: center; width: 152px; height: 152px; margin: 28px auto 20px; border-radius: 50%; transition: transform .22s ease; }
 .supplier-platform-chart:hover .supplier-donut { transform: rotate(-3deg) scale(1.035); }
-.supplier-donut > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; transform: rotate(-90deg); }
+.supplier-donut > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; transform: rotate(-90deg); }
 .supplier-donut-track, .supplier-donut-segment { fill: none; }
 .supplier-donut-track { stroke: #eff1f5; stroke-width: 20; }
-.supplier-donut-segment { stroke-width: 20; stroke-linecap: butt; stroke-dasharray: var(--segment) calc(100 - var(--segment)); stroke-dashoffset: var(--offset); cursor: pointer; pointer-events: stroke; transform-box: fill-box; transform-origin: center; transition: stroke-width .18s ease, filter .18s ease, transform .18s ease, opacity .18s ease; }
+.supplier-donut-segment { stroke-width: 20; stroke-linecap: butt; stroke-dasharray: var(--segment) calc(100 - var(--segment)); stroke-dashoffset: var(--offset); cursor: pointer; pointer-events: stroke; transition: stroke-width .18s ease, filter .18s ease, opacity .18s ease; }
 .supplier-donut-segment.is-xhs { stroke: #315fd5; }
 .supplier-donut-segment.is-video { stroke: #ed5978; }
 .supplier-donut:has(.supplier-donut-segment.is-xhs:hover) .supplier-donut-segment.is-video, .supplier-donut:has(.supplier-donut-segment.is-xhs:focus-visible) .supplier-donut-segment.is-video, .supplier-donut:has(.supplier-donut-segment.is-video:hover) .supplier-donut-segment.is-xhs, .supplier-donut:has(.supplier-donut-segment.is-video:focus-visible) .supplier-donut-segment.is-xhs { opacity: .42; }
-.supplier-donut-segment:hover, .supplier-donut-segment:focus-visible { stroke-width: 25; filter: drop-shadow(0 5px 7px rgba(30,45,72,.24)); transform: scale(1.04); outline: none; }
+.supplier-donut-segment:hover, .supplier-donut-segment:focus-visible { stroke-width: 20; filter: drop-shadow(0 3px 5px rgba(30,45,72,.18)); outline: none; }
 .supplier-donut::after { content: ""; width: 94px; height: 94px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(148,163,184,.12); }
 .supplier-donut > i { position: absolute; z-index: 1; display: grid; text-align: center; font-style: normal; }
 .supplier-donut b { font-size: 23px; }
@@ -4005,9 +4005,9 @@ button.overview-viz-card { cursor: pointer; }
 .overview-donut-card { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .overview-donut-wrap { min-height: 158px; display: grid; place-items: center; }
 .overview-donut { position: relative; width: 140px; aspect-ratio: 1; display: grid; place-items: center; flex: none; border-radius: 50%; box-shadow: 0 10px 24px rgba(50,105,226,.12); }
-.overview-donut > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; transform: rotate(-90deg); }
+.overview-donut > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; transform: rotate(-90deg); }
 .overview-donut-track { fill: none; stroke: #eff1f5; stroke-width: 16; }
-.overview-donut-segment { fill: none; stroke-width: 16; stroke-linecap: butt; stroke-dasharray: var(--segment) calc(100 - var(--segment)); stroke-dashoffset: var(--offset); cursor: pointer; pointer-events: stroke; transform-box: fill-box; transform-origin: center; transition: stroke-width 180ms ease, filter 180ms ease, transform 180ms ease, opacity 180ms ease; }
+.overview-donut-segment { fill: none; stroke-width: 16; stroke-linecap: butt; stroke-dasharray: var(--segment) calc(100 - var(--segment)); stroke-dashoffset: var(--offset); cursor: pointer; pointer-events: stroke; transition: stroke-width 180ms ease, filter 180ms ease, opacity 180ms ease; }
 .overview-donut-segment.is-xhs { stroke: #3269e2; }
 .overview-donut-segment.is-video { stroke: #e75a6c; }
 .overview-donut:has(.overview-donut-segment.is-xhs:hover) .overview-donut-segment.is-video,
@@ -4015,7 +4015,7 @@ button.overview-viz-card { cursor: pointer; }
 .overview-donut:has(.overview-donut-segment.is-video:hover) .overview-donut-segment.is-xhs,
 .overview-donut:has(.overview-donut-segment.is-video:focus-visible) .overview-donut-segment.is-xhs { opacity: .42; }
 .overview-donut-segment:hover,
-.overview-donut-segment:focus-visible { stroke-width: 21; filter: drop-shadow(0 5px 7px rgba(30,45,72,.24)); transform: scale(1.045); outline: none; }
+.overview-donut-segment:focus-visible { stroke-width: 16; filter: drop-shadow(0 3px 5px rgba(30,45,72,.18)); outline: none; }
 .overview-donut::after { content: ""; position: absolute; inset: 23px; border-radius: 50%; background: #fafafa; }
 .overview-donut > i { position: relative; z-index: 1; display: grid; place-items: center; gap: 1px; font-style: normal; }
 .overview-donut > i b { font-size: 22px; }

@@ -7,7 +7,7 @@ import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, produ
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { ensureVideoCover } from "./chainWorkshop.js?v=20260728-v120-shell-13";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260727-v118-7";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260729-v121-shell-22";
 import { accountCreatedToday, groupOf, isAccountDisabled } from "../domain/accounts.js";
 
 let activeCustomPublishModal = null;

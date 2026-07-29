@@ -13,6 +13,7 @@ const _collectionSyncHolds = new Map();
 const _heldCollectionSnapshots = new Map();
 const FETCH_TIMEOUT_MS = 9000;
 const PERFORMANCE_KEY = "xingzhen.remote.performance.v1";
+const LOCAL_PUBLISH_TAGS_KEY = "xingzhen.publish-tags.v1";
 const PERFORMANCE_DETAIL_KEYS = new Set([
   "durationMs", "ttfbMs", "bodyMs", "parseMs", "bodyChars", "status",
   "collections", "collectionCount", "phase", "source", "ok"
@@ -219,6 +220,35 @@ export const passwordReset = {
     body: { name }
   }),
   list: () => req("/api/password-reset-requests")
+};
+
+function localPublishTags() {
+  try {
+    const rows = JSON.parse(tokenStorage.getItem(LOCAL_PUBLISH_TAGS_KEY) || "[]");
+    return Array.isArray(rows) ? rows.filter(item => item?.label) : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+export const publishTags = {
+  async list() {
+    if (_on && _token && !_authBlocked) return req("/api/publish-tags");
+    return { items: localPublishTags() };
+  },
+  async create(label) {
+    const clean = String(label || "").trim().replace(/\s+/g, " ").slice(0, 20);
+    if (!clean) throw new Error("标签不能为空");
+    if (_on && _token && !_authBlocked) {
+      return req("/api/publish-tags", { method: "POST", body: { label: clean } });
+    }
+    const rows = localPublishTags();
+    const existing = rows.find(item => String(item.label).toLocaleLowerCase() === clean.toLocaleLowerCase());
+    if (existing) return { item: existing };
+    const item = { id: `local-publish-tag-${Date.now().toString(36)}`, label: clean };
+    tokenStorage.setItem(LOCAL_PUBLISH_TAGS_KEY, JSON.stringify([...rows, item]));
+    return { item };
+  }
 };
 
 /* 写穿透：整集合 upsert（服务端按 id 后写胜，绝不整表删）。关时/未登录时 no-op。 */
