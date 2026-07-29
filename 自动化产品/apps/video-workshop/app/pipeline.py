@@ -23,6 +23,7 @@ from .media import (
     compose_variant,
     normalize_narration,
     probe,
+    render_still_clip,
     retime_video,
 )
 from .openmontage_bridge import openmontage
@@ -30,6 +31,7 @@ from .providers import (
     ProviderError,
     _sanitize_seedance_visual_text,
     director,
+    image_generator,
     seedance,
     tts,
 )
@@ -235,6 +237,8 @@ def _render_units(
     scenes: list[dict[str, Any]],
     timeline: list[dict[str, Any]],
     work_dir: Path,
+    *,
+    creation_mode: str = "video",
 ) -> list[dict[str, Any]]:
     """Turn technical time windows into independently generated visual beats.
 
@@ -242,6 +246,41 @@ def _render_units(
     only expanded after the real narration duration is known, and every
     expanded window gets its own Seedance source instead of replaying one clip.
     """
+    if creation_mode == "static":
+        units: list[dict[str, Any]] = []
+        for render_index, window in enumerate(timeline, start=1):
+            source_number = int(window.get("sourceSceneNumber") or window["sceneNumber"])
+            source_scene = dict(scenes[source_number - 1])
+            segment_number = int(window.get("segmentNumber") or 1)
+            segment_count = int(window.get("segmentCount") or 1)
+            image_prompt = str(
+                source_scene.get("image_prompt")
+                or source_scene.get("visual_prompt")
+                or ""
+            ).strip()
+            if segment_count > 1:
+                image_prompt += (
+                    f"\n这是该叙事段的第 {segment_number}/{segment_count} 张静态分镜。"
+                    "保持同一角色、产品、场景设定与画风锚点，但用不同动作阶段、构图或景别推进叙事；"
+                    "不要复制上一张的画面组织。"
+                )
+            source_scene["image_prompt"] = image_prompt
+            source_scene["visual_prompt"] = image_prompt
+            filename = (
+                f"scene-{source_number:02d}.mp4"
+                if segment_count == 1
+                else f"scene-{source_number:02d}-part-{segment_number:02d}.mp4"
+            )
+            units.append({
+                "render_number": render_index,
+                "source_scene_number": source_number,
+                "segment_number": segment_number,
+                "segment_count": segment_count,
+                "scene": source_scene,
+                "target_duration": float(window["duration"]),
+                "target_path": work_dir / filename,
+            })
+        return units
     units: list[dict[str, Any]] = []
     for render_index, window in enumerate(timeline, start=1):
         source_number = int(window.get("sourceSceneNumber") or window["sceneNumber"])
@@ -330,6 +369,43 @@ def _render_units(
             }
         )
     return units
+
+
+def _static_generation_prompt(
+    plan: dict[str, Any],
+    scene: dict[str, Any],
+    reference_images: list[dict[str, Any]],
+) -> str:
+    labels = [
+        str(item.get("label") or item.get("name") or "").strip()
+        for item in reference_images
+        if str(item.get("label") or item.get("name") or "").strip()
+    ]
+    selected = [
+        str(label)
+        for label in list(scene.get("reference_labels") or [])
+        if str(label) in labels
+    ]
+    reference_rule = (
+        "本次请求实际附带了以下统一参考图：" + "、".join(labels) + "。"
+        "先识别全部参考图；当前分镜若出现其中的 IP 角色、真人、产品、Logo 或界面，"
+        "必须保持其身份、外形、品牌结构和关键视觉特征一致。"
+        + (
+            "导演判定本分镜重点参考：" + "、".join(selected) + "。"
+            if selected
+            else "当前分镜没有强制指定某一张；只在语义相关时使用，不得让参考图篡改用户主题。"
+        )
+        if labels
+        else "本分镜没有用户参考图，按导演计划独立完成。"
+    )
+    return "\n".join([
+        "生成一张可直接用于竖屏静态视频分镜的高质量完整画面。",
+        f"全片固定风格锚点：{str(plan.get('style_anchor') or '').strip()}",
+        f"本分镜画面：{str(scene.get('image_prompt') or scene.get('visual_prompt') or '').strip()}",
+        reference_rule,
+        f"全片固定负面约束：{str(plan.get('negative_constraints') or '').strip()}",
+        "画面中不要生成字幕、说明文字、时间码或边框；后续字幕由平台统一烧录。",
+    ])
 
 
 def _merge_timed_asset_placements(
@@ -589,6 +665,28 @@ class VideoPipeline:
         return data_urls
 
     @staticmethod
+    def _static_reference_images(
+        project_id: str,
+        plan: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Resolve every current-turn still so each storyboard request carries it."""
+        resolved: list[dict[str, Any]] = []
+        for item in list(plan.get("reference_images") or [])[:8]:
+            filename = Path(str(item.get("url") or "")).name
+            path = settings.uploads_dir / project_id / filename
+            if (
+                not filename
+                or not path.is_file()
+                or path.stat().st_size > 12 * 1024 * 1024
+            ):
+                continue
+            resolved.append({
+                **item,
+                "path": str(path),
+            })
+        return resolved
+
+    @staticmethod
     def _material_assets(project_id: str, plan: dict[str, Any]) -> list[dict[str, Any]]:
         resolved: list[dict[str, Any]] = []
         scenes = [item for item in plan.get("scenes") or [] if isinstance(item, dict)]
@@ -663,6 +761,7 @@ class VideoPipeline:
             scenes = [scene for scene in list(plan.get("scenes") or []) if isinstance(scene, dict)]
             if not scenes:
                 raise RuntimeError("导演计划没有可执行镜头")
+            is_static = str(plan.get("creation_mode") or "video") == "static"
             if retry_scene_number and recompose_only:
                 raise RuntimeError("不能同时重生成镜头并只重合成字幕")
             if recompose_only:
@@ -683,7 +782,14 @@ class VideoPipeline:
                 await self._event(
                     project_id,
                     "导演计划已锁定",
-                    str(plan.get("director_note") or f"{len(scenes)} 个镜头已确认，开始并行生成画面与声音。"),
+                    str(
+                        plan.get("director_note")
+                        or (
+                            f"{len(scenes)} 张图片分镜已确认，开始并行生成画面与声音。"
+                            if is_static
+                            else f"{len(scenes)} 个镜头已确认，开始并行生成画面与声音。"
+                        )
+                    ),
                     12,
                 )
             plan_path = work_dir / "director-plan.json"
@@ -758,23 +864,43 @@ class VideoPipeline:
             if not recompose_only and not retry_scene_number:
                 await self._event(
                     project_id,
-                    "正在按真实口播锁定视觉分镜",
-                    "故事和口播保持不变；视觉导演正在逐段核对独立画面、附件时机和全片重复项。",
+                    (
+                        "正在按真实口播锁定图片分镜"
+                        if is_static
+                        else "正在按真实口播锁定视觉分镜"
+                    ),
+                    (
+                        "故事和口播保持不变；图片分镜正在统一画风锚点、负面约束与本轮参考图。"
+                        if is_static
+                        else "故事和口播保持不变；视觉导演正在逐段核对独立画面、附件时机和全片重复项。"
+                    ),
                     19,
                 )
-                timed_plan = await director.lock_timed_visual_plan(plan, narration_duration)
-                plan = {
-                    **plan,
-                    "scenes": timed_plan["scenes"],
-                    "duration_sec": round(narration_duration, 3),
-                    "timed_visual_editor": {
-                        "actual_duration": round(narration_duration, 3),
-                        "minimum_units": timed_plan["minimum_units"],
-                        "scene_count": len(timed_plan["scenes"]),
-                        "public_summary": timed_plan["public_summary"],
-                    },
-                }
-                _merge_timed_asset_placements(plan, timed_plan.get("asset_placements") or [])
+                if is_static:
+                    plan = {
+                        **plan,
+                        "duration_sec": round(narration_duration, 3),
+                        "timed_visual_editor": {
+                            "actual_duration": round(narration_duration, 3),
+                            "minimum_units": len(scenes),
+                            "scene_count": len(scenes),
+                            "public_summary": "静态图片分镜已按真实口播时长锁定。",
+                        },
+                    }
+                else:
+                    timed_plan = await director.lock_timed_visual_plan(plan, narration_duration)
+                    plan = {
+                        **plan,
+                        "scenes": timed_plan["scenes"],
+                        "duration_sec": round(narration_duration, 3),
+                        "timed_visual_editor": {
+                            "actual_duration": round(narration_duration, 3),
+                            "minimum_units": timed_plan["minimum_units"],
+                            "scene_count": len(timed_plan["scenes"]),
+                            "public_summary": timed_plan["public_summary"],
+                        },
+                    }
+                    _merge_timed_asset_placements(plan, timed_plan.get("asset_placements") or [])
                 scenes = [scene for scene in plan["scenes"] if isinstance(scene, dict)]
 
                 def remember_timed_plan(item: dict[str, Any]) -> None:
@@ -784,23 +910,36 @@ class VideoPipeline:
                 plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
                 await self._event(
                     project_id,
-                    "真实时序分镜已锁定",
-                    f"{len(scenes)} 个纯视觉生成单元覆盖 {narration_duration:.1f} 秒口播；"
-                    "相邻重复、口播文字泄漏和素材错位已在提交前复核。",
+                    "真实时序图片分镜已锁定" if is_static else "真实时序分镜已锁定",
+                    (
+                        f"{len(scenes)} 张图片分镜覆盖 {narration_duration:.1f} 秒口播；"
+                        "全片共用固定画风锚点、负面约束，并会为每次生成真实携带本轮参考图。"
+                        if is_static
+                        else f"{len(scenes)} 个纯视觉生成单元覆盖 {narration_duration:.1f} 秒口播；"
+                        "相邻重复、口播文字泄漏和素材错位已在提交前复核。"
+                    ),
                     20,
                 )
-            material_assets = self._material_assets(project_id, plan)
+            material_assets = [] if is_static else self._material_assets(project_id, plan)
             sfx_assets = self._audio_assets(project_id, plan, "sfx_assets")
             scene_durations = _scene_timeline_weights(scenes)
             scene_timeline, _transition_duration = build_scene_timeline(
                 scene_durations,
                 narration_duration,
             )
-            render_units = _render_units(scenes, scene_timeline, work_dir)
+            render_units = _render_units(
+                scenes,
+                scene_timeline,
+                work_dir,
+                creation_mode="static" if is_static else "video",
+            )
             (work_dir / "render-plan.json").write_text(
                 json.dumps(
                     {
+                        "creation_mode": "static" if is_static else "video",
                         "narration_duration": narration_duration,
+                        "style_anchor": str(plan.get("style_anchor") or ""),
+                        "negative_constraints": str(plan.get("negative_constraints") or ""),
                         "units": [
                             {
                                 "render_number": int(unit["render_number"]),
@@ -809,6 +948,7 @@ class VideoPipeline:
                                 "segment_count": int(unit["segment_count"]),
                                 "target_duration": round(float(unit["target_duration"]), 3),
                                 "visual_prompt": str(unit["scene"].get("visual_prompt") or ""),
+                                "image_prompt": str(unit["scene"].get("image_prompt") or ""),
                                 "visual_identity": str(unit["scene"].get("visual_identity") or ""),
                             }
                             for unit in render_units
@@ -836,6 +976,11 @@ class VideoPipeline:
             )
 
             scene_jobs: list[dict[str, Any]] = []
+            static_references = (
+                self._static_reference_images(project_id, plan)
+                if is_static
+                else []
+            )
             for index, unit in enumerate(render_units):
                 scene_number = int(unit["render_number"])
                 source_scene_number = int(unit["source_scene_number"])
@@ -853,8 +998,12 @@ class VideoPipeline:
                 candidate_path = work_dir / (
                     f".scene-{scene_number:02d}-{uuid.uuid4().hex[:10]}.candidate.mp4"
                 )
+                image_path = work_dir / (
+                    f".scene-{scene_number:02d}-{uuid.uuid4().hex[:10]}.candidate.jpg"
+                )
                 temporary_scene_paths.add(candidate_path)
-                duration_sec = generation_durations[index]
+                if is_static:
+                    temporary_scene_paths.add(image_path)
                 scene_jobs.append(
                     {
                         "scene_number": scene_number,
@@ -863,13 +1012,18 @@ class VideoPipeline:
                         "scene": unit["scene"],
                         "target_path": target_path,
                         "candidate_path": candidate_path,
+                        "image_path": image_path,
                         "had_existing": target_path.is_file(),
                         "target_duration": float(unit["target_duration"]),
                         "duration_sec": generation_durations[index],
-                        "reference_images": self._reference_images(
-                            project_id,
-                            plan,
-                            source_scene_number,
+                        "reference_images": (
+                            static_references
+                            if is_static
+                            else self._reference_images(
+                                project_id,
+                                plan,
+                                source_scene_number,
+                            )
                         ),
                     }
                 )
@@ -915,36 +1069,71 @@ class VideoPipeline:
             else:
                 await self._event(
                     project_id,
-                    "画面正在并行生成",
-                    f"{len(scene_jobs)} 个镜头已按真实口播时长同时排队。",
+                    "图片分镜正在并行生成" if is_static else "画面正在并行生成",
+                    (
+                        f"{len(scene_jobs)} 张图片分镜已同时排队；每张都会真实携带本轮全部统一参考图。"
+                        if is_static
+                        else f"{len(scene_jobs)} 个镜头已按真实口播时长同时排队。"
+                    ),
                     24,
                 )
 
-            await _gather_bounded(
-                *(
-                    seedance.generate(
-                        str(job["scene"].get("visual_prompt") or ""),
+            if is_static:
+                async def generate_static_scene(job: dict[str, Any]) -> dict[str, Any]:
+                    await image_generator.generate(
+                        _static_generation_prompt(
+                            plan,
+                            job["scene"],
+                            job["reference_images"],
+                        ),
                         str(plan.get("aspect_ratio") or "9:16"),
-                        Path(job["candidate_path"]),
-                        callback=callback,
-                        # Provider-facing failures must map back to the
-                        # director's logical scene so "continue missing shot"
-                        # remains usable even when that scene was expanded
-                        # into several independently rendered visual beats.
-                        scene_number=int(job["source_scene_number"]),
+                        Path(job["image_path"]),
                         reference_images=job["reference_images"],
-                        duration_sec=int(job["duration_sec"]),
+                        callback=callback,
+                        scene_number=int(job["source_scene_number"]),
                     )
-                    for job in scene_jobs
-                ),
-                shared_seedance_slots=True,
-            )
+                    return await render_still_clip(
+                        Path(job["image_path"]),
+                        Path(job["candidate_path"]),
+                        str(plan.get("aspect_ratio") or "9:16"),
+                        float(job["target_duration"]),
+                    )
+
+                await _gather_bounded(
+                    *(generate_static_scene(job) for job in scene_jobs)
+                )
+            else:
+                await _gather_bounded(
+                    *(
+                        seedance.generate(
+                            str(job["scene"].get("visual_prompt") or ""),
+                            str(plan.get("aspect_ratio") or "9:16"),
+                            Path(job["candidate_path"]),
+                            callback=callback,
+                            # Provider-facing failures must map back to the
+                            # director's logical scene so "continue missing shot"
+                            # remains usable even when that scene was expanded
+                            # into several independently rendered visual beats.
+                            scene_number=int(job["source_scene_number"]),
+                            reference_images=job["reference_images"],
+                            duration_sec=int(job["duration_sec"]),
+                        )
+                        for job in scene_jobs
+                    ),
+                    shared_seedance_slots=True,
+                )
 
             async def validate_scene_candidate(job: dict[str, Any]) -> dict[str, Any]:
                 candidate_path = Path(job["candidate_path"])
                 info = await probe(candidate_path)
                 actual_duration = float(info.get("duration") or 0)
                 target_duration = float(job["target_duration"])
+                if is_static:
+                    if actual_duration <= 0:
+                        raise RuntimeError(
+                            f"静态分镜 {job['scene_number']} 没有生成可用视频片段"
+                        )
+                    return info
                 if _clip_covers_target(actual_duration, target_duration):
                     return info
                 retry_duration = min(

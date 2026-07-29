@@ -13,8 +13,8 @@ import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfig
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial, enforceSupportedVideoMode } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260727-v118-7";
-import { toast, withLoading, openLightbox } from "../ui/components.js?v=20260729-v121-shell-22";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260729-v122-static-1";
+import { toast, withLoading, openLightbox } from "../ui/components.js?v=20260729-v122-team-3";
 import { go, currentRoute } from "../core/router.js";
 import * as remote from "../core/remote.js";
 import { stepperHtml, wireStepper } from "./studio.js?v=20260728-v120-shell-13";

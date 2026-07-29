@@ -1,7 +1,7 @@
 import { go } from "../core/router.js";
 import { state } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { toast } from "../ui/components.js?v=20260729-v121-shell-22";
+import { toast } from "../ui/components.js?v=20260729-v122-team-3";
 import { voiceLabView } from "./voiceLab.js?v=20260728-v120-shell-13";
 
 const TOOLS = [
@@ -154,9 +154,10 @@ export const customCreationView = {
         toast(key === "canvas" ? "当前画布还没有可发布的图片" : "请先在视频工坊完成成片");
         return;
       }
-      const { openCustomPublish } = await import("./customPublish.js?v=20260728-v120-shell-13");
+      const { openCustomPublish } = await import("./customPublish.js?v=20260729-v122-team-3");
+      output.kind = key === "canvas" ? "canvas" : "video";
       openCustomPublish(
-        { ...output, kind: key === "canvas" ? "canvas" : "video" },
+        output,
         {
           onPublished(asset, { customProjectId, publishedCount } = {}) {
             const latest = host?.__customLatestOutput;
@@ -209,7 +210,7 @@ export const customCreationView = {
       mountedTools.set(key, { loading: true });
       try {
         const module = key === "video"
-          ? await import("./customVideoIntegration.js?v=20260729-v121-shell-22")
+          ? await import("./customVideoIntegration.js?v=20260729-v122-team-3")
           : await import("./customCanvasIntegration.js?v=20260728-v120-shell-13");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);

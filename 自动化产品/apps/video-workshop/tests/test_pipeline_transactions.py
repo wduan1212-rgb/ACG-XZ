@@ -254,6 +254,118 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("platform", self.project["production"]["bgm"]["source"])
         self.assertEqual("platform:bgm-test", self.project["outputs"][0]["bgm"]["id"])
 
+    async def test_static_mode_generates_images_in_parallel_with_every_turn_reference(self) -> None:
+        instance = pipeline_module.VideoPipeline()
+        upload_dir = self.uploads_dir / self.project_id
+        upload_dir.mkdir()
+        for name in ("ip.png", "logo.png"):
+            (upload_dir / name).write_bytes(b"\x89PNG\r\n\x1a\nreference")
+
+        plan = _plan(scene_count=3)
+        plan.update({
+            "creation_mode": "static",
+            "style_anchor": "统一柔和纸雕风，暖白背景，蓝橙固定配色",
+            "negative_constraints": "不换画风，不生成字幕，不改变IP身份",
+            "reference_images": [
+                {
+                    "asset_id": "ip",
+                    "label": "图1",
+                    "mime": "image/png",
+                    "url": f"/uploads/{self.project_id}/ip.png",
+                },
+                {
+                    "asset_id": "logo",
+                    "label": "图2",
+                    "mime": "image/png",
+                    "url": f"/uploads/{self.project_id}/logo.png",
+                },
+            ],
+        })
+        for index, scene in enumerate(plan["scenes"], start=1):
+            scene["image_prompt"] = f"静态图片分镜 {index}"
+            scene["reference_labels"] = ["图1"] if index == 1 else []
+
+        active = 0
+        peak = 0
+        image_calls: list[dict] = []
+        still_calls: list[dict] = []
+
+        async def generate_image(prompt, aspect_ratio, output: Path, **kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            image_calls.append({
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+                "reference_images": list(kwargs.get("reference_images") or []),
+                "scene_number": kwargs.get("scene_number"),
+            })
+            await asyncio.sleep(0.01)
+            output.write_bytes(b"\xff\xd8\xffstatic-image")
+            active -= 1
+            return {"path": str(output)}
+
+        async def render_still(source: Path, output: Path, aspect_ratio: str, duration: float):
+            still_calls.append({
+                "source": source,
+                "aspect_ratio": aspect_ratio,
+                "duration": duration,
+            })
+            output.write_bytes(b"static-video-clip")
+            return {"duration": duration}
+
+        seedance_generate = AsyncMock()
+        with ExitStack() as stack:
+            for common_patch in self._common_patches(instance):
+                stack.enter_context(common_patch)
+            stack.enter_context(patch.object(
+                pipeline_module.image_generator,
+                "generate",
+                new=generate_image,
+            ))
+            stack.enter_context(patch.object(
+                pipeline_module,
+                "render_still_clip",
+                new=render_still,
+            ))
+            stack.enter_context(patch.object(
+                pipeline_module.seedance,
+                "generate",
+                seedance_generate,
+            ))
+            stack.enter_context(patch.object(
+                pipeline_module,
+                "compose_variant",
+                new=self._compose,
+            ))
+            stack.enter_context(patch.object(
+                pipeline_module.openmontage,
+                "validate_composition",
+                return_value={"success": True},
+            ))
+            stack.enter_context(patch.object(
+                pipeline_module.openmontage,
+                "inspect_video",
+                return_value={"success": True},
+            ))
+            stack.enter_context(patch.object(pipeline_module, "add_event"))
+            stack.enter_context(patch.object(pipeline_module, "add_message"))
+            await instance.run(self.project_id, plan)
+
+        self.assertEqual(3, len(image_calls))
+        self.assertEqual(3, len(still_calls))
+        self.assertGreaterEqual(peak, 2)
+        for call in image_calls:
+            self.assertEqual("9:16", call["aspect_ratio"])
+            self.assertEqual(["图1", "图2"], [
+                item["label"] for item in call["reference_images"]
+            ])
+            self.assertIn("统一柔和纸雕风", call["prompt"])
+            self.assertIn("不换画风", call["prompt"])
+        seedance_generate.assert_not_awaited()
+        self.assertEqual("succeeded", self.project["status"])
+        self.assertEqual("static", self.project["plan"]["creation_mode"])
+
     async def test_failed_candidate_cancels_and_reaps_siblings_before_cleanup(self) -> None:
         instance = pipeline_module.VideoPipeline()
         slow_started = asyncio.Event()

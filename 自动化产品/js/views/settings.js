@@ -2,13 +2,13 @@
 
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, saveMembers, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260729-v121-shell-22";
+import { state, save, saveMembers, currentMember, currentTeam, ROLE_LABEL } from "../core/store.js";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260729-v122-team-3";
 import * as remote from "../core/remote.js";
 import { renderSupplierSettings } from "./supplierViews.js?v=20260728-v120-shell-20";
 
-const ROLE_DESC = { admin: "管理员", editor: "创作成员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
-const ROLE_OPTS = ["admin", "editor", "supplier_parent"];
+const ROLE_DESC = { admin: "团队管理员", editor: "创作成员", user: "个人用户", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
+const ROLE_OPTS = ["admin", "editor"];
 
 function productFromText(text = {}) {
   const raw = typeof text === "string" ? text : (text.raw || "");
@@ -96,9 +96,88 @@ function renderCreatorProfile(root) {
   });
 }
 
+function renderTeamJoin(root) {
+  const member = currentMember() || {};
+  const team = currentTeam();
+  let teams = [];
+  let loading = false;
+  let submitted = false;
+  const draw = () => {
+    root.innerHTML = `<div class="team-join-page">
+      <section class="card team-join-card">
+        <span class="team-join-icon">${icon(team ? "users" : "plus", 22)}</span>
+        <div class="team-join-heading">
+          <b>${team ? esc(team.name) : "加入团队"}</b>
+          <em>${team ? `当前身份：${team.role === "owner" ? "团队所有者" : team.role === "admin" ? "团队管理员" : "创作成员"}` : "输入准确的团队名称，申请会发送给该团队的所有者和管理员。"}</em>
+        </div>
+        ${team ? `
+          <div class="team-join-status">
+            <span><b>团队套餐</b><em>${team.quotaMode === "unlimited" ? "无限额度" : "共享额度"}</em></span>
+            <span><b>已解锁</b><em>全部团队功能</em></span>
+          </div>
+          <button class="btn ghost" type="button" data-team-profile>${icon("user", 14)} 返回个人资料</button>
+        ` : `
+          <form class="team-join-form" id="teamJoinForm">
+            <label class="field">团队名称
+              <input class="input" id="teamJoinName" autocomplete="organization" list="joinableTeams" placeholder="例如：ACG市场部" required />
+              <datalist id="joinableTeams">${teams.map(item => `<option value="${esc(item.name)}"></option>`).join("")}</datalist>
+            </label>
+            <label class="field">申请说明（可选）
+              <textarea class="input" id="teamJoinMessage" rows="3" maxlength="240" placeholder="简单说明你的身份，方便管理员确认"></textarea>
+            </label>
+            <div class="team-join-actions">
+              <span>${loading ? "正在读取可加入团队…" : submitted ? "申请已提交，请等待团队管理员审批。" : "团队之间的数据、供应商和账号彼此隔离。"}</span>
+              <button class="btn primary" id="teamJoinSubmit" type="submit" ${loading || submitted ? "disabled" : ""}>${icon("send", 14)} ${submitted ? "已提交" : "提交申请"}</button>
+            </div>
+          </form>
+        `}
+      </section>
+    </div>`;
+    root.querySelector("[data-team-profile]")?.addEventListener("click", () => { location.hash = "#/settings/profile"; });
+    $("#teamJoinForm", root)?.addEventListener("submit", async event => {
+      event.preventDefault();
+      const name = $("#teamJoinName", root)?.value.trim() || "";
+      const message = $("#teamJoinMessage", root)?.value.trim() || "";
+      if (!name) { toast("请输入团队名称"); return; }
+      const button = $("#teamJoinSubmit", root);
+      if (button) button.disabled = true;
+      try {
+        await remote.teams.requestJoin(name, message);
+        submitted = true;
+        draw();
+        toast(`已向「${name}」提交加入申请`);
+      } catch (error) {
+        if (button) button.disabled = false;
+        toast("提交失败：" + (error?.message || error));
+      }
+    });
+  };
+  draw();
+  if (!team && remote.isOn()) {
+    loading = true;
+    draw();
+    remote.teams.list().then(result => {
+      teams = Array.isArray(result) ? result : (result?.items || []);
+    }).catch(error => {
+      toast("读取团队列表失败：" + (error?.message || error));
+    }).finally(() => {
+      loading = false;
+      draw();
+    });
+  }
+}
+
 export const settingsView = {
   render(root, { page } = {}) {
-    if (page === "profile" || state.role === "editor") {
+    const member = currentMember() || {};
+    const team = currentTeam();
+    const canManageTeam = ["owner", "admin"].includes(member.teamRole || "");
+    if (page === "team") {
+      root.dataset.settingsView = "team";
+      renderTeamJoin(root);
+      return;
+    }
+    if (page === "profile" || (!canManageTeam && ["editor", "user"].includes(state.role))) {
       root.dataset.settingsView = "profile";
       renderCreatorProfile(root);
       return;
@@ -113,12 +192,17 @@ export const settingsView = {
     const managementPage = managementPages.has(page) ? page : "members";
     root.dataset.settingsView = managementPage;
     let memberRequests = [];
+    let teamJoinRequests = [];
+    let teamSupplierAccounts = [];
+    let teamSuppliersLoaded = false;
     let requestsLoaded = false;
     let apiUsageRows = [];
     let apiUsageLoaded = false;
     let apiUsageLoading = false;
     let productLibraryOpen = managementPage === "products";
-    const canReviewRequests = () => remote.isOn() && state.role === "admin";
+    const canReviewRegistrations = () => remote.isOn() && team?.kind === "internal" && canManageTeam;
+    const canReviewTeamRequests = () => remote.isOn() && canManageTeam;
+    const canReviewRequests = () => canReviewRegistrations() || canReviewTeamRequests();
     const canSeeApiUsage = () => remote.isOn() && state.role === "admin";
     const usageNumber = value => Number(value || 0).toLocaleString("zh-CN");
     const apiUsageSummaryHtml = () => {
@@ -155,20 +239,36 @@ export const settingsView = {
       </div>`;
     };
     const draw = () => {
-      const visibleMembers = state.members.filter(member => member.role !== "supplier_child");
+      const visibleMembers = state.members.filter(item => item.role !== "supplier_child");
+      const requestCount = memberRequests.length + teamJoinRequests.length;
       root.innerHTML = `
         <div class="settings-page" data-settings-page="${managementPage}">
           ${managementPage === "requests" ? `<section class="card set-data member-requests">
-            <div class="card-head"><span><b>${icon("users", 14)} 成员申请看板</b><em>${requestsLoaded ? `${memberRequests.length} 条待审批` : "正在读取申请"}</em></span>
+            <div class="card-head"><span><b>${icon("users", 14)} 团队申请看板</b><em>${requestsLoaded ? `${requestCount} 条待审批` : "正在读取申请"}</em></span>
               ${canReviewRequests() ? `<button class="btn ghost sm" id="reqRefresh">${icon("pulse", 13)} 刷新</button>` : ""}</div>
-            <div class="mem-list">
-              ${!canReviewRequests() ? `<div class="muted" style="padding:8px 2px">成员申请仅在管理员连接主服务后可用。</div>` : !requestsLoaded ? `<div class="muted" style="padding:8px 2px">正在读取申请...</div>` : memberRequests.length ? memberRequests.map(r => `
+            ${canReviewTeamRequests() ? `<div class="settings-request-section">
+              <div class="settings-request-title"><b>加入 ${esc(team?.name || "团队")}</b><span>${teamJoinRequests.length} 条</span></div>
+              <div class="mem-list">
+                ${!requestsLoaded ? `<div class="muted" style="padding:8px 2px">正在读取申请...</div>` : teamJoinRequests.length ? teamJoinRequests.map(r => `
+                  <div class="mem-row">
+                    <span class="ovt-main"><b>${esc(r.memberName || "用户")}</b><em>@${esc(r.username || "")} · ${esc(r.message || "未填写说明")} · ${r.createdAt ? new Date(r.createdAt).toLocaleString() : ""}</em></span>
+                    <button class="btn primary sm" data-team-approve="${r.id}">${icon("check", 13)} 加入团队</button>
+                    <button class="btn ghost sm danger" data-team-reject="${r.id}">${icon("x", 13)} 拒绝</button>
+                  </div>`).join("") : `<div class="muted" style="padding:8px 2px">暂无待处理的团队加入申请。</div>`}
+              </div>
+            </div>` : ""}
+            ${canReviewRegistrations() ? `<div class="settings-request-section">
+              <div class="settings-request-title"><b>平台注册账号</b><span>${memberRequests.length} 条</span></div>
+              <div class="mem-list">
+                ${!requestsLoaded ? `<div class="muted" style="padding:8px 2px">正在读取申请...</div>` : memberRequests.length ? memberRequests.map(r => `
                 <div class="mem-row">
-                  <span class="ovt-main"><b>${esc(r.name)}</b><em>@${esc(r.username)} · 申请角色：${ROLE_LABEL[r.role] || r.role} · ${r.createdAt ? new Date(r.createdAt).toLocaleString() : ""}</em></span>
+                  <span class="ovt-main"><b>${esc(r.name)}</b><em>@${esc(r.username)} · 注册为普通个人用户 · ${r.createdAt ? new Date(r.createdAt).toLocaleString() : ""}</em></span>
                   <button class="btn primary sm" data-rapprove="${r.id}">${icon("check", 13)} 通过</button>
                   <button class="btn ghost sm danger" data-rreject="${r.id}">${icon("x", 13)} 拒绝</button>
-                </div>`).join("") : `<div class="muted" style="padding:8px 2px">暂无待审批申请。</div>`}
-            </div>
+                </div>`).join("") : `<div class="muted" style="padding:8px 2px">暂无待审批的注册账号。</div>`}
+              </div>
+            </div>` : ""}
+            ${!canReviewRequests() ? `<div class="muted" style="padding:8px 2px">当前账号没有团队审批权限。</div>` : ""}
           </section>` : ""}
 
           ${managementPage === "members" ? `<section class="card set-data member-accounts">
@@ -177,11 +277,21 @@ export const settingsView = {
             <div class="settings-member-grid" id="memList">
               ${visibleMembers.map(m => `
                 <article class="settings-member-card" data-mem="${m.id}">
-                  <span class="settings-member-avatar ${m.role}">${m.avatarUrl ? `<img src="${esc(m.avatarUrl)}" alt="${esc(m.name)} 的头像"/>` : icon(m.role === "admin" ? "shield" : "user", 14)}</span>
+                  <span class="settings-member-avatar ${m.teamRole || m.role}">${m.avatarUrl ? `<img src="${esc(m.avatarUrl)}" alt="${esc(m.name)} 的头像"/>` : icon(["owner", "admin"].includes(m.teamRole) ? "shield" : "user", 14)}</span>
                   <span class="ovt-main"><b>${esc(m.name)} ${m.id === state.ui.currentMemberId ? `<i class="mem-me">当前</i>` : ""}</b><em>@${esc(m.username)} · ${ROLE_DESC[m.role] || ROLE_LABEL[m.role] || m.role}</em></span>
-                  <span class="mem-role tag ${m.role}">${ROLE_LABEL[m.role] || m.role}</span>
-                  <span class="settings-member-actions"><button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-mdel="${m.id}" title="删除" ${m.id === state.ui.currentMemberId ? "disabled" : ""}>${icon("trash", 13)}</button></span>
+                  <span class="mem-role tag ${m.teamRole || m.role}">${m.teamRole === "owner" ? "团队所有者" : m.teamRole === "admin" ? "团队管理员" : "创作成员"}</span>
+                  <span class="settings-member-actions"><button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-mdel="${m.id}" title="删除" ${m.id === state.ui.currentMemberId || m.teamRole === "owner" ? "disabled" : ""}>${icon("trash", 13)}</button></span>
                 </article>`).join("")}
+            </div>
+          </section>
+          <section class="card set-data team-supplier-accounts">
+            <div class="card-head"><span><b>团队供应商入口</b><em>供应商管理员可登录供应商端并建立自己的子账号；密码不会以明文保存或回显</em></span></div>
+            <div class="mem-list">
+              ${!teamSuppliersLoaded ? `<div class="muted" style="padding:8px 2px">正在读取团队供应商账号...</div>` : teamSupplierAccounts.length ? teamSupplierAccounts.map(account => `
+                <div class="mem-row team-supplier-row">
+                  <span class="ovt-main"><b>${esc(account.name || "供应商管理员")}</b><em>登录用户名：@${esc(account.username || "")}</em></span>
+                  <button class="btn ghost sm" type="button" data-team-supplier-password="${esc(account.id)}">${icon("keyRound", 13)} 设置新密码</button>
+                </div>`).join("") : `<div class="muted" style="padding:8px 2px">当前团队尚未绑定供应商管理员。</div>`}
             </div>
           </section>` : ""}
 
@@ -210,7 +320,12 @@ export const settingsView = {
     async function loadRequests() {
       if (!canReviewRequests()) return;
       try {
-        memberRequests = (await remote.memberRequests.list("pending")).filter(x => x.role !== "supplier_child");
+        const [registrations, joins] = await Promise.all([
+          canReviewRegistrations() ? remote.memberRequests.list("pending") : Promise.resolve([]),
+          canReviewTeamRequests() ? remote.teams.requests("pending") : Promise.resolve({ items: [] }),
+        ]);
+        memberRequests = (Array.isArray(registrations) ? registrations : []).filter(x => x.role !== "supplier_child");
+        teamJoinRequests = Array.isArray(joins) ? joins : (joins?.items || []);
         requestsLoaded = true;
         draw();
       } catch (e) {
@@ -377,9 +492,44 @@ export const settingsView = {
           toast("操作失败：" + (e.message || e));
         }
       }));
+      $$("[data-team-approve]", root).forEach(button => button.addEventListener("click", async () => {
+        const req = teamJoinRequests.find(item => item.id === button.dataset.teamApprove);
+        const ok = await confirmModal({
+          title: `允许「${req?.memberName || "用户"}」加入团队？`,
+          body: "通过后会成为创作成员，并获得团队全部功能与团队共享数据权限。",
+          okText: "加入团队",
+        });
+        if (!ok) return;
+        try {
+          await remote.teams.review(button.dataset.teamApprove, true);
+          state.members = await remote.members.list(true);
+          saveMembers();
+          toast("已加入团队");
+          await loadRequests();
+        } catch (error) {
+          toast("审批失败：" + (error?.message || error));
+        }
+      }));
+      $$("[data-team-reject]", root).forEach(button => button.addEventListener("click", async () => {
+        const req = teamJoinRequests.find(item => item.id === button.dataset.teamReject);
+        const ok = await confirmModal({
+          title: `拒绝「${req?.memberName || "用户"}」的加入申请？`,
+          danger: true,
+          okText: "拒绝申请",
+        });
+        if (!ok) return;
+        try {
+          await remote.teams.review(button.dataset.teamReject, false);
+          toast("申请已拒绝");
+          await loadRequests();
+        } catch (error) {
+          toast("操作失败：" + (error?.message || error));
+        }
+      }));
       const memberDialog = (m) => {
         const editing = !!m;
         m = m || { name: "", username: "", pin: "", role: "editor" };
+        const selectedRole = m.teamRole === "admin" ? "admin" : "editor";
         openModal(`
           <div class="mp-head"><b>${editing ? "编辑成员" : "添加成员"}</b><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
           <div class="mp-body">
@@ -388,7 +538,7 @@ export const settingsView = {
             <label class="field">${editing ? "重设登录密码（留空不改）" : "初始登录密码"}<input class="input" id="mdPin" type="password" value="" autocomplete="new-password" placeholder="${editing ? "设置新密码" : "登录密码"}" /></label>
             <label class="field">角色
               <select class="input" id="mdRole">
-                ${ROLE_OPTS.map(r => `<option value="${r}" ${m.role === r ? "selected" : ""}>${ROLE_DESC[r]}</option>`).join("")}
+                ${ROLE_OPTS.map(r => `<option value="${r}" ${selectedRole === r ? "selected" : ""}>${ROLE_DESC[r]}</option>`).join("")}
               </select>
             </label>
           </div>
@@ -407,7 +557,8 @@ export const settingsView = {
                 const savedMember = editing
                   ? await remote.members.update(m.id, { name, username, ...(pin ? { pin } : {}), role })
                   : await remote.members.add({ name, username, pin, role });
-                if (!savedMember || savedMember.role !== role) throw new Error("角色保存未生效，请刷新后重试");
+                const expectedTeamRole = role === "admin" ? "admin" : "creator";
+                if (!savedMember || savedMember.teamRole !== expectedTeamRole) throw new Error("团队角色保存未生效，请刷新后重试");
                 state.members = state.members.filter(x => x.id !== savedMember.id).concat(savedMember);
                 state.members = await remote.members.list(true);
                 saveMembers();
@@ -440,10 +591,53 @@ export const settingsView = {
         draw();
         toast("成员已删除");
       }));
+      $$("[data-team-supplier-password]", root).forEach(button => button.addEventListener("click", () => {
+        const account = teamSupplierAccounts.find(item => item.id === button.dataset.teamSupplierPassword);
+        if (!account) return;
+        openModal(`
+          <div class="mp-head"><div><b>设置供应商登录密码</b><em>@${esc(account.username || "")}</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
+          <div class="mp-body">
+            <p class="mp-sub">出于安全原因，旧密码无法查看。这里设置的新密码只用于该供应商管理员登录。</p>
+            <label class="field">新密码<input class="input" id="teamSupplierPin" type="password" minlength="6" autocomplete="new-password" placeholder="至少 6 位" /></label>
+            <label class="field">确认新密码<input class="input" id="teamSupplierPinConfirm" type="password" minlength="6" autocomplete="new-password" placeholder="再次输入" /></label>
+          </div>
+          <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="teamSupplierPinSave">保存新密码</button></div>
+        `, { onMount(panel, close) {
+          $("#teamSupplierPinSave", panel)?.addEventListener("click", async () => {
+            const pin = $("#teamSupplierPin", panel)?.value || "";
+            const confirm = $("#teamSupplierPinConfirm", panel)?.value || "";
+            if (pin.length < 6) { toast("新密码至少 6 位"); return; }
+            if (pin !== confirm) { toast("两次输入的密码不一致"); return; }
+            try {
+              await remote.teams.resetSupplierPassword(account.id, pin);
+              close();
+              toast("供应商登录密码已更新");
+            } catch (error) {
+              toast("供应商密码更新失败：" + (error?.message || error));
+            }
+          });
+        }});
+      }));
 
     }
 
     draw();
+    if (managementPage === "members" && remote.isOn() && canManageTeam) {
+      remote.members.list(true).then(items => {
+        state.members = Array.isArray(items) ? items : state.members;
+        saveMembers();
+        draw();
+      }).catch(error => toast("读取团队成员失败：" + (error?.message || error)));
+      remote.teams.supplierAccounts().then(result => {
+        teamSupplierAccounts = Array.isArray(result) ? result : (result?.items || []);
+        teamSuppliersLoaded = true;
+        draw();
+      }).catch(error => {
+        teamSuppliersLoaded = true;
+        toast("读取团队供应商账号失败：" + (error?.message || error));
+        draw();
+      });
+    }
     if (managementPage === "requests") loadRequests();
     if (managementPage === "usage") loadApiUsage();
   }

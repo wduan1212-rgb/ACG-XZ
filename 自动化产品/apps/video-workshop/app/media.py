@@ -655,6 +655,26 @@ async def _prepare_material_clip(
     )
 
 
+async def render_still_clip(
+    source: Path,
+    output: Path,
+    aspect_ratio: str,
+    duration: float,
+) -> dict[str, Any]:
+    """Render a storyboard still as a centered, slowly enlarging video clip."""
+    width, height = ASPECTS.get(aspect_ratio, ASPECTS["9:16"])
+    await _prepare_material_clip(
+        source,
+        "image/jpeg",
+        output,
+        width,
+        height,
+        max(0.1, float(duration or 0.1)),
+        0,
+    )
+    return await probe(output)
+
+
 async def _apply_material_cutaways(
     picture: Path,
     assets: list[dict[str, Any]],

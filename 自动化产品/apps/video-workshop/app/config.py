@@ -85,6 +85,14 @@ class Settings:
         or "16000"
     )
 
+    image_api_key: str = os.getenv("IMAGE_API_KEY", "") or os.getenv("LLM_API_KEY", "")
+    image_base_url: str = os.getenv(
+        "IMAGE_BASE_URL",
+        "https://tokenhub.tencentmaas.com/v1",
+    ).rstrip("/")
+    image_endpoint: str = os.getenv("IMAGE_ENDPOINT", "").strip()
+    image_model: str = os.getenv("IMAGE_MODEL", "custom-imagemodel-gt").strip()
+
     seedance_api_key: str = os.getenv("SEEDANCE_API_KEY", "")
     seedance_base_url: str = os.getenv("SEEDANCE_BASE_URL", "https://ark.cn-beijing.volces.com").rstrip("/")
     seedance_model: str = os.getenv("SEEDANCE_MODEL", "doubao-seedance-2-0-260128")

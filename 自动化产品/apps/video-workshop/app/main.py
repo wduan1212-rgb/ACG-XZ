@@ -77,6 +77,7 @@ class ChatRequest(BaseModel):
     projectId: str = ""
     message: str = Field(min_length=1, max_length=8000)
     aspectRatio: str = "9:16"
+    creationMode: str = Field(default="video", max_length=24)
     voiceId: str = Field(default="", max_length=180)
     attachments: list[Attachment] = Field(default_factory=list)
 
@@ -1083,6 +1084,60 @@ def _apply_asset_plan(
     return "；".join(summary_parts)
 
 
+def _apply_static_reference_plan(
+    plan: dict[str, Any],
+    assets: list[dict[str, Any]],
+) -> str:
+    """Keep current-turn images as generation references, never edit inserts."""
+    image_assets = [
+        {
+            key: item[key]
+            for key in ("asset_id", "label", "name", "mime", "url")
+            if key in item
+        }
+        for item in assets
+        if str(item.get("media_type") or "") == "image"
+        and str(item.get("mime") or "").startswith("image/")
+    ][:8]
+    image_ids = {str(item.get("asset_id") or "") for item in image_assets}
+    narration_asset = (
+        plan.get("narration_audio")
+        if isinstance(plan.get("narration_audio"), dict)
+        else {}
+    )
+    narration_id = str(narration_asset.get("asset_id") or "")
+    normalized: list[dict[str, Any]] = []
+    for item in assets:
+        media_type = str(item.get("media_type") or "")
+        asset_id = str(item.get("asset_id") or "")
+        role = (
+            "reference"
+            if asset_id in image_ids
+            else "narration"
+            if media_type == "audio" and narration_id and asset_id == narration_id
+            else "unused"
+        )
+        normalized.append({
+            **{key: value for key, value in item.items() if key != "visionDataUrl"},
+            "role": role,
+            "reason": (
+                "本轮静态分镜统一生成参考"
+                if role == "reference"
+                else "本轮静态视频使用该音频作为口播"
+                if role == "narration"
+                else "静态视频不把该附件作为剪辑画面"
+            ),
+        })
+    plan["asset_assignments"] = normalized
+    plan["reference_images"] = image_assets
+    plan["material_assets"] = []
+    return (
+        "；".join(f"{item.get('label')}：静态分镜统一参考" for item in image_assets)
+        if image_assets
+        else ""
+    )
+
+
 _AUTO_POLICY_REWRITE_LIMIT = 2
 
 
@@ -1890,6 +1945,7 @@ async def _run_director_production(
     project_id: str,
     *,
     aspect_ratio: str,
+    creation_mode: str,
     director_assets: list[dict[str, Any]],
     saved_attachments: list[dict[str, Any]],
     revision_message: str,
@@ -1915,6 +1971,7 @@ async def _run_director_production(
             director_assets,
             skill_context=director_context(),
             bgm_catalog=bgm_library.catalog(),
+            creation_mode=creation_mode,
         )
         if decision["action"] == "ask":
             question = str(decision.get("question") or "").strip()
@@ -1946,9 +2003,12 @@ async def _run_director_production(
             return
 
         plan = decision["plan"]
+        plan["creation_mode"] = creation_mode
         plan["skill"] = SKILL_NAME
         plan["voice_id"] = selected_voice_id
         asset_summary = _apply_asset_plan(plan, saved_attachments, original_message)
+        if creation_mode == "static":
+            asset_summary = _apply_static_reference_plan(plan, saved_attachments)
         narration_asset = plan.get("narration_audio") or {}
         transcript_text = str((narration_asset.get("transcript") or {}).get("text") or "").strip()
         if transcript_text:
@@ -2055,6 +2115,7 @@ async def chat(req: ChatRequest):
         raise HTTPException(409, "当前项目仍在制作，请等待完成")
     if _project_has_active_work(str(project.get("id") or "")):
         raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
+    creation_mode = "static" if str(req.creationMode or "").strip().lower() == "static" else "video"
     try:
         selected_voice_id = _selected_voice_id(req, project)
     except ValueError as exc:
@@ -2062,6 +2123,7 @@ async def chat(req: ChatRequest):
 
     def remember_voice(item: dict[str, Any]) -> None:
         item["voiceId"] = selected_voice_id
+        item["creationMode"] = creation_mode
 
     await asyncio.to_thread(mutate_project, project["id"], remember_voice)
     project["voiceId"] = selected_voice_id
@@ -2191,6 +2253,7 @@ async def chat(req: ChatRequest):
             _run_director_production(
                 project["id"],
                 aspect_ratio=aspect_ratio,
+                creation_mode=creation_mode,
                 director_assets=director_assets,
                 saved_attachments=saved_attachments,
                 revision_message=revision_message,

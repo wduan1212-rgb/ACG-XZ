@@ -199,6 +199,7 @@ export async function mountCustomCanvas(
   let canvasContextInstallFrame = 0;
   let canvasContextInstallAttempts = 0;
   let messageListenerInstalled = false;
+  let createProjectWhenReady = false;
   let removeCanvasRouteGuard = () => {};
   const canvasContextToken = (
     globalThis.crypto?.randomUUID?.()
@@ -326,7 +327,7 @@ export async function mountCustomCanvas(
   };
 
   const mountCanvasFrame = () => {
-    if (disposed || !currentProjectId || !canvasBootstrap) return false;
+    if (disposed || !canvasBootstrap) return false;
     iframeReady = false;
     installCanvasContextTools();
     iframe = document.createElement("iframe");
@@ -344,6 +345,13 @@ export async function mountCustomCanvas(
       iframeReady = true;
       installCanvasRouteGuard();
       installCanvasContextTools();
+      if (createProjectWhenReady) {
+        createProjectWhenReady = false;
+        iframe.contentWindow?.postMessage(
+          { type: "custom-canvas:create-project" },
+          window.location.origin,
+        );
+      }
       host.dispatchEvent(new CustomEvent("custom-canvas:workspace-ready", {
         detail: { projectId: currentProjectId },
       }));
@@ -375,6 +383,23 @@ export async function mountCustomCanvas(
     return true;
   };
 
+  const createProject = () => {
+    if (disposed) return false;
+    if (!iframe) {
+      createProjectWhenReady = true;
+      return mountCanvasFrame();
+    }
+    if (!iframeReady) {
+      createProjectWhenReady = true;
+      return true;
+    }
+    iframe.contentWindow?.postMessage(
+      { type: "custom-canvas:create-project" },
+      window.location.origin,
+    );
+    return true;
+  };
+
   const cleanup = () => {
     if (disposed) return;
     disposed = true;
@@ -394,6 +419,7 @@ export async function mountCustomCanvas(
     getLatestOutput: () => cloneOutput(latestOutput),
     getCurrentProjectId: () => currentProjectId,
     openProject,
+    createProject,
     reload() {
       if (disposed || !iframe) return false;
       iframeReady = false;
@@ -447,6 +473,19 @@ export async function mountCustomCanvas(
       return;
     }
     const output = normalizeOutput(event.data);
+    if (
+      event.data?.source === CANVAS_SOURCE
+      && event.data?.type === "project-created"
+    ) {
+      const createdProjectId = safeText(event.data.projectId, "", 180);
+      if (createdProjectId) {
+        currentProjectId = createdProjectId;
+        host.dispatchEvent(new CustomEvent("custom-canvas:project-created", {
+          detail: { projectId: createdProjectId },
+        }));
+      }
+      return;
+    }
     if (!output) return;
     publishOutput(output);
     if (output.type === "publish-request" && typeof onPublishRequest === "function") {
@@ -485,11 +524,6 @@ export async function mountCustomCanvas(
         ? config.publishedProjects
         : []
     };
-    if (!currentProjectId) {
-      host.innerHTML = emptyCanvasHtml();
-      host.dataset.customCanvasWorkspace = "true";
-      return integration;
-    }
     mountCanvasFrame();
   } catch (error) {
     if (disposed || error?.name === "AbortError") return integration;

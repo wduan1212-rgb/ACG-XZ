@@ -29,9 +29,12 @@ const COVER_STYLE_HINTS = [
 ];
 const activeImageRecoveries = new Set();
 
-const CONTENT_KIND_GROUP = { image: "图文组", material: "素材", real: "真人" };
+const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
+const STATIC_WORKSHOP_POLL_MS = 5000;
+const staticWorkshopPollers = new Map();
 
 function contentKindFromGroup(group = "") {
+  if (group === "静态视频") return "static";
   if (group === "素材") return "material";
   if (group === "真人") return "real";
   return "image";
@@ -45,12 +48,13 @@ function coverStyleHint(seed = "") {
 }
 
 function normalizeContentKind(kind = "", group = "") {
-  return ["image", "material", "real"].includes(kind) ? kind : contentKindFromGroup(group);
+  return ["image", "static", "material", "real"].includes(kind) ? kind : contentKindFromGroup(group);
 }
 
 function accountMatchesKind(acc, kind = "image") {
   const g = groupOf(acc);
   if (kind === "image") return acc?.mode === "图文" || g === "图文组";
+  if (kind === "static") return acc?.mode === "视频";
   if (kind === "material") return acc?.mode === "视频" && g === "素材";
   if (kind === "real") return acc?.mode === "视频" && g === "真人";
   return true;
@@ -77,9 +81,9 @@ export function prunePlanReferences(plan = {}) {
     ...(Array.isArray(plan.sharedRefAssetIds) ? plan.sharedRefAssetIds : []),
     plan.sharedRefAssetId
   ], 5);
-  plan.sharedRefAssetIds = contentKind === "image" ? shared : [];
+  plan.sharedRefAssetIds = ["image", "static"].includes(contentKind) ? shared : [];
   plan.sharedRefAssetId = plan.sharedRefAssetIds[0] || null;
-  plan.coverRefAssetIds = contentKind === "image" ? [] : cleanPlanRefIds(plan.coverRefAssetIds, 5);
+  plan.coverRefAssetIds = ["image", "static"].includes(contentKind) ? [] : cleanPlanRefIds(plan.coverRefAssetIds, 5);
   plan.accountRefAssetIds = Object.fromEntries(
     Object.entries(plan.accountRefAssetIds || {})
       .filter(([accountId]) => selectedAccounts.has(accountId))
@@ -719,6 +723,7 @@ export function sessionBatches(sessionId) {
 export async function deleteBatch(batchId) {
   const b = batchById(batchId); if (!b) return;
   const ids = b.productionIds || [];
+  ids.forEach(stopStaticWorkshopPolling);
   const removedProdIds = state.productions.filter(p => ids.includes(p.id) && p.stage !== "delivered").map(p => p.id);
   const removedJobIds = state.jobs.filter(j => removedProdIds.includes(j.productionId)).map(j => j.id);
   await Promise.all([
@@ -735,6 +740,7 @@ export async function deleteBatch(batchId) {
 /* 从批次里删除单条任务 */
 export async function removeProductionFromBatch(pid) {
   const p = productionById(pid);
+  stopStaticWorkshopPolling(pid);
   const jobIds = state.jobs.filter(j => j.productionId === pid).map(j => j.id);
   await Promise.all([
     removeRemoteAsync("productions", pid),
@@ -859,7 +865,11 @@ function accountLastActivityAt(acc) {
 }
 
 export function matchAccounts({ group = "all", sort = "" } = {}) {
-  const list = state.accounts.filter(a => !isAccountDisabled(a) && (group === "all" || !group || groupOf(a) === group));
+  const list = state.accounts.filter(a => {
+    if (isAccountDisabled(a)) return false;
+    if (group === "静态视频") return a?.mode === "视频";
+    return group === "all" || !group || groupOf(a) === group;
+  });
   if (sort === "stale") {
     list.sort((a, b) => accountLastActivityAt(a) - accountLastActivityAt(b) || String(a.name || "").localeCompare(String(b.name || ""), "zh-Hans-CN"));
   }
@@ -1526,6 +1536,244 @@ async function queueBatchDigitalHuman(p, batch, acc, product) {
   return true;
 }
 
+function staticWorkshopAuthHeaders(includeJson = false) {
+  const token = String(remote.getToken?.() || "").trim();
+  if (!token) throw new Error("登录状态已失效，请重新登录后再生成静态视频");
+  return {
+    ...(includeJson ? { "Content-Type": "application/json" } : {}),
+    Authorization: `Bearer ${token}`
+  };
+}
+
+async function staticWorkshopJson(url, options = {}) {
+  const response = await fetch(url, {
+    credentials: "same-origin",
+    cache: "no-store",
+    ...options
+  });
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_) {
+    data = null;
+  }
+  if (!response.ok) {
+    const detail = data?.detail || data?.message || text || `HTTP ${response.status}`;
+    throw new Error(String(detail));
+  }
+  if (!data || typeof data !== "object") throw new Error("视频工坊返回了无法识别的数据");
+  return data;
+}
+
+async function ensureStaticWorkshopSession() {
+  await staticWorkshopJson("/api/custom-video/session", {
+    method: "POST",
+    headers: staticWorkshopAuthHeaders()
+  });
+}
+
+async function staticWorkshopAttachments(batch, accountId) {
+  const customRaw = batch?.accountRefAssetIds?.[accountId];
+  const ids = [...new Set([
+    ...(Array.isArray(batch?.sharedRefAssetIds) ? batch.sharedRefAssetIds : []),
+    batch?.sharedRefAssetId,
+    ...(Array.isArray(customRaw) ? customRaw : [customRaw])
+  ].filter(Boolean))].slice(0, 8);
+  const attachments = [];
+  for (let index = 0; index < ids.length; index++) {
+    const assetId = ids[index];
+    const asset = state.assets.find(item => item.id === assetId);
+    const blob = await assetBlob(assetId);
+    if (!blob || !String(blob.type || asset?.mime || "").startsWith("image/")) continue;
+    attachments.push({
+      label: String(asset?.name || `参考图${index + 1}`).slice(0, 80),
+      name: String(asset?.name || `reference-${index + 1}.png`).slice(0, 120),
+      mime: String(blob.type || asset?.mime || "image/png"),
+      dataUrl: await fileToDataUrl(blob)
+    });
+  }
+  return attachments;
+}
+
+function staticWorkshopMessage(p, batch, acc) {
+  const title = String(p.artifacts?.copy?.title || p.title || p.topic || "").trim();
+  const copy = String(p.artifacts?.copy?.body || "").trim();
+  const style = String(acc?.styleProfile || acc?.lockedStyle || batch?.style || "").trim();
+  return [
+    `请为视频号账号“${acc?.name || "未命名账号"}”直接制作一条静态视频。`,
+    `标题：${title}`,
+    copy ? `用户提供的发布文案/口播参考：\n${copy}` : "用户只提供了标题，请先自动完成发布文案和自然口播。",
+    style ? `账号既有风格参考：${style}` : "",
+    "画幅固定为 9:16。请自行决定整条视频的统一视觉风格、合理时长和图片分镜数量。",
+    "整条视频必须共享固定风格锚点与固定负面约束；当前消息附带的统一参考图必须真实进入每张图片分镜的生成请求，并按画面语义使用。",
+    "不要调用视频模型。请并发生成图片分镜，使用轻微居中慢放大动效，完成口播、字幕、BGM、质检与最终成片。",
+    "信息已足够，无需再提问，直接开始制作。"
+  ].filter(Boolean).join("\n\n");
+}
+
+function staticWorkshopOutput(project) {
+  const output = (project?.outputs || []).find(item => item?.url || item?.downloadUrl);
+  if (!output) return null;
+  const url = String(output.url || output.downloadUrl || "").trim();
+  return url ? { ...output, url } : null;
+}
+
+function stopStaticWorkshopPolling(productionId) {
+  const timer = staticWorkshopPollers.get(productionId);
+  if (timer) clearTimeout(timer);
+  staticWorkshopPollers.delete(productionId);
+}
+
+async function pollStaticWorkshopProduction(p, batch) {
+  if (!p?.id || !p.staticWorkshopProjectId || !productionById(p.id)) {
+    stopStaticWorkshopPolling(p?.id);
+    return;
+  }
+  try {
+    await ensureStaticWorkshopSession();
+    const project = await staticWorkshopJson(
+      `/custom-video/api/projects/${encodeURIComponent(p.staticWorkshopProjectId)}`,
+      { headers: staticWorkshopAuthHeaders() }
+    );
+    p.staticWorkshopStatus = String(project.status || "");
+    p.staticWorkshopPhase = String(project.phase || "");
+    p.staticPollErrors = 0;
+    const output = staticWorkshopOutput(project);
+    if (project.status === "succeeded" && output) {
+      p.artifacts.finalVideoUrl = output.url;
+      p.artifacts.finalVideoName = String(output.label || `${p.title || "静态视频"}.mp4`);
+      p.artifacts.script.staticVideoPlan = project.plan || null;
+      p.artifacts.script.source = "video-workshop-static";
+      p.artifacts.timeline = [{
+        id: uid(),
+        name: "静态视频成片",
+        dur: Number(output?.probe?.duration || 0),
+        trimIn: 0,
+        videoUrl: output.url,
+        source: "video-workshop-static"
+      }];
+      if (!String(p.artifacts.copy.body || "").trim()) {
+        p.artifacts.copy.body = String(project?.plan?.narration || "").trim();
+      }
+      setStage(p, "review", "pending");
+      stopStaticWorkshopPolling(p.id);
+      evaluate(batch.id);
+      return;
+    }
+    if (project.status === "failed") {
+      setStatus(p, "failed", project.error || "静态视频生成失败");
+      stopStaticWorkshopPolling(p.id);
+      evaluate(batch.id);
+      return;
+    }
+    if (project.status === "conversation" && project.phase !== "delivery") {
+      p.staticConversationPolls = Number(p.staticConversationPolls || 0) + 1;
+      const lastAssistant = [...(project.messages || [])].reverse().find(item => item?.role === "assistant");
+      if (p.staticConversationPolls >= 3 && lastAssistant?.content) {
+        setStatus(p, "failed", lastAssistant.content || "导演仍需补充信息，请完善标题或文案后重试");
+        stopStaticWorkshopPolling(p.id);
+        evaluate(batch.id);
+        return;
+      }
+    } else {
+      p.staticConversationPolls = 0;
+    }
+    save("productions");
+    emit("production:update", p);
+  } catch (error) {
+    p.staticPollErrors = Number(p.staticPollErrors || 0) + 1;
+    if (p.staticPollErrors >= 6) {
+      setStatus(p, "failed", `静态视频状态同步失败：${error?.message || "视频工坊暂不可用"}`);
+      stopStaticWorkshopPolling(p.id);
+      evaluate(batch.id);
+      return;
+    }
+    save("productions");
+  }
+  stopStaticWorkshopPolling(p.id);
+  staticWorkshopPollers.set(
+    p.id,
+    setTimeout(() => pollStaticWorkshopProduction(p, batch), STATIC_WORKSHOP_POLL_MS)
+  );
+}
+
+async function queueBatchStaticVideo(p, batch, acc, product) {
+  const title = String(
+    batch.accountCopyTitles?.[acc.id]
+    || p.title
+    || p.topic
+    || ""
+  ).trim();
+  const body = String(batch.accountCopyBodies?.[acc.id] || "").trim();
+  if (!title && !body) {
+    setStatus(p, "failed", "静态视频请至少填写标题或文案");
+    return false;
+  }
+  p.staticVideo = true;
+  p.title = title || body.slice(0, 36);
+  p.topic = p.title;
+  p.artifacts.copy = {
+    title: p.title,
+    body,
+    source: body ? "manual" : "video-workshop-static"
+  };
+  p.artifacts.script.title = p.title;
+  p.artifacts.script.style = acc?.styleProfile || acc?.lockedStyle || batch.style || "";
+  p.artifacts.script.source = "video-workshop-static";
+  applyBatchCoverRefs(p, batch);
+  ensureVideoCoverPrompt(p, product);
+  await generateVideoCoverInHouse(p);
+  await ensureStaticWorkshopSession();
+  const created = await staticWorkshopJson("/custom-video/api/projects", {
+    method: "POST",
+    headers: staticWorkshopAuthHeaders(true),
+    body: "{}"
+  });
+  const projectId = String(created.id || "").trim();
+  if (!projectId) throw new Error("视频工坊没有返回静态视频项目编号");
+  p.staticWorkshopProjectId = projectId;
+  p.staticWorkshopStatus = "running";
+  p.staticWorkshopPhase = "brief";
+  p.staticConversationPolls = 0;
+  p.staticPollErrors = 0;
+  setStage(p, "workshop", "running");
+  const attachments = await staticWorkshopAttachments(batch, acc.id);
+  await staticWorkshopJson("/custom-video/api/chat", {
+    method: "POST",
+    headers: staticWorkshopAuthHeaders(true),
+    body: JSON.stringify({
+      projectId,
+      message: staticWorkshopMessage(p, batch, acc),
+      aspectRatio: "9:16",
+      creationMode: "static",
+      attachments
+    })
+  });
+  stopStaticWorkshopPolling(p.id);
+  staticWorkshopPollers.set(
+    p.id,
+    setTimeout(() => pollStaticWorkshopProduction(p, batch), 800)
+  );
+  return true;
+}
+
+function resetStaticWorkshopProduction(p) {
+  if (!p) return;
+  stopStaticWorkshopPolling(p.id);
+  delete p.staticWorkshopProjectId;
+  delete p.staticWorkshopStatus;
+  delete p.staticWorkshopPhase;
+  delete p.staticConversationPolls;
+  delete p.staticPollErrors;
+  if (p.artifacts?.script) delete p.artifacts.script.staticVideoPlan;
+  if (p.artifacts) {
+    delete p.artifacts.finalVideoUrl;
+    delete p.artifacts.finalVideoName;
+    p.artifacts.timeline = [];
+  }
+}
+
 /* ---------- 起草 ---------- */
 async function draftOne(p, batch) {
   const acc = accountById(p.accountId);
@@ -1543,6 +1791,14 @@ async function draftOne(p, batch) {
     let topic = contentOverride || batch.topic || p.topic || "";
     const product = productById(productId);
     const style = acc.styleProfile || acc.lockedStyle || batch.style || "";
+    if (batch.contentKind === "static") {
+      try {
+        await queueBatchStaticVideo(p, batch, acc, product);
+      } catch (error) {
+        setStatus(p, "failed", error?.message || "静态视频任务启动失败");
+      }
+      return;
+    }
     const useOnlineTrends = false;
     const batchVariant = p.batchCreativeVariant || p.artifacts.script.batchCreativeVariant || batchVariantFor({
       acc,
@@ -2220,6 +2476,7 @@ export const createShotVideoJobs = createUnitVideoJobs;
 
 export async function regenerateBatchVideo(p) {
   if (!p || p.mode === "图文" || !p.batchId) throw new Error("当前任务不是批量视频任务");
+  if (p.staticVideo) throw new Error("静态视频不支持单独微调，请从批次中重试整条任务");
   const currentJobs = jobsOf(p).filter(job => job.kind === "video" && !job.superseded);
   if (currentJobs.some(job => ["queued", "submitted", "running"].includes(job.status))) {
     throw new Error("当前视频仍在生成，请完成后再重新生成");
@@ -2371,6 +2628,16 @@ export function startGeneration(batch) {
   let jobs = 0;
   batchProds(batch).forEach(p => {
     if (isVideoWorkshop(p) && p.stage === "workshop") {
+      if (p.staticVideo || batch.contentKind === "static") {
+        if (p.staticWorkshopProjectId && p.stageStatus !== "failed") {
+          stopStaticWorkshopPolling(p.id);
+          staticWorkshopPollers.set(
+            p.id,
+            setTimeout(() => pollStaticWorkshopProduction(p, batch), 250)
+          );
+        }
+        return;
+      }
       if (p.stage === "workshop" && p.stageStatus !== "running") {
         const n = createUnitVideoJobs(p);
         if (n) { setStatus(p, "running"); jobs += n; }
@@ -2414,6 +2681,13 @@ export function retryFailedIn(batch) {
       return;
     }
     if (p.stage === "script") { setStatus(p, "pending"); draftOne(p, batch).then(() => evaluate(batch.id)); n++; }
+    else if (p.staticVideo || batch.contentKind === "static") {
+      resetStaticWorkshopProduction(p);
+      setStage(p, "script", "running");
+      setStatus(p, "running");
+      draftOne(p, batch).then(() => evaluate(batch.id));
+      n++;
+    }
     else if (p.mode === "图文" && (p.stage === "images" || p.artifacts?.images?.items?.length)) {
       runBatchImagesToReview(p, batch);
       n++;
@@ -2554,6 +2828,20 @@ on("job:done", evaluateAll);
 export function resumeActiveBatches() {
   let resumed = 0;
   activeBatches().forEach(b => {
+    const staticStuck = batchProds(b).filter(p =>
+      (p.staticVideo || b.contentKind === "static")
+      && p.stage === "workshop"
+      && p.stageStatus === "running"
+      && p.staticWorkshopProjectId
+    );
+    staticStuck.forEach(p => {
+      stopStaticWorkshopPolling(p.id);
+      staticWorkshopPollers.set(
+        p.id,
+        setTimeout(() => pollStaticWorkshopProduction(p, b), 250)
+      );
+    });
+    resumed += staticStuck.length;
     const stuck = batchProds(b).filter(p => p.stage === "script" && (p.stageStatus === "running" || p.stageStatus === "pending"));
     if (stuck.length) { runPool(stuck, p => draftOne(p, b), 2).then(() => evaluate(b.id)); resumed += stuck.length; }
     const imageStuck = batchProds(b).filter(p =>

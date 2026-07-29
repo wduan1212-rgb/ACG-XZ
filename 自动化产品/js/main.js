@@ -3,9 +3,9 @@
 import { $, $$, esc, uid } from "./core/util.js";
 import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260728-v120-shell-13";
 import { db } from "./core/db.js";
-import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
+import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, currentTeam, hasEntitlement, canManageAccounts, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260727-v118-7";
+import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260729-v122-static-1";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
@@ -16,17 +16,18 @@ import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountPro
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260727-v118-7";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260727-v118-7";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260729-v122-static-1";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
-import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260729-v121-shell-22";
+import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260729-v122-team-3";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
 import { initLoginBeams } from "./ui/loginBeams.js?v=20260728-v120-shell-21";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
 import { overviewView } from "./views/overview.js?v=20260728-v120-shell-21";
+import { homeView } from "./views/home.js?v=20260729-v122-team-3";
 import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-13";
-import { customCreationView } from "./views/customCreation.js?v=20260729-v121-shell-22";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260728-v120-shell-13";
+import { customCreationView } from "./views/customCreation.js?v=20260729-v122-team-3";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260729-v122-static-1";
 import { studioView } from "./views/studio.js?v=20260728-v120-shell-13";
 import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-21";
 import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-21";
@@ -37,7 +38,7 @@ import "./views/accountDialog.js";
 import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-13";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260729-v121-shell-22";
+const APP_BUILD_ID = "20260729-v122-static-1";
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 const WORKSPACE_VIDEO_META_KEY = "xingzhen.workspaceVideoMeta";
@@ -294,7 +295,7 @@ function applyGateModeContent(mode) {
   const userField = $("#lgUserField"), pinField = $("#lgPinField"), formHelper = $("#lgFormHelper");
   const loginBtn = $("#lgLogin"), applyBtn = $("#lgApply"), applyLead = $("#lgApplyLead"), hint = $("#lgHint"), title = $("#lgModeTitle");
   if (nameField) nameField.hidden = !apply;
-  if (roleField) roleField.hidden = !apply;
+  if (roleField) roleField.hidden = true;
   if (forgotNameField) forgotNameField.hidden = !forgot;
   if (userField) userField.hidden = forgot;
   if (pinField) pinField.hidden = forgot;
@@ -302,25 +303,25 @@ function applyGateModeContent(mode) {
   if (title) {
     window.clearTimeout(gateTitleTransitionTimer);
     title.classList.remove("is-phase-entering");
-    title.textContent = apply ? "申请账号" : forgot ? "找回密码" : "登录";
+    title.textContent = apply ? "注册账号" : forgot ? "找回密码" : "登录";
   }
   if (loginBtn) {
-    const label = apply ? "提交申请" : forgot ? "通知管理员" : "登录";
+    const label = apply ? "提交注册" : forgot ? "通知管理员" : "登录";
     const labelNode = loginBtn.querySelector("span");
     if (labelNode) labelNode.textContent = label;
     else loginBtn.textContent = label;
   }
   if (applyBtn) {
-    const label = apply || forgot ? "返回登录" : "申请账号";
+    const label = apply || forgot ? "返回登录" : "注册账号";
     const labelNode = applyBtn.querySelector("span");
     if (labelNode) labelNode.textContent = label;
     else applyBtn.textContent = label;
     applyBtn.setAttribute("aria-pressed", mode !== "login" ? "true" : "false");
-    applyBtn.title = mode !== "login" ? "返回登录" : "申请账号";
+    applyBtn.title = mode !== "login" ? "返回登录" : "注册账号";
   }
   if (applyLead) applyLead.textContent = mode === "login" ? "还没有账号？" : "";
   if (hint) hint.textContent = apply
-    ? "填写资料，提交后等待管理员审批"
+    ? "创建个人账号，提交后等待 ACG 市场部管理员审批"
     : forgot
       ? "填写你的姓名，管理员会在通知中心收到申请"
       : "登录后继续你的工作区";
@@ -377,10 +378,11 @@ function applyRoleClasses() {
   document.body.classList.toggle("role-supplier-parent", state.role === "supplier" || state.role === "supplier_parent");
   document.body.classList.toggle("role-supplier-child", state.role === "supplier_child");
   document.body.classList.toggle("role-editor", state.role === "editor");
+  document.body.classList.toggle("role-user", state.role === "user");
   document.body.classList.toggle("role-admin", state.role === "admin");
   const parent = state.role === "supplier" || state.role === "supplier_parent";
   const labels = {
-    overview: parent ? "首页" : "首页",
+    overview: parent ? "首页" : "数据看板",
     assets: parent ? "全部账号" : "整体资产",
     delivery: "发布清单",
     settings: workspaceShellEnabled() ? "我的" : (state.role === "editor" ? "我的" : "设置")
@@ -403,8 +405,9 @@ function ensureViewRendered(reason = "startup") {
   try { render(); } catch (e) { console.error("[boot-render-retry]", e); }
   setTimeout(() => {
     if (!root.innerHTML.trim()) {
-      console.warn("[boot] render retry still empty; falling back to overview");
-      if ((location.hash || "") !== "#/overview") location.hash = "#/overview";
+      const fallbackRoute = ["supplier", "supplier_parent", "supplier_child"].includes(state.role) ? "overview" : "home";
+      console.warn(`[boot] render retry still empty; falling back to ${fallbackRoute}`);
+      if ((location.hash || "") !== `#/${fallbackRoute}`) location.hash = `#/${fallbackRoute}`;
       try { render(); } catch (e) { console.error("[boot-render-fallback]", e); }
     }
     if (!root.innerHTML.trim()) {
@@ -420,7 +423,10 @@ function ensureViewRendered(reason = "startup") {
 }
 
 async function syncAdminPasswordResetNotifications() {
-  if (!remote.isOn() || !remote.hasToken() || state.role !== "admin") return false;
+  const member = currentMember();
+  const canReviewPlatformAccounts = member?.team?.kind === "internal"
+    && ["owner", "admin"].includes(member?.teamRole || "");
+  if (!remote.isOn() || !remote.hasToken() || !canReviewPlatformAccounts) return false;
   try {
     const rows = await remote.passwordReset.list();
     const known = new Map(state.notifications.map(item => [item.passwordResetRequestId, item]));
@@ -458,6 +464,53 @@ async function syncAdminPasswordResetNotifications() {
   }
 }
 
+async function syncTeamJoinNotifications() {
+  const member = currentMember();
+  if (!remote.isOn() || !remote.hasToken() || !["owner", "admin"].includes(member?.teamRole || "")) return false;
+  try {
+    const result = await remote.teams.requests("pending");
+    const rows = Array.isArray(result) ? result : (result?.items || []);
+    const known = new Map(state.notifications.map(item => [item.teamJoinRequestId, item]));
+    let changed = false;
+    rows.forEach(row => {
+      const requestId = String(row.id || "");
+      if (!requestId) return;
+      const existing = known.get(requestId);
+      const next = {
+        id: existing?.id || `team-join-${requestId}`,
+        ts: Number(row.createdAt || Date.now()),
+        kind: "team",
+        title: "收到加入团队申请",
+        body: `${String(row.memberName || row.name || "用户")} 申请加入 ${String(row.teamName || member.team?.name || "团队")}`,
+        read: existing?.read === true,
+        teamJoinRequestId: requestId,
+      };
+      if (existing) Object.assign(existing, next);
+      else {
+        state.notifications.push(next);
+        changed = true;
+      }
+    });
+    if (changed) {
+      state.notifications.sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
+      if (state.notifications.length > 60) state.notifications.length = 60;
+      save("notifications");
+      updateNotifyBadge();
+    }
+    return true;
+  } catch (error) {
+    console.warn("[team-join-notifications]", error);
+    return false;
+  }
+}
+
+async function syncAccountNotifications() {
+  await Promise.all([
+    syncAdminPasswordResetNotifications(),
+    syncTeamJoinNotifications(),
+  ]);
+}
+
 function enterMember(member) {
   document.documentElement.classList.remove("auth-booting");
   state.role = member.role;
@@ -468,9 +521,10 @@ function enterMember(member) {
   $("#loginGate").hidden = true;
   document.body.classList.remove("gated");
   applyRoleClasses();
-  go(member.role === "supplier_child" ? "delivery" : "overview");
+  const supplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(member.role);
+  go(member.role === "supplier_child" ? "delivery" : supplierRole ? "overview" : "home");
   render();
-  void syncAdminPasswordResetNotifications();
+  void syncAccountNotifications();
   toast(`欢迎回来 · ${esc(member.name)}（${ROLE_LABEL[member.role] || ""}）`);
 }
 
@@ -575,7 +629,9 @@ async function enterRemote(member) {
   state.ui.currentMemberId = member.id;
   const bootstrap = await pullRemoteBootstrap();
   if (!bootstrap.ok) throw new Error("请检查网络后重试");
-  if (!state.members.some(item => item.id === member.id)) state.members.unshift(member);
+  const existingMemberIndex = state.members.findIndex(item => item.id === member.id);
+  if (existingMemberIndex >= 0) state.members.splice(existingMemberIndex, 1, member);
+  else state.members.unshift(member);
   if (!["supplier", "supplier_parent", "supplier_child"].includes(member.role)) {
     await bootstrapAccountProfilesIfEmpty();
   }
@@ -641,13 +697,12 @@ function wireGate() {
     const name = ($("#lgName").value || "").trim();
     const username = ($("#lgUser").value || "").trim();
     const pin = ($("#lgPin").value || "").trim();
-    const role = ($("#lgRole").value || "editor").trim();
     if (!name || !username || !pin) { toast("请填写姓名、用户名和密码"); shakeCard(); return; }
     setGateError("");
     setGateBusy(true, "applying");
     try {
-      await remote.requestMember({ name, username, pin, role });
-      toast("申请已提交，等待管理员审批");
+      await remote.requestMember({ name, username, pin, role: "user" });
+      toast("注册申请已提交，等待 ACG 市场部管理员审批");
       setGateMode("login");
       $("#lgPin").value = "";
       $("#lgName").value = "";
@@ -761,15 +816,21 @@ function workspaceNavItems() {
       { key: "delivery", label: "发布清单", zone: "delivery", iconName: "package" }
     ];
   }
+  const item = (config, entitlement = "") => ({
+    ...config,
+    entitlement,
+    locked: !!entitlement && !hasEntitlement(entitlement),
+  });
   return [
-    { key: "overview", label: "首页", zone: "overview", iconName: "grid" },
-    { key: "studio", label: "单号创作", zone: "studio", iconName: "film" },
-    { key: "agent", label: "批量生产", zone: "agent", iconName: "spark" },
+    item({ key: "home", label: "首页", zone: "home", iconName: "grid" }, "home"),
+    item({ key: "studio", label: "单号创作", zone: "studio", iconName: "film" }, "studio"),
+    item({ key: "agent", label: "批量生产", zone: "agent", iconName: "spark" }, "batch"),
     { key: "custom-video", label: "视频工坊", zone: "custom", page: "video", iconName: "film" },
     { key: "custom-canvas", label: "无限画布", zone: "custom", page: "canvas", iconName: "layers" },
     { key: "custom-voice", label: "语音生成", zone: "custom", page: "voice", iconName: "mic" },
-    { key: "assets", label: "整体资产", zone: "assets", iconName: "folder" },
-    { key: "delivery", label: "发布清单", zone: "delivery", iconName: "package" }
+    item({ key: "assets", label: "整体资产", zone: "assets", iconName: "folder" }, "assets"),
+    item({ key: "delivery", label: "发布清单", zone: "delivery", iconName: "package" }, "delivery"),
+    item({ key: "overview", label: "数据看板", zone: "overview", iconName: "analytics" }, "dashboard")
   ];
 }
 
@@ -777,12 +838,15 @@ function workspaceCurrentItem() {
   const { zone, page, resourceId } = parseHash();
   const items = workspaceNavItems();
   if (zone === "settings") {
+    const member = currentMember();
+    const canManageTeam = ["owner", "admin"].includes(member?.teamRole || "");
+    const personalPage = page === "profile" || page === "team" || (!canManageTeam && ["editor", "user"].includes(state.role));
     return {
-      key: page === "profile" || state.role === "editor" ? "profile" : "settings",
-      label: page === "profile" || state.role === "editor" ? "我的资料" : "管理设置",
+      key: personalPage ? "profile" : "settings",
+      label: page === "team" ? "加入团队" : personalPage ? "我的资料" : "管理设置",
       zone: "settings",
       page,
-      iconName: page === "profile" || state.role === "editor" ? "user" : "gear"
+      iconName: personalPage ? "user" : "gear"
     };
   }
   if (zone === "custom") return items.find(item => item.zone === "custom" && item.page === (page || "video")) || items.find(item => item.zone === "custom");
@@ -813,6 +877,12 @@ function setWorkspaceContextOpen(open) {
 
 function openWorkspaceItem(item) {
   if (!item) return;
+  if (item.locked) {
+    closeWorkspaceSwitcher();
+    toast(`${item.label} 是团队功能。加入团队后即可解锁。`);
+    go("settings", "team");
+    return;
+  }
   const openRequest = ++workspaceProjectOpenRequest;
   closeWorkspaceSwitcher();
   setWorkspaceContextOpen(false);
@@ -867,6 +937,7 @@ function renderWorkspaceSwitcher() {
   }
   const items = workspaceNavItems();
   const current = workspaceCurrentItem() || items[0];
+  const homeStatic = parseHash().zone === "home" && !["supplier", "supplier_parent", "supplier_child"].includes(state.role);
   let wrap = $("#workspaceSwitcher");
   if (!wrap) {
     wrap = document.createElement("div");
@@ -893,25 +964,26 @@ function renderWorkspaceSwitcher() {
     topbar.insertBefore(contextToggle, topbar.firstChild);
   }
   const brandTone = document.body.dataset.zone === "agent" ? "dark" : "light";
+  wrap.classList.toggle("is-static", homeStatic);
   wrap.innerHTML = `
-    <button class="workspace-switch-button" id="workspaceSwitchButton" type="button" aria-haspopup="menu" aria-expanded="false">
+    <button class="workspace-switch-button" id="workspaceSwitchButton" type="button" aria-haspopup="${homeStatic ? "false" : "menu"}" aria-expanded="false">
       ${workspaceBrandGlyph(30, brandTone)}
       <span class="workspace-switch-copy"><b>星阵</b><em>${esc(current?.label || "工作区")}</em></span>
-      ${icon("chevronDown", 13)}
+      ${homeStatic ? "" : icon("chevronDown", 13)}
     </button>
-    <div class="workspace-menu" id="workspaceSwitchMenu" role="menu" aria-label="切换工作区">
+    <div class="workspace-menu" id="workspaceSwitchMenu" role="menu" aria-label="切换工作区" ${homeStatic ? "hidden" : ""}>
       ${items.map(item => `
-        <button type="button" role="menuitem" class="${item.key === current?.key ? "is-active" : ""}" data-ws-switch="${esc(item.key)}">
+        <button type="button" role="menuitem" class="${item.key === current?.key ? "is-active" : ""}${item.locked ? " is-locked" : ""}" data-ws-switch="${esc(item.key)}">
           ${icon(item.iconName || "grid", 15)}
           <span><b>${esc(item.label)}</b></span>
-          ${item.key === current?.key ? icon("check", 14) : ""}
+          ${item.locked ? icon("lock", 13) : item.key === current?.key ? icon("check", 14) : ""}
         </button>
       `).join("")}
     </div>
   `;
   const button = $("#workspaceSwitchButton", wrap);
   const menu = $("#workspaceSwitchMenu", wrap);
-  button?.addEventListener("click", event => {
+  if (!homeStatic) button?.addEventListener("click", event => {
     event.stopPropagation();
     const open = wrap.classList.toggle("is-open");
     button.setAttribute("aria-expanded", open ? "true" : "false");
@@ -1638,14 +1710,17 @@ function workspaceAccountMarkup() {
   const avatar = member.avatarUrl
     ? `<img src="${esc(member.avatarUrl)}" alt="" />`
     : `<span>${esc(initial)}</span>`;
-  const canOpenProfile = ["admin", "editor", "supplier", "supplier_parent"].includes(state.role);
-  const canOpenManagement = ["admin", "supplier", "supplier_parent"].includes(state.role);
-  const canSendFeedback = ["admin", "editor"].includes(state.role);
-  const managementLabel = state.role === "admin" ? "管理设置" : "供应商设置";
+  const team = currentTeam();
+  const accountPlanLabel = team?.name || "个人版";
+  const canOpenProfile = ["admin", "editor", "user", "supplier", "supplier_parent"].includes(state.role);
+  const canManageTeam = ["owner", "admin"].includes(member.teamRole || "");
+  const canOpenManagement = ["admin", "supplier", "supplier_parent"].includes(state.role) || canManageTeam;
+  const canSendFeedback = ["admin", "editor", "user"].includes(state.role);
+  const managementLabel = ["supplier", "supplier_parent"].includes(state.role) ? "供应商设置" : "团队设置";
   return `
     <button class="workspace-account-button" id="workspaceAccountButton" type="button" aria-haspopup="menu" aria-expanded="false">
       <span class="workspace-account-avatar">${avatar}</span>
-      <span class="workspace-account-copy"><b>${esc(name)}</b><em>${esc(ROLE_LABEL[state.role] || state.role || "当前账号")}</em></span>
+      <span class="workspace-account-copy"><b>${esc(name)}</b><em>${esc(accountPlanLabel)}</em></span>
       ${icon("more", 16)}
     </button>
     <div class="workspace-account-menu" id="workspaceAccountMenu" role="menu" aria-label="账号与客户端">
@@ -1654,6 +1729,7 @@ function workspaceAccountMarkup() {
         <span><b>${esc(name)}</b><em>${esc(member.username ? `@${member.username}` : (ROLE_LABEL[state.role] || "当前账号"))}</em></span>
       </div>
       ${canOpenProfile ? `<button type="button" role="menuitem" data-account-action="profile">${icon("user", 16)}<span>我的资料</span></button>` : ""}
+      ${!team && state.role === "user" ? `<button type="button" role="menuitem" data-account-action="join-team">${icon("users", 16)}<span>加入团队</span></button>` : ""}
       <button type="button" role="menuitem" data-account-action="client">${icon("download", 16)}<span data-client-entry-label>${esc(clientLabel)}</span></button>
       ${canSendFeedback ? `<button type="button" role="menuitem" data-account-action="feedback">${icon("fileText", 16)}<span>意见反馈</span></button>` : ""}
       ${canOpenManagement ? `<button type="button" role="menuitem" data-account-action="settings">${icon("gear", 16)}<span>${esc(managementLabel)}</span></button>` : ""}
@@ -1724,6 +1800,7 @@ function ensureWorkspaceContextShell(panel) {
       event.stopPropagation();
       closeWorkspaceAccountMenu();
       if (accountAction === "profile") go("settings", "profile");
+      else if (accountAction === "join-team") go("settings", "team");
       else if (accountAction === "settings") go("settings");
       else if (accountAction === "client") document.dispatchEvent(new CustomEvent("client-distribution:open"));
       else if (accountAction === "feedback") openWorkspaceFeedbackModal();
@@ -1983,6 +2060,12 @@ function ensureWorkspaceContextShell(panel) {
     }
     const routeButton = event.target.closest("[data-ws-go]");
     if (!routeButton) return;
+    if (routeButton.dataset.wsLocked === "true") {
+      toast(`${routeButton.dataset.wsLabel || "这个模块"} 是团队功能。加入团队后即可解锁。`);
+      setWorkspaceContextOpen(false);
+      go("settings", "team");
+      return;
+    }
     const targetZone = routeButton.dataset.wsGo || "overview";
     const targetPage = routeButton.dataset.wsPage || null;
     const targetId = routeButton.dataset.wsId || "";
@@ -2123,6 +2206,24 @@ function renderWorkspaceContextPanel() {
     .filter(ownedBy)
     .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
   const rowsByZone = () => {
+    if (zone === "home" && !supplier) {
+      return [{
+        key: "functions",
+        title: "功能",
+        collapsible: false,
+        rows: workspaceNavItems()
+          .filter(item => item.zone !== "home")
+          .map(item => contextRow({
+            title: item.label,
+            tag: item.locked ? "团队" : "",
+            zone: item.zone,
+            page: item.page || "",
+            attrs: item.locked
+              ? `data-ws-locked="true" data-ws-label="${esc(item.label)}"`
+              : "",
+          })),
+      }];
+    }
     if (zone === "overview") {
       if (supplier) {
         return [{
@@ -2267,6 +2368,9 @@ function renderWorkspaceContextPanel() {
           key: "projects",
           title: projectList.loading && !projectList.items.length ? "正在读取画布项目…" : "画布项目",
           collapsible: false,
+          headerAction: `
+            <button class="wsctx-title-add" type="button" data-ws-go="custom" data-ws-page="canvas" data-ws-id="__new__"
+              aria-label="新建画布项目" title="新建画布项目">${icon("plus", 13)}</button>`,
           rows: projectList.items.slice(0, 80).map(project => canvasProjectContextRow(project, resourceId))
         }];
       }
@@ -2322,9 +2426,21 @@ function renderWorkspaceContextPanel() {
     }
     if (zone === "settings") {
       const me = currentMember();
+      const team = currentTeam();
+      const canManageTeam = ["owner", "admin"].includes(me?.teamRole || "");
       const managementPages = new Set(["members", "products", "usage", "requests"]);
       const activeManagementPage = managementPages.has(page) ? page : "members";
-      if (page === "profile" || state.role === "editor") {
+      if (page === "team") {
+        return [{
+          key: "team",
+          title: "团队",
+          collapsible: false,
+          rows: [
+            contextRow({ title: team?.name || "加入团队", active: true, zone: "settings", page: "team" }),
+          ],
+        }];
+      }
+      if (page === "profile" || (!canManageTeam && ["editor", "user"].includes(state.role))) {
         return [{
           key: "profile",
           title: "个人资料",
@@ -2339,16 +2455,18 @@ function renderWorkspaceContextPanel() {
           ]
         }];
       }
-      if (state.role === "admin") {
+      if (state.role === "admin" || canManageTeam) {
         return [{
           key: "management",
-          title: "管理设置",
+          title: team?.name || "团队设置",
           collapsible: false,
           rows: [
             contextRow({ title: "成员账号", active: activeManagementPage === "members", zone: "settings", page: "members" }),
-            contextRow({ title: "产品库", active: activeManagementPage === "products", zone: "settings", page: "products" }),
-            contextRow({ title: "模型用量", active: activeManagementPage === "usage", zone: "settings", page: "usage" }),
-            contextRow({ title: "成员申请", active: activeManagementPage === "requests", zone: "settings", page: "requests" })
+            ...(team?.kind === "internal" ? [
+              contextRow({ title: "产品库", active: activeManagementPage === "products", zone: "settings", page: "products" }),
+              contextRow({ title: "模型用量", active: activeManagementPage === "usage", zone: "settings", page: "usage" }),
+            ] : []),
+            contextRow({ title: "团队申请", active: activeManagementPage === "requests", zone: "settings", page: "requests" }),
           ]
         }];
       }
@@ -2435,7 +2553,7 @@ function renderContextPanel() {
   panel.innerHTML = `
     <div class="ctx-head">
       <b>账号矩阵</b>
-      ${state.role === "admin" ? `<button class="icon-btn sm" id="ctxNew" title="创建账号">${icon("plus", 14)}</button>` : ""}
+      ${canManageAccounts() ? `<button class="icon-btn sm" id="ctxNew" title="创建账号">${icon("plus", 14)}</button>` : ""}
     </div>
     <div class="ctx-search">${icon("search", 13)}<input id="ctxSearch" placeholder="搜索账号" value="${esc(panel.dataset.q || "")}" /></div>
     <div class="ctx-groups">
@@ -2448,7 +2566,7 @@ function renderContextPanel() {
               <span class="ctx-idx ${platformCode(a.platform).toLowerCase()}" title="${esc(a.platform || "")}">#${String(accountIndex.get(a.id) || 0).padStart(2, "0")}</span>
               <span class="ctx-name" title="${esc(a.name)}">${esc(a.name)}${isNewAccount(a) ? `<i class="ctx-new-badge">新</i>` : ""}</span>
               <em>${a.monthlyDone || 0}</em>
-              ${state.role === "admin" ? `<button class="ctx-del" data-acc-del="${a.id}" title="删除账号">${icon("trash", 12)}</button>` : ""}
+              ${canManageAccounts() ? `<button class="ctx-del" data-acc-del="${a.id}" title="删除账号">${icon("trash", 12)}</button>` : ""}
             </div>`).join("")}
         </div>`;
       }).join("")}
@@ -2519,7 +2637,7 @@ function renderContextPanel() {
 }
 
 /* ---------- 顶栏 ---------- */
-const ZONE_TITLE = { overview: "首页", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
+const ZONE_TITLE = { home: "首页", overview: "数据看板", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
 
 async function syncHomepageAnalytics(button) {
   if (button.disabled) return;
@@ -2558,7 +2676,8 @@ function renderTopbar() {
   if (assetsDock && zone !== "assets") assetsDock.remove();
   const acc = activeAccount();
   const { page } = parseHash();
-  let crumb = zone === "settings" && state.role === "editor" ? "我的" : (ZONE_TITLE[zone] || "");
+  const teamManager = ["owner", "admin"].includes(currentMember()?.teamRole || "");
+  let crumb = zone === "settings" && ["editor", "user"].includes(state.role) && !teamManager ? "我的" : (ZONE_TITLE[zone] || "");
   if (zone === "custom") {
     crumb = `定制创作 / ${{ video: "视频工坊", canvas: "无限画布", voice: "语音生成" }[page || "video"] || "视频工坊"}`;
   }
@@ -2605,8 +2724,8 @@ function renderTopbar() {
       .find(node => node?.parentElement === actions) || null;
     actions.insertBefore(syncDataBtn, syncAnchor);
   }
-  if (newAccBtn) newAccBtn.hidden = !(zone === "overview" && state.role === "admin");
-  if (syncDataBtn) syncDataBtn.hidden = !(zone === "overview" && state.role === "admin");
+  if (newAccBtn) newAccBtn.hidden = !(zone === "overview" && teamManager);
+  if (syncDataBtn) syncDataBtn.hidden = !(zone === "overview" && teamManager);
   const supplierParent = ["supplier", "supplier_parent"].includes(state.role);
   const supplierToolbarZone = supplierParent && zone === "assets";
   let supplierTools = $("#topSupplierOverviewTools");
@@ -2656,13 +2775,14 @@ function paletteCommands() {
     { label: "全部账号", group: "导航", icon: "users", run: () => go("assets") },
     { label: "供应商设置", group: "导航", icon: "settings", run: () => go("settings") }
   ] : [
-    { label: "首页", group: "导航", icon: "grid", run: () => go("overview") },
+    { label: "首页", group: "导航", icon: "grid", run: () => go("home") },
     { label: "批量创作", group: "导航", icon: "spark", run: () => go("agent") },
     { label: "语音生成", group: "导航", icon: "mic", run: () => go("custom", "voice") },
     { label: "单号创作", group: "导航", icon: "film", run: () => { allowStudioFromAgent(); go("studio"); } },
     { label: "整体资产", group: "导航", icon: "folder", run: () => go("assets") },
     { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") },
     { label: "定制创作", group: "导航", icon: "layers", run: () => go("custom", "video") },
+    ...(hasEntitlement("dashboard") ? [{ label: "数据看板", group: "导航", icon: "analytics", run: () => go("overview") }] : []),
     ...(state.role === "admin" ? [
       { label: "设置", group: "导航", icon: "gear", run: () => go("settings") },
       { label: "创建账号", group: "操作", icon: "plus", run: () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })) }
@@ -2768,6 +2888,7 @@ async function boot() {
     applyKeyOverrides(state.apiKeys);
 
     // 注册路由
+    registerView("home", homeView);
     registerView("overview", hydrationAwareView("overview", overviewView));
     registerView("custom", customCreationView);
     registerView("voice", voiceLabView);
@@ -2798,7 +2919,7 @@ async function boot() {
       if (e.target.closest("[data-open-create-account]")) document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} }));
     });
     $("#topBell").addEventListener("click", async e => {
-      await syncAdminPasswordResetNotifications();
+      await syncAccountNotifications();
       toggleNotifyPanel(e.currentTarget);
     });
     document.addEventListener("keydown", e => {
@@ -2823,7 +2944,8 @@ async function boot() {
         state.role = m.role; state.ui.currentMemberId = m.id;
         const bootstrap = await pullRemoteBootstrap();
         if (bootstrap.ok) {
-          if (!state.members.some(item => item.id === m.id)) state.members.unshift(m);
+          state.members = state.members.filter(item => item.id !== m.id);
+          state.members.unshift(m);
           if (!["supplier", "supplier_parent", "supplier_child"].includes(m.role)) {
             await bootstrapAccountProfilesIfEmpty();
           }
@@ -2831,7 +2953,7 @@ async function boot() {
           document.documentElement.classList.add("has-auth-token");
           pauseLoginBackground();
           applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;
-          void syncAdminPasswordResetNotifications();
+          void syncAccountNotifications();
           recordFirstRender(resumeStartedAt, "resume");
           continueRemoteHydration(m, bootstrap.complete);
         } else {

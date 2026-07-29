@@ -6,7 +6,7 @@ import { canDeliver, save } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
-import { toast, openLightbox, publishModal } from "../ui/components.js?v=20260729-v121-shell-22";
+import { toast, openLightbox, publishModal } from "../ui/components.js?v=20260729-v122-team-3";
 import { go } from "../core/router.js";
 import { stepperHtml, wireStepper } from "./studio.js?v=20260728-v120-shell-13";
 import { reviewPreviewHtml } from "./prodDrawer.js?v=20260728-v120-shell-13";

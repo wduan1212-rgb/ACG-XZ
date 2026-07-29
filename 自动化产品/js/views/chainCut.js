@@ -7,7 +7,7 @@ import { save, accountById, state } from "../core/store.js";
 import { autoAssemble, setStage, isVideoWorkshop } from "../domain/productions.js";
 import { buildDeliveryName } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, globalBgmAssets, urlFor } from "../domain/assets.js";
-import { toast, openVideoPreview } from "../ui/components.js?v=20260729-v121-shell-22";
+import { toast, openVideoPreview } from "../ui/components.js?v=20260729-v122-team-3";
 import { go } from "../core/router.js";
 import * as remote from "../core/remote.js";
 import { stepperHtml, wireStepper } from "./studio.js?v=20260728-v120-shell-13";

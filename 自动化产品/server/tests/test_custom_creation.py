@@ -811,8 +811,12 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn("AI.generateImageCopyFromTitle", publishing)
         self.assertIn('id="customPublishProduct"', publishing)
         self.assertIn('id="customPublishProductTag"', publishing)
-        self.assertIn('const initialTitle = kind === "video"', publishing)
-        self.assertIn("accountCoverStylePrompt(account)", publishing)
+        self.assertIn("const initialTitle = String(", publishing)
+        self.assertIn('kind === "video" ? ""', publishing)
+        self.assertIn(
+            "accountCoverStylePrompt(account, stylePrompt, palettePrompt)",
+            publishing,
+        )
         self.assertIn('account.subType === "数字人"', publishing)
         self.assertIn("account.charBoardAssetId", publishing)
         self.assertIn("characterRefAssetId: roleRefAssetId || null", publishing)
@@ -829,8 +833,10 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn("交付正在等待同步，不能再修改封面参考图", publishing)
         self.assertIn('source: "uploaded"', publishing)
         self.assertIn('if (source === "generated" || source === "uploaded") createdCoverIds.add(assetId)', publishing)
-        self.assertIn("if (published && coverAssetId) createdCoverIds.delete(coverAssetId)", publishing)
-        self.assertIn("createdCoverIds.forEach(id =>", publishing)
+        self.assertIn("if (!published) {", publishing)
+        self.assertIn("persistDraft();", publishing)
+        self.assertIn("if (coverAssetId) createdCoverIds.delete(coverAssetId)", publishing)
+        self.assertIn("[...createdCoverIds, ...createdCoverReferenceIds].forEach(id =>", publishing)
         self.assertNotIn("generatedCoverIds", publishing)
         self.assertIn('coverSource === "generated"', publishing)
         self.assertIn("productTagLabel(product)", publishing)

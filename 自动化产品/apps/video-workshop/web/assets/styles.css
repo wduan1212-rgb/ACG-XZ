@@ -170,6 +170,52 @@ button {
   text-align: left;
 }
 
+.creation-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid #343431;
+  border-radius: 999px;
+  background: rgba(18, 18, 17, 0.9);
+}
+
+.creation-mode-switch button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  color: var(--faint);
+  background: transparent;
+  font: inherit;
+  font-size: 10px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.creation-mode-switch button:hover {
+  color: var(--text);
+}
+
+.creation-mode-switch button.active {
+  color: #111;
+  background: #f1f1ed;
+}
+
+.creation-mode-switch button:active {
+  transform: scale(0.97);
+}
+
+.creation-mode-switch button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.start-mode-switch {
+  margin-top: 14px;
+}
+
 .start-input-line,
 .chat-input-line {
   display: grid;
@@ -1709,7 +1755,7 @@ html[data-platform-embedded="true"] .studio-header {
 
 .chat-composer-actions {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 40px;
+  grid-template-columns: 34px auto minmax(0, 1fr) 40px;
   align-items: center;
   gap: 8px;
 }
@@ -1753,6 +1799,24 @@ html[data-platform-embedded="true"] .studio-header {
   bottom: 5px;
   max-width: calc(100% - 12px);
   border-radius: 5px;
+}
+
+html[data-platform-workspace="true"] .creation-mode-switch {
+  border-color: #deded9;
+  background: #f5f5f2;
+}
+
+html[data-platform-workspace="true"] .creation-mode-switch button {
+  color: #777772;
+}
+
+html[data-platform-workspace="true"] .creation-mode-switch button:hover {
+  color: #242422;
+}
+
+html[data-platform-workspace="true"] .creation-mode-switch button.active {
+  color: #fff;
+  background: #20201e;
 }
 
 .chat-composer .skill-menu {
@@ -2031,6 +2095,14 @@ body.is-file-dragging .drop-overlay-content svg {
   .start-core {
     width: 100%;
     top: -18px;
+  }
+
+  .chat-composer-hint {
+    display: none;
+  }
+
+  .chat-composer-actions {
+    grid-template-columns: 34px minmax(0, 1fr) 40px;
   }
 
   .brand-mark {

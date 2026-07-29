@@ -62,6 +62,43 @@ class AttachmentTurnIsolationTests(unittest.TestCase):
         self.assertEqual([item["label"] for item in second], ["图1"])
         self.assertNotEqual(first[0]["asset_id"], second[0]["asset_id"])
 
+    def test_static_plan_keeps_current_turn_images_as_generation_references_only(self):
+        image = {
+            "asset_id": "current-image",
+            "label": "图1",
+            "media_type": "image",
+            "name": "current.png",
+            "mime": "image/png",
+            "url": "/uploads/project/current.png",
+        }
+        video = {
+            "asset_id": "current-video",
+            "label": "视频1",
+            "media_type": "video",
+            "name": "current.mp4",
+            "mime": "video/mp4",
+            "url": "/uploads/project/current.mp4",
+        }
+        plan = {
+            "narration": "静态视频口播",
+            "scenes": [{"duration_sec": 5, "image_prompt": "图片分镜"}],
+        }
+
+        summary = main._apply_static_reference_plan(plan, [image, video])
+
+        self.assertEqual(["current-image"], [
+            item["asset_id"] for item in plan["reference_images"]
+        ])
+        self.assertEqual([], plan["material_assets"])
+        self.assertEqual(
+            {"current-image": "reference", "current-video": "unused"},
+            {
+                item["asset_id"]: item["role"]
+                for item in plan["asset_assignments"]
+            },
+        )
+        self.assertIn("图1：静态分镜统一参考", summary)
+
 
 class ChatAttachmentScopeTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_keeps_history_but_only_injects_current_turn_assets(self):

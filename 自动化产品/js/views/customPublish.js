@@ -7,10 +7,71 @@ import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, produ
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { ensureVideoCover } from "./chainWorkshop.js?v=20260728-v120-shell-13";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260729-v121-shell-22";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260729-v122-team-3";
 import { accountCreatedToday, groupOf, isAccountDisabled } from "../domain/accounts.js";
 
 let activeCustomPublishModal = null;
+const CUSTOM_PUBLISH_DRAFT_PREFIX = "xingzhen:custom-publish-draft:v1";
+const COVER_STYLE_OPTIONS = [
+  ["editorial", "高级杂志", "高级杂志封面，克制留白，清晰层级，精致排版与真实质感"],
+  ["social", "社媒爆款", "社交媒体爆款封面，主体醒目，大标题高识别，强视觉停留点"],
+  ["cinematic", "电影海报", "电影海报质感，戏剧性光影，空间纵深，画面叙事明确"],
+  ["minimal", "极简留白", "极简主义封面，大面积留白，单一视觉焦点，精确网格排版"],
+  ["tech", "未来科技", "未来科技视觉，精密光线与材质，现代信息图形，避免廉价霓虹"],
+  ["documentary", "纪实人文", "纪实摄影风格，自然光线，真实人物与环境，可信且有温度"],
+  ["lifestyle", "生活方式", "生活方式品牌视觉，柔和自然光，松弛构图，清爽且具亲和力"],
+  ["commerce", "产品商业", "高端商业产品摄影，主体轮廓清晰，材质细节准确，卖点聚焦"],
+  ["illustration", "设计插画", "现代编辑插画风格，统一造型语言，图形简洁，视觉节奏鲜明"],
+  ["bold-type", "强字效海报", "强字效平面海报，中文标题为核心视觉，字图关系明确且易读"],
+];
+const COVER_PALETTE_OPTIONS = [
+  ["auto", "智能配色", ""],
+  ["ink", "墨黑银白", "墨黑、炭灰与银白，少量冷光点缀"],
+  ["blue", "深海蓝", "深海蓝、雾蓝与象牙白，少量钴蓝强调"],
+  ["red", "朱红米白", "朱红、米白与深灰，传统感和现代排版结合"],
+  ["green", "森林绿", "森林绿、鼠尾草绿与暖白，质感自然克制"],
+  ["orange", "日落橙", "日落橙、杏色与深棕，温暖但保持高级"],
+  ["purple", "暮光紫", "暮光紫、灰紫与冷白，柔和渐变而不过度霓虹"],
+  ["yellow", "柠檬黄", "柠檬黄、暖白与石墨黑，明快醒目且高对比"],
+  ["pastel", "低饱和粉彩", "低饱和粉蓝、粉灰与奶油白，轻盈柔和"],
+  ["random", "随机灵感", ""],
+];
+
+function publishDraftKey(output = {}, kind = outputKind(output)) {
+  const memberId = String(state.ui.currentMemberId || state.meta?.memberId || "local");
+  const projectId = String(output.projectId || output.id || output.customProjectId || "untitled");
+  return `${CUSTOM_PUBLISH_DRAFT_PREFIX}:${memberId}:${kind}:${projectId}`;
+}
+
+function readPublishDraft(output = {}, kind = outputKind(output)) {
+  const attached = output.publishDraft && typeof output.publishDraft === "object"
+    ? output.publishDraft
+    : null;
+  try {
+    const stored = JSON.parse(localStorage.getItem(publishDraftKey(output, kind)) || "null");
+    return stored && typeof stored === "object" ? { ...(attached || {}), ...stored } : (attached || {});
+  } catch (_) {
+    return attached || {};
+  }
+}
+
+function writePublishDraft(output, kind, draft) {
+  const value = { ...(draft || {}), updatedAt: Date.now() };
+  output.publishDraft = value;
+  try {
+    localStorage.setItem(publishDraftKey(output, kind), JSON.stringify(value));
+  } catch (error) {
+    console.warn("[custom-publish-draft-save]", error);
+  }
+  return value;
+}
+
+function clearPublishDraft(output, kind) {
+  delete output.publishDraft;
+  try {
+    localStorage.removeItem(publishDraftKey(output, kind));
+  } catch (_) {}
+}
 
 function todayValue() {
   const date = new Date();
@@ -202,7 +263,7 @@ async function materializeCanvas(output, accountId, title) {
   return { packAssetIds: ids, createdAssetIds: ids.slice() };
 }
 
-function accountCoverStylePrompt(account = {}) {
+function accountCoverStylePrompt(account = {}, stylePrompt = "", palettePrompt = "") {
   const hints = [
     account.imagePromptTemplate,
     account.lockedStyle,
@@ -214,7 +275,14 @@ function accountCoverStylePrompt(account = {}) {
     .filter(Boolean);
   const style = hints.length ? `账号视觉风格：${[...new Set(hints)].join("；").slice(0, 600)}\n` : "";
   // 仅用于视频工坊发布封面；底层生成仍沿用单号/批量的封面链路与 ratio 参数。
-  return `${style}画幅要求：竖版 3:4，适合作为视频发布封面，主体和标题信息保持在安全可见区域。`;
+  const selectedStyle = String(stylePrompt || "").trim();
+  const selectedPalette = String(palettePrompt || "").trim();
+  return [
+    style,
+    selectedStyle ? `封面风格：${selectedStyle}\n` : "",
+    selectedPalette ? `配色方向：${selectedPalette}\n` : "",
+    "画幅要求：竖版 3:4，适合作为视频发布封面，主体和标题信息保持在安全可见区域。"
+  ].join("");
 }
 
 function coverReferenceIds(output = {}, account = {}, extraReferenceAssetIds = []) {
@@ -235,7 +303,16 @@ function coverReferenceIds(output = {}, account = {}, extraReferenceAssetIds = [
   };
 }
 
-async function generateCover({ output, accountId, productId, title, copy, extraReferenceAssetIds = [] }) {
+async function generateCover({
+  output,
+  accountId,
+  productId,
+  title,
+  copy,
+  extraReferenceAssetIds = [],
+  stylePrompt = "",
+  palettePrompt = "",
+}) {
   const account = accountById(accountId);
   if (!account) throw new Error("请先选择发布账号");
   const { roleRefAssetId, refAssetIds } = coverReferenceIds(output, account, extraReferenceAssetIds);
@@ -257,7 +334,7 @@ async function generateCover({ output, accountId, productId, title, copy, extraR
       boards: {
         characterRefAssetId: roleRefAssetId || null,
         cover: {
-          prompt: accountCoverStylePrompt(account),
+          prompt: accountCoverStylePrompt(account, stylePrompt, palettePrompt),
           assetId: null,
           refAssetIds,
           status: "idle",
@@ -387,6 +464,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
     return activeCustomPublishModal;
   }
   const kind = outputKind(output);
+  const draft = readPublishDraft(output, kind);
   const accounts = eligibleAccounts(kind);
   if (!accounts.length) {
     toast(`请先创建至少一个${kind === "video" ? "素材" : "图文"}账号`, "error");
@@ -397,34 +475,56 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
     toast("请先在设置中配置至少一个产品", "error");
     return null;
   }
-  const selectedAccountId = accounts.some(account => account.id === output.accountId)
-    ? output.accountId
+  const requestedAccountId = String(draft.accountId || output.accountId || "");
+  const selectedAccountId = accounts.some(account => account.id === requestedAccountId)
+    ? requestedAccountId
     : accounts[0].id;
-  const selectedProductId = products.some(product => product.id === output.productId)
-    ? output.productId
+  const requestedProductId = String(draft.productId || output.productId || "");
+  const selectedProductId = products.some(product => product.id === requestedProductId)
+    ? requestedProductId
     : (products.some(product => product.id === "dumate") ? "dumate" : products[0].id);
   const initialProductTag = String(
     productTagLabel(productById(selectedProductId)) || "定制创作"
   ).trim();
-  const initialTitle = kind === "video"
-    ? ""
-    : String(output.title || output.project?.name || "无限画布作品").trim();
+  const initialTitle = String(
+    draft.title
+    || (kind === "video" ? "" : (output.title || output.project?.name || "无限画布作品"))
+  ).trim();
   const initialCopy = kind === "canvas"
-    ? compactCanvasPublishCopy(output.copy || "")
-    : String(output.copy || "");
-  let coverAssetId = "";
-  let coverAccountId = "";
-  let coverProductId = "";
-  let coverTitle = "";
-  let coverCopy = "";
-  let coverSource = "";
+    ? compactCanvasPublishCopy(draft.copy || output.copy || "")
+    : String(draft.copy || output.copy || "");
+  const validDraftCoverId = assetById(draft.coverAssetId)?.type === "图片"
+    ? String(draft.coverAssetId)
+    : "";
+  let coverAssetId = validDraftCoverId;
+  let coverAccountId = validDraftCoverId ? String(draft.coverAccountId || selectedAccountId) : "";
+  let coverProductId = validDraftCoverId ? String(draft.coverProductId || selectedProductId) : "";
+  let coverTitle = validDraftCoverId ? String(draft.coverTitle || initialTitle) : "";
+  let coverCopy = validDraftCoverId ? String(draft.coverCopy || initialCopy) : "";
+  let coverSource = validDraftCoverId ? String(draft.coverSource || "uploaded") : "";
   let coverBusy = false;
-  let coverReferenceAssetIds = [];
-  const createdCoverIds = new Set();
-  const createdCoverReferenceIds = new Set();
+  let coverReferenceAssetIds = [...new Set(
+    (Array.isArray(draft.coverReferenceAssetIds) ? draft.coverReferenceAssetIds : [])
+      .filter(id => assetById(id)?.type === "图片")
+  )].slice(0, 5);
+  const createdCoverIds = new Set(
+    (Array.isArray(draft.createdCoverIds) ? draft.createdCoverIds : [])
+      .filter(id => assetById(id)?.type === "图片")
+  );
+  const createdCoverReferenceIds = new Set(
+    (Array.isArray(draft.createdCoverReferenceIds) ? draft.createdCoverReferenceIds : [])
+      .filter(id => assetById(id)?.type === "图片")
+  );
+  const initialCoverStyle = COVER_STYLE_OPTIONS.some(([value]) => value === draft.coverStyle)
+    ? draft.coverStyle
+    : "editorial";
+  const initialCoverPalette = COVER_PALETTE_OPTIONS.some(([value]) => value === draft.coverPalette)
+    ? draft.coverPalette
+    : "auto";
   let pendingSubmission = null;
   let published = false;
   let releaseSyncHold = null;
+  let persistDraft = () => {};
   let modal = null;
   modal = openModal(`
     <div class="mp-head custom-publish-head">
@@ -442,7 +542,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       </div>
       <div class="custom-publish-grid">
         <label class="field"><span>计划发布日期（必填）</span>
-          <input class="input" type="date" id="customPublishDate" value="${todayValue()}" required />
+          <input class="input" type="date" id="customPublishDate" value="${esc(draft.planDate || todayValue())}" required />
         </label>
         <label class="field"><span>发布清单产品标签（随产品自动填写）</span>
           <input class="input" id="customPublishProductTag" maxlength="20" value="${esc(initialProductTag)}" readonly />
@@ -468,6 +568,21 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
             </div>
             <input id="customPublishCoverReferenceFile" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden />
             <div class="custom-publish-cover-reference-list" id="customPublishCoverReferenceList">${coverReferencePreviewHtml(coverReferenceAssetIds)}</div>
+            <div class="custom-publish-cover-controls">
+              <label><span>封面风格</span>
+                <select class="input" id="customPublishCoverStyle">
+                  ${COVER_STYLE_OPTIONS.map(([value, label]) => `<option value="${esc(value)}" ${value === initialCoverStyle ? "selected" : ""}>${esc(label)}</option>`).join("")}
+                </select>
+              </label>
+              <label><span>配色方向</span>
+                <span class="custom-publish-cover-palette-control">
+                  <select class="input" id="customPublishCoverPalette">
+                    ${COVER_PALETTE_OPTIONS.map(([value, label]) => `<option value="${esc(value)}" ${value === initialCoverPalette ? "selected" : ""}>${esc(label)}</option>`).join("")}
+                  </select>
+                  <button class="btn ghost" type="button" id="customPublishRandomPalette" title="随机换一组配色">${icon("spark", 13)} 随机</button>
+                </span>
+              </label>
+            </div>
             <div class="custom-publish-cover-actions">
               <button class="btn ghost" type="button" id="customPublishGenerateCover">${icon("image", 13)} ${coverAssetId ? "重新生成封面" : "生成封面"}</button>
               <button class="btn ghost" type="button" id="customPublishUploadCover">${icon("upload", 13)} 上传现成封面</button>
@@ -476,7 +591,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         </section>
       ` : ""}
       <label class="field"><span>备注</span>
-        <input class="input" id="customPublishNote" maxlength="200" value="${esc(output.note || "")}" placeholder="例如：周五晚发布" />
+        <input class="input" id="customPublishNote" maxlength="200" value="${esc(draft.note || output.note || "")}" placeholder="例如：周五晚发布" />
       </label>
       <div class="custom-publish-status" id="customPublishStatus">${kind === "canvas"
         ? "提交发布时会先执行与图文工坊相同的发布前精修，再复制到主平台资产库；直接导出保持原图。"
@@ -505,14 +620,16 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       if (activeCustomPublishModal?.el === modal?.el) activeCustomPublishModal = null;
       releaseSyncHold?.({ flush: false });
       releaseSyncHold = null;
-      if (published && coverAssetId) createdCoverIds.delete(coverAssetId);
-      createdCoverIds.forEach(id => {
-        removeAsset(id).catch(error => console.warn("[custom-cover-close]", error));
+      if (!published) {
+        persistDraft();
+        return;
+      }
+      clearPublishDraft(output, kind);
+      if (coverAssetId) createdCoverIds.delete(coverAssetId);
+      [...createdCoverIds, ...createdCoverReferenceIds].forEach(id => {
+        removeAsset(id).catch(error => console.warn("[custom-cover-published-cleanup]", error));
       });
       createdCoverIds.clear();
-      createdCoverReferenceIds.forEach(id => {
-        removeAsset(id).catch(error => console.warn("[custom-cover-reference-close]", error));
-      });
       createdCoverReferenceIds.clear();
     },
     onMount(panel, close) {
@@ -521,6 +638,8 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       const productTagInput = panel.querySelector("#customPublishProductTag");
       const titleInput = panel.querySelector("#customPublishTitle");
       const copyInput = panel.querySelector("#customPublishCopy");
+      const dateInput = panel.querySelector("#customPublishDate");
+      const noteInput = panel.querySelector("#customPublishNote");
       const status = panel.querySelector("#customPublishStatus");
       const coverPreview = panel.querySelector("#customPublishCoverPreview");
       const coverFileInput = panel.querySelector("#customPublishCoverFile");
@@ -528,7 +647,37 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       const coverReferenceFileInput = panel.querySelector("#customPublishCoverReferenceFile");
       const coverReferenceList = panel.querySelector("#customPublishCoverReferenceList");
       const coverHint = panel.querySelector("#customPublishCoverHint");
+      const coverStyleInput = panel.querySelector("#customPublishCoverStyle");
+      const coverPaletteInput = panel.querySelector("#customPublishCoverPalette");
       const submitButton = panel.querySelector("#customPublishSubmit");
+      let draftTimer = 0;
+      const saveDraftNow = () => writePublishDraft(output, kind, {
+        accountId: accountInput?.value || selectedAccountId,
+        productId: productInput?.value || selectedProductId,
+        planDate: dateInput?.value || todayValue(),
+        title: titleInput?.value || "",
+        copy: copyInput?.value || "",
+        note: noteInput?.value || "",
+        coverAssetId,
+        coverAccountId,
+        coverProductId,
+        coverTitle,
+        coverCopy,
+        coverSource,
+        coverReferenceAssetIds: coverReferenceAssetIds.slice(),
+        createdCoverIds: [...createdCoverIds],
+        createdCoverReferenceIds: [...createdCoverReferenceIds],
+        coverStyle: coverStyleInput?.value || "editorial",
+        coverPalette: coverPaletteInput?.value || "auto",
+      });
+      const queueDraftSave = () => {
+        window.clearTimeout(draftTimer);
+        draftTimer = window.setTimeout(saveDraftNow, 120);
+      };
+      persistDraft = () => {
+        window.clearTimeout(draftTimer);
+        if (!published) saveDraftNow();
+      };
       const setPendingMode = active => {
         panel.querySelectorAll("input, select, textarea, #customPublishGenerateCopy, #customPublishGenerateCover, #customPublishUploadCover")
           .forEach(control => { control.disabled = active; });
@@ -571,6 +720,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         if (coverPreview) coverPreview.innerHTML = coverPreviewHtml("");
         status.textContent = message;
         removeCreatedCover(retiredId, "[custom-cover-cleanup]");
+        queueDraftSave();
       };
       const updateCoverHint = () => {
         if (!coverHint) return;
@@ -593,6 +743,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         renderCoverReferences();
         retiredIds.forEach(id => removeCreatedCoverReference(id, "[custom-cover-reference-cleanup]"));
         if (message && retiredIds.length) status.textContent = message;
+        queueDraftSave();
       };
       const invalidateGeneratedCoverForReferences = () => {
         if (coverSource === "generated" && coverAssetId) {
@@ -613,6 +764,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         if (retiredId && retiredId !== assetId) {
           removeCreatedCover(retiredId, "[custom-cover-replace]");
         }
+        saveDraftNow();
       };
       const withCoverBusy = async task => {
         if (pendingSubmission) throw new Error("交付正在等待同步，不能再更换封面");
@@ -718,6 +870,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         status.textContent = skipped > 0
           ? `已添加 ${accepted.length} 张参考图；受 5 张上限影响，另有 ${skipped} 张未加入。`
           : `已添加 ${accepted.length} 张 AI 封面参考图；生成封面时会真实传入。`;
+        saveDraftNow();
       };
 
       accountInput.addEventListener("change", () => {
@@ -726,6 +879,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         }
         clearCoverReferences("发布账号已变化，已清除仅属于原账号的自定义封面参考图。");
         updateCoverHint();
+        queueDraftSave();
       });
       productInput.addEventListener("change", () => {
         const selectedProduct = productById(productInput.value);
@@ -733,18 +887,42 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         if (coverProductId && coverProductId !== productInput.value) {
           invalidateCover("发布产品已变化，请按新产品重新生成或拖入封面。");
         }
+        queueDraftSave();
       });
       titleInput.addEventListener("input", () => {
         if (coverSource === "generated" && coverTitle !== titleInput.value.trim()) {
           invalidateCover("发布标题已变化，请按新标题重新生成封面。");
         }
+        queueDraftSave();
       });
       copyInput.addEventListener("input", () => {
         if (coverSource === "generated" && coverCopy !== copyInput.value.trim() && coverAssetId) {
           invalidateCover("发布文案已变化，请按新文案重新生成封面。");
         }
+        queueDraftSave();
+      });
+      dateInput?.addEventListener("change", queueDraftSave);
+      noteInput?.addEventListener("input", queueDraftSave);
+      coverStyleInput?.addEventListener("change", () => {
+        if (coverSource === "generated") invalidateCover("封面风格已变化，请按新风格重新生成封面。");
+        queueDraftSave();
+      });
+      coverPaletteInput?.addEventListener("change", () => {
+        if (coverSource === "generated") invalidateCover("封面配色已变化，请按新配色重新生成封面。");
+        queueDraftSave();
+      });
+      panel.querySelector("#customPublishRandomPalette")?.addEventListener("click", () => {
+        const choices = COVER_PALETTE_OPTIONS.filter(([value]) => !["auto", "random"].includes(value));
+        const current = coverPaletteInput?.value || "";
+        const alternatives = choices.filter(([value]) => value !== current);
+        const selected = (alternatives.length ? alternatives : choices)[Math.floor(Math.random() * choices.length)];
+        if (!selected || !coverPaletteInput) return;
+        coverPaletteInput.value = selected[0];
+        coverPaletteInput.dispatchEvent(new Event("change", { bubbles: true }));
+        status.textContent = `已随机选择「${selected[1]}」，生成封面时会加入这组配色提示。`;
       });
       updateCoverHint();
+      saveDraftNow();
 
       coverPreview?.addEventListener("click", () => {
         if (coverBusy) return;
@@ -847,6 +1025,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
           renderCoverReferences();
           removeCreatedCoverReference(assetId, "[custom-cover-reference-remove]");
           status.textContent = "已移除参考图；如需 AI 封面，请按当前参考图重新生成。";
+          saveDraftNow();
           return;
         }
         const previewButton = event.target.closest("[data-cover-ref-preview]");
@@ -889,6 +1068,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
             }
             copyInput.value = generatedCopy;
             status.textContent = "文案已生成，可以继续手动修改。";
+            saveDraftNow();
           } catch (error) {
             copyInput.value = previousCopy;
             status.textContent = "文案生成失败，已保留原文案。";
@@ -902,6 +1082,14 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
           const title = titleInput.value.trim();
           if (!title) throw new Error("请先填写发布标题");
           await withCoverBusy(async () => {
+            const styleOption = COVER_STYLE_OPTIONS.find(([value]) => value === coverStyleInput?.value)
+              || COVER_STYLE_OPTIONS[0];
+            let paletteOption = COVER_PALETTE_OPTIONS.find(([value]) => value === coverPaletteInput?.value)
+              || COVER_PALETTE_OPTIONS[0];
+            if (paletteOption[0] === "random") {
+              const choices = COVER_PALETTE_OPTIONS.filter(([value]) => !["auto", "random"].includes(value));
+              paletteOption = choices[Math.floor(Math.random() * choices.length)] || COVER_PALETTE_OPTIONS[0];
+            }
             status.textContent = "正在根据标题、账号风格和参考图生成封面…";
             const generated = await generateCover({
               output,
@@ -909,7 +1097,9 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
               productId: productInput.value,
               title,
               copy: copyInput.value.trim(),
-              extraReferenceAssetIds: coverReferenceAssetIds
+              extraReferenceAssetIds: coverReferenceAssetIds,
+              stylePrompt: styleOption[2],
+              palettePrompt: paletteOption[2],
             });
             if (!generated.assetId) throw new Error("封面生成没有返回图片");
             installCover({
@@ -957,7 +1147,9 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
             coverAssetId,
             planDate,
             productTag,
-            note
+            note,
+            coverStyle: coverStyleInput?.value || "",
+            coverPalette: coverPaletteInput?.value || "",
           });
           if (pendingSubmission && pendingSubmission.signature !== signature) {
             throw new Error("已有待同步交付，不能修改字段后重复创建；请先重试同步");

@@ -12,7 +12,7 @@ const DEFAULT_ADMIN_PIN_HASH = "pbkdf2$120000$737461722d61727261792d61646d696e2d
 const DEFAULT_SUPPLIER_PIN_HASH = "pbkdf2$120000$737461722d61727261792d737570706c6965722d7631$a5b6620381cff96c4602112ab5b3ee89b027d53c263d4452150cc9c7d9d5e1ff";
 
 export const state = {
-  role: null,                 // 当前登录成员的角色：admin | editor | supplier_parent | supplier_child
+  role: null,                 // 当前登录成员的角色：admin | editor | user | supplier_parent | supplier_child
   members: [],                // 成员账号（将来服务器侧用户表的本地形态）
   accounts: [],
   productions: [],
@@ -46,12 +46,18 @@ export const state = {
    editor   创作成员：走创作流程，且可直接定稿发布入供应商端（拥有发布权）
    supplier_parent 供应商端管理员：管理子账号和内容账号分配
    supplier_child  供应商端子账号：仅处理被分配的发布清单 */
-export const ROLE_LABEL = { admin: "管理员", editor: "创作成员", supplier: "供应商管理员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
+export const ROLE_LABEL = { admin: "管理员", editor: "创作成员", user: "个人用户", supplier: "供应商管理员", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 export const currentMember = () => state.members.find(m => m.id === state.ui.currentMemberId) || null;
 export const myId = () => state.ui.currentMemberId;
-export const canManageAccounts = () => state.role === "admin";
-export const canManageMembers = () => state.role === "admin";
-export const canCreate = () => state.role === "admin" || state.role === "editor";
+export const currentTeam = () => currentMember()?.team || null;
+export const hasEntitlement = (key) => {
+  const member = currentMember();
+  if (!key || ["admin", "editor"].includes(state.role) && !Array.isArray(member?.entitlements)) return true;
+  return Array.isArray(member?.entitlements) && member.entitlements.includes(key);
+};
+export const canManageAccounts = () => hasEntitlement("team_members") && ["owner", "admin"].includes(currentMember()?.teamRole);
+export const canManageMembers = canManageAccounts;
+export const canCreate = () => ["admin", "editor", "user"].includes(state.role);
 export const canDeliver = () => state.role === "admin" || state.role === "editor";   // 创作者也有发布权
 export const canReview = canDeliver;                       // 兼容旧引用：现在"定稿"即由创作者自行完成
 export const canMarkReviewed = () => state.role === "admin";  // 仅管理员可标注「已审阅」（非强制门槛）

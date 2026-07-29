@@ -1,7 +1,9 @@
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +29,9 @@ class _Response:
 class _Client:
     responses = []
     calls = 0
+    last_url = ""
+    last_json = {}
+    last_headers = {}
 
     async def __aenter__(self):
         return self
@@ -36,6 +41,9 @@ class _Client:
 
     async def post(self, *args, **kwargs):
         type(self).calls += 1
+        type(self).last_url = str(args[0] if args else kwargs.get("url") or "")
+        type(self).last_json = kwargs.get("json") or {}
+        type(self).last_headers = kwargs.get("headers") or {}
         return type(self).responses.pop(0)
 
 
@@ -131,6 +139,55 @@ class ProviderLlmRetryTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("用百度搭子做自媒体", submitted)
         self.assertIn("开始整理", submitted)
         self.assertEqual(1, submitted.count(providers._SEEDANCE_TEXT_NEGATIVE))
+
+    async def test_static_image_request_physically_carries_every_turn_reference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            references = []
+            for index, name in enumerate(("ip.png", "logo.png"), start=1):
+                path = root / name
+                path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes([index]))
+                references.append({"label": f"图{index}", "path": str(path)})
+            output = root / "storyboard.jpg"
+            _Client.calls = 0
+            _Client.responses = [
+                _Response(200, {"data": [{"b64_json": "/9j/c3RhdGljLWltYWdl"}]})
+            ]
+            image_settings = SimpleNamespace(
+                image_api_key="test-key",
+                image_endpoint="",
+                image_base_url="https://tokenhub.tencentmaas.com",
+                image_model="custom-imagemodel-gt",
+            )
+
+            with (
+                patch.object(providers, "_client", _client),
+                patch.object(providers, "settings", image_settings),
+            ):
+                result = await providers.GPTImageGenerator().generate(
+                    "统一风格锚点；固定负面约束；静态分镜",
+                    "9:16",
+                    output,
+                    reference_images=references,
+                    scene_number=2,
+                )
+                output_bytes = output.read_bytes()
+
+        self.assertEqual(1, _Client.calls)
+        self.assertEqual(
+            "https://tokenhub.tencentmaas.com/v1/aiart/gtimage",
+            _Client.last_url,
+        )
+        self.assertEqual("1152x2048", _Client.last_json["size"])
+        self.assertEqual("high", _Client.last_json["input_fidelity"])
+        self.assertEqual(2, len(_Client.last_json["images"]))
+        self.assertTrue(all(
+            item["image_url"].startswith("data:image/png;base64,")
+            for item in _Client.last_json["images"]
+        ))
+        self.assertEqual("Bearer test-key", _Client.last_headers["Authorization"])
+        self.assertEqual(2, result["referenceCount"])
+        self.assertTrue(output_bytes.startswith(b"\xff\xd8\xff"))
 
 
 if __name__ == "__main__":

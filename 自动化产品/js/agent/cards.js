@@ -5,14 +5,15 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset, accountCreatedToday, isAccountDisabled } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260727-v118-7";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260729-v122-static-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
-const CONTENT_KIND_GROUP = { image: "图文组", material: "素材", real: "真人" };
-const CONTENT_KIND_LABEL = { image: "图文", material: "素材视频", real: "真人视频" };
+const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
+const CONTENT_KIND_LABEL = { image: "图文", static: "静态视频", material: "素材视频", real: "真人视频" };
 
 function kindFromGroup(group = "") {
+  if (group === "静态视频") return "static";
   if (group === "素材") return "material";
   if (group === "真人") return "real";
   return "image";
@@ -20,7 +21,7 @@ function kindFromGroup(group = "") {
 
 function normalizePlanKind(p) {
   p.creativeMode = "custom";
-  p.contentKind = ["image", "material", "real"].includes(p.contentKind) ? p.contentKind : kindFromGroup(p.group);
+  p.contentKind = ["image", "static", "material", "real"].includes(p.contentKind) ? p.contentKind : kindFromGroup(p.group);
   p.group = CONTENT_KIND_GROUP[p.contentKind] || "图文组";
   if (p.creativeMode === "custom") {
     p.content = "";
@@ -33,6 +34,7 @@ function normalizePlanKind(p) {
     if (!a || isAccountDisabled(a)) return false;
     const g = groupOf(a);
     if (p.contentKind === "image") return a?.mode === "图文" || g === "图文组";
+    if (p.contentKind === "static") return a?.mode === "视频";
     if (p.contentKind === "material") return a?.mode === "视频" && g === "素材";
     if (p.contentKind === "real") return a?.mode === "视频" && g === "真人";
     return true;
@@ -173,6 +175,7 @@ const CARD = {
     const isImageAcc = a => a?.mode === "图文" || groupOf(a) === "图文组";
     const customMode = true;
     const isImageKind = p.contentKind === "image";
+    const isStaticKind = p.contentKind === "static";
     const isMaterialKind = p.contentKind === "material";
     const isRealKind = p.contentKind === "real";
     const globalRefs = selectedRefIds(p);
@@ -231,21 +234,24 @@ const CARD = {
     return `<div class="ag-card plan ${confirmed ? "resolved" : ""}" data-plan="${m.id}">
       <div class="agc-head">${icon("kanban", 15)}<b>量产任务板</b>
         <div class="agc-modebar">
-          <span class="agc-seg-group">${kindBtn("image", "图文")}${kindBtn("material", "素材视频")}${kindBtn("real", "真人视频")}</span>
+          <span class="agc-seg-group">${kindBtn("image", "图文")}${kindBtn("static", "静态视频")}${kindBtn("material", "素材视频")}${kindBtn("real", "真人视频")}</span>
         </div>
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
       </div>
       <div class="agc-custom-hint">${icon("spark", 13)} ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 新任务只使用任务板明确选择的参考图；数字人账号会额外使用管理员锁定的角色版。</div>
       ${(() => {
         const editable = !locked;
-        const refKind = isImageKind ? "shared" : "cover";
-        const refIds = isImageKind ? globalRefs : coverRefs;
-        const removeAct = isImageKind ? "plan-refremove" : "plan-cover-refremove";
-        const clearAct = isImageKind ? "plan-refclear" : "plan-cover-refclear";
-        const dropAttr = isImageKind ? `data-plan-refdrop="${m.id}"` : `data-plan-cover-refdrop="${m.id}"`;
-        const inputAttr = isImageKind ? `data-plan-ref="${m.id}"` : `data-plan-cover-ref="${m.id}"`;
-        const refTitle = isImageKind ? "统一参考图" : isMaterialKind ? "统一素材视频参考" : "统一真人视频封面参考";
-        const refDesc = isImageKind
+        const usesUnifiedImageRefs = isImageKind || isStaticKind;
+        const refKind = usesUnifiedImageRefs ? "shared" : "cover";
+        const refIds = usesUnifiedImageRefs ? globalRefs : coverRefs;
+        const removeAct = usesUnifiedImageRefs ? "plan-refremove" : "plan-cover-refremove";
+        const clearAct = usesUnifiedImageRefs ? "plan-refclear" : "plan-cover-refclear";
+        const dropAttr = usesUnifiedImageRefs ? `data-plan-refdrop="${m.id}"` : `data-plan-cover-refdrop="${m.id}"`;
+        const inputAttr = usesUnifiedImageRefs ? `data-plan-ref="${m.id}"` : `data-plan-cover-ref="${m.id}"`;
+        const refTitle = usesUnifiedImageRefs ? "统一参考图" : isMaterialKind ? "统一素材视频参考" : "统一真人视频封面参考";
+        const refDesc = isStaticKind
+          ? "静态视频的每张图片分镜都会携带这些参考图，最多5张；单账号可再追加"
+          : isImageKind
           ? "图文成图会参考，最多5张；单账号定制图可单独追加"
           : isMaterialKind
           ? "用于视频封面、信息流 B 面分镜和功能演示参考，最多5张"
@@ -374,7 +380,7 @@ const CARD = {
       return `<div class="agr-row">
         ${editableBoards ? `<span class="agr-board-strip">${editableBoards}</span>` : `<span class="agr-cover ${finalVideoUrl ? "is-video" : ""}">${finalVideoUrl ? `<video src="${esc(finalVideoUrl)}" poster="${esc(coverUrl || "")}" muted playsinline preload="metadata"></video>` : coverUrl ? `<img src="${coverUrl}" alt="视频封面"/>` : `<i style="background:${gradFor(p.title)}">封面</i>`}</span>`}
         <span class="agr-main"><b>${esc(p.artifacts.copy.title || p.title || p.topic)}</b><em>${esc(acc?.name || "")} · ${p.mode}</em></span>
-        ${p.mode === "视频" ? `<button class="link-btn" data-act="batch-cover-edit" data-pid="${p.id}">${icon("sliders", 11)} 微调封面</button>
+        ${p.mode === "视频" && !p.staticVideo ? `<button class="link-btn" data-act="batch-cover-edit" data-pid="${p.id}">${icon("sliders", 11)} 微调封面</button>
         <button class="link-btn" data-act="batch-video-regenerate" data-pid="${p.id}">${icon("refresh", 11)} 重新生成视频</button>` : ""}
         <button class="link-btn" data-act="open-prod" data-pid="${p.id}">查看</button>
         ${canPub ? `<button class="btn primary sm" data-act="prod-deliver" data-pid="${p.id}">定稿发布</button>` : ""}
@@ -468,7 +474,7 @@ export function boardRow(p) {
   } else if (p.stageStatus === "failed") {
     sub = `<span class="mb-sub fail-text">${esc((p.error || "失败").slice(0, 18))}</span>`;
   }
-  const TYPE = p.mode === "图文" ? ["图文", "img"] : p.subType === "无数字人" ? ["素材", "mat"] : ["真人", "dh"];
+  const TYPE = p.mode === "图文" ? ["图文", "img"] : p.staticVideo ? ["静态", "mat"] : p.subType === "无数字人" ? ["素材", "mat"] : ["真人", "dh"];
   const previewAssetId = p.mode === "图文"
     ? p.artifacts.images?.items?.find(item => item.assetId)?.assetId
     : p.artifacts.boards?.cover?.assetId;
@@ -483,6 +489,6 @@ export function boardRow(p) {
     </div>
     <div class="mb-title">${esc(p.artifacts.copy.title || p.title || p.topic || "未命名")}</div>
     <div class="mb-dots">${dots}${sub}</div>
-    ${p.mode === "视频" ? `<div class="mb-actions"><button type="button" data-act="batch-cover-edit" data-pid="${p.id}">${icon("sliders", 10)} 封面</button><button type="button" data-act="batch-video-regenerate" data-pid="${p.id}">${icon("refresh", 10)} 重生视频</button></div>` : ""}
+    ${p.mode === "视频" && !p.staticVideo ? `<div class="mb-actions"><button type="button" data-act="batch-cover-edit" data-pid="${p.id}">${icon("sliders", 10)} 封面</button><button type="button" data-act="batch-video-regenerate" data-pid="${p.id}">${icon("refresh", 10)} 重生视频</button></div>` : ""}
   </div>`;
 }

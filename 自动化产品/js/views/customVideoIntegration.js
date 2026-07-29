@@ -93,6 +93,9 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
     "min-height:0",
     "border:0",
     "background:#fff",
+    "opacity:0",
+    "visibility:hidden",
+    "transition:opacity 120ms ease",
   ].join(";");
   host.replaceChildren(frame);
   host.dataset.customVideoMounted = "true";
@@ -105,8 +108,24 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
   let workspaceReady = false;
   let pendingCreate = false;
   let destroyed = false;
+  let frameRevealed = false;
   const listeners = new Set();
   if (typeof onOutput === "function") listeners.add(onOutput);
+
+  const concealFrame = () => {
+    frameRevealed = false;
+    frame.style.opacity = "0";
+    frame.style.visibility = "hidden";
+  };
+
+  const revealFrame = () => {
+    if (destroyed || frameRevealed) return;
+    frameRevealed = true;
+    frame.style.visibility = "visible";
+    requestAnimationFrame(() => {
+      if (!destroyed) frame.style.opacity = "1";
+    });
+  };
 
   const postWorkspaceAction = (type, payload = {}) => {
     if (destroyed || !workspaceReady || !frame.contentWindow) return false;
@@ -162,6 +181,8 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
         postWorkspaceAction("workspace:create");
       } else if (currentProjectId) {
         openProject(currentProjectId);
+      } else {
+        revealFrame();
       }
       return;
     }
@@ -184,6 +205,7 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
         ? message.project
         : (message.payload?.project || null);
       currentProjectId = String(latestProject?.id || currentProjectId || "").trim();
+      revealFrame();
       if (message.payload?.videoUrl && latestProject?.status === "succeeded") {
         emitOutput(message.payload);
       }
@@ -237,6 +259,7 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
     reload() {
       if (!destroyed) {
         workspaceReady = false;
+        concealFrame();
         frame.src = entryUrl + "&ts=" + Date.now();
       }
     },

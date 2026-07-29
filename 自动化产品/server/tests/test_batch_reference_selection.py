@@ -104,6 +104,64 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertEqual(result["video"]["cover"], ["current-video-ref"])
         self.assertEqual(result["video"]["custom"], {"video-a": ["current-video-custom-ref"]})
 
+    def test_static_video_selects_every_enabled_video_account_and_keeps_image_references(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+
+            const { state } = await import("./js/core/store.js");
+            const {
+              defaultPlan, matchAccounts, prunePlanReferences
+            } = await import("./js/agent/orchestrator.js");
+
+            state.accounts = [
+              { id: "image", mode: "图文", group: "图文组", disabled: false },
+              { id: "material", mode: "视频", group: "素材", disabled: false },
+              { id: "real", mode: "视频", group: "真人", disabled: false },
+              { id: "disabled-video", mode: "视频", group: "素材", status: "disabled" }
+            ];
+            const plan = defaultPlan("静态视频测试");
+            plan.contentKind = "static";
+            plan.group = "静态视频";
+            plan.accountIds = matchAccounts({ group: "静态视频" }).map(item => item.id);
+            plan.sharedRefAssetIds = ["shared-image"];
+            plan.sharedRefAssetId = "shared-image";
+            plan.coverRefAssetIds = ["stale-video-cover"];
+            plan.accountRefAssetIds = {
+              material: ["material-custom"],
+              real: ["real-custom"],
+              image: ["stale-image-account"]
+            };
+            prunePlanReferences(plan);
+            console.log(JSON.stringify(plan));
+            """
+        )
+
+        self.assertEqual(["material", "real"], result["accountIds"])
+        self.assertEqual(["shared-image"], result["sharedRefAssetIds"])
+        self.assertEqual([], result["coverRefAssetIds"])
+        self.assertEqual({
+            "material": ["material-custom"],
+            "real": ["real-custom"],
+        }, result["accountRefAssetIds"])
+
+    def test_static_video_ui_and_runtime_use_the_independent_workshop_chain(self):
+        cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")
+        view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+
+        self.assertIn('data-pf-kind="${kind}"', cards)
+        self.assertIn("静态视频", cards)
+        self.assertIn('creationMode: "static"', orchestrator)
+        self.assertIn("queueBatchStaticVideo", orchestrator)
+        self.assertIn("resumeActiveBatches", orchestrator)
+        self.assertIn("staticWorkshopProjectId", orchestrator)
+        self.assertIn("!p.staticVideo", cards)
+        self.assertIn('PLAN_KIND_GROUP = { image: "图文组", static: "静态视频"', view)
+
     def test_legacy_aggregate_refs_are_not_silently_reused_by_image_refine(self):
         drawer = (APP_DIR / "js/views/prodDrawer.js").read_text(encoding="utf-8")
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
@@ -364,6 +422,19 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn("regenerateBatchVideoCover(p, prompt, refIds)", view)
         self.assertIn("await draftOne(p, batch)", orchestrator)
         self.assertIn('p.subType === "数字人" ? account?.charBoardAssetId : null', orchestrator)
+
+    def test_static_video_uses_whole_task_retry_without_micro_adjustment(self):
+        cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")
+        drawer = (APP_DIR / "js/views/prodDrawer.js").read_text(encoding="utf-8")
+        view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+
+        self.assertIn('p.mode === "视频" && !p.staticVideo', cards)
+        self.assertIn('p.staticVideo ? "" : `<button class="btn ghost sm" data-pd="workbench"', drawer)
+        self.assertIn('if (p.staticVideo)', view)
+        self.assertIn("静态视频不支持单独微调，请从批次中重试整条任务", view)
+        self.assertIn('if (p.staticVideo) throw new Error("静态视频不支持单独微调，请从批次中重试整条任务")', orchestrator)
+        self.assertIn('{ headers: staticWorkshopAuthHeaders() }', orchestrator)
 
     def test_batch_confirm_has_visible_busy_state_and_sync_error_recovery(self):
         view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")

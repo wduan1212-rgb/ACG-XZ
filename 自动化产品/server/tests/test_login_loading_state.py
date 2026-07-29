@@ -54,7 +54,7 @@ class LoginLoadingStateTest(unittest.TestCase):
         self.assertIn('title.classList.add("is-phase-entering")', phase)
         restore = self.main.split("function applyGateModeContent", 1)[1].split("function setGateMode", 1)[0]
         self.assertIn('title.classList.remove("is-phase-entering")', restore)
-        self.assertIn('title.textContent = apply ? "申请账号" : forgot ? "找回密码" : "登录";', restore)
+        self.assertIn('title.textContent = apply ? "注册账号" : forgot ? "找回密码" : "登录";', restore)
 
     def test_failed_sync_revokes_half_finished_identity_and_auto_resume_stays_gated(self):
         self.assertIn('if (phase === "syncing" && remote.isOn()) await clearPendingRemoteIdentity();', self.main)

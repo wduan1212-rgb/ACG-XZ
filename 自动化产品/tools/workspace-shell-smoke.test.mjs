@@ -19,6 +19,8 @@ const remoteJs = read("js/core/remote.js");
 const loginBeamsJs = read("js/ui/loginBeams.js");
 const componentsJs = read("js/ui/components.js");
 const agentViewJs = read("js/agent/view.js");
+const agentCardsJs = read("js/agent/cards.js");
+const agentOrchestratorJs = read("js/agent/orchestrator.js");
 const chainBoardsJs = read("js/views/chainBoards.js");
 const iconsJs = read("js/ui/icons.js");
 const voiceLabJs = read("js/views/voiceLab.js");
@@ -35,6 +37,7 @@ const videoWorkshopJs = read("apps/video-workshop/web/assets/app.js");
 const videoWorkshopCss = read("apps/video-workshop/web/assets/styles.css");
 const customVideoIntegrationJs = read("js/views/customVideoIntegration.js");
 const customCreationJs = read("js/views/customCreation.js");
+const customPublishJs = read("js/views/customPublish.js");
 const chainWorkshopJs = read("js/views/chainWorkshop.js");
 const settingsJs = read("js/views/settings.js");
 const supplierViewsJs = read("js/views/supplierViews.js");
@@ -182,6 +185,30 @@ test("batch panels keep scrolling while hiding rails and omit the covered sessio
   assert.match(viewsCss, /\.pd-body::-(?:webkit|Webkit)-scrollbar\s*\{[^}]*display\s*:\s*none\s*;/s);
 });
 
+test("failed batch image jobs keep a real retry action while manual-input jobs stay distinct", () => {
+  assert.match(
+    agentCardsJs,
+    /failed\.length\s*\?\s*`<div class="agc-p fail">[\s\S]*data-act="batch-retry"[\s\S]*重试失败项/,
+  );
+  assert.match(
+    agentCardsJs,
+    /<button class="btn primary sm" data-act="batch-retry"[\s\S]*重试失败项<\/button>/,
+  );
+  assert.match(
+    agentViewJs,
+    /case "batch-retry":\s*if \(batch\)\s*\{\s*const n = retryFailedIn\(batch\)/,
+  );
+  const retryFailed = section(
+    agentOrchestratorJs,
+    "export function retryFailedIn(batch)",
+    "export function",
+  );
+  assert.match(retryFailed, /p\.stageStatus !== "failed"/);
+  assert.match(retryFailed, /p\.mode === "图文"/);
+  assert.match(retryFailed, /runBatchImagesToReview\(p,\s*batch\)/);
+  assert.doesNotMatch(retryFailed, /stageStatus === "needs_input"/);
+});
+
 test("unified reference drop zone has visible hover and drop motion", () => {
   assert.match(chainBoardsJs, /class="refbar-drop-cue"/);
   assert.match(chainBoardsJs, /拖入统一参考图/);
@@ -312,8 +339,12 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
     canvasProjectClientTsx,
     /\{!IS_PLATFORM_EMBED\s*&&\s*<div className="h-14 shrink-0 border-b border-line bg-page"\s*\/>\}/,
   );
-  assert.match(canvasIntegrationJs, /if\s*\(!currentProjectId\)\s*\{\s*host\.innerHTML\s*=\s*emptyCanvasHtml\(\)/s);
+  assert.match(
+    canvasIntegrationJs,
+    /if\s*\(!currentProjectId\)\s*\{\s*currentProjectId\s*=\s*await loadRecentProjectId\(token,\s*controller\.signal\)/s,
+  );
   assert.match(canvasIntegrationJs, /if\s*\(!iframe\)\s*return\s+mountCanvasFrame\(\)/);
+  assert.match(canvasIntegrationJs, /\{\s*type:\s*"custom-canvas:create-project"\s*\}/);
   assert.match(canvasIntegrationJs, /a\[href\$="#\/"\]/);
   assert.match(canvasIntegrationJs, /contextPortalId:\s*canvasContextPortalId/);
   assert.match(canvasIntegrationJs, /contextPortalNonce:\s*canvasContextPortalNonce/);
@@ -345,7 +376,7 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260729-v121-shell-8/);
+  assert.match(videoWorkshopHtml, /20260729-v122-static-1/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -412,6 +443,10 @@ test("video workshop is white, has no duplicate history rail, and exposes publis
   assert.match(videoWorkshopHtml, /class="attachment-strip"\s+data-attachment-strip/);
   assert.match(videoWorkshopJs, /className\s*=\s*"message-copy"/);
   assert.match(videoWorkshopJs, /message\.type\s*===\s*"workspace:rename"/);
+  assert.doesNotMatch(videoWorkshopHtml, /id="projectAssetsButton"/);
+  assert.doesNotMatch(videoWorkshopHtml, /id="projectAssetsModal"/);
+  assert.doesNotMatch(videoWorkshopJs, /function openProjectAssets\(/);
+  assert.doesNotMatch(videoWorkshopJs, /projectAsset:\s*true/);
   assert.match(mainJs, /"xingzhen:video-published"/);
   const canvasRows = section(mainJs, 'if (page === "canvas") {', 'if (zone === "assets") {');
   assert.match(canvasRows, /title:[^,\n]*"画布项目"/);
@@ -465,6 +500,21 @@ test("reference targets animate subtly and custom copy aligns with the cover edi
   assert.match(viewsCss, /#wsBriefbar\.no-narration\s+\.ws-brief-fields\s*\{[^}]*grid-template-rows:\s*auto\s+356px/s);
   assert.match(viewsCss, /#wsBriefbar\.no-narration\s+\.ws-copy-fields\s*\{[^}]*height:\s*356px/s);
   assert.match(viewsCss, /#wsBriefbar\.no-narration\s+\.ws-cover-inline\s*\{[^}]*height:\s*356px/s);
+});
+
+test("custom publishing retains unfinished cover work and exposes varied cover directions", () => {
+  assert.match(customPublishJs, /CUSTOM_PUBLISH_DRAFT_PREFIX/);
+  assert.match(customPublishJs, /localStorage\.setItem\(publishDraftKey\(output,\s*kind\)/);
+  assert.match(customPublishJs, /if \(!published\)\s*\{\s*persistDraft\(\);\s*return;/s);
+  assert.match(customPublishJs, /coverReferenceAssetIds:\s*coverReferenceAssetIds\.slice\(\)/);
+  assert.match(customPublishJs, /coverStyle:\s*coverStyleInput\?\.value/);
+  assert.match(customPublishJs, /coverPalette:\s*coverPaletteInput\?\.value/);
+  assert.match(customPublishJs, /\["cinematic",\s*"电影海报"/);
+  assert.match(customPublishJs, /\["bold-type",\s*"强字效海报"/);
+  assert.match(customPublishJs, /\["random",\s*"随机灵感"/);
+  assert.match(customPublishJs, /id="customPublishRandomPalette"/);
+  assert.match(customCreationJs, /const previous = host\.__customLatestOutput/);
+  assert.match(customCreationJs, /sameProject \? previous : \{\}/);
 });
 
 test("asset and publishing workspaces adapt their controls into the context sidebar", () => {
@@ -589,14 +639,14 @@ test("administrator settings use four isolated context routes while profile stay
     'if (zone === "settings") {\n      const me = currentMember();',
     'return [{ title: "上下文", rows: [] }];',
   );
-  assert.match(settingsContext, /page === "profile"\s*\|\|\s*state\.role === "editor"/);
+  assert.match(settingsContext, /page === "profile"\s*\|\|\s*\(!canManageTeam\s*&&\s*\["editor",\s*"user"\]\.includes\(state\.role\)\)/);
   assert.match(settingsContext, /title:\s*"个人资料"/);
-  assert.match(settingsContext, /state\.role === "admin"/);
+  assert.match(settingsContext, /state\.role === "admin"\s*\|\|\s*canManageTeam/);
   for (const [title, page] of [
     ["成员账号", "members"],
     ["产品库", "products"],
     ["模型用量", "usage"],
-    ["成员申请", "requests"],
+    ["团队申请", "requests"],
   ]) {
     assert.match(settingsContext, new RegExp(`title:\\s*"${title}"[\\s\\S]*?page:\\s*"${page}"`));
   }
@@ -621,13 +671,13 @@ test("administrator overview sync action is created independently from the new-a
   const renderTopbar = section(mainJs, "function renderTopbar()", "function paletteCommands()");
   assert.match(renderTopbar, /if\s*\(!syncDataBtn\s*&&\s*actions\)\s*\{/);
   assert.doesNotMatch(renderTopbar, /if\s*\(!syncDataBtn\s*&&\s*actions\s*&&\s*newAccBtn\)/);
-  assert.match(renderTopbar, /syncDataBtn\.hidden\s*=\s*!\(zone === "overview"\s*&&\s*state\.role === "admin"\)/);
+  assert.match(renderTopbar, /syncDataBtn\.hidden\s*=\s*!\(zone === "overview"\s*&&\s*teamManager\)/);
   assert.match(renderTopbar, /const syncAnchor\s*=\s*\[newAccBtn\]/);
 });
 
 test("creator and administrator account menus expose the lightweight feedback dialog", () => {
   const accountMarkup = section(mainJs, "function workspaceAccountMarkup()", "function openWorkspaceFeedbackModal()");
-  assert.match(accountMarkup, /const canSendFeedback\s*=\s*\["admin",\s*"editor"\]\.includes\(state\.role\)/);
+  assert.match(accountMarkup, /const canSendFeedback\s*=\s*\["admin",\s*"editor",\s*"user"\]\.includes\(state\.role\)/);
   assert.match(accountMarkup, /data-account-action="feedback"/);
   assert.match(accountMarkup, />意见反馈</);
 
@@ -702,6 +752,10 @@ test("supplier workspaces move account and delivery tools into the left context"
   assert.match(componentsJs, /typeof commandSource === "function"/);
   assert.match(componentsJs, /data-pal-more/);
   assert.match(componentsCss, /\.pal-more\s*\{[^}]*min-height:\s*38px/s);
+  assert.match(componentsJs, /const preferredLeft = r\.right \+ gap/);
+  assert.match(componentsJs, /panel\.style\.left = `\$\{left\}px`/);
+  assert.match(componentsJs, /window\.innerWidth - panelWidth - margin/);
+  assert.match(componentsCss, /@media \(max-width: 720px\)[\s\S]*?\.notify-panel\s*\{[\s\S]*?left:\s*12px !important; right:\s*12px !important;/);
   assert.match(supplierViewsJs, /focusAccount\(state\.ui\.supplierSelectedAccountId\)/);
   assert.match(deliveryViewJs, /focusSupplierDeliveryAsset/);
   assert.match(supplierViewsJs, /data-supplier-platform-filter/);
@@ -730,26 +784,27 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final v121 cache marker", () => {
+test("all modified workspace-shell resources use the final v122 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260729-v121-shell-22"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260729-v121-shell-22"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260729-v121-shell-22"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260729-v121-shell-22"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260729-v121-shell-22"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260729-v121-shell-22"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260729-v122-team-3"/);
+  assert.match(indexHtml, /styles\/components\.css\?v=20260729-v122-team-3"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260729-v122-team-3"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260729-v122-team-3"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260729-v122-team-3"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260729-v122-team-3"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260729-v122-static-1"/);
   assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-21"/);
   assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260728-v120-shell-21"/);
   assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260728-v120-shell-21"/);
-  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260729-v121-shell-22"/);
-  assert.match(mainJs, /ui\/components\.js\?v=20260729-v121-shell-22/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260728-v120-shell-13"/);
+  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260729-v122-team-3"/);
+  assert.match(mainJs, /ui\/components\.js\?v=20260729-v122-team-3/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260729-v122-static-1"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-13"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
   assert.doesNotMatch(mainJs, /core\/remote\.js\?v=/);
   assert.match(mainJs, /ui\/loginBeams\.js\?v=20260728-v120-shell-21/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260729-v121-shell-22"/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260729-v122-static-1"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

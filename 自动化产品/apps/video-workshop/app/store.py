@@ -32,6 +32,7 @@ def create_project() -> dict[str, Any]:
         "status": "conversation",
         "phase": "brief",
         "progress": 0,
+        "creationMode": "video",
         "createdAt": _now(),
         "updatedAt": _now(),
         "messages": [],
@@ -63,6 +64,11 @@ def _project_summary(project: dict[str, Any], fallback_id: str) -> dict[str, Any
         "id": project.get("id") or fallback_id,
         "name": str(project.get("name") or fallback_name)[:60],
         "status": project.get("status") or "conversation",
+        "creationMode": (
+            project.get("creationMode")
+            or (project.get("plan") or {}).get("creation_mode")
+            or "video"
+        ),
         "updatedAt": project.get("updatedAt") or project.get("createdAt") or "",
     }
 

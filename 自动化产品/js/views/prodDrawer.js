@@ -3,13 +3,13 @@
 import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
-import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260729-v121-shell-22";
+import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260729-v122-team-3";
 import { STAGES, jobsOf } from "../domain/productions.js";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
-import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260727-v118-7";
+import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260729-v122-static-1";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */
@@ -199,7 +199,7 @@ export function openProductionDrawer(pid, tab) {
           <div class="pd-body">${TAB[curTab] ? TAB[curTab](p) : ""}</div>
           <div class="pd-foot">
             <span class="muted">${p.error ? `⚠ ${esc(p.error)}` : ""}</span>
-            <button class="btn ghost sm" data-pd="workbench">${icon("sliders", 14)} 进入单号工坊微调</button>
+            ${p.staticVideo ? "" : `<button class="btn ghost sm" data-pd="workbench">${icon("sliders", 14)} 进入单号工坊微调</button>`}
           </div>`;
         wire(root);
       };

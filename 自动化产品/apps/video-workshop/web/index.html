@@ -19,7 +19,7 @@
       })();
     </script>
     <link rel="icon" type="image/png" href="/assets/xingzhen-logo-white.png" />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260729-v121-shell-8" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260729-v122-static-1" />
     <style>
       /* 主平台嵌入态由外层工作区负责一级导航，内部只保留创作、素材与成片能力。 */
       html[data-platform-workspace="true"] {
@@ -305,6 +305,10 @@
               </button>
               <div class="attachment-strip" data-attachment-strip></div>
             </div>
+            <div class="creation-mode-switch start-mode-switch" role="group" aria-label="创作模式">
+              <button type="button" class="active" data-creation-mode="video" aria-pressed="true">正常视频</button>
+              <button type="button" data-creation-mode="static" aria-pressed="false">静态视频</button>
+            </div>
             <div class="skill-menu is-hidden" data-skill-menu></div>
           </form>
         </div>
@@ -411,6 +415,10 @@
                   <button class="attachment-button" type="button" data-file-trigger aria-label="添加图片、视频或音频" title="添加图片、视频或音频">
                     <i data-lucide="plus"></i>
                   </button>
+                  <div class="creation-mode-switch" role="group" aria-label="创作模式">
+                    <button type="button" class="active" data-creation-mode="video" aria-pressed="true">正常视频</button>
+                    <button type="button" data-creation-mode="static" aria-pressed="false">静态视频</button>
+                  </div>
                   <span class="chat-composer-hint">图片、视频或音频</span>
                   <button class="icon-button submit-button" type="submit" aria-label="发送" title="发送">
                     <i data-lucide="arrow-up"></i>
@@ -475,6 +483,6 @@
     <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,.m4a" multiple hidden />
     <div class="toast" id="toast" role="status"></div>
     <script src="/assets/lucide.min.js"></script>
-    <script src="/assets/app.js?v=20260729-v121-shell-8"></script>
+    <script src="/assets/app.js?v=20260729-v122-static-1"></script>
   </body>
 </html>

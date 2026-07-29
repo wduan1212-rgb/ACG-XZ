@@ -396,6 +396,224 @@ class _RetryableDownloadError(RuntimeError):
     pass
 
 
+_IMAGE_SIZE_BY_RATIO = {
+    "9:16": "1152x2048",
+    "16:9": "2048x1152",
+    "1:1": "1024x1024",
+    "4:3": "1536x1152",
+    "3:4": "1152x1536",
+    "21:9": "2048x896",
+}
+
+
+def _find_generated_image(value: Any) -> str:
+    if not value:
+        return ""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("data:image/", "http://", "https://")):
+            return text
+        try:
+            decoded = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            decoded = None
+        if decoded is not None:
+            found = _find_generated_image(decoded)
+            if found:
+                return found
+        data_match = re.search(
+            r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+",
+            text,
+        )
+        if data_match:
+            return data_match.group(0).replace("\r", "").replace("\n", "")
+        url_match = re.search(r"https?://[^\s\"'<>]+", text)
+        return url_match.group(0).rstrip("，,。.;；)") if url_match else ""
+    if isinstance(value, list):
+        for item in value:
+            found = _find_generated_image(item)
+            if found:
+                return found
+        return ""
+    if isinstance(value, dict):
+        for key in (
+            "dataUrl",
+            "data_url",
+            "image_url",
+            "url",
+            "b64_json",
+            "b64",
+            "base64",
+        ):
+            raw = value.get(key)
+            if isinstance(raw, dict):
+                raw = raw.get("url") or raw.get("dataUrl")
+            if key in {"b64_json", "b64", "base64"} and raw:
+                encoded = str(raw)
+                return (
+                    encoded
+                    if encoded.startswith("data:image/")
+                    else f"data:image/jpeg;base64,{encoded}"
+                )
+            found = _find_generated_image(raw)
+            if found:
+                return found
+        for raw in value.values():
+            found = _find_generated_image(raw)
+            if found:
+                return found
+    return ""
+
+
+def _looks_like_image(blob: bytes) -> bool:
+    return bool(
+        blob.startswith(b"\x89PNG\r\n\x1a\n")
+        or blob.startswith(b"\xff\xd8\xff")
+        or blob.startswith(b"GIF87a")
+        or blob.startswith(b"GIF89a")
+        or (blob.startswith(b"RIFF") and blob[8:12] == b"WEBP")
+    )
+
+
+def _image_data_url(path: Path) -> str:
+    blob = path.read_bytes()
+    suffix = path.suffix.lower()
+    mime = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(suffix, "image/png")
+    return f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"
+
+
+class GPTImageGenerator:
+    """Generate one storyboard still through the platform image model."""
+
+    @staticmethod
+    def _endpoint(with_references: bool) -> str:
+        configured = str(settings.image_endpoint or "").strip()
+        base = configured or str(settings.image_base_url or "").strip()
+        is_maas = any(
+            marker in f"{settings.image_model} {base}".lower()
+            for marker in ("custom-imagemodel", "aiart", "tencentmaas", "tokenhub")
+        )
+        if configured:
+            return configured
+        if is_maas:
+            root = re.sub(
+                r"/(?:v1/)?(?:aiart/(?:gtimage|gttext)|images/generations)/?$",
+                "",
+                base,
+                flags=re.I,
+            ).rstrip("/")
+            return root + ("/v1/aiart/gtimage" if with_references else "/v1/aiart/gttext")
+        return base.rstrip("/") + "/images/generations"
+
+    async def generate(
+        self,
+        prompt: str,
+        aspect_ratio: str,
+        output_path: Path,
+        *,
+        reference_images: list[dict[str, Any]] | None = None,
+        callback: ProgressCallback | None = None,
+        scene_number: int = 1,
+    ) -> dict[str, Any]:
+        if not settings.image_api_key:
+            raise ProviderError("图片模型 API Key 未配置")
+        references = [
+            Path(str(item.get("path") or ""))
+            for item in list(reference_images or [])[:8]
+            if str(item.get("path") or "")
+        ]
+        references = [path for path in references if path.is_file()]
+        endpoint = self._endpoint(bool(references))
+        is_maas = any(
+            marker in f"{settings.image_model} {endpoint}".lower()
+            for marker in ("custom-imagemodel", "aiart", "tencentmaas", "tokenhub")
+        )
+        payload: dict[str, Any] = {
+            "model": settings.image_model,
+            "prompt": str(prompt or "").strip(),
+            "n": 1,
+            "size": _IMAGE_SIZE_BY_RATIO.get(aspect_ratio, "1152x2048"),
+            "response_format": "b64_json",
+        }
+        if is_maas:
+            payload.update({"output_format": "jpeg", "logo_add": 0})
+            if references:
+                payload["images"] = [
+                    {"image_url": _image_data_url(path)}
+                    for path in references
+                ]
+                payload["input_fidelity"] = "high"
+        headers = {
+            "Authorization": f"Bearer {settings.image_api_key}",
+            "Content-Type": "application/json",
+        }
+        if callback:
+            await callback(
+                f"正在生成静态分镜 {scene_number}",
+                f"图片模型正在绘制 {aspect_ratio} 分镜，已携带 {len(references)} 张本轮参考图。",
+                min(56, 24 + scene_number * 3),
+            )
+        response: httpx.Response | None = None
+        for attempt in range(1, 9):
+            try:
+                async with _client(180) as client:
+                    response = await client.post(endpoint, json=payload, headers=headers)
+            except httpx.RequestError as exc:
+                if attempt >= 8:
+                    raise ProviderError(
+                        f"静态分镜 {scene_number} 图片请求连续失败：{exc.__class__.__name__}"
+                    ) from exc
+                await asyncio.sleep(min(10, attempt * 2))
+                continue
+            if response.status_code < 400:
+                break
+            detail = _json_error(response)
+            transient = (
+                response.status_code in {408, 425, 429, 500, 502, 503, 504}
+                or any(
+                    marker in detail.lower()
+                    for marker in ("任务上限", "1002", "too many", "concurrency", "rate limit", "busy")
+                )
+            )
+            if not transient or attempt >= 8:
+                raise ProviderError(
+                    f"静态分镜 {scene_number} 图片生成失败：{detail}"
+                )
+            await asyncio.sleep(min(10, attempt * 2))
+        if response is None or response.status_code >= 400:
+            raise ProviderError(f"静态分镜 {scene_number} 图片生成失败")
+        image_value = _find_generated_image(response.json())
+        if not image_value:
+            raise ProviderError(f"静态分镜 {scene_number} 未返回图片")
+        if image_value.startswith("data:image/"):
+            try:
+                blob = base64.b64decode(image_value.split(",", 1)[1], validate=True)
+            except (ValueError, TypeError) as exc:
+                raise ProviderError(f"静态分镜 {scene_number} 返回的图片无法解析") from exc
+        else:
+            try:
+                async with _client(180, follow_redirects=True) as client:
+                    download = await client.get(image_value)
+                    download.raise_for_status()
+                    blob = download.content
+            except (httpx.RequestError, httpx.HTTPStatusError) as exc:
+                raise ProviderError(f"静态分镜 {scene_number} 图片下载失败") from exc
+        if not _looks_like_image(blob):
+            raise ProviderError(f"静态分镜 {scene_number} 返回的文件不是有效图片")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(blob)
+        return {
+            "path": str(output_path),
+            "model": settings.image_model,
+            "referenceCount": len(references),
+        }
+
+
 LLM_TRANSIENT_STATUS = {408, 425, 429, 500, 502, 503, 504}
 
 
@@ -686,6 +904,14 @@ class MiniMaxDirector:
                                 "type": "string",
                                 "description": "完整口播。篇幅、结构和语言由用户目标与导演判断决定。",
                             },
+                            "style_anchor": {
+                                "type": "string",
+                                "description": "静态视频整片固定的视觉风格锚点；普通视频可留空。",
+                            },
+                            "negative_constraints": {
+                                "type": "string",
+                                "description": "静态视频整片固定的负面约束；普通视频可留空。",
+                            },
                             "scenes": {
                                 "type": "array",
                                 "minItems": 1,
@@ -702,6 +928,15 @@ class MiniMaxDirector:
                                         "visual_prompt": {
                                             "type": "string",
                                             "description": "可直接交给 Seedance 的中文镜头提示词，包含主体、景别、动作、镜头运动、光线和连续性。",
+                                        },
+                                        "image_prompt": {
+                                            "type": "string",
+                                            "description": "静态视频模式下可直接交给图片模型的一帧画面提示词；普通视频可留空。",
+                                        },
+                                        "reference_labels": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "该静态分镜语义上必须遵循的图N参考；实际请求仍会携带本轮全部参考图。",
                                         },
                                         "narration_excerpt": {
                                             "type": "string",
@@ -944,6 +1179,33 @@ class MiniMaxDirector:
 
 内置视频制作工作流：
 {skill_context}
+"""
+
+    @staticmethod
+    def _static_mode_prompt(aspect_ratio: str, attachments: list[dict[str, Any]]) -> str:
+        image_labels = [
+            str(item.get("label") or "")
+            for item in attachments
+            if str(item.get("media_type") or "") == "image" and str(item.get("label") or "")
+        ]
+        reference_note = (
+            "本轮可用统一图片参考为：" + "、".join(image_labels) + "。"
+            if image_labels
+            else "本轮没有上传图片参考。"
+        )
+        return f"""
+
+当前用户已手动切换为“静态视频”模式。这是与普通 Seedance 视频并列的独立后半段，但前半段的信息完整度判断、口播创作、叙事拆解和导演自主性保持完全一致。
+
+静态视频执行规则：
+1. 仍然只在主题、主体或核心目标缺失到无法开工时调用 ask_user；不要因为风格、配色、镜头数或图片参考而追问。
+2. start_video_production 仍用于提交计划，但每个 scene 的 image_prompt 必须描述一张可以独立生成的静态分镜图：主体、环境、构图、景别、姿态、表情、光线、材质和关键视觉证据要具体；不得写运镜、动作过程、字幕、花字、口播原句或视频模型指令。visual_prompt 与 image_prompt 保持相同，供后端兼容读取。
+3. 你自主选择最适合主题的整片视觉风格与配色，并在 style_anchor 写成一个整片固定、可复用的风格锚点；在 negative_constraints 写成整片固定的负面约束。每张 image_prompt 都必须继承这两个字段，不能中途更换画风、角色设定、材质体系或主配色。
+4. 默认画幅是 {aspect_ratio if aspect_ratio else "9:16"}。图片分镜会并发生成，后端只增加平滑轻推近，再合成口播、字幕、BGM、质检和交付；不要调用或描述视频模型。
+5. 图片附件只作为本轮任务的图片生成参考，不作为后期剪辑素材，不要分配为 material 或 both。asset_assignments 对图片只能用 reference 或 unused；视频附件在本模式不能作为图片参考，除非用户明确要求把其中某一帧先转为参考，否则标为 unused。
+6. {reference_note} 所有本轮图片会真实随每一张分镜请求发送，避免出现模型端没有拿到参考图。你仍需按语义在每个 scene.reference_labels 标出真正相关的图N：当分镜中出现参考图里的 IP、人物、产品、Logo 或界面时，必须列入对应标签并在 image_prompt 明确保持其身份、外形、颜色、结构和品牌特征；与该分镜无关的参考图不得强行改变主题。
+7. 统一参考图不是强制每张都画入所有主体，而是所有分镜都可用的身份依据。用户当轮指令优先：只在语义相关的分镜显式使用相应主体，不得因为上传了参考图就改变用户主题或提前开始创作。
+8. narration_excerpt 仍必须连续覆盖口播。scene 数量由叙事和理解成本决定；每张图应承接一段清晰语义，最终通过图片时长和轻推近覆盖真实口播时间线。
 """
 
     @staticmethod
@@ -1461,20 +1723,24 @@ class MiniMaxDirector:
         attachments: list[dict[str, Any]],
         skill_context: str = "",
         bgm_catalog: list[dict[str, str]] | None = None,
+        creation_mode: str = "video",
     ) -> dict[str, Any]:
         if not settings.llm_api_key:
             raise ProviderError("MiniMax-M3 API Key 未配置")
 
         requested_duration_sec = _explicit_duration_seconds(messages)
+        system_prompt = self._system_prompt(
+            aspect_ratio,
+            skill_context,
+            bgm_catalog or [],
+            requested_duration_sec,
+        )
+        if creation_mode == "static":
+            system_prompt += self._static_mode_prompt(aspect_ratio, attachments)
         api_messages: list[dict[str, Any]] = [
             {
                 "role": "system",
-                "content": self._system_prompt(
-                    aspect_ratio,
-                    skill_context,
-                    bgm_catalog or [],
-                    requested_duration_sec,
-                ),
+                "content": system_prompt,
             }
         ]
         for message in messages[-12:]:
@@ -1746,6 +2012,20 @@ class MiniMaxDirector:
                     if len(reconstructed) >= 20
                     else self._fallback_safe_rewrite(arguments, index + 1)["visual_prompt"]
                 )
+            if creation_mode == "static":
+                image_prompt = str(scene.get("image_prompt") or scene["visual_prompt"]).strip()
+                scene["image_prompt"] = image_prompt
+                scene["visual_prompt"] = image_prompt
+                valid_labels = {
+                    str(item.get("label") or "")
+                    for item in attachments
+                    if str(item.get("media_type") or "") == "image"
+                }
+                scene["reference_labels"] = [
+                    str(label)
+                    for label in list(scene.get("reference_labels") or [])
+                    if str(label) in valid_labels
+                ][:8]
         # Preserve director freedom, but do not silently lose an explicit
         # audience enumeration.  This fallback only fills concepts the model
         # omitted; it never changes scene count, timing, style or camera plan.
@@ -1793,6 +2073,16 @@ class MiniMaxDirector:
             auto_visual_concepts.append(concept)
             visual_text += f"\n{concept}"
         arguments["scenes"] = scenes
+        if creation_mode == "static":
+            arguments["creation_mode"] = "static"
+            arguments["style_anchor"] = str(
+                arguments.get("style_anchor")
+                or f"{arguments.get('tone') or '清晰现代'}，统一角色设定、材质、光线与主配色"
+            ).strip()[:1200]
+            arguments["negative_constraints"] = str(
+                arguments.get("negative_constraints")
+                or "不要字幕、花字、水印、乱码、错误 Logo；不要角色身份漂移、画风跳变、肢体畸形、重复主体、低清晰度或无关元素"
+            ).strip()[:1200]
         planned_duration = sum(int(scene["duration_sec"]) for scene in scenes)
         arguments["duration_sec"] = max(1, _safe_int(arguments.get("duration_sec"), planned_duration))
         public_thoughts = list(arguments.get("public_thoughts") or [])[:8]
@@ -2601,4 +2891,5 @@ class SeedanceVideo:
 
 director = MiniMaxDirector()
 tts = MiniMaxTTS()
+image_generator = GPTImageGenerator()
 seedance = SeedanceVideo()

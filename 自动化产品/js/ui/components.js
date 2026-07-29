@@ -433,7 +433,7 @@ export function emptyState(icoName, title, hint = "", cta = "") {
 /* ---------- 通知中心 ---------- */
 export function toggleNotifyPanel(anchorBtn) {
   const exist = $("#notifyPanel");
-  if (exist) { exist.remove(); return; }
+  if (exist) { exist.__close?.(); return; }
   const panel = document.createElement("div");
   panel.id = "notifyPanel";
   panel.className = "notify-panel";
@@ -449,21 +449,41 @@ export function toggleNotifyPanel(anchorBtn) {
       </div>`).join("") : `<div class="np-empty">暂无通知</div>`}
     </div>`;
   document.body.appendChild(panel);
-  const r = anchorBtn.getBoundingClientRect();
-  panel.style.top = (r.bottom + 8) + "px";
-  panel.style.right = (window.innerWidth - r.right) + "px";
+  const position = () => {
+    const r = anchorBtn.getBoundingClientRect();
+    const gap = 8;
+    const margin = 12;
+    const panelWidth = panel.getBoundingClientRect().width || Math.min(360, window.innerWidth - margin * 2);
+    const preferredLeft = r.right + gap;
+    const maxLeft = Math.max(margin, window.innerWidth - panelWidth - margin);
+    const left = Math.max(margin, Math.min(preferredLeft, maxLeft));
+    const top = Math.max(margin, r.bottom + gap);
+    panel.style.left = `${left}px`;
+    panel.style.right = "auto";
+    panel.style.top = `${top}px`;
+    panel.style.maxHeight = `${Math.max(220, window.innerHeight - top - margin)}px`;
+  };
+  let off = null;
+  const close = () => {
+    panel.remove();
+    window.removeEventListener("resize", position);
+    if (off) document.removeEventListener("pointerdown", off);
+  };
+  panel.__close = close;
+  position();
+  window.addEventListener("resize", position);
   requestAnimationFrame(() => panel.classList.add("open"));
   state.notifications.forEach(n => n.read = true);
   save("notifications");
   updateNotifyBadge();
-  const off = e => {
+  off = e => {
     if (!panel.contains(e.target) && e.target !== anchorBtn && !anchorBtn.contains(e.target)) {
-      panel.remove(); document.removeEventListener("pointerdown", off);
+      close();
     }
   };
   setTimeout(() => document.addEventListener("pointerdown", off), 10);
   const clr = $("#npClear", panel);
-  if (clr) clr.addEventListener("click", () => { panel.remove(); });
+  if (clr) clr.addEventListener("click", close);
 }
 
 export function updateNotifyBadge() {

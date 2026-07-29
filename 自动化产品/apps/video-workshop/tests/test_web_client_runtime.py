@@ -358,8 +358,12 @@ console.log(JSON.stringify({{
         self.assertIn('textarea.addEventListener("paste", async (event) => {', source)
         self.assertIn('dom.fileInput.addEventListener("change", async () => {', source)
         self.assertGreaterEqual(source.count("showAttachmentError(error)"), 4)
-        self.assertIn("app.js?v=20260729-v121-shell-8", index)
-        self.assertIn("styles.css?v=20260729-v121-shell-8", index)
+        self.assertIn("app.js?v=20260729-v122-static-1", index)
+        self.assertIn("styles.css?v=20260729-v122-static-1", index)
+        self.assertNotIn("projectAssetsButton", index)
+        self.assertNotIn("projectAssetsModal", index)
+        self.assertNotIn("projectAsset:", source)
+        self.assertIn('type: "custom-video:project"', source)
 
     def test_new_conversation_is_created_and_inserted_into_history_immediately(self):
         source = APP_JS.read_text(encoding="utf-8")
@@ -372,6 +376,21 @@ console.log(JSON.stringify({{
             source,
         )
         self.assertIn("historyLoadEpoch", source)
+
+    def test_static_video_mode_is_explicit_and_persists_per_project(self):
+        source = APP_JS.read_text(encoding="utf-8")
+        index = INDEX_HTML.read_text(encoding="utf-8")
+        styles = STYLES_CSS.read_text(encoding="utf-8")
+
+        self.assertEqual(2, index.count('data-creation-mode="static"'))
+        self.assertEqual(2, index.count(">静态视频</button>"))
+        self.assertIn('creationMode: "video"', source)
+        self.assertIn("creationMode: state.creationMode", source)
+        self.assertIn("project.creationMode", source)
+        self.assertIn("project.plan?.creation_mode", source)
+        self.assertIn('syncCreationMode(button.dataset.creationMode', source)
+        self.assertIn(".creation-mode-switch", styles)
+        self.assertIn(".creation-mode-switch button.active", styles)
 
     def test_production_heartbeat_uses_one_owner_and_rolls_only_the_stage_copy(self):
         source = APP_JS.read_text(encoding="utf-8")

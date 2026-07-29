@@ -31,7 +31,11 @@ class PasswordResetRequestTests(unittest.TestCase):
     def test_admin_list_returns_pending_requests(self):
         store.add_password_reset_request("测试成员")
 
-        rows = main.password_reset_requests_list({"id": "admin", "role": "admin"})
+        rows = main.password_reset_requests_list({
+            "id": "admin",
+            "role": "admin",
+            "team": {"id": store.INTERNAL_TEAM_ID, "role": "owner"},
+        })
 
         self.assertEqual(1, len(rows))
         self.assertEqual("测试成员", rows[0]["name"])

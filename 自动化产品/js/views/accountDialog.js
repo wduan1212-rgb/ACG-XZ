@@ -2,19 +2,19 @@
 
 import { $, $$, esc, fileToDataUrl, todayStamp, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, persistNow, accountById } from "../core/store.js";
+import { state, save, persistNow, accountById, canManageAccounts } from "../core/store.js";
 import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
 import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
-import { openModal, toast } from "../ui/components.js?v=20260729-v121-shell-22";
+import { openModal, toast } from "../ui/components.js?v=20260729-v122-team-3";
 import { go, render as routerRender } from "../core/router.js";
 import * as remote from "../core/remote.js";
 
 export function openAccountDialog(accountId = null) {
   const isSupplierManager = ["supplier", "supplier_parent"].includes(state.role);
-  if (state.role !== "admin" && !isSupplierManager) {
+  if (!canManageAccounts() && !isSupplierManager) {
     toast("仅管理员可创建或编辑账号", "error");
     return;
   }
@@ -396,8 +396,8 @@ export function openAccountDialog(accountId = null) {
   });
 }
 
-/* 全局开口：平台管理员与供应商管理员共用同一完整账号编辑器。 */
+/* 全局开口：团队管理员与供应商管理员共用同一完整账号编辑器。 */
 document.addEventListener("open-account-dialog", e => {
-  if (!["admin", "supplier", "supplier_parent"].includes(state.role)) { toast("只有管理员可以创建 / 编辑账号"); return; }
+  if (!canManageAccounts() && !["supplier", "supplier_parent"].includes(state.role)) { toast("只有团队管理员可以创建 / 编辑账号"); return; }
   openAccountDialog(e.detail?.accountId || null);
 });

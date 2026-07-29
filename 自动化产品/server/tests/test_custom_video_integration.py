@@ -239,8 +239,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260729-v121-shell-8", html)
-        self.assertIn("app.js?v=20260729-v121-shell-8", html)
+        self.assertIn("styles.css?v=20260729-v122-static-1", html)
+        self.assertIn("app.js?v=20260729-v122-static-1", html)
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",
@@ -489,6 +489,10 @@ if (!value.includes("<img src=x onerror=alert(1)>")) {{
         self.assertIn('entryParams.set("project", initialProjectId)', integration)
         self.assertIn('const entryUrl = `/custom-video/?${entryParams.toString()}`', integration)
         self.assertIn('"background:#fff"', integration)
+        self.assertIn('"opacity:0"', integration)
+        self.assertIn('"visibility:hidden"', integration)
+        self.assertIn("const revealFrame = () =>", integration)
+        self.assertIn('message.type === "custom-video:project"', integration)
         self.assertLess(
             integration.index('window.addEventListener("message", receive)'),
             integration.index("frame.src = entryUrl"),

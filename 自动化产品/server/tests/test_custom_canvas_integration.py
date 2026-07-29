@@ -560,10 +560,13 @@ console.log(JSON.stringify({{
         self.assertNotIn("min-height:640px", integration)
         self.assertIn("background:#fff", integration)
         self.assertIn("data-custom-canvas-loading", integration)
-        self.assertIn("data-custom-canvas-empty", integration)
         self.assertIn("if (!currentProjectId) {", integration)
-        self.assertIn("host.innerHTML = emptyCanvasHtml()", integration)
+        self.assertIn(
+            "currentProjectId = await loadRecentProjectId(token, controller.signal)",
+            integration,
+        )
         self.assertIn("if (!iframe) return mountCanvasFrame()", integration)
+        self.assertIn('{ type: "custom-canvas:create-project" }', integration)
         self.assertIn(
             "iframe.src = `/XZ-Design/?embed=1&v=20260728-v120-shell-13${projectHash(currentProjectId)}`",
             integration,

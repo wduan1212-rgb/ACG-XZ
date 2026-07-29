@@ -734,7 +734,7 @@ console.log(result);
         self.assertIn("data-ref-replace", drawer)
         self.assertIn("data-ref-remove", drawer)
         self.assertIn('hasOwnProperty.call(item, "refAssetIds")', orchestrator)
-        self.assertIn('member.role !== "supplier_child"', settings)
+        self.assertIn('item.role !== "supplier_child"', settings)
         self.assertIn('id="apiUsagePanel"', settings)
         self.assertIn('loadApiUsage({ inPlace: true })', settings)
         self.assertIn('refreshApiUsagePanel()', settings)
@@ -749,7 +749,7 @@ console.log(result);
             self.assertIn(f'managementPage === "{management_page}"', settings)
         self.assertIn('if (managementPage === "requests") loadRequests()', settings)
         self.assertIn('if (managementPage === "usage") loadApiUsage()', settings)
-        self.assertIn('["admin", "editor", "supplier_parent", "supplier"].includes(state.role)', router)
+        self.assertIn("if (entitlementByRoute[zone] && !hasEntitlement(entitlementByRoute[zone]))", router)
         self.assertIn("<th>账号</th><th>发布标题</th>", analytics)
 
     def test_v84_assets_delivery_and_stable_first_render(self):
@@ -1287,14 +1287,14 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260729-v121-shell-22"', main)
-        self.assertIn('js/main.js?v=20260729-v121-shell-22', index)
+        self.assertIn('const APP_BUILD_ID = "20260729-v122-static-1"', main)
+        self.assertIn('js/main.js?v=20260729-v122-static-1', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)
         self.assertIn("if (!syncDataBtn && actions) {", main)
         self.assertNotIn("if (!syncDataBtn && actions && newAccBtn) {", main)
-        self.assertIn('syncDataBtn.hidden = !(zone === "overview" && state.role === "admin")', main)
+        self.assertIn('syncDataBtn.hidden = !(zone === "overview" && teamManager)', main)
 
     def test_batch_reference_images_are_explicit_and_title_changes_refresh_copy(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")

@@ -34,6 +34,13 @@ DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME") or bytes.fromhex("6
 DEFAULT_SUPPLIER_USERNAME = os.getenv("DEFAULT_SUPPLIER_USERNAME") or bytes.fromhex("676f6e6779696e677368616e67").decode()
 DEFAULT_ADMIN_PIN_HASH = os.getenv("DEFAULT_ADMIN_PIN_HASH") or "pbkdf2$120000$737461722d61727261792d61646d696e2d7631$1d5f7e973e925fb41415dd6b322a3e8d6e3ab272e0c8ce8961393abd9af8edba"
 DEFAULT_SUPPLIER_PIN_HASH = os.getenv("DEFAULT_SUPPLIER_PIN_HASH") or "pbkdf2$120000$737461722d61727261792d737570706c6965722d7631$a5b6620381cff96c4602112ab5b3ee89b027d53c263d4452150cc9c7d9d5e1ff"
+INTERNAL_TEAM_ID = "team-acg-marketing"
+INTERNAL_TEAM_NAME = "ACG市场部"
+TEAM_FEATURES = (
+    "home", "dashboard", "studio", "batch", "video_workshop", "canvas",
+    "voice", "assets", "delivery", "analytics", "team_members",
+)
+PERSONAL_FEATURES = ("home", "video_workshop", "canvas", "voice", "assets", "profile", "team_join")
 
 # 入服务器共享的集合（与前端 db.collections 对齐）。
 # notifications / ui / apiKeys 是每设备本地态，不入服务器。
@@ -215,6 +222,59 @@ CREATE TABLE IF NOT EXISTS password_reset_requests(
 CREATE INDEX IF NOT EXISTS idx_password_reset_requests_status_created
   ON password_reset_requests(status, created_at DESC);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS teams(
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL UNIQUE,
+  slug         TEXT NOT NULL UNIQUE,
+  kind         TEXT NOT NULL DEFAULT 'customer',
+  status       TEXT NOT NULL DEFAULT 'active',
+  plan         TEXT NOT NULL DEFAULT 'team',
+  quota_mode   TEXT NOT NULL DEFAULT 'metered',
+  created_at   INTEGER NOT NULL,
+  created_by   TEXT
+);
+CREATE TABLE IF NOT EXISTS team_members(
+  team_id     TEXT NOT NULL,
+  member_id   TEXT NOT NULL UNIQUE,
+  team_role   TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'active',
+  joined_at   INTEGER NOT NULL,
+  added_by    TEXT,
+  PRIMARY KEY(team_id, member_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_team_role
+  ON team_members(team_id, team_role, status);
+CREATE TABLE IF NOT EXISTS team_join_requests(
+  id          TEXT PRIMARY KEY,
+  team_id     TEXT NOT NULL,
+  member_id   TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  message     TEXT,
+  created_at  INTEGER NOT NULL,
+  reviewed_at INTEGER,
+  reviewed_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_team_join_requests_team_status
+  ON team_join_requests(team_id, status, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_team_join_requests_pending_member
+  ON team_join_requests(team_id, member_id)
+  WHERE status='pending';
+CREATE TABLE IF NOT EXISTS team_suppliers(
+  team_id            TEXT NOT NULL,
+  supplier_parent_id TEXT NOT NULL UNIQUE,
+  created_at         INTEGER NOT NULL,
+  added_by           TEXT,
+  PRIMARY KEY(team_id, supplier_parent_id)
+);
+CREATE TABLE IF NOT EXISTS team_accounts(
+  team_id    TEXT NOT NULL,
+  account_id TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  added_by   TEXT,
+  PRIMARY KEY(team_id, account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_accounts_team
+  ON team_accounts(team_id, created_at);
 CREATE TABLE IF NOT EXISTS supplier_account_bindings(
   parent_id  TEXT NOT NULL,
   child_id   TEXT NOT NULL,
@@ -319,6 +379,102 @@ def _ensure_supplier_parent_role_locked(conn):
         conn.execute("UPDATE members SET role='supplier_parent', parent_id=NULL WHERE id=?", (row[0],))
 
 
+def _ensure_internal_team_locked(conn):
+    """幂等归属现有生产账号，不复制或覆盖任何成员、素材、任务和供应商数据。"""
+    now = int(time.time() * 1000)
+    owner = conn.execute(
+        "SELECT id FROM members WHERE username=? AND role='admin'",
+        (DEFAULT_ADMIN_USERNAME,),
+    ).fetchone()
+    owner_id = owner[0] if owner else None
+    conn.execute(
+        "INSERT OR IGNORE INTO teams(id,name,slug,kind,status,plan,quota_mode,created_at,created_by) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        (
+            INTERNAL_TEAM_ID, INTERNAL_TEAM_NAME, "acg-marketing", "internal",
+            "active", "team", "unlimited", now, owner_id,
+        ),
+    )
+    conn.execute(
+        "UPDATE teams SET name=?,kind='internal',status='active',plan='team',quota_mode='unlimited' "
+        "WHERE id=?",
+        (INTERNAL_TEAM_NAME, INTERNAL_TEAM_ID),
+    )
+    # The platform owner is a durable invariant, not a one-time migration side
+    # effect. Some databases already carried the v1 migration marker before the
+    # current default administrator row was normalized, which left that account
+    # appearing as a personal plan. Repair only the designated internal owner;
+    # later personal registrations and unrelated administrators stay untouched.
+    if owner_id:
+        conn.execute(
+            "INSERT OR IGNORE INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
+            "VALUES(?,?,?,?,?,?)",
+            (
+                INTERNAL_TEAM_ID, owner_id, "owner", "active",
+                now, owner_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE team_members SET team_role='owner',status='active' "
+            "WHERE team_id=? AND member_id=?",
+            (INTERNAL_TEAM_ID, owner_id),
+        )
+    # 首次上线只收编部署前已经存在的管理员与创作者。后续注册的普通用户
+    # 不会被这个幂等迁移自动加入内部团队。
+    migration_done = conn.execute(
+        "SELECT v FROM meta WHERE k='internal_team_members_migrated_v1'"
+    ).fetchone()
+    if not migration_done:
+        rows = conn.execute(
+            "SELECT id,username,role,created_at FROM members WHERE role IN ('admin','editor')"
+        ).fetchall()
+        for member_id, username, role, created_at in rows:
+            team_role = (
+                "owner" if role == "admin" and username == DEFAULT_ADMIN_USERNAME
+                else "admin" if role == "admin"
+                else "creator"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    INTERNAL_TEAM_ID, member_id, team_role, "active",
+                    int(created_at or now), owner_id,
+                ),
+            )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(k,v) VALUES('internal_team_members_migrated_v1',?)",
+            (str(now),),
+        )
+    # 供应商与内容账号仅在首次上线时建立归属关系，不改原 parent_id、绑定和
+    # 业务记录。后续新建的外部团队资源必须由团队开通流程显式归属，不能在
+    # 每次服务启动时被重新收编进平台内部团队。
+    resource_migration_done = conn.execute(
+        "SELECT v FROM meta WHERE k='internal_team_resources_migrated_v1'"
+    ).fetchone()
+    if not resource_migration_done:
+        for (supplier_parent_id,) in conn.execute(
+            "SELECT id FROM members WHERE role='supplier_parent'"
+        ).fetchall():
+            conn.execute(
+                "INSERT OR IGNORE INTO team_suppliers(team_id,supplier_parent_id,created_at,added_by) "
+                "VALUES(?,?,?,?)",
+                (INTERNAL_TEAM_ID, supplier_parent_id, now, owner_id),
+            )
+        for (account_id,) in conn.execute(
+            "SELECT id FROM docs WHERE collection='accounts'"
+        ).fetchall():
+            conn.execute(
+                "INSERT OR IGNORE INTO team_accounts(team_id,account_id,created_at,added_by) "
+                "VALUES(?,?,?,?)",
+                (INTERNAL_TEAM_ID, account_id, now, owner_id),
+            )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(k,v) VALUES('internal_team_resources_migrated_v1',?)",
+            (str(now),),
+        )
+
+
 def _ensure_db():
     global _initialized
     if _initialized:
@@ -339,6 +495,7 @@ def _ensure_db():
             _seed_admin_locked(conn)
             _ensure_admin_alias_locked(conn)
             _ensure_supplier_parent_role_locked(conn)
+            _ensure_internal_team_locked(conn)
             conn.commit()
             _initialized = True
         finally:
@@ -438,20 +595,113 @@ def _member_public(row):
     }
 
 
-def add_member(name, username, pin, role, parent_id=None):
-    return add_member_with_hash(name, username, hash_pin(pin), role, parent_id)
+def _team_public_row(row):
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "name": row[1],
+        "kind": row[2],
+        "status": row[3],
+        "plan": row[4],
+        "quotaMode": row[5],
+        "role": row[6],
+    }
 
 
-def add_member_with_hash(name, username, pin_hash, role, parent_id=None):
+def member_team(member_id):
+    row = _fetchone(
+        "SELECT t.id,t.name,t.kind,t.status,t.plan,t.quota_mode,tm.team_role "
+        "FROM team_members tm JOIN teams t ON t.id=tm.team_id "
+        "WHERE tm.member_id=? AND tm.status='active' AND t.status='active'",
+        (member_id,),
+    )
+    return _team_public_row(row)
+
+
+def member_entitlements(member_id, role):
+    if role in {"supplier_parent", "supplier_child"}:
+        return ["supplier"]
+    team = member_team(member_id)
+    return list(TEAM_FEATURES if team else PERSONAL_FEATURES)
+
+
+def list_team_members(team_id):
+    if not team_id:
+        return []
+    rows = _fetchall(
+        "SELECT m.id,m.name,m.username,m.pin_hash,m.role,m.parent_id,m.avatar_url,m.created_at "
+        "FROM team_members tm JOIN members m ON m.id=tm.member_id "
+        "WHERE tm.team_id=? AND tm.status='active' "
+        "ORDER BY CASE tm.team_role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,m.created_at",
+        (team_id,),
+    )
+    return [member_public(row) for row in rows]
+
+
+def team_role_for(member_id):
+    team = member_team(member_id)
+    return team["role"] if team else None
+
+
+def update_team_member_role(team_id, member_id, team_role):
+    clean_role = team_role if team_role in {"admin", "creator"} else "creator"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            current = conn.execute(
+                "SELECT team_role FROM team_members WHERE team_id=? AND member_id=? AND status='active'",
+                (team_id, member_id),
+            ).fetchone()
+            if not current:
+                return None, "not_found"
+            if current[0] == "owner":
+                return None, "owner_locked"
+            conn.execute(
+                "UPDATE team_members SET team_role=? WHERE team_id=? AND member_id=?",
+                (clean_role, team_id, member_id),
+            )
+            conn.execute(
+                "UPDATE members SET role=? WHERE id=? AND role IN ('user','editor')",
+                ("editor", member_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return member_public(get_member(member_id)), None
+
+
+def add_member(name, username, pin, role, parent_id=None, team_id=None, team_role=None, added_by=None):
+    return add_member_with_hash(
+        name, username, hash_pin(pin), role, parent_id,
+        team_id=team_id, team_role=team_role, added_by=added_by,
+    )
+
+
+def add_member_with_hash(
+    name, username, pin_hash, role, parent_id=None,
+    *, team_id=None, team_role=None, added_by=None,
+):
     mid = uuid.uuid4().hex[:10]
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
+            now = int(time.time() * 1000)
             conn.execute(
                 "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
-                (mid, name, username, pin_hash, role, parent_id, int(time.time() * 1000)),
+                (mid, name, username, pin_hash, role, parent_id, now),
             )
+            if team_id:
+                conn.execute(
+                    "INSERT INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (
+                        str(team_id), mid, str(team_role or "creator"), "active",
+                        now, str(added_by or "") or None,
+                    ),
+                )
             conn.commit()
         finally:
             conn.close()
@@ -468,7 +718,7 @@ def get_member_by_username(username):
 
 def list_members():
     rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members ORDER BY created_at")
-    return [_member_public(r) for r in rows]
+    return [member_public(r) for r in rows]
 
 
 def update_member(mid, name=None, username=None, role=None, pin=None, parent_id=None, avatar_url=None):
@@ -505,6 +755,9 @@ def delete_member(mid):
         try:
             conn.execute("DELETE FROM supplier_account_bindings WHERE child_id=? OR parent_id=?", (mid, mid))
             conn.execute("DELETE FROM supplier_activity WHERE child_id=? OR parent_id=? OR member_id=?", (mid, mid, mid))
+            conn.execute("DELETE FROM team_join_requests WHERE member_id=?", (mid,))
+            conn.execute("DELETE FROM team_members WHERE member_id=?", (mid,))
+            conn.execute("DELETE FROM team_suppliers WHERE supplier_parent_id=?", (mid,))
             conn.execute("DELETE FROM members WHERE id=?", (mid,))
             conn.commit()
         finally:
@@ -512,7 +765,14 @@ def delete_member(mid):
 
 
 def member_public(row):
-    return _member_public(row)
+    item = _member_public(row)
+    team = member_team(item["id"])
+    item["team"] = team
+    item["teamId"] = team["id"] if team else None
+    item["teamRole"] = team["role"] if team else None
+    item["entitlements"] = member_entitlements(item["id"], item["role"])
+    item["plan"] = "team" if team else "personal"
+    return item
 
 
 # ---------- 成员申请 ----------
@@ -562,6 +822,243 @@ def list_member_requests(status=None):
 def username_has_pending_request(username):
     row = _fetchone("SELECT id FROM member_requests WHERE username=? AND status='pending'", (username,))
     return bool(row)
+
+
+# ---------- 团队与加入申请 ----------
+def list_joinable_teams():
+    rows = _fetchall(
+        "SELECT id,name,kind,plan FROM teams WHERE status='active' ORDER BY kind='internal' DESC,created_at"
+    )
+    return [
+        {"id": row[0], "name": row[1], "kind": row[2], "plan": row[3]}
+        for row in rows
+    ]
+
+
+def team_for_name(name):
+    clean = re.sub(r"\s+", " ", str(name or "")).strip()
+    if not clean:
+        return None
+    row = _fetchone(
+        "SELECT id,name,kind,status,plan,quota_mode FROM teams "
+        "WHERE status='active' AND lower(name)=lower(?)",
+        (clean,),
+    )
+    if not row:
+        return None
+    return {
+        "id": row[0], "name": row[1], "kind": row[2], "status": row[3],
+        "plan": row[4], "quotaMode": row[5],
+    }
+
+
+def add_team_join_request(member_id, team_name, message=""):
+    team = team_for_name(team_name)
+    if not team:
+        return None, "team_not_found"
+    if member_team(member_id):
+        return None, "already_in_team"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            existing = conn.execute(
+                "SELECT id,status FROM team_join_requests WHERE team_id=? AND member_id=? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (team["id"], member_id),
+            ).fetchone()
+            if existing and existing[1] == "pending":
+                return None, "already_pending"
+            rid = uuid.uuid4().hex[:12]
+            now = int(time.time() * 1000)
+            conn.execute(
+                "INSERT INTO team_join_requests(id,team_id,member_id,status,message,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    rid, team["id"], member_id, "pending",
+                    re.sub(r"\s+", " ", str(message or "")).strip()[:240], now,
+                ),
+            )
+            conn.commit()
+            return {
+                "id": rid, "teamId": team["id"], "teamName": team["name"],
+                "memberId": member_id, "status": "pending", "createdAt": now,
+            }, None
+        finally:
+            conn.close()
+
+
+def can_manage_team(member_id, team_id):
+    row = _fetchone(
+        "SELECT team_role FROM team_members "
+        "WHERE member_id=? AND team_id=? AND status='active'",
+        (member_id, team_id),
+    )
+    return bool(row and row[0] in {"owner", "admin"})
+
+
+def list_team_join_requests(reviewer_id, status="pending"):
+    team = member_team(reviewer_id)
+    if not team or team["role"] not in {"owner", "admin"}:
+        raise PermissionError("forbidden")
+    params = [team["id"]]
+    status_sql = ""
+    if status:
+        status_sql = " AND r.status=?"
+        params.append(status)
+    rows = _fetchall(
+        "SELECT r.id,r.team_id,t.name,r.member_id,m.name,m.username,r.status,r.message,"
+        "r.created_at,r.reviewed_at,r.reviewed_by "
+        "FROM team_join_requests r "
+        "JOIN teams t ON t.id=r.team_id JOIN members m ON m.id=r.member_id "
+        "WHERE r.team_id=?" + status_sql + " ORDER BY r.created_at DESC",
+        tuple(params),
+    )
+    return [{
+        "id": row[0], "teamId": row[1], "teamName": row[2],
+        "memberId": row[3], "memberName": row[4], "username": row[5],
+        "status": row[6], "message": row[7] or "", "createdAt": row[8],
+        "reviewedAt": row[9], "reviewedBy": row[10],
+    } for row in rows]
+
+
+def review_team_join_request(request_id, reviewer_id, approve):
+    _ensure_db()
+    reviewed_member_id = None
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT id,team_id,member_id,status FROM team_join_requests WHERE id=?",
+                (request_id,),
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            if row[3] != "pending":
+                return None, "not_pending"
+            manager = conn.execute(
+                "SELECT team_role FROM team_members "
+                "WHERE team_id=? AND member_id=? AND status='active'",
+                (row[1], reviewer_id),
+            ).fetchone()
+            if not manager or manager[0] not in {"owner", "admin"}:
+                return None, "forbidden"
+            now = int(time.time() * 1000)
+            next_status = "approved" if approve else "rejected"
+            if approve:
+                if conn.execute(
+                    "SELECT 1 FROM team_members WHERE member_id=? AND status='active'",
+                    (row[2],),
+                ).fetchone():
+                    return None, "already_in_team"
+                conn.execute(
+                    "INSERT INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (row[1], row[2], "creator", "active", now, reviewer_id),
+                )
+                # 加入团队后仍是创作成员；平台管理员角色不会在这里被授予。
+                conn.execute(
+                    "UPDATE members SET role='editor' WHERE id=? AND role='user'",
+                    (row[2],),
+                )
+            conn.execute(
+                "UPDATE team_join_requests SET status=?,reviewed_at=?,reviewed_by=? WHERE id=?",
+                (next_status, now, reviewer_id, request_id),
+            )
+            conn.commit()
+            reviewed_member_id = row[2]
+        finally:
+            conn.close()
+    return member_public(get_member(reviewed_member_id)), None
+
+
+def team_account_ids(team_id):
+    if not team_id:
+        return set()
+    rows = _fetchall("SELECT account_id FROM team_accounts WHERE team_id=?", (team_id,))
+    return {str(row[0]) for row in rows}
+
+
+def assign_team_accounts(team_id, account_ids, added_by=None):
+    if not team_id:
+        return
+    ids = sorted({str(account_id) for account_id in (account_ids or []) if str(account_id)})
+    if not ids:
+        return
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            now = int(time.time() * 1000)
+            for account_id in ids:
+                conn.execute(
+                    "INSERT OR IGNORE INTO team_accounts(team_id,account_id,created_at,added_by) "
+                    "VALUES(?,?,?,?)",
+                    (team_id, account_id, now, added_by),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def supplier_team_id(member_id, role=None, parent_id=None):
+    supplier_parent_id = (
+        member_id if role == "supplier_parent"
+        else parent_id if role == "supplier_child"
+        else member_id
+    )
+    row = _fetchone(
+        "SELECT team_id FROM team_suppliers WHERE supplier_parent_id=?",
+        (supplier_parent_id,),
+    )
+    return row[0] if row else None
+
+
+def supplier_parent_ids_for_team(team_id):
+    if not team_id:
+        return set()
+    rows = _fetchall(
+        "SELECT supplier_parent_id FROM team_suppliers WHERE team_id=?",
+        (team_id,),
+    )
+    return {str(row[0]) for row in rows}
+
+
+def team_supplier_accounts(team_id):
+    """Return login identities for supplier administrators owned by a team.
+
+    Password hashes are deliberately never returned. Team managers may set a
+    new password through a separate endpoint when the original is unknown.
+    """
+    if not team_id:
+        return []
+    rows = _fetchall(
+        "SELECT m.id,m.name,m.username,m.created_at "
+        "FROM team_suppliers ts JOIN members m ON m.id=ts.supplier_parent_id "
+        "WHERE ts.team_id=? AND m.role='supplier_parent' ORDER BY m.created_at",
+        (team_id,),
+    )
+    return [
+        {
+            "id": row[0],
+            "name": row[1],
+            "username": row[2],
+            "createdAt": row[3],
+        }
+        for row in rows
+    ]
+
+
+def reset_team_supplier_pin(team_id, supplier_parent_id, pin):
+    allowed = _fetchone(
+        "SELECT 1 FROM team_suppliers ts JOIN members m ON m.id=ts.supplier_parent_id "
+        "WHERE ts.team_id=? AND ts.supplier_parent_id=? AND m.role='supplier_parent'",
+        (team_id, supplier_parent_id),
+    )
+    if not allowed:
+        return None
+    row = update_member(supplier_parent_id, pin=pin)
+    return _member_public(row) if row else None
 
 
 # ---------- 密码找回申请 ----------
@@ -649,19 +1146,38 @@ def approve_member_request(rid, reviewer_id, parent_id=None):
 # ---------- 供应商组织：母账号可管理子账号并分配内容账号 ----------
 def list_supplier_children(parent_id, include_all=False):
     if include_all:
-        rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members WHERE role='supplier_child' ORDER BY created_at")
+        team_id = supplier_team_id(parent_id, "supplier_parent")
+        parent_ids = supplier_parent_ids_for_team(team_id)
+        if not parent_ids:
+            parent_ids = {str(parent_id)}
+        marks = ",".join("?" for _ in parent_ids)
+        rows = _fetchall(
+            "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at "
+            f"FROM members WHERE role='supplier_child' AND parent_id IN ({marks}) ORDER BY created_at",
+            tuple(sorted(parent_ids)),
+        )
     else:
         rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members WHERE role='supplier_child' AND parent_id=? ORDER BY created_at", (parent_id,))
     return [_member_public(r) for r in rows]
 
 
-def list_supplier_members():
+def list_supplier_members(parent_id=None):
     """供应商管理员共享同一组织视图：可见全部管理员与子账号。"""
-    rows = _fetchall(
-        "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members "
-        "WHERE role IN ('supplier_parent','supplier_child') "
-        "ORDER BY CASE role WHEN 'supplier_parent' THEN 0 ELSE 1 END, created_at"
-    )
+    parent_ids = supplier_parent_ids_for_team(supplier_team_id(parent_id, "supplier_parent")) if parent_id else set()
+    if parent_ids:
+        marks = ",".join("?" for _ in parent_ids)
+        rows = _fetchall(
+            "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members "
+            f"WHERE id IN ({marks}) OR (role='supplier_child' AND parent_id IN ({marks})) "
+            "ORDER BY CASE role WHEN 'supplier_parent' THEN 0 ELSE 1 END, created_at",
+            tuple(sorted(parent_ids)) * 2,
+        )
+    else:
+        rows = _fetchall(
+            "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members "
+            "WHERE role IN ('supplier_parent','supplier_child') "
+            "ORDER BY CASE role WHEN 'supplier_parent' THEN 0 ELSE 1 END, created_at"
+        )
     return [_member_public(r) for r in rows]
 
 
@@ -669,7 +1185,13 @@ def supplier_child_for(parent_id, child_id, include_all=False):
     row = get_member(child_id)
     if not row or row[4] != "supplier_child":
         return None
-    if not include_all and row[5] != parent_id:
+    if include_all:
+        team_parent_ids = supplier_parent_ids_for_team(
+            supplier_team_id(parent_id, "supplier_parent")
+        )
+        if row[5] not in (team_parent_ids or {parent_id}):
+            return None
+    elif row[5] != parent_id:
         return None
     return row
 
@@ -720,7 +1242,17 @@ def supplier_bindings(parent_id, include_all=False):
         conn = _connect()
         try:
             sql = "SELECT parent_id,child_id,account_id,created_at,created_by FROM supplier_account_bindings"
-            rows = conn.execute(sql + (" ORDER BY created_at" if include_all else " WHERE parent_id=? ORDER BY created_at"), () if include_all else (parent_id,)).fetchall()
+            if include_all:
+                parent_ids = supplier_parent_ids_for_team(
+                    supplier_team_id(parent_id, "supplier_parent")
+                ) or {str(parent_id)}
+                marks = ",".join("?" for _ in parent_ids)
+                rows = conn.execute(
+                    sql + f" WHERE parent_id IN ({marks}) ORDER BY created_at",
+                    tuple(sorted(parent_ids)),
+                ).fetchall()
+            else:
+                rows = conn.execute(sql + " WHERE parent_id=? ORDER BY created_at", (parent_id,)).fetchall()
             return [{"parentId": r[0], "childId": r[1], "accountId": r[2], "createdAt": r[3], "createdBy": r[4]} for r in rows]
         finally:
             conn.close()
@@ -774,7 +1306,15 @@ def list_supplier_activity(parent_id, include_all=False, limit=80):
         conn = _connect()
         try:
             if include_all:
-                rows = conn.execute("SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at FROM supplier_activity ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+                parent_ids = supplier_parent_ids_for_team(
+                    supplier_team_id(parent_id, "supplier_parent")
+                ) or {str(parent_id)}
+                marks = ",".join("?" for _ in parent_ids)
+                rows = conn.execute(
+                    "SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at "
+                    f"FROM supplier_activity WHERE parent_id IN ({marks}) ORDER BY created_at DESC LIMIT ?",
+                    (*tuple(sorted(parent_ids)), limit),
+                ).fetchall()
             else:
                 rows = conn.execute("SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at FROM supplier_activity WHERE parent_id=? ORDER BY created_at DESC LIMIT ?", (parent_id, limit)).fetchall()
             members = {r[0]: r[1] for r in conn.execute("SELECT id,name FROM members").fetchall()}
@@ -1489,8 +2029,33 @@ def upsert_member_collection(owner_id, role, collection, items):
     """
     if collection not in COLLECTIONS:
         raise ValueError("unknown collection")
-    if role == "admin":
+    team = member_team(owner_id)
+    team_manager = bool(team and team.get("role") in {"owner", "admin"})
+    elevated_team_admin = team_manager and collection in ADMIN_ONLY_GENERIC_COLLECTIONS
+    if role == "admin" or elevated_team_admin:
+        if collection == "products" and (not team or team.get("id") != INTERNAL_TEAM_ID):
+            raise PermissionError("forbidden")
+        if collection == "accounts" and team:
+            incoming_ids = {
+                str(item.get("id"))
+                for item in (items or [])
+                if isinstance(item, dict) and item.get("id")
+            }
+            if incoming_ids:
+                marks = ",".join("?" for _ in incoming_ids)
+                rows = _fetchall(
+                    f"SELECT account_id,team_id FROM team_accounts WHERE account_id IN ({marks})",
+                    tuple(sorted(incoming_ids)),
+                )
+                if any(str(team_id) != str(team["id"]) for _account_id, team_id in rows):
+                    raise PermissionError("forbidden")
         written = upsert_docs(collection, items)
+        if collection == "accounts":
+            assign_team_accounts(
+                team["id"] if team else None,
+                [item.get("id") for item in (items or []) if isinstance(item, dict)],
+                owner_id,
+            )
         return {"written": written, "denied": 0, "unchanged": 0}
     if role != "editor" or collection in ADMIN_ONLY_GENERIC_COLLECTIONS:
         raise PermissionError("forbidden")
@@ -1536,7 +2101,7 @@ def upsert_member_assets(owner_id, role, items):
     """
     if role == "admin":
         return {"written": upsert_docs("assets", items), "denied": 0}
-    if role != "editor":
+    if role not in {"editor", "user"}:
         raise PermissionError("forbidden")
     actor = str(owner_id)
     incoming = [dict(item) for item in (items or []) if isinstance(item, dict) and item.get("id")]
@@ -1583,7 +2148,7 @@ def upsert_member_assets(owner_id, role, items):
 
 def upsert_voice_presets(owner_id, role, items):
     """定制音色全平台可选，但只有原创建者或管理员能修改。"""
-    if role not in {"admin", "editor"}:
+    if role not in {"admin", "editor", "user"}:
         raise PermissionError("forbidden")
     actor = str(owner_id)
     incoming = [dict(item) for item in (items or []) if isinstance(item, dict) and item.get("id")]
@@ -1657,8 +2222,29 @@ def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delive
     """通用删除同样执行 actor 校验，避免 DELETE 绕过 PUT 的权限矩阵。"""
     if collection not in COLLECTIONS:
         raise ValueError("unknown collection")
-    if role == "admin":
+    team = member_team(member_id)
+    team_manager = bool(team and team.get("role") in {"owner", "admin"})
+    elevated_team_admin = team_manager and collection in ADMIN_ONLY_GENERIC_COLLECTIONS
+    if role == "admin" or elevated_team_admin:
+        if collection == "products" and (not team or team.get("id") != INTERNAL_TEAM_ID):
+            raise PermissionError("forbidden")
+        if collection == "accounts" and team:
+            owner_team = _fetchone(
+                "SELECT team_id FROM team_accounts WHERE account_id=?",
+                (str(doc_id),),
+            )
+            if not owner_team or str(owner_team[0]) != str(team["id"]):
+                raise PermissionError("forbidden")
         delete_doc(collection, doc_id, protect_custom_delivery=protect_custom_delivery)
+        if collection == "accounts":
+            _ensure_db()
+            with _lock:
+                conn = _connect()
+                try:
+                    conn.execute("DELETE FROM team_accounts WHERE account_id=?", (str(doc_id),))
+                    conn.commit()
+                finally:
+                    conn.close()
         return
     if role != "editor" or collection in ADMIN_ONLY_GENERIC_COLLECTIONS:
         raise PermissionError("forbidden")
@@ -5132,6 +5718,9 @@ def state_for(member_id, role, parent_id=None, collections=None):
     supplier_production_created_at = {}
     account_projected_sequences = {}
     delivery_global_sequences = {}
+    team = member_team(member_id) if role not in {"supplier_parent", "supplier_child"} else None
+    team_id = team["id"] if team else supplier_team_id(member_id, role, parent_id)
+    visible_team_account_ids = team_account_ids(team_id)
     with _lock:
         conn = _connect()
         try:
@@ -5189,6 +5778,23 @@ def state_for(member_id, role, parent_id=None, collections=None):
                         "customProjects", "customOutputs", "customVideoJobs",
                     } and owner and owner != member_id:
                         continue
+                    if col == "products" and (
+                        role == "user"
+                        or (team_id and team_id != INTERNAL_TEAM_ID)
+                    ):
+                        continue
+                    if (
+                        col == "accounts"
+                        and role != "supplier_child"
+                        and (
+                            role == "user"
+                            or (
+                                team_id
+                                and str(item.get("id") or "") not in visible_team_account_ids
+                            )
+                        )
+                    ):
+                        continue
                     if col == "accounts" and role == "supplier_child" and item.get("id") not in assigned_account_ids:
                         continue
                     if col == "accounts" and role == "editor":
@@ -5219,6 +5825,28 @@ def state_for(member_id, role, parent_id=None, collections=None):
                         if role not in {"supplier_child", "supplier_parent", "editor", "admin"} and owner and owner != member_id:
                             continue
                     if col == "assets":
+                        account_id = str(item.get("accountId") or "")
+                        if role == "user" and (
+                            owner != member_id
+                            or item.get("delivered")
+                            or item.get("shared")
+                            or _is_global_editing_asset(item)
+                        ):
+                            continue
+                        if (
+                            team_id
+                            and team_id != INTERNAL_TEAM_ID
+                            and owner != member_id
+                            and account_id not in visible_team_account_ids
+                        ):
+                            continue
+                        if (
+                            role == "supplier_parent"
+                            and team_id
+                            and account_id
+                            and account_id not in visible_team_account_ids
+                        ):
+                            continue
                         try:
                             persisted_delivery_seq = int(item.get("pubSeq") or 0)
                         except (TypeError, ValueError):

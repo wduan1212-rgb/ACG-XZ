@@ -26,6 +26,7 @@ const state = {
   project: null,
   attachments: [],
   ratio: "9:16",
+  creationMode: "video",
   outputIndex: 0,
   busy: false,
   pollTimer: null,
@@ -93,6 +94,7 @@ const dom = {
   dropOverlay: document.querySelector("#dropOverlay"),
   toast: document.querySelector("#toast"),
   conversationColumn: document.querySelector(".conversation-column"),
+  creationModeButtons: [...document.querySelectorAll("[data-creation-mode]")],
 };
 
 const rotatingPrompts = [
@@ -1191,10 +1193,39 @@ function startProductionHeartbeat(project) {
   state.productionHeartbeatTimer = window.setInterval(tick, 1000);
 }
 
+function normalizeCreationMode(value) {
+  return String(value || "").trim().toLowerCase() === "static" ? "static" : "video";
+}
+
+function syncCreationMode(value, { announce = false } = {}) {
+  const mode = normalizeCreationMode(value);
+  state.creationMode = mode;
+  dom.creationModeButtons.forEach((button) => {
+    const active = button.dataset.creationMode === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  dom.chatInput.placeholder = mode === "static"
+    ? "告诉小星想制作的静态视频"
+    : "告诉小星你的想法";
+  if (announce) {
+    showToast(
+      mode === "static"
+        ? "已切换为静态视频：图片分镜、轻推近、字幕、口播与 BGM"
+        : "已切换为正常视频",
+    );
+  }
+}
+
 function renderProject(project) {
   state.project = project;
   state.projectId = project.id;
   state.ratio = project.plan?.aspect_ratio || state.ratio;
+  syncCreationMode(
+    project.creationMode
+      || project.plan?.creation_mode
+      || state.creationMode,
+  );
   localStorage.setItem(PROJECT_STORAGE_KEY, project.id);
   enterStudio();
   dom.projectLabel.textContent = project.name && project.name !== "新会话"
@@ -1209,9 +1240,18 @@ function renderProject(project) {
   else stopProductionHeartbeat();
   dom.chatInput.disabled = running;
   dom.chatForm.querySelector("button[type='submit']").disabled = running;
+  dom.creationModeButtons.forEach((button) => {
+    button.disabled = running;
+  });
   refreshIcons();
   loadHistory();
   schedulePoll(running);
+  if (WORKSPACE_MODE && window.parent !== window) {
+    window.parent.postMessage({
+      type: "custom-video:project",
+      project,
+    }, window.location.origin);
+  }
 }
 
 function historyItemName(project) {
@@ -1624,6 +1664,7 @@ async function sendMessage(message, fromStart = false) {
         projectId: requestProjectId,
         message: cleanMessage,
         aspectRatio: state.ratio,
+        creationMode: state.creationMode,
         attachments: requestAttachments.map(({ label, name, mime, dataUrl }) => ({ label, name, mime, dataUrl })),
       }),
     });
@@ -1749,6 +1790,7 @@ function resetProject(showStart = true) {
   state.project = null;
   state.busy = false;
   state.attachments = [];
+  syncCreationMode("video");
   state.outputIndex = 0;
   state.messageSignature = "";
   state.eventSignature = "";
@@ -1765,6 +1807,9 @@ function resetProject(showStart = true) {
   dom.projectLabel.textContent = "新项目";
   dom.chatInput.disabled = false;
   dom.chatForm.querySelector("button[type='submit']").disabled = false;
+  dom.creationModeButtons.forEach((button) => {
+    button.disabled = false;
+  });
   if (WORKSPACE_MODE) {
     enterStudio();
     dom.chatInput.focus();
@@ -1909,6 +1954,13 @@ dom.startForm.addEventListener("submit", (event) => {
 dom.chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
   sendMessage(dom.chatInput.value, false);
+});
+
+dom.creationModeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    if (state.busy || button.disabled) return;
+    syncCreationMode(button.dataset.creationMode, { announce: true });
+  });
 });
 
 [dom.startInput, dom.chatInput].forEach((textarea) => {

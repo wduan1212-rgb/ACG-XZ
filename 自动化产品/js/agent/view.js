@@ -4,15 +4,15 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260729-v121-shell-22";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260729-v122-team-3";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences
-} from "./orchestrator.js?v=20260727-v118-7";
-import { renderMessage, boardRow } from "./cards.js?v=20260727-v119-1";
+} from "./orchestrator.js?v=20260729-v122-static-1";
+import { renderMessage, boardRow } from "./cards.js?v=20260729-v122-static-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
 import { openProductionDrawer } from "../views/prodDrawer.js?v=20260728-v120-shell-13";
 import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
@@ -24,10 +24,11 @@ let mounted = false;
 let rootEl = null;
 const thinkingBySession = new Map(); // sessionId -> { active, steps }
 let scrollTopOnce = false;
-const PLAN_KIND_GROUP = { image: "图文组", material: "素材", real: "真人" };
+const PLAN_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
 
 function normalizePlanKind(kind = "", group = "") {
-  if (["image", "material", "real"].includes(kind)) return kind;
+  if (["image", "static", "material", "real"].includes(kind)) return kind;
+  if (group === "静态视频") return "static";
   if (group === "素材") return "material";
   if (group === "真人") return "real";
   return "image";
@@ -559,7 +560,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260727-v118-7");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260729-v122-static-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -954,9 +955,13 @@ function wire(root) {
         break;
       }
       case "batch-image-edit": if (p) openBatchImageEditor(p, act.dataset.imageIndex); break;
-      case "batch-cover-edit": if (p) openBatchVideoCoverEditor(p); break;
+      case "batch-cover-edit": if (p && !p.staticVideo) openBatchVideoCoverEditor(p); break;
       case "batch-video-regenerate": {
         if (!p) break;
+        if (p.staticVideo) {
+          toast("静态视频不支持单独微调，请从批次中重试整条任务", "error");
+          break;
+        }
         const ok = await confirmModal({ title: `重新生成「${p.artifacts.copy.title || p.title || "视频"}」？`, body: "会保留文案、口播、封面和参考图，只重新派发视频画面任务。", okText: "重新生成" });
         if (!ok) break;
         try {

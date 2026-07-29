@@ -1,12 +1,14 @@
 import asyncio
 import importlib
+import json
 import socket
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
+from starlette.requests import Request
 
 
 SERVER_DIR = Path(__file__).resolve().parents[1]
@@ -58,6 +60,42 @@ class _FakeAsyncClient:
 
     def stream(self, *_args, **_kwargs):
         return self._response
+
+
+class _FakeJsonResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    def json(self):
+        return self._payload
+
+
+def _request(method, path, payload=None):
+    body = json.dumps(payload or {}, ensure_ascii=False).encode("utf-8")
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request({
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("utf-8"),
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json")],
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 8787),
+    }, receive)
 
 
 class CreatorProxySecurityTest(unittest.TestCase):

@@ -1,8 +1,8 @@
 /* hash 路由：#/zone 或 #/studio/<page>
-   zones: overview | custom | voice(兼容入口) | agent | studio | assets | drafts | delivery | analytics | settings */
+   zones: home | overview | custom | voice(兼容入口) | agent | studio | assets | drafts | delivery | analytics | settings */
 
 import { $, $$ } from "./util.js";
-import { state } from "./store.js";
+import { state, hasEntitlement } from "./store.js";
 
 const routes = new Map();   // zone -> { render(root, params), title }
 let current = { zone: null, page: null, resourceId: null };
@@ -11,7 +11,7 @@ let allowStudioFromAgentUntil = 0;
 export function registerView(zone, view) { routes.set(zone, view); }
 
 export function parseHash() {
-  const h = (location.hash || "#/overview").replace(/^#\/?/, "");
+  const h = (location.hash || "#/home").replace(/^#\/?/, "");
   const [zone, page, encodedResourceId] = h.split("/");
   let resourceId = null;
   if (encodedResourceId) {
@@ -22,7 +22,7 @@ export function parseHash() {
     }
   }
   return {
-    zone: zone || "overview",
+    zone: zone || "home",
     page: page || null,
     resourceId: resourceId || null,
   };
@@ -77,9 +77,19 @@ export function render() {
   // 权限路由：供应商子账号只处理发布；供应商母账号可看首页、账号板、发布和设置。
   if (state.role === "supplier_child" && zone !== "delivery") { zone = "delivery"; page = null; resourceId = null; location.hash = "#/delivery"; }
   if ((state.role === "supplier_parent" || state.role === "supplier") && !["overview", "assets", "delivery", "settings"].includes(zone)) { zone = "overview"; page = null; resourceId = null; location.hash = "#/overview"; }
-  // 创作成员的 settings 是“我的”个人资料页；管理员和供应商管理员仍保留各自设置看板。
-  if (!["admin", "editor", "supplier_parent", "supplier"].includes(state.role) && zone === "settings") { zone = "overview"; page = null; resourceId = null; location.hash = "#/overview"; }
-  if (!routes.has(zone)) { zone = "overview"; page = null; resourceId = null; }
+  const entitlementByRoute = {
+    overview: "dashboard",
+    studio: "studio",
+    agent: "batch",
+    assets: "assets",
+    drafts: "studio",
+    delivery: "delivery",
+    analytics: "analytics",
+  };
+  if (entitlementByRoute[zone] && !hasEntitlement(entitlementByRoute[zone])) {
+    zone = "home"; page = null; resourceId = null; location.hash = "#/home";
+  }
+  if (!routes.has(zone)) { zone = "home"; page = null; resourceId = null; }
   current = { zone, page, resourceId };
 
   document.body.dataset.zone = zone;

@@ -335,6 +335,26 @@ export const memberRequests = {
   reject: (id) => req("/api/member-requests/" + encodeURIComponent(id) + "/reject", { method: "POST" })
 };
 
+export const teams = {
+  list: () => req("/api/teams"),
+  requestJoin: (teamName, message = "") => req("/api/team-join-requests", {
+    method: "POST",
+    body: { teamName, message }
+  }),
+  requests: (status = "pending") => req(
+    "/api/team-join-requests" + (status ? "?status=" + encodeURIComponent(status) : "")
+  ),
+  review: (id, approve) => req(
+    "/api/team-join-requests/" + encodeURIComponent(id) + "/review",
+    { method: "POST", body: { approve: !!approve } }
+  ),
+  supplierAccounts: () => req("/api/teams/current/supplier-accounts"),
+  resetSupplierPassword: (id, pin) => req(
+    "/api/teams/current/supplier-accounts/" + encodeURIComponent(id) + "/password",
+    { method: "PUT", body: { pin } }
+  ),
+};
+
 /* 管理员用量看板：语言 Token 与实际图片/视频调用分账展示。 */
 export const admin = {
   llmUsage: () => req("/api/admin/llm-usage"),

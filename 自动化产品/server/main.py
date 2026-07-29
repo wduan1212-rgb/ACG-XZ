@@ -708,9 +708,9 @@ def _member_from_authorization(authorization: str = ""):
 
 
 def require_creator(authorization: str = Header(default="")):
-    """高成本创作能力只允许已登录的管理员或创作成员调用。"""
+    """基础生成能力对已登录个人开放；团队能力仍由具体业务接口单独鉴权。"""
     member = _member_from_authorization(authorization)
-    if member["role"] not in {"admin", "editor"}:
+    if member["role"] not in {"admin", "editor", "user"}:
         raise HTTPException(403, "当前账号不能使用创作能力")
     return member
 
@@ -4571,6 +4571,19 @@ class MemberReq(BaseModel):
     parentId: str = ""
 
 
+class TeamJoinReq(BaseModel):
+    teamName: str = ""
+    message: str = ""
+
+
+class TeamJoinReviewReq(BaseModel):
+    approve: bool = True
+
+
+class TeamSupplierPinReq(BaseModel):
+    pin: str = Field(min_length=6, max_length=120)
+
+
 class MemberProfileReq(BaseModel):
     name: str = ""
     username: str = ""
@@ -4647,7 +4660,7 @@ class PasswordResetReq(BaseModel):
 def _clean_role(role: str) -> str:
     if role == "supplier":
         return "supplier_parent"
-    return role if role in {"admin", "editor", "supplier_parent", "supplier_child"} else "editor"
+    return role if role in {"admin", "editor", "user", "supplier_parent", "supplier_child"} else "editor"
 
 
 def require_member(authorization: str = Header(default="")):
@@ -4658,6 +4671,21 @@ def require_admin(me=Depends(require_member)):
     if me["role"] != "admin":
         raise HTTPException(403, "需要管理员权限")
     return me
+
+
+def require_team_manager(me=Depends(require_member)):
+    team = me.get("team")
+    if not team or team.get("role") not in {"owner", "admin"}:
+        raise HTTPException(403, "需要团队管理员权限")
+    return me
+
+
+def _can_review_platform_registrations(me):
+    team = me.get("team") or {}
+    return (
+        team.get("id") == store.INTERNAL_TEAM_ID
+        and team.get("role") in {"owner", "admin"}
+    )
 
 
 def require_supplier_parent(me=Depends(require_member)):
@@ -5014,9 +5042,9 @@ def member_request_create(req: MemberApplyReq):
     name = req.name.strip()
     username = req.username.strip()
     pin = req.pin.strip()
-    role = _clean_role(req.role)
-    if role == "admin":
-        role = "editor"
+    # 公共注册永远先建立独立个人账号。加入团队与团队角色由后续审批决定，
+    # 不能通过注册请求自行获得平台或供应商权限。
+    role = "user"
     if not name or not username or not pin:
         raise HTTPException(400, "姓名、用户名和密码都要填写")
     if store.get_member_by_username(username):
@@ -5048,7 +5076,9 @@ def password_reset_request_create(req: PasswordResetReq):
 
 
 @app.get("/api/password-reset-requests")
-def password_reset_requests_list(_me=Depends(require_admin)):
+def password_reset_requests_list(me=Depends(require_member)):
+    if not _can_review_platform_registrations(me):
+        raise HTTPException(403, "需要平台注册管理权限")
     return store.list_password_reset_requests("pending")
 
 
@@ -5067,10 +5097,10 @@ def api_state(response: Response, collections: str = "", me=Depends(require_memb
         requested_collections if filtered else None,
     )
     if not filtered or "members" in requested_names:
-        if me["role"] == "admin":
-            data["members"] = store.list_members()
+        if me.get("teamId") and me.get("teamRole") in {"owner", "admin"}:
+            data["members"] = store.list_team_members(me["teamId"])
         elif me["role"] == "supplier_parent":
-            data["members"] = store.list_supplier_members()
+            data["members"] = store.list_supplier_members(me["id"])
         else:
             data["members"] = [me]
     response.headers["X-Xingzhen-State-Mode"] = "partial" if filtered else "full"
@@ -5078,7 +5108,7 @@ def api_state(response: Response, collections: str = "", me=Depends(require_memb
 
 
 def _require_custom_creator(me):
-    if me["role"] not in {"admin", "editor"}:
+    if me["role"] not in {"admin", "editor", "user"}:
         raise HTTPException(403, "当前账号不能使用定制创作")
     return me
 
@@ -6090,7 +6120,7 @@ def api_put(collection: str, req: PutReq, me=Depends(require_member)):
         result = {"written": len(req.items or []), "denied": 0}
         if me["role"] in {"supplier_parent", "supplier_child"}:
             result["written"] = store.upsert_docs(collection, req.items)
-        elif collection == "assets" and me["role"] in {"admin", "editor"}:
+        elif collection == "assets" and me["role"] in {"admin", "editor", "user"}:
             result = store.upsert_member_assets(me["id"], me["role"], req.items)
         elif collection == "voicePresets":
             store.upsert_voice_presets(me["id"], me["role"], req.items)
@@ -6241,8 +6271,8 @@ def file_delete(name: str, me=Depends(require_member)):
 
 
 @app.get("/api/members")
-def members_list(me=Depends(require_admin)):
-    return store.list_members()
+def members_list(me=Depends(require_team_manager)):
+    return store.list_team_members(me["teamId"])
 
 
 @app.get("/api/members/me")
@@ -6307,6 +6337,67 @@ def member_profile_avatar_get(name: str, request: Request):
     return ranged_file_response(request, path, media_type=_media_type_for_path(path))
 
 
+@app.get("/api/teams")
+def teams_list(_me=Depends(require_member)):
+    """仅返回可申请加入的团队名，不暴露团队成员、供应商或业务数据。"""
+    return {"items": store.list_joinable_teams()}
+
+
+@app.post("/api/team-join-requests")
+def team_join_request_create(req: TeamJoinReq, me=Depends(require_member)):
+    item, err = store.add_team_join_request(me["id"], req.teamName, req.message)
+    if err == "team_not_found":
+        raise HTTPException(404, "没有找到这个团队，请检查团队名称")
+    if err == "already_in_team":
+        raise HTTPException(409, "当前账号已经加入团队")
+    if err == "already_pending":
+        raise HTTPException(409, "加入申请已提交，请等待团队管理员处理")
+    return {"ok": True, "request": item}
+
+
+@app.get("/api/team-join-requests")
+def team_join_requests_list(status: str = "pending", me=Depends(require_team_manager)):
+    clean_status = status if status in {"pending", "approved", "rejected"} else ""
+    return {"items": store.list_team_join_requests(me["id"], clean_status)}
+
+
+@app.post("/api/team-join-requests/{rid}/review")
+def team_join_request_review(rid: str, req: TeamJoinReviewReq, me=Depends(require_team_manager)):
+    member, err = store.review_team_join_request(rid, me["id"], req.approve)
+    if err == "not_found":
+        raise HTTPException(404, "团队申请不存在")
+    if err == "not_pending":
+        raise HTTPException(409, "团队申请已经处理")
+    if err == "already_in_team":
+        raise HTTPException(409, "申请人已经加入其他团队")
+    if err == "forbidden":
+        raise HTTPException(403, "无权处理这个团队的申请")
+    return {"ok": True, "member": member}
+
+
+@app.get("/api/teams/current/supplier-accounts")
+def team_supplier_accounts(me=Depends(require_team_manager)):
+    team = me.get("team") or {}
+    return {"items": store.team_supplier_accounts(team.get("id"))}
+
+
+@app.put("/api/teams/current/supplier-accounts/{supplier_id}/password")
+def team_supplier_password_reset(
+    supplier_id: str,
+    req: TeamSupplierPinReq,
+    me=Depends(require_team_manager),
+):
+    team = me.get("team") or {}
+    member = store.reset_team_supplier_pin(team.get("id"), supplier_id, req.pin)
+    if not member:
+        raise HTTPException(404, "团队供应商管理员不存在")
+    return {"ok": True, "account": {
+        "id": member["id"],
+        "name": member["name"],
+        "username": member["username"],
+    }}
+
+
 @app.get("/api/supplier/children")
 def supplier_children(me=Depends(require_supplier_parent)):
     return store.list_supplier_children(me["id"], include_all=True)
@@ -6314,7 +6405,7 @@ def supplier_children(me=Depends(require_supplier_parent)):
 
 @app.get("/api/supplier/members")
 def supplier_members(me=Depends(require_supplier_parent)):
-    return store.list_supplier_members()
+    return store.list_supplier_members(me["id"])
 
 
 @app.post("/api/supplier/children")
@@ -6567,54 +6658,82 @@ def delivery_remarks_read(asset_id: str, me=Depends(require_member)):
 
 
 @app.post("/api/members")
-def members_add(req: MemberReq, me=Depends(require_admin)):
+def members_add(req: MemberReq, me=Depends(require_team_manager)):
     if not req.username.strip() or not req.pin:
         raise HTTPException(400, "用户名与初始密码必填")
     if store.get_member_by_username(req.username.strip()):
         raise HTTPException(409, "用户名已存在")
-    role = _clean_role(req.role)
-    parent_id = req.parentId.strip() if role == "supplier_child" and req.parentId else None
-    return store.member_public(store.add_member(req.name or req.username, req.username.strip(), req.pin, role, parent_id))
+    team_role = "admin" if req.role == "admin" else "creator"
+    # 团队管理员创建的是团队子创作成员，不会获得平台管理员身份。
+    role = "editor"
+    return store.member_public(store.add_member(
+        req.name or req.username,
+        req.username.strip(),
+        req.pin,
+        role,
+        team_id=me["teamId"],
+        team_role=team_role,
+        added_by=me["id"],
+    ))
 
 
 @app.put("/api/members/{mid}")
-def members_update(mid: str, req: MemberReq, me=Depends(require_admin)):
+def members_update(mid: str, req: MemberReq, me=Depends(require_team_manager)):
+    target = store.member_public(store.get_member(mid)) if store.get_member(mid) else None
+    if not target or target.get("teamId") != me.get("teamId"):
+        raise HTTPException(404, "团队成员不存在")
+    if target.get("teamRole") == "owner" and mid != me["id"]:
+        raise HTTPException(403, "团队所有者不能被其他成员修改")
     username = req.username.strip() if req.username else None
     if username:
         existing = store.get_member_by_username(username)
         if existing and existing[0] != mid:
             raise HTTPException(409, "用户名已存在")
-    role = _clean_role(req.role) if req.role else None
-    parent_id = req.parentId.strip() if role == "supplier_child" and req.parentId else None
-    row = store.update_member(mid, name=req.name or None, username=username, role=role, pin=req.pin or None, parent_id=parent_id)
+    row = store.update_member(mid, name=req.name or None, username=username, pin=req.pin or None)
     if not row:
         raise HTTPException(404, "成员不存在")
+    if req.role and target.get("teamRole") != "owner":
+        updated, err = store.update_team_member_role(
+            me["teamId"], mid, "admin" if req.role == "admin" else "creator"
+        )
+        if err == "owner_locked":
+            raise HTTPException(403, "不能修改团队所有者角色")
+        return updated
     return store.member_public(row)
 
 
 @app.delete("/api/members/{mid}")
-def members_delete(mid: str, me=Depends(require_admin)):
+def members_delete(mid: str, me=Depends(require_team_manager)):
     if mid == me["id"]:
         raise HTTPException(400, "不能删除当前登录的自己")
+    target = store.member_public(store.get_member(mid)) if store.get_member(mid) else None
+    if not target or target.get("teamId") != me.get("teamId"):
+        raise HTTPException(404, "团队成员不存在")
+    if target.get("teamRole") == "owner":
+        raise HTTPException(403, "不能删除团队所有者")
     store.delete_member(mid)
     return {"ok": True}
 
 
 @app.get("/api/member-requests")
 def member_requests_list(status: str = "", me=Depends(require_member)):
-    if me["role"] not in {"admin", "supplier_parent"}:
+    if me["role"] != "supplier_parent" and not _can_review_platform_registrations(me):
         raise HTTPException(403, "需要成员管理权限")
     st = status if status in {"pending", "approved", "rejected"} else None
     rows = store.list_member_requests(st)
-    return rows if me["role"] == "admin" else [x for x in rows if x.get("role") == "supplier_child"]
+    return (
+        [x for x in rows if x.get("role") == "supplier_child"]
+        if me["role"] == "supplier_parent"
+        else [x for x in rows if x.get("role") != "supplier_child"]
+    )
 
 
 @app.post("/api/member-requests/{rid}/approve")
 def member_requests_approve(rid: str, me=Depends(require_member)):
-    if me["role"] not in {"admin", "supplier_parent"}:
+    if me["role"] != "supplier_parent" and not _can_review_platform_registrations(me):
         raise HTTPException(403, "需要成员管理权限")
     request_row = store.get_member_request(rid)
-    if me["role"] == "admin" and request_row and request_row[4] == "supplier_child":
+    if me["role"] != "supplier_parent" and request_row and request_row[4] == "supplier_child":
         raise HTTPException(403, "供应商子账号申请需由供应商管理员审批")
     if me["role"] == "supplier_parent" and (not request_row or request_row[4] != "supplier_child"):
         raise HTTPException(403, "只能审批供应商子账号申请")
@@ -6630,7 +6749,7 @@ def member_requests_approve(rid: str, me=Depends(require_member)):
 
 @app.post("/api/member-requests/{rid}/reject")
 def member_requests_reject(rid: str, me=Depends(require_member)):
-    if me["role"] not in {"admin", "supplier_parent"}:
+    if me["role"] != "supplier_parent" and not _can_review_platform_registrations(me):
         raise HTTPException(403, "需要成员管理权限")
     request_row = store.get_member_request(rid)
     if me["role"] == "supplier_parent" and (not request_row or request_row[4] != "supplier_child"):

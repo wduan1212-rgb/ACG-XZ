@@ -17,6 +17,7 @@ export function GithubPagesApp() {
   const syncPublishedProjects = useStore((state) => state.syncPublishedProjects);
   const syncCanvasProjectIndex = useStore((state) => state.syncCanvasProjectIndex);
   const markProjectPublished = useStore((state) => state.markProjectPublished);
+  const createProject = useStore((state) => state.createProject);
 
   useEffect(() => {
     const sync = () => setProjectId(currentProjectId());
@@ -47,6 +48,21 @@ export function GithubPagesApp() {
         void syncCanvasProjectIndex();
         return;
       }
+      if (message.type === "custom-canvas:create-project") {
+        if (!hydrated) return;
+        const createdId = createProject({
+          name: "未命名创作",
+          scene: "brand_kv",
+          targetSize: "1080x1920",
+        });
+        window.location.hash = `#/project/${encodeURIComponent(createdId)}`;
+        window.parent.postMessage({
+          source: "xingzhen-canvas",
+          type: "project-created",
+          projectId: createdId,
+        }, window.location.origin);
+        return;
+      }
       if (message.type !== "custom-canvas:published") return;
       const sourceProjectId = String(message.projectId || "").trim().slice(0, 180);
       const deliveryId = String(message.deliveryId || "").trim().slice(0, 160);
@@ -65,7 +81,7 @@ export function GithubPagesApp() {
     };
     window.addEventListener("message", receivePublishedState);
     return () => window.removeEventListener("message", receivePublishedState);
-  }, [markProjectPublished, syncCanvasProjectIndex]);
+  }, [createProject, hydrated, markProjectPublished, syncCanvasProjectIndex]);
 
   if (!projectId) {
     return (
