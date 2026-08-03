@@ -23,7 +23,7 @@ class PublishTagsTest(unittest.TestCase):
             self.assertEqual(first["label"], "百度 搭子")
             self.assertEqual(duplicate["id"], first["id"])
             self.assertEqual(
-                [item["label"] for item in store.list_publish_tags()],
+                [item["label"] for item in store.list_publish_tags("member-a")],
                 ["百度 搭子", "AI 办公"],
             )
             self.assertEqual(second["createdBy"], "member-b")

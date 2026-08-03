@@ -1,0 +1,21 @@
+{
+  "format": "acg-resource-scope-overrides-v1",
+  "databaseIdentity": "<identity-from-the-same-frozen-database-copy>",
+  "databasePathSha256": "<databasePathSha256-from-resource-preflight>",
+  "databaseLogicalSha256": "<databaseLogicalSha256-from-resource-preflight>",
+  "schemaVersion": -1,
+  "userVersion": -1,
+  "backupManifestSha256": "<fresh-v2-backup-manifest-sha256-from-the-same-frozen-state>",
+  "resourceScopeSchemaVersion": 140001,
+  "resourceScopeDataVersion": 140002,
+  "entries": [
+    {
+      "resourceKind": "doc:<collection>",
+      "resourceId": "<exact-unresolved-resource-id-from-preflight>",
+      "scopeType": "team",
+      "scopeId": "<reviewed-active-team-id>",
+      "reason": "<why no deterministic owner or live reference remains>",
+      "evidence": "<short summary of the frozen-copy evidence used to approve this target>"
+    }
+  ]
+}

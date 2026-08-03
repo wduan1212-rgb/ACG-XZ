@@ -31,7 +31,31 @@ PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("as
 
 def load_canvas_store(tmpdir):
     os.environ["CUSTOM_CANVAS_BLOB_DIR"] = str(Path(tmpdir) / "canvas_blobs")
-    return load_isolated_store(tmpdir)
+    store = load_isolated_store(tmpdir)
+    store._ensure_db()
+    with store._lock:
+        conn = store._connect()
+        try:
+            now = 1
+            for member_id in ("creator-a", "creator-b"):
+                conn.execute(
+                    "INSERT OR IGNORE INTO members("
+                    "id,name,username,username_key,pin_hash,role,parent_id,created_at"
+                    ") VALUES(?,?,?,?,?,?,NULL,?)",
+                    (
+                        member_id,
+                        member_id,
+                        member_id,
+                        member_id,
+                        store.DEFAULT_ADMIN_PIN_HASH,
+                        "editor",
+                        now,
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    return store
 
 
 def draft_payload(

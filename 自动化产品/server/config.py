@@ -92,6 +92,17 @@ def is_read_only() -> bool:
     return env_bool("ACG_READ_ONLY", False)
 
 
+def read_only_mode_status() -> dict:
+    """Require an unambiguous production write-mode declaration."""
+
+    raw = str(os.getenv("ACG_READ_ONLY", "") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return {"ok": True, "readOnly": True}
+    if raw in {"0", "false", "no", "off"}:
+        return {"ok": True, "readOnly": False}
+    return {"ok": False, "readOnly": True}
+
+
 def db_bootstrap_mode() -> str:
     configured = str(os.getenv("ACG_DB_BOOTSTRAP_MODE", "") or "").strip().lower()
     # Production can never opt back into startup mutation.  The migration CLI
@@ -130,6 +141,22 @@ def require_internal_team() -> bool:
     if runtime_mode() in {"production", "invalid"}:
         return True
     return env_bool("ACG_REQUIRE_INTERNAL_TEAM", False)
+
+
+def require_resource_scopes() -> bool:
+    """Production cannot bypass the v140 deny-by-default ownership registry."""
+
+    if runtime_mode() in {"production", "invalid"}:
+        return True
+    return env_bool("ACG_REQUIRE_RESOURCE_SCOPES", False)
+
+
+def require_private_media_registry() -> bool:
+    """Production cannot bypass the v140 private-media ownership registry."""
+
+    if runtime_mode() in {"production", "invalid"}:
+        return True
+    return env_bool("ACG_REQUIRE_PRIVATE_MEDIA", False)
 
 
 def loopback_http_url_status(value: str, *, expected_port: int | None = None) -> dict:

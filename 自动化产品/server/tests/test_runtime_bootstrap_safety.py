@@ -25,13 +25,20 @@ def runtime_environment(**values):
     names = {
         "DATA_DB",
         "CUSTOM_CANVAS_BLOB_DIR",
+        "UPLOAD_DIR",
+        "COMPOSED_DIR",
+        "VIDEO_WORKSHOP_OUTPUT_DIR",
+        "VIDEO_WORKSHOP_UPLOAD_DIR",
         "ACG_RUNTIME_MODE",
         "ACG_DB_BOOTSTRAP_MODE",
         "ACG_READ_ONLY",
         "ACG_REQUIRE_INTERNAL_TEAM",
+        "ACG_REQUIRE_RESOURCE_SCOPES",
         "ACG_RELEASE_ID",
         "ACG_ALLOW_SCHEMA_MIGRATION",
         "ACG_ALLOW_ACG_TEAM_MIGRATION",
+        "ACG_ALLOW_RESOURCE_SCOPE_MIGRATION",
+        "ACG_ALLOW_PRIVATE_MEDIA_MIGRATION",
         "AUTH_SECRET",
     }
     previous = {name: os.environ.get(name) for name in names}
@@ -120,6 +127,44 @@ def logical_database_dump(database):
 
     with sqlite3.connect(database) as conn:
         return "\n".join(conn.iterdump())
+
+
+def current_backup_binding(store, database):
+    """Represent a manifest already byte-verified by the migration CLI."""
+
+    with sqlite3.connect(database) as conn:
+        conn.execute("BEGIN")
+        try:
+            logical_sha256 = store._database_logical_digest_locked(conn)
+            schema_version = int(conn.execute("PRAGMA schema_version").fetchone()[0])
+            user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            conn.rollback()
+    return {
+        "format": "acg-sqlite-backup-v2",
+        "verified": True,
+        "manifestSha256": "a" * 64,
+        "sourceDatabase": Path(database).name,
+        "sourceIdentity": store._database_identity(database),
+        "sourcePathSha256": store._database_path_digest(database),
+        "sourceLogicalSha256": logical_sha256,
+        "sourceSchemaVersion": schema_version,
+        "sourceUserVersion": user_version,
+        "backupSha256": "b" * 64,
+    }
+
+
+def current_runtime_snapshot_binding(store):
+    return {
+        "format": "acg-runtime-snapshot-binding-v1",
+        "verified": True,
+        "profile": "acg-production-complete-v1",
+        "manifestSha256": "c" * 64,
+        "componentNames": sorted(
+            store.PRIVATE_MEDIA_RUNTIME_SNAPSHOT_COMPLETE_COMPONENTS
+        ),
+        "mediaInventoryDigest": store._private_media_live_inventory_digest(),
+    }
 
 
 class RuntimeBootstrapSafetyTest(unittest.TestCase):
@@ -218,12 +263,23 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
             ):
                 store = load_isolated_store()
                 identity = store._database_identity(database)
-                first = store.apply_schema_migrations(expected_identity=identity)
-                second = store.apply_schema_migrations(expected_identity=identity)
+                first = store.apply_schema_migrations(
+                    expected_identity=identity,
+                    backup_binding=current_backup_binding(store, database),
+                )
+                second = store.apply_schema_migrations(
+                    expected_identity=identity,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 self.assertTrue(first["applied"])
                 self.assertEqual(store.LATEST_SCHEMA_MIGRATION_VERSION, first["version"])
                 self.assertEqual(
-                    [store.SCHEMA_MIGRATION_VERSION, store.MODEL_USAGE_SCHEMA_MIGRATION_VERSION],
+                    [
+                        store.SCHEMA_MIGRATION_VERSION,
+                        store.MODEL_USAGE_SCHEMA_MIGRATION_VERSION,
+                        store.RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,
+                        store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                    ],
                     first["appliedVersions"],
                 )
                 self.assertFalse(second["applied"])
@@ -279,7 +335,10 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                     ),
                     self.assertRaisesRegex(RuntimeError, "forced-ledger-failure"),
                 ):
-                    store.apply_schema_migrations(expected_identity=identity)
+                    store.apply_schema_migrations(
+                        expected_identity=identity,
+                        backup_binding=current_backup_binding(store, database),
+                    )
 
                 with sqlite3.connect(database) as conn:
                     tables = {
@@ -342,6 +401,253 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                         "SELECT 1 FROM sqlite_master "
                         "WHERE type='table' AND name='schema_migrations'"
                     ).fetchone())
+
+    def test_production_migration_requires_verified_backup_without_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "data.sqlite"
+            with sqlite3.connect(database) as conn:
+                conn.execute("CREATE TABLE legacy_record(id TEXT PRIMARY KEY)")
+                conn.execute("INSERT INTO legacy_record(id) VALUES('preserve-me')")
+            with runtime_environment(
+                DATA_DB=database,
+                CUSTOM_CANVAS_BLOB_DIR=Path(tmp) / "blobs",
+                ACG_RUNTIME_MODE="production",
+                ACG_READ_ONLY="0",
+                ACG_RELEASE_ID="test-release",
+                ACG_ALLOW_SCHEMA_MIGRATION="1",
+                AUTH_SECRET="test-secret",
+            ):
+                store = load_isolated_store()
+                identity = store._database_identity(database)
+                before = logical_database_dump(database)
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "verified backup manifest binding",
+                ):
+                    store.apply_schema_migrations(expected_identity=identity)
+                self.assertEqual(before, logical_database_dump(database))
+                with sqlite3.connect(database) as conn:
+                    self.assertIsNone(conn.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type='table' AND name='schema_migrations'"
+                    ).fetchone())
+
+    def test_production_migration_rejects_changes_after_verified_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "data.sqlite"
+            with sqlite3.connect(database) as conn:
+                conn.execute("CREATE TABLE legacy_record(id TEXT PRIMARY KEY)")
+                conn.execute("INSERT INTO legacy_record(id) VALUES('before-backup')")
+            with runtime_environment(
+                DATA_DB=database,
+                CUSTOM_CANVAS_BLOB_DIR=Path(tmp) / "blobs",
+                ACG_RUNTIME_MODE="production",
+                ACG_READ_ONLY="0",
+                ACG_RELEASE_ID="test-release",
+                ACG_ALLOW_SCHEMA_MIGRATION="1",
+                AUTH_SECRET="test-secret",
+            ):
+                store = load_isolated_store()
+                identity = store._database_identity(database)
+                binding = current_backup_binding(store, database)
+                with sqlite3.connect(database) as conn:
+                    conn.execute("INSERT INTO legacy_record(id) VALUES('after-backup')")
+                before_rejected_apply = logical_database_dump(database)
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "changed after verified backup",
+                ):
+                    store.apply_schema_migrations(
+                        expected_identity=identity,
+                        backup_binding=binding,
+                    )
+                self.assertEqual(before_rejected_apply, logical_database_dump(database))
+                with sqlite3.connect(database) as conn:
+                    self.assertIsNone(conn.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type='table' AND name='schema_migrations'"
+                    ).fetchone())
+
+    def test_production_migration_rejects_backup_for_another_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "data.sqlite"
+            with sqlite3.connect(database) as conn:
+                conn.execute("CREATE TABLE legacy_record(id TEXT PRIMARY KEY)")
+            with runtime_environment(
+                DATA_DB=database,
+                CUSTOM_CANVAS_BLOB_DIR=Path(tmp) / "blobs",
+                ACG_RUNTIME_MODE="production",
+                ACG_READ_ONLY="0",
+                ACG_RELEASE_ID="test-release",
+                ACG_ALLOW_SCHEMA_MIGRATION="1",
+                AUTH_SECRET="test-secret",
+            ):
+                store = load_isolated_store()
+                identity = store._database_identity(database)
+                binding = current_backup_binding(store, database)
+                binding["sourcePathSha256"] = "c" * 64
+                with self.assertRaisesRegex(store.StoreNotReadyError, "path mismatch"):
+                    store.apply_schema_migrations(
+                        expected_identity=identity,
+                        backup_binding=binding,
+                    )
+                with sqlite3.connect(database) as conn:
+                    self.assertIsNone(conn.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type='table' AND name='schema_migrations'"
+                    ).fetchone())
+
+    def test_private_media_apply_reuses_backup_gate_before_any_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database = root / "data.sqlite"
+            media_paths = {
+                "CUSTOM_CANVAS_BLOB_DIR": root / "blobs",
+                "UPLOAD_DIR": root / "uploads",
+                "COMPOSED_DIR": root / "composed",
+                "VIDEO_WORKSHOP_OUTPUT_DIR": root / "video-outputs",
+                "VIDEO_WORKSHOP_UPLOAD_DIR": root / "video-uploads",
+            }
+            for path in media_paths.values():
+                path.mkdir()
+            with sqlite3.connect(database) as conn:
+                conn.execute("CREATE TABLE legacy_record(id TEXT PRIMARY KEY)")
+                conn.execute("INSERT INTO legacy_record(id) VALUES('before-backup')")
+            with runtime_environment(
+                DATA_DB=database,
+                **media_paths,
+                ACG_RUNTIME_MODE="production",
+                ACG_READ_ONLY="0",
+                ACG_RELEASE_ID="test-release",
+                ACG_ALLOW_PRIVATE_MEDIA_MIGRATION="1",
+                AUTH_SECRET="test-secret",
+            ):
+                store = load_isolated_store()
+                identity = store._database_identity(database)
+                before = logical_database_dump(database)
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "verified backup manifest binding",
+                ):
+                    store.apply_private_media_migration(
+                        expected_identity=identity,
+                        expected_schema_version=(
+                            store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                        ),
+                        runtime_snapshot_binding=current_runtime_snapshot_binding(
+                            store
+                        ),
+                    )
+                self.assertEqual(before, logical_database_dump(database))
+
+                binding = current_backup_binding(store, database)
+                with sqlite3.connect(database) as conn:
+                    conn.execute("INSERT INTO legacy_record(id) VALUES('after-backup')")
+                changed = logical_database_dump(database)
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "changed after verified backup",
+                ):
+                    store.apply_private_media_migration(
+                        expected_identity=identity,
+                        expected_schema_version=(
+                            store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                        ),
+                        backup_binding=binding,
+                        runtime_snapshot_binding=current_runtime_snapshot_binding(
+                            store
+                        ),
+                    )
+                self.assertEqual(changed, logical_database_dump(database))
+                with sqlite3.connect(database) as conn:
+                    self.assertIsNone(conn.execute(
+                        "SELECT 1 FROM sqlite_master "
+                        "WHERE type='table' AND name='schema_migrations'"
+                    ).fetchone())
+
+    def test_private_media_140004_apply_is_bound_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database = root / "data.sqlite"
+            paths = {
+                "CUSTOM_CANVAS_BLOB_DIR": root / "canvas",
+                "UPLOAD_DIR": root / "uploads",
+                "COMPOSED_DIR": root / "composed",
+                "VIDEO_WORKSHOP_OUTPUT_DIR": root / "video-outputs",
+                "VIDEO_WORKSHOP_UPLOAD_DIR": root / "video-uploads",
+            }
+            for path in paths.values():
+                path.mkdir()
+            with sqlite3.connect(database) as conn:
+                conn.execute("CREATE TABLE legacy_record(id TEXT PRIMARY KEY)")
+            with runtime_environment(
+                DATA_DB=database,
+                **paths,
+                ACG_RUNTIME_MODE="production",
+                ACG_READ_ONLY="0",
+                ACG_REQUIRE_INTERNAL_TEAM="1",
+                ACG_REQUIRE_RESOURCE_SCOPES="1",
+                ACG_RELEASE_ID="test-release",
+                ACG_ALLOW_SCHEMA_MIGRATION="1",
+                ACG_ALLOW_ACG_TEAM_MIGRATION="1",
+                ACG_ALLOW_RESOURCE_SCOPE_MIGRATION="1",
+                ACG_ALLOW_PRIVATE_MEDIA_MIGRATION="1",
+                AUTH_SECRET="test-secret",
+            ):
+                store = load_isolated_store()
+                identity = store._database_identity(database)
+                store.apply_schema_migrations(
+                    expected_identity=identity,
+                    backup_binding=current_backup_binding(store, database),
+                )
+                seed_acg_legacy_fixture(store, database)
+                store.apply_acg_internal_team_migration(
+                    expected_identity=identity,
+                    owner_username=store.DEFAULT_ADMIN_USERNAME,
+                    team_id=store.INTERNAL_TEAM_ID,
+                    expected_schema_version=store.SCHEMA_MIGRATION_VERSION,
+                    backup_binding=current_backup_binding(store, database),
+                )
+                store.apply_resource_scope_migration(
+                    expected_identity=identity,
+                    expected_schema_version=(
+                        store.RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION
+                    ),
+                    backup_binding=current_backup_binding(store, database),
+                )
+                dry_run = store.private_media_migration_preflight(
+                    expected_identity=identity,
+                    expected_schema_version=(
+                        store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                    ),
+                )
+                self.assertTrue(dry_run["readyForApply"])
+                self.assertFalse(dry_run["dataMigration"])
+
+                first = store.apply_private_media_migration(
+                    expected_identity=identity,
+                    expected_schema_version=(
+                        store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                    ),
+                    backup_binding=current_backup_binding(store, database),
+                    runtime_snapshot_binding=current_runtime_snapshot_binding(
+                        store
+                    ),
+                )
+                self.assertTrue(first["applied"])
+                self.assertTrue(first["ok"])
+                self.assertEqual(
+                    store.PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+                    first["dataMigrationVersion"],
+                )
+                second = store.apply_private_media_migration(
+                    expected_identity=identity,
+                    expected_schema_version=(
+                        store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                    ),
+                    backup_binding=current_backup_binding(store, database),
+                    runtime_snapshot_binding=current_runtime_snapshot_binding(
+                        store
+                    ),
+                )
+                self.assertFalse(second["applied"])
+                self.assertTrue(store.database_readiness()["ok"])
 
     def test_local_auto_mode_keeps_existing_bootstrap_compatibility(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -455,11 +761,15 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                 ACG_RELEASE_ID="test-release",
                 ACG_ALLOW_SCHEMA_MIGRATION="1",
                 ACG_ALLOW_ACG_TEAM_MIGRATION="1",
+                ACG_ALLOW_RESOURCE_SCOPE_MIGRATION="1",
                 AUTH_SECRET="test-secret",
             ):
                 store = load_isolated_store()
                 identity = store._database_identity(database)
-                store.apply_schema_migrations(expected_identity=identity)
+                store.apply_schema_migrations(
+                    expected_identity=identity,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 seed_acg_legacy_fixture(store, database)
                 protected_before = protected_fixture_rows(database)
 
@@ -476,10 +786,18 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                 self.assertEqual(dry_run["counts"]["suppliersCaptured"], 1)
                 self.assertEqual(dry_run["counts"]["accountsCaptured"], 2)
 
-                first = store.apply_acg_internal_team_migration(**confirmation)
+                first = store.apply_acg_internal_team_migration(
+                    **confirmation,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 self.assertTrue(first["applied"])
                 self.assertTrue(first["ok"])
                 self.assertEqual(protected_fixture_rows(database), protected_before)
+                store.apply_resource_scope_migration(
+                    expected_identity=identity,
+                    expected_schema_version=store.RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 self.assertTrue(store.database_readiness()["ok"])
 
                 with sqlite3.connect(database) as conn:
@@ -527,7 +845,10 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                     for username, username_key in member_keys + request_keys
                 ))
 
-                second = store.apply_acg_internal_team_migration(**confirmation)
+                second = store.apply_acg_internal_team_migration(
+                    **confirmation,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 self.assertFalse(second["applied"])
                 with sqlite3.connect(database) as conn:
                     counts_after_second = {
@@ -550,7 +871,10 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                     )
                 self.assertEqual(counts_after_second, counts_after_first)
 
-                third = store.apply_acg_internal_team_migration(**confirmation)
+                third = store.apply_acg_internal_team_migration(
+                    **confirmation,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 self.assertFalse(third["applied"])
                 with sqlite3.connect(database) as conn:
                     future_scoped = conn.execute(
@@ -583,7 +907,10 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
             ):
                 store = load_isolated_store()
                 identity = store._database_identity(database)
-                store.apply_schema_migrations(expected_identity=identity)
+                store.apply_schema_migrations(
+                    expected_identity=identity,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 seed_acg_legacy_fixture(store, database)
                 confirmation = {
                     "expected_identity": identity,
@@ -617,7 +944,10 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                 self.assertFalse(conflict["ok"])
                 self.assertIn("external_team_binding_conflict", conflict["issues"])
                 with self.assertRaisesRegex(store.StoreNotReadyError, "preflight failed"):
-                    store.apply_acg_internal_team_migration(**confirmation)
+                    store.apply_acg_internal_team_migration(
+                        **confirmation,
+                        backup_binding=current_backup_binding(store, database),
+                    )
                 with sqlite3.connect(database) as conn:
                     target_team = conn.execute(
                         "SELECT 1 FROM teams WHERE id=?", (store.INTERNAL_TEAM_ID,)
@@ -647,7 +977,10 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
             ):
                 store = load_isolated_store()
                 identity = store._database_identity(database)
-                store.apply_schema_migrations(expected_identity=identity)
+                store.apply_schema_migrations(
+                    expected_identity=identity,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 seed_acg_legacy_fixture(store, database)
                 with sqlite3.connect(database) as conn:
                     conn.execute(
@@ -706,7 +1039,10 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                 )
 
                 with self.assertRaisesRegex(store.StoreNotReadyError, "preflight failed"):
-                    store.apply_acg_internal_team_migration(**confirmation)
+                    store.apply_acg_internal_team_migration(
+                        **confirmation,
+                        backup_binding=current_backup_binding(store, database),
+                    )
                 self.assertEqual(before, logical_database_dump(database))
                 with sqlite3.connect(database) as conn:
                     data_ledger = conn.execute(
@@ -738,7 +1074,10 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
             ):
                 store = load_isolated_store()
                 identity = store._database_identity(database)
-                store.apply_schema_migrations(expected_identity=identity)
+                store.apply_schema_migrations(
+                    expected_identity=identity,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 seed_acg_legacy_fixture(store, database)
                 with sqlite3.connect(database) as conn:
                     conn.execute(
@@ -784,7 +1123,10 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                 )
 
                 with self.assertRaisesRegex(store.StoreNotReadyError, "preflight failed"):
-                    store.apply_acg_internal_team_migration(**confirmation)
+                    store.apply_acg_internal_team_migration(
+                        **confirmation,
+                        backup_binding=current_backup_binding(store, database),
+                    )
                 self.assertEqual(before, logical_database_dump(database))
                 with sqlite3.connect(database) as conn:
                     data_ledger = conn.execute(
@@ -798,7 +1140,7 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                 self.assertIsNone(data_ledger)
                 self.assertIsNone(scope_table)
 
-    def test_acg_readiness_allows_member_changes_but_guards_owner_and_resources(self):
+    def test_acg_readiness_guards_all_captured_members_and_resources(self):
         with tempfile.TemporaryDirectory() as tmp:
             database = Path(tmp) / "data.sqlite"
             with sqlite3.connect(database) as conn:
@@ -812,11 +1154,15 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                 ACG_RELEASE_ID="test-release",
                 ACG_ALLOW_SCHEMA_MIGRATION="1",
                 ACG_ALLOW_ACG_TEAM_MIGRATION="1",
+                ACG_ALLOW_RESOURCE_SCOPE_MIGRATION="1",
                 AUTH_SECRET="test-secret",
             ):
                 store = load_isolated_store()
                 identity = store._database_identity(database)
-                store.apply_schema_migrations(expected_identity=identity)
+                store.apply_schema_migrations(
+                    expected_identity=identity,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 seed_acg_legacy_fixture(store, database)
                 confirmation = {
                     "expected_identity": identity,
@@ -824,7 +1170,15 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                     "team_id": store.INTERNAL_TEAM_ID,
                     "expected_schema_version": store.SCHEMA_MIGRATION_VERSION,
                 }
-                store.apply_acg_internal_team_migration(**confirmation)
+                store.apply_acg_internal_team_migration(
+                    **confirmation,
+                    backup_binding=current_backup_binding(store, database),
+                )
+                store.apply_resource_scope_migration(
+                    expected_identity=identity,
+                    expected_schema_version=store.RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,
+                    backup_binding=current_backup_binding(store, database),
+                )
                 self.assertTrue(store.database_readiness()["ok"])
 
                 with sqlite3.connect(database) as conn:
@@ -833,7 +1187,21 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                         "UPDATE team_members SET team_role='viewer',status='inactive' "
                         "WHERE member_id='editor'"
                     )
-                self.assertTrue(store.database_readiness()["ok"])
+                member_drift = store.database_readiness()
+                self.assertFalse(member_drift["ok"])
+                self.assertFalse(member_drift["acgMigration"])
+
+                with sqlite3.connect(database) as conn:
+                    conn.execute(
+                        "INSERT INTO team_members("
+                        "team_id,member_id,team_role,status,joined_at,added_by"
+                        ") VALUES(?,?,?,?,?,?)",
+                        (store.INTERNAL_TEAM_ID, "admin-2", "admin", "active", 1, "owner"),
+                    )
+                    conn.execute(
+                        "UPDATE team_members SET team_role='creator',status='active' "
+                        "WHERE member_id='editor'"
+                    )
 
                 with sqlite3.connect(database) as conn:
                     conn.execute(
@@ -918,6 +1286,9 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
             patch.object(server_main.runtime_config, "db_bootstrap_mode", return_value="validate"),
             patch.object(server_main.store, "database_readiness", return_value=healthy),
             patch.object(server_main, "_runtime_path_readiness", return_value=healthy),
+            patch.object(
+                server_main, "_private_media_registry_readiness", return_value=healthy,
+            ),
             patch.object(server_main, "_canvas_manifest_readiness", return_value=healthy),
             patch.object(
                 server_main, "_video_sidecar_readiness",
@@ -953,27 +1324,42 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
             self.assertEqual(getattr(raised.exception, "status_code", None), 503)
             client.assert_not_called()
 
-    def test_v137_production_write_contract_requires_read_only_mode(self):
+    def test_v140_production_write_contract_requires_verified_startup(self):
         if str(APP_DIR) not in sys.path:
             sys.path.insert(0, str(APP_DIR))
         from server import main as server_main
 
         with (
+            patch.object(server_main.runtime_config, "runtime_mode", return_value="production"),
             patch.object(server_main.runtime_config, "is_production", return_value=True),
             patch.object(server_main.runtime_config, "is_read_only", return_value=False),
+            patch.object(
+                server_main.runtime_config,
+                "read_only_mode_status",
+                return_value={"ok": True, "readOnly": False},
+            ),
         ):
             read_write = server_main._production_write_contract_readiness()
         self.assertFalse(read_write["ok"])
         self.assertEqual(read_write["mode"], "read-write")
-        self.assertIn("resource-scope-coverage", read_write["writeEnableBlockers"])
-        self.assertIn("private-media-registry", read_write["writeEnableBlockers"])
+        self.assertEqual(
+            ["startup-contract-unverified"],
+            read_write["writeEnableBlockers"],
+        )
 
         with (
+            patch.object(server_main.runtime_config, "runtime_mode", return_value="production"),
             patch.object(server_main.runtime_config, "is_production", return_value=True),
             patch.object(server_main.runtime_config, "is_read_only", return_value=True),
+            patch.object(
+                server_main.runtime_config,
+                "read_only_mode_status",
+                return_value={"ok": True, "readOnly": True},
+            ),
         ):
             protected = server_main._production_write_contract_readiness()
         self.assertTrue(protected["ok"])
+        self.assertFalse(protected["writeReady"])
         self.assertEqual(protected["mode"], "read-only")
 
     def test_deploy_launcher_uses_validation_and_readiness_gate(self):
@@ -982,7 +1368,8 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
         self.assertIn('if [ "$ACG_RUNTIME_MODE" != "production" ]; then', source)
         self.assertNotIn("local|test)", source)
         self.assertIn('ACG_DB_BOOTSTRAP_MODE="${ACG_DB_BOOTSTRAP_MODE:-validate}"', source)
-        self.assertIn("ACG_REQUIRE_INTERNAL_TEAM must be enabled in production", source)
+        self.assertIn("must be enabled in production", source)
+        self.assertIn("verify_production_write_gate", source)
         self.assertIn('validate_sidecar_url("VIDEO_WORKSHOP_URL"', source)
         self.assertIn('validate_sidecar_url("VIDEO_WORKSHOP_HEALTH_URL"', source)
         self.assertIn('"http://127.0.0.1:${PORT}/api/ready"', source)

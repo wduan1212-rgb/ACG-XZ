@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260803-v139-durable-usage-1",
-  "fileCount": 48,
-  "totalBytes": 2315474,
+  "releaseId": "20260803-v140-deployment-readiness-1",
+  "fileCount": 53,
+  "totalBytes": 2570124,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100711,
-      "sha256": "a4d3dfe626ae5ffeca3f2b8d7a7d8de40e7748d81e9edd04ff9a83c93bf38888"
+      "size": 100718,
+      "sha256": "9487cb401068e7e184cc8372eebd41f847f0cb96bbd5cedead315ca63404f303"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -63,6 +63,11 @@
       "path": "apps/video-workshop/app/video_skill.py",
       "size": 928,
       "sha256": "222da122ecc216e77a310d6f681712fb391611f9698cd9bc8fc39861436b75c8"
+    },
+    {
+      "path": "apps/video-workshop/requirements.lock.txt",
+      "size": 846,
+      "sha256": "57927123392d8af5f54983ac11a6ae92c75ef197c274c5165983fa70b181fa7c"
     },
     {
       "path": "apps/video-workshop/requirements.txt",
@@ -156,13 +161,13 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22279,
-      "sha256": "ba079da6f358819ee1fb50d59e1bd3672efd0e357172b303dad32ea51ed382a8"
+      "size": 22293,
+      "sha256": "4e0b3ada5c6f8c8098e98f89b48f9d201e9ff65160a74a8d01af89b713af9901"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
-      "size": 12775,
-      "sha256": "7f45bfb0c60564e9afabf5932f6ddd8799dbe76909686aec10a5ea8383b46cd4"
+      "size": 15992,
+      "sha256": "08956d60d349156edbecb049e9eab8db86bb7818a5638789792b86cdecbe9d1e"
     },
     {
       "path": "deploy/local_video_workshop.sh",
@@ -171,8 +176,8 @@
     },
     {
       "path": "deploy/start_server.sh",
-      "size": 21928,
-      "sha256": "b3c33cd3fa545c311510f9c4f788c3b0cba5e35b5ee0ba554ce14d53bb9bbfec"
+      "size": 32909,
+      "sha256": "4d5c9345cfd235d7d3f87fb6db84235e4f4c237025d0af409eb460ce2ba3c866"
     },
     {
       "path": "deploy/status_server.sh",
@@ -185,19 +190,29 @@
       "sha256": "3190f7f86c0b87ce69c633159f50170a9084ba9337124eab6e2324743b78998c"
     },
     {
+      "path": "deploy/verify_offline_dependencies.py",
+      "size": 10766,
+      "sha256": "f7c456a6e7505f395396446b32d20ecc4890ddc169575694fe996563eb962143"
+    },
+    {
+      "path": "deploy/verify_production_write_gate.py",
+      "size": 2236,
+      "sha256": "0b750270d116a8834ffecfccd4c7e975be96c1f95a9ffc7a6eefc3c1329cadf9"
+    },
+    {
       "path": "deploy/verify_release_contracts.sh",
       "size": 526,
       "sha256": "d3586ebe4efe25c211f2b5f05e90c68b87224e6f756d0bed94fb8b5a92de764a"
     },
     {
       "path": "server/config.py",
-      "size": 9256,
-      "sha256": "083d49b2d0d63b7a6524aea1a6d4a7b4e880861b8db4af24f0d0b058f80af231"
+      "size": 10160,
+      "sha256": "264e4f40fb7d11862e8ab89fc59eb096ac813df564ed89288a80f1196e9e6b19"
     },
     {
       "path": "server/main.py",
-      "size": 451518,
-      "sha256": "2e987dfda04b9a28b5da696b5a28db6639ec610a7b876bf486afa08814c05107"
+      "size": 478556,
+      "sha256": "fd9c14977987921bbf9081f4022f58784baa7ed310e94ce3b47dc18ea2bff8b4"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -206,8 +221,8 @@
     },
     {
       "path": "server/migrations/__main__.py",
-      "size": 5376,
-      "sha256": "fc0852afbbd88c197e1fed79b60ff105019ae6086117b60716514e909c4312d3"
+      "size": 17491,
+      "sha256": "9f356afba0b87d64102928a65bfffac14c1371282370796cc171bc10617a7b98"
     },
     {
       "path": "server/minimax_system_voices.json",
@@ -220,14 +235,19 @@
       "sha256": "5c3563b15a076a4a8e996609e685c37baa080be25624c25042b0836f9fa7cf65"
     },
     {
+      "path": "server/requirements.lock.txt",
+      "size": 491,
+      "sha256": "a8b8084d406d1a9c2900942415b8f2e7ed5721bd1cf6e8b57f618514301c69c8"
+    },
+    {
       "path": "server/requirements.txt",
       "size": 77,
       "sha256": "2955e276662f75a713ed69279c9dc927f245dcbd68001b58640c9ec18126b467"
     },
     {
       "path": "server/scripts/consistent_sqlite_backup.py",
-      "size": 6947,
-      "sha256": "b54cb38aabd7c0167810ee84ab93ad5011b088082779b5421b97c3183dce388f"
+      "size": 15891,
+      "sha256": "7402a7d6688ba25564c08257a9b1b100327748a6f380ba10613973001551da8f"
     },
     {
       "path": "server/scripts/dry_run_dedupe_accounts.py",
@@ -235,14 +255,19 @@
       "sha256": "312e31a998d698534710696254a7e3e1ef34988241faa6776d697e8c67a49073"
     },
     {
+      "path": "server/scripts/runtime_snapshot.py",
+      "size": 31888,
+      "sha256": "fd22c84476a91aa74a7f96b81518665d28d31273f9b13d744aec7a98e60780cd"
+    },
+    {
       "path": "server/store.py",
-      "size": 499342,
-      "sha256": "8f97c74a1e86c0cf4d646491d20fb6afc990c123c0642036fbcfdc67ba23f519"
+      "size": 644369,
+      "sha256": "e4a46e5261208a52cbc9b522ca0c0c9162126de79400f8f20a9e0d47f82488f2"
     },
     {
       "path": "tools/verify_release_contracts.py",
-      "size": 37023,
-      "sha256": "69a0973d970c2544db57f2565a42030f6b61e00d2b28f6d079d30c8fdbd36487"
+      "size": 37199,
+      "sha256": "fc63bd4126b925757d80b739d81c71c393870c04e051f447c288ec95d13312e9"
     }
   ]
 }

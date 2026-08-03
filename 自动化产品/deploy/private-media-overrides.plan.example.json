@@ -1,0 +1,23 @@
+{
+  "format": "acg-private-media-overrides-v1",
+  "databaseIdentity": "<databaseIdentity-from-media-preflight>",
+  "databasePathSha256": "<databasePathSha256-from-media-preflight>",
+  "databaseLogicalSha256": "<databaseLogicalSha256-from-media-preflight>",
+  "schemaVersion": 0,
+  "userVersion": 0,
+  "backupManifestSha256": "<fresh-v2-backup-manifest-sha256-from-the-same-frozen-state>",
+  "privateMediaSchemaVersion": 140003,
+  "privateMediaDataVersion": 140004,
+  "inventoryDigest": "<inventoryDigest-from-media-preflight>",
+  "snapshotManifestSha256": "<verified-runtime-snapshot-manifest-sha256>",
+  "snapshotMediaInventoryDigest": "<mediaInventoryDigest-from-the-same-runtime-snapshot>",
+  "entries": [
+    {
+      "mediaKind": "composed",
+      "mediaKey": "<exact-unresolved-media-key-from-preflight>",
+      "ownerId": "<reviewed-existing-owner-id>",
+      "reason": "<why deterministic provenance cannot recover this owner>",
+      "evidence": "<short summary of frozen DB and runtime snapshot evidence>"
+    }
+  ]
+}

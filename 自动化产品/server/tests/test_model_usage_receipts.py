@@ -223,16 +223,27 @@ class ModelUsageReceiptStoreTest(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual("pending", status)
 
-    def test_local_schema_records_forward_only_v139_migration(self):
+    def test_local_schema_preserves_v139_receipt_and_advances_forward_only(self):
         with sqlite3.connect(store.DB_PATH) as conn:
             ledger = conn.execute(
                 "SELECT checksum,status FROM schema_migrations WHERE version=?",
                 (store.MODEL_USAGE_SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
+            media_ledger = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
         self.assertEqual(
             (store.MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM, "success"), ledger
         )
-        self.assertEqual(139001, store.LATEST_SCHEMA_MIGRATION_VERSION)
+        self.assertEqual(
+            (store.PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM, "success"),
+            media_ledger,
+        )
+        self.assertEqual(
+            store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+            store.LATEST_SCHEMA_MIGRATION_VERSION,
+        )
 
 
 if __name__ == "__main__":

@@ -144,6 +144,7 @@ if not _VIDEO_WORKSHOP_URL_STATUS["ok"]:
 VIDEO_WORKSHOP_TIMEOUT = float(os.getenv("VIDEO_WORKSHOP_TIMEOUT", "180") or "180")
 VIDEO_WORKSHOP_SESSION_COOKIE = "acg_custom_video_session"
 CUSTOM_CANVAS_SESSION_COOKIE = "acg_custom_canvas_session"
+PRIVATE_MEDIA_SESSION_COOKIE = "acg_private_media_session"
 CUSTOM_CANVAS_SESSION_TTL = 30 * 60
 
 
@@ -461,11 +462,13 @@ JUSTONE_TIMEOUT = float(os.getenv("JUSTONE_TIMEOUT", "90") or "90")
 async def _app_lifespan(_app):
     # The helpers are resolved when startup runs, after this module has been
     # fully loaded.  Importing the application therefore remains read-only.
+    await _prime_production_write_gate()
     await _start_model_usage_completion_spool_reconciler()
     try:
         yield
     finally:
         await _stop_model_usage_completion_spool_reconciler()
+        _clear_production_write_gate()
 
 
 app = FastAPI(
@@ -476,26 +479,155 @@ app = FastAPI(
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# The v137 audit proved that global admin collection access and the legacy
-# uploads/composed URL model still lack complete resource ownership coverage.
-# Keep the production release physically incapable of serving normal business
-# traffic in read-write mode until a later audited release replaces this
-# contract with deny-by-default resource scopes and a private media registry.
-PRODUCTION_WRITE_CONTRACT = "v137-read-only-until-resource-scopes-and-media-registry"
+# The write contract is a backend deployment invariant, not a UI switch.  A
+# production read-write process remains closed until one complete read-only
+# audit proves the exact migration/data/security closure.  The resulting
+# snapshot is O(1) on normal requests; /api/ready refreshes it explicitly.
+PRODUCTION_WRITE_CONTRACT = "v140-production-write-gate-1"
+_PRODUCTION_WRITE_GATE_SNAPSHOT = None
+_PRODUCTION_WRITE_MIGRATIONS = {
+    "acgMigrationVersion": 137004,
+    "resourceScopeMigrationVersion": 140002,
+    "privateMediaMigrationVersion": 140004,
+}
+_PRODUCTION_SCHEMA_MIGRATIONS = {
+    "modelUsageMigrationVersion": 139001,
+    "resourceScopeSchemaVersion": 140001,
+    "privateMediaSchemaVersion": 140003,
+}
 
 
-def _production_write_contract_readiness():
-    blocked = runtime_config.is_production() and not runtime_config.is_read_only()
+def _production_write_gate_from_checks(checks):
+    """Evaluate one already-collected, read-only deployment audit."""
+
+    checks = checks if isinstance(checks, dict) else {}
+    database = checks.get("database") if isinstance(checks.get("database"), dict) else {}
+    blockers = []
+
+    if not bool(database.get("ok")):
+        blockers.append("database-readiness")
+    if str(database.get("quickCheck") or "") != "ok":
+        blockers.append("sqlite-quick-check")
+    if (
+        database.get("missingTables")
+        or database.get("missingColumns")
+        or int(database.get("migrationDirty") or 0) != 0
+        or any(
+            int(database.get(field) or 0) != expected
+            for field, expected in _PRODUCTION_SCHEMA_MIGRATIONS.items()
+        )
+    ):
+        blockers.append("schema-migrations")
+    if not bool(database.get("acgMigration")) or int(
+        database.get("acgMigrationVersion") or 0
+    ) != _PRODUCTION_WRITE_MIGRATIONS["acgMigrationVersion"]:
+        blockers.append("acg-team-migration-137004")
+    if not bool(database.get("resourceScopeMigration")) or int(
+        database.get("resourceScopeMigrationVersion") or 0
+    ) != _PRODUCTION_WRITE_MIGRATIONS["resourceScopeMigrationVersion"]:
+        blockers.append("resource-scope-migration-140002")
+    if not bool(database.get("privateMediaMigration")) or int(
+        database.get("privateMediaMigrationVersion") or 0
+    ) != _PRODUCTION_WRITE_MIGRATIONS["privateMediaMigrationVersion"]:
+        blockers.append("private-media-migration-140004")
+    if (
+        int(database.get("modelUsageCompletionSpoolCorrupt") or 0) != 0
+        or int(database.get("modelUsageCompletionSpoolConflicts") or 0) != 0
+        or bool(database.get("modelUsageCompletionSpoolError"))
+    ):
+        blockers.append("model-usage-spool-integrity")
+    for field, blocker in (
+        ("modelUsageUnresolved", "model-usage-unresolved"),
+        ("modelUsageOutboxPending", "model-usage-outbox-pending"),
+        ("modelUsageCompletionSpoolPending", "model-usage-spool-pending"),
+    ):
+        if int(database.get(field) or 0) != 0:
+            blockers.append(blocker)
+    for key, blocker in (
+        ("mediaRegistry", "private-media-registry-coverage"),
+        ("paths", "runtime-paths"),
+        ("sidecar", "video-sidecar"),
+        ("canvas", "infinite-canvas-manifest"),
+        ("release", "release-identity"),
+    ):
+        value = checks.get(key)
+        if not isinstance(value, dict) or not bool(value.get("ok")):
+            blockers.append(blocker)
+
+    blockers = list(dict.fromkeys(blockers))
     return {
-        "ok": not blocked,
+        "ok": not blockers,
+        "writeReady": not blockers,
         "contract": PRODUCTION_WRITE_CONTRACT,
-        "mode": "read-only" if runtime_config.is_read_only() else "read-write",
-        "productionReadOnlyRequired": True,
-        "writeEnableBlockers": [
-            "resource-scope-coverage",
-            "private-media-registry",
-        ],
+        "mode": "read-write",
+        "productionReadOnlyRequired": False,
+        "startupVerified": True,
+        "writeEnableBlockers": blockers,
     }
+
+
+def _production_write_contract_readiness(checks=None):
+    """Return the cheap request gate or evaluate explicitly supplied checks."""
+
+    if runtime_config.runtime_mode() == "invalid":
+        return {
+            "ok": False,
+            "writeReady": False,
+            "contract": PRODUCTION_WRITE_CONTRACT,
+            "mode": "invalid",
+            "productionReadOnlyRequired": True,
+            "startupVerified": False,
+            "writeEnableBlockers": ["runtime-mode"],
+        }
+    if not runtime_config.is_production():
+        return {
+            "ok": True,
+            "writeReady": True,
+            "contract": PRODUCTION_WRITE_CONTRACT,
+            "mode": "read-write",
+            "productionReadOnlyRequired": False,
+            "startupVerified": True,
+            "writeEnableBlockers": [],
+        }
+    mode_status = runtime_config.read_only_mode_status()
+    if not mode_status.get("ok"):
+        return {
+            "ok": False,
+            "writeReady": False,
+            "contract": PRODUCTION_WRITE_CONTRACT,
+            "mode": "invalid",
+            "productionReadOnlyRequired": True,
+            "startupVerified": False,
+            "writeEnableBlockers": ["read-only-mode-configuration"],
+        }
+    if runtime_config.is_read_only():
+        return {
+            "ok": True,
+            "writeReady": False,
+            "contract": PRODUCTION_WRITE_CONTRACT,
+            "mode": "read-only",
+            "productionReadOnlyRequired": False,
+            "startupVerified": True,
+            "writeEnableBlockers": ["maintenance-read-only"],
+        }
+    if checks is not None:
+        return _production_write_gate_from_checks(checks)
+    if isinstance(_PRODUCTION_WRITE_GATE_SNAPSHOT, dict):
+        return dict(_PRODUCTION_WRITE_GATE_SNAPSHOT)
+    return {
+        "ok": False,
+        "writeReady": False,
+        "contract": PRODUCTION_WRITE_CONTRACT,
+        "mode": "read-write",
+        "productionReadOnlyRequired": False,
+        "startupVerified": False,
+        "writeEnableBlockers": ["startup-contract-unverified"],
+    }
+
+
+def _clear_production_write_gate():
+    global _PRODUCTION_WRITE_GATE_SNAPSHOT
+    _PRODUCTION_WRITE_GATE_SNAPSHOT = None
 
 _READ_ONLY_ALLOWED_POST_PATHS = {
     "/api/auth/login",
@@ -891,6 +1023,52 @@ def _member_from_authorization(authorization: str = ""):
     row = store.get_member(member_id) if member_id else None
     if not row:
         raise HTTPException(401, "未登录或登录已过期")
+    return store.member_public(row)
+
+
+def _set_private_media_session_cookie(
+    response: Response,
+    request: Request,
+    token: str,
+) -> Response:
+    """Issue an HttpOnly credential for native ``img``/``video`` requests.
+
+    Browser media elements cannot attach the platform's bearer header.  The
+    cookie is deliberately scoped to ``/api`` so it authorizes only private
+    upload/composed reads, while community media stays public through its own
+    explicit post route.
+    """
+
+    clean = str(token or "").strip()
+    if clean:
+        forwarded_proto = str(request.headers.get("x-forwarded-proto") or "")
+        secure_cookie = (
+            forwarded_proto.split(",", 1)[0].strip().lower() == "https"
+            or request.url.scheme == "https"
+        )
+        response.set_cookie(
+            PRIVATE_MEDIA_SESSION_COOKIE,
+            clean,
+            max_age=store.TOKEN_TTL,
+            httponly=True,
+            secure=secure_cookie,
+            samesite="strict",
+            path="/api",
+        )
+    return response
+
+
+def _private_media_session_member(request: Request):
+    """Authenticate a direct private-media request without query credentials."""
+
+    authorization = str(request.headers.get("authorization") or "").strip()
+    if authorization:
+        return _member_from_authorization(authorization)
+    token = str(request.cookies.get(PRIVATE_MEDIA_SESSION_COOKIE) or "").strip()
+    member_id = store.parse_token(token) if token else None
+    row = store.get_member(member_id) if member_id else None
+    if not row:
+        raise HTTPException(401, "媒体登录态已过期，请刷新页面后重试")
     return store.member_public(row)
 
 
@@ -3504,23 +3682,32 @@ def _find_video_url(obj) -> str:
     return ""
 
 
-def _local_server_file_path(url: str) -> Optional[Path]:
+def _local_server_media_identity(url: str):
     raw = str(url or "").strip()
     if not raw:
         return None
     path = urlparse(raw).path if raw.startswith(("http://", "https://")) else raw
     path = path.split("?", 1)[0].split("#", 1)[0]
     if path.startswith("/api/video/composed/"):
-        local = COMPOSED_DIR / Path(path[len("/api/video/composed/"):]).name
+        key = Path(path[len("/api/video/composed/"):]).name
+        kind = "composed"
+        local = COMPOSED_DIR / key
     elif path.startswith("/api/files/"):
-        local = UPLOAD_DIR / Path(path[len("/api/files/"):]).name
+        key = Path(path[len("/api/files/"):]).name
+        kind = "upload"
+        local = UPLOAD_DIR / key
     else:
         return None
     try:
         local.resolve().relative_to(local.parent.resolve())
     except Exception:
         return None
-    return local
+    return kind, key, local
+
+
+def _local_server_file_path(url: str) -> Optional[Path]:
+    identity = _local_server_media_identity(url)
+    return identity[2] if identity else None
 
 
 def _stable_local_video_url(url: str) -> str:
@@ -3549,7 +3736,11 @@ async def _download_binary(client: httpx.AsyncClient, url: str, label: str, max_
     return data
 
 
-async def _cache_generated_video_output(video_url: str, prefix: str) -> Tuple[str, str]:
+async def _cache_generated_video_output(
+    video_url: str,
+    prefix: str,
+    member: dict,
+) -> Tuple[str, str]:
     raw = str(video_url or "").strip()
     if not raw:
         return "", ""
@@ -3557,6 +3748,14 @@ async def _cache_generated_video_output(video_url: str, prefix: str) -> Tuple[st
     if stable:
         local = _local_server_file_path(stable)
         if local and local.exists() and local.stat().st_size > 0:
+            identity = _local_server_media_identity(stable)
+            _register_private_media(
+                identity[0],
+                identity[1],
+                member,
+                provenance_kind="provider-output",
+                provenance_id=str(prefix),
+            )
             return stable, ""
         return "", "视频已生成，但服务器缓存文件暂不可读取，请重试生成。"
     if not raw.startswith(("http://", "https://")):
@@ -3566,8 +3765,16 @@ async def _cache_generated_video_output(video_url: str, prefix: str) -> Tuple[st
     out_name = f"{prefix}_{digest}.mp4"
     out_path = COMPOSED_DIR / out_name
     if out_path.exists() and out_path.stat().st_size > 0:
+        _register_private_media(
+            "composed",
+            out_name,
+            member,
+            provenance_kind="provider-output",
+            provenance_id=str(prefix),
+        )
         return f"/api/video/composed/{out_name}", ""
     tmp_path = out_path.with_suffix(".tmp")
+    created_output = False
     try:
         async with httpx.AsyncClient(**_httpx_async_client_kwargs(
             timeout=httpx.Timeout(240.0, connect=12.0),
@@ -3577,6 +3784,14 @@ async def _cache_generated_video_output(video_url: str, prefix: str) -> Tuple[st
             data = await _download_binary(client, raw, "成片")
         tmp_path.write_bytes(data)
         tmp_path.replace(out_path)
+        created_output = True
+        _register_private_media(
+            "composed",
+            out_name,
+            member,
+            provenance_kind="provider-output",
+            provenance_id=str(prefix),
+        )
         return f"/api/video/composed/{out_name}", ""
     except Exception:
         try:
@@ -3584,6 +3799,11 @@ async def _cache_generated_video_output(video_url: str, prefix: str) -> Tuple[st
                 tmp_path.unlink()
         except Exception:
             pass
+        if created_output:
+            try:
+                out_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         return "", "视频已生成，但服务器缓存成片失败；请稍后重试该段，避免直接播放上游临时地址。"
 
 
@@ -4305,7 +4525,7 @@ async def _digital_human_submit(
     return {"ok": True, "provider": "jimeng-omnihuman", "providerRef": f"omnihuman:{task_id}", "raw": data}
 
 
-async def _digital_human_poll(task_id: str):
+async def _digital_human_poll(task_id: str, member: dict):
     if not _digital_human_configured():
         raise HTTPException(
             500,
@@ -4341,14 +4561,18 @@ async def _digital_human_poll(task_id: str):
     output = None
     error = _cv_error(data) if status == "failed" else None
     if status == "succeeded" and video_url:
-        stable_url, cache_error = await _cache_generated_video_output(video_url, "omnihuman")
+        stable_url, cache_error = await _cache_generated_video_output(
+            video_url, "omnihuman", member,
+        )
         if stable_url:
             output = {"url": stable_url, "label": "OmniHuman 数字人片段已生成"}
         else:
             status = "failed"
             error = cache_error or "OmniHuman 已生成视频，但服务器未能缓存成片，请重试该段。"
     elif video_url:
-        stable_url, _ = await _cache_generated_video_output(video_url, "omnihuman")
+        stable_url, _ = await _cache_generated_video_output(
+            video_url, "omnihuman", member,
+        )
         if stable_url:
             output = {"url": stable_url, "label": "OmniHuman 数字人片段已生成"}
     return {
@@ -4731,7 +4955,7 @@ async def video_submit(
 
 async def _video_poll_upstream(task_id: str, _me: dict):
     if _is_digital_human_task(task_id):
-        result = await _digital_human_poll(task_id)
+        result = await _digital_human_poll(task_id, _me)
         if result.get("status") in {"succeeded", "failed"}:
             await _video_task_gate().release_task(task_id)
         return result
@@ -4758,14 +4982,18 @@ async def _video_poll_upstream(task_id: str, _me: dict):
     output = None
     error = _video_error(data) if status == "failed" else None
     if status == "succeeded" and video_url:
-        stable_url, cache_error = await _cache_generated_video_output(video_url, "seedance")
+        stable_url, cache_error = await _cache_generated_video_output(
+            video_url, "seedance", _me,
+        )
         if stable_url:
             output = {"url": stable_url, "label": "Seedance 片段已生成"}
         else:
             status = "failed"
             error = cache_error or "Seedance 已生成视频，但服务器未能缓存成片，请重试该段。"
     elif video_url:
-        stable_url, _ = await _cache_generated_video_output(video_url, "seedance")
+        stable_url, _ = await _cache_generated_video_output(
+            video_url, "seedance", _me,
+        )
         if stable_url:
             output = {"url": stable_url, "label": "Seedance 片段已生成"}
     result = {
@@ -5033,20 +5261,73 @@ async def proxy_file(req: FileProxyReq, _me=Depends(require_creator)):
 
 
 @app.get("/api/video/composed/{name}")
-def composed_file(name: str, request: Request):
+def composed_file(
+    name: str,
+    request: Request,
+    me=Depends(_private_media_session_member),
+):
     safe_name = Path(name).name
     path = COMPOSED_DIR / safe_name
     if not path.exists():
         raise HTTPException(404, "成片不存在")
-    return ranged_file_response(request, path, media_type="video/mp4")
+    _private_media_access_or_404(
+        "composed",
+        safe_name,
+        me,
+        legacy_authorizer=lambda: bool(
+            store.legacy_private_media_document_access(
+                "composed", safe_name, me["id"], me.get("role") or "",
+            )
+        ),
+    )
+    return _private_ranged_file_response(request, path, media_type="video/mp4")
 
 
-async def _write_video_source(client: httpx.AsyncClient, url: str, path: Path, label: str) -> bool:
+def _register_new_composed_output(
+    path: Path,
+    member: dict,
+    *,
+    provenance_kind: str,
+    provenance_id: str,
+) -> dict:
+    """Publish a newly rendered file only after its owner record is durable."""
+
+    try:
+        return _register_private_media(
+            "composed",
+            path.name,
+            member,
+            provenance_kind=provenance_kind,
+            provenance_id=provenance_id,
+        )
+    except Exception:
+        # These call sites create unique names for the current request.  It is
+        # therefore safe to remove this unpublished result, and safer than
+        # leaving an orphan that blocks the deployment readiness gate.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+async def _write_video_source(
+    client: httpx.AsyncClient,
+    url: str,
+    path: Path,
+    label: str,
+    *,
+    member: Optional[dict] = None,
+) -> bool:
     source = str(url or "").strip()
     if not source:
         return False
-    local = _local_server_file_path(source)
-    if local:
+    local_identity = _local_server_media_identity(source)
+    if local_identity:
+        kind, key, local = local_identity
+        if not member:
+            raise HTTPException(403, f"{label}缺少私有媒体访问身份")
+        _private_media_access_or_404(kind, key, member)
         if not local.exists() or local.stat().st_size <= 0:
             raise HTTPException(502, f"{label}不可读取")
         shutil.copyfile(local, path)
@@ -5371,7 +5652,13 @@ async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
         async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(240.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
             for i, c in enumerate(clips):
                 raw_fp = tdir / f"clip_raw_{i:03d}.mp4"
-                await _write_video_source(client, c.url, raw_fp, f"下载片段失败：{c.name or i + 1}")
+                await _write_video_source(
+                    client,
+                    c.url,
+                    raw_fp,
+                    f"下载片段失败：{c.name or i + 1}",
+                    member=_me,
+                )
                 fp = raw_fp
                 if float(c.trimIn or 0) > 0 or float(c.dur or 0) > 0:
                     fp = tdir / f"clip_{i:03d}.mp4"
@@ -5387,11 +5674,15 @@ async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
             if req.narrationDataUrl:
                 _write_data_url(narr_path, req.narrationDataUrl)
             elif req.narrationUrl:
-                await _write_video_source(client, req.narrationUrl, narr_path, "下载口播音频失败")
+                await _write_video_source(
+                    client, req.narrationUrl, narr_path, "下载口播音频失败", member=_me,
+                )
             if req.bgmDataUrl:
                 _write_data_url(bgm_path, req.bgmDataUrl)
             elif req.bgmUrl:
-                await _write_video_source(client, req.bgmUrl, bgm_path, "下载 BGM 失败")
+                await _write_video_source(
+                    client, req.bgmUrl, bgm_path, "下载 BGM 失败", member=_me,
+                )
         concat = tdir / "concat.txt"
         lines = []
         for f in files:
@@ -5457,6 +5748,12 @@ async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
                 raise HTTPException(502, "ffmpeg 字幕烧录失败：" + (run.stderr or run.stdout)[-800:])
         else:
             shutil.copyfile(mixed_path, out_path)
+    _register_new_composed_output(
+        out_path,
+        _me,
+        provenance_kind="video-compose",
+        provenance_id=out_name,
+    )
     return {"ok": True, "url": f"/api/video/composed/{out_name}", "name": out_name}
 
 
@@ -5507,6 +5804,7 @@ async def static_video_compose(req: StaticComposeReq, _me=Depends(require_creato
                     frame.url,
                     source_path,
                     f"下载图片分镜失败：{frame.name or index + 1}",
+                    member=_me,
                 ):
                     raise HTTPException(400, f"图片分镜 {index + 1} 地址不可用")
                 clip_path = tdir / f"frame-{index:03d}.mp4"
@@ -5542,11 +5840,19 @@ async def static_video_compose(req: StaticComposeReq, _me=Depends(require_creato
             if req.narrationDataUrl:
                 _write_data_url(narration_path, req.narrationDataUrl)
             elif req.narrationUrl:
-                await _write_video_source(client, req.narrationUrl, narration_path, "下载口播音频失败")
+                await _write_video_source(
+                    client,
+                    req.narrationUrl,
+                    narration_path,
+                    "下载口播音频失败",
+                    member=_me,
+                )
             if req.bgmDataUrl:
                 _write_data_url(bgm_path, req.bgmDataUrl)
             elif req.bgmUrl:
-                await _write_video_source(client, req.bgmUrl, bgm_path, "下载 BGM 失败")
+                await _write_video_source(
+                    client, req.bgmUrl, bgm_path, "下载 BGM 失败", member=_me,
+                )
 
         concat_path = tdir / "frames.txt"
         concat_path.write_text(
@@ -5614,6 +5920,12 @@ async def static_video_compose(req: StaticComposeReq, _me=Depends(require_creato
                 raise HTTPException(502, "静态视频字幕烧录失败：" + (run.stderr or run.stdout)[-800:])
         else:
             shutil.copyfile(mixed_path, out_path)
+    _register_new_composed_output(
+        out_path,
+        _me,
+        provenance_kind="static-video-compose",
+        provenance_id=out_name,
+    )
     return {
         "ok": True,
         "url": f"/api/video/composed/{out_name}",
@@ -5638,6 +5950,7 @@ async def video_speed_version(req: VideoSpeedReq, _me=Depends(require_creator)):
     source_path = (COMPOSED_DIR / source_name).resolve()
     if not source_name or source_path.parent != COMPOSED_DIR.resolve() or not source_path.is_file():
         raise HTTPException(404, "原成片不存在")
+    _private_media_access_or_404("composed", source_name, _me)
     rate = max(1.2, min(2.0, float(req.speed)))
     out_name = (
         f"{time.time_ns()}_{uuid.uuid4().hex[:6]}_speed_{rate:.1f}_"
@@ -5662,6 +5975,12 @@ async def video_speed_version(req: VideoSpeedReq, _me=Depends(require_creator)):
     result = subprocess.run(command, capture_output=True, text=True, timeout=900)
     if result.returncode != 0 or not out_path.is_file() or out_path.stat().st_size <= 0:
         raise HTTPException(502, "ffmpeg 变速处理失败：" + (result.stderr or result.stdout)[-800:])
+    _register_new_composed_output(
+        out_path,
+        _me,
+        provenance_kind="speed-version",
+        provenance_id=source_name,
+    )
     return {
         "ok": True,
         "url": f"/api/video/composed/{out_name}",
@@ -6398,8 +6717,12 @@ def _video_sidecar_health_summary(status_code, payload):
     read_only = payload.get("readOnly") is True
     write_policy = str(payload.get("writePolicy") or "").strip()[:80]
     maintenance_contract_ok = bool(
-        not runtime_config.is_read_only()
-        or (read_only and write_policy == "deny-mutations")
+        (runtime_config.is_read_only() and read_only and write_policy == "deny-mutations")
+        or (
+            not runtime_config.is_read_only()
+            and not read_only
+            and write_policy == "normal"
+        )
     )
     return {
         "ok": bool(
@@ -6448,7 +6771,7 @@ def _runtime_path_readiness():
         "VIDEO_WORKSHOP_PROJECTS_DIR",
         VIDEO_WORKSHOP_ROOT / "data" / "projects",
     ))
-    return runtime_config.storage_path_status({
+    specs = {
         "database": (store.DB_PATH, "file"),
         "legacyData": (DATA_FILE, "optional_file"),
         "uploads": (UPLOAD_DIR, "dir"),
@@ -6457,7 +6780,128 @@ def _runtime_path_readiness():
         "videoProjects": (video_projects, "dir"),
         "videoOutputs": (VIDEO_WORKSHOP_OUTPUT_DIR, "dir"),
         "videoUploads": (VIDEO_WORKSHOP_UPLOAD_DIR, "dir"),
-    })
+    }
+    if runtime_config.is_production():
+        specs.update({
+            "modelUsageSpool": (Path(os.getenv(
+                "MODEL_USAGE_COMPLETION_SPOOL_DIR",
+                ROOT / "model_usage_spool",
+            )), "dir"),
+            "modelCache": (Path(os.getenv(
+                "HF_HOME",
+                FRONTEND_DIR / "runtime" / "model-cache",
+            )), "dir"),
+            "bgmLibrary": (Path(os.getenv(
+                "BGM_LIBRARY_DIR",
+                FRONTEND_DIR / "runtime" / "bgm-library",
+            )), "dir"),
+        })
+    return runtime_config.storage_path_status(specs)
+
+
+def _private_media_registry_readiness():
+    """Return a redacted ownership-coverage report for deployment gating."""
+
+    required = runtime_config.require_private_media_registry()
+    try:
+        status = store.private_media_registry_status()
+    except Exception as exc:
+        return {
+            "ok": not required,
+            "auditOk": False,
+            "required": required,
+            "error": exc.__class__.__name__,
+            "reason": "private media registry audit unavailable",
+        }
+    if not isinstance(status, dict):
+        return {
+            "ok": not required,
+            "auditOk": False,
+            "required": required,
+            "reason": "private media registry audit returned invalid data",
+        }
+    audit_ok = bool(status.get("ok"))
+    return {
+        **status,
+        "ok": audit_ok if required else True,
+        "auditOk": audit_ok,
+        "required": required,
+    }
+
+
+async def _deployment_readiness_checks(*, include_sidecar=True):
+    """Collect the expensive deployment checks once, outside request traffic."""
+
+    database, paths, media_registry, canvas = await asyncio.gather(
+        asyncio.to_thread(store.database_readiness),
+        asyncio.to_thread(_runtime_path_readiness),
+        asyncio.to_thread(_private_media_registry_readiness),
+        asyncio.to_thread(_canvas_manifest_readiness),
+    )
+    sidecar = (
+        await _video_sidecar_readiness()
+        if include_sidecar
+        else {"ok": False, "deferred": True}
+    )
+    release = runtime_config.release_id()
+    runtime_ok = runtime_config.runtime_mode() in {"local", "test", "production"}
+    release_ok = bool(release and release != "local-unidentified")
+    return {
+        "release": {
+            "ok": release_ok and runtime_ok,
+            "id": release,
+            "runtimeMode": runtime_config.runtime_mode(),
+            "readOnly": runtime_config.is_read_only(),
+            "bootstrapMode": runtime_config.db_bootstrap_mode(),
+        },
+        "database": database,
+        "mediaRegistry": media_registry,
+        "paths": paths,
+        "sidecar": sidecar,
+        "canvas": canvas,
+    }
+
+
+async def _prime_production_write_gate():
+    """Fail startup closed before a production read-write socket can serve."""
+
+    global _PRODUCTION_WRITE_GATE_SNAPSHOT
+    _PRODUCTION_WRITE_GATE_SNAPSHOT = None
+    if not runtime_config.is_production() or runtime_config.is_read_only():
+        return _production_write_contract_readiness()
+    try:
+        checks = await _deployment_readiness_checks()
+        gate = _production_write_contract_readiness(checks)
+    except Exception as exc:
+        gate = {
+            "ok": False,
+            "writeReady": False,
+            "contract": PRODUCTION_WRITE_CONTRACT,
+            "mode": "read-write",
+            "productionReadOnlyRequired": False,
+            "startupVerified": False,
+            "writeEnableBlockers": [
+                f"startup-audit-{exc.__class__.__name__.lower()}",
+            ],
+        }
+    _PRODUCTION_WRITE_GATE_SNAPSHOT = dict(gate)
+    if not gate.get("ok"):
+        blockers = ",".join(gate.get("writeEnableBlockers") or ["unknown"])
+        raise RuntimeError(f"production write gate failed: {blockers}")
+    return gate
+
+
+def _read_only_database_operational(database):
+    """Read-only maintenance needs integrity, not completed write migrations."""
+
+    database = database if isinstance(database, dict) else {}
+    return bool(
+        database.get("exists")
+        and str(database.get("quickCheck") or "") == "ok"
+        and int(database.get("modelUsageCompletionSpoolCorrupt") or 0) == 0
+        and int(database.get("modelUsageCompletionSpoolConflicts") or 0) == 0
+        and not database.get("modelUsageCompletionSpoolError")
+    )
 
 
 @app.get("/api/ready")
@@ -6481,31 +6925,36 @@ async def readiness(
             headers={"Cache-Control": "no-store"},
         )
 
-    database = store.database_readiness()
-    paths = _runtime_path_readiness()
-    canvas = _canvas_manifest_readiness()
-    sidecar = await _video_sidecar_readiness()
-    release = runtime_config.release_id()
-    runtime_ok = runtime_config.runtime_mode() in {"local", "test", "production"}
-    release_ok = bool(release and release != "local-unidentified")
-    checks = {
-        "release": {
-            "ok": release_ok and runtime_ok,
-            "id": release,
-            "runtimeMode": runtime_config.runtime_mode(),
-            "readOnly": runtime_config.is_read_only(),
-            "bootstrapMode": runtime_config.db_bootstrap_mode(),
-        },
-        "database": database,
-        "tenantSecurity": _production_write_contract_readiness(),
-        "paths": paths,
-        "sidecar": sidecar,
-        "canvas": canvas,
-    }
-    ready = all(bool(value.get("ok")) for value in checks.values())
+    checks = await _deployment_readiness_checks()
+    write_gate = _production_write_contract_readiness(checks)
+    checks["tenantSecurity"] = write_gate
+    if runtime_config.is_production() and not runtime_config.is_read_only():
+        global _PRODUCTION_WRITE_GATE_SNAPSHOT
+        _PRODUCTION_WRITE_GATE_SNAPSHOT = dict(write_gate)
+
+    if runtime_config.is_production() and runtime_config.is_read_only():
+        # An old-but-integral production database must be able to boot in
+        # maintenance mode so migrations can be inspected and applied by the
+        # separate CLI.  Migration/media coverage remains visible as false and
+        # writeReady stays false; it simply does not prevent a read-only socket.
+        ready = bool(
+            _read_only_database_operational(checks.get("database"))
+            and all(
+                bool((checks.get(name) or {}).get("ok"))
+                for name in ("release", "paths", "sidecar", "canvas")
+            )
+            and write_gate.get("ok")
+        )
+    else:
+        ready = all(bool(value.get("ok")) for value in checks.values())
     return JSONResponse(
         status_code=200 if ready else 503,
-        content={"ok": ready, "checks": checks},
+        content={
+            "ok": ready,
+            "ready": ready,
+            "writeReady": bool(write_gate.get("writeReady")),
+            "checks": checks,
+        },
         headers={"Cache-Control": "no-store"},
     )
 
@@ -7122,15 +7571,20 @@ async def supplier_assistant(
 
 
 @app.post("/api/auth/login")
-def auth_login(req: LoginReq):
+def auth_login(req: LoginReq, request: Request):
     row = store.get_member_by_username(store.normalize_username(req.username))
     if not row or not store.verify_pin(req.pin.strip(), row[3]):
         raise HTTPException(401, "用户名或密码不正确")
-    return {"token": store.make_token(row[0]), "member": store.member_public(row)}
+    token = store.make_token(row[0])
+    return _set_private_media_session_cookie(
+        JSONResponse({"token": token, "member": store.member_public(row)}),
+        request,
+        token,
+    )
 
 
 @app.post("/api/auth/register")
-def auth_register(req: MemberApplyReq):
+def auth_register(req: MemberApplyReq, request: Request):
     """Create a standalone personal account and issue a normal login token.
 
     Public registration never accepts a role, team or supplier relationship
@@ -7154,12 +7608,22 @@ def auth_register(req: MemberApplyReq):
         row = store.add_member(name, username, pin, "user")
     except sqlite3.IntegrityError:
         raise HTTPException(409, "这个用户名已存在，请换一个")
-    return {"ok": True, "token": store.make_token(row[0]), "member": store.member_public(row)}
+    token = store.make_token(row[0])
+    return _set_private_media_session_cookie(
+        JSONResponse({"ok": True, "token": token, "member": store.member_public(row)}),
+        request,
+        token,
+    )
 
 
 @app.get("/api/auth/me")
-def auth_me(me=Depends(require_member)):
-    return me
+def auth_me(
+    request: Request,
+    authorization: str = Header(default=""),
+    me=Depends(require_member),
+):
+    token = str(authorization or "").replace("Bearer ", "").strip()
+    return _set_private_media_session_cookie(JSONResponse(me), request, token)
 
 
 def _community_post_response(post):
@@ -7216,31 +7680,77 @@ def _validate_community_media_owner(me, media, source_kind="", source_id=""):
         clean = store.normalize_community_media(media)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+    def require_private_media(kind, key, detail, legacy_authorizer=None):
+        try:
+            return _private_media_access_or_404(
+                kind,
+                key,
+                me,
+                legacy_authorizer=legacy_authorizer,
+            )
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise HTTPException(403, detail) from exc
+            raise
+
+    def legacy_composed_access(url):
+        _validate_community_composed_owner(me, source_kind, source_id, url)
+        return True
+
     for item in clean:
         url = str(item.get("url") or "")
         if url.startswith("/api/custom-canvas/blobs/"):
             content_hash = Path(urlparse(url).path).name
-            blob, error = store.get_custom_canvas_blob(me["id"], content_hash)
+            registry = require_private_media(
+                "canvas-blob",
+                content_hash,
+                "只能分享自己或同团队可访问的无限画布图片",
+                legacy_authorizer=lambda: bool(
+                    store.get_custom_canvas_blob(me["id"], content_hash)[0]
+                ),
+            )
+            blob, error = store.get_custom_canvas_blob(
+                registry.get("ownerId"), content_hash,
+            )
             if error or not blob:
-                raise HTTPException(403, "只能分享自己的无限画布图片")
+                raise HTTPException(403, "只能分享自己或同团队可访问的无限画布图片")
         elif url.startswith("/api/files/"):
             name = Path(urlparse(url).path).name
-            path = _upload_path(name)
-            owns_file = name.startswith(f"{me['id']}--") or store.can_delete_asset_file(
-                name, me["id"], me["role"]
+            require_private_media(
+                "upload",
+                name,
+                "只能分享自己或同团队可访问的平台素材",
+                legacy_authorizer=lambda: _legacy_upload_access_allowed(name, me),
             )
-            if not path.is_file() or (me["role"] != "admin" and not owns_file):
-                raise HTTPException(403, "只能分享自己可访问的平台素材")
+            path = _upload_path(name)
+            if not path.is_file():
+                raise HTTPException(403, "只能分享自己或同团队可访问的平台素材")
         elif url.startswith("/custom-video/outputs/"):
             relative = urlparse(url).path[len("/custom-video/outputs/"):]
             parts = Path(relative).parts
             if len(parts) < 2:
                 raise HTTPException(400, "视频成片地址无效")
+            require_private_media(
+                "video-output",
+                relative,
+                "只能分享自己或同团队可访问的视频成片",
+                legacy_authorizer=lambda: bool(
+                    _video_workshop_owned_project(me, parts[0])
+                ),
+            )
             _video_workshop_owned_project(me, parts[0])
             if not _video_workshop_safe_path(VIDEO_WORKSHOP_OUTPUT_DIR, relative).is_file():
                 raise HTTPException(404, "视频成片不存在或已被清理")
         elif url.startswith("/api/video/composed/"):
-            if not (COMPOSED_DIR / Path(urlparse(url).path).name).is_file():
+            name = Path(urlparse(url).path).name
+            require_private_media(
+                "composed",
+                name,
+                "只能分享自己或同团队可访问的合成视频",
+                legacy_authorizer=lambda: legacy_composed_access(url),
+            )
+            if not (COMPOSED_DIR / name).is_file():
                 raise HTTPException(404, "成片不存在或已被清理")
             _validate_community_composed_owner(me, source_kind, source_id, url)
     return clean
@@ -8566,8 +9076,19 @@ def custom_canvas_blob_get(
     header_token = str(authorization or "").replace("Bearer ", "").strip()
     me = _member_from_authorization(f"Bearer {header_token or cookie_token}")
     _require_custom_creator(me)
+    registry = _private_media_access_or_404(
+        "canvas-blob",
+        content_hash,
+        me,
+        legacy_authorizer=lambda: bool(
+            store.get_custom_canvas_blob(me["id"], content_hash)[0]
+        ),
+    )
     try:
-        blob, error = store.get_custom_canvas_blob(me["id"], content_hash)
+        blob, error = store.get_custom_canvas_blob(
+            registry.get("ownerId"),
+            content_hash,
+        )
     except ValueError:
         blob, error = None, "not_found"
     # Missing hashes and hashes owned by another member are intentionally
@@ -9110,7 +9631,7 @@ def custom_projects_delete(project_id: str, me=Depends(require_member)):
 
 @app.get("/api/publish-tags")
 def publish_tags_list(me=Depends(require_member)):
-    return {"items": store.list_publish_tags()}
+    return {"items": store.list_publish_tags(me["id"])}
 
 
 @app.post("/api/publish-tags")
@@ -9236,9 +9757,137 @@ def _upload_path(name: str) -> Path:
     return path
 
 
+def _private_media_registry_enforced() -> bool:
+    """Strict in production/opt-in mode and after local 140004 completion."""
+
+    if runtime_config.require_private_media_registry():
+        return True
+    try:
+        return bool(store.private_media_data_migration_completed())
+    except Exception:
+        # Compatibility is allowed only when incompleteness is positively
+        # known. An unavailable ledger must fail closed.
+        return True
+
+
+def _legacy_upload_access_allowed(name: str, member: dict) -> bool:
+    member_id = str((member or {}).get("id") or "")
+    if not member_id:
+        return False
+    target = Path(str(name or "")).name
+    if target.startswith(f"{member_id}--"):
+        return True
+    try:
+        # Evaluate document ownership as a creator. Passing the actual legacy
+        # platform-admin role here would reintroduce the global bypass.
+        return bool(store.can_delete_asset_file(target, member_id, "editor"))
+    except Exception:
+        return False
+
+
+def _private_media_access_or_404(
+    kind: str,
+    key: str,
+    member: dict,
+    *,
+    legacy_authorizer=None,
+) -> dict:
+    """Resolve one registered media row without leaking cross-tenant names."""
+
+    enforced = _private_media_registry_enforced()
+    try:
+        record, error = store.private_media_access(
+            kind,
+            key,
+            str((member or {}).get("id") or ""),
+        )
+    except Exception as exc:
+        if not enforced and callable(legacy_authorizer):
+            try:
+                if legacy_authorizer():
+                    return {
+                        "kind": kind,
+                        "key": key,
+                        "ownerId": str((member or {}).get("id") or ""),
+                        "teamId": "",
+                        "legacy": True,
+                    }
+            except HTTPException:
+                pass
+        print(
+            f"[private-media] access registry unavailable: {kind} "
+            f"{exc.__class__.__name__}: {str(exc)[:160]}",
+            file=sys.stderr,
+        )
+        raise HTTPException(503, "私有媒体归属登记暂不可用") from exc
+    if error == "unregistered" and not record and not enforced and callable(legacy_authorizer):
+        try:
+            if legacy_authorizer():
+                return {
+                    "kind": kind,
+                    "key": key,
+                    "ownerId": str((member or {}).get("id") or ""),
+                    "teamId": "",
+                    "legacy": True,
+                }
+        except HTTPException:
+            pass
+    if error or not record:
+        # Unregistered and forbidden are intentionally indistinguishable.
+        raise HTTPException(404, "媒体不存在或无权访问")
+    return record
+
+
+def _register_private_media(
+    kind: str,
+    key: str,
+    member: dict,
+    *,
+    provenance_kind: str,
+    provenance_id: str,
+) -> dict:
+    try:
+        return store.register_private_media(
+            kind,
+            key,
+            str((member or {}).get("id") or ""),
+            team_id=str((member or {}).get("teamId") or ""),
+            provenance_kind=provenance_kind,
+            provenance_id=provenance_id,
+        )
+    except Exception as exc:
+        print(
+            f"[private-media] registration failed: {kind} "
+            f"{exc.__class__.__name__}: {str(exc)[:160]}",
+            file=sys.stderr,
+        )
+        raise HTTPException(503, "私有媒体归属登记失败，本次未开放文件") from exc
+
+
+def _private_ranged_file_response(
+    request: Request,
+    path: Path,
+    *,
+    media_type: str = None,
+    cache_seconds: int = 300,
+):
+    response = ranged_file_response(
+        request,
+        path,
+        media_type=media_type,
+        cache_seconds=cache_seconds,
+    )
+    if int(cache_seconds) == 300:
+        response.headers["Cache-Control"] = "private, max-age=300"
+    else:
+        response.headers["Cache-Control"] = f"private, max-age={cache_seconds}"
+    response.headers["Vary"] = "Cookie, Authorization"
+    return response
+
+
 @app.put("/api/files/{asset_id}")
 async def file_put(asset_id: str, req: Request, filename: str = "", mime: str = "", me=Depends(require_member)):
-    """把资产二进制保存到服务端，返回所有成员可访问的同源 URL。
+    """把资产二进制保存到服务端，返回当前成员/团队可访问的同源 URL。
     不使用 multipart，避免老 Python/FastAPI 环境额外安装 python-multipart。"""
     if not store.can_write_asset_file(asset_id, me["id"], me["role"]):
         raise HTTPException(403, "不能覆盖其他成员的私有素材文件")
@@ -9247,15 +9896,46 @@ async def file_put(asset_id: str, req: Request, filename: str = "", mime: str = 
         raise HTTPException(400, "文件为空")
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     stem = _safe_file_stem(f"{me['id']}--{asset_id}")
-    for old in UPLOAD_DIR.glob(stem + ".*"):
-        try:
-            old.unlink()
-        except Exception:
-            pass
     ext = _safe_ext(filename, mime)
     stored = stem + ext
     path = _upload_path(stored)
-    path.write_bytes(data)
+    temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+    registration = None
+    try:
+        temporary.write_bytes(data)
+        registration = _register_private_media(
+            "upload",
+            stored,
+            me,
+            provenance_kind="asset",
+            provenance_id=str(asset_id),
+        )
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if registration and registration.get("created"):
+            try:
+                store.unregister_private_media("upload", stored, me["id"])
+            except Exception:
+                pass
+        raise
+    # Remove prior extensions only after the replacement is durable and
+    # registered. A crash before this point leaves the previous file intact.
+    for old in UPLOAD_DIR.glob(stem + ".*"):
+        if old == path or old.name.endswith(".tmp"):
+            continue
+        try:
+            store.unregister_private_media("upload", old.name, me["id"])
+            old.unlink()
+        except Exception as exc:
+            print(
+                f"[private-media] old upload cleanup pending: "
+                f"{exc.__class__.__name__}: {str(exc)[:160]}",
+                file=sys.stderr,
+            )
     media = (mime or mimetypes.guess_type(stored)[0] or "application/octet-stream").split(";")[0]
     return {
         "ok": True,
@@ -9268,21 +9948,72 @@ async def file_put(asset_id: str, req: Request, filename: str = "", mime: str = 
 
 
 @app.get("/api/files/{name}")
-def file_get(name: str, request: Request):
+def file_get(
+    name: str,
+    request: Request,
+    me=Depends(_private_media_session_member),
+):
     path = _upload_path(name)
     if not path.exists():
         raise HTTPException(404, "文件不存在或已被清理")
+    _private_media_access_or_404(
+        "upload",
+        path.name,
+        me,
+        legacy_authorizer=lambda: _legacy_upload_access_allowed(path.name, me),
+    )
     media = _media_type_for_path(path)
-    return ranged_file_response(request, path, media_type=media)
+    return _private_ranged_file_response(request, path, media_type=media)
 
 
 @app.delete("/api/files/{name}")
 def file_delete(name: str, me=Depends(require_member)):
-    if not store.can_delete_asset_file(Path(name).name, me["id"], me["role"]):
-        raise HTTPException(403, "不能删除其他成员的私有素材文件")
     path = _upload_path(name)
     if path.exists():
-        path.unlink()
+        record = _private_media_access_or_404(
+            "upload",
+            path.name,
+            me,
+            legacy_authorizer=lambda: _legacy_upload_access_allowed(path.name, me),
+        )
+        if not store.can_delete_asset_file(path.name, me["id"], me["role"]):
+            # Local compatibility never inherits the legacy platform-admin
+            # bypass merely because the registry row is absent.
+            if not record.get("legacy") or not _legacy_upload_access_allowed(path.name, me):
+                raise HTTPException(403, "不能删除其他成员的私有素材文件")
+        temporary = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+        moved = False
+        unregistered = bool(record.get("legacy"))
+        try:
+            os.replace(path, temporary)
+            moved = True
+            if not record.get("legacy"):
+                unregistered = bool(store.unregister_private_media(
+                    "upload", path.name, record.get("ownerId"),
+                ))
+                if not unregistered:
+                    raise RuntimeError("private_media_registry_row_missing")
+        except Exception as exc:
+            if moved and not unregistered and temporary.exists():
+                try:
+                    os.replace(temporary, path)
+                except OSError as restore_exc:
+                    print(
+                        "[private-media] upload delete rollback failed: "
+                        f"{restore_exc.__class__.__name__}: {str(restore_exc)[:160]}",
+                        file=sys.stderr,
+                    )
+            raise HTTPException(503, "私有媒体归属登记暂不可更新，未删除文件") from exc
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as exc:
+            # The public path and registry are already gone. Keep the uniquely
+            # named .tmp file for recoverable maintenance cleanup.
+            print(
+                "[private-media] deleted upload temp cleanup pending: "
+                f"{exc.__class__.__name__}: {str(exc)[:160]}",
+                file=sys.stderr,
+            )
     return {"ok": True}
 
 
@@ -9863,7 +10594,7 @@ def _video_workshop_project_index(member_id: str, force: bool = False):
 
 
 def _video_workshop_preferred_voice(me):
-    presets = store.list_voice_presets()
+    presets = store.list_voice_presets(me["id"])
     own = [item for item in presets if item.get("ownerId") == str(me.get("id") or "")]
     selected = (own or presets or [None])[0]
     if selected:
@@ -9918,6 +10649,49 @@ def _rewrite_video_workshop_urls(value):
     if isinstance(value, str) and value.startswith(("/outputs/", "/uploads/")):
         return "/custom-video" + value
     return value
+
+
+def _video_workshop_media_references(value, output=None):
+    """Collect existing sidecar media paths without following external URLs."""
+
+    found = output if output is not None else set()
+    if isinstance(value, list):
+        for item in value:
+            _video_workshop_media_references(item, found)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _video_workshop_media_references(item, found)
+    elif isinstance(value, str):
+        raw = value.strip()
+        for prefix, kind, root in (
+            ("/custom-video/outputs/", "video-output", VIDEO_WORKSHOP_OUTPUT_DIR),
+            ("/outputs/", "video-output", VIDEO_WORKSHOP_OUTPUT_DIR),
+            ("/custom-video/uploads/", "video-upload", VIDEO_WORKSHOP_UPLOAD_DIR),
+            ("/uploads/", "video-upload", VIDEO_WORKSHOP_UPLOAD_DIR),
+        ):
+            if not raw.startswith(prefix):
+                continue
+            relative = urlparse(raw).path[len(prefix):]
+            try:
+                path = _video_workshop_safe_path(root, relative)
+            except HTTPException:
+                break
+            if path.is_file():
+                found.add((kind, relative.replace("\\", "/").strip("/")))
+            break
+    return found
+
+
+def _register_video_workshop_media(source, member: dict, project_id: str = ""):
+    provenance_id = str(project_id or (source or {}).get("id") or "").strip()
+    for kind, relative in sorted(_video_workshop_media_references(source)):
+        _register_private_media(
+            kind,
+            relative,
+            member,
+            provenance_kind="video-workshop-project",
+            provenance_id=provenance_id,
+        )
 
 
 def _video_workshop_project_response(source, mapped):
@@ -10208,6 +10982,7 @@ def _sync_video_workshop_project(me, source):
         raise HTTPException(403, "视频工坊项目归属冲突")
     if error or not mapped:
         raise HTTPException(500, "视频工坊项目映射失败")
+    _register_video_workshop_media(source, me, str(source.get("id") or ""))
     usage_reconciliation = _reconcile_video_workshop_usage_receipts(me, source)
     _VIDEO_PROJECT_INDEX_CACHE.pop(str(me["id"]), None)
     response = _video_workshop_project_response(source, mapped)
@@ -10593,16 +11368,19 @@ def custom_video_output(file_path: str, request: Request, me=Depends(_custom_vid
     parts = Path(str(file_path or "")).parts
     if len(parts) < 2:
         raise HTTPException(404, "视频成片不存在")
-    _video_workshop_owned_project(me, parts[0])
     path = _video_workshop_safe_path(VIDEO_WORKSHOP_OUTPUT_DIR, file_path)
     if not path.is_file():
         raise HTTPException(404, "视频成片不存在或已被清理")
-    response = ranged_file_response(
+    key = str(file_path or "").replace("\\", "/").strip("/")
+    _private_media_access_or_404(
+        "video-output",
+        key,
+        me,
+        legacy_authorizer=lambda: bool(_video_workshop_owned_project(me, parts[0])),
+    )
+    return _private_ranged_file_response(
         request, path, media_type=_media_type_for_path(path), cache_seconds=300,
     )
-    response.headers["Cache-Control"] = "private, max-age=300"
-    response.headers["Vary"] = "Cookie, Authorization"
-    return response
 
 
 @app.get("/custom-video/uploads/{file_path:path}")
@@ -10610,16 +11388,19 @@ def custom_video_upload(file_path: str, request: Request, me=Depends(_custom_vid
     parts = Path(str(file_path or "")).parts
     if len(parts) < 2:
         raise HTTPException(404, "视频工坊附件不存在")
-    _video_workshop_owned_project(me, parts[0])
     path = _video_workshop_safe_path(VIDEO_WORKSHOP_UPLOAD_DIR, file_path)
     if not path.is_file():
         raise HTTPException(404, "视频工坊附件不存在或已被清理")
-    response = ranged_file_response(
+    key = str(file_path or "").replace("\\", "/").strip("/")
+    _private_media_access_or_404(
+        "video-upload",
+        key,
+        me,
+        legacy_authorizer=lambda: bool(_video_workshop_owned_project(me, parts[0])),
+    )
+    return _private_ranged_file_response(
         request, path, media_type=_media_type_for_path(path), cache_seconds=300,
     )
-    response.headers["Cache-Control"] = "private, max-age=300"
-    response.headers["Vary"] = "Cookie, Authorization"
-    return response
 
 
 @app.api_route(
@@ -10718,6 +11499,13 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
         except Exception:
             raise HTTPException(502, "视频工坊项目返回异常")
         if project_action == "speed-version":
+            if not runtime_config.is_read_only():
+                await asyncio.to_thread(
+                    _register_video_workshop_media,
+                    project,
+                    me,
+                    project_id,
+                )
             return _video_workshop_json_response(
                 _rewrite_video_workshop_urls(project),
                 server_timing=_video_workshop_timing("speed-version", started),

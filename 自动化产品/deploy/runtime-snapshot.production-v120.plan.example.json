@@ -1,0 +1,105 @@
+{
+  "format": "acg-runtime-snapshot-plan-v1",
+  "profile": "acg-production-complete-v1",
+  "releaseId": "replace-with-approved-v140-release-id",
+  "components": [
+    {
+      "name": "database",
+      "type": "sqlite",
+      "path": "/data/dumate-studio/current/server/data.sqlite"
+    },
+    {
+      "name": "legacy-data",
+      "type": "file",
+      "path": "/data/dumate-studio/current/server/data.json",
+      "required": false
+    },
+    {
+      "name": "uploads",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/server/uploads"
+    },
+    {
+      "name": "composed",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/server/composed"
+    },
+    {
+      "name": "canvas-blobs",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/server/canvas_blobs"
+    },
+    {
+      "name": "model-usage-spool",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/server/model_usage_spool",
+      "required": false
+    },
+    {
+      "name": "server-logs",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/server/logs",
+      "required": false
+    },
+    {
+      "name": "video-projects",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/runtime/video-workshop/projects"
+    },
+    {
+      "name": "video-uploads",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/runtime/video-workshop/uploads"
+    },
+    {
+      "name": "video-outputs",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/runtime/video-workshop/outputs"
+    },
+    {
+      "name": "bgm-library",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/runtime/bgm-library"
+    },
+    {
+      "name": "model-cache",
+      "type": "directory",
+      "path": "/data/dumate-studio/current/runtime/model-cache"
+    },
+    {
+      "name": "runtime-env-public",
+      "type": "file",
+      "path": "/data/dumate-studio/current/.env"
+    },
+    {
+      "name": "runtime-env-private",
+      "type": "file",
+      "path": "/data/dumate-studio/current/.env.local"
+    },
+    {
+      "name": "runtime-env-v140",
+      "type": "file",
+      "path": "/data/dumate-studio/config/runtime-v140.env",
+      "required": false,
+      "allowOutsidePersistentRoot": true
+    },
+    {
+      "name": "systemd-main",
+      "type": "file",
+      "path": "/etc/systemd/system/dumate-studio.service",
+      "allowOutsidePersistentRoot": true
+    },
+    {
+      "name": "systemd-video",
+      "type": "file",
+      "path": "/etc/systemd/system/dumate-studio-video-workshop.service",
+      "allowOutsidePersistentRoot": true
+    },
+    {
+      "name": "nginx-site",
+      "type": "file",
+      "path": "/etc/nginx/sites-enabled/xingzhenworld.com",
+      "allowOutsidePersistentRoot": true
+    }
+  ]
+}

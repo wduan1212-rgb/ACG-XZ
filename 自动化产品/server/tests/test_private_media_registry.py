@@ -1,0 +1,871 @@
+import importlib
+import hashlib
+import json
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from starlette.requests import Request
+
+from server.tests.test_runtime_bootstrap_safety import (
+    current_backup_binding,
+    logical_database_dump,
+)
+
+
+SERVER_DIR = Path(__file__).resolve().parents[1]
+
+
+def load_media_store(tmpdir):
+    root = Path(tmpdir)
+    paths = {
+        "DATA_DB": root / "data.sqlite",
+        "UPLOAD_DIR": root / "uploads",
+        "COMPOSED_DIR": root / "composed",
+        "CUSTOM_CANVAS_BLOB_DIR": root / "canvas-blobs",
+        "VIDEO_WORKSHOP_ROOT": root / "video-workshop",
+        "VIDEO_WORKSHOP_OUTPUT_DIR": root / "video-workshop" / "outputs",
+        "VIDEO_WORKSHOP_UPLOAD_DIR": root / "video-workshop" / "uploads",
+    }
+    for name, value in paths.items():
+        os.environ[name] = str(value)
+    for name in ("UPLOAD_DIR", "COMPOSED_DIR", "CUSTOM_CANVAS_BLOB_DIR", "VIDEO_WORKSHOP_OUTPUT_DIR", "VIDEO_WORKSHOP_UPLOAD_DIR"):
+        paths[name].mkdir(parents=True, exist_ok=True)
+    sys.modules.pop("store", None)
+    if str(SERVER_DIR) not in sys.path:
+        sys.path.insert(0, str(SERVER_DIR))
+    store = importlib.import_module("store")
+    store._ensure_db()
+    with store._lock:
+        conn = store._connect()
+        try:
+            now = 1
+            conn.execute(
+                "INSERT OR IGNORE INTO teams(id,name,slug,kind,status,plan,quota_mode,created_at,created_by) "
+                "VALUES('team-a','A','a','external','active','team','subscription',1,'owner-a')"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO teams(id,name,slug,kind,status,plan,quota_mode,created_at,created_by) "
+                "VALUES('team-b','B','b','external','active','team','subscription',1,'admin-b')"
+            )
+            for member_id, role in (("owner-a", "editor"), ("peer-a", "editor"), ("admin-b", "admin")):
+                conn.execute(
+                    "INSERT OR IGNORE INTO members(id,name,username,username_key,pin_hash,role,parent_id,created_at) "
+                    "VALUES(?,?,?,?,?,?,NULL,?)",
+                    (member_id, member_id, member_id, member_id, store.DEFAULT_ADMIN_PIN_HASH, role, now),
+                )
+            conn.execute(
+                "INSERT OR IGNORE INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
+                "VALUES('team-a','owner-a','owner','active',1,'owner-a')"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
+                "VALUES('team-a','peer-a','creator','active',1,'owner-a')"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
+                "VALUES('team-b','admin-b','owner','active',1,'admin-b')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return store, paths
+
+
+def request_with_range(value="bytes=1-3"):
+    return Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [(b"range", value.encode("ascii"))],
+        "query_string": b"",
+        "scheme": "http",
+        "server": ("test", 80),
+        "client": ("test", 1),
+    })
+
+
+def runtime_snapshot_binding(digest, media_inventory_digest):
+    return {
+        "format": "acg-runtime-snapshot-binding-v1",
+        "verified": True,
+        "profile": "acg-production-complete-v1",
+        "manifestSha256": digest,
+        "componentNames": sorted({
+            "database", "legacy-data", "uploads", "composed", "canvas-blobs",
+            "model-usage-spool", "server-logs", "video-projects",
+            "video-uploads", "video-outputs", "bgm-library", "model-cache",
+            "runtime-env-public", "runtime-env-private", "runtime-env-v140",
+            "systemd-main", "systemd-video", "nginx-site",
+        }),
+        "mediaInventoryDigest": media_inventory_digest,
+    }
+
+
+def write_media_override(
+    store,
+    path,
+    identity,
+    backup_binding,
+    inventory_digest,
+    snapshot_digest,
+    snapshot_media_digest,
+    entries,
+    *,
+    manifest_overrides=None,
+):
+    payload = {
+        "format": store.PRIVATE_MEDIA_OVERRIDE_MANIFEST_FORMAT,
+        "databaseIdentity": identity,
+        "databasePathSha256": backup_binding["sourcePathSha256"],
+        "databaseLogicalSha256": backup_binding["sourceLogicalSha256"],
+        "schemaVersion": backup_binding["sourceSchemaVersion"],
+        "userVersion": backup_binding["sourceUserVersion"],
+        "backupManifestSha256": backup_binding["manifestSha256"],
+        "privateMediaSchemaVersion": store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+        "privateMediaDataVersion": store.PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+        "inventoryDigest": inventory_digest,
+        "snapshotManifestSha256": snapshot_digest,
+        "snapshotMediaInventoryDigest": snapshot_media_digest,
+        "entries": entries,
+    }
+    payload.update(manifest_overrides or {})
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    path.write_bytes(encoded)
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class PrivateMediaRegistryTest(unittest.TestCase):
+    def test_owner_and_same_team_allowed_external_admin_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _paths = load_media_store(tmp)
+            created = store.register_private_media(
+                "upload", "owner-a--asset.png", "owner-a",
+                team_id="team-a", provenance_kind="asset", provenance_id="asset-1",
+            )
+            self.assertTrue(created["created"])
+            self.assertIsNone(store.private_media_access("upload", "owner-a--asset.png", "owner-a")[1])
+            self.assertIsNone(store.private_media_access("upload", "owner-a--asset.png", "peer-a")[1])
+            self.assertEqual(
+                "forbidden",
+                store.private_media_access("upload", "owner-a--asset.png", "admin-b")[1],
+            )
+            self.assertEqual(
+                "unregistered",
+                store.private_media_access("upload", "missing.png", "owner-a")[1],
+            )
+            with self.assertRaisesRegex(ValueError, "owner_conflict"):
+                store.register_private_media(
+                    "upload", "owner-a--asset.png", "admin-b",
+                    team_id="team-b", provenance_kind="asset", provenance_id="asset-2",
+                )
+
+    def test_private_range_and_community_public_exception(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            name = "owner-a--clip.mp4"
+            (paths["UPLOAD_DIR"] / name).write_bytes(b"0123456789")
+            store.register_private_media(
+                "upload", name, "owner-a", team_id="team-a",
+                provenance_kind="asset", provenance_id="clip",
+            )
+            post = store.create_community_post(
+                "owner-a", "A", "team-a", "delivery", "delivery-1",
+                "公开", "", "", "视频灵感", [{"url": f"/api/files/{name}", "type": "video"}],
+            )
+            main = importlib.import_module("main")
+            with patch.object(main, "store", store), patch.object(main, "UPLOAD_DIR", paths["UPLOAD_DIR"]):
+                private = main.file_get(name, request_with_range(), me={"id": "peer-a"})
+                public = main.community_post_media(post["id"], 0, request_with_range())
+                with self.assertRaises(Exception):
+                    main.file_get(name, request_with_range(), me={"id": "admin-b"})
+            self.assertEqual(206, private.status_code)
+            self.assertEqual("bytes 1-3/10", private.headers["content-range"])
+            self.assertEqual("private, max-age=300", private.headers["cache-control"])
+            self.assertEqual(206, public.status_code)
+
+    def test_deterministic_plan_blocks_ambiguity_and_maps_workshop_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            upload = paths["UPLOAD_DIR"] / "owner-a--asset.png"
+            upload.write_bytes(b"png")
+            output = paths["VIDEO_WORKSHOP_OUTPUT_DIR"] / "workshop-a" / "final.mp4"
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b"video")
+            payload = {
+                "id": "custom-project-a",
+                "ownerId": "owner-a",
+                "projectState": {
+                    "integration": "video-workshop",
+                    "workshopProjectId": "workshop-a",
+                    "output": "/custom-video/outputs/workshop-a/final.mp4",
+                },
+            }
+            with store._lock:
+                conn = store._connect()
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                        ("customProjects", "custom-project-a", "owner-a", 1, json.dumps(payload)),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            status = store.private_media_registry_status()
+            self.assertTrue(status["readyForApply"])
+            self.assertEqual(2, status["counts"]["pendingRows"])
+
+            shared = paths["COMPOSED_DIR"] / "shared.mp4"
+            shared.write_bytes(b"x")
+            with store._lock:
+                conn = store._connect()
+                try:
+                    for owner in ("owner-a", "admin-b"):
+                        conn.execute(
+                            "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                            ("assets", f"asset-{owner}", owner, 1, json.dumps({"url": "/api/video/composed/shared.mp4"})),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+            blocked = store.private_media_registry_status()
+            self.assertFalse(blocked["readyForApply"])
+            self.assertEqual(1, blocked["counts"]["ambiguousFiles"])
+
+    def test_nonempty_data_migration_is_atomic_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            (paths["UPLOAD_DIR"] / "owner-a--asset.png").write_bytes(b"png")
+            with store._lock:
+                conn = store._connect()
+                try:
+                    now = 1
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                        ") VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+                            "test",
+                            now,
+                            now,
+                            "success",
+                            "{}",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            identity = store._database_identity(store.DB_PATH)
+            with patch.object(
+                store,
+                "_private_media_live_inventory_digest",
+                wraps=store._private_media_live_inventory_digest,
+            ) as content_digest:
+                with patch.dict(
+                    os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_MIGRATION": "1"}
+                ):
+                    first = store.apply_private_media_migration(
+                        expected_identity=identity,
+                        expected_schema_version=(
+                            store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                        ),
+                    )
+                    second = store.apply_private_media_migration(
+                        expected_identity=identity,
+                        expected_schema_version=(
+                            store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                        ),
+                    )
+            self.assertGreaterEqual(content_digest.call_count, 2)
+            self.assertTrue(first["applied"])
+            self.assertTrue(first["ok"])
+            self.assertFalse(second["applied"])
+            self.assertIsNone(
+                store.private_media_access(
+                    "upload", "owner-a--asset.png", "peer-a",
+                )[1]
+            )
+
+    def test_unreferenced_disk_file_is_quarantined_not_attributed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            unknown = paths["COMPOSED_DIR"] / "legacy-unknown.mp4"
+            unknown.write_bytes(b"preserve-me")
+            first = store.private_media_registry_status()
+            second = store.private_media_registry_status()
+            self.assertTrue(first["readyForApply"])
+            self.assertEqual(1, first["counts"]["quarantinedFiles"])
+            self.assertIn("quarantinedFiles", first["warnings"])
+            self.assertNotIn("quarantinedFiles", first["issues"])
+            self.assertEqual(first["inventoryDigest"], second["inventoryDigest"])
+            self.assertTrue(unknown.is_file())
+            self.assertEqual(
+                "unregistered",
+                store.private_media_access(
+                    "composed", "legacy-unknown.mp4", "owner-a",
+                )[1],
+            )
+
+    def test_registry_status_never_reads_full_media_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            (paths["COMPOSED_DIR"] / "large-placeholder.mp4").write_bytes(
+                b"preserve"
+            )
+            with patch.object(
+                store,
+                "_private_media_live_inventory_digest",
+                side_effect=AssertionError("readiness must not hash media bytes"),
+            ) as content_digest:
+                status = store.private_media_registry_status()
+            content_digest.assert_not_called()
+            self.assertTrue(status["readyForApply"])
+            self.assertEqual("", status["mediaInventoryDigest"])
+
+    def test_live_media_digest_matches_runtime_snapshot_algorithm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            samples = {
+                "uploads": paths["UPLOAD_DIR"] / "sample.bin",
+                "composed": paths["COMPOSED_DIR"] / "sample.bin",
+                "canvas-blobs": paths["CUSTOM_CANVAS_BLOB_DIR"] / "sample.bin",
+                "video-uploads": paths["VIDEO_WORKSHOP_UPLOAD_DIR"] / "sample.bin",
+                "video-outputs": paths["VIDEO_WORKSHOP_OUTPUT_DIR"] / "sample.bin",
+            }
+            for index, path in enumerate(samples.values()):
+                path.write_bytes(f"sample-{index}".encode("ascii"))
+            script = SERVER_DIR / "scripts" / "runtime_snapshot.py"
+            spec = importlib.util.spec_from_file_location(
+                f"runtime_snapshot_digest_{id(store)}", script,
+            )
+            runtime_snapshot = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(runtime_snapshot)
+            components = []
+            for name, path in sorted(samples.items()):
+                info = path.stat()
+                components.append({
+                    "name": name,
+                    "type": "directory",
+                    "files": [{
+                        "path": path.name,
+                        "bytes": info.st_size,
+                        "mtimeNs": info.st_mtime_ns,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }],
+                })
+            self.assertEqual(
+                runtime_snapshot._media_inventory_digest_from_components(
+                    components
+                ),
+                store._private_media_live_inventory_digest(),
+            )
+
+    def test_referenced_file_with_missing_owner_is_a_hard_blocker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            referenced = paths["COMPOSED_DIR"] / "legacy-orphan.mp4"
+            referenced.write_bytes(b"preserve-me")
+            with store._lock:
+                conn = store._connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                        "VALUES('assets','orphan-media','deleted-owner',1,?)",
+                        (
+                            '{"id":"orphan-media","ownerId":"deleted-owner",'
+                            '"url":"/api/video/composed/legacy-orphan.mp4"}',
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            status = store.private_media_registry_status()
+            self.assertFalse(status["readyForApply"])
+            self.assertEqual(1, status["counts"]["missingReferenceOwners"])
+            self.assertEqual(0, status["counts"]["quarantinedFiles"])
+            self.assertIn("missingReferenceOwners", status["issues"])
+            self.assertNotIn("quarantinedFiles", status["warnings"])
+            self.assertTrue(referenced.is_file())
+
+    def test_reviewed_override_binds_inventory_snapshot_backup_and_double_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            media_key = "reviewed-orphan.mp4"
+            (paths["COMPOSED_DIR"] / media_key).write_bytes(b"preserve-me")
+            with store._lock:
+                conn = store._connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                        "VALUES('assets','reviewed-media','deleted-owner',1,?)",
+                        (json.dumps({
+                            "id": "reviewed-media",
+                            "url": f"/api/video/composed/{media_key}",
+                        }),),
+                    )
+                    conn.execute(
+                        "INSERT INTO resource_scopes(resource_kind,resource_id,scope_type,"
+                        "scope_id,owner_id,provenance,captured_at,updated_at) "
+                        "VALUES('doc:assets','reviewed-media','team','team-a','',"
+                        "'test-reviewed-scope',1,1)"
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                        ") VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+                            "test", 1, 1, "success", "{}",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            blocked = store.private_media_migration_preflight(
+                expected_identity=store._database_identity(store.DB_PATH),
+                expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+            )
+            self.assertFalse(blocked["readyForApply"])
+            self.assertEqual(1, blocked["counts"]["missingReferenceOwners"])
+            snapshot_digest = "c" * 64
+            snapshot_media_digest = blocked["mediaInventoryDigest"]
+            review_backup = current_backup_binding(store, store.DB_PATH)
+            reviewed = store.private_media_migration_preflight(
+                expected_identity=store._database_identity(store.DB_PATH),
+                expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                backup_binding=review_backup,
+            )
+            manifest = Path(tmp) / "media-overrides.json"
+            manifest_digest = write_media_override(
+                store,
+                manifest,
+                store._database_identity(store.DB_PATH),
+                review_backup,
+                reviewed["inventoryDigest"],
+                snapshot_digest,
+                snapshot_media_digest,
+                [{
+                    "mediaKind": "composed",
+                    "mediaKey": media_key,
+                    "ownerId": "owner-a",
+                    "reason": "operator-reviewed legacy orphan",
+                    "evidence": "frozen v120 business record and complete composed inventory",
+                }],
+            )
+            confirmation = {
+                "expected_identity": store._database_identity(store.DB_PATH),
+                "expected_schema_version": store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                "override_manifest_path": manifest,
+                "expected_override_manifest_sha256": manifest_digest,
+                "runtime_snapshot_binding": runtime_snapshot_binding(
+                    snapshot_digest, snapshot_media_digest,
+                ),
+                "backup_binding": review_backup,
+            }
+            ready = store.private_media_migration_preflight(**confirmation)
+            self.assertTrue(ready["readyForApply"])
+            self.assertEqual(0, ready["counts"]["missingReferenceOwners"])
+            self.assertEqual(1, ready["counts"]["overrideEntries"])
+
+            with patch.dict(os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_MIGRATION": "1"}):
+                first = store.apply_private_media_migration(**confirmation)
+                frozen_after_first = logical_database_dump(store.DB_PATH)
+                fresh_backup = current_backup_binding(store, store.DB_PATH)
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "database logical state mismatch"
+                ):
+                    store.apply_private_media_migration(
+                        **{**confirmation, "backup_binding": fresh_backup}
+                    )
+                self.assertEqual(
+                    frozen_after_first, logical_database_dump(store.DB_PATH)
+                )
+                second = store.apply_private_media_migration(
+                    expected_identity=confirmation["expected_identity"],
+                    expected_schema_version=confirmation[
+                        "expected_schema_version"
+                    ],
+                    backup_binding=fresh_backup,
+                    runtime_snapshot_binding=confirmation[
+                        "runtime_snapshot_binding"
+                    ],
+                )
+            self.assertTrue(first["applied"])
+            self.assertTrue(first["ok"])
+            self.assertFalse(second["applied"])
+            self.assertIsNone(
+                store.private_media_access("composed", media_key, "peer-a")[1]
+            )
+            with store._connect(read_only=True) as conn:
+                summary = json.loads(conn.execute(
+                    "SELECT summary FROM schema_migrations WHERE version=?",
+                    (store.PRIVATE_MEDIA_DATA_MIGRATION_VERSION,),
+                ).fetchone()[0])
+            self.assertEqual(manifest_digest, summary["overrideManifestSha256"])
+            self.assertEqual(1, summary["overrideEntries"])
+            self.assertEqual(
+                snapshot_media_digest,
+                summary["snapshotMediaInventoryDigest"],
+            )
+            self.assertEqual(
+                review_backup["sourceLogicalSha256"],
+                summary["overrideDatabaseLogicalSha256"],
+            )
+            self.assertEqual(
+                review_backup["manifestSha256"],
+                summary["overrideBackupManifestSha256"],
+            )
+            self.assertNotIn(media_key, json.dumps(summary))
+
+    def test_override_rejects_wrong_hash_digest_coverage_scope_and_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            for key in ("orphan-a.mp4", "orphan-b.mp4"):
+                (paths["COMPOSED_DIR"] / key).write_bytes(b"preserve")
+            with store._lock:
+                conn = store._connect()
+                try:
+                    for index, key in enumerate(("orphan-a.mp4", "orphan-b.mp4")):
+                        resource_id = f"orphan-{index}"
+                        conn.execute(
+                            "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                            "VALUES('assets',?,'deleted-owner',1,?)",
+                            (resource_id, json.dumps({
+                                "id": resource_id,
+                                "url": f"/api/video/composed/{key}",
+                            })),
+                        )
+                        conn.execute(
+                            "INSERT INTO resource_scopes(resource_kind,resource_id,scope_type,"
+                            "scope_id,owner_id,provenance,captured_at,updated_at) "
+                            "VALUES('doc:assets',?,'team','team-a','','test',1,1)",
+                            (resource_id,),
+                        )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                        ") VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+                            "test", 1, 1, "success", "{}",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            identity = store._database_identity(store.DB_PATH)
+            blocked = store.private_media_migration_preflight(
+                expected_identity=identity,
+                expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+            )
+            snapshot_digest = "d" * 64
+            snapshot_media_digest = blocked["mediaInventoryDigest"]
+            review_backup = current_backup_binding(store, store.DB_PATH)
+            base_entries = [{
+                "mediaKind": "composed",
+                "mediaKey": key,
+                "ownerId": "owner-a",
+                "reason": "reviewed",
+                "evidence": "complete inventory review",
+            } for key in ("orphan-a.mp4", "orphan-b.mp4")]
+
+            manifest = Path(tmp) / "negative-overrides.json"
+            digest = write_media_override(
+                store, manifest, identity, review_backup,
+                blocked["inventoryDigest"], snapshot_digest,
+                snapshot_media_digest, base_entries,
+            )
+            before = logical_database_dump(store.DB_PATH)
+            with self.assertRaisesRegex(
+                store.StoreNotReadyError, "sha256 mismatch"
+            ):
+                store.private_media_migration_preflight(
+                    expected_identity=identity,
+                    expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                    override_manifest_path=manifest,
+                    expected_override_manifest_sha256="e" * 64,
+                    runtime_snapshot_binding=runtime_snapshot_binding(
+                        snapshot_digest, snapshot_media_digest,
+                    ),
+                    backup_binding=review_backup,
+                )
+            self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+            partial_digest = write_media_override(
+                store, manifest, identity, review_backup,
+                blocked["inventoryDigest"], snapshot_digest,
+                snapshot_media_digest, base_entries[:1],
+            )
+            partial = store.private_media_migration_preflight(
+                expected_identity=identity,
+                expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                override_manifest_path=manifest,
+                expected_override_manifest_sha256=partial_digest,
+                runtime_snapshot_binding=runtime_snapshot_binding(
+                    snapshot_digest, snapshot_media_digest,
+                ),
+                backup_binding=review_backup,
+            )
+            self.assertEqual(1, partial["counts"]["overrideMissing"])
+
+            cross_entries = [dict(entry) for entry in base_entries]
+            cross_entries[0]["ownerId"] = "admin-b"
+            cross_digest = write_media_override(
+                store, manifest, identity, review_backup,
+                blocked["inventoryDigest"], snapshot_digest,
+                snapshot_media_digest, cross_entries,
+            )
+            cross = store.private_media_migration_preflight(
+                expected_identity=identity,
+                expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                override_manifest_path=manifest,
+                expected_override_manifest_sha256=cross_digest,
+                runtime_snapshot_binding=runtime_snapshot_binding(
+                    snapshot_digest, snapshot_media_digest,
+                ),
+                backup_binding=review_backup,
+            )
+            self.assertEqual(1, cross["counts"]["overrideScopeConflicts"])
+
+            stale_digest = write_media_override(
+                store, manifest, identity, review_backup,
+                "f" * 64, snapshot_digest, snapshot_media_digest, base_entries,
+            )
+            stale = store.private_media_migration_preflight(
+                expected_identity=identity,
+                expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                override_manifest_path=manifest,
+                expected_override_manifest_sha256=stale_digest,
+                runtime_snapshot_binding=runtime_snapshot_binding(
+                    snapshot_digest, snapshot_media_digest,
+                ),
+                backup_binding=review_backup,
+            )
+            self.assertEqual(1, stale["counts"]["overrideInventoryMismatch"])
+
+            stale_database_digest = write_media_override(
+                store, manifest, identity, review_backup,
+                blocked["inventoryDigest"], snapshot_digest,
+                snapshot_media_digest, base_entries,
+                manifest_overrides={"databaseLogicalSha256": "0" * 64},
+            )
+            with self.assertRaisesRegex(
+                store.StoreNotReadyError, "database logical state mismatch"
+            ):
+                store.private_media_migration_preflight(
+                    expected_identity=identity,
+                    expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                    override_manifest_path=manifest,
+                    expected_override_manifest_sha256=stale_database_digest,
+                    runtime_snapshot_binding=runtime_snapshot_binding(
+                        snapshot_digest, snapshot_media_digest,
+                    ),
+                    backup_binding=review_backup,
+                )
+            with patch.dict(os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_MIGRATION": "1"}):
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "database logical state mismatch"
+                ):
+                    store.apply_private_media_migration(
+                        expected_identity=identity,
+                        expected_schema_version=(
+                            store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                        ),
+                        backup_binding=review_backup,
+                        override_manifest_path=manifest,
+                        expected_override_manifest_sha256=stale_database_digest,
+                        runtime_snapshot_binding=runtime_snapshot_binding(
+                            snapshot_digest, snapshot_media_digest,
+                        ),
+                    )
+            self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+            stale_snapshot_media = "0" * 64
+            stale_snapshot_digest = write_media_override(
+                store, manifest, identity, review_backup,
+                blocked["inventoryDigest"], snapshot_digest,
+                stale_snapshot_media, base_entries,
+            )
+            stale_snapshot = store.private_media_migration_preflight(
+                expected_identity=identity,
+                expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                override_manifest_path=manifest,
+                expected_override_manifest_sha256=stale_snapshot_digest,
+                runtime_snapshot_binding=runtime_snapshot_binding(
+                    snapshot_digest, stale_snapshot_media,
+                ),
+                backup_binding=review_backup,
+            )
+            self.assertEqual(
+                1, stale_snapshot["counts"]["snapshotInventoryMismatch"]
+            )
+            with patch.dict(os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_MIGRATION": "1"}):
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "preflight failed"
+                ):
+                    store.apply_private_media_migration(
+                        expected_identity=identity,
+                        expected_schema_version=(
+                            store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                        ),
+                        backup_binding=review_backup,
+                        override_manifest_path=manifest,
+                        expected_override_manifest_sha256=stale_snapshot_digest,
+                        runtime_snapshot_binding=runtime_snapshot_binding(
+                            snapshot_digest, stale_snapshot_media,
+                        ),
+                    )
+            self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+            old_override_digest = write_media_override(
+                store, manifest, identity, review_backup,
+                blocked["inventoryDigest"], snapshot_digest,
+                snapshot_media_digest, base_entries,
+            )
+            replaced = paths["COMPOSED_DIR"] / "orphan-a.mp4"
+            original_stat = replaced.stat()
+            replaced.write_bytes(b"mutation")
+            os.utime(
+                replaced,
+                ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+            )
+            before_content_drift_apply = logical_database_dump(store.DB_PATH)
+            with patch.dict(os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_MIGRATION": "1"}):
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "preflight failed"
+                ):
+                    store.apply_private_media_migration(
+                        expected_identity=identity,
+                        expected_schema_version=(
+                            store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                        ),
+                        backup_binding=review_backup,
+                        override_manifest_path=manifest,
+                        expected_override_manifest_sha256=old_override_digest,
+                        runtime_snapshot_binding=runtime_snapshot_binding(
+                            snapshot_digest, snapshot_media_digest,
+                        ),
+                    )
+            self.assertEqual(
+                before_content_drift_apply, logical_database_dump(store.DB_PATH)
+            )
+            replaced.write_bytes(b"preserve")
+            os.utime(
+                replaced,
+                ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+            )
+            self.assertEqual(
+                snapshot_media_digest,
+                store._private_media_live_inventory_digest(),
+            )
+            missing_key = "missing-on-disk.mp4"
+            with store._lock:
+                conn = store._connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                        "VALUES('assets','missing-file','deleted-owner',1,?)",
+                        (json.dumps({"url": f"/api/video/composed/{missing_key}"}),),
+                    )
+                    conn.execute(
+                        "INSERT INTO resource_scopes(resource_kind,resource_id,scope_type,"
+                        "scope_id,owner_id,provenance,captured_at,updated_at) "
+                        "VALUES('doc:assets','missing-file','team','team-a','','test',1,1)"
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            after_same_inode_drift = logical_database_dump(store.DB_PATH)
+            refreshed_backup = current_backup_binding(store, store.DB_PATH)
+            with patch.dict(os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_MIGRATION": "1"}):
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "database logical state mismatch"
+                ):
+                    store.apply_private_media_migration(
+                        expected_identity=identity,
+                        expected_schema_version=(
+                            store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+                        ),
+                        backup_binding=refreshed_backup,
+                        override_manifest_path=manifest,
+                        expected_override_manifest_sha256=old_override_digest,
+                        runtime_snapshot_binding=runtime_snapshot_binding(
+                            snapshot_digest, snapshot_media_digest,
+                        ),
+                    )
+            self.assertEqual(
+                after_same_inode_drift, logical_database_dump(store.DB_PATH)
+            )
+            refreshed = store.private_media_migration_preflight(
+                expected_identity=identity,
+                expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                backup_binding=refreshed_backup,
+            )
+            extra_entries = [*base_entries, {
+                "mediaKind": "composed", "mediaKey": missing_key,
+                "ownerId": "owner-a", "reason": "reviewed",
+                "evidence": "file is absent and must not be overrideable",
+            }]
+            extra_digest = write_media_override(
+                store, manifest, identity, refreshed_backup,
+                refreshed["inventoryDigest"], snapshot_digest,
+                refreshed["mediaInventoryDigest"], extra_entries,
+            )
+            extra = store.private_media_migration_preflight(
+                expected_identity=identity,
+                expected_schema_version=store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                override_manifest_path=manifest,
+                expected_override_manifest_sha256=extra_digest,
+                runtime_snapshot_binding=runtime_snapshot_binding(
+                    snapshot_digest, refreshed["mediaInventoryDigest"],
+                ),
+                backup_binding=refreshed_backup,
+            )
+            self.assertGreaterEqual(extra["counts"]["overrideExtra"], 1)
+            self.assertGreaterEqual(extra["counts"]["missingReferencedFiles"], 1)
+
+    def test_relative_media_reference_ignores_cache_busting_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _paths = load_media_store(tmp)
+            self.assertEqual(
+                ("upload", "owner-a--asset.png"),
+                store._private_media_reference(
+                    "/api/files/owner-a--asset.png?asset_rev=revision-1"
+                ),
+            )
+            with patch.dict(
+                os.environ,
+                {"PUBLIC_BASE_URL": "https://platform.example"},
+                clear=False,
+            ):
+                self.assertEqual(
+                    ("upload", "owner-a--asset.png"),
+                    store._private_media_reference(
+                        "https://platform.example/api/files/owner-a--asset.png?asset_rev=revision-2"
+                    ),
+                )
+                self.assertEqual(
+                    ("invalid", ""),
+                    store._private_media_reference(
+                        "https://attacker.example/api/files/owner-a--asset.png"
+                    ),
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()

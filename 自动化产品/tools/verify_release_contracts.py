@@ -42,9 +42,13 @@ RUNTIME_EXACT_PATHS = {
     "server/model_usage_recovery.py",
     "server/store.py",
     "server/requirements.txt",
+    "server/requirements.lock.txt",
     "server/minimax_system_voices.json",
     "apps/video-workshop/run.py",
     "apps/video-workshop/requirements.txt",
+    "apps/video-workshop/requirements.lock.txt",
+    "deploy/verify_offline_dependencies.py",
+    "deploy/verify_production_write_gate.py",
     "tools/verify_release_contracts.py",
 }
 RUNTIME_PREFIX_RULES = (

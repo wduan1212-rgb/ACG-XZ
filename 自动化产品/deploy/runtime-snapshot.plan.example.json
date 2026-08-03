@@ -1,0 +1,74 @@
+{
+  "format": "acg-runtime-snapshot-plan-v1",
+  "releaseId": "replace-with-approved-release-id",
+  "components": [
+    {
+      "name": "database",
+      "type": "sqlite",
+      "path": "/srv/acg/shared/data/data.sqlite"
+    },
+    {
+      "name": "legacy-data",
+      "type": "file",
+      "path": "/srv/acg/shared/data/data.json",
+      "required": false
+    },
+    {
+      "name": "uploads",
+      "type": "directory",
+      "path": "/srv/acg/shared/uploads"
+    },
+    {
+      "name": "composed",
+      "type": "directory",
+      "path": "/srv/acg/shared/composed"
+    },
+    {
+      "name": "canvas-blobs",
+      "type": "directory",
+      "path": "/srv/acg/shared/canvas_blobs"
+    },
+    {
+      "name": "model-usage-spool",
+      "type": "directory",
+      "path": "/srv/acg/shared/data/model_usage_spool"
+    },
+    {
+      "name": "video-projects",
+      "type": "directory",
+      "path": "/srv/acg/shared/video-workshop/projects"
+    },
+    {
+      "name": "video-uploads",
+      "type": "directory",
+      "path": "/srv/acg/shared/video-workshop/uploads"
+    },
+    {
+      "name": "video-outputs",
+      "type": "directory",
+      "path": "/srv/acg/shared/video-workshop/outputs"
+    },
+    {
+      "name": "bgm-library",
+      "type": "directory",
+      "path": "/srv/acg/shared/bgm-library"
+    },
+    {
+      "name": "runtime-env",
+      "type": "file",
+      "path": "/srv/acg/shared/config/runtime.env"
+    },
+    {
+      "name": "systemd-unit",
+      "type": "file",
+      "path": "/etc/systemd/system/acg-xz.service",
+      "allowOutsidePersistentRoot": true
+    },
+    {
+      "name": "nginx-site",
+      "type": "file",
+      "path": "/etc/nginx/conf.d/acg-xz.conf",
+      "allowOutsidePersistentRoot": true
+    }
+  ]
+}

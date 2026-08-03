@@ -70,6 +70,7 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
         *,
         use_ready_token: bool,
         require_service_ready: bool,
+        read_only: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         code = self._embedded_python(script, function_name)
         self.assertEqual(1, code.count("for _ in range(40):"))
@@ -91,7 +92,7 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
                 "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                 "ACG_RELEASE_ID": "release-current",
                 "ACG_READY_TOKEN": "ready-token",
-                "ACG_READ_ONLY": "1",
+                "ACG_READ_ONLY": "1" if read_only else "0",
             },
             check=False,
             capture_output=True,
@@ -115,13 +116,18 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
         harness.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
+            "PYTHON_BIN=\"${PYTHON_BIN:-python3}\"\n"
             f"{functions}\n"
+            "case \"${TEST_FORCE_IDENTITY:-}\" in\n"
+            "  match) managed_process_identity_matches() { return 0; } ;;\n"
+            "  mismatch) managed_process_identity_matches() { return 1; } ;;\n"
+            "esac\n"
             "shutdown_failed=0\n"
             "if [ \"${TEST_STOP_PID:-0}\" = \"1\" ]; then\n"
-            "  if ! stop_pid_file \"$TEST_PID_FILE\"; then shutdown_failed=1; fi\n"
+            "  if ! stop_pid_file \"$TEST_PID_FILE\" \"$TEST_SERVICE\" \"$TEST_EXPECTED_CWD\" \"$TEST_EXPECTED_EXECUTABLE\" \"$TEST_EXPECTED_MARKER\"; then shutdown_failed=1; fi\n"
             "fi\n"
             "if [ \"${TEST_STOP_PORT:-0}\" = \"1\" ]; then\n"
-            "  if ! stop_port \"$TEST_PORT\"; then shutdown_failed=1; fi\n"
+            "  if ! stop_port \"$TEST_PORT\" \"$TEST_SERVICE\" \"$TEST_EXPECTED_CWD\" \"$TEST_EXPECTED_EXECUTABLE\" \"$TEST_EXPECTED_MARKER\"; then shutdown_failed=1; fi\n"
             "fi\n"
             "if [ \"$shutdown_failed\" -ne 0 ]; then\n"
             "  echo \"Runtime shutdown could not be proven; refusing backup and startup.\" >&2\n"
@@ -133,16 +139,30 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
         harness.chmod(0o755)
         return harness
 
-    def _start_term_ignoring_process(self) -> subprocess.Popen[str]:
+    def _start_term_ignoring_process(
+        self,
+        cwd: Path,
+        marker: str = "synthetic-managed-service",
+        *,
+        ignore_term: bool = True,
+    ) -> subprocess.Popen[str]:
+        signal_setup = (
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            if ignore_term
+            else ""
+        )
         process = subprocess.Popen(
             [
                 sys.executable,
                 "-c",
                 "import signal,time\n"
-                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                + signal_setup
+                +
                 "print('ready', flush=True)\n"
                 "while True: time.sleep(1)\n",
+                marker,
             ],
+            cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -181,11 +201,16 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
             "ACG_DB_BOOTSTRAP_MODE": "validate",
             "ACG_READ_ONLY": "1",
             "ACG_REQUIRE_INTERNAL_TEAM": "1",
+            "ACG_REQUIRE_RESOURCE_SCOPES": "1",
+            "ACG_REQUIRE_PRIVATE_MEDIA": "1",
             "ACG_PERSISTENT_ROOT": str(root),
             "ACG_ENV_FILE": str(env_file),
             "ACG_RELEASE_ID": RELEASE_ID,
             "ACG_READY_TOKEN": "test-ready-token",
+            "PUBLIC_BASE_URL": "https://studio.example.test",
+            "PRIVATE_MEDIA_LEGACY_ORIGINS": "https://legacy.example.test",
             "DATA_DB": str(database),
+            "MODEL_USAGE_COMPLETION_SPOOL_DIR": str(root / "model_usage_spool"),
             "LEGACY_DATA_FILE": str(root / "data.json"),
             "UPLOAD_DIR": str(root / "uploads"),
             "COMPOSED_DIR": str(root / "composed"),
@@ -198,6 +223,7 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
             "VIDEO_WORKSHOP_HEALTH_URL": "http://127.0.0.1:8765",
             "HF_HOME": str(root / "model-cache"),
             "BGM_SOURCE": "platform",
+            "BGM_LIBRARY_DIR": str(root / "bgm-library"),
         }
 
     def test_non_docker_production_preflight_does_not_create_missing_paths(self):
@@ -232,7 +258,7 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
             self.assertFalse((root / "uploads").exists())
             self.assertFalse((root / "video-workshop").exists())
 
-    def test_production_read_write_mode_is_rejected_before_backup(self):
+    def test_production_read_write_mode_reaches_read_only_contract_audit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = self._preflight_env(START_SERVER, root)
@@ -240,10 +266,8 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
             result = self._run_embedded_preflight(START_SERVER, env)
 
             self.assertNotEqual(0, result.returncode)
-            self.assertIn(
-                "ACG_READ_ONLY must be enabled for this production release",
-                result.stderr,
-            )
+            self.assertNotIn("ACG_READ_ONLY must be", result.stderr)
+            self.assertIn("must already exist as a directory", result.stderr)
             self.assertFalse((root / "backups").exists())
             self.assertFalse((root / "logs").exists())
 
@@ -313,17 +337,35 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
                         self.assertFalse((root / "backups").exists())
                         self.assertFalse((root / "logs").exists())
 
-    def test_production_preflight_requires_internal_team_mode(self):
+    def test_production_preflight_requires_all_security_gates(self):
+        for script in (START_SERVER, DOCKER_ENTRYPOINT):
+            for gate in (
+                "ACG_REQUIRE_INTERNAL_TEAM",
+                "ACG_REQUIRE_RESOURCE_SCOPES",
+                "ACG_REQUIRE_PRIVATE_MEDIA",
+            ):
+                with self.subTest(script=script.name, gate=gate):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        env = self._preflight_env(script, Path(tmp))
+                        env[gate] = "0"
+                        result = self._run_embedded_preflight(script, env)
+
+                        self.assertNotEqual(0, result.returncode)
+                        self.assertIn(
+                            f"{gate} must be enabled in production",
+                            result.stderr,
+                        )
+
+    def test_production_preflight_rejects_ambiguous_read_only_value(self):
         for script in (START_SERVER, DOCKER_ENTRYPOINT):
             with self.subTest(script=script.name):
                 with tempfile.TemporaryDirectory() as tmp:
                     env = self._preflight_env(script, Path(tmp))
-                    env["ACG_REQUIRE_INTERNAL_TEAM"] = "0"
+                    env["ACG_READ_ONLY"] = "maybe"
                     result = self._run_embedded_preflight(script, env)
-
                     self.assertNotEqual(0, result.returncode)
                     self.assertIn(
-                        "ACG_REQUIRE_INTERNAL_TEAM must be enabled in production",
+                        "ACG_READ_ONLY must be an explicit boolean",
                         result.stderr,
                     )
 
@@ -355,6 +397,24 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
                                 f"{name} must use http with a literal loopback IP",
                                 result.stderr,
                             )
+
+    def test_production_preflight_requires_exact_public_media_origins(self):
+        invalid_values = {
+            "missing": "",
+            "loopback": "http://127.0.0.1:8787",
+            "credentials": "https://user@example.test",
+            "path": "https://example.test/app",
+            "query": "https://example.test?tenant=acg",
+        }
+        for script in (START_SERVER, DOCKER_ENTRYPOINT):
+            for case, value in invalid_values.items():
+                with self.subTest(script=script.name, case=case):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        env = self._preflight_env(script, Path(tmp))
+                        env["PUBLIC_BASE_URL"] = value
+                        result = self._run_embedded_preflight(script, env)
+                        self.assertNotEqual(0, result.returncode)
+                        self.assertIn("PUBLIC_BASE_URL", result.stderr)
 
     def test_health_gates_require_exact_release_and_sidecar_contract(self):
         valid_sidecar = {
@@ -394,6 +454,41 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
                     require_service_ready=True,
                 )
                 self.assertEqual(0, result.returncode, result.stderr)
+            read_write_sidecar = {
+                **valid_sidecar,
+                "readOnly": False,
+                "writePolicy": "normal",
+            }
+            with self.subTest(script=script.name, case="valid-read-write-sidecar"):
+                result = self._run_embedded_health_gate(
+                    script,
+                    function_name,
+                    read_write_sidecar,
+                    use_ready_token=False,
+                    require_service_ready=True,
+                    read_only=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+            with self.subTest(script=script.name, case="read-write-main-read-only-sidecar"):
+                result = self._run_embedded_health_gate(
+                    script,
+                    function_name,
+                    valid_sidecar,
+                    use_ready_token=False,
+                    require_service_ready=True,
+                    read_only=False,
+                )
+                self.assertNotEqual(0, result.returncode)
+            with self.subTest(script=script.name, case="read-only-main-write-sidecar"):
+                result = self._run_embedded_health_gate(
+                    script,
+                    function_name,
+                    read_write_sidecar,
+                    use_ready_token=False,
+                    require_service_ready=True,
+                    read_only=True,
+                )
+                self.assertNotEqual(0, result.returncode)
             for case, payload in invalid_sidecars.items():
                 with self.subTest(script=script.name, case=case):
                     result = self._run_embedded_health_gate(
@@ -426,7 +521,7 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
     def test_stubborn_pid_aborts_before_backup_and_preserves_pidfile(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            process = self._start_term_ignoring_process()
+            process = self._start_term_ignoring_process(root)
             try:
                 pid_file = root / "service.pid"
                 pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
@@ -437,6 +532,11 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
                         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                         "TEST_STOP_PID": "1",
                         "TEST_PID_FILE": str(pid_file),
+                        "TEST_SERVICE": "test",
+                        "TEST_EXPECTED_CWD": str(root),
+                        "TEST_EXPECTED_EXECUTABLE": sys.executable,
+                        "TEST_EXPECTED_MARKER": "synthetic-managed-service",
+                        "TEST_FORCE_IDENTITY": "match",
                         "TEST_BACKUP_MARKER": str(backup_marker),
                     },
                     check=False,
@@ -453,10 +553,49 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
             finally:
                 self._terminate_test_process(process)
 
+    def test_pidfile_identity_mismatch_never_signals_unrelated_process(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            process = self._start_term_ignoring_process(
+                root,
+                marker="unrelated-process",
+                ignore_term=False,
+            )
+            try:
+                pid_file = root / "service.pid"
+                pid_file.write_text(f"{process.pid}\n", encoding="utf-8")
+                backup_marker = root / "backup-ran"
+                result = subprocess.run(
+                    ["/bin/bash", str(self._write_shutdown_harness(root))],
+                    env={
+                        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                        "TEST_STOP_PID": "1",
+                        "TEST_PID_FILE": str(pid_file),
+                        "TEST_SERVICE": "test",
+                        "TEST_EXPECTED_CWD": str(root),
+                        "TEST_EXPECTED_EXECUTABLE": sys.executable,
+                        "TEST_EXPECTED_MARKER": "synthetic-managed-service",
+                        "TEST_FORCE_IDENTITY": "mismatch",
+                        "TEST_BACKUP_MARKER": str(backup_marker),
+                    },
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+
+                self.assertEqual(70, result.returncode)
+                self.assertIn("does not match managed test identity", result.stderr)
+                self.assertIsNone(process.poll())
+                self.assertTrue(pid_file.exists())
+                self.assertFalse(backup_marker.exists())
+            finally:
+                self._terminate_test_process(process)
+
     def test_stubborn_lsof_listener_aborts_before_backup_without_sigkill(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            process = self._start_term_ignoring_process()
+            process = self._start_term_ignoring_process(root)
             try:
                 fake_bin = self._write_fake_lsof(
                     root,
@@ -475,6 +614,11 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
                         "FAKE_LISTENER_PID": str(process.pid),
                         "TEST_STOP_PORT": "1",
                         "TEST_PORT": "59997",
+                        "TEST_SERVICE": "test",
+                        "TEST_EXPECTED_CWD": str(root),
+                        "TEST_EXPECTED_EXECUTABLE": sys.executable,
+                        "TEST_EXPECTED_MARKER": "synthetic-managed-service",
+                        "TEST_FORCE_IDENTITY": "match",
                         "TEST_BACKUP_MARKER": str(backup_marker),
                     },
                     check=False,
@@ -495,6 +639,47 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
             finally:
                 self._terminate_test_process(process)
 
+    def test_port_identity_mismatch_never_signals_unrelated_listener(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            process = self._start_term_ignoring_process(
+                root,
+                marker="unrelated-listener",
+                ignore_term=False,
+            )
+            try:
+                fake_bin = self._write_fake_lsof(
+                    root,
+                    "#!/bin/sh\nprintf '%s\\n' \"$FAKE_LISTENER_PID\"\n",
+                )
+                backup_marker = root / "backup-ran"
+                result = subprocess.run(
+                    ["/bin/bash", str(self._write_shutdown_harness(root))],
+                    env={
+                        "PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+                        "FAKE_LISTENER_PID": str(process.pid),
+                        "TEST_STOP_PORT": "1",
+                        "TEST_PORT": "59995",
+                        "TEST_SERVICE": "test",
+                        "TEST_EXPECTED_CWD": str(root),
+                        "TEST_EXPECTED_EXECUTABLE": sys.executable,
+                        "TEST_EXPECTED_MARKER": "synthetic-managed-service",
+                        "TEST_FORCE_IDENTITY": "mismatch",
+                        "TEST_BACKUP_MARKER": str(backup_marker),
+                    },
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+
+                self.assertEqual(70, result.returncode)
+                self.assertIn("is not managed test; refusing TERM", result.stderr)
+                self.assertIsNone(process.poll())
+                self.assertFalse(backup_marker.exists())
+            finally:
+                self._terminate_test_process(process)
+
     def test_lsof_probe_error_cannot_be_treated_as_an_empty_port(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -509,9 +694,13 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
                 ["/bin/bash", str(self._write_shutdown_harness(root))],
                 env={
                     "PATH": f"{fake_bin}:{os.environ.get('PATH', '/usr/bin:/bin')}",
-                    "TEST_STOP_PORT": "1",
-                    "TEST_PORT": "59996",
-                    "TEST_BACKUP_MARKER": str(backup_marker),
+                "TEST_STOP_PORT": "1",
+                "TEST_PORT": "59996",
+                "TEST_SERVICE": "test",
+                "TEST_EXPECTED_CWD": str(root),
+                "TEST_EXPECTED_EXECUTABLE": sys.executable,
+                "TEST_EXPECTED_MARKER": "synthetic-managed-service",
+                "TEST_BACKUP_MARKER": str(backup_marker),
                 },
                 check=False,
                 capture_output=True,
@@ -535,11 +724,24 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
         self.assertLess(gate, abort)
         self.assertLess(abort, backup)
         shutdown_block = source[gate:backup]
-        self.assertIn('stop_pid_file "$MAIN_PID_FILE"', shutdown_block)
-        self.assertIn('stop_pid_file "$VIDEO_PID_FILE"', shutdown_block)
-        self.assertIn('stop_port "$PORT"', shutdown_block)
-        self.assertIn('stop_port "$VIDEO_WORKSHOP_PORT"', shutdown_block)
+        self.assertIn('"$MAIN_PID_FILE" "main"', shutdown_block)
+        self.assertIn('"$VIDEO_PID_FILE" "video-workshop"', shutdown_block)
+        self.assertIn('"$PORT" "main"', shutdown_block)
+        self.assertIn('"$VIDEO_WORKSHOP_PORT" "video-workshop"', shutdown_block)
         self.assertIn("shutdown_failed=1", shutdown_block)
+
+    def test_native_shutdown_requires_process_identity_before_term(self):
+        source = START_SERVER.read_text("utf-8")
+        shutdown = source.split("readonly STOP_WAIT_ATTEMPTS=", 1)[1].split(
+            "wait_for_health() {", 1
+        )[0]
+        self.assertIn("managed_process_identity_matches", shutdown)
+        self.assertIn("actual_cwd != expected_cwd", shutdown)
+        self.assertIn("actual_executable != expected_executable", shutdown)
+        self.assertIn("does not match managed", shutdown)
+        validation = shutdown.index("# Validate the complete listener set")
+        signal = shutdown.index('kill -TERM "$pid"', validation)
+        self.assertLess(validation, signal)
 
     def test_external_env_paths_feed_preflight_and_backup_after_contract_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -558,14 +760,28 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
                 "ok", encoding="utf-8"
             )
             (release / "server" / "requirements.txt").write_text("", encoding="utf-8")
+            (release / "server" / "requirements.lock.txt").write_text(
+                "fixture==1\n", encoding="utf-8"
+            )
             video_root = release / "apps" / "video-workshop"
             (video_root / "requirements.txt").write_text("", encoding="utf-8")
+            (video_root / "requirements.lock.txt").write_text(
+                "fixture==1\n", encoding="utf-8"
+            )
             (video_root / "run.py").write_text("raise SystemExit(99)\n", encoding="utf-8")
             for executable in (
                 release / ".venv" / "bin" / "python",
                 video_root / ".venv" / "bin" / "python",
             ):
-                executable.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+                executable.write_text(
+                    "#!/bin/sh\n"
+                    "case \"${1:-}\" in\n"
+                    "  */verify_offline_dependencies.py) exit 0 ;;\n"
+                    "  */verify_production_write_gate.py) exit 0 ;;\n"
+                    "esac\n"
+                    "exit 99\n",
+                    encoding="utf-8",
+                )
                 executable.chmod(0o755)
 
             verify_marker = persistent / "verified"
@@ -576,6 +792,12 @@ class DeployRuntimeSafetyTests(unittest.TestCase):
                 encoding="utf-8",
             )
             verifier.chmod(0o755)
+            (release / "deploy" / "verify_offline_dependencies.py").write_text(
+                "raise SystemExit(99)\n", encoding="utf-8"
+            )
+            (release / "deploy" / "verify_production_write_gate.py").write_text(
+                "raise SystemExit(99)\n", encoding="utf-8"
+            )
             backup_helper = release / "server" / "scripts" / "consistent_sqlite_backup.py"
             backup_helper.write_text(
                 """import argparse, os
@@ -601,10 +823,12 @@ raise SystemExit(42)
                 "UPLOAD_DIR": persistent / "uploads",
                 "COMPOSED_DIR": persistent / "composed",
                 "CUSTOM_CANVAS_BLOB_DIR": persistent / "canvas_blobs",
+                "MODEL_USAGE_COMPLETION_SPOOL_DIR": persistent / "model_usage_spool",
                 "VIDEO_WORKSHOP_PROJECTS_DIR": persistent / "video" / "projects",
                 "VIDEO_WORKSHOP_OUTPUT_DIR": persistent / "video" / "outputs",
                 "VIDEO_WORKSHOP_UPLOAD_DIR": persistent / "video" / "uploads",
                 "HF_HOME": persistent / "model-cache",
+                "BGM_LIBRARY_DIR": persistent / "bgm-library",
             }
             for path in required_dirs.values():
                 path.mkdir(parents=True, exist_ok=True)
@@ -617,10 +841,13 @@ raise SystemExit(42)
                 "ACG_DB_BOOTSTRAP_MODE": "validate",
                 "ACG_READ_ONLY": "1",
                 "ACG_REQUIRE_INTERNAL_TEAM": "1",
+                "ACG_REQUIRE_RESOURCE_SCOPES": "1",
+                "ACG_REQUIRE_PRIVATE_MEDIA": "1",
                 "ACG_RELEASE_ROOT": str(release),
                 "ACG_PERSISTENT_ROOT": str(persistent),
                 "ACG_RELEASE_ID": "env-release",
                 "ACG_READY_TOKEN": "env-ready-token",
+                "PUBLIC_BASE_URL": "https://studio.example.test",
                 "DATA_DB": str(database),
                 "LEGACY_DATA_FILE": str(persistent / "data.json"),
                 "BGM_SOURCE": "platform",
@@ -663,6 +890,8 @@ raise SystemExit(42)
         dockerignore_source = DOCKERIGNORE.read_text("utf-8")
 
         self.assertIn("consistent_sqlite_backup.py", start_source)
+        self.assertIn("model-usage-spool.manifest", start_source)
+        self.assertIn("model-usage-spool.tar", start_source)
         self.assertNotIn('cp -p "$DATA_DB_PATH"*', start_source)
         self.assertIn("/api/ready", start_source)
         self.assertIn("/api/ready", entrypoint_source)
@@ -679,10 +908,20 @@ raise SystemExit(42)
                 "Deployment entrypoint requires ACG_RUNTIME_MODE=production.", source
             )
             self.assertNotIn("local|test)", source)
-            self.assertIn("ACG_REQUIRE_INTERNAL_TEAM must be enabled", source)
+            self.assertIn("must be enabled in production", source)
+            self.assertIn("ACG_REQUIRE_RESOURCE_SCOPES", source)
+            self.assertIn("ACG_REQUIRE_PRIVATE_MEDIA", source)
+            self.assertIn("verify_production_write_gate.py", source)
+            self.assertIn("verify_production_write_gate --skip-sidecar", source)
+            self.assertIn('"MODEL_USAGE_COMPLETION_SPOOL_DIR": "dir"', source)
+            self.assertIn('"HF_HOME": "dir"', source)
+            self.assertIn('"BGM_LIBRARY_DIR": "dir"', source)
             self.assertIn("validate_sidecar_url(\"VIDEO_WORKSHOP_URL\"", source)
             self.assertIn(
                 "validate_sidecar_url(\"VIDEO_WORKSHOP_HEALTH_URL\"", source
+            )
+            self.assertIn(
+                'validate_public_origin("PUBLIC_BASE_URL", required=True)', source
             )
             self.assertIn(
                 'data.get("contractVersion") == "video-workshop-v137-read-only-1"',
@@ -711,6 +950,8 @@ raise SystemExit(42)
         self.assertIn("from server import config as c", dockerfile_source)
         self.assertIn('ACG_READ_ONLY="1"', dockerfile_source)
         self.assertIn('ACG_REQUIRE_INTERNAL_TEAM="1"', dockerfile_source)
+        self.assertIn('ACG_REQUIRE_RESOURCE_SCOPES="1"', dockerfile_source)
+        self.assertIn('ACG_REQUIRE_PRIVATE_MEDIA="1"', dockerfile_source)
         self.assertIn('VIDEO_WORKSHOP_HEALTH_URL="http://127.0.0.1:8765"', dockerfile_source)
         self.assertIn('FALLBACK_ENV="${FALLBACK_ENV:-${ACG_ENV_FILE:-}}"', start_source)
         self.assertIn('FALLBACK_ENV="${FALLBACK_ENV:-${ACG_ENV_FILE:-}}"', entrypoint_source)

@@ -79,9 +79,14 @@ if [ "$ACG_RUNTIME_MODE" != "production" ]; then
   exit 1
 fi
 export ACG_DB_BOOTSTRAP_MODE="${ACG_DB_BOOTSTRAP_MODE:-validate}"
+export ACG_READ_ONLY="${ACG_READ_ONLY:-1}"
+export ACG_REQUIRE_INTERNAL_TEAM="${ACG_REQUIRE_INTERNAL_TEAM:-1}"
+export ACG_REQUIRE_RESOURCE_SCOPES="${ACG_REQUIRE_RESOURCE_SCOPES:-1}"
+export ACG_REQUIRE_PRIVATE_MEDIA="${ACG_REQUIRE_PRIVATE_MEDIA:-1}"
 export FALLBACK_ENV="${FALLBACK_ENV:-${ACG_ENV_FILE:-}}"
 
 export DATA_DB="${DATA_DB:-/data/data.sqlite}"
+export MODEL_USAGE_COMPLETION_SPOOL_DIR="${MODEL_USAGE_COMPLETION_SPOOL_DIR:-/data/model_usage_spool}"
 export LEGACY_DATA_FILE="${LEGACY_DATA_FILE:-/data/data.json}"
 export UPLOAD_DIR="${UPLOAD_DIR:-/data/uploads}"
 export COMPOSED_DIR="${COMPOSED_DIR:-/data/composed}"
@@ -110,6 +115,10 @@ if [ "${PORT:-8787}" = "$VIDEO_WORKSHOP_PORT" ]; then
 fi
 
 RELEASE_CONTRACT_VERIFIER="$APP_DIR/deploy/verify_release_contracts.sh"
+DEPENDENCY_CONTRACT_VERIFIER="$APP_DIR/deploy/verify_offline_dependencies.py"
+PRODUCTION_WRITE_GATE_VERIFIER="$APP_DIR/deploy/verify_production_write_gate.py"
+MAIN_DEPENDENCY_LOCK="$APP_DIR/server/requirements.lock.txt"
+VIDEO_DEPENDENCY_LOCK="$VIDEO_APP_DIR/requirements.lock.txt"
 
 production_preflight() {
   "$PYTHON_BIN" - <<'PY'
@@ -172,6 +181,40 @@ def validate_sidecar_url(name, expected_port):
         )
 
 
+def validate_public_origin(name, *, required):
+    raw_value = str(os.environ.get(name, "") or "")
+    values = [raw_value] if name == "PUBLIC_BASE_URL" else raw_value.split(",")
+    values = [value.strip() for value in values if value.strip()]
+    if required and not values:
+        errors.append(f"{name} must be explicitly configured")
+        return
+    for value in values:
+        valid = value == value.strip()
+        try:
+            parsed = urlsplit(value)
+            _ = parsed.port
+        except (TypeError, ValueError):
+            valid = False
+        else:
+            valid = bool(
+                valid
+                and parsed.scheme in {"http", "https"}
+                and parsed.hostname
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.path in {"", "/"}
+                and not parsed.query
+                and not parsed.fragment
+                and parsed.hostname.lower() not in {"localhost", "127.0.0.1", "::1"}
+            )
+        if not valid:
+            errors.append(
+                f"{name} entries must be exact public http(s) origins with no "
+                "credentials/path/query/fragment"
+            )
+            return
+
+
 release_root = resolved("ACG_RELEASE_ROOT")
 persistent_root = resolved("ACG_PERSISTENT_ROOT")
 env_file = resolved("ACG_ENV_FILE")
@@ -203,13 +246,18 @@ if not str(os.environ.get("ACG_READY_TOKEN", "")).strip():
 if str(os.environ.get("ACG_DB_BOOTSTRAP_MODE", "")).strip() != "validate":
     errors.append("ACG_DB_BOOTSTRAP_MODE must be validate in production")
 if str(os.environ.get("ACG_READ_ONLY", "")).strip().lower() not in {
-    "1", "true", "yes", "on",
+    "0", "1", "false", "true", "no", "yes", "off", "on",
 }:
-    errors.append("ACG_READ_ONLY must be enabled for this production release")
-if str(os.environ.get("ACG_REQUIRE_INTERNAL_TEAM", "")).strip().lower() not in {
-    "1", "true", "yes", "on",
-}:
-    errors.append("ACG_REQUIRE_INTERNAL_TEAM must be enabled in production")
+    errors.append("ACG_READ_ONLY must be an explicit boolean")
+for required_gate in (
+    "ACG_REQUIRE_INTERNAL_TEAM",
+    "ACG_REQUIRE_RESOURCE_SCOPES",
+    "ACG_REQUIRE_PRIVATE_MEDIA",
+):
+    if str(os.environ.get(required_gate, "")).strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        errors.append(f"{required_gate} must be enabled in production")
 
 try:
     sidecar_port = int(str(os.environ.get("VIDEO_WORKSHOP_PORT", "")).strip())
@@ -220,9 +268,12 @@ except ValueError:
     errors.append("VIDEO_WORKSHOP_PORT must be an integer from 1 to 65535")
 validate_sidecar_url("VIDEO_WORKSHOP_URL", sidecar_port)
 validate_sidecar_url("VIDEO_WORKSHOP_HEALTH_URL", sidecar_port)
+validate_public_origin("PUBLIC_BASE_URL", required=True)
+validate_public_origin("PRIVATE_MEDIA_LEGACY_ORIGINS", required=False)
 
 path_specs = {
     "DATA_DB": "file",
+    "MODEL_USAGE_COMPLETION_SPOOL_DIR": "dir",
     "LEGACY_DATA_FILE": "optional_file",
     "UPLOAD_DIR": "dir",
     "COMPOSED_DIR": "dir",
@@ -231,9 +282,8 @@ path_specs = {
     "VIDEO_WORKSHOP_OUTPUT_DIR": "dir",
     "VIDEO_WORKSHOP_UPLOAD_DIR": "dir",
     "HF_HOME": "dir",
+    "BGM_LIBRARY_DIR": "dir",
 }
-if str(os.environ.get("BGM_SOURCE", "")).strip() != "platform":
-    path_specs["BGM_LIBRARY_DIR"] = "dir"
 
 for name, kind in path_specs.items():
     path = resolved(name)
@@ -270,6 +320,25 @@ verify_release_contracts() {
 
 verify_release_contracts
 production_preflight
+
+if [ ! -f "$DEPENDENCY_CONTRACT_VERIFIER" ]; then
+  echo "Dependency contract verifier is missing: $DEPENDENCY_CONTRACT_VERIFIER" >&2
+  exit 1
+fi
+"$PYTHON_BIN" "$DEPENDENCY_CONTRACT_VERIFIER" installed \
+  --python "$PYTHON_BIN" --lock "$MAIN_DEPENDENCY_LOCK"
+"$PYTHON_BIN" "$DEPENDENCY_CONTRACT_VERIFIER" installed \
+  --python "$VIDEO_PYTHON" --lock "$VIDEO_DEPENDENCY_LOCK"
+
+verify_production_write_gate() {
+  if [ ! -f "$PRODUCTION_WRITE_GATE_VERIFIER" ]; then
+    echo "Production write gate verifier is missing: $PRODUCTION_WRITE_GATE_VERIFIER" >&2
+    return 1
+  fi
+  "$PYTHON_BIN" "$PRODUCTION_WRITE_GATE_VERIFIER" "$@"
+}
+
+verify_production_write_gate --skip-sidecar
 
 wait_for_json_gate() {
   local url="$1"
@@ -315,10 +384,16 @@ for _ in range(40):
                 and release_id
                 and data.get("buildId") == release_id
                 and (
-                    not expected_read_only
-                    or (
+                    (
+                        expected_read_only
+                        and
                         data.get("readOnly") is True
                         and data.get("writePolicy") == "deny-mutations"
+                    )
+                    or (
+                        not expected_read_only
+                        and data.get("readOnly") is False
+                        and data.get("writePolicy") == "normal"
                     )
                 )
             )
@@ -358,6 +433,12 @@ if ! wait_for_json_gate \
   "Video workshop live" \
   "0" \
   "$VIDEO_READY_GATE"; then
+  exit 1
+fi
+
+# Keep the independent launcher guard in addition to the main lifespan gate.
+# The verifier only performs read-only DB/filesystem/sidecar checks.
+if ! verify_production_write_gate; then
   exit 1
 fi
 

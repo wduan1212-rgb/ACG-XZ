@@ -29,6 +29,17 @@ DB_PATH = Path(os.getenv("DATA_DB", Path(__file__).resolve().parent / "data.sqli
 CUSTOM_CANVAS_BLOB_DIR = Path(
     os.getenv("CUSTOM_CANVAS_BLOB_DIR", DB_PATH.parent / "canvas_blobs")
 )
+PRIVATE_MEDIA_UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", DB_PATH.parent / "uploads"))
+PRIVATE_MEDIA_COMPOSED_DIR = Path(os.getenv("COMPOSED_DIR", DB_PATH.parent / "composed"))
+_PRIVATE_MEDIA_VIDEO_ROOT = Path(
+    os.getenv("VIDEO_WORKSHOP_ROOT", runtime_config.APP_DIR / "apps" / "video-workshop")
+)
+PRIVATE_MEDIA_VIDEO_OUTPUT_DIR = Path(
+    os.getenv("VIDEO_WORKSHOP_OUTPUT_DIR", _PRIVATE_MEDIA_VIDEO_ROOT / "outputs")
+)
+PRIVATE_MEDIA_VIDEO_UPLOAD_DIR = Path(
+    os.getenv("VIDEO_WORKSHOP_UPLOAD_DIR", _PRIVATE_MEDIA_VIDEO_ROOT / "uploads")
+)
 
 
 def _positive_env_int(name, default, minimum=1):
@@ -631,6 +642,52 @@ CREATE TABLE IF NOT EXISTS model_usage_outbox(
 CREATE INDEX IF NOT EXISTS idx_model_usage_outbox_state_available
   ON model_usage_outbox(state, available_at, created_at);
 """
+RESOURCE_SCOPE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS resource_scopes(
+  resource_kind TEXT NOT NULL,
+  resource_id   TEXT NOT NULL,
+  scope_type    TEXT NOT NULL,
+  scope_id      TEXT NOT NULL,
+  owner_id      TEXT NOT NULL DEFAULT '',
+  provenance    TEXT NOT NULL,
+  captured_at   INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY(resource_kind, resource_id),
+  CHECK(scope_type IN ('team','member'))
+);
+CREATE INDEX IF NOT EXISTS idx_resource_scopes_scope
+  ON resource_scopes(scope_type, scope_id, resource_kind);
+CREATE TRIGGER IF NOT EXISTS trg_resource_scopes_docs_delete
+AFTER DELETE ON docs
+BEGIN
+  DELETE FROM resource_scopes
+  WHERE resource_kind=('doc:' || OLD.collection) AND resource_id=OLD.id;
+END;
+"""
+PRIVATE_MEDIA_REGISTRY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS private_media_registry(
+  media_kind      TEXT NOT NULL,
+  media_key       TEXT NOT NULL,
+  owner_id        TEXT NOT NULL,
+  team_id         TEXT NOT NULL DEFAULT '',
+  provenance_kind TEXT NOT NULL,
+  provenance_id   TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  PRIMARY KEY(media_kind, media_key, owner_id),
+  CHECK(media_kind IN (
+    'upload','composed','canvas-blob','video-output','video-upload'
+  ))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_private_media_single_owner
+  ON private_media_registry(media_kind, media_key)
+  WHERE media_kind<>'canvas-blob';
+CREATE INDEX IF NOT EXISTS idx_private_media_owner
+  ON private_media_registry(owner_id, media_kind, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_private_media_team
+  ON private_media_registry(team_id, media_kind, updated_at DESC)
+  WHERE team_id<>'';
+"""
 # 137001/137002 were exercised by local pre-release builds before the v137
 # schema identity was frozen.  Migration versions are immutable once written,
 # even outside production, so the audited release advances to fresh numbers
@@ -667,13 +724,49 @@ _MODEL_USAGE_SCHEMA_IDENTITY = "|".join((
 MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
     (MODEL_USAGE_RECEIPT_SCHEMA + "\n" + _MODEL_USAGE_SCHEMA_IDENTITY).encode("utf-8")
 ).hexdigest()
-LATEST_SCHEMA_MIGRATION_VERSION = MODEL_USAGE_SCHEMA_MIGRATION_VERSION
+RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION = 140001
+RESOURCE_SCOPE_SCHEMA_MIGRATION_NAME = "v140-resource-scopes"
+_RESOURCE_SCOPE_SCHEMA_IDENTITY = "|".join((
+    "deny-by-default-doc-resources",
+    "single-team-or-member-authority",
+    "immutable-stable-resource-id",
+    "delete-scope-with-document",
+    "legacy-attribution-is-separate-data-migration",
+))
+RESOURCE_SCOPE_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (RESOURCE_SCOPE_SCHEMA + "\n" + _RESOURCE_SCOPE_SCHEMA_IDENTITY).encode("utf-8")
+).hexdigest()
+PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION = 140003
+PRIVATE_MEDIA_SCHEMA_MIGRATION_NAME = "v140-private-media-registry"
+_PRIVATE_MEDIA_SCHEMA_IDENTITY = "|".join((
+    "deny-by-default-direct-media-reads",
+    "owner-or-current-team-access",
+    "no-global-admin-bypass",
+    "canvas-hash-may-have-multiple-owner-paths",
+    "all-other-media-has-one-owner",
+    "community-route-is-explicit-public-exception",
+    "legacy-attribution-is-separate-data-migration",
+))
+PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (PRIVATE_MEDIA_REGISTRY_SCHEMA + "\n" + _PRIVATE_MEDIA_SCHEMA_IDENTITY).encode("utf-8")
+).hexdigest()
+LATEST_SCHEMA_MIGRATION_VERSION = PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
 EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", SCHEMA)
 ) | frozenset(
     re.findall(
         r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
         MODEL_USAGE_RECEIPT_SCHEMA,
+    )
+) | frozenset(
+    re.findall(
+        r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+        RESOURCE_SCOPE_SCHEMA,
+    )
+) | frozenset(
+    re.findall(
+        r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+        PRIVATE_MEDIA_REGISTRY_SCHEMA,
     )
 ) | {"schema_migrations"}
 EXPECTED_SCHEMA_COLUMNS = {
@@ -689,6 +782,14 @@ EXPECTED_SCHEMA_COLUMNS = {
     "model_usage_outbox": {
         "state", "attempts", "available_at", "last_error", "legacy_event_id",
         "projected_at",
+    },
+    "resource_scopes": {
+        "resource_kind", "resource_id", "scope_type", "scope_id", "owner_id",
+        "provenance", "captured_at", "updated_at",
+    },
+    "private_media_registry": {
+        "media_kind", "media_key", "owner_id", "team_id",
+        "provenance_kind", "provenance_id", "created_at", "updated_at",
     },
 }
 ACG_DATA_MIGRATION_VERSION = 137004
@@ -716,6 +817,57 @@ _ACG_DATA_MIGRATION_IDENTITY = "|".join((
 ))
 ACG_DATA_MIGRATION_CHECKSUM = hashlib.sha256(
     (ACG_MIGRATION_SCOPE_SCHEMA + "\n" + _ACG_DATA_MIGRATION_IDENTITY).encode("utf-8")
+).hexdigest()
+RESOURCE_SCOPE_DATA_MIGRATION_VERSION = 140002
+RESOURCE_SCOPE_DATA_MIGRATION_NAME = "v140-acg-resource-attribution"
+RESOURCE_SCOPE_OVERRIDE_MANIFEST_FORMAT = "acg-resource-scope-overrides-v1"
+RESOURCE_SCOPE_OVERRIDE_MANIFEST_MAX_BYTES = 512 * 1024
+RESOURCE_SCOPE_OVERRIDE_MANIFEST_MAX_ENTRIES = 10_000
+PRIVATE_MEDIA_OVERRIDE_MANIFEST_FORMAT = "acg-private-media-overrides-v1"
+PRIVATE_MEDIA_OVERRIDE_MANIFEST_MAX_BYTES = 512 * 1024
+PRIVATE_MEDIA_OVERRIDE_MANIFEST_MAX_ENTRIES = 10_000
+PRIVATE_MEDIA_RUNTIME_SNAPSHOT_COMPLETE_COMPONENTS = frozenset({
+    "database", "legacy-data", "uploads", "composed", "canvas-blobs",
+    "model-usage-spool", "server-logs", "video-projects", "video-uploads",
+    "video-outputs", "bgm-library", "model-cache", "runtime-env-public",
+    "runtime-env-private", "runtime-env-v140", "systemd-main",
+    "systemd-video", "nginx-site",
+})
+_RESOURCE_SCOPE_DATA_MIGRATION_IDENTITY = "|".join((
+    "requires-acg-137004",
+    "freeze-existing-doc-identities",
+    "owner-account-reference-candidate-intersection",
+    "archived-analytics-reference",
+    "stale-secondary-reference-warning",
+    "external-tenants-remain-external",
+    "unknown-or-ambiguous-fail-closed",
+    "explicit-override-manifest-v1",
+    "override-file-sha256-and-frozen-database-state",
+    "override-binds-fresh-backup-manifest",
+    "preserve-doc-json-owner-and-credentials",
+    "idempotent-frozen-scope-v1",
+))
+RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM = hashlib.sha256(
+    _RESOURCE_SCOPE_DATA_MIGRATION_IDENTITY.encode("utf-8")
+).hexdigest()
+PRIVATE_MEDIA_DATA_MIGRATION_VERSION = 140004
+PRIVATE_MEDIA_DATA_MIGRATION_NAME = "v140-private-media-attribution"
+_PRIVATE_MEDIA_DATA_MIGRATION_IDENTITY = "|".join((
+    "requires-private-media-schema-140003",
+    "docs-and-server-provenance-only",
+    "upload-member-prefix-is-authoritative",
+    "canvas-row-owner-is-authoritative",
+    "workshop-project-id-owner-is-authoritative",
+    "community-author-is-public-provenance",
+    "ambiguous-or-orphan-blocks-entire-apply",
+    "operator-review-manifest-binds-db-path-logical-versions-and-backup",
+    "runtime-snapshot-media-inventory-matches-live-path-size-mtime-and-sha256",
+    "override-owner-scope-must-match-business-reference",
+    "no-path-url-or-content-rewrite",
+    "idempotent-frozen-attribution-v1",
+))
+PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM = hashlib.sha256(
+    _PRIVATE_MEDIA_DATA_MIGRATION_IDENTITY.encode("utf-8")
 ).hexdigest()
 
 
@@ -768,6 +920,14 @@ def _connect(read_only=None):
         conn.execute("PRAGMA query_only=ON")
     else:
         conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _connect_migration_target():
+    """Open the target without changing journal mode before backup binding."""
+
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -975,14 +1135,33 @@ def _ensure_internal_team_locked(conn):
         )
 
 
-def _apply_schema_locked(conn):
+def _execute_sql_script_locked(conn, script):
+    """Execute a trusted multi-statement script without an implicit commit."""
+
+    pending = ""
+    for line in str(script or "").splitlines(keepends=True):
+        pending += line
+        if not sqlite3.complete_statement(pending):
+            continue
+        statement = pending.strip()
+        pending = ""
+        if statement:
+            conn.execute(statement)
+    if pending.strip():
+        raise sqlite3.OperationalError("incomplete SQL migration statement")
+
+
+def _apply_schema_locked(conn, *, begin_transaction=True):
     """Apply additive schema only; never seed accounts, roles or credentials."""
 
-    # ``sqlite3.executescript`` otherwise commits before running the script and
-    # can leave a half-expanded database if a later index/ALTER fails.  Start an
-    # explicit transaction inside the script and let the caller commit only
-    # after every additive statement and ledger update has succeeded.
-    conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\n" + MIGRATION_LEDGER_SCHEMA)
+    # ``sqlite3.executescript`` commits before running a script, which would
+    # release the write lock protecting the backup-manifest comparison.  Run
+    # complete statements individually so validation and expansion stay in one
+    # BEGIN IMMEDIATE transaction.
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, SCHEMA)
+    _execute_sql_script_locked(conn, MIGRATION_LEDGER_SCHEMA)
     member_cols = {r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
     if "parent_id" not in member_cols:
         conn.execute("ALTER TABLE members ADD COLUMN parent_id TEXT")
@@ -1031,10 +1210,28 @@ def _apply_schema_locked(conn):
     )
 
 
-def _apply_model_usage_schema_locked(conn):
+def _apply_model_usage_schema_locked(conn, *, begin_transaction=True):
     """Apply only the v139 usage receipt expansion in its own transaction."""
 
-    conn.executescript("BEGIN IMMEDIATE;\n" + MODEL_USAGE_RECEIPT_SCHEMA)
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, MODEL_USAGE_RECEIPT_SCHEMA)
+
+
+def _apply_resource_scope_schema_locked(conn, *, begin_transaction=True):
+    """Create the v140 registry without assigning any legacy resource."""
+
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, RESOURCE_SCOPE_SCHEMA)
+
+
+def _apply_private_media_schema_locked(conn, *, begin_transaction=True):
+    """Create the v140 media registry without attributing legacy files."""
+
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, PRIVATE_MEDIA_REGISTRY_SCHEMA)
 
 
 def _record_schema_migration_locked(conn, *, summary=None):
@@ -1126,6 +1323,96 @@ def _record_model_usage_schema_migration_locked(conn, *, summary=None):
         )
 
 
+def _record_resource_scope_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != RESOURCE_SCOPE_SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("resource scope schema migration checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {"schema": "resource-scopes", "mode": "expand-only"},
+        ensure_ascii=False,
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            (
+                RESOURCE_SCOPE_SCHEMA_MIGRATION_NAME,
+                RESOURCE_SCOPE_SCHEMA_MIGRATION_CHECKSUM,
+                runtime_config.release_id() or "unidentified",
+                now,
+                encoded_summary,
+                RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,
+            ),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "version,name,checksum,app_version,started_at,finished_at,status,summary"
+            ") VALUES(?,?,?,?,?,?,?,?)",
+            (
+                RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,
+                RESOURCE_SCOPE_SCHEMA_MIGRATION_NAME,
+                RESOURCE_SCOPE_SCHEMA_MIGRATION_CHECKSUM,
+                runtime_config.release_id() or "unidentified",
+                now,
+                now,
+                "success",
+                encoded_summary,
+            ),
+        )
+
+
+def _record_private_media_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("private media schema migration checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {"schema": "private-media-registry", "mode": "expand-only"},
+        ensure_ascii=False,
+    )
+    values = (
+        PRIVATE_MEDIA_SCHEMA_MIGRATION_NAME,
+        PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM,
+        runtime_config.release_id() or "unidentified",
+        now,
+        encoded_summary,
+        PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            values,
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "name,checksum,app_version,finished_at,status,summary,version,started_at"
+            ") VALUES(?,?,?,?,'success',?,?,?)",
+            (
+                PRIVATE_MEDIA_SCHEMA_MIGRATION_NAME,
+                PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM,
+                runtime_config.release_id() or "unidentified",
+                now,
+                encoded_summary,
+                PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                now,
+            ),
+        )
+
+
 def _database_identity(path):
     try:
         stat = Path(path).stat()
@@ -1133,6 +1420,141 @@ def _database_identity(path):
         return ""
     raw = f"{stat.st_dev}:{stat.st_ino}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _database_path_digest(path):
+    resolved = Path(path).expanduser().resolve(strict=False)
+    return hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()
+
+
+def _database_logical_digest_locked(conn):
+    """Hash logical schema/data while the caller holds a stable transaction."""
+
+    digest = hashlib.sha256()
+    for statement in conn.iterdump():
+        encoded = statement.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def _database_review_state_locked(conn, *, backup_manifest_sha256=""):
+    """Return the exact frozen DB state an operator-reviewed manifest binds."""
+
+    return {
+        "databaseIdentity": _database_identity(DB_PATH),
+        "databasePathSha256": _database_path_digest(DB_PATH),
+        "databaseLogicalSha256": _database_logical_digest_locked(conn),
+        "schemaVersion": int(conn.execute("PRAGMA schema_version").fetchone()[0]),
+        "userVersion": int(conn.execute("PRAGMA user_version").fetchone()[0]),
+        "backupManifestSha256": str(backup_manifest_sha256 or "").strip().lower(),
+    }
+
+
+def _verify_migration_backup_binding_locked(conn, backup_binding):
+    """Bind a production migration transaction to one verified v2 backup."""
+
+    if not isinstance(backup_binding, dict):
+        raise StoreNotReadyError("verified backup manifest binding is required")
+    required = {
+        "format", "verified", "manifestSha256", "sourceDatabase",
+        "sourceIdentity", "sourcePathSha256", "sourceLogicalSha256",
+        "sourceSchemaVersion", "sourceUserVersion", "backupSha256",
+    }
+    if set(backup_binding) != required:
+        raise StoreNotReadyError("backup manifest binding fields are invalid")
+    if backup_binding.get("format") != "acg-sqlite-backup-v2" \
+            or backup_binding.get("verified") is not True:
+        raise StoreNotReadyError("verified backup manifest v2 is required")
+    for field, length in (
+        ("manifestSha256", 64),
+        ("sourceIdentity", 16),
+        ("sourcePathSha256", 64),
+        ("sourceLogicalSha256", 64),
+        ("backupSha256", 64),
+    ):
+        value = str(backup_binding.get(field) or "").strip().lower()
+        if len(value) != length or any(char not in "0123456789abcdef" for char in value):
+            raise StoreNotReadyError(f"backup manifest {field} is invalid")
+    if str(backup_binding.get("sourceDatabase") or "") != DB_PATH.name:
+        raise StoreNotReadyError("backup source database name mismatch")
+    actual_state = _database_review_state_locked(
+        conn,
+        backup_manifest_sha256=backup_binding.get("manifestSha256"),
+    )
+    actual_identity = actual_state["databaseIdentity"]
+    if not hmac.compare_digest(
+        str(backup_binding["sourceIdentity"]), actual_identity,
+    ):
+        raise StoreNotReadyError("backup source database identity mismatch")
+    actual_path_digest = actual_state["databasePathSha256"]
+    if not hmac.compare_digest(
+        str(backup_binding["sourcePathSha256"]), actual_path_digest,
+    ):
+        raise StoreNotReadyError("backup source database path mismatch")
+    actual_schema_version = actual_state["schemaVersion"]
+    actual_user_version = actual_state["userVersion"]
+    if actual_schema_version != int(backup_binding["sourceSchemaVersion"]):
+        raise StoreNotReadyError("backup source schema version mismatch")
+    if actual_user_version != int(backup_binding["sourceUserVersion"]):
+        raise StoreNotReadyError("backup source user version mismatch")
+    actual_logical_digest = actual_state["databaseLogicalSha256"]
+    if not hmac.compare_digest(
+        str(backup_binding["sourceLogicalSha256"]), actual_logical_digest,
+    ):
+        raise StoreNotReadyError("database changed after verified backup")
+    return actual_state
+
+
+def _verify_runtime_snapshot_binding(binding, *, required=False):
+    """Validate the redacted result of runtime_snapshot.verify_snapshot."""
+
+    if binding is None and not required:
+        return {"manifestSha256": "", "mediaInventoryDigest": ""}
+    required_fields = {
+        "format", "verified", "profile", "manifestSha256", "componentNames",
+        "mediaInventoryDigest",
+    }
+    if not isinstance(binding, dict) or set(binding) != required_fields:
+        raise StoreNotReadyError("verified runtime snapshot binding is required")
+    if (
+        binding.get("format") != "acg-runtime-snapshot-binding-v1"
+        or binding.get("verified") is not True
+    ):
+        raise StoreNotReadyError("verified runtime snapshot binding is invalid")
+    digest = str(binding.get("manifestSha256") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise StoreNotReadyError("runtime snapshot manifest sha256 is invalid")
+    media_digest = str(
+        binding.get("mediaInventoryDigest") or ""
+    ).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", media_digest):
+        raise StoreNotReadyError("runtime snapshot media inventory digest is invalid")
+    components = binding.get("componentNames")
+    if not isinstance(components, list) or components != sorted(set(components)):
+        raise StoreNotReadyError("runtime snapshot component binding is invalid")
+    media_components = {
+        "database", "uploads", "composed", "canvas-blobs",
+        "video-projects", "video-uploads", "video-outputs",
+    }
+    if not media_components.issubset(set(components)):
+        raise StoreNotReadyError("runtime snapshot media components are incomplete")
+    profile = str(binding.get("profile") or "")
+    if profile not in {"", "acg-production-complete-v1"}:
+        raise StoreNotReadyError("runtime snapshot profile is invalid")
+    if runtime_config.is_production() and profile != "acg-production-complete-v1":
+        raise StoreNotReadyError("production-complete runtime snapshot is required")
+    if (
+        profile == "acg-production-complete-v1"
+        and set(components) != PRIVATE_MEDIA_RUNTIME_SNAPSHOT_COMPLETE_COMPONENTS
+    ):
+        raise StoreNotReadyError(
+            "production runtime snapshot component set is incomplete"
+        )
+    return {
+        "manifestSha256": digest,
+        "mediaInventoryDigest": media_digest,
+    }
 
 
 def database_readiness():
@@ -1164,6 +1586,21 @@ def database_readiness():
         "acgMigrationVersion": None,
         "acgMigrationChecksum": "",
         "acgMigrationDrift": 0,
+        "resourceScopeSchemaVersion": None,
+        "resourceScopeSchemaChecksum": "",
+        "resourceScopeMigration": False,
+        "resourceScopeMigrationVersion": None,
+        "resourceScopeMigrationChecksum": "",
+        "resourceScopeCoverage": 0,
+        "resourceScopeDocuments": 0,
+        "resourceScopeMissing": 0,
+        "resourceScopeOrphans": 0,
+        "resourceScopeInvalidTargets": 0,
+        "privateMediaSchemaVersion": None,
+        "privateMediaSchemaChecksum": "",
+        "privateMediaMigration": False,
+        "privateMediaMigrationVersion": None,
+        "privateMediaMigrationChecksum": "",
     }
     spool_status = model_usage_completion_spool_status()
     result["modelUsageCompletionSpoolPending"] = spool_status["pending"]
@@ -1213,6 +1650,16 @@ def database_readiness():
                 "WHERE version=?",
                 (MODEL_USAGE_SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
+            scope_schema_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            media_schema_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
             if base_row:
                 result["migrationVersion"] = int(base_row[0])
                 result["checksum"] = str(base_row[1] or "")[:16]
@@ -1221,6 +1668,20 @@ def database_readiness():
                 result["checksum"] = str(usage_row[1] or "")[:16]
                 result["modelUsageMigrationVersion"] = int(usage_row[0])
                 result["modelUsageMigrationChecksum"] = str(usage_row[1] or "")[:16]
+            if scope_schema_row:
+                result["migrationVersion"] = int(scope_schema_row[0])
+                result["checksum"] = str(scope_schema_row[1] or "")[:16]
+                result["resourceScopeSchemaVersion"] = int(scope_schema_row[0])
+                result["resourceScopeSchemaChecksum"] = str(
+                    scope_schema_row[1] or ""
+                )[:16]
+            if media_schema_row:
+                result["migrationVersion"] = int(media_schema_row[0])
+                result["checksum"] = str(media_schema_row[1] or "")[:16]
+                result["privateMediaSchemaVersion"] = int(media_schema_row[0])
+                result["privateMediaSchemaChecksum"] = str(
+                    media_schema_row[1] or ""
+                )[:16]
             result["migrationDirty"] = int(conn.execute(
                 "SELECT COUNT(*) FROM schema_migrations WHERE status<>'success'"
             ).fetchone()[0] or 0)
@@ -1231,6 +1692,12 @@ def database_readiness():
                 and usage_row
                 and usage_row[1] == MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM
                 and usage_row[2] == "success"
+                and scope_schema_row
+                and scope_schema_row[1] == RESOURCE_SCOPE_SCHEMA_MIGRATION_CHECKSUM
+                and scope_schema_row[2] == "success"
+                and media_schema_row
+                and media_schema_row[1] == PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM
+                and media_schema_row[2] == "success"
                 and result["migrationDirty"] == 0
             )
         else:
@@ -1291,9 +1758,9 @@ def database_readiness():
                 "SELECT COUNT(*) FROM acg_internal_migration_scope s "
                 "LEFT JOIN members m ON m.id=s.resource_id "
                 "LEFT JOIN team_members tm ON tm.member_id=s.resource_id "
-                "WHERE s.resource_kind='member' AND (m.id IS NULL OR ("
-                "s.target_role='owner' AND (tm.member_id IS NULL OR tm.team_id<>? "
-                "OR tm.team_role<>'owner' OR tm.status<>'active')))",
+                "WHERE s.resource_kind='member' AND (m.id IS NULL "
+                "OR tm.member_id IS NULL OR tm.team_id<>? "
+                "OR tm.team_role<>s.target_role OR tm.status<>'active')",
                 (INTERNAL_TEAM_ID,),
             ).fetchone()[0] or 0)
             owner_count = int(conn.execute(
@@ -1352,10 +1819,69 @@ def database_readiness():
                 and data_row[2] == "success"
                 and drift == 0
             )
+        if {"schema_migrations", "resource_scopes", "docs"}.issubset(tables):
+            resource_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations WHERE version=?",
+                (RESOURCE_SCOPE_DATA_MIGRATION_VERSION,),
+            ).fetchone()
+            if resource_row:
+                result["resourceScopeMigrationVersion"] = int(resource_row[0])
+                result["resourceScopeMigrationChecksum"] = str(
+                    resource_row[1] or ""
+                )[:16]
+            documents = int(conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0] or 0)
+            scoped = int(conn.execute(
+                "SELECT COUNT(*) FROM docs d JOIN resource_scopes s "
+                "ON s.resource_kind=('doc:' || d.collection) AND s.resource_id=d.id"
+            ).fetchone()[0] or 0)
+            orphans = int(conn.execute(
+                "SELECT COUNT(*) FROM resource_scopes s LEFT JOIN docs d "
+                "ON s.resource_kind=('doc:' || d.collection) AND s.resource_id=d.id "
+                "WHERE s.resource_kind LIKE 'doc:%' AND d.id IS NULL"
+            ).fetchone()[0] or 0)
+            invalid_targets = int(conn.execute(
+                "SELECT COUNT(*) FROM resource_scopes s "
+                "LEFT JOIN teams t ON s.scope_type='team' AND t.id=s.scope_id "
+                "LEFT JOIN members m ON s.scope_type='member' AND m.id=s.scope_id "
+                "WHERE (s.scope_type='team' AND (t.id IS NULL OR t.status<>'active')) "
+                "OR (s.scope_type='member' AND m.id IS NULL)"
+            ).fetchone()[0] or 0)
+            result["resourceScopeDocuments"] = documents
+            result["resourceScopeCoverage"] = scoped
+            result["resourceScopeMissing"] = max(0, documents - scoped)
+            result["resourceScopeOrphans"] = orphans
+            result["resourceScopeInvalidTargets"] = invalid_targets
+            result["resourceScopeMigration"] = bool(
+                resource_row
+                and resource_row[1] == RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM
+                and resource_row[2] == "success"
+                and scoped == documents
+                and orphans == 0
+                and invalid_targets == 0
+            )
+        if {"schema_migrations", "private_media_registry"}.issubset(tables):
+            media_data_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations WHERE version=?",
+                (PRIVATE_MEDIA_DATA_MIGRATION_VERSION,),
+            ).fetchone()
+            if media_data_row:
+                result["privateMediaMigrationVersion"] = int(media_data_row[0])
+                result["privateMediaMigrationChecksum"] = str(
+                    media_data_row[1] or ""
+                )[:16]
+            result["privateMediaMigration"] = bool(
+                media_data_row
+                and media_data_row[1] == PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM
+                and media_data_row[2] == "success"
+            )
         team_ok = (
             result["internalTeam"]
             and result["acgMigration"]
         ) or not runtime_config.require_internal_team()
+        resource_scope_ok = (
+            result["resourceScopeMigration"]
+            or not runtime_config.require_resource_scopes()
+        )
         result["ok"] = bool(
             result["quickCheck"] == "ok"
             and not result["missingTables"]
@@ -1363,6 +1889,7 @@ def database_readiness():
             and migration_ok
             and result["authSecret"]
             and team_ok
+            and resource_scope_ok
             and result["modelUsageCompletionSpoolCorrupt"] == 0
             and result["modelUsageCompletionSpoolConflicts"] == 0
         )
@@ -1373,7 +1900,9 @@ def database_readiness():
     return result
 
 
-def apply_schema_migrations(*, expected_identity=""):
+def apply_schema_migrations(
+    *, expected_identity="", backup_binding=None, migration_version=None,
+):
     """Explicit expand-only migration entry used by ``python -m server.migrations``.
 
     This function deliberately does not seed members, normalize roles, rewrite
@@ -1396,13 +1925,22 @@ def apply_schema_migrations(*, expected_identity=""):
     ):
         raise StoreNotReadyError("migration target database identity mismatch")
     with _lock:
-        conn = _connect(read_only=False)
+        conn = _connect_migration_target()
+        active_migration = None
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            locked_identity = _database_identity(DB_PATH)
+            if runtime_config.is_production() and not hmac.compare_digest(
+                str(expected_identity or ""), locked_identity,
+            ):
+                raise StoreNotReadyError("migration target database identity mismatch")
+            if runtime_config.is_production():
+                _verify_migration_backup_binding_locked(conn, backup_binding)
             quick_check = str(conn.execute("PRAGMA quick_check").fetchone()[0])
             if quick_check != "ok":
                 raise StoreNotReadyError("migration target failed SQLite quick_check")
-            conn.executescript(MIGRATION_LEDGER_SCHEMA)
-            migrations = (
+            _execute_sql_script_locked(conn, MIGRATION_LEDGER_SCHEMA)
+            all_migrations = (
                 (
                     SCHEMA_MIGRATION_VERSION,
                     SCHEMA_MIGRATION_NAME,
@@ -1417,7 +1955,43 @@ def apply_schema_migrations(*, expected_identity=""):
                     _apply_model_usage_schema_locked,
                     _record_model_usage_schema_migration_locked,
                 ),
+                (
+                    RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,
+                    RESOURCE_SCOPE_SCHEMA_MIGRATION_NAME,
+                    RESOURCE_SCOPE_SCHEMA_MIGRATION_CHECKSUM,
+                    _apply_resource_scope_schema_locked,
+                    _record_resource_scope_schema_migration_locked,
+                ),
+                (
+                    PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                    PRIVATE_MEDIA_SCHEMA_MIGRATION_NAME,
+                    PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM,
+                    _apply_private_media_schema_locked,
+                    _record_private_media_schema_migration_locked,
+                ),
             )
+            migrations = all_migrations
+            if migration_version is not None:
+                requested = int(migration_version)
+                positions = {
+                    version: index
+                    for index, (version, _name, _checksum, _apply, _record)
+                    in enumerate(all_migrations)
+                }
+                if requested not in positions:
+                    raise StoreNotReadyError("unknown schema migration version")
+                position = positions[requested]
+                for prerequisite in all_migrations[:position]:
+                    version, _name, checksum, _apply, _record = prerequisite
+                    row = conn.execute(
+                        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                        (version,),
+                    ).fetchone()
+                    if row != (checksum, "success"):
+                        raise StoreNotReadyError(
+                            f"schema migration prerequisite {version} is not ready"
+                        )
+                migrations = (all_migrations[position],)
             applied_versions = []
             for version, name, checksum, apply_locked, record_locked in migrations:
                 existing = conn.execute(
@@ -1430,6 +2004,7 @@ def apply_schema_migrations(*, expected_identity=""):
                     continue
                 if existing and existing[1] == "running":
                     raise StoreNotReadyError(f"schema migration {version} is already marked running")
+                active_migration = (version, name, checksum)
                 now = int(time.time() * 1000)
                 conn.execute(
                     "INSERT OR REPLACE INTO schema_migrations("
@@ -1443,31 +2018,51 @@ def apply_schema_migrations(*, expected_identity=""):
                         now,
                     ),
                 )
-                conn.commit()
-                try:
-                    apply_locked(conn)
-                    record_locked(conn)
-                    conn.commit()
-                    applied_versions.append(version)
-                except Exception as exc:
-                    conn.rollback()
-                    conn.execute(
-                        "UPDATE schema_migrations SET status='failed',finished_at=?,summary=? "
-                        "WHERE version=?",
-                        (
-                            int(time.time() * 1000),
-                            json.dumps({"error": type(exc).__name__}),
-                            version,
-                        ),
-                    )
-                    conn.commit()
-                    raise
+                apply_locked(conn, begin_transaction=False)
+                record_locked(conn)
+                applied_versions.append(version)
+                active_migration = None
+            conn.commit()
             _initialized = False
             return {
                 "applied": bool(applied_versions),
-                "version": LATEST_SCHEMA_MIGRATION_VERSION,
+                "version": (
+                    int(migration_version)
+                    if migration_version is not None
+                    else LATEST_SCHEMA_MIGRATION_VERSION
+                ),
                 "appliedVersions": applied_versions,
             }
+        except Exception as exc:
+            conn.rollback()
+            # Preserve an auditable failure marker without retaining any
+            # partial schema writes.  Backup-binding failures happen before an
+            # active migration is selected and therefore remain zero-write.
+            if active_migration:
+                version, name, checksum = active_migration
+                try:
+                    _execute_sql_script_locked(conn, MIGRATION_LEDGER_SCHEMA)
+                    existing = conn.execute(
+                        "SELECT checksum FROM schema_migrations WHERE version=?",
+                        (version,),
+                    ).fetchone()
+                    if not existing or existing[0] == checksum:
+                        now = int(time.time() * 1000)
+                        conn.execute(
+                            "INSERT OR REPLACE INTO schema_migrations("
+                            "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                            ") VALUES(?,?,?,?,?,?,?,?)",
+                            (
+                                version, name, checksum,
+                                runtime_config.release_id() or "unidentified",
+                                now, now, "failed",
+                                json.dumps({"error": type(exc).__name__}),
+                            ),
+                        )
+                        conn.commit()
+                except Exception:
+                    conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -1897,6 +2492,7 @@ def _record_failed_acg_migration(conn, error_name):
 
 def apply_acg_internal_team_migration(
     *, expected_identity, owner_username, team_id, expected_schema_version,
+    backup_binding=None,
 ):
     """Map the frozen legacy production scope to ACG without rewriting content."""
 
@@ -1916,12 +2512,19 @@ def apply_acg_internal_team_migration(
         raise StoreNotReadyError("migration target database identity mismatch")
 
     with _lock:
-        conn = _connect(read_only=False)
+        conn = _connect_migration_target()
         migration_started = False
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            locked_identity = _database_identity(DB_PATH)
+            if not hmac.compare_digest(
+                str(expected_identity or ""), locked_identity,
+            ):
+                raise StoreNotReadyError("migration target database identity mismatch")
+            if runtime_config.is_production():
+                _verify_migration_backup_binding_locked(conn, backup_binding)
             if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
                 raise StoreNotReadyError("migration target failed SQLite quick_check")
-            conn.execute("BEGIN IMMEDIATE")
             summary, plan = _acg_plan_locked(conn, owner_username, team_id)
             if not summary["ok"]:
                 raise StoreNotReadyError(
@@ -2106,6 +2709,1089 @@ def apply_acg_internal_team_migration(
     return {**result, "applied": True, "dryRun": False}
 
 
+_RESOURCE_SCOPE_MEMBER_FIELDS = ("ownerId", "byMemberId", "createdBy")
+_RESOURCE_SCOPE_ACCOUNT_FIELDS = ("accountId",)
+_RESOURCE_SCOPE_REFERENCE_FIELDS = {
+    "jobs": (("productionId", "productions"),),
+    "sessions": (("productionId", "productions"),),
+    "batches": (("productionId", "productions"), ("productionIds", "productions")),
+    "assets": (("productionId", "productions"), ("customProjectId", "customProjects")),
+    "analyticsLinks": (("assetId", "assets"),),
+    "metricSnapshots": (
+        ("assetId", "assets"),
+        ("analyticsLinkId", "analyticsLinks"),
+        ("linkId", "analyticsLinks"),
+        ("archivedLinkId", "analyticsLinks"),
+    ),
+    "insightReports": (("assetId", "assets"),),
+    "creativeMemory": (("sourceReportId", "insightReports"),),
+    "customOutputs": (("projectId", "customProjects"), ("customProjectId", "customProjects")),
+    "customVideoJobs": (("projectId", "customProjects"), ("customProjectId", "customProjects")),
+}
+_RESOURCE_SCOPE_ACG_GLOBAL_COLLECTIONS = {"products", "publishTags"}
+
+
+def _doc_resource_kind(collection):
+    return f"doc:{str(collection or '')}"
+
+
+def _resource_scope_data_row_locked(conn):
+    return conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (RESOURCE_SCOPE_DATA_MIGRATION_VERSION,),
+    ).fetchone()
+
+
+def _resource_scope_schema_ready_locked(conn):
+    row = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    return row == (RESOURCE_SCOPE_SCHEMA_MIGRATION_CHECKSUM, "success")
+
+
+def _resource_scopes_enforced_locked(conn):
+    if not _table_exists_locked(conn, "schema_migrations"):
+        return False
+    row = _resource_scope_data_row_locked(conn)
+    return row == (RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM, "success")
+
+
+def _member_resource_scope_locked(conn, identity):
+    """Resolve one stable member id (or unique legacy username) to its tenant."""
+
+    clean = str(identity or "").strip()
+    if not clean:
+        return None
+    row = conn.execute(
+        "SELECT id,username,role,parent_id FROM members WHERE id=?",
+        (clean,),
+    ).fetchone()
+    if not row:
+        matches = conn.execute(
+            "SELECT id,username,role,parent_id FROM members WHERE username=?",
+            (clean,),
+        ).fetchall()
+        if not matches:
+            matches = [
+                item for item in conn.execute(
+                    "SELECT id,username,role,parent_id FROM members"
+                ).fetchall()
+                if canonical_username(item[1]) == canonical_username(clean)
+            ]
+        if len(matches) != 1:
+            return None
+        row = matches[0]
+    member_id, _username, role, parent_id = map(
+        lambda value: str(value or ""), row
+    )
+    membership = conn.execute(
+        "SELECT team_id FROM team_members WHERE member_id=? AND status='active'",
+        (member_id,),
+    ).fetchall()
+    team_ids = {str(item[0]) for item in membership}
+    if role == "supplier_child" and parent_id:
+        supplier_rows = conn.execute(
+            "SELECT team_id FROM team_suppliers WHERE supplier_parent_id=?",
+            (parent_id,),
+        ).fetchall()
+        team_ids.update(str(item[0]) for item in supplier_rows)
+    elif role in {"supplier_parent", "supplier"}:
+        supplier_rows = conn.execute(
+            "SELECT team_id FROM team_suppliers WHERE supplier_parent_id=?",
+            (member_id,),
+        ).fetchall()
+        team_ids.update(str(item[0]) for item in supplier_rows)
+    if len(team_ids) == 1:
+        return "team", next(iter(team_ids)), member_id
+    if team_ids:
+        return None
+    if role == "user":
+        return "member", member_id, member_id
+    return None
+
+
+def _account_resource_scope_locked(conn, account_id):
+    clean = str(account_id or "").strip()
+    if not clean:
+        return None
+    rows = conn.execute(
+        "SELECT team_id FROM team_accounts WHERE account_id=?",
+        (clean,),
+    ).fetchall()
+    team_ids = {str(item[0]) for item in rows}
+    if len(team_ids) != 1:
+        return None
+    return "team", next(iter(team_ids)), ""
+
+
+def _resource_values(value):
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    clean = str(value or "").strip()
+    return [clean] if clean else []
+
+
+def _load_resource_scope_override_manifest(
+    manifest_path, expected_sha256, database_state,
+):
+    """Load one exact operator-reviewed override file.
+
+    The digest covers the file bytes, not a re-serialized JSON object.  Both
+    preflight and apply therefore prove that they consumed the same artifact.
+    Overrides are deliberately limited to unresolved legacy documents; target
+    validation and exact coverage are performed while the database is locked.
+    """
+
+    raw_path = str(manifest_path or "").strip()
+    expected = str(expected_sha256 or "").strip().lower()
+    if not raw_path and not expected:
+        return [], ""
+    if not raw_path or not expected:
+        raise StoreNotReadyError(
+            "resource scope override manifest path and sha256 are both required"
+        )
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise StoreNotReadyError("resource scope override manifest sha256 is invalid")
+    path = Path(raw_path)
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise StoreNotReadyError("resource scope override manifest is unavailable") from exc
+    if size <= 0 or size > RESOURCE_SCOPE_OVERRIDE_MANIFEST_MAX_BYTES:
+        raise StoreNotReadyError("resource scope override manifest size is invalid")
+    try:
+        encoded = path.read_bytes()
+    except OSError as exc:
+        raise StoreNotReadyError("resource scope override manifest is unavailable") from exc
+    actual = hashlib.sha256(encoded).hexdigest()
+    if not hmac.compare_digest(expected, actual):
+        raise StoreNotReadyError("resource scope override manifest sha256 mismatch")
+    def strict_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate override manifest key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        payload = json.loads(
+            encoded.decode("utf-8"), object_pairs_hook=strict_object,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise StoreNotReadyError("resource scope override manifest JSON is invalid") from exc
+    required_top = {
+        "format", "databaseIdentity", "databasePathSha256",
+        "databaseLogicalSha256", "schemaVersion", "userVersion",
+        "backupManifestSha256", "resourceScopeSchemaVersion",
+        "resourceScopeDataVersion", "entries",
+    }
+    if not isinstance(payload, dict) or set(payload) != required_top:
+        raise StoreNotReadyError("resource scope override manifest fields are invalid")
+    if payload.get("format") != RESOURCE_SCOPE_OVERRIDE_MANIFEST_FORMAT:
+        raise StoreNotReadyError("resource scope override manifest format is invalid")
+    state = database_state if isinstance(database_state, dict) else {}
+    manifest_identity = str(payload.get("databaseIdentity") or "").strip().lower()
+    if (
+        not re.fullmatch(r"[0-9a-f]{16}", manifest_identity)
+        or not hmac.compare_digest(
+            manifest_identity,
+            str(state.get("databaseIdentity") or "").strip().lower(),
+        )
+    ):
+        raise StoreNotReadyError("resource scope override manifest database identity mismatch")
+    for field, label in (
+        ("databasePathSha256", "database path"),
+        ("databaseLogicalSha256", "database logical state"),
+        ("backupManifestSha256", "backup manifest"),
+    ):
+        manifest_value = str(payload.get(field) or "").strip().lower()
+        state_value = str(state.get(field) or "").strip().lower()
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", manifest_value)
+            or not hmac.compare_digest(manifest_value, state_value)
+        ):
+            raise StoreNotReadyError(
+                f"resource scope override manifest {label} mismatch"
+            )
+    for field, label in (
+        ("schemaVersion", "schema version"),
+        ("userVersion", "user version"),
+    ):
+        if (
+            type(payload.get(field)) is not int
+            or payload.get(field) < 0
+            or payload.get(field) != state.get(field)
+        ):
+            raise StoreNotReadyError(
+                f"resource scope override manifest {label} mismatch"
+            )
+    if (
+        type(payload.get("resourceScopeSchemaVersion")) is not int
+        or payload.get("resourceScopeSchemaVersion")
+        != RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION
+    ):
+        raise StoreNotReadyError("resource scope override schema version mismatch")
+    if (
+        type(payload.get("resourceScopeDataVersion")) is not int
+        or payload.get("resourceScopeDataVersion")
+        != RESOURCE_SCOPE_DATA_MIGRATION_VERSION
+    ):
+        raise StoreNotReadyError("resource scope override data version mismatch")
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or len(entries) > RESOURCE_SCOPE_OVERRIDE_MANIFEST_MAX_ENTRIES:
+        raise StoreNotReadyError("resource scope override entries are invalid")
+    required_entry = {
+        "resourceKind", "resourceId", "scopeType", "scopeId", "reason", "evidence",
+    }
+    normalized = []
+    seen = set()
+    for raw in entries:
+        if not isinstance(raw, dict) or set(raw) != required_entry:
+            raise StoreNotReadyError("resource scope override entry fields are invalid")
+        resource_kind = str(raw.get("resourceKind") or "").strip()
+        resource_id = str(raw.get("resourceId") or "").strip()
+        scope_type = str(raw.get("scopeType") or "").strip()
+        scope_id = str(raw.get("scopeId") or "").strip()
+        reason = str(raw.get("reason") or "").strip()
+        evidence = str(raw.get("evidence") or "").strip()
+        if (
+            not resource_kind.startswith("doc:")
+            or len(resource_kind) > 120
+            or not resource_id
+            or len(resource_id) > 240
+            or scope_type not in {"team", "member"}
+            or not scope_id
+            or len(scope_id) > 240
+            or not reason
+            or len(reason) > 240
+            or not evidence
+            or len(evidence) > 1000
+        ):
+            raise StoreNotReadyError("resource scope override entry is invalid")
+        key = (resource_kind, resource_id)
+        if key in seen:
+            raise StoreNotReadyError("resource scope override entry is duplicated")
+        seen.add(key)
+        normalized.append({
+            "resourceKind": resource_kind,
+            "resourceId": resource_id,
+            "scopeType": scope_type,
+            "scopeId": scope_id,
+            "reason": reason,
+            "evidence": evidence,
+        })
+    return normalized, actual
+
+
+def _load_private_media_override_manifest(
+    manifest_path,
+    expected_sha256,
+    database_state,
+    expected_snapshot_manifest_sha256="",
+    expected_snapshot_media_inventory_digest="",
+):
+    """Load one exact operator-reviewed media attribution manifest."""
+
+    raw_path = str(manifest_path or "").strip()
+    expected = str(expected_sha256 or "").strip().lower()
+    expected_snapshot = str(expected_snapshot_manifest_sha256 or "").strip().lower()
+    expected_snapshot_media = str(
+        expected_snapshot_media_inventory_digest or ""
+    ).strip().lower()
+    if not raw_path and not expected:
+        return [], "", "", "", "", ""
+    if not raw_path or not expected:
+        raise StoreNotReadyError(
+            "private media override path and sha256 must be provided together"
+        )
+    if not expected_snapshot or not expected_snapshot_media:
+        raise StoreNotReadyError(
+            "private media override requires a verified runtime snapshot binding"
+        )
+    for label, value in (
+        ("manifest", expected),
+        ("snapshot manifest", expected_snapshot),
+        ("snapshot media inventory", expected_snapshot_media),
+    ):
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise StoreNotReadyError(
+                f"private media override {label} sha256 is invalid"
+            )
+    path = Path(raw_path)
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise StoreNotReadyError(
+            "private media override manifest is unavailable"
+        ) from exc
+    if size <= 0 or size > PRIVATE_MEDIA_OVERRIDE_MANIFEST_MAX_BYTES:
+        raise StoreNotReadyError("private media override manifest size is invalid")
+    try:
+        encoded = path.read_bytes()
+    except OSError as exc:
+        raise StoreNotReadyError(
+            "private media override manifest is unavailable"
+        ) from exc
+    actual = hashlib.sha256(encoded).hexdigest()
+    if not hmac.compare_digest(expected, actual):
+        raise StoreNotReadyError("private media override manifest sha256 mismatch")
+    def strict_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate override manifest key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        payload = json.loads(
+            encoded.decode("utf-8"), object_pairs_hook=strict_object,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise StoreNotReadyError(
+            "private media override manifest JSON is invalid"
+        ) from exc
+    required_top = {
+        "format", "databaseIdentity", "databasePathSha256",
+        "databaseLogicalSha256", "schemaVersion", "userVersion",
+        "backupManifestSha256",
+        "privateMediaSchemaVersion",
+        "privateMediaDataVersion", "inventoryDigest",
+        "snapshotManifestSha256", "snapshotMediaInventoryDigest", "entries",
+    }
+    if not isinstance(payload, dict) or set(payload) != required_top:
+        raise StoreNotReadyError("private media override manifest fields are invalid")
+    if payload.get("format") != PRIVATE_MEDIA_OVERRIDE_MANIFEST_FORMAT:
+        raise StoreNotReadyError("private media override manifest format is invalid")
+    state = database_state if isinstance(database_state, dict) else {}
+    manifest_identity = str(
+        payload.get("databaseIdentity") or ""
+    ).strip().lower()
+    if (
+        not re.fullmatch(r"[0-9a-f]{16}", manifest_identity)
+        or not hmac.compare_digest(
+            manifest_identity,
+            str(state.get("databaseIdentity") or "").strip().lower(),
+        )
+    ):
+        raise StoreNotReadyError(
+            "private media override manifest database identity mismatch"
+        )
+    for field, label in (
+        ("databasePathSha256", "database path"),
+        ("databaseLogicalSha256", "database logical state"),
+        ("backupManifestSha256", "backup manifest"),
+    ):
+        manifest_value = str(payload.get(field) or "").strip().lower()
+        state_value = str(state.get(field) or "").strip().lower()
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", manifest_value)
+            or not hmac.compare_digest(manifest_value, state_value)
+        ):
+            raise StoreNotReadyError(
+                f"private media override manifest {label} mismatch"
+            )
+    for field, label in (
+        ("schemaVersion", "schema version"),
+        ("userVersion", "user version"),
+    ):
+        if (
+            type(payload.get(field)) is not int
+            or payload.get(field) < 0
+            or payload.get(field) != state.get(field)
+        ):
+            raise StoreNotReadyError(
+                f"private media override manifest {label} mismatch"
+            )
+    if (
+        type(payload.get("privateMediaSchemaVersion")) is not int
+        or payload.get("privateMediaSchemaVersion")
+        != PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+    ):
+        raise StoreNotReadyError("private media override schema version mismatch")
+    if (
+        type(payload.get("privateMediaDataVersion")) is not int
+        or payload.get("privateMediaDataVersion")
+        != PRIVATE_MEDIA_DATA_MIGRATION_VERSION
+    ):
+        raise StoreNotReadyError("private media override data version mismatch")
+    inventory_digest = str(payload.get("inventoryDigest") or "").strip().lower()
+    database_logical_digest = str(
+        payload.get("databaseLogicalSha256") or ""
+    ).strip().lower()
+    snapshot_digest = str(payload.get("snapshotManifestSha256") or "").strip().lower()
+    snapshot_media_digest = str(
+        payload.get("snapshotMediaInventoryDigest") or ""
+    ).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", inventory_digest):
+        raise StoreNotReadyError("private media override inventory digest is invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", database_logical_digest):
+        raise StoreNotReadyError(
+            "private media override database logical sha256 is invalid"
+        )
+    if not hmac.compare_digest(snapshot_digest, expected_snapshot):
+        raise StoreNotReadyError(
+            "private media override snapshot manifest sha256 mismatch"
+        )
+    if not hmac.compare_digest(snapshot_media_digest, expected_snapshot_media):
+        raise StoreNotReadyError(
+            "private media override snapshot media inventory digest mismatch"
+        )
+    entries = payload.get("entries")
+    if (
+        not isinstance(entries, list)
+        or not entries
+        or len(entries) > PRIVATE_MEDIA_OVERRIDE_MANIFEST_MAX_ENTRIES
+    ):
+        raise StoreNotReadyError("private media override entries are invalid")
+    required_entry = {"mediaKind", "mediaKey", "ownerId", "reason", "evidence"}
+    normalized = []
+    seen = set()
+    for raw in entries:
+        if not isinstance(raw, dict) or set(raw) != required_entry:
+            raise StoreNotReadyError(
+                "private media override entry fields are invalid"
+            )
+        try:
+            media_kind, media_key = _normalize_private_media_key(
+                raw.get("mediaKind"), raw.get("mediaKey"),
+            )
+        except ValueError as exc:
+            raise StoreNotReadyError(
+                "private media override identity is invalid"
+            ) from exc
+        owner_id = str(raw.get("ownerId") or "").strip()
+        reason = str(raw.get("reason") or "").strip()
+        evidence = str(raw.get("evidence") or "").strip()
+        if (
+            not owner_id or len(owner_id) > 240
+            or not reason or len(reason) > 240
+            or not evidence or len(evidence) > 1000
+        ):
+            raise StoreNotReadyError("private media override entry is invalid")
+        key = (media_kind, media_key)
+        if key in seen:
+            raise StoreNotReadyError("private media override entry is duplicated")
+        seen.add(key)
+        normalized.append({
+            "mediaKind": media_kind,
+            "mediaKey": media_key,
+            "ownerId": owner_id,
+            "reason": reason,
+            "evidence": evidence,
+        })
+    return (
+        normalized,
+        actual,
+        inventory_digest,
+        snapshot_digest,
+        snapshot_media_digest,
+        database_logical_digest,
+    )
+
+
+def _resource_scope_plan_locked(
+    conn, *, override_entries=None, override_manifest_sha256="",
+):
+    issues = []
+    schema_row = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if schema_row != (RESOURCE_SCOPE_SCHEMA_MIGRATION_CHECKSUM, "success"):
+        issues.append("resource_scope_schema_not_ready")
+    acg_row = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (ACG_DATA_MIGRATION_VERSION,),
+    ).fetchone()
+    if acg_row != (ACG_DATA_MIGRATION_CHECKSUM, "success"):
+        issues.append("acg_migration_not_ready")
+    dirty_other = int(conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations WHERE status<>'success' AND version<>?",
+        (RESOURCE_SCOPE_DATA_MIGRATION_VERSION,),
+    ).fetchone()[0] or 0)
+    if dirty_other:
+        issues.append("other_dirty_migrations")
+
+    data_row = _resource_scope_data_row_locked(conn)
+    if data_row and data_row[0] != RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM:
+        issues.append("resource_scope_migration_checksum_mismatch")
+    if data_row and data_row[1] == "running":
+        issues.append("resource_scope_migration_running")
+
+    docs = []
+    for collection, resource_id, owner_id, raw in conn.execute(
+        "SELECT collection,id,owner_id,data FROM docs ORDER BY collection,id"
+    ).fetchall():
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            payload = None
+        docs.append({
+            "collection": str(collection),
+            "resourceId": str(resource_id),
+            "ownerId": str(owner_id or ""),
+            "payload": payload,
+        })
+    doc_keys = {
+        (item["collection"], item["resourceId"]) for item in docs
+    }
+    existing_rows = conn.execute(
+        "SELECT resource_kind,resource_id,scope_type,scope_id,owner_id,provenance "
+        "FROM resource_scopes ORDER BY resource_kind,resource_id"
+    ).fetchall() if _table_exists_locked(conn, "resource_scopes") else []
+    existing = {
+        (str(kind), str(resource_id)): (
+            str(scope_type), str(scope_id), str(owner_id or ""), str(provenance)
+        )
+        for kind, resource_id, scope_type, scope_id, owner_id, provenance in existing_rows
+    }
+
+    plan = {}
+    invalid_json_keys = set()
+    unresolved_keys = set()
+    ambiguous_keys = set()
+    missing_identity_refs = set()
+    missing_account_refs = set()
+    dangling_reference_refs = set()
+    candidate_scopes = {}
+    orphan_scopes = 0
+    invalid_scope_targets = 0
+    warnings = []
+    override_entries = list(override_entries or [])
+    override_by_key = {
+        (entry["resourceKind"], entry["resourceId"]): entry
+        for entry in override_entries
+    }
+
+    if data_row and data_row[1] == "success":
+        for item in docs:
+            key = (_doc_resource_kind(item["collection"]), item["resourceId"])
+            scope = existing.get(key)
+            if not scope:
+                unresolved_keys.add(key)
+                continue
+            scope_type, scope_id, stored_owner, provenance = scope
+            if scope_type == "team":
+                target = conn.execute(
+                    "SELECT 1 FROM teams WHERE id=? AND status='active'", (scope_id,)
+                ).fetchone()
+            else:
+                member_scope = _member_resource_scope_locked(conn, scope_id)
+                target = bool(
+                    member_scope and member_scope[:2] == ("member", scope_id)
+                )
+            if not target:
+                invalid_scope_targets += 1
+            payload = item["payload"]
+            if not isinstance(payload, dict):
+                invalid_json_keys.add(key)
+                continue
+            expected_scope = (scope_type, scope_id)
+            identities = [item["ownerId"]]
+            identities.extend(
+                _resource_values(payload.get(field))
+                for field in _RESOURCE_SCOPE_MEMBER_FIELDS
+            )
+            if stored_owner:
+                identities.append(stored_owner)
+            flattened_identities = []
+            for value in identities:
+                flattened_identities.extend(
+                    value if isinstance(value, list) else _resource_values(value)
+                )
+            for identity in dict.fromkeys(flattened_identities):
+                resolved = _member_resource_scope_locked(conn, identity)
+                if not resolved:
+                    missing_identity_refs.add((key, identity))
+                elif resolved[:2] != expected_scope:
+                    issues.append("resource_scope_member_drift")
+
+            account_values = []
+            if item["collection"] == "accounts":
+                account_values.append(item["resourceId"])
+            for field in _RESOURCE_SCOPE_ACCOUNT_FIELDS:
+                account_values.extend(_resource_values(payload.get(field)))
+            for account_id in dict.fromkeys(account_values):
+                resolved = _account_resource_scope_locked(conn, account_id)
+                if not resolved:
+                    missing_account_refs.add((key, account_id))
+                elif resolved[:2] != expected_scope:
+                    issues.append("resource_scope_account_drift")
+
+            for field, target_collection in _RESOURCE_SCOPE_REFERENCE_FIELDS.get(
+                item["collection"], ()
+            ):
+                for target_id in _resource_values(payload.get(field)):
+                    target_scope = existing.get(
+                        (_doc_resource_kind(target_collection), target_id)
+                    )
+                    if not target_scope:
+                        dangling_reference_refs.add(
+                            (key, field, target_collection, target_id)
+                        )
+                        if (target_collection, target_id) in doc_keys:
+                            issues.append("resource_scope_reference_registry_missing")
+                    elif target_scope[:2] != expected_scope:
+                        issues.append("resource_scope_reference_drift")
+            plan[key] = (*scope,)
+        for kind, resource_id in existing:
+            if not kind.startswith("doc:"):
+                continue
+            if (kind[4:], resource_id) not in doc_keys:
+                orphan_scopes += 1
+        for key, entry in override_by_key.items():
+            stored = existing.get(key)
+            if not stored or (stored[0], stored[1]) != (
+                entry["scopeType"], entry["scopeId"],
+            ):
+                issues.append("resource_scope_override_drift")
+    else:
+        if existing_rows:
+            issues.append("resource_scope_registry_not_empty")
+        pending = list(docs)
+        for _pass in range(max(2, len(COLLECTIONS) + 2)):
+            next_pending = []
+            progressed = False
+            for item in pending:
+                collection = item["collection"]
+                resource_id = item["resourceId"]
+                payload = item["payload"]
+                key = (_doc_resource_kind(collection), resource_id)
+                if not isinstance(payload, dict):
+                    invalid_json_keys.add(key)
+                    next_pending.append(item)
+                    continue
+                candidates = set()
+                owner_id = item["ownerId"]
+                identities = [owner_id]
+                identities.extend(
+                    _resource_values(payload.get(field))
+                    for field in _RESOURCE_SCOPE_MEMBER_FIELDS
+                )
+                flattened_identities = []
+                for value in identities:
+                    flattened_identities.extend(
+                        value if isinstance(value, list) else _resource_values(value)
+                    )
+                for identity in dict.fromkeys(flattened_identities):
+                    resolved = _member_resource_scope_locked(conn, identity)
+                    if resolved:
+                        candidates.add((resolved[0], resolved[1]))
+                    else:
+                        missing_identity_refs.add((key, identity))
+
+                account_values = []
+                if collection == "accounts":
+                    account_values.append(resource_id)
+                for field in _RESOURCE_SCOPE_ACCOUNT_FIELDS:
+                    account_values.extend(_resource_values(payload.get(field)))
+                for account_id in dict.fromkeys(account_values):
+                    resolved = _account_resource_scope_locked(conn, account_id)
+                    if resolved:
+                        candidates.add((resolved[0], resolved[1]))
+                    else:
+                        missing_account_refs.add((key, account_id))
+
+                waiting_reference = False
+                for field, target_collection in _RESOURCE_SCOPE_REFERENCE_FIELDS.get(
+                    collection, ()
+                ):
+                    for target_id in _resource_values(payload.get(field)):
+                        target_key = (_doc_resource_kind(target_collection), target_id)
+                        if (target_collection, target_id) not in doc_keys:
+                            dangling_reference_refs.add(
+                                (key, field, target_collection, target_id)
+                            )
+                            continue
+                        target_scope = plan.get(target_key)
+                        if not target_scope:
+                            waiting_reference = True
+                            continue
+                        candidates.add((target_scope[0], target_scope[1]))
+
+                if not candidates and collection in _RESOURCE_SCOPE_ACG_GLOBAL_COLLECTIONS:
+                    candidates.add(("team", INTERNAL_TEAM_ID))
+                candidate_scopes[key] = set(candidates)
+                if len(candidates) > 1:
+                    ambiguous_keys.add(key)
+                    continue
+                # Existing references are authoritative even when their target
+                # sorts later in ``docs``.  Do not freeze an owner-only answer
+                # before every extant reference has resolved, otherwise a later
+                # cross-tenant target could be silently ignored.
+                if waiting_reference:
+                    next_pending.append(item)
+                    continue
+                if len(candidates) == 1:
+                    scope_type, scope_id = next(iter(candidates))
+                    plan[key] = (
+                        scope_type,
+                        scope_id,
+                        owner_id,
+                        "v140-deterministic-owner-account-reference",
+                    )
+                    progressed = True
+                    continue
+                next_pending.append(item)
+            pending = next_pending
+            if not progressed:
+                break
+        unresolved_keys = {
+            (_doc_resource_kind(item["collection"]), item["resourceId"])
+            for item in pending
+        }
+
+        # Overrides may resolve only documents with no trustworthy candidate at
+        # all.  Ambiguous resources, invalid JSON and records waiting on an
+        # unresolved extant reference remain hard failures.
+        eligible_override_keys = {
+            key for key in unresolved_keys
+            if not candidate_scopes.get(key) and key not in invalid_json_keys
+        }
+        supplied_override_keys = set(override_by_key)
+        if eligible_override_keys - supplied_override_keys:
+            issues.append("resource_scope_override_missing")
+        if supplied_override_keys - eligible_override_keys:
+            issues.append("resource_scope_override_extra")
+        if supplied_override_keys == eligible_override_keys:
+            docs_by_key = {
+                (_doc_resource_kind(item["collection"]), item["resourceId"]): item
+                for item in docs
+            }
+            for key in sorted(supplied_override_keys):
+                entry = override_by_key[key]
+                scope_type = entry["scopeType"]
+                scope_id = entry["scopeId"]
+                if scope_type == "team":
+                    target_valid = bool(conn.execute(
+                        "SELECT 1 FROM teams WHERE id=? AND status='active'",
+                        (scope_id,),
+                    ).fetchone())
+                else:
+                    target = _member_resource_scope_locked(conn, scope_id)
+                    target_valid = bool(
+                        target and target[:2] == ("member", scope_id)
+                    )
+                if not target_valid:
+                    issues.append("resource_scope_override_target_invalid")
+                    continue
+                item = docs_by_key[key]
+                plan[key] = (
+                    scope_type,
+                    scope_id,
+                    item["ownerId"],
+                    "v140-explicit-override:" + override_manifest_sha256[:16],
+                )
+                unresolved_keys.discard(key)
+
+    resolved_keys = set(plan)
+    blocking_keys = unresolved_keys | ambiguous_keys | invalid_json_keys
+    stale_identity = {entry for entry in missing_identity_refs if entry[0] in resolved_keys}
+    stale_account = {entry for entry in missing_account_refs if entry[0] in resolved_keys}
+    stale_reference = {
+        entry for entry in dangling_reference_refs if entry[0] in resolved_keys
+    }
+    if stale_identity:
+        warnings.append("resource_owner_identity_stale")
+    if stale_account:
+        warnings.append("resource_account_mapping_stale")
+    if stale_reference:
+        warnings.append("resource_reference_stale")
+
+    if invalid_json_keys:
+        issues.append("resource_payload_invalid_json")
+    if unresolved_keys:
+        issues.append("resource_scope_unresolved")
+    if ambiguous_keys:
+        issues.append("resource_scope_ambiguous")
+    if any(entry[0] in blocking_keys for entry in missing_identity_refs):
+        issues.append("resource_owner_identity_missing")
+    if any(entry[0] in blocking_keys for entry in missing_account_refs):
+        issues.append("resource_account_mapping_missing")
+    if any(entry[0] in blocking_keys for entry in dangling_reference_refs):
+        issues.append("resource_reference_missing")
+    if orphan_scopes:
+        issues.append("resource_scope_orphan")
+    if invalid_scope_targets:
+        issues.append("resource_scope_target_missing")
+    if len(plan) != len(docs):
+        issues.append("resource_scope_coverage_incomplete")
+
+    counts = {
+        "documents": len(docs),
+        "scoped": len(plan),
+        "unresolved": len(unresolved_keys),
+        "ambiguous": len(ambiguous_keys),
+        "invalidJson": len(invalid_json_keys),
+        "missingOwnerIdentities": len(missing_identity_refs),
+        "missingAccountMappings": len(missing_account_refs),
+        "danglingReferences": len(dangling_reference_refs),
+        "staleOwnerIdentities": len(stale_identity),
+        "staleAccountMappings": len(stale_account),
+        "staleReferences": len(stale_reference),
+        "overrideEntries": len(override_entries),
+        "orphanScopes": orphan_scopes,
+        "invalidScopeTargets": invalid_scope_targets,
+    }
+    return {
+        "ok": not issues,
+        "dataMigrationStatus": str(data_row[1]) if data_row else "pending",
+        "schemaMigrationVersion": (
+            RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION if schema_row else None
+        ),
+        "dataMigrationVersion": (
+            RESOURCE_SCOPE_DATA_MIGRATION_VERSION
+            if data_row and data_row[1] == "success" else None
+        ),
+        "issues": sorted(set(issues)),
+        "warnings": sorted(set(warnings)),
+        "overrideManifestSha256": str(override_manifest_sha256 or ""),
+        "unresolvedResources": [
+            {"resourceKind": kind, "resourceId": resource_id}
+            for kind, resource_id in sorted(unresolved_keys)
+        ],
+        "ambiguousResources": [
+            {"resourceKind": kind, "resourceId": resource_id}
+            for kind, resource_id in sorted(ambiguous_keys)
+        ],
+        "counts": counts,
+    }, plan
+
+
+def resource_scope_migration_preflight(
+    *, expected_identity, expected_schema_version, override_manifest_path="",
+    expected_override_manifest_sha256="", backup_binding=None,
+):
+    if int(expected_schema_version or 0) != RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION:
+        raise StoreNotReadyError("resource scope schema version confirmation mismatch")
+    if not DB_PATH.is_file():
+        raise StoreNotReadyError("migration target database must already exist")
+    actual_identity = _database_identity(DB_PATH)
+    if not hmac.compare_digest(str(expected_identity or ""), actual_identity):
+        raise StoreNotReadyError("migration target database identity mismatch")
+    conn = _connect(read_only=True)
+    try:
+        if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+            raise StoreNotReadyError("migration target failed SQLite quick_check")
+        conn.execute("BEGIN")
+        override_requested = bool(
+            str(override_manifest_path or "").strip()
+            or str(expected_override_manifest_sha256 or "").strip()
+        )
+        if backup_binding is not None or override_requested:
+            database_state = _verify_migration_backup_binding_locked(
+                conn, backup_binding,
+            )
+        else:
+            database_state = _database_review_state_locked(conn)
+        override_entries, override_digest = _load_resource_scope_override_manifest(
+            override_manifest_path,
+            expected_override_manifest_sha256,
+            database_state,
+        )
+        summary, _plan = _resource_scope_plan_locked(
+            conn,
+            override_entries=override_entries,
+            override_manifest_sha256=override_digest,
+        )
+        conn.rollback()
+        return {**summary, **database_state, "dryRun": True}
+    finally:
+        conn.close()
+
+
+def _record_failed_resource_scope_migration(conn, error_name):
+    now = int(time.time() * 1000)
+    existing = _resource_scope_data_row_locked(conn)
+    if existing and existing[0] != RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_migrations("
+        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+        ") VALUES(?,?,?,?,?,?,?,?)",
+        (
+            RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+            RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+            RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+            runtime_config.release_id() or "unidentified",
+            now,
+            now,
+            "failed",
+            json.dumps({"error": str(error_name or "migration_error")}),
+        ),
+    )
+
+
+def apply_resource_scope_migration(
+    *, expected_identity, expected_schema_version, backup_binding=None,
+    override_manifest_path="", expected_override_manifest_sha256="",
+):
+    """Freeze deterministic tenant ownership without rewriting legacy documents."""
+
+    global _initialized
+    if runtime_config.is_read_only():
+        raise StoreNotReadyError("read-only runtime cannot apply migrations")
+    if runtime_config.runtime_mode() == "invalid":
+        raise StoreNotReadyError("invalid ACG_RUNTIME_MODE")
+    if str(os.getenv("ACG_ALLOW_RESOURCE_SCOPE_MIGRATION", "")).strip() != "1":
+        raise StoreNotReadyError("resource scope migration authorization is required")
+    if int(expected_schema_version or 0) != RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION:
+        raise StoreNotReadyError("resource scope schema version confirmation mismatch")
+    if not DB_PATH.is_file():
+        raise StoreNotReadyError("migration target database must already exist")
+    actual_identity = _database_identity(DB_PATH)
+    if not hmac.compare_digest(str(expected_identity or ""), actual_identity):
+        raise StoreNotReadyError("migration target database identity mismatch")
+
+    applied_override_digest = ""
+    applied_override_entries = 0
+    applied_override_state = {}
+    with _lock:
+        conn = _connect_migration_target()
+        migration_started = False
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            locked_identity = _database_identity(DB_PATH)
+            if not hmac.compare_digest(
+                str(expected_identity or ""), locked_identity,
+            ):
+                raise StoreNotReadyError("migration target database identity mismatch")
+            override_requested = bool(
+                str(override_manifest_path or "").strip()
+                or str(expected_override_manifest_sha256 or "").strip()
+            )
+            if (
+                runtime_config.is_production()
+                or backup_binding is not None
+                or override_requested
+            ):
+                database_state = _verify_migration_backup_binding_locked(
+                    conn, backup_binding,
+                )
+            else:
+                database_state = _database_review_state_locked(conn)
+            override_entries, override_digest = _load_resource_scope_override_manifest(
+                override_manifest_path,
+                expected_override_manifest_sha256,
+                database_state,
+            )
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError("migration target failed SQLite quick_check")
+            summary, plan = _resource_scope_plan_locked(
+                conn,
+                override_entries=override_entries,
+                override_manifest_sha256=override_digest,
+            )
+            if not summary["ok"]:
+                raise StoreNotReadyError(
+                    "resource scope migration preflight failed: "
+                    + ",".join(summary["issues"])
+                )
+            if summary["dataMigrationStatus"] == "success":
+                conn.rollback()
+                return {
+                    **summary,
+                    "applied": False,
+                    "dryRun": False,
+                    "databaseIdentity": actual_identity,
+                }
+            protected_before = _acg_protected_digests_locked(conn)["docs"]
+            now = int(time.time() * 1000)
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_migrations("
+                "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                ") VALUES(?,?,?,?,?,NULL,'running','{}')",
+                (
+                    RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                    RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+                    RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+                    runtime_config.release_id() or "unidentified",
+                    now,
+                ),
+            )
+            migration_started = True
+            rows = [
+                (kind, resource_id, *scope[:3], scope[3], now, now)
+                for (kind, resource_id), scope in sorted(plan.items())
+            ]
+            conn.executemany(
+                "INSERT INTO resource_scopes("
+                "resource_kind,resource_id,scope_type,scope_id,owner_id,provenance,"
+                "captured_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                rows,
+            )
+            protected_after = _acg_protected_digests_locked(conn)["docs"]
+            if protected_after != protected_before:
+                raise StoreNotReadyError("protected business documents changed")
+            audit = {
+                "counts": summary["counts"],
+                "warnings": summary.get("warnings") or [],
+                "overrideManifestSha256": summary.get("overrideManifestSha256") or "",
+                "overrideEntries": int(
+                    (summary.get("counts") or {}).get("overrideEntries") or 0
+                ),
+                "overrideDatabaseIdentity": (
+                    database_state.get("databaseIdentity") if override_digest else ""
+                ),
+                "overrideDatabasePathSha256": (
+                    database_state.get("databasePathSha256") if override_digest else ""
+                ),
+                "overrideDatabaseLogicalSha256": (
+                    database_state.get("databaseLogicalSha256") if override_digest else ""
+                ),
+                "overrideSchemaVersion": (
+                    database_state.get("schemaVersion") if override_digest else None
+                ),
+                "overrideUserVersion": (
+                    database_state.get("userVersion") if override_digest else None
+                ),
+                "overrideBackupManifestSha256": (
+                    database_state.get("backupManifestSha256") if override_digest else ""
+                ),
+            }
+            conn.execute(
+                "UPDATE schema_migrations SET finished_at=?,status='success',summary=? "
+                "WHERE version=?",
+                (
+                    int(time.time() * 1000),
+                    json.dumps(audit, ensure_ascii=False, sort_keys=True),
+                    RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                ),
+            )
+            conn.commit()
+            applied_override_digest = override_digest
+            applied_override_entries = len(override_entries)
+            applied_override_state = dict(database_state) if override_digest else {}
+            _initialized = False
+        except Exception as exc:
+            conn.rollback()
+            if migration_started:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    _record_failed_resource_scope_migration(conn, type(exc).__name__)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+            raise
+        finally:
+            conn.close()
+    result = resource_scope_migration_preflight(
+        expected_identity=actual_identity,
+        expected_schema_version=expected_schema_version,
+    )
+    return {
+        **result,
+        "overrideManifestSha256": applied_override_digest,
+        "appliedOverrideEntries": applied_override_entries,
+        "appliedOverrideDatabaseState": applied_override_state,
+        "applied": True,
+        "dryRun": False,
+    }
+
+
 def _ensure_db():
     global _initialized
     if _initialized:
@@ -2143,6 +3829,18 @@ def _ensure_db():
                 summary={"schema": "model-usage-receipt-outbox", "mode": "local-auto"},
             )
             conn.commit()
+            _apply_resource_scope_schema_locked(conn)
+            _record_resource_scope_schema_migration_locked(
+                conn,
+                summary={"schema": "resource-scopes", "mode": "local-auto"},
+            )
+            conn.commit()
+            _apply_private_media_schema_locked(conn)
+            _record_private_media_schema_migration_locked(
+                conn,
+                summary={"schema": "private-media-registry", "mode": "local-auto"},
+            )
+            conn.commit()
             _initialized = True
         finally:
             conn.close()
@@ -2166,6 +3864,1368 @@ def _fetchall(sql, params=()):
             return conn.execute(sql, params).fetchall()
         finally:
             conn.close()
+
+
+# ---------- 私有媒体归属登记（URL/路径保持不变） ----------
+PRIVATE_MEDIA_KINDS = frozenset({
+    "upload", "composed", "canvas-blob", "video-output", "video-upload",
+})
+
+
+def _normalize_private_media_key(kind, value):
+    media_kind = str(kind or "").strip().lower()
+    if media_kind not in PRIVATE_MEDIA_KINDS:
+        raise ValueError("invalid_private_media_kind")
+    key = str(value or "").strip()
+    if (
+        not key
+        or len(key) > 1200
+        or "\\" in key
+        or "\x00" in key
+        or "%" in key
+        or "?" in key
+        or "#" in key
+    ):
+        raise ValueError("invalid_private_media_key")
+    if media_kind == "canvas-blob":
+        if not re.fullmatch(r"[a-f0-9]{64}", key):
+            raise ValueError("invalid_private_media_key")
+        return media_kind, key
+    if media_kind in {"upload", "composed"}:
+        if Path(key).name != key or key in {".", ".."}:
+            raise ValueError("invalid_private_media_key")
+        return media_kind, key
+    if key.startswith("/"):
+        raise ValueError("invalid_private_media_key")
+    parts = key.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("invalid_private_media_key")
+    return media_kind, "/".join(parts)
+
+
+def _private_media_member_teams_locked(conn, member_id):
+    return [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT team_id FROM team_members WHERE member_id=? AND status='active' "
+            "ORDER BY team_id",
+            (str(member_id or ""),),
+        ).fetchall()
+    ]
+
+
+def _private_media_registration_team_locked(conn, owner_id, requested_team_id=""):
+    teams = _private_media_member_teams_locked(conn, owner_id)
+    requested = str(requested_team_id or "").strip()
+    if requested:
+        if requested not in teams:
+            raise ValueError("private_media_team_mismatch")
+        return requested
+    if len(teams) > 1:
+        raise ValueError("private_media_team_ambiguous")
+    return teams[0] if teams else ""
+
+
+def _private_media_row_public(row):
+    if not row:
+        return None
+    return {
+        "kind": str(row[0]),
+        "key": str(row[1]),
+        "ownerId": str(row[2]),
+        "teamId": str(row[3] or ""),
+        "provenanceKind": str(row[4]),
+        "provenanceId": str(row[5]),
+        "createdAt": int(row[6]),
+        "updatedAt": int(row[7]),
+    }
+
+
+def _register_private_media_locked(
+    conn,
+    kind,
+    key,
+    owner_id,
+    *,
+    team_id="",
+    provenance_kind,
+    provenance_id,
+    now=None,
+):
+    media_kind, media_key = _normalize_private_media_key(kind, key)
+    owner = str(owner_id or "").strip()
+    if not owner or not conn.execute(
+        "SELECT 1 FROM members WHERE id=?", (owner,),
+    ).fetchone():
+        raise ValueError("private_media_owner_missing")
+    provenance_type = str(provenance_kind or "").strip()[:80]
+    provenance_key = str(provenance_id or "").strip()[:240]
+    if not provenance_type or not provenance_key:
+        raise ValueError("private_media_provenance_required")
+    authoritative_team = _private_media_registration_team_locked(
+        conn, owner, team_id,
+    )
+    existing_rows = conn.execute(
+        "SELECT media_kind,media_key,owner_id,team_id,provenance_kind,"
+        "provenance_id,created_at,updated_at FROM private_media_registry "
+        "WHERE media_kind=? AND media_key=? ORDER BY owner_id",
+        (media_kind, media_key),
+    ).fetchall()
+    for row in existing_rows:
+        if str(row[2]) != owner and media_kind != "canvas-blob":
+            raise ValueError("private_media_owner_conflict")
+        if str(row[2]) == owner:
+            if str(row[3] or "") != authoritative_team:
+                raise ValueError("private_media_team_conflict")
+            result = _private_media_row_public(row)
+            result["created"] = False
+            return result
+    timestamp = int(now if now is not None else time.time() * 1000)
+    conn.execute(
+        "INSERT INTO private_media_registry("
+        "media_kind,media_key,owner_id,team_id,provenance_kind,provenance_id,"
+        "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+        (
+            media_kind, media_key, owner, authoritative_team,
+            provenance_type, provenance_key, timestamp, timestamp,
+        ),
+    )
+    row = conn.execute(
+        "SELECT media_kind,media_key,owner_id,team_id,provenance_kind,"
+        "provenance_id,created_at,updated_at FROM private_media_registry "
+        "WHERE media_kind=? AND media_key=? AND owner_id=?",
+        (media_kind, media_key, owner),
+    ).fetchone()
+    result = _private_media_row_public(row)
+    result["created"] = True
+    return result
+
+
+def register_private_media(
+    kind,
+    key,
+    owner_id,
+    *,
+    team_id="",
+    provenance_kind,
+    provenance_id,
+):
+    """Register one file before its stable direct URL is returned to a client."""
+
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            result = _register_private_media_locked(
+                conn,
+                kind,
+                key,
+                owner_id,
+                team_id=team_id,
+                provenance_kind=provenance_kind,
+                provenance_id=provenance_id,
+            )
+            conn.commit()
+            return result
+        finally:
+            conn.close()
+
+
+def private_media_access(kind, key, member_id):
+    """Resolve owner/team access; platform role never grants a global bypass."""
+
+    media_kind, media_key = _normalize_private_media_key(kind, key)
+    requester = str(member_id or "").strip()
+    if not requester:
+        return None, "forbidden"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM members WHERE id=?", (requester,),
+            ).fetchone():
+                return None, "forbidden"
+            rows = conn.execute(
+                "SELECT media_kind,media_key,owner_id,team_id,provenance_kind,"
+                "provenance_id,created_at,updated_at FROM private_media_registry "
+                "WHERE media_kind=? AND media_key=? "
+                "ORDER BY CASE WHEN owner_id=? THEN 0 ELSE 1 END,owner_id",
+                (media_kind, media_key, requester),
+            ).fetchall()
+            if not rows:
+                return None, "unregistered"
+            teams = set(_private_media_member_teams_locked(conn, requester))
+            for row in rows:
+                owner = str(row[2])
+                team = str(row[3] or "")
+                if owner == requester or (team and team in teams):
+                    return _private_media_row_public(row), None
+            return None, "forbidden"
+        finally:
+            conn.close()
+
+
+def private_media_data_migration_completed():
+    """Cheap ledger check used to retire local legacy-read compatibility."""
+
+    if not DB_PATH.is_file():
+        return False
+    try:
+        conn = _connect(read_only=True)
+    except sqlite3.Error:
+        return False
+    try:
+        if not _table_exists_locked(conn, "schema_migrations"):
+            return False
+        row = conn.execute(
+            "SELECT checksum,status FROM schema_migrations WHERE version=?",
+            (PRIVATE_MEDIA_DATA_MIGRATION_VERSION,),
+        ).fetchone()
+        return row == (PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM, "success")
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def legacy_private_media_document_access(kind, key, member_id, role=""):
+    """Resolve an unregistered local file from persisted document ownership.
+
+    This compatibility path deliberately has no role-level administrator
+    bypass.  Once 140004 is complete (or strict mode is configured), callers
+    must not use it.
+    """
+
+    identity = _normalize_private_media_key(kind, key)
+    requester = str(member_id or "").strip()
+    if not requester:
+        return None
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM members WHERE id=?", (requester,),
+            ).fetchone():
+                return None
+            scoped = _resource_scopes_enforced_locked(conn)
+            for collection, resource_id, stored_owner, encoded in conn.execute(
+                "SELECT collection,id,owner_id,data FROM docs ORDER BY collection,id"
+            ).fetchall():
+                try:
+                    payload = json.loads(encoded)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                references = set()
+                _private_media_collect_references(payload, references)
+                if identity not in references:
+                    continue
+                owner_candidates = {
+                    str(value or "").strip()
+                    for value in (
+                        stored_owner,
+                        payload.get("ownerId") if isinstance(payload, dict) else "",
+                        payload.get("byMemberId") if isinstance(payload, dict) else "",
+                        payload.get("createdBy") if isinstance(payload, dict) else "",
+                    )
+                    if str(value or "").strip()
+                }
+                if scoped:
+                    allowed = _resource_scope_allows_actor_locked(
+                        conn, collection, resource_id, requester, role,
+                    )
+                else:
+                    allowed = requester in owner_candidates
+                if not allowed:
+                    continue
+                owner = (
+                    requester if requester in owner_candidates
+                    else next(
+                        (
+                            candidate for candidate in sorted(owner_candidates)
+                            if conn.execute(
+                                "SELECT 1 FROM members WHERE id=?", (candidate,),
+                            ).fetchone()
+                        ),
+                        requester,
+                    )
+                )
+                return {
+                    "kind": identity[0],
+                    "key": identity[1],
+                    "ownerId": owner,
+                    "teamId": "",
+                    "legacy": True,
+                }
+            return None
+        finally:
+            conn.close()
+
+
+def unregister_private_media(kind, key, owner_id):
+    media_kind, media_key = _normalize_private_media_key(kind, key)
+    owner = str(owner_id or "").strip()
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            cursor = conn.execute(
+                "DELETE FROM private_media_registry "
+                "WHERE media_kind=? AND media_key=? AND owner_id=?",
+                (media_kind, media_key, owner),
+            )
+            conn.commit()
+            return bool(cursor.rowcount)
+        finally:
+            conn.close()
+
+
+def _private_media_url_origin(value):
+    """Return a canonical HTTP origin, or an empty string when invalid."""
+
+    try:
+        parsed = urlparse(str(value or "").strip())
+        scheme = parsed.scheme.lower()
+        if (
+            scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return ""
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    default_port = 443 if scheme == "https" else 80
+    suffix = "" if port in {None, default_port} else f":{port}"
+    return f"{scheme}://{parsed.hostname.lower()}{suffix}"
+
+
+def _private_media_allowed_absolute_origins():
+    configured = [os.getenv("PUBLIC_BASE_URL", "")]
+    configured.extend(
+        item.strip()
+        for item in os.getenv("PRIVATE_MEDIA_LEGACY_ORIGINS", "").split(",")
+        if item.strip()
+    )
+    return {
+        origin for origin in map(_private_media_url_origin, configured) if origin
+    }
+
+
+def _private_media_reference(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    # Relative application URLs may carry cache-busting query parameters just
+    # like approved absolute URLs. Ownership is keyed by canonical path only.
+    path = parsed.path
+    prefixes = (
+        ("/api/files/", "upload"),
+        ("/api/video/composed/", "composed"),
+        ("/api/custom-canvas/blobs/", "canvas-blob"),
+        ("/custom-video/outputs/", "video-output"),
+        ("/custom-video/uploads/", "video-upload"),
+        ("/outputs/", "video-output"),
+        ("/uploads/", "video-upload"),
+    )
+    for prefix, kind in prefixes:
+        if not path.startswith(prefix):
+            continue
+        if parsed.scheme or parsed.netloc:
+            origin = _private_media_url_origin(raw)
+            if not origin or origin not in _private_media_allowed_absolute_origins():
+                # An external host may deliberately mimic our application
+                # paths; never let it become local ownership evidence.
+                return ("invalid", "")
+        try:
+            return _normalize_private_media_key(kind, path[len(prefix):])
+        except ValueError:
+            return ("invalid", "")
+    return None
+
+
+def _private_media_collect_references(value, output):
+    if isinstance(value, list):
+        for item in value:
+            _private_media_collect_references(item, output)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _private_media_collect_references(item, output)
+    elif isinstance(value, str):
+        reference = _private_media_reference(value)
+        if reference:
+            output.add(reference)
+
+
+def _private_media_inventory_files(root, kind, *, recursive):
+    root = Path(root).expanduser()
+    if not root.is_dir():
+        return [], {"missingRoots": 1, "unsafeEntries": 0, "temporaryFiles": 0}
+    paths = root.rglob("*") if recursive else root.iterdir()
+    items = []
+    issues = {"missingRoots": 0, "unsafeEntries": 0, "temporaryFiles": 0}
+    for path in paths:
+        try:
+            if path.is_symlink():
+                issues["unsafeEntries"] += 1
+                continue
+            if not path.is_file():
+                if not recursive and path != root:
+                    issues["unsafeEntries"] += 1
+                continue
+            relative = path.relative_to(root).as_posix()
+            if relative.endswith(".tmp"):
+                issues["temporaryFiles"] += 1
+                continue
+            if kind == "upload" and relative.startswith("member-avatar-"):
+                # Member avatars are an explicit public profile-media route,
+                # not part of the private asset URL namespace.
+                continue
+            try:
+                media_kind, media_key = _normalize_private_media_key(kind, relative)
+            except ValueError:
+                issues["unsafeEntries"] += 1
+                continue
+            items.append((media_kind, media_key, path))
+        except OSError:
+            issues["unsafeEntries"] += 1
+    return items, issues
+
+
+def _private_media_live_inventory_digest():
+    """Content-hash frozen live media trees like a runtime snapshot.
+
+    This deliberately reads every media byte and is therefore reserved for
+    explicit migration maintenance windows.  Normal readiness never calls it.
+    """
+
+    digest = hashlib.sha256()
+    components = (
+        ("uploads", PRIVATE_MEDIA_UPLOAD_DIR),
+        ("composed", PRIVATE_MEDIA_COMPOSED_DIR),
+        ("canvas-blobs", CUSTOM_CANVAS_BLOB_DIR),
+        ("video-uploads", PRIVATE_MEDIA_VIDEO_UPLOAD_DIR),
+        ("video-outputs", PRIVATE_MEDIA_VIDEO_OUTPUT_DIR),
+    )
+    for name, raw_root in sorted(components):
+        root = Path(raw_root).expanduser()
+        if not root.is_dir():
+            digest.update(f"{name}\0absent\0".encode("utf-8"))
+            continue
+        entries = []
+        for path in root.rglob("*"):
+            try:
+                if path.is_symlink():
+                    raise StoreNotReadyError(
+                        "live media inventory contains a symbolic link"
+                    )
+                if not path.is_file():
+                    continue
+                before = path.stat()
+                content_digest = hashlib.sha256()
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        content_digest.update(chunk)
+                after = path.stat()
+                if (
+                    before.st_size != after.st_size
+                    or before.st_mtime_ns != after.st_mtime_ns
+                ):
+                    raise StoreNotReadyError(
+                        "live media changed during inventory hashing"
+                    )
+                entries.append((
+                    path.relative_to(root).as_posix(),
+                    int(before.st_size),
+                    int(before.st_mtime_ns),
+                    content_digest.hexdigest(),
+                ))
+            except OSError as exc:
+                raise StoreNotReadyError(
+                    "live media inventory is unavailable"
+                ) from exc
+        for relative, size, mtime_ns, content_sha256 in sorted(entries):
+            digest.update(
+                f"{name}\0{relative}\0{size}\0{mtime_ns}\0"
+                f"{content_sha256}\0".encode("utf-8")
+            )
+    return digest.hexdigest()
+
+
+def _private_media_active_teams_by_member_locked(conn):
+    teams = {}
+    for member_id, team_id in conn.execute(
+        "SELECT member_id,team_id FROM team_members WHERE status='active' "
+        "ORDER BY member_id,team_id"
+    ).fetchall():
+        teams.setdefault(str(member_id), []).append(str(team_id))
+    return teams
+
+
+def _private_media_plan_locked(
+    conn,
+    *,
+    override_entries=None,
+    override_manifest_sha256="",
+    override_inventory_digest="",
+    snapshot_manifest_sha256="",
+    snapshot_media_inventory_digest="",
+    override_database_logical_sha256="",
+    include_database_logical_digest=False,
+    include_media_content_digest=False,
+):
+    """Build a deterministic, redacted legacy-attribution plan.
+
+    The plan never infers ownership from a directory alone.  It accepts only
+    persisted document authorship, the server-generated upload owner prefix,
+    canvas owner rows, workshop project mappings, community authorship, or an
+    already registered row.  One disagreement blocks the whole data migration.
+    """
+
+    tables = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    required = {"members", "team_members", "docs", "community_posts", "custom_canvas_blobs", "private_media_registry", "schema_migrations"}
+    if not required.issubset(tables):
+        missing = len(required - tables)
+        return {
+            "ok": False,
+            "readyForApply": False,
+            "issues": ["schema-not-ready"],
+            "counts": {"missingTables": missing},
+            "rows": [],
+        }
+
+    members = {
+        str(row[0])
+        for row in conn.execute("SELECT id FROM members").fetchall()
+    }
+    teams_by_member = _private_media_active_teams_by_member_locked(conn)
+    inventory = {}
+    issue_counts = {
+        "missingRoots": 0,
+        "unsafeEntries": 0,
+        "temporaryFiles": 0,
+        "invalidDocuments": 0,
+        "invalidReferences": 0,
+        "missingReferenceOwners": 0,
+        "missingReferencedFiles": 0,
+        "quarantinedFiles": 0,
+        "ambiguousFiles": 0,
+        "teamBindingConflicts": 0,
+        "registryMissingFiles": 0,
+        "canvasFilesystemQuarantined": 0,
+        "overrideMissing": 0,
+        "overrideExtra": 0,
+        "overrideInvalidTargets": 0,
+        "overrideScopeConflicts": 0,
+        "overrideInventoryMismatch": 0,
+        "overrideDatabaseMismatch": 0,
+        "snapshotInventoryMismatch": 0,
+    }
+    for root, kind, recursive in (
+        (PRIVATE_MEDIA_UPLOAD_DIR, "upload", False),
+        (PRIVATE_MEDIA_COMPOSED_DIR, "composed", False),
+        (PRIVATE_MEDIA_VIDEO_OUTPUT_DIR, "video-output", True),
+        (PRIVATE_MEDIA_VIDEO_UPLOAD_DIR, "video-upload", True),
+    ):
+        files, file_issues = _private_media_inventory_files(
+            root, kind, recursive=recursive,
+        )
+        for name, count in file_issues.items():
+            issue_counts[name] += int(count)
+        for media_kind, media_key, path in files:
+            inventory[(media_kind, media_key)] = path
+
+    candidates = {}
+    provenance = {}
+    referenced = set()
+    reference_scopes = {}
+    resource_scope_rows = {
+        (str(kind), str(resource_id)): (str(scope_type), str(scope_id))
+        for kind, resource_id, scope_type, scope_id in conn.execute(
+            "SELECT resource_kind,resource_id,scope_type,scope_id "
+            "FROM resource_scopes"
+        ).fetchall()
+    } if "resource_scopes" in tables else {}
+
+    def add_reference(identity, scope=None):
+        """Record business usage independently from attribution evidence."""
+
+        if not identity:
+            return False
+        if identity[0] == "invalid":
+            issue_counts["invalidReferences"] += 1
+            return False
+        referenced.add(identity)
+        if scope and scope[0] in {"team", "member"} and scope[1]:
+            reference_scopes.setdefault(identity, set()).add(
+                (str(scope[0]), str(scope[1]))
+            )
+        return True
+
+    def add_candidate(identity, owner_id, provenance_kind, provenance_id):
+        if not identity or identity[0] == "invalid":
+            return
+        owner = str(owner_id or "").strip()
+        if owner not in members:
+            return
+        candidates.setdefault(identity, set()).add(owner)
+        provenance.setdefault((identity, owner), set()).add((
+            str(provenance_kind or "")[:80],
+            str(provenance_id or "")[:240],
+        ))
+
+    workshop_projects = {}
+    document_rows = conn.execute(
+        "SELECT collection,id,owner_id,data FROM docs ORDER BY collection,id"
+    ).fetchall()
+    for collection, document_id, stored_owner, encoded in document_rows:
+        try:
+            payload = json.loads(encoded)
+        except (TypeError, json.JSONDecodeError):
+            issue_counts["invalidDocuments"] += 1
+            continue
+        owner_candidates = {
+            str(value or "").strip()
+            for value in (
+                stored_owner,
+                payload.get("ownerId") if isinstance(payload, dict) else "",
+                payload.get("byMemberId") if isinstance(payload, dict) else "",
+            )
+            if str(value or "").strip() in members
+        }
+        references = set()
+        _private_media_collect_references(payload, references)
+        document_scope = resource_scope_rows.get(
+            (_doc_resource_kind(collection), str(document_id))
+        )
+        for identity in references:
+            if not add_reference(identity, document_scope):
+                continue
+            for owner in owner_candidates:
+                add_candidate(identity, owner, f"doc:{collection}", document_id)
+        if str(collection) == "customProjects" and isinstance(payload, dict):
+            state = payload.get("projectState") if isinstance(payload.get("projectState"), dict) else {}
+            workshop_id = str(state.get("workshopProjectId") or "").strip()
+            for owner in owner_candidates:
+                if workshop_id:
+                    workshop_projects.setdefault(workshop_id, set()).add(owner)
+
+    for post_id, author_id, post_team_id, media_json, cover_json in conn.execute(
+        "SELECT id,author_id,team_id,media_json,cover_json FROM community_posts "
+        "WHERE status='published' ORDER BY id"
+    ).fetchall():
+        references = set()
+        for encoded in (media_json, cover_json):
+            try:
+                payload = json.loads(encoded or "{}")
+            except (TypeError, json.JSONDecodeError):
+                issue_counts["invalidDocuments"] += 1
+                continue
+            _private_media_collect_references(payload, references)
+        post_scope = None
+        if post_team_id and conn.execute(
+            "SELECT 1 FROM teams WHERE id=? AND status='active'",
+            (str(post_team_id),),
+        ).fetchone():
+            post_scope = ("team", str(post_team_id))
+        elif str(author_id) in members:
+            member_scope = _member_resource_scope_locked(conn, author_id)
+            if member_scope:
+                post_scope = (member_scope[0], member_scope[1])
+        for identity in references:
+            if not add_reference(identity, post_scope):
+                continue
+            add_candidate(identity, author_id, "community-post", post_id)
+
+    # Existing registrations are provenance, but never override disagreement
+    # with documents or a server-generated owner prefix.
+    registry_rows = conn.execute(
+        "SELECT media_kind,media_key,owner_id,team_id,provenance_kind,"
+        "provenance_id,created_at,updated_at FROM private_media_registry "
+        "ORDER BY media_kind,media_key,owner_id"
+    ).fetchall()
+    existing_registry = {}
+    for row in registry_rows:
+        identity = (str(row[0]), str(row[1]))
+        existing_registry[(identity, str(row[2]))] = row
+        registry_scope = (
+            ("team", str(row[3]))
+            if str(row[3] or "")
+            else ("member", str(row[2]))
+        )
+        add_reference(identity, registry_scope)
+        add_candidate(identity, row[2], row[4], row[5])
+        if identity[0] != "canvas-blob" and identity not in inventory:
+            issue_counts["registryMissingFiles"] += 1
+
+    # Upload names are generated as member-id--asset-id.ext by the server.
+    for identity in sorted(inventory):
+        kind, key = identity
+        if kind == "upload" and "--" in key:
+            prefix = key.split("--", 1)[0]
+            if prefix in members:
+                add_candidate(identity, prefix, "upload-owner-prefix", key)
+        if kind in {"video-output", "video-upload"}:
+            project_id = key.split("/", 1)[0]
+            for owner in workshop_projects.get(project_id, set()):
+                add_candidate(identity, owner, "video-workshop-project", project_id)
+
+    canvas_rows = conn.execute(
+        "SELECT owner_id,content_hash,stored_name FROM custom_canvas_blobs "
+        "ORDER BY owner_id,content_hash"
+    ).fetchall()
+    canvas_expected_paths = set()
+    canvas_present_identities = set()
+    canvas_quarantine = []
+    canvas_plan = []
+    for owner_id, content_hash, stored_name in canvas_rows:
+        identity = ("canvas-blob", str(content_hash))
+        owner = str(owner_id)
+        member_scope = _member_resource_scope_locked(conn, owner)
+        add_reference(
+            identity,
+            (member_scope[0], member_scope[1]) if member_scope else None,
+        )
+        add_candidate(identity, owner, "custom-canvas-blob", content_hash)
+        try:
+            path = _custom_canvas_blob_path(stored_name)
+        except ValueError:
+            issue_counts["unsafeEntries"] += 1
+            continue
+        canvas_expected_paths.add(path.resolve(strict=False))
+        if path.is_file():
+            canvas_present_identities.add(identity)
+        canvas_plan.append((identity, owner))
+    canvas_root = CUSTOM_CANVAS_BLOB_DIR.expanduser()
+    if canvas_root.is_dir():
+        for path in canvas_root.rglob("*"):
+            if path.is_file() and path.resolve(strict=False) not in canvas_expected_paths:
+                issue_counts["canvasFilesystemQuarantined"] += 1
+                try:
+                    canvas_quarantine.append((
+                        path.relative_to(canvas_root).as_posix(),
+                        int(path.stat().st_size),
+                    ))
+                except OSError:
+                    canvas_quarantine.append((path.name, -1))
+    else:
+        issue_counts["missingRoots"] += 1
+
+    inventory_digest = hashlib.sha256()
+    for (kind, key), path in sorted(inventory.items()):
+        try:
+            size = int(path.stat().st_size)
+        except OSError:
+            size = -1
+        inventory_digest.update(
+            f"{kind}\0{key}\0{size}\n".encode("utf-8")
+        )
+    for identity, owner in sorted(canvas_plan):
+        inventory_digest.update(
+            f"{identity[0]}\0{identity[1]}\0{owner}\n".encode("utf-8")
+        )
+    for relative, size in sorted(canvas_quarantine):
+        inventory_digest.update(
+            f"canvas-quarantine\0{relative}\0{size}\n".encode("utf-8")
+        )
+    inventory_digest_value = inventory_digest.hexdigest()
+    live_media_inventory_digest = ""
+    if include_media_content_digest:
+        live_media_inventory_digest = _private_media_live_inventory_digest()
+    if snapshot_media_inventory_digest:
+        if (
+            not live_media_inventory_digest
+            or not hmac.compare_digest(
+                str(snapshot_media_inventory_digest),
+                live_media_inventory_digest,
+            )
+        ):
+            issue_counts["snapshotInventoryMismatch"] += 1
+    missing_file_identities = {
+        identity for identity in referenced
+        if (
+            identity not in canvas_present_identities
+            if identity[0] == "canvas-blob"
+            else identity not in inventory
+        )
+    }
+    issue_counts["missingReferencedFiles"] = len(missing_file_identities)
+
+    migration_row = conn.execute(
+        "SELECT checksum,status,summary FROM schema_migrations WHERE version=?",
+        (PRIVATE_MEDIA_DATA_MIGRATION_VERSION,),
+    ).fetchone()
+    migrated = bool(
+        migration_row
+        and migration_row[0] == PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM
+        and migration_row[1] == "success"
+    )
+    migration_running = bool(
+        migration_row
+        and migration_row[0] == PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM
+        and migration_row[1] == "running"
+    )
+    override_entries = list(override_entries or [])
+    database_logical_digest_value = (
+        _database_logical_digest_locked(conn)
+        if include_database_logical_digest or override_entries
+        else ""
+    )
+    override_by_identity = {
+        (entry["mediaKind"], entry["mediaKey"]): entry
+        for entry in override_entries
+    }
+    unresolved_before_override = {
+        identity for identity in referenced if not candidates.get(identity)
+    }
+    eligible_override_identities = (
+        unresolved_before_override - missing_file_identities
+    )
+    if override_entries:
+        if not hmac.compare_digest(
+            str(override_inventory_digest or ""), inventory_digest_value,
+        ):
+            issue_counts["overrideInventoryMismatch"] += 1
+        supplied = set(override_by_identity)
+        if migrated:
+            try:
+                stored_summary = json.loads(str(migration_row[2] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                stored_summary = {}
+            if (
+                str(stored_summary.get("overrideManifestSha256") or "")
+                != str(override_manifest_sha256 or "")
+                or int(stored_summary.get("overrideEntries") or 0)
+                != len(override_entries)
+                or str(stored_summary.get("snapshotManifestSha256") or "")
+                != str(snapshot_manifest_sha256 or "")
+                or str(stored_summary.get("snapshotMediaInventoryDigest") or "")
+                != str(snapshot_media_inventory_digest or "")
+                or str(stored_summary.get("overrideDatabaseLogicalSha256") or "")
+                != str(override_database_logical_sha256 or "")
+            ):
+                issue_counts["overrideExtra"] += 1
+        elif migration_running:
+            issue_counts["overrideMissing"] = sum(
+                1
+                for identity, entry in override_by_identity.items()
+                if ((identity, str(entry["ownerId"]))) not in existing_registry
+            )
+        else:
+            if not hmac.compare_digest(
+                str(override_database_logical_sha256 or ""),
+                database_logical_digest_value,
+            ):
+                issue_counts["overrideDatabaseMismatch"] += 1
+            issue_counts["overrideMissing"] = len(
+                eligible_override_identities - supplied
+            )
+            issue_counts["overrideExtra"] = len(
+                supplied - eligible_override_identities
+            )
+            if not any((
+                issue_counts["overrideMissing"],
+                issue_counts["overrideExtra"],
+                issue_counts["overrideInventoryMismatch"],
+                issue_counts["overrideDatabaseMismatch"],
+                issue_counts["snapshotInventoryMismatch"],
+            )):
+                for identity in sorted(supplied):
+                    entry = override_by_identity[identity]
+                    owner = str(entry["ownerId"])
+                    if owner not in members:
+                        issue_counts["overrideInvalidTargets"] += 1
+                        continue
+                    owner_scope = _member_resource_scope_locked(conn, owner)
+                    scopes = reference_scopes.get(identity) or set()
+                    if (
+                        not owner_scope
+                        or len(scopes) != 1
+                        or (owner_scope[0], owner_scope[1]) not in scopes
+                    ):
+                        issue_counts["overrideScopeConflicts"] += 1
+                        continue
+                    add_candidate(
+                        identity,
+                        owner,
+                        "operator-reviewed-media",
+                        str(override_manifest_sha256 or "")[:16],
+                    )
+
+    rows = []
+    planned_pairs = set()
+    missing_reference_owners = {
+        identity for identity in referenced
+        if not candidates.get(identity)
+    }
+    issue_counts["missingReferenceOwners"] = len(missing_reference_owners)
+    for identity in sorted(inventory):
+        owners = sorted(candidates.get(identity) or set())
+        if not owners:
+            if identity not in referenced:
+                # Preserve unknown legacy files in place, but do not register
+                # or serve them.  Only files with no business reference at all
+                # are quarantine warnings; an orphaned referenced file blocks.
+                issue_counts["quarantinedFiles"] += 1
+            continue
+        if len(owners) != 1:
+            issue_counts["ambiguousFiles"] += 1
+            continue
+        owner = owners[0]
+        teams = teams_by_member.get(owner, [])
+        if len(teams) > 1:
+            issue_counts["teamBindingConflicts"] += 1
+            continue
+        proofs = sorted(provenance.get((identity, owner)) or set())
+        proof = proofs[0] if proofs else ("legacy-media", identity[1])
+        rows.append((identity[0], identity[1], owner, teams[0] if teams else "", proof[0], proof[1]))
+        planned_pairs.add((identity, owner))
+    for identity, owner in canvas_plan:
+        teams = teams_by_member.get(owner, [])
+        if owner not in members:
+            continue
+        if len(teams) > 1:
+            issue_counts["teamBindingConflicts"] += 1
+            continue
+        pair = (identity, owner)
+        if pair in planned_pairs:
+            continue
+        rows.append((identity[0], identity[1], owner, teams[0] if teams else "", "custom-canvas-blob", identity[1]))
+        planned_pairs.add(pair)
+
+    pending = 0
+    registry_conflicts = 0
+    for kind, key, owner, team_id, _proof_kind, _proof_id in rows:
+        existing = existing_registry.get(((kind, key), owner))
+        if not existing:
+            pending += 1
+            continue
+        if str(existing[3] or "") != str(team_id or ""):
+            registry_conflicts += 1
+    issue_counts["registryConflicts"] = registry_conflicts
+    warning_names = {
+        "temporaryFiles",
+        "quarantinedFiles",
+        "canvasFilesystemQuarantined",
+    }
+    blocking = sum(
+        value
+        for name, value in issue_counts.items()
+        if name not in warning_names
+    )
+    issues = sorted(
+        name for name, value in issue_counts.items()
+        if value and name not in warning_names
+    )
+    warnings = sorted(
+        name for name, value in issue_counts.items()
+        if value and name in warning_names
+    )
+    ready_for_apply = blocking == 0
+    summary = {
+        "ok": bool(ready_for_apply and migrated and pending == 0),
+        "readyForApply": ready_for_apply,
+        "dataMigration": migrated,
+        "dataMigrationVersion": PRIVATE_MEDIA_DATA_MIGRATION_VERSION if migrated else None,
+        "issues": issues,
+        "warnings": warnings,
+        "inventoryDigest": inventory_digest_value,
+        "databaseLogicalSha256": database_logical_digest_value,
+        "mediaInventoryDigest": live_media_inventory_digest,
+        "overrideManifestSha256": str(override_manifest_sha256 or ""),
+        "snapshotManifestSha256": str(snapshot_manifest_sha256 or ""),
+        "snapshotMediaInventoryDigest": str(
+            snapshot_media_inventory_digest or ""
+        ),
+        "counts": {
+            **issue_counts,
+            "inventory": len(inventory) + len(canvas_plan),
+            "plannedRows": len(rows),
+            "registeredRows": len(registry_rows),
+            "pendingRows": pending,
+            "overrideEntries": len(override_entries),
+            "publicAvatarExemptions": sum(
+                1
+                for path in (PRIVATE_MEDIA_UPLOAD_DIR.iterdir() if PRIVATE_MEDIA_UPLOAD_DIR.is_dir() else [])
+                if path.is_file() and path.name.startswith("member-avatar-")
+            ),
+        },
+        "rows": rows,
+    }
+    return summary
+
+
+def private_media_registry_status():
+    """Read-only, redacted filesystem/DB coverage used by ``/api/ready``."""
+
+    if not DB_PATH.is_file():
+        return {
+            "ok": False,
+            "readyForApply": False,
+            "dataMigration": False,
+            "issues": ["database-missing"],
+            "counts": {},
+        }
+    conn = _connect(read_only=True)
+    try:
+        conn.execute("BEGIN")
+        plan = _private_media_plan_locked(conn)
+        conn.rollback()
+        return {key: value for key, value in plan.items() if key != "rows"}
+    finally:
+        conn.close()
+
+
+def private_media_migration_preflight(
+    *,
+    expected_identity,
+    expected_schema_version,
+    override_manifest_path="",
+    expected_override_manifest_sha256="",
+    runtime_snapshot_binding=None,
+    backup_binding=None,
+):
+    """Dry-run legacy media attribution without exposing file/member names."""
+
+    if int(expected_schema_version or 0) != PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION:
+        raise StoreNotReadyError("private media schema version confirmation mismatch")
+    if not DB_PATH.is_file():
+        raise StoreNotReadyError("migration target database must already exist")
+    actual_identity = _database_identity(DB_PATH)
+    if not hmac.compare_digest(str(expected_identity or ""), actual_identity):
+        raise StoreNotReadyError("migration target database identity mismatch")
+    snapshot_binding = _verify_runtime_snapshot_binding(
+        runtime_snapshot_binding,
+        required=bool(
+            str(override_manifest_path or "").strip()
+            or str(expected_override_manifest_sha256 or "").strip()
+        ),
+    )
+    snapshot_manifest_digest = snapshot_binding["manifestSha256"]
+    snapshot_media_digest = snapshot_binding["mediaInventoryDigest"]
+    conn = _connect(read_only=True)
+    try:
+        if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+            raise StoreNotReadyError("migration target failed SQLite quick_check")
+        conn.execute("BEGIN")
+        override_requested = bool(
+            str(override_manifest_path or "").strip()
+            or str(expected_override_manifest_sha256 or "").strip()
+        )
+        if backup_binding is not None or override_requested:
+            database_state = _verify_migration_backup_binding_locked(
+                conn, backup_binding,
+            )
+        else:
+            database_state = _database_review_state_locked(conn)
+        (
+            override_entries,
+            override_digest,
+            override_inventory,
+            _override_snapshot,
+            _override_snapshot_media,
+            override_database_logical_digest,
+        ) = _load_private_media_override_manifest(
+            override_manifest_path,
+            expected_override_manifest_sha256,
+            database_state,
+            snapshot_manifest_digest,
+            snapshot_media_digest,
+        )
+        schema_row = conn.execute(
+            "SELECT checksum,status FROM schema_migrations WHERE version=?",
+            (PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,),
+        ).fetchone()
+        if schema_row != (PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM, "success"):
+            raise StoreNotReadyError("private media schema migration is not ready")
+        resource_row = conn.execute(
+            "SELECT checksum,status FROM schema_migrations WHERE version=?",
+            (RESOURCE_SCOPE_DATA_MIGRATION_VERSION,),
+        ).fetchone()
+        if resource_row != (RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM, "success"):
+            raise StoreNotReadyError("resource scope data migration prerequisite is not ready")
+        plan = _private_media_plan_locked(
+            conn,
+            override_entries=override_entries,
+            override_manifest_sha256=override_digest,
+            override_inventory_digest=override_inventory,
+            snapshot_manifest_sha256=snapshot_manifest_digest,
+            snapshot_media_inventory_digest=snapshot_media_digest,
+            override_database_logical_sha256=(
+                override_database_logical_digest
+            ),
+            include_database_logical_digest=True,
+            include_media_content_digest=True,
+        )
+        conn.rollback()
+        return {
+            **{key: value for key, value in plan.items() if key != "rows"},
+            **database_state,
+            "dryRun": True,
+        }
+    finally:
+        conn.close()
+
+
+def apply_private_media_migration(
+    *,
+    expected_identity,
+    expected_schema_version,
+    backup_binding=None,
+    override_manifest_path="",
+    expected_override_manifest_sha256="",
+    runtime_snapshot_binding=None,
+):
+    """Atomically register only a complete, deterministic legacy media plan."""
+
+    global _initialized
+    if runtime_config.is_read_only():
+        raise StoreNotReadyError("read-only runtime cannot apply migrations")
+    if runtime_config.runtime_mode() == "invalid":
+        raise StoreNotReadyError("invalid ACG_RUNTIME_MODE")
+    if str(os.getenv("ACG_ALLOW_PRIVATE_MEDIA_MIGRATION", "")).strip() != "1":
+        raise StoreNotReadyError("private media migration authorization is required")
+    if int(expected_schema_version or 0) != PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION:
+        raise StoreNotReadyError("private media schema version confirmation mismatch")
+    if not DB_PATH.is_file():
+        raise StoreNotReadyError("migration target database must already exist")
+    actual_identity = _database_identity(DB_PATH)
+    if not hmac.compare_digest(str(expected_identity or ""), actual_identity):
+        raise StoreNotReadyError("migration target database identity mismatch")
+
+    snapshot_binding = _verify_runtime_snapshot_binding(
+        runtime_snapshot_binding,
+        required=(
+            runtime_config.is_production()
+            or bool(str(override_manifest_path or "").strip())
+            or bool(str(expected_override_manifest_sha256 or "").strip())
+        ),
+    )
+    snapshot_manifest_digest = snapshot_binding["manifestSha256"]
+    snapshot_media_digest = snapshot_binding["mediaInventoryDigest"]
+
+    applied_override_digest = ""
+    applied_override_entries = 0
+    applied_override_state = {}
+    with _lock:
+        conn = _connect_migration_target()
+        migration_started = False
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if not hmac.compare_digest(
+                str(expected_identity or ""), _database_identity(DB_PATH),
+            ):
+                raise StoreNotReadyError("migration target database identity mismatch")
+            override_requested = bool(
+                str(override_manifest_path or "").strip()
+                or str(expected_override_manifest_sha256 or "").strip()
+            )
+            # The CLI always supplies this binding. Production and every
+            # operator override additionally refuse a direct call without it.
+            if (
+                runtime_config.is_production()
+                or backup_binding is not None
+                or override_requested
+            ):
+                database_state = _verify_migration_backup_binding_locked(
+                    conn, backup_binding,
+                )
+            else:
+                database_state = _database_review_state_locked(conn)
+            (
+                override_entries,
+                override_digest,
+                override_inventory,
+                _override_snapshot,
+                _override_snapshot_media,
+                override_database_logical_digest,
+            ) = _load_private_media_override_manifest(
+                override_manifest_path,
+                expected_override_manifest_sha256,
+                database_state,
+                snapshot_manifest_digest,
+                snapshot_media_digest,
+            )
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError("migration target failed SQLite quick_check")
+            schema_row = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            if schema_row != (PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM, "success"):
+                raise StoreNotReadyError("private media schema migration is not ready")
+            resource_row = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (RESOURCE_SCOPE_DATA_MIGRATION_VERSION,),
+            ).fetchone()
+            if resource_row != (RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM, "success"):
+                raise StoreNotReadyError("resource scope data migration prerequisite is not ready")
+            plan = _private_media_plan_locked(
+                conn,
+                override_entries=override_entries,
+                override_manifest_sha256=override_digest,
+                override_inventory_digest=override_inventory,
+                snapshot_manifest_sha256=snapshot_manifest_digest,
+                snapshot_media_inventory_digest=snapshot_media_digest,
+                override_database_logical_sha256=(
+                    override_database_logical_digest
+                ),
+                include_database_logical_digest=True,
+                include_media_content_digest=True,
+            )
+            if not plan.get("readyForApply"):
+                raise StoreNotReadyError(
+                    "private media migration preflight failed: "
+                    + ",".join(plan.get("issues") or ["unknown"])
+                )
+            if plan.get("dataMigration") and plan.get("counts", {}).get("pendingRows") == 0:
+                conn.rollback()
+                return {
+                    **{key: value for key, value in plan.items() if key != "rows"},
+                    "applied": False,
+                    "dryRun": False,
+                    "databaseIdentity": actual_identity,
+                }
+            now = int(time.time() * 1000)
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_migrations("
+                "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                ") VALUES(?,?,?,?,?,NULL,'running','{}')",
+                (
+                    PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+                    PRIVATE_MEDIA_DATA_MIGRATION_NAME,
+                    PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM,
+                    runtime_config.release_id() or "unidentified",
+                    now,
+                ),
+            )
+            migration_started = True
+            for kind, key, owner, team_id, proof_kind, proof_id in plan["rows"]:
+                _register_private_media_locked(
+                    conn,
+                    kind,
+                    key,
+                    owner,
+                    team_id=team_id,
+                    provenance_kind=proof_kind,
+                    provenance_id=proof_id,
+                    now=now,
+                )
+            verification = _private_media_plan_locked(
+                conn,
+                override_entries=override_entries,
+                override_manifest_sha256=override_digest,
+                override_inventory_digest=override_inventory,
+                snapshot_manifest_sha256=snapshot_manifest_digest,
+                snapshot_media_inventory_digest=snapshot_media_digest,
+                override_database_logical_sha256=(
+                    override_database_logical_digest
+                ),
+                include_database_logical_digest=True,
+                include_media_content_digest=True,
+            )
+            if (
+                not verification.get("readyForApply")
+                or int(verification.get("counts", {}).get("pendingRows") or 0) != 0
+            ):
+                raise StoreNotReadyError("private media registry verification failed")
+            audit_summary = {
+                "counts": verification.get("counts") or {},
+                "issues": verification.get("issues") or [],
+                "overrideManifestSha256": override_digest,
+                "overrideEntries": len(override_entries),
+                "snapshotManifestSha256": snapshot_manifest_digest,
+                "snapshotMediaInventoryDigest": snapshot_media_digest,
+                "overrideDatabaseIdentity": (
+                    database_state.get("databaseIdentity") if override_digest else ""
+                ),
+                "overrideDatabasePathSha256": (
+                    database_state.get("databasePathSha256") if override_digest else ""
+                ),
+                "overrideDatabaseLogicalSha256": (
+                    database_state.get("databaseLogicalSha256") if override_digest else ""
+                ),
+                "overrideSchemaVersion": (
+                    database_state.get("schemaVersion") if override_digest else None
+                ),
+                "overrideUserVersion": (
+                    database_state.get("userVersion") if override_digest else None
+                ),
+                "overrideBackupManifestSha256": (
+                    database_state.get("backupManifestSha256") if override_digest else ""
+                ),
+            }
+            conn.execute(
+                "UPDATE schema_migrations SET finished_at=?,status='success',summary=? "
+                "WHERE version=?",
+                (
+                    int(time.time() * 1000),
+                    json.dumps(audit_summary, ensure_ascii=False, sort_keys=True),
+                    PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+                ),
+            )
+            conn.commit()
+            applied_override_digest = override_digest
+            applied_override_entries = len(override_entries)
+            applied_override_state = (
+                dict(database_state) if override_digest else {}
+            )
+            _initialized = False
+        except Exception:
+            conn.rollback()
+            if migration_started:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    now = int(time.time() * 1000)
+                    existing = conn.execute(
+                        "SELECT checksum FROM schema_migrations WHERE version=?",
+                        (PRIVATE_MEDIA_DATA_MIGRATION_VERSION,),
+                    ).fetchone()
+                    if not existing or existing[0] == PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO schema_migrations("
+                            "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                            ") VALUES(?,?,?,?,?,?,?,?)",
+                            (
+                                PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+                                PRIVATE_MEDIA_DATA_MIGRATION_NAME,
+                                PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM,
+                                runtime_config.release_id() or "unidentified",
+                                now,
+                                now,
+                                "failed",
+                                json.dumps({"error": "migration_error"}),
+                            ),
+                        )
+                        conn.commit()
+                except Exception:
+                    conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    result = private_media_migration_preflight(
+        expected_identity=actual_identity,
+        expected_schema_version=expected_schema_version,
+        runtime_snapshot_binding=runtime_snapshot_binding,
+    )
+    return {
+        **result,
+        "appliedOverrideManifestSha256": applied_override_digest,
+        "appliedOverrideEntries": applied_override_entries,
+        "appliedOverrideDatabaseState": applied_override_state,
+        "applied": True,
+        "dryRun": False,
+    }
 
 
 # ---------- 口令哈希（pbkdf2，纯 stdlib，无新依赖） ----------
@@ -6814,7 +9874,7 @@ def _existing_account_keys(conn):
     return keys
 
 
-def _upsert_docs_in_conn(conn, collection, items):
+def _upsert_docs_in_conn(conn, collection, items, *, actor_id=""):
     deleted_ids = {
         r[0] for r in conn.execute("SELECT id FROM deleted_docs WHERE collection=?", (collection,)).fetchall()
     }
@@ -6889,6 +9949,14 @@ def _upsert_docs_in_conn(conn, collection, items):
         elif collection == "assets" and it.get("delivered") and _delivery_sequences_reconciled(conn):
             # 新交付也必须由共享账本分配编号，不能信任旧前端的本地计数器。
             it["pubSeq"] = _next_delivery_pub_seq(conn)
+        _ensure_doc_resource_scope_locked(
+            conn,
+            collection,
+            doc_id,
+            it,
+            actor_id=actor_id,
+            owner_id=str(it.get("ownerId") or actor_id or ""),
+        )
         conn.execute(
             "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
             (collection, doc_id, it.get("ownerId"), ua, json.dumps(it, ensure_ascii=False)),
@@ -6901,31 +9969,38 @@ def _upsert_docs_in_conn(conn, collection, items):
     return written
 
 
-def upsert_docs(collection, items):
+def upsert_docs(collection, items, *, actor_id=""):
     if collection not in COLLECTIONS:
         raise ValueError("unknown collection")
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
-            written = _upsert_docs_in_conn(conn, collection, items)
+            written = _upsert_docs_in_conn(
+                conn, collection, items, actor_id=actor_id
+            )
             conn.commit()
             return written
         finally:
             conn.close()
 
 
-def list_publish_tags():
-    """独立共享发布标签，不混入前端全量状态集合。"""
+def list_publish_tags(member_id):
+    """发布标签在当前租户内共享，不混入前端全量状态集合。"""
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
             rows = conn.execute(
-                "SELECT data FROM docs WHERE collection='publishTags' ORDER BY updated_at ASC, rowid ASC"
+                "SELECT id,data FROM docs WHERE collection='publishTags' "
+                "ORDER BY updated_at ASC, rowid ASC"
             ).fetchall()
             items = []
-            for (raw,) in rows:
+            for doc_id, raw in rows:
+                if not _resource_scope_allows_actor_locked(
+                    conn, "publishTags", doc_id, member_id
+                ):
+                    continue
                 try:
                     item = json.loads(raw)
                 except (TypeError, json.JSONDecodeError):
@@ -6947,10 +10022,14 @@ def create_publish_tag(label, member_id):
         conn = _connect()
         try:
             rows = conn.execute(
-                "SELECT data FROM docs WHERE collection='publishTags'"
+                "SELECT id,data FROM docs WHERE collection='publishTags'"
             ).fetchall()
             wanted = clean.casefold()
-            for (raw,) in rows:
+            for doc_id, raw in rows:
+                if not _resource_scope_allows_actor_locked(
+                    conn, "publishTags", doc_id, member_id
+                ):
+                    continue
                 try:
                     existing = json.loads(raw)
                 except (TypeError, json.JSONDecodeError):
@@ -6965,6 +10044,14 @@ def create_publish_tag(label, member_id):
                 "createdAt": now,
                 "updatedAt": now,
             }
+            _ensure_doc_resource_scope_locked(
+                conn,
+                "publishTags",
+                item["id"],
+                item,
+                actor_id=member_id,
+                owner_id=member_id,
+            )
             conn.execute(
                 "INSERT INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                 ("publishTags", item["id"], None, now, json.dumps(item, ensure_ascii=False)),
@@ -6996,6 +10083,90 @@ def _doc_row_in_conn(conn, collection, doc_id):
     except (TypeError, json.JSONDecodeError):
         item = {}
     return row[0], item
+
+
+def _resource_scope_row_locked(conn, collection, resource_id):
+    if not _resource_scopes_enforced_locked(conn):
+        return None
+    return conn.execute(
+        "SELECT scope_type,scope_id,owner_id FROM resource_scopes "
+        "WHERE resource_kind=? AND resource_id=?",
+        (_doc_resource_kind(collection), str(resource_id)),
+    ).fetchone()
+
+
+def _resource_scope_allows_actor_locked(
+    conn, collection, resource_id, member_id, role=None, parent_id=None,
+):
+    if not _resource_scopes_enforced_locked(conn):
+        return True
+    stored = _resource_scope_row_locked(conn, collection, resource_id)
+    if not stored:
+        return False
+    actor = _member_resource_scope_locked(conn, member_id)
+    if not actor:
+        return False
+    return (str(stored[0]), str(stored[1])) == (actor[0], actor[1])
+
+
+def _ensure_doc_resource_scope_locked(
+    conn, collection, resource_id, payload, *, actor_id="", owner_id="",
+):
+    """Attach a new write to exactly one actor tenant once v140 is active."""
+
+    if not _resource_scopes_enforced_locked(conn):
+        return
+    clean_resource_id = str(resource_id or "")
+    if not clean_resource_id:
+        raise PermissionError("resource_scope_required")
+    actor = _member_resource_scope_locked(conn, actor_id or owner_id)
+    if not actor:
+        raise PermissionError("resource_scope_required")
+    actor_key = (actor[0], actor[1])
+    existing = _resource_scope_row_locked(conn, collection, clean_resource_id)
+    if existing:
+        if (str(existing[0]), str(existing[1])) != actor_key:
+            raise PermissionError("resource_scope_conflict")
+    item = payload if isinstance(payload, dict) else {}
+    candidates = {actor_key}
+    for field in _RESOURCE_SCOPE_MEMBER_FIELDS:
+        for identity in dict.fromkeys(_resource_values(item.get(field))):
+            member_scope = _member_resource_scope_locked(conn, identity)
+            if not member_scope:
+                raise PermissionError("resource_member_scope_missing")
+            candidates.add((member_scope[0], member_scope[1]))
+    account_ids = []
+    if collection == "accounts":
+        account_ids.append(clean_resource_id)
+    for field in _RESOURCE_SCOPE_ACCOUNT_FIELDS:
+        account_ids.extend(_resource_values(item.get(field)))
+    for account_id in dict.fromkeys(account_ids):
+        account_scope = _account_resource_scope_locked(conn, account_id)
+        if account_scope:
+            candidates.add((account_scope[0], account_scope[1]))
+        elif collection != "accounts":
+            raise PermissionError("resource_account_scope_missing")
+    for field, target_collection in _RESOURCE_SCOPE_REFERENCE_FIELDS.get(collection, ()):
+        for target_id in _resource_values(item.get(field)):
+            target = _resource_scope_row_locked(conn, target_collection, target_id)
+            if not target:
+                raise PermissionError("resource_reference_scope_missing")
+            candidates.add((str(target[0]), str(target[1])))
+    if candidates != {actor_key}:
+        raise PermissionError("resource_scope_conflict")
+    if existing:
+        return
+    now = int(time.time() * 1000)
+    conn.execute(
+        "INSERT INTO resource_scopes("
+        "resource_kind,resource_id,scope_type,scope_id,owner_id,provenance,"
+        "captured_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+        (
+            _doc_resource_kind(collection), clean_resource_id,
+            actor[0], actor[1], str(owner_id or actor[2] or ""),
+            "v140-write-actor", now, now,
+        ),
+    )
 
 
 def _stored_owner(row):
@@ -7226,34 +10397,67 @@ def upsert_member_collection(owner_id, role, collection, items):
     """
     if collection not in COLLECTIONS:
         raise ValueError("unknown collection")
-    team = member_team(owner_id)
-    team_manager = bool(team and team.get("role") in {"owner", "admin"})
-    elevated_team_admin = team_manager and collection in ADMIN_ONLY_GENERIC_COLLECTIONS
-    if role == "admin" or elevated_team_admin:
-        if collection == "products" and (not team or team.get("id") != INTERNAL_TEAM_ID):
-            raise PermissionError("forbidden")
-        if collection == "accounts" and team:
-            incoming_ids = {
-                str(item.get("id"))
-                for item in (items or [])
-                if isinstance(item, dict) and item.get("id")
-            }
-            if incoming_ids:
-                marks = ",".join("?" for _ in incoming_ids)
-                rows = _fetchall(
-                    f"SELECT account_id,team_id FROM team_accounts WHERE account_id IN ({marks})",
-                    tuple(sorted(incoming_ids)),
+    if role == "admin" or collection in ADMIN_ONLY_GENERIC_COLLECTIONS:
+        _ensure_db()
+        with _lock:
+            conn = _connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                team_row = conn.execute(
+                    "SELECT t.id,t.name,t.kind,t.status,t.plan,t.quota_mode,tm.team_role "
+                    "FROM team_members tm JOIN teams t ON t.id=tm.team_id "
+                    "WHERE tm.member_id=? AND tm.status='active' AND t.status='active'",
+                    (str(owner_id),),
+                ).fetchone()
+                team = _team_public_row(team_row)
+                team_manager = bool(
+                    team and team.get("role") in {"owner", "admin"}
                 )
-                if any(str(team_id) != str(team["id"]) for _account_id, team_id in rows):
-                    raise PermissionError("forbidden")
-        written = upsert_docs(collection, items)
-        if collection == "accounts":
-            assign_team_accounts(
-                team["id"] if team else None,
-                [item.get("id") for item in (items or []) if isinstance(item, dict)],
-                owner_id,
-            )
-        return {"written": written, "denied": 0, "unchanged": 0}
+                elevated_team_admin = (
+                    team_manager and collection in ADMIN_ONLY_GENERIC_COLLECTIONS
+                )
+                if role == "admin" or elevated_team_admin:
+                    if collection == "products" and (
+                        not team or team.get("id") != INTERNAL_TEAM_ID
+                    ):
+                        raise PermissionError("forbidden")
+                    incoming_ids = {
+                        str(item.get("id"))
+                        for item in (items or [])
+                        if isinstance(item, dict) and item.get("id")
+                    }
+                    if collection == "accounts" and team and incoming_ids:
+                        marks = ",".join("?" for _ in incoming_ids)
+                        rows = conn.execute(
+                            f"SELECT account_id,team_id FROM team_accounts "
+                            f"WHERE account_id IN ({marks})",
+                            tuple(sorted(incoming_ids)),
+                        ).fetchall()
+                        if any(
+                            str(team_id) != str(team["id"])
+                            for _account_id, team_id in rows
+                        ):
+                            raise PermissionError("forbidden")
+                    written = _upsert_docs_in_conn(
+                        conn, collection, items, actor_id=owner_id
+                    )
+                    if collection == "accounts" and team:
+                        now = int(time.time() * 1000)
+                        for account_id in sorted(incoming_ids):
+                            conn.execute(
+                                "INSERT OR IGNORE INTO team_accounts("
+                                "team_id,account_id,created_at,added_by) "
+                                "VALUES(?,?,?,?)",
+                                (team["id"], account_id, now, owner_id),
+                            )
+                    conn.commit()
+                    return {"written": written, "denied": 0, "unchanged": 0}
+                conn.rollback()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
     if role != "editor" or collection in ADMIN_ONLY_GENERIC_COLLECTIONS:
         raise PermissionError("forbidden")
     if collection in CUSTOM_COLLECTIONS or collection in {"assets", "voicePresets"}:
@@ -7283,7 +10487,9 @@ def upsert_member_collection(owner_id, role, collection, items):
                 allowed.append(incoming)
             if denied and not allowed:
                 raise PermissionError("forbidden")
-            written = _upsert_docs_in_conn(conn, collection, allowed)
+            written = _upsert_docs_in_conn(
+                conn, collection, allowed, actor_id=owner_id
+            )
             conn.commit()
             return {"written": written, "denied": denied, "unchanged": unchanged}
         finally:
@@ -7362,7 +10568,9 @@ def upsert_member_assets(owner_id, role, items):
                     allowed.append(item)
                 if denied and not allowed:
                     raise PermissionError("forbidden")
-                written = _upsert_docs_in_conn(conn, "assets", allowed)
+                written = _upsert_docs_in_conn(
+                    conn, "assets", allowed, actor_id=owner_id
+                )
                 conn.commit()
                 return {"written": written, "denied": denied, "unchanged": unchanged}
             finally:
@@ -7407,7 +10615,9 @@ def upsert_member_assets(owner_id, role, items):
     if denied and not allowed:
         raise PermissionError("forbidden")
     return {
-        "written": upsert_docs("assets", allowed) if allowed else 0,
+        "written": (
+            upsert_docs("assets", allowed, actor_id=owner_id) if allowed else 0
+        ),
         "denied": denied,
     }
 
@@ -7478,7 +10688,9 @@ def upsert_supplier_assets(member_id, role, items):
             if denied and not allowed and not unchanged:
                 conn.rollback()
                 raise PermissionError("forbidden")
-            written = _upsert_docs_in_conn(conn, "assets", allowed)
+            written = _upsert_docs_in_conn(
+                conn, "assets", allowed, actor_id=member_id
+            )
             conn.commit()
             return {"written": written, "denied": denied, "unchanged": unchanged}
         except Exception:
@@ -7522,37 +10734,50 @@ def upsert_voice_presets(owner_id, role, items):
         finally:
             conn.close()
     if allowed:
-        upsert_docs("voicePresets", allowed)
+        upsert_docs("voicePresets", allowed, actor_id=owner_id)
 
 
-def list_voice_presets():
-    """Return the shared custom-voice catalog for server-side integrations.
+def list_voice_presets(member_id):
+    """Return the current tenant's custom voices for server-side integrations.
 
     Preview audio can be large and is irrelevant to TTS routing, so this helper
     deliberately returns only the safe metadata needed to select a voice ID.
+    Team members may share a preset, while personal and external-team scopes
+    remain isolated; callers must never fall back to a different tenant's row.
     """
-    rows = _fetchall(
-        "SELECT owner_id,data,updated_at FROM docs WHERE collection='voicePresets'"
-    )
+    _ensure_db()
     presets = []
-    for owner_id, raw_data, updated_at in rows:
+    with _lock:
+        conn = _connect()
         try:
-            item = json.loads(raw_data)
-        except (TypeError, json.JSONDecodeError):
-            continue
-        if not isinstance(item, dict):
-            continue
-        voice_id = str(item.get("voiceId") or "").strip()
-        if not voice_id:
-            continue
-        presets.append({
-            "id": str(item.get("id") or voice_id),
-            "voiceId": voice_id,
-            "name": str(item.get("name") or voice_id).strip()[:120],
-            "ownerId": str(item.get("ownerId") or owner_id or "").strip(),
-            "createdAt": int(item.get("createdAt") or 0),
-            "updatedAt": int(item.get("updatedAt") or updated_at or 0),
-        })
+            rows = conn.execute(
+                "SELECT id,owner_id,data,updated_at FROM docs "
+                "WHERE collection='voicePresets'"
+            ).fetchall()
+            for doc_id, owner_id, raw_data, updated_at in rows:
+                if not _resource_scope_allows_actor_locked(
+                    conn, "voicePresets", doc_id, member_id,
+                ):
+                    continue
+                try:
+                    item = json.loads(raw_data)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                voice_id = str(item.get("voiceId") or "").strip()
+                if not voice_id:
+                    continue
+                presets.append({
+                    "id": str(item.get("id") or voice_id),
+                    "voiceId": voice_id,
+                    "name": str(item.get("name") or voice_id).strip()[:120],
+                    "ownerId": str(item.get("ownerId") or owner_id or "").strip(),
+                    "createdAt": int(item.get("createdAt") or 0),
+                    "updatedAt": int(item.get("updatedAt") or updated_at or 0),
+                })
+        finally:
+            conn.close()
     return sorted(
         presets,
         key=lambda item: (item["updatedAt"], item["createdAt"], item["id"]),
@@ -7561,42 +10786,87 @@ def list_voice_presets():
 
 
 def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delivery=False):
-    """通用删除同样执行 actor 校验，避免 DELETE 绕过 PUT 的权限矩阵。"""
+    """通用删除同样执行 actor 校验，避免 DELETE 绕过 PUT 的权限矩阵。
+
+    租户范围、业务权限和最终 DELETE 必须位于同一个 BEGIN IMMEDIATE
+    事务内。否则多进程下可在校验后删除前删除并以同 ID 重建另一
+    租户资源，使旧 actor 跨租户删除新记录。
+    """
     if collection not in COLLECTIONS:
         raise ValueError("unknown collection")
-    team = member_team(member_id)
-    team_manager = bool(team and team.get("role") in {"owner", "admin"})
-    elevated_team_admin = team_manager and collection in ADMIN_ONLY_GENERIC_COLLECTIONS
-    if role == "admin" or elevated_team_admin:
-        if collection == "products" and (not team or team.get("id") != INTERNAL_TEAM_ID):
-            raise PermissionError("forbidden")
-        if collection == "accounts" and team:
-            owner_team = _fetchone(
-                "SELECT team_id FROM team_accounts WHERE account_id=?",
-                (str(doc_id),),
-            )
-            if not owner_team or str(owner_team[0]) != str(team["id"]):
-                raise PermissionError("forbidden")
-        delete_doc(collection, doc_id, protect_custom_delivery=protect_custom_delivery)
-        if collection == "accounts":
-            _ensure_db()
-            with _lock:
-                conn = _connect()
-                try:
-                    conn.execute("DELETE FROM team_accounts WHERE account_id=?", (str(doc_id),))
-                    conn.commit()
-                finally:
-                    conn.close()
-        return
-    if role != "editor" or collection in ADMIN_ONLY_GENERIC_COLLECTIONS:
-        raise PermissionError("forbidden")
-    actor = str(member_id)
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            if not _resource_scope_allows_actor_locked(
+                conn, collection, doc_id, member_id, role
+            ):
+                raise PermissionError("forbidden")
+
+            team_row = conn.execute(
+                "SELECT t.id,t.name,t.kind,t.status,t.plan,t.quota_mode,tm.team_role "
+                "FROM team_members tm JOIN teams t ON t.id=tm.team_id "
+                "WHERE tm.member_id=? AND tm.status='active' AND t.status='active'",
+                (str(member_id),),
+            ).fetchone()
+            team = _team_public_row(team_row)
+            team_manager = bool(
+                team and team.get("role") in {"owner", "admin"}
+            )
+            elevated_team_admin = (
+                team_manager and collection in ADMIN_ONLY_GENERIC_COLLECTIONS
+            )
+            if role == "admin" or elevated_team_admin:
+                if collection == "products" and (
+                    not team or team.get("id") != INTERNAL_TEAM_ID
+                ):
+                    raise PermissionError("forbidden")
+                if collection == "accounts" and team:
+                    owner_team = conn.execute(
+                        "SELECT team_id FROM team_accounts WHERE account_id=?",
+                        (str(doc_id),),
+                    ).fetchone()
+                    if not owner_team or str(owner_team[0]) != str(team["id"]):
+                        raise PermissionError("forbidden")
+                if collection == "productions":
+                    job_rows = conn.execute(
+                        "SELECT id,data FROM docs WHERE collection='jobs'"
+                    ).fetchall()
+                    for job_id, raw in job_rows:
+                        try:
+                            job = json.loads(raw)
+                        except (TypeError, json.JSONDecodeError):
+                            continue
+                        if str(job.get("productionId") or "") != str(doc_id):
+                            continue
+                        if not _resource_scope_allows_actor_locked(
+                            conn, "jobs", job_id, member_id, role
+                        ):
+                            raise PermissionError("resource_scope_conflict")
+                        _delete_doc_in_conn(conn, "jobs", job_id)
+                if collection == "assets":
+                    _clear_legacy_style_reference_locked(conn, doc_id)
+                _delete_doc_in_conn(
+                    conn,
+                    collection,
+                    doc_id,
+                    protect_custom_delivery=protect_custom_delivery,
+                )
+                if collection == "accounts":
+                    conn.execute(
+                        "DELETE FROM team_accounts WHERE account_id=?",
+                        (str(doc_id),),
+                    )
+                conn.commit()
+                return
+
+            if role != "editor" or collection in ADMIN_ONLY_GENERIC_COLLECTIONS:
+                raise PermissionError("forbidden")
+            actor = str(member_id)
             row = _doc_row_in_conn(conn, collection, doc_id)
             if not row:
+                conn.commit()
                 return
             allowed = False
             if collection in {"assets", "voicePresets"} | OWNER_SCOPED_GENERIC_COLLECTIONS:
@@ -7637,6 +10907,10 @@ def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delive
                     except (TypeError, json.JSONDecodeError):
                         continue
                     if str(job.get("productionId") or "") == str(doc_id):
+                        if not _resource_scope_allows_actor_locked(
+                            conn, "jobs", job_id, member_id, role
+                        ):
+                            raise PermissionError("resource_scope_conflict")
                         _delete_doc_in_conn(conn, "jobs", job_id)
             if collection == "assets":
                 _clear_legacy_style_reference_locked(conn, doc_id)
@@ -7647,12 +10921,31 @@ def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delive
                 protect_custom_delivery=protect_custom_delivery,
             )
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
 
 def can_write_asset_file(asset_id, member_id, role):
     """文件上传覆盖前检查同 ID 资产归属；新 ID 可由当前创作者创建。"""
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM docs WHERE collection='assets' AND id=?",
+                (str(asset_id),),
+            ).fetchone()
+            if _resource_scopes_enforced_locked(conn):
+                if existing:
+                    return _resource_scope_allows_actor_locked(
+                        conn, "assets", asset_id, member_id, role
+                    )
+                return _member_resource_scope_locked(conn, member_id) is not None
+        finally:
+            conn.close()
     if role == "admin":
         return True
     if role in {"supplier_parent", "supplier"}:
@@ -7681,10 +10974,9 @@ def can_write_asset_file(asset_id, member_id, role):
 
 def can_delete_asset_file(filename, member_id, role):
     """文件删除与资产记录使用同一权限和交付保护规则。"""
-    if role == "admin":
-        return True
     if role != "editor":
-        return False
+        if role != "admin":
+            return False
     target = str(filename or "")
     _ensure_db()
     with _lock:
@@ -7701,6 +10993,12 @@ def can_delete_asset_file(filename, member_id, role):
                 file_name = str(item.get("serverFileName") or "")
                 file_url = str(item.get("fileUrl") or item.get("url") or "")
                 if file_name == target or file_url.endswith("/" + target):
+                    if _resource_scopes_enforced_locked(conn):
+                        return _resource_scope_allows_actor_locked(
+                            conn, "assets", asset_id, member_id, role
+                        )
+                    if role == "admin":
+                        return True
                     return _editor_can_delete_reference_asset_locked(
                         conn, asset_id, member_id
                     )
@@ -7741,7 +11039,11 @@ def _published_custom_delivery_counts_locked(conn, owner_id):
         """,
         (owner,),
     ).fetchall()
-    for _asset_id, row_owner, raw in rows:
+    for asset_id, row_owner, raw in rows:
+        if not _resource_scope_allows_actor_locked(
+            conn, "assets", asset_id, owner,
+        ):
+            continue
         try:
             item = json.loads(raw)
         except (TypeError, json.JSONDecodeError):
@@ -7796,14 +11098,18 @@ def _find_custom_project_by_source_locked(conn, owner_id, kind, source_ids):
         return None
     rows = conn.execute(
         """
-        SELECT data
+        SELECT id,data
         FROM docs
         WHERE collection='customProjects' AND owner_id=?
         ORDER BY updated_at DESC
         """,
         (str(owner_id),),
     ).fetchall()
-    for (raw,) in rows:
+    for doc_id, raw in rows:
+        if not _resource_scope_allows_actor_locked(
+            conn, "customProjects", doc_id, owner_id,
+        ):
+            continue
         try:
             item = json.loads(raw)
         except (TypeError, json.JSONDecodeError):
@@ -7829,11 +11135,16 @@ def list_custom_projects(owner_id, kind=""):
                 owner_id,
             )
             rows = conn.execute(
-                "SELECT data FROM docs WHERE collection='customProjects' AND owner_id=? ORDER BY updated_at DESC",
+                "SELECT id,data FROM docs WHERE collection='customProjects' "
+                "AND owner_id=? ORDER BY updated_at DESC",
                 (str(owner_id),),
             ).fetchall()
             items = []
-            for (raw,) in rows:
+            for doc_id, raw in rows:
+                if not _resource_scope_allows_actor_locked(
+                    conn, "customProjects", doc_id, owner_id,
+                ):
+                    continue
                 try:
                     item = json.loads(raw)
                 except (TypeError, json.JSONDecodeError):
@@ -8139,6 +11450,15 @@ def _persist_custom_canvas_blobs_locked(
                     now,
                 ),
             )
+        _register_private_media_locked(
+            conn,
+            "canvas-blob",
+            content_hash,
+            owner,
+            provenance_kind="custom-canvas-blob",
+            provenance_id=content_hash,
+            now=now,
+        )
 
 
 def _custom_canvas_collect_blob_hashes(value, output):
@@ -8324,6 +11644,11 @@ def _custom_canvas_gc_blobs_locked(conn, owner_id):
     if orphaned:
         conn.executemany(
             "DELETE FROM custom_canvas_blobs WHERE owner_id=? AND content_hash=?",
+            [(owner, content_hash) for content_hash, _ in orphaned],
+        )
+        conn.executemany(
+            "DELETE FROM private_media_registry "
+            "WHERE media_kind='canvas-blob' AND owner_id=? AND media_key=?",
             [(owner, content_hash) for content_hash, _ in orphaned],
         )
     return [stored_name for _, stored_name in orphaned]
@@ -8852,6 +12177,14 @@ def _ensure_custom_canvas_project_locked(
         "createdAt": int(existing.get("createdAt") or project.get("createdAt") or now),
         "updatedAt": int(now),
     }
+    _ensure_doc_resource_scope_locked(
+        conn,
+        "customProjects",
+        custom_project_id,
+        item,
+        actor_id=owner,
+        owner_id=owner,
+    )
     conn.execute(
         """
         INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data)
@@ -9321,6 +12654,10 @@ def get_custom_project(project_id, owner_id):
             row = _custom_project_row(project_id, conn)
             if not row:
                 return None, "not_found"
+            if not _resource_scope_allows_actor_locked(
+                conn, "customProjects", project_id, owner_id,
+            ):
+                return None, "forbidden"
             stored_owner, item = row
             if stored_owner != str(owner_id):
                 return None, "forbidden"
@@ -9349,6 +12686,10 @@ def get_custom_output_by_source(project_id, owner_id, source_output_id):
                 (owner,),
             ).fetchall()
             for doc_id, raw in rows:
+                if not _resource_scope_allows_actor_locked(
+                    conn, "customOutputs", doc_id, owner,
+                ):
+                    continue
                 try:
                     item = json.loads(raw)
                 except (TypeError, json.JSONDecodeError):
@@ -9435,6 +12776,14 @@ def save_custom_project(owner_id, payload, project_id=""):
                 "createdAt": created_at,
                 "updatedAt": now,
             }
+            _ensure_doc_resource_scope_locked(
+                conn,
+                "customProjects",
+                pid,
+                item,
+                actor_id=owner_id,
+                owner_id=owner_id,
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                 ("customProjects", pid, str(owner_id), now, json.dumps(item, ensure_ascii=False)),
@@ -9464,9 +12813,14 @@ def mark_custom_project_published(project_id, owner_id, delivery_id):
     with _lock:
         conn = _connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             row = _custom_project_row(pid, conn)
             if not row:
                 return None, "not_found"
+            if not _resource_scope_allows_actor_locked(
+                conn, "customProjects", pid, owner_id,
+            ):
+                return None, "forbidden"
             stored_owner, project = row
             if stored_owner != str(owner_id):
                 return None, "forbidden"
@@ -9476,6 +12830,10 @@ def mark_custom_project_published(project_id, owner_id, delivery_id):
             ).fetchone()
             if not delivery_row:
                 return None, "delivery_not_found"
+            if not _resource_scope_allows_actor_locked(
+                conn, "assets", did, owner_id,
+            ):
+                return None, "delivery_mismatch"
             try:
                 delivery = json.loads(delivery_row[0])
             except (TypeError, json.JSONDecodeError):
@@ -9520,6 +12878,9 @@ def mark_custom_project_published(project_id, owner_id, delivery_id):
                 owner_id,
             ).get(pid, 0)
             return result, None
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -9733,6 +13094,10 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
             row = _custom_project_row(pid, conn)
             if not row:
                 return None, "not_found"
+            if not _resource_scope_allows_actor_locked(
+                conn, "customProjects", pid, owner,
+            ):
+                return None, "forbidden"
             stored_owner, project = row
             if stored_owner != owner:
                 return None, "forbidden"
@@ -9760,6 +13125,10 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
             ).fetchone()
             if not account_row:
                 return None, "account_not_found"
+            if not _resource_scope_allows_actor_locked(
+                conn, "accounts", account_id, owner,
+            ):
+                return None, "account_not_found"
             try:
                 account = json.loads(account_row[1])
             except (TypeError, json.JSONDecodeError):
@@ -9785,6 +13154,10 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
                 (did,),
             ).fetchone()
             if existing_delivery_row:
+                if not _resource_scope_allows_actor_locked(
+                    conn, "assets", did, owner,
+                ):
+                    return None, "delivery_mismatch"
                 try:
                     existing_delivery = json.loads(existing_delivery_row[1])
                 except (TypeError, json.JSONDecodeError):
@@ -9930,10 +13303,26 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
             })
 
             for asset_id, asset in normalized_assets.items():
+                _ensure_doc_resource_scope_locked(
+                    conn,
+                    "assets",
+                    asset_id,
+                    asset,
+                    actor_id=owner,
+                    owner_id=owner,
+                )
                 conn.execute(
                     "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                     ("assets", asset_id, owner, now, json.dumps(asset, ensure_ascii=False)),
                 )
+            _ensure_doc_resource_scope_locked(
+                conn,
+                "assets",
+                did,
+                delivery,
+                actor_id=owner,
+                owner_id=owner,
+            )
             conn.execute(
                 "INSERT INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                 ("assets", did, owner, now, json.dumps(delivery, ensure_ascii=False)),
@@ -10025,6 +13414,10 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
             row = _custom_project_row(pid, conn)
             if not row:
                 return None, "not_found"
+            if not _resource_scope_allows_actor_locked(
+                conn, "customProjects", pid, owner,
+            ):
+                return None, "forbidden"
             stored_owner, project = row
             if stored_owner != owner:
                 return None, "forbidden"
@@ -10052,6 +13445,10 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
                         "removedAnalyticsIds": [],
                     }, None
                 return None, "delivery_not_found"
+            if not _resource_scope_allows_actor_locked(
+                conn, "assets", did, owner,
+            ):
+                return None, "delivery_mismatch"
             try:
                 delivery = json.loads(delivery_row[1])
             except (TypeError, json.JSONDecodeError):
@@ -10074,6 +13471,10 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
             ).fetchone()
             account = None
             if account_row:
+                if not _resource_scope_allows_actor_locked(
+                    conn, "accounts", account_id, owner,
+                ):
+                    return None, "delivery_mismatch"
                 try:
                     account = json.loads(account_row[1])
                 except (TypeError, json.JSONDecodeError):
@@ -10106,6 +13507,10 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
             for link_id, raw in conn.execute(
                 "SELECT id,data FROM docs WHERE collection='analyticsLinks'"
             ).fetchall():
+                if not _resource_scope_allows_actor_locked(
+                    conn, "analyticsLinks", link_id, owner,
+                ):
+                    continue
                 try:
                     link = json.loads(raw)
                 except (TypeError, json.JSONDecodeError):
@@ -10128,6 +13533,10 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
                 for snapshot_id, raw in conn.execute(
                     "SELECT id,data FROM docs WHERE collection='metricSnapshots'"
                 ).fetchall():
+                    if not _resource_scope_allows_actor_locked(
+                        conn, "metricSnapshots", snapshot_id, owner,
+                    ):
+                        continue
                     try:
                         snapshot = json.loads(raw)
                     except (TypeError, json.JSONDecodeError):
@@ -10150,6 +13559,10 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
                     for report_id, report_owner, raw in conn.execute(
                         "SELECT id,owner_id,data FROM docs WHERE collection='insightReports'"
                     ).fetchall():
+                        if not _resource_scope_allows_actor_locked(
+                            conn, "insightReports", report_id, owner,
+                        ):
+                            continue
                         try:
                             report = json.loads(raw)
                         except (TypeError, json.JSONDecodeError):
@@ -10171,9 +13584,13 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
             conn.execute("DELETE FROM supplier_activity WHERE asset_id=?", (did,))
 
             remaining_deliveries = []
-            for (raw,) in conn.execute(
-                "SELECT data FROM docs WHERE collection='assets'"
+            for asset_id, raw in conn.execute(
+                "SELECT id,data FROM docs WHERE collection='assets'"
             ).fetchall():
+                if not _resource_scope_allows_actor_locked(
+                    conn, "assets", asset_id, owner,
+                ):
+                    continue
                 try:
                     item = json.loads(raw)
                 except (TypeError, json.JSONDecodeError):
@@ -10187,7 +13604,13 @@ def unpublish_custom_project_delivery(project_id, owner_id, delivery_id):
                     "SELECT owner_id,data FROM docs WHERE collection='assets' AND id=?",
                     (asset_id,),
                 ).fetchone()
-                if not asset_row or asset_row[0] != owner:
+                if (
+                    not asset_row
+                    or asset_row[0] != owner
+                    or not _resource_scope_allows_actor_locked(
+                        conn, "assets", asset_id, owner,
+                    )
+                ):
                     continue
                 try:
                     asset = json.loads(asset_row[1])
@@ -10320,10 +13743,14 @@ def find_custom_video_project(owner_id, workshop_project_id):
         conn = _connect()
         try:
             rows = conn.execute(
-                "SELECT data FROM docs WHERE collection='customProjects' AND owner_id=?",
+                "SELECT id,data FROM docs WHERE collection='customProjects' AND owner_id=?",
                 (str(owner_id),),
             ).fetchall()
-            for (raw,) in rows:
+            for doc_id, raw in rows:
+                if not _resource_scope_allows_actor_locked(
+                    conn, "customProjects", doc_id, owner_id,
+                ):
+                    continue
                 try:
                     item = json.loads(raw)
                 except (TypeError, json.JSONDecodeError):
@@ -10474,7 +13901,7 @@ def sync_custom_video_project(owner_id, workshop_project):
     if error:
         return None, error
     if output_docs:
-        upsert_docs("customOutputs", output_docs)
+        upsert_docs("customOutputs", output_docs, actor_id=owner_id)
     item["publishedCount"] = count_custom_project_deliveries(
         item.get("id"),
         owner_id,
@@ -10487,9 +13914,14 @@ def delete_custom_project(project_id, owner_id):
     with _lock:
         conn = _connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             row = _custom_project_row(project_id, conn)
             if not row:
                 return False, "not_found"
+            if not _resource_scope_allows_actor_locked(
+                conn, "customProjects", project_id, owner_id,
+            ):
+                return False, "forbidden"
             stored_owner, _ = row
             if stored_owner != str(owner_id):
                 return False, "forbidden"
@@ -10509,6 +13941,10 @@ def delete_custom_project(project_id, owner_id):
                     except (TypeError, json.JSONDecodeError):
                         continue
                     if str(child.get("projectId") or "") == str(project_id):
+                        if not _resource_scope_allows_actor_locked(
+                            conn, collection, doc_id, owner_id,
+                        ):
+                            return False, "forbidden"
                         conn.execute(
                             "DELETE FROM docs WHERE collection=? AND id=?",
                             (collection, doc_id),
@@ -10519,6 +13955,9 @@ def delete_custom_project(project_id, owner_id):
             )
             conn.commit()
             return True, None
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -10526,6 +13965,12 @@ def delete_custom_project(project_id, owner_id):
 def _delivery_asset_access(item, member_id, role, conn):
     if not isinstance(item, dict) or not item.get("delivered"):
         return False
+    if _resource_scopes_enforced_locked(conn):
+        asset_id = str(item.get("id") or "").strip()
+        if not asset_id or not _resource_scope_allows_actor_locked(
+            conn, "assets", asset_id, member_id,
+        ):
+            return False
     if role == "admin":
         return True
     if role in {"supplier_parent", "supplier_child", "supplier"}:
@@ -10574,6 +14019,12 @@ def get_delivery_asset_for_member(asset_id, member_id, role):
             except (TypeError, json.JSONDecodeError):
                 return None, "not_found"
             if not isinstance(item, dict) or not item.get("delivered"):
+                return None, "forbidden"
+            if _resource_scopes_enforced_locked(conn) and not (
+                _resource_scope_allows_actor_locked(
+                    conn, "assets", str(asset_id or ""), str(member_id or ""),
+                )
+            ):
                 return None, "forbidden"
             owner_ids = {
                 str(row[0] or ""),
@@ -10724,6 +14175,12 @@ def _supplier_delivery_row_locked(conn, asset_id, member_id, role):
     context = _supplier_access_context_locked(conn, member_id, role)
     if not context:
         return None, None, None, "forbidden"
+    if _resource_scopes_enforced_locked(conn) and not (
+        _resource_scope_allows_actor_locked(
+            conn, "assets", str(asset_id), str(member_id), role
+        )
+    ):
+        return context, None, None, "unassigned"
     row = conn.execute(
         "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?",
         (str(asset_id),),
@@ -10745,6 +14202,12 @@ def _supplier_account_row_locked(conn, account_id, member_id, role):
     context = _supplier_access_context_locked(conn, member_id, role)
     if not context or context["role"] != "supplier_parent":
         return None, None, None, "forbidden"
+    if _resource_scopes_enforced_locked(conn) and not (
+        _resource_scope_allows_actor_locked(
+            conn, "accounts", str(account_id), str(member_id), role
+        )
+    ):
+        return context, None, None, "unassigned"
     if not _supplier_account_allowed_locked(conn, context, account_id):
         return context, None, None, "unassigned"
     row = conn.execute(
@@ -11006,6 +14469,14 @@ def upsert_supplier_account(account_id, data, assets, member_id, *, create=False
                 candidate["status"] = "active"
                 candidate.pop("disabledAt", None)
                 candidate.pop("disabledBy", None)
+            _ensure_doc_resource_scope_locked(
+                conn,
+                "accounts",
+                doc_id,
+                candidate,
+                actor_id=member_id,
+                owner_id=member_id,
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                 ("accounts", doc_id, None, now, json.dumps(candidate, ensure_ascii=False)),
@@ -11020,6 +14491,14 @@ def upsert_supplier_account(account_id, data, assets, member_id, *, create=False
             for asset in _supplier_account_assets(doc_id, assets, member_id):
                 asset.setdefault("createdAt", now)
                 asset["updatedAt"] = max(now, int(asset.get("updatedAt") or 0))
+                _ensure_doc_resource_scope_locked(
+                    conn,
+                    "assets",
+                    asset["id"],
+                    asset,
+                    actor_id=member_id,
+                    owner_id=member_id,
+                )
                 conn.execute(
                     "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                     ("assets", asset["id"], None, asset["updatedAt"], json.dumps(asset, ensure_ascii=False)),
@@ -11210,6 +14689,14 @@ def update_supplier_asset_published_link(asset_id, published_url, note, title, r
                     "createdAt": now,
                     "updatedAt": now,
                 }
+            _ensure_doc_resource_scope_locked(
+                conn,
+                "analyticsLinks",
+                link_id,
+                link,
+                actor_id=member_id,
+                owner_id=str(link_owner or member_id),
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                 ("analyticsLinks", link_id, link_owner, now, json.dumps(link, ensure_ascii=False)),
@@ -11486,21 +14973,32 @@ def state_for(member_id, role, parent_id=None, collections=None):
                     continue
                 account_order = " ORDER BY rowid" if col == "accounts" else ""
                 rows = conn.execute(
-                    f"SELECT data, owner_id FROM docs WHERE collection=?{account_order}", (col,)
+                    f"SELECT id,data,owner_id FROM docs WHERE collection=?{account_order}",
+                    (col,),
                 ).fetchall()
                 items = []
                 if col == "accounts":
-                    decoded_rows = [(json.loads(data), owner) for data, owner in rows]
+                    decoded_rows = [
+                        (str(doc_id), json.loads(data), owner)
+                        for doc_id, data, owner in rows
+                    ]
                     account_projected_sequences = _projected_account_sequences(
-                        [item for item, _ in decoded_rows]
+                        [item for _doc_id, item, _owner in decoded_rows]
                     )
                     row_items = decoded_rows
                 elif col == "assets":
-                    decoded_rows = [(json.loads(data), owner) for data, owner in rows]
-                    delivery_projected_sequences = _projected_delivery_sequences([item for item, _ in decoded_rows])
-                    delivery_global_sequences = _global_delivery_sequences([item for item, _ in decoded_rows])
+                    decoded_rows = [
+                        (str(doc_id), json.loads(data), owner)
+                        for doc_id, data, owner in rows
+                    ]
+                    delivery_projected_sequences = _projected_delivery_sequences(
+                        [item for _doc_id, item, _owner in decoded_rows]
+                    )
+                    delivery_global_sequences = _global_delivery_sequences(
+                        [item for _doc_id, item, _owner in decoded_rows]
+                    )
                     if role == "editor":
-                        for delivery, _ in decoded_rows:
+                        for _doc_id, delivery, _owner in decoded_rows:
                             if not delivery.get("delivered"):
                                 continue
                             editor_delivery_asset_ids.update(
@@ -11511,8 +15009,15 @@ def state_for(member_id, role, parent_id=None, collections=None):
                             )
                     row_items = decoded_rows
                 else:
-                    row_items = ((json.loads(data), owner) for data, owner in rows)
-                for item, owner in row_items:
+                    row_items = (
+                        (str(doc_id), json.loads(data), owner)
+                        for doc_id, data, owner in rows
+                    )
+                for doc_id, item, owner in row_items:
+                    if not _resource_scope_allows_actor_locked(
+                        conn, col, doc_id, member_id, role, parent_id
+                    ):
+                        continue
                     healed = False
                     if col == "productions":
                         item, healed = _heal_production_runtime_state(item)

@@ -244,8 +244,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260803-v139-durable-usage-1", html)
-        self.assertIn("app.js?v=20260803-v139-durable-usage-1", html)
+        self.assertIn("styles.css?v=20260803-v140-deployment-readiness-1", html)
+        self.assertIn("app.js?v=20260803-v140-deployment-readiness-1", html)
         self.assertIn('data-creation-mode="video" aria-pressed="true">动态</button>', html)
         self.assertIn('data-creation-mode="static" aria-pressed="false">静态</button>', html)
         self.assertNotIn(">动态视频</button>", html)
@@ -744,7 +744,7 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         self.assertIn("if (requireLlm)", ai)
         self.assertIn("throw lastError instanceof Error", ai)
         self.assertIn("retryableModelOutput", ai)
-        self.assertIn("def list_voice_presets():", store)
+        self.assertIn("def list_voice_presets(member_id):", store)
         self.assertIn("def _video_workshop_preferred_voice(me):", backend)
         self.assertIn('"preferredVoice": _video_workshop_preferred_voice(me)', backend)
         self.assertIn(
