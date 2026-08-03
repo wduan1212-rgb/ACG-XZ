@@ -69,6 +69,63 @@ def parse_lock(path: Path) -> dict[str, str]:
     return pins
 
 
+def verify_lock_extension(
+    base_lock: Path,
+    extended_lock: Path,
+    *,
+    allowed_extras: set[str],
+) -> dict:
+    """Prove that a test lock is an exact, named extension of runtime.
+
+    Keeping a complete test lock makes one-file offline installation and
+    ``installed`` verification possible.  This check prevents the duplicated
+    runtime portion from silently drifting away from production.
+    """
+
+    base = parse_lock(base_lock)
+    extended = parse_lock(extended_lock)
+    allowed = {_canonical_name(name) for name in allowed_extras}
+    missing = sorted(name for name in base if name not in extended)
+    drift = sorted(
+        (
+            {
+                "name": name,
+                "expected": version,
+                "actual": extended.get(name, ""),
+            }
+            for name, version in base.items()
+            if name in extended and extended[name] != version
+        ),
+        key=lambda item: item["name"],
+    )
+    extras = set(extended) - set(base)
+    unexpected = sorted(extras - allowed)
+    required_missing = sorted(allowed - extras)
+    if missing or drift or unexpected or required_missing:
+        raise DependencyContractError(
+            json.dumps(
+                {
+                    "missing": missing,
+                    "drift": drift,
+                    "unexpectedExtras": unexpected,
+                    "requiredExtrasMissing": required_missing,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+    return {
+        "ok": True,
+        "baseLock": str(base_lock.resolve()),
+        "baseLockSha256": _sha256(base_lock),
+        "extendedLock": str(extended_lock.resolve()),
+        "extendedLockSha256": _sha256(extended_lock),
+        "basePackageCount": len(base),
+        "extendedPackageCount": len(extended),
+        "extras": sorted(extras),
+    }
+
+
 def installed_versions(python: Path) -> tuple[dict[str, str], dict]:
     if not python.is_file() or not os.access(python, os.X_OK):
         raise DependencyContractError(f"python_not_executable:{python}")
@@ -264,12 +321,22 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="independently recorded SHA-256 of wheelhouse.manifest.json",
     )
+    extends = sub.add_parser("extends")
+    extends.add_argument("--base-lock", required=True, type=Path)
+    extends.add_argument("--extended-lock", required=True, type=Path)
+    extends.add_argument("--allow-extra", action="append", default=[])
     args = parser.parse_args(argv)
     try:
         if args.command == "installed":
             payload = verify_installed(args.python, args.lock)
         elif args.command == "build":
             payload = build_wheelhouse(args.python, args.lock, args.output)
+        elif args.command == "extends":
+            payload = verify_lock_extension(
+                args.base_lock,
+                args.extended_lock,
+                allowed_extras=set(args.allow_extra),
+            )
         else:
             payload = verify_wheelhouse(
                 args.root,

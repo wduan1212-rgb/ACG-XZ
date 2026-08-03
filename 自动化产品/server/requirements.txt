@@ -1,4 +1,6 @@
+# Local developer bootstrap only. Production uses requirements.lock.txt.
 fastapi==0.68.1
+pydantic==1.10.26
 uvicorn==0.15.0
 httpx==0.19.0
 aiofiles==0.8.0

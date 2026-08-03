@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
-from fastapi.testclient import TestClient
+from server.tests.testclient_compat import TestClient
 
 
 SERVER_DIR = Path(__file__).resolve().parents[1]
@@ -289,6 +289,25 @@ class PersonalQuotaReservationTest(unittest.TestCase):
 
 class SubscriptionQuotaTest(unittest.TestCase):
     def setUp(self):
+        # Image endpoint tests must never inherit a developer/production key.
+        # The provider call itself is patched in each test; these values only
+        # let the endpoint reach that seam in a clean, secret-free process.
+        self.image_config_patchers = (
+            patch.object(main, "IMAGE_API_KEY", "test-image-key"),
+            patch.object(
+                main,
+                "IMAGE_BASE_URL",
+                "https://tokenhub.tencentmaas.com/v1",
+            ),
+            patch.object(
+                main,
+                "IMAGE_ENDPOINT",
+                "https://tokenhub.tencentmaas.com/v1/aiart/gtimage",
+            ),
+        )
+        for patcher in self.image_config_patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.previous_path = store.DB_PATH
         self.previous_blob_dir = store.CUSTOM_CANVAS_BLOB_DIR
@@ -550,6 +569,24 @@ class SubscriptionQuotaTest(unittest.TestCase):
 
 class PersonalQuotaEndpointTest(unittest.TestCase):
     def setUp(self):
+        # Keep quota/receipt endpoint tests independent from .env.local and
+        # every real provider credential.  No request reaches this endpoint.
+        self.image_config_patchers = (
+            patch.object(main, "IMAGE_API_KEY", "test-image-key"),
+            patch.object(
+                main,
+                "IMAGE_BASE_URL",
+                "https://tokenhub.tencentmaas.com/v1",
+            ),
+            patch.object(
+                main,
+                "IMAGE_ENDPOINT",
+                "https://tokenhub.tencentmaas.com/v1/aiart/gtimage",
+            ),
+        )
+        for patcher in self.image_config_patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.previous_path = store.DB_PATH
         self.previous_blob_dir = store.CUSTOM_CANVAS_BLOB_DIR

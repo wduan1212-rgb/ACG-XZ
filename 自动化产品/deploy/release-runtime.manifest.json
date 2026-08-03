@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260803-v140-deployment-readiness-1",
   "fileCount": 53,
-  "totalBytes": 2570124,
+  "totalBytes": 2572578,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -191,8 +191,8 @@
     },
     {
       "path": "deploy/verify_offline_dependencies.py",
-      "size": 10766,
-      "sha256": "f7c456a6e7505f395396446b32d20ecc4890ddc169575694fe996563eb962143"
+      "size": 13129,
+      "sha256": "33f22927558c8736cc0f4b274016fe1b6f1b438aea3621df98936cee1001a792"
     },
     {
       "path": "deploy/verify_production_write_gate.py",
@@ -241,8 +241,8 @@
     },
     {
       "path": "server/requirements.txt",
-      "size": 77,
-      "sha256": "2955e276662f75a713ed69279c9dc927f245dcbd68001b58640c9ec18126b467"
+      "size": 168,
+      "sha256": "ccac70733cb3e3b358132e72bc31dd52f7c2b88f8e139d45e2deb4adf5ba1375"
     },
     {
       "path": "server/scripts/consistent_sqlite_backup.py",

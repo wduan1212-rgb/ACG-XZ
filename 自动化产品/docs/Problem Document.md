@@ -4,6 +4,13 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-03 v140 部署门禁修复：系统 Python 与本机私密环境不能证明锁定发布可用
+
+- **症状**：主服务锁固定 FastAPI 0.68.1 / Starlette 0.14.2 / Pydantic 1.10.26，但一条测试使用 Pydantic 2 专属 `model_copy()`；旧 Starlette TestClient 还隐式需要未声明的 requests。直接使用本机 Pydantic 2、新 Starlette 和 `.env.local` 时，既绕过真实生产依赖，也会让图片端点测试因继承真实 `IMAGE_API_KEY` 而假通过。
+- **修复**：生产主 venv 只安装 18 项 `requirements.lock.txt`；一次性测试 venv 安装完整 20 项 `requirements-test.lock.txt`，后者必须是运行锁的逐项同版本扩展且只能新增 requests/urllib3。旧 TestClient 锁为 requests 2.28.2 / urllib3 1.26.20，并使用仅清理无连接池 ASGI mount 的测试兼容关闭器；Pydantic 用例改为 v1 `copy(update=...)`。
+- **无私密回归门禁**：图片额度端点测试显式注入假的 test key 和已知 endpoint，provider 调用仍由 mock 接管。`tools/run_locked_server_tests.sh` 只接受验签 wheelhouse，在干净提交中拒绝 `.env.local`/`.env`，使用 `env -i` 运行全量并记录 Python/Node/FFmpeg/Git；任何 Key、生产 endpoint 或系统 site-packages 都不能进入证据。
+- **部署边界**：测试锁绝不能装入生产 venv；生产 `installed` 必须继续拒绝 requests/urllib3 等额外包。该门禁通过前不得恢复 v140 服务器切换，且不能用“系统 Python 全量通过”作为替代证据。
+
 ## 2026-08-03 v140 修复与门禁：代码具备迁移安全机制不等于生产已具备写入证据
 
 - **已收口的代码缺口**：`140001/140002` 把历史业务资源冻结到唯一个人/团队 scope，并在严格模式下移除通用管理员跨租户旁路；`140003/140004` 为 uploads、composed、画布 Blob 与视频工坊持久媒体建立 owner/team registry、服务端会话和 Range 授权。两类 data migration 都先只读 preflight，真正 unresolved、ambiguous、缺文件、缺 owner 或 registry conflict 会在任何归属/账本写入前拒绝整次 apply。

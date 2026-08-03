@@ -188,9 +188,15 @@ python3 server/scripts/runtime_snapshot.py restore-drill \
   --confirm-manifest-sha256 <independently-recorded-manifest-sha256>
 ```
 
-精确依赖以 `server/requirements.lock.txt` 和
-`apps/video-workshop/requirements.lock.txt` 为唯一基线。正式 wheelhouse 必须由生产同
-Python/ABI 的联网构建环境产生，用 `deploy/verify_offline_dependencies.py build` 创建，
+生产运行依赖以 `server/requirements.lock.txt` 和
+`apps/video-workshop/requirements.lock.txt` 为唯一基线。主服务正式基线固定为
+FastAPI 0.68.1、Starlette 0.14.2、Pydantic 1.10.26；不得用开发机的 Pydantic 2
+回归代替。`server/requirements-test.lock.txt` 是独立、完整的主服务测试闭包：它必须
+逐项同版本包含主运行锁，且只可额外包含 TestClient 所需的 requests/urllib3。测试锁
+不得安装到生产主服务 venv，否则生产 `installed` 验证应将其判为额外包并拒绝。
+
+正式 wheelhouse 必须由生产同 Python/ABI 的联网构建环境产生，用
+`deploy/verify_offline_dependencies.py build` 创建，
 build stdout 中的 `manifestSha256` 必须独立记录；`verify-wheelhouse` 必须传入该值，
 同时校验运行时身份、lock 和每个文件 SHA-256。离线安装后再用 `installed` 拒绝
 缺包、版本漂移和额外包。不得在维护窗现场联网升级依赖，也不得只信任可与 wheel
@@ -202,6 +208,28 @@ python3 deploy/verify_offline_dependencies.py verify-wheelhouse \
   --lock server/requirements.lock.txt \
   --root /path/to/main-wheelhouse \
   --confirm-manifest-sha256 <independently-recorded-manifest-sha256>
+```
+
+主服务完整回归必须另建测试 wheelhouse 和一次性测试 venv。先证明测试锁严格扩展
+运行锁，再在没有 `.env.local` / `.env` 的干净提交中运行离线、清空进程环境的测试器；
+测试器还会要求 Node 支持 `--experimental-strip-types`，并记录 Python、Node、FFmpeg、
+Git 版本。任何本地 Key、endpoint 或私密配置都不能作为用例通过条件。干净提交可因
+未携带被 Git 排除的旧 v120 只读快照而跳过对应单项；runner 只允许该精确测试和原因，
+其他任何 skip 都视为失败。
+
+```bash
+python3 deploy/verify_offline_dependencies.py extends \
+  --base-lock server/requirements.lock.txt \
+  --extended-lock server/requirements-test.lock.txt \
+  --allow-extra requests --allow-extra urllib3
+python3 deploy/verify_offline_dependencies.py build \
+  --python /path/to/production-compatible-python \
+  --lock server/requirements-test.lock.txt \
+  --output /path/to/main-test-wheelhouse
+tools/run_locked_server_tests.sh \
+  --python /path/to/production-compatible-python \
+  --wheelhouse /path/to/main-test-wheelhouse \
+  --confirm-manifest-sha256 <independently-recorded-test-manifest-sha256>
 ```
 
 ## 迁移与备份边界

@@ -3,7 +3,7 @@ import json
 import unittest
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from server.tests.testclient_compat import TestClient
 
 try:
     from .. import main

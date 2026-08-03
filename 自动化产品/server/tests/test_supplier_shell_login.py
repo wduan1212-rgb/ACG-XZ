@@ -4,7 +4,7 @@ import time
 import unittest
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from server.tests.testclient_compat import TestClient
 
 
 SERVER_DIR = Path(__file__).resolve().parents[1]

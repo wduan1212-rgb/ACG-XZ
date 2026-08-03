@@ -6,7 +6,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from server.tests.testclient_compat import TestClient
 
 SERVER_DIR = Path(__file__).resolve().parents[1]
 if str(SERVER_DIR.parent) not in sys.path:

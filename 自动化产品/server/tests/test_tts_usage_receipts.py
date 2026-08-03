@@ -129,7 +129,9 @@ class TtsUsageReceiptTest(unittest.TestCase):
         self.assertEqual(0, mocked.await_count)
 
     def test_network_uncertainty_stays_visible_without_fake_output(self):
-        request = self.req.model_copy(update={"idempotencyKey": "tts-network"})
+        # The production service is deliberately pinned to Pydantic v1.  Use
+        # the v1 API here as well; Pydantic v2 keeps it as a compatibility API.
+        request = self.req.copy(update={"idempotencyKey": "tts-network"})
         with patch.object(main, "MINIMAX_API_KEY", "test-key"), patch.object(
             main,
             "_minimax_tts_request",

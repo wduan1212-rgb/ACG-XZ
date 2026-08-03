@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
-from fastapi.testclient import TestClient
+from server.tests.testclient_compat import TestClient
 
 from server import main, store
 

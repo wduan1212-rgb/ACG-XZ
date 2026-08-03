@@ -26,12 +26,25 @@ class OfflineDependencyTests(unittest.TestCase):
     def test_release_locks_are_exact_and_bind_target_runtime_versions(self):
         module = load_module()
         main_pins = module.parse_lock(APP_DIR / "server" / "requirements.lock.txt")
+        test_pins = module.parse_lock(
+            APP_DIR / "server" / "requirements-test.lock.txt"
+        )
         video_pins = module.parse_lock(
             APP_DIR / "apps" / "video-workshop" / "requirements.lock.txt"
         )
         self.assertEqual("11.3.0", main_pins["pillow"])
         self.assertEqual("0.68.1", main_pins["fastapi"])
+        self.assertEqual("1.10.26", main_pins["pydantic"])
         self.assertEqual(18, len(main_pins))
+        extension = module.verify_lock_extension(
+            APP_DIR / "server" / "requirements.lock.txt",
+            APP_DIR / "server" / "requirements-test.lock.txt",
+            allowed_extras={"requests", "urllib3"},
+        )
+        self.assertEqual(20, extension["extendedPackageCount"])
+        self.assertEqual(["requests", "urllib3"], extension["extras"])
+        self.assertEqual("2.28.2", test_pins["requests"])
+        self.assertEqual("1.26.20", test_pins["urllib3"])
         self.assertEqual("0.139.0", video_pins["fastapi"])
         self.assertEqual("1.27.0", video_pins["onnxruntime"])
         self.assertEqual(36, len(video_pins))
@@ -54,6 +67,43 @@ class OfflineDependencyTests(unittest.TestCase):
                 lock.write_text(text, encoding="utf-8")
                 with self.assertRaises(module.DependencyContractError):
                     module.parse_lock(lock)
+
+    def test_test_lock_extension_rejects_runtime_drift_and_undeclared_extras(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = root / "runtime.lock"
+            extended = root / "test.lock"
+            base.write_text("fastapi==1\npydantic==1\n", encoding="utf-8")
+            extended.write_text(
+                "fastapi==2\npydantic==1\nrequests==1\npytest==1\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(module.DependencyContractError) as denied:
+                module.verify_lock_extension(
+                    base,
+                    extended,
+                    allowed_extras={"requests", "urllib3"},
+                )
+            payload = json.loads(str(denied.exception))
+            self.assertEqual("2", payload["drift"][0]["actual"])
+            self.assertEqual(["pytest"], payload["unexpectedExtras"])
+            self.assertEqual(["urllib3"], payload["requiredExtrasMissing"])
+
+    def test_locked_test_runner_is_offline_and_refuses_local_secret_files(self):
+        script = (
+            APP_DIR / "tools" / "run_locked_server_tests.sh"
+        ).read_text("utf-8")
+        self.assertIn("--no-index", script)
+        self.assertIn("requirements-test.lock.txt", script)
+        self.assertIn("Secret-free test refused", script)
+        self.assertIn("env -i", script)
+        self.assertIn("run_server_unittest_suite.py", script)
+        suite_runner = (
+            APP_DIR / "tools" / "run_server_unittest_suite.py"
+        ).read_text("utf-8")
+        self.assertIn("unexpected skipped tests", suite_runner)
+        self.assertIn("test_real_v120_snapshot_copy", suite_runner)
 
     def test_wheelhouse_verify_rejects_tamper_extra_and_runtime_drift(self):
         module = load_module()
