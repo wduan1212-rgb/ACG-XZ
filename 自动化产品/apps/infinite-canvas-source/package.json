@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "build:embed": "GITHUB_PAGES=1 NEXT_PUBLIC_GITHUB_PAGES=1 NEXT_PUBLIC_BASE_PATH=/XZ-Design NEXT_PUBLIC_PLATFORM_EMBED=1 next build --webpack",
+    "build:embed": "GITHUB_PAGES=1 NEXT_PUBLIC_GITHUB_PAGES=1 NEXT_PUBLIC_BASE_PATH=/XZ-Design NEXT_PUBLIC_PLATFORM_EMBED=1 NEXT_PUBLIC_CLIENT_PROVIDER=0 next build --webpack",
+    "build:pages": "GITHUB_PAGES=1 NEXT_PUBLIC_GITHUB_PAGES=1 NEXT_PUBLIC_PLATFORM_EMBED=0 NEXT_PUBLIC_CLIENT_PROVIDER=1 next build --webpack",
     "sync:vendor": "node scripts/sync-vendor.mjs",
     "check:vendor": "node scripts/sync-vendor.mjs --check",
     "start": "next start",

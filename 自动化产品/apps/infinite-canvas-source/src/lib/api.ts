@@ -1,11 +1,5 @@
 import type { AgentRequest, AgentResult } from "./agent";
 import { buildAgentResult } from "./agent";
-import {
-  editRegionWithClientKey,
-  enhanceImageWithClientKey,
-  generateImagesWithClientKey,
-} from "./clientImageApi";
-import { getClientImageApiKey } from "./clientKeys";
 import { generateImages, type GenerateOptions, type GeneratedImage } from "./imageProvider";
 import { IS_GITHUB_PAGES, IS_PLATFORM_EMBED } from "./runtime";
 import { parseSize, planSize } from "./sizing";
@@ -17,6 +11,25 @@ import {
 import type { EnhanceOp } from "./types";
 
 /** Client-side wrappers around the route handlers. */
+
+type ClientImageProvider = typeof import("./clientImageApi");
+
+async function loadStandaloneClientImageProvider(): Promise<{
+  key: string;
+  api: ClientImageProvider;
+} | null> {
+  // Keep this environment check in the same module as the dynamic import.
+  // The embedded build pins it to 0, allowing webpack to remove the provider
+  // implementation (including its remote endpoint) from the deployable graph.
+  if (process.env.NEXT_PUBLIC_CLIENT_PROVIDER !== "1") return null;
+  if (!IS_GITHUB_PAGES || IS_PLATFORM_EMBED) return null;
+  const [{ getClientImageApiKey }, api] = await Promise.all([
+    import("./clientKeys"),
+    import("./clientImageApi"),
+  ]);
+  const key = getClientImageApiKey();
+  return key ? { key, api } : null;
+}
 
 export function platformFetch(path: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
@@ -47,11 +60,14 @@ export async function callAgent(
   requestOptions: AbortableRequestOptions = {},
 ): Promise<AgentResult> {
   return runAbortableRequest(async (signal) => {
-    if (IS_GITHUB_PAGES && !IS_PLATFORM_EMBED) return buildAgentResult(req);
+    const idempotencyKey = req.idempotencyKey.trim();
+    if (!idempotencyKey) throw new Error("导演理解缺少稳定的任务标识");
+    const stableRequest = { ...req, idempotencyKey };
+    if (IS_GITHUB_PAGES && !IS_PLATFORM_EMBED) return buildAgentResult(stableRequest);
     const res = await platformFetch("/agent", {
       method: "POST",
       signal,
-      body: JSON.stringify(req),
+      body: JSON.stringify(stableRequest),
     });
     if (!res.ok) throw canvasHttpError(res.status, await responseDetail(res), "导演理解");
     return (await res.json()) as AgentResult;
@@ -64,10 +80,14 @@ export async function callGenerate(
 ): Promise<GeneratedImage[]> {
   return runAbortableRequest(async (signal) => {
     if (IS_GITHUB_PAGES && !IS_PLATFORM_EMBED) {
-      const key = getClientImageApiKey();
-      if (key && opts.prompt) {
+      const clientProvider = await loadStandaloneClientImageProvider();
+      if (clientProvider && opts.prompt) {
         try {
-          const images = await generateImagesWithClientKey(key, opts, signal);
+          const images = await clientProvider.api.generateImagesWithClientKey(
+            clientProvider.key,
+            opts,
+            signal,
+          );
           if (images.length > 0) return images;
         } catch (e) {
           if (signal.aborted) throw e;
@@ -235,10 +255,14 @@ export async function callEnhance(opts: {
   if (IS_GITHUB_PAGES && !IS_PLATFORM_EMBED) {
     return runAbortableRequest(async (signal) => {
       const master = planSize(parseSize(opts.size) ?? { width: 1920, height: 1080 }).master;
-      const key = getClientImageApiKey();
-      if (key && opts.image.startsWith("data:image/") && !opts.image.startsWith("data:image/svg")) {
+      const clientProvider = await loadStandaloneClientImageProvider();
+      if (clientProvider && opts.image.startsWith("data:image/") && !opts.image.startsWith("data:image/svg")) {
         try {
-          return await enhanceImageWithClientKey(key, opts, signal);
+          return await clientProvider.api.enhanceImageWithClientKey(
+            clientProvider.key,
+            opts,
+            signal,
+          );
         } catch (e) {
           if (signal.aborted) throw e;
           console.warn("[pages-enhance] image API failed, passthrough:", e);
@@ -273,9 +297,9 @@ export async function callEditRegion(
   signal?: AbortSignal,
 ): Promise<{ dataUrl: string; width: number; height: number }> {
   if (IS_GITHUB_PAGES && !IS_PLATFORM_EMBED) {
-    const key = getClientImageApiKey();
-    if (!key) throw new Error("请先回到首页添加图片 API Key");
-    return editRegionWithClientKey(key, opts, signal);
+    const clientProvider = await loadStandaloneClientImageProvider();
+    if (!clientProvider) throw new Error("独立版客户端图片模型未启用或未配置 API Key");
+    return clientProvider.api.editRegionWithClientKey(clientProvider.key, opts, signal);
   }
   return runAbortableRequest(async (requestSignal) => {
     const res = await platformFetch("/edit-region", {

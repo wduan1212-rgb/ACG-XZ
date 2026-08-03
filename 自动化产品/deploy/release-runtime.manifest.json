@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260803-v138-home-usage-audit-1",
-  "fileCount": 46,
-  "totalBytes": 2097850,
+  "releaseId": "20260803-v139-durable-usage-1",
+  "fileCount": 48,
+  "totalBytes": 2315474,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100312,
-      "sha256": "7b0e4aa0fc2f38f6a8a87eacf87942597e7156d19545152ec0d94362bba14b31"
+      "size": 100711,
+      "sha256": "a4d3dfe626ae5ffeca3f2b8d7a7d8de40e7748d81e9edd04ff9a83c93bf38888"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -36,23 +36,28 @@
     },
     {
       "path": "apps/video-workshop/app/pipeline.py",
-      "size": 92916,
-      "sha256": "b6d57661972d58efa4cd17f47992d763c4f6c25132aad754ed25617253b64850"
+      "size": 93082,
+      "sha256": "05773dc4d9713037541ec7cab8024640f0f6bc0e72ca5ef4b9eca1ebbb718896"
     },
     {
       "path": "apps/video-workshop/app/providers.py",
-      "size": 173817,
-      "sha256": "c65cbd5ff4fcabb9587861333f9412018ae260f482933f7a6fcd4857f795f98e"
+      "size": 185341,
+      "sha256": "437c3544e34865471473e2588921881ba9bac5ec9bbaae08299e15db2cf89cea"
     },
     {
       "path": "apps/video-workshop/app/store.py",
-      "size": 5828,
-      "sha256": "9b1931081d9462a771a7f9bb42a3c6548e1a0372ed7b3e78dec5d70d481f1195"
+      "size": 6562,
+      "sha256": "d7ef6955989706082a68b5e003e6c4ed7228bd77d60038bff3edd46263e71e9e"
     },
     {
       "path": "apps/video-workshop/app/transcription.py",
       "size": 3841,
       "sha256": "41dc652dc84385655a69307f0866d9c361ecd3e65e3b2151b4e2ad703d7bb8e1"
+    },
+    {
+      "path": "apps/video-workshop/app/usage_receipts.py",
+      "size": 8251,
+      "sha256": "29fea8959995878c8210630990a50430a1e7b247a844928ee92573f3176914a5"
     },
     {
       "path": "apps/video-workshop/app/video_skill.py",
@@ -151,8 +156,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22285,
-      "sha256": "d0dc4665d426a4bbf056806da7645c3bff73690eeab3547c47ab36aba9975977"
+      "size": 22279,
+      "sha256": "ba079da6f358819ee1fb50d59e1bd3672efd0e357172b303dad32ea51ed382a8"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -191,8 +196,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 393464,
-      "sha256": "976ba3b7afa9472fb3f635303a3258e850a6fda3e815e4cc82301eea78df6f9f"
+      "size": 451518,
+      "sha256": "2e987dfda04b9a28b5da696b5a28db6639ec610a7b876bf486afa08814c05107"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -201,13 +206,18 @@
     },
     {
       "path": "server/migrations/__main__.py",
-      "size": 5126,
-      "sha256": "bbeef1f2da6c0ff91b5d8729f44bb3acc1bf3e5afe766957bb40263dfa165f00"
+      "size": 5376,
+      "sha256": "fc0852afbbd88c197e1fed79b60ff105019ae6086117b60716514e909c4312d3"
     },
     {
       "path": "server/minimax_system_voices.json",
       "size": 39946,
       "sha256": "b9dfbc92de70dc58f47a73fdbeebdb8bf44b4a8fb5f89e83da0ff205969d32f5"
+    },
+    {
+      "path": "server/model_usage_recovery.py",
+      "size": 75078,
+      "sha256": "5c3563b15a076a4a8e996609e685c37baa080be25624c25042b0836f9fa7cf65"
     },
     {
       "path": "server/requirements.txt",
@@ -226,13 +236,13 @@
     },
     {
       "path": "server/store.py",
-      "size": 436206,
-      "sha256": "da01c4940650b023f63318d675602b95891d0bdc9bb711c241ea2980ddd3f49e"
+      "size": 499342,
+      "sha256": "8f97c74a1e86c0cf4d646491d20fb6afc990c123c0642036fbcfdc67ba23f519"
     },
     {
       "path": "tools/verify_release_contracts.py",
-      "size": 36985,
-      "sha256": "efafd5f3874a4b219e3d9b1d083309e0b67c503a666ae2f36c353370fba29d4f"
+      "size": 37023,
+      "sha256": "69a0973d970c2544db57f2565a42030f6b61e00d2b28f6d079d30c8fdbd36487"
     }
   ]
 }

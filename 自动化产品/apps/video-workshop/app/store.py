@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import uuid
 from copy import deepcopy
@@ -128,10 +130,29 @@ def load_project(project_id: str) -> dict[str, Any] | None:
 def save_project(project: dict[str, Any]) -> dict[str, Any]:
     project["updatedAt"] = _now()
     path = _path(project["id"])
-    tmp = path.with_suffix(".tmp")
     with _lock:
-        tmp.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        encoded = json.dumps(project, ensure_ascii=False, indent=2).encode("utf-8")
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory_fd = os.open(path.parent, directory_flags)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
         stat = path.stat()
         _summary_cache[str(path.resolve())] = (
             stat.st_mtime_ns,

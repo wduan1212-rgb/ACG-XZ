@@ -39,6 +39,7 @@ RUNTIME_MANIFEST_PATH = Path("deploy/release-runtime.manifest.json")
 RUNTIME_EXACT_PATHS = {
     "server/config.py",
     "server/main.py",
+    "server/model_usage_recovery.py",
     "server/store.py",
     "server/requirements.txt",
     "server/minimax_system_voices.json",

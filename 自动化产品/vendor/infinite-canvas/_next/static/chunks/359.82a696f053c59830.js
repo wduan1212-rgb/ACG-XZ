@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[359],{359:(e,n,t)=>{function i(){throw Error("平台嵌入构建已禁用客户端图片模型直连")}async function r(e,n,t){return i()}async function c(e,n,t){return i()}async function u(e,n,t){return i()}t.r(n),t.d(n,{editRegionWithClientKey:()=>u,enhanceImageWithClientKey:()=>c,generateImagesWithClientKey:()=>r})}}]);

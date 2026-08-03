@@ -16,6 +16,7 @@ export async function POST(request: Request) {
     scene: body.scene ?? "brand_kv",
     size: body.size ?? "1080x1920",
     references: Array.isArray(body.references) ? body.references : [],
+    idempotencyKey: String(body.idempotencyKey ?? ""),
     images: Array.isArray(body.images)
       ? body.images.filter((u) => typeof u === "string" && u.startsWith("data:image/")).slice(0, 4)
       : undefined,

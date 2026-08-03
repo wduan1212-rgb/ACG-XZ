@@ -4,7 +4,7 @@ Examples::
 
     python -m server.migrations status
     ACG_ALLOW_SCHEMA_MIGRATION=1 python -m server.migrations apply \
-        --confirm-version 137003 --confirm-identity <status identity>
+        --confirm-version 139001 --confirm-identity <status identity>
 
 The apply command is expand-only.  It does not migrate ACG ownership, seed
 accounts, normalize roles, or update credentials.
@@ -41,6 +41,9 @@ def _safe_status() -> dict:
         "userVersion": status.get("userVersion"),
         "migrationVersion": status.get("migrationVersion"),
         "migrationDirty": status.get("migrationDirty"),
+        "modelUsageMigrationVersion": status.get("modelUsageMigrationVersion"),
+        "modelUsageMigrationChecksum": status.get("modelUsageMigrationChecksum") or "",
+        "modelUsageUnresolved": status.get("modelUsageUnresolved"),
         "missingTables": status.get("missingTables") or [],
         "missingColumns": status.get("missingColumns") or {},
         "checksum": status.get("checksum") or "",
@@ -89,9 +92,9 @@ def main(argv=None) -> int:
 
     try:
         if args.command == "apply":
-            if args.confirm_version != store.SCHEMA_MIGRATION_VERSION:
+            if args.confirm_version != store.LATEST_SCHEMA_MIGRATION_VERSION:
                 parser.error(
-                    f"--confirm-version must equal {store.SCHEMA_MIGRATION_VERSION}"
+                    f"--confirm-version must equal {store.LATEST_SCHEMA_MIGRATION_VERSION}"
                 )
             if str(os.getenv("ACG_ALLOW_SCHEMA_MIGRATION", "")).strip() != "1":
                 parser.error("ACG_ALLOW_SCHEMA_MIGRATION=1 is required")

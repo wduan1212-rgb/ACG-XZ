@@ -4,6 +4,8 @@
 文档存零映射、最稳，前端域模型一行不用改。团队规模够用；要扩 Postgres 时把本文件换实现即可（接口不变）。
 """
 import base64
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import hmac
 import json
@@ -573,6 +575,62 @@ CREATE TABLE IF NOT EXISTS schema_migrations(
   summary     TEXT NOT NULL DEFAULT '{}'
 );
 """
+MODEL_USAGE_RECEIPT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS model_usage_receipts(
+  receipt_id          TEXT PRIMARY KEY,
+  receipt_key         TEXT NOT NULL UNIQUE,
+  member_id           TEXT NOT NULL,
+  member_name         TEXT NOT NULL,
+  team_id             TEXT NOT NULL DEFAULT '',
+  surface             TEXT NOT NULL,
+  feature             TEXT NOT NULL,
+  usage_kind          TEXT NOT NULL,
+  provider            TEXT NOT NULL DEFAULT '',
+  model               TEXT NOT NULL DEFAULT '',
+  operation           TEXT NOT NULL,
+  operation_id        TEXT NOT NULL,
+  idempotency_key     TEXT NOT NULL DEFAULT '',
+  request_fingerprint TEXT NOT NULL,
+  provider_ref        TEXT NOT NULL DEFAULT '',
+  call_status         TEXT NOT NULL,
+  prompt_tokens       INTEGER NOT NULL DEFAULT 0,
+  completion_tokens   INTEGER NOT NULL DEFAULT 0,
+  total_tokens        INTEGER NOT NULL DEFAULT 0,
+  calls               INTEGER NOT NULL DEFAULT 0,
+  output_units        INTEGER NOT NULL DEFAULT 0,
+  unit_label          TEXT NOT NULL DEFAULT '',
+  source              TEXT NOT NULL,
+  error               TEXT NOT NULL DEFAULT '',
+  event_at            INTEGER,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  completed_at        INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_model_usage_receipts_member_idempotency
+  ON model_usage_receipts(source, member_id, idempotency_key)
+  WHERE idempotency_key<>'';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_model_usage_receipts_provider_ref
+  ON model_usage_receipts(provider, provider_ref, usage_kind)
+  WHERE provider<>'' AND provider_ref<>'';
+CREATE INDEX IF NOT EXISTS idx_model_usage_receipts_member_created
+  ON model_usage_receipts(member_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_model_usage_receipts_status_updated
+  ON model_usage_receipts(call_status, updated_at);
+CREATE TABLE IF NOT EXISTS model_usage_outbox(
+  receipt_id         TEXT PRIMARY KEY,
+  state              TEXT NOT NULL,
+  attempts           INTEGER NOT NULL DEFAULT 0,
+  available_at       INTEGER NOT NULL,
+  last_error         TEXT NOT NULL DEFAULT '',
+  legacy_event_kind  TEXT NOT NULL DEFAULT '',
+  legacy_event_id    TEXT NOT NULL DEFAULT '',
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL,
+  projected_at       INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_model_usage_outbox_state_available
+  ON model_usage_outbox(state, available_at, created_at);
+"""
 # 137001/137002 were exercised by local pre-release builds before the v137
 # schema identity was frozen.  Migration versions are immutable once written,
 # even outside production, so the audited release advances to fresh numbers
@@ -595,14 +653,43 @@ _SCHEMA_ALTERATIONS_IDENTITY = "|".join((
 SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
     (SCHEMA + "\n" + _SCHEMA_ALTERATIONS_IDENTITY).encode("utf-8")
 ).hexdigest()
+MODEL_USAGE_SCHEMA_MIGRATION_VERSION = 139001
+MODEL_USAGE_SCHEMA_MIGRATION_NAME = "v139-model-usage-receipt-outbox"
+_MODEL_USAGE_SCHEMA_IDENTITY = "|".join((
+    "pre-call-durable-intent",
+    "terminal-success-failure-unknown",
+    "source-member-idempotency-unique",
+    "provider-reference-unique",
+    "deterministic-legacy-projection",
+    "sqlite-busy-bounded-retry",
+    "legacy-ledgers-unchanged",
+))
+MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (MODEL_USAGE_RECEIPT_SCHEMA + "\n" + _MODEL_USAGE_SCHEMA_IDENTITY).encode("utf-8")
+).hexdigest()
+LATEST_SCHEMA_MIGRATION_VERSION = MODEL_USAGE_SCHEMA_MIGRATION_VERSION
 EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", SCHEMA)
+) | frozenset(
+    re.findall(
+        r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+        MODEL_USAGE_RECEIPT_SCHEMA,
+    )
 ) | {"schema_migrations"}
 EXPECTED_SCHEMA_COLUMNS = {
     "members": {"parent_id", "avatar_url", "username_key"},
     "member_requests": {"username_key"},
     "personal_daily_quota_reservations": {"request_fingerprint"},
     "community_posts": {"cover_json", "identity_key"},
+    "model_usage_receipts": {
+        "receipt_key", "team_id", "surface", "usage_kind", "operation_id",
+        "idempotency_key", "request_fingerprint", "provider_ref", "call_status",
+        "source", "event_at", "completed_at",
+    },
+    "model_usage_outbox": {
+        "state", "attempts", "available_at", "last_error", "legacy_event_id",
+        "projected_at",
+    },
 }
 ACG_DATA_MIGRATION_VERSION = 137004
 ACG_DATA_MIGRATION_NAME = "v137-acg-internal-team-final"
@@ -636,8 +723,37 @@ class StoreNotReadyError(RuntimeError):
     """Raised when normal production startup sees an unapplied/dirty schema."""
 
 
+class ModelUsageReceiptError(RuntimeError):
+    """Base error for durable model-usage receipt operations."""
+
+
+class ModelUsageReceiptConflict(ModelUsageReceiptError):
+    """Raised when an idempotency credential is replayed with different input."""
+
+
+class ModelUsageReceiptWriteError(ModelUsageReceiptError):
+    """Raised after bounded SQLite busy/locked retries are exhausted."""
+
+
+class ModelUsageCompletionSpoolError(ModelUsageReceiptError):
+    """Base error for the SQLite-independent completion spool."""
+
+
+class ModelUsageCompletionSpoolConflict(ModelUsageCompletionSpoolError):
+    """Raised when one receipt is spooled with a different completion payload."""
+
+
+class ModelUsageCompletionSpoolCorrupt(ModelUsageCompletionSpoolError):
+    """Raised when a persisted completion envelope fails strict validation."""
+
+
 _lock = Lock()
 _initialized = False
+MODEL_USAGE_WRITE_RETRY_ATTEMPTS = 5
+MODEL_USAGE_WRITE_RETRY_BASE_SECONDS = 0.03
+MODEL_USAGE_WRITE_BUSY_TIMEOUT_MS = 100
+MODEL_USAGE_WRITE_MAX_SECONDS = 1.25
+MODEL_USAGE_COMPLETION_SPOOL_VERSION = 1
 
 
 def _connect(read_only=None):
@@ -652,6 +768,21 @@ def _connect(read_only=None):
         conn.execute("PRAGMA query_only=ON")
     else:
         conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _connect_model_usage_write(*, busy_timeout_ms=MODEL_USAGE_WRITE_BUSY_TIMEOUT_MS):
+    """Open the short-timeout connection used only by receipt transactions.
+
+    Ordinary store connections intentionally retain their existing 30-second
+    connect timeout and 5-second SQLite busy timeout.  Receipt writes use the
+    already-initialized WAL database and must fail quickly enough for callers to
+    avoid turning accounting into a long generation-path stall.
+    """
+
+    timeout_ms = max(1, min(int(busy_timeout_ms), MODEL_USAGE_WRITE_BUSY_TIMEOUT_MS))
+    conn = sqlite3.connect(str(DB_PATH), timeout=timeout_ms / 1000)
+    conn.execute(f"PRAGMA busy_timeout={timeout_ms}")
     return conn
 
 
@@ -900,6 +1031,12 @@ def _apply_schema_locked(conn):
     )
 
 
+def _apply_model_usage_schema_locked(conn):
+    """Apply only the v139 usage receipt expansion in its own transaction."""
+
+    conn.executescript("BEGIN IMMEDIATE;\n" + MODEL_USAGE_RECEIPT_SCHEMA)
+
+
 def _record_schema_migration_locked(conn, *, summary=None):
     existing = conn.execute(
         "SELECT checksum,status FROM schema_migrations WHERE version=?",
@@ -944,6 +1081,51 @@ def _record_schema_migration_locked(conn, *, summary=None):
         )
 
 
+def _record_model_usage_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (MODEL_USAGE_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("model usage schema migration checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {"schema": "model-usage-receipt-outbox", "mode": "expand-only"},
+        ensure_ascii=False,
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            (
+                MODEL_USAGE_SCHEMA_MIGRATION_NAME,
+                MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM,
+                runtime_config.release_id() or "unidentified",
+                now,
+                encoded_summary,
+                MODEL_USAGE_SCHEMA_MIGRATION_VERSION,
+            ),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "version,name,checksum,app_version,started_at,finished_at,status,summary"
+            ") VALUES(?,?,?,?,?,?,?,?)",
+            (
+                MODEL_USAGE_SCHEMA_MIGRATION_VERSION,
+                MODEL_USAGE_SCHEMA_MIGRATION_NAME,
+                MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM,
+                runtime_config.release_id() or "unidentified",
+                now,
+                now,
+                "success",
+                encoded_summary,
+            ),
+        )
+
+
 def _database_identity(path):
     try:
         stat = Path(path).stat()
@@ -965,6 +1147,14 @@ def database_readiness():
         "userVersion": None,
         "migrationVersion": None,
         "migrationDirty": 0,
+        "modelUsageMigrationVersion": None,
+        "modelUsageMigrationChecksum": "",
+        "modelUsageUnresolved": 0,
+        "modelUsageOutboxPending": 0,
+        "modelUsageCompletionSpoolPending": 0,
+        "modelUsageCompletionSpoolArchived": 0,
+        "modelUsageCompletionSpoolCorrupt": 0,
+        "modelUsageCompletionSpoolConflicts": 0,
         "missingTables": [],
         "missingColumns": {},
         "checksum": "",
@@ -975,6 +1165,13 @@ def database_readiness():
         "acgMigrationChecksum": "",
         "acgMigrationDrift": 0,
     }
+    spool_status = model_usage_completion_spool_status()
+    result["modelUsageCompletionSpoolPending"] = spool_status["pending"]
+    result["modelUsageCompletionSpoolArchived"] = spool_status["archived"]
+    result["modelUsageCompletionSpoolCorrupt"] = spool_status["corrupt"]
+    result["modelUsageCompletionSpoolConflicts"] = spool_status["conflicts"]
+    if spool_status.get("error"):
+        result["modelUsageCompletionSpoolError"] = spool_status["error"]
     if not DB_PATH.is_file():
         return result
     try:
@@ -1006,25 +1203,49 @@ def database_readiness():
                 missing_columns[table] = absent
         result["missingColumns"] = missing_columns
         if "schema_migrations" in tables:
-            row = conn.execute(
+            base_row = conn.execute(
                 "SELECT version,checksum,status FROM schema_migrations "
                 "WHERE version=?",
                 (SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
-            if row:
-                result["migrationVersion"] = int(row[0])
-                result["checksum"] = str(row[1] or "")[:16]
+            usage_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (MODEL_USAGE_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            if base_row:
+                result["migrationVersion"] = int(base_row[0])
+                result["checksum"] = str(base_row[1] or "")[:16]
+            if usage_row:
+                result["migrationVersion"] = int(usage_row[0])
+                result["checksum"] = str(usage_row[1] or "")[:16]
+                result["modelUsageMigrationVersion"] = int(usage_row[0])
+                result["modelUsageMigrationChecksum"] = str(usage_row[1] or "")[:16]
             result["migrationDirty"] = int(conn.execute(
                 "SELECT COUNT(*) FROM schema_migrations WHERE status<>'success'"
             ).fetchone()[0] or 0)
             migration_ok = bool(
-                row
-                and row[1] == SCHEMA_MIGRATION_CHECKSUM
-                and row[2] == "success"
+                base_row
+                and base_row[1] == SCHEMA_MIGRATION_CHECKSUM
+                and base_row[2] == "success"
+                and usage_row
+                and usage_row[1] == MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM
+                and usage_row[2] == "success"
                 and result["migrationDirty"] == 0
             )
         else:
             migration_ok = False
+        if {"model_usage_receipts", "model_usage_outbox"}.issubset(tables):
+            result["modelUsageUnresolved"] = int(conn.execute(
+                "SELECT COUNT(*) FROM model_usage_receipts r "
+                "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
+                "WHERE r.call_status IN ('pending','unknown') "
+                "OR (r.call_status='succeeded' AND COALESCE(o.state,'')<>'projected')"
+            ).fetchone()[0] or 0)
+            result["modelUsageOutboxPending"] = int(conn.execute(
+                "SELECT COUNT(*) FROM model_usage_outbox "
+                "WHERE state IN ('pending','retry')"
+            ).fetchone()[0] or 0)
         if "meta" in tables:
             result["authSecret"] = bool(
                 os.getenv("AUTH_SECRET")
@@ -1142,6 +1363,8 @@ def database_readiness():
             and migration_ok
             and result["authSecret"]
             and team_ok
+            and result["modelUsageCompletionSpoolCorrupt"] == 0
+            and result["modelUsageCompletionSpoolConflicts"] == 0
         )
     except sqlite3.Error as exc:
         result["error"] = type(exc).__name__
@@ -1179,50 +1402,72 @@ def apply_schema_migrations(*, expected_identity=""):
             if quick_check != "ok":
                 raise StoreNotReadyError("migration target failed SQLite quick_check")
             conn.executescript(MIGRATION_LEDGER_SCHEMA)
-            existing = conn.execute(
-                "SELECT checksum,status FROM schema_migrations WHERE version=?",
-                (SCHEMA_MIGRATION_VERSION,),
-            ).fetchone()
-            if existing and existing[0] != SCHEMA_MIGRATION_CHECKSUM:
-                raise StoreNotReadyError("schema migration checksum mismatch")
-            if existing and existing[1] == "success":
-                _initialized = False
-                return {"applied": False, "version": SCHEMA_MIGRATION_VERSION}
-            if existing and existing[1] == "running":
-                raise StoreNotReadyError("schema migration is already marked running")
-            now = int(time.time() * 1000)
-            conn.execute(
-                "INSERT OR REPLACE INTO schema_migrations("
-                "version,name,checksum,app_version,started_at,finished_at,status,summary"
-                ") VALUES(?,?,?,?,?,NULL,'running','{}')",
+            migrations = (
                 (
                     SCHEMA_MIGRATION_VERSION,
                     SCHEMA_MIGRATION_NAME,
                     SCHEMA_MIGRATION_CHECKSUM,
-                    runtime_config.release_id() or "unidentified",
-                    now,
+                    _apply_schema_locked,
+                    _record_schema_migration_locked,
+                ),
+                (
+                    MODEL_USAGE_SCHEMA_MIGRATION_VERSION,
+                    MODEL_USAGE_SCHEMA_MIGRATION_NAME,
+                    MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM,
+                    _apply_model_usage_schema_locked,
+                    _record_model_usage_schema_migration_locked,
                 ),
             )
-            conn.commit()
-            try:
-                _apply_schema_locked(conn)
-                _record_schema_migration_locked(conn)
-                conn.commit()
-            except Exception as exc:
-                conn.rollback()
+            applied_versions = []
+            for version, name, checksum, apply_locked, record_locked in migrations:
+                existing = conn.execute(
+                    "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                    (version,),
+                ).fetchone()
+                if existing and existing[0] != checksum:
+                    raise StoreNotReadyError(f"schema migration {version} checksum mismatch")
+                if existing and existing[1] == "success":
+                    continue
+                if existing and existing[1] == "running":
+                    raise StoreNotReadyError(f"schema migration {version} is already marked running")
+                now = int(time.time() * 1000)
                 conn.execute(
-                    "UPDATE schema_migrations SET status='failed',finished_at=?,summary=? "
-                    "WHERE version=?",
+                    "INSERT OR REPLACE INTO schema_migrations("
+                    "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                    ") VALUES(?,?,?,?,?,NULL,'running','{}')",
                     (
-                        int(time.time() * 1000),
-                        json.dumps({"error": type(exc).__name__}),
-                        SCHEMA_MIGRATION_VERSION,
+                        version,
+                        name,
+                        checksum,
+                        runtime_config.release_id() or "unidentified",
+                        now,
                     ),
                 )
                 conn.commit()
-                raise
+                try:
+                    apply_locked(conn)
+                    record_locked(conn)
+                    conn.commit()
+                    applied_versions.append(version)
+                except Exception as exc:
+                    conn.rollback()
+                    conn.execute(
+                        "UPDATE schema_migrations SET status='failed',finished_at=?,summary=? "
+                        "WHERE version=?",
+                        (
+                            int(time.time() * 1000),
+                            json.dumps({"error": type(exc).__name__}),
+                            version,
+                        ),
+                    )
+                    conn.commit()
+                    raise
             _initialized = False
-            return {"applied": True, "version": SCHEMA_MIGRATION_VERSION}
+            return {
+                "applied": bool(applied_versions),
+                "version": LATEST_SCHEMA_MIGRATION_VERSION,
+                "appliedVersions": applied_versions,
+            }
         finally:
             conn.close()
 
@@ -1891,6 +2136,12 @@ def _ensure_db():
             _ensure_username_keys_locked(conn)
             _ensure_internal_team_locked(conn)
             _record_schema_migration_locked(conn, summary={"schema": "expand", "mode": "local-auto"})
+            conn.commit()
+            _apply_model_usage_schema_locked(conn)
+            _record_model_usage_schema_migration_locked(
+                conn,
+                summary={"schema": "model-usage-receipt-outbox", "mode": "local-auto"},
+            )
             conn.commit()
             _initialized = True
         finally:
@@ -4988,6 +5239,1152 @@ def list_supplier_activity(parent_id, include_all=False, limit=80):
             conn.close()
 
 
+# ---------- 模型用量 receipt / outbox（两阶段、幂等、可补偿） ----------
+_MODEL_USAGE_KINDS = {"llm", "image", "video", "voice"}
+_MODEL_USAGE_RECEIPT_COLUMNS = (
+    "receipt_id,receipt_key,member_id,member_name,team_id,surface,feature,usage_kind,"
+    "provider,model,operation,operation_id,idempotency_key,request_fingerprint,"
+    "provider_ref,call_status,prompt_tokens,completion_tokens,total_tokens,calls,"
+    "output_units,unit_label,source,error,event_at,created_at,updated_at,completed_at"
+)
+
+
+def _model_usage_text(value, limit, *, required=""):
+    text = str(value or "").strip()
+    if required and not text:
+        raise ValueError(f"{required}_required")
+    return text[:limit]
+
+
+def _model_usage_busy_error(exc):
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code in {getattr(sqlite3, "SQLITE_BUSY", 5), getattr(sqlite3, "SQLITE_LOCKED", 6)}:
+        return True
+    message = str(exc or "").lower()
+    return "database is locked" in message or "database is busy" in message
+
+
+def _model_usage_write(operation):
+    """Run one short receipt transaction with bounded SQLite lock retries.
+
+    This path deliberately never acquires the store-wide ``_lock``.  SQLite's
+    immediate transaction plus the receipt unique indexes provide cross-thread
+    and cross-process serialization, while every retry sleep occurs without
+    blocking unrelated ordinary store operations.  Exhaustion is intentionally
+    loud: a provider call must never proceed after a failed pre-call receipt.
+    """
+
+    deadline = time.monotonic() + MODEL_USAGE_WRITE_MAX_SECONDS
+    last_error = None
+    for attempt in range(MODEL_USAGE_WRITE_RETRY_ATTEMPTS):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        conn = None
+        try:
+            conn = _connect_model_usage_write(
+                busy_timeout_ms=min(
+                    MODEL_USAGE_WRITE_BUSY_TIMEOUT_MS,
+                    max(1, int(remaining * 1000)),
+                )
+            )
+            conn.execute("BEGIN IMMEDIATE")
+            result = operation(conn)
+            conn.commit()
+            return result
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+            if not _model_usage_busy_error(exc):
+                raise ModelUsageReceiptWriteError(
+                    "model usage receipt write failed"
+                ) from exc
+            if attempt + 1 >= MODEL_USAGE_WRITE_RETRY_ATTEMPTS:
+                break
+        except sqlite3.DatabaseError as exc:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+            raise ModelUsageReceiptWriteError(
+                "model usage receipt write failed"
+            ) from exc
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+            raise
+        finally:
+            if conn is not None:
+                conn.close()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(
+            MODEL_USAGE_WRITE_RETRY_BASE_SECONDS * (2 ** attempt),
+            remaining,
+        ))
+    raise ModelUsageReceiptWriteError(
+        "model usage receipt database remained busy"
+    ) from last_error
+
+
+def _model_usage_receipt_dict(row, *, created=False, reused=False, outbox_state=""):
+    if not row:
+        return None
+    return {
+        "receiptId": row[0],
+        "receiptKey": row[1],
+        "memberId": row[2],
+        "memberName": row[3],
+        "teamId": row[4],
+        "surface": row[5],
+        "feature": row[6],
+        "usageKind": row[7],
+        "provider": row[8],
+        "model": row[9],
+        "operation": row[10],
+        "operationId": row[11],
+        "idempotencyKey": row[12],
+        "requestFingerprint": row[13],
+        "providerRef": row[14],
+        "status": row[15],
+        "promptTokens": int(row[16] or 0),
+        "completionTokens": int(row[17] or 0),
+        "totalTokens": int(row[18] or 0),
+        "calls": int(row[19] or 0),
+        "outputUnits": int(row[20] or 0),
+        "unitLabel": row[21] or "",
+        "source": row[22],
+        "error": row[23] or "",
+        "eventAt": row[24],
+        "createdAt": row[25],
+        "updatedAt": row[26],
+        "completedAt": row[27],
+        "created": bool(created),
+        "reused": bool(reused),
+        "shouldCallProvider": bool(created and row[15] == "pending"),
+        "outboxState": outbox_state or "",
+    }
+
+
+def _model_usage_receipt_identifiers(source, member_id, stable_credential):
+    receipt_key = hashlib.sha256(
+        f"model-usage-v1|{source}|{member_id}|{stable_credential}".encode("utf-8")
+    ).hexdigest()
+    return receipt_key, "mur_" + receipt_key[:28]
+
+
+def _model_usage_receipt_row_locked(conn, receipt_id):
+    return conn.execute(
+        f"SELECT {_MODEL_USAGE_RECEIPT_COLUMNS} FROM model_usage_receipts "
+        "WHERE receipt_id=?",
+        (str(receipt_id or ""),),
+    ).fetchone()
+
+
+def _model_usage_outbox_state_locked(conn, receipt_id):
+    row = conn.execute(
+        "SELECT state FROM model_usage_outbox WHERE receipt_id=?",
+        (str(receipt_id or ""),),
+    ).fetchone()
+    return str(row[0] or "") if row else ""
+
+
+def _model_usage_authority_locked(conn, member_id, requested_team_id=""):
+    member = conn.execute(
+        "SELECT id,name FROM members WHERE id=?",
+        (str(member_id or ""),),
+    ).fetchone()
+    if not member:
+        raise ValueError("model_usage_member_not_found")
+    teams = conn.execute(
+        "SELECT team_id FROM team_members WHERE member_id=? AND status='active' "
+        "ORDER BY team_id",
+        (member[0],),
+    ).fetchall()
+    active_team_ids = [str(row[0] or "") for row in teams if str(row[0] or "")]
+    requested_team_id = str(requested_team_id or "").strip()
+    if requested_team_id:
+        if requested_team_id not in active_team_ids:
+            raise ModelUsageReceiptConflict("model_usage_team_mismatch")
+        actual_team_id = requested_team_id
+    elif len(active_team_ids) > 1:
+        raise ModelUsageReceiptConflict("model_usage_team_ambiguous")
+    else:
+        actual_team_id = active_team_ids[0] if active_team_ids else ""
+    return str(member[0]), str(member[1] or "成员")[:120], actual_team_id
+
+
+def begin_model_usage_receipt(
+    member_id,
+    *,
+    surface,
+    feature,
+    usage_kind,
+    operation,
+    operation_id,
+    request_fingerprint,
+    source="main",
+    idempotency_key="",
+    provider="",
+    model="",
+    team_id="",
+    member_name="",
+    now_ms=None,
+):
+    """Persist a pre-provider intent and return whether the provider may run.
+
+    Reusing the same source/idempotency credential never authorizes a second
+    provider call.  A failed attempt therefore needs a new explicit attempt key.
+    ``member_name`` is accepted for caller compatibility but the stored name and
+    team are resolved authoritatively from the member tables.
+    """
+
+    del member_name
+    member_id = _model_usage_text(member_id, 120, required="member_id")
+    surface = _model_usage_text(surface, 80, required="surface")
+    feature = _model_usage_text(feature, 120, required="feature")
+    usage_kind = _model_usage_text(usage_kind, 24, required="usage_kind").lower()
+    if usage_kind not in _MODEL_USAGE_KINDS:
+        raise ValueError("model_usage_kind_invalid")
+    operation = _model_usage_text(operation, 80, required="operation")
+    operation_id = _model_usage_text(operation_id, 180, required="operation_id")
+    request_fingerprint = _model_usage_text(
+        request_fingerprint, 128, required="request_fingerprint"
+    )
+    source = _model_usage_text(source, 80, required="source")
+    idempotency_key = _model_usage_text(idempotency_key, 220)
+    provider = _model_usage_text(provider, 80, required="provider")
+    model = _model_usage_text(model, 180, required="model")
+    stable_credential = idempotency_key or operation_id
+    receipt_key, receipt_id = _model_usage_receipt_identifiers(
+        source, member_id, stable_credential
+    )
+    now = _usage_int(now_ms) or int(time.time() * 1000)
+    _ensure_db()
+
+    def write(conn):
+        resolved_member_id, resolved_name, resolved_team_id = _model_usage_authority_locked(
+            conn, member_id, team_id
+        )
+        existing = conn.execute(
+            f"SELECT {_MODEL_USAGE_RECEIPT_COLUMNS} FROM model_usage_receipts "
+            "WHERE receipt_key=?",
+            (receipt_key,),
+        ).fetchone()
+        if existing:
+            expected_identity = (
+                resolved_member_id,
+                resolved_team_id,
+                surface,
+                feature,
+                usage_kind,
+                operation,
+                operation_id,
+                idempotency_key,
+                request_fingerprint,
+                source,
+                provider,
+                model,
+            )
+            stored_identity = (
+                existing[2], existing[4], existing[5], existing[6], existing[7],
+                existing[10], existing[11], existing[12], existing[13], existing[22],
+                existing[8], existing[9],
+            )
+            if stored_identity != expected_identity:
+                raise ModelUsageReceiptConflict(
+                    "model usage idempotency credential payload mismatch"
+                )
+            return _model_usage_receipt_dict(
+                existing,
+                reused=True,
+                outbox_state=_model_usage_outbox_state_locked(conn, existing[0]),
+            )
+        conn.execute(
+            "INSERT INTO model_usage_receipts("
+            "receipt_id,receipt_key,member_id,member_name,team_id,surface,feature,usage_kind,"
+            "provider,model,operation,operation_id,idempotency_key,request_fingerprint,"
+            "provider_ref,call_status,prompt_tokens,completion_tokens,total_tokens,calls,"
+            "output_units,unit_label,source,error,event_at,created_at,updated_at,completed_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                receipt_id, receipt_key, resolved_member_id, resolved_name, resolved_team_id,
+                surface, feature, usage_kind, provider, model, operation, operation_id,
+                idempotency_key, request_fingerprint, "", "pending", 0, 0, 0, 0, 0,
+                "", source, "", None, now, now, None,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO model_usage_outbox("
+            "receipt_id,state,attempts,available_at,last_error,legacy_event_kind,"
+            "legacy_event_id,created_at,updated_at,projected_at"
+            ") VALUES(?,'waiting',0,?,'','','',?,?,NULL)",
+            (receipt_id, now, now, now),
+        )
+        row = _model_usage_receipt_row_locked(conn, receipt_id)
+        return _model_usage_receipt_dict(row, created=True, outbox_state="waiting")
+
+    return _model_usage_write(write)
+
+
+def find_model_usage_receipt(member_id, *, source, stable_credential):
+    """Read an existing immutable receipt without acquiring a SQLite write lock.
+
+    Project polling may replay hundreds of already-terminal sidecar receipts.
+    Their deterministic source/member/credential identity permits a read-only
+    lookup; the caller must still compare the complete immutable payload before
+    trusting the result.  Initial concurrent misses continue through
+    ``begin_model_usage_receipt`` where the unique indexes serialize creation.
+    """
+
+    member_id = _model_usage_text(member_id, 120, required="member_id")
+    source = _model_usage_text(source, 80, required="source")
+    stable_credential = _model_usage_text(
+        stable_credential, 220, required="stable_credential"
+    )
+    receipt_key, _ = _model_usage_receipt_identifiers(
+        source, member_id, stable_credential
+    )
+    _ensure_db()
+    conn = _connect(read_only=True)
+    try:
+        row = conn.execute(
+            f"SELECT {_MODEL_USAGE_RECEIPT_COLUMNS} FROM model_usage_receipts "
+            "WHERE receipt_key=?",
+            (receipt_key,),
+        ).fetchone()
+        return _model_usage_receipt_dict(
+            row,
+            reused=bool(row),
+            outbox_state=(
+                _model_usage_outbox_state_locked(conn, row[0]) if row else ""
+            ),
+        )
+    finally:
+        conn.close()
+
+
+def complete_model_usage_receipt(
+    receipt_id,
+    *,
+    usage=None,
+    provider_ref="",
+    provider="",
+    model="",
+    calls=1,
+    output_units=0,
+    unit_label="",
+    error="",
+    event_at=None,
+    now_ms=None,
+):
+    """Confirm one successful provider call and enqueue legacy projection."""
+
+    receipt_id = _model_usage_text(receipt_id, 80, required="receipt_id")
+    usage_data = usage if isinstance(usage, dict) else {}
+    prompt = _usage_int(usage_data.get("prompt_tokens", usage_data.get("input_tokens")))
+    completion = _usage_int(
+        usage_data.get("completion_tokens", usage_data.get("output_tokens"))
+    )
+    total = _usage_int(usage_data.get("total_tokens")) or prompt + completion
+    call_count = _usage_int(calls)
+    if call_count != 1:
+        raise ValueError("model_usage_receipt_must_represent_one_call")
+    units = _usage_int(output_units)
+    provider_ref = _model_usage_text(provider_ref, 240)
+    provider = _model_usage_text(provider, 80)
+    model = _model_usage_text(model, 180)
+    unit_label = _model_usage_text(unit_label, 24)
+    completion_error = _model_usage_text(error, 500)
+    now = _usage_int(now_ms) or int(time.time() * 1000)
+    occurred_at = _usage_int(event_at) or now
+    _ensure_db()
+
+    def write(conn):
+        row = _model_usage_receipt_row_locked(conn, receipt_id)
+        if not row:
+            raise ValueError("model_usage_receipt_not_found")
+        if row[15] == "failed":
+            raise ModelUsageReceiptConflict(
+                "failed model usage attempt requires a new attempt key"
+            )
+        actual_provider = provider or str(row[8] or "")
+        actual_model = model or str(row[9] or "")
+        if provider_ref:
+            duplicate = conn.execute(
+                "SELECT receipt_id FROM model_usage_receipts "
+                "WHERE provider=? AND provider_ref=? AND usage_kind=? AND receipt_id<>?",
+                (actual_provider, provider_ref, row[7], receipt_id),
+            ).fetchone()
+            if duplicate:
+                raise ModelUsageReceiptConflict("model_usage_provider_ref_reused")
+        if row[15] == "succeeded":
+            replay_values = (
+                actual_provider,
+                actual_model,
+                provider_ref or str(row[14] or ""),
+                prompt,
+                completion,
+                total,
+                call_count,
+                units,
+                unit_label,
+                completion_error or str(row[23] or ""),
+            )
+            stored_values = (
+                str(row[8] or ""), str(row[9] or ""), str(row[14] or ""),
+                int(row[16] or 0), int(row[17] or 0), int(row[18] or 0),
+                int(row[19] or 0), int(row[20] or 0), str(row[21] or ""),
+                str(row[23] or ""),
+            )
+            if replay_values != stored_values:
+                raise ModelUsageReceiptConflict(
+                    "completed model usage receipt payload mismatch"
+                )
+            return _model_usage_receipt_dict(
+                row,
+                reused=True,
+                outbox_state=_model_usage_outbox_state_locked(conn, receipt_id),
+            )
+        conn.execute(
+            "UPDATE model_usage_receipts SET provider=?,model=?,provider_ref=?,"
+            "call_status='succeeded',prompt_tokens=?,completion_tokens=?,total_tokens=?,"
+            "calls=?,output_units=?,unit_label=?,error=?,event_at=?,updated_at=?,"
+            "completed_at=? WHERE receipt_id=?",
+            (
+                actual_provider, actual_model, provider_ref, prompt, completion, total,
+                call_count, units, unit_label, completion_error, occurred_at, now, now,
+                receipt_id,
+            ),
+        )
+        conn.execute(
+            "UPDATE model_usage_outbox SET state='pending',available_at=?,last_error='',"
+            "updated_at=?,projected_at=NULL WHERE receipt_id=?",
+            (now, now, receipt_id),
+        )
+        updated = _model_usage_receipt_row_locked(conn, receipt_id)
+        return _model_usage_receipt_dict(updated, outbox_state="pending")
+
+    return _model_usage_write(write)
+
+
+def fail_model_usage_receipt(
+    receipt_id,
+    error,
+    *,
+    status="failed",
+    now_ms=None,
+):
+    """Mark a pre-call intent as definitively failed or provider-unknown."""
+
+    receipt_id = _model_usage_text(receipt_id, 80, required="receipt_id")
+    status = _model_usage_text(status, 24, required="status").lower()
+    if status not in {"failed", "unknown"}:
+        raise ValueError("model_usage_failure_status_invalid")
+    safe_error = _model_usage_text(error, 500) or "unspecified_error"
+    now = _usage_int(now_ms) or int(time.time() * 1000)
+    _ensure_db()
+
+    def write(conn):
+        row = _model_usage_receipt_row_locked(conn, receipt_id)
+        if not row:
+            raise ValueError("model_usage_receipt_not_found")
+        if row[15] == "succeeded":
+            raise ModelUsageReceiptConflict("completed model usage receipt cannot be downgraded")
+        if row[15] == status:
+            return _model_usage_receipt_dict(
+                row,
+                reused=True,
+                outbox_state=_model_usage_outbox_state_locked(conn, receipt_id),
+            )
+        outbox_state = "ignored" if status == "failed" else "unresolved"
+        conn.execute(
+            "UPDATE model_usage_receipts SET call_status=?,error=?,updated_at=?,"
+            "completed_at=? WHERE receipt_id=?",
+            (status, safe_error, now, now if status == "failed" else None, receipt_id),
+        )
+        conn.execute(
+            "UPDATE model_usage_outbox SET state=?,available_at=?,last_error=?,updated_at=? "
+            "WHERE receipt_id=?",
+            (outbox_state, now, safe_error, now, receipt_id),
+        )
+        updated = _model_usage_receipt_row_locked(conn, receipt_id)
+        return _model_usage_receipt_dict(updated, outbox_state=outbox_state)
+
+    return _model_usage_write(write)
+
+
+def mark_model_usage_receipt_unknown(receipt_id, error, *, now_ms=None):
+    return fail_model_usage_receipt(
+        receipt_id, error, status="unknown", now_ms=now_ms
+    )
+
+
+def get_model_usage_receipt(receipt_id):
+    receipt_id = str(receipt_id or "").strip()
+    if not receipt_id:
+        return None
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = _model_usage_receipt_row_locked(conn, receipt_id)
+            return _model_usage_receipt_dict(
+                row,
+                outbox_state=_model_usage_outbox_state_locked(conn, receipt_id) if row else "",
+            )
+        finally:
+            conn.close()
+
+
+def unresolved_model_usage_receipts(limit=100):
+    try:
+        limit = max(1, min(int(limit or 100), 1000))
+    except (TypeError, ValueError, OverflowError):
+        limit = 100
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            aliased_columns = "r." + _MODEL_USAGE_RECEIPT_COLUMNS.replace(",", ",r.")
+            rows = conn.execute(
+                f"SELECT {aliased_columns} FROM model_usage_receipts r "
+                "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
+                "WHERE r.call_status IN ('pending','unknown') "
+                "OR (r.call_status='succeeded' AND COALESCE(o.state,'')<>'projected') "
+                "ORDER BY r.updated_at ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [_model_usage_receipt_dict(row) for row in rows]
+        finally:
+            conn.close()
+
+
+def _model_usage_legacy_event_id(receipt_id, usage_kind):
+    digest = hashlib.sha256(
+        f"legacy-model-usage-v1|{usage_kind}|{receipt_id}".encode("utf-8")
+    ).hexdigest()
+    return "mup_" + digest[:28]
+
+
+def reconcile_model_usage_outbox(limit=100, *, receipt_id="", now_ms=None):
+    """Idempotently project completed receipts into the unchanged legacy ledgers."""
+
+    try:
+        limit = max(1, min(int(limit or 100), 1000))
+    except (TypeError, ValueError, OverflowError):
+        limit = 100
+    receipt_id = str(receipt_id or "").strip()
+    now = _usage_int(now_ms) or int(time.time() * 1000)
+    _ensure_db()
+
+    def write(conn):
+        where_receipt = "AND r.receipt_id=? " if receipt_id else ""
+        params = (now, receipt_id, limit) if receipt_id else (now, limit)
+        aliased_columns = "r." + _MODEL_USAGE_RECEIPT_COLUMNS.replace(",", ",r.")
+        rows = conn.execute(
+            f"SELECT {aliased_columns} FROM model_usage_receipts r "
+            "JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
+            "WHERE r.call_status='succeeded' AND o.state IN ('pending','retry') "
+            "AND o.available_at<=? " + where_receipt +
+            "ORDER BY o.created_at ASC LIMIT ?",
+            params,
+        ).fetchall()
+        projected = 0
+        failed = 0
+        receipt_only = 0
+        for row in rows:
+            current_receipt_id = str(row[0])
+            usage_kind = str(row[7])
+            legacy_kind = ""
+            legacy_id = ""
+            is_receipt_only = False
+            conn.execute("SAVEPOINT model_usage_projection")
+            try:
+                if usage_kind == "llm" and int(row[18] or 0) > 0:
+                    legacy_kind = "llm_usage_events"
+                    legacy_id = _model_usage_legacy_event_id(current_receipt_id, usage_kind)
+                    legacy_created_at = row[24] or row[26]
+                    conn.execute(
+                        "INSERT OR IGNORE INTO llm_usage_events("
+                        "id,member_id,member_name,feature,model,prompt_tokens,"
+                        "completion_tokens,total_tokens,created_at"
+                        ") VALUES(?,?,?,?,?,?,?,?,?)",
+                        (
+                            legacy_id, row[2], row[3], row[6], row[9], row[16],
+                            row[17], row[18], legacy_created_at,
+                        ),
+                    )
+                    stored = conn.execute(
+                        "SELECT member_id,member_name,feature,COALESCE(model,''),"
+                        "prompt_tokens,completion_tokens,total_tokens,created_at "
+                        "FROM llm_usage_events WHERE id=?",
+                        (legacy_id,),
+                    ).fetchone()
+                    expected = (
+                        row[2], row[3], row[6], str(row[9] or ""), int(row[16] or 0),
+                        int(row[17] or 0), int(row[18] or 0), legacy_created_at,
+                    )
+                    if tuple(stored or ()) != expected:
+                        raise ModelUsageReceiptConflict(
+                            "model usage legacy LLM event collision"
+                        )
+                elif usage_kind in {"image", "video", "voice"}:
+                    legacy_kind = "api_usage_events"
+                    legacy_id = _model_usage_legacy_event_id(current_receipt_id, usage_kind)
+                    legacy_created_at = row[24] or row[26]
+                    legacy_unit_label = row[21] or "任务"
+                    conn.execute(
+                        "INSERT OR IGNORE INTO api_usage_events("
+                        "id,member_id,member_name,api_type,feature,model,calls,"
+                        "output_units,unit_label,created_at"
+                        ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            legacy_id, row[2], row[3], usage_kind, row[6], row[9],
+                            row[19], row[20], legacy_unit_label, legacy_created_at,
+                        ),
+                    )
+                    stored = conn.execute(
+                        "SELECT member_id,member_name,api_type,feature,COALESCE(model,''),"
+                        "calls,output_units,unit_label,created_at FROM api_usage_events WHERE id=?",
+                        (legacy_id,),
+                    ).fetchone()
+                    expected = (
+                        row[2], row[3], usage_kind, row[6], str(row[9] or ""),
+                        int(row[19] or 0), int(row[20] or 0), legacy_unit_label,
+                        legacy_created_at,
+                    )
+                    if tuple(stored or ()) != expected:
+                        raise ModelUsageReceiptConflict(
+                            "model usage legacy API event collision"
+                        )
+                else:
+                    legacy_kind = "receipt_only"
+                    is_receipt_only = True
+                conn.execute(
+                    "UPDATE model_usage_outbox SET state='projected',legacy_event_kind=?,"
+                    "legacy_event_id=?,last_error='',updated_at=?,projected_at=? "
+                    "WHERE receipt_id=?",
+                    (legacy_kind, legacy_id, now, now, current_receipt_id),
+                )
+                conn.execute("RELEASE SAVEPOINT model_usage_projection")
+                projected += 1
+                if is_receipt_only:
+                    receipt_only += 1
+            except Exception as exc:
+                conn.execute("ROLLBACK TO SAVEPOINT model_usage_projection")
+                conn.execute("RELEASE SAVEPOINT model_usage_projection")
+                state = "conflict" if isinstance(exc, ModelUsageReceiptConflict) else "retry"
+                delay = 0 if state == "conflict" else 1000
+                conn.execute(
+                    "UPDATE model_usage_outbox SET state=?,attempts=attempts+1,"
+                    "available_at=?,last_error=?,updated_at=? WHERE receipt_id=?",
+                    (
+                        state, now + delay, type(exc).__name__[:120], now,
+                        current_receipt_id,
+                    ),
+                )
+                failed += 1
+        return {
+            "selected": len(rows),
+            "projected": projected,
+            "failed": failed,
+            "receiptOnly": receipt_only,
+        }
+
+    return _model_usage_write(write)
+
+
+def pending_model_usage_outbox_count():
+    """Read how many completed receipts still need legacy projection."""
+
+    _ensure_db()
+    conn = _connect(read_only=True)
+    try:
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM model_usage_outbox "
+            "WHERE state IN ('pending','retry')"
+        ).fetchone()[0] or 0)
+    finally:
+        conn.close()
+
+
+# ---------- 模型用量 completion spool（SQLite 锁外持久兜底） ----------
+_MODEL_USAGE_COMPLETION_PAYLOAD_KEYS = frozenset({
+    "version", "receiptId", "providerRef", "provider", "model",
+    "promptTokens", "completionTokens", "totalTokens", "calls",
+    "outputUnits", "unitLabel", "eventAt", "completedAt",
+})
+_MODEL_USAGE_COMPLETION_ENVELOPE_KEYS = frozenset({"checksum", "payload"})
+_MODEL_USAGE_COMPLETION_MAX_BYTES = 32 * 1024
+
+
+def _model_usage_completion_spool_root(spool_dir=None):
+    if spool_dir is not None and str(spool_dir).strip():
+        return Path(spool_dir).expanduser()
+    configured = str(os.getenv("MODEL_USAGE_COMPLETION_SPOOL_DIR", "")).strip()
+    if configured:
+        return Path(configured).expanduser()
+    # DB_PATH is intentionally resolved at call time so isolated tests and
+    # explicit migration copies never write beside the import-time database.
+    return DB_PATH.parent / "model_usage_spool"
+
+
+def _model_usage_completion_spool_paths(spool_dir=None, *, create=False):
+    root = _model_usage_completion_spool_root(spool_dir)
+    paths = {
+        "root": root,
+        "pending": root / "pending",
+        "archive": root / "archive",
+        "locks": root / "locks",
+    }
+    if create:
+        for path in paths.values():
+            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return paths
+
+
+def _model_usage_completion_stem(receipt_id):
+    return hashlib.sha256(
+        f"model-usage-completion-spool-v1|{receipt_id}".encode("utf-8")
+    ).hexdigest()
+
+
+def _model_usage_completion_payload(
+    receipt_id,
+    *,
+    usage=None,
+    provider_ref="",
+    provider="",
+    model="",
+    calls=1,
+    output_units=0,
+    unit_label="",
+    event_at=None,
+    now_ms=None,
+):
+    receipt_id = _model_usage_text(receipt_id, 80, required="receipt_id")
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", receipt_id):
+        raise ValueError("model_usage_spool_receipt_id_invalid")
+    usage_data = usage if isinstance(usage, dict) else {}
+    prompt = _usage_int(usage_data.get("prompt_tokens", usage_data.get("input_tokens")))
+    completion = _usage_int(
+        usage_data.get("completion_tokens", usage_data.get("output_tokens"))
+    )
+    total = _usage_int(usage_data.get("total_tokens")) or prompt + completion
+    call_count = _usage_int(calls)
+    if call_count != 1:
+        raise ValueError("model_usage_receipt_must_represent_one_call")
+    text_fields = {
+        "providerRef": _model_usage_text(provider_ref, 240),
+        "provider": _model_usage_text(provider, 80),
+        "model": _model_usage_text(model, 180),
+        "unitLabel": _model_usage_text(unit_label, 24),
+    }
+    if any("\n" in value or "\r" in value or "\x00" in value for value in text_fields.values()):
+        raise ValueError("model_usage_spool_reference_invalid")
+    return {
+        "version": MODEL_USAGE_COMPLETION_SPOOL_VERSION,
+        "receiptId": receipt_id,
+        **text_fields,
+        "promptTokens": prompt,
+        "completionTokens": completion,
+        "totalTokens": total,
+        "calls": call_count,
+        "outputUnits": _usage_int(output_units),
+        "eventAt": _usage_int(event_at),
+        "completedAt": _usage_int(now_ms),
+    }
+
+
+def _model_usage_completion_checksum(payload):
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _model_usage_completion_envelope(payload):
+    return {
+        "checksum": _model_usage_completion_checksum(payload),
+        "payload": payload,
+    }
+
+
+def _model_usage_completion_encoded(envelope):
+    return (
+        json.dumps(
+            envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ) + "\n"
+    ).encode("utf-8")
+
+
+def _model_usage_fsync_directory(path):
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _model_usage_atomic_create(path, content):
+    """Durably create ``path`` without ever replacing an existing envelope."""
+
+    temp_path = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        offset = 0
+        while offset < len(content):
+            offset += os.write(fd, content[offset:])
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.link(temp_path, path)
+        _model_usage_fsync_directory(path.parent)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _read_model_usage_completion_envelope(path):
+    try:
+        if path.stat().st_size > _MODEL_USAGE_COMPLETION_MAX_BYTES:
+            raise ModelUsageCompletionSpoolCorrupt("model usage spool envelope too large")
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        # A concurrent successful reconciliation may atomically rename a file
+        # between directory enumeration and read.  Absence is not corruption.
+        raise
+    except ModelUsageCompletionSpoolCorrupt:
+        raise
+    except OSError as exc:
+        raise ModelUsageCompletionSpoolCorrupt(
+            "model usage spool envelope unreadable"
+        ) from exc
+    try:
+        envelope = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ModelUsageCompletionSpoolCorrupt(
+            "model usage spool envelope unreadable"
+        ) from exc
+    if not isinstance(envelope, dict) or set(envelope) != _MODEL_USAGE_COMPLETION_ENVELOPE_KEYS:
+        raise ModelUsageCompletionSpoolCorrupt("model usage spool envelope schema invalid")
+    checksum = envelope.get("checksum")
+    payload = envelope.get("payload")
+    if (
+        not isinstance(checksum, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", checksum)
+        or not isinstance(payload, dict)
+        or set(payload) != _MODEL_USAGE_COMPLETION_PAYLOAD_KEYS
+    ):
+        raise ModelUsageCompletionSpoolCorrupt("model usage spool payload schema invalid")
+    try:
+        normalized = _model_usage_completion_payload(
+            payload.get("receiptId"),
+            usage={
+                "prompt_tokens": payload.get("promptTokens"),
+                "completion_tokens": payload.get("completionTokens"),
+                "total_tokens": payload.get("totalTokens"),
+            },
+            provider_ref=payload.get("providerRef"),
+            provider=payload.get("provider"),
+            model=payload.get("model"),
+            calls=payload.get("calls"),
+            output_units=payload.get("outputUnits"),
+            unit_label=payload.get("unitLabel"),
+            event_at=payload.get("eventAt"),
+            now_ms=payload.get("completedAt"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ModelUsageCompletionSpoolCorrupt(
+            "model usage spool payload values invalid"
+        ) from exc
+    if normalized != payload:
+        raise ModelUsageCompletionSpoolCorrupt("model usage spool payload is not canonical")
+    expected = _model_usage_completion_checksum(payload)
+    if not hmac.compare_digest(checksum, expected):
+        raise ModelUsageCompletionSpoolCorrupt("model usage spool checksum mismatch")
+    expected_name = _model_usage_completion_stem(payload["receiptId"]) + ".json"
+    if path.name != expected_name:
+        raise ModelUsageCompletionSpoolCorrupt("model usage spool filename mismatch")
+    return envelope
+
+
+@contextmanager
+def _model_usage_completion_file_lock(paths, receipt_id):
+    stem = _model_usage_completion_stem(receipt_id)
+    lock_path = paths["locks"] / f"{stem}.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield stem
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def spool_model_usage_completion(
+    receipt_id,
+    *,
+    usage=None,
+    provider_ref="",
+    provider="",
+    model="",
+    calls=1,
+    output_units=0,
+    unit_label="",
+    event_at=None,
+    now_ms=None,
+    spool_dir=None,
+):
+    """Persist one successful provider completion without touching SQLite.
+
+    The strict envelope intentionally contains no prompt text, request body,
+    API key, idempotency key, request fingerprint, member data or free-form
+    provider error.  A receipt may have exactly one canonical completion; a
+    different replay is preserved and rejected instead of overwriting evidence.
+    """
+
+    payload = _model_usage_completion_payload(
+        receipt_id,
+        usage=usage,
+        provider_ref=provider_ref,
+        provider=provider,
+        model=model,
+        calls=calls,
+        output_units=output_units,
+        unit_label=unit_label,
+        event_at=event_at,
+        now_ms=now_ms,
+    )
+    envelope = _model_usage_completion_envelope(payload)
+    encoded = _model_usage_completion_encoded(envelope)
+    if len(encoded) > _MODEL_USAGE_COMPLETION_MAX_BYTES:
+        raise ValueError("model_usage_spool_envelope_too_large")
+    paths = _model_usage_completion_spool_paths(spool_dir, create=True)
+    with _model_usage_completion_file_lock(paths, payload["receiptId"]) as stem:
+        pending_path = paths["pending"] / f"{stem}.json"
+        archive_path = paths["archive"] / f"{stem}.json"
+        for state, existing_path in (("archived", archive_path), ("pending", pending_path)):
+            if not existing_path.exists():
+                continue
+            existing = _read_model_usage_completion_envelope(existing_path)
+            if not hmac.compare_digest(existing["checksum"], envelope["checksum"]):
+                raise ModelUsageCompletionSpoolConflict(
+                    "model usage completion payload conflicts with persisted evidence"
+                )
+            return {
+                "receiptId": payload["receiptId"],
+                "checksum": envelope["checksum"],
+                "state": state,
+                "created": False,
+                "reused": True,
+            }
+        try:
+            _model_usage_atomic_create(pending_path, encoded)
+        except FileExistsError:
+            existing = _read_model_usage_completion_envelope(pending_path)
+            if not hmac.compare_digest(existing["checksum"], envelope["checksum"]):
+                raise ModelUsageCompletionSpoolConflict(
+                    "model usage completion payload conflicts with persisted evidence"
+                )
+            return {
+                "receiptId": payload["receiptId"],
+                "checksum": envelope["checksum"],
+                "state": "pending",
+                "created": False,
+                "reused": True,
+            }
+        return {
+            "receiptId": payload["receiptId"],
+            "checksum": envelope["checksum"],
+            "state": "pending",
+            "created": True,
+            "reused": False,
+        }
+
+
+def model_usage_completion_spool_status(*, spool_dir=None):
+    """Return a read-only integrity/count snapshot; never creates directories."""
+
+    paths = _model_usage_completion_spool_paths(spool_dir, create=False)
+    result = {
+        "pending": 0,
+        "archived": 0,
+        "corrupt": 0,
+        "conflicts": 0,
+        "error": "",
+    }
+    if not paths["root"].exists():
+        return result
+    try:
+        pending_files = sorted(paths["pending"].glob("*.json")) if paths["pending"].is_dir() else []
+        archive_files = sorted(paths["archive"].glob("*.json")) if paths["archive"].is_dir() else []
+    except OSError as exc:
+        result["corrupt"] = 1
+        result["error"] = type(exc).__name__
+        return result
+    result["pending"] = len(pending_files)
+    result["archived"] = len(archive_files)
+    archive_by_name = {path.name: path for path in archive_files}
+    archive_checksums = {}
+    for path in archive_files:
+        try:
+            archive_checksums[path.name] = _read_model_usage_completion_envelope(path)["checksum"]
+        except FileNotFoundError:
+            result["archived"] -= 1
+        except ModelUsageCompletionSpoolCorrupt:
+            result["corrupt"] += 1
+    for path in pending_files:
+        try:
+            envelope = _read_model_usage_completion_envelope(path)
+        except FileNotFoundError:
+            result["pending"] -= 1
+            continue
+        except ModelUsageCompletionSpoolCorrupt:
+            result["corrupt"] += 1
+            continue
+        if path.name in archive_by_name:
+            archived_checksum = archive_checksums.get(path.name)
+            if archived_checksum and not hmac.compare_digest(
+                archived_checksum, envelope["checksum"]
+            ):
+                result["conflicts"] += 1
+    return result
+
+
+def _archive_model_usage_completion(paths, pending_path, envelope):
+    archive_path = paths["archive"] / pending_path.name
+    if archive_path.exists():
+        archived = _read_model_usage_completion_envelope(archive_path)
+        if not hmac.compare_digest(archived["checksum"], envelope["checksum"]):
+            raise ModelUsageCompletionSpoolConflict(
+                "model usage completion archive conflicts with pending evidence"
+            )
+        pending_path.unlink()
+        _model_usage_fsync_directory(paths["pending"])
+        return True
+    os.rename(pending_path, archive_path)
+    _model_usage_fsync_directory(paths["pending"])
+    _model_usage_fsync_directory(paths["archive"])
+    return False
+
+
+def reconcile_model_usage_completion_spool(limit=100, *, spool_dir=None):
+    """Replay verified completions, project the outbox, then atomically archive.
+
+    Corrupt or conflicting evidence is never changed.  SQLite failures leave the
+    pending file intact so an explicit later reconciliation can safely retry.
+    This function is not invoked on import or normal service startup.
+    """
+
+    try:
+        limit = max(1, min(int(limit or 100), 1000))
+    except (TypeError, ValueError, OverflowError):
+        limit = 100
+    paths = _model_usage_completion_spool_paths(spool_dir, create=True)
+    pending_files = sorted(paths["pending"].glob("*.json"))[:limit]
+    result = {
+        "selected": len(pending_files),
+        "completed": 0,
+        "projected": 0,
+        "archived": 0,
+        "archiveReused": 0,
+        "corrupt": 0,
+        "conflicts": 0,
+        "failed": 0,
+    }
+    for candidate in pending_files:
+        try:
+            initial = _read_model_usage_completion_envelope(candidate)
+            receipt_id = initial["payload"]["receiptId"]
+        except FileNotFoundError:
+            continue
+        except ModelUsageCompletionSpoolCorrupt:
+            result["corrupt"] += 1
+            continue
+        with _model_usage_completion_file_lock(paths, receipt_id) as stem:
+            pending_path = paths["pending"] / f"{stem}.json"
+            if not pending_path.exists():
+                continue
+            try:
+                envelope = _read_model_usage_completion_envelope(pending_path)
+                payload = envelope["payload"]
+                completed = complete_model_usage_receipt(
+                    payload["receiptId"],
+                    usage={
+                        "prompt_tokens": payload["promptTokens"],
+                        "completion_tokens": payload["completionTokens"],
+                        "total_tokens": payload["totalTokens"],
+                    },
+                    provider_ref=payload["providerRef"],
+                    provider=payload["provider"],
+                    model=payload["model"],
+                    calls=payload["calls"],
+                    output_units=payload["outputUnits"],
+                    unit_label=payload["unitLabel"],
+                    event_at=payload["eventAt"] or None,
+                    now_ms=payload["completedAt"] or None,
+                )
+                result["completed"] += 1
+                projected = reconcile_model_usage_outbox(receipt_id=payload["receiptId"])
+                if projected.get("failed"):
+                    raise ModelUsageCompletionSpoolError(
+                        "model usage outbox projection failed"
+                    )
+                current = get_model_usage_receipt(payload["receiptId"])
+                if not current or current.get("outboxState") != "projected":
+                    raise ModelUsageCompletionSpoolError(
+                        "model usage outbox projection remains pending"
+                    )
+                result["projected"] += int(projected.get("projected") or 0)
+                reused_archive = _archive_model_usage_completion(
+                    paths, pending_path, envelope
+                )
+                result["archived"] += 1
+                result["archiveReused"] += int(reused_archive)
+            except FileNotFoundError:
+                continue
+            except ModelUsageCompletionSpoolCorrupt:
+                result["corrupt"] += 1
+            except (ModelUsageCompletionSpoolConflict, ModelUsageReceiptConflict):
+                result["conflicts"] += 1
+            except (
+                ModelUsageReceiptWriteError,
+                ModelUsageCompletionSpoolError,
+                StoreNotReadyError,
+                sqlite3.Error,
+                OSError,
+                ValueError,
+            ):
+                result["failed"] += 1
+    status = model_usage_completion_spool_status(spool_dir=spool_dir)
+    result["pendingAfter"] = status["pending"]
+    result["corruptAfter"] = status["corrupt"]
+    result["conflictsAfter"] = status["conflicts"]
+    return result
+
+
 # ---------- 语言模型用量（仅记录上游响应中可核验的 token 字段） ----------
 def _usage_int(value):
     try:
@@ -5038,7 +6435,7 @@ def llm_usage_summary():
                 "COALESCE(SUM(u.total_tokens),0) AS total_tokens,"
                 "COUNT(u.id) AS calls,MAX(u.created_at) AS last_used_at "
                 "FROM members m LEFT JOIN llm_usage_events u ON u.member_id=m.id "
-                "WHERE m.role IN ('admin','editor') "
+                "WHERE m.role IN ('admin','editor','user') "
                 "GROUP BY m.id,m.name,m.username,m.role ORDER BY total_tokens DESC,m.created_at ASC"
             ).fetchall()
             return [{
@@ -5095,8 +6492,37 @@ def model_usage_summary():
                 "SELECT m.id,m.name,m.username,m.role,u.api_type,"
                 "COALESCE(SUM(u.calls),0),COALESCE(SUM(u.output_units),0),MAX(u.created_at) "
                 "FROM members m LEFT JOIN api_usage_events u ON u.member_id=m.id "
-                "WHERE m.role IN ('admin','editor') "
+                "WHERE m.role IN ('admin','editor','user') "
                 "GROUP BY m.id,m.name,m.username,m.role,u.api_type"
+            ).fetchall()
+            receipt_rows = conn.execute(
+                "SELECT m.id,m.name,m.username,m.role,r.usage_kind,COUNT(r.receipt_id),"
+                "COALESCE(SUM(r.output_units),0),"
+                "COALESCE(SUM(CASE WHEN r.usage_kind='llm' AND r.total_tokens=0 "
+                "THEN 1 ELSE 0 END),0),"
+                "COALESCE(SUM(CASE WHEN NOT (COALESCE(o.state,'')='projected' AND "
+                "COALESCE(o.legacy_event_kind,'')=CASE WHEN r.usage_kind='llm' "
+                "THEN 'llm_usage_events' ELSE 'api_usage_events' END) "
+                "THEN r.calls ELSE 0 END),0),"
+                "COALESCE(SUM(CASE WHEN NOT (COALESCE(o.state,'')='projected' AND "
+                "COALESCE(o.legacy_event_kind,'')='api_usage_events') "
+                "THEN r.output_units ELSE 0 END),0),"
+                "COALESCE(SUM(CASE WHEN r.usage_kind='llm' AND NOT ("
+                "COALESCE(o.state,'')='projected' AND "
+                "COALESCE(o.legacy_event_kind,'')='llm_usage_events') "
+                "THEN r.prompt_tokens ELSE 0 END),0),"
+                "COALESCE(SUM(CASE WHEN r.usage_kind='llm' AND NOT ("
+                "COALESCE(o.state,'')='projected' AND "
+                "COALESCE(o.legacy_event_kind,'')='llm_usage_events') "
+                "THEN r.completion_tokens ELSE 0 END),0),"
+                "COALESCE(SUM(CASE WHEN r.usage_kind='llm' AND NOT ("
+                "COALESCE(o.state,'')='projected' AND "
+                "COALESCE(o.legacy_event_kind,'')='llm_usage_events') "
+                "THEN r.total_tokens ELSE 0 END),0),MAX(r.event_at) "
+                "FROM members m JOIN model_usage_receipts r ON r.member_id=m.id "
+                "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
+                "WHERE m.role IN ('admin','editor','user') AND r.call_status='succeeded' "
+                "GROUP BY m.id,m.name,m.username,m.role,r.usage_kind"
             ).fetchall()
         finally:
             conn.close()
@@ -5113,9 +6539,58 @@ def model_usage_summary():
         row[f"{prefix}Calls"] = int(calls or 0)
         row[f"{prefix}Outputs"] = int(outputs or 0)
         row[f"{prefix}LastUsedAt"] = last_used_at
+    for (
+        member_id, member_name, username, role, usage_kind, confirmed_calls,
+        confirmed_outputs, token_unknown, missing_calls, missing_outputs,
+        missing_prompt, missing_completion, missing_total, last_used_at,
+    ) in receipt_rows:
+        row = rows.setdefault(member_id, {
+            "memberId": member_id, "memberName": member_name, "username": username,
+            "role": role, "promptTokens": 0, "completionTokens": 0,
+            "totalTokens": 0, "calls": 0, "lastUsedAt": None,
+        })
+        if usage_kind == "llm":
+            row["confirmedLlmCalls"] = int(confirmed_calls or 0)
+            row["tokenUnknownCalls"] = int(token_unknown or 0)
+            row["calls"] = int(row.get("calls") or 0) + int(missing_calls or 0)
+            row["promptTokens"] = int(row.get("promptTokens") or 0) + int(
+                missing_prompt or 0
+            )
+            row["completionTokens"] = int(row.get("completionTokens") or 0) + int(
+                missing_completion or 0
+            )
+            row["totalTokens"] = int(row.get("totalTokens") or 0) + int(
+                missing_total or 0
+            )
+            row["lastUsedAt"] = max(
+                int(row.get("lastUsedAt") or 0), int(last_used_at or 0)
+            ) or None
+            continue
+        prefix = {"image": "image", "video": "video", "voice": "voice"}.get(
+            usage_kind, ""
+        )
+        if not prefix:
+            continue
+        title_prefix = prefix.title()
+        row[f"confirmed{title_prefix}Calls"] = int(confirmed_calls or 0)
+        row[f"confirmed{title_prefix}Outputs"] = int(confirmed_outputs or 0)
+        row[f"{prefix}Calls"] = int(row.get(f"{prefix}Calls") or 0) + int(
+            missing_calls or 0
+        )
+        row[f"{prefix}Outputs"] = int(row.get(f"{prefix}Outputs") or 0) + int(
+            missing_outputs or 0
+        )
+        row[f"{prefix}LastUsedAt"] = max(
+            int(row.get(f"{prefix}LastUsedAt") or 0), int(last_used_at or 0)
+        ) or None
     for row in rows.values():
         for key in ("imageCalls", "imageOutputs", "videoCalls", "videoOutputs", "voiceCalls", "voiceOutputs"):
             row.setdefault(key, 0)
+        row.setdefault("confirmedLlmCalls", 0)
+        row.setdefault("tokenUnknownCalls", 0)
+        for prefix in ("Image", "Video", "Voice"):
+            row.setdefault(f"confirmed{prefix}Calls", 0)
+            row.setdefault(f"confirmed{prefix}Outputs", 0)
     return sorted(rows.values(), key=lambda row: (
         -int(row.get("totalTokens") or 0),
         -(int(row.get("imageCalls") or 0) + int(row.get("videoCalls") or 0) + int(row.get("voiceCalls") or 0)),
@@ -5182,6 +6657,7 @@ def model_usage_details(member_id="", limit=120):
     _ensure_db()
     where = "WHERE u.member_id=?" if member_id else ""
     params = (member_id,) if member_id else ()
+    receipt_where = "WHERE r.member_id=?" if member_id else ""
     with _lock:
         conn = _connect()
         try:
@@ -5200,6 +6676,35 @@ def model_usage_details(member_id="", limit=120):
                 "ORDER BY u.created_at DESC LIMIT ?",
                 (*params, limit),
             ).fetchall()
+            receipt_rows = conn.execute(
+                "SELECT r.usage_kind,r.surface,r.feature,COALESCE(r.model,''),r.call_status,"
+                "COUNT(r.receipt_id),COALESCE(SUM(r.prompt_tokens),0),"
+                "COALESCE(SUM(r.completion_tokens),0),COALESCE(SUM(r.total_tokens),0),"
+                "COALESCE(SUM(r.output_units),0),"
+                "COALESCE(SUM(CASE WHEN r.usage_kind='llm' AND r.call_status='succeeded' "
+                "AND r.total_tokens=0 THEN 1 ELSE 0 END),0),MAX(r.updated_at) "
+                "FROM model_usage_receipts r " + receipt_where + " "
+                "GROUP BY r.usage_kind,r.surface,r.feature,COALESCE(r.model,''),r.call_status "
+                "ORDER BY MAX(r.updated_at) DESC,r.usage_kind,r.feature",
+                params,
+            ).fetchall()
+            receipt_events = conn.execute(
+                "SELECT r.receipt_id,r.member_id,r.member_name,COALESCE(m.username,''),"
+                "r.team_id,r.surface,r.feature,r.usage_kind,r.provider,r.model,r.operation,"
+                "r.operation_id,r.idempotency_key,r.provider_ref,r.call_status,"
+                "r.prompt_tokens,r.completion_tokens,r.total_tokens,r.calls,r.output_units,"
+                "r.unit_label,r.source,r.error,r.event_at,r.created_at,r.updated_at,"
+                "COALESCE(o.state,'') FROM model_usage_receipts r "
+                "LEFT JOIN members m ON m.id=r.member_id "
+                "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id " +
+                receipt_where + " ORDER BY r.updated_at DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+            unresolved_events = [
+                row for row in receipt_events
+                if row[14] in {"pending", "unknown"}
+                or (row[14] == "succeeded" and row[26] != "projected")
+            ]
         finally:
             conn.close()
     details["assetApiRows"] = [{
@@ -5212,6 +6717,33 @@ def model_usage_details(member_id="", limit=120):
         "apiType": row[4], "feature": row[5], "model": row[6], "calls": int(row[7] or 0),
         "outputUnits": int(row[8] or 0), "unitLabel": row[9] or "任务", "createdAt": row[10],
     } for row in events]
+    details["receiptRows"] = [{
+        "usageKind": row[0], "surface": row[1], "feature": row[2], "model": row[3],
+        "status": row[4], "calls": int(row[5] or 0),
+        "promptTokens": int(row[6] or 0), "completionTokens": int(row[7] or 0),
+        "totalTokens": int(row[8] or 0), "outputUnits": int(row[9] or 0),
+        "tokenUnknownCalls": int(row[10] or 0), "lastUpdatedAt": row[11],
+    } for row in receipt_rows]
+
+    def receipt_event(row):
+        return {
+            "receiptId": row[0], "memberId": row[1], "memberName": row[2],
+            "username": row[3], "teamId": row[4], "surface": row[5],
+            "feature": row[6], "usageKind": row[7], "provider": row[8],
+            "model": row[9], "operation": row[10], "operationId": row[11],
+            "idempotencyKey": row[12], "providerRef": row[13], "status": row[14],
+            "promptTokens": int(row[15] or 0), "completionTokens": int(row[16] or 0),
+            "totalTokens": int(row[17] or 0), "calls": int(row[18] or 0),
+            "outputUnits": int(row[19] or 0), "unitLabel": row[20] or "",
+            "source": row[21], "error": row[22] or "", "eventAt": row[23],
+            "createdAt": row[24], "updatedAt": row[25], "outboxState": row[26],
+            "tokenUsageKnown": bool(row[7] != "llm" or int(row[17] or 0) > 0),
+        }
+
+    details["receiptEvents"] = [receipt_event(row) for row in receipt_events]
+    details["unresolvedReceiptEvents"] = [
+        receipt_event(row) for row in unresolved_events
+    ]
     return details
 
 

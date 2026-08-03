@@ -8,14 +8,14 @@ import {
   hasClientImageApiKey,
   setClientImageApiKey,
 } from "@/lib/clientKeys";
-import { IS_GITHUB_PAGES, IS_PLATFORM_EMBED } from "@/lib/runtime";
+import { CLIENT_PROVIDER_ENABLED } from "@/lib/runtime";
 
 export function ApiKeyButton() {
   const [open, setOpen] = useState(false);
   const [key, setKey] = useState("");
   const [saved, setSaved] = useState(false);
 
-  if (!IS_GITHUB_PAGES || IS_PLATFORM_EMBED) return null;
+  if (!CLIENT_PROVIDER_ENABLED) return null;
 
   function openModal() {
     setKey(getClientImageApiKey());

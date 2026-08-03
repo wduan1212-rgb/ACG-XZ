@@ -364,10 +364,11 @@ export async function lookupTtsVoice(voiceId = "", { test = true } = {}) {
   };
   if (!serverTts.configured || !test) return result;
   let res;
+  const requestKey = generationOperationKey("voice-lookup");
   try {
     res = await fetch(`/api/tts/voice/lookup?voiceId=${encodeURIComponent(id)}&test=${test ? "true" : "false"}`, {
       cache: "no-store",
-      headers: creatorAuthHeaders()
+      headers: creatorAuthHeaders({ "Idempotency-Key": requestKey })
     });
   } catch (e) {
     result.detail = "连不上本地服务端 /api/tts/voice/lookup：" + (e.message || e);

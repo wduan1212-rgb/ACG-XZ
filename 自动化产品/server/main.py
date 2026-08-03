@@ -31,6 +31,7 @@ import sqlite3
 import sys
 import math
 import weakref
+from contextlib import asynccontextmanager
 from datetime import date as calendar_date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -456,8 +457,23 @@ JUSTONE_WECHAT_BASIC_PATH = os.getenv("JUSTONE_WECHAT_BASIC_PATH", "/api/weixin-
 JUSTONE_WECHAT_METRICS_PATH = os.getenv("JUSTONE_WECHAT_METRICS_PATH", "/api/weixin-channels/get-video-metrics/v1")
 JUSTONE_TIMEOUT = float(os.getenv("JUSTONE_TIMEOUT", "90") or "90")
 
-app = FastAPI(title="ACG 视频工具 API", version="0.1.0",
-              description="账号化 AI 视频生产工作台后端。CLI / agent 可直接按本 OpenAPI 调用。")
+@asynccontextmanager
+async def _app_lifespan(_app):
+    # The helpers are resolved when startup runs, after this module has been
+    # fully loaded.  Importing the application therefore remains read-only.
+    await _start_model_usage_completion_spool_reconciler()
+    try:
+        yield
+    finally:
+        await _stop_model_usage_completion_spool_reconciler()
+
+
+app = FastAPI(
+    title="ACG 视频工具 API",
+    version="0.1.0",
+    description="账号化 AI 视频生产工作台后端。CLI / agent 可直接按本 OpenAPI 调用。",
+    lifespan=_app_lifespan,
+)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # The v137 audit proved that global admin collection access and the legacy
@@ -732,7 +748,13 @@ def _clean_llm_text(text: str = "") -> str:
     return out.strip()
 
 
-async def _call_llm(body: dict, auth_header: str = "", force_deployed_model: bool = True):
+async def _call_llm(
+    body: dict,
+    auth_header: str = "",
+    force_deployed_model: bool = True,
+    *,
+    attempt_ledger=None,
+):
     if force_deployed_model and LLM_FORCE_MODEL and LLM_MODEL:
         body["model"] = LLM_MODEL
     if not _llm_supports_response_format():
@@ -754,19 +776,40 @@ async def _call_llm(body: dict, auth_header: str = "", force_deployed_model: boo
     last_error = None
     async with httpx.AsyncClient(timeout=httpx.Timeout(LLM_TIMEOUT, connect=LLM_CONNECT_TIMEOUT), trust_env=False) as client:
         for attempt in range(2):
+            attempt_receipt = (
+                await attempt_ledger.acquire()
+                if attempt_ledger is not None
+                else None
+            )
             try:
                 response = await client.post(LLM_ENDPOINT, json=body, headers=_llm_headers(auth_header))
+            except asyncio.CancelledError as exc:
+                if attempt_ledger is not None:
+                    await attempt_ledger.mark_latest(exc, definitive=False)
+                raise
             except httpx.RequestError as exc:
                 last_error = exc
                 if attempt == 0:
+                    if attempt_ledger is not None:
+                        await attempt_ledger.finish_retry(
+                            attempt_receipt,
+                            error=exc,
+                        )
                     await asyncio.sleep(0.35)
                     continue
+                if attempt_ledger is not None:
+                    await attempt_ledger.mark_latest(exc, definitive=False)
                 raise _llm_error(502, f"{exc.__class__.__name__}: {exc}")
             response_detail = response.text[:800].lower()
             permanent_limit = any(marker in response_detail for marker in (
                 "余额", "额度", "insufficient", "quota", "credit",
             ))
             if response.status_code in transient_statuses and not permanent_limit and attempt == 0:
+                if attempt_ledger is not None:
+                    await attempt_ledger.finish_retry(
+                        attempt_receipt,
+                        response=response,
+                    )
                 retry_after = response.headers.get("retry-after", "")
                 try:
                     delay_seconds = min(1.6, max(0.1, float(retry_after)))
@@ -1368,12 +1411,34 @@ def _is_image_busy_error(detail: str) -> bool:
     )
 
 
-async def _post_json_with_retry(client: httpx.AsyncClient, endpoint: str, body: dict, headers: dict, retries: int = 24):
+async def _post_json_with_retry(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    body: dict,
+    headers: dict,
+    retries: int = 24,
+    *,
+    attempt_ledger=None,
+):
     last_r = None
     last_data = None
     for attempt in range(retries + 1):
-        async with _image_submit_queue():
-            r = await client.post(endpoint, json=body, headers=headers)
+        attempt_receipt = (
+            await attempt_ledger.acquire()
+            if attempt_ledger is not None
+            else None
+        )
+        try:
+            async with _image_submit_queue():
+                r = await client.post(endpoint, json=body, headers=headers)
+        except asyncio.CancelledError as exc:
+            if attempt_ledger is not None:
+                await attempt_ledger.mark_latest(exc, definitive=False)
+            raise
+        except httpx.RequestError:
+            # This helper historically did not retry transport errors. Leave
+            # the final attempt open so the owning route can mark it unknown.
+            raise
         last_r = r
         ctype = r.headers.get("content-type") or ""
         try:
@@ -1385,17 +1450,43 @@ async def _post_json_with_retry(client: httpx.AsyncClient, endpoint: str, body: 
             return r, data
         detail = _http_detail(data) if data else r.text[:1000]
         if _is_image_busy_error(detail) and attempt < retries:
+            if attempt_ledger is not None:
+                await attempt_ledger.finish_retry(
+                    attempt_receipt,
+                    response=r,
+                )
             await asyncio.sleep(min(3 + attempt * 2, 12))
             continue
         return r, data
     return last_r, last_data
 
 
-async def _post_image_form_with_retry(client: httpx.AsyncClient, endpoint: str, *, data, files, headers, retries: int = 24):
+async def _post_image_form_with_retry(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    data,
+    files,
+    headers,
+    retries: int = 24,
+    attempt_ledger=None,
+):
     last_response = None
     for attempt in range(retries + 1):
-        async with _image_submit_queue():
-            response = await client.post(endpoint, data=data, files=files, headers=headers)
+        attempt_receipt = (
+            await attempt_ledger.acquire()
+            if attempt_ledger is not None
+            else None
+        )
+        try:
+            async with _image_submit_queue():
+                response = await client.post(endpoint, data=data, files=files, headers=headers)
+        except asyncio.CancelledError as exc:
+            if attempt_ledger is not None:
+                await attempt_ledger.mark_latest(exc, definitive=False)
+            raise
+        except httpx.RequestError:
+            raise
         last_response = response
         try:
             payload = response.json()
@@ -1403,6 +1494,11 @@ async def _post_image_form_with_retry(client: httpx.AsyncClient, endpoint: str, 
             payload = None
         detail = _http_detail(payload) if payload else response.text[:1000]
         if response.status_code >= 400 and _is_image_busy_error(detail) and attempt < retries:
+            if attempt_ledger is not None:
+                await attempt_ledger.finish_retry(
+                    attempt_receipt,
+                    response=response,
+                )
             await asyncio.sleep(min(3 + attempt * 2, 12))
             continue
         return response
@@ -1565,32 +1661,481 @@ def llm_config(_me=Depends(require_creator)):
     }
 
 
-def _record_llm_usage(member, response_data, feature, fallback_model=""):
-    """Best-effort 记录可核验 token；统计故障绝不能影响创作结果。"""
-    usage = response_data.get("usage") if isinstance(response_data, dict) else None
-    if not isinstance(usage, dict):
-        return
+class _ModelUsageGateFailure(HTTPException):
+    """A durable usage intent could not authorize an upstream model call."""
+
+
+def _model_usage_provider_name(endpoint: str, fallback: str) -> str:
+    """Return a stable provider label without persisting credentials or query data."""
     try:
-        store.record_llm_usage(
-            member.get("id"), member.get("name"), feature,
-            response_data.get("model") or fallback_model, usage,
-        )
+        host = str(urlparse(str(endpoint or "")).hostname or "").strip().lower()
     except Exception:
-        # 统计是旁路能力，不让 SQLite 暂时忙或旧数据表影响生产调用。
-        pass
+        host = ""
+    return (host or str(fallback or "model-provider").strip() or "model-provider")[:80]
 
 
-def _record_model_api_usage(member, api_type, feature, model, output_units=1, unit_label="任务"):
-    """Best-effort 记录已成功提交/返回的非 Token 模型调用。
+def _begin_model_usage_call(
+    member,
+    *,
+    feature: str,
+    usage_kind: str,
+    operation: str,
+    idempotency_key: str,
+    request_fingerprint: str,
+    provider: str,
+    model: str,
+    surface: str = "infinite-canvas",
+    source: str = "custom-canvas",
+) -> dict:
+    """Durably authorize exactly one provider call before any network access.
 
-    与 _record_llm_usage 一样完全旁路：SQLite 临时繁忙不能影响已成功的图片或视频创作。
+    This gate is independent of points billing. In particular, an unlimited
+    allowance must not turn a replayed canvas request into a second paid model
+    call. Any receipt write failure therefore fails closed.
     """
+    raw_key = str(idempotency_key or "").strip()
+    stable_key = _quota_operation_key(operation, raw_key)
+    if not stable_key:
+        raise _ModelUsageGateFailure(400, "模型请求必须提供稳定的 Idempotency-Key")
+    member_id = str((member or {}).get("id") or "").strip()
+    if not member_id:
+        raise _ModelUsageGateFailure(403, "当前账号无法建立模型用量凭证")
     try:
-        store.record_api_usage(
-            member.get("id"), member.get("name"), api_type, feature, model,
-            output_units=output_units, unit_label=unit_label,
+        receipt = store.begin_model_usage_receipt(
+            member_id,
+            surface=str(surface or "infinite-canvas")[:80],
+            feature=str(feature or "无限画布模型调用"),
+            usage_kind=str(usage_kind or ""),
+            operation=str(operation or "canvas.model")[:80],
+            operation_id=stable_key,
+            idempotency_key=stable_key,
+            request_fingerprint=str(request_fingerprint or ""),
+            source=str(source or "custom-canvas")[:80],
+            provider=str(provider or "model-provider")[:80],
+            model=str(model or "unknown-model")[:180],
+            team_id=str((member or {}).get("teamId") or ""),
+        )
+    except store.ModelUsageReceiptConflict as exc:
+        raise _ModelUsageGateFailure(409, "该幂等键已用于其他模型请求") from exc
+    except Exception as exc:
+        print(
+            f"[model-usage] begin failed: {operation} "
+            f"{exc.__class__.__name__}: {str(exc)[:200]}",
+            file=sys.stderr,
+        )
+        raise _ModelUsageGateFailure(503, "模型用量凭证落盘失败，本次未调用上游") from exc
+    if not isinstance(receipt, dict) or not receipt.get("receiptId"):
+        raise _ModelUsageGateFailure(503, "模型用量凭证回包不完整，本次未调用上游")
+    if not receipt.get("shouldCallProvider"):
+        raise _ModelUsageGateFailure(409, "该模型任务已存在或正在处理，已拒绝重复调用上游")
+    return receipt
+
+
+def _mark_model_usage_call(receipt, error, *, definitive: Optional[bool] = None):
+    """Classify an attempt without persisting provider payload or user input."""
+    receipt_id = str((receipt or {}).get("receiptId") or "").strip()
+    if not receipt_id:
+        return
+    if definitive is None:
+        status_code = getattr(error, "status_code", 0)
+        definitive = bool(400 <= int(status_code or 0) < 500)
+    raw_detail = getattr(error, "detail", "") or str(error or "model provider error")
+    try:
+        encoded_detail = json.dumps(
+            raw_detail,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
         )
     except Exception:
+        encoded_detail = str(raw_detail or "")
+    evidence_hash = hashlib.sha256(encoded_detail.encode("utf-8")).hexdigest()[:20]
+    error_name = error.__class__.__name__ if error is not None else "ProviderError"
+    status_code = int(getattr(error, "status_code", 0) or 0)
+    detail = f"{error_name};status={status_code};evidence_sha256={evidence_hash}"
+    try:
+        if definitive:
+            store.fail_model_usage_receipt(receipt_id, detail)
+        else:
+            store.mark_model_usage_receipt_unknown(receipt_id, detail)
+    except Exception as exc:
+        print(
+            f"[model-usage] failure mark failed: {receipt_id} "
+            f"{exc.__class__.__name__}: {str(exc)[:200]}",
+            file=sys.stderr,
+        )
+
+
+def _complete_model_usage_call(
+    receipt,
+    *,
+    usage=None,
+    provider_ref: str = "",
+    provider: str = "",
+    model: str = "",
+    output_units: int = 0,
+    unit_label: str = "",
+) -> bool:
+    """Confirm a call, then synchronously attempt its legacy-ledger projection.
+
+    Once a provider result is usable, accounting I/O must not discard it. A
+    failed completion therefore leaves the pre-call receipt pending for repair;
+    a failed projection leaves its durable outbox pending/retryable.
+    """
+    receipt_id = str((receipt or {}).get("receiptId") or "").strip()
+    if not receipt_id:
+        return False
+    completed_at = int(time.time() * 1000)
+    completion_kwargs = {
+        "usage": usage if isinstance(usage, dict) else {},
+        "provider_ref": str(provider_ref or "")[:240],
+        "provider": str(provider or "")[:80],
+        "model": str(model or "")[:180],
+        "calls": 1,
+        "output_units": max(0, int(output_units or 0)),
+        "unit_label": str(unit_label or "")[:24],
+        "event_at": completed_at,
+        "now_ms": completed_at,
+    }
+    try:
+        store.complete_model_usage_receipt(
+            receipt_id,
+            **completion_kwargs,
+        )
+    except Exception as exc:
+        print(
+            f"[model-usage] complete pending: {receipt_id} "
+            f"{exc.__class__.__name__}: {str(exc)[:200]}",
+            file=sys.stderr,
+        )
+        try:
+            spooled = store.spool_model_usage_completion(
+                receipt_id,
+                **completion_kwargs,
+            )
+            print(
+                f"[model-usage] completion spooled: {receipt_id} "
+                f"state={str((spooled or {}).get('state') or 'pending')}",
+                file=sys.stderr,
+            )
+        except Exception as spool_exc:
+            # The pre-call receipt remains an auditable unresolved attempt, but
+            # exact completion units need operator recovery from provider logs.
+            # Keep the usable provider response; never hide this double fault.
+            print(
+                f"[model-usage] CRITICAL completion spool failed: {receipt_id} "
+                f"{spool_exc.__class__.__name__}: {str(spool_exc)[:200]}",
+                file=sys.stderr,
+            )
+        return False
+    try:
+        store.reconcile_model_usage_outbox(receipt_id=receipt_id)
+    except Exception as exc:
+        print(
+            f"[model-usage] outbox pending: {receipt_id} "
+            f"{exc.__class__.__name__}: {str(exc)[:200]}",
+            file=sys.stderr,
+        )
+    return True
+
+
+async def _begin_model_usage_call_async(member, **kwargs):
+    """Keep SQLite lock waits away from FastAPI's shared event loop."""
+    return await asyncio.to_thread(_begin_model_usage_call, member, **kwargs)
+
+
+async def _mark_model_usage_call_async(receipt, error, *, definitive=None):
+    return await asyncio.to_thread(
+        _mark_model_usage_call,
+        receipt,
+        error,
+        definitive=definitive,
+    )
+
+
+async def _complete_model_usage_call_async(receipt, **kwargs):
+    return await asyncio.to_thread(_complete_model_usage_call, receipt, **kwargs)
+
+
+class _ModelUsageAttempts:
+    """One durable receipt per actual provider network attempt.
+
+    Retry helpers call :meth:`authorize` immediately before network access and
+    close intermediate attempts before sleeping/retrying.  The final attempt is
+    closed by the owning adapter once it can classify the provider response.
+    """
+
+    def __init__(
+        self,
+        member,
+        *,
+        feature: str,
+        usage_kind: str,
+        operation: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+        provider: str,
+        model: str,
+        surface: str = "main",
+        source: str = "main-provider",
+    ):
+        self.member = member
+        self.feature = str(feature or "模型调用")
+        self.usage_kind = str(usage_kind or "")
+        self.operation = str(operation or "main.model")
+        self.idempotency_key = str(idempotency_key or "")
+        self.request_fingerprint = str(request_fingerprint or "")
+        self.provider = str(provider or "model-provider")
+        self.model = str(model or "unknown-model")
+        self.surface = str(surface or "main")
+        self.source = str(source or "main-provider")
+        self.receipts = []
+        self._terminal_ids = set()
+        self._prepared_ids = set()
+
+    @property
+    def latest(self):
+        return self.receipts[-1] if self.receipts else None
+
+    async def authorize(self):
+        ordinal = len(self.receipts) + 1
+        attempt_key = f"{self.idempotency_key}:attempt:{ordinal}"
+        attempt_fingerprint = hashlib.sha256(
+            f"{self.request_fingerprint}:attempt:{ordinal}".encode("utf-8")
+        ).hexdigest()
+        receipt = await _begin_model_usage_call_async(
+            self.member,
+            feature=self.feature,
+            usage_kind=self.usage_kind,
+            operation=self.operation,
+            idempotency_key=attempt_key,
+            request_fingerprint=attempt_fingerprint,
+            provider=self.provider,
+            model=self.model,
+            surface=self.surface,
+            source=self.source,
+        )
+        self.receipts.append(receipt)
+        return receipt
+
+    async def prime(self):
+        """Open attempt one at the route gate, before entering adapter code."""
+        receipt = await self.authorize()
+        receipt_id = str((receipt or {}).get("receiptId") or "")
+        if receipt_id:
+            self._prepared_ids.add(receipt_id)
+        return receipt
+
+    async def acquire(self):
+        """Consume a primed receipt or authorize the next retry attempt."""
+        latest = self.latest
+        latest_id = str((latest or {}).get("receiptId") or "")
+        if latest_id and latest_id in self._prepared_ids:
+            self._prepared_ids.discard(latest_id)
+            return latest
+        return await self.authorize()
+
+    def _is_terminal(self, receipt) -> bool:
+        return str((receipt or {}).get("receiptId") or "") in self._terminal_ids
+
+    def _remember_terminal(self, receipt):
+        receipt_id = str((receipt or {}).get("receiptId") or "")
+        if receipt_id:
+            self._terminal_ids.add(receipt_id)
+
+    async def finish_retry(self, receipt, *, response=None, error=None):
+        if self._is_terminal(receipt):
+            return
+        if error is not None:
+            await _mark_model_usage_call_async(receipt, error, definitive=False)
+        else:
+            status_code = int(getattr(response, "status_code", 0) or 0)
+            detail = "canvas provider retry"
+            try:
+                detail = _http_detail(response.json()) or response.text[:800] or detail
+            except Exception:
+                detail = str(getattr(response, "text", "") or detail)[:800]
+            provider_error = HTTPException(status_code or 502, detail)
+            await _mark_model_usage_call_async(
+                receipt,
+                provider_error,
+                definitive=400 <= status_code < 500,
+            )
+        self._remember_terminal(receipt)
+
+    async def mark_latest(self, error, *, definitive=None):
+        receipt = self.latest
+        if not receipt or self._is_terminal(receipt):
+            return
+        await _mark_model_usage_call_async(receipt, error, definitive=definitive)
+        self._remember_terminal(receipt)
+
+    async def complete_latest(self, **kwargs):
+        receipt = self.latest
+        if not receipt or self._is_terminal(receipt):
+            return False
+        completed = await _complete_model_usage_call_async(receipt, **kwargs)
+        self._remember_terminal(receipt)
+        return completed
+
+
+# Infinite-canvas keeps its historical surface/source identity while sharing
+# the same per-network-attempt primitive with main-service providers.
+class _CanvasModelUsageAttempts(_ModelUsageAttempts):
+    def __init__(self, member, **kwargs):
+        kwargs.setdefault("surface", "infinite-canvas")
+        kwargs.setdefault("source", "custom-canvas")
+        super().__init__(member, **kwargs)
+
+
+def _provider_request_key(provided: str = "") -> str:
+    """Return an opaque request key without deriving it from prompt content.
+
+    Existing browser clients do not all send an Idempotency-Key for text-only
+    model routes.  A caller-supplied key is preferred; otherwise one opaque key
+    is generated once for the current HTTP request and then remains stable for
+    every retry attempt opened below it.  Prompt/image/audio content is only
+    represented by the one-way request fingerprint.
+    """
+    raw = re.sub(r"[\x00-\x1f\x7f]+", "", str(provided or "")).strip()
+    return raw or f"request-{uuid.uuid4().hex}"
+
+
+def _main_provider_attempts(
+    member,
+    *,
+    feature: str,
+    usage_kind: str,
+    operation: str,
+    request_value,
+    provider: str,
+    model: str,
+    idempotency_key: str = "",
+    surface: str = "main",
+) -> _ModelUsageAttempts:
+    return _ModelUsageAttempts(
+        member,
+        feature=feature,
+        usage_kind=usage_kind,
+        operation=operation,
+        idempotency_key=_provider_request_key(idempotency_key),
+        request_fingerprint=_quota_request_fingerprint(request_value),
+        provider=provider,
+        model=model,
+        surface=surface,
+        source="main-provider",
+    )
+
+
+async def _finish_llm_attempt(ledger, response, *, fallback_model: str = "") -> dict:
+    """Classify a final LLM response and durably confirm accepted usage."""
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code >= 300:
+        try:
+            detail = _http_detail(response.json())
+        except Exception:
+            detail = str(getattr(response, "text", "") or "语言模型调用失败")[:800]
+        error = _llm_error(status_code if status_code >= 400 else 502, detail)
+        await ledger.mark_latest(error, definitive=400 <= status_code < 500)
+        raise error
+    try:
+        data = response.json()
+    except Exception as exc:
+        # A 2xx response proves that the provider received the call, but without
+        # a parseable response we cannot assert token units or provider id.
+        await ledger.complete_latest(model=fallback_model)
+        raise HTTPException(502, "语言模型已返回，但回包无法解析") from exc
+    if isinstance(data, dict) and data.get("error"):
+        error = HTTPException(502, _http_detail(data.get("error")) or "语言模型调用失败")
+        await ledger.mark_latest(error, definitive=True)
+        raise error
+    await ledger.complete_latest(
+        usage=data.get("usage") if isinstance(data, dict) else {},
+        provider_ref=str(data.get("id") or data.get("request_id") or "") if isinstance(data, dict) else "",
+        provider=ledger.provider,
+        model=str(data.get("model") or fallback_model or ledger.model) if isinstance(data, dict) else (fallback_model or ledger.model),
+    )
+    return data
+
+
+_MODEL_USAGE_SPOOL_RECONCILER_TASK = None
+
+
+async def _model_usage_completion_spool_reconciler():
+    """Replay rare completion fallbacks without delaying generation requests."""
+
+    try:
+        configured_interval = float(
+            os.getenv("MODEL_USAGE_SPOOL_RECONCILE_SECONDS", "15") or "15"
+        )
+    except (TypeError, ValueError, OverflowError):
+        configured_interval = 15.0
+    interval = max(5.0, min(configured_interval, 300.0))
+    while True:
+        try:
+            if not runtime_config.is_read_only():
+                status = await asyncio.to_thread(store.model_usage_completion_spool_status)
+                if int((status or {}).get("pending") or 0) > 0:
+                    result = await asyncio.to_thread(
+                        store.reconcile_model_usage_completion_spool,
+                        25,
+                    )
+                    if int((result or {}).get("failed") or 0) > 0:
+                        print(
+                            "[model-usage] completion spool replay remains pending: "
+                            f"{result}",
+                            file=sys.stderr,
+                        )
+                outbox_pending = await asyncio.to_thread(
+                    store.pending_model_usage_outbox_count
+                )
+                if int(outbox_pending or 0) > 0:
+                    projection = await asyncio.to_thread(
+                        store.reconcile_model_usage_outbox,
+                        100,
+                    )
+                    if int((projection or {}).get("failed") or 0) > 0:
+                        print(
+                            "[model-usage] legacy projection remains pending: "
+                            f"{projection}",
+                            file=sys.stderr,
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(
+                f"[model-usage] completion spool replay error: "
+                f"{exc.__class__.__name__}: {str(exc)[:200]}",
+                file=sys.stderr,
+            )
+        await asyncio.sleep(interval)
+
+
+async def _start_model_usage_completion_spool_reconciler():
+    """Start only after FastAPI startup; importing modules remains read-only."""
+
+    global _MODEL_USAGE_SPOOL_RECONCILER_TASK
+    if runtime_config.is_read_only() or (
+        _MODEL_USAGE_SPOOL_RECONCILER_TASK
+        and not _MODEL_USAGE_SPOOL_RECONCILER_TASK.done()
+    ):
+        return
+    _MODEL_USAGE_SPOOL_RECONCILER_TASK = asyncio.create_task(
+        _model_usage_completion_spool_reconciler(),
+        name="model-usage-completion-spool",
+    )
+
+
+async def _stop_model_usage_completion_spool_reconciler():
+    global _MODEL_USAGE_SPOOL_RECONCILER_TASK
+    task = _MODEL_USAGE_SPOOL_RECONCILER_TASK
+    _MODEL_USAGE_SPOOL_RECONCILER_TASK = None
+    if not task:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
         pass
 
 
@@ -1808,7 +2353,10 @@ def _tts_generation_points(text: str) -> int:
 
 
 @app.post("/api/llm/test")
-async def llm_test(_me=Depends(require_creator)):
+async def llm_test(
+    _me=Depends(require_creator),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
     if not LLM_API_KEY:
         raise HTTPException(500, "服务器未配置 LLM_API_KEY")
     body = {
@@ -1816,39 +2364,50 @@ async def llm_test(_me=Depends(require_creator)):
         "temperature": 0,
         "messages": [{"role": "user", "content": "请只回复：在线"}],
     }
-    r = await _call_llm(body)
-    if r.status_code >= 400:
-        raise _llm_error(r.status_code, _http_detail(r.json() if "json" in (r.headers.get("content-type") or "") else r.text[:800]))
-    data = r.json()
+    attempts = _main_provider_attempts(
+        _me, feature="语言模型连通测试", usage_kind="llm", operation="llm.test",
+        request_value=body, idempotency_key=idempotency_key,
+        provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=LLM_MODEL,
+        surface="settings",
+    )
+    r = await _call_llm(body, attempt_ledger=attempts)
+    data = await _finish_llm_attempt(attempts, r, fallback_model=LLM_MODEL)
     content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
     return {"ok": True, "model": LLM_MODEL, "content": content, "endpoint": _mask_endpoint(LLM_ENDPOINT)}
 
 
 @app.post("/api/llm")
-async def llm_proxy(req: LLMReq, _me=Depends(require_creator)):
+async def llm_proxy(
+    req: LLMReq,
+    _me=Depends(require_creator),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
     """前端 / CLI 统一从这里调模型，Key 只存在服务器环境变量里。"""
     if not LLM_API_KEY:
         raise HTTPException(500, "服务器未配置 LLM_API_KEY")
     body = {"model": LLM_MODEL, "temperature": req.temperature, "messages": req.messages}
     if req.json_mode:
         body["response_format"] = {"type": "json_object"}
-    r = await _call_llm(body)
-    if r.status_code != 200:
-        try:
-            detail = _http_detail(r.json())
-        except Exception:
-            detail = r.text[:800]
-        raise _llm_error(r.status_code, detail)
-    data = r.json()
+    attempts = _main_provider_attempts(
+        _me, feature="通用文案", usage_kind="llm", operation="llm.proxy",
+        request_value=req, idempotency_key=idempotency_key,
+        provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=LLM_MODEL,
+        surface="main-workspace",
+    )
+    r = await _call_llm(body, attempt_ledger=attempts)
+    data = await _finish_llm_attempt(attempts, r, fallback_model=LLM_MODEL)
     content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
     if not content:
         raise _llm_error(502, "模型无有效返回")
-    _record_llm_usage(_me, data, "通用文案", LLM_MODEL)
     return {"content": content}
 
 
 @app.post("/api/llm/vision-copy")
-async def llm_vision_copy(req: VisionCopyReq, _me=Depends(require_creator)):
+async def llm_vision_copy(
+    req: VisionCopyReq,
+    _me=Depends(require_creator),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
     """单图创作：让已配置的视觉语言模型看最终成图，再写发布标题与正文。"""
     if not LLM_API_KEY:
         raise HTTPException(500, "服务器未配置语言模型")
@@ -1875,18 +2434,22 @@ async def llm_vision_copy(req: VisionCopyReq, _me=Depends(require_creator)):
             ],
         }],
     }
-    r = await _call_llm(body, force_deployed_model=not bool(LLM_VISION_MODEL))
-    if r.status_code >= 400:
-        try:
-            detail = _http_detail(r.json())
-        except Exception:
-            detail = r.text[:500]
-        raise _llm_error(r.status_code, detail)
-    data = r.json()
+    actual_model = LLM_VISION_MODEL or LLM_MODEL
+    attempts = _main_provider_attempts(
+        _me, feature="成图文案", usage_kind="llm", operation="llm.vision-copy",
+        request_value=req, idempotency_key=idempotency_key,
+        provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=actual_model,
+        surface="main-workspace",
+    )
+    r = await _call_llm(
+        body,
+        force_deployed_model=not bool(LLM_VISION_MODEL),
+        attempt_ledger=attempts,
+    )
+    data = await _finish_llm_attempt(attempts, r, fallback_model=actual_model)
     content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
     if not content:
         raise HTTPException(502, "视觉模型没有返回文案")
-    _record_llm_usage(_me, data, "成图文案", LLM_VISION_MODEL or LLM_MODEL)
     return {"content": content}
 
 
@@ -2153,7 +2716,11 @@ def _clean_copy_reference_brief(value: str) -> str:
 
 
 @app.post("/api/llm/image-copy-reference-brief")
-async def llm_image_copy_reference_brief(req: ImageCopyReferenceBriefReq, _me=Depends(require_creator)):
+async def llm_image_copy_reference_brief(
+    req: ImageCopyReferenceBriefReq,
+    _me=Depends(require_creator),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
     """Let a VLM ground title-only image copy in the user's shared references.
 
     The result is deliberately a short editorial angle, not an image caption and
@@ -2205,7 +2772,7 @@ async def llm_image_copy_reference_brief(req: ImageCopyReferenceBriefReq, _me=De
     )
     content = [{"type": "text", "text": "发布标题：%s\n统一参考图：\n%s" % (title[:500], ref_lines)}]
     content.extend({"type": "image_url", "image_url": {"url": _image_ref_to_data_url(blob, mime)}} for _, (_, blob, mime) in seen)
-    response = await _call_llm({
+    llm_body = {
         "model": vision_model,
         "temperature": 0.18,
         "messages": [
@@ -2213,14 +2780,20 @@ async def llm_image_copy_reference_brief(req: ImageCopyReferenceBriefReq, _me=De
             {"role": "user", "content": content},
         ],
         "response_format": {"type": "json_object"},
-    }, force_deployed_model=not bool(LLM_VISION_MODEL))
-    if response.status_code >= 400:
-        try:
-            detail = _http_detail(response.json())
-        except Exception:
-            detail = response.text[:500]
-        raise _llm_error(response.status_code, detail)
-    data = response.json()
+    }
+    attempts = _main_provider_attempts(
+        _me, feature="图文文案参考", usage_kind="llm",
+        operation="llm.image-copy-reference-brief", request_value=req,
+        idempotency_key=idempotency_key,
+        provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=vision_model,
+        surface="main-workspace",
+    )
+    response = await _call_llm(
+        llm_body,
+        force_deployed_model=not bool(LLM_VISION_MODEL),
+        attempt_ledger=attempts,
+    )
+    data = await _finish_llm_attempt(attempts, response, fallback_model=vision_model)
     brief, required_terms, terms_source = _copy_reference_brief_fields(
         _deep_get(data, ("choices", 0, "message", "content"), default=""),
         [ref for ref, _ in seen],
@@ -2230,7 +2803,6 @@ async def llm_image_copy_reference_brief(req: ImageCopyReferenceBriefReq, _me=De
         # send the downstream copy writer back to generic title templates.
         reason = "模型没有返回可解析的内容关联摘要" if not brief else "模型没有返回可确认的参考图主题词"
         return {"ok": True, "source": "vision-incomplete", "brief": "", "requiredTerms": [], "reason": reason}
-    _record_llm_usage(_me, data, "图文文案参考", vision_model)
     return {
         "ok": True,
         "source": "vision",
@@ -2242,7 +2814,11 @@ async def llm_image_copy_reference_brief(req: ImageCopyReferenceBriefReq, _me=De
 
 
 @app.post("/api/llm/image-reference-plan")
-async def llm_image_reference_plan(req: ImageReferencePlanReq, _me=Depends(require_creator)):
+async def llm_image_reference_plan(
+    req: ImageReferencePlanReq,
+    _me=Depends(require_creator),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
     """视觉模型先为整组图卡分配参考图；其短规划会进入后续完整提示词生成。"""
     cards = [card for card in (req.cards or [])[:12] if 0 <= int(card.index) < 24]
     refs = [ref for ref in (req.refs or [])[:8] if str(ref.id or "").strip()]
@@ -2311,14 +2887,19 @@ async def llm_image_reference_plan(req: ImageReferencePlanReq, _me=Depends(requi
         ],
         "response_format": {"type": "json_object"},
     }
-    response = await _call_llm(body, force_deployed_model=not bool(LLM_VISION_MODEL))
-    if response.status_code >= 400:
-        try:
-            detail = _http_detail(response.json())
-        except Exception:
-            detail = response.text[:500]
-        raise _llm_error(response.status_code, detail)
-    data = response.json()
+    attempts = _main_provider_attempts(
+        _me, feature="参考图编排", usage_kind="llm",
+        operation="llm.image-reference-plan", request_value=req,
+        idempotency_key=idempotency_key,
+        provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=vision_model,
+        surface="main-workspace",
+    )
+    response = await _call_llm(
+        body,
+        force_deployed_model=not bool(LLM_VISION_MODEL),
+        attempt_ledger=attempts,
+    )
+    data = await _finish_llm_attempt(attempts, response, fallback_model=vision_model)
     parsed = _image_reference_plan_json(_deep_get(data, ("choices", 0, "message", "content"), default=""))
     valid_indexes = {card.index for card in cards}
     allowed_ids_by_card = {
@@ -2363,12 +2944,15 @@ async def llm_image_reference_plan(req: ImageReferencePlanReq, _me=Depends(requi
         [str(ref.id) for ref, _ in seen if int(ref.slotIndex) < 0],
         refs_by_id,
     )
-    _record_llm_usage(_me, data, "参考图编排", vision_model)
     return {"ok": True, "source": "vision", "model": data.get("model") or vision_model, "cards": output}
 
 
 @app.post("/api/chat/completions")
-async def chat_completions_proxy(req: Request, _me=Depends(require_creator)):
+async def chat_completions_proxy(
+    req: Request,
+    _me=Depends(require_creator),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
     """OpenAI 兼容透传：前端语言模型 Provider 指到这里即可，免浏览器跨域、Key 藏服务器。
     请求体原样转发到 LLM_ENDPOINT，响应原样返回（保留 choices 结构供前端解析）。
     只使用服务器环境变量 LLM_API_KEY；成员 Bearer token 仅用于平台身份校验。"""
@@ -2380,17 +2964,16 @@ async def chat_completions_proxy(req: Request, _me=Depends(require_creator)):
         body = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw)
     except Exception:
         raise HTTPException(400, "请求体不是合法 JSON")
-    r = await _call_llm(body, auth)
-    if r.status_code >= 400:
-        try:
-            detail = _http_detail(r.json())
-        except Exception:
-            detail = r.text[:800]
-        raise _llm_error(r.status_code, detail)
-    try:
-        _record_llm_usage(_me, r.json(), "兼容代理", body.get("model") or LLM_MODEL)
-    except Exception:
-        pass
+    requested_model = str(body.get("model") or LLM_MODEL)
+    attempts = _main_provider_attempts(
+        _me, feature="兼容代理", usage_kind="llm",
+        operation="llm.chat-completions", request_value=body,
+        idempotency_key=idempotency_key,
+        provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=requested_model,
+        surface="provider-proxy",
+    )
+    r = await _call_llm(body, auth, attempt_ledger=attempts)
+    await _finish_llm_attempt(attempts, r, fallback_model=requested_model)
     return Response(content=r.content, status_code=r.status_code, media_type="application/json")
 
 
@@ -2415,7 +2998,7 @@ def image_config(_me=Depends(require_creator)):
     }
 
 
-async def _image_generate_impl(req: ImageGenerateReq, member=None):
+async def _image_generate_impl(req: ImageGenerateReq, member=None, *, attempt_ledger=None):
     """同源图片生成代理：解决浏览器跨域，并保留最多 5 张参考图。
     服务器托管模式只使用服务器配置；本地客户端 Key 模式仅允许白名单端点。"""
     api_key, endpoint, edit_endpoint = _image_request_config(req)
@@ -2452,6 +3035,7 @@ async def _image_generate_impl(req: ImageGenerateReq, member=None):
     used_refs = 0
     skipped_refs = 0
     request_endpoint = endpoint
+    attempt_kwargs = {"attempt_ledger": attempt_ledger} if attempt_ledger is not None else {}
     try:
         async with httpx.AsyncClient(**_httpx_async_client_kwargs(timeout=httpx.Timeout(180.0, connect=12.0), trust_env=False, follow_redirects=True)) as client:
             ref_files = await _collect_image_ref_files(client, req.refs or [])
@@ -2471,7 +3055,10 @@ async def _image_generate_impl(req: ImageGenerateReq, member=None):
                     size=req.size,
                 )
                 request_endpoint = _maas_endpoint_for_refs(endpoint, bool(ref_files))
-                r, data = await _post_json_with_retry(client, request_endpoint, maas_body, json_headers)
+                r, data = await _post_json_with_retry(
+                    client, request_endpoint, maas_body, json_headers,
+                    **attempt_kwargs,
+                )
             elif responses_mode:
                 used_refs = min(len(ref_files), 8)
                 ref_note = ""
@@ -2483,7 +3070,10 @@ async def _image_generate_impl(req: ImageGenerateReq, member=None):
                     "input": _responses_input(prompt + ref_note, ref_files),
                     "stream": False
                 }
-                r, data = await _post_json_with_retry(client, endpoint, response_body, json_headers)
+                r, data = await _post_json_with_retry(
+                    client, endpoint, response_body, json_headers,
+                    **attempt_kwargs,
+                )
             elif chat_mode:
                 content = [{"type": "text", "text": prompt}]
                 for idx, (name, blob, mime) in enumerate(ref_files[:8], start=1):
@@ -2504,45 +3094,112 @@ async def _image_generate_impl(req: ImageGenerateReq, member=None):
                     ],
                     "stream": False
                 }
-                r, data = await _post_json_with_retry(client, endpoint, chat_body, json_headers)
+                r, data = await _post_json_with_retry(
+                    client, endpoint, chat_body, json_headers,
+                    **attempt_kwargs,
+                )
             elif ref_files:
                 form = {"model": model, "prompt": prompt, "n": "1", "size": body["size"]}
                 file_parts = [("image", (name, blob, mime)) for name, blob, mime in ref_files]
-                r = await _post_image_form_with_retry(client, edit_endpoint, data=form, files=file_parts, headers=upload_headers)
+                r = await _post_image_form_with_retry(
+                    client, edit_endpoint, data=form, files=file_parts, headers=upload_headers,
+                    **attempt_kwargs,
+                )
                 data = r.json() if "json" in (r.headers.get("content-type") or "") else {}
                 if r.status_code >= 400:
+                    if attempt_ledger is not None:
+                        await attempt_ledger.finish_retry(
+                            attempt_ledger.latest,
+                            response=r,
+                        )
                     file_parts = [("image[]", (name, blob, mime)) for name, blob, mime in ref_files]
-                    r = await _post_image_form_with_retry(client, edit_endpoint, data=form, files=file_parts, headers=upload_headers)
+                    r = await _post_image_form_with_retry(
+                        client, edit_endpoint, data=form, files=file_parts, headers=upload_headers,
+                        **attempt_kwargs,
+                    )
                     data = r.json() if "json" in (r.headers.get("content-type") or "") else {}
                 if r.status_code >= 400:
                     detail = _http_detail(data) if data else r.text[:1000]
                     raise HTTPException(r.status_code, "参考图未被图片 API 接收：" + (detail or "图片编辑接口失败"))
                 used_refs = len(ref_files)
             else:
-                r, data = await _post_json_with_retry(client, endpoint, body, json_headers)
-    except HTTPException:
+                r, data = await _post_json_with_retry(
+                    client, endpoint, body, json_headers,
+                    **attempt_kwargs,
+                )
+    except HTTPException as exc:
+        if attempt_ledger is not None:
+            status_code = int(getattr(exc, "status_code", 0) or 0)
+            await attempt_ledger.mark_latest(
+                exc,
+                definitive=400 <= status_code < 500,
+            )
         raise
     except httpx.HTTPError as exc:
+        if attempt_ledger is not None:
+            await attempt_ledger.mark_latest(exc, definitive=False)
         raise HTTPException(502, "无法连接图片 API（%s）：%s %s" % (_public_base(request_endpoint), exc.__class__.__name__, exc))
     except Exception as exc:
+        if attempt_ledger is not None:
+            await attempt_ledger.mark_latest(exc, definitive=False)
         raise HTTPException(502, "图片 API 适配失败：%s %s" % (exc.__class__.__name__, str(exc)[:240]))
     if r.status_code >= 400:
         detail = _http_detail(data) if data else r.text[:1000]
-        raise HTTPException(r.status_code, detail or "图片生成失败")
+        error = HTTPException(r.status_code, detail or "图片生成失败")
+        if attempt_ledger is not None:
+            await attempt_ledger.mark_latest(
+                error,
+                definitive=400 <= int(r.status_code or 0) < 500,
+            )
+        raise error
     if isinstance(data, dict) and (data.get("error") or str(data.get("status") or "").lower() == "failed"):
         detail = _http_detail(data) or "图片生成失败"
-        raise HTTPException(502, detail)
+        error = HTTPException(502, detail)
+        if attempt_ledger is not None:
+            await attempt_ledger.mark_latest(error, definitive=True)
+        raise error
     try:
         output = _find_image_url_or_data(data) if responses_mode else (_image_from_chat_response(data) if chat_mode else _image_from_response(data, "image/jpeg" if maas_mode else "image/png"))
-        if not output:
-            raise HTTPException(502, "图片 API 没有返回图片数据")
+    except Exception as exc:
+        # A successful HTTP provider response is a known call even when our
+        # local adapter cannot decode its result shape. Keep output units at 0
+        # rather than downgrading the provider attempt to unknown.
+        if attempt_ledger is not None:
+            await attempt_ledger.complete_latest(
+                provider_ref=str(data.get("id") or data.get("request_id") or "") if isinstance(data, dict) else "",
+                provider=attempt_ledger.provider,
+                model=str(data.get("model") or model) if isinstance(data, dict) else model,
+                output_units=0,
+                unit_label="张",
+            )
+        raise HTTPException(502, "图片 API 返回已收到，但结果格式无法解析") from exc
+    if not output:
+        if attempt_ledger is not None:
+            await attempt_ledger.complete_latest(
+                provider_ref=str(data.get("id") or data.get("request_id") or "") if isinstance(data, dict) else "",
+                provider=attempt_ledger.provider,
+                model=str(data.get("model") or model) if isinstance(data, dict) else model,
+                output_units=0,
+                unit_label="张",
+            )
+        raise HTTPException(502, "图片 API 没有返回图片数据")
+    try:
+        # The provider has already accepted and returned one image.  Close the
+        # provider attempt before local download/normalization so a later local
+        # parse, download, or resize error cannot erase a known upstream call.
+        if attempt_ledger is not None:
+            await attempt_ledger.complete_latest(
+                provider_ref=str(data.get("id") or data.get("request_id") or "") if isinstance(data, dict) else "",
+                provider=attempt_ledger.provider,
+                model=str(data.get("model") or model) if isinstance(data, dict) else model,
+                output_units=1,
+                unit_label="张",
+            )
         output = await _generated_image_to_data_url(client, output, ratio)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(502, "图片 API 返回已收到，但服务端解析失败：%s %s" % (exc.__class__.__name__, str(exc)[:240]))
-    # 只在图片已完整返回后记一次“张”数；不会把它换算为 token、积分或现金成本。
-    _record_model_api_usage(member, "image", "图片生成", model, output_units=1, unit_label="张")
     return {
         "ok": True,
         "dataUrl": output,
@@ -2567,7 +3224,16 @@ async def image_generate(
         return await _image_generate_impl(req, None)
 
     async def operation():
-        return await _image_generate_impl(req, _me)
+        _api_key, endpoint, _edit_endpoint = _image_request_config(req)
+        model = _image_model_for_request(req.model, endpoint)
+        attempts = _main_provider_attempts(
+            _me, feature="图片生成", usage_kind="image",
+            operation="image.generate", request_value=req,
+            idempotency_key=idempotency_key or req.idempotencyKey,
+            provider=_model_usage_provider_name(endpoint, "image-provider"), model=model,
+            surface="main-workspace",
+        )
+        return await _image_generate_impl(req, _me, attempt_ledger=attempts)
 
     result, settlement = await _run_personal_billable(
         _me,
@@ -3522,25 +4188,57 @@ def _video_submit_busy(status_code: int = 0, data=None, text: str = "") -> bool:
     )
 
 
-async def _queued_video_post(client: httpx.AsyncClient, url: str, retries: int = 24, **kwargs):
+async def _queued_video_post(
+    client: httpx.AsyncClient,
+    url: str,
+    retries: int = 24,
+    *,
+    attempt_ledger=None,
+    **kwargs,
+):
     """提交类视频请求共享本机队列；上游并发满时继续排队并退避重试。"""
     last_response = None
     for attempt in range(retries + 1):
-        async with _video_submit_queue():
-            response = await client.post(url, **kwargs)
+        attempt_receipt = (
+            await attempt_ledger.authorize()
+            if attempt_ledger is not None
+            else None
+        )
+        try:
+            async with _video_submit_queue():
+                response = await client.post(url, **kwargs)
+        except asyncio.CancelledError as exc:
+            if attempt_ledger is not None:
+                await attempt_ledger.mark_latest(exc, definitive=False)
+            raise
+        except httpx.RequestError as exc:
+            if attempt_ledger is not None:
+                await attempt_ledger.mark_latest(exc, definitive=False)
+            raise
         last_response = response
         try:
             data = response.json()
         except Exception:
             data = None
         if _video_submit_busy(response.status_code, data, response.text[:1200]) and attempt < retries:
+            if attempt_ledger is not None:
+                await attempt_ledger.finish_retry(
+                    attempt_receipt,
+                    response=response,
+                )
             await asyncio.sleep(min(3 + attempt * 2, 12))
             continue
         return response
     return last_response
 
 
-async def _digital_human_submit(req: VideoSubmitReq, resolved_images, resolved_audios):
+async def _digital_human_submit(
+    req: VideoSubmitReq,
+    resolved_images,
+    resolved_audios,
+    *,
+    attempt_ledger=None,
+):
     if not _digital_human_configured():
         raise HTTPException(
             500,
@@ -3572,21 +4270,38 @@ async def _digital_human_submit(req: VideoSubmitReq, resolved_images, resolved_a
     headers = _volc_signed_headers("POST", url, raw)
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
-            r = await _queued_video_post(client, url, content=raw, headers=headers)
+            r = await _queued_video_post(
+                client, url, content=raw, headers=headers,
+                attempt_ledger=attempt_ledger,
+            )
     except httpx.HTTPError as exc:
+        if attempt_ledger is not None:
+            await attempt_ledger.mark_latest(exc, definitive=False)
         raise HTTPException(502, f"无法连接 OmniHuman 智能视觉接口：{exc.__class__.__name__} {exc}")
     try:
         data = r.json()
     except Exception:
         data = {"message": r.text[:1000]}
     if r.status_code >= 400:
-        raise HTTPException(r.status_code, _digital_human_transient_detail(data, r.status_code) or "OmniHuman 提交失败")
+        error = HTTPException(r.status_code, _digital_human_transient_detail(data, r.status_code) or "OmniHuman 提交失败")
+        if attempt_ledger is not None:
+            await attempt_ledger.mark_latest(
+                error,
+                definitive=400 <= int(r.status_code or 0) < 500,
+            )
+        raise error
     code = data.get("code")
     if code not in (None, 10000, "10000"):
-        raise HTTPException(502, _digital_human_transient_detail(data, 502) or f"OmniHuman 提交失败：code={code}")
+        error = HTTPException(502, _digital_human_transient_detail(data, 502) or f"OmniHuman 提交失败：code={code}")
+        if attempt_ledger is not None:
+            await attempt_ledger.mark_latest(error, definitive=True)
+        raise error
     task_id = _find_provider_ref(data)
     if not task_id:
-        raise HTTPException(502, {"detail": "OmniHuman 已返回结果，但没有任务 ID；请检查接口返回结构。", "raw": data})
+        error = HTTPException(502, {"detail": "OmniHuman 已返回结果，但没有任务 ID；请检查接口返回结构。", "raw": data})
+        if attempt_ledger is not None:
+            await attempt_ledger.mark_latest(error, definitive=False)
+        raise error
     return {"ok": True, "provider": "jimeng-omnihuman", "providerRef": f"omnihuman:{task_id}", "raw": data}
 
 
@@ -3725,13 +4440,42 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
         elif ref.dataUrl or (ref.url or "").startswith(("http://localhost", "https://localhost", "http://127.0.0.1", "https://127.0.0.1")):
             unresolved_local_images.append(ref.name or f"图{i + 1}")
     if is_digital_human:
+        usage_attempts = _main_provider_attempts(
+            _me, feature="数字人视频生成", usage_kind="video",
+            operation="video.submit.digital-human", request_value=req,
+            idempotency_key=str(getattr(req, "_usage_operation_key", "") or ""),
+            provider=_model_usage_provider_name(DIGITAL_HUMAN_BASE_URL, "jimeng-omnihuman"),
+            model=DIGITAL_HUMAN_MODEL,
+            surface="video-workspace",
+        )
         lease_token = await _video_task_gate().acquire()
         try:
-            result = await _digital_human_submit(req, resolved_images, resolved_audios)
+            result = await _digital_human_submit(
+                req,
+                resolved_images,
+                resolved_audios,
+                attempt_ledger=usage_attempts,
+            )
+            await usage_attempts.complete_latest(
+                provider_ref=str(result.get("providerRef") or ""),
+                provider=str(result.get("provider") or "jimeng-omnihuman"),
+                model=DIGITAL_HUMAN_MODEL,
+                output_units=1,
+                unit_label="任务",
+            )
             await _video_task_gate().register(lease_token, result.get("providerRef") or "")
-            _record_model_api_usage(_me, "video", "数字人视频生成", DIGITAL_HUMAN_MODEL, output_units=1, unit_label="任务")
             return result
-        except Exception:
+        except asyncio.CancelledError as exc:
+            await usage_attempts.mark_latest(exc, definitive=False)
+            await _video_task_gate().release_token(lease_token)
+            raise
+        except Exception as exc:
+            await usage_attempts.mark_latest(
+                exc,
+                definitive=(
+                    400 <= int(getattr(exc, "status_code", 0) or 0) < 500
+                ),
+            )
             await _video_task_gate().release_token(lease_token)
             raise
     resolved_images = resolved_images[:9]
@@ -3777,10 +4521,24 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
         "Accept": "application/json",
         "Accept-Encoding": "identity",
     }
+    usage_attempts = _main_provider_attempts(
+        _me, feature="视频生成", usage_kind="video",
+        operation="video.submit.seedance", request_value=req,
+        idempotency_key=str(getattr(req, "_usage_operation_key", "") or ""),
+        provider=_model_usage_provider_name(SEEDANCE_BASE_URL, "seedance"),
+        model=req.model or SEEDANCE_MODEL,
+        surface="video-workspace",
+    )
     lease_token = await _video_task_gate().acquire()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
-            r = await _queued_video_post(client, _video_submit_url(), json=payload, headers=headers)
+            r = await _queued_video_post(
+                client,
+                _video_submit_url(),
+                json=payload,
+                headers=headers,
+                attempt_ledger=usage_attempts,
+            )
             if r.status_code >= 400 and resolved_images:
                 try:
                     err_text = json.dumps(r.json(), ensure_ascii=False)
@@ -3788,6 +4546,10 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
                     err_text = r.text[:1200]
                 low = err_text.lower()
                 if "image_url" in low and ("timeout while fetching" in low or "fetching resource" in low or "not valid" in low):
+                    await usage_attempts.finish_retry(
+                        usage_attempts.latest,
+                        response=r,
+                    )
                     fallback_content = [{
                         "type": "text",
                         "text": (
@@ -3797,8 +4559,19 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
                         ),
                     }]
                     fallback_payload = _video_payload(req, fallback_content)
-                    r = await _queued_video_post(client, _video_submit_url(), json=fallback_payload, headers=headers)
+                    r = await _queued_video_post(
+                        client,
+                        _video_submit_url(),
+                        json=fallback_payload,
+                        headers=headers,
+                        attempt_ledger=usage_attempts,
+                    )
+    except asyncio.CancelledError as exc:
+        await usage_attempts.mark_latest(exc, definitive=False)
+        await _video_task_gate().release_token(lease_token)
+        raise
     except httpx.HTTPError as exc:
+        await usage_attempts.mark_latest(exc, definitive=False)
         await _video_task_gate().release_token(lease_token)
         raise HTTPException(502, f"无法连接 Seedance（{SEEDANCE_BASE_URL}）：{exc.__class__.__name__} {exc}。请确认 SEEDANCE_BASE_URL 可达（内网地址需在内网/VPN）。")
     if r.status_code >= 400:
@@ -3812,19 +4585,42 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
             )
         except Exception:
             detail = _normalize_provider_error(r.text[:800])
+        error = HTTPException(r.status_code, detail)
+        await usage_attempts.mark_latest(
+            error,
+            definitive=400 <= int(r.status_code or 0) < 500,
+        )
         await _video_task_gate().release_token(lease_token)
-        raise HTTPException(r.status_code, detail)
+        raise error
     try:
         data = r.json()
     except Exception as exc:
+        await usage_attempts.mark_latest(exc, definitive=False)
         await _video_task_gate().release_token(lease_token)
         raise HTTPException(502, f"Seedance 返回了无法解析的任务响应：{exc.__class__.__name__}")
+    if isinstance(data, dict) and (
+        data.get("error") or str(data.get("status") or "").lower() in {"failed", "error"}
+    ):
+        error = HTTPException(502, _http_detail(data) or "Seedance 提交失败")
+        await usage_attempts.mark_latest(error, definitive=True)
+        await _video_task_gate().release_token(lease_token)
+        raise error
     provider_ref = _find_provider_ref(data)
     if not provider_ref:
+        await usage_attempts.mark_latest(
+            HTTPException(502, "Seedance 返回缺少任务 ID"),
+            definitive=False,
+        )
         await _video_task_gate().release_token(lease_token)
         raise HTTPException(502, {"detail": "Seedance 已返回结果，但没有任务 ID；请检查模型/接口返回结构。", "raw": data})
+    await usage_attempts.complete_latest(
+        provider_ref=provider_ref,
+        provider=_video_provider_name(),
+        model=req.model or SEEDANCE_MODEL,
+        output_units=1,
+        unit_label="任务",
+    )
     await _video_task_gate().register(lease_token, provider_ref)
-    _record_model_api_usage(_me, "video", "视频生成", req.model or SEEDANCE_MODEL, output_units=1, unit_label="任务")
     return {"ok": True, "provider": _video_provider_name(), "providerRef": provider_ref, "raw": data}
 
 
@@ -3882,6 +4678,11 @@ async def video_submit(
                 500, f"视频积分已预占，但任务映射失败：{attach_error or 'unknown'}",
             )
         task = attached
+        # Keep the public call signature stable for existing internal/test
+        # adapters while binding every upstream retry to this already durable
+        # video billing operation. The opaque key is excluded from request
+        # serialization and no prompt content is persisted in the receipt.
+        object.__setattr__(req, "_usage_operation_key", operation_key)
         result = await _video_submit_upstream(req, _me)
         provider_accepted = True
         provider_ref = str(result.get("providerRef") or "")
@@ -4952,6 +5753,51 @@ def _normalize_minimax_tts_error(msg: str) -> str:
     return text
 
 
+async def _begin_tts_usage_call(
+    member,
+    *,
+    feature: str,
+    operation: str,
+    idempotency_key: str,
+    request_fingerprint: str,
+    attempt: str,
+    model: str = "",
+):
+    """Authorize one exact MiniMax request without storing text or voice data."""
+    raw_key = str(idempotency_key or "").strip()
+    if not raw_key:
+        raise _ModelUsageGateFailure(400, "语音模型请求必须提供稳定的 Idempotency-Key")
+    attempt_label = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", str(attempt or "1"))[:48]
+    attempt_key = f"{raw_key}:attempt:{attempt_label}"
+    attempt_fingerprint = hashlib.sha256(
+        f"tts-usage-v1|{request_fingerprint}|{attempt_label}".encode("utf-8")
+    ).hexdigest()
+    return await _begin_model_usage_call_async(
+        member,
+        feature=feature,
+        usage_kind="voice",
+        operation=operation,
+        idempotency_key=attempt_key,
+        request_fingerprint=attempt_fingerprint,
+        provider=_model_usage_provider_name(MINIMAX_BASE_URL, "minimax"),
+        model=model or MINIMAX_TTS_MODEL or "minimax-voice",
+        surface="voice-studio",
+        source="main-tts",
+    )
+
+
+async def _complete_tts_usage_call(receipt, data, *, output_units: int, unit_label: str):
+    payload = data if isinstance(data, dict) else {}
+    return await _complete_model_usage_call_async(
+        receipt,
+        provider_ref=str(payload.get("trace_id") or payload.get("traceId") or ""),
+        provider=_model_usage_provider_name(MINIMAX_BASE_URL, "minimax"),
+        model=str(payload.get("model") or MINIMAX_TTS_MODEL or "minimax-voice"),
+        output_units=max(0, int(output_units or 0)),
+        unit_label=unit_label,
+    )
+
+
 def _tts_payload(text: str, voice_id: str, speed=MINIMAX_TTS_SPEED, vol=1, pitch=0, language_boost="auto"):
     try:
         safe_vol = max(0.1, min(10.0, float(vol if vol is not None else 1)))
@@ -5042,14 +5888,27 @@ def tts_config(_me=Depends(require_tts_creator)):
 
 
 @app.post("/api/tts/test")
-async def tts_test(_me=Depends(require_tts_creator)):
+async def tts_test(
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    _me=Depends(require_tts_creator),
+):
     if not MINIMAX_API_KEY:
         raise HTTPException(500, "服务器未配置 MINIMAX_API_KEY")
     if not MINIMAX_VOICE_ID:
         raise HTTPException(400, "服务器未配置默认 Minimax voice_id")
+    fingerprint = _quota_request_fingerprint({"operation": "tts-test"})
+    receipt = await _begin_tts_usage_call(
+        _me,
+        feature="语音服务测试",
+        operation="tts.test",
+        idempotency_key=idempotency_key,
+        request_fingerprint=fingerprint,
+        attempt="primary",
+    )
     try:
         r = await _minimax_tts_request(_tts_payload("测试", MINIMAX_VOICE_ID))
     except httpx.HTTPError as exc:
+        await _mark_model_usage_call_async(receipt, exc, definitive=False)
         raise HTTPException(502, _minimax_connect_error(exc))
     if r.status_code >= 400:
         try:
@@ -5058,16 +5917,27 @@ async def tts_test(_me=Depends(require_tts_creator)):
         except Exception:
             detail = r.text[:500]
         detail = _normalize_minimax_tts_error(detail)
+        await _mark_model_usage_call_async(
+            receipt,
+            HTTPException(r.status_code, detail),
+            definitive=400 <= int(r.status_code) < 500,
+        )
         if _looks_like_voice_error(detail):
             raise HTTPException(400, "默认 Minimax voice_id 无效或不存在：" + detail[:500])
         raise HTTPException(r.status_code, detail)
-    data = r.json()
+    try:
+        data = r.json()
+    except Exception as exc:
+        await _mark_model_usage_call_async(receipt, exc, definitive=False)
+        raise HTTPException(502, "Minimax TTS 测试回包无法解析") from exc
     base = data.get("base_resp") or {}
     if base.get("status_code", 0) != 0:
         msg = _normalize_minimax_tts_error(base.get("status_msg") or "Minimax TTS 测试失败")
+        await _mark_model_usage_call_async(receipt, HTTPException(400, msg), definitive=True)
         if _looks_like_voice_error(msg):
             raise HTTPException(400, "默认 Minimax voice_id 无效或不存在：" + msg[:500])
         raise HTTPException(502, msg)
+    await _complete_tts_usage_call(receipt, data, output_units=2, unit_label="字符")
     return {"ok": True, "provider": "minimax", "model": MINIMAX_TTS_MODEL, "voiceId": MINIMAX_VOICE_ID}
 
 
@@ -5075,6 +5945,7 @@ async def tts_test(_me=Depends(require_tts_creator)):
 async def tts_voice_lookup(
     voiceId: str = "",
     test: bool = True,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
     _me=Depends(require_tts_creator),
 ):
     voice_id = (voiceId or "").strip()
@@ -5097,9 +5968,18 @@ async def tts_voice_lookup(
     if not MINIMAX_API_KEY:
         result["detail"] = "服务器未配置 Minimax TTS，已完成本地识别，无法做上游有效性测试"
         return result
+    receipt = await _begin_tts_usage_call(
+        _me,
+        feature="音色有效性测试",
+        operation="tts.voice-lookup",
+        idempotency_key=idempotency_key,
+        request_fingerprint=_quota_request_fingerprint({"voiceId": voice_id, "test": True}),
+        attempt="primary",
+    )
     try:
         r = await _minimax_tts_request(_tts_payload("声线测试", voice_id))
     except httpx.HTTPError as exc:
+        await _mark_model_usage_call_async(receipt, exc, definitive=False)
         result["detail"] = _minimax_connect_error(exc)
         return result
     if r.status_code >= 400:
@@ -5110,14 +5990,26 @@ async def tts_voice_lookup(
             detail = r.text[:500]
         result["valid"] = False if _looks_like_voice_error(detail) else None
         result["detail"] = detail
+        await _mark_model_usage_call_async(
+            receipt,
+            HTTPException(r.status_code, detail),
+            definitive=400 <= int(r.status_code) < 500,
+        )
         return result
-    data = r.json()
+    try:
+        data = r.json()
+    except Exception as exc:
+        await _mark_model_usage_call_async(receipt, exc, definitive=False)
+        result["detail"] = "Minimax TTS 声线测试回包无法解析"
+        return result
     base = data.get("base_resp") or {}
     if base.get("status_code", 0) != 0:
         msg = _normalize_minimax_tts_error(base.get("status_msg") or "Minimax TTS 声线测试失败")
         result["valid"] = False if _looks_like_voice_error(msg) else None
         result["detail"] = msg
+        await _mark_model_usage_call_async(receipt, HTTPException(400, msg), definitive=True)
         return result
+    await _complete_tts_usage_call(receipt, data, output_units=4, unit_label="字符")
     result["valid"] = True
     result["durationMs"] = int((data.get("extra_info") or {}).get("audio_length") or 0)
     return result
@@ -5185,23 +6077,47 @@ async def tts_voice_design(
     idempotency_key: str = Header(default="", alias="Idempotency-Key"),
     _me=Depends(require_tts_creator),
 ):
+    request_key = idempotency_key or req.idempotencyKey
+    request_fingerprint = _quota_request_fingerprint(req)
+
     async def operation():
-        return await _tts_voice_design_impl(req)
+        receipt = await _begin_tts_usage_call(
+            _me,
+            feature="音色设计",
+            operation="tts.voice-design",
+            idempotency_key=request_key,
+            request_fingerprint=request_fingerprint,
+            attempt="primary",
+            model="minimax-voice-design",
+        )
+        try:
+            result = await _tts_voice_design_impl(req)
+        except Exception as exc:
+            await _mark_model_usage_call_async(receipt, exc)
+            raise
+        await _complete_tts_usage_call(receipt, result, output_units=1, unit_label="音色")
+        return result
 
     result, settlement = await _run_personal_billable(
         _me,
         points=VOICE_DESIGN_POINTS,
         feature="音色设计",
         namespace="tts.voice-design",
-        idempotency_key=idempotency_key or req.idempotencyKey,
-        request_fingerprint=_quota_request_fingerprint(req),
+        idempotency_key=request_key,
+        request_fingerprint=request_fingerprint,
         operation=operation,
     )
     billing = _quota_billing_public(settlement)
     return {**result, "billing": billing, "dailyQuota": billing["dailyQuota"]}
 
 
-async def _tts_generate_impl(req: TtsReq):
+async def _tts_generate_impl(
+    req: TtsReq,
+    *,
+    member,
+    idempotency_key: str,
+    request_fingerprint: str,
+):
     if not MINIMAX_API_KEY:
         raise HTTPException(500, "服务器未配置 MINIMAX_API_KEY")
     text = (req.text or "").strip()
@@ -5212,65 +6128,82 @@ async def _tts_generate_impl(req: TtsReq):
         raise HTTPException(400, "请填写 Minimax voice_id")
     def build_payload(vid: str):
         return _tts_payload(text, vid, req.speed, req.vol, req.pitch, req.languageBoost)
-    payload = build_payload(voice_id)
     used_fallback_voice = False
-    try:
-        r = await _minimax_tts_request(payload)
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, _minimax_connect_error(exc))
-    if r.status_code >= 400:
+
+    async def submit(vid: str, attempt: str):
+        receipt = await _begin_tts_usage_call(
+            member,
+            feature="语音生成",
+            operation="tts.generate",
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+            attempt=attempt,
+        )
         try:
-            err = r.json()
-            detail = _http_detail(err.get("detail")) or _readable_error(err.get("base_resp")) or _http_detail(err) or r.text[:500]
-        except Exception:
-            detail = r.text[:500]
-        detail = _normalize_minimax_tts_error(detail)
-        if voice_id != MINIMAX_VOICE_ID and _looks_like_voice_error(detail):
-            payload = build_payload(MINIMAX_VOICE_ID)
-            used_fallback_voice = True
+            response = await _minimax_tts_request(build_payload(vid))
+        except httpx.HTTPError as exc:
+            await _mark_model_usage_call_async(receipt, exc, definitive=False)
+            raise HTTPException(502, _minimax_connect_error(exc)) from exc
+        return response, receipt
+
+    async def parse(response, receipt):
+        if response.status_code >= 400:
             try:
-                r = await _minimax_tts_request(payload)
-            except httpx.HTTPError as exc:
-                raise HTTPException(502, _minimax_connect_error(exc))
-            if r.status_code >= 400:
-                try:
-                    err = r.json()
-                    detail = _http_detail(err.get("detail")) or _readable_error(err.get("base_resp")) or _http_detail(err) or r.text[:500]
-                except Exception:
-                    detail = r.text[:500]
-                raise HTTPException(r.status_code, _normalize_minimax_tts_error(detail))
-            data = r.json()
-            base = data.get("base_resp") or {}
-            voice_id = MINIMAX_VOICE_ID
-        else:
-            raise HTTPException(r.status_code, detail)
-    else:
-        data = r.json()
-        base = data.get("base_resp") or {}
-    if base.get("status_code", 0) != 0:
-        msg = _normalize_minimax_tts_error(base.get("status_msg") or "Minimax TTS 生成失败")
-        if voice_id != MINIMAX_VOICE_ID and _looks_like_voice_error(msg):
-            payload = build_payload(MINIMAX_VOICE_ID)
-            used_fallback_voice = True
-            try:
-                r = await _minimax_tts_request(payload)
-            except httpx.HTTPError as exc:
-                raise HTTPException(502, _minimax_connect_error(exc))
-            if r.status_code >= 400:
-                try:
-                    err = r.json()
-                    detail = _http_detail(err.get("detail")) or _readable_error(err.get("base_resp")) or _http_detail(err) or r.text[:500]
-                except Exception:
-                    detail = r.text[:500]
-                raise HTTPException(r.status_code, detail)
-            data = r.json()
-            base = data.get("base_resp") or {}
-            voice_id = MINIMAX_VOICE_ID
+                error_data = response.json()
+                detail = (
+                    _http_detail(error_data.get("detail"))
+                    or _readable_error(error_data.get("base_resp"))
+                    or _http_detail(error_data)
+                    or response.text[:500]
+                )
+            except Exception:
+                detail = response.text[:500]
+            detail = _normalize_minimax_tts_error(detail)
+            await _mark_model_usage_call_async(
+                receipt,
+                HTTPException(response.status_code, detail),
+                definitive=400 <= int(response.status_code) < 500,
+            )
+            return None, detail, int(response.status_code)
+        try:
+            payload = response.json()
+        except Exception as exc:
+            await _mark_model_usage_call_async(receipt, exc, definitive=False)
+            raise HTTPException(502, "Minimax TTS 回包无法解析") from exc
+        base = payload.get("base_resp") or {}
         if base.get("status_code", 0) != 0:
-            raise HTTPException(502, _normalize_minimax_tts_error(base.get("status_msg") or msg))
+            detail = _normalize_minimax_tts_error(
+                base.get("status_msg") or "Minimax TTS 生成失败"
+            )
+            await _mark_model_usage_call_async(receipt, HTTPException(400, detail), definitive=True)
+            return payload, detail, 502
+        audio = _audio_data_url_from_minimax(payload)
+        if not audio:
+            # The upstream accepted and completed the call even though the
+            # response omitted a usable output. Keep the real call visible.
+            await _complete_tts_usage_call(receipt, payload, output_units=0, unit_label="字符")
+            raise HTTPException(
+                502,
+                {"detail": "Minimax 已返回结果，但没有 audio 字段", "raw": payload},
+            )
+        await _complete_tts_usage_call(
+            receipt,
+            payload,
+            output_units=len(text),
+            unit_label="字符",
+        )
+        return payload, "", 200
+
+    response, receipt = await submit(voice_id, "primary")
+    data, detail, status_code = await parse(response, receipt)
+    if detail and voice_id != MINIMAX_VOICE_ID and _looks_like_voice_error(detail):
+        used_fallback_voice = True
+        voice_id = MINIMAX_VOICE_ID
+        response, receipt = await submit(voice_id, "fallback")
+        data, detail, status_code = await parse(response, receipt)
+    if detail:
+        raise HTTPException(status_code, detail)
     audio_data_url = _audio_data_url_from_minimax(data)
-    if not audio_data_url:
-        raise HTTPException(502, {"detail": "Minimax 已返回结果，但没有 audio 字段", "raw": data})
     duration_ms = int((data.get("extra_info") or {}).get("audio_length") or 0)
     return {
         "ok": True,
@@ -5294,17 +6227,24 @@ async def tts_generate(
     # Validate free local input before freezing any points.
     if not text:
         raise HTTPException(400, "口播文本为空")
+    request_key = idempotency_key or req.idempotencyKey
+    request_fingerprint = _quota_request_fingerprint(req)
 
     async def operation():
-        return await _tts_generate_impl(req)
+        return await _tts_generate_impl(
+            req,
+            member=_me,
+            idempotency_key=request_key,
+            request_fingerprint=request_fingerprint,
+        )
 
     result, settlement = await _run_personal_billable(
         _me,
         points=_tts_generation_points(text),
         feature="语音生成",
         namespace="tts.generate",
-        idempotency_key=idempotency_key or req.idempotencyKey,
-        request_fingerprint=_quota_request_fingerprint(req),
+        idempotency_key=request_key,
+        request_fingerprint=request_fingerprint,
         operation=operation,
     )
     billing = _quota_billing_public(settlement)
@@ -5628,6 +6568,7 @@ class CustomCanvasAgentReq(BaseModel):
     size: str = "1920x1080"
     references: List[dict] = Field(default_factory=list)
     images: List[str] = Field(default_factory=list)
+    idempotencyKey: str = ""
 
 
 class CustomCanvasGenerateReq(BaseModel):
@@ -6104,7 +7045,12 @@ def _supplier_assistant_model_snapshot(snapshot: dict) -> dict:
     }
 
 
-async def _supplier_assistant_answer(question: str, snapshot: dict, member: dict) -> dict:
+async def _supplier_assistant_answer(
+    question: str,
+    snapshot: dict,
+    member: dict,
+    idempotency_key: str = "",
+) -> dict:
     factual = _supplier_assistant_fact_answer(question, snapshot)
     wants_links = _supplier_assistant_is_link_question(question)
     if not LLM_API_KEY:
@@ -6131,15 +7077,22 @@ async def _supplier_assistant_answer(question: str, snapshot: dict, member: dict
             {"role": "user", "content": "问题：" + str(question or "")[:500] + "\n\n授权数据：\n" + json.dumps(prompt_data, ensure_ascii=False)},
         ],
     }
+    attempts = _main_provider_attempts(
+        member, feature="供应商数据问答", usage_kind="llm",
+        operation="supplier.assistant", request_value={
+            "question": str(question or "")[:500],
+            "scope": _quota_request_fingerprint(prompt_data),
+        },
+        idempotency_key=idempotency_key,
+        provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=LLM_MODEL,
+        surface="supplier",
+    )
     try:
-        response = await _call_llm(body)
-        if response.status_code != 200:
-            raise HTTPException(502, "数据助手的语言模型暂时不可用，请稍后重试")
-        data = response.json()
+        response = await _call_llm(body, attempt_ledger=attempts)
+        data = await _finish_llm_attempt(attempts, response, fallback_model=LLM_MODEL)
         content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))[:1800]
         if not content:
             raise HTTPException(502, "数据助手的语言模型没有返回有效回答，请稍后重试")
-        _record_llm_usage(member, data, "供应商数据问答", LLM_MODEL)
         if factual and not wants_links and factual not in content:
             content = factual + ("\n" + content if content else "")
         if wants_links and factual:
@@ -6154,14 +7107,18 @@ async def _supplier_assistant_answer(question: str, snapshot: dict, member: dict
 
 
 @app.post("/api/supplier/assistant")
-async def supplier_assistant(req: SupplierAssistantReq, me=Depends(require_member)):
+async def supplier_assistant(
+    req: SupplierAssistantReq,
+    me=Depends(require_member),
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+):
     if me["role"] not in {"supplier_parent", "supplier_child"}:
         raise HTTPException(403, "数据助手仅对供应商账号开放")
     question = re.sub(r"\s+", " ", str(req.question or "")).strip()
     if not question:
         raise HTTPException(400, "请输入数据问题")
     snapshot = _supplier_assistant_snapshot(me)
-    return await _supplier_assistant_answer(question, snapshot, me)
+    return await _supplier_assistant_answer(question, snapshot, me, idempotency_key)
 
 
 @app.post("/api/auth/login")
@@ -7083,7 +8040,12 @@ def _custom_canvas_agent_fallback(req: CustomCanvasAgentReq) -> dict:
     }
 
 
-async def _custom_canvas_agent_llm(req: CustomCanvasAgentReq) -> dict:
+async def _custom_canvas_agent_llm(
+    req: CustomCanvasAgentReq,
+    member=None,
+    *,
+    idempotency_key: str = "",
+) -> dict:
     if not LLM_API_KEY:
         raise RuntimeError("语言模型未配置")
     fallback = _custom_canvas_agent_fallback(req)
@@ -7141,11 +8103,68 @@ async def _custom_canvas_agent_llm(req: CustomCanvasAgentReq) -> dict:
         "messages": messages,
         "response_format": {"type": "json_object"},
     }
-    response = await _call_llm(body, force_deployed_model=not can_see)
+    actual_model = str(
+        LLM_MODEL
+        if (not can_see and LLM_FORCE_MODEL and LLM_MODEL)
+        else body.get("model") or LLM_MODEL or "unknown-llm"
+    )
+    usage_attempts = None
+    if member is not None:
+        usage_attempts = _CanvasModelUsageAttempts(
+            member,
+            feature="无限画布导演理解",
+            usage_kind="llm",
+            operation="canvas.agent",
+            idempotency_key=idempotency_key or req.idempotencyKey,
+            request_fingerprint=_quota_request_fingerprint(req),
+            provider=_model_usage_provider_name(LLM_ENDPOINT, "canvas-llm"),
+            model=actual_model,
+        )
+        await usage_attempts.prime()
+    try:
+        response = await _call_llm(
+            body,
+            force_deployed_model=not can_see,
+            attempt_ledger=usage_attempts,
+        )
+    except asyncio.CancelledError as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc, definitive=False)
+        raise
+    except Exception as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc)
+        raise
     if response.status_code >= 400:
-        raise _llm_error(response.status_code, _http_detail(response.json() if "json" in (response.headers.get("content-type") or "") else response.text[:800]))
-    data = response.json()
-    parsed = _custom_canvas_json_object(_deep_get(data, ("choices", 0, "message", "content"), default=""))
+        try:
+            detail_source = (
+                response.json()
+                if "json" in (response.headers.get("content-type") or "")
+                else response.text[:800]
+            )
+        except Exception:
+            detail_source = response.text[:800]
+        error = _llm_error(response.status_code, _http_detail(detail_source))
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(
+                error,
+                definitive=400 <= int(response.status_code or 0) < 500,
+            )
+        raise error
+    try:
+        data = response.json()
+    except Exception as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc, definitive=False)
+        raise HTTPException(502, "导演理解模型回包无法解析") from exc
+    try:
+        parsed = _custom_canvas_json_object(
+            _deep_get(data, ("choices", 0, "message", "content"), default="")
+        )
+    except Exception as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc, definitive=False)
+        raise
     prompt = str(parsed.get("prompt") or fallback["prompt"]).strip()
     palette = str(parsed.get("palette") or "default").strip()
     if palette not in CUSTOM_CANVAS_PALETTES:
@@ -7161,6 +8180,13 @@ async def _custom_canvas_agent_llm(req: CustomCanvasAgentReq) -> dict:
     }
     if count > 1:
         result["variants"] = _custom_canvas_variant_prompts(prompt, count, parsed.get("variants"))
+    if usage_attempts is not None:
+        await usage_attempts.complete_latest(
+            usage=data.get("usage") if isinstance(data, dict) else {},
+            provider_ref=str(data.get("id") or data.get("request_id") or "") if isinstance(data, dict) else "",
+            provider=_model_usage_provider_name(LLM_ENDPOINT, "canvas-llm"),
+            model=str(data.get("model") or actual_model) if isinstance(data, dict) else actual_model,
+        )
     return result
 
 
@@ -7171,6 +8197,7 @@ async def _custom_canvas_generated_image(
     *,
     adapt_primary_reference: bool = False,
     member=None,
+    usage_context: Optional[dict] = None,
 ) -> dict:
     clean_prompt = str(prompt or "").strip()
     if not clean_prompt:
@@ -7194,17 +8221,71 @@ async def _custom_canvas_generated_image(
         size=master_size,
         exactPrompt=True,
     )
+    usage_attempts = None
+    usage_provider = ""
+    usage_model = ""
+    if member is not None:
+        context = usage_context if isinstance(usage_context, dict) else {}
+        # Resolve the same server-managed provider configuration as the image
+        # implementation before opening the durable gate. Configuration and
+        # input errors therefore do not create ambiguous provider attempts.
+        _api_key, endpoint, _edit_endpoint = _image_request_config(image_request)
+        usage_provider = _model_usage_provider_name(endpoint, "canvas-image")
+        usage_model = _image_model_for_request(image_request.model, endpoint)
+        if _image_is_maas_mode(model=usage_model, endpoint=endpoint):
+            usage_model = _maas_model_for_refs(
+                image_request.model or usage_model,
+                bool(request_refs),
+            )
+        usage_attempts = _CanvasModelUsageAttempts(
+            member,
+            feature=str(context.get("feature") or "无限画布图片生成"),
+            usage_kind="image",
+            operation=str(context.get("operation") or "canvas.generate"),
+            idempotency_key=str(context.get("idempotencyKey") or ""),
+            request_fingerprint=str(
+                context.get("requestFingerprint") or _quota_request_fingerprint(image_request)
+            ),
+            provider=usage_provider,
+            model=usage_model,
+        )
+        await usage_attempts.prime()
     # Direct helper callers (including deterministic tests) keep the historical
-    # patch point. Production canvas endpoints always pass ``member`` and call
-    # the unbilled implementation because they own one aggregate reservation.
-    result = (
-        await _image_generate_impl(image_request, member)
-        if member is not None
-        else await image_generate(image_request)
-    )
-    used_refs = int(result.get("usedRefs") or 0)
-    if request_refs and used_refs < len(request_refs):
-        raise HTTPException(502, f"参考图未完整送达图片模型（实际使用 {used_refs}/{len(request_refs)}），本次已停止，避免错误出图")
+    # patch point. Production canvas endpoints call the unbilled implementation
+    # with ``member=None`` because this canvas-specific receipt owns the only
+    # model ledger event and the surrounding endpoint owns points settlement.
+    try:
+        result = (
+            await _image_generate_impl(
+                image_request,
+                None,
+                attempt_ledger=usage_attempts,
+            )
+            if member is not None
+            else await image_generate(image_request)
+        )
+        used_refs = int(result.get("usedRefs") or 0)
+        if request_refs and used_refs < len(request_refs):
+            raise HTTPException(502, f"参考图未完整送达图片模型（实际使用 {used_refs}/{len(request_refs)}），本次已停止，避免错误出图")
+    except asyncio.CancelledError as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc, definitive=False)
+        raise
+    except Exception as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc)
+        raise
+    # Provider accounting is already terminal at provider acceptance inside
+    # _image_generate_impl. The fallback covers patched/custom adapters that
+    # return the same accepted-provider result contract without using its hook.
+    if usage_attempts is not None:
+        await usage_attempts.complete_latest(
+            provider=usage_provider,
+            model=str(result.get("model") or usage_model),
+            output_units=1,
+            unit_label="张",
+        )
+    # Exact-pixel normalization is local postprocessing.
     exact_data_url = _custom_canvas_resize_exact_pixels(
         result["dataUrl"],
         width,
@@ -7221,7 +8302,12 @@ async def _custom_canvas_generated_image(
     }
 
 
-async def _custom_canvas_mask_edit(req: CustomCanvasEditRegionReq, member=None) -> dict:
+async def _custom_canvas_mask_edit(
+    req: CustomCanvasEditRegionReq,
+    member=None,
+    *,
+    usage_context: Optional[dict] = None,
+) -> dict:
     if not IMAGE_API_KEY:
         raise HTTPException(500, "服务器未配置图片 API Key")
     image = _custom_canvas_data_url(req.image, "待编辑图片")
@@ -7255,32 +8341,89 @@ async def _custom_canvas_mask_edit(req: CustomCanvasEditRegionReq, member=None) 
         "Accept-Encoding": "identity",
     }
     request_endpoint = _maas_endpoint_for_refs(endpoint, True)
+    usage_attempts = None
+    usage_provider = _model_usage_provider_name(request_endpoint, "canvas-image")
+    if member is not None:
+        context = usage_context if isinstance(usage_context, dict) else {}
+        usage_attempts = _CanvasModelUsageAttempts(
+            member,
+            feature=str(context.get("feature") or "无限画布局部编辑"),
+            usage_kind="image",
+            operation=str(context.get("operation") or "canvas.edit-region"),
+            idempotency_key=str(context.get("idempotencyKey") or ""),
+            request_fingerprint=str(
+                context.get("requestFingerprint") or _quota_request_fingerprint(req)
+            ),
+            provider=usage_provider,
+            model=model,
+        )
+        await usage_attempts.prime()
     try:
         async with httpx.AsyncClient(**_httpx_async_client_kwargs(
             timeout=httpx.Timeout(180.0, connect=12.0),
             trust_env=False,
             follow_redirects=True,
         )) as client:
-            response, data = await _post_json_with_retry(client, request_endpoint, body, headers)
+            response, data = await _post_json_with_retry(
+                client,
+                request_endpoint,
+                body,
+                headers,
+                **({"attempt_ledger": usage_attempts} if usage_attempts is not None else {}),
+            )
             if response.status_code >= 400:
                 raise HTTPException(response.status_code, _http_detail(data) or "区域编辑失败")
-            output = _image_from_response(data, "image/jpeg")
+            try:
+                output = _image_from_response(data, "image/jpeg")
+            except Exception as exc:
+                if usage_attempts is not None:
+                    await usage_attempts.complete_latest(
+                        provider_ref=str(data.get("id") or data.get("request_id") or "") if isinstance(data, dict) else "",
+                        provider=usage_provider,
+                        model=model,
+                        output_units=0,
+                        unit_label="张",
+                    )
+                raise HTTPException(502, "区域编辑模型回包无法解析") from exc
             if not output:
-                raise HTTPException(502, "区域编辑没有返回图片")
+                if usage_attempts is not None:
+                    await usage_attempts.complete_latest(
+                        provider_ref=str(data.get("id") or data.get("request_id") or "") if isinstance(data, dict) else "",
+                        provider=usage_provider,
+                        model=model,
+                        output_units=0,
+                        unit_label="张",
+                    )
+                raise HTTPException(502, "区域编辑没有返图片")
+            if usage_attempts is not None:
+                await usage_attempts.complete_latest(
+                    provider_ref=str(data.get("id") or data.get("request_id") or "") if isinstance(data, dict) else "",
+                    provider=usage_provider,
+                    model=model,
+                    output_units=1,
+                    unit_label="张",
+                )
             output = await _generated_image_to_data_url(client, output, ratio)
-    except HTTPException:
+    except asyncio.CancelledError as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc, definitive=False)
+        raise
+    except HTTPException as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc)
         raise
     except httpx.HTTPError as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc, definitive=False)
         raise HTTPException(502, f"无法连接区域编辑模型：{exc.__class__.__name__} {exc}")
-    output = _custom_canvas_resize_exact_pixels(output, req.width, req.height)
-    _record_model_api_usage(
-        member,
-        "image",
-        "无限画布局部编辑",
-        model,
-        output_units=1,
-        unit_label="张",
-    )
+    except Exception as exc:
+        if usage_attempts is not None:
+            await usage_attempts.mark_latest(exc, definitive=False)
+        raise HTTPException(502, f"区域编辑模型回包解析失败：{exc.__class__.__name__}") from exc
+    try:
+        output = _custom_canvas_resize_exact_pixels(output, req.width, req.height)
+    except Exception as exc:
+        raise
     return {"dataUrl": output, "width": req.width, "height": req.height}
 
 
@@ -7550,11 +8693,30 @@ def custom_canvas_projects_delete(source_id: str, me=Depends(require_member)):
     return {"ok": True, "tombstone": tombstone}
 
 
+def _custom_canvas_request_key(header_key: str, body_key: str) -> str:
+    header_value = header_key if isinstance(header_key, str) else ""
+    key = str(header_value or body_key or "").strip()
+    if not key:
+        raise _ModelUsageGateFailure(400, "画布模型请求必须提供 Idempotency-Key")
+    return key
+
+
 @app.post("/api/custom-canvas/agent")
-async def custom_canvas_agent(req: CustomCanvasAgentReq, me=Depends(require_member)):
+async def custom_canvas_agent(
+    req: CustomCanvasAgentReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    me=Depends(require_member),
+):
     _require_custom_creator(me)
+    request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
     try:
-        return await _custom_canvas_agent_llm(req)
+        return await _custom_canvas_agent_llm(
+            req,
+            me,
+            idempotency_key=request_key,
+        )
+    except _ModelUsageGateFailure:
+        raise
     except Exception as exc:
         print(f"[custom-canvas] agent fallback: {exc.__class__.__name__}: {str(exc)[:240]}", file=sys.stderr)
         return _custom_canvas_agent_fallback(req)
@@ -7567,6 +8729,8 @@ async def custom_canvas_generate(
     me=Depends(require_member),
 ):
     _require_custom_creator(me)
+    request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
+    request_fingerprint = _quota_request_fingerprint(req)
     refs = _custom_canvas_image_refs(req.references)
     prompt = str(req.prompt or "").strip()
     negative = ", ".join(part.strip() for part in str(req.negativePrompt or "").split(",")[:7] if part.strip())
@@ -7574,8 +8738,21 @@ async def custom_canvas_generate(
         prompt += f"\n画面中不要出现：{negative}。"
     async def operation():
         return await _gather_cancel_on_error([
-            _custom_canvas_generated_image(prompt, req.size, refs, member=me)
-            for _ in range(req.count)
+            _custom_canvas_generated_image(
+                prompt,
+                req.size,
+                refs,
+                member=me,
+                usage_context={
+                    "feature": "无限画布图片生成",
+                    "operation": "canvas.generate",
+                    "idempotencyKey": f"{request_key}:output:{index + 1}",
+                    "requestFingerprint": hashlib.sha256(
+                        f"{request_fingerprint}:output:{index + 1}".encode("utf-8")
+                    ).hexdigest(),
+                },
+            )
+            for index in range(req.count)
         ])
 
     images, settlement = await _run_personal_billable(
@@ -7583,8 +8760,8 @@ async def custom_canvas_generate(
         points=CUSTOM_CANVAS_IMAGE_GENERATION_POINTS * req.count,
         feature="无限画布图片生成",
         namespace="canvas.generate",
-        idempotency_key=idempotency_key or req.idempotencyKey,
-        request_fingerprint=_quota_request_fingerprint(req),
+        idempotency_key=request_key,
+        request_fingerprint=request_fingerprint,
         operation=operation,
         receipt_specs=lambda generated: [
             {
@@ -7629,6 +8806,8 @@ async def custom_canvas_enhance(
     me=Depends(require_member),
 ):
     _require_custom_creator(me)
+    request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
+    request_fingerprint = _quota_request_fingerprint(req)
     image = _custom_canvas_data_url(req.image, "待增强图片")
     prompt = (
         "以参考图为唯一内容来源，保持原图比例、构图、主体位置、品牌元素、全部文字与配色准确不变；"
@@ -7643,6 +8822,12 @@ async def custom_canvas_enhance(
             refs,
             adapt_primary_reference=True,
             member=me,
+            usage_context={
+                "feature": "无限画布图片增强",
+                "operation": "canvas.enhance",
+                "idempotencyKey": request_key,
+                "requestFingerprint": request_fingerprint,
+            },
         )
 
     result, settlement = await _run_personal_billable(
@@ -7650,8 +8835,8 @@ async def custom_canvas_enhance(
         points=CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
         feature="无限画布图片增强",
         namespace="canvas.enhance",
-        idempotency_key=idempotency_key or req.idempotencyKey,
-        request_fingerprint=_quota_request_fingerprint(req),
+        idempotency_key=request_key,
+        request_fingerprint=request_fingerprint,
         operation=operation,
         receipt_specs=lambda generated: [{
             "dataUrl": generated["dataUrl"],
@@ -7681,17 +8866,28 @@ async def custom_canvas_edit_region(
     me=Depends(require_member),
 ):
     _require_custom_creator(me)
+    request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
+    request_fingerprint = _quota_request_fingerprint(req)
 
     async def operation():
-        return await _custom_canvas_mask_edit(req, me)
+        return await _custom_canvas_mask_edit(
+            req,
+            me,
+            usage_context={
+                "feature": "无限画布局部编辑",
+                "operation": "canvas.edit-region",
+                "idempotencyKey": request_key,
+                "requestFingerprint": request_fingerprint,
+            },
+        )
 
     result, settlement = await _run_personal_billable(
         me,
         points=CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
         feature="无限画布局部编辑",
         namespace="canvas.edit-region",
-        idempotency_key=idempotency_key or req.idempotencyKey,
-        request_fingerprint=_quota_request_fingerprint(req),
+        idempotency_key=request_key,
+        request_fingerprint=request_fingerprint,
         operation=operation,
         receipt_specs=lambda generated: [{
             "dataUrl": generated["dataUrl"],
@@ -7715,6 +8911,8 @@ async def custom_canvas_transform(
     me=Depends(require_member),
 ):
     _require_custom_creator(me)
+    request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
+    request_fingerprint = _quota_request_fingerprint(req)
     image = _custom_canvas_data_url(req.image, "待处理图片")
     prompt = str(req.prompt or "").strip() or "优化这张图"
     fidelity = "high" if str(req.fidelity or "").lower() != "low" else "low"
@@ -7743,6 +8941,12 @@ async def custom_canvas_transform(
             refs,
             adapt_primary_reference=True,
             member=me,
+            usage_context={
+                "feature": "无限画布定向编辑",
+                "operation": "canvas.transform",
+                "idempotencyKey": request_key,
+                "requestFingerprint": request_fingerprint,
+            },
         )
 
     result, settlement = await _run_personal_billable(
@@ -7750,8 +8954,8 @@ async def custom_canvas_transform(
         points=CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
         feature="无限画布定向编辑",
         namespace="canvas.transform",
-        idempotency_key=idempotency_key or req.idempotencyKey,
-        request_fingerprint=_quota_request_fingerprint(req),
+        idempotency_key=request_key,
+        request_fingerprint=request_fingerprint,
         operation=operation,
         receipt_specs=lambda generated: [{
             "dataUrl": generated["dataUrl"],
@@ -8736,6 +9940,267 @@ def _video_workshop_project_response(source, mapped):
     return project
 
 
+_VIDEO_WORKSHOP_USAGE_KINDS = {"llm", "image", "video", "voice"}
+_VIDEO_WORKSHOP_USAGE_STATUSES = {
+    "submitted", "unknown", "failed", "confirmed", "succeeded",
+}
+
+
+def _video_workshop_usage_event_ms(value) -> Optional[int]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0, int(parsed.timestamp() * 1000))
+
+
+def _video_workshop_usage_completion(sidecar_receipt: dict) -> dict:
+    """Normalize the terminal sidecar payload used for exact replay checks."""
+
+    prompt_tokens = max(0, int(sidecar_receipt.get("inputTokens") or 0))
+    completion_tokens = max(0, int(sidecar_receipt.get("outputTokens") or 0))
+    total_tokens = max(0, int(sidecar_receipt.get("totalTokens") or 0))
+    return {
+        "usage": {
+            "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        },
+        "providerRef": str(sidecar_receipt.get("providerRef") or "").strip()[:240],
+        "provider": str(sidecar_receipt.get("provider") or "").strip()[:80],
+        "model": str(sidecar_receipt.get("model") or "").strip()[:180],
+        "outputUnits": max(0, int(sidecar_receipt.get("outputUnits") or 0)),
+        "unitLabel": str(sidecar_receipt.get("unitLabel") or "").strip()[:24],
+    }
+
+
+def _video_workshop_usage_completion_matches(central: dict, completion: dict) -> bool:
+    """Avoid rewriting a terminal receipt that is already exactly projected."""
+
+    usage = completion["usage"]
+    return bool(
+        str((central or {}).get("status") or "") == "succeeded"
+        and str((central or {}).get("providerRef") or "") == completion["providerRef"]
+        and str((central or {}).get("provider") or "") == completion["provider"]
+        and str((central or {}).get("model") or "") == completion["model"]
+        and int((central or {}).get("promptTokens") or 0) == usage["input_tokens"]
+        and int((central or {}).get("completionTokens") or 0) == usage["output_tokens"]
+        and int((central or {}).get("totalTokens") or 0) == usage["total_tokens"]
+        and int((central or {}).get("calls") or 0) == 1
+        and int((central or {}).get("outputUnits") or 0) == completion["outputUnits"]
+        and str((central or {}).get("unitLabel") or "") == completion["unitLabel"]
+    )
+
+
+def _reconcile_video_workshop_usage_receipts(me, source) -> dict:
+    """Import sidecar outbox receipts under the verified current member.
+
+    The sidecar is authoritative only for provider-call evidence. Ownership
+    and team identity always come from the authenticated main-service member
+    after ``sync_custom_video_project`` has accepted the project mapping.
+    """
+
+    receipts = [
+        item
+        for item in list((source or {}).get("modelUsageReceipts") or [])
+        if isinstance(item, dict)
+    ]
+    summary = {
+        "total": len(receipts),
+        "reconciled": 0,
+        "pending": 0,
+        "failed": 0,
+    }
+    source_project_id = str((source or {}).get("id") or "").strip()
+    member_id = str((me or {}).get("id") or "").strip()
+    for sidecar_receipt in receipts:
+        operation_id = str(sidecar_receipt.get("operationId") or "").strip()
+        receipt_project_id = str(sidecar_receipt.get("projectId") or "").strip()
+        surface = str(sidecar_receipt.get("surface") or "").strip()
+        usage_kind = str(sidecar_receipt.get("usageKind") or "").strip().lower()
+        status = str(sidecar_receipt.get("status") or "").strip().lower()
+        feature = str(sidecar_receipt.get("feature") or "视频工坊模型调用").strip()[:120]
+        provider = str(sidecar_receipt.get("provider") or "").strip()[:80]
+        model = str(sidecar_receipt.get("model") or "").strip()[:180]
+        unit_label = str(sidecar_receipt.get("unitLabel") or "").strip()[:24]
+        valid_identity = bool(
+            member_id
+            and source_project_id
+            and operation_id
+            and len(operation_id) <= 180
+            and receipt_project_id == source_project_id
+            and surface == "video-workshop"
+            and usage_kind in _VIDEO_WORKSHOP_USAGE_KINDS
+            and status in _VIDEO_WORKSHOP_USAGE_STATUSES
+            and provider
+            and model
+        )
+        if not valid_identity:
+            summary["pending"] += 1
+            print(
+                f"[model-usage] video-workshop invalid receipt pending: "
+                f"project={source_project_id[:40]} operation={operation_id[:80]}",
+                file=sys.stderr,
+            )
+            continue
+        immutable_identity = {
+            "schemaVersion": int(sidecar_receipt.get("schemaVersion") or 1),
+            "surface": "video-workshop",
+            "projectId": source_project_id,
+            "operationId": operation_id,
+            "usageKind": usage_kind,
+            "feature": feature,
+            "provider": provider,
+            "model": model,
+            "unitLabel": unit_label,
+        }
+        request_fingerprint = hashlib.sha256(
+            json.dumps(
+                immutable_identity,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        try:
+            team_id = str((me or {}).get("teamId") or "")
+            central = store.find_model_usage_receipt(
+                member_id,
+                source="video-workshop-sidecar",
+                stable_credential=operation_id,
+            )
+            if central:
+                immutable_expected = {
+                    "memberId": member_id,
+                    "teamId": team_id,
+                    "surface": "video-workshop",
+                    "feature": feature,
+                    "usageKind": usage_kind,
+                    "provider": provider,
+                    "model": model,
+                    "operation": "provider-call",
+                    "operationId": operation_id,
+                    "idempotencyKey": operation_id,
+                    "requestFingerprint": request_fingerprint,
+                    "source": "video-workshop-sidecar",
+                }
+                if any(
+                    str((central or {}).get(key) or "") != str(expected or "")
+                    for key, expected in immutable_expected.items()
+                ):
+                    raise store.ModelUsageReceiptConflict(
+                        "video workshop receipt immutable identity mismatch"
+                    )
+            else:
+                central = store.begin_model_usage_receipt(
+                    member_id,
+                    surface="video-workshop",
+                    feature=feature,
+                    usage_kind=usage_kind,
+                    operation="provider-call",
+                    operation_id=operation_id,
+                    idempotency_key=operation_id,
+                    request_fingerprint=request_fingerprint,
+                    source="video-workshop-sidecar",
+                    provider=provider,
+                    model=model,
+                    team_id=team_id,
+                )
+            central_id = str((central or {}).get("receiptId") or "").strip()
+            if not central_id:
+                raise RuntimeError("model_usage_receipt_missing_id")
+            central_status = str((central or {}).get("status") or "").strip().lower()
+            central_outbox = str((central or {}).get("outboxState") or "").strip().lower()
+            completion = _video_workshop_usage_completion(sidecar_receipt)
+
+            # Project polling returns the full historical sidecar outbox.  Once
+            # a receipt is terminal, do not turn every poll into another pair
+            # of SQLite write transactions.  A terminal payload mismatch still
+            # goes through the Store replay guard below and is reported pending.
+            if central_status == "succeeded":
+                if status in {"confirmed", "succeeded"} and not (
+                    _video_workshop_usage_completion_matches(central, completion)
+                ):
+                    store.complete_model_usage_receipt(
+                        central_id,
+                        usage=completion["usage"],
+                        provider_ref=completion["providerRef"],
+                        provider=completion["provider"],
+                        model=completion["model"],
+                        calls=1,
+                        output_units=completion["outputUnits"],
+                        unit_label=completion["unitLabel"],
+                        event_at=_video_workshop_usage_event_ms(
+                            sidecar_receipt.get("occurredAt")
+                        ),
+                    )
+                if central_outbox != "projected":
+                    projection = store.reconcile_model_usage_outbox(receipt_id=central_id)
+                    if (
+                        int((projection or {}).get("failed") or 0) > 0
+                        or int((projection or {}).get("projected") or 0) < 1
+                    ):
+                        summary["pending"] += 1
+                        continue
+                summary["reconciled"] += 1
+                continue
+            if status == "submitted":
+                if central_status == "failed":
+                    summary["failed"] += 1
+                else:
+                    summary["pending"] += 1
+                continue
+            if status == "unknown":
+                if central_status == "failed":
+                    summary["failed"] += 1
+                else:
+                    if central_status != "unknown":
+                        store.mark_model_usage_receipt_unknown(
+                            central_id,
+                            "video-workshop sidecar reported an uncertain provider attempt",
+                        )
+                    summary["pending"] += 1
+                continue
+            if status == "failed":
+                if central_status != "failed":
+                    store.fail_model_usage_receipt(
+                        central_id,
+                        "video-workshop sidecar reported a definitive provider failure",
+                    )
+                summary["failed"] += 1
+                continue
+            store.complete_model_usage_receipt(
+                central_id,
+                usage=completion["usage"],
+                provider_ref=completion["providerRef"],
+                provider=completion["provider"],
+                model=completion["model"],
+                calls=1,
+                output_units=completion["outputUnits"],
+                unit_label=completion["unitLabel"],
+                event_at=_video_workshop_usage_event_ms(sidecar_receipt.get("occurredAt")),
+            )
+            projection = store.reconcile_model_usage_outbox(receipt_id=central_id)
+            if int((projection or {}).get("failed") or 0) > 0:
+                summary["pending"] += 1
+            else:
+                summary["reconciled"] += 1
+        except Exception as exc:
+            summary["pending"] += 1
+            print(
+                f"[model-usage] video-workshop receipt pending: "
+                f"project={source_project_id[:40]} operation={operation_id[:80]} "
+                f"{exc.__class__.__name__}: {str(exc)[:200]}",
+                file=sys.stderr,
+            )
+    return summary
+
+
 def _sync_video_workshop_project(me, source):
     _reconcile_static_video_billing(me, source)
     mapped, error = store.sync_custom_video_project(me["id"], source)
@@ -8743,8 +10208,11 @@ def _sync_video_workshop_project(me, source):
         raise HTTPException(403, "视频工坊项目归属冲突")
     if error or not mapped:
         raise HTTPException(500, "视频工坊项目映射失败")
+    usage_reconciliation = _reconcile_video_workshop_usage_receipts(me, source)
     _VIDEO_PROJECT_INDEX_CACHE.pop(str(me["id"]), None)
-    return _video_workshop_project_response(source, mapped)
+    response = _video_workshop_project_response(source, mapped)
+    response["_usageReconciliation"] = usage_reconciliation
+    return response
 
 
 def _static_video_reservation(me, request: Request, payload: dict) -> Optional[dict]:
@@ -9200,11 +10668,12 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             mapped = mapped_projects.get(project_id)
             if not mapped:
                 continue
-            visible_items.append(
-                _video_workshop_project_response(raw_item, mapped)
-                if runtime_config.is_read_only()
-                else _sync_video_workshop_project(me, raw_item)
-            )
+            if runtime_config.is_read_only():
+                visible_items.append(_video_workshop_project_response(raw_item, mapped))
+            else:
+                visible_items.append(
+                    await asyncio.to_thread(_sync_video_workshop_project, me, raw_item)
+                )
         data["items"] = visible_items
         return _video_workshop_json_response(
             data,
@@ -9227,7 +10696,7 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
         # first chat request then uses the same owner-scoped project instead of
         # creating an unindexed sidecar project that appears only after polling.
         return _video_workshop_json_response(
-            _sync_video_workshop_project(me, project),
+            await asyncio.to_thread(_sync_video_workshop_project, me, project),
             server_timing=_video_workshop_timing("project-create", started),
         )
 
@@ -9256,7 +10725,7 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
         return _video_workshop_json_response(
             _video_workshop_project_response(project, mapped_project)
             if runtime_config.is_read_only()
-            else _sync_video_workshop_project(me, project),
+            else await asyncio.to_thread(_sync_video_workshop_project, me, project),
             server_timing=_video_workshop_timing("project", started),
         )
 
@@ -9283,7 +10752,9 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             project = upstream.json()
         except Exception:
             raise HTTPException(502, "视频工坊导演返回异常")
-        return _video_workshop_json_response(_sync_video_workshop_project(me, project))
+        return _video_workshop_json_response(
+            await asyncio.to_thread(_sync_video_workshop_project, me, project)
+        )
 
     raise HTTPException(404, "该视频工坊接口未开放给主平台")
 

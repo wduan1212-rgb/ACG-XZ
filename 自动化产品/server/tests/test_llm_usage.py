@@ -1,7 +1,6 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from server import main, store
 
@@ -62,10 +61,9 @@ class LlmUsageStoreTest(unittest.TestCase):
         self.assertEqual(1, by_model[("视频生成", "video-model-b")]["outputUnits"])
         self.assertEqual(2, len(details["assetEvents"]))
 
-    def test_recording_failure_cannot_break_a_model_response(self):
-        member = {"id": "editor-1", "name": "创作者甲"}
-        with patch.object(main.store, "record_llm_usage", side_effect=RuntimeError("db busy")):
-            main._record_llm_usage(member, {"model": "m3", "usage": {"total_tokens": 8}}, "通用文案")
+    def test_main_service_no_longer_exposes_silent_best_effort_recorders(self):
+        self.assertFalse(hasattr(main, "_record_llm_usage"))
+        self.assertFalse(hasattr(main, "_record_model_api_usage"))
 
     def test_reference_planner_never_turns_visual_attachment_into_long_prompt_copy(self):
         self.assertEqual({}, main._image_reference_plan_json("not json"))
@@ -73,8 +71,11 @@ class LlmUsageStoreTest(unittest.TestCase):
         source = Path(main.__file__).read_text(encoding="utf-8")
         self.assertIn('/api/llm/image-reference-plan', source)
         self.assertIn("不要详细复述附件里的颜色、物体、人物或文字", source)
-        self.assertIn('_record_model_api_usage(member, "image", "图片生成"', source)
-        self.assertIn('_record_model_api_usage(_me, "video", "视频生成"', source)
+        self.assertIn("class _ModelUsageAttempts", source)
+        self.assertIn('operation="image.generate"', source)
+        self.assertIn('operation="video.submit.seedance"', source)
+        self.assertNotIn('_record_model_api_usage(member, "image", "图片生成"', source)
+        self.assertNotIn('_record_model_api_usage(_me, "video", "视频生成"', source)
 
 
 if __name__ == "__main__":

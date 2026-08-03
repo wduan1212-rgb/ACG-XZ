@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[58],{6058:(e,n,t)=>{function i(){throw Error("平台嵌入构建已禁用客户端模型密钥")}function r(){return i()}function u(e){i()}function c(){return i()}t.r(n),t.d(n,{getClientImageApiKey:()=>r,hasClientImageApiKey:()=>c,setClientImageApiKey:()=>u})}}]);

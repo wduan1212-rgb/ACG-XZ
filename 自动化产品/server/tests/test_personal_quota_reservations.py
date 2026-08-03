@@ -506,7 +506,7 @@ class SubscriptionQuotaTest(unittest.TestCase):
         }
         observations = []
 
-        async def success(_req, member):
+        async def success(_req, member, **_kwargs):
             observations.append(store.generation_quota(member["id"]))
             return {
                 "ok": True,
@@ -533,7 +533,7 @@ class SubscriptionQuotaTest(unittest.TestCase):
         self.assertEqual(5, billing["deductedPoints"])
         self.assertEqual(5, observations[0]["reserved"])
 
-        async def failure(_req, _member):
+        async def failure(_req, _member, **_kwargs):
             raise HTTPException(502, "mock provider failed")
 
         with patch.object(main, "_image_generate_impl", side_effect=failure):
@@ -571,7 +571,7 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
     def test_main_image_reserves_before_call_settles_success_and_blocks_replay(self):
         observations = []
 
-        async def generated(_req, member):
+        async def generated(_req, member, **_kwargs):
             observations.append(store.personal_daily_quota(member["id"]))
             return {
                 "ok": True,
@@ -601,7 +601,7 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
         self.assertEqual("settled", first.json()["billing"]["status"])
 
     def test_main_image_failure_releases_without_charging(self):
-        async def failed(_req, _member):
+        async def failed(_req, _member, **_kwargs):
             raise HTTPException(502, "mock provider failed")
 
         with patch.object(main, "_image_generate_impl", side_effect=failed):

@@ -4,7 +4,7 @@ import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
@@ -98,10 +98,9 @@ class SupplierDataAssistantTest(unittest.TestCase):
 
     def test_open_question_calls_deployed_llm_with_authorized_snapshot_only(self):
         snapshot = self._snapshot()
-        record = Mock()
         with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
             main, "_call_llm", new=AsyncMock(return_value=FakeLlmResponse())
-        ) as call_llm, patch.object(main, "_record_llm_usage", record):
+        ) as call_llm:
             result = asyncio.run(main._supplier_assistant_answer("总结最近两天的交付节奏", snapshot, self.member))
         self.assertEqual("llm", result["source"])
         self.assertEqual("MiniMax-M3", result["model"])
@@ -110,14 +109,13 @@ class SupplierDataAssistantTest(unittest.TestCase):
         self.assertEqual("MiniMax-M3", body["model"])
         self.assertIn("2026-07-23", body["messages"][1]["content"])
         self.assertNotIn("不应进入问答", body["messages"][1]["content"])
-        record.assert_called_once()
+        self.assertIsInstance(call_llm.await_args.kwargs["attempt_ledger"], main._ModelUsageAttempts)
 
     def test_date_fact_and_link_question_both_use_m3_but_raw_links_stay_server_side(self):
         snapshot = self._snapshot()
-        record = Mock()
         with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
             main, "_call_llm", new=AsyncMock(return_value=FakeLlmResponse())
-        ) as call_llm, patch.object(main, "_record_llm_usage", record):
+        ) as call_llm:
             result = asyncio.run(main._supplier_assistant_answer("昨天交付多少条", snapshot, self.member))
         self.assertEqual("llm", result["source"])
         self.assertTrue(result["answer"].startswith("昨天交付 2 条，其中已回传链接 1 条。"))
@@ -125,7 +123,7 @@ class SupplierDataAssistantTest(unittest.TestCase):
         self.assertIn("authoritativeAnswer", body["messages"][1]["content"])
         self.assertIn("昨天交付 2 条，其中已回传链接 1 条。", body["messages"][1]["content"])
         self.assertNotIn("https://example.test/a", body["messages"][1]["content"])
-        record.assert_called_once()
+        self.assertIsInstance(call_llm.await_args.kwargs["attempt_ledger"], main._ModelUsageAttempts)
 
         with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
             main, "_call_llm", new=AsyncMock(return_value=FakeLlmResponse())

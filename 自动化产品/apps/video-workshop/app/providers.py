@@ -13,6 +13,12 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from .config import settings
+from .usage_receipts import (
+    new_operation_id,
+    provider_reference,
+    record_model_usage_receipt,
+    token_usage,
+)
 
 
 ProgressCallback = Callable[[str, str, int], Awaitable[None]]
@@ -660,11 +666,32 @@ class GPTImageGenerator:
                 24 if is_continuity else min(56, 24 + scene_number * 3),
             )
         response: httpx.Response | None = None
+        response_data: dict[str, Any] = {}
+        operation_id = ""
         for attempt in range(1, 9):
+            operation_id = new_operation_id(f"static-image-scene-{scene_number}-attempt-{attempt}")
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊静态分镜",
+                usage_kind="image",
+                provider="image-api",
+                model=settings.image_model,
+                status="submitted",
+                output_units=1,
+                unit_label="张",
+            )
             try:
                 async with _client(180) as client:
                     response = await client.post(endpoint, json=payload, headers=headers)
             except httpx.RequestError as exc:
+                record_model_usage_receipt(
+                    operation_id,
+                    feature="视频工坊静态分镜",
+                    usage_kind="image",
+                    provider="image-api",
+                    model=settings.image_model,
+                    status="unknown",
+                )
                 if attempt >= 8:
                     raise ProviderError(
                         f"静态分镜 {scene_number} 图片请求连续失败：{exc.__class__.__name__}"
@@ -672,8 +699,32 @@ class GPTImageGenerator:
                 await asyncio.sleep(min(10, attempt * 2))
                 continue
             if response.status_code < 400:
+                try:
+                    response_data = response.json()
+                except (TypeError, ValueError):
+                    record_model_usage_receipt(
+                        operation_id,
+                        feature="视频工坊静态分镜",
+                        usage_kind="image",
+                        provider="image-api",
+                        provider_ref=provider_reference(headers=response.headers),
+                        model=settings.image_model,
+                        status="confirmed",
+                    )
+                    raise ProviderError(
+                        f"静态分镜 {scene_number} 图片接口返回内容不是合法 JSON"
+                    )
                 break
             detail = _json_error(response)
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊静态分镜",
+                usage_kind="image",
+                provider="image-api",
+                provider_ref=provider_reference(headers=response.headers),
+                model=settings.image_model,
+                status="unknown" if response.status_code >= 500 else "failed",
+            )
             transient = (
                 response.status_code in {408, 425, 429, 500, 502, 503, 504}
                 or any(
@@ -688,7 +739,19 @@ class GPTImageGenerator:
             await asyncio.sleep(min(10, attempt * 2))
         if response is None or response.status_code >= 400:
             raise ProviderError(f"静态分镜 {scene_number} 图片生成失败")
-        image_value = _find_generated_image(response.json())
+        image_value = _find_generated_image(response_data)
+        image_provider_ref = provider_reference(response_data, response.headers)
+        record_model_usage_receipt(
+            operation_id,
+            feature="视频工坊静态分镜",
+            usage_kind="image",
+            provider="image-api",
+            provider_ref=image_provider_ref,
+            model=settings.image_model,
+            status="confirmed",
+            output_units=1 if image_value else 0,
+            unit_label="张",
+        )
         if not image_value:
             raise ProviderError(f"静态分镜 {scene_number} 未返回图片")
         if image_value.startswith("data:image/"):
@@ -708,6 +771,17 @@ class GPTImageGenerator:
             raise ProviderError(f"静态分镜 {scene_number} 返回的文件不是有效图片")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(blob)
+        record_model_usage_receipt(
+            operation_id,
+            feature="视频工坊静态分镜",
+            usage_kind="image",
+            provider="image-api",
+            provider_ref=image_provider_ref,
+            model=settings.image_model,
+            status="succeeded",
+            output_units=1,
+            unit_label="张",
+        )
         return {
             "path": str(output_path),
             "model": settings.image_model,
@@ -784,6 +858,17 @@ async def _post_llm_json_with_retry(
     max_attempts = 3
     retry_delays = (0.35, 0.9)
     for attempt in range(max_attempts):
+        operation_id = new_operation_id(f"director-{label}-attempt-{attempt + 1}")
+        record_model_usage_receipt(
+            operation_id,
+            feature=f"视频工坊导演：{label}",
+            usage_kind="llm",
+            provider="minimax",
+            model=settings.llm_model,
+            status="submitted",
+            output_units=1,
+            unit_label="次",
+        )
         try:
             async with _client(timeout) as client:
                 response = await client.post(
@@ -792,6 +877,14 @@ async def _post_llm_json_with_retry(
                     headers=headers,
                 )
         except httpx.RequestError as exc:
+            record_model_usage_receipt(
+                operation_id,
+                feature=f"视频工坊导演：{label}",
+                usage_kind="llm",
+                provider="minimax",
+                model=settings.llm_model,
+                status="unknown",
+            )
             last_detail = exc.__class__.__name__
             if attempt < max_attempts - 1:
                 await asyncio.sleep(retry_delays[attempt])
@@ -799,6 +892,15 @@ async def _post_llm_json_with_retry(
             raise ProviderError(f"{label}请求失败：{last_detail}") from exc
         detail = _json_error(response).strip()
         if response.status_code >= 400:
+            record_model_usage_receipt(
+                operation_id,
+                feature=f"视频工坊导演：{label}",
+                usage_kind="llm",
+                provider="minimax",
+                provider_ref=provider_reference(headers=response.headers),
+                model=settings.llm_model,
+                status="unknown" if response.status_code >= 500 else "failed",
+            )
             last_detail = detail or f"HTTP {response.status_code}"
             if (
                 attempt < max_attempts - 1
@@ -811,13 +913,36 @@ async def _post_llm_json_with_retry(
         try:
             data = response.json()
         except (TypeError, ValueError) as exc:
+            record_model_usage_receipt(
+                operation_id,
+                feature=f"视频工坊导演：{label}",
+                usage_kind="llm",
+                provider="minimax",
+                provider_ref=provider_reference(headers=response.headers),
+                model=settings.llm_model,
+                status="confirmed",
+            )
             last_detail = "返回内容不是合法 JSON"
             if attempt < max_attempts - 1:
                 await asyncio.sleep(retry_delays[attempt])
                 continue
             raise ProviderError(f"{label}请求失败：{last_detail}") from exc
         base_resp = data.get("base_resp") if isinstance(data, dict) else None
+        usage = token_usage(data)
+        receipt_base = {
+            "feature": f"视频工坊导演：{label}",
+            "usage_kind": "llm",
+            "provider": "minimax",
+            "provider_ref": provider_reference(data, response.headers),
+            "model": settings.llm_model,
+            "input_tokens": usage["inputTokens"],
+            "output_tokens": usage["outputTokens"],
+            "total_tokens": usage["totalTokens"],
+            "output_units": 1,
+            "unit_label": "次",
+        }
         if isinstance(base_resp, dict) and int(base_resp.get("status_code") or 0) != 0:
+            record_model_usage_receipt(operation_id, status="failed", **receipt_base)
             last_detail = str(base_resp.get("status_msg") or "模型返回错误")
             transient = bool(re.search(r"繁忙|稍后|限流|频率|timeout|timed out|rate limit|too many", last_detail, re.I))
             if attempt < max_attempts - 1 and transient and not _llm_permanent_limit(last_detail):
@@ -825,7 +950,9 @@ async def _post_llm_json_with_retry(
                 continue
             raise ProviderError(f"{label}请求失败：{last_detail}")
         if _llm_message_usable(data):
+            record_model_usage_receipt(operation_id, status="succeeded", **receipt_base)
             return data
+        record_model_usage_receipt(operation_id, status="confirmed", **receipt_base)
         last_detail = "没有返回可用消息或工具参数"
         if attempt < max_attempts - 1:
             await asyncio.sleep(retry_delays[attempt])
@@ -3118,23 +3245,98 @@ class MiniMaxTTS:
                 "channel": 1,
             },
         }
-        async with _client(150) as client:
-            response = await client.post(
-                f"{settings.minimax_base_url}/v1/t2a_v2",
-                params=({"GroupId": group_id} if group_id else None),
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.minimax_api_key}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
+        operation_id = new_operation_id("tts-generate")
+        output_chars = len(re.sub(r"\s+", "", str(text or "")))
+        record_model_usage_receipt(
+            operation_id,
+            feature="视频工坊语音生成",
+            usage_kind="voice",
+            provider="minimax",
+            model=settings.minimax_tts_model,
+            status="submitted",
+            output_units=output_chars,
+            unit_label="字符",
+        )
+        try:
+            async with _client(150) as client:
+                response = await client.post(
+                    f"{settings.minimax_base_url}/v1/t2a_v2",
+                    params=({"GroupId": group_id} if group_id else None),
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {settings.minimax_api_key}",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                )
+        except httpx.RequestError as exc:
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊语音生成",
+                usage_kind="voice",
+                provider="minimax",
+                model=settings.minimax_tts_model,
+                status="unknown",
+                output_units=output_chars,
+                unit_label="字符",
             )
+            raise ProviderError(
+                f"MiniMax 语音请求失败：{exc.__class__.__name__}"
+            ) from exc
         if response.status_code >= 400:
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊语音生成",
+                usage_kind="voice",
+                provider="minimax",
+                provider_ref=provider_reference(headers=response.headers),
+                model=settings.minimax_tts_model,
+                status="unknown" if response.status_code >= 500 else "failed",
+                output_units=output_chars,
+                unit_label="字符",
+            )
             raise ProviderError(f"MiniMax 语音请求失败：{_json_error(response)}")
-        data = response.json()
+        try:
+            data = response.json()
+        except (TypeError, ValueError) as exc:
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊语音生成",
+                usage_kind="voice",
+                provider="minimax",
+                provider_ref=provider_reference(headers=response.headers),
+                model=settings.minimax_tts_model,
+                status="confirmed",
+                output_units=output_chars,
+                unit_label="字符",
+            )
+            raise ProviderError("MiniMax 语音接口返回内容不是合法 JSON") from exc
+        tts_provider_ref = provider_reference(data, response.headers)
         base_resp = data.get("base_resp") or {}
         if base_resp.get("status_code", 0) != 0:
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊语音生成",
+                usage_kind="voice",
+                provider="minimax",
+                provider_ref=tts_provider_ref,
+                model=settings.minimax_tts_model,
+                status="failed",
+                output_units=output_chars,
+                unit_label="字符",
+            )
             raise ProviderError(f"MiniMax 语音生成失败：{base_resp.get('status_msg') or '未知错误'}")
+        record_model_usage_receipt(
+            operation_id,
+            feature="视频工坊语音生成",
+            usage_kind="voice",
+            provider="minimax",
+            provider_ref=tts_provider_ref,
+            model=settings.minimax_tts_model,
+            status="confirmed",
+            output_units=output_chars,
+            unit_label="字符",
+        )
         payload_data = data.get("data") if isinstance(data.get("data"), dict) else {}
         audio = payload_data.get("audio") or data.get("audio") or ""
         if not audio:
@@ -3148,6 +3350,17 @@ class MiniMaxTTS:
                 raise ProviderError("MiniMax 返回的音频无法解码") from exc
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(raw)
+        record_model_usage_receipt(
+            operation_id,
+            feature="视频工坊语音生成",
+            usage_kind="voice",
+            provider="minimax",
+            provider_ref=tts_provider_ref,
+            model=settings.minimax_tts_model,
+            status="succeeded",
+            output_units=output_chars,
+            unit_label="字符",
+        )
         return {
             "path": str(output_path),
             "durationMs": int((data.get("extra_info") or {}).get("audio_length") or 0),
@@ -3278,14 +3491,89 @@ class SeedanceVideo:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        async with _client(180) as client:
-            response = await client.post(self.submit_url, json=payload, headers=headers)
+        operation_id = new_operation_id(f"seedance-submit-scene-{scene_number}")
+        record_model_usage_receipt(
+            operation_id,
+            feature="视频工坊动态视频提交",
+            usage_kind="video",
+            provider="seedance",
+            model=settings.seedance_model,
+            status="submitted",
+            output_units=clip_duration,
+            unit_label="秒",
+        )
+        try:
+            async with _client(180) as client:
+                response = await client.post(self.submit_url, json=payload, headers=headers)
+        except httpx.RequestError as exc:
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊动态视频提交",
+                usage_kind="video",
+                provider="seedance",
+                model=settings.seedance_model,
+                status="unknown",
+                output_units=clip_duration,
+                unit_label="秒",
+            )
+            raise ProviderError(
+                f"Seedance 第 {scene_number} 段提交失败：{exc.__class__.__name__}"
+            ) from exc
         if response.status_code >= 400:
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊动态视频提交",
+                usage_kind="video",
+                provider="seedance",
+                provider_ref=provider_reference(headers=response.headers),
+                model=settings.seedance_model,
+                status="unknown" if response.status_code >= 500 else "failed",
+                output_units=clip_duration,
+                unit_label="秒",
+            )
             raise ProviderError(f"Seedance 第 {scene_number} 段提交失败：{_json_error(response)}")
-        data = response.json()
+        try:
+            data = response.json()
+        except (TypeError, ValueError) as exc:
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊动态视频提交",
+                usage_kind="video",
+                provider="seedance",
+                provider_ref=provider_reference(headers=response.headers),
+                model=settings.seedance_model,
+                status="confirmed",
+                output_units=clip_duration,
+                unit_label="秒",
+            )
+            raise ProviderError(
+                f"Seedance 第 {scene_number} 段提交返回内容不是合法 JSON"
+            ) from exc
         task_id = _find_task_id(data)
         if not task_id:
+            record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊动态视频提交",
+                usage_kind="video",
+                provider="seedance",
+                provider_ref=provider_reference(data, response.headers),
+                model=settings.seedance_model,
+                status="confirmed",
+                output_units=clip_duration,
+                unit_label="秒",
+            )
             raise ProviderError(f"Seedance 第 {scene_number} 段未返回任务 ID")
+        record_model_usage_receipt(
+            operation_id,
+            feature="视频工坊动态视频提交",
+            usage_kind="video",
+            provider="seedance",
+            provider_ref=task_id,
+            model=settings.seedance_model,
+            status="confirmed",
+            output_units=clip_duration,
+            unit_label="秒",
+        )
         if callback:
             await callback(
                 f"镜头 {scene_number} 已进入 Seedance 队列",

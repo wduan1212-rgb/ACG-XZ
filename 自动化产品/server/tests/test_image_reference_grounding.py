@@ -4,7 +4,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 
 SERVER_DIR = Path(__file__).resolve().parents[1]
@@ -68,7 +68,7 @@ class ImageReferenceGroundingTest(unittest.TestCase):
             main.ImageReferencePlanCard(index=index, title=f"图{index + 1}", prompt=f"围绕第{index + 1}个信息点展开")
             for index in range(4)
         ]
-        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(main, "LLM_MODEL", "MiniMax-M3"), patch.object(main, "LLM_VISION_MODEL", ""), patch.object(main, "_collect_image_ref_files", new=self._collect_patch()), patch.object(main, "_compact_image_ref_files", side_effect=lambda files: (files, 0)), patch.object(main, "_record_llm_usage", Mock()):
+        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(main, "LLM_MODEL", "MiniMax-M3"), patch.object(main, "LLM_VISION_MODEL", ""), patch.object(main, "_collect_image_ref_files", new=self._collect_patch()), patch.object(main, "_compact_image_ref_files", side_effect=lambda files: (files, 0)):
             for round_index, (title, anchor) in enumerate(cases):
                 with self.subTest(round=round_index + 1, stage="copy"):
                     with patch.object(main, "_call_llm", new=AsyncMock(return_value=JsonLlmResponse({

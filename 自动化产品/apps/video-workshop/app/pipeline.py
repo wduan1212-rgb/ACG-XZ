@@ -37,6 +37,7 @@ from .providers import (
     tts,
 )
 from .store import add_event, add_message, load_project, mutate_project
+from .usage_receipts import bind_project_usage, reset_project_usage
 
 
 DEFAULT_DELIVERY_SPEED = 1.2
@@ -1235,6 +1236,7 @@ class VideoPipeline:
         temporary_scene_paths: set[Path] = set()
         scene_backups: list[tuple[Path, Path]] = []
         project_committed = False
+        usage_token = bind_project_usage(project_id)
         try:
             await asyncio.to_thread(_ensure_legacy_delivery, project_id)
             scenes = [scene for scene in list(plan.get("scenes") or []) if isinstance(scene, dict)]
@@ -2069,6 +2071,7 @@ class VideoPipeline:
                 _unlink_quietly(candidate_path)
             for _target_path, backup_path in scene_backups:
                 _unlink_quietly(backup_path)
+            reset_project_usage(usage_token)
 
 
 pipeline = VideoPipeline()

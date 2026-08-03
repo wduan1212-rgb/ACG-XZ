@@ -420,6 +420,7 @@ export function useStudioActions(projectId: string) {
               size,
               references: refDesc,
               images: agentImages,
+              idempotencyKey: agentMsgId,
             }, { signal: requestSignal })
           : {
               palette: "default" as const,

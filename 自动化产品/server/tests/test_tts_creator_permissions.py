@@ -105,6 +105,8 @@ class TtsCreatorPermissionTest(unittest.TestCase):
             'headers: creatorAuthHeaders({ "Content-Type": "application/json" })',
             providers,
         )
+        self.assertIn('generationOperationKey("voice-lookup")', providers)
+        self.assertIn('creatorAuthHeaders({ "Idempotency-Key": requestKey })', providers)
         self.assertIn('state.role === "admin" || state.role === "editor"', providers)
         self.assertIn("if (entered) {", main_js)
         self.assertNotIn("adminOnly", shell)

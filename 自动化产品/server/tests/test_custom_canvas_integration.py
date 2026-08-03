@@ -514,6 +514,39 @@ console.log(JSON.stringify({{
         self.assertNotIn("/Users/", deployment_text)
         self.assertNotIn("Desktop/百度/图片生产平台", deployment_text)
 
+    def test_embed_vendor_cannot_load_the_client_key_image_provider(self):
+        source_dir = APP_DIR / "apps" / "infinite-canvas-source"
+        package = (source_dir / "package.json").read_text(encoding="utf-8")
+        api_source = (source_dir / "src/lib/api.ts").read_text(encoding="utf-8")
+        next_config = (source_dir / "next.config.ts").read_text(encoding="utf-8")
+        disabled_image_api = (
+            source_dir / "src/lib/clientImageApi.disabled.ts"
+        ).read_text(encoding="utf-8")
+        disabled_keys = (
+            source_dir / "src/lib/clientKeys.disabled.ts"
+        ).read_text(encoding="utf-8")
+        deployment_text = "\n".join(
+            path.read_text(encoding="utf-8", errors="ignore")
+            for path in (APP_DIR / "vendor/infinite-canvas").rglob("*")
+            if path.is_file() and path.suffix in {".html", ".js", ".txt"}
+        )
+
+        self.assertIn("NEXT_PUBLIC_CLIENT_PROVIDER=0", package)
+        self.assertIn('"build:pages"', package)
+        self.assertIn("NEXT_PUBLIC_CLIENT_PROVIDER=1", package)
+        self.assertIn('process.env.NEXT_PUBLIC_CLIENT_PROVIDER !== "1"', api_source)
+        self.assertIn('import("./clientImageApi")', api_source)
+        self.assertNotIn('from "./clientImageApi"', api_source)
+        self.assertIn("NormalModuleReplacementPlugin", next_config)
+        self.assertIn("clientImageApi.disabled.ts", next_config)
+        self.assertIn("clientKeys.disabled.ts", next_config)
+        self.assertIn("平台嵌入构建已禁用客户端图片模型直连", disabled_image_api)
+        self.assertIn("平台嵌入构建已禁用客户端模型密钥", disabled_keys)
+        self.assertNotIn("tokenhub.tencentmaas.com", deployment_text)
+        self.assertNotIn("/v1/aiart/gttext", deployment_text)
+        self.assertNotIn("/v1/aiart/gtimage", deployment_text)
+        self.assertNotIn("xz-design:image-api-key", deployment_text)
+
     def test_minimal_source_snapshot_is_internal_rebuildable_and_secret_free(self):
         source_dir = APP_DIR / "apps" / "infinite-canvas-source"
         self.assertTrue((source_dir / "src" / "lib" / "api.ts").is_file())
@@ -1026,6 +1059,400 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(captured["body"]["images"]), 1)
         self.assertTrue(captured["endpoint"].endswith("/aiart/gtimage"))
 
+    async def test_agent_usage_receipt_confirms_calls_with_and_without_tokens(self):
+        class DummyResponse:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+            text = ""
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        base_payload = {
+            "model": "canvas-agent-test",
+            "choices": [{"message": {"content": json.dumps({
+                "palette": "tech",
+                "prompt": "生成一张1024x1024科技海报，中央主题文字「向新而行」",
+                "negativePrompt": "watermark",
+                "caption": "科技主视觉",
+                "count": 1,
+            }, ensure_ascii=False)}}],
+        }
+        token_usage = {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+        }
+        responses = [
+            DummyResponse({**base_payload, "id": "llm-token", "usage": token_usage}),
+            DummyResponse({**base_payload, "id": "llm-no-token"}),
+        ]
+        request = main.CustomCanvasAgentReq(
+            brief="做一张科技海报",
+            idempotencyKey="agent-msg-1",
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(main, "LLM_API_KEY", "test-key"))
+            stack.enter_context(patch.object(main, "LLM_MODEL", "canvas-agent-test"))
+            stack.enter_context(patch.object(main, "LLM_FORCE_MODEL", False))
+            call_llm = stack.enter_context(patch.object(
+                main,
+                "_call_llm",
+                new=AsyncMock(side_effect=responses),
+            ))
+            begin = stack.enter_context(patch.object(
+                main.store,
+                "begin_model_usage_receipt",
+                side_effect=[
+                    {"receiptId": "receipt-token", "shouldCallProvider": True},
+                    {"receiptId": "receipt-no-token", "shouldCallProvider": True},
+                ],
+            ))
+            complete = stack.enter_context(patch.object(
+                main.store,
+                "complete_model_usage_receipt",
+            ))
+            reconcile = stack.enter_context(patch.object(
+                main.store,
+                "reconcile_model_usage_outbox",
+            ))
+            first = await main._custom_canvas_agent_llm(
+                request,
+                {"id": "member-user", "role": "user"},
+            )
+            request.idempotencyKey = "agent-msg-2"
+            second = await main._custom_canvas_agent_llm(
+                request,
+                {"id": "member-user", "role": "user"},
+            )
+
+        self.assertEqual(first["palette"], "tech")
+        self.assertEqual(second["palette"], "tech")
+        self.assertEqual(call_llm.await_count, 2)
+        self.assertEqual(begin.call_count, 2)
+        self.assertEqual(complete.call_count, 2)
+        self.assertEqual(complete.call_args_list[0].kwargs["usage"], token_usage)
+        self.assertEqual(complete.call_args_list[1].kwargs["usage"], {})
+        self.assertEqual(reconcile.call_count, 2)
+        self.assertEqual(reconcile.call_args_list[0].kwargs["receipt_id"], "receipt-token")
+        self.assertEqual(reconcile.call_args_list[1].kwargs["receipt_id"], "receipt-no-token")
+
+    async def test_agent_duplicate_or_receipt_write_failure_never_calls_provider(self):
+        request = main.CustomCanvasAgentReq(
+            brief="一张海报",
+            idempotencyKey="agent-replay",
+        )
+        member = {"id": "member-user", "role": "user"}
+        for status in ("pending", "succeeded", "unknown"):
+            with self.subTest(status=status), patch.object(
+                main,
+                "LLM_API_KEY",
+                "test-key",
+            ), patch.object(
+                main.store,
+                "begin_model_usage_receipt",
+                return_value={
+                    "receiptId": f"receipt-{status}",
+                    "status": status,
+                    "reused": True,
+                    "shouldCallProvider": False,
+                },
+            ), patch.object(main, "_call_llm", new=AsyncMock()) as provider:
+                with self.assertRaises(main._ModelUsageGateFailure) as raised:
+                    await main._custom_canvas_agent_llm(request, member)
+                self.assertEqual(raised.exception.status_code, 409)
+                provider.assert_not_awaited()
+
+        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
+            main.store,
+            "begin_model_usage_receipt",
+            side_effect=main.store.ModelUsageReceiptWriteError("database busy"),
+        ), patch.object(main, "_call_llm", new=AsyncMock()) as provider:
+            with self.assertRaises(main._ModelUsageGateFailure) as raised:
+                await main._custom_canvas_agent_llm(request, member)
+        self.assertEqual(raised.exception.status_code, 503)
+        provider.assert_not_awaited()
+
+        request.idempotencyKey = ""
+        with patch.object(main, "_call_llm", new=AsyncMock()) as provider:
+            with self.assertRaises(main._ModelUsageGateFailure) as raised:
+                await main.custom_canvas_agent(request, idempotency_key="", me=member)
+        self.assertEqual(raised.exception.status_code, 400)
+        provider.assert_not_awaited()
+
+    async def test_agent_parse_uncertainty_is_unknown_and_provider_4xx_is_failed(self):
+        class DummyResponse:
+            headers = {"content-type": "application/json"}
+            text = ""
+
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        request = main.CustomCanvasAgentReq(
+            brief="一张海报",
+            idempotencyKey="agent-parse",
+        )
+        member = {"id": "member-user", "role": "user"}
+        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
+            main.store,
+            "begin_model_usage_receipt",
+            return_value={"receiptId": "agent-parse-receipt", "shouldCallProvider": True},
+        ), patch.object(
+            main,
+            "_call_llm",
+            new=AsyncMock(return_value=DummyResponse(200, {
+                "choices": [{"message": {"content": "not-json"}}],
+            })),
+        ), patch.object(
+            main.store,
+            "mark_model_usage_receipt_unknown",
+        ) as mark_unknown, patch.object(
+            main.store,
+            "complete_model_usage_receipt",
+        ) as complete:
+            with self.assertRaises(ValueError):
+                await main._custom_canvas_agent_llm(request, member)
+        mark_unknown.assert_called_once()
+        complete.assert_not_called()
+
+        request.idempotencyKey = "agent-4xx"
+        with patch.object(main, "LLM_API_KEY", "test-key"), patch.object(
+            main.store,
+            "begin_model_usage_receipt",
+            return_value={"receiptId": "agent-4xx-receipt", "shouldCallProvider": True},
+        ), patch.object(
+            main,
+            "_call_llm",
+            new=AsyncMock(return_value=DummyResponse(422, {"detail": "bad input"})),
+        ), patch.object(
+            main.store,
+            "fail_model_usage_receipt",
+        ) as fail, patch.object(
+            main.store,
+            "mark_model_usage_receipt_unknown",
+        ) as mark_unknown:
+            with self.assertRaises(HTTPException) as raised:
+                await main._custom_canvas_agent_llm(request, member)
+        self.assertEqual(raised.exception.status_code, 422)
+        fail.assert_called_once()
+        mark_unknown.assert_not_called()
+
+    async def test_canvas_image_uncertain_failure_is_marked_unknown_before_user_error(self):
+        member = {"id": "member-user", "role": "user"}
+        usage_context = {
+            "feature": "无限画布图片生成",
+            "operation": "canvas.generate",
+            "idempotencyKey": "canvas-output-1",
+            "requestFingerprint": "f" * 64,
+        }
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                main,
+                "_image_request_config",
+                return_value=("test-key", "https://image.example/v1/images", "https://image.example/v1/images/edits"),
+            ))
+            stack.enter_context(patch.object(
+                main.store,
+                "begin_model_usage_receipt",
+                return_value={"receiptId": "image-unknown", "shouldCallProvider": True},
+            ))
+            mark_unknown = stack.enter_context(patch.object(
+                main.store,
+                "mark_model_usage_receipt_unknown",
+            ))
+            fail = stack.enter_context(patch.object(main.store, "fail_model_usage_receipt"))
+            provider = stack.enter_context(patch.object(
+                main,
+                "_image_generate_impl",
+                new=AsyncMock(side_effect=HTTPException(502, "upstream timeout")),
+            ))
+            with self.assertRaises(HTTPException) as raised:
+                await main._custom_canvas_generated_image(
+                    "科技海报",
+                    "64x64",
+                    [],
+                    member=member,
+                    usage_context=usage_context,
+                )
+
+        self.assertEqual(raised.exception.status_code, 502)
+        provider.assert_awaited_once()
+        mark_unknown.assert_called_once()
+        fail.assert_not_called()
+
+    async def test_canvas_image_completion_failure_keeps_usable_result(self):
+        member = {"id": "member-user", "role": "user"}
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(
+                main,
+                "_image_request_config",
+                return_value=("test-key", "https://image.example/v1/images", "https://image.example/v1/images/edits"),
+            ))
+            stack.enter_context(patch.object(
+                main.store,
+                "begin_model_usage_receipt",
+                return_value={"receiptId": "image-pending", "shouldCallProvider": True},
+            ))
+            stack.enter_context(patch.object(
+                main.store,
+                "complete_model_usage_receipt",
+                side_effect=main.store.ModelUsageReceiptWriteError("database busy"),
+            ))
+            spool = stack.enter_context(patch.object(
+                main.store,
+                "spool_model_usage_completion",
+                return_value={"state": "pending", "created": True},
+            ))
+            reconcile = stack.enter_context(patch.object(
+                main.store,
+                "reconcile_model_usage_outbox",
+            ))
+            stack.enter_context(patch.object(
+                main,
+                "_image_generate_impl",
+                new=AsyncMock(return_value={
+                    "dataUrl": png_data_url(64, 64),
+                    "usedRefs": 0,
+                    "skippedRefs": 0,
+                    "model": "image-test",
+                    "mode": "images",
+                }),
+            ))
+            result = await main._custom_canvas_generated_image(
+                "科技海报",
+                "64x64",
+                [],
+                member=member,
+                usage_context={
+                    "feature": "无限画布图片生成",
+                    "operation": "canvas.generate",
+                    "idempotencyKey": "canvas-output-pending",
+                    "requestFingerprint": "e" * 64,
+                },
+            )
+
+        self.assertEqual((result["width"], result["height"]), (64, 64))
+        spool.assert_called_once()
+        reconcile.assert_not_called()
+
+    async def test_all_four_canvas_image_routes_pass_stable_usage_context(self):
+        member = {"id": "creator", "role": "editor"}
+        generated = {
+            "dataUrl": png_data_url(64, 64),
+            "width": 64,
+            "height": 64,
+            "usedRefs": 0,
+            "skippedRefs": 0,
+            "model": "image-test",
+            "mode": "images",
+        }
+        quota_patches = (
+            patch.object(
+                main,
+                "_quota_begin",
+                return_value={"bypassed": True, "status": "bypassed", "points": 0},
+            ),
+            patch.object(
+                main.store,
+                "issue_custom_canvas_generation_receipt",
+                return_value={"token": "generation-receipt"},
+            ),
+        )
+
+        with quota_patches[0], quota_patches[1], patch.object(
+            main,
+            "_custom_canvas_generated_image",
+            new=AsyncMock(return_value=generated),
+        ) as image_call:
+            await main.custom_canvas_generate(main.CustomCanvasGenerateReq(
+                prompt="生成海报",
+                size="64x64",
+                idempotencyKey="generate-parent",
+            ), idempotency_key="", me=member)
+            context = image_call.await_args.kwargs["usage_context"]
+            self.assertEqual(context["operation"], "canvas.generate")
+            self.assertEqual(context["idempotencyKey"], "generate-parent:output:1")
+
+        with patch.object(
+            main,
+            "_quota_begin",
+            return_value={"bypassed": True, "status": "bypassed", "points": 0},
+        ), patch.object(
+            main.store,
+            "issue_custom_canvas_generation_receipt",
+            return_value={"token": "generation-receipt"},
+        ), patch.object(
+            main,
+            "_custom_canvas_generated_image",
+            new=AsyncMock(return_value=generated),
+        ) as image_call:
+            await main.custom_canvas_enhance(main.CustomCanvasEnhanceReq(
+                image=png_data_url(64, 64),
+                size="64x64",
+                idempotencyKey="enhance-1",
+            ), idempotency_key="", me=member)
+            self.assertEqual(
+                image_call.await_args.kwargs["usage_context"]["operation"],
+                "canvas.enhance",
+            )
+
+        with patch.object(
+            main,
+            "_quota_begin",
+            return_value={"bypassed": True, "status": "bypassed", "points": 0},
+        ), patch.object(
+            main.store,
+            "issue_custom_canvas_generation_receipt",
+            return_value={"token": "generation-receipt"},
+        ), patch.object(
+            main,
+            "_custom_canvas_mask_edit",
+            new=AsyncMock(return_value=generated),
+        ) as mask_call:
+            await main.custom_canvas_edit_region(main.CustomCanvasEditRegionReq(
+                image=png_data_url(64, 64),
+                mask=png_data_url(64, 64),
+                instruction="改成蓝色",
+                width=64,
+                height=64,
+                idempotencyKey="region-1",
+            ), idempotency_key="", me=member)
+            self.assertEqual(
+                mask_call.await_args.kwargs["usage_context"]["operation"],
+                "canvas.edit-region",
+            )
+
+        with patch.object(
+            main,
+            "_quota_begin",
+            return_value={"bypassed": True, "status": "bypassed", "points": 0},
+        ), patch.object(
+            main.store,
+            "issue_custom_canvas_generation_receipt",
+            return_value={"token": "generation-receipt"},
+        ), patch.object(
+            main,
+            "_custom_canvas_generated_image",
+            new=AsyncMock(return_value=generated),
+        ) as image_call:
+            await main.custom_canvas_transform(main.CustomCanvasTransformReq(
+                image=png_data_url(64, 64),
+                prompt="调整配色",
+                size="64x64",
+                idempotencyKey="transform-1",
+            ), idempotency_key="", me=member)
+            self.assertEqual(
+                image_call.await_args.kwargs["usage_context"]["operation"],
+                "canvas.transform",
+            )
+
     async def test_targeted_transform_keeps_target_first_and_style_donors_after_it(self):
         target = "data:image/png;base64,TARGET"
         donor = "data:image/png;base64,DONOR"
@@ -1034,6 +1461,7 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
             references=[donor],
             prompt="将图2的背景调整为图1的浅蓝色",
             size="1242x1660",
+            idempotencyKey="transform-target-donor",
         )
         with patch.object(
             main,
@@ -1065,6 +1493,7 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
             image=png_data_url(3496, 1022),
             prompt=prompt,
             size="3496x1022",
+            idempotencyKey="transform-single-target",
         )
         with patch.object(
             main,
@@ -1085,6 +1514,282 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generate.await_args.args[1], "3496x1022")
         self.assertEqual(len(generate.await_args.args[2]), 1)
         self.assertTrue(generate.await_args.kwargs["adapt_primary_reference"])
+
+    async def test_agent_retry_uses_one_receipt_per_5xx_attempt(self):
+        class DummyResponse:
+            headers = {"content-type": "application/json"}
+            text = ""
+
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        class DummyClient:
+            def __init__(self, responses):
+                self.responses = list(responses)
+                self.calls = 0
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, *_args, **_kwargs):
+                self.calls += 1
+                value = self.responses.pop(0)
+                if isinstance(value, Exception):
+                    raise value
+                return value
+
+        success = {
+            "id": "provider-success-2",
+            "model": "canvas-agent-test",
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+            "choices": [{"message": {"content": json.dumps({
+                "palette": "tech",
+                "prompt": "科技主视觉",
+                "negativePrompt": "blur",
+                "caption": "完成",
+                "count": 1,
+            }, ensure_ascii=False)}}],
+        }
+        client = DummyClient([
+            DummyResponse(503, {"detail": "temporarily unavailable"}),
+            DummyResponse(200, success),
+        ])
+        request = main.CustomCanvasAgentReq(
+            brief="做一张科技海报",
+            idempotencyKey="agent-retry-5xx",
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(main, "LLM_API_KEY", "test-key"))
+            stack.enter_context(patch.object(main, "LLM_MODEL", "canvas-agent-test"))
+            stack.enter_context(patch.object(main, "LLM_FORCE_MODEL", False))
+            stack.enter_context(patch.object(main.httpx, "AsyncClient", return_value=client))
+            stack.enter_context(patch.object(main.asyncio, "sleep", new=AsyncMock()))
+            begin = stack.enter_context(patch.object(
+                main.store,
+                "begin_model_usage_receipt",
+                side_effect=[
+                    {"receiptId": "attempt-1", "shouldCallProvider": True},
+                    {"receiptId": "attempt-2", "shouldCallProvider": True},
+                ],
+            ))
+            unknown = stack.enter_context(patch.object(main.store, "mark_model_usage_receipt_unknown"))
+            failed = stack.enter_context(patch.object(main.store, "fail_model_usage_receipt"))
+            complete = stack.enter_context(patch.object(main.store, "complete_model_usage_receipt"))
+            stack.enter_context(patch.object(main.store, "reconcile_model_usage_outbox"))
+            result = await main._custom_canvas_agent_llm(
+                request,
+                {"id": "member-user", "role": "user"},
+            )
+
+        self.assertEqual(result["palette"], "tech")
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(begin.call_count, 2)
+        self.assertEqual(begin.call_args_list[0].kwargs["surface"], "infinite-canvas")
+        self.assertEqual(begin.call_args_list[0].kwargs["source"], "custom-canvas")
+        self.assertTrue(begin.call_args_list[0].kwargs["idempotency_key"].endswith(":attempt:1"))
+        self.assertTrue(begin.call_args_list[1].kwargs["idempotency_key"].endswith(":attempt:2"))
+        unknown.assert_called_once()
+        self.assertEqual(unknown.call_args.args[0], "attempt-1")
+        failed.assert_not_called()
+        complete.assert_called_once()
+        self.assertEqual(complete.call_args.args[0], "attempt-2")
+        self.assertEqual(complete.call_args.kwargs["calls"], 1)
+
+    async def test_agent_network_retry_has_unknown_then_succeeded_receipts(self):
+        class DummyResponse:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+            text = ""
+
+            def json(self):
+                return {
+                    "id": "provider-success-after-network",
+                    "model": "canvas-agent-test",
+                    "choices": [{"message": {"content": json.dumps({
+                        "palette": "business",
+                        "prompt": "商务主视觉",
+                        "caption": "完成",
+                        "count": 1,
+                    }, ensure_ascii=False)}}],
+                }
+
+        class DummyClient:
+            calls = 0
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def post(self, *_args, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    raise main.httpx.ConnectError("network reset")
+                return DummyResponse()
+
+        client = DummyClient()
+        request = main.CustomCanvasAgentReq(
+            brief="做一张商务海报",
+            idempotencyKey="agent-retry-network",
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(main, "LLM_API_KEY", "test-key"))
+            stack.enter_context(patch.object(main, "LLM_MODEL", "canvas-agent-test"))
+            stack.enter_context(patch.object(main, "LLM_FORCE_MODEL", False))
+            stack.enter_context(patch.object(main.httpx, "AsyncClient", return_value=client))
+            stack.enter_context(patch.object(main.asyncio, "sleep", new=AsyncMock()))
+            begin = stack.enter_context(patch.object(
+                main.store,
+                "begin_model_usage_receipt",
+                side_effect=[
+                    {"receiptId": "network-attempt-1", "shouldCallProvider": True},
+                    {"receiptId": "network-attempt-2", "shouldCallProvider": True},
+                ],
+            ))
+            unknown = stack.enter_context(patch.object(main.store, "mark_model_usage_receipt_unknown"))
+            complete = stack.enter_context(patch.object(main.store, "complete_model_usage_receipt"))
+            stack.enter_context(patch.object(main.store, "reconcile_model_usage_outbox"))
+            result = await main._custom_canvas_agent_llm(
+                request,
+                {"id": "member-user", "role": "user"},
+            )
+
+        self.assertEqual(result["palette"], "business")
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(begin.call_count, 2)
+        self.assertEqual(unknown.call_args.args[0], "network-attempt-1")
+        self.assertEqual(complete.call_args.args[0], "network-attempt-2")
+
+    async def test_image_busy_retry_uses_distinct_failed_and_succeeded_receipts(self):
+        class DummyResponse:
+            headers = {"content-type": "application/json"}
+            text = ""
+
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        class DummyClient:
+            def __init__(self):
+                self.responses = [
+                    DummyResponse(429, {"detail": "too many concurrency tasks"}),
+                    DummyResponse(200, {"data": [{"b64_json": "AA=="}]}),
+                ]
+
+            async def post(self, *_args, **_kwargs):
+                return self.responses.pop(0)
+
+        attempts = main._CanvasModelUsageAttempts(
+            {"id": "member-user", "role": "user"},
+            feature="无限画布图片生成",
+            usage_kind="image",
+            operation="canvas.generate",
+            idempotency_key="image-busy-retry",
+            request_fingerprint="a" * 64,
+            provider="image.example",
+            model="image-test",
+        )
+        with ExitStack() as stack:
+            begin = stack.enter_context(patch.object(
+                main.store,
+                "begin_model_usage_receipt",
+                side_effect=[
+                    {"receiptId": "busy-attempt-1", "shouldCallProvider": True},
+                    {"receiptId": "busy-attempt-2", "shouldCallProvider": True},
+                ],
+            ))
+            failed = stack.enter_context(patch.object(main.store, "fail_model_usage_receipt"))
+            unknown = stack.enter_context(patch.object(main.store, "mark_model_usage_receipt_unknown"))
+            complete = stack.enter_context(patch.object(main.store, "complete_model_usage_receipt"))
+            stack.enter_context(patch.object(main.store, "reconcile_model_usage_outbox"))
+            stack.enter_context(patch.object(main.asyncio, "sleep", new=AsyncMock()))
+            await attempts.prime()
+            response, _data = await main._post_json_with_retry(
+                DummyClient(),
+                "https://image.example/generate",
+                {"prompt": "test"},
+                {},
+                retries=1,
+                attempt_ledger=attempts,
+            )
+            await attempts.complete_latest(output_units=1, unit_label="张")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(begin.call_count, 2)
+        failed.assert_called_once()
+        self.assertEqual(failed.call_args.args[0], "busy-attempt-1")
+        unknown.assert_not_called()
+        self.assertEqual(complete.call_args.args[0], "busy-attempt-2")
+        self.assertEqual(complete.call_args.kwargs["calls"], 1)
+
+    async def test_provider_acceptance_stays_succeeded_when_local_image_download_fails(self):
+        class DummyClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        class DummyResponse:
+            status_code = 200
+
+        request = main.CustomCanvasEditRegionReq(
+            image=png_data_url(64, 64),
+            mask=png_data_url(64, 64),
+            instruction="改成蓝色",
+            width=64,
+            height=64,
+            idempotencyKey="local-download-failure",
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(main, "IMAGE_API_KEY", "test-key"))
+            stack.enter_context(patch.object(main, "_image_endpoint", return_value="https://maas.example/v1/aiart/gtimage"))
+            stack.enter_context(patch.object(
+                main.store,
+                "begin_model_usage_receipt",
+                return_value={"receiptId": "accepted-provider", "shouldCallProvider": True},
+            ))
+            complete = stack.enter_context(patch.object(main.store, "complete_model_usage_receipt"))
+            stack.enter_context(patch.object(main.store, "reconcile_model_usage_outbox"))
+            failed = stack.enter_context(patch.object(main.store, "fail_model_usage_receipt"))
+            unknown = stack.enter_context(patch.object(main.store, "mark_model_usage_receipt_unknown"))
+            stack.enter_context(patch.object(
+                main,
+                "_post_json_with_retry",
+                new=AsyncMock(return_value=(DummyResponse(), {"id": "provider-image", "data": [{"url": "https://cdn.example/image.jpg"}]})),
+            ))
+            stack.enter_context(patch.object(
+                main,
+                "_generated_image_to_data_url",
+                new=AsyncMock(side_effect=HTTPException(502, "local download failed")),
+            ))
+            stack.enter_context(patch.object(main.httpx, "AsyncClient", return_value=DummyClient()))
+            with self.assertRaises(HTTPException):
+                await main._custom_canvas_mask_edit(
+                    request,
+                    {"id": "member-user", "role": "user"},
+                    usage_context={
+                        "idempotencyKey": "local-download-failure",
+                        "requestFingerprint": "b" * 64,
+                    },
+                )
+
+        complete.assert_called_once()
+        self.assertEqual(complete.call_args.args[0], "accepted-provider")
+        self.assertEqual(complete.call_args.kwargs["output_units"], 1)
+        failed.assert_not_called()
+        unknown.assert_not_called()
 
     def test_config_is_creator_only_and_reports_export_bridge(self):
         with patch.object(main.store, "list_custom_projects", return_value=[]):

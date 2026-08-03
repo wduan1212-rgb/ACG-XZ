@@ -221,6 +221,11 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                 first = store.apply_schema_migrations(expected_identity=identity)
                 second = store.apply_schema_migrations(expected_identity=identity)
                 self.assertTrue(first["applied"])
+                self.assertEqual(store.LATEST_SCHEMA_MIGRATION_VERSION, first["version"])
+                self.assertEqual(
+                    [store.SCHEMA_MIGRATION_VERSION, store.MODEL_USAGE_SCHEMA_MIGRATION_VERSION],
+                    first["appliedVersions"],
+                )
                 self.assertFalse(second["applied"])
                 with sqlite3.connect(database) as conn:
                     self.assertEqual(
@@ -234,7 +239,20 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                         "SELECT checksum,status FROM schema_migrations WHERE version=?",
                         (store.SCHEMA_MIGRATION_VERSION,),
                     ).fetchone()
+                    usage_ledger = conn.execute(
+                        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                        (store.MODEL_USAGE_SCHEMA_MIGRATION_VERSION,),
+                    ).fetchone()
+                    usage_tables = conn.execute(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                        "AND name IN ('model_usage_receipts','model_usage_outbox')"
+                    ).fetchone()[0]
                 self.assertEqual(ledger, (store.SCHEMA_MIGRATION_CHECKSUM, "success"))
+                self.assertEqual(
+                    usage_ledger,
+                    (store.MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM, "success"),
+                )
+                self.assertEqual(2, usage_tables)
 
     def test_failed_schema_expand_rolls_back_every_new_business_table(self):
         with tempfile.TemporaryDirectory() as tmp:

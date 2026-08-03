@@ -5,9 +5,9 @@ import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260803-v138-home-usage-audit-1";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260803-v139-durable-usage-1";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260803-v138-home-usage-audit-1";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260803-v139-durable-usage-1";
 import { accountCreatedToday, groupOf, isAccountDisabled } from "../domain/accounts.js";
 
 let activeCustomPublishModal = null;

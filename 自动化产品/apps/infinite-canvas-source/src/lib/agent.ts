@@ -134,6 +134,8 @@ export interface AgentRequest {
   scene: Scene;
   size: string;
   references: { label: string }[];
+  /** Stable message identity used to prevent a replayed upstream LLM call. */
+  idempotencyKey: string;
   /** Small data URLs of the reference images, for a vision-capable LLM. */
   images?: string[];
 }

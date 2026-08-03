@@ -25,6 +25,7 @@ from .pipeline import pipeline
 from .providers import ProviderError, director, seedance, tts
 from .store import add_event, add_message, create_project, list_project_summaries, load_project, mutate_project
 from .transcription import TranscriptionError, transcriber
+from .usage_receipts import project_usage_scope
 from .video_skill import SKILL_NAME, director_context, strip_command
 
 
@@ -34,7 +35,7 @@ app.mount("/outputs", StaticFiles(directory=settings.outputs_dir), name="outputs
 app.mount("/uploads", StaticFiles(directory=settings.uploads_dir), name="uploads")
 
 VIDEO_WORKSHOP_CONTRACT_VERSION = "video-workshop-v137-read-only-1"
-VIDEO_WORKSHOP_BUILD_ID = "20260803-v138-home-usage-audit-1"
+VIDEO_WORKSHOP_BUILD_ID = "20260803-v139-durable-usage-1"
 
 
 def _runtime_read_only() -> bool:
@@ -1408,11 +1409,12 @@ async def _run_pipeline_with_auto_policy(
             "recovery",
         )
         try:
-            rewrite = await director.rewrite_scene_for_safety(
-                current_plan,
-                scene_number,
-                reason,
-            )
+            with project_usage_scope(project_id):
+                rewrite = await director.rewrite_scene_for_safety(
+                    current_plan,
+                    scene_number,
+                    reason,
+                )
         except ProviderError as exc:
             await asyncio.to_thread(
                 add_event,
@@ -1835,11 +1837,12 @@ async def project_retry(project_id: str):
             "recovery",
         )
         try:
-            rewrite = await director.rewrite_scene_for_safety(
-                plan,
-                scene_number,
-                str(retryable.get("reason") or "safety"),
-            )
+            with project_usage_scope(project_id):
+                rewrite = await director.rewrite_scene_for_safety(
+                    plan,
+                    scene_number,
+                    str(retryable.get("reason") or "safety"),
+                )
         except ProviderError as exc:
             def restore_failure(item: dict[str, Any]) -> None:
                 item["status"] = "failed"
@@ -2070,11 +2073,12 @@ async def _handle_local_revision(
     try:
         if revision_type == "scene":
             scene_number = int(revision["sceneNumber"])
-            rewrite = await director.revise_scene(
-                plan,
-                scene_number,
-                str(revision.get("instruction") or ""),
-            )
+            with project_usage_scope(project_id):
+                rewrite = await director.revise_scene(
+                    plan,
+                    scene_number,
+                    str(revision.get("instruction") or ""),
+                )
             scenes = [dict(item) for item in scenes]
             original_prompt = str(scenes[scene_number - 1].get("visual_prompt") or "")
             scenes[scene_number - 1]["visual_prompt"] = rewrite["visual_prompt"]
@@ -2116,10 +2120,11 @@ async def _handle_local_revision(
             retry_scene_number = None
             recompose_only = True
         else:
-            subtitle_style = await director.revise_subtitle_style(
-                plan,
-                str(revision.get("instruction") or ""),
-            )
+            with project_usage_scope(project_id):
+                subtitle_style = await director.revise_subtitle_style(
+                    plan,
+                    str(revision.get("instruction") or ""),
+                )
             revised_plan = {**plan, "subtitle_style": subtitle_style}
             revision_record = {
                 "id": uuid.uuid4().hex[:16],
@@ -2211,14 +2216,15 @@ async def _run_director_production(
                 if message.get("role") == "user":
                     message["content"] = revision_message
                     break
-        decision = await director.decide(
-            director_messages,
-            aspect_ratio,
-            director_assets,
-            skill_context=director_context(),
-            bgm_catalog=bgm_library.catalog(),
-            creation_mode=creation_mode,
-        )
+        with project_usage_scope(project_id):
+            decision = await director.decide(
+                director_messages,
+                aspect_ratio,
+                director_assets,
+                skill_context=director_context(),
+                bgm_catalog=bgm_library.catalog(),
+                creation_mode=creation_mode,
+            )
         if decision["action"] == "ask":
             question = str(decision.get("question") or "").strip()
             await asyncio.to_thread(

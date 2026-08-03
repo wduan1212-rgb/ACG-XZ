@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -96,6 +97,18 @@ class ProjectSummaryCacheTest(unittest.TestCase):
         with patch.object(store.json, "loads", side_effect=AssertionError("reparsed")):
             items = store.list_project_summaries()
         self.assertEqual(items[0]["name"], "保存后的名称")
+
+    def test_save_fsyncs_file_and_directory_before_returning(self):
+        with (
+            patch.object(store.os, "fsync", wraps=os.fsync) as fsync_call,
+            patch.object(store.os, "replace", wraps=os.replace) as replace_call,
+        ):
+            saved = store.save_project(project("durable", "持久写入"))
+
+        self.assertEqual("durable", saved["id"])
+        self.assertTrue((self.projects_dir / "durable.json").is_file())
+        self.assertEqual(1, replace_call.call_count)
+        self.assertGreaterEqual(fsync_call.call_count, 2)
 
     def test_removed_project_is_evicted_from_cache(self):
         path = self.projects_dir / "removed.json"

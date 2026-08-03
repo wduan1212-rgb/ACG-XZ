@@ -1,6 +1,10 @@
 export const IS_GITHUB_PAGES = process.env.NEXT_PUBLIC_GITHUB_PAGES === "1";
 export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 export const IS_PLATFORM_EMBED = process.env.NEXT_PUBLIC_PLATFORM_EMBED === "1";
+export const CLIENT_PROVIDER_ENABLED =
+  process.env.NEXT_PUBLIC_CLIENT_PROVIDER === "1" &&
+  IS_GITHUB_PAGES &&
+  !IS_PLATFORM_EMBED;
 
 export function publicAsset(path: string): string {
   if (!BASE_PATH || !path.startsWith("/")) return path;

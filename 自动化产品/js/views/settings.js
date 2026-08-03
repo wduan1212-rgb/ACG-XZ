@@ -3,9 +3,9 @@
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, currentMember, currentTeam, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260803-v138-home-usage-audit-1";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260803-v139-durable-usage-1";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260803-v138-home-usage-audit-1";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260803-v139-durable-usage-1";
 
 const ROLE_DESC = { admin: "团队管理员", editor: "创作成员", user: "个人用户", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor"];
@@ -240,30 +240,34 @@ export const settingsView = {
       if (!apiUsageLoaded) return `<div class="muted api-usage-empty">正在读取用量...</div>`;
       if (!apiUsageRows.length) return `<div class="muted api-usage-empty">暂未收到已记录的模型调用。历史图片、视频调用若当时没有服务端账本，无法可靠追溯或估算。</div>`;
       const activeRows = apiUsageRows
-        .filter(row => Number(row.totalTokens || 0) || Number(row.imageCalls || 0) || Number(row.videoCalls || 0))
-        .sort((a, b) => (Number(b.totalTokens || 0) + Number(b.imageCalls || 0) + Number(b.videoCalls || 0)) - (Number(a.totalTokens || 0) + Number(a.imageCalls || 0) + Number(a.videoCalls || 0)));
+        .filter(row => Number(row.calls || 0) || Number(row.imageCalls || 0) || Number(row.videoCalls || 0) || Number(row.voiceCalls || 0))
+        .sort((a, b) => (Number(b.totalTokens || 0) + Number(b.calls || 0) + Number(b.imageCalls || 0) + Number(b.videoCalls || 0) + Number(b.voiceCalls || 0)) - (Number(a.totalTokens || 0) + Number(a.calls || 0) + Number(a.imageCalls || 0) + Number(a.videoCalls || 0) + Number(a.voiceCalls || 0)));
       const quietRows = apiUsageRows.filter(row => !activeRows.includes(row));
       const totals = apiUsageRows.reduce((sum, row) => ({
         tokens: sum.tokens + Number(row.totalTokens || 0),
+        tokenUnknownCalls: sum.tokenUnknownCalls + Number(row.tokenUnknownCalls || 0),
         imageOutputs: sum.imageOutputs + Number(row.imageOutputs || 0),
         videoOutputs: sum.videoOutputs + Number(row.videoOutputs || 0),
-      }), { tokens: 0, imageOutputs: 0, videoOutputs: 0 });
+        voiceOutputs: sum.voiceOutputs + Number(row.voiceOutputs || 0),
+      }), { tokens: 0, tokenUnknownCalls: 0, imageOutputs: 0, videoOutputs: 0, voiceOutputs: 0 });
       const memberRow = row => `<article class="api-usage-summary-row">
         <span class="api-usage-member"><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "")}</em></span>
-        <span class="api-usage-row-stat"><b>${usageNumber(row.totalTokens)}</b><em>语言 Token · ${usageNumber(row.calls)} 次</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.totalTokens)}</b><em>语言 Token · ${usageNumber(row.calls)} 次${Number(row.tokenUnknownCalls || 0) ? ` · ${usageNumber(row.tokenUnknownCalls)} 次 Token 未知` : ""}</em></span>
         <span class="api-usage-row-stat"><b>${usageNumber(row.imageOutputs)}</b><em>图片输出 · ${usageNumber(row.imageCalls)} 次</em></span>
         <span class="api-usage-row-stat"><b>${usageNumber(row.videoOutputs)}</b><em>视频任务 · ${usageNumber(row.videoCalls)} 次</em></span>
+        <span class="api-usage-row-stat"><b>${usageNumber(row.voiceOutputs)}</b><em>语音输出 · ${usageNumber(row.voiceCalls)} 次</em></span>
         <button class="icon-btn sm api-member-detail" data-usage-member="${esc(row.memberId || "")}" title="查看 ${esc(row.memberName || "成员")} 的接口明细">${icon("eye", 13)}</button>
       </article>`;
       return `<div class="api-usage-overview">
         <div class="api-usage-kpis">
-          <span class="api-usage-kpi"><b>${usageNumber(totals.tokens)}</b><em>语言 Token</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(totals.tokens)}</b><em>语言 Token${totals.tokenUnknownCalls ? ` · ${usageNumber(totals.tokenUnknownCalls)} 次未知` : ""}</em></span>
           <span class="api-usage-kpi"><b>${usageNumber(totals.imageOutputs)}</b><em>图片输出</em></span>
           <span class="api-usage-kpi"><b>${usageNumber(totals.videoOutputs)}</b><em>视频任务</em></span>
+          <span class="api-usage-kpi"><b>${usageNumber(totals.voiceOutputs)}</b><em>语音输出</em></span>
           <span class="api-usage-kpi"><b>${usageNumber(activeRows.length)}</b><em>有用量成员</em></span>
         </div>
         <div class="api-usage-summary-list">
-          <div class="api-usage-summary-label"><span>创作者</span><span>语言模型</span><span>图片模型</span><span>视频模型</span><span>明细</span></div>
+          <div class="api-usage-summary-label"><span>创作者</span><span>语言模型</span><span>图片模型</span><span>视频模型</span><span>语音模型</span><span>明细</span></div>
           ${activeRows.length ? activeRows.map(memberRow).join("") : `<div class="muted api-usage-empty">暂未产生用量；成员明细仍可从“查看 API 明细”中查看。</div>`}
         </div>
         ${quietRows.length ? `<details class="api-usage-zero-members"><summary>未产生用量的成员（${quietRows.length}）</summary><div class="api-usage-summary-list is-quiet">${quietRows.map(memberRow).join("")}</div></details>` : ""}
@@ -341,7 +345,7 @@ export const settingsView = {
           </section>` : ""}` : ""}
 
           ${managementPage === "usage" ? `<section class="card set-data api-usage-panel" id="apiUsagePanel">
-            <div class="card-head"><span><b>创作者模型用量</b><em>语言显示真实 Token；图片/视频显示成功调用与输出单位，不估算历史消耗</em></span>
+            <div class="card-head"><span><b>创作者模型用量</b><em>语言只显示上游真实 Token；图片、视频、语音显示已确认调用，未回传 Token 会明确标记未知</em></span>
               ${canSeeApiUsage() ? `<span class="api-usage-actions"><button class="btn ghost sm" id="apiUsageDetails">${icon("list", 13)} 查看 API 明细</button><button class="btn ghost sm" id="apiUsageRefresh" ${apiUsageLoading ? "disabled" : ""}>${icon("pulse", 13)} ${apiUsageLoading ? "刷新中…" : "刷新"}</button></span>` : ""}</div>
             <div class="api-usage-table">${canSeeApiUsage() ? apiUsageSummaryHtml() : `<div class="muted api-usage-empty">模型用量仅在管理员连接主服务后可用。</div>`}</div>
           </section>` : ""}
@@ -418,15 +422,19 @@ export const settingsView = {
       const apiRows = Array.isArray(details?.apiRows) ? details.apiRows : [];
       const assetRows = Array.isArray(details?.assetApiRows) ? details.assetApiRows : [];
       const assetEvents = Array.isArray(details?.assetEvents) ? details.assetEvents : [];
+      const receiptRows = Array.isArray(details?.receiptRows) ? details.receiptRows : [];
+      const unresolvedReceipts = Array.isArray(details?.unresolvedReceiptEvents) ? details.unresolvedReceiptEvents : [];
       const apiTable = apiRows.length ? apiRows.map(row => `<div class="api-detail-row api-detail-api-row"><span><b>${esc(row.feature || "通用调用")}</b><em>${esc(row.model || "上游未回传模型")}</em></span><span>${usageNumber(row.calls)}</span><span>${usageNumber(row.promptTokens)}</span><span>${usageNumber(row.completionTokens)}</span><strong>${usageNumber(row.totalTokens)}</strong><time>${usageTime(row.lastUsedAt)}</time></div>`).join("") : `<p class="muted api-detail-empty">暂未收到上游可核验的 token 用量。</p>`;
       const eventTable = events.length ? events.map(row => `<div class="api-detail-row api-detail-event-row"><span><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "未知账号")}</em></span><span><b>${esc(row.feature || "通用调用")}</b><em>${esc(row.model || "上游未回传模型")}</em></span><span>${usageNumber(row.promptTokens)}</span><span>${usageNumber(row.completionTokens)}</span><strong>${usageNumber(row.totalTokens)}</strong><time>${usageTime(row.createdAt)}</time></div>`).join("") : `<p class="muted api-detail-empty">暂无调用记录。</p>`;
-      const assetTable = assetRows.length ? assetRows.map(row => `<div class="api-asset-row"><span><b>${esc(row.feature || "模型调用")}</b><em>${esc(row.model || "上游未回传模型")}</em></span><span>${usageNumber(row.calls)} 次</span><strong>${usageNumber(row.outputUnits)} ${esc(row.unitLabel || "任务")}</strong><time>${usageTime(row.lastUsedAt)}</time></div>`).join("") : `<p class="muted api-detail-empty">暂无已记录的图片或视频成功调用；旧调用不会以猜测值补写。</p>`;
+      const assetTable = assetRows.length ? assetRows.map(row => `<div class="api-asset-row"><span><b>${esc(row.feature || "模型调用")}</b><em>${esc(row.model || "上游未回传模型")}</em></span><span>${usageNumber(row.calls)} 次</span><strong>${usageNumber(row.outputUnits)} ${esc(row.unitLabel || "任务")}</strong><time>${usageTime(row.lastUsedAt)}</time></div>`).join("") : `<p class="muted api-detail-empty">暂无已记录的图片、视频或语音成功调用；旧调用不会以猜测值补写。</p>`;
       const assetEventTable = assetEvents.length ? assetEvents.map(row => `<div class="api-asset-row api-asset-event-row"><span><b>${esc(row.memberName || "成员")}</b><em>@${esc(row.username || "未知账号")} · ${esc(row.feature || "模型调用")} · ${esc(row.model || "上游未回传模型")}</em></span><span>${usageNumber(row.calls)} 次</span><strong>${usageNumber(row.outputUnits)} ${esc(row.unitLabel || "任务")}</strong><time>${usageTime(row.createdAt)}</time></div>`).join("") : `<p class="muted api-detail-empty">暂无调用记录。</p>`;
-      return `<section class="api-detail-section"><div class="api-detail-title"><b>语言模型 Token（按 API / 模型）</b><em>仅来自上游返回的真实 usage 字段</em></div><div class="api-detail-table"><div class="api-detail-row api-detail-label"><span>调用类型 / 模型</span><span>调用</span><span>输入</span><span>输出</span><span>合计</span><span>最近调用</span></div>${apiTable}</div></section><section class="api-detail-section"><div class="api-detail-title"><b>图片与视频模型（成功调用）</b><em>显示实际调用次数与输出单位；不是 Token，也不估算成本</em></div><div class="api-asset-table"><div class="api-asset-row api-detail-label"><span>调用类型 / 模型</span><span>调用</span><strong>输出</strong><time>最近调用</time></div>${assetTable}</div></section><section class="api-detail-section"><div class="api-detail-title"><b>最近语言调用记录</b><em>最多展示最近 120 笔；不含未返回 token 的请求</em></div><div class="api-detail-table api-detail-events"><div class="api-detail-row api-detail-label api-detail-event-row"><span>创作者</span><span>调用类型 / 模型</span><span>输入</span><span>输出</span><span>合计</span><span>时间</span></div>${eventTable}</div></section><section class="api-detail-section"><div class="api-detail-title"><b>最近图片 / 视频调用</b><em>只在服务端确认成功返回图片或创建视频任务后写入</em></div><div class="api-asset-table">${assetEventTable}</div></section>`;
+      const receiptTable = receiptRows.length ? receiptRows.map(row => `<div class="api-asset-row"><span><b>${esc(row.feature || "模型调用")}</b><em>${esc(row.surface || "平台")} · ${esc(row.usageKind || "未知")} · ${esc(row.model || "上游未回传模型")} · ${esc(row.status || "未知")}</em></span><span>${usageNumber(row.calls)} 次</span><strong>${row.usageKind === "llm" ? `${usageNumber(row.totalTokens)} Token${Number(row.tokenUnknownCalls || 0) ? ` · ${usageNumber(row.tokenUnknownCalls)} 次未知` : ""}` : `${usageNumber(row.outputUnits)} 输出单位`}</strong><time>${usageTime(row.lastUpdatedAt)}</time></div>`).join("") : `<p class="muted api-detail-empty">暂无新版可对账凭证。</p>`;
+      const unresolvedTable = unresolvedReceipts.length ? unresolvedReceipts.map(row => `<div class="api-asset-row api-usage-unresolved-row"><span><b>${esc(row.feature || "模型调用")}</b><em>${esc(row.surface || "平台")} · ${esc(row.usageKind || "未知")} · ${esc(row.status || "未知")}</em></span><span>${esc(row.outboxState || "待核对")}</span><strong>${esc(row.error || "待持久化投影")}</strong><time>${usageTime(row.updatedAt)}</time></div>`).join("") : `<p class="muted api-detail-empty">当前没有待核对或未知凭证。</p>`;
+      return `<section class="api-detail-section"><div class="api-detail-title"><b>可对账调用凭证</b><em>先落盘再调用上游；无 Token 回包的成功调用依然可见，但不伪造 Token</em></div><div class="api-asset-table">${receiptTable}</div></section><section class="api-detail-section"><div class="api-detail-title"><b>待核对 / 未知凭证</b><em>正常稳态应为 0；未知表示上游结果无法安全判定，需要对账而不是删除</em></div><div class="api-asset-table">${unresolvedTable}</div></section><section class="api-detail-section"><div class="api-detail-title"><b>语言模型 Token（按 API / 模型）</b><em>仅来自上游返回的真实 usage 字段</em></div><div class="api-detail-table"><div class="api-detail-row api-detail-label"><span>调用类型 / 模型</span><span>调用</span><span>输入</span><span>输出</span><span>合计</span><span>最近调用</span></div>${apiTable}</div></section><section class="api-detail-section"><div class="api-detail-title"><b>图片、视频与语音模型（成功调用）</b><em>显示实际调用次数与输出单位；不是 Token，也不估算成本</em></div><div class="api-asset-table"><div class="api-asset-row api-detail-label"><span>调用类型 / 模型</span><span>调用</span><strong>输出</strong><time>最近调用</time></div>${assetTable}</div></section><section class="api-detail-section"><div class="api-detail-title"><b>最近语言调用记录</b><em>旧表只包含上游返回了 Token 的请求；新凭证请以上方对账区为准</em></div><div class="api-detail-table api-detail-events"><div class="api-detail-row api-detail-label api-detail-event-row"><span>创作者</span><span>调用类型 / 模型</span><span>输入</span><span>输出</span><span>合计</span><span>时间</span></div>${eventTable}</div></section><section class="api-detail-section"><div class="api-detail-title"><b>最近图片 / 视频 / 语音调用</b><em>只在服务端确认成功返回输出或创建任务后写入</em></div><div class="api-asset-table">${assetEventTable}</div></section>`;
     };
     const openApiUsageDetails = (memberId = "") => {
       const member = apiUsageRows.find(row => row.memberId === memberId) || null;
-      openModal(`<div class="mp-head"><div><b>${member ? `${esc(member.memberName || "成员")} · 模型调用明细` : "模型调用明细"}</b><em>语言 Token 与图片 / 视频成功调用分开统计</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div><div class="api-usage-detail-body"><div class="muted" style="padding:12px 2px">正在读取 API 明细...</div></div>`, { wide: true, onMount(panel) {
+      openModal(`<div class="mp-head"><div><b>${member ? `${esc(member.memberName || "成员")} · 模型调用明细` : "模型调用明细"}</b><em>真实 Token 与图片 / 视频 / 语音输出分开统计，未知状态单独标记</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div><div class="api-usage-detail-body"><div class="muted" style="padding:12px 2px">正在读取 API 明细...</div></div>`, { wide: true, onMount(panel) {
         panel.classList.add("api-usage-modal");
         const body = $(".api-usage-detail-body", panel);
         remote.admin.llmUsageDetails(memberId).then(details => {
