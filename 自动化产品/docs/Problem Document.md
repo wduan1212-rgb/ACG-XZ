@@ -4,6 +4,16 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-03 v140 修复与门禁：代码具备迁移安全机制不等于生产已具备写入证据
+
+- **已收口的代码缺口**：`140001/140002` 把历史业务资源冻结到唯一个人/团队 scope，并在严格模式下移除通用管理员跨租户旁路；`140003/140004` 为 uploads、composed、画布 Blob 与视频工坊持久媒体建立 owner/team registry、服务端会话和 Range 授权。两类 data migration 都先只读 preflight，真正 unresolved、ambiguous、缺文件、缺 owner 或 registry conflict 会在任何归属/账本写入前拒绝整次 apply。
+- **人工 override 不是模糊兜底**：只允许处理 preflight 精确列出的真实孤儿，必须逐条人工确认并精确绑定冻结库 identity、路径摘要、逻辑摘要、schema/user version、当次 fresh v2 备份 manifest SHA-256；条目少、多、重复、目标无效、数据库或媒体内容漂移均零写失败。不得把不确定记录批量归入 ACG，也不得通过放宽 legacy origin 绕过历史媒体归属。
+- **备份/恢复不再只是“复制了文件”**：每个会写库的 apply 都要求紧邻执行的 `acg-sqlite-backup-v2`，在同一 `BEGIN IMMEDIATE` 重新比对当前源库；任何上一步成功都会使旧 binding 失效。完整恢复必须使用 `acg-production-complete-v1` 将数据库、媒体、usage spool、视频 runtime、环境和服务配置绑定到同一 snapshot ID，独立验签后恢复到空隔离目录。启动器的部分 runtime 备份不能冒充完整生产恢复点。
+- **性能边界**：约 15 GB 媒体的逐文件内容哈希只允许在显式 snapshot、media preflight/apply 和维护窗验收中执行，常规 readiness/registry status 不读取全量媒体内容。模型用量 receipt 仍沿用 v139 门禁：生产同盘副本必须完成 64/128 路连续压测；为避免漏账，异常长 SQLite 写锁应在上游调用前失败，而不是允许无凭证调用。
+- **旧副本证据及其边界**：较早的 v120 副本中 7,044 条文档经 ACG/resource 迁移后计数不下降，7,039 条可自动归属，5 条真实历史孤儿经既定“v120 尚无外部团队、既有历史资料归 ACG”边界逐条复核后达到覆盖 100%、歧义 0、未解析 0，第二轮为零写幂等。该副本不含完整媒体字节，media preflight 因缺根目录、缺文件和缺 owner 失败关闭；这是防丢失证据，不能用空文件、旧 override 或旧清单冒充当前生产通过。
+- **当前真实阻断**：生产仍为 v120；v140 已形成本地代码提交 `2ee0dd3`，但未推送、未部署。当前生产最新一致副本、完整冻结恢复、目标 Linux/Python/ABI wheelhouse、七步迁移双演练、资源/媒体覆盖实数、团队 A/B/供应商父子/游客权限矩阵、usage reconciliation/性能和兼容前向回滚 release 均未取得最终证据。因此只读 release 可以用于迁移验收，但 `writeReady=false` 属于预期；没有上述证据不得解除生产写冻结。
+- **防错位不变量**：首迁不移动或改名 `/data/dumate-studio/current` 中现有业务库和约 15 GB 媒体，只把新代码放到 sibling versioned release，并通过固定绝对路径读取持久数据。禁止删除式同步、本地数据覆盖、原始 v120 读取演进库，或用 `/api/health`/本地测试代替生产副本、恢复和权限验收。
+
 ## 2026-08-03 v139 修复与风险：用量凭证不能丢，也不能拖垮生成
 
 - **修复**：主服务、无限画布和视频工坊所有已识别的真实模型入口均改为“每次 upstream attempt 调用前持久化 receipt”；重试/降级逐次记账，成功后本地解析或下载失败仍保留已调用事实。旧静默 `_record_*` 旁路已移除；完成写失败进入去敏、可校验、可重放的本地 spool，后台仅在存在 pending 时投影旧 usage 表。

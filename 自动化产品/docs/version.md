@@ -1,5 +1,25 @@
 # 星阵版本记录
 
+## v140 - 2026-08-03（生产迁移安全条件本地收口；本地代码 `2ee0dd3`、未推送、未部署）
+
+### 本版范围
+
+- 在既有 `137003` schema、`137004` ACG 团队数据和 `139001` 模型用量迁移之后，新增 `140001` resource scope schema 与 `140002` 历史资源归属迁移。受保护资源必须冻结到唯一个人或团队 scope；启用严格模式后，平台管理员也不再拥有跨租户 collection 旁路，新写入、更新和删除都在事务内核验行为人、owner、账号与上游资源的 scope。歧义、缺失或后续漂移均 fail closed，不能以“默认归入 ACG”掩盖未知归属。
+- 新增 `140003` private media schema 与 `140004` 历史媒体归属迁移，为 uploads、composed、画布 Blob 与视频工坊持久媒体建立 owner/team registry。受保护文件读取使用服务端会话并支持 Range；本人及同团队成员按归属放行，外部团队管理员不能越权。社区已发布媒体保留独立公共读取边界；无业务引用的孤立文件只作为 quarantine 证据，不自动授予任何成员。
+- 资源和媒体的少量真实孤儿可以使用人工复核 override，但 manifest 必须精确覆盖无 override preflight 报告的条目，并绑定冻结库的 database identity、路径摘要、逻辑摘要、schema/user version 及当次 fresh 备份 manifest SHA-256。所有生产 apply 都要求紧接执行前生成的 `acg-sqlite-backup-v2`，并在同一 `BEGIN IMMEDIATE` 内重新核对源库身份和逻辑摘要；前一步迁移成功后旧备份绑定立即失效。
+- 新增 `acg-production-complete-v1` runtime snapshot/verify/restore-drill：把 SQLite、uploads、composed、canvas blobs、模型用量 spool、视频工坊 projects/uploads/outputs、BGM、模型缓存、环境、systemd 与 Nginx 纳入同一 snapshot ID，独立确认 manifest SHA-256，并把恢复限制到全新的隔离目录。媒体强内容摘要只用于显式 snapshot、media preflight/apply 和维护窗验收，不进入常规 `/api/ready` 轮询，避免约 15 GB 媒体反复哈希拖慢在线服务。
+- 主服务与视频 sidecar 新增精确依赖 lock、目标 Python/ABI wheelhouse manifest 与离线安装验签工具。生产启动器在监听 socket 前执行强制 write gate，核对 release、production/validate 模式、只读状态、资源/媒体严格开关、七步迁移、固定持久路径、公开媒体 origin、sidecar、画布闭包和用量账本；RO 可用于迁移验收但明确 `writeReady=false`，只有全部门禁闭合的 RW 启动才允许 `writeReady=true`。
+- 本版没有为追求“拆文件”机械重写大单体。8787 主服务、8765 回环 sidecar、无限画布源码/审计后 vendor 闭包和 release 外持久数据边界保持不变；优化重点是把环境、迁移、权限、媒体、备份、依赖和切换条件变成可独立验证的契约，降低一次改动同时牵动代码与生产数据的风险。
+
+### 验证、Git 与生产边界
+
+- 最终自动回归通过：主服务 `681/681`、视频工坊 `137/137`、Node `97/97`；Python compileall、全部项目 JavaScript 语法、shell 语法、无限画布 lint/typecheck/vendor 闭包和 `git diff --check` 通过。release verifier 核对 59 个 ESM 模块/339 条本地边、63 个画布文件/1,759,226 bytes 和 53 个 backend/video runtime 文件；Phase 0 SHA-256 为 `3c531a8db322d2407d29731ba6f46e498f957b355e30d4af6a5834f59de7bce7`，runtime manifest SHA-256 为 `6f865d2ad120a84e1826f50d9fbf28cc6475ea2cd9afa3831c433c17bf75e9f9`。
+- 一份较早的本地 v120 只读副本完成生产形态数据库演练：7,044 条历史文档、65 名成员、72 条成员申请、52 条供应商账号绑定和 884 条供应商活动均未减少，`quick_check=ok`；80 个平台账号、58 名已捕获成员和 4 个供应商完成 ACG 映射。资源 scope 自动确定 7,039 条，5 条经“v120 尚无外部团队、全部既有历史资料归 ACG”的既定迁移边界逐条复核后达到 7,044/7,044、歧义 0、未解析 0；第二轮 schema/ACG/resource apply 均为零写幂等。该旧副本没有约 15 GB 真实媒体，media preflight 因缺根目录、缺文件和缺 owner 正确阻断，未伪造文件强行通过；正式部署必须对当前线上完整冻结快照重新生成实数与 override，不能复用上述旧结果。
+- 本地 8787/8765 已以标准 `start.command` 重启，主服务 `/api/health`、sidecar `/api/health` 与 `/api/ready` 均通过并回报 `20260803-v140-deployment-readiness-1`。本地兼容模式如实显示 `140001/140003` schema 已就绪，而生产专用 `140002/140004` data migration 尚未作用于本地业务库；这不构成生产验收。
+- 2026-08-03 对生产仅做固定、非交互只读核对：线上仍为 v120，活动目录 `/data/dumate-studio/current` 是实体目录，业务库与约 15 GB 持久媒体仍与现行代码共同位于该树内；本轮没有改动服务器、数据库、文件、服务、账号或私密配置。
+- 当前结论是“代码侧部署条件已形成可审计候选”，不是“现在可以直接热部署”。生产 RW 前仍必须：取得最新一致副本并按 `137003 -> 137004 -> 139001 -> 140001 -> 140002 -> 140003 -> 140004` 连续双演练；完成完整冻结 snapshot 的异机/隔离恢复；在目标 Linux/Python/ABI 建立并验签正式 wheelhouse；证明资源 scope 100%、可开放媒体唯一归属、权限/媒体正负矩阵、usage reconciliation 与 64/128 路 receipt 性能全部通过，并准备理解 v140 演进库的前向兼容回滚 release。原始 v120 只能作历史基线，不能读取迁移后的生产库。
+- v140 功能与部署安全代码已精确提交为 `2ee0dd3`；本节由后续独立文档提交固化。当前未推送、未部署，没有执行生产迁移、历史用量回填或真实付费生成。两份归属未知的 Project Memory 删除继续排除。
+
 ## v139 - 2026-08-03（统一模型用量持久凭证与副本恢复工具；本地代码 `7b6e36c`，未推送、未部署）
 
 ### 本版范围
