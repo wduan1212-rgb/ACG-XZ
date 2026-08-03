@@ -264,6 +264,7 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
         plan = _plan(scene_count=3)
         plan.update({
             "creation_mode": "static",
+            "aspect_ratio": "16:9",
             "style_anchor": "统一柔和纸雕风，暖白背景，蓝橙固定配色",
             "negative_constraints": "不换画风，不生成字幕，不改变IP身份",
             "reference_images": [
@@ -356,15 +357,99 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(3, len(still_calls))
         self.assertGreaterEqual(peak, 2)
         for call in image_calls:
-            self.assertEqual("9:16", call["aspect_ratio"])
+            self.assertEqual("16:9", call["aspect_ratio"])
             self.assertEqual(["图1", "图2"], [
                 item["label"] for item in call["reference_images"]
             ])
             self.assertIn("统一柔和纸雕风", call["prompt"])
             self.assertIn("不换画风", call["prompt"])
+            self.assertIn("用于 16:9 静态视频分镜", call["prompt"])
         seedance_generate.assert_not_awaited()
         self.assertEqual("succeeded", self.project["status"])
         self.assertEqual("static", self.project["plan"]["creation_mode"])
+
+    async def test_static_image_empty_response_retries_without_restarting_project(self) -> None:
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        output = self.work_dir / "retry.jpg"
+        calls = 0
+        progress: list[str] = []
+
+        async def flaky_generate(*_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise pipeline_module.ProviderError("静态分镜 2 未返回图片")
+            output.write_bytes(b"\xff\xd8\xffsuccessful-static-image")
+            return {"path": str(output)}
+
+        async def callback(title, _detail, _progress):
+            progress.append(title)
+
+        with (
+            patch.object(pipeline_module.image_generator, "generate", new=flaky_generate),
+            patch.object(pipeline_module.asyncio, "sleep", new=AsyncMock()),
+        ):
+            result = await pipeline_module._generate_static_image_with_retry(
+                prompt="静态图片",
+                aspect_ratio="16:9",
+                output_path=output,
+                reference_images=[],
+                callback=callback,
+                scene_number=2,
+            )
+
+        self.assertEqual(3, calls)
+        self.assertEqual(str(output), result["path"])
+        self.assertEqual(
+            ["静态分镜 2 正在自动重试", "静态分镜 2 正在自动重试"],
+            progress,
+        )
+
+    async def test_director_continuity_anchor_is_generated_once_and_reused_by_every_scene(self) -> None:
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        reference = self.work_dir / "user.png"
+        reference.write_bytes(b"\x89PNG\r\n\x1a\nuser-reference")
+        calls: list[dict] = []
+
+        async def generate(**kwargs):
+            calls.append(kwargs)
+            Path(kwargs["output_path"]).write_bytes(b"\xff\xd8\xffcontinuity-anchor")
+            return {"path": str(kwargs["output_path"])}
+
+        plan = {
+            "style_anchor": "统一日系漫画线稿与蓝橙配色",
+            "negative_constraints": "角色身份不漂移",
+            "continuity_anchors": [{
+                "key": "host",
+                "kind": "character",
+                "description": "短发、蓝色外套的同一位女性主持人",
+                "reason": "主持人贯穿全片",
+            }],
+        }
+        user_references = [{"label": "图1", "path": str(reference)}]
+        with patch.object(
+            pipeline_module,
+            "_generate_static_image_with_retry",
+            new=generate,
+        ):
+            first = await pipeline_module._ensure_static_continuity_references(
+                project_id=self.project_id,
+                plan=plan,
+                work_dir=self.work_dir,
+                user_references=user_references,
+                callback=None,
+            )
+            second = await pipeline_module._ensure_static_continuity_references(
+                project_id=self.project_id,
+                plan=plan,
+                work_dir=self.work_dir,
+                user_references=user_references,
+                callback=None,
+            )
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual(["图1", "连续性锚点1"], [item["label"] for item in first])
+        self.assertEqual(["图1", "连续性锚点1"], [item["label"] for item in second])
 
     async def test_failed_candidate_cancels_and_reaps_siblings_before_cleanup(self) -> None:
         instance = pipeline_module.VideoPipeline()

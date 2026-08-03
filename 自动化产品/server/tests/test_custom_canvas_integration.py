@@ -64,6 +64,12 @@ def striped_png_data_url(width=160, height=90):
 
 
 class CustomCanvasStaticIntegrationTest(unittest.TestCase):
+    def test_platform_creates_one_real_canvas_project_for_a_first_time_user(self):
+        source = (APP_DIR / "js/views/customCanvasIntegration.js").read_text(encoding="utf-8")
+        self.assertIn("currentProjectId = await loadRecentProjectId(token, controller.signal)", source)
+        self.assertIn("createProjectWhenReady = !currentProjectId", source)
+        self.assertIn('{ type: "custom-canvas:create-project" }', source)
+
     def test_embed_root_never_renders_home_before_project_hash_resolves(self):
         source = (
             APP_DIR
@@ -85,7 +91,7 @@ class CustomCanvasStaticIntegrationTest(unittest.TestCase):
         self.assertIn("正在打开画布", vendored_index)
         self.assertNotIn("欢迎使用星阵无限画布", vendored_index)
 
-    def test_embed_workspace_releases_the_internal_topbar_height(self):
+    def test_embed_workspace_uses_an_overlay_action_bar_without_reserved_height(self):
         workspace = (
             APP_DIR
             / "apps"
@@ -94,6 +100,15 @@ class CustomCanvasStaticIntegrationTest(unittest.TestCase):
             / "components"
             / "workspace"
             / "Workspace.tsx"
+        ).read_text(encoding="utf-8")
+        topbar = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "TopBar.tsx"
         ).read_text(encoding="utf-8")
         project_client = (
             APP_DIR
@@ -106,16 +121,81 @@ class CustomCanvasStaticIntegrationTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("homeHref, IS_PLATFORM_EMBED", workspace)
-        self.assertIn("{!IS_PLATFORM_EMBED && (", workspace)
         self.assertIn("<TopBar", workspace)
-        self.assertLess(
-            workspace.index("{!IS_PLATFORM_EMBED && ("),
-            workspace.index("<TopBar"),
-        )
+        self.assertIn("embedded={IS_PLATFORM_EMBED}", workspace)
+        self.assertIn("if (embedded)", topbar)
+        self.assertIn("absolute right-4 top-4", topbar)
+        self.assertIn("showPublish && (", topbar)
         self.assertIn(
             '!IS_PLATFORM_EMBED && <div className="h-14 shrink-0 border-b border-line bg-page" />',
             project_client,
         )
+
+    def test_canvas_home_launch_waits_for_hydration_and_executes_once(self):
+        app = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "GithubPagesApp.tsx"
+        ).read_text(encoding="utf-8")
+        workspace = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "Workspace.tsx"
+        ).read_text(encoding="utf-8")
+        integration = (APP_DIR / "js/views/customCanvasIntegration.js").read_text(encoding="utf-8")
+
+        self.assertIn('type: "workspace-ready"', app)
+        self.assertIn('type: "home-launch-consumed"', app)
+        self.assertIn("handledLaunches.current.has(launchId)", app)
+        self.assertIn("const targetProjectId = createProject({", app)
+        self.assertNotIn("const targetProjectId = currentProjectId() || createProject({", app)
+        self.assertIn("sessionStorage.setItem(`aidc:brief:${targetProjectId}`", app)
+        self.assertIn("sessionStorage.setItem(`aidc:refs:${targetProjectId}`", app)
+        self.assertIn("generate(pending, { size: project?.targetSize })", workspace)
+        self.assertIn("let canvasAppReady = false", integration)
+        self.assertIn("flushPendingWorkspaceCommands", integration)
+        self.assertIn("if (pendingLaunchPayload)", integration)
+        self.assertIn("waitForCanvasProjectIndex", integration)
+        self.assertIn("indexed: true", integration)
+        self.assertIn("const announceCreatedProject = createdProjectId =>", integration)
+        self.assertIn("if (launchProjectId) announceCreatedProject(launchProjectId)", integration)
+
+    def test_canvas_embed_ui_keeps_entitlements_preview_and_collapsible_minimap(self):
+        source_dir = APP_DIR / "apps" / "infinite-canvas-source" / "src"
+        workspace = (source_dir / "components/workspace/Workspace.tsx").read_text(encoding="utf-8")
+        panel = (source_dir / "components/workspace/AgentPanel.tsx").read_text(encoding="utf-8")
+        messages = (source_dir / "components/workspace/AgentMessages.tsx").read_text(encoding="utf-8")
+        bridge = (source_dir / "lib/platformBridge.ts").read_text(encoding="utf-8")
+        integration = (APP_DIR / "js/views/customCanvasIntegration.js").read_text(encoding="utf-8")
+
+        self.assertIn("canvasPlatformCapabilitiesFromBootstrap", workspace)
+        self.assertIn("showPublish={allowPublish}", workspace)
+        self.assertIn("allowPublish={allowPublish}", workspace)
+        self.assertIn("bootstrap.canPublish === true", bridge)
+        self.assertIn('return { canPublish: false }', bridge)
+        self.assertIn("canPublish: Boolean(canPublish)", integration)
+        self.assertIn('e.key === "Enter" && !e.shiftKey', panel)
+        self.assertIn("e.nativeEvent.isComposing", panel)
+        self.assertIn("starmatrix-mascot-transparent.png", messages)
+        self.assertIn("CanvasMascotAvatar thinking", messages)
+        self.assertIn("object-contain", messages)
+        self.assertIn("onPreviewItem", workspace)
+        self.assertIn("flex-nowrap", workspace)
+        self.assertIn("whitespace-nowrap", workspace)
+        self.assertIn("canvas-context-collapsed", integration)
+        self.assertIn("canvasContextTools.classList.add(\"is-detached\")", integration)
+        self.assertIn("bottom: 12px", integration)
+        self.assertIn('child.classList.contains("workspace-account-footer")', integration)
+        self.assertIn('activeShell.classList.add("has-canvas-context-tools")', integration)
+        self.assertIn('window.addEventListener("view:rendered", onCanvasViewRendered)', integration)
+        self.assertIn('window.removeEventListener("view:rendered", onCanvasViewRendered)', integration)
 
     def test_homepage_first_generation_uses_the_new_project_size(self):
         workspace = (
@@ -444,15 +524,32 @@ console.log(JSON.stringify({{
         self.assertIn("NEXT_PUBLIC_PLATFORM_EMBED=1", package)
         self.assertIn("next build --webpack", package)
 
+        tracked_files = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.quotepath=false",
+                "ls-files",
+                "-z",
+                "--",
+                "自动化产品/apps/infinite-canvas-source",
+            ],
+            cwd=APP_DIR.parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split("\0")
+        tracked_files = [path for path in tracked_files if path]
         forbidden_names = {".env.local", ".next", "node_modules", ".cache", "out"}
-        present = {path.name for path in source_dir.rglob("*")}
-        self.assertTrue(forbidden_names.isdisjoint(present))
-        self.assertFalse(any(path.is_symlink() for path in source_dir.rglob("*")))
+        tracked_parts = {part for path in tracked_files for part in Path(path).parts}
+        self.assertTrue(forbidden_names.isdisjoint(tracked_parts))
+        self.assertFalse(any((APP_DIR.parent / path).is_symlink() for path in tracked_files))
 
         source_text = "\n".join(
-            path.read_text(encoding="utf-8", errors="ignore")
-            for path in source_dir.rglob("*")
-            if path.is_file() and path.suffix in {".ts", ".tsx", ".js", ".json", ".md", ".mjs", ".example"}
+            (APP_DIR.parent / path).read_text(encoding="utf-8", errors="ignore")
+            for path in tracked_files
+            if (APP_DIR.parent / path).suffix
+            in {".ts", ".tsx", ".js", ".json", ".md", ".mjs", ".example"}
         )
         self.assertNotIn("/Users/", source_text)
         self.assertNotIn("Desktop/百度/图片生产平台", source_text)
@@ -507,7 +604,7 @@ console.log(JSON.stringify({{
     def test_host_module_is_isolated_and_exposes_output_bridge(self):
         integration = (APP_DIR / "js" / "views" / "customCanvasIntegration.js").read_text(encoding="utf-8")
         self.assertIn(
-            "{ onOutput, onPublishRequest, projectId = \"\" } = {}",
+            "{ onOutput, onPublishRequest, onCommunityShareRequest, projectId = \"\", canPublish = false, launchPayload = null } = {}",
             integration,
         )
         self.assertIn(
@@ -567,14 +664,14 @@ console.log(JSON.stringify({{
         )
         self.assertIn("if (!iframe) return mountCanvasFrame()", integration)
         self.assertIn('{ type: "custom-canvas:create-project" }', integration)
-        self.assertIn(
-            "iframe.src = `/XZ-Design/?embed=1&v=20260728-v120-shell-13${projectHash(currentProjectId)}`",
+        self.assertRegex(
             integration,
+            r"iframe\.src = `/XZ-Design/\?embed=1&v=[^`$]+\$\{projectHash\(currentProjectId\)\}`",
         )
         self.assertIn('return value ? `#/project/${encodeURIComponent(value)}` : "#/"', integration)
-        self.assertNotIn(
-            'iframe.src = "/XZ-Design/?embed=1&v=20260728-v120-shell-13#/"',
+        self.assertNotRegex(
             integration,
+            r'iframe\.src = "/XZ-Design/\?embed=1&v=[^"]+#/"',
         )
         source = (
             APP_DIR
@@ -853,6 +950,8 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ImageOps.fit(", source[source.index("def _custom_canvas_resize_exact_pixels"):source.index("def _custom_canvas_data_url")])
 
     def test_primary_reference_adaptation_accepts_common_upload_formats(self):
+        if not main.Image:
+            self.skipTest("Pillow is required for custom-canvas image output tests")
         formats = ["PNG", "JPEG"]
         if "WEBP" in set(main.Image.registered_extensions().values()):
             formats.append("WEBP")
@@ -940,10 +1039,19 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
             main,
             "_custom_canvas_generated_image",
             new=AsyncMock(return_value={"dataUrl": "data:image/png;base64,RESULT", "width": 1152, "height": 1536}),
-        ) as generate:
+        ) as generate, patch.object(
+            main,
+            "_quota_begin",
+            return_value={"bypassed": True, "status": "bypassed", "points": 0},
+        ), patch.object(
+            main.store,
+            "issue_custom_canvas_generation_receipt",
+            return_value={"token": "receipt-targeted-transform"},
+        ):
             result = await main.custom_canvas_transform(request, me={"id": "creator", "role": "editor"})
 
         self.assertEqual(result["image"]["dataUrl"], "data:image/png;base64,RESULT")
+        self.assertEqual(result["image"]["generationReceipt"], "receipt-targeted-transform")
         prompt, _size, refs = generate.await_args.args
         self.assertEqual([ref.dataUrl for ref in refs], [target, donor])
         self.assertTrue(prompt.startswith(request.prompt))
@@ -962,7 +1070,15 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
             main,
             "_custom_canvas_generated_image",
             new=AsyncMock(return_value={"dataUrl": png_data_url(), "width": 3496, "height": 1022}),
-        ) as generate:
+        ) as generate, patch.object(
+            main,
+            "_quota_begin",
+            return_value={"bypassed": True, "status": "bypassed", "points": 0},
+        ), patch.object(
+            main.store,
+            "issue_custom_canvas_generation_receipt",
+            return_value={"token": "receipt-single-transform"},
+        ):
             await main.custom_canvas_transform(request, me={"id": "creator", "role": "editor"})
 
         self.assertEqual(generate.await_args.args[0], prompt)

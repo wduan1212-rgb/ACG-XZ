@@ -1,8 +1,11 @@
 import { go } from "../core/router.js";
-import { state } from "../core/store.js";
+import { state, canDeliver, save } from "../core/store.js";
+import { uid } from "../core/util.js";
+import { addAssetFromDataUrl } from "../domain/assets.js";
 import { icon } from "../ui/icons.js";
-import { toast } from "../ui/components.js?v=20260729-v122-team-3";
-import { voiceLabView } from "./voiceLab.js?v=20260728-v120-shell-13";
+import { toast } from "../ui/components.js?v=20260802-v134-static-community-1";
+import { voiceLabView } from "./voiceLab.js?v=20260802-v134-static-community-1";
+import { communityMedia, openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
 
 const TOOLS = [
   { key: "video", label: "视频工坊", mountId: "customVideoMount" },
@@ -10,6 +13,118 @@ const TOOLS = [
   { key: "voice", label: "语音生成", mountId: "customVoiceMount" }
 ];
 const CUSTOM_PERF_KEY = "xingzhen.customCreation.performance.v1";
+const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
+const HOME_LAUNCH_REGISTRY_KEY = "__starmatrixHomeLaunchRegistry";
+const HOME_LAUNCH_TTL_MS = 10 * 60 * 1000;
+const personalOutputInflight = new Set();
+
+function dataUrlForBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("读取生成图片失败"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function storePersonalCanvasItem(payload, item, index) {
+  const projectId = String(payload?.projectId || "canvas").trim() || "canvas";
+  const itemId = String(item?.sourceItemId || index + 1).trim();
+  const sourceKey = `canvas:${projectId}:${itemId}`;
+  if (state.assets.some(asset => asset?.sourceOutputKey === sourceKey) || personalOutputInflight.has(sourceKey)) return;
+  personalOutputInflight.add(sourceKey);
+  try {
+    let dataUrl = String(item?.dataUrl || "").trim();
+    if (!dataUrl && item?.url) {
+      const response = await fetch(String(item.url), { credentials: "same-origin" });
+      if (!response.ok) throw new Error(`读取画布成品失败 (${response.status})`);
+      dataUrl = await dataUrlForBlob(await response.blob());
+    }
+    if (!/^data:image\/(?:png|jpe?g|webp);base64,/i.test(dataUrl)) return;
+    const asset = await addAssetFromDataUrl(null, {
+      name: item?.name || `${payload?.title || "无限画布作品"}_${String(index + 1).padStart(2, "0")}`,
+      type: "图片",
+      tags: ["个人资产", "无限画布", "生成图片"],
+      dataUrl,
+      processImage: false,
+    });
+    if (!asset) return;
+    asset.sourceOutputKey = sourceKey;
+    asset.sourceProjectId = projectId;
+    asset.updatedAt = Date.now();
+    save("assets", "meta");
+  } catch (error) {
+    console.warn("[personal-assets] canvas output", error);
+  } finally {
+    personalOutputInflight.delete(sourceKey);
+  }
+}
+
+function storePersonalOutput(kind, payload) {
+  if (state.role !== "user" || !payload || typeof payload !== "object") return;
+  if (kind === "canvas") {
+    (Array.isArray(payload.items) ? payload.items : []).forEach((item, index) => {
+      void storePersonalCanvasItem(payload, item, index);
+    });
+    return;
+  }
+  const projectId = String(payload.projectId || "video").trim() || "video";
+  const url = String(payload.videoUrl || payload.downloadUrl || payload.url || "").trim();
+  if (!url) return;
+  const sourceKey = `video:${projectId}:${url}`;
+  if (state.assets.some(asset => asset?.sourceOutputKey === sourceKey)) return;
+  const now = Date.now();
+  state.assets.push({
+    id: uid(),
+    accountId: null,
+    ownerId: state.ui.currentMemberId || null,
+    name: payload.title || "视频工坊成片",
+    type: "视频",
+    tags: ["个人资产", "视频工坊", "生成成片"],
+    createdAt: now,
+    updatedAt: now,
+    url,
+    fileUrl: url,
+    mime: "video/mp4",
+    sourceOutputKey: sourceKey,
+    sourceProjectId: projectId,
+    aspectRatio: payload.aspectRatio || "",
+  });
+  save("assets", "meta");
+}
+
+function consumeHomeLaunch(mode, resourceId) {
+  if (resourceId !== "__new__") return null;
+  let value = null;
+  try {
+    value = JSON.parse(sessionStorage.getItem(HOME_LAUNCH_KEY) || "null");
+    sessionStorage.removeItem(HOME_LAUNCH_KEY);
+  } catch (_) {
+    try { sessionStorage.removeItem(HOME_LAUNCH_KEY); } catch (_) {}
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const launchToken = String(value.launchToken || "").trim();
+  const registry = window[HOME_LAUNCH_REGISTRY_KEY];
+  const entry = launchToken && registry instanceof Map ? registry.get(launchToken) : null;
+  if (launchToken && registry instanceof Map) registry.delete(launchToken);
+  const stagedPayload = entry?.payload && typeof entry.payload === "object"
+    ? entry.payload
+    : null;
+  const createdAt = Number(stagedPayload?.createdAt || value.createdAt || 0);
+  const expired = !createdAt || Date.now() - createdAt > HOME_LAUNCH_TTL_MS;
+  if (value.mode !== mode || (stagedPayload?.mode && stagedPayload.mode !== mode) || expired) return null;
+  if (launchToken && !stagedPayload && Number(value.attachmentCount || 0) > 0) {
+    toast("首页附件暂存已失效，请返回首页重新添加", "error");
+  }
+  return {
+    ...value,
+    ...(stagedPayload || {}),
+    attachments: Array.isArray(stagedPayload?.attachments)
+      ? stagedPayload.attachments
+      : Array.isArray(value.attachments) ? value.attachments : [],
+  };
+}
 
 function perfNow() {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -79,6 +194,7 @@ function hostsHtml(activePage) {
         ${active ? "" : "hidden"}
       >
         ${tool.key === "voice" ? "" : `<div class="custom-app-mount" data-custom-app-mount="${tool.key}">${appLoadingHtml(tool)}</div>`}
+        ${tool.key === "voice" ? "" : `<button class="custom-community-share" type="button" data-custom-community-share="${tool.key}" hidden>${icon("send", 14)} 分享灵感</button>`}
       </div>
     `;
   }).join("");
@@ -88,9 +204,11 @@ export const customCreationView = {
   render(root, { page, resourceId } = {}) {
     const renderStarted = perfNow();
     const activePage = normalizedPage(page);
+    const homeLaunch = consumeHomeLaunch(activePage, resourceId);
     const existing = root.__customCreationContext;
     if (existing?.shell?.isConnected) {
       existing.activate(activePage, resourceId);
+      if (homeLaunch) existing.prefill?.(activePage, homeLaunch);
       return;
     }
 
@@ -143,9 +261,64 @@ export const customCreationView = {
         ...payload,
         kind: key === "canvas" ? "canvas" : "video"
       };
+      storePersonalOutput(key, host.__customLatestOutput);
+      const shareButton = host.querySelector(`[data-custom-community-share="${key}"]`);
+      if (shareButton) {
+        const output = host.__customLatestOutput;
+        const media = key === "video"
+          ? communityMedia([{ type: "video", url: output.videoUrl || output.downloadUrl || output.url || "" }])
+          : communityMedia((output.items || []).map(item => ({ ...item, type: "image" })));
+        shareButton.hidden = media.length === 0;
+      }
       return host.__customLatestOutput;
     };
+    const communityPayloadFor = (key, output) => {
+      if (!output) return null;
+      const sourceOutputId = String(output.sourceOutputId || output.items?.[0]?.sourceItemId || "").trim();
+      const sourceId = [output.projectId || "", sourceOutputId].filter(Boolean).join(":");
+      const media = key === "canvas"
+        ? (output.items || []).map(item => ({ ...item, type: "image" }))
+        : [{ type: "video", url: output.videoUrl || output.downloadUrl || output.url || "" }];
+      return {
+        authorId: String(output.ownerId || ""),
+        sourceKind: key === "canvas" ? "canvas" : "video",
+        sourceId,
+        title: output.title || (key === "canvas" ? "无限画布灵感" : "视频工坊灵感"),
+        copy: output.copy || output.description || "",
+        prompt: output.prompt || output.promptText || "",
+        category: key === "canvas" ? "视觉设计" : "视频灵感",
+        media,
+      };
+    };
+    const markRuntimeCommunityShared = (key, output, post) => {
+      mountedTools.get(key)?.markCommunityShared?.({
+        projectId: output?.projectId || "",
+        sourceOutputId: output?.sourceOutputId || output?.items?.[0]?.sourceItemId || "",
+        postId: post?.id || "",
+        sharedAt: post?.createdAt || Date.now(),
+      });
+    };
+    const openCommunityFor = (key, output, trigger = null) => {
+      const payload = communityPayloadFor(key, output);
+      if (!payload) return;
+      openCommunityShare({
+        ...payload,
+        trigger,
+        onShared: post => markRuntimeCommunityShared(key, output, post),
+      });
+    };
+    const syncCommunityFor = (key, output, trigger = null) => {
+      const payload = communityPayloadFor(key, output);
+      if (!payload) return;
+      void syncCommunityShareStatus(trigger, payload, {
+        onShared: post => markRuntimeCommunityShared(key, output, post),
+      });
+    };
     const openPublishFor = async (key, payload = null) => {
+      if (!canDeliver()) {
+        toast("当前账号不包含发布能力，请升级专业版或加入团队。");
+        return;
+      }
       const host = root.querySelector(`[data-custom-tool-host="${key}"]`);
       const runtime = mountedTools.get(key);
       const mergedPayload = payload ? setLatestOutput(key, payload) : null;
@@ -154,7 +327,7 @@ export const customCreationView = {
         toast(key === "canvas" ? "当前画布还没有可发布的图片" : "请先在视频工坊完成成片");
         return;
       }
-      const { openCustomPublish } = await import("./customPublish.js?v=20260729-v122-team-3");
+      const { openCustomPublish } = await import("./customPublish.js?v=20260802-v134-static-community-1");
       output.kind = key === "canvas" ? "canvas" : "video";
       openCustomPublish(
         output,
@@ -195,6 +368,19 @@ export const customCreationView = {
         toast(error?.message || "发布面板打开失败", "error");
       });
     };
+    root.querySelectorAll("[data-custom-community-share]").forEach(button => {
+      button.addEventListener("click", event => {
+        event.preventDefault();
+        const key = button.dataset.customCommunityShare;
+        const host = root.querySelector(`[data-custom-tool-host="${key}"]`);
+        const output = host?.__customLatestOutput || mountedTools.get(key)?.getLatestOutput?.();
+        if (!output) {
+          toast(key === "canvas" ? "当前画布还没有可分享的图片" : "请先完成视频成片");
+          return;
+        }
+        openCommunityFor(key, output, button);
+      }, { signal });
+    });
     const showMountError = (host, message) => {
       const loading = host?.querySelector("[data-custom-loading]");
       if (!loading) return;
@@ -210,8 +396,8 @@ export const customCreationView = {
       mountedTools.set(key, { loading: true });
       try {
         const module = key === "video"
-          ? await import("./customVideoIntegration.js?v=20260729-v122-team-3")
-          : await import("./customCanvasIntegration.js?v=20260728-v120-shell-13");
+          ? await import("./customVideoIntegration.js?v=20260802-v134-static-community-1")
+          : await import("./customCanvasIntegration.js?v=20260802-v134-static-community-1");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);
         const initialProjectId = pendingProjectIds.get(key);
@@ -221,8 +407,17 @@ export const customCreationView = {
         if (routedProjectId) pendingProjectIds.delete(key);
         const mounted = await mount(mountRoot, {
           projectId: routedProjectId,
-          onOutput: payload => setLatestOutput(key, payload),
+          launchPayload: key === activePage ? homeLaunch : null,
+          canPublish: canDeliver(),
+          onOutput: payload => {
+            const output = setLatestOutput(key, payload);
+            if (output) queueMicrotask(() => syncCommunityFor(key, output));
+          },
           onPublishRequest: payload => requestPublishFor(key, payload),
+          onCommunityShareRequest: payload => {
+            const output = setLatestOutput(key, payload);
+            if (output) openCommunityFor(key, output);
+          },
           ownerId: state.ui.currentMemberId || ""
         });
         mountedTools.set(key, {
@@ -236,11 +431,17 @@ export const customCreationView = {
           markPublished: typeof mounted?.markPublished === "function"
             ? payload => mounted.markPublished(payload)
             : null,
+          markCommunityShared: typeof mounted?.markCommunityShared === "function"
+            ? payload => mounted.markCommunityShared(payload)
+            : null,
           openProject: typeof mounted?.openProject === "function"
             ? projectId => mounted.openProject(projectId)
             : null,
           createProject: typeof mounted?.createProject === "function"
             ? () => mounted.createProject()
+            : null,
+          prefill: typeof mounted?.prefill === "function"
+            ? payload => mounted.prefill(payload)
             : null,
         });
         const pendingProjectId = pendingProjectIds.get(key);
@@ -255,13 +456,22 @@ export const customCreationView = {
           mountedTools.get(key).openProject(pendingProjectId);
         }
         const latest = mounted?.latestOutput || mountedTools.get(key)?.getLatestOutput?.();
-        if (latest) setLatestOutput(key, latest);
+        if (latest) {
+          const output = setLatestOutput(key, latest);
+          syncCommunityFor(key, output);
+        }
         recordCustomPerformance("tool-mount", mountStarted, { tool: key, ok: true });
       } catch (error) {
         mountedTools.delete(key);
         showMountError(host, error?.message || error);
         recordCustomPerformance("tool-mount", mountStarted, { tool: key, ok: false });
       }
+    };
+    const prefill = (key, payload) => {
+      if (!payload) return false;
+      const runtime = mountedTools.get(key);
+      if (runtime?.prefill) return runtime.prefill(payload);
+      return false;
     };
     const positionIndicator = tab => {
       if (!tab || !tabsHost || !indicator) return;
@@ -348,7 +558,7 @@ export const customCreationView = {
       resizeObserver.observe(tabsHost);
     }
 
-    root.__customCreationContext = { shell, activate };
+    root.__customCreationContext = { shell, activate, prefill };
     activate(activePage, resourceId);
 
     root.__viewCleanup = () => {

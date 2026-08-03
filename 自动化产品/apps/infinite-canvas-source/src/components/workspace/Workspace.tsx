@@ -36,7 +36,7 @@ import { RegionEditor } from "./RegionEditor";
 import { StyleModal } from "./StyleModal";
 import { AdjustModal } from "./AdjustModal";
 import { useStudioActions } from "./useStudioActions";
-import { platformFetch } from "@/lib/api";
+import { persistCanvasBlob, platformFetch } from "@/lib/api";
 import { rememberAssetSource } from "@/lib/assetCache";
 import {
   blobToDataUrl,
@@ -49,6 +49,9 @@ import { homeHref, IS_PLATFORM_EMBED } from "@/lib/runtime";
 import { buildStoreZip } from "@/lib/storeZip";
 import {
   buildCanvasPublishRequest,
+  buildCanvasCommunityShareRequest,
+  canvasPlatformCapabilitiesFromBootstrap,
+  postCanvasCommunityShareRequest,
   postCanvasPublishRequest,
 } from "@/lib/platformBridge";
 import { useStore, type Viewport } from "@/lib/store";
@@ -68,6 +71,8 @@ import type {
 } from "@/lib/types";
 
 export function Workspace({ projectId }: { projectId: string }) {
+  const platformCapabilities = canvasPlatformCapabilitiesFromBootstrap();
+  const allowPublish = !IS_PLATFORM_EMBED || platformCapabilities.canPublish;
   const project = useStore((s) => s.projects.find((p) => p.id === projectId));
   const addItem = useStore((s) => s.addItem);
   const updateItem = useStore((s) => s.updateItem);
@@ -114,6 +119,8 @@ export function Workspace({ projectId }: { projectId: string }) {
   const [adjustItem, setAdjustItem] = useState<ImageItem | null>(null);
   const [publishNotice, setPublishNotice] = useState("");
   const [publishing, setPublishing] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [sharedItemIds, setSharedItemIds] = useState<Set<string>>(() => new Set());
   const publishNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const imageClipboard = useRef<ImageItem[]>([]);
 
@@ -132,6 +139,20 @@ export function Workspace({ projectId }: { projectId: string }) {
     },
     [],
   );
+
+  useEffect(() => {
+    const receiveCommunityStatus = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || event.source !== window.parent) return;
+      const message = event.data && typeof event.data === "object" ? event.data : {};
+      if (message.type !== "custom-canvas:community-shared") return;
+      if (String(message.projectId || "") !== projectId) return;
+      const itemId = String(message.sourceItemId || "").trim();
+      if (!itemId) return;
+      setSharedItemIds((current) => new Set([...current, itemId]));
+    };
+    window.addEventListener("message", receiveCommunityStatus);
+    return () => window.removeEventListener("message", receiveCommunityStatus);
+  }, [projectId]);
 
   useEffect(() => {
     // ProjectClient mounts Workspace only after the owner-scoped project state
@@ -533,6 +554,10 @@ export function Workspace({ projectId }: { projectId: string }) {
   );
 
   async function requestPublish() {
+    if (!allowPublish) {
+      showPublishNotice("当前账号不包含发布能力。");
+      return;
+    }
     if (!selectedImageReady || !selectedImage) {
       showPublishNotice("当前项目还没有可发布图片，请先生成或上传图片。");
       return;
@@ -574,6 +599,44 @@ export function Workspace({ projectId }: { projectId: string }) {
       );
     } finally {
       setPublishing(false);
+    }
+  }
+
+  async function requestCommunityShare() {
+    if (!selectedImageReady || !selectedImage || sharedItemIds.has(selectedImage.id)) return;
+    setSharing(true);
+    try {
+      const rendered = await renderCanvasOutput({
+        imageItem: selectedImage,
+        marks: overlappingMarksFor(selectedImage, reactiveItems),
+        targetWidth: selectedImage.naturalWidth,
+        targetHeight: selectedImage.naturalHeight,
+        mime: "image/png",
+      });
+      const dataUrl = await blobToDataUrl(rendered.blob);
+      // Community posts must reference a stable owner-scoped URL. Persisting
+      // the flattened result also keeps annotations without embedding a large
+      // Base64 payload in the post or project draft.
+      const persisted = await persistCanvasBlob(dataUrl, selectedImage.id);
+      const baseName = (selectedImage.label || project?.name || "无限画布作品").trim().replace(/\.[a-z0-9]{2,5}$/i, "").slice(0, 120);
+      const request = buildCanvasCommunityShareRequest({
+        projectId,
+        title: project?.name || "无限画布作品",
+        item: {
+          url: persisted.assetUrl,
+          dataUrl: persisted.assetUrl.startsWith("data:image/") ? persisted.assetUrl : "",
+          name: `${baseName || "无限画布作品"}.png`,
+          mime: "image/png",
+          sourceItemId: selectedImage.id,
+        },
+      });
+      if (!request || !postCanvasCommunityShareRequest(request)) {
+        showPublishNotice("分享灵感仅在星阵主平台中可用。");
+      }
+    } catch (error) {
+      showPublishNotice(error instanceof Error ? `分享准备失败：${error.message}` : "分享准备失败，请重试。");
+    } finally {
+      setSharing(false);
     }
   }
 
@@ -709,19 +772,23 @@ export function Workspace({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div className="flex h-full w-full flex-col">
-      {!IS_PLATFORM_EMBED && (
-        <TopBar
-          projectId={projectId}
-          onExport={() => selectedImages.length === 1 ? setExportItem(selectedImages[0]) : void batchExportSelection()}
-          onPublish={requestPublish}
-          canExport={selectedImages.length > 0}
-          exportCount={selectedImages.length}
-          canPublish={selectedImageReady}
-          publishing={publishing}
-          publishNotice={publishNotice}
-        />
-      )}
+    <div className="relative flex h-full w-full flex-col">
+      <TopBar
+        projectId={projectId}
+        onExport={() => selectedImages.length === 1 ? setExportItem(selectedImages[0]) : void batchExportSelection()}
+        onPublish={requestPublish}
+        onShare={requestCommunityShare}
+        canExport={selectedImages.length > 0}
+        exportCount={selectedImages.length}
+        canPublish={allowPublish && selectedImageReady}
+        canShare={selectedImageReady}
+        showPublish={allowPublish}
+        embedded={IS_PLATFORM_EMBED}
+        publishing={publishing}
+        sharing={sharing}
+        shared={Boolean(selectedImage && sharedItemIds.has(selectedImage.id))}
+        publishNotice={publishNotice}
+      />
       <div className="flex min-h-0 flex-1">
         <div
           className="relative min-w-0 flex-1"
@@ -761,7 +828,11 @@ export function Workspace({ projectId }: { projectId: string }) {
                 onPreview={() => setLightbox(selectedImage)}
                 onExport={() => setExportItem(selectedImage)}
                 onPublish={requestPublish}
+                onShare={requestCommunityShare}
+                allowPublish={allowPublish}
                 publishing={publishing}
+                sharing={sharing}
+                shared={sharedItemIds.has(selectedImage.id)}
                 onDelete={() => removeItems(projectId, [selectedImage.id])}
               />
             )}
@@ -778,6 +849,12 @@ export function Workspace({ projectId }: { projectId: string }) {
           <AgentPanel
             projectId={projectId}
             onAttachFiles={(files) => addUploadedFiles(files, true)}
+            onPreviewItem={(id) => {
+              const item = reactiveItems.find((candidate) => candidate.id === id);
+              if (!item || !isImageItem(item)) return;
+              setSelection([id]);
+              setLightbox(item);
+            }}
           />
         </div>
       </div>
@@ -939,7 +1016,11 @@ function SelectionQuickBar({
   onPreview,
   onExport,
   onPublish,
+  onShare,
+  allowPublish,
   publishing,
+  sharing,
+  shared,
   onDelete,
 }: {
   item: ImageItem;
@@ -951,23 +1032,27 @@ function SelectionQuickBar({
   onPreview: () => void;
   onExport: () => void;
   onPublish: () => void;
+  onShare: () => void;
+  allowPublish: boolean;
   publishing: boolean;
+  sharing: boolean;
+  shared: boolean;
   onDelete: () => void;
 }) {
   const vp = viewport ?? { x: 0, y: 0, zoom: 1 };
   const left = vp.x + (item.position.x + item.size.width / 2) * vp.zoom;
   const top = Math.max(56, vp.y + item.position.y * vp.zoom - 34);
   const btn =
-    "flex h-7 w-7 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink";
+    "flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-ink-2 hover:bg-fill hover:text-ink";
   return (
     <div
-      className="surface-popover absolute z-30 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 p-1 animate-pop"
+      className="surface-popover absolute z-30 flex flex-nowrap -translate-x-1/2 -translate-y-full items-center gap-0.5 p-1 animate-pop"
       style={{ left, top }}
       onPointerDown={(e) => e.stopPropagation()}
     >
       <button
         onClick={(e) => onEnhance({ x: e.clientX, y: e.clientY })}
-        className="flex h-7 items-center gap-1 rounded-[var(--radius-sm)] px-2 text-[12px] font-medium text-ink hover:bg-fill"
+        className="flex h-7 min-w-[58px] shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-[var(--radius-sm)] px-2 text-[12px] font-medium leading-none text-ink hover:bg-fill"
         title="高清增强 / 超清放大"
       >
         <Sparkles size={14} className="text-accent" /> 高清
@@ -989,15 +1074,27 @@ function SelectionQuickBar({
       <button title="导出" onClick={onExport} className={btn}>
         <Download size={14} />
       </button>
+      {allowPublish && (
+        <button
+          type="button"
+          title={publishing ? "正在准备发布…" : "发布"}
+          aria-label={publishing ? "正在准备发布" : "发布"}
+          onClick={onPublish}
+          disabled={publishing}
+          className={`${btn} disabled:cursor-wait disabled:opacity-45`}
+        >
+          <Send size={14} />
+        </button>
+      )}
       <button
         type="button"
-        title={publishing ? "正在准备发布…" : "发布"}
-        aria-label={publishing ? "正在准备发布" : "发布"}
-        onClick={onPublish}
-        disabled={publishing}
-        className={`${btn} disabled:cursor-wait disabled:opacity-45`}
+        title={shared ? "已分享" : "分享灵感"}
+        aria-label={shared ? "已分享" : "分享灵感"}
+        onClick={onShare}
+        disabled={sharing || shared}
+        className={`${btn} disabled:cursor-default disabled:opacity-45`}
       >
-        <Send size={14} />
+        {shared ? <Star size={14} fill="currentColor" /> : <Send size={14} />}
       </button>
       <div className="mx-0.5 h-4 w-px bg-line" />
       <button

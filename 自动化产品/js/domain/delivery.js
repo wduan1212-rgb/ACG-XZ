@@ -10,6 +10,21 @@ import * as remote from "../core/remote.js";
 
 const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 
+async function markSupplierDownloadedWithRetry(assetId) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await remote.supplier.markDownloaded(assetId);
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) {
+        await new Promise(resolve => setTimeout(resolve, 350));
+      }
+    }
+  }
+  throw lastError || new Error("供应商下载状态同步失败");
+}
+
 export function productTagLabel(product) {
   const name = String(product?.name || "");
   const short = String(product?.shortName || "");
@@ -682,7 +697,7 @@ export async function downloadDelivery(asset, { markDownloaded = true } = {}) {
   if (markDownloaded && SUPPLIER_ROLES.has(state.role)) {
     if (remote.isOn()) {
       try {
-        const result = await remote.supplier.markDownloaded(asset.id);
+        const result = await markSupplierDownloadedWithRetry(asset.id);
         Object.assign(asset, result?.asset || {});
       } catch (err) {
         window.__toast?.(`文件已下载，但供应商下载状态同步失败：${err?.message || err}`, "error");
@@ -712,7 +727,7 @@ export async function batchDownloadZip(assets, filename = "", { markDownloaded =
   downloadBlob(filename || `供应商待下载素材_${Date.now()}.zip`, buildZipBlob(entries));
   if (markDownloaded && SUPPLIER_ROLES.has(state.role)) {
     if (remote.isOn()) {
-      const results = await Promise.allSettled(list.map(a => remote.supplier.markDownloaded(a.id)));
+      const results = await Promise.allSettled(list.map(a => markSupplierDownloadedWithRetry(a.id)));
       results.forEach((result, index) => {
         if (result.status === "fulfilled") Object.assign(list[index], result.value?.asset || {});
       });

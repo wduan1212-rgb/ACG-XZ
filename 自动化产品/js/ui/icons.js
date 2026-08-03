@@ -23,6 +23,7 @@ const P = {
   chevronLeft: 'M15 6l-6 6 6 6',
   arrowRight: 'M5 12h14m0 0l-6-6m6 6l-6 6',
   arrowLeft: 'M19 12H5m0 0l6-6m-6 6l6 6',
+  arrowUp: 'M12 19V5m0 0l-6 6m6-6l6 6',
   trash: 'M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13|M10 11v5M14 11v5',
   edit: 'M4 20h4L19 9l-4-4L4 16v4z|M13 7l4 4',
   copy: 'M9 9h11v11H9z|M5 15H4V4h11v1',
@@ -48,6 +49,8 @@ const P = {
   logout: 'M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4|M16 17l5-5-5-5|M21 12H9',
   sliders: 'M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3|M1 14h6M9 8h6M17 16h6',
   star: 'M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.2L5.8 21 7 14.2 2 9.3l6.9-1L12 2z',
+  heart: 'M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.6l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 000-7.8z',
+  bookmark: 'M6 3h12v18l-6-4-6 4V3z',
   lock: 'M5 11h14v10H5z|M8 11V7a4 4 0 118 0v4',
   unlock: 'M5 11h14v10H5z|M8 11V7a4 4 0 017.8-1.2',
   external: 'M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6|M15 3h6v6|M10 14L21 3',
@@ -67,7 +70,8 @@ const P = {
   drag: 'M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01',
   split: 'M12 3v18|M7 8L3 12l4 4M17 8l4 4-4 4',
   music: 'M9 18V5l12-2v13|M6 21a3 3 0 100-6 3 3 0 000 6zM18 19a3 3 0 100-6 3 3 0 000 6z',
-  archive: 'M21 8v13H3V8|M1 3h22v5H1z|M10 12h4'
+  archive: 'M21 8v13H3V8|M1 3h22v5H1z|M10 12h4',
+  gift: 'M20 12v10H4V12|M2 7h20v5H2z|M12 7v15|M12 7H7.5a2.5 2.5 0 110-5C10.5 2 12 7 12 7z|M12 7h4.5a2.5 2.5 0 100-5C13.5 2 12 7 12 7z'
 };
 
 export function icon(name, size = 16, cls = "") {
@@ -99,18 +103,25 @@ export function brandMark(height = 28) {
 
 /* 方形小标（导航栏 / favicon 同款）：深色圆角底 + 渐变描边播放三角 */
 export function brandGlyph(size = 28) {
-  return `<img class="brand-glyph-img" src="./assets/brand/xingzhen-icon.png" alt="星阵" width="${size}" height="${size}" />`;
+  return `<img class="brand-glyph-img" src="./assets/brand/starmatrix-mascot-transparent.png" alt="星阵" width="${size}" height="${size}" />`;
 }
 
 /* 统一工作区品牌标：浅色界面使用黑标，深色界面使用白标；不改变旧版 brandGlyph。 */
 export function workspaceBrandGlyph(size = 28, tone = "light") {
   const pixelSize = Number.isFinite(Number(size)) ? Math.max(1, Math.round(Number(size))) : 28;
   const normalizedTone = tone === "dark" ? "dark" : "light";
-  const fileTone = normalizedTone === "dark" ? "white" : "black";
-  return `<img class="workspace-brand-glyph workspace-brand-glyph-${normalizedTone}" src="./assets/brand/xingzhen-mark-${fileTone}.png" alt="星阵" width="${pixelSize}" height="${pixelSize}" decoding="async" />`;
+  const source = normalizedTone === "dark"
+    ? "./assets/brand/starmatrix-logo-login-transparent.png"
+    : "./assets/brand/starmatrix-logo-black-transparent.png";
+  return `<img class="workspace-brand-glyph workspace-brand-glyph-${normalizedTone}" src="${source}" alt="星阵" width="${pixelSize}" height="${pixelSize}" decoding="async" />`;
 }
 
-export function agentAvatar(size = 34) {
-  const glyph = Math.max(14, Math.round(size * .58));
-  return `<span class="agent-avatar-mono" style="width:${size}px;height:${size}px">${icon("bot", glyph)}</span>`;
+export function agentAvatar(size = 34, state = "normal") {
+  const normalized = ["normal", "idle", "hover", "working", "success"].includes(state) ? state : "normal";
+  const source = normalized === "normal"
+    ? "./assets/brand/starmatrix-mascot-transparent.png"
+    : `./assets/brand/starmatrix-mascot-${normalized}.png`;
+  return `<span class="star-mascot star-mascot-${normalized}" data-mascot-state="${normalized}" style="width:${size}px;height:${size}px">
+    <img src="${source}" alt="" decoding="async" draggable="false" />
+  </span>`;
 }

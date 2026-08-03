@@ -749,7 +749,10 @@ console.log(result);
             self.assertIn(f'managementPage === "{management_page}"', settings)
         self.assertIn('if (managementPage === "requests") loadRequests()', settings)
         self.assertIn('if (managementPage === "usage") loadApiUsage()', settings)
-        self.assertIn("if (entitlementByRoute[zone] && !hasEntitlement(entitlementByRoute[zone]))", router)
+        self.assertIn(
+            "if (!supplierRole && entitlementByRoute[zone] && !hasEntitlement(entitlementByRoute[zone]))",
+            router,
+        )
         self.assertIn("<th>账号</th><th>发布标题</th>", analytics)
 
     def test_v84_assets_delivery_and_stable_first_render(self):
@@ -770,15 +773,18 @@ console.log(result);
         assets_view = (APP_DIR / "js/views/assetsView.js").read_text(encoding="utf-8")
         cut = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
         accounts = (APP_DIR / "js/domain/accounts.js").read_text(encoding="utf-8")
-        self.assertIn(
-            'const isGlobalLibrary = () => ["bgm", "material", "voice", "reference"].includes(libraryMode)',
-            assets_view,
-        )
-        self.assertIn('searchAssets({ accountId: isGlobalLibrary() ? "all" : fAcc', assets_view)
-        self.assertIn('isGlobalLibrary() ? "" : `<label class="select-shell account-select">', assets_view)
-        self.assertIn("if (isGlobalLibrary()) return `<div class=\"asset-grid\">", assets_view)
+        self.assertIn('const isGlobalLibrary = () => libraryMode === "backend"', assets_view)
+        self.assertIn('Object.freeze({ key: "drafts", label: "草稿箱"', assets_view)
+        self.assertIn('Object.freeze({ key: "shared", label: "账号资产"', assets_view)
+        self.assertIn('Object.freeze({ key: "favorites", label: "收藏夹"', assets_view)
+        self.assertIn('Object.freeze({ key: "backend", label: "后台素材"', assets_view)
+        self.assertIn('data-backend-kind="bgm"', assets_view)
+        self.assertIn('data-backend-kind="material"', assets_view)
+        self.assertIn('searchAssets({ accountId: isGlobalLibrary() || isPersonalLibrary() ? "all" : fAcc', assets_view)
+        self.assertIn('isGlobalLibrary() || isPersonalLibrary() ? "" : `<label class="select-shell account-select">', assets_view)
+        self.assertIn("if (isGlobalLibrary() || isPersonalLibrary()) return `<div class=\"asset-grid\">", assets_view)
         self.assertIn('a.type === "音频"', assets_view)
-        self.assertIn("私有语音/参考音频仍由 searchAssets 的 ownedBy 边界隔离", assets_view)
+        self.assertIn("收藏夹始终严格绑定当前成员", assets_view)
         self.assertIn("globalBgmAssets()", cut)
         self.assertIn('optgroup label="共享 BGM 库"', cut)
         self.assertIn("addAssetFromFile(null, file", cut)
@@ -786,7 +792,8 @@ console.log(result);
         self.assertIn("inferAssetFileMeta", assets_view)
         self.assertIn('const isEditingMaterial = ["图片", "视频"].includes(type)', assets_view)
         self.assertIn('["剪辑素材", "共享剪辑素材", `${type}素材`]', assets_view)
-        self.assertIn("松手加入剪辑素材库 · 视频或图片", assets_view)
+        self.assertIn("松手加入剪辑素材", assets_view)
+        self.assertIn("视频或图片", assets_view)
 
         script = r"""
 globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
@@ -1268,7 +1275,7 @@ console.log(JSON.stringify({
         self.assertNotIn("overview-action-icon is-link", overview)
         self.assertNotIn("data-dashboard-mode", overview)
         self.assertNotIn("analyticsView.render(host, { embedded: true })", overview)
-        self.assertIn('data-library="drafts"', assets)
+        self.assertIn('Object.freeze({ key: "drafts", label: "草稿箱", shortLabel: "草稿箱" })', assets)
         self.assertIn('libraryMode = "drafts"', assets)
         self.assertNotIn("去发布清单", assets)
         self.assertIn('const showRoleRef = acc.mode === "视频" && acc.subType === "数字人"', studio)
@@ -1287,8 +1294,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260729-v122-static-1"', main)
-        self.assertIn('js/main.js?v=20260729-v122-static-1', index)
+        self.assertIn('const APP_BUILD_ID = "20260802-v134-static-community-1"', main)
+        self.assertIn('js/main.js?v=20260802-v134-static-community-1', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)

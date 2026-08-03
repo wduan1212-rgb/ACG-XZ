@@ -12,9 +12,11 @@ import { isImageItem } from "@/lib/types";
 export function AgentPanel({
   projectId,
   onAttachFiles,
+  onPreviewItem,
 }: {
   projectId: string;
   onAttachFiles: (files: FileList | File[]) => void;
+  onPreviewItem?: (id: string) => void;
 }) {
   const items = useStore((s) => s.itemsByProject[projectId] ?? EMPTY);
   const references = useStore((s) => s.references);
@@ -63,7 +65,13 @@ export function AgentPanel({
   return (
     <aside className="flex h-full w-full flex-col bg-page">
       <div className="flex-1 overflow-y-auto px-4 py-4">
-        <AgentMessages projectId={projectId} onSelectItem={(id) => setSelection([id])} />
+        <AgentMessages
+          projectId={projectId}
+          onSelectItem={(id) => {
+            setSelection([id]);
+            onPreviewItem?.(id);
+          }}
+        />
       </div>
 
       {/* composer */}

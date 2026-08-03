@@ -433,7 +433,7 @@ export function urlFor(idOrAsset) {
 }
 
 /* 新增资产（dataUrl 形式进来 → 转 Blob 落库） */
-export async function addAssetFromDataUrl(accountId, { name, type = "图片", tags = [], dataUrl, forceNew = false }) {
+export async function addAssetFromDataUrl(accountId, { name, type = "图片", tags = [], dataUrl, forceNew = false, processImage = true }) {
   const contentHash = dataUrl ? assetHashFromDataUrl(dataUrl) : "";
   const dup = forceNew ? null : duplicateAssetByHash(contentHash, type, tags);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name });
@@ -446,7 +446,7 @@ export async function addAssetFromDataUrl(accountId, { name, type = "图片", ta
         inferAssetFileMime({ name: name || a.name, type: raw.type }),
         name || a.name
       );
-      const blob = type === "图片" ? await lightlyProcessImageBlob(sourceBlob, name || a.name) : sourceBlob;
+      const blob = type === "图片" && processImage ? await lightlyProcessImageBlob(sourceBlob, name || a.name) : sourceBlob;
       a.mime = resolvedAssetBlobMime(blob, sourceBlob.type, name || a.name);
       await db.putBlob(a.id, blob);
       urlCache.set(a.id, URL.createObjectURL(blob));
@@ -468,6 +468,7 @@ export async function addAssetFromFile(accountId, file, {
   forceNew = false,
   rejectDuplicateName = false,
   libraryLabel = "当前素材库",
+  processImage = true,
 } = {}) {
   const { mime, type } = inferAssetFileMeta(file);
   const assetName = name || file.name.replace(/\.[^.]+$/, "");
@@ -475,7 +476,7 @@ export async function addAssetFromFile(accountId, file, {
     throw new Error(`“${String(assetName).trim()}”已存在于${String(libraryLabel || "当前素材库")}，请重命名文件后再添加`);
   }
   const sourceBlob = normalizeAssetBlobMime(file, mime, file.name || assetName);
-  const blob = type === "图片" ? await lightlyProcessImageBlob(sourceBlob, file.name || assetName) : sourceBlob;
+  const blob = type === "图片" && processImage ? await lightlyProcessImageBlob(sourceBlob, file.name || assetName) : sourceBlob;
   const contentHash = await assetHashFromBlob(blob);
   const dup = forceNew ? null : duplicateAssetByHash(contentHash, type, tags);
   if (dup) return mergeAssetMeta(dup, { accountId, tags, name: assetName });

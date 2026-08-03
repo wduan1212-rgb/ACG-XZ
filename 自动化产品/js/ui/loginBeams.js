@@ -1,8 +1,5 @@
-/* React Bits Silk shader, ported from React Three Fiber to the platform's
-   existing dependency-free WebGL login canvas.
-   Copyright (c) 2026 David Haz
-   MIT + Commons Clause License Condition v1.0:
-   https://github.com/DavidHDev/react-bits */
+/* 原创的依赖无关 WebGL 颗粒渐变，用于登录页左侧视觉。
+   只沿用项目原有 Canvas 入口，不引入外部组件或限制性素材。 */
 const VERTEX_SHADER = `
 attribute vec2 aPosition;
 varying vec2 vUv;
@@ -21,18 +18,38 @@ varying vec2 vUv;
 varying vec3 vPosition;
 
 uniform float uTime;
-uniform vec3  uColor;
 uniform float uSpeed;
 uniform float uScale;
 uniform float uRotation;
 uniform float uNoiseIntensity;
+uniform vec2  uResolution;
 
-const float e = 2.71828182845904523536;
+float hash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += vec2(dot(p, p + vec2(45.32)));
+  return fract(p.x * p.y);
+}
 
-float noise(vec2 texCoord) {
-  float G = e;
-  vec2  r = (G * sin(G * texCoord));
-  return fract(r.x * r.y * (1.0 + texCoord.x));
+float valueNoise(vec2 p) {
+  vec2 cell = floor(p);
+  vec2 local = fract(p);
+  local = local * local * (3.0 - 2.0 * local);
+  float a = hash21(cell);
+  float b = hash21(cell + vec2(1.0, 0.0));
+  float c = hash21(cell + vec2(0.0, 1.0));
+  float d = hash21(cell + vec2(1.0, 1.0));
+  return mix(mix(a, b, local.x), mix(c, d, local.x), local.y);
+}
+
+float fbm(vec2 p) {
+  float result = 0.0;
+  float amplitude = 0.52;
+  for (int i = 0; i < 4; i++) {
+    result += amplitude * valueNoise(p);
+    p = mat2(1.56, 1.18, -1.18, 1.56) * p + vec2(7.13);
+    amplitude *= 0.48;
+  }
+  return result;
 }
 
 vec2 rotateUvs(vec2 uv, float angle) {
@@ -43,22 +60,32 @@ vec2 rotateUvs(vec2 uv, float angle) {
 }
 
 void main() {
-  float rnd        = noise(gl_FragCoord.xy);
-  vec2  uv         = rotateUvs(vUv * uScale, uRotation);
-  vec2  tex        = uv * uScale;
-  float tOffset    = uSpeed * uTime;
+  float aspect = uResolution.x / max(uResolution.y, 1.0);
+  vec2 centered = vUv - 0.5;
+  centered.x *= aspect;
+  centered = rotateUvs(centered, uRotation) * uScale;
 
-  tex.y += 0.03 * sin(8.0 * tex.x - tOffset);
+  float t = uTime * uSpeed;
+  vec2 flowA = centered * 1.12 + vec2(t * 0.055, -t * 0.032);
+  vec2 flowB = centered * 1.72 + vec2(-t * 0.036, t * 0.047);
+  float broad = fbm(flowA + vec2(fbm(flowB) * 0.66));
+  float ribbon = fbm(flowB + vec2(broad * 1.3, -broad * 0.82));
+  float diagonal = smoothstep(-0.76, 0.82, centered.x * 0.68 - centered.y + ribbon * 0.72);
+  float bloom = smoothstep(0.12, 0.92, broad * 0.72 + ribbon * 0.54);
 
-  float pattern = 0.6 +
-                  0.4 * sin(5.0 * (tex.x + tex.y +
-                                   cos(3.0 * tex.x + 5.0 * tex.y) +
-                                   0.02 * tOffset) +
-                           sin(20.0 * (tex.x + tex.y - 0.1 * tOffset)));
+  vec3 deep = vec3(0.018, 0.055, 0.16);
+  vec3 cyan = vec3(0.02, 0.82, 0.92);
+  vec3 blue = vec3(0.055, 0.34, 0.98);
+  vec3 violet = vec3(0.49, 0.17, 0.93);
+  vec3 color = mix(deep, blue, smoothstep(0.02, 0.94, broad));
+  color = mix(color, cyan, (1.0 - diagonal) * bloom * 0.84);
+  color = mix(color, violet, diagonal * smoothstep(0.22, 0.92, ribbon) * 0.8);
 
-  vec4 col = vec4(uColor, 1.0) * vec4(pattern) - rnd / 15.0 * uNoiseIntensity;
-  col.a = 1.0;
-  gl_FragColor = col;
+  float vignette = 1.0 - smoothstep(0.18, 1.08, length(centered / vec2(max(aspect, 1.0), 1.0)));
+  color *= mix(0.64, 1.08, vignette);
+  float grain = (hash21(gl_FragCoord.xy + vec2(floor(t * 24.0))) - 0.5) * 0.07 * uNoiseIntensity;
+  color += vec3(grain);
+  gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }`;
 
 function compile(gl, type, source) {
@@ -101,16 +128,15 @@ export function initLoginBeams() {
     gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
 
     const time = gl.getUniformLocation(program, "uTime");
-    const color = gl.getUniformLocation(program, "uColor");
     const speed = gl.getUniformLocation(program, "uSpeed");
     const scale = gl.getUniformLocation(program, "uScale");
     const rotation = gl.getUniformLocation(program, "uRotation");
     const noiseIntensity = gl.getUniformLocation(program, "uNoiseIntensity");
-    gl.uniform3f(color, 0.92, 0.92, 0.92);
-    gl.uniform1f(speed, 5);
-    gl.uniform1f(scale, 1.28);
-    gl.uniform1f(rotation, 0.08);
-    gl.uniform1f(noiseIntensity, 1.4);
+    const resolution = gl.getUniformLocation(program, "uResolution");
+    gl.uniform1f(speed, 1.18);
+    gl.uniform1f(scale, 1.05);
+    gl.uniform1f(rotation, -0.12);
+    gl.uniform1f(noiseIntensity, 0.9);
 
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let frame = 0;
@@ -125,6 +151,7 @@ export function initLoginBeams() {
         canvas.height = height;
         gl.viewport(0, 0, width, height);
       }
+      gl.uniform2f(resolution, width, height);
     };
 
     const draw = now => {
@@ -151,7 +178,7 @@ export function initLoginBeams() {
     canvas.addEventListener("webglcontextlost", event => { event.preventDefault(); gate.classList.add("beams-fallback"); }, false);
     sync();
   } catch (error) {
-    console.warn("[login-silk]", error);
+    console.warn("[login-grainient]", error);
     gate.classList.add("beams-fallback");
   }
 }

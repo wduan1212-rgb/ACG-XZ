@@ -60,8 +60,8 @@ async function generateImage(apiKey: string, opts: {
   size: string;
   n: number;
   quality: string;
-}): Promise<ClientImage[]> {
-  return callImage(apiKey, "/v1/aiart/gttext", opts);
+}, signal?: AbortSignal): Promise<ClientImage[]> {
+  return callImage(apiKey, "/v1/aiart/gttext", opts, signal);
 }
 
 async function editImage(apiKey: string, opts: {
@@ -88,6 +88,7 @@ async function editImage(apiKey: string, opts: {
 export async function generateImagesWithClientKey(
   apiKey: string,
   opts: GenerateOptions,
+  signal?: AbortSignal,
 ): Promise<GeneratedImage[]> {
   if (!opts.prompt?.trim()) return [];
   const target = parseSize(opts.size) ?? { width: 1920, height: 1080 };
@@ -108,13 +109,13 @@ export async function generateImagesWithClientKey(
           quality: opts.quality ?? "low",
           images: refs,
           inputFidelity: "high",
-        })
+        }, signal)
       : await generateImage(apiKey, {
           prompt,
           size: sizeStr,
           n: opts.count,
           quality: opts.quality ?? "low",
-        });
+        }, signal);
 
   const prefix = opts.labelPrefix ?? "Draft";
   return results
@@ -145,6 +146,7 @@ function promptFor(mode?: EnhanceOp): string {
 export async function enhanceImageWithClientKey(
   apiKey: string,
   opts: { image: string; size: string; quality?: string; mode?: EnhanceOp },
+  signal?: AbortSignal,
 ): Promise<{ dataUrl: string; width: number; height: number } | null> {
   const master = planSize(parseSize(opts.size) ?? { width: 1920, height: 1080 }).master;
   const sizeStr = `${master.width}x${master.height}`;
@@ -155,7 +157,7 @@ export async function enhanceImageWithClientKey(
     quality: opts.quality ?? "high",
     images: [opts.image],
     inputFidelity: "high",
-  });
+  }, signal);
   const src = res[0]?.dataUrl ?? res[0]?.url;
   return src ? { dataUrl: src, width: master.width, height: master.height } : null;
 }

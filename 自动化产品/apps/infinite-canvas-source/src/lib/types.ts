@@ -109,6 +109,12 @@ export interface GenerationItem extends BaseItem {
   jobId: string;
   provenance: Provenance;
   loading?: boolean; // true while the image is being generated
+  generationStatus?: "queued" | "running" | "done" | "failed" | "interrupted";
+  queuePosition?: number;
+  queueTotal?: number;
+  error?: string;
+  /** Stable owner-scoped server output identifier when the image is persisted. */
+  outputId?: string;
 }
 
 export interface EnhancedItem extends BaseItem {
@@ -121,6 +127,9 @@ export interface EnhancedItem extends BaseItem {
   parentItemId: string;
   provenance: Provenance;
   loading?: boolean; // true while the HD result is being generated
+  generationStatus?: "running" | "done" | "failed" | "interrupted";
+  error?: string;
+  outputId?: string;
 }
 
 export interface ArtboardItem extends BaseItem {
@@ -210,13 +219,13 @@ export interface ChatMessage {
   /** Number of directions this message will generate. */
   genCount?: number;
   resultItemIds?: string[];
-  status?: "thinking" | "done" | "error";
+  status?: "thinking" | "done" | "partial" | "error";
 }
 
 /* ---- Background task queue (PRD §6.1 bottom bar) ---- */
 
 export type TaskKind = "generate" | "enhance" | "export";
-export type TaskStatus = "queued" | "running" | "completed" | "failed";
+export type TaskStatus = "queued" | "running" | "completed" | "partial" | "failed";
 
 export interface QueueTask {
   id: string;

@@ -13,6 +13,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Lock
 from urllib.parse import unquote_to_bytes, urlparse
@@ -40,7 +41,40 @@ TEAM_FEATURES = (
     "home", "dashboard", "studio", "batch", "video_workshop", "canvas",
     "voice", "assets", "delivery", "analytics", "team_members",
 )
-PERSONAL_FEATURES = ("home", "video_workshop", "canvas", "voice", "assets", "profile", "team_join")
+PERSONAL_FEATURES = (
+    "home", "video_workshop", "canvas", "voice", "assets", "profile", "team_join"
+)
+TEAM_SEAT_LIMITS = {
+    "team": 5,
+    "team-pro": 10,
+}
+TEAM_SUPPLIER_ELIGIBLE_PLANS = {"team", "team-pro"}
+CHINA_TZ = timezone(timedelta(hours=8))
+PERSONAL_DAILY_POINTS = 70
+SUBSCRIPTION_MONTHLY_POINTS = {
+    "personal-pro": 2200,
+    "personal-advanced": 3600,
+    "team": 9000,
+    "team-pro": 20000,
+}
+PERSONAL_SUBSCRIPTION_PLANS = {"personal-pro", "personal-advanced"}
+TEAM_SUBSCRIPTION_PLANS = {"team", "team-pro"}
+CUSTOM_CANVAS_GENERATION_RECEIPT_TTL_MS = 24 * 60 * 60 * 1000
+
+
+def normalize_username(value):
+    """用户名对外展示时仅去掉首尾空白。"""
+    return str(value or "").strip()
+
+
+def canonical_username(value):
+    """用于查找与唯一性判定的稳定 key。
+
+    不直接给旧表加唯一索引：部署前数据可能已有 Alice/alice
+    这类大小写碰撞，强制索引会让服务启动迁移失败。新写入由
+    同一事务内的 key 查询拦截，旧数据仍可登录和审计。
+    """
+    return normalize_username(value).casefold()
 
 # 入服务器共享的集合（与前端 db.collections 对齐）。
 # notifications / ui / apiKeys 是每设备本地态，不入服务器。
@@ -191,10 +225,30 @@ CREATE TABLE IF NOT EXISTS custom_canvas_blobs(
   created_at   INTEGER NOT NULL,
   PRIMARY KEY(owner_id, content_hash)
 );
+CREATE TABLE IF NOT EXISTS custom_canvas_blob_staging(
+  owner_id     TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY(owner_id, content_hash)
+);
+CREATE TABLE IF NOT EXISTS custom_canvas_generation_receipts(
+  owner_id     TEXT NOT NULL,
+  receipt_id   TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  points       INTEGER NOT NULL,
+  feature      TEXT NOT NULL,
+  expires_at   INTEGER NOT NULL,
+  created_at   INTEGER NOT NULL,
+  charged_at   INTEGER,
+  PRIMARY KEY(owner_id, receipt_id)
+);
+CREATE INDEX IF NOT EXISTS idx_custom_canvas_generation_receipts_hash
+  ON custom_canvas_generation_receipts(owner_id, content_hash, charged_at);
 CREATE TABLE IF NOT EXISTS members(
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   username   TEXT NOT NULL UNIQUE,
+  username_key TEXT NOT NULL DEFAULT '',
   pin_hash   TEXT NOT NULL,
   role       TEXT NOT NULL,
   parent_id  TEXT,
@@ -205,6 +259,7 @@ CREATE TABLE IF NOT EXISTS member_requests(
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   username    TEXT NOT NULL,
+  username_key TEXT NOT NULL DEFAULT '',
   pin_hash    TEXT NOT NULL,
   role        TEXT NOT NULL,
   status      TEXT NOT NULL,
@@ -244,6 +299,141 @@ CREATE TABLE IF NOT EXISTS team_members(
 );
 CREATE INDEX IF NOT EXISTS idx_team_members_team_role
   ON team_members(team_id, team_role, status);
+CREATE TABLE IF NOT EXISTS personal_daily_quotas(
+  member_id      TEXT NOT NULL,
+  quota_day      TEXT NOT NULL,
+  granted_points INTEGER NOT NULL,
+  used_points    INTEGER NOT NULL DEFAULT 0,
+  updated_at     INTEGER NOT NULL,
+  PRIMARY KEY(member_id, quota_day)
+);
+CREATE TABLE IF NOT EXISTS personal_daily_quota_events(
+  id              TEXT PRIMARY KEY,
+  member_id       TEXT NOT NULL,
+  quota_day       TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  points          INTEGER NOT NULL,
+  feature         TEXT NOT NULL,
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_daily_quota_events_member_day
+  ON personal_daily_quota_events(member_id, quota_day, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_personal_daily_quota_events_idempotency
+  ON personal_daily_quota_events(member_id, idempotency_key)
+  WHERE idempotency_key <> '';
+CREATE TABLE IF NOT EXISTS personal_daily_quota_reservations(
+  id              TEXT PRIMARY KEY,
+  member_id       TEXT NOT NULL,
+  quota_day       TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  points          INTEGER NOT NULL,
+  feature         TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  settled_at      INTEGER,
+  released_at     INTEGER,
+  request_fingerprint TEXT NOT NULL DEFAULT '',
+  UNIQUE(member_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_personal_quota_reservations_day_status
+  ON personal_daily_quota_reservations(member_id, quota_day, status, created_at);
+CREATE TABLE IF NOT EXISTS member_subscriptions(
+  member_id     TEXT PRIMARY KEY,
+  plan          TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'active',
+  activated_at  INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  activated_by  TEXT
+);
+CREATE TABLE IF NOT EXISTS subscription_monthly_quotas(
+  scope_type       TEXT NOT NULL,
+  scope_id         TEXT NOT NULL,
+  quota_month      TEXT NOT NULL,
+  plan             TEXT NOT NULL,
+  granted_points   INTEGER NOT NULL,
+  purchased_points INTEGER NOT NULL DEFAULT 0,
+  used_points      INTEGER NOT NULL DEFAULT 0,
+  updated_at       INTEGER NOT NULL,
+  PRIMARY KEY(scope_type, scope_id, quota_month)
+);
+CREATE TABLE IF NOT EXISTS subscription_quota_events(
+  id              TEXT PRIMARY KEY,
+  scope_type      TEXT NOT NULL,
+  scope_id        TEXT NOT NULL,
+  member_id       TEXT NOT NULL,
+  quota_month     TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  points          INTEGER NOT NULL,
+  feature         TEXT NOT NULL,
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_quota_events_scope_month
+  ON subscription_quota_events(scope_type, scope_id, quota_month, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_quota_events_idempotency
+  ON subscription_quota_events(scope_type, scope_id, idempotency_key)
+  WHERE idempotency_key <> '';
+CREATE TABLE IF NOT EXISTS subscription_quota_reservations(
+  id                  TEXT PRIMARY KEY,
+  scope_type          TEXT NOT NULL,
+  scope_id            TEXT NOT NULL,
+  member_id           TEXT NOT NULL,
+  quota_month         TEXT NOT NULL,
+  plan                TEXT NOT NULL,
+  idempotency_key     TEXT NOT NULL,
+  points              INTEGER NOT NULL,
+  feature             TEXT NOT NULL,
+  status              TEXT NOT NULL,
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL,
+  settled_at          INTEGER,
+  released_at         INTEGER,
+  request_fingerprint TEXT NOT NULL DEFAULT '',
+  UNIQUE(scope_type, scope_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_quota_reservations_scope_status
+  ON subscription_quota_reservations(
+    scope_type, scope_id, quota_month, status, created_at
+  );
+CREATE TABLE IF NOT EXISTS subscription_quota_topups(
+  id              TEXT PRIMARY KEY,
+  scope_type      TEXT NOT NULL,
+  scope_id        TEXT NOT NULL,
+  quota_month     TEXT NOT NULL,
+  points          INTEGER NOT NULL,
+  entitlement_ref TEXT NOT NULL,
+  activated_by    TEXT,
+  created_at      INTEGER NOT NULL,
+  UNIQUE(scope_type, scope_id, entitlement_ref)
+);
+CREATE TABLE IF NOT EXISTS video_generation_billing_tasks(
+  id                   TEXT PRIMARY KEY,
+  member_id            TEXT NOT NULL,
+  idempotency_key      TEXT NOT NULL,
+  request_fingerprint  TEXT NOT NULL,
+  reservation_id       TEXT NOT NULL DEFAULT '',
+  points               INTEGER NOT NULL,
+  feature              TEXT NOT NULL,
+  model                TEXT NOT NULL DEFAULT '',
+  duration_seconds     INTEGER NOT NULL,
+  provider_ref         TEXT NOT NULL DEFAULT '',
+  provider              TEXT NOT NULL DEFAULT '',
+  status               TEXT NOT NULL,
+  submit_response_json TEXT NOT NULL DEFAULT '{}',
+  poll_result_json     TEXT NOT NULL DEFAULT '{}',
+  billing_json         TEXT NOT NULL DEFAULT '{}',
+  error                TEXT NOT NULL DEFAULT '',
+  created_at           INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL,
+  settled_at           INTEGER,
+  released_at          INTEGER,
+  UNIQUE(member_id, idempotency_key)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_video_generation_billing_provider_ref
+  ON video_generation_billing_tasks(provider_ref)
+  WHERE provider_ref <> '';
+CREATE INDEX IF NOT EXISTS idx_video_generation_billing_member_status
+  ON video_generation_billing_tasks(member_id, status, updated_at DESC);
 CREATE TABLE IF NOT EXISTS team_join_requests(
   id          TEXT PRIMARY KEY,
   team_id     TEXT NOT NULL,
@@ -323,6 +513,38 @@ CREATE TABLE IF NOT EXISTS api_usage_events(
 );
 CREATE INDEX IF NOT EXISTS idx_api_usage_events_member_created
   ON api_usage_events(member_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS community_posts(
+  id          TEXT PRIMARY KEY,
+  author_id   TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  team_id     TEXT,
+  source_kind TEXT NOT NULL,
+  source_id   TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  copy_text   TEXT NOT NULL DEFAULT '',
+  prompt_text TEXT NOT NULL DEFAULT '',
+  category    TEXT NOT NULL,
+  media_json  TEXT NOT NULL,
+  cover_json  TEXT NOT NULL DEFAULT '{}',
+  identity_key TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'published',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_community_posts_status_created
+  ON community_posts(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_community_posts_author_created
+  ON community_posts(author_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS community_reactions(
+  post_id      TEXT NOT NULL,
+  member_id    TEXT NOT NULL,
+  liked        INTEGER NOT NULL DEFAULT 0,
+  favorited    INTEGER NOT NULL DEFAULT 0,
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY(post_id, member_id)
+);
+CREATE INDEX IF NOT EXISTS idx_community_reactions_member_favorite
+  ON community_reactions(member_id, favorited, updated_at DESC);
 """
 
 _lock = Lock()
@@ -340,17 +562,31 @@ def _seed_admin_locked(conn):
     if conn.execute("SELECT COUNT(*) FROM members").fetchone()[0] == 0:
         now = int(time.time() * 1000)
         conn.execute(
-            "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
-            (uuid.uuid4().hex[:10], "管理员", DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PIN_HASH, "admin", None, now),
+            "INSERT INTO members(id,name,username,username_key,pin_hash,role,parent_id,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (
+                uuid.uuid4().hex[:10], "管理员", DEFAULT_ADMIN_USERNAME,
+                canonical_username(DEFAULT_ADMIN_USERNAME), DEFAULT_ADMIN_PIN_HASH,
+                "admin", None, now,
+            ),
         )
         conn.execute(
-            "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
-            (uuid.uuid4().hex[:10], "供应商", DEFAULT_SUPPLIER_USERNAME, DEFAULT_SUPPLIER_PIN_HASH, "supplier_parent", None, now + 1),
+            "INSERT INTO members(id,name,username,username_key,pin_hash,role,parent_id,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (
+                uuid.uuid4().hex[:10], "供应商", DEFAULT_SUPPLIER_USERNAME,
+                canonical_username(DEFAULT_SUPPLIER_USERNAME), DEFAULT_SUPPLIER_PIN_HASH,
+                "supplier_parent", None, now + 1,
+            ),
         )
 
 
 def _ensure_admin_alias_locked(conn):
-    admin = conn.execute("SELECT id,pin_hash,role,name FROM members WHERE username=?", (DEFAULT_ADMIN_USERNAME,)).fetchone()
+    admin = conn.execute(
+        "SELECT id,pin_hash,role,name FROM members WHERE username_key=? "
+        "ORDER BY CASE WHEN trim(username)=? THEN 0 ELSE 1 END,created_at,id LIMIT 1",
+        (canonical_username(DEFAULT_ADMIN_USERNAME), normalize_username(DEFAULT_ADMIN_USERNAME)),
+    ).fetchone()
     if admin:
         if admin[1] != DEFAULT_ADMIN_PIN_HASH or admin[2] != "admin" or admin[3] != "管理员":
             conn.execute(
@@ -361,20 +597,55 @@ def _ensure_admin_alias_locked(conn):
     old = conn.execute("SELECT id FROM members WHERE username='yuxuan' AND role='admin'").fetchone()
     if old:
         conn.execute(
-            "UPDATE members SET username=?, name=?, pin_hash=?, role=? WHERE id=?",
-            (DEFAULT_ADMIN_USERNAME, "管理员", DEFAULT_ADMIN_PIN_HASH, "admin", old[0]),
+            "UPDATE members SET username=?, username_key=?, name=?, pin_hash=?, role=? WHERE id=?",
+            (
+                DEFAULT_ADMIN_USERNAME, canonical_username(DEFAULT_ADMIN_USERNAME),
+                "管理员", DEFAULT_ADMIN_PIN_HASH, "admin", old[0],
+            ),
         )
         return
     now = int(time.time() * 1000)
     conn.execute(
-        "INSERT INTO members(id,name,username,pin_hash,role,created_at) VALUES(?,?,?,?,?,?)",
-        (uuid.uuid4().hex[:10], "管理员", DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PIN_HASH, "admin", now),
+        "INSERT INTO members(id,name,username,username_key,pin_hash,role,created_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (
+            uuid.uuid4().hex[:10], "管理员", DEFAULT_ADMIN_USERNAME,
+            canonical_username(DEFAULT_ADMIN_USERNAME), DEFAULT_ADMIN_PIN_HASH, "admin", now,
+        ),
+    )
+
+
+def _ensure_username_keys_locked(conn):
+    """幂等补齐旧库 canonical key，保留旧的大小写碰撞记录。"""
+    for table in ("members", "member_requests"):
+        rows = conn.execute(
+            f"SELECT id,username,COALESCE(username_key,'') FROM {table}"
+        ).fetchall()
+        updates = []
+        for row_id, username, stored_key in rows:
+            expected = canonical_username(username)
+            if stored_key != expected:
+                updates.append((expected, row_id))
+        if updates:
+            conn.executemany(
+                f"UPDATE {table} SET username_key=? WHERE id=?",
+                updates,
+            )
+    # 非唯一索引仅用于查找；旧数据有碰撞时不会导致启动失败。
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_members_username_key ON members(username_key)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_member_requests_username_key_status "
+        "ON member_requests(username_key,status)"
     )
 
 
 def _ensure_supplier_parent_role_locked(conn):
     """旧版曾把默认供应商账号保存为创作成员；只修正角色，不改账号、密码或业务数据。"""
-    row = conn.execute("SELECT id,role FROM members WHERE username=?", (DEFAULT_SUPPLIER_USERNAME,)).fetchone()
+    row = conn.execute(
+        "SELECT id,role FROM members WHERE username_key=? "
+        "ORDER BY CASE WHEN trim(username)=? THEN 0 ELSE 1 END,created_at,id LIMIT 1",
+        (canonical_username(DEFAULT_SUPPLIER_USERNAME), normalize_username(DEFAULT_SUPPLIER_USERNAME)),
+    ).fetchone()
     if row and row[1] != "supplier_parent":
         conn.execute("UPDATE members SET role='supplier_parent', parent_id=NULL WHERE id=?", (row[0],))
 
@@ -383,8 +654,9 @@ def _ensure_internal_team_locked(conn):
     """幂等归属现有生产账号，不复制或覆盖任何成员、素材、任务和供应商数据。"""
     now = int(time.time() * 1000)
     owner = conn.execute(
-        "SELECT id FROM members WHERE username=? AND role='admin'",
-        (DEFAULT_ADMIN_USERNAME,),
+        "SELECT id FROM members WHERE username_key=? AND role='admin' "
+        "ORDER BY CASE WHEN trim(username)=? THEN 0 ELSE 1 END,created_at,id LIMIT 1",
+        (canonical_username(DEFAULT_ADMIN_USERNAME), normalize_username(DEFAULT_ADMIN_USERNAME)),
     ).fetchone()
     owner_id = owner[0] if owner else None
     conn.execute(
@@ -392,11 +664,11 @@ def _ensure_internal_team_locked(conn):
         "VALUES(?,?,?,?,?,?,?,?,?)",
         (
             INTERNAL_TEAM_ID, INTERNAL_TEAM_NAME, "acg-marketing", "internal",
-            "active", "team", "unlimited", now, owner_id,
+            "active", "team-pro", "unlimited", now, owner_id,
         ),
     )
     conn.execute(
-        "UPDATE teams SET name=?,kind='internal',status='active',plan='team',quota_mode='unlimited' "
+        "UPDATE teams SET name=?,kind='internal',status='active',plan='team-pro',quota_mode='unlimited' "
         "WHERE id=?",
         (INTERNAL_TEAM_NAME, INTERNAL_TEAM_ID),
     )
@@ -490,11 +762,49 @@ def _ensure_db():
                 conn.execute("ALTER TABLE members ADD COLUMN parent_id TEXT")
             if "avatar_url" not in member_cols:
                 conn.execute("ALTER TABLE members ADD COLUMN avatar_url TEXT")
+            if "username_key" not in member_cols:
+                conn.execute("ALTER TABLE members ADD COLUMN username_key TEXT NOT NULL DEFAULT ''")
+            request_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(member_requests)").fetchall()
+            }
+            if "username_key" not in request_cols:
+                conn.execute(
+                    "ALTER TABLE member_requests ADD COLUMN username_key TEXT NOT NULL DEFAULT ''"
+                )
+            reservation_cols = {
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(personal_daily_quota_reservations)"
+                ).fetchall()
+            }
+            if "request_fingerprint" not in reservation_cols:
+                conn.execute(
+                    "ALTER TABLE personal_daily_quota_reservations "
+                    "ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''"
+                )
+            community_cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(community_posts)").fetchall()
+            }
+            if "cover_json" not in community_cols:
+                conn.execute(
+                    "ALTER TABLE community_posts ADD COLUMN cover_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "identity_key" not in community_cols:
+                conn.execute(
+                    "ALTER TABLE community_posts ADD COLUMN identity_key TEXT NOT NULL DEFAULT ''"
+                )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_community_posts_author_identity "
+                "ON community_posts(author_id, identity_key) "
+                "WHERE status='published' AND identity_key<>''"
+            )
             # 旧版 supplier 无子账号概念，安全迁移为供应商母账号。
             conn.execute("UPDATE members SET role='supplier_parent' WHERE role='supplier'")
+            _ensure_username_keys_locked(conn)
             _seed_admin_locked(conn)
             _ensure_admin_alias_locked(conn)
             _ensure_supplier_parent_role_locked(conn)
+            _ensure_username_keys_locked(conn)
             _ensure_internal_team_locked(conn)
             conn.commit()
             _initialized = True
@@ -626,6 +936,1540 @@ def member_entitlements(member_id, role):
     return list(TEAM_FEATURES if team else PERSONAL_FEATURES)
 
 
+def _china_quota_day(now_ms=None):
+    stamp = int(now_ms if now_ms is not None else time.time() * 1000)
+    current = datetime.fromtimestamp(stamp / 1000, tz=CHINA_TZ)
+    next_midnight = datetime.combine(
+        current.date() + timedelta(days=1), datetime.min.time(), tzinfo=CHINA_TZ,
+    )
+    return current.date().isoformat(), int(next_midnight.timestamp() * 1000)
+
+
+def _china_quota_month(now_ms=None):
+    stamp = int(now_ms if now_ms is not None else time.time() * 1000)
+    current = datetime.fromtimestamp(stamp / 1000, tz=CHINA_TZ)
+    if current.month == 12:
+        next_month = datetime(current.year + 1, 1, 1, tzinfo=CHINA_TZ)
+    else:
+        next_month = datetime(current.year, current.month + 1, 1, tzinfo=CHINA_TZ)
+    return f"{current.year:04d}-{current.month:02d}", int(next_month.timestamp() * 1000)
+
+
+def _quota_reset_at_for_month(quota_month):
+    try:
+        year, month = (int(value) for value in str(quota_month).split("-", 1))
+        if not 1 <= month <= 12:
+            raise ValueError("invalid month")
+    except (TypeError, ValueError):
+        current = datetime.now(CHINA_TZ)
+        year, month = current.year, current.month
+    if month == 12:
+        next_month = datetime(year + 1, 1, 1, tzinfo=CHINA_TZ)
+    else:
+        next_month = datetime(year, month + 1, 1, tzinfo=CHINA_TZ)
+    return int(next_month.timestamp() * 1000)
+
+
+def _personal_quota_eligible_locked(conn, member_id):
+    row = conn.execute(
+        "SELECT m.role, EXISTS("
+        "SELECT 1 FROM team_members tm JOIN teams t ON t.id=tm.team_id "
+        "WHERE tm.member_id=m.id AND tm.status='active' AND t.status='active'"
+        ") FROM members m WHERE m.id=?",
+        (member_id,),
+    ).fetchone()
+    return bool(row and row[0] == "user" and not row[1])
+
+
+def _quota_reset_at_for_day(quota_day):
+    try:
+        current = datetime.fromisoformat(str(quota_day)).date()
+    except (TypeError, ValueError):
+        current = datetime.now(CHINA_TZ).date()
+    next_midnight = datetime.combine(
+        current + timedelta(days=1), datetime.min.time(), tzinfo=CHINA_TZ,
+    )
+    return int(next_midnight.timestamp() * 1000)
+
+
+def _personal_quota_snapshot_locked(conn, member_id, quota_day):
+    row = conn.execute(
+        "SELECT granted_points,used_points FROM personal_daily_quotas "
+        "WHERE member_id=? AND quota_day=?",
+        (str(member_id or ""), str(quota_day or "")),
+    ).fetchone()
+    if not row:
+        return None
+    reserved = int(conn.execute(
+        "SELECT COALESCE(SUM(points),0) FROM personal_daily_quota_reservations "
+        "WHERE member_id=? AND quota_day=? AND status='active'",
+        (str(member_id or ""), str(quota_day or "")),
+    ).fetchone()[0] or 0)
+    granted, used = int(row[0] or 0), int(row[1] or 0)
+    remaining = max(0, granted - used - reserved)
+    return {
+        "type": "daily",
+        "period": "day",
+        "plan": "personal",
+        "billingScope": {"type": "member", "id": str(member_id or "")},
+        "day": str(quota_day),
+        "limit": granted,
+        "used": used,
+        "reserved": reserved,
+        "remaining": remaining,
+        "available": remaining,
+        "resetAt": _quota_reset_at_for_day(quota_day),
+        "nonAccumulating": True,
+    }
+
+
+def _ensure_personal_quota_row_locked(conn, member_id, quota_day, now):
+    conn.execute(
+        "INSERT OR IGNORE INTO personal_daily_quotas("
+        "member_id,quota_day,granted_points,used_points,updated_at"
+        ") VALUES(?,?,?,?,?)",
+        (str(member_id or ""), str(quota_day or ""), PERSONAL_DAILY_POINTS, 0, int(now)),
+    )
+    return _personal_quota_snapshot_locked(conn, member_id, quota_day)
+
+
+def personal_daily_quota(member_id, now_ms=None):
+    """Return the durable daily grant for a standalone personal user.
+
+    A fresh row is created per China-local day, so unused points never carry
+    into tomorrow while prior days remain auditable. Team and supplier members
+    deliberately receive no personal grant row because their quota follows the
+    team or supplier contract instead.
+    """
+    _ensure_db()
+    day, _reset_at = _china_quota_day(now_ms)
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if not _personal_quota_eligible_locked(conn, member_id):
+                conn.rollback()
+                return None
+            result = _ensure_personal_quota_row_locked(conn, member_id, day, now)
+            conn.commit()
+        finally:
+            conn.close()
+    return result
+
+
+def _reservation_result(row, quota, *, reused=False, retried=False):
+    return {
+        "reservationId": str(row[0] or ""),
+        "quotaDay": str(row[2] or ""),
+        "idempotencyKey": str(row[3] or ""),
+        "points": int(row[4] or 0),
+        "feature": str(row[5] or ""),
+        "status": str(row[6] or ""),
+        "createdAt": int(row[7] or 0),
+        "updatedAt": int(row[8] or 0),
+        "settledAt": int(row[9] or 0) if row[9] is not None else None,
+        "releasedAt": int(row[10] or 0) if row[10] is not None else None,
+        "requestFingerprint": str(row[11] or "") if len(row) > 11 else "",
+        "reused": bool(reused),
+        "retried": bool(retried),
+        "quota": quota,
+    }
+
+
+def reserve_personal_daily_points(
+    member_id,
+    points,
+    feature="",
+    idempotency_key="",
+    now_ms=None,
+    request_fingerprint="",
+):
+    """Atomically freeze points before a billable upstream request.
+
+    Only standalone ``user`` accounts receive a reservation. Team, ACG and
+    supplier accounts return ``not_personal_user`` so callers can bypass this
+    personal wallet without creating audit rows. A stable idempotency key is
+    mandatory: concurrent repeats observe the same reservation and never freeze
+    a second amount.
+    """
+    try:
+        amount = int(points)
+    except (TypeError, ValueError, OverflowError):
+        amount = 0
+    if amount <= 0:
+        return None, "invalid_points"
+    key = str(idempotency_key or "").strip()[:160]
+    clean_feature = str(feature or "生成任务")[:80]
+    fingerprint = str(request_fingerprint or "").strip()[:128]
+    day, _reset_at = _china_quota_day(now_ms)
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    owner = str(member_id or "")
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if not _personal_quota_eligible_locked(conn, owner):
+                conn.rollback()
+                return None, "not_personal_user"
+            if not key:
+                conn.rollback()
+                return None, "idempotency_key_required"
+            _ensure_personal_quota_row_locked(conn, owner, day, now)
+
+            # Preserve idempotency across the older post-success deduction
+            # primitive: a previously settled key must never fund a new call.
+            settled_event = conn.execute(
+                "SELECT quota_day,points,feature,created_at FROM personal_daily_quota_events "
+                "WHERE member_id=? AND idempotency_key=?",
+                (owner, key),
+            ).fetchone()
+            if settled_event:
+                if int(settled_event[1] or 0) != amount:
+                    conn.rollback()
+                    return None, "idempotency_conflict"
+                event_day = str(settled_event[0] or day)
+                quota = _personal_quota_snapshot_locked(conn, owner, event_day)
+                conn.commit()
+                legacy_row = (
+                    "", owner, event_day, key, amount,
+                    str(settled_event[2] or clean_feature), "settled",
+                    int(settled_event[3] or now), int(settled_event[3] or now),
+                    int(settled_event[3] or now), None, "",
+                )
+                return _reservation_result(legacy_row, quota, reused=True), None
+
+            previous = conn.execute(
+                "SELECT id,member_id,quota_day,idempotency_key,points,feature,status,"
+                "created_at,updated_at,settled_at,released_at,request_fingerprint "
+                "FROM personal_daily_quota_reservations "
+                "WHERE member_id=? AND idempotency_key=?",
+                (owner, key),
+            ).fetchone()
+            if previous:
+                if (
+                    int(previous[4] or 0) != amount
+                    or str(previous[5] or "") != clean_feature
+                    or str(previous[11] or "") != fingerprint
+                ):
+                    conn.rollback()
+                    return None, "idempotency_conflict"
+                if str(previous[6]) == "released":
+                    quota = _personal_quota_snapshot_locked(conn, owner, day)
+                    if not quota or int(quota["remaining"]) < amount:
+                        conn.commit()
+                        return quota, "insufficient_points"
+                    conn.execute(
+                        "UPDATE personal_daily_quota_reservations SET "
+                        "quota_day=?,status='active',updated_at=?,settled_at=NULL,released_at=NULL "
+                        "WHERE id=? AND member_id=? AND status='released'",
+                        (day, now, previous[0], owner),
+                    )
+                    previous = conn.execute(
+                        "SELECT id,member_id,quota_day,idempotency_key,points,feature,status,"
+                        "created_at,updated_at,settled_at,released_at,request_fingerprint "
+                        "FROM personal_daily_quota_reservations WHERE id=? AND member_id=?",
+                        (previous[0], owner),
+                    ).fetchone()
+                    quota = _personal_quota_snapshot_locked(conn, owner, day)
+                    conn.commit()
+                    return _reservation_result(previous, quota, retried=True), None
+                quota = _personal_quota_snapshot_locked(conn, owner, previous[2])
+                conn.commit()
+                return _reservation_result(previous, quota, reused=True), None
+
+            quota = _personal_quota_snapshot_locked(conn, owner, day)
+            if not quota or int(quota["remaining"]) < amount:
+                conn.commit()
+                return quota, "insufficient_points"
+            reservation_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO personal_daily_quota_reservations("
+                "id,member_id,quota_day,idempotency_key,points,feature,status,"
+                "created_at,updated_at,settled_at,released_at,request_fingerprint"
+                ") VALUES(?,?,?,?,?,?, 'active',?,?,NULL,NULL,?)",
+                (
+                    reservation_id, owner, day, key, amount, clean_feature,
+                    now, now, fingerprint,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id,member_id,quota_day,idempotency_key,points,feature,status,"
+                "created_at,updated_at,settled_at,released_at,request_fingerprint "
+                "FROM personal_daily_quota_reservations WHERE id=?",
+                (reservation_id,),
+            ).fetchone()
+            quota = _personal_quota_snapshot_locked(conn, owner, day)
+            conn.commit()
+            return _reservation_result(row, quota), None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def settle_personal_daily_points(
+    member_id,
+    reservation_id,
+    now_ms=None,
+    canvas_receipts=None,
+    *,
+    consumed_points=None,
+):
+    """Move one active freeze into used points exactly once.
+
+    Optional Canvas receipts are validated before the transaction and inserted
+    as charged in the same transaction as the quota settlement. This prevents
+    a response from failing after points have already been committed.
+    """
+    owner = str(member_id or "")
+    rid = str(reservation_id or "").strip()
+    if not owner or not rid:
+        return None, "reservation_not_found"
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    prepared_receipts = _prepare_custom_canvas_generation_receipts(
+        owner, canvas_receipts, now,
+    ) if canvas_receipts else []
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT id,member_id,quota_day,idempotency_key,points,feature,status,"
+                "created_at,updated_at,settled_at,released_at,request_fingerprint "
+                "FROM personal_daily_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, "reservation_not_found"
+            status = str(row[6] or "")
+            if status == "released":
+                quota = _personal_quota_snapshot_locked(conn, owner, row[2])
+                conn.commit()
+                return _reservation_result(row, quota, reused=True), "reservation_released"
+            if status == "settled":
+                quota = _personal_quota_snapshot_locked(conn, owner, row[2])
+                conn.commit()
+                result = _reservation_result(row, quota, reused=True)
+                result["deducted"] = 0
+                result["generationReceipts"] = []
+                return result, None
+            if status != "active":
+                conn.rollback()
+                return None, "invalid_reservation_status"
+
+            quota = _personal_quota_snapshot_locked(conn, owner, row[2])
+            reserved_amount = int(row[4] or 0)
+            amount = (
+                reserved_amount
+                if consumed_points is None
+                else int(consumed_points)
+            )
+            if amount <= 0 or amount > reserved_amount:
+                conn.rollback()
+                return quota, "invalid_consumed_points"
+            if prepared_receipts and sum(
+                int(receipt.get("points") or 0) for receipt in prepared_receipts
+            ) != amount:
+                conn.rollback()
+                return quota, "receipt_points_mismatch"
+            if not quota or int(quota["used"]) + amount > int(quota["limit"]):
+                conn.rollback()
+                return quota, "insufficient_points"
+            conn.execute(
+                "UPDATE personal_daily_quotas SET used_points=used_points+?,updated_at=? "
+                "WHERE member_id=? AND quota_day=?",
+                (amount, now, owner, row[2]),
+            )
+            conn.execute(
+                "INSERT INTO personal_daily_quota_events("
+                "id,member_id,quota_day,idempotency_key,points,feature,created_at"
+                ") VALUES(?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:16], owner, row[2], row[3], amount,
+                    row[5], now,
+                ),
+            )
+            conn.execute(
+                "UPDATE personal_daily_quota_reservations SET "
+                "status='settled',updated_at=?,settled_at=?,released_at=NULL "
+                "WHERE id=? AND member_id=? AND status='active'",
+                (now, now, rid, owner),
+            )
+            if prepared_receipts:
+                _insert_custom_canvas_generation_receipts_locked(
+                    conn, prepared_receipts, now, True,
+                )
+            row = conn.execute(
+                "SELECT id,member_id,quota_day,idempotency_key,points,feature,status,"
+                "created_at,updated_at,settled_at,released_at,request_fingerprint "
+                "FROM personal_daily_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            quota = _personal_quota_snapshot_locked(conn, owner, row[2])
+            conn.commit()
+            result = _reservation_result(row, quota)
+            result["deducted"] = amount
+            result["chargedPoints"] = amount
+            result["reservedPoints"] = reserved_amount
+            result["generationReceipts"] = prepared_receipts
+            return result, None
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            # The event unique key is the final cross-process idempotency gate.
+            row = conn.execute(
+                "SELECT id,member_id,quota_day,idempotency_key,points,feature,status,"
+                "created_at,updated_at,settled_at,released_at,request_fingerprint "
+                "FROM personal_daily_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            if row and str(row[6]) == "settled":
+                result = _reservation_result(
+                    row,
+                    _personal_quota_snapshot_locked(conn, owner, row[2]),
+                    reused=True,
+                )
+                result["deducted"] = 0
+                result["generationReceipts"] = []
+                return result, None
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def release_personal_daily_points(member_id, reservation_id, now_ms=None):
+    """Release one active freeze; duplicate releases are harmless."""
+    owner = str(member_id or "")
+    rid = str(reservation_id or "").strip()
+    if not owner or not rid:
+        return None, "reservation_not_found"
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT id,member_id,quota_day,idempotency_key,points,feature,status,"
+                "created_at,updated_at,settled_at,released_at,request_fingerprint "
+                "FROM personal_daily_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, "reservation_not_found"
+            if str(row[6]) == "settled":
+                quota = _personal_quota_snapshot_locked(conn, owner, row[2])
+                conn.commit()
+                return _reservation_result(row, quota, reused=True), "reservation_settled"
+            reused = str(row[6]) == "released"
+            if str(row[6]) == "active":
+                conn.execute(
+                    "UPDATE personal_daily_quota_reservations SET "
+                    "status='released',updated_at=?,released_at=? "
+                    "WHERE id=? AND member_id=? AND status='active'",
+                    (now, now, rid, owner),
+                )
+            row = conn.execute(
+                "SELECT id,member_id,quota_day,idempotency_key,points,feature,status,"
+                "created_at,updated_at,settled_at,released_at,request_fingerprint "
+                "FROM personal_daily_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            quota = _personal_quota_snapshot_locked(conn, owner, row[2])
+            conn.commit()
+            return _reservation_result(row, quota, reused=reused), None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def deduct_personal_daily_points(member_id, points, feature="", idempotency_key="", now_ms=None):
+    """Compatibility wrapper implemented as reserve then settle.
+
+    New billable endpoints must call ``reserve_personal_daily_points`` before
+    touching an upstream provider and explicitly settle or release afterwards.
+    """
+    key = str(idempotency_key or "").strip()[:160] or f"legacy-deduct:{uuid.uuid4().hex}"
+    reservation, error = reserve_personal_daily_points(
+        member_id,
+        points,
+        feature=feature,
+        idempotency_key=key,
+        now_ms=now_ms,
+    )
+    if error or not reservation:
+        return reservation, error
+    if reservation.get("status") == "settled":
+        result = dict(reservation.get("quota") or {})
+        result.update({"deducted": 0, "reused": True})
+        return result, None
+    settled, error = settle_personal_daily_points(
+        member_id,
+        reservation.get("reservationId"),
+        now_ms=now_ms,
+    )
+    if error or not settled:
+        return settled, error
+    result = dict(settled.get("quota") or {})
+    result.update({
+        "deducted": int(settled.get("deducted") or 0),
+        "reused": bool(settled.get("reused")),
+    })
+    return result, None
+
+
+def _generation_billing_scope_locked(conn, member_id):
+    owner = str(member_id or "")
+    row = conn.execute(
+        "SELECT m.role,t.id,t.kind,t.plan,t.quota_mode "
+        "FROM members m "
+        "LEFT JOIN team_members tm ON tm.member_id=m.id AND tm.status='active' "
+        "LEFT JOIN teams t ON t.id=tm.team_id AND t.status='active' "
+        "WHERE m.id=? LIMIT 1",
+        (owner,),
+    ).fetchone()
+    if not row:
+        return {"type": "unconfigured", "error": "member_not_found"}
+    role, team_id, team_kind, team_plan, quota_mode = row
+    if team_id:
+        # quota_mode is descriptive only. Never allow an external customer
+        # team to gain an unlimited wallet by changing that column.
+        if team_id == INTERNAL_TEAM_ID and team_kind == "internal":
+            return {
+                "type": "unlimited",
+                "scopeType": "team",
+                "scopeId": str(team_id),
+                "plan": "team-pro",
+                "quotaMode": "unlimited",
+            }
+        if str(team_plan or "") not in TEAM_SUBSCRIPTION_PLANS:
+            return {"type": "unconfigured", "error": "team_plan_not_configured"}
+        return {
+            "type": "subscription",
+            "scopeType": "team",
+            "scopeId": str(team_id),
+            "plan": str(team_plan),
+            "quotaMode": "metered",
+        }
+    subscription = conn.execute(
+        "SELECT plan FROM member_subscriptions "
+        "WHERE member_id=? AND status='active' LIMIT 1",
+        (owner,),
+    ).fetchone()
+    if subscription and str(subscription[0] or "") in PERSONAL_SUBSCRIPTION_PLANS:
+        return {
+            "type": "subscription",
+            "scopeType": "member",
+            "scopeId": owner,
+            "plan": str(subscription[0]),
+            "quotaMode": "metered",
+        }
+    if role == "user":
+        return {
+            "type": "daily",
+            "scopeType": "member",
+            "scopeId": owner,
+            "plan": "personal",
+            "quotaMode": "metered",
+        }
+    return {"type": "unconfigured", "error": "billing_scope_not_configured"}
+
+
+def generation_billing_scope(member_id):
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            return _generation_billing_scope_locked(conn, member_id)
+        finally:
+            conn.close()
+
+
+def _subscription_quota_snapshot_locked(
+    conn, scope_type, scope_id, quota_month,
+):
+    row = conn.execute(
+        "SELECT plan,granted_points,purchased_points,used_points "
+        "FROM subscription_monthly_quotas "
+        "WHERE scope_type=? AND scope_id=? AND quota_month=?",
+        (str(scope_type), str(scope_id), str(quota_month)),
+    ).fetchone()
+    if not row:
+        return None
+    reserved = int(conn.execute(
+        "SELECT COALESCE(SUM(points),0) FROM subscription_quota_reservations "
+        "WHERE scope_type=? AND scope_id=? AND quota_month=? AND status='active'",
+        (str(scope_type), str(scope_id), str(quota_month)),
+    ).fetchone()[0] or 0)
+    plan = str(row[0] or "")
+    granted = int(row[1] or 0)
+    purchased = int(row[2] or 0)
+    used = int(row[3] or 0)
+    limit = granted + purchased
+    remaining = max(0, limit - used - reserved)
+    return {
+        "type": "subscription",
+        "period": "month",
+        "month": str(quota_month),
+        "plan": plan,
+        "billingScope": {"type": str(scope_type), "id": str(scope_id)},
+        "shared": str(scope_type) == "team",
+        "granted": granted,
+        "purchased": purchased,
+        "limit": limit,
+        "used": used,
+        "reserved": reserved,
+        "remaining": remaining,
+        "available": remaining,
+        "resetAt": _quota_reset_at_for_month(quota_month),
+        "nonAccumulating": True,
+    }
+
+
+def _ensure_subscription_quota_row_locked(
+    conn, scope_type, scope_id, quota_month, plan, now,
+):
+    clean_plan = str(plan or "")
+    grant = SUBSCRIPTION_MONTHLY_POINTS.get(clean_plan)
+    if not grant:
+        raise ValueError("subscription_plan_not_configured")
+    conn.execute(
+        "INSERT OR IGNORE INTO subscription_monthly_quotas("
+        "scope_type,scope_id,quota_month,plan,granted_points,purchased_points,"
+        "used_points,updated_at) VALUES(?,?,?,?,?,0,0,?)",
+        (
+            str(scope_type), str(scope_id), str(quota_month), clean_plan,
+            int(grant), int(now),
+        ),
+    )
+    # A trusted mid-cycle upgrade increases the grant immediately. Downgrades
+    # never revoke points already granted in the current month.
+    conn.execute(
+        "UPDATE subscription_monthly_quotas SET plan=?,"
+        "granted_points=MAX(granted_points,?),updated_at=? "
+        "WHERE scope_type=? AND scope_id=? AND quota_month=?",
+        (
+            clean_plan, int(grant), int(now), str(scope_type), str(scope_id),
+            str(quota_month),
+        ),
+    )
+    return _subscription_quota_snapshot_locked(
+        conn, scope_type, scope_id, quota_month,
+    )
+
+
+def subscription_monthly_quota(member_id, now_ms=None):
+    month, _reset_at = _china_quota_month(now_ms)
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            scope = _generation_billing_scope_locked(conn, member_id)
+            if scope.get("type") != "subscription":
+                conn.rollback()
+                return None
+            result = _ensure_subscription_quota_row_locked(
+                conn,
+                scope["scopeType"],
+                scope["scopeId"],
+                month,
+                scope["plan"],
+                now,
+            )
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def _subscription_reservation_result(row, quota, *, reused=False, retried=False):
+    return {
+        "reservationId": str(row[0] or ""),
+        "billingScope": {"type": str(row[1] or ""), "id": str(row[2] or "")},
+        "memberId": str(row[3] or ""),
+        "quotaMonth": str(row[4] or ""),
+        "plan": str(row[5] or ""),
+        "idempotencyKey": str(row[6] or ""),
+        "points": int(row[7] or 0),
+        "feature": str(row[8] or ""),
+        "status": str(row[9] or ""),
+        "createdAt": int(row[10] or 0),
+        "updatedAt": int(row[11] or 0),
+        "settledAt": int(row[12] or 0) if row[12] is not None else None,
+        "releasedAt": int(row[13] or 0) if row[13] is not None else None,
+        "requestFingerprint": str(row[14] or ""),
+        "billingType": "subscription",
+        "reused": bool(reused),
+        "retried": bool(retried),
+        "quota": quota,
+    }
+
+
+def reserve_subscription_points(
+    member_id,
+    points,
+    feature="",
+    idempotency_key="",
+    now_ms=None,
+    request_fingerprint="",
+):
+    try:
+        amount = int(points)
+    except (TypeError, ValueError, OverflowError):
+        amount = 0
+    if amount <= 0:
+        return None, "invalid_points"
+    key = str(idempotency_key or "").strip()[:160]
+    if not key:
+        return None, "idempotency_key_required"
+    clean_feature = str(feature or "生成任务")[:80]
+    fingerprint = str(request_fingerprint or "").strip()[:128]
+    owner = str(member_id or "")
+    month, _reset_at = _china_quota_month(now_ms)
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            scope = _generation_billing_scope_locked(conn, owner)
+            if scope.get("type") != "subscription":
+                conn.rollback()
+                return None, scope.get("error") or "subscription_required"
+            scope_type, scope_id, plan = (
+                scope["scopeType"], scope["scopeId"], scope["plan"],
+            )
+            _ensure_subscription_quota_row_locked(
+                conn, scope_type, scope_id, month, plan, now,
+            )
+            previous = conn.execute(
+                "SELECT id,scope_type,scope_id,member_id,quota_month,plan,"
+                "idempotency_key,points,feature,status,created_at,updated_at,"
+                "settled_at,released_at,request_fingerprint "
+                "FROM subscription_quota_reservations "
+                "WHERE scope_type=? AND scope_id=? AND idempotency_key=?",
+                (scope_type, scope_id, key),
+            ).fetchone()
+            if previous:
+                if (
+                    int(previous[7] or 0) != amount
+                    or str(previous[8] or "") != clean_feature
+                    or str(previous[14] or "") != fingerprint
+                ):
+                    conn.rollback()
+                    return None, "idempotency_conflict"
+                if str(previous[9] or "") == "released":
+                    quota = _subscription_quota_snapshot_locked(
+                        conn, scope_type, scope_id, month,
+                    )
+                    if not quota or int(quota["remaining"]) < amount:
+                        conn.commit()
+                        return quota, "insufficient_points"
+                    conn.execute(
+                        "UPDATE subscription_quota_reservations SET "
+                        "member_id=?,quota_month=?,plan=?,status='active',updated_at=?,"
+                        "settled_at=NULL,released_at=NULL WHERE id=? AND status='released'",
+                        (owner, month, plan, now, previous[0]),
+                    )
+                    previous = conn.execute(
+                        "SELECT id,scope_type,scope_id,member_id,quota_month,plan,"
+                        "idempotency_key,points,feature,status,created_at,updated_at,"
+                        "settled_at,released_at,request_fingerprint "
+                        "FROM subscription_quota_reservations WHERE id=?",
+                        (previous[0],),
+                    ).fetchone()
+                    quota = _subscription_quota_snapshot_locked(
+                        conn, scope_type, scope_id, month,
+                    )
+                    conn.commit()
+                    return _subscription_reservation_result(
+                        previous, quota, retried=True,
+                    ), None
+                quota = _subscription_quota_snapshot_locked(
+                    conn, scope_type, scope_id, previous[4],
+                )
+                conn.commit()
+                return _subscription_reservation_result(
+                    previous, quota, reused=True,
+                ), None
+
+            settled_event = conn.execute(
+                "SELECT quota_month,points,feature,created_at,member_id "
+                "FROM subscription_quota_events WHERE scope_type=? AND scope_id=? "
+                "AND idempotency_key=?",
+                (scope_type, scope_id, key),
+            ).fetchone()
+            if settled_event:
+                if int(settled_event[1] or 0) != amount:
+                    conn.rollback()
+                    return None, "idempotency_conflict"
+                event_month = str(settled_event[0] or month)
+                quota = _subscription_quota_snapshot_locked(
+                    conn, scope_type, scope_id, event_month,
+                )
+                conn.commit()
+                legacy_row = (
+                    "", scope_type, scope_id, str(settled_event[4] or owner),
+                    event_month, plan, key, amount,
+                    str(settled_event[2] or clean_feature), "settled",
+                    int(settled_event[3] or now), int(settled_event[3] or now),
+                    int(settled_event[3] or now), None, "",
+                )
+                return _subscription_reservation_result(
+                    legacy_row, quota, reused=True,
+                ), None
+
+            quota = _subscription_quota_snapshot_locked(
+                conn, scope_type, scope_id, month,
+            )
+            if not quota or int(quota["remaining"]) < amount:
+                conn.commit()
+                return quota, "insufficient_points"
+            reservation_id = "sq_" + uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO subscription_quota_reservations("
+                "id,scope_type,scope_id,member_id,quota_month,plan,idempotency_key,"
+                "points,feature,status,created_at,updated_at,settled_at,released_at,"
+                "request_fingerprint) VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,NULL,NULL,?)",
+                (
+                    reservation_id, scope_type, scope_id, owner, month, plan, key,
+                    amount, clean_feature, now, now, fingerprint,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id,scope_type,scope_id,member_id,quota_month,plan,"
+                "idempotency_key,points,feature,status,created_at,updated_at,"
+                "settled_at,released_at,request_fingerprint "
+                "FROM subscription_quota_reservations WHERE id=?",
+                (reservation_id,),
+            ).fetchone()
+            quota = _subscription_quota_snapshot_locked(
+                conn, scope_type, scope_id, month,
+            )
+            conn.commit()
+            return _subscription_reservation_result(row, quota), None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def settle_subscription_points(
+    member_id, reservation_id, now_ms=None, canvas_receipts=None, *,
+    consumed_points=None,
+):
+    owner = str(member_id or "")
+    rid = str(reservation_id or "").strip()
+    if not owner or not rid:
+        return None, "reservation_not_found"
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    prepared_receipts = _prepare_custom_canvas_generation_receipts(
+        owner, canvas_receipts, now,
+    ) if canvas_receipts else []
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT id,scope_type,scope_id,member_id,quota_month,plan,"
+                "idempotency_key,points,feature,status,created_at,updated_at,"
+                "settled_at,released_at,request_fingerprint "
+                "FROM subscription_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, "reservation_not_found"
+            quota = _subscription_quota_snapshot_locked(
+                conn, row[1], row[2], row[4],
+            )
+            status = str(row[9] or "")
+            if status == "released":
+                conn.commit()
+                return _subscription_reservation_result(
+                    row, quota, reused=True,
+                ), "reservation_released"
+            if status == "settled":
+                conn.commit()
+                result = _subscription_reservation_result(row, quota, reused=True)
+                result["deducted"] = 0
+                result["generationReceipts"] = []
+                return result, None
+            if status != "active":
+                conn.rollback()
+                return None, "invalid_reservation_status"
+            reserved_amount = int(row[7] or 0)
+            amount = (
+                reserved_amount
+                if consumed_points is None
+                else int(consumed_points)
+            )
+            if amount <= 0 or amount > reserved_amount:
+                conn.rollback()
+                return quota, "invalid_consumed_points"
+            if prepared_receipts and sum(
+                int(receipt.get("points") or 0) for receipt in prepared_receipts
+            ) != amount:
+                conn.rollback()
+                return quota, "receipt_points_mismatch"
+            if not quota or int(quota["used"]) + amount > int(quota["limit"]):
+                conn.rollback()
+                return quota, "insufficient_points"
+            conn.execute(
+                "UPDATE subscription_monthly_quotas SET used_points=used_points+?,"
+                "updated_at=? WHERE scope_type=? AND scope_id=? AND quota_month=?",
+                (amount, now, row[1], row[2], row[4]),
+            )
+            conn.execute(
+                "INSERT INTO subscription_quota_events("
+                "id,scope_type,scope_id,member_id,quota_month,idempotency_key,"
+                "points,feature,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:16], row[1], row[2], owner, row[4],
+                    row[6], amount, row[8], now,
+                ),
+            )
+            conn.execute(
+                "UPDATE subscription_quota_reservations SET status='settled',"
+                "updated_at=?,settled_at=?,released_at=NULL "
+                "WHERE id=? AND member_id=? AND status='active'",
+                (now, now, rid, owner),
+            )
+            if prepared_receipts:
+                _insert_custom_canvas_generation_receipts_locked(
+                    conn, prepared_receipts, now, True,
+                )
+            row = conn.execute(
+                "SELECT id,scope_type,scope_id,member_id,quota_month,plan,"
+                "idempotency_key,points,feature,status,created_at,updated_at,"
+                "settled_at,released_at,request_fingerprint "
+                "FROM subscription_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            quota = _subscription_quota_snapshot_locked(
+                conn, row[1], row[2], row[4],
+            )
+            conn.commit()
+            result = _subscription_reservation_result(row, quota)
+            result["deducted"] = amount
+            result["chargedPoints"] = amount
+            result["reservedPoints"] = reserved_amount
+            result["generationReceipts"] = prepared_receipts
+            return result, None
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            row = conn.execute(
+                "SELECT id,scope_type,scope_id,member_id,quota_month,plan,"
+                "idempotency_key,points,feature,status,created_at,updated_at,"
+                "settled_at,released_at,request_fingerprint "
+                "FROM subscription_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            if row and str(row[9] or "") == "settled":
+                result = _subscription_reservation_result(
+                    row,
+                    _subscription_quota_snapshot_locked(
+                        conn, row[1], row[2], row[4],
+                    ),
+                    reused=True,
+                )
+                result["deducted"] = 0
+                result["generationReceipts"] = []
+                return result, None
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def release_subscription_points(member_id, reservation_id, now_ms=None):
+    owner = str(member_id or "")
+    rid = str(reservation_id or "").strip()
+    if not owner or not rid:
+        return None, "reservation_not_found"
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT id,scope_type,scope_id,member_id,quota_month,plan,"
+                "idempotency_key,points,feature,status,created_at,updated_at,"
+                "settled_at,released_at,request_fingerprint "
+                "FROM subscription_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, "reservation_not_found"
+            quota = _subscription_quota_snapshot_locked(
+                conn, row[1], row[2], row[4],
+            )
+            if str(row[9] or "") == "settled":
+                conn.commit()
+                return _subscription_reservation_result(
+                    row, quota, reused=True,
+                ), "reservation_settled"
+            reused = str(row[9] or "") == "released"
+            if str(row[9] or "") == "active":
+                conn.execute(
+                    "UPDATE subscription_quota_reservations SET status='released',"
+                    "updated_at=?,released_at=? WHERE id=? AND member_id=? "
+                    "AND status='active'",
+                    (now, now, rid, owner),
+                )
+            row = conn.execute(
+                "SELECT id,scope_type,scope_id,member_id,quota_month,plan,"
+                "idempotency_key,points,feature,status,created_at,updated_at,"
+                "settled_at,released_at,request_fingerprint "
+                "FROM subscription_quota_reservations WHERE id=? AND member_id=?",
+                (rid, owner),
+            ).fetchone()
+            quota = _subscription_quota_snapshot_locked(
+                conn, row[1], row[2], row[4],
+            )
+            conn.commit()
+            return _subscription_reservation_result(
+                row, quota, reused=reused,
+            ), None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def generation_quota(member_id, now_ms=None):
+    scope = generation_billing_scope(member_id)
+    if scope.get("type") == "unlimited":
+        return {
+            "type": "unlimited",
+            "period": "none",
+            "plan": scope.get("plan") or "team-pro",
+            "billingScope": {
+                "type": scope.get("scopeType"), "id": scope.get("scopeId"),
+            },
+            "shared": True,
+            "limit": None,
+            "used": 0,
+            "reserved": 0,
+            "remaining": None,
+            "available": None,
+            "resetAt": None,
+            "nonAccumulating": False,
+        }
+    if scope.get("type") == "subscription":
+        return subscription_monthly_quota(member_id, now_ms=now_ms)
+    if scope.get("type") == "daily":
+        return personal_daily_quota(member_id, now_ms=now_ms)
+    return None
+
+
+def reserve_generation_points(
+    member_id,
+    points,
+    feature="",
+    idempotency_key="",
+    now_ms=None,
+    request_fingerprint="",
+):
+    scope = generation_billing_scope(member_id)
+    scope_type = scope.get("type")
+    if scope_type == "unlimited":
+        return {
+            "reservationId": "",
+            "status": "bypassed",
+            "points": int(points or 0),
+            "feature": str(feature or ""),
+            "idempotencyKey": str(idempotency_key or ""),
+            "billingType": "unlimited",
+            "billingScope": {
+                "type": scope.get("scopeType"), "id": scope.get("scopeId"),
+            },
+            "bypassed": True,
+            "deducted": 0,
+            "quota": generation_quota(member_id, now_ms=now_ms),
+        }, None
+    if scope_type == "subscription":
+        return reserve_subscription_points(
+            member_id,
+            points,
+            feature=feature,
+            idempotency_key=idempotency_key,
+            now_ms=now_ms,
+            request_fingerprint=request_fingerprint,
+        )
+    if scope_type == "daily":
+        result, error = reserve_personal_daily_points(
+            member_id,
+            points,
+            feature=feature,
+            idempotency_key=idempotency_key,
+            now_ms=now_ms,
+            request_fingerprint=request_fingerprint,
+        )
+        if result:
+            result["billingType"] = "daily"
+            result["billingScope"] = {"type": "member", "id": str(member_id)}
+        return result, error
+    return None, scope.get("error") or "billing_scope_not_configured"
+
+
+def settle_generation_points(
+    member_id, reservation_id, now_ms=None, canvas_receipts=None, *,
+    consumed_points=None,
+):
+    rid = str(reservation_id or "")
+    if rid.startswith("sq_"):
+        return settle_subscription_points(
+            member_id, rid, now_ms=now_ms, canvas_receipts=canvas_receipts,
+            consumed_points=consumed_points,
+        )
+    return settle_personal_daily_points(
+        member_id, rid, now_ms=now_ms, canvas_receipts=canvas_receipts,
+        consumed_points=consumed_points,
+    )
+
+
+def release_generation_points(member_id, reservation_id, now_ms=None):
+    rid = str(reservation_id or "")
+    if rid.startswith("sq_"):
+        return release_subscription_points(member_id, rid, now_ms=now_ms)
+    return release_personal_daily_points(member_id, rid, now_ms=now_ms)
+
+
+_VIDEO_GENERATION_TASK_COLUMNS = (
+    "id,member_id,idempotency_key,request_fingerprint,reservation_id,points,"
+    "feature,model,duration_seconds,provider_ref,provider,status,"
+    "submit_response_json,poll_result_json,billing_json,error,created_at,"
+    "updated_at,settled_at,released_at"
+)
+
+
+def _video_generation_json(raw):
+    try:
+        value = json.loads(str(raw or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _video_generation_task_public(row):
+    if not row:
+        return None
+    return {
+        "id": str(row[0] or ""),
+        "memberId": str(row[1] or ""),
+        "idempotencyKey": str(row[2] or ""),
+        "requestFingerprint": str(row[3] or ""),
+        "reservationId": str(row[4] or ""),
+        "points": int(row[5] or 0),
+        "feature": str(row[6] or ""),
+        "model": str(row[7] or ""),
+        "durationSeconds": int(row[8] or 0),
+        "providerRef": str(row[9] or ""),
+        "provider": str(row[10] or ""),
+        "status": str(row[11] or ""),
+        "submitResponse": _video_generation_json(row[12]),
+        "pollResult": _video_generation_json(row[13]),
+        "billing": _video_generation_json(row[14]),
+        "error": str(row[15] or ""),
+        "createdAt": int(row[16] or 0),
+        "updatedAt": int(row[17] or 0),
+        "settledAt": int(row[18] or 0) if row[18] is not None else None,
+        "releasedAt": int(row[19] or 0) if row[19] is not None else None,
+    }
+
+
+def create_video_generation_billing_task(
+    member_id,
+    idempotency_key,
+    request_fingerprint,
+    points,
+    feature,
+    model,
+    duration_seconds,
+    now_ms=None,
+):
+    owner = str(member_id or "").strip()
+    key = str(idempotency_key or "").strip()
+    fingerprint = str(request_fingerprint or "").strip()
+    if not owner:
+        return None, "member_not_found", False
+    if not key:
+        return None, "idempotency_key_required", False
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                f"SELECT {_VIDEO_GENERATION_TASK_COLUMNS} "
+                "FROM video_generation_billing_tasks "
+                "WHERE member_id=? AND idempotency_key=?",
+                (owner, key),
+            ).fetchone()
+            if row:
+                task = _video_generation_task_public(row)
+                conn.commit()
+                if task.get("requestFingerprint") != fingerprint:
+                    return task, "idempotency_conflict", False
+                return task, None, False
+            task_id = "vbt_" + uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO video_generation_billing_tasks("
+                "id,member_id,idempotency_key,request_fingerprint,reservation_id,"
+                "points,feature,model,duration_seconds,provider_ref,provider,status,"
+                "submit_response_json,poll_result_json,billing_json,error,created_at,"
+                "updated_at,settled_at,released_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,'','','preparing','{}','{}','{}','',?,?,NULL,NULL)",
+                (
+                    task_id, owner, key, fingerprint, "", int(points or 0),
+                    str(feature or ""), str(model or ""),
+                    int(duration_seconds or 0), now, now,
+                ),
+            )
+            row = conn.execute(
+                f"SELECT {_VIDEO_GENERATION_TASK_COLUMNS} "
+                "FROM video_generation_billing_tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            conn.commit()
+            return _video_generation_task_public(row), None, True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def get_video_generation_billing_task(
+    member_id, *, idempotency_key="", provider_ref="", task_id="",
+):
+    owner = str(member_id or "").strip()
+    if not owner:
+        return None
+    where = "member_id=?"
+    params = [owner]
+    if provider_ref:
+        where += " AND provider_ref=?"
+        params.append(str(provider_ref))
+    elif idempotency_key:
+        where += " AND idempotency_key=?"
+        params.append(str(idempotency_key))
+    elif task_id:
+        where += " AND id=?"
+        params.append(str(task_id))
+    else:
+        return None
+    row = _fetchone(
+        f"SELECT {_VIDEO_GENERATION_TASK_COLUMNS} "
+        f"FROM video_generation_billing_tasks WHERE {where}",
+        tuple(params),
+    )
+    return _video_generation_task_public(row)
+
+
+def attach_video_generation_reservation(
+    task_id, member_id, reservation_id, billing, now_ms=None,
+):
+    owner = str(member_id or "").strip()
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    payload = json.dumps(billing or {}, ensure_ascii=False, separators=(",", ":"))
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                "UPDATE video_generation_billing_tasks SET reservation_id=?,"
+                "billing_json=?,status='reserved',updated_at=? "
+                "WHERE id=? AND member_id=? AND status='preparing'",
+                (str(reservation_id or ""), payload, now, str(task_id), owner),
+            ).rowcount
+            row = conn.execute(
+                f"SELECT {_VIDEO_GENERATION_TASK_COLUMNS} "
+                "FROM video_generation_billing_tasks WHERE id=? AND member_id=?",
+                (str(task_id), owner),
+            ).fetchone()
+            conn.commit()
+            return _video_generation_task_public(row), None if changed else "task_state_conflict"
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def mark_video_generation_submitted(
+    task_id,
+    member_id,
+    provider_ref,
+    provider,
+    submit_response,
+    now_ms=None,
+):
+    owner = str(member_id or "").strip()
+    ref = str(provider_ref or "").strip()
+    if not ref:
+        return None, "provider_ref_required"
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    payload = json.dumps(
+        submit_response or {}, ensure_ascii=False, separators=(",", ":"),
+    )
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                "UPDATE video_generation_billing_tasks SET provider_ref=?,provider=?,"
+                "submit_response_json=?,status='submitted',updated_at=? "
+                "WHERE id=? AND member_id=? AND status='reserved'",
+                (ref, str(provider or ""), payload, now, str(task_id), owner),
+            ).rowcount
+            row = conn.execute(
+                f"SELECT {_VIDEO_GENERATION_TASK_COLUMNS} "
+                "FROM video_generation_billing_tasks WHERE id=? AND member_id=?",
+                (str(task_id), owner),
+            ).fetchone()
+            conn.commit()
+            return _video_generation_task_public(row), None if changed else "task_state_conflict"
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            return None, "provider_ref_conflict"
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def update_video_generation_billing_task(
+    task_id,
+    member_id,
+    status,
+    *,
+    poll_result=None,
+    billing=None,
+    error="",
+    settled=False,
+    released=False,
+    now_ms=None,
+):
+    owner = str(member_id or "").strip()
+    clean_status = str(status or "").strip()
+    if clean_status not in {
+        "preparing", "reserved", "submitted", "running", "succeeded",
+        "failed", "cancelled", "interrupted",
+    }:
+        return None, "invalid_task_status"
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    assignments = ["status=?", "error=?", "updated_at=?"]
+    params = [clean_status, str(error or ""), now]
+    if poll_result is not None:
+        assignments.append("poll_result_json=?")
+        params.append(json.dumps(
+            poll_result or {}, ensure_ascii=False, separators=(",", ":"),
+        ))
+    if billing is not None:
+        assignments.append("billing_json=?")
+        params.append(json.dumps(
+            billing or {}, ensure_ascii=False, separators=(",", ":"),
+        ))
+    if settled:
+        assignments.append("settled_at=COALESCE(settled_at,?)")
+        params.append(now)
+    if released:
+        assignments.append("released_at=COALESCE(released_at,?)")
+        params.append(now)
+    params.extend([str(task_id), owner])
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            changed = conn.execute(
+                "UPDATE video_generation_billing_tasks SET "
+                + ",".join(assignments)
+                + " WHERE id=? AND member_id=?",
+                tuple(params),
+            ).rowcount
+            row = conn.execute(
+                f"SELECT {_VIDEO_GENERATION_TASK_COLUMNS} "
+                "FROM video_generation_billing_tasks WHERE id=? AND member_id=?",
+                (str(task_id), owner),
+            ).fetchone()
+            conn.commit()
+            return _video_generation_task_public(row), None if changed else "task_not_found"
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def list_stale_video_generation_billing_tasks(cutoff_ms):
+    rows = _fetchall(
+        f"SELECT {_VIDEO_GENERATION_TASK_COLUMNS} "
+        "FROM video_generation_billing_tasks "
+        "WHERE status IN ('preparing','reserved') AND updated_at<? "
+        "ORDER BY updated_at ASC",
+        (int(cutoff_ms),),
+    )
+    return [_video_generation_task_public(row) for row in rows]
+
+
+def activate_personal_subscription_plan(
+    member_id, plan, *, activated_by=None, now_ms=None,
+):
+    """Trusted entitlement hook; deliberately not exposed as an HTTP route."""
+    clean_plan = str(plan or "").strip()
+    if clean_plan not in PERSONAL_SUBSCRIPTION_PLANS:
+        return None, "invalid_plan"
+    owner = str(member_id or "")
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    month, _reset_at = _china_quota_month(now)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            member = conn.execute(
+                "SELECT role FROM members WHERE id=?", (owner,),
+            ).fetchone()
+            if not member or member[0] != "user":
+                conn.rollback()
+                return None, "member_not_eligible"
+            if conn.execute(
+                "SELECT 1 FROM team_members tm JOIN teams t ON t.id=tm.team_id "
+                "WHERE tm.member_id=? AND tm.status='active' AND t.status='active'",
+                (owner,),
+            ).fetchone():
+                conn.rollback()
+                return None, "already_in_team"
+            conn.execute(
+                "INSERT INTO member_subscriptions("
+                "member_id,plan,status,activated_at,updated_at,activated_by"
+                ") VALUES(?,?,'active',?,?,?) "
+                "ON CONFLICT(member_id) DO UPDATE SET plan=excluded.plan,"
+                "status='active',updated_at=excluded.updated_at,"
+                "activated_by=excluded.activated_by",
+                (owner, clean_plan, now, now, str(activated_by or "") or None),
+            )
+            result = _ensure_subscription_quota_row_locked(
+                conn, "member", owner, month, clean_plan, now,
+            )
+            conn.commit()
+            return result, None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def grant_subscription_addon_points(
+    member_id,
+    points,
+    entitlement_ref,
+    *,
+    activated_by=None,
+    now_ms=None,
+):
+    """Trusted, idempotent add-on hook for a verified payment/entitlement flow."""
+    try:
+        amount = int(points)
+    except (TypeError, ValueError, OverflowError):
+        amount = 0
+    reference = str(entitlement_ref or "").strip()[:180]
+    if amount <= 0:
+        return None, "invalid_points"
+    if not reference:
+        return None, "entitlement_ref_required"
+    month, _reset_at = _china_quota_month(now_ms)
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            scope = _generation_billing_scope_locked(conn, member_id)
+            if scope.get("type") != "subscription":
+                conn.rollback()
+                return None, "subscription_required"
+            quota = _ensure_subscription_quota_row_locked(
+                conn,
+                scope["scopeType"],
+                scope["scopeId"],
+                month,
+                scope["plan"],
+                now,
+            )
+            previous = conn.execute(
+                "SELECT points FROM subscription_quota_topups "
+                "WHERE scope_type=? AND scope_id=? AND entitlement_ref=?",
+                (scope["scopeType"], scope["scopeId"], reference),
+            ).fetchone()
+            if previous:
+                if int(previous[0] or 0) != amount:
+                    conn.rollback()
+                    return None, "idempotency_conflict"
+                conn.commit()
+                quota["reused"] = True
+                return quota, None
+            conn.execute(
+                "INSERT INTO subscription_quota_topups("
+                "id,scope_type,scope_id,quota_month,points,entitlement_ref,"
+                "activated_by,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:16], scope["scopeType"], scope["scopeId"],
+                    month, amount, reference,
+                    str(activated_by or "") or None, now,
+                ),
+            )
+            conn.execute(
+                "UPDATE subscription_monthly_quotas SET "
+                "purchased_points=purchased_points+?,updated_at=? "
+                "WHERE scope_type=? AND scope_id=? AND quota_month=?",
+                (
+                    amount, now, scope["scopeType"], scope["scopeId"], month,
+                ),
+            )
+            quota = _subscription_quota_snapshot_locked(
+                conn, scope["scopeType"], scope["scopeId"], month,
+            )
+            conn.commit()
+            quota["reused"] = False
+            return quota, None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def list_team_members(team_id):
     if not team_id:
         return []
@@ -683,15 +2527,31 @@ def add_member_with_hash(
     name, username, pin_hash, role, parent_id=None,
     *, team_id=None, team_role=None, added_by=None,
 ):
+    username = normalize_username(username)
+    username_key = canonical_username(username)
+    if not username_key:
+        raise ValueError("username_required")
     mid = uuid.uuid4().hex[:10]
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
+            # 跨进程也串行化「检查 canonical key + 写入」，避免
+            # Alice/alice 在并发注册时绕过查询层约束。
+            conn.execute("BEGIN IMMEDIATE")
             now = int(time.time() * 1000)
+            if conn.execute(
+                "SELECT 1 FROM members WHERE username_key=? LIMIT 1",
+                (username_key,),
+            ).fetchone() or conn.execute(
+                "SELECT 1 FROM member_requests WHERE username_key=? AND status='pending' LIMIT 1",
+                (username_key,),
+            ).fetchone():
+                raise sqlite3.IntegrityError("username_exists")
             conn.execute(
-                "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
-                (mid, name, username, pin_hash, role, parent_id, now),
+                "INSERT INTO members(id,name,username,username_key,pin_hash,role,parent_id,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (mid, name, username, username_key, pin_hash, role, parent_id, now),
             )
             if team_id:
                 conn.execute(
@@ -713,7 +2573,18 @@ def get_member(mid):
 
 
 def get_member_by_username(username):
-    return _fetchone("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members WHERE username=?", (username,))
+    clean = normalize_username(username)
+    key = canonical_username(clean)
+    if not key:
+        return None
+    # 旧库可能已有 Alice/alice 碰撞：精确大小写优先，否则稳定返回
+    # 最早账号。新注册会拦截继续制造这类碰撞。
+    return _fetchone(
+        "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at "
+        "FROM members WHERE username_key=? "
+        "ORDER BY CASE WHEN trim(username)=? THEN 0 ELSE 1 END,created_at,id LIMIT 1",
+        (key, clean),
+    )
 
 
 def list_members():
@@ -726,7 +2597,11 @@ def update_member(mid, name=None, username=None, role=None, pin=None, parent_id=
     if name is not None:
         sets.append("name=?"); vals.append(name)
     if username is not None:
-        sets.append("username=?"); vals.append(username)
+        username = normalize_username(username)
+        username_key = canonical_username(username)
+        if not username_key:
+            raise ValueError("username_required")
+        sets.extend(("username=?", "username_key=?")); vals.extend((username, username_key))
     if role is not None:
         sets.append("role=?"); vals.append(role)
     if parent_id is not None:
@@ -741,6 +2616,16 @@ def update_member(mid, name=None, username=None, role=None, pin=None, parent_id=
         with _lock:
             conn = _connect()
             try:
+                if username is not None:
+                    conn.execute("BEGIN IMMEDIATE")
+                    if conn.execute(
+                        "SELECT 1 FROM members WHERE username_key=? AND id<>? LIMIT 1",
+                        (username_key, mid),
+                    ).fetchone() or conn.execute(
+                        "SELECT 1 FROM member_requests WHERE username_key=? AND status='pending' LIMIT 1",
+                        (username_key,),
+                    ).fetchone():
+                        raise sqlite3.IntegrityError("username_exists")
                 conn.execute(f"UPDATE members SET {','.join(sets)} WHERE id=?", vals)
                 conn.commit()
             finally:
@@ -771,7 +2656,24 @@ def member_public(row):
     item["teamId"] = team["id"] if team else None
     item["teamRole"] = team["role"] if team else None
     item["entitlements"] = member_entitlements(item["id"], item["role"])
-    item["plan"] = "team" if team else "personal"
+    quota = generation_quota(item["id"])
+    item["plan"] = team["plan"] if team else str((quota or {}).get("plan") or "personal")
+    item["generationQuota"] = quota
+    if quota:
+        item["pointsLimit"] = quota.get("limit")
+        item["pointsUsed"] = quota.get("used")
+        item["pointsReserved"] = quota.get("reserved")
+        item["pointsRemaining"] = quota.get("remaining")
+        item["pointsResetAt"] = quota.get("resetAt")
+    if quota and quota.get("type") == "daily":
+        # Keep both the compact display values and the auditable object so
+        # older clients can adopt this without a schema migration.
+        item["dailyPoints"] = quota["limit"]
+        item["dailyPointsUsed"] = quota["used"]
+        item["dailyPointsReserved"] = quota["reserved"]
+        item["dailyPointsRemaining"] = quota["remaining"]
+        item["dailyPointsResetAt"] = quota["resetAt"]
+        item["dailyQuota"] = quota
     return item
 
 
@@ -791,14 +2693,31 @@ def _request_public(row):
 
 
 def add_member_request(name, username, pin, role, message=""):
+    username = normalize_username(username)
+    username_key = canonical_username(username)
+    if not username_key:
+        raise ValueError("username_required")
     rid = uuid.uuid4().hex[:10]
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT 1 FROM members WHERE username_key=? LIMIT 1",
+                (username_key,),
+            ).fetchone() or conn.execute(
+                "SELECT 1 FROM member_requests WHERE username_key=? AND status='pending' LIMIT 1",
+                (username_key,),
+            ).fetchone():
+                raise sqlite3.IntegrityError("username_exists")
             conn.execute(
-                "INSERT INTO member_requests(id,name,username,pin_hash,role,status,message,created_at,reviewed_at,reviewed_by) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (rid, name, username, hash_pin(pin), role, "pending", message, int(time.time() * 1000), None, None),
+                "INSERT INTO member_requests(id,name,username,username_key,pin_hash,role,status,message,created_at,reviewed_at,reviewed_by) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    rid, name, username, username_key, hash_pin(pin), role,
+                    "pending", message, int(time.time() * 1000), None, None,
+                ),
             )
             conn.commit()
         finally:
@@ -820,17 +2739,32 @@ def list_member_requests(status=None):
 
 
 def username_has_pending_request(username):
-    row = _fetchone("SELECT id FROM member_requests WHERE username=? AND status='pending'", (username,))
+    key = canonical_username(username)
+    if not key:
+        return False
+    row = _fetchone(
+        "SELECT id FROM member_requests WHERE username_key=? AND status='pending'",
+        (key,),
+    )
     return bool(row)
 
 
 # ---------- 团队与加入申请 ----------
 def list_joinable_teams():
     rows = _fetchall(
-        "SELECT id,name,kind,plan FROM teams WHERE status='active' ORDER BY kind='internal' DESC,created_at"
+        "SELECT t.id,t.name,t.kind,t.plan,"
+        "COUNT(tm.member_id) FROM teams t "
+        "LEFT JOIN team_members tm ON tm.team_id=t.id AND tm.status='active' "
+        "WHERE t.status='active' GROUP BY t.id,t.name,t.kind,t.plan "
+        "ORDER BY t.kind='internal' DESC,t.created_at"
     )
     return [
-        {"id": row[0], "name": row[1], "kind": row[2], "plan": row[3]}
+        {
+            "id": row[0], "name": row[1], "kind": row[2], "plan": row[3],
+            "seatLimit": None if row[2] == "internal" else TEAM_SEAT_LIMITS.get(row[3], TEAM_SEAT_LIMITS["team"]),
+            "activeMembers": int(row[4] or 0),
+            "seatsAvailable": None if row[2] == "internal" else max(0, TEAM_SEAT_LIMITS.get(row[3], TEAM_SEAT_LIMITS["team"]) - int(row[4] or 0)),
+        }
         for row in rows
     ]
 
@@ -850,6 +2784,98 @@ def team_for_name(name):
         "id": row[0], "name": row[1], "kind": row[2], "status": row[3],
         "plan": row[4], "quotaMode": row[5],
     }
+
+
+def activate_customer_team_plan(member_id, team_name, plan="team"):
+    """Atomically create a paid customer team after an external verifier succeeds.
+
+    This intentionally has no public self-service endpoint: a future billing or
+    administrator flow may call it only after entitlement verification.
+    """
+    clean_name = re.sub(r"\s+", " ", str(team_name or "")).strip()[:80]
+    clean_plan = str(plan or "team").strip()
+    if not clean_name:
+        return None, "team_name_required"
+    if clean_plan not in {"team", "team-pro"}:
+        return None, "invalid_plan"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            member = conn.execute(
+                "SELECT role FROM members WHERE id=?", (member_id,),
+            ).fetchone()
+            if not member or member[0] != "user":
+                conn.rollback()
+                return None, "member_not_eligible"
+            if conn.execute(
+                "SELECT 1 FROM team_members WHERE member_id=? AND status='active' LIMIT 1",
+                (member_id,),
+            ).fetchone():
+                conn.rollback()
+                return None, "already_in_team"
+            if conn.execute(
+                "SELECT 1 FROM teams WHERE lower(name)=lower(?) LIMIT 1",
+                (clean_name,),
+            ).fetchone():
+                conn.rollback()
+                return None, "team_name_exists"
+            now = int(time.time() * 1000)
+            team_id = "team-" + uuid.uuid4().hex[:16]
+            conn.execute(
+                "INSERT INTO teams(id,name,slug,kind,status,plan,quota_mode,created_at,created_by) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    team_id, clean_name, "customer-" + uuid.uuid4().hex[:16],
+                    "customer", "active", clean_plan, "metered", now, member_id,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
+                "VALUES(?,?,?,?,?,?)",
+                (team_id, member_id, "owner", "active", now, member_id),
+            )
+            conn.execute("UPDATE members SET role='editor' WHERE id=?", (member_id,))
+            conn.commit()
+        finally:
+            conn.close()
+    return member_public(get_member(member_id)), None
+
+
+def rename_team(member_id, team_name):
+    """Rename an external team. Only its owner may do so; ACG is immutable."""
+    clean_name = re.sub(r"\s+", " ", str(team_name or "")).strip()[:80]
+    if not clean_name:
+        return None, "team_name_required"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT t.id,t.kind,tm.team_role FROM team_members tm "
+                "JOIN teams t ON t.id=tm.team_id "
+                "WHERE tm.member_id=? AND tm.status='active' AND t.status='active'",
+                (member_id,),
+            ).fetchone()
+            if not row or row[2] != "owner":
+                conn.rollback()
+                return None, "forbidden"
+            if row[1] == "internal":
+                conn.rollback()
+                return None, "internal_team_immutable"
+            if conn.execute(
+                "SELECT 1 FROM teams WHERE id<>? AND lower(name)=lower(?) LIMIT 1",
+                (row[0], clean_name),
+            ).fetchone():
+                conn.rollback()
+                return None, "team_name_exists"
+            conn.execute("UPDATE teams SET name=? WHERE id=?", (clean_name, row[0]))
+            conn.commit()
+        finally:
+            conn.close()
+    return member_team(member_id), None
 
 
 def add_team_join_request(member_id, team_name, message=""):
@@ -928,6 +2954,7 @@ def review_team_join_request(request_id, reviewer_id, approve):
     with _lock:
         conn = _connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT id,team_id,member_id,status FROM team_join_requests WHERE id=?",
                 (request_id,),
@@ -951,6 +2978,20 @@ def review_team_join_request(request_id, reviewer_id, approve):
                     (row[2],),
                 ).fetchone():
                     return None, "already_in_team"
+                team_row = conn.execute(
+                    "SELECT kind,plan FROM teams WHERE id=? AND status='active'",
+                    (row[1],),
+                ).fetchone()
+                if not team_row:
+                    return None, "not_found"
+                if team_row[0] != "internal":
+                    limit = TEAM_SEAT_LIMITS.get(team_row[1], TEAM_SEAT_LIMITS["team"])
+                    count = conn.execute(
+                        "SELECT COUNT(*) FROM team_members WHERE team_id=? AND status='active'",
+                        (row[1],),
+                    ).fetchone()[0]
+                    if int(count or 0) >= limit:
+                        return None, "team_full"
                 conn.execute(
                     "INSERT INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
                     "VALUES(?,?,?,?,?,?)",
@@ -972,10 +3013,60 @@ def review_team_join_request(request_id, reviewer_id, approve):
     return member_public(get_member(reviewed_member_id)), None
 
 
+def list_platform_account_summaries():
+    """Read-only platform-level account summary for internal-team managers.
+
+    It intentionally returns identity, plan and team metadata only. Password
+    hashes, reset tokens, assets, account credentials and supplier details stay
+    behind their dedicated APIs.
+    """
+    personal_rows = _fetchall(
+        "SELECT m.id,m.name,m.username,m.created_at FROM members m "
+        "WHERE m.role='user' AND NOT EXISTS("
+        "SELECT 1 FROM team_members tm JOIN teams t ON t.id=tm.team_id "
+        "WHERE tm.member_id=m.id AND tm.status='active' AND t.status='active'"
+        ") ORDER BY m.created_at DESC"
+    )
+    owner_rows = _fetchall(
+        "SELECT m.id,m.name,m.username,m.created_at,t.id,t.name,t.plan,t.kind "
+        "FROM team_members tm JOIN members m ON m.id=tm.member_id "
+        "JOIN teams t ON t.id=tm.team_id WHERE tm.status='active' AND t.status='active' "
+        "AND tm.team_role='owner' ORDER BY t.created_at DESC"
+    )
+    return {
+        "personal": [
+            {
+                "id": row[0], "name": row[1], "username": row[2],
+                "createdAt": row[3], "category": "personal", "plan": "personal",
+            }
+            for row in personal_rows
+        ],
+        "teamOwners": [
+            {
+                "id": row[0], "name": row[1], "username": row[2], "createdAt": row[3],
+                "category": "team_owner", "teamId": row[4], "teamName": row[5],
+                "plan": row[6], "teamKind": row[7],
+            }
+            for row in owner_rows
+        ],
+    }
+
+
 def team_account_ids(team_id):
     if not team_id:
         return set()
     rows = _fetchall("SELECT account_id FROM team_accounts WHERE team_id=?", (team_id,))
+    return {str(row[0]) for row in rows}
+
+
+def team_member_ids(team_id):
+    if not team_id:
+        return set()
+    rows = _fetchall(
+        "SELECT tm.member_id FROM team_members tm JOIN teams t ON t.id=tm.team_id "
+        "WHERE tm.team_id=? AND tm.status='active' AND t.status='active'",
+        (team_id,),
+    )
     return {str(row[0]) for row in rows}
 
 
@@ -1049,16 +3140,155 @@ def team_supplier_accounts(team_id):
     ]
 
 
+def provision_team_supplier_admin(team_id, added_by=None):
+    """Idempotently provision one supplier administrator for an external team.
+
+    This is intentionally an explicit management operation.  The project does
+    not yet have a server-side purchase/plan-activation workflow, so a pricing
+    preview must never call this implicitly.  The bootstrap password is only
+    returned by the first successful transaction; SQLite stores its hash only.
+    """
+    clean_team_id = str(team_id or "").strip()
+    if not clean_team_id:
+        return None, "not_found"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            team = conn.execute(
+                "SELECT id,name,slug,kind,status,plan FROM teams WHERE id=?",
+                (clean_team_id,),
+            ).fetchone()
+            if not team:
+                conn.rollback()
+                return None, "not_found"
+
+            existing = conn.execute(
+                "SELECT m.id,m.name,m.username,m.created_at "
+                "FROM team_suppliers ts JOIN members m ON m.id=ts.supplier_parent_id "
+                "WHERE ts.team_id=? AND m.role='supplier_parent' "
+                "ORDER BY m.created_at,m.id LIMIT 1",
+                (clean_team_id,),
+            ).fetchone()
+            # The internal ACG relationship is a protected migration invariant.
+            # Never synthesize or replace its supplier account here.
+            if team[3] == "internal" or clean_team_id == INTERNAL_TEAM_ID:
+                if existing:
+                    conn.commit()
+                    return {
+                        "created": False,
+                        "account": {
+                            "id": existing[0], "name": existing[1],
+                            "username": existing[2], "createdAt": existing[3],
+                        },
+                    }, None
+                conn.rollback()
+                return None, "internal_team_protected"
+            if team[3] != "customer":
+                conn.rollback()
+                return None, "team_not_eligible"
+            if team[4] != "active":
+                conn.rollback()
+                return None, "team_inactive"
+            if team[5] not in TEAM_SUPPLIER_ELIGIBLE_PLANS:
+                conn.rollback()
+                return None, "plan_not_eligible"
+            if existing:
+                conn.commit()
+                return {
+                    "created": False,
+                    "account": {
+                        "id": existing[0], "name": existing[1],
+                        "username": existing[2], "createdAt": existing[3],
+                    },
+                }, None
+
+            slug = re.sub(r"[^a-z0-9]+", "-", str(team[2] or "").casefold()).strip("-")
+            if not slug:
+                slug = re.sub(r"[^a-z0-9]+", "-", clean_team_id.casefold()).strip("-")
+            slug = (slug or hashlib.sha256(clean_team_id.encode()).hexdigest()[:12])[:36]
+            username_base = f"supplier-{slug}"
+            username = ""
+            for index in range(10_000):
+                candidate = username_base if index == 0 else f"{username_base}-{index + 1}"
+                key = canonical_username(candidate)
+                occupied = conn.execute(
+                    "SELECT 1 FROM members WHERE username_key=? LIMIT 1",
+                    (key,),
+                ).fetchone() or conn.execute(
+                    "SELECT 1 FROM member_requests "
+                    "WHERE username_key=? AND status='pending' LIMIT 1",
+                    (key,),
+                ).fetchone()
+                if not occupied:
+                    username = candidate
+                    break
+            if not username:
+                raise RuntimeError("supplier_username_exhausted")
+
+            now = int(time.time() * 1000)
+            member_id = uuid.uuid4().hex[:10]
+            temporary_password = secrets.token_urlsafe(18)
+            display_name = f"{str(team[1] or '').strip() or '团队'} 供应商管理员"
+            conn.execute(
+                "INSERT INTO members(id,name,username,username_key,pin_hash,role,parent_id,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    member_id, display_name, username, canonical_username(username),
+                    hash_pin(temporary_password), "supplier_parent", None, now,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO team_suppliers(team_id,supplier_parent_id,created_at,added_by) "
+                "VALUES(?,?,?,?)",
+                (clean_team_id, member_id, now, str(added_by or "") or None),
+            )
+            conn.commit()
+            return {
+                "created": True,
+                "account": {
+                    "id": member_id, "name": display_name,
+                    "username": username, "createdAt": now,
+                },
+                "temporaryPassword": temporary_password,
+            }, None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def reset_team_supplier_pin(team_id, supplier_parent_id, pin):
-    allowed = _fetchone(
-        "SELECT 1 FROM team_suppliers ts JOIN members m ON m.id=ts.supplier_parent_id "
-        "WHERE ts.team_id=? AND ts.supplier_parent_id=? AND m.role='supplier_parent'",
-        (team_id, supplier_parent_id),
-    )
-    if not allowed:
+    clean_pin = str(pin or "")
+    if not clean_pin:
         return None
-    row = update_member(supplier_parent_id, pin=pin)
-    return _member_public(row) if row else None
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT m.id,m.name,m.username,m.pin_hash,m.role,m.parent_id,m.avatar_url,m.created_at "
+                "FROM team_suppliers ts JOIN members m ON m.id=ts.supplier_parent_id "
+                "WHERE ts.team_id=? AND ts.supplier_parent_id=? AND m.role='supplier_parent'",
+                (team_id, supplier_parent_id),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None
+            conn.execute(
+                "UPDATE members SET pin_hash=? WHERE id=?",
+                (hash_pin(clean_pin), supplier_parent_id),
+            )
+            conn.commit()
+            return _member_public(row)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 # ---------- 密码找回申请 ----------
@@ -1120,18 +3350,31 @@ def approve_member_request(rid, reviewer_id, parent_id=None):
     with _lock:
         conn = _connect()
         try:
-            row = conn.execute("SELECT id,name,username,pin_hash,role,status FROM member_requests WHERE id=?", (rid,)).fetchone()
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT id,name,username,pin_hash,role,status,username_key "
+                "FROM member_requests WHERE id=?",
+                (rid,),
+            ).fetchone()
             if not row:
                 return None, "not_found"
             if row[5] != "pending":
                 return None, "not_pending"
-            if conn.execute("SELECT id FROM members WHERE username=?", (row[2],)).fetchone():
+            username_key = row[6] or canonical_username(row[2])
+            if conn.execute(
+                "SELECT id FROM members WHERE username_key=? LIMIT 1",
+                (username_key,),
+            ).fetchone():
                 return None, "username_exists"
             mid = uuid.uuid4().hex[:10]
             now = int(time.time() * 1000)
             conn.execute(
-                "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
-                (mid, row[1], row[2], row[3], row[4], parent_id if row[4] == "supplier_child" else None, now),
+                "INSERT INTO members(id,name,username,username_key,pin_hash,role,parent_id,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    mid, row[1], normalize_username(row[2]), username_key,
+                    row[3], row[4], parent_id if row[4] == "supplier_child" else None, now,
+                ),
             )
             conn.execute(
                 "UPDATE member_requests SET status='approved', reviewed_at=?, reviewed_by=? WHERE id=?",
@@ -1200,28 +3443,39 @@ def create_supplier_children(parent_id, items):
     normalized = []
     for item in items or []:
         name = str((item or {}).get("name") or "").strip()
-        username = str((item or {}).get("username") or "").strip()
+        username = normalize_username((item or {}).get("username"))
         pin = str((item or {}).get("pin") or "")
         if not name or not username or not pin:
             raise ValueError("missing_fields")
-        normalized.append((name, username, pin))
-    usernames = [row[1].lower() for row in normalized]
-    if len(set(usernames)) != len(usernames):
+        normalized.append((name, username, canonical_username(username), pin))
+    username_keys = [row[2] for row in normalized]
+    if len(set(username_keys)) != len(username_keys):
         raise ValueError("username_exists")
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
-            for _name, username, _pin in normalized:
-                if conn.execute("SELECT 1 FROM members WHERE lower(username)=lower(?)", (username,)).fetchone():
+            conn.execute("BEGIN IMMEDIATE")
+            for _name, _username, username_key, _pin in normalized:
+                if conn.execute(
+                    "SELECT 1 FROM members WHERE username_key=? LIMIT 1",
+                    (username_key,),
+                ).fetchone() or conn.execute(
+                    "SELECT 1 FROM member_requests WHERE username_key=? AND status='pending' LIMIT 1",
+                    (username_key,),
+                ).fetchone():
                     raise ValueError("username_exists")
             made = []
             now = int(time.time() * 1000)
-            for index, (name, username, pin) in enumerate(normalized):
+            for index, (name, username, username_key, pin) in enumerate(normalized):
                 mid = uuid.uuid4().hex[:10]
                 conn.execute(
-                    "INSERT INTO members(id,name,username,pin_hash,role,parent_id,created_at) VALUES(?,?,?,?,?,?,?)",
-                    (mid, name, username, hash_pin(pin), "supplier_child", parent_id, now + index),
+                    "INSERT INTO members(id,name,username,username_key,pin_hash,role,parent_id,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        mid, name, username, username_key, hash_pin(pin),
+                        "supplier_child", parent_id, now + index,
+                    ),
                 )
                 made.append({
                     "id": mid, "name": name, "username": username,
@@ -1237,15 +3491,23 @@ def create_supplier_children(parent_id, items):
 
 
 def supplier_bindings(parent_id, include_all=False):
+    # Resolve the team scope before taking the store write/read lock.  The
+    # helper queries use _fetchone/_fetchall, which acquire the same
+    # non-reentrant lock; calling them from inside this block deadlocks every
+    # supplier-parent dashboard request that includes all team suppliers.
+    parent_ids = (
+        supplier_parent_ids_for_team(
+            supplier_team_id(parent_id, "supplier_parent")
+        ) or {str(parent_id)}
+        if include_all
+        else {str(parent_id)}
+    )
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
             sql = "SELECT parent_id,child_id,account_id,created_at,created_by FROM supplier_account_bindings"
             if include_all:
-                parent_ids = supplier_parent_ids_for_team(
-                    supplier_team_id(parent_id, "supplier_parent")
-                ) or {str(parent_id)}
                 marks = ",".join("?" for _ in parent_ids)
                 rows = conn.execute(
                     sql + f" WHERE parent_id IN ({marks}) ORDER BY created_at",
@@ -1301,14 +3563,20 @@ def add_supplier_activity(parent_id, child_id, member_id, action, account_id="",
 
 
 def list_supplier_activity(parent_id, include_all=False, limit=80):
+    # Keep nested supplier-team lookups outside _lock for the same reason as
+    # supplier_bindings: the public lookup helpers acquire _lock themselves.
+    parent_ids = (
+        supplier_parent_ids_for_team(
+            supplier_team_id(parent_id, "supplier_parent")
+        ) or {str(parent_id)}
+        if include_all
+        else {str(parent_id)}
+    )
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
             if include_all:
-                parent_ids = supplier_parent_ids_for_team(
-                    supplier_team_id(parent_id, "supplier_parent")
-                ) or {str(parent_id)}
                 marks = ",".join("?" for _ in parent_ids)
                 rows = conn.execute(
                     "SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at "
@@ -2094,13 +4362,82 @@ def upsert_member_collection(owner_id, role, collection, items):
 
 
 def upsert_member_assets(owner_id, role, items):
-    """创作成员只能新建/更新自己的私有资产；管理员保持原管理能力。
+    """创作成员只能新建/更新自己的私有资产；管理员仅能管理本团队资产。
 
     前端保存 assets 时会携带当前快照中的共享 BGM 等其他成员记录，所以对完全
     未改变的他人记录只跳过，不把一次正常保存误判为越权；任何字段变化仍拒绝。
     """
     if role == "admin":
-        return {"written": upsert_docs("assets", items), "denied": 0}
+        actor = str(owner_id)
+        team = member_team(actor)
+        if not team:
+            raise PermissionError("forbidden")
+        team_id = str(team.get("id") or "")
+        member_ids = team_member_ids(team_id)
+        account_ids = team_account_ids(team_id)
+        incoming = [
+            dict(item) for item in (items or [])
+            if isinstance(item, dict) and item.get("id")
+        ]
+        _ensure_db()
+        with _lock:
+            conn = _connect()
+            try:
+                allowed = []
+                denied = 0
+                unchanged = 0
+                for item in incoming:
+                    doc_id = str(item["id"])
+                    row = conn.execute(
+                        "SELECT owner_id,data FROM docs WHERE collection='assets' AND id=?",
+                        (doc_id,),
+                    ).fetchone()
+                    existing = {}
+                    stored_owner = ""
+                    existing_account = ""
+                    if row:
+                        try:
+                            existing = json.loads(row[1])
+                        except (TypeError, json.JSONDecodeError):
+                            existing = {}
+                        stored_owner = str(row[0] or existing.get("ownerId") or "")
+                        existing_account = str(existing.get("accountId") or "")
+                        legacy_acg = (
+                            team_id == INTERNAL_TEAM_ID
+                            and stored_owner in {"", DEFAULT_ADMIN_USERNAME}
+                        )
+                        existing_in_team = (
+                            stored_owner in member_ids
+                            or existing_account in account_ids
+                            or legacy_acg
+                        )
+                        if not existing_in_team:
+                            if _same_doc_payload(existing, item):
+                                unchanged += 1
+                            else:
+                                denied += 1
+                            continue
+
+                    incoming_owner = str(item.get("ownerId") or "")
+                    incoming_account = str(item.get("accountId") or "")
+                    if incoming_owner and incoming_owner not in member_ids:
+                        denied += 1
+                        continue
+                    if incoming_account and incoming_account not in account_ids:
+                        denied += 1
+                        continue
+                    # Preserve a same-team owner's identity on updates; every new
+                    # accountless asset is explicitly attached to its creator so
+                    # it can never become an ambiguous cross-tenant record.
+                    item["ownerId"] = stored_owner if stored_owner in member_ids else actor
+                    allowed.append(item)
+                if denied and not allowed:
+                    raise PermissionError("forbidden")
+                written = _upsert_docs_in_conn(conn, "assets", allowed)
+                conn.commit()
+                return {"written": written, "denied": denied, "unchanged": unchanged}
+            finally:
+                conn.close()
     if role not in {"editor", "user"}:
         raise PermissionError("forbidden")
     actor = str(owner_id)
@@ -2938,6 +5275,17 @@ def _custom_canvas_gc_blobs_locked(conn, owner_id):
     """
     owner = str(owner_id)
     referenced = set()
+    # A generation result is uploaded before its lightweight URL is committed
+    # into the draft. Keep that short hand-off race owner-scoped and bounded.
+    staging_cutoff = int(time.time() * 1000) - 24 * 60 * 60 * 1000
+    conn.execute(
+        "DELETE FROM custom_canvas_blob_staging WHERE owner_id=? AND created_at<?",
+        (owner, staging_cutoff),
+    )
+    referenced.update(str(row[0]) for row in conn.execute(
+        "SELECT content_hash FROM custom_canvas_blob_staging WHERE owner_id=?",
+        (owner,),
+    ).fetchall())
     rows = conn.execute(
         """
         SELECT project_json,draft_json
@@ -3017,6 +5365,276 @@ def get_custom_canvas_blob(owner_id, content_hash):
             if path.stat().st_size != size:
                 return None, "not_found"
             return {"path": path, "mime": mime, "size": size}, None
+        finally:
+            conn.close()
+
+
+def _custom_canvas_generation_receipt_token(payload):
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    encoded = base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+    signature = hmac.new(
+        _secret(),
+        f"custom-canvas-generation:{encoded}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def _custom_canvas_parse_generation_receipt(token):
+    try:
+        encoded, signature = str(token or "").strip().rsplit(".", 1)
+        expected = hmac.new(
+            _secret(),
+            f"custom-canvas-generation:{encoded}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("invalid_custom_canvas_generation_receipt")
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or int(payload.get("version") or 0) != 1
+            or not re.fullmatch(r"[a-f0-9]{32}", str(payload.get("receiptId") or ""))
+            or not re.fullmatch(r"[a-f0-9]{64}", str(payload.get("contentHash") or ""))
+            or int(payload.get("points") or 0) <= 0
+        ):
+            raise ValueError("invalid_custom_canvas_generation_receipt")
+        return payload
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("invalid_custom_canvas_generation_receipt") from exc
+
+
+def _prepare_custom_canvas_generation_receipts(owner_id, receipt_specs, now):
+    owner = str(owner_id or "")
+    if not owner:
+        raise ValueError("invalid_custom_canvas_generation_receipt")
+    prepared = []
+    for spec in list(receipt_specs or []):
+        item = spec if isinstance(spec, dict) else {}
+        parsed = _custom_canvas_parse_data_image(item.get("dataUrl"))
+        if not parsed:
+            raise ValueError("invalid_custom_canvas_image")
+        amount = int(item.get("points") or 0)
+        if amount <= 0:
+            raise ValueError("invalid_custom_canvas_generation_receipt")
+        payload = {
+            "version": 1,
+            "receiptId": uuid.uuid4().hex,
+            "ownerId": owner,
+            "contentHash": parsed["contentHash"],
+            "points": amount,
+            "feature": str(item.get("feature") or "无限画布图片生成")[:80],
+            "expiresAt": int(now) + CUSTOM_CANVAS_GENERATION_RECEIPT_TTL_MS,
+        }
+        prepared.append({
+            **payload,
+            "token": _custom_canvas_generation_receipt_token(payload),
+        })
+    return prepared
+
+
+def _insert_custom_canvas_generation_receipts_locked(conn, prepared, now, charged):
+    for receipt in prepared:
+        conn.execute(
+            """
+            INSERT INTO custom_canvas_generation_receipts(
+              owner_id,receipt_id,content_hash,points,feature,
+              expires_at,created_at,charged_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                receipt["ownerId"],
+                receipt["receiptId"],
+                receipt["contentHash"],
+                receipt["points"],
+                receipt["feature"],
+                receipt["expiresAt"],
+                int(now),
+                int(now) if charged else None,
+            ),
+        )
+
+
+def issue_custom_canvas_generation_receipts(
+    owner_id,
+    receipt_specs,
+    charged=False,
+    now_ms=None,
+):
+    """Register a batch of exact outputs in one transaction."""
+    now = int(now_ms if now_ms is not None else time.time() * 1000)
+    prepared = _prepare_custom_canvas_generation_receipts(owner_id, receipt_specs, now)
+    if not prepared:
+        return []
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            _insert_custom_canvas_generation_receipts_locked(
+                conn, prepared, now, bool(charged),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    return prepared
+
+
+def issue_custom_canvas_generation_receipt(
+    owner_id,
+    data_url,
+    points=5,
+    feature="无限画布图片生成",
+    charged=False,
+    now_ms=None,
+):
+    """Register and sign one exact generated image before it reaches the client."""
+    return issue_custom_canvas_generation_receipts(
+        owner_id,
+        [{"dataUrl": data_url, "points": points, "feature": feature}],
+        charged=charged,
+        now_ms=now_ms,
+    )[0]
+
+
+def mark_custom_canvas_generation_receipt_charged(owner_id, receipt_id, now_ms=None):
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            result = conn.execute(
+                """
+                UPDATE custom_canvas_generation_receipts
+                SET charged_at=COALESCE(charged_at,?)
+                WHERE owner_id=? AND receipt_id=?
+                """,
+                (
+                    int(now_ms if now_ms is not None else time.time() * 1000),
+                    str(owner_id or ""),
+                    str(receipt_id or ""),
+                ),
+            )
+            conn.commit()
+            return bool(result.rowcount)
+        finally:
+            conn.close()
+
+
+def _custom_canvas_pending_generation_hashes_locked(conn, owner_id, hashes):
+    digests = {
+        str(value)
+        for value in hashes
+        if re.fullmatch(r"[a-f0-9]{64}", str(value or ""))
+    }
+    if not digests:
+        return set()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT content_hash
+        FROM custom_canvas_generation_receipts
+        WHERE owner_id=? AND charged_at IS NULL AND content_hash IN (%s)
+        """ % ",".join("?" for _ in digests),
+        (str(owner_id or ""), *sorted(digests)),
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def save_custom_canvas_blob(owner_id, data_url, generation_receipt=""):
+    """Persist one owner-scoped image before a large draft PUT.
+
+    The following project save validates ownership of the returned stable URL
+    and makes it reachable from the draft. The short-lived staging row protects
+    this hand-off from an older in-flight draft save. A model output additionally
+    requires the owner/hash-bound signed receipt issued by the generation route.
+    """
+    parsed = _custom_canvas_parse_data_image(data_url)
+    if not parsed:
+        raise ValueError("invalid_custom_canvas_image")
+    owner = str(owner_id or "")
+    receipt_payload = None
+    if str(generation_receipt or "").strip():
+        receipt_payload = _custom_canvas_parse_generation_receipt(generation_receipt)
+        if (
+            str(receipt_payload.get("ownerId") or "") != owner
+            or str(receipt_payload.get("contentHash") or "") != parsed["contentHash"]
+            or int(receipt_payload.get("expiresAt") or 0) < int(time.time() * 1000)
+        ):
+            raise ValueError("invalid_custom_canvas_generation_receipt")
+    _ensure_db()
+    created_blob_files = []
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            generated = conn.execute(
+                "SELECT 1 FROM custom_canvas_generation_receipts "
+                "WHERE owner_id=? AND content_hash=? LIMIT 1",
+                (owner, parsed["contentHash"]),
+            ).fetchone()
+            if generated and not receipt_payload:
+                raise ValueError("custom_canvas_generation_receipt_required")
+            if receipt_payload:
+                receipt_row = conn.execute(
+                    """
+                    SELECT content_hash,points,feature,expires_at,charged_at
+                    FROM custom_canvas_generation_receipts
+                    WHERE owner_id=? AND receipt_id=?
+                    """,
+                    (owner, receipt_payload["receiptId"]),
+                ).fetchone()
+                if not receipt_row or (
+                    str(receipt_row[0]) != parsed["contentHash"]
+                    or int(receipt_row[1]) != int(receipt_payload["points"])
+                    or str(receipt_row[2]) != str(receipt_payload["feature"])
+                    or int(receipt_row[3]) != int(receipt_payload["expiresAt"])
+                    or receipt_row[4] is None
+                ):
+                    raise ValueError("invalid_custom_canvas_generation_receipt")
+            _persist_custom_canvas_blobs_locked(
+                conn,
+                owner,
+                {parsed["contentHash"]: parsed},
+                int(time.time() * 1000),
+                created_blob_files,
+            )
+            conn.execute(
+                """
+                INSERT INTO custom_canvas_blob_staging(owner_id,content_hash,created_at)
+                VALUES(?,?,?)
+                ON CONFLICT(owner_id,content_hash) DO UPDATE SET
+                  created_at=excluded.created_at
+                """,
+                (owner, parsed["contentHash"], int(time.time() * 1000)),
+            )
+            conn.commit()
+            result = {
+                "contentHash": parsed["contentHash"],
+                "url": _custom_canvas_blob_url(parsed["contentHash"]),
+                "mime": parsed["mime"],
+                "size": parsed["size"],
+            }
+            if receipt_payload:
+                result["generationReceipt"] = {
+                    "receiptId": receipt_payload["receiptId"],
+                    "points": int(receipt_payload["points"]),
+                    "feature": str(receipt_payload["feature"]),
+                    "chargedAt": int(receipt_row[4]),
+                }
+            return result
+        except Exception:
+            conn.rollback()
+            _custom_canvas_cleanup_rolled_back_blobs_locked(
+                conn,
+                owner,
+                created_blob_files,
+            )
+            raise
         finally:
             conn.close()
 
@@ -3497,6 +6115,11 @@ def save_custom_canvas_draft(owner_id, source_project_id, payload):
             # Reject forged stable URLs before writing any new data URL blob.
             # Hashes decoded from this request are allowed as pending until the
             # transaction inserts their owner-scoped rows below.
+            incoming_hashes = set()
+            _custom_canvas_collect_blob_hashes(prepared["project"], incoming_hashes)
+            _custom_canvas_collect_blob_hashes(prepared["draft"], incoming_hashes)
+            if _custom_canvas_pending_generation_hashes_locked(conn, owner, incoming_hashes):
+                raise ValueError("custom_canvas_generation_receipt_required")
             _custom_canvas_validate_blob_refs_locked(
                 conn,
                 owner,
@@ -3517,6 +6140,14 @@ def save_custom_canvas_draft(owner_id, source_project_id, payload):
                 prepared["project"],
                 prepared["draft"],
             )
+            committed_hashes = set()
+            _custom_canvas_collect_blob_hashes(prepared["project"], committed_hashes)
+            _custom_canvas_collect_blob_hashes(prepared["draft"], committed_hashes)
+            if committed_hashes:
+                conn.executemany(
+                    "DELETE FROM custom_canvas_blob_staging WHERE owner_id=? AND content_hash=?",
+                    [(owner, digest) for digest in committed_hashes],
+                )
             custom_project, project_error = _ensure_custom_canvas_project_locked(
                 conn,
                 owner,
@@ -4883,6 +7514,43 @@ def _delivery_asset_access(item, member_id, role, conn):
     return False
 
 
+def get_delivery_asset_for_member(asset_id, member_id, role):
+    """Read one delivery only when it belongs to or is visible to the member.
+
+    Community sharing needs the actual delivery snapshot to prove that a
+    composed media URL is referenced by the selected source.  Keep this check
+    in the store so it uses the same delivery access rules as remarks and other
+    delivery APIs.  Personal/team creators may always read their own delivery.
+    """
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection='assets' AND id=?",
+                (str(asset_id or ""),),
+            ).fetchone()
+            if not row:
+                return None, "not_found"
+            try:
+                item = json.loads(row[1])
+            except (TypeError, json.JSONDecodeError):
+                return None, "not_found"
+            if not isinstance(item, dict) or not item.get("delivered"):
+                return None, "forbidden"
+            owner_ids = {
+                str(row[0] or ""),
+                str(item.get("ownerId") or ""),
+                str(item.get("byMemberId") or ""),
+            }
+            owns_delivery = str(member_id or "") in owner_ids
+            if not owns_delivery and not _delivery_asset_access(item, member_id, role, conn):
+                return None, "forbidden"
+            return item, None
+        finally:
+            conn.close()
+
+
 def delivery_remarks(asset_id, member_id, role):
     _ensure_db()
     with _lock:
@@ -5721,6 +8389,7 @@ def state_for(member_id, role, parent_id=None, collections=None):
     team = member_team(member_id) if role not in {"supplier_parent", "supplier_child"} else None
     team_id = team["id"] if team else supplier_team_id(member_id, role, parent_id)
     visible_team_account_ids = team_account_ids(team_id)
+    visible_team_member_ids = team_member_ids(team_id)
     with _lock:
         conn = _connect()
         try:
@@ -5833,13 +8502,16 @@ def state_for(member_id, role, parent_id=None, collections=None):
                             or _is_global_editing_asset(item)
                         ):
                             continue
-                        if (
-                            team_id
-                            and team_id != INTERNAL_TEAM_ID
-                            and owner != member_id
-                            and account_id not in visible_team_account_ids
-                        ):
-                            continue
+                        if team_id and role not in {"supplier_parent", "supplier_child"}:
+                            same_team_owner = bool(owner and str(owner) in visible_team_member_ids)
+                            same_team_account = bool(account_id and account_id in visible_team_account_ids)
+                            legacy_acg_asset = (
+                                team_id == INTERNAL_TEAM_ID
+                                and str(owner or item.get("ownerId") or "")
+                                in {"", DEFAULT_ADMIN_USERNAME}
+                            )
+                            if not same_team_owner and not same_team_account and not legacy_acg_asset:
+                                continue
                         if (
                             role == "supplier_parent"
                             and team_id
@@ -5872,6 +8544,7 @@ def state_for(member_id, role, parent_id=None, collections=None):
                             and owner
                             and owner != member_id
                             and not _is_global_editing_asset(item)
+                            and str(owner) not in visible_team_member_ids
                             and str(item.get("id") or "") not in editor_account_asset_ids
                             and str(item.get("id") or "") not in editor_delivery_asset_ids
                         ):
@@ -5899,3 +8572,363 @@ def state_for(member_id, role, parent_id=None, collections=None):
     if requested is not None:
         out = {name: out.get(name, []) for name in requested}
     return out
+
+
+# ---------- 社区灵感（用户显式分享的轻量公开快照） ----------
+COMMUNITY_CATEGORIES = {"视频灵感", "视觉设计"}
+COMMUNITY_SOURCE_KINDS = {"video", "canvas", "delivery"}
+COMMUNITY_MEDIA_PREFIXES = (
+    "/api/files/",
+    "/api/custom-canvas/blobs/",
+    "/api/video/composed/",
+    "/custom-video/outputs/",
+)
+_COMMUNITY_MEDIA_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+
+
+def normalize_community_media_url(value):
+    """Return one canonical in-platform media path, or an empty string.
+
+    Prefix checks alone are not sufficient here: query strings, encoded path
+    separators and dot segments can otherwise make the ownership check inspect
+    a different file from the one later served by the public community route.
+    Generated platform file names and video-workshop project ids are all simple
+    ASCII components, so reject ambiguous encodings instead of normalizing them.
+    """
+    url = str(value or "").strip()
+    if not url or len(url) > 1200 or "\\" in url or "%" in url:
+        return ""
+    parsed = urlparse(url)
+    if parsed.scheme or parsed.netloc or parsed.params or parsed.query or parsed.fragment:
+        return ""
+    path = parsed.path
+    if path != url or not path.startswith(COMMUNITY_MEDIA_PREFIXES):
+        return ""
+    if path.startswith("/api/custom-canvas/blobs/"):
+        digest = path[len("/api/custom-canvas/blobs/"):]
+        return path if re.fullmatch(r"[0-9a-f]{64}", digest) else ""
+    for prefix in ("/api/files/", "/api/video/composed/"):
+        if path.startswith(prefix):
+            name = path[len(prefix):]
+            return path if _COMMUNITY_MEDIA_COMPONENT_RE.fullmatch(name or "") else ""
+    relative = path[len("/custom-video/outputs/"):]
+    parts = relative.split("/")
+    if len(parts) < 2 or any(
+        part in {"", ".", ".."} or not _COMMUNITY_MEDIA_COMPONENT_RE.fullmatch(part)
+        for part in parts
+    ):
+        return ""
+    return path
+
+
+def normalize_community_media(items):
+    """只保存站内持久化 URL 和尺寸元数据，拒绝 Base64/blob/外链。"""
+    clean = []
+    for raw in list(items or [])[:12]:
+        if not isinstance(raw, dict):
+            continue
+        url = normalize_community_media_url(raw.get("url"))
+        if not url:
+            continue
+        kind = str(raw.get("type") or "").strip().lower()
+        if kind not in {"image", "video"}:
+            kind = "video" if re.search(r"\.(?:mp4|webm|mov)(?:\?|$)", url, re.I) else "image"
+        try:
+            width = max(0, min(20000, int(raw.get("width") or 0)))
+            height = max(0, min(20000, int(raw.get("height") or 0)))
+        except (TypeError, ValueError):
+            width, height = 0, 0
+        clean.append({
+            "url": url,
+            "type": kind,
+            "width": width,
+            "height": height,
+            "alt": str(raw.get("alt") or "")[:160],
+        })
+    if not clean:
+        raise ValueError("community_media_required")
+    return clean
+
+
+def normalize_community_cover(value):
+    """视频封面独立保存，避免把封面误当作正文图片。"""
+    raw = value if isinstance(value, dict) else {}
+    if not raw:
+        return {}
+    clean = normalize_community_media([{**raw, "type": "image"}])
+    return clean[0] if clean else {}
+
+
+def community_identity_key(source_kind, source_id, media, cover=None):
+    payload = {
+        "sourceKind": str(source_kind or "").strip().lower(),
+        "sourceId": str(source_id or "").strip()[:160],
+        "media": [str(item.get("url") or "") for item in list(media or [])],
+        "cover": str((cover or {}).get("url") or ""),
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _community_reaction_state(post_id, viewer_id=""):
+    summary = _fetchone(
+        "SELECT COALESCE(SUM(liked),0),COALESCE(SUM(favorited),0) "
+        "FROM community_reactions WHERE post_id=?",
+        (str(post_id or ""),),
+    ) or (0, 0)
+    viewer = (0, 0)
+    if viewer_id:
+        viewer = _fetchone(
+            "SELECT liked,favorited FROM community_reactions WHERE post_id=? AND member_id=?",
+            (str(post_id or ""), str(viewer_id or "")),
+        ) or (0, 0)
+    return {
+        "likeCount": int(summary[0] or 0),
+        "favoriteCount": int(summary[1] or 0),
+        "viewerLiked": bool(viewer[0]),
+        "viewerFavorited": bool(viewer[1]),
+    }
+
+
+def _community_post_public(row, viewer_id=""):
+    if not row:
+        return None
+    try:
+        media = json.loads(row[9])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        media = []
+    try:
+        cover = json.loads(row[10] or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        cover = {}
+    team = member_team(row[1])
+    item = {
+        "id": row[0],
+        "authorId": row[1],
+        "authorName": row[2],
+        "teamId": row[3] or "",
+        "sourceKind": row[4],
+        "sourceId": row[5],
+        "title": row[6],
+        "copy": row[7] or "",
+        "prompt": row[8] or "",
+        "media": media if isinstance(media, list) else [],
+        "cover": cover if isinstance(cover, dict) else {},
+        "identityKey": row[11] or "",
+        "category": row[12],
+        "status": row[13],
+        "createdAt": int(row[14] or 0),
+        "updatedAt": int(row[15] or 0),
+        "teamName": str((team or {}).get("name") or ""),
+    }
+    item.update(_community_reaction_state(item["id"], viewer_id))
+    return item
+
+
+def create_community_post(
+    author_id,
+    author_name,
+    team_id,
+    source_kind,
+    source_id,
+    title,
+    copy_text,
+    prompt_text,
+    category,
+    media,
+    cover=None,
+):
+    source_kind = str(source_kind or "").strip().lower()
+    if source_kind not in COMMUNITY_SOURCE_KINDS:
+        raise ValueError("invalid_community_source")
+    category = str(category or "").strip()
+    if category not in COMMUNITY_CATEGORIES:
+        raise ValueError("invalid_community_category")
+    title = re.sub(r"\s+", " ", str(title or "")).strip()[:120]
+    if not title:
+        raise ValueError("community_title_required")
+    media = normalize_community_media(media)
+    cover = normalize_community_cover(cover) if cover else {}
+    identity_key = community_identity_key(source_kind, source_id, media, cover)
+    now = int(time.time() * 1000)
+    post_id = "community_" + uuid.uuid4().hex[:18]
+    existing_id = ""
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            existing = conn.execute(
+                """
+                SELECT id FROM community_posts
+                WHERE author_id=? AND identity_key=? AND status='published'
+                LIMIT 1
+                """,
+                (str(author_id or ""), identity_key),
+            ).fetchone()
+            if existing:
+                existing_id = str(existing[0] or "")
+            else:
+                conn.execute(
+                """
+                INSERT INTO community_posts(
+                  id,author_id,author_name,team_id,source_kind,source_id,title,
+                  copy_text,prompt_text,category,media_json,cover_json,identity_key,
+                  status,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                    (
+                    post_id,
+                    str(author_id or ""),
+                    str(author_name or "")[:80],
+                    str(team_id or "") or None,
+                    source_kind,
+                    str(source_id or "")[:160],
+                    title,
+                    str(copy_text or "")[:6000],
+                    str(prompt_text or "")[:6000],
+                    category,
+                    json.dumps(media, ensure_ascii=False, separators=(",", ":")),
+                    json.dumps(cover, ensure_ascii=False, separators=(",", ":")),
+                    identity_key,
+                    "published",
+                    now,
+                    now,
+                    ),
+                )
+                conn.commit()
+        finally:
+            conn.close()
+    if existing_id:
+        post = get_community_post(existing_id)
+        if post:
+            post["alreadyShared"] = True
+        return post
+    return get_community_post(post_id)
+
+
+def get_community_post(post_id, include_non_published=False, viewer_id=""):
+    _ensure_db()
+    where = "id=?" if include_non_published else "id=? AND status='published'"
+    row = _fetchone(
+        f"""
+        SELECT id,author_id,author_name,team_id,source_kind,source_id,title,
+               copy_text,prompt_text,media_json,cover_json,identity_key,
+               category,status,created_at,updated_at
+        FROM community_posts WHERE {where}
+        """,
+        (str(post_id or ""),),
+    )
+    return _community_post_public(row, viewer_id)
+
+
+def list_community_posts(category="", limit=40, before=0, viewer_id=""):
+    _ensure_db()
+    category = str(category or "").strip()
+    limit = max(1, min(80, int(limit or 40)))
+    before = max(0, int(before or 0))
+    clauses = ["status='published'"]
+    params = []
+    if category:
+        if category not in COMMUNITY_CATEGORIES:
+            return {"items": [], "nextBefore": 0}
+        clauses.append("category=?")
+        params.append(category)
+    if before:
+        clauses.append("created_at<?")
+        params.append(before)
+    params.append(limit + 1)
+    rows = _fetchall(
+        f"""
+        SELECT id,author_id,author_name,team_id,source_kind,source_id,title,
+               copy_text,prompt_text,media_json,cover_json,identity_key,
+               category,status,created_at,updated_at
+        FROM community_posts
+        WHERE {' AND '.join(clauses)}
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        """,
+        tuple(params),
+    )
+    has_more = len(rows) > limit
+    items = [_community_post_public(row, viewer_id) for row in rows[:limit]]
+    return {
+        "items": items,
+        "nextBefore": items[-1]["createdAt"] if has_more and items else 0,
+    }
+
+
+def community_post_status(author_id, source_kind, source_id, media, cover=None):
+    try:
+        clean_media = normalize_community_media(media)
+        clean_cover = normalize_community_cover(cover) if cover else {}
+    except ValueError:
+        return {"shared": False, "post": None}
+    identity_key = community_identity_key(source_kind, source_id, clean_media, clean_cover)
+    row = _fetchone(
+        "SELECT id FROM community_posts WHERE author_id=? AND identity_key=? "
+        "AND status='published' LIMIT 1",
+        (str(author_id or ""), identity_key),
+    )
+    post = get_community_post(row[0], viewer_id=author_id) if row else None
+    return {"shared": bool(post), "post": post}
+
+
+def set_community_reaction(post_id, member_id, liked=None, favorited=None):
+    post = get_community_post(post_id)
+    if not post:
+        return None
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT liked,favorited FROM community_reactions WHERE post_id=? AND member_id=?",
+                (str(post_id), str(member_id)),
+            ).fetchone() or (0, 0)
+            next_liked = int(bool(liked)) if liked is not None else int(row[0] or 0)
+            next_favorited = int(bool(favorited)) if favorited is not None else int(row[1] or 0)
+            conn.execute(
+                """
+                INSERT INTO community_reactions(post_id,member_id,liked,favorited,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(post_id,member_id) DO UPDATE SET
+                  liked=excluded.liked,favorited=excluded.favorited,updated_at=excluded.updated_at
+                """,
+                (str(post_id), str(member_id), next_liked, next_favorited, int(time.time() * 1000)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return get_community_post(post_id, viewer_id=member_id)
+
+
+def list_community_favorites(member_id, limit=80):
+    limit = max(1, min(120, int(limit or 80)))
+    rows = _fetchall(
+        """
+        SELECT p.id,p.author_id,p.author_name,p.team_id,p.source_kind,p.source_id,p.title,
+               p.copy_text,p.prompt_text,p.media_json,p.cover_json,p.identity_key,
+               p.category,p.status,p.created_at,p.updated_at
+        FROM community_reactions r
+        JOIN community_posts p ON p.id=r.post_id
+        WHERE r.member_id=? AND r.favorited=1 AND p.status='published'
+        ORDER BY r.updated_at DESC LIMIT ?
+        """,
+        (str(member_id or ""), limit),
+    )
+    return {"items": [_community_post_public(row, member_id) for row in rows]}
+
+
+def delete_community_post(post_id):
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE community_posts SET status='deleted',updated_at=? WHERE id=? AND status='published'",
+                (int(time.time() * 1000), str(post_id or "")),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()

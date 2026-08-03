@@ -183,6 +183,16 @@ export async function login(username, pin) {
   setToken(r.token);
   return r.member;
 }
+export async function register(payload) {
+  const r = await req("/api/auth/register", {
+    method: "POST",
+    auth: false,
+    body: payload,
+    metric: "auth"
+  });
+  setToken(r.token);
+  return r.member;
+}
 export async function me() {
   if (!_token) return null;
   try { return await req("/api/auth/me", { metric: "auth-resume" }); } catch { return null; }
@@ -337,6 +347,7 @@ export const memberRequests = {
 
 export const teams = {
   list: () => req("/api/teams"),
+  rename: name => req("/api/teams/current", { method: "PUT", body: { name } }),
   requestJoin: (teamName, message = "") => req("/api/team-join-requests", {
     method: "POST",
     body: { teamName, message }
@@ -358,7 +369,8 @@ export const teams = {
 /* 管理员用量看板：语言 Token 与实际图片/视频调用分账展示。 */
 export const admin = {
   llmUsage: () => req("/api/admin/llm-usage"),
-  llmUsageDetails: (memberId = "") => req("/api/admin/llm-usage/details" + (memberId ? "?memberId=" + encodeURIComponent(memberId) : ""))
+  llmUsageDetails: (memberId = "") => req("/api/admin/llm-usage/details" + (memberId ? "?memberId=" + encodeURIComponent(memberId) : "")),
+  platformAccounts: () => req("/api/platform/accounts")
 };
 
 /* 供应商母账号：子账号、内容账号绑定与操作记录均由服务端授权。 */
@@ -388,6 +400,25 @@ export const deliveryRemarks = {
   list: (assetId) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks"),
   add: (assetId, text) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks", { method: "POST", body: { text } }),
   read: (assetId) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks/read", { method: "PUT" })
+};
+
+export const community = {
+  list: ({ category = "", limit = 40, before = 0 } = {}) => {
+    const params = new URLSearchParams();
+    if (category) params.set("category", category);
+    params.set("limit", String(limit));
+    if (before) params.set("before", String(before));
+    return req("/api/community/posts?" + params.toString(), { auth: Boolean(_token) });
+  },
+  get: (postId) => req("/api/community/posts/" + encodeURIComponent(postId), { auth: Boolean(_token) }),
+  create: (payload) => req("/api/community/posts", { method: "POST", body: payload }),
+  status: (payload) => req("/api/community/status", { method: "POST", body: payload }),
+  react: (postId, payload) => req("/api/community/posts/" + encodeURIComponent(postId) + "/reaction", {
+    method: "PUT",
+    body: payload,
+  }),
+  favorites: (limit = 80) => req("/api/community/favorites?limit=" + encodeURIComponent(limit)),
+  remove: (postId) => req("/api/community/posts/" + encodeURIComponent(postId), { method: "DELETE" })
 };
 
 /* 定制创作项目使用专用 owner-scoped API，不进入 /api/state 的整集合写穿透。 */

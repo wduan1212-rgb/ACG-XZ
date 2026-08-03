@@ -10,6 +10,7 @@ APP_DIR = Path(__file__).resolve().parents[2]
 class DeliveryStatusFiltersTest(unittest.TestCase):
     def test_creator_and_supplier_render_all_four_status_chips(self):
         source = (APP_DIR / "js/views/deliveryView.js").read_text(encoding="utf-8")
+        delivery = (APP_DIR / "js/domain/delivery.js").read_text(encoding="utf-8")
         self.assertIn('deliveryStatusFiltersHtml("creator")', source)
         self.assertIn('deliveryStatusFiltersHtml("sup")', source)
         for label in ("已下载", "未下载", "已发布", "未发布"):
@@ -22,6 +23,10 @@ class DeliveryStatusFiltersTest(unittest.TestCase):
         self.assertIn("applySupplierReturnResponse(asset, result)", source)
         self.assertIn("deliveryDisplaySequence(x.asset, map.get(x.asset.id))", source)
         self.assertIn("if (!changed) return;\n        draw();", source)
+        self.assertIn('const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"])', delivery)
+        self.assertIn("markSupplierDownloadedWithRetry", delivery)
+        self.assertIn("attempt < 2", delivery)
+        self.assertIn("SUPPLIER_ROLES.has(state.role)", delivery)
 
     def test_status_filter_semantics_reuse_download_and_publish_state(self):
         script = r"""

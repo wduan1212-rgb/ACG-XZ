@@ -442,7 +442,7 @@ export function toggleNotifyPanel(anchorBtn) {
   panel.innerHTML = `
     <div class="np-head"><b>通知中心</b>${items.length ? `<button class="link-btn" id="npClear">全部已读</button>` : ""}</div>
     <div class="np-list">${items.length ? items.map(n => `
-      <div class="np-item ${n.read ? "" : "unread"}">
+      <div class="np-item ${n.read ? "" : "unread"} ${n.priority === "urgent" ? "priority" : ""}">
         <span class="np-ico">${icon(KIND_ICO[n.kind] || "info", 14)}</span>
         <span class="np-main"><b>${esc(n.title)}</b>${n.body ? `<em>${esc(n.body)}</em>` : ""}</span>
         <time>${timeAgo(n.ts)}</time>
@@ -453,23 +453,34 @@ export function toggleNotifyPanel(anchorBtn) {
     const r = anchorBtn.getBoundingClientRect();
     const gap = 8;
     const margin = 12;
-    const panelWidth = panel.getBoundingClientRect().width || Math.min(360, window.innerWidth - margin * 2);
+    const panelRect = panel.getBoundingClientRect();
+    const panelWidth = panelRect.width || Math.min(360, window.innerWidth - margin * 2);
+    const panelHeight = panelRect.height || 360;
     const preferredLeft = r.right + gap;
     const maxLeft = Math.max(margin, window.innerWidth - panelWidth - margin);
     const left = Math.max(margin, Math.min(preferredLeft, maxLeft));
-    const top = Math.max(margin, r.bottom + gap);
+    const belowTop = r.bottom + gap;
+    const roomBelow = Math.max(0, window.innerHeight - belowTop - margin);
+    const roomAbove = Math.max(0, r.top - gap - margin);
+    const openAbove = roomBelow < Math.min(panelHeight, 260) && roomAbove > roomBelow;
+    const availableHeight = Math.max(160, openAbove ? roomAbove : roomBelow);
+    const top = openAbove
+      ? Math.max(margin, r.top - gap - Math.min(panelHeight, availableHeight))
+      : Math.max(margin, belowTop);
     panel.style.left = `${left}px`;
     panel.style.right = "auto";
     panel.style.top = `${top}px`;
-    panel.style.maxHeight = `${Math.max(220, window.innerHeight - top - margin)}px`;
+    panel.style.maxHeight = `${availableHeight}px`;
   };
   let off = null;
   const close = () => {
     panel.remove();
+    anchorBtn?.setAttribute("aria-expanded", "false");
     window.removeEventListener("resize", position);
     if (off) document.removeEventListener("pointerdown", off);
   };
   panel.__close = close;
+  anchorBtn?.setAttribute("aria-expanded", "true");
   position();
   window.addEventListener("resize", position);
   requestAnimationFrame(() => panel.classList.add("open"));
@@ -489,9 +500,19 @@ export function toggleNotifyPanel(anchorBtn) {
 export function updateNotifyBadge() {
   const b = $("#notifyBadge");
   if (!b) return;
-  const n = state.notifications.filter(x => !x.read).length;
+  const unread = state.notifications.filter(x => !x.read);
+  const n = unread.length;
+  const urgent = unread.filter(x => x.priority === "urgent").length;
   b.textContent = n > 9 ? "9+" : String(n);
   b.hidden = n === 0;
+  b.classList.toggle("is-priority", urgent > 0);
+  const bell = $("#topBell");
+  bell?.classList.toggle("has-priority-notification", urgent > 0);
+  if (bell) {
+    const label = urgent > 0 ? `有 ${urgent} 条待处理成员申请` : "打开通知中心";
+    bell.title = label;
+    bell.setAttribute("aria-label", label);
+  }
 }
 on("notify", updateNotifyBadge);
 
@@ -653,7 +674,9 @@ export async function withLoading(btn, fn, loadingText = "处理中…") {
   if (!btn || btn.classList.contains("is-loading")) return;
   const old = btn.innerHTML;
   btn.classList.add("is-loading");
-  btn.innerHTML = `<span class="spin-dot"></span> ${loadingText}`;
+  btn.innerHTML = btn.classList.contains("button-anthe")
+    ? `<span><i class="spin-dot"></i> ${loadingText}</span>`
+    : `<span class="spin-dot"></span> ${loadingText}`;
   try { return await fn(); }
   catch (e) {
     toast(e.message || "操作失败", "error");

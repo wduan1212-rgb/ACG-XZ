@@ -1,15 +1,15 @@
 /* 任务详情抽屉：Agent 看板 / 创作空间 / 发布清单 共用的任务控制面板 */
 
 import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
-import { icon } from "../ui/icons.js";
+import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
-import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260729-v122-team-3";
+import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260802-v134-static-community-1";
 import { STAGES, jobsOf } from "../domain/productions.js";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
-import { maybeAdvanceAfterInput, regenerateBatchImage } from "../agent/orchestrator.js?v=20260729-v122-static-1";
+import { maybeAdvanceAfterInput, regenerateBatchImage, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260802-v134-static-community-1";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */
@@ -36,19 +36,19 @@ export function reviewPreviewHtml(p) {
   const firstRealClipUrl = tl.map(clipUrl).find(Boolean);
   const previewVideoUrl = p.artifacts.finalVideoUrl || firstRealClipUrl || "";
   if (previewVideoUrl) {
-    return `<div class="rv-preview vid">
+    return `<div class="rv-preview vid ${p.staticVideo ? "is-landscape" : ""}">
       <div class="rvp-screen">
         <video src="${esc(previewVideoUrl)}" controls playsinline preload="metadata"></video>
-        <span class="rvp-ratio">9:16</span>
+        <span class="rvp-ratio">${p.staticVideo ? "16:9" : "9:16"}</span>
         <span class="rvp-time">${Math.round(total)}s</span>
         ${!p.artifacts.finalVideoUrl ? `<div class="rvp-hint">当前播放首段真实视频 · 合成后替换为完整成片</div>` : ""}
       </div>
     </div>`;
   }
-  return `<div class="rv-preview vid">
+  return `<div class="rv-preview vid ${p.staticVideo ? "is-landscape" : ""}">
     <div class="rvp-screen">
       <div class="rvp-frame" style="background:${coverUrl ? "#0a0e1a" : gradFor(p.title || p.id)}">${coverUrl ? `<img src="${coverUrl}"/>` : ""}</div>
-      <span class="rvp-ratio">9:16</span>
+      <span class="rvp-ratio">${p.staticVideo ? "16:9" : "9:16"}</span>
       <span class="rvp-time">${Math.round(total)}s</span>
       <span class="rvp-play">${icon("play", 20)}</span>
       ${firstSub ? `<div class="rvp-sub">${esc(firstSub.text)}</div>` : ""}
@@ -68,11 +68,37 @@ function outputUrl(output) {
 function workshopPreviewHtml(p) {
   const composedUrl = String(p.artifacts?.finalVideoUrl || "").trim();
   if (composedUrl) {
-    return `<div class="pd-workshop-preview is-composed"><div class="pd-note">已剪辑完整成片 · 可播放声音，点击放大查看</div><div class="pd-video-grid"><article><video src="${esc(composedUrl)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="0" data-video-url="${esc(composedUrl)}">${icon("eye", 12)} 放大</button><em>完整成片</em></article></div></div>`;
+    return `<div class="pd-workshop-preview is-composed ${p.staticVideo ? "is-landscape" : ""}"><div class="pd-note">已剪辑完整成片 · 可播放声音，点击放大查看</div><div class="pd-video-grid"><article><video src="${esc(composedUrl)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="0" data-video-url="${esc(composedUrl)}">${icon("eye", 12)} 放大</button><em>完整成片</em></article></div></div>`;
   }
   const ready = jobsOf(p).filter(j => j.status === "succeeded").map(j => ({ name: j.segName || `片段 ${Number(j.segIndex || 0) + 1}`, url: outputUrl(j.output) })).filter(x => x.url);
   if (!ready.length) return `<div class="pd-empty compact">${icon("film", 20)}<p>视频生成后会直接在${p.subType === "数字人" ? "数字人制作" : "信息流制作"}阶段出现预览</p></div>`;
   return `<div class="pd-workshop-preview"><div class="pd-note">视频预览 ${ready.length} 段 · 可播放声音，点击放大查看</div><div class="pd-video-grid">${ready.map((item, i) => `<article><video src="${esc(item.url)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="${i}" data-video-url="${esc(item.url)}">${icon("eye", 12)} 放大</button><em>${esc(item.name)}</em></article>`).join("")}</div></div>`;
+}
+
+function staticAgentHtml(p) {
+  const agent = p.staticAgent || {};
+  const messages = Array.isArray(agent.messages) ? agent.messages : [];
+  const finalUrl = String(p.artifacts?.finalVideoUrl || "");
+  return `<section class="pd-static-agent">
+    <div class="pd-static-agent-intro">
+      <span class="pd-static-agent-bot" aria-hidden="true">${agentAvatar(28, p.stageStatus === "running" ? "working" : "normal")}</span>
+      <div><b>静态视频 Agent</b><span>独立完成理解、图片分镜、口播、字幕和成片渲染，不经过视频工坊或 Seedance。</span></div>
+    </div>
+    <div class="pd-static-agent-chat">
+      ${messages.length ? messages.map(message => `<article class="pd-static-agent-message ${esc(message.status || "running")} ${message.role === "user" ? "is-user" : "is-agent"}">
+        ${message.role === "user" ? "" : `<span>${message.status === "failed" ? icon("alert", 13) : agentAvatar(22, message.status === "done" ? "success" : "working")}</span>`}
+        <div><b>${esc(message.role === "user" ? "你" : message.title || "处理中")}</b><p>${esc(message.detail || "")}</p></div>
+      </article>`).join("") : `<div class="pd-empty compact"><p>Agent 尚未开始工作</p></div>`}
+      ${finalUrl ? `<article class="pd-static-agent-delivery">
+        <video src="${esc(finalUrl)}" controls playsinline preload="metadata"></video>
+        <div><b>本轮成片 · 16:9</b><a class="btn primary sm" href="${esc(finalUrl)}" download>${icon("download", 13)} 下载成片</a></div>
+      </article>` : ""}
+    </div>
+    <form class="pd-static-agent-composer" data-static-agent-form>
+      <input class="input" name="instruction" autocomplete="off" placeholder="继续对话修改封面、文案、口播或整条成片…" ${p.stageStatus === "running" ? "disabled" : ""}/>
+      <button class="btn primary" type="submit" ${p.stageStatus === "running" ? "disabled" : ""}>${icon("send", 13)} 发送修改</button>
+    </form>
+  </section>`;
 }
 
 function openImageRefineModal(p, imageIndex, onDone) {
@@ -181,11 +207,14 @@ export function openProductionDrawer(pid, tab) {
       const root = panel.querySelector("#pdRoot");
       const render = () => {
         const acc = accountById(p.accountId);
-        const tabs = [
-          [isImg ? "images" : "boards", isImg ? "图文创作台" : p.subType === "数字人" ? "数字人制作" : "信息流制作"],
-          ...(isImg ? [] : [["render", "剪辑"]]),
-          ["review", "审核"]
-        ];
+        const tabs = p.staticVideo
+          ? [["agent", "静态视频 Agent"], ["review", "成片"]]
+          : [
+              [isImg ? "images" : "boards", isImg ? "图文创作台" : p.subType === "数字人" ? "数字人制作" : "信息流制作"],
+              ...(isImg ? [] : [["render", "剪辑"]]),
+              ["review", "审核"]
+            ];
+        if (p.staticVideo && !tabs.some(([key]) => key === curTab)) curTab = "agent";
         root.innerHTML = `
           <div class="pd-head">
             <div class="pd-title">
@@ -196,7 +225,7 @@ export function openProductionDrawer(pid, tab) {
             <button class="icon-btn" data-close>${icon("x", 16)}</button>
           </div>
           <div class="pd-tabs">${tabs.map(([k, l]) => `<button class="pd-tab ${curTab === k ? "is-active" : ""}" data-tab="${k}">${l}</button>`).join("")}</div>
-          <div class="pd-body">${TAB[curTab] ? TAB[curTab](p) : ""}</div>
+          <div class="pd-body">${p.staticVideo && curTab === "agent" ? staticAgentHtml(p) : TAB[curTab] ? TAB[curTab](p) : ""}</div>
           <div class="pd-foot">
             <span class="muted">${p.error ? `⚠ ${esc(p.error)}` : ""}</span>
             ${p.staticVideo ? "" : `<button class="btn ghost sm" data-pd="workbench">${icon("sliders", 14)} 进入单号工坊微调</button>`}
@@ -270,6 +299,35 @@ export function openProductionDrawer(pid, tab) {
         // 槽位图放大
         rootEl.querySelectorAll(".pd-slot img").forEach(im => im.addEventListener("click", () => openLightbox(im, im.src, "")));
         rootEl.querySelectorAll("[data-pd-video-preview]").forEach(button => button.addEventListener("click", () => openVideoPreview(button.dataset.videoUrl, "视频片段预览")));
+        rootEl.querySelector("[data-static-agent-form]")?.addEventListener("submit", async event => {
+          event.preventDefault();
+          const form = event.currentTarget;
+          const input = form.elements.instruction;
+          const instruction = String(input?.value || "").trim();
+          if (!instruction) {
+            toast("请先输入修改要求", "error");
+            input?.focus();
+            return;
+          }
+          const button = form.querySelector("button[type='submit']");
+          if (button) {
+            button.disabled = true;
+            button.innerHTML = `${icon("refresh", 13)} 正在继续原任务`;
+          }
+          if (input) input.disabled = true;
+          try {
+            await reviseBatchStaticVideo(p, instruction);
+            toast(/封面|首图|标题图/.test(instruction) ? "封面修改完成" : "静态视频已按本轮要求继续制作");
+            render();
+          } catch (error) {
+            toast(error?.message || "静态视频修改失败", "error");
+            if (button) {
+              button.disabled = false;
+              button.innerHTML = `${icon("send", 13)} 发送修改`;
+            }
+            if (input) input.disabled = false;
+          }
+        });
         // 文案编辑
         const t = rootEl.querySelector("#pdCopyTitle"), c = rootEl.querySelector("#pdCopyBody");
         if (t) t.addEventListener("input", () => { p.artifacts.copy = p.artifacts.copy || {}; p.artifacts.copy.title = t.value; save("productions"); });

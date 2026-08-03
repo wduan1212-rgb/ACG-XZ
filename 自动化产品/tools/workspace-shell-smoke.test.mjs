@@ -31,6 +31,7 @@ const canvasSourceTsx = read("apps/infinite-canvas-source/src/components/workspa
 const canvasBridgeTs = read("apps/infinite-canvas-source/src/lib/platformBridge.ts");
 const canvasRootTsx = read("apps/infinite-canvas-source/src/components/GithubPagesApp.tsx");
 const canvasWorkspaceTsx = read("apps/infinite-canvas-source/src/components/workspace/Workspace.tsx");
+const canvasTopBarTsx = read("apps/infinite-canvas-source/src/components/workspace/TopBar.tsx");
 const canvasProjectClientTsx = read("apps/infinite-canvas-source/src/components/workspace/ProjectClient.tsx");
 const videoWorkshopHtml = read("apps/video-workshop/web/index.html");
 const videoWorkshopJs = read("apps/video-workshop/web/assets/app.js");
@@ -51,7 +52,7 @@ function section(source, startMarker, endMarker) {
   return source.slice(start, end);
 }
 
-test("login gate uses the Silk split visual and keeps alternate auth actions honest", () => {
+test("login gate uses the original grainient split visual and keeps alternate auth actions honest", () => {
   assert.match(indexHtml, /class="lg-auth-shell"/);
   assert.match(indexHtml, /class="lg-visual"/);
   assert.match(indexHtml, /id="lgGoogle"[^>]*>[\s\S]*google-g-mark\.png[\s\S]*使用 Google 快速登录[\s\S]*<\/button>/);
@@ -64,7 +65,8 @@ test("login gate uses the Silk split visual and keeps alternate auth actions hon
   assert.match(uiMotionCss, /grid-template-columns:\s*minmax\(0,\s*1\.12fr\)\s+minmax\(460px,\s*\.88fr\)/);
   assert.match(uiMotionCss, /\.lg-auth-shell\s*\{[^}]*width:\s*100%;[^}]*height:\s*100%;[^}]*border-radius:\s*0;/s);
   assert.match(uiMotionCss, /\.lg-provider-actions\s*\{[^}]*grid-template-columns:\s*1fr;/s);
-  assert.match(loginBeamsJs, /React Bits Silk shader/);
+  assert.match(loginBeamsJs, /原创的依赖无关 WebGL 颗粒渐变/);
+  assert.match(loginBeamsJs, /float fbm\(vec2 p\)/);
   assert.match(loginBeamsJs, /uniform float uNoiseIntensity/);
 
   const wireGate = section(mainJs, "function wireGate()", "function logout()");
@@ -107,10 +109,10 @@ test("v120 is the only workspace shell and uses the release-list label", () => {
   assert.doesNotMatch(mainJs, /workspace=legacy/);
 });
 
-test("workspace brand keeps product and current feature on one line", () => {
+test("workspace brand keeps the blue lockup and current feature on one line", () => {
   assert.match(
     baseCss,
-    /\.workspace-switch-copy\s*\{[^}]*display\s*:\s*flex\s*;[^}]*align-items\s*:\s*baseline\s*;/s,
+    /\.workspace-switch-copy\s*\{[^}]*display\s*:\s*flex\s*;[^}]*align-items\s*:\s*center\s*;/s,
   );
   assert.match(
     baseCss,
@@ -334,15 +336,18 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
   assert.match(canvasRootTsx, /data-canvas-project-opening/);
   assert.match(canvasRootTsx, /正在打开画布/);
   assert.match(canvasWorkspaceTsx, /import\s*\{\s*homeHref,\s*IS_PLATFORM_EMBED\s*\}\s*from\s*"@\/lib\/runtime"/);
-  assert.match(canvasWorkspaceTsx, /\{!IS_PLATFORM_EMBED\s*&&\s*\(\s*<TopBar/s);
+  assert.match(canvasWorkspaceTsx, /<TopBar/);
+  assert.match(canvasWorkspaceTsx, /embedded=\{IS_PLATFORM_EMBED\}/);
+  assert.match(canvasWorkspaceTsx, /showPublish=\{allowPublish\}/);
+  assert.match(canvasTopBarTsx, /if\s*\(embedded\)/);
+  assert.match(canvasTopBarTsx, /absolute right-4 top-4/);
   assert.match(
     canvasProjectClientTsx,
     /\{!IS_PLATFORM_EMBED\s*&&\s*<div className="h-14 shrink-0 border-b border-line bg-page"\s*\/>\}/,
   );
-  assert.match(
-    canvasIntegrationJs,
-    /if\s*\(!currentProjectId\)\s*\{\s*currentProjectId\s*=\s*await loadRecentProjectId\(token,\s*controller\.signal\)/s,
-  );
+  assert.match(canvasIntegrationJs, /currentProjectId\s*=\s*await loadRecentProjectId\(token,\s*controller\.signal\)/);
+  assert.match(canvasIntegrationJs, /createProjectWhenReady\s*=\s*!currentProjectId/);
+  assert.match(canvasIntegrationJs, /canPublish\s*=\s*false/);
   assert.match(canvasIntegrationJs, /if\s*\(!iframe\)\s*return\s+mountCanvasFrame\(\)/);
   assert.match(canvasIntegrationJs, /\{\s*type:\s*"custom-canvas:create-project"\s*\}/);
   assert.match(canvasIntegrationJs, /a\[href\$="#\/"\]/);
@@ -358,6 +363,8 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
   assert.match(canvasSourceTsx, /className="canvas-viewport-minimap/);
   assert.match(canvasBridgeTs, /contextPortalId/);
   assert.match(canvasBridgeTs, /contextPortalNonce/);
+  assert.match(canvasBridgeTs, /bootstrap\.canPublish\s*===\s*true/);
+  assert.match(canvasBridgeTs, /return\s*\{\s*canPublish:\s*false\s*\}/);
   assert.match(
     customCreationCss,
     /\.workspace-context-shell\.has-canvas-context-tools\s*\{[^}]*grid-template-rows\s*:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s+auto\s*;/s,
@@ -370,13 +377,17 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
     customCreationCss,
     /\.canvas-context-portal\s+\.canvas-viewport-minimap\s*\{[^}]*width\s*:\s*196px\s*;[^}]*height\s*:\s*116px\s*;/s,
   );
+  assert.match(
+    customCreationCss,
+    />\s*\.workspace-account-footer\s*\{[^}]*grid-row\s*:\s*4\s*;/s,
+  );
   const ownerSwitch = section(mainJs, "function renderWorkspaceContextPanel()", "if (zone === \"studio\"");
   assert.match(ownerSwitch, /canvasContextTools\.hidden\s*=\s*activeContextTool\s*!==\s*"canvas"/);
 });
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260729-v122-static-1/);
+  assert.match(videoWorkshopHtml, /20260802-v134-static-community-1/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -425,7 +436,12 @@ test("video workshop is white, has no duplicate history rail, and exposes publis
   );
   assert.match(
     baseCss,
-    /\.wsctx-canvas-project-shell\.is-active::before,[\s\S]*?\.wsctx-video-project-shell\.is-active::before\s*\{[^}]*animation:\s*workspace-current-session\s+2\.8s\s+ease-in-out\s+infinite\s*;/s,
+    /\.wsctx-canvas-project-shell\.is-active::before\s*\{[^}]*content:\s*none\s*;[^}]*display:\s*none\s*;/s,
+  );
+  assert.doesNotMatch(baseCss, /\.wsctx-video-project-shell\.is-active::before/);
+  assert.match(
+    baseCss,
+    /\.wsctx-video-project-shell\.is-working::after\s*\{[^}]*animation:\s*workspace-video-heatwave\s+2\.7s\s+ease-in-out\s+infinite\s*;/s,
   );
   const projectSetter = section(mainJs, "function setWorkspaceProjects", "async function loadWorkspaceProjects");
   assert.match(projectSetter, /const retainedItems\s*=\s*target\.items/);
@@ -443,10 +459,10 @@ test("video workshop is white, has no duplicate history rail, and exposes publis
   assert.match(videoWorkshopHtml, /class="attachment-strip"\s+data-attachment-strip/);
   assert.match(videoWorkshopJs, /className\s*=\s*"message-copy"/);
   assert.match(videoWorkshopJs, /message\.type\s*===\s*"workspace:rename"/);
-  assert.doesNotMatch(videoWorkshopHtml, /id="projectAssetsButton"/);
-  assert.doesNotMatch(videoWorkshopHtml, /id="projectAssetsModal"/);
-  assert.doesNotMatch(videoWorkshopJs, /function openProjectAssets\(/);
-  assert.doesNotMatch(videoWorkshopJs, /projectAsset:\s*true/);
+  assert.match(videoWorkshopHtml, /id="projectAssetsButton"/);
+  assert.match(videoWorkshopHtml, /项目资产/);
+  assert.match(videoWorkshopJs, /projectAssetsButton\?\.addEventListener\("click",\s*openHistoryDeliveryModal\)/);
+  assert.match(videoWorkshopJs, /function createChatDeliveryCard\(/);
   assert.match(mainJs, /"xingzhen:video-published"/);
   const canvasRows = section(mainJs, 'if (page === "canvas") {', 'if (zone === "assets") {');
   assert.match(canvasRows, /title:[^,\n]*"画布项目"/);
@@ -588,8 +604,9 @@ test("workspace brand owns compact search and notification actions without a ham
   assert.doesNotMatch(topbar, /id="topActionsToggle"/);
   const contextShell = section(mainJs, "function ensureWorkspaceContextShell", "function renderWorkspaceContextPanel");
   assert.match(contextShell, /id="workspaceContextActions"/);
-  assert.match(contextShell, /\[\$\("#topSearch"\),\s*\$\("#topBell"\)\]\.forEach/);
-  assert.match(contextShell, /contextActions\.append\(button\)/);
+  assert.match(contextShell, /id="workspaceAccountNotify"/);
+  assert.match(contextShell, /if \(topSearch && contextActions\) contextActions\.append\(topSearch\)/);
+  assert.match(contextShell, /if \(topBell && accountNotify\) accountNotify\.append\(topBell\)/);
 
   assert.match(baseCss, /\.workspace-utility-toggle\s*\{[^}]*display\s*:\s*none\s*;/s);
   assert.match(
@@ -755,6 +772,9 @@ test("supplier workspaces move account and delivery tools into the left context"
   assert.match(componentsJs, /const preferredLeft = r\.right \+ gap/);
   assert.match(componentsJs, /panel\.style\.left = `\$\{left\}px`/);
   assert.match(componentsJs, /window\.innerWidth - panelWidth - margin/);
+  assert.match(indexHtml, /id="topBell"[^>]*aria-haspopup="dialog"[^>]*aria-expanded="false"/);
+  assert.match(componentsJs, /anchorBtn\?\.setAttribute\("aria-expanded", "true"\)/);
+  assert.match(componentsJs, /anchorBtn\?\.setAttribute\("aria-expanded", "false"\)/);
   assert.match(componentsCss, /@media \(max-width: 720px\)[\s\S]*?\.notify-panel\s*\{[\s\S]*?left:\s*12px !important; right:\s*12px !important;/);
   assert.match(supplierViewsJs, /focusAccount\(state\.ui\.supplierSelectedAccountId\)/);
   assert.match(deliveryViewJs, /focusSupplierDeliveryAsset/);
@@ -780,41 +800,124 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(opener, /const project\s*=\s*items\?\.\[0\]\s*\|\|/);
   assert.match(opener, /go\(item\.zone,\s*item\.page,\s*project\?\.id\s*\|\|\s*null\)/);
   const load = section(mainJs, "async function loadWorkspaceProjects", "if (typeof window !==");
-  assert.match(load, /if\s*\(target\.pending\)\s*return target\.pending/);
+  assert.match(load, /if\s*\(target\.pending\)\s*\{\s*if\s*\(!force\)\s*return target\.pending/);
+  assert.match(load, /if\s*\(target\.forcedPending\)\s*return target\.forcedPending/);
+  assert.match(load, /await activePending/);
+  assert.match(load, /return loadWorkspaceProjects\(kind,\s*\{\s*force:\s*true\s*\}\)/);
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the final v122 cache marker", () => {
+test("all modified workspace-shell resources use the final v132 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260729-v122-team-3"/);
-  assert.match(indexHtml, /styles\/components\.css\?v=20260729-v122-team-3"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260729-v122-team-3"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260729-v122-team-3"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260729-v122-team-3"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260729-v122-team-3"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260729-v122-static-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260728-v120-shell-21"/);
-  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260728-v120-shell-21"/);
-  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260728-v120-shell-21"/);
-  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260729-v122-team-3"/);
-  assert.match(mainJs, /ui\/components\.js\?v=20260729-v122-team-3/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260729-v122-static-1"/);
-  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260728-v120-shell-13"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260802-v134-static-community-1"/);
+  assert.match(indexHtml, /styles\/components\.css\?v=20260802-v134-static-community-1"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260802-v134-static-community-1"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260802-v134-static-community-1"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260802-v134-static-community-1"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260802-v134-static-community-1"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260802-v134-static-community-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260802-v134-static-community-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260802-v134-static-community-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260802-v134-static-community-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260802-v134-static-community-1"/);
+  assert.match(mainJs, /ui\/components\.js\?v=20260802-v134-static-community-1/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260802-v134-static-community-1"/);
+  assert.match(mainJs, /from\s+"\.\/ui\/icons\.js\?v=20260802-v134-static-community-1"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
   assert.doesNotMatch(mainJs, /core\/remote\.js\?v=/);
-  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260728-v120-shell-21/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260729-v122-static-1"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260802-v134-static-community-1/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260802-v134-static-community-1"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 
-test("dark batch workspace selects the white brand logo", () => {
+test("workspace switcher uses the transparent blue brand lockup", () => {
   const switcher = section(mainJs, "function renderWorkspaceSwitcher()", "function normalizeWorkspaceProject");
-  assert.match(switcher, /zone\s*===\s*"agent"/);
-  assert.match(switcher, /["']dark["']/);
-  assert.match(switcher, /workspaceBrandGlyph\s*\(/);
-  assert.match(
-    iconsJs,
-    /normalizedTone\s*===\s*"dark"\s*\?\s*"white"\s*:\s*"black"/,
+  assert.match(switcher, /starmatrix-wordmark-blue-transparent\.png/);
+  assert.match(switcher, /class="workspace-brand-lockup"/);
+  assert.doesNotMatch(switcher, /workspaceBrandGlyph\s*\(/);
+  assert.match(baseCss, /\.workspace-brand-lockup img\s*\{/);
+});
+
+test("batch workspace uses a light task-board shell with one create button", () => {
+  assert.match(agentViewJs, /class="agw-new-board-button"[^>]*>[\s\S]*?新建任务板<\/button>/);
+  assert.match(agentViewJs, /<textarea id="agwInput" hidden>/);
+  assert.match(agentCss, /body\.workspace-shell-v2\[data-zone="agent"\]\s+\.agw-composer[\s\S]*?background:\s*rgba\(250,251,252,.94\)/);
+  assert.match(agentCss, /\.agw-new-board-button[\s\S]*?background:\s*#ffffff/);
+  assert.match(uiMotionCss, /body\.workspace-shell-v2\[data-zone="agent"\]\s+\.agc-seg\.is-active[\s\S]*?color:\s*#fff/);
+  assert.match(uiMotionCss, /body\.workspace-shell-v2\[data-zone="agent"\]\s+\.agc-acc\.is-video\s+\.agc-idx[\s\S]*?color:\s*#2f64a9/);
+  assert.match(agentCardsJs, /class="agc-account-copy \$\{imgAcc \? "has-mode-switch has-image-count" : ""\}"/);
+  assert.match(agentCardsJs, /class="agc-copy-title-input"[^>]*data-pacc-copy-title/);
+  assert.match(agentCardsJs, /data-mode="copy"[^>]*>\u591a\u56fe<\/button>/);
+  assert.match(agentCardsJs, /data-mode="single"[^>]*>\u5355\u56fe<\/button>/);
+  assert.match(agentCardsJs, /function accountDisplayName\(account,[\s\S]*?tail === head\.repeat/);
+  assert.match(agentCardsJs, /class="agc-override-name"><b>\$\{esc\(accountDisplayName\(a\)\)\}/);
+  assert.match(agentCardsJs, /class="agc-acc[\s\S]*?<b>\$\{esc\(accountDisplayName\(a\)\)\}/);
+  assert.match(agentViewJs, /accountDisplayName\(state\.accounts\.find\(a => a\.id === accountId\), "当前账号"\)/);
+  assert.match(agentCardsJs, /<div class="agc-mini-ref">[\s\S]*?<div class="agc-override-actions">[\s\S]*?\u4ece\u8d44\u4ea7\u9009\u62e9[\s\S]*?\u53d6\u6d88\u9009\u62e9/);
+  assert.match(uiMotionCss, /\.agc-override\.is-custom-plan\s+\.agc-account-copy\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+max-content/);
+  assert.match(uiMotionCss, /\.agc-account-copy\.has-mode-switch[\s\S]*?grid-template-columns:\s*86px\s+minmax\(0,\s*1fr\)\s+max-content/);
+  assert.match(uiMotionCss, /\.agc-override\.is-custom-plan\s+\.agc-copy-editor-btn[\s\S]*?max-width:\s*124px/);
+  assert.match(uiMotionCss, /grid-template-areas:\s*\n\s*"name content imgcount"\s*\n\s*"refs refs refs"/);
+  assert.match(agentViewJs, /class="asset-picker-upload" data-ap-upload-zone/);
+  assert.match(agentViewJs, /wireDropZone\(uploadZone,\s*addUploadedImages,\s*\{ filesOnly:\s*true \}\)/);
+  assert.match(agentViewJs, /const \{ addAssetFromDataUrl \} = await import\("\.\.\/domain\/assets\.js"\);[\s\S]*?addAssetFromDataUrl\(kind === "custom" \? accountId : null/);
+  assert.match(agentCardsJs, /class="static-agent-board-mark/);
+  assert.doesNotMatch(agentCardsJs, /class="static-agent-board-status/);
+  assert.match(uiMotionCss, /\.agc-head\s*>\s*b[\s\S]*?color:\s*#252a33\s*!important/);
+  assert.match(uiMotionCss, /\.static-agent-progress\s*\{\s*display:\s*none/);
+  assert.doesNotMatch(agentCardsJs, /<div class="static-agent-progress">/);
+});
+
+test("batch account selection stays spatially stable and marks accounts created today", () => {
+  const planCard = section(agentCardsJs, "  plan(m) {", "  /* 进度卡：活卡片，从 store 实时取数 */");
+
+  assert.match(planCard, /aria-pressed="\$\{on \? "true" : "false"\}"/);
+  assert.match(planCard, /class="agc-select-mark \$\{on \? "is-visible" : ""\}"/);
+  assert.match(planCard, /class="agc-account-meta"[\s\S]*?class="agc-account-type"[\s\S]*?今日已创作/);
+  assert.doesNotMatch(planCard, /\$\{on \? icon\("check"/);
+  assert.match(uiMotionCss, /v130 batch interaction:[\s\S]*?\.agc-acc\s*\{[\s\S]*?grid-template-columns:\s*48px\s+minmax\(0,\s*1fr\)\s+minmax\(104px,\s*max-content\)\s+24px/);
+  assert.match(uiMotionCss, /\.agc-select-mark\.is-visible\s*\{[\s\S]*?background:\s*linear-gradient/);
+  assert.match(uiMotionCss, /@keyframes agcAccountSelectIn/);
+});
+
+test("image batch keeps per-item image count in the copy row and reference pickers accept drops", () => {
+  const planCard = section(agentCardsJs, "  plan(m) {", "  /* 进度卡：活卡片，从 store 实时取数 */");
+  const imageCopyRow = section(planCard, 'class="agc-account-copy ${imgAcc ? "has-mode-switch has-image-count" : ""}"', "</div>`}\n        </div>`;");
+
+  assert.match(planCard, /const imageCountControl\s*=\s*imgAcc\s*&&\s*imageCreationMode\s*!==\s*"single"/);
+  assert.match(imageCopyRow, /\$\{imageModeSwitch\}[\s\S]*?data-pacc-copy-title[\s\S]*?data-act="plan-edit-copy"[\s\S]*?\$\{imageCountControl\}/);
+  assert.match(uiMotionCss, /v132:[\s\S]*?@media \(min-width:\s*981px\)[\s\S]*?\.agc-account-copy\.has-mode-switch\.has-image-count\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?flex-flow:\s*row nowrap\s*!important/);
+  assert.match(uiMotionCss, /\.agc-account-copy\.has-mode-switch\.has-image-count\s+\.agc-mini-count\.img-count\s*\{[\s\S]*?grid-area:\s*auto\s*!important[\s\S]*?position:\s*static\s*!important[\s\S]*?flex:\s*0 0 78px/);
+  assert.match(planCard, /class="agc-ref-picked \$\{editable \? "is-dropzone" : ""\}"/);
+  assert.match(planCard, /data-plan-custom-refdrop="\$\{m\.id\}" data-ref-account="\$\{a\.id\}"/);
+  assert.match(agentViewJs, /kind === "custom" \? "选择定制参考图"/);
+  assert.match(agentViewJs, /const pickerSurface = panel\.querySelector\("\.asset-picker"\);[\s\S]*?wireDropZone\(pickerSurface,\s*addUploadedImages,\s*\{ filesOnly:\s*true \}\)/);
+  assert.match(agentViewJs, /wireDropZone\(uploadZone,\s*addUploadedImages,\s*\{ filesOnly:\s*true \}\)/);
+  assert.match(agentViewJs, /wireDropZone\(z,\s*files\s*=>\s*setPlanCustomRefs\(z\.dataset\.planCustomRefdrop/);
+  assert.match(uiMotionCss, /\.asset-picker-upload\.drag-over[\s\S]*?\.agc-override\[data-plan-custom-refdrop\]\.drag-over/);
+});
+
+test("static-video plans keep image accounts on the video copy editor", () => {
+  const planCard = section(agentCardsJs, "  plan(m) {", "  /* 进度卡：活卡片，从 store 实时取数 */");
+  const imageAccountMatcher = planCard.match(/const isImageAcc\s*=\s*(a\s*=>[^;]+);/);
+  assert.ok(imageAccountMatcher, "plan card must define the image-only account gate");
+
+  const makeImageAccountMatcher = Function(
+    "isImageKind",
+    "groupOf",
+    `return (${imageAccountMatcher[1]});`,
   );
+  const xhsImageAccount = { platform: "小红书", mode: "图文" };
+  const staticContentKind = "static";
+  assert.equal(makeImageAccountMatcher(true, () => "图文组")(xhsImageAccount), true);
+  assert.equal(
+    makeImageAccountMatcher(staticContentKind === "image", () => "图文组")(xhsImageAccount),
+    false,
+  );
+
+  assert.match(planCard, /const imageModeSwitch\s*=\s*imgAcc\s*\?\s*`<div class="agc-image-mode-switch"/);
+  assert.match(planCard, /imgAcc && imageCreationMode !== "single"\s*\?\s*`<label class="agc-mini-count img-count">每条图数/);
+  assert.match(planCard, /<input class="agc-copy-title-input"[^>]*data-pacc-copy-title/);
+  assert.match(planCard, /data-act="plan-edit-copy"[^>]*>[\s\S]*?填写文案/);
 });

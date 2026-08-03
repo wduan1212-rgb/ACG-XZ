@@ -1,7 +1,7 @@
 import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
-import { icon } from "../ui/icons.js";
+import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save } from "../core/store.js";
-import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260729-v122-team-3";
+import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260802-v134-static-community-1";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliveryViewsSummary } from "../domain/delivery.js?v=20260728-v120-shell-20";
@@ -202,6 +202,9 @@ function smoothTrendPath(points = []) {
 }
 
 function supplierTrendModel(rows = []) {
+  // “已发布”在供应商端只有一个口径：供应商已经回传有效链接。
+  // 不能把仅完成交付、仍待回传的内容混入折线。
+  const publishedRows = rows.filter(item => Boolean(item?.asset?.publishedUrl));
   const trendEnd = new Date();
   trendEnd.setHours(0, 0, 0, 0);
   const customTrendStart = supplierTrendWindow.start ? new Date(`${supplierTrendWindow.start}T00:00:00`) : null;
@@ -213,7 +216,7 @@ function supplierTrendModel(rows = []) {
   const days = Array.from({ length: trendDayCount }, (_, offset) => {
     const date = new Date(trendStart.getTime() + offset * 864e5);
     const key = supplierDateKey(date.getTime());
-    const items = rows.filter(item => supplierDateKey(item.timestamp) === key);
+    const items = publishedRows.filter(item => supplierDateKey(item.timestamp) === key);
     return { key, label: `${date.getMonth() + 1}/${date.getDate()}`, count: items.length, items };
   });
   const maxDaily = Math.max(1, ...days.map(item => item.count));
@@ -227,13 +230,25 @@ function supplierTrendModel(rows = []) {
 
 function supplierTrendCardContent(model) {
   const { days, points, path, areaPath } = model;
-  const title = supplierTrendWindow.kind === "custom" ? "自定义时间交付" : `近 ${supplierTrendWindow.days} 日交付`;
-  return `<header><span class="supplier-chart-title">${title}</span><span class="supplier-trend-actions"><button type="button" data-supplier-trend-window="7">7日</button><button type="button" data-supplier-trend-window="30">30日</button><button type="button" data-supplier-trend-window="custom">自定义</button></span></header><div class="supplier-trend-scroll"><div class="supplier-trend-canvas" style="--supplier-trend-points:${days.length}"><div class="supplier-trend-plot"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="交付趋势"><defs><linearGradient id="supplierTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef476f" stop-opacity=".34"/><stop offset="1" stop-color="#ef476f" stop-opacity="0"/></linearGradient></defs><path d="${areaPath}" fill="url(#supplierTrendFill)"/><path d="${path}" fill="none" stroke="#e83e62" stroke-width="2.2" vector-effect="non-scaling-stroke"/></svg>${points.map((point, index) => `<span class="supplier-trend-node" style="--x:${point.x}%;--y:${point.y}%" data-supplier-trend-date="${esc(days[index].key)}" tabindex="0" role="button" aria-label="${esc(`${days[index].label} 共 ${days[index].count} 条交付，查看明细`)}"><i>${days[index].count} 条交付</i></span>`).join("")}</div><span class="supplier-trend-labels">${days.map((item, index) => `<i style="--x:${points[index].x}%"><b>${item.count}</b><em>${item.label}</em></i>`).join("")}</span></div></div>`;
+  const title = supplierTrendWindow.kind === "custom" ? "自定义时间已发布" : `近 ${supplierTrendWindow.days} 日已发布`;
+  return `<header><span class="supplier-chart-title">${title}</span><span class="supplier-trend-actions"><button type="button" data-supplier-trend-window="7">7日</button><button type="button" data-supplier-trend-window="30">30日</button><button type="button" data-supplier-trend-window="custom">自定义</button></span></header><div class="supplier-trend-scroll"><div class="supplier-trend-canvas" style="--supplier-trend-points:${days.length}"><div class="supplier-trend-plot"><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="供应商回传链接趋势"><defs><linearGradient id="supplierTrendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ef476f" stop-opacity=".34"/><stop offset="1" stop-color="#ef476f" stop-opacity="0"/></linearGradient></defs><path d="${areaPath}" fill="url(#supplierTrendFill)"/><path d="${path}" fill="none" stroke="#e83e62" stroke-width="2.2" vector-effect="non-scaling-stroke"/></svg>${points.map((point, index) => `<span class="supplier-trend-node" style="--x:${point.x}%;--y:${point.y}%" data-supplier-trend-date="${esc(days[index].key)}" tabindex="0" role="button" aria-label="${esc(`${days[index].label} 共 ${days[index].count} 条已回传链接，查看明细`)}"><i>${days[index].count} 条已发布</i></span>`).join("")}</div><span class="supplier-trend-labels">${days.map((item, index) => `<i style="--x:${points[index].x}%"><b>${item.count}</b><em>${item.label}</em></i>`).join("")}</span></div></div>`;
 }
 
-async function supplierData(includeMembers = false) {
+async function supplierData(includeMembers = false, includeActivity = true) {
+  // 子账号和绑定关系是供应商首页/账号页的核心读模型；活动日志只是
+  // 首页的增强信息。不要让一个旧服务端暂时缺少 activity 路由时把
+  // “全部账号”也一起拖在读取态。remote 层仍会在 9 秒内确定超时收尾。
+  const activityPromise = includeActivity
+    ? remote.supplier.activity().catch(error => {
+        console.warn("[supplier-activity] optional feed unavailable", error);
+        return [];
+      })
+    : Promise.resolve([]);
   const [members, children, bindings, activity] = await Promise.all([
-    includeMembers ? remote.supplier.members() : Promise.resolve([]), remote.supplier.children(), remote.supplier.bindings(), remote.supplier.activity()
+    includeMembers ? remote.supplier.members() : Promise.resolve([]),
+    remote.supplier.children(),
+    remote.supplier.bindings(),
+    activityPromise,
   ]);
   return { members: members || [], children: children || [], bindings: bindings || [], activity: activity || [] };
 }
@@ -258,7 +273,7 @@ export async function renderSupplierOverview(root) {
     const xhsCount = platformCounts.get("小红书") || 0;
     const sphCount = platformCounts.get("视频号") || 0;
     const platformTotal = Math.max(1, xhsCount + sphCount);
-    let trendModel = supplierTrendModel(rows);
+    let trendModel = supplierTrendModel(publishedRows);
     const activityCutoff = supplierActivityDays === "all" ? 0 : Date.now() - Number(supplierActivityDays) * 86400000;
     const visibleActivity = activity.filter(item => (
       (supplierActivityType === "all" || supplierActivityKind(item) === supplierActivityType)
@@ -288,7 +303,7 @@ export async function renderSupplierOverview(root) {
             ${activity.length ? `<div class="supplier-activity-carousel" id="supplierActivityCarousel">${supplierActivityItemsHtml(carouselActivity)}</div><div class="supplier-activity-pagination"><button class="icon-btn sm" type="button" data-supplier-activity-page="prev" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button><span id="supplierActivityPage">${visibleActivity.length ? `${supplierActivityCarouselPage + 1} / ${activityPages}` : "0 / 0"}</span><button class="icon-btn sm" type="button" data-supplier-activity-page="next" ${activityPages <= 1 ? "disabled" : ""}>${icon("chevronRight", 13)}</button></div>` : emptyState("pulse", "暂无操作记录", "子账号下载、回传链接或更新观看量后会显示在这里")}
           </section>
         </div>
-        <aside class="card supplier-data-assistant"><header><span class="supplier-data-assistant-icon">${icon("bot", 18)}</span><div><b>数据助手</b></div><span class="supplier-today-link-actions"><button class="btn ghost sm supplier-today-links" id="supplierTodayLinks" type="button">${icon("link", 13)} 今日回传</button><button class="icon-btn sm" id="supplierTodayLinksCopyAll" type="button" title="复制今日全部回传链接" aria-label="复制今日全部回传链接">${icon("copy", 13)}</button></span></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button type="button">今天交付多少？</button><button type="button">谁下载过？</button><button type="button">给我回传链接</button></div><form id="supplierDataForm"><input id="supplierDataInput" name="supplierDataQuestion" autocomplete="off" aria-label="向数据助手提问" placeholder="问问数据…"/><button class="icon-btn primary" type="submit" title="发送" aria-label="发送数据问题">${icon("send", 14)}</button></form></aside>
+        <aside class="card supplier-data-assistant"><header><span class="supplier-data-assistant-icon">${agentAvatar(28)}</span><div><b>数据助手</b></div><span class="supplier-today-link-actions"><button class="btn ghost sm supplier-today-links" id="supplierTodayLinks" type="button">${icon("link", 13)} 今日回传</button><button class="icon-btn sm" id="supplierTodayLinksCopyAll" type="button" title="复制今日全部回传链接" aria-label="复制今日全部回传链接">${icon("copy", 13)}</button></span></header><div class="supplier-data-messages" id="supplierDataMessages" aria-live="polite">${supplierAssistantMessagesHtml(assistantHistory)}</div><div class="supplier-data-suggestions"><button type="button">今天交付多少？</button><button type="button">谁下载过？</button><button type="button">给我回传链接</button></div><form id="supplierDataForm"><input id="supplierDataInput" name="supplierDataQuestion" autocomplete="off" aria-label="向数据助手提问" placeholder="问问数据…"/><button class="icon-btn primary" type="submit" title="发送" aria-label="发送数据问题">${icon("send", 14)}</button></form></aside>
       </div>
     </div>`;
     const openSupplierRows = (title, selectedRows) => {
@@ -301,11 +316,11 @@ export async function renderSupplierOverview(root) {
       let end = initialEnd;
       openModal(`<div class="supplier-trend-detail-modal" id="supplierTrendDetailModal"></div>`, { wide: true, onMount(panel, close) {
         const draw = () => {
-          const scoped = rows.filter(item => {
+          const scoped = publishedRows.filter(item => {
             const date = supplierDateKey(item.timestamp);
             return (!start || date >= start) && (!end || date <= end);
           });
-          panel.innerHTML = `<div class="mp-head"><b>交付趋势明细 · ${scoped.length} 条</b><button class="icon-btn ghost" data-close aria-label="关闭">${icon("x", 15)}</button></div><div class="supplier-trend-detail-tools"><label>开始<input type="date" id="supplierTrendStart" value="${esc(start)}"/></label><label>结束<input type="date" id="supplierTrendEnd" value="${esc(end)}"/></label><button class="btn primary sm" type="button" id="supplierTrendApply">应用到图表</button></div><div class="supplier-dashboard-detail-list">${scoped.map(({ asset, account, timestamp }) => `<div class="supplier-dashboard-detail-row"><span><b>${esc(asset.title || asset.name || "未命名内容")}</b><em>${esc(account.name || "未命名账号")} · ${esc(account.platform || "")}</em></span><time>${timestamp ? new Date(timestamp).toLocaleString("zh-CN", { hour12: false }) : "暂无时间"}</time>${asset.publishedUrl ? `<a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">打开链接</a>` : `<i>未回传</i>`}</div>`).join("") || `<p class="supplier-activity-empty">该时间范围暂无交付</p>`}</div>`;
+          panel.innerHTML = `<div class="mp-head"><b>已发布趋势明细 · ${scoped.length} 条</b><button class="icon-btn ghost" data-close aria-label="关闭">${icon("x", 15)}</button></div><div class="supplier-trend-detail-tools"><label>开始<input type="date" id="supplierTrendStart" value="${esc(start)}"/></label><label>结束<input type="date" id="supplierTrendEnd" value="${esc(end)}"/></label><button class="btn primary sm" type="button" id="supplierTrendApply">应用到图表</button></div><div class="supplier-dashboard-detail-list">${scoped.map(({ asset, account, timestamp }) => `<div class="supplier-dashboard-detail-row"><span><b>${esc(asset.title || asset.name || "未命名内容")}</b><em>${esc(account.name || "未命名账号")} · ${esc(account.platform || "")}</em></span><time>${timestamp ? new Date(timestamp).toLocaleString("zh-CN", { hour12: false }) : "暂无时间"}</time><a href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">打开链接</a></div>`).join("") || `<p class="supplier-activity-empty">该时间范围暂无回传链接</p>`}</div>`;
           $("#supplierTrendStart", panel)?.addEventListener("change", event => { start = event.currentTarget.value; draw(); });
           $("#supplierTrendEnd", panel)?.addEventListener("change", event => { end = event.currentTarget.value; draw(); });
           $("#supplierTrendApply", panel)?.addEventListener("click", () => {
@@ -364,7 +379,7 @@ export async function renderSupplierOverview(root) {
     refreshSupplierTrend = () => {
       const chart = $(".supplier-trend-chart", root);
       if (!chart) return;
-      trendModel = supplierTrendModel(rows);
+      trendModel = supplierTrendModel(publishedRows);
       chart.innerHTML = supplierTrendCardContent(trendModel);
       chart.classList.remove("is-trend-switching");
       void chart.offsetWidth;
@@ -494,7 +509,7 @@ export async function renderSupplierOverview(root) {
 export async function renderSupplierAccounts(root) {
   root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div><div class="supplier-loading">正在读取...</div></div>`;
   try {
-    const { children, bindings } = await supplierData();
+    const { children, bindings } = await supplierData(false, false);
     if (!onSupplierRoute("assets")) return;
     emitSupplierChildren(children, bindings);
     const childMap = new Map(children.map(x => [x.id, x]));
@@ -800,7 +815,7 @@ export async function renderSupplierSettings(root, { page } = {}) {
   root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">设置</div><h2>${pageTitle}</h2></div></div><div class="supplier-loading">正在读取...</div></div>`;
   const draw = async () => {
     try {
-      const [{ members, children, bindings }, allRequests] = await Promise.all([supplierData(true), remote.memberRequests.list("pending")]);
+      const [{ members, children, bindings }, allRequests] = await Promise.all([supplierData(true, false), remote.memberRequests.list("pending")]);
       const requests = (allRequests || []).filter(request => request.role === "supplier_child");
       if (!onSupplierRoute("settings")) return;
       emitSupplierChildren(children, bindings);

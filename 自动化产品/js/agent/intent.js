@@ -42,7 +42,15 @@ function selectionRange(goal = "") {
 }
 
 export function parseGoalFallback(goal) {
-  const group = /图文|笔记|小红书图/.test(goal) ? "图文组"
+  const contentKind = /静态视频|静态成片|图片分镜(?:视频|成片)|图片(?:加|配)口播(?:视频|成片)?/.test(goal) ? "static"
+    : /素材视频|素材号|无数字人/.test(goal) ? "material"
+    : /真人视频|真人号|数字人/.test(goal) ? "real"
+    : /图文|笔记|小红书图/.test(goal) ? "image" : "";
+  const group = contentKind === "static" ? "静态视频"
+    : contentKind === "image" ? "图文组"
+    : contentKind === "real" ? "真人"
+    : contentKind === "material" ? "素材"
+    : /图文|笔记|小红书图/.test(goal) ? "图文组"
     : (goal.includes("真人") || goal.includes("数字人")) ? "真人"
     : (goal.includes("素材") || goal.includes("无数字人")) ? "素材" : "all";
   const styleM = goal.match(/[，,。]\s*(偏[^，,。]+|风格[^，,。]+)/);
@@ -63,7 +71,7 @@ export function parseGoalFallback(goal) {
   else { const dm = goal.match(/(?:主题|关于|围绕|做一?期|出一?期|发一?条)\s*[是为：:]?\s*([^，,。、\d]{2,16})/); if (dm) topic = dm[1].trim(); }
   if (isPureAccountSelectionText(goal) && !qm) topic = "";
   return {
-    topic: topic.slice(0, 30), tags: [], group, style: styleM ? styleM[1] : "",
+    topic: topic.slice(0, 30), tags: [], contentKind, group, style: styleM ? styleM[1] : "",
     count: range.accountCount || count, accountCount: range.accountCount || accountCount || count || null,
     perAccountCount: Math.max(1, perAccountCount || 1),
     sort, pickFrom: range.pickFrom || ""
@@ -89,7 +97,7 @@ export async function routeIntent(text, contextSummary = "") {
     const r = await llm([
       { role: "system", content: `你是内容生产工作台的指令路由器。把用户输入归类为一个 intent 并提取参数，只输出 JSON。
 可选 intent：
-- plan_batch：发起一批内容量产（提到主题/选号/做一期/量产/批量创作等）。params: {"topic":"创作主题","group":"图文组|真人|素材|all","style":"风格策略，可空","count":数字或null}
+- plan_batch：发起一批内容量产（提到主题/选号/做一期/量产/批量创作等）。params: {"topic":"创作主题","contentKind":"image|static|material|real","group":"图文组|静态视频|真人|素材|all","style":"风格策略，可空","count":数字或null}
 - run_generation：开始/继续生成已就绪的任务。params:{}
 - approve_all：批量通过审核。params:{}
 - deliver_all：批量交付/定稿入库。params:{}

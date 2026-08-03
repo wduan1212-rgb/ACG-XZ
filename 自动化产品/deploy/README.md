@@ -1,6 +1,10 @@
 # Dumate Studio / 星阵定制创作部署
 
-生产目录建议为：
+> 本文件是通用部署模板，不记录也不代表当前生产服务器实况。正式部署必须先读取
+> `docs/服务器部署交接指南.md` 与目标版本 release manifest，并在维护窗内重新做只读预检。
+> 下面的目录、命令和变量均为示例，禁止把示例路径或删除式同步直接套用到生产环境。
+
+示例安装目录：
 
 ```bash
 /opt/dumate-studio
@@ -138,10 +142,11 @@ apps/video-workshop/uploads/
 兼容旧版本时，最后三项即使已经迁移到 `runtime/video-workshop/` 也继续
 排除，避免误删尚未迁移的历史项目。不要使用 `--delete-excluded`。
 
-安全同步示例（源目录为 `自动化产品/`）：
+代码同步示例（源目录为 `自动化产品/`）。示例刻意不带 `--delete`；生产发布应优先
+生成版本化 release 包并原子切换，不对当前目录做原地删除式同步：
 
 ```bash
-rsync -av --delete \
+rsync -av \
   --exclude '.env' \
   --exclude '.env.local' \
   --exclude '.venv/' \
@@ -162,6 +167,9 @@ rsync -av --delete \
   --exclude 'apps/infinite-canvas-source/out/' \
   ./ <ssh-target>:/opt/dumate-studio/
 ```
+
+即使配置了排除项，也禁止为“清理旧文件”临时追加 `--delete`、`--delete-excluded`
+或整目录覆盖。静态闭包的旧哈希只根据已审计 manifest 精确处理，持久数据目录永不参与清理。
 
 此次代码同步必须包含：
 

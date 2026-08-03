@@ -580,6 +580,50 @@ def _material_timeline(
     return sorted(timeline, key=lambda item: item["start"])
 
 
+def _still_zoom_filter(
+    width: int,
+    height: int,
+    duration: float,
+    *,
+    fps: int = 30,
+) -> tuple[int, str]:
+    """Build one continuous, centered Ken Burns move for a still storyboard frame.
+
+    The still is first supersampled so ``zoompan`` has enough sub-pixel detail.  Its
+    crop origin is then snapped to an even high-resolution pixel instead of being
+    rounded differently on adjacent frames.  This keeps the optical centre stable
+    while the zoom progresses monotonically for the whole shot and resets only when
+    the next storyboard clip starts.
+    """
+    safe_width = max(2, int(width))
+    safe_height = max(2, int(height))
+    safe_duration = max(0.1, _finite_number(duration, 0.1))
+    safe_fps = max(1, int(fps))
+    frames = max(1, int(round(safe_duration * safe_fps)))
+    last_frame = max(0, frames - 1)
+    denominator = max(1, last_frame)
+    supersample = 4
+    canvas_width = safe_width * supersample
+    canvas_height = safe_height * supersample
+
+    # Narration remains the timing source of truth.  Longer semantic beats move a
+    # little farther, but every single still remains a slow continuous push-in.
+    zoom_delta = min(0.05, max(0.008, safe_duration * 0.006))
+    progress = f"min(on,{last_frame})/{denominator}"
+    zoom = f"1+{zoom_delta:.6f}*{progress}"
+    even_center_x = "2*trunc((iw-iw/zoom)/4)"
+    even_center_y = "2*trunc((ih-ih/zoom)/4)"
+    filters = (
+        f"scale={canvas_width}:{canvas_height}:force_original_aspect_ratio=increase:"
+        "flags=lanczos+accurate_rnd+full_chroma_int,"
+        f"crop={canvas_width}:{canvas_height},"
+        f"zoompan=z='{zoom}':x='{even_center_x}':y='{even_center_y}':"
+        f"d=1:s={safe_width}x{safe_height}:fps={safe_fps},"
+        "setsar=1,format=yuv420p"
+    )
+    return frames, filters
+
+
 async def _prepare_material_clip(
     source: Path,
     mime: str,
@@ -604,25 +648,21 @@ async def _prepare_material_clip(
         str(output),
     ]
     if mime.startswith("image/"):
-        frames = max(1, int(round(duration * 30)))
-        filters = (
-            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},"
-            "zoompan=z='min(zoom+0.00055,1.055)':"
-            "x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-            f"d={frames}:s={width}x{height}:fps=30,"
-            "setsar=1,format=yuv420p"
-        )
+        frames, filters = _still_zoom_filter(width, height, duration)
         await run(
             [
                 _binary("ffmpeg"),
                 "-y",
                 "-loop",
                 "1",
+                "-framerate",
+                "30",
                 "-i",
                 str(source),
                 "-t",
                 f"{duration:.3f}",
+                "-frames:v",
+                str(frames),
                 "-vf",
                 filters,
                 *common_output,

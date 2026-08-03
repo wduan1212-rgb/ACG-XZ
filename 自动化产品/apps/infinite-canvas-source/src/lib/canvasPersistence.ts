@@ -46,6 +46,54 @@ export interface CanvasProjectReadResult {
   serverRevision?: number;
 }
 
+export const CANVAS_INTERRUPTED_TASK_TIMEOUT_MS = 5 * 60 * 1000;
+export const CANVAS_INTERRUPTED_TASK_TEXT = "任务已中断，可重试";
+
+/**
+ * A persisted async marker has no executable promise behind it after reload.
+ * Repair only stale markers, preserve completed mixed results, and never call
+ * a generation API from hydration.
+ */
+export function recoverInterruptedCanvasState(
+  state: CanvasProjectState,
+  now = Date.now(),
+  timeoutMs = CANVAS_INTERRUPTED_TASK_TIMEOUT_MS,
+): { state: CanvasProjectState; changed: boolean } {
+  let changed = false;
+  const stale = (createdAt: number | undefined) =>
+    !Number.isFinite(createdAt) || now - Number(createdAt || 0) >= timeoutMs;
+  const items = state.items.map((item) => {
+    if (
+      (item.type !== "generation" && item.type !== "enhanced")
+      || !item.loading
+      || !stale(item.createdAt)
+    ) return item;
+    changed = true;
+    if (item.assetUrl) {
+      return { ...item, loading: false, generationStatus: "done" as const };
+    }
+    return {
+      ...item,
+      loading: false,
+      generationStatus: "interrupted" as const,
+      label: CANVAS_INTERRUPTED_TASK_TEXT,
+      error: CANVAS_INTERRUPTED_TASK_TEXT,
+    };
+  });
+  const messages = state.messages.map((message) => {
+    if (message.status !== "thinking" || !stale(message.createdAt)) return message;
+    changed = true;
+    return {
+      ...message,
+      status: message.resultItemIds?.length ? "partial" as const : "error" as const,
+      text: CANVAS_INTERRUPTED_TASK_TEXT,
+    };
+  });
+  return changed
+    ? { state: { ...state, items, messages }, changed: true }
+    : { state, changed: false };
+}
+
 export function decideCanvasServerReconciliation(
   local: CanvasProjectReadResult | null,
   serverRevision: number,
@@ -231,6 +279,7 @@ function stateFingerprint(state: CanvasProjectState): string {
 
 export async function readCanvasProject(
   projectId: string,
+  options: { recoverInterrupted?: boolean | "all" } = {},
 ): Promise<CanvasProjectReadResult | null> {
   const db = await openCanvasDatabase();
   try {
@@ -245,11 +294,19 @@ export async function readCanvasProject(
     if (!raw) return null;
     const record = raw as Partial<StoredCanvasProject>;
     if ((record.schema === 1 || record.schema === 2) && isCanvasProjectState(record.state)) {
+      const recovered = options.recoverInterrupted === false
+        ? { state: record.state, changed: false }
+        : recoverInterruptedCanvasState(
+            record.state,
+            Date.now(),
+            options.recoverInterrupted === "all" ? 0 : CANVAS_INTERRUPTED_TASK_TIMEOUT_MS,
+          );
       return {
-        state: record.state,
+        state: recovered.state,
         confirmedEmpty: record.confirmedEmpty === true,
         source: record.source || "local",
-        dirty: typeof record.dirty === "boolean" ? record.dirty : record.source !== "server",
+        dirty: recovered.changed
+          || (typeof record.dirty === "boolean" ? record.dirty : record.source !== "server"),
         conflicted: record.conflicted === true,
         clientUpdatedAt: Number(record.clientUpdatedAt || record.verifiedAt || 0),
         serverRevision: Number.isFinite(record.serverRevision)
@@ -258,8 +315,15 @@ export async function readCanvasProject(
       };
     }
     if (isCanvasProjectState(raw)) {
+      const recovered = options.recoverInterrupted === false
+        ? { state: raw, changed: false }
+        : recoverInterruptedCanvasState(
+            raw,
+            Date.now(),
+            options.recoverInterrupted === "all" ? 0 : CANVAS_INTERRUPTED_TASK_TIMEOUT_MS,
+          );
       return {
-        state: raw,
+        state: recovered.state,
         // Old unversioned empty records are ambiguous and must go through recovery.
         confirmedEmpty: !isCanvasProjectEmpty(raw),
         source: "unversioned",
@@ -297,11 +361,14 @@ export async function writeCanvasProjectVerified(
   if (isCanvasProjectEmpty(state) && !options.allowEmpty) {
     throw new Error("画布尚未恢复，已阻止空数据覆盖");
   }
+  // Active jobs may legitimately live longer than the stale-marker threshold.
+  // Repair belongs to hydration/read, not to an in-flight checkpoint write.
+  const safeState = state;
   const record: StoredCanvasProject = {
     schema: 2,
-    state,
+    state: safeState,
     verifiedAt: Date.now(),
-    confirmedEmpty: isCanvasProjectEmpty(state) && options.confirmEmpty === true,
+    confirmedEmpty: isCanvasProjectEmpty(safeState) && options.confirmEmpty === true,
     source: options.source || "local",
     dirty: options.dirty ?? options.source !== "server",
     conflicted: options.conflicted === true,
@@ -322,10 +389,10 @@ export async function writeCanvasProjectVerified(
 
   // Deliberately reopen the database: validation must be independent from the
   // write transaction and its in-memory value.
-  const readback = await readCanvasProject(projectId);
+  const readback = await readCanvasProject(projectId, { recoverInterrupted: false });
   if (
     !readback
-    || stateFingerprint(readback.state) !== stateFingerprint(state)
+    || stateFingerprint(readback.state) !== stateFingerprint(safeState)
     || readback.confirmedEmpty !== record.confirmedEmpty
     || readback.dirty !== record.dirty
     || readback.conflicted !== record.conflicted

@@ -5,12 +5,29 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset, accountCreatedToday, isAccountDisabled } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260729-v122-static-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260802-v134-static-community-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
 const CONTENT_KIND_LABEL = { image: "图文", static: "静态视频", material: "素材视频", real: "真人视频" };
+
+/* 旧数据里偶尔会把“昵称+英文别名”整段重复写入 name。
+   这里只修正展示投影，不回写账号数据，避免影响历史任务和交付命名。 */
+export function accountDisplayName(account, fallback = "未命名账号") {
+  const raw = String(account?.name || "").trim().replace(/\s+/g, " ");
+  if (!raw) return fallback;
+  const parts = raw.split(" ");
+  if (parts.length < 2) return raw;
+  const comparable = value => value.replace(/[\s_-]+/g, "").toLocaleLowerCase("zh-Hans-CN");
+  for (let cut = 1; cut < parts.length; cut++) {
+    const head = comparable(parts.slice(0, cut).join(""));
+    const tail = comparable(parts.slice(cut).join(""));
+    if (!head || tail.length < head.length || tail.length % head.length !== 0) continue;
+    if (tail === head.repeat(tail.length / head.length)) return parts.slice(0, cut).join(" ");
+  }
+  return raw;
+}
 
 function kindFromGroup(group = "") {
   if (group === "静态视频") return "static";
@@ -34,7 +51,7 @@ function normalizePlanKind(p) {
     if (!a || isAccountDisabled(a)) return false;
     const g = groupOf(a);
     if (p.contentKind === "image") return a?.mode === "图文" || g === "图文组";
-    if (p.contentKind === "static") return a?.mode === "视频";
+    if (p.contentKind === "static") return true;
     if (p.contentKind === "material") return a?.mode === "视频" && g === "素材";
     if (p.contentKind === "real") return a?.mode === "视频" && g === "真人";
     return true;
@@ -172,12 +189,14 @@ const CARD = {
     const countFor = id => Math.max(1, Math.min(12, Number((p.accountCounts || {})[id] || perAccountCount) || perAccountCount));
     const imageCountFor = id => Math.max(1, Math.min(12, Number((p.accountImageCounts || {})[id] || imageCountDefault) || imageCountDefault));
     const totalCount = matched.reduce((sum, a) => sum + countFor(a.id), 0);
-    const isImageAcc = a => a?.mode === "图文" || groupOf(a) === "图文组";
-    const customMode = true;
     const isImageKind = p.contentKind === "image";
     const isStaticKind = p.contentKind === "static";
     const isMaterialKind = p.contentKind === "material";
     const isRealKind = p.contentKind === "real";
+    // 图文账号也能参与静态视频，但此时它走独立的视频产物链路，不能继续
+    // 显示“多图 / 单图”和每条图数等图文专属编辑项。
+    const isImageAcc = a => isImageKind && (a?.mode === "图文" || groupOf(a) === "图文组");
+    const customMode = true;
     const globalRefs = selectedRefIds(p);
     const coverRefs = selectedRefIds(p, "coverRefAssetIds");
     const accountRefs = p.accountRefAssetIds || {};
@@ -186,6 +205,7 @@ const CARD = {
     const perAccountOverrides = matched.length ? `<div class="agc-overrides">
       ${matched.map(a => {
         const imgAcc = isImageAcc(a);
+        const createdToday = accountCreatedToday(a.id);
         const customCopyMode = customMode;
         const imageCreationMode = imgAcc ? ((p.accountImageCreationModes || {})[a.id] || "copy") : "copy";
         const singleImagePrompt = ((p.accountImagePrompts || {})[a.id] || "").trim();
@@ -196,28 +216,28 @@ const CARD = {
         const taskRefIds = (accountRefs[a.id] || []).slice(0, 3);
         const presetRefHtml = presetRefId ? `<span class="agc-ref-origin is-preset">数字人角色版 · 生成时自动用于锁定角色身份</span>${refChips([presetRefId], "", m.id, a.id)}` : "";
         const imageModeSwitch = imgAcc ? `<div class="agc-image-mode-switch" data-mode="${imageCreationMode}" aria-label="图文创作模式">
-          <button type="button" class="${imageCreationMode === "copy" ? "is-active" : ""}" data-act="plan-image-mode" data-mid="${m.id}" data-account="${a.id}" data-mode="copy" title="文案组图" ${locked ? "disabled" : ""}>多</button>
-          <button type="button" class="${imageCreationMode === "single" ? "is-active" : ""}" data-act="plan-image-mode" data-mid="${m.id}" data-account="${a.id}" data-mode="single" title="单图创作" ${locked ? "disabled" : ""}>单</button>
+          <button type="button" class="${imageCreationMode === "copy" ? "is-active" : ""}" data-act="plan-image-mode" data-mid="${m.id}" data-account="${a.id}" data-mode="copy" title="多图笔记：根据标题和文案生成一组配图" ${locked ? "disabled" : ""}>多图</button>
+          <button type="button" class="${imageCreationMode === "single" ? "is-active" : ""}" data-act="plan-image-mode" data-mid="${m.id}" data-account="${a.id}" data-mode="single" title="单图创作：只生成一张指定画面" ${locked ? "disabled" : ""}>单图</button>
         </div>` : "";
+        const imageCountControl = imgAcc && imageCreationMode !== "single"
+          ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="1" max="12" aria-label="${esc(accountDisplayName(a))}每条图数" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>`
+          : "";
         const copyFields = `<div class="agc-copy-fields ${customCopyMode ? "is-custom" : ""} image-mode-panel" data-image-mode="${imageCreationMode}">
-          ${imageCreationMode === "single" ? `<div class="agc-account-copy single-image-copy">
+          ${imageCreationMode === "single" ? `<div class="agc-account-copy single-image-copy has-mode-switch">
             ${imageModeSwitch}
-            <input data-pacc-single-title="${a.id}" value="${esc(singleImageTitle)}" placeholder="必填标题：用于生成发布文案" ${locked ? "disabled" : ""} />
+            <input class="agc-copy-title-input" data-pacc-single-title="${a.id}" value="${esc(singleImageTitle)}" placeholder="必填标题：用于生成发布文案" ${locked ? "disabled" : ""} />
             <button type="button" class="agc-copy-editor-btn ${singleImagePrompt ? "is-filled" : ""}" data-act="plan-edit-single-image" data-mid="${m.id}" data-account="${a.id}" ${locked ? "disabled" : ""}>${icon("image", 11)} ${singleImagePrompt ? "已填图片提示词" : "填写图片提示词"}</button>
-          </div>` : `<div class="agc-account-copy">
+          </div>` : `<div class="agc-account-copy ${imgAcc ? "has-mode-switch has-image-count" : ""}">
             ${imageModeSwitch}
-            <input data-pacc-copy-title="${a.id}" value="${esc(customCopyTitle)}" placeholder="必填标题" ${locked ? "disabled" : ""} />
+            <input class="agc-copy-title-input" data-pacc-copy-title="${a.id}" value="${esc(customCopyTitle)}" placeholder="必填标题" ${locked ? "disabled" : ""} />
             <button type="button" class="agc-copy-editor-btn ${customCopyBody ? "is-filled" : ""}" data-act="plan-edit-copy" data-mid="${m.id}" data-account="${a.id}" ${locked ? "disabled" : ""}>${icon("fileText", 11)} ${customCopyBody ? "已填文案" : "填写文案"}</button>
+            ${imageCountControl}
           </div>`}
         </div>`;
         return `<div class="agc-override ${imgAcc ? "is-image" : "is-video"} ${customMode ? "is-custom-plan" : ""}" ${locked ? "" : `data-plan-custom-refdrop="${m.id}" data-ref-account="${a.id}"`}>
-        <div class="agc-override-name"><b>${esc(a.name)}</b><span>${accountCreatedToday(a.id) ? `<span class="status-pill ok">已创作</span> ` : ""}${esc(groupOf(a))} · ${esc(a.platform || a.mode || "账号")}</span></div>
-        ${locked ? "" : `<div class="agc-override-actions">
-          <button data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="custom" data-ref-account="${a.id}">${icon("image", 11)} 从资产选择</button>
-          <button data-act="plan-remove-account" data-mid="${m.id}" data-account="${a.id}">${icon("x", 10)} 取消选择</button>
-        </div>`}
+        <div class="agc-override-name"><b>${esc(accountDisplayName(a))}</b><span>${esc(groupOf(a))} · ${esc(a.platform || a.mode || "账号")}</span>${createdToday ? `<em class="agc-created-today">今日已创作</em>` : ""}</div>
         ${customMode ? "" : `<label class="agc-mini-count">本号条数<input type="number" min="1" max="12" data-pacc-count="${a.id}" value="${esc(countFor(a.id))}" ${locked ? "disabled" : ""} /></label>`}
-        ${imgAcc && imageCreationMode !== "single" ? `<label class="agc-mini-count img-count">每条图数<input type="number" min="1" max="12" data-pacc-imgcount="${a.id}" value="${esc(imageCountFor(a.id))}" ${locked ? "disabled" : ""} /></label>` : (imgAcc ? "" : customMode ? "" : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`) }
+        ${imgAcc ? "" : customMode ? "" : `<span class="agc-video-chain" title="口播 / 数字人 / 混剪">${icon("video", 12)} 视频</span>`}
         ${copyFields}
         <div class="agc-mini-ref">
           <div class="agc-mini-head"><span>参考图</span><em>本次定制最多3张；数字人角色版会单独标记</em></div>
@@ -226,6 +246,10 @@ const CARD = {
             <span class="agc-ref-origin">本次任务</span>
             ${refChips(taskRefIds, locked ? "" : "plan-custom-refremove", m.id, a.id)}
           </div>
+          ${locked ? "" : `<div class="agc-override-actions">
+            <button class="agc-account-asset-btn" data-act="plan-asset-pick" data-mid="${m.id}" data-ref-kind="custom" data-ref-account="${a.id}">${icon("image", 11)} 从资产选择</button>
+            <button class="agc-account-remove-btn" data-act="plan-remove-account" data-mid="${m.id}" data-account="${a.id}">${icon("x", 10)} 取消选择</button>
+          </div>`}
           ${locked ? "" : `<input type="file" accept="image/*" multiple hidden data-pacc-ref-up="${a.id}" data-mid="${m.id}" />`}
         </div>
       </div>`;
@@ -285,10 +309,12 @@ const CARD = {
       <div class="agc-accs">${accountPool.map((a, idx) => {
         const on = (p.accountIds || []).includes(a.id);
         const imgAcc = isImageAcc(a);
-        return `<button class="agc-acc ${on ? "on" : ""} ${imgAcc ? "is-image" : "is-video"}" data-pacc="${a.id}" ${locked ? "disabled" : ""}>
+        const createdToday = accountCreatedToday(a.id);
+        return `<button class="agc-acc ${on ? "on" : ""} ${imgAcc ? "is-image" : "is-video"}" data-pacc="${a.id}" aria-pressed="${on ? "true" : "false"}" ${locked ? "disabled" : ""}>
           <span class="agc-idx">#${String(idx + 1).padStart(2, "0")}</span>
-          <b>${esc(a.name)}</b><em>${accountCreatedToday(a.id) ? `<span class="status-pill ok">已创作</span> ` : ""}${groupOf(a)}</em>
-          ${on ? icon("check", 13, "ok") : ""}
+          <b>${esc(accountDisplayName(a))}</b>
+          <em class="agc-account-meta"><span class="agc-account-type">${esc(groupOf(a))}</span>${createdToday ? `<span class="agc-created-today">今日已创作</span>` : ""}</em>
+          <span class="agc-select-mark ${on ? "is-visible" : ""}" aria-hidden="true">${icon("check", 13, "ok")}</span>
         </button>`;
       }).join("")}</div>
       ${perAccountOverrides}
@@ -450,6 +476,27 @@ export function boardRow(p) {
   const flow = flowOf(p);
   const curIdx = flow.indexOf(normalizeStage(p));
   const [label, cls] = statusPill(p);
+  if (p.staticVideo) {
+    const agent = p.staticAgent || {};
+    const last = (agent.messages || []).at(-1);
+    const coverAssetId = p.artifacts?.boards?.cover?.assetId || "";
+    const coverUrl = coverAssetId ? urlFor(coverAssetId) : "";
+    return `<div class="mb-row static-agent-row ${p.stageStatus === "running" ? "is-running" : ""}" data-act="open-prod" data-pid="${p.id}" role="button">
+      ${coverUrl ? `<span class="mb-preview static-agent-cover"><img src="${esc(coverUrl)}" alt="静态视频封面"/></span>` : ""}
+      <div class="mb-top">
+        <span class="mb-type mat">静态</span>
+        <b>${esc(acc?.name || "")}</b>
+        <span class="status-pill ${cls}">${label}</span>
+        <button class="mb-del" data-proddel="${p.id}" title="删除任务">${icon("x", 11)}</button>
+      </div>
+      <div class="mb-title">${esc(p.artifacts.copy.title || p.title || p.topic || "未命名")}</div>
+      <div class="static-agent-board-mark ${p.stage === "delivered" ? "is-delivered" : p.stageStatus === "running" ? "is-running" : ""}">
+        <span class="static-agent-board-icon" aria-hidden="true">${p.stage === "delivered" ? icon("checkCircle", 15) : agentAvatar(20, p.stageStatus === "running" ? "working" : p.stageStatus === "done" ? "success" : "normal")}</span>
+        <b>${esc(p.stage === "delivered" ? "成片已交付" : last?.title || "静态视频 Agent 等待启动")}</b>
+      </div>
+      <div class="mb-actions"><button type="button" data-act="batch-cover-edit" data-pid="${p.id}">${icon("sliders", 10)} 封面</button><span>${icon("send", 10)} 对话修改</span></div>
+    </div>`;
+  }
   const dots = flow.map((st, i) => {
     let s = "idle";
     if (p.stage === "delivered" || i < curIdx || (i === curIdx && p.stageStatus === "done") || stageDone(p, st) && i <= curIdx) s = "done";

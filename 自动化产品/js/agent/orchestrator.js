@@ -2,17 +2,16 @@
    会话/消息/批次全部持久化，刷新后 resumeActiveBatches() 接续 */
 
 import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
-import { uid, runPool, debounce, singleImageGenerationPrompt } from "../core/util.js";
+import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
-import { addAssetFromDataUrl, addAssetFromFile, assetBlob, replaceAssetBlob, urlFor } from "../domain/assets.js";
+import { addAssetFromDataUrl, addAssetFromFile, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
-import { fileToDataUrl } from "../core/util.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
 
@@ -20,18 +19,22 @@ const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
 const VIDEO_NEGATIVE_PROMPT = "负面约束：无字幕，不生成花字，不生成水印，不生成二维码。";
 const COVER_STYLE_HINTS = [
-  "波普风，大色块和强对比排版",
-  "极简风，大留白和一个强视觉焦点",
-  "杂志封面风，标题醒目、层级清楚",
-  "手写标注风，少量重点圈画",
-  "蓝白科技风，干净界面和冷色高光",
-  "轻 3D 插画风，主体明确、空间干净"
+  "编辑部纪实摄影风，人物或产品占画面三分之二，米白底配深红标题，像高完成度人物专访封面",
+  "瑞士国际主义平面风，严格网格、大留白、黑白主体配一处高饱和蓝，标题左对齐形成强秩序",
+  "复古丝网印刷海报风，颗粒纸张肌理、暖橙与墨黑套色、粗体标题和斜向构图，醒目但不杂乱",
+  "电影海报风，低机位主视觉、青橙互补光、环境雾与纵深层次，标题置于安全区并保留呼吸感",
+  "日系生活杂志风，自然窗光、低饱和奶油色、近景物件与手写小注释，主标题简洁克制",
+  "未来界面拼贴风，深海军蓝背景、半透明数据卡与银色高光，主体清晰，信息层级不超过三级",
+  "现代漫画分镜封面风，单一主画面配两处速度线和拟声字，红黄黑强对比，禁止多格拼贴",
+  "极简产品摄影风，纯净浅灰背景、柔和棚拍阴影、一个超大主体和一行黑体标题，强调材质细节",
+  "街头文化海报风，撕纸边缘、荧光绿与炭黑、局部放大的真实照片，标题像贴纸但保持清晰可读",
+  "博物馆展览目录风，留白、细衬线标题、低饱和艺术图像与编号系统，气质理性高级",
+  "黏土定格插画风，圆润角色、柔和顶光、珊瑚橙与天蓝配色，标题像实体字块但不过度儿童化",
+  "信息图封面风，一个核心数字或关键词、清晰箭头关系、象牙白底配墨绿和亮橙，信息少而有力"
 ];
 const activeImageRecoveries = new Set();
 
 const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
-const STATIC_WORKSHOP_POLL_MS = 5000;
-const staticWorkshopPollers = new Map();
 
 function contentKindFromGroup(group = "") {
   if (group === "静态视频") return "static";
@@ -44,7 +47,7 @@ function coverStyleHint(seed = "") {
   const s = String(seed || "");
   let n = 0;
   for (let i = 0; i < s.length; i++) n = (n * 31 + s.charCodeAt(i)) >>> 0;
-  return COVER_STYLE_HINTS[(n + Math.floor(Date.now() / 60000)) % COVER_STYLE_HINTS.length];
+  return COVER_STYLE_HINTS[n % COVER_STYLE_HINTS.length];
 }
 
 function normalizeContentKind(kind = "", group = "") {
@@ -54,7 +57,7 @@ function normalizeContentKind(kind = "", group = "") {
 function accountMatchesKind(acc, kind = "image") {
   const g = groupOf(acc);
   if (kind === "image") return acc?.mode === "图文" || g === "图文组";
-  if (kind === "static") return acc?.mode === "视频";
+  if (kind === "static") return true;
   if (kind === "material") return acc?.mode === "视频" && g === "素材";
   if (kind === "real") return acc?.mode === "视频" && g === "真人";
   return true;
@@ -563,9 +566,11 @@ function ensureVideoCoverPrompt(p, product = null) {
   if (A.cover.prompt && A.cover.prompt.includes(title)) return;
   const style = coverStyleHint(`${title}:${product?.id || product?.name || ""}:${p.id || ""}`);
   A.cover.prompt = [
-    "这是一张具有冲击力的短视频封面图，比例3:4，文字清晰明显。",
+    "生成一张完整的短视频发布封面，比例 3:4，只输出单张成图。",
     `标题内容：${title}`,
-    `风格描述：${style}。`,
+    `本轮视觉方向：${style}。`,
+    "参考图用途：把所有提供的统一参考图视为真实主体、品牌元素或视觉风格依据；需要出现的主体必须可辨认，不能只做颜色参考。",
+    "版式要求：标题是唯一主文案，控制在两级文字层级，避开人物面部和关键信息；封面在手机缩略图尺寸下仍应一眼读懂。",
     IMAGE_NEGATIVE_PROMPT
   ].filter(Boolean).join("\n");
   A.cover.status = A.cover.status || "idle";
@@ -574,7 +579,14 @@ function ensureVideoCoverPrompt(p, product = null) {
 
 export function batchCoverRefIds(batch, accountId = "") {
   const customRaw = batch?.accountRefAssetIds?.[accountId];
+  const shared = batch?.contentKind === "static"
+    ? [
+        ...(Array.isArray(batch?.sharedRefAssetIds) ? batch.sharedRefAssetIds : []),
+        batch?.sharedRefAssetId
+      ]
+    : [];
   return [...new Set([
+    ...shared,
     ...(Array.isArray(batch?.coverRefAssetIds) ? batch.coverRefAssetIds : []),
     ...(Array.isArray(customRaw) ? customRaw : [customRaw])
   ].filter(Boolean))].slice(0, 8);
@@ -629,7 +641,7 @@ async function generateVideoCoverInHouse(p, { force = false } = {}) {
     const raw = out.output.dataUrl.startsWith("data:") ? out.output.dataUrl : await dataUrlFromUrl(out.output.dataUrl);
     const title = (p.artifacts?.copy?.title || p.title || p.topic || "视频封面").trim();
     const polished = await polishImageDataUrl(raw, `${p.id}-batch-cover-${title}`);
-    if (force && cover.assetId) {
+    if (force && cover.assetId && cover.source !== "static-frame-fallback") {
       await replaceAssetBlob(cover.assetId, polished);
     } else {
       const a = await addAssetFromDataUrl(p.accountId, {
@@ -639,6 +651,7 @@ async function generateVideoCoverInHouse(p, { force = false } = {}) {
       });
       cover.assetId = a.id;
     }
+    cover.source = "generated";
     cover.status = "done";
     cover.error = "";
     save("productions");
@@ -723,7 +736,6 @@ export function sessionBatches(sessionId) {
 export async function deleteBatch(batchId) {
   const b = batchById(batchId); if (!b) return;
   const ids = b.productionIds || [];
-  ids.forEach(stopStaticWorkshopPolling);
   const removedProdIds = state.productions.filter(p => ids.includes(p.id) && p.stage !== "delivered").map(p => p.id);
   const removedJobIds = state.jobs.filter(j => removedProdIds.includes(j.productionId)).map(j => j.id);
   await Promise.all([
@@ -740,7 +752,6 @@ export async function deleteBatch(batchId) {
 /* 从批次里删除单条任务 */
 export async function removeProductionFromBatch(pid) {
   const p = productionById(pid);
-  stopStaticWorkshopPolling(pid);
   const jobIds = state.jobs.filter(j => j.productionId === pid).map(j => j.id);
   await Promise.all([
     removeRemoteAsync("productions", pid),
@@ -867,7 +878,7 @@ function accountLastActivityAt(acc) {
 export function matchAccounts({ group = "all", sort = "" } = {}) {
   const list = state.accounts.filter(a => {
     if (isAccountDisabled(a)) return false;
-    if (group === "静态视频") return a?.mode === "视频";
+    if (group === "静态视频") return true;
     return group === "all" || !group || groupOf(a) === group;
   });
   if (sort === "stale") {
@@ -1222,6 +1233,65 @@ function buildVideoCustomCopyShots(copy, product, isDigital = false) {
   }));
 }
 
+function splitStaticNarrationBeats(value) {
+  const normalized = String(value || "")
+    .replace(/#[^\s#]+/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n+/g, "。")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return [];
+  const sentences = normalized
+    .split(/(?<=[。！？!?；;])/u)
+    .map(item => item.replace(/[。！？!?；;]+$/u, "").trim())
+    .filter(Boolean);
+  const clauses = [];
+  const semanticConnector = /(?=(?:首先|其次|然后|接着|随后|但是|不过|所以|因此|同时|另外|最后|如果|当|因为|这时|结果|第一|第二|第三|第四|第五))/u;
+  for (const sentence of sentences.length ? sentences : [normalized]) {
+    const punctuationParts = sentence
+      .split(/[，,：:、—–]+/u)
+      .map(item => item.trim())
+      .filter(Boolean);
+    const candidates = punctuationParts.flatMap(part => (
+      part.length > 30
+        ? part.split(semanticConnector).map(item => item.trim()).filter(Boolean)
+        : [part]
+    ));
+    let current = "";
+    for (const part of candidates) {
+      if (!current) {
+        current = part;
+        continue;
+      }
+      const combinedLength = current.length + part.length + 1;
+      if ((current.length < 8 && combinedLength <= 24) || combinedLength <= 18) {
+        current = `${current}，${part}`;
+      } else {
+        clauses.push(current);
+        current = part;
+      }
+    }
+    if (current) clauses.push(current);
+  }
+  return clauses.filter(Boolean).slice(0, 24);
+}
+
+export function buildStaticVideoCustomCopyShots(copy, product) {
+  const title = String(copy?.title || "").trim();
+  const body = String(copy?.body || copy?.copy || "").trim();
+  const productName = product?.shortName || product?.name || "百度搭子";
+  const beats = splitStaticNarrationBeats(body || title);
+  const resolved = beats.length ? beats : [title || `${productName}本期口播`];
+  return resolved.map((line, index) => ({
+    time: "",
+    idea: index === 0 ? (title || line).slice(0, 40) : line.slice(0, 44),
+    visual: `围绕这段连续口播规划独立的静态图片分镜：「${line.slice(0, 48)}」。根据语义选择景别、导演视角和情绪色彩；同一视频保持统一画风与主体连续性，不为了凑时长机械切图。`,
+    line,
+    ui: true,
+    scene: index + 1,
+  }));
+}
+
 async function generateBatchImagesInHouse(p, batch, acc) {
   if (!imageApiConfigured()) return false;
   const provider = activeProviderFor("image");
@@ -1536,166 +1606,176 @@ async function queueBatchDigitalHuman(p, batch, acc, product) {
   return true;
 }
 
-function staticWorkshopAuthHeaders(includeJson = false) {
+function staticAgentAuthHeaders() {
   const token = String(remote.getToken?.() || "").trim();
   if (!token) throw new Error("登录状态已失效，请重新登录后再生成静态视频");
   return {
-    ...(includeJson ? { "Content-Type": "application/json" } : {}),
+    "Content-Type": "application/json",
     Authorization: `Bearer ${token}`
   };
 }
 
-async function staticWorkshopJson(url, options = {}) {
-  const response = await fetch(url, {
-    credentials: "same-origin",
-    cache: "no-store",
-    ...options
+function staticAgentStep(p, title, detail, status = "running", role = "agent") {
+  p.staticAgent ||= { status: "running", messages: [], startedAt: Date.now(), updatedAt: Date.now() };
+  p.staticAgent.status = status === "failed" ? "failed" : status === "done" ? "succeeded" : "running";
+  p.staticAgent.updatedAt = Date.now();
+  p.staticAgent.messages.push({
+    id: uid(),
+    role,
+    title,
+    detail,
+    status,
+    at: Date.now()
   });
-  const text = await response.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch (_) {
-    data = null;
-  }
-  if (!response.ok) {
-    const detail = data?.detail || data?.message || text || `HTTP ${response.status}`;
-    throw new Error(String(detail));
-  }
-  if (!data || typeof data !== "object") throw new Error("视频工坊返回了无法识别的数据");
-  return data;
+  p.staticAgent.messages = p.staticAgent.messages.slice(-24);
+  save("productions");
+  emit("production:update", p);
 }
 
-async function ensureStaticWorkshopSession() {
-  await staticWorkshopJson("/api/custom-video/session", {
-    method: "POST",
-    headers: staticWorkshopAuthHeaders()
+function staticAgentUserMessage(p, content) {
+  staticAgentStep(p, "修改要求", String(content || "").trim(), "done", "user");
+}
+
+function staticSubtitleCues(narration, duration) {
+  const chunks = String(narration || "")
+    .split(/(?<=[。！？!?；;])/)
+    .map(item => item.trim())
+    .filter(Boolean);
+  const rows = chunks.length ? chunks : [String(narration || "").trim()].filter(Boolean);
+  const totalWeight = rows.reduce((sum, item) => sum + Math.max(2, item.length), 0) || 1;
+  let cursor = 0;
+  return rows.map((text, index) => {
+    const share = index === rows.length - 1
+      ? Math.max(0.5, duration - cursor)
+      : Math.max(0.8, duration * Math.max(2, text.length) / totalWeight);
+    const cue = { start: cursor, end: Math.min(duration, cursor + share), text };
+    cursor = cue.end;
+    return cue;
   });
 }
 
-async function staticWorkshopAttachments(batch, accountId) {
-  const customRaw = batch?.accountRefAssetIds?.[accountId];
-  const ids = [...new Set([
-    ...(Array.isArray(batch?.sharedRefAssetIds) ? batch.sharedRefAssetIds : []),
-    batch?.sharedRefAssetId,
-    ...(Array.isArray(customRaw) ? customRaw : [customRaw])
-  ].filter(Boolean))].slice(0, 8);
-  const attachments = [];
-  for (let index = 0; index < ids.length; index++) {
-    const assetId = ids[index];
-    const asset = state.assets.find(item => item.id === assetId);
-    const blob = await assetBlob(assetId);
-    if (!blob || !String(blob.type || asset?.mime || "").startsWith("image/")) continue;
-    attachments.push({
-      label: String(asset?.name || `参考图${index + 1}`).slice(0, 80),
-      name: String(asset?.name || `reference-${index + 1}.png`).slice(0, 120),
-      mime: String(blob.type || asset?.mime || "image/png"),
-      dataUrl: await fileToDataUrl(blob)
-    });
+async function staticFramePayload(assetId, duration, index) {
+  const asset = state.assets.find(item => item.id === assetId);
+  const url = String(urlFor(asset) || asset?.fileUrl || "");
+  if (url && !url.startsWith("blob:")) {
+    return { url, name: asset?.name || `分镜${index + 1}`, dur: duration };
   }
-  return attachments;
+  const blob = await assetBlob(assetId);
+  if (!blob) throw new Error(`静态分镜 ${index + 1} 文件不可读取`);
+  return {
+    dataUrl: await fileToDataUrl(blob),
+    name: asset?.name || `分镜${index + 1}`,
+    dur: duration
+  };
 }
 
-function staticWorkshopMessage(p, batch, acc) {
-  const title = String(p.artifacts?.copy?.title || p.title || p.topic || "").trim();
-  const copy = String(p.artifacts?.copy?.body || "").trim();
-  const style = String(acc?.styleProfile || acc?.lockedStyle || batch?.style || "").trim();
-  return [
-    `请为视频号账号“${acc?.name || "未命名账号"}”直接制作一条静态视频。`,
-    `标题：${title}`,
-    copy ? `用户提供的发布文案/口播参考：\n${copy}` : "用户只提供了标题，请先自动完成发布文案和自然口播。",
-    style ? `账号既有风格参考：${style}` : "",
-    "画幅固定为 9:16。请自行决定整条视频的统一视觉风格、合理时长和图片分镜数量。",
-    "整条视频必须共享固定风格锚点与固定负面约束；当前消息附带的统一参考图必须真实进入每张图片分镜的生成请求，并按画面语义使用。",
-    "不要调用视频模型。请并发生成图片分镜，使用轻微居中慢放大动效，完成口播、字幕、BGM、质检与最终成片。",
-    "信息已足够，无需再提问，直接开始制作。"
-  ].filter(Boolean).join("\n\n");
-}
-
-function staticWorkshopOutput(project) {
-  const output = (project?.outputs || []).find(item => item?.url || item?.downloadUrl);
-  if (!output) return null;
-  const url = String(output.url || output.downloadUrl || "").trim();
-  return url ? { ...output, url } : null;
-}
-
-function stopStaticWorkshopPolling(productionId) {
-  const timer = staticWorkshopPollers.get(productionId);
-  if (timer) clearTimeout(timer);
-  staticWorkshopPollers.delete(productionId);
-}
-
-async function pollStaticWorkshopProduction(p, batch) {
-  if (!p?.id || !p.staticWorkshopProjectId || !productionById(p.id)) {
-    stopStaticWorkshopPolling(p?.id);
-    return;
-  }
-  try {
-    await ensureStaticWorkshopSession();
-    const project = await staticWorkshopJson(
-      `/custom-video/api/projects/${encodeURIComponent(p.staticWorkshopProjectId)}`,
-      { headers: staticWorkshopAuthHeaders() }
+async function generateStaticFrames(p, batch, acc, prompts) {
+  if (!imageApiConfigured()) throw new Error("服务器未配置可用图片模型");
+  const provider = activeProviderFor("image");
+  if (!provider || provider.mock) throw new Error("静态视频需要真实图片模型，当前仅有模拟能力");
+  const key = providerKeyFor("image", provider);
+  const refGroups = imageRefGroupsFor(acc, batch, p);
+  const refs = [
+    ...(await imageRefsForIds(refGroups.shared, "shared")),
+    ...(await imageRefsForIds(refGroups.custom, "custom"))
+  ].slice(0, 8);
+  const styleAnchor = String(p.artifacts.script.style || "真实、克制、统一的商业纪实风格").trim();
+  const previous = Array.isArray(p.artifacts?.boards?.items) ? p.artifacts.boards.items : [];
+  const results = Array(prompts.length).fill(null);
+  prompts.forEach((_prompt, index) => {
+    const saved = previous.find(item =>
+      item?.assetId
+      && item.status === "done"
+      && Number(item.staticFrameIndex) === index
     );
-    p.staticWorkshopStatus = String(project.status || "");
-    p.staticWorkshopPhase = String(project.phase || "");
-    p.staticPollErrors = 0;
-    const output = staticWorkshopOutput(project);
-    if (project.status === "succeeded" && output) {
-      p.artifacts.finalVideoUrl = output.url;
-      p.artifacts.finalVideoName = String(output.label || `${p.title || "静态视频"}.mp4`);
-      p.artifacts.script.staticVideoPlan = project.plan || null;
-      p.artifacts.script.source = "video-workshop-static";
-      p.artifacts.timeline = [{
-        id: uid(),
-        name: "静态视频成片",
-        dur: Number(output?.probe?.duration || 0),
-        trimIn: 0,
-        videoUrl: output.url,
-        source: "video-workshop-static"
-      }];
-      if (!String(p.artifacts.copy.body || "").trim()) {
-        p.artifacts.copy.body = String(project?.plan?.narration || "").trim();
+    if (saved) results[index] = saved;
+  });
+  const pendingIndexes = prompts.map((_prompt, index) => index).filter(index => !results[index]);
+  await runPool(pendingIndexes, async index => {
+    const prompt = prompts[index];
+    const fullPrompt = [
+      `16:9 横屏静态视频图片分镜，第 ${index + 1}/${prompts.length} 张。`,
+      `整条片固定风格锚点：${styleAnchor}。`,
+      String(prompt || "").trim(),
+      "构图必须单帧成立，主体位于画面安全区，适合后期做轻微居中慢推近。",
+      "负面约束：无字幕、无花字、无水印、无二维码、无乱码、无黑边、无畸形手指、无重复主体、无画风漂移。"
+    ].join("\n");
+    let lastError = null;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      if (attempt > 1) {
+        const waitMs = [0, 1200, 2500, 4500, 7000][attempt - 1];
+        staticAgentStep(
+          p,
+          "图片分镜自动重试",
+          `分镜 ${index + 1} 第 ${attempt}/5 次尝试；已完成的其他分镜会保留。`
+        );
+        await delay(waitMs);
       }
-      setStage(p, "review", "pending");
-      stopStaticWorkshopPolling(p.id);
-      evaluate(batch.id);
-      return;
-    }
-    if (project.status === "failed") {
-      setStatus(p, "failed", project.error || "静态视频生成失败");
-      stopStaticWorkshopPolling(p.id);
-      evaluate(batch.id);
-      return;
-    }
-    if (project.status === "conversation" && project.phase !== "delivery") {
-      p.staticConversationPolls = Number(p.staticConversationPolls || 0) + 1;
-      const lastAssistant = [...(project.messages || [])].reverse().find(item => item?.role === "assistant");
-      if (p.staticConversationPolls >= 3 && lastAssistant?.content) {
-        setStatus(p, "failed", lastAssistant.content || "导演仍需补充信息，请完善标题或文案后重试");
-        stopStaticWorkshopPolling(p.id);
-        evaluate(batch.id);
+      try {
+        const submitted = await provider.submit({
+          prompt: enrichBatchImagePrompt(fullPrompt, refs, ""),
+          refs,
+          intendedRefAssetIds: refGroups.all,
+          ratio: "16:9",
+          apiKey: key?.secret,
+          endpoint: key?.provider,
+          model: key?.model || ""
+        });
+        const result = await provider.poll(submitted.providerRef);
+        if (result.status !== "succeeded" || !result.output?.dataUrl) {
+          throw new Error(result.error || `静态分镜 ${index + 1} 没有返回图片`);
+        }
+        const raw = result.output.dataUrl.startsWith("data:")
+          ? result.output.dataUrl
+          : await dataUrlFromUrl(result.output.dataUrl);
+        if (!String(raw || "").startsWith("data:image/")) {
+          throw new Error(`静态分镜 ${index + 1} 返回了无效图片`);
+        }
+        const polished = await polishImageDataUrl(raw, `${p.id}-static-${index}`);
+        const asset = await addAssetFromDataUrl(acc.id, {
+          name: `${p.title || "静态视频"}_分镜${String(index + 1).padStart(2, "0")}`,
+          type: "图片",
+          tags: ["静态视频分镜", "批量生产", "账号资产"],
+          dataUrl: polished,
+          forceNew: true
+        });
+        results[index] = {
+          assetId: asset.id,
+          prompt: fullPrompt,
+          staticFrameIndex: index,
+          status: "done",
+          title: `分镜 ${index + 1}`
+        };
+        p.artifacts.boards.items = results.filter(Boolean);
+        save("productions");
+        emit("production:update", p);
         return;
+      } catch (error) {
+        lastError = error;
       }
-    } else {
-      p.staticConversationPolls = 0;
     }
-    save("productions");
-    emit("production:update", p);
-  } catch (error) {
-    p.staticPollErrors = Number(p.staticPollErrors || 0) + 1;
-    if (p.staticPollErrors >= 6) {
-      setStatus(p, "failed", `静态视频状态同步失败：${error?.message || "视频工坊暂不可用"}`);
-      stopStaticWorkshopPolling(p.id);
-      evaluate(batch.id);
-      return;
+    throw new Error(lastError?.message || `静态分镜 ${index + 1} 连续 5 次没有返回图片`);
+  }, 3);
+  return results;
+}
+
+async function retryStaticAgentStep(p, title, worker, attempts = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await worker(attempt);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts) break;
+      staticAgentStep(
+        p,
+        `${title}自动重试`,
+        `第 ${attempt + 1}/${attempts} 次尝试即将开始，当前制作进度不会丢失。`
+      );
+      await delay([0, 1500, 3500][attempt] || 3500);
     }
-    save("productions");
   }
-  stopStaticWorkshopPolling(p.id);
-  staticWorkshopPollers.set(
-    p.id,
-    setTimeout(() => pollStaticWorkshopProduction(p, batch), STATIC_WORKSHOP_POLL_MS)
-  );
+  throw lastError || new Error(`${title}失败`);
 }
 
 async function queueBatchStaticVideo(p, batch, acc, product) {
@@ -1706,9 +1786,9 @@ async function queueBatchStaticVideo(p, batch, acc, product) {
     || ""
   ).trim();
   const body = String(batch.accountCopyBodies?.[acc.id] || "").trim();
+  const revisionInstruction = String(p.staticRevisionInstruction || "").trim();
   if (!title && !body) {
-    setStatus(p, "failed", "静态视频请至少填写标题或文案");
-    return false;
+    throw new Error("静态视频请至少填写标题或文案");
   }
   p.staticVideo = true;
   p.title = title || body.slice(0, 36);
@@ -1716,62 +1796,226 @@ async function queueBatchStaticVideo(p, batch, acc, product) {
   p.artifacts.copy = {
     title: p.title,
     body,
-    source: body ? "manual" : "video-workshop-static"
+    source: body ? "manual" : "batch-static-agent"
   };
   p.artifacts.script.title = p.title;
   p.artifacts.script.style = acc?.styleProfile || acc?.lockedStyle || batch.style || "";
-  p.artifacts.script.source = "video-workshop-static";
+  p.artifacts.script.source = "batch-static-agent";
+  p.artifacts.script.aspectRatio = "16:9";
+  const previousAgent = p.staticAgent;
+  const isResuming = Boolean(previousAgent?.messages?.length);
+  p.staticAgent = {
+    status: "running",
+    messages: isResuming ? previousAgent.messages.slice(-20) : [],
+    startedAt: previousAgent?.startedAt || Date.now(),
+    updatedAt: Date.now()
+  };
+  setStage(p, "workshop", "running");
+  staticAgentStep(
+    p,
+    isResuming ? "正在继续上一轮创作" : "正在思考",
+    isResuming
+      ? "正在从已完成步骤恢复，已经生成的图片分镜不会重复丢弃。"
+      : "正在理解标题、文案、账号风格和参考图用途。"
+  );
+  const draft = await AI.generateCustomVideoDraft({
+    title: p.title,
+    body: revisionInstruction
+      ? [
+          `现有发布文案与口播方向：${body || p.artifacts?.copy?.body || "请根据标题生成"}`,
+          `用户本轮修改要求：${revisionInstruction}`,
+          "请在同一个任务中重写发布文案、自然口播和分镜方向，不要解释修改过程。"
+        ].join("\n")
+      : body,
+    account: acc,
+    product,
+    mode: "infoFlow"
+  });
+  p.title = title || draft.title || p.title;
+  p.artifacts.copy = {
+    title: p.title,
+    body: revisionInstruction ? (draft.copy || body || "") : (body || draft.copy || ""),
+    source: revisionInstruction ? "batch-static-agent-revision" : body ? "manual" : "batch-static-agent"
+  };
+  const narration = String(draft.narration || p.artifacts.copy.body || draft.copy || "").trim();
+  if (!narration) throw new Error("静态视频智能体没有生成可用口播");
+  p.artifacts.script.generatedNarration = narration;
+  staticAgentStep(p, "内容方案已确认", `发布文案和自然口播已完成，默认采用 16:9 横屏。`);
   applyBatchCoverRefs(p, batch);
   ensureVideoCoverPrompt(p, product);
-  await generateVideoCoverInHouse(p);
-  await ensureStaticWorkshopSession();
-  const created = await staticWorkshopJson("/custom-video/api/projects", {
-    method: "POST",
-    headers: staticWorkshopAuthHeaders(true),
-    body: "{}"
-  });
-  const projectId = String(created.id || "").trim();
-  if (!projectId) throw new Error("视频工坊没有返回静态视频项目编号");
-  p.staticWorkshopProjectId = projectId;
-  p.staticWorkshopStatus = "running";
-  p.staticWorkshopPhase = "brief";
-  p.staticConversationPolls = 0;
-  p.staticPollErrors = 0;
-  setStage(p, "workshop", "running");
-  const attachments = await staticWorkshopAttachments(batch, acc.id);
-  await staticWorkshopJson("/custom-video/api/chat", {
-    method: "POST",
-    headers: staticWorkshopAuthHeaders(true),
-    body: JSON.stringify({
-      projectId,
-      message: staticWorkshopMessage(p, batch, acc),
-      aspectRatio: "9:16",
-      creationMode: "static",
-      attachments
-    })
-  });
-  stopStaticWorkshopPolling(p.id);
-  staticWorkshopPollers.set(
-    p.id,
-    setTimeout(() => pollStaticWorkshopProduction(p, batch), 800)
+  staticAgentStep(p, "封面方案已确认", "已把标题、统一参考图和本轮差异化视觉方向合并为封面提示词，开始站内生成封面。");
+  const coverGenerated = await generateVideoCoverInHouse(p);
+  staticAgentStep(
+    p,
+    coverGenerated ? "封面生成完成" : "封面生成稍后可重试",
+    coverGenerated
+      ? "封面已生成并保留参考图回执，可在任务对话或封面编辑器中继续修改。"
+      : (p.artifacts?.boards?.cover?.error || "当前图片服务未返回封面，静态成片仍会继续生成。"),
+    coverGenerated ? "done" : "running"
   );
+  const shots = buildStaticVideoCustomCopyShots(
+    { title: p.title, body: narration },
+    product
+  );
+  const promptResult = await AI.generateStoryboardPrompts({
+    shots,
+    account: acc,
+    style: p.artifacts.script.style,
+    product,
+    aspectRatio: "16:9",
+    creationMode: "static"
+  });
+  const prompts = (promptResult.shots || []).map(item => String(item.prompt || "").trim()).filter(Boolean);
+  if (!prompts.length) throw new Error("静态视频智能体没有生成图片分镜提示词");
+  p.artifacts.script.shots = shots;
+  p.artifacts.script.staticVideoPlan = {
+    creationMode: "static",
+    aspectRatio: "16:9",
+    narration,
+    prompts
+  };
+  staticAgentStep(p, "图片分镜已锁定", `已生成 ${prompts.length} 张统一风格的 16:9 图片提示词，开始并行生图。`);
+  const frames = await generateStaticFrames(p, batch, acc, prompts);
+  p.artifacts.boards.items = frames;
+  p.artifacts.boards.cover = {
+    ...(p.artifacts.boards.cover || {}),
+    assetId: p.artifacts.boards.cover?.assetId || frames[0]?.assetId || null,
+    source: p.artifacts.boards.cover?.assetId
+      ? (p.artifacts.boards.cover?.source || "generated")
+      : (frames[0]?.assetId ? "static-frame-fallback" : "")
+  };
+  staticAgentStep(p, "图片分镜生成完成", `${frames.length}/${frames.length} 张图片已完成，正在生成口播并建立字幕时间线。`);
+  const voiceId = acc.voiceId || defaultTtsVoiceId();
+  const tts = await retryStaticAgentStep(
+    p,
+    "口播生成",
+    () => synthesizeTts({ text: narration, voiceId, speed: 1.0 })
+  );
+  const audioAsset = await addAssetFromDataUrl(acc.id, {
+    name: `${p.title || "静态视频"}_口播`,
+    type: "音频",
+    tags: ["口播音频", "静态视频", "批量生产", "账号资产"],
+    dataUrl: tts.audioDataUrl,
+    forceNew: true
+  });
+  const totalDuration = Math.max(frames.length * 2.5, Number(tts.duration || 0));
+  const weights = shots.map(item => Math.max(2, String(item.line || "").length));
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0) || frames.length;
+  const frameDurations = frames.map((_frame, index) => Math.max(1.6, totalDuration * (weights[index] || 1) / totalWeight));
+  const normalizedTotal = frameDurations.reduce((sum, value) => sum + value, 0);
+  const durationScale = totalDuration / normalizedTotal;
+  const finalDurations = frameDurations.map(value => value * durationScale);
+  const framePayloads = await Promise.all(frames.map((frame, index) => (
+    staticFramePayload(frame.assetId, finalDurations[index], index)
+  )));
+  const subtitles = staticSubtitleCues(narration, totalDuration);
+  p.artifacts.subs = subtitles;
+  p.artifacts.subStyle = { size: 13, stroke: 1, bottom: 20, animation: "soft-pop" };
+  Object.assign(p.artifacts.audio, {
+    assetId: audioAsset.id,
+    voiceId: tts.voiceId || voiceId,
+    duration: totalDuration,
+    source: "minimax"
+  });
+  const bgmAsset = globalBgmAssets()[0] || null;
+  const bgmUrl = bgmAsset ? String(urlFor(bgmAsset) || bgmAsset.fileUrl || "") : "";
+  staticAgentStep(p, "正在渲染成片", "图片将轻微居中推近，并加入靠近画面下方的动态字幕、口播和 BGM。");
+  const composeBody = {
+        title: p.title,
+        aspectRatio: "16:9",
+        frames: framePayloads,
+        narrationDataUrl: tts.audioDataUrl,
+        bgmUrl: bgmUrl && !bgmUrl.startsWith("blob:") ? bgmUrl : "",
+        bgmVolume: 0.18,
+        narrationVolume: 1,
+        subtitleStyle: p.artifacts.subStyle,
+        subtitles
+  };
+  const composed = await retryStaticAgentStep(p, "成片渲染", async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20 * 60 * 1000);
+    try {
+      const response = await fetch("/api/video/static-compose", {
+        method: "POST",
+        signal: controller.signal,
+        headers: staticAgentAuthHeaders(),
+        body: JSON.stringify(composeBody)
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.ok || !payload.url) {
+        throw new Error(payload.detail || payload.error || `静态视频渲染失败 (${response.status})`);
+      }
+      return payload;
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+  p.artifacts.finalVideoUrl = composed.url;
+  p.artifacts.finalVideoName = composed.name || `${p.title || "静态视频"}.mp4`;
+  p.artifacts.timeline = frames.map((frame, index) => ({
+    id: uid(),
+    name: frame.title,
+    dur: finalDurations[index],
+    trimIn: 0,
+    assetId: frame.assetId,
+    source: "batch-static-agent"
+  }));
+  p.artifacts.finalVideoTimelineSig = JSON.stringify(framePayloads.map(item => [item.url || item.name, item.dur]));
+  setStage(p, "review", "pending");
+  setStatus(p, "pending");
+  staticAgentStep(p, "成片已提交", `16:9 静态视频已完成：${frames.length} 张图片分镜、口播、动态字幕${bgmUrl ? "和 BGM" : ""}均已合成。`, "done");
+  delete p.staticRevisionInstruction;
+  evaluate(batch.id);
   return true;
 }
 
-function resetStaticWorkshopProduction(p) {
+function resetStaticAgentProduction(p, { preserveFrames = false, preserveAgent = false } = {}) {
   if (!p) return;
-  stopStaticWorkshopPolling(p.id);
-  delete p.staticWorkshopProjectId;
-  delete p.staticWorkshopStatus;
-  delete p.staticWorkshopPhase;
-  delete p.staticConversationPolls;
-  delete p.staticPollErrors;
+  if (!preserveAgent) delete p.staticAgent;
   if (p.artifacts?.script) delete p.artifacts.script.staticVideoPlan;
   if (p.artifacts) {
     delete p.artifacts.finalVideoUrl;
     delete p.artifacts.finalVideoName;
     p.artifacts.timeline = [];
+    p.artifacts.subs = [];
+    if (p.artifacts.boards && !preserveFrames) p.artifacts.boards.items = [];
   }
+}
+
+export async function reviseBatchStaticVideo(p, instruction = "") {
+  const text = String(instruction || "").trim();
+  if (!p?.staticVideo || !p.batchId) throw new Error("当前任务不是批量静态视频");
+  if (!text) throw new Error("请先输入修改要求");
+  if (p.stageStatus === "running") throw new Error("当前任务仍在制作，请完成后再提交修改");
+  const batch = batchById(p.batchId);
+  const acc = accountById(p.accountId);
+  if (!batch || !acc) throw new Error("原批次或账号不存在");
+  staticAgentUserMessage(p, text);
+  if (/封面|首图|标题图/.test(text)) {
+    const product = productById(p.artifacts?.script?.productId || "dumate");
+    applyBatchCoverRefs(p, batch);
+    ensureVideoCoverPrompt(p, product);
+    const cover = p.artifacts?.boards?.cover;
+    cover.prompt = `${cover.prompt || ""}\n用户本轮修改要求：${text}`.trim();
+    staticAgentStep(p, "正在修改封面", "保留原任务和统一参考图，只重新生成本轮封面。");
+    const result = await regenerateBatchVideoCover(p, cover.prompt, cover.refAssetIds || []);
+    staticAgentStep(p, "封面修改完成", "新封面已回到当前任务，可继续对话修改或进入成片审核。", "done");
+    return result;
+  }
+  p.staticRevisionInstruction = text;
+  resetStaticAgentProduction(p, { preserveAgent: true });
+  const cover = p.artifacts?.boards?.cover;
+  if (cover) {
+    cover.prompt = "";
+    cover.assetId = null;
+    cover.status = "idle";
+    cover.error = "";
+  }
+  setStage(p, "workshop", "running");
+  setStatus(p, "running");
+  await draftOne(p, batch);
+  if (p.stageStatus === "failed") throw new Error(p.error || "静态视频修改失败");
+  return p;
 }
 
 /* ---------- 起草 ---------- */
@@ -1792,11 +2036,28 @@ async function draftOne(p, batch) {
     const product = productById(productId);
     const style = acc.styleProfile || acc.lockedStyle || batch.style || "";
     if (batch.contentKind === "static") {
-      try {
-        await queueBatchStaticVideo(p, batch, acc, product);
-      } catch (error) {
-        setStatus(p, "failed", error?.message || "静态视频任务启动失败");
+      let lastError = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await queueBatchStaticVideo(p, batch, acc, product);
+          delete p.staticAgentAutoRetryCount;
+          return;
+        } catch (error) {
+          lastError = error;
+          p.staticAgentAutoRetryCount = attempt;
+          if (attempt >= 3) break;
+          staticAgentStep(
+            p,
+            "正在自动恢复制作",
+            `整条任务第 ${attempt + 1}/3 次接续；成功分镜和已完成资产会保留。`
+          );
+          setStage(p, "workshop", "running");
+          setStatus(p, "running");
+          await delay([0, 3000, 7000][attempt] || 7000);
+        }
       }
+      staticAgentStep(p, "任务未完成", lastError?.message || "静态视频任务启动失败", "failed");
+      setStatus(p, "failed", lastError?.message || "静态视频任务启动失败");
       return;
     }
     const useOnlineTrends = false;
@@ -2568,13 +2829,24 @@ export async function startBatch(plan, session) {
       ).trim();
       const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId });
       if (p) {
+        if (batch.contentKind === "static") {
+          // 静态视频是独立视频产物，允许图文/小红书账号参与，但不改账号本身的模式。
+          p.mode = "视频";
+          p.subType = "无数字人";
+          p.stage = "workshop";
+          p.staticVideo = true;
+          p.artifacts.boards.generationMode = "static";
+          p.artifacts.boards.materialMode = "static";
+        }
         p.referenceSelectionId = batch.referenceSelectionId || "";
         p.artifacts.script.imageCount = imageCount;
         p.batchItemIndex = i + 1;
         p.batchItemTotal = perAccountCount;
         p.batchCreativeVariant = batchVariantFor({ acc, batch, globalIndex, itemIndex: i + 1, itemTotal: perAccountCount });
         p.artifacts.script.batchCreativeVariant = p.batchCreativeVariant;
-        if (!(acc.mode === "图文" || groupOf(acc) === "图文组")) applyBatchCoverRefs(p, batch);
+        if (batch.contentKind === "static" || !(acc.mode === "图文" || groupOf(acc) === "图文组")) {
+          applyBatchCoverRefs(p, batch);
+        }
         batch.productionIds.push(p.id);
       }
     }
@@ -2629,13 +2901,6 @@ export function startGeneration(batch) {
   batchProds(batch).forEach(p => {
     if (isVideoWorkshop(p) && p.stage === "workshop") {
       if (p.staticVideo || batch.contentKind === "static") {
-        if (p.staticWorkshopProjectId && p.stageStatus !== "failed") {
-          stopStaticWorkshopPolling(p.id);
-          staticWorkshopPollers.set(
-            p.id,
-            setTimeout(() => pollStaticWorkshopProduction(p, batch), 250)
-          );
-        }
         return;
       }
       if (p.stage === "workshop" && p.stageStatus !== "running") {
@@ -2682,7 +2947,7 @@ export function retryFailedIn(batch) {
     }
     if (p.stage === "script") { setStatus(p, "pending"); draftOne(p, batch).then(() => evaluate(batch.id)); n++; }
     else if (p.staticVideo || batch.contentKind === "static") {
-      resetStaticWorkshopProduction(p);
+      resetStaticAgentProduction(p);
       setStage(p, "script", "running");
       setStatus(p, "running");
       draftOne(p, batch).then(() => evaluate(batch.id));
@@ -2831,17 +3096,19 @@ export function resumeActiveBatches() {
     const staticStuck = batchProds(b).filter(p =>
       (p.staticVideo || b.contentKind === "static")
       && p.stage === "workshop"
-      && p.stageStatus === "running"
-      && p.staticWorkshopProjectId
+      && (
+        p.stageStatus === "running"
+        || (p.stageStatus === "failed" && Number(p.staticAgentAutoRetryCount || 0) < 3)
+      )
+      && !p.artifacts?.finalVideoUrl
     );
     staticStuck.forEach(p => {
-      stopStaticWorkshopPolling(p.id);
-      staticWorkshopPollers.set(
-        p.id,
-        setTimeout(() => pollStaticWorkshopProduction(p, b), 250)
-      );
+      if (p.stageStatus === "failed") {
+        p.staticAgentAutoRetryCount = Number(p.staticAgentAutoRetryCount || 0) + 1;
+      }
+      resetStaticAgentProduction(p, { preserveFrames: true, preserveAgent: true });
+      setStage(p, "script", "pending");
     });
-    resumed += staticStuck.length;
     const stuck = batchProds(b).filter(p => p.stage === "script" && (p.stageStatus === "running" || p.stageStatus === "pending"));
     if (stuck.length) { runPool(stuck, p => draftOne(p, b), 2).then(() => evaluate(b.id)); resumed += stuck.length; }
     const imageStuck = batchProds(b).filter(p =>

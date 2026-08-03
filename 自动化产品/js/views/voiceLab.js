@@ -1,7 +1,7 @@
 import { $, $$, esc, copyText, wireDropZone } from "../core/util.js";
 import { myId, state, save } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { confirmModal, promptModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260729-v122-team-3";
+import { confirmModal, promptModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260802-v134-static-community-1";
 import { designTtsVoice, refreshProviderStatus, synthesizeTts } from "../api/providers.js";
 import { addAssetFromDataUrl, addAssetFromFile, inferAssetFileMime, removeAsset, urlFor } from "../domain/assets.js";
 import { canManageCustomVoice, deleteCustomVoice, favoriteVoiceIds, findVoiceOption, isFavoriteVoice, rememberCustomVoice, renameCustomVoice, setFavoriteVoice, toggleFavoriteVoice, voiceListByTab, voiceMeta } from "../domain/voices.js";
@@ -158,7 +158,7 @@ function toolPanelHtml(mode, s, selected) {
   return `<aside class="vl-side-panel vl-console glass-panel">
     <div class="vl-section-head compact">
       <div><b>${icon("mic", 16)} 调试台</b><em>当前：${esc(selected.name || "默认/手动声线")}</em></div>
-      <button class="btn primary sm" id="vlGenerate">${icon("spark", 14)} 生成音频</button>
+      <button class="btn primary sm button-anthe vl-generate-action" id="vlGenerate"><span>${icon("spark", 14)} 生成音频 ${icon("arrowRight", 13)}</span></button>
     </div>
     ${runtimeAudioSlotHtml()}
     <div class="vl-current-voice">

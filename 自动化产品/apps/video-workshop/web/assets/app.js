@@ -3,6 +3,7 @@ const PROJECT_STORAGE_KEY =
 const SEARCH_PARAMS = new URLSearchParams(window.location.search);
 const START_ON_HOME = SEARCH_PARAMS.get("start") === "home";
 const INITIAL_PROJECT_ID = String(SEARCH_PARAMS.get("project") || "").trim().slice(0, 180);
+const CAN_PUBLISH = SEARCH_PARAMS.get("canPublish") !== "0";
 const WORKSPACE_MODE =
   typeof window.parent !== "undefined"
   && window.parent !== window
@@ -17,6 +18,7 @@ if (WORKSPACE_MODE && typeof document !== "undefined") {
   document.documentElement.dataset.platformWorkspace = "true";
 }
 const MAX_ATTACHMENTS_PER_MESSAGE = 8;
+const HOME_PREFILL_IDS = new Set();
 const state = {
   // 统一工作区由外层路由决定当前会话，不读取子应用自己的最近项目，
   // 避免进入视频工坊时先闪出旧首页或错误的历史项目。
@@ -48,6 +50,9 @@ const state = {
   productionHeartbeatStartedAt: 0,
   productionHeartbeatStageIndex: -1,
   projectLoadEpoch: 0,
+  historyDeliveryCloseTimer: null,
+  chatComposerResizeObserver: null,
+  communitySharedOutputs: {},
 };
 
 const dom = {
@@ -77,6 +82,7 @@ const dom = {
   historyDeliveryFilterMenu: document.querySelector("#historyDeliveryFilterMenu"),
   historyDeliveryFilterLabel: document.querySelector("#historyDeliveryFilterLabel"),
   historyDeliveryList: document.querySelector("#historyDeliveryList"),
+  projectAssetsButton: document.querySelector("#projectAssetsButton"),
   speedVersionControl: document.querySelector("#speedVersionControl"),
   speedVersionSelect: document.querySelector("#speedVersionSelect"),
   deliverySpeedMenu: document.querySelector("#deliverySpeedMenu"),
@@ -257,6 +263,144 @@ function deliveryRowsFor(project) {
   }] : [];
 }
 
+function deliveryForMessage(project, message) {
+  const deliveries = deliveryRowsFor(project);
+  const deliveryId = String(message?.deliveryId || "").trim();
+  if (deliveryId) {
+    return deliveries.find(item => String(item?.id || "") === deliveryId) || null;
+  }
+  const deliveryMessages = (project?.messages || []).filter(item => item?.kind === "delivery");
+  const messageIndex = deliveryMessages.findIndex(item => item?.id === message?.id);
+  return messageIndex >= 0 ? deliveries[messageIndex] || null : null;
+}
+
+function createSpeedPicker(output, compact = false) {
+  const details = document.createElement("details");
+  details.className = `delivery-speed-menu${compact ? " compact" : ""}`;
+  const summary = document.createElement("summary");
+  const label = document.createElement("span");
+  label.textContent = `${Number(output?.speed || 1.2).toFixed(1)}x`;
+  const icon = document.createElement("i");
+  icon.dataset.lucide = "chevron-down";
+  summary.append(label, icon);
+  const menu = document.createElement("div");
+  menu.setAttribute("role", "menu");
+  [1.2, 1.3, 1.5, 1.8, 2].forEach(rate => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.speedValue = String(rate);
+    button.setAttribute("role", "menuitemradio");
+    button.setAttribute("aria-checked", Math.abs(rate - Number(output?.speed || 1.2)) < 0.01 ? "true" : "false");
+    const check = document.createElement("i");
+    check.dataset.lucide = "check";
+    const text = document.createElement("span");
+    text.textContent = `${rate.toFixed(1)}x`;
+    button.append(check, text);
+    button.addEventListener("click", () => {
+      label.textContent = `${rate.toFixed(1)}x`;
+      details.dataset.value = String(rate);
+      menu.querySelectorAll("[data-speed-value]").forEach(item => {
+        item.setAttribute("aria-checked", item === button ? "true" : "false");
+      });
+      details.open = false;
+    });
+    menu.append(button);
+  });
+  details.dataset.value = String(Number(output?.speed || 1.2));
+  details.append(summary, menu);
+  details.addEventListener("toggle", () => {
+    if (!details.open) {
+      menu.classList.remove("is-floating");
+      menu.style.removeProperty("left");
+      menu.style.removeProperty("top");
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      const anchor = summary.getBoundingClientRect();
+      const box = menu.getBoundingClientRect();
+      const left = Math.min(
+        window.innerWidth - box.width - 12,
+        Math.max(12, anchor.left + (anchor.width - box.width) / 2),
+      );
+      const canOpenAbove = anchor.top > box.height + 16;
+      const top = canOpenAbove
+        ? anchor.top - box.height - 9
+        : anchor.bottom + 9;
+      menu.classList.add("is-floating");
+      menu.style.left = `${Math.round(left)}px`;
+      menu.style.top = `${Math.round(Math.max(12, top))}px`;
+      const closeOnScroll = () => {
+        details.open = false;
+      };
+      window.addEventListener("scroll", closeOnScroll, { capture: true, once: true });
+      window.addEventListener("resize", closeOnScroll, { once: true });
+    });
+  });
+  return details;
+}
+
+function createChatDeliveryCard(message) {
+  const project = state.project;
+  const delivery = deliveryForMessage(project, message);
+  const output = delivery?.outputs?.[0];
+  if (!delivery || !output) return null;
+  const publication = publicationForOutput(project, output);
+  const card = document.createElement("section");
+  card.className = "chat-delivery-card";
+  const stage = document.createElement("div");
+  stage.className = "chat-delivery-stage";
+  const video = document.createElement("video");
+  video.src = String(output.url || output.downloadUrl || "");
+  video.controls = true;
+  video.preload = "metadata";
+  video.playsInline = true;
+  const download = document.createElement("a");
+  download.className = "chat-delivery-download";
+  download.href = String(output.downloadUrl || output.url || "#");
+  download.download = `xingzhen-${String(output.aspectRatio || "16:9").replace(":", "x")}.mp4`;
+  download.title = "下载成片";
+  const downloadIcon = document.createElement("i");
+  downloadIcon.dataset.lucide = "download";
+  const downloadText = document.createElement("span");
+  downloadText.textContent = "下载成片";
+  download.append(downloadIcon, downloadText);
+  stage.append(video, download);
+  const footer = document.createElement("div");
+  footer.className = "chat-delivery-footer";
+  const meta = document.createElement("span");
+  meta.textContent = [
+    String(output.aspectRatio || delivery.aspectRatio || "16:9"),
+    `${Number(output.speed || 1).toFixed(1)}x`,
+    publication ? "已发布" : "未发布",
+  ].join(" · ");
+  const actions = document.createElement("div");
+  actions.className = "chat-delivery-actions";
+  const speedPicker = createSpeedPicker(output, true);
+  const speedButton = document.createElement("button");
+  speedButton.type = "button";
+  speedButton.textContent = "另存变速版";
+  speedButton.addEventListener("click", () => createSpeedVersion(output, speedPicker.dataset.value, speedButton));
+  const publish = document.createElement("button");
+  publish.type = "button";
+  publish.textContent = publication ? "已发布" : "发布";
+  publish.disabled = Boolean(publication);
+  publish.addEventListener("click", () => requestOutputPublish(output, delivery));
+  const share = document.createElement("button");
+  share.type = "button";
+  const shareKey = String(output.id || output.deliveryId || "").trim();
+  const sharedPost = shareKey ? state.communitySharedOutputs[shareKey] : null;
+  share.textContent = sharedPost ? "已分享" : "分享灵感";
+  share.disabled = Boolean(sharedPost);
+  share.classList.toggle("is-shared", Boolean(sharedPost));
+  share.addEventListener("click", () => requestOutputCommunityShare(output, delivery));
+  actions.append(speedPicker, speedButton);
+  if (CAN_PUBLISH) actions.append(publish);
+  actions.append(share);
+  footer.append(meta, actions);
+  card.append(stage, footer);
+  return card;
+}
+
 function refreshIcons() {
   if (window.lucide) window.lucide.createIcons({ attrs: { "aria-hidden": "true" } });
 }
@@ -358,6 +502,29 @@ function stopPlaceholderCycle() {
 function autoSize(textarea) {
   textarea.style.height = "auto";
   textarea.style.height = `${Math.min(textarea.scrollHeight, 168)}px`;
+  if (textarea === dom.chatInput) window.requestAnimationFrame(syncChatComposerSafeSpace);
+}
+
+function syncChatComposerSafeSpace() {
+  const composer = dom.chatForm;
+  const column = dom.conversationColumn;
+  const pane = column?.closest?.(".conversation-pane");
+  if (!composer || !column || !pane || typeof composer.getBoundingClientRect !== "function") return;
+  const wasNearBottom = column.scrollHeight - column.scrollTop - column.clientHeight < 160;
+  const composerHeight = Math.ceil(composer.getBoundingClientRect().height || 0);
+  const safeSpace = Math.max(126, composerHeight - 24);
+  pane.style.setProperty("--chat-composer-safe-space", `${safeSpace}px`);
+  if (wasNearBottom) {
+    window.requestAnimationFrame(() => column.scrollTo({ top: column.scrollHeight }));
+  }
+}
+
+function installChatComposerSafeSpace() {
+  syncChatComposerSafeSpace();
+  if (!dom.chatForm || typeof ResizeObserver !== "function") return;
+  state.chatComposerResizeObserver?.disconnect?.();
+  state.chatComposerResizeObserver = new ResizeObserver(syncChatComposerSafeSpace);
+  state.chatComposerResizeObserver.observe(dom.chatForm);
 }
 
 function fileToDataUrl(file) {
@@ -485,14 +652,29 @@ function enterStudio() {
   dom.studioView.classList.remove("is-hidden");
 }
 
+function createMessageIdentity(message) {
+  const label = document.createElement("span");
+  label.className = "message-label";
+  label.textContent = message.role === "user" ? "YOU" : message.kind === "plan" ? "DIRECTOR" : "XINGZHEN";
+  if (message.role === "user") return label;
+
+  const identity = document.createElement("div");
+  identity.className = "message-identity";
+  const avatar = document.createElement("span");
+  avatar.className = `message-agent-avatar${message.kind === "pending" ? " is-working" : ""}${message.kind === "plan" ? " is-director" : ""}`;
+  avatar.setAttribute("aria-hidden", "true");
+  const image = document.createElement("img");
+  image.src = "/assets/xingzhen-logo-white.png";
+  image.alt = "";
+  avatar.append(image);
+  identity.append(avatar, label);
+  return identity;
+}
+
 function createMessage(message, isRetryTarget = false) {
   const article = document.createElement("article");
   article.className = `message ${message.role}${message.kind === "error" ? " error" : ""}${message.kind === "pending" ? " pending" : ""}`;
   article.dataset.messageId = message.id || "";
-
-  const label = document.createElement("span");
-  label.className = "message-label";
-  label.textContent = message.role === "user" ? "YOU" : message.kind === "plan" ? "DIRECTOR" : "XINGZHEN";
 
   const content = document.createElement("div");
   content.className = "message-content";
@@ -509,7 +691,7 @@ function createMessage(message, isRetryTarget = false) {
       ? assistantText(message.content)
       : publicText(message.content);
   }
-  article.append(label);
+  article.append(createMessageIdentity(message));
 
   if (message.kind === "plan" && state.project?.plan) {
     const plan = state.project.plan;
@@ -569,12 +751,12 @@ function createMessage(message, isRetryTarget = false) {
     article.append(suggestions);
   }
 
-  if (isRetryTarget && ["safe_rewrite", "resume_missing"].includes(state.project?.retryable?.type)) {
+  if (isRetryTarget && ["safe_rewrite", "resume_missing", "resume_plan"].includes(state.project?.retryable?.type)) {
     const sceneNumber = Number(state.project.retryable.sceneNumber || 0);
-    const isResume = state.project.retryable.type === "resume_missing";
+    const isResume = ["resume_missing", "resume_plan"].includes(state.project.retryable.type);
     const isCopyright = state.project.retryable.reason === "copyright";
     const actionLabel = isResume
-      ? `继续缺失镜头 ${sceneNumber}`
+      ? `继续原任务 · 镜头 ${sceneNumber}`
       : `${isCopyright ? "原创" : "安全"}改写并重试镜头 ${sceneNumber}`;
     const actions = document.createElement("div");
     actions.className = "message-actions";
@@ -619,6 +801,11 @@ function createMessage(message, isRetryTarget = false) {
       images.append(item);
     });
     article.append(images);
+  }
+
+  if (message.kind === "delivery") {
+    const deliveryCard = createChatDeliveryCard(message);
+    if (deliveryCard) article.append(deliveryCard);
   }
 
   if (message.kind === "plan" && state.project?.plan) {
@@ -690,9 +877,6 @@ function createMessage(message, isRetryTarget = false) {
 function createLiveProductionIndicator(project) {
   const article = document.createElement("article");
   article.className = "message assistant production-live";
-  const label = document.createElement("span");
-  label.className = "message-label";
-  label.textContent = "XINGZHEN";
   const content = document.createElement("div");
   content.className = "message-content";
   const ring = document.createElement("span");
@@ -722,20 +906,7 @@ function createLiveProductionIndicator(project) {
   detail.append(separator, stageWindow, elapsed);
   text.append(title, detail);
   content.append(ring, text);
-  const actions = document.createElement("div");
-  actions.className = "message-actions";
-  const stopButton = document.createElement("button");
-  stopButton.type = "button";
-  stopButton.className = "stop-production-button";
-  stopButton.title = "立即停止当前执行；已完成文件会保留，但不伪装为可无损暂停";
-  const stopIcon = document.createElement("i");
-  stopIcon.dataset.lucide = "square";
-  const stopLabel = document.createElement("span");
-  stopLabel.textContent = "停止制作";
-  stopButton.append(stopIcon, stopLabel);
-  stopButton.addEventListener("click", () => stopProject(stopButton));
-  actions.append(stopButton);
-  article.append(label, content, actions);
+  article.append(createMessageIdentity({ role: "assistant", kind: "pending" }), content);
   return article;
 }
 
@@ -743,9 +914,14 @@ function renderConversation(project) {
   const errorMessages = (project.messages || []).filter((item) => item.kind === "error");
   const retryMessageId = project.retryable ? errorMessages.at(-1)?.id : "";
   const signature = JSON.stringify({
-    messages: (project.messages || []).map((item) => [item.id, item.content, item.kind, item.attachments, item.suggestions]),
+    messages: (project.messages || []).map((item) => [item.id, item.content, item.kind, item.deliveryId, item.attachments, item.suggestions]),
     thoughts: project.plan?.public_thoughts || null,
     assetAssignments: project.plan?.asset_assignments || null,
+    deliveries: deliveryRowsFor(project).map(item => [
+      item.id,
+      (item.outputs || []).map(output => [output.id, output.url, output.aspectRatio, output.speed]),
+    ]),
+    publishedVideoOutputs: publishedOutputMap(project),
     retryable: project.retryable || null,
     status: project.status,
   });
@@ -773,17 +949,43 @@ function renderConversation(project) {
 
 function renderEvents(project) {
   const events = [];
-  const generationIndexes = new Map();
+  const generationGroups = new Map();
   (project.events || []).forEach((event) => {
-    if (event.title.startsWith("Seedance 正在生成镜头")) {
-      const existingIndex = generationIndexes.get(event.title);
-      if (existingIndex !== undefined) {
-        events.splice(existingIndex, 1);
-        generationIndexes.forEach((value, key) => {
-          if (value > existingIndex) generationIndexes.set(key, value - 1);
-        });
+    const title = String(event.title || "");
+    const seedanceMatch = title.match(/^Seedance 正在生成镜头\s*(\d+)/);
+    const staticMatch = title.match(/^正在生成静态分镜\s*(\d+)/);
+    const match = seedanceMatch || staticMatch;
+    if (match) {
+      const groupKey = seedanceMatch ? "seedance" : "static";
+      const sceneNumber = Number(match[1] || 0);
+      const existing = generationGroups.get(groupKey);
+      if (existing) {
+        existing.numbers.add(sceneNumber);
+        existing.event.id = event.id || existing.event.id;
+        existing.event.status = event.status || existing.event.status;
+        const numbers = [...existing.numbers].filter(Boolean).sort((a, b) => a - b);
+        const range = numbers.length > 1 ? `${numbers[0]}–${numbers.at(-1)}` : String(numbers[0] || 1);
+        existing.event.title = groupKey === "seedance"
+          ? `提交 Seedance 分镜 ${range}`
+          : `提交静态图片分镜 ${range}`;
+        existing.event.detail = groupKey === "seedance"
+          ? `${numbers.length} 个视频分镜已统一提交，等待模型返回。`
+          : `${numbers.length} 张图片分镜已并行提交，等待画面返回。`;
+      } else {
+        const numbers = new Set([sceneNumber]);
+        const summaryEvent = {
+          ...event,
+          title: groupKey === "seedance"
+            ? `提交 Seedance 分镜 ${sceneNumber || 1}`
+            : `提交静态图片分镜 ${sceneNumber || 1}`,
+          detail: groupKey === "seedance"
+            ? "视频分镜已统一提交，等待模型返回。"
+            : "图片分镜已并行提交，等待画面返回。",
+        };
+        generationGroups.set(groupKey, { numbers, event: summaryEvent });
+        events.push(summaryEvent);
       }
-      generationIndexes.set(event.title, events.length);
+      return;
     }
     events.push(event);
   });
@@ -902,6 +1104,10 @@ function selectedPublishPayload() {
 }
 
 function requestSelectedOutputPublish() {
+  if (!CAN_PUBLISH) {
+    showToast("当前版本不包含发布能力");
+    return;
+  }
   const payload = selectedPublishPayload();
   if (!payload) {
     showToast("成片尚未完成，暂时不能发布");
@@ -922,6 +1128,10 @@ function requestSelectedOutputPublish() {
 }
 
 function requestOutputPublish(output, delivery) {
+  if (!CAN_PUBLISH) {
+    showToast("当前版本不包含发布能力");
+    return;
+  }
   const payload = publishPayloadForOutput(output, delivery);
   if (!payload) {
     showToast("成片尚未完成，暂时不能发布");
@@ -933,6 +1143,22 @@ function requestOutputPublish(output, delivery) {
   }
   window.parent.postMessage(
     { type: "custom-video:publish-request", payload },
+    window.location.origin,
+  );
+}
+
+function requestOutputCommunityShare(output, delivery) {
+  const payload = publishPayloadForOutput(output, delivery);
+  if (!payload) {
+    showToast("成片尚未完成，暂时不能分享");
+    return;
+  }
+  if (document.documentElement.dataset.platformEmbedded !== "true" || window.parent === window) {
+    showToast("请在星阵主平台中分享灵感");
+    return;
+  }
+  window.parent.postMessage(
+    { type: "custom-video:community-share-request", payload },
     window.location.origin,
   );
 }
@@ -968,7 +1194,13 @@ async function createSpeedVersion(output, speed, trigger) {
 }
 
 function closeHistoryDeliveryModal() {
-  dom.historyDeliveryModal.hidden = true;
+  window.clearTimeout(state.historyDeliveryCloseTimer);
+  dom.historyDeliveryModal.classList.remove("is-open");
+  dom.historyDeliveryModal.classList.add("is-closing");
+  state.historyDeliveryCloseTimer = window.setTimeout(() => {
+    dom.historyDeliveryModal.hidden = true;
+    dom.historyDeliveryModal.classList.remove("is-closing");
+  }, 220);
   document.body.classList.remove("history-delivery-open");
 }
 
@@ -976,7 +1208,6 @@ function renderHistoryDeliveryModal() {
   const project = state.project;
   const filter = String(dom.historyDeliveryFilter.value || "all");
   const entries = deliveryRowsFor(project)
-    .slice(1)
     .flatMap(delivery => (delivery.outputs || []).map(output => ({ delivery, output })))
     .filter(({ output }) => {
       const published = Boolean(publicationForOutput(project, output));
@@ -1015,26 +1246,24 @@ function renderHistoryDeliveryModal() {
     const download = document.createElement("a");
     download.href = String(output.downloadUrl || output.url || "#");
     download.download = `xingzhen-history-${String(output.aspectRatio || "9:16").replace(":", "x")}.mp4`;
-    download.textContent = "下载";
+    download.className = "history-download-action";
+    const downloadIcon = document.createElement("i");
+    downloadIcon.dataset.lucide = "download";
+    const downloadLabel = document.createElement("span");
+    downloadLabel.textContent = "下载";
+    download.append(downloadIcon, downloadLabel);
     const publish = document.createElement("button");
     publish.type = "button";
     publish.textContent = publication ? "已发布" : "发布";
     publish.disabled = Boolean(publication);
     publish.addEventListener("click", () => requestOutputPublish(output, delivery));
-    const speedSelect = document.createElement("select");
-    speedSelect.className = "history-speed-select";
-    [1.2, 1.3, 1.5, 1.8, 2].forEach(rate => {
-      const option = document.createElement("option");
-      option.value = String(rate);
-      option.textContent = `${rate.toFixed(1)}x`;
-      if (Math.abs(rate - Number(output.speed || 1.2)) < 0.01) option.selected = true;
-      speedSelect.append(option);
-    });
+    const speedSelect = createSpeedPicker(output, true);
     const speedButton = document.createElement("button");
     speedButton.type = "button";
     speedButton.textContent = "另存变速版";
-    speedButton.addEventListener("click", () => createSpeedVersion(output, speedSelect.value, speedButton));
-    actions.append(download, speedSelect, speedButton, publish);
+    speedButton.addEventListener("click", () => createSpeedVersion(output, speedSelect.dataset.value, speedButton));
+    actions.append(download, speedSelect, speedButton);
+    if (CAN_PUBLISH) actions.append(publish);
     content.append(title, meta, actions);
     card.append(video, content);
     dom.historyDeliveryList.append(card);
@@ -1042,10 +1271,15 @@ function renderHistoryDeliveryModal() {
 }
 
 function openHistoryDeliveryModal() {
-  if (deliveryRowsFor(state.project).length <= 1) return;
+  if (!deliveryRowsFor(state.project).length) return;
+  window.clearTimeout(state.historyDeliveryCloseTimer);
   selectHistoryDeliveryFilter("all");
   renderHistoryDeliveryModal();
   dom.historyDeliveryModal.hidden = false;
+  dom.historyDeliveryModal.classList.remove("is-closing");
+  window.requestAnimationFrame(() => {
+    dom.historyDeliveryModal.classList.add("is-open");
+  });
   document.body.classList.add("history-delivery-open");
   refreshIcons();
 }
@@ -1085,15 +1319,10 @@ function renderDelivery(project) {
   if (signature === state.outputSignature) return;
   state.outputSignature = signature;
   state.outputMediaSignature = mediaSignature;
-  if (!outputs.length) {
-    dom.delivery.classList.add("is-hidden");
-    dom.publishOutputButton.hidden = true;
-    dom.historyDeliveryButton.hidden = true;
-    dom.publishedOutputBadge.hidden = true;
-    dom.speedVersionControl.hidden = true;
-    return;
-  }
-  dom.delivery.classList.remove("is-hidden");
+  dom.delivery.classList.add("is-hidden");
+  dom.projectAssetsButton.hidden = !deliveries.length;
+  if (!outputs.length) return;
+  // 成片改为随助手消息交付；旧的独立成片区只保留内部兼容状态，不再展示。
   dom.delivery.classList.toggle("is-collapsed", state.deliveryCollapsed);
   dom.deliveryToggleButton.setAttribute("aria-expanded", String(!state.deliveryCollapsed));
   dom.deliveryToggleButton.querySelector("span").textContent = state.deliveryCollapsed
@@ -1103,10 +1332,11 @@ function renderDelivery(project) {
     "data-lucide",
     state.deliveryCollapsed ? "chevron-down" : "chevron-up",
   );
-  dom.historyDeliveryButton.hidden = deliveries.length <= 1;
+  dom.historyDeliveryButton.hidden = !deliveries.length;
   dom.speedVersionControl.hidden = project.status !== "succeeded";
   dom.publishOutputButton.hidden = !(
-    project.status === "succeeded"
+    CAN_PUBLISH
+    && project.status === "succeeded"
     && document.documentElement.dataset.platformEmbedded === "true"
     && window.parent !== window
   );
@@ -1199,7 +1429,11 @@ function normalizeCreationMode(value) {
 
 function syncCreationMode(value, { announce = false } = {}) {
   const mode = normalizeCreationMode(value);
+  const modeChanged = state.creationMode !== mode;
   state.creationMode = mode;
+  if (modeChanged) {
+    state.ratio = mode === "static" ? "16:9" : "9:16";
+  }
   dom.creationModeButtons.forEach((button) => {
     const active = button.dataset.creationMode === mode;
     button.classList.toggle("active", active);
@@ -1212,7 +1446,7 @@ function syncCreationMode(value, { announce = false } = {}) {
     showToast(
       mode === "static"
         ? "已切换为静态视频：图片分镜、轻推近、字幕、口播与 BGM"
-        : "已切换为正常视频",
+        : "已切换为动态视频",
     );
   }
 }
@@ -1239,7 +1473,32 @@ function renderProject(project) {
   if (running) startProductionHeartbeat(project);
   else stopProductionHeartbeat();
   dom.chatInput.disabled = running;
-  dom.chatForm.querySelector("button[type='submit']").disabled = running;
+  const chatSubmitButton = dom.chatForm.querySelector("button[type='submit']");
+  if (chatSubmitButton) {
+    chatSubmitButton.disabled = false;
+    chatSubmitButton.dataset.runningStop = running ? "true" : "false";
+    chatSubmitButton.classList.toggle("is-stop", running);
+    chatSubmitButton.setAttribute("aria-label", running ? "停止当前制作" : "发送");
+    chatSubmitButton.title = running
+      ? "停止当前制作；已完成的本地素材会保留"
+      : "发送";
+    const chatSubmitIcon = document.createElement("i");
+    chatSubmitIcon.dataset.lucide = running ? "square" : "arrow-up";
+    chatSubmitButton.replaceChildren(chatSubmitIcon);
+  }
+  const chatAttachmentButton = dom.chatForm.querySelector("[data-file-trigger]");
+  if (chatAttachmentButton) {
+    delete chatAttachmentButton.dataset.runningStop;
+    chatAttachmentButton.classList.remove("is-stop");
+    chatAttachmentButton.disabled = running;
+    chatAttachmentButton.setAttribute("aria-label", "添加图片、视频或音频");
+    chatAttachmentButton.title = running
+      ? "制作进行中，停止后可继续添加附件"
+      : "添加图片、视频或音频";
+    const chatAttachmentIcon = document.createElement("i");
+    chatAttachmentIcon.dataset.lucide = "plus";
+    chatAttachmentButton.replaceChildren(chatAttachmentIcon);
+  }
   dom.creationModeButtons.forEach((button) => {
     button.disabled = running;
   });
@@ -1432,12 +1691,15 @@ async function loadHistory(force = false) {
   const requestEpoch = ++state.historyLoadEpoch;
   try {
     const response = await fetch("/api/projects?page=1&pageSize=60", { cache: "no-store" });
-    if (!response.ok) return;
+    if (!response.ok) return [];
     const data = await response.json();
-    if (requestEpoch !== state.historyLoadEpoch) return;
-    renderHistory(data.items || []);
+    if (requestEpoch !== state.historyLoadEpoch) return [];
+    const items = data.items || [];
+    renderHistory(items);
+    return items;
   } catch {
     // History is secondary to the active creation flow.
+    return [];
   }
 }
 
@@ -1495,6 +1757,7 @@ function schedulePoll(active) {
 }
 
 const pendingThoughtStages = [
+  ["正在思考", "正在理解这条消息，并判断应当回答、追问还是开始制作"],
   ["正在提取核心诉求", "从你的描述中识别主题、受众和最重要的表达目标"],
   ["正在识别附件用途", "判断图片、视频和音频分别承担参考、剪辑、口播或声音设计"],
   ["正在听取口播时间线", "口播音频会先转写，再按真实语义和时长组织镜头"],
@@ -1556,7 +1819,15 @@ function startPendingThoughts(token, attachments) {
   }, 1800);
 }
 
-function renderPendingRequest(message, attachments) {
+function isDirectContinuation(message) {
+  const compact = String(message || "")
+    .toLowerCase()
+    .replace(/[\s，。！？、,.!?]+/g, "");
+  return /^(?:没关系|不用管|无所谓|这个误差没关系)?(?:请)?继续(?:制作|生成|合成|执行|完成)?$/.test(compact)
+    || ["确认继续", "按这个做", "执行吧", "开始吧"].includes(compact);
+}
+
+function renderPendingRequest(message, attachments, { resuming = false } = {}) {
   const current = state.project && state.project.id === state.projectId ? state.project : {};
   const pendingId = createClientId();
   const optimisticProject = {
@@ -1583,15 +1854,17 @@ function renderPendingRequest(message, attachments) {
         id: `${pendingId}-assistant`,
         role: "assistant",
         kind: "pending",
-        content: "正在理解你的需求",
+        content: resuming ? "正在继续上一轮创作" : "正在思考",
       },
     ],
     events: [
       ...(current.events || []),
       {
         id: `${pendingId}-event`,
-        title: "导演正在理解你的需求",
-        detail: "正在判断主题、受众、叙事结构和附件用途",
+        title: resuming ? "正在继续原任务" : "正在思考",
+        detail: resuming
+          ? "正在复用上一轮导演计划与已完成素材，从缺失步骤接着执行"
+          : "正在理解这条消息，并判断应当回答、追问还是开始制作",
         status: "running",
       },
     ],
@@ -1609,7 +1882,8 @@ function renderPendingRequest(message, attachments) {
   dom.chatForm.querySelector("button[type='submit']").disabled = true;
   dom.startForm.querySelector("button[type='submit']").disabled = true;
   refreshIcons();
-  startPendingThoughts(pendingId, attachments);
+  if (resuming) stopPendingThoughts();
+  else startPendingThoughts(pendingId, attachments);
   return pendingId;
 }
 
@@ -1656,11 +1930,18 @@ async function sendMessage(message, fromStart = false) {
     dom.chatInput.value = "";
     autoSize(dom.startInput);
     autoSize(dom.chatInput);
-    pendingToken = renderPendingRequest(cleanMessage, requestAttachments);
+    const resumableTypes = new Set(["resume_missing", "resume_plan", "recompose"]);
+    const resuming = (
+      isDirectContinuation(cleanMessage)
+      && resumableTypes.has(String(state.project?.retryable?.type || ""))
+    );
+    pendingToken = renderPendingRequest(cleanMessage, requestAttachments, { resuming });
     const response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        idempotencyKey: globalThis.crypto?.randomUUID?.()
+          || `static-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         projectId: requestProjectId,
         message: cleanMessage,
         aspectRatio: state.ratio,
@@ -1721,13 +2002,13 @@ async function retryProject(button) {
   if (state.busy || !state.projectId) return;
   const retryType = state.project?.retryable?.type;
   const sceneNumber = state.project?.retryable?.sceneNumber || "";
-  const isResume = retryType === "resume_missing";
+  const isResume = ["resume_missing", "resume_plan"].includes(retryType);
   const isCopyright = state.project?.retryable?.reason === "copyright";
   state.busy = true;
   button.disabled = true;
   button.classList.add("is-loading");
   const label = button.querySelector("span");
-  if (label) label.textContent = isResume ? "正在恢复缺失镜头" : `导演正在${isCopyright ? "原创" : "安全"}改写`;
+  if (label) label.textContent = isResume ? "正在继续原任务" : `导演正在${isCopyright ? "原创" : "安全"}改写`;
   try {
     const response = await fetch(`/api/projects/${state.projectId}/retry`, { method: "POST" });
     const data = await response.json().catch(() => ({}));
@@ -1736,14 +2017,14 @@ async function retryProject(button) {
     state.eventSignature = "";
     state.historySignature = "";
     renderProject(data);
-    showToast(isResume ? "已保留完成素材，正在恢复缺失镜头" : "已保留成功素材，正在重试失败镜头");
+    showToast(isResume ? "已保留原计划和完成素材，正在继续任务" : "已保留成功素材，正在重试失败镜头");
   } catch (error) {
     showToast(error.message || (isResume ? "恢复制作失败" : "安全改写失败"));
     button.disabled = false;
     button.classList.remove("is-loading");
     if (label) {
       label.textContent = isResume
-        ? `继续缺失镜头 ${sceneNumber}`
+        ? `继续原任务 · 镜头 ${sceneNumber}`
         : `${isCopyright ? "原创" : "安全"}改写并重试镜头 ${sceneNumber}`;
     }
   } finally {
@@ -1806,7 +2087,23 @@ function resetProject(showStart = true) {
   dom.delivery.classList.add("is-hidden");
   dom.projectLabel.textContent = "新项目";
   dom.chatInput.disabled = false;
-  dom.chatForm.querySelector("button[type='submit']").disabled = false;
+  const chatSubmitButton = dom.chatForm.querySelector("button[type='submit']");
+  if (chatSubmitButton) {
+    chatSubmitButton.disabled = false;
+    delete chatSubmitButton.dataset.runningStop;
+    chatSubmitButton.classList.remove("is-stop");
+    chatSubmitButton.setAttribute("aria-label", "发送");
+    chatSubmitButton.title = "发送";
+    const chatSubmitIcon = document.createElement("i");
+    chatSubmitIcon.dataset.lucide = "arrow-up";
+    chatSubmitButton.replaceChildren(chatSubmitIcon);
+  }
+  const chatAttachmentButton = dom.chatForm.querySelector("[data-file-trigger]");
+  if (chatAttachmentButton) {
+    chatAttachmentButton.disabled = false;
+    delete chatAttachmentButton.dataset.runningStop;
+    chatAttachmentButton.classList.remove("is-stop");
+  }
   dom.creationModeButtons.forEach((button) => {
     button.disabled = false;
   });
@@ -1953,6 +2250,11 @@ dom.startForm.addEventListener("submit", (event) => {
 
 dom.chatForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  const submitButton = event.submitter || dom.chatForm.querySelector("button[type='submit']");
+  if (submitButton?.dataset.runningStop === "true") {
+    void stopProject(submitButton);
+    return;
+  }
   sendMessage(dom.chatInput.value, false);
 });
 
@@ -2027,6 +2329,44 @@ window.addEventListener("message", (event) => {
   if (
     WORKSPACE_MODE
     && message.scope === "video"
+    && message.type === "workspace:prefill"
+  ) {
+    const launchId = String(message.launchId || "").trim().slice(0, 180);
+    if (launchId && HOME_PREFILL_IDS.has(launchId)) return;
+    if (launchId) HOME_PREFILL_IDS.add(launchId);
+    syncCreationMode(message.creationMode === "static" ? "static" : "video");
+    const incoming = Array.isArray(message.attachments) ? message.attachments.slice(0, MAX_ATTACHMENTS_PER_MESSAGE) : [];
+    state.attachments = incoming
+      .filter(item => /^(?:image|video|audio)\//.test(String(item?.type || item?.mime || "")) && /^data:/.test(String(item?.dataUrl || "")))
+      .map((item, index) => {
+        const mime = String(item.type || item.mime || "");
+        const kind = mime.startsWith("video/") ? "视频" : mime.startsWith("audio/") ? "音频" : "图";
+        return {
+          id: createClientId(),
+          label: `${kind}${index + 1}`,
+          name: String(item.name || `${kind}${index + 1}`).slice(0, 180),
+          mime,
+          dataUrl: String(item.dataUrl || ""),
+        };
+      });
+    renderAttachments();
+    stopPlaceholderCycle();
+    const prompt = String(message.prompt || "").trim().slice(0, 12000);
+    dom.startInput.value = prompt;
+    dom.chatInput.value = prompt;
+    autoSize(dom.startInput);
+    autoSize(dom.chatInput);
+    if (prompt || state.attachments.length) {
+      window.setTimeout(() => {
+        const fromStart = !dom.startView.classList.contains("is-hidden");
+        void sendMessage(prompt, fromStart);
+      }, 80);
+    }
+    return;
+  }
+  if (
+    WORKSPACE_MODE
+    && message.scope === "video"
     && message.type === "workspace:open"
   ) {
     const projectId = String(message.projectId || "").trim().slice(0, 180);
@@ -2079,6 +2419,18 @@ window.addEventListener("message", (event) => {
     })();
     return;
   }
+  if (message.type === "custom-video:community-shared") {
+    const projectId = String(message.projectId || "").trim();
+    const sourceOutputId = String(message.sourceOutputId || "").trim();
+    if (!projectId || !sourceOutputId || state.project?.id !== projectId) return;
+    state.communitySharedOutputs[sourceOutputId] = {
+      postId: String(message.postId || "shared"),
+      sharedAt: Number(message.sharedAt) || Date.now(),
+    };
+    state.messageSignature = "";
+    renderConversation(state.project);
+    return;
+  }
   if (message.type !== "custom-video:published") return;
   const projectId = String(message.projectId || "").trim();
   const deliveryId = String(message.deliveryId || "").trim();
@@ -2113,7 +2465,9 @@ window.addEventListener("message", (event) => {
     },
   };
   state.outputSignature = "";
+  state.messageSignature = "";
   renderDelivery(state.project);
+  renderConversation(state.project);
   if (!dom.historyDeliveryModal.hidden) renderHistoryDeliveryModal();
   state.historySignature = "";
   loadHistory(true);
@@ -2121,6 +2475,7 @@ window.addEventListener("message", (event) => {
 
 dom.publishOutputButton.addEventListener("click", requestSelectedOutputPublish);
 dom.historyDeliveryButton.addEventListener("click", openHistoryDeliveryModal);
+dom.projectAssetsButton?.addEventListener("click", openHistoryDeliveryModal);
 dom.historyDeliveryFilter.addEventListener("change", renderHistoryDeliveryModal);
 document.querySelectorAll("[data-history-delivery-close]").forEach(button => {
   button.addEventListener("click", closeHistoryDeliveryModal);
@@ -2171,15 +2526,27 @@ dom.startHistoryToggleButton.addEventListener("click", () => {
 });
 installGlobalDropZone();
 
-refreshIcons();
-typePlaceholder();
-checkHealth();
-loadHistory(true);
-if (WORKSPACE_MODE) enterStudio();
-if (state.projectId) loadProject(state.projectId, true);
-if (WORKSPACE_MODE) {
-  window.parent.postMessage({
-    type: "custom-video:workspace-ready",
-    projectId: state.projectId,
-  }, window.location.origin);
+async function bootstrapApplication() {
+  refreshIcons();
+  installChatComposerSafeSpace();
+  typePlaceholder();
+  checkHealth();
+  const historyItems = await loadHistory(true);
+  if (WORKSPACE_MODE) enterStudio();
+  if (state.projectId) {
+    await loadProject(state.projectId, true);
+  } else if (WORKSPACE_MODE && !historyItems.length) {
+    await createNewConversation();
+  }
+  if (WORKSPACE_MODE) {
+    window.parent.postMessage({
+      type: "custom-video:workspace-ready",
+      projectId: state.projectId,
+    }, window.location.origin);
+  }
+  window.requestAnimationFrame(() => {
+    document.documentElement.classList.remove("app-booting");
+  });
 }
+
+void bootstrapApplication();

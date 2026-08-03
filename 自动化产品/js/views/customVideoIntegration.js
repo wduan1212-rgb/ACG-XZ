@@ -59,7 +59,7 @@ function normalizedOutput(raw) {
  * - getProject(): 最近一次视频工坊项目快照
  * - reload()/destroy()
  */
-export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
+export function mountCustomVideo(host, { onOutput, onPublishRequest, onCommunityShareRequest } = {}) {
   if (!(host instanceof Element)) {
     throw new TypeError("mountCustomVideo 需要有效的 DOM 挂载容器");
   }
@@ -74,8 +74,16 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
   const onProjects = typeof mountOptions.onProjects === "function"
     ? mountOptions.onProjects
     : null;
+  const canPublish = mountOptions.canPublish !== false;
+  let pendingPrefill = mountOptions.launchPayload && typeof mountOptions.launchPayload === "object"
+    ? mountOptions.launchPayload
+    : null;
   const frame = document.createElement("iframe");
-  const entryParams = new URLSearchParams({ embed: "1", workspace: "1" });
+  const entryParams = new URLSearchParams({
+    embed: "1",
+    workspace: "1",
+    canPublish: canPublish ? "1" : "0",
+  });
   if (initialProjectId) entryParams.set("project", initialProjectId);
   const entryUrl = `/custom-video/?${entryParams.toString()}`;
   frame.title = "星阵视频工坊";
@@ -136,6 +144,17 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
     }, window.location.origin);
     return true;
   };
+  const flushPrefill = () => {
+    if (!pendingPrefill || !workspaceReady) return false;
+    const payload = pendingPrefill;
+    pendingPrefill = null;
+    return postWorkspaceAction("workspace:prefill", {
+      launchId: `${Number(payload.createdAt || Date.now())}-${Math.random().toString(36).slice(2)}`,
+      prompt: String(payload.prompt || "").slice(0, 12000),
+      attachments: Array.isArray(payload.attachments) ? payload.attachments.slice(0, 8) : [],
+      creationMode: payload.creationMode === "static" ? "static" : "video",
+    });
+  };
 
   const openProject = projectId => {
     const nextProjectId = String(projectId || "").trim().slice(0, 180);
@@ -184,6 +203,7 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
       } else {
         revealFrame();
       }
+      window.setTimeout(flushPrefill, 180);
       return;
     }
     if (message.type === "custom-video:workspace-projects") {
@@ -226,6 +246,18 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
       } catch (error) {
         console.error("视频工坊 onPublishRequest 回调失败", error);
       }
+      return;
+    }
+    if (message.type === "custom-video:community-share-request") {
+      const output = normalizedOutput(message.payload);
+      if (!output || typeof onCommunityShareRequest !== "function") return;
+      latestProject = message.payload?.project || latestProject;
+      latestOutput = output;
+      try {
+        onCommunityShareRequest(output);
+      } catch (error) {
+        console.error("视频工坊 onCommunityShareRequest 回调失败", error);
+      }
     }
   };
   window.addEventListener("message", receive);
@@ -247,6 +279,13 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
         return true;
       }
       return postWorkspaceAction("workspace:create");
+    },
+    prefill(payload) {
+      if (!payload || typeof payload !== "object") return false;
+      pendingPrefill = payload;
+      if (!workspaceReady) return true;
+      window.setTimeout(flushPrefill, 120);
+      return true;
     },
     onOutput(listener) {
       if (typeof listener !== "function") return () => {};
@@ -289,6 +328,19 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest } = {}) {
         sourceOutputId: String(sourceOutputId || "").trim().slice(0, 180),
         publishedAt: Number(publishedAt) || Date.now(),
         publishedCount: Math.max(0, Math.floor(Number(publishedCount) || 0)),
+      }, window.location.origin);
+      return true;
+    },
+    markCommunityShared({ projectId, sourceOutputId, postId = "", sharedAt = Date.now() } = {}) {
+      const sourceProjectId = String(projectId || "").trim().slice(0, 180);
+      const outputId = String(sourceOutputId || "").trim().slice(0, 180);
+      if (destroyed || !frame.contentWindow || !sourceProjectId || !outputId) return false;
+      frame.contentWindow.postMessage({
+        type: "custom-video:community-shared",
+        projectId: sourceProjectId,
+        sourceOutputId: outputId,
+        postId: String(postId || "").trim().slice(0, 180),
+        sharedAt: Number(sharedAt) || Date.now(),
       }, window.location.origin);
       return true;
     },

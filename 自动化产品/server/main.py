@@ -131,6 +131,21 @@ def _positive_env_int(name: str, default: int) -> int:
         return default
 
 
+# Personal-wallet rates are deliberately explicit and server-owned. They are
+# operation prices, not provider-cost estimates, and can be tuned without a
+# frontend rebuild. Video rates remain separate because their asynchronous
+# lifecycle needs task-bound settlement rather than request-bound settlement.
+IMAGE_GENERATION_POINTS = _positive_env_int("IMAGE_GENERATION_POINTS", 5)
+STATIC_VIDEO_MAX_RESERVATION_POINTS = _positive_env_int(
+    "STATIC_VIDEO_MAX_RESERVATION_POINTS", 200,
+)
+CUSTOM_CANVAS_IMAGE_GENERATION_POINTS = _positive_env_int(
+    "CUSTOM_CANVAS_IMAGE_GENERATION_POINTS", IMAGE_GENERATION_POINTS,
+)
+TTS_POINTS_PER_100_CHARS = _positive_env_int("TTS_POINTS_PER_100_CHARS", 2)
+VOICE_DESIGN_POINTS = _positive_env_int("VOICE_DESIGN_POINTS", 200)
+
+
 # 上游达到并发上限时请求先在本服务排队，避免直接把 429/任务上限暴露给创作者。
 IMAGE_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3))
 VIDEO_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("VIDEO_SUBMIT_CONCURRENCY", 10))
@@ -256,6 +271,9 @@ _EXPLICIT_SEEDANCE_BASE_URL = os.getenv("SEEDANCE_BASE_URL") or os.getenv("JIMEN
 SEEDANCE_BASE_URL = (_EXPLICIT_SEEDANCE_BASE_URL or ("" if _ARK_VIDEO_KEY else os.getenv("LLMONE_BASE_URL", "")) or _DEFAULT_SEEDANCE_BASE_URL).rstrip("/")
 SEEDANCE_MODEL = os.getenv("SEEDANCE_MODEL") or os.getenv("JIMENG_MODEL") or os.getenv("ARK_VIDEO_MODEL") or "doubao-seedance-2-0-260128"
 DIGITAL_HUMAN_MODEL = os.getenv("DIGITAL_HUMAN_MODEL") or os.getenv("OMNIHUMAN_MODEL") or os.getenv("OMINIHUMAN_MODEL") or "omni-human-1.5"
+VIDEO_FAST_POINTS_PER_MINUTE = 960
+VIDEO_STANDARD_POINTS_PER_MINUTE = 1200
+VIDEO_BILLING_STALE_MS = 5 * 60 * 1000
 SEEDANCE_RESOLUTION = os.getenv("SEEDANCE_RESOLUTION", "720p")
 SEEDANCE_GENERATE_AUDIO = os.getenv("SEEDANCE_GENERATE_AUDIO", "").lower() in {"1", "true", "yes"}
 SEEDANCE_WATERMARK = os.getenv("SEEDANCE_WATERMARK", "").lower() in {"1", "true", "yes"}
@@ -677,6 +695,7 @@ class ImageGenerateReq(BaseModel):
     endpoint: str = ""
     model: str = ""
     apiKey: str = ""
+    idempotencyKey: str = ""
 
 
 class ImageReferencePlanCard(BaseModel):
@@ -1450,6 +1469,219 @@ def _record_model_api_usage(member, api_type, feature, model, output_units=1, un
         pass
 
 
+def _quota_operation_key(namespace: str, provided: str = "") -> str:
+    raw = re.sub(r"[\x00-\x1f\x7f]+", "", str(provided or "")).strip()
+    if not raw:
+        return ""
+    if len(raw) > 96:
+        raw = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    scope = re.sub(r"[^a-z0-9_.:-]+", "-", str(namespace or "generation").lower())[:48]
+    return f"{scope}:{raw}"[:160]
+
+
+def _quota_request_fingerprint(value) -> str:
+    if isinstance(value, BaseModel):
+        if hasattr(value, "model_dump"):
+            value = value.model_dump()
+        else:
+            value = value.dict()
+    if isinstance(value, dict):
+        value = {key: item for key, item in value.items() if key != "idempotencyKey"}
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _quota_begin(
+    member,
+    points: int,
+    feature: str,
+    namespace: str,
+    provided_key: str = "",
+    request_fingerprint: str = "",
+) -> dict:
+    key = _quota_operation_key(namespace, provided_key)
+    reservation, error = store.reserve_generation_points(
+        member.get("id"),
+        int(points),
+        feature=feature,
+        idempotency_key=key,
+        request_fingerprint=request_fingerprint,
+    )
+    if error == "insufficient_points":
+        remaining = int((reservation or {}).get("remaining") or 0)
+        period = str((reservation or {}).get("period") or "")
+        label = "今日免费积分" if period == "day" else "套餐积分"
+        raise HTTPException(
+            402,
+            f"{label}不足：需要 {int(points)} 点，当前可用 {remaining} 点",
+        )
+    if error == "idempotency_conflict":
+        raise HTTPException(409, "幂等键已用于不同的生成请求")
+    if error == "idempotency_key_required":
+        raise HTTPException(400, "生成请求必须提供 Idempotency-Key")
+    if error in {
+        "billing_scope_not_configured",
+        "team_plan_not_configured",
+        "member_not_found",
+    }:
+        raise HTTPException(403, "当前账号尚未配置可用的生成积分")
+    if error or not reservation:
+        raise HTTPException(500, f"生成任务积分预占失败：{error or 'unknown'}")
+    if reservation.get("bypassed"):
+        return reservation
+    if reservation.get("status") == "settled":
+        raise HTTPException(409, "该幂等任务已结算，为避免重复调用上游已拒绝重放")
+    if reservation.get("status") == "active" and reservation.get("reused"):
+        raise HTTPException(409, "该幂等任务正在进行，请勿重复提交")
+    if reservation.get("status") != "active":
+        raise HTTPException(409, "该幂等任务状态不允许重新调用上游")
+    reservation["bypassed"] = False
+    return reservation
+
+
+def _quota_release_safely(member, reservation):
+    if not reservation or reservation.get("bypassed"):
+        return
+    try:
+        _released, error = store.release_generation_points(
+            member.get("id"), reservation.get("reservationId"),
+        )
+        if error not in (None, "reservation_settled"):
+            print(
+                f"[quota] release failed: {reservation.get('reservationId')} {error}",
+                file=sys.stderr,
+            )
+    except Exception as exc:
+        # Preserve the original provider/cancellation exception. The durable
+        # active reservation remains safer than returning an uncharged result.
+        print(
+            f"[quota] release exception: {reservation.get('reservationId')} "
+            f"{exc.__class__.__name__}: {str(exc)[:160]}",
+            file=sys.stderr,
+        )
+
+
+def _quota_settle(
+    member, reservation, canvas_receipts=None, *, consumed_points=None,
+) -> dict:
+    if reservation.get("bypassed"):
+        result = dict(reservation)
+        receipt_items = list(canvas_receipts or [])
+        if len(receipt_items) == 1:
+            item = receipt_items[0]
+            result["generationReceipts"] = [
+                store.issue_custom_canvas_generation_receipt(
+                    member.get("id"),
+                    item.get("dataUrl"),
+                    points=item.get("points"),
+                    feature=item.get("feature"),
+                    charged=True,
+                )
+            ]
+        else:
+            result["generationReceipts"] = (
+                store.issue_custom_canvas_generation_receipts(
+                    member.get("id"), receipt_items, charged=True,
+                )
+                if receipt_items else []
+            )
+        return result
+    settled, error = store.settle_generation_points(
+        member.get("id"),
+        reservation.get("reservationId"),
+        canvas_receipts=canvas_receipts,
+        consumed_points=consumed_points,
+    )
+    if error or not settled:
+        # The provider already returned a usable result. Do not release here:
+        # retaining the freeze prevents a free output if SQLite is unavailable.
+        raise HTTPException(500, f"生成已完成，但积分结算失败：{error or 'unknown'}")
+    settled["bypassed"] = False
+    return settled
+
+
+def _quota_billing_public(settlement: dict) -> dict:
+    quota = settlement.get("quota") if isinstance(settlement, dict) else None
+    return {
+        "reservationId": str((settlement or {}).get("reservationId") or ""),
+        "status": str((settlement or {}).get("status") or ""),
+        "requestedPoints": int((settlement or {}).get("points") or 0),
+        "deductedPoints": int((settlement or {}).get("deducted") or 0),
+        "bypassed": bool((settlement or {}).get("bypassed")),
+        "billingType": str((settlement or {}).get("billingType") or ""),
+        "billingScope": (settlement or {}).get("billingScope"),
+        "quota": quota,
+        # Compatibility alias retained for existing clients. The object may
+        # represent a daily, monthly subscription, or unlimited allowance.
+        "dailyQuota": quota,
+    }
+
+
+async def _run_personal_billable(
+    member,
+    *,
+    points: int,
+    feature: str,
+    namespace: str,
+    idempotency_key: str,
+    request_fingerprint: str,
+    operation,
+    receipt_specs=None,
+):
+    reservation = _quota_begin(
+        member,
+        points,
+        feature,
+        namespace,
+        idempotency_key,
+        request_fingerprint,
+    )
+    try:
+        result = await operation()
+    except BaseException:
+        _quota_release_safely(member, reservation)
+        raise
+    if receipt_specs is not None:
+        try:
+            settlement = _quota_settle(
+                member,
+                reservation,
+                canvas_receipts=receipt_specs(result),
+            )
+        except BaseException:
+            # Receipt validation and persistence are inside the settlement
+            # transaction. If either fails, the quota remains active and can
+            # be released without producing a charged-but-unusable response.
+            _quota_release_safely(member, reservation)
+            raise
+    else:
+        settlement = _quota_settle(member, reservation)
+    return result, settlement
+
+
+async def _gather_cancel_on_error(awaitables):
+    tasks = [asyncio.create_task(item) for item in awaitables]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+
+def _tts_generation_points(text: str) -> int:
+    billable_chars = len(re.sub(r"\s+", "", str(text or "")))
+    return max(1, math.ceil(billable_chars / 100)) * TTS_POINTS_PER_100_CHARS
+
+
 @app.post("/api/llm/test")
 async def llm_test(_me=Depends(require_creator)):
     if not LLM_API_KEY:
@@ -2058,8 +2290,7 @@ def image_config(_me=Depends(require_creator)):
     }
 
 
-@app.post("/api/image/generate")
-async def image_generate(req: ImageGenerateReq, _me=Depends(require_creator)):
+async def _image_generate_impl(req: ImageGenerateReq, member=None):
     """同源图片生成代理：解决浏览器跨域，并保留最多 5 张参考图。
     服务器托管模式只使用服务器配置；本地客户端 Key 模式仅允许白名单端点。"""
     api_key, endpoint, edit_endpoint = _image_request_config(req)
@@ -2186,7 +2417,7 @@ async def image_generate(req: ImageGenerateReq, _me=Depends(require_creator)):
     except Exception as exc:
         raise HTTPException(502, "图片 API 返回已收到，但服务端解析失败：%s %s" % (exc.__class__.__name__, str(exc)[:240]))
     # 只在图片已完整返回后记一次“张”数；不会把它换算为 token、积分或现金成本。
-    _record_model_api_usage(_me, "image", "图片生成", model, output_units=1, unit_label="张")
+    _record_model_api_usage(member, "image", "图片生成", model, output_units=1, unit_label="张")
     return {
         "ok": True,
         "dataUrl": output,
@@ -2197,6 +2428,33 @@ async def image_generate(req: ImageGenerateReq, _me=Depends(require_creator)):
         "ratio": ratio,
         "mode": "responses" if responses_mode else ("chat" if chat_mode else ("gpt-maas" if maas_mode else "images"))
     }
+
+
+@app.post("/api/image/generate")
+async def image_generate(
+    req: ImageGenerateReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    _me=Depends(require_creator),
+):
+    if not isinstance(_me, dict):
+        # Internal Python callers predate the HTTP billing wrapper. Canvas uses
+        # its own aggregate reservation and tests patch this public seam.
+        return await _image_generate_impl(req, None)
+
+    async def operation():
+        return await _image_generate_impl(req, _me)
+
+    result, settlement = await _run_personal_billable(
+        _me,
+        points=IMAGE_GENERATION_POINTS,
+        feature="图片生成",
+        namespace="image.generate",
+        idempotency_key=idempotency_key or req.idempotencyKey,
+        request_fingerprint=_quota_request_fingerprint(req),
+        operation=operation,
+    )
+    billing = _quota_billing_public(settlement)
+    return {**result, "billing": billing, "dailyQuota": billing["dailyQuota"]}
 
 
 # ---------- 视频生成代理：Seedance ----------
@@ -2218,6 +2476,82 @@ class VideoSubmitReq(BaseModel):
     resolution: Optional[str] = None
     generateAudio: Optional[bool] = None
     model: Optional[str] = None
+
+
+def _video_generation_billing_spec(req: VideoSubmitReq) -> dict:
+    duration = max(4, min(15, int(req.duration or 15)))
+    requested_model = str(req.model or "").strip()
+    model = (
+        DIGITAL_HUMAN_MODEL
+        if requested_model == "__digital_human__"
+        else (requested_model or SEEDANCE_MODEL)
+    )
+    is_fast = "fast" in model.casefold()
+    rate = (
+        VIDEO_FAST_POINTS_PER_MINUTE
+        if is_fast else VIDEO_STANDARD_POINTS_PER_MINUTE
+    )
+    return {
+        "durationSeconds": duration,
+        "model": model,
+        "ratePerMinute": rate,
+        "points": int(math.ceil(rate * duration / 60)),
+        "feature": "动态视频生成 Fast" if is_fast else "动态视频生成 标准 2.0",
+    }
+
+
+def _video_task_reservation(task: dict) -> dict:
+    billing = dict((task or {}).get("billing") or {})
+    billing["reservationId"] = str((task or {}).get("reservationId") or "")
+    billing["points"] = int((task or {}).get("points") or billing.get("requestedPoints") or 0)
+    billing["bypassed"] = bool(
+        billing.get("bypassed") or not billing["reservationId"]
+    )
+    return billing
+
+
+def _video_release_reservation(member: dict, task: dict) -> dict:
+    reservation = _video_task_reservation(task)
+    if reservation.get("bypassed"):
+        return _quota_billing_public(reservation)
+    released, error = store.release_generation_points(
+        member.get("id"), reservation.get("reservationId"),
+    )
+    if error == "reservation_settled":
+        return _quota_billing_public(reservation)
+    if error or not released:
+        raise HTTPException(
+            500, f"视频任务已结束，但积分释放失败：{error or 'unknown'}",
+        )
+    released["bypassed"] = False
+    return _quota_billing_public(released)
+
+
+def _recover_stale_video_billing_tasks() -> None:
+    cutoff = int(time.time() * 1000) - VIDEO_BILLING_STALE_MS
+    for task in store.list_stale_video_generation_billing_tasks(cutoff):
+        member = {"id": task.get("memberId")}
+        try:
+            billing = _video_release_reservation(member, task)
+            error = "视频提交在服务重启或连接中断前未完成，可重新提交"
+            result = {
+                "ok": True,
+                "status": "failed",
+                "progress": 0,
+                "output": None,
+                "error": error,
+                "billing": billing,
+            }
+            store.update_video_generation_billing_task(
+                task.get("id"), task.get("memberId"), "interrupted",
+                poll_result=result, billing=billing, error=error, released=True,
+            )
+        except Exception as exc:
+            print(
+                f"[video-billing] stale recovery failed for {task.get('id')}: "
+                f"{exc.__class__.__name__}: {str(exc)[:160]}",
+                file=sys.stderr,
+            )
 
 
 class FileProxyReq(BaseModel):
@@ -2255,6 +2589,27 @@ class ComposeReq(BaseModel):
     preserveClipAudio: bool = False
     transitionDuration: float = 0.0
     subtitleStyle: ComposeSubtitleStyle = ComposeSubtitleStyle()
+    subtitles: List[ComposeSubtitle] = []
+
+
+class StaticComposeFrame(BaseModel):
+    url: str = ""
+    dataUrl: str = ""
+    name: str = ""
+    dur: float = Field(default=3.0, ge=0.5, le=30.0)
+
+
+class StaticComposeReq(BaseModel):
+    frames: List[StaticComposeFrame]
+    title: str = "static-final"
+    aspectRatio: str = "16:9"
+    narrationUrl: str = ""
+    narrationDataUrl: str = ""
+    bgmUrl: str = ""
+    bgmDataUrl: str = ""
+    bgmVolume: float = 0.18
+    narrationVolume: float = 1.0
+    subtitleStyle: ComposeSubtitleStyle = ComposeSubtitleStyle(size=13, stroke=1, bottom=20)
     subtitles: List[ComposeSubtitle] = []
 
 
@@ -3213,8 +3568,7 @@ def video_ref(rid: str):
     return Response(content=data, media_type=mime, headers={"Cache-Control": "no-store"})
 
 
-@app.post("/api/video/submit")
-async def video_submit(req: VideoSubmitReq, _me=Depends(require_creator)):
+async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
     is_digital_human = _is_digital_human_request(req)
     if not SEEDANCE_API_KEY and not is_digital_human:
         raise HTTPException(500, "服务器未配置 SEEDANCE_API_KEY")
@@ -3349,8 +3703,107 @@ async def video_submit(req: VideoSubmitReq, _me=Depends(require_creator)):
     return {"ok": True, "provider": _video_provider_name(), "providerRef": provider_ref, "raw": data}
 
 
-@app.get("/api/video/poll/{task_id}")
-async def video_poll(task_id: str, _me=Depends(require_creator)):
+@app.post("/api/video/submit")
+async def video_submit(
+    req: VideoSubmitReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    _me=Depends(require_creator),
+):
+    _recover_stale_video_billing_tasks()
+    member_id = str(_me.get("id") or "")
+    operation_key = _quota_operation_key("video.submit", idempotency_key)
+    if not operation_key:
+        raise HTTPException(400, "视频生成请求必须提供 Idempotency-Key")
+    spec = _video_generation_billing_spec(req)
+    fingerprint = _quota_request_fingerprint(req)
+    task, error, created = store.create_video_generation_billing_task(
+        member_id,
+        operation_key,
+        fingerprint,
+        spec["points"],
+        spec["feature"],
+        spec["model"],
+        spec["durationSeconds"],
+    )
+    if error == "idempotency_conflict":
+        raise HTTPException(409, "幂等键已用于不同的视频生成请求")
+    if error or not task:
+        raise HTTPException(500, f"视频计费任务创建失败：{error or 'unknown'}")
+    if not created:
+        stored = dict(task.get("submitResponse") or {})
+        if task.get("providerRef") and stored:
+            return stored
+        if task.get("status") in {"failed", "cancelled", "interrupted"}:
+            raise HTTPException(409, task.get("error") or "该视频任务已结束，请重新提交")
+        raise HTTPException(409, "该视频任务正在提交，请勿重复操作")
+
+    reservation = None
+    provider_accepted = False
+    try:
+        reservation = _quota_begin(
+            _me,
+            spec["points"],
+            spec["feature"],
+            f"video.submit.{member_id}",
+            operation_key,
+            fingerprint,
+        )
+        billing = _quota_billing_public(reservation)
+        attached, attach_error = store.attach_video_generation_reservation(
+            task.get("id"), member_id, reservation.get("reservationId"), billing,
+        )
+        if attach_error or not attached:
+            raise HTTPException(
+                500, f"视频积分已预占，但任务映射失败：{attach_error or 'unknown'}",
+            )
+        task = attached
+        result = await _video_submit_upstream(req, _me)
+        provider_accepted = True
+        provider_ref = str(result.get("providerRef") or "")
+        response = {**result, "billing": billing}
+        submitted, submit_error = store.mark_video_generation_submitted(
+            task.get("id"), member_id, provider_ref,
+            result.get("provider") or "", response,
+        )
+        if submit_error or not submitted:
+            # 上游已经受理。保留积分预占，避免产生无法追踪的免费成片。
+            store.update_video_generation_billing_task(
+                task.get("id"), member_id, "submitted",
+                error=(
+                    "上游已受理但 providerRef 映射未可靠保存；"
+                    "积分保持预占，需管理员核对"
+                ),
+            )
+            raise HTTPException(
+                500, f"视频已提交上游，但本地任务映射保存失败：{submit_error or 'unknown'}",
+            )
+        return response
+    except BaseException as exc:
+        if provider_accepted:
+            raise
+        if reservation:
+            try:
+                billing = _video_release_reservation(_me, {
+                    **task,
+                    "reservationId": reservation.get("reservationId"),
+                    "billing": _quota_billing_public(reservation),
+                })
+            except Exception:
+                billing = _quota_billing_public(reservation)
+            store.update_video_generation_billing_task(
+                task.get("id"), member_id, "failed",
+                billing=billing, error=str(getattr(exc, "detail", exc))[:600],
+                released=not reservation.get("bypassed"),
+            )
+        else:
+            store.update_video_generation_billing_task(
+                task.get("id"), member_id, "failed",
+                error=str(getattr(exc, "detail", exc))[:600],
+            )
+        raise
+
+
+async def _video_poll_upstream(task_id: str, _me: dict):
     if _is_digital_human_task(task_id):
         result = await _digital_human_poll(task_id)
         if result.get("status") in {"succeeded", "failed"}:
@@ -3402,17 +3855,116 @@ async def video_poll(task_id: str, _me=Depends(require_creator)):
     return result
 
 
-@app.post("/api/video/cancel/{task_id}")
-async def video_cancel(task_id: str, _me=Depends(require_creator)):
+@app.get("/api/video/poll/{task_id}")
+async def video_poll(task_id: str, _me=Depends(require_creator)):
+    _recover_stale_video_billing_tasks()
+    member_id = str(_me.get("id") or "")
+    task = store.get_video_generation_billing_task(
+        member_id, provider_ref=task_id,
+    )
+    if not task:
+        # Do not reveal whether another member owns this provider task.
+        raise HTTPException(404, "视频任务不存在")
+    if task.get("status") in {
+        "succeeded", "failed", "cancelled", "interrupted",
+    }:
+        stored = dict(task.get("pollResult") or {})
+        if stored:
+            return stored
+        return {
+            "ok": True,
+            "status": (
+                "succeeded" if task.get("status") == "succeeded" else "failed"
+            ),
+            "progress": 100 if task.get("status") == "succeeded" else 0,
+            "output": None,
+            "error": task.get("error") or None,
+            "billing": dict(task.get("billing") or {}),
+        }
+
+    result = await _video_poll_upstream(task_id, _me)
+    status = str(result.get("status") or "running")
+    if status == "succeeded":
+        settlement = _quota_settle(_me, _video_task_reservation(task))
+        billing = _quota_billing_public(settlement)
+        response = {**result, "billing": billing}
+        store.update_video_generation_billing_task(
+            task.get("id"), member_id, "succeeded",
+            poll_result=response, billing=billing, settled=True,
+        )
+        return response
+    if status == "failed":
+        billing = _video_release_reservation(_me, task)
+        response = {**result, "billing": billing}
+        store.update_video_generation_billing_task(
+            task.get("id"), member_id, "failed",
+            poll_result=response, billing=billing,
+            error=str(result.get("error") or "视频生成失败")[:600],
+            released=not billing.get("bypassed"),
+        )
+        return response
+    response = {**result, "billing": dict(task.get("billing") or {})}
+    store.update_video_generation_billing_task(
+        task.get("id"), member_id, "running", poll_result=response,
+    )
+    return response
+
+
+async def _video_cancel_upstream(task_id: str, _me: dict):
     if _is_digital_human_task(task_id):
         await VIDEO_TASK_GATE.release_task(task_id)
         return {"ok": True}
     if SEEDANCE_API_KEY:
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
-            await client.delete(_video_poll_url(task_id),
-                                headers={"Authorization": f"Bearer {SEEDANCE_API_KEY}"})
+            response = await client.delete(
+                _video_poll_url(task_id),
+                headers={"Authorization": f"Bearer {SEEDANCE_API_KEY}"},
+            )
+        if response.status_code >= 400:
+            try:
+                detail = _http_detail(response.json()) or response.text[:800]
+            except Exception:
+                detail = response.text[:800]
+            raise HTTPException(
+                response.status_code,
+                _normalize_provider_error(detail or "取消视频任务失败"),
+            )
     await VIDEO_TASK_GATE.release_task(task_id)
     return {"ok": True}
+
+
+@app.post("/api/video/cancel/{task_id}")
+async def video_cancel(task_id: str, _me=Depends(require_creator)):
+    _recover_stale_video_billing_tasks()
+    member_id = str(_me.get("id") or "")
+    task = store.get_video_generation_billing_task(
+        member_id, provider_ref=task_id,
+    )
+    if not task:
+        raise HTTPException(404, "视频任务不存在")
+    if task.get("status") == "succeeded":
+        raise HTTPException(409, "视频任务已完成，不能取消")
+    if task.get("status") in {"failed", "cancelled", "interrupted"}:
+        return {
+            "ok": True,
+            "status": task.get("status"),
+            "billing": dict(task.get("billing") or {}),
+            "reused": True,
+        }
+
+    result = await _video_cancel_upstream(task_id, _me)
+    billing = _video_release_reservation(_me, task)
+    response = {
+        **result,
+        "status": "cancelled",
+        "billing": billing,
+    }
+    store.update_video_generation_billing_task(
+        task.get("id"), member_id, "cancelled",
+        poll_result=response, billing=billing,
+        error="用户已取消视频生成", released=not billing.get("bypassed"),
+    )
+    return response
 
 
 def _proxy_ip_blocked(value: str) -> bool:
@@ -3644,6 +4196,65 @@ def _compose_subtitle_font() -> Tuple[str, str]:
             if any(mark in found_family for mark in ("Noto Sans CJK", "Source Han Sans", "WenQuanYi")) and Path(found_file).is_file():
                 return found_family.split(",", 1)[0], str(Path(found_file).parent)
     return configured_name or "Noto Sans CJK SC", ""
+
+
+def _ass_time(value: float) -> str:
+    total = max(0, int(round(float(value or 0) * 100)))
+    hour, rest = divmod(total, 360000)
+    minute, rest = divmod(rest, 6000)
+    second, centisecond = divmod(rest, 100)
+    return f"{hour}:{minute:02d}:{second:02d}.{centisecond:02d}"
+
+
+def _write_static_ass(
+    path: Path,
+    subtitles: List[ComposeSubtitle],
+    *,
+    width: int,
+    height: int,
+    style: ComposeSubtitleStyle,
+) -> bool:
+    font_name, _fonts_dir = _compose_subtitle_font()
+    font_size = max(28, min(54, int(float(style.size or 13) * 3.0)))
+    outline = max(1.0, min(3.2, float(style.stroke or 1) * 1.25))
+    margin_v = max(42, min(120, int(float(style.bottom or 20) * 2.9)))
+    rows = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {width}",
+        f"PlayResY: {height}",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,{font_name},{font_size},&H00FFFFFF,&H00FFFFFF,&H00111111,&H50000000,"
+        f"-1,0,0,0,100,100,0,0,1,{outline:.2f},0,2,72,72,{margin_v},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    last_end = -0.05
+    dialogue_count = 0
+    for sub in subtitles or []:
+        text = str(sub.text or "").strip().replace("\r", "").replace("\n", r"\N")
+        if not text:
+            continue
+        text = text.replace("{", r"\{").replace("}", r"\}")
+        start = max(last_end + 0.05, float(sub.start or 0))
+        end = max(start + 0.4, float(sub.end or 0))
+        # 克制的淡入与轻微弹性缩放，只作用于后期字幕，不污染图片分镜。
+        effect = r"{\fad(110,130)\fscx94\fscy94\t(0,180,\fscx100\fscy100)}"
+        rows.append(
+            f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{effect}{text}"
+        )
+        last_end = end
+        dialogue_count += 1
+    if not dialogue_count:
+        return False
+    path.write_text("\n".join(rows) + "\n", "utf-8")
+    return True
 
 
 def _shift_subtitles_for_transitions(subtitles: List[ComposeSubtitle], clips: List[ComposeClip], transition: float) -> List[ComposeSubtitle]:
@@ -3923,6 +4534,170 @@ async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
     return {"ok": True, "url": f"/api/video/composed/{out_name}", "name": out_name}
 
 
+@app.post("/api/video/static-compose")
+async def static_video_compose(req: StaticComposeReq, _me=Depends(require_creator)):
+    """独立把图片分镜渲染成静态视频；此接口不提交或轮询任何视频模型。"""
+    ffmpeg = _ffmpeg_bin()
+    if not ffmpeg:
+        raise HTTPException(501, "本机未安装 ffmpeg，无法渲染静态视频")
+    frames = [frame for frame in (req.frames or []) if frame.url or frame.dataUrl]
+    if not frames:
+        raise HTTPException(400, "没有可渲染的图片分镜")
+    ratio = str(req.aspectRatio or "16:9").strip()
+    dimensions = {
+        "16:9": (1920, 1080),
+        "9:16": (1080, 1920),
+        "1:1": (1080, 1080),
+        "4:3": (1440, 1080),
+        "3:4": (1080, 1440),
+        "21:9": (1920, 822),
+    }
+    width, height = dimensions.get(ratio, dimensions["16:9"])
+    total_dur = sum(max(0.5, float(frame.dur or 3.0)) for frame in frames)
+    COMPOSED_DIR.mkdir(parents=True, exist_ok=True)
+    out_name = (
+        f"{time.time_ns()}_{uuid.uuid4().hex[:6]}_static_"
+        f"{hashlib.sha1((req.title or 'static-final').encode('utf-8')).hexdigest()[:8]}.mp4"
+    )
+    out_path = COMPOSED_DIR / out_name
+    with tempfile.TemporaryDirectory() as td:
+        tdir = Path(td)
+        rendered: List[Path] = []
+        narration_path = tdir / "narration.mp3"
+        bgm_path = tdir / "bgm.mp3"
+        async with httpx.AsyncClient(
+            **_httpx_async_client_kwargs(
+                timeout=httpx.Timeout(240.0, connect=12.0),
+                trust_env=False,
+                follow_redirects=True,
+            )
+        ) as client:
+            for index, frame in enumerate(frames):
+                source_path = tdir / f"frame-{index:03d}.img"
+                if frame.dataUrl:
+                    _write_data_url(source_path, frame.dataUrl)
+                elif not await _write_video_source(
+                    client,
+                    frame.url,
+                    source_path,
+                    f"下载图片分镜失败：{frame.name or index + 1}",
+                ):
+                    raise HTTPException(400, f"图片分镜 {index + 1} 地址不可用")
+                clip_path = tdir / f"frame-{index:03d}.mp4"
+                duration = max(0.5, float(frame.dur or 3.0))
+                frame_count = max(1, int(round(duration * 30)))
+                zoom_denominator = max(1, frame_count - 1)
+                canvas_width = width * 2
+                canvas_height = height * 2
+                video_filter = (
+                    f"scale={canvas_width}:{canvas_height}:force_original_aspect_ratio=increase,"
+                    f"crop={canvas_width}:{canvas_height},"
+                    "zoompan="
+                    f"z='1+0.05*min(on,{frame_count - 1})/{zoom_denominator}':"
+                    "x='iw/2-(iw/zoom/2)':"
+                    "y='ih/2-(ih/zoom/2)':"
+                    f"d=1:s={width}x{height}:fps=30,"
+                    "setsar=1,format=yuv420p"
+                )
+                run = subprocess.run(
+                    [
+                        ffmpeg, "-y", "-loop", "1", "-framerate", "30", "-i", str(source_path),
+                        "-vf", video_filter, "-t", f"{duration:.3f}", "-r", "30",
+                        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                        "-pix_fmt", "yuv420p", str(clip_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=900,
+                )
+                if run.returncode != 0 or not clip_path.is_file():
+                    raise HTTPException(502, "静态分镜渲染失败：" + (run.stderr or run.stdout)[-800:])
+                rendered.append(clip_path)
+            if req.narrationDataUrl:
+                _write_data_url(narration_path, req.narrationDataUrl)
+            elif req.narrationUrl:
+                await _write_video_source(client, req.narrationUrl, narration_path, "下载口播音频失败")
+            if req.bgmDataUrl:
+                _write_data_url(bgm_path, req.bgmDataUrl)
+            elif req.bgmUrl:
+                await _write_video_source(client, req.bgmUrl, bgm_path, "下载 BGM 失败")
+
+        concat_path = tdir / "frames.txt"
+        concat_path.write_text(
+            "\n".join(f"file '{str(path).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'" for path in rendered),
+            "utf-8",
+        )
+        base_path = tdir / "base.mp4"
+        run = subprocess.run(
+            [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_path), "-c", "copy", str(base_path)],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if run.returncode != 0 or not base_path.is_file():
+            raise HTTPException(502, "静态分镜拼接失败：" + (run.stderr or run.stdout)[-800:])
+        mixed_path = tdir / "mixed.mp4"
+        has_narr = narration_path.is_file() and narration_path.stat().st_size > 0
+        has_bgm = bgm_path.is_file() and bgm_path.stat().st_size > 0
+        if has_narr or has_bgm:
+            audio_cmd = _compose_audio_command(
+                ffmpeg,
+                base_path,
+                mixed_path,
+                total_dur,
+                narration_path,
+                bgm_path,
+                has_base_audio=False,
+                has_narr=has_narr,
+                has_bgm=has_bgm,
+                preserve_clip_audio=False,
+                narration_volume=max(0.0, min(1.0, float(req.narrationVolume or 1.0))),
+                bgm_volume=max(0.03, min(0.45, float(req.bgmVolume or 0.18))),
+            )
+            run = subprocess.run(audio_cmd, capture_output=True, text=True, timeout=900)
+            if run.returncode != 0 or not mixed_path.is_file():
+                raise HTTPException(502, "静态视频混音失败：" + (run.stderr or run.stdout)[-800:])
+        else:
+            shutil.copyfile(base_path, mixed_path)
+        ass_path = tdir / "captions.ass"
+        if _write_static_ass(
+            ass_path,
+            req.subtitles,
+            width=width,
+            height=height,
+            style=req.subtitleStyle,
+        ):
+            ass_filter = str(ass_path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+            _font_name, fonts_dir = _compose_subtitle_font()
+            fonts_arg = ""
+            if fonts_dir:
+                escaped_fonts = fonts_dir.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+                fonts_arg = f":fontsdir='{escaped_fonts}'"
+            run = subprocess.run(
+                [
+                    ffmpeg, "-y", "-i", str(mixed_path),
+                    "-vf", f"ass='{ass_filter}'{fonts_arg}",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    "-c:a", "copy", "-movflags", "+faststart", str(out_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+            if run.returncode != 0 or not out_path.is_file():
+                raise HTTPException(502, "静态视频字幕烧录失败：" + (run.stderr or run.stdout)[-800:])
+        else:
+            shutil.copyfile(mixed_path, out_path)
+    return {
+        "ok": True,
+        "url": f"/api/video/composed/{out_name}",
+        "name": out_name,
+        "aspectRatio": ratio,
+        "duration": total_dur,
+        "frameCount": len(frames),
+    }
+
+
 @app.post("/api/video/speed-version")
 async def video_speed_version(req: VideoSpeedReq, _me=Depends(require_creator)):
     """Create a derived final-video version without rerunning generation or TTS."""
@@ -3978,6 +4753,7 @@ class TtsReq(BaseModel):
     vol: float = 1
     pitch: float = 0
     languageBoost: str = "auto"
+    idempotencyKey: str = ""
 
 
 class VoiceDesignReq(BaseModel):
@@ -3986,6 +4762,7 @@ class VoiceDesignReq(BaseModel):
     previewText: str = ""
     name: str = ""
     gender: str = ""
+    idempotencyKey: str = ""
 
 
 def _known_voice_name(voice_id: str) -> str:
@@ -4235,11 +5012,7 @@ def _voice_design_prompt(prompt: str, gender: str = "") -> str:
     return f"{gender_anchor}\n{semantic_anchor}\n用户音色描述：{prompt}".strip()
 
 
-@app.post("/api/tts/voice/design")
-async def tts_voice_design(
-    req: VoiceDesignReq,
-    _me=Depends(require_tts_creator),
-):
+async def _tts_voice_design_impl(req: VoiceDesignReq):
     if not MINIMAX_API_KEY:
         raise HTTPException(500, "服务器未配置 MINIMAX_API_KEY")
     prompt = (req.prompt or req.description or "").strip()
@@ -4281,11 +5054,29 @@ async def tts_voice_design(
     }
 
 
-@app.post("/api/tts/generate")
-async def tts_generate(
-    req: TtsReq,
+@app.post("/api/tts/voice/design")
+async def tts_voice_design(
+    req: VoiceDesignReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
     _me=Depends(require_tts_creator),
 ):
+    async def operation():
+        return await _tts_voice_design_impl(req)
+
+    result, settlement = await _run_personal_billable(
+        _me,
+        points=VOICE_DESIGN_POINTS,
+        feature="音色设计",
+        namespace="tts.voice-design",
+        idempotency_key=idempotency_key or req.idempotencyKey,
+        request_fingerprint=_quota_request_fingerprint(req),
+        operation=operation,
+    )
+    billing = _quota_billing_public(settlement)
+    return {**result, "billing": billing, "dailyQuota": billing["dailyQuota"]}
+
+
+async def _tts_generate_impl(req: TtsReq):
     if not MINIMAX_API_KEY:
         raise HTTPException(500, "服务器未配置 MINIMAX_API_KEY")
     text = (req.text or "").strip()
@@ -4366,6 +5157,33 @@ async def tts_generate(
         "traceId": data.get("trace_id") or "",
         "fallbackVoice": used_fallback_voice,
     }
+
+
+@app.post("/api/tts/generate")
+async def tts_generate(
+    req: TtsReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    _me=Depends(require_tts_creator),
+):
+    text = (req.text or "").strip()
+    # Validate free local input before freezing any points.
+    if not text:
+        raise HTTPException(400, "口播文本为空")
+
+    async def operation():
+        return await _tts_generate_impl(req)
+
+    result, settlement = await _run_personal_billable(
+        _me,
+        points=_tts_generation_points(text),
+        feature="语音生成",
+        namespace="tts.generate",
+        idempotency_key=idempotency_key or req.idempotencyKey,
+        request_fingerprint=_quota_request_fingerprint(req),
+        operation=operation,
+    )
+    billing = _quota_billing_public(settlement)
+    return {**result, "billing": billing, "dailyQuota": billing["dailyQuota"]}
 
 
 # ---------- 账号 ----------
@@ -4524,6 +5342,7 @@ class CustomCanvasGenerateReq(BaseModel):
     quality: str = "low"
     references: List[str] = Field(default_factory=list)
     mode: str = ""
+    idempotencyKey: str = ""
 
 
 class CustomCanvasProjectDraftReq(BaseModel):
@@ -4537,11 +5356,18 @@ class CustomCanvasProjectDraftReq(BaseModel):
     baseRevision: Optional[int] = None
 
 
+class CustomCanvasBlobPutReq(BaseModel):
+    dataUrl: str
+    outputId: str = ""
+    generationReceipt: str = ""
+
+
 class CustomCanvasEnhanceReq(BaseModel):
     image: str = ""
     size: str = "1920x1080"
     quality: str = "high"
     mode: str = ""
+    idempotencyKey: str = ""
 
 
 class CustomCanvasEditRegionReq(BaseModel):
@@ -4550,6 +5376,7 @@ class CustomCanvasEditRegionReq(BaseModel):
     instruction: str = ""
     width: int = Field(default=1920, ge=16, le=20000)
     height: int = Field(default=1080, ge=16, le=20000)
+    idempotencyKey: str = ""
 
 
 class CustomCanvasTransformReq(BaseModel):
@@ -4561,6 +5388,7 @@ class CustomCanvasTransformReq(BaseModel):
     # The first `image` remains the only editable source. Extra images may be
     # supplied as visual/style donors for a targeted multi-reference edit.
     references: List[str] = Field(default_factory=list)
+    idempotencyKey: str = ""
 
 
 class MemberReq(BaseModel):
@@ -4578,6 +5406,10 @@ class TeamJoinReq(BaseModel):
 
 class TeamJoinReviewReq(BaseModel):
     approve: bool = True
+
+
+class TeamRenameReq(BaseModel):
+    name: str = ""
 
 
 class TeamSupplierPinReq(BaseModel):
@@ -4645,6 +5477,23 @@ class DeliveryRemarkReq(BaseModel):
     text: str = ""
 
 
+class CommunityPostReq(BaseModel):
+    authorId: str = ""
+    sourceKind: str = ""
+    sourceId: str = ""
+    title: str = ""
+    copyText: str = Field(default="", alias="copy")
+    prompt: str = ""
+    category: str = "视觉设计"
+    media: List[dict] = Field(default_factory=list)
+    cover: dict = Field(default_factory=dict)
+
+
+class CommunityReactionReq(BaseModel):
+    liked: Optional[bool] = None
+    favorited: Optional[bool] = None
+
+
 class MemberApplyReq(BaseModel):
     name: str = ""
     username: str = ""
@@ -4665,6 +5514,15 @@ def _clean_role(role: str) -> str:
 
 def require_member(authorization: str = Header(default="")):
     return _member_from_authorization(authorization)
+
+
+def optional_member(authorization: str = Header(default="")):
+    if not str(authorization or "").strip():
+        return None
+    try:
+        return _member_from_authorization(authorization)
+    except HTTPException:
+        return None
 
 
 def require_admin(me=Depends(require_member)):
@@ -5006,15 +5864,316 @@ async def supplier_assistant(req: SupplierAssistantReq, me=Depends(require_membe
 
 @app.post("/api/auth/login")
 def auth_login(req: LoginReq):
-    row = store.get_member_by_username(req.username.strip())
+    row = store.get_member_by_username(store.normalize_username(req.username))
     if not row or not store.verify_pin(req.pin.strip(), row[3]):
         raise HTTPException(401, "用户名或密码不正确")
     return {"token": store.make_token(row[0]), "member": store.member_public(row)}
 
 
+@app.post("/api/auth/register")
+def auth_register(req: MemberApplyReq):
+    """Create a standalone personal account and issue a normal login token.
+
+    Public registration never accepts a role, team or supplier relationship
+    from the browser. Joining a team remains an explicit, manager-reviewed
+    request after this account exists.
+    """
+    name = re.sub(r"\s+", " ", str(req.name or "")).strip()
+    username = store.normalize_username(req.username)
+    pin = str(req.pin or "").strip()
+    if not name or not username or not pin:
+        raise HTTPException(400, "姓名、用户名和密码都要填写")
+    if len(name) > 80 or len(username) > 80:
+        raise HTTPException(400, "姓名和用户名不能超过 80 个字")
+    if len(pin) < 6 or len(pin) > 120:
+        raise HTTPException(400, "密码长度需为 6 至 120 位")
+    # The store serializes the canonical-key check and insert in one write
+    # transaction; this pre-check provides a clear client message in the usual case.
+    if store.get_member_by_username(username) or store.username_has_pending_request(username):
+        raise HTTPException(409, "这个用户名已存在或正在审批中，请换一个")
+    try:
+        row = store.add_member(name, username, pin, "user")
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "这个用户名已存在，请换一个")
+    return {"ok": True, "token": store.make_token(row[0]), "member": store.member_public(row)}
+
+
 @app.get("/api/auth/me")
 def auth_me(me=Depends(require_member)):
     return me
+
+
+def _community_post_response(post):
+    if not post:
+        return None
+    result = dict(post)
+    result["media"] = [
+        {
+            **dict(item),
+            "url": f"/api/community/posts/{quote(str(post['id']), safe='')}/media/{index}",
+        }
+        for index, item in enumerate(post.get("media") or [])
+        if isinstance(item, dict)
+    ]
+    cover = post.get("cover") if isinstance(post.get("cover"), dict) else {}
+    result["cover"] = {
+        **cover,
+        "url": f"/api/community/posts/{quote(str(post['id']), safe='')}/cover",
+    } if cover.get("url") else {}
+    return result
+
+
+def _community_snapshot_contains_media(value, target_url):
+    """Match a canonical community URL inside a persisted project snapshot."""
+    if isinstance(value, dict):
+        return any(_community_snapshot_contains_media(item, target_url) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_community_snapshot_contains_media(item, target_url) for item in value)
+    if not isinstance(value, str):
+        return False
+    raw = value.strip()
+    candidate = urlparse(raw).path if raw.startswith(("http://", "https://")) else raw
+    return store.normalize_community_media_url(candidate) == target_url
+
+
+def _validate_community_composed_owner(me, source_kind, source_id, url):
+    """A composed filename is global, so prove it belongs to the chosen source."""
+    kind = str(source_kind or "").strip().lower()
+    sid = str(source_id or "").strip()
+    if kind == "video" and sid:
+        source = _video_workshop_owned_project(me, sid)
+    elif kind == "delivery" and sid:
+        source, error = store.get_delivery_asset_for_member(sid, me["id"], me["role"])
+        if error or not source:
+            raise HTTPException(403, "只能分享自己可访问的发布成片")
+    else:
+        raise HTTPException(403, "成片来源与当前账号不匹配")
+    if not _community_snapshot_contains_media(source, url):
+        raise HTTPException(403, "只能分享所选项目或发布内容中的成片")
+
+
+def _validate_community_media_owner(me, media, source_kind="", source_id=""):
+    try:
+        clean = store.normalize_community_media(media)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    for item in clean:
+        url = str(item.get("url") or "")
+        if url.startswith("/api/custom-canvas/blobs/"):
+            content_hash = Path(urlparse(url).path).name
+            blob, error = store.get_custom_canvas_blob(me["id"], content_hash)
+            if error or not blob:
+                raise HTTPException(403, "只能分享自己的无限画布图片")
+        elif url.startswith("/api/files/"):
+            name = Path(urlparse(url).path).name
+            path = _upload_path(name)
+            owns_file = name.startswith(f"{me['id']}--") or store.can_delete_asset_file(
+                name, me["id"], me["role"]
+            )
+            if not path.is_file() or (me["role"] != "admin" and not owns_file):
+                raise HTTPException(403, "只能分享自己可访问的平台素材")
+        elif url.startswith("/custom-video/outputs/"):
+            relative = urlparse(url).path[len("/custom-video/outputs/"):]
+            parts = Path(relative).parts
+            if len(parts) < 2:
+                raise HTTPException(400, "视频成片地址无效")
+            _video_workshop_owned_project(me, parts[0])
+            if not _video_workshop_safe_path(VIDEO_WORKSHOP_OUTPUT_DIR, relative).is_file():
+                raise HTTPException(404, "视频成片不存在或已被清理")
+        elif url.startswith("/api/video/composed/"):
+            if not (COMPOSED_DIR / Path(urlparse(url).path).name).is_file():
+                raise HTTPException(404, "成片不存在或已被清理")
+            _validate_community_composed_owner(me, source_kind, source_id, url)
+    return clean
+
+
+def _can_delete_community_post(post, me):
+    if not post or not me:
+        return False
+    if str(post.get("authorId") or "") == str(me.get("id") or ""):
+        return True
+    # members.role=admin is the legacy platform-wide administrator identity.
+    if me.get("role") == "admin":
+        return True
+    team_role = (me.get("team") or {}).get("role") or me.get("teamRole")
+    return bool(
+        post.get("teamId")
+        and str(post.get("teamId")) == str(me.get("teamId") or "")
+        and team_role in {"owner", "admin"}
+    )
+
+
+def _community_share_author(me, requested_author_id=""):
+    author_id = str(requested_author_id or me.get("id") or "").strip()
+    if author_id == str(me.get("id") or ""):
+        return me
+    row = store.get_member(author_id)
+    if not row:
+        raise HTTPException(404, "原创作者不存在")
+    author = store.member_public(row)
+    manager_team = me.get("team") or {}
+    author_team = author.get("team") or {}
+    if (
+        not manager_team.get("id")
+        or str(manager_team.get("id")) != str(author_team.get("id") or "")
+        or manager_team.get("role") not in {"owner", "admin"}
+    ):
+        raise HTTPException(403, "只有团队所有者或管理员可以代团队成员分享")
+    return author
+
+
+@app.get("/api/community/posts")
+def community_posts_list(
+    category: str = "", limit: int = 40, before: int = 0,
+    viewer=Depends(optional_member),
+):
+    page = store.list_community_posts(
+        category=category, limit=limit, before=before,
+        viewer_id=(viewer or {}).get("id") or "",
+    )
+    return {
+        **page,
+        "items": [_community_post_response(item) for item in page.get("items") or []],
+    }
+
+
+@app.get("/api/community/favorites")
+def community_favorites(me=Depends(require_member), limit: int = 80):
+    page = store.list_community_favorites(me["id"], limit=limit)
+    return {
+        **page,
+        "items": [_community_post_response(item) for item in page.get("items") or []],
+    }
+
+
+@app.post("/api/community/status")
+def community_status(req: CommunityPostReq, me=Depends(require_member)):
+    author = _community_share_author(me, req.authorId)
+    result = store.community_post_status(
+        author["id"], req.sourceKind, req.sourceId, req.media, req.cover,
+    )
+    return {**result, "post": _community_post_response(result.get("post"))}
+
+
+@app.put("/api/community/posts/{post_id}/reaction")
+def community_reaction(post_id: str, req: CommunityReactionReq, me=Depends(require_member)):
+    post = store.set_community_reaction(
+        post_id, me["id"], liked=req.liked, favorited=req.favorited,
+    )
+    if not post:
+        raise HTTPException(404, "社区内容不存在")
+    return _community_post_response(post)
+
+
+@app.get("/api/community/posts/{post_id}")
+def community_post_get(post_id: str, viewer=Depends(optional_member)):
+    post = store.get_community_post(post_id, viewer_id=(viewer or {}).get("id") or "")
+    if not post:
+        raise HTTPException(404, "社区内容不存在")
+    return _community_post_response(post)
+
+
+@app.get("/api/community/posts/{post_id}/media/{media_index}")
+def community_post_media(post_id: str, media_index: int, request: Request):
+    post = store.get_community_post(post_id)
+    media = post.get("media") if post else []
+    if not post or media_index < 0 or media_index >= len(media):
+        raise HTTPException(404, "社区媒体不存在")
+    source = str(media[media_index].get("url") or "")
+    path = None
+    mime = ""
+    if source.startswith("/api/custom-canvas/blobs/"):
+        blob, error = store.get_custom_canvas_blob(post["authorId"], Path(urlparse(source).path).name)
+        if error or not blob:
+            raise HTTPException(404, "社区图片不存在或已被清理")
+        path, mime = blob["path"], blob["mime"]
+    elif source.startswith("/api/files/"):
+        path = _upload_path(Path(urlparse(source).path).name)
+    elif source.startswith("/api/video/composed/"):
+        path = COMPOSED_DIR / Path(urlparse(source).path).name
+    elif source.startswith("/custom-video/outputs/"):
+        relative = urlparse(source).path[len("/custom-video/outputs/"):]
+        path = _video_workshop_safe_path(VIDEO_WORKSHOP_OUTPUT_DIR, relative)
+    if not path or not path.is_file():
+        raise HTTPException(404, "社区媒体不存在或已被清理")
+    return ranged_file_response(
+        request,
+        path,
+        media_type=mime or _media_type_for_path(path),
+        cache_seconds=3600,
+    )
+
+
+@app.get("/api/community/posts/{post_id}/cover")
+def community_post_cover(post_id: str, request: Request):
+    post = store.get_community_post(post_id)
+    cover = post.get("cover") if post else {}
+    source = str((cover or {}).get("url") or "")
+    if not source:
+        raise HTTPException(404, "社区封面不存在")
+    path = None
+    mime = ""
+    if source.startswith("/api/custom-canvas/blobs/"):
+        blob, error = store.get_custom_canvas_blob(post["authorId"], Path(urlparse(source).path).name)
+        if error or not blob:
+            raise HTTPException(404, "社区封面不存在或已被清理")
+        path, mime = blob["path"], blob["mime"]
+    elif source.startswith("/api/files/"):
+        path = _upload_path(Path(urlparse(source).path).name)
+    elif source.startswith("/api/video/composed/"):
+        path = COMPOSED_DIR / Path(urlparse(source).path).name
+    elif source.startswith("/custom-video/outputs/"):
+        relative = urlparse(source).path[len("/custom-video/outputs/"):]
+        path = _video_workshop_safe_path(VIDEO_WORKSHOP_OUTPUT_DIR, relative)
+    if not path or not path.is_file():
+        raise HTTPException(404, "社区封面不存在或已被清理")
+    return ranged_file_response(
+        request, path, media_type=mime or _media_type_for_path(path), cache_seconds=3600,
+    )
+
+
+@app.post("/api/community/posts")
+def community_post_create(req: CommunityPostReq, me=Depends(require_member)):
+    author = _community_share_author(me, req.authorId)
+    clean_media = _validate_community_media_owner(
+        author,
+        req.media,
+        source_kind=req.sourceKind,
+        source_id=req.sourceId,
+    )
+    clean_cover = {}
+    if req.cover:
+        clean_cover = _validate_community_media_owner(
+            author, [req.cover], source_kind=req.sourceKind, source_id=req.sourceId,
+        )[0]
+    try:
+        post = store.create_community_post(
+            author_id=author["id"],
+            author_name=author.get("name") or author.get("username") or "星阵用户",
+            team_id=author.get("teamId"),
+            source_kind=req.sourceKind,
+            source_id=req.sourceId,
+            title=req.title,
+            copy_text=req.copyText,
+            prompt_text=req.prompt,
+            category=req.category,
+            media=clean_media,
+            cover=clean_cover,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _community_post_response(post)
+
+
+@app.delete("/api/community/posts/{post_id}")
+def community_post_delete(post_id: str, me=Depends(require_member)):
+    post = store.get_community_post(post_id, include_non_published=True)
+    if not post:
+        raise HTTPException(404, "社区内容不存在")
+    if not _can_delete_community_post(post, me):
+        raise HTTPException(403, "只能删除自己发布的社区内容")
+    store.delete_community_post(post_id)
+    return {"ok": True}
 
 
 @app.get("/api/admin/llm-usage")
@@ -5040,7 +6199,7 @@ def admin_llm_usage_details(memberId: str = "", _me=Depends(require_admin)):
 @app.post("/api/member-requests")
 def member_request_create(req: MemberApplyReq):
     name = req.name.strip()
-    username = req.username.strip()
+    username = store.normalize_username(req.username)
     pin = req.pin.strip()
     # 公共注册永远先建立独立个人账号。加入团队与团队角色由后续审批决定，
     # 不能通过注册请求自行获得平台或供应商权限。
@@ -5051,7 +6210,10 @@ def member_request_create(req: MemberApplyReq):
         raise HTTPException(409, "这个用户名已存在，请换一个")
     if store.username_has_pending_request(username):
         raise HTTPException(409, "这个用户名已有待审批申请，请等待管理员处理")
-    row = store.add_member_request(name, username, pin, role, req.message.strip()[:240])
+    try:
+        row = store.add_member_request(name, username, pin, role, req.message.strip()[:240])
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "这个用户名已存在或正在审批中，请换一个")
     return {"ok": True, "request": {
         "id": row[0],
         "name": row[1],
@@ -5527,6 +6689,7 @@ async def _custom_canvas_generated_image(
     refs: List[ImageRef],
     *,
     adapt_primary_reference: bool = False,
+    member=None,
 ) -> dict:
     clean_prompt = str(prompt or "").strip()
     if not clean_prompt:
@@ -5542,14 +6705,22 @@ async def _custom_canvas_generated_image(
         if adapt_primary_reference
         else refs
     )
-    result = await image_generate(ImageGenerateReq(
+    image_request = ImageGenerateReq(
         prompt=clean_prompt,
         refs=request_refs,
         ratio=ratio,
         strictRatio=True,
         size=master_size,
         exactPrompt=True,
-    ))
+    )
+    # Direct helper callers (including deterministic tests) keep the historical
+    # patch point. Production canvas endpoints always pass ``member`` and call
+    # the unbilled implementation because they own one aggregate reservation.
+    result = (
+        await _image_generate_impl(image_request, member)
+        if member is not None
+        else await image_generate(image_request)
+    )
     used_refs = int(result.get("usedRefs") or 0)
     if request_refs and used_refs < len(request_refs):
         raise HTTPException(502, f"参考图未完整送达图片模型（实际使用 {used_refs}/{len(request_refs)}），本次已停止，避免错误出图")
@@ -5569,7 +6740,7 @@ async def _custom_canvas_generated_image(
     }
 
 
-async def _custom_canvas_mask_edit(req: CustomCanvasEditRegionReq) -> dict:
+async def _custom_canvas_mask_edit(req: CustomCanvasEditRegionReq, member=None) -> dict:
     if not IMAGE_API_KEY:
         raise HTTPException(500, "服务器未配置图片 API Key")
     image = _custom_canvas_data_url(req.image, "待编辑图片")
@@ -5621,6 +6792,14 @@ async def _custom_canvas_mask_edit(req: CustomCanvasEditRegionReq) -> dict:
     except httpx.HTTPError as exc:
         raise HTTPException(502, f"无法连接区域编辑模型：{exc.__class__.__name__} {exc}")
     output = _custom_canvas_resize_exact_pixels(output, req.width, req.height)
+    _record_model_api_usage(
+        member,
+        "image",
+        "无限画布局部编辑",
+        model,
+        output_units=1,
+        unit_label="张",
+    )
     return {"dataUrl": output, "width": req.width, "height": req.height}
 
 
@@ -5674,6 +6853,10 @@ def custom_canvas_config(me=Depends(require_member)):
 
 def _custom_canvas_draft_value_error(exc):
     reason = str(exc)
+    if reason == "custom_canvas_generation_receipt_required":
+        raise HTTPException(409, "生成图片需要先完成持久化与额度结算")
+    if reason == "invalid_custom_canvas_generation_receipt":
+        raise HTTPException(403, "生成图片凭据无效或不属于当前账号")
     if reason in {
         "custom_canvas_project_too_large",
         "custom_canvas_draft_too_large",
@@ -5785,6 +6968,48 @@ def custom_canvas_blob_get(
     return response
 
 
+@app.post("/api/custom-canvas/blobs")
+def custom_canvas_blob_put(
+    req: CustomCanvasBlobPutReq,
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    try:
+        result = store.save_custom_canvas_blob(
+            me["id"],
+            req.dataUrl,
+            req.generationReceipt,
+        )
+    except ValueError as exc:
+        _custom_canvas_draft_value_error(exc)
+    receipt = result.pop("generationReceipt", None)
+    # Generation was already reserved and settled before its image left the
+    # model endpoint. Blob persistence only verifies that settled receipt and
+    # is intentionally zero-charge/idempotent.
+    quota = store.generation_quota(me["id"])
+    if quota is None and receipt:
+        # A settled generation receipt can outlive the account/team migration
+        # that introduced the generic quota scope.  Blob persistence is a
+        # zero-charge compatibility path, so expose the legacy personal daily
+        # snapshot instead of returning an empty quota object.  This does not
+        # grant generation access and cannot deduct or mint points.
+        quota = store.personal_daily_quota(me["id"])
+    output_id = str(req.outputId or "").strip()[:180] or result["contentHash"]
+    return {
+        **result,
+        "outputId": output_id,
+        "billing": {
+            "receiptId": receipt["receiptId"] if receipt else "",
+            "requestedPoints": receipt["points"] if receipt else 0,
+            "deductedPoints": 0,
+            "reused": True,
+            "settledAtGeneration": bool(receipt and receipt.get("chargedAt")),
+        },
+        "quota": quota,
+        "dailyQuota": quota,
+    }
+
+
 @app.get("/api/custom-canvas/projects")
 def custom_canvas_projects_list(me=Depends(require_member)):
     _require_custom_creator(me)
@@ -5855,19 +7080,43 @@ async def custom_canvas_agent(req: CustomCanvasAgentReq, me=Depends(require_memb
 
 
 @app.post("/api/custom-canvas/generate")
-async def custom_canvas_generate(req: CustomCanvasGenerateReq, me=Depends(require_member)):
+async def custom_canvas_generate(
+    req: CustomCanvasGenerateReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    me=Depends(require_member),
+):
     _require_custom_creator(me)
     refs = _custom_canvas_image_refs(req.references)
     prompt = str(req.prompt or "").strip()
     negative = ", ".join(part.strip() for part in str(req.negativePrompt or "").split(",")[:7] if part.strip())
     if negative:
         prompt += f"\n画面中不要出现：{negative}。"
-    images = await asyncio.gather(*[
-        _custom_canvas_generated_image(prompt, req.size, refs)
-        for _ in range(req.count)
-    ])
+    async def operation():
+        return await _gather_cancel_on_error([
+            _custom_canvas_generated_image(prompt, req.size, refs, member=me)
+            for _ in range(req.count)
+        ])
+
+    images, settlement = await _run_personal_billable(
+        me,
+        points=CUSTOM_CANVAS_IMAGE_GENERATION_POINTS * req.count,
+        feature="无限画布图片生成",
+        namespace="canvas.generate",
+        idempotency_key=idempotency_key or req.idempotencyKey,
+        request_fingerprint=_quota_request_fingerprint(req),
+        operation=operation,
+        receipt_specs=lambda generated: [
+            {
+                "dataUrl": image["dataUrl"],
+                "points": CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
+                "feature": "无限画布图片生成",
+            }
+            for image in generated
+        ],
+    )
     prefix = str(req.labelPrefix or "Draft").strip()[:80] or "Draft"
     output = []
+    generation_receipts = settlement.get("generationReceipts") or []
     for index, image in enumerate(images):
         variant = req.startVariant + index
         output.append({
@@ -5876,8 +7125,10 @@ async def custom_canvas_generate(req: CustomCanvasGenerateReq, me=Depends(requir
             "height": image["height"],
             "label": f"{prefix} {variant:02d}",
             "variant": variant,
+            "generationReceipt": generation_receipts[index]["token"],
         })
     receipt = images[0] if images else {}
+    billing = _quota_billing_public(settlement)
     return {
         "images": output,
         "source": "platform",
@@ -5885,41 +7136,103 @@ async def custom_canvas_generate(req: CustomCanvasGenerateReq, me=Depends(requir
         "skippedRefs": receipt.get("skippedRefs", 0),
         "model": receipt.get("model", ""),
         "mode": receipt.get("mode", ""),
+        "billing": billing,
+        "dailyQuota": billing["dailyQuota"],
     }
 
 
 @app.post("/api/custom-canvas/enhance")
-async def custom_canvas_enhance(req: CustomCanvasEnhanceReq, me=Depends(require_member)):
+async def custom_canvas_enhance(
+    req: CustomCanvasEnhanceReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    me=Depends(require_member),
+):
     _require_custom_creator(me)
     image = _custom_canvas_data_url(req.image, "待增强图片")
     prompt = (
         "以参考图为唯一内容来源，保持原图比例、构图、主体位置、品牌元素、全部文字与配色准确不变；"
         "显著提升清晰度、边缘锐度、材质纹理、画面层次和远距离可读性，不新增元素、水印或文字。"
     )
-    result = await _custom_canvas_generated_image(
-        prompt,
-        req.size,
-        _custom_canvas_image_refs([image]),
-        adapt_primary_reference=True,
+    refs = _custom_canvas_image_refs([image])
+
+    async def operation():
+        return await _custom_canvas_generated_image(
+            prompt,
+            req.size,
+            refs,
+            adapt_primary_reference=True,
+            member=me,
+        )
+
+    result, settlement = await _run_personal_billable(
+        me,
+        points=CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
+        feature="无限画布图片增强",
+        namespace="canvas.enhance",
+        idempotency_key=idempotency_key or req.idempotencyKey,
+        request_fingerprint=_quota_request_fingerprint(req),
+        operation=operation,
+        receipt_specs=lambda generated: [{
+            "dataUrl": generated["dataUrl"],
+            "points": CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
+            "feature": "无限画布图片增强",
+        }],
     )
+    generation_receipt = settlement["generationReceipts"][0]
+    billing = _quota_billing_public(settlement)
     return {
         "images": [{
             "dataUrl": result["dataUrl"],
             "width": result["width"],
             "height": result["height"],
+            "generationReceipt": generation_receipt["token"],
         }],
         "source": "platform",
+        "billing": billing,
+        "dailyQuota": billing["dailyQuota"],
     }
 
 
 @app.post("/api/custom-canvas/edit-region")
-async def custom_canvas_edit_region(req: CustomCanvasEditRegionReq, me=Depends(require_member)):
+async def custom_canvas_edit_region(
+    req: CustomCanvasEditRegionReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    me=Depends(require_member),
+):
     _require_custom_creator(me)
-    return {"image": await _custom_canvas_mask_edit(req)}
+
+    async def operation():
+        return await _custom_canvas_mask_edit(req, me)
+
+    result, settlement = await _run_personal_billable(
+        me,
+        points=CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
+        feature="无限画布局部编辑",
+        namespace="canvas.edit-region",
+        idempotency_key=idempotency_key or req.idempotencyKey,
+        request_fingerprint=_quota_request_fingerprint(req),
+        operation=operation,
+        receipt_specs=lambda generated: [{
+            "dataUrl": generated["dataUrl"],
+            "points": CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
+            "feature": "无限画布局部编辑",
+        }],
+    )
+    generation_receipt = settlement["generationReceipts"][0]
+    billing = _quota_billing_public(settlement)
+    return {
+        "image": {**result, "generationReceipt": generation_receipt["token"]},
+        "billing": billing,
+        "dailyQuota": billing["dailyQuota"],
+    }
 
 
 @app.post("/api/custom-canvas/transform")
-async def custom_canvas_transform(req: CustomCanvasTransformReq, me=Depends(require_member)):
+async def custom_canvas_transform(
+    req: CustomCanvasTransformReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    me=Depends(require_member),
+):
     _require_custom_creator(me)
     image = _custom_canvas_data_url(req.image, "待处理图片")
     prompt = str(req.prompt or "").strip() or "优化这张图"
@@ -5942,17 +7255,41 @@ async def custom_canvas_transform(req: CustomCanvasTransformReq, me=Depends(requ
         )
         if fidelity == "low":
             prompt += "按用户要求明显转换视觉风格，但保持第一张图的内容主体。"
-    result = await _custom_canvas_generated_image(
-        prompt,
-        req.size,
-        refs,
-        adapt_primary_reference=True,
+    async def operation():
+        return await _custom_canvas_generated_image(
+            prompt,
+            req.size,
+            refs,
+            adapt_primary_reference=True,
+            member=me,
+        )
+
+    result, settlement = await _run_personal_billable(
+        me,
+        points=CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
+        feature="无限画布定向编辑",
+        namespace="canvas.transform",
+        idempotency_key=idempotency_key or req.idempotencyKey,
+        request_fingerprint=_quota_request_fingerprint(req),
+        operation=operation,
+        receipt_specs=lambda generated: [{
+            "dataUrl": generated["dataUrl"],
+            "points": CUSTOM_CANVAS_IMAGE_GENERATION_POINTS,
+            "feature": "无限画布定向编辑",
+        }],
     )
-    return {"image": {
-        "dataUrl": result["dataUrl"],
-        "width": result["width"],
-        "height": result["height"],
-    }}
+    generation_receipt = settlement["generationReceipts"][0]
+    billing = _quota_billing_public(settlement)
+    return {
+        "image": {
+            "dataUrl": result["dataUrl"],
+            "width": result["width"],
+            "height": result["height"],
+            "generationReceipt": generation_receipt["token"],
+        },
+        "billing": billing,
+        "dailyQuota": billing["dailyQuota"],
+    }
 
 
 def _custom_project_error(error):
@@ -6343,6 +7680,20 @@ def teams_list(_me=Depends(require_member)):
     return {"items": store.list_joinable_teams()}
 
 
+@app.put("/api/teams/current")
+def team_current_rename(req: TeamRenameReq, me=Depends(require_member)):
+    team, err = store.rename_team(me["id"], req.name)
+    if err == "team_name_required":
+        raise HTTPException(400, "请输入团队名称")
+    if err == "team_name_exists":
+        raise HTTPException(409, "该团队名称已被使用")
+    if err == "internal_team_immutable":
+        raise HTTPException(409, "内部团队名称由平台维护")
+    if err == "forbidden":
+        raise HTTPException(403, "只有团队所有者可以修改团队名称")
+    return {"ok": True, "team": team, "member": store.member_public(store.get_member(me["id"]))}
+
+
 @app.post("/api/team-join-requests")
 def team_join_request_create(req: TeamJoinReq, me=Depends(require_member)):
     item, err = store.add_team_join_request(me["id"], req.teamName, req.message)
@@ -6352,6 +7703,8 @@ def team_join_request_create(req: TeamJoinReq, me=Depends(require_member)):
         raise HTTPException(409, "当前账号已经加入团队")
     if err == "already_pending":
         raise HTTPException(409, "加入申请已提交，请等待团队管理员处理")
+    if err == "team_full":
+        raise HTTPException(409, "该团队当前席位已满")
     return {"ok": True, "request": item}
 
 
@@ -6370,15 +7723,52 @@ def team_join_request_review(rid: str, req: TeamJoinReviewReq, me=Depends(requir
         raise HTTPException(409, "团队申请已经处理")
     if err == "already_in_team":
         raise HTTPException(409, "申请人已经加入其他团队")
+    if err == "team_full":
+        raise HTTPException(409, "团队席位已满，无法批准该申请")
     if err == "forbidden":
         raise HTTPException(403, "无权处理这个团队的申请")
     return {"ok": True, "member": member}
+
+
+@app.get("/api/platform/accounts")
+def platform_accounts_list(me=Depends(require_team_manager)):
+    """Internal managers can review account categories without secrets."""
+    team = me.get("team") or {}
+    if team.get("id") != store.INTERNAL_TEAM_ID:
+        raise HTTPException(403, "仅 ACG 市场部管理员可查看平台账号摘要")
+    return store.list_platform_account_summaries()
 
 
 @app.get("/api/teams/current/supplier-accounts")
 def team_supplier_accounts(me=Depends(require_team_manager)):
     team = me.get("team") or {}
     return {"items": store.team_supplier_accounts(team.get("id"))}
+
+
+@app.post("/api/teams/current/supplier-accounts/provision")
+def team_supplier_account_provision(
+    response: Response,
+    me=Depends(require_team_manager),
+):
+    """Explicitly create the external team's supplier administrator once.
+
+    There is no server-side subscription activation flow yet.  Keeping this as
+    an owner-only management action prevents pricing-preview controls from
+    creating credentials or changing tenant relationships.
+    """
+    team = me.get("team") or {}
+    if team.get("role") != "owner":
+        raise HTTPException(403, "仅团队所有者可开通供应商管理员")
+    result, error = store.provision_team_supplier_admin(team.get("id"), me.get("id"))
+    if error == "not_found":
+        raise HTTPException(404, "团队不存在")
+    if error == "internal_team_protected":
+        raise HTTPException(409, "ACG 内部团队供应商关系已受保护")
+    if error in {"team_inactive", "team_not_eligible", "plan_not_eligible"}:
+        raise HTTPException(409, "当前团队尚未激活可用的团队版方案")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return result
 
 
 @app.put("/api/teams/current/supplier-accounts/{supplier_id}/password")
@@ -6844,6 +8234,7 @@ def _rewrite_video_workshop_urls(value):
 
 
 def _sync_video_workshop_project(me, source):
+    _reconcile_static_video_billing(me, source)
     mapped, error = store.sync_custom_video_project(me["id"], source)
     if error == "forbidden":
         raise HTTPException(403, "视频工坊项目归属冲突")
@@ -6865,6 +8256,104 @@ def _sync_video_workshop_project(me, source):
         ),
     }
     return project
+
+
+def _static_video_reservation(me, request: Request, payload: dict) -> Optional[dict]:
+    if str(payload.get("creationMode") or "").strip().lower() != "static":
+        return None
+    quota = store.generation_quota(me.get("id")) or {}
+    remaining = quota.get("remaining")
+    point_limit = STATIC_VIDEO_MAX_RESERVATION_POINTS
+    if remaining is not None:
+        point_limit = min(point_limit, max(0, int(remaining or 0)))
+    if point_limit <= 0:
+        label = "今日免费积分" if str(quota.get("period") or "") == "day" else "套餐积分"
+        raise HTTPException(402, f"{label}不足，当前可用 0 点")
+    provided_key = str(
+        payload.get("idempotencyKey")
+        or request.headers.get("Idempotency-Key")
+        or uuid.uuid4().hex
+    ).strip()
+    fingerprint_payload = {
+        key: value
+        for key, value in payload.items()
+        if not str(key).startswith("billing")
+    }
+    reservation = _quota_begin(
+        me,
+        point_limit,
+        "静态视频图片与口播",
+        f"custom-video.static.{me.get('id')}",
+        provided_key,
+        _quota_request_fingerprint(fingerprint_payload),
+    )
+    payload["idempotencyKey"] = provided_key
+    payload["billingReservationId"] = str(reservation.get("reservationId") or "")
+    payload["billingOwnerId"] = str(me.get("id") or "")
+    payload["billingPointLimit"] = point_limit
+    payload["billingBypassed"] = bool(reservation.get("bypassed"))
+    return reservation
+
+
+def _reconcile_static_video_billing(me, source) -> None:
+    if not isinstance(source, dict):
+        return
+    billing = source.get("billing")
+    if not isinstance(billing, dict):
+        return
+    owner_id = str(billing.get("ownerId") or "")
+    if owner_id and owner_id != str(me.get("id") or ""):
+        raise HTTPException(403, "静态视频积分任务归属冲突")
+    billing_status = str(billing.get("status") or "")
+    if billing_status in {"settled", "released", "bypassed"}:
+        return
+    reservation = {
+        "reservationId": str(billing.get("reservationId") or ""),
+        "points": max(0, int(billing.get("pointLimit") or 0)),
+        "status": "bypassed" if billing.get("bypassed") else "active",
+        "bypassed": bool(billing.get("bypassed")),
+    }
+    project_status = str(source.get("status") or "").strip().lower()
+    usage = source.get("billingUsage")
+    if not isinstance(usage, dict):
+        usage = billing.get("usage") if isinstance(billing.get("usage"), dict) else {}
+    if project_status == "succeeded":
+        actual_points = max(0, int(usage.get("totalPoints") or 0))
+        if reservation["bypassed"]:
+            billing["status"] = "bypassed"
+            billing["settlement"] = {
+                "reservationId": "",
+                "status": "bypassed",
+                "requestedPoints": reservation["points"],
+                "deductedPoints": 0,
+                "bypassed": True,
+                "quota": store.generation_quota(me.get("id")),
+            }
+            return
+        if actual_points <= 0:
+            # Keep the durable reservation active rather than silently handing
+            # out a generated video for free when usage evidence is missing.
+            billing["status"] = "settlement-pending"
+            return
+        settlement = _quota_settle(
+            me,
+            reservation,
+            consumed_points=actual_points,
+        )
+        billing["status"] = "settled"
+        billing["settlement"] = _quota_billing_public(settlement)
+        return
+    if project_status in {"conversation", "failed", "cancelled", "interrupted"}:
+        if reservation["bypassed"]:
+            billing["status"] = "bypassed"
+            return
+        released, error = store.release_generation_points(
+            me.get("id"), reservation.get("reservationId"),
+        )
+        if error not in (None, "reservation_settled"):
+            raise HTTPException(500, f"静态视频积分释放失败：{error}")
+        billing["status"] = "settled" if error == "reservation_settled" else "released"
+        billing["settlement"] = _quota_billing_public(released or reservation)
 
 
 async def _video_workshop_request(
@@ -7206,21 +8695,7 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             mapped = mapped_projects.get(project_id)
             if not mapped:
                 continue
-            item = _rewrite_video_workshop_urls(raw_item)
-            item["_integration"] = {
-                "kind": "video",
-                "customProjectId": str(mapped.get("id") or ""),
-                "workshopProjectId": project_id,
-                "publishedDeliveryId": str(mapped.get("publishedDeliveryId") or ""),
-                "publishedAt": int(mapped.get("publishedAt") or 0),
-                "publishedCount": max(0, int(mapped.get("publishedCount") or 0)),
-                "publishedVideoOutputs": (
-                    dict((mapped.get("projectState") or {}).get("publishedVideoOutputs"))
-                    if isinstance((mapped.get("projectState") or {}).get("publishedVideoOutputs"), dict)
-                    else {}
-                ),
-            }
-            visible_items.append(item)
+            visible_items.append(_sync_video_workshop_project(me, raw_item))
         data["items"] = visible_items
         return _video_workshop_json_response(
             data,
@@ -7284,12 +8759,14 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             _video_workshop_owned_project(me, existing_project_id)
         if not str(payload.get("voiceId") or "").strip():
             payload["voiceId"] = _video_workshop_preferred_voice(me)["voiceId"]
+        reservation = _static_video_reservation(me, request, payload)
         upstream = await _video_workshop_request(
             request,
             path,
             body_override=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         )
         if upstream.status_code >= 400:
+            _quota_release_safely(me, reservation)
             return Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
         try:
             project = upstream.json()
@@ -7398,12 +8875,12 @@ def index_html_head():
 
 @app.get("/favicon.svg")
 def favicon():
-    return no_cache_file(FRONTEND_DIR / "assets" / "brand" / "xingzhen-favicon.png", media_type="image/png")
+    return no_cache_file(FRONTEND_DIR / "assets" / "brand" / "starmatrix-favicon.png", media_type="image/png")
 
 
 @app.get("/favicon.ico")
 def favicon_ico():
-    return no_cache_file(FRONTEND_DIR / "assets" / "brand" / "xingzhen-favicon.png", media_type="image/png")
+    return no_cache_file(FRONTEND_DIR / "assets" / "brand" / "starmatrix-favicon.png", media_type="image/png")
 
 
 @app.get("/logo.png")

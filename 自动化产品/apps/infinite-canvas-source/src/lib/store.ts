@@ -57,6 +57,11 @@ const canvasBootStarted = typeof performance !== "undefined" ? performance.now()
 
 const loadedCanvasProjects = new Set<string>();
 const loadingCanvasProjects = new Map<string, Promise<boolean>>();
+// A persisted loading/thinking marker has no live promise after a document
+// reload. Recover every such marker on the first hydration in this JS runtime;
+// subsequent project switches retain the timeout guard for genuinely active
+// work that still belongs to this runtime.
+const hydratedCanvasProjects = new Set<string>();
 const canvasWriteTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const canvasMutationGeneration = new Map<string, number>();
 const suppressedCanvasProjects = new Set<string>();
@@ -145,6 +150,8 @@ interface AppState {
   enterProject: (id: string, options?: { retry?: boolean }) => Promise<boolean>;
   adoptServerProject: (id: string) => Promise<boolean>;
   syncCanvasProjectIndex: () => Promise<void>;
+  /** Immediately commit the latest result to the verified local checkpoint. */
+  flushCanvasProjectLocal: (projectId: string) => Promise<void>;
 
   /* ---- canvas items ---- */
   addItem: (projectId: string, item: CanvasItem) => void;
@@ -405,6 +412,49 @@ function scheduleCanvasProjectPersistence(
   canvasWriteTimers.set(projectId, timer);
 }
 
+async function flushCanvasProjectLocalCheckpoint(
+  projectId: string,
+  get: () => AppState,
+): Promise<void> {
+  const existing = canvasWriteTimers.get(projectId);
+  if (existing) clearTimeout(existing);
+  canvasWriteTimers.delete(projectId);
+  if (serverTombstonedProjects.has(projectId)) return;
+
+  cancelCanvasProjectPut(projectId);
+  const current = get();
+  const projectUpdatedAt = Number(
+    current.projects.find((project) => project.id === projectId)?.updatedAt || 0,
+  );
+  const clientUpdatedAt = Math.max(
+    Date.now(),
+    Number(current.localUpdatedAtByProject[projectId] || 0) + 1,
+    projectUpdatedAt + 1,
+  );
+  const snapshot = canvasProjectSnapshot(current, projectId, clientUpdatedAt);
+  if (!snapshot) throw new Error("画布尚未就绪，无法保存本轮结果");
+  const state: CanvasProjectState = {
+    items: snapshot.items,
+    messages: snapshot.messages,
+    viewport: snapshot.viewport,
+  };
+  if (!isCanvasProjectEmpty(state)) explicitlyEmptyCanvasProjects.delete(projectId);
+  await writeCanvasProjectVerified(projectId, state, {
+    allowEmpty: true,
+    confirmEmpty: explicitlyEmptyCanvasProjects.has(projectId),
+    source: "local",
+    dirty: true,
+    conflicted: conflictedCanvasProjects.has(projectId),
+    clientUpdatedAt,
+    serverRevision: snapshot.baseRevision,
+  });
+  useStore.setState((latest) => ({
+    projectDirtyByProject: { ...latest.projectDirtyByProject, [projectId]: true },
+    localUpdatedAtByProject: { ...latest.localUpdatedAtByProject, [projectId]: clientUpdatedAt },
+    projectSyncError: { ...latest.projectSyncError, [projectId]: "" },
+  }));
+}
+
 function installRecoveredProject(
   projectId: string,
   payload: CanvasProjectState,
@@ -567,6 +617,9 @@ export const useStore = create<AppState>()(
         scheduleCanvasProjectPersistence(id, get, 0);
         return id;
       },
+
+      flushCanvasProjectLocal: (projectId) =>
+        flushCanvasProjectLocalCheckpoint(projectId, get),
 
       deleteProject: (id) => {
         if (!queueCanvasProjectDelete(id)) {
@@ -785,7 +838,11 @@ export const useStore = create<AppState>()(
               });
               return true;
             }
-            const local = await readCanvasProject(id).catch(() => null);
+            const firstHydration = !hydratedCanvasProjects.has(id);
+            hydratedCanvasProjects.add(id);
+            const local = await readCanvasProject(id, {
+              recoverInterrupted: firstHydration ? "all" : true,
+            }).catch(() => null);
             if (local && (!isCanvasProjectEmpty(local.state) || local.confirmedEmpty)) {
               if (!get().projects.some((item) => item.id === id)) return false;
               if (local.confirmedEmpty) explicitlyEmptyCanvasProjects.add(id);

@@ -18,6 +18,269 @@ from app import main, media, pipeline, providers
 
 
 class DirectorSemanticAlignmentTests(unittest.IsolatedAsyncioTestCase):
+    def test_static_timeline_keeps_semantic_weights_without_forcing_five_seconds(self):
+        timeline, _ = media.build_scene_timeline([2, 8], 24)
+        self.assertGreater(
+            max(float(item["duration"]) for item in timeline),
+            5.0,
+        )
+        self.assertEqual(
+            [1, 2],
+            sorted({int(item["sourceSceneNumber"]) for item in timeline}),
+        )
+
+    def test_static_timeline_only_adds_frames_for_distinct_semantic_beats(self):
+        scenes = [
+            {
+                "visual_beats": [
+                    {"visual_action": "手把散乱文件分成三堆"},
+                    {"visual_action": "三堆文件分别进入标记文件夹"},
+                    {"visual_action": "桌面只留下交付清单"},
+                ],
+            },
+            {"visual_beats": []},
+        ]
+        timeline = [
+            {
+                "sceneNumber": 1,
+                "sourceSceneNumber": 1,
+                "segmentNumber": 1,
+                "segmentCount": 1,
+                "start": 0,
+                "end": 12,
+                "duration": 12,
+            },
+            {
+                "sceneNumber": 2,
+                "sourceSceneNumber": 2,
+                "segmentNumber": 1,
+                "segmentCount": 1,
+                "start": 12,
+                "end": 24,
+                "duration": 12,
+            },
+        ]
+        expanded = pipeline._expand_static_timeline_by_semantic_beats(scenes, timeline)
+        first = [item for item in expanded if item["sourceSceneNumber"] == 1]
+        second = [item for item in expanded if item["sourceSceneNumber"] == 2]
+        self.assertEqual(3, len(first))
+        self.assertEqual(1, len(second))
+        self.assertEqual(12, second[0]["duration"])
+
+    def test_static_pacing_counts_establishing_frame_before_semantic_beats(self):
+        scene = {
+            "visual_beats": [
+                {"visual_action": "人物抬头确认第一项任务"},
+                {"visual_action": "人物把最后一项放进完成区"},
+            ]
+        }
+        expanded = pipeline._expand_static_timeline_by_semantic_beats(
+            [scene],
+            [{
+                "sceneNumber": 1,
+                "sourceSceneNumber": 1,
+                "segmentNumber": 1,
+                "segmentCount": 1,
+                "start": 0,
+                "end": 12.6,
+                "duration": 12.6,
+            }],
+        )
+        self.assertEqual(3, len(expanded))
+        self.assertEqual([], pipeline._visual_beats_for_segment(scene, 1, 3))
+        self.assertEqual(
+            "人物抬头确认第一项任务",
+            pipeline._visual_beats_for_segment(scene, 2, 3)[0]["visual_action"],
+        )
+        self.assertEqual(
+            "人物把最后一项放进完成区",
+            pipeline._visual_beats_for_segment(scene, 3, 3)[0]["visual_action"],
+        )
+
+    def test_static_image_prompt_removes_video_only_motion_language(self):
+        cleaned = providers._sanitize_static_image_prompt(
+            "镜头中景缓慢推进至面部特写，人物端着茶杯。"
+            "浅木桌面上的连续动作，镜头缓慢横移，最后轻微跟拍。"
+            "表情先是呆滞，再低头皱眉。依次出现五件交付物。"
+            "镜头从纸面缓慢摇到屏幕，再摇到咖啡杯。"
+            "一个明确时间截面，无运镜。镜头从肩后缓缓前推到人物侧脸。"
+        )
+        self.assertNotIn("镜头缓慢", cleaned)
+        self.assertNotIn("连续动作", cleaned)
+        self.assertNotIn("跟拍", cleaned)
+        self.assertIn("单一关键动作瞬间", cleaned)
+        self.assertNotIn("表情先是", cleaned)
+        self.assertNotIn("依次出现", cleaned)
+        self.assertNotIn("镜头从", cleaned)
+        self.assertNotIn("运镜", cleaned)
+        self.assertNotIn("前推", cleaned)
+        physical = providers._sanitize_static_image_prompt(
+            "咖啡杯被轻轻推到桌面一旁。"
+            "0-4 秒保持中景；4-8 秒缓慢上移回人物眼睛。"
+            "构图由中景推到全景。白板上画着一条弧线代表推镜动作。"
+        )
+        self.assertIn("咖啡杯被轻轻推到桌面一旁", physical)
+        self.assertNotIn("0-4", physical)
+        self.assertNotIn("缓慢上移", physical)
+        self.assertNotIn("构图由中景推到全景", physical)
+        self.assertNotIn("推镜动作", physical)
+        appended_style = providers._sanitize_static_image_prompt(
+            "人物站在茶馆木桌旁。"
+            "镜头缓慢从门外经过竹帘滑入，扫过屋内静物。"
+            "表情先是紧绷，然后缓缓呼出一口气，嘴角浮现轻笑。"
+            "整片固定风格：每张图为单一静态截面，不含连续过程或运镜描述。"
+        )
+        self.assertNotIn("镜头缓慢", appended_style)
+        self.assertNotIn("表情先是", appended_style)
+        self.assertNotIn("运镜", appended_style)
+        self.assertIn("嘴角浮现轻笑", appended_style)
+        transition = providers._sanitize_static_image_prompt(
+            "清晨城市俯瞰转场到普通办公楼层窗边。"
+            "焦点从窗外城市慢慢移到最近桌上的咖啡杯。"
+        )
+        self.assertNotIn("转场", transition)
+        self.assertNotIn("慢慢移到", transition)
+        self.assertIn("普通办公楼层窗边", transition)
+        self.assertIn("焦点落在最近桌上的咖啡杯", transition)
+        residual = providers._sanitize_static_image_prompt(
+            "镜头缓慢，人物连续动作展示整个操作过程，镜头移动并跟拍，最后镜头后拉，"
+            "画面前推后用转场衔接下一场景。"
+        )
+        for marker in (
+            "镜头缓慢", "连续动作", "动作过程", "镜头移动", "跟拍",
+            "镜头后拉", "前推", "转场",
+        ):
+            self.assertNotIn(marker, residual)
+
+    async def test_static_single_scene_expands_visual_beats_into_independent_frames(self):
+        narration = "先看混乱文件，再按项目整理，最后得到清晰交付清单。"
+        arguments = {
+            "title": "静态分镜拆分",
+            "input_mode": "script",
+            "aspect_ratio": "16:9",
+            "duration_sec": 18,
+            "audience": "办公用户",
+            "tone": "真实",
+            "core_message": "从混乱到交付",
+            "narration": narration,
+            "style_anchor": "暖灰色真实办公摄影，统一自然窗光、人物服装与木质桌面。",
+            "negative_constraints": "不要字幕、花字、水印、乱码、人物漂移或画风跳变。",
+            "scenes": [{
+                "title": "完整过程",
+                "duration_sec": 18,
+                "visual_prompt": "办公室人物整理文件。",
+                "image_prompt": "办公室人物整理文件。",
+                "narration_excerpt": narration,
+                "purpose": "展示过程",
+                "visual_beats": [
+                    {"visual_action": "桌上散落文件，人物神情焦虑。", "camera": "中景缓慢推近。"},
+                    {"visual_action": "人物把文件分成三个项目文件夹。", "camera": "俯拍横移。"},
+                    {"visual_action": "桌面只剩一份清晰交付清单。", "camera": "中近景跟拍。"},
+                ],
+            }],
+            "director_note": "按内容推进",
+            "audio_design": {"bgm_enabled": False},
+            "public_thoughts": [],
+            "asset_assignments": [],
+        }
+        payload = {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "start_video_production",
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        }
+                    }]
+                }
+            }]
+        }
+        with (
+            patch.object(providers, "settings", SimpleNamespace(
+                llm_api_key="test-key",
+                llm_model="MiniMax-M3",
+                llm_thinking="disabled",
+                llm_max_completion_tokens=12000,
+            )),
+            patch.object(providers, "_post_llm_json_with_retry", AsyncMock(return_value=payload)),
+        ):
+            result = await providers.MiniMaxDirector().decide(
+                [{"role": "user", "content": "按这段口播制作静态视频。"}],
+                "16:9",
+                [],
+                "",
+                [],
+                creation_mode="static",
+            )
+        scenes = result["plan"]["scenes"]
+        self.assertEqual(3, len(scenes))
+        self.assertTrue(all(scene["image_prompt"] == scene["visual_prompt"] for scene in scenes))
+        self.assertTrue(all("跟拍" not in scene["image_prompt"] for scene in scenes))
+        self.assertEqual(narration, "".join(scene["narration_excerpt"] for scene in scenes))
+
+    async def test_static_single_scene_without_beats_gets_two_semantic_fallback_frames(self):
+        narration = "夜班编辑先面对混乱硬盘，最后建立清晰素材归档。"
+        arguments = {
+            "title": "夜班编辑",
+            "input_mode": "script",
+            "aspect_ratio": "21:9",
+            "duration_sec": 12,
+            "audience": "内容创作者",
+            "tone": "纪录片",
+            "core_message": "从混乱到归档",
+            "narration": narration,
+            "style_anchor": "冷静纪录片摄影，统一夜间工作室与硬盘材质。",
+            "negative_constraints": "不要字幕、花字、水印或人物漂移。",
+            "scenes": [{
+                "title": "硬盘与编辑",
+                "duration_sec": 12,
+                "visual_prompt": "夜班编辑坐在硬盘堆前，冷白屏幕光照亮桌面。",
+                "image_prompt": "夜班编辑坐在硬盘堆前，冷白屏幕光照亮桌面。",
+                "narration_excerpt": narration,
+                "purpose": "建立人物与问题",
+                "visual_beats": [],
+            }],
+            "director_note": "克制处理",
+            "audio_design": {"bgm_enabled": False},
+            "public_thoughts": [],
+            "asset_assignments": [],
+        }
+        payload = {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "start_video_production",
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        }
+                    }]
+                }
+            }]
+        }
+        with (
+            patch.object(providers, "settings", SimpleNamespace(
+                llm_api_key="test-key",
+                llm_model="MiniMax-M3",
+                llm_thinking="disabled",
+                llm_max_completion_tokens=12000,
+            )),
+            patch.object(providers, "_post_llm_json_with_retry", AsyncMock(return_value=payload)),
+        ):
+            result = await providers.MiniMaxDirector().decide(
+                [{"role": "user", "content": "做一条21:9夜班编辑静态视频。"}],
+                "21:9",
+                [],
+                "",
+                [],
+                creation_mode="static",
+            )
+        scenes = result["plan"]["scenes"]
+        self.assertEqual(2, len(scenes))
+        self.assertEqual(narration, "".join(scene["narration_excerpt"] for scene in scenes))
+        self.assertNotEqual(scenes[0]["image_prompt"], scenes[1]["image_prompt"])
+        self.assertIn("建立主体、空间与问题关系", scenes[0]["shot_intent"])
+        self.assertIn("收束变化、结果与情绪", scenes[1]["shot_intent"])
+
     async def test_seedance_capacity_is_shared_across_concurrent_projects(self):
         active = 0
         peak = 0
@@ -116,6 +379,43 @@ class DirectorSemanticAlignmentTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, len(second))
             self.assertNotEqual(first[0], second[0])
 
+    def test_logo_identity_reference_is_attached_to_every_normal_video_scene(self):
+        assets = [{
+            "asset_id": "logo-global",
+            "label": "图1",
+            "name": "品牌-logo.png",
+            "media_type": "image",
+            "mime": "image/png",
+            "url": "/uploads/project-1/logo.png",
+        }]
+        plan = {
+            "scenes": [
+                {"visual_prompt": "第一镜头"},
+                {"visual_prompt": "第二镜头"},
+            ],
+            "asset_assignments": [{
+                "asset_id": "logo-global",
+                "label": "图1",
+                "role": "unused",
+                "scene_number": 2,
+            }],
+        }
+        main._apply_asset_plan(plan, assets, "围绕这个品牌做一条视频")
+        self.assertEqual("reference", plan["asset_assignments"][0]["role"])
+        self.assertEqual("global_identity", plan["reference_images"][0]["reference_scope"])
+        self.assertTrue(all("全片身份参考必须保持一致" in scene["visual_prompt"] for scene in plan["scenes"]))
+
+        with tempfile.TemporaryDirectory() as directory:
+            uploads = Path(directory)
+            project = uploads / "project-1"
+            project.mkdir()
+            (project / "logo.png").write_bytes(b"brand-logo")
+            with patch.object(pipeline, "settings", SimpleNamespace(uploads_dir=uploads)):
+                first = pipeline.VideoPipeline._reference_images("project-1", plan, 1)
+                second = pipeline.VideoPipeline._reference_images("project-1", plan, 2)
+            self.assertEqual(first, second)
+            self.assertEqual(1, len(first))
+
     def test_unassigned_images_do_not_become_implicit_global_references(self):
         assets = [
             {"asset_id": "a1", "label": "图1", "name": "随手截图.png", "media_type": "image", "mime": "image/png", "url": "/uploads/p/a1.png"},
@@ -196,6 +496,281 @@ class DirectorSemanticAlignmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("material", assignments["video-1"]["role"])
         self.assertEqual(2, assignments["video-1"]["scene_number"])
         self.assertEqual("pip", assignments["video-1"]["presentation"])
+
+    async def test_semantic_attachment_names_keep_numbered_multi_image_roles(self):
+        narration = "人物戴上耳机开始工作，最后展示整理完成的真实结果。"
+        arguments = {
+            "title": "多图语义分工",
+            "input_mode": "topic",
+            "aspect_ratio": "16:9",
+            "duration_sec": 12,
+            "audience": "办公用户",
+            "tone": "真实",
+            "core_message": "人物、产品与结果证据分工",
+            "narration": narration,
+            "scenes": [{
+                "title": "人物与结果",
+                "duration_sec": 12,
+                "visual_prompt": "真实办公室里的人物戴着白色耳机完成资料整理，结尾展示结果界面。",
+                "narration_excerpt": narration,
+                "purpose": "完成多附件分工",
+            }],
+            "director_note": "按语义使用附件",
+            "audio_design": {"bgm_enabled": False},
+            "public_thoughts": [],
+            "asset_assignments": [
+                {"asset_id": "person-3", "label": "图1", "role": "unused"},
+                {"asset_id": "product-1", "label": "图2", "role": "unused"},
+                {"asset_id": "result-1", "label": "图3", "role": "unused"},
+            ],
+        }
+        payload = {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "start_video_production",
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        }
+                    }]
+                }
+            }]
+        }
+        attachments = [
+            {"asset_id": "person-3", "label": "图1", "name": "人物定妆.png", "media_type": "image"},
+            {"asset_id": "product-1", "label": "图2", "name": "白色耳机产品.png", "media_type": "image"},
+            {"asset_id": "result-1", "label": "图3", "name": "结果界面.png", "media_type": "image"},
+        ]
+        with (
+            patch.object(providers, "settings", SimpleNamespace(
+                llm_api_key="test-key",
+                llm_model="MiniMax-M3",
+                llm_thinking="disabled",
+                llm_max_completion_tokens=12000,
+            )),
+            patch.object(providers, "_post_llm_json_with_retry", AsyncMock(return_value=payload)),
+        ):
+            result = await providers.MiniMaxDirector().decide(
+                [{
+                    "role": "user",
+                    "content": (
+                        "图1是人物，图2是耳机产品，图3是结果界面。"
+                        "人物和产品只作对应镜头生成参考，结果界面作为结尾全屏剪辑证据。"
+                    ),
+                }],
+                "16:9",
+                attachments,
+                "",
+                [],
+            )
+        assignments = {
+            item["asset_id"]: item["role"]
+            for item in result["plan"]["asset_assignments"]
+        }
+        self.assertEqual("reference", assignments["person-3"])
+        self.assertEqual("reference", assignments["product-1"])
+        self.assertEqual("material", assignments["result-1"])
+
+    async def test_explicit_do_not_use_overrides_default_video_material_role(self):
+        narration = "把散乱资料整理成一份清晰周报。"
+        arguments = {
+            "title": "忽略附件测试",
+            "input_mode": "topic",
+            "aspect_ratio": "16:9",
+            "duration_sec": 8,
+            "audience": "办公用户",
+            "tone": "真实",
+            "core_message": "整理周报",
+            "narration": narration,
+            "scenes": [{
+                "title": "整理",
+                "duration_sec": 8,
+                "visual_prompt": "真实办公室里，人物把散乱资料整理为一份清晰周报。",
+                "narration_excerpt": narration,
+                "purpose": "展示结果",
+            }],
+            "director_note": "按口播推进",
+            "audio_design": {"bgm_enabled": False},
+            "public_thoughts": [],
+            "asset_assignments": [{
+                "asset_id": "video-ignore",
+                "label": "视频1",
+                "role": "material",
+            }],
+        }
+        payload = {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "start_video_production",
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        }
+                    }]
+                }
+            }]
+        }
+        with (
+            patch.object(providers, "settings", SimpleNamespace(
+                llm_api_key="test-key",
+                llm_model="MiniMax-M3",
+                llm_thinking="disabled",
+                llm_max_completion_tokens=12000,
+            )),
+            patch.object(providers, "_post_llm_json_with_retry", AsyncMock(return_value=payload)),
+        ):
+            result = await providers.MiniMaxDirector().decide(
+                [{"role": "user", "content": "视频1只是氛围参考，不需要剪进成片，也不能作为生成参考；做一条AI整理周报的视频。"}],
+                "16:9",
+                [{
+                    "asset_id": "video-ignore",
+                    "label": "视频1",
+                    "name": "随手拍.mp4",
+                    "media_type": "video",
+                }],
+                "",
+                [],
+            )
+        self.assertEqual("unused", result["plan"]["asset_assignments"][0]["role"])
+
+    async def test_video_only_for_understanding_and_not_directly_cut_in_is_unused(self):
+        narration = "拣货员沿着货架核对标签，最终发现错放的箱子。"
+        arguments = {
+            "title": "仓库错放箱",
+            "input_mode": "topic",
+            "aspect_ratio": "21:9",
+            "duration_sec": 12,
+            "audience": "仓储团队",
+            "tone": "真实克制",
+            "core_message": "发现错放箱",
+            "narration": narration,
+            "scenes": [{
+                "title": "核对货架",
+                "duration_sec": 8,
+                "visual_prompt": "真实仓库内，拣货员沿着货架逐一核对箱体标签和库位编号。",
+                "narration_excerpt": narration,
+                "purpose": "发现异常",
+            }],
+            "director_note": "按现场动作推进",
+            "audio_design": {"bgm_enabled": False},
+            "public_thoughts": [],
+            "asset_assignments": [{
+                "asset_id": "warehouse-video",
+                "label": "视频1",
+                "role": "material",
+            }],
+        }
+        payload = {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "start_video_production",
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        }
+                    }]
+                }
+            }]
+        }
+        with (
+            patch.object(providers, "settings", SimpleNamespace(
+                llm_api_key="test-key",
+                llm_model="MiniMax-M3",
+                llm_thinking="disabled",
+                llm_max_completion_tokens=12000,
+            )),
+            patch.object(providers, "_post_llm_json_with_retry", AsyncMock(return_value=payload)),
+        ):
+            result = await providers.MiniMaxDirector().decide(
+                [{
+                    "role": "user",
+                    "content": (
+                        "视频1只帮助你理解仓库现场长什么样，不要直接剪进成片。"
+                        "请重新生成一条讲拣货员如何发现错放箱子的短片。"
+                    ),
+                }],
+                "21:9",
+                [{
+                    "asset_id": "warehouse-video",
+                    "label": "视频1",
+                    "name": "仓库勘景.mp4",
+                    "media_type": "video",
+                }],
+                "",
+                [],
+            )
+        self.assertEqual("unused", result["plan"]["asset_assignments"][0]["role"])
+
+    async def test_real_logo_revealed_only_at_the_end_is_both_reference_and_material(self):
+        narration = "把家庭照片整理成能重新翻看的记忆，最后回到品牌。"
+        arguments = {
+            "title": "家庭照片整理",
+            "input_mode": "topic",
+            "aspect_ratio": "9:16",
+            "duration_sec": 18,
+            "audience": "家庭用户",
+            "tone": "温暖",
+            "core_message": "整理照片",
+            "narration": narration,
+            "scenes": [{
+                "title": "整理与揭示",
+                "duration_sec": 18,
+                "visual_prompt": "主持人在家里整理照片，结尾品牌揭示。",
+                "narration_excerpt": narration,
+                "purpose": "完成品牌收束",
+            }],
+            "director_note": "结尾揭示真实品牌",
+            "audio_design": {"bgm_enabled": False},
+            "public_thoughts": [],
+            "asset_assignments": [
+                {"asset_id": "host-4", "label": "图1", "role": "reference"},
+                {"asset_id": "logo-4", "label": "图2", "role": "unused"},
+            ],
+        }
+        payload = {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "start_video_production",
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        }
+                    }]
+                }
+            }]
+        }
+        attachments = [
+            {"asset_id": "host-4", "label": "图1", "name": "主持人定妆.png", "media_type": "image"},
+            {"asset_id": "logo-4", "label": "图2", "name": "品牌Logo.png", "media_type": "image"},
+        ]
+        with (
+            patch.object(providers, "settings", SimpleNamespace(
+                llm_api_key="test-key",
+                llm_model="MiniMax-M3",
+                llm_thinking="disabled",
+                llm_max_completion_tokens=12000,
+            )),
+            patch.object(providers, "_post_llm_json_with_retry", AsyncMock(return_value=payload)),
+        ):
+            result = await providers.MiniMaxDirector().decide(
+                [{
+                    "role": "user",
+                    "content": (
+                        "图1只作为主持人外形参考；图2是真实Logo，只在最后品牌揭示时居中出现，"
+                        "不要全程角标。主题是普通人如何用AI整理家庭照片。"
+                    ),
+                }],
+                "9:16",
+                attachments,
+                "",
+                [],
+            )
+        assignments = {
+            item["asset_id"]: item["role"]
+            for item in result["plan"]["asset_assignments"]
+        }
+        self.assertEqual("reference", assignments["host-4"])
+        self.assertEqual("both", assignments["logo-4"])
 
     async def test_topic_narration_uses_requested_duration_as_a_floor_and_never_regresses(self):
         def response(narration):

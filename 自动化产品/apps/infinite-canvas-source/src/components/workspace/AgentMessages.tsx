@@ -97,9 +97,15 @@ function AgentBubble({
 
   if (msg.status === "thinking") {
     return (
-      <div className="flex items-center gap-2 text-[13px] text-ink-2">
-        <Spinner className="h-3.5 w-3.5 text-accent" />
-        正在写提示词并生成海报…
+      <div className="canvas-agent-thinking flex items-center gap-3 rounded-[var(--radius-md)] border border-[rgba(0,107,255,.1)] bg-[linear-gradient(120deg,rgba(0,107,255,.045),rgba(255,194,65,.07),rgba(0,107,255,.045))] px-3 py-2.5 text-[13px] text-ink-2">
+        <CanvasMascotAvatar thinking />
+        <span className="min-w-0 flex-1">
+          <b className="block text-[12px] font-medium text-ink">正在思考</b>
+          <span className="mt-0.5 flex items-center gap-1 text-[11px] text-ink-3">
+            正在理解需求并生成画面
+            <Spinner className="ml-1 h-3 w-3 text-accent" />
+          </span>
+        </span>
       </div>
     );
   }
@@ -118,40 +124,39 @@ function AgentBubble({
   return (
     <div className="space-y-2">
       <div className="flex items-start gap-2">
-        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-ink text-white">
-          <Sparkles size={13} />
-        </div>
+        <CanvasMascotAvatar />
         <div className="flex-1 text-[13px] leading-5 text-ink">{msg.text}</div>
       </div>
 
       {results.length === 1 && isImageItem(results[0]) && (
         <button
           onClick={() => onSelectItem(results[0].id)}
-          className="relative block w-full overflow-hidden rounded-[var(--radius-md)] border border-line hover:border-accent"
+          className="relative flex min-h-[132px] w-full items-center justify-center overflow-hidden rounded-[var(--radius-md)] border border-line bg-[#f6f8fb] p-1.5 hover:border-accent"
+          title="点击放大查看"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={results[0].assetUrl}
             alt={results[0].label}
-            className="max-h-[220px] w-full object-cover"
+            className="h-auto max-h-[260px] w-auto max-w-full object-contain"
           />
           {publishedItemIds.includes(results[0].id) && <PublishedImageBadge />}
         </button>
       )}
       {results.length > 1 && (
-        <div className="grid grid-cols-3 gap-1.5">
+        <div className="grid grid-cols-2 items-start gap-1.5">
           {results.map((r) => (
             <button
               key={r.id}
               onClick={() => onSelectItem(r.id)}
-              className="relative aspect-square overflow-hidden rounded-[var(--radius-sm)] border border-line hover:border-accent"
-              title={isImageItem(r) ? r.label : ""}
+              className="relative flex min-h-[92px] items-center justify-center overflow-hidden rounded-[var(--radius-sm)] border border-line bg-[#f6f8fb] p-1 hover:border-accent"
+              title={`${isImageItem(r) ? r.label : ""}· 点击放大查看`}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={isImageItem(r) ? r.assetUrl : ""}
                 alt=""
-                className="h-full w-full object-cover"
+                className="h-auto max-h-[180px] w-auto max-w-full object-contain"
               />
               {publishedItemIds.includes(r.id) && <PublishedImageBadge compact />}
             </button>
@@ -170,6 +175,24 @@ function AgentBubble({
         </details>
       )}
     </div>
+  );
+}
+
+function CanvasMascotAvatar({ thinking = false }: { thinking?: boolean }) {
+  return (
+    <span
+      className={`canvas-agent-avatar${thinking ? " is-thinking" : ""}`}
+      aria-hidden="true"
+    >
+      {/* Main-platform asset stays owner-scoped and is served from the same origin. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/assets/brand/starmatrix-mascot-transparent.png"
+        alt=""
+        draggable={false}
+      />
+      {thinking && <i />}
+    </span>
   );
 }
 

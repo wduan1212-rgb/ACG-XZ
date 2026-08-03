@@ -202,6 +202,72 @@ nextjs-portal {
   animation: fade-in 0.15s var(--ease-out-soft);
 }
 
+/* Brand avatar used by the canvas agent. The orbit stays deliberately small
+ * so the panel feels alive without competing with the generated work. */
+.canvas-agent-avatar {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(229, 242, 255, .96), rgba(255, 247, 220, .9));
+  box-shadow: 0 5px 14px rgba(34, 102, 188, .12);
+}
+.canvas-agent-avatar img {
+  width: 24px;
+  height: 24px;
+  display: block;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 3px rgba(0, 74, 175, .16));
+}
+.canvas-agent-avatar.is-thinking {
+  animation: canvas-avatar-drift 1.9s ease-in-out infinite;
+}
+.canvas-agent-avatar.is-thinking img {
+  animation: canvas-avatar-breathe 1.45s ease-in-out infinite;
+}
+.canvas-agent-avatar.is-thinking i {
+  position: absolute;
+  inset: -4px;
+  z-index: -1;
+  border: 1px solid rgba(0, 107, 255, .24);
+  border-radius: 13px;
+  animation: canvas-avatar-orbit 1.65s cubic-bezier(.45, 0, .55, 1) infinite;
+}
+.canvas-agent-thinking {
+  background-size: 220% 100%;
+  animation: canvas-thinking-shimmer 3.2s ease-in-out infinite;
+}
+@keyframes canvas-avatar-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-2deg); }
+  50% { transform: translate3d(0, -2px, 0) rotate(2deg); }
+}
+@keyframes canvas-avatar-breathe {
+  0%, 100% { transform: scale(.94); }
+  50% { transform: scale(1.04); }
+}
+@keyframes canvas-avatar-orbit {
+  0% { opacity: .35; transform: rotate(0deg) scale(.88); }
+  55% { opacity: .72; }
+  100% { opacity: 0; transform: rotate(180deg) scale(1.18); }
+}
+@keyframes canvas-thinking-shimmer {
+  0%, 100% { background-position: 0 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-agent-avatar.is-thinking,
+  .canvas-agent-avatar.is-thinking img,
+  .canvas-agent-avatar.is-thinking i,
+  .canvas-agent-thinking {
+    animation: none !important;
+  }
+}
+
 /* Directional image transition for lightbox keyboard/button navigation. */
 @keyframes lightbox-switch-next {
   from {

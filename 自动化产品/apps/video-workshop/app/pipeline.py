@@ -30,6 +30,7 @@ from .openmontage_bridge import openmontage
 from .providers import (
     ProviderError,
     _sanitize_seedance_visual_text,
+    _sanitize_static_image_prompt,
     director,
     image_generator,
     seedance,
@@ -41,6 +42,10 @@ from .store import add_event, add_message, load_project, mutate_project
 DEFAULT_DELIVERY_SPEED = 1.2
 DURATION_OVERRUN_ALLOWANCE = 30.0
 DURATION_MEASUREMENT_EPSILON = 1.0
+STATIC_IMAGE_POINTS = max(1, int(os.getenv("IMAGE_GENERATION_POINTS", "5") or "5"))
+STATIC_TTS_POINTS_PER_100_CHARS = max(
+    1, int(os.getenv("TTS_POINTS_PER_100_CHARS", "2") or "2")
+)
 _SEEDANCE_LIMITERS: "weakref.WeakKeyDictionary[Any, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
 
 
@@ -225,12 +230,74 @@ def _visual_beats_for_segment(
     beats = [item for item in scene.get("visual_beats") or [] if isinstance(item, dict)]
     if not beats or segment_count <= 1:
         return beats
+    if segment_count > len(beats):
+        # The scene's base image prompt is itself a meaningful establishing
+        # frame. When real narration needs one more picture than the director
+        # supplied beats, keep that base frame first, then distribute the
+        # explicit semantic beats in order. This speeds up long passages
+        # without inventing an arbitrary time cut or duplicating a beat.
+        if segment_number == 1:
+            return []
+        remaining_segments = segment_count - 1
+        adjusted_number = segment_number - 1
+        start = round(len(beats) * (adjusted_number - 1) / remaining_segments)
+        end = round(len(beats) * adjusted_number / remaining_segments)
+        return beats[start:end]
     # Partition beats once and only once. The previous floor/ceil pair made a
     # middle beat belong to both neighboring segments (for example 3 beats / 2
     # segments), which produced near-identical Seedance clips in long videos.
     start = round(len(beats) * (segment_number - 1) / segment_count)
     end = round(len(beats) * segment_number / segment_count)
     return beats[start:end]
+
+
+def _expand_static_timeline_by_semantic_beats(
+    scenes: list[dict[str, Any]],
+    timeline: list[dict[str, Any]],
+    *,
+    preferred_window: float = 5.0,
+) -> list[dict[str, Any]]:
+    """Speed up still-image pacing only when the director supplied real beats.
+
+    Five seconds is a soft editorial target, never a hard cut rule. A long
+    semantic hold with no new beat stays intact; a long range containing
+    several distinct actions can become several independently composed stills.
+    """
+    expanded: list[dict[str, Any]] = []
+    for window in timeline:
+        source_number = int(window.get("sourceSceneNumber") or window["sceneNumber"])
+        source_scene = scenes[source_number - 1]
+        beats = [
+            item
+            for item in (source_scene.get("visual_beats") or [])
+            if isinstance(item, dict) and str(item.get("visual_action") or "").strip()
+        ]
+        duration = max(0.1, float(window.get("duration") or 0.1))
+        original_count = max(1, int(window.get("segmentCount") or 1))
+        suggested_count = max(1, int(math.ceil(duration / max(1.0, preferred_window))))
+        # A scene with real beats already has one establishing composition in
+        # its base image prompt plus the distinct beat compositions. Count
+        # both, but never manufacture extra frames when the director supplied
+        # no new semantic action.
+        semantic_count = min(len(beats) + 1, suggested_count) if beats else 1
+        part_count = max(original_count, semantic_count)
+        if part_count <= original_count:
+            expanded.append(dict(window))
+            continue
+        part_duration = duration / part_count
+        for part_index in range(part_count):
+            expanded.append({
+                **window,
+                "sceneNumber": len(expanded) + 1,
+                "segmentNumber": part_index + 1,
+                "segmentCount": part_count,
+                "start": float(window.get("start") or 0) + part_duration * part_index,
+                "end": float(window.get("start") or 0) + part_duration * (part_index + 1),
+                "duration": part_duration,
+            })
+    for index, window in enumerate(expanded, start=1):
+        window["sceneNumber"] = index
+    return expanded
 
 
 def _render_units(
@@ -259,10 +326,38 @@ def _render_units(
                 or ""
             ).strip()
             if segment_count > 1:
+                segment_beats = _visual_beats_for_segment(
+                    source_scene,
+                    segment_number,
+                    segment_count,
+                )
+                semantic_frame = _sanitize_static_image_prompt(
+                    "。".join(
+                        filter(
+                            None,
+                            [
+                                str(beat.get("visual_action") or "")
+                                for beat in segment_beats
+                            ]
+                            + [
+                                str(beat.get("camera") or "")
+                                for beat in segment_beats
+                            ]
+                            + [
+                                str(beat.get("shot_intent") or "")
+                                for beat in segment_beats
+                            ]
+                        )
+                    )
+                )
+                if semantic_frame:
+                    image_prompt = (
+                        f"{semantic_frame}。沿用本段的主体、环境、角色身份与整片固定画风："
+                        f"{image_prompt}"
+                    )
                 image_prompt += (
-                    f"\n这是该叙事段的第 {segment_number}/{segment_count} 张静态分镜。"
-                    "保持同一角色、产品、场景设定与画风锚点，但用不同动作阶段、构图或景别推进叙事；"
-                    "不要复制上一张的画面组织。"
+                    f"\n这是该叙事段按口播语义拆出的第 {segment_number}/{segment_count} 张静态分镜。"
+                    "用独立时间截面、不同动作证据、构图或景别推进叙事；不要复制相邻图片的画面组织。"
                 )
             source_scene["image_prompt"] = image_prompt
             source_scene["visual_prompt"] = image_prompt
@@ -398,14 +493,169 @@ def _static_generation_prompt(
         if labels
         else "本分镜没有用户参考图，按导演计划独立完成。"
     )
+    aspect_ratio = str(plan.get("aspect_ratio") or "16:9").strip() or "16:9"
     return "\n".join([
-        "生成一张可直接用于竖屏静态视频分镜的高质量完整画面。",
+        f"生成一张可直接用于 {aspect_ratio} 静态视频分镜的高质量完整画面。",
         f"全片固定风格锚点：{str(plan.get('style_anchor') or '').strip()}",
         f"本分镜画面：{str(scene.get('image_prompt') or scene.get('visual_prompt') or '').strip()}",
         reference_rule,
         f"全片固定负面约束：{str(plan.get('negative_constraints') or '').strip()}",
-        "画面中不要生成字幕、说明文字、时间码或边框；后续字幕由平台统一烧录。",
+        "不要自动生成整句口播字幕、长篇说明、时间码或边框；后续口播字幕由平台统一烧录。"
+        "若导演在本分镜画面中明确指定了漫画拟声词、短标题、路牌或界面短标签，"
+        "只生成该短文字并保持版式准确。",
     ])
+
+
+async def _generate_static_image_with_retry(
+    *,
+    prompt: str,
+    aspect_ratio: str,
+    output_path: Path,
+    reference_images: list[dict[str, Any]],
+    callback,
+    scene_number: int,
+    attempts: int = 5,
+) -> dict[str, Any]:
+    """Retry complete-but-empty image responses as well as network failures."""
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            result = await image_generator.generate(
+                prompt,
+                aspect_ratio,
+                output_path,
+                reference_images=reference_images,
+                callback=callback,
+                scene_number=scene_number,
+            )
+            if output_path.is_file() and output_path.stat().st_size > 8:
+                return result
+            raise ProviderError(
+                "连续性参考图未返回有效图片"
+                if scene_number <= 0
+                else f"静态分镜 {scene_number} 未返回有效图片"
+            )
+        except (ProviderError, OSError, RuntimeError) as exc:
+            last_error = exc
+            output_path.unlink(missing_ok=True)
+            if attempt >= attempts:
+                raise
+            if callback:
+                title = (
+                    "连续性参考图正在自动重试"
+                    if scene_number <= 0
+                    else f"静态分镜 {scene_number} 正在自动重试"
+                )
+                await callback(
+                    title,
+                    f"第 {attempt} 次返回不完整，已自动保留任务并重新请求，不需要用户重新发起。",
+                    min(55, 26 + attempt * 3),
+                )
+            await asyncio.sleep(min(8.0, 1.5 * attempt))
+    raise ProviderError(str(last_error or "静态图片生成失败"))
+
+
+def _continuity_anchor_prompt(
+    plan: dict[str, Any],
+    anchor: dict[str, Any],
+) -> str:
+    kind = str(anchor.get("kind") or "object")
+    layout = {
+        "character": "生成同一角色的正面、标准侧面、背面三视图，并补充稳定的表情、服装、发型与比例细节",
+        "scene": "生成同一空间的正面总览与两个关键方向视图，固定布局、材质、光源位置和主配色",
+        "object": "生成同一关键物件的正面、侧面、背面与细节视图，固定结构、材质、颜色和比例",
+    }.get(kind, "生成清晰的多角度视觉设定图")
+    return "\n".join([
+        "这是静态视频正式分镜生成前的连续性参考设定，不是成片画面。",
+        layout + "；所有视图放在一张干净的设定板中。",
+        f"设定对象：{str(anchor.get('description') or '').strip()}",
+        f"全片固定风格：{str(plan.get('style_anchor') or '').strip()}",
+        f"固定负面约束：{str(plan.get('negative_constraints') or '').strip()}",
+        "不要生成长篇说明、字幕或水印；不同视图必须明确属于同一角色、空间或物件。",
+    ])
+
+
+async def _ensure_static_continuity_references(
+    *,
+    project_id: str,
+    plan: dict[str, Any],
+    work_dir: Path,
+    user_references: list[dict[str, Any]],
+    callback,
+) -> list[dict[str, Any]]:
+    anchors = [
+        item
+        for item in list(plan.get("continuity_anchors") or [])[:3]
+        if isinstance(item, dict) and str(item.get("description") or "").strip()
+    ]
+    resolved = list(user_references[:8])
+    available_slots = max(0, 8 - len(resolved))
+    for index, anchor in enumerate(anchors[:available_slots], start=1):
+        anchor_path = work_dir / f"continuity-anchor-{index:02d}.jpg"
+        if not anchor_path.is_file() or anchor_path.stat().st_size <= 8:
+            await _generate_static_image_with_retry(
+                prompt=_continuity_anchor_prompt(plan, anchor),
+                aspect_ratio="16:9",
+                output_path=anchor_path,
+                reference_images=list(user_references[:8]),
+                callback=callback,
+                scene_number=0,
+            )
+        resolved.append({
+            "asset_id": f"continuity-{project_id}-{index}",
+            "label": f"连续性锚点{index}",
+            "name": str(anchor.get("key") or f"连续性锚点{index}"),
+            "mime": "image/jpeg",
+            "path": str(anchor_path),
+            "source": "director-continuity",
+            "kind": str(anchor.get("kind") or "object"),
+            "reason": str(anchor.get("reason") or "保持跨分镜视觉连续性"),
+        })
+    return resolved
+
+
+def _missing_static_continuity_count(
+    plan: dict[str, Any], work_dir: Path, user_reference_count: int,
+) -> int:
+    anchors = [
+        item
+        for item in list(plan.get("continuity_anchors") or [])[:3]
+        if isinstance(item, dict) and str(item.get("description") or "").strip()
+    ]
+    available_slots = max(0, 8 - max(0, int(user_reference_count)))
+    missing = 0
+    for index, _anchor in enumerate(anchors[:available_slots], start=1):
+        path = work_dir / f"continuity-anchor-{index:02d}.jpg"
+        if not path.is_file() or path.stat().st_size <= 8:
+            missing += 1
+    return missing
+
+
+def _static_billing_usage(
+    plan: dict[str, Any], *, scene_image_count: int,
+    continuity_image_count: int, tts_generated: bool,
+) -> dict[str, Any]:
+    narration = str(plan.get("narration") or "")
+    tts_chars = len(re.sub(r"\s+", "", narration)) if tts_generated else 0
+    tts_points = (
+        max(1, math.ceil(tts_chars / 100)) * STATIC_TTS_POINTS_PER_100_CHARS
+        if tts_generated else 0
+    )
+    image_count = max(0, int(scene_image_count)) + max(0, int(continuity_image_count))
+    image_points = image_count * STATIC_IMAGE_POINTS
+    return {
+        "sceneImageCount": max(0, int(scene_image_count)),
+        "continuityImageCount": max(0, int(continuity_image_count)),
+        "imageCount": image_count,
+        "imagePoints": image_points,
+        "ttsChars": tts_chars,
+        "ttsPoints": tts_points,
+        "totalPoints": image_points + tts_points,
+        "rates": {
+            "image": STATIC_IMAGE_POINTS,
+            "ttsPer100Chars": STATIC_TTS_POINTS_PER_100_CHARS,
+        },
+    }
 
 
 def _merge_timed_asset_placements(
@@ -632,6 +882,7 @@ class VideoPipeline:
             "assistant",
             f"已基于原成片生成新的 {rate:.1f} 倍速版本，没有重新生成镜头或口播。",
             kind="delivery",
+            deliveryId=delivery_id,
         )
         return output
 
@@ -644,6 +895,7 @@ class VideoPipeline:
         data_urls = []
         for item in list(plan.get("reference_images") or [])[:3]:
             assigned_scene = int(item.get("scene_number") or 0)
+            global_identity = str(item.get("reference_scope") or "") == "global_identity"
             # New plans scope each reference to the director-selected logical
             # scene.  Legacy plans did not persist scene_number, so preserve
             # their prior global behavior for safe resume compatibility.
@@ -651,6 +903,7 @@ class VideoPipeline:
                 source_scene_number is not None
                 and assigned_scene > 0
                 and assigned_scene != int(source_scene_number)
+                and not global_identity
             ):
                 continue
             filename = Path(str(item.get("url") or "")).name
@@ -808,6 +1061,7 @@ class VideoPipeline:
             selected_bgm = bgm_library.resolve(project_id, plan)
             audio_design = plan.get("audio_design") if isinstance(plan.get("audio_design"), dict) else {}
             tts_result: dict[str, Any] = {"path": str(narration_path), "reused": True}
+            tts_generated_this_run = False
             audio_info: dict[str, Any] | None = None
             narration_duration = 0.0
             duration_alignment: list[dict[str, Any]] = []
@@ -847,6 +1101,7 @@ class VideoPipeline:
                         narration_path,
                         voice_id=str(plan.get("voice_id") or "").strip() or None,
                     )
+                    tts_generated_this_run = True
 
             if audio_info is None:
                 audio_info = await probe(narration_path)
@@ -927,6 +1182,11 @@ class VideoPipeline:
                 scene_durations,
                 narration_duration,
             )
+            if is_static:
+                scene_timeline = _expand_static_timeline_by_semantic_beats(
+                    scenes,
+                    scene_timeline,
+                )
             render_units = _render_units(
                 scenes,
                 scene_timeline,
@@ -976,10 +1236,9 @@ class VideoPipeline:
             )
 
             scene_jobs: list[dict[str, Any]] = []
-            static_references = (
-                self._static_reference_images(project_id, plan)
-                if is_static
-                else []
+            static_references: list[dict[str, Any]] = []
+            user_static_references = (
+                self._static_reference_images(project_id, plan) if is_static else []
             )
             for index, unit in enumerate(render_units):
                 scene_number = int(unit["render_number"])
@@ -1017,7 +1276,7 @@ class VideoPipeline:
                         "target_duration": float(unit["target_duration"]),
                         "duration_sec": generation_durations[index],
                         "reference_images": (
-                            static_references
+                            []
                             if is_static
                             else self._reference_images(
                                 project_id,
@@ -1027,6 +1286,59 @@ class VideoPipeline:
                         ),
                     }
                 )
+
+            if is_static and not recompose_only:
+                missing_continuity_count = _missing_static_continuity_count(
+                    plan,
+                    work_dir,
+                    len(user_static_references),
+                )
+                billing_usage = _static_billing_usage(
+                    plan,
+                    scene_image_count=len(scene_jobs),
+                    continuity_image_count=missing_continuity_count,
+                    tts_generated=tts_generated_this_run,
+                )
+
+                def remember_billing_usage(item: dict[str, Any]) -> None:
+                    item["billingUsage"] = billing_usage
+                    billing = item.get("billing")
+                    if isinstance(billing, dict):
+                        billing["usage"] = billing_usage
+                        billing["status"] = "measured"
+
+                await asyncio.to_thread(
+                    mutate_project,
+                    project_id,
+                    remember_billing_usage,
+                )
+                current_project = await asyncio.to_thread(load_project, project_id)
+                billing = (
+                    current_project.get("billing")
+                    if isinstance(current_project, dict)
+                    and isinstance(current_project.get("billing"), dict)
+                    else {}
+                )
+                point_limit = max(0, int(billing.get("pointLimit") or 0))
+                if (
+                    billing
+                    and not bool(billing.get("bypassed"))
+                    and point_limit > 0
+                    and int(billing_usage["totalPoints"]) > point_limit
+                ):
+                    raise RuntimeError(
+                        "静态视频积分不足：本轮预计消耗 "
+                        f"{billing_usage['totalPoints']} 点，可用 {point_limit} 点"
+                    )
+                static_references = await _ensure_static_continuity_references(
+                    project_id=project_id,
+                    plan=plan,
+                    work_dir=work_dir,
+                    user_references=user_static_references,
+                    callback=callback,
+                )
+                for job in scene_jobs:
+                    job["reference_images"] = static_references
 
             if recompose_only:
                 for unit in render_units:
@@ -1080,14 +1392,14 @@ class VideoPipeline:
 
             if is_static:
                 async def generate_static_scene(job: dict[str, Any]) -> dict[str, Any]:
-                    await image_generator.generate(
-                        _static_generation_prompt(
+                    await _generate_static_image_with_retry(
+                        prompt=_static_generation_prompt(
                             plan,
                             job["scene"],
                             job["reference_images"],
                         ),
-                        str(plan.get("aspect_ratio") or "9:16"),
-                        Path(job["image_path"]),
+                        aspect_ratio=str(plan.get("aspect_ratio") or "16:9"),
+                        output_path=Path(job["image_path"]),
                         reference_images=job["reference_images"],
                         callback=callback,
                         scene_number=int(job["source_scene_number"]),
@@ -1095,7 +1407,7 @@ class VideoPipeline:
                     return await render_still_clip(
                         Path(job["image_path"]),
                         Path(job["candidate_path"]),
-                        str(plan.get("aspect_ratio") or "9:16"),
+                        str(plan.get("aspect_ratio") or "16:9"),
                         float(job["target_duration"]),
                     )
 
@@ -1467,6 +1779,8 @@ class VideoPipeline:
                 }
                 project["error"] = ""
                 project["retryable"] = None
+                if is_static and isinstance(project.get("billing"), dict):
+                    project["billing"]["status"] = "ready-to-settle"
 
             await asyncio.to_thread(mutate_project, project_id, complete)
             project_committed = True
@@ -1488,6 +1802,7 @@ class VideoPipeline:
                 "assistant",
                 f"成片完成。我按照需求输出了 {aspect_order[0]} 的默认 1.2 倍速版本，并检查了时长、分辨率、音频和关键帧。",
                 kind="delivery",
+                deliveryId=delivery_id,
             )
         except Exception as exc:
             detail = str(exc) or exc.__class__.__name__

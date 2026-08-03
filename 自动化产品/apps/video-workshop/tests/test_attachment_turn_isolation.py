@@ -98,6 +98,8 @@ class AttachmentTurnIsolationTests(unittest.TestCase):
             },
         )
         self.assertIn("图1：静态分镜统一参考", summary)
+        self.assertEqual(["图1"], plan["scenes"][0]["reference_labels"])
+        self.assertIn("必须清晰呈现参考图 图1", plan["scenes"][0]["image_prompt"])
 
 
 class ChatAttachmentScopeTests(unittest.IsolatedAsyncioTestCase):

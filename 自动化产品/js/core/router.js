@@ -1,5 +1,5 @@
 /* hash 路由：#/zone 或 #/studio/<page>
-   zones: home | overview | custom | voice(兼容入口) | agent | studio | assets | drafts | delivery | analytics | settings */
+   zones: home | subscription | overview | custom | voice(兼容入口) | agent | studio | assets | drafts | delivery | analytics | settings */
 
 import { $, $$ } from "./util.js";
 import { state, hasEntitlement } from "./store.js";
@@ -48,6 +48,14 @@ export function allowStudioFromAgent(ms = 3000) {
 
 export function currentRoute() { return { ...current }; }
 
+export function supplierRouteForRole(role, zone) {
+  if (role === "supplier_child") return "delivery";
+  if (["supplier", "supplier_parent"].includes(role)) {
+    return ["overview", "assets", "delivery", "settings"].includes(zone) ? zone : "overview";
+  }
+  return zone;
+}
+
 export function render() {
   const previous = { ...current };
   let { zone, page, resourceId } = parseHash();
@@ -74,9 +82,24 @@ export function render() {
     zone = "agent"; page = null; resourceId = null; location.hash = "#/agent";
   }
   if (zone === "studio") allowStudioFromAgentUntil = 0;
-  // 权限路由：供应商子账号只处理发布；供应商母账号可看首页、账号板、发布和设置。
-  if (state.role === "supplier_child" && zone !== "delivery") { zone = "delivery"; page = null; resourceId = null; location.hash = "#/delivery"; }
-  if ((state.role === "supplier_parent" || state.role === "supplier") && !["overview", "assets", "delivery", "settings"].includes(zone)) { zone = "overview"; page = null; resourceId = null; location.hash = "#/overview"; }
+  // 游客可以浏览首页、订阅和空资产空间，但任何创作入口都先回到首页并
+  // 打开登录弹窗。直接输入 hash 也不能绕过这一层。
+  if (state.role === "guest" && !["home", "subscription", "assets"].includes(zone)) {
+    window.dispatchEvent(new CustomEvent("xingzhen:auth-required", {
+      detail: { reason: "create", target: { zone, page, resourceId } }
+    }));
+    zone = "home"; page = null; resourceId = null;
+    history.replaceState(null, "", "#/home");
+  }
+  // 供应商使用独立工作区。这里必须先固定角色可访问的落点，并在下方跳过
+  // 创作端 entitlement 检查；供应商只拥有 supplier entitlement，若继续套用
+  // dashboard/assets/delivery 会再次被错误改回 #/home。
+  const supplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+  const supplierZone = supplierRouteForRole(state.role, zone);
+  if (supplierZone !== zone) {
+    zone = supplierZone; page = null; resourceId = null;
+    history.replaceState(null, "", `#/${zone}`);
+  }
   const entitlementByRoute = {
     overview: "dashboard",
     studio: "studio",
@@ -86,7 +109,13 @@ export function render() {
     delivery: "delivery",
     analytics: "analytics",
   };
-  if (entitlementByRoute[zone] && !hasEntitlement(entitlementByRoute[zone])) {
+  if (!supplierRole && entitlementByRoute[zone] && !hasEntitlement(entitlementByRoute[zone])) {
+    zone = "home"; page = null; resourceId = null; location.hash = "#/home";
+  }
+  const customEntitlement = zone === "custom"
+    ? { video: "video_workshop", canvas: "canvas", voice: "voice" }[page || "video"]
+    : "";
+  if (!supplierRole && customEntitlement && !hasEntitlement(customEntitlement)) {
     zone = "home"; page = null; resourceId = null; location.hash = "#/home";
   }
   if (!routes.has(zone)) { zone = "home"; page = null; resourceId = null; }

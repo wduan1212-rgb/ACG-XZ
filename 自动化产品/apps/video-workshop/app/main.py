@@ -76,10 +76,14 @@ class Attachment(BaseModel):
 class ChatRequest(BaseModel):
     projectId: str = ""
     message: str = Field(min_length=1, max_length=8000)
-    aspectRatio: str = "9:16"
+    aspectRatio: str = ""
     creationMode: str = Field(default="video", max_length=24)
     voiceId: str = Field(default="", max_length=180)
     attachments: list[Attachment] = Field(default_factory=list)
+    billingReservationId: str = Field(default="", max_length=180)
+    billingOwnerId: str = Field(default="", max_length=180)
+    billingPointLimit: int = Field(default=0, ge=0, le=1000000)
+    billingBypassed: bool = False
 
 
 class RenameProjectRequest(BaseModel):
@@ -185,7 +189,12 @@ def _retry_info(project: dict[str, Any]) -> dict[str, Any] | None:
     scenes = list((project.get("plan") or {}).get("scenes") or [])
     scene_count = len(scenes)
     retryable = project.get("retryable")
-    if isinstance(retryable, dict) and retryable.get("type") in {"safe_rewrite", "resume_missing", "recompose"}:
+    if isinstance(retryable, dict) and retryable.get("type") in {
+        "safe_rewrite",
+        "resume_missing",
+        "resume_plan",
+        "recompose",
+    }:
         scene_number = int(retryable.get("sceneNumber") or 0)
         if 1 <= scene_number <= scene_count:
             result = {"type": retryable["type"], "sceneNumber": scene_number}
@@ -300,6 +309,8 @@ def _local_revision_request(
         "替换",
         "换掉",
         "换一下",
+        "换成",
+        "换为",
         "更换",
         "改一下",
         "改成",
@@ -427,8 +438,14 @@ def _local_revision_request(
     scene_count = len([item for item in plan.get("scenes") or [] if isinstance(item, dict)])
     if number < 1 or number > scene_count:
         return {"type": "invalid_scene", "sceneNumber": number, "sceneCount": scene_count}
+    timeline_text = re.sub(
+        r"(?:不改|不调整|保持|沿用|保留)(?:原有|原来的|当前)?"
+        r"(?:口播|旁白|配音|声音|音色|语速|时长|BGM|bgm|背景音乐)",
+        "",
+        text,
+    )
     if any(
-        marker in text
+        marker in timeline_text
         for marker in (
             "口播",
             "旁白",
@@ -511,15 +528,42 @@ def _mark_orphaned_running_project(project_id: str) -> dict[str, Any]:
         if project.get("status") != "running":
             return
         retryable = _retry_info(project)
-        resumable = bool(retryable and retryable.get("type") == "resume_missing")
+        scenes = [
+            item
+            for item in (project.get("plan") or {}).get("scenes") or []
+            if isinstance(item, dict)
+        ]
+        if not retryable and scenes:
+            work_dir = settings.outputs_dir / project_id
+            first_missing = next(
+                (
+                    scene_number
+                    for scene_number in range(1, len(scenes) + 1)
+                    if not (work_dir / f"scene-{scene_number:02d}.mp4").is_file()
+                ),
+                1,
+            )
+            retryable = {"type": "resume_plan", "sceneNumber": first_missing}
+        resumable = bool(
+            retryable
+            and retryable.get("type") in {"resume_missing", "resume_plan"}
+        )
         scene_number = int((retryable or {}).get("sceneNumber") or 0)
         if resumable:
-            public_error = (
-                "服务重启，已保留素材，可继续缺失镜头；"
-                f"将从缺失镜头 {scene_number} 开始继续所有未完成镜头。"
-            )
-            event_title = "服务重启，已保留素材，可继续缺失镜头"
+            if retryable.get("type") == "resume_missing":
+                public_error = (
+                    "服务重启，已保留素材，将自动继续缺失镜头；"
+                    f"从缺失镜头 {scene_number} 开始继续所有未完成镜头。"
+                )
+                event_title = "服务重启，已保留素材，正在自动继续"
+            else:
+                public_error = (
+                    "服务重启，已保留原导演计划，将自动恢复上一轮制作；"
+                    f"从镜头 {scene_number} 继续，不会新建任务或重新判断需求。"
+                )
+                event_title = "服务重启，正在恢复上一轮制作"
             project["retryable"] = retryable
+            project["restartAutoResumeAttempted"] = False
         else:
             public_error = (
                 "服务重启，当前制作任务已中断；未发现可安全续作的完整素材，"
@@ -566,6 +610,41 @@ def _mark_orphaned_running_project(project_id: str) -> dict[str, Any]:
             )
 
     return mutate_project(project_id, recover)
+
+
+async def _auto_resume_restart_project(
+    project_id: str,
+    project: dict[str, Any],
+) -> dict[str, Any]:
+    retryable = _retry_info(project)
+    restart_recovery = any(
+        item.get("recoveryType") == "service-restart"
+        for item in [
+            *(project.get("events") or []),
+            *(project.get("messages") or []),
+        ]
+        if isinstance(item, dict)
+    )
+    if (
+        project.get("status") != "failed"
+        or not restart_recovery
+        or project.get("restartAutoResumeAttempted")
+        or not retryable
+        or retryable.get("type") not in {"resume_missing", "resume_plan"}
+    ):
+        return project
+
+    def mark_attempted(item: dict[str, Any]) -> None:
+        item["restartAutoResumeAttempted"] = True
+
+    await asyncio.to_thread(mutate_project, project_id, mark_attempted)
+    try:
+        return await project_retry(project_id)
+    except HTTPException as exc:
+        if exc.status_code == 409:
+            latest = await asyncio.to_thread(load_project, project_id)
+            return latest or project
+        raise
 
 
 def _project_response(project: dict[str, Any]) -> dict[str, Any]:
@@ -819,7 +898,7 @@ def _hydrate_assets_for_director(project_id: str, assets: list[dict[str, Any]]) 
     return hydrated
 
 
-def _infer_aspect_ratio(message: str) -> str:
+def _infer_aspect_ratio(message: str, default: str = "9:16") -> str:
     text = re.sub(r"\s+", "", message).lower()
     explicit_patterns = (
         ("21:9", ("21:9", "21：9", "超宽屏", "电影宽幅")),
@@ -835,7 +914,8 @@ def _infer_aspect_ratio(message: str) -> str:
             position = text.rfind(marker)
             if position >= 0:
                 matches.append((position, ratio))
-    return max(matches, default=(-1, "9:16"))[1]
+    fallback = default if default in {"21:9", "16:9", "4:3", "3:4", "1:1", "9:16"} else "9:16"
+    return max(matches, default=(-1, fallback))[1]
 
 
 _VOICE_ID_SAFE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@+()\- ]{0,179}$")
@@ -937,12 +1017,31 @@ def _explicit_asset_role_overrides(
 
 
 _LOGO_ASSET_MARKERS = ("logo", "标志", "徽标", "角标", "水印", "icon")
+_IDENTITY_ASSET_MARKERS = (
+    "ip形象", "ip角色", "角色设定", "角色三视图", "人物设定", "人设",
+    "品牌角色", "品牌形象", "主角", "产品外观", "产品主体",
+)
 
 
 def _is_logo_asset(asset: dict[str, Any]) -> bool:
     return str(asset.get("media_type") or "") == "image" and any(
         marker in str(asset.get("name") or "").lower()
         for marker in _LOGO_ASSET_MARKERS
+    )
+
+
+def _is_identity_reference_asset(asset: dict[str, Any]) -> bool:
+    """Recognize visual identity references that must survive every relevant shot."""
+    if str(asset.get("media_type") or "") != "image":
+        return False
+    if _is_logo_asset(asset):
+        return True
+    text = " ".join(
+        str(asset.get(key) or "")
+        for key in ("name", "label", "reason", "visual_summary", "description")
+    ).lower()
+    return any(marker in text for marker in _IDENTITY_ASSET_MARKERS) or bool(
+        re.search(r"(?:^|[\s_\-])ip(?:$|[\s_\-])", text)
     )
 
 
@@ -997,6 +1096,11 @@ def _apply_asset_plan(
     }
     explicit_roles = _explicit_asset_role_overrides(instruction, assets)
     explicit_logo_overlays = _explicit_logo_overlay_labels(instruction, assets)
+    instruction_compact = re.sub(r"\s+", "", str(instruction or "")).lower()
+    all_references_global = bool(
+        re.search(r"(?:所有|全部|每个|每一).{0,10}(?:镜头|分镜).{0,12}(?:参考|使用|带入)", instruction_compact)
+        or re.search(r"(?:参考图|附件).{0,10}(?:贯穿|全片|所有镜头|每个镜头)", instruction_compact)
+    )
 
     def safe_number(value: Any, default: float) -> float:
         try:
@@ -1023,6 +1127,12 @@ def _apply_asset_plan(
         }.get(media_type, {"unused"})
         if role not in allowed_roles:
             role = default_role
+        identity_reference = _is_identity_reference_asset(asset)
+        if media_type == "image" and identity_reference and label not in explicit_roles:
+            if role == "material":
+                role = "both"
+            elif role == "unused":
+                role = "reference"
         scene_value = safe_number(assignment.get("scene_number"), index % scene_count + 1)
         scene_number = max(1, min(scene_count, int(scene_value)))
         merged = {
@@ -1038,6 +1148,8 @@ def _apply_asset_plan(
             "volume": max(0.0, min(1.5, safe_number(assignment.get("volume"), 0.72 if role == "sfx" else 1.0))),
             "reason": str(assignment.get("reason") or role_labels[role])[:220],
         }
+        if identity_reference or (role in {"reference", "both"} and all_references_global):
+            merged["reference_scope"] = "global_identity"
         is_logo = _is_logo_asset(asset)
         if is_logo and label in explicit_logo_overlays:
             merged["presentation"] = "overlay"
@@ -1061,7 +1173,7 @@ def _apply_asset_plan(
                 key: merged[key]
                 for key in (
                     "asset_id", "label", "name", "mime", "url",
-                    "scene_number", "narration_anchor", "reason",
+                    "scene_number", "narration_anchor", "reason", "reference_scope",
                 )
                 if key in merged
             })
@@ -1074,7 +1186,25 @@ def _apply_asset_plan(
         if role == "sfx" and media_type == "audio":
             sfx_assets.append(merged)
     plan["asset_assignments"] = normalized
+    reference_images.sort(key=lambda item: item.get("reference_scope") != "global_identity")
     plan["reference_images"] = reference_images[:3]
+    identity_labels = [
+        str(item.get("label") or item.get("name") or "")
+        for item in plan["reference_images"]
+        if item.get("reference_scope") == "global_identity"
+    ]
+    if identity_labels:
+        identity_note = (
+            "全片身份参考必须保持一致并在所有涉及该主体或品牌的镜头中使用："
+            + "、".join(filter(None, identity_labels))
+            + "。不得自行替换角色造型、Logo、产品外观或品牌识别特征。"
+        )
+        for scene in plan.get("scenes") or []:
+            if not isinstance(scene, dict):
+                continue
+            visual_prompt = str(scene.get("visual_prompt") or "")
+            if identity_note not in visual_prompt:
+                scene["visual_prompt"] = f"{visual_prompt}\n{identity_note}".strip()
     plan["material_assets"] = material_assets
     plan["narration_audio"] = narration_assets[0] if narration_assets else None
     plan["bgm_assets"] = bgm_assets
@@ -1088,7 +1218,7 @@ def _apply_static_reference_plan(
     plan: dict[str, Any],
     assets: list[dict[str, Any]],
 ) -> str:
-    """Keep current-turn images as generation references, never edit inserts."""
+    """Carry every current-turn image into each request and ensure visible use."""
     image_assets = [
         {
             key: item[key]
@@ -1131,6 +1261,50 @@ def _apply_static_reference_plan(
     plan["asset_assignments"] = normalized
     plan["reference_images"] = image_assets
     plan["material_assets"] = []
+    scenes = [
+        item
+        for item in list(plan.get("scenes") or [])
+        if isinstance(item, dict)
+    ]
+    valid_labels = {
+        str(item.get("label") or "")
+        for item in image_assets
+        if str(item.get("label") or "")
+    }
+    covered_labels: set[str] = set()
+    for scene in scenes:
+        labels = [
+            str(label)
+            for label in list(scene.get("reference_labels") or [])
+            if str(label) in valid_labels
+        ]
+        scene["reference_labels"] = list(dict.fromkeys(labels))
+        covered_labels.update(scene["reference_labels"])
+    # The provider physically receives all images on every request.  This
+    # second guard prevents the director from receiving them but never showing
+    # one in the delivered video.  Existing semantic/timing choices win; only
+    # genuinely uncovered assets are assigned a visible scene.
+    if scenes:
+        for index, asset in enumerate(image_assets):
+            label = str(asset.get("label") or "")
+            if not label or label in covered_labels:
+                continue
+            target_index = len(scenes) - 1 if _is_logo_asset({
+                **asset,
+                "media_type": "image",
+            }) else min(len(scenes) - 1, index)
+            target = scenes[target_index]
+            target.setdefault("reference_labels", []).append(label)
+            identity = str(asset.get("name") or label)
+            appearance_rule = (
+                f"本分镜必须清晰呈现参考图 {label}（{identity}）中的真实主体，"
+                "保持身份、外形、颜色、结构与品牌特征，不得自行替换或省略。"
+            )
+            prompt = str(target.get("image_prompt") or target.get("visual_prompt") or "").strip()
+            prompt = f"{prompt}。{appearance_rule}".strip("。")
+            target["image_prompt"] = prompt
+            target["visual_prompt"] = prompt
+            covered_labels.add(label)
     return (
         "；".join(f"{item.get('label')}：静态分镜统一参考" for item in image_assets)
         if image_assets
@@ -1460,6 +1634,7 @@ async def project_detail(project_id: str):
             _mark_orphaned_running_project,
             project_id,
         )
+    project = await _auto_resume_restart_project(project_id, project)
     return _project_response(project)
 
 
@@ -1521,7 +1696,8 @@ async def project_retry(project_id: str):
     previous_progress = int(project.get("progress") or 0)
     is_copyright_rewrite = retryable.get("reason") == "copyright"
 
-    if retryable.get("type") == "resume_missing":
+    if retryable.get("type") in {"resume_missing", "resume_plan"}:
+        resume_from_plan = retryable.get("type") == "resume_plan"
         with _launching_project(project_id):
             def mark_resuming(item: dict[str, Any]) -> None:
                 item["status"] = "running"
@@ -1534,8 +1710,12 @@ async def project_retry(project_id: str):
             await asyncio.to_thread(
                 add_event,
                 project_id,
-                f"正在从镜头 {scene_number} 恢复未完成镜头",
-                "已保留完成的口播与视频素材，将继续所有缺失镜头。",
+                f"正在从镜头 {scene_number} 继续原任务",
+                (
+                    "已保留原导演计划，将沿用同一任务继续口播、图片或视频镜头。"
+                    if resume_from_plan
+                    else "已保留完成的口播与媒体素材，将继续所有缺失镜头。"
+                ),
                 "running",
                 max(12, min(58, previous_progress)),
                 "recovery",
@@ -1544,8 +1724,8 @@ async def project_retry(project_id: str):
                 add_message,
                 project_id,
                 "assistant",
-                f"已恢复制作任务。本次从缺失镜头 {scene_number} 开始继续所有未完成镜头，"
-                "已完成的口播和视频素材不会重复生成。",
+                f"已继续原制作任务。本次从镜头 {scene_number} 接着执行，"
+                "不会重新做一份导演方案；已经完成的本地素材会直接复用。",
                 kind="retry",
             )
             if not _schedule(project_id, plan, retry_scene_number=scene_number):
@@ -1699,7 +1879,23 @@ async def project_cancel(project_id: str):
         return _project_response(project)
 
     retryable = _retry_info(project)
-    resumable = bool(retryable and retryable.get("type") == "resume_missing")
+    plan = project.get("plan") if isinstance(project.get("plan"), dict) else None
+    scenes = list((plan or {}).get("scenes") or [])
+    if not retryable and scenes:
+        work_dir = settings.outputs_dir / project_id
+        first_missing = next(
+            (
+                scene_number
+                for scene_number in range(1, len(scenes) + 1)
+                if not (work_dir / f"scene-{scene_number:02d}.mp4").is_file()
+            ),
+            1,
+        )
+        retryable = {"type": "resume_plan", "sceneNumber": first_missing}
+    resumable = bool(
+        retryable
+        and retryable.get("type") in {"resume_missing", "resume_plan"}
+    )
     scene_number = int((retryable or {}).get("sceneNumber") or 0)
     message = (
         "制作已按请求停止。已经完成的口播和镜头文件会保留，"
@@ -1707,7 +1903,7 @@ async def project_cancel(project_id: str):
         if resumable
         else (
             "制作已按请求停止。已完成的本地文件会保留；"
-            "当前链路不伪装为可无损暂停，可以补充方向后重新发起制作。"
+            "当前还没有形成可恢复的导演计划，可以继续聊天后再开始制作。"
         )
     )
 
@@ -2116,6 +2312,13 @@ async def chat(req: ChatRequest):
     if _project_has_active_work(str(project.get("id") or "")):
         raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
     creation_mode = "static" if str(req.creationMode or "").strip().lower() == "static" else "video"
+    existing_plan = project.get("plan") if isinstance(project.get("plan"), dict) else {}
+    previous_creation_mode = str(
+        existing_plan.get("creation_mode")
+        or project.get("creationMode")
+        or "video"
+    ).strip().lower()
+    creation_mode_changed = bool(existing_plan.get("scenes")) and previous_creation_mode != creation_mode
     try:
         selected_voice_id = _selected_voice_id(req, project)
     except ValueError as exc:
@@ -2124,16 +2327,24 @@ async def chat(req: ChatRequest):
     def remember_voice(item: dict[str, Any]) -> None:
         item["voiceId"] = selected_voice_id
         item["creationMode"] = creation_mode
+        if creation_mode == "static" and (
+            req.billingReservationId or req.billingBypassed
+        ):
+            item["billing"] = {
+                "reservationId": str(req.billingReservationId or ""),
+                "ownerId": str(req.billingOwnerId or ""),
+                "pointLimit": max(0, int(req.billingPointLimit or 0)),
+                "bypassed": bool(req.billingBypassed),
+                "status": "reserved",
+            }
+            item.pop("billingUsage", None)
 
     await asyncio.to_thread(mutate_project, project["id"], remember_voice)
     project["voiceId"] = selected_voice_id
 
-    previous_user_text = "\n".join(
-        str(message.get("content") or "")
-        for message in project.get("messages") or []
-        if message.get("role") == "user"
-    )
-    aspect_ratio = _infer_aspect_ratio(f"{previous_user_text}\n{req.message}")
+    requested_ratio = str(req.aspectRatio or "").strip()
+    default_ratio = requested_ratio or ("16:9" if creation_mode == "static" else "9:16")
+    aspect_ratio = _infer_aspect_ratio(req.message, default=default_ratio)
     decoded_attachments = await asyncio.to_thread(_decode_attachments, req.attachments)
 
     saved_attachments = _save_attachments(project["id"], decoded_attachments)
@@ -2158,7 +2369,7 @@ async def chat(req: ChatRequest):
 
     await asyncio.to_thread(mutate_project, project["id"], name_from_first_message)
     project = await asyncio.to_thread(load_project, project["id"])
-    retryable = _retry_info(project)
+    retryable = None if creation_mode_changed else _retry_info(project)
     if (
         _is_continue_request(req.message)
         and retryable
@@ -2166,15 +2377,15 @@ async def chat(req: ChatRequest):
         and not _project_has_active_work(project["id"])
     ):
         return await project_retry(project["id"])
-    revision_message = _revision_message_for_continuation(project, req.message)
-    revision_result = await _handle_local_revision(
+    revision_message = req.message if creation_mode_changed else _revision_message_for_continuation(project, req.message)
+    revision_result = None if creation_mode_changed else await _handle_local_revision(
         project,
         revision_message,
         saved_attachments,
     )
     if revision_result is not None:
         return revision_result
-    if _is_continue_request(req.message):
+    if _is_continue_request(req.message) and not creation_mode_changed:
         retryable = _retry_info(project)
         if retryable:
             return await project_retry(project["id"])
@@ -2203,8 +2414,8 @@ async def chat(req: ChatRequest):
     await asyncio.to_thread(
         add_event,
         project["id"],
-        "导演正在判断信息是否完整",
-        "正在组织受众、叙事、口播、附件用途和最合适的镜头结构。",
+        "正在思考",
+        "正在理解这条消息，并判断应当回答、追问还是开始制作。",
         "running",
         4,
         "brief",

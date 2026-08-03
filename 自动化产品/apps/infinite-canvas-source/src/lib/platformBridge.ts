@@ -14,6 +14,10 @@ export interface CanvasPublishRequest {
   items: CanvasPublishItem[];
 }
 
+export interface CanvasCommunityShareRequest extends Omit<CanvasPublishRequest, "type"> {
+  type: "community-share-request";
+}
+
 export interface CanvasPublishedProject {
   projectId: string;
   deliveryId: string;
@@ -24,6 +28,26 @@ export interface CanvasPublishedProject {
 export interface CanvasContextPortal {
   id: string;
   nonce: string;
+}
+
+export interface CanvasPlatformCapabilities {
+  canPublish: boolean;
+}
+
+export function canvasPlatformCapabilitiesFromBootstrap(): CanvasPlatformCapabilities {
+  if (typeof window === "undefined") return { canPublish: false };
+  try {
+    const bootstrap = JSON.parse(window.name || "{}") as {
+      kind?: string;
+      canPublish?: unknown;
+    };
+    if (bootstrap.kind !== "xingzhen-canvas-bootstrap") return { canPublish: false };
+    return { canPublish: bootstrap.canPublish === true };
+  } catch {
+    // Standalone canvas keeps its complete toolset. Embedded canvases must
+    // receive an explicit capability from the owner platform.
+    return { canPublish: false };
+  }
 }
 
 export function canvasContextPortalFromBootstrap(): CanvasContextPortal | null {
@@ -110,6 +134,17 @@ export function buildCanvasPublishRequest({
 }
 
 export function postCanvasPublishRequest(request: CanvasPublishRequest): boolean {
+  if (typeof window === "undefined" || window.parent === window) return false;
+  window.parent.postMessage(request, window.location.origin);
+  return true;
+}
+
+export function buildCanvasCommunityShareRequest(input: Parameters<typeof buildCanvasPublishRequest>[0]): CanvasCommunityShareRequest | null {
+  const request = buildCanvasPublishRequest(input);
+  return request ? { ...request, type: "community-share-request" } : null;
+}
+
+export function postCanvasCommunityShareRequest(request: CanvasCommunityShareRequest): boolean {
   if (typeof window === "undefined" || window.parent === window) return false;
   window.parent.postMessage(request, window.location.origin);
   return true;

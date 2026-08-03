@@ -1,8 +1,15 @@
 "use client";
 
-import { useCallback } from "react";
-import { callAgent, callEnhance, callGenerate, callTransform } from "@/lib/api";
-import { bestAssetUrlFor } from "@/lib/assetCache";
+import { useCallback, useEffect, useMemo } from "react";
+import {
+  callAgent,
+  callEnhance,
+  callGenerate,
+  callTransform,
+  materializeCanvasAsset,
+  persistCanvasBlob,
+} from "@/lib/api";
+import { bestAssetUrlFor, rememberAssetSource } from "@/lib/assetCache";
 import {
   downscaleDataUrl,
   estimateSharpnessDataUrl,
@@ -17,6 +24,17 @@ import { uid } from "@/lib/util";
 import { isImageItem } from "@/lib/types";
 import { parseCount, prepareSingleImagePrompt } from "@/lib/agent";
 import { planReferenceEdits } from "@/lib/referenceEditPlan";
+import { runConcurrentQueue } from "@/lib/concurrencyQueue";
+import {
+  canvasRequestUserMessage,
+  isCanvasRequestCancelled,
+  throwIfCanvasRequestAborted,
+} from "@/lib/request";
+import {
+  CanvasRequestLifecycle,
+  bindCanvasPageLifecycle,
+} from "@/lib/requestLifecycle";
+import { CANVAS_INTERRUPTED_TASK_TEXT } from "@/lib/canvasPersistence";
 import type { PaletteKey } from "@/lib/agent";
 import type {
   CanvasItem,
@@ -45,13 +63,29 @@ export function useStudioActions(projectId: string) {
   const updateMessage = useStore((s) => s.updateMessage);
   const addItem = useStore((s) => s.addItem);
   const updateItem = useStore((s) => s.updateItem);
-  const removeItems = useStore((s) => s.removeItems);
   const setSelection = useStore((s) => s.setSelection);
   const addTask = useStore((s) => s.addTask);
   const updateTask = useStore((s) => s.updateTask);
   const recordGeneration = useStore((s) => s.recordGeneration);
   const recordFailure = useStore((s) => s.recordFailure);
   const reserveDrafts = useStore((s) => s.reserveDrafts);
+  const flushCanvasProjectLocal = useStore((s) => s.flushCanvasProjectLocal);
+  const requestLifecycle = useMemo(
+    () => new CanvasRequestLifecycle(projectId),
+    [projectId],
+  );
+
+  useEffect(() => {
+    // React Strict Mode intentionally runs setup/cleanup twice in development.
+    // Resume with a fresh signal while every previously captured batch signal
+    // remains aborted and therefore cannot restart paid work.
+    requestLifecycle.resume();
+    const unbind = bindCanvasPageLifecycle(requestLifecycle, window);
+    return () => {
+      unbind();
+      requestLifecycle.dispose();
+    };
+  }, [requestLifecycle]);
 
   const startTask = useCallback(
     (kind: "generate" | "enhance" | "export", label: string) => {
@@ -87,6 +121,8 @@ export function useStudioActions(projectId: string) {
       const state = useStore.getState();
       const project = state.projects.find((p) => p.id === projectId);
       if (!project) return;
+      const requestSignal = requestLifecycle.signal;
+      if (requestSignal.aborted) return;
       // Homepage handoff may reach this callback before ProjectClient's
       // enterProject effect has copied targetSize into the shared composer.
       // An explicit handoff size is authoritative only for that first request;
@@ -118,7 +154,15 @@ export function useStudioActions(projectId: string) {
       for (const r of references) {
         const it = items.find((i) => i.id === r.itemId);
         if (!it || !isImageItem(it)) continue;
-        const u = it.assetUrl;
+        let u = bestAssetUrlFor(it);
+        try {
+          u = await materializeCanvasAsset(u, { signal: requestSignal });
+        } catch (error) {
+          if (isCanvasRequestCancelled(error)) return;
+          // A missing private blob is isolated to this reference. The user can
+          // still generate from the remaining prompt and healthy references.
+          continue;
+        }
         if (!u.startsWith("data:image/") || u.startsWith("data:image/svg")) continue;
         try {
           const image = (await downscaleDataUrl(u, 1280, 0.85)).dataUrl;
@@ -185,6 +229,9 @@ export function useStudioActions(projectId: string) {
             quality: POSTER_QUALITY,
             jobId: id,
             loading: true,
+            generationStatus: "queued",
+            queuePosition: index + 1,
+            queueTotal: editTargets.length,
             provenance: {
               brief,
               references,
@@ -209,11 +256,8 @@ export function useStudioActions(projectId: string) {
           status: "thinking",
         });
 
-        const completed: string[] = [];
-        const failed: number[] = [];
-        await Promise.all(
-          jobs.map(async (job) => {
-            try {
+        const results = await runConcurrentQueue(
+          jobs.map((job) => async () => {
               const sourceImage =
                 referenceImageById.get(job.source.id) ??
                 (await downscaleDataUrl(bestAssetUrlFor(job.source), 1280, 0.85)).dataUrl;
@@ -221,6 +265,7 @@ export function useStudioActions(projectId: string) {
                 .filter(([itemId]) => itemId !== job.source.id)
                 .map(([, image]) => image)
                 .slice(0, 7);
+              throwIfCanvasRequestAborted(requestSignal, "图片编辑");
               const image = await callTransform({
                 image: sourceImage,
                 references: styleReferences,
@@ -231,15 +276,25 @@ export function useStudioActions(projectId: string) {
                 size: targetSize,
                 fidelity: "high",
                 quality: POSTER_QUALITY,
+                idempotencyKey: job.id,
+              }, { signal: requestSignal });
+              throwIfCanvasRequestAborted(requestSignal, "图片持久化");
+              const persisted = await persistCanvasBlob(image.dataUrl, job.id, {
+                generationReceipt: image.generationReceipt,
+                signal: requestSignal,
               });
+              rememberAssetSource(job.id, image.dataUrl);
               updateItem(projectId, job.id, {
-                assetUrl: image.dataUrl,
+                assetUrl: persisted.assetUrl,
+                outputId: persisted.outputId,
                 naturalWidth: image.width,
                 naturalHeight: image.height,
                 label: `图 ${job.index + 1} · 已按指令编辑`,
                 loading: false,
+                generationStatus: "done",
+                error: undefined,
               } as Partial<CanvasItem>);
-              completed.push(job.id);
+              await flushCanvasProjectLocal(projectId);
               job.task.stop({
                 status: "completed",
                 progress: 1,
@@ -247,18 +302,49 @@ export function useStudioActions(projectId: string) {
                 resultItemIds: [job.id],
                 label: `图 ${job.index + 1} · 已完成`,
               });
-            } catch (error) {
-              failed.push(job.index);
-              removeItems(projectId, [job.id]);
-              job.task.stop({
-                status: "failed",
-                progress: 1,
-                error: error instanceof Error ? error.message : "编辑失败",
-                label: `图 ${job.index + 1} · 编辑失败`,
-              });
-            }
+              return job.id;
           }),
+          {
+            limit: 3,
+            onStart: (index) => {
+              const job = jobs[index];
+              updateItem(projectId, job.id, {
+                label: `图 ${job.index + 1} · 编辑中`,
+                generationStatus: "running",
+              } as Partial<CanvasItem>);
+            },
+          },
         );
+
+        const completed = results.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
+        );
+        const failed: number[] = [];
+        const interrupted: number[] = [];
+        results.forEach((result, index) => {
+          if (result.status !== "rejected") return;
+          const job = jobs[index];
+          const cancelled = isCanvasRequestCancelled(result.reason);
+          const error = cancelled
+            ? CANVAS_INTERRUPTED_TASK_TEXT
+            : canvasRequestUserMessage(result.reason);
+          (cancelled ? interrupted : failed).push(job.index);
+          updateItem(projectId, job.id, {
+            loading: false,
+            generationStatus: cancelled ? "interrupted" : "failed",
+            label: cancelled ? CANVAS_INTERRUPTED_TASK_TEXT : "编辑失败，可重试",
+            error,
+          } as Partial<CanvasItem>);
+          job.task.stop({
+            status: "failed",
+            progress: 1,
+            error,
+            label: cancelled
+              ? `图 ${job.index + 1} · 已中断`
+              : `图 ${job.index + 1} · 编辑失败`,
+          });
+        });
+        if (failed.length || interrupted.length) await flushCanvasProjectLocal(projectId);
 
         if (completed.length > 0) {
           const cost = +(QUALITY_COST[POSTER_QUALITY] * completed.length).toFixed(4);
@@ -266,26 +352,28 @@ export function useStudioActions(projectId: string) {
           setSelection(completed);
           updateMessage(projectId, agentMsgId, {
             text:
-              failed.length > 0
-                ? `${targetNames} 已完成 ${completed.length} 张；图 ${failed.map((index) => index + 1).join("、")} 未完成，可单独重试。`
+              failed.length > 0 || interrupted.length > 0
+                ? `${targetNames} 已完成 ${completed.length} 张；其余任务${interrupted.length ? "已中断" : "未完成"}，可单独重试。`
                 : `${targetNames} 已分别完成定向编辑。每张结果都以自身原图为编辑源，未输出无关新图。`,
-            status: "done",
+            status: failed.length > 0 || interrupted.length > 0 ? "partial" : "done",
             resultItemIds: completed,
           });
         } else {
           setSelection([]);
           updateMessage(projectId, agentMsgId, {
-            text: "定向编辑未完成，已保留原参考图且没有产出无关新图，请稍后重试。",
+            text: interrupted.length && !failed.length
+              ? CANVAS_INTERRUPTED_TASK_TEXT
+              : "定向编辑未完成，已保留原参考图且没有产出无关新图，请稍后重试。",
             status: "error",
           });
-          recordFailure(projectId);
+          if (failed.length) recordFailure(projectId);
         }
         return;
       }
 
       // Placeholder cards so results "appear" on the canvas while generating.
       const fp = footprintFor(target.width, target.height, 340);
-      const makePlaceholder = (): string => {
+      const makePlaceholder = (position = 1, total = 1): string => {
         const cur = (useStore.getState().itemsByProject[projectId] ?? []).filter((item) => !item.hidden);
         // A new task follows the current content, independent of pan/zoom.
         // Each additional result then advances from the newly enlarged bounds,
@@ -304,11 +392,14 @@ export function useStudioActions(projectId: string) {
           assetUrl: "",
           naturalWidth: target.width,
           naturalHeight: target.height,
-          label: "生成中",
+          label: "正在思考",
           mode: "final",
           quality: POSTER_QUALITY,
           jobId: phId,
           loading: true,
+          generationStatus: "running",
+          queuePosition: position,
+          queueTotal: total,
           provenance: { brief, references },
         };
         addItem(projectId, ph);
@@ -329,7 +420,7 @@ export function useStudioActions(projectId: string) {
               size,
               references: refDesc,
               images: agentImages,
-            })
+            }, { signal: requestSignal })
           : {
               palette: "default" as const,
               prompt: brief.trim(),
@@ -338,7 +429,24 @@ export function useStudioActions(projectId: string) {
               count: parseCount(brief),
             };
         const count = Math.max(1, Math.min(10, ar.count ?? 1));
-        while (ids.length < count) ids.push(makePlaceholder());
+        while (ids.length < count) ids.push(makePlaceholder(ids.length + 1, count));
+        ids.forEach((id, index) => {
+          updateItem(projectId, id, {
+            label: `排队中 ${index + 1}/${count}`,
+            loading: true,
+            generationStatus: "queued",
+            queuePosition: index + 1,
+            queueTotal: count,
+            error: undefined,
+          } as Partial<CanvasItem>);
+        });
+        setSelection(ids);
+        updateMessage(projectId, agentMsgId, {
+          text: ar.caption,
+          status: "thinking",
+          palette: ar.palette,
+          genCount: count,
+        });
 
         // Output quantity controls concurrency only. Every upstream image call
         // must describe one complete canvas, otherwise models often interpret
@@ -364,73 +472,100 @@ export function useStudioActions(projectId: string) {
           references: refUrls,
         };
 
-        // Full resolution — the API result is the true selected size; no downscale.
-        const done: string[] = [];
-        const fill = (
-          slot: number,
-          img: { dataUrl: string; width: number; height: number; label: string },
-          usedPrompt: string,
-        ) => {
-          updateItem(projectId, ids[slot], {
-            assetUrl: img.dataUrl,
-            naturalWidth: img.width,
-            naturalHeight: img.height,
-            label: img.label,
-            loading: false,
-            provenance: {
-              brief,
-              references,
+        // The output count is a queue length, never an upstream burst. Each
+        // worker requests exactly one complete image and commits it immediately.
+        const startVariant = reserveDrafts(projectId, count);
+        const prompts = Array.from(
+          { length: count },
+          (_, index) => variants[index] || singlePrompt,
+        );
+        let settledCount = 0;
+        const results = await runConcurrentQueue(
+          ids.map((id, index) => async () => {
+            const usedPrompt = prompts[index];
+            throwIfCanvasRequestAborted(requestSignal, "图片生成");
+            const images = await callGenerate({
+              ...common,
+              count: 1,
+              startVariant: startVariant + index,
               prompt: usedPrompt,
-              negativePrompt: ar.negativePrompt,
-              size,
-              quality: POSTER_QUALITY,
+              idempotencyKey: id,
+            }, { signal: requestSignal });
+            const image = images[0];
+            if (!image?.dataUrl) throw new Error("图片生成未返回结果");
+            throwIfCanvasRequestAborted(requestSignal, "图片持久化");
+            const persisted = await persistCanvasBlob(image.dataUrl, id, {
+              generationReceipt: image.generationReceipt,
+              signal: requestSignal,
+            });
+            rememberAssetSource(id, image.dataUrl);
+            updateItem(projectId, id, {
+              assetUrl: persisted.assetUrl,
+              outputId: persisted.outputId,
+              naturalWidth: image.width,
+              naturalHeight: image.height,
+              label: image.label,
+              loading: false,
+              generationStatus: "done",
+              error: undefined,
+              provenance: {
+                brief,
+                references,
+                prompt: usedPrompt,
+                negativePrompt: ar.negativePrompt,
+                size,
+                quality: POSTER_QUALITY,
+              },
+            } as Partial<CanvasItem>);
+            await flushCanvasProjectLocal(projectId);
+            return id;
+          }),
+          {
+            limit: 3,
+            onStart: (index) => {
+              updateItem(projectId, ids[index], {
+                label: `生成中 ${index + 1}/${count}`,
+                generationStatus: "running",
+              } as Partial<CanvasItem>);
             },
+            onSettled: () => {
+              settledCount += 1;
+              updateTask(projectId, task.id, {
+                progress: Math.max(0.08, settledCount / count),
+              });
+            },
+          },
+        );
+        const done = results.flatMap((result) =>
+          result.status === "fulfilled" ? [result.value] : [],
+        );
+        const failures: string[] = [];
+        const interrupted: string[] = [];
+        results.forEach((result, index) => {
+          if (result.status !== "rejected") return;
+          const cancelled = isCanvasRequestCancelled(result.reason);
+          const message = cancelled
+            ? CANVAS_INTERRUPTED_TASK_TEXT
+            : canvasRequestUserMessage(result.reason);
+          (cancelled ? interrupted : failures).push(message);
+          updateItem(projectId, ids[index], {
+            loading: false,
+            generationStatus: cancelled ? "interrupted" : "failed",
+            label: cancelled ? CANVAS_INTERRUPTED_TASK_TEXT : "生成失败，可重试",
+            error: message,
           } as Partial<CanvasItem>);
-          done.push(ids[slot]);
-        };
-
-        if (variants.length > 1) {
-          const startV = reserveDrafts(projectId, variants.length);
-          // Parallel, progressive: each direction fills its placeholder on arrival.
-          await Promise.allSettled(
-            variants.map((vp, i) =>
-              callGenerate({ ...common, count: 1, startVariant: startV + i, prompt: vp }).then(
-                (r) => {
-                  if (r[0]) fill(i, r[0], vp);
-                },
-              ),
-            ),
-          );
-        } else if (count > 1) {
-          // Same prompt × N — fire N single-image requests CONCURRENTLY so all
-          // placeholders fill in parallel (the API's n>1 is one slow request).
-          const startV = reserveDrafts(projectId, count);
-          await Promise.allSettled(
-            Array.from({ length: count }, (_, i) =>
-              callGenerate({ ...common, count: 1, startVariant: startV + i, prompt: singlePrompt }).then(
-                (r) => {
-                  if (r[0]) fill(i, r[0], singlePrompt);
-                },
-              ),
-            ),
-          );
-        } else {
-          const imgs = await callGenerate({
-            ...common,
-            count: 1,
-            startVariant: reserveDrafts(projectId, 1),
-            prompt: singlePrompt,
-          });
-          imgs.slice(0, ids.length).forEach((img, i) => fill(i, img, singlePrompt));
-        }
-        if (done.length === 0) throw new Error("未返回图片");
-        const doneSet = new Set(done);
-        const leftover = ids.filter((x) => !doneSet.has(x));
-        if (leftover.length) removeItems(projectId, leftover);
+        });
+        if (failures.length || interrupted.length) await flushCanvasProjectLocal(projectId);
 
         updateMessage(projectId, agentMsgId, {
-          text: ar.caption,
-          status: "done",
+          text: done.length === count
+            ? ar.caption
+            : done.length > 0
+              ? `${ar.caption}\n已完成 ${done.length}/${count} 张，其余可单独重试。`
+              : interrupted.length && !failures.length
+                ? CANVAS_INTERRUPTED_TASK_TEXT
+                : `本轮 ${count} 张均未完成：${failures[0] || "请稍后重试"}`,
+          status: done.length === count ? "done" : done.length > 0 ? "partial" : "error",
           palette: ar.palette,
           plan: {
             prompt: singlePrompt,
@@ -442,27 +577,57 @@ export function useStudioActions(projectId: string) {
           resultItemIds: done,
         });
 
-        const cost = +(QUALITY_COST[POSTER_QUALITY] * done.length).toFixed(4);
-        recordGeneration(projectId, cost, done.length);
-        task.stop({
-          status: "completed",
-          progress: 1,
-          cost,
-          resultItemIds: done,
-          label: `已生成 ${done.length} 张 · ${size}`,
-        });
+        if (done.length > 0) {
+          const cost = +(QUALITY_COST[POSTER_QUALITY] * done.length).toFixed(4);
+          recordGeneration(projectId, cost, done.length);
+          setSelection(done);
+          task.stop({
+            status: done.length === count ? "completed" : "partial",
+            progress: 1,
+            cost,
+            error: failures[0] || (interrupted.length ? CANVAS_INTERRUPTED_TASK_TEXT : undefined),
+            resultItemIds: done,
+            label: done.length === count
+              ? `已生成 ${done.length} 张 · ${size}`
+              : `部分完成 ${done.length}/${count} 张 · ${size}`,
+          });
+          if (failures.length) recordFailure(projectId);
+        } else {
+          setSelection(ids);
+          task.stop({
+            status: "failed",
+            progress: 1,
+            error: failures[0] || (interrupted.length ? CANVAS_INTERRUPTED_TASK_TEXT : "未返回图片"),
+            resultItemIds: [],
+            label: interrupted.length && !failures.length
+              ? `生成已中断 · ${size}`
+              : `生成失败 · ${size}`,
+          });
+          if (failures.length) recordFailure(projectId);
+        }
       } catch (e) {
-        removeItems(projectId, ids);
+        const cancelled = isCanvasRequestCancelled(e);
+        const message = cancelled
+          ? CANVAS_INTERRUPTED_TASK_TEXT
+          : canvasRequestUserMessage(e);
+        ids.forEach((id) => updateItem(projectId, id, {
+          loading: false,
+          generationStatus: cancelled ? "interrupted" : "failed",
+          label: cancelled ? CANVAS_INTERRUPTED_TASK_TEXT : "生成失败，可重试",
+          error: message,
+        } as Partial<CanvasItem>));
+        await flushCanvasProjectLocal(projectId).catch(() => undefined);
         updateMessage(projectId, agentMsgId, {
           status: "error",
-          text: "生成失败，请重试。",
+          text: message,
         });
         task.stop({
           status: "failed",
           progress: 1,
-          error: e instanceof Error ? e.message : "生成失败",
+          error: message,
+          label: cancelled ? `生成已中断 · ${size}` : `生成失败 · ${size}`,
         });
-        recordFailure(projectId);
+        if (!cancelled) recordFailure(projectId);
       }
     },
     [
@@ -471,12 +636,14 @@ export function useStudioActions(projectId: string) {
       updateMessage,
       addItem,
       updateItem,
-      removeItems,
       setSelection,
       startTask,
       reserveDrafts,
       recordGeneration,
       recordFailure,
+      flushCanvasProjectLocal,
+      updateTask,
+      requestLifecycle,
     ],
   );
 
@@ -484,6 +651,8 @@ export function useStudioActions(projectId: string) {
   const enhance = useCallback(
     async (itemId: string, op: EnhanceOp, options: EnhanceRunOptions = {}) => {
       const state = useStore.getState();
+      const requestSignal = requestLifecycle.signal;
+      if (requestSignal.aborted) return;
       const items = state.itemsByProject[projectId] ?? [];
       const visibleItems = items.filter((item) => !item.hidden);
       const src = items.find((i) => i.id === itemId);
@@ -538,6 +707,7 @@ export function useStudioActions(projectId: string) {
         operation: op,
         parentItemId: itemId,
         loading: true,
+        generationStatus: "running",
         provenance: {
           enhancedFrom: itemId,
           size: options.targetLabel ? `${options.targetLabel} · ${targetStr}` : targetStr,
@@ -548,7 +718,10 @@ export function useStudioActions(projectId: string) {
 
       const task = startTask("enhance", `${mode.label} · ${target.width}×${target.height}`);
       try {
-        const sourceUrl = bestAssetUrlFor(src);
+        const sourceUrl = await materializeCanvasAsset(bestAssetUrlFor(src), {
+          signal: requestSignal,
+        });
+        throwIfCanvasRequestAborted(requestSignal, "图片高清");
         const enhanced =
           op === "local2x"
             ? await faithfulSharpenDataUrl(sourceUrl, target.width, target.height)
@@ -557,7 +730,8 @@ export function useStudioActions(projectId: string) {
                 size: targetStr,
                 quality: "high",
                 mode: op,
-              });
+                idempotencyKey: id,
+              }, { signal: requestSignal });
         if (!enhanced) throw new Error("增强失败");
         const normalized =
           op === "local2x"
@@ -576,8 +750,14 @@ export function useStudioActions(projectId: string) {
             ? Math.round(((sharpnessAfter - sharpnessBefore) / sharpnessBefore) * 100)
             : 0;
 
+        throwIfCanvasRequestAborted(requestSignal, "图片高清");
+        const persisted = await persistCanvasBlob(finalImg.dataUrl, id, {
+          signal: requestSignal,
+        });
+        rememberAssetSource(id, finalImg.dataUrl);
         updateItem(projectId, id, {
-          assetUrl: finalImg.dataUrl,
+          assetUrl: persisted.assetUrl,
+          outputId: persisted.outputId,
           naturalWidth: finalImg.width,
           naturalHeight: finalImg.height,
           size: displaySize,
@@ -592,7 +772,10 @@ export function useStudioActions(projectId: string) {
             },
           },
           loading: false,
+          generationStatus: "done",
+          error: undefined,
         } as Partial<CanvasItem>);
+        await flushCanvasProjectLocal(projectId);
 
         const cost = op === "local2x" ? 0 : op === "airport" ? 0.18 : op === "4x" ? 0.12 : 0.06;
         recordGeneration(projectId, cost, 0);
@@ -604,16 +787,37 @@ export function useStudioActions(projectId: string) {
           label: `已高清 · ${finalImg.width}×${finalImg.height}`,
         });
       } catch (e) {
-        removeItems(projectId, [id]);
+        const cancelled = isCanvasRequestCancelled(e);
+        const message = cancelled
+          ? CANVAS_INTERRUPTED_TASK_TEXT
+          : canvasRequestUserMessage(e);
+        updateItem(projectId, id, {
+          loading: false,
+          generationStatus: cancelled ? "interrupted" : "failed",
+          label: cancelled ? CANVAS_INTERRUPTED_TASK_TEXT : "高清失败，可重试",
+          error: message,
+        } as Partial<CanvasItem>);
+        await flushCanvasProjectLocal(projectId).catch(() => undefined);
         task.stop({
           status: "failed",
           progress: 1,
-          error: e instanceof Error ? e.message : "增强失败",
+          error: message,
+          label: cancelled ? "高清已中断" : "高清失败",
         });
-        recordFailure(projectId);
+        if (!cancelled) recordFailure(projectId);
       }
     },
-    [projectId, startTask, addItem, updateItem, removeItems, setSelection, recordGeneration, recordFailure],
+    [
+      projectId,
+      startTask,
+      addItem,
+      updateItem,
+      setSelection,
+      recordGeneration,
+      recordFailure,
+      flushCanvasProjectLocal,
+      requestLifecycle,
+    ],
   );
 
   return { generate, enhance };

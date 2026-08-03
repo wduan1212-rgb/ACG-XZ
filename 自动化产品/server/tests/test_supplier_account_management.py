@@ -149,6 +149,10 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertIn('data-supplier-trend-window="30"', source)
         self.assertIn("openSupplierTrendDetail", source)
         self.assertNotIn('${esc(acc.platform || "平台")} · ${esc(acc.mode || "内容")}', source)
+        self.assertIn("const publishedRows = rows.filter(item => Boolean(item?.asset?.publishedUrl))", source)
+        self.assertIn("const items = publishedRows.filter", source)
+        self.assertIn("供应商回传链接趋势", source)
+        self.assertIn("已发布趋势明细", source)
 
     def test_product_library_toggle_updates_only_its_local_panel(self):
         source = (APP_DIR / "js/views/settings.js").read_text(encoding="utf-8")

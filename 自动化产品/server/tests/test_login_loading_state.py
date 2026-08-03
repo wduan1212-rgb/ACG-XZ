@@ -49,7 +49,7 @@ class LoginLoadingStateTest(unittest.TestCase):
     def test_login_title_has_short_process_copy_and_recovers_by_mode(self):
         self.assertIn('title: "正在验证账号权限…"', self.main)
         self.assertIn('title: "正在进入星阵…"', self.main)
-        self.assertIn('title: "正在提交申请…"', self.main)
+        self.assertIn('title: "正在创建账号…"', self.main)
         phase = self.main.split("function setGatePhase", 1)[1].split("function setGateBusy", 1)[0]
         self.assertIn('title.classList.add("is-phase-entering")', phase)
         restore = self.main.split("function applyGateModeContent", 1)[1].split("function setGateMode", 1)[0]

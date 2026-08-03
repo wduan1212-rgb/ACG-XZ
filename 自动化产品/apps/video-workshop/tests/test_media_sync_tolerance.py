@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import tempfile
 import unittest
 from dataclasses import replace
@@ -10,6 +11,74 @@ from app import main, media
 
 
 class MediaSyncToleranceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_static_frame_uses_one_monotonic_centered_zoom_without_resets(self) -> None:
+        commands = []
+
+        async def fake_run(command, _cwd=None):
+            commands.append(command)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "frame.jpg"
+            output = Path(tmp) / "frame.mp4"
+            source.write_bytes(b"\xff\xd8\xffframe")
+            with (
+                patch.object(media, "run", new=fake_run),
+                patch.object(media, "probe", return_value={"duration": 7.0}),
+                patch.object(media, "_binary", side_effect=lambda value: value),
+            ):
+                await media.render_still_clip(source, output, "16:9", 7.0)
+
+        command = commands[0]
+        video_filter = command[command.index("-vf") + 1]
+        self.assertIn("scale=5120:2880", video_filter)
+        self.assertIn("min(on,209)", video_filter)
+        self.assertIn("d=1:s=1280x720:fps=30", video_filter)
+        self.assertIn("2*trunc((iw-iw/zoom)/4)", video_filter)
+        self.assertIn("2*trunc((ih-ih/zoom)/4)", video_filter)
+        self.assertEqual("210", command[command.index("-frames:v") + 1])
+        self.assertIn("-framerate", command)
+
+    def test_static_zoom_path_is_monotonic_and_keeps_optical_center_stable(self) -> None:
+        duration = 7.0
+        frames, video_filter = media._still_zoom_filter(1280, 720, duration)
+        self.assertEqual(210, frames)
+        self.assertNotIn("sin(", video_filter)
+        self.assertNotIn("mod(", video_filter)
+        self.assertNotIn("pzoom", video_filter)
+
+        canvas_width = 1280 * 4
+        canvas_height = 720 * 4
+        zoom_delta = min(0.05, max(0.008, duration * 0.006))
+        samples: list[tuple[float, int, int]] = []
+        center_errors: list[tuple[float, float]] = []
+        for frame in range(frames):
+            zoom = 1 + zoom_delta * frame / (frames - 1)
+            x = 2 * math.trunc((canvas_width - canvas_width / zoom) / 4)
+            y = 2 * math.trunc((canvas_height - canvas_height / zoom) / 4)
+            samples.append((zoom, x, y))
+
+            visible_width = canvas_width / zoom
+            visible_height = canvas_height / zoom
+            # Convert high-resolution source-pixel centre error back to the
+            # delivered frame.  The even-grid quantisation must stay sub-pixel.
+            center_errors.append(
+                (
+                    (x + visible_width / 2 - canvas_width / 2) * 1280 / visible_width,
+                    (y + visible_height / 2 - canvas_height / 2) * 720 / visible_height,
+                )
+            )
+
+        self.assertTrue(all(current[0] >= previous[0] for previous, current in zip(samples, samples[1:])))
+        self.assertTrue(all(current[1] >= previous[1] for previous, current in zip(samples, samples[1:])))
+        self.assertTrue(all(current[2] >= previous[2] for previous, current in zip(samples, samples[1:])))
+        self.assertLessEqual(max(abs(error) for pair in center_errors for error in pair), 0.55)
+        self.assertAlmostEqual(1.042, samples[-1][0], places=6)
+
+    def test_static_zoom_stays_slow_for_long_narration_beats(self) -> None:
+        frames, video_filter = media._still_zoom_filter(1280, 720, 20.0)
+        self.assertEqual(600, frames)
+        self.assertIn("1+0.050000*min(on,599)/599", video_filter)
+
     def test_container_rounding_does_not_block_delivery(self) -> None:
         media._assert_av_sync(92.600, 92.449, "变速成片")
 

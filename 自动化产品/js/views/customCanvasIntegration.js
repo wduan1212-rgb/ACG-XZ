@@ -39,7 +39,7 @@ function normalizeOutput(message) {
   if (
     !message
     || message.source !== CANVAS_SOURCE
-    || !["output-ready", "publish-request"].includes(message.type)
+    || !["output-ready", "publish-request", "community-share-request"].includes(message.type)
   ) return null;
   const items = Array.isArray(message.items)
     ? message.items.map(safeOutputItem).filter(Boolean).slice(0, 20)
@@ -166,6 +166,57 @@ async function loadRecentProjectId(token, signal) {
     .map(projectId)[0] || "";
 }
 
+function abortableDelay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function waitForCanvasProjectIndex(token, projectId, signal) {
+  const expectedId = safeText(projectId, "", 180);
+  if (!expectedId) return false;
+  for (const delayMs of [120, 300, 600, 1200, 2400, 4800, 8000]) {
+    await abortableDelay(delayMs, signal);
+    let response;
+    try {
+      response = await fetch("/api/custom-canvas/projects", {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Authorization: `Bearer ${token}` },
+        signal
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") throw error;
+      continue;
+    }
+    if (!response.ok) continue;
+    let data = {};
+    try { data = await response.json(); } catch (_) {}
+    const projects = Array.isArray(data.items) ? data.items : [];
+    if (projects.some(item => safeText(
+      item?.sourceId
+      || item?.sourceProjectId
+      || item?.project?.id
+      || item?.id,
+      "",
+      180
+    ) === expectedId)) return true;
+  }
+  return false;
+}
+
 export function getLatestOutput() {
   return cloneOutput(latestOutput);
 }
@@ -179,7 +230,7 @@ export function subscribeCanvasOutput(listener, { immediate = false } = {}) {
 
 export async function mountCustomCanvas(
   host,
-  { onOutput, onPublishRequest, projectId = "" } = {}
+  { onOutput, onPublishRequest, onCommunityShareRequest, projectId = "", canPublish = false, launchPayload = null } = {}
 ) {
   if (!(host instanceof HTMLElement)) throw new TypeError("无限画布挂载点无效");
   host.__customCanvasCleanup?.();
@@ -192,6 +243,7 @@ export async function mountCustomCanvas(
   let iframe = null;
   let disposed = false;
   let iframeReady = false;
+  let canvasAppReady = false;
   let canvasBootstrap = null;
   let canvasContextTools = null;
   let canvasContextPortal = null;
@@ -200,6 +252,16 @@ export async function mountCustomCanvas(
   let canvasContextInstallAttempts = 0;
   let messageListenerInstalled = false;
   let createProjectWhenReady = false;
+  let pendingLaunchPayload = launchPayload && typeof launchPayload === "object" ? launchPayload : null;
+  let pendingLaunchSent = false;
+  let canvasContextCollapseButton = null;
+  let canvasContextRestoreButton = null;
+  let canvasContextCollapseStyle = null;
+  let canvasContextCollapsed = false;
+  let canvasContextRouteActive = true;
+  let canvasRouteListenerInstalled = false;
+  const projectIndexWaits = new Set();
+  const announcedProjectIds = new Set();
   let removeCanvasRouteGuard = () => {};
   const canvasContextToken = (
     globalThis.crypto?.randomUUID?.()
@@ -207,6 +269,18 @@ export async function mountCustomCanvas(
   ).replace(/[^A-Za-z0-9_-]/g, "");
   const canvasContextPortalId = `canvasContextPortal_${canvasContextToken}`.slice(0, 80);
   const canvasContextPortalNonce = `canvasPortal_${canvasContextToken}`.slice(0, 96);
+  const normalizedLaunchPayload = payload => {
+    if (!payload || typeof payload !== "object") return null;
+    return {
+      ...payload,
+      bridgeLaunchId: safeText(
+        payload.bridgeLaunchId,
+        `canvas-launch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        180
+      )
+    };
+  };
+  pendingLaunchPayload = normalizedLaunchPayload(pendingLaunchPayload);
 
   const projectHash = projectId => {
     const value = safeText(projectId, "", 180);
@@ -245,6 +319,12 @@ export async function mountCustomCanvas(
           header:has(button[aria-label="返回"]) > div:last-child {
             padding-right: 58px !important;
           }
+          ${canPublish ? "" : `
+          button[aria-label*="发布"],
+          button[title*="发布"],
+          [data-action="publish"] {
+            display: none !important;
+          }`}
         `;
         childDocument.head.appendChild(style);
       }
@@ -271,6 +351,215 @@ export async function mountCustomCanvas(
     };
   };
 
+  const flushPendingWorkspaceCommands = () => {
+    if (!iframeReady || !canvasAppReady || !iframe?.contentWindow) return false;
+    // A homepage launch always owns a fresh project. Never create a blank
+    // placeholder first and then start the homepage task in a second project.
+    if (pendingLaunchPayload && !pendingLaunchSent) {
+      pendingLaunchSent = true;
+      try {
+        iframe.contentWindow.sessionStorage.setItem(
+          "starmatrix.canvasHomeLaunch.v1",
+          JSON.stringify(pendingLaunchPayload),
+        );
+      } catch (_) {}
+      iframe.contentWindow.postMessage(
+        { type: "custom-canvas:home-launch", payload: pendingLaunchPayload },
+        window.location.origin,
+      );
+      createProjectWhenReady = false;
+      return true;
+    }
+    if (createProjectWhenReady && !pendingLaunchPayload) {
+      createProjectWhenReady = false;
+      iframe.contentWindow.postMessage(
+        { type: "custom-canvas:create-project" },
+        window.location.origin,
+      );
+      return true;
+    }
+    return false;
+  };
+
+  const setCanvasContextCollapsed = collapsed => {
+    canvasContextCollapsed = Boolean(collapsed);
+    document.body.classList.toggle(
+      "canvas-context-collapsed",
+      canvasContextRouteActive && canvasContextCollapsed,
+    );
+    canvasContextCollapseButton?.setAttribute("aria-expanded", canvasContextCollapsed ? "false" : "true");
+    canvasContextCollapseButton?.setAttribute(
+      "aria-label",
+      canvasContextCollapsed ? "展开画布项目栏" : "折叠画布项目栏",
+    );
+    if (canvasContextCollapseButton) canvasContextCollapseButton.hidden = !canvasContextRouteActive;
+    if (canvasContextRestoreButton) {
+      canvasContextRestoreButton.hidden = !canvasContextRouteActive || !canvasContextCollapsed;
+    }
+    if (canvasContextTools) canvasContextTools.hidden = !canvasContextRouteActive;
+    if (!canvasContextRouteActive) return;
+    if (canvasContextTools?.isConnected) {
+      if (canvasContextCollapsed) {
+        canvasContextTools.classList.add("is-detached");
+        document.body.append(canvasContextTools);
+      } else {
+        canvasContextTools.classList.remove("is-detached");
+        const activeShell = canvasContextShell?.isConnected
+          ? canvasContextShell
+          : document.querySelector("#ctxPanel .workspace-context-shell");
+        if (activeShell) canvasContextShell = activeShell;
+        const footer = activeShell
+          ? Array.from(activeShell.children).find(child => child.classList.contains("workspace-account-footer"))
+          : null;
+        if (activeShell && footer?.parentElement === activeShell) {
+          activeShell.insertBefore(canvasContextTools, footer);
+          activeShell.classList.add("has-canvas-context-tools");
+        }
+      }
+    }
+    try {
+      sessionStorage.setItem("xingzhen.canvasContextCollapsed.v1", canvasContextCollapsed ? "1" : "0");
+    } catch (_) {}
+  };
+
+  const syncCanvasContextRoute = detail => {
+    const routeIsCanvas = detail && typeof detail === "object"
+      ? detail.zone === "custom" && detail.page === "canvas"
+      : /^#\/custom\/canvas(?:\/|$)/.test(window.location.hash || "");
+    canvasContextRouteActive = Boolean(routeIsCanvas);
+    if (!canvasContextRouteActive) {
+      document.body.classList.remove("canvas-context-collapsed");
+      canvasContextShell?.classList.remove("has-canvas-context-tools");
+      if (canvasContextCollapseButton) canvasContextCollapseButton.hidden = true;
+      if (canvasContextRestoreButton) canvasContextRestoreButton.hidden = true;
+      if (canvasContextTools) canvasContextTools.hidden = true;
+      return;
+    }
+    let storedCollapsed = canvasContextCollapsed;
+    try { storedCollapsed = sessionStorage.getItem("xingzhen.canvasContextCollapsed.v1") === "1"; } catch (_) {}
+    setCanvasContextCollapsed(storedCollapsed);
+  };
+
+  const onCanvasViewRendered = event => syncCanvasContextRoute(event?.detail);
+  window.addEventListener("view:rendered", onCanvasViewRendered);
+  canvasRouteListenerInstalled = true;
+
+  const removeCanvasContextCollapseControls = () => {
+    document.body.classList.remove("canvas-context-collapsed");
+    canvasContextCollapseButton?.remove();
+    canvasContextCollapseButton = null;
+    canvasContextRestoreButton?.remove();
+    canvasContextRestoreButton = null;
+    canvasContextCollapseStyle?.remove();
+    canvasContextCollapseStyle = null;
+    canvasContextCollapsed = false;
+  };
+
+  const installCanvasContextCollapseControls = () => {
+    const shell = canvasContextShell?.isConnected
+      ? canvasContextShell
+      : document.querySelector("#ctxPanel .workspace-context-shell");
+    const header = shell?.querySelector(".workspace-context-brand");
+    if (!shell || !header) return false;
+    if (!canvasContextCollapseStyle) {
+      const style = document.createElement("style");
+      style.dataset.canvasContextCollapseStyle = canvasContextToken;
+      style.textContent = `
+        .canvas-context-collapse-toggle,
+        .canvas-context-collapse-restore {
+          width: 30px;
+          height: 30px;
+          display: grid;
+          place-items: center;
+          border: 0;
+          border-radius: 9px;
+          color: #696963;
+          background: transparent;
+          cursor: pointer;
+          transition: color 160ms ease, background 160ms ease, transform 160ms ease;
+        }
+        .canvas-context-collapse-toggle:hover,
+        .canvas-context-collapse-toggle:focus-visible,
+        .canvas-context-collapse-restore:hover,
+        .canvas-context-collapse-restore:focus-visible {
+          outline: 0;
+          color: #1769d2;
+          background: #edf5ff;
+          transform: translateY(-1px);
+        }
+        .canvas-context-collapse-restore {
+          position: fixed;
+          left: 14px;
+          top: 14px;
+          z-index: 96;
+          border: 1px solid rgba(32, 91, 169, .16);
+          background: rgba(255,255,255,.94);
+          box-shadow: 0 8px 24px rgba(24, 62, 112, .12);
+          backdrop-filter: blur(12px);
+        }
+        body.workspace-shell-v2.canvas-context-collapsed .app-shell,
+        body.workspace-shell-v2.canvas-context-collapsed.has-panel .app-shell {
+          grid-template-columns: 0 minmax(0, 1fr) !important;
+        }
+        body.workspace-shell-v2.canvas-context-collapsed #ctxPanel {
+          width: 0 !important;
+          min-width: 0 !important;
+          border-right: 0 !important;
+          overflow: visible !important;
+        }
+        body.workspace-shell-v2.canvas-context-collapsed #ctxPanel > .workspace-context-shell {
+          display: none !important;
+        }
+        .canvas-context-tools.is-detached {
+          position: fixed;
+          left: 12px;
+          bottom: 12px;
+          z-index: 94;
+          width: 224px;
+          margin: 0;
+          padding: 10px;
+          border: 1px solid rgba(28, 79, 145, .13);
+          border-radius: 14px;
+          background: rgba(255,255,255,.94);
+          box-shadow: 0 14px 34px rgba(20, 55, 105, .14);
+          backdrop-filter: blur(14px);
+        }
+        .canvas-context-tools.is-detached > span { display: none; }
+        .canvas-context-tools.is-detached .canvas-context-portal { min-height: 154px; }
+      `;
+      document.head.append(style);
+      canvasContextCollapseStyle = style;
+    }
+    if (!canvasContextCollapseButton?.isConnected) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "canvas-context-collapse-toggle";
+      button.setAttribute("aria-expanded", "true");
+      button.setAttribute("aria-label", "折叠画布项目栏");
+      button.title = "折叠画布项目栏";
+      button.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M14.5 6.5 9 12l5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      button.addEventListener("click", () => setCanvasContextCollapsed(true));
+      header.append(button);
+      canvasContextCollapseButton = button;
+    }
+    if (!canvasContextRestoreButton?.isConnected) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "canvas-context-collapse-restore";
+      button.setAttribute("aria-label", "展开画布项目栏");
+      button.title = "展开画布项目栏";
+      button.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m9.5 6.5 5.5 5.5-5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      button.hidden = true;
+      button.addEventListener("click", () => setCanvasContextCollapsed(false));
+      document.body.append(button);
+      canvasContextRestoreButton = button;
+    }
+    let storedCollapsed = false;
+    try { storedCollapsed = sessionStorage.getItem("xingzhen.canvasContextCollapsed.v1") === "1"; } catch (_) {}
+    setCanvasContextCollapsed(storedCollapsed);
+    return true;
+  };
+
   const removeCanvasContextTools = () => {
     window.cancelAnimationFrame(canvasContextInstallFrame);
     canvasContextInstallFrame = 0;
@@ -289,12 +578,16 @@ export async function mountCustomCanvas(
       && canvasContextPortal?.isConnected
       && canvasContextPortal.id === canvasContextPortalId
     ) {
+      syncCanvasContextRoute();
+      installCanvasContextCollapseControls();
       return true;
     }
     if (!document.body.classList.contains("workspace-shell-v2")) return false;
     const shell = document.querySelector("#ctxPanel .workspace-context-shell");
-    const footer = shell?.querySelector(".workspace-account");
-    if (!shell || !footer) {
+    const footer = shell
+      ? Array.from(shell.children).find(child => child.classList.contains("workspace-account-footer"))
+      : null;
+    if (!shell || !footer || footer.parentElement !== shell) {
       canvasContextInstallAttempts += 1;
       if (!disposed && canvasContextInstallAttempts < 180) {
         canvasContextInstallFrame = window.requestAnimationFrame(installCanvasContextTools);
@@ -323,12 +616,16 @@ export async function mountCustomCanvas(
     canvasContextPortal = dock.querySelector(".canvas-context-portal");
     canvasContextShell = shell;
     canvasContextInstallAttempts = 0;
+    syncCanvasContextRoute();
+    installCanvasContextCollapseControls();
     return true;
   };
 
   const mountCanvasFrame = () => {
     if (disposed || !canvasBootstrap) return false;
     iframeReady = false;
+    canvasAppReady = false;
+    pendingLaunchSent = false;
     installCanvasContextTools();
     iframe = document.createElement("iframe");
     iframe.title = "星阵无限画布";
@@ -336,7 +633,7 @@ export async function mountCustomCanvas(
     // Cache-bust the iframe entry alongside the main application build. The
     // canvas itself continues to own hashed chunk URLs; this only prevents a
     // browser from reusing an old entry document after a safe static rebuild.
-    iframe.src = `/XZ-Design/?embed=1&v=20260728-v120-shell-13${projectHash(currentProjectId)}`;
+    iframe.src = `/XZ-Design/?embed=1&v=20260802-v134-static-community-1${projectHash(currentProjectId)}`;
     iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-downloads allow-forms allow-modals");
     iframe.setAttribute("allow", "clipboard-read; clipboard-write");
     iframe.referrerPolicy = "same-origin";
@@ -345,12 +642,13 @@ export async function mountCustomCanvas(
       iframeReady = true;
       installCanvasRouteGuard();
       installCanvasContextTools();
-      if (createProjectWhenReady) {
-        createProjectWhenReady = false;
-        iframe.contentWindow?.postMessage(
-          { type: "custom-canvas:create-project" },
-          window.location.origin,
-        );
+      if (pendingLaunchPayload) {
+        try {
+          iframe.contentWindow?.sessionStorage?.setItem(
+            "starmatrix.canvasHomeLaunch.v1",
+            JSON.stringify(pendingLaunchPayload),
+          );
+        } catch (_) {}
       }
       host.dispatchEvent(new CustomEvent("custom-canvas:workspace-ready", {
         detail: { projectId: currentProjectId },
@@ -372,13 +670,13 @@ export async function mountCustomCanvas(
     if (!iframe) return mountCanvasFrame();
     const nextHash = projectHash(nextProjectId);
     if (!iframeReady) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260728-v120-shell-13${nextHash}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260802-v134-static-community-1${nextHash}`;
       return true;
     }
     try {
       iframe.contentWindow.location.hash = nextHash.slice(1);
     } catch (_) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260728-v120-shell-13${nextHash}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260802-v134-static-community-1${nextHash}`;
     }
     return true;
   };
@@ -389,15 +687,12 @@ export async function mountCustomCanvas(
       createProjectWhenReady = true;
       return mountCanvasFrame();
     }
-    if (!iframeReady) {
+    if (!iframeReady || !canvasAppReady) {
       createProjectWhenReady = true;
       return true;
     }
-    iframe.contentWindow?.postMessage(
-      { type: "custom-canvas:create-project" },
-      window.location.origin,
-    );
-    return true;
+    createProjectWhenReady = true;
+    return flushPendingWorkspaceCommands();
   };
 
   const cleanup = () => {
@@ -406,7 +701,10 @@ export async function mountCustomCanvas(
     controller.abort();
     unsubscribeOutput();
     if (messageListenerInstalled) window.removeEventListener("message", onMessage);
+    if (canvasRouteListenerInstalled) window.removeEventListener("view:rendered", onCanvasViewRendered);
+    canvasRouteListenerInstalled = false;
     removeCanvasRouteGuard();
+    removeCanvasContextCollapseControls();
     removeCanvasContextTools();
     iframe?.remove();
     delete host.dataset.customCanvasWorkspace;
@@ -420,10 +718,39 @@ export async function mountCustomCanvas(
     getCurrentProjectId: () => currentProjectId,
     openProject,
     createProject,
+    markCommunityShared({ projectId, sourceOutputId, sourceItemId, postId = "", sharedAt = Date.now() } = {}) {
+      const targetProjectId = safeText(projectId || currentProjectId, "", 180);
+      const targetItemId = safeText(sourceItemId || sourceOutputId, "", 180);
+      if (disposed || !iframe?.contentWindow || !targetProjectId || !targetItemId) return false;
+      iframe.contentWindow.postMessage({
+        type: "custom-canvas:community-shared",
+        projectId: targetProjectId,
+        sourceItemId: targetItemId,
+        postId: safeText(postId, "", 180),
+        sharedAt: Number(sharedAt) || Date.now(),
+      }, window.location.origin);
+      return true;
+    },
+    prefill(payload) {
+      if (!payload || typeof payload !== "object") return false;
+      pendingLaunchPayload = normalizedLaunchPayload(payload);
+      pendingLaunchSent = false;
+      createProjectWhenReady = false;
+      if (!iframeReady || !canvasAppReady || !iframe?.contentWindow) return true;
+      try {
+        iframe.contentWindow.sessionStorage.setItem(
+          "starmatrix.canvasHomeLaunch.v1",
+          JSON.stringify(pendingLaunchPayload),
+        );
+      } catch (_) {}
+      return flushPendingWorkspaceCommands();
+    },
     reload() {
       if (disposed || !iframe) return false;
       iframeReady = false;
-      iframe.src = `/XZ-Design/?embed=1&v=20260728-v120-shell-13${projectHash(currentProjectId)}`;
+      canvasAppReady = false;
+      pendingLaunchSent = false;
+      iframe.src = `/XZ-Design/?embed=1&v=20260802-v134-static-community-1${projectHash(currentProjectId)}`;
       return true;
     },
     markPublished({
@@ -457,8 +784,62 @@ export async function mountCustomCanvas(
     }
   };
 
+  const announceCreatedProject = createdProjectId => {
+    const nextProjectId = safeText(createdProjectId, "", 180);
+    if (!nextProjectId) return;
+    currentProjectId = nextProjectId;
+    if (announcedProjectIds.has(nextProjectId)) return;
+    announcedProjectIds.add(nextProjectId);
+    host.dispatchEvent(new CustomEvent("custom-canvas:project-created", {
+      detail: { projectId: nextProjectId, indexed: false },
+      bubbles: true,
+    }));
+    if (projectIndexWaits.has(nextProjectId)) return;
+    projectIndexWaits.add(nextProjectId);
+    void waitForCanvasProjectIndex(token, nextProjectId, controller.signal)
+      .then(indexed => {
+        if (!indexed || disposed) return;
+        host.dispatchEvent(new CustomEvent("custom-canvas:project-created", {
+          detail: { projectId: nextProjectId, indexed: true },
+          bubbles: true,
+        }));
+      })
+      .catch(error => {
+        if (error?.name !== "AbortError") {
+          console.warn("[custom-canvas] project index confirmation", error);
+        }
+      })
+      .finally(() => projectIndexWaits.delete(nextProjectId));
+  };
+
   const onMessage = event => {
     if (!iframe || event.source !== iframe.contentWindow || event.origin !== window.location.origin) return;
+    if (
+      event.data?.source === CANVAS_SOURCE
+      && event.data?.type === "workspace-ready"
+    ) {
+      canvasAppReady = true;
+      const readyProjectId = safeText(event.data.projectId, "", 180);
+      if (readyProjectId) currentProjectId = readyProjectId;
+      flushPendingWorkspaceCommands();
+      return;
+    }
+    if (
+      event.data?.source === CANVAS_SOURCE
+      && event.data?.type === "home-launch-consumed"
+    ) {
+      const launchId = safeText(event.data.launchId, "", 180);
+      const pendingId = safeText(pendingLaunchPayload?.bridgeLaunchId, "", 180);
+      if (!pendingId || !launchId || launchId === pendingId) {
+        pendingLaunchPayload = null;
+        pendingLaunchSent = false;
+        createProjectWhenReady = false;
+        try { iframe.contentWindow?.sessionStorage?.removeItem("starmatrix.canvasHomeLaunch.v1"); } catch (_) {}
+      }
+      const launchProjectId = safeText(event.data.projectId, "", 180);
+      if (launchProjectId) announceCreatedProject(launchProjectId);
+      return;
+    }
     if (
       event.data?.source === CANVAS_SOURCE
       && event.data?.type === "performance"
@@ -478,12 +859,7 @@ export async function mountCustomCanvas(
       && event.data?.type === "project-created"
     ) {
       const createdProjectId = safeText(event.data.projectId, "", 180);
-      if (createdProjectId) {
-        currentProjectId = createdProjectId;
-        host.dispatchEvent(new CustomEvent("custom-canvas:project-created", {
-          detail: { projectId: createdProjectId },
-        }));
-      }
+      if (createdProjectId) announceCreatedProject(createdProjectId);
       return;
     }
     if (!output) return;
@@ -493,6 +869,13 @@ export async function mountCustomCanvas(
         onPublishRequest(cloneOutput(output));
       } catch (error) {
         console.error("[custom-canvas] publish request", error);
+      }
+    }
+    if (output.type === "community-share-request" && typeof onCommunityShareRequest === "function") {
+      try {
+        onCommunityShareRequest(cloneOutput(output));
+      } catch (error) {
+        console.error("[custom-canvas] community share request", error);
       }
     }
   };
@@ -511,13 +894,22 @@ export async function mountCustomCanvas(
     const storageNamespace = safeText(config.storageNamespace, "", 80).replace(/[^\w-]/g, "");
     if (!storageNamespace) throw new Error("服务端没有返回当前成员的画布分仓");
     if (!currentProjectId) {
-      currentProjectId = await loadRecentProjectId(token, controller.signal);
+      if (pendingLaunchPayload) {
+        // 首页发起的创作必须在新画布中执行，不能偷用上一次打开的项目。
+        createProjectWhenReady = false;
+      } else {
+        currentProjectId = await loadRecentProjectId(token, controller.signal);
+        // 新成员第一次进入时直接落在一个真实的新画布中；创建动作仍由
+        // 画布应用自己完成，主平台只在服务端确认“当前成员没有项目”后触发一次。
+        createProjectWhenReady = !currentProjectId;
+      }
     }
     if (disposed) return integration;
 
     canvasBootstrap = {
       kind: "xingzhen-canvas-bootstrap",
       storageNamespace,
+      canPublish: Boolean(canPublish),
       contextPortalId: canvasContextPortalId,
       contextPortalNonce: canvasContextPortalNonce,
       publishedProjects: Array.isArray(config.publishedProjects)

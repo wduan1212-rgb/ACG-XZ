@@ -14,6 +14,7 @@ VIDEO_WORKSHOP_VENV="$VIDEO_WORKSHOP_APP_DIR/.venv"
 VIDEO_WORKSHOP_PYTHON="$VIDEO_WORKSHOP_VENV/bin/python"
 VIDEO_WORKSHOP_PID_FILE="$APP_DIR/logs/video-workshop.pid"
 VIDEO_WORKSHOP_LOG_FILE="$APP_DIR/logs/video-workshop-local.log"
+VIDEO_WORKSHOP_WATCHDOG_LOG_FILE="$APP_DIR/logs/video-workshop-watchdog.log"
 
 prepare_local_video_workshop() {
   export VIDEO_WORKSHOP_HOST="127.0.0.1"
@@ -119,7 +120,7 @@ start_local_video_workshop() {
   (
     cd "$VIDEO_WORKSHOP_APP_DIR" || exit 1
     exec "$VIDEO_WORKSHOP_PYTHON" run.py
-  ) > "$VIDEO_WORKSHOP_LOG_FILE" 2>&1 &
+  ) >> "$VIDEO_WORKSHOP_LOG_FILE" 2>&1 &
   LOCAL_VIDEO_WORKSHOP_PID=$!
   printf '%s %s\n' "$LOCAL_VIDEO_WORKSHOP_PID" "$LOCAL_VIDEO_WORKSHOP_INSTANCE" > "$VIDEO_WORKSHOP_PID_FILE"
 
@@ -167,7 +168,7 @@ PY
 
 start_local_video_workshop_watchdog() {
   local main_pid="$1"
-  local log_file="$VIDEO_WORKSHOP_LOG_FILE"
+  local log_file="$VIDEO_WORKSHOP_WATCHDOG_LOG_FILE"
   (
     local failed_checks=0
     while kill -0 "$main_pid" 2>/dev/null; do
@@ -175,8 +176,18 @@ start_local_video_workshop_watchdog() {
         failed_checks=0
       else
         failed_checks=$((failed_checks + 1))
-        # 连续两次失败再重启，避免单次健康请求抖动误杀正在处理任务的 sidecar。
-        if [ "$failed_checks" -ge 2 ]; then
+        local recorded_pid="" recorded_instance="" restart_threshold=10
+        if [ -f "$VIDEO_WORKSHOP_PID_FILE" ]; then
+          read -r recorded_pid recorded_instance < "$VIDEO_WORKSHOP_PID_FILE" || true
+        fi
+        # 进程已经退出时立即恢复；进程仍存活但健康请求被重媒体任务短时拖慢时，
+        # 至少容忍约一分钟，避免把正在生成图片/合成视频的 sidecar 误杀。
+        if [ "$recorded_instance" != "$LOCAL_VIDEO_WORKSHOP_INSTANCE" ] \
+          || [ -z "$recorded_pid" ] \
+          || ! kill -0 "$recorded_pid" 2>/dev/null; then
+          restart_threshold=1
+        fi
+        if [ "$failed_checks" -ge "$restart_threshold" ]; then
           printf '%s sidecar health lost; restarting for active main pid=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$main_pid" >> "$log_file"
           if start_local_video_workshop; then
             failed_checks=0

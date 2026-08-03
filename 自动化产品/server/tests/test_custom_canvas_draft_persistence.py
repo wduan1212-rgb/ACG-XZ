@@ -876,6 +876,211 @@ class CustomCanvasDraftPersistenceTest(unittest.TestCase):
             self.assertEqual(updated["project"]["publishedItemIds"], ["image-node-1"])
             self.assertEqual(updated["project"]["publishedCount"], 1)
 
+    def test_preuploaded_blob_survives_old_draft_race_and_commits_by_stable_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            uploaded = store.save_custom_canvas_blob("creator-a", PNG_DATA_URL)
+            stable_url = uploaded["url"]
+            digest = uploaded["contentHash"]
+            self.assertRegex(stable_url, r"^/api/custom-canvas/blobs/[a-f0-9]{64}$")
+            self.assertEqual(store._fetchone(
+                "SELECT COUNT(*) FROM custom_canvas_blob_staging WHERE owner_id=? AND content_hash=?",
+                ("creator-a", digest),
+            )[0], 1)
+
+            # A delayed save from before the upload must not garbage-collect the
+            # newly generated image before its own lightweight draft arrives.
+            old_payload = draft_payload("canvas-old", items=[], messages=[])
+            saved_old, old_error, _ = store.save_custom_canvas_draft(
+                "creator-a", "canvas-old", old_payload
+            )
+            self.assertIsNone(old_error)
+            self.assertIsNotNone(saved_old)
+            blob, blob_error = store.get_custom_canvas_blob("creator-a", digest)
+            self.assertIsNone(blob_error)
+            self.assertEqual(blob["size"], len(PNG_BYTES))
+
+            target = draft_payload("canvas-progressive", items=[{
+                "id": "generated-1",
+                "projectId": "canvas-progressive",
+                "type": "generation",
+                "assetUrl": stable_url,
+                "outputId": "output-generated-1",
+                "position": {"x": 0, "y": 0},
+                "size": {"width": 100, "height": 100},
+                "z": 1,
+                "createdAt": 10,
+                "loading": False,
+                "generationStatus": "done",
+            }])
+            saved, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-progressive", target
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "created")
+            self.assertEqual(saved["state"]["items"][0]["assetUrl"], stable_url)
+            self.assertEqual(store._fetchone(
+                "SELECT COUNT(*) FROM custom_canvas_blob_staging WHERE owner_id=? AND content_hash=?",
+                ("creator-a", digest),
+            )[0], 0)
+            fetched, fetch_error = store.get_custom_canvas_draft(
+                "creator-a", "canvas-progressive"
+            )
+            self.assertIsNone(fetch_error)
+            self.assertEqual(fetched["state"]["items"][0]["assetUrl"], stable_url)
+
+    def test_generated_blob_receipt_is_owner_hash_bound_and_blocks_unsettled_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            receipt = store.issue_custom_canvas_generation_receipt(
+                "creator-a",
+                PNG_DATA_URL,
+                points=5,
+                feature="无限画布图片生成",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "custom_canvas_generation_receipt_required"
+            ):
+                store.save_custom_canvas_blob("creator-a", PNG_DATA_URL)
+            with self.assertRaisesRegex(
+                ValueError, "invalid_custom_canvas_generation_receipt"
+            ):
+                store.save_custom_canvas_blob(
+                    "creator-b", PNG_DATA_URL, receipt["token"]
+                )
+            forged = receipt["token"][:-1] + (
+                "0" if receipt["token"][-1] != "0" else "1"
+            )
+            with self.assertRaisesRegex(
+                ValueError, "invalid_custom_canvas_generation_receipt"
+            ):
+                store.save_custom_canvas_blob("creator-a", PNG_DATA_URL, forged)
+
+            with self.assertRaisesRegex(
+                ValueError, "invalid_custom_canvas_generation_receipt"
+            ):
+                store.save_custom_canvas_blob(
+                    "creator-a", PNG_DATA_URL, receipt["token"]
+                )
+
+            self.assertTrue(store.mark_custom_canvas_generation_receipt_charged(
+                "creator-a", receipt["receiptId"]
+            ))
+            uploaded = store.save_custom_canvas_blob(
+                "creator-a", PNG_DATA_URL, receipt["token"]
+            )
+            self.assertEqual(
+                uploaded["generationReceipt"]["receiptId"], receipt["receiptId"]
+            )
+            generated_item = {
+                "id": "generated-billed-1",
+                "projectId": "canvas-billed",
+                "type": "generation",
+                "assetUrl": uploaded["url"],
+                "outputId": "generated-billed-1",
+                "position": {"x": 0, "y": 0},
+                "size": {"width": 100, "height": 100},
+                "z": 1,
+                "createdAt": 10,
+                "loading": False,
+                "generationStatus": "done",
+            }
+            saved, error, outcome = store.save_custom_canvas_draft(
+                "creator-a",
+                "canvas-billed",
+                draft_payload("canvas-billed", items=[generated_item]),
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "created")
+            self.assertEqual(saved["state"]["items"][0]["assetUrl"], uploaded["url"])
+
+    def test_blob_route_verifies_settled_receipt_without_charging_uploads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            main = importlib.import_module("main")
+            receipt = store.issue_custom_canvas_generation_receipt(
+                "creator-a", PNG_DATA_URL, points=5, charged=True
+            )
+            generated_request = main.CustomCanvasBlobPutReq(
+                dataUrl=PNG_DATA_URL,
+                outputId="generated-slot-1",
+                generationReceipt=receipt["token"],
+            )
+            quota = {
+                "limit": 70,
+                "used": 5,
+                "remaining": 65,
+                "resetAt": 123,
+                "deducted": 5,
+                "reused": False,
+            }
+            with patch.object(main, "store", store), patch.object(
+                store, "deduct_personal_daily_points"
+            ) as deduct, patch.object(
+                store, "mark_custom_canvas_generation_receipt_charged"
+            ) as mark, patch.object(
+                store, "personal_daily_quota", return_value=quota
+            ):
+                generated = main.custom_canvas_blob_put(
+                    generated_request,
+                    me={"id": "creator-a", "role": "editor"},
+                )
+            deduct.assert_not_called()
+            mark.assert_not_called()
+            self.assertEqual(generated["billing"]["deductedPoints"], 0)
+            self.assertTrue(generated["billing"]["settledAtGeneration"])
+            self.assertEqual(generated["dailyQuota"]["remaining"], 65)
+
+            ordinary_svg = (
+                '<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2">'
+                '<rect width="2" height="2" fill="#1677ff"/></svg>'
+            )
+            ordinary_request = main.CustomCanvasBlobPutReq(
+                dataUrl=(
+                    "data:image/svg+xml;base64,"
+                    + base64.b64encode(ordinary_svg.encode("utf-8")).decode("ascii")
+                ),
+                outputId="uploaded-reference-1",
+            )
+            with patch.object(main, "store", store), patch.object(
+                store, "deduct_personal_daily_points"
+            ) as deduct:
+                ordinary = main.custom_canvas_blob_put(
+                    ordinary_request,
+                    me={"id": "creator-a", "role": "editor"},
+                )
+            deduct.assert_not_called()
+            self.assertEqual(ordinary["billing"]["deductedPoints"], 0)
+            self.assertIsNone(ordinary["dailyQuota"])
+
+    def test_blob_upload_route_returns_output_id_and_maps_oversize_to_413(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            main = importlib.import_module("main")
+            request = main.CustomCanvasBlobPutReq(
+                dataUrl=PNG_DATA_URL,
+                outputId="image-slot-7",
+            )
+            with patch.object(main, "store", store):
+                result = main.custom_canvas_blob_put(
+                    request,
+                    me={"id": "creator-a", "role": "editor"},
+                )
+            self.assertEqual(result["outputId"], "image-slot-7")
+            self.assertRegex(result["url"], r"^/api/custom-canvas/blobs/[a-f0-9]{64}$")
+
+            with patch.object(main, "store", store), patch.object(
+                store, "MAX_CUSTOM_CANVAS_BLOB_BYTES", 1
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    main.custom_canvas_blob_put(
+                        request,
+                        me={"id": "creator-a", "role": "editor"},
+                    )
+            self.assertEqual(raised.exception.status_code, 413)
+            self.assertIn("过大", str(raised.exception.detail))
+
 
 if __name__ == "__main__":
     unittest.main()

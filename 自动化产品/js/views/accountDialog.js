@@ -8,7 +8,7 @@ import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
-import { openModal, toast } from "../ui/components.js?v=20260729-v122-team-3";
+import { openModal, toast } from "../ui/components.js?v=20260802-v134-static-community-1";
 import { go, render as routerRender } from "../core/router.js";
 import * as remote from "../core/remote.js";
 
@@ -74,14 +74,20 @@ export function openAccountDialog(accountId = null) {
             <div class="ad-or"><span>或手动新建一个</span></div>`}
             <div class="ad-grid">
               <label class="field">账号名称<input class="input" id="adName" value="${esc(draft.name)}" placeholder="例如：百度搭子图文教程 02" /></label>
-              <label class="field">平台
-                <div class="seg-group" id="adPlat">
-                  ${["视频号", "小红书"].map(v => `<button type="button" class="${draft.platform === v ? "is-active" : ""}" data-v="${v}"><i class="seg-dot ${platformCode(v).toLowerCase()}"></i>${v}</button>`).join("")}
+              <label class="field ad-choice-field">平台 <em class="ad-choice-guidance">选择内容实际发布的平台</em>
+                <div class="seg-group ad-choice-group" id="adPlat" role="group" aria-label="选择发布平台">
+                  ${[
+                    ["视频号", "面向视频号的发布与交付规格"],
+                    ["小红书", "面向小红书的笔记、封面与发布规格"]
+                  ].map(([v, help]) => `<button type="button" class="ad-choice-button ${draft.platform === v ? "is-active" : ""}" data-v="${v}" data-choice-help="${help}" aria-pressed="${draft.platform === v ? "true" : "false"}" aria-label="${v}：${help}"><i class="seg-dot ${platformCode(v).toLowerCase()}"></i><span>${v}</span></button>`).join("")}
                 </div>
               </label>
-              <label class="field">内容形式
-                <div class="seg-group" id="adMode">
-                  ${[["视频", "film"], ["图文", "image"]].map(([v, ic]) => `<button type="button" class="${draft.mode === v ? "is-active" : ""}" data-v="${v}">${icon(ic, 14)}${v}</button>`).join("")}
+              <label class="field ad-choice-field">内容形式 <em class="ad-choice-guidance">决定该账号进入的创作链路</em>
+                <div class="seg-group ad-choice-group" id="adMode" role="group" aria-label="选择内容形式">
+                  ${[
+                    ["视频", "film", "使用分镜、口播、剪辑与成片交付链路"],
+                    ["图文", "image", "使用标题、文案、逐图生成与笔记交付链路"]
+                  ].map(([v, ic, help]) => `<button type="button" class="ad-choice-button ${draft.mode === v ? "is-active" : ""}" data-v="${v}" data-choice-help="${help}" aria-pressed="${draft.mode === v ? "true" : "false"}" aria-label="${v}：${help}">${icon(ic, 14)}<span>${v}</span></button>`).join("")}
                 </div>
               </label>
               ${isVideo ? `<label class="field">视频类型
@@ -98,9 +104,15 @@ export function openAccountDialog(accountId = null) {
               </label>
               <div class="field full">
                 <span>账号头像 <em class="muted">管理员可维护，可点击或拖图替换</em></span>
-                <label class="ad-image-drop avatar" id="adAvatarDrop">
-                  ${avatarUrl ? `<img src="${avatarUrl}" alt="账号头像" />` : `<i class="account-avatar-fallback">${icon("user", 18)}</i>`}
-                  <b>拖入 / 上传头像</b>
+                <label class="ad-image-drop avatar ${avatarUrl ? "has-image" : ""}" id="adAvatarDrop">
+                  <span class="ad-avatar-preview">
+                    ${avatarUrl ? `<img src="${avatarUrl}" alt="账号头像" />` : `<i class="account-avatar-fallback">${icon("user", 18)}</i>`}
+                    ${avatarUrl ? `<i class="ad-avatar-ready" aria-label="头像已选择">${icon("check", 10)}</i>` : ""}
+                  </span>
+                  <span class="ad-avatar-copy">
+                    <b>${avatarUrl ? "已选择头像 · 点击或拖入替换" : "拖入 / 上传头像"}</b>
+                    <em>${avatarUrl ? "保存修改后同步到创作与交付页" : "支持 PNG、JPG、WebP 或 GIF"}</em>
+                  </span>
                   <input type="file" accept="image/*" hidden id="adAvatarUp" />
                 </label>
               </div>
@@ -156,7 +168,7 @@ export function openAccountDialog(accountId = null) {
             <div class="ad-naming">素材命名规则：<b>${platformCode(draft.platform)}-${esc((draft.name || "账号名").replace(/\s+/g, ""))}-${draft.mode === "视频" ? esc(draft.subType) : "图文"}-001-${todayStamp()}</b></div>
           </div>
           <div class="mp-foot">
-            <button class="btn ghost" data-close>取消</button>
+            <button class="btn ghost account-dialog-cancel" data-close>取消</button>
             <button class="btn primary" id="adConfirm">${editing ? "保存修改" : "创建并进入创作空间"}</button>
           </div>`;
         wire();
@@ -235,7 +247,17 @@ export function openAccountDialog(accountId = null) {
           box.addEventListener("click", e => {
             const b = e.target.closest("button[data-v]"); if (!b) return;
             draft[key] = b.dataset.v;
-            redraw ? draw() : ($$(sel + " button", root).forEach(x => x.classList.toggle("is-active", x.dataset.v === draft[key])), refreshNaming());
+            if (redraw) {
+              draw();
+              requestAnimationFrame(() => $$(sel + " button", root).find(x => x.dataset.v === draft[key])?.focus());
+              return;
+            }
+            $$(sel + " button", root).forEach(x => {
+              const selected = x.dataset.v === draft[key];
+              x.classList.toggle("is-active", selected);
+              x.setAttribute("aria-pressed", selected ? "true" : "false");
+            });
+            refreshNaming();
           });
         };
         segWire("#adPlat", "platform");
@@ -253,16 +275,22 @@ export function openAccountDialog(accountId = null) {
           toast(msg);
         }
         async function setAvatar(file) {
-          if (!file || !file.type.startsWith("image/")) return;
+          if (!file) return;
+          if (!file.type.startsWith("image/")) { toast("请选择图片文件", "error"); return; }
           draft.avatarDataUrl = await fileToDataUrl(file);
           draw();
-          toast("已选择账号头像");
+          requestAnimationFrame(() => $("#adAvatarDrop", root)?.classList.add("has-selection-feedback"));
+          toast("头像已选择，保存修改后生效");
         }
         const avatarUp = $("#adAvatarUp", root);
         if (avatarUp) avatarUp.addEventListener("change", e => setAvatar(e.target.files[0]));
         const avatarDrop = $("#adAvatarDrop", root);
         if (avatarDrop) {
-          avatarDrop.addEventListener("click", () => $("#adAvatarUp", root)?.click());
+          avatarDrop.addEventListener("click", event => {
+            if (event.target === avatarUp) return;
+            event.preventDefault();
+            avatarUp?.click();
+          });
           wireDropZone(avatarDrop, files => setAvatar(Array.from(files).find(f => f.type.startsWith("image/"))), { filesOnly: true });
         }
         const charUp = $("#adCharUp", root);

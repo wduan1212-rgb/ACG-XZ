@@ -5,8 +5,8 @@ import { icon } from "../ui/icons.js";
 import { state, save, ownedBy, accountById, productionById } from "../core/store.js";
 import { STAGES, statusPill, deleteProduction } from "../domain/productions.js";
 import { urlFor } from "../domain/assets.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260728-v120-shell-13";
-import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js?v=20260729-v122-team-3";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260802-v134-static-community-1";
+import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js?v=20260802-v134-static-community-1";
 import { go } from "../core/router.js";
 
 const DRAFT_RENDER_BATCH = 24;

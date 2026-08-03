@@ -91,6 +91,14 @@ class CustomSubappDeploymentTest(unittest.TestCase):
         ):
             self.assertIn(token, helper)
         self.assertNotIn('VIDEO_WORKSHOP_HOST="0.0.0.0"', helper)
+        self.assertIn(
+            'VIDEO_WORKSHOP_WATCHDOG_LOG_FILE="$APP_DIR/logs/video-workshop-watchdog.log"',
+            helper,
+        )
+        self.assertIn('restart_threshold=10', helper)
+        self.assertIn('restart_threshold=1', helper)
+        self.assertIn('kill -0 "$recorded_pid"', helper)
+        self.assertIn('>> "$VIDEO_WORKSHOP_LOG_FILE" 2>&1 &', helper)
         self.assertIn("runtime/", gitignore)
 
         for filename, browser_url in (

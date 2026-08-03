@@ -1,44 +1,59 @@
 /* 应用入口：装载数据 → 迁移 → 恢复任务 → 外壳 → 路由 */
 
 import { $, $$, esc, uid } from "./core/util.js";
-import { icon, brandGlyph, workspaceBrandGlyph } from "./ui/icons.js?v=20260728-v120-shell-13";
+import { icon, brandGlyph } from "./ui/icons.js?v=20260802-v134-static-community-1";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, currentTeam, hasEntitlement, canManageAccounts, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260729-v122-static-1";
+import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260802-v134-static-community-1";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
-import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260728-v120-shell-21";
+import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260802-v134-static-community-1";
 import { buildSupplierSearchResults } from "./domain/supplierSearch.js";
 import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js?v=20260727-v118-7";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260727-v118-7";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260729-v122-static-1";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260802-v134-static-community-1";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
-import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260729-v122-team-3";
+import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260802-v134-static-community-1";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
-import { initLoginBeams } from "./ui/loginBeams.js?v=20260728-v120-shell-21";
+import { initLoginBeams } from "./ui/loginBeams.js?v=20260802-v134-static-community-1";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
-import { overviewView } from "./views/overview.js?v=20260728-v120-shell-21";
-import { homeView } from "./views/home.js?v=20260729-v122-team-3";
-import { voiceLabView } from "./views/voiceLab.js?v=20260728-v120-shell-13";
-import { customCreationView } from "./views/customCreation.js?v=20260729-v122-team-3";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260729-v122-static-1";
-import { studioView } from "./views/studio.js?v=20260728-v120-shell-13";
-import { assetsView } from "./views/assetsView.js?v=20260728-v120-shell-21";
-import { deliveryView } from "./views/deliveryView.js?v=20260728-v120-shell-21";
+import { overviewView } from "./views/overview.js?v=20260802-v134-static-community-1";
+import { homeView } from "./views/home.js?v=20260802-v134-static-community-1";
+import { subscriptionView } from "./views/subscription.js?v=20260802-v134-static-community-1";
+import { voiceLabView } from "./views/voiceLab.js?v=20260802-v134-static-community-1";
+import { customCreationView } from "./views/customCreation.js?v=20260802-v134-static-community-1";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260802-v134-static-community-1";
+import { studioView } from "./views/studio.js?v=20260802-v134-static-community-1";
+import { assetsView } from "./views/assetsView.js?v=20260802-v134-static-community-1";
+import { deliveryView } from "./views/deliveryView.js?v=20260802-v134-static-community-1";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js?v=20260728-v120-shell-13";
-import { settingsView } from "./views/settings.js?v=20260728-v120-shell-21";
+import { draftsView } from "./views/draftsView.js?v=20260802-v134-static-community-1";
+import { settingsView } from "./views/settings.js?v=20260802-v134-static-community-1";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260728-v120-shell-13";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260802-v134-static-community-1";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260729-v122-static-1";
+const APP_BUILD_ID = "20260802-v134-static-community-1";
+const GUEST_MEMBER_ID = "guest-local-preview";
+const GUEST_MEMBER = Object.freeze({
+  id: GUEST_MEMBER_ID,
+  name: "游客",
+  username: "guest",
+  role: "guest",
+  plan: "guest",
+  team: null,
+  teamId: null,
+  teamRole: null,
+  dailyPoints: 70,
+  points: 70,
+  entitlements: ["home", "video_workshop", "canvas", "voice", "assets", "subscription"]
+});
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 const WORKSPACE_VIDEO_META_KEY = "xingzhen.workspaceVideoMeta";
@@ -48,10 +63,40 @@ let workspaceUtilityDockWired = false;
 let workspaceProjectOpenRequest = 0;
 let workspaceSupplierChildren = [];
 let workspaceSupplierBindings = [];
+let workspaceProjectOwnerKey = "";
+let workspaceProjectGeneration = 0;
 const workspaceProjectLists = {
-  video: { items: [], loading: false, loadedAt: 0, error: "", pending: null },
-  canvas: { items: [], loading: false, loadedAt: 0, error: "", pending: null },
+  video: { items: [], loading: false, loadedAt: 0, error: "", pending: null, forcedPending: null },
+  canvas: { items: [], loading: false, loadedAt: 0, error: "", pending: null, forcedPending: null },
 };
+
+function activeWorkspaceProjectOwnerKey() {
+  return String(currentMember()?.id || state.ui.currentMemberId || state.role || "anonymous").trim() || "anonymous";
+}
+
+function resetWorkspaceProjectLists(ownerKey = activeWorkspaceProjectOwnerKey()) {
+  workspaceProjectOwnerKey = String(ownerKey || "anonymous");
+  workspaceProjectGeneration += 1;
+  workspaceProjectOpenRequest += 1;
+  Object.values(workspaceProjectLists).forEach(target => {
+    target.items = [];
+    target.loading = false;
+    target.loadedAt = 0;
+    target.error = "";
+    target.pending = null;
+    target.forcedPending = null;
+  });
+}
+
+function ensureWorkspaceProjectOwner() {
+  const ownerKey = activeWorkspaceProjectOwnerKey();
+  if (workspaceProjectOwnerKey !== ownerKey) resetWorkspaceProjectLists(ownerKey);
+  return { ownerKey, generation: workspaceProjectGeneration };
+}
+
+function workspaceProjectRequestIsCurrent(ownerKey, generation) {
+  return workspaceProjectOwnerKey === ownerKey && workspaceProjectGeneration === generation;
+}
 
 function workspaceShellEnabled() {
   return true;
@@ -197,12 +242,14 @@ function normalizeDeliveredSharedAssets() {
 }
 
 /* ---------- 登录（成员账号制：用户名 + 口令） ---------- */
-function showGate() {
+function showGate({ modal = true } = {}) {
   document.documentElement.classList.remove("auth-booting");
   document.documentElement.classList.remove("has-auth-token");
   const gate = $("#loginGate");
+  gate.classList.toggle("is-modal", !!modal);
   gate.hidden = false;
   document.body.classList.add("gated");
+  document.body.classList.toggle("auth-modal-open", !!modal);
   playLoginBackground();
   setGateBusy(false);
   setGateError("");
@@ -225,8 +272,8 @@ const GATE_PHASES = {
     button: "即将进入"
   },
   applying: {
-    title: "正在提交申请…",
-    button: "提交中"
+    title: "正在创建账号…",
+    button: "创建中"
   },
   resetting: {
     title: "正在通知管理员…",
@@ -280,6 +327,7 @@ async function clearPendingRemoteIdentity() {
   remote.logout();
   state.role = null;
   state.ui.currentMemberId = null;
+  resetWorkspaceProjectLists("anonymous");
   document.documentElement.classList.remove("has-auth-token");
   await Promise.allSettled([
     db.metaSet("role", null),
@@ -321,7 +369,7 @@ function applyGateModeContent(mode) {
   }
   if (applyLead) applyLead.textContent = mode === "login" ? "还没有账号？" : "";
   if (hint) hint.textContent = apply
-    ? "创建个人账号，提交后等待 ACG 市场部管理员审批"
+    ? "创建个人账号后即可开始使用；用户名不可重复"
     : forgot
       ? "填写你的姓名，管理员会在通知中心收到申请"
       : "登录后继续你的工作区";
@@ -379,6 +427,7 @@ function applyRoleClasses() {
   document.body.classList.toggle("role-supplier-child", state.role === "supplier_child");
   document.body.classList.toggle("role-editor", state.role === "editor");
   document.body.classList.toggle("role-user", state.role === "user");
+  document.body.classList.toggle("role-guest", state.role === "guest");
   document.body.classList.toggle("role-admin", state.role === "admin");
   const parent = state.role === "supplier" || state.role === "supplier_parent";
   const labels = {
@@ -394,6 +443,35 @@ function applyRoleClasses() {
     const span = item.querySelector("span");
     if (span) span.textContent = label;
   });
+  const logoutButton = $("#navLogout");
+  if (logoutButton) {
+    const label = state.role === "guest" ? "登录" : "退出登录";
+    logoutButton.title = label;
+    logoutButton.setAttribute("aria-label", label);
+    const span = logoutButton.querySelector("span");
+    if (span) span.textContent = label;
+  }
+}
+
+function enterGuest({ routeHome = true } = {}) {
+  cancelRemoteHydration();
+  state.role = "guest";
+  state.ui.currentMemberId = GUEST_MEMBER_ID;
+  state.members = state.members.filter(member => member.id !== GUEST_MEMBER_ID);
+  state.members.unshift({ ...GUEST_MEMBER, entitlements: [...GUEST_MEMBER.entitlements] });
+  resetWorkspaceProjectLists(GUEST_MEMBER_ID);
+  document.documentElement.classList.remove("has-auth-token");
+  pauseLoginBackground();
+  const gate = $("#loginGate");
+  if (gate) {
+    gate.hidden = true;
+    gate.classList.remove("is-modal");
+  }
+  document.body.classList.remove("gated", "auth-modal-open");
+  applyRoleClasses();
+  if (routeHome) go("home");
+  render();
+  document.documentElement.classList.remove("auth-booting");
 }
 
 function ensureViewRendered(reason = "startup") {
@@ -471,6 +549,7 @@ async function syncTeamJoinNotifications() {
     const result = await remote.teams.requests("pending");
     const rows = Array.isArray(result) ? result : (result?.items || []);
     const known = new Map(state.notifications.map(item => [item.teamJoinRequestId, item]));
+    const pendingIds = new Set(rows.map(row => String(row.id || "")).filter(Boolean));
     let changed = false;
     rows.forEach(row => {
       const requestId = String(row.id || "");
@@ -483,11 +562,22 @@ async function syncTeamJoinNotifications() {
         title: "收到加入团队申请",
         body: `${String(row.memberName || row.name || "用户")} 申请加入 ${String(row.teamName || member.team?.name || "团队")}`,
         read: existing?.read === true,
+        priority: "urgent",
         teamJoinRequestId: requestId,
       };
-      if (existing) Object.assign(existing, next);
+      if (existing) {
+        if (Object.entries(next).some(([key, value]) => existing[key] !== value)) changed = true;
+        Object.assign(existing, next);
+      }
       else {
         state.notifications.push(next);
+        changed = true;
+      }
+    });
+    state.notifications.forEach(item => {
+      if (!item.teamJoinRequestId || pendingIds.has(String(item.teamJoinRequestId))) return;
+      if (item.priority === "urgent") {
+        item.priority = "";
         changed = true;
       }
     });
@@ -512,18 +602,22 @@ async function syncAccountNotifications() {
 }
 
 function enterMember(member) {
-  document.documentElement.classList.remove("auth-booting");
   state.role = member.role;
   state.ui.currentMemberId = member.id;
+  resetWorkspaceProjectLists(member.id);
   save("meta");
   document.documentElement.classList.add("has-auth-token");
   pauseLoginBackground();
   $("#loginGate").hidden = true;
-  document.body.classList.remove("gated");
+  $("#loginGate").classList.remove("is-modal");
+  document.body.classList.remove("gated", "auth-modal-open");
   applyRoleClasses();
   const supplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(member.role);
   go(member.role === "supplier_child" ? "delivery" : supplierRole ? "overview" : "home");
   render();
+  // 新工作区外壳、角色样式和首屏内容都已经就位后再解除开屏遮罩，
+  // 避免刷新瞬间暴露 index.html 中保留的旧版静态骨架。
+  document.documentElement.classList.remove("auth-booting");
   void syncAccountNotifications();
   toast(`欢迎回来 · ${esc(member.name)}（${ROLE_LABEL[member.role] || ""}）`);
 }
@@ -700,13 +794,15 @@ function wireGate() {
     if (!name || !username || !pin) { toast("请填写姓名、用户名和密码"); shakeCard(); return; }
     setGateError("");
     setGateBusy(true, "applying");
+    let registered = false;
     try {
-      await remote.requestMember({ name, username, pin, role: "user" });
-      toast("注册申请已提交，等待 ACG 市场部管理员审批");
-      setGateMode("login");
-      $("#lgPin").value = "";
-      $("#lgName").value = "";
+      const member = await remote.register({ name, username, pin });
+      registered = true;
+      setGatePhase("syncing");
+      await enterRemote(member);
+      toast("注册成功，今天的 70 点体验积分已到账");
     } catch (e) {
+      if (registered) await clearPendingRemoteIdentity();
       const message = (e.message || "申请提交失败").replace(/^HTTP\s+\d+\s+/, "");
       shakeCard();
       setGateError(message);
@@ -772,6 +868,10 @@ function wireGate() {
   [$("#lgGoogle", gate), $("#lgPhone", gate)].forEach(button => {
     button?.addEventListener("click", () => toast("暂不支持，等待功能上线"));
   });
+  $("#lgModalClose", gate)?.addEventListener("click", () => {
+    if (gateBusy) return;
+    enterGuest();
+  });
   gate.addEventListener("keydown", e => {
     if (e.key !== "Enter" || e.isComposing) return;
     e.preventDefault();
@@ -781,11 +881,9 @@ function wireGate() {
 function logout() {
   cancelRemoteHydration();
   remote.logout();
-  state.role = null;
-  state.ui.currentMemberId = null;
-  save("meta");
-  document.body.classList.remove("role-supplier", "role-supplier-parent", "role-supplier-child", "role-editor", "role-admin");
-  showGate();
+  document.body.classList.remove("role-supplier", "role-supplier-parent", "role-supplier-child", "role-editor", "role-admin", "role-user");
+  enterGuest();
+  showGate({ modal: true });
 }
 
 /* ---------- 上下文面板（创作空间 = 账号列表） ---------- */
@@ -821,17 +919,27 @@ function workspaceNavItems() {
     entitlement,
     locked: !!entitlement && !hasEntitlement(entitlement),
   });
-  return [
+  const items = [
     item({ key: "home", label: "首页", zone: "home", iconName: "grid" }, "home"),
+    item({ key: "custom-video", label: "视频工坊", zone: "custom", page: "video", iconName: "film" }, "video_workshop"),
+    item({ key: "custom-canvas", label: "无限画布", zone: "custom", page: "canvas", iconName: "layers" }, "canvas"),
+    item({ key: "custom-voice", label: "语音生成", zone: "custom", page: "voice", iconName: "mic" }, "voice"),
     item({ key: "studio", label: "单号创作", zone: "studio", iconName: "film" }, "studio"),
     item({ key: "agent", label: "批量生产", zone: "agent", iconName: "spark" }, "batch"),
-    { key: "custom-video", label: "视频工坊", zone: "custom", page: "video", iconName: "film" },
-    { key: "custom-canvas", label: "无限画布", zone: "custom", page: "canvas", iconName: "layers" },
-    { key: "custom-voice", label: "语音生成", zone: "custom", page: "voice", iconName: "mic" },
     item({ key: "assets", label: "整体资产", zone: "assets", iconName: "folder" }, "assets"),
     item({ key: "delivery", label: "发布清单", zone: "delivery", iconName: "package" }, "delivery"),
     item({ key: "overview", label: "数据看板", zone: "overview", iconName: "analytics" }, "dashboard")
   ];
+  if (currentTeam()) return items;
+  const personalOrder = [
+    "home", "custom-video", "custom-canvas", "custom-voice", "assets",
+    "studio", "agent", "delivery", "overview",
+  ];
+  const order = new Map(personalOrder.map((key, index) => [key, index]));
+  return items.slice().sort((left, right) => (
+    (order.get(left.key) ?? Number.MAX_SAFE_INTEGER)
+    - (order.get(right.key) ?? Number.MAX_SAFE_INTEGER)
+  ));
 }
 
 function workspaceCurrentItem() {
@@ -848,6 +956,9 @@ function workspaceCurrentItem() {
       page,
       iconName: personalPage ? "user" : "gear"
     };
+  }
+  if (zone === "subscription") {
+    return { key: "subscription", label: "订阅管理", zone: "subscription", iconName: "spark" };
   }
   if (zone === "custom") return items.find(item => item.zone === "custom" && item.page === (page || "video")) || items.find(item => item.zone === "custom");
   return items.find(item => item.zone === zone) || items[0];
@@ -877,6 +988,13 @@ function setWorkspaceContextOpen(open) {
 
 function openWorkspaceItem(item) {
   if (!item) return;
+  if (state.role === "guest" && !["home", "subscription", "assets"].includes(item.zone)) {
+    closeWorkspaceSwitcher();
+    window.dispatchEvent(new CustomEvent("xingzhen:auth-required", {
+      detail: { reason: "create", target: item }
+    }));
+    return;
+  }
   if (item.locked) {
     closeWorkspaceSwitcher();
     toast(`${item.label} 是团队功能。加入团队后即可解锁。`);
@@ -937,7 +1055,9 @@ function renderWorkspaceSwitcher() {
   }
   const items = workspaceNavItems();
   const current = workspaceCurrentItem() || items[0];
-  const homeStatic = parseHash().zone === "home" && !["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+  const homeWorkspace = parseHash().zone === "home";
+  const supplierWorkspace = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
+  const menuItems = supplierWorkspace ? items : items.filter(item => !item.locked);
   let wrap = $("#workspaceSwitcher");
   if (!wrap) {
     wrap = document.createElement("div");
@@ -963,27 +1083,29 @@ function renderWorkspaceSwitcher() {
     });
     topbar.insertBefore(contextToggle, topbar.firstChild);
   }
-  const brandTone = document.body.dataset.zone === "agent" ? "dark" : "light";
-  wrap.classList.toggle("is-static", homeStatic);
-  wrap.innerHTML = `
-    <button class="workspace-switch-button" id="workspaceSwitchButton" type="button" aria-haspopup="${homeStatic ? "false" : "menu"}" aria-expanded="false">
-      ${workspaceBrandGlyph(30, brandTone)}
-      <span class="workspace-switch-copy"><b>星阵</b><em>${esc(current?.label || "工作区")}</em></span>
-      ${homeStatic ? "" : icon("chevronDown", 13)}
-    </button>
-    <div class="workspace-menu" id="workspaceSwitchMenu" role="menu" aria-label="切换工作区" ${homeStatic ? "hidden" : ""}>
-      ${items.map(item => `
-        <button type="button" role="menuitem" class="${item.key === current?.key ? "is-active" : ""}${item.locked ? " is-locked" : ""}" data-ws-switch="${esc(item.key)}">
-          ${icon(item.iconName || "grid", 15)}
-          <span><b>${esc(item.label)}</b></span>
-          ${item.locked ? icon("lock", 13) : item.key === current?.key ? icon("check", 14) : ""}
-        </button>
-      `).join("")}
-    </div>
-  `;
+  wrap.classList.toggle("is-static", homeWorkspace);
+  const brandMarkup = `
+    <span class="workspace-brand-lockup"><img src="./assets/brand/starmatrix-wordmark-blue-transparent.png" alt="星阵" draggable="false" /></span>
+    <span class="workspace-switch-copy"><em>${esc(current?.label || "工作区")}</em></span>`;
+  wrap.innerHTML = homeWorkspace
+    ? `<div class="workspace-switch-button workspace-switch-static" id="workspaceSwitchButton" aria-label="星阵首页">${brandMarkup}</div>`
+    : `
+      <button class="workspace-switch-button" id="workspaceSwitchButton" type="button" aria-haspopup="menu" aria-expanded="false">
+        ${brandMarkup}
+        ${icon("chevronDown", 13)}
+      </button>
+      <div class="workspace-menu" id="workspaceSwitchMenu" role="menu" aria-label="切换工作区">
+        ${menuItems.map(item => `
+          <button type="button" role="menuitem" class="${item.key === current?.key ? "is-active" : ""}${item.locked ? " is-locked" : ""}" data-ws-switch="${esc(item.key)}">
+            ${icon(item.iconName || "grid", 15)}
+            <span><b>${esc(item.label)}</b></span>
+            ${item.locked ? icon("lock", 13) : item.key === current?.key ? icon("check", 14) : ""}
+          </button>
+        `).join("")}
+      </div>`;
   const button = $("#workspaceSwitchButton", wrap);
   const menu = $("#workspaceSwitchMenu", wrap);
-  if (!homeStatic) button?.addEventListener("click", event => {
+  if (!homeWorkspace) button?.addEventListener("click", event => {
     event.stopPropagation();
     const open = wrap.classList.toggle("is-open");
     button.setAttribute("aria-expanded", open ? "true" : "false");
@@ -1291,6 +1413,7 @@ function hideWorkspaceVideoProject(projectId) {
 }
 
 function setWorkspaceProjects(kind, items = []) {
+  ensureWorkspaceProjectOwner();
   const target = workspaceProjectLists[kind];
   if (!target) return;
   const hiddenVideoIds = kind === "video" ? workspaceHiddenVideoProjectIds() : null;
@@ -1342,9 +1465,26 @@ function setWorkspaceProjects(kind, items = []) {
 }
 
 async function loadWorkspaceProjects(kind, { force = false } = {}) {
+  const requestIdentity = ensureWorkspaceProjectOwner();
   const target = workspaceProjectLists[kind];
   if (!target) return [];
-  if (target.pending) return target.pending;
+  if (target.pending) {
+    if (!force) return target.pending;
+    if (target.forcedPending) return target.forcedPending;
+    const activePending = target.pending;
+    const forcedPending = (async () => {
+      await activePending;
+      if (!workspaceProjectRequestIsCurrent(requestIdentity.ownerKey, requestIdentity.generation)) return [];
+      if (target.pending === activePending) target.pending = null;
+      return loadWorkspaceProjects(kind, { force: true });
+    })();
+    target.forcedPending = forcedPending;
+    try {
+      return await forcedPending;
+    } finally {
+      if (target.forcedPending === forcedPending) target.forcedPending = null;
+    }
+  }
   if (!force && target.loadedAt && Date.now() - target.loadedAt < 12_000) return target.items;
   if (!remote.isOn() || !remote.hasToken()) {
     target.loadedAt = Date.now();
@@ -1357,15 +1497,18 @@ async function loadWorkspaceProjects(kind, { force = false } = {}) {
     try {
       if (kind === "canvas") {
         const result = await remote.customCanvasProjects.list();
+        if (!workspaceProjectRequestIsCurrent(requestIdentity.ownerKey, requestIdentity.generation)) return [];
         setWorkspaceProjects("canvas", result?.items);
         return target.items;
       }
       // 视频工坊的 iframe 会在挂载后回传完整项目索引。这里先用主服务中
       // 已保存的轻量映射作首屏兜底，不能再误用批量生产的 state.sessions。
       const result = await remote.customProjects.list("video");
+      if (!workspaceProjectRequestIsCurrent(requestIdentity.ownerKey, requestIdentity.generation)) return [];
       setWorkspaceProjects("video", result?.items);
       return target.items;
     } catch (error) {
+      if (!workspaceProjectRequestIsCurrent(requestIdentity.ownerKey, requestIdentity.generation)) return [];
       target.loading = false;
       target.loadedAt = Date.now();
       target.error = String(error?.message || "项目读取失败");
@@ -1396,6 +1539,9 @@ if (typeof window !== "undefined") {
     project.publishedCount = Math.max(project.publishedCount || 0, publishedCount);
     scheduleWorkspaceContextRender();
   });
+  document.addEventListener("custom-canvas:project-created", () => {
+    void loadWorkspaceProjects("canvas", { force: true });
+  });
   window.addEventListener("xingzhen:asset-library-model", () => {
     if (parseHash().zone === "assets") scheduleWorkspaceContextRender();
   });
@@ -1409,10 +1555,11 @@ if (typeof window !== "undefined") {
   });
 }
 
-function contextRow({ title, meta = "", tag = "", action = "", zone = "", page = "", id = "", active = false, attrs = "", className = "" } = {}) {
+function contextRow({ title, meta = "", tag = "", action = "", zone = "", page = "", id = "", active = false, attrs = "", className = "", iconName = "" } = {}) {
   return `
-    <button class="wsctx-row${className ? ` ${esc(className)}` : ""}${active ? " is-active" : ""}" type="button" ${active ? `aria-current="page"` : ""} ${zone ? `data-ws-go="${esc(zone)}"` : ""} ${page ? `data-ws-page="${esc(page)}"` : ""} ${id ? `data-ws-id="${esc(id)}"` : ""} ${attrs}>
-      <span>
+    <button class="wsctx-row${className ? ` ${esc(className)}` : ""}${iconName ? " has-leading-icon" : ""}${active ? " is-active" : ""}" type="button" ${active ? `aria-current="page"` : ""} ${zone ? `data-ws-go="${esc(zone)}"` : ""} ${page ? `data-ws-page="${esc(page)}"` : ""} ${id ? `data-ws-id="${esc(id)}"` : ""} ${attrs}>
+      ${iconName ? `<span class="wsctx-leading-icon">${icon(iconName, 15)}</span>` : ""}
+      <span class="wsctx-row-copy">
         <b>${esc(title || "未命名")}</b>
         ${meta ? `<em>${esc(meta)}</em>` : ""}
       </span>
@@ -1500,8 +1647,9 @@ function videoProjectContextRow(project, resourceId) {
   const meta = workspaceVideoProjectMeta(project.id);
   const title = meta.title || project.title;
   const active = project.id === resourceId;
+  const working = ["running", "thinking"].includes(String(project.status || "").toLowerCase());
   return `
-    <div class="wsctx-row-shell wsctx-video-project-shell${active ? " is-active" : ""}" data-session-shell="video" data-session-id="${esc(project.id)}">
+    <div class="wsctx-row-shell wsctx-video-project-shell${active ? " is-active" : ""}${working ? " is-working" : ""}" data-session-shell="video" data-session-id="${esc(project.id)}">
       ${contextRow({
         title,
         tag: `已发布 ${project.publishedCount || 0}`,
@@ -1704,6 +1852,7 @@ function deliveryFilterControls(model = {}) {
 
 function workspaceAccountMarkup() {
   const member = currentMember() || {};
+  const isGuest = state.role === "guest";
   const name = member.name || member.username || "我的";
   const clientLabel = $("#clientRailLabel")?.textContent?.trim() || "客户端";
   const initial = String(name).trim().slice(0, 1) || "我";
@@ -1717,6 +1866,7 @@ function workspaceAccountMarkup() {
   const canOpenManagement = ["admin", "supplier", "supplier_parent"].includes(state.role) || canManageTeam;
   const canSendFeedback = ["admin", "editor", "user"].includes(state.role);
   const managementLabel = ["supplier", "supplier_parent"].includes(state.role) ? "供应商设置" : "团队设置";
+  const canOpenSubscription = !["supplier", "supplier_parent", "supplier_child"].includes(state.role);
   return `
     <button class="workspace-account-button" id="workspaceAccountButton" type="button" aria-haspopup="menu" aria-expanded="false">
       <span class="workspace-account-avatar">${avatar}</span>
@@ -1730,11 +1880,14 @@ function workspaceAccountMarkup() {
       </div>
       ${canOpenProfile ? `<button type="button" role="menuitem" data-account-action="profile">${icon("user", 16)}<span>我的资料</span></button>` : ""}
       ${!team && state.role === "user" ? `<button type="button" role="menuitem" data-account-action="join-team">${icon("users", 16)}<span>加入团队</span></button>` : ""}
+      ${canOpenSubscription ? `<button type="button" role="menuitem" data-account-action="subscription">${icon("spark", 16)}<span>订阅管理</span></button>` : ""}
       <button type="button" role="menuitem" data-account-action="client">${icon("download", 16)}<span data-client-entry-label>${esc(clientLabel)}</span></button>
       ${canSendFeedback ? `<button type="button" role="menuitem" data-account-action="feedback">${icon("fileText", 16)}<span>意见反馈</span></button>` : ""}
       ${canOpenManagement ? `<button type="button" role="menuitem" data-account-action="settings">${icon("gear", 16)}<span>${esc(managementLabel)}</span></button>` : ""}
       <div class="workspace-account-separator" role="separator"></div>
-      <button type="button" role="menuitem" class="is-danger" data-account-action="logout">${icon("logout", 16)}<span>退出登录</span></button>
+      ${isGuest
+        ? `<button type="button" role="menuitem" data-account-action="login">${icon("user", 16)}<span>登录</span></button>`
+        : `<button type="button" role="menuitem" class="is-danger" data-account-action="logout">${icon("logout", 16)}<span>退出登录</span></button>`}
     </div>
   `;
 }
@@ -1772,13 +1925,18 @@ function ensureWorkspaceContextShell(panel) {
       </header>
       <div class="wsctx-groups" id="workspaceContextList"></div>
       <div class="workspace-context-tool-host" id="workspaceContextToolHost" hidden></div>
-      <footer class="workspace-account" id="workspaceAccount">${workspaceAccountMarkup()}</footer>
+      <footer class="workspace-account-footer">
+        <div class="workspace-account" id="workspaceAccount">${workspaceAccountMarkup()}</div>
+        <div class="workspace-account-notify" id="workspaceAccountNotify"></div>
+      </footer>
     </div>
   `;
   const contextActions = panel.querySelector("#workspaceContextActions");
-  [$("#topSearch"), $("#topBell")].forEach(button => {
-    if (button && contextActions) contextActions.append(button);
-  });
+  const accountNotify = panel.querySelector("#workspaceAccountNotify");
+  const topSearch = $("#topSearch");
+  const topBell = $("#topBell");
+  if (topSearch && contextActions) contextActions.append(topSearch);
+  if (topBell && accountNotify) accountNotify.append(topBell);
   if (panel.dataset.workspaceShellWired === "1") return;
   panel.dataset.workspaceShellWired = "1";
   panel.addEventListener("click", async event => {
@@ -1801,9 +1959,11 @@ function ensureWorkspaceContextShell(panel) {
       closeWorkspaceAccountMenu();
       if (accountAction === "profile") go("settings", "profile");
       else if (accountAction === "join-team") go("settings", "team");
+      else if (accountAction === "subscription") go("subscription");
       else if (accountAction === "settings") go("settings");
       else if (accountAction === "client") document.dispatchEvent(new CustomEvent("client-distribution:open"));
       else if (accountAction === "feedback") openWorkspaceFeedbackModal();
+      else if (accountAction === "login") showGate({ modal: true });
       else if (accountAction === "logout") logout();
       return;
     }
@@ -2207,22 +2367,70 @@ function renderWorkspaceContextPanel() {
     .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
   const rowsByZone = () => {
     if (zone === "home" && !supplier) {
-      return [{
-        key: "functions",
-        title: "功能",
-        collapsible: false,
-        rows: workspaceNavItems()
-          .filter(item => item.zone !== "home")
-          .map(item => contextRow({
+      const canUseVideo = hasEntitlement("video_workshop");
+      const canUseCanvas = hasEntitlement("canvas");
+      if (canUseVideo) void loadWorkspaceProjects("video");
+      if (canUseCanvas) void loadWorkspaceProjects("canvas");
+      const availableFunctions = workspaceNavItems()
+        .filter(item => item.zone !== "home");
+      const videoHistory = (canUseVideo ? workspaceProjectLists.video.items : []).map(project => {
+        const meta = workspaceVideoProjectMeta(project.id);
+        return {
+          ...project,
+          kind: "video",
+          title: meta.title || project.title,
+          iconName: "film",
+          page: "video",
+          tag: "视频",
+        };
+      });
+      const canvasHistory = (canUseCanvas ? workspaceProjectLists.canvas.items : []).map(project => ({
+        ...project,
+        kind: "canvas",
+        iconName: "layers",
+        page: "canvas",
+        tag: "画布",
+      }));
+      const history = [...videoHistory, ...canvasHistory]
+        .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))
+        .slice(0, 80);
+      return [
+        {
+          key: "functions",
+          title: "功能",
+          collapsible: false,
+          rows: availableFunctions.map(item => contextRow({
             title: item.label,
-            tag: item.locked ? "团队" : "",
+            tag: item.locked && item.key !== "assets" ? "VIP" : "",
             zone: item.zone,
             page: item.page || "",
-            attrs: item.locked
-              ? `data-ws-locked="true" data-ws-label="${esc(item.label)}"`
-              : "",
+            iconName: item.iconName || "grid",
+            attrs: item.locked ? `data-ws-locked="true" data-ws-label="${esc(item.label)}"` : "",
+            className: `wsctx-home-function${item.locked && item.key !== "assets" ? " is-vip" : ""}`,
           })),
-      }];
+        },
+        {
+          key: "home-history",
+          title: workspaceProjectLists.video.loading || workspaceProjectLists.canvas.loading
+            ? "正在读取历史会话…"
+            : "历史会话",
+          collapsible: false,
+          headerAction: `
+            <span class="wsctx-title-actions">
+              <button class="wsctx-title-add" type="button" data-ws-go="custom" data-ws-page="video" data-ws-id="__new__" aria-label="新建视频会话" title="新建视频会话">${icon("film", 12)}${icon("plus", 9)}</button>
+              <button class="wsctx-title-add" type="button" data-ws-go="custom" data-ws-page="canvas" data-ws-id="__new__" aria-label="新建画布" title="新建画布">${icon("layers", 12)}${icon("plus", 9)}</button>
+            </span>`,
+          rows: history.map(project => contextRow({
+            title: project.title,
+            tag: project.tag,
+            zone: "custom",
+            page: project.page,
+            id: project.id,
+            iconName: project.iconName,
+            className: "wsctx-home-history",
+          })),
+        },
+      ];
     }
     if (zone === "overview") {
       if (supplier) {
@@ -2484,6 +2692,22 @@ function renderWorkspaceContextPanel() {
         ],
       }];
     }
+    if (zone === "subscription") {
+      return [{
+        key: "subscription",
+        title: "订阅与积分",
+        collapsible: false,
+        rows: [
+          contextRow({
+            title: "订阅方案",
+            active: true,
+            zone: "subscription",
+            page: "plans",
+            iconName: "spark",
+          }),
+        ],
+      }];
+    }
     return [{ title: "上下文", rows: [] }];
   };
 
@@ -2637,7 +2861,7 @@ function renderContextPanel() {
 }
 
 /* ---------- 顶栏 ---------- */
-const ZONE_TITLE = { home: "首页", overview: "数据看板", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
+const ZONE_TITLE = { home: "首页", subscription: "订阅管理", overview: "数据看板", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
 
 async function syncHomepageAnalytics(button) {
   if (button.disabled) return;
@@ -2727,7 +2951,9 @@ function renderTopbar() {
   if (newAccBtn) newAccBtn.hidden = !(zone === "overview" && teamManager);
   if (syncDataBtn) syncDataBtn.hidden = !(zone === "overview" && teamManager);
   const supplierParent = ["supplier", "supplier_parent"].includes(state.role);
-  const supplierToolbarZone = supplierParent && zone === "assets";
+  // 供应商资产页已经在内容区提供账号/平台筛选；顶栏再渲染一组会
+  // 造成两个互不共享状态的重复筛选器。保留内容区这一处即可。
+  const supplierToolbarZone = false;
   let supplierTools = $("#topSupplierOverviewTools");
   if (!supplierTools && actions) {
     supplierTools = document.createElement("div");
@@ -2739,12 +2965,7 @@ function renderTopbar() {
     supplierTools.hidden = !supplierToolbarZone;
     if (supplierTools.dataset.zone !== zone) {
       supplierTools.dataset.zone = zone;
-      const platforms = [...new Set(state.accounts.map(account => account.platform).filter(Boolean))];
-      if (zone === "assets") {
-        supplierTools.innerHTML = `<div class="top-supplier-platforms"><button class="top-btn is-active" type="button" data-top-supplier-platform="all">全部平台</button>${platforms.map(platform => `<button class="top-btn" type="button" data-top-supplier-platform="${esc(platform)}">${esc(platform)}</button>`).join("")}</div>`;
-      } else {
-        supplierTools.innerHTML = "";
-      }
+      supplierTools.innerHTML = "";
     }
   }
   if (!workspaceUtilityDockWired) {
@@ -2889,6 +3110,7 @@ async function boot() {
 
     // 注册路由
     registerView("home", homeView);
+    registerView("subscription", subscriptionView);
     registerView("overview", hydrationAwareView("overview", overviewView));
     registerView("custom", customCreationView);
     registerView("voice", voiceLabView);
@@ -2910,6 +3132,12 @@ async function boot() {
     $("#railBrand").innerHTML = brandGlyph(28);
     $$("[data-nav]").forEach(b => b.addEventListener("click", () => {
       state.ui.returnTo = null;
+      if (state.role === "guest" && !["home", "assets"].includes(b.dataset.nav)) {
+        window.dispatchEvent(new CustomEvent("xingzhen:auth-required", {
+          detail: { reason: "create", target: { zone: b.dataset.nav } }
+        }));
+        return;
+      }
       if (b.dataset.nav === "studio") allowStudioFromAgent();
       go(b.dataset.nav);
     }));
@@ -2918,9 +3146,15 @@ async function boot() {
     document.addEventListener("click", e => {
       if (e.target.closest("[data-open-create-account]")) document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} }));
     });
-    $("#topBell").addEventListener("click", async e => {
-      await syncAccountNotifications();
-      toggleNotifyPanel(e.currentTarget);
+    $("#topBell").addEventListener("click", e => {
+      const anchor = e.currentTarget;
+      toggleNotifyPanel(anchor);
+      void syncAccountNotifications().then(() => {
+        if ($("#notifyPanel")) {
+          toggleNotifyPanel(anchor);
+          toggleNotifyPanel(anchor);
+        }
+      });
     });
     document.addEventListener("keydown", e => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openGlobalPalette(); }
@@ -2935,6 +3169,10 @@ async function boot() {
 
     // 登录分流（三身份 + 口令）
     wireGate();
+    window.addEventListener("xingzhen:auth-required", () => {
+      if (state.role !== "guest") return;
+      showGate({ modal: true });
+    });
     // 进入：远端共享模式凭 token 自动续登；本地模式凭本地 role/member
     let entered = false;
     if (remote.isOn() && remote.hasToken()) {
@@ -2942,6 +3180,7 @@ async function boot() {
       const m = await remote.me();
       if (m) {
         state.role = m.role; state.ui.currentMemberId = m.id;
+        resetWorkspaceProjectLists(m.id);
         const bootstrap = await pullRemoteBootstrap();
         if (bootstrap.ok) {
           state.members = state.members.filter(item => item.id !== m.id);
@@ -2962,12 +3201,12 @@ async function boot() {
       } else {
         await clearPendingRemoteIdentity();
       }
-    } else if (!remote.isOn() && state.role && state.ui.currentMemberId) {
+    } else if (!remote.isOn() && state.role && state.role !== "guest" && state.ui.currentMemberId) {
       document.documentElement.classList.add("has-auth-token");
       pauseLoginBackground();
       applyRoleClasses(); $("#loginGate").hidden = true; document.body.classList.remove("gated"); render(); entered = true;
     }
-    if (!entered) { showGate(); render(); }
+    if (!entered) { enterGuest(); entered = true; }
     else document.documentElement.classList.remove("auth-booting");
     window.__dumateBooting = false;
     setTimeout(() => ensureViewRendered("initial render"), 600);

@@ -76,11 +76,15 @@ function useCanvasContextPortal() {
 
   useEffect(() => {
     const config = canvasContextPortalFromBootstrap();
-    if (!IS_PLATFORM_EMBED || !config || window.parent === window) {
-      setState({ expectsPortal: false, target: null });
-      return;
-    }
     let frame = 0;
+    if (!IS_PLATFORM_EMBED || !config || window.parent === window) {
+      // Keep the effect subscription-only: defer the post-hydration fallback
+      // instead of synchronously setting React state inside the effect body.
+      frame = window.requestAnimationFrame(() => {
+        setState({ expectsPortal: false, target: null });
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
     let attempts = 0;
     const findTarget = () => {
       try {
@@ -99,7 +103,7 @@ function useCanvasContextPortal() {
       attempts += 1;
       if (attempts < 180) frame = window.requestAnimationFrame(findTarget);
     };
-    findTarget();
+    frame = window.requestAnimationFrame(findTarget);
     return () => window.cancelAnimationFrame(frame);
   }, []);
 

@@ -1,6 +1,7 @@
 import { platformFetch } from "./api";
 import {
   CANVAS_OWNER,
+  recoverInterruptedCanvasState,
   type CanvasProjectState,
   localCanvasGet,
   writeDurableCanvasValue,
@@ -89,7 +90,7 @@ function normalizeState(value: unknown): CanvasProjectState | null {
     || !Number.isFinite(viewport.y)
     || !Number.isFinite(viewport.zoom)
   )) return null;
-  return { items: state.items, messages: state.messages, viewport };
+  return recoverInterruptedCanvasState({ items: state.items, messages: state.messages, viewport }).state;
 }
 
 export async function getCanvasProjectIndex(

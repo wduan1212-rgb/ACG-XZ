@@ -571,7 +571,7 @@ body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-voice-paramet
   grid-template-rows: auto minmax(0, 1fr) auto auto;
 }
 .workspace-context-shell.has-canvas-context-tools > .canvas-context-tools { grid-row: 3; }
-.workspace-context-shell.has-canvas-context-tools > .workspace-account { grid-row: 4; }
+.workspace-context-shell.has-canvas-context-tools > .workspace-account-footer { grid-row: 4; }
 .canvas-context-tools {
   margin: 0 4px 8px;
   padding: 9px 7px 7px;

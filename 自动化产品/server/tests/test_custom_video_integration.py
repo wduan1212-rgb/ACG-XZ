@@ -201,7 +201,10 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertNotIn("from 视频工坊产品试验", backend)
 
         self.assertIn("export function mountCustomVideo(", integration)
-        self.assertIn('const entryParams = new URLSearchParams({ embed: "1", workspace: "1" })', integration)
+        self.assertIn("const entryParams = new URLSearchParams({", integration)
+        self.assertIn('embed: "1"', integration)
+        self.assertIn('workspace: "1"', integration)
+        self.assertIn('canPublish: canPublish ? "1" : "0"', integration)
         self.assertIn('entryParams.set("project", initialProjectId)', integration)
         self.assertIn('const entryUrl = `/custom-video/?${entryParams.toString()}`', integration)
         self.assertIn("frame.src = entryUrl", integration)
@@ -239,8 +242,17 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260729-v122-static-1", html)
-        self.assertIn("app.js?v=20260729-v122-static-1", html)
+        self.assertIn("styles.css?v=20260802-v134-static-community-1", html)
+        self.assertIn("app.js?v=20260802-v134-static-community-1", html)
+        self.assertIn('data-creation-mode="video" aria-pressed="true">动态</button>', html)
+        self.assertIn('data-creation-mode="static" aria-pressed="false">静态</button>', html)
+        self.assertNotIn(">动态视频</button>", html)
+        self.assertNotIn(">静态视频</button>", html)
+        self.assertNotIn(">正常视频</button>", html)
+        self.assertIn(
+            'syncCreationMode(message.creationMode === "static" ? "static" : "video")',
+            javascript,
+        )
         self.assertIn(
             '<h1 class="brand-kicker brand-title" id="startTitle">'
             "XINGZHEN VIDEO WORKSHOP</h1>",
@@ -300,7 +312,7 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         embed_bootstrap_check = f"""
 function runBootstrap(search, framed) {{
   const document = {{
-    documentElement: {{ dataset: {{}} }},
+    documentElement: {{ dataset: {{}}, classList: {{ add() {{}} }} }},
     querySelector: () => ({{ setAttribute() {{}} }}),
   }};
   const window = {{ location: {{ search }} }};
@@ -485,7 +497,10 @@ if (!value.includes("<img src=x onerror=alert(1)>")) {{
         javascript = (
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
-        self.assertIn('const entryParams = new URLSearchParams({ embed: "1", workspace: "1" })', integration)
+        self.assertIn("const entryParams = new URLSearchParams({", integration)
+        self.assertIn('embed: "1"', integration)
+        self.assertIn('workspace: "1"', integration)
+        self.assertIn('canPublish: canPublish ? "1" : "0"', integration)
         self.assertIn('entryParams.set("project", initialProjectId)', integration)
         self.assertIn('const entryUrl = `/custom-video/?${entryParams.toString()}`', integration)
         self.assertIn('"background:#fff"', integration)
@@ -538,7 +553,7 @@ host.replaceChildren = child => {{
   if (child !== frame) throw new Error("wrong iframe mounted");
 }};
 mountCustomVideo(host, {{ projectId: "history-project-1" }});
-if (frame.currentSrc !== "/custom-video/?embed=1&workspace=1&project=history-project-1") {{
+if (frame.currentSrc !== "/custom-video/?embed=1&workspace=1&canPublish=1&project=history-project-1") {{
   throw new Error(`unexpected iframe source ${{frame.currentSrc}}`);
 }}
 """

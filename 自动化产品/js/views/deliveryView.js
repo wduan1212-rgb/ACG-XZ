@@ -8,10 +8,11 @@ import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js?v=20260728-v120-shell-20";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260728-v120-shell-13";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260729-v122-team-3";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260802-v134-static-community-1";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260802-v134-static-community-1";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
+import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
 
 function extractUrl(text) {
   const matches = String(text || "").match(/https?:\/\/[^\s"'<>，。；、）】]+/g) || [];
@@ -122,6 +123,38 @@ function hasUnreadRemark(asset) {
 
 function remarkDot(asset) {
   return hasUnreadRemark(asset) ? `<i class="delivery-remark-dot" title="有未读备注"></i>` : "";
+}
+
+function deliveryMedia(asset) {
+  if (asset?.type === "图集") {
+    return (asset.packAssetIds || []).map(id => {
+      const item = state.assets.find(entry => entry.id === id);
+      const url = item ? urlFor(item) : urlFor(id);
+      return url ? { type: "image", url, title: item?.name || asset.title || asset.name || "发布图片" } : null;
+    }).filter(Boolean);
+  }
+  const url = urlFor(asset) || asset?.videoUrl || asset?.fileUrl || asset?.url || "";
+  return url ? [{ type: "video", url, title: asset.title || asset.name || "发布视频" }] : [];
+}
+
+function openDeliveryPreview(asset) {
+  const media = deliveryMedia(asset);
+  if (!media.length) { toast("当前成果还没有可预览的媒体文件", "error"); return; }
+  openModal(`<article class="delivery-preview-dialog">
+    <header><div><span>${asset.type === "图集" ? `${media.length} 张图片` : "视频预览"}</span><h2>${esc(asset.title || asset.name || "发布内容")}</h2></div><button class="icon-btn" data-close>${icon("x", 16)}</button></header>
+    <div class="delivery-preview-media ${asset.type === "图集" ? "is-gallery" : "is-video"}">${media.map((item, index) => item.type === "video"
+      ? `<video src="${esc(item.url)}" controls playsinline preload="metadata"></video>`
+      : `<button type="button" data-delivery-preview-image="${index}"><img src="${esc(item.url)}" alt="${esc(item.title)}" loading="lazy" /><span>${index + 1}</span></button>`).join("")}</div>
+    ${asset.copy ? `<div class="delivery-preview-copy"><b>发布文案</b><pre>${esc(asset.copy)}</pre></div>` : ""}
+  </article>`, {
+    onMount(panel) {
+      panel.classList.add("delivery-preview-panel");
+      panel.querySelectorAll("[data-delivery-preview-image]").forEach((button, index) => button.addEventListener("click", () => {
+        const img = button.querySelector("img");
+        if (img) openLightbox(img, media[index]?.url || img.src, media[index]?.title || "发布图片");
+      }));
+    },
+  });
 }
 
 export async function openDeliveryRemarks(asset) {
@@ -235,8 +268,10 @@ function deliveredItemHtml(asset, acc, i, displaySeq) {
         ${asset.copy ? `<pre class="dv-copy">${esc(asset.copy)}</pre>` : ""}
         ${isImg && (asset.packAssetIds || []).length ? `<div class="cc-grid">${asset.packAssetIds.map((id, k) => { const uu = urlFor(id); return uu ? `<div class="cc-thumb"><img src="${uu}" data-dvimg/><span>${k + 1}</span></div>` : ""; }).join("")}</div>` : ""}
         <div class="dv-actions">
+          <button class="btn ghost sm" data-dvact="preview">${icon("eye", 13)} 预览${isImg ? `全部 ${Math.max(0, (asset.packAssetIds || []).length)} 张` : "视频"}</button>
           <button class="btn ghost sm" data-dvact="copy">${icon("copy", 13)} 复制标题+文案</button>
           <button class="btn ghost sm" data-dvact="download">${icon("download", 13)} 下载 zip</button>
+          <button class="btn ghost sm${asset.communityPostId ? " is-shared" : ""}" data-dvact="community" ${asset.communityPostId ? "disabled" : ""}>${asset.communityPostId ? `${icon("check", 13)} 已分享` : `${icon("send", 13)} 分享灵感`}</button>
           ${asset.publishedUrl
             ? `<a class="btn ghost sm" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 13)} 查看链接</a>`
             : `<button class="btn ghost sm" disabled>${icon("link", 13)} 供应商未回传</button>`}
@@ -681,11 +716,35 @@ export const deliveryView = {
         const asset = state.assets.find(x => x.id === card.dataset.aid);
         if (!asset) return;
         const acc = accountById(asset.accountId);
+        const shareButton = card.querySelector('[data-dvact="community"]');
+        if (shareButton && !asset.communityPostId) {
+          syncCommunityShareStatus(shareButton, {
+            authorId: asset.byMemberId || productionById(asset.productionId)?.ownerId || "",
+            sourceKind: "delivery",
+            sourceId: asset.id,
+            media: deliveryMedia(asset),
+          }, { onShared: post => { asset.communityPostId = post?.id || "shared"; } });
+        }
         card.querySelectorAll("[data-dvact]").forEach(b => b.addEventListener("click", async e => {
           e.stopPropagation();
           const act = b.dataset.dvact;
+          if (act === "preview") openDeliveryPreview(asset);
           if (act === "copy") copyText((asset.title || "") + "\n\n" + (asset.copy || ""), "已复制标题+文案");
           if (act === "download") { await downloadDelivery(asset, { markDownloaded: false }); toast("已下载 " + asset.name); }
+          if (act === "community") {
+            openCommunityShare({
+              authorId: asset.byMemberId || productionById(asset.productionId)?.ownerId || "",
+              sourceKind: "delivery",
+              sourceId: asset.id,
+              title: asset.title || asset.name || "星阵灵感",
+              copy: asset.copy || "",
+              prompt: asset.prompt || asset.promptText || "",
+              category: asset.type === "图集" ? "视觉设计" : "视频灵感",
+              media: deliveryMedia(asset),
+              trigger: b,
+              onShared: post => { asset.communityPostId = post?.id || "shared"; },
+            });
+          }
           if (act === "remarks") await openDeliveryRemarks(asset);
           if (act === "review") { const on = toggleAdminReviewed(asset); toast(on ? "已标记为「已审阅」" : "已取消「已审阅」"); draw(); }
           if (act === "delete") {
@@ -790,7 +849,7 @@ export const deliveryView = {
                   : `<span class="sup-views-readonly" title="供应商同步的曝光量">${Number(asset.exposureCount || 0).toLocaleString()}</span>`}</td>
                 <td><span class="sup-status ${returnState.statusClass}">${returnState.statusText}</span></td>
                 <td class="sup-acts">
-                  <div class="sup-actions-inner"><button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
+                  <div class="sup-actions-inner"><button class="btn ghost sm" data-suppreview="${asset.id}">${icon("eye", 13)} 预览</button><button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
                   ${isSupplierRole && asset.publishedUrl ? `<a class="btn ghost sm sup-row-jump-link" href="${esc(asset.publishedUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转链接</a>` : ""}
                   ${isSupplierRole ? `<button class="btn ghost sm delivery-remark-button" data-supremarks="${asset.id}">${icon("fileText", 13)} 备注${remarkDot(asset)}</button>` : ""}
                   ${isSupplierRole
@@ -877,6 +936,11 @@ export const deliveryView = {
           await downloadDelivery(a, { markDownloaded: isSupplierRole });
           toast("已下载 " + a.name); draw();
         }
+      }));
+      $$("[data-suppreview]", body).forEach(button => button.addEventListener("click", event => {
+        event.stopPropagation();
+        const asset = state.assets.find(item => item.id === button.dataset.suppreview);
+        if (asset) openDeliveryPreview(asset);
       }));
       $$("[data-supviews]", body).forEach(b => b.addEventListener("click", async e => {
         e.stopPropagation();

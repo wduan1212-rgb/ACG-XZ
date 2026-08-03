@@ -4,17 +4,17 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260729-v122-team-3";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260802-v134-static-community-1";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences
-} from "./orchestrator.js?v=20260729-v122-static-1";
-import { renderMessage, boardRow } from "./cards.js?v=20260729-v122-static-1";
+} from "./orchestrator.js?v=20260802-v134-static-community-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260802-v134-static-community-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260728-v120-shell-13";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260802-v134-static-community-1";
 import { deliver } from "../domain/delivery.js?v=20260727-v118-7";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
@@ -163,16 +163,10 @@ export const agentView = {
           <main class="agw-conv">
             <div class="agw-msgs" id="agwMsgs"></div>
             <div class="agw-composer" id="agwComposer">
-              <div class="agw-input-card">
-                <textarea id="agwInput" rows="1" placeholder="描述量产需求，例如：选择3个久未发布的图文账号，每号3条…"></textarea>
-                <div class="agw-input-tools">
-                  <button class="icon-btn ghost" id="agwNewPanel" title="开启新量产面板">${icon("plus", 16)}</button>
-                  <label class="icon-btn ghost" title="上传上传图片">
-                    ${icon("upload", 16)}<input type="file" accept="image/*,video/*" multiple hidden id="agwUpload" />
-                  </label>
-                  <button class="agw-send" id="agwSend" title="发送">${icon("send", 16)}</button>
-                </div>
-              </div>
+              <button class="agw-new-board-button" id="agwNewPanel" type="button">${icon("plus", 16)} 新建任务板</button>
+              <textarea id="agwInput" hidden></textarea>
+              <input type="file" accept="image/*,video/*" multiple hidden id="agwUpload" />
+              <button id="agwSend" type="button" hidden></button>
             </div>
           </main>
 
@@ -560,7 +554,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260729-v122-static-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260802-v134-static-community-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -636,12 +630,6 @@ function wire(root) {
     input.value = ""; fit();
     await handleUserText(text);
   }
-
-  // composer 整体可拖图
-  wireDropZone($("#agwComposer", root), async files => {
-    const r = await routeMediaFiles(files);
-    reportRoute(r);
-  });
 
   const handlePlanPickClick = e => {
     const tagBtn = e.target.closest("[data-ptag]");
@@ -955,7 +943,7 @@ function wire(root) {
         break;
       }
       case "batch-image-edit": if (p) openBatchImageEditor(p, act.dataset.imageIndex); break;
-      case "batch-cover-edit": if (p && !p.staticVideo) openBatchVideoCoverEditor(p); break;
+      case "batch-cover-edit": if (p) openBatchVideoCoverEditor(p); break;
       case "batch-video-regenerate": {
         if (!p) break;
         if (p.staticVideo) {
@@ -1169,13 +1157,26 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
   const title = kind === "custom" ? "选择定制参考图" : kind === "cover" ? "选择统一视频参考图" : "选择统一参考图";
   const assets = imageAssetList(kind === "custom" ? accountId : "");
   const selected = new Set(planRefIds(m.payload, kind, accountId).slice(0, limit));
-  const accountName = accountId ? (state.accounts.find(a => a.id === accountId)?.name || "当前账号") : "";
+  const accountName = accountId ? accountDisplayName(state.accounts.find(a => a.id === accountId), "当前账号") : "";
   const sourceLabel = a => {
     const tags = (a.tags || []).join(" ");
     if (!a.accountId) return "公共素材池";
     if (/logo|图文风格参考|主界面|角色版/i.test(`${a.name || ""} ${tags}`)) return "账号固定素材";
     if (a.shared || /已发布生成图|站内生成|笔记图/.test(tags)) return "已发布生成图";
     return "账号素材";
+  };
+  const assetCardHtml = a => {
+    const u = urlFor(a);
+    const on = selected.has(a.id);
+    const source = sourceLabel(a);
+    const deletable = canDeleteReferenceAsset(a);
+    return `<div class="asset-pick-card ${on ? "on" : ""}" data-asset-pick="${a.id}" role="button" tabindex="0" title="${esc(a.name || "参考图")}">
+      <span class="asset-pick-thumb">${u ? `<img src="${u}" alt="${esc(a.name || "参考图")}" />` : `<i>${esc((a.name || "图").slice(0, 1))}</i>`}</span>
+      <b>${esc(a.name || "未命名图片")}</b>
+      <em>${esc(source)}</em>
+      <span class="asset-pick-check">${icon("check", 13)}</span>
+      ${deletable ? `<button class="asset-pick-delete" data-asset-del="${a.id}" title="删除这张参考图">${icon("trash", 12)}</button>` : ""}
+    </div>`;
   };
   const html = `
     <div class="mp-head">
@@ -1187,21 +1188,14 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
         <span>${kind === "custom" ? esc(accountName) + " · " : ""}最多 ${limit} 张</span>
         <em data-ap-count>${selected.size}/${limit}</em>
       </div>
-      ${assets.length ? `<div class="asset-picker-grid">
-        ${assets.map(a => {
-          const u = urlFor(a);
-          const on = selected.has(a.id);
-          const source = sourceLabel(a);
-          const deletable = canDeleteReferenceAsset(a);
-          return `<div class="asset-pick-card ${on ? "on" : ""}" data-asset-pick="${a.id}" role="button" tabindex="0" title="${esc(a.name || "参考图")}">
-            <span class="asset-pick-thumb">${u ? `<img src="${u}" alt="${esc(a.name || "参考图")}" />` : `<i>${esc((a.name || "图").slice(0, 1))}</i>`}</span>
-            <b>${esc(a.name || "未命名图片")}</b>
-            <em>${esc(source)}</em>
-            <span class="asset-pick-check">${icon("check", 13)}</span>
-            ${deletable ? `<button class="asset-pick-delete" data-asset-del="${a.id}" title="删除这张参考图">${icon("trash", 12)}</button>` : ""}
-          </div>`;
-        }).join("")}
-      </div>` : `<div class="asset-picker-empty">${icon("image", 20)}<b>资产库暂无可选图片</b><p>可以先用拖入 / 上传区域补充参考图。</p></div>`}
+      <label class="asset-picker-upload" data-ap-upload-zone>
+        ${icon("upload", 18)}
+        <span><b>拖入图片或点击上传</b><em>上传后自动加入本次选择</em></span>
+        <input type="file" accept="image/*" multiple hidden data-ap-upload />
+      </label>
+      <div class="asset-picker-grid" data-ap-grid>
+        ${assets.length ? assets.map(assetCardHtml).join("") : `<div class="asset-picker-empty" data-ap-empty>${icon("image", 20)}<b>资产库暂无可选图片</b><p>可以直接拖入或点击上传参考图。</p></div>`}
+      </div>
     </div>
     <div class="mp-foot">
       <button class="btn ghost" data-close>取消</button>
@@ -1215,7 +1209,52 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
         const count = panel.querySelector("[data-ap-count]");
         if (count) count.textContent = `${selected.size}/${limit}`;
         panel.querySelectorAll("[data-asset-pick]").forEach(btn => btn.classList.toggle("on", selected.has(btn.dataset.assetPick)));
+        const grid = panel.querySelector("[data-ap-grid]");
+        if (grid && !grid.querySelector("[data-asset-pick]") && !grid.querySelector("[data-ap-empty]")) {
+          grid.innerHTML = `<div class="asset-picker-empty" data-ap-empty>${icon("image", 20)}<b>资产库暂无可选图片</b><p>可以直接拖入或点击上传参考图。</p></div>`;
+        }
       };
+      const addUploadedImages = async files => {
+        const remaining = Math.max(0, limit - selected.size);
+        const images = Array.from(files || []).filter(file => file?.type?.startsWith("image/")).slice(0, remaining);
+        if (!images.length) {
+          toast(remaining ? "请选择图片文件" : `最多选择 ${limit} 张参考图`);
+          return;
+        }
+        const { fileToDataUrl } = await import("../core/util.js");
+        const { addAssetFromDataUrl } = await import("../domain/assets.js");
+        const grid = panel.querySelector("[data-ap-grid]");
+        let added = 0;
+        for (const file of images) {
+          try {
+            const dataUrl = await fileToDataUrl(file);
+            const asset = await addAssetFromDataUrl(kind === "custom" ? accountId : null, {
+              name: file.name || (kind === "custom" ? "批量定制参考图" : "批量统一参考图"),
+              tags: ["参考图", kind === "custom" ? "定制参考" : kind === "cover" ? "视频统一参考" : "统一参考"],
+              dataUrl,
+              forceNew: kind !== "custom",
+            });
+            selected.add(asset.id);
+            if (grid && !grid.querySelector(`[data-asset-pick="${asset.id}"]`)) {
+              grid.querySelector("[data-ap-empty]")?.remove();
+              grid.insertAdjacentHTML("afterbegin", assetCardHtml(asset));
+            }
+            added += 1;
+          } catch (error) {
+            console.warn("参考图上传失败", error);
+          }
+        }
+        sync();
+        toast(added ? `已上传并选中 ${added} 张参考图` : "参考图上传失败，请重试");
+      };
+      const uploadZone = panel.querySelector("[data-ap-upload-zone]");
+      const pickerSurface = panel.querySelector(".asset-picker");
+      if (pickerSurface) wireDropZone(pickerSurface, addUploadedImages, { filesOnly: true });
+      if (uploadZone) wireDropZone(uploadZone, addUploadedImages, { filesOnly: true });
+      panel.querySelector("[data-ap-upload]")?.addEventListener("change", event => {
+        addUploadedImages(event.target.files);
+        event.target.value = "";
+      });
       panel.addEventListener("click", e => {
         const del = e.target.closest("[data-asset-del]");
         if (del) {

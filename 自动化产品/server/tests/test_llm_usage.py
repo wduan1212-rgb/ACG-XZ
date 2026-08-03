@@ -73,7 +73,7 @@ class LlmUsageStoreTest(unittest.TestCase):
         source = Path(main.__file__).read_text(encoding="utf-8")
         self.assertIn('/api/llm/image-reference-plan', source)
         self.assertIn("不要详细复述附件里的颜色、物体、人物或文字", source)
-        self.assertIn('_record_model_api_usage(_me, "image", "图片生成"', source)
+        self.assertIn('_record_model_api_usage(member, "image", "图片生成"', source)
         self.assertIn('_record_model_api_usage(_me, "video", "视频生成"', source)
 
 

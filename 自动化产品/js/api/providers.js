@@ -77,6 +77,12 @@ function creatorAuthHeaders(headers = {}) {
   return token ? { ...headers, Authorization: `Bearer ${token}` } : { ...headers };
 }
 
+function generationOperationKey(prefix = "generation") {
+  const random = globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  return `${prefix}-${random}`;
+}
+
 async function readResponsePayload(res) {
   const raw = await res.text().catch(() => "");
   if (!raw) return { data: null, message: `HTTP ${res.status}` };
@@ -531,6 +537,8 @@ registerProvider({
   label: "Seedance",
   capabilities: { ratios: ["9:16", "16:9"], maxDuration: 15, refImages: true, characterLock: true },
   async submit({ prompt, refs, ratio, duration, generateAudio, model }) {
+    const operationKey = globalThis.crypto?.randomUUID?.()
+      || `video-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const cleanRefs = [];
     for (const ref of refs || []) {
       if (cleanRefs.length >= 15) break;
@@ -545,7 +553,10 @@ registerProvider({
     try {
       res = await fetch("/api/video/submit", {
         method: "POST",
-        headers: creatorAuthHeaders({ "Content-Type": "application/json" }),
+        headers: creatorAuthHeaders({
+          "Content-Type": "application/json",
+          "Idempotency-Key": operationKey
+        }),
         body: JSON.stringify({ prompt, refs: cleanRefs, ratio, duration: duration || 15, generateAudio, model: model || "" })
       });
     } catch (e) {
@@ -619,6 +630,10 @@ registerProvider({
       throw imageReferenceReceiptUnavailableError(preflightReceipt);
     }
     const body = {
+      // postJsonWithFallback may retry the same logical submit against a
+      // second local API candidate. Reuse this provider ref so the server can
+      // reject an already-active/settled replay instead of charging twice.
+      idempotencyKey: ref,
       model: model || serverImage.model || "custom-imagemodel-gt",
       prompt,
       refs: preparedRefs.map(r => ({
@@ -694,16 +709,17 @@ function normalizeTtsErrorMessage(message = "") {
   return msg;
 }
 
-export async function synthesizeTts({ text, voiceId, speed = 1.2, vol = 1, pitch = 0 }) {
+export async function synthesizeTts({ text, voiceId, speed = 1.2, vol = 1, pitch = 0, idempotencyKey = "" }) {
   if (!serverTts.configured) throw new Error("服务器未配置 Minimax TTS");
   const cleanText = sanitizeXhsText(text);
   if (!cleanText) throw new Error("口播文本为空");
+  const requestKey = idempotencyKey || generationOperationKey("tts");
   let res;
   try {
     res = await fetch("/api/tts/generate", {
       method: "POST",
       headers: creatorAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ text: cleanText, voiceId, speed, vol, pitch })
+      body: JSON.stringify({ text: cleanText, voiceId, speed, vol, pitch, idempotencyKey: requestKey })
     });
   } catch (e) {
     throw new Error("连不上本地服务端 /api/tts/generate —— 请确认用 start-shared.command（python 服务端）打开、且改完后已重启它（" + (e.message || e) + "）");
@@ -713,7 +729,7 @@ export async function synthesizeTts({ text, voiceId, speed = 1.2, vol = 1, pitch
   return data;
 }
 
-export async function designTtsVoice({ prompt, previewText, name = "" }) {
+export async function designTtsVoice({ prompt, previewText, name = "", idempotencyKey = "" }) {
   if (!serverTts.configured) throw new Error("服务器未配置 Minimax TTS");
   const cleanPrompt = sanitizeXhsText(prompt);
   const cleanPreview = sanitizeXhsText(previewText);
@@ -723,12 +739,19 @@ export async function designTtsVoice({ prompt, previewText, name = "" }) {
       ? "male"
       : "";
   if (!cleanPrompt) throw new Error("请先填写音色设计描述");
+  const requestKey = idempotencyKey || generationOperationKey("voice-design");
   let res;
   try {
     res = await fetch("/api/tts/voice/design", {
       method: "POST",
       headers: creatorAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify({ prompt: cleanPrompt, previewText: cleanPreview, name: sanitizeXhsText(name), gender })
+      body: JSON.stringify({
+        prompt: cleanPrompt,
+        previewText: cleanPreview,
+        name: sanitizeXhsText(name),
+        gender,
+        idempotencyKey: requestKey
+      })
     });
   } catch (e) {
     throw new Error("连不上本地服务端 /api/tts/voice/design —— 请确认用 start-shared.command（python 服务端）打开、且改完后已重启它（" + (e.message || e) + "）");

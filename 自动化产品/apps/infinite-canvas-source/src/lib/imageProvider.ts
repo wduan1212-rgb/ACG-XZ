@@ -160,6 +160,8 @@ export interface GeneratedImage {
   height: number;
   label: string;
   variant: number;
+  /** Server-signed owner/hash proof that generation billing already settled. */
+  generationReceipt?: string;
 }
 
 export interface GenerateOptions {
@@ -172,6 +174,8 @@ export interface GenerateOptions {
   negativePrompt?: string;
   quality?: string; // auto|high|medium|low
   references?: string[]; // reference image data URLs (edit endpoint)
+  /** Stable logical-operation key used by platform quota reservation. */
+  idempotencyKey?: string;
 }
 
 /**

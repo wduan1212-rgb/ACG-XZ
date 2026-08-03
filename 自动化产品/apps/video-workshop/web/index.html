@@ -12,14 +12,19 @@
           && window.parent !== window
         );
         if (embedded) {
+          document.documentElement.classList.add("app-booting");
           document.documentElement.dataset.platformEmbedded = "true";
           document.documentElement.dataset.platformWorkspace = "true";
           document.querySelector('meta[name="theme-color"]')?.setAttribute("content", "#ffffff");
         }
       })();
     </script>
+    <style>
+      html.app-booting { background: #fff; }
+      html.app-booting body { visibility: hidden; }
+    </style>
     <link rel="icon" type="image/png" href="/assets/xingzhen-logo-white.png" />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260729-v122-static-1" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260802-v134-static-community-1" />
     <style>
       /* 主平台嵌入态由外层工作区负责一级导航，内部只保留创作、素材与成片能力。 */
       html[data-platform-workspace="true"] {
@@ -306,8 +311,8 @@
               <div class="attachment-strip" data-attachment-strip></div>
             </div>
             <div class="creation-mode-switch start-mode-switch" role="group" aria-label="创作模式">
-              <button type="button" class="active" data-creation-mode="video" aria-pressed="true">正常视频</button>
-              <button type="button" data-creation-mode="static" aria-pressed="false">静态视频</button>
+              <button type="button" class="active" data-creation-mode="video" aria-pressed="true">动态</button>
+              <button type="button" data-creation-mode="static" aria-pressed="false">静态</button>
             </div>
             <div class="skill-menu is-hidden" data-skill-menu></div>
           </form>
@@ -416,10 +421,13 @@
                     <i data-lucide="plus"></i>
                   </button>
                   <div class="creation-mode-switch" role="group" aria-label="创作模式">
-                    <button type="button" class="active" data-creation-mode="video" aria-pressed="true">正常视频</button>
-                    <button type="button" data-creation-mode="static" aria-pressed="false">静态视频</button>
+                    <button type="button" class="active" data-creation-mode="video" aria-pressed="true">动态</button>
+                    <button type="button" data-creation-mode="static" aria-pressed="false">静态</button>
                   </div>
-                  <span class="chat-composer-hint">图片、视频或音频</span>
+                  <button class="project-assets-button" id="projectAssetsButton" type="button" hidden>
+                    <i data-lucide="folder-open"></i>
+                    <span>项目资产</span>
+                  </button>
                   <button class="icon-button submit-button" type="submit" aria-label="发送" title="发送">
                     <i data-lucide="arrow-up"></i>
                   </button>
@@ -448,7 +456,7 @@
       <div class="history-delivery-backdrop" data-history-delivery-close></div>
       <section class="history-delivery-panel" role="dialog" aria-modal="true" aria-labelledby="historyDeliveryTitle">
         <header>
-          <div><span>DELIVERY ARCHIVE</span><h2 id="historyDeliveryTitle">历史成片</h2></div>
+          <div><span>PROJECT ASSETS</span><h2 id="historyDeliveryTitle">项目资产</h2></div>
           <div class="history-delivery-tools">
             <select id="historyDeliveryFilter" aria-label="筛选历史成片" hidden>
               <option value="all">全部</option>
@@ -466,7 +474,7 @@
                 <button type="button" role="menuitemradio" aria-checked="false" data-history-filter-value="unpublished"><i data-lucide="check"></i><span>未发布</span></button>
               </div>
             </details>
-            <button class="icon-button quiet" type="button" data-history-delivery-close aria-label="关闭历史成片"><i data-lucide="x"></i></button>
+            <button class="icon-button quiet" type="button" data-history-delivery-close aria-label="关闭项目资产"><i data-lucide="x"></i></button>
           </div>
         </header>
         <div class="history-delivery-list" id="historyDeliveryList"></div>
@@ -483,6 +491,6 @@
     <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,.m4a" multiple hidden />
     <div class="toast" id="toast" role="status"></div>
     <script src="/assets/lucide.min.js"></script>
-    <script src="/assets/app.js?v=20260729-v122-static-1"></script>
+    <script src="/assets/app.js?v=20260802-v134-static-community-1"></script>
   </body>
 </html>

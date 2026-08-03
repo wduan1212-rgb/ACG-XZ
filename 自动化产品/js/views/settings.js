@@ -3,9 +3,9 @@
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, currentMember, currentTeam, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260729-v122-team-3";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260802-v134-static-community-1";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260728-v120-shell-20";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260802-v132-supplier-loading-1";
 
 const ROLE_DESC = { admin: "团队管理员", editor: "创作成员", user: "个人用户", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor"];
@@ -115,6 +115,14 @@ function renderTeamJoin(root) {
             <span><b>团队套餐</b><em>${team.quotaMode === "unlimited" ? "无限额度" : "共享额度"}</em></span>
             <span><b>已解锁</b><em>全部团队功能</em></span>
           </div>
+          ${team.role === "owner" && team.kind !== "internal" ? `
+            <form class="team-rename-form" id="teamRenameForm">
+              <label class="field">团队名称
+                <input class="input" id="teamRenameName" value="${esc(team.name || "")}" maxlength="80" required />
+              </label>
+              <button class="btn primary" id="teamRenameSubmit" type="submit">${icon("check", 14)} 保存团队名称</button>
+            </form>
+          ` : `<p class="team-name-managed">${team.kind === "internal" ? "ACG 市场部名称由平台统一维护。" : "只有团队所有者可以修改团队名称。"}</p>`}
           <button class="btn ghost" type="button" data-team-profile>${icon("user", 14)} 返回个人资料</button>
         ` : `
           <form class="team-join-form" id="teamJoinForm">
@@ -134,6 +142,26 @@ function renderTeamJoin(root) {
       </section>
     </div>`;
     root.querySelector("[data-team-profile]")?.addEventListener("click", () => { location.hash = "#/settings/profile"; });
+    $("#teamRenameForm", root)?.addEventListener("submit", async event => {
+      event.preventDefault();
+      const name = $("#teamRenameName", root)?.value.trim() || "";
+      if (!name) { toast("请输入团队名称"); return; }
+      const button = $("#teamRenameSubmit", root);
+      if (button) button.disabled = true;
+      try {
+        const result = await remote.teams.rename(name);
+        const savedMember = result?.member;
+        if (savedMember?.id) {
+          state.members = state.members.map(item => item.id === savedMember.id ? savedMember : item);
+          saveMembers();
+        }
+        toast("团队名称已更新");
+        renderTeamJoin(root);
+      } catch (error) {
+        if (button) button.disabled = false;
+        toast("保存失败：" + (error?.message || error));
+      }
+    });
     $("#teamJoinForm", root)?.addEventListener("submit", async event => {
       event.preventDefault();
       const name = $("#teamJoinName", root)?.value.trim() || "";
@@ -195,12 +223,15 @@ export const settingsView = {
     let teamJoinRequests = [];
     let teamSupplierAccounts = [];
     let teamSuppliersLoaded = false;
+    let platformAccounts = { personal: [], teamOwners: [] };
+    let platformAccountsLoaded = false;
     let requestsLoaded = false;
     let apiUsageRows = [];
     let apiUsageLoaded = false;
     let apiUsageLoading = false;
     let productLibraryOpen = managementPage === "products";
     const canReviewRegistrations = () => remote.isOn() && team?.kind === "internal" && canManageTeam;
+    const canReviewPlatformAccounts = () => remote.isOn() && team?.kind === "internal" && canManageTeam;
     const canReviewTeamRequests = () => remote.isOn() && canManageTeam;
     const canReviewRequests = () => canReviewRegistrations() || canReviewTeamRequests();
     const canSeeApiUsage = () => remote.isOn() && state.role === "admin";
@@ -293,7 +324,21 @@ export const settingsView = {
                   <button class="btn ghost sm" type="button" data-team-supplier-password="${esc(account.id)}">${icon("keyRound", 13)} 设置新密码</button>
                 </div>`).join("") : `<div class="muted" style="padding:8px 2px">当前团队尚未绑定供应商管理员。</div>`}
             </div>
-          </section>` : ""}
+          </section>
+          ${canReviewPlatformAccounts() ? `<section class="card set-data platform-account-overview">
+            <div class="card-head"><span><b>平台账号概览</b><em>仅显示安全身份与套餐摘要，不回显密码、凭证或业务数据</em></span></div>
+            ${!platformAccountsLoaded ? `<div class="muted" style="padding:8px 2px">正在读取平台账号...</div>` : `
+              <div class="settings-request-section">
+                <div class="settings-request-title"><b>无主个人账号</b><span>${platformAccounts.personal.length} 个</span></div>
+                <div class="mem-list">${platformAccounts.personal.length ? platformAccounts.personal.map(account => `
+                  <div class="mem-row"><span class="ovt-main"><b>${esc(account.name || "个人用户")}</b><em>@${esc(account.username || "")} · 每日 70 点，当日清零</em></span><span class="tag user">个人用户</span></div>`).join("") : `<div class="muted" style="padding:8px 2px">暂无独立个人账号。</div>`}</div>
+              </div>
+              <div class="settings-request-section">
+                <div class="settings-request-title"><b>团队版账号</b><span>${platformAccounts.teamOwners.length} 个</span></div>
+                <div class="mem-list">${platformAccounts.teamOwners.length ? platformAccounts.teamOwners.map(account => `
+                  <div class="mem-row"><span class="ovt-main"><b>${esc(account.teamName || "团队")}</b><em>所有者 ${esc(account.name || "用户")} · @${esc(account.username || "")}</em></span><span class="tag admin">${account.plan === "team-pro" ? "团队专业版" : "团队版"}</span></div>`).join("") : `<div class="muted" style="padding:8px 2px">暂无已开通的外部团队。</div>`}</div>
+              </div>`}
+          </section>` : ""}` : ""}
 
           ${managementPage === "usage" ? `<section class="card set-data api-usage-panel" id="apiUsagePanel">
             <div class="card-head"><span><b>创作者模型用量</b><em>语言显示真实 Token；图片/视频显示成功调用与输出单位，不估算历史消耗</em></span>
@@ -637,6 +682,20 @@ export const settingsView = {
         toast("读取团队供应商账号失败：" + (error?.message || error));
         draw();
       });
+      if (canReviewPlatformAccounts()) {
+        remote.admin.platformAccounts().then(result => {
+          platformAccounts = {
+            personal: Array.isArray(result?.personal) ? result.personal : [],
+            teamOwners: Array.isArray(result?.teamOwners) ? result.teamOwners : [],
+          };
+          platformAccountsLoaded = true;
+          draw();
+        }).catch(error => {
+          platformAccountsLoaded = true;
+          toast("读取平台账号失败：" + (error?.message || error));
+          draw();
+        });
+      }
     }
     if (managementPage === "requests") loadRequests();
     if (managementPage === "usage") loadApiUsage();

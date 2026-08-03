@@ -2619,10 +2619,19 @@ ${productRelationLine(rel.slice(0, 2))}
     return cleanText(`9:16 竖图，${styleTxt}。画面内容：${v}。镜头：中近景、固定机位、人物三分位画面结构；光线：正面偏侧暖色柔光；界面元素：${productName}产品界面，界面文字精简、大字号、清晰可读；主体动作与表情：自然放松、看向镜头或界面；背景：简洁办公桌面、浅景深虚化。${refTxt}无字幕、不叠加标题花字，不要二维码、不要乱码、不要密集小字、不要 emoji。`);
   },
 
-  async generateStoryboardPrompts({ shots, account, style, sharedRefName, product = null }) {
+  async generateStoryboardPrompts({
+    shots,
+    account,
+    style,
+    sharedRefName,
+    product = null,
+    aspectRatio = "9:16",
+    creationMode = "video",
+  }) {
     const refLine = sharedRefName ? `所有分镜图统一参考「${sharedRefName}」，保持品牌/角色一致。` : "";
     const productName = chineseProductDisplayName(product);
-    const sys = `你是${productName}视频分镜图设计师。脚本每个镜头对应生成一张静态分镜图(9:16竖图)的画面提示词，数量必须与脚本镜头数完全一致、不能少、不能留空。${style ? "统一风格：" + style + "。" : "默认白底极简、蓝紫渐变品牌色、圆角卡片 UI、大留白。"}${refLine}写每条前，先把脚本那句画面在脑内具象化成一个完整真实场景（空间环境里有什么物件、光线从哪来、人物正在做哪个具体动作、屏幕里显示什么文字数据），脚本一句话至少扩成 3-5 个可落地的具体视觉细节。每条都要非常具体：景别(中近景/特写/全景)、机位与画面结构、人物动作与表情、界面里出现的具体文字、配色、光线方向与冷暖、背景元素、产品界面出现位置。整体偏教程、专业、可信，不是信息流硬广，画面干净克制。画面里不要叠加字幕/标题/花字(产品界面本身自带的少量UI文字可以)。禁止使用『电影感/高级感/种草感/氛围感/科技感』等抽象词，要把这种感觉翻译成具体画面结构/光线/景深来写。不要 emoji、不要二维码、不要乱码。只输出 JSON：{"shots":[{"prompt":"..."}]}，shots 数量=脚本镜头数。`;
+    const staticMode = creationMode === "static";
+    const sys = `你是${productName}${staticMode ? "静态视频图片分镜" : "视频分镜图"}设计师。脚本每个镜头对应生成一张${aspectRatio}画幅的完整分镜图，数量必须与脚本镜头数完全一致、不能少、不能留空。${style ? "整条片固定统一风格：" + style + "。" : "整条片使用统一、真实、克制的商业纪实风格。"}${refLine}写每条前，先把脚本那句画面具象化成一个完整真实场景（空间环境、主体、光线、动作瞬间和关键证据），脚本一句话至少扩成 3-5 个可落地视觉细节。每条都要具体写清：景别、机位与画面结构、主体姿态和表情、配色、光线方向、背景元素与关键视觉证据。${staticMode ? "这些图片会直接轻微居中推近后组成成片，所以每张必须单帧成立、主体位于安全区，不能写运镜、连续动作、视频模型或 Seedance 指令。" : ""}画面里不要叠加字幕、标题或花字。固定负面约束：不要水印、二维码、乱码、畸形手指、重复主体、风格漂移和画幅外黑边。禁止只写电影感、高级感、科技感等抽象词，必须翻译成具体构图、光线和材质。只输出 JSON：{"shots":[{"prompt":"..."}]}，shots 数量=脚本镜头数。`;
     try {
       const content = await llm([
         { role: "system", content: baseProductFacts(product) + productBrief(product) + "\n\n" + sys },

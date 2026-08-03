@@ -2,15 +2,19 @@
 
 import { $, $$, esc, buildZipBlob, downloadBlob, wireDropZone } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, accountById } from "../core/store.js";
+import { state, save, accountById, currentMember, currentTeam } from "../core/store.js";
+import { community } from "../core/remote.js";
 import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile, inferAssetFileMeta, isBgmAsset, isEditingMaterialAsset } from "../domain/assets.js";
 import { downloadAsset } from "../domain/delivery.js?v=20260728-v120-shell-20";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260729-v122-team-3";
-import { renderSupplierAccounts } from "./supplierViews.js?v=20260728-v120-shell-20";
+import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260802-v134-static-community-1";
+import { renderSupplierAccounts } from "./supplierViews.js?v=20260802-v132-supplier-loading-1";
 
-let fAcc = "all", fQ = "", fKind = "all", libraryMode = "drafts", collapseInitialized = false;
+let fAcc = "all", fQ = "", fKind = "all", fSource = "all", fBackendKind = "bgm", libraryMode = "drafts", collapseInitialized = false;
 let activeAssetsController = null;
+let favoritePosts = [];
+let favoritePostsMemberId = "";
+let favoritePostsLoading = false;
 const collapsedAcc = new Set();
 const isSharedAsset = a => !!a?.delivered || !!a?.shared;
 const assetKind = a => a.type === "音频"
@@ -23,23 +27,29 @@ const accountArchivableAssets = accountId => state.assets
   .filter(a => isSharedAsset(a) && a.accountId === accountId && ["图片", "视频"].includes(a.type) && !isAvatarAsset(a))
   .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 export const ASSET_LIBRARY_OPTIONS = Object.freeze([
-  Object.freeze({ key: "shared", label: "账号资产", shortLabel: "账号资产" }),
   Object.freeze({ key: "drafts", label: "草稿箱", shortLabel: "草稿箱" }),
-  Object.freeze({ key: "bgm", label: "BGM 库", shortLabel: "BGM" }),
-  Object.freeze({ key: "material", label: "剪辑素材库", shortLabel: "剪辑素材" }),
-  Object.freeze({ key: "voice", label: "语音素材库", shortLabel: "语音素材" }),
-  Object.freeze({ key: "reference", label: "总参考音频库", shortLabel: "参考音频" }),
+  Object.freeze({ key: "shared", label: "账号资产", shortLabel: "账号资产" }),
+  Object.freeze({ key: "favorites", label: "收藏夹", shortLabel: "收藏夹" }),
+  Object.freeze({ key: "backend", label: "后台素材", shortLabel: "后台素材" }),
 ]);
 const libraryLabels = Object.fromEntries(ASSET_LIBRARY_OPTIONS.map(option => [option.key, option.label]));
 const assetLibraryKeys = new Set(ASSET_LIBRARY_OPTIONS.map(option => option.key));
-const libraryTabsHtml = () => `<div class="asset-library-tabs text-switch"><button class="${libraryMode === "shared" ? "on is-active" : ""}" data-library="shared">账号资产</button><button class="${libraryMode === "drafts" ? "on is-active" : ""}" data-library="drafts">草稿箱</button><button class="${libraryMode === "bgm" ? "on is-active" : ""}" data-library="bgm">BGM</button><button class="${libraryMode === "material" ? "on is-active" : ""}" data-library="material">剪辑素材</button><button class="${libraryMode === "voice" ? "on is-active" : ""}" data-library="voice">语音素材</button><button class="${libraryMode === "reference" ? "on is-active" : ""}" data-library="reference">参考音频</button></div>`;
-// “全局”仅表示跨账号平铺；私有语音/参考音频仍由 searchAssets 的 ownedBy 边界隔离。
-const isGlobalLibrary = () => ["bgm", "material", "voice", "reference"].includes(libraryMode);
+const isPersonalLibrary = () => state.role === "user";
+const hasProfessionalAssetFilters = () => {
+  const member = currentMember();
+  const plan = String(member?.plan || member?.subscription || "").toLowerCase();
+  return Boolean(currentTeam()?.id || currentTeam()?.name)
+    || ["pro", "professional", "personal-pro", "personal-high", "team", "team-pro"].includes(plan);
+};
+const visibleLibraryOptions = () => ASSET_LIBRARY_OPTIONS;
+const libraryTabsHtml = () => `<div class="asset-library-tabs text-switch">${visibleLibraryOptions().map(option => `<button class="${libraryMode === option.key ? "on is-active" : ""}" data-library="${option.key}">${option.shortLabel}</button>`).join("")}</div>`;
+// 后台素材是团队共享的 BGM / 剪辑素材池；收藏夹始终严格绑定当前成员。
+const isGlobalLibrary = () => libraryMode === "backend";
 
 export function getAssetLibraryModel() {
   return {
     value: libraryMode,
-    options: ASSET_LIBRARY_OPTIONS.map(option => ({ ...option })),
+    options: visibleLibraryOptions().map(option => ({ ...option })),
   };
 }
 
@@ -50,6 +60,24 @@ function emitAssetLibraryModel() {
   }));
 }
 
+async function refreshFavoritePosts(redraw) {
+  const memberId = String(currentMember()?.id || "");
+  if (!memberId || favoritePostsLoading) return;
+  favoritePostsLoading = true;
+  if (favoritePostsMemberId !== memberId) favoritePosts = [];
+  try {
+    const response = await community.favorites(80);
+    favoritePosts = Array.isArray(response?.items) ? response.items : [];
+    favoritePostsMemberId = memberId;
+  } catch (_) {
+    favoritePosts = [];
+    favoritePostsMemberId = memberId;
+  } finally {
+    favoritePostsLoading = false;
+    if (typeof redraw === "function" && libraryMode === "favorites") redraw();
+  }
+}
+
 export function setAssetLibraryMode(nextMode, { redraw = true, resetKind = true } = {}) {
   const normalized = String(nextMode || "").trim();
   if (!assetLibraryKeys.has(normalized)) return getAssetLibraryModel();
@@ -57,6 +85,7 @@ export function setAssetLibraryMode(nextMode, { redraw = true, resetKind = true 
   libraryMode = normalized;
   if (changed && resetKind) {
     fKind = "all";
+    fSource = "all";
     fQ = "";
   }
   if (redraw && activeAssetsController?.draw) activeAssetsController.draw();
@@ -108,6 +137,20 @@ export const assetsView = {
       state.ui.assetsIncludePrivate = false;
       save("meta");
     }
+    const mountTopDock = () => {
+      const topDock = $(".head-actions", root);
+      const topbar = document.querySelector(".topbar");
+      const topActions = document.querySelector(".top-actions");
+      if (!topDock || !topbar || !topActions) return;
+      topDock.id = "assetsTopDock";
+      topDock.classList.add("topbar-assets-dock");
+      topbar.insertBefore(topDock, topActions);
+    };
+    const wireLibraryTabs = () => {
+      $$('[data-library]', $("#assetsTopDock") || root).forEach(button => button.addEventListener("click", () => {
+        setAssetLibraryMode(button.dataset.library);
+      }));
+    };
     const draw = () => {
       root.__assetDropController?.abort();
       root.__assetDropController = null;
@@ -116,37 +159,47 @@ export const assetsView = {
       $("#assetsTopDock")?.remove();
       if (libraryMode === "drafts") {
         root.innerHTML = `<div class="assets-page"><div class="page-head"><div><div class="eyebrow">整体资产</div><h2>草稿箱</h2></div><div class="head-actions">${libraryTabsHtml()}</div></div><div class="asset-mode-stage" id="assetDraftsHost"></div></div>`;
-        const topDock = $(".head-actions", root);
-        const topbar = document.querySelector(".topbar");
-        const topActions = document.querySelector(".top-actions");
-        if (topDock && topbar && topActions) {
-          topDock.id = "assetsTopDock";
-          topDock.classList.add("topbar-assets-dock");
-          topbar.insertBefore(topDock, topActions);
-        }
-        $$('[data-library]', $("#assetsTopDock") || root).forEach(button => button.addEventListener("click", () => {
-          setAssetLibraryMode(button.dataset.library);
-        }));
-        import("./draftsView.js?v=20260728-v120-shell-13").then(({ draftsView }) => {
+        mountTopDock();
+        wireLibraryTabs();
+        import("./draftsView.js?v=20260802-v134-static-community-1").then(({ draftsView }) => {
           const host = $("#assetDraftsHost", root);
           if (host) draftsView.render(host);
         });
         return;
       }
-      let list = searchAssets({ accountId: isGlobalLibrary() ? "all" : fAcc, tag: "all", q: fQ, includeDelivered: true })
+      if (libraryMode === "favorites") {
+        const memberId = String(currentMember()?.id || "");
+        if (favoritePostsMemberId !== memberId && !favoritePostsLoading) {
+          queueMicrotask(() => refreshFavoritePosts(draw));
+        }
+        root.innerHTML = `<div class="assets-page"><div class="page-head"><div><div class="eyebrow">整体资产</div><h2>收藏夹</h2></div><div class="head-actions">${libraryTabsHtml()}</div></div><div class="asset-mode-stage" id="avBody">${renderFavorites()}</div></div>`;
+        mountTopDock();
+        wireLibraryTabs();
+        $$('[data-favorite-post]', root).forEach(card => card.addEventListener("click", () => {
+          const post = favoritePosts.find(item => String(item.id) === String(card.dataset.favoritePost));
+          if (post) openFavoritePost(post);
+        }));
+        return;
+      }
+      let list = searchAssets({ accountId: isGlobalLibrary() || isPersonalLibrary() ? "all" : fAcc, tag: "all", q: fQ, includeDelivered: true })
         .filter(a => !isAvatarAsset(a))
         .filter(a => libraryMode === "shared"
-          ? (includeAccountPrivate && fAcc !== "all" ? a.accountId === fAcc : isSharedAsset(a))
-          : libraryMode === "bgm"
-            ? isBgmAsset(a)
-            : libraryMode === "material"
-              ? isEditingMaterialAsset(a)
-              : libraryMode === "voice"
-                ? (a.type === "音频" && (a.tags || []).some(t => /语音素材库|口播|tts/i.test(t)) && !(a.tags || []).some(t => /参考音频库/i.test(t)))
-                : (a.type === "音频" && (a.tags || []).some(t => /参考音频库|声线参考/i.test(t))))
+          ? (isPersonalLibrary()
+              ? (a.ownerId === state.ui.currentMemberId && (isSharedAsset(a) || (a.tags || []).some(tag => /个人资产|视频工坊|无限画布|语音素材库|口播|tts/i.test(tag))))
+              : (includeAccountPrivate && fAcc !== "all"
+                  ? a.accountId === fAcc
+                  : isSharedAsset(a) || (a.type === "音频" && (a.tags || []).some(tag => /语音素材库|口播|tts/i.test(tag)))))
+          : fBackendKind === "bgm"
+            ? (isBgmAsset(a) && (!isPersonalLibrary() || a.ownerId === state.ui.currentMemberId))
+            : isEditingMaterialAsset(a))
         .sort((a, b) => (b.deliveredAt || b.createdAt || 0) - (a.deliveredAt || a.createdAt || 0));
       if (fKind === "video") list = list.filter(a => assetKind(a) === "视频");
       if (fKind === "image") list = list.filter(a => assetKind(a) === "图文");
+      if (fKind === "audio") list = list.filter(a => assetKind(a) === "音频");
+      if (isPersonalLibrary() && hasProfessionalAssetFilters() && libraryMode === "shared" && fSource !== "all") {
+        const sourcePattern = fSource === "video" ? /视频工坊/ : /无限画布/;
+        list = list.filter(a => (a.tags || []).some(tag => sourcePattern.test(tag)));
+      }
       const accounts = state.accounts || [];
       const selectedFileCount = fAcc === "all" ? 0 : accountArchivableAssets(fAcc).length;
       if (!collapseInitialized) { state.accounts.forEach(a => collapsedAcc.add(a.id)); collapsedAcc.add("__none"); collapseInitialized = true; }
@@ -156,24 +209,18 @@ export const assetsView = {
             <div><div class="eyebrow">整体资产</div><h2>${libraryLabels[libraryMode] || "账号资产"}</h2></div>
             <div class="head-actions">${libraryTabsHtml()}</div>
           </div>
-          <div class="filter-bar card asset-smart-filters">
+          <div class="filter-bar card asset-smart-filters ${isPersonalLibrary() ? "is-personal" : ""}">
             <div class="fb-search">${icon("search", 14)}<input id="avSearch" placeholder="搜索素材名 / 标签" value="${esc(fQ)}" /></div>
-            ${isGlobalLibrary() ? "" : `<label class="select-shell">${icon("filter", 13)}<select id="avKind"><option value="all">全部形式</option><option value="video" ${fKind === "video" ? "selected" : ""}>视频</option><option value="image" ${fKind === "image" ? "selected" : ""}>图文</option></select>${icon("chevronDown", 12)}</label>`}
-            ${isGlobalLibrary() ? "" : `<label class="select-shell account-select">${icon("users", 13)}<select id="avAccount"><option value="all">全部账号</option>${accounts.map(a => `<option value="${esc(a.id)}" ${fAcc === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>`}
+            ${libraryMode === "backend" ? `<div class="asset-backend-kind text-switch" aria-label="后台素材分类"><button class="${fBackendKind === "bgm" ? "on is-active" : ""}" data-backend-kind="bgm">BGM</button><button class="${fBackendKind === "material" ? "on is-active" : ""}" data-backend-kind="material">剪辑素材</button></div>` : `<label class="select-shell">${icon("filter", 13)}<select id="avKind"><option value="all">全部形式</option><option value="video" ${fKind === "video" ? "selected" : ""}>视频</option><option value="image" ${fKind === "image" ? "selected" : ""}>图文</option><option value="audio" ${fKind === "audio" ? "selected" : ""}>语音</option></select>${icon("chevronDown", 12)}</label>`}
+            ${isPersonalLibrary() && hasProfessionalAssetFilters() && libraryMode === "shared" ? `<div class="asset-personal-source-filter text-switch" aria-label="个人资产来源筛选"><button class="${fSource === "all" ? "on is-active" : ""}" data-personal-source="all">全部</button><button class="${fSource === "video" ? "on is-active" : ""}" data-personal-source="video">视频工坊</button><button class="${fSource === "canvas" ? "on is-active" : ""}" data-personal-source="canvas">无限画布</button></div>` : ""}
+            ${isGlobalLibrary() || isPersonalLibrary() ? "" : `<label class="select-shell account-select">${icon("users", 13)}<select id="avAccount"><option value="all">全部账号</option>${accounts.map(a => `<option value="${esc(a.id)}" ${fAcc === a.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select>${icon("chevronDown", 12)}</label>`}
             ${!isGlobalLibrary() && fAcc !== "all" ? `<button class="btn ghost asset-filter-action" data-export-del-acc="${esc(fAcc)}" ${selectedFileCount ? "" : "disabled"}>${icon("download", 14)} 导出并清空文件 ${selectedFileCount ? `(${selectedFileCount})` : ""}</button>` : ""}
           </div>
           <div class="asset-mode-stage" id="avBody">
             ${renderBody(list)}
           </div>
         </div>`;
-      const topDock = $(".head-actions", root);
-      const topbar = document.querySelector(".topbar");
-      const topActions = document.querySelector(".top-actions");
-      if (topDock && topbar && topActions) {
-        topDock.id = "assetsTopDock";
-        topDock.classList.add("topbar-assets-dock");
-        topbar.insertBefore(topDock, topActions);
-      }
+      mountTopDock();
       wire();
     };
 
@@ -181,15 +228,9 @@ export const assetsView = {
       const acc = accountById(a.accountId);
       const kind = assetKind(a);
       const audioUrl = a.type === "音频" ? urlFor(a) : "";
-      const globalLabel = libraryMode === "bgm"
-        ? "共享 BGM"
-        : libraryMode === "material"
-          ? "共享剪辑素材"
-          : libraryMode === "voice"
-            ? "我的语音素材"
-            : libraryMode === "reference"
-              ? "我的参考音频"
-              : "";
+      const globalLabel = libraryMode === "backend"
+        ? (fBackendKind === "bgm" ? "BGM" : "剪辑素材")
+        : "";
       return `<div class="asset-card card ${a.type === "音频" ? "is-audio" : ""}" data-aid="${a.id}">
         <div class="ac-thumb">${a.type === "音频" && audioUrl ? `<div class="asset-audio-thumb">${icon("pulse", 22)}<audio controls preload="metadata" src="${esc(audioUrl)}"></audio></div>` : thumbHtml(a)}
           ${a.seq ? `<span class="ac-seq">${assetCode(a)}</span>` : ""}
@@ -197,7 +238,7 @@ export const assetsView = {
           <div class="ac-hover">
             <button class="ac-mini" data-aact="download" title="下载">${icon("download", 13)}</button>
             <button class="ac-mini" data-aact="rename" title="重命名">${icon("edit", 13)}</button>
-            ${isGlobalLibrary() ? "" : `<button class="ac-mini" data-aact="assign" title="分配到账号素材库">${icon("users", 13)}</button>`}
+            ${isGlobalLibrary() || isPersonalLibrary() ? "" : `<button class="ac-mini" data-aact="assign" title="分配到账号素材库">${icon("users", 13)}</button>`}
             <button class="ac-mini" data-aact="tag" title="加标签">#</button>
             <button class="ac-mini danger" data-aact="del" title="删除">${icon("trash", 13)}</button>
           </div>
@@ -209,9 +250,60 @@ export const assetsView = {
       </div>`;
     };
 
+    function renderFavorites() {
+      if (favoritePostsLoading && !favoritePosts.length) return emptyState("folder", "正在读取收藏夹", "收藏内容严格按当前成员隔离");
+      if (!favoritePosts.length) return emptyState("bookmark", "收藏夹暂无内容", "在首页灵感详情中点击收藏后，会出现在这里");
+      return `<div class="asset-favorite-grid">${favoritePosts.map(post => {
+        const media = (post.media || [])[0] || {};
+        const poster = post.cover?.url || media.poster || "";
+        const preview = media.type === "video"
+          ? `<video src="${esc(media.url)}" ${poster ? `poster="${esc(poster)}"` : ""} muted playsinline preload="metadata"></video>`
+          : `<img src="${esc(media.url)}" alt="${esc(post.title || "收藏灵感")}" loading="lazy" />`;
+        return `<article class="asset-favorite-card card" data-favorite-post="${esc(post.id)}">
+          <div class="asset-favorite-preview">${preview}${(post.media || []).length > 1 ? `<span>${post.media.length} 项素材</span>` : ""}</div>
+          <div class="asset-favorite-copy"><em>${esc(post.category || "灵感")}</em><b>${esc(post.title || "未命名灵感")}</b><small>${esc(post.authorName || "星阵用户")}${post.teamName ? ` · ${esc(post.teamName)}` : ""}</small></div>
+        </article>`;
+      }).join("")}</div>`;
+    }
+
+    function openFavoritePost(post) {
+      const media = (post.media || []).map((entry, index) => entry.type === "video"
+        ? `<video src="${esc(entry.url)}" controls muted playsinline preload="metadata"></video>`
+        : `<button type="button" data-favorite-image="${index}"><img src="${esc(entry.url)}" alt="${esc(entry.alt || post.title || "收藏灵感")}" loading="lazy" /></button>`
+      ).join("");
+      openModal(`<article class="asset-favorite-dialog">
+        <header><div><span>${esc(post.category || "灵感")}</span><h2>${esc(post.title || "未命名灵感")}</h2><small>${esc(post.authorName || "星阵用户")}${post.teamName ? ` · ${esc(post.teamName)}` : ""}</small></div><button class="icon-btn" data-close>${icon("x", 16)}</button></header>
+        <div class="asset-favorite-dialog-media">${media}</div>
+        <div class="asset-favorite-dialog-copy">${post.copy ? `<p>${esc(post.copy)}</p>` : ""}${post.prompt ? `<label>参考提示词</label><pre>${esc(post.prompt)}</pre>` : ""}</div>
+        <footer><button class="btn ghost" type="button" data-favorite-remove>${icon("bookmark", 14)} 取消收藏</button></footer>
+      </article>`, {
+        onMount(panel, close) {
+          panel.classList.add("asset-favorite-panel");
+          panel.querySelectorAll("[data-favorite-image]").forEach((button, index) => button.addEventListener("click", () => {
+            const image = button.querySelector("img");
+            if (image) openLightbox(image, post.media?.[index]?.url || image.src, post.title || "收藏灵感");
+          }));
+          panel.querySelector("[data-favorite-remove]")?.addEventListener("click", async event => {
+            const button = event.currentTarget;
+            button.disabled = true;
+            try {
+              await community.react(post.id, { favorited: false });
+              favoritePosts = favoritePosts.filter(item => String(item.id) !== String(post.id));
+              close();
+              draw();
+              toast("已取消收藏");
+            } catch (error) {
+              button.disabled = false;
+              toast(error?.message || "取消收藏失败", "error");
+            }
+          });
+        },
+      });
+    }
+
     function renderBody(list) {
-      if (!list.length) return emptyState("folder", `${libraryLabels[libraryMode] || "资产库"}暂无内容`, libraryMode === "shared" ? "完成定稿发布后，内容会进入这里供团队共享和下载" : "可从上方拖入符合格式的文件");
-      if (isGlobalLibrary()) return `<div class="asset-grid">${list.map(cardHtml).join("")}</div>`;
+      if (!list.length) return emptyState("folder", `${libraryLabels[libraryMode] || "资产库"}暂无内容`, libraryMode === "shared" ? (isPersonalLibrary() ? "无限画布和视频工坊的生成结果会自动收纳到这里" : "完成定稿发布后，内容会进入这里供团队共享和下载") : "可从上方拖入符合格式的文件");
+      if (isGlobalLibrary() || isPersonalLibrary()) return `<div class="asset-grid">${list.map(cardHtml).join("")}</div>`;
       // 指定账号：直接平铺
       if (fAcc !== "all") return `<div class="asset-grid">${list.map(cardHtml).join("")}</div>`;
       // 全部账号：按账号分组，支持折叠
@@ -252,6 +344,14 @@ export const assetsView = {
         });
       }
       $("#avKind", root)?.addEventListener("change", e => { fKind = e.currentTarget.value; draw(); });
+      $$('[data-personal-source]', root).forEach(button => button.addEventListener("click", () => {
+        fSource = button.dataset.personalSource || "all";
+        draw();
+      }));
+      $$('[data-backend-kind]', root).forEach(button => button.addEventListener("click", () => {
+        fBackendKind = button.dataset.backendKind || "bgm";
+        draw();
+      }));
       $$("[data-library]", $("#assetsTopDock") || root).forEach(b => b.addEventListener("click", () => {
         setAssetLibraryMode(b.dataset.library);
       }));
@@ -261,12 +361,11 @@ export const assetsView = {
         const { mime, type } = inferAssetFileMeta(file);
         const isMp3 = mime === "audio/mpeg" && /\.mp3$/i.test(file.name || "");
         const isEditingMaterial = ["图片", "视频"].includes(type) && /^(image|video)\//.test(mime);
-        if (libraryMode === "bgm" && !isMp3) { toast("BGM 库仅支持 MP3 格式", "error"); return; }
-        if (libraryMode === "material" && !isEditingMaterial) { toast("剪辑素材库仅支持视频或图片格式", "error"); return; }
-        if (["voice", "reference"].includes(libraryMode) && !mime.startsWith("audio/")) { toast("请拖入音频文件", "error"); return; }
-        const tags = libraryMode === "bgm" ? ["BGM", "音乐"]
-          : libraryMode === "material" ? ["剪辑素材", "共享剪辑素材", `${type}素材`]
-            : libraryMode === "voice" ? ["语音素材库"] : ["参考音频库", "声线参考"];
+        if (fBackendKind === "bgm" && !isMp3) { toast("BGM 仅支持 MP3 格式", "error"); return; }
+        if (fBackendKind === "material" && !isEditingMaterial) { toast("剪辑素材仅支持视频或图片格式", "error"); return; }
+        const tags = fBackendKind === "bgm"
+          ? ["BGM", "音乐"]
+          : ["剪辑素材", "共享剪辑素材", `${type}素材`];
         try {
           await addAssetFromFile(null, file, {
             tags,
@@ -277,18 +376,14 @@ export const assetsView = {
           toast(error?.message || "素材加入失败，请稍后重试", "error");
           return false;
         }
-        toast(
-          ["bgm", "material"].includes(libraryMode)
-            ? `已加入${libraryLabels[libraryMode]} · 公共素材池`
-            : `已加入我的${libraryLabels[libraryMode]}`
-        );
+        toast(`已加入后台素材 · ${fBackendKind === "bgm" ? "BGM" : "剪辑素材"}`);
         draw();
         return true;
       };
-      if (libraryMode !== "shared") {
+      if (libraryMode === "backend") {
         const controller = new AbortController();
         root.__assetDropController = controller;
-        root.dataset.dropHint = libraryMode === "bgm" ? "松手加入 BGM 库 · 仅 MP3" : libraryMode === "material" ? "松手加入剪辑素材库 · 视频或图片" : "松手加入音频库";
+        root.dataset.dropHint = fBackendKind === "bgm" ? "松手加入 BGM · 仅 MP3" : "松手加入剪辑素材 · 视频或图片";
         wireDropZone(root, async files => { for (const file of Array.from(files || [])) await uploadLibraryFile(file); }, { filesOnly: true, signal: controller.signal });
       } else {
         delete root.dataset.dropHint;

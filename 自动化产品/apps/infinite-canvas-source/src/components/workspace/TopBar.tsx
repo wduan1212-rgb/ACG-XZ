@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Download, Send } from "lucide-react";
+import { ArrowLeft, Check, Download, Send, Share2 } from "lucide-react";
 import { Button } from "@/components/ui";
 import { navigateHome } from "@/lib/runtime";
 import { useStore } from "@/lib/store";
@@ -11,19 +11,31 @@ export function TopBar({
   projectId,
   onExport,
   onPublish,
+  onShare,
   canExport,
   exportCount,
   canPublish,
+  canShare,
+  showPublish = true,
+  embedded = false,
   publishing,
+  sharing,
+  shared,
   publishNotice,
 }: {
   projectId: string;
   onExport: () => void;
   onPublish: () => void;
+  onShare: () => void;
   canExport: boolean;
   exportCount: number;
   canPublish: boolean;
+  canShare: boolean;
+  showPublish?: boolean;
+  embedded?: boolean;
   publishing: boolean;
+  sharing: boolean;
+  shared: boolean;
   publishNotice: string;
 }) {
   const project = useStore((s) => s.projects.find((p) => p.id === projectId));
@@ -38,6 +50,43 @@ export function TopBar({
     const v = draft.trim();
     if (v) renameProject(projectId, v);
     setEditing(false);
+  }
+
+  if (embedded) {
+    return (
+      <div
+        data-canvas-embed-actions
+        className="surface-popover pointer-events-auto absolute right-4 top-4 z-40 flex items-center gap-2 rounded-[14px] p-1.5"
+        role="toolbar"
+        aria-label="画布导出与发布"
+      >
+        {publishNotice && (
+          <span
+            className="max-w-[280px] truncate px-1.5 text-[12px] text-ink-3"
+            role="status"
+            aria-live="polite"
+            title={publishNotice}
+          >
+            {publishNotice}
+          </span>
+        )}
+        <Button variant="secondary" onClick={onExport} disabled={!canExport}>
+          <Download size={15} /> {exportCount > 1 ? `导出 ${exportCount} 张` : "导出"}
+        </Button>
+        <Button variant="secondary" onClick={onShare} disabled={!canShare || sharing || shared}>
+          {shared ? <Check size={15} /> : <Share2 size={15} />} {shared ? "已分享" : (sharing ? "分享中…" : "分享灵感")}
+        </Button>
+        {showPublish && (
+          <Button
+            variant="primary"
+            onClick={onPublish}
+            disabled={!canPublish || publishing}
+          >
+            <Send size={15} /> {publishing ? "合成中…" : "发布"}
+          </Button>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -89,13 +138,18 @@ export function TopBar({
         <Button variant="secondary" onClick={onExport} disabled={!canExport}>
           <Download size={15} /> {exportCount > 1 ? `批量导出 ${exportCount} 张` : "导出"}
         </Button>
-        <Button
-          variant="primary"
-          onClick={onPublish}
-          disabled={!canPublish || publishing}
-        >
-          <Send size={15} /> {publishing ? "合成中…" : "发布"}
+        <Button variant="secondary" onClick={onShare} disabled={!canShare || sharing || shared}>
+          {shared ? <Check size={15} /> : <Share2 size={15} />} {shared ? "已分享" : (sharing ? "分享中…" : "分享灵感")}
         </Button>
+        {showPublish && (
+          <Button
+            variant="primary"
+            onClick={onPublish}
+            disabled={!canPublish || publishing}
+          >
+            <Send size={15} /> {publishing ? "合成中…" : "发布"}
+          </Button>
+        )}
       </div>
     </header>
   );

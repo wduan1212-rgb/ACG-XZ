@@ -323,6 +323,100 @@ def _sanitize_seedance_visual_text(text: str) -> str:
     return cleaned_source.strip(" \t\r\n。；;")
 
 
+def _sanitize_static_image_prompt(text: str) -> str:
+    """Keep static-frame prompts photographic and remove video-only directions."""
+    source = _sanitize_seedance_visual_text(text)
+    if not source:
+        return ""
+    source = re.sub(
+        r"表情先是[^，,。；;]+[，,]\s*(?:再(?:次)?|然后|随后|最终)([^，,。；;]+)",
+        r"表情\1",
+        source,
+    )
+    source = re.sub(r"依次出现", "同框并置", source)
+    source = re.sub(r"每件出现时", "每件分别", source)
+    source = re.sub(
+        r"[^。！？!?；;]*转场(?:到|至)",
+        "",
+        source,
+        flags=re.I,
+    )
+    source = re.sub(
+        r"焦点从[^，,。！？!?；;]+(?:缓慢|慢慢|逐渐)?移到([^，,。！？!?；;]+)",
+        r"焦点落在\1",
+        source,
+        flags=re.I,
+    )
+    source = re.sub(r"从全黑屏幕(?:缓慢|逐渐)?亮起[，,]?", "凌晨低照度画面，", source)
+    source = re.sub(r"[，,]?\s*无运镜", "", source, flags=re.I)
+    source = re.sub(
+        r"色调由([^，,。；;]+)过渡到([^，,。；;]+)",
+        r"色调以\1与\2平衡呈现",
+        source,
+    )
+    # A full camera-move sentence cannot describe one independently generated
+    # still. Drop it; the surrounding subject, pose, light and composition
+    # remain the authoritative frame description.
+    source = re.sub(
+        r"(?:最后)?镜头[^。！？!?；;]*(?:上移|下移|后拉|前移|推进|推近|跟拍|横移|"
+        r"摇(?:到|移|镜)|环绕|拉远|前推|后推|推到|缓推|下落|上升)"
+        r"[^。！？!?；;]*[。！？!?；;]?",
+        "",
+        source,
+        flags=re.I,
+    )
+    source = re.sub(
+        r"镜头(?:缓慢|轻微|缓缓)?从[^。！？!?；;]+[。！？!?；;]?",
+        "",
+        source,
+        flags=re.I,
+    )
+    source = re.sub(
+        r"\d+\s*[–—-]\s*\d+\s*秒[^。！？!?；;]*[。！？!?；;]?",
+        "",
+        source,
+        flags=re.I,
+    )
+    source = re.sub(
+        r"构图由[^，,。！？!?；;]+(?:推到|推进到|拉到|转为)[^，,。！？!?；;]+",
+        "采用收束后的静态景别构图",
+        source,
+        flags=re.I,
+    )
+    replacements = (
+        (r"中远景到中景(?:轻微|缓慢)?跟拍", "中远景静态构图"),
+        (r"中景到中近景(?:轻微|缓慢)?推近", "中近景静态构图"),
+        (r"镜头中景(?:轻微|缓慢)?推进至面部特写", "中近景静态构图，以面部为视觉中心"),
+        (r"镜头(?:轻微|缓慢)?横移", "横向静态构图"),
+        (r"镜头(?:轻微|缓慢)?(?:推进|推近|拉远|后退|跟拍|摇移|摇镜)", "静态构图"),
+        (r"镜头(?:轻微|缓慢)?从[^。！？!?；;]+(?:平移|上移|下移|拉到|推到)[^。！？!?；;]*", "静态构图"),
+        (r"(?:轻微|缓慢)?(?:跟拍|横移|推近|推进|拉远|摇移|摇镜)", "静态构图"),
+        (r"推镜动作", "镜头草图标记"),
+        (r"(?:缓缓|缓慢|轻微)?(?:上移|下移|前移|后移)", "静态位置关系"),
+        (r"固定机位带轻微手持呼吸感", "自然纪实静态构图"),
+        (r"连续动作", "单一关键动作瞬间"),
+        (r"动作过程", "关键动作瞬间"),
+        (r"镜头缓慢", "静态画面"),
+        (r"镜头移动", "静态构图"),
+        (r"镜头推进", "中近景静态构图"),
+        (r"镜头后拉", "全景静态构图"),
+        (r"镜头上移", "高位静态构图"),
+        (r"镜头下移", "低位静态构图"),
+        (r"镜头前移", "中近景静态构图"),
+        (r"镜头摇", "横向静态构图"),
+        (r"前推", "中近景构图"),
+        (r"转场", "场景关系"),
+        (r"运镜", ""),
+        (r"\bSeedance\b", ""),
+        (r"视频模型", "图片生成"),
+    )
+    for pattern, replacement in replacements:
+        source = re.sub(pattern, replacement, source, flags=re.I)
+    source = re.sub(r"(?:静态构图[，、；\s]*){2,}", "静态构图，", source)
+    source = re.sub(r"\s{2,}", " ", source)
+    return source.strip(" \t\r\n。；;")
+
+
 def _tts_speed_for_target(text: str, target_duration_sec: float | None) -> float:
     # Keep the platform voice model at its natural cadence.  The measured audio
     # duration, not a requested duration or a fixed multiplier, drives editing.
@@ -553,10 +647,17 @@ class GPTImageGenerator:
             "Content-Type": "application/json",
         }
         if callback:
+            is_continuity = scene_number <= 0
             await callback(
-                f"正在生成静态分镜 {scene_number}",
-                f"图片模型正在绘制 {aspect_ratio} 分镜，已携带 {len(references)} 张本轮参考图。",
-                min(56, 24 + scene_number * 3),
+                "正在生成连续性参考设定"
+                if is_continuity
+                else f"正在生成静态分镜 {scene_number}",
+                (
+                    f"图片模型正在绘制角色/场景一致性设定，已携带 {len(references)} 张用户参考图。"
+                    if is_continuity
+                    else f"图片模型正在绘制 {aspect_ratio} 分镜，已携带 {len(references)} 张本轮参考图。"
+                ),
+                24 if is_continuity else min(56, 24 + scene_number * 3),
             )
         response: httpx.Response | None = None
         for attempt in range(1, 9):
@@ -912,6 +1013,27 @@ class MiniMaxDirector:
                                 "type": "string",
                                 "description": "静态视频整片固定的负面约束；普通视频可留空。",
                             },
+                            "continuity_anchors": {
+                                "type": "array",
+                                "maxItems": 3,
+                                "description": "静态视频中用户未提供参考、但会贯穿多个分镜的角色、场景或物件设定；普通视频或无需一致性锚点时返回空数组。",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "key": {"type": "string"},
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": ["character", "scene", "object"],
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "用于先生成角色三视图、场景设定图或物件设定图的完整视觉描述。",
+                                        },
+                                        "reason": {"type": "string"},
+                                    },
+                                    "required": ["key", "kind", "description", "reason"],
+                                },
+                            },
                             "scenes": {
                                 "type": "array",
                                 "minItems": 1,
@@ -1199,13 +1321,13 @@ class MiniMaxDirector:
 
 静态视频执行规则：
 1. 仍然只在主题、主体或核心目标缺失到无法开工时调用 ask_user；不要因为风格、配色、镜头数或图片参考而追问。
-2. start_video_production 仍用于提交计划，但每个 scene 的 image_prompt 必须描述一张可以独立生成的静态分镜图：主体、环境、构图、景别、姿态、表情、光线、材质和关键视觉证据要具体；不得写运镜、动作过程、字幕、花字、口播原句或视频模型指令。visual_prompt 与 image_prompt 保持相同，供后端兼容读取。
-3. 你自主选择最适合主题的整片视觉风格与配色，并在 style_anchor 写成一个整片固定、可复用的风格锚点；在 negative_constraints 写成整片固定的负面约束。每张 image_prompt 都必须继承这两个字段，不能中途更换画风、角色设定、材质体系或主配色。
-4. 默认画幅是 {aspect_ratio if aspect_ratio else "9:16"}。图片分镜会并发生成，后端只增加平滑轻推近，再合成口播、字幕、BGM、质检和交付；不要调用或描述视频模型。
+2. start_video_production 仍用于提交计划，但每个 scene 的 image_prompt 必须描述一张可以独立生成的静态分镜图：主体、环境、构图、景别、姿态、表情、光线、材质和关键视觉证据要具体；每张只允许一个明确时间截面，不得写“先、再、随后、逐渐、最后”等连续过程，不得写推近、拉远、横移、跟拍、摇镜等运镜，也不得把整句口播或平台字幕写进图片。若叙事确实需要漫画拟声词、短标题、路牌、界面按钮或设计性短文字，可以在 image_prompt 明确写出这一个短文字及其版式，但不能变成长篇解释。visual_prompt 与 image_prompt 保持相同，供后端兼容读取。
+3. 你自主选择最适合主题的整片视觉风格与配色，并在 style_anchor 写成一个整片固定、可复用的风格锚点；写实、日系漫画、导演分镜漫画、火柴人、抽象漫画、纸雕、拼贴等都可以按内容选择。每个分镜还要按语义决定情绪色彩和构图变化，但不能中途更换角色设定、基础画风、材质体系或主配色。negative_constraints 只约束错误字幕、乱码、身份漂移和画风跳变，不要把导演明确选择的短文字或漫画元素误删。
+4. 默认画幅是 {aspect_ratio if aspect_ratio else "16:9"}。图片分镜会并发生成，后端只增加平滑轻推近，再合成口播、字幕、BGM、质检和交付；不要调用或描述视频模型。切图节奏以口播语义为先，通常每张承接约 3–5 秒，不按固定秒数机械切句；一段口播明显过长时要拆成新的、构图和叙事职责都不同的图片。
 5. 图片附件只作为本轮任务的图片生成参考，不作为后期剪辑素材，不要分配为 material 或 both。asset_assignments 对图片只能用 reference 或 unused；视频附件在本模式不能作为图片参考，除非用户明确要求把其中某一帧先转为参考，否则标为 unused。
-6. {reference_note} 所有本轮图片会真实随每一张分镜请求发送，避免出现模型端没有拿到参考图。你仍需按语义在每个 scene.reference_labels 标出真正相关的图N：当分镜中出现参考图里的 IP、人物、产品、Logo 或界面时，必须列入对应标签并在 image_prompt 明确保持其身份、外形、颜色、结构和品牌特征；与该分镜无关的参考图不得强行改变主题。
-7. 统一参考图不是强制每张都画入所有主体，而是所有分镜都可用的身份依据。用户当轮指令优先：只在语义相关的分镜显式使用相应主体，不得因为上传了参考图就改变用户主题或提前开始创作。
-8. narration_excerpt 仍必须连续覆盖口播。scene 数量由叙事和理解成本决定；每张图应承接一段清晰语义，最终通过图片时长和轻推近覆盖真实口播时间线。
+6. {reference_note} 所有本轮图片会真实随每一张分镜请求发送，避免出现模型端没有拿到参考图。你仍需按语义在每个 scene.reference_labels 标出真正相关的图N：当分镜中出现参考图里的 IP、人物、产品、Logo 或界面时，必须列入对应标签并在 image_prompt 明确保持其身份、外形、颜色、结构和品牌特征。用户上传的每一张图片都必须至少在一个语义合适的分镜中清晰可见；若用户明确了出现时机，以用户要求为准。
+7. 统一参考图不是强制每张都画入所有主体，而是所有分镜请求都会携带的身份依据。若一个主角、IP、关键物件或主要场景会贯穿两个及以上分镜，而用户没有提供它的参考图，必须在 continuity_anchors 中描述它：角色生成正面/侧面/背面三视图，场景生成统一空间设定图，关键物件生成多角度设定图。后端会先生成这些锚点，再把它们和用户图片一起作为每张分镜的参考。没有贯穿元素时返回空数组，不要机械生成。
+8. narration_excerpt 仍必须连续覆盖口播。scene 数量由叙事和理解成本决定；每张图应承接一段清晰语义，最终通过图片时长和连续平滑轻推近覆盖真实口播时间线。
 """
 
     @staticmethod
@@ -1943,6 +2065,67 @@ class MiniMaxDirector:
             else:
                 break
         arguments = best_arguments
+        if creation_mode == "static":
+            estimated_duration = max(
+                1,
+                _safe_int(arguments.get("duration_sec"), 1),
+            )
+            recommended_static_frames = max(
+                2,
+                min(60, math.ceil(estimated_duration / 5)),
+            )
+            # This is only a coverage guard against a single stretched image.
+            # The 3–5 second cadence remains an editorial recommendation, not
+            # a mechanical per-frame limit; semantic holds may run longer.
+            minimum_static_frames = 2
+            static_scenes = [
+                scene
+                for scene in list(arguments.get("scenes") or [])
+                if isinstance(scene, dict)
+            ]
+            if len(static_scenes) < minimum_static_frames:
+                corrected_payload = {
+                    **payload,
+                    "messages": [
+                        *api_messages,
+                        {
+                            "role": "system",
+                            "content": (
+                                "静态图片分镜覆盖复核：上一版图片数量不足以承接口播，"
+                                f"预计 {estimated_duration} 秒建议约 {recommended_static_frames} 张语义独立的图片，"
+                                "常规节奏尽量让每张图承接约 3–5 秒口播，但完整语义、情绪停留或关键证据可以更长，"
+                                "不要按秒数机械切句。"
+                                "保留原口播、事实、风格、附件用途和用户要求，重新完整返回 start_video_production。"
+                                f"scenes 至少 {minimum_static_frames} 张，并以 {recommended_static_frames} 张作为非强制节奏参考；"
+                                "每个 scene 只描述一个明确时间截面，"
+                                "相邻图片主体动作、场景职责或构图必须新增信息；image_prompt 与 visual_prompt 相同，"
+                                "不得写运镜、叠化、动作过程、字幕或视频模型指令。上一版完整结构："
+                                + json.dumps(arguments, ensure_ascii=False)[:18000]
+                            ),
+                        },
+                    ],
+                    "tools": [self.tools[1]],
+                    "tool_choice": "required",
+                    "temperature": 0.2,
+                }
+                corrected_data = await _post_llm_json_with_retry(
+                    corrected_payload,
+                    label="MiniMax-M3静态分镜覆盖复核",
+                )
+                try:
+                    corrected_message = corrected_data["choices"][0]["message"]
+                except (KeyError, IndexError, TypeError) as exc:
+                    raise ProviderError("MiniMax-M3静态分镜覆盖复核没有返回可用消息") from exc
+                corrected_call = self._tool_call(corrected_message)
+                if corrected_call and corrected_call[0] == "start_video_production":
+                    corrected_arguments = corrected_call[1]
+                    corrected_scenes = [
+                        scene
+                        for scene in list(corrected_arguments.get("scenes") or [])
+                        if isinstance(scene, dict)
+                    ]
+                    if len(corrected_scenes) >= minimum_static_frames:
+                        arguments = corrected_arguments
 
         supported_ratios = {"9:16", "16:9", "1:1", "4:3", "3:4", "21:9"}
         arguments["aspect_ratio"] = aspect_ratio if aspect_ratio in supported_ratios else "9:16"
@@ -1953,6 +2136,104 @@ class MiniMaxDirector:
         scenes = [scene for scene in list(arguments.get("scenes") or []) if isinstance(scene, dict)]
         if not scenes:
             raise ProviderError("导演计划必须包含至少一个可执行镜头")
+        if creation_mode == "static" and len(scenes) == 1:
+            original_scene = scenes[0]
+            still_beats = [
+                beat
+                for beat in list(original_scene.get("visual_beats") or [])
+                if isinstance(beat, dict) and str(beat.get("visual_action") or "").strip()
+            ][:8]
+            if len(still_beats) >= 2:
+                total_duration = max(
+                    len(still_beats) * 4,
+                    _safe_int(
+                        arguments.get("duration_sec")
+                        or original_scene.get("duration_sec"),
+                        len(still_beats) * 6,
+                    ),
+                )
+                per_frame_duration = max(3, min(15, round(total_duration / len(still_beats))))
+                base_title = str(original_scene.get("title") or arguments.get("title") or "静态分镜")
+                style_anchor = str(arguments.get("style_anchor") or "").strip()
+                expanded_scenes: list[dict[str, Any]] = []
+                for beat_index, beat in enumerate(still_beats, start=1):
+                    image_prompt = _sanitize_static_image_prompt(
+                        "。".join(filter(None, [
+                            str(beat.get("visual_action") or ""),
+                            str(beat.get("camera") or ""),
+                            style_anchor,
+                        ]))
+                    )
+                    if len(image_prompt) < 20:
+                        image_prompt = _sanitize_static_image_prompt(
+                            original_scene.get("image_prompt")
+                            or original_scene.get("visual_prompt")
+                            or ""
+                        )
+                    expanded_scenes.append({
+                        **original_scene,
+                        "title": f"{base_title} · {beat_index}",
+                        "duration_sec": per_frame_duration,
+                        "visual_prompt": image_prompt,
+                        "image_prompt": image_prompt,
+                        "narration_excerpt": "",
+                        "visual_beats": [],
+                        "shot_intent": str(
+                            beat.get("shot_intent")
+                            or original_scene.get("shot_intent")
+                            or original_scene.get("purpose")
+                            or "承接当前语义"
+                        ),
+                    })
+                scenes = expanded_scenes
+            else:
+                # A second model pass can still return one stretched frame.
+                # Preserve the director's visual identity while creating two
+                # distinct semantic stills so even a short square or ultrawide
+                # request has an opening state and a resolved state.
+                total_duration = max(
+                    6,
+                    _safe_int(
+                        arguments.get("duration_sec")
+                        or original_scene.get("duration_sec"),
+                        10,
+                    ),
+                )
+                per_frame_duration = max(3, min(15, round(total_duration / 2)))
+                base_title = str(original_scene.get("title") or arguments.get("title") or "静态分镜")
+                base_prompt = _sanitize_static_image_prompt(
+                    original_scene.get("image_prompt")
+                    or original_scene.get("visual_prompt")
+                    or ""
+                )
+                role_specs = (
+                    (
+                        "建立主体、空间与问题关系",
+                        "以清晰环境景别呈现主体、空间和本段问题证据，保留可呼吸的构图层次",
+                    ),
+                    (
+                        "收束变化、结果与情绪",
+                        "以不同景别呈现动作完成后的结果证据与人物情绪，形成明确收束",
+                    ),
+                )
+                scenes = [
+                    {
+                        **original_scene,
+                        "title": f"{base_title} · {index}",
+                        "duration_sec": per_frame_duration,
+                        "visual_prompt": _sanitize_static_image_prompt(
+                            f"{base_prompt}。{visual_direction}"
+                        ),
+                        "image_prompt": _sanitize_static_image_prompt(
+                            f"{base_prompt}。{visual_direction}"
+                        ),
+                        "narration_excerpt": "",
+                        "visual_beats": [],
+                        "shot_intent": role,
+                        "purpose": role,
+                    }
+                    for index, (role, visual_direction) in enumerate(role_specs, start=1)
+                ]
         fallback_excerpts = _partition_narration_excerpts(narration, len(scenes))
         provided_excerpts = [str(scene.get("narration_excerpt") or "").strip() for scene in scenes]
         cursor = 0
@@ -1969,9 +2250,14 @@ class MiniMaxDirector:
             cursor = position + len(excerpt)
         if len(ordered_excerpts) != len(scenes) or cursor != len(narration):
             ordered_excerpts = fallback_excerpts
+        used_static_prompts: set[str] = set()
         for index, scene in enumerate(scenes):
             scene["title"] = str(scene.get("title") or f"镜头 {index + 1}")[:120]
-            scene["duration_sec"] = max(4, min(15, _safe_int(scene.get("duration_sec"), 8)))
+            scene["duration_sec"] = (
+                max(3, min(15, _safe_int(scene.get("duration_sec"), 4)))
+                if creation_mode == "static"
+                else max(4, min(15, _safe_int(scene.get("duration_sec"), 8)))
+            )
             scene["visual_prompt"] = str(scene.get("visual_prompt") or "").strip()
             scene["purpose"] = str(scene.get("purpose") or "推进当前叙事")[:300]
             scene["narrative_role"] = str(scene.get("narrative_role") or "推进叙事").strip()[:160]
@@ -2013,7 +2299,60 @@ class MiniMaxDirector:
                     else self._fallback_safe_rewrite(arguments, index + 1)["visual_prompt"]
                 )
             if creation_mode == "static":
-                image_prompt = str(scene.get("image_prompt") or scene["visual_prompt"]).strip()
+                prompt_candidates = [
+                    str(scene.get("image_prompt") or "").strip(),
+                    str(scene.get("visual_prompt") or "").strip(),
+                ]
+                raw_image_prompt = max(prompt_candidates, key=len)
+                image_prompt = _sanitize_static_image_prompt(raw_image_prompt)
+                style_anchor = str(arguments.get("style_anchor") or "").strip()
+                if len(image_prompt) < 60:
+                    image_prompt = _sanitize_static_image_prompt(
+                        "。".join(filter(None, [
+                            image_prompt,
+                            str(scene.get("shot_intent") or ""),
+                            str(scene.get("purpose") or ""),
+                            *[
+                                str(beat.get("visual_action") or "")
+                                for beat in beats
+                                if isinstance(beat, dict)
+                            ],
+                            style_anchor,
+                        ]))
+                    )
+                if len(image_prompt) < 20:
+                    image_prompt = _sanitize_static_image_prompt(
+                        self._fallback_safe_rewrite(arguments, index + 1)["visual_prompt"]
+                    )
+                if style_anchor and style_anchor not in image_prompt:
+                    image_prompt = f"{image_prompt}。整片固定风格：{style_anchor}".strip("。")
+                if image_prompt in used_static_prompts:
+                    semantic_difference = _sanitize_static_image_prompt(
+                        "。".join(filter(None, [
+                            str(scene.get("title") or ""),
+                            str(scene.get("visual_identity") or ""),
+                            str(scene.get("shot_intent") or ""),
+                            str(scene.get("purpose") or ""),
+                            *[
+                                str(beat.get("visual_action") or "")
+                                for beat in beats
+                                if isinstance(beat, dict)
+                            ],
+                        ]))
+                    )
+                    if semantic_difference and semantic_difference not in image_prompt:
+                        image_prompt = f"{semantic_difference}。{image_prompt}".strip("。")
+                    else:
+                        image_prompt = (
+                            f"采用与相邻图片不同的主体位置、景别与物件证据，"
+                            f"突出本段第 {index + 1} 个独立叙事职责。{image_prompt}"
+                        )
+                # The director may accidentally place video-only wording in
+                # the shared style anchor. Run the completed still prompt
+                # through the sanitizer once more so appended constraints
+                # cannot reintroduce camera motion into image generation.
+                image_prompt = _sanitize_static_image_prompt(image_prompt)
+                used_static_prompts.add(image_prompt)
                 scene["image_prompt"] = image_prompt
                 scene["visual_prompt"] = image_prompt
                 valid_labels = {
@@ -2081,8 +2420,58 @@ class MiniMaxDirector:
             ).strip()[:1200]
             arguments["negative_constraints"] = str(
                 arguments.get("negative_constraints")
-                or "不要字幕、花字、水印、乱码、错误 Logo；不要角色身份漂移、画风跳变、肢体畸形、重复主体、低清晰度或无关元素"
+                or "不要自动生成整句口播字幕、长篇说明、水印、乱码或错误 Logo；不要角色身份漂移、画风跳变、肢体畸形、重复主体、低清晰度或无关元素；导演明确指定的短标题、界面短标签或漫画拟声词除外"
             ).strip()[:1200]
+            anchors: list[dict[str, str]] = []
+            for index, raw_anchor in enumerate(list(arguments.get("continuity_anchors") or [])[:3]):
+                if not isinstance(raw_anchor, dict):
+                    continue
+                kind = str(raw_anchor.get("kind") or "").strip().lower()
+                description = str(raw_anchor.get("description") or "").strip()
+                if kind not in {"character", "scene", "object"} or len(description) < 12:
+                    continue
+                anchors.append({
+                    "key": str(raw_anchor.get("key") or f"anchor-{index + 1}").strip()[:80],
+                    "kind": kind,
+                    "description": description[:1200],
+                    "reason": str(raw_anchor.get("reason") or "保持跨分镜视觉连续性").strip()[:240],
+                })
+            if not anchors:
+                static_visual_text = "\n".join(
+                    str(scene.get("image_prompt") or scene.get("visual_prompt") or "")
+                    for scene in scenes
+                )
+                continuity_source = f"{original_brief}\n{static_visual_text}"
+                if re.search(
+                    r"同一(?:位|名|个)?(?:主角|主持人|人物|角色|女性|男性|女孩|男孩)|"
+                    r"固定同一.{0,30}(?:主角|主持人|人物|角色|女性|男性|女孩|男孩)|"
+                    r"(?:主角|主持人|人物|角色|IP).{0,12}(?:贯穿|全片|每个分镜)",
+                    continuity_source,
+                ):
+                    anchors.append({
+                        "key": "main-character",
+                        "kind": "character",
+                        "description": (
+                            "提取并固定全片反复出现的主要人物："
+                            + str(scenes[0].get("image_prompt") or scenes[0].get("visual_prompt") or "")[:900]
+                        ),
+                        "reason": "导演计划中同一人物跨多个分镜出现，用户未提供完整角色设定图。",
+                    })
+                if re.search(
+                    r"同一(?:空间|场景|办公室|客厅|房间|店铺|工作室)|"
+                    r"(?:主要场景|核心场景).{0,12}(?:贯穿|全片|反复出现)",
+                    static_visual_text,
+                ):
+                    anchors.append({
+                        "key": "main-setting",
+                        "kind": "scene",
+                        "description": (
+                            "提取并固定全片反复出现的主要空间："
+                            + str(scenes[0].get("image_prompt") or scenes[0].get("visual_prompt") or "")[:900]
+                        ),
+                        "reason": "导演计划中同一空间跨多个分镜出现，用户未提供场景设定图。",
+                    })
+            arguments["continuity_anchors"] = anchors[:3]
         planned_duration = sum(int(scene["duration_sec"]) for scene in scenes)
         arguments["duration_sec"] = max(1, _safe_int(arguments.get("duration_sec"), planned_duration))
         public_thoughts = list(arguments.get("public_thoughts") or [])[:8]
@@ -2158,12 +2547,90 @@ class MiniMaxDirector:
             labels = [re.sub(r"\s+", "", item) for item in re.findall(r"(?:图|视频|音频)\s*\d+", clause)]
             if not labels:
                 continue
+            if re.search(
+                r"(?:不需要|不要|不用|不必|无需|不参与).{0,4}(?:剪进|剪入|放进|加入|放入).{0,8}成片|"
+                r"(?:不需要|不要|不用|不必|无需|不参与)(?:作为)?(?:剪辑素材|素材使用)|"
+                r"忽略|标为未使用",
+                clause,
+            ):
+                for label in labels:
+                    explicit_roles[label] = {"unused"}
+                continue
             if re.search(r"参考|作为.*(?:生成|视频).*参考", clause):
                 for label in labels:
                     explicit_roles.setdefault(label, set()).add("reference")
             if re.search(r"剪辑素材|作为.*素材|插入|放到.*(?:位置|镜头|地方|合适)", clause):
                 for label in labels:
                     explicit_roles.setdefault(label, set()).add("material")
+            # “真实 Logo 只在结尾出现”同时表达了身份参考与必须物理
+            # 出镜，不能因为用户没有复述“作为素材”就被模型降为 unused。
+            if re.search(r"(?:真实)?(?:Logo|logo|LOGO|品牌标志|品牌标识)", clause) and re.search(
+                r"出现|展示|揭示|呈现|露出",
+                clause,
+            ):
+                for label in labels:
+                    explicit_roles.setdefault(label, set()).update({"reference", "material"})
+        # Users often introduce several numbered files first, then assign
+        # roles by their semantic names in the next clause:
+        # “图1是人物，图2是产品，图3是结果界面。人物和产品作参考，
+        # 结果界面作剪辑证据。” Keep those explicit semantic references
+        # authoritative instead of requiring the numbers to be repeated.
+        semantic_aliases: dict[str, set[str]] = {}
+        for asset in attachments:
+            label = re.sub(r"\s+", "", str(asset.get("label") or ""))
+            if not label:
+                continue
+            descriptor_match = re.search(
+                rf"{re.escape(label)}(?:是|为)([^，,。；;！!？?\n]{{1,30}})",
+                compact_user_text,
+            )
+            if not descriptor_match:
+                continue
+            descriptor = descriptor_match.group(1).strip()
+            aliases = {descriptor}
+            for keyword in (
+                "人物", "主持人", "主角", "产品", "耳机", "界面", "结果界面",
+                "截图", "Logo", "logo", "标志", "录屏", "口播", "配乐", "音效",
+            ):
+                if keyword.lower() in descriptor.lower():
+                    aliases.add(keyword)
+            semantic_aliases[label] = {
+                alias for alias in aliases if len(alias) >= 2
+            }
+        for clause in re.split(r"[，,。；;！!？?\n]+", compact_user_text):
+            if re.search(r"(?:图|视频|音频)\d+", clause):
+                continue
+            for label, aliases in semantic_aliases.items():
+                if not any(alias.lower() in clause.lower() for alias in aliases):
+                    continue
+                if re.search(r"参考|生成参考|形象锁定|外形锁定", clause):
+                    explicit_roles.setdefault(label, set()).add("reference")
+                if re.search(r"剪辑|素材|插入|全屏|证据|放进成片|剪进成片", clause):
+                    explicit_roles.setdefault(label, set()).add("material")
+        for asset in attachments:
+            label = re.sub(r"\s+", "", str(asset.get("label") or ""))
+            if not label:
+                continue
+            label_match = re.search(re.escape(label), compact_user_text)
+            if not label_match:
+                continue
+            scoped_tail = compact_user_text[label_match.start():]
+            next_label = re.search(r"(?:图|视频|音频)\d+", scoped_tail[len(label):])
+            scope_end = len(label) + next_label.start() if next_label else min(len(scoped_tail), 160)
+            scoped_text = scoped_tail[:scope_end]
+            if re.search(
+                r"(?:不需要|不要|不用|不必|无需|不参与).{0,4}(?:剪进|剪入|放进|加入|放入).{0,8}成片|"
+                r"(?:不需要|不要|不用|不必|无需|不参与)(?:作为)?(?:剪辑素材|素材使用)|"
+                r"忽略|标为未使用",
+                scoped_text,
+            ):
+                explicit_roles[label] = {"unused"}
+                continue
+            if str(asset.get("media_type") or "") == "image" and re.search(
+                r"(?:真实)?(?:Logo|logo|LOGO|品牌标志|品牌标识)",
+                scoped_text,
+            ) and re.search(r"出现|展示|揭示|呈现|露出", scoped_text):
+                explicit_roles.setdefault(label, set()).update({"reference", "material"})
 
         if re.search(r"(?:其他|其余|剩下|余下)(?:的)?(?:图片|图).*?(?:剪辑素材|作为素材|放到合适)", compact_user_text):
             explicit_reference_labels = {

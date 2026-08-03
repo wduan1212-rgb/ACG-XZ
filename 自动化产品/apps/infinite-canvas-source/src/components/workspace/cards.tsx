@@ -76,6 +76,14 @@ function ImageCardView({
   const isPublished = !!publishedItemIds?.includes(item.id);
   const loading =
     (item.type === "generation" || item.type === "enhanced") && item.loading;
+  const generationStatus = item.type === "generation" || item.type === "enhanced"
+    ? item.generationStatus
+    : undefined;
+  const generationError = item.type === "generation" || item.type === "enhanced"
+    ? item.error
+    : undefined;
+  const unavailable = !loading && !item.assetUrl
+    && (generationStatus === "failed" || generationStatus === "interrupted");
   const label =
     item.type === "reference" ? item.label ?? "参考图" : item.label;
   const metrics =
@@ -85,22 +93,46 @@ function ImageCardView({
   return (
     <div
       className="group/card relative h-full w-full overflow-hidden bg-transparent"
-      onDoubleClick={() => !loading && cb.onPreview(item)}
+      onDoubleClick={() => !loading && !!item.assetUrl && cb.onPreview(item)}
     >
       {loading ? (
         <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-[linear-gradient(110deg,#0c0f15,45%,#182338,55%,#0c0f15)] bg-[length:200%_100%] [animation:shimmer_1.6s_infinite]">
-          <Spinner className="h-5 w-5 text-white/70" />
-          <span className="text-[11px] text-white/60">生成中…</span>
+          {generationStatus === "queued" ? (
+            <span className="h-2 w-2 rounded-full bg-white/60 shadow-[0_0_14px_rgba(255,255,255,0.45)]" />
+          ) : (
+            <Spinner className="h-5 w-5 text-white/70" />
+          )}
+          <span className="text-[11px] text-white/70">{label || "生成中"}</span>
+        </div>
+      ) : unavailable ? (
+        <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-[#f7f8fa] px-6 text-center">
+          <Sparkles size={18} className="text-ink-3" />
+          <span className="text-[12px] font-medium text-ink-2">
+            {generationStatus === "interrupted" ? "任务已中断，可重试" : "生成失败，可重试"}
+          </span>
+          {generationError && (
+            <span className="line-clamp-2 text-[10px] text-ink-3">{generationError}</span>
+          )}
         </div>
       ) : (
         <>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={item.assetUrl}
-            alt={label}
-            draggable={false}
-            className="h-full w-full select-none object-cover"
-          />
+          {item.assetUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={item.assetUrl}
+              alt={label}
+              draggable={false}
+              className={
+                item.type === "reference"
+                  ? "h-full w-full select-none object-cover"
+                  : "h-full w-full select-none bg-[#f6f8fb] object-contain"
+              }
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center bg-[#f7f8fa] text-[11px] text-ink-3">
+              暂无图片
+            </div>
+          )}
           {metrics && (
             <div className="pointer-events-none absolute bottom-1.5 left-1.5 rounded-full bg-white/88 px-2 py-0.5 text-[10px] font-medium text-ink shadow-[var(--shadow-card)] backdrop-blur">
               锐度 {delta >= 0 ? "+" : ""}
@@ -122,7 +154,7 @@ function ImageCardView({
               <Check size={10} strokeWidth={2.4} /> 已发布
             </div>
           )}
-          <HoverBar item={item} cb={cb} />
+          {item.assetUrl && <HoverBar item={item} cb={cb} />}
         </>
       )}
     </div>

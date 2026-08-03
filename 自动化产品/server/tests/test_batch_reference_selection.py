@@ -104,7 +104,7 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertEqual(result["video"]["cover"], ["current-video-ref"])
         self.assertEqual(result["video"]["custom"], {"video-a": ["current-video-custom-ref"]})
 
-    def test_static_video_selects_every_enabled_video_account_and_keeps_image_references(self):
+    def test_static_video_selects_every_enabled_account_including_xiaohongshu(self):
         result = self.run_node(
             """
             globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
@@ -140,15 +140,36 @@ class BatchReferenceSelectionTest(unittest.TestCase):
             """
         )
 
-        self.assertEqual(["material", "real"], result["accountIds"])
+        self.assertEqual(["image", "material", "real"], result["accountIds"])
         self.assertEqual(["shared-image"], result["sharedRefAssetIds"])
         self.assertEqual([], result["coverRefAssetIds"])
         self.assertEqual({
+            "image": ["stale-image-account"],
             "material": ["material-custom"],
             "real": ["real-custom"],
         }, result["accountRefAssetIds"])
 
-    def test_static_video_ui_and_runtime_use_the_independent_workshop_chain(self):
+    def test_static_batch_language_routes_to_static_content_kind_before_plan_render(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+
+            const { parseGoalFallback } = await import("./js/agent/intent.js");
+            const prompts = [
+              "创建并直接执行一个真实静态视频批次：选择1个视频号账号，每号1条",
+              "选两个视频号做图片分镜视频，加自然口播和字幕",
+              "批量做三条静态成片，默认16:9"
+            ];
+            console.log(JSON.stringify(prompts.map(parseGoalFallback)));
+            """
+        )
+        self.assertTrue(all(item["contentKind"] == "static" for item in result))
+        self.assertTrue(all(item["group"] == "静态视频" for item in result))
+
+    def test_static_video_ui_and_runtime_use_the_independent_main_agent_chain(self):
         cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")
         view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
@@ -158,9 +179,56 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn('creationMode: "static"', orchestrator)
         self.assertIn("queueBatchStaticVideo", orchestrator)
         self.assertIn("resumeActiveBatches", orchestrator)
-        self.assertIn("staticWorkshopProjectId", orchestrator)
+        self.assertIn("/api/video/static-compose", orchestrator)
+        self.assertIn("staticAgentStep", orchestrator)
+        self.assertIn("generateStaticFrames", orchestrator)
+        self.assertIn("图片分镜自动重试", orchestrator)
+        self.assertIn("attempt <= 5", orchestrator)
+        self.assertIn("staticFrameIndex", orchestrator)
+        self.assertIn("preserveFrames: true, preserveAgent: true", orchestrator)
+        self.assertIn("口播生成", orchestrator)
+        self.assertIn("成片渲染", orchestrator)
+        self.assertNotIn("/custom-video/api/chat", orchestrator)
+        self.assertNotIn("staticWorkshopProjectId", orchestrator)
+        self.assertIn("static-agent-board-mark", cards)
+        self.assertIn("成片已交付", cards)
+        self.assertNotIn("成片已提交", cards)
         self.assertIn("!p.staticVideo", cards)
+        self.assertIn("对话修改", cards)
+        self.assertNotIn("static-agent-orb", cards)
+        self.assertIn("新建任务板", view)
+        self.assertIn("reviseBatchStaticVideo", orchestrator)
+        self.assertIn('cover.source = "generated"', orchestrator)
+        self.assertIn('"static-frame-fallback"', orchestrator)
         self.assertIn('PLAN_KIND_GROUP = { image: "图文组", static: "静态视频"', view)
+        self.assertIn("buildStaticVideoCustomCopyShots", orchestrator)
+        self.assertIn("不为了凑时长机械切图", orchestrator)
+
+    def test_static_batch_pacing_splits_semantic_clauses_without_changing_normal_video(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+
+            const { buildStaticVideoCustomCopyShots } = await import("./js/agent/orchestrator.js");
+            const copy = {
+              title: "复杂工作流为什么总会卡住",
+              body: "先看入口配置，它决定任务会去哪里；然后检查上下文和附件，因为参考图必须贯穿每一张分镜；最后回到交付结果，确认字幕、口播和画面节奏是否一致。"
+            };
+            const shots = buildStaticVideoCustomCopyShots(copy, { name: "百度搭子" });
+            console.log(JSON.stringify(shots));
+            """
+        )
+        self.assertGreaterEqual(len(result), 5)
+        self.assertTrue(all(item["line"] for item in result))
+        self.assertTrue(all("静态图片分镜" in item["visual"] for item in result))
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+        self.assertIn(
+            "const shots = buildVideoCustomCopyShots(narrationCopy, product, p.subType === \"数字人\")",
+            orchestrator,
+        )
 
     def test_legacy_aggregate_refs_are_not_silently_reused_by_image_refine(self):
         drawer = (APP_DIR / "js/views/prodDrawer.js").read_text(encoding="utf-8")
@@ -328,12 +396,26 @@ class BatchReferenceSelectionTest(unittest.TestCase):
     def test_browser_title_and_batch_reference_layout_are_unambiguous(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         styles = (APP_DIR / "styles/ui-motion.css").read_text(encoding="utf-8")
+        cards = (APP_DIR / "js/agent/cards.js").read_text(encoding="utf-8")
+        view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
 
         self.assertIn("<title>星阵</title>", index)
         self.assertNotIn("星阵 · 内容生产工作台", index)
         self.assertIn(".agc-mini-ref {\n  grid-area: refs;\n  display: grid;", styles)
         self.assertIn('"refs refs refs refs"', styles)
         self.assertIn(".agc-mini-ref .agc-mini-head::before { display: none; }", styles)
+        self.assertIn('class="agc-account-copy ${imgAcc ? "has-mode-switch has-image-count" : ""}"', cards)
+        self.assertIn('class="agc-copy-title-input" data-pacc-copy-title=', cards)
+        self.assertIn('aria-label="${esc(accountDisplayName(a))}每条图数"', cards)
+        self.assertIn("const imageCountControl = imgAcc && imageCreationMode !== \"single\"", cards)
+        self.assertIn("grid-template-columns: 86px minmax(0, 1fr) max-content 82px !important;", styles)
+        self.assertIn('class="agc-select-mark ${on ? "is-visible" : ""}"', cards)
+        self.assertIn("今日已创作", cards)
+        self.assertIn('const pickerSurface = panel.querySelector(".asset-picker")', view)
+        self.assertIn("wireDropZone(pickerSurface, addUploadedImages, { filesOnly: true })", view)
+        self.assertIn('". actions actions"', styles)
+        self.assertIn('"refs refs refs"', styles)
+        self.assertIn("grid-area: actions;", styles)
 
     def test_batch_video_reference_contract_separates_cover_and_scene_inputs(self):
         result = self.run_node(
@@ -434,7 +516,8 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn('if (p.staticVideo)', view)
         self.assertIn("静态视频不支持单独微调，请从批次中重试整条任务", view)
         self.assertIn('if (p.staticVideo) throw new Error("静态视频不支持单独微调，请从批次中重试整条任务")', orchestrator)
-        self.assertIn('{ headers: staticWorkshopAuthHeaders() }', orchestrator)
+        self.assertIn('headers: staticAgentAuthHeaders()', orchestrator)
+        self.assertNotIn('staticWorkshopAuthHeaders', orchestrator)
 
     def test_batch_confirm_has_visible_busy_state_and_sync_error_recovery(self):
         view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")

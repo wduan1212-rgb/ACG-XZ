@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 APP_DIR = Path(__file__).resolve().parents[2]
@@ -105,9 +105,8 @@ class VideoWorkshopRestartRecoveryTest(unittest.IsolatedAsyncioTestCase):
         (work_dir / "narration.mp3").write_bytes(b"narration")
         (work_dir / "scene-01.mp4").write_bytes(b"scene-one")
 
-        listed = await workshop_main.project_list()
-        first = await workshop_main.project_detail(project["id"])
-        second = await workshop_main.project_detail(project["id"])
+        first = workshop_main._mark_orphaned_running_project(project["id"])
+        second = workshop_main._mark_orphaned_running_project(project["id"])
         persisted = workshop_store.load_project(project["id"])
 
         self.assertEqual(first["status"], "failed")
@@ -118,20 +117,12 @@ class VideoWorkshopRestartRecoveryTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse((work_dir / "scene-02.mp4").exists())
         self.assertFalse((work_dir / "scene-03.mp4").exists())
-        self.assertIn("服务重启，已保留素材，可继续缺失镜头", first["error"])
+        self.assertIn("服务重启，已保留素材，将自动继续缺失镜头", first["error"])
         self.assertIn(
             "从缺失镜头 2 开始继续所有未完成镜头",
             first["error"],
         )
         self.assertEqual(second["status"], "failed")
-        self.assertEqual(
-            next(
-                item["status"]
-                for item in listed["items"]
-                if item["id"] == project["id"]
-            ),
-            "failed",
-        )
         self.assertEqual(persisted["status"], "failed")
         self.assertEqual(persisted["phase"], "error")
         self.assertEqual(
@@ -174,6 +165,40 @@ class VideoWorkshopRestartRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(retry_response["status"], "running")
         self.assertEqual(scheduled, [(project["id"], 2)])
+
+    async def test_orphaned_plan_without_media_can_resume_same_project(self):
+        project = self.save_running_project("restart-before-media")
+
+        recovered = workshop_main._mark_orphaned_running_project(project["id"])
+
+        self.assertEqual(recovered["status"], "failed")
+        self.assertEqual(
+            recovered["retryable"],
+            {"type": "resume_plan", "sceneNumber": 1},
+        )
+        self.assertFalse(recovered["restartAutoResumeAttempted"])
+        self.assertIn("已保留原导演计划", recovered["error"])
+        self.assertIn("不会新建任务或重新判断需求", recovered["error"])
+
+    async def test_project_detail_auto_resumes_restart_once(self):
+        project = self.save_running_project("restart-auto-resume")
+        recovered = workshop_main._mark_orphaned_running_project(project["id"])
+        resumed = {**recovered, "status": "running", "phase": "recovery"}
+
+        with patch.object(
+            workshop_main,
+            "project_retry",
+            new=AsyncMock(return_value=resumed),
+        ) as retry:
+            response = await workshop_main._auto_resume_restart_project(
+                project["id"],
+                recovered,
+            )
+
+        self.assertEqual(response["status"], "running")
+        retry.assert_awaited_once_with(project["id"])
+        persisted = workshop_store.load_project(project["id"])
+        self.assertTrue(persisted["restartAutoResumeAttempted"])
 
     async def test_schedule_maps_project_and_ignores_duplicate_submission(self):
         gate = asyncio.Event()
@@ -224,15 +249,18 @@ class VideoWorkshopRestartRecoveryTest(unittest.IsolatedAsyncioTestCase):
         persisted = workshop_store.load_project(project["id"])
 
         self.assertTrue(task.cancelled())
-        self.assertEqual(response["status"], "stopped")
-        self.assertEqual(persisted["status"], "stopped")
+        self.assertEqual(response["status"], "failed")
+        self.assertEqual(persisted["status"], "failed")
         self.assertEqual(persisted["phase"], "stopped")
-        self.assertIsNone(persisted["retryable"])
-        self.assertIn("不伪装为可无损暂停", persisted["messages"][-1]["content"])
+        self.assertEqual(
+            persisted["retryable"],
+            {"type": "resume_plan", "sceneNumber": 1},
+        )
+        self.assertIn("稍后可从缺失镜头 1 继续", persisted["messages"][-1]["content"])
         self.assertEqual(persisted["events"][-1]["title"], "制作已停止")
 
         repeated = await workshop_main.project_cancel(project["id"])
-        self.assertEqual(repeated["status"], "stopped")
+        self.assertEqual(repeated["status"], "failed")
         self.assertEqual(
             len([
                 item

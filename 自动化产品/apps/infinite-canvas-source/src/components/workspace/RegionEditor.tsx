@@ -119,6 +119,7 @@ export function RegionEditor({
           instruction: instruction.trim(),
           width: item.naturalWidth,
           height: item.naturalHeight,
+          idempotencyKey: `region-${item.id}-${Date.now()}`,
         },
         ctrl.signal,
       );

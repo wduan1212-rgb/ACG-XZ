@@ -44,6 +44,21 @@ def _local_sources(root: str, project: dict) -> object:
 
 
 class LocalRevisionRecognitionTests(unittest.TestCase):
+    def test_static_mode_defaults_to_landscape_but_keeps_explicit_user_ratio(self):
+        self.assertEqual(main._infer_aspect_ratio("做一条静态视频", default="16:9"), "16:9")
+        self.assertEqual(main._infer_aspect_ratio("改成竖屏静态视频", default="16:9"), "9:16")
+        self.assertEqual(main._infer_aspect_ratio("先说横屏，最终还是 1:1", default="16:9"), "1:1")
+
+    def test_stopped_plan_is_retryable_before_any_media_exists(self):
+        project = _project()
+        project["status"] = "failed"
+        project["phase"] = "stopped"
+        project["retryable"] = {"type": "resume_plan", "sceneNumber": 1}
+        self.assertEqual(
+            main._retry_info(project),
+            {"type": "resume_plan", "sceneNumber": 1},
+        )
+
     def test_scene_video_and_subtitle_requests_are_separated(self):
         plan = _project()["plan"]
         self.assertEqual(
@@ -125,6 +140,25 @@ class LocalRevisionRecognitionTests(unittest.TestCase):
             "重新补一下镜头 现在有静止帧",
         )
 
+    def test_scene_background_change_is_local_and_negative_voice_clause_does_not_expand_scope(self):
+        plan = _project()["plan"]
+        background = main._local_revision_request(
+            "把第4个片段的背景换成清晨办公室",
+            plan,
+            [],
+        )
+        camera = main._local_revision_request(
+            "只调整镜头1的机位，不改口播",
+            plan,
+            [],
+        )
+        self.assertEqual(
+            {"type": "invalid_scene", "sceneNumber": 4, "sceneCount": 3},
+            background,
+        )
+        self.assertEqual("scene", camera["type"])
+        self.assertEqual(1, camera["sceneNumber"])
+
     def test_context_free_followup_replays_user_intent_without_forcing_director(self):
         project = _project()
         project["messages"] = [
@@ -177,6 +211,80 @@ class LocalRevisionRecognitionTests(unittest.TestCase):
 
 
 class LocalRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_static_director_route_persists_mode_before_pipeline(self):
+        project = _project()
+        project["status"] = "running"
+        project["phase"] = "brief"
+
+        def mutate(_project_id, callback):
+            callback(project)
+            return project
+
+        plan = {
+            **project["plan"],
+            "title": "静态链路守门",
+            "director_note": "用图片分镜承接口播。",
+        }
+        run_pipeline = AsyncMock()
+        with (
+            patch.object(main, "load_project", return_value=project),
+            patch.object(main, "mutate_project", side_effect=mutate),
+            patch.object(main, "add_message"),
+            patch.object(main, "add_event"),
+            patch.object(
+                main.director,
+                "decide",
+                AsyncMock(return_value={"action": "produce", "plan": plan}),
+            ) as decide,
+            patch.object(
+                main,
+                "_run_pipeline_with_auto_policy",
+                run_pipeline,
+            ),
+        ):
+            await main._run_director_production(
+                project["id"],
+                aspect_ratio="16:9",
+                creation_mode="static",
+                director_assets=[],
+                saved_attachments=[],
+                revision_message="制作静态视频",
+                original_message="制作静态视频",
+                selected_voice_id="",
+            )
+
+        self.assertEqual("static", project["plan"]["creation_mode"])
+        decide.assert_awaited_once()
+        self.assertEqual("static", decide.await_args.kwargs["creation_mode"])
+        run_pipeline.assert_awaited_once()
+        self.assertEqual("static", run_pipeline.await_args.args[1]["creation_mode"])
+
+    async def test_cancelled_planned_task_can_resume_the_same_plan(self):
+        project = _project()
+        project["status"] = "running"
+        project["phase"] = "production"
+
+        def mutate(_project_id, callback):
+            callback(project)
+            return project
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(main, "settings", replace(main.settings, outputs_dir=Path(tmp))),
+                patch.object(main, "load_project", return_value=project),
+                patch.object(main, "mutate_project", side_effect=mutate),
+                patch.object(main, "add_message"),
+                patch.object(main, "add_event"),
+            ):
+                result = await main.project_cancel(project["id"])
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["phase"], "stopped")
+        self.assertEqual(
+            result["retryable"],
+            {"type": "resume_plan", "sceneNumber": 1},
+        )
+
     async def test_motion_quality_request_reuses_plan_and_all_original_sources(self):
         project = _project()
 
