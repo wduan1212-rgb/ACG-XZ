@@ -32,9 +32,13 @@ class MediaSyncToleranceTests(unittest.IsolatedAsyncioTestCase):
         video_filter = command[command.index("-vf") + 1]
         self.assertIn("scale=5120:2880", video_filter)
         self.assertIn("min(on,209)", video_filter)
-        self.assertIn("d=1:s=1280x720:fps=30", video_filter)
-        self.assertIn("2*trunc((iw-iw/zoom)/4)", video_filter)
-        self.assertIn("2*trunc((ih-ih/zoom)/4)", video_filter)
+        self.assertIn("d=1:s=2560x1440:fps=30", video_filter)
+        self.assertIn("x='trunc((iw-iw/zoom)/2)'", video_filter)
+        self.assertIn("y='trunc((ih-ih/zoom)/2)'", video_filter)
+        self.assertIn(
+            "scale=1280:720:flags=lanczos+accurate_rnd+full_chroma_int",
+            video_filter,
+        )
         self.assertEqual("210", command[command.index("-frames:v") + 1])
         self.assertIn("-framerate", command)
 
@@ -53,14 +57,15 @@ class MediaSyncToleranceTests(unittest.IsolatedAsyncioTestCase):
         center_errors: list[tuple[float, float]] = []
         for frame in range(frames):
             zoom = 1 + zoom_delta * frame / (frames - 1)
-            x = 2 * math.trunc((canvas_width - canvas_width / zoom) / 4)
-            y = 2 * math.trunc((canvas_height - canvas_height / zoom) / 4)
+            x = math.trunc((canvas_width - canvas_width / zoom) / 2)
+            y = math.trunc((canvas_height - canvas_height / zoom) / 2)
             samples.append((zoom, x, y))
 
             visible_width = canvas_width / zoom
             visible_height = canvas_height / zoom
             # Convert high-resolution source-pixel centre error back to the
-            # delivered frame.  The even-grid quantisation must stay sub-pixel.
+            # delivered frame.  The 4x source and 2x zoompan output keep the
+            # deterministic crop quantisation far below one delivered pixel.
             center_errors.append(
                 (
                     (x + visible_width / 2 - canvas_width / 2) * 1280 / visible_width,
@@ -71,13 +76,21 @@ class MediaSyncToleranceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(current[0] >= previous[0] for previous, current in zip(samples, samples[1:])))
         self.assertTrue(all(current[1] >= previous[1] for previous, current in zip(samples, samples[1:])))
         self.assertTrue(all(current[2] >= previous[2] for previous, current in zip(samples, samples[1:])))
-        self.assertLessEqual(max(abs(error) for pair in center_errors for error in pair), 0.55)
+        self.assertLessEqual(max(abs(error) for pair in center_errors for error in pair), 0.26)
         self.assertAlmostEqual(1.042, samples[-1][0], places=6)
 
     def test_static_zoom_stays_slow_for_long_narration_beats(self) -> None:
         frames, video_filter = media._still_zoom_filter(1280, 720, 20.0)
         self.assertEqual(600, frames)
         self.assertIn("1+0.050000*min(on,599)/599", video_filter)
+
+    def test_dynamic_image_cutaway_keeps_pre_v136_motion_filter(self) -> None:
+        frames, video_filter = media._material_still_zoom_filter(1280, 720, 7.0)
+        self.assertEqual(210, frames)
+        self.assertIn("d=1:s=1280x720:fps=30", video_filter)
+        self.assertIn("x='2*trunc((iw-iw/zoom)/4)'", video_filter)
+        self.assertIn("y='2*trunc((ih-ih/zoom)/4)'", video_filter)
+        self.assertNotIn("scale=1280:720:flags=lanczos", video_filter)
 
     def test_container_rounding_does_not_block_delivery(self) -> None:
         media._assert_av_sync(92.600, 92.449, "变速成片")

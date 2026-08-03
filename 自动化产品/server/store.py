@@ -535,6 +535,15 @@ CREATE INDEX IF NOT EXISTS idx_community_posts_status_created
   ON community_posts(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_community_posts_author_created
   ON community_posts(author_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS community_post_identities(
+  author_id   TEXT NOT NULL,
+  identity_key TEXT NOT NULL,
+  post_id     TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY(author_id, identity_key)
+);
+CREATE INDEX IF NOT EXISTS idx_community_post_identities_post
+  ON community_post_identities(post_id);
 CREATE TABLE IF NOT EXISTS community_reactions(
   post_id      TEXT NOT NULL,
   member_id    TEXT NOT NULL,
@@ -6326,6 +6335,40 @@ def get_custom_project(project_id, owner_id):
             conn.close()
 
 
+def get_custom_output_by_source(project_id, owner_id, source_output_id):
+    """Resolve one video output by its server-owned project/source identity."""
+    pid = str(project_id or "").strip()
+    owner = str(owner_id or "").strip()
+    output_id = str(source_output_id or "").strip()
+    if not pid or not owner or not output_id:
+        return None, "not_found"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                "SELECT id,data FROM docs WHERE collection='customOutputs' AND owner_id=?",
+                (owner,),
+            ).fetchall()
+            for doc_id, raw in rows:
+                try:
+                    item = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(item, dict) or str(item.get("projectId") or "") != pid:
+                    continue
+                if output_id not in {
+                    str(doc_id or ""),
+                    str(item.get("id") or ""),
+                    str(item.get("sourceOutputId") or ""),
+                }:
+                    continue
+                return item, None
+            return None, "not_found"
+        finally:
+            conn.close()
+
+
 def save_custom_project(owner_id, payload, project_id=""):
     """由服务端写入 ownerId，并幂等创建有稳定子应用来源 ID 的项目。
 
@@ -8624,7 +8667,7 @@ def normalize_community_media_url(value):
 def normalize_community_media(items):
     """只保存站内持久化 URL 和尺寸元数据，拒绝 Base64/blob/外链。"""
     clean = []
-    for raw in list(items or [])[:12]:
+    for raw in list(items or [])[:20]:
         if not isinstance(raw, dict):
             continue
         url = normalize_community_media_url(raw.get("url"))
@@ -8659,15 +8702,241 @@ def normalize_community_cover(value):
     return clean[0] if clean else {}
 
 
-def community_identity_key(source_kind, source_id, media, cover=None):
-    payload = {
-        "sourceKind": str(source_kind or "").strip().lower(),
-        "sourceId": str(source_id or "").strip()[:160],
-        "media": [str(item.get("url") or "") for item in list(media or [])],
-        "cover": str((cover or {}).get("url") or ""),
+def community_delivery_media_urls(delivery, author_id):
+    """Resolve the server-owned media closure of one delivery snapshot."""
+    source = delivery if isinstance(delivery, dict) else {}
+    owner = str(author_id or "")
+    asset_ids = {
+        str(source.get("sourceAssetId") or "").strip(),
+        str(source.get("coverAssetId") or "").strip(),
+        *[
+            str(item or "").strip()
+            for item in list(source.get("packAssetIds") or [])[:20]
+        ],
     }
+    asset_ids.discard("")
+    payloads = [source]
+    if asset_ids:
+        _ensure_db()
+        with _lock:
+            conn = _connect()
+            try:
+                placeholders = ",".join("?" for _ in asset_ids)
+                rows = conn.execute(
+                    f"SELECT owner_id,data FROM docs WHERE collection='assets' "
+                    f"AND id IN ({placeholders})",
+                    tuple(sorted(asset_ids)),
+                ).fetchall()
+            finally:
+                conn.close()
+        for stored_owner, raw in rows:
+            try:
+                item = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            item_owners = {
+                str(stored_owner or ""),
+                str(item.get("ownerId") or "") if isinstance(item, dict) else "",
+                str(item.get("byMemberId") or "") if isinstance(item, dict) else "",
+            }
+            if isinstance(item, dict) and owner in item_owners:
+                payloads.append(item)
+
+    found = set()
+
+    def visit(value):
+        if isinstance(value, dict):
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+        elif isinstance(value, str):
+            normalized = normalize_community_media_url(value)
+            if normalized:
+                found.add(normalized)
+
+    visit(payloads)
+    return found
+
+
+def community_media_fingerprint(media):
+    """Build the fallback identity from canonical URLs only.
+
+    Media type is presentation metadata supplied by the browser.  Letting it
+    participate in identity would allow the same persisted file to be shared
+    twice merely by relabelling image/video.
+    """
+    payload = sorted({
+        str(item.get("url") or "").strip()
+        for item in list(media or [])
+        if isinstance(item, dict) and item.get("url")
+    })
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def normalize_community_source_identity(value):
+    """Normalize a server-verified source identity shared by every UI surface.
+
+    Delivery can materialize a workshop/canvas output under a different media
+    URL, so URL fingerprints alone are not authoritative.  The caller must
+    derive this structure from an owned project/output or delivery snapshot;
+    the store only canonicalizes the already verified values.
+    """
+    raw = value if isinstance(value, dict) else {}
+    kind = str(raw.get("kind") or "").strip().lower()
+    project_id = str(raw.get("projectId") or "").strip()[:180]
+    output_ids = {
+        str(raw.get("sourceOutputId") or "").strip()[:180],
+        *[
+            str(item or "").strip()[:180]
+            for item in list(raw.get("sourceItemIds") or [])[:20]
+        ],
+    }
+    output_ids.discard("")
+    if kind not in {"video", "canvas"} or not project_id or not output_ids:
+        return {}
+    return {
+        "kind": kind,
+        "projectId": project_id,
+        "outputIds": sorted(output_ids),
+    }
+
+
+def community_identity_key(
+    source_kind,
+    source_id,
+    media,
+    cover=None,
+    source_identity=None,
+):
+    return community_identity_keys(
+        source_kind,
+        source_id,
+        media,
+        cover,
+        source_identity=source_identity,
+    )[0]
+
+
+def community_identity_keys(
+    source_kind,
+    source_id,
+    media,
+    cover=None,
+    source_identity=None,
+):
+    """Return one primary identity plus per-output aliases.
+
+    A canvas gallery and one of its individual images are the same already
+    shared source for duplicate prevention.  Persist each item alias so either
+    direction (gallery first or single image first) resolves transactionally.
+    """
+    verified = normalize_community_source_identity(source_identity)
+    if verified:
+        def source_key(output_ids):
+            canonical = json.dumps(
+                {**verified, "outputIds": sorted(output_ids)},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            return "source:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+        primary = source_key(verified["outputIds"])
+        aliases = {primary, *(source_key([item]) for item in verified["outputIds"])}
+        return primary, sorted(aliases)
+    # Old records and outputs without stable provenance remain compatible via
+    # the normalized persistent URL set.  Presentation metadata and covers are
+    # intentionally excluded.
+    urls = sorted({
+        str(item.get("url") or "").strip()
+        for item in list(media or [])
+        if isinstance(item, dict) and item.get("url")
+    })
+
+    def media_key(values):
+        canonical = json.dumps(sorted(values), ensure_ascii=False, separators=(",", ":"))
+        return "media:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    primary = media_key(urls)
+    aliases = {primary, *(media_key([item]) for item in urls)}
+    return primary, sorted(aliases)
+
+
+def _community_existing_post_id(conn, author_id, identity_keys, media):
+    """Find new- or old-format rows for one already shared media work."""
+    keys = sorted({str(item or "") for item in list(identity_keys or []) if str(item or "")})
+    if keys:
+        placeholders = ",".join("?" for _ in keys)
+        row = conn.execute(
+            "SELECT p.id FROM community_post_identities i "
+            "JOIN community_posts p ON p.id=i.post_id "
+            f"WHERE i.author_id=? AND i.identity_key IN ({placeholders}) "
+            "AND p.status='published' ORDER BY p.created_at ASC LIMIT 1",
+            (str(author_id or ""), *keys),
+        ).fetchone()
+        if row:
+            return str(row[0] or "")
+        row = conn.execute(
+            f"SELECT id FROM community_posts WHERE author_id=? AND identity_key IN ({placeholders}) "
+            "AND status='published' ORDER BY created_at ASC LIMIT 1",
+            (str(author_id or ""), *keys),
+        ).fetchone()
+        if row:
+            return str(row[0] or "")
+
+    # Existing deployments stored a source-dependent identity.  Compare their
+    # normalized media fingerprints in-process instead of rewriting production
+    # rows during startup, so rollout remains an additive, reversible change.
+    wanted_urls = {
+        str(item.get("url") or "").strip()
+        for item in list(media or [])
+        if isinstance(item, dict) and item.get("url")
+    }
+    rows = conn.execute(
+        "SELECT id,media_json FROM community_posts "
+        "WHERE author_id=? AND status='published'",
+        (str(author_id or ""),),
+    ).fetchall()
+    for post_id, raw_media in rows:
+        try:
+            stored = json.loads(raw_media or "[]")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        stored_urls = {
+            str(item.get("url") or "").strip()
+            for item in stored
+            if isinstance(item, dict) and item.get("url")
+        } if isinstance(stored, list) else set()
+        if wanted_urls & stored_urls:
+            return str(post_id or "")
+    return ""
+
+
+def _community_clear_stale_identity_aliases(conn, author_id, identity_keys):
+    """Release aliases left behind by an older soft-delete implementation.
+
+    v136 removes aliases together with a post, but a forward rollback can run an
+    older delete path that only changes ``community_posts.status``.  Such an
+    alias must not keep its unique key forever and make a later re-share fail.
+    Restrict cleanup to the keys used by this transaction so normal startup
+    never rewrites unrelated community history.
+    """
+    keys = sorted({str(item or "") for item in list(identity_keys or []) if str(item or "")})
+    if not keys:
+        return
+    placeholders = ",".join("?" for _ in keys)
+    conn.execute(
+        "DELETE FROM community_post_identities "
+        f"WHERE author_id=? AND identity_key IN ({placeholders}) "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM community_posts p "
+        "WHERE p.id=community_post_identities.post_id AND p.status='published'"
+        ")",
+        (str(author_id or ""), *keys),
+    )
 
 
 def _community_reaction_state(post_id, viewer_id=""):
@@ -8701,7 +8970,17 @@ def _community_post_public(row, viewer_id=""):
         cover = json.loads(row[10] or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
         cover = {}
-    team = member_team(row[1])
+    team = None
+    if row[3]:
+        team_row = _fetchone(
+            "SELECT id,name FROM teams WHERE id=? AND status='active'",
+            (str(row[3]),),
+        )
+        if team_row:
+            team = {"id": str(team_row[0]), "name": str(team_row[1] or "")}
+    if not row[3]:
+        # Compatibility for old posts that did not persist team_id.
+        team = member_team(row[1])
     item = {
         "id": row[0],
         "authorId": row[1],
@@ -8737,6 +9016,7 @@ def create_community_post(
     category,
     media,
     cover=None,
+    source_identity=None,
 ):
     source_kind = str(source_kind or "").strip().lower()
     if source_kind not in COMMUNITY_SOURCE_KINDS:
@@ -8749,7 +9029,13 @@ def create_community_post(
         raise ValueError("community_title_required")
     media = normalize_community_media(media)
     cover = normalize_community_cover(cover) if cover else {}
-    identity_key = community_identity_key(source_kind, source_id, media, cover)
+    identity_key, identity_keys = community_identity_keys(
+        source_kind,
+        source_id,
+        media,
+        cover,
+        source_identity=source_identity,
+    )
     now = int(time.time() * 1000)
     post_id = "community_" + uuid.uuid4().hex[:18]
     existing_id = ""
@@ -8757,25 +9043,39 @@ def create_community_post(
     with _lock:
         conn = _connect()
         try:
-            existing = conn.execute(
-                """
-                SELECT id FROM community_posts
-                WHERE author_id=? AND identity_key=? AND status='published'
-                LIMIT 1
-                """,
-                (str(author_id or ""), identity_key),
-            ).fetchone()
-            if existing:
-                existing_id = str(existing[0] or "")
+            # Serialize the read-before-insert across separate server workers,
+            # not only threads in this process.  This keeps two entry points
+            # submitted at the same instant from both observing an empty row.
+            conn.execute("BEGIN IMMEDIATE")
+            _community_clear_stale_identity_aliases(
+                conn, author_id, identity_keys,
+            )
+            existing_id = _community_existing_post_id(
+                conn, author_id, identity_keys, media,
+            )
+            if existing_id:
+                # A legacy URL-only row has no provenance aliases to bridge a
+                # later materialized URL.  Bind only this request's primary
+                # composite source key.  Do not bind every per-item gallery
+                # alias: the old post may not actually display those items.
+                if identity_key.startswith("source:"):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO community_post_identities("
+                        "author_id,identity_key,post_id,created_at"
+                        ") VALUES(?,?,?,?)",
+                        (str(author_id or ""), identity_key, existing_id, now),
+                    )
+                conn.commit()
             else:
-                conn.execute(
-                """
-                INSERT INTO community_posts(
-                  id,author_id,author_name,team_id,source_kind,source_id,title,
-                  copy_text,prompt_text,category,media_json,cover_json,identity_key,
-                  status,created_at,updated_at
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO community_posts(
+                          id,author_id,author_name,team_id,source_kind,source_id,title,
+                          copy_text,prompt_text,category,media_json,cover_json,identity_key,
+                          status,created_at,updated_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
                     (
                     post_id,
                     str(author_id or ""),
@@ -8794,8 +9094,26 @@ def create_community_post(
                     now,
                     now,
                     ),
-                )
-                conn.commit()
+                    )
+                    conn.executemany(
+                        "INSERT INTO community_post_identities(author_id,identity_key,post_id,created_at) "
+                        "VALUES(?,?,?,?)",
+                        [
+                            (str(author_id or ""), key, post_id, now)
+                            for key in identity_keys
+                        ],
+                    )
+                    conn.commit()
+                except sqlite3.IntegrityError:
+                    # A second worker may have inserted the same media identity
+                    # after our read.  Resolve to that post instead of surfacing
+                    # a 500 or creating a duplicate on retry.
+                    conn.rollback()
+                    existing_id = _community_existing_post_id(
+                        conn, author_id, identity_keys, media,
+                    )
+                    if not existing_id:
+                        raise
         finally:
             conn.close()
     if existing_id:
@@ -8857,19 +9175,36 @@ def list_community_posts(category="", limit=40, before=0, viewer_id=""):
     }
 
 
-def community_post_status(author_id, source_kind, source_id, media, cover=None):
+def community_post_status(
+    author_id,
+    source_kind,
+    source_id,
+    media,
+    cover=None,
+    source_identity=None,
+):
     try:
         clean_media = normalize_community_media(media)
         clean_cover = normalize_community_cover(cover) if cover else {}
     except ValueError:
         return {"shared": False, "post": None}
-    identity_key = community_identity_key(source_kind, source_id, clean_media, clean_cover)
-    row = _fetchone(
-        "SELECT id FROM community_posts WHERE author_id=? AND identity_key=? "
-        "AND status='published' LIMIT 1",
-        (str(author_id or ""), identity_key),
+    _identity_key, identity_keys = community_identity_keys(
+        source_kind,
+        source_id,
+        clean_media,
+        clean_cover,
+        source_identity=source_identity,
     )
-    post = get_community_post(row[0], viewer_id=author_id) if row else None
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            post_id = _community_existing_post_id(
+                conn, author_id, identity_keys, clean_media,
+            )
+        finally:
+            conn.close()
+    post = get_community_post(post_id, viewer_id=author_id) if post_id else None
     return {"shared": bool(post), "post": post}
 
 
@@ -8928,6 +9263,11 @@ def delete_community_post(post_id):
                 "UPDATE community_posts SET status='deleted',updated_at=? WHERE id=? AND status='published'",
                 (int(time.time() * 1000), str(post_id or "")),
             )
+            if cursor.rowcount:
+                conn.execute(
+                    "DELETE FROM community_post_identities WHERE post_id=?",
+                    (str(post_id or ""),),
+                )
             conn.commit()
             return cursor.rowcount > 0
         finally:

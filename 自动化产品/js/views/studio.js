@@ -5,14 +5,14 @@ import { icon } from "../ui/icons.js";
 import { state, save, activeAccount, activeProduction, productionById, canManageAccounts } from "../core/store.js";
 import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, accountCreatedToday, isAccountDisabled } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
-import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260802-v134-static-community-1";
+import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260803-v136-community-static-1";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260802-v134-static-community-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260803-v136-community-static-1";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260802-v134-static-community-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260802-v134-static-community-1";
-import { renderCutPage } from "./chainCut.js?v=20260802-v134-static-community-1";
-import { renderReviewPage } from "./chainCopy.js?v=20260802-v134-static-community-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260803-v136-community-static-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260803-v136-community-static-1";
+import { renderCutPage } from "./chainCut.js?v=20260803-v136-community-static-1";
+import { renderReviewPage } from "./chainCopy.js?v=20260803-v136-community-static-1";
 
 export const studioView = {
   render(root, { page }) {

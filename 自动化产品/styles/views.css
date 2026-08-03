@@ -628,6 +628,7 @@ body.workspace-shell-v2[data-zone="studio"] .view-root > .chain-stepper .cs-orig
   columns: auto !important;
 }
 .product-home-miaoda .home-inspiration-card {
+  position: relative;
   width: 100%;
   min-width: 0;
   margin: 0;
@@ -714,27 +715,6 @@ button.home-community-empty { width: 100%; cursor: pointer; }
 .community-share-dialog footer { display: flex; justify-content: flex-end; gap: 9px; }
 
 .custom-tool-host { position: relative; }
-.custom-community-share {
-  position: absolute;
-  z-index: 40;
-  right: 24px;
-  top: 18px;
-  min-height: 38px;
-  padding: 0 14px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  border: 1px solid rgba(255,255,255,.75);
-  border-radius: 999px;
-  background: rgba(32,38,47,.9);
-  color: #fff;
-  box-shadow: 0 10px 28px rgba(20,28,40,.18);
-  backdrop-filter: blur(12px);
-  cursor: pointer;
-  transition: transform 160ms ease, background 160ms ease, box-shadow 160ms ease;
-}
-.custom-community-share:hover { transform: translateY(-2px); background: #2776cf; box-shadow: 0 14px 30px rgba(39,118,207,.24); }
-.custom-community-share[hidden] { display: none !important; }
 
 @media (max-width: 1080px) {
   .product-home-miaoda .home-inspiration-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -743,7 +723,6 @@ button.home-community-empty { width: 100%; cursor: pointer; }
   .product-home-miaoda .home-inspiration-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .community-share-preview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .home-inspiration-detail { grid-template-columns: 1fr; }
-  .custom-community-share { top: 10px; right: 10px; }
 }
 @media (max-width: 480px) {
   .product-home-miaoda .home-inspiration-grid { grid-template-columns: 1fr; }
@@ -2484,7 +2463,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
   border-radius: 13px;
 }
 .vl-console .vl-section-head.compact .vl-generate-action:hover::before {
-  border-radius: 0;
+  border-radius: 13px;
 }
 .vl-section-head > div { display: grid; gap: 4px; min-width: 0; }
 .vl-section-head b { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 15px; }
@@ -6693,22 +6672,51 @@ body.workspace-shell-v2[data-zone="subscription"] .view-root {
   }
 }
 
-/* 最终层：不让历史首页规则把真实社区恢复成占位卡片。 */
+/* 最终层：社区按 DOM 顺序横向优先，并用细网格回填不同媒体比例留下的空隙。 */
 .product-home-miaoda .home-inspiration-grid {
-  display: block !important;
-  columns: 4 !important;
-  column-gap: 10px !important;
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  grid-auto-flow: row dense !important;
+  grid-auto-rows: 4px !important;
+  align-items: start !important;
+  gap: 10px !important;
+  columns: auto !important;
 }
 .product-home-miaoda .home-inspiration-card {
   width: 100% !important;
-  margin: 0 0 10px !important;
+  margin: 0 !important;
   padding: 0 !important;
-  display: inline-block !important;
-  break-inside: avoid !important;
+  display: block !important;
+  align-self: start;
   border: 0 !important;
   border-radius: 14px !important;
   background: transparent !important;
   box-shadow: none !important;
+}
+.product-home-miaoda .home-inspiration-card-author {
+  position: absolute;
+  z-index: 2;
+  left: 9px;
+  right: 9px;
+  bottom: 8px;
+  padding: 5px 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(17, 25, 37, .56);
+  box-shadow: 0 4px 14px rgba(14, 23, 36, .16);
+  backdrop-filter: blur(8px);
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: .9;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.product-home-miaoda .home-inspiration-card:hover .home-inspiration-card-author,
+.product-home-miaoda .home-inspiration-card:focus-visible .home-inspiration-card-author {
+  opacity: 1;
+  transform: translateY(-1px);
 }
 .product-home-miaoda .home-inspiration-card:nth-child(n) .home-inspiration-media {
   min-height: 0 !important;
@@ -6721,51 +6729,76 @@ body.workspace-shell-v2[data-zone="subscription"] .view-root {
 .product-home-miaoda .home-inspiration-media img,
 .product-home-miaoda .home-inspiration-media video {
   width: 100% !important;
-  height: 100% !important;
-  min-height: 132px;
+  height: auto !important;
+  min-height: 0;
   max-height: none !important;
   display: block;
   object-fit: cover !important;
 }
 @media (max-width: 1080px) {
-  .product-home-miaoda .home-inspiration-grid { columns: 3 !important; }
+  .product-home-miaoda .home-inspiration-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
 }
 @media (max-width: 760px) {
-  .product-home-miaoda .home-inspiration-grid { columns: 2 !important; }
+  .product-home-miaoda .home-inspiration-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
 }
 @media (max-width: 480px) {
-  .product-home-miaoda .home-inspiration-grid { columns: 1 !important; }
+  .product-home-miaoda .home-inspiration-grid { grid-template-columns: 1fr !important; }
 }
 
-/* 社区详情：不同尺寸媒体完整展示；长文和多图各自在弹层内滚动。 */
-.home-inspiration-panel { width: min(1180px, calc(100vw - 48px)); max-height: min(880px, calc(100vh - 48px)); overflow: hidden; }
-.home-inspiration-detail { min-height: 0; height: min(760px, calc(100vh - 96px)); }
+/* 社区详情：只允许弹层整体滚动，媒体和文案区不再各自出现滚动条。 */
+.home-inspiration-panel { width: min(1180px, calc(100vw - 48px)); max-height: min(880px, calc(100vh - 48px)); overflow: auto; }
+.home-inspiration-detail { min-height: 0; height: auto; align-items: stretch; }
 .home-inspiration-detail-media {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-start;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 12px;
-  overflow: auto;
-  overscroll-behavior: contain;
+  padding: 24px;
+  overflow: visible;
 }
-.home-inspiration-detail-media img,
-.home-inspiration-detail-media video {
-  width: 100%;
+.home-inspiration-detail-stage {
+  min-width: 0;
+  min-height: min(560px, calc(100vh - 190px));
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.home-inspiration-detail-stage .home-inspiration-detail-item {
+  grid-area: 1 / 1;
+  width: auto;
   height: auto;
-  max-height: none;
-  flex: none;
+  max-width: 100%;
+  max-height: min(680px, calc(100vh - 190px));
   object-fit: contain;
   border-radius: 12px;
 }
-.home-inspiration-detail-copy { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.home-inspiration-detail-stage .home-inspiration-detail-item[hidden] { display: none; }
+.home-inspiration-detail-thumbs { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.home-inspiration-detail-thumbs button {
+  position: relative;
+  width: 54px;
+  height: 54px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #dbe3ec;
+  border-radius: 10px;
+  background: #fff;
+  opacity: .68;
+  cursor: pointer;
+}
+.home-inspiration-detail-thumbs button.is-active { border-color: #4b96ed; box-shadow: 0 0 0 2px rgba(53, 135, 230, .15); opacity: 1; }
+.home-inspiration-detail-thumbs img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.home-inspiration-detail-thumbs i { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; background: rgba(14, 24, 39, .26); }
+.home-inspiration-detail-copy { min-height: 0; overflow: visible; }
 .home-inspiration-detail-copy p,
 .home-prompt-preview { white-space: pre-wrap; overflow-wrap: anywhere; }
+.home-prompt-preview { max-height: none; overflow: visible; }
 @media (max-width: 760px) {
   .home-inspiration-panel { width: min(96vw, 680px); }
-  .home-inspiration-detail { height: min(82vh, 760px); overflow: auto; }
-  .home-inspiration-detail-media,
-  .home-inspiration-detail-copy { overflow: visible; }
+  .home-inspiration-detail { height: auto; overflow: visible; }
+  .home-inspiration-detail-media { padding: 16px; }
+  .home-inspiration-detail-stage { min-height: min(52vh, 440px); }
+  .home-inspiration-detail-stage .home-inspiration-detail-item { max-height: min(52vh, 440px); }
 }
 
 /* v133 · 整体资产：草稿优先、成员收藏夹、后台素材二级分类。 */
@@ -6985,9 +7018,9 @@ body.workspace-shell-v2[data-zone="subscription"] .view-root {
 }
 .dv-actions .btn.is-shared,
 .dv-actions .btn:disabled.is-shared {
-  border-color: #c8dff8;
-  background: #eef6ff;
-  color: #2677cf;
+  border-color: #d7dce2;
+  background: #f0f2f4;
+  color: #858d98;
   opacity: 1;
 }
 @media (max-width: 720px) {

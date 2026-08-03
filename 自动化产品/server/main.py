@@ -5481,6 +5481,9 @@ class CommunityPostReq(BaseModel):
     authorId: str = ""
     sourceKind: str = ""
     sourceId: str = ""
+    sourceProjectId: str = ""
+    sourceOutputId: str = ""
+    sourceItemIds: List[str] = Field(default_factory=list)
     title: str = ""
     copyText: str = Field(default="", alias="copy")
     prompt: str = ""
@@ -6022,6 +6025,181 @@ def _community_share_author(me, requested_author_id=""):
     return author
 
 
+def _community_canvas_item_ids(value):
+    found = set()
+
+    def visit(item):
+        if isinstance(item, dict):
+            item_id = str(item.get("id") or "").strip()[:180]
+            if item_id:
+                found.add(item_id)
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return found
+
+
+def _community_request_media_urls(req):
+    values = list(req.media or [])
+    if req.cover:
+        values.append(req.cover)
+    if not values:
+        return set()
+    try:
+        return {
+            str(item.get("url") or "")
+            for item in store.normalize_community_media(values)
+            if item.get("url")
+        }
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def _community_verified_source_identity(author, req: CommunityPostReq):
+    """Derive cross-surface provenance only from server-owned source records."""
+    kind = str(req.sourceKind or "").strip().lower()
+    if kind == "delivery":
+        delivery, error = store.get_delivery_asset_for_member(
+            req.sourceId,
+            author["id"],
+            author.get("role") or "user",
+        )
+        if error or not delivery:
+            raise HTTPException(403, "只能分享原创作者可访问的发布内容")
+        output_kind = str(delivery.get("customOutputKind") or "").strip().lower()
+        if output_kind not in {"video", "canvas"}:
+            output_kind = "canvas" if delivery.get("type") == "图集" else "video"
+        custom_project_id = str(delivery.get("customProjectId") or "").strip()[:180]
+        source_output_id = str(delivery.get("sourceOutputId") or "").strip()[:180]
+        source_item_ids = sorted({
+            str(item or "").strip()[:180]
+            for item in list(delivery.get("sourceItemIds") or [])[:20]
+            if str(item or "").strip()
+        })
+        if not custom_project_id or (not source_output_id and not source_item_ids):
+            return {}
+        project, project_error = store.get_custom_project(custom_project_id, author["id"])
+        if project_error or not project or str(project.get("kind") or "") != output_kind:
+            return {}
+        if output_kind == "video":
+            output, output_error = store.get_custom_output_by_source(
+                custom_project_id,
+                author["id"],
+                source_output_id,
+            )
+            if output_error or not output:
+                raise HTTPException(400, "发布清单的视频来源身份无法由服务端核验")
+            source_output_id = str(
+                output.get("sourceOutputId") or source_output_id
+            ).strip()[:180]
+        else:
+            project_state = (
+                project.get("projectState")
+                if isinstance(project.get("projectState"), dict)
+                else {}
+            )
+            source_project_id = str(
+                project_state.get("sourceProjectId") or ""
+            ).strip()[:180]
+            if not source_project_id:
+                return {}
+            try:
+                draft, draft_error = store.get_custom_canvas_draft(
+                    author["id"], source_project_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(400, "发布清单的画布来源身份无效") from exc
+            if draft_error or not draft:
+                raise HTTPException(400, "发布清单的画布来源无法由服务端核验")
+            stored_ids = _community_canvas_item_ids(
+                (draft.get("state") or {}).get("items") or []
+            )
+            if not set(source_item_ids).issubset(stored_ids):
+                raise HTTPException(400, "发布清单的画布来源与所选图片不匹配")
+            draft_project = (
+                draft.get("project")
+                if isinstance(draft.get("project"), dict)
+                else {}
+            )
+            if str(draft_project.get("customProjectId") or "") != custom_project_id:
+                raise HTTPException(400, "发布清单的画布项目身份不匹配")
+        requested_urls = _community_request_media_urls(req)
+        allowed_urls = store.community_delivery_media_urls(delivery, author["id"])
+        if requested_urls and not allowed_urls:
+            return {}
+        if not requested_urls.issubset(allowed_urls):
+            raise HTTPException(400, "发布清单来源与所选媒体不匹配")
+        return {
+            "kind": output_kind,
+            "projectId": custom_project_id,
+            "sourceOutputId": source_output_id if output_kind == "video" else "",
+            "sourceItemIds": source_item_ids if output_kind == "canvas" else [],
+        }
+
+    source_project_id = str(req.sourceProjectId or req.sourceId or "").strip()[:180]
+    if kind == "video" and source_project_id:
+        source_output_id = str(req.sourceOutputId or "").strip()[:180]
+        if not source_output_id:
+            return {}
+        mapped = _video_workshop_owned_project(author, source_project_id)
+        output, error = store.get_custom_output_by_source(
+            mapped.get("id"), author["id"], source_output_id,
+        )
+        if error or not output:
+            raise HTTPException(400, "视频来源身份与所选成片不匹配")
+        requested_urls = _community_request_media_urls(req)
+        allowed_urls = {
+            store.normalize_community_media_url(output.get(key))
+            for key in ("url", "downloadUrl", "videoUrl")
+        }
+        allowed_urls.discard("")
+        if requested_urls and not allowed_urls:
+            # Old output snapshots without a bindable URL remain compatible
+            # through the media fingerprint, but cannot claim provenance.
+            return {}
+        if not requested_urls.issubset(allowed_urls):
+            raise HTTPException(400, "视频来源身份与所选成片地址不匹配")
+        return {
+            "kind": "video",
+            "projectId": str(mapped.get("id") or "")[:180],
+            "sourceOutputId": str(output.get("sourceOutputId") or source_output_id)[:180],
+            "sourceItemIds": [],
+        }
+
+    if kind == "canvas" and source_project_id:
+        requested_ids = {
+            str(item or "").strip()[:180]
+            for item in [req.sourceOutputId, *list(req.sourceItemIds or [])[:20]]
+            if str(item or "").strip()
+        }
+        if not requested_ids:
+            return {}
+        try:
+            draft, error = store.get_custom_canvas_draft(author["id"], source_project_id)
+        except ValueError as exc:
+            raise HTTPException(400, "无限画布来源身份无效") from exc
+        if error or not draft:
+            raise HTTPException(403, "无限画布来源与原创作者不匹配")
+        stored_ids = _community_canvas_item_ids((draft.get("state") or {}).get("items") or [])
+        if not requested_ids.issubset(stored_ids):
+            raise HTTPException(400, "无限画布来源身份与所选图片不匹配")
+        project = draft.get("project") if isinstance(draft.get("project"), dict) else {}
+        custom_project_id = str(project.get("customProjectId") or "").strip()[:180]
+        if not custom_project_id:
+            return {}
+        return {
+            "kind": "canvas",
+            "projectId": custom_project_id,
+            "sourceOutputId": "",
+            "sourceItemIds": sorted(requested_ids),
+        }
+    return {}
+
+
 @app.get("/api/community/posts")
 def community_posts_list(
     category: str = "", limit: int = 40, before: int = 0,
@@ -6047,10 +6225,12 @@ def community_favorites(me=Depends(require_member), limit: int = 80):
 
 
 @app.post("/api/community/status")
-def community_status(req: CommunityPostReq, me=Depends(require_member)):
+def community_status(req: CommunityPostReq, me=Depends(require_creator)):
     author = _community_share_author(me, req.authorId)
+    source_identity = _community_verified_source_identity(author, req)
     result = store.community_post_status(
         author["id"], req.sourceKind, req.sourceId, req.media, req.cover,
+        source_identity=source_identity,
     )
     return {**result, "post": _community_post_response(result.get("post"))}
 
@@ -6133,7 +6313,7 @@ def community_post_cover(post_id: str, request: Request):
 
 
 @app.post("/api/community/posts")
-def community_post_create(req: CommunityPostReq, me=Depends(require_member)):
+def community_post_create(req: CommunityPostReq, me=Depends(require_creator)):
     author = _community_share_author(me, req.authorId)
     clean_media = _validate_community_media_owner(
         author,
@@ -6146,6 +6326,7 @@ def community_post_create(req: CommunityPostReq, me=Depends(require_member)):
         clean_cover = _validate_community_media_owner(
             author, [req.cover], source_kind=req.sourceKind, source_id=req.sourceId,
         )[0]
+    source_identity = _community_verified_source_identity(author, req)
     try:
         post = store.create_community_post(
             author_id=author["id"],
@@ -6159,6 +6340,7 @@ def community_post_create(req: CommunityPostReq, me=Depends(require_member)):
             category=req.category,
             media=clean_media,
             cover=clean_cover,
+            source_identity=source_identity,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))

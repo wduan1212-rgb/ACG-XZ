@@ -47,6 +47,7 @@ STATIC_TTS_POINTS_PER_100_CHARS = max(
     1, int(os.getenv("TTS_POINTS_PER_100_CHARS", "2") or "2")
 )
 _SEEDANCE_LIMITERS: "weakref.WeakKeyDictionary[Any, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+_STATIC_IMAGE_LIMITERS: "weakref.WeakKeyDictionary[Any, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
 
 
 def _scene_generation_duration(target_duration: float) -> int:
@@ -175,6 +176,16 @@ def _seedance_limiter(limit: int = 10) -> asyncio.Semaphore:
     return semaphore
 
 
+def _static_image_limiter(limit: int = 3) -> asyncio.Semaphore:
+    """Share static-image provider capacity across projects on the app loop."""
+    loop = asyncio.get_running_loop()
+    semaphore = _STATIC_IMAGE_LIMITERS.get(loop)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(max(1, int(limit or 1)))
+        _STATIC_IMAGE_LIMITERS[loop] = semaphore
+    return semaphore
+
+
 async def _gather_bounded(
     *awaitables: Any,
     limit: int = 10,
@@ -251,52 +262,196 @@ def _visual_beats_for_segment(
     return beats[start:end]
 
 
+def _split_static_narration_semantics(text: str, target_count: int) -> list[str]:
+    """Split narration near real language boundaries for still-storyboard planning."""
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not normalized:
+        return []
+    # Do not manufacture a dozen nearly empty cards from a very short sentence.
+    count = min(max(1, int(target_count or 1)), max(1, len(normalized) // 6))
+    if count <= 1:
+        return [normalized]
+
+    boundary_chars = set("，,。、！!？?；;：:\n")
+    boundaries: list[int] = []
+    previous = 0
+    search_radius = max(8, int(len(normalized) / count * 0.55))
+    for index in range(1, count):
+        ideal = round(len(normalized) * index / count)
+        lower = max(previous + 4, ideal - search_radius)
+        upper = min(len(normalized) - 4, ideal + search_radius)
+        candidates = [
+            position + 1
+            for position in range(lower, upper)
+            if normalized[position] in boundary_chars or normalized[position].isspace()
+        ]
+        cut = min(candidates, key=lambda value: abs(value - ideal)) if candidates else ideal
+        cut = max(previous + 1, min(len(normalized) - 1, cut))
+        boundaries.append(cut)
+        previous = cut
+
+    chunks: list[str] = []
+    start = 0
+    for end in [*boundaries, len(normalized)]:
+        chunk = normalized[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        start = end
+    return chunks
+
+
+def _static_semantic_frames(
+    scene: dict[str, Any],
+    target_count: int,
+) -> list[dict[str, str]]:
+    """Build ordered still-frame briefs from narration plus director beats."""
+    beats = [
+        item
+        for item in (scene.get("visual_beats") or [])
+        if isinstance(item, dict) and str(item.get("visual_action") or "").strip()
+    ]
+    narration_chunks = _split_static_narration_semantics(
+        str(scene.get("narration_excerpt") or ""),
+        target_count,
+    )
+    if not narration_chunks and not beats:
+        return [{}]
+
+    count = max(1, len(narration_chunks), min(max(1, target_count), len(beats) + 1))
+    if narration_chunks and len(narration_chunks) < count:
+        # A short phrase can still carry one director beat, but it must not be
+        # duplicated verbatim into many visually identical frames.
+        count = max(len(narration_chunks), min(count, len(beats) + 1))
+    beat_positions: dict[int, dict[str, Any]] = {}
+    for beat_index, beat in enumerate(beats, start=1):
+        position = round(beat_index * count / (len(beats) + 1)) - 1
+        while position in beat_positions and position + 1 < count:
+            position += 1
+        beat_positions[max(0, min(count - 1, position))] = beat
+
+    frames: list[dict[str, str]] = []
+    for index in range(count):
+        anchor = narration_chunks[min(index, len(narration_chunks) - 1)] if narration_chunks else ""
+        beat = beat_positions.get(index, {})
+        visual_action = str(beat.get("visual_action") or "").strip()
+        if not visual_action and anchor:
+            visual_action = (
+                f"将口播语义“{anchor}”中的主体、动作、对象和结果转化为"
+                "一个独立的高信息量时间截面"
+            )
+        frames.append({
+            "narration_anchor": anchor,
+            "visual_action": visual_action,
+            "camera": str(beat.get("camera") or "").strip(),
+            "shot_intent": str(beat.get("shot_intent") or "").strip(),
+            "text_layout": (
+                "仅当口播语义需要时提炼一条简短标题或信息标签，"
+                "按阅读层级排版；不需要文字时保持纯画面"
+            ),
+        })
+    return frames
+
+
 def _expand_static_timeline_by_semantic_beats(
     scenes: list[dict[str, Any]],
     timeline: list[dict[str, Any]],
     *,
     preferred_window: float = 5.0,
 ) -> list[dict[str, Any]]:
-    """Speed up still-image pacing only when the director supplied real beats.
+    """Expand stills from measured narration windows, never a requested hard limit.
 
-    Five seconds is a soft editorial target, never a hard cut rule. A long
-    semantic hold with no new beat stays intact; a long range containing
-    several distinct actions can become several independently composed stills.
+    ``build_scene_timeline`` first creates provider-safe technical windows of up to
+    15 seconds.  Static images need a faster editorial cadence, so each real
+    narration window is subdivided again near semantic language boundaries.  Five
+    seconds remains a soft target: short holds stay intact and very short text is
+    never duplicated merely to satisfy a clock.
     """
-    expanded: list[dict[str, Any]] = []
-    for window in timeline:
+    grouped: dict[int, list[tuple[int, dict[str, Any]]]] = {}
+    for timeline_index, window in enumerate(timeline):
         source_number = int(window.get("sourceSceneNumber") or window["sceneNumber"])
+        grouped.setdefault(source_number, []).append((timeline_index, window))
+
+    allocations: dict[int, int] = {}
+    semantic_frames: dict[int, list[dict[str, str]]] = {}
+    for source_number, source_windows in grouped.items():
         source_scene = scenes[source_number - 1]
+        durations = [max(0.1, float(item.get("duration") or 0.1)) for _, item in source_windows]
+        technical_count = len(source_windows)
+        total_duration = sum(durations)
+        narration = str(source_scene.get("narration_excerpt") or "").strip()
         beats = [
             item
             for item in (source_scene.get("visual_beats") or [])
             if isinstance(item, dict) and str(item.get("visual_action") or "").strip()
         ]
+        if narration:
+            requested_frames = max(
+                technical_count,
+                sum(
+                    int(math.ceil(duration / max(1.0, preferred_window)))
+                    for duration in durations
+                ),
+            )
+        elif beats:
+            requested_frames = max(
+                technical_count,
+                min(
+                    len(beats) + 1,
+                    int(math.ceil(total_duration / max(1.0, preferred_window))),
+                ),
+            )
+        else:
+            requested_frames = technical_count
+        frames = _static_semantic_frames(source_scene, requested_frames)
+        frame_count = max(technical_count, len(frames))
+        if len(frames) < frame_count:
+            frames.extend({} for _ in range(frame_count - len(frames)))
+        semantic_frames[source_number] = frames
+
+        # Give every existing technical window one output, then distribute the
+        # remaining semantic frames by measured narration duration.
+        counts = [1] * technical_count
+        remaining = frame_count - technical_count
+        if remaining > 0:
+            shares = [remaining * duration / total_duration for duration in durations]
+            floors = [int(math.floor(value)) for value in shares]
+            counts = [base + extra for base, extra in zip(counts, floors)]
+            remainder = remaining - sum(floors)
+            order = sorted(
+                range(technical_count),
+                key=lambda idx: (shares[idx] - floors[idx], durations[idx]),
+                reverse=True,
+            )
+            for idx in order[:remainder]:
+                counts[idx] += 1
+        for (timeline_index, _), count in zip(source_windows, counts):
+            allocations[timeline_index] = count
+
+    expanded: list[dict[str, Any]] = []
+    source_offsets = {source_number: 0 for source_number in grouped}
+    source_totals = {
+        source_number: sum(allocations[index] for index, _ in windows)
+        for source_number, windows in grouped.items()
+    }
+    for timeline_index, window in enumerate(timeline):
+        source_number = int(window.get("sourceSceneNumber") or window["sceneNumber"])
         duration = max(0.1, float(window.get("duration") or 0.1))
-        original_count = max(1, int(window.get("segmentCount") or 1))
-        suggested_count = max(1, int(math.ceil(duration / max(1.0, preferred_window))))
-        # A scene with real beats already has one establishing composition in
-        # its base image prompt plus the distinct beat compositions. Count
-        # both, but never manufacture extra frames when the director supplied
-        # no new semantic action.
-        semantic_count = min(len(beats) + 1, suggested_count) if beats else 1
-        part_count = max(original_count, semantic_count)
-        if part_count <= original_count:
-            expanded.append(dict(window))
-            continue
-        part_duration = duration / part_count
-        for part_index in range(part_count):
+        local_count = max(1, allocations.get(timeline_index, 1))
+        part_duration = duration / local_count
+        base_start = float(window.get("start") or 0)
+        for local_index in range(local_count):
+            semantic_index = source_offsets[source_number]
+            source_offsets[source_number] += 1
             expanded.append({
                 **window,
                 "sceneNumber": len(expanded) + 1,
-                "segmentNumber": part_index + 1,
-                "segmentCount": part_count,
-                "start": float(window.get("start") or 0) + part_duration * part_index,
-                "end": float(window.get("start") or 0) + part_duration * (part_index + 1),
+                "segmentNumber": semantic_index + 1,
+                "segmentCount": source_totals[source_number],
+                "start": base_start + part_duration * local_index,
+                "end": base_start + part_duration * (local_index + 1),
                 "duration": part_duration,
+                "staticSemanticFrame": semantic_frames[source_number][semantic_index],
             })
-    for index, window in enumerate(expanded, start=1):
-        window["sceneNumber"] = index
     return expanded
 
 
@@ -326,26 +481,15 @@ def _render_units(
                 or ""
             ).strip()
             if segment_count > 1:
-                segment_beats = _visual_beats_for_segment(
-                    source_scene,
-                    segment_number,
-                    segment_count,
-                )
+                semantic_brief = dict(window.get("staticSemanticFrame") or {})
                 semantic_frame = _sanitize_static_image_prompt(
                     "。".join(
                         filter(
                             None,
                             [
-                                str(beat.get("visual_action") or "")
-                                for beat in segment_beats
-                            ]
-                            + [
-                                str(beat.get("camera") or "")
-                                for beat in segment_beats
-                            ]
-                            + [
-                                str(beat.get("shot_intent") or "")
-                                for beat in segment_beats
+                                str(semantic_brief.get("visual_action") or ""),
+                                str(semantic_brief.get("camera") or ""),
+                                str(semantic_brief.get("shot_intent") or ""),
                             ]
                         )
                     )
@@ -359,6 +503,10 @@ def _render_units(
                     f"\n这是该叙事段按口播语义拆出的第 {segment_number}/{segment_count} 张静态分镜。"
                     "用独立时间截面、不同动作证据、构图或景别推进叙事；不要复制相邻图片的画面组织。"
                 )
+                narration_anchor = str(semantic_brief.get("narration_anchor") or "").strip()
+                if narration_anchor:
+                    image_prompt += f"\n本镜必须准确对应口播语义：{narration_anchor}"
+                source_scene["static_semantic_frame"] = semantic_brief
             source_scene["image_prompt"] = image_prompt
             source_scene["visual_prompt"] = image_prompt
             filename = (
@@ -481,28 +629,49 @@ def _static_generation_prompt(
         for label in list(scene.get("reference_labels") or [])
         if str(label) in labels
     ]
-    reference_rule = (
-        "本次请求实际附带了以下统一参考图：" + "、".join(labels) + "。"
-        "先识别全部参考图；当前分镜若出现其中的 IP 角色、真人、产品、Logo 或界面，"
-        "必须保持其身份、外形、品牌结构和关键视觉特征一致。"
-        + (
-            "导演判定本分镜重点参考：" + "、".join(selected) + "。"
-            if selected
-            else "当前分镜没有强制指定某一张；只在语义相关时使用，不得让参考图篡改用户主题。"
-        )
-        if labels
-        else "本分镜没有用户参考图，按导演计划独立完成。"
-    )
     aspect_ratio = str(plan.get("aspect_ratio") or "16:9").strip() or "16:9"
+    width, height = ASPECTS.get(aspect_ratio, ASPECTS["16:9"])
+    semantic_brief = dict(scene.get("static_semantic_frame") or {})
+    scene_content = _sanitize_static_image_prompt(
+        str(scene.get("image_prompt") or scene.get("visual_prompt") or "").strip()
+    )
+    narration_anchor = str(semantic_brief.get("narration_anchor") or "").strip()
+    text_layout = str(semantic_brief.get("text_layout") or "").strip()
+    if labels:
+        reference_rule = (
+            "本次实际附带：" + "、".join(labels) + "。必须逐张识别用途。"
+            + (
+                "本镜必须显式使用“" + "、".join(selected) +
+                "”，按语义放在主体、界面、角色或品牌标识的正确位置；"
+                "不得只参考色彩后丢失具体附件。"
+                if selected
+                else "本镜未指定必现附件；仅将与本镜语义相关的附件放入画面，"
+                "其他附件只用于统一角色、界面和品牌一致性。"
+            )
+        )
+    else:
+        reference_rule = "本镜没有用户附件，按导演设定保持全片一致性。"
+    negative = "；".join(filter(None, [
+        str(plan.get("negative_constraints") or "").strip(),
+        "禁止二维码、水印、时间码、外部平台标识、多余 Logo",
+        "禁止乱码、错字、重复肢体、人物或 IP 身份漂移、界面结构错乱",
+        "禁止把多个时间瞬间叠在同一张画面里",
+    ]))
     return "\n".join([
-        f"生成一张可直接用于 {aspect_ratio} 静态视频分镜的高质量完整画面。",
-        f"全片固定风格锚点：{str(plan.get('style_anchor') or '').strip()}",
-        f"本分镜画面：{str(scene.get('image_prompt') or scene.get('visual_prompt') or '').strip()}",
-        reference_rule,
-        f"全片固定负面约束：{str(plan.get('negative_constraints') or '').strip()}",
-        "不要自动生成整句口播字幕、长篇说明、时间码或边框；后续口播字幕由平台统一烧录。"
-        "若导演在本分镜画面中明确指定了漫画拟声词、短标题、路牌或界面短标签，"
-        "只生成该短文字并保持版式准确。",
+        f"【输出规格】用于 {aspect_ratio} 静态视频分镜；{aspect_ratio} 横竖比，"
+        f"目标画布 {width}×{height} px，满画布构图，主体与文字保持安全区。",
+        "【统一画风】" + (
+            str(plan.get("style_anchor") or "").strip()
+            or "高信息密度 2D 编辑设计与轻漫画结合；统一清晰线条、克制渐变材质、"
+            "明快主色与情绪辅助色、柔和电影光影和稳定角色设定；全片不得更换画风"
+        ),
+        f"【本镜内容】{scene_content}",
+        f"【口播语义】{narration_anchor or '与导演计划中的当前叙事节拍严格对齐'}。"
+        "画面必须呈现这一句的具体信息、动作、对比、证据或情绪，不得退化成通用抽象背景。",
+        "【文字与版式】" + (text_layout or "只呈现本镜必要的短标题或界面短标签") +
+        "。不生成整段口播字幕；后续字幕由平台统一烧录。",
+        f"【附件参考与摆放】{reference_rule}",
+        f"【负面约束】{negative}。",
     ])
 
 
@@ -520,14 +689,19 @@ async def _generate_static_image_with_retry(
     last_error: Exception | None = None
     for attempt in range(1, max(1, attempts) + 1):
         try:
-            result = await image_generator.generate(
-                prompt,
-                aspect_ratio,
-                output_path,
-                reference_images=reference_images,
-                callback=callback,
-                scene_number=scene_number,
-            )
+            # Gate the real provider request rather than the surrounding batch.
+            # Continuity anchors and scene frames from every project therefore
+            # share the same three slots, while retry backoff and FFmpeg render
+            # work do not occupy upstream image capacity.
+            async with _static_image_limiter():
+                result = await image_generator.generate(
+                    prompt,
+                    aspect_ratio,
+                    output_path,
+                    reference_images=reference_images,
+                    callback=callback,
+                    scene_number=scene_number,
+                )
             if output_path.is_file() and output_path.stat().st_size > 8:
                 return result
             raise ProviderError(
@@ -1412,7 +1586,8 @@ class VideoPipeline:
                     )
 
                 await _gather_bounded(
-                    *(generate_static_scene(job) for job in scene_jobs)
+                    *(generate_static_scene(job) for job in scene_jobs),
+                    limit=3,
                 )
             else:
                 await _gather_bounded(

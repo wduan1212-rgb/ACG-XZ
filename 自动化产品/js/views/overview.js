@@ -10,11 +10,11 @@ import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=202607
 import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260802-v134-static-community-1";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260802-v134-static-community-1";
-import { emptyState, openModal } from "../ui/components.js?v=20260802-v134-static-community-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260803-v136-community-static-1";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260803-v136-community-static-1";
+import { emptyState, openModal } from "../ui/components.js?v=20260803-v136-community-static-1";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260802-v132-supplier-loading-1";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260803-v136-supplier-shared-1";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}

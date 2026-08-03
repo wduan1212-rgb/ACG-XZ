@@ -664,7 +664,14 @@ function createMessageIdentity(message) {
   avatar.className = `message-agent-avatar${message.kind === "pending" ? " is-working" : ""}${message.kind === "plan" ? " is-director" : ""}`;
   avatar.setAttribute("aria-hidden", "true");
   const image = document.createElement("img");
-  image.src = "assets/xingzhen-logo-white.png";
+  const reduceMotion = typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  image.src = reduceMotion
+    ? "/assets/brand/starmatrix-mascot-transparent.png"
+    : "/assets/brand/starmatrix-mascot-wink.webp";
+  image.addEventListener("error", () => {
+    image.src = "assets/xingzhen-logo-white.png";
+  }, { once: true });
   image.alt = "";
   avatar.append(image);
   identity.append(avatar, label);

@@ -3,9 +3,9 @@ import { state, canDeliver, save } from "../core/store.js";
 import { uid } from "../core/util.js";
 import { addAssetFromDataUrl } from "../domain/assets.js";
 import { icon } from "../ui/icons.js";
-import { toast } from "../ui/components.js?v=20260802-v134-static-community-1";
-import { voiceLabView } from "./voiceLab.js?v=20260802-v134-static-community-1";
-import { communityMedia, openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
+import { toast } from "../ui/components.js?v=20260803-v136-community-static-1";
+import { voiceLabView } from "./voiceLab.js?v=20260803-v136-community-static-1";
+import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
 
 const TOOLS = [
   { key: "video", label: "视频工坊", mountId: "customVideoMount" },
@@ -194,7 +194,6 @@ function hostsHtml(activePage) {
         ${active ? "" : "hidden"}
       >
         ${tool.key === "voice" ? "" : `<div class="custom-app-mount" data-custom-app-mount="${tool.key}">${appLoadingHtml(tool)}</div>`}
-        ${tool.key === "voice" ? "" : `<button class="custom-community-share" type="button" data-custom-community-share="${tool.key}" hidden>${icon("send", 14)} 分享灵感</button>`}
       </div>
     `;
   }).join("");
@@ -262,27 +261,27 @@ export const customCreationView = {
         kind: key === "canvas" ? "canvas" : "video"
       };
       storePersonalOutput(key, host.__customLatestOutput);
-      const shareButton = host.querySelector(`[data-custom-community-share="${key}"]`);
-      if (shareButton) {
-        const output = host.__customLatestOutput;
-        const media = key === "video"
-          ? communityMedia([{ type: "video", url: output.videoUrl || output.downloadUrl || output.url || "" }])
-          : communityMedia((output.items || []).map(item => ({ ...item, type: "image" })));
-        shareButton.hidden = media.length === 0;
-      }
       return host.__customLatestOutput;
     };
     const communityPayloadFor = (key, output) => {
       if (!output) return null;
       const sourceOutputId = String(output.sourceOutputId || output.items?.[0]?.sourceItemId || "").trim();
-      const sourceId = [output.projectId || "", sourceOutputId].filter(Boolean).join(":");
+      const sourceProjectId = String(output.projectId || "").trim();
+      const sourceItemIds = key === "canvas"
+        ? [...new Set((output.items || [])
+            .map(item => String(item?.sourceItemId || "").trim())
+            .filter(Boolean))]
+        : [];
       const media = key === "canvas"
         ? (output.items || []).map(item => ({ ...item, type: "image" }))
         : [{ type: "video", url: output.videoUrl || output.downloadUrl || output.url || "" }];
       return {
         authorId: String(output.ownerId || ""),
         sourceKind: key === "canvas" ? "canvas" : "video",
-        sourceId,
+        sourceId: sourceProjectId,
+        sourceProjectId,
+        sourceOutputId: key === "video" ? sourceOutputId : "",
+        sourceItemIds,
         title: output.title || (key === "canvas" ? "无限画布灵感" : "视频工坊灵感"),
         copy: output.copy || output.description || "",
         prompt: output.prompt || output.promptText || "",
@@ -327,7 +326,7 @@ export const customCreationView = {
         toast(key === "canvas" ? "当前画布还没有可发布的图片" : "请先在视频工坊完成成片");
         return;
       }
-      const { openCustomPublish } = await import("./customPublish.js?v=20260802-v134-static-community-1");
+      const { openCustomPublish } = await import("./customPublish.js?v=20260803-v136-community-static-1");
       output.kind = key === "canvas" ? "canvas" : "video";
       openCustomPublish(
         output,
@@ -368,19 +367,6 @@ export const customCreationView = {
         toast(error?.message || "发布面板打开失败", "error");
       });
     };
-    root.querySelectorAll("[data-custom-community-share]").forEach(button => {
-      button.addEventListener("click", event => {
-        event.preventDefault();
-        const key = button.dataset.customCommunityShare;
-        const host = root.querySelector(`[data-custom-tool-host="${key}"]`);
-        const output = host?.__customLatestOutput || mountedTools.get(key)?.getLatestOutput?.();
-        if (!output) {
-          toast(key === "canvas" ? "当前画布还没有可分享的图片" : "请先完成视频成片");
-          return;
-        }
-        openCommunityFor(key, output, button);
-      }, { signal });
-    });
     const showMountError = (host, message) => {
       const loading = host?.querySelector("[data-custom-loading]");
       if (!loading) return;
@@ -396,8 +382,8 @@ export const customCreationView = {
       mountedTools.set(key, { loading: true });
       try {
         const module = key === "video"
-          ? await import("./customVideoIntegration.js?v=20260802-v134-static-community-1")
-          : await import("./customCanvasIntegration.js?v=20260802-v134-static-community-1");
+          ? await import("./customVideoIntegration.js?v=20260803-v136-community-static-1")
+          : await import("./customCanvasIntegration.js?v=20260803-v136-community-static-1");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);
         const initialProjectId = pendingProjectIds.get(key);

@@ -8,8 +8,8 @@ import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js?v=20260728-v120-shell-20";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260802-v134-static-community-1";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260802-v134-static-community-1";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260803-v136-community-static-1";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260803-v136-community-static-1";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
 import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
@@ -137,13 +137,39 @@ function deliveryMedia(asset) {
   return url ? [{ type: "video", url, title: asset.title || asset.name || "发布视频" }] : [];
 }
 
+function deliveryCover(asset) {
+  const coverId = asset?.coverAssetId || (asset?.type === "图集" ? (asset.packAssetIds || [])[0] : "");
+  if (!coverId) return null;
+  const item = state.assets.find(entry => entry.id === coverId);
+  const url = item ? urlFor(item) : urlFor(coverId);
+  return url ? {
+    type: "image",
+    url,
+    width: Number(item?.width || 0) || 0,
+    height: Number(item?.height || 0) || 0,
+    title: item?.name || asset?.title || asset?.name || "发布封面",
+  } : null;
+}
+
+function deliveryCommunitySource(asset) {
+  const sourceItemIds = [...new Set((Array.isArray(asset?.sourceItemIds) ? asset.sourceItemIds : [])
+    .map(item => String(item || "").trim())
+    .filter(Boolean))].slice(0, 20);
+  return {
+    sourceProjectId: String(asset?.customProjectId || "").trim(),
+    sourceOutputId: String(asset?.sourceOutputId || "").trim(),
+    sourceItemIds,
+  };
+}
+
 function openDeliveryPreview(asset) {
   const media = deliveryMedia(asset);
+  const cover = deliveryCover(asset);
   if (!media.length) { toast("当前成果还没有可预览的媒体文件", "error"); return; }
   openModal(`<article class="delivery-preview-dialog">
     <header><div><span>${asset.type === "图集" ? `${media.length} 张图片` : "视频预览"}</span><h2>${esc(asset.title || asset.name || "发布内容")}</h2></div><button class="icon-btn" data-close>${icon("x", 16)}</button></header>
     <div class="delivery-preview-media ${asset.type === "图集" ? "is-gallery" : "is-video"}">${media.map((item, index) => item.type === "video"
-      ? `<video src="${esc(item.url)}" controls playsinline preload="metadata"></video>`
+      ? `<video src="${esc(item.url)}" ${cover?.url ? `poster="${esc(cover.url)}"` : ""} controls playsinline preload="metadata"></video>`
       : `<button type="button" data-delivery-preview-image="${index}"><img src="${esc(item.url)}" alt="${esc(item.title)}" loading="lazy" /><span>${index + 1}</span></button>`).join("")}</div>
     ${asset.copy ? `<div class="delivery-preview-copy"><b>发布文案</b><pre>${esc(asset.copy)}</pre></div>` : ""}
   </article>`, {
@@ -719,10 +745,12 @@ export const deliveryView = {
         const shareButton = card.querySelector('[data-dvact="community"]');
         if (shareButton && !asset.communityPostId) {
           syncCommunityShareStatus(shareButton, {
-            authorId: asset.byMemberId || productionById(asset.productionId)?.ownerId || "",
+            authorId: asset.byMemberId || asset.ownerId || productionById(asset.productionId)?.ownerId || "",
             sourceKind: "delivery",
             sourceId: asset.id,
+            ...deliveryCommunitySource(asset),
             media: deliveryMedia(asset),
+            cover: deliveryCover(asset),
           }, { onShared: post => { asset.communityPostId = post?.id || "shared"; } });
         }
         card.querySelectorAll("[data-dvact]").forEach(b => b.addEventListener("click", async e => {
@@ -733,14 +761,16 @@ export const deliveryView = {
           if (act === "download") { await downloadDelivery(asset, { markDownloaded: false }); toast("已下载 " + asset.name); }
           if (act === "community") {
             openCommunityShare({
-              authorId: asset.byMemberId || productionById(asset.productionId)?.ownerId || "",
+              authorId: asset.byMemberId || asset.ownerId || productionById(asset.productionId)?.ownerId || "",
               sourceKind: "delivery",
               sourceId: asset.id,
+              ...deliveryCommunitySource(asset),
               title: asset.title || asset.name || "星阵灵感",
               copy: asset.copy || "",
               prompt: asset.prompt || asset.promptText || "",
               category: asset.type === "图集" ? "视觉设计" : "视频灵感",
               media: deliveryMedia(asset),
+              cover: deliveryCover(asset),
               trigger: b,
               onShared: post => { asset.communityPostId = post?.id || "shared"; },
             });

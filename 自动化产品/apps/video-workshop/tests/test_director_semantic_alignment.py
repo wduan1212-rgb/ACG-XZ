@@ -97,6 +97,120 @@ class DirectorSemanticAlignmentTests(unittest.IsolatedAsyncioTestCase):
             pipeline._visual_beats_for_segment(scene, 3, 3)[0]["visual_action"],
         )
 
+    def test_one_minute_sparse_static_plan_expands_from_measured_narration(self):
+        narration = (
+            "秒哒先理解用户目标，再把需求拆成页面结构、交互和数据流程。"
+            "用户上传参考图后，系统识别角色、品牌和界面用途，放进对应画面。"
+            "创作过程依次展示规划、生成、检查和交付，让复杂任务也能看懂。"
+            "如果需要修改，用户继续对话即可保留上下文并调整结果。"
+            "最后所有资产进入项目，方便继续编辑、下载和分享。"
+        )
+        midpoint = len(narration) // 2
+        scenes = [
+            {
+                "narration_excerpt": narration[:midpoint],
+                "image_prompt": "秒哒产品功能信息图",
+                "visual_beats": [],
+            },
+            {
+                "narration_excerpt": narration[midpoint:],
+                "image_prompt": "秒哒工作流程漫画",
+                "visual_beats": [],
+            },
+        ]
+        timeline, _ = media.build_scene_timeline(
+            [len(item["narration_excerpt"]) for item in scenes],
+            66.96,
+        )
+        expanded = pipeline._expand_static_timeline_by_semantic_beats(scenes, timeline)
+
+        self.assertGreaterEqual(len(expanded), 12)
+        self.assertTrue(all(float(item["duration"]) <= 5.0 for item in expanded))
+        anchors = [
+            str(item["staticSemanticFrame"].get("narration_anchor") or "").strip()
+            for item in expanded
+        ]
+        self.assertTrue(all(anchors))
+        self.assertGreaterEqual(len(set(anchors)), 12)
+
+    def test_one_minute_short_narration_does_not_force_twelve_static_frames(self):
+        scenes = [{
+            "narration_excerpt": "把资料交给搭子，马上整理完成。",
+            "image_prompt": "搭子整理资料并交付结果",
+            "visual_beats": [],
+        }]
+        timeline, _ = media.build_scene_timeline(
+            [len(scenes[0]["narration_excerpt"])],
+            60.0,
+        )
+
+        expanded = pipeline._expand_static_timeline_by_semantic_beats(scenes, timeline)
+
+        # The four 15-second technical windows remain renderable, but the
+        # planner must not invent twelve semantic cards merely to hit 5 seconds.
+        self.assertEqual(4, len(expanded))
+        self.assertLess(len(expanded), 12)
+
+    def test_static_generation_prompt_has_explicit_visual_contract(self):
+        prompt = pipeline._static_generation_prompt(
+            {
+                "aspect_ratio": "16:9",
+                "style_anchor": "日系二次元信息漫画，统一浅蓝和金色点缀。",
+                "negative_constraints": "不要可扫描编码或第三方品牌。",
+            },
+            {
+                "image_prompt": "左侧是用户参考的角色，右侧是三步任务流程卡片。",
+                "reference_labels": ["图1"],
+                "static_semantic_frame": {
+                    "narration_anchor": "上传参考图后自动识别角色与界面用途。",
+                    "text_layout": "顶部一行短标题，右侧卡片使用短标签。",
+                },
+            },
+            [
+                {"label": "图1", "name": "角色三视图.png"},
+                {"label": "图2", "name": "产品界面.png"},
+            ],
+        )
+
+        for heading in (
+            "【输出规格】",
+            "【统一画风】",
+            "【本镜内容】",
+            "【口播语义】",
+            "【文字与版式】",
+            "【附件参考与摆放】",
+            "【负面约束】",
+        ):
+            self.assertIn(heading, prompt)
+        self.assertIn("1280×720", prompt)
+        self.assertIn("本镜必须显式使用“图1”", prompt)
+        self.assertIn("正确位置", prompt)
+        self.assertIn("禁止二维码", prompt)
+
+    def test_static_expansion_does_not_change_dynamic_render_units(self):
+        scene = {
+            "title": "动态链路隔离",
+            "visual_prompt": "真实办公室里人物起身走向大屏。",
+            "narration_excerpt": "先展示问题，再展示解决方案。",
+            "visual_beats": [],
+        }
+        timeline = [{
+            "sceneNumber": 1,
+            "sourceSceneNumber": 1,
+            "segmentNumber": 1,
+            "segmentCount": 1,
+            "duration": 12.0,
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            units = pipeline._render_units(
+                [scene], timeline, Path(directory), creation_mode="video"
+            )
+
+        self.assertEqual(1, len(units))
+        self.assertNotIn("static_semantic_frame", units[0]["scene"])
+        self.assertNotIn("【输出规格】", units[0]["scene"]["visual_prompt"])
+        self.assertIn("真实办公室", units[0]["scene"]["visual_prompt"])
+
     def test_static_image_prompt_removes_video_only_motion_language(self):
         cleaned = providers._sanitize_static_image_prompt(
             "镜头中景缓慢推进至面部特写，人物端着茶杯。"
@@ -301,6 +415,57 @@ class DirectorSemanticAlignmentTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertEqual(10, peak)
+
+    async def test_static_image_provider_capacity_is_shared_with_continuity_across_batches(self):
+        active = 0
+        peak = 0
+        calls: list[int] = []
+
+        async def generate(_prompt, _aspect_ratio, output_path, **kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            calls.append(int(kwargs.get("scene_number") or 0))
+            try:
+                await asyncio.sleep(0.01)
+                Path(output_path).write_bytes(b"valid-static-image")
+                return {"path": str(output_path)}
+            finally:
+                active -= 1
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            pipeline.image_generator,
+            "generate",
+            new=generate,
+        ):
+            output_root = Path(tmp)
+
+            async def request(name: str, scene_number: int):
+                return await pipeline._generate_static_image_with_retry(
+                    prompt=name,
+                    aspect_ratio="16:9",
+                    output_path=output_root / f"{name}.jpg",
+                    reference_images=[],
+                    callback=None,
+                    scene_number=scene_number,
+                    attempts=1,
+                )
+
+            async def scene_batch(prefix: str):
+                return await pipeline._gather_bounded(
+                    *(request(f"{prefix}-{index}", index) for index in range(1, 5)),
+                    limit=3,
+                )
+
+            await asyncio.gather(
+                scene_batch("project-a"),
+                scene_batch("project-b"),
+                request("continuity-anchor", 0),
+            )
+
+        self.assertEqual(3, peak)
+        self.assertEqual(9, len(calls))
+        self.assertEqual(1, calls.count(0))
 
     def test_explicit_first_reference_and_other_materials_override_director_drift(self):
         assets = [

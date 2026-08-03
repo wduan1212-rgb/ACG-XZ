@@ -580,6 +580,40 @@ def _material_timeline(
     return sorted(timeline, key=lambda item: item["start"])
 
 
+def _material_still_zoom_filter(
+    width: int,
+    height: int,
+    duration: float,
+    *,
+    fps: int = 30,
+) -> tuple[int, str]:
+    """Keep the pre-v136 motion path used by dynamic-video image cutaways."""
+    safe_width = max(2, int(width))
+    safe_height = max(2, int(height))
+    safe_duration = max(0.1, _finite_number(duration, 0.1))
+    safe_fps = max(1, int(fps))
+    frames = max(1, int(round(safe_duration * safe_fps)))
+    last_frame = max(0, frames - 1)
+    denominator = max(1, last_frame)
+    supersample = 4
+    canvas_width = safe_width * supersample
+    canvas_height = safe_height * supersample
+    zoom_delta = min(0.05, max(0.008, safe_duration * 0.006))
+    progress = f"min(on,{last_frame})/{denominator}"
+    zoom = f"1+{zoom_delta:.6f}*{progress}"
+    even_center_x = "2*trunc((iw-iw/zoom)/4)"
+    even_center_y = "2*trunc((ih-ih/zoom)/4)"
+    filters = (
+        f"scale={canvas_width}:{canvas_height}:force_original_aspect_ratio=increase:"
+        "flags=lanczos+accurate_rnd+full_chroma_int,"
+        f"crop={canvas_width}:{canvas_height},"
+        f"zoompan=z='{zoom}':x='{even_center_x}':y='{even_center_y}':"
+        f"d=1:s={safe_width}x{safe_height}:fps={safe_fps},"
+        "setsar=1,format=yuv420p"
+    )
+    return frames, filters
+
+
 def _still_zoom_filter(
     width: int,
     height: int,
@@ -602,23 +636,33 @@ def _still_zoom_filter(
     frames = max(1, int(round(safe_duration * safe_fps)))
     last_frame = max(0, frames - 1)
     denominator = max(1, last_frame)
+    # Render the source at 4x and let zoompan produce a 2x delivery canvas
+    # before the final Lanczos downsample.  A one-pixel crop-origin step is
+    # therefore only 1/4 of a delivered pixel and the last downsample blends it
+    # instead of exposing the familiar left/right vibration of still zooms.
+    # Four times is deliberate: eight times creates 10K intermediate frames for
+    # 16:9 delivery and can exhaust memory when a batch renders several stills.
     supersample = 4
+    output_supersample = 2
     canvas_width = safe_width * supersample
     canvas_height = safe_height * supersample
+    zoom_width = safe_width * output_supersample
+    zoom_height = safe_height * output_supersample
 
     # Narration remains the timing source of truth.  Longer semantic beats move a
     # little farther, but every single still remains a slow continuous push-in.
     zoom_delta = min(0.05, max(0.008, safe_duration * 0.006))
     progress = f"min(on,{last_frame})/{denominator}"
     zoom = f"1+{zoom_delta:.6f}*{progress}"
-    even_center_x = "2*trunc((iw-iw/zoom)/4)"
-    even_center_y = "2*trunc((ih-ih/zoom)/4)"
+    center_x = "trunc((iw-iw/zoom)/2)"
+    center_y = "trunc((ih-ih/zoom)/2)"
     filters = (
         f"scale={canvas_width}:{canvas_height}:force_original_aspect_ratio=increase:"
         "flags=lanczos+accurate_rnd+full_chroma_int,"
         f"crop={canvas_width}:{canvas_height},"
-        f"zoompan=z='{zoom}':x='{even_center_x}':y='{even_center_y}':"
-        f"d=1:s={safe_width}x{safe_height}:fps={safe_fps},"
+        f"zoompan=z='{zoom}':x='{center_x}':y='{center_y}':"
+        f"d=1:s={zoom_width}x{zoom_height}:fps={safe_fps},"
+        f"scale={safe_width}:{safe_height}:flags=lanczos+accurate_rnd+full_chroma_int,"
         "setsar=1,format=yuv420p"
     )
     return frames, filters
@@ -632,6 +676,8 @@ async def _prepare_material_clip(
     height: int,
     duration: float,
     source_start: float,
+    *,
+    storyboard_motion: bool = False,
 ) -> None:
     common_output = [
         "-an",
@@ -648,7 +694,8 @@ async def _prepare_material_clip(
         str(output),
     ]
     if mime.startswith("image/"):
-        frames, filters = _still_zoom_filter(width, height, duration)
+        zoom_filter = _still_zoom_filter if storyboard_motion else _material_still_zoom_filter
+        frames, filters = zoom_filter(width, height, duration)
         await run(
             [
                 _binary("ffmpeg"),
@@ -711,6 +758,7 @@ async def render_still_clip(
         height,
         max(0.1, float(duration or 0.1)),
         0,
+        storyboard_motion=True,
     )
     return await probe(output)
 

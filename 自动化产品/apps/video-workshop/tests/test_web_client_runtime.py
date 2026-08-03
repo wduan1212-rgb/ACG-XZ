@@ -358,8 +358,8 @@ console.log(JSON.stringify({{
         self.assertIn('textarea.addEventListener("paste", async (event) => {', source)
         self.assertIn('dom.fileInput.addEventListener("change", async () => {', source)
         self.assertGreaterEqual(source.count("showAttachmentError(error)"), 4)
-        self.assertIn("app.js?v=20260803-v135-video-avatar-path-1", index)
-        self.assertIn("styles.css?v=20260802-v134-static-community-1", index)
+        self.assertIn("app.js?v=20260803-v136-community-static-1", index)
+        self.assertIn("styles.css?v=20260803-v136-community-static-1", index)
         self.assertIn("projectAssetsButton", index)
         self.assertNotIn("projectAssetsModal", index)
         self.assertNotIn("projectAsset:", source)
@@ -404,8 +404,10 @@ console.log(JSON.stringify({{
         self.assertIn(".creation-mode-switch", styles)
         self.assertIn(".creation-mode-switch button.active", styles)
         self.assertIn("message-agent-avatar", source)
+        self.assertIn('"/assets/brand/starmatrix-mascot-wink.webp"', source)
+        self.assertIn('"/assets/brand/starmatrix-mascot-transparent.png"', source)
         self.assertIn('image.src = "assets/xingzhen-logo-white.png"', source)
-        self.assertNotIn('image.src = "/assets/xingzhen-logo-white.png"', source)
+        self.assertIn('matchMedia("(prefers-reduced-motion: reduce)")', source)
 
     def test_production_heartbeat_uses_one_owner_and_rolls_only_the_stage_copy(self):
         source = APP_JS.read_text(encoding="utf-8")

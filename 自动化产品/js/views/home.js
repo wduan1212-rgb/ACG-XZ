@@ -3,8 +3,8 @@ import { currentMember, currentTeam } from "../core/store.js";
 import { community, teams } from "../core/remote.js";
 import { go } from "../core/router.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260802-v134-static-community-1";
-import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260802-v134-static-community-1";
+import { openModal, toast } from "../ui/components.js?v=20260803-v136-community-static-1";
+import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260803-v136-community-static-1";
 
 const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
 const HOME_LAUNCH_REGISTRY_KEY = "__starmatrixHomeLaunchRegistry";
@@ -124,9 +124,65 @@ function inspirationCard(item) {
   const content = media.type === "video"
     ? `<video src="${esc(media.url)}" ${poster ? `poster="${esc(poster)}"` : ""} muted loop playsinline preload="metadata" aria-label="${esc(item.title)}"></video>`
     : `<img src="${esc(media.url)}" alt="${esc(item.title)}" loading="lazy" />`;
-  return `<button class="home-inspiration-card" style="--community-ratio:${esc(ratio)}" type="button" data-home-inspiration="${esc(item.id)}" aria-label="${esc(item.title)}">
+  const byline = `${item.authorName || "星阵用户"}${item.teamName ? ` · ${item.teamName}` : ""}`;
+  return `<button class="home-inspiration-card" style="--community-ratio:${esc(ratio)}" type="button" data-home-inspiration="${esc(item.id)}" aria-label="${esc(`${item.title}，${byline}`)}">
     <span class="home-inspiration-media">${content}</span>
+    <span class="home-inspiration-card-author">${esc(byline)}</span>
   </button>`;
+}
+
+function mountInspirationGrid(grid) {
+  if (!grid) return () => {};
+  const cards = [...grid.querySelectorAll(".home-inspiration-card")];
+  if (!cards.length) return () => {};
+  let frame = 0;
+  const disposers = [];
+
+  const sync = () => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      const style = getComputedStyle(grid);
+      const rowHeight = Math.max(1, parseFloat(style.gridAutoRows) || 4);
+      const rowGap = Math.max(0, parseFloat(style.rowGap) || 10);
+      cards.forEach(card => {
+        card.style.gridRowEnd = "auto";
+        const height = card.getBoundingClientRect().height;
+        card.style.gridRowEnd = `span ${Math.max(1, Math.ceil((height + rowGap) / (rowHeight + rowGap)))}`;
+      });
+    });
+  };
+
+  cards.forEach(card => {
+    const media = card.querySelector("img, video");
+    const shell = card.querySelector(".home-inspiration-media");
+    const syncIntrinsicRatio = () => {
+      const width = media?.naturalWidth || media?.videoWidth || 0;
+      const height = media?.naturalHeight || media?.videoHeight || 0;
+      if (shell && width > 0 && height > 0) shell.style.aspectRatio = `${width} / ${height}`;
+      sync();
+    };
+    if (media?.complete || media?.readyState >= 1) syncIntrinsicRatio();
+    else {
+      media?.addEventListener("load", syncIntrinsicRatio, { once: true });
+      media?.addEventListener("loadedmetadata", syncIntrinsicRatio, { once: true });
+      disposers.push(() => {
+        media?.removeEventListener("load", syncIntrinsicRatio);
+        media?.removeEventListener("loadedmetadata", syncIntrinsicRatio);
+      });
+    }
+  });
+
+  const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(sync) : null;
+  resizeObserver?.observe(grid);
+  cards.forEach(card => resizeObserver?.observe(card.querySelector(".home-inspiration-media") || card));
+  window.addEventListener("resize", sync, { passive: true });
+  sync();
+  return () => {
+    cancelAnimationFrame(frame);
+    resizeObserver?.disconnect();
+    window.removeEventListener("resize", sync);
+    disposers.forEach(dispose => dispose());
+  };
 }
 
 function homePetMarkup() {
@@ -140,13 +196,19 @@ function homePetMarkup() {
 }
 
 function inspirationDetail(item) {
-  const media = (item.media || []).map(entry => entry.type === "video"
-    ? `<video src="${esc(entry.url)}" controls muted playsinline preload="metadata"></video>`
-    : `<img src="${esc(entry.url)}" alt="${esc(entry.alt || item.title)}" />`
+  const entries = (item.media || []).filter(entry => entry?.url);
+  const cover = item.cover?.url || entries.find(entry => entry?.poster)?.poster || "";
+  const media = entries.map((entry, index) => entry.type === "video"
+    ? `<video class="home-inspiration-detail-item${index ? "" : " is-active"}" data-home-detail-media="${index}" src="${esc(entry.url)}" ${entry.poster || cover ? `poster="${esc(entry.poster || cover)}"` : ""} controls muted playsinline preload="metadata" ${index ? "hidden" : ""}></video>`
+    : `<img class="home-inspiration-detail-item${index ? "" : " is-active"}" data-home-detail-media="${index}" src="${esc(entry.url)}" alt="${esc(entry.alt || item.title)}" ${index ? "hidden" : ""} />`
   ).join("");
+  const thumbs = entries.length > 1 ? `<div class="home-inspiration-detail-thumbs" role="tablist" aria-label="查看全部媒体">${entries.map((entry, index) => {
+    const preview = entry.type === "video" ? (entry.poster || cover) : entry.url;
+    return `<button class="${index ? "" : "is-active"}" type="button" role="tab" aria-selected="${index ? "false" : "true"}" data-home-detail-thumb="${index}" aria-label="查看第 ${index + 1} 项媒体">${preview ? `<img src="${esc(preview)}" alt="" />` : icon("video", 15)}${entry.type === "video" ? `<i>${icon("play", 10)}</i>` : ""}</button>`;
+  }).join("")}</div>` : "";
   openModal(`
     <article class="home-inspiration-detail">
-      <div class="home-inspiration-detail-media">${media}</div>
+      <div class="home-inspiration-detail-media"><div class="home-inspiration-detail-stage">${media}</div>${thumbs}</div>
       <div class="home-inspiration-detail-copy">
         <span>${esc(item.category)}</span>
         <h2>${esc(item.title)}</h2>
@@ -162,6 +224,27 @@ function inspirationDetail(item) {
   `, {
     onMount(panel, close) {
       panel.classList.add("home-inspiration-panel");
+      panel.querySelectorAll("video[data-home-detail-media]").forEach(video => {
+        video.addEventListener("mouseenter", () => {
+          video.muted = true;
+          video.play().catch(() => {});
+        });
+        video.addEventListener("mouseleave", () => video.pause());
+      });
+      panel.querySelectorAll("[data-home-detail-thumb]").forEach(button => button.addEventListener("click", () => {
+        const index = button.dataset.homeDetailThumb;
+        panel.querySelectorAll("[data-home-detail-media]").forEach(mediaItem => {
+          const active = mediaItem.dataset.homeDetailMedia === index;
+          mediaItem.hidden = !active;
+          mediaItem.classList.toggle("is-active", active);
+          if (!active && mediaItem.tagName === "VIDEO") mediaItem.pause();
+        });
+        panel.querySelectorAll("[data-home-detail-thumb]").forEach(tab => {
+          const active = tab === button;
+          tab.classList.toggle("is-active", active);
+          tab.setAttribute("aria-selected", active ? "true" : "false");
+        });
+      }));
       panel.querySelectorAll("[data-home-reaction]").forEach(button => button.addEventListener("click", async event => {
         event.preventDefault();
         const field = button.dataset.homeReaction;
@@ -272,6 +355,7 @@ export const homeView = {
     let attachments = [];
     let inspirations = [];
     let inspirationRequest = 0;
+    let disposeInspirationLayout = () => {};
 
     root.innerHTML = `<section class="product-home product-home-lovart product-home-miaoda">
       <header class="home-topline">
@@ -362,6 +446,7 @@ export const homeView = {
       eventController.abort();
       stopTypewriter();
       lightfallController.destroy();
+      disposeInspirationLayout();
     };
 
     const bindCommunityPreview = () => {
@@ -375,6 +460,8 @@ export const homeView = {
     };
     const loadInspirations = async () => {
       const requestId = ++inspirationRequest;
+      disposeInspirationLayout();
+      disposeInspirationLayout = () => {};
       inspirationGrid.setAttribute("aria-busy", "true");
       inspirationGrid.innerHTML = `<div class="home-community-empty">正在读取社区灵感…</div>`;
       try {
@@ -385,6 +472,7 @@ export const homeView = {
           ? inspirations.map(inspirationCard).join("")
           : `<div class="home-community-empty"><b>这个分类还没有人分享</b><span>在视频工坊、无限画布或发布清单中将成果分享到社区。</span></div>`;
         bindCommunityPreview();
+        disposeInspirationLayout = mountInspirationGrid(inspirationGrid);
       } catch (error) {
         if (requestId !== inspirationRequest || !inspirationGrid.isConnected) return;
         inspirations = [];

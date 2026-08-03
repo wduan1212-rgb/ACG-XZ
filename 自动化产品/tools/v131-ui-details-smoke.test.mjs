@@ -29,7 +29,9 @@ test("video workshop uses compact branded mode controls and assistant identity",
   assert.doesNotMatch(workshopHtml, />动态视频<\/button>|>静态视频<\/button>/);
   assert.match(workshopJs, /function createMessageIdentity\(message\)/);
   assert.match(workshopJs, /className = `message-agent-avatar/);
-  assert.match(workshopJs, /image\.src = "\/assets\/xingzhen-logo-white\.png"/);
+  assert.match(workshopJs, /starmatrix-mascot-wink\.webp/);
+  assert.match(workshopJs, /starmatrix-mascot-transparent\.png/);
+  assert.match(workshopJs, /image\.src = "assets\/xingzhen-logo-white\.png"/);
   assert.match(workshopCss, /\.message-agent-avatar\.is-working/);
   assert.match(workshopCss, /html\[data-platform-workspace="true"\] \.creation-mode-switch button\.active[\s\S]*?#c9e3fb/);
 });

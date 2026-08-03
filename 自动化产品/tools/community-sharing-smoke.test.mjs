@@ -20,14 +20,17 @@ test("home inspiration is populated from the public community API", async () => 
   assert.match(home, /\$\{esc\(item\.authorName \|\| "星阵用户"\)\}\$\{item\.teamName/);
   assert.match(home, /const canRequestTeam = member\.role === "user" && !team/);
   assert.match(home, /data-home-team-join/);
-  assert.match(styles, /\.product-home-miaoda \.home-inspiration-grid[\s\S]*?columns:\s*4 !important/);
-  assert.match(styles, /break-inside:\s*avoid !important/);
+  assert.match(home, /home-inspiration-card-author/);
+  assert.match(home, /item\.authorName \|\| "星阵用户"/);
+  assert.match(styles, /\.product-home-miaoda \.home-inspiration-grid[\s\S]*?grid-template-columns:\s*repeat\(4,[\s\S]*?grid-auto-flow:\s*row dense !important/);
+  assert.match(home, /function mountInspirationGrid\(grid\)/);
+  assert.match(home, /card\.style\.gridRowEnd = `span/);
   assert.doesNotMatch(home, /const INSPIRATIONS\s*=/);
   assert.match(remote, /export const community =/);
   assert.match(remote, /\/api\/community\/posts/);
 });
 
-test("all product surfaces expose a persistent share action", async () => {
+test("all product surfaces expose only output-targeted share actions", async () => {
   const [creation, delivery, video, videoBridge, canvasBridge, canvasTop, canvasWorkspace] = await Promise.all([
     read("js/views/customCreation.js"),
     read("js/views/deliveryView.js"),
@@ -38,11 +41,17 @@ test("all product surfaces expose a persistent share action", async () => {
     read("apps/infinite-canvas-source/src/components/workspace/Workspace.tsx"),
   ]);
 
-  assert.match(creation, /data-custom-community-share=/);
+  assert.doesNotMatch(creation, /data-custom-community-share=/);
+  assert.match(creation, /onCommunityShareRequest: payload =>/);
   assert.match(creation, /openCommunityShare\(\{/);
   assert.match(creation, /syncCommunityShareStatus/);
+  assert.match(creation, /sourceProjectId/);
+  assert.match(creation, /sourceOutputId: key === "video"/);
+  assert.match(creation, /sourceItemIds/);
   assert.match(delivery, /data-dvact="community"/);
   assert.match(delivery, /openCommunityShare\(\{/);
+  assert.match(delivery, /function deliveryCommunitySource\(asset\)/);
+  assert.match(delivery, /\.\.\.deliveryCommunitySource\(asset\)/);
   assert.match(video, /custom-video:community-share-request/);
   assert.match(videoBridge, /custom-video:community-shared/);
   assert.match(canvasBridge, /community-share-request/);
@@ -61,6 +70,7 @@ test("shared actions are disabled and labelled after persistent status recovery"
   assert.match(share, /trigger\.disabled = true/);
   assert.match(share, /trigger\.innerHTML = `\$\{icon\("check", 14\)\} 已分享`/);
   assert.match(share, /await community\.status\(/);
+  assert.match(share, /trigger\.dataset\.communityShared/);
   assert.match(delivery, /asset\.communityPostId \? "disabled"/);
   assert.match(video, /share\.disabled = Boolean\(sharedPost\)/);
   assert.match(video, /share\.textContent = sharedPost \? "已分享" : "分享灵感"/);
@@ -76,6 +86,30 @@ test("community sharing only accepts persistent same-origin media", async () => 
   assert.match(source, /只有你主动分享的成果才会公开/);
 });
 
+test("community media strips safe asset revisions and keeps twenty delivery images", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { location: { origin: "https://platform.example" } };
+  try {
+    const moduleUrl = new URL("js/views/communityShare.js", root);
+    moduleUrl.searchParams.set("community-test", String(Date.now()));
+    const { communityMedia } = await import(moduleUrl.href);
+    const media = communityMedia(Array.from({ length: 20 }, (_, index) => ({
+      url: `/api/files/member-a--gallery-${index}.png?asset_rev=revision-${index}`,
+      type: "image",
+    })));
+    assert.equal(media.length, 20);
+    assert.equal(media[0].url, "/api/files/member-a--gallery-0.png");
+    assert.equal(media[19].url, "/api/files/member-a--gallery-19.png");
+    assert.deepEqual(
+      communityMedia([{ url: "/api/files/member-a--private.png?token=secret" }]),
+      [],
+    );
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
 test("delivery preview renders every image, scrollable copy, and video controls", async () => {
   const [delivery, styles] = await Promise.all([
     read("js/views/deliveryView.js"),
@@ -84,10 +118,40 @@ test("delivery preview renders every image, scrollable copy, and video controls"
 
   assert.match(delivery, /\(asset\.packAssetIds \|\| \[\]\)\.map/);
   assert.match(delivery, /delivery-preview-media/);
-  assert.match(delivery, /<video src="\$\{esc\(item\.url\)\}" controls/);
+  assert.match(delivery, /<video src="\$\{esc\(item\.url\)\}" \$\{cover\?\.url \? `poster=/);
   assert.match(delivery, /data-delivery-preview-image/);
   assert.match(styles, /\.delivery-preview-copy pre[\s\S]*?overflow:\s*auto/);
   assert.match(styles, /\.delivery-preview-media\.is-gallery/);
+});
+
+test("delivery community share keeps title, full copy, all media and the saved cover", async () => {
+  const delivery = await read("js/views/deliveryView.js");
+
+  assert.match(delivery, /function deliveryCover\(asset\)/);
+  assert.match(delivery, /asset\?\.coverAssetId \|\| \(asset\?\.type === "图集"/);
+  assert.match(delivery, /title: asset\.title \|\| asset\.name \|\| "星阵灵感"/);
+  assert.match(delivery, /copy: asset\.copy \|\| ""/);
+  assert.match(delivery, /media: deliveryMedia\(asset\)/);
+  assert.match(delivery, /cover: deliveryCover\(asset\)/);
+  assert.match(delivery, /sourceProjectId: String\(asset\?\.customProjectId/);
+  assert.match(delivery, /sourceOutputId: String\(asset\?\.sourceOutputId/);
+  assert.match(delivery, /sourceItemIds/);
+  assert.match(delivery, /asset\.byMemberId \|\| asset\.ownerId \|\| productionById/);
+});
+
+test("community detail centers one media item at a time without nested scroll regions", async () => {
+  const [home, styles] = await Promise.all([
+    read("js/views/home.js"),
+    read("styles/views.css"),
+  ]);
+
+  assert.match(home, /home-inspiration-detail-stage/);
+  assert.match(home, /data-home-detail-thumb/);
+  assert.match(home, /poster="\$\{esc\(entry\.poster \|\| cover\)\}"/);
+  assert.match(home, /video\.addEventListener\("mouseenter"/);
+  assert.match(styles, /\.home-inspiration-detail-stage[\s\S]*?place-items:\s*center/);
+  assert.match(styles, /\.home-inspiration-detail-copy\s*\{[^}]*overflow:\s*visible/);
+  assert.match(styles, /\.home-prompt-preview\s*\{[^}]*max-height:\s*none;\s*overflow:\s*visible/);
 });
 
 test("overall assets use the new hierarchy and hide account filters from ordinary personal users", async () => {

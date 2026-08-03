@@ -107,6 +107,185 @@ class CommunitySecurityTest(unittest.TestCase):
         self.assertEqual("原创作者", delegated["name"])
         self.assertEqual("team-a", delegated["teamId"])
 
+    def test_delivery_provenance_uses_authoritative_custom_source_fields(self):
+        author = {"id": "author-a", "role": "editor", "teamId": "team-a"}
+        request = main.CommunityPostReq(
+            sourceKind="delivery",
+            sourceId="delivery-a",
+            # Client values are deliberately wrong; delivery/store data wins.
+            sourceProjectId="spoofed-project",
+            sourceOutputId="spoofed-output",
+            sourceItemIds=["spoofed-item"],
+        )
+        delivery = {
+            "id": "delivery-a",
+            "delivered": True,
+            "customOutputKind": "video",
+            "customProjectId": "custom-project-a",
+            "sourceOutputId": "output-a",
+        }
+        project = {"id": "custom-project-a", "ownerId": "author-a", "kind": "video"}
+        with patch.object(
+            store, "get_delivery_asset_for_member", return_value=(delivery, None),
+        ), patch.object(
+            store, "get_custom_project", return_value=(project, None),
+        ), patch.object(
+            store, "get_custom_output_by_source",
+            return_value=({"sourceOutputId": "output-a"}, None),
+        ):
+            identity = main._community_verified_source_identity(author, request)
+        self.assertEqual({
+            "kind": "video",
+            "projectId": "custom-project-a",
+            "sourceOutputId": "output-a",
+            "sourceItemIds": [],
+        }, identity)
+
+    def test_direct_video_and_canvas_sources_resolve_to_server_project_identity(self):
+        author = {"id": "author-a", "role": "editor", "teamId": "team-a"}
+        video_request = main.CommunityPostReq(
+            sourceKind="video",
+            sourceId="workshop-project-a",
+            sourceProjectId="workshop-project-a",
+            sourceOutputId="output-a",
+            media=[{"url": "/custom-video/outputs/workshop-project-a/final.mp4", "type": "video"}],
+        )
+        with patch.object(
+            main, "_video_workshop_owned_project",
+            return_value={"id": "custom-video-a", "kind": "video"},
+        ), patch.object(
+            store, "get_custom_output_by_source",
+            return_value=({
+                "sourceOutputId": "output-a",
+                "url": "/custom-video/outputs/workshop-project-a/final.mp4",
+            }, None),
+        ):
+            video_identity = main._community_verified_source_identity(author, video_request)
+        self.assertEqual("custom-video-a", video_identity["projectId"])
+        self.assertEqual("output-a", video_identity["sourceOutputId"])
+
+        canvas_request = main.CommunityPostReq(
+            sourceKind="canvas",
+            sourceId="canvas-source-a",
+            sourceProjectId="canvas-source-a",
+            sourceItemIds=["item-a"],
+            # Direct sharing persists a newly flattened PNG.  Its content hash
+            # need not equal the source image URL stored in the draft.
+            media=[{"url": f"/api/custom-canvas/blobs/{'b' * 64}", "type": "image"}],
+        )
+        canvas_draft = {
+            "project": {"customProjectId": "custom-canvas-a"},
+            "state": {"items": [{
+                "id": "item-a",
+                "type": "image",
+                "assetUrl": f"/api/custom-canvas/blobs/{'a' * 64}",
+            }]},
+        }
+        with patch.object(
+            store, "get_custom_canvas_draft", return_value=(canvas_draft, None),
+        ):
+            canvas_identity = main._community_verified_source_identity(author, canvas_request)
+        self.assertEqual({
+            "kind": "canvas",
+            "projectId": "custom-canvas-a",
+            "sourceOutputId": "",
+            "sourceItemIds": ["item-a"],
+        }, canvas_identity)
+
+    def test_direct_provenance_rejects_media_from_another_owned_output(self):
+        author = {"id": "author-a", "role": "editor", "teamId": "team-a"}
+        request = main.CommunityPostReq(
+            sourceKind="video",
+            sourceId="workshop-project-a",
+            sourceProjectId="workshop-project-a",
+            sourceOutputId="output-a",
+            media=[{"url": "/custom-video/outputs/workshop-project-a/other.mp4", "type": "video"}],
+        )
+        with patch.object(
+            main, "_video_workshop_owned_project",
+            return_value={"id": "custom-video-a", "kind": "video"},
+        ), patch.object(
+            store, "get_custom_output_by_source",
+            return_value=({
+                "sourceOutputId": "output-a",
+                "url": "/custom-video/outputs/workshop-project-a/final.mp4",
+            }, None),
+        ):
+            with self.assertRaises(HTTPException) as denied:
+                main._community_verified_source_identity(author, request)
+        self.assertEqual(400, denied.exception.status_code)
+
+    def test_delivery_rejects_unknown_output_and_unrelated_media(self):
+        author = {"id": "author-a", "role": "editor", "teamId": "team-a"}
+        delivery = {
+            "id": "delivery-a",
+            "delivered": True,
+            "customOutputKind": "video",
+            "customProjectId": "custom-project-a",
+            "sourceOutputId": "output-a",
+            "sourceAssetId": "asset-video-a",
+        }
+        project = {"id": "custom-project-a", "ownerId": "author-a", "kind": "video"}
+
+        unknown = main.CommunityPostReq(
+            sourceKind="delivery",
+            sourceId="delivery-a",
+            media=[{"url": "/api/files/author-a--expected.mp4", "type": "video"}],
+        )
+        with patch.object(
+            store, "get_delivery_asset_for_member", return_value=(delivery, None),
+        ), patch.object(
+            store, "get_custom_project", return_value=(project, None),
+        ), patch.object(
+            store, "get_custom_output_by_source", return_value=(None, "not_found"),
+        ):
+            with self.assertRaises(HTTPException) as denied:
+                main._community_verified_source_identity(author, unknown)
+        self.assertEqual(400, denied.exception.status_code)
+
+        unrelated = main.CommunityPostReq(
+            sourceKind="delivery",
+            sourceId="delivery-a",
+            media=[{"url": "/api/files/author-a--unrelated.mp4", "type": "video"}],
+        )
+        with patch.object(
+            store, "get_delivery_asset_for_member", return_value=(delivery, None),
+        ), patch.object(
+            store, "get_custom_project", return_value=(project, None),
+        ), patch.object(
+            store, "get_custom_output_by_source",
+            return_value=({"sourceOutputId": "output-a"}, None),
+        ), patch.object(
+            store, "community_delivery_media_urls",
+            return_value={"/api/files/author-a--expected.mp4"},
+        ):
+            with self.assertRaises(HTTPException) as denied:
+                main._community_verified_source_identity(author, unrelated)
+        self.assertEqual(400, denied.exception.status_code)
+
+    def test_supplier_cannot_share_delivery_to_community(self):
+        supplier = store.add_member(
+            "供应商", "community-supplier", "123456", "supplier_parent",
+        )
+        token = store.make_token(supplier[0])
+        payload = {
+            "sourceKind": "delivery",
+            "sourceId": "delivery-a",
+            "title": "不应分享",
+            "category": "视频灵感",
+            "media": [{
+                "url": "/api/video/composed/supplier-visible.mp4",
+                "type": "video",
+            }],
+        }
+        for path in ("/api/community/status", "/api/community/posts"):
+            response = self.client.post(
+                path,
+                headers={"Authorization": f"Bearer {token}"},
+                json=payload,
+            )
+            self.assertEqual(403, response.status_code, path)
+
     def test_ordinary_member_cannot_share_another_members_work(self):
         creator = {
             "id": "creator-a", "role": "editor", "teamId": "team-a",

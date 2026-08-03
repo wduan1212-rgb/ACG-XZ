@@ -2,7 +2,7 @@ import { community } from "../core/remote.js";
 import { currentMember } from "../core/store.js";
 import { esc } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260802-v134-static-community-1";
+import { openModal, toast } from "../ui/components.js?v=20260803-v136-community-static-1";
 
 const CATEGORIES = ["视频灵感", "视觉设计"];
 const SAFE_MEDIA_PREFIXES = [
@@ -18,7 +18,8 @@ function platformUrl(value) {
   try {
     const parsed = new URL(raw, window.location.origin);
     if (parsed.origin !== window.location.origin) return "";
-    if (parsed.search || parsed.hash || raw.includes("\\") || parsed.pathname.includes("%")) return "";
+    if (parsed.hash || raw.includes("\\") || parsed.pathname.includes("%")) return "";
+    if ([...parsed.searchParams.keys()].some(key => key !== "asset_rev")) return "";
     const relative = parsed.pathname;
     return SAFE_MEDIA_PREFIXES.some(prefix => relative.startsWith(prefix)) ? relative : "";
   } catch (_) {
@@ -42,7 +43,7 @@ export function communityMedia(items = []) {
       height: Number(source.height || 0) || 0,
       alt: String(source.alt || source.title || "").slice(0, 160),
     };
-  }).filter(Boolean).slice(0, 12);
+  }).filter(Boolean).slice(0, 20);
 }
 
 export function markCommunityShared(trigger, post = null) {
@@ -63,6 +64,11 @@ export async function syncCommunityShareStatus(trigger, payload = {}, { onShared
       authorId: String(payload.authorId || ""),
       sourceKind: String(payload.sourceKind || "delivery"),
       sourceId: String(payload.sourceId || "").slice(0, 160),
+      sourceProjectId: String(payload.sourceProjectId || "").slice(0, 180),
+      sourceOutputId: String(payload.sourceOutputId || "").slice(0, 180),
+      sourceItemIds: [...new Set((Array.isArray(payload.sourceItemIds) ? payload.sourceItemIds : [])
+        .map(item => String(item || "").trim().slice(0, 180))
+        .filter(Boolean))].slice(0, 20),
       media,
       cover: communityMedia(payload.cover ? [payload.cover] : [])[0] || {},
     });
@@ -80,6 +86,9 @@ export function openCommunityShare({
   authorId = "",
   sourceKind = "delivery",
   sourceId = "",
+  sourceProjectId = "",
+  sourceOutputId = "",
+  sourceItemIds = [],
   title = "",
   copy = "",
   prompt = "",
@@ -89,6 +98,10 @@ export function openCommunityShare({
   trigger = null,
   onShared = null,
 } = {}) {
+  if (trigger instanceof HTMLElement && trigger.dataset.communityShared) {
+    toast("这份成果已经分享过，无需重复分享");
+    return;
+  }
   const member = currentMember();
   if (!member || member.role === "guest") {
     window.dispatchEvent(new CustomEvent("xingzhen:auth-required", { detail: { reason: "community-share" } }));
@@ -130,6 +143,11 @@ export function openCommunityShare({
             authorId: String(authorId || ""),
             sourceKind,
             sourceId: String(sourceId || "").slice(0, 160),
+            sourceProjectId: String(sourceProjectId || "").slice(0, 180),
+            sourceOutputId: String(sourceOutputId || "").slice(0, 180),
+            sourceItemIds: [...new Set((Array.isArray(sourceItemIds) ? sourceItemIds : [])
+              .map(item => String(item || "").trim().slice(0, 180))
+              .filter(Boolean))].slice(0, 20),
             title: String(data.get("title") || "").trim(),
             copy: String(data.get("copy") || "").trim(),
             prompt: String(data.get("prompt") || "").trim(),
@@ -140,7 +158,7 @@ export function openCommunityShare({
           markCommunityShared(trigger, post);
           onShared?.(post);
           close();
-          toast("已分享到首页灵感社区", "success");
+          toast(post?.alreadyShared ? "这份成果已经分享过" : "已分享到首页灵感社区", "success");
           window.dispatchEvent(new CustomEvent("xingzhen:community-updated"));
         } catch (error) {
           console.warn("[community-share]", error);
