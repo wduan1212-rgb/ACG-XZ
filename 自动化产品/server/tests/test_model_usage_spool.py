@@ -88,7 +88,8 @@ class ModelUsageLatencyAndSpoolTest(unittest.TestCase):
         self.assertEqual(workers, sum(bool(item["created"]) for item in receipts))
         self.assertEqual(workers, sum(bool(item["shouldCallProvider"]) for item in receipts))
         self.assertEqual(workers, len({item["receiptId"] for item in receipts}))
-        self.assertLess(p99, store.MODEL_USAGE_WRITE_MAX_SECONDS)
+        self.assertLess(p99, 0.75)
+        self.assertLess(max(latencies), store.MODEL_USAGE_WRITE_MAX_SECONDS)
         with sqlite3.connect(store.DB_PATH) as conn:
             self.assertEqual(
                 workers,
@@ -104,6 +105,92 @@ class ModelUsageLatencyAndSpoolTest(unittest.TestCase):
                     "JOIN model_usage_receipts r ON r.receipt_id=o.receipt_id "
                     "WHERE r.operation_id LIKE 'canvas:agent:unique:%'"
                 ).fetchone()[0],
+            )
+
+    def test_128_concurrent_unique_writes_stay_bounded_and_exactly_once(self):
+        workers = 128
+        barrier = threading.Barrier(workers)
+
+        def invoke(index):
+            barrier.wait(timeout=10)
+            started = time.perf_counter()
+            receipt = self.begin(f"canvas:agent:unique-128:{index}")
+            return receipt, time.perf_counter() - started
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            rows = list(executor.map(invoke, range(workers)))
+        receipts = [row[0] for row in rows]
+        latencies = [row[1] for row in rows]
+        p50 = _percentile(latencies, 0.50)
+        p95 = _percentile(latencies, 0.95)
+        p99 = _percentile(latencies, 0.99)
+        print(
+            "model_usage_receipt_128_unique_seconds "
+            f"p50={p50:.6f} p95={p95:.6f} p99={p99:.6f} max={max(latencies):.6f}"
+        )
+
+        self.assertEqual(workers, sum(bool(item["created"]) for item in receipts))
+        self.assertEqual(workers, sum(bool(item["shouldCallProvider"]) for item in receipts))
+        self.assertEqual(workers, len({item["receiptId"] for item in receipts}))
+        self.assertLess(p99, 1.0)
+        self.assertLess(max(latencies), store.MODEL_USAGE_WRITE_MAX_SECONDS)
+        with sqlite3.connect(store.DB_PATH) as conn:
+            self.assertEqual(
+                workers,
+                conn.execute(
+                    "SELECT COUNT(*) FROM model_usage_receipts "
+                    "WHERE operation_id LIKE 'canvas:agent:unique-128:%'"
+                ).fetchone()[0],
+            )
+            self.assertEqual(
+                workers,
+                conn.execute(
+                    "SELECT COUNT(*) FROM model_usage_outbox o "
+                    "JOIN model_usage_receipts r ON r.receipt_id=o.receipt_id "
+                    "WHERE r.operation_id LIKE 'canvas:agent:unique-128:%'"
+                ).fetchone()[0],
+            )
+
+    def test_batched_write_savepoints_isolate_one_failed_operation(self):
+        with sqlite3.connect(store.DB_PATH) as conn:
+            conn.execute(
+                "CREATE TABLE model_usage_batch_probe("
+                "value TEXT PRIMARY KEY NOT NULL)"
+            )
+        barrier = threading.Barrier(2)
+
+        def invoke(value, fail):
+            barrier.wait(timeout=5)
+
+            def write(conn):
+                conn.execute(
+                    "INSERT INTO model_usage_batch_probe(value) VALUES(?)", (value,)
+                )
+                if fail:
+                    raise ValueError("batch-probe-failure")
+                return value
+
+            try:
+                return ("ok", store._model_usage_write(write))
+            except Exception as exc:  # assertions are made in the owner thread
+                return ("error", exc)
+
+        with (
+            patch.object(store, "MODEL_USAGE_WRITE_BATCH_WINDOW_SECONDS", 0.02),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            rows = list(executor.map(lambda args: invoke(*args), (("keep", False), ("drop", True))))
+
+        self.assertEqual("ok", rows[0][0])
+        self.assertEqual("keep", rows[0][1])
+        self.assertEqual("error", rows[1][0])
+        self.assertIsInstance(rows[1][1], ValueError)
+        with sqlite3.connect(store.DB_PATH) as conn:
+            self.assertEqual(
+                [("keep",)],
+                conn.execute(
+                    "SELECT value FROM model_usage_batch_probe ORDER BY value"
+                ).fetchall(),
             )
 
     def test_64_concurrent_replays_are_exactly_once_with_reported_latency(self):
@@ -131,7 +218,8 @@ class ModelUsageLatencyAndSpoolTest(unittest.TestCase):
         self.assertEqual(1, sum(bool(item["created"]) for item in receipts))
         self.assertEqual(1, sum(bool(item["shouldCallProvider"]) for item in receipts))
         self.assertEqual(1, len({item["receiptId"] for item in receipts}))
-        self.assertLess(p99, store.MODEL_USAGE_WRITE_MAX_SECONDS)
+        self.assertLess(p99, 0.75)
+        self.assertLess(max(latencies), store.MODEL_USAGE_WRITE_MAX_SECONDS)
         with sqlite3.connect(store.DB_PATH) as conn:
             self.assertEqual(
                 1,

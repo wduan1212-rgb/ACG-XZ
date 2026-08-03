@@ -1,6 +1,6 @@
 # 星阵版本记录
 
-## v140 - 2026-08-03（生产迁移安全条件本地收口；本地代码 `2ee0dd3`、未推送、未部署）
+## v140 - 2026-08-04（生产迁移安全条件与目标环境门禁收口；生产未部署）
 
 ### 本版范围
 
@@ -13,13 +13,16 @@
 
 ### 验证、Git 与生产边界
 
+- 目标 Ubuntu 24.04 / CPython 3.12.3 的隔离 staging 在 `da8f2f0` 连续复现 64 个不同幂等键并发写 receipt 时至少一个 writer 用尽 5 次 `BEGIN IMMEDIATE` 重试；同一 staging 还证明 sidecar lock 缺少 ctranslate2 4.8.1 所需的 setuptools，联网 wheelhouse 和已有 venv 会掩盖该缺项，而 `--no-deps` 离线新 venv 的 `pip check` 稳定失败。生产因此保持 v120，未冻结、迁移、切换或重启。
+- receipt 写入改为模型账本专用进程内微批：同一时刻到达的短 operation 分别在 savepoint 内执行，一次 `BEGIN IMMEDIATE`、一次 FULL durability commit；调用者仅在整批提交成功后获得上游授权。它不使用全局 `store._lock`，跨进程 exactly-once 仍由 SQLite 事务与唯一索引裁决，外部长锁继续共享 1.25 秒总截止时间并 fail closed。新增 128 unique 自动门禁，同时收紧 64 unique/replay P99 与单次最大延迟断言。
+- 视频 sidecar 的开发依赖和正式运行锁显式增加 `setuptools==83.0.0`，正式锁为 37 项。依赖 verifier 不再忽略 setuptools；`installed` 在精确包核对后强制 `pip check`，新增 `install-check` 从验签 wheelhouse 创建一次性 venv，以 `--no-index --no-deps` 安装后再次执行 exact-installed 与 `pip check`。本地 CPython 3.12.13/macOS arm64 sidecar wheelhouse 为 37 个文件，lock SHA-256 `a062e5b9021c5430e585baeeb555d986e9644f0a80af23712a205481dc42fc59`、manifest SHA-256 `05c7caededf360deae12aa5f60a70778de0555b8195accb89497604fbf9f5f22`，`--no-deps` 离线闭包及视频工坊 `137/137` 功能回归通过；正式 Linux wheelhouse 仍必须从最终提交重新构建。
 - 部署线程在干净提交上发现原 v140 依赖证据不成立：主服务锁是 FastAPI 0.68.1 / Starlette 0.14.2 / Pydantic 1.10.26，但一条 TTS 测试使用 Pydantic 2 专属 API，且 TestClient 的 requests 依赖未声明；另有 5 条图片端点用例会从本地私密环境继承 `IMAGE_API_KEY`。本次补充将生产运行锁与完整测试锁彻底分离，锁定兼容的 requests 2.28.2 / urllib3 1.26.20，增加锁扩展校验、离线一次性测试 venv 和 `env -i` 无私密全量入口；图片用例只注入假的测试配置，不触发真实 provider。
-- 锁定依赖修复后的无私密主服务全量收集 `683` 项：`682` 项通过，`1` 项仅因干净提交按规则不携带旧 v120 只读数据库快照而明确跳过；runner 只允许这一精确测试/原因，其他任何 skip 都失败。新增两项依赖测试分别约束测试锁扩展和无私密离线 runner；视频工坊 `137/137`、Node `97/97` 继续通过。测试 wheelhouse 在 CPython 3.12.13/macOS arm64 上为 20 个文件，lock SHA-256 `2761fda33970336dcca73c7cf1e82e1c0a0d045a89c23fef0b3b70549b87c32e`、manifest SHA-256 `5d1853640975e563d344170b88bd5bf8e046085106a4464af2cc265d36262e53`；它只证明本地锁闭包，生产 Linux/ABI 仍必须重新构建验签。Python compileall、全部项目 JavaScript 语法、shell 语法、无限画布 lint/typecheck/vendor 闭包和 `git diff --check` 通过。release verifier 核对 59 个 ESM 模块/339 条本地边、63 个画布文件/1,759,226 bytes 和 53 个 backend/video runtime 文件；Phase 0 SHA-256 为 `790720672b5d7ecc94514ca95893bf7765f52a1b8aa1d75fc0ec13a3836eebb0`，runtime manifest SHA-256 为 `07d7af2023fd6705957068017c0ceb7c580f3842eed5ecfa66ee77b963d52cbc`。
+- 本轮在 detached 干净提交、无 `.env*`、`env -i`、CPython 3.12.13、离线一次性 venv 中完整收集主服务 `687` 项：`686` 项通过，`1` 项仅因 Git 提交按规则不携带旧 v120 只读数据库快照而明确跳过；runner 只允许这一精确测试/原因，其他任何 skip 都失败。最终样本 64 unique P99 `0.017635s`、128 unique P99 `0.027940s`、64 replay P99 `0.014930s`，外部写锁 `1.101790s` 后拒绝，事件循环在约 `1.143623s` 等待中持续调度；另有 10 轮定向压力全部通过。测试 wheelhouse 为 20 个文件，lock SHA-256 `2761fda33970336dcca73c7cf1e82e1c0a0d045a89c23fef0b3b70549b87c32e`、manifest SHA-256 `dc97563ccaf172ba3ac0bcaf2c8d604f490aa295ee9c8c369b7a390ee4291ede`；它只证明本地 macOS arm64 闭包，生产 Linux/ABI 仍必须重新构建验签。release verifier 核对 59 个 ESM 模块/339 条本地边、63 个画布文件/1,759,226 bytes 和 53 个 backend/video runtime 文件；Phase 0 SHA-256 为 `015a5a7e8faeb15edac29dbe8accad63325cb9771ce3b7fd7ef66fda3a652657`，runtime manifest SHA-256 为 `36473adc45e0180d48dda4a6977ead67ac387993865d25d3bec8110d0956732f`。
 - 一份较早的本地 v120 只读副本完成生产形态数据库演练：7,044 条历史文档、65 名成员、72 条成员申请、52 条供应商账号绑定和 884 条供应商活动均未减少，`quick_check=ok`；80 个平台账号、58 名已捕获成员和 4 个供应商完成 ACG 映射。资源 scope 自动确定 7,039 条，5 条经“v120 尚无外部团队、全部既有历史资料归 ACG”的既定迁移边界逐条复核后达到 7,044/7,044、歧义 0、未解析 0；第二轮 schema/ACG/resource apply 均为零写幂等。该旧副本没有约 15 GB 真实媒体，media preflight 因缺根目录、缺文件和缺 owner 正确阻断，未伪造文件强行通过；正式部署必须对当前线上完整冻结快照重新生成实数与 override，不能复用上述旧结果。
 - 本地 8787/8765 已以标准 `start.command` 重启，主服务 `/api/health`、sidecar `/api/health` 与 `/api/ready` 均通过并回报 `20260803-v140-deployment-readiness-1`。本地兼容模式如实显示 `140001/140003` schema 已就绪，而生产专用 `140002/140004` data migration 尚未作用于本地业务库；这不构成生产验收。
 - 2026-08-03 对生产仅做固定、非交互只读核对：线上仍为 v120，活动目录 `/data/dumate-studio/current` 是实体目录，业务库与约 15 GB 持久媒体仍与现行代码共同位于该树内；本轮没有改动服务器、数据库、文件、服务、账号或私密配置。
 - 当前结论是“代码侧部署条件已形成可审计候选”，不是“现在可以直接热部署”。生产 RW 前仍必须：取得最新一致副本并按 `137003 -> 137004 -> 139001 -> 140001 -> 140002 -> 140003 -> 140004` 连续双演练；完成完整冻结 snapshot 的异机/隔离恢复；在目标 Linux/Python/ABI 建立并验签正式 wheelhouse；证明资源 scope 100%、可开放媒体唯一归属、权限/媒体正负矩阵、usage reconciliation 与 64/128 路 receipt 性能全部通过，并准备理解 v140 演进库的前向兼容回滚 release。原始 v120 只能作历史基线，不能读取迁移后的生产库。
-- v140 功能与部署安全代码已精确提交为 `2ee0dd3`；本节由后续独立文档提交固化。当前未推送、未部署，没有执行生产迁移、历史用量回填或真实付费生成。两份归属未知的 Project Memory 删除继续排除。
+- v140 功能与部署安全基线为 `2ee0dd3`，主服务锁定依赖修复为 `da8f2f0`，本轮 receipt 并发与 sidecar 闭包修复随当前唯一 Git HEAD 固化并推送。生产仍未部署，没有执行生产冻结、迁移、历史用量回填或真实付费生成；两份归属未知的 Project Memory 删除继续排除。
 
 ## v139 - 2026-08-03（统一模型用量持久凭证与副本恢复工具；本地代码 `7b6e36c`，未推送、未部署）
 

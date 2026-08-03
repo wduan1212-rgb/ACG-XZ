@@ -30,7 +30,7 @@ from pathlib import Path
 
 FORMAT = "acg-offline-wheelhouse-v1"
 PIN_RE = re.compile(r"^([A-Za-z0-9_.-]+)==([^\s;]+)$")
-IGNORED_INSTALLED = {"pip", "setuptools", "wheel"}
+IGNORED_INSTALLED = {"pip", "wheel"}
 
 
 class DependencyContractError(RuntimeError):
@@ -175,11 +175,21 @@ def verify_installed(python: Path, lock: Path) -> dict:
                 sort_keys=True,
             )
         )
+    check = subprocess.run(
+        [str(python), "-m", "pip", "check"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if check.returncode:
+        detail = (check.stdout + "\n" + check.stderr).strip()[-500:]
+        raise DependencyContractError(f"pip_check_failed:{detail}")
     return {
         "ok": True,
         "lock": str(lock.resolve()),
         "lockSha256": _sha256(lock),
         "packageCount": len(pins),
+        "pipCheck": "ok",
         "runtime": runtime,
     }
 
@@ -302,6 +312,60 @@ def verify_wheelhouse(
     }
 
 
+def verify_offline_install(
+    python: Path,
+    lock: Path,
+    root: Path,
+    *,
+    expected_manifest_sha256: str,
+) -> dict:
+    """Prove a wheelhouse closes under an isolated ``--no-deps`` install."""
+
+    wheelhouse = verify_wheelhouse(
+        root,
+        lock,
+        python,
+        expected_manifest_sha256=expected_manifest_sha256,
+    )
+    with tempfile.TemporaryDirectory(prefix="acg-offline-install-") as tmp:
+        venv = Path(tmp) / "venv"
+        created = subprocess.run(
+            [str(python), "-m", "venv", str(venv)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode:
+            raise DependencyContractError(
+                f"venv_create_failed:{created.stderr.strip()[-500:]}"
+            )
+        test_python = venv / "bin" / "python"
+        installed = subprocess.run(
+            [
+                str(test_python), "-m", "pip", "install", "--isolated",
+                "--disable-pip-version-check", "--no-index", "--no-deps",
+                "--find-links", str(root), "--requirement", str(lock),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if installed.returncode:
+            detail = (installed.stdout + "\n" + installed.stderr).strip()[-500:]
+            raise DependencyContractError(f"offline_install_failed:{detail}")
+        environment = verify_installed(test_python, lock)
+    return {
+        "ok": True,
+        "root": wheelhouse["root"],
+        "manifestSha256": wheelhouse["manifestSha256"],
+        "lockSha256": wheelhouse["lockSha256"],
+        "fileCount": wheelhouse["fileCount"],
+        "packageCount": environment["packageCount"],
+        "pipCheck": environment["pipCheck"],
+        "runtime": environment["runtime"],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -321,6 +385,15 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="independently recorded SHA-256 of wheelhouse.manifest.json",
     )
+    install_check = sub.add_parser("install-check")
+    install_check.add_argument("--python", required=True, type=Path)
+    install_check.add_argument("--lock", required=True, type=Path)
+    install_check.add_argument("--root", required=True, type=Path)
+    install_check.add_argument(
+        "--confirm-manifest-sha256",
+        required=True,
+        help="independently recorded SHA-256 of wheelhouse.manifest.json",
+    )
     extends = sub.add_parser("extends")
     extends.add_argument("--base-lock", required=True, type=Path)
     extends.add_argument("--extended-lock", required=True, type=Path)
@@ -336,6 +409,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.base_lock,
                 args.extended_lock,
                 allowed_extras=set(args.allow_extra),
+            )
+        elif args.command == "install-check":
+            payload = verify_offline_install(
+                args.python,
+                args.lock,
+                args.root,
+                expected_manifest_sha256=args.confirm_manifest_sha256,
             )
         else:
             payload = verify_wheelhouse(

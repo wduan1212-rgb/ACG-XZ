@@ -1,8 +1,15 @@
 # Problem Document
 
-更新时间：2026-08-03
+更新时间：2026-08-04
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
+
+## 2026-08-04 v140 生产门禁修复：SQLite 同进程惊群与隐式 wheel 不能作为偶发抖动放行
+
+- **Ubuntu 确定性症状**：目标 Ubuntu 24.04 / CPython 3.12.3 在无私密、离线测试环境连续复现 64 个不同幂等键写入时至少一个 `BEGIN IMMEDIATE` 用尽 5 次重试并抛出 `ModelUsageReceiptWriteError`。同一发布的 sidecar 锁又缺少 ctranslate2 4.8.1 声明的 setuptools；联网构建会隐式下载该 wheel，已有 venv 也可能碰巧安装过它，但严格 `--no-deps` 新 venv 会在 `pip check` 稳定失败。
+- **receipt 修复**：不使用全局 `store._lock`，改由模型账本专用进程内协调器将同一瞬间到达的短事务微批处理；每个 operation 先在自己的 savepoint 内完成幂等/冲突判断，整批只有一次 `BEGIN IMMEDIATE` 和一次 FULL durability commit。调用者只在提交成功后获得 `shouldCallProvider=true`；任一单项异常回滚自身，跨进程仍由 SQLite 事务与唯一索引裁决，外部长锁仍共享原 1.25 秒总截止时间并 fail closed。
+- **依赖闭包修复**：sidecar 的开发依赖和 37 项正式 lock 均显式固定 `setuptools==83.0.0`。依赖 verifier 不再把 setuptools 当作可忽略额外包；`installed` 在精确版本核对后强制执行 `pip check`，新增 `install-check` 从验签 wheelhouse 建立一次性 venv，以 `--no-index --no-deps` 安装后再次执行 exact-installed 与 `pip check`。缺失传递依赖不能再被联网解析或旧 venv 残留掩盖。
+- **防回归边界**：64 unique P99 必须小于 0.75 秒，128 unique P99 小于 1 秒，单次小于 1.25 秒；64 replay 只能授权一次上游，外部 `BEGIN IMMEDIATE` 必须在有界时间拒绝且不能占用 `store._lock`，异步入口必须继续可调度。正式 Linux wheelhouse 仍须从最终干净提交重建并运行 `install-check`；macOS wheel 或本地多轮结果不能替代目标环境复验。
 
 ## 2026-08-03 v140 部署门禁修复：系统 Python 与本机私密环境不能证明锁定发布可用
 

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260803-v140-deployment-readiness-1",
   "fileCount": 53,
-  "totalBytes": 2572578,
+  "totalBytes": 2579960,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -66,13 +66,13 @@
     },
     {
       "path": "apps/video-workshop/requirements.lock.txt",
-      "size": 846,
-      "sha256": "57927123392d8af5f54983ac11a6ae92c75ef197c274c5165983fa70b181fa7c"
+      "size": 865,
+      "sha256": "a062e5b9021c5430e585baeeb555d986e9644f0a80af23712a205481dc42fc59"
     },
     {
       "path": "apps/video-workshop/requirements.txt",
-      "size": 100,
-      "sha256": "48c214bf6cb2f083e6bf83c54e693f3e580f5144ab4c0d2955939904f07c8122"
+      "size": 119,
+      "sha256": "3600bd90822fc41f16e82bd1e7c6c2c75251ef9c728642742d8d1e75d072055b"
     },
     {
       "path": "apps/video-workshop/run.py",
@@ -191,8 +191,8 @@
     },
     {
       "path": "deploy/verify_offline_dependencies.py",
-      "size": 13129,
-      "sha256": "33f22927558c8736cc0f4b274016fe1b6f1b438aea3621df98936cee1001a792"
+      "size": 15975,
+      "sha256": "26888d4efd1bb869108b48e34ba6ee671ec5d0355fe9b5b9258ae9a276d6c521"
     },
     {
       "path": "deploy/verify_production_write_gate.py",
@@ -261,8 +261,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 644369,
-      "sha256": "e4a46e5261208a52cbc9b522ca0c0c9162126de79400f8f20a9e0d47f82488f2"
+      "size": 648867,
+      "sha256": "45a49333c073b1e01230ba33527339ec1d64f61a92fb0f7e75fefa9709cd5ba4"
     },
     {
       "path": "tools/verify_release_contracts.py",

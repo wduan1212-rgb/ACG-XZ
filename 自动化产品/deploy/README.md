@@ -193,14 +193,18 @@ python3 server/scripts/runtime_snapshot.py restore-drill \
 FastAPI 0.68.1、Starlette 0.14.2、Pydantic 1.10.26；不得用开发机的 Pydantic 2
 回归代替。`server/requirements-test.lock.txt` 是独立、完整的主服务测试闭包：它必须
 逐项同版本包含主运行锁，且只可额外包含 TestClient 所需的 requests/urllib3。测试锁
-不得安装到生产主服务 venv，否则生产 `installed` 验证应将其判为额外包并拒绝。
+不得安装到生产主服务 venv，否则生产 `installed` 验证应将其判为额外包并拒绝。视频
+sidecar 的 37 项运行锁显式包含 ctranslate2 所需的 `setuptools==83.0.0`；setuptools
+不属于可忽略启动包，缺失或版本漂移必须拒绝。
 
 正式 wheelhouse 必须由生产同 Python/ABI 的联网构建环境产生，用
 `deploy/verify_offline_dependencies.py build` 创建，
 build stdout 中的 `manifestSha256` 必须独立记录；`verify-wheelhouse` 必须传入该值，
 同时校验运行时身份、lock 和每个文件 SHA-256。离线安装后再用 `installed` 拒绝
-缺包、版本漂移和额外包。不得在维护窗现场联网升级依赖，也不得只信任可与 wheel
-同时被替换的目录内 manifest。
+缺包、版本漂移和额外包，并强制执行 `pip check`。此外，每个生产运行 wheelhouse
+都必须先运行 `install-check`：从空的一次性 venv 以 `--no-index --no-deps` 安装，随后
+再做 exact-installed 与 `pip check`，证明 lock 本身覆盖传递依赖。不得在维护窗现场联网
+升级依赖，也不得只信任可与 wheel 同时被替换的目录内 manifest。
 
 ```bash
 python3 deploy/verify_offline_dependencies.py verify-wheelhouse \
@@ -208,6 +212,16 @@ python3 deploy/verify_offline_dependencies.py verify-wheelhouse \
   --lock server/requirements.lock.txt \
   --root /path/to/main-wheelhouse \
   --confirm-manifest-sha256 <independently-recorded-manifest-sha256>
+python3 deploy/verify_offline_dependencies.py install-check \
+  --python /path/to/target-python \
+  --lock server/requirements.lock.txt \
+  --root /path/to/main-wheelhouse \
+  --confirm-manifest-sha256 <the-same-independently-recorded-manifest-sha256>
+python3 deploy/verify_offline_dependencies.py install-check \
+  --python /path/to/target-python \
+  --lock apps/video-workshop/requirements.lock.txt \
+  --root /path/to/video-wheelhouse \
+  --confirm-manifest-sha256 <independently-recorded-video-manifest-sha256>
 ```
 
 主服务完整回归必须另建测试 wheelhouse 和一次性测试 venv。先证明测试锁严格扩展

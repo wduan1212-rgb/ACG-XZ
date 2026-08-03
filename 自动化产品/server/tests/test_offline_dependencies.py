@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 import uuid
@@ -47,7 +48,9 @@ class OfflineDependencyTests(unittest.TestCase):
         self.assertEqual("1.26.20", test_pins["urllib3"])
         self.assertEqual("0.139.0", video_pins["fastapi"])
         self.assertEqual("1.27.0", video_pins["onnxruntime"])
-        self.assertEqual(36, len(video_pins))
+        self.assertEqual("83.0.0", video_pins["setuptools"])
+        self.assertEqual(37, len(video_pins))
+        self.assertNotIn("setuptools", module.IGNORED_INSTALLED)
 
         # The inherited local main .venv predates the Pillow requirement.  The
         # production gate must expose that drift instead of silently accepting
@@ -172,6 +175,96 @@ class OfflineDependencyTests(unittest.TestCase):
             output.mkdir()
             with self.assertRaisesRegex(module.DependencyContractError, "already_exists"):
                 module.build_wheelhouse(Path(os.sys.executable), lock, output)
+
+    def test_installed_contract_rejects_unlocked_setuptools_and_runs_pip_check(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = Path(tmp) / "requirements.lock.txt"
+            lock.write_text("demo==1.0\n", encoding="utf-8")
+            runtime = {
+                "implementation": "CPython",
+                "python": "3.12.3",
+                "machine": "x86_64",
+                "sysconfigPlatform": "linux-x86_64",
+            }
+            with patch.object(
+                module,
+                "installed_versions",
+                return_value=({"demo": "1.0", "setuptools": "83.0.0"}, runtime),
+            ):
+                with self.assertRaisesRegex(
+                    module.DependencyContractError, r'"unexpected": \["setuptools"\]'
+                ):
+                    module.verify_installed(Path(os.sys.executable), lock)
+
+            failed = subprocess.CompletedProcess(
+                [os.sys.executable, "-m", "pip", "check"],
+                1,
+                stdout="demo 1.0 requires missing-package",
+                stderr="",
+            )
+            with (
+                patch.object(
+                    module,
+                    "installed_versions",
+                    return_value=({"demo": "1.0"}, runtime),
+                ),
+                patch.object(module.subprocess, "run", return_value=failed),
+            ):
+                with self.assertRaisesRegex(
+                    module.DependencyContractError, "pip_check_failed"
+                ):
+                    module.verify_installed(Path(os.sys.executable), lock)
+
+    def test_install_check_uses_no_deps_offline_venv_before_pip_check(self):
+        module = load_module()
+        runtime = {
+            "implementation": "CPython",
+            "python": "3.12.3",
+            "machine": "x86_64",
+            "sysconfigPlatform": "linux-x86_64",
+        }
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lock = root / "requirements.lock.txt"
+            lock.write_text("demo==1.0\n", encoding="utf-8")
+            wheelhouse = root / "wheelhouse"
+            wheelhouse.mkdir()
+            with (
+                patch.object(
+                    module,
+                    "verify_wheelhouse",
+                    return_value={
+                        "root": str(wheelhouse),
+                        "manifestSha256": "a" * 64,
+                        "lockSha256": "b" * 64,
+                        "fileCount": 1,
+                    },
+                ),
+                patch.object(
+                    module,
+                    "verify_installed",
+                    return_value={
+                        "packageCount": 1,
+                        "pipCheck": "ok",
+                        "runtime": runtime,
+                    },
+                ) as installed,
+                patch.object(module.subprocess, "run", return_value=completed) as run,
+            ):
+                result = module.verify_offline_install(
+                    Path(os.sys.executable),
+                    lock,
+                    wheelhouse,
+                    expected_manifest_sha256="a" * 64,
+                )
+            install_command = run.call_args_list[1].args[0]
+            self.assertIn("--no-index", install_command)
+            self.assertIn("--no-deps", install_command)
+            self.assertIn("--requirement", install_command)
+            installed.assert_called_once()
+            self.assertEqual("ok", result["pipCheck"])
 
 
 if __name__ == "__main__":

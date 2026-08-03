@@ -17,7 +17,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock
+from threading import Condition, Lock
 from urllib.parse import unquote_to_bytes, urlparse
 
 try:
@@ -900,11 +900,15 @@ class ModelUsageCompletionSpoolCorrupt(ModelUsageCompletionSpoolError):
 
 
 _lock = Lock()
+_model_usage_write_condition = Condition()
+_model_usage_write_queue = []
+_model_usage_write_active = False
 _initialized = False
 MODEL_USAGE_WRITE_RETRY_ATTEMPTS = 5
 MODEL_USAGE_WRITE_RETRY_BASE_SECONDS = 0.03
 MODEL_USAGE_WRITE_BUSY_TIMEOUT_MS = 100
 MODEL_USAGE_WRITE_MAX_SECONDS = 1.25
+MODEL_USAGE_WRITE_BATCH_WINDOW_SECONDS = 0.004
 MODEL_USAGE_COMPLETION_SPOOL_VERSION = 1
 
 
@@ -8324,17 +8328,56 @@ def _model_usage_busy_error(exc):
     return "database is locked" in message or "database is busy" in message
 
 
-def _model_usage_write(operation):
-    """Run one short receipt transaction with bounded SQLite lock retries.
+def _model_usage_finish_write_batch(batch, outcomes):
+    global _model_usage_write_active
+    with _model_usage_write_condition:
+        for request, (succeeded, value) in zip(batch, outcomes):
+            if succeeded:
+                request["result"] = value
+            else:
+                request["error"] = value
+            request["done"] = True
+            request["processing"] = False
+        _model_usage_write_active = False
+        _model_usage_write_condition.notify_all()
 
-    This path deliberately never acquires the store-wide ``_lock``.  SQLite's
-    immediate transaction plus the receipt unique indexes provide cross-thread
-    and cross-process serialization, while every retry sleep occurs without
-    blocking unrelated ordinary store operations.  Exhaustion is intentionally
-    loud: a provider call must never proceed after a failed pre-call receipt.
-    """
 
-    deadline = time.monotonic() + MODEL_USAGE_WRITE_MAX_SECONDS
+def _model_usage_fail_write_batch(batch, message):
+    _model_usage_finish_write_batch(
+        batch,
+        [
+            (False, ModelUsageReceiptWriteError(message))
+            for _request in batch
+        ],
+    )
+
+
+def _model_usage_run_write_batch():
+    """Commit currently queued process-local receipt writes as one durable unit."""
+
+    global _model_usage_write_queue, _model_usage_write_active
+    time.sleep(MODEL_USAGE_WRITE_BATCH_WINDOW_SECONDS)
+    with _model_usage_write_condition:
+        now = time.monotonic()
+        queued = _model_usage_write_queue
+        _model_usage_write_queue = []
+        batch = []
+        for request in queued:
+            if request["deadline"] <= now:
+                request["error"] = ModelUsageReceiptWriteError(
+                    "model usage receipt database remained busy"
+                )
+                request["done"] = True
+            else:
+                request["processing"] = True
+                batch.append(request)
+        if not batch:
+            _model_usage_write_active = False
+            _model_usage_write_condition.notify_all()
+            return
+        _model_usage_write_condition.notify_all()
+
+    deadline = min(request["deadline"] for request in batch)
     last_error = None
     for attempt in range(MODEL_USAGE_WRITE_RETRY_ATTEMPTS):
         remaining = deadline - time.monotonic()
@@ -8349,9 +8392,28 @@ def _model_usage_write(operation):
                 )
             )
             conn.execute("BEGIN IMMEDIATE")
-            result = operation(conn)
+            outcomes = []
+            for index, request in enumerate(batch):
+                savepoint = f"model_usage_batch_{index}"
+                conn.execute(f"SAVEPOINT {savepoint}")
+                try:
+                    result = request["operation"](conn)
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    outcomes.append((True, result))
+                except sqlite3.DatabaseError:
+                    try:
+                        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    except sqlite3.Error:
+                        pass
+                    raise
+                except Exception as exc:
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    outcomes.append((False, exc))
             conn.commit()
-            return result
+            _model_usage_finish_write_batch(batch, outcomes)
+            return
         except sqlite3.OperationalError as exc:
             last_error = exc
             if conn is not None:
@@ -8360,27 +8422,30 @@ def _model_usage_write(operation):
                 except sqlite3.Error:
                     pass
             if not _model_usage_busy_error(exc):
-                raise ModelUsageReceiptWriteError(
-                    "model usage receipt write failed"
-                ) from exc
+                _model_usage_fail_write_batch(
+                    batch, "model usage receipt write failed"
+                )
+                return
             if attempt + 1 >= MODEL_USAGE_WRITE_RETRY_ATTEMPTS:
                 break
-        except sqlite3.DatabaseError as exc:
+        except sqlite3.DatabaseError:
             if conn is not None:
                 try:
                     conn.rollback()
                 except sqlite3.Error:
                     pass
-            raise ModelUsageReceiptWriteError(
-                "model usage receipt write failed"
-            ) from exc
-        except Exception:
+            _model_usage_fail_write_batch(batch, "model usage receipt write failed")
+            return
+        except Exception as exc:
             if conn is not None:
                 try:
                     conn.rollback()
                 except sqlite3.Error:
                     pass
-            raise
+            _model_usage_finish_write_batch(
+                batch, [(False, exc) for _request in batch]
+            )
+            return
         finally:
             if conn is not None:
                 conn.close()
@@ -8391,9 +8456,64 @@ def _model_usage_write(operation):
             MODEL_USAGE_WRITE_RETRY_BASE_SECONDS * (2 ** attempt),
             remaining,
         ))
-    raise ModelUsageReceiptWriteError(
-        "model usage receipt database remained busy"
-    ) from last_error
+    _model_usage_fail_write_batch(
+        batch, "model usage receipt database remained busy"
+    )
+
+
+def _model_usage_write(operation):
+    """Run one bounded, durable receipt write without using ``store._lock``.
+
+    Concurrent same-process requests are micro-batched so SQLite performs one
+    FULL-durability commit instead of a synchronized retry storm.  Savepoints
+    preserve each operation's own conflict/error result, while ``BEGIN
+    IMMEDIATE`` and the receipt unique indexes remain the cross-process
+    exactly-once authority.  A caller returns only after the batch commits; a
+    pre-call receipt failure therefore still prevents the provider call.
+    """
+
+    global _model_usage_write_active
+    request = {
+        "operation": operation,
+        "deadline": time.monotonic() + MODEL_USAGE_WRITE_MAX_SECONDS,
+        "processing": False,
+        "done": False,
+        "result": None,
+        "error": None,
+    }
+    with _model_usage_write_condition:
+        _model_usage_write_queue.append(request)
+        _model_usage_write_condition.notify_all()
+
+    while True:
+        leader = False
+        with _model_usage_write_condition:
+            if request["done"]:
+                if request["error"] is not None:
+                    raise request["error"]
+                return request["result"]
+            remaining = request["deadline"] - time.monotonic()
+            if remaining <= 0 and not request["processing"]:
+                try:
+                    _model_usage_write_queue.remove(request)
+                except ValueError:
+                    pass
+                raise ModelUsageReceiptWriteError(
+                    "model usage receipt database remained busy"
+                )
+            if (
+                not _model_usage_write_active
+                and _model_usage_write_queue
+                and _model_usage_write_queue[0] is request
+            ):
+                _model_usage_write_active = True
+                leader = True
+            else:
+                _model_usage_write_condition.wait(
+                    timeout=None if request["processing"] else max(0.001, remaining)
+                )
+        if leader:
+            _model_usage_run_write_batch()
 
 
 def _model_usage_receipt_dict(row, *, created=False, reused=False, outbox_state=""):
