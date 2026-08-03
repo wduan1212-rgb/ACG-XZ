@@ -166,6 +166,9 @@ test("community detail keeps media fixed, copy scrollable, and manual video play
   assert.match(styles, /\.home-inspiration-panel\s*\{[^}]*overflow:\s*hidden/);
   assert.match(styles, /\.home-inspiration-detail-media\s*\{[^}]*overflow:\s*hidden/);
   assert.match(styles, /\.home-inspiration-detail-copy\s*\{[^}]*overflow-y:\s*auto/);
+  assert.match(styles, /\.community-detail-head\s*\{[^}]*position:\s*static;[^}]*background:\s*transparent/);
+  assert.doesNotMatch(styles, /\.community-detail-head\s*\{[^}]*position:\s*sticky/);
+  assert.doesNotMatch(styles, /\.community-detail-head\s*\{[^}]*linear-gradient/);
   assert.match(styles, /\.community-detail-action\.is-like\[aria-pressed="true"\]/);
   assert.match(styles, /\.community-detail-action\.is-favorite\[aria-pressed="true"\]/);
   assert.match(styles, /\.home-prompt-preview\s*\{[^}]*max-height:\s*none;\s*overflow:\s*visible/);

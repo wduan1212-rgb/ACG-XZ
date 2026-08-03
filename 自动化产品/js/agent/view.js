@@ -4,17 +4,17 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260803-v137-architecture-isolation-1";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260803-v138-home-usage-audit-1";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences
-} from "./orchestrator.js?v=20260803-v137-architecture-isolation-1";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260803-v137-architecture-isolation-1";
+} from "./orchestrator.js?v=20260803-v138-home-usage-audit-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260803-v138-home-usage-audit-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260803-v137-architecture-isolation-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260803-v138-home-usage-audit-1";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
@@ -554,7 +554,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260803-v137-architecture-isolation-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260803-v138-home-usage-audit-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;

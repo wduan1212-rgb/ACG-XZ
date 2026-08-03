@@ -86,10 +86,10 @@ trap stop_local_video_workshop EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
 
-echo "Dumate Studio 共享后端启动中… http://localhost:${PORT}/#/overview  （Ctrl+C 退出）"
+echo "Dumate Studio 共享后端启动中… http://localhost:${PORT}/#/home  （Ctrl+C 退出）"
 echo "定制创作视频工坊已在 127.0.0.1:8765 就绪，不对局域网单独暴露。"
 echo "登录账号请联系管理员；新成员可在登录页提交账号申请。"
-( sleep 2 && open "http://localhost:${PORT}/#/overview" ) &
+( sleep 2 && open "http://localhost:${PORT}/#/home" ) &
 # 强制使用纯 Python 的 asyncio + h11，避开部分 macOS/Python 环境下
 # uvicorn 自动选择 httptools/uvloop 后在长轮询时触发 Segmentation fault: 11。
 # 主服务与 sidecar 具有明确实例归属；sidecar 意外退出时仅本实例看门狗重启它。

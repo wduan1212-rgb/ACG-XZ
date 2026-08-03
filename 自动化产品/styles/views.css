@@ -6792,16 +6792,14 @@ body.workspace-shell-v2[data-zone="subscription"] .view-root {
 .home-inspiration-detail-thumbs i { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; background: rgba(14, 24, 39, .26); }
 .home-inspiration-detail-copy { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .community-detail-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+  position: static;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  margin: -8px 0 0;
-  padding: 8px 0 12px;
-  background: linear-gradient(180deg, rgba(248,249,251,.98) 72%, rgba(248,249,251,0));
+  margin: 0;
+  padding: 0 0 12px;
+  background: transparent;
 }
 .home-inspiration-detail-category { color: #858b95; font-size: 11px; }
 .community-detail-actions { display: inline-flex; align-items: center; gap: 7px; }

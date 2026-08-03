@@ -7,10 +7,10 @@ import { save, accountById, state } from "../core/store.js";
 import { autoAssemble, setStage, isVideoWorkshop } from "../domain/productions.js";
 import { buildDeliveryName } from "../domain/accounts.js";
 import { addAssetFromFile, assetBlob, globalBgmAssets, urlFor } from "../domain/assets.js";
-import { toast, openVideoPreview } from "../ui/components.js?v=20260803-v137-architecture-isolation-1";
+import { toast, openVideoPreview } from "../ui/components.js?v=20260803-v138-home-usage-audit-1";
 import { go } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260803-v137-architecture-isolation-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260803-v138-home-usage-audit-1";
 
 let PPS = 40;
 const CLIP_SEC = 15;
@@ -1596,7 +1596,7 @@ export function renderCutPage(root, p) {
     if (p.mode === "视频" && !p.artifacts?.boards?.cover?.assetId) {
       toast("未检测到封面，正在自动生成");
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260803-v137-architecture-isolation-1");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260803-v138-home-usage-audit-1");
         await ensureVideoCover(p);
         toast("封面已自动生成并入库");
       } catch (err) {

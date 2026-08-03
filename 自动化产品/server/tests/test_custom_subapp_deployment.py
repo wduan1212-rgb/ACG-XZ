@@ -107,7 +107,7 @@ class CustomSubappDeploymentTest(unittest.TestCase):
         self.assertIn("runtime/", gitignore)
 
         for filename, browser_url in (
-            ("start.command", "http://localhost:${PORT}/#/overview"),
+            ("start.command", "http://localhost:${PORT}/#/home"),
             ("start-shared.command", "http://localhost:${PORT}"),
         ):
             launcher = (APP_DIR / filename).read_text(encoding="utf-8")

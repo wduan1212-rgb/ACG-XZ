@@ -8,7 +8,7 @@ import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
-import { openModal, toast } from "../ui/components.js?v=20260803-v137-architecture-isolation-1";
+import { openModal, toast } from "../ui/components.js?v=20260803-v138-home-usage-audit-1";
 import { go, render as routerRender } from "../core/router.js";
 import * as remote from "../core/remote.js";
 

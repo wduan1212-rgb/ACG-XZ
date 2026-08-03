@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260803-v137-architecture-isolation-1",
+  "releaseId": "20260803-v138-home-usage-audit-1",
   "fileCount": 46,
-  "totalBytes": 2097868,
+  "totalBytes": 2097850,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100318,
-      "sha256": "3b2fc075243e1df2f94502eeaf85a06d880006efac526f39e39842dd7f9f2f4f"
+      "size": 100312,
+      "sha256": "7b0e4aa0fc2f38f6a8a87eacf87942597e7156d19545152ec0d94362bba14b31"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -151,8 +151,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22297,
-      "sha256": "4f2ce5df8b8bc162750a19b3621dec18fce89a57afe338c6a917015d62e9982a"
+      "size": 22285,
+      "sha256": "d0dc4665d426a4bbf056806da7645c3bff73690eeab3547c47ab36aba9975977"
     },
     {
       "path": "deploy/docker_entrypoint.sh",

@@ -1,8 +1,8 @@
-# v137 部署入口契约
+# v138 部署入口契约（沿用 v137 迁移安全协议）
 
-> 本文件是代码仓内的通用契约，不代表当前生产实况。v137 只允许作为
+> 本文件是代码仓内的通用契约，不代表当前生产实况。v138 仍只允许作为
 > **生产只读迁移验收版**；资源级管理员鉴权和私有媒体注册表未收口前，
-> 不得开启生产业务写入。本地开发使用 `start.command`，不使用本目录的
+> 且统一模型用量 receipt/outbox 未实现前，不得开启生产业务写入。本地开发使用 `start.command`，不使用本目录的
 > 生产入口。
 
 正式操作前还必须阅读：
@@ -54,7 +54,7 @@ ACG_RUNTIME_MODE=production
 ACG_DB_BOOTSTRAP_MODE=validate
 ACG_READ_ONLY=1
 ACG_REQUIRE_INTERNAL_TEAM=1
-ACG_RELEASE_ID=20260803-v137-architecture-isolation-1
+ACG_RELEASE_ID=20260803-v138-home-usage-audit-1
 ACG_RELEASE_ROOT=/srv/acg/releases/<release-id>
 ACG_PERSISTENT_ROOT=/srv/acg/shared
 ACG_ENV_FILE=/srv/acg/shared/config/runtime.env
@@ -83,7 +83,7 @@ path、query 或 fragment。
 
 ```bash
 cd /path/to/unpacked-release
-ACG_RELEASE_ID=20260803-v137-architecture-isolation-1 \
+ACG_RELEASE_ID=20260803-v138-home-usage-audit-1 \
   deploy/verify_release_contracts.sh
 ```
 
