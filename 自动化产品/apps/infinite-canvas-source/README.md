@@ -40,11 +40,16 @@ npm run build:embed
 验证通过后，才可在主项目根目录同步部署产物：
 
 ```bash
-rsync -a --delete apps/infinite-canvas-source/out/ vendor/infinite-canvas/
+npm run sync:vendor
+npm run check:vendor
 ```
 
-同步后必须重新运行 `server/tests/test_custom_canvas_integration.py`。不要只部署源码；
-生产环境需要同时携带 `vendor/infinite-canvas/`。
+`sync:vendor` 会先在同级临时目录形成完整闭包并计算路径、大小与 SHA-256，
+再切换 `vendor/infinite-canvas/` 并生成
+`vendor/infinite-canvas.manifest.json`。不要手工拼接历史哈希，也不要直接对混杂目录执行
+删除式同步；目录与 manifest 全部通过校验前会保留上一版，中途失败则恢复上一版。
+同步后必须重新运行 `server/tests/test_custom_canvas_integration.py`。
+不要只部署源码；生产环境需要同时携带 manifest 内列出的静态闭包。
 
 ## 安全边界
 

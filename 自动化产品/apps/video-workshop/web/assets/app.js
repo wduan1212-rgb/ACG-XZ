@@ -664,7 +664,7 @@ function createMessageIdentity(message) {
   avatar.className = `message-agent-avatar${message.kind === "pending" ? " is-working" : ""}${message.kind === "plan" ? " is-director" : ""}`;
   avatar.setAttribute("aria-hidden", "true");
   const image = document.createElement("img");
-  image.src = "/assets/xingzhen-logo-white.png";
+  image.src = "assets/xingzhen-logo-white.png";
   image.alt = "";
   avatar.append(image);
   identity.append(avatar, label);
