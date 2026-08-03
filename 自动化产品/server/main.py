@@ -30,6 +30,7 @@ import inspect
 import sqlite3
 import sys
 import math
+import weakref
 from datetime import date as calendar_date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,7 +40,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 try:
@@ -68,12 +69,22 @@ def _httpx_get_redirect_kwargs():
     return {}
 
 try:
+    from . import config as runtime_config
+except ImportError:  # 兼容以脚本方式直接运行
+    import config as runtime_config
+
+# Storage paths in server.store are resolved at module import time.  Parse the
+# external/local environment before importing it so DATA_DB and blob roots can
+# never silently fall back to a release-local path first.
+runtime_config.load_environment()
+
+try:
     from . import store
 except ImportError:  # 兼容以脚本方式直接运行
     import store
 
-ROOT = Path(__file__).resolve().parent
-FRONTEND_DIR = ROOT.parent          # index.html 所在目录
+ROOT = runtime_config.SERVER_DIR
+FRONTEND_DIR = runtime_config.APP_DIR          # index.html 所在目录
 DATA_FILE = Path(os.getenv("LEGACY_DATA_FILE", ROOT / "data.json"))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", ROOT / "uploads"))
 CUSTOM_CANVAS_DIR = FRONTEND_DIR / "vendor" / "infinite-canvas"
@@ -91,16 +102,13 @@ CLIENT_INSTALLERS = {
 
 
 def load_env_local():
-    for name in (".env.local", ".env"):
-        path = FRONTEND_DIR / name
-        if not path.exists():
-            continue
-        for line in path.read_text("utf-8").splitlines():
-            s = line.strip()
-            if not s or s.startswith("#") or "=" not in s:
-                continue
-            key, value = s.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    """Backward-compatible wrapper for older launch/tests.
+
+    Environment parsing itself lives in ``server.config`` and has already run
+    before ``server.store`` was imported.
+    """
+
+    return runtime_config.load_environment(FRONTEND_DIR)
 
 
 load_env_local()
@@ -117,7 +125,21 @@ VIDEO_WORKSHOP_OUTPUT_DIR = Path(
 VIDEO_WORKSHOP_UPLOAD_DIR = Path(
     os.getenv("VIDEO_WORKSHOP_UPLOAD_DIR", VIDEO_WORKSHOP_ROOT / "uploads")
 ).expanduser().resolve()
+try:
+    VIDEO_WORKSHOP_PORT = int(os.getenv("VIDEO_WORKSHOP_PORT", "8765") or "8765")
+except (TypeError, ValueError) as exc:
+    raise RuntimeError("VIDEO_WORKSHOP_PORT must be an integer") from exc
 VIDEO_WORKSHOP_URL = os.getenv("VIDEO_WORKSHOP_URL", "http://127.0.0.1:8765").rstrip("/")
+EXPECTED_VIDEO_WORKSHOP_CONTRACT_VERSION = "video-workshop-v137-read-only-1"
+_VIDEO_WORKSHOP_URL_STATUS = runtime_config.loopback_http_url_status(
+    VIDEO_WORKSHOP_URL,
+    expected_port=VIDEO_WORKSHOP_PORT,
+)
+if not _VIDEO_WORKSHOP_URL_STATUS["ok"]:
+    raise RuntimeError(
+        "VIDEO_WORKSHOP_URL must be an origin-only literal loopback HTTP URL "
+        f"on VIDEO_WORKSHOP_PORT ({_VIDEO_WORKSHOP_URL_STATUS['reason']})"
+    )
 VIDEO_WORKSHOP_TIMEOUT = float(os.getenv("VIDEO_WORKSHOP_TIMEOUT", "180") or "180")
 VIDEO_WORKSHOP_SESSION_COOKIE = "acg_custom_video_session"
 CUSTOM_CANVAS_SESSION_COOKIE = "acg_custom_canvas_session"
@@ -147,8 +169,33 @@ VOICE_DESIGN_POINTS = _positive_env_int("VOICE_DESIGN_POINTS", 200)
 
 
 # 上游达到并发上限时请求先在本服务排队，避免直接把 429/任务上限暴露给创作者。
-IMAGE_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3))
-VIDEO_SUBMIT_QUEUE = asyncio.Semaphore(_positive_env_int("VIDEO_SUBMIT_CONCURRENCY", 10))
+# asyncio primitives are intentionally created only after a request has a
+# running loop.  Python 3.9 binds Semaphore/Condition during construction, so
+# module-level instances make a clean import fail after another loop was closed
+# (and can bind production work to the wrong bootstrap loop).
+IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3)
+VIDEO_SUBMIT_CONCURRENCY = _positive_env_int("VIDEO_SUBMIT_CONCURRENCY", 10)
+_IMAGE_SUBMIT_QUEUES = weakref.WeakKeyDictionary()
+_VIDEO_SUBMIT_QUEUES = weakref.WeakKeyDictionary()
+
+
+def _loop_submit_queue(queues, limit: int):
+    loop = asyncio.get_running_loop()
+    queue = queues.get(loop)
+    if queue is None:
+        queue = asyncio.Semaphore(limit)
+        queues[loop] = queue
+    return queue
+
+
+def _image_submit_queue():
+    return _loop_submit_queue(_IMAGE_SUBMIT_QUEUES, IMAGE_SUBMIT_CONCURRENCY)
+
+
+def _video_submit_queue():
+    return _loop_submit_queue(_VIDEO_SUBMIT_QUEUES, VIDEO_SUBMIT_CONCURRENCY)
+
+
 VIDEO_TASK_CONCURRENCY = _positive_env_int("VIDEO_TASK_CONCURRENCY", 10)
 VIDEO_TASK_LEASE_SECONDS = _positive_env_int("VIDEO_TASK_LEASE_SECONDS", 2 * 60 * 60)
 
@@ -157,7 +204,7 @@ class VideoTaskGate:
     """单进程服务内的跨成员 FIFO 视频任务闸门。
 
     槽位从上游任务提交前一直持有到轮询终态或取消；与只保护 HTTP POST
-    的 VIDEO_SUBMIT_QUEUE 配合，避免多个创作者合计超过 Seedance/数字人上限。
+    的视频提交信号量配合，避免多个创作者合计超过 Seedance/数字人上限。
     当前部署脚本使用单个 uvicorn worker，因此这里覆盖整台主服务。
     """
 
@@ -240,7 +287,16 @@ class VideoTaskGate:
             return {"active": len(self._leases), "limit": self.limit, "waiting": max(0, self._next_ticket - self._serving_ticket)}
 
 
-VIDEO_TASK_GATE = VideoTaskGate(VIDEO_TASK_CONCURRENCY, VIDEO_TASK_LEASE_SECONDS)
+_VIDEO_TASK_GATES = weakref.WeakKeyDictionary()
+
+
+def _video_task_gate():
+    loop = asyncio.get_running_loop()
+    gate = _VIDEO_TASK_GATES.get(loop)
+    if gate is None:
+        gate = VideoTaskGate(VIDEO_TASK_CONCURRENCY, VIDEO_TASK_LEASE_SECONDS)
+        _VIDEO_TASK_GATES[loop] = gate
+    return gate
 # Keep data-URL reference images comfortably below the upstream 10 MB request cap.
 # These are encoded-data budgets because JSON payloads carry base64 strings, not raw files.
 IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES = _positive_env_int("IMAGE_REFERENCE_TOTAL_DATA_URL_BYTES", 7_200_000)
@@ -404,6 +460,73 @@ app = FastAPI(title="ACG 视频工具 API", version="0.1.0",
               description="账号化 AI 视频生产工作台后端。CLI / agent 可直接按本 OpenAPI 调用。")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# The v137 audit proved that global admin collection access and the legacy
+# uploads/composed URL model still lack complete resource ownership coverage.
+# Keep the production release physically incapable of serving normal business
+# traffic in read-write mode until a later audited release replaces this
+# contract with deny-by-default resource scopes and a private media registry.
+PRODUCTION_WRITE_CONTRACT = "v137-read-only-until-resource-scopes-and-media-registry"
+
+
+def _production_write_contract_readiness():
+    blocked = runtime_config.is_production() and not runtime_config.is_read_only()
+    return {
+        "ok": not blocked,
+        "contract": PRODUCTION_WRITE_CONTRACT,
+        "mode": "read-only" if runtime_config.is_read_only() else "read-write",
+        "productionReadOnlyRequired": True,
+        "writeEnableBlockers": [
+            "resource-scope-coverage",
+            "private-media-registry",
+        ],
+    }
+
+_READ_ONLY_ALLOWED_POST_PATHS = {
+    "/api/auth/login",
+    "/api/custom-video/session",
+    "/api/community/status",
+}
+
+
+@app.middleware("http")
+async def enforce_runtime_read_only(request: Request, call_next):
+    """Freeze application writes before route dependencies or handlers run.
+
+    Login and community status lookup are POST-shaped legacy read operations;
+    both are allowed while the SQLite connection remains ``mode=ro``.  Video
+    polling is GET-shaped but settles billing and caches media, so it is blocked.
+    """
+
+    production_contract = _production_write_contract_readiness()
+    if runtime_config.runtime_mode() == "invalid":
+        if request.url.path not in {"/api/health", "/api/ready"}:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "服务运行模式配置无效"},
+                headers={"Cache-Control": "no-store"},
+            )
+    if not production_contract["ok"]:
+        if request.url.path not in {"/api/health", "/api/ready"}:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "当前发布仅允许生产只读迁移验收"},
+                headers={"Retry-After": "60", "Cache-Control": "no-store"},
+            )
+    if runtime_config.is_read_only():
+        method = request.method.upper()
+        path = request.url.path
+        blocked = (
+            method not in {"GET", "HEAD", "OPTIONS"}
+            and not (method == "POST" and path in _READ_ONLY_ALLOWED_POST_PATHS)
+        ) or path.startswith("/api/video/poll/")
+        if blocked:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "服务正在受保护的只读验收模式"},
+                headers={"Retry-After": "60", "Cache-Control": "no-store"},
+            )
+    return await call_next(request)
+
 
 NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -551,6 +674,8 @@ def load_db() -> dict:
 
 
 def save_db(db: dict):
+    if runtime_config.is_read_only():
+        raise HTTPException(503, "服务正在受保护的只读验收模式")
     DATA_FILE.write_text(json.dumps(db, ensure_ascii=False, indent=2), "utf-8")
 
 
@@ -1247,7 +1372,7 @@ async def _post_json_with_retry(client: httpx.AsyncClient, endpoint: str, body: 
     last_r = None
     last_data = None
     for attempt in range(retries + 1):
-        async with IMAGE_SUBMIT_QUEUE:
+        async with _image_submit_queue():
             r = await client.post(endpoint, json=body, headers=headers)
         last_r = r
         ctype = r.headers.get("content-type") or ""
@@ -1269,7 +1394,7 @@ async def _post_json_with_retry(client: httpx.AsyncClient, endpoint: str, body: 
 async def _post_image_form_with_retry(client: httpx.AsyncClient, endpoint: str, *, data, files, headers, retries: int = 24):
     last_response = None
     for attempt in range(retries + 1):
-        async with IMAGE_SUBMIT_QUEUE:
+        async with _image_submit_queue():
             response = await client.post(endpoint, data=data, files=files, headers=headers)
         last_response = response
         try:
@@ -3401,7 +3526,7 @@ async def _queued_video_post(client: httpx.AsyncClient, url: str, retries: int =
     """提交类视频请求共享本机队列；上游并发满时继续排队并退避重试。"""
     last_response = None
     for attempt in range(retries + 1):
-        async with VIDEO_SUBMIT_QUEUE:
+        async with _video_submit_queue():
             response = await client.post(url, **kwargs)
         last_response = response
         try:
@@ -3538,7 +3663,7 @@ def _find_provider_ref(data: dict) -> str:
 async def video_config(_me=Depends(require_creator)):
     reachable, detail = _resolve_base(SEEDANCE_BASE_URL)
     dh_reachable, dh_detail = _resolve_base(DIGITAL_HUMAN_BASE_URL)
-    queue_state = await VIDEO_TASK_GATE.snapshot()
+    queue_state = await _video_task_gate().snapshot()
     return {
         "ok": True,
         "provider": _video_provider_name(),
@@ -3600,14 +3725,14 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
         elif ref.dataUrl or (ref.url or "").startswith(("http://localhost", "https://localhost", "http://127.0.0.1", "https://127.0.0.1")):
             unresolved_local_images.append(ref.name or f"图{i + 1}")
     if is_digital_human:
-        lease_token = await VIDEO_TASK_GATE.acquire()
+        lease_token = await _video_task_gate().acquire()
         try:
             result = await _digital_human_submit(req, resolved_images, resolved_audios)
-            await VIDEO_TASK_GATE.register(lease_token, result.get("providerRef") or "")
+            await _video_task_gate().register(lease_token, result.get("providerRef") or "")
             _record_model_api_usage(_me, "video", "数字人视频生成", DIGITAL_HUMAN_MODEL, output_units=1, unit_label="任务")
             return result
         except Exception:
-            await VIDEO_TASK_GATE.release_token(lease_token)
+            await _video_task_gate().release_token(lease_token)
             raise
     resolved_images = resolved_images[:9]
     resolved_videos = resolved_videos[:3]
@@ -3652,7 +3777,7 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
         "Accept": "application/json",
         "Accept-Encoding": "identity",
     }
-    lease_token = await VIDEO_TASK_GATE.acquire()
+    lease_token = await _video_task_gate().acquire()
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0), trust_env=False) as client:
             r = await _queued_video_post(client, _video_submit_url(), json=payload, headers=headers)
@@ -3674,7 +3799,7 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
                     fallback_payload = _video_payload(req, fallback_content)
                     r = await _queued_video_post(client, _video_submit_url(), json=fallback_payload, headers=headers)
     except httpx.HTTPError as exc:
-        await VIDEO_TASK_GATE.release_token(lease_token)
+        await _video_task_gate().release_token(lease_token)
         raise HTTPException(502, f"无法连接 Seedance（{SEEDANCE_BASE_URL}）：{exc.__class__.__name__} {exc}。请确认 SEEDANCE_BASE_URL 可达（内网地址需在内网/VPN）。")
     if r.status_code >= 400:
         try:
@@ -3687,18 +3812,18 @@ async def _video_submit_upstream(req: VideoSubmitReq, _me: dict):
             )
         except Exception:
             detail = _normalize_provider_error(r.text[:800])
-        await VIDEO_TASK_GATE.release_token(lease_token)
+        await _video_task_gate().release_token(lease_token)
         raise HTTPException(r.status_code, detail)
     try:
         data = r.json()
     except Exception as exc:
-        await VIDEO_TASK_GATE.release_token(lease_token)
+        await _video_task_gate().release_token(lease_token)
         raise HTTPException(502, f"Seedance 返回了无法解析的任务响应：{exc.__class__.__name__}")
     provider_ref = _find_provider_ref(data)
     if not provider_ref:
-        await VIDEO_TASK_GATE.release_token(lease_token)
+        await _video_task_gate().release_token(lease_token)
         raise HTTPException(502, {"detail": "Seedance 已返回结果，但没有任务 ID；请检查模型/接口返回结构。", "raw": data})
-    await VIDEO_TASK_GATE.register(lease_token, provider_ref)
+    await _video_task_gate().register(lease_token, provider_ref)
     _record_model_api_usage(_me, "video", "视频生成", req.model or SEEDANCE_MODEL, output_units=1, unit_label="任务")
     return {"ok": True, "provider": _video_provider_name(), "providerRef": provider_ref, "raw": data}
 
@@ -3807,7 +3932,7 @@ async def _video_poll_upstream(task_id: str, _me: dict):
     if _is_digital_human_task(task_id):
         result = await _digital_human_poll(task_id)
         if result.get("status") in {"succeeded", "failed"}:
-            await VIDEO_TASK_GATE.release_task(task_id)
+            await _video_task_gate().release_task(task_id)
         return result
     if not SEEDANCE_API_KEY:
         raise HTTPException(500, "服务器未配置 SEEDANCE_API_KEY")
@@ -3851,7 +3976,7 @@ async def _video_poll_upstream(task_id: str, _me: dict):
         "raw": data,
     }
     if status in {"succeeded", "failed"}:
-        await VIDEO_TASK_GATE.release_task(task_id)
+        await _video_task_gate().release_task(task_id)
     return result
 
 
@@ -3912,7 +4037,7 @@ async def video_poll(task_id: str, _me=Depends(require_creator)):
 
 async def _video_cancel_upstream(task_id: str, _me: dict):
     if _is_digital_human_task(task_id):
-        await VIDEO_TASK_GATE.release_task(task_id)
+        await _video_task_gate().release_task(task_id)
         return {"ok": True}
     if SEEDANCE_API_KEY:
         async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
@@ -3929,7 +4054,7 @@ async def _video_cancel_upstream(task_id: str, _me: dict):
                 response.status_code,
                 _normalize_provider_error(detail or "取消视频任务失败"),
             )
-    await VIDEO_TASK_GATE.release_task(task_id)
+    await _video_task_gate().release_task(task_id)
     return {"ok": True}
 
 
@@ -5224,11 +5349,17 @@ class Asset(BaseModel):
 
 @app.get("/api/assets")
 def list_assets(
+    response: Response,
     platform: Optional[str] = None,
     tag: Optional[str] = None,
-    _me=Depends(require_creator),
+    me=Depends(require_creator),
 ):
-    items = load_db()["assets"]
+    """旧客户端兼容读；权威数据已统一来自成员隔离的文档库。"""
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = '</api/state>; rel="successor-version"'
+    items = store.state_for(
+        me["id"], me["role"], me.get("parentId"), ["assets"]
+    ).get("assets", [])
     if platform:
         items = [x for x in items if x.get("platform") == platform]
     if tag:
@@ -5238,37 +5369,205 @@ def list_assets(
 
 @app.post("/api/assets")
 def create_asset(asset: Asset, _me=Depends(require_creator)):
-    db = load_db()
-    acc = next((a for a in db["accounts"] if a["id"] == asset.accountId), None)
-    item = {"id": uuid.uuid4().hex[:8], "createdAt": int(time.time()),
-            "status": "未下载", "platform": acc["platform"] if acc else "",
-            **asset.dict()}
-    db["assets"].append(item)
-    if acc:
-        acc["monthlyDone"] = acc.get("monthlyDone", 0) + 1   # 月度进度+1
-    save_db(db)
-    return item
+    raise HTTPException(410, "旧素材写入接口已停用，请使用 /api/db/assets")
 
 
 @app.post("/api/assets/{asset_id}/download")
 def mark_downloaded(asset_id: str, _me=Depends(require_creator)):
-    db = load_db()
-    for x in db["assets"]:
-        if x["id"] == asset_id:
-            x["status"] = "已下载"
-            save_db(db)
-            return x
-    raise HTTPException(404, "素材不存在")
+    raise HTTPException(410, "旧素材下载写入接口已停用，请使用交付下载接口")
 
 
 @app.get("/api/health")
 def health():
     return {
         "ok": True,
+        "releaseId": runtime_config.release_id(),
         "llm_configured": bool(LLM_API_KEY),
         "llm_model": LLM_MODEL,
         "llm_endpoint": _mask_endpoint(LLM_ENDPOINT),
     }
+
+
+def _canvas_manifest_readiness():
+    manifest_path = FRONTEND_DIR / "vendor" / "infinite-canvas.manifest.json"
+    result = {
+        "ok": False,
+        "fileCount": 0,
+        "totalBytes": 0,
+        "manifest": "",
+    }
+    try:
+        raw = manifest_path.read_bytes()
+        manifest = json.loads(raw.decode("utf-8"))
+        entries = manifest.get("files") if isinstance(manifest, dict) else None
+        if not isinstance(entries, list):
+            return result
+        expected_paths = set()
+        total_bytes = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return result
+            relative = str(entry.get("path") or "").replace("\\", "/").strip("/")
+            if not relative or ".." in Path(relative).parts or relative in expected_paths:
+                return result
+            target = CUSTOM_CANVAS_DIR / relative
+            if target.is_symlink() or not target.is_file():
+                return result
+            payload = target.read_bytes()
+            if len(payload) != int(entry.get("size") or -1):
+                return result
+            if hashlib.sha256(payload).hexdigest() != str(entry.get("sha256") or ""):
+                return result
+            expected_paths.add(relative)
+            total_bytes += len(payload)
+        actual_paths = {
+            path.relative_to(CUSTOM_CANVAS_DIR).as_posix()
+            for path in CUSTOM_CANVAS_DIR.rglob("*")
+            if path.is_file()
+        }
+        declared_count = int(manifest.get("fileCount") or 0)
+        declared_bytes = int(manifest.get("totalBytes") or 0)
+        result.update({
+            "ok": bool(
+                expected_paths == actual_paths
+                and declared_count == len(expected_paths)
+                and declared_bytes == total_bytes
+            ),
+            "fileCount": len(expected_paths),
+            "totalBytes": total_bytes,
+            "manifest": hashlib.sha256(raw).hexdigest()[:16],
+        })
+    except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return result
+
+
+def _video_sidecar_health_summary(status_code, payload):
+    payload = payload if isinstance(payload, dict) else {}
+    missing = payload.get("missingRequired")
+    missing = missing if isinstance(missing, list) else []
+    safe_missing = [
+        re.sub(r"[^A-Za-z0-9._-]+", "-", str(item or ""))[:80]
+        for item in missing[:20]
+        if str(item or "").strip()
+    ]
+    ready = payload.get("ready") is True
+    contract = str(payload.get("contractVersion") or "").strip()[:80]
+    build_id = str(payload.get("buildId") or "").strip()[:160]
+    expected_build_id = runtime_config.release_id()
+    read_only = payload.get("readOnly") is True
+    write_policy = str(payload.get("writePolicy") or "").strip()[:80]
+    maintenance_contract_ok = bool(
+        not runtime_config.is_read_only()
+        or (read_only and write_policy == "deny-mutations")
+    )
+    return {
+        "ok": bool(
+            int(status_code or 0) == 200
+            and payload.get("ok") is True
+            and ready
+            and not safe_missing
+            and contract == EXPECTED_VIDEO_WORKSHOP_CONTRACT_VERSION
+            and bool(expected_build_id)
+            and hmac.compare_digest(build_id, expected_build_id)
+            and maintenance_contract_ok
+        ),
+        "ready": ready,
+        "readOnly": read_only,
+        "writePolicy": write_policy,
+        "status": str(payload.get("status") or "unknown")[:80],
+        "missingRequired": safe_missing,
+        "missingRequiredCount": len(safe_missing),
+        "contract": contract,
+        "buildId": build_id,
+    }
+
+
+async def _video_sidecar_readiness():
+    result = _video_sidecar_health_summary(0, {})
+    endpoint = runtime_config.loopback_http_url_status(
+        VIDEO_WORKSHOP_URL,
+        expected_port=VIDEO_WORKSHOP_PORT,
+    )
+    if not endpoint["ok"]:
+        result["configuration"] = endpoint["reason"]
+        return result
+    try:
+        timeout = httpx.Timeout(3.0, connect=1.5)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            response = await client.get(VIDEO_WORKSHOP_URL + "/api/health")
+        payload = response.json() if response.status_code == 200 else {}
+        result = _video_sidecar_health_summary(response.status_code, payload)
+    except (httpx.HTTPError, ValueError, TypeError):
+        pass
+    return result
+
+
+def _runtime_path_readiness():
+    video_projects = Path(os.getenv(
+        "VIDEO_WORKSHOP_PROJECTS_DIR",
+        VIDEO_WORKSHOP_ROOT / "data" / "projects",
+    ))
+    return runtime_config.storage_path_status({
+        "database": (store.DB_PATH, "file"),
+        "legacyData": (DATA_FILE, "optional_file"),
+        "uploads": (UPLOAD_DIR, "dir"),
+        "composed": (COMPOSED_DIR, "dir"),
+        "canvasBlobs": (store.CUSTOM_CANVAS_BLOB_DIR, "dir"),
+        "videoProjects": (video_projects, "dir"),
+        "videoOutputs": (VIDEO_WORKSHOP_OUTPUT_DIR, "dir"),
+        "videoUploads": (VIDEO_WORKSHOP_UPLOAD_DIR, "dir"),
+    })
+
+
+@app.get("/api/ready")
+async def readiness(
+    x_readiness_token: str = Header(default="", alias="X-Readiness-Token"),
+    authorization: str = Header(default=""),
+):
+    """Deployment gate; never initializes schema, paths, credentials or teams."""
+
+    expected_token = runtime_config.readiness_token()
+    supplied_token = (
+        str(x_readiness_token or "").strip()
+        or str(authorization or "").replace("Bearer ", "").strip()
+    )
+    if expected_token and not hmac.compare_digest(expected_token, supplied_token):
+        raise HTTPException(404, "Not Found")
+    if runtime_config.is_production() and not expected_token:
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "reason": "readiness protection is not configured"},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    database = store.database_readiness()
+    paths = _runtime_path_readiness()
+    canvas = _canvas_manifest_readiness()
+    sidecar = await _video_sidecar_readiness()
+    release = runtime_config.release_id()
+    runtime_ok = runtime_config.runtime_mode() in {"local", "test", "production"}
+    release_ok = bool(release and release != "local-unidentified")
+    checks = {
+        "release": {
+            "ok": release_ok and runtime_ok,
+            "id": release,
+            "runtimeMode": runtime_config.runtime_mode(),
+            "readOnly": runtime_config.is_read_only(),
+            "bootstrapMode": runtime_config.db_bootstrap_mode(),
+        },
+        "database": database,
+        "tenantSecurity": _production_write_contract_readiness(),
+        "paths": paths,
+        "sidecar": sidecar,
+        "canvas": canvas,
+    }
+    ready = all(bool(value.get("ok")) for value in checks.values())
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"ok": ready, "checks": checks},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _deep_get(obj, *paths, default=None):
@@ -7629,16 +7928,10 @@ def api_put(collection: str, req: PutReq, me=Depends(require_member)):
     if me["role"] in {"supplier_parent", "supplier_child"}:
         if collection != "assets":
             raise HTTPException(403, "供应商账号只能更新交付清单")
-        assigned = store.supplier_account_ids_for_child(me["id"]) if me["role"] == "supplier_child" else None
-        for item in req.items or []:
-            if not isinstance(item, dict) or (not item.get("delivered") and not item.get("shared")):
-                raise HTTPException(403, "只能更新已交付素材")
-            if assigned is not None and item.get("accountId") not in assigned:
-                raise HTTPException(403, "无权更新未分配账号的素材")
     try:
         result = {"written": len(req.items or []), "denied": 0}
         if me["role"] in {"supplier_parent", "supplier_child"}:
-            result["written"] = store.upsert_docs(collection, req.items)
+            result = store.upsert_supplier_assets(me["id"], me["role"], req.items)
         elif collection == "assets" and me["role"] in {"admin", "editor", "user"}:
             result = store.upsert_member_assets(me["id"], me["role"], req.items)
         elif collection == "voicePresets":
@@ -7988,6 +8281,8 @@ def supplier_children_create(req: SupplierChildrenReq, me=Depends(require_suppli
         if str(exc) == "username_exists":
             raise HTTPException(409, "用户名已存在")
         raise HTTPException(400, "姓名、用户名和初始密码必填")
+    except PermissionError:
+        raise HTTPException(403, "当前供应商账号尚未绑定有效团队")
     except sqlite3.IntegrityError:
         raise HTTPException(409, "用户名已存在")
     except sqlite3.Error as exc:
@@ -7996,15 +8291,15 @@ def supplier_children_create(req: SupplierChildrenReq, me=Depends(require_suppli
 
 @app.put("/api/supplier/children/{mid}")
 def supplier_child_update(mid: str, req: MemberReq, me=Depends(require_supplier_parent)):
-    row = store.supplier_child_for(me["id"], mid, include_all=True)
-    if not row:
-        raise HTTPException(404, "供应商子账号不存在")
     username = req.username.strip() if req.username else None
-    if username:
-        existing = store.get_member_by_username(username)
-        if existing and existing[0] != mid:
-            raise HTTPException(409, "用户名已存在")
-    updated = store.update_member(mid, name=req.name or None, username=username, pin=req.pin or None)
+    updated, error = store.update_supplier_member(
+        me["id"], mid, name=req.name or None, username=username,
+        pin=req.pin or None, child_only=True,
+    )
+    if error == "username_exists":
+        raise HTTPException(409, "用户名已存在")
+    if error:
+        raise HTTPException(404, "供应商子账号不存在")
     return store.member_public(updated)
 
 
@@ -8037,15 +8332,14 @@ def supplier_activity(me=Depends(require_supplier_parent)):
 
 @app.put("/api/supplier/members/{mid}")
 def supplier_member_update(mid: str, req: MemberReq, me=Depends(require_supplier_parent)):
-    row = store.get_member(mid)
-    if not row or row[4] not in {"supplier_parent", "supplier_child"}:
-        raise HTTPException(404, "供应商账号不存在")
     username = req.username.strip() if req.username else None
-    if username:
-        existing = store.get_member_by_username(username)
-        if existing and existing[0] != mid:
-            raise HTTPException(409, "用户名已存在")
-    updated = store.update_member(mid, name=req.name or None, username=username, pin=req.pin or None)
+    updated, error = store.update_supplier_member(
+        me["id"], mid, name=req.name or None, username=username, pin=req.pin or None,
+    )
+    if error == "username_exists":
+        raise HTTPException(409, "用户名已存在")
+    if error:
+        raise HTTPException(404, "供应商账号不存在")
     return store.member_public(updated)
 
 
@@ -8054,7 +8348,8 @@ def supplier_activity_add(req: SupplierActivityReq, me=Depends(require_member)):
     if me["role"] not in {"supplier_parent", "supplier_child"}:
         raise HTTPException(403, "需要供应商权限")
     parent_id = me.get("parentId") or (me["id"] if me["role"] == "supplier_parent" else "")
-    store.add_supplier_activity(parent_id, me["id"] if me["role"] == "supplier_child" else "", me["id"], req.action, req.accountId, req.assetId, req.detail)
+    if not store.add_supplier_activity(parent_id, me["id"] if me["role"] == "supplier_child" else "", me["id"], req.action, req.accountId, req.assetId, req.detail):
+        raise HTTPException(403, "无权为未分配账号或素材记录操作")
     return {"ok": True}
 
 
@@ -8099,6 +8394,8 @@ def supplier_account_views(account_id: str, req: SupplierViewsReq, me=Depends(re
     item, err = store.update_supplier_account_views(account_id, req.viewCount, me["id"], me["role"])
     if err == "forbidden":
         raise HTTPException(403, "只有供应商母账号可以更新账号总播放量")
+    if err == "unassigned":
+        raise HTTPException(403, "无权更新非本团队账号的总播放量")
     if err:
         raise HTTPException(404, "账号不存在")
     parent_id = me.get("parentId") or me["id"]
@@ -8160,6 +8457,8 @@ def supplier_account_homepage(account_id: str, req: SupplierHomepageReq, me=Depe
     item, err = store.update_supplier_account_homepage(account_id, req.homepageUrl, me["id"], me["role"])
     if err == "forbidden":
         raise HTTPException(403, "只有供应商母账号可以编辑主页链接")
+    if err == "unassigned":
+        raise HTTPException(403, "无权编辑非本团队账号的主页链接")
     if err == "invalid_url":
         raise HTTPException(400, "主页链接仅支持 http:// 或 https://")
     if err:
@@ -8174,6 +8473,8 @@ def _supplier_account_error(err):
         raise HTTPException(400, "账号名称必填")
     if err in {"duplicate", "exists"}:
         raise HTTPException(409, "同平台、同形式的同名账号已存在")
+    if err in {"forbidden", "unassigned"}:
+        raise HTTPException(403, "当前供应商无权管理该账号")
     raise HTTPException(404, "账号不存在")
 
 
@@ -8415,14 +8716,9 @@ def _rewrite_video_workshop_urls(value):
     return value
 
 
-def _sync_video_workshop_project(me, source):
-    _reconcile_static_video_billing(me, source)
-    mapped, error = store.sync_custom_video_project(me["id"], source)
-    if error == "forbidden":
-        raise HTTPException(403, "视频工坊项目归属冲突")
-    if error or not mapped:
-        raise HTTPException(500, "视频工坊项目映射失败")
-    _VIDEO_PROJECT_INDEX_CACHE.pop(str(me["id"]), None)
+def _video_workshop_project_response(source, mapped):
+    """Attach existing integration metadata without performing persistence."""
+
     project = _rewrite_video_workshop_urls(source)
     project["_integration"] = {
         "kind": "video",
@@ -8438,6 +8734,17 @@ def _sync_video_workshop_project(me, source):
         ),
     }
     return project
+
+
+def _sync_video_workshop_project(me, source):
+    _reconcile_static_video_billing(me, source)
+    mapped, error = store.sync_custom_video_project(me["id"], source)
+    if error == "forbidden":
+        raise HTTPException(403, "视频工坊项目归属冲突")
+    if error or not mapped:
+        raise HTTPException(500, "视频工坊项目映射失败")
+    _VIDEO_PROJECT_INDEX_CACHE.pop(str(me["id"]), None)
+    return _video_workshop_project_response(source, mapped)
 
 
 def _static_video_reservation(me, request: Request, payload: dict) -> Optional[dict]:
@@ -8545,6 +8852,12 @@ async def _video_workshop_request(
     body_override=None,
     params_override=None,
 ):
+    endpoint = runtime_config.loopback_http_url_status(
+        VIDEO_WORKSHOP_URL,
+        expected_port=VIDEO_WORKSHOP_PORT,
+    )
+    if not endpoint["ok"]:
+        raise HTTPException(503, "视频工坊sidecar地址未通过本机回环安全校验")
     target = VIDEO_WORKSHOP_URL + "/api/" + api_path.lstrip("/")
     body = await request.body() if body_override is None else body_override
     headers = {"Accept": "application/json"}
@@ -8816,7 +9129,12 @@ def custom_video_output(file_path: str, request: Request, me=Depends(_custom_vid
     path = _video_workshop_safe_path(VIDEO_WORKSHOP_OUTPUT_DIR, file_path)
     if not path.is_file():
         raise HTTPException(404, "视频成片不存在或已被清理")
-    return ranged_file_response(request, path, media_type=_media_type_for_path(path), cache_seconds=300)
+    response = ranged_file_response(
+        request, path, media_type=_media_type_for_path(path), cache_seconds=300,
+    )
+    response.headers["Cache-Control"] = "private, max-age=300"
+    response.headers["Vary"] = "Cookie, Authorization"
+    return response
 
 
 @app.get("/custom-video/uploads/{file_path:path}")
@@ -8828,7 +9146,12 @@ def custom_video_upload(file_path: str, request: Request, me=Depends(_custom_vid
     path = _video_workshop_safe_path(VIDEO_WORKSHOP_UPLOAD_DIR, file_path)
     if not path.is_file():
         raise HTTPException(404, "视频工坊附件不存在或已被清理")
-    return ranged_file_response(request, path, media_type=_media_type_for_path(path), cache_seconds=300)
+    response = ranged_file_response(
+        request, path, media_type=_media_type_for_path(path), cache_seconds=300,
+    )
+    response.headers["Cache-Control"] = "private, max-age=300"
+    response.headers["Vary"] = "Cookie, Authorization"
+    return response
 
 
 @app.api_route(
@@ -8877,7 +9200,11 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             mapped = mapped_projects.get(project_id)
             if not mapped:
                 continue
-            visible_items.append(_sync_video_workshop_project(me, raw_item))
+            visible_items.append(
+                _video_workshop_project_response(raw_item, mapped)
+                if runtime_config.is_read_only()
+                else _sync_video_workshop_project(me, raw_item)
+            )
         data["items"] = visible_items
         return _video_workshop_json_response(
             data,
@@ -8911,7 +9238,7 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
     if project_match:
         project_id = project_match.group(1)
         project_action = str(project_match.group(2) or "")
-        _video_workshop_owned_project(me, project_id)
+        mapped_project = _video_workshop_owned_project(me, project_id)
         if project_action == "speed-version" and method != "POST":
             raise HTTPException(405, "视频工坊变速接口只接受 POST")
         upstream = await _video_workshop_request(request, path)
@@ -8927,7 +9254,9 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
                 server_timing=_video_workshop_timing("speed-version", started),
             )
         return _video_workshop_json_response(
-            _sync_video_workshop_project(me, project),
+            _video_workshop_project_response(project, mapped_project)
+            if runtime_config.is_read_only()
+            else _sync_video_workshop_project(me, project),
             server_timing=_video_workshop_timing("project", started),
         )
 

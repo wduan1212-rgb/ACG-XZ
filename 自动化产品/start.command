@@ -23,6 +23,12 @@ if [ -f ".env.local" ]; then
   done < ".env.local"
 fi
 
+# Finder launchers are always local/test-compatible.  Production uses the
+# dedicated deploy launcher, which validates an explicit migration ledger.
+export ACG_RUNTIME_MODE="local"
+export ACG_DB_BOOTSTRAP_MODE="auto"
+export ACG_READ_ONLY="0"
+
 export IMAGE_BASE_URL="${IMAGE_BASE_URL:-https://tokenhub.tencentmaas.com/v1}"
 export IMAGE_ENDPOINT="${IMAGE_ENDPOINT:-https://tokenhub.tencentmaas.com/v1/aiart/gtimage}"
 export IMAGE_MODEL="${IMAGE_MODEL:-custom-imagemodel-gt}"

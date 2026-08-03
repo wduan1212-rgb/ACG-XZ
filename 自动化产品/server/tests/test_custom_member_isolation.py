@@ -148,7 +148,9 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
             )
 
             # 供应商仍只取得既有的账号头像白名单，角色版和普通私有图均不放开。
-            supplier_state = store.state_for("supplier-parent", "supplier_parent")
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["shared-digital-account"])
+            supplier_parent_id = store.get_member_by_username(store.DEFAULT_SUPPLIER_USERNAME)[0]
+            supplier_state = store.state_for(supplier_parent_id, "supplier_parent")
             self.assertEqual(
                 {item["id"] for item in supplier_state["assets"]},
                 {"account-avatar"},

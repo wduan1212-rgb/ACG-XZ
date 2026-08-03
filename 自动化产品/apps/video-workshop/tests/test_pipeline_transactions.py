@@ -417,6 +417,7 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
             return {"path": str(kwargs["output_path"])}
 
         plan = {
+            "reference_scope_id": "production-a",
             "style_anchor": "统一日系漫画线稿与蓝橙配色",
             "negative_constraints": "角色身份不漂移",
             "continuity_anchors": [{
@@ -450,6 +451,104 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(calls))
         self.assertEqual(["图1", "连续性锚点1"], [item["label"] for item in first])
         self.assertEqual(["图1", "连续性锚点1"], [item["label"] for item in second])
+        self.assertIn("continuity-anchor-production-a-01.jpg", first[1]["path"])
+
+    async def test_new_production_scope_never_reuses_previous_continuity_anchor(self) -> None:
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        calls: list[dict] = []
+
+        async def generate(**kwargs):
+            calls.append(kwargs)
+            Path(kwargs["output_path"]).write_bytes(
+                f"anchor-{len(calls)}".encode("utf-8")
+            )
+            return {"path": str(kwargs["output_path"])}
+
+        base_plan = {
+            "style_anchor": "统一视觉风格",
+            "negative_constraints": "身份不漂移",
+            "continuity_anchors": [{
+                "key": "subject",
+                "kind": "character",
+                "description": "当前任务的主要角色",
+                "reason": "保持当前任务内连续性",
+            }],
+        }
+        first_plan = {**base_plan, "reference_scope_id": "production-first"}
+        second_plan = {**base_plan, "reference_scope_id": "production-second"}
+
+        with patch.object(
+            pipeline_module,
+            "_generate_static_image_with_retry",
+            new=generate,
+        ):
+            first = await pipeline_module._ensure_static_continuity_references(
+                project_id=self.project_id,
+                plan=first_plan,
+                work_dir=self.work_dir,
+                user_references=[],
+                callback=None,
+            )
+            second = await pipeline_module._ensure_static_continuity_references(
+                project_id=self.project_id,
+                plan=second_plan,
+                work_dir=self.work_dir,
+                user_references=[],
+                callback=None,
+            )
+
+        self.assertEqual(2, len(calls))
+        self.assertNotEqual(first[0]["path"], second[0]["path"])
+        self.assertIn("continuity-anchor-production-first-01.jpg", first[0]["path"])
+        self.assertIn("continuity-anchor-production-second-01.jpg", second[0]["path"])
+        self.assertEqual(b"anchor-1", Path(first[0]["path"]).read_bytes())
+        self.assertEqual(b"anchor-2", Path(second[0]["path"]).read_bytes())
+
+    async def test_legacy_plan_ignores_old_project_wide_continuity_anchor(self) -> None:
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        leaked = self.work_dir / "continuity-anchor-01.jpg"
+        leaked.write_bytes(b"previous-production-reference")
+        calls: list[dict] = []
+
+        async def generate(**kwargs):
+            calls.append(kwargs)
+            Path(kwargs["output_path"]).write_bytes(b"current-production-reference")
+            return {"path": str(kwargs["output_path"])}
+
+        legacy_plan = {
+            "title": "当前旧版计划",
+            "narration": "只处理当前任务",
+            "style_anchor": "当前任务风格",
+            "negative_constraints": "不要出现其他任务角色",
+            "continuity_anchors": [{
+                "key": "current-subject",
+                "kind": "character",
+                "description": "当前任务角色",
+                "reason": "当前任务内保持一致",
+            }],
+        }
+
+        with patch.object(
+            pipeline_module,
+            "_generate_static_image_with_retry",
+            new=generate,
+        ):
+            result = await pipeline_module._ensure_static_continuity_references(
+                project_id=self.project_id,
+                plan=legacy_plan,
+                work_dir=self.work_dir,
+                user_references=[],
+                callback=None,
+            )
+
+        self.assertEqual(1, len(calls))
+        self.assertNotEqual(str(leaked), result[0]["path"])
+        self.assertIn("continuity-anchor-legacy-", result[0]["path"])
+        self.assertEqual(b"previous-production-reference", leaked.read_bytes())
+        self.assertEqual(
+            b"current-production-reference",
+            Path(result[0]["path"]).read_bytes(),
+        )
 
     async def test_failed_candidate_cancels_and_reaps_siblings_before_cleanup(self) -> None:
         instance = pipeline_module.VideoPipeline()

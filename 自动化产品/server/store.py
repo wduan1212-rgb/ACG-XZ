@@ -18,6 +18,11 @@ from pathlib import Path
 from threading import Lock
 from urllib.parse import unquote_to_bytes, urlparse
 
+try:
+    from . import config as runtime_config
+except ImportError:  # 兼容以脚本方式直接运行
+    import config as runtime_config
+
 DB_PATH = Path(os.getenv("DATA_DB", Path(__file__).resolve().parent / "data.sqlite"))
 CUSTOM_CANVAS_BLOB_DIR = Path(
     os.getenv("CUSTOM_CANVAS_BLOB_DIR", DB_PATH.parent / "canvas_blobs")
@@ -556,14 +561,97 @@ CREATE INDEX IF NOT EXISTS idx_community_reactions_member_favorite
   ON community_reactions(member_id, favorited, updated_at DESC);
 """
 
+MIGRATION_LEDGER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_migrations(
+  version     INTEGER PRIMARY KEY,
+  name        TEXT NOT NULL,
+  checksum    TEXT NOT NULL,
+  app_version TEXT NOT NULL,
+  started_at  INTEGER NOT NULL,
+  finished_at INTEGER,
+  status      TEXT NOT NULL,
+  summary     TEXT NOT NULL DEFAULT '{}'
+);
+"""
+# 137001/137002 were exercised by local pre-release builds before the v137
+# schema identity was frozen.  Migration versions are immutable once written,
+# even outside production, so the audited release advances to fresh numbers
+# instead of overwriting an existing ledger checksum.
+SCHEMA_MIGRATION_VERSION = 137003
+SCHEMA_MIGRATION_NAME = "v137-schema-expand-final"
+_SCHEMA_ALTERATIONS_IDENTITY = "|".join((
+    "atomic-expand-transaction",
+    "members.parent_id",
+    "members.avatar_url",
+    "members.username_key",
+    "member_requests.username_key",
+    "personal_daily_quota_reservations.request_fingerprint",
+    "community_posts.cover_json",
+    "community_posts.identity_key",
+    "community_posts.author_identity_unique",
+    "members.username_key_lookup",
+    "member_requests.username_key_status_lookup",
+))
+SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (SCHEMA + "\n" + _SCHEMA_ALTERATIONS_IDENTITY).encode("utf-8")
+).hexdigest()
+EXPECTED_SCHEMA_TABLES = frozenset(
+    re.findall(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", SCHEMA)
+) | {"schema_migrations"}
+EXPECTED_SCHEMA_COLUMNS = {
+    "members": {"parent_id", "avatar_url", "username_key"},
+    "member_requests": {"username_key"},
+    "personal_daily_quota_reservations": {"request_fingerprint"},
+    "community_posts": {"cover_json", "identity_key"},
+}
+ACG_DATA_MIGRATION_VERSION = 137004
+ACG_DATA_MIGRATION_NAME = "v137-acg-internal-team-final"
+ACG_MIGRATION_SCOPE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS acg_internal_migration_scope(
+  resource_kind TEXT NOT NULL,
+  resource_id   TEXT NOT NULL,
+  target_role   TEXT NOT NULL DEFAULT '',
+  captured_at   INTEGER NOT NULL,
+  PRIMARY KEY(resource_kind, resource_id)
+)
+"""
+_ACG_DATA_MIGRATION_IDENTITY = "|".join((
+    "team-acg-marketing",
+    "capture-existing-admin-editor",
+    "capture-existing-supplier-parent",
+    "capture-existing-accounts",
+    "capture-identity-members-and-requests",
+    "block-canonical-identity-collisions",
+    "block-supplier-relationship-orphans",
+    "preserve-pin-parent-original-docs",
+    "skip-and-block-external-team-bindings",
+    "idempotent-scope-v1",
+))
+ACG_DATA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (ACG_MIGRATION_SCOPE_SCHEMA + "\n" + _ACG_DATA_MIGRATION_IDENTITY).encode("utf-8")
+).hexdigest()
+
+
+class StoreNotReadyError(RuntimeError):
+    """Raised when normal production startup sees an unapplied/dirty schema."""
+
+
 _lock = Lock()
 _initialized = False
 
 
-def _connect():
-    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+def _connect(read_only=None):
+    use_read_only = runtime_config.is_read_only() if read_only is None else bool(read_only)
+    if use_read_only:
+        uri = DB_PATH.expanduser().resolve(strict=False).as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, timeout=30, uri=True)
+    else:
+        conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA journal_mode=WAL")
+    if use_read_only:
+        conn.execute("PRAGMA query_only=ON")
+    else:
+        conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -756,6 +844,1023 @@ def _ensure_internal_team_locked(conn):
         )
 
 
+def _apply_schema_locked(conn):
+    """Apply additive schema only; never seed accounts, roles or credentials."""
+
+    # ``sqlite3.executescript`` otherwise commits before running the script and
+    # can leave a half-expanded database if a later index/ALTER fails.  Start an
+    # explicit transaction inside the script and let the caller commit only
+    # after every additive statement and ledger update has succeeded.
+    conn.executescript("BEGIN IMMEDIATE;\n" + SCHEMA + "\n" + MIGRATION_LEDGER_SCHEMA)
+    member_cols = {r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
+    if "parent_id" not in member_cols:
+        conn.execute("ALTER TABLE members ADD COLUMN parent_id TEXT")
+    if "avatar_url" not in member_cols:
+        conn.execute("ALTER TABLE members ADD COLUMN avatar_url TEXT")
+    if "username_key" not in member_cols:
+        conn.execute("ALTER TABLE members ADD COLUMN username_key TEXT NOT NULL DEFAULT ''")
+    request_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(member_requests)").fetchall()
+    }
+    if "username_key" not in request_cols:
+        conn.execute(
+            "ALTER TABLE member_requests ADD COLUMN username_key TEXT NOT NULL DEFAULT ''"
+        )
+    reservation_cols = {
+        r[1]
+        for r in conn.execute(
+            "PRAGMA table_info(personal_daily_quota_reservations)"
+        ).fetchall()
+    }
+    if "request_fingerprint" not in reservation_cols:
+        conn.execute(
+            "ALTER TABLE personal_daily_quota_reservations "
+            "ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''"
+        )
+    community_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(community_posts)").fetchall()
+    }
+    if "cover_json" not in community_cols:
+        conn.execute(
+            "ALTER TABLE community_posts ADD COLUMN cover_json TEXT NOT NULL DEFAULT '{}'"
+        )
+    if "identity_key" not in community_cols:
+        conn.execute(
+            "ALTER TABLE community_posts ADD COLUMN identity_key TEXT NOT NULL DEFAULT ''"
+        )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_members_username_key ON members(username_key)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_member_requests_username_key_status "
+        "ON member_requests(username_key,status)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_community_posts_author_identity "
+        "ON community_posts(author_id, identity_key) "
+        "WHERE status='published' AND identity_key<>''"
+    )
+
+
+def _record_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("schema migration checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {"schema": "expand-only"}, ensure_ascii=False
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            (
+                SCHEMA_MIGRATION_NAME,
+                SCHEMA_MIGRATION_CHECKSUM,
+                runtime_config.release_id() or "unidentified",
+                now,
+                encoded_summary,
+                SCHEMA_MIGRATION_VERSION,
+            ),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "version,name,checksum,app_version,started_at,finished_at,status,summary"
+            ") VALUES(?,?,?,?,?,?,?,?)",
+            (
+                SCHEMA_MIGRATION_VERSION,
+                SCHEMA_MIGRATION_NAME,
+                SCHEMA_MIGRATION_CHECKSUM,
+                runtime_config.release_id() or "unidentified",
+                now,
+                now,
+                "success",
+                encoded_summary,
+            ),
+        )
+
+
+def _database_identity(path):
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return ""
+    raw = f"{stat.st_dev}:{stat.st_ino}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def database_readiness():
+    """Inspect schema and migration state through a URI ``mode=ro`` connection."""
+
+    result = {
+        "ok": False,
+        "exists": DB_PATH.is_file(),
+        "identity": _database_identity(DB_PATH),
+        "quickCheck": "unavailable",
+        "schemaVersion": None,
+        "userVersion": None,
+        "migrationVersion": None,
+        "migrationDirty": 0,
+        "missingTables": [],
+        "missingColumns": {},
+        "checksum": "",
+        "authSecret": False,
+        "internalTeam": False,
+        "acgMigration": False,
+        "acgMigrationVersion": None,
+        "acgMigrationChecksum": "",
+        "acgMigrationDrift": 0,
+    }
+    if not DB_PATH.is_file():
+        return result
+    try:
+        conn = _connect(read_only=True)
+    except sqlite3.Error as exc:
+        result["error"] = type(exc).__name__
+        return result
+    try:
+        result["quickCheck"] = str(conn.execute("PRAGMA quick_check").fetchone()[0])
+        result["schemaVersion"] = int(conn.execute("PRAGMA schema_version").fetchone()[0])
+        result["userVersion"] = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        tables = {
+            str(row[0]) for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        result["missingTables"] = sorted(EXPECTED_SCHEMA_TABLES - tables)
+        missing_columns = {}
+        for table, required in EXPECTED_SCHEMA_COLUMNS.items():
+            if table not in tables:
+                continue
+            actual = {
+                str(row[1]) for row in conn.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            absent = sorted(required - actual)
+            if absent:
+                missing_columns[table] = absent
+        result["missingColumns"] = missing_columns
+        if "schema_migrations" in tables:
+            row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            if row:
+                result["migrationVersion"] = int(row[0])
+                result["checksum"] = str(row[1] or "")[:16]
+            result["migrationDirty"] = int(conn.execute(
+                "SELECT COUNT(*) FROM schema_migrations WHERE status<>'success'"
+            ).fetchone()[0] or 0)
+            migration_ok = bool(
+                row
+                and row[1] == SCHEMA_MIGRATION_CHECKSUM
+                and row[2] == "success"
+                and result["migrationDirty"] == 0
+            )
+        else:
+            migration_ok = False
+        if "meta" in tables:
+            result["authSecret"] = bool(
+                os.getenv("AUTH_SECRET")
+                or conn.execute("SELECT 1 FROM meta WHERE k='auth_secret'").fetchone()
+            )
+        if {"teams", "meta"}.issubset(tables):
+            team = conn.execute(
+                "SELECT name,slug,kind,status,plan,quota_mode FROM teams WHERE id=?",
+                (INTERNAL_TEAM_ID,),
+            ).fetchone()
+            markers = int(conn.execute(
+                "SELECT COUNT(*) FROM meta WHERE k IN ("
+                "'internal_team_members_migrated_v1',"
+                "'internal_team_resources_migrated_v1')"
+            ).fetchone()[0] or 0)
+            result["internalTeam"] = bool(
+                team
+                and tuple(team) == (
+                    INTERNAL_TEAM_NAME, "acg-marketing", "internal", "active",
+                    "team-pro", "unlimited",
+                )
+                and markers == 2
+            )
+        if {"schema_migrations", "acg_internal_migration_scope"}.issubset(tables):
+            data_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations WHERE version=?",
+                (ACG_DATA_MIGRATION_VERSION,),
+            ).fetchone()
+            if data_row:
+                result["acgMigrationVersion"] = int(data_row[0])
+                result["acgMigrationChecksum"] = str(data_row[1] or "")[:16]
+            drift = 0
+            scope_count = int(conn.execute(
+                "SELECT COUNT(*) FROM acg_internal_migration_scope"
+            ).fetchone()[0] or 0)
+            owner_scope_count = int(conn.execute(
+                "SELECT COUNT(*) FROM acg_internal_migration_scope "
+                "WHERE resource_kind='member' AND target_role='owner'"
+            ).fetchone()[0] or 0)
+            if scope_count == 0 or owner_scope_count != 1:
+                drift += 1
+            drift += int(conn.execute(
+                "SELECT COUNT(*) FROM acg_internal_migration_scope s "
+                "LEFT JOIN members m ON m.id=s.resource_id "
+                "LEFT JOIN team_members tm ON tm.member_id=s.resource_id "
+                "WHERE s.resource_kind='member' AND (m.id IS NULL OR ("
+                "s.target_role='owner' AND (tm.member_id IS NULL OR tm.team_id<>? "
+                "OR tm.team_role<>'owner' OR tm.status<>'active')))",
+                (INTERNAL_TEAM_ID,),
+            ).fetchone()[0] or 0)
+            owner_count = int(conn.execute(
+                "SELECT COUNT(*) FROM team_members WHERE team_id=? "
+                "AND team_role='owner' AND status='active'",
+                (INTERNAL_TEAM_ID,),
+            ).fetchone()[0] or 0)
+            if owner_count != 1:
+                drift += abs(owner_count - 1) or 1
+            drift += int(conn.execute(
+                "SELECT COUNT(*) FROM acg_internal_migration_scope s "
+                "LEFT JOIN members m ON m.id=s.resource_id "
+                "LEFT JOIN team_suppliers ts ON ts.supplier_parent_id=s.resource_id "
+                "WHERE s.resource_kind='supplier' AND (m.id IS NULL "
+                "OR m.role<>'supplier_parent' OR ts.supplier_parent_id IS NULL OR ts.team_id<>?)",
+                (INTERNAL_TEAM_ID,),
+            ).fetchone()[0] or 0)
+            drift += int(conn.execute(
+                "SELECT COUNT(*) FROM acg_internal_migration_scope s "
+                "LEFT JOIN docs d ON d.collection='accounts' AND d.id=s.resource_id "
+                "LEFT JOIN team_accounts ta ON ta.account_id=s.resource_id "
+                "WHERE s.resource_kind='account' AND (d.id IS NULL "
+                "OR ta.account_id IS NULL OR ta.team_id<>?)",
+                (INTERNAL_TEAM_ID,),
+            ).fetchone()[0] or 0)
+            for username, username_key in conn.execute(
+                "SELECT m.username,m.username_key FROM acg_internal_migration_scope s "
+                "JOIN members m ON m.id=s.resource_id "
+                "WHERE s.resource_kind='identity_member'"
+            ).fetchall():
+                if str(username_key or "") != canonical_username(username):
+                    drift += 1
+            missing_identity_members = conn.execute(
+                "SELECT COUNT(*) FROM acg_internal_migration_scope s "
+                "LEFT JOIN members m ON m.id=s.resource_id "
+                "WHERE s.resource_kind='identity_member' AND m.id IS NULL"
+            ).fetchone()[0]
+            drift += int(missing_identity_members or 0)
+            for username, username_key in conn.execute(
+                "SELECT r.username,r.username_key FROM acg_internal_migration_scope s "
+                "JOIN member_requests r ON r.id=s.resource_id "
+                "WHERE s.resource_kind='identity_request'"
+            ).fetchall():
+                if str(username_key or "") != canonical_username(username):
+                    drift += 1
+            missing_identity_requests = conn.execute(
+                "SELECT COUNT(*) FROM acg_internal_migration_scope s "
+                "LEFT JOIN member_requests r ON r.id=s.resource_id "
+                "WHERE s.resource_kind='identity_request' AND r.id IS NULL"
+            ).fetchone()[0]
+            drift += int(missing_identity_requests or 0)
+            result["acgMigrationDrift"] = drift
+            result["acgMigration"] = bool(
+                data_row
+                and data_row[1] == ACG_DATA_MIGRATION_CHECKSUM
+                and data_row[2] == "success"
+                and drift == 0
+            )
+        team_ok = (
+            result["internalTeam"]
+            and result["acgMigration"]
+        ) or not runtime_config.require_internal_team()
+        result["ok"] = bool(
+            result["quickCheck"] == "ok"
+            and not result["missingTables"]
+            and not missing_columns
+            and migration_ok
+            and result["authSecret"]
+            and team_ok
+        )
+    except sqlite3.Error as exc:
+        result["error"] = type(exc).__name__
+    finally:
+        conn.close()
+    return result
+
+
+def apply_schema_migrations(*, expected_identity=""):
+    """Explicit expand-only migration entry used by ``python -m server.migrations``.
+
+    This function deliberately does not seed members, normalize roles, rewrite
+    PIN hashes or create ACG team ownership.  Those are separately approved data
+    migrations and must never hide inside ordinary application startup.
+    """
+
+    global _initialized
+    if runtime_config.is_read_only():
+        raise StoreNotReadyError("read-only runtime cannot apply migrations")
+    if runtime_config.runtime_mode() == "invalid":
+        raise StoreNotReadyError("invalid ACG_RUNTIME_MODE")
+    if str(os.getenv("ACG_ALLOW_SCHEMA_MIGRATION", "")).strip() != "1":
+        raise StoreNotReadyError("schema migration authorization is required")
+    if not DB_PATH.is_file():
+        raise StoreNotReadyError("migration target database must already exist")
+    actual_identity = _database_identity(DB_PATH)
+    if runtime_config.is_production() and not hmac.compare_digest(
+        str(expected_identity or ""), actual_identity,
+    ):
+        raise StoreNotReadyError("migration target database identity mismatch")
+    with _lock:
+        conn = _connect(read_only=False)
+        try:
+            quick_check = str(conn.execute("PRAGMA quick_check").fetchone()[0])
+            if quick_check != "ok":
+                raise StoreNotReadyError("migration target failed SQLite quick_check")
+            conn.executescript(MIGRATION_LEDGER_SCHEMA)
+            existing = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            if existing and existing[0] != SCHEMA_MIGRATION_CHECKSUM:
+                raise StoreNotReadyError("schema migration checksum mismatch")
+            if existing and existing[1] == "success":
+                _initialized = False
+                return {"applied": False, "version": SCHEMA_MIGRATION_VERSION}
+            if existing and existing[1] == "running":
+                raise StoreNotReadyError("schema migration is already marked running")
+            now = int(time.time() * 1000)
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_migrations("
+                "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                ") VALUES(?,?,?,?,?,NULL,'running','{}')",
+                (
+                    SCHEMA_MIGRATION_VERSION,
+                    SCHEMA_MIGRATION_NAME,
+                    SCHEMA_MIGRATION_CHECKSUM,
+                    runtime_config.release_id() or "unidentified",
+                    now,
+                ),
+            )
+            conn.commit()
+            try:
+                _apply_schema_locked(conn)
+                _record_schema_migration_locked(conn)
+                conn.commit()
+            except Exception as exc:
+                conn.rollback()
+                conn.execute(
+                    "UPDATE schema_migrations SET status='failed',finished_at=?,summary=? "
+                    "WHERE version=?",
+                    (
+                        int(time.time() * 1000),
+                        json.dumps({"error": type(exc).__name__}),
+                        SCHEMA_MIGRATION_VERSION,
+                    ),
+                )
+                conn.commit()
+                raise
+            _initialized = False
+            return {"applied": True, "version": SCHEMA_MIGRATION_VERSION}
+        finally:
+            conn.close()
+
+
+def _table_exists_locked(conn, table):
+    return bool(conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (str(table),),
+    ).fetchone())
+
+
+def _safe_table_count_locked(conn, table):
+    if not _table_exists_locked(conn, table):
+        return 0
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
+
+
+def _acg_record_totals_locked(conn):
+    return {
+        table: _safe_table_count_locked(conn, table)
+        for table in (
+            "members", "member_requests", "docs", "teams", "team_members",
+            "team_suppliers", "team_accounts",
+        )
+    }
+
+
+def _rows_digest(rows):
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(json.dumps(list(row), ensure_ascii=False, sort_keys=True).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _acg_protected_digests_locked(conn):
+    """Hash fields this migration is forbidden to rewrite; values never leave memory."""
+
+    members = conn.execute(
+        "SELECT id,name,username,pin_hash,parent_id,avatar_url,created_at "
+        "FROM members ORDER BY id"
+    ).fetchall()
+    requests = conn.execute(
+        "SELECT id,name,username,pin_hash,role,status,message,created_at,"
+        "reviewed_at,reviewed_by FROM member_requests ORDER BY id"
+    ).fetchall()
+    docs = conn.execute(
+        "SELECT collection,id,owner_id,updated_at,data FROM docs "
+        "ORDER BY collection,id"
+    ).fetchall()
+    return {
+        "members": _rows_digest(members),
+        "memberRequests": _rows_digest(requests),
+        "docs": _rows_digest(docs),
+    }
+
+
+def _acg_scope_rows_locked(conn):
+    if not _table_exists_locked(conn, "acg_internal_migration_scope"):
+        return []
+    return conn.execute(
+        "SELECT resource_kind,resource_id,target_role "
+        "FROM acg_internal_migration_scope ORDER BY resource_kind,resource_id"
+    ).fetchall()
+
+
+def _acg_data_migration_row_locked(conn):
+    return conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (ACG_DATA_MIGRATION_VERSION,),
+    ).fetchone()
+
+
+def _acg_plan_locked(conn, owner_username, team_id):
+    issues = []
+    schema_row = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if not schema_row or schema_row != (SCHEMA_MIGRATION_CHECKSUM, "success"):
+        issues.append("schema_migration_not_ready")
+    dirty_other = int(conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations "
+        "WHERE status<>'success' AND version<>?",
+        (ACG_DATA_MIGRATION_VERSION,),
+    ).fetchone()[0] or 0)
+    if dirty_other:
+        issues.append("other_dirty_migrations")
+
+    expected_owner = normalize_username(DEFAULT_ADMIN_USERNAME)
+    confirmed_owner = normalize_username(owner_username)
+    if canonical_username(confirmed_owner) != canonical_username(expected_owner):
+        issues.append("owner_confirmation_mismatch")
+    if str(team_id or "") != INTERNAL_TEAM_ID:
+        issues.append("team_confirmation_mismatch")
+
+    member_rows = conn.execute(
+        "SELECT id,username,username_key,role,parent_id,created_at FROM members"
+    ).fetchall()
+    owner_rows = [
+        row for row in member_rows
+        if canonical_username(row[1]) == canonical_username(confirmed_owner)
+        and str(row[3]) == "admin"
+    ]
+    if len(owner_rows) != 1:
+        issues.append("owner_not_unique_admin")
+        owner_id = ""
+    else:
+        owner_id = str(owner_rows[0][0])
+
+    data_row = _acg_data_migration_row_locked(conn)
+    if data_row and data_row[0] != ACG_DATA_MIGRATION_CHECKSUM:
+        issues.append("acg_migration_checksum_mismatch")
+    if data_row and data_row[1] == "running":
+        issues.append("acg_migration_running")
+
+    team = conn.execute(
+        "SELECT name,slug,kind,status,plan,quota_mode FROM teams WHERE id=?",
+        (INTERNAL_TEAM_ID,),
+    ).fetchone()
+    expected_team = (
+        INTERNAL_TEAM_NAME, "acg-marketing", "internal", "active",
+        "team-pro", "unlimited",
+    )
+    if team and tuple(team) != expected_team:
+        issues.append("target_team_conflict")
+    alias_conflict = conn.execute(
+        "SELECT COUNT(*) FROM teams WHERE id<>? AND (name=? OR slug='acg-marketing')",
+        (INTERNAL_TEAM_ID, INTERNAL_TEAM_NAME),
+    ).fetchone()[0]
+    if int(alias_conflict or 0):
+        issues.append("target_team_alias_conflict")
+
+    scope_rows = _acg_scope_rows_locked(conn)
+    scope_captured = bool(scope_rows)
+    if data_row and data_row[1] == "success" and not scope_captured:
+        issues.append("acg_scope_missing")
+    if scope_captured and (not data_row or data_row[1] not in {"success", "running"}):
+        issues.append("acg_scope_without_success")
+
+    members_by_id = {str(row[0]): row for row in member_rows}
+    request_rows = conn.execute(
+        "SELECT id,username,username_key,status FROM member_requests"
+    ).fetchall()
+    requests_by_id = {str(row[0]): row for row in request_rows}
+    account_ids = {
+        str(row[0]) for row in conn.execute(
+            "SELECT id FROM docs WHERE collection='accounts'"
+        ).fetchall()
+    }
+
+    # The ACG data migration canonicalizes every captured identity key.
+    # Refuse to make an
+    # already ambiguous active identity namespace look migrated: members own
+    # their key permanently, while only pending requests reserve a username.
+    member_ids_by_key = {}
+    for row in member_rows:
+        key = canonical_username(row[1])
+        if key:
+            member_ids_by_key.setdefault(key, []).append(str(row[0]))
+    request_ids_by_key = {}
+    for row in request_rows:
+        if str(row[3]) != "pending":
+            continue
+        key = canonical_username(row[1])
+        if key:
+            request_ids_by_key.setdefault(key, []).append(str(row[0]))
+    member_collision_keys = {
+        key for key, row_ids in member_ids_by_key.items() if len(row_ids) > 1
+    }
+    request_collision_keys = {
+        key for key, row_ids in request_ids_by_key.items() if len(row_ids) > 1
+    }
+    cross_identity_collision_keys = (
+        set(member_ids_by_key) & set(request_ids_by_key)
+    )
+    if member_collision_keys:
+        issues.append("member_canonical_username_conflict")
+    if request_collision_keys:
+        issues.append("request_canonical_username_conflict")
+    if cross_identity_collision_keys:
+        issues.append("cross_identity_canonical_username_conflict")
+
+    # Supplier relationships have no foreign keys in the legacy database.
+    # Validate them before scope capture so INSERT OR IGNORE cannot hide a
+    # missing/wrong parent, child or platform-account reference.
+    supplier_parent_roles = {"supplier", "supplier_parent"}
+    supplier_child_parent_orphans = 0
+    for row in member_rows:
+        if str(row[3]) != "supplier_child":
+            continue
+        parent_id = str(row[4] or "")
+        parent = members_by_id.get(parent_id)
+        if (
+            not parent
+            or str(parent[3]) not in supplier_parent_roles
+            or bool(parent[4])
+        ):
+            supplier_child_parent_orphans += 1
+
+    supplier_binding_orphans = 0
+    for parent_id, child_id, account_id in conn.execute(
+        "SELECT parent_id,child_id,account_id FROM supplier_account_bindings"
+    ).fetchall():
+        parent_id = str(parent_id or "")
+        child_id = str(child_id or "")
+        account_id = str(account_id or "")
+        parent = members_by_id.get(parent_id)
+        child = members_by_id.get(child_id)
+        if (
+            not parent
+            or str(parent[3]) not in supplier_parent_roles
+            or bool(parent[4])
+            or not child
+            or str(child[3]) != "supplier_child"
+            or str(child[4] or "") != parent_id
+            or account_id not in account_ids
+        ):
+            supplier_binding_orphans += 1
+    if supplier_child_parent_orphans:
+        issues.append("supplier_child_parent_orphan")
+    if supplier_binding_orphans:
+        issues.append("supplier_account_binding_orphan")
+
+    if scope_captured:
+        scoped = {}
+        for kind, resource_id, target_role in scope_rows:
+            scoped.setdefault(str(kind), []).append((str(resource_id), str(target_role or "")))
+        member_scope = scoped.get("member", [])
+        supplier_scope = [item[0] for item in scoped.get("supplier", [])]
+        account_scope = [item[0] for item in scoped.get("account", [])]
+        identity_member_scope = [item[0] for item in scoped.get("identity_member", [])]
+        identity_request_scope = [item[0] for item in scoped.get("identity_request", [])]
+    else:
+        member_scope = []
+        supplier_scope = []
+        for row in member_rows:
+            member_id, _username, _username_key, role, parent_id, _created_at = row
+            member_id = str(member_id)
+            if role in {"admin", "editor"}:
+                target_role = (
+                    "owner" if member_id == owner_id
+                    else "admin" if role == "admin"
+                    else "creator"
+                )
+                member_scope.append((member_id, target_role))
+            if role in {"supplier_parent", "supplier"} and not parent_id:
+                supplier_scope.append(member_id)
+        account_scope = sorted(account_ids)
+        identity_member_scope = sorted(members_by_id)
+        identity_request_scope = sorted(requests_by_id)
+
+    missing_scope_records = 0
+    external_conflicts = 0
+    member_inserts = 0
+    member_updates = 0
+    for member_id, target_role in member_scope:
+        if member_id not in members_by_id:
+            missing_scope_records += 1
+            continue
+        binding = conn.execute(
+            "SELECT team_id,team_role,status FROM team_members WHERE member_id=?",
+            (member_id,),
+        ).fetchone()
+        if binding and str(binding[0]) != INTERNAL_TEAM_ID:
+            external_conflicts += 1
+        elif not binding:
+            member_inserts += 1
+        elif str(binding[1]) != target_role or str(binding[2]) != "active":
+            member_updates += 1
+
+    supplier_inserts = 0
+    legacy_supplier_roles = 0
+    for supplier_id in supplier_scope:
+        row = members_by_id.get(supplier_id)
+        if not row:
+            missing_scope_records += 1
+            continue
+        if str(row[3]) == "supplier":
+            legacy_supplier_roles += 1
+        binding = conn.execute(
+            "SELECT team_id FROM team_suppliers WHERE supplier_parent_id=?",
+            (supplier_id,),
+        ).fetchone()
+        if binding and str(binding[0]) != INTERNAL_TEAM_ID:
+            external_conflicts += 1
+        elif not binding:
+            supplier_inserts += 1
+
+    account_inserts = 0
+    for account_id in account_scope:
+        if account_id not in account_ids:
+            missing_scope_records += 1
+            continue
+        binding = conn.execute(
+            "SELECT team_id FROM team_accounts WHERE account_id=?",
+            (account_id,),
+        ).fetchone()
+        if binding and str(binding[0]) != INTERNAL_TEAM_ID:
+            external_conflicts += 1
+        elif not binding:
+            account_inserts += 1
+
+    member_key_updates = sum(
+        1 for member_id in identity_member_scope
+        if member_id in members_by_id
+        and str(members_by_id[member_id][2] or "")
+        != canonical_username(members_by_id[member_id][1])
+    )
+    request_key_updates = sum(
+        1 for request_id in identity_request_scope
+        if request_id in requests_by_id
+        and str(requests_by_id[request_id][2] or "")
+        != canonical_username(requests_by_id[request_id][1])
+    )
+    missing_scope_records += sum(
+        1 for member_id in identity_member_scope if member_id not in members_by_id
+    )
+    missing_scope_records += sum(
+        1 for request_id in identity_request_scope if request_id not in requests_by_id
+    )
+    if missing_scope_records:
+        issues.append("captured_resource_missing")
+    if external_conflicts:
+        issues.append("external_team_binding_conflict")
+
+    counts = {
+        "membersCaptured": len(member_scope),
+        "memberMappingsPending": member_inserts,
+        "memberRoleRepairsPending": member_updates,
+        "suppliersCaptured": len(supplier_scope),
+        "supplierMappingsPending": supplier_inserts,
+        "legacySupplierRolesPending": legacy_supplier_roles,
+        "accountsCaptured": len(account_scope),
+        "accountMappingsPending": account_inserts,
+        "memberUsernameKeysPending": member_key_updates,
+        "requestUsernameKeysPending": request_key_updates,
+        "memberCanonicalCollisionKeys": len(member_collision_keys),
+        "memberCanonicalCollisionRows": sum(
+            len(member_ids_by_key[key]) for key in member_collision_keys
+        ),
+        "requestCanonicalCollisionKeys": len(request_collision_keys),
+        "requestCanonicalCollisionRows": sum(
+            len(request_ids_by_key[key]) for key in request_collision_keys
+        ),
+        "crossIdentityCanonicalCollisionKeys": len(cross_identity_collision_keys),
+        "supplierChildParentOrphans": supplier_child_parent_orphans,
+        "supplierAccountBindingOrphans": supplier_binding_orphans,
+        "externalBindingConflicts": external_conflicts,
+        "missingCapturedRecords": missing_scope_records,
+    }
+    plan = {
+        "ownerId": owner_id,
+        "memberScope": member_scope,
+        "supplierScope": supplier_scope,
+        "accountScope": account_scope,
+        "identityMemberScope": identity_member_scope,
+        "identityRequestScope": identity_request_scope,
+        "membersById": members_by_id,
+        "requestsById": requests_by_id,
+        "dataMigrationStatus": str(data_row[1]) if data_row else "pending",
+    }
+    summary = {
+        "ok": not issues,
+        "scopeCaptured": scope_captured,
+        "schemaMigrationVersion": SCHEMA_MIGRATION_VERSION if schema_row else None,
+        "dataMigrationVersion": (
+            ACG_DATA_MIGRATION_VERSION if data_row and data_row[1] == "success" else None
+        ),
+        "dataMigrationStatus": str(data_row[1]) if data_row else "pending",
+        "issues": sorted(set(issues)),
+        "counts": counts,
+        "totals": _acg_record_totals_locked(conn),
+    }
+    return summary, plan
+
+
+def acg_internal_team_migration_preflight(
+    *, expected_identity, owner_username, team_id, expected_schema_version,
+):
+    """Read-only ACG migration dry-run with no account names or resource IDs."""
+
+    if int(expected_schema_version or 0) != SCHEMA_MIGRATION_VERSION:
+        raise StoreNotReadyError("schema migration version confirmation mismatch")
+    if not DB_PATH.is_file():
+        raise StoreNotReadyError("migration target database must already exist")
+    actual_identity = _database_identity(DB_PATH)
+    if not hmac.compare_digest(str(expected_identity or ""), actual_identity):
+        raise StoreNotReadyError("migration target database identity mismatch")
+    conn = _connect(read_only=True)
+    try:
+        if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+            raise StoreNotReadyError("migration target failed SQLite quick_check")
+        conn.execute("BEGIN")
+        summary, _plan = _acg_plan_locked(conn, owner_username, team_id)
+        conn.rollback()
+        return {
+            **summary,
+            "dryRun": True,
+            "databaseIdentity": actual_identity,
+        }
+    finally:
+        conn.close()
+
+
+def _record_failed_acg_migration(conn, error_name):
+    now = int(time.time() * 1000)
+    existing = _acg_data_migration_row_locked(conn)
+    if existing and existing[0] != ACG_DATA_MIGRATION_CHECKSUM:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_migrations("
+        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+        ") VALUES(?,?,?,?,?,?,?,?)",
+        (
+            ACG_DATA_MIGRATION_VERSION,
+            ACG_DATA_MIGRATION_NAME,
+            ACG_DATA_MIGRATION_CHECKSUM,
+            runtime_config.release_id() or "unidentified",
+            now,
+            now,
+            "failed",
+            json.dumps({"error": str(error_name or "migration_error")}, ensure_ascii=False),
+        ),
+    )
+
+
+def apply_acg_internal_team_migration(
+    *, expected_identity, owner_username, team_id, expected_schema_version,
+):
+    """Map the frozen legacy production scope to ACG without rewriting content."""
+
+    global _initialized
+    if runtime_config.is_read_only():
+        raise StoreNotReadyError("read-only runtime cannot apply migrations")
+    if runtime_config.runtime_mode() == "invalid":
+        raise StoreNotReadyError("invalid ACG_RUNTIME_MODE")
+    if str(os.getenv("ACG_ALLOW_ACG_TEAM_MIGRATION", "")).strip() != "1":
+        raise StoreNotReadyError("ACG team migration authorization is required")
+    if int(expected_schema_version or 0) != SCHEMA_MIGRATION_VERSION:
+        raise StoreNotReadyError("schema migration version confirmation mismatch")
+    if not DB_PATH.is_file():
+        raise StoreNotReadyError("migration target database must already exist")
+    actual_identity = _database_identity(DB_PATH)
+    if not hmac.compare_digest(str(expected_identity or ""), actual_identity):
+        raise StoreNotReadyError("migration target database identity mismatch")
+
+    with _lock:
+        conn = _connect(read_only=False)
+        migration_started = False
+        try:
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError("migration target failed SQLite quick_check")
+            conn.execute("BEGIN IMMEDIATE")
+            summary, plan = _acg_plan_locked(conn, owner_username, team_id)
+            if not summary["ok"]:
+                raise StoreNotReadyError(
+                    "ACG migration preflight failed: " + ",".join(summary["issues"])
+                )
+            if plan["dataMigrationStatus"] == "success":
+                conn.rollback()
+                return {
+                    **summary,
+                    "applied": False,
+                    "dryRun": False,
+                    "databaseIdentity": actual_identity,
+                }
+
+            before_totals = _acg_record_totals_locked(conn)
+            protected_before = _acg_protected_digests_locked(conn)
+            now = int(time.time() * 1000)
+            conn.execute(ACG_MIGRATION_SCOPE_SCHEMA)
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_migrations("
+                "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                ") VALUES(?,?,?,?,?,NULL,'running','{}')",
+                (
+                    ACG_DATA_MIGRATION_VERSION,
+                    ACG_DATA_MIGRATION_NAME,
+                    ACG_DATA_MIGRATION_CHECKSUM,
+                    runtime_config.release_id() or "unidentified",
+                    now,
+                ),
+            )
+            migration_started = True
+
+            scope_rows = []
+            scope_rows.extend(
+                ("member", resource_id, target_role, now)
+                for resource_id, target_role in plan["memberScope"]
+            )
+            scope_rows.extend(
+                ("supplier", resource_id, "", now)
+                for resource_id in plan["supplierScope"]
+            )
+            scope_rows.extend(
+                ("account", resource_id, "", now)
+                for resource_id in plan["accountScope"]
+            )
+            scope_rows.extend(
+                ("identity_member", resource_id, "", now)
+                for resource_id in plan["identityMemberScope"]
+            )
+            scope_rows.extend(
+                ("identity_request", resource_id, "", now)
+                for resource_id in plan["identityRequestScope"]
+            )
+            conn.executemany(
+                "INSERT INTO acg_internal_migration_scope("
+                "resource_kind,resource_id,target_role,captured_at) VALUES(?,?,?,?)",
+                scope_rows,
+            )
+
+            if not conn.execute(
+                "SELECT 1 FROM teams WHERE id=?", (INTERNAL_TEAM_ID,)
+            ).fetchone():
+                conn.execute(
+                    "INSERT INTO teams("
+                    "id,name,slug,kind,status,plan,quota_mode,created_at,created_by"
+                    ") VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        INTERNAL_TEAM_ID, INTERNAL_TEAM_NAME, "acg-marketing",
+                        "internal", "active", "team-pro", "unlimited", now,
+                        plan["ownerId"],
+                    ),
+                )
+
+            for member_id in plan["identityMemberScope"]:
+                row = plan["membersById"][member_id]
+                conn.execute(
+                    "UPDATE members SET username_key=? WHERE id=?",
+                    (canonical_username(row[1]), member_id),
+                )
+            for request_id in plan["identityRequestScope"]:
+                row = plan["requestsById"][request_id]
+                conn.execute(
+                    "UPDATE member_requests SET username_key=? WHERE id=?",
+                    (canonical_username(row[1]), request_id),
+                )
+            for supplier_id in plan["supplierScope"]:
+                if str(plan["membersById"][supplier_id][3]) == "supplier":
+                    conn.execute(
+                        "UPDATE members SET role='supplier_parent' "
+                        "WHERE id=? AND role='supplier' AND parent_id IS NULL",
+                        (supplier_id,),
+                    )
+
+            for member_id, target_role in plan["memberScope"]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO team_members("
+                    "team_id,member_id,team_role,status,joined_at,added_by"
+                    ") VALUES(?,?,?,?,?,?)",
+                    (
+                        INTERNAL_TEAM_ID, member_id, target_role, "active",
+                        int(plan["membersById"][member_id][5] or now), plan["ownerId"],
+                    ),
+                )
+                conn.execute(
+                    "UPDATE team_members SET team_role=?,status='active' "
+                    "WHERE team_id=? AND member_id=?",
+                    (target_role, INTERNAL_TEAM_ID, member_id),
+                )
+            for supplier_id in plan["supplierScope"]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO team_suppliers("
+                    "team_id,supplier_parent_id,created_at,added_by"
+                    ") VALUES(?,?,?,?)",
+                    (INTERNAL_TEAM_ID, supplier_id, now, plan["ownerId"]),
+                )
+            for account_id in plan["accountScope"]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO team_accounts("
+                    "team_id,account_id,created_at,added_by"
+                    ") VALUES(?,?,?,?)",
+                    (INTERNAL_TEAM_ID, account_id, now, plan["ownerId"]),
+                )
+
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(k,v) VALUES("
+                "'internal_team_members_migrated_v1',?)",
+                (str(now),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(k,v) VALUES("
+                "'internal_team_resources_migrated_v1',?)",
+                (str(now),),
+            )
+            protected_after = _acg_protected_digests_locked(conn)
+            if protected_after != protected_before:
+                raise StoreNotReadyError("protected identity or business records changed")
+            after_totals = _acg_record_totals_locked(conn)
+            if any(after_totals[key] < before_totals[key] for key in before_totals):
+                raise StoreNotReadyError("record totals declined during ACG migration")
+
+            audit_summary = {
+                "scope": {
+                    "members": len(plan["memberScope"]),
+                    "suppliers": len(plan["supplierScope"]),
+                    "accounts": len(plan["accountScope"]),
+                    "identityMembers": len(plan["identityMemberScope"]),
+                    "identityRequests": len(plan["identityRequestScope"]),
+                },
+                "before": before_totals,
+                "after": after_totals,
+            }
+            conn.execute(
+                "UPDATE schema_migrations SET finished_at=?,status='success',summary=? "
+                "WHERE version=?",
+                (
+                    int(time.time() * 1000),
+                    json.dumps(audit_summary, ensure_ascii=False, sort_keys=True),
+                    ACG_DATA_MIGRATION_VERSION,
+                ),
+            )
+            conn.commit()
+            _initialized = False
+        except Exception as exc:
+            conn.rollback()
+            if migration_started:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    _record_failed_acg_migration(conn, type(exc).__name__)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    result = acg_internal_team_migration_preflight(
+        expected_identity=actual_identity,
+        owner_username=owner_username,
+        team_id=team_id,
+        expected_schema_version=expected_schema_version,
+    )
+    return {**result, "applied": True, "dryRun": False}
+
+
 def _ensure_db():
     global _initialized
     if _initialized:
@@ -763,51 +1868,21 @@ def _ensure_db():
     with _lock:
         if _initialized:
             return
-        conn = _connect()
+        if runtime_config.runtime_mode() == "invalid":
+            raise StoreNotReadyError("invalid ACG_RUNTIME_MODE")
+        bootstrap_mode = runtime_config.db_bootstrap_mode()
+        if runtime_config.is_read_only() or bootstrap_mode == "validate":
+            status = database_readiness()
+            if not status.get("ok"):
+                raise StoreNotReadyError("database migration/readiness validation failed")
+            _initialized = True
+            return
+        conn = _connect(read_only=False)
         try:
-            conn.executescript(SCHEMA)
-            member_cols = {r[1] for r in conn.execute("PRAGMA table_info(members)").fetchall()}
-            if "parent_id" not in member_cols:
-                conn.execute("ALTER TABLE members ADD COLUMN parent_id TEXT")
-            if "avatar_url" not in member_cols:
-                conn.execute("ALTER TABLE members ADD COLUMN avatar_url TEXT")
-            if "username_key" not in member_cols:
-                conn.execute("ALTER TABLE members ADD COLUMN username_key TEXT NOT NULL DEFAULT ''")
-            request_cols = {
-                r[1] for r in conn.execute("PRAGMA table_info(member_requests)").fetchall()
-            }
-            if "username_key" not in request_cols:
-                conn.execute(
-                    "ALTER TABLE member_requests ADD COLUMN username_key TEXT NOT NULL DEFAULT ''"
-                )
-            reservation_cols = {
-                r[1]
-                for r in conn.execute(
-                    "PRAGMA table_info(personal_daily_quota_reservations)"
-                ).fetchall()
-            }
-            if "request_fingerprint" not in reservation_cols:
-                conn.execute(
-                    "ALTER TABLE personal_daily_quota_reservations "
-                    "ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''"
-                )
-            community_cols = {
-                r[1] for r in conn.execute("PRAGMA table_info(community_posts)").fetchall()
-            }
-            if "cover_json" not in community_cols:
-                conn.execute(
-                    "ALTER TABLE community_posts ADD COLUMN cover_json TEXT NOT NULL DEFAULT '{}'"
-                )
-            if "identity_key" not in community_cols:
-                conn.execute(
-                    "ALTER TABLE community_posts ADD COLUMN identity_key TEXT NOT NULL DEFAULT ''"
-                )
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_community_posts_author_identity "
-                "ON community_posts(author_id, identity_key) "
-                "WHERE status='published' AND identity_key<>''"
-            )
-            # 旧版 supplier 无子账号概念，安全迁移为供应商母账号。
+            _apply_schema_locked(conn)
+            # Legacy local/test compatibility.  Production never reaches this
+            # branch and therefore cannot seed, repair roles or rewrite a PIN
+            # hash during normal startup.
             conn.execute("UPDATE members SET role='supplier_parent' WHERE role='supplier'")
             _ensure_username_keys_locked(conn)
             _seed_admin_locked(conn)
@@ -815,6 +1890,7 @@ def _ensure_db():
             _ensure_supplier_parent_role_locked(conn)
             _ensure_username_keys_locked(conn)
             _ensure_internal_team_locked(conn)
+            _record_schema_migration_locked(conn, summary={"schema": "expand", "mode": "local-auto"})
             conn.commit()
             _initialized = True
         finally:
@@ -868,6 +1944,8 @@ def _secret() -> bytes:
     row = _fetchone("SELECT v FROM meta WHERE k='auth_secret'")
     if row:
         return bytes.fromhex(row[0])
+    if runtime_config.is_read_only():
+        raise StoreNotReadyError("AUTH_SECRET is unavailable in read-only mode")
     with _lock:
         conn = _connect()
         try:
@@ -1056,6 +2134,27 @@ def personal_daily_quota(member_id, now_ms=None):
     with _lock:
         conn = _connect()
         try:
+            if runtime_config.is_read_only():
+                if not _personal_quota_eligible_locked(conn, member_id):
+                    return None
+                existing = _personal_quota_snapshot_locked(conn, member_id, day)
+                if existing:
+                    return existing
+                return {
+                    "type": "daily",
+                    "period": "day",
+                    "plan": "personal",
+                    "billingScope": {"type": "member", "id": str(member_id or "")},
+                    "day": str(day),
+                    "limit": PERSONAL_DAILY_POINTS,
+                    "used": 0,
+                    "reserved": 0,
+                    "remaining": PERSONAL_DAILY_POINTS,
+                    "available": PERSONAL_DAILY_POINTS,
+                    "resetAt": _quota_reset_at_for_day(day),
+                    "nonAccumulating": True,
+                    "projected": True,
+                }
             conn.execute("BEGIN IMMEDIATE")
             if not _personal_quota_eligible_locked(conn, member_id):
                 conn.rollback()
@@ -1584,6 +2683,37 @@ def subscription_monthly_quota(member_id, now_ms=None):
     with _lock:
         conn = _connect()
         try:
+            if runtime_config.is_read_only():
+                scope = _generation_billing_scope_locked(conn, member_id)
+                if scope.get("type") != "subscription":
+                    return None
+                existing = _subscription_quota_snapshot_locked(
+                    conn, scope["scopeType"], scope["scopeId"], month,
+                )
+                if existing:
+                    return existing
+                granted = int(SUBSCRIPTION_MONTHLY_POINTS.get(scope["plan"], 0))
+                return {
+                    "type": "subscription",
+                    "period": "month",
+                    "month": str(month),
+                    "plan": str(scope["plan"]),
+                    "billingScope": {
+                        "type": str(scope["scopeType"]),
+                        "id": str(scope["scopeId"]),
+                    },
+                    "shared": str(scope["scopeType"]) == "team",
+                    "granted": granted,
+                    "purchased": 0,
+                    "limit": granted,
+                    "used": 0,
+                    "reserved": 0,
+                    "remaining": granted,
+                    "available": granted,
+                    "resetAt": _quota_reset_at_for_month(month),
+                    "nonAccumulating": True,
+                    "projected": True,
+                }
             conn.execute("BEGIN IMMEDIATE")
             scope = _generation_billing_scope_locked(conn, member_id)
             if scope.get("type") != "subscription":
@@ -3101,17 +4231,123 @@ def assign_team_accounts(team_id, account_ids, added_by=None):
             conn.close()
 
 
-def supplier_team_id(member_id, role=None, parent_id=None):
-    supplier_parent_id = (
-        member_id if role == "supplier_parent"
-        else parent_id if role == "supplier_child"
-        else member_id
-    )
-    row = _fetchone(
-        "SELECT team_id FROM team_suppliers WHERE supplier_parent_id=?",
+def _supplier_access_context_locked(conn, member_id, role=None, parent_id=None):
+    """Resolve one supplier identity to an active team without trusting callers.
+
+    A supplier login is useful only when its real database role and parent chain
+    terminate at an explicitly mapped supplier parent.  This is deliberately
+    fail closed: historical accounts that have not been migrated into
+    ``team_suppliers`` see no tenant data and cannot mutate it.
+    """
+    clean_member_id = str(member_id or "")
+    if not clean_member_id:
+        return None
+    row = conn.execute(
+        "SELECT role,parent_id FROM members WHERE id=?",
+        (clean_member_id,),
+    ).fetchone()
+    if not row or row[0] not in {"supplier_parent", "supplier_child"}:
+        return None
+    actual_role = str(row[0])
+    requested_role = "supplier_parent" if role == "supplier" else str(role or actual_role)
+    if requested_role not in {"supplier_parent", "supplier_child"} or requested_role != actual_role:
+        return None
+    if actual_role == "supplier_parent":
+        supplier_parent_id = clean_member_id
+    else:
+        supplier_parent_id = str(row[1] or "")
+        if not supplier_parent_id:
+            return None
+        if parent_id is not None and str(parent_id or "") != supplier_parent_id:
+            return None
+    team = conn.execute(
+        "SELECT ts.team_id FROM team_suppliers ts "
+        "JOIN teams t ON t.id=ts.team_id AND t.status='active' "
+        "JOIN members p ON p.id=ts.supplier_parent_id AND p.role='supplier_parent' "
+        "WHERE ts.supplier_parent_id=?",
         (supplier_parent_id,),
+    ).fetchone()
+    if not team:
+        return None
+    return {
+        "memberId": clean_member_id,
+        "role": actual_role,
+        "parentId": supplier_parent_id,
+        "teamId": str(team[0]),
+    }
+
+
+def supplier_access_context(member_id, role=None, parent_id=None):
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            return _supplier_access_context_locked(conn, member_id, role, parent_id)
+        finally:
+            conn.close()
+
+
+def supplier_team_id(member_id, role=None, parent_id=None):
+    context = supplier_access_context(member_id, role, parent_id)
+    return context["teamId"] if context else None
+
+
+def _supplier_account_allowed_locked(conn, context, account_id):
+    if not context or not str(account_id or ""):
+        return False
+    clean_account_id = str(account_id)
+    mapped = conn.execute(
+        "SELECT 1 FROM team_accounts WHERE team_id=? AND account_id=?",
+        (context["teamId"], clean_account_id),
+    ).fetchone()
+    if not mapped:
+        return False
+    if context["role"] == "supplier_parent":
+        return True
+    return bool(conn.execute(
+        "SELECT 1 FROM supplier_account_bindings "
+        "WHERE parent_id=? AND child_id=? AND account_id=?",
+        (context["parentId"], context["memberId"], clean_account_id),
+    ).fetchone())
+
+
+def _supplier_asset_allowed_locked(conn, context, item):
+    return bool(
+        isinstance(item, dict)
+        and _supplier_account_allowed_locked(conn, context, item.get("accountId"))
     )
-    return row[0] if row else None
+
+
+def _supplier_parent_ids_for_context_locked(conn, context):
+    if not context:
+        return set()
+    return {
+        str(row[0]) for row in conn.execute(
+            "SELECT ts.supplier_parent_id FROM team_suppliers ts "
+            "JOIN members m ON m.id=ts.supplier_parent_id AND m.role='supplier_parent' "
+            "WHERE ts.team_id=?",
+            (context["teamId"],),
+        ).fetchall()
+    }
+
+
+def _supplier_member_row_locked(conn, context, target_id, include_all=True):
+    if not context:
+        return None
+    row = conn.execute(
+        "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at "
+        "FROM members WHERE id=?",
+        (str(target_id or ""),),
+    ).fetchone()
+    if not row or row[4] not in {"supplier_parent", "supplier_child"}:
+        return None
+    allowed_parents = (
+        _supplier_parent_ids_for_context_locked(conn, context)
+        if include_all else {context["parentId"]}
+    )
+    if row[4] == "supplier_parent":
+        return row if row[0] in allowed_parents else None
+    return row if row[5] in allowed_parents else None
 
 
 def supplier_parent_ids_for_team(team_id):
@@ -3397,55 +4633,136 @@ def approve_member_request(rid, reviewer_id, parent_id=None):
 
 # ---------- 供应商组织：母账号可管理子账号并分配内容账号 ----------
 def list_supplier_children(parent_id, include_all=False):
-    if include_all:
-        team_id = supplier_team_id(parent_id, "supplier_parent")
-        parent_ids = supplier_parent_ids_for_team(team_id)
-        if not parent_ids:
-            parent_ids = {str(parent_id)}
-        marks = ",".join("?" for _ in parent_ids)
-        rows = _fetchall(
-            "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at "
-            f"FROM members WHERE role='supplier_child' AND parent_id IN ({marks}) ORDER BY created_at",
-            tuple(sorted(parent_ids)),
-        )
-    else:
-        rows = _fetchall("SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members WHERE role='supplier_child' AND parent_id=? ORDER BY created_at", (parent_id,))
-    return [_member_public(r) for r in rows]
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            context = _supplier_access_context_locked(conn, parent_id, "supplier_parent")
+            if not context:
+                return []
+            parent_ids = (
+                _supplier_parent_ids_for_context_locked(conn, context)
+                if include_all else {context["parentId"]}
+            )
+            if not parent_ids:
+                return []
+            marks = ",".join("?" for _ in parent_ids)
+            rows = conn.execute(
+                "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at "
+                f"FROM members WHERE role='supplier_child' AND parent_id IN ({marks}) ORDER BY created_at",
+                tuple(sorted(parent_ids)),
+            ).fetchall()
+            return [_member_public(row) for row in rows]
+        finally:
+            conn.close()
 
 
 def list_supplier_members(parent_id=None):
     """供应商管理员共享同一组织视图：可见全部管理员与子账号。"""
-    parent_ids = supplier_parent_ids_for_team(supplier_team_id(parent_id, "supplier_parent")) if parent_id else set()
-    if parent_ids:
-        marks = ",".join("?" for _ in parent_ids)
-        rows = _fetchall(
-            "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members "
-            f"WHERE id IN ({marks}) OR (role='supplier_child' AND parent_id IN ({marks})) "
-            "ORDER BY CASE role WHEN 'supplier_parent' THEN 0 ELSE 1 END, created_at",
-            tuple(sorted(parent_ids)) * 2,
-        )
-    else:
-        rows = _fetchall(
-            "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members "
-            "WHERE role IN ('supplier_parent','supplier_child') "
-            "ORDER BY CASE role WHEN 'supplier_parent' THEN 0 ELSE 1 END, created_at"
-        )
-    return [_member_public(r) for r in rows]
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            context = _supplier_access_context_locked(conn, parent_id, "supplier_parent")
+            parent_ids = _supplier_parent_ids_for_context_locked(conn, context)
+            if not parent_ids:
+                return []
+            marks = ",".join("?" for _ in parent_ids)
+            rows = conn.execute(
+                "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at FROM members "
+                f"WHERE id IN ({marks}) OR (role='supplier_child' AND parent_id IN ({marks})) "
+                "ORDER BY CASE role WHEN 'supplier_parent' THEN 0 ELSE 1 END, created_at",
+                tuple(sorted(parent_ids)) * 2,
+            ).fetchall()
+            return [_member_public(row) for row in rows]
+        finally:
+            conn.close()
 
 
 def supplier_child_for(parent_id, child_id, include_all=False):
-    row = get_member(child_id)
-    if not row or row[4] != "supplier_child":
-        return None
-    if include_all:
-        team_parent_ids = supplier_parent_ids_for_team(
-            supplier_team_id(parent_id, "supplier_parent")
-        )
-        if row[5] not in (team_parent_ids or {parent_id}):
-            return None
-    elif row[5] != parent_id:
-        return None
-    return row
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            context = _supplier_access_context_locked(conn, parent_id, "supplier_parent")
+            row = _supplier_member_row_locked(conn, context, child_id, include_all)
+            return row if row and row[4] == "supplier_child" else None
+        finally:
+            conn.close()
+
+
+def supplier_member_for(parent_id, member_id):
+    """Return a supplier member only when the actor and target share a team."""
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            context = _supplier_access_context_locked(conn, parent_id, "supplier_parent")
+            return _supplier_member_row_locked(conn, context, member_id, include_all=True)
+        finally:
+            conn.close()
+
+
+def update_supplier_member(parent_id, member_id, *, name=None, username=None, pin=None, child_only=False):
+    """Atomically scope-check and update one member in the supplier team."""
+    clean_username = None
+    username_key = None
+    if username is not None:
+        clean_username = normalize_username(username)
+        username_key = canonical_username(clean_username)
+        if not username_key:
+            return None, "username_required"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            context = _supplier_access_context_locked(conn, parent_id, "supplier_parent")
+            row = _supplier_member_row_locked(conn, context, member_id, include_all=True)
+            if not row or (child_only and row[4] != "supplier_child"):
+                conn.rollback()
+                return None, "not_found"
+            if clean_username is not None and (
+                conn.execute(
+                    "SELECT 1 FROM members WHERE username_key=? AND id<>? LIMIT 1",
+                    (username_key, str(member_id)),
+                ).fetchone()
+                or conn.execute(
+                    "SELECT 1 FROM member_requests "
+                    "WHERE username_key=? AND status='pending' LIMIT 1",
+                    (username_key,),
+                ).fetchone()
+            ):
+                conn.rollback()
+                return None, "username_exists"
+            sets = []
+            values = []
+            if name is not None:
+                sets.append("name=?")
+                values.append(name)
+            if clean_username is not None:
+                sets.extend(("username=?", "username_key=?"))
+                values.extend((clean_username, username_key))
+            if pin:
+                sets.append("pin_hash=?")
+                values.append(hash_pin(pin))
+            if sets:
+                conn.execute(
+                    f"UPDATE members SET {','.join(sets)} WHERE id=?",
+                    (*values, str(member_id)),
+                )
+            updated = conn.execute(
+                "SELECT id,name,username,pin_hash,role,parent_id,avatar_url,created_at "
+                "FROM members WHERE id=?",
+                (str(member_id),),
+            ).fetchone()
+            conn.commit()
+            return updated, None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def create_supplier_children(parent_id, items):
@@ -3465,6 +4782,9 @@ def create_supplier_children(parent_id, items):
         conn = _connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            context = _supplier_access_context_locked(conn, parent_id, "supplier_parent")
+            if not context:
+                raise PermissionError("forbidden")
             for _name, _username, username_key, _pin in normalized:
                 if conn.execute(
                     "SELECT 1 FROM members WHERE username_key=? LIMIT 1",
@@ -3483,12 +4803,12 @@ def create_supplier_children(parent_id, items):
                     "VALUES(?,?,?,?,?,?,?,?)",
                     (
                         mid, name, username, username_key, hash_pin(pin),
-                        "supplier_child", parent_id, now + index,
+                        "supplier_child", context["parentId"], now + index,
                     ),
                 )
                 made.append({
                     "id": mid, "name": name, "username": username,
-                    "role": "supplier_child", "parentId": parent_id, "createdAt": now + index,
+                    "role": "supplier_child", "parentId": context["parentId"], "createdAt": now + index,
                 })
             conn.commit()
             return made
@@ -3500,50 +4820,77 @@ def create_supplier_children(parent_id, items):
 
 
 def supplier_bindings(parent_id, include_all=False):
-    # Resolve the team scope before taking the store write/read lock.  The
-    # helper queries use _fetchone/_fetchall, which acquire the same
-    # non-reentrant lock; calling them from inside this block deadlocks every
-    # supplier-parent dashboard request that includes all team suppliers.
-    parent_ids = (
-        supplier_parent_ids_for_team(
-            supplier_team_id(parent_id, "supplier_parent")
-        ) or {str(parent_id)}
-        if include_all
-        else {str(parent_id)}
-    )
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
-            sql = "SELECT parent_id,child_id,account_id,created_at,created_by FROM supplier_account_bindings"
-            if include_all:
-                marks = ",".join("?" for _ in parent_ids)
-                rows = conn.execute(
-                    sql + f" WHERE parent_id IN ({marks}) ORDER BY created_at",
-                    tuple(sorted(parent_ids)),
-                ).fetchall()
-            else:
-                rows = conn.execute(sql + " WHERE parent_id=? ORDER BY created_at", (parent_id,)).fetchall()
+            context = _supplier_access_context_locked(conn, parent_id, "supplier_parent")
+            if not context:
+                return []
+            parent_ids = (
+                _supplier_parent_ids_for_context_locked(conn, context)
+                if include_all else {context["parentId"]}
+            )
+            if not parent_ids:
+                return []
+            marks = ",".join("?" for _ in parent_ids)
+            rows = conn.execute(
+                "SELECT b.parent_id,b.child_id,b.account_id,b.created_at,b.created_by "
+                "FROM supplier_account_bindings b "
+                "JOIN members c ON c.id=b.child_id AND c.role='supplier_child' "
+                "AND c.parent_id=b.parent_id "
+                "JOIN team_accounts ta ON ta.account_id=b.account_id AND ta.team_id=? "
+                f"WHERE b.parent_id IN ({marks}) ORDER BY b.created_at",
+                (context["teamId"], *tuple(sorted(parent_ids))),
+            ).fetchall()
             return [{"parentId": r[0], "childId": r[1], "accountId": r[2], "createdAt": r[3], "createdBy": r[4]} for r in rows]
         finally:
             conn.close()
 
 
 def supplier_account_ids_for_child(child_id):
-    rows = _fetchall("SELECT account_id FROM supplier_account_bindings WHERE child_id=?", (child_id,))
-    return {r[0] for r in rows}
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            context = _supplier_access_context_locked(conn, child_id, "supplier_child")
+            if not context:
+                return set()
+            rows = conn.execute(
+                "SELECT b.account_id FROM supplier_account_bindings b "
+                "JOIN team_accounts ta ON ta.account_id=b.account_id AND ta.team_id=? "
+                "WHERE b.parent_id=? AND b.child_id=?",
+                (context["teamId"], context["parentId"], context["memberId"]),
+            ).fetchall()
+            return {str(row[0]) for row in rows}
+        finally:
+            conn.close()
 
 
 def set_supplier_child_accounts(parent_id, child_id, account_ids, actor_id, include_all=False):
-    child = supplier_child_for(parent_id, child_id, include_all)
-    if not child:
-        return False
-    actual_parent_id = child[5] or parent_id
     ids = sorted({str(x) for x in (account_ids or []) if str(x)})
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            context = _supplier_access_context_locked(conn, parent_id, "supplier_parent")
+            child = _supplier_member_row_locked(conn, context, child_id, include_all)
+            if not child or child[4] != "supplier_child":
+                conn.rollback()
+                return False
+            actual_parent_id = str(child[5] or "")
+            if ids:
+                marks = ",".join("?" for _ in ids)
+                mapped = {
+                    str(row[0]) for row in conn.execute(
+                        f"SELECT account_id FROM team_accounts WHERE team_id=? AND account_id IN ({marks})",
+                        (context["teamId"], *ids),
+                    ).fetchall()
+                }
+                if mapped != set(ids):
+                    conn.rollback()
+                    return False
             conn.execute("DELETE FROM supplier_account_bindings WHERE child_id=?", (child_id,))
             now = int(time.time() * 1000)
             for aid in ids:
@@ -3551,6 +4898,9 @@ def set_supplier_child_accounts(parent_id, child_id, account_ids, actor_id, incl
                 conn.execute("DELETE FROM supplier_account_bindings WHERE parent_id=? AND account_id=?", (actual_parent_id, aid))
                 conn.execute("INSERT INTO supplier_account_bindings(parent_id,child_id,account_id,created_at,created_by) VALUES(?,?,?,?,?)", (actual_parent_id, child_id, aid, now, actor_id))
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
     return True
@@ -3562,40 +4912,78 @@ def add_supplier_activity(parent_id, child_id, member_id, action, account_id="",
     with _lock:
         conn = _connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            context = _supplier_access_context_locked(conn, member_id)
+            if not context or (parent_id and str(parent_id) != context["parentId"]):
+                return False
+            if account_id and not _supplier_account_allowed_locked(conn, context, account_id):
+                return False
+            if asset_id:
+                asset_row = conn.execute(
+                    "SELECT data FROM docs WHERE collection='assets' AND id=?",
+                    (str(asset_id),),
+                ).fetchone()
+                try:
+                    asset = json.loads(asset_row[0]) if asset_row else None
+                except (TypeError, json.JSONDecodeError):
+                    asset = None
+                if not _supplier_asset_allowed_locked(conn, context, asset):
+                    return False
             conn.execute(
                 "INSERT INTO supplier_activity(id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                (uuid.uuid4().hex[:12], parent_id or None, child_id or None, member_id, str(action or "")[:40], account_id or None, asset_id or None, str(detail or "")[:300], now),
+                (
+                    uuid.uuid4().hex[:12], context["parentId"],
+                    context["memberId"] if context["role"] == "supplier_child" else None,
+                    context["memberId"], str(action or "")[:40], account_id or None,
+                    asset_id or None, str(detail or "")[:300], now,
+                ),
             )
             conn.commit()
+            return True
         finally:
             conn.close()
 
 
 def list_supplier_activity(parent_id, include_all=False, limit=80):
-    # Keep nested supplier-team lookups outside _lock for the same reason as
-    # supplier_bindings: the public lookup helpers acquire _lock themselves.
-    parent_ids = (
-        supplier_parent_ids_for_team(
-            supplier_team_id(parent_id, "supplier_parent")
-        ) or {str(parent_id)}
-        if include_all
-        else {str(parent_id)}
-    )
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
-            if include_all:
-                marks = ",".join("?" for _ in parent_ids)
-                rows = conn.execute(
-                    "SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at "
-                    f"FROM supplier_activity WHERE parent_id IN ({marks}) ORDER BY created_at DESC LIMIT ?",
-                    (*tuple(sorted(parent_ids)), limit),
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at FROM supplier_activity WHERE parent_id=? ORDER BY created_at DESC LIMIT ?", (parent_id, limit)).fetchall()
+            context = _supplier_access_context_locked(conn, parent_id, "supplier_parent")
+            if not context:
+                return []
+            parent_ids = (
+                _supplier_parent_ids_for_context_locked(conn, context)
+                if include_all else {context["parentId"]}
+            )
+            if not parent_ids:
+                return []
+            marks = ",".join("?" for _ in parent_ids)
+            rows = conn.execute(
+                "SELECT id,parent_id,child_id,member_id,action,account_id,asset_id,detail,created_at "
+                f"FROM supplier_activity WHERE parent_id IN ({marks}) ORDER BY created_at DESC LIMIT ?",
+                (*tuple(sorted(parent_ids)), limit),
+            ).fetchall()
+            safe_rows = []
+            for row in rows:
+                member = _supplier_member_row_locked(conn, context, row[3], include_all=True)
+                if not member:
+                    continue
+                if row[5] and not _supplier_account_allowed_locked(conn, context, row[5]):
+                    continue
+                if row[6]:
+                    asset_row = conn.execute(
+                        "SELECT data FROM docs WHERE collection='assets' AND id=?", (str(row[6]),)
+                    ).fetchone()
+                    try:
+                        asset = json.loads(asset_row[0]) if asset_row else None
+                    except (TypeError, json.JSONDecodeError):
+                        asset = None
+                    if not _supplier_asset_allowed_locked(conn, context, asset):
+                        continue
+                safe_rows.append(row)
             members = {r[0]: r[1] for r in conn.execute("SELECT id,name FROM members").fetchall()}
-            return [{"id": r[0], "parentId": r[1], "childId": r[2], "memberId": r[3], "memberName": members.get(r[3], "成员"), "action": r[4], "accountId": r[5], "assetId": r[6], "detail": r[7] or "", "createdAt": r[8]} for r in rows]
+            return [{"id": r[0], "parentId": r[1], "childId": r[2], "memberId": r[3], "memberName": members.get(r[3], "成员"), "action": r[4], "accountId": r[5], "assetId": r[6], "detail": r[7] or "", "createdAt": r[8]} for r in safe_rows]
         finally:
             conn.close()
 
@@ -4492,6 +5880,82 @@ def upsert_member_assets(owner_id, role, items):
     }
 
 
+SUPPLIER_ASSET_IMMUTABLE_FIELDS = {
+    "id", "accountId", "ownerId", "byMemberId", "delivered", "shared",
+    "productionId", "customProjectId", "sourceOutputId", "sourceItemIds",
+    "deliveryId", "coverAssetId", "packAssetIds",
+}
+
+
+def upsert_supplier_assets(member_id, role, items):
+    """Tenant-scoped compatibility writer for supplier delivery snapshots.
+
+    Suppliers may only update already persisted delivery rows associated with
+    an account in their mapped team (and, for a child, explicitly assigned to
+    that child).  Tenant/provenance fields always come from the stored row, so
+    a full-browser snapshot cannot move an asset between accounts or tenants.
+    """
+    incoming = [
+        dict(item) for item in (items or [])
+        if isinstance(item, dict) and item.get("id")
+    ]
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            context = _supplier_access_context_locked(conn, member_id, role)
+            if not context:
+                conn.rollback()
+                raise PermissionError("forbidden")
+            allowed = []
+            denied = 0
+            unchanged = 0
+            for item in incoming:
+                doc_id = str(item["id"])
+                row = conn.execute(
+                    "SELECT owner_id,data FROM docs WHERE collection='assets' AND id=?",
+                    (doc_id,),
+                ).fetchone()
+                if not row:
+                    denied += 1
+                    continue
+                try:
+                    existing = json.loads(row[1])
+                except (TypeError, json.JSONDecodeError):
+                    denied += 1
+                    continue
+                if (
+                    (not existing.get("delivered") and not existing.get("shared"))
+                    or not _supplier_asset_allowed_locked(conn, context, existing)
+                    or str(item.get("accountId") or "") != str(existing.get("accountId") or "")
+                ):
+                    denied += 1
+                    continue
+                for key in SUPPLIER_ASSET_IMMUTABLE_FIELDS:
+                    if key in existing:
+                        item[key] = existing[key]
+                    else:
+                        item.pop(key, None)
+                item["id"] = doc_id
+                item["ownerId"] = row[0] if row[0] is not None else existing.get("ownerId")
+                if _same_doc_payload(existing, item):
+                    unchanged += 1
+                    continue
+                allowed.append(item)
+            if denied and not allowed and not unchanged:
+                conn.rollback()
+                raise PermissionError("forbidden")
+            written = _upsert_docs_in_conn(conn, "assets", allowed)
+            conn.commit()
+            return {"written": written, "denied": denied, "unchanged": unchanged}
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def upsert_voice_presets(owner_id, role, items):
     """定制音色全平台可选，但只有原创建者或管理员能修改。"""
     if role not in {"admin", "editor", "user"}:
@@ -4662,6 +6126,8 @@ def can_write_asset_file(asset_id, member_id, role):
     if role in {"supplier_parent", "supplier"}:
         # 供应商管理员只能为之后由专用账号 API 绑定的新资产上传文件；
         # 已存在的资产仍不允许从通用文件口覆盖。
+        if not supplier_access_context(member_id, role):
+            return False
         return not bool(_fetchone(
             "SELECT 1 FROM docs WHERE collection='assets' AND id=?",
             (str(asset_id),),
@@ -7528,15 +8994,11 @@ def delete_custom_project(project_id, owner_id):
 def _delivery_asset_access(item, member_id, role, conn):
     if not isinstance(item, dict) or not item.get("delivered"):
         return False
-    if role in {"admin", "supplier_parent", "supplier"}:
+    if role == "admin":
         return True
-    if role == "supplier_child":
-        assigned = {
-            row[0] for row in conn.execute(
-                "SELECT account_id FROM supplier_account_bindings WHERE child_id=?", (member_id,)
-            ).fetchall()
-        }
-        return item.get("accountId") in assigned
+    if role in {"supplier_parent", "supplier_child", "supplier"}:
+        context = _supplier_access_context_locked(conn, member_id, role)
+        return _supplier_asset_allowed_locked(conn, context, item)
     if role == "editor":
         if item.get("byMemberId") == member_id:
             return True
@@ -7587,7 +9049,10 @@ def get_delivery_asset_for_member(asset_id, member_id, role):
                 str(item.get("byMemberId") or ""),
             }
             owns_delivery = str(member_id or "") in owner_ids
-            if not owns_delivery and not _delivery_asset_access(item, member_id, role, conn):
+            supplier_role = role in {"supplier_parent", "supplier_child", "supplier"}
+            if supplier_role and not _delivery_asset_access(item, member_id, role, conn):
+                return None, "forbidden"
+            if not supplier_role and not owns_delivery and not _delivery_asset_access(item, member_id, role, conn):
                 return None, "forbidden"
             return item, None
         finally:
@@ -7723,25 +9188,58 @@ def delete_doc(collection, doc_id, protect_custom_delivery=False):
             conn.close()
 
 
+def _supplier_delivery_row_locked(conn, asset_id, member_id, role):
+    context = _supplier_access_context_locked(conn, member_id, role)
+    if not context:
+        return None, None, None, "forbidden"
+    row = conn.execute(
+        "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?",
+        (str(asset_id),),
+    ).fetchone()
+    if not row:
+        return context, None, None, "not_found"
+    try:
+        item = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return context, row, None, "not_found"
+    if not item.get("delivered") and not item.get("shared"):
+        return context, row, item, "not_delivered"
+    if not _supplier_asset_allowed_locked(conn, context, item):
+        return context, row, item, "unassigned"
+    return context, row, item, None
+
+
+def _supplier_account_row_locked(conn, account_id, member_id, role):
+    context = _supplier_access_context_locked(conn, member_id, role)
+    if not context or context["role"] != "supplier_parent":
+        return None, None, None, "forbidden"
+    if not _supplier_account_allowed_locked(conn, context, account_id):
+        return context, None, None, "unassigned"
+    row = conn.execute(
+        "SELECT data,owner_id FROM docs WHERE collection='accounts' AND id=?",
+        (str(account_id),),
+    ).fetchone()
+    if not row:
+        return context, None, None, "not_found"
+    try:
+        item = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return context, row, None, "not_found"
+    return context, row, item, None
+
+
 def update_supplier_asset_views(asset_id, view_count, member_id, role):
     """供应商观看量专用写入：母账号可更新供应商端交付，子账号仅可更新已分配账号。"""
-    if role not in {"supplier_parent", "supplier_child"}:
-        return None, "forbidden"
     _ensure_db()
-    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
     with _lock:
         conn = _connect()
         try:
-            row = conn.execute(
-                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
-            ).fetchone()
-            if not row:
-                return None, "not_found"
-            item = json.loads(row[0])
-            if not item.get("delivered") and not item.get("shared"):
-                return None, "not_delivered"
-            if assigned is not None and item.get("accountId") not in assigned:
-                return None, "unassigned"
+            conn.execute("BEGIN IMMEDIATE")
+            _context, row, item, error = _supplier_delivery_row_locked(
+                conn, asset_id, member_id, role
+            )
+            if error:
+                return None, error
             now = int(time.time() * 1000)
             item["viewCount"] = max(0, int(view_count or 0))
             item["viewsUpdatedAt"] = now
@@ -7759,23 +9257,16 @@ def update_supplier_asset_views(asset_id, view_count, member_id, role):
 
 def update_supplier_asset_exposure(asset_id, exposure_count, member_id, role):
     """供应商曝光量专用写入：权限与单条素材观看量保持一致，且不影响观看量汇总。"""
-    if role not in {"supplier_parent", "supplier_child"}:
-        return None, "forbidden"
     _ensure_db()
-    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
     with _lock:
         conn = _connect()
         try:
-            row = conn.execute(
-                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
-            ).fetchone()
-            if not row:
-                return None, "not_found"
-            item = json.loads(row[0])
-            if not item.get("delivered") and not item.get("shared"):
-                return None, "not_delivered"
-            if assigned is not None and item.get("accountId") not in assigned:
-                return None, "unassigned"
+            conn.execute("BEGIN IMMEDIATE")
+            _context, row, item, error = _supplier_delivery_row_locked(
+                conn, asset_id, member_id, role
+            )
+            if error:
+                return None, error
             now = int(time.time() * 1000)
             item["exposureCount"] = max(0, int(exposure_count or 0))
             item["exposureUpdatedAt"] = now
@@ -7793,18 +9284,16 @@ def update_supplier_asset_exposure(asset_id, exposure_count, member_id, role):
 
 def update_supplier_account_views(account_id, view_count, member_id, role):
     """供应商母账号保存账号累计播放量；不拆分、不回写任何单条素材。"""
-    if role not in {"supplier_parent", "supplier"}:
-        return None, "forbidden"
     _ensure_db()
     with _lock:
         conn = _connect()
         try:
-            row = conn.execute(
-                "SELECT data,owner_id FROM docs WHERE collection='accounts' AND id=?", (str(account_id),)
-            ).fetchone()
-            if not row:
-                return None, "not_found"
-            item = json.loads(row[0])
+            conn.execute("BEGIN IMMEDIATE")
+            _context, row, item, error = _supplier_account_row_locked(
+                conn, account_id, member_id, role
+            )
+            if error:
+                return None, error
             now = int(time.time() * 1000)
             item["totalViewCountOverride"] = max(0, int(view_count or 0))
             item["totalViewsUpdatedAt"] = now
@@ -7836,8 +9325,6 @@ def _normalize_homepage_url(value):
 
 def update_supplier_account_homepage(account_id, homepage_url, member_id, role):
     """供应商母账号只更新账号主页字段；子账号没有账号编辑权限。"""
-    if role not in {"supplier_parent", "supplier"}:
-        return None, "forbidden"
     try:
         normalized = _normalize_homepage_url(homepage_url)
     except ValueError:
@@ -7846,12 +9333,12 @@ def update_supplier_account_homepage(account_id, homepage_url, member_id, role):
     with _lock:
         conn = _connect()
         try:
-            row = conn.execute(
-                "SELECT data,owner_id FROM docs WHERE collection='accounts' AND id=?", (str(account_id),)
-            ).fetchone()
-            if not row:
-                return None, "not_found"
-            item = json.loads(row[0])
+            conn.execute("BEGIN IMMEDIATE")
+            _context, row, item, error = _supplier_account_row_locked(
+                conn, account_id, member_id, role
+            )
+            if error:
+                return None, error
             now = int(time.time() * 1000)
             item["homepageUrl"] = normalized
             item["homepageUpdatedAt"] = now
@@ -7935,6 +9422,21 @@ def upsert_supplier_account(account_id, data, assets, member_id, *, create=False
     with _lock:
         conn = _connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
+            context = _supplier_access_context_locked(conn, member_id, "supplier_parent")
+            if not context:
+                conn.rollback()
+                return None, "forbidden"
+            mapping = conn.execute(
+                "SELECT team_id FROM team_accounts WHERE account_id=?",
+                (doc_id,),
+            ).fetchone()
+            if mapping and str(mapping[0]) != context["teamId"]:
+                conn.rollback()
+                return None, "forbidden"
+            if not create and not _supplier_account_allowed_locked(conn, context, doc_id):
+                conn.rollback()
+                return None, "unassigned"
             row = conn.execute(
                 "SELECT data FROM docs WHERE collection='accounts' AND id=?", (doc_id,)
             ).fetchone()
@@ -7976,6 +9478,12 @@ def upsert_supplier_account(account_id, data, assets, member_id, *, create=False
                 "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                 ("accounts", doc_id, None, now, json.dumps(candidate, ensure_ascii=False)),
             )
+            if create:
+                conn.execute(
+                    "INSERT INTO team_accounts(team_id,account_id,created_at,added_by) "
+                    "VALUES(?,?,?,?)",
+                    (context["teamId"], doc_id, now, member_id),
+                )
             persisted_assets = []
             for asset in _supplier_account_assets(doc_id, assets, member_id):
                 asset.setdefault("createdAt", now)
@@ -7987,29 +9495,25 @@ def upsert_supplier_account(account_id, data, assets, member_id, *, create=False
                 persisted_assets.append(asset)
             conn.commit()
             return {"account": candidate, "assets": persisted_assets}, None
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
 
 def mark_supplier_asset_downloaded(asset_id, member_id, role):
     """只有真实供应商下载会写入供应商下载状态；创作端下载不经过此函数。"""
-    if role not in {"supplier_parent", "supplier_child", "supplier"}:
-        return None, "forbidden"
     _ensure_db()
-    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
     with _lock:
         conn = _connect()
         try:
-            row = conn.execute(
-                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
-            ).fetchone()
-            if not row:
-                return None, "not_found"
-            item = json.loads(row[0])
-            if not item.get("delivered") and not item.get("shared"):
-                return None, "not_delivered"
-            if assigned is not None and item.get("accountId") not in assigned:
-                return None, "unassigned"
+            conn.execute("BEGIN IMMEDIATE")
+            _context, row, item, error = _supplier_delivery_row_locked(
+                conn, asset_id, member_id, role
+            )
+            if error:
+                return None, error
             now = int(time.time() * 1000)
             item["supplierDownloadedAt"] = now
             item["supplierDownloadedBy"] = member_id
@@ -8049,27 +9553,20 @@ def _published_platform(url, fallback=""):
 
 def update_supplier_asset_published_link(asset_id, published_url, note, title, raw_text, member_id, role):
     """供应商回传发布链接：原子更新交付资产与当前数据分析链接。"""
-    if role not in {"supplier_parent", "supplier_child", "supplier"}:
-        return None, None, "forbidden"
     try:
         normalized = _normalize_published_url(published_url)
     except ValueError:
         return None, None, "invalid_url"
     _ensure_db()
-    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
     with _lock:
         conn = _connect()
         try:
-            asset_row = conn.execute(
-                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
-            ).fetchone()
-            if not asset_row:
-                return None, None, "not_found"
-            item = json.loads(asset_row[0])
-            if not item.get("delivered") and not item.get("shared"):
-                return None, None, "not_delivered"
-            if assigned is not None and item.get("accountId") not in assigned:
-                return None, None, "unassigned"
+            conn.execute("BEGIN IMMEDIATE")
+            _context, asset_row, item, error = _supplier_delivery_row_locked(
+                conn, asset_id, member_id, role
+            )
+            if error:
+                return None, None, error
 
             now = int(time.time() * 1000)
             item["publishedUrl"] = normalized
@@ -8198,23 +9695,16 @@ def clear_supplier_asset_published_link(asset_id, member_id, role):
     become archived (`superseded`) so they cannot be refreshed or counted as
     the current link.  Existing metric snapshots stay intact for audit.
     """
-    if role not in {"supplier_parent", "supplier_child", "supplier"}:
-        return None, None, "forbidden"
     _ensure_db()
-    assigned = supplier_account_ids_for_child(member_id) if role == "supplier_child" else None
     with _lock:
         conn = _connect()
         try:
-            asset_row = conn.execute(
-                "SELECT data,owner_id FROM docs WHERE collection='assets' AND id=?", (str(asset_id),)
-            ).fetchone()
-            if not asset_row:
-                return None, None, "not_found"
-            item = json.loads(asset_row[0])
-            if not item.get("delivered") and not item.get("shared"):
-                return None, None, "not_delivered"
-            if assigned is not None and item.get("accountId") not in assigned:
-                return None, None, "unassigned"
+            conn.execute("BEGIN IMMEDIATE")
+            _context, asset_row, item, error = _supplier_delivery_row_locked(
+                conn, asset_id, member_id, role
+            )
+            if error:
+                return None, None, error
 
             now = int(time.time() * 1000)
             for key in ("publishedUrl", "supplierNote", "publishedTitle", "publishedRawText", "publishedAt"):
@@ -8411,6 +9901,12 @@ def state_for(member_id, role, parent_id=None, collections=None):
     requested = None if collections is None else {
         str(name) for name in collections if str(name) in COLLECTIONS
     }
+    supplier_context = None
+    if role in {"supplier_parent", "supplier_child", "supplier"}:
+        supplier_context = supplier_access_context(member_id, role, parent_id)
+        if not supplier_context:
+            names = COLLECTIONS if requested is None else requested
+            return {name: [] for name in names}
     scan_collections = set(COLLECTIONS if requested is None else requested)
     if requested is not None:
         if "jobs" in requested:
@@ -8429,10 +9925,13 @@ def state_for(member_id, role, parent_id=None, collections=None):
     supplier_production_created_at = {}
     account_projected_sequences = {}
     delivery_global_sequences = {}
-    team = member_team(member_id) if role not in {"supplier_parent", "supplier_child"} else None
-    team_id = team["id"] if team else supplier_team_id(member_id, role, parent_id)
+    team = member_team(member_id) if role not in {"supplier_parent", "supplier_child", "supplier"} else None
+    team_id = team["id"] if team else supplier_context["teamId"] if supplier_context else None
     visible_team_account_ids = team_account_ids(team_id)
     visible_team_member_ids = team_member_ids(team_id)
+    supplier_allowed_account_ids = (
+        assigned_account_ids if role == "supplier_child" else visible_team_account_ids
+    )
     with _lock:
         conn = _connect()
         try:
@@ -8444,7 +9943,7 @@ def state_for(member_id, role, parent_id=None, collections=None):
                         production = json.loads(raw_data)
                     except (TypeError, json.JSONDecodeError):
                         continue
-                    if role == "supplier_child" and production.get("accountId") not in assigned_account_ids:
+                    if str(production.get("accountId") or "") not in supplier_allowed_account_ids:
                         continue
                     supplier_production_created_at[str(production_id)] = production.get("createdAt")
             for col in COLLECTIONS:
@@ -8538,6 +10037,8 @@ def state_for(member_id, role, parent_id=None, collections=None):
                             continue
                     if col == "assets":
                         account_id = str(item.get("accountId") or "")
+                        if role in {"supplier_parent", "supplier_child"} and account_id not in supplier_allowed_account_ids:
+                            continue
                         if role == "user" and (
                             owner != member_id
                             or item.get("delivered")
@@ -8555,13 +10056,6 @@ def state_for(member_id, role, parent_id=None, collections=None):
                             )
                             if not same_team_owner and not same_team_account and not legacy_acg_asset:
                                 continue
-                        if (
-                            role == "supplier_parent"
-                            and team_id
-                            and account_id
-                            and account_id not in visible_team_account_ids
-                        ):
-                            continue
                         try:
                             persisted_delivery_seq = int(item.get("pubSeq") or 0)
                         except (TypeError, ValueError):
@@ -8594,7 +10088,11 @@ def state_for(member_id, role, parent_id=None, collections=None):
                             continue
                         if role not in {"supplier_child", "supplier_parent", "editor", "admin"} and owner and owner != member_id and not item.get("delivered") and not item.get("shared") and not _is_global_editing_asset(item):
                             continue
-                    if healed and col == "productions":
+                    if (
+                        healed
+                        and col == "productions"
+                        and not runtime_config.is_read_only()
+                    ):
                         conn.execute(
                             "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                             (col, str(item.get("id")), item.get("ownerId"), int(item.get("updatedAt") or time.time() * 1000), json.dumps(item, ensure_ascii=False)),
@@ -8605,7 +10103,8 @@ def state_for(member_id, role, parent_id=None, collections=None):
                     visible_prod_ids = {p.get("id") for p in items}
                 if col == "assets":
                     visible_asset_ids = {a.get("id") for a in items}
-            conn.commit()
+            if not runtime_config.is_read_only():
+                conn.commit()
         finally:
             conn.close()
     if requested is None or "jobs" in requested:

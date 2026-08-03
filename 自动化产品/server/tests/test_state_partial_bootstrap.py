@@ -105,9 +105,11 @@ class PartialStateBootstrapTest(unittest.TestCase):
                 "delivered": True,
                 "createdAt": 1784301000000,
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-1"])
+            parent_id = store.get_member_by_username(store.DEFAULT_SUPPLIER_USERNAME)[0]
 
             partial = store.state_for(
-                "supplier-parent",
+                parent_id,
                 "supplier_parent",
                 collections={"accounts", "products", "assets"},
             )

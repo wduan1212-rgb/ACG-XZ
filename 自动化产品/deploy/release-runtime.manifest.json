@@ -1,0 +1,238 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "20260803-v137-architecture-isolation-1",
+  "fileCount": 46,
+  "totalBytes": 2097868,
+  "files": [
+    {
+      "path": "apps/video-workshop/app/__init__.py",
+      "size": 42,
+      "sha256": "56cf7952aaa87cf646103c449115184138b0e16e6a7dc15637d910329d162e26"
+    },
+    {
+      "path": "apps/video-workshop/app/bgm.py",
+      "size": 10239,
+      "sha256": "f0043b4b7912b789f2973e9a60d930fd60b0e38611e032a46667fe81f4c1e2e8"
+    },
+    {
+      "path": "apps/video-workshop/app/config.py",
+      "size": 5467,
+      "sha256": "39ef23b2a74701f6b21e236d39a1882f4eaf5a3ece87550ea30cb9701739be2a"
+    },
+    {
+      "path": "apps/video-workshop/app/main.py",
+      "size": 100318,
+      "sha256": "3b2fc075243e1df2f94502eeaf85a06d880006efac526f39e39842dd7f9f2f4f"
+    },
+    {
+      "path": "apps/video-workshop/app/media.py",
+      "size": 44995,
+      "sha256": "11efb5cda9a30648110e15cc12ea40f7d840642d8780c93c6c0f10ccbac83883"
+    },
+    {
+      "path": "apps/video-workshop/app/openmontage_bridge.py",
+      "size": 4122,
+      "sha256": "eb1aaacafd09a1278d4da62df0c7aca58a4c3716b742be3c6909d27c2a881222"
+    },
+    {
+      "path": "apps/video-workshop/app/pipeline.py",
+      "size": 92916,
+      "sha256": "b6d57661972d58efa4cd17f47992d763c4f6c25132aad754ed25617253b64850"
+    },
+    {
+      "path": "apps/video-workshop/app/providers.py",
+      "size": 173817,
+      "sha256": "c65cbd5ff4fcabb9587861333f9412018ae260f482933f7a6fcd4857f795f98e"
+    },
+    {
+      "path": "apps/video-workshop/app/store.py",
+      "size": 5828,
+      "sha256": "9b1931081d9462a771a7f9bb42a3c6548e1a0372ed7b3e78dec5d70d481f1195"
+    },
+    {
+      "path": "apps/video-workshop/app/transcription.py",
+      "size": 3841,
+      "sha256": "41dc652dc84385655a69307f0866d9c361ecd3e65e3b2151b4e2ad703d7bb8e1"
+    },
+    {
+      "path": "apps/video-workshop/app/video_skill.py",
+      "size": 928,
+      "sha256": "222da122ecc216e77a310d6f681712fb391611f9698cd9bc8fc39861436b75c8"
+    },
+    {
+      "path": "apps/video-workshop/requirements.txt",
+      "size": 100,
+      "sha256": "48c214bf6cb2f083e6bf83c54e693f3e580f5144ab4c0d2955939904f07c8122"
+    },
+    {
+      "path": "apps/video-workshop/run.py",
+      "size": 163,
+      "sha256": "01b4b938e12ce7a19f7023632e8add564d4794ae573e8ded22cd82d939687681"
+    },
+    {
+      "path": "apps/video-workshop/skills/video-production/SKILL.md",
+      "size": 1333,
+      "sha256": "e7b3007ed3d1be833c304f290f1c88073cf41461e7019214270406c064761c40"
+    },
+    {
+      "path": "apps/video-workshop/skills/video-production/references/workflow.md",
+      "size": 2257,
+      "sha256": "f8be80202620e33cf15833f6f8f92b86f3e3102460fe9d73bc89efbb459207aa"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/LICENSE",
+      "size": 34523,
+      "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/skills/core/subtitle-sync.md",
+      "size": 3398,
+      "sha256": "3fe3fb5810849a5b71694daffb5bcd4fac37f950066078c99c53aceddc6e529a"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/skills/pipelines/explainer/edit-director.md",
+      "size": 5474,
+      "sha256": "8390d683b385790a9888618142c364e5034dfda0764525107ec483626f645e92"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/skills/pipelines/explainer/idea-director.md",
+      "size": 9415,
+      "sha256": "7e953f7184abea26e367853acf1b47d8294d115564cd4ed9aab2bcc94e2cf02f"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/tools/__init__.py",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/tools/analysis/__init__.py",
+      "size": 81,
+      "sha256": "294c6c2de742240e56ceba06bc6158156f8c1fb8223126e78f0baa5e4d9c6b02"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/tools/analysis/audio_probe.py",
+      "size": 5435,
+      "sha256": "75ed7da29dc035182c0c4f97458a7ecdc98d6c1e6748e8f7aca6eb6356805fcb"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/tools/analysis/composition_validator.py",
+      "size": 10372,
+      "sha256": "ce597d6ee336fab8f817e33d3509020b7de965c697949432ac9a683c8cff6a34"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/tools/analysis/visual_qa.py",
+      "size": 12531,
+      "sha256": "be5df568c8f810ea3d8b48cf3373a43f0598a92030a4c1414fd5a79fbc37c7dc"
+    },
+    {
+      "path": "apps/video-workshop/vendor/OpenMontage/tools/base_tool.py",
+      "size": 17265,
+      "sha256": "eb7e1041c2924aa21c42117ac3ca9f702208e95fc7f12616e93ff0115d1aa88e"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/app.js",
+      "size": 99173,
+      "sha256": "39bb13e45a0afa62c17f7f26731b678e0a8a2789484f78e4c813d7170d664bd3"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/lucide.min.js",
+      "size": 357796,
+      "sha256": "3411692820cb8d47543f69496aa25fd603a358f4498046f41c508a5a3342210e"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/styles.css",
+      "size": 51200,
+      "sha256": "4ce794583d00cda2e670e17661e24b983583ba47087d4a905eea7ecbd8daf7cd"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/xingzhen-logo-white.png",
+      "size": 45290,
+      "sha256": "951d4debe37480f2d3d1b177515e0e2752766d0cf04436f2f35e7ae79e6e7a67"
+    },
+    {
+      "path": "apps/video-workshop/web/index.html",
+      "size": 22297,
+      "sha256": "4f2ce5df8b8bc162750a19b3621dec18fce89a57afe338c6a917015d62e9982a"
+    },
+    {
+      "path": "deploy/docker_entrypoint.sh",
+      "size": 12775,
+      "sha256": "7f45bfb0c60564e9afabf5932f6ddd8799dbe76909686aec10a5ea8383b46cd4"
+    },
+    {
+      "path": "deploy/local_video_workshop.sh",
+      "size": 7974,
+      "sha256": "1b5b2cc3adfad79b9c224cbac829bdf359af8ecea13e317753a4ac1ed7a3bfa5"
+    },
+    {
+      "path": "deploy/start_server.sh",
+      "size": 21928,
+      "sha256": "b3c33cd3fa545c311510f9c4f788c3b0cba5e35b5ee0ba554ce14d53bb9bbfec"
+    },
+    {
+      "path": "deploy/status_server.sh",
+      "size": 1078,
+      "sha256": "1e8c9efa0cf3d7ea0c73e938ce45fde461597f1c0b148a7a152f8dd6f95a81a0"
+    },
+    {
+      "path": "deploy/stop_server.sh",
+      "size": 1068,
+      "sha256": "3190f7f86c0b87ce69c633159f50170a9084ba9337124eab6e2324743b78998c"
+    },
+    {
+      "path": "deploy/verify_release_contracts.sh",
+      "size": 526,
+      "sha256": "d3586ebe4efe25c211f2b5f05e90c68b87224e6f756d0bed94fb8b5a92de764a"
+    },
+    {
+      "path": "server/config.py",
+      "size": 9256,
+      "sha256": "083d49b2d0d63b7a6524aea1a6d4a7b4e880861b8db4af24f0d0b058f80af231"
+    },
+    {
+      "path": "server/main.py",
+      "size": 393464,
+      "sha256": "976ba3b7afa9472fb3f635303a3258e850a6fda3e815e4cc82301eea78df6f9f"
+    },
+    {
+      "path": "server/migrations/__init__.py",
+      "size": 119,
+      "sha256": "8388acc8eb0defcffea3d27be05ccc42cf53b810dea44f99dd8db43a5264c660"
+    },
+    {
+      "path": "server/migrations/__main__.py",
+      "size": 5126,
+      "sha256": "bbeef1f2da6c0ff91b5d8729f44bb3acc1bf3e5afe766957bb40263dfa165f00"
+    },
+    {
+      "path": "server/minimax_system_voices.json",
+      "size": 39946,
+      "sha256": "b9dfbc92de70dc58f47a73fdbeebdb8bf44b4a8fb5f89e83da0ff205969d32f5"
+    },
+    {
+      "path": "server/requirements.txt",
+      "size": 77,
+      "sha256": "2955e276662f75a713ed69279c9dc927f245dcbd68001b58640c9ec18126b467"
+    },
+    {
+      "path": "server/scripts/consistent_sqlite_backup.py",
+      "size": 6947,
+      "sha256": "b54cb38aabd7c0167810ee84ab93ad5011b088082779b5421b97c3183dce388f"
+    },
+    {
+      "path": "server/scripts/dry_run_dedupe_accounts.py",
+      "size": 3777,
+      "sha256": "312e31a998d698534710696254a7e3e1ef34988241faa6776d697e8c67a49073"
+    },
+    {
+      "path": "server/store.py",
+      "size": 436206,
+      "sha256": "da01c4940650b023f63318d675602b95891d0bdc9bb711c241ea2980ddd3f49e"
+    },
+    {
+      "path": "tools/verify_release_contracts.py",
+      "size": 36985,
+      "sha256": "efafd5f3874a4b219e3d9b1d083309e0b67c503a666ae2f36c353370fba29d4f"
+    }
+  ]
+}

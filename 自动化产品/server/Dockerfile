@@ -25,29 +25,34 @@ COPY js/ ./js/
 COPY styles/ ./styles/
 COPY assets/ ./assets/
 COPY vendor/infinite-canvas/ ./vendor/infinite-canvas/
-COPY apps/video-workshop/ ./apps/video-workshop/
-COPY deploy/docker_entrypoint.sh ./deploy/docker_entrypoint.sh
+COPY vendor/infinite-canvas.manifest.json ./vendor/infinite-canvas.manifest.json
+COPY apps/video-workshop/run.py apps/video-workshop/requirements.txt ./apps/video-workshop/
+COPY apps/video-workshop/app/ ./apps/video-workshop/app/
+COPY apps/video-workshop/web/ ./apps/video-workshop/web/
+COPY apps/video-workshop/skills/video-production/ ./apps/video-workshop/skills/video-production/
+COPY apps/video-workshop/vendor/OpenMontage/ ./apps/video-workshop/vendor/OpenMontage/
+COPY deploy/*.sh ./deploy/
+COPY deploy/release-runtime.manifest.json ./deploy/release-runtime.manifest.json
+COPY tools/verify_release_contracts.py ./tools/verify_release_contracts.py
 
-# Main backend.
-COPY server/main.py server/store.py ./server/
+# Main backend and explicit schema migration runner.
+COPY server/main.py server/store.py server/config.py ./server/
+COPY server/migrations/ ./server/migrations/
 COPY server/requirements.txt ./server/requirements.txt
 COPY server/minimax_system_voices.json ./server/minimax_system_voices.json
-COPY server/scripts/ ./server/scripts/
+COPY server/scripts/*.py ./server/scripts/
 
-RUN chmod +x ./deploy/docker_entrypoint.sh \
-    && mkdir -p \
-       /data/uploads \
-       /data/composed \
-       /data/canvas_blobs \
-       /data/video-workshop/projects \
-       /data/video-workshop/outputs \
-       /data/video-workshop/uploads \
-       /data/bgm-library \
-       /data/model-cache
+RUN chmod +x ./deploy/docker_entrypoint.sh ./deploy/verify_release_contracts.sh
 
 # Secrets are injected at runtime. Only persistent paths and non-secret process
 # defaults belong in the image.
-ENV LLM_API_KEY="" \
+ENV ACG_RUNTIME_MODE="production" \
+    ACG_DB_BOOTSTRAP_MODE="validate" \
+    ACG_READ_ONLY="1" \
+    ACG_REQUIRE_INTERNAL_TEAM="1" \
+    ACG_RELEASE_ROOT="/app" \
+    ACG_PERSISTENT_ROOT="/data" \
+    ACG_ENV_FILE="/data/config/runtime.env" \
     DATA_DB="/data/data.sqlite" \
     LEGACY_DATA_FILE="/data/data.json" \
     UPLOAD_DIR="/data/uploads" \
@@ -58,6 +63,7 @@ ENV LLM_API_KEY="" \
     VIDEO_WORKSHOP_HOST="127.0.0.1" \
     VIDEO_WORKSHOP_PORT="8765" \
     VIDEO_WORKSHOP_URL="http://127.0.0.1:8765" \
+    VIDEO_WORKSHOP_HEALTH_URL="http://127.0.0.1:8765" \
     VIDEO_WORKSHOP_PROJECTS_DIR="/data/video-workshop/projects" \
     VIDEO_WORKSHOP_OUTPUT_DIR="/data/video-workshop/outputs" \
     VIDEO_WORKSHOP_UPLOAD_DIR="/data/video-workshop/uploads" \
@@ -68,5 +74,5 @@ ENV LLM_API_KEY="" \
 VOLUME ["/data"]
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=8s --start-period=30s --retries=3 \
-  CMD python -c "import json,os,urllib.request; main='http://127.0.0.1:'+os.getenv('PORT','8787')+'/api/health'; video=os.getenv('VIDEO_WORKSHOP_URL','http://127.0.0.1:8765')+'/api/health'; assert json.load(urllib.request.urlopen(main, timeout=4)).get('ok'); assert json.load(urllib.request.urlopen(video, timeout=4)).get('ok')"
+  CMD python3 -c "import json,os,urllib.request; from server import config as c; rid=os.getenv('ACG_RELEASE_ID',''); main='http://127.0.0.1:'+os.getenv('PORT','8787')+'/api/ready'; req=urllib.request.Request(main,headers={'X-Readiness-Token':c.readiness_token()}); m=json.load(urllib.request.urlopen(req,timeout=4)); release=((m.get('checks') or {}).get('release') or {}); assert m.get('ok') and m.get('ready') is True and rid and release.get('id') == rid; video=os.getenv('VIDEO_WORKSHOP_HEALTH_URL','http://127.0.0.1:8765')+'/api/health'; v=json.load(urllib.request.urlopen(video,timeout=4)); ro=c.is_read_only(); assert v.get('ok') and v.get('ready') is True and v.get('contractVersion') == 'video-workshop-v137-read-only-1' and v.get('buildId') == rid and (not ro or (v.get('readOnly') is True and v.get('writePolicy') == 'deny-mutations'))"
 CMD ["./deploy/docker_entrypoint.sh"]

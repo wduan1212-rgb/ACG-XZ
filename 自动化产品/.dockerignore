@@ -6,6 +6,7 @@ server/composed/
 server/canvas_blobs/
 server/logs/
 server/__pycache__/
+server/**/__pycache__/
 server/**/*.pyc
 apps/video-workshop/.env
 apps/video-workshop/.env.*

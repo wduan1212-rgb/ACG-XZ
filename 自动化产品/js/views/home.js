@@ -3,8 +3,8 @@ import { currentMember, currentTeam } from "../core/store.js";
 import { community, teams } from "../core/remote.js";
 import { go } from "../core/router.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260803-v136-community-static-1";
-import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260803-v136-community-static-1";
+import { openModal, toast } from "../ui/components.js?v=20260803-v137-architecture-isolation-1";
+import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260803-v137-architecture-isolation-1";
 
 const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
 const HOME_LAUNCH_REGISTRY_KEY = "__starmatrixHomeLaunchRegistry";
@@ -195,11 +195,29 @@ function homePetMarkup() {
   </span>`;
 }
 
+function detailReactionButton({ field, active }) {
+  const isLike = field === "liked";
+  const activeLabel = isLike ? "取消点赞" : "取消收藏";
+  const idleLabel = isLike ? "点赞" : "收藏";
+  const label = active ? activeLabel : idleLabel;
+  return `<button class="community-detail-action is-${isLike ? "like" : "favorite"}" type="button" data-home-reaction="${field}" aria-pressed="${active ? "true" : "false"}" aria-label="${label}" title="${label}">${icon(isLike ? "heart" : "bookmark", 18)}</button>`;
+}
+
+function syncDetailReactionButton(button, field, active) {
+  const isLike = field === "liked";
+  const label = active
+    ? (isLike ? "取消点赞" : "取消收藏")
+    : (isLike ? "点赞" : "收藏");
+  button.setAttribute("aria-pressed", active ? "true" : "false");
+  button.setAttribute("aria-label", label);
+  button.title = label;
+}
+
 function inspirationDetail(item) {
   const entries = (item.media || []).filter(entry => entry?.url);
   const cover = item.cover?.url || entries.find(entry => entry?.poster)?.poster || "";
   const media = entries.map((entry, index) => entry.type === "video"
-    ? `<video class="home-inspiration-detail-item${index ? "" : " is-active"}" data-home-detail-media="${index}" src="${esc(entry.url)}" ${entry.poster || cover ? `poster="${esc(entry.poster || cover)}"` : ""} controls muted playsinline preload="metadata" ${index ? "hidden" : ""}></video>`
+    ? `<video class="home-inspiration-detail-item${index ? "" : " is-active"}" data-home-detail-media="${index}" src="${esc(entry.url)}" ${entry.poster || cover ? `poster="${esc(entry.poster || cover)}"` : ""} controls playsinline preload="metadata" ${index ? "hidden" : ""}></video>`
     : `<img class="home-inspiration-detail-item${index ? "" : " is-active"}" data-home-detail-media="${index}" src="${esc(entry.url)}" alt="${esc(entry.alt || item.title)}" ${index ? "hidden" : ""} />`
   ).join("");
   const thumbs = entries.length > 1 ? `<div class="home-inspiration-detail-thumbs" role="tablist" aria-label="查看全部媒体">${entries.map((entry, index) => {
@@ -210,26 +228,25 @@ function inspirationDetail(item) {
     <article class="home-inspiration-detail">
       <div class="home-inspiration-detail-media"><div class="home-inspiration-detail-stage">${media}</div>${thumbs}</div>
       <div class="home-inspiration-detail-copy">
-        <span>${esc(item.category)}</span>
+        <div class="community-detail-head">
+          <span class="home-inspiration-detail-category">${esc(item.category)}</span>
+          <div class="community-detail-actions" role="group" aria-label="灵感操作">
+            ${detailReactionButton({ field: "liked", active: Boolean(item.viewerLiked) })}
+            ${detailReactionButton({ field: "favorited", active: Boolean(item.viewerFavorited) })}
+          </div>
+        </div>
         <h2>${esc(item.title)}</h2>
         <small>${esc(item.authorName || "星阵用户")}${item.teamName ? ` · ${esc(item.teamName)}` : ""}</small>
         ${item.copy ? `<p>${esc(item.copy)}</p>` : ""}
         ${item.prompt ? `<label>参考提示词</label><div class="home-prompt-preview">${esc(item.prompt)}</div>` : ""}
-        <div class="home-inspiration-reactions">
-          <button class="btn ghost" type="button" data-home-reaction="liked" aria-pressed="${item.viewerLiked ? "true" : "false"}">${icon("heart", 14)} <span>${item.viewerLiked ? "已点赞" : "点赞"}</span><em>${Number(item.likeCount || 0)}</em></button>
-          <button class="btn ghost" type="button" data-home-reaction="favorited" aria-pressed="${item.viewerFavorited ? "true" : "false"}">${icon("bookmark", 14)} <span>${item.viewerFavorited ? "已收藏" : "收藏"}</span><em>${Number(item.favoriteCount || 0)}</em></button>
-        </div>
       </div>
     </article>
   `, {
     onMount(panel, close) {
       panel.classList.add("home-inspiration-panel");
       panel.querySelectorAll("video[data-home-detail-media]").forEach(video => {
-        video.addEventListener("mouseenter", () => {
-          video.muted = true;
-          video.play().catch(() => {});
-        });
-        video.addEventListener("mouseleave", () => video.pause());
+        video.defaultMuted = false;
+        video.muted = false;
       });
       panel.querySelectorAll("[data-home-detail-thumb]").forEach(button => button.addEventListener("click", () => {
         const index = button.dataset.homeDetailThumb;
@@ -253,11 +270,8 @@ function inspirationDetail(item) {
         try {
           const result = await community.react(item.id, { [field]: next });
           Object.assign(item, result);
-          button.setAttribute("aria-pressed", next ? "true" : "false");
-          button.querySelector("span").textContent = next
-            ? (field === "liked" ? "已点赞" : "已收藏")
-            : (field === "liked" ? "点赞" : "收藏");
-          button.querySelector("em").textContent = String(field === "liked" ? result.likeCount : result.favoriteCount);
+          const active = field === "liked" ? Boolean(result.viewerLiked) : Boolean(result.viewerFavorited);
+          syncDetailReactionButton(button, field, active);
         } catch (error) {
           if (/登录|401|未登录/.test(String(error?.message || ""))) {
             window.dispatchEvent(new CustomEvent("xingzhen:auth-required", { detail: { reason: "community-reaction" } }));

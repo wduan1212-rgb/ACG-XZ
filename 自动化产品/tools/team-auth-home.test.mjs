@@ -273,12 +273,12 @@ test("member requests raise a red priority notification and publish tags stay re
   assert.match(componentsCss, /\.np-item\.priority/);
 });
 
-test("all runtime modules share the v132 cache identity", async () => {
+test("all runtime modules share the v137 cache identity", async () => {
   const [indexHtml, mainJs] = await Promise.all([
     read("index.html"),
     read("js/main.js"),
   ]);
-  assert.match(indexHtml, /20260803-v136-community-static-1/);
-  assert.match(mainJs, /APP_BUILD_ID = "20260803-v136-community-static-1"/);
+  assert.match(indexHtml, /20260803-v137-architecture-isolation-1/);
+  assert.match(mainJs, /APP_BUILD_ID = "20260803-v137-architecture-isolation-1"/);
   assert.doesNotMatch(indexHtml + mainJs, /20260729-v121-shell-22|20260729-v122-shell-1/);
 });

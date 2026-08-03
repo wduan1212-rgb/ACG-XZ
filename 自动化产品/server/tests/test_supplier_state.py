@@ -13,6 +13,25 @@ if str(SERVER_DIR) not in sys.path:
 main = importlib.import_module("main")
 
 
+def default_supplier_parent_id(store):
+    return store.get_member_by_username(store.DEFAULT_SUPPLIER_USERNAME)[0]
+
+
+def map_supplier_parent(store, parent_id, team_id=None):
+    store._ensure_db()
+    with store._lock:
+        conn = store._connect()
+        try:
+            conn.execute(
+                "INSERT INTO team_suppliers(team_id,supplier_parent_id,created_at,added_by) "
+                "VALUES(?,?,?,?)",
+                (team_id or store.INTERNAL_TEAM_ID, parent_id, 1, "test"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
 class SupplierStateTest(unittest.TestCase):
     def test_global_editing_assets_are_visible_across_creator_owners(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -56,19 +75,20 @@ class SupplierStateTest(unittest.TestCase):
     def test_supplier_child_batch_is_atomic_and_rejects_duplicate_usernames(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
-            made = store.create_supplier_children("supplier-parent", [
+            parent_id = default_supplier_parent_id(store)
+            made = store.create_supplier_children(parent_id, [
                 {"name": "子账号一", "username": "supplier_child_one", "pin": "local-test-pin"},
                 {"name": "子账号二", "username": "supplier_child_two", "pin": "local-test-pin"},
             ])
             self.assertEqual(len(made), 2)
 
             with self.assertRaisesRegex(ValueError, "username_exists"):
-                store.create_supplier_children("supplier-parent", [
+                store.create_supplier_children(parent_id, [
                     {"name": "不应落库", "username": "supplier_child_three", "pin": "local-test-pin"},
                     {"name": "重复账号", "username": "supplier_child_one", "pin": "local-test-pin"},
                 ])
 
-            children = store.list_supplier_children("supplier-parent")
+            children = store.list_supplier_children(parent_id)
             self.assertEqual({row["username"] for row in children}, {"supplier_child_one", "supplier_child_two"})
 
     def test_parent_receives_account_avatar_and_original_creation_date(self):
@@ -107,8 +127,10 @@ class SupplierStateTest(unittest.TestCase):
                 "createdAt": 300,
                 "updatedAt": 300,
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-1"])
+            parent_id = default_supplier_parent_id(store)
 
-            snapshot = store.state_for("supplier-parent", "supplier_parent")
+            snapshot = store.state_for(parent_id, "supplier_parent")
             assets = {item["id"]: item for item in snapshot["assets"]}
 
             self.assertIn("avatar-1", assets)
@@ -125,6 +147,8 @@ class SupplierStateTest(unittest.TestCase):
                 "mode": "图文",
                 "updatedAt": 100,
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-1"])
+            parent_id = default_supplier_parent_id(store)
 
             denied, err = store.update_supplier_account_homepage(
                 "account-1", "https://blocked.example", "supplier-child", "supplier_child"
@@ -133,12 +157,12 @@ class SupplierStateTest(unittest.TestCase):
             self.assertEqual(err, "forbidden")
 
             updated, err = store.update_supplier_account_homepage(
-                "account-1", "example.com/profile", "supplier-parent", "supplier_parent"
+                "account-1", "example.com/profile", parent_id, "supplier_parent"
             )
             self.assertIsNone(err)
             self.assertEqual(updated["homepageUrl"], "https://example.com/profile")
             creator_snapshot = store.state_for("admin-1", "admin")
-            supplier_snapshot = store.state_for("supplier-parent", "supplier_parent")
+            supplier_snapshot = store.state_for(parent_id, "supplier_parent")
             self.assertEqual(creator_snapshot["accounts"][0]["homepageUrl"], updated["homepageUrl"])
             self.assertEqual(supplier_snapshot["accounts"][0]["homepageUrl"], updated["homepageUrl"])
 
@@ -154,6 +178,8 @@ class SupplierStateTest(unittest.TestCase):
                 "status": "未下载",
                 "updatedAt": 100,
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-1"])
+            parent_id = default_supplier_parent_id(store)
 
             denied, err = store.mark_supplier_asset_downloaded("delivery-1", "editor-1", "editor")
             self.assertIsNone(denied)
@@ -163,11 +189,11 @@ class SupplierStateTest(unittest.TestCase):
             self.assertIsNone(denied)
             self.assertEqual(err, "forbidden")
 
-            updated, err = store.mark_supplier_asset_downloaded("delivery-1", "supplier-parent", "supplier_parent")
+            updated, err = store.mark_supplier_asset_downloaded("delivery-1", parent_id, "supplier_parent")
             self.assertIsNone(err)
             self.assertEqual(updated["status"], "已下载")
             self.assertGreater(updated["supplierDownloadedAt"], 0)
-            self.assertEqual(updated["supplierDownloadedBy"], "supplier-parent")
+            self.assertEqual(updated["supplierDownloadedBy"], parent_id)
 
     def test_supplier_return_link_updates_creator_asset_and_active_analytics_atomically(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -188,6 +214,8 @@ class SupplierStateTest(unittest.TestCase):
                 "supplierDownloadedBy": "supplier-parent",
                 "updatedAt": 100,
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-1"])
+            parent_id = default_supplier_parent_id(store)
 
             denied, denied_link, err = store.update_supplier_asset_published_link(
                 "delivery-link-1", "https://www.xiaohongshu.com/explore/first", "", "", "",
@@ -199,7 +227,7 @@ class SupplierStateTest(unittest.TestCase):
 
             first, first_link, err = store.update_supplier_asset_published_link(
                 "delivery-link-1", "https://www.xiaohongshu.com/explore/first", "首轮备注", "首轮标题", "分享文本",
-                "supplier-parent", "supplier_parent",
+                parent_id, "supplier_parent",
             )
             self.assertIsNone(err)
             self.assertEqual(first["status"], "已发布")
@@ -220,7 +248,7 @@ class SupplierStateTest(unittest.TestCase):
             }])
             second, second_link, err = store.update_supplier_asset_published_link(
                 "delivery-link-1", "https://channels.weixin.qq.com/web/pages/feed?finderUserName=second",
-                "链接已修改", "修改后标题", "新的分享文本", "supplier-parent", "supplier_parent",
+                "链接已修改", "修改后标题", "新的分享文本", parent_id, "supplier_parent",
             )
             self.assertIsNone(err)
             self.assertEqual(second_link["id"], first_link["id"])
@@ -252,7 +280,7 @@ class SupplierStateTest(unittest.TestCase):
             # 误传链接必须可以显式清除：不删除历史快照，只把当前分析链接
             # 归档，资产恢复为未回传但保留已下载状态。
             cleared, archived_link, err = store.clear_supplier_asset_published_link(
-                "delivery-link-1", "supplier-parent", "supplier_parent",
+                "delivery-link-1", parent_id, "supplier_parent",
             )
             self.assertIsNone(err)
             self.assertIsNotNone(archived_link)
@@ -288,9 +316,13 @@ class SupplierStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
             parent = store.add_member("供应商母账号", "return_link_parent", "local-test-pin", "supplier_parent")
+            map_supplier_parent(store, parent[0])
             child = store.create_supplier_children(parent[0], [{
                 "name": "供应商子账号", "username": "return_link_child", "pin": "local-test-pin",
             }])[0]
+            store.assign_team_accounts(
+                store.INTERNAL_TEAM_ID, ["account-assigned", "account-other"]
+            )
             store.set_supplier_child_accounts(parent[0], child["id"], ["account-assigned"], parent[0])
             store.upsert_docs("accounts", [{
                 "id": "account-assigned", "name": "已分配账号", "platform": "小红书", "mode": "图文", "updatedAt": 80,
@@ -369,9 +401,13 @@ class SupplierStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
             parent = store.add_member("供应商管理员", "legacy_seq_parent", "local-test-pin", "supplier_parent")
+            map_supplier_parent(store, parent[0])
             child = store.create_supplier_children(parent[0], [{
                 "name": "旧数据子账号", "username": "legacy_seq_child", "pin": "local-test-pin",
             }])[0]
+            store.assign_team_accounts(
+                store.INTERNAL_TEAM_ID, ["account-assigned", "account-hidden"]
+            )
             store.set_supplier_child_accounts(parent[0], child["id"], ["account-assigned"], parent[0])
             store.upsert_docs("accounts", [{
                 "id": "account-assigned", "name": "已分配账号", "platform": "小红书", "mode": "图文", "updatedAt": 1,
@@ -430,9 +466,13 @@ class SupplierStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
             parent = store.add_member("供应商管理员", "sequence_parent", "local-test-pin", "supplier_parent")
+            map_supplier_parent(store, parent[0])
             child = store.create_supplier_children(parent[0], [{
                 "name": "供应商子账号", "username": "sequence_child", "pin": "local-test-pin",
             }])[0]
+            store.assign_team_accounts(
+                store.INTERNAL_TEAM_ID, ["account-assigned", "account-other"]
+            )
             store.set_supplier_child_accounts(parent[0], child["id"], ["account-assigned"], parent[0])
             store.upsert_docs("accounts", [{
                 "id": "account-assigned", "name": "已分配账号", "platform": "小红书", "mode": "图文", "updatedAt": 1,
@@ -506,18 +546,23 @@ class SupplierStateTest(unittest.TestCase):
             self.assertEqual(len(decoded_asset_ids), 32)
             self.assertEqual(len(set(decoded_asset_ids)), 32)
 
-    def test_supplier_admin_can_list_and_edit_all_supplier_members(self):
+    def test_supplier_admin_can_list_and_edit_same_team_supplier_members(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
             parent_a = store.add_member("供应商管理员甲", "supplier_parent_a", "local-test-pin", "supplier_parent")
             parent_b = store.add_member("供应商管理员乙", "supplier_parent_b", "local-test-pin", "supplier_parent")
+            map_supplier_parent(store, parent_a[0])
+            map_supplier_parent(store, parent_b[0])
             child = store.create_supplier_children(parent_a[0], [{
                 "name": "子账号", "username": "supplier_child_editable", "pin": "local-test-pin",
             }])[0]
 
-            visible = store.list_supplier_members()
+            visible = store.list_supplier_members(parent_a[0])
             self.assertTrue({parent_a[0], parent_b[0], child["id"]}.issubset({row["id"] for row in visible}))
-            updated = store.update_member(parent_b[0], name="管理员乙已更新", pin="new-local-test-pin")
+            updated, error = store.update_supplier_member(
+                parent_a[0], parent_b[0], name="管理员乙已更新", pin="new-local-test-pin"
+            )
+            self.assertIsNone(error)
             self.assertEqual(store.member_public(updated)["name"], "管理员乙已更新")
 
     def test_delivery_remarks_are_persistent_and_track_reads(self):
@@ -525,6 +570,8 @@ class SupplierStateTest(unittest.TestCase):
             store = load_isolated_store(tmp)
             editor = store.add_member("创作者", "remarks_editor", "local-test-pin", "editor")
             supplier = store.add_member("供应商管理员", "remarks_supplier", "local-test-pin", "supplier_parent")
+            map_supplier_parent(store, supplier[0])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-1"])
             store.upsert_docs("assets", [{
                 "id": "delivery-remarks-1",
                 "accountId": "account-1",

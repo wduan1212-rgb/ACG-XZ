@@ -17,6 +17,10 @@ if str(TEST_DIR) not in sys.path:
 from test_store_tombstone import load_isolated_store
 
 
+def default_supplier_parent_id(store):
+    return store.get_member_by_username(store.DEFAULT_SUPPLIER_USERNAME)[0]
+
+
 class CustomCreationStoreTest(unittest.TestCase):
     @staticmethod
     def _video_bundle(project_id, suffix, account_id="account-video"):
@@ -231,6 +235,8 @@ class CustomCreationStoreTest(unittest.TestCase):
                 "exportSeq": 9,
                 "updatedAt": 100,
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-video"])
+            supplier_parent_id = default_supplier_parent_id(store)
             bundle = self._video_bundle(made["id"], "atomic")
             delivery = bundle["delivery"]
             source = bundle["assets"][1]
@@ -265,7 +271,7 @@ class CustomCreationStoreTest(unittest.TestCase):
             self.assertFalse(creator_assets[source["id"]].get("shared", False))
             self.assertTrue(creator_assets[cover["id"]]["shared"])
 
-            supplier_state = store.state_for("supplier-parent", "supplier_parent")
+            supplier_state = store.state_for(supplier_parent_id, "supplier_parent")
             supplier_assets = {item["id"]: item for item in supplier_state["assets"]}
             self.assertIn(delivery["id"], supplier_assets)
             self.assertIn(cover["id"], supplier_assets)
@@ -331,7 +337,7 @@ class CustomCreationStoreTest(unittest.TestCase):
                 [],
             )
 
-            supplier_after = store.state_for("supplier-parent", "supplier_parent")
+            supplier_after = store.state_for(supplier_parent_id, "supplier_parent")
             supplier_asset_ids = {item["id"] for item in supplier_after["assets"]}
             self.assertNotIn(delivery["id"], supplier_asset_ids)
             self.assertNotIn(cover["id"], supplier_asset_ids)
@@ -379,6 +385,8 @@ class CustomCreationStoreTest(unittest.TestCase):
                         "exportSeq": 8,
                         "updatedAt": 10,
                     }])
+                    store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-video"])
+                    supplier_parent_id = default_supplier_parent_id(store)
                     bundle = self._video_bundle(made["id"], f"protected-{index}")
                     published, publish_error = store.publish_custom_project_bundle(
                         made["id"], "creator-a", bundle,
@@ -430,7 +438,7 @@ class CustomCreationStoreTest(unittest.TestCase):
                         {
                             item["id"]
                             for item in store.state_for(
-                                "supplier-parent",
+                                supplier_parent_id,
                                 "supplier_parent",
                             )["assets"]
                         },
@@ -571,6 +579,8 @@ class CustomCreationStoreTest(unittest.TestCase):
                 "exportSeq": 0,
                 "updatedAt": 10,
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-video"])
+            supplier_parent_id = default_supplier_parent_id(store)
             first_bundle = self._video_bundle(made["id"], "first")
             second_bundle = self._video_bundle(made["id"], "second")
             first, first_error = store.publish_custom_project_bundle(
@@ -623,7 +633,7 @@ class CustomCreationStoreTest(unittest.TestCase):
 
             supplier_ids = {
                 item["id"]
-                for item in store.state_for("supplier-parent", "supplier_parent")["assets"]
+                for item in store.state_for(supplier_parent_id, "supplier_parent")["assets"]
             }
             self.assertIn(first_bundle["deliveryId"], supplier_ids)
             self.assertIn(first_bundle["delivery"]["coverAssetId"], supplier_ids)

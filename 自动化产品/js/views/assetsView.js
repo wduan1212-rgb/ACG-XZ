@@ -5,10 +5,10 @@ import { icon } from "../ui/icons.js";
 import { state, save, accountById, currentMember, currentTeam } from "../core/store.js";
 import { community } from "../core/remote.js";
 import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile, inferAssetFileMeta, isBgmAsset, isEditingMaterialAsset } from "../domain/assets.js";
-import { downloadAsset } from "../domain/delivery.js?v=20260728-v120-shell-20";
+import { downloadAsset } from "../domain/delivery.js";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260803-v136-community-static-1";
-import { renderSupplierAccounts } from "./supplierViews.js?v=20260803-v136-supplier-shared-1";
+import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260803-v137-architecture-isolation-1";
+import { renderSupplierAccounts } from "./supplierViews.js?v=20260803-v137-architecture-isolation-1";
 
 let fAcc = "all", fQ = "", fKind = "all", fSource = "all", fBackendKind = "bgm", libraryMode = "drafts", collapseInitialized = false;
 let activeAssetsController = null;
@@ -161,7 +161,7 @@ export const assetsView = {
         root.innerHTML = `<div class="assets-page"><div class="page-head"><div><div class="eyebrow">整体资产</div><h2>草稿箱</h2></div><div class="head-actions">${libraryTabsHtml()}</div></div><div class="asset-mode-stage" id="assetDraftsHost"></div></div>`;
         mountTopDock();
         wireLibraryTabs();
-        import("./draftsView.js?v=20260803-v136-community-static-1").then(({ draftsView }) => {
+        import("./draftsView.js?v=20260803-v137-architecture-isolation-1").then(({ draftsView }) => {
           const host = $("#assetDraftsHost", root);
           if (host) draftsView.render(host);
         });
@@ -267,36 +267,92 @@ export const assetsView = {
     }
 
     function openFavoritePost(post) {
-      const media = (post.media || []).map((entry, index) => entry.type === "video"
-        ? `<video src="${esc(entry.url)}" controls muted playsinline preload="metadata"></video>`
-        : `<button type="button" data-favorite-image="${index}"><img src="${esc(entry.url)}" alt="${esc(entry.alt || post.title || "收藏灵感")}" loading="lazy" /></button>`
+      const entries = (post.media || []).filter(entry => entry?.url);
+      const cover = post.cover?.url || entries.find(entry => entry?.poster)?.poster || "";
+      const reactionButton = (field, active) => {
+        const isLike = field === "liked";
+        const label = active
+          ? (isLike ? "取消点赞" : "取消收藏")
+          : (isLike ? "点赞" : "收藏");
+        return `<button class="community-detail-action is-${isLike ? "like" : "favorite"}" type="button" data-favorite-reaction="${field}" aria-pressed="${active ? "true" : "false"}" aria-label="${label}" title="${label}">${icon(isLike ? "heart" : "bookmark", 18)}</button>`;
+      };
+      const media = entries.map((entry, index) => entry.type === "video"
+        ? `<video class="asset-favorite-dialog-item${index ? "" : " is-active"}" data-favorite-detail-media="${index}" src="${esc(entry.url)}" ${entry.poster || cover ? `poster="${esc(entry.poster || cover)}"` : ""} controls playsinline preload="metadata" ${index ? "hidden" : ""}></video>`
+        : `<button class="asset-favorite-dialog-item${index ? "" : " is-active"}" type="button" data-favorite-detail-media="${index}" data-favorite-image="${index}" ${index ? "hidden" : ""}><img src="${esc(entry.url)}" alt="${esc(entry.alt || post.title || "收藏灵感")}" loading="lazy" /></button>`
       ).join("");
+      const thumbs = entries.length > 1 ? `<div class="asset-favorite-dialog-thumbs" role="tablist" aria-label="查看全部媒体">${entries.map((entry, index) => {
+        const preview = entry.type === "video" ? (entry.poster || cover) : entry.url;
+        return `<button class="${index ? "" : "is-active"}" type="button" role="tab" aria-selected="${index ? "false" : "true"}" data-favorite-detail-thumb="${index}" aria-label="查看第 ${index + 1} 项媒体">${preview ? `<img src="${esc(preview)}" alt="" />` : icon("video", 15)}${entry.type === "video" ? `<i>${icon("play", 10)}</i>` : ""}</button>`;
+      }).join("")}</div>` : "";
       openModal(`<article class="asset-favorite-dialog">
-        <header><div><span>${esc(post.category || "灵感")}</span><h2>${esc(post.title || "未命名灵感")}</h2><small>${esc(post.authorName || "星阵用户")}${post.teamName ? ` · ${esc(post.teamName)}` : ""}</small></div><button class="icon-btn" data-close>${icon("x", 16)}</button></header>
-        <div class="asset-favorite-dialog-media">${media}</div>
+        <header>
+          <div><span>${esc(post.category || "灵感")}</span><h2>${esc(post.title || "未命名灵感")}</h2><small>${esc(post.authorName || "星阵用户")}${post.teamName ? ` · ${esc(post.teamName)}` : ""}</small></div>
+          <div class="asset-favorite-dialog-tools">
+            <div class="community-detail-actions" role="group" aria-label="收藏灵感操作">
+              ${reactionButton("liked", Boolean(post.viewerLiked))}
+              ${reactionButton("favorited", Boolean(post.viewerFavorited))}
+            </div>
+            <button class="icon-btn" type="button" data-close aria-label="关闭" title="关闭">${icon("x", 16)}</button>
+          </div>
+        </header>
+        <div class="asset-favorite-dialog-media"><div class="asset-favorite-dialog-stage">${media}</div>${thumbs}</div>
         <div class="asset-favorite-dialog-copy">${post.copy ? `<p>${esc(post.copy)}</p>` : ""}${post.prompt ? `<label>参考提示词</label><pre>${esc(post.prompt)}</pre>` : ""}</div>
-        <footer><button class="btn ghost" type="button" data-favorite-remove>${icon("bookmark", 14)} 取消收藏</button></footer>
       </article>`, {
         onMount(panel, close) {
           panel.classList.add("asset-favorite-panel");
-          panel.querySelectorAll("[data-favorite-image]").forEach((button, index) => button.addEventListener("click", () => {
+          panel.querySelectorAll("video[data-favorite-detail-media]").forEach(video => {
+            video.defaultMuted = false;
+            video.muted = false;
+          });
+          panel.querySelectorAll("[data-favorite-image]").forEach(button => button.addEventListener("click", () => {
+            const index = Number(button.dataset.favoriteImage);
             const image = button.querySelector("img");
-            if (image) openLightbox(image, post.media?.[index]?.url || image.src, post.title || "收藏灵感");
+            if (image) openLightbox(image, entries[index]?.url || image.src, post.title || "收藏灵感");
           }));
-          panel.querySelector("[data-favorite-remove]")?.addEventListener("click", async event => {
+          panel.querySelectorAll("[data-favorite-detail-thumb]").forEach(button => button.addEventListener("click", () => {
+            const index = button.dataset.favoriteDetailThumb;
+            panel.querySelectorAll("[data-favorite-detail-media]").forEach(mediaItem => {
+              const active = mediaItem.dataset.favoriteDetailMedia === index;
+              mediaItem.hidden = !active;
+              mediaItem.classList.toggle("is-active", active);
+              if (!active && mediaItem.tagName === "VIDEO") mediaItem.pause();
+            });
+            panel.querySelectorAll("[data-favorite-detail-thumb]").forEach(tab => {
+              const active = tab === button;
+              tab.classList.toggle("is-active", active);
+              tab.setAttribute("aria-selected", active ? "true" : "false");
+            });
+          }));
+          panel.querySelectorAll("[data-favorite-reaction]").forEach(button => button.addEventListener("click", async event => {
             const button = event.currentTarget;
+            const field = button.dataset.favoriteReaction;
+            const next = button.getAttribute("aria-pressed") !== "true";
             button.disabled = true;
             try {
-              await community.react(post.id, { favorited: false });
-              favoritePosts = favoritePosts.filter(item => String(item.id) !== String(post.id));
-              close();
-              draw();
-              toast("已取消收藏");
+              const result = await community.react(post.id, { [field]: next });
+              Object.assign(post, result);
+              const active = field === "liked" ? Boolean(result.viewerLiked) : Boolean(result.viewerFavorited);
+              const label = active
+                ? (field === "liked" ? "取消点赞" : "取消收藏")
+                : (field === "liked" ? "点赞" : "收藏");
+              button.setAttribute("aria-pressed", active ? "true" : "false");
+              button.setAttribute("aria-label", label);
+              button.title = label;
+              if (field === "favorited" && !active) {
+                favoritePosts = favoritePosts.filter(item => String(item.id) !== String(post.id));
+                close();
+                draw();
+                toast("已取消收藏");
+              }
             } catch (error) {
               button.disabled = false;
-              toast(error?.message || "取消收藏失败", "error");
+              if (/登录|401|未登录/.test(String(error?.message || ""))) {
+                window.dispatchEvent(new CustomEvent("xingzhen:auth-required", { detail: { reason: "community-reaction" } }));
+              } else toast(error?.message || "操作失败，请稍后重试", "error");
+            } finally {
+              if (button.isConnected) button.disabled = false;
             }
-          });
+          }));
         },
       });
     }

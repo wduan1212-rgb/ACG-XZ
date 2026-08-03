@@ -749,6 +749,58 @@ def _continuity_anchor_prompt(
     ])
 
 
+def _static_reference_scope_id(plan: dict[str, Any]) -> str:
+    """Return a filesystem-safe scope for generated continuity references.
+
+    Current plans receive a random ``reference_scope_id`` when the director
+    accepts a production.  The deterministic fallback keeps old persisted
+    plans retryable without ever consulting the legacy project-wide anchor
+    filenames that caused references from an earlier production to leak into
+    a later one.
+    """
+    explicit = re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "",
+        str(plan.get("reference_scope_id") or ""),
+    )[:64]
+    if explicit:
+        return explicit
+    legacy_identity = {
+        "title": plan.get("title"),
+        "narration": plan.get("narration"),
+        "style_anchor": plan.get("style_anchor"),
+        "negative_constraints": plan.get("negative_constraints"),
+        "continuity_anchors": plan.get("continuity_anchors"),
+        "reference_images": [
+            {
+                "asset_id": item.get("asset_id"),
+                "url": item.get("url"),
+            }
+            for item in list(plan.get("reference_images") or [])
+            if isinstance(item, dict)
+        ],
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            legacy_identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:20]
+    return f"legacy-{digest}"
+
+
+def _continuity_anchor_path(
+    plan: dict[str, Any],
+    work_dir: Path,
+    index: int,
+) -> Path:
+    return work_dir / (
+        f"continuity-anchor-{_static_reference_scope_id(plan)}-{index:02d}.jpg"
+    )
+
+
 async def _ensure_static_continuity_references(
     *,
     project_id: str,
@@ -765,7 +817,7 @@ async def _ensure_static_continuity_references(
     resolved = list(user_references[:8])
     available_slots = max(0, 8 - len(resolved))
     for index, anchor in enumerate(anchors[:available_slots], start=1):
-        anchor_path = work_dir / f"continuity-anchor-{index:02d}.jpg"
+        anchor_path = _continuity_anchor_path(plan, work_dir, index)
         if not anchor_path.is_file() or anchor_path.stat().st_size <= 8:
             await _generate_static_image_with_retry(
                 prompt=_continuity_anchor_prompt(plan, anchor),
@@ -799,7 +851,7 @@ def _missing_static_continuity_count(
     available_slots = max(0, 8 - max(0, int(user_reference_count)))
     missing = 0
     for index, _anchor in enumerate(anchors[:available_slots], start=1):
-        path = work_dir / f"continuity-anchor-{index:02d}.jpg"
+        path = _continuity_anchor_path(plan, work_dir, index)
         if not path.is_file() or path.stat().st_size <= 8:
             missing += 1
     return missing

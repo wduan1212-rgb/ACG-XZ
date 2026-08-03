@@ -15,6 +15,10 @@ if str(TEST_DIR) not in sys.path:
 from test_store_tombstone import load_isolated_store
 
 
+def default_supplier_parent_id(store):
+    return store.get_member_by_username(store.DEFAULT_SUPPLIER_USERNAME)[0]
+
+
 class SupplierAccountManagementTests(unittest.TestCase):
     def test_supplier_account_editor_keeps_creator_style_configuration_private(self):
         source = (APP_DIR / "js/views/accountDialog.js").read_text(encoding="utf-8")
@@ -58,6 +62,8 @@ class SupplierAccountManagementTests(unittest.TestCase):
                 "voiceRefAssetId": "creator-voice-reference",
                 "status": "active",
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["supplier-private-01"])
+            parent_id = default_supplier_parent_id(store)
             result, error = store.upsert_supplier_account(
                 "supplier-private-01",
                 {
@@ -71,7 +77,7 @@ class SupplierAccountManagementTests(unittest.TestCase):
                     "voiceRefAssetId": "supplier-voice-reference",
                 },
                 [],
-                "supplier-parent-a",
+                parent_id,
                 create=False,
             )
             self.assertIsNone(error)
@@ -205,6 +211,7 @@ class SupplierAccountManagementTests(unittest.TestCase):
     def test_create_disable_and_restore_preserve_account_identity_and_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
+            parent_id = default_supplier_parent_id(store)
             result, error = store.upsert_supplier_account(
                 "supplier-new-01",
                 {
@@ -216,7 +223,7 @@ class SupplierAccountManagementTests(unittest.TestCase):
                     "status": "active",
                 },
                 [],
-                "supplier-parent-a",
+                parent_id,
                 create=True,
             )
             self.assertIsNone(error)
@@ -232,7 +239,7 @@ class SupplierAccountManagementTests(unittest.TestCase):
                 account_id,
                 {**result["account"], "status": "disabled"},
                 [],
-                "supplier-parent-a",
+                parent_id,
                 create=False,
             )
             self.assertIsNone(error)
@@ -243,7 +250,7 @@ class SupplierAccountManagementTests(unittest.TestCase):
                 account_id,
                 {**disabled["account"], "status": "active"},
                 [],
-                "supplier-parent-a",
+                parent_id,
                 create=False,
             )
             self.assertIsNone(error)
@@ -256,9 +263,10 @@ class SupplierAccountManagementTests(unittest.TestCase):
     def test_supplier_account_semantic_duplicate_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
+            parent_id = default_supplier_parent_id(store)
             payload = {"name": "同名账号", "platform": "视频号", "mode": "视频", "subType": "无数字人"}
-            _, first_error = store.upsert_supplier_account("supplier-a1", payload, [], "supplier-parent-a", create=True)
-            _, second_error = store.upsert_supplier_account("supplier-a2", payload, [], "supplier-parent-a", create=True)
+            _, first_error = store.upsert_supplier_account("supplier-a1", payload, [], parent_id, create=True)
+            _, second_error = store.upsert_supplier_account("supplier-a2", payload, [], parent_id, create=True)
             self.assertIsNone(first_error)
             self.assertEqual("duplicate", second_error)
 
@@ -282,14 +290,16 @@ class SupplierAccountManagementTests(unittest.TestCase):
                 "delivered": True,
                 "viewCount": 18,
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-views"])
+            parent_id = default_supplier_parent_id(store)
 
             updated, error = store.update_supplier_account_views(
-                "account-views", 100, "supplier-parent-a", "supplier_parent"
+                "account-views", 100, parent_id, "supplier_parent"
             )
             self.assertIsNone(error)
             self.assertEqual(100, updated["totalViewCountOverride"])
-            self.assertEqual("supplier-parent-a", updated["totalViewsUpdatedBy"])
-            assets = {item["id"]: item for item in store.state_for("supplier-parent-a", "supplier_parent")["assets"]}
+            self.assertEqual(parent_id, updated["totalViewsUpdatedBy"])
+            assets = {item["id"]: item for item in store.state_for(parent_id, "supplier_parent")["assets"]}
             self.assertEqual(12, assets["delivery-a"]["viewCount"])
             self.assertEqual(18, assets["delivery-b"]["viewCount"])
 
@@ -308,14 +318,16 @@ class SupplierAccountManagementTests(unittest.TestCase):
                 "delivered": True,
                 "viewCount": 23,
             }])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-exposure"])
+            parent_id = default_supplier_parent_id(store)
 
             updated, error = store.update_supplier_asset_exposure(
-                "delivery-exposure", 456, "supplier-parent-a", "supplier_parent"
+                "delivery-exposure", 456, parent_id, "supplier_parent"
             )
             self.assertIsNone(error)
             self.assertEqual(456, updated["exposureCount"])
             self.assertEqual(23, updated["viewCount"])
-            self.assertEqual("supplier-parent-a", updated["exposureUpdatedBy"])
+            self.assertEqual(parent_id, updated["exposureUpdatedBy"])
 
             denied, denied_error = store.update_supplier_asset_exposure(
                 "delivery-exposure", 999, "creator-a", "editor"

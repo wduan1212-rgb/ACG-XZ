@@ -39,6 +39,20 @@ class SupplierShellLoginTests(unittest.TestCase):
         self.assertEqual(200, resumed.status_code)
         return payload["member"], resumed.json()
 
+    def _map_supplier_parent(self, parent_id):
+        store._ensure_db()
+        with store._lock:
+            conn = store._connect()
+            try:
+                conn.execute(
+                    "INSERT INTO team_suppliers(team_id,supplier_parent_id,created_at,added_by) "
+                    "VALUES(?,?,?,?)",
+                    (store.INTERNAL_TEAM_ID, parent_id, int(time.time() * 1000), "test"),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def test_parent_first_login_and_refresh_keep_supplier_identity(self):
         store.add_member("供应商管理员", "shell_supplier_parent", "123456", "supplier_parent")
         logged_in, resumed = self._login("shell_supplier_parent", "123456")
@@ -49,6 +63,7 @@ class SupplierShellLoginTests(unittest.TestCase):
 
     def test_child_first_login_and_refresh_keep_parent_binding(self):
         parent = store.add_member("供应商管理员", "shell_supplier_owner", "123456", "supplier_parent")
+        self._map_supplier_parent(parent[0])
         child = store.create_supplier_children(parent[0], [{
             "name": "供应商子账号", "username": "shell_supplier_child", "pin": "123456",
         }])[0]
@@ -60,7 +75,8 @@ class SupplierShellLoginTests(unittest.TestCase):
         self.assertEqual(["supplier"], resumed["entitlements"])
 
     def test_parent_dashboard_read_endpoints_settle_with_lists(self):
-        store.add_member("供应商管理员", "shell_supplier_dashboard", "123456", "supplier_parent")
+        parent = store.add_member("供应商管理员", "shell_supplier_dashboard", "123456", "supplier_parent")
+        self._map_supplier_parent(parent[0])
         response = self.client.post(
             "/api/auth/login",
             json={"username": "shell_supplier_dashboard", "pin": "123456"},

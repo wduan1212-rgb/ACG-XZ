@@ -113,6 +113,10 @@ class CreatorProxySecurityTest(unittest.TestCase):
                 main.store,
                 "get_member",
                 return_value=member_row(f"{role}-id", role),
+            ), patch.object(
+                main.store,
+                "member_public",
+                return_value={"id": f"{role}-id", "role": role},
             ):
                 with self.assertRaises(HTTPException) as denied:
                     main.require_creator("Bearer supplier-token")
@@ -128,6 +132,10 @@ class CreatorProxySecurityTest(unittest.TestCase):
                 main.store,
                 "get_member",
                 return_value=member_row(f"{role}-id", role),
+            ), patch.object(
+                main.store,
+                "member_public",
+                return_value={"id": f"{role}-id", "role": role},
             ):
                 member = main.require_creator("Bearer creator-token")
                 self.assertEqual(member["id"], f"{role}-id")

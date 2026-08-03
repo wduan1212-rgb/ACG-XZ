@@ -1087,7 +1087,8 @@ class CustomCanvasBackendTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(generate.await_args.kwargs["adapt_primary_reference"])
 
     def test_config_is_creator_only_and_reports_export_bridge(self):
-        result = main.custom_canvas_config(me={"id": "creator", "role": "editor"})
+        with patch.object(main.store, "list_custom_projects", return_value=[]):
+            result = main.custom_canvas_config(me={"id": "creator", "role": "editor"})
         self.assertTrue(result["available"])
         self.assertIn("export-bridge", result["features"])
         with self.assertRaises(HTTPException) as raised:

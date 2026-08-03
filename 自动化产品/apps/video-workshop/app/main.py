@@ -4,6 +4,7 @@ import asyncio
 import base64
 import math
 import mimetypes
+import os
 import re
 import shutil
 import uuid
@@ -11,8 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -31,6 +32,35 @@ app = FastAPI(title="星阵视频导演台", version="0.1.0")
 app.mount("/assets", StaticFiles(directory=settings.web_dir / "assets"), name="assets")
 app.mount("/outputs", StaticFiles(directory=settings.outputs_dir), name="outputs")
 app.mount("/uploads", StaticFiles(directory=settings.uploads_dir), name="uploads")
+
+VIDEO_WORKSHOP_CONTRACT_VERSION = "video-workshop-v137-read-only-1"
+VIDEO_WORKSHOP_BUILD_ID = "20260803-v137-architecture-isolation-1"
+
+
+def _runtime_read_only() -> bool:
+    return str(os.getenv("ACG_READ_ONLY", "") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+@app.middleware("http")
+async def enforce_runtime_read_only(request: Request, call_next):
+    """Deny every sidecar mutation while a protected release is inspected.
+
+    The sidecar is loopback-only, but it owns durable project JSON and media.
+    Enforcing the same flag here prevents a direct loopback request from
+    bypassing the main service maintenance gate.
+    """
+
+    if _runtime_read_only() and request.method.upper() not in {
+        "GET", "HEAD", "OPTIONS",
+    }:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "视频工坊正在受保护的只读验收模式"},
+            headers={"Retry-After": "60", "Cache-Control": "no-store"},
+        )
+    return await call_next(request)
 
 _tasks: set[asyncio.Task[Any]] = set()
 _project_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -962,6 +992,20 @@ def _director_messages_without_voice_id_directives(
     return director_messages
 
 
+def _director_messages_for_current_production(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep current-task dialogue while dropping completed production history."""
+    boundary = -1
+    for index, message in enumerate(messages):
+        if (
+            message.get("role") == "assistant"
+            and message.get("kind") == "delivery"
+        ):
+            boundary = index
+    return _director_messages_without_voice_id_directives(messages[boundary + 1:])
+
+
 def _selected_voice_id(req: ChatRequest, project: dict[str, Any]) -> str:
     plan = project.get("plan") if isinstance(project.get("plan"), dict) else {}
     candidates = (
@@ -1553,6 +1597,10 @@ async def health():
     )
     return {
         "ok": True,
+        "contractVersion": VIDEO_WORKSHOP_CONTRACT_VERSION,
+        "buildId": VIDEO_WORKSHOP_BUILD_ID,
+        "readOnly": _runtime_read_only(),
+        "writePolicy": "deny-mutations" if _runtime_read_only() else "normal",
         "live": settings.live,
         "ready": not missing_required,
         "status": status,
@@ -1575,24 +1623,25 @@ async def project_list(
     }
     project_filter = requested_ids if projectIds else None
     items = await asyncio.to_thread(list_project_summaries, project_filter)
-    recovered = False
-    for item in items:
-        project_id = str(item.get("id") or "")
-        if (
-            project_id
-            and item.get("status") == "running"
-            and not _project_has_active_work(project_id)
-        ):
-            try:
-                await asyncio.to_thread(
-                    _mark_orphaned_running_project,
-                    project_id,
-                )
-            except KeyError:
-                continue
-            recovered = True
-    if recovered:
-        items = await asyncio.to_thread(list_project_summaries, project_filter)
+    if not _runtime_read_only():
+        recovered = False
+        for item in items:
+            project_id = str(item.get("id") or "")
+            if (
+                project_id
+                and item.get("status") == "running"
+                and not _project_has_active_work(project_id)
+            ):
+                try:
+                    await asyncio.to_thread(
+                        _mark_orphaned_running_project,
+                        project_id,
+                    )
+                except KeyError:
+                    continue
+                recovered = True
+        if recovered:
+            items = await asyncio.to_thread(list_project_summaries, project_filter)
     total = len(items)
     if page is None and pageSize is None:
         # Backward compatibility for older standalone clients.
@@ -1626,15 +1675,16 @@ async def project_detail(project_id: str):
     project = await asyncio.to_thread(load_project, project_id)
     if project is None:
         raise HTTPException(404, "项目不存在")
-    if (
-        project.get("status") == "running"
-        and not _project_has_active_work(project_id)
-    ):
-        project = await asyncio.to_thread(
-            _mark_orphaned_running_project,
-            project_id,
-        )
-    project = await _auto_resume_restart_project(project_id, project)
+    if not _runtime_read_only():
+        if (
+            project.get("status") == "running"
+            and not _project_has_active_work(project_id)
+        ):
+            project = await asyncio.to_thread(
+                _mark_orphaned_running_project,
+                project_id,
+            )
+        project = await _auto_resume_restart_project(project_id, project)
     return _project_response(project)
 
 
@@ -2153,7 +2203,7 @@ async def _run_director_production(
         project = await asyncio.to_thread(load_project, project_id)
         if project is None:
             return
-        director_messages = _director_messages_without_voice_id_directives(
+        director_messages = _director_messages_for_current_production(
             project["messages"]
         )
         if revision_message != original_message:
@@ -2202,6 +2252,11 @@ async def _run_director_production(
         plan["creation_mode"] = creation_mode
         plan["skill"] = SKILL_NAME
         plan["voice_id"] = selected_voice_id
+        # One conversation can produce several unrelated videos.  Give every
+        # accepted production plan its own durable scope so pipeline-generated
+        # continuity references can be reused by retries of this production,
+        # but can never leak into the next production in the same project.
+        plan["reference_scope_id"] = uuid.uuid4().hex
         asset_summary = _apply_asset_plan(plan, saved_attachments, original_message)
         if creation_mode == "static":
             asset_summary = _apply_static_reference_plan(plan, saved_attachments)

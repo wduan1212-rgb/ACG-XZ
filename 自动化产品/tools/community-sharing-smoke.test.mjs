@@ -139,19 +139,59 @@ test("delivery community share keeps title, full copy, all media and the saved c
   assert.match(delivery, /asset\.byMemberId \|\| asset\.ownerId \|\| productionById/);
 });
 
-test("community detail centers one media item at a time without nested scroll regions", async () => {
+test("community detail keeps media fixed, copy scrollable, and manual video playback audible", async () => {
   const [home, styles] = await Promise.all([
     read("js/views/home.js"),
     read("styles/views.css"),
   ]);
+  const detailSource = home.slice(
+    home.indexOf("function inspirationDetail"),
+    home.indexOf("function openHomeTeamJoinDialog"),
+  );
 
   assert.match(home, /home-inspiration-detail-stage/);
   assert.match(home, /data-home-detail-thumb/);
   assert.match(home, /poster="\$\{esc\(entry\.poster \|\| cover\)\}"/);
-  assert.match(home, /video\.addEventListener\("mouseenter"/);
+  assert.match(home, /function inspirationCard[\s\S]*?<video[^>]*\bmuted\b[^>]*\bplaysinline\b/);
+  assert.match(home, /data-home-detail-media="\$\{index\}"[\s\S]{0,300}?controls playsinline preload="metadata"/);
+  assert.doesNotMatch(home, /data-home-detail-media="\$\{index\}"[^>]*\bmuted\b/);
+  assert.doesNotMatch(detailSource, /video\.addEventListener\("mouseenter"/);
+  assert.doesNotMatch(detailSource, /\bautoplay\b/);
+  assert.match(home, /video\.defaultMuted = false;[\s\S]*?video\.muted = false/);
+  assert.match(home, /data-home-reaction="\$\{field\}"[\s\S]{0,180}?aria-pressed=/);
+  assert.match(home, /aria-label="\$\{label\}" title="\$\{label\}"/);
+  assert.match(home, /community-detail-head[\s\S]*?community-detail-actions[\s\S]*?detailReactionButton\(\{ field: "liked"[\s\S]*?detailReactionButton\(\{ field: "favorited"/);
+  assert.match(home, /\$\{icon\(isLike \? "heart" : "bookmark", 18\)\}<\/button>/);
   assert.match(styles, /\.home-inspiration-detail-stage[\s\S]*?place-items:\s*center/);
-  assert.match(styles, /\.home-inspiration-detail-copy\s*\{[^}]*overflow:\s*visible/);
+  assert.match(styles, /\.home-inspiration-panel\s*\{[^}]*overflow:\s*hidden/);
+  assert.match(styles, /\.home-inspiration-detail-media\s*\{[^}]*overflow:\s*hidden/);
+  assert.match(styles, /\.home-inspiration-detail-copy\s*\{[^}]*overflow-y:\s*auto/);
+  assert.match(styles, /\.community-detail-action\.is-like\[aria-pressed="true"\]/);
+  assert.match(styles, /\.community-detail-action\.is-favorite\[aria-pressed="true"\]/);
   assert.match(styles, /\.home-prompt-preview\s*\{[^}]*max-height:\s*none;\s*overflow:\s*visible/);
+  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*?\.home-inspiration-detail\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*visible[\s\S]*?\.home-inspiration-detail-copy\s*\{[^}]*overflow:\s*visible/);
+});
+
+test("favorite detail matches audible playback, fixed media, and icon-only reactions", async () => {
+  const [assets, styles] = await Promise.all([
+    read("js/views/assetsView.js"),
+    read("styles/views.css"),
+  ]);
+
+  assert.match(assets, /function renderFavorites[\s\S]*?<video[^>]*\bmuted\b[^>]*\bplaysinline\b/);
+  assert.match(assets, /data-favorite-detail-media="\$\{index\}"[\s\S]{0,300}?controls playsinline preload="metadata"/);
+  assert.doesNotMatch(assets, /data-favorite-detail-media="\$\{index\}"[^>]*\bmuted\b/);
+  assert.match(assets, /video\.defaultMuted = false;[\s\S]*?video\.muted = false/);
+  assert.match(assets, /data-favorite-reaction="\$\{field\}"[\s\S]{0,180}?aria-pressed=/);
+  assert.match(assets, /\$\{icon\(isLike \? "heart" : "bookmark", 18\)\}<\/button>/);
+  assert.match(assets, /reactionButton\("liked", Boolean\(post\.viewerLiked\)\)/);
+  assert.match(assets, /reactionButton\("favorited", Boolean\(post\.viewerFavorited\)\)/);
+  assert.match(assets, /const index = Number\(button\.dataset\.favoriteImage\);[\s\S]*?entries\[index\]\?\.url/);
+  assert.match(assets, /if \(!active && mediaItem\.tagName === "VIDEO"\) mediaItem\.pause\(\)/);
+  assert.match(assets, /field === "favorited" && !active[\s\S]*?favoritePosts = favoritePosts\.filter[\s\S]*?close\(\);[\s\S]*?draw\(\);/);
+  assert.match(styles, /\.asset-favorite-dialog-media\s*\{[^}]*overflow:\s*hidden/);
+  assert.match(styles, /\.asset-favorite-dialog-copy\s*\{[^}]*overflow-y:\s*auto/);
+  assert.match(styles, /@media \(max-width: 720px\)[\s\S]*?\.asset-favorite-dialog\s*\{[^}]*height:\s*auto;[^}]*display:\s*block;[^}]*overflow:\s*visible/);
 });
 
 test("overall assets use the new hierarchy and hide account filters from ordinary personal users", async () => {

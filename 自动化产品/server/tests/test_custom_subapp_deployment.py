@@ -47,8 +47,11 @@ class CustomSubappDeploymentTest(unittest.TestCase):
             'export DATA_DB="$DATA_DB_PATH"',
             'export UPLOAD_DIR="$UPLOAD_DIR_PATH"',
             'export CUSTOM_CANVAS_BLOB_DIR="$CUSTOM_CANVAS_BLOB_DIR_PATH"',
-            'migrate_legacy_tree "$VIDEO_APP_DIR/data/projects" "$VIDEO_WORKSHOP_PROJECTS_DIR"',
-            '"$VIDEO_VENV/bin/python" -m pip install',
+            'export ACG_RUNTIME_MODE="${ACG_RUNTIME_MODE:-production}"',
+            'export ACG_DB_BOOTSTRAP_MODE="${ACG_DB_BOOTSTRAP_MODE:-validate}"',
+            'verify_release_contracts',
+            'ACG_READ_ONLY must be enabled for this production release',
+            'Production dependencies must be installed before startup',
             'exec nohup "$VIDEO_VENV/bin/python" run.py',
             'vendor/infinite-canvas/index.html',
             '"$video_backup_dir/uploads.manifest"',
@@ -57,6 +60,8 @@ class CustomSubappDeploymentTest(unittest.TestCase):
             'VIDEO_WORKSHOP_HOST must stay on a loopback address',
         ):
             self.assertIn(token, start)
+        self.assertNotIn("migrate_legacy_tree", start)
+        self.assertNotIn("pip install", start)
 
         self.assertIn('logs/video-workshop.pid', stop)
         self.assertIn('VIDEO_WORKSHOP_PORT="${VIDEO_WORKSHOP_PORT:-8765}"', stop)
@@ -173,7 +178,11 @@ class CustomSubappDeploymentTest(unittest.TestCase):
             "ffmpeg fonts-noto-cjk libgomp1",
             "python -m venv /opt/video-workshop-venv",
             "COPY vendor/infinite-canvas/ ./vendor/infinite-canvas/",
-            "COPY apps/video-workshop/ ./apps/video-workshop/",
+            "COPY apps/video-workshop/app/ ./apps/video-workshop/app/",
+            "COPY apps/video-workshop/web/ ./apps/video-workshop/web/",
+            "COPY apps/video-workshop/skills/video-production/ ./apps/video-workshop/skills/video-production/",
+            "COPY apps/video-workshop/vendor/OpenMontage/ ./apps/video-workshop/vendor/OpenMontage/",
+            "COPY deploy/release-runtime.manifest.json ./deploy/release-runtime.manifest.json",
             'VIDEO_WORKSHOP_HOST="127.0.0.1"',
             'VIDEO_WORKSHOP_PORT="8765"',
             'VIDEO_WORKSHOP_PROJECTS_DIR="/data/video-workshop/projects"',
@@ -183,6 +192,7 @@ class CustomSubappDeploymentTest(unittest.TestCase):
             'CMD ["./deploy/docker_entrypoint.sh"]',
         ):
             self.assertIn(token, dockerfile)
+        self.assertNotIn("COPY apps/video-workshop/ ./apps/video-workshop/", dockerfile)
         self.assertNotIn("COPY .env", dockerfile)
         self.assertNotIn("favicon.svg", dockerfile)
         self.assertNotIn("EXPOSE 8765", dockerfile)
@@ -200,7 +210,7 @@ class CustomSubappDeploymentTest(unittest.TestCase):
             self.assertIn(token, dockerignore)
 
         self.assertIn('exec "$VIDEO_PYTHON" run.py', entrypoint)
-        self.assertIn("python -m uvicorn server.main:app", entrypoint)
+        self.assertIn('"$PYTHON_BIN" -m uvicorn server.main:app', entrypoint)
         self.assertIn("VIDEO_WORKSHOP_HOST must stay on a loopback address", entrypoint)
 
     def test_deployment_guide_preserves_server_data_and_lists_both_subapps(self):
@@ -208,14 +218,15 @@ class CustomSubappDeploymentTest(unittest.TestCase):
         for token in (
             "apps/video-workshop/",
             "vendor/infinite-canvas/",
-            "apps/infinite-canvas-source/",
-            "--exclude 'runtime/'",
-            "--exclude 'server/data.sqlite*'",
-            "--exclude 'server/canvas_blobs/'",
-            "--exclude 'apps/video-workshop/.venv/'",
-            "--exclude 'apps/video-workshop/data/projects/'",
-            "不要使用 `--delete-excluded`",
-            "不要映射 `8765`",
+            "release-runtime.manifest.json",
+            "ACG_PERSISTENT_ROOT",
+            "ACG_DB_BOOTSTRAP_MODE=validate",
+            "ACG_READ_ONLY=1",
+            "生产入口不会创建缺失目录、安装依赖、复制旧数据",
+            "禁止对生产目录使用",
+            "--delete-excluded",
+            "deploy/verify_release_contracts.sh",
+            "必须只映射 `8787`",
             "AGPL-3.0",
         ):
             self.assertIn(token, guide)

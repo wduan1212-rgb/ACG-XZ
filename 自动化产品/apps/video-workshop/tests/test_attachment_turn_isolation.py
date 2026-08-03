@@ -31,6 +31,60 @@ def image_attachment(name: str) -> main.Attachment:
 
 
 class AttachmentTurnIsolationTests(unittest.TestCase):
+    def test_director_context_starts_after_latest_delivery_without_losing_current_qa(self):
+        messages = [
+            {
+                "role": "user",
+                "content": "上一轮使用秒哒IP形象和附件图1制作品牌视频",
+                "attachments": [{"label": "图1", "name": "秒哒IP.png"}],
+            },
+            {
+                "role": "assistant",
+                "kind": "plan",
+                "content": "上一轮会让秒哒IP贯穿全片。",
+            },
+            {
+                "role": "assistant",
+                "kind": "delivery",
+                "content": "上一轮成片完成。",
+            },
+            {
+                "role": "user",
+                "content": "帮我做一个中式恐怖的盗墓短片。",
+            },
+            {
+                "role": "assistant",
+                "kind": "question",
+                "content": "主角是单人还是盗墓团队？",
+            },
+            {
+                "role": "user",
+                "content": "四人团队，音色ID：grave_voice",
+            },
+            {
+                "role": "assistant",
+                "kind": "error",
+                "content": "本轮导演请求暂时失败，可以继续。",
+            },
+            {
+                "role": "user",
+                "content": "继续按四人团队制作。",
+            },
+        ]
+
+        current = main._director_messages_for_current_production(messages)
+
+        self.assertEqual(5, len(current))
+        current_text = "\n".join(str(item.get("content") or "") for item in current)
+        self.assertNotIn("秒哒", current_text)
+        self.assertNotIn("上一轮", current_text)
+        self.assertIn("中式恐怖的盗墓短片", current_text)
+        self.assertIn("主角是单人还是盗墓团队", current_text)
+        self.assertIn("四人团队", current_text)
+        self.assertIn("本轮导演请求暂时失败", current_text)
+        self.assertIn("继续按四人团队制作", current_text)
+        self.assertNotIn("grave_voice", current_text)
+
     def test_more_than_eight_attachments_is_rejected_instead_of_truncated(self):
         attachments = [image_attachment(f"image-{index}.png") for index in range(9)]
 
@@ -242,6 +296,7 @@ class ChatAttachmentScopeTests(unittest.IsolatedAsyncioTestCase):
             [item["asset_id"] for item in result["plan"]["reference_images"]],
             ["current-image"],
         )
+        self.assertRegex(result["plan"]["reference_scope_id"], r"^[0-9a-f]{32}$")
         self.assertNotIn("old-audio", str(result["plan"]))
 
 

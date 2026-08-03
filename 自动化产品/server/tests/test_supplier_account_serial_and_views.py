@@ -10,6 +10,10 @@ from test_store_tombstone import load_isolated_store
 APP_DIR = Path(__file__).resolve().parents[2]
 
 
+def default_supplier_parent_id(store):
+    return store.get_member_by_username(store.DEFAULT_SUPPLIER_USERNAME)[0]
+
+
 class SupplierAccountSerialAndViewsTest(unittest.TestCase):
     def test_supplier_account_board_reuses_creator_sequence_map(self):
         source = (APP_DIR / "js/views/supplierViews.js").read_text(encoding="utf-8")
@@ -46,15 +50,19 @@ console.log(JSON.stringify(accounts.map(account => [account.id, sequence.get(acc
                 {"id": "account-b", "name": "账号 B", "platform": "视频号", "mode": "视频"},
                 {"id": "account-c", "name": "账号 C", "platform": "小红书", "mode": "图文"},
             ])
-            child = store.create_supplier_children("supplier-parent", [{
+            store.assign_team_accounts(
+                store.INTERNAL_TEAM_ID, ["account-a", "account-b", "account-c"]
+            )
+            parent_id = default_supplier_parent_id(store)
+            child = store.create_supplier_children(parent_id, [{
                 "name": "子账号", "username": "supplier_sequence_child", "pin": "local-test-pin",
             }])[0]
             store.set_supplier_child_accounts(
-                "supplier-parent", child["id"], ["account-b"], "supplier-parent"
+                parent_id, child["id"], ["account-b"], parent_id
             )
 
-            parent_state = store.state_for("supplier-parent", "supplier_parent")
-            child_state = store.state_for(child["id"], "supplier_child")
+            parent_state = store.state_for(parent_id, "supplier_parent")
+            child_state = store.state_for(child["id"], "supplier_child", parent_id)
             creator_state = store.state_for("creator", "creator")
             parent_sequences = {account["id"]: account["index"] for account in parent_state["accounts"]}
 
@@ -72,29 +80,33 @@ console.log(JSON.stringify(accounts.map(account => [account.id, sequence.get(acc
                 {"id": "account-b", "name": "账号 B", "platform": "视频号", "mode": "视频"},
                 {"id": "account-c", "name": "账号 C", "platform": "小红书", "mode": "图文"},
             ])
+            store.assign_team_accounts(
+                store.INTERNAL_TEAM_ID, ["account-a", "account-b", "account-c"]
+            )
+            parent_id = default_supplier_parent_id(store)
             before = {
                 account["id"]: account["index"]
-                for account in store.state_for("supplier-parent", "supplier_parent")["accounts"]
+                for account in store.state_for(parent_id, "supplier_parent")["accounts"]
             }
             account_b = next(
-                account for account in store.state_for("supplier-parent", "supplier_parent")["accounts"]
+                account for account in store.state_for(parent_id, "supplier_parent")["accounts"]
                 if account["id"] == "account-b"
             )
             disabled, error = store.upsert_supplier_account(
-                "account-b", {**account_b, "status": "disabled"}, [], "supplier-parent", create=False
+                "account-b", {**account_b, "status": "disabled"}, [], parent_id, create=False
             )
             self.assertIsNone(error)
             disabled_numbers = {
                 account["id"]: account["index"]
-                for account in store.state_for("supplier-parent", "supplier_parent")["accounts"]
+                for account in store.state_for(parent_id, "supplier_parent")["accounts"]
             }
             restored, error = store.upsert_supplier_account(
-                "account-b", {**disabled["account"], "status": "active"}, [], "supplier-parent", create=False
+                "account-b", {**disabled["account"], "status": "active"}, [], parent_id, create=False
             )
             self.assertIsNone(error)
             restored_numbers = {
                 account["id"]: account["index"]
-                for account in store.state_for("supplier-parent", "supplier_parent")["accounts"]
+                for account in store.state_for(parent_id, "supplier_parent")["accounts"]
             }
             self.assertEqual(before, {"account-a": 1, "account-b": 2, "account-c": 3})
             self.assertEqual(disabled_numbers, before)
