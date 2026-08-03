@@ -20,14 +20,17 @@ Example plan::
 
 All component paths must resolve below ``--persistent-root`` unless a regular
 file explicitly declares ``allowOutsidePersistentRoot: true`` (for systemd or
-Nginx configuration).  Symlinks and special files are rejected.  The caller
-must stop/freeze every writer before create; this script verifies bytes, not
-the process freeze itself.
+Nginx configuration).  Symlinks and special files are rejected by default.
+The production-complete profile may explicitly allow byte-only dereferencing
+for named components; that policy is exact, component scoped and never follows
+directory symlinks.  The caller must stop/freeze every writer before create;
+this script verifies bytes, not the process freeze itself.
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import importlib.util
 import json
@@ -49,41 +52,59 @@ SNAPSHOT_FORMAT = "acg-runtime-snapshot-v1"
 RESTORE_FORMAT = "acg-runtime-restore-drill-v1"
 PRODUCTION_COMPLETE_PROFILE = "acg-production-complete-v1"
 PRODUCTION_COMPLETE_COMPONENTS = {
-    "database": ("sqlite", True, "server/data.sqlite", False),
-    "legacy-data": ("file", False, "server/data.json", False),
-    "uploads": ("directory", True, "server/uploads", False),
-    "composed": ("directory", True, "server/composed", False),
-    "canvas-blobs": ("directory", True, "server/canvas_blobs", False),
-    "model-usage-spool": (
-        "directory", False, "server/model_usage_spool", False,
+    # type, required, exact lexical path, outside persistent root,
+    # dereference internal/component symlinks
+    "database": ("sqlite", True, "server/data.sqlite", False, False),
+    "legacy-data": ("file", False, "server/data.json", False, False),
+    "uploads": ("directory", True, "server/uploads", False, False),
+    "composed": ("directory", True, "server/composed", False, False),
+    "canvas-blobs": (
+        "directory", True, "server/canvas_blobs", False, False,
     ),
-    "server-logs": ("directory", False, "server/logs", False),
+    "model-usage-spool": (
+        "directory", False, "server/model_usage_spool", False, False,
+    ),
+    "server-logs": ("directory", False, "server/logs", False, False),
     "video-projects": (
-        "directory", True, "runtime/video-workshop/projects", False,
+        "directory", True, "runtime/video-workshop/projects", False, False,
     ),
     "video-uploads": (
-        "directory", True, "runtime/video-workshop/uploads", False,
+        "directory", True, "runtime/video-workshop/uploads", False, False,
     ),
     "video-outputs": (
-        "directory", True, "runtime/video-workshop/outputs", False,
+        "directory", True, "runtime/video-workshop/outputs", False, False,
     ),
-    "bgm-library": ("directory", True, "runtime/bgm-library", False),
-    "model-cache": ("directory", True, "runtime/model-cache", False),
-    "runtime-env-public": ("file", True, ".env", False),
-    "runtime-env-private": ("file", True, ".env.local", False),
+    "bgm-library": (
+        "directory", True, "runtime/bgm-library", False, False,
+    ),
+    "model-cache": (
+        "directory", True, "runtime/model-cache", False, True,
+    ),
+    "runtime-env-public": ("file", True, ".env", False, False),
+    "runtime-env-private": ("file", True, ".env.local", False, False),
     "runtime-env-v140": (
         "file", False, "/data/dumate-studio/config/runtime-v140.env", True,
+        False,
     ),
     "systemd-main": (
         "file", True, "/etc/systemd/system/dumate-studio.service", True,
+        False,
     ),
     "systemd-video": (
         "file", True,
         "/etc/systemd/system/dumate-studio-video-workshop.service", True,
+        False,
     ),
     "nginx-site": (
         "file", True, "/etc/nginx/sites-enabled/xingzhenworld.com", True,
+        True,
     ),
+}
+PRODUCTION_COMPONENT_SYMLINK_ROOTS = {
+    # Debian/Ubuntu commonly links sites-enabled to sites-available.  Both
+    # relative and absolute links are accepted only when the final regular file
+    # remains below this exact root.
+    "nginx-site": Path("/etc/nginx"),
 }
 PRODUCTION_MEDIA_COMPONENTS = {
     "uploads",
@@ -135,6 +156,70 @@ def _within(path: Path, root: Path) -> bool:
         return False
 
 
+def _lexical_absolute(path: Path) -> Path:
+    """Return an absolute normalized path without resolving any symlink."""
+
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _resolve_regular_symlink(
+    path: Path,
+    *,
+    allowed_root: Path,
+    allow_absolute_link: bool,
+    label: str,
+) -> tuple[Path, str]:
+    """Resolve one explicitly approved symlink to a contained regular file."""
+
+    lexical_root = _lexical_absolute(allowed_root)
+    resolved_root = allowed_root.resolve(strict=True)
+    current = _lexical_absolute(path)
+    first_target = ""
+    seen: set[Path] = set()
+    for _hop in range(64):
+        try:
+            info = current.lstat()
+        except FileNotFoundError as exc:
+            raise SnapshotError(f"dangling_symlink_rejected:{label}") from exc
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise SnapshotError(f"symlink_loop_rejected:{label}") from exc
+            raise SnapshotError(f"dangling_symlink_rejected:{label}") from exc
+        if not stat.S_ISLNK(info.st_mode):
+            try:
+                resolved = current.resolve(strict=True)
+                final_info = resolved.stat()
+            except RuntimeError as exc:
+                raise SnapshotError(f"symlink_loop_rejected:{label}") from exc
+            except (FileNotFoundError, OSError) as exc:
+                raise SnapshotError(f"dangling_symlink_rejected:{label}") from exc
+            if not _within(resolved, resolved_root):
+                raise SnapshotError(f"symlink_target_outside_component:{label}")
+            if not stat.S_ISREG(final_info.st_mode):
+                raise SnapshotError(f"symlink_target_not_regular:{label}")
+            return resolved, first_target
+        if current in seen:
+            raise SnapshotError(f"symlink_loop_rejected:{label}")
+        seen.add(current)
+        try:
+            raw_target = os.readlink(current)
+        except OSError as exc:
+            raise SnapshotError(f"symlink_read_failed:{label}") from exc
+        if not first_target:
+            first_target = raw_target
+        absolute_target = Path(raw_target).is_absolute()
+        if absolute_target and not allow_absolute_link:
+            raise SnapshotError(f"absolute_symlink_rejected:{label}")
+        current = _lexical_absolute(
+            Path(raw_target) if absolute_target else current.parent / raw_target
+        )
+        if not (
+            _within(current, lexical_root) or _within(current, resolved_root)
+        ):
+            raise SnapshotError(f"symlink_target_outside_component:{label}")
+    raise SnapshotError(f"symlink_loop_rejected:{label}")
+
+
 def _load_json(path: Path) -> tuple[dict, bytes]:
     raw = path.read_bytes()
     payload = json.loads(raw.decode("utf-8"))
@@ -170,7 +255,7 @@ def _validate_production_component_contract(
         extra = sorted(set(by_name) - expected_names)
         detail = ",".join(missing or extra)
         raise SnapshotError(f"production_profile_component_set_invalid:{detail}")
-    for name, (kind, required, relative, outside) in (
+    for name, (kind, required, relative, outside, dereference) in (
         PRODUCTION_COMPLETE_COMPONENTS.items()
     ):
         item = by_name[name]
@@ -184,12 +269,20 @@ def _validate_production_component_contract(
             raise SnapshotError(
                 f"production_profile_component_boundary_invalid:{name}"
             )
+        actual_dereference = item.get("dereferenceInternalSymlinks", False)
+        if (
+            type(actual_dereference) is not bool
+            or actual_dereference is not dereference
+        ):
+            raise SnapshotError(
+                f"production_profile_component_dereference_invalid:{name}"
+            )
         if required and snapshot and item.get("state") == "absent":
             raise SnapshotError(f"production_profile_component_absent:{name}")
         source = Path(str(item.get("source" if snapshot else "path") or ""))
         if relative is not None:
-            expected = (persistent_root / relative).resolve(strict=False)
-            if source.resolve(strict=False) != expected:
+            expected = _lexical_absolute(persistent_root / relative)
+            if _lexical_absolute(source) != expected:
                 raise SnapshotError(
                     f"production_profile_component_path_invalid:{name}"
                 )
@@ -243,6 +336,9 @@ def _validate_plan(plan: dict, persistent_root: Path) -> list[dict]:
     raw_components = plan.get("components")
     if not isinstance(raw_components, list) or not raw_components:
         raise SnapshotError("plan_components_missing")
+    profile = str(plan.get("profile") or "").strip()
+    if profile and profile != PRODUCTION_COMPLETE_PROFILE:
+        raise SnapshotError("plan_profile_unknown")
     components: list[dict] = []
     names: set[str] = set()
     for raw in raw_components:
@@ -257,35 +353,52 @@ def _validate_plan(plan: dict, persistent_root: Path) -> list[dict]:
         source = Path(str(raw.get("path") or ""))
         if not source.is_absolute():
             raise SnapshotError(f"plan_component_path_not_absolute:{name}")
+        source = _lexical_absolute(source)
+        dereference_value = raw.get("dereferenceInternalSymlinks", False)
+        if type(dereference_value) is not bool:
+            raise SnapshotError(f"plan_component_dereference_invalid:{name}")
+        dereference = bool(dereference_value)
+        if dereference and profile != PRODUCTION_COMPLETE_PROFILE:
+            raise SnapshotError(f"plan_component_dereference_not_allowed:{name}")
         if source.is_symlink():
-            raise SnapshotError(f"plan_component_symlink:{name}")
-        resolved = source.resolve(strict=False)
+            if kind != "file" or not dereference:
+                raise SnapshotError(f"plan_component_symlink:{name}")
+            allowed_root = PRODUCTION_COMPONENT_SYMLINK_ROOTS.get(name)
+            if allowed_root is None:
+                raise SnapshotError(f"plan_component_dereference_not_allowed:{name}")
+            content_path, _raw_target = _resolve_regular_symlink(
+                source,
+                allowed_root=allowed_root,
+                allow_absolute_link=True,
+                label=name,
+            )
+        else:
+            content_path = source.resolve(strict=False)
         allow_outside = raw.get("allowOutsidePersistentRoot") is True
-        if not _within(resolved, persistent_root):
+        if not _within(content_path, persistent_root):
             if not (allow_outside and kind == "file"):
                 raise SnapshotError(f"plan_component_outside_persistent_root:{name}")
         required = raw.get("required", True) is not False
-        if required and not resolved.exists():
+        if required and not content_path.exists():
             raise SnapshotError(f"plan_component_missing:{name}")
-        if resolved.exists():
-            if kind == "directory" and not resolved.is_dir():
+        if content_path.exists():
+            if kind == "directory" and not content_path.is_dir():
                 raise SnapshotError(f"plan_component_not_directory:{name}")
-            if kind in {"file", "sqlite"} and not resolved.is_file():
+            if kind in {"file", "sqlite"} and not content_path.is_file():
                 raise SnapshotError(f"plan_component_not_file:{name}")
         names.add(name)
         components.append({
             "name": name,
             "type": kind,
-            "path": resolved,
+            "path": source,
+            "contentPath": content_path,
             "required": required,
             "allowOutsidePersistentRoot": allow_outside,
+            "dereferenceInternalSymlinks": dereference,
         })
     sqlite_components = [item for item in components if item["type"] == "sqlite"]
     if len(sqlite_components) != 1:
         raise SnapshotError("plan_requires_exactly_one_sqlite")
-    profile = str(plan.get("profile") or "").strip()
-    if profile and profile != PRODUCTION_COMPLETE_PROFILE:
-        raise SnapshotError("plan_profile_unknown")
     if profile == PRODUCTION_COMPLETE_PROFILE:
         _validate_production_component_contract(
             components,
@@ -295,7 +408,44 @@ def _validate_plan(plan: dict, persistent_root: Path) -> list[dict]:
     return components
 
 
-def _directory_inventory(root: Path) -> list[dict]:
+def _directory_entry_source(
+    root: Path,
+    path: Path,
+    *,
+    dereference_internal_symlinks: bool,
+) -> tuple[Path, os.stat_result, dict]:
+    relative = path.relative_to(root).as_posix()
+    try:
+        link_info = path.lstat()
+    except OSError as exc:
+        raise SnapshotError(f"directory_entry_unreadable:{relative}") from exc
+    if stat.S_ISLNK(link_info.st_mode):
+        if not dereference_internal_symlinks:
+            raise SnapshotError(f"file_symlink_rejected:{path}")
+        resolved, raw_target = _resolve_regular_symlink(
+            path,
+            allowed_root=root,
+            allow_absolute_link=False,
+            label=relative,
+        )
+        info = resolved.stat()
+        return resolved, info, {
+            "dereferencedSymlink": True,
+            "linkTarget": raw_target,
+            "targetPath": resolved.relative_to(
+                root.resolve(strict=True)
+            ).as_posix(),
+        }
+    if not stat.S_ISREG(link_info.st_mode):
+        raise SnapshotError(f"special_file_rejected:{path}")
+    return path, link_info, {}
+
+
+def _directory_inventory(
+    root: Path,
+    *,
+    dereference_internal_symlinks: bool = False,
+) -> list[dict]:
     entries: list[dict] = []
     for current, dirnames, filenames in os.walk(root, followlinks=False):
         current_path = Path(current)
@@ -305,21 +455,54 @@ def _directory_inventory(root: Path) -> list[dict]:
                 raise SnapshotError(f"directory_symlink_rejected:{path}")
         for filename in filenames:
             path = current_path / filename
-            if path.is_symlink():
-                raise SnapshotError(f"file_symlink_rejected:{path}")
-            info = path.stat()
-            if not stat.S_ISREG(info.st_mode):
-                raise SnapshotError(f"special_file_rejected:{path}")
+            content_path, info, symlink_metadata = _directory_entry_source(
+                root,
+                path,
+                dereference_internal_symlinks=dereference_internal_symlinks,
+            )
             entries.append(
                 {
                     "path": path.relative_to(root).as_posix(),
                     "bytes": info.st_size,
-                    "sha256": _sha256(path),
+                    "sha256": _sha256(content_path),
                     "mode": stat.S_IMODE(info.st_mode),
                     "mtimeNs": info.st_mtime_ns,
+                    **symlink_metadata,
                 }
             )
     return sorted(entries, key=lambda item: item["path"])
+
+
+def _file_component_source(item: dict) -> tuple[Path, os.stat_result, dict]:
+    """Revalidate one file component and return the bytes-bearing path."""
+
+    source = item["path"]
+    if source.is_symlink():
+        if not item["dereferenceInternalSymlinks"]:
+            raise SnapshotError(f"plan_component_symlink:{item['name']}")
+        allowed_root = PRODUCTION_COMPONENT_SYMLINK_ROOTS.get(item["name"])
+        if allowed_root is None:
+            raise SnapshotError(
+                f"plan_component_dereference_not_allowed:{item['name']}"
+            )
+        content_path, raw_target = _resolve_regular_symlink(
+            source,
+            allowed_root=allowed_root,
+            allow_absolute_link=True,
+            label=item["name"],
+        )
+        return content_path, content_path.stat(), {
+            "sourceWasSymlink": True,
+            "linkTarget": raw_target,
+            "resolvedSource": str(content_path),
+        }
+    try:
+        info = source.lstat()
+    except OSError as exc:
+        raise SnapshotError(f"plan_component_missing:{item['name']}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise SnapshotError(f"special_file_rejected:{source}")
+    return source, info, {"sourceWasSymlink": False}
 
 
 def _content_inventory(entries: list[dict]) -> list[dict]:
@@ -335,25 +518,58 @@ def _content_inventory(entries: list[dict]) -> list[dict]:
     ]
 
 
-def _archive_directory(source: Path, archive: Path, entries: list[dict]) -> None:
+def _archive_directory(
+    source: Path,
+    archive: Path,
+    entries: list[dict],
+    *,
+    dereference_internal_symlinks: bool = False,
+) -> None:
     expected = {item["path"]: item for item in entries}
     with tarfile.open(archive, "w", format=tarfile.PAX_FORMAT) as bundle:
         for relative, item in expected.items():
             path = source / PurePosixPath(relative)
-            before = path.stat()
-            bundle.add(path, arcname=relative, recursive=False)
-            after = path.stat()
+            content_path, before, metadata = _directory_entry_source(
+                source,
+                path,
+                dereference_internal_symlinks=dereference_internal_symlinks,
+            )
+            if (
+                before.st_size != item["bytes"]
+                or before.st_mtime_ns != item["mtimeNs"]
+                or metadata != {
+                    key: item[key]
+                    for key in ("dereferencedSymlink", "linkTarget", "targetPath")
+                    if key in item
+                }
+            ):
+                raise SnapshotError(f"source_changed_during_snapshot:{relative}")
+            member = tarfile.TarInfo(relative)
+            member.size = before.st_size
+            member.mode = stat.S_IMODE(before.st_mode)
+            member.mtime = before.st_mtime
+            with content_path.open("rb") as handle:
+                bundle.addfile(member, handle)
+            _after_path, after, after_metadata = _directory_entry_source(
+                source,
+                path,
+                dereference_internal_symlinks=dereference_internal_symlinks,
+            )
             if (
                 before.st_size != after.st_size
                 or before.st_mtime_ns != after.st_mtime_ns
                 or after.st_size != item["bytes"]
                 or after.st_mtime_ns != item["mtimeNs"]
+                or metadata != after_metadata
             ):
                 raise SnapshotError(f"source_changed_during_snapshot:{relative}")
     with archive.open("rb") as handle:
         os.fsync(handle.fileno())
     _verify_archive(archive, entries)
-    if _directory_inventory(source) != entries:
+    if _directory_inventory(
+        source,
+        dereference_internal_symlinks=dereference_internal_symlinks,
+    ) != entries:
         raise SnapshotError(f"source_changed_during_snapshot:{source}")
 
 
@@ -403,7 +619,7 @@ def create_snapshot(plan_path: Path, persistent_root: Path, output: Path) -> dic
     if not output.parent.is_dir():
         raise SnapshotError(f"output_parent_missing:{output.parent}")
     output_resolved = output.resolve(strict=False)
-    if any(_within(output_resolved, item["path"]) for item in components):
+    if any(_within(output_resolved, item["contentPath"]) for item in components):
         raise SnapshotError("output_inside_source_component")
     stage = Path(tempfile.mkdtemp(prefix=".runtime-snapshot-", dir=output.parent))
     os.chmod(stage, 0o700)
@@ -414,7 +630,8 @@ def create_snapshot(plan_path: Path, persistent_root: Path, output: Path) -> dic
         component_root.mkdir(mode=0o700)
         for item in components:
             name, kind, source = item["name"], item["type"], item["path"]
-            if not source.exists():
+            content_source = item["contentPath"]
+            if not content_source.exists():
                 manifest_components.append(
                     {
                         "name": name,
@@ -423,6 +640,9 @@ def create_snapshot(plan_path: Path, persistent_root: Path, output: Path) -> dic
                         "required": item["required"],
                         "allowOutsidePersistentRoot": item[
                             "allowOutsidePersistentRoot"
+                        ],
+                        "dereferenceInternalSymlinks": item[
+                            "dereferenceInternalSymlinks"
                         ],
                         "state": "absent",
                     }
@@ -436,12 +656,17 @@ def create_snapshot(plan_path: Path, persistent_root: Path, output: Path) -> dic
                 "allowOutsidePersistentRoot": item[
                     "allowOutsidePersistentRoot"
                 ],
+                "dereferenceInternalSymlinks": item[
+                    "dereferenceInternalSymlinks"
+                ],
             }
             if kind == "sqlite":
                 destination = component_root / f"{name}.sqlite"
                 db_manifest = component_root / f"{name}.sqlite.manifest.json"
                 backup = _load_backup_module()
-                payload = backup.create_backup(source, destination, db_manifest)
+                payload = backup.create_backup(
+                    content_source, destination, db_manifest
+                )
                 manifest_components.append(
                     {
                         **common,
@@ -454,9 +679,21 @@ def create_snapshot(plan_path: Path, persistent_root: Path, output: Path) -> dic
                     }
                 )
             elif kind == "directory":
-                entries = _directory_inventory(source)
+                entries = _directory_inventory(
+                    content_source,
+                    dereference_internal_symlinks=item[
+                        "dereferenceInternalSymlinks"
+                    ],
+                )
                 archive = component_root / f"{name}.tar"
-                _archive_directory(source, archive, entries)
+                _archive_directory(
+                    content_source,
+                    archive,
+                    entries,
+                    dereference_internal_symlinks=item[
+                        "dereferenceInternalSymlinks"
+                    ],
+                )
                 manifest_components.append(
                     {
                         **common,
@@ -469,29 +706,37 @@ def create_snapshot(plan_path: Path, persistent_root: Path, output: Path) -> dic
                     }
                 )
             else:
-                info = source.stat()
-                if not stat.S_ISREG(info.st_mode):
-                    raise SnapshotError(f"special_file_rejected:{source}")
-                source_sha256 = _sha256(source)
-                after_initial_hash = source.stat()
+                file_source, info, source_metadata = _file_component_source(item)
+                source_sha256 = _sha256(file_source)
+                after_initial_path, after_initial_hash, initial_metadata = (
+                    _file_component_source(item)
+                )
                 if (
-                    after_initial_hash.st_size != info.st_size
+                    after_initial_path != file_source
+                    or after_initial_hash.st_size != info.st_size
                     or after_initial_hash.st_mtime_ns != info.st_mtime_ns
+                    or initial_metadata != source_metadata
                 ):
                     raise SnapshotError(f"source_changed_during_snapshot:{source}")
                 destination = component_root / f"{name}.file"
-                shutil.copyfile(source, destination)
+                shutil.copyfile(file_source, destination)
                 os.chmod(destination, 0o600)
                 with destination.open("rb") as handle:
                     os.fsync(handle.fileno())
-                final_info = source.stat()
-                final_source_sha256 = _sha256(source)
-                after_final_hash = source.stat()
+                final_path, final_info, final_metadata = _file_component_source(item)
+                final_source_sha256 = _sha256(final_path)
+                after_final_path, after_final_hash, after_final_metadata = (
+                    _file_component_source(item)
+                )
                 if (
-                    final_info.st_mtime_ns != info.st_mtime_ns
+                    final_path != file_source
+                    or after_final_path != file_source
+                    or final_info.st_mtime_ns != info.st_mtime_ns
                     or final_info.st_size != info.st_size
                     or after_final_hash.st_mtime_ns != info.st_mtime_ns
                     or after_final_hash.st_size != info.st_size
+                    or final_metadata != source_metadata
+                    or after_final_metadata != source_metadata
                     or final_source_sha256 != source_sha256
                     or _sha256(destination) != source_sha256
                 ):
@@ -503,6 +748,7 @@ def create_snapshot(plan_path: Path, persistent_root: Path, output: Path) -> dic
                         "artifactSha256": _sha256(destination),
                         "artifactBytes": destination.stat().st_size,
                         "mode": stat.S_IMODE(info.st_mode),
+                        **source_metadata,
                     }
                 )
         manifest = {

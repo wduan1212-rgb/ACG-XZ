@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "releaseId": "20260803-v140-deployment-readiness-1",
-  "fileCount": 53,
-  "totalBytes": 2579960,
+  "fileCount": 54,
+  "totalBytes": 2592649,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -175,6 +175,11 @@
       "sha256": "1b5b2cc3adfad79b9c224cbac829bdf359af8ecea13e317753a4ac1ed7a3bfa5"
     },
     {
+      "path": "deploy/runtime-snapshot.production-v120.plan.example.json",
+      "size": 2892,
+      "sha256": "55aff86d72fc0e42d85b5678bc165e3e1a6e83a8067812836ac3bc93b36f4079"
+    },
+    {
       "path": "deploy/start_server.sh",
       "size": 32909,
       "sha256": "4d5c9345cfd235d7d3f87fb6db84235e4f4c237025d0af409eb460ce2ba3c866"
@@ -256,8 +261,8 @@
     },
     {
       "path": "server/scripts/runtime_snapshot.py",
-      "size": 31888,
-      "sha256": "fd22c84476a91aa74a7f96b81518665d28d31273f9b13d744aec7a98e60780cd"
+      "size": 41620,
+      "sha256": "320b19b394f95eb0545e34139231cf51cb464318bf3b5ecf137a5d1abf421c73"
     },
     {
       "path": "server/store.py",
@@ -266,8 +271,8 @@
     },
     {
       "path": "tools/verify_release_contracts.py",
-      "size": 37199,
-      "sha256": "fc63bd4126b925757d80b739d81c71c393870c04e051f447c288ec95d13312e9"
+      "size": 37264,
+      "sha256": "6fd77d455a7dd16dfa3831eef88482bcacc1fd453a30e8a1fbf0cd22203be998"
     }
   ]
 }

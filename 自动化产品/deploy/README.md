@@ -108,8 +108,8 @@ ACG_RELEASE_ID=20260803-v140-deployment-readiness-1 \
 
 - 首页可达 ESM 图及“一个物理模块只有一个 URL 身份”，并输出当前图的内容摘要；
 - 无限画布精确文件集、size 和 SHA-256；
-- 主后端、迁移/备份工具、部署脚本、视频 sidecar、视频 Web 桥接与
-  依赖声明的 runtime manifest；
+- 主后端、迁移/备份工具、生产 complete snapshot 计划、部署脚本、视频
+  sidecar、视频 Web 桥接与依赖声明的 runtime manifest；
 - manifest 的 release id 必须精确等于 `ACG_RELEASE_ID`。
 
 画布或 runtime manifest 覆盖范围内的漏文件、路径越界、symlink、哈希不一致，
@@ -163,10 +163,19 @@ snapshot ID 的备份与恢复；不得为了通过 readiness 删除来源未核
 
 维护窗必须复制并人工核对
 `deploy/runtime-snapshot.production-v120.plan.example.json`，不得用通用示例代替。该计划带
-`profile=acg-production-complete-v1`；组件名、类型、必填性、持久路径和越界许可都是精确契约。
+`profile=acg-production-complete-v1`；组件名、类型、必填性、持久路径、越界许可和
+`dereferenceInternalSymlinks` 都是精确契约。该解引用开关默认关闭，只有计划中的
+`model-cache` 和 `nginx-site` 必须显式为 `true`，其他组件开启或这两项关闭都会在 create
+前拒绝；该 production plan 自身也属于 runtime manifest 验签闭包。
 数据库、uploads、composed、canvas blobs、视频 runtime、BGM、模型缓存、现用环境、systemd
 和 Nginx 等必保组件不得缺失；只有计划中明确 `required=false` 的 legacy data、usage
 spool、server logs 或未启用的 v140 外部环境才可以以 `absent` 状态记录，仍不得从计划删除。
+模型缓存只解引用组件根内的相对文件 symlink：每一跳和最终普通文件都必须留在该根内；
+绝对链接、越界、目录链接、环、dangling 和设备/管道等特殊文件一律拒绝。Nginx 仅对精确的
+`/etc/nginx/sites-enabled/xingzhenworld.com` 单文件入口允许解引用，最终目标必须是
+`/etc/nginx` 内普通文件，因此可兼容 sites-available 的相对或绝对标准链接，但不能指向
+其他系统目录。manifest 和 tar/file artifact 按最终真实字节计算 SHA-256；restore-drill
+把两类链接位置恢复为普通文件，不在隔离恢复目录重建 symlink，也不修改或物化生产源目录。
 create 前必须冻结所有 writer，restore-drill 只能输出到全新的隔离目录。
 create stdout 中的 `manifestSha256` 必须另行记录；verify 和 restore-drill 都强制提供该值，
 不允许只信任快照目录内可同时被替换的文件。

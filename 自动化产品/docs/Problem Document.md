@@ -4,6 +4,13 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-04 v140 生产门禁修复：全局拒绝 symlink 与全局 follow symlink 都不是安全的 complete snapshot
+
+- **目标环境症状**：`6767129` 已在 Ubuntu 通过 wheelhouse、无私密全量和 receipt 门禁，但 complete snapshot 首先因 Nginx `sites-enabled` 入口是 symlink 被拒绝，随后又因 Hugging Face `snapshots/.../model.bin -> blobs/...` 的标准内部 symlink 停止。`model-cache` 是 production complete profile 必保组件，删掉组件或运维临时改 plan 都会破坏精确契约。后续生产只读扫描证明其他 complete 目录组件均为 0 个 symlink，model-cache 只有 4 个根内普通文件链接，越界/dangling/内部特殊文件均为 0，因此不应扩大到业务媒体目录。
+- **组件级修复**：`dereferenceInternalSymlinks` 默认为 false，只有 production exact contract 的 `model-cache` 和 `nginx-site` 为 true。模型缓存每一跳必须是根内相对文件链接，最终目标必须是根内普通文件；Nginx 的精确单文件入口可使用相对或绝对链接，但最终目标必须留在 `/etc/nginx`。其他组件开启、模型缓存绝对/越界/目录链接、环、dangling 和特殊文件均 fail closed。
+- **恢复语义**：inventory 保留链接位置与受控目标审计信息，tar/file artifact 和 manifest SHA-256 均对解析后的真实字节计算；restore-drill 在隔离目录恢复为普通文件。工具不会修改、重写或物化生产模型缓存。
+- **防回归边界**：production plan 本身纳入 runtime manifest；测试必须覆盖安全内部链接、Nginx 标准链接、绝对/越界/环/dangling/目录/特殊文件拒绝，以及 create→verify→restore-drill 字节一致且恢复端无 symlink。目标 Linux 完整冻结快照仍须从新提交复验，本地通过不能直接解锁迁移或 RW。
+
 ## 2026-08-04 v140 生产门禁修复：SQLite 同进程惊群与隐式 wheel 不能作为偶发抖动放行
 
 - **Ubuntu 确定性症状**：目标 Ubuntu 24.04 / CPython 3.12.3 在无私密、离线测试环境连续复现 64 个不同幂等键写入时至少一个 `BEGIN IMMEDIATE` 用尽 5 次重试并抛出 `ModelUsageReceiptWriteError`。同一发布的 sidecar 锁又缺少 ctranslate2 4.8.1 声明的 setuptools；联网构建会隐式下载该 wheel，已有 venv 也可能碰巧安装过它，但严格 `--no-deps` 新 venv 会在 `pip check` 稳定失败。

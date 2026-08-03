@@ -81,6 +81,14 @@ class RuntimeSnapshotTests(unittest.TestCase):
         self.assertEqual(
             "/data/dumate-studio/current/server/data.sqlite", database["path"]
         )
+        policies = {
+            item["name"]: item.get("dereferenceInternalSymlinks", False)
+            for item in production["components"]
+        }
+        self.assertEqual(
+            {"model-cache", "nginx-site"},
+            {name for name, enabled in policies.items() if enabled},
+        )
 
     def _fixture(self, root: Path):
         persistent = root / "persistent"
@@ -223,6 +231,245 @@ class RuntimeSnapshotTests(unittest.TestCase):
             with self.assertRaisesRegex(module.SnapshotError, "symlink"):
                 module.create_snapshot(plan, persistent, root / "snapshot")
 
+    def test_nonproduction_plan_cannot_enable_symlink_dereference(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            persistent, plan = self._fixture(root)
+            payload = json.loads(plan.read_text("utf-8"))
+            payload["components"][2]["dereferenceInternalSymlinks"] = True
+            plan.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(
+                module.SnapshotError, "dereference_not_allowed:runtime-env"
+            ):
+                module.create_snapshot(plan, persistent, root / "snapshot")
+
+    def test_approved_symlinks_are_hashed_and_restored_as_regular_files(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            persistent = root / "persistent"
+            persistent.mkdir()
+            database = persistent / "data.sqlite"
+            with sqlite3.connect(database) as conn:
+                conn.execute("CREATE TABLE records(id INTEGER PRIMARY KEY)")
+            model_cache = persistent / "model-cache"
+            blob = model_cache / "blobs" / "sha256-model"
+            blob.parent.mkdir(parents=True)
+            blob.write_bytes(b"trusted-model-bytes")
+            snapshot_dir = model_cache / "snapshots" / "revision-one"
+            snapshot_dir.mkdir(parents=True)
+            os.symlink("../../blobs/sha256-model", snapshot_dir / "model.bin")
+            nginx = root / "etc" / "nginx"
+            nginx_enabled = nginx / "sites-enabled"
+            nginx_available = nginx / "sites-available"
+            nginx_enabled.mkdir(parents=True)
+            nginx_available.mkdir()
+            nginx_target = nginx_available / "site.conf"
+            nginx_target.write_text("server { listen 80; }\n", encoding="utf-8")
+            nginx_source = nginx_enabled / "site.conf"
+            os.symlink("../sites-available/site.conf", nginx_source)
+            plan = root / "plan.json"
+            plan.write_text(
+                json.dumps({
+                    "format": module.PLAN_FORMAT,
+                    "profile": module.PRODUCTION_COMPLETE_PROFILE,
+                    "releaseId": "symlink-test",
+                    "components": [
+                        {
+                            "name": "database",
+                            "type": "sqlite",
+                            "path": str(database),
+                        },
+                        {
+                            "name": "model-cache",
+                            "type": "directory",
+                            "path": str(model_cache),
+                            "dereferenceInternalSymlinks": True,
+                        },
+                        {
+                            "name": "nginx-site",
+                            "type": "file",
+                            "path": str(nginx_source),
+                            "allowOutsidePersistentRoot": True,
+                            "dereferenceInternalSymlinks": True,
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+            contract = {
+                "database": (
+                    "sqlite", True, str(database), False, False,
+                ),
+                "model-cache": (
+                    "directory", True, str(model_cache), False, True,
+                ),
+                "nginx-site": (
+                    "file", True, str(nginx_source), True, True,
+                ),
+            }
+            with patch.object(
+                module, "PRODUCTION_COMPLETE_COMPONENTS", contract
+            ), patch.dict(
+                module.PRODUCTION_COMPONENT_SYMLINK_ROOTS,
+                {"nginx-site": nginx},
+                clear=True,
+            ):
+                snapshot = root / "snapshot"
+                manifest = module.create_snapshot(plan, persistent, snapshot)
+                digest = (snapshot / "snapshot.manifest.sha256").read_text(
+                    "ascii"
+                ).strip()
+                self.assertTrue(module.verify_snapshot(
+                    snapshot, expected_manifest_sha256=digest,
+                )["ok"])
+                model_component = next(
+                    item for item in manifest["components"]
+                    if item["name"] == "model-cache"
+                )
+                linked_entry = next(
+                    item for item in model_component["files"]
+                    if item["path"] == "snapshots/revision-one/model.bin"
+                )
+                self.assertTrue(linked_entry["dereferencedSymlink"])
+                self.assertEqual("blobs/sha256-model", linked_entry["targetPath"])
+                self.assertEqual(
+                    hashlib.sha256(b"trusted-model-bytes").hexdigest(),
+                    linked_entry["sha256"],
+                )
+                nginx_component = next(
+                    item for item in manifest["components"]
+                    if item["name"] == "nginx-site"
+                )
+                self.assertTrue(nginx_component["sourceWasSymlink"])
+                self.assertEqual(
+                    hashlib.sha256(b"server { listen 80; }\n").hexdigest(),
+                    nginx_component["artifactSha256"],
+                )
+                restored = root / "restored"
+                module.restore_drill(
+                    snapshot,
+                    restored,
+                    expected_manifest_sha256=digest,
+                )
+                restored_model = (
+                    restored / "model-cache" / "snapshots" / "revision-one"
+                    / "model.bin"
+                )
+                self.assertFalse(restored_model.is_symlink())
+                self.assertEqual(b"trusted-model-bytes", restored_model.read_bytes())
+                restored_nginx = restored / "nginx-site"
+                self.assertFalse(restored_nginx.is_symlink())
+                self.assertEqual(
+                    b"server { listen 80; }\n", restored_nginx.read_bytes()
+                )
+
+    def test_model_cache_symlink_policy_rejects_unsafe_targets(self):
+        module = load_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "cache"
+            root.mkdir()
+            (root / "blob.bin").write_bytes(b"inside")
+            os.symlink("blob.bin", root / "model.bin")
+            with self.assertRaisesRegex(
+                module.SnapshotError, "file_symlink_rejected"
+            ):
+                module._directory_inventory(root)
+
+        def assert_rejected(setup, pattern):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp) / "cache"
+                root.mkdir()
+                setup(root)
+                with self.assertRaisesRegex(module.SnapshotError, pattern):
+                    module._directory_inventory(
+                        root, dereference_internal_symlinks=True,
+                    )
+
+        def outside(root):
+            target = root.parent / "outside.bin"
+            target.write_bytes(b"outside")
+            os.symlink("../outside.bin", root / "model.bin")
+
+        def absolute(root):
+            target = root / "blob.bin"
+            target.write_bytes(b"inside")
+            os.symlink(str(target), root / "model.bin")
+
+        def nested_absolute(root):
+            target = root / "blob.bin"
+            target.write_bytes(b"inside")
+            os.symlink(str(target), root / "second-link.bin")
+            os.symlink("second-link.bin", root / "model.bin")
+
+        def dangling(root):
+            os.symlink("missing.bin", root / "model.bin")
+
+        def loop(root):
+            os.symlink("second.bin", root / "first.bin")
+            os.symlink("first.bin", root / "second.bin")
+
+        def directory(root):
+            target = root / "target-dir"
+            target.mkdir()
+            os.symlink("target-dir", root / "linked-dir")
+
+        def special(root):
+            target = root / "pipe"
+            os.mkfifo(target)
+            os.symlink("pipe", root / "model.bin")
+
+        assert_rejected(outside, "target_outside_component")
+        assert_rejected(absolute, "absolute_symlink_rejected")
+        assert_rejected(nested_absolute, "absolute_symlink_rejected")
+        assert_rejected(dangling, "dangling_symlink_rejected")
+        assert_rejected(loop, "symlink_loop_rejected")
+        assert_rejected(directory, "directory_symlink_rejected")
+        assert_rejected(special, "special_file_rejected")
+
+    def test_nginx_component_symlink_is_scoped_to_explicit_root(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nginx = root / "etc" / "nginx"
+            enabled = nginx / "sites-enabled"
+            available = nginx / "sites-available"
+            enabled.mkdir(parents=True)
+            available.mkdir()
+            source = enabled / "site.conf"
+            target = available / "site.conf"
+            target.write_text("server {}\n", encoding="utf-8")
+            os.symlink("../sites-available/site.conf", source)
+            item = {
+                "name": "nginx-site",
+                "path": source,
+                "dereferenceInternalSymlinks": True,
+            }
+            with patch.dict(
+                module.PRODUCTION_COMPONENT_SYMLINK_ROOTS,
+                {"nginx-site": nginx},
+                clear=True,
+            ):
+                resolved, _info, metadata = module._file_component_source(item)
+                self.assertEqual(target.resolve(), resolved)
+                self.assertTrue(metadata["sourceWasSymlink"])
+                source.unlink()
+                os.symlink(str(target.resolve()), source)
+                absolute_resolved, _info, _metadata = (
+                    module._file_component_source(item)
+                )
+                self.assertEqual(target.resolve(), absolute_resolved)
+                external = root / "outside.conf"
+                external.write_text("outside\n", encoding="utf-8")
+                source.unlink()
+                os.symlink(str(external), source)
+                with self.assertRaisesRegex(
+                    module.SnapshotError, "target_outside_component"
+                ):
+                    module._file_component_source(item)
+
     def test_snapshot_and_restore_refuse_existing_outputs(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -252,7 +499,7 @@ class RuntimeSnapshotTests(unittest.TestCase):
             persistent = Path(tmp) / "persistent"
             persistent.mkdir()
             components = []
-            for name, (kind, required, relative, outside) in (
+            for name, (kind, required, relative, outside, dereference) in (
                 module.PRODUCTION_COMPLETE_COMPONENTS.items()
             ):
                 path = (
@@ -267,6 +514,7 @@ class RuntimeSnapshotTests(unittest.TestCase):
                     "source": str(path),
                     "required": required,
                     "allowOutsidePersistentRoot": outside,
+                    "dereferenceInternalSymlinks": dereference,
                 })
 
             wrong_type = [dict(item) for item in components]
@@ -296,6 +544,38 @@ class RuntimeSnapshotTests(unittest.TestCase):
             with self.assertRaisesRegex(module.SnapshotError, "path_invalid:uploads"):
                 module._validate_production_component_contract(
                     wrong_path, persistent, snapshot=False
+                )
+
+            wrong_dereference = [dict(item) for item in components]
+            next(
+                item for item in wrong_dereference
+                if item["name"] == "model-cache"
+            )["dereferenceInternalSymlinks"] = False
+            with self.assertRaisesRegex(
+                module.SnapshotError, "dereference_invalid:model-cache"
+            ):
+                module._validate_production_component_contract(
+                    wrong_dereference, persistent, snapshot=False
+                )
+            wrong_scope = [dict(item) for item in components]
+            next(
+                item for item in wrong_scope if item["name"] == "uploads"
+            )["dereferenceInternalSymlinks"] = True
+            with self.assertRaisesRegex(
+                module.SnapshotError, "dereference_invalid:uploads"
+            ):
+                module._validate_production_component_contract(
+                    wrong_scope, persistent, snapshot=False
+                )
+            next(
+                item for item in wrong_dereference
+                if item["name"] == "model-cache"
+            )["dereferenceInternalSymlinks"] = "true"
+            with self.assertRaisesRegex(
+                module.SnapshotError, "dereference_invalid:model-cache"
+            ):
+                module._validate_production_component_contract(
+                    wrong_dereference, persistent, snapshot=False
                 )
 
             absent = [dict(item) for item in components]

@@ -64,7 +64,8 @@
     {
       "name": "model-cache",
       "type": "directory",
-      "path": "/data/dumate-studio/current/runtime/model-cache"
+      "path": "/data/dumate-studio/current/runtime/model-cache",
+      "dereferenceInternalSymlinks": true
     },
     {
       "name": "runtime-env-public",
@@ -99,7 +100,8 @@
       "name": "nginx-site",
       "type": "file",
       "path": "/etc/nginx/sites-enabled/xingzhenworld.com",
-      "allowOutsidePersistentRoot": true
+      "allowOutsidePersistentRoot": true,
+      "dereferenceInternalSymlinks": true
     }
   ]
 }

@@ -47,6 +47,7 @@ RUNTIME_EXACT_PATHS = {
     "apps/video-workshop/run.py",
     "apps/video-workshop/requirements.txt",
     "apps/video-workshop/requirements.lock.txt",
+    "deploy/runtime-snapshot.production-v120.plan.example.json",
     "deploy/verify_offline_dependencies.py",
     "deploy/verify_production_write_gate.py",
     "tools/verify_release_contracts.py",
