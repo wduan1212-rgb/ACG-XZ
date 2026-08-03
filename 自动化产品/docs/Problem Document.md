@@ -4,6 +4,21 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-03 v139 修复与风险：用量凭证不能丢，也不能拖垮生成
+
+- **修复**：主服务、无限画布和视频工坊所有已识别的真实模型入口均改为“每次 upstream attempt 调用前持久化 receipt”；重试/降级逐次记账，成功后本地解析或下载失败仍保留已调用事实。旧静默 `_record_*` 旁路已移除；完成写失败进入去敏、可校验、可重放的本地 spool，后台仅在存在 pending 时投影旧 usage 表。
+- **性能边界**：SQLite 仍是单写者，receipt 不是零成本。当前本地 64/128 并发典型 P99 约 0.20s/0.48s，最坏样本 0.69s/0.74s；异常长锁约 1.08s 后拒绝该次生成，且不占用全局 `store._lock`。部署前必须在生产同盘副本连续压测；64 P99 >0.75s、128 P99 >1s、单次 >1.25s、任何重复授权/漏凭证或事件循环 P99 gap >100ms 都必须阻断。已存在的幂等重放仍会先抢 `BEGIN IMMEDIATE`，重试风暴下可后续优化只读 exact preflight，但不能以放松唯一约束换速度。
+- **spool 隔离**：`MODEL_USAGE_COMPLETION_SPOOL_DIR` 必须位于 release 外持久根并纳入数据库同一恢复集。测试必须将 spool 指向临时目录或 mock；假 receipt 若落到真实本地 spool，会造成 readiness pending。不得为清零门禁删除无法确认来源的生产 envelope，应先隔离、核验 checksum/receipt 与数据库身份。
+- **历史恢复边界**：恢复工具只接受只读扫描和隔离数据库副本，拒绝活动库、源库同目录、已配置 `DATA_DB` 及生产持久根内目标。只有可证明的 charged receipt、成功静态图片、最小 TTS observation、Seedance accepted event 可形成证据下限；导演 LLM、未知 token、印象日期不能猜补。manifest 应先人工审计，再在副本 `apply`/`reconcile-copy` 两次验证零重复；任何生产写入仍需单独授权。
+- **仍未解除的部署阻断**：生产仍为 v120；`139001`、spool/outbox 和恢复工具只在本地提交。通用 deny-by-default resource scope、uploads/composed owner registry、迁移与已验证备份 manifest 的原子绑定、完整媒体异机恢复、离线依赖和兼容前向回滚 release 未完成前，不得开放生产写入或把原始 v120 直接回滚到演进库。
+
+## 2026-08-03 v138 风险：模型用量为 0 不等于没有调用
+
+- **生产只读证据**：SQLite `quick_check=ok`，`llm_usage_events` / `api_usage_events` 分别已有 824 / 1,186 行，前后日期均在持续写入；但北京时间 2026-08-02 两表全平台都是 0。指定 editor 成员两表历史均为 0，而其 2026-07-31 成功视频工坊项目包含 80 条事件、1 个最终输出和 3 条平台输出映射，直接证明“真实使用成功但中央用量账本零记录”。本轮没有证据证明该成员在 8 月 2 日产生项目活动，不能按印象补写日期或用量。
+- **根因**：生产 v120 只覆盖主服务部分调用；视频工坊 sidecar 直接调用 LLM、图片、TTS、Seedance，却没有 usage bridge。v137 的 `billingUsage` 仅用于静态视频积分 reconciliation，不会写两张模型用量表；主服务 TTS / 音色链路也未完整记录，汇总还硬编码排除 `role=user`，遥测写入异常会被吞掉而无持久重试。
+- **处理边界**：现有面板只能称为“有限覆盖的应用事件账本”，不是供应商账单。旧项目没有可靠 token/provider receipt 时，禁止估算成真实 token 或 API 调用；历史只能形成明确标注的 observation，不混入已验证用量，也不得给指定成员补写 8 月 2 日数据。
+- **生产前门禁**：新增追加式、唯一幂等的 usage receipt/outbox；主服务下发 operation/member/team 身份，sidecar 只产出去敏 receipt，由主服务核验 owner 后入库；无 token 的成功调用保留“已调用、token 未提供”。SQLite busy 等失败必须持久重试并告警。汇总按授权成员/团队而非硬编码角色，覆盖 voice/date/source；迁移保持 member ID 不变并在生产副本连续执行两次，核对旧 824 / 1,186 行不变、新 receipt 不重复。
+
 ## 2026-08-03 v137 修复：同一视频项目的新任务不能复用上一任务参考图
 
 - **现象**：同一视频工坊项目先制作“秒哒”内容，再以无附件的“帮我做一个中式恐怖的盗墓短片”创建静态视频，新成片 47 秒附近仍出现了上一轮的蓝色 IP 形象。结果并非新任务主动携带参考图。

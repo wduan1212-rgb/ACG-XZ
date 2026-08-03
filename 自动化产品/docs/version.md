@@ -1,5 +1,41 @@
 # 星阵版本记录
 
+## v139 - 2026-08-03（统一模型用量持久凭证与副本恢复工具；本地代码 `7b6e36c`，未推送、未部署）
+
+### 本版范围
+
+- 新增 `139001` (`v139-model-usage-receipt-outbox`)：每次真实上游尝试都在调用前持久化独立 receipt，主服务 LLM/视觉文案/图片/Seedance/数字人/TTS/音色/供应商助手、无限画布 Agent 与图片链路、视频工坊导演/图片/TTS/Seedance 全部接入；重试和降级使用 `:attempt:N`，幂等重放不会二次授权上游。
+- SQLite 完成写失败不再静默吞掉：精简、去敏的 completion envelope 先写 `MODEL_USAGE_COMPLETION_SPOOL_DIR`（默认 `DATA_DB` 同级 `model_usage_spool`），后台循环重放 spool 与 legacy projection outbox；`/api/ready` 显式报告 unresolved、outbox pending、spool pending/corrupt/conflict。供应商已接受但本地解析、下载或 resize 失败仍按已调用完成记录，不误降为“未知”。
+- 视频工坊使用主服务核验 owner/member/team 的 receipt bridge，并把项目保存改成临时文件 fsync、原子替换和目录 fsync；项目轮询对已投影终态采用只读精确查找，避免每次刷新重复抢 SQLite 写锁。无限画布浏览器端供应商 Key/直连路径已禁用，所有模型调用统一经过主服务。
+- 新增 `server/model_usage_recovery.py` 历史恢复工具：只从只读、immutable/query-only 的生产副本及 runtime 形成证据下限 manifest；只允许对独立目录中的数据库副本执行 `scan -> apply -> reconcile-copy`，拒绝活动库、同目录副本和生产持久根。无法证明的导演 token、日期或调用次数不估算，不把 observation 冒充供应商账单。
+- 设置页用量增加调用数、图片/视频/语音、token 未知调用及未决凭证展示；旧 `llm_usage_events` / `api_usage_events` 保持原样，通过 outbox 幂等投影。生产 v120 尚未获得这些能力，历史 824 / 1,186 行也未被改写或回填。
+
+### 性能、验证与发布边界
+
+- 本地临时 SQLite 压测 64 路唯一调用典型 P99 约 200ms、最坏样本 689ms；128 路典型 P99 约 475ms、最坏 743ms，均 0 异常、唯一数和授权数准确。外部长写锁约 1.06–1.08s 后 fail closed，期间不持有 `store._lock`，异步入口通过 `asyncio.to_thread` 保持事件循环可调度。生产同盘副本仍必须暖库连续 5 轮；64 路 P99 >750ms、128 路 P99 >1s、单次 >1.25s 或事件循环 P99 间隔 >100ms 均阻断部署。
+- 最终自动回归通过：主服务 `618/618`、视频工坊 `137/137`、Node `97/97`；Python compileall、全部 JavaScript 语法、无限画布 lint/typecheck/生产构建/vendor 校验和 `git diff --check` 通过。完成写失败的画布测试已隔离补偿队列，假凭证不会再进入本地运行目录。
+- release verifier 通过 59 个 ESM 模块/339 条本地边、63 个无限画布文件/1,759,226 bytes 和 48 个 backend/video runtime 文件；最终 Phase 0 SHA-256 为 `539b9657d401eb076edd0fd722f0907ece33aec7d45ec69c4de0e1dbe41641c5`，画布 manifest 为 `5f30a760868603d79727d7ed9af472ce15a7e304afaf31833dd50f7f8cfbaa7d`，runtime manifest 为 `b17813006dbfb51b42c33bae71611ce1139affec79fdcb0830adad4da029d0f6`。
+- 本地 8787/8765 已以标准启动器重启，主服务 `/api/health`、sidecar `/api/health` 与 `/api/ready` 全部通过并回报 `20260803-v139-durable-usage-1`；本地 readiness 为 migration `139001`、unresolved/outbox/spool pending/corrupt/conflict 全为 0。
+- 本轮没有真实图片、语音或视频付费调用；没有向生产执行恢复、迁移、回填或任何写入，也未推送、未部署。两份归属未知的 Project Memory 删除继续排除。下一轮即使获部署授权，也必须先在生产一致副本验证迁移、恢复、receipt 性能和权限/媒体门禁，不能直接同步当前工作区。
+
+## v138 - 2026-08-03（默认首页、灵感详情白条与生产模型用量审计；本地代码 `844039a`，未推送、未部署）
+
+### 本版范围
+
+- 主启动器默认打开 `#/home`，入口初始 zone 同步为 home；供应商登录后的专属路由不变。首页灵感/整体资产收藏详情继续沿用 v137 的“点击后有声播放、桌面左侧媒体固定、右栏独立滚动、右上角纯图标点赞收藏”，并移除详情头部 sticky 白色渐变条。
+- 主平台、供应商视图和视频工坊抬升到统一 release/缓存身份 `20260803-v138-home-usage-audit-1`，避免一年 immutable 缓存继续返回旧 CSS；runtime manifest 已按最终源码重建。浏览器已实际从根地址进入 `#/home`，打开指定灵感详情并确认白条消失、分类和纯图标操作保持在右上区域。
+- 生产仅做固定、非交互只读核对：SQLite `quick_check=ok`；`llm_usage_events` / `api_usage_events` 共 824 / 1,186 行并在前后日期持续写入，但北京时间 2026-08-02 两表全平台均为 0。指定 editor 在 2026-07-31 有成功视频工坊项目（80 条事件、1 个最终输出、3 条平台输出映射）而两表历史均为 0，证实视频工坊调用真实漏记；没有证据支持把该成员的使用日期写成 8 月 2 日。
+- 根因是视频工坊 sidecar 直接调用 LLM、图片、TTS 和 Seedance，却没有中央 usage bridge；v137 `billingUsage` 只结算静态视频积分。主服务 TTS/音色、`role=user` 汇总和 SQLite 写失败持久重试也未完整覆盖。因此当前面板是有限覆盖的事件账本，不是供应商账单；本版没有伪造或回填任何历史 token/调用。
+- 架构复核结论：v137 已完成环境/持久路径隔离、显式 `137003/137004` 迁移、强制只读、readiness、release verifier 和一致 SQLite 备份等 Phase 0/1 安全层，但 `server/main.py` / `server/store.py` 仍是大单体。生产写入继续被 deny-by-default 资源 scope、媒体 owner registry、迁移与备份 manifest 原子绑定、完整媒体恢复/离线依赖，以及幂等 usage receipt/outbox 阻断。
+
+### 验证与发布边界
+
+- 最终自动回归通过：主服务 `557/557`、视频工坊 `132/132`、Node `97/97`；Python compileall（缓存定向到 `/private/tmp`）、改动 JavaScript 语法、shell 语法、`git diff --check` 和暂存后的 `git diff --cached --check` 均通过。
+- release verifier 通过 59 个 ESM 模块/339 条本地边、61 个无限画布文件/1,761,292 bytes 和 46 个 backend/video runtime 文件；Phase 0 SHA-256 为 `8c94aced2b2b9f98fb5b81ee8d8f53d5344ff113f5cf932fee150ba56a2b54d9`，runtime manifest SHA-256 为 `e69927ddb3ac4496ecd0f5e93d77911d36a3cdaabdbcc168dedd24336a3e6f40`。
+- 本地已以标准启动器重启 8787/8765；主服务 `/api/health`、`/api/ready` 与 sidecar `/api/health` 均通过并回报同一 v138 build ID。Playwright 冷启动确认根地址自动落到 `#/home`，详情截图保存在 `output/playwright/v138-final-home-detail.png`（运行证据，不入 Git）。
+- 本轮未执行真实图片、语音或视频付费生成，未推送、未部署，也未修改生产数据库、生产文件、服务、账号或私密配置。两份归属未知的 Project Memory 删除继续排除。
+- 下一步不能直接把当前主工作区同步到服务器。获得部署授权后应从批准提交构建干净 release，冻结全部 writer，形成同一 snapshot ID 的 SQLite/媒体/环境/认证/systemd/Nginx/依赖恢复集，在同环境副本连续演练迁移与 usage reconciliation 两次，再做只读切换；执行 `137003/137004` 后原始 v120 不能作为回滚代码。
+
 ## v137 - 2026-08-03（架构隔离、静态任务引用安全与灵感详情收口；本地代码 `52e3d72`，未推送、未部署）
 
 ### 本版范围

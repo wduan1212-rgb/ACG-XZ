@@ -1,8 +1,9 @@
-# v138 部署入口契约（沿用 v137 迁移安全协议）
+# v139 部署入口契约（沿用 v137 迁移安全协议）
 
-> 本文件是代码仓内的通用契约，不代表当前生产实况。v138 仍只允许作为
+> 本文件是代码仓内的通用契约，不代表当前生产实况。v139 仍只允许作为
 > **生产只读迁移验收版**；资源级管理员鉴权和私有媒体注册表未收口前，
-> 且统一模型用量 receipt/outbox 未实现前，不得开启生产业务写入。本地开发使用 `start.command`，不使用本目录的
+> 不得开启生产业务写入。统一模型用量 receipt/outbox 已在本地实现，但生产
+> 历史恢复仍只能在核验副本上执行。本地开发使用 `start.command`，不使用本目录的
 > 生产入口。
 
 正式操作前还必须阅读：
@@ -54,13 +55,14 @@ ACG_RUNTIME_MODE=production
 ACG_DB_BOOTSTRAP_MODE=validate
 ACG_READ_ONLY=1
 ACG_REQUIRE_INTERNAL_TEAM=1
-ACG_RELEASE_ID=20260803-v138-home-usage-audit-1
+ACG_RELEASE_ID=20260803-v139-durable-usage-1
 ACG_RELEASE_ROOT=/srv/acg/releases/<release-id>
 ACG_PERSISTENT_ROOT=/srv/acg/shared
 ACG_ENV_FILE=/srv/acg/shared/config/runtime.env
 ACG_READY_TOKEN=<random-secret>
 
 DATA_DB=/srv/acg/shared/data/data.sqlite
+MODEL_USAGE_COMPLETION_SPOOL_DIR=/srv/acg/shared/data/model_usage_spool
 LEGACY_DATA_FILE=/srv/acg/shared/data/data.json
 UPLOAD_DIR=/srv/acg/shared/uploads
 COMPOSED_DIR=/srv/acg/shared/composed
@@ -83,7 +85,7 @@ path、query 或 fragment。
 
 ```bash
 cd /path/to/unpacked-release
-ACG_RELEASE_ID=20260803-v138-home-usage-audit-1 \
+ACG_RELEASE_ID=20260803-v139-durable-usage-1 \
   deploy/verify_release_contracts.sh
 ```
 
@@ -123,7 +125,11 @@ curl -fsS http://127.0.0.1:8765/api/health
 ```
 
 `/api/ready` 要求 release、SQLite/schema/migration ledger、ACG 团队迁移、所有持久
-路径、sidecar 精确版本和只读状态、无限画布 manifest 全部通过。
+路径、sidecar 精确版本和只读状态、无限画布 manifest，以及模型用量
+unresolved/outbox/spool pending/corrupt/conflict 全部通过。
+
+`MODEL_USAGE_COMPLETION_SPOOL_DIR` 必须位于 release 外持久根，并与 SQLite 纳入同一
+snapshot ID 的备份与恢复；不得为了通过 readiness 删除来源未核验的 envelope。
 
 ## 迁移与备份边界
 
@@ -135,9 +141,35 @@ ACG preflight / ACG apply 命令。主服务、sidecar、后台任务及其他 w
 `ACG_ALLOW_SCHEMA_MIGRATION=1` 或 `ACG_ALLOW_ACG_TEAM_MIGRATION=1`、版本和数据库
 identity 确认；结束后先恢复 `ACG_READ_ONLY=1` 再启动服务。禁止把外部环境文件
 永久改成可写或在 apply 期间启动业务进程。两次连续迁移必须验证幂等，记录数不得下降。
+v139 的 `139001` usage migration、receipt/outbox reconciliation 和 completion spool
+replay 也必须在生产同环境副本连续验证两次，第二次零新增、零重复投影，旧 usage event
+ID/member ID 保持不变。
 
-v137 不允许把原始 v120 二进制回滚到已迁移数据库上。回滚只能使用兼容
-137003/137004 的前向版本。完整媒体备份、异机恢复演练、锁定依赖的同环境
+历史用量恢复只允许先以 `server/model_usage_recovery.py` 对只读生产副本/runtime 做
+`scan`，人工审计 evidence-only manifest，再对隔离目录数据库副本执行 `apply` 与
+`reconcile-copy`。工具必须拒绝活动 `DATA_DB`、源库同目录和生产持久根目标；无法证明的
+token、日期和调用不得猜补。任何生产 apply 仍需单独授权。
+
+```bash
+python3 server/model_usage_recovery.py scan \
+  --database <closed-read-only-snapshot.sqlite> \
+  --video-dir <snapshot-video-projects> --output <manifest.json>
+python3 server/model_usage_recovery.py apply \
+  --manifest <manifest.json> --target-database <isolated-copy/data.sqlite> \
+  --confirm-manifest-sha256 <manifest-sha256> --expected-db-sha256 <current-copy-sha256>
+python3 server/model_usage_recovery.py reconcile-copy \
+  --manifest <manifest.json> --target-database <isolated-copy/data.sqlite> \
+  --confirm-manifest-sha256 <manifest-sha256> --expected-db-sha256 <recomputed-copy-sha256>
+```
+
+每一步后都要重新计算副本 SHA-256；不得把上一阶段的 hash 复用到已变化的副本。
+
+receipt 性能必须在生产同规格磁盘暖库后连续 5 轮通过：64 路 P99 不超过 750ms，
+128 路 P99 不超过 1s，单次不超过 1.25s，异步事件循环 P99 gap 不超过 100ms；
+任一写异常、重复授权、数量错位或数据库长锁期间发生供应商调用都阻断部署。
+
+v139 不允许把原始 v120 二进制回滚到已迁移数据库上。回滚只能使用兼容
+137003/137004/139001 的前向版本。完整媒体备份、异机恢复演练、锁定依赖的同环境
 离线 wheelhouse，仍是真正执行生产迁移前的硬门禁。
 
 ## Docker
