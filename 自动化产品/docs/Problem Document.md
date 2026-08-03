@@ -4,6 +4,26 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-03 v137 修复：同一视频项目的新任务不能复用上一任务参考图
+
+- **现象**：同一视频工坊项目先制作“秒哒”内容，再以无附件的“帮我做一个中式恐怖的盗墓短片”创建静态视频，新成片 47 秒附近仍出现了上一轮的蓝色 IP 形象。结果并非新任务主动携带参考图。
+- **根因**：连续性设定图使用项目级固定文件名 `continuity-anchor-NN.jpg`，新生产计划即使 `reference_images=[]` 也会命中旧文件；导演请求还携带全部项目对话历史，进一步污染新任务语义。
+- **修复**：每次被接受的生产计划获得独立 `reference_scope_id`，anchor 文件名必须带该 scope；旧计划回退使用计划身份 SHA-256，不再命中旧固定名。导演上下文从最近一次助手交付边界之后开始；同一生产的恢复/重试继续自身 scope，不破坏本轮一致性。
+- **防回归**：测试必须在同一 project 内先写入带附件的旧任务和旧 anchor，再提交无附件新任务，同时断言导演消息、provider 参考数组和实际 anchor 路径均不含旧任务。旧已生成成片不会被自动重做，只保证新任务不再串图。
+
+## 2026-08-03 v137 风险：架构分层不能在部署入口留下降级绕过或混版窗口
+
+- **已修复的门禁**：外部 env 在 store import 前解析，生产普通启动 validate-only；`137003` schema 与 `137004` ACG data 分离记账/授权，并阻断 canonical 身份冲突、供应商父子/账号孤儿关系；生产入口无法降级为 local/test，只允许强制只读。sidecar 只允许同端口的字面回环 HTTP origin，主服务/sidecar/release ID 必须精确匹配。停服后 PID 或监听端口未清空就在备份前终止。
+- **迁移编号不可复用**：本机早期 v137 中间构建已留下 `137001` 的旧 checksum，最终 schema identity 变化后严格校验会拒绝启动。没有改写或删除旧账本，也没有放宽 checksum；最终迁移顺延为 `137003/137004`，旧 `137001/137002` 明确退役。以后 migration 文件或 identity 发生任何变化都必须使用新版本号。
+- **发布闭包**：release verifier 校验首页 ESM 可达图/单一 URL 身份并输出图摘要，精确校验无限画布 manifest，以及主后端/迁移/备份/部署脚本与视频 sidecar/Web/skill/OpenMontage runtime manifest。对应闭包内的路径越界、symlink、漏文件或哈希不一致均 fail closed；但 CSS/普通 assets 尚未绑定到同一 manifest，仍需批准 identity set/外部 release 摘要，不能宣称当前 verifier 已自动阻断所有前端字节混版。不得在服务器上为了通过门禁而重建 manifest。
+- **仍未完成的 P0**：通用 `role=admin` 资源 scope 尚未全面 deny-by-default，uploads/composed 尚无完整 owner registry 与历史直链兼容授权；迁移 apply 尚未在同一事务中绑定“已验证备份 manifest + 当前 DB 逻辑摘要”；完整媒体异机恢复演练和目标环境离线依赖锁也未完成。因此 v137 不能开放生产写入，当前也不应直接执行生产迁移。
+- **防回归**：生产部署测试要主动传入 local/test、关闭 ACG 团队门禁、外网/localhost/错端口 sidecar URL、伪造非空 contract、旧 release ID、TERM 不退出进程、lsof 失败和残留监听，断言它们全部在数据变更/备份前失败。`/api/health` 继续只证明存活，不代替 `/api/ready`。
+
+## 2026-08-03 v137 修复与余留：供应商租户切片 fail-closed 不等于全平台鉴权已完成
+
+- **已处理**：供应商父账号必须映射到唯一 active team，平台账号必须属于该 team，子账号还必须有真实 parent binding；缺映射和跨团队读写返回空或拒绝。成员更新在同一 `BEGIN IMMEDIATE` 事务内完成 scope 校验和写入；资产回推只接受已持久的 delivered/shared 行，owner/account/provenance 从库内恢复，不信任请求伪造。旧 `/api/assets` 只保留成员隔离读，写入/下载写接口返回 410。
+- **仍需保持的风险表达**：上述只是供应商域窄修。通用管理员 collection 通道、直接媒体 URL 和旧全局 JSON 的其他消费者仍要逐域转为服务端资源 scope；在覆盖率和孤儿数可审计之前，不能删除 v137 生产只读硬门禁。
+
 ## 2026-08-03 v136 风险：本地社区幂等和媒体 UI 变更不能越过生产数据门禁
 
 - **风险**：跨入口分享若只依赖入口、客户端 `sourceId` 或瞬时按钮状态，同一产物在原始 URL 与发布清单物化 URL 之间仍会形成重复帖子；而本地 UI/静态视频变更若在没有迁移账本与 readiness 的情况下直接部署，会与错误 `DATA_DB`、隐式初始化或未挂载持久卷叠加，表现为帖子、资产或历史业务数据丢失。

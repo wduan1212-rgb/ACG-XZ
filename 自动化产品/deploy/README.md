@@ -1,215 +1,151 @@
-# Dumate Studio / 星阵定制创作部署
+# v137 部署入口契约
 
-> 本文件是通用部署模板，不记录也不代表当前生产服务器实况。正式部署必须先读取
-> `docs/服务器部署交接指南.md` 与目标版本 release manifest，并在维护窗内重新做只读预检。
-> 下面的目录、命令和变量均为示例，禁止把示例路径或删除式同步直接套用到生产环境。
+> 本文件是代码仓内的通用契约，不代表当前生产实况。v137 只允许作为
+> **生产只读迁移验收版**；资源级管理员鉴权和私有媒体注册表未收口前，
+> 不得开启生产业务写入。本地开发使用 `start.command`，不使用本目录的
+> 生产入口。
 
-示例安装目录：
+正式操作前还必须阅读：
 
-```bash
-/opt/dumate-studio
+- `docs/服务器部署交接指南.md`
+- `docs/ACG市场部生产团队迁移计划.md`
+- `docs/本地代码架构优化与服务器迁移部署方案.md`
+- `deploy/release-runtime.manifest.json`
+
+## 运行边界
+
+- 主平台 FastAPI：默认 `8787`，只对外暴露这一个端口。
+- 视频工坊 sidecar：默认 `127.0.0.1:8765`，必须是字面回环 IP，禁止
+  Nginx、安全组或 Docker 端口映射直接公开。
+- 无限画布：不起独立进程，只使用已审计的
+  `vendor/infinite-canvas/` 和对应 manifest。
+- 主服务与 sidecar 必须同时回报精确的 `ACG_RELEASE_ID`；仅为非空
+  `contractVersion` 不能通过门禁。
+
+## 不可变的持久化边界
+
+生产环境文件和所有运行数据必须位于 release 目录外，并位于显式
+`ACG_PERSISTENT_ROOT` 下。生产入口不会创建缺失目录、安装依赖、复制旧数据、
+自动建表或修复角色。任一持久路径不存在、落入 release 内或不在持久根下都会
+fail closed。
+
+必须保护：
+
+```text
+外部 env / 密钥 / 认证状态
+SQLite 及 WAL 所代表的业务数据
+uploads / composed / canvas_blobs
+视频工坊 projects / uploads / outputs
+服务器独立的代理、Nginx、systemd 和上传大小配置
 ```
 
-本版本包含两个隔离运行的 Python 服务：
+禁止用本地数据库或本地 runtime 覆盖服务器；禁止对生产目录使用
+`rsync --delete`、`--delete-excluded` 或整目录覆盖。发布应生成新的版本化
+release，验证后再原子切换；不在当前目录原地清理。
 
-- 主平台 FastAPI：默认 `8787`，对外只暴露这一端口。
-- 视频工坊 sidecar：默认 `127.0.0.1:8765`，只允许主平台通过回环地址访问，
-  不得在安全组、Nginx 或 Docker 端口映射中直接公开。
+## 生产环境最小契约
 
-无限画布不需要独立进程，生产静态产物位于
-`vendor/infinite-canvas/`，由主平台在 `/XZ-Design` 同源托管。服务器运行
-不读取 `apps/infinite-canvas-source/`；该目录用于后续重建静态产物。
-
-## 服务器依赖
-
-- Python 3.10 或更新版本。
-- FFmpeg 与 ffprobe。
-- 可显示中文字幕的字体；Ubuntu / Debian 建议安装 `fonts-noto-cjk`。
-- 能访问所配置的 LLM、图片、Seedance、MiniMax 与模型下载地址。
-- 足够的持久磁盘保存视频上传、成片、BGM 与 faster-whisper 模型缓存。
-
-Ubuntu / Debian 示例：
+真实配置必须放在 release 外的绝对路径，由 `ACG_ENV_FILE` 指定。进程
+环境优先于文件，不得在 release 内保留 `.env`、`.env.local` 或
+`apps/video-workshop/.env.local`。
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y ffmpeg fonts-noto-cjk python3 python3-venv
-```
+ACG_RUNTIME_MODE=production
+ACG_DB_BOOTSTRAP_MODE=validate
+ACG_READ_ONLY=1
+ACG_REQUIRE_INTERNAL_TEAM=1
+ACG_RELEASE_ID=20260803-v137-architecture-isolation-1
+ACG_RELEASE_ROOT=/srv/acg/releases/<release-id>
+ACG_PERSISTENT_ROOT=/srv/acg/shared
+ACG_ENV_FILE=/srv/acg/shared/config/runtime.env
+ACG_READY_TOKEN=<random-secret>
 
-## 密钥与环境
+DATA_DB=/srv/acg/shared/data/data.sqlite
+LEGACY_DATA_FILE=/srv/acg/shared/data/data.json
+UPLOAD_DIR=/srv/acg/shared/uploads
+COMPOSED_DIR=/srv/acg/shared/composed
+CUSTOM_CANVAS_BLOB_DIR=/srv/acg/shared/canvas_blobs
+VIDEO_WORKSHOP_PROJECTS_DIR=/srv/acg/shared/video-workshop/projects
+VIDEO_WORKSHOP_OUTPUT_DIR=/srv/acg/shared/video-workshop/outputs
+VIDEO_WORKSHOP_UPLOAD_DIR=/srv/acg/shared/video-workshop/uploads
+HF_HOME=/srv/acg/shared/model-cache
 
-真实 `.env`、`.env.local`、API Key、token 和账号凭据不能进入 Git、Docker
-镜像或代码同步包。把生产配置保留在服务器
-`/opt/dumate-studio/.env.local`，或由 systemd / 容器平台注入。
-
-完整创作链路至少需要：
-
-- 导演与文案：`LLM_API_KEY`、`LLM_ENDPOINT`（以及匹配的 `LLM_MODEL`）。
-- 无限画布真实出图：`IMAGE_API_KEY`、`IMAGE_BASE_URL` /
-  `IMAGE_ENDPOINT`、`IMAGE_MODEL`、`IMAGE_MODE`。
-- 视频片段：`SEEDANCE_API_KEY`、`SEEDANCE_BASE_URL`、
-  `SEEDANCE_MODEL`。
-- 无上传口播时的配音：`MINIMAX_API_KEY`、`MINIMAX_BASE_URL`、
-  `MINIMAX_TTS_MODEL`、`MINIMAX_VOICE_ID`；若平台设计音色使用了
-  `MINIMAX_GROUP_ID`，视频工坊必须沿用相同 GroupId 才能调用该音色。
-
-视频工坊会自动读取主产品根目录的 `.env.local`。进程和持久目录变量建议保持：
-
-```bash
 VIDEO_WORKSHOP_HOST=127.0.0.1
 VIDEO_WORKSHOP_PORT=8765
 VIDEO_WORKSHOP_URL=http://127.0.0.1:8765
-VIDEO_WORKSHOP_DATA_ROOT=/opt/dumate-studio/runtime/video-workshop
-BGM_SOURCE=platform
-DATA_DB=/opt/dumate-studio/server/data.sqlite
-UPLOAD_DIR=/opt/dumate-studio/server/uploads
-CUSTOM_CANVAS_BLOB_DIR=/opt/dumate-studio/server/canvas_blobs
-HF_HOME=/opt/dumate-studio/runtime/model-cache
+VIDEO_WORKSHOP_HEALTH_URL=http://127.0.0.1:8765
 ```
 
-`BGM_SOURCE=platform` 时，视频工坊只读主平台 SQLite 的 `assets` 文档和
-`UPLOAD_DIR` 中由 `/api/files/` 上传的真实音频，不复制、不删除也不覆盖
-服务器资产。`DATA_DB`、`UPLOAD_DIR` 必须与主服务保持完全一致；共享库为空
-时仍允许生成无 BGM 成片。只有需要切回独立目录曲库时才设置
-`BGM_SOURCE=local` 和 `BGM_LIBRARY_DIR`。
+sidecar URL 只允许 `http` + 字面回环 IP + 显式同端口，不允许用户信息、
+path、query 或 fragment。
 
-无限画布会将草稿内的 data URL 图片拆分到
-`CUSTOM_CANVAS_BLOB_DIR`，项目 JSON 只保存内部引用。浏览器通过登录鉴权的
-`/api/custom-canvas/blobs/{hash}` 同源地址读取；不同成员即使知道 hash
-也无法读取对方图片。该目录和 `server/data.sqlite` 必须作为同一组持久
-数据保留；替换或删除草稿时只会回收当前成员已无实时草稿引用的私有
-blob，不会扫描或删除发布资产。
-子应用打开时会先以 Bearer 登录态调用 `POST /api/custom-canvas/session`，
-服务端只为 blob 路径设置短时 HttpOnly / SameSite 会话 Cookie，以便
-`img` 和 Canvas 同源加载图片。平台 token 不得放入 URL、项目 JSON 或日志。
-
-`ASR_MODEL=small` 会在首次转写时下载 faster-whisper 模型并缓存到
-`HF_HOME`。无外网服务器应提前把兼容的 CTranslate2 模型目录放到持久盘，
-再把 `ASR_MODEL` 配成该绝对路径。不要把模型缓存放进代码目录。
-
-## 非 Docker 启停
-
-首次启动与每次代码更新后：
+## 发布前只读校验
 
 ```bash
-cd /opt/dumate-studio
-chmod +x deploy/*.sh
+cd /path/to/unpacked-release
+ACG_RELEASE_ID=20260803-v137-architecture-isolation-1 \
+  deploy/verify_release_contracts.sh
+```
+
+校验同时覆盖：
+
+- 首页可达 ESM 图及“一个物理模块只有一个 URL 身份”，并输出当前图的内容摘要；
+- 无限画布精确文件集、size 和 SHA-256；
+- 主后端、迁移/备份工具、部署脚本、视频 sidecar、视频 Web 桥接与
+  依赖声明的 runtime manifest；
+- manifest 的 release id 必须精确等于 `ACG_RELEASE_ID`。
+
+画布或 runtime manifest 覆盖范围内的漏文件、路径越界、symlink、哈希不一致，
+以及 ESM 多 URL 身份或不可达依赖，都必须在停服、备份和迁移之前失败。
+runtime manifest 所列源文件发生变化时必须重建
+`deploy/release-runtime.manifest.json`；ESM 变化必须重跑 verifier，并把输出摘要
+绑定到批准的外部 release 摘要/identity set。当前 CSS 和普通 assets 尚未纳入
+同一 manifest，这仍是生产发布 P1；不得声称 verifier 已自动阻断所有前端字节混版，
+也不得在服务器上为了通过门禁而重建 manifest。
+
+## 启动与 readiness
+
+`deploy/start_server.sh` 和 `deploy/docker_entrypoint.sh` 均只允许 production；传入
+`local/test` 会立即失败。二者均不负责安装依赖或执行迁移。非 Docker
+环境还要求两个已审计、已预装的独立虚拟环境。
+
+```bash
+cd /srv/acg/releases/<release-id>
 deploy/start_server.sh
 ```
 
-脚本会：
-
-1. 分别创建主服务 `.venv` 与 `apps/video-workshop/.venv`，避免
-   FastAPI / Pydantic 版本互相覆盖。
-2. 校验 FFmpeg、无限画布静态产物和视频工坊运行副本。
-3. 首次升级时把旧代码目录中的视频工坊数据非破坏性复制到 `runtime/`，
-   目标已存在的文件不会被覆盖，旧目录也不会被删除。
-4. 备份主平台数据库，以及视频工坊项目 JSON 与媒体清单。
-5. 先启动并验证 `8765` sidecar，再启动并验证 `8787` 主服务。
-
-停止与检查：
+启动成功不以 `/api/health` 为准，必须以受 token 保护的 `/api/ready` 为准：
 
 ```bash
-deploy/stop_server.sh
-deploy/status_server.sh
-```
-
-状态脚本同时显示两个 PID、两个健康检查和两份日志。
-
-## 数据保护与代码同步
-
-升级时只能覆盖代码和静态资源。以下内容属于服务器数据或私密配置，不得从
-本地空目录覆盖、删除或回传：
-
-```text
-.env
-.env.local
-.venv/
-server/data.sqlite
-server/data.sqlite-*
-server/data.json
-server/uploads/
-server/composed/
-server/canvas_blobs/
-runtime/
-backups/
-logs/
-apps/video-workshop/.venv/
-apps/video-workshop/data/projects/
-apps/video-workshop/outputs/
-apps/video-workshop/uploads/
-```
-
-兼容旧版本时，最后三项即使已经迁移到 `runtime/video-workshop/` 也继续
-排除，避免误删尚未迁移的历史项目。不要使用 `--delete-excluded`。
-
-代码同步示例（源目录为 `自动化产品/`）。示例刻意不带 `--delete`；生产发布应优先
-生成版本化 release 包并原子切换，不对当前目录做原地删除式同步：
-
-```bash
-rsync -av \
-  --exclude '.env' \
-  --exclude '.env.local' \
-  --exclude '.venv/' \
-  --exclude 'server/data.sqlite*' \
-  --exclude 'server/data.json' \
-  --exclude 'server/uploads/' \
-  --exclude 'server/composed/' \
-  --exclude 'server/canvas_blobs/' \
-  --exclude 'runtime/' \
-  --exclude 'backups/' \
-  --exclude 'logs/' \
-  --exclude 'apps/video-workshop/.venv/' \
-  --exclude 'apps/video-workshop/data/projects/' \
-  --exclude 'apps/video-workshop/outputs/' \
-  --exclude 'apps/video-workshop/uploads/' \
-  --exclude 'apps/infinite-canvas-source/node_modules/' \
-  --exclude 'apps/infinite-canvas-source/.next/' \
-  --exclude 'apps/infinite-canvas-source/out/' \
-  ./ <ssh-target>:/opt/dumate-studio/
-```
-
-即使配置了排除项，也禁止为“清理旧文件”临时追加 `--delete`、`--delete-excluded`
-或整目录覆盖。静态闭包的旧哈希只根据已审计 manifest 精确处理，持久数据目录永不参与清理。
-
-此次代码同步必须包含：
-
-```text
-apps/video-workshop/
-vendor/infinite-canvas/
-apps/infinite-canvas-source/   # 运行非必需，但建议随源码版本保存
-deploy/
-server/main.py
-server/store.py
-```
-
-## Docker
-
-从 `自动化产品/` 作为构建上下文：
-
-```bash
-docker build -f server/Dockerfile -t dumate-studio:latest .
-docker run -d \
-  --name dumate-studio \
-  --env-file /opt/dumate-studio/.env.local \
-  -p 8787:8787 \
-  -v /opt/dumate-data:/data \
-  dumate-studio:latest
-```
-
-镜像包含 `apps/video-workshop/`、`vendor/infinite-canvas/`、FFmpeg、
-中文字幕字体和 sidecar 独立虚拟环境；不会复制真实 env、运行数据、模型缓存
-或虚拟环境。只映射 `8787`，不要映射 `8765`。
-
-## 发布前验收
-
-```bash
-curl -fsS http://127.0.0.1:8787/api/health
+curl -fsS -H "X-Readiness-Token: $ACG_READY_TOKEN" \
+  http://127.0.0.1:8787/api/ready
 curl -fsS http://127.0.0.1:8765/api/health
 ```
 
-还需在登录后的定制创作页面完成一次无限画布真实出图、一次视频工坊口播转写
-和成片生成，并验证发布时能选择账号、生成文案/封面、填写发布时间与备注。
+`/api/ready` 要求 release、SQLite/schema/migration ledger、ACG 团队迁移、所有持久
+路径、sidecar 精确版本和只读状态、无限画布 manifest 全部通过。
 
-视频工坊内含 AGPL-3.0 的 OpenMontage 精简运行文件。公网部署前须落实
-`apps/video-workshop/THIRD_PARTY_NOTICES.md` 中的许可证和网络交互源代码
-提供义务。
+## 迁移与备份边界
+
+迁移不在应用启动中执行。只能在只读预检、维护窗冻结写入、完整备份
+与恢复演练后，使用 `python -m server.migrations` 的显式 status / apply /
+ACG preflight / ACG apply 命令。主服务、sidecar、后台任务及其他 writer 必须保持
+停止或服务端冻结；`status` / `acg-preflight` 保持 `ACG_READ_ONLY=1`。每个 apply
+只能在单独 CLI 进程中临时覆盖 `ACG_READ_ONLY=0`，并同时提供对应的
+`ACG_ALLOW_SCHEMA_MIGRATION=1` 或 `ACG_ALLOW_ACG_TEAM_MIGRATION=1`、版本和数据库
+identity 确认；结束后先恢复 `ACG_READ_ONLY=1` 再启动服务。禁止把外部环境文件
+永久改成可写或在 apply 期间启动业务进程。两次连续迁移必须验证幂等，记录数不得下降。
+
+v137 不允许把原始 v120 二进制回滚到已迁移数据库上。回滚只能使用兼容
+137003/137004 的前向版本。完整媒体备份、异机恢复演练、锁定依赖的同环境
+离线 wheelhouse，仍是真正执行生产迁移前的硬门禁。
+
+## Docker
+
+镜像包含主后端、sidecar、静态闭包、FFmpeg 和两个隔离的 Python 环境，
+但不包含真实配置和运行数据。必须只映射 `8787`，且把完整持久根和
+外部 env 挂载到 `/data`。下一轮未完成目标环境依赖锁定和恢复演练前，
+本仓库不将 Docker 示例命令视为生产发布授权。
+
+视频工坊包含 AGPL-3.0 的 OpenMontage 精简运行文件。公网部署前须落实
+`apps/video-workshop/THIRD_PARTY_NOTICES.md` 中的许可证和网络交互源代码提供义务。
