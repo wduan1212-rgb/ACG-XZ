@@ -4,7 +4,7 @@ import { db } from "./db.js";
 import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
 import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js";
-import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js";
+import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260804-v140-hydration-settlement-1";
 
 const DEFAULT_ADMIN_USERNAME = String.fromCharCode(97, 100, 109, 105, 110);
 const LEGACY_ADMIN_USERNAME = String.fromCharCode(121, 117, 120, 117, 97, 110);

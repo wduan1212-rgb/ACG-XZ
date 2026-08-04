@@ -6,7 +6,7 @@ import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationProm
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
-import { productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate } from "../domain/productionFailureState.js";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260804-v140-hydration-settlement-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
@@ -34,6 +34,8 @@ const COVER_STYLE_HINTS = [
   "信息图封面风，一个核心数字或关键词、清晰箭头关系、象牙白底配墨绿和亮橙，信息少而有力"
 ];
 const activeImageRecoveries = new Set();
+const activeHydrationCompositions = new Set();
+const activeComposeRequests = new Map();
 
 const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
 
@@ -2508,37 +2510,25 @@ function digitalJobMatches(j, p, segIndex, segmentId = "") {
   return j.segIndex === segIndex;
 }
 
-function outputUrl(output) {
-  if (!output) return "";
-  if (typeof output === "string") return output;
-  if (Array.isArray(output)) {
-    for (const item of output) {
-      const found = outputUrl(item);
-      if (found) return found;
-    }
-    return "";
+export async function composeBatchFinalVideo(p) {
+  const key = String(p?.id || "");
+  if (key && activeComposeRequests.has(key)) return activeComposeRequests.get(key);
+  const request = composeBatchFinalVideoOnce(p);
+  if (key) activeComposeRequests.set(key, request);
+  try {
+    return await request;
+  } finally {
+    if (key && activeComposeRequests.get(key) === request) activeComposeRequests.delete(key);
   }
-  if (typeof output === "object") {
-    for (const key of ["url", "videoUrl", "video_url", "result_url"]) {
-      const value = output[key];
-      if (typeof value === "string" && value) return value;
-    }
-    for (const value of Object.values(output)) {
-      const found = outputUrl(value);
-      if (found) return found;
-    }
-  }
-  return "";
 }
 
-export async function composeBatchFinalVideo(p) {
+async function composeBatchFinalVideoOnce(p) {
   if (!p?.artifacts || p.mode !== "视频") return false;
   if (p.artifacts.finalVideoUrl) return true;
-  if (p.artifacts.composing) return false;
   const clips = (p.artifacts.timeline || []).map(clip => {
     const job = state.jobs.find(item => item.id === clip.jobId);
     return {
-      url: clip.videoUrl || outputUrl(job?.output),
+      url: recoverableVideoUrl(clip.videoUrl, true) || recoverableVideoUrl(job?.output, true),
       name: clip.name || job?.segName || "",
       dur: Math.max(.5, Number(clip.dur || job?.duration || 15)),
       trimIn: Math.max(0, Number(clip.trimIn || 0))
@@ -2555,6 +2545,7 @@ export async function composeBatchFinalVideo(p) {
   save("productions");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 3 * 60 * 1000);
+  let keepComposing = false;
   try {
     const response = await fetch("/api/video/compose", {
       method: "POST",
@@ -2564,6 +2555,7 @@ export async function composeBatchFinalVideo(p) {
         ...(remote.getToken() ? { Authorization: `Bearer ${remote.getToken()}` } : {})
       },
       body: JSON.stringify({
+        productionId: String(p.id || ""),
         title: p.artifacts.copy?.title || p.title || p.topic || "batch-final",
         clips,
         preserveClipAudio: true,
@@ -2577,6 +2569,11 @@ export async function composeBatchFinalVideo(p) {
       })
     });
     const data = await response.json().catch(() => ({}));
+    if (response.ok && data.ok && data.pending) {
+      keepComposing = true;
+      p.artifacts.composeError = "完整成片仍在服务器合成；刷新后会从幂等账本继续恢复，不会重复创建成片";
+      return null;
+    }
     if (!response.ok || !data.ok || !data.url) throw new Error(data.detail || data.error || `合成失败 (${response.status})`);
     p.artifacts.finalVideoUrl = data.url;
     p.artifacts.finalVideoName = data.name || "";
@@ -2585,16 +2582,94 @@ export async function composeBatchFinalVideo(p) {
     p.artifacts.composeError = "";
     return true;
   } catch (error) {
-    p.artifacts.composeError = error?.name === "AbortError"
-      ? "批量成片合成超过 3 分钟，请重试"
-      : (error?.message || "批量成片合成失败");
+    if (error?.name === "AbortError") {
+      keepComposing = true;
+      p.artifacts.composeError = "浏览器已停止等待，但服务器可能仍在合成；刷新后将查询同一幂等账本，不会重复创建成片";
+      return null;
+    }
+    p.artifacts.composeError = error?.message || "批量成片合成失败";
     return false;
   } finally {
     clearTimeout(timer);
-    p.artifacts.composing = false;
-    p.artifacts.composingStartedAt = 0;
+    if (!keepComposing) {
+      p.artifacts.composing = false;
+      p.artifacts.composingStartedAt = 0;
+    }
     save("productions");
   }
+}
+
+function linkedOwnedBatch(p) {
+  const batch = p?.batchId ? batchById(p.batchId) : null;
+  return batch && ownedBy(batch) ? batch : null;
+}
+
+function markHydrationSettlementFailed(p, error) {
+  p.artifacts ||= {};
+  p.artifacts.composing = false;
+  p.artifacts.composingStartedAt = 0;
+  p.artifacts.composeError = String(error || "视频任务无法安全收敛，请明确重试");
+  setStatus(p, "failed", p.artifacts.composeError);
+}
+
+/*
+ * 远端水合完成后只收敛当前 owner 的旧 running 状态。分类器只读；
+ * 本函数不提交 provider、不创建 job，只复用已成功片段执行本地 compose。
+ */
+export function settleHydratedVideoProductions() {
+  let settled = 0;
+  const reevaluateBatchIds = new Set();
+  state.productions.filter(p => ownedBy(p)).forEach(p => {
+    const decision = classifyHydratedVideoSettlement(p, state.jobs);
+    if (decision.action === "none") return;
+    const batch = linkedOwnedBatch(p);
+    if (decision.action === "review") {
+      if (batch) reevaluateBatchIds.add(batch.id);
+      p.artifacts.finalVideoUrl = decision.mediaUrl;
+      p.error = null;
+      setStage(p, "review", "pending");
+      settled++;
+      return;
+    }
+    if (decision.action === "failed") {
+      if (batch) reevaluateBatchIds.add(batch.id);
+      markHydrationSettlementFailed(p, decision.error);
+      settled++;
+      return;
+    }
+    if (activeHydrationCompositions.has(p.id)) return;
+    const assembled = autoAssemble(p);
+    if (!assembled?.clips || assembled.clips < decision.expectedSegments) {
+      if (batch) reevaluateBatchIds.add(batch.id);
+      markHydrationSettlementFailed(
+        p,
+        `已成功视频片段不完整（${assembled?.clips || 0}/${decision.expectedSegments}），无法安全合成，请明确重试`,
+      );
+      settled++;
+      return;
+    }
+    activeHydrationCompositions.add(p.id);
+    settled++;
+    void composeBatchFinalVideo(p).then(ok => {
+      if (ok === true) {
+        p.error = null;
+        setStage(p, "review", "pending");
+      } else if (ok === false) {
+        markHydrationSettlementFailed(p, p.artifacts?.composeError || "视频片段已成功，但完整成片合成失败");
+      }
+    }).catch(error => {
+      markHydrationSettlementFailed(p, error?.message || "完整成片合成失败");
+    }).finally(() => {
+      activeHydrationCompositions.delete(p.id);
+      const currentBatch = linkedOwnedBatch(p);
+      if (currentBatch && currentBatch.phase !== "done") evaluate(currentBatch.id);
+    });
+  });
+  reevaluateBatchIds.forEach(batchId => {
+    const batch = batchById(batchId);
+    if (batch && batch.phase !== "done") evaluate(batch.id);
+  });
+  return settled;
 }
 
 function latestDigitalJob(p, segIndex, segmentId = "") {
@@ -2673,7 +2748,7 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
       if (onlyUnitIndex != null && i !== onlyUnitIndex) return;
       const existing = latestDigitalJob(p, i, seg.id || "");
       if (existing && ["queued", "submitted", "running"].includes(existing.status)) return;
-      if (onlyUnitIndex == null && (outputUrl(existing?.output) || outputUrl(seg.videoOutput))) return;
+      if (onlyUnitIndex == null && (recoverableVideoUrl(existing?.output, true) || recoverableVideoUrl(seg.videoOutput, true))) return;
       const characterAssetId = seg.characterRefAssetId || characterRefId;
       const audioAssetId = seg.audioAssetId;
       const prompt = (seg.videoPrompt || A.digitalHuman?.fixedPrompt || "角色动作自然，表情自然生动，语言表达流畅，视线自然看镜头，自然地讲述内容。").trim();
@@ -2966,7 +3041,37 @@ export function retryFailedIn(batch) {
       n++;
     }
     else if (jobStage) {
+      const composeRecovery = classifyHydratedVideoSettlement(
+        { ...p, stageStatus: "running" },
+        state.jobs,
+      );
+      if (composeRecovery.action === "review") {
+        p.artifacts.finalVideoUrl = composeRecovery.mediaUrl;
+        p.error = null;
+        setStage(p, "review", "pending");
+        n++;
+        return;
+      }
+      if (composeRecovery.action === "compose") {
+        setStatus(p, "running");
+        autoAssemble(p);
+        void composeBatchFinalVideo(p).then(ok => {
+          if (ok === true) setStage(p, "review", "pending");
+          else if (ok === false) markHydrationSettlementFailed(
+            p,
+            p.artifacts?.composeError || "完整成片合成失败，请再次明确重试",
+          );
+          evaluate(batch.id);
+        });
+        n++;
+        return;
+      }
       // 明确重试先离开 failed 终态，否则 job runner 的失败任务门禁会拒绝此次重试。
+      if (p.artifacts?.composing) {
+        p.artifacts.composing = false;
+        p.artifacts.composingStartedAt = 0;
+        p.artifacts.composeError = "";
+      }
       setStatus(p, "running");
       const failed = jobsOf(p).filter(j => j.status === "failed");
       if (failed.length) failed.forEach(j => retryJob(j.id));
@@ -3033,12 +3138,12 @@ export function evaluate(batchId) {
       if (p.artifacts.finalVideoUrl) {
         setStage(p, "review", "pending");
         notify("agent", `「${p.title || p.topic}」渲染完成`, `已合成为 1 个完整视频：${r.clips} 段 + ${r.subs} 条字幕${r.bgm ? ` · BGM「${r.bgm}」` : ""}，进入待审核`);
-      } else if (!p.artifacts.composing) {
+      } else if (!activeComposeRequests.has(String(p.id || ""))) {
         composeBatchFinalVideo(p).then(ok => {
-          if (ok) {
+          if (ok === true) {
             setStage(p, "review", "pending");
             notify("agent", `「${p.title || p.topic}」成片完成`, `已合成为 1 个完整视频：${r.clips} 段 + ${r.subs} 条字幕，进入待审核`);
-          } else {
+          } else if (ok === false) {
             setStatus(p, "failed", p.artifacts.composeError || "视频片段已生成，但完整成片合成失败");
           }
           evaluate(batch.id);
@@ -3095,8 +3200,13 @@ on("job:done", evaluateAll);
 
 /* 启动恢复：把中断的起草接着跑 */
 export function resumeActiveBatches() {
+  settleHydratedVideoProductions();
   let resumed = 0;
-  activeBatches().forEach(b => {
+  const batches = activeBatches();
+  const dormantGeneratingIds = new Set(
+    batches.filter(batch => batchNeedsHydrationEvaluation(batch, state.productions)).map(batch => batch.id)
+  );
+  batches.forEach(b => {
     const staticStuck = batchProds(b).filter(p =>
       (p.staticVideo || b.contentKind === "static")
       && p.stage === "workshop"
@@ -3119,8 +3229,11 @@ export function resumeActiveBatches() {
       runPool(imageStuck, p => runBatchImagesToReview(p, b), 1).then(() => evaluate(b.id));
       resumed += imageStuck.length;
     }
-    evaluate(b.id);
+    if (!dormantGeneratingIds.has(b.id)) evaluate(b.id);
   });
+  // 显式覆盖“batch 仍 generating，但已无真正运行/待派发任务”的水合恢复。
+  // evaluate 内的 emitted 标记保证二次调用不重复发卡或通知。
+  dormantGeneratingIds.forEach(batchId => evaluate(batchId));
   return resumed;
 }
 

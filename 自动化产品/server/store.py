@@ -688,6 +688,26 @@ CREATE INDEX IF NOT EXISTS idx_private_media_team
   ON private_media_registry(team_id, media_kind, updated_at DESC)
   WHERE team_id<>'';
 """
+VIDEO_COMPOSE_OPERATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS video_compose_operations(
+  owner_id            TEXT NOT NULL,
+  operation_key       TEXT NOT NULL,
+  production_id       TEXT NOT NULL DEFAULT '',
+  request_fingerprint TEXT NOT NULL,
+  state               TEXT NOT NULL,
+  claim_token         TEXT NOT NULL DEFAULT '',
+  output_name         TEXT NOT NULL DEFAULT '',
+  error               TEXT NOT NULL DEFAULT '',
+  attempt              INTEGER NOT NULL DEFAULT 1,
+  created_at           INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL,
+  completed_at         INTEGER,
+  PRIMARY KEY(owner_id, operation_key),
+  CHECK(state IN ('running','succeeded','failed'))
+);
+CREATE INDEX IF NOT EXISTS idx_video_compose_operations_state_updated
+  ON video_compose_operations(state, updated_at);
+"""
 # 137001/137002 were exercised by local pre-release builds before the v137
 # schema identity was frozen.  Migration versions are immutable once written,
 # even outside production, so the audited release advances to fresh numbers
@@ -750,7 +770,20 @@ _PRIVATE_MEDIA_SCHEMA_IDENTITY = "|".join((
 PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
     (PRIVATE_MEDIA_REGISTRY_SCHEMA + "\n" + _PRIVATE_MEDIA_SCHEMA_IDENTITY).encode("utf-8")
 ).hexdigest()
-LATEST_SCHEMA_MIGRATION_VERSION = PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION
+VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION = 140005
+VIDEO_COMPOSE_SCHEMA_MIGRATION_NAME = "v140-video-compose-idempotency"
+_VIDEO_COMPOSE_SCHEMA_IDENTITY = "|".join((
+    "owner-operation-primary-key",
+    "production-request-fingerprint",
+    "atomic-running-claim",
+    "success-replay-reuses-output",
+    "failure-remains-retryable",
+    "private-media-registration-and-success-atomic",
+))
+VIDEO_COMPOSE_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (VIDEO_COMPOSE_OPERATION_SCHEMA + "\n" + _VIDEO_COMPOSE_SCHEMA_IDENTITY).encode("utf-8")
+).hexdigest()
+LATEST_SCHEMA_MIGRATION_VERSION = VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION
 EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", SCHEMA)
 ) | frozenset(
@@ -767,6 +800,11 @@ EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(
         r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
         PRIVATE_MEDIA_REGISTRY_SCHEMA,
+    )
+) | frozenset(
+    re.findall(
+        r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+        VIDEO_COMPOSE_OPERATION_SCHEMA,
     )
 ) | {"schema_migrations"}
 EXPECTED_SCHEMA_COLUMNS = {
@@ -790,6 +828,11 @@ EXPECTED_SCHEMA_COLUMNS = {
     "private_media_registry": {
         "media_kind", "media_key", "owner_id", "team_id",
         "provenance_kind", "provenance_id", "created_at", "updated_at",
+    },
+    "video_compose_operations": {
+        "owner_id", "operation_key", "production_id", "request_fingerprint",
+        "state", "claim_token", "output_name", "error", "attempt",
+        "created_at", "updated_at", "completed_at",
     },
 }
 ACG_DATA_MIGRATION_VERSION = 137004
@@ -897,6 +940,14 @@ class ModelUsageCompletionSpoolConflict(ModelUsageCompletionSpoolError):
 
 class ModelUsageCompletionSpoolCorrupt(ModelUsageCompletionSpoolError):
     """Raised when a persisted completion envelope fails strict validation."""
+
+
+class VideoComposeOperationConflict(RuntimeError):
+    """One compose identity was replayed with a different request body."""
+
+
+class VideoComposeOperationClaimLost(RuntimeError):
+    """The caller no longer owns the durable compose attempt."""
 
 
 _lock = Lock()
@@ -1238,6 +1289,14 @@ def _apply_private_media_schema_locked(conn, *, begin_transaction=True):
     _execute_sql_script_locked(conn, PRIVATE_MEDIA_REGISTRY_SCHEMA)
 
 
+def _apply_video_compose_schema_locked(conn, *, begin_transaction=True):
+    """Create the durable compose claim table without touching media rows."""
+
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, VIDEO_COMPOSE_OPERATION_SCHEMA)
+
+
 def _record_schema_migration_locked(conn, *, summary=None):
     existing = conn.execute(
         "SELECT checksum,status FROM schema_migrations WHERE version=?",
@@ -1412,6 +1471,51 @@ def _record_private_media_schema_migration_locked(conn, *, summary=None):
                 now,
                 encoded_summary,
                 PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                now,
+            ),
+        )
+
+
+def _record_video_compose_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != VIDEO_COMPOSE_SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("video compose schema migration checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {"schema": "video-compose-idempotency", "mode": "expand-only"},
+        ensure_ascii=False,
+    )
+    values = (
+        VIDEO_COMPOSE_SCHEMA_MIGRATION_NAME,
+        VIDEO_COMPOSE_SCHEMA_MIGRATION_CHECKSUM,
+        runtime_config.release_id() or "unidentified",
+        now,
+        encoded_summary,
+        VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            values,
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "name,checksum,app_version,finished_at,status,summary,version,started_at"
+            ") VALUES(?,?,?,?,'success',?,?,?)",
+            (
+                VIDEO_COMPOSE_SCHEMA_MIGRATION_NAME,
+                VIDEO_COMPOSE_SCHEMA_MIGRATION_CHECKSUM,
+                runtime_config.release_id() or "unidentified",
+                now,
+                encoded_summary,
+                VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,
                 now,
             ),
         )
@@ -1605,6 +1709,8 @@ def database_readiness():
         "privateMediaMigration": False,
         "privateMediaMigrationVersion": None,
         "privateMediaMigrationChecksum": "",
+        "videoComposeSchemaVersion": None,
+        "videoComposeSchemaChecksum": "",
     }
     spool_status = model_usage_completion_spool_status()
     result["modelUsageCompletionSpoolPending"] = spool_status["pending"]
@@ -1664,6 +1770,11 @@ def database_readiness():
                 "WHERE version=?",
                 (PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
+            compose_schema_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
             if base_row:
                 result["migrationVersion"] = int(base_row[0])
                 result["checksum"] = str(base_row[1] or "")[:16]
@@ -1686,6 +1797,13 @@ def database_readiness():
                 result["privateMediaSchemaChecksum"] = str(
                     media_schema_row[1] or ""
                 )[:16]
+            if compose_schema_row:
+                result["migrationVersion"] = int(compose_schema_row[0])
+                result["checksum"] = str(compose_schema_row[1] or "")[:16]
+                result["videoComposeSchemaVersion"] = int(compose_schema_row[0])
+                result["videoComposeSchemaChecksum"] = str(
+                    compose_schema_row[1] or ""
+                )[:16]
             result["migrationDirty"] = int(conn.execute(
                 "SELECT COUNT(*) FROM schema_migrations WHERE status<>'success'"
             ).fetchone()[0] or 0)
@@ -1702,6 +1820,9 @@ def database_readiness():
                 and media_schema_row
                 and media_schema_row[1] == PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM
                 and media_schema_row[2] == "success"
+                and compose_schema_row
+                and compose_schema_row[1] == VIDEO_COMPOSE_SCHEMA_MIGRATION_CHECKSUM
+                and compose_schema_row[2] == "success"
                 and result["migrationDirty"] == 0
             )
         else:
@@ -1972,6 +2093,13 @@ def apply_schema_migrations(
                     PRIVATE_MEDIA_SCHEMA_MIGRATION_CHECKSUM,
                     _apply_private_media_schema_locked,
                     _record_private_media_schema_migration_locked,
+                ),
+                (
+                    VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,
+                    VIDEO_COMPOSE_SCHEMA_MIGRATION_NAME,
+                    VIDEO_COMPOSE_SCHEMA_MIGRATION_CHECKSUM,
+                    _apply_video_compose_schema_locked,
+                    _record_video_compose_schema_migration_locked,
                 ),
             )
             migrations = all_migrations
@@ -3845,6 +3973,12 @@ def _ensure_db():
                 summary={"schema": "private-media-registry", "mode": "local-auto"},
             )
             conn.commit()
+            _apply_video_compose_schema_locked(conn)
+            _record_video_compose_schema_migration_locked(
+                conn,
+                summary={"schema": "video-compose-idempotency", "mode": "local-auto"},
+            )
+            conn.commit()
             _initialized = True
         finally:
             conn.close()
@@ -4032,6 +4166,209 @@ def register_private_media(
             )
             conn.commit()
             return result
+        finally:
+            conn.close()
+
+
+_VIDEO_COMPOSE_OPERATION_COLUMNS = (
+    "owner_id,operation_key,production_id,request_fingerprint,state,claim_token,"
+    "output_name,error,attempt,created_at,updated_at,completed_at"
+)
+
+
+def _video_compose_operation_public(row, *, claimed=False, reused=False):
+    if not row:
+        return None
+    output_name = str(row[6] or "")
+    return {
+        "ownerId": str(row[0]),
+        "operationKey": str(row[1]),
+        "productionId": str(row[2] or ""),
+        "requestFingerprint": str(row[3]),
+        "state": str(row[4]),
+        "claimToken": str(row[5] or "") if claimed else "",
+        "outputName": output_name,
+        "url": f"/api/video/composed/{output_name}" if output_name else "",
+        "error": str(row[7] or ""),
+        "attempt": int(row[8] or 0),
+        "createdAt": int(row[9] or 0),
+        "updatedAt": int(row[10] or 0),
+        "completedAt": int(row[11] or 0) if row[11] is not None else None,
+        "claimed": bool(claimed),
+        "reused": bool(reused),
+    }
+
+
+def begin_video_compose_operation(
+    owner_id,
+    operation_key,
+    production_id,
+    request_fingerprint,
+    *,
+    stale_after_ms=6 * 60 * 60 * 1000,
+):
+    """Atomically claim one owner-scoped compose identity.
+
+    The SQLite primary key is the cross-process authority.  A running claim is
+    never stolen while its lease is current; failed or stale interrupted work
+    can be retried with a fresh token.  Successful rows are immutable replays.
+    """
+
+    _ensure_db()
+    owner = str(owner_id or "").strip()
+    key = str(operation_key or "").strip()[:240]
+    production = str(production_id or "").strip()[:160]
+    fingerprint = str(request_fingerprint or "").strip().lower()
+    if not owner or not key or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise ValueError("invalid_video_compose_identity")
+    now = int(time.time() * 1000)
+    claim_token = secrets.token_hex(24)
+    stale_cutoff = now - max(60_000, int(stale_after_ms or 0))
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if not conn.execute("SELECT 1 FROM members WHERE id=?", (owner,)).fetchone():
+                raise ValueError("video_compose_owner_missing")
+            row = conn.execute(
+                f"SELECT {_VIDEO_COMPOSE_OPERATION_COLUMNS} "
+                "FROM video_compose_operations WHERE owner_id=? AND operation_key=?",
+                (owner, key),
+            ).fetchone()
+            if row and str(row[3]) != fingerprint:
+                raise VideoComposeOperationConflict("video_compose_idempotency_conflict")
+            if row and str(row[4]) == "succeeded":
+                conn.commit()
+                return _video_compose_operation_public(row, reused=True)
+            if row and str(row[4]) == "running" and int(row[10] or 0) > stale_cutoff:
+                conn.commit()
+                return _video_compose_operation_public(row)
+            if row:
+                conn.execute(
+                    "UPDATE video_compose_operations SET production_id=?,state='running',"
+                    "claim_token=?,output_name='',error='',attempt=attempt+1,updated_at=?,"
+                    "completed_at=NULL WHERE owner_id=? AND operation_key=?",
+                    (production, claim_token, now, owner, key),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO video_compose_operations("
+                    "owner_id,operation_key,production_id,request_fingerprint,state,"
+                    "claim_token,output_name,error,attempt,created_at,updated_at,completed_at"
+                    ") VALUES(?,?,?,?,'running',?,'','',1,?,?,NULL)",
+                    (owner, key, production, fingerprint, claim_token, now, now),
+                )
+            row = conn.execute(
+                f"SELECT {_VIDEO_COMPOSE_OPERATION_COLUMNS} "
+                "FROM video_compose_operations WHERE owner_id=? AND operation_key=?",
+                (owner, key),
+            ).fetchone()
+            conn.commit()
+            return _video_compose_operation_public(row, claimed=True)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def get_video_compose_operation(owner_id, operation_key):
+    _ensure_db()
+    owner = str(owner_id or "").strip()
+    key = str(operation_key or "").strip()[:240]
+    with _lock:
+        conn = _connect(read_only=True)
+        try:
+            row = conn.execute(
+                f"SELECT {_VIDEO_COMPOSE_OPERATION_COLUMNS} "
+                "FROM video_compose_operations WHERE owner_id=? AND operation_key=?",
+                (owner, key),
+            ).fetchone()
+            return _video_compose_operation_public(row)
+        finally:
+            conn.close()
+
+
+def fail_video_compose_operation(owner_id, operation_key, claim_token, error):
+    """Release only the caller's own claim; a successful replay stays final."""
+
+    _ensure_db()
+    owner = str(owner_id or "").strip()
+    key = str(operation_key or "").strip()[:240]
+    token = str(claim_token or "").strip()
+    message = str(error or "视频合成失败")[:1000]
+    now = int(time.time() * 1000)
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            updated = conn.execute(
+                "UPDATE video_compose_operations SET state='failed',claim_token='',"
+                "error=?,updated_at=?,completed_at=? WHERE owner_id=? AND operation_key=? "
+                "AND state='running' AND claim_token=?",
+                (message, now, now, owner, key, token),
+            ).rowcount
+            conn.commit()
+            return bool(updated)
+        finally:
+            conn.close()
+
+
+def complete_video_compose_operation(
+    owner_id,
+    operation_key,
+    claim_token,
+    output_name,
+    *,
+    team_id="",
+):
+    """Atomically register the private file and publish one successful result."""
+
+    _ensure_db()
+    owner = str(owner_id or "").strip()
+    key = str(operation_key or "").strip()[:240]
+    token = str(claim_token or "").strip()
+    media_key = _normalize_private_media_key("composed", output_name)[1]
+    now = int(time.time() * 1000)
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                f"SELECT {_VIDEO_COMPOSE_OPERATION_COLUMNS} "
+                "FROM video_compose_operations WHERE owner_id=? AND operation_key=?",
+                (owner, key),
+            ).fetchone()
+            if not row or str(row[4]) != "running" or not hmac.compare_digest(str(row[5] or ""), token):
+                raise VideoComposeOperationClaimLost("video_compose_claim_lost")
+            _register_private_media_locked(
+                conn,
+                "composed",
+                media_key,
+                owner,
+                team_id=team_id,
+                provenance_kind="video-compose",
+                provenance_id=key,
+                now=now,
+            )
+            updated = conn.execute(
+                "UPDATE video_compose_operations SET state='succeeded',claim_token='',"
+                "output_name=?,error='',updated_at=?,completed_at=? "
+                "WHERE owner_id=? AND operation_key=? AND state='running' AND claim_token=?",
+                (media_key, now, now, owner, key, token),
+            ).rowcount
+            if updated != 1:
+                raise VideoComposeOperationClaimLost("video_compose_claim_lost")
+            row = conn.execute(
+                f"SELECT {_VIDEO_COMPOSE_OPERATION_COLUMNS} "
+                "FROM video_compose_operations WHERE owner_id=? AND operation_key=?",
+                (owner, key),
+            ).fetchone()
+            conn.commit()
+            return _video_compose_operation_public(row)
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -9807,7 +10144,7 @@ def llm_usage_details(limit=120, member_id=""):
                 "SELECT u.id,u.member_id,u.member_name,COALESCE(m.username,''),u.feature,"
                 "COALESCE(u.model,''),u.prompt_tokens,u.completion_tokens,u.total_tokens,u.created_at "
                 "FROM llm_usage_events u LEFT JOIN members m ON m.id=u.member_id " + where + " "
-                "ORDER BY u.created_at DESC LIMIT ?",
+                "ORDER BY u.created_at DESC,u.rowid DESC LIMIT ?",
                 (*params, limit),
             ).fetchall()
             return {

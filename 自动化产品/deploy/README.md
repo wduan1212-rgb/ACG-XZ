@@ -57,7 +57,7 @@ ACG_READ_ONLY=1
 ACG_REQUIRE_INTERNAL_TEAM=1
 ACG_REQUIRE_RESOURCE_SCOPES=1
 ACG_REQUIRE_PRIVATE_MEDIA=1
-ACG_RELEASE_ID=20260804-v140-failed-generation-terminal-1
+ACG_RELEASE_ID=20260804-v140-hydration-settlement-1
 ACG_RELEASE_ROOT=/data/dumate-studio/releases/<release-id>
 ACG_PERSISTENT_ROOT=/data/dumate-studio/current
 ACG_ENV_FILE=/data/dumate-studio/current/.env.local
@@ -100,7 +100,7 @@ fragment 或回环地址；不得为了让 `140004` 通过而添加宽泛域名�
 
 ```bash
 cd /path/to/unpacked-release
-ACG_RELEASE_ID=20260804-v140-failed-generation-terminal-1 \
+ACG_RELEASE_ID=20260804-v140-hydration-settlement-1 \
   deploy/verify_release_contracts.sh
 ```
 
@@ -264,13 +264,17 @@ tools/run_locked_server_tests.sh \
 
 迁移不在应用启动中执行。只能在只读预检、维护窗冻结写入、完整备份
 与恢复演练后，使用 `python -m server.migrations` 显式执行：
-`137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`。`137004`、`140002`、
+`137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005`。`137004`、`140002`、
 `140004` 分别先做 ACG/resource/media preflight。主服务、sidecar、后台任务及其他 writer 必须保持
 停止或服务端冻结；`status` / `acg-preflight` 保持 `ACG_READ_ONLY=1`。每个 apply
 只能在单独 CLI 进程中临时覆盖 `ACG_READ_ONLY=0`，并同时提供对应的
 `ACG_ALLOW_SCHEMA_MIGRATION=1` 或 `ACG_ALLOW_ACG_TEAM_MIGRATION=1`、版本和数据库
 identity 确认；结束后先恢复 `ACG_READ_ONLY=1` 再启动服务。禁止把外部环境文件
 永久改成可写或在 apply 期间启动业务进程。两次连续迁移必须验证幂等，记录数不得下降。
+
+生产已完成到 `140004` 时，后续 hydration release 只增量 apply expand-only `140005`；不得重跑
+团队、资源或媒体归属迁移。`140005` 必须使用新的 fresh v2 备份绑定，第一次只新增 compose claim
+表与 success ledger，第二次 `appliedVersions=[]`，再恢复只读并核对 readiness。
 
 每一个会写库的 apply 都必须绑定“紧接在该 apply 前”生成的 v2 SQLite
 备份；上一个 apply 成功后数据库逻辑摘要已变，不得复用旧 manifest。备份

@@ -87,6 +87,8 @@ def _safe_status() -> dict:
         "resourceScopeOrphans": status.get("resourceScopeOrphans"),
         "resourceScopeInvalidTargets": status.get("resourceScopeInvalidTargets"),
         "privateMediaSchemaVersion": status.get("privateMediaSchemaVersion"),
+        "videoComposeSchemaVersion": status.get("videoComposeSchemaVersion"),
+        "videoComposeSchemaChecksum": status.get("videoComposeSchemaChecksum") or "",
         "privateMediaMigration": bool(status.get("privateMediaMigration")),
         "privateMediaMigrationVersion": status.get("privateMediaMigrationVersion"),
         "privateMediaMigrationChecksum": status.get("privateMediaMigrationChecksum") or "",

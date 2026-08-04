@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260804-v140-failed-generation-terminal-1",
+  "releaseId": "20260804-v140-hydration-settlement-1",
   "fileCount": 54,
-  "totalBytes": 2594597,
+  "totalBytes": 2612253,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100724,
-      "sha256": "dc61c7649b4e134ce83ff53c68c484b9f10d76712aea9d726362997090c543da"
+      "size": 100718,
+      "sha256": "7c1658b560acbc5f556433d0da0cd2e817901d85a049305c6ec1249853abb545"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -161,8 +161,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22305,
-      "sha256": "c25cdadbb505f0700cb1f0cddaf6213c51ec20582b71553c67bd5824713156cd"
+      "size": 22293,
+      "sha256": "00185529694df45b58f64289a9ae4699ee5f34ee21b7739e07cf696e226ba3cb"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -216,8 +216,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 478556,
-      "sha256": "fd9c14977987921bbf9081f4022f58784baa7ed310e94ce3b47dc18ea2bff8b4"
+      "size": 482613,
+      "sha256": "e194ab84b860ce101c78002346455db2362a11e133077169d4386605d9668374"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -226,8 +226,8 @@
     },
     {
       "path": "server/migrations/__main__.py",
-      "size": 17491,
-      "sha256": "9f356afba0b87d64102928a65bfffac14c1371282370796cc171bc10617a7b98"
+      "size": 17655,
+      "sha256": "f04c96d585e8c81d00ba89dc185978bd91898c060eb8d809652b1c06e97ba09f"
     },
     {
       "path": "server/minimax_system_voices.json",
@@ -266,8 +266,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 648867,
-      "sha256": "45a49333c073b1e01230ba33527339ec1d64f61a92fb0f7e75fefa9709cd5ba4"
+      "size": 662320,
+      "sha256": "b354be8fd932af1adba1c00842fae67eeadc290f87b9cc2edee8a3b18efacc3a"
     },
     {
       "path": "tools/verify_release_contracts.py",

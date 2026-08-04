@@ -279,6 +279,7 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                         store.MODEL_USAGE_SCHEMA_MIGRATION_VERSION,
                         store.RESOURCE_SCOPE_SCHEMA_MIGRATION_VERSION,
                         store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
+                        store.VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,
                     ],
                     first["appliedVersions"],
                 )

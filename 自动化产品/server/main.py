@@ -3548,6 +3548,7 @@ class ComposeSubtitleStyle(BaseModel):
 
 class ComposeReq(BaseModel):
     clips: List[ComposeClip]
+    productionId: str = ""
     title: str = "final"
     narrationUrl: str = ""
     narrationDataUrl: str = ""
@@ -5628,8 +5629,7 @@ def _compose_audio_command(
     return command
 
 
-@app.post("/api/video/compose")
-async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
+async def _video_compose_once(req: ComposeReq, _me: dict, out_name: str):
     """把时间轴上的 Seedance 片段拼成一个同源 mp4。
     本地/服务器都需要安装 ffmpeg；支持把口播与 BGM 混进成片。"""
     ffmpeg = _ffmpeg_bin()
@@ -5642,7 +5642,6 @@ async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
     raw_total_dur = sum(float(c.dur or 0) for c in clips) or (len(clips) * 15)
     total_dur = max(0.5, raw_total_dur - transition * max(0, len(clips) - 1))
     COMPOSED_DIR.mkdir(parents=True, exist_ok=True)
-    out_name = f"{time.time_ns()}_{uuid.uuid4().hex[:6]}_{hashlib.sha1((req.title or 'final').encode('utf-8')).hexdigest()[:8]}.mp4"
     out_path = COMPOSED_DIR / out_name
     with tempfile.TemporaryDirectory() as td:
         tdir = Path(td)
@@ -5748,13 +5747,119 @@ async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
                 raise HTTPException(502, "ffmpeg 字幕烧录失败：" + (run.stderr or run.stdout)[-800:])
         else:
             shutil.copyfile(mixed_path, out_path)
-    _register_new_composed_output(
-        out_path,
-        _me,
-        provenance_kind="video-compose",
-        provenance_id=out_name,
+    return out_path
+
+
+def _video_compose_identity(req: ComposeReq) -> Tuple[str, str, str]:
+    """Bind idempotency to owner (in Store), production and rendered timeline."""
+
+    payload = req.dict(exclude={"productionId", "title"})
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    production_id = str(req.productionId or "").strip()[:160]
+    if not production_id:
+        production_id = "legacy-" + fingerprint[:24]
+    operation_key = "vco_" + hashlib.sha256(
+        f"video-compose-v1|{production_id}|{fingerprint}".encode("utf-8")
+    ).hexdigest()
+    return production_id, fingerprint, operation_key
+
+
+def _video_compose_replay_response(operation: dict) -> dict:
+    output_name = Path(str((operation or {}).get("outputName") or "")).name
+    output_path = COMPOSED_DIR / output_name
+    if not output_name or not output_path.is_file() or output_path.stat().st_size <= 0:
+        raise HTTPException(503, "合成账本已有成功记录，但成片文件不可读取；已阻止重复合成，请联系管理员核对媒体快照")
+    return {
+        "ok": True,
+        "url": f"/api/video/composed/{output_name}",
+        "name": output_name,
+        "reused": True,
+    }
+
+
+async def _wait_for_video_compose(owner_id: str, operation_key: str, timeout_seconds=150.0):
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        operation = await asyncio.to_thread(
+            store.get_video_compose_operation, owner_id, operation_key,
+        )
+        if operation and operation.get("state") == "succeeded":
+            return _video_compose_replay_response(operation)
+        if operation and operation.get("state") == "failed":
+            raise HTTPException(409, str(operation.get("error") or "并发合成失败，请明确重试"))
+        await asyncio.sleep(0.1)
+    return {
+        "ok": True,
+        "pending": True,
+        "reused": False,
+        "url": "",
+        "name": "",
+    }
+
+
+@app.post("/api/video/compose")
+async def video_compose(req: ComposeReq, _me=Depends(require_creator)):
+    """Exactly-once dynamic compose scoped to owner + production + timeline."""
+
+    production_id, fingerprint, operation_key = _video_compose_identity(req)
+    try:
+        operation = await asyncio.to_thread(
+            store.begin_video_compose_operation,
+            str(_me.get("id") or ""),
+            operation_key,
+            production_id,
+            fingerprint,
+        )
+    except store.VideoComposeOperationConflict as exc:
+        raise HTTPException(409, "合成幂等标识与请求内容冲突") from exc
+    if operation.get("state") == "succeeded":
+        return _video_compose_replay_response(operation)
+    if not operation.get("claimed"):
+        return await _wait_for_video_compose(str(_me.get("id") or ""), operation_key)
+
+    claim_token = str(operation.get("claimToken") or "")
+    out_name = (
+        f"{time.time_ns()}_{uuid.uuid4().hex[:6]}_"
+        f"{hashlib.sha1((req.title or 'final').encode('utf-8')).hexdigest()[:8]}.mp4"
     )
-    return {"ok": True, "url": f"/api/video/composed/{out_name}", "name": out_name}
+    out_path = COMPOSED_DIR / out_name
+    try:
+        await _video_compose_once(req, _me, out_name)
+        completed = await asyncio.to_thread(
+            store.complete_video_compose_operation,
+            str(_me.get("id") or ""),
+            operation_key,
+            claim_token,
+            out_name,
+            team_id=str(_me.get("teamId") or ""),
+        )
+        return {
+            "ok": True,
+            "url": str(completed.get("url") or ""),
+            "name": str(completed.get("outputName") or ""),
+            "reused": False,
+        }
+    except Exception as exc:
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc or "视频合成失败")
+        try:
+            await asyncio.to_thread(
+                store.fail_video_compose_operation,
+                str(_me.get("id") or ""),
+                operation_key,
+                claim_token,
+                str(detail),
+            )
+        except Exception as ledger_exc:
+            print(
+                f"[video-compose] failure ledger update failed: {ledger_exc.__class__.__name__}",
+                file=sys.stderr,
+            )
+        raise
 
 
 @app.post("/api/video/static-compose")

@@ -4,6 +4,16 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-04 v140 线上状态收敛缺口：succeeded job 不会在刷新后重放 `job:done`
+
+- **生产现象**：受保护切换到 `9e8aeb5` 后，6 条已有成片或全部有效 job 已 succeeded 的视频 production 仍停在 `workshop/running`；它们同时覆盖无 batch、done batch 和 generating batch。另有 1 个 generating batch 的全部 production 已在 review/failed/delivered，但 batch 未收敛。
+- **根因**：成功 job 只在当次运行时发出 `job:done`；远端 hydration 读回 succeeded 后不会重放事件。旧 `resumeActiveBatches()` 只遍历当前 owner 且 `phase != done` 的 batch，因此无 batch 与 done batch 内的 running production 永久失去 evaluate 入口。
+- **修复边界**：hydration/resume 仅对当前 owner 的非 delivered 视频任务做纯分类。明确成片直接 review；只有全部非 superseded job succeeded、覆盖规划段且每段有可验证输出时才复用现有片段 compose。输出判定只接受 http(s)/data/blob、带视频扩展名的路径及已知媒体键/容器，不递归扫描任意 object value；只有 `status/providerRef/message/taskId` 不得当成媒体 URL。不提交 provider、不重建 job、不扣费；不完整、失败或未知终态才 failed/可重试。
+- **跨标签页竞态**：`artifacts.composing` 是会同步的 UI 展示字段，不能证明服务器任务中断。旧逻辑看到它就写 failed，或在第二个页面直接 `return false`，会把第一个页面仍在合法执行的 compose 误杀。`/api/video/compose` 旧实现又每次生成随机文件名，两个标签页可同时产生两份成片。
+- **持久幂等修复**：expand-only `140005` 新建 `video_compose_operations`，以 owner + production + composition fingerprint 做原子 claim；成功行与私有媒体归属同事务提交，跨进程唯一键是最终权威。并发请求等待/复用同一成功 URL，失败释放为可重试，成功不可重做；owner 不共享 claim。浏览器 180 秒停止等待或服务端返回 pending 时保持 running/composing，刷新再次 POST 同一确定性身份并从账本恢复，不能据 UI composing 标 failed。
+- **批次与权限**：无真正 script/images/render/workshop pending/running 的 generating batch 必须再次 evaluate 到 review/done；done batch 不被重开，但其内部残留 running production 仍按成片证据收敛。执行器必须经 `ownedBy` 守卫，不允许管理员借恢复器跨租户改写。
+- **防回归**：覆盖无 batch、done batch、generating batch、已有 finalVideoUrl、仅有完整分段输出需 compose、failed job、缺段/缺输出、真正 active job 和静态视频原恢复链路；另覆盖两个并发标签页仅一份输出、失败可重试、成功重放、owner 隔离、pending/Abort 水合恢复及 `140005` 双跑幂等。新缓存身份必须与可达 ESM 闭包一起验签；生产只允许 fresh 备份绑定后增量 apply `140005`，不得重跑既有团队/资源/媒体迁移。
+
 ## 2026-08-04 v140 生产阻断修复：failed 不能被“非 running”条件重新派发，也不能降级为等待人工补图
 
 - **生产现象**：11 条真人/数字人任务显示“等待补图/上传”，同时 jobs 在 queued/failed 间持续波动。旧客户端把图片服务不可用、图片未完整返回或数字人口播准备失败写成 `needs_input`，批次进入 `awaiting_input` 并生成跨任务自动填图卡。

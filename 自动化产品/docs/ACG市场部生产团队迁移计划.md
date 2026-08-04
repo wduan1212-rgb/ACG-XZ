@@ -2,7 +2,7 @@
 
 记录日期：2026-08-03
 
-状态：**v140 共享工作树已实现七步前向迁移：`137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`。`140002` 将历史资源冻结到唯一个人/团队 scope，`140004` 建立私有媒体 owner/team registry；所有 apply 在生产都强制绑定 fresh v2 备份。通用鉴权和媒体代码缺口已从 v139 P0 清单移除，但生产同环境副本、完整冻结恢复、正式 wheelhouse 与权限/媒体实数尚未验收。本地候选未最终提交、未推送、未部署，也未写入生产。**
+状态：**生产已按受保护流程完成 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004` 并运行 `9e8aeb5`，团队、资源 scope、媒体 registry 与数据完整性正常。当前增量候选新增 expand-only `140005` compose 幂等 schema；它必须绑定新的 fresh v2 备份单独双跑，禁止重做既有 ACG/resource/media data migration。本地候选尚未部署，未写生产。**
 
 本文件负责 ACG 市场部的数据归属、角色映射、冲突阻断和迁移验收。它不是生产执行授权；每个 apply 必须单独确认，不能由应用启动隐式触发。首次迁移不搬动当前约 15 GB 数据，也不将模块机械拆分与生产数据迁移绑定。
 
@@ -11,7 +11,7 @@
 ### 0.1 本地 v140
 
 - 生产普通启动 validate-only；RO 允许完整的旧库进入迁移验收并显示 `writeReady=false`，RW 则必须在提供 socket 前通过全部安全门禁。
-- 七步迁移使用 `schema_migrations` version/checksum/status 账本；`137004`、`140002`、`140004` 均先只读 preflight，再在 `BEGIN IMMEDIATE` 中重新校验并幂等冻结。已退役的 `137001/137002` 不得复用。
+- 完整八步迁移使用 `schema_migrations` version/checksum/status 账本；`137004`、`140002`、`140004` 均先只读 preflight，再在 `BEGIN IMMEDIATE` 中重新校验并幂等冻结，`140005` 只新增 owner-scoped compose claim 表。已退役的 `137001/137002` 不得复用。
 - 每个 apply 必须绑定当次操作前刚生成的 v2 备份；上一个 apply 成功后不得复用旧 manifest。
 - `140002` 要求历史资源 100% 得到唯一 scope；unresolved/ambiguous 阻断，陈旧次要引用仅在唯一主证据存在时记 warning。可选 override 只能在 writer 冻结的维护窗作为精确人工复核 manifest 生成，必须绑定 database identity、path/logical digest、schema/user version 和 fresh backup manifest SHA；使用 override 的 preflight/apply 均传同一备份并重验，不能解决歧义。
 - `140004` 只登记媒体归属，不改 URL/文件。无引用文件 quarantine 保留但不开放；有引用却缺 owner、缺文件、多 owner 或 team 冲突会阻断整个 apply。
@@ -85,10 +85,10 @@
 - 一次只搬一个域，规范化 OpenAPI、响应、schema、稳定 ID 和媒体 URL 必须零计划外差异。
 - 前端保留单一 transport/auth singleton；`remote.js` 旧导出作为适配器，避免拆出多个 token/缓存状态实例。
 
-### 阶段 4：七步迁移（本地已实现，生产未执行）
+### 阶段 4：完整八步迁移（前七步已在生产完成，当前仅增量 `140005`）
 
 - `137003` 只做 expand-only schema；`137004` 的只读 dry-run 不持久化 scope，正式 apply 会在同一写事务内重新预检并把当次稳定 member/supplier/account/identity scope 写入冻结表后建立 ACG 关系。不全表覆盖 docs JSON，不改凭据、父子关系、业务 ID 或媒体 URL。
-- 固定顺序是 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`。每个 apply 前必须创建 fresh v2 备份，结束后重新读取 identity 和逻辑摘要。
+- 新环境固定顺序是 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005`。当前生产只执行 `140005`；每次 apply 前必须创建 fresh v2 备份，结束后重新读取 identity 和逻辑摘要，第二次必须零写。
 - `acg_internal_migration_scope` 只是“本次生产历史对象的冻结映射”，不是通用租户资源鉴权账本。
 
 ### 阶段 5：租户与媒体 scope（代码已实现，生产证据待验收）
@@ -141,7 +141,7 @@
 3. 真正由服务端强制冻结主 API、后台任务和 sidecar writer；不是只在前端隐藏按钮。
 4. 冻结后使用 Python SQLite backup API 生成一致副本并验证 `quick_check`、大小与 SHA-256；禁止复制活动 `data.sqlite*` 兜底。
 5. 数据库、uploads、composed、canvas blobs、视频 runtime、环境、认证状态、systemd、依赖与旧代码/静态闭包形成同步目录外的完整回滚点，并完成隔离恢复演练。
-6. 迁移 CLI 必须按 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004` 执行，并使用 schema/ACG/resource/media 各自的 preflight/apply 及专用 ALLOW。每个 apply 前产生 fresh v2 backup manifest/数据库副本/独立 manifest SHA-256；只读命令保持 `ACG_READ_ONLY=1`，只有当次 CLI 进程临时设 `0`。
+6. 新环境迁移 CLI 必须按 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005` 执行，并使用 schema/ACG/resource/media 各自的 preflight/apply 及专用 ALLOW；当前生产不得重跑前七步，只增量执行 `140005`。每个 apply 前产生 fresh v2 backup manifest/数据库副本/独立 manifest SHA-256；只读命令保持 `ACG_READ_ONLY=1`，只有当次 CLI 进程临时设 `0`。
 7. 目标 release 和兼容回滚 release 均已离线构建并验证；维护窗内禁止安装或升级依赖。
 8. 主服务、视频 Web、sidecar、bridge 和画布 closure 的 release tuple 与 ESM 图验签通过。
 9. `MODEL_USAGE_COMPLETION_SPOOL_DIR` 位于 release 外持久根并与 SQLite 形成同一备份/恢复点；readiness 的 unresolved、outbox pending、spool pending/corrupt/conflict 全为 0。历史恢复只在隔离数据库副本执行 `scan -> apply -> reconcile-copy`，第二轮零写入，禁止把恢复工具目标指向活动库。
