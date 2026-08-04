@@ -51,6 +51,8 @@ export interface Size {
 
 /** Where a generated asset came from — internal provenance (PRD §11.4) */
 export interface Provenance {
+  /** The paid request runs on the platform and can be recovered after navigation. */
+  backgroundJob?: boolean;
   brief?: string;
   references?: ActiveReference[];
   prompt?: string;

@@ -17,6 +17,7 @@ import {
   Palette,
   Scan,
   Send,
+  Share2,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -1094,7 +1095,7 @@ function SelectionQuickBar({
         disabled={sharing || shared}
         className={`${btn} disabled:cursor-default disabled:opacity-45`}
       >
-        {shared ? <Star size={14} fill="currentColor" /> : <Send size={14} />}
+        {shared ? <Star size={14} fill="currentColor" /> : <Share2 size={14} />}
       </button>
       <div className="mx-0.5 h-4 w-px bg-line" />
       <button

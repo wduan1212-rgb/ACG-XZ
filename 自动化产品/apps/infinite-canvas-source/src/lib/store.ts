@@ -127,6 +127,7 @@ interface AppState {
   localUpdatedAtByProject: Record<string, number>;
   projectSyncError: Record<string, string>;
   projectIndexState: "idle" | "loading" | "ready";
+  projectIndexSynced: boolean;
   persistenceWarning: string;
   _hasHydrated: boolean;
 
@@ -588,6 +589,7 @@ export const useStore = create<AppState>()(
       localUpdatedAtByProject: {},
       projectSyncError: {},
       projectIndexState: "idle",
+      projectIndexSynced: false,
       persistenceWarning: "",
       _hasHydrated: false,
 
@@ -976,7 +978,7 @@ export const useStore = create<AppState>()(
 
       syncCanvasProjectIndex: async () => {
         if (get().projectIndexState === "loading") return;
-        set({ projectIndexState: "loading" });
+        set({ projectIndexState: "loading", projectIndexSynced: false });
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8000);
         try {
@@ -1355,8 +1357,10 @@ export const useStore = create<AppState>()(
               }));
             }
           }
+          set({ projectIndexSynced: true });
         } catch (error) {
           console.warn("[canvas-sync] index sync deferred:", error);
+          set({ projectIndexSynced: false });
         } finally {
           clearTimeout(timeout);
           set({ projectIndexState: "ready" });

@@ -5,7 +5,7 @@ import { state, saveIncremental, emit, productionById, notify, assetById } from 
 import { uid } from "../core/util.js";
 import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
-import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260804-v140-supplier-metric-sync-1";
+import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260805-v140-platform-stability-1";
 
 const IMAGE_CONCURRENCY = 4;
 // 浏览器只维持 3 个受控视频槽。数字人与信息流都可能由一条 production
@@ -175,6 +175,32 @@ function readableProviderError(message = "") {
   return msg;
 }
 
+function isAuthenticationError(message = "") {
+  return /(?:HTTP\s*)?401|Unauthorized|未登录|登录.*(?:过期|失效)/i.test(String(message || ""));
+}
+
+function holdJobForLogin(j, { preserveProviderRef = false } = {}) {
+  const message = "登录已过期，任务已保留；重新登录后会继续。";
+  const submitted = preserveProviderRef && !!j.providerRef;
+  const nextStatus = submitted
+    ? (j.status === "running" ? "running" : "submitted")
+    : "queued";
+  const changed = j.status !== nextStatus || j.error !== message;
+  j.status = nextStatus;
+  if (!submitted) {
+    j.progress = 0;
+    j.providerRef = null;
+  }
+  j.error = message;
+  j.nextPollAt = submitted ? Date.now() + 30_000 : 0;
+  j.nextAttemptAt = submitted ? 0 : Date.now() + 30_000;
+  if (changed) {
+    j.updatedAt = Date.now();
+    persistJob(j); emit("job:update", j); syncJobToProduction(j);
+  }
+  return true;
+}
+
 function nextDelayFor(j) {
   const n = Math.max(1, Number(j.attempts || 1));
   return Math.min(45000, 8000 * Math.pow(2, Math.max(0, n - 1)));
@@ -187,6 +213,7 @@ function pollDelayFor(j) {
 }
 
 function scheduleSubmitRetry(j, message) {
+  if (isAuthenticationError(message)) return holdJobForLogin(j);
   if (isDigitalHumanJob(j) && isTransientProviderError(message) && Number(j.attempts || 0) < DIGITAL_HUMAN_MAX_ATTEMPTS) {
     j.status = "queued";
     j.progress = 0;
@@ -291,7 +318,11 @@ async function tick() {
       }
     } catch (e) {
       const msg = e.message || "轮询失败";
-      if (isTransientProviderError(msg)) {
+      if (isAuthenticationError(msg)) {
+        // The upstream task already exists. Keep providerRef so a later login
+        // resumes polling instead of submitting and charging for a duplicate.
+        holdJobForLogin(j, { preserveProviderRef: true });
+      } else if (isTransientProviderError(msg)) {
         const readable = readableProviderError(msg);
         const changed = j.error !== readable;
         j.error = readable;

@@ -230,12 +230,14 @@ def test_hydration_repairs_old_loading_without_touching_mixed_results():
         const state = {{
           items: [
             {{ ...base, id: "old-loading", type: "generation", assetUrl: "", jobId: "a", createdAt: old, loading: true }},
+            {{ ...base, id: "background-loading", type: "generation", assetUrl: "", jobId: "server-job", createdAt: old, loading: true, provenance: {{ backgroundJob: true }} }},
             {{ ...base, id: "old-done-image", type: "generation", assetUrl: "/api/custom-canvas/blobs/" + "a".repeat(64), jobId: "b", createdAt: old, loading: true }},
             {{ ...base, id: "mixed-done", type: "generation", assetUrl: "/api/custom-canvas/blobs/" + "b".repeat(64), jobId: "c", createdAt: old, loading: false, generationStatus: "done" }},
             {{ ...base, id: "fresh-loading", type: "generation", assetUrl: "", jobId: "d", createdAt: fresh, loading: true }},
           ],
           messages: [
             {{ id: "thinking", role: "agent", text: "", createdAt: old, status: "thinking" }},
+            {{ id: "background-thinking", role: "agent", text: "", createdAt: old, status: "thinking", resultItemIds: ["background-loading"] }},
             {{ id: "partial", role: "agent", text: "", createdAt: old, status: "thinking", resultItemIds: ["mixed-done"] }},
             {{ id: "done", role: "agent", text: "ok", createdAt: old, status: "done", resultItemIds: ["mixed-done"] }},
           ],
@@ -246,14 +248,16 @@ def test_hydration_repairs_old_loading_without_touching_mixed_results():
         assert.equal(byId["old-loading"].loading, false);
         assert.equal(byId["old-loading"].generationStatus, "interrupted");
         assert.equal(byId["old-loading"].error, "任务已中断，可重试");
+        assert.strictEqual(byId["background-loading"], state.items[1]);
         assert.equal(byId["old-done-image"].generationStatus, "done");
-        assert.equal(byId["old-done-image"].assetUrl, state.items[1].assetUrl);
-        assert.strictEqual(byId["mixed-done"], state.items[2]);
-        assert.strictEqual(byId["fresh-loading"], state.items[3]);
+        assert.equal(byId["old-done-image"].assetUrl, state.items[2].assetUrl);
+        assert.strictEqual(byId["mixed-done"], state.items[3]);
+        assert.strictEqual(byId["fresh-loading"], state.items[4]);
         assert.equal(recovered.state.messages[0].status, "error");
         assert.equal(recovered.state.messages[0].text, "任务已中断，可重试");
-        assert.equal(recovered.state.messages[1].status, "partial");
-        assert.strictEqual(recovered.state.messages[2], state.messages[2]);
+        assert.strictEqual(recovered.state.messages[1], state.messages[1]);
+        assert.equal(recovered.state.messages[2].status, "partial");
+        assert.strictEqual(recovered.state.messages[3], state.messages[3]);
 
         // A full page reload has no live generation promise. First hydration
         // therefore repairs even a recently persisted marker immediately.
@@ -261,6 +265,8 @@ def test_hydration_repairs_old_loading_without_touching_mixed_results():
         const firstById = Object.fromEntries(firstHydration.state.items.map((item) => [item.id, item]));
         assert.equal(firstById["fresh-loading"].loading, false);
         assert.equal(firstById["fresh-loading"].generationStatus, "interrupted");
+        assert.equal(firstById["background-loading"].loading, true);
+        assert.equal(firstById["background-loading"].provenance.backgroundJob, true);
         """
     )
     run_node(script)
@@ -275,15 +281,23 @@ def test_generation_source_contract_persists_progressive_results():
     assert "persistCanvasBlob(image.dataUrl, id, {" in source
     assert "generationReceipt: image.generationReceipt" in source
     assert "idempotencyKey: id" in source
+    assert "sourceProjectId: projectId" in source
+    assert "backgroundJob: true" in source
+    assert "waitCanvasGenerationJob" in source
+    assert "服务器继续生成中" in source
+    assert "resultItemIds: jobs.map((job) => job.id)" in source
+    assert "resultItemIds: [job.id]" in source
+    assert "resultItemIds: ids" in source
     assert "idempotencyKey: job.id" in source
     assert "await flushCanvasProjectLocal(projectId)" in source
-    assert 'generationStatus: cancelled ? "interrupted" : "failed"' in source
+    assert 'generationStatus: "running"' in source
     assert "new CanvasRequestLifecycle(projectId)" in source
     assert "bindCanvasPageLifecycle(requestLifecycle, window)" in source
     assert "requestLifecycle.dispose()" in source
     assert "const requestSignal = requestLifecycle.signal" in source
     assert "if (!cancelled) recordFailure(projectId)" in source
-    assert 'status: done.length === count ? "done" : done.length > 0 ? "partial" : "error"' in source
+    assert 'status: continuing.length > 0 ? "thinking"' in source
+    assert 'done.length === count ? "done" : done.length > 0 ? "partial" : "error"' in source
     assert "Promise.allSettled" not in source
 
 

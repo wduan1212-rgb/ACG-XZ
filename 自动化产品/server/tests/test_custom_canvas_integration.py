@@ -70,6 +70,62 @@ class CustomCanvasStaticIntegrationTest(unittest.TestCase):
         self.assertIn("createProjectWhenReady = !currentProjectId", source)
         self.assertIn('{ type: "custom-canvas:create-project" }', source)
 
+    def test_embedded_canvas_has_a_single_guarded_first_project_fallback(self):
+        app = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "GithubPagesApp.tsx"
+        ).read_text(encoding="utf-8")
+        store = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "lib"
+            / "store.ts"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("const projectIndexSynced = useStore", app)
+        self.assertIn("const autoCreatedFirstProject = useRef(false)", app)
+        self.assertIn("!projectIndexSynced", app)
+        self.assertIn("projects.length > 0", app)
+        self.assertIn("pendingCreateProject.current", app)
+        self.assertIn("sessionStorage.getItem(HOME_LAUNCH_KEY)", app)
+        self.assertIn("autoCreatedFirstProject.current = true", app)
+        self.assertIn("projectIndexSynced: false", store)
+        self.assertIn("set({ projectIndexSynced: true })", store)
+
+    def test_home_join_dialog_stays_within_modal_and_explains_read_only_mode(self):
+        home = (APP_DIR / "js/views/home.js").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles/views.css").read_text(encoding="utf-8")
+        dialog = home.split("function openHomeTeamJoinDialog()", 1)[1].split(
+            "\nfunction ", 1
+        )[0]
+
+        self.assertIn("wide: true", dialog)
+        self.assertIn("平台正在维护，暂时无法提交申请，请稍后重试。", dialog)
+        self.assertIn("平台正在维护，团队列表暂时不可用，请稍后重试。", dialog)
+        self.assertIn("width: min(620px, calc(100vw - 40px));", styles)
+        self.assertIn("overflow-x: hidden;", styles)
+        self.assertIn("overflow-wrap: anywhere;", styles)
+
+    def test_canvas_share_and_publish_actions_use_distinct_icons(self):
+        workspace = (
+            APP_DIR
+            / "apps"
+            / "infinite-canvas-source"
+            / "src"
+            / "components"
+            / "workspace"
+            / "Workspace.tsx"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Share2,", workspace)
+        self.assertIn("<Share2 size={14}", workspace)
+        self.assertIn("<Send size={14}", workspace)
+
     def test_embed_root_never_renders_home_before_project_hash_resolves(self):
         source = (
             APP_DIR

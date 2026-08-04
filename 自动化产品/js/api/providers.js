@@ -11,7 +11,7 @@
      async cancel(ref)  -> void
    } */
 
-import { state } from "../core/store.js";
+import { canCreate, state } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { ACCOUNT_PROFILE_SEED } from "../data/accountProfilesSeed.js";
@@ -110,7 +110,12 @@ async function fetchJsonWithTimeout(url, timeoutMs = 3500) {
         signal: ctrl.signal
       });
       const payload = await readResponsePayload(res);
-      if (!res.ok) throw new Error(payload.message || ("HTTP " + res.status));
+      if (!res.ok) {
+        if (res.status === 401) remote.logout();
+        const error = new Error(payload.message || ("HTTP " + res.status));
+        error.status = res.status;
+        throw error;
+      }
       return payload.data || {};
     } catch (e) {
       lastError = e;
@@ -189,8 +194,19 @@ export function activeProviderFor(kind) {
    for later polling; mock is only available after a completed probe says the
    server is not configured. */
 export async function providerReadyForSubmit(kind) {
+  if (browserHttpOrigin() && !remote.hasToken()) {
+    const error = new Error("登录已过期，任务已保留；请重新登录后继续。");
+    error.status = 401;
+    throw error;
+  }
   if (kind === "video" && !serverVideo.checked) await refreshProviderStatus();
   if (kind === "video" && serverVideo.failed) {
+    const detail = String(serverVideo.error || "");
+    if (/401|未登录|登录.*(?:过期|失效)/i.test(detail)) {
+      const error = new Error("登录已过期，任务已保留；请重新登录后继续。");
+      error.status = 401;
+      throw error;
+    }
     throw new Error("视频服务配置检测失败，请稍后重试；未创建模拟视频任务。");
   }
   const provider = activeProviderFor(kind);
@@ -419,7 +435,7 @@ export async function refreshProviderStatus() {
       target.error = (e && e.name === "AbortError") ? unavailable + " timeout" : (e.message || String(e));
     }
   };
-  const creatorAccess = remote.hasToken() && (state.role === "admin" || state.role === "editor");
+  const creatorAccess = remote.hasToken() && canCreate();
   const loads = [];
   if (creatorAccess) {
     loads.push(

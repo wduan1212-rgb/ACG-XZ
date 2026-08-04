@@ -2148,6 +2148,12 @@ function cleanCustomVideoText(text = "", { stripTags = false, title = "" } = {})
   return out.replace(/[“”]/g, "\"").trim();
 }
 
+function ensureFirstPersonNarration(text = "") {
+  const narration = String(text || "").trim();
+  if (!narration || /我|咱|我们/.test(narration)) return narration;
+  return `我这次从实际使用出发，${narration}`;
+}
+
 /*
  * 信息流导演稿是视频模型的执行指令，不是直接发布的小红书正文。
  * 这里只做无损文本整理，避免内容合规替换把“第一扇门 / 电话亭”等
@@ -2912,13 +2918,13 @@ ${productRelationLine(rel.slice(0, 2))}
           const out = {
             title: cleanCustomVideoText(d.title || safeTitle || ""),
             copy: ensureVideoBrandTags(cleanCustomVideoText(d.copy || safeBody || "", { title: d.title || safeTitle }), product),
-            narration: cleanCustomVideoText(d.narration || "", { stripTags: true, title: d.title || safeTitle }),
+            narration: ensureFirstPersonNarration(cleanCustomVideoText(d.narration || "", { stripTags: true, title: d.title || safeTitle })),
             visualPrompt: cleanCustomVideoText(d.visualPrompt || "", { stripTags: true, title: d.title || safeTitle })
           };
           if (!out.title) out.title = safeTitle || cleanCustomVideoText((out.copy || out.narration).split(/\n+/)[0] || "");
           if (!out.copy || !out.narration) throw new Error("模型未返回完整的发布文案和口播");
           if (normalizeForDedupe(out.copy) === normalizeForDedupe(out.narration)) throw new Error("模型返回的发布文案和口播过于相似，请重试");
-          if (!/我|咱|我们/.test(out.narration)) throw new Error("模型口播缺少第一人称视角，请重试");
+          if (!/我|咱|我们/.test(out.narration)) throw new Error("口播第一人称规范化失败，请重试");
           if (out.narration.length < Math.min(360, out.copy.length + 80)) throw new Error("模型口播长度不足，请重试");
           if (/本条围绕|这条围绕|本文围绕|本期围绕/.test(`${out.copy}\n${out.narration}`)) throw new Error("模型文案仍含元话术，请重试");
           if (/^(哎|嘿|诶|欸|跟你说|我跟你说|说个事|你感受一下|家人们|兄弟们|姐妹们)/.test(out.copy.trim())) throw new Error("模型发布文案过于口语化，请重试");
@@ -2952,6 +2958,8 @@ ${productRelationLine(rel.slice(0, 2))}
       "一镜到底挑战：用空间调度和连续动作制造压力，最后切进纯界面完成反差"
     ];
     let lastError = null;
+    let lastDraft = "";
+    let lastFailure = "";
     for (let attempt = 0; attempt < 3; attempt++) {
       const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${attempt}`;
       const engine = engines[Math.floor(Math.random() * engines.length)];
@@ -2978,13 +2986,21 @@ ${productRelationLine(rel.slice(0, 2))}
         `标题：${safeTitle || "未填写"}`,
         `去标签发布文案：${safeCopy || "未填写"}`,
         `口播内容依据：${safeNarration || safeCopy || safeTitle}`,
-        avoid
+        avoid,
+        lastDraft
+          ? [
+              `上一轮未通过原因：${lastFailure || "结构不完整"}`,
+              "请保留上轮中与主题紧密相关的创意，定向补齐缺失的分时镜头、动作、台词和转场；A/B 面必须各至少 4 个明确时间段。",
+              `上一轮草稿：${lastDraft.slice(0, 7000)}`
+            ].join("\n")
+          : ""
       ].filter(Boolean).join("\n\n");
       try {
         const content = await llm([
           { role: "system", content: system },
           { role: "user", content: user }
         ], { json: true, temperature: 1.15, timeoutMs: 90000, thinking: "disabled", maxTokens: 5200 });
+        lastDraft = String(content || "");
         const plan = parseInfoFlowCreativePlan(content);
         const sharedStyle = plan.visualStyle || "超写实商业广告质感，自然电影光影，真实材质，统一色彩与镜头语言";
         plan.frontPrompt = withSharedInfoFlowStyle(plan.frontPrompt, sharedStyle);
@@ -2993,6 +3009,7 @@ ${productRelationLine(rel.slice(0, 2))}
         return this._ok(plan);
       } catch (error) {
         lastError = error;
+        lastFailure = error?.message || String(error || "信息流创意校验失败");
       }
     }
     this.lastSource = "error";

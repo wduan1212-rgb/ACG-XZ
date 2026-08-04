@@ -6099,7 +6099,20 @@ button.overview-viz-card { cursor: pointer; }
 .team-rename-form .input { min-height: 46px; border-radius: 14px; }
 .team-rename-form .btn { min-height: 46px; }
 .team-name-managed { margin: 0 0 18px; color: #9399a2; font-size: 12px; }
-.home-team-join-dialog { width: min(620px, calc(100vw - 40px)); padding: 34px; }
+.home-team-join-dialog {
+  width: min(620px, calc(100vw - 40px));
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  padding: 34px;
+}
+.home-team-join-dialog > *,
+.home-team-join-dialog .field,
+.home-team-join-dialog .input,
+.home-team-join-dialog .team-join-heading { min-width: 0; max-width: 100%; }
+.home-team-join-dialog .team-join-heading em,
+.home-team-join-dialog [data-home-team-status],
+.home-team-results > span { overflow-wrap: anywhere; word-break: break-word; }
 .home-team-join-dialog .field { display: grid; gap: 8px; margin-top: 20px; color: #555c67; font-size: 13px; }
 .home-team-join-dialog textarea.input { min-height: 86px; padding-top: 13px; resize: vertical; }
 .home-team-results { display: grid; max-height: 230px; gap: 8px; margin-top: 10px; overflow: auto; }

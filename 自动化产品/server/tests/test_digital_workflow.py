@@ -499,6 +499,9 @@ console.log(JSON.stringify({
         cleaner = source[cleaner_start:cleaner_end]
 
         self.assertIn("for (let attempt = 0; attempt < 3; attempt++)", director)
+        self.assertIn("上一轮未通过原因", director)
+        self.assertIn("A/B 面必须各至少 4 个明确时间段", director)
+        self.assertIn("lastDraft.slice(0, 7000)", director)
         self.assertIn("temperature: 1.15", director)
         self.assertIn("至少 4 个分时镜头；台词必须原创、短促、自然", director)
         self.assertIn("例如超写实、电影纪实、夸张舞台广告或高质感三维界面", director)
@@ -1299,8 +1302,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260804-v140-supplier-metric-sync-1"', main)
-        self.assertIn('js/main.js?v=20260804-v140-supplier-metric-sync-1', index)
+        self.assertIn('const APP_BUILD_ID = "20260805-v140-platform-stability-1"', main)
+        self.assertIn('js/main.js?v=20260805-v140-platform-stability-1', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)

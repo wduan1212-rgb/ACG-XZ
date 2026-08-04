@@ -5,9 +5,9 @@ import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260804-v140-supplier-metric-sync-1";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260805-v140-platform-stability-1";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260804-v140-supplier-metric-sync-1";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260805-v140-platform-stability-1";
 import { accountCreatedToday, groupOf, isAccountDisabled } from "../domain/accounts.js";
 
 let activeCustomPublishModal = null;
@@ -1059,15 +1059,15 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
             const generatedCopy = kind === "canvas"
               ? compactCanvasPublishCopy(generated.copy || "")
               : String(generated.copy || "");
-            if (
-              coverSource === "generated"
-              && coverAssetId
-              && coverCopy !== generatedCopy.trim()
-            ) {
-              invalidateCover("发布文案已重新生成，请按新文案重新生成封面。");
-            }
             copyInput.value = generatedCopy;
-            status.textContent = "文案已生成，可以继续手动修改。";
+            if (coverSource === "generated" && coverAssetId) {
+              // Generating copy after a cover is an intentional publish workflow.
+              // Keep the chosen cover, then use the new copy as the next edit baseline.
+              coverCopy = generatedCopy.trim();
+              status.textContent = "文案已生成，现有封面已保留。";
+            } else {
+              status.textContent = "文案已生成，可以继续手动修改。";
+            }
             saveDraftNow();
           } catch (error) {
             copyInput.value = previousCopy;

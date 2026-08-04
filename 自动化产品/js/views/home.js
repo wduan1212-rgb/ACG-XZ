@@ -3,8 +3,8 @@ import { currentMember, currentTeam } from "../core/store.js";
 import { community, teams, memberProfile } from "../core/remote.js";
 import { go } from "../core/router.js";
 import { icon } from "../ui/icons.js";
-import { openModal, openLightbox, toast } from "../ui/components.js?v=20260804-v140-supplier-metric-sync-1";
-import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260804-v140-supplier-metric-sync-1";
+import { openModal, openLightbox, toast } from "../ui/components.js?v=20260805-v140-platform-stability-1";
+import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260805-v140-platform-stability-1";
 
 const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
 const HOME_LAUNCH_REGISTRY_KEY = "__starmatrixHomeLaunchRegistry";
@@ -326,6 +326,7 @@ function openHomeTeamJoinDialog() {
       </div>
     </section>
   `, {
+    wide: true,
     onMount(panel, close) {
       const search = panel.querySelector("[data-home-team-search]");
       const results = panel.querySelector("[data-home-team-results]");
@@ -361,7 +362,10 @@ function openHomeTeamJoinDialog() {
           close();
           toast(`已向「${selected.name}」提交加入申请`);
         } catch (error) {
-          status.textContent = error?.message || "提交失败，请稍后重试";
+          const message = String(error?.message || "");
+          status.textContent = /\b503\b|只读|维护/.test(message)
+            ? "平台正在维护，暂时无法提交申请，请稍后重试。"
+            : (message || "提交失败，请稍后重试");
           submit.disabled = false;
         }
       });
@@ -370,7 +374,10 @@ function openHomeTeamJoinDialog() {
         draw();
         search?.focus();
       }).catch(error => {
-        results.innerHTML = `<span>${esc(error?.message || "团队列表读取失败")}</span>`;
+        const message = String(error?.message || "");
+        results.innerHTML = `<span>${esc(/\b503\b|只读|维护/.test(message)
+          ? "平台正在维护，团队列表暂时不可用，请稍后重试。"
+          : (message || "团队列表读取失败"))}</span>`;
       });
     },
   });

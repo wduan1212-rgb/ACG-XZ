@@ -107,12 +107,28 @@ class TtsCreatorPermissionTest(unittest.TestCase):
         )
         self.assertIn('generationOperationKey("voice-lookup")', providers)
         self.assertIn('creatorAuthHeaders({ "Idempotency-Key": requestKey })', providers)
-        self.assertIn('state.role === "admin" || state.role === "editor"', providers)
+        self.assertIn('import { canCreate, state } from "../core/store.js"', providers)
+        self.assertIn("remote.hasToken() && canCreate()", providers)
+        self.assertIn("登录已过期，任务已保留", providers)
+        self.assertNotIn('state.role === "admin" || state.role === "editor"', providers)
         self.assertIn("if (entered) {", main_js)
         self.assertNotIn("adminOnly", shell)
         self.assertNotIn("data-custom-locked", shell)
         self.assertNotIn("语音生成仅管理员可用", shell)
         self.assertNotIn('page === "voice" && state.role !== "admin"', router)
+
+    def test_auth_expiry_holds_generation_jobs_instead_of_failing_them(self):
+        jobs = (APP_DIR / "js" / "api" / "jobs.js").read_text(encoding="utf-8")
+        self.assertIn("function isAuthenticationError", jobs)
+        self.assertIn("function holdJobForLogin", jobs)
+        self.assertIn("重新登录后会继续", jobs)
+        self.assertIn(
+            "if (isAuthenticationError(message)) return holdJobForLogin(j);",
+            jobs,
+        )
+        self.assertIn("preserveProviderRef: true", jobs)
+        self.assertIn("j.nextPollAt = submitted ? Date.now() + 30_000 : 0", jobs)
+        self.assertIn("if (!submitted) {", jobs)
 
 
 if __name__ == "__main__":

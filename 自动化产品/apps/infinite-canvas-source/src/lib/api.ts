@@ -75,7 +75,7 @@ export async function callAgent(
 }
 
 export async function callGenerate(
-  opts: GenerateOptions & { mode?: string },
+  opts: GenerateOptions & { mode?: string; sourceProjectId?: string },
   requestOptions: AbortableRequestOptions = {},
 ): Promise<GeneratedImage[]> {
   return runAbortableRequest(async (signal) => {
@@ -103,15 +103,114 @@ export async function callGenerate(
       });
       return generateImages(opts);
     }
-    const res = await platformFetch("/generate", {
+    const jobId = String(opts.idempotencyKey || "").trim();
+    const sourceProjectId = String(opts.sourceProjectId || "").trim();
+    if (!jobId || !sourceProjectId) throw new Error("画布后台生成缺少稳定任务标识");
+    const request = { ...opts };
+    delete request.sourceProjectId;
+    await submitCanvasGenerationJob({
+      jobId,
+      sourceProjectId,
+      operation: "generate",
+      request,
+    }, { signal });
+    const job = await waitCanvasGenerationJob(jobId, { signal });
+    return job.images ?? [];
+  }, { timeoutMs: 5 * 60_000, label: "图片生成", ...requestOptions });
+}
+
+export interface CanvasGenerationJob {
+  jobId: string;
+  sourceProjectId: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  progress: number;
+  error?: string;
+  images?: Array<GeneratedImage & {
+    assetUrl?: string;
+    outputId?: string;
+    contentHash?: string;
+  }>;
+  usedRefs?: number;
+  skippedRefs?: number;
+  model?: string;
+  mode?: string;
+  billing?: unknown;
+  createdAt?: number;
+  startedAt?: number;
+  finishedAt?: number;
+  updatedAt?: number;
+}
+
+export async function submitCanvasGenerationJob(
+  payload: {
+    jobId: string;
+    sourceProjectId: string;
+    operation?: "generate" | "transform";
+    request: Record<string, unknown>;
+  },
+  requestOptions: AbortableRequestOptions = {},
+): Promise<CanvasGenerationJob> {
+  return runAbortableRequest(async (signal) => {
+    const res = await platformFetch("/generation-jobs", {
       method: "POST",
       signal,
-      body: JSON.stringify(opts),
+      headers: { "Idempotency-Key": payload.jobId },
+      body: JSON.stringify(payload),
     });
-    if (!res.ok) throw canvasHttpError(res.status, await responseDetail(res), "图片生成");
-    const data = (await res.json()) as { images: GeneratedImage[] };
-    return data.images;
-  }, { timeoutMs: 5 * 60_000, label: "图片生成", ...requestOptions });
+    if (!res.ok) {
+      throw canvasHttpError(res.status, await responseDetail(res), "画布后台任务提交");
+    }
+    return (await res.json()) as CanvasGenerationJob;
+  }, { timeoutMs: 30_000, label: "画布后台任务提交", ...requestOptions });
+}
+
+export async function getCanvasGenerationJob(
+  jobId: string,
+  requestOptions: AbortableRequestOptions = {},
+): Promise<CanvasGenerationJob> {
+  return runAbortableRequest(async (signal) => {
+    const res = await platformFetch(`/generation-jobs/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+      signal,
+    });
+    if (!res.ok) {
+      throw canvasHttpError(res.status, await responseDetail(res), "画布后台任务查询");
+    }
+    return (await res.json()) as CanvasGenerationJob;
+  }, { timeoutMs: 20_000, label: "画布后台任务查询", ...requestOptions });
+}
+
+function waitForCanvasPoll(signal?: AbortSignal, delayMs = 1_500): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException("cancelled", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason ?? new DOMException("cancelled", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export async function waitCanvasGenerationJob(
+  jobId: string,
+  requestOptions: AbortableRequestOptions = {},
+): Promise<CanvasGenerationJob> {
+  while (true) {
+    const job = await getCanvasGenerationJob(jobId, requestOptions);
+    if (job.status === "succeeded") return job;
+    if (job.status === "failed") {
+      throw canvasHttpError(502, String(job.error || "图片生成失败"), "图片生成");
+    }
+    await waitForCanvasPoll(requestOptions.signal);
+  }
 }
 
 export interface CanvasBlobResult {
@@ -202,6 +301,7 @@ export async function callTransform(opts: {
   quality?: string;
   references?: string[];
   idempotencyKey?: string;
+  sourceProjectId?: string;
 }, requestOptions: AbortableRequestOptions = {}): Promise<{
   dataUrl: string;
   width: number;
@@ -223,21 +323,22 @@ export async function callTransform(opts: {
     if (!image) throw new Error("编辑未返回图片");
     return image;
   }
+  const jobId = String(opts.idempotencyKey || "").trim();
+  const sourceProjectId = String(opts.sourceProjectId || "").trim();
+  if (!jobId || !sourceProjectId) throw new Error("画布后台编辑缺少稳定任务标识");
+  const request = { ...opts };
+  delete request.sourceProjectId;
   return runAbortableRequest(async (signal) => {
-    const res = await platformFetch("/transform", {
-      method: "POST",
-      signal,
-      body: JSON.stringify(opts),
-    });
-    if (!res.ok) throw canvasHttpError(res.status, await responseDetail(res), "图片编辑");
-    const data = await res.json() as { image?: unknown };
-    if (!data.image) throw new Error("编辑未返图片");
-    return data.image as {
-      dataUrl: string;
-      width: number;
-      height: number;
-      generationReceipt?: string;
-    };
+    await submitCanvasGenerationJob({
+      jobId,
+      sourceProjectId,
+      operation: "transform",
+      request,
+    }, { signal });
+    const job = await waitCanvasGenerationJob(jobId, { signal });
+    const image = job.images?.[0];
+    if (!image) throw new Error("编辑未返图片");
+    return image;
   }, { timeoutMs: 5 * 60_000, label: "图片编辑", ...requestOptions });
 }
 

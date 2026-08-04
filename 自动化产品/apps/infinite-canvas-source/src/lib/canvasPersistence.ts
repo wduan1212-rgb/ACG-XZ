@@ -62,11 +62,29 @@ export function recoverInterruptedCanvasState(
   let changed = false;
   const stale = (createdAt: number | undefined) =>
     !Number.isFinite(createdAt) || now - Number(createdAt || 0) >= timeoutMs;
+  const recoverableBackgroundJobs = new Set(
+    state.items
+      .filter((item) =>
+        item.type === "generation"
+        && item.loading
+        && item.provenance?.backgroundJob === true
+        && !!item.jobId,
+      )
+      .map((item) => item.id),
+  );
   const items = state.items.map((item) => {
     if (
       (item.type !== "generation" && item.type !== "enhanced")
       || !item.loading
       || !stale(item.createdAt)
+    ) return item;
+    // Embedded image jobs continue on the server after this page is gone.
+    // Their dedicated status endpoint, not a local age heuristic, owns the
+    // terminal state and prevents a refresh from discarding a paid result.
+    if (
+      item.type === "generation"
+      && item.provenance?.backgroundJob === true
+      && item.jobId
     ) return item;
     changed = true;
     if (item.assetUrl) {
@@ -82,6 +100,9 @@ export function recoverInterruptedCanvasState(
   });
   const messages = state.messages.map((message) => {
     if (message.status !== "thinking" || !stale(message.createdAt)) return message;
+    if (message.resultItemIds?.some((id) => recoverableBackgroundJobs.has(id))) {
+      return message;
+    }
     changed = true;
     return {
       ...message,

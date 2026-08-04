@@ -78,6 +78,7 @@ SUBSCRIPTION_MONTHLY_POINTS = {
 PERSONAL_SUBSCRIPTION_PLANS = {"personal-pro", "personal-advanced"}
 TEAM_SUBSCRIPTION_PLANS = {"team", "team-pro"}
 CUSTOM_CANVAS_GENERATION_RECEIPT_TTL_MS = 24 * 60 * 60 * 1000
+CUSTOM_CANVAS_GENERATION_JOB_COLLECTION = "customCanvasGenerationJobs"
 
 
 def normalize_username(value):
@@ -13734,6 +13735,248 @@ def save_custom_canvas_blob(owner_id, data_url, generation_receipt=""):
                 created_blob_files,
             )
             raise
+        finally:
+            conn.close()
+
+
+def _custom_canvas_generation_job_id(owner_id, client_job_id):
+    owner = str(owner_id or "").strip()
+    client = str(client_job_id or "").strip()
+    if not owner or not re.fullmatch(r"[A-Za-z0-9._:-]{1,180}", client):
+        raise ValueError("invalid_custom_canvas_generation_job")
+    digest = hashlib.sha256(f"{owner}:{client}".encode("utf-8")).hexdigest()
+    return f"canvas-generation-{digest}"
+
+
+def _custom_canvas_generation_job_public(item):
+    if not isinstance(item, dict):
+        return None
+    return {
+        key: item.get(key)
+        for key in (
+            "jobId", "sourceProjectId", "status", "progress", "error",
+            "createdAt", "startedAt", "finishedAt", "updatedAt", "images",
+            "usedRefs", "skippedRefs", "model", "mode", "billing",
+        )
+        if key in item
+    }
+
+
+def create_custom_canvas_generation_job(
+    owner_id,
+    client_job_id,
+    request_fingerprint,
+    *,
+    source_project_id="",
+):
+    """Create one owner-scoped background image job exactly once.
+
+    The job lives in the existing docs table but is intentionally not part of
+    COLLECTIONS, so it never enlarges /api/state or enters legacy browser
+    snapshots. Dedicated endpoints are the only read/write surface.
+    """
+    owner = str(owner_id or "").strip()
+    job_id = str(client_job_id or "").strip()
+    fingerprint = str(request_fingerprint or "").strip()
+    project_id = str(source_project_id or "").strip()[:180]
+    internal_id = _custom_canvas_generation_job_id(owner, job_id)
+    if not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
+        raise ValueError("invalid_custom_canvas_generation_job")
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection=? AND id=?",
+                (CUSTOM_CANVAS_GENERATION_JOB_COLLECTION, internal_id),
+            ).fetchone()
+            if row:
+                if str(row[0] or "") != owner:
+                    raise ValueError("custom_canvas_generation_job_forbidden")
+                existing = json.loads(row[1])
+                if str(existing.get("requestFingerprint") or "") != fingerprint:
+                    raise ValueError("custom_canvas_generation_job_conflict")
+                if str(existing.get("sourceProjectId") or "") != project_id:
+                    raise ValueError("custom_canvas_generation_job_conflict")
+                conn.commit()
+                return _custom_canvas_generation_job_public(existing), False
+            item = {
+                "id": internal_id,
+                "jobId": job_id,
+                "ownerId": owner,
+                "sourceProjectId": project_id,
+                "requestFingerprint": fingerprint,
+                "status": "queued",
+                "progress": 0,
+                "images": [],
+                "error": "",
+                "createdAt": now,
+                "updatedAt": now,
+            }
+            conn.execute(
+                "INSERT INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                (
+                    CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                    internal_id,
+                    owner,
+                    now,
+                    json.dumps(item, ensure_ascii=False),
+                ),
+            )
+            conn.commit()
+            return _custom_canvas_generation_job_public(item), True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def claim_custom_canvas_generation_job(owner_id, client_job_id):
+    owner = str(owner_id or "").strip()
+    internal_id = _custom_canvas_generation_job_id(owner, client_job_id)
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection=? AND id=?",
+                (CUSTOM_CANVAS_GENERATION_JOB_COLLECTION, internal_id),
+            ).fetchone()
+            if not row or str(row[0] or "") != owner:
+                conn.commit()
+                return None, False
+            item = json.loads(row[1])
+            if str(item.get("status") or "") != "queued":
+                conn.commit()
+                return _custom_canvas_generation_job_public(item), False
+            item.update({
+                "status": "running",
+                "progress": max(0.02, float(item.get("progress") or 0)),
+                "startedAt": now,
+                "updatedAt": now,
+            })
+            conn.execute(
+                "UPDATE docs SET updated_at=?,data=? WHERE collection=? AND id=?",
+                (
+                    now,
+                    json.dumps(item, ensure_ascii=False),
+                    CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                    internal_id,
+                ),
+            )
+            conn.commit()
+            return _custom_canvas_generation_job_public(item), True
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def finish_custom_canvas_generation_job(
+    owner_id,
+    client_job_id,
+    *,
+    status,
+    result=None,
+    error="",
+):
+    owner = str(owner_id or "").strip()
+    internal_id = _custom_canvas_generation_job_id(owner, client_job_id)
+    terminal = str(status or "")
+    if terminal not in {"succeeded", "failed"}:
+        raise ValueError("invalid_custom_canvas_generation_job_status")
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection=? AND id=?",
+                (CUSTOM_CANVAS_GENERATION_JOB_COLLECTION, internal_id),
+            ).fetchone()
+            if not row or str(row[0] or "") != owner:
+                conn.commit()
+                return None
+            item = json.loads(row[1])
+            if str(item.get("status") or "") == "succeeded":
+                conn.commit()
+                return _custom_canvas_generation_job_public(item)
+            payload = result if isinstance(result, dict) else {}
+            item.update({
+                "status": terminal,
+                "progress": 1,
+                "error": str(error or "")[:600] if terminal == "failed" else "",
+                "finishedAt": now,
+                "updatedAt": now,
+            })
+            if terminal == "succeeded":
+                for key in (
+                    "images", "usedRefs", "skippedRefs", "model", "mode", "billing",
+                ):
+                    if key in payload:
+                        item[key] = payload[key]
+            conn.execute(
+                "UPDATE docs SET updated_at=?,data=? WHERE collection=? AND id=?",
+                (
+                    now,
+                    json.dumps(item, ensure_ascii=False),
+                    CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                    internal_id,
+                ),
+            )
+            conn.commit()
+            return _custom_canvas_generation_job_public(item)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def get_custom_canvas_generation_job(owner_id, client_job_id, *, stale_ms=20 * 60 * 1000):
+    owner = str(owner_id or "").strip()
+    internal_id = _custom_canvas_generation_job_id(owner, client_job_id)
+    now = int(time.time() * 1000)
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection=? AND id=?",
+                (CUSTOM_CANVAS_GENERATION_JOB_COLLECTION, internal_id),
+            ).fetchone()
+            if not row or str(row[0] or "") != owner:
+                return None
+            item = json.loads(row[1])
+            if (
+                str(item.get("status") or "") in {"queued", "running"}
+                and now - int(item.get("updatedAt") or item.get("startedAt") or now) >= int(stale_ms)
+            ):
+                item.update({
+                    "status": "failed",
+                    "progress": 1,
+                    "error": "服务器重启或任务超时，未自动重试以避免重复扣费，请手动重试。",
+                    "finishedAt": now,
+                    "updatedAt": now,
+                })
+                conn.execute(
+                    "UPDATE docs SET updated_at=?,data=? WHERE collection=? AND id=?",
+                    (
+                        now,
+                        json.dumps(item, ensure_ascii=False),
+                        CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                        internal_id,
+                    ),
+                )
+                conn.commit()
+            return _custom_canvas_generation_job_public(item)
         finally:
             conn.close()
 

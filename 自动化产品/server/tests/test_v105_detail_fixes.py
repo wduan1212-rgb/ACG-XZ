@@ -60,6 +60,8 @@ class V105DetailFixesTest(unittest.TestCase):
         )[0]
         self.assertIn("for (let attempt = 0; attempt < 2; attempt++)", draft)
         self.assertIn("上一版没有通过完整性校验", draft)
+        self.assertIn("ensureFirstPersonNarration", draft)
+        self.assertNotIn("模型口播缺少第一人称视角", draft)
         self.assertNotIn("_mockCopy", draft)
 
     def test_info_flow_defaults_to_no_subtitles_and_video_delivery_requires_composite(self):

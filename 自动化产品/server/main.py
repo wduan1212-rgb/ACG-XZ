@@ -7184,6 +7184,13 @@ class CustomCanvasGenerateReq(BaseModel):
     idempotencyKey: str = ""
 
 
+class CustomCanvasGenerationJobReq(BaseModel):
+    jobId: str = ""
+    sourceProjectId: str = ""
+    operation: str = "generate"
+    request: dict = Field(default_factory=dict)
+
+
 class CustomCanvasProjectDraftReq(BaseModel):
     project: dict
     items: List[dict]
@@ -9414,14 +9421,7 @@ async def custom_canvas_agent(
         return _custom_canvas_agent_fallback(req)
 
 
-@app.post("/api/custom-canvas/generate")
-async def custom_canvas_generate(
-    req: CustomCanvasGenerateReq,
-    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
-    me=Depends(require_member),
-):
-    _require_custom_creator(me)
-    request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
+async def _custom_canvas_generate_result(req, request_key, me):
     request_fingerprint = _quota_request_fingerprint(req)
     refs = _custom_canvas_image_refs(req.references)
     prompt = str(req.prompt or "").strip()
@@ -9489,6 +9489,193 @@ async def custom_canvas_generate(
         "billing": billing,
         "dailyQuota": billing["dailyQuota"],
     }
+
+
+@app.post("/api/custom-canvas/generate")
+async def custom_canvas_generate(
+    req: CustomCanvasGenerateReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
+    return await _custom_canvas_generate_result(req, request_key, me)
+
+
+_CUSTOM_CANVAS_GENERATION_TASKS = {}
+
+
+def _custom_canvas_background_error(exc):
+    if isinstance(exc, HTTPException):
+        return str(exc.detail or "图片生成失败")[:600]
+    if isinstance(exc, _ModelUsageGateFailure):
+        return str(exc.detail or "图片生成暂不可用")[:600]
+    if isinstance(exc, asyncio.CancelledError):
+        return "服务器正在重启，本任务未自动重试以避免重复扣费，请手动重试。"
+    return f"图片生成失败：{exc.__class__.__name__}"[:600]
+
+
+async def _run_custom_canvas_generation_job(
+    me,
+    client_job_id,
+    request_key,
+    operation,
+    req,
+):
+    owner_id = str(me.get("id") or "")
+    _job, claimed = store.claim_custom_canvas_generation_job(owner_id, client_job_id)
+    if not claimed:
+        return
+    try:
+        if operation == "transform":
+            transformed = await _custom_canvas_transform_result(req, request_key, me)
+            result = {
+                "images": [transformed["image"]],
+                "billing": transformed.get("billing"),
+                "dailyQuota": transformed.get("dailyQuota"),
+                "mode": "transform",
+            }
+        else:
+            result = await _custom_canvas_generate_result(req, request_key, me)
+        stable_images = []
+        for image in result.get("images") or []:
+            persisted = store.save_custom_canvas_blob(
+                owner_id,
+                image.get("dataUrl") or "",
+                image.get("generationReceipt") or "",
+            )
+            stable_images.append({
+                "dataUrl": persisted["url"],
+                "assetUrl": persisted["url"],
+                "outputId": client_job_id,
+                "contentHash": persisted["contentHash"],
+                "width": image.get("width"),
+                "height": image.get("height"),
+                "label": image.get("label") or "图片",
+                "variant": image.get("variant"),
+            })
+        store.finish_custom_canvas_generation_job(
+            owner_id,
+            client_job_id,
+            status="succeeded",
+            result={**result, "images": stable_images},
+        )
+    except asyncio.CancelledError as exc:
+        store.finish_custom_canvas_generation_job(
+            owner_id,
+            client_job_id,
+            status="failed",
+            error=_custom_canvas_background_error(exc),
+        )
+        raise
+    except Exception as exc:
+        store.finish_custom_canvas_generation_job(
+            owner_id,
+            client_job_id,
+            status="failed",
+            error=_custom_canvas_background_error(exc),
+        )
+
+
+def _start_custom_canvas_generation_task(
+    me,
+    client_job_id,
+    request_key,
+    operation,
+    req,
+):
+    owner_id = str(me.get("id") or "")
+    task_key = f"{owner_id}:{client_job_id}"
+    current = _CUSTOM_CANVAS_GENERATION_TASKS.get(task_key)
+    if current and not current.done():
+        return current
+    task = asyncio.create_task(
+        _run_custom_canvas_generation_job(
+            dict(me),
+            client_job_id,
+            request_key,
+            operation,
+            req,
+        )
+    )
+    _CUSTOM_CANVAS_GENERATION_TASKS[task_key] = task
+
+    def cleanup(done):
+        if _CUSTOM_CANVAS_GENERATION_TASKS.get(task_key) is done:
+            _CUSTOM_CANVAS_GENERATION_TASKS.pop(task_key, None)
+
+    task.add_done_callback(cleanup)
+    return task
+
+
+@app.post("/api/custom-canvas/generation-jobs", status_code=202)
+async def custom_canvas_generation_job_create(
+    req: CustomCanvasGenerationJobReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    client_job_id = str(req.jobId or "").strip()
+    operation = str(req.operation or "generate").strip().lower()
+    try:
+        if operation == "generate":
+            task_request = CustomCanvasGenerateReq(**dict(req.request or {}))
+        elif operation == "transform":
+            task_request = CustomCanvasTransformReq(**dict(req.request or {}))
+        else:
+            raise HTTPException(400, "画布后台任务类型无效")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "画布后台任务参数无效")
+    request_key = _custom_canvas_request_key(
+        idempotency_key,
+        task_request.idempotencyKey or client_job_id,
+    )
+    if not client_job_id or request_key != client_job_id:
+        raise HTTPException(409, "画布后台任务标识不一致")
+    task_request.idempotencyKey = request_key
+    fingerprint = _quota_request_fingerprint(task_request)
+    if operation != "generate":
+        fingerprint = hashlib.sha256(
+            f"{operation}:{fingerprint}".encode("utf-8")
+        ).hexdigest()
+    try:
+        job, _created = store.create_custom_canvas_generation_job(
+            me["id"],
+            client_job_id,
+            fingerprint,
+            source_project_id=req.sourceProjectId,
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        if reason == "custom_canvas_generation_job_conflict":
+            raise HTTPException(409, "同一画布任务标识对应了不同请求")
+        raise HTTPException(400, "画布后台任务标识无效")
+    if str((job or {}).get("status") or "") == "queued":
+        _start_custom_canvas_generation_task(
+            me,
+            client_job_id,
+            request_key,
+            operation,
+            task_request,
+        )
+    return job
+
+
+@app.get("/api/custom-canvas/generation-jobs/{client_job_id}")
+def custom_canvas_generation_job_get(
+    client_job_id: str,
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    try:
+        job = store.get_custom_canvas_generation_job(me["id"], client_job_id)
+    except ValueError:
+        raise HTTPException(404, "画布后台任务不存在")
+    if not job:
+        raise HTTPException(404, "画布后台任务不存在")
+    return job
 
 
 @app.post("/api/custom-canvas/enhance")
@@ -9596,14 +9783,7 @@ async def custom_canvas_edit_region(
     }
 
 
-@app.post("/api/custom-canvas/transform")
-async def custom_canvas_transform(
-    req: CustomCanvasTransformReq,
-    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
-    me=Depends(require_member),
-):
-    _require_custom_creator(me)
-    request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
+async def _custom_canvas_transform_result(req, request_key, me):
     request_fingerprint = _quota_request_fingerprint(req)
     image = _custom_canvas_data_url(req.image, "待处理图片")
     prompt = str(req.prompt or "").strip() or "优化这张图"
@@ -9667,6 +9847,17 @@ async def custom_canvas_transform(
         "billing": billing,
         "dailyQuota": billing["dailyQuota"],
     }
+
+
+@app.post("/api/custom-canvas/transform")
+async def custom_canvas_transform(
+    req: CustomCanvasTransformReq,
+    idempotency_key: str = Header(default="", alias="Idempotency-Key"),
+    me=Depends(require_member),
+):
+    _require_custom_creator(me)
+    request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
+    return await _custom_canvas_transform_result(req, request_key, me)
 
 
 def _custom_project_error(error):

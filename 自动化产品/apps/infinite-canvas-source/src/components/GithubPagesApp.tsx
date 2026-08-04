@@ -21,12 +21,15 @@ function currentProjectId(): string | null {
 export function GithubPagesApp() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const hydrated = useStore((state) => state._hasHydrated);
+  const projects = useStore((state) => state.projects);
+  const projectIndexSynced = useStore((state) => state.projectIndexSynced);
   const syncPublishedProjects = useStore((state) => state.syncPublishedProjects);
   const syncCanvasProjectIndex = useStore((state) => state.syncCanvasProjectIndex);
   const markProjectPublished = useStore((state) => state.markProjectPublished);
   const createProject = useStore((state) => state.createProject);
   const addItem = useStore((state) => state.addItem);
   const pendingCreateProject = useRef(false);
+  const autoCreatedFirstProject = useRef(false);
   const handledLaunches = useRef(new Set<string>());
 
   const announceProject = useCallback((createdId: string) => {
@@ -164,6 +167,24 @@ export function GithubPagesApp() {
       sessionStorage.removeItem(HOME_LAUNCH_KEY);
     }
   }, [consumeHomeLaunch, createBlankProject, hydrated]);
+
+  useEffect(() => {
+    if (
+      !hydrated
+      || !projectIndexSynced
+      || projectId
+      || projects.length > 0
+      || autoCreatedFirstProject.current
+      || pendingCreateProject.current
+    ) return;
+    try {
+      if (sessionStorage.getItem(HOME_LAUNCH_KEY)) return;
+    } catch {
+      // Storage restrictions must not leave a first-time user on a blank shell.
+    }
+    autoCreatedFirstProject.current = true;
+    createBlankProject();
+  }, [createBlankProject, hydrated, projectId, projectIndexSynced, projects.length]);
 
   useEffect(() => {
     const receivePublishedState = (event: MessageEvent) => {
