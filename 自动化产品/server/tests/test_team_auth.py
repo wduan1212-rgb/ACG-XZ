@@ -86,6 +86,61 @@ class TeamAuthorizationStoreTest(unittest.TestCase):
         self.assertEqual("creator", approved["teamRole"])
         self.assertEqual(set(store.TEAM_FEATURES), set(approved["entitlements"]))
 
+    def test_kick_preserves_account_and_turns_member_into_free_user(self):
+        owner = self._admin()
+        member = store.add_member("待踢出成员", "kick-to-free", "123456", "user")
+        request, error = store.add_team_join_request(
+            member[0], store.INTERNAL_TEAM_NAME, "加入后再踢出"
+        )
+        self.assertIsNone(error)
+        joined, error = store.review_team_join_request(request["id"], owner[0], True)
+        self.assertIsNone(error)
+        self.assertEqual("editor", joined["role"])
+        promoted, error = store.update_team_member_role(
+            store.INTERNAL_TEAM_ID, member[0], "admin",
+        )
+        self.assertIsNone(error)
+        self.assertEqual("admin", promoted["teamRole"])
+        # Production migration preserves historical platform admins as
+        # creator-side team administrators. Exercise that legacy role shape
+        # explicitly so a kick cannot leave a global admin outside the team.
+        with store._lock:
+            conn = store._connect()
+            try:
+                conn.execute("UPDATE members SET role='admin' WHERE id=?", (member[0],))
+                conn.commit()
+            finally:
+                conn.close()
+        store.upsert_member_assets(member[0], "editor", [{
+            "id": "kick-preserved-asset", "name": "保留记录", "type": "图片",
+            "updatedAt": 10,
+        }])
+
+        kicked, error = store.kick_team_member(
+            store.INTERNAL_TEAM_ID, member[0], owner[0],
+        )
+        self.assertIsNone(error)
+        self.assertEqual("user", kicked["role"])
+        self.assertIsNone(kicked["team"])
+        self.assertEqual("personal", kicked["plan"])
+        self.assertEqual(70, kicked["generationQuota"]["remaining"])
+        self.assertIsNotNone(store.get_member(member[0]))
+        with store._lock:
+            conn = store._connect()
+            try:
+                row = conn.execute(
+                    "SELECT status FROM team_members WHERE member_id=?",
+                    (member[0],),
+                ).fetchone()
+                asset = conn.execute(
+                    "SELECT owner_id FROM docs WHERE collection='assets' AND id=?",
+                    ("kick-preserved-asset",),
+                ).fetchone()
+            finally:
+                conn.close()
+        self.assertEqual("removed", row[0])
+        self.assertEqual(member[0], asset[0])
+
     def test_internal_owner_membership_is_repaired_after_migration_marker_exists(self):
         owner = self._admin()
         with store._lock:

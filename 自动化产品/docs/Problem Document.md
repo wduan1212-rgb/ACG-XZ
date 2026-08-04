@@ -4,6 +4,28 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-04 v140 本地启动：生产 sidecar 锁升级后不能原地复用 Python 3.9 虚拟环境
+
+- **现象与根因**：sidecar 为补齐 ctranslate2 运行闭包显式锁定 `setuptools==83.0.0`，它要求 Python 3.10+；旧开发机的 `.venv` 可能仍由系统 Python 3.9 创建。一键启动若直接在旧环境安装新依赖，会稳定失败；原地清空或升级又可能破坏用户正在使用的本地环境。
+- **修复**：启动器先核对虚拟环境解释器版本。旧 `.venv` 不兼容时完整保留，并使用兼容的 `VIDEO_WORKSHOP_BOOTSTRAP_PYTHON` 在 `.venv-py<版本>/` 创建并行环境；新目录同时被 Git、Docker 部署上下文和子应用忽略。没有 Python 3.10+ 时明确停止并给出处理方式，不回退到缺依赖运行。
+- **部署边界**：这只影响本地 Finder/Terminal 启动，不改变生产 37 项 lock、wheelhouse 或 systemd venv。生产仍必须按目标 Linux/Python 3.12 从最终提交离线安装、exact-installed 与 `pip check`，不能上传任一本地 `.venv*`。
+
+## 2026-08-04 v140 生产 P0：140004 之后新视频成片未动态登记私有媒体归属
+
+- **生产只读证据**：实际运行 release 的 `_private_media_plan_locked` 报告 `pendingRows=114`，全部为 `video-output + video-workshop-project`。`140004` 成功时 pending 为 0，所以这些是之后新产生的成片，不是旧迁移残留。
+- **新写路径修复**：项目终态同步/水合会扫描当前 owner-scoped 项目目录内的普通完整文件，将 JSON 引用和经验证文件以同一事务批量写入 registry。拒绝 symlink、隐藏、tmp/part 和越界路径；登记失败不返回伪成功，下次水合可幂等补偿，读取权限仍按 owner/team 处理。
+- **存量收口**：新 `140006` 只建成员状态和 settlement 审计表，不改写 `140004`。`media-settle` 必须绑定 fresh complete snapshot manifest/media digest、当前 SQLite identity 和 fresh v2 backup；只对当次 plan 明确、无冲突的 pending 登记，验证 pending 归零后才提交。二次运行零写；不得裸 SQL、忽略 pending 或重放历史媒体归属迁移。
+
+## 2026-08-04 v140 生产 P0：泛用旧资产快照可覆盖供应商权威播放/曝光量
+
+- **根因**：专用 supplier metric 端点已原子写入计数、时间和 actor，但泛用 assets 兼容回推仍会信任整条文档的更大 `updatedAt`。父账号、子账号、旧标签页或创作端的旧数可因无关字段编辑覆盖服务端权威 triplet。
+- **修复与边界**：对已存在 delivered asset，`viewCount/viewsUpdatedAt/viewsUpdatedBy` 与 `exposureCount/exposureUpdatedAt/exposureUpdatedBy` 在所有泛用 upsert 中一律保留库内值，只有专用端点可改写。无 marker 的历史非零值也必须保留，不做生产编号或数据校准。页面只在进入/重新聚焦时轻量刷新，不启动高频整集合轮询。
+
+## 2026-08-04 v140 P0：Free 生成未真实扣积分，团队移除与账号停用语义混杂
+
+- **积分修复**：图片/视频已有的预占与结算扩展到主 LLM、兼容对话代理、无限画布 Agent 和视频工坊对话。调用上游前必须预占，成功后结算，失败/取消释放，幂等冲突不得二次调用或二次扣费。
+- **账号语义**：“踢出团队”只将 active membership 改为 removed，并把创作角色收敛为 Free `user`；不删除 member、资产或历史文档。ACG 市场部 owner/admin 可将创作账号设为 disabled，但不删数据；登录、旧 Bearer token、私有媒体 cookie 与视频工坊 cookie 都必须立即 fail closed。`140006` 之后 `9e8aeb5` 因不理解 disabled 语义，不能作为长期 RW 回滚版本。
+
 ## 2026-08-04 v140 视频工坊：消息节点定位会把嵌入工作区的外层页面一起滚动
 
 - **现象与根因**：每次发送消息后，视频工坊工作区跳回顶部。发送路径为新用户消息设置 `pendingScrollMessageId`，重绘后对该消息调用元素定位；浏览器会滚动所有可滚动祖先，因此不仅移动 `.conversation-column`，也可能联动 iframe 和主工作区外层。MiniMax-M3 的一次 ReadTimeout 经用户重试恢复，属于上游瞬态错误，与本项滚动缺陷分开处理。

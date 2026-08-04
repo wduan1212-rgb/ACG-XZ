@@ -160,6 +160,7 @@ def _positive_env_int(name: str, default: int) -> int:
 # frontend rebuild. Video rates remain separate because their asynchronous
 # lifecycle needs task-bound settlement rather than request-bound settlement.
 IMAGE_GENERATION_POINTS = _positive_env_int("IMAGE_GENERATION_POINTS", 5)
+LLM_GENERATION_POINTS = _positive_env_int("LLM_GENERATION_POINTS", 1)
 STATIC_VIDEO_MAX_RESERVATION_POINTS = _positive_env_int(
     "STATIC_VIDEO_MAX_RESERVATION_POINTS", 200,
 )
@@ -494,6 +495,8 @@ _PRODUCTION_SCHEMA_MIGRATIONS = {
     "modelUsageMigrationVersion": 139001,
     "resourceScopeSchemaVersion": 140001,
     "privateMediaSchemaVersion": 140003,
+    "videoComposeSchemaVersion": 140005,
+    "memberControlSchemaVersion": 140006,
 }
 
 
@@ -1023,6 +1026,8 @@ def _member_from_authorization(authorization: str = ""):
     row = store.get_member(member_id) if member_id else None
     if not row:
         raise HTTPException(401, "未登录或登录已过期")
+    if store.member_account_disabled(row[0]):
+        raise HTTPException(403, "账号已被停用，请联系 ACG 市场部管理员")
     return store.member_public(row)
 
 
@@ -1069,6 +1074,8 @@ def _private_media_session_member(request: Request):
     row = store.get_member(member_id) if member_id else None
     if not row:
         raise HTTPException(401, "媒体登录态已过期，请刷新页面后重试")
+    if store.member_account_disabled(row[0]):
+        raise HTTPException(403, "账号已被停用")
     return store.member_public(row)
 
 
@@ -2566,18 +2573,33 @@ async def llm_proxy(
     body = {"model": LLM_MODEL, "temperature": req.temperature, "messages": req.messages}
     if req.json_mode:
         body["response_format"] = {"type": "json_object"}
-    attempts = _main_provider_attempts(
-        _me, feature="通用文案", usage_kind="llm", operation="llm.proxy",
-        request_value=req, idempotency_key=idempotency_key,
-        provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=LLM_MODEL,
-        surface="main-workspace",
+    request_key = _provider_request_key(idempotency_key)
+
+    async def operation():
+        attempts = _main_provider_attempts(
+            _me, feature="通用文案", usage_kind="llm", operation="llm.proxy",
+            request_value=req, idempotency_key=request_key,
+            provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=LLM_MODEL,
+            surface="main-workspace",
+        )
+        response = await _call_llm(body, attempt_ledger=attempts)
+        data = await _finish_llm_attempt(attempts, response, fallback_model=LLM_MODEL)
+        content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
+        if not content:
+            raise _llm_error(502, "模型无有效返回")
+        return {"content": content}
+
+    result, settlement = await _run_personal_billable(
+        _me,
+        points=LLM_GENERATION_POINTS,
+        feature="通用文案",
+        namespace="llm.proxy",
+        idempotency_key=request_key,
+        request_fingerprint=_quota_request_fingerprint(req),
+        operation=operation,
     )
-    r = await _call_llm(body, attempt_ledger=attempts)
-    data = await _finish_llm_attempt(attempts, r, fallback_model=LLM_MODEL)
-    content = _clean_llm_text(_deep_get(data, ("choices", 0, "message", "content"), default=""))
-    if not content:
-        raise _llm_error(502, "模型无有效返回")
-    return {"content": content}
+    result["billing"] = _quota_billing_public(settlement)
+    return result
 
 
 @app.post("/api/llm/vision-copy")
@@ -3143,16 +3165,36 @@ async def chat_completions_proxy(
     except Exception:
         raise HTTPException(400, "请求体不是合法 JSON")
     requested_model = str(body.get("model") or LLM_MODEL)
-    attempts = _main_provider_attempts(
-        _me, feature="兼容代理", usage_kind="llm",
-        operation="llm.chat-completions", request_value=body,
-        idempotency_key=idempotency_key,
-        provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=requested_model,
-        surface="provider-proxy",
+    request_key = _provider_request_key(idempotency_key)
+
+    async def operation():
+        attempts = _main_provider_attempts(
+            _me, feature="兼容代理", usage_kind="llm",
+            operation="llm.chat-completions", request_value=body,
+            idempotency_key=request_key,
+            provider=_model_usage_provider_name(LLM_ENDPOINT, "llm"), model=requested_model,
+            surface="provider-proxy",
+        )
+        response = await _call_llm(body, auth, attempt_ledger=attempts)
+        await _finish_llm_attempt(attempts, response, fallback_model=requested_model)
+        return response
+
+    upstream, settlement = await _run_personal_billable(
+        _me,
+        points=LLM_GENERATION_POINTS,
+        feature="兼容语言对话",
+        namespace="llm.chat-completions",
+        idempotency_key=request_key,
+        request_fingerprint=_quota_request_fingerprint(body),
+        operation=operation,
     )
-    r = await _call_llm(body, auth, attempt_ledger=attempts)
-    await _finish_llm_attempt(attempts, r, fallback_model=requested_model)
-    return Response(content=r.content, status_code=r.status_code, media_type="application/json")
+    response = Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
+    billing = _quota_billing_public(settlement)
+    response.headers["X-Xingzhen-Points-Deducted"] = str(billing["deductedPoints"])
+    quota = billing.get("quota") or {}
+    if quota.get("remaining") is not None:
+        response.headers["X-Xingzhen-Points-Remaining"] = str(quota["remaining"])
+    return response
 
 
 @app.get("/api/image/config")
@@ -7195,6 +7237,10 @@ class MemberReq(BaseModel):
     parentId: str = ""
 
 
+class MemberAccountStatusReq(BaseModel):
+    status: str = "active"
+
+
 class TeamJoinReq(BaseModel):
     teamName: str = ""
     message: str = ""
@@ -7682,6 +7728,8 @@ def auth_login(req: LoginReq, request: Request):
     row = store.get_member_by_username(store.normalize_username(req.username))
     if not row or not store.verify_pin(req.pin.strip(), row[3]):
         raise HTTPException(401, "用户名或密码不正确")
+    if store.member_account_disabled(row[0]):
+        raise HTTPException(403, "账号已被停用，请联系 ACG 市场部管理员")
     token = store.make_token(row[0])
     return _set_private_media_session_cookie(
         JSONResponse({"token": token, "member": store.member_public(row)}),
@@ -9337,13 +9385,28 @@ async def custom_canvas_agent(
 ):
     _require_custom_creator(me)
     request_key = _custom_canvas_request_key(idempotency_key, req.idempotencyKey)
-    try:
+    request_fingerprint = _quota_request_fingerprint(req)
+
+    async def operation():
         return await _custom_canvas_agent_llm(
             req,
             me,
             idempotency_key=request_key,
         )
-    except _ModelUsageGateFailure:
+
+    try:
+        result, settlement = await _run_personal_billable(
+            me,
+            points=LLM_GENERATION_POINTS,
+            feature="无限画布导演理解",
+            namespace="canvas.agent",
+            idempotency_key=request_key,
+            request_fingerprint=request_fingerprint,
+            operation=operation,
+        )
+        result["billing"] = _quota_billing_public(settlement)
+        return result
+    except (_ModelUsageGateFailure, HTTPException):
         raise
     except Exception as exc:
         print(f"[custom-canvas] agent fallback: {exc.__class__.__name__}: {str(exc)[:240]}", file=sys.stderr)
@@ -10261,6 +10324,32 @@ def platform_accounts_list(me=Depends(require_team_manager)):
     return store.list_platform_account_summaries()
 
 
+@app.put("/api/platform/accounts/{mid}/status")
+def platform_account_status_update(
+    mid: str,
+    req: MemberAccountStatusReq,
+    me=Depends(require_team_manager),
+):
+    if not _can_review_platform_registrations(me):
+        raise HTTPException(403, "仅 ACG 市场部管理员可停用创作端账号")
+    if mid == me["id"]:
+        raise HTTPException(400, "不能停用当前登录的自己")
+    row = store.get_member(mid)
+    if not row:
+        raise HTTPException(404, "创作端账号不存在")
+    target = store.member_public(row)
+    if target.get("role") not in {"admin", "editor", "user"}:
+        raise HTTPException(403, "只能停用创作端账号")
+    if target.get("teamId") == store.INTERNAL_TEAM_ID and target.get("teamRole") == "owner":
+        raise HTTPException(403, "ACG 市场部所有者账号不能被停用")
+    item, error = store.set_member_account_status(mid, req.status, me["id"])
+    if error == "invalid_status":
+        raise HTTPException(400, "账号状态只允许 active 或 disabled")
+    if error:
+        raise HTTPException(409, "账号状态更新失败")
+    return {"ok": True, "account": item}
+
+
 @app.get("/api/teams/current/supplier-accounts")
 def team_supplier_accounts(me=Depends(require_team_manager)):
     team = me.get("team") or {}
@@ -10625,14 +10714,18 @@ def members_update(mid: str, req: MemberReq, me=Depends(require_team_manager)):
 @app.delete("/api/members/{mid}")
 def members_delete(mid: str, me=Depends(require_team_manager)):
     if mid == me["id"]:
-        raise HTTPException(400, "不能删除当前登录的自己")
+        raise HTTPException(400, "不能把当前登录的自己踢出团队")
     target = store.member_public(store.get_member(mid)) if store.get_member(mid) else None
     if not target or target.get("teamId") != me.get("teamId"):
         raise HTTPException(404, "团队成员不存在")
     if target.get("teamRole") == "owner":
-        raise HTTPException(403, "不能删除团队所有者")
-    store.delete_member(mid)
-    return {"ok": True}
+        raise HTTPException(403, "不能把团队所有者踢出团队")
+    account, error = store.kick_team_member(me["teamId"], mid, me["id"])
+    if error == "owner_locked":
+        raise HTTPException(403, "不能把团队所有者踢出团队")
+    if error or not account:
+        raise HTTPException(404, "团队成员不存在")
+    return {"ok": True, "member": account, "accountPreserved": True}
 
 
 @app.get("/api/member-requests")
@@ -10730,6 +10823,8 @@ def _custom_video_session_member(request: Request):
     row = store.get_member(member_id) if member_id else None
     if not row:
         raise HTTPException(401, "视频工坊登录态已过期，请刷新定制创作页面")
+    if store.member_account_disabled(row[0]):
+        raise HTTPException(403, "账号已被停用，请联系 ACG 市场部管理员")
     member = store.member_public(row)
     return _require_custom_creator(member)
 
@@ -10745,6 +10840,8 @@ def _video_output_download_member(request: Request):
         member_id = store.parse_token(token) if token else None
         row = store.get_member(member_id) if member_id else None
         if row:
+            if store.member_account_disabled(row[0]):
+                raise HTTPException(403, "账号已被停用")
             return store.member_public(row)
     raise HTTPException(401, "媒体登录态已过期，请刷新页面后重试")
 
@@ -10811,14 +10908,40 @@ def _video_workshop_media_references(value, output=None):
 
 def _register_video_workshop_media(source, member: dict, project_id: str = ""):
     provenance_id = str(project_id or (source or {}).get("id") or "").strip()
-    for kind, relative in sorted(_video_workshop_media_references(source)):
-        _register_private_media(
-            kind,
-            relative,
-            member,
+    entries = set(_video_workshop_media_references(source))
+    # Sidecar jobs finish asynchronously. A terminal project response can omit
+    # archived/derived output URLs even though their regular files are already
+    # durable. Scan only this verified owner-scoped project directory so every
+    # completed file is atomically registered on the next project hydration.
+    if provenance_id:
+        project_root = _video_workshop_safe_path(
+            VIDEO_WORKSHOP_OUTPUT_DIR, provenance_id,
+        )
+        if project_root.is_dir() and not project_root.is_symlink():
+            for path in project_root.rglob("*"):
+                if path.is_symlink() or not path.is_file():
+                    continue
+                if path.name.startswith(".") or path.name.endswith((".tmp", ".part")):
+                    continue
+                relative = path.resolve().relative_to(
+                    VIDEO_WORKSHOP_OUTPUT_DIR.resolve()
+                ).as_posix()
+                entries.add(("video-output", relative))
+    try:
+        store.register_private_media_batch(
+            entries,
+            str((member or {}).get("id") or ""),
+            team_id=str((member or {}).get("teamId") or ""),
             provenance_kind="video-workshop-project",
             provenance_id=provenance_id,
         )
+    except Exception as exc:
+        print(
+            f"[private-media] video workshop registration failed: "
+            f"{exc.__class__.__name__}: {str(exc)[:160]}",
+            file=sys.stderr,
+        )
+        raise HTTPException(503, "视频工坊成片归属登记失败，请刷新项目重试") from exc
 
 
 def _video_workshop_project_response(source, mapped):
@@ -11154,6 +11277,27 @@ def _static_video_reservation(me, request: Request, payload: dict) -> Optional[d
     return reservation
 
 
+def _video_workshop_dialogue_reservation(
+    me, request: Request, payload: dict,
+) -> Optional[dict]:
+    if str(payload.get("creationMode") or "").strip().lower() == "static":
+        return None
+    provided_key = str(
+        payload.get("idempotencyKey")
+        or request.headers.get("Idempotency-Key")
+        or uuid.uuid4().hex
+    ).strip()
+    payload["idempotencyKey"] = provided_key
+    return _quota_begin(
+        me,
+        LLM_GENERATION_POINTS,
+        "视频工坊导演对话",
+        f"custom-video.dialogue.{me.get('id')}",
+        provided_key,
+        _quota_request_fingerprint(payload),
+    )
+
+
 def _reconcile_static_video_billing(me, source) -> None:
     if not isinstance(source, dict):
         return
@@ -11177,7 +11321,10 @@ def _reconcile_static_video_billing(me, source) -> None:
     if not isinstance(usage, dict):
         usage = billing.get("usage") if isinstance(billing.get("usage"), dict) else {}
     if project_status == "succeeded":
-        actual_points = max(0, int(usage.get("totalPoints") or 0))
+        actual_points = max(
+            LLM_GENERATION_POINTS,
+            max(0, int(usage.get("totalPoints") or 0)),
+        )
         if reservation["bypassed"]:
             billing["status"] = "bypassed"
             billing["settlement"] = {
@@ -11665,6 +11812,9 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
         if not str(payload.get("voiceId") or "").strip():
             payload["voiceId"] = _video_workshop_preferred_voice(me)["voiceId"]
         reservation = _static_video_reservation(me, request, payload)
+        dialogue_reservation = (
+            None if reservation else _video_workshop_dialogue_reservation(me, request, payload)
+        )
         upstream = await _video_workshop_request(
             request,
             path,
@@ -11672,14 +11822,25 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
         )
         if upstream.status_code >= 400:
             _quota_release_safely(me, reservation)
+            _quota_release_safely(me, dialogue_reservation)
             return Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
         try:
             project = upstream.json()
         except Exception:
+            _quota_release_safely(me, reservation)
+            _quota_release_safely(me, dialogue_reservation)
             raise HTTPException(502, "视频工坊导演返回异常")
-        return _video_workshop_json_response(
-            await asyncio.to_thread(_sync_video_workshop_project, me, project)
-        )
+        try:
+            synced = await asyncio.to_thread(_sync_video_workshop_project, me, project)
+        except BaseException:
+            _quota_release_safely(me, reservation)
+            _quota_release_safely(me, dialogue_reservation)
+            raise
+        if dialogue_reservation:
+            synced["_dialogueBilling"] = _quota_billing_public(
+                _quota_settle(me, dialogue_reservation)
+            )
+        return _video_workshop_json_response(synced)
 
     raise HTTPException(404, "该视频工坊接口未开放给主平台")
 

@@ -1,7 +1,7 @@
 import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { state, save } from "../core/store.js";
-import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260804-v140-workshop-scroll-1";
+import { state, save, refreshRemoteCollections } from "../core/store.js";
+import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260804-v140-metric-billing-control-1";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliveryViewsSummary } from "../domain/delivery.js";
@@ -26,9 +26,35 @@ let supplierAccountFilterQuery = "";
 let activeSupplierAccountController = null;
 let activeSupplierOverviewController = null;
 let activeSupplierSettingsController = null;
+let supplierAuthorityRefreshPromise = null;
+let supplierAuthorityRefreshedAt = 0;
 const SUPPLIER_ACTIVITY_PAGE_SIZE = 4;
 const SUPPLIER_ASSISTANT_HISTORY_PREFIX = "xingzhen:supplier-data-assistant:";
 const onSupplierRoute = zone => document.body.dataset.zone === zone;
+const SUPPLIER_AUTHORITY_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
+
+async function refreshSupplierAuthorityState({ force = false, showError = false } = {}) {
+  if (!SUPPLIER_AUTHORITY_ROLES.has(state.role) || !remote.isOn() || !remote.hasToken()) return false;
+  if (supplierAuthorityRefreshPromise) return supplierAuthorityRefreshPromise;
+  if (!force && Date.now() - supplierAuthorityRefreshedAt < 5000) return false;
+  supplierAuthorityRefreshPromise = refreshRemoteCollections(["accounts", "assets"])
+    .then(refreshed => {
+      if (!refreshed) return false;
+      supplierAuthorityRefreshedAt = Date.now();
+      activeSupplierOverviewController?.syncAuthority?.();
+      activeSupplierAccountController?.syncAuthority?.();
+      if (typeof window.CustomEvent === "function") {
+        window.dispatchEvent(new CustomEvent("xingzhen:supplier-authority-refreshed"));
+      }
+      return true;
+    })
+    .catch(error => {
+      if (showError) toast(`播放与曝光数据刷新失败：${error?.message || error}`, "error");
+      throw error;
+    })
+    .finally(() => { supplierAuthorityRefreshPromise = null; });
+  return supplierAuthorityRefreshPromise;
+}
 
 function emitSupplierChildren(children = [], bindings = []) {
   if (typeof window === "undefined" || typeof window.CustomEvent !== "function") return;
@@ -49,6 +75,11 @@ if (typeof document !== "undefined") {
       ? activeSupplierSettingsController
       : activeSupplierOverviewController;
     createChildrenDialog(() => controller?.refresh?.());
+  });
+  window.addEventListener("focus", () => {
+    if (!SUPPLIER_AUTHORITY_ROLES.has(state.role)) return;
+    if (!["overview", "assets", "delivery", "settings"].includes(document.body.dataset.zone)) return;
+    void refreshSupplierAuthorityState({ showError: true }).catch(() => null);
   });
 }
 
@@ -257,7 +288,10 @@ export async function renderSupplierOverview(root) {
   clearSupplierActivityCarousel();
   root.innerHTML = `<div class="supplier-shell"><div class="supplier-loading">正在读取...</div></div>`;
   try {
-    const { children, bindings, activity } = await supplierData();
+    const [{ children, bindings, activity }] = await Promise.all([
+      supplierData(),
+      refreshSupplierAuthorityState({ force: true, showError: true }),
+    ]);
     if (!onSupplierRoute("overview")) return;
     emitSupplierChildren(children, bindings);
     const rows = supplierOverviewRows();
@@ -498,6 +532,11 @@ export async function renderSupplierOverview(root) {
     activeSupplierOverviewController = {
       root,
       refresh: () => renderSupplierOverview(root),
+      syncAuthority: () => {
+        const nextSummary = deliveryViewsSummary(supplierViewsPlatform);
+        const total = $("#supplierViewsTotal", root);
+        if (total) total.textContent = Number(nextSummary.totalViews || 0).toLocaleString("zh-CN");
+      },
     };
     scheduleSupplierActivityCarousel(root, visibleActivity, activityPages);
   } catch (e) {
@@ -509,7 +548,10 @@ export async function renderSupplierOverview(root) {
 export async function renderSupplierAccounts(root) {
   root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div><div class="supplier-loading">正在读取...</div></div>`;
   try {
-    const { children, bindings } = await supplierData(false, false);
+    const [{ children, bindings }] = await Promise.all([
+      supplierData(false, false),
+      refreshSupplierAuthorityState({ force: true, showError: true }),
+    ]);
     if (!onSupplierRoute("assets")) return;
     emitSupplierChildren(children, bindings);
     const childMap = new Map(children.map(x => [x.id, x]));
@@ -546,7 +588,7 @@ export async function renderSupplierAccounts(root) {
         const disabled = isAccountDisabled(acc);
         const fresh = isNewAccount(acc);
         const viewSummary = accountViewSummary(acc);
-        return `<article class="supplier-account${disabled ? " is-disabled" : ""}${fresh ? " is-new-account" : ""}" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)} ${fresh ? `<i class="supplier-new-account-badge">新</i>` : ""}</b>${disabled ? `<em class="supplier-account-status"><strong>已停用</strong></em>` : ""}</div><div class="supplier-account-controls">${acc.homepageUrl ? `<a class="supplier-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 主页链接</a>` : ""}<div class="supplier-account-control-row"><div class="supplier-content-account-actions"><span class="supplier-account-total-views" title="由该账号全部交付内容的观看量自动汇总">${icon("pulse", 12)} ${Number(viewSummary.total).toLocaleString("zh-CN")}</span>${canEditHomepage ? `<button class="icon-btn sm" type="button" data-content-account-edit="${esc(acc.id)}" title="编辑账号（含主页链接）">${icon("edit", 13)}</button><button class="icon-btn sm${disabled ? " restore" : " danger"}" type="button" data-content-account-status="${esc(acc.id)}" title="${disabled ? "恢复账号" : "停用账号"}">${icon(disabled ? "unlock" : "lock", 13)}</button>` : ""}</div><label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage && !disabled ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></div></article>`;
+        return `<article class="supplier-account${disabled ? " is-disabled" : ""}${fresh ? " is-new-account" : ""}" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)} ${fresh ? `<i class="supplier-new-account-badge">新</i>` : ""}</b>${disabled ? `<em class="supplier-account-status"><strong>已停用</strong></em>` : ""}</div><div class="supplier-account-controls">${acc.homepageUrl ? `<a class="supplier-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 主页链接</a>` : ""}<div class="supplier-account-control-row"><div class="supplier-content-account-actions"><span class="supplier-account-total-views" data-supplier-account-views="${esc(acc.id)}" title="由该账号全部交付内容的观看量自动汇总">${icon("pulse", 12)} ${Number(viewSummary.total).toLocaleString("zh-CN")}</span>${canEditHomepage ? `<button class="icon-btn sm" type="button" data-content-account-edit="${esc(acc.id)}" title="编辑账号（含主页链接）">${icon("edit", 13)}</button><button class="icon-btn sm${disabled ? " restore" : " danger"}" type="button" data-content-account-status="${esc(acc.id)}" title="${disabled ? "恢复账号" : "停用账号"}">${icon(disabled ? "unlock" : "lock", 13)}</button>` : ""}</div><label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage && !disabled ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></div></article>`;
       }).join("")}</div><p class="supplier-account-filter-empty" hidden>没有匹配的账号</p></div>`;
     $$('[data-content-account-edit]', root).forEach(button => button.addEventListener("click", () => openAccountDialog(button.dataset.contentAccountEdit)));
     $$('[data-content-account-status]', root).forEach(button => button.addEventListener("click", async () => {
@@ -664,6 +706,15 @@ export async function renderSupplierAccounts(root) {
       applyFilters: applyAccountFilters,
       focusAccount,
       refresh: () => renderSupplierAccounts(root),
+      syncAuthority: () => {
+        const delivered = state.assets.filter(asset => asset && (asset.delivered || asset.shared));
+        $$('[data-supplier-account-views]', root).forEach(target => {
+          const total = delivered
+            .filter(asset => asset.accountId === target.dataset.supplierAccountViews)
+            .reduce((sum, asset) => sum + Math.max(0, Number(asset.viewCount || 0)), 0);
+          target.innerHTML = `${icon("pulse", 12)} ${Number(total).toLocaleString("zh-CN")}`;
+        });
+      },
     };
     root.__viewCleanup = () => {
       if (activeSupplierAccountController?.root === root) activeSupplierAccountController = null;

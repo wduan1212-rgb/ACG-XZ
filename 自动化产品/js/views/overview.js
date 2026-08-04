@@ -10,11 +10,11 @@ import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=202607
 import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260804-v140-workshop-scroll-1";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260804-v140-workshop-scroll-1";
-import { emptyState, openModal } from "../ui/components.js?v=20260804-v140-workshop-scroll-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260804-v140-metric-billing-control-1";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260804-v140-metric-billing-control-1";
+import { emptyState, openModal } from "../ui/components.js?v=20260804-v140-metric-billing-control-1";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260804-v140-workshop-scroll-1";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260804-v140-metric-billing-control-1";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
@@ -550,15 +550,17 @@ export const overviewView = {
           const periodButtons = [filterButton("period", "all", "全部时间"), filterButton("period", "7", "近 7 天"), filterButton("period", "30", "近 30 天")].join("");
           const list = scoped.map(row => {
             const updated = row.updatedAt ? timeAgo(row.updatedAt) : "暂无更新时间";
-            const sourceMetrics = `累计播放 ${fmt(row.views)} · 单条合计 ${row.rows.length} 条`;
-            return makeRow(
-              row.acc?.name || "未命名账号",
-              `${row.platform} · 由已填写单条播放量自动汇总 · ${updated}`,
-              row.acc?.homepageUrl
-                ? `<a class="btn ghost sm" href="${esc(row.acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">账号主页</a>`
-                : "",
-              sourceMetrics
-            );
+            const deliveries = row.rows
+              .slice()
+              .sort((a, b) => b.views - a.views || b.updatedAt - a.updatedAt)
+              .map(item => `<div class="overview-view-delivery">
+                <span><b>${esc(item.asset?.title || item.asset?.name || "未命名交付")}</b><em>${esc(item.sourceLabel)} · ${item.updatedAt ? esc(timeAgo(item.updatedAt)) : "暂无更新时间"}</em></span>
+                <strong>${fmt(item.views)}</strong>
+              </div>`).join("");
+            return `<article class="overview-view-account">
+              <header><span><b>${esc(row.acc?.name || "未命名账号")}</b><em>${esc(row.platform)} · ${updated}</em></span><span class="overview-view-account-total"><em>单条合计</em><strong>${fmt(row.views)}</strong></span>${row.acc?.homepageUrl ? `<a class="btn ghost sm" href="${esc(row.acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">账号主页</a>` : ""}</header>
+              <div class="overview-view-deliveries">${deliveries || `<div class="overview-task-empty">暂无单条播放量</div>`}</div>
+            </article>`;
           }).join("");
           const scopeLabel = viewFilter.period === "all" ? "全部时间" : viewFilter.period === "custom" ? `${viewFilter.start || "开始"} 至 ${viewFilter.end || "今天"}` : `近 ${viewFilter.period} 天`;
           return `<section class="overview-detail-filter-section"><div><b>按平台</b><span class="overview-detail-filter-tags">${platformButtons}</span></div><div><b>按更新时间</b><span class="overview-detail-filter-tags">${periodButtons}</span></div><div class="overview-detail-custom-range"><b>自定义时间</b><label>开始<input type="date" data-view-custom-date="start" value="${esc(viewFilter.start)}"/></label><label>结束<input type="date" data-view-custom-date="end" value="${esc(viewFilter.end)}"/></label><button class="overview-detail-filter${viewFilter.period === "custom" ? " is-active" : ""}" type="button" data-view-filter-kind="period" data-view-filter-value="custom">应用</button></div></section><div class="overview-detail-summary">${scopeLabel} · ${scoped.length} 个账号 · 累计播放 ${fmt(total)}</div><div class="overview-task-list">${list || `<div class="overview-task-empty">该筛选范围没有账号播放量</div>`}</div>`;
@@ -607,6 +609,7 @@ export const overviewView = {
         wide: true,
         onMount(panel, close) {
           panel.classList.add("overview-task-panel");
+          if (key === "views") panel.classList.add("overview-views-panel");
           panel.addEventListener("click", event => {
             const viewFilterButton = event.target.closest("[data-view-filter-kind]");
             if (key === "views" && viewFilterButton && viewFilter && viewDetailHtml) {

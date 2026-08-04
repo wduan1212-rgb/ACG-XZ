@@ -4717,6 +4717,27 @@ button.overview-viz-card { cursor: pointer; }
 .overview-detail-filter { padding: 4px 8px; border-radius: 999px; font-size: 10px; }
 .overview-detail-filter.is-active { border-color: #252a31; background: #252a31; color: #fff; }
 .overview-detail-summary { padding: 11px 0 4px; color: #6b737f; font-size: 11px; font-weight: 700; }
+.overview-views-panel { width: min(1040px, calc(100vw - 44px)); max-width: 1040px; }
+.overview-views-panel .overview-detail-filter-section { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+.overview-views-panel .overview-detail-custom-range { grid-column: 1 / -1; margin-top: 0; }
+.overview-view-account { overflow: hidden; margin-top: 10px; border: 1px solid #e7ebf0; border-radius: 15px; background: #fff; }
+.overview-view-account > header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 13px 15px; background: #f8fafc; }
+.overview-view-account > header span { display: grid; gap: 3px; }
+.overview-view-account > header em { color: #788291; font-size: 11px; font-style: normal; }
+.overview-view-account > header .overview-view-account-total { justify-items: end; }
+.overview-view-account > header .overview-view-account-total strong { color: #1f5ea8; font-size: 18px; font-variant-numeric: tabular-nums; }
+.overview-view-deliveries { display: grid; }
+.overview-view-delivery { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 11px 15px; border-top: 1px solid #edf0f4; }
+.overview-view-delivery span { min-width: 0; display: grid; gap: 3px; }
+.overview-view-delivery b { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.overview-view-delivery em { color: #89929f; font-size: 10px; font-style: normal; }
+.overview-view-delivery strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  .overview-views-panel .overview-detail-filter-section { grid-template-columns: 1fr; }
+  .overview-views-panel .overview-detail-custom-range { grid-column: auto; }
+  .overview-view-account > header { grid-template-columns: minmax(0, 1fr) auto; }
+  .overview-view-account > header .btn { grid-column: 1 / -1; justify-self: start; }
+}
 .overview-action-grid { display: grid; grid-template-columns: var(--overview-data-columns); gap: var(--overview-data-gap); }
 .overview-action-card { min-width: 0; min-height: 58px; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px 12px; text-align: left; cursor: pointer; transition: border-color 180ms ease, background 180ms ease, transform 180ms ease; }
 .overview-action-icon { width: 30px; height: 30px; display: grid; place-items: center; color: #31363d; }
@@ -6774,6 +6795,7 @@ body.workspace-shell-v2[data-zone="subscription"] .view-root {
   object-fit: contain;
   border-radius: 12px;
 }
+.home-inspiration-detail-stage img.home-inspiration-detail-item { cursor: zoom-in; }
 .home-inspiration-detail-stage .home-inspiration-detail-item[hidden] { display: none; }
 .home-inspiration-detail-thumbs { min-width: 0; display: flex; flex-wrap: nowrap; justify-content: flex-start; gap: 8px; overflow-x: auto; overscroll-behavior-inline: contain; }
 .home-inspiration-detail-thumbs button {

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260804-v140-workshop-scroll-1",
+  "releaseId": "20260804-v140-metric-billing-control-1",
   "fileCount": 55,
-  "totalBytes": 2622600,
+  "totalBytes": 2652276,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100713,
-      "sha256": "f5bcc6cf4be6a3d9ca9bfab5b7cf2653659d225a4a4c14d305358159b254a0f9"
+      "size": 100720,
+      "sha256": "9c3aa5f512cd320e29f42373364fdcad8537329f45c06d44bc3260d29863f3bb"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -166,8 +166,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22370,
-      "sha256": "500cf079ed27f60c168cb8c0dd65f2805aebfd66886e23c26ed59aba6b8ed901"
+      "size": 22391,
+      "sha256": "1f62240940b219cf25e03cc6ecada742045f22ed35bfd9c5cd52743009e3fe04"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -176,8 +176,8 @@
     },
     {
       "path": "deploy/local_video_workshop.sh",
-      "size": 7974,
-      "sha256": "1b5b2cc3adfad79b9c224cbac829bdf359af8ecea13e317753a4ac1ed7a3bfa5"
+      "size": 9606,
+      "sha256": "a47ccb76565caf6a921b65aa0257ac96e7a7eeb235a0b90848df3598de0214d5"
     },
     {
       "path": "deploy/runtime-snapshot.production-v120.plan.example.json",
@@ -221,8 +221,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 483807,
-      "sha256": "9da4e7aa712ac03eab16ea723d99f84ccde911faf56669e4296e3db6dafad931"
+      "size": 490677,
+      "sha256": "830a7cc289283e4ae62e267410dd774ae087376ea0f4eb7aac1ba24e3f35f513"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -231,8 +231,8 @@
     },
     {
       "path": "server/migrations/__main__.py",
-      "size": 17655,
-      "sha256": "f04c96d585e8c81d00ba89dc185978bd91898c060eb8d809652b1c06e97ba09f"
+      "size": 19131,
+      "sha256": "37e2b99780ddfaac37ecd3bd2bae849b974549dce6df4107dff525785c8936cd"
     },
     {
       "path": "server/minimax_system_voices.json",
@@ -271,8 +271,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 666836,
-      "sha256": "c12d663b220a285f15c178b455df21779425a434185e81f2331e6d6e705ebd13"
+      "size": 686506,
+      "sha256": "6952bb2f42f0d84d9676c04353223f539f6f6c6ea7177e354a4ada6b857ef275"
     },
     {
       "path": "tools/verify_release_contracts.py",

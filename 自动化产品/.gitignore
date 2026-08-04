@@ -10,6 +10,7 @@ server/canvas_blobs/
 .env.local
 # 本地 Python 环境、备份与日志不入库
 .venv/
+.venv-py*/
 backups/
 logs/
 # Python 缓存

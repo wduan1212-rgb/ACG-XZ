@@ -30,6 +30,12 @@ Private media ownership is then registered without changing any file URL::
     python -m server.migrations media-preflight <confirmations>
     ACG_ALLOW_PRIVATE_MEDIA_MIGRATION=1 \
       python -m server.migrations media-apply <same confirmations>
+
+Files created after the frozen 140004 migration use a separate, snapshot-bound
+incremental settlement and never replay the historical ownership migration::
+
+    ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT=1 \
+      python -m server.migrations media-settle <confirmations>
 """
 
 from __future__ import annotations
@@ -89,6 +95,8 @@ def _safe_status() -> dict:
         "privateMediaSchemaVersion": status.get("privateMediaSchemaVersion"),
         "videoComposeSchemaVersion": status.get("videoComposeSchemaVersion"),
         "videoComposeSchemaChecksum": status.get("videoComposeSchemaChecksum") or "",
+        "memberControlSchemaVersion": status.get("memberControlSchemaVersion"),
+        "memberControlSchemaChecksum": status.get("memberControlSchemaChecksum") or "",
         "privateMediaMigration": bool(status.get("privateMediaMigration")),
         "privateMediaMigrationVersion": status.get("privateMediaMigrationVersion"),
         "privateMediaMigrationChecksum": status.get("privateMediaMigrationChecksum") or "",
@@ -284,6 +292,13 @@ def main(argv=None) -> int:
     _add_media_override_confirmation(media_apply)
     _add_runtime_snapshot_confirmation(media_apply, required=True)
     _add_backup_confirmation(media_apply)
+    media_settle = subparsers.add_parser(
+        "media-settle",
+        help="settle deterministic post-140004 private media registrations",
+    )
+    _add_resource_confirmations(media_settle)
+    _add_runtime_snapshot_confirmation(media_settle, required=True)
+    _add_backup_confirmation(media_settle)
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -383,7 +398,7 @@ def main(argv=None) -> int:
                 runtime_snapshot_binding=runtime_snapshot_binding,
                 backup_binding=backup_binding,
             )
-        else:
+        elif args.command == "media-apply":
             if str(os.getenv("ACG_ALLOW_PRIVATE_MEDIA_MIGRATION", "")).strip() != "1":
                 parser.error("ACG_ALLOW_PRIVATE_MEDIA_MIGRATION=1 is required")
             backup_binding = consistent_sqlite_backup.verify_backup_manifest(
@@ -402,6 +417,19 @@ def main(argv=None) -> int:
                 expected_override_manifest_sha256=(
                     args.confirm_override_manifest_sha256
                 ),
+                runtime_snapshot_binding=runtime_snapshot_binding,
+            )
+        else:
+            if str(os.getenv("ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT", "")).strip() != "1":
+                parser.error("ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT=1 is required")
+            backup_binding = _verified_backup_binding(args, required=True)
+            runtime_snapshot_binding = _verified_runtime_snapshot_binding(
+                args, required=True,
+            )
+            result = store.settle_private_media_registry_incremental(
+                expected_identity=args.confirm_identity,
+                expected_schema_version=args.confirm_schema_version,
+                backup_binding=backup_binding,
                 runtime_snapshot_binding=runtime_snapshot_binding,
             )
     except (

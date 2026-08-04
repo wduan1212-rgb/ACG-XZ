@@ -1,8 +1,8 @@
 # ACG 市场部生产团队迁移计划
 
-记录日期：2026-08-03
+记录日期：2026-08-04
 
-状态：**生产已按受保护流程完成 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004` 并运行 `9e8aeb5`，团队、资源 scope、媒体 registry 与数据完整性正常。当前增量候选保留 expand-only `140005` compose 幂等 schema，并新增供应商对“可见交付的精确媒体依赖”的只读权限。`140005` 必须绑定新的 fresh v2 备份单独双跑，交付媒体验收必须证明 parent/child 正例可读且跨 team/交付外文件/写删反例被拒绝；禁止重做既有 ACG/resource/media data migration。本地候选尚未部署，未写生产。**
+状态：**生产已按受保护流程完成 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004` 并运行 `9e8aeb5`，团队、资源 scope 与历史媒体 registry 不变。当前候选增加 expand-only `140005` compose claim 与 `140006` 成员状态/settlement 审计表；生产只读已确认 114 条 post-140004 pending 全部是新视频工坊 `video-output`。部署必须为 `140005`、`140006` 分别 fresh v2 备份双跑，再以 fresh complete snapshot/media digest/库 identity/备份绑定单独执行幂等 `media-settle`，二次零写。禁止重做 ACG/resource/140004 data migration、裸 SQL、忽略 pending 或用本地数据覆盖生产。候选尚未部署，未写生产。**
 
 本文件负责 ACG 市场部的数据归属、角色映射、冲突阻断和迁移验收。它不是生产执行授权；每个 apply 必须单独确认，不能由应用启动隐式触发。首次迁移不搬动当前约 15 GB 数据，也不将模块机械拆分与生产数据迁移绑定。
 
@@ -11,7 +11,7 @@
 ### 0.1 本地 v140
 
 - 生产普通启动 validate-only；RO 允许完整的旧库进入迁移验收并显示 `writeReady=false`，RW 则必须在提供 socket 前通过全部安全门禁。
-- 完整八步迁移使用 `schema_migrations` version/checksum/status 账本；`137004`、`140002`、`140004` 均先只读 preflight，再在 `BEGIN IMMEDIATE` 中重新校验并幂等冻结，`140005` 只新增 owner-scoped compose claim 表。已退役的 `137001/137002` 不得复用。
+- 完整九步 schema/data 顺序使用 `schema_migrations` version/checksum/status 账本；`137004`、`140002`、`140004` 均先只读 preflight，`140005` 只新增 owner-scoped compose claim，`140006` 只新增成员状态与 settlement 审计表。post-140004 registry 收口是另一个快照/备份绑定的 `media-settle` 命令，不属于 `140004` 重放。已退役的 `137001/137002` 不得复用。
 - 每个 apply 必须绑定当次操作前刚生成的 v2 备份；上一个 apply 成功后不得复用旧 manifest。
 - `140002` 要求历史资源 100% 得到唯一 scope；unresolved/ambiguous 阻断，陈旧次要引用仅在唯一主证据存在时记 warning。可选 override 只能在 writer 冻结的维护窗作为精确人工复核 manifest 生成，必须绑定 database identity、path/logical digest、schema/user version 和 fresh backup manifest SHA；使用 override 的 preflight/apply 均传同一备份并重验，不能解决歧义。
 - `140004` 只登记媒体归属，不改 URL/文件。无引用文件 quarantine 保留但不开放；有引用却缺 owner、缺文件、多 owner 或 team 冲突会阻断整个 apply。
@@ -26,8 +26,8 @@
 | --- | --- | --- |
 | 运行版本 | 首页缓存身份包含 `20260728-v120-shell-21`；活动源码无 Git 元数据，精确 commit 不能由服务器仓库确认 | 当前可确认的是 v120 静态基线，不得把本地 commit 号当作生产事实；新 release 必须携带独立 manifest/build ID |
 | 服务 | `dumate-studio.service` 活跃，主服务和 sidecar 健康；主服务自 2026-07-28 启动，systemd 未显式设置 `User/Group` | `/api/health` 不含 release/schema/path 门禁；服务用户与文件 UID/GID 需单独审计，不能和 schema 迁移同时调整 |
-| 代码与进程 | 主服务从 `/data/dumate-studio/current` 启动；视频 sidecar 使用独立 `video-workshop-v91` 虚拟环境 | 保留 8787 主入口、8765 回环 sidecar 与双环境边界，不能合并环境或只更新其中一层 |
-| 发布拓扑 | `current` 是活动实体目录而非版本 symlink；`.env.local`、SQLite 和媒体目录均位于其中 | 首迁把 `/data/dumate-studio/current` 暂作持久根，新 release 放 sibling `/data/dumate-studio/releases/<id>`；不搬 15 GB、不假设或改造 `current` symlink |
+| 代码与进程 | 当前必须以 systemd `ExecStart`/`WorkingDirectory` 和进程 cwd 确定实际运行 release；视频 sidecar 保持独立虚拟环境 | 保留 8787 主入口、8765 回环 sidecar 与双环境边界，运行 release 必须与批准 SHA/manifest 一致 |
+| 发布拓扑 | `/data/.../current` 已证明可能是滞后普通目录，不能代表运行代码；持久数据仍由审计后的绝对路径指向 | 新 release 放 sibling `/data/dumate-studio/releases/<id>`；不搬 15 GB、不改造 `current`、不根据 current 目录猜测运行代码 |
 | SQLite | 活动库约 30.9 MB，WAL，`schema_version=23`、`user_version=0`，仅有 12 张业务表；没有 teams、配额、计费或社区表 | v137 不会在普通启动隐式迁移；必须在副本先执行 `137003`，再执行 `137004`，两者均须双演练 |
 | 角色与业务量 | 72 名成员，其中 admin 2、editor 63、supplier_parent 4、supplier_child 3；`docs` 10,048 条 | 迁移应验证唯一 canonical `admin`，其余管理员映射为 ACG 管理员；不能只看总数不下降 |
 | 模型用量 | 两张 usage 表完整性正常并持续写入；现有 824 条 LLM、1,186 条图片/视频事件。北京时间 8 月 2 日两表均为 0；指定 editor 的 7 月 31 日成功视频工坊项目未生成任何中央用量行 | 保留原事件和 member ID，不更新、删除或重算；在副本对账 sidecar runtime/provider receipt。没有可核验 token 的历史项目只作 observation，不补写“真实用量” |
@@ -85,10 +85,10 @@
 - 一次只搬一个域，规范化 OpenAPI、响应、schema、稳定 ID 和媒体 URL 必须零计划外差异。
 - 前端保留单一 transport/auth singleton；`remote.js` 旧导出作为适配器，避免拆出多个 token/缓存状态实例。
 
-### 阶段 4：完整八步迁移（前七步已在生产完成，当前仅增量 `140005`）
+### 阶段 4：完整九步 schema/data 迁移（生产已到 `140004`）
 
 - `137003` 只做 expand-only schema；`137004` 的只读 dry-run 不持久化 scope，正式 apply 会在同一写事务内重新预检并把当次稳定 member/supplier/account/identity scope 写入冻结表后建立 ACG 关系。不全表覆盖 docs JSON，不改凭据、父子关系、业务 ID 或媒体 URL。
-- 新环境固定顺序是 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005`。当前生产只执行 `140005`；每次 apply 前必须创建 fresh v2 备份，结束后重新读取 identity 和逻辑摘要，第二次必须零写。
+- 新环境固定顺序是 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005`→`140006`。当前生产只执行后两步，且每步 apply 前都要新建 fresh v2 备份、第二次零写。完成后以 fresh complete snapshot/media digest 及另一份 fresh v2 backup 执行 `media-settle` 两次，只收口当前确定 pending。
 - `acg_internal_migration_scope` 只是“本次生产历史对象的冻结映射”，不是通用租户资源鉴权账本。
 
 ### 阶段 5：租户与媒体 scope（代码已实现，生产证据待验收）
@@ -141,7 +141,7 @@
 3. 真正由服务端强制冻结主 API、后台任务和 sidecar writer；不是只在前端隐藏按钮。
 4. 冻结后使用 Python SQLite backup API 生成一致副本并验证 `quick_check`、大小与 SHA-256；禁止复制活动 `data.sqlite*` 兜底。
 5. 数据库、uploads、composed、canvas blobs、视频 runtime、环境、认证状态、systemd、依赖与旧代码/静态闭包形成同步目录外的完整回滚点，并完成隔离恢复演练。
-6. 新环境迁移 CLI 必须按 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005` 执行，并使用 schema/ACG/resource/media 各自的 preflight/apply 及专用 ALLOW；当前生产不得重跑前七步，只增量执行 `140005`。每个 apply 前产生 fresh v2 backup manifest/数据库副本/独立 manifest SHA-256；只读命令保持 `ACG_READ_ONLY=1`，只有当次 CLI 进程临时设 `0`。
+6. 新环境迁移 CLI 必须按 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005`→`140006` 执行；当前生产不得重跑前七步，只分别增量双跑 `140005/140006`。每个 apply 前产生独立 fresh v2 backup；随后使用 fresh complete snapshot/media digest 和另一份 fresh v2 backup 双跑 `media-settle`，确认 114 条既有 pending 变为 0 且之后新 output 动态登记不再产生 pending。只读命令保持 `ACG_READ_ONLY=1`，只有当次 CLI 进程临时设 `0`。
 7. 目标 release 和兼容回滚 release 均已离线构建并验证；维护窗内禁止安装或升级依赖。
 8. 主服务、视频 Web、sidecar、bridge 和画布 closure 的 release tuple 与 ESM 图验签通过。
 9. `MODEL_USAGE_COMPLETION_SPOOL_DIR` 位于 release 外持久根并与 SQLite 形成同一备份/恢复点；readiness 的 unresolved、outbox pending、spool pending/corrupt/conflict 全为 0。历史恢复只在隔离数据库副本执行 `scan -> apply -> reconcile-copy`，第二轮零写入，禁止把恢复工具目标指向活动库。
@@ -149,7 +149,7 @@
 
 副本演练至少执行：
 
-- 对两个分别从同一原始一致备份恢复的副本执行全部七步顺序；第二轮零新增、零重复、零归属漂移，每步后 `quick_check=ok`。
+- 对两个分别从同一原始一致备份恢复的副本执行全部九步 schema/data 顺序及独立 settlement；第二轮零新增、零重复、零归属漂移，每步后 `quick_check=ok`。
 - 比较迁移前后稳定 ID 集合、逐集合 digest、owner/team/supplier 关系摘要、删除墓碑、社区 identity、配额流水和幂等键。
 - 比较 `llm_usage_events` / `api_usage_events` 的原始 ID、member ID、逐日计数和总计；新 usage receipt/outbox 连续 reconciliation 两次，第二次必须零新增。成功项目与中央账本不一致时列为 observation/conflict，不能用猜测回填通过门禁。
 - 凭据 hash 仅在内存比较，不打印、不写文档；任何差异立即停止。
@@ -164,10 +164,10 @@
 ## 6. 未来获授权后的生产顺序
 
 1. 重新取得生产实时事实、所有 writer、在途任务、文件 UID/GID、release/schema 身份、稳定 ID/关系摘要和媒体 inventory；冻结全部写入并完成一致备份与恢复验证。
-2. 在 `/data/dumate-studio/releases/<id>` 建立 **v140 只读目标 release**，以 `/data/dumate-studio/current` 为首迁持久根，不搬动现有数据。RO readiness 可为 2xx，但 `writeReady=false` 是预期。
-3. 在两个生产形状副本分别按七步顺序执行，每个 apply 前 fresh v2 backup；核对凭据不变、唯一 owner、供应商/账号映射、resource scope 100%、可开放媒体唯一归属和 `quick_check`。
+2. 在 `/data/dumate-studio/releases/<id>` 建立 **v140 只读目标 release**；systemd 实际运行目录、进程 cwd、release manifest 与批准 SHA 必须一致。持久路径继续使用已审计的绝对配置，不根据滞后 `/data/.../current` 代码目录判断运行版本。RO readiness 可为 2xx，但 `writeReady=false` 是预期。
+3. 在两个生产形状副本分别双跑 `140005/140006/media-settle`，每个写步骤前 fresh v2 backup，settlement 另绑 fresh complete snapshot/media digest；核对凭据不变、唯一 owner、pending=0、供应商/账号映射、resource scope 100%、可开放媒体唯一归属和 `quick_check`。
 4. 完成完整 snapshot/restore drill、正式 wheelhouse 离线验签/安装、usage 恢复/性能、权限/媒体正负矩阵和兼容回滚 release 验证。
-5. 只有上述证据全部通过，才能在维护窗冻结全部 writer，对生产重复同一七步顺序。完成后仍先 RO 验收，只有 RW 预检明确 `writeReady=true` 才能解除冻结。
+5. 只有上述证据全部通过，才能在维护窗冻结全部 writer，对生产重复同一增量顺序。完成后仍先 RO 验收，只有 ledger clean、pending=0 且 RW 预检明确 `writeReady=true` 才能解除冻结。
 6. 真实付费生成、真实发布或外部消息仍需用户另行授权。
 
 一旦生产库执行 `137003` 或 `137004`，原始 v120 代码不能读取演进库，只能作为历史基线；回滚必须使用理解新 schema/租户语义的兼容 release。
@@ -189,6 +189,7 @@
 - **开放新写入前失败**：保持冻结，优先切换到已验证的兼容回滚 release。只有能证明数据库与媒体快照属于同一一致性点且快照后零写入时，才可整体恢复原 v120 快照。
 - **开放新写入后失败**：再次冻结并先保存事故后数据库与媒体；只能切换到理解新 schema、租户、角色、配额和幂等语义的兼容 release，并做前向数据修复。
 - 新迁移采用 expand-first，但“旧代码能忽略新增表/列”必须由兼容矩阵实证。执行 v137 `137003` 或 `137004` 后，原始 v120 不得作为代码回滚目标。
+- `9e8aeb5` 不理解 `140006` 的账号停用语义；它只可在无新 disabled 写入时做 RO 验收，不能作为长期 RW 回滚。在开放 `140006` 写入前，必须准备一个理解新表且禁用该写路径的前向恢复 release，或证明可整体恢复到迁移前 complete snapshot。
 - 回滚不得只替换主前端、sidecar、视频 Web、bridge 或 canvas vendor 中的一层；release tuple 必须成套切换。
 - 任何数据恢复、反向迁移或权限批量修复都需要用户再次明确批准。
 

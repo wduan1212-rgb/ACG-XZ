@@ -16,6 +16,20 @@ VIDEO_WORKSHOP_PID_FILE="$APP_DIR/logs/video-workshop.pid"
 VIDEO_WORKSHOP_LOG_FILE="$APP_DIR/logs/video-workshop-local.log"
 VIDEO_WORKSHOP_WATCHDOG_LOG_FILE="$APP_DIR/logs/video-workshop-watchdog.log"
 
+video_workshop_python_supported() {
+  "$1" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+PY
+}
+
+video_workshop_python_tag() {
+  "$1" - <<'PY'
+import sys
+print(f"{sys.version_info.major}{sys.version_info.minor}")
+PY
+}
+
 prepare_local_video_workshop() {
   export VIDEO_WORKSHOP_HOST="127.0.0.1"
   export VIDEO_WORKSHOP_PORT="8765"
@@ -52,9 +66,31 @@ prepare_local_video_workshop() {
     fi
   done
 
+  local bootstrap_python="${VIDEO_WORKSHOP_BOOTSTRAP_PYTHON:-python3}" bootstrap_tag=""
+  # 生产锁定的 sidecar 依赖要求 Python >= 3.10。旧开发机可能保留
+  # Python 3.9 创建的 .venv；不要原地清空或升级它，改用按版本隔离的
+  # 新环境，避免一键启动破坏用户已有的本地运行态。
+  if [ -x "$VIDEO_WORKSHOP_PYTHON" ] && ! video_workshop_python_supported "$VIDEO_WORKSHOP_PYTHON"; then
+    if ! command -v "$bootstrap_python" >/dev/null 2>&1 \
+      || ! video_workshop_python_supported "$bootstrap_python"; then
+      echo "视频工坊依赖要求 Python 3.10 或更高版本；现有 .venv 将保留不变。"
+      echo "请安装新版 Python，或设置 VIDEO_WORKSHOP_BOOTSTRAP_PYTHON 指向可用解释器。"
+      return 1
+    fi
+    bootstrap_tag="$(video_workshop_python_tag "$bootstrap_python")"
+    VIDEO_WORKSHOP_VENV="$VIDEO_WORKSHOP_APP_DIR/.venv-py${bootstrap_tag}"
+    VIDEO_WORKSHOP_PYTHON="$VIDEO_WORKSHOP_VENV/bin/python"
+  fi
+
   if [ ! -x "$VIDEO_WORKSHOP_PYTHON" ]; then
+    if ! command -v "$bootstrap_python" >/dev/null 2>&1 \
+      || ! video_workshop_python_supported "$bootstrap_python"; then
+      echo "视频工坊依赖要求 Python 3.10 或更高版本，当前解释器不兼容。"
+      echo "请安装新版 Python，或设置 VIDEO_WORKSHOP_BOOTSTRAP_PYTHON 指向可用解释器。"
+      return 1
+    fi
     echo "首次运行：创建视频工坊独立 Python 环境…"
-    if ! python3 -m venv "$VIDEO_WORKSHOP_VENV"; then
+    if ! "$bootstrap_python" -m venv "$VIDEO_WORKSHOP_VENV"; then
       echo "创建视频工坊 Python 环境失败。"
       return 1
     fi

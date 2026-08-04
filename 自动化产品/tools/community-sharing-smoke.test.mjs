@@ -161,6 +161,10 @@ test("community detail keeps media fixed, copy scrollable, and manual video play
   assert.match(home, /data-home-reaction="\$\{field\}"[\s\S]{0,180}?aria-pressed=/);
   assert.match(home, /aria-label="\$\{label\}" title="\$\{label\}"/);
   assert.match(home, /community-detail-head[\s\S]*?community-detail-actions[\s\S]*?detailReactionButton\(\{ field: "liked"[\s\S]*?detailReactionButton\(\{ field: "favorited"/);
+  assert.match(home, /data-home-detail-download/);
+  assert.match(home, /downloadBlob\(/);
+  assert.match(home, /openLightbox\(image, image\.src/);
+  assert.match(home, /target\.origin !== window\.location\.origin/);
   assert.match(home, /\$\{icon\(isLike \? "heart" : "bookmark", 18\)\}<\/button>/);
   assert.match(styles, /\.home-inspiration-detail-stage[\s\S]*?place-items:\s*center/);
   assert.match(styles, /\.home-inspiration-panel\s*\{[^}]*overflow:\s*hidden/);

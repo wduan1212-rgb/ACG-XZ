@@ -2,8 +2,9 @@
 
 > 本文件是代码仓内契约，不代表当前候选已部署。生产已受保护运行 v140
 > `9e8aeb5`，团队、资源 scope 和媒体 registry 已迁移；当前 release 只允许在 fresh
-> v2 备份绑定后增量双跑 expand-only `140005`，不得重做前七步或覆盖现有数据/媒体。
-> 本轮供应商交付媒体精确读与视频工坊成片发布修复尚未上线；部署前必须从唯一提交重建并验签完整 release。
+> v2 备份绑定后分别双跑 expand-only `140005` 与 `140006`，再以 fresh complete
+> snapshot/media digest 执行幂等 `media-settle`，不得重做历史团队/资源/媒体迁移或覆盖现有数据。
+> 本轮 P0 候选尚未上线；部署前必须从唯一提交重建并验签完整 release。
 
 正式操作前还必须阅读：
 
@@ -57,7 +58,7 @@ ACG_READ_ONLY=1
 ACG_REQUIRE_INTERNAL_TEAM=1
 ACG_REQUIRE_RESOURCE_SCOPES=1
 ACG_REQUIRE_PRIVATE_MEDIA=1
-ACG_RELEASE_ID=20260804-v140-workshop-scroll-1
+ACG_RELEASE_ID=20260804-v140-metric-billing-control-1
 ACG_RELEASE_ROOT=/data/dumate-studio/releases/<release-id>
 ACG_PERSISTENT_ROOT=/data/dumate-studio/current
 ACG_ENV_FILE=/data/dumate-studio/current/.env.local
@@ -100,7 +101,7 @@ fragment 或回环地址；不得为了让 `140004` 通过而添加宽泛域名�
 
 ```bash
 cd /path/to/unpacked-release
-ACG_RELEASE_ID=20260804-v140-workshop-scroll-1 \
+ACG_RELEASE_ID=20260804-v140-metric-billing-control-1 \
   deploy/verify_release_contracts.sh
 ```
 
@@ -140,6 +141,11 @@ systemd timer 周期检查受 token 保护的 `/api/ready` 和 sidecar `/api/hea
 timer 只调用轻量 registry/ledger/readiness，不调用 snapshot、media preflight 或
 约 15 GB 媒体强哈希。若实际 unit 或 timer 未达到该契约，只能停在 RO
 验收，不得切 RW。
+
+运行代码真源必须由 systemd `ExecStart`/`WorkingDirectory`、实际进程 cwd
+和批准 release manifest 三者一致证明。生产已发现 `/data/.../current`
+可能是滞后的普通目录；它可以继续作为审计后的持久数据根，但不得被当作
+“当前运行代码指针”。三者不一致时保持 RO 并停止后续迁移。
 
 启动成功不以 `/api/health` 为准，必须以受 token 保护的 `/api/ready` 为准：
 
@@ -264,7 +270,7 @@ tools/run_locked_server_tests.sh \
 
 迁移不在应用启动中执行。只能在只读预检、维护窗冻结写入、完整备份
 与恢复演练后，使用 `python -m server.migrations` 显式执行：
-`137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005`。`137004`、`140002`、
+`137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005`→`140006`。`137004`、`140002`、
 `140004` 分别先做 ACG/resource/media preflight。主服务、sidecar、后台任务及其他 writer 必须保持
 停止或服务端冻结；`status` / `acg-preflight` 保持 `ACG_READ_ONLY=1`。每个 apply
 只能在单独 CLI 进程中临时覆盖 `ACG_READ_ONLY=0`，并同时提供对应的
@@ -272,9 +278,18 @@ tools/run_locked_server_tests.sh \
 identity 确认；结束后先恢复 `ACG_READ_ONLY=1` 再启动服务。禁止把外部环境文件
 永久改成可写或在 apply 期间启动业务进程。两次连续迁移必须验证幂等，记录数不得下降。
 
-生产已完成到 `140004` 时，后续 hydration release 只增量 apply expand-only `140005`；不得重跑
-团队、资源或媒体归属迁移。`140005` 必须使用新的 fresh v2 备份绑定，第一次只新增 compose claim
-表与 success ledger，第二次 `appliedVersions=[]`，再恢复只读并核对 readiness。
+生产已完成到 `140004` 时，后续 release 依次增量 apply expand-only `140005`、
+`140006`；不得重跑团队、资源或历史媒体归属迁移。两个 schema apply 必须
+分别使用紧接执行前产生的 fresh v2 备份，各自第二次均为
+`appliedVersions=[]`。`140006` 只新增账号状态和媒体 settlement 审计表，
+不改任何成员状态或 registry 行。
+
+生产当前 post-140004 的 114 条 pending 全部为新 `video-output`。schema 双跑完成后，
+必须在 writer 仍冻结时新建并验签 `acg-production-complete-v1` snapshot/restore-drill，
+另外生成 fresh v2 SQLite 备份，然后执行独立 `media-settle`。该命令只能写入
+当次 plan 确定且无冲突的 pending registry 行及一条 audit receipt，在同一事务内重算
+pending=0 后才提交；再次使用同一已验签 snapshot 及当前 fresh backup 执行必须零写。
+禁止设置 `ACG_ALLOW_PRIVATE_MEDIA_MIGRATION`重跑 `140004`，也禁止裸 SQL 或放宽 readiness。
 
 每一个会写库的 apply 都必须绑定“紧接在该 apply 前”生成的 v2 SQLite
 备份；上一个 apply 成功后数据库逻辑摘要已变，不得复用旧 manifest。备份
@@ -297,6 +312,26 @@ python3 -m server.migrations apply \
   --backup-database /persistent/backups/<snapshot-id>/data.sqlite \
   --confirm-backup-manifest-sha256 <recorded-manifest-sha256>
 ```
+
+`140005` 成功后重新运行上述 backup 命令，再以
+`--confirm-version 140006` 执行下一步。完成 complete snapshot create/verify/restore-drill
+并独立记录 manifest SHA-256 后，使用：
+
+```bash
+ACG_READ_ONLY=0 ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT=1 \
+python3 -m server.migrations media-settle \
+  --confirm-schema-version 140006 \
+  --confirm-identity <status-identity> \
+  --runtime-snapshot <fresh-complete-snapshot-directory> \
+  --confirm-runtime-snapshot-manifest-sha256 <recorded-runtime-manifest-sha256> \
+  --backup-manifest <fresh-settlement-backup.manifest.json> \
+  --backup-database <fresh-settlement-backup.sqlite> \
+  --confirm-backup-manifest-sha256 <recorded-settlement-backup-manifest-sha256>
+```
+
+第一次要求 `plannedRows=insertedRows`，然后以只读 `status`/媒体状态确认
+`pendingRows=0`。第二次在新 fresh v2 备份绑定下执行，要求
+`applied=false`、`insertedRows=0` 且数据库逻辑摘要不变。
 
 `140002` 会把可由 owner、账号或现存上游唯一证明的历史文档冻结到一个 scope。
 已失效的次要引用只在存在该唯一证据时记为 warning；歧义或仍等待现存上游解析的记录
@@ -366,8 +401,11 @@ receipt 性能必须在生产同规格磁盘暖库后连续 5 轮通过：64 路
 128 路 P99 不超过 1s，单次不超过 1.25s，异步事件循环 P99 gap 不超过 100ms；
 任一写异常、重复授权、数量错位或数据库长锁期间发生供应商调用都阻断部署。
 
-v140 不允许把原始 v120 二进制回滚到已迁移数据库上。回滚只能使用理解七步 schema/
-租户/媒体语义的前向兼容版本。RO readiness 通过不代表可写；只有 RW 启动预检明确
+v140 不允许把原始 v120 二进制回滚到已迁移数据库上。回滚只能使用理解当前 schema/
+租户/媒体语义的前向兼容版本。`9e8aeb5` 不理解 `140006` 的 disabled 状态：
+在尚未写入任何新账号状态时可作 RO 验收，一旦新状态已使用，长期 RW 回滚必须使用
+理解 `140006` 且禁用新写入的恢复 release，或恢复到 `140006` 之前的 complete snapshot。
+RO readiness 通过不代表可写；只有 RW 启动预检明确
 `writeReady=true` 才能解除冻结。
 
 ## Docker

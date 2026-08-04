@@ -637,6 +637,54 @@ class PersonalQuotaEndpointTest(unittest.TestCase):
         self.assertEqual(main.IMAGE_GENERATION_POINTS, first.json()["dailyQuota"]["used"])
         self.assertEqual("settled", first.json()["billing"]["status"])
 
+    def test_free_language_dialogue_reserves_then_deducts_real_points(self):
+        observations = []
+
+        async def llm_success(_body, _auth="", _force=True, *, attempt_ledger=None):
+            observations.append(store.personal_daily_quota(self.user[0]))
+            await attempt_ledger.acquire()
+            return main.httpx.Response(200, json={
+                "id": "chatcmpl-test",
+                "model": "mock-llm",
+                "choices": [{"message": {"content": "真实回答"}}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+            })
+
+        headers = {**self.headers, "Idempotency-Key": "free-llm-one"}
+        with patch.object(main, "LLM_API_KEY", "test-llm-key"), patch.object(
+            main, "_call_llm", side_effect=llm_success,
+        ):
+            response = self.client.post(
+                "/api/llm",
+                json={"messages": [{"role": "user", "content": "你好"}]},
+                headers=headers,
+            )
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual(main.LLM_GENERATION_POINTS, observations[0]["reserved"])
+        self.assertEqual(0, observations[0]["used"])
+        self.assertEqual(main.LLM_GENERATION_POINTS, response.json()["billing"]["deductedPoints"])
+        quota = store.personal_daily_quota(self.user[0])
+        self.assertEqual(main.LLM_GENERATION_POINTS, quota["used"])
+        self.assertEqual(0, quota["reserved"])
+
+    def test_free_language_failure_releases_points(self):
+        async def llm_failure(_body, _auth="", _force=True, *, attempt_ledger=None):
+            await attempt_ledger.acquire()
+            raise HTTPException(502, "mock llm failure")
+
+        with patch.object(main, "LLM_API_KEY", "test-llm-key"), patch.object(
+            main, "_call_llm", side_effect=llm_failure,
+        ):
+            response = self.client.post(
+                "/api/llm",
+                json={"messages": [{"role": "user", "content": "失败"}]},
+                headers={**self.headers, "Idempotency-Key": "free-llm-fail"},
+            )
+        self.assertEqual(502, response.status_code)
+        quota = store.personal_daily_quota(self.user[0])
+        self.assertEqual(0, quota["used"])
+        self.assertEqual(0, quota["reserved"])
+
     def test_main_image_failure_releases_without_charging(self):
         async def failed(_req, _member, **_kwargs):
             raise HTTPException(502, "mock provider failed")

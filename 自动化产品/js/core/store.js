@@ -4,7 +4,7 @@ import { db } from "./db.js";
 import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
 import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js";
-import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260804-v140-workshop-scroll-1";
+import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260804-v140-metric-billing-control-1";
 
 const DEFAULT_ADMIN_USERNAME = String.fromCharCode(97, 100, 109, 105, 110);
 const LEGACY_ADMIN_USERNAME = String.fromCharCode(121, 117, 120, 117, 97, 110);
@@ -732,6 +732,31 @@ export async function pullRemote() {
   }
   emit("change", { collections: db.collections });
   return true;
+}
+
+/* 页面重新进入 / 窗口重新聚焦时，只刷新指定权威集合。它不会递增登录
+   generation、不会取消正在进行的后台水合，也不会把本地整集合回推服务端。 */
+export async function refreshRemoteCollections(collections = []) {
+  if (!remote.isOn() || !remote.hasToken()) return false;
+  const requested = [...new Set((collections || []).filter(name => (
+    REMOTE_STATE_COLLECTIONS.includes(name)
+  )))];
+  if (!requested.length) return false;
+  const memberId = state.ui.currentMemberId;
+  const generation = remoteSyncGeneration;
+  const isCurrent = () => isRemoteSyncCurrent(generation, memberId);
+  const snap = await fetchRemoteStateGroup(requested, isCurrent);
+  if (!isCurrent()) return false;
+  const applied = applyRemoteSnapshot(snap, requested);
+  if (!isCurrent()) return false;
+  emit("change", { collections: applied, phase: "authority-refresh" });
+  void cacheRemoteSnapshot(
+    snap,
+    applied,
+    "authority-refresh",
+    isCurrent,
+  ).catch(() => null);
+  return applied.length > 0;
 }
 
 /* ---- 通知中心 ---- */

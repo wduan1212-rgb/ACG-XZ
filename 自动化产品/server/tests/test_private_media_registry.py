@@ -480,6 +480,95 @@ class PrivateMediaRegistryTest(unittest.TestCase):
             self.assertFalse(blocked["readyForApply"])
             self.assertEqual(1, blocked["counts"]["ambiguousFiles"])
 
+    def test_post_140004_video_outputs_register_on_hydration_and_settle_independently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            project_id = "workshop-post-140004"
+            project = {
+                "id": project_id,
+                "name": "迁移后成片",
+                "status": "succeeded",
+                "outputs": [],
+            }
+            mapped, error = store.sync_custom_video_project("owner-a", project)
+            self.assertIsNone(error)
+            self.assertEqual(project_id, mapped["projectState"]["workshopProjectId"])
+            output_dir = paths["VIDEO_WORKSHOP_OUTPUT_DIR"] / project_id
+            output_dir.mkdir(parents=True)
+            for index in range(114):
+                (output_dir / f"delivery-{index:03d}.mp4").write_bytes(
+                    f"video-{index}".encode("ascii")
+                )
+            with store._lock:
+                conn = store._connect()
+                try:
+                    now = 1
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                        ") VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_NAME,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM,
+                            "test", now, now, "success", "{}",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            pending = store.private_media_registry_status()
+            self.assertTrue(pending["readyForApply"])
+            self.assertEqual(114, pending["counts"]["pendingRows"])
+
+            backup = current_backup_binding(store, store.DB_PATH)
+            snapshot = runtime_snapshot_binding(
+                "c" * 64, store._private_media_live_inventory_digest(),
+            )
+            with patch.dict(os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT": "1"}):
+                first = store.settle_private_media_registry_incremental(
+                    expected_identity=store._database_identity(store.DB_PATH),
+                    expected_schema_version=store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
+                    backup_binding=backup,
+                    runtime_snapshot_binding=snapshot,
+                    created_by="test-deployer",
+                )
+            self.assertTrue(first["applied"])
+            self.assertEqual(114, first["insertedRows"])
+            self.assertEqual(0, store.private_media_registry_status()["counts"]["pendingRows"])
+            before_second = logical_database_dump(store.DB_PATH)
+            with patch.dict(os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT": "1"}):
+                second = store.settle_private_media_registry_incremental(
+                    expected_identity=store._database_identity(store.DB_PATH),
+                    expected_schema_version=store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
+                    backup_binding=current_backup_binding(store, store.DB_PATH),
+                    runtime_snapshot_binding=snapshot,
+                    created_by="test-deployer",
+                )
+            self.assertFalse(second["applied"])
+            self.assertTrue(second["reused"])
+            self.assertEqual(before_second, logical_database_dump(store.DB_PATH))
+
+            # A subsequent sidecar hydration now performs the same owner-scoped
+            # registration for new regular files, without another settlement.
+            new_output = output_dir / "delivery-114.mp4"
+            new_output.write_bytes(b"video-114")
+            main = importlib.import_module("main")
+            with patch.object(main, "store", store), patch.object(
+                main, "VIDEO_WORKSHOP_OUTPUT_DIR", paths["VIDEO_WORKSHOP_OUTPUT_DIR"],
+            ):
+                main._register_video_workshop_media(
+                    project,
+                    {"id": "owner-a", "teamId": "team-a"},
+                    project_id,
+                )
+            self.assertEqual(0, store.private_media_registry_status()["counts"]["pendingRows"])
+            access, access_error = store.private_media_access(
+                "video-output", f"{project_id}/delivery-114.mp4", "peer-a",
+            )
+            self.assertIsNone(access_error)
+            self.assertEqual("owner-a", access["ownerId"])
+
     def test_nonempty_data_migration_is_atomic_and_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, paths = load_media_store(tmp)

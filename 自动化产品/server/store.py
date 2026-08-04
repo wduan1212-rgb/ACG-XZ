@@ -708,6 +708,28 @@ CREATE TABLE IF NOT EXISTS video_compose_operations(
 CREATE INDEX IF NOT EXISTS idx_video_compose_operations_state_updated
   ON video_compose_operations(state, updated_at);
 """
+MEMBER_CONTROL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS member_account_states(
+  member_id  TEXT PRIMARY KEY,
+  status     TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT NOT NULL DEFAULT '',
+  CHECK(status IN ('active','disabled'))
+);
+CREATE INDEX IF NOT EXISTS idx_member_account_states_status
+  ON member_account_states(status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS private_media_registry_settlements(
+  settlement_id                  TEXT PRIMARY KEY,
+  database_identity             TEXT NOT NULL,
+  snapshot_manifest_sha256      TEXT NOT NULL,
+  snapshot_media_digest         TEXT NOT NULL,
+  planned_rows                  INTEGER NOT NULL,
+  inserted_rows                 INTEGER NOT NULL,
+  registry_rows_after           INTEGER NOT NULL,
+  created_at                    INTEGER NOT NULL,
+  created_by                    TEXT NOT NULL DEFAULT ''
+);
+"""
 # 137001/137002 were exercised by local pre-release builds before the v137
 # schema identity was frozen.  Migration versions are immutable once written,
 # even outside production, so the audited release advances to fresh numbers
@@ -783,7 +805,19 @@ _VIDEO_COMPOSE_SCHEMA_IDENTITY = "|".join((
 VIDEO_COMPOSE_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
     (VIDEO_COMPOSE_OPERATION_SCHEMA + "\n" + _VIDEO_COMPOSE_SCHEMA_IDENTITY).encode("utf-8")
 ).hexdigest()
-LATEST_SCHEMA_MIGRATION_VERSION = VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION
+MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION = 140006
+MEMBER_CONTROL_SCHEMA_MIGRATION_NAME = "v140-member-control-media-settlement"
+_MEMBER_CONTROL_SCHEMA_IDENTITY = "|".join((
+    "creator-account-disable-without-data-deletion",
+    "disabled-token-and-login-fail-closed",
+    "team-kick-preserves-member-and-documents",
+    "private-media-post-140004-settlement-ledger",
+    "snapshot-and-backup-bound-incremental-only",
+))
+MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (MEMBER_CONTROL_SCHEMA + "\n" + _MEMBER_CONTROL_SCHEMA_IDENTITY).encode("utf-8")
+).hexdigest()
+LATEST_SCHEMA_MIGRATION_VERSION = MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION
 EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", SCHEMA)
 ) | frozenset(
@@ -805,6 +839,11 @@ EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(
         r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
         VIDEO_COMPOSE_OPERATION_SCHEMA,
+    )
+ ) | frozenset(
+    re.findall(
+        r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+        MEMBER_CONTROL_SCHEMA,
     )
 ) | {"schema_migrations"}
 EXPECTED_SCHEMA_COLUMNS = {
@@ -833,6 +872,12 @@ EXPECTED_SCHEMA_COLUMNS = {
         "owner_id", "operation_key", "production_id", "request_fingerprint",
         "state", "claim_token", "output_name", "error", "attempt",
         "created_at", "updated_at", "completed_at",
+    },
+    "member_account_states": {"member_id", "status", "updated_at", "updated_by"},
+    "private_media_registry_settlements": {
+        "settlement_id", "database_identity", "snapshot_manifest_sha256",
+        "snapshot_media_digest", "planned_rows", "inserted_rows",
+        "registry_rows_after", "created_at", "created_by",
     },
 }
 ACG_DATA_MIGRATION_VERSION = 137004
@@ -1297,6 +1342,14 @@ def _apply_video_compose_schema_locked(conn, *, begin_transaction=True):
     _execute_sql_script_locked(conn, VIDEO_COMPOSE_OPERATION_SCHEMA)
 
 
+def _apply_member_control_schema_locked(conn, *, begin_transaction=True):
+    """Add reversible account state and auditable media settlement ledgers."""
+
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, MEMBER_CONTROL_SCHEMA)
+
+
 def _record_schema_migration_locked(conn, *, summary=None):
     existing = conn.execute(
         "SELECT checksum,status FROM schema_migrations WHERE version=?",
@@ -1521,6 +1574,46 @@ def _record_video_compose_schema_migration_locked(conn, *, summary=None):
         )
 
 
+def _record_member_control_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("member control schema migration checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {
+            "schema": "member-control-media-settlement",
+            "mode": "expand-only",
+        },
+        ensure_ascii=False,
+    )
+    values = (
+        MEMBER_CONTROL_SCHEMA_MIGRATION_NAME,
+        MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM,
+        runtime_config.release_id() or "unidentified",
+        now,
+        encoded_summary,
+        MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            values,
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "name,checksum,app_version,finished_at,status,summary,version,started_at"
+            ") VALUES(?,?,?,?,'success',?,?,?)",
+            (*values, now),
+        )
+
+
 def _database_identity(path):
     try:
         stat = Path(path).stat()
@@ -1711,6 +1804,8 @@ def database_readiness():
         "privateMediaMigrationChecksum": "",
         "videoComposeSchemaVersion": None,
         "videoComposeSchemaChecksum": "",
+        "memberControlSchemaVersion": None,
+        "memberControlSchemaChecksum": "",
     }
     spool_status = model_usage_completion_spool_status()
     result["modelUsageCompletionSpoolPending"] = spool_status["pending"]
@@ -1775,6 +1870,11 @@ def database_readiness():
                 "WHERE version=?",
                 (VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
+            member_control_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
             if base_row:
                 result["migrationVersion"] = int(base_row[0])
                 result["checksum"] = str(base_row[1] or "")[:16]
@@ -1804,6 +1904,13 @@ def database_readiness():
                 result["videoComposeSchemaChecksum"] = str(
                     compose_schema_row[1] or ""
                 )[:16]
+            if member_control_row:
+                result["migrationVersion"] = int(member_control_row[0])
+                result["checksum"] = str(member_control_row[1] or "")[:16]
+                result["memberControlSchemaVersion"] = int(member_control_row[0])
+                result["memberControlSchemaChecksum"] = str(
+                    member_control_row[1] or ""
+                )[:16]
             result["migrationDirty"] = int(conn.execute(
                 "SELECT COUNT(*) FROM schema_migrations WHERE status<>'success'"
             ).fetchone()[0] or 0)
@@ -1823,6 +1930,9 @@ def database_readiness():
                 and compose_schema_row
                 and compose_schema_row[1] == VIDEO_COMPOSE_SCHEMA_MIGRATION_CHECKSUM
                 and compose_schema_row[2] == "success"
+                and member_control_row
+                and member_control_row[1] == MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM
+                and member_control_row[2] == "success"
                 and result["migrationDirty"] == 0
             )
         else:
@@ -2100,6 +2210,13 @@ def apply_schema_migrations(
                     VIDEO_COMPOSE_SCHEMA_MIGRATION_CHECKSUM,
                     _apply_video_compose_schema_locked,
                     _record_video_compose_schema_migration_locked,
+                ),
+                (
+                    MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
+                    MEMBER_CONTROL_SCHEMA_MIGRATION_NAME,
+                    MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM,
+                    _apply_member_control_schema_locked,
+                    _record_member_control_schema_migration_locked,
                 ),
             )
             migrations = all_migrations
@@ -3979,6 +4096,12 @@ def _ensure_db():
                 summary={"schema": "video-compose-idempotency", "mode": "local-auto"},
             )
             conn.commit()
+            _apply_member_control_schema_locked(conn)
+            _record_member_control_schema_migration_locked(
+                conn,
+                summary={"schema": "member-control-media-settlement", "mode": "local-auto"},
+            )
+            conn.commit()
             _initialized = True
         finally:
             conn.close()
@@ -4166,6 +4289,45 @@ def register_private_media(
             )
             conn.commit()
             return result
+        finally:
+            conn.close()
+
+
+def register_private_media_batch(
+    entries,
+    owner_id,
+    *,
+    team_id="",
+    provenance_kind,
+    provenance_id,
+):
+    """Atomically register one completed sidecar project media snapshot."""
+
+    normalized = sorted({
+        _normalize_private_media_key(kind, key)
+        for kind, key in (entries or [])
+    })
+    if not normalized:
+        return []
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            now = int(time.time() * 1000)
+            results = [
+                _register_private_media_locked(
+                    conn, kind, key, owner_id, team_id=team_id,
+                    provenance_kind=provenance_kind,
+                    provenance_id=provenance_id, now=now,
+                )
+                for kind, key in normalized
+            ]
+            conn.commit()
+            return results
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -5697,6 +5859,159 @@ def apply_private_media_migration(
 
 
 # ---------- 口令哈希（pbkdf2，纯 stdlib，无新依赖） ----------
+def settle_private_media_registry_incremental(
+    *,
+    expected_identity,
+    expected_schema_version,
+    backup_binding,
+    runtime_snapshot_binding,
+    created_by="deployment",
+):
+    """Register only deterministic rows created after successful 140004.
+
+    This is intentionally not a replay of the historical ownership migration:
+    it requires the immutable 140004 success record, a fresh complete snapshot,
+    a verified database backup, and the dedicated 140006 audit table.  The
+    transaction may insert registry rows plus one settlement receipt only; it
+    never updates documents, files, owners, teams, or the 140004 ledger row.
+    """
+
+    global _initialized
+    if runtime_config.is_read_only():
+        raise StoreNotReadyError("read-only runtime cannot settle private media")
+    if str(os.getenv("ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT", "")).strip() != "1":
+        raise StoreNotReadyError("private media settlement authorization is required")
+    if int(expected_schema_version or 0) != MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION:
+        raise StoreNotReadyError("private media settlement schema confirmation mismatch")
+    actual_identity = _database_identity(DB_PATH)
+    if not hmac.compare_digest(str(expected_identity or ""), actual_identity):
+        raise StoreNotReadyError("settlement target database identity mismatch")
+    snapshot = _verify_runtime_snapshot_binding(runtime_snapshot_binding, required=True)
+    with _lock:
+        conn = _connect_migration_target()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if not hmac.compare_digest(actual_identity, _database_identity(DB_PATH)):
+                raise StoreNotReadyError("settlement target database identity mismatch")
+            _verify_migration_backup_binding_locked(conn, backup_binding)
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError("settlement target failed SQLite quick_check")
+            data_row = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (PRIVATE_MEDIA_DATA_MIGRATION_VERSION,),
+            ).fetchone()
+            if data_row != (PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM, "success"):
+                raise StoreNotReadyError("private media data migration 140004 is not frozen")
+            schema_row = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            if schema_row != (MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM, "success"):
+                raise StoreNotReadyError("private media settlement schema is not ready")
+            plan = _private_media_plan_locked(
+                conn,
+                snapshot_manifest_sha256=snapshot["manifestSha256"],
+                snapshot_media_inventory_digest=snapshot["mediaInventoryDigest"],
+                include_database_logical_digest=True,
+                include_media_content_digest=True,
+            )
+            if not plan.get("readyForApply"):
+                raise StoreNotReadyError(
+                    "private media settlement preflight failed: "
+                    + ",".join(plan.get("issues") or ["unknown"])
+                )
+            pending = int((plan.get("counts") or {}).get("pendingRows") or 0)
+            if pending == 0:
+                previous = conn.execute(
+                    "SELECT settlement_id,planned_rows,inserted_rows,registry_rows_after "
+                    "FROM private_media_registry_settlements "
+                    "WHERE database_identity=? ORDER BY created_at DESC LIMIT 1",
+                    (actual_identity,),
+                ).fetchone()
+                conn.rollback()
+                return {
+                    "ok": True, "applied": False, "reused": bool(previous),
+                    "settlementId": str(previous[0]) if previous else "",
+                    "plannedRows": int(previous[1]) if previous else 0,
+                    "insertedRows": 0,
+                    "registryRows": int(
+                        previous[3] if previous else (plan.get("counts") or {}).get("registeredRows") or 0
+                    ),
+                }
+            plan_digest = hashlib.sha256(json.dumps(
+                plan.get("rows") or [], ensure_ascii=False, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            settlement_id = hashlib.sha256(
+                f"{actual_identity}:{snapshot['manifestSha256']}:"
+                f"{snapshot['mediaInventoryDigest']}:{plan_digest}".encode("utf-8")
+            ).hexdigest()
+            existing = conn.execute(
+                "SELECT planned_rows,inserted_rows,registry_rows_after "
+                "FROM private_media_registry_settlements WHERE settlement_id=?",
+                (settlement_id,),
+            ).fetchone()
+            if existing:
+                conn.rollback()
+                return {
+                    "ok": True, "applied": False, "reused": True,
+                    "settlementId": settlement_id,
+                    "plannedRows": int(existing[0]), "insertedRows": int(existing[1]),
+                    "registryRows": int(existing[2]),
+                }
+            existing_pairs = {
+                (str(row[0]), str(row[1]), str(row[2]))
+                for row in conn.execute(
+                    "SELECT media_kind,media_key,owner_id FROM private_media_registry"
+                ).fetchall()
+            }
+            now = int(time.time() * 1000)
+            inserted = 0
+            for kind, key, owner, team_id, proof_kind, proof_id in plan.get("rows") or []:
+                if (str(kind), str(key), str(owner)) in existing_pairs:
+                    continue
+                _register_private_media_locked(
+                    conn, kind, key, owner, team_id=team_id,
+                    provenance_kind=proof_kind, provenance_id=proof_id, now=now,
+                )
+                inserted += 1
+            if inserted != pending:
+                raise StoreNotReadyError("private media settlement pending row count changed")
+            verification = _private_media_plan_locked(
+                conn,
+                snapshot_manifest_sha256=snapshot["manifestSha256"],
+                snapshot_media_inventory_digest=snapshot["mediaInventoryDigest"],
+                include_media_content_digest=True,
+            )
+            if not verification.get("readyForApply") or int(
+                (verification.get("counts") or {}).get("pendingRows") or 0
+            ) != 0:
+                raise StoreNotReadyError("private media settlement verification failed")
+            registry_rows = int((verification.get("counts") or {}).get("registeredRows") or 0)
+            conn.execute(
+                "INSERT INTO private_media_registry_settlements("
+                "settlement_id,database_identity,snapshot_manifest_sha256,"
+                "snapshot_media_digest,planned_rows,inserted_rows,registry_rows_after,"
+                "created_at,created_by) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    settlement_id, actual_identity, snapshot["manifestSha256"],
+                    snapshot["mediaInventoryDigest"], pending, inserted,
+                    registry_rows, now, str(created_by or "deployment")[:120],
+                ),
+            )
+            conn.commit()
+            _initialized = False
+            return {
+                "ok": True, "applied": bool(inserted), "reused": False,
+                "settlementId": settlement_id, "plannedRows": pending,
+                "insertedRows": inserted, "registryRows": registry_rows,
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def hash_pin(pin: str) -> str:
     salt = secrets.token_bytes(16)
     dk = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt, 120_000)
@@ -7551,6 +7866,89 @@ def update_member(mid, name=None, username=None, role=None, pin=None, parent_id=
     return get_member(mid)
 
 
+def kick_team_member(team_id, member_id, removed_by):
+    """Remove an active team seat without deleting the creator account or data."""
+
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT tm.team_role,m.role FROM team_members tm "
+                "JOIN members m ON m.id=tm.member_id "
+                "WHERE tm.team_id=? AND tm.member_id=? AND tm.status='active'",
+                (str(team_id or ""), str(member_id or "")),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, "not_found"
+            if str(row[0]) == "owner":
+                conn.rollback()
+                return None, "owner_locked"
+            conn.execute(
+                "UPDATE team_members SET status='removed',added_by=? "
+                "WHERE team_id=? AND member_id=? AND status='active'",
+                (str(removed_by or ""), str(team_id or ""), str(member_id or "")),
+            )
+            # A team administrator is still a creator account. Once its seat
+            # is removed it must not retain the platform-level ``admin`` role;
+            # the account and all owned data stay intact as a Free user.
+            if str(row[1]) in {"admin", "editor", "user"}:
+                conn.execute("UPDATE members SET role='user' WHERE id=?", (str(member_id),))
+            conn.commit()
+        finally:
+            conn.close()
+    row = get_member(member_id)
+    return (member_public(row) if row else None), None
+
+
+def member_account_status(member_id):
+    _ensure_db()
+    row = _fetchone(
+        "SELECT status,updated_at,updated_by FROM member_account_states WHERE member_id=?",
+        (str(member_id or ""),),
+    )
+    return {
+        "status": str(row[0]), "updatedAt": int(row[1]), "updatedBy": str(row[2] or ""),
+    } if row else {"status": "active", "updatedAt": 0, "updatedBy": ""}
+
+
+def member_account_disabled(member_id):
+    return member_account_status(member_id).get("status") == "disabled"
+
+
+def set_member_account_status(member_id, status, updated_by):
+    next_status = str(status or "").strip().lower()
+    if next_status not in {"active", "disabled"}:
+        return None, "invalid_status"
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT role FROM members WHERE id=?", (str(member_id or ""),),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, "not_found"
+            if str(row[0]) not in {"admin", "editor", "user"}:
+                conn.rollback()
+                return None, "not_creator"
+            now = int(time.time() * 1000)
+            conn.execute(
+                "INSERT INTO member_account_states(member_id,status,updated_at,updated_by) "
+                "VALUES(?,?,?,?) ON CONFLICT(member_id) DO UPDATE SET "
+                "status=excluded.status,updated_at=excluded.updated_at,updated_by=excluded.updated_by",
+                (str(member_id), next_status, now, str(updated_by or "")),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return member_public(get_member(member_id)), None
+
+
 def delete_member(mid):
     _ensure_db()
     with _lock:
@@ -7574,6 +7972,10 @@ def member_public(row):
     item["teamId"] = team["id"] if team else None
     item["teamRole"] = team["role"] if team else None
     item["entitlements"] = member_entitlements(item["id"], item["role"])
+    account_state = member_account_status(item["id"])
+    item["accountStatus"] = account_state["status"]
+    item["accountStatusUpdatedAt"] = account_state["updatedAt"]
+    item["accountStatusUpdatedBy"] = account_state["updatedBy"]
     quota = generation_quota(item["id"])
     item["plan"] = team["plan"] if team else str((quota or {}).get("plan") or "personal")
     item["generationQuota"] = quota
@@ -7951,6 +8353,15 @@ def list_platform_account_summaries():
         "JOIN teams t ON t.id=tm.team_id WHERE tm.status='active' AND t.status='active' "
         "AND tm.team_role='owner' ORDER BY t.created_at DESC"
     )
+    creator_rows = _fetchall(
+        "SELECT m.id,m.name,m.username,m.role,m.created_at,"
+        "COALESCE(s.status,'active'),COALESCE(s.updated_at,0),"
+        "COALESCE(t.id,''),COALESCE(t.name,''),COALESCE(tm.team_role,'') "
+        "FROM members m LEFT JOIN member_account_states s ON s.member_id=m.id "
+        "LEFT JOIN team_members tm ON tm.member_id=m.id AND tm.status='active' "
+        "LEFT JOIN teams t ON t.id=tm.team_id AND t.status='active' "
+        "WHERE m.role IN ('admin','editor','user') ORDER BY m.created_at DESC"
+    )
     return {
         "personal": [
             {
@@ -7966,6 +8377,15 @@ def list_platform_account_summaries():
                 "plan": row[6], "teamKind": row[7],
             }
             for row in owner_rows
+        ],
+        "creators": [
+            {
+                "id": row[0], "name": row[1], "username": row[2], "role": row[3],
+                "createdAt": row[4], "accountStatus": row[5],
+                "accountStatusUpdatedAt": row[6], "teamId": row[7],
+                "teamName": row[8], "teamRole": row[9],
+            }
+            for row in creator_rows
         ],
     }
 
@@ -10458,6 +10878,34 @@ def _existing_account_keys(conn):
     return keys
 
 
+SUPPLIER_ASSET_SERVER_METRIC_FIELDS = (
+    "viewCount", "viewsUpdatedAt", "viewsUpdatedBy",
+    "exposureCount", "exposureUpdatedAt", "exposureUpdatedBy",
+)
+
+
+def _preserve_supplier_asset_server_metrics(existing, incoming):
+    """Keep dedicated supplier metrics authoritative on delivered assets.
+
+    Legacy browser snapshots are whole-document writes and may contain an older
+    metric triplet together with a newer unrelated ``updatedAt``.  Once an
+    asset is delivered, only the dedicated supplier metric endpoints may
+    create, replace, or clear these fields.  Copying the stored values without
+    comparing markers also protects historical non-zero values that predate
+    ``viewsUpdatedAt`` / ``exposureUpdatedAt``.
+    """
+    if not isinstance(existing, dict) or not isinstance(incoming, dict):
+        return incoming
+    if not existing.get("delivered"):
+        return incoming
+    for key in SUPPLIER_ASSET_SERVER_METRIC_FIELDS:
+        if key in existing:
+            incoming[key] = existing[key]
+        else:
+            incoming.pop(key, None)
+    return incoming
+
+
 def _upsert_docs_in_conn(conn, collection, items, *, actor_id=""):
     deleted_ids = {
         r[0] for r in conn.execute("SELECT id FROM deleted_docs WHERE collection=?", (collection,)).fetchall()
@@ -10499,11 +10947,10 @@ def _upsert_docs_in_conn(conn, collection, items, *, actor_id=""):
                 existing = json.loads(cur[1])
             except Exception:
                 existing = {}
+            _preserve_supplier_asset_server_metrics(existing, it)
             for key in (
                 "remarks", "remarkReadAt", "latestRemarkAt",
                 "supplierDownloadedAt", "supplierDownloadedBy",
-                "viewsUpdatedAt", "viewsUpdatedBy", "viewCount",
-                "exposureUpdatedAt", "exposureUpdatedBy", "exposureCount",
             ):
                 if key not in it and key in existing:
                     it[key] = existing[key]
@@ -11263,8 +11710,11 @@ def upsert_supplier_assets(member_id, role, items):
                         item[key] = existing[key]
                     else:
                         item.pop(key, None)
+                item.pop("projectedSeq", None)
+                item.pop("globalSeq", None)
                 item["id"] = doc_id
                 item["ownerId"] = row[0] if row[0] is not None else existing.get("ownerId")
+                _preserve_supplier_asset_server_metrics(existing, item)
                 if _same_doc_payload(existing, item):
                     unchanged += 1
                     continue

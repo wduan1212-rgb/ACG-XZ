@@ -8,8 +8,8 @@ import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260804-v140-workshop-scroll-1";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260804-v140-workshop-scroll-1";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260804-v140-metric-billing-control-1";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260804-v140-metric-billing-control-1";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
 import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
@@ -441,6 +441,12 @@ const supplierAccountCollator = new Intl.Collator("zh-CN-u-co-pinyin", {
   numeric: true,
   sensitivity: "base",
 });
+
+if (typeof window !== "undefined") {
+  window.addEventListener("xingzhen:supplier-authority-refreshed", () => {
+    activeDeliveryController?.syncAuthority?.();
+  });
+}
 
 const filterOption = (value, label) => ({ value, label });
 const withAllOption = (label, options) => [filterOption("all", label), ...options];
@@ -880,10 +886,10 @@ export const deliveryView = {
                 <td>${platChip(acc.platform, true)}</td>
                 <td>${canUpdateViews
                   ? `<button class="sup-views" data-supviews="${asset.id}" title="更新观看量">${Number(asset.viewCount || 0).toLocaleString()} ${icon("edit", 11)}</button>`
-                  : `<span class="sup-views-readonly" title="供应商同步的观看量">${Number(asset.viewCount || 0).toLocaleString()}</span>`}</td>
+                  : `<span class="sup-views-readonly" data-supviews-value="${asset.id}" title="供应商同步的观看量">${Number(asset.viewCount || 0).toLocaleString()}</span>`}</td>
                 <td>${canUpdateViews
                   ? `<button class="sup-views sup-exposure" data-supexposure="${asset.id}" title="更新曝光量">${Number(asset.exposureCount || 0).toLocaleString()} ${icon("edit", 11)}</button>`
-                  : `<span class="sup-views-readonly" title="供应商同步的曝光量">${Number(asset.exposureCount || 0).toLocaleString()}</span>`}</td>
+                  : `<span class="sup-views-readonly" data-supexposure-value="${asset.id}" title="供应商同步的曝光量">${Number(asset.exposureCount || 0).toLocaleString()}</span>`}</td>
                 <td><span class="sup-status ${returnState.statusClass}">${returnState.statusText}</span></td>
                 <td class="sup-acts">
                   <div class="sup-actions-inner"><button class="btn ghost sm" data-suppreview="${asset.id}">${icon("eye", 13)} 预览</button><button class="btn ghost sm" data-supdl="${asset.id}">${icon("download", 13)} 下载</button>
@@ -1001,7 +1007,7 @@ export const deliveryView = {
             const result = await remote.supplier.updateViews(a.id, nextViews);
             Object.assign(a, result.asset || {});
           } catch (err) {
-            toast(err?.message || "观看量更新失败");
+            toast(err?.message || "观看量更新失败", "error");
             return;
           }
         } else {
@@ -1098,7 +1104,25 @@ export const deliveryView = {
       }
     }
 
-    activeDeliveryController = { root, draw, batchDl };
+    const syncAuthority = () => {
+      $$('[data-supviews]', root).forEach(button => {
+        const asset = state.assets.find(item => item.id === button.dataset.supviews);
+        if (asset) button.innerHTML = `${Number(asset.viewCount || 0).toLocaleString()} ${icon("edit", 11)}`;
+      });
+      $$('[data-supexposure]', root).forEach(button => {
+        const asset = state.assets.find(item => item.id === button.dataset.supexposure);
+        if (asset) button.innerHTML = `${Number(asset.exposureCount || 0).toLocaleString()} ${icon("edit", 11)}`;
+      });
+      $$('[data-supviews-value]', root).forEach(value => {
+        const asset = state.assets.find(item => item.id === value.dataset.supviewsValue);
+        if (asset) value.textContent = Number(asset.viewCount || 0).toLocaleString();
+      });
+      $$('[data-supexposure-value]', root).forEach(value => {
+        const asset = state.assets.find(item => item.id === value.dataset.supexposureValue);
+        if (asset) value.textContent = Number(asset.exposureCount || 0).toLocaleString();
+      });
+    };
+    activeDeliveryController = { root, draw, batchDl, syncAuthority };
     root.__viewCleanup = () => {
       if (activeDeliveryController?.root === root) activeDeliveryController = null;
     };

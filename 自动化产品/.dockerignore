@@ -12,6 +12,7 @@ apps/video-workshop/.env
 apps/video-workshop/.env.*
 !apps/video-workshop/.env.example
 apps/video-workshop/.venv/
+apps/video-workshop/.venv-py*/
 apps/video-workshop/**/__pycache__/
 apps/video-workshop/**/*.pyc
 apps/video-workshop/data/projects/*

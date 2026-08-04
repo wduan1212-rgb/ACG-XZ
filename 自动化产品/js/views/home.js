@@ -1,10 +1,10 @@
-import { esc } from "../core/util.js";
+import { esc, downloadBlob } from "../core/util.js";
 import { currentMember, currentTeam } from "../core/store.js";
-import { community, teams } from "../core/remote.js";
+import { community, teams, memberProfile } from "../core/remote.js";
 import { go } from "../core/router.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260804-v140-workshop-scroll-1";
-import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260804-v140-workshop-scroll-1";
+import { openModal, openLightbox, toast } from "../ui/components.js?v=20260804-v140-metric-billing-control-1";
+import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260804-v140-metric-billing-control-1";
 
 const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
 const HOME_LAUNCH_REGISTRY_KEY = "__starmatrixHomeLaunchRegistry";
@@ -231,6 +231,7 @@ function inspirationDetail(item) {
         <div class="community-detail-head">
           <span class="home-inspiration-detail-category">${esc(item.category)}</span>
           <div class="community-detail-actions" role="group" aria-label="灵感操作">
+            <button class="community-detail-action is-download" type="button" data-home-detail-download aria-label="下载当前媒体" title="下载当前媒体">${icon("download", 18)}</button>
             ${detailReactionButton({ field: "liked", active: Boolean(item.viewerLiked) })}
             ${detailReactionButton({ field: "favorited", active: Boolean(item.viewerFavorited) })}
           </div>
@@ -244,12 +245,14 @@ function inspirationDetail(item) {
   `, {
     onMount(panel, close) {
       panel.classList.add("home-inspiration-panel");
+      let activeMediaIndex = 0;
       panel.querySelectorAll("video[data-home-detail-media]").forEach(video => {
         video.defaultMuted = false;
         video.muted = false;
       });
       panel.querySelectorAll("[data-home-detail-thumb]").forEach(button => button.addEventListener("click", () => {
         const index = button.dataset.homeDetailThumb;
+        activeMediaIndex = Number(index || 0);
         panel.querySelectorAll("[data-home-detail-media]").forEach(mediaItem => {
           const active = mediaItem.dataset.homeDetailMedia === index;
           mediaItem.hidden = !active;
@@ -262,6 +265,26 @@ function inspirationDetail(item) {
           tab.setAttribute("aria-selected", active ? "true" : "false");
         });
       }));
+      panel.querySelectorAll('img[data-home-detail-media]').forEach(image => image.addEventListener("click", () => {
+        if (!image.hidden) openLightbox(image, image.src, item.title || "灵感图片");
+      }));
+      panel.querySelector("[data-home-detail-download]")?.addEventListener("click", async buttonEvent => {
+        const entry = entries[activeMediaIndex];
+        if (!entry?.url) return;
+        const button = buttonEvent.currentTarget;
+        button.disabled = true;
+        try {
+          const target = new URL(entry.url, window.location.origin);
+          if (target.origin !== window.location.origin) throw new Error("仅支持下载平台内受保护媒体");
+          const response = await fetch(target.href, { credentials: "same-origin" });
+          if (!response.ok) throw new Error(`媒体下载失败（${response.status}）`);
+          const suffix = entry.type === "video" ? "mp4" : ((response.headers.get("content-type") || "image/jpeg").split("/")[1] || "jpg").replace("jpeg", "jpg");
+          const safeTitle = String(item.title || "灵感").replace(new RegExp('[\\\\/:*?"<>|]', "g"), "-");
+          downloadBlob(`${safeTitle}-${activeMediaIndex + 1}.${suffix}`, await response.blob());
+        } catch (error) {
+          toast(error?.message || "下载失败，请稍后重试", "error");
+        } finally { button.disabled = false; }
+      });
       panel.querySelectorAll("[data-home-reaction]").forEach(button => button.addEventListener("click", async event => {
         event.preventDefault();
         const field = button.dataset.homeReaction;
@@ -362,7 +385,7 @@ export const homeView = {
     const team = currentTeam();
     const unlimited = team?.name === "ACG市场部" || team?.kind === "internal";
     const canRequestTeam = member.role === "user" && !team;
-    const pointLabel = unlimited ? "∞" : String(member.points ?? 70);
+    const pointLabel = unlimited ? "∞" : String(member.pointsRemaining ?? member.dailyPointsRemaining ?? 0);
     let mode = "video";
     let creationMode = "video";
     let category = "";
@@ -377,11 +400,11 @@ export const homeView = {
           ${canRequestTeam ? `<button class="home-team-join-button" type="button" data-home-team-join>${icon("users", 14)}<span>加入团队</span></button>` : ""}
           <div class="home-points-wrap">
             <button class="home-points-button" type="button" data-subscription-open aria-label="查看积分与订阅方案">
-              ${icon("spark", 14)} <b>${esc(pointLabel)}</b><i></i><span>升级</span>
+              ${icon("spark", 14)} <b data-home-points-value>${esc(pointLabel)}</b><i></i><span>升级</span>
             </button>
             <div class="home-points-popover">
               <header><b>${unlimited ? "ACG 团队版" : "Free"}</b><button type="button" data-subscription-open>订阅管理</button></header>
-              <p><span>${icon("spark", 16)} 积分</span><b>${esc(pointLabel)}</b></p>
+              <p><span>${icon("spark", 16)} 积分</span><b data-home-points-value>${esc(pointLabel)}</b></p>
               <p><span>${icon("gift", 16)} 每日免费积分</span><b>${unlimited ? "无限" : "70"}</b></p>
               <small>${unlimited ? "内部团队默认使用无限积分" : "每天重置为 70 免费积分"}</small>
             </div>
@@ -441,6 +464,13 @@ export const homeView = {
         </section>
       </main>
     </section>`;
+
+    memberProfile.get().then(freshMember => {
+      if (!freshMember || freshMember.id !== member.id) return;
+      Object.assign(member, freshMember);
+      const value = unlimited ? "∞" : String(freshMember.pointsRemaining ?? freshMember.dailyPointsRemaining ?? 0);
+      root.querySelectorAll("[data-home-points-value]").forEach(node => { node.textContent = value; });
+    }).catch(() => {});
 
     const composer = root.querySelector("#homeComposer");
     const input = root.querySelector("#homePrompt");

@@ -131,6 +131,115 @@ class SupplierTenantPolicyTests(unittest.TestCase):
             )
             self.assertIsNone(error)
             self.assertEqual(321, asset["viewCount"])
+            asset, error = store.update_supplier_asset_exposure(
+                "delivery-positive", 654, tenant["childId"], "supplier_child"
+            )
+            self.assertIsNone(error)
+            self.assertEqual(654, asset["exposureCount"])
+            authoritative = dict(asset)
+
+            # A parent account or another old tab may later push a complete
+            # document with an unrelated, newer updatedAt. Dedicated metric
+            # triplets remain server-authoritative, including their actor and
+            # timestamp markers.
+            stale_snapshot = {
+                **parent_state["assets"][0],
+                "name": "Fresh non-metric title",
+                "viewCount": 3,
+                "viewsUpdatedAt": 2,
+                "viewsUpdatedBy": "stale-parent-tab",
+                "exposureCount": 4,
+                "exposureUpdatedAt": 2,
+                "exposureUpdatedBy": "stale-parent-tab",
+                "updatedAt": authoritative["updatedAt"] + 1000,
+            }
+            first_stale = store.upsert_supplier_assets(
+                tenant["parentId"], "supplier_parent", [stale_snapshot]
+            )
+            self.assertEqual(1, first_stale["written"])
+            second_stale = store.upsert_supplier_assets(
+                tenant["parentId"], "supplier_parent", [stale_snapshot]
+            )
+            self.assertEqual(
+                {"written": 0, "denied": 0, "unchanged": 1}, second_stale
+            )
+
+            # The creator/admin compatibility writer has the same protection;
+            # legitimate non-metric edits do not reopen the metric race.
+            creator_stale = {
+                **stale_snapshot,
+                "name": "Creator renamed delivery",
+                "viewCount": 0,
+                "exposureCount": 0,
+                "updatedAt": stale_snapshot["updatedAt"] + 1000,
+            }
+            result = store.upsert_member_assets(
+                tenant["ownerId"], "admin", [creator_stale]
+            )
+            self.assertEqual(1, result["written"])
+
+            expected_metrics = {
+                key: authoritative[key] for key in (
+                    "viewCount", "viewsUpdatedAt", "viewsUpdatedBy",
+                    "exposureCount", "exposureUpdatedAt", "exposureUpdatedBy",
+                )
+            }
+            snapshots = [
+                store.state_for(
+                    tenant["parentId"], "supplier_parent",
+                    collections=["accounts", "assets"],
+                ),
+                store.state_for(
+                    tenant["childId"], "supplier_child", tenant["parentId"],
+                    ["accounts", "assets"],
+                ),
+                store.state_for(
+                    tenant["ownerId"], "editor",
+                    collections=["accounts", "assets"],
+                ),
+            ]
+            for snapshot in snapshots:
+                visible = next(
+                    row for row in snapshot["assets"]
+                    if row["id"] == "delivery-positive"
+                )
+                self.assertEqual(expected_metrics, {
+                    key: visible[key] for key in expected_metrics
+                })
+                self.assertEqual("Creator renamed delivery", visible["name"])
+
+            # Old delivered rows may have a useful non-zero count without the
+            # newer marker fields. A whole-document write must not clear it.
+            store.upsert_docs("assets", [{
+                "id": "delivery-legacy-metric",
+                "accountId": "account-positive",
+                "name": "Legacy metric",
+                "type": "图集",
+                "delivered": True,
+                "ownerId": tenant["ownerId"],
+                "viewCount": 88,
+                "exposureCount": 99,
+                "updatedAt": 100,
+            }])
+            store.upsert_docs("assets", [{
+                "id": "delivery-legacy-metric",
+                "accountId": "account-positive",
+                "name": "Legacy metric renamed",
+                "type": "图集",
+                "delivered": True,
+                "ownerId": tenant["ownerId"],
+                "viewCount": 0,
+                "exposureCount": 0,
+                "updatedAt": 200,
+            }])
+            legacy = json.loads(store._fetchone(
+                "SELECT data FROM docs WHERE collection='assets' "
+                "AND id='delivery-legacy-metric'"
+            )[0])
+            self.assertEqual(88, legacy["viewCount"])
+            self.assertEqual(99, legacy["exposureCount"])
+            self.assertNotIn("viewsUpdatedAt", legacy)
+            self.assertNotIn("exposureUpdatedAt", legacy)
 
     def test_cross_team_reads_and_writes_reject_without_database_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -177,6 +286,20 @@ class SupplierTenantPolicyTests(unittest.TestCase):
                 tenant_a["parentId"], tenant_a["childId"], ["account-b"],
                 tenant_a["parentId"], include_all=True,
             ))
+            for actor_id, actor_role in (
+                (tenant_a["parentId"], "supplier_parent"),
+                (tenant_a["childId"], "supplier_child"),
+            ):
+                item, error = store.update_supplier_asset_views(
+                    "delivery-b", 777, actor_id, actor_role
+                )
+                self.assertIsNone(item)
+                self.assertEqual("unassigned", error)
+                item, error = store.update_supplier_asset_exposure(
+                    "delivery-b", 888, actor_id, actor_role
+                )
+                self.assertIsNone(item)
+                self.assertEqual("unassigned", error)
             with self.assertRaises(PermissionError):
                 store.upsert_supplier_assets(tenant_a["parentId"], "supplier_parent", [{
                     "id": "delivery-b",

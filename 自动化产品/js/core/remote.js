@@ -313,6 +313,7 @@ export const members = {
   list: (fresh = false) => req("/api/members" + (fresh ? "?ts=" + Date.now() : "")),
   add: (m) => req("/api/members", { method: "POST", body: m }),
   update: (id, m) => req("/api/members/" + id, { method: "PUT", body: m }),
+  kick: (id) => req("/api/members/" + id, { method: "DELETE" }),
   remove: (id) => req("/api/members/" + id, { method: "DELETE" })
 };
 
@@ -370,7 +371,11 @@ export const teams = {
 export const admin = {
   llmUsage: () => req("/api/admin/llm-usage"),
   llmUsageDetails: (memberId = "") => req("/api/admin/llm-usage/details" + (memberId ? "?memberId=" + encodeURIComponent(memberId) : "")),
-  platformAccounts: () => req("/api/platform/accounts")
+  platformAccounts: () => req("/api/platform/accounts"),
+  setPlatformAccountStatus: (id, status) => req(
+    "/api/platform/accounts/" + encodeURIComponent(id) + "/status",
+    { method: "PUT", body: { status } }
+  )
 };
 
 /* 供应商母账号：子账号、内容账号绑定与操作记录均由服务端授权。 */

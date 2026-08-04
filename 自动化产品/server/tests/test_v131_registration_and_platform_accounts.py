@@ -219,6 +219,51 @@ class RegistrationAndPlatformAccountsApiTest(unittest.TestCase):
         )
         self.assertEqual(403, denied.status_code)
 
+    def test_internal_manager_can_disable_and_restore_creator_without_deleting_data(self):
+        admin = store.get_member_by_username(store.DEFAULT_ADMIN_USERNAME)
+        headers = {"Authorization": f"Bearer {store.make_token(admin[0])}"}
+        target = store.add_member("可停用创作者", "disable-creator", "123456", "user")
+        store.upsert_member_assets(target[0], "user", [{
+            "id": "disabled-account-asset", "name": "账号资产", "type": "图片",
+            "updatedAt": 1,
+        }])
+        disabled = self.client.put(
+            f"/api/platform/accounts/{target[0]}/status",
+            json={"status": "disabled"}, headers=headers,
+        )
+        self.assertEqual(200, disabled.status_code, disabled.text)
+        self.assertEqual("disabled", disabled.json()["account"]["accountStatus"])
+        login = self.client.post(
+            "/api/auth/login", json={"username": "disable-creator", "pin": "123456"},
+        )
+        self.assertEqual(403, login.status_code)
+        stale_token = store.make_token(target[0])
+        self.assertEqual(403, self.client.get(
+            "/api/members/me", headers={"Authorization": f"Bearer {stale_token}"},
+        ).status_code)
+        self.assertEqual(403, self.client.get(
+            "/custom-video/api/projects",
+            cookies={main.VIDEO_WORKSHOP_SESSION_COOKIE: stale_token},
+        ).status_code)
+        self.assertEqual(403, self.client.get(
+            "/custom-video/outputs/disabled-account/test.mp4",
+            cookies={main.VIDEO_WORKSHOP_SESSION_COOKIE: stale_token},
+        ).status_code)
+        self.assertIsNotNone(store.get_member(target[0]))
+        self.assertTrue(any(
+            item["id"] == "disabled-account-asset"
+            for item in store.state_for(target[0], "user", collections=["assets"])["assets"]
+        ))
+
+        restored = self.client.put(
+            f"/api/platform/accounts/{target[0]}/status",
+            json={"status": "active"}, headers=headers,
+        )
+        self.assertEqual(200, restored.status_code, restored.text)
+        self.assertEqual(200, self.client.post(
+            "/api/auth/login", json={"username": "disable-creator", "pin": "123456"},
+        ).status_code)
+
 
 if __name__ == "__main__":
     unittest.main()

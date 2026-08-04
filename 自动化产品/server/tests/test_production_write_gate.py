@@ -29,6 +29,8 @@ def healthy_checks():
             "modelUsageMigrationVersion": 139001,
             "resourceScopeSchemaVersion": 140001,
             "privateMediaSchemaVersion": 140003,
+            "videoComposeSchemaVersion": 140005,
+            "memberControlSchemaVersion": 140006,
             "acgMigration": True,
             "acgMigrationVersion": 137004,
             "resourceScopeMigration": True,

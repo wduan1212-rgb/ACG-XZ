@@ -237,6 +237,10 @@ class ModelUsageReceiptStoreTest(unittest.TestCase):
                 "SELECT checksum,status FROM schema_migrations WHERE version=?",
                 (store.VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
+            member_control_ledger = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
         self.assertEqual(
             (store.MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM, "success"), ledger
         )
@@ -249,7 +253,11 @@ class ModelUsageReceiptStoreTest(unittest.TestCase):
             compose_ledger,
         )
         self.assertEqual(
-            store.VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,
+            (store.MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM, "success"),
+            member_control_ledger,
+        )
+        self.assertEqual(
+            store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
             store.LATEST_SCHEMA_MIGRATION_VERSION,
         )
 

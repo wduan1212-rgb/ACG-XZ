@@ -89,6 +89,9 @@ class CustomSubappDeploymentTest(unittest.TestCase):
             'BGM_LIBRARY_DIR="${BGM_LIBRARY_DIR:-$APP_DIR/runtime/bgm-library}"',
             'HF_HOME="$APP_DIR/runtime/model-cache"',
             'VIDEO_WORKSHOP_VENV="$VIDEO_WORKSHOP_APP_DIR/.venv"',
+            'VIDEO_WORKSHOP_BOOTSTRAP_PYTHON',
+            'video_workshop_python_supported',
+            '.venv-py${bootstrap_tag}',
             'exec "$VIDEO_WORKSHOP_PYTHON" run.py',
             'http://127.0.0.1:8765/api/health',
             "stop_local_video_workshop()",
@@ -97,6 +100,8 @@ class CustomSubappDeploymentTest(unittest.TestCase):
         ):
             self.assertIn(token, helper)
         self.assertNotIn('VIDEO_WORKSHOP_HOST="0.0.0.0"', helper)
+        self.assertIn("Python 3.10 或更高版本", helper)
+        self.assertNotIn('rm -rf "$VIDEO_WORKSHOP_VENV"', helper)
         self.assertIn(
             'VIDEO_WORKSHOP_WATCHDOG_LOG_FILE="$APP_DIR/logs/video-workshop-watchdog.log"',
             helper,
@@ -106,6 +111,7 @@ class CustomSubappDeploymentTest(unittest.TestCase):
         self.assertIn('kill -0 "$recorded_pid"', helper)
         self.assertIn('>> "$VIDEO_WORKSHOP_LOG_FILE" 2>&1 &', helper)
         self.assertIn("runtime/", gitignore)
+        self.assertIn(".venv-py*/", gitignore)
 
         for filename, browser_url in (
             ("start.command", "http://localhost:${PORT}/#/home"),

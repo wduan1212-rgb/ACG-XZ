@@ -1,5 +1,6 @@
 .env.local
 .venv/
+.venv-py*/
 __pycache__/
 *.pyc
 *.log

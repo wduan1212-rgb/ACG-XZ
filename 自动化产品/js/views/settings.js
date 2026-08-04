@@ -3,9 +3,9 @@
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, currentMember, currentTeam, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260804-v140-workshop-scroll-1";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260804-v140-metric-billing-control-1";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260804-v140-workshop-scroll-1";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260804-v140-metric-billing-control-1";
 
 const ROLE_DESC = { admin: "团队管理员", editor: "创作成员", user: "个人用户", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor"];
@@ -223,7 +223,7 @@ export const settingsView = {
     let teamJoinRequests = [];
     let teamSupplierAccounts = [];
     let teamSuppliersLoaded = false;
-    let platformAccounts = { personal: [], teamOwners: [] };
+    let platformAccounts = { personal: [], teamOwners: [], creators: [] };
     let platformAccountsLoaded = false;
     let requestsLoaded = false;
     let apiUsageRows = [];
@@ -315,7 +315,7 @@ export const settingsView = {
                   <span class="settings-member-avatar ${m.teamRole || m.role}">${m.avatarUrl ? `<img src="${esc(m.avatarUrl)}" alt="${esc(m.name)} 的头像"/>` : icon(["owner", "admin"].includes(m.teamRole) ? "shield" : "user", 14)}</span>
                   <span class="ovt-main"><b>${esc(m.name)} ${m.id === state.ui.currentMemberId ? `<i class="mem-me">当前</i>` : ""}</b><em>@${esc(m.username)} · ${ROLE_DESC[m.role] || ROLE_LABEL[m.role] || m.role}</em></span>
                   <span class="mem-role tag ${m.teamRole || m.role}">${m.teamRole === "owner" ? "团队所有者" : m.teamRole === "admin" ? "团队管理员" : "创作成员"}</span>
-                  <span class="settings-member-actions"><button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-mdel="${m.id}" title="删除" ${m.id === state.ui.currentMemberId || m.teamRole === "owner" ? "disabled" : ""}>${icon("trash", 13)}</button></span>
+                  <span class="settings-member-actions"><button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-mdel="${m.id}" title="踢出团队" ${m.id === state.ui.currentMemberId || m.teamRole === "owner" ? "disabled" : ""}>${icon("logOut", 13)}</button></span>
                 </article>`).join("")}
             </div>
           </section>
@@ -341,6 +341,14 @@ export const settingsView = {
                 <div class="settings-request-title"><b>团队版账号</b><span>${platformAccounts.teamOwners.length} 个</span></div>
                 <div class="mem-list">${platformAccounts.teamOwners.length ? platformAccounts.teamOwners.map(account => `
                   <div class="mem-row"><span class="ovt-main"><b>${esc(account.teamName || "团队")}</b><em>所有者 ${esc(account.name || "用户")} · @${esc(account.username || "")}</em></span><span class="tag admin">${account.plan === "team-pro" ? "团队专业版" : "团队版"}</span></div>`).join("") : `<div class="muted" style="padding:8px 2px">暂无已开通的外部团队。</div>`}</div>
+              </div>
+              <div class="settings-request-section">
+                <div class="settings-request-title"><b>全部创作端账号</b><span>${platformAccounts.creators.length} 个</span></div>
+                <div class="mem-list">${platformAccounts.creators.length ? platformAccounts.creators.map(account => {
+                  const disabled = account.accountStatus === "disabled";
+                  const protectedAccount = account.id === state.ui.currentMemberId || (account.teamId === "team-acg-marketing" && account.teamRole === "owner");
+                  return `<div class="mem-row"><span class="ovt-main"><b>${esc(account.name || "创作用户")}</b><em>@${esc(account.username || "")} · ${esc(account.teamName || "Free")} · ${disabled ? "已停用" : "使用中"}</em></span><span class="tag ${disabled ? "danger" : "user"}">${disabled ? "已停用" : "正常"}</span><button class="btn ghost sm ${disabled ? "" : "danger"}" type="button" data-platform-status="${esc(account.id)}" data-next-status="${disabled ? "active" : "disabled"}" ${protectedAccount ? "disabled" : ""}>${disabled ? "恢复账号" : "停用账号"}</button></div>`;
+                }).join("") : `<div class="muted" style="padding:8px 2px">暂无创作端账号。</div>`}</div>
               </div>`}
           </section>` : ""}` : ""}
 
@@ -632,17 +640,33 @@ export const settingsView = {
       $$("[data-mdel]", root).forEach(b => b.addEventListener("click", async () => {
         const m = state.members.find(x => x.id === b.dataset.mdel);
         if (!m) return;
-        const ok = await confirmModal({ title: `删除成员「${m.name}」？`, body: "其创作记录会保留但归属置空。", danger: true, okText: "删除" });
+        const ok = await confirmModal({ title: `把「${m.name}」踢出团队？`, body: "账号和创作记录会完整保留；该账号将退出当前团队并变为 Free 用户。", danger: true, okText: "踢出团队" });
         if (!ok) return;
         if (remote.isOn()) {
-          try { await remote.members.remove(m.id); state.members = await remote.members.list(); saveMembers(); }
-          catch (e) { toast("删除失败：" + (e.message || e)); return; }
+          try { await remote.members.kick(m.id); state.members = await remote.members.list(); saveMembers(); }
+          catch (e) { toast("踢出失败：" + (e.message || e), "error"); return; }
         } else {
+          m.role = "user"; m.team = null; m.teamId = null; m.teamRole = null;
           state.members = state.members.filter(x => x.id !== m.id);
           saveMembers();
         }
         draw();
-        toast("成员已删除");
+        toast("成员已踢出团队，账号已转为 Free");
+      }));
+      $$('[data-platform-status]', root).forEach(button => button.addEventListener("click", async () => {
+        const nextStatus = button.dataset.nextStatus;
+        const account = platformAccounts.creators.find(item => item.id === button.dataset.platformStatus);
+        if (!account) return;
+        const action = nextStatus === "disabled" ? "停用" : "恢复";
+        const ok = await confirmModal({ title: `${action}「${account.name}」？`, body: nextStatus === "disabled" ? "停用后现有登录态和后续登录都会被服务端拒绝；账号、资产和历史记录不会删除。" : "恢复后该账号可以重新登录，原有账号和数据保持不变。", danger: nextStatus === "disabled", okText: action + "账号" });
+        if (!ok) return;
+        try {
+          await remote.admin.setPlatformAccountStatus(account.id, nextStatus);
+          const result = await remote.admin.platformAccounts();
+          platformAccounts = { personal: result?.personal || [], teamOwners: result?.teamOwners || [], creators: result?.creators || [] };
+          toast(`账号已${action}`);
+          draw();
+        } catch (error) { toast(error?.message || `${action}失败`, "error"); }
       }));
       $$("[data-team-supplier-password]", root).forEach(button => button.addEventListener("click", () => {
         const account = teamSupplierAccounts.find(item => item.id === button.dataset.teamSupplierPassword);
@@ -695,6 +719,7 @@ export const settingsView = {
           platformAccounts = {
             personal: Array.isArray(result?.personal) ? result.personal : [],
             teamOwners: Array.isArray(result?.teamOwners) ? result.teamOwners : [],
+            creators: Array.isArray(result?.creators) ? result.creators : [],
           };
           platformAccountsLoaded = true;
           draw();

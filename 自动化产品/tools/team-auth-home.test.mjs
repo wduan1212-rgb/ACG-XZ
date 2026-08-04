@@ -77,6 +77,70 @@ test("home exposes the two creation entrances, multimodal handoff, and inspirati
   assert.match(homeJs, /root\.__viewCleanup = \(\) =>/);
   assert.match(routerJs, /root\.__viewCleanup\?\.\(\)/);
   assert.doesNotMatch(homeJs, /最近项目/);
+  assert.match(homeJs, /member\.pointsRemaining \?\? member\.dailyPointsRemaining/);
+  assert.match(homeJs, /memberProfile\.get\(\)/);
+  assert.match(homeJs, /data-home-points-value/);
+});
+
+test("team removal preserves the account as Free and ACG managers can disable creator logins", async () => {
+  const [settingsJs, remoteJs, mainPy, storePy] = await Promise.all([
+    read("js/views/settings.js"),
+    read("js/core/remote.js"),
+    read("server/main.py"),
+    read("server/store.py"),
+  ]);
+  assert.match(settingsJs, /踢出团队/);
+  assert.match(settingsJs, /账号和创作记录会完整保留/);
+  assert.match(settingsJs, /账号已转为 Free/);
+  assert.match(remoteJs, /kick: \(id\) => req\("\/api\/members\/"/);
+  assert.match(storePy, /def kick_team_member/);
+  assert.match(storePy, /SET status='removed'/);
+  assert.match(storePy, /UPDATE members SET role='user'/);
+  assert.match(mainPy, /\/api\/platform\/accounts\/\{mid\}\/status/);
+  assert.match(mainPy, /member_account_disabled/);
+  assert.match(settingsJs, /全部创作端账号/);
+  assert.match(settingsJs, /停用账号/);
+});
+
+test("free language and canvas agent operations use the same reserve-settle point ledger", async () => {
+  const mainPy = await read("server/main.py");
+  assert.match(mainPy, /LLM_GENERATION_POINTS/);
+  assert.match(mainPy, /namespace="llm\.proxy"/);
+  assert.match(mainPy, /namespace="llm\.chat-completions"/);
+  assert.match(mainPy, /namespace="canvas\.agent"/);
+  assert.match(mainPy, /custom-video\.dialogue/);
+  assert.match(mainPy, /_run_personal_billable/);
+});
+
+test("supplier metrics refresh on entry and focus without a high-frequency full-state poll", async () => {
+  const [storeJs, supplierViews, deliveryView, storePy] = await Promise.all([
+    read("js/core/store.js"),
+    read("js/views/supplierViews.js"),
+    read("js/views/deliveryView.js"),
+    read("server/store.py"),
+  ]);
+  assert.match(storeJs, /export async function refreshRemoteCollections/);
+  assert.match(supplierViews, /refreshRemoteCollections\(\["accounts", "assets"\]\)/);
+  assert.match(supplierViews, /addEventListener\("focus"/);
+  assert.match(supplierViews, /xingzhen:supplier-authority-refreshed/);
+  assert.match(deliveryView, /syncAuthority/);
+  assert.match(deliveryView, /观看量更新失败", "error"/);
+  assert.match(storePy, /SUPPLIER_ASSET_SERVER_METRIC_FIELDS/);
+  assert.match(storePy, /_preserve_supplier_asset_server_metrics/);
+  assert.doesNotMatch(supplierViews, /setInterval\(/);
+});
+
+test("creator total views modal includes account summaries and delivery-level rows", async () => {
+  const [overview, styles] = await Promise.all([
+    read("js/views/overview.js"),
+    read("styles/views.css"),
+  ]);
+  assert.match(overview, /overview-view-account/);
+  assert.match(overview, /overview-view-delivery/);
+  assert.match(overview, /item\.asset\?\.title \|\| item\.asset\?\.name/);
+  assert.match(overview, /item\.sourceLabel/);
+  assert.match(styles, /\.overview-views-panel/);
+  assert.match(styles, /\.overview-view-deliveries/);
 });
 
 test("home launch keeps binary attachments in a short-lived token registry", async () => {
@@ -279,7 +343,7 @@ test("all runtime modules share the v140 cache identity", async () => {
     read("index.html"),
     read("js/main.js"),
   ]);
-  assert.match(indexHtml, /20260804-v140-workshop-scroll-1/);
-  assert.match(mainJs, /APP_BUILD_ID = "20260804-v140-workshop-scroll-1"/);
+  assert.match(indexHtml, /20260804-v140-metric-billing-control-1/);
+  assert.match(mainJs, /APP_BUILD_ID = "20260804-v140-metric-billing-control-1"/);
   assert.doesNotMatch(indexHtml + mainJs, /20260729-v121-shell-22|20260729-v122-shell-1/);
 });
