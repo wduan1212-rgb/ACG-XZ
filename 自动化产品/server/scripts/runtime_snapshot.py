@@ -518,6 +518,21 @@ def _content_inventory(entries: list[dict]) -> list[dict]:
     ]
 
 
+def _restored_inventory(entries: list[dict]) -> list[dict]:
+    """Compare every field that binds a restored file to its snapshot."""
+
+    return [
+        {
+            "path": entry["path"],
+            "bytes": entry["bytes"],
+            "sha256": entry["sha256"],
+            "mode": entry["mode"],
+            "mtimeNs": entry["mtimeNs"],
+        }
+        for entry in entries
+    ]
+
+
 def _archive_directory(
     source: Path,
     archive: Path,
@@ -883,6 +898,42 @@ def _safe_extract(archive: Path, destination: Path) -> None:
         bundle.extractall(destination, members=members)
 
 
+def _restore_directory_mtimes(root: Path, entries: list[dict]) -> None:
+    """Restore exact manifest nanoseconds without ever following a symlink."""
+
+    for entry in entries:
+        relative = _safe_member_name(str(entry.get("path") or ""))
+        mtime_ns = entry.get("mtimeNs")
+        if type(mtime_ns) is not int or mtime_ns < 0:
+            raise SnapshotError(f"restored_directory_mtime_invalid:{relative}")
+        path = root / PurePosixPath(relative)
+        try:
+            before = path.lstat()
+        except OSError as exc:
+            raise SnapshotError(
+                f"restored_directory_file_missing:{relative}"
+            ) from exc
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise SnapshotError(f"restored_directory_file_unsafe:{relative}")
+        try:
+            os.utime(
+                path,
+                ns=(mtime_ns, mtime_ns),
+                follow_symlinks=False,
+            )
+            after = path.lstat()
+        except (OSError, TypeError, ValueError, OverflowError) as exc:
+            raise SnapshotError(
+                f"restored_directory_mtime_unavailable:{relative}"
+            ) from exc
+        if (
+            stat.S_ISLNK(after.st_mode)
+            or not stat.S_ISREG(after.st_mode)
+            or after.st_mtime_ns != mtime_ns
+        ):
+            raise SnapshotError(f"restored_directory_mtime_mismatch:{relative}")
+
+
 def restore_drill(
     snapshot: Path,
     output: Path,
@@ -916,8 +967,11 @@ def restore_drill(
             if item["type"] == "directory":
                 target.mkdir(mode=0o700)
                 _safe_extract(artifact, target)
+                _restore_directory_mtimes(target, item["files"])
                 actual = _directory_inventory(target)
-                if _content_inventory(actual) != _content_inventory(item["files"]):
+                if _restored_inventory(actual) != _restored_inventory(
+                    item["files"]
+                ):
                     raise SnapshotError(f"restored_directory_mismatch:{name}")
                 restored.append({"name": name, "type": "directory", "fileCount": len(actual)})
             else:

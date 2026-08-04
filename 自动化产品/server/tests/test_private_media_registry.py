@@ -369,6 +369,142 @@ class PrivateMediaRegistryTest(unittest.TestCase):
                 store._private_media_live_inventory_digest(),
             )
 
+    def test_snapshot_restore_preserves_live_media_digest_at_nanosecond_precision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            media_roots = {
+                "uploads": paths["UPLOAD_DIR"],
+                "composed": paths["COMPOSED_DIR"],
+                "canvas-blobs": paths["CUSTOM_CANVAS_BLOB_DIR"],
+                "video-uploads": paths["VIDEO_WORKSHOP_UPLOAD_DIR"],
+                "video-outputs": paths["VIDEO_WORKSHOP_OUTPUT_DIR"],
+            }
+            expected_mtimes = {}
+            for index, (name, media_root) in enumerate(sorted(media_roots.items())):
+                sample = media_root / "nested" / f"sample-{index}.bin"
+                sample.parent.mkdir(parents=True, exist_ok=True)
+                sample.write_bytes(f"sample-{index}".encode("ascii"))
+                requested_mtime = 1_700_000_000_123_456_789 + (index * 137)
+                os.utime(
+                    sample,
+                    ns=(requested_mtime, requested_mtime),
+                    follow_symlinks=False,
+                )
+                actual_mtime = sample.stat().st_mtime_ns
+                self.assertNotEqual(0, actual_mtime % 1_000)
+                expected_mtimes[(name, sample.relative_to(media_root).as_posix())] = (
+                    actual_mtime
+                )
+
+            script = SERVER_DIR / "scripts" / "runtime_snapshot.py"
+            spec = importlib.util.spec_from_file_location(
+                f"runtime_snapshot_restore_{id(store)}", script,
+            )
+            runtime_snapshot = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(runtime_snapshot)
+
+            plan_path = Path(tmp) / "complete-plan.json"
+            components = [{
+                "name": "database",
+                "type": "sqlite",
+                "path": str(paths["DATA_DB"]),
+            }]
+            components.extend({
+                "name": name,
+                "type": "directory",
+                "path": str(media_root),
+            } for name, media_root in sorted(media_roots.items()))
+            plan_path.write_text(
+                json.dumps({
+                    "format": runtime_snapshot.PLAN_FORMAT,
+                    "profile": runtime_snapshot.PRODUCTION_COMPLETE_PROFILE,
+                    "releaseId": "mtime-restore-test",
+                    "components": components,
+                }),
+                encoding="utf-8",
+            )
+            contract = {
+                "database": (
+                    "sqlite", True, str(paths["DATA_DB"]), False, False,
+                ),
+                **{
+                    name: (
+                        "directory", True, str(media_root), False, False,
+                    )
+                    for name, media_root in media_roots.items()
+                },
+            }
+            with patch.object(
+                runtime_snapshot, "PRODUCTION_COMPLETE_COMPONENTS", contract
+            ):
+                snapshot = Path(tmp) / "snapshot"
+                runtime_snapshot.create_snapshot(
+                    plan_path, Path(tmp), snapshot
+                )
+                manifest_sha256 = (
+                    snapshot / "snapshot.manifest.sha256"
+                ).read_text("ascii").strip()
+                verified = runtime_snapshot.verify_snapshot(
+                    snapshot,
+                    expected_manifest_sha256=manifest_sha256,
+                )
+                restored = Path(tmp) / "restored"
+                runtime_snapshot.restore_drill(
+                    snapshot,
+                    restored,
+                    expected_manifest_sha256=manifest_sha256,
+                )
+
+                restored_roots = {
+                    name: restored / name for name in media_roots
+                }
+                with patch.multiple(
+                    store,
+                    PRIVATE_MEDIA_UPLOAD_DIR=restored_roots["uploads"],
+                    PRIVATE_MEDIA_COMPOSED_DIR=restored_roots["composed"],
+                    CUSTOM_CANVAS_BLOB_DIR=restored_roots["canvas-blobs"],
+                    PRIVATE_MEDIA_VIDEO_UPLOAD_DIR=restored_roots["video-uploads"],
+                    PRIVATE_MEDIA_VIDEO_OUTPUT_DIR=restored_roots["video-outputs"],
+                ):
+                    self.assertEqual(
+                        verified["mediaInventoryDigest"],
+                        store._private_media_live_inventory_digest(),
+                    )
+
+                for (name, relative), expected_mtime in expected_mtimes.items():
+                    restored_file = restored_roots[name] / relative
+                    self.assertFalse(restored_file.is_symlink())
+                    self.assertEqual(
+                        expected_mtime, restored_file.stat().st_mtime_ns
+                    )
+
+                rounded_root = Path(tmp) / "rounded"
+                rounded_root.mkdir()
+                rounded_file = rounded_root / "sample.bin"
+                rounded_file.write_bytes(b"rounded")
+                rounded_mtime = 1_700_000_000_987_654_321
+                original_utime = runtime_snapshot.os.utime
+
+                def round_one_nanosecond(path, *args, **kwargs):
+                    atime_ns, mtime_ns = kwargs["ns"]
+                    kwargs["ns"] = (atime_ns - 1, mtime_ns - 1)
+                    return original_utime(path, *args, **kwargs)
+
+                with patch.object(
+                    runtime_snapshot.os,
+                    "utime",
+                    side_effect=round_one_nanosecond,
+                ):
+                    with self.assertRaisesRegex(
+                        runtime_snapshot.SnapshotError,
+                        "restored_directory_mtime_mismatch",
+                    ):
+                        runtime_snapshot._restore_directory_mtimes(
+                            rounded_root,
+                            [{"path": "sample.bin", "mtimeNs": rounded_mtime}],
+                        )
+
     def test_referenced_file_with_missing_owner_is_a_hard_blocker(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, paths = load_media_store(tmp)

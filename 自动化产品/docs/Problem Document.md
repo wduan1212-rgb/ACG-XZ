@@ -4,6 +4,13 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-04 v140 生产门禁修复：内容一致的恢复副本仍可能因纳秒 mtime 漂移而不是同一媒体恢复点
+
+- **目标环境症状**：`927bd29` 的 complete snapshot/verify/restore-drill 在生产形态隔离副本上完成后，五类媒体共 6,713 个文件无缺失、无多余、无 size 或内容 SHA 差异，但 6,688 个 `st_mtime_ns` 与 manifest 不完全相等，最大差 120ns。第七步 media-preflight 因此报告 `snapshotInventoryMismatch=1`；这是精确绑定生效，不是历史媒体归属歧义。
+- **根因**：tar 安全解包能恢复内容和常规元数据，却不能在目标文件系统上保证 manifest 纳秒值逐位相等；旧 restore-drill 仅比较 path/size/SHA/mode，而生产媒体摘要还绑定 `mtimeNs`，导致“恢复工具通过”和“媒体迁移门禁通过”使用了不同完整性定义。
+- **修复**：安全解包目录后，只对 manifest 列出的普通文件执行 `os.utime(..., ns=(mtimeNs, mtimeNs), follow_symlinks=False)`，再以 `lstat` 严格验证文件类型和精确纳秒值；目标文件系统无法保留时立即失败。恢复端仍不得出现 symlink，摘要算法、mtime 字段和 override 门禁均未弱化。
+- **防回归与部署边界**：五个 production media component 使用非整微秒/毫秒时间戳完成 create→verify→restore，并用 `store` 的 live-media 算法确认恢复摘要等于已验签 `mediaInventoryDigest`；另以 1ns 舍入证明 fail closed。生产仍为 v120，必须从修复后的唯一提交重做洁净审计和七步双演练，不能复用 `927bd29` 的失败恢复目录。
+
 ## 2026-08-04 v140 生产门禁修复：全局拒绝 symlink 与全局 follow symlink 都不是安全的 complete snapshot
 
 - **目标环境症状**：`6767129` 已在 Ubuntu 通过 wheelhouse、无私密全量和 receipt 门禁，但 complete snapshot 首先因 Nginx `sites-enabled` 入口是 symlink 被拒绝，随后又因 Hugging Face `snapshots/.../model.bin -> blobs/...` 的标准内部 symlink 停止。`model-cache` 是 production complete profile 必保组件，删掉组件或运维临时改 plan 都会破坏精确契约。后续生产只读扫描证明其他 complete 目录组件均为 0 个 symlink，model-cache 只有 4 个根内普通文件链接，越界/dangling/内部特殊文件均为 0，因此不应扩大到业务媒体目录。

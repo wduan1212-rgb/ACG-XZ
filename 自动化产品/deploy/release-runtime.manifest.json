@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260803-v140-deployment-readiness-1",
   "fileCount": 54,
-  "totalBytes": 2592649,
+  "totalBytes": 2594579,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -261,8 +261,8 @@
     },
     {
       "path": "server/scripts/runtime_snapshot.py",
-      "size": 41620,
-      "sha256": "320b19b394f95eb0545e34139231cf51cb464318bf3b5ecf137a5d1abf421c73"
+      "size": 43550,
+      "sha256": "fa866598b89c73187ed80c0ab69e764f27347e01e0c910ef1a124b5b0d682625"
     },
     {
       "path": "server/store.py",

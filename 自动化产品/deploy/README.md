@@ -176,6 +176,11 @@ spool、server logs 或未启用的 v140 外部环境才可以以 `absent` 状�
 `/etc/nginx` 内普通文件，因此可兼容 sites-available 的相对或绝对标准链接，但不能指向
 其他系统目录。manifest 和 tar/file artifact 按最终真实字节计算 SHA-256；restore-drill
 把两类链接位置恢复为普通文件，不在隔离恢复目录重建 symlink，也不修改或物化生产源目录。
+目录组件安全解包后，restore-drill 还会逐个普通文件按已验签 manifest 的
+`mtimeNs` 调用 `os.utime(..., ns=..., follow_symlinks=False)`，随后以 `lstat` 严格复核
+类型和纳秒时间。目标文件系统若不能精确保留该值，即使字节、大小和路径都一致也会
+fail closed；不得舍弃或截断 mtime，因为 production media inventory digest 把
+path、size、mtimeNs 和内容 SHA-256 共同绑定到同一恢复点。
 create 前必须冻结所有 writer，restore-drill 只能输出到全新的隔离目录。
 create stdout 中的 `manifestSha256` 必须另行记录；verify 和 restore-drill 都强制提供该值，
 不允许只信任快照目录内可同时被替换的文件。
