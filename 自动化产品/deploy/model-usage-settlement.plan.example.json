@@ -1,0 +1,26 @@
+{
+  "format": "acg-model-usage-settlement-plan-v1",
+  "databaseIdentity": "<exact-16-char-database-identity>",
+  "snapshotManifestSha256": "<fresh-complete-snapshot-manifest-sha256>",
+  "snapshotMediaInventoryDigest": "<fresh-complete-snapshot-media-digest>",
+  "reviewedBy": "<operator-identity>",
+  "reviewedAt": "<ISO-8601-timestamp-with-timezone>",
+  "entries": [
+    {
+      "operationId": "<exact-operation-id-from-usage-settle-inspect>",
+      "centralReceiptSha256": "<exact-central-receipt-sha256>",
+      "sidecarReceiptSha256": "<exact-sidecar-receipt-sha256>",
+      "resolution": "sidecar-succeeded",
+      "operatorReviewed": true,
+      "reviewNote": ""
+    },
+    {
+      "operationId": "<exact-unknown-operation-id-from-usage-settle-inspect>",
+      "centralReceiptSha256": "<exact-central-receipt-sha256>",
+      "sidecarReceiptSha256": "<exact-sidecar-receipt-sha256>",
+      "resolution": "operator-confirmed-unknown",
+      "operatorReviewed": true,
+      "reviewNote": "Provider call was sent; billing, token usage and output remain unknowable."
+    }
+  ]
+}

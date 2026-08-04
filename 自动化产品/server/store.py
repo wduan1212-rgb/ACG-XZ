@@ -730,6 +730,55 @@ CREATE TABLE IF NOT EXISTS private_media_registry_settlements(
   created_by                    TEXT NOT NULL DEFAULT ''
 );
 """
+MODEL_USAGE_SETTLEMENT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS model_usage_settlements(
+  settlement_id             TEXT PRIMARY KEY,
+  plan_sha256               TEXT NOT NULL UNIQUE,
+  database_identity         TEXT NOT NULL,
+  snapshot_manifest_sha256  TEXT NOT NULL,
+  snapshot_media_digest     TEXT NOT NULL,
+  operation_count           INTEGER NOT NULL,
+  resolved_rows             INTEGER NOT NULL,
+  projected_rows            INTEGER NOT NULL,
+  created_at                INTEGER NOT NULL,
+  created_by                TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS model_usage_settlement_entries(
+  settlement_id                 TEXT NOT NULL,
+  operation_id                  TEXT NOT NULL,
+  central_receipt_id            TEXT NOT NULL,
+  resolution                    TEXT NOT NULL,
+  central_receipt_before_sha256 TEXT NOT NULL,
+  sidecar_receipt_sha256        TEXT NOT NULL,
+  central_receipt_after_sha256  TEXT NOT NULL,
+  created_at                    INTEGER NOT NULL,
+  PRIMARY KEY(settlement_id, operation_id),
+  FOREIGN KEY(settlement_id) REFERENCES model_usage_settlements(settlement_id),
+  CHECK(resolution IN ('sidecar-succeeded','operator-confirmed-unknown'))
+);
+CREATE INDEX IF NOT EXISTS idx_model_usage_settlement_entries_operation
+  ON model_usage_settlement_entries(operation_id, created_at DESC);
+CREATE TRIGGER IF NOT EXISTS trg_model_usage_settlements_immutable_update
+BEFORE UPDATE ON model_usage_settlements
+BEGIN
+  SELECT RAISE(ABORT, 'model_usage_settlement_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_model_usage_settlements_immutable_delete
+BEFORE DELETE ON model_usage_settlements
+BEGIN
+  SELECT RAISE(ABORT, 'model_usage_settlement_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_model_usage_settlement_entries_immutable_update
+BEFORE UPDATE ON model_usage_settlement_entries
+BEGIN
+  SELECT RAISE(ABORT, 'model_usage_settlement_entry_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_model_usage_settlement_entries_immutable_delete
+BEFORE DELETE ON model_usage_settlement_entries
+BEGIN
+  SELECT RAISE(ABORT, 'model_usage_settlement_entry_immutable');
+END;
+"""
 # 137001/137002 were exercised by local pre-release builds before the v137
 # schema identity was frozen.  Migration versions are immutable once written,
 # even outside production, so the audited release advances to fresh numbers
@@ -817,7 +866,24 @@ _MEMBER_CONTROL_SCHEMA_IDENTITY = "|".join((
 MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
     (MEMBER_CONTROL_SCHEMA + "\n" + _MEMBER_CONTROL_SCHEMA_IDENTITY).encode("utf-8")
 ).hexdigest()
-LATEST_SCHEMA_MIGRATION_VERSION = MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION
+MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION = 140007
+MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_NAME = "v140-model-usage-reviewed-settlement"
+_MODEL_USAGE_SETTLEMENT_SCHEMA_IDENTITY = "|".join((
+    "exact-operation-reviewed-plan",
+    "complete-snapshot-sidecar-evidence",
+    "fresh-backup-and-database-binding",
+    "atomic-receipt-completion-and-projection",
+    "operator-confirmed-unknown-zero-token-output",
+    "immutable-settlement-receipts",
+))
+MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (
+        MODEL_USAGE_SETTLEMENT_SCHEMA
+        + "\n"
+        + _MODEL_USAGE_SETTLEMENT_SCHEMA_IDENTITY
+    ).encode("utf-8")
+).hexdigest()
+LATEST_SCHEMA_MIGRATION_VERSION = MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION
 EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", SCHEMA)
 ) | frozenset(
@@ -844,6 +910,11 @@ EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(
         r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
         MEMBER_CONTROL_SCHEMA,
+    )
+) | frozenset(
+    re.findall(
+        r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+        MODEL_USAGE_SETTLEMENT_SCHEMA,
     )
 ) | {"schema_migrations"}
 EXPECTED_SCHEMA_COLUMNS = {
@@ -878,6 +949,17 @@ EXPECTED_SCHEMA_COLUMNS = {
         "settlement_id", "database_identity", "snapshot_manifest_sha256",
         "snapshot_media_digest", "planned_rows", "inserted_rows",
         "registry_rows_after", "created_at", "created_by",
+    },
+    "model_usage_settlements": {
+        "settlement_id", "plan_sha256", "database_identity",
+        "snapshot_manifest_sha256", "snapshot_media_digest",
+        "operation_count", "resolved_rows", "projected_rows", "created_at",
+        "created_by",
+    },
+    "model_usage_settlement_entries": {
+        "settlement_id", "operation_id", "central_receipt_id", "resolution",
+        "central_receipt_before_sha256", "sidecar_receipt_sha256",
+        "central_receipt_after_sha256", "created_at",
     },
 }
 ACG_DATA_MIGRATION_VERSION = 137004
@@ -1350,6 +1432,14 @@ def _apply_member_control_schema_locked(conn, *, begin_transaction=True):
     _execute_sql_script_locked(conn, MEMBER_CONTROL_SCHEMA)
 
 
+def _apply_model_usage_settlement_schema_locked(conn, *, begin_transaction=True):
+    """Add immutable reviewed-settlement receipts without changing usage rows."""
+
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, MODEL_USAGE_SETTLEMENT_SCHEMA)
+
+
 def _record_schema_migration_locked(conn, *, summary=None):
     existing = conn.execute(
         "SELECT checksum,status FROM schema_migrations WHERE version=?",
@@ -1614,6 +1704,46 @@ def _record_member_control_schema_migration_locked(conn, *, summary=None):
         )
 
 
+def _record_model_usage_settlement_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("model usage settlement schema checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {
+            "schema": "model-usage-reviewed-settlement",
+            "mode": "expand-only",
+        },
+        ensure_ascii=False,
+    )
+    values = (
+        MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_NAME,
+        MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_CHECKSUM,
+        runtime_config.release_id() or "unidentified",
+        now,
+        encoded_summary,
+        MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION,
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            values,
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "name,checksum,app_version,finished_at,status,summary,version,started_at"
+            ") VALUES(?,?,?,?,'success',?,?,?)",
+            (*values, now),
+        )
+
+
 def _database_identity(path):
     try:
         stat = Path(path).stat()
@@ -1806,6 +1936,8 @@ def database_readiness():
         "videoComposeSchemaChecksum": "",
         "memberControlSchemaVersion": None,
         "memberControlSchemaChecksum": "",
+        "modelUsageSettlementSchemaVersion": None,
+        "modelUsageSettlementSchemaChecksum": "",
     }
     spool_status = model_usage_completion_spool_status()
     result["modelUsageCompletionSpoolPending"] = spool_status["pending"]
@@ -1875,6 +2007,11 @@ def database_readiness():
                 "WHERE version=?",
                 (MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
+            usage_settlement_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
             if base_row:
                 result["migrationVersion"] = int(base_row[0])
                 result["checksum"] = str(base_row[1] or "")[:16]
@@ -1911,6 +2048,15 @@ def database_readiness():
                 result["memberControlSchemaChecksum"] = str(
                     member_control_row[1] or ""
                 )[:16]
+            if usage_settlement_row:
+                result["migrationVersion"] = int(usage_settlement_row[0])
+                result["checksum"] = str(usage_settlement_row[1] or "")[:16]
+                result["modelUsageSettlementSchemaVersion"] = int(
+                    usage_settlement_row[0]
+                )
+                result["modelUsageSettlementSchemaChecksum"] = str(
+                    usage_settlement_row[1] or ""
+                )[:16]
             result["migrationDirty"] = int(conn.execute(
                 "SELECT COUNT(*) FROM schema_migrations WHERE status<>'success'"
             ).fetchone()[0] or 0)
@@ -1933,6 +2079,10 @@ def database_readiness():
                 and member_control_row
                 and member_control_row[1] == MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM
                 and member_control_row[2] == "success"
+                and usage_settlement_row
+                and usage_settlement_row[1]
+                == MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_CHECKSUM
+                and usage_settlement_row[2] == "success"
                 and result["migrationDirty"] == 0
             )
         else:
@@ -2217,6 +2367,13 @@ def apply_schema_migrations(
                     MEMBER_CONTROL_SCHEMA_MIGRATION_CHECKSUM,
                     _apply_member_control_schema_locked,
                     _record_member_control_schema_migration_locked,
+                ),
+                (
+                    MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION,
+                    MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_NAME,
+                    MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_CHECKSUM,
+                    _apply_model_usage_settlement_schema_locked,
+                    _record_model_usage_settlement_schema_migration_locked,
                 ),
             )
             migrations = all_migrations
@@ -4100,6 +4257,15 @@ def _ensure_db():
             _record_member_control_schema_migration_locked(
                 conn,
                 summary={"schema": "member-control-media-settlement", "mode": "local-auto"},
+            )
+            conn.commit()
+            _apply_model_usage_settlement_schema_locked(conn)
+            _record_model_usage_settlement_schema_migration_locked(
+                conn,
+                summary={
+                    "schema": "model-usage-reviewed-settlement",
+                    "mode": "local-auto",
+                },
             )
             conn.commit()
             _initialized = True
@@ -9980,6 +10146,549 @@ def pending_model_usage_outbox_count():
         ).fetchone()[0] or 0)
     finally:
         conn.close()
+
+
+_MODEL_USAGE_SETTLEMENT_PLAN_KEYS = {
+    "format", "databaseIdentity", "snapshotManifestSha256",
+    "snapshotMediaInventoryDigest", "reviewedBy", "reviewedAt", "entries",
+}
+_MODEL_USAGE_SETTLEMENT_ENTRY_KEYS = {
+    "operationId", "centralReceiptSha256", "sidecarReceiptSha256",
+    "resolution", "operatorReviewed", "reviewNote",
+}
+
+
+def _canonical_json_sha256(value):
+    return hashlib.sha256(json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def _model_usage_settlement_central_evidence_locked(conn, row):
+    receipt = _model_usage_receipt_dict(
+        row,
+        outbox_state=_model_usage_outbox_state_locked(conn, row[0]),
+    )
+    for field in ("created", "reused", "shouldCallProvider"):
+        receipt.pop(field, None)
+    return receipt
+
+
+def model_usage_settlement_evidence(operation_ids):
+    """Read exact central receipt hashes for an operator-supplied ID list."""
+
+    clean_ids = [str(item or "").strip() for item in list(operation_ids or [])]
+    if (
+        not clean_ids
+        or len(clean_ids) != len(set(clean_ids))
+        or len(clean_ids) > 100
+        or any(not re.fullmatch(r"[A-Za-z0-9._:/+\-]{1,180}", item) for item in clean_ids)
+    ):
+        raise ValueError("model_usage_settlement_operation_ids_invalid")
+    _ensure_db()
+    conn = _connect(read_only=True)
+    try:
+        result = []
+        for operation_id in sorted(clean_ids):
+            rows = conn.execute(
+                f"SELECT {_MODEL_USAGE_RECEIPT_COLUMNS} FROM model_usage_receipts "
+                "WHERE source='video-workshop-sidecar' AND operation_id=?",
+                (operation_id,),
+            ).fetchall()
+            if len(rows) != 1:
+                raise StoreNotReadyError(
+                    f"model usage settlement central receipt count invalid:{operation_id}"
+                )
+            evidence = _model_usage_settlement_central_evidence_locked(conn, rows[0])
+            result.append({
+                "operationId": operation_id,
+                "receiptId": str(rows[0][0]),
+                "status": str(rows[0][15]),
+                "outboxState": evidence["outboxState"],
+                "centralReceiptSha256": _canonical_json_sha256(evidence),
+            })
+        return {
+            "databaseIdentity": _database_identity(DB_PATH),
+            "entries": result,
+        }
+    finally:
+        conn.close()
+
+
+def _model_usage_sidecar_event_ms(value):
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0, int(parsed.timestamp() * 1000))
+
+
+def _model_usage_settlement_completion(entry, sidecar, central):
+    operation_id = entry["operationId"]
+    if str(sidecar.get("operationId") or "") != operation_id:
+        raise StoreNotReadyError(
+            f"model usage settlement sidecar operation mismatch:{operation_id}"
+        )
+    required_identity = {
+        "surface": "video-workshop",
+        "feature": str(sidecar.get("feature") or "").strip()[:120],
+        "usageKind": str(sidecar.get("usageKind") or "").strip().lower(),
+        "provider": str(sidecar.get("provider") or "").strip()[:80],
+        "model": str(sidecar.get("model") or "").strip()[:180],
+    }
+    for field, expected in required_identity.items():
+        if str(central.get(field) or "") != expected:
+            raise StoreNotReadyError(
+                f"model usage settlement immutable identity mismatch:{operation_id}:{field}"
+            )
+    if (
+        central.get("source") != "video-workshop-sidecar"
+        or central.get("operation") != "provider-call"
+        or central.get("idempotencyKey") != operation_id
+    ):
+        raise StoreNotReadyError(
+            f"model usage settlement central identity invalid:{operation_id}"
+        )
+    immutable_sidecar = {
+        "schemaVersion": int(sidecar.get("schemaVersion") or 1),
+        "surface": "video-workshop",
+        "projectId": str(sidecar.get("projectId") or "").strip(),
+        "operationId": operation_id,
+        "usageKind": required_identity["usageKind"],
+        "feature": required_identity["feature"],
+        "provider": required_identity["provider"],
+        "model": required_identity["model"],
+        "unitLabel": str(sidecar.get("unitLabel") or "").strip()[:24],
+    }
+    expected_fingerprint = _canonical_json_sha256(immutable_sidecar)
+    if central.get("requestFingerprint") != expected_fingerprint:
+        raise StoreNotReadyError(
+            f"model usage settlement request fingerprint mismatch:{operation_id}"
+        )
+    status = str(sidecar.get("status") or "").strip().lower()
+    provider_ref = str(sidecar.get("providerRef") or "").strip()[:240]
+    resolution = entry["resolution"]
+    if resolution == "sidecar-succeeded":
+        if status not in {"confirmed", "succeeded"} or not provider_ref:
+            raise StoreNotReadyError(
+                f"model usage settlement succeeded evidence invalid:{operation_id}"
+            )
+        prompt = _usage_int(sidecar.get("inputTokens"))
+        completion = _usage_int(sidecar.get("outputTokens"))
+        total = _usage_int(sidecar.get("totalTokens")) or prompt + completion
+        output_units = _usage_int(sidecar.get("outputUnits"))
+        error = ""
+    elif resolution == "operator-confirmed-unknown":
+        if status != "unknown" or provider_ref:
+            raise StoreNotReadyError(
+                f"model usage settlement unknown evidence invalid:{operation_id}"
+            )
+        if entry.get("operatorReviewed") is not True or not str(
+            entry.get("reviewNote") or ""
+        ).strip():
+            raise StoreNotReadyError(
+                f"model usage settlement operator review missing:{operation_id}"
+            )
+        prompt = completion = total = output_units = 0
+        error = (
+            "operator-reviewed provider call confirmed; token and output usage unknown"
+        )
+    else:
+        raise StoreNotReadyError(
+            f"model usage settlement resolution invalid:{operation_id}"
+        )
+    return {
+        "provider": required_identity["provider"],
+        "model": required_identity["model"],
+        "providerRef": provider_ref,
+        "promptTokens": prompt,
+        "completionTokens": completion,
+        "totalTokens": total,
+        "calls": 1,
+        "outputUnits": output_units,
+        "unitLabel": immutable_sidecar["unitLabel"],
+        "error": error,
+        "eventAt": _model_usage_sidecar_event_ms(sidecar.get("occurredAt")),
+    }
+
+
+def _project_model_usage_settlement_receipt_locked(conn, row, now):
+    receipt_id = str(row[0])
+    usage_kind = str(row[7])
+    legacy_kind = ""
+    legacy_id = ""
+    receipt_only = False
+    if usage_kind == "llm" and int(row[18] or 0) > 0:
+        legacy_kind = "llm_usage_events"
+        legacy_id = _model_usage_legacy_event_id(receipt_id, usage_kind)
+        created_at = row[24] or row[26]
+        conn.execute(
+            "INSERT OR IGNORE INTO llm_usage_events("
+            "id,member_id,member_name,feature,model,prompt_tokens,"
+            "completion_tokens,total_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                legacy_id, row[2], row[3], row[6], row[9], row[16], row[17],
+                row[18], created_at,
+            ),
+        )
+        stored = conn.execute(
+            "SELECT member_id,member_name,feature,COALESCE(model,''),"
+            "prompt_tokens,completion_tokens,total_tokens,created_at "
+            "FROM llm_usage_events WHERE id=?",
+            (legacy_id,),
+        ).fetchone()
+        expected = (
+            row[2], row[3], row[6], str(row[9] or ""), int(row[16] or 0),
+            int(row[17] or 0), int(row[18] or 0), created_at,
+        )
+        if tuple(stored or ()) != expected:
+            raise ModelUsageReceiptConflict(
+                "model usage settlement legacy LLM event collision"
+            )
+    elif usage_kind in {"image", "video", "voice"}:
+        legacy_kind = "api_usage_events"
+        legacy_id = _model_usage_legacy_event_id(receipt_id, usage_kind)
+        created_at = row[24] or row[26]
+        unit_label = row[21] or "任务"
+        conn.execute(
+            "INSERT OR IGNORE INTO api_usage_events("
+            "id,member_id,member_name,api_type,feature,model,calls,"
+            "output_units,unit_label,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                legacy_id, row[2], row[3], usage_kind, row[6], row[9], row[19],
+                row[20], unit_label, created_at,
+            ),
+        )
+        stored = conn.execute(
+            "SELECT member_id,member_name,api_type,feature,COALESCE(model,''),"
+            "calls,output_units,unit_label,created_at FROM api_usage_events WHERE id=?",
+            (legacy_id,),
+        ).fetchone()
+        expected = (
+            row[2], row[3], usage_kind, row[6], str(row[9] or ""),
+            int(row[19] or 0), int(row[20] or 0), unit_label, created_at,
+        )
+        if tuple(stored or ()) != expected:
+            raise ModelUsageReceiptConflict(
+                "model usage settlement legacy API event collision"
+            )
+    else:
+        legacy_kind = "receipt_only"
+        receipt_only = True
+    conn.execute(
+        "UPDATE model_usage_outbox SET state='projected',legacy_event_kind=?,"
+        "legacy_event_id=?,last_error='',updated_at=?,projected_at=? "
+        "WHERE receipt_id=?",
+        (legacy_kind, legacy_id, now, now, receipt_id),
+    )
+    return {"receiptOnly": receipt_only, "legacyEventId": legacy_id}
+
+
+def settle_model_usage_receipts_reviewed(
+    *,
+    plan,
+    plan_sha256,
+    sidecar_receipts,
+    expected_identity,
+    expected_schema_version,
+    backup_binding,
+    runtime_snapshot_binding,
+    created_by="deployment",
+    dry_run=False,
+):
+    """Atomically complete and project only the exact reviewed operations."""
+
+    global _initialized
+    if not isinstance(plan, dict) or set(plan) != _MODEL_USAGE_SETTLEMENT_PLAN_KEYS:
+        raise StoreNotReadyError("model usage settlement plan fields are invalid")
+    entries = plan.get("entries")
+    if not isinstance(entries, list) or not entries or len(entries) > 100:
+        raise StoreNotReadyError("model usage settlement plan entries are invalid")
+    if any(
+        not isinstance(entry, dict)
+        or set(entry) != _MODEL_USAGE_SETTLEMENT_ENTRY_KEYS
+        for entry in entries
+    ):
+        raise StoreNotReadyError("model usage settlement entry fields are invalid")
+    operation_ids = [str(entry.get("operationId") or "") for entry in entries]
+    if operation_ids != sorted(set(operation_ids)):
+        raise StoreNotReadyError("model usage settlement operations are not exact")
+    if set(sidecar_receipts or {}) != set(operation_ids):
+        raise StoreNotReadyError("model usage settlement sidecar evidence set mismatch")
+    plan_sha256 = str(plan_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", plan_sha256):
+        raise StoreNotReadyError("model usage settlement plan sha256 is invalid")
+    actual_identity = _database_identity(DB_PATH)
+    confirmed_identity = str(expected_identity or "").strip().lower()
+    if (
+        not hmac.compare_digest(confirmed_identity, actual_identity)
+        or not hmac.compare_digest(str(plan.get("databaseIdentity") or ""), actual_identity)
+    ):
+        raise StoreNotReadyError("model usage settlement database identity mismatch")
+    if int(expected_schema_version or 0) != MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION:
+        raise StoreNotReadyError("model usage settlement schema confirmation mismatch")
+    snapshot = _verify_runtime_snapshot_binding(runtime_snapshot_binding, required=True)
+    if (
+        not hmac.compare_digest(
+            str(plan.get("snapshotManifestSha256") or ""),
+            snapshot["manifestSha256"],
+        )
+        or not hmac.compare_digest(
+            str(plan.get("snapshotMediaInventoryDigest") or ""),
+            snapshot["mediaInventoryDigest"],
+        )
+    ):
+        raise StoreNotReadyError("model usage settlement snapshot binding mismatch")
+    if not dry_run:
+        if runtime_config.is_read_only():
+            raise StoreNotReadyError("read-only runtime cannot settle model usage")
+        if str(os.getenv("ACG_ALLOW_MODEL_USAGE_SETTLEMENT", "")).strip() != "1":
+            raise StoreNotReadyError("model usage settlement authorization is required")
+    settlement_id = hashlib.sha256(
+        (
+            "model-usage-settlement-v1|"
+            + actual_identity
+            + "|"
+            + snapshot["manifestSha256"]
+            + "|"
+            + plan_sha256
+        ).encode("utf-8")
+    ).hexdigest()
+    with _lock:
+        conn = _connect(read_only=True) if dry_run else _connect_migration_target()
+        try:
+            conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
+            if not hmac.compare_digest(actual_identity, _database_identity(DB_PATH)):
+                raise StoreNotReadyError("model usage settlement database identity mismatch")
+            _verify_migration_backup_binding_locked(conn, backup_binding)
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError("model usage settlement SQLite quick_check failed")
+            schema_row = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            if schema_row != (
+                MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_CHECKSUM, "success",
+            ):
+                raise StoreNotReadyError("model usage settlement schema is not ready")
+            usage_schema_row = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (MODEL_USAGE_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            if usage_schema_row != (MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM, "success"):
+                raise StoreNotReadyError("model usage receipt authority is not ready")
+            existing = conn.execute(
+                "SELECT plan_sha256,database_identity,snapshot_manifest_sha256,"
+                "snapshot_media_digest,operation_count,resolved_rows,projected_rows "
+                "FROM model_usage_settlements WHERE settlement_id=?",
+                (settlement_id,),
+            ).fetchone()
+            if existing:
+                expected_header = (
+                    plan_sha256, actual_identity, snapshot["manifestSha256"],
+                    snapshot["mediaInventoryDigest"], len(entries), len(entries),
+                    len(entries),
+                )
+                if tuple(existing) != expected_header:
+                    raise StoreNotReadyError("model usage settlement receipt conflict")
+                stored_entries = conn.execute(
+                    "SELECT operation_id,central_receipt_id,resolution,"
+                    "central_receipt_before_sha256,sidecar_receipt_sha256,"
+                    "central_receipt_after_sha256 FROM model_usage_settlement_entries "
+                    "WHERE settlement_id=? ORDER BY operation_id",
+                    (settlement_id,),
+                ).fetchall()
+                if len(stored_entries) != len(entries):
+                    raise StoreNotReadyError("model usage settlement entry receipt conflict")
+                for entry, stored in zip(entries, stored_entries):
+                    if (
+                        stored[0] != entry["operationId"]
+                        or stored[2] != entry["resolution"]
+                        or stored[3] != entry["centralReceiptSha256"]
+                        or stored[4] != entry["sidecarReceiptSha256"]
+                    ):
+                        raise StoreNotReadyError(
+                            "model usage settlement immutable entry conflict"
+                        )
+                    row = _model_usage_receipt_row_locked(conn, stored[1])
+                    if not row:
+                        raise StoreNotReadyError(
+                            "model usage settlement completed receipt missing"
+                        )
+                    current_evidence = _model_usage_settlement_central_evidence_locked(
+                        conn, row,
+                    )
+                    if (
+                        row[15] != "succeeded"
+                        or current_evidence["outboxState"] != "projected"
+                        or _canonical_json_sha256(current_evidence) != stored[5]
+                    ):
+                        raise StoreNotReadyError(
+                            "model usage settlement completed receipt drift"
+                        )
+                unresolved = conn.execute(
+                    "SELECT COUNT(*) FROM model_usage_receipts r "
+                    "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
+                    "WHERE r.call_status IN ('pending','unknown') OR "
+                    "(r.call_status='succeeded' AND COALESCE(o.state,'')<>'projected')"
+                ).fetchone()[0]
+                outbox_pending = conn.execute(
+                    "SELECT COUNT(*) FROM model_usage_outbox "
+                    "WHERE state IN ('pending','retry')"
+                ).fetchone()[0]
+                if int(unresolved or 0) or int(outbox_pending or 0):
+                    raise StoreNotReadyError("model usage settlement replay readiness drift")
+                conn.rollback()
+                return {
+                    "ok": True, "dryRun": bool(dry_run), "applied": False,
+                    "reused": True, "settlementId": settlement_id,
+                    "plannedRows": len(entries), "insertedRows": 0,
+                    "resolvedRows": 0, "projectedRows": 0,
+                    "unresolved": 0, "outboxPending": 0, "quickCheck": "ok",
+                }
+            unresolved_rows = conn.execute(
+                "SELECT r.operation_id FROM model_usage_receipts r "
+                "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
+                "WHERE r.call_status IN ('pending','unknown') OR "
+                "(r.call_status='succeeded' AND COALESCE(o.state,'')<>'projected') "
+                "ORDER BY r.operation_id"
+            ).fetchall()
+            if [str(row[0]) for row in unresolved_rows] != operation_ids:
+                raise StoreNotReadyError(
+                    "model usage settlement plan does not exactly cover unresolved receipts"
+                )
+            prepared = []
+            for entry in entries:
+                operation_id = entry["operationId"]
+                rows = conn.execute(
+                    f"SELECT {_MODEL_USAGE_RECEIPT_COLUMNS} FROM model_usage_receipts "
+                    "WHERE source='video-workshop-sidecar' AND operation_id=?",
+                    (operation_id,),
+                ).fetchall()
+                if len(rows) != 1:
+                    raise StoreNotReadyError(
+                        f"model usage settlement central receipt count invalid:{operation_id}"
+                    )
+                row = rows[0]
+                evidence = _model_usage_settlement_central_evidence_locked(conn, row)
+                if _canonical_json_sha256(evidence) != entry["centralReceiptSha256"]:
+                    raise StoreNotReadyError(
+                        f"model usage settlement central receipt hash mismatch:{operation_id}"
+                    )
+                sidecar = sidecar_receipts[operation_id]
+                if _canonical_json_sha256(sidecar) != entry["sidecarReceiptSha256"]:
+                    raise StoreNotReadyError(
+                        f"model usage settlement sidecar receipt hash mismatch:{operation_id}"
+                    )
+                completion = _model_usage_settlement_completion(entry, sidecar, evidence)
+                if row[15] not in {"pending", "unknown", "succeeded"}:
+                    raise StoreNotReadyError(
+                        f"model usage settlement central status invalid:{operation_id}"
+                    )
+                prepared.append((entry, row, completion))
+            if dry_run:
+                outbox_pending = int(conn.execute(
+                    "SELECT COUNT(*) FROM model_usage_outbox "
+                    "WHERE state IN ('pending','retry')"
+                ).fetchone()[0] or 0)
+                conn.rollback()
+                return {
+                    "ok": True, "dryRun": True, "applied": False,
+                    "reused": False, "settlementId": settlement_id,
+                    "plannedRows": len(prepared), "insertedRows": 0,
+                    "resolvedRows": 0, "projectedRows": 0,
+                    "unresolved": len(prepared),
+                    "outboxPending": outbox_pending,
+                    "quickCheck": "ok",
+                }
+            now = int(time.time() * 1000)
+            completed = []
+            for entry, row, completion in prepared:
+                event_at = completion["eventAt"] or now
+                conn.execute(
+                    "UPDATE model_usage_receipts SET provider=?,model=?,provider_ref=?,"
+                    "call_status='succeeded',prompt_tokens=?,completion_tokens=?,"
+                    "total_tokens=?,calls=1,output_units=?,unit_label=?,error=?,"
+                    "event_at=?,updated_at=?,completed_at=? WHERE receipt_id=?",
+                    (
+                        completion["provider"], completion["model"],
+                        completion["providerRef"], completion["promptTokens"],
+                        completion["completionTokens"], completion["totalTokens"],
+                        completion["outputUnits"], completion["unitLabel"],
+                        completion["error"], event_at, now, now, row[0],
+                    ),
+                )
+                conn.execute(
+                    "UPDATE model_usage_outbox SET state='pending',available_at=?,"
+                    "last_error='',updated_at=?,projected_at=NULL WHERE receipt_id=?",
+                    (now, now, row[0]),
+                )
+                updated = _model_usage_receipt_row_locked(conn, row[0])
+                _project_model_usage_settlement_receipt_locked(conn, updated, now)
+                final_row = _model_usage_receipt_row_locked(conn, row[0])
+                final_evidence = _model_usage_settlement_central_evidence_locked(
+                    conn, final_row,
+                )
+                completed.append((
+                    entry, str(row[0]), _canonical_json_sha256(final_evidence),
+                ))
+            unresolved = int(conn.execute(
+                "SELECT COUNT(*) FROM model_usage_receipts r "
+                "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
+                "WHERE r.call_status IN ('pending','unknown') OR "
+                "(r.call_status='succeeded' AND COALESCE(o.state,'')<>'projected')"
+            ).fetchone()[0] or 0)
+            outbox_pending = int(conn.execute(
+                "SELECT COUNT(*) FROM model_usage_outbox "
+                "WHERE state IN ('pending','retry')"
+            ).fetchone()[0] or 0)
+            if unresolved != 0 or outbox_pending != 0:
+                raise StoreNotReadyError("model usage settlement final readiness failed")
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError("model usage settlement final quick_check failed")
+            conn.execute(
+                "INSERT INTO model_usage_settlements("
+                "settlement_id,plan_sha256,database_identity,snapshot_manifest_sha256,"
+                "snapshot_media_digest,operation_count,resolved_rows,projected_rows,"
+                "created_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    settlement_id, plan_sha256, actual_identity,
+                    snapshot["manifestSha256"], snapshot["mediaInventoryDigest"],
+                    len(completed), len(completed), len(completed), now,
+                    str(created_by or plan.get("reviewedBy") or "deployment")[:120],
+                ),
+            )
+            for entry, receipt_id, after_sha256 in completed:
+                conn.execute(
+                    "INSERT INTO model_usage_settlement_entries("
+                    "settlement_id,operation_id,central_receipt_id,resolution,"
+                    "central_receipt_before_sha256,sidecar_receipt_sha256,"
+                    "central_receipt_after_sha256,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        settlement_id, entry["operationId"], receipt_id,
+                        entry["resolution"], entry["centralReceiptSha256"],
+                        entry["sidecarReceiptSha256"], after_sha256, now,
+                    ),
+                )
+            conn.commit()
+            _initialized = False
+            return {
+                "ok": True, "dryRun": False, "applied": True, "reused": False,
+                "settlementId": settlement_id, "plannedRows": len(completed),
+                "insertedRows": len(completed), "resolvedRows": len(completed),
+                "projectedRows": len(completed), "unresolved": 0,
+                "outboxPending": 0, "quickCheck": "ok",
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 # ---------- 模型用量 completion spool（SQLite 锁外持久兜底） ----------

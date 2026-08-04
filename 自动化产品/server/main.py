@@ -484,7 +484,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # production read-write process remains closed until one complete read-only
 # audit proves the exact migration/data/security closure.  The resulting
 # snapshot is O(1) on normal requests; /api/ready refreshes it explicitly.
-PRODUCTION_WRITE_CONTRACT = "v140-production-write-gate-1"
+PRODUCTION_WRITE_CONTRACT = "v140-production-write-gate-2"
 _PRODUCTION_WRITE_GATE_SNAPSHOT = None
 _PRODUCTION_WRITE_MIGRATIONS = {
     "acgMigrationVersion": 137004,
@@ -497,6 +497,7 @@ _PRODUCTION_SCHEMA_MIGRATIONS = {
     "privateMediaSchemaVersion": 140003,
     "videoComposeSchemaVersion": 140005,
     "memberControlSchemaVersion": 140006,
+    "modelUsageSettlementSchemaVersion": 140007,
 }
 
 

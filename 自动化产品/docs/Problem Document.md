@@ -15,6 +15,7 @@
 - **生产只读证据**：实际运行 release 的 `_private_media_plan_locked` 报告 `pendingRows=114`，全部为 `video-output + video-workshop-project`。`140004` 成功时 pending 为 0，所以这些是之后新产生的成片，不是旧迁移残留。
 - **新写路径修复**：项目终态同步/水合会扫描当前 owner-scoped 项目目录内的普通完整文件，将 JSON 引用和经验证文件以同一事务批量写入 registry。拒绝 symlink、隐藏、tmp/part 和越界路径；登记失败不返回伪成功，下次水合可幂等补偿，读取权限仍按 owner/team 处理。
 - **存量收口**：新 `140006` 只建成员状态和 settlement 审计表，不改写 `140004`。`media-settle` 必须绑定 fresh complete snapshot manifest/media digest、当前 SQLite identity 和 fresh v2 backup；只对当次 plan 明确、无冲突的 pending 登记，验证 pending 归零后才提交。二次运行零写；不得裸 SQL、忽略 pending 或重放历史媒体归属迁移。
+- **模型用量 RW 阻断与受控结算**：生产只读审计在媒体收口后仍有 9 条 unresolved。3 条中央 pending/waiting 可由 complete snapshot 中 succeeded sidecar receipt、providerRef 和用量精确证明；6 条中央/sidecar 均 unknown 且无 providerRef，只能证明请求已发出，不能猜 Token、输出或上游是否计费。`140007` 的精确计划工具只接收逐条 operation ID 和中央/sidecar receipt 哈希，绑定当前库 identity、fresh complete snapshot/media digest 与每次 fresh v2 backup；前三条按权威 receipt 完成，后六条须人工复核为 calls=1、Token/输出=0，且禁止 provider 重试。整批完成、projection、不可变审计 receipt 与最终 unresolved=0/outbox=0/quick_check=ok 是一个事务；冲突零写，二次执行零写。生产在该门禁实地双跑前继续 RO。
 
 ## 2026-08-04 v140 生产 P0：泛用旧资产快照可覆盖供应商权威播放/曝光量
 

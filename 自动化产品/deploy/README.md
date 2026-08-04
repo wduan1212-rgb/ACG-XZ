@@ -1,9 +1,10 @@
 # v140 部署入口契约
 
-> 本文件是代码仓内契约，不代表当前候选已部署。生产已受保护运行 v140
-> `9e8aeb5`，团队、资源 scope 和媒体 registry 已迁移；当前 release 只允许在 fresh
-> v2 备份绑定后分别双跑 expand-only `140005` 与 `140006`，再以 fresh complete
-> snapshot/media digest 执行幂等 `media-settle`，不得重做历史团队/资源/媒体迁移或覆盖现有数据。
+> 本文件是代码仓内契约，不代表当前候选已部署。生产当前仍在受保护只读维护态，
+> 部署线程已对 `f642571` 完成 `140005`、`140006`、complete snapshot/restore 与
+> `media-settle` 双跑，尚未开放 RW。新候选只允许在 fresh v2 备份绑定后双跑
+> expand-only `140007`，再以 fresh complete snapshot、精确人工复核计划和 fresh
+> backup 执行 `usage-settle`；不得重做历史团队/资源/媒体迁移或覆盖现有数据。
 > 本轮 P0 候选尚未上线；部署前必须从唯一提交重建并验签完整 release。
 
 正式操作前还必须阅读：
@@ -58,7 +59,7 @@ ACG_READ_ONLY=1
 ACG_REQUIRE_INTERNAL_TEAM=1
 ACG_REQUIRE_RESOURCE_SCOPES=1
 ACG_REQUIRE_PRIVATE_MEDIA=1
-ACG_RELEASE_ID=20260804-v140-metric-billing-control-1
+ACG_RELEASE_ID=20260804-v140-usage-settlement-1
 ACG_RELEASE_ROOT=/data/dumate-studio/releases/<release-id>
 ACG_PERSISTENT_ROOT=/data/dumate-studio/current
 ACG_ENV_FILE=/data/dumate-studio/current/.env.local
@@ -101,7 +102,7 @@ fragment 或回环地址；不得为了让 `140004` 通过而添加宽泛域名�
 
 ```bash
 cd /path/to/unpacked-release
-ACG_RELEASE_ID=20260804-v140-metric-billing-control-1 \
+ACG_RELEASE_ID=20260804-v140-usage-settlement-1 \
   deploy/verify_release_contracts.sh
 ```
 
@@ -270,7 +271,7 @@ tools/run_locked_server_tests.sh \
 
 迁移不在应用启动中执行。只能在只读预检、维护窗冻结写入、完整备份
 与恢复演练后，使用 `python -m server.migrations` 显式执行：
-`137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005`→`140006`。`137004`、`140002`、
+`137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004`→`140005`→`140006`→`140007`。`137004`、`140002`、
 `140004` 分别先做 ACG/resource/media preflight。主服务、sidecar、后台任务及其他 writer 必须保持
 停止或服务端冻结；`status` / `acg-preflight` 保持 `ACG_READ_ONLY=1`。每个 apply
 只能在单独 CLI 进程中临时覆盖 `ACG_READ_ONLY=0`，并同时提供对应的
@@ -279,10 +280,12 @@ identity 确认；结束后先恢复 `ACG_READ_ONLY=1` 再启动服务。禁止�
 永久改成可写或在 apply 期间启动业务进程。两次连续迁移必须验证幂等，记录数不得下降。
 
 生产已完成到 `140004` 时，后续 release 依次增量 apply expand-only `140005`、
-`140006`；不得重跑团队、资源或历史媒体归属迁移。两个 schema apply 必须
+`140006`、`140007`；不得重跑团队、资源或历史媒体归属迁移。每个 schema apply 必须
 分别使用紧接执行前产生的 fresh v2 备份，各自第二次均为
 `appliedVersions=[]`。`140006` 只新增账号状态和媒体 settlement 审计表，
 不改任何成员状态或 registry 行。
+
+当前生产只读维护窗已经完成 `140005`、`140006` 和 `media-settle`，因此新候选不得重跑它们。先以紧接执行前生成的 fresh v2 backup 双跑 `140007`；它只增加不可变模型用量 settlement header/entry 表与防更新/删除触发器，不改 receipt、outbox 或业务数据。第一次要求 `appliedVersions=[140007]`，第二次使用新 fresh backup 要求 `appliedVersions=[]`。
 
 生产当前 post-140004 的 114 条 pending 全部为新 `video-output`。schema 双跑完成后，
 必须在 writer 仍冻结时新建并验签 `acg-production-complete-v1` snapshot/restore-drill，
@@ -332,6 +335,64 @@ python3 -m server.migrations media-settle \
 第一次要求 `plannedRows=insertedRows`，然后以只读 `status`/媒体状态确认
 `pendingRows=0`。第二次在新 fresh v2 备份绑定下执行，要求
 `applied=false`、`insertedRows=0` 且数据库逻辑摘要不变。
+
+### 模型用量精确结算（开放 RW 前 P0）
+
+`140007` 双跑后，writer 继续冻结。重新创建并验签 fresh
+`acg-production-complete-v1` snapshot/restore-drill；该快照中的
+`video-projects` 是 sidecar receipt 的只读权威证据。先对部署审计已明确的每一个
+operation ID 运行 `usage-settle-inspect`，命令不会扫描并自动选择待处理项，也不会给出
+结算模式，更不会请求 provider：
+
+```bash
+ACG_READ_ONLY=1 python3 -m server.migrations usage-settle-inspect \
+  --operation-id <exact-operation-id-1> \
+  --operation-id <exact-operation-id-2> \
+  --runtime-snapshot <fresh-complete-snapshot-directory> \
+  --confirm-runtime-snapshot-manifest-sha256 <recorded-runtime-manifest-sha256>
+```
+
+按输出的 database identity、snapshot manifest/media digest、中央 receipt SHA-256 和
+sidecar receipt SHA-256 人工填写 `deploy/model-usage-settlement.plan.example.json`，entries
+必须按 operation ID 排序且精确覆盖当时全部 unresolved。`sidecar-succeeded` 只接受
+snapshot 中状态为 confirmed/succeeded 且带 providerRef 的权威 receipt；
+`operator-confirmed-unknown` 只接受 sidecar unknown 且无 providerRef，并要求人工说明，
+最终只记录 calls=1、Token=0、output=0。两者都不会重试 provider。
+
+对计划文件独立计算并记录 SHA-256，再创建 fresh `acg-sqlite-backup-v2`。先只读预检；
+数据库在预检后没有变化时，可用同一 fresh backup 执行 apply：
+
+```bash
+ACG_READ_ONLY=1 python3 -m server.migrations usage-settle-preflight \
+  --confirm-schema-version 140007 \
+  --confirm-identity <status-identity> \
+  --review-plan <reviewed-plan.json> \
+  --confirm-review-plan-sha256 <recorded-plan-sha256> \
+  --runtime-snapshot <fresh-complete-snapshot-directory> \
+  --confirm-runtime-snapshot-manifest-sha256 <recorded-runtime-manifest-sha256> \
+  --backup-manifest <fresh-usage-backup.manifest.json> \
+  --backup-database <fresh-usage-backup.sqlite> \
+  --confirm-backup-manifest-sha256 <recorded-backup-manifest-sha256>
+
+ACG_READ_ONLY=0 ACG_ALLOW_MODEL_USAGE_SETTLEMENT=1 \
+python3 -m server.migrations usage-settle \
+  --confirm-schema-version 140007 \
+  --confirm-identity <status-identity> \
+  --review-plan <reviewed-plan.json> \
+  --confirm-review-plan-sha256 <recorded-plan-sha256> \
+  --runtime-snapshot <fresh-complete-snapshot-directory> \
+  --confirm-runtime-snapshot-manifest-sha256 <recorded-runtime-manifest-sha256> \
+  --backup-manifest <fresh-usage-backup.manifest.json> \
+  --backup-database <fresh-usage-backup.sqlite> \
+  --confirm-backup-manifest-sha256 <recorded-backup-manifest-sha256>
+```
+
+同一事务会完成精确 receipt、既有 legacy projection 与不可变 settlement receipt；任一
+中央/sidecar 哈希、身份、状态、旧账本碰撞或全局 unresolved 集合不一致都会整批零写。
+首次必须得到 `unresolved=0`、`outboxPending=0`、`quickCheck=ok`。随后在数据库新状态上
+再做 fresh v2 backup，以同一 plan/snapshot 第二次执行，必须
+`applied=false`、`insertedRows=0`；此后才可重新运行 RW write gate。禁止裸 SQL、重跑旧迁移、
+修改项目/任务/媒体/账号，或把 unknown 猜成失败/成功 Token。
 
 `140002` 会把可由 owner、账号或现存上游唯一证明的历史文档冻结到一个 scope。
 已失效的次要引用只在存在该唯一证据时记为 warning；歧义或仍等待现存上游解析的记录

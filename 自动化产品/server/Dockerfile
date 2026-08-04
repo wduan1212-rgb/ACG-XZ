@@ -39,7 +39,7 @@ COPY deploy/release-runtime.manifest.json ./deploy/release-runtime.manifest.json
 COPY tools/verify_release_contracts.py ./tools/verify_release_contracts.py
 
 # Main backend and explicit schema migration runner.
-COPY server/main.py server/store.py server/config.py server/model_usage_recovery.py ./server/
+COPY server/main.py server/store.py server/config.py server/model_usage_recovery.py server/model_usage_settlement.py ./server/
 COPY server/migrations/ ./server/migrations/
 COPY server/requirements.txt ./server/requirements.txt
 COPY server/requirements.lock.txt ./server/requirements.lock.txt

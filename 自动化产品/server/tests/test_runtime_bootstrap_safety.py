@@ -39,6 +39,8 @@ def runtime_environment(**values):
         "ACG_ALLOW_ACG_TEAM_MIGRATION",
         "ACG_ALLOW_RESOURCE_SCOPE_MIGRATION",
         "ACG_ALLOW_PRIVATE_MEDIA_MIGRATION",
+        "ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT",
+        "ACG_ALLOW_MODEL_USAGE_SETTLEMENT",
         "AUTH_SECRET",
     }
     previous = {name: os.environ.get(name) for name in names}
@@ -281,6 +283,7 @@ class RuntimeBootstrapSafetyTest(unittest.TestCase):
                         store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
                         store.VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,
                         store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
+                        store.MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION,
                     ],
                     first["appliedVersions"],
                 )

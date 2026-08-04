@@ -53,6 +53,7 @@ from .. import config
 # Config must be loaded before store freezes DATA_DB/CUSTOM_CANVAS_BLOB_DIR.
 config.load_environment()
 from .. import store  # noqa: E402
+from .. import model_usage_settlement  # noqa: E402
 from ..scripts import consistent_sqlite_backup  # noqa: E402
 from ..scripts import runtime_snapshot  # noqa: E402
 
@@ -97,6 +98,12 @@ def _safe_status() -> dict:
         "videoComposeSchemaChecksum": status.get("videoComposeSchemaChecksum") or "",
         "memberControlSchemaVersion": status.get("memberControlSchemaVersion"),
         "memberControlSchemaChecksum": status.get("memberControlSchemaChecksum") or "",
+        "modelUsageSettlementSchemaVersion": status.get(
+            "modelUsageSettlementSchemaVersion"
+        ),
+        "modelUsageSettlementSchemaChecksum": status.get(
+            "modelUsageSettlementSchemaChecksum"
+        ) or "",
         "privateMediaMigration": bool(status.get("privateMediaMigration")),
         "privateMediaMigrationVersion": status.get("privateMediaMigrationVersion"),
         "privateMediaMigrationChecksum": status.get("privateMediaMigrationChecksum") or "",
@@ -245,6 +252,38 @@ def _verified_backup_binding(args, *, required):
     )
 
 
+def _add_usage_settlement_plan_confirmation(command):
+    command.add_argument(
+        "--review-plan",
+        type=Path,
+        required=True,
+        help="exact operator-reviewed acg-model-usage-settlement-plan-v1 file",
+    )
+    command.add_argument(
+        "--confirm-review-plan-sha256",
+        required=True,
+        help="independently recorded SHA-256 of the exact review plan bytes",
+    )
+
+
+def _verified_usage_settlement_inputs(args):
+    plan, plan_sha256 = model_usage_settlement.load_review_plan(
+        args.review_plan,
+        expected_sha256=args.confirm_review_plan_sha256,
+    )
+    backup_binding = _verified_backup_binding(args, required=True)
+    runtime_snapshot_binding = _verified_runtime_snapshot_binding(
+        args, required=True,
+    )
+    operation_ids = [entry["operationId"] for entry in plan["entries"]]
+    sidecar_receipts = model_usage_settlement.extract_sidecar_receipts(
+        args.runtime_snapshot,
+        operation_ids,
+    )
+    model_usage_settlement.verify_sidecar_hashes(plan, sidecar_receipts)
+    return plan, plan_sha256, sidecar_receipts, backup_binding, runtime_snapshot_binding
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python -m server.migrations")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -299,6 +338,31 @@ def main(argv=None) -> int:
     _add_resource_confirmations(media_settle)
     _add_runtime_snapshot_confirmation(media_settle, required=True)
     _add_backup_confirmation(media_settle)
+    usage_inspect = subparsers.add_parser(
+        "usage-settle-inspect",
+        help="read exact central and snapshot receipt hashes for named operations",
+    )
+    usage_inspect.add_argument(
+        "--operation-id", action="append", required=True,
+        help="exact video-workshop operation ID; repeat for every reviewed operation",
+    )
+    _add_runtime_snapshot_confirmation(usage_inspect, required=True)
+    usage_preflight = subparsers.add_parser(
+        "usage-settle-preflight",
+        help="validate one exact reviewed model-usage settlement plan without writes",
+    )
+    _add_resource_confirmations(usage_preflight)
+    _add_usage_settlement_plan_confirmation(usage_preflight)
+    _add_runtime_snapshot_confirmation(usage_preflight, required=True)
+    _add_backup_confirmation(usage_preflight)
+    usage_settle = subparsers.add_parser(
+        "usage-settle",
+        help="atomically settle only exact reviewed model-usage operations",
+    )
+    _add_resource_confirmations(usage_settle)
+    _add_usage_settlement_plan_confirmation(usage_settle)
+    _add_runtime_snapshot_confirmation(usage_settle, required=True)
+    _add_backup_confirmation(usage_settle)
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -419,7 +483,7 @@ def main(argv=None) -> int:
                 ),
                 runtime_snapshot_binding=runtime_snapshot_binding,
             )
-        else:
+        elif args.command == "media-settle":
             if str(os.getenv("ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT", "")).strip() != "1":
                 parser.error("ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT=1 is required")
             backup_binding = _verified_backup_binding(args, required=True)
@@ -432,9 +496,79 @@ def main(argv=None) -> int:
                 backup_binding=backup_binding,
                 runtime_snapshot_binding=runtime_snapshot_binding,
             )
+        elif args.command == "usage-settle-inspect":
+            runtime_snapshot_binding = _verified_runtime_snapshot_binding(
+                args, required=True,
+            )
+            operation_ids = sorted(set(args.operation_id or []))
+            if len(operation_ids) != len(args.operation_id or []):
+                raise model_usage_settlement.SettlementPlanError(
+                    "inspection_operation_id_duplicate"
+                )
+            sidecar_receipts = model_usage_settlement.extract_sidecar_receipts(
+                args.runtime_snapshot,
+                operation_ids,
+            )
+            central = store.model_usage_settlement_evidence(operation_ids)
+            central_by_id = {
+                item["operationId"]: item for item in central["entries"]
+            }
+            result = {
+                "ok": True,
+                "dryRun": True,
+                "databaseIdentity": central["databaseIdentity"],
+                "snapshotManifestSha256": runtime_snapshot_binding["manifestSha256"],
+                "snapshotMediaInventoryDigest": runtime_snapshot_binding[
+                    "mediaInventoryDigest"
+                ],
+                "entries": [
+                    {
+                        **central_by_id[operation_id],
+                        "sidecarReceiptSha256": model_usage_settlement.canonical_sha256(
+                            sidecar_receipts[operation_id]
+                        ),
+                        "sidecarStatus": str(
+                            sidecar_receipts[operation_id].get("status") or ""
+                        ),
+                        "sidecarProviderRefPresent": bool(
+                            sidecar_receipts[operation_id].get("providerRef")
+                        ),
+                    }
+                    for operation_id in operation_ids
+                ],
+            }
+        elif args.command in {"usage-settle-preflight", "usage-settle"}:
+            if (
+                args.command == "usage-settle"
+                and str(os.getenv("ACG_ALLOW_MODEL_USAGE_SETTLEMENT", "")).strip()
+                != "1"
+            ):
+                parser.error("ACG_ALLOW_MODEL_USAGE_SETTLEMENT=1 is required")
+            (
+                plan,
+                plan_sha256,
+                sidecar_receipts,
+                backup_binding,
+                runtime_snapshot_binding,
+            ) = _verified_usage_settlement_inputs(args)
+            result = store.settle_model_usage_receipts_reviewed(
+                plan=plan,
+                plan_sha256=plan_sha256,
+                sidecar_receipts=sidecar_receipts,
+                expected_identity=args.confirm_identity,
+                expected_schema_version=args.confirm_schema_version,
+                backup_binding=backup_binding,
+                runtime_snapshot_binding=runtime_snapshot_binding,
+                created_by=plan.get("reviewedBy") or "deployment",
+                dry_run=args.command == "usage-settle-preflight",
+            )
+        else:
+            raise ValueError("unsupported migration command")
     except (
         FileNotFoundError, OSError, sqlite3.Error, store.StoreNotReadyError,
-        runtime_snapshot.SnapshotError, ValueError,
+        runtime_snapshot.SnapshotError,
+        model_usage_settlement.SettlementPlanError,
+        ValueError,
     ) as exc:
         print(json.dumps({
             "ok": False,

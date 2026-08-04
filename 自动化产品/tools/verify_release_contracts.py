@@ -40,6 +40,7 @@ RUNTIME_EXACT_PATHS = {
     "server/config.py",
     "server/main.py",
     "server/model_usage_recovery.py",
+    "server/model_usage_settlement.py",
     "server/store.py",
     "server/requirements.txt",
     "server/requirements.lock.txt",
