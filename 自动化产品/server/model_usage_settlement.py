@@ -13,7 +13,7 @@ import json
 import re
 import tarfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -178,10 +178,24 @@ def _snapshot_video_project_artifact(snapshot_root: Path) -> Path:
     component = matches[0]
     if component.get("type") != "directory" or component.get("state") == "absent":
         raise SettlementPlanError("snapshot_video_projects_component_unavailable")
-    artifact_name = str(component.get("artifact") or "")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", artifact_name):
+    artifact_name = str(component.get("artifact") or "").strip()
+    relative = PurePosixPath(artifact_name)
+    if (
+        not artifact_name
+        or "\\" in artifact_name
+        or relative.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or any(
+            not re.fullmatch(r"[A-Za-z0-9._-]+", part)
+            for part in relative.parts
+        )
+    ):
         raise SettlementPlanError("snapshot_video_projects_artifact_invalid")
-    artifact = Path(snapshot_root) / artifact_name
+    artifact = Path(snapshot_root)
+    for part in relative.parts:
+        artifact = artifact / part
+        if artifact.is_symlink():
+            raise SettlementPlanError("snapshot_video_projects_artifact_invalid")
     if not artifact.is_file():
         raise SettlementPlanError("snapshot_video_projects_artifact_missing")
     return artifact

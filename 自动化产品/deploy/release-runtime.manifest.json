@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260804-v140-usage-settlement-1",
   "fileCount": 56,
-  "totalBytes": 2701817,
+  "totalBytes": 2702287,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -246,8 +246,8 @@
     },
     {
       "path": "server/model_usage_settlement.py",
-      "size": 11059,
-      "sha256": "d38e048524ae642f7f6336e06dec81717925248d0f9ed8fe795c1bee71e00a10"
+      "size": 11529,
+      "sha256": "910ccd259ebe3cfdefa9f7b50c6e24ca61f32784757e09e58e4251fdfbb4c292"
     },
     {
       "path": "server/requirements.lock.txt",

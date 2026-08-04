@@ -272,7 +272,8 @@ class ModelUsageSettlementTest(unittest.TestCase):
                 "id": "project-a",
                 "modelUsageReceipts": list(self.sidecars.values()),
             }
-            archive = root / "video-projects.tar"
+            archive = root / "components" / "video-projects.tar"
+            archive.parent.mkdir()
             encoded = json.dumps(project).encode("utf-8")
             with tarfile.open(archive, "w") as bundle:
                 info = tarfile.TarInfo("project-a.json")
@@ -283,7 +284,7 @@ class ModelUsageSettlementTest(unittest.TestCase):
                 "components": [{
                     "name": "video-projects",
                     "type": "directory",
-                    "artifact": archive.name,
+                    "artifact": "components/video-projects.tar",
                 }],
             }), encoding="utf-8")
             extracted = model_usage_settlement.extract_sidecar_receipts(
@@ -295,6 +296,43 @@ class ModelUsageSettlementTest(unittest.TestCase):
                 model_usage_settlement.SettlementPlanError, "hash_mismatch"
             ):
                 model_usage_settlement.verify_sidecar_hashes(plan, extracted)
+
+            manifest_path = root / "snapshot.manifest.json"
+            manifest_path.write_text(json.dumps({
+                "components": [{
+                    "name": "video-projects",
+                    "type": "directory",
+                    "artifact": "../video-projects.tar",
+                }],
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(
+                model_usage_settlement.SettlementPlanError,
+                "artifact_invalid",
+            ):
+                model_usage_settlement.extract_sidecar_receipts(
+                    root, sorted(self.sidecars),
+                )
+
+            manifest_path.write_text(json.dumps({
+                "components": [{
+                    "name": "video-projects",
+                    "type": "directory",
+                    "artifact": "components/video-projects-link.tar",
+                }],
+            }), encoding="utf-8")
+            link = root / "components" / "video-projects-link.tar"
+            try:
+                link.symlink_to(archive.name)
+            except (OSError, NotImplementedError):
+                pass
+            else:
+                with self.assertRaisesRegex(
+                    model_usage_settlement.SettlementPlanError,
+                    "artifact_invalid",
+                ):
+                    model_usage_settlement.extract_sidecar_receipts(
+                        root, sorted(self.sidecars),
+                    )
 
     def test_140007_is_additive_for_the_previous_read_only_schema_contract(self):
         before = logical_database_dump(store.DB_PATH)
