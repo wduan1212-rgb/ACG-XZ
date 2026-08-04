@@ -112,19 +112,35 @@ test("free language and canvas agent operations use the same reserve-settle poin
   assert.match(mainPy, /_run_personal_billable/);
 });
 
-test("supplier metrics refresh on entry and focus without a high-frequency full-state poll", async () => {
-  const [storeJs, supplierViews, deliveryView, storePy] = await Promise.all([
+test("delivery metrics converge through one lightweight server-authoritative projection", async () => {
+  const [storeJs, supplierViews, deliveryView, overview, remoteJs, mainPy, storePy] = await Promise.all([
     read("js/core/store.js"),
     read("js/views/supplierViews.js"),
     read("js/views/deliveryView.js"),
+    read("js/views/overview.js"),
+    read("js/core/remote.js"),
+    read("server/main.py"),
     read("server/store.py"),
   ]);
-  assert.match(storeJs, /export async function refreshRemoteCollections/);
+  assert.match(mainPy, /@app\.get\("\/api\/deliveries\/metrics"\)/);
+  assert.match(remoteJs, /deliveryMetrics = \(\) => req\("\/api\/deliveries\/metrics"\)/);
+  assert.match(storeJs, /export async function refreshDeliveryMetrics/);
+  assert.match(storeJs, /applyDeliveryMetricProjection/);
+  assert.match(storeJs, /incomingUpdatedAt < currentUpdatedAt/);
+  assert.match(storeJs, /db\.putMany\("assets", changedAssets\)/);
+  const metricRefreshStart = storeJs.indexOf("export async function refreshDeliveryMetrics");
+  const metricRefreshEnd = storeJs.indexOf("/* ---- 通知中心 ---- */", metricRefreshStart);
+  assert.ok(metricRefreshStart >= 0 && metricRefreshEnd > metricRefreshStart);
+  assert.doesNotMatch(storeJs.slice(metricRefreshStart, metricRefreshEnd), /remote\.putCollection/);
+  assert.match(deliveryView, /refreshDeliveryMetrics/);
+  assert.match(deliveryView, /setInterval/);
+  assert.match(overview, /refreshDeliveryMetrics/);
   assert.match(supplierViews, /refreshRemoteCollections\(\["accounts", "assets"\]\)/);
   assert.match(supplierViews, /addEventListener\("focus"/);
   assert.match(supplierViews, /xingzhen:supplier-authority-refreshed/);
   assert.match(deliveryView, /syncAuthority/);
   assert.match(deliveryView, /观看量更新失败", "error"/);
+  assert.match(storePy, /def list_delivery_asset_metrics/);
   assert.match(storePy, /SUPPLIER_ASSET_SERVER_METRIC_FIELDS/);
   assert.match(storePy, /_preserve_supplier_asset_server_metrics/);
   assert.doesNotMatch(supplierViews, /setInterval\(/);
@@ -343,7 +359,7 @@ test("all runtime modules share the v140 cache identity", async () => {
     read("index.html"),
     read("js/main.js"),
   ]);
-  assert.match(indexHtml, /20260804-v140-usage-settlement-1/);
-  assert.match(mainJs, /APP_BUILD_ID = "20260804-v140-usage-settlement-1"/);
+  assert.match(indexHtml, /20260804-v140-supplier-metric-sync-1/);
+  assert.match(mainJs, /APP_BUILD_ID = "20260804-v140-supplier-metric-sync-1"/);
   assert.doesNotMatch(indexHtml + mainJs, /20260729-v121-shell-22|20260729-v122-shell-1/);
 });

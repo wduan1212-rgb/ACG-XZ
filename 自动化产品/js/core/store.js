@@ -4,7 +4,7 @@ import { db } from "./db.js";
 import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
 import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js";
-import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260804-v140-usage-settlement-1";
+import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260804-v140-supplier-metric-sync-1";
 
 const DEFAULT_ADMIN_USERNAME = String.fromCharCode(97, 100, 109, 105, 110);
 const LEGACY_ADMIN_USERNAME = String.fromCharCode(121, 117, 120, 117, 97, 110);
@@ -757,6 +757,67 @@ export async function refreshRemoteCollections(collections = []) {
     isCurrent,
   ).catch(() => null);
   return applied.length > 0;
+}
+
+let deliveryMetricRefreshPromise = null;
+let deliveryMetricRefreshedAt = 0;
+const DELIVERY_METRIC_REFRESH_WINDOW_MS = 4000;
+const DELIVERY_METRIC_GROUPS = [
+  ["viewCount", "viewsUpdatedAt", "viewsUpdatedBy"],
+  ["exposureCount", "exposureUpdatedAt", "exposureUpdatedBy"],
+];
+
+export function applyDeliveryMetricProjection(asset, row) {
+  if (!asset || !row || String(asset.id || "") !== String(row.id || "")) return false;
+  let changed = false;
+  for (const [valueField, updatedAtField, updatedByField] of DELIVERY_METRIC_GROUPS) {
+    const incomingUpdatedAt = Math.max(0, Number(row?.[updatedAtField] || 0));
+    const currentUpdatedAt = Math.max(0, Number(asset?.[updatedAtField] || 0));
+    if (incomingUpdatedAt < currentUpdatedAt) continue;
+    for (const field of [valueField, updatedAtField, updatedByField]) {
+      const next = row?.[field] ?? (field.endsWith("By") ? "" : 0);
+      if (asset[field] === next) continue;
+      asset[field] = next;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/* 供应商指标采用专用服务端权威投影。只原位合并观看量/曝光量字段，
+   不替换资产集合，也不会把浏览器旧快照回推服务端。 */
+export async function refreshDeliveryMetrics({ force = false } = {}) {
+  if (!remote.isOn() || !remote.hasToken()) return { refreshed: false, changed: false };
+  if (deliveryMetricRefreshPromise) return deliveryMetricRefreshPromise;
+  if (!force && Date.now() - deliveryMetricRefreshedAt < DELIVERY_METRIC_REFRESH_WINDOW_MS) {
+    return { refreshed: false, changed: false };
+  }
+  const memberId = state.ui.currentMemberId;
+  const generation = remoteSyncGeneration;
+  const isCurrent = () => isRemoteSyncCurrent(generation, memberId);
+  deliveryMetricRefreshPromise = remote.deliveryMetrics()
+    .then(payload => {
+      if (!isCurrent()) return { refreshed: false, changed: false };
+      const byId = new Map(state.assets.map(asset => [String(asset?.id || ""), asset]));
+      let changed = false;
+      const changedAssets = [];
+      for (const row of payload?.items || []) {
+        const asset = byId.get(String(row?.id || ""));
+        if (!asset) continue;
+        if (applyDeliveryMetricProjection(asset, row)) {
+          changed = true;
+          changedAssets.push(asset);
+        }
+      }
+      deliveryMetricRefreshedAt = Date.now();
+      if (changed) {
+        void db.putMany("assets", changedAssets).catch(() => null);
+        emit("change", { collections: ["assets"], phase: "delivery-metrics" });
+      }
+      return { refreshed: true, changed };
+    })
+    .finally(() => { deliveryMetricRefreshPromise = null; });
+  return deliveryMetricRefreshPromise;
 }
 
 /* ---- 通知中心 ---- */

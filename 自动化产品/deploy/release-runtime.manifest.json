@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260804-v140-usage-settlement-1",
+  "releaseId": "20260804-v140-supplier-metric-sync-1",
   "fileCount": 56,
-  "totalBytes": 2703538,
+  "totalBytes": 2708718,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100714,
-      "sha256": "8f8a03f0e3e029faa344e2da70694a7c1d6bf489c09344fae72cf1262142d9a3"
+      "size": 100718,
+      "sha256": "0916588200f775cb8c8f93bb081e811532ff704e902647912271842223962531"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -166,8 +166,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22373,
-      "sha256": "48cfed4fa7c7f9ead7f9d2747e498f073a052428be6fa74cf76c51623ecd8951"
+      "size": 22385,
+      "sha256": "4e3c89571596562aca7941eb90171638a9f8ae86aa6c57d9dc5088b9636e7f90"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -221,8 +221,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 490726,
-      "sha256": "d69eb9bd95e48c1bc51e4341d9aa8ffa0285d347f3cdf4c78128a03a10880de3"
+      "size": 490898,
+      "sha256": "d6e3fbf98eecc31465f954504f095e02874544bddfa896590f71fb9862ccc3d3"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -276,8 +276,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 720016,
-      "sha256": "23f6843f8a2f77f654563904aef2831af99ae74caa6c5525fd73626c4850b77d"
+      "size": 725008,
+      "sha256": "200559f220304c2402b9f94803ed91521a8f30fb64d3e67ea74649e307b6e8e8"
     },
     {
       "path": "tools/verify_release_contracts.py",

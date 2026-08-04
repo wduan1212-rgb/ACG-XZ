@@ -1,7 +1,7 @@
 import { esc } from "../core/util.js";
 import { currentMember, currentTeam } from "../core/store.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260804-v140-usage-settlement-1";
+import { openModal, toast } from "../ui/components.js?v=20260804-v140-supplier-metric-sync-1";
 
 const PLANS = [
   {

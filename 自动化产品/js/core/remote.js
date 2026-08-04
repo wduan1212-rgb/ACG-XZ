@@ -401,6 +401,8 @@ export const supplier = {
   updateAccount: (accountId, account, assets = []) => req("/api/supplier/accounts/" + encodeURIComponent(accountId), { method: "PUT", body: { account, assets } })
 };
 
+export const deliveryMetrics = () => req("/api/deliveries/metrics");
+
 export const deliveryRemarks = {
   list: (assetId) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks"),
   add: (assetId, text) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks", { method: "POST", body: { text } }),

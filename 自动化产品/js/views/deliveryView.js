@@ -3,13 +3,13 @@
 
 import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
-import { state, save, notify, accountById, productionById, canMarkReviewed, productById, currentMember } from "../core/store.js";
+import { state, save, notify, accountById, productionById, canMarkReviewed, productById, currentMember, refreshDeliveryMetrics } from "../core/store.js";
 import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260804-v140-usage-settlement-1";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260804-v140-usage-settlement-1";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260804-v140-supplier-metric-sync-1";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260804-v140-supplier-metric-sync-1";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
 import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
@@ -437,6 +437,7 @@ let creatorRemarkFilter = "all";
 let activeDeliveryController = null;
 let supplierDeliveryQuery = "";
 let supplierDeliveryFocusId = "";
+let deliveryMetricPollTimer = 0;
 const supplierAccountCollator = new Intl.Collator("zh-CN-u-co-pinyin", {
   numeric: true,
   sensitivity: "base",
@@ -445,6 +446,10 @@ const supplierAccountCollator = new Intl.Collator("zh-CN-u-co-pinyin", {
 if (typeof window !== "undefined") {
   window.addEventListener("xingzhen:supplier-authority-refreshed", () => {
     activeDeliveryController?.syncAuthority?.();
+  });
+  window.addEventListener("focus", () => {
+    if (document.body.dataset.zone !== "delivery") return;
+    void activeDeliveryController?.refreshMetrics?.(true);
   });
 }
 
@@ -1122,11 +1127,29 @@ export const deliveryView = {
         if (asset) value.textContent = Number(asset.exposureCount || 0).toLocaleString();
       });
     };
-    activeDeliveryController = { root, draw, batchDl, syncAuthority };
+    const refreshMetrics = async (force = false) => {
+      try {
+        const result = await refreshDeliveryMetrics({ force });
+        if (result.changed && activeDeliveryController?.root === root) syncAuthority();
+        return result;
+      } catch (error) {
+        if (force) toast(`播放与曝光数据刷新失败：${error?.message || error}`, "error");
+        return { refreshed: false, changed: false };
+      }
+    };
+    activeDeliveryController = { root, draw, batchDl, syncAuthority, refreshMetrics };
+    window.clearInterval(deliveryMetricPollTimer);
+    deliveryMetricPollTimer = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || document.body.dataset.zone !== "delivery") return;
+      void refreshMetrics(false);
+    }, 8000);
     root.__viewCleanup = () => {
       if (activeDeliveryController?.root === root) activeDeliveryController = null;
+      window.clearInterval(deliveryMetricPollTimer);
+      deliveryMetricPollTimer = 0;
     };
     draw();
+    void refreshMetrics(true);
     emitDeliveryFilterModel();
   }
 };

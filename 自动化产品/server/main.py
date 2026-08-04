@@ -10490,6 +10490,11 @@ def supplier_activity_add(req: SupplierActivityReq, me=Depends(require_member)):
     return {"ok": True}
 
 
+@app.get("/api/deliveries/metrics")
+def delivery_asset_metrics(me=Depends(require_member)):
+    return {"items": store.list_delivery_asset_metrics(me["id"], me["role"])}
+
+
 @app.put("/api/supplier/assets/{asset_id}/views")
 def supplier_asset_views(asset_id: str, req: SupplierViewsReq, me=Depends(require_member)):
     item, err = store.update_supplier_asset_views(asset_id, req.viewCount, me["id"], me["role"])

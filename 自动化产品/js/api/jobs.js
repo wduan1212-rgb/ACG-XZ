@@ -5,7 +5,7 @@ import { state, saveIncremental, emit, productionById, notify, assetById } from 
 import { uid } from "../core/util.js";
 import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
-import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260804-v140-usage-settlement-1";
+import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260804-v140-supplier-metric-sync-1";
 
 const IMAGE_CONCURRENCY = 4;
 // 浏览器只维持 3 个受控视频槽。数字人与信息流都可能由一条 production

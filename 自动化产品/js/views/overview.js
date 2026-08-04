@@ -2,7 +2,7 @@
 
 import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { state, save, accountById, ownedBy, assetById } from "../core/store.js";
+import { state, save, accountById, ownedBy, assetById, refreshDeliveryMetrics } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
 import { STAGES, statusPill } from "../domain/productions.js";
 import { deliveredAssets } from "../domain/delivery.js";
@@ -10,11 +10,11 @@ import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=202607
 import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260804-v140-usage-settlement-1";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260804-v140-usage-settlement-1";
-import { emptyState, openModal } from "../ui/components.js?v=20260804-v140-usage-settlement-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260804-v140-supplier-metric-sync-1";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260804-v140-supplier-metric-sync-1";
+import { emptyState, openModal } from "../ui/components.js?v=20260804-v140-supplier-metric-sync-1";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260804-v140-usage-settlement-1";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260804-v140-supplier-metric-sync-1";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
@@ -23,6 +23,7 @@ let accountCarouselPage = 0;
 let accountCarouselTimer = null;
 let accountCarouselTransitionTimer = null;
 let overviewTrendWindow = { kind: "days", days: 7, start: "", end: "" };
+let overviewMetricPollTimer = 0;
 
 function overviewAccountPerformance(accounts = [], analyticsAccounts = []) {
   const snapshotsByName = new Map(
@@ -772,9 +773,29 @@ export const overviewView = {
     root.__viewCleanup = () => {
       window.clearInterval(accountCarouselTimer);
       window.clearTimeout(accountCarouselTransitionTimer);
+      window.clearInterval(overviewMetricPollTimer);
       accountCarouselTimer = null;
       accountCarouselTransitionTimer = null;
+      overviewMetricPollTimer = 0;
     };
+
+    const refreshOverviewMetrics = async (force = false) => {
+      try {
+        const result = await refreshDeliveryMetrics({ force });
+        if (result.changed && root.isConnected && document.body.dataset.zone === "overview") {
+          root.__viewCleanup?.();
+          overviewView.render(root);
+        }
+      } catch (error) {
+        console.warn("首页播放与曝光数据刷新失败", error);
+      }
+    };
+    window.clearInterval(overviewMetricPollTimer);
+    overviewMetricPollTimer = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || document.body.dataset.zone !== "overview") return;
+      void refreshOverviewMetrics(false);
+    }, 10000);
+    void refreshOverviewMetrics(true);
 
     root.querySelectorAll("[data-ov-go]").forEach(b => b.addEventListener("click", () => go(b.dataset.ovGo)));
     root.querySelectorAll("[data-ov-stat]").forEach(b => b.addEventListener("click", () => openTaskGroup(b.dataset.ovStat)));

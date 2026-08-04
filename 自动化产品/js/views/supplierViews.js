@@ -1,7 +1,7 @@
 import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, refreshRemoteCollections } from "../core/store.js";
-import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260804-v140-usage-settlement-1";
+import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260804-v140-supplier-metric-sync-1";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliveryViewsSummary } from "../domain/delivery.js";
@@ -78,7 +78,7 @@ if (typeof document !== "undefined") {
   });
   window.addEventListener("focus", () => {
     if (!SUPPLIER_AUTHORITY_ROLES.has(state.role)) return;
-    if (!["overview", "assets", "delivery", "settings"].includes(document.body.dataset.zone)) return;
+    if (!["overview", "assets", "settings"].includes(document.body.dataset.zone)) return;
     void refreshSupplierAuthorityState({ showError: true }).catch(() => null);
   });
 }

@@ -65,6 +65,62 @@ def seed_account_and_delivery(store, tenant, account_id, asset_id):
 
 
 class SupplierTenantPolicyTests(unittest.TestCase):
+    def test_metric_projection_uses_v140_doc_asset_scope_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            tenant = provision_supplier_team(store, "scoped-metrics")
+            seed_account_and_delivery(
+                store, tenant, "account-scoped-metrics", "delivery-scoped-metrics"
+            )
+            self.assertTrue(store.set_supplier_child_accounts(
+                tenant["parentId"], tenant["childId"], ["account-scoped-metrics"],
+                tenant["parentId"], include_all=True,
+            ))
+            conn = store._connect()
+            try:
+                conn.executescript(store.RESOURCE_SCOPE_SCHEMA)
+                actor_scope = store._member_resource_scope_locked(
+                    conn, tenant["parentId"]
+                )
+                self.assertIsNotNone(actor_scope)
+                conn.execute(
+                    "INSERT INTO resource_scopes(resource_kind,resource_id,scope_type,"
+                    "scope_id,owner_id,provenance,captured_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        "doc:assets", "delivery-scoped-metrics",
+                        actor_scope[0], actor_scope[1], tenant["ownerId"],
+                        "test", 1, 1,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO schema_migrations(version,name,checksum,app_version,"
+                    "started_at,finished_at,status,summary) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        store.RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                        store.RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+                        store.RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+                        "test", 1, 1, "success", "{}",
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            for actor_id, actor_role in (
+                (tenant["parentId"], "supplier_parent"),
+                (tenant["childId"], "supplier_child"),
+                (tenant["ownerId"], "editor"),
+            ):
+                self.assertEqual(
+                    ["delivery-scoped-metrics"],
+                    [
+                        row["id"] for row in store.list_delivery_asset_metrics(
+                            actor_id, actor_role
+                        )
+                    ],
+                )
+
     def test_same_team_parent_and_bound_child_can_read_and_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
@@ -208,6 +264,29 @@ class SupplierTenantPolicyTests(unittest.TestCase):
                 })
                 self.assertEqual("Creator renamed delivery", visible["name"])
 
+            metric_snapshots = [
+                store.list_delivery_asset_metrics(tenant["parentId"], "supplier_parent"),
+                store.list_delivery_asset_metrics(tenant["childId"], "supplier_child"),
+                store.list_delivery_asset_metrics(tenant["ownerId"], "editor"),
+            ]
+            for metrics in metric_snapshots:
+                projected = next(row for row in metrics if row["id"] == "delivery-positive")
+                self.assertEqual(expected_metrics, {
+                    key: projected[key] for key in expected_metrics
+                })
+
+            main = importlib.import_module("main")
+            with mock.patch.object(main, "store", store):
+                response = main.delivery_asset_metrics(me={
+                    "id": tenant["parentId"], "role": "supplier_parent",
+                })
+            projected = next(
+                row for row in response["items"] if row["id"] == "delivery-positive"
+            )
+            self.assertEqual(expected_metrics, {
+                key: projected[key] for key in expected_metrics
+            })
+
             # Old delivered rows may have a useful non-zero count without the
             # newer marker fields. A whole-document write must not clear it.
             store.upsert_docs("assets", [{
@@ -290,6 +369,14 @@ class SupplierTenantPolicyTests(unittest.TestCase):
                 (tenant_a["parentId"], "supplier_parent"),
                 (tenant_a["childId"], "supplier_child"),
             ):
+                self.assertNotIn(
+                    "delivery-b",
+                    {
+                        row["id"] for row in store.list_delivery_asset_metrics(
+                            actor_id, actor_role
+                        )
+                    },
+                )
                 item, error = store.update_supplier_asset_views(
                     "delivery-b", 777, actor_id, actor_role
                 )
@@ -348,6 +435,9 @@ class SupplierTenantPolicyTests(unittest.TestCase):
                 store.state_for(unmapped[0], "supplier_parent", collections=["accounts", "assets"]),
             )
             self.assertEqual([], store.list_supplier_members(unmapped[0]))
+            self.assertEqual(
+                [], store.list_delivery_asset_metrics(unmapped[0], "supplier_parent")
+            )
             self.assertFalse(store.can_write_asset_file(
                 "new-unmapped-file", unmapped[0], "supplier_parent"
             ))

@@ -15990,6 +15990,111 @@ def _supplier_account_row_locked(conn, account_id, member_id, role):
     return context, row, item, None
 
 
+def list_delivery_asset_metrics(member_id, role):
+    """Return the authoritative metric triplets for deliveries visible to one actor.
+
+    This is deliberately a lightweight projection rather than another full
+    ``assets`` snapshot.  Supplier children, supplier parents and creators can
+    therefore converge on the same server values without repeatedly hydrating
+    every delivery media document.
+    """
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            clean_member_id = str(member_id or "")
+            clean_role = str(role or "")
+            if clean_role not in {
+                "admin", "editor", "supplier", "supplier_parent", "supplier_child",
+            }:
+                return []
+
+            allowed_scoped_ids = None
+            if _resource_scopes_enforced_locked(conn):
+                actor_scope = _member_resource_scope_locked(conn, clean_member_id)
+                if not actor_scope:
+                    return []
+                allowed_scoped_ids = {
+                    str(row[0]) for row in conn.execute(
+                        "SELECT resource_id FROM resource_scopes "
+                        "WHERE resource_kind=? AND scope_type=? AND scope_id=?",
+                        (_doc_resource_kind("assets"), actor_scope[0], actor_scope[1]),
+                    ).fetchall()
+                }
+
+            supplier_account_ids = None
+            if clean_role in {"supplier", "supplier_parent", "supplier_child"}:
+                context = _supplier_access_context_locked(conn, clean_member_id, clean_role)
+                if not context:
+                    return []
+                if context["role"] == "supplier_parent":
+                    supplier_account_ids = {
+                        str(row[0]) for row in conn.execute(
+                            "SELECT account_id FROM team_accounts WHERE team_id=?",
+                            (context["teamId"],),
+                        ).fetchall()
+                    }
+                else:
+                    supplier_account_ids = {
+                        str(row[0]) for row in conn.execute(
+                            "SELECT account_id FROM supplier_account_bindings "
+                            "WHERE parent_id=? AND child_id=?",
+                            (context["parentId"], context["memberId"]),
+                        ).fetchall()
+                    }
+
+            editor_production_ids = set()
+            if clean_role == "editor":
+                for production_id, owner_id, raw in conn.execute(
+                    "SELECT id,owner_id,data FROM docs WHERE collection='productions'"
+                ).fetchall():
+                    if str(owner_id or "") == clean_member_id:
+                        editor_production_ids.add(str(production_id))
+                        continue
+                    try:
+                        production = json.loads(raw)
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if str(production.get("ownerId") or "") == clean_member_id:
+                        editor_production_ids.add(str(production_id))
+
+            result = []
+            rows = conn.execute(
+                "SELECT id,owner_id,data FROM docs WHERE collection='assets'"
+            ).fetchall()
+            for doc_id, stored_owner_id, raw in rows:
+                try:
+                    item = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(item, dict) or not item.get("delivered"):
+                    continue
+                clean_doc_id = str(doc_id)
+                if allowed_scoped_ids is not None and clean_doc_id not in allowed_scoped_ids:
+                    continue
+                if supplier_account_ids is not None and str(item.get("accountId") or "") not in supplier_account_ids:
+                    continue
+                if clean_role == "editor" and not (
+                    str(item.get("byMemberId") or "") == clean_member_id
+                    or str(item.get("ownerId") or "") == clean_member_id
+                    or str(stored_owner_id or "") == clean_member_id
+                    or str(item.get("productionId") or "") in editor_production_ids
+                ):
+                    continue
+                result.append({
+                    "id": clean_doc_id,
+                    "viewCount": _int_at_least_zero(item.get("viewCount")),
+                    "viewsUpdatedAt": _int_at_least_zero(item.get("viewsUpdatedAt")),
+                    "viewsUpdatedBy": str(item.get("viewsUpdatedBy") or ""),
+                    "exposureCount": _int_at_least_zero(item.get("exposureCount")),
+                    "exposureUpdatedAt": _int_at_least_zero(item.get("exposureUpdatedAt")),
+                    "exposureUpdatedBy": str(item.get("exposureUpdatedBy") or ""),
+                })
+            return result
+        finally:
+            conn.close()
+
+
 def update_supplier_asset_views(asset_id, view_count, member_id, role):
     """供应商观看量专用写入：母账号可更新供应商端交付，子账号仅可更新已分配账号。"""
     _ensure_db()
