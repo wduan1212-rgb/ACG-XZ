@@ -1,6 +1,6 @@
 # 星阵版本记录
 
-## v140.1 - 2026-08-05（平台生成稳定性与无限画布后台任务，待受保护部署）
+## v140.1 - 2026-08-05（平台生成稳定性与无限画布后台任务，已受保护部署）
 
 ### 本版范围
 
@@ -19,6 +19,17 @@
 - release verifier 通过：Phase 0 SHA-256 `f1f70d1d64326724fcb1a835b70edfc7d4dacd1b439c4095a924de93f2943b3d`；ESM `60` modules / `342` edges，closure SHA-256 `05c30ef13ebb71aae6894ec95ec7a2e2225e21ee94dd70f82ebe98533df08020`；canvas `63` files / `1,764,379` bytes；runtime `56` files / `2,727,506` bytes，manifest SHA-256 `146cfafc8773ff183d64b5256a0548e4bfbe7527da2a08b0533b11a8bf24ae57`。
 - 当前开发机系统 Python 3.9 与生产锁定 TestClient 闭包不一致，且工作树保留用户删除的旧 `logo.png`，因此未把系统 Python 直接运行的 51 个环境错误计作代码回归。正式主服务全量必须在最终干净提交、目标 Linux / CPython 3.12 和验签离线测试 wheelhouse 中重新通过后才允许切换。
 - 部署只允许同步最终干净提交的代码和静态资源；不得覆盖 SQLite、账号/成员、资产/发布清单、草稿、分析数据、uploads、composed、canvas blobs、视频工坊 runtime、模型缓存、认证或私密环境。生产已在 schema `140007` 时不得重跑早期迁移。
+
+### 生产部署结果
+
+- 2026-08-05 从干净提交 `0d690d6` 建立 sibling release 并完成受保护切换，实际运行身份为 `20260805-v140-platform-stability-3`。主服务与视频工坊 sidecar 均已恢复正常读写，`/api/ready` 返回 `ready=true / writeReady=true`，SQLite `quick_check=ok`。
+- 目标 Linux / CPython 3.12 验签既有三套锁定 wheelhouse，并重新执行主 runtime 与 sidecar 离线 install-check。主服务锁定全量收集 `720` 项、`719` 通过且只有批准的旧 v120 快照项跳过；视频工坊 `140/140`、Node `120/120`。服务器 release verifier 与本地最终闭包一致。
+- 部署前创建并验证独立 SQLite v2 备份、代码/静态回滚点和受保护目录基线。切换前后 SQLite 仍为 `42` 张表、总行数 `37,465`，主要集合与 uploads `4,545`、composed `859`、canvas blobs `481`、视频工坊 projects `34` / uploads `123` / outputs `955` 均无减少；私密环境未替换。
+- 私有媒体只读 preflight 已闭合：`ambiguousFiles=0`、`pendingRows=0`、registry conflict / missing owner / missing reference / team binding conflict 均为 `0`。供应商绑定媒体新增规则没有扩大任意私有 URL 读取权限。
+- 服务器私密配置继续由服务端统一提供。管理员与普通创作者的 LLM、TTS、图片、Seedance / 数字人配置均返回 configured / reachable；真实最小 LLM、TTS、图片和 Seedance 提交与轮询均成功。未把 Key 写入前端、仓库或部署记录。
+- 团队指标做了全量只读核对：`680` 条已交付数据中 `153` 条由供应商子账号更新过观看量或曝光量；更新者、对应供应商父账号与创作端管理员的缺失数和字段不一致数均为 `0`，证明专用轻量同步已在线生效。
+- 生产浏览器加载目标缓存，1280px 与 1024px 两档均无横向溢出或白屏；游客访问受保护入口会正确打开登录层。日志观察窗口内主服务与 sidecar 均无新增应用级 traceback、5xx 或超时。
+- 代码/静态回滚目录已按既定策略轮换并复核为最新 `5` 份。该轮换不涉及数据库快照、上传、成片、画布、视频工坊 runtime 或部署证据；当前直接回滚点为前一 sibling release `20260805-v140-platform-stability-2-1b41200`，回滚只允许切换代码和静态资源。
 
 ## v140 - 2026-08-04（生产已受保护运行 `9e8aeb5`；当前 P0 候选待部署）
 
