@@ -245,6 +245,32 @@ class ModelUsageSettlementTest(unittest.TestCase):
         self.assertEqual(before, logical_database_dump(store.DB_PATH))
         self.assertEqual(2, len(store.unresolved_model_usage_receipts()))
 
+    def test_legacy_media_error_unit_is_normalized_without_weakening_identity(self):
+        operation_id = "video-workshop:project-a:storyboard:operation-b"
+        sidecar = self.sidecars[operation_id]
+        sidecar["unitLabel"] = "次"
+        plan, plan_sha256, snapshot = self._plan()
+
+        first = self._apply(plan, plan_sha256, snapshot)
+        self.assertTrue(first["applied"])
+        with sqlite3.connect(store.DB_PATH) as conn:
+            unit_label = conn.execute(
+                "SELECT unit_label FROM model_usage_receipts WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()[0]
+        self.assertEqual("张", unit_label)
+
+    def test_legacy_unit_compatibility_rejects_other_identity_drift(self):
+        operation_id = "video-workshop:project-a:storyboard:operation-b"
+        sidecar = self.sidecars[operation_id]
+        sidecar["unitLabel"] = "次"
+        sidecar["feature"] = "不同任务"
+        plan, plan_sha256, snapshot = self._plan()
+        with self.assertRaisesRegex(
+            store.StoreNotReadyError, "immutable identity mismatch",
+        ):
+            self._apply(plan, plan_sha256, snapshot)
+
     def test_plan_must_cover_the_entire_unresolved_set(self):
         plan, _plan_sha256, snapshot = self._plan()
         plan["entries"] = plan["entries"][:1]

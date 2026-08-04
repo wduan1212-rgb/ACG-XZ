@@ -152,6 +152,33 @@ class ModelUsageReceiptTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("reconciled", receipts[0]["reconcileState"])
         self.assertNotIn("prompt", json.dumps(receipts, ensure_ascii=False).lower())
 
+    def test_terminal_error_does_not_rewrite_submitted_media_identity(self):
+        with usage_receipts.project_usage_scope("usage-project"):
+            operation_id = usage_receipts.new_operation_id("static-image-scene-1")
+            usage_receipts.record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊静态分镜",
+                usage_kind="image",
+                provider="image-api",
+                model="image-model",
+                status="submitted",
+                output_units=1,
+                unit_label="张",
+            )
+            usage_receipts.record_model_usage_receipt(
+                operation_id,
+                feature="视频工坊静态分镜",
+                usage_kind="image",
+                provider="image-api",
+                model="image-model",
+                status="unknown",
+            )
+
+        receipt = self._receipts()[0]
+        self.assertEqual("unknown", receipt["status"])
+        self.assertEqual("张", receipt["unitLabel"])
+        self.assertEqual("image-model", receipt["model"])
+
     async def test_llm_receipt_is_durable_before_http_and_captures_tokens(self):
         _Client.response = _Response(
             200,

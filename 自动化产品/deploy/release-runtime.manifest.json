@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260804-v140-usage-settlement-1",
   "fileCount": 56,
-  "totalBytes": 2702287,
+  "totalBytes": 2703538,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -56,8 +56,8 @@
     },
     {
       "path": "apps/video-workshop/app/usage_receipts.py",
-      "size": 8251,
-      "sha256": "29fea8959995878c8210630990a50430a1e7b247a844928ee92573f3176914a5"
+      "size": 8606,
+      "sha256": "7640171591c5de45d022e32e17c74d8fbbdde5ca2dbd0a7be6e4177096e138d9"
     },
     {
       "path": "apps/video-workshop/app/video_skill.py",
@@ -276,8 +276,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 719120,
-      "sha256": "d1234aa3dc98a846003f344378526bd8caef89e0646e65b21673d330a13ba719"
+      "size": 720016,
+      "sha256": "23f6843f8a2f77f654563904aef2831af99ae74caa6c5525fd73626c4850b77d"
     },
     {
       "path": "tools/verify_release_contracts.py",

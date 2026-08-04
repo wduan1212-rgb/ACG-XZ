@@ -13,6 +13,17 @@ from .store import mutate_project
 _project_id: ContextVar[str] = ContextVar("video_workshop_usage_project_id", default="")
 _VALID_STATUSES = {"submitted", "unknown", "failed", "confirmed", "succeeded"}
 _VALID_USAGE_KINDS = {"llm", "image", "video", "voice"}
+_IMMUTABLE_RECEIPT_FIELDS = {
+    "schemaVersion",
+    "operationId",
+    "surface",
+    "projectId",
+    "feature",
+    "usageKind",
+    "provider",
+    "model",
+    "unitLabel",
+}
 
 
 def _now() -> str:
@@ -200,6 +211,10 @@ def record_model_usage_receipt(
             for key, value in receipt.items():
                 if key in {"occurredAt", "reconcileState"}:
                     continue
+                if key in _IMMUTABLE_RECEIPT_FIELDS:
+                    if not existing.get(key) and value:
+                        existing[key] = value
+                    continue
                 if key == "status":
                     # `submitted` is durably written before the HTTP call to
                     # close the crash window. A later observation must be able
@@ -209,7 +224,7 @@ def record_model_usage_receipt(
                         continue
                     if previous_status == "confirmed" and normalized_status not in {"confirmed", "succeeded"}:
                         continue
-                if key in {"providerRef", "model"} and not value:
+                if key == "providerRef" and not value:
                     continue
                 if key in {"inputTokens", "outputTokens", "totalTokens", "outputUnits"}:
                     existing[key] = max(_safe_non_negative_int(existing.get(key)), value)

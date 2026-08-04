@@ -10228,6 +10228,14 @@ def _model_usage_sidecar_event_ms(value):
     return max(0, int(parsed.timestamp() * 1000))
 
 
+_VIDEO_WORKSHOP_USAGE_UNIT_LABELS = {
+    "llm": "次",
+    "image": "张",
+    "video": "秒",
+    "voice": "字符",
+}
+
+
 def _model_usage_settlement_completion(entry, sidecar, central):
     operation_id = entry["operationId"]
     if str(sidecar.get("operationId") or "") != operation_id:
@@ -10265,8 +10273,24 @@ def _model_usage_settlement_completion(entry, sidecar, central):
         "model": required_identity["model"],
         "unitLabel": str(sidecar.get("unitLabel") or "").strip()[:24],
     }
-    expected_fingerprint = _canonical_json_sha256(immutable_sidecar)
-    if central.get("requestFingerprint") != expected_fingerprint:
+    expected_fingerprints = {_canonical_json_sha256(immutable_sidecar)}
+    normalized_unit_label = immutable_sidecar["unitLabel"]
+    legacy_unit_label = _VIDEO_WORKSHOP_USAGE_UNIT_LABELS.get(
+        required_identity["usageKind"], "",
+    )
+    if (
+        normalized_unit_label == "次"
+        and legacy_unit_label
+        and legacy_unit_label != normalized_unit_label
+    ):
+        # Older sidecar error paths rewrote the submitted media unit to the
+        # recorder's default. Accept only the fingerprint of that exact typed
+        # initial unit; every other immutable field must still match above.
+        legacy_identity = dict(immutable_sidecar)
+        legacy_identity["unitLabel"] = legacy_unit_label
+        expected_fingerprints.add(_canonical_json_sha256(legacy_identity))
+        normalized_unit_label = legacy_unit_label
+    if central.get("requestFingerprint") not in expected_fingerprints:
         raise StoreNotReadyError(
             f"model usage settlement request fingerprint mismatch:{operation_id}"
         )
@@ -10311,7 +10335,7 @@ def _model_usage_settlement_completion(entry, sidecar, central):
         "totalTokens": total,
         "calls": 1,
         "outputUnits": output_units,
-        "unitLabel": immutable_sidecar["unitLabel"],
+        "unitLabel": normalized_unit_label,
         "error": error,
         "eventAt": _model_usage_sidecar_event_ms(sidecar.get("occurredAt")),
     }
