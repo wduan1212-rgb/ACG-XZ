@@ -126,6 +126,38 @@ let toastTimer = null;
 let clientIdSequence = 0;
 const compositionStates = new WeakMap();
 
+const CONVERSATION_BOTTOM_THRESHOLD = 140;
+
+function captureConversationScroll(column) {
+  if (!column) return { scrollTop: 0, wasNearBottom: true };
+  const scrollTop = Math.max(0, Number(column.scrollTop) || 0);
+  const scrollHeight = Math.max(0, Number(column.scrollHeight) || 0);
+  const clientHeight = Math.max(0, Number(column.clientHeight) || 0);
+  return {
+    scrollTop,
+    wasNearBottom: scrollHeight - scrollTop - clientHeight < CONVERSATION_BOTTOM_THRESHOLD,
+  };
+}
+
+function scheduleConversationScroll(column, snapshot, { forceBottom = false, smooth = false } = {}) {
+  if (!column) return;
+  window.requestAnimationFrame(() => {
+    if (forceBottom || snapshot.wasNearBottom) {
+      const top = Math.max(0, Number(column.scrollHeight) || 0);
+      if (typeof column.scrollTo === "function") {
+        column.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
+      } else {
+        column.scrollTop = top;
+      }
+      return;
+    }
+    // Replacing the message DOM must not move a reader who has scrolled back
+    // through history.  Directly changing this container cannot scroll an
+    // embedded parent page, unlike scrolling a message element into view.
+    column.scrollTop = snapshot.scrollTop;
+  });
+}
+
 function createClientId() {
   const cryptoApi = globalThis.crypto;
   if (typeof cryptoApi?.randomUUID === "function") {
@@ -937,24 +969,16 @@ function renderConversation(project) {
   });
   if (signature === state.messageSignature) return;
   state.messageSignature = signature;
-  const previousCount = dom.conversation.children.length;
-  const wasNearBottom = dom.conversationColumn.scrollHeight - dom.conversationColumn.scrollTop - dom.conversationColumn.clientHeight < 140;
+  const scrollSnapshot = captureConversationScroll(dom.conversationColumn);
   const messages = (project.messages || []).map((message) => createMessage(message, message.id === retryMessageId));
   if (project.status === "running") messages.push(createLiveProductionIndicator(project));
   dom.conversation.replaceChildren(...messages);
   const pendingScrollId = state.pendingScrollMessageId;
-  if (pendingScrollId) {
-    state.pendingScrollMessageId = "";
-    window.requestAnimationFrame(() => {
-      const target = [...dom.conversation.children]
-        .find(item => item.dataset.messageId === pendingScrollId);
-      target?.scrollIntoView({ block: "center", behavior: "smooth" });
-    });
-  } else if ((project.messages || []).length !== previousCount && wasNearBottom) {
-    window.requestAnimationFrame(() => {
-      dom.conversationColumn.scrollTo({ top: dom.conversationColumn.scrollHeight, behavior: "smooth" });
-    });
-  }
+  state.pendingScrollMessageId = "";
+  scheduleConversationScroll(dom.conversationColumn, scrollSnapshot, {
+    forceBottom: Boolean(pendingScrollId),
+    smooth: Boolean(pendingScrollId),
+  });
 }
 
 function renderEvents(project) {

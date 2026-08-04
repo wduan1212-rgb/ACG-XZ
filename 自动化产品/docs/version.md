@@ -1,6 +1,6 @@
 # 星阵版本记录
 
-## v140 - 2026-08-04（生产已受保护运行 `9e8aeb5`；供应商交付媒体与成片发布修复待部署）
+## v140 - 2026-08-04（生产已受保护运行 `9e8aeb5`；视频工坊滚动修复待部署）
 
 ### 本版范围
 
@@ -17,6 +17,7 @@
 - 新增 expand-only schema `140005`：`video_compose_operations` 以 owner + 确定性 production/timeline 指纹建立 SQLite 原子 claim。成功成片与 `private_media_registry` 在同一 `BEGIN IMMEDIATE` 提交；同标签页复用进程内 Promise，跨标签页/跨进程由持久账本等待并复用同一 URL，失败行可重新 claim。浏览器 `artifacts.composing` 只表示展示态，不再作为“刷新中断”的失败依据；服务端 pending 或浏览器 180 秒停止等待都保持 running，下一次水合用同一请求查询账本并在成功后进入 review。
 - 供应商交付媒体读取改为三重精确授权：请求必须携带持久化交付 ID，当前 supplier parent/child 必须通过既有团队、账号与 child binding 可见性，目标文件又必须恰好是该交付的 `coverAssetId` / `packAssetIds` / `sourceAssetId` 或最终 `videoUrl`。这不会让供应商成为 team member，也不授予其他私有 URL、删除或覆盖权限；历史绝对 URL 只接受明确配置的本站 public origin。图文/视频 ZIP 任一必备媒体读取失败时直接显示报错并停止，不再静默产出只有文案的伪完整 ZIP。
 - 视频工坊的“发布成片”以被点击 delivery/output 的已持久化记录为权威，不再要求项目顶层 `status=succeeded`。因此项目回到 conversation/brief 后的当前成片和历史交付仍可发布；策略只接受当前项目 ID 下的站内成片路径，拒绝空 URL、failed/running output、路径穿越、外链与跨项目伪造，并以项目中的 canonical output 覆盖请求传入的可疑 URL。
+- 视频工坊发送消息后只滚动 `.conversation-column`，不再对消息节点调用会联动所有可滚动祖先的元素定位 API。每次对话 DOM 重绘前记录容器 `scrollTop` 与距底部状态：显式发送强制让新用户消息和 pending 回复进入可视区，原本接近底部的轮询继续跟随；正在阅读历史消息时则恢复原位置，项目轮询、状态更新和普通重绘都不得把外层工作区带回顶部。
 
 ### 验证、Git 与生产边界
 
@@ -34,8 +35,9 @@
 - 失败终态修复新增可执行回归：11 条真人/数字人旧等待任务及关联 queued job 全部一次性归一为 failed，二次刷新零变化；只有 pending 可自动生成，failed job 不参与队列或恢复。当时统一缓存/release 身份为 `20260804-v140-failed-generation-terminal-1`。独立无 `.env*` detached 工作树的主服务锁定全量为 `692` 项收集、`691` 通过、唯一批准快照项跳过；视频工坊 `137/137`、Node `100/100`、改动 JavaScript 语法和 release verifier 均通过。最终闭包为 60 个 ESM 模块/342 条边、63 个画布文件/1,759,226 bytes、54 个 backend/video runtime 文件/2,594,597 bytes；Phase 0 SHA-256 为 `2228814d9080f1f80805cef8ec8986743b25901babc6a0b887310d152c3674c0`，runtime manifest SHA-256 为 `c1ec0008e0478d02e4aea132f7b3012aa6ba121028ac3d80c94acc5c519e8e05`。
 - 本轮 hydration/compose 候选在独立 detached 工作树、无 `.env*`、CPython 3.12.13 与验签 20 包测试 wheelhouse 中完整收集主服务 `696` 项：`695` 通过，唯一跳过仍是批准的旧 v120 快照项；视频工坊 `137/137`、Node `109/109` 通过。两个并发标签页只执行一次 render、只产生一份成片和一条媒体归属，失败后第二次请求可重试，成功重放复用同一 URL，不同 owner 分别隔离。`140005` 精确 apply 第一次 `appliedVersions=[140005]`、第二次零写，readiness `ok=true`、dirty=0。应用 `140005` 后再用生产当前 `9e8aeb5` 代码执行 production/validate/read-only 的 `database_readiness()` 与 `_ensure_db()` 均通过，SQLite 文件前后 SHA-256 同为 `47902a4ee70a972a68f03806086cb1f34375fcf1f9b6e96afb59290f266e33fb`，证明 extra success ledger/table 不破坏只读前向回滚。最终闭包为 60 个 ESM 模块/342 条边、63 个画布文件/1,759,226 bytes、54 个 backend/video runtime 文件/2,612,253 bytes；Phase 0 SHA-256 为 `887e186b8c0dcf66d76d2336f4735d9c9239f20e0b59468801ba2146898605fa`，runtime manifest SHA-256 为 `5d86b5a728b575d2d83c59c6111145aae485cab564b7ee9b75aea110f12bac9c`。
 - 本轮供应商交付媒体/成片发布候选在新的干净 detached 工作树中以无 `.env*`、`env -i`、CPython 3.12.13 和验签离线 wheelhouse 复验：主服务收集 `697` 项，`696` 通过，唯一跳过为获准的旧 v120 只读快照；视频 sidecar `139/139`、Node `111/111` 通过。主服务 20 包测试锁与 sidecar 37 包运行锁都通过 `--no-index --no-deps`、exact-installed 和 `pip check`；发布端对所有改动 JavaScript 做语法检查，Python compileall 通过。供应商 parent/已绑定 child、未绑定 child、跨 team、交付外媒体、Range、写权拒绝、本站绝对 URL/伪造外域以及图片/视频真实 ZIP entries 均有可执行回归。最终闭包为 60 个 ESM 模块/342 条本地边、63 个画布文件/1,759,226 bytes、55 个 backend/video runtime 文件/2,621,863 bytes；Phase 0 SHA-256 为 `dc26b5f51ac69e2c004686d3f03e0cfa90c25808788ff821f35eac0fd5d29ac9`，runtime manifest SHA-256 为 `ca1853fd2112331c9bd4e3c1bdac069ef53bb3925161ee6f54a729f04d59a6af`。
+- 本轮视频工坊滚动候选新增两条 Node DOM 门禁：发送路径不能出现消息元素定位调用，且只把 `.conversation-column` 平滑滚到底部；轮询重绘对历史阅读位置精确恢复 `scrollTop`，接近底部才自动跟随。CPython 3.12.13 按 37 项 sidecar lock 离线 `--no-deps` 安装并通过 `pip check` 后，视频工坊 `139/139`；Node 全量 `113/113`、相关主服务/发布契约测试 `72/72`、全部改动 JavaScript 语法检查和 release verifier 均通过。统一缓存为 `20260804-v140-workshop-scroll-1`；闭包仍为 60 个 ESM 模块/342 条边、63 个画布文件/1,759,226 bytes、55 个 runtime 文件/2,622,600 bytes，Phase 0 SHA-256 为 `4855256a67b2389e8caf4813e7a43928329d2faa347bfc90178e518cc6b4e182`，runtime manifest SHA-256 为 `95ed3be8ae3ae2f2d337adcb36fdfb188ff8e98ef82fdcc6288c4da90e028238`。该证据未连接生产，目标 Linux 仍须从最终推送 SHA 重建并验签。
 - 当前生产已完成 v140 受保护迁移并运行 `9e8aeb5`；本轮部署只允许在新的完整 snapshot/备份绑定和维护窗中增量执行 expand-only `140005`，不得重跑历史团队/资源/媒体迁移，也不得覆盖现有数据库或持久媒体。代码回滚到 `9e8aeb5` 可保持只读验收，但它不理解新合成账本，不能在仍有 running compose claim 时作为长期 RW 版本使用。
-- 生产已按受保护流程运行 `9e8aeb5`，主服务、sidecar 与数据完整性正常；本轮供应商交付媒体与视频工坊成片发布修复仍是本地候选，未部署、未连接或修改生产数据。两份 Project Memory 与 `logo.png` 的归属未知删除继续排除。
+- 生产已按受保护流程运行 `9e8aeb5`，主服务、sidecar 与数据完整性正常；本轮视频工坊滚动修复仍是本地候选，未部署、未连接或修改生产数据。两份 Project Memory 与 `logo.png` 的归属未知删除继续排除。
 
 ## v139 - 2026-08-03（统一模型用量持久凭证与副本恢复工具；本地代码 `7b6e36c`，未推送、未部署）
 

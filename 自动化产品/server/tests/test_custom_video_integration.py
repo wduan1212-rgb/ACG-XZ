@@ -244,8 +244,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260804-v140-delivery-media-publish-1", html)
-        self.assertIn("app.js?v=20260804-v140-delivery-media-publish-1", html)
+        self.assertIn("styles.css?v=20260804-v140-workshop-scroll-1", html)
+        self.assertIn("app.js?v=20260804-v140-workshop-scroll-1", html)
         self.assertIn('data-creation-mode="video" aria-pressed="true">动态</button>', html)
         self.assertIn('data-creation-mode="static" aria-pressed="false">静态</button>', html)
         self.assertNotIn(">动态视频</button>", html)
@@ -380,9 +380,11 @@ for (const candidate of [
             "stopProject(",
             "/cancel",
             "pendingScrollMessageId",
-            'scrollIntoView({ block: "center", behavior: "smooth" })',
+            "captureConversationScroll(dom.conversationColumn)",
+            "forceBottom: Boolean(pendingScrollId)",
         ):
             self.assertIn(token, javascript)
+        self.assertNotIn("scrollIntoView(", javascript)
         self.assertIn("history-published-badge", css)
         self.assertIn("published-output-badge", css)
         self.assertIn(

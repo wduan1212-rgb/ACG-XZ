@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260804-v140-delivery-media-publish-1",
+  "releaseId": "20260804-v140-workshop-scroll-1",
   "fileCount": 55,
-  "totalBytes": 2621863,
+  "totalBytes": 2622600,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100720,
-      "sha256": "b2d8905ae76ed9a3873658b2d71c270e072a8306fcc99f6091c5796a5acb8a92"
+      "size": 100713,
+      "sha256": "f5bcc6cf4be6a3d9ca9bfab5b7cf2653659d225a4a4c14d305358159b254a0f9"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -141,8 +141,8 @@
     },
     {
       "path": "apps/video-workshop/web/assets/app.js",
-      "size": 99764,
-      "sha256": "6895cb73755ab7bfda00810d8dbabafd84a7728224d12c828665d10983b9eccb"
+      "size": 100529,
+      "sha256": "579566d0d0b7760547438694e004c1482d4315d2bb766d92ebd50a69fa49d9f1"
     },
     {
       "path": "apps/video-workshop/web/assets/lucide.min.js",
@@ -166,8 +166,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22391,
-      "sha256": "d493f1f499a063ee8ac25fe226f19e199444518c71e6d7d6b7442c67fd07ceef"
+      "size": 22370,
+      "sha256": "500cf079ed27f60c168cb8c0dd65f2805aebfd66886e23c26ed59aba6b8ed901"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
