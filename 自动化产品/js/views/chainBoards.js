@@ -9,10 +9,10 @@ import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260803-v140-deployment-readiness-1";
-import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260803-v140-deployment-readiness-1";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260804-v140-failed-generation-terminal-1";
+import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260804-v140-failed-generation-terminal-1";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260803-v140-deployment-readiness-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260804-v140-failed-generation-terminal-1";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;
@@ -995,7 +995,7 @@ export function renderSlotsPage(root, p, isImg) {
     it.referenceReceipt = null;
     save("productions");
     const complete = (A.items || []).every(x => x.assetId);
-    if (complete && p.stageStatus === "needs_input") maybeAdvanceAfterInput(p);
+    if (complete && ["failed", "pending"].includes(p.stageStatus)) maybeAdvanceAfterInput(p);
     toast(`${isImg ? "已上传并完成发布前精修" : "已上传"} ${i + 1}/${A.items.length}${complete ? " ✓ 全部就位" : ""}`);
   }
 

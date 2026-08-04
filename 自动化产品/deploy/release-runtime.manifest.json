@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260803-v140-deployment-readiness-1",
+  "releaseId": "20260804-v140-failed-generation-terminal-1",
   "fileCount": 54,
-  "totalBytes": 2594579,
+  "totalBytes": 2594597,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100718,
-      "sha256": "9487cb401068e7e184cc8372eebd41f847f0cb96bbd5cedead315ca63404f303"
+      "size": 100724,
+      "sha256": "dc61c7649b4e134ce83ff53c68c484b9f10d76712aea9d726362997090c543da"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -161,8 +161,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22293,
-      "sha256": "4e0b3ada5c6f8c8098e98f89b48f9d201e9ff65160a74a8d01af89b713af9901"
+      "size": 22305,
+      "sha256": "c25cdadbb505f0700cb1f0cddaf6213c51ec20582b71553c67bd5824713156cd"
     },
     {
       "path": "deploy/docker_entrypoint.sh",

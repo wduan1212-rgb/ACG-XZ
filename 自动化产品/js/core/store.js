@@ -4,6 +4,7 @@ import { db } from "./db.js";
 import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
 import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js";
+import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js";
 
 const DEFAULT_ADMIN_USERNAME = String.fromCharCode(97, 100, 109, 105, 110);
 const LEGACY_ADMIN_USERNAME = String.fromCharCode(121, 117, 120, 117, 97, 110);
@@ -268,6 +269,11 @@ export async function loadAll() {
     db.metaGet("role").catch(() => null)
   ]);
   db.collections.forEach((c, index) => { state[c] = collectionRows[index] || []; });
+  const normalizedFailureFallbacks = normalizeLegacyInputFallbackState(state);
+  for (const [collection, count] of Object.entries(normalizedFailureFallbacks)) {
+    if (!count || !db.collections.includes(collection)) continue;
+    await db.replaceAll(collection, JSON.parse(JSON.stringify(state[collection] || []))).catch(() => null);
+  }
   state.members = membersMeta || [];
   const productMeta = productMetaRaw || [];
   if (!state.products.length && productMeta.length) state.products = productMeta;
@@ -465,6 +471,7 @@ function applyRemoteSnapshot(snap, requested = REMOTE_STATE_COLLECTIONS) {
     applied.push(name);
   });
   if (Array.isArray(snap?.members)) state.members = cloneRemoteRows(snap.members);
+  normalizeLegacyInputFallbackState(state);
   state.notifications.sort((a, b) => (b.ts || 0) - (a.ts || 0));
   state.sessions.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   return applied;
@@ -504,12 +511,17 @@ async function fetchRemoteStateGroup(collections, isCurrent = () => true) {
 
 async function cacheRemoteSnapshot(snap, collections, phase = "background", isCurrent = () => true) {
   const startedAt = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const normalizedSnapshot = {};
+  REMOTE_STATE_COLLECTIONS.forEach(name => {
+    if (Array.isArray(snap?.[name])) normalizedSnapshot[name] = cloneRemoteRows(snap[name]);
+  });
+  normalizeLegacyInputFallbackState(normalizedSnapshot);
   for (const name of collections) {
     if (!Array.isArray(snap?.[name])) continue;
     if (!isCurrent()) return false;
     await idleTurn();
     if (!isCurrent()) return false;
-    const rows = cloneRemoteRows(snap[name]);
+    const rows = normalizedSnapshot[name] || cloneRemoteRows(snap[name]);
     try { await db.replaceAll(name, rows); } catch (_) { /* 本地缓存失败不影响服务端权威状态 */ }
   }
   if (Array.isArray(snap?.members) && isCurrent()) {

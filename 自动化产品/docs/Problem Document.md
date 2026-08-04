@@ -4,6 +4,14 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-04 v140 生产阻断修复：failed 不能被“非 running”条件重新派发，也不能降级为等待人工补图
+
+- **生产现象**：11 条真人/数字人任务显示“等待补图/上传”，同时 jobs 在 queued/failed 间持续波动。旧客户端把图片服务不可用、图片未完整返回或数字人口播准备失败写成 `needs_input`，批次进入 `awaiting_input` 并生成跨任务自动填图卡。
+- **更深根因**：批次评估把所有 `stageStatus !== running` 的 workshop 都算作待生成，其中包括真正的 `failed`；一次 job 终态失败后，下一轮 evaluate 又调用 startGeneration，造成失败任务刷新复活和持续重派。JobRunner 的队列/恢复也没有检查父 production 是否已失败。
+- **修复**：只有明确 `pending` 的 production 能自动进入站内生成；图片/数字人准备失败直接保存可读 error 的 failed，JobRunner 排除 failed 父任务，刷新恢复不自动重试 failed。旧 needs/awaiting 状态、上传提示消息和其关联的活跃 job 通过纯幂等归一器转成 failed，原始服务端快照或 IndexedDB 缓存再次到达也不会复活。
+- **主动上传边界**：删除等待上传卡、对话粘贴和批次缺口的自动分发；任务行、详情、参考图选择器与资产库仍允许用户主动、定向上传。主动上传完成后只对当前明确的 failed/pending 任务推进，不把上传重新做成生成失败的默认后继。
+- **防回归**：至少覆盖 11 条真人/数字人旧状态、queued job 收尾、二次归一零变化、failed 不可自动生成、刷新不自动重试、图片/数字人失败写 failed，以及运行源码不再产生 needs_input/awaiting_input。缓存身份必须同步更新，否则一年 immutable 的旧 JS 仍可能执行已删除分支。
+
 ## 2026-08-04 v140 生产门禁修复：内容一致的恢复副本仍可能因纳秒 mtime 漂移而不是同一媒体恢复点
 
 - **目标环境症状**：`927bd29` 的 complete snapshot/verify/restore-drill 在生产形态隔离副本上完成后，五类媒体共 6,713 个文件无缺失、无多余、无 size 或内容 SHA 差异，但 6,688 个 `st_mtime_ns` 与 manifest 不完全相等，最大差 120ns。第七步 media-preflight 因此报告 `snapshotInventoryMismatch=1`；这是精确绑定生效，不是历史媒体归属歧义。

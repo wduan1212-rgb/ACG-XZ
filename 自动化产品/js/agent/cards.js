@@ -5,7 +5,7 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset, accountCreatedToday, isAccountDisabled } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260803-v140-deployment-readiness-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260804-v140-failed-generation-terminal-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -331,55 +331,22 @@ const CARD = {
     if (!b) return `<div class="ag-bubble agent">批次已不存在</div>`;
     const prods = batchProds(b);
     const seg = (label, n, cls) => n ? `<span class="agp-seg ${cls}"><b>${n}</b>${label}</span>` : "";
-    const c = { draft: 0, wait: 0, gen: 0, review: 0, done: 0, fail: 0 };
+    const c = { draft: 0, gen: 0, review: 0, done: 0, fail: 0 };
     prods.forEach(p => {
       if (p.stageStatus === "failed") c.fail++;
       else if (p.stage === "delivered") c.done++;
       else if (p.stage === "review") c.review++;
       else if (p.stage === "render" || p.stage === "workshop" || (p.stage === "images" && p.stageStatus === "running")) c.gen++;
-      else if (p.stageStatus === "needs_input") c.wait++;
       else c.draft++;
     });
     const pct = prods.length ? Math.round(c.done / prods.length * 100) : 0;
-    const PHASE = { drafting: "批量起草中", awaiting_input: "等待上传", generating: "生成中", review: "待发布", done: "已完成" };
+    const PHASE = { drafting: "批量起草中", generating: "生成中", review: "待发布", done: "已完成" };
     return `<div class="ag-card live" data-live="batch" data-batch="${b.id}">
       <div class="agc-head">${icon("pulse", 15)}<b>「${esc(b.topic)}」</b><span class="agc-state run">${PHASE[b.phase] || b.phase}</span></div>
       <div class="agp-bar"><i style="width:${pct}%"></i></div>
       <div class="agp-segs">
-        ${seg("起草", c.draft, "draft")}${seg("待上传", c.wait, "wait")}${seg("生成", c.gen, "gen")}${seg("待审", c.review, "review")}${seg("已交付", c.done, "done")}${seg("失败", c.fail, "fail")}
+        ${seg("起草", c.draft, "draft")}${seg("生成", c.gen, "gen")}${seg("待审", c.review, "review")}${seg("已交付", c.done, "done")}${seg("失败", c.fail, "fail")}
       </div>
-    </div>`;
-  },
-
-  /* 等待上传卡：内嵌拖拽热区 + 缺口列表 */
-  need_input(m) {
-    const b = batchById(m.payload.batchId);
-    if (!b) return `<div class="ag-bubble agent">批次已不存在</div>`;
-    const prods = batchProds(b);
-    const waiting = prods.filter(p => p.stageStatus === "needs_input");
-    const rows = waiting.map(p => {
-      const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
-      const got = items.filter(x => x.assetId).length;
-      const acc = accountById(p.accountId);
-      return `<div class="agn-row">
-        <span class="dot" style="background:${gradFor(acc?.name || "")}"></span>
-        <b>${esc(acc?.name || "")}</b>
-        <span class="agn-bar"><i style="width:${items.length ? got / items.length * 100 : 0}%"></i></span>
-        <em>${got}/${items.length}</em>
-        <button class="link-btn" data-act="open-prod" data-pid="${p.id}">详情</button>
-      </div>`;
-    }).join("");
-    return `<div class="ag-card live" data-live="batch" data-batch="${b.id}">
-      <div class="agc-head">${icon("upload", 15)}<b>等待补图 / 上传</b><span class="agc-state wait">${waiting.length} 条任务</span></div>
-      <p class="agc-p">站内生成失败或需要人工补图时，把图片<b>直接拖进下面这块区域</b>（或拖到输入框），我会按顺序分发到各任务，全部就位后自动继续。</p>
-      ${rows ? `<div class="agn-list">${rows}</div>` : `<div class="agc-p ok">${icon("checkCircle", 14)} 已全部上传完成</div>`}
-      ${waiting.length ? `<div class="ag-drop" data-agdrop="${b.id}">
-        <span class="agd-rings"><i></i><i></i></span>
-        ${icon("upload", 18)}
-        <b>拖图到这里 · 自动按缺口分发</b>
-        <em>也可以点击选择（可多选）</em>
-        <input type="file" accept="image/*" multiple hidden data-agdrop-input="${b.id}" />
-      </div>` : ""}
     </div>`;
   },
 
@@ -501,7 +468,7 @@ export function boardRow(p) {
     let s = "idle";
     if (p.stage === "delivered" || i < curIdx || (i === curIdx && p.stageStatus === "done") || stageDone(p, st) && i <= curIdx) s = "done";
     if (i === curIdx && p.stage !== "delivered") {
-      s = p.stageStatus === "failed" ? "fail" : p.stageStatus === "running" ? "run" : p.stageStatus === "needs_input" ? "wait" : "cur";
+      s = p.stageStatus === "failed" ? "fail" : p.stageStatus === "running" ? "run" : "cur";
     }
     return `<span class="mb-dot ${s}" title="${STAGES[st].label}"><i></i></span>`;
   }).join(`<span class="mb-link"></span>`);
@@ -515,9 +482,6 @@ export function boardRow(p) {
     const ok = jobs.filter(j => j.status === "succeeded").length;
     const run = jobs.find(j => j.status === "running");
     sub = `<span class="mb-sub">渲染 ${ok}/${jobs.length}${run ? ` · ${run.progress}%` : ""}</span>`;
-  } else if (p.stageStatus === "needs_input") {
-    const items = (p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || [];
-    sub = `<span class="mb-sub">上传 ${items.filter(x => x.assetId).length}/${items.length}</span>`;
   } else if (p.stageStatus === "failed") {
     sub = `<span class="mb-sub fail-text">${esc((p.error || "失败").slice(0, 18))}</span>`;
   }

@@ -101,7 +101,7 @@ export async function migrateFromV4() {
   }
 
   // 快速批量任务 → 在制 production（已发布的跳过，publications 已覆盖）
-  const QMAP = { drafting: ["script", "pending"], awaiting: ["needs"], ready: ["ready"], failed: ["script", "failed"], check: ["review", "pending"], publish: ["review", "approved"] };
+  const QMAP = { drafting: ["script", "pending"], awaiting: ["script", "failed"], ready: ["ready"], failed: ["script", "failed"], check: ["review", "pending"], publish: ["review", "approved"] };
   for (const t of ((snap.quick && snap.quick.tasks) || [])) {
     try {
       if (t.status === "published" || !QMAP[t.status]) continue;
@@ -136,7 +136,11 @@ export async function migrateFromV4() {
       else if (t.status === "publish") { p.stage = "review"; p.stageStatus = "pending"; p.review.state = "approved"; }
       else if (t.status === "failed") { p.stage = "script"; p.stageStatus = "failed"; }
       else if (!p.artifacts.script.shots.length) { p.stage = "script"; p.stageStatus = "pending"; }
-      else if (!allBoards) { p.stage = isImg ? "images" : "boards"; p.stageStatus = "needs_input"; }
+      else if (!allBoards) {
+        p.stage = isImg ? "images" : "boards";
+        p.stageStatus = "failed";
+        p.error = "旧版任务的站内生成未完成；等待人工补图兜底已移除，请明确重试或主动打开任务上传素材。";
+      }
       else { p.stage = isImg ? "review" : "render"; p.stageStatus = "pending"; }
       state.productions.push(p); counts.productions++;
     } catch (e) { /* 跳过 */ }
@@ -178,7 +182,11 @@ export async function migrateFromV4() {
       // 阶段推断：取已有产物的最远阶段
       if (p.artifacts.timeline.length) { p.stage = "cut"; p.stageStatus = "pending"; }
       else if (!isImg && p.artifacts.prompts.length) { p.stage = "render"; p.stageStatus = "pending"; }
-      else if ((isImg ? p.artifacts.images.items : p.artifacts.boards.items).some(x => x.assetId)) { p.stage = isImg ? "images" : "boards"; p.stageStatus = "needs_input"; }
+      else if ((isImg ? p.artifacts.images.items : p.artifacts.boards.items).some(x => x.assetId)) {
+        p.stage = isImg ? "images" : "boards";
+        p.stageStatus = "failed";
+        p.error = "旧版草稿只保留了部分素材；系统不会自动等待补图，请主动打开任务补充或重新生成。";
+      }
       else if ((d.shots || []).length) { p.stage = isImg ? "images" : "boards"; p.stageStatus = "pending"; }
       state.productions.push(p); counts.productions++;
     } catch (e) { /* 跳过 */ }

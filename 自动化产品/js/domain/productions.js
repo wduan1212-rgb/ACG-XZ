@@ -95,7 +95,7 @@ export function normalizeStage(p) {
 }
 
 export const STATUS_LABEL = {
-  pending: "待开始", running: "进行中", needs_input: "等待上传", failed: "失败", done: "已完成"
+  pending: "待开始", running: "进行中", failed: "失败", done: "已完成"
 };
 
 export function blankArtifacts() {
@@ -356,7 +356,6 @@ export function statusPill(p) {
   if (p.stageStatus === "failed") return ["失败", "failed"];
   const stage = normalizeStage(p);
   if (p.stageStatus === "running") return [stage === "workshop" ? "全自动生成中" : STAGES[stage].label + "中", "running"];
-  if (p.stageStatus === "needs_input") return ["等待上传", "need-input"];
   if (stage === "review") {
     if (p.review.state === "approved") return ["审核通过", "approved"];
     if (p.review.state === "submitted") return ["已提交待审", "review"];

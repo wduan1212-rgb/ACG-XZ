@@ -6,9 +6,10 @@ import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationProm
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
+import { productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate } from "../domain/productionFailureState.js";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
-import { addAssetFromDataUrl, addAssetFromFile, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
+import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
@@ -827,7 +828,7 @@ export function createBatch(plan, sessionId) {
     tags: [], group: plan.group || "all",
     accountIds: plan.accountIds || [],
     productionIds: [],
-    phase: "drafting",         // drafting | awaiting_input | generating | review | done
+    phase: "drafting",         // drafting | generating | review | done
     autoAdvance: true,
     createdAt: Date.now(), updatedAt: Date.now()
   };
@@ -1293,9 +1294,9 @@ export function buildStaticVideoCustomCopyShots(copy, product) {
 }
 
 async function generateBatchImagesInHouse(p, batch, acc) {
-  if (!imageApiConfigured()) return false;
+  if (!imageApiConfigured()) throw new Error("图片生成服务未配置，无法执行站内生图");
   const provider = activeProviderFor("image");
-  if (!provider || provider.mock) return false;
+  if (!provider || provider.mock) throw new Error("图片生成服务当前不可用");
   const key = providerKeyFor("image", provider);
   const A = p.artifacts.images;
   const refGroups = imageRefGroupsFor(acc, batch, p);
@@ -1368,7 +1369,13 @@ async function generateBatchImagesInHouse(p, batch, acc) {
       throw err;
     }
   }
-  return items.length > 0 && items.every(x => x.assetId);
+  if (!items.length) throw new Error("站内生图计划没有可执行图片");
+  const unresolvedIndex = items.findIndex(item => !item.assetId);
+  if (unresolvedIndex >= 0) {
+    const unresolved = items[unresolvedIndex];
+    throw new Error(unresolved?.error || `第 ${unresolvedIndex + 1} 张图片缺少提示词或未返回结果`);
+  }
+  return true;
 }
 
 export async function regenerateBatchImage(p, imageIndex) {
@@ -1445,7 +1452,7 @@ async function runBatchImagesToReview(p, batch) {
   try {
     setBatchPhase(batch, "generating");
     const generated = await generateBatchImagesInHouse(p, batch, acc);
-    setStage(p, generated ? "review" : "images", generated ? "pending" : "needs_input");
+    setStage(p, "review", "pending");
     return generated;
   } catch (e) {
     setStatus(p, "failed", "站内图片生成失败：" + (e.message || e));
@@ -1589,8 +1596,8 @@ async function queueBatchDigitalHuman(p, batch, acc, product) {
   if (!prepared.ready) {
     A.digitalHuman = A.digitalHuman || { segments: [] };
     A.digitalHuman.error = prepared.error;
-    setStage(p, "workshop", "needs_input");
-    setStatus(p, "needs_input", prepared.error);
+    setStage(p, "workshop", "failed");
+    setStatus(p, "failed", prepared.error);
     save("productions");
     return false;
   }
@@ -2882,6 +2889,7 @@ export async function startBatch(plan, session) {
 
 /* ---------- 上传完成后的推进 ---------- */
 export function maybeAdvanceAfterInput(p) {
+  if (!productionCanAdvanceAfterExplicitUpload(p)) return false;
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   if (!items.length || !items.every(x => x.assetId)) return false;
@@ -2903,7 +2911,7 @@ export function startGeneration(batch) {
       if (p.staticVideo || batch.contentKind === "static") {
         return;
       }
-      if (p.stage === "workshop" && p.stageStatus !== "running") {
+      if (p.stage === "workshop" && productionCanAutoGenerate(p)) {
         const n = createUnitVideoJobs(p);
         if (n) { setStatus(p, "running"); jobs += n; }
       }
@@ -2942,7 +2950,7 @@ export function retryFailedIn(batch) {
     const jobStage = p.stage === "render" || p.stage === "workshop";
     if (p.stageStatus !== "failed") {
       // 渲染/工坊中的失败 job 也重试
-      if (jobStage) jobsOf(p).filter(j => j.status === "failed").forEach(j => { retryJob(j.id); setStatus(p, "running"); n++; });
+      if (jobStage) jobsOf(p).filter(j => j.status === "failed").forEach(j => { setStatus(p, "running"); retryJob(j.id); n++; });
       return;
     }
     if (p.stage === "script") { setStatus(p, "pending"); draftOne(p, batch).then(() => evaluate(batch.id)); n++; }
@@ -2958,6 +2966,8 @@ export function retryFailedIn(batch) {
       n++;
     }
     else if (jobStage) {
+      // 明确重试先离开 failed 终态，否则 job runner 的失败任务门禁会拒绝此次重试。
+      setStatus(p, "running");
       const failed = jobsOf(p).filter(j => j.status === "failed");
       if (failed.length) failed.forEach(j => retryJob(j.id));
       else if (p.stage === "workshop") {
@@ -2973,7 +2983,7 @@ export function retryFailedIn(batch) {
         }
         createUnitVideoJobs(p);
       }
-      setStatus(p, "running"); n++;
+      n++;
     } else { setStatus(p, "pending"); n++; }
   });
   if (n && batch.phase === "review") { batch.phase = "generating"; save("batches"); }
@@ -2994,8 +3004,6 @@ export function evaluate(batchId) {
     batch.emitted = {};
     const msgs = session.messages || [];
     const has = (type, pred) => msgs.some(x => x.type === type && x.payload?.batchId === batch.id && (pred ? pred(x) : true));
-    if (has("need_input", x => x.payload?.mode !== "confirm_generate")) batch.emitted.awaiting_input = true;
-    if (has("need_input", x => x.payload?.mode === "confirm_generate")) batch.emitted.gen_wait = true;
     if (has("approval")) batch.emitted.review = true;
     if (has("results")) batch.emitted.done = true;
     if (has("error")) batch.emitted.allfail = true;
@@ -3005,11 +3013,10 @@ export function evaluate(batchId) {
 
   const drafting = prods.filter(p => p.stage === "script" && p.stageStatus !== "failed").length;
   const failed = prods.filter(p => p.stageStatus === "failed").length;
-  const waiting = prods.filter(p => p.stageStatus === "needs_input").length;
   const imageGenerating = prods.filter(p => p.stage === "images" && p.stageStatus === "running").length;
   const renderPending = prods.filter(p =>
-    (p.mode === "视频" && p.stage === "render" && p.stageStatus !== "running") ||
-    (p.stage === "workshop" && p.stageStatus !== "running")).length;
+    ((p.mode === "视频" && p.stage === "render") || p.stage === "workshop")
+    && productionCanAutoGenerate(p)).length;
   const rendering = prods.filter(p => (p.stage === "render" || p.stage === "workshop") && p.stageStatus === "running");
   const inReview = prods.filter(p => p.stage === "review").length;
   const delivered = prods.filter(p => p.stage === "delivered").length;
@@ -3047,15 +3054,12 @@ export function evaluate(batchId) {
 
   if (imageGenerating > 0) { batch.phase = "generating"; }
   else if (drafting > 0) { batch.phase = "drafting"; }
-  else if (waiting > 0) {
-    batch.phase = "awaiting_input";
-    emitOnce("awaiting_input", () => {
-      addMsg(session, { role: "agent", type: "need_input", payload: { batchId: batch.id } });
-    });
-  } else if (renderPending > 0 || rendering.length > 0) {
+  else if (renderPending > 0 || rendering.length > 0) {
     if (renderPending > 0) {
-      // 素材号用站内分镜（无需上传）；真人号按工坊设置生成后渲染。
-      const pend = prods.filter(p => (p.mode === "视频" && p.stage === "render" && p.stageStatus !== "running") || (p.stage === "workshop" && p.stageStatus !== "running"));
+      // 只有明确 pending 的站内任务可以自动派发；failed 必须等待用户重试。
+      const pend = prods.filter(p =>
+        ((p.mode === "视频" && p.stage === "render") || p.stage === "workshop")
+        && productionCanAutoGenerate(p));
       const allInhouse = pend.length > 0 && pend.every(p => p.stage === "workshop");
       emitOnce("gen_kick", () => agentSay(allInhouse
         ? "脚本就绪，自动开始批量生成分镜视频（统一视频任务队列，超出上游并发容量时自动排队）。"
@@ -3096,16 +3100,10 @@ export function resumeActiveBatches() {
     const staticStuck = batchProds(b).filter(p =>
       (p.staticVideo || b.contentKind === "static")
       && p.stage === "workshop"
-      && (
-        p.stageStatus === "running"
-        || (p.stageStatus === "failed" && Number(p.staticAgentAutoRetryCount || 0) < 3)
-      )
+      && p.stageStatus === "running"
       && !p.artifacts?.finalVideoUrl
     );
     staticStuck.forEach(p => {
-      if (p.stageStatus === "failed") {
-        p.staticAgentAutoRetryCount = Number(p.staticAgentAutoRetryCount || 0) + 1;
-      }
       resetStaticAgentProduction(p, { preserveFrames: true, preserveAgent: true });
       setStage(p, "script", "pending");
     });
@@ -3124,52 +3122,6 @@ export function resumeActiveBatches() {
     evaluate(b.id);
   });
   return resumed;
-}
-
-/* ---------- 媒体路由：对话区拖图 → 顺序分发到等待上传的任务 ---------- */
-export async function routeMediaFiles(files, batchId = null) {
-  const imgs = Array.from(files).filter(f => f.type.startsWith("image/"));
-  const vids = Array.from(files).filter(f => f.type.startsWith("video/"));
-  const out = { assigned: 0, tasks: 0, extra: 0, videos: vids.length };
-  if (imgs.length) {
-    const hasGap = p => ((p.mode === "图文" ? p.artifacts.images.items : p.artifacts.boards.items) || []).some(x => !x.assetId);
-    // 从某个批次的上传区拖入 → 只分发到该批次的任务，且按看板/卡片显示顺序填，避免跑到别的账号/会话上
-    const b = batchId ? batchById(batchId) : null;
-    const targets = b && ownedBy(b)
-      ? batchProds(b).filter(p => p.stageStatus === "needs_input" && hasGap(p))
-      : state.productions.filter(p => ownedBy(p) && p.stageStatus === "needs_input" && hasGap(p)).sort((a, b2) => a.createdAt - b2.createdAt);
-    let fi = 0;
-    for (const p of targets) {
-      if (fi >= imgs.length) break;
-      const isImg = p.mode === "图文";
-      const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
-      let took = 0;
-      for (const item of items) {
-        if (fi >= imgs.length) break;
-        if (item.assetId) continue;
-        const rawDataUrl = await fileToDataUrl(imgs[fi++]);
-        const dataUrl = isImg ? await polishImageDataUrl(rawDataUrl, `${p.id}-agent-upload-${items.indexOf(item)}-${p.topic || ""}`) : rawDataUrl;
-        const a = await addAssetFromDataUrl(p.accountId, {
-          name: `${isImg ? "笔记图" : "分镜图"}${String(items.indexOf(item) + 1).padStart(2, "0")}_${(p.title || "").slice(0, 6)}`,
-          tags: [isImg ? "笔记图" : "分镜图", "Agent上传", ...(isImg ? ["发布前精修"] : [])], dataUrl
-        });
-        item.assetId = a.id; item.status = "done";
-        took++; out.assigned++;
-      }
-      if (took) {
-        out.tasks++;
-        if (items.every(x => x.assetId)) maybeAdvanceAfterInput(p);
-        else save("productions");
-      }
-    }
-    out.extra = imgs.length - fi;
-  }
-  for (const f of vids) {
-    const accId = state.productions.find(p => ownedBy(p) && p.batchId)?.accountId || state.accounts[0]?.id;
-    if (accId) await addAssetFromFile(accId, f, { tags: ["Agent上传"] });
-  }
-  evaluateAll();
-  return out;
 }
 
 /* ---------- 用户输入主入口 ---------- */
@@ -3257,7 +3209,7 @@ export function statusText() {
   }
   return bs.map(b => {
     const prods = batchProds(b);
-    const phase = { drafting: "批量起草中", awaiting_input: "等待分镜上传", generating: "生成中", review: "待审核", done: "已完成" }[b.phase] || b.phase;
+    const phase = { drafting: "批量起草中", generating: "生成中", review: "待审核", done: "已完成" }[b.phase] || b.phase;
     const fail = prods.filter(p => p.stageStatus === "failed").length;
     const done = prods.filter(p => p.stage === "delivered").length;
     return `「${b.topic}」：${phase} · ${done}/${prods.length} 已交付${fail ? ` · ${fail} 条失败（说"重试失败的"即可）` : ""}`;

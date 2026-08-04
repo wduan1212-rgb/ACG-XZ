@@ -4,17 +4,17 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260803-v140-deployment-readiness-1";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260804-v140-failed-generation-terminal-1";
 import {
-  ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText, routeMediaFiles,
+  ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences
-} from "./orchestrator.js?v=20260803-v140-deployment-readiness-1";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260803-v140-deployment-readiness-1";
+} from "./orchestrator.js?v=20260804-v140-failed-generation-terminal-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260804-v140-failed-generation-terminal-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260803-v140-deployment-readiness-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260804-v140-failed-generation-terminal-1";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
@@ -165,7 +165,6 @@ export const agentView = {
             <div class="agw-composer" id="agwComposer">
               <button class="agw-new-board-button" id="agwNewPanel" type="button">${icon("plus", 16)} 新建任务板</button>
               <textarea id="agwInput" hidden></textarea>
-              <input type="file" accept="image/*,video/*" multiple hidden id="agwUpload" />
               <button id="agwSend" type="button" hidden></button>
             </div>
           </main>
@@ -291,7 +290,7 @@ function renderSessions() {
 
 function textOf(m) {
   if (m.type === "text") return m.payload.text || "";
-  return { plan: "量产任务板", progress: "批次进度", need_input: "等待上传", approval: "待发布", results: "批次完成", error: "失败报告" }[m.type] || "";
+  return { plan: "量产任务板", progress: "批次进度", approval: "待发布", results: "批次完成", error: "失败报告" }[m.type] || "";
 }
 
 function renderMsgs(scroll = false) {
@@ -352,17 +351,16 @@ function renderThinking() {
 }
 
 /* 活卡片就地刷新（不打断滚动/输入） */
-const PHASE_LABEL = { drafting: "批量起草中", awaiting_input: "等待上传", generating: "生成中", review: "待发布", done: "已完成" };
+const PHASE_LABEL = { drafting: "批量起草中", generating: "生成中", review: "待发布", done: "已完成" };
 /* 进度卡就地更新（只改进度条宽度与分段计数），避免整卡换节点导致闪烁跳跃 */
 function updateProgressCard(node, b) {
   const prods = batchProds(b);
-  const c = { draft: 0, wait: 0, gen: 0, review: 0, done: 0, fail: 0 };
+  const c = { draft: 0, gen: 0, review: 0, done: 0, fail: 0 };
   prods.forEach(p => {
     if (p.stageStatus === "failed") c.fail++;
     else if (p.stage === "delivered") c.done++;
     else if (p.stage === "review") c.review++;
     else if (p.stage === "render" || p.stage === "workshop" || (p.stage === "images" && p.stageStatus === "running")) c.gen++;
-    else if (p.stageStatus === "needs_input") c.wait++;
     else c.draft++;
   });
   const pct = prods.length ? Math.round(c.done / prods.length * 100) : 0;
@@ -371,7 +369,7 @@ function updateProgressCard(node, b) {
   const segs = node.querySelector(".agp-segs");
   if (segs) {
     const seg = (label, n, cls) => n ? `<span class="agp-seg ${cls}"><b>${n}</b>${label}</span>` : "";
-    segs.innerHTML = seg("起草", c.draft, "draft") + seg("待上传", c.wait, "wait") + seg("生成", c.gen, "gen") + seg("待审", c.review, "review") + seg("已交付", c.done, "done") + seg("失败", c.fail, "fail");
+  segs.innerHTML = seg("起草", c.draft, "draft") + seg("生成", c.gen, "gen") + seg("待审", c.review, "review") + seg("已交付", c.done, "done") + seg("失败", c.fail, "fail");
   }
 }
 function refreshLiveCards() {
@@ -383,7 +381,7 @@ function refreshLiveCards() {
       if (b) updateProgressCard(node, b);
       return;
     }
-    if (!node.querySelector("[data-live]") && node.dataset.mtype !== "approval" && node.dataset.mtype !== "need_input") return;
+    if (!node.querySelector("[data-live]") && node.dataset.mtype !== "approval") return;
     const { msg: m } = findMessageInSessions(node.dataset.mid);
     if (!m) return;
     const tmp = document.createElement("div");
@@ -466,7 +464,7 @@ function updateBoardGroups() {
   const total = groups.reduce((sum, b) => sum + (b.productionIds || []).length, 0);
   const boardCount = board.querySelector(".agw-board-head em");
   if (boardCount) boardCount.textContent = `${total} 条`;
-  const PH = { drafting: "起草", awaiting_input: "待上传", generating: "生成", review: "待审", done: "完成" };
+  const PH = { drafting: "起草", generating: "生成", review: "待审", done: "完成" };
   groups.forEach(b => {
     const group = board.querySelector(`[data-batchid="${selectorValue(b.id)}"]`);
     if (!group) return;
@@ -500,7 +498,7 @@ function renderBoard() {
     groups.map(b => {
       const prods = batchProds(b);
       const done = prods.filter(p => p.stage === "delivered").length;
-      const PH = { drafting: "起草", awaiting_input: "待上传", generating: "生成", review: "待审", done: "完成" };
+      const PH = { drafting: "起草", generating: "生成", review: "待审", done: "完成" };
       return `<div class="mb-group" data-batchid="${b.id}">
         <div class="mb-ghead">
           <b>${esc(b.topic)}</b>
@@ -554,7 +552,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260803-v140-deployment-readiness-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260804-v140-failed-generation-terminal-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -580,17 +578,16 @@ function renderPhase() {
     if (el.innerHTML !== html) el.innerHTML = html;
     return;
   }
-  const c = { draft: 0, wait: 0, gen: 0, review: 0, done: 0, fail: 0 };
+  const c = { draft: 0, gen: 0, review: 0, done: 0, fail: 0 };
   bs.forEach(b => batchProds(b).forEach(p => {
     if (p.stageStatus === "failed") c.fail++;
     else if (p.stage === "delivered") c.done++;
     else if (p.stage === "review") c.review++;
     else if (p.stage === "render" || p.stage === "workshop" || (p.stage === "images" && p.stageStatus === "running")) c.gen++;
-    else if (p.stageStatus === "needs_input") c.wait++;
     else c.draft++;
   }));
   const chip = (label, n, cls) => n ? `<span class="phase-chip ${cls}">${label} ${n}</span>` : "";
-  const html = chip("起草", c.draft, "draft") + chip("待上传", c.wait, "wait") + chip("生成", c.gen, "gen") + chip("待审", c.review, "review") + chip("失败", c.fail, "fail") + chip("已交付", c.done, "done");
+  const html = chip("起草", c.draft, "draft") + chip("生成", c.gen, "gen") + chip("待审", c.review, "review") + chip("失败", c.fail, "fail") + chip("已交付", c.done, "done");
   if (el.innerHTML !== html) el.innerHTML = html;
 }
 
@@ -604,26 +601,12 @@ function wire(root) {
   input.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
-  input.addEventListener("paste", async e => {
-    const items = Array.from(e.clipboardData.items).filter(i => i.type.startsWith("image/"));
-    if (items.length) {
-      e.preventDefault();
-      const r = await routeMediaFiles(items.map(i => i.getAsFile()));
-      reportRoute(r);
-    }
-  });
   $("#agwSend", root).addEventListener("click", send);
   $("#agwNewPanel", root).addEventListener("click", () => {
     const session = ensureSession();
     addMsg(session, { role: "agent", type: "plan", payload: defaultPlan("新量产计划") });
     renderMsgs(true);
   });
-  $("#agwUpload", root).addEventListener("change", async e => {
-    const r = await routeMediaFiles(e.target.files);
-    reportRoute(r);
-    e.target.value = "";
-  });
-
   async function send() {
     const text = input.value.trim();
     if (!text) return;
@@ -982,15 +965,8 @@ function wire(root) {
     }
   });
 
-  // 需输入卡的文件选择 + 计划卡统一参考图上传
+  // 计划卡统一参考图上传
   shell.addEventListener("change", async e => {
-    const inp = e.target.closest("[data-agdrop-input]");
-    if (inp && inp.files.length) {
-      const r = await routeMediaFiles(inp.files, inp.dataset.agdropInput);
-      reportRoute(r);
-      inp.value = "";
-      return;
-    }
     const ref = e.target.closest("[data-plan-ref]");
     if (ref && ref.files.length) { await setPlanRefs(ref.dataset.planRef, Array.from(ref.files)); ref.value = ""; }
     const coverRef = e.target.closest("[data-plan-cover-ref]");
@@ -1498,15 +1474,6 @@ async function setPlanCustomRefs(mid, accountId, files) {
 }
 
 function wireDrops() {
-  $$("#agwMsgs [data-agdrop]").forEach(z => {
-    if (z.dataset.wired) return;
-    z.dataset.wired = "1";
-    wireDropZone(z, async files => {
-      const r = await routeMediaFiles(files, z.dataset.agdrop);
-      reportRoute(r);
-    });
-    z.addEventListener("click", () => { const inp = z.querySelector("[data-agdrop-input]"); if (inp) inp.click(); });
-  });
   // 计划卡统一参考图：支持拖入
   $$("#agwMsgs [data-plan-refdrop]").forEach(z => {
     if (z.dataset.wired) return;
@@ -1533,14 +1500,4 @@ function wireDrops() {
     z.dataset.wired = "1";
     wireDropZone(z, files => setPlanCustomRefs(z.dataset.planCustomRefdrop, z.dataset.refAccount, Array.from(files).filter(f => f.type.startsWith("image/"))), { filesOnly: true });
   });
-}
-
-function reportRoute(r) {
-  if (!r) return;
-  if (r.assigned) {
-    toast(`已接收 ${r.assigned} 张图，分发到 ${r.tasks} 个任务${r.extra ? `（多出 ${r.extra} 张未分发）` : ""}`);
-    // 立即同步对话卡（缺口进度）+ 右侧看板，不等防抖事件
-    if (isLive()) { refreshLiveCards(); renderBoard(); renderPhase(); }
-  } else if (r.videos) { toast(`已登记 ${r.videos} 个视频素材入资产库`); if (isLive()) renderBoard(); }
-  else toast("当前没有等待上传的任务，先发起一批量产");
 }

@@ -5,6 +5,7 @@ import { state, saveIncremental, emit, productionById, notify, assetById } from 
 import { uid } from "../core/util.js";
 import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
+import { productionAllowsJobProcessing } from "../domain/productionFailureState.js";
 
 const IMAGE_CONCURRENCY = 4;
 // 浏览器只维持 3 个受控视频槽。数字人与信息流都可能由一条 production
@@ -97,16 +98,25 @@ export async function cancelJob(id) {
 }
 
 function activeJobs() {
-  return state.jobs.filter(j => j.status === "submitted" || j.status === "running");
+  return state.jobs.filter(j =>
+    (j.status === "submitted" || j.status === "running")
+    && productionAllowsJobProcessing(productionById(j.productionId)));
 }
 function queuedJobs() {
   const now = Date.now();
-  return state.jobs.filter(j => j.status === "queued" && Number(j.nextAttemptAt || 0) <= now).sort((a, b) => a.createdAt - b.createdAt);
+  return state.jobs.filter(j =>
+    j.status === "queued"
+    && Number(j.nextAttemptAt || 0) <= now
+    && productionAllowsJobProcessing(productionById(j.productionId)))
+    .sort((a, b) => a.createdAt - b.createdAt);
 }
 
 function delayedQueuedJobs() {
   const now = Date.now();
-  return state.jobs.filter(j => j.status === "queued" && Number(j.nextAttemptAt || 0) > now);
+  return state.jobs.filter(j =>
+    j.status === "queued"
+    && Number(j.nextAttemptAt || 0) > now
+    && productionAllowsJobProcessing(productionById(j.productionId)));
 }
 
 function isDigitalHumanJob(j) {
@@ -384,6 +394,18 @@ export function resumeJobs() {
   let n = 0;
   const touched = [];
   state.jobs.forEach(j => {
+    if (!productionAllowsJobProcessing(productionById(j.productionId))) {
+      if (["queued", "submitted", "running"].includes(j.status)) {
+        j.status = "failed";
+        j.progress = 0;
+        j.nextPollAt = 0;
+        j.nextAttemptAt = 0;
+        j.error = j.error || "所属任务已经失败；刷新不会自动恢复或重新提交，请从任务页明确重试。";
+        j.updatedAt = Date.now();
+        touched.push(j);
+      }
+      return;
+    }
     if (j.status === "submitted" || j.status === "running") {
       if (isLegacyMockVideoJob(j)) {
         j.status = "failed";

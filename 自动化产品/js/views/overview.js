@@ -10,11 +10,11 @@ import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=202607
 import { urlFor } from "../domain/assets.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260803-v140-deployment-readiness-1";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260803-v140-deployment-readiness-1";
-import { emptyState, openModal } from "../ui/components.js?v=20260803-v140-deployment-readiness-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260804-v140-failed-generation-terminal-1";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260804-v140-failed-generation-terminal-1";
+import { emptyState, openModal } from "../ui/components.js?v=20260804-v140-failed-generation-terminal-1";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260803-v140-deployment-readiness-1";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260804-v140-failed-generation-terminal-1";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
@@ -281,7 +281,6 @@ export const overviewView = {
     const accounts = state.accounts.filter(Boolean).map(safeAccount);
     const prods = state.productions.filter(ownedBy);
     const inflight = prods.filter(p => p.stage !== "delivered");
-    const waiting = inflight.filter(p => p.stageStatus === "needs_input");
     const rendering = inflight.filter(p => (p.stage === "render" || p.stage === "workshop") && p.stageStatus === "running");
     const inReview = inflight.filter(p => p.stage === "review");
     const failed = inflight.filter(p => p.stageStatus === "failed");
@@ -363,8 +362,7 @@ export const overviewView = {
       </button>`;
 
     const taskGroups = {
-      todo: { title: "待你处理", items: [...waiting, ...inReview, ...failed], type: "production" },
-      waiting: { title: "等待上传", items: waiting, type: "production" },
+      todo: { title: "待你处理", items: [...inReview, ...failed], type: "production" },
       rendering: { title: "生成中", items: rendering, type: "production" },
       review: { title: "待审核", items: inReview, type: "production" },
       failed: { title: "失败待重试", items: failed, type: "production" },
@@ -459,7 +457,7 @@ export const overviewView = {
 
     let refreshOverviewTrend = () => render(root);
     const openDataDetail = (key, accountName = "", initialRecentFilter = null, accountId = "", platform = "") => {
-      if (["todo", "waiting", "rendering", "review", "failed", "supplier"].includes(key)) { openTaskGroup(key); return; }
+      if (["todo", "rendering", "review", "failed", "supplier"].includes(key)) { openTaskGroup(key); return; }
       const metricText = row => {
         const m = row?.latest?.metrics || {};
         return `播放 ${fmt(m.views)} · 赞 ${fmt(m.likes)} · 藏 ${fmt(m.collects)} · 评 ${fmt(m.comments)}${Number(m.shares || 0) ? ` · 分享 ${fmt(m.shares)}` : ""}`;

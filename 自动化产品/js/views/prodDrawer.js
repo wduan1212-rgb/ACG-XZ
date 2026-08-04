@@ -3,13 +3,13 @@
 import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
-import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260803-v140-deployment-readiness-1";
+import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260804-v140-failed-generation-terminal-1";
 import { STAGES, jobsOf } from "../domain/productions.js";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { maybeAdvanceAfterInput, regenerateBatchImage, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260803-v140-deployment-readiness-1";
+import { maybeAdvanceAfterInput, regenerateBatchImage, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260804-v140-failed-generation-terminal-1";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */
@@ -436,7 +436,7 @@ async function fillSlot(p, idx, file) {
   items[i].status = "done";
   save("productions");
   const complete = items.every(x => x.assetId);
-  if (complete && p.stageStatus === "needs_input") maybeAdvanceAfterInput(p);
+  if (complete && ["failed", "pending"].includes(p.stageStatus)) maybeAdvanceAfterInput(p);
   toast(`已上传 ${isImg ? "图" : "分镜"} ${i + 1}/${items.length}${complete ? " ✓ 全部就位" : ""}`);
 }
 

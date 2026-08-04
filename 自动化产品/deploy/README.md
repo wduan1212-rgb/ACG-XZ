@@ -57,7 +57,7 @@ ACG_READ_ONLY=1
 ACG_REQUIRE_INTERNAL_TEAM=1
 ACG_REQUIRE_RESOURCE_SCOPES=1
 ACG_REQUIRE_PRIVATE_MEDIA=1
-ACG_RELEASE_ID=20260803-v140-deployment-readiness-1
+ACG_RELEASE_ID=20260804-v140-failed-generation-terminal-1
 ACG_RELEASE_ROOT=/data/dumate-studio/releases/<release-id>
 ACG_PERSISTENT_ROOT=/data/dumate-studio/current
 ACG_ENV_FILE=/data/dumate-studio/current/.env.local
@@ -100,7 +100,7 @@ fragment 或回环地址；不得为了让 `140004` 通过而添加宽泛域名�
 
 ```bash
 cd /path/to/unpacked-release
-ACG_RELEASE_ID=20260803-v140-deployment-readiness-1 \
+ACG_RELEASE_ID=20260804-v140-failed-generation-terminal-1 \
   deploy/verify_release_contracts.sh
 ```
 

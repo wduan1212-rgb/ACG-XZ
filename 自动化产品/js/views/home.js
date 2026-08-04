@@ -3,8 +3,8 @@ import { currentMember, currentTeam } from "../core/store.js";
 import { community, teams } from "../core/remote.js";
 import { go } from "../core/router.js";
 import { icon } from "../ui/icons.js";
-import { openModal, toast } from "../ui/components.js?v=20260803-v140-deployment-readiness-1";
-import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260803-v140-deployment-readiness-1";
+import { openModal, toast } from "../ui/components.js?v=20260804-v140-failed-generation-terminal-1";
+import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260804-v140-failed-generation-terminal-1";
 
 const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
 const HOME_LAUNCH_REGISTRY_KEY = "__starmatrixHomeLaunchRegistry";
