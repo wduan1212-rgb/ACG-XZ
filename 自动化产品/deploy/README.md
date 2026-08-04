@@ -1,9 +1,9 @@
 # v140 部署入口契约
 
-> 本文件是代码仓内契约，不代表生产已迁移。v140 本地已收口资源/媒体
-> deny-by-default、fresh v2 备份绑定、完整 snapshot/restore 和精确离线依赖工具；生产
-> 仍为 v120、未部署、未写入。RO 可用于迁移验收，RW 只能在生产形状副本、冻结
-> 恢复、正式 wheelhouse 均通过且 `writeReady=true` 后开启。本地开发继续使用 `start.command`。
+> 本文件是代码仓内契约，不代表当前候选已部署。生产已受保护运行 v140
+> `9e8aeb5`，团队、资源 scope 和媒体 registry 已迁移；当前 release 只允许在 fresh
+> v2 备份绑定后增量双跑 expand-only `140005`，不得重做前七步或覆盖现有数据/媒体。
+> 本轮供应商交付媒体精确读与视频工坊成片发布修复尚未上线；部署前必须从唯一提交重建并验签完整 release。
 
 正式操作前还必须阅读：
 
@@ -57,7 +57,7 @@ ACG_READ_ONLY=1
 ACG_REQUIRE_INTERNAL_TEAM=1
 ACG_REQUIRE_RESOURCE_SCOPES=1
 ACG_REQUIRE_PRIVATE_MEDIA=1
-ACG_RELEASE_ID=20260804-v140-hydration-settlement-1
+ACG_RELEASE_ID=20260804-v140-delivery-media-publish-1
 ACG_RELEASE_ROOT=/data/dumate-studio/releases/<release-id>
 ACG_PERSISTENT_ROOT=/data/dumate-studio/current
 ACG_ENV_FILE=/data/dumate-studio/current/.env.local
@@ -100,7 +100,7 @@ fragment 或回环地址；不得为了让 `140004` 通过而添加宽泛域名�
 
 ```bash
 cd /path/to/unpacked-release
-ACG_RELEASE_ID=20260804-v140-hydration-settlement-1 \
+ACG_RELEASE_ID=20260804-v140-delivery-media-publish-1 \
   deploy/verify_release_contracts.sh
 ```
 

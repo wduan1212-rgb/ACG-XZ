@@ -2,7 +2,7 @@
 
 记录日期：2026-08-03
 
-状态：**生产已按受保护流程完成 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004` 并运行 `9e8aeb5`，团队、资源 scope、媒体 registry 与数据完整性正常。当前增量候选新增 expand-only `140005` compose 幂等 schema；它必须绑定新的 fresh v2 备份单独双跑，禁止重做既有 ACG/resource/media data migration。本地候选尚未部署，未写生产。**
+状态：**生产已按受保护流程完成 `137003`→`137004`→`139001`→`140001`→`140002`→`140003`→`140004` 并运行 `9e8aeb5`，团队、资源 scope、媒体 registry 与数据完整性正常。当前增量候选保留 expand-only `140005` compose 幂等 schema，并新增供应商对“可见交付的精确媒体依赖”的只读权限。`140005` 必须绑定新的 fresh v2 备份单独双跑，交付媒体验收必须证明 parent/child 正例可读且跨 team/交付外文件/写删反例被拒绝；禁止重做既有 ACG/resource/media data migration。本地候选尚未部署，未写生产。**
 
 本文件负责 ACG 市场部的数据归属、角色映射、冲突阻断和迁移验收。它不是生产执行授权；每个 apply 必须单独确认，不能由应用启动隐式触发。首次迁移不搬动当前约 15 GB 数据，也不将模块机械拆分与生产数据迁移绑定。
 
@@ -178,6 +178,7 @@
 - SQLite `quick_check=ok`，migration ledger clean，`/api/ready` 返回批准的 release/schema/path/sidecar/vendor 组合。
 - canonical `admin` 为 ACG 唯一 owner，其他管理员与创作者映射正确，凭据逐字节不变。
 - 当前供应商绑定 ACG 且仍展示独立首页、全部账号和发布清单。
+- 供应商 parent 和已绑定 child 能下载可见交付的全部 cover/pack/final media，ZIP 实际包含媒体字节；未绑定 child、其他团队、交付外文件和任何写/删请求仍 fail closed，缺媒体时不产出伪完整 ZIP。
 - ACG、个人、外部团队 A/B 与供应商层级遵守 deny-by-default 隔离。
 - 通用 `resource_scopes` 和 uploads/composed owner registry 均达到 coverage=100%、orphan=0、conflict=0，历史直接 URL、Range 和缓存行为仍可用。
 - 主前端 ESM 无多身份，视频 bridge N/N-1 兼容，v120 项目 JSON 与历史媒体可读，画布闭包 hash 正确。

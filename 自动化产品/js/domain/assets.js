@@ -559,15 +559,36 @@ export async function removeAsset(id) {
   removeRemote("assets", id);
 }
 
-export async function assetBlob(id) {
-  const local = await db.getBlob(id);
+export async function assetBlob(id, { deliveryId = "", required = false, label = "素材" } = {}) {
+  const scopedRemoteRead = Boolean(String(deliveryId || "").trim() && remote.isOn());
+  const local = scopedRemoteRead ? null : await db.getBlob(id);
   if (local) return local;
   const a = assetById(id);
-  const u = serverFileUrl(a);
-  if (!u) return null;
+  let u = serverFileUrl(a);
+  if (!u) {
+    if (required) throw new Error(`${label}缺少可下载的媒体地址`);
+    return null;
+  }
   try {
-    const res = await fetch(u, { cache: "no-store" });
-    if (!res.ok) return null;
+    if (deliveryId) {
+      const scoped = new URL(u, globalThis.location?.origin || "http://local.invalid");
+      scoped.searchParams.set("deliveryId", String(deliveryId));
+      u = u.startsWith("http://") || u.startsWith("https://")
+        ? scoped.href
+        : `${scoped.pathname}${scoped.search}${scoped.hash}`;
+    }
+    const token = remote.getToken();
+    const res = await fetch(u, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const reason = body.detail || body.error || `HTTP ${res.status}`;
+      if (required) throw new Error(`${label}下载失败：${reason}`);
+      return null;
+    }
     const fetchedBlob = await res.blob();
     const blob = normalizeAssetBlobMime(
       fetchedBlob,
@@ -578,13 +599,20 @@ export async function assetBlob(id) {
     if (!urlCache.has(id)) urlCache.set(id, URL.createObjectURL(blob));
     return blob;
   } catch (e) {
+    if (required) {
+      if (String(e?.message || "").startsWith(`${label}下载失败`)) throw e;
+      throw new Error(`${label}下载失败：${e?.message || "网络异常"}`);
+    }
     return null;
   }
 }
 
-export async function assetU8(id) {
-  const b = await assetBlob(id);
-  if (!b) return null;
+export async function assetU8(id, options = {}) {
+  const b = await assetBlob(id, options);
+  if (!b) {
+    if (options.required) throw new Error(`${options.label || "素材"}下载失败`);
+    return null;
+  }
   const a = assetById(id);
   const mime = resolvedAssetBlobMime(b, a?.mime, a?.serverFileName || a?.name || "");
   return {

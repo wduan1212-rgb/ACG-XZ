@@ -613,12 +613,23 @@ function encText(text) {
   return enc.encode(String(text || ""));
 }
 
-async function remoteFileU8(url) {
-  if (!url) return null;
+async function remoteFileU8(url, { deliveryId = "", label = "视频成片" } = {}) {
+  if (!url) throw new Error(`${label}缺少可下载的媒体地址`);
   try {
-    const sameOrigin = String(url).startsWith("/") || String(url).startsWith(location.origin);
+    let requestUrl = String(url);
+    const sameOrigin = requestUrl.startsWith("/") || requestUrl.startsWith(location.origin);
+    if (sameOrigin && deliveryId) {
+      const scoped = new URL(requestUrl, location.origin);
+      scoped.searchParams.set("deliveryId", String(deliveryId));
+      requestUrl = requestUrl.startsWith("http://") || requestUrl.startsWith("https://")
+        ? scoped.href
+        : `${scoped.pathname}${scoped.search}${scoped.hash}`;
+    }
     const res = sameOrigin
-      ? await fetch(url, { credentials: "same-origin" })
+      ? await fetch(requestUrl, {
+          credentials: "same-origin",
+          headers: remote.getToken() ? { Authorization: `Bearer ${remote.getToken()}` } : {},
+        })
       : await fetch("/api/proxy/file", {
           method: "POST",
           headers: {
@@ -627,16 +638,20 @@ async function remoteFileU8(url) {
           },
           body: JSON.stringify({ url })
         });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+    }
     const ct = res.headers.get("content-type") || "video/mp4";
     const ext = /webm/.test(ct) ? "webm" : /quicktime|mov/.test(ct) ? "mov" : "mp4";
     return { u8: new Uint8Array(await res.arrayBuffer()), ext };
   } catch (e) {
-    return null;
+    if (String(e?.message || "").startsWith(`${label}下载失败`)) throw e;
+    throw new Error(`${label}下载失败：${e?.message || "网络异常"}`);
   }
 }
 
-async function deliveryEntries(asset, folder = "") {
+export async function deliveryEntries(asset, folder = "") {
   asset = syncDeliveryAssetSnapshot(asset);
   const base = folder ? safeName(folder) + "/" : "";
   const entries = [];
@@ -655,41 +670,39 @@ async function deliveryEntries(asset, folder = "") {
   ].filter(x => x != null).join("\n");
   entries.push({ name: `${base}标题文案.txt`, u8: encText(manifest) });
   if (asset.coverAssetId) {
-    const d = await assetU8(asset.coverAssetId);
-    if (d) entries.push({ name: `${base}封面图.${d.ext}`, u8: d.u8 });
+    const d = await assetU8(asset.coverAssetId, {
+      deliveryId: asset.id,
+      required: true,
+      label: "封面图",
+    });
+    entries.push({ name: `${base}封面图.${d.ext}`, u8: d.u8 });
   }
   if (asset.type === "图集" && (asset.packAssetIds || []).length) {
     for (let i = 0; i < asset.packAssetIds.length; i++) {
-      const d = await assetU8(asset.packAssetIds[i]);
-      if (d) entries.push({ name: `${base}图片/${String(i + 1).padStart(2, "0")}.${d.ext}`, u8: d.u8 });
+      const d = await assetU8(asset.packAssetIds[i], {
+        deliveryId: asset.id,
+        required: true,
+        label: `第 ${i + 1} 张图片`,
+      });
+      entries.push({ name: `${base}图片/${String(i + 1).padStart(2, "0")}.${d.ext}`, u8: d.u8 });
     }
+  } else if (asset.type === "图集") {
+    throw new Error("图文交付缺少图片清单，已停止生成不完整 ZIP");
   } else {
     const prod = state.productions.find(p => p.id === asset.productionId);
-    const timelineUrls = (prod?.artifacts?.timeline || [])
-      .map(x => state.jobs.find(j => j.id === x.jobId)?.output?.url)
-      .filter(Boolean);
     const finalUrl = asset.videoUrl || prod?.artifacts?.finalVideoUrl || "";
-    const urls = finalUrl ? [finalUrl] : [];
-    let got = 0;
-    for (let i = 0; i < urls.length; i++) {
-      const d = await remoteFileU8(urls[i]);
-      if (d) {
-        got++;
-        entries.push({ name: `${base}视频/${String(i + 1).padStart(2, "0")}.${d.ext}`, u8: d.u8 });
-      }
-    }
-    if (urls.length) {
-      entries.push({ name: `${base}视频下载链接.txt`, u8: encText(urls.map((u, i) => `${i + 1}. ${u}`).join("\n")) });
-    }
-    if (!got && !urls.length) {
-      const sourceCount = new Set([...(asset.clipUrls || []), ...timelineUrls].filter(Boolean)).size;
-      entries.push({ name: `${base}视频说明.txt`, u8: encText(`当前交付记录缺少已合成的单一成片，未把 ${sourceCount || asset.clips || 0} 段源视频冒充成片写入压缩包。请回到创作端剪辑台重新合成后再发布。`) });
-    }
+    if (!finalUrl) throw new Error("视频交付缺少完整成片，已停止生成不完整 ZIP");
+    const d = await remoteFileU8(finalUrl, {
+      deliveryId: asset.id,
+      label: "视频成片",
+    });
+    entries.push({ name: `${base}视频/01.${d.ext}`, u8: d.u8 });
+    entries.push({ name: `${base}视频下载链接.txt`, u8: encText(`1. ${finalUrl}`) });
   }
   return entries;
 }
 
-/* 下载交付物：图集/视频均打包为 zip（视频尽量拉取真实 mp4，失败时保留下载链接） */
+/* 下载交付物：图集/视频均打包为 zip；任一必备媒体缺失就显式失败。 */
 export async function downloadDelivery(asset, { markDownloaded = true } = {}) {
   asset = syncDeliveryAssetSnapshot(asset);
   const entries = await deliveryEntries(asset);

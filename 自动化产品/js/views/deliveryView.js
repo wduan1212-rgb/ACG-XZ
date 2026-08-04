@@ -8,8 +8,8 @@ import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260804-v140-hydration-settlement-1";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260804-v140-hydration-settlement-1";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260804-v140-delivery-media-publish-1";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260804-v140-delivery-media-publish-1";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
 import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
@@ -758,7 +758,14 @@ export const deliveryView = {
           const act = b.dataset.dvact;
           if (act === "preview") openDeliveryPreview(asset);
           if (act === "copy") copyText((asset.title || "") + "\n\n" + (asset.copy || ""), "已复制标题+文案");
-          if (act === "download") { await downloadDelivery(asset, { markDownloaded: false }); toast("已下载 " + asset.name); }
+          if (act === "download") {
+            try {
+              await downloadDelivery(asset, { markDownloaded: false });
+              toast("已下载 " + asset.name);
+            } catch (error) {
+              toast(error?.message || "交付文件下载失败，请刷新后重试", "error");
+            }
+          }
           if (act === "community") {
             openCommunityShare({
               authorId: asset.byMemberId || asset.ownerId || productionById(asset.productionId)?.ownerId || "",
@@ -963,8 +970,13 @@ export const deliveryView = {
       $$("[data-supdl]", body).forEach(b => b.addEventListener("click", async () => {
         const a = state.assets.find(x => x.id === b.dataset.supdl);
         if (a) {
-          await downloadDelivery(a, { markDownloaded: isSupplierRole });
-          toast("已下载 " + a.name); draw();
+          try {
+            await downloadDelivery(a, { markDownloaded: isSupplierRole });
+            toast("已下载 " + a.name);
+            draw();
+          } catch (error) {
+            toast(error?.message || "交付文件下载失败，请刷新后重试", "error");
+          }
         }
       }));
       $$("[data-suppreview]", body).forEach(button => button.addEventListener("click", event => {
@@ -1077,9 +1089,13 @@ export const deliveryView = {
       const ids = checkedIds.length ? checkedIds : pendingIds;
       if (!ids.length) { toast("当前筛选下没有未下载素材"); return; }
       const assets = ids.map(id => state.assets.find(x => x.id === id)).filter(Boolean);
-      const n = await batchDownloadZip(assets, "", { markDownloaded: isSupplierRole });
-      toast(`${checkedIds.length ? "已打包所选" : "已打包未下载"} ${n} 个素材${isSupplierRole ? "，供应商下载状态已更新" : ""}`);
-      draw();
+      try {
+        const n = await batchDownloadZip(assets, "", { markDownloaded: isSupplierRole });
+        toast(`${checkedIds.length ? "已打包所选" : "已打包未下载"} ${n} 个素材${isSupplierRole ? "，供应商下载状态已更新" : ""}`);
+        draw();
+      } catch (error) {
+        toast(error?.message || "批量交付下载失败，请刷新后重试", "error");
+      }
     }
 
     activeDeliveryController = { root, draw, batchDl };

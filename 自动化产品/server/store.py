@@ -4373,7 +4373,120 @@ def complete_video_compose_operation(
             conn.close()
 
 
-def private_media_access(kind, key, member_id):
+_SUPPLIER_MEDIA_ROLES = {"supplier", "supplier_parent", "supplier_child"}
+_DELIVERY_READABLE_MEDIA_KINDS = {"upload", "composed", "video-output"}
+
+
+def _delivery_media_identity(value):
+    """Return one local private-media identity from a persisted delivery URL."""
+
+    raw = str(value or "").strip()
+    if not raw or any(char.isspace() for char in raw):
+        return None
+    parsed = urlparse(raw)
+    # Historical rows may contain this application's configured public origin.
+    # Accept only an explicitly approved origin; an arbitrary external host may
+    # still mimic our paths and must never become local ownership evidence.
+    if parsed.scheme or parsed.netloc:
+        origin = _private_media_url_origin(raw)
+        if not origin or origin not in _private_media_allowed_absolute_origins():
+            return None
+    try:
+        path = unquote_to_bytes(parsed.path).decode("utf-8")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    for prefix, kind in (
+        ("/api/files/", "upload"),
+        ("/api/video/composed/", "composed"),
+        ("/custom-video/outputs/", "video-output"),
+    ):
+        if not path.startswith(prefix):
+            continue
+        try:
+            return _normalize_private_media_key(kind, path[len(prefix):])
+        except ValueError:
+            return None
+    return None
+
+
+def _supplier_delivery_media_allowed_locked(
+    conn,
+    requester,
+    role,
+    delivery_id,
+    media_kind,
+    media_key,
+):
+    """Grant a supplier one exact read through one visible delivery.
+
+    This is deliberately not a tenant-wide media grant.  The caller must name
+    the delivery, the supplier must pass the existing parent/child visibility
+    policy for that row, and the requested file must be the row's final video
+    or an asset document referenced as its cover/pack/source dependency.
+    """
+
+    did = str(delivery_id or "").strip()
+    if role not in _SUPPLIER_MEDIA_ROLES or not did:
+        return False
+    if media_kind not in _DELIVERY_READABLE_MEDIA_KINDS:
+        return False
+    row = conn.execute(
+        "SELECT data FROM docs WHERE collection='assets' AND id=?",
+        (did,),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        delivery = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(delivery, dict) or not delivery.get("delivered"):
+        return False
+    if not _delivery_asset_access(delivery, requester, role, conn):
+        return False
+
+    target = (media_kind, media_key)
+    if _delivery_media_identity(delivery.get("videoUrl")) == target:
+        return True
+
+    pack_ids = delivery.get("packAssetIds")
+    if not isinstance(pack_ids, (list, tuple)):
+        pack_ids = []
+    dependency_ids = []
+    for value in (
+        delivery.get("coverAssetId"),
+        delivery.get("sourceAssetId"),
+        *pack_ids[:20],
+    ):
+        asset_id = str(value or "").strip()
+        if asset_id and asset_id not in dependency_ids:
+            dependency_ids.append(asset_id)
+    if not dependency_ids:
+        return False
+    placeholders = ",".join("?" for _ in dependency_ids)
+    rows = conn.execute(
+        f"SELECT id,data FROM docs WHERE collection='assets' "
+        f"AND id IN ({placeholders})",
+        tuple(dependency_ids),
+    ).fetchall()
+    for asset_id, raw in rows:
+        if str(asset_id) not in dependency_ids:
+            continue
+        try:
+            asset = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(asset, dict):
+            continue
+        if media_kind == "upload" and str(asset.get("serverFileName") or "").strip() == media_key:
+            return True
+        for field in ("fileUrl", "url", "videoUrl", "downloadUrl"):
+            if _delivery_media_identity(asset.get(field)) == target:
+                return True
+    return False
+
+
+def private_media_access(kind, key, member_id, delivery_id=""):
     """Resolve owner/team access; platform role never grants a global bypass."""
 
     media_kind, media_key = _normalize_private_media_key(kind, key)
@@ -4384,10 +4497,12 @@ def private_media_access(kind, key, member_id):
     with _lock:
         conn = _connect()
         try:
-            if not conn.execute(
-                "SELECT 1 FROM members WHERE id=?", (requester,),
-            ).fetchone():
+            member_row = conn.execute(
+                "SELECT role FROM members WHERE id=?", (requester,),
+            ).fetchone()
+            if not member_row:
                 return None, "forbidden"
+            role = str(member_row[0] or "")
             rows = conn.execute(
                 "SELECT media_kind,media_key,owner_id,team_id,provenance_kind,"
                 "provenance_id,created_at,updated_at FROM private_media_registry "
@@ -4403,6 +4518,18 @@ def private_media_access(kind, key, member_id):
                 team = str(row[3] or "")
                 if owner == requester or (team and team in teams):
                     return _private_media_row_public(row), None
+                if _supplier_delivery_media_allowed_locked(
+                    conn,
+                    requester,
+                    role,
+                    delivery_id,
+                    media_kind,
+                    media_key,
+                ):
+                    record = _private_media_row_public(row)
+                    record["deliveryId"] = str(delivery_id or "").strip()
+                    record["accessVia"] = "supplier-delivery"
+                    return record, None
             return None, "forbidden"
         finally:
             conn.close()

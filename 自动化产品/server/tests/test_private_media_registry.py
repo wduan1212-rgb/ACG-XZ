@@ -141,6 +141,249 @@ def write_media_override(
 
 
 class PrivateMediaRegistryTest(unittest.TestCase):
+    def test_supplier_delivery_linked_reads_are_exact_and_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            parent = store.add_member(
+                "A supplier", "delivery_media_parent", "local-test-pin", "supplier_parent"
+            )
+            other_parent = store.add_member(
+                "B supplier", "delivery_media_other", "local-test-pin", "supplier_parent"
+            )
+            with store._lock:
+                conn = store._connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO team_suppliers(team_id,supplier_parent_id,created_at,added_by) "
+                        "VALUES('team-a',?,?,?)",
+                        (parent[0], 1, "owner-a"),
+                    )
+                    conn.execute(
+                        "INSERT INTO team_suppliers(team_id,supplier_parent_id,created_at,added_by) "
+                        "VALUES('team-b',?,?,?)",
+                        (other_parent[0], 1, "admin-b"),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            child = store.create_supplier_children(parent[0], [{
+                "name": "A child",
+                "username": "delivery_media_child",
+                "pin": "local-test-pin",
+            }])[0]
+            unbound_child = store.create_supplier_children(parent[0], [{
+                "name": "A unbound child",
+                "username": "delivery_media_unbound",
+                "pin": "local-test-pin",
+            }])[0]
+
+            store.upsert_member_collection("owner-a", "editor", "accounts", [{
+                "id": "account-delivery-a",
+                "name": "Delivery account",
+                "mode": "图文",
+                "updatedAt": 1,
+            }])
+            pack_name = "owner-a--delivery-pack.png"
+            unrelated_name = "owner-a--private-other.png"
+            composed_name = "delivery-final.mp4"
+            workshop_key = "workshop-a/delivery-final.mp4"
+            store.upsert_docs("assets", [
+                {
+                    "id": "pack-asset-a",
+                    "ownerId": "owner-a",
+                    "accountId": "account-delivery-a",
+                    "type": "图片",
+                    "serverFileName": pack_name,
+                    "fileUrl": f"/api/files/{pack_name}",
+                    "updatedAt": 1,
+                },
+                {
+                    "id": "private-asset-a",
+                    "ownerId": "owner-a",
+                    "accountId": "account-delivery-a",
+                    "type": "图片",
+                    "serverFileName": unrelated_name,
+                    "fileUrl": f"/api/files/{unrelated_name}",
+                    "updatedAt": 1,
+                },
+                {
+                    "id": "delivery-images-a",
+                    "ownerId": "owner-a",
+                    "byMemberId": "owner-a",
+                    "accountId": "account-delivery-a",
+                    "type": "图集",
+                    "delivered": True,
+                    "coverAssetId": "pack-asset-a",
+                    "packAssetIds": ["pack-asset-a"],
+                    "updatedAt": 1,
+                },
+                {
+                    "id": "delivery-video-a",
+                    "ownerId": "owner-a",
+                    "byMemberId": "owner-a",
+                    "accountId": "account-delivery-a",
+                    "type": "视频",
+                    "delivered": True,
+                    "videoUrl": f"/api/video/composed/{composed_name}",
+                    "updatedAt": 1,
+                },
+                {
+                    "id": "delivery-workshop-video-a",
+                    "ownerId": "owner-a",
+                    "byMemberId": "owner-a",
+                    "accountId": "account-delivery-a",
+                    "type": "视频",
+                    "delivered": True,
+                    "videoUrl": f"/custom-video/outputs/{workshop_key}",
+                    "updatedAt": 1,
+                },
+            ])
+            self.assertTrue(store.set_supplier_child_accounts(
+                parent[0], child["id"], ["account-delivery-a"], parent[0], include_all=True,
+            ))
+
+            (paths["UPLOAD_DIR"] / pack_name).write_bytes(b"pack-image")
+            (paths["UPLOAD_DIR"] / unrelated_name).write_bytes(b"private-image")
+            (paths["COMPOSED_DIR"] / composed_name).write_bytes(b"final-video")
+            workshop_output = paths["VIDEO_WORKSHOP_OUTPUT_DIR"] / workshop_key
+            workshop_output.parent.mkdir(parents=True, exist_ok=True)
+            workshop_output.write_bytes(b"workshop-video")
+            store.register_private_media(
+                "upload", pack_name, "owner-a", team_id="team-a",
+                provenance_kind="asset", provenance_id="pack-asset-a",
+            )
+            store.register_private_media(
+                "upload", unrelated_name, "owner-a", team_id="team-a",
+                provenance_kind="asset", provenance_id="private-asset-a",
+            )
+            store.register_private_media(
+                "composed", composed_name, "owner-a", team_id="team-a",
+                provenance_kind="video-compose", provenance_id="compose-delivery-a",
+            )
+            store.register_private_media(
+                "video-output", workshop_key, "owner-a", team_id="team-a",
+                provenance_kind="video-workshop-project", provenance_id="workshop-a",
+            )
+
+            for requester in (parent[0], child["id"]):
+                image, image_error = store.private_media_access(
+                    "upload", pack_name, requester, "delivery-images-a"
+                )
+                self.assertIsNone(image_error)
+                self.assertEqual("supplier-delivery", image["accessVia"])
+                video, video_error = store.private_media_access(
+                    "composed", composed_name, requester, "delivery-video-a"
+                )
+                self.assertIsNone(video_error)
+                self.assertEqual("supplier-delivery", video["accessVia"])
+                workshop, workshop_error = store.private_media_access(
+                    "video-output", workshop_key, requester,
+                    "delivery-workshop-video-a",
+                )
+                self.assertIsNone(workshop_error)
+                self.assertEqual("supplier-delivery", workshop["accessVia"])
+
+            self.assertEqual(
+                "forbidden",
+                store.private_media_access("upload", pack_name, parent[0])[1],
+            )
+            self.assertEqual(
+                "forbidden",
+                store.private_media_access(
+                    "upload", unrelated_name, parent[0], "delivery-images-a"
+                )[1],
+            )
+            self.assertEqual(
+                "forbidden",
+                store.private_media_access(
+                    "upload", pack_name, unbound_child["id"], "delivery-images-a"
+                )[1],
+            )
+            self.assertEqual(
+                "forbidden",
+                store.private_media_access(
+                    "upload", pack_name, other_parent[0], "delivery-images-a"
+                )[1],
+            )
+            with patch.dict(os.environ, {
+                "PUBLIC_BASE_URL": "https://media.example.test",
+            }, clear=False):
+                store.upsert_docs("assets", [{
+                    "id": "delivery-approved-origin-a",
+                    "ownerId": "owner-a",
+                    "byMemberId": "owner-a",
+                    "accountId": "account-delivery-a",
+                    "type": "视频",
+                    "delivered": True,
+                    "videoUrl": (
+                        "https://media.example.test/api/video/composed/"
+                        f"{composed_name}"
+                    ),
+                    "updatedAt": 2,
+                }])
+                approved, approved_error = store.private_media_access(
+                    "composed", composed_name, parent[0],
+                    "delivery-approved-origin-a",
+                )
+                self.assertIsNone(approved_error)
+                self.assertEqual("supplier-delivery", approved["accessVia"])
+            store.upsert_docs("assets", [{
+                "id": "delivery-forged-origin-a",
+                "ownerId": "owner-a",
+                "byMemberId": "owner-a",
+                "accountId": "account-delivery-a",
+                "type": "视频",
+                "delivered": True,
+                "videoUrl": (
+                    "https://attacker.example/api/video/composed/"
+                    f"{composed_name}"
+                ),
+                "updatedAt": 3,
+            }])
+            self.assertEqual(
+                "forbidden",
+                store.private_media_access(
+                    "composed", composed_name, parent[0],
+                    "delivery-forged-origin-a",
+                )[1],
+            )
+            self.assertFalse(store.can_write_asset_file(
+                "pack-asset-a", parent[0], "supplier_parent"
+            ))
+
+            main = importlib.import_module("main")
+            with patch.object(main, "store", store), patch.object(
+                main, "UPLOAD_DIR", paths["UPLOAD_DIR"]
+            ), patch.object(
+                main, "COMPOSED_DIR", paths["COMPOSED_DIR"]
+            ), patch.object(
+                main, "VIDEO_WORKSHOP_OUTPUT_DIR", paths["VIDEO_WORKSHOP_OUTPUT_DIR"]
+            ):
+                image_response = main.file_get(
+                    pack_name,
+                    request_with_range("bytes=0-3"),
+                    deliveryId="delivery-images-a",
+                    me={"id": child["id"], "role": "supplier_child"},
+                )
+                video_response = main.composed_file(
+                    composed_name,
+                    request_with_range("bytes=0-4"),
+                    deliveryId="delivery-video-a",
+                    me={"id": parent[0], "role": "supplier_parent"},
+                )
+                workshop_response = main.custom_video_output(
+                    workshop_key,
+                    request_with_range("bytes=0-7"),
+                    deliveryId="delivery-workshop-video-a",
+                    me={"id": child["id"], "role": "supplier_child"},
+                )
+            self.assertEqual(206, image_response.status_code)
+            self.assertEqual("bytes 0-3/10", image_response.headers["content-range"])
+            self.assertEqual(206, video_response.status_code)
+            self.assertEqual("bytes 0-4/11", video_response.headers["content-range"])
+            self.assertEqual(206, workshop_response.status_code)
+            self.assertEqual("bytes 0-7/14", workshop_response.headers["content-range"])
+
     def test_owner_and_same_team_allowed_external_admin_denied(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, _paths = load_media_store(tmp)

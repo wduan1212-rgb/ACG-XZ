@@ -73,7 +73,8 @@ class V105DetailFixesTest(unittest.TestCase):
         self.assertIn("if (needsCompose())", cut)
         self.assertNotIn("if (videoJobsComplete() && needsCompose())", cut)
         self.assertIn("完整成片尚未合成", delivery)
-        self.assertIn("未把 ${sourceCount", delivery)
+        self.assertIn("视频交付缺少完整成片，已停止生成不完整 ZIP", delivery)
+        self.assertNotIn("视频说明.txt", delivery)
 
     def test_voice_gender_is_preserved_end_to_end(self):
         providers = self.read("js/api/providers.js")

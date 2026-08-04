@@ -4,6 +4,19 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-04 v140 生产 P0：交付可见不等于其依赖的私有媒体可读
+
+- **生产现象与排除项**：供应商下载图文 ZIP 只有文案。532 条图文交付的 1,780 个 `packAssetIds` 底层资产、磁盘文件和 `private_media_registry` 均不缺失，但 `/api/files` 大量返回 401/404。这是权限链路缺口，不是生产文件丢失，禁止为修复下载而补传、重建或改写媒体库。
+- **根因**：供应商通过 `team_suppliers` 和 `supplier_account_bindings` 获得交付可见性，但不是 `team_members`；原 `private_media_access()` 只允许 owner/同团队成员。下载端 `assetU8()` 又静默丢弃失败图片，使一个不完整 ZIP 被误报为成功。
+- **服务端修复边界**：仅对 supplier parent/child 提供交付关联的精确读取：供应商须先通过既有交付可见性，请求须指定交付 ID，媒体须精确命中库内该交付的 cover/pack/source asset 或最终 video URL。未指定交付、未绑定子账号、其他团队、交付外文件、伪造外链、非媒体路径全部拒绝。该例外不进入写/删接口，不能扩大成任意 shared/private URL 权限。
+- **下载与防回归**：图文的封面/全部图片和视频的完整成片都是 ZIP 必备项，任一项缺失或拒绝就向用户显示错误，不标记已下载。回归必须覆盖 parent/child 正例、未绑定 child/跨 team/非交付文件反例、Range、读取不会带来写权，以及实际 ZIP entry 中存在图片/视频字节。
+
+## 2026-08-04 v140 生产 P0：视频工坊顶层状态不能否定已持久化的历史成片
+
+- **现象与根因**：生产 32 个项目中有 3 个已存在有效 output URL，但项目因回到 conversation/brief 而 `status != succeeded`，原 `publishPayloadForOutput()` 因此统一报“成片尚未完成”。项目顶层状态表示当前对话/制作阶段，不是历史 delivery/output 是否完成的权威。
+- **修复与权限边界**：发布必须选中项目持久化 `deliveries/outputs` 中的 canonical output ID，仅接受路径中项目 ID 完全相同的本地 MP4/WebM/MOV。显式 failed/running、空 URL、外部 scheme、路径穿越、跨项目路径、delivery/output ID 不一致全部拒绝；请求携带的 URL 不可以覆盖项目中的 canonical URL。用户点击当前或历史成片后才构造发布请求，不发起 provider 生成，不修改其他项目。
+- **防回归**：同时覆盖 inline delivery、历史 delivery、顶层 conversation + 已完成 output、legacy 当前 outputs，以及空 URL、failed/running output、跨项目伪造和伪造请求 URL。嵌入主平台时策略脚本必须在 `app.js` 前加载并与缓存身份一起验签。
+
 ## 2026-08-04 v140 线上状态收敛缺口：succeeded job 不会在刷新后重放 `job:done`
 
 - **生产现象**：受保护切换到 `9e8aeb5` 后，6 条已有成片或全部有效 job 已 succeeded 的视频 production 仍停在 `workshop/running`；它们同时覆盖无 batch、done batch 和 generating batch。另有 1 个 generating batch 的全部 production 已在 review/failed/delivered，但 batch 未收敛。

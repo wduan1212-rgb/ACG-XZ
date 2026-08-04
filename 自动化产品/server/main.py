@@ -5265,6 +5265,7 @@ async def proxy_file(req: FileProxyReq, _me=Depends(require_creator)):
 def composed_file(
     name: str,
     request: Request,
+    deliveryId: str = "",
     me=Depends(_private_media_session_member),
 ):
     safe_name = Path(name).name
@@ -5275,6 +5276,7 @@ def composed_file(
         "composed",
         safe_name,
         me,
+        delivery_id=deliveryId,
         legacy_authorizer=lambda: bool(
             store.legacy_private_media_document_access(
                 "composed", safe_name, me["id"], me.get("role") or "",
@@ -9895,17 +9897,20 @@ def _private_media_access_or_404(
     key: str,
     member: dict,
     *,
+    delivery_id: str = "",
     legacy_authorizer=None,
 ) -> dict:
     """Resolve one registered media row without leaking cross-tenant names."""
 
     enforced = _private_media_registry_enforced()
     try:
-        record, error = store.private_media_access(
-            kind,
-            key,
-            str((member or {}).get("id") or ""),
-        )
+        requester = str((member or {}).get("id") or "")
+        if delivery_id:
+            record, error = store.private_media_access(
+                kind, key, requester, str(delivery_id),
+            )
+        else:
+            record, error = store.private_media_access(kind, key, requester)
     except Exception as exc:
         if not enforced and callable(legacy_authorizer):
             try:
@@ -10056,6 +10061,7 @@ async def file_put(asset_id: str, req: Request, filename: str = "", mime: str = 
 def file_get(
     name: str,
     request: Request,
+    deliveryId: str = "",
     me=Depends(_private_media_session_member),
 ):
     path = _upload_path(name)
@@ -10065,6 +10071,7 @@ def file_get(
         "upload",
         path.name,
         me,
+        delivery_id=deliveryId,
         legacy_authorizer=lambda: _legacy_upload_access_allowed(path.name, me),
     )
     media = _media_type_for_path(path)
@@ -10725,6 +10732,21 @@ def _custom_video_session_member(request: Request):
         raise HTTPException(401, "视频工坊登录态已过期，请刷新定制创作页面")
     member = store.member_public(row)
     return _require_custom_creator(member)
+
+
+def _video_output_download_member(request: Request):
+    """Authenticate a video-output read for creators or delivery suppliers."""
+
+    authorization = str(request.headers.get("authorization") or "").strip()
+    if authorization:
+        return _member_from_authorization(authorization)
+    for cookie_name in (VIDEO_WORKSHOP_SESSION_COOKIE, PRIVATE_MEDIA_SESSION_COOKIE):
+        token = str(request.cookies.get(cookie_name) or "").strip()
+        member_id = store.parse_token(token) if token else None
+        row = store.get_member(member_id) if member_id else None
+        if row:
+            return store.member_public(row)
+    raise HTTPException(401, "媒体登录态已过期，请刷新页面后重试")
 
 
 def _video_workshop_safe_path(root: Path, relative_path: str):
@@ -11469,7 +11491,12 @@ def custom_video_asset(asset_path: str, request: Request):
 
 
 @app.get("/custom-video/outputs/{file_path:path}")
-def custom_video_output(file_path: str, request: Request, me=Depends(_custom_video_session_member)):
+def custom_video_output(
+    file_path: str,
+    request: Request,
+    deliveryId: str = "",
+    me=Depends(_video_output_download_member),
+):
     parts = Path(str(file_path or "")).parts
     if len(parts) < 2:
         raise HTTPException(404, "视频成片不存在")
@@ -11481,7 +11508,12 @@ def custom_video_output(file_path: str, request: Request, me=Depends(_custom_vid
         "video-output",
         key,
         me,
-        legacy_authorizer=lambda: bool(_video_workshop_owned_project(me, parts[0])),
+        delivery_id=deliveryId,
+        legacy_authorizer=(
+            (lambda: bool(_video_workshop_owned_project(me, parts[0])))
+            if me.get("role") in {"admin", "editor", "user"}
+            else None
+        ),
     )
     return _private_ranged_file_response(
         request, path, media_type=_media_type_for_path(path), cache_seconds=300,

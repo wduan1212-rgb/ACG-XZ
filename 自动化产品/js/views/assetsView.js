@@ -7,8 +7,8 @@ import { community } from "../core/remote.js";
 import { searchAssets, thumbHtml, removeAsset, urlFor, assetCode, assetU8, addAssetFromFile, inferAssetFileMeta, isBgmAsset, isEditingMaterialAsset } from "../domain/assets.js";
 import { downloadAsset } from "../domain/delivery.js";
 import { platChip, groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260804-v140-hydration-settlement-1";
-import { renderSupplierAccounts } from "./supplierViews.js?v=20260804-v140-hydration-settlement-1";
+import { emptyState, promptModal, confirmModal, openLightbox, openModal, toast, withLoading, removeWithMotion } from "../ui/components.js?v=20260804-v140-delivery-media-publish-1";
+import { renderSupplierAccounts } from "./supplierViews.js?v=20260804-v140-delivery-media-publish-1";
 
 let fAcc = "all", fQ = "", fKind = "all", fSource = "all", fBackendKind = "bgm", libraryMode = "drafts", collapseInitialized = false;
 let activeAssetsController = null;
@@ -161,7 +161,7 @@ export const assetsView = {
         root.innerHTML = `<div class="assets-page"><div class="page-head"><div><div class="eyebrow">整体资产</div><h2>草稿箱</h2></div><div class="head-actions">${libraryTabsHtml()}</div></div><div class="asset-mode-stage" id="assetDraftsHost"></div></div>`;
         mountTopDock();
         wireLibraryTabs();
-        import("./draftsView.js?v=20260804-v140-hydration-settlement-1").then(({ draftsView }) => {
+        import("./draftsView.js?v=20260804-v140-delivery-media-publish-1").then(({ draftsView }) => {
           const host = $("#assetDraftsHost", root);
           if (host) draftsView.render(host);
         });
@@ -476,7 +476,13 @@ export const assetsView = {
         if (!a) return;
         const img = card.querySelector(".ac-thumb img");
         if (img) img.addEventListener("click", () => openLightbox(img, urlFor(a), a.name));
-        card.querySelector('[data-aact="download"]').addEventListener("click", () => downloadAsset(a));
+        card.querySelector('[data-aact="download"]').addEventListener("click", async () => {
+          try {
+            await downloadAsset(a);
+          } catch (error) {
+            toast(error?.message || "素材下载失败，请刷新后重试", "error");
+          }
+        });
         card.querySelector('[data-aact="rename"]').addEventListener("click", async () => {
           const name = await promptModal({ title: "重命名素材", value: a.name });
           if (name) { a.name = name; save("assets"); draw(); }

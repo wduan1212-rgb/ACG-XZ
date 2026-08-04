@@ -4,6 +4,9 @@ const SEARCH_PARAMS = new URLSearchParams(window.location.search);
 const START_ON_HOME = SEARCH_PARAMS.get("start") === "home";
 const INITIAL_PROJECT_ID = String(SEARCH_PARAMS.get("project") || "").trim().slice(0, 180);
 const CAN_PUBLISH = SEARCH_PARAMS.get("canPublish") !== "0";
+const resolvePublishableVideoOutput =
+  window.VideoWorkshopPublishPolicy?.resolvePublishableVideoOutput
+  || (() => null);
 const WORKSPACE_MODE =
   typeof window.parent !== "undefined"
   && window.parent !== window
@@ -1076,10 +1079,13 @@ function selectOutput(index, { forceReload = false } = {}) {
 
 function publishPayloadForOutput(output, delivery = null) {
   const project = state.project;
-  const videoUrl = String(output?.url || output?.downloadUrl || "");
-  if (project?.status !== "succeeded" || !project?.id || !videoUrl) return null;
+  const resolved = resolvePublishableVideoOutput(project, output, delivery);
+  if (!resolved) return null;
+  const canonicalOutput = resolved.output;
+  const canonicalDelivery = resolved.delivery;
+  const videoUrl = resolved.videoUrl;
   const title = String(
-    delivery?.title
+    canonicalDelivery?.title
     || (project.name && project.name !== "新会话" ? project.name : "")
     || project.plan?.title
     || "未命名视频"
@@ -1090,13 +1096,13 @@ function publishPayloadForOutput(output, delivery = null) {
     title,
     videoUrl,
     url: videoUrl,
-    downloadUrl: String(output.downloadUrl || videoUrl),
-    aspectRatio: String(output.aspectRatio || project.plan?.aspect_ratio || "9:16"),
-    sourceDeliveryId: String(output.deliveryId || delivery?.id || ""),
-    sourceOutputId: String(output.id || ""),
-    plan: delivery?.plan || project.plan || null,
+    downloadUrl: String(canonicalOutput.downloadUrl || videoUrl),
+    aspectRatio: String(canonicalOutput.aspectRatio || project.plan?.aspect_ratio || "9:16"),
+    sourceDeliveryId: String(canonicalOutput.deliveryId || canonicalDelivery?.id || ""),
+    sourceOutputId: String(canonicalOutput.id || ""),
+    plan: canonicalDelivery?.plan || project.plan || null,
     project,
-    status: String(project.status || ""),
+    status: "succeeded",
     publishedCount: publishedCountFor(project),
   };
 }
@@ -1341,9 +1347,16 @@ function renderDelivery(project) {
   );
   dom.historyDeliveryButton.hidden = !deliveries.length;
   dom.speedVersionControl.hidden = project.status !== "succeeded";
+  const selectedOutput = outputs[state.outputIndex] || null;
+  const selectedDelivery = deliveries.find(item =>
+    String(item?.id || "") === String(selectedOutput?.deliveryId || project?.activeDeliveryId || "")
+  ) || null;
+  const selectedPublishable = Boolean(
+    resolvePublishableVideoOutput(project, selectedOutput, selectedDelivery)
+  );
   dom.publishOutputButton.hidden = !(
     CAN_PUBLISH
-    && project.status === "succeeded"
+    && selectedPublishable
     && document.documentElement.dataset.platformEmbedded === "true"
     && window.parent !== window
   );

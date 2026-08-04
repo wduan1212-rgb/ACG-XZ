@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260804-v140-hydration-settlement-1",
-  "fileCount": 54,
-  "totalBytes": 2612253,
+  "releaseId": "20260804-v140-delivery-media-publish-1",
+  "fileCount": 55,
+  "totalBytes": 2621863,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100718,
-      "sha256": "7c1658b560acbc5f556433d0da0cd2e817901d85a049305c6ec1249853abb545"
+      "size": 100720,
+      "sha256": "b2d8905ae76ed9a3873658b2d71c270e072a8306fcc99f6091c5796a5acb8a92"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -141,13 +141,18 @@
     },
     {
       "path": "apps/video-workshop/web/assets/app.js",
-      "size": 99173,
-      "sha256": "39bb13e45a0afa62c17f7f26731b678e0a8a2789484f78e4c813d7170d664bd3"
+      "size": 99764,
+      "sha256": "6895cb73755ab7bfda00810d8dbabafd84a7728224d12c828665d10983b9eccb"
     },
     {
       "path": "apps/video-workshop/web/assets/lucide.min.js",
       "size": 357796,
       "sha256": "3411692820cb8d47543f69496aa25fd603a358f4498046f41c508a5a3342210e"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/publishPolicy.js",
+      "size": 3209,
+      "sha256": "cabf0f0fcb6fb94c670acedb0ebecc68def55a991b4b052ad6a12df50fe9dc9c"
     },
     {
       "path": "apps/video-workshop/web/assets/styles.css",
@@ -161,8 +166,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22293,
-      "sha256": "00185529694df45b58f64289a9ae4699ee5f34ee21b7739e07cf696e226ba3cb"
+      "size": 22391,
+      "sha256": "d493f1f499a063ee8ac25fe226f19e199444518c71e6d7d6b7442c67fd07ceef"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -216,8 +221,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 482613,
-      "sha256": "e194ab84b860ce101c78002346455db2362a11e133077169d4386605d9668374"
+      "size": 483807,
+      "sha256": "9da4e7aa712ac03eab16ea723d99f84ccde911faf56669e4296e3db6dafad931"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -266,8 +271,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 662320,
-      "sha256": "b354be8fd932af1adba1c00842fae67eeadc290f87b9cc2edee8a3b18efacc3a"
+      "size": 666836,
+      "sha256": "c12d663b220a285f15c178b455df21779425a434185e81f2331e6d6e705ebd13"
     },
     {
       "path": "tools/verify_release_contracts.py",
