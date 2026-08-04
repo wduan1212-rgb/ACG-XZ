@@ -359,7 +359,7 @@ test("all runtime modules share the v140 cache identity", async () => {
     read("index.html"),
     read("js/main.js"),
   ]);
-  assert.match(indexHtml, /20260805-v140-platform-stability-2/);
-  assert.match(mainJs, /APP_BUILD_ID = "20260805-v140-platform-stability-2"/);
+  assert.match(indexHtml, /20260805-v140-platform-stability-3/);
+  assert.match(mainJs, /APP_BUILD_ID = "20260805-v140-platform-stability-3"/);
   assert.doesNotMatch(indexHtml + mainJs, /20260729-v121-shell-22|20260729-v122-shell-1/);
 });

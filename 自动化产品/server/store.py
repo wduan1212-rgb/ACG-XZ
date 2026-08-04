@@ -5200,11 +5200,18 @@ def _private_media_plan_locked(
             "rows": [],
         }
 
-    members = {
-        str(row[0])
-        for row in conn.execute("SELECT id FROM members").fetchall()
+    member_roles = {
+        str(row[0]): str(row[1] or "")
+        for row in conn.execute("SELECT id,role FROM members").fetchall()
     }
+    members = set(member_roles)
     teams_by_member = _private_media_active_teams_by_member_locked(conn)
+    supplier_team_bindings = {
+        (str(row[0]), str(row[1]))
+        for row in conn.execute(
+            "SELECT team_id,supplier_parent_id FROM team_suppliers"
+        ).fetchall()
+    } if "team_suppliers" in tables else set()
     inventory = {}
     issue_counts = {
         "missingRoots": 0,
@@ -5245,6 +5252,7 @@ def _private_media_plan_locked(
     provenance = {}
     referenced = set()
     reference_scopes = {}
+    supplier_managed_reference_scopes = {}
     resource_scope_rows = {
         (str(kind), str(resource_id)): (str(scope_type), str(scope_id))
         for kind, resource_id, scope_type, scope_id in conn.execute(
@@ -5309,6 +5317,23 @@ def _private_media_plan_locked(
                 continue
             for owner in owner_candidates:
                 add_candidate(identity, owner, f"doc:{collection}", document_id)
+        supplier_manager = (
+            str(payload.get("supplierManagedBy") or "").strip()
+            if isinstance(payload, dict)
+            else ""
+        )
+        if (
+            str(collection) == "assets"
+            and supplier_manager
+            and member_roles.get(supplier_manager) in {"supplier", "supplier_parent"}
+            and document_scope
+            and document_scope[0] == "team"
+            and (document_scope[1], supplier_manager) in supplier_team_bindings
+        ):
+            for identity in references:
+                supplier_managed_reference_scopes.setdefault(
+                    (identity, supplier_manager), set()
+                ).add((str(document_scope[0]), str(document_scope[1])))
         if str(collection) == "customProjects" and isinstance(payload, dict):
             state = payload.get("projectState") if isinstance(payload.get("projectState"), dict) else {}
             workshop_id = str(state.get("workshopProjectId") or "").strip()
@@ -5588,6 +5613,9 @@ def _private_media_plan_locked(
             registered_owner = registered_owners[0]
             registered_scopes = registry_scopes_by_identity.get(identity) or set()
             referenced_scopes = reference_scopes.get(identity) or set()
+            supplier_managed_scopes = supplier_managed_reference_scopes.get(
+                (identity, registered_owner), set()
+            )
             strong_owners = {
                 owner_id
                 for owner_id in owners
@@ -5607,6 +5635,7 @@ def _private_media_plan_locked(
                 or len(registered_scopes) != 1
                 or any(
                     scope not in registered_scopes
+                    and scope not in supplier_managed_scopes
                     for scope in referenced_scopes
                 )
             ):

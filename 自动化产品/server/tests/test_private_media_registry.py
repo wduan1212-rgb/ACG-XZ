@@ -536,6 +536,90 @@ class PrivateMediaRegistryTest(unittest.TestCase):
             self.assertFalse(conflict["readyForApply"])
             self.assertEqual(1, conflict["counts"]["ambiguousFiles"])
 
+    def test_completed_migration_allows_bound_supplier_to_manage_team_asset_media(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            supplier = store.add_member(
+                "Supplier", "media_supplier", "local-test-pin", "supplier_parent"
+            )
+            other_supplier = store.add_member(
+                "Other supplier", "other_media_supplier", "local-test-pin", "supplier_parent"
+            )
+            uploaded = paths["UPLOAD_DIR"] / f"{supplier[0]}--managed.png"
+            uploaded.write_bytes(b"png")
+            store.register_private_media(
+                "upload", uploaded.name, supplier[0],
+                provenance_kind="supplier-account-asset",
+                provenance_id="asset-supplier-managed",
+            )
+            asset = {
+                "id": "asset-supplier-managed",
+                "accountId": "account-a",
+                "fileUrl": f"/api/files/{uploaded.name}",
+                "url": f"/api/files/{uploaded.name}",
+                "supplierManagedBy": supplier[0],
+            }
+            with store._lock:
+                conn = store._connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO team_suppliers(team_id,supplier_parent_id,created_at,added_by) "
+                        "VALUES('team-a',?,?,?)",
+                        (supplier[0], 1, "owner-a"),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) "
+                        "VALUES(?,?,?,?,?)",
+                        (
+                            "assets", asset["id"], "owner-a", 1,
+                            json.dumps(asset),
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT INTO resource_scopes("
+                        "resource_kind,resource_id,scope_type,scope_id,owner_id,"
+                        "provenance,captured_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store._doc_resource_kind("assets"), asset["id"],
+                            "team", "team-a", "owner-a",
+                            "test", 1, 1,
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                        ") VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_NAME,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM,
+                            "test", 1, 1, "success", "{}",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            status = store.private_media_registry_status()
+            self.assertTrue(status["readyForApply"])
+            self.assertEqual(0, status["counts"]["ambiguousFiles"])
+
+            asset["supplierManagedBy"] = other_supplier[0]
+            with store._lock:
+                conn = store._connect()
+                try:
+                    conn.execute(
+                        "UPDATE docs SET data=?,updated_at=? "
+                        "WHERE collection='assets' AND id=?",
+                        (json.dumps(asset), 2, asset["id"]),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            blocked = store.private_media_registry_status()
+            self.assertFalse(blocked["readyForApply"])
+            self.assertEqual(1, blocked["counts"]["ambiguousFiles"])
+
     def test_post_140004_video_outputs_register_on_hydration_and_settle_independently(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, paths = load_media_store(tmp)

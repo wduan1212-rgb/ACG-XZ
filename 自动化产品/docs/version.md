@@ -10,13 +10,13 @@
 - 无限画布的文生图与定向编辑改为 owner-scoped 服务端后台任务。浏览器先持久化占位和确定性 job ID，再提交服务端；离开页面只停止当前页面轮询，不取消上游请求，回到项目后从服务器恢复图片或明确失败。服务重启后的过久遗留任务会失败关闭，不自动重提付费请求。
 - 无限画布首次进入时，只有在登录水合完成且服务器项目索引已成功同步、确认项目数为零后，才自动创建一个空白画布；索引读取失败时不误建重复项目。分享灵感使用独立分享图标，和发布动作保持可辨识。
 - 视频工坊发布页在先生成封面、再根据标题生成文案时保留既有封面并更新文案基线；既有对话滚动修复继续保持。首页加入团队弹窗补齐宽度、换行和维护态错误，信息流重试会携带上一轮草稿与失败原因定向补足 A/B 面分时镜头。
-- 私有媒体历史迁移完成后，唯一 `private_media_registry` 所有者继续作为权威归属；同团队后续共享的资产或交付文档只增加使用引用，不会把一份已登记媒体误判为多所有者。跨团队引用、上传文件名前缀、视频工坊项目或画布 Blob 等强来源与 registry 冲突时仍失败关闭。
-- 缓存与发布身份统一为 `20260805-v140-platform-stability-2`，无限画布已从同一源码重新构建并同步受控 vendor 闭包。
+- 私有媒体历史迁移完成后，唯一 `private_media_registry` 所有者继续作为权威归属；同团队后续共享的资产或交付文档只增加使用引用，不会把一份已登记媒体误判为多所有者。供应商父账号经 `team_suppliers` 明确绑定团队、且团队资产的 `supplierManagedBy` 精确指向该父账号时，该团队资产可以引用供应商登记的上传媒体；错绑供应商、跨团队引用、上传文件名前缀、视频工坊项目或画布 Blob 等强来源与 registry 冲突时仍失败关闭。
+- 缓存与发布身份统一为 `20260805-v140-platform-stability-3`，无限画布已从同一源码重新构建并同步受控 vendor 闭包。
 
 ### 本地验证与生产边界
 
-- Node 全量 `120/120`、视频工坊 `140/140`、本轮定向回归 `177/177` 通过；无限画布 TypeScript、ESLint、生产构建和 vendor 闭包核对通过；Python 编译、全部受跟踪 JavaScript 语法、Shell 语法与 `git diff --check` 通过。
-- release verifier 通过：Phase 0 SHA-256 `bd2c18166a5fdebf1b2c99cf783fdeccf7a6ddfc464c0cf02a21c90ee56b59ce`；ESM `60` modules / `342` edges，closure SHA-256 `dcc80cdce996a328495d9d1561ec7f2d5d9a8a8fb0cc307a3ec86409991d6c07`；canvas `63` files / `1,764,379` bytes；runtime `56` files / `2,726,231` bytes，manifest SHA-256 `36b6c4aaf736a4329b530a56cf5687f90fd5b427f6712b38a68a2606bebddd6a`。
+- Node 全量 `120/120`、视频工坊 `140/140`、既有定向回归 `177/177` 与新增私有媒体门禁 `16/16` 通过；无限画布 TypeScript、ESLint、生产构建和 vendor 闭包核对通过；Python 编译、全部受跟踪 JavaScript 语法、Shell 语法与 `git diff --check` 通过。
+- release verifier 通过：Phase 0 SHA-256 `f1f70d1d64326724fcb1a835b70edfc7d4dacd1b439c4095a924de93f2943b3d`；ESM `60` modules / `342` edges，closure SHA-256 `05c30ef13ebb71aae6894ec95ec7a2e2225e21ee94dd70f82ebe98533df08020`；canvas `63` files / `1,764,379` bytes；runtime `56` files / `2,727,506` bytes，manifest SHA-256 `146cfafc8773ff183d64b5256a0548e4bfbe7527da2a08b0533b11a8bf24ae57`。
 - 当前开发机系统 Python 3.9 与生产锁定 TestClient 闭包不一致，且工作树保留用户删除的旧 `logo.png`，因此未把系统 Python 直接运行的 51 个环境错误计作代码回归。正式主服务全量必须在最终干净提交、目标 Linux / CPython 3.12 和验签离线测试 wheelhouse 中重新通过后才允许切换。
 - 部署只允许同步最终干净提交的代码和静态资源；不得覆盖 SQLite、账号/成员、资产/发布清单、草稿、分析数据、uploads、composed、canvas blobs、视频工坊 runtime、模型缓存、认证或私密环境。生产已在 schema `140007` 时不得重跑早期迁移。
 

@@ -13,11 +13,11 @@ import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfig
 import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial, enforceSupportedVideoMode } from "../domain/productions.js";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260805-v140-platform-stability-2";
-import { toast, withLoading, openLightbox } from "../ui/components.js?v=20260805-v140-platform-stability-2";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260805-v140-platform-stability-3";
+import { toast, withLoading, openLightbox } from "../ui/components.js?v=20260805-v140-platform-stability-3";
 import { go, currentRoute } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260805-v140-platform-stability-2";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260805-v140-platform-stability-3";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, setFavoriteVoice, voicePickerGroups } from "../domain/voices.js";
 import {
