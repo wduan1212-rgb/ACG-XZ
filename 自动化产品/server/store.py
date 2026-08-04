@@ -5343,24 +5343,35 @@ def _private_media_plan_locked(
                 continue
             add_candidate(identity, author_id, "community-post", post_id)
 
-    # Existing registrations are provenance, but never override disagreement
-    # with documents or a server-generated owner prefix.
+    # Before the one-time migration completes, every ownership signal must
+    # agree. Afterwards the registry is authoritative: shared delivery or
+    # asset documents are usage references and must not redefine ownership.
+    # Strong server-derived signals and cross-scope references still block.
     registry_rows = conn.execute(
         "SELECT media_kind,media_key,owner_id,team_id,provenance_kind,"
         "provenance_id,created_at,updated_at FROM private_media_registry "
         "ORDER BY media_kind,media_key,owner_id"
     ).fetchall()
     existing_registry = {}
+    registry_owners_by_identity = {}
+    registry_scopes_by_identity = {}
     for row in registry_rows:
         identity = (str(row[0]), str(row[1]))
-        existing_registry[(identity, str(row[2]))] = row
+        registry_owner = str(row[2])
+        existing_registry[(identity, registry_owner)] = row
+        registry_owners_by_identity.setdefault(identity, set()).add(
+            registry_owner
+        )
         registry_scope = (
             ("team", str(row[3]))
             if str(row[3] or "")
-            else ("member", str(row[2]))
+            else ("member", registry_owner)
+        )
+        registry_scopes_by_identity.setdefault(identity, set()).add(
+            registry_scope
         )
         add_reference(identity, registry_scope)
-        add_candidate(identity, row[2], row[4], row[5])
+        add_candidate(identity, registry_owner, row[4], row[5])
         if identity[0] != "canvas-blob" and identity not in inventory:
             issue_counts["registryMissingFiles"] += 1
 
@@ -5567,6 +5578,41 @@ def _private_media_plan_locked(
     issue_counts["missingReferenceOwners"] = len(missing_reference_owners)
     for identity in sorted(inventory):
         owners = sorted(candidates.get(identity) or set())
+        registered_owners = sorted(
+            registry_owners_by_identity.get(identity) or set()
+        )
+        if migrated and registered_owners:
+            if len(registered_owners) != 1:
+                issue_counts["ambiguousFiles"] += 1
+                continue
+            registered_owner = registered_owners[0]
+            registered_scopes = registry_scopes_by_identity.get(identity) or set()
+            referenced_scopes = reference_scopes.get(identity) or set()
+            strong_owners = {
+                owner_id
+                for owner_id in owners
+                if any(
+                    proof_kind in {
+                        "upload-owner-prefix",
+                        "video-workshop-project",
+                        "custom-canvas-blob",
+                    }
+                    for proof_kind, _proof_id in (
+                        provenance.get((identity, owner_id)) or set()
+                    )
+                )
+            }
+            if (
+                any(owner_id != registered_owner for owner_id in strong_owners)
+                or len(registered_scopes) != 1
+                or any(
+                    scope not in registered_scopes
+                    for scope in referenced_scopes
+                )
+            ):
+                issue_counts["ambiguousFiles"] += 1
+                continue
+            owners = [registered_owner]
         if not owners:
             if identity not in referenced:
                 # Preserve unknown legacy files in place, but do not register

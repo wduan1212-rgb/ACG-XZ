@@ -480,6 +480,62 @@ class PrivateMediaRegistryTest(unittest.TestCase):
             self.assertFalse(blocked["readyForApply"])
             self.assertEqual(1, blocked["counts"]["ambiguousFiles"])
 
+    def test_completed_migration_keeps_unique_registry_owner_for_shared_media(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            shared = paths["COMPOSED_DIR"] / "shared-after-migration.mp4"
+            shared.write_bytes(b"video")
+            store.register_private_media(
+                "composed", shared.name, "owner-a",
+                team_id="team-a", provenance_kind="production",
+                provenance_id="production-a",
+            )
+            with store._lock:
+                conn = store._connect()
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                        ") VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_NAME,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM,
+                            "test", 1, 1, "success", "{}",
+                        ),
+                    )
+                    for owner in ("owner-a", "peer-a"):
+                        conn.execute(
+                            "INSERT OR REPLACE INTO docs("
+                            "collection,id,owner_id,updated_at,data"
+                            ") VALUES(?,?,?,?,?)",
+                            (
+                                "assets", f"shared-{owner}", owner, 1,
+                                json.dumps({
+                                    "url": f"/api/video/composed/{shared.name}",
+                                }),
+                            ),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            status = store.private_media_registry_status()
+            self.assertTrue(status["readyForApply"])
+            self.assertEqual(0, status["counts"]["ambiguousFiles"])
+            self.assertEqual(0, status["counts"]["pendingRows"])
+
+            prefixed = paths["UPLOAD_DIR"] / "peer-a--conflict.png"
+            prefixed.write_bytes(b"png")
+            store.register_private_media(
+                "upload", prefixed.name, "owner-a",
+                team_id="team-a", provenance_kind="asset",
+                provenance_id="asset-conflict",
+            )
+            conflict = store.private_media_registry_status()
+            self.assertFalse(conflict["readyForApply"])
+            self.assertEqual(1, conflict["counts"]["ambiguousFiles"])
+
     def test_post_140004_video_outputs_register_on_hydration_and_settle_independently(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, paths = load_media_store(tmp)
