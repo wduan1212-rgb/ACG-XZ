@@ -21,6 +21,34 @@ def run_node(script: str) -> dict:
 
 
 class ImageCopyGenerationTest(unittest.TestCase):
+    def test_single_image_title_copy_removes_duplicate_title_and_markdown(self):
+        result = run_node(
+            r"""
+globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+globalThis.location = { origin:'http://127.0.0.1:8787', hash:'' };
+globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+globalThis.fetch = async () => ({
+  ok: true,
+  json: async () => ({ choices: [{ message: { content: JSON.stringify({
+    copy:'# 百度搭子你的好伙伴\\n**百度搭子你的好伙伴**\\n- 先整理资料，再核对交付结果。\\n- 保留真实边界，不夸大能力。\\n#百度搭子 #效率工具 #实测'
+  }) } }] }),
+  text: async () => ''
+});
+const { LLM_CONFIG } = await import('./js/api/llm.js?v=20260727-v118-7');
+LLM_CONFIG.apiKey = 'server-managed';
+LLM_CONFIG.endpoint = '/api/chat/completions';
+LLM_CONFIG.serverManaged = true;
+const { AI } = await import('./js/api/ai.js?v=single-copy-clean-test');
+const out = await AI.generateImageCopyFromTitle({ title:'百度搭子你的好伙伴', account:{} });
+console.log(JSON.stringify({ copy:out.copy }));
+"""
+        )
+        self.assertNotIn("**", result["copy"])
+        self.assertNotIn("\n", result["copy"])
+        self.assertFalse(result["copy"].startswith("百度搭子你的好伙伴"))
+        self.assertIn("先整理资料", result["copy"])
+
     def test_generated_copy_removes_only_exact_repeated_product_parentheses(self):
         result = run_node(
             r"""

@@ -5,9 +5,9 @@ import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
 import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260805-v140-platform-stability-3";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260806-v140-platform-stability-5";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260805-v140-platform-stability-3";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260806-v140-platform-stability-5";
 import { accountCreatedToday, groupOf, isAccountDisabled } from "../domain/accounts.js";
 
 let activeCustomPublishModal = null;
@@ -722,6 +722,11 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         removeCreatedCover(retiredId, "[custom-cover-cleanup]");
         queueDraftSave();
       };
+      const markGeneratedCoverStale = message => {
+        if (kind !== "video" || coverSource !== "generated" || !coverAssetId) return;
+        status.textContent = `${message} 当前封面已保留；需要时可点击重新生成。`;
+        queueDraftSave();
+      };
       const updateCoverHint = () => {
         if (!coverHint) return;
         const account = accountById(accountInput.value);
@@ -891,13 +896,13 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       });
       titleInput.addEventListener("input", () => {
         if (coverSource === "generated" && coverTitle !== titleInput.value.trim()) {
-          invalidateCover("发布标题已变化，请按新标题重新生成封面。");
+          markGeneratedCoverStale("发布标题已变化。");
         }
         queueDraftSave();
       });
       copyInput.addEventListener("input", () => {
         if (coverSource === "generated" && coverCopy !== copyInput.value.trim() && coverAssetId) {
-          invalidateCover("发布文案已变化，请按新文案重新生成封面。");
+          markGeneratedCoverStale("发布文案已变化。");
         }
         queueDraftSave();
       });
@@ -1131,10 +1136,6 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
             || coverAccountId !== accountId
             || coverProductId !== productId
           )) throw new Error("封面与当前账号或产品不一致，请重新生成或拖入");
-          if (kind === "video" && coverSource === "generated" && (
-            coverTitle !== title
-            || coverCopy !== copyInput.value.trim()
-          )) throw new Error("AI 封面与当前标题或文案不一致，请重新生成");
           const planDate = panel.querySelector("#customPublishDate").value;
           if (!planDate) throw new Error("请填写计划发布日期");
           const productTag = productTagLabel(product) || "定制创作";

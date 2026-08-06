@@ -3,9 +3,9 @@
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, currentMember, currentTeam, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260805-v140-platform-stability-3";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260806-v140-platform-stability-5";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260805-v140-platform-stability-3";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260806-v140-platform-stability-5";
 
 const ROLE_DESC = { admin: "团队管理员", editor: "创作成员", user: "个人用户", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor"];
@@ -335,7 +335,7 @@ export const settingsView = {
               <div class="settings-request-section">
                 <div class="settings-request-title"><b>无主个人账号</b><span>${platformAccounts.personal.length} 个</span></div>
                 <div class="mem-list">${platformAccounts.personal.length ? platformAccounts.personal.map(account => `
-                  <div class="mem-row"><span class="ovt-main"><b>${esc(account.name || "个人用户")}</b><em>@${esc(account.username || "")} · 每日 70 点，当日清零</em></span><span class="tag user">个人用户</span></div>`).join("") : `<div class="muted" style="padding:8px 2px">暂无独立个人账号。</div>`}</div>
+                  <div class="mem-row"><span class="ovt-main"><b>${esc(account.name || "个人用户")}</b><em>@${esc(account.username || "")} · 每日 70 点，当日清零</em></span><span class="tag user">个人用户</span><button class="btn primary sm" type="button" data-platform-adopt="${esc(account.id)}">${icon("users", 13)} 拉入 ACG 团队</button></div>`).join("") : `<div class="muted" style="padding:8px 2px">暂无独立个人账号。</div>`}</div>
               </div>
               <div class="settings-request-section">
                 <div class="settings-request-title"><b>团队版账号</b><span>${platformAccounts.teamOwners.length} 个</span></div>
@@ -667,6 +667,27 @@ export const settingsView = {
           toast(`账号已${action}`);
           draw();
         } catch (error) { toast(error?.message || `${action}失败`, "error"); }
+      }));
+      $$('[data-platform-adopt]', root).forEach(button => button.addEventListener("click", async () => {
+        const account = platformAccounts.personal.find(item => item.id === button.dataset.platformAdopt);
+        if (!account) return;
+        const ok = await confirmModal({
+          title: `把「${account.name || account.username}」拉入 ACG 团队？`,
+          body: "账号、历史创作、资产和发布数据都会原样保留；加入后按 ACG 创作成员权限继续使用。",
+          okText: "拉入团队",
+        });
+        if (!ok) return;
+        try {
+          await remote.admin.adoptPlatformAccount(account.id);
+          const result = await remote.admin.platformAccounts();
+          platformAccounts = { personal: result?.personal || [], teamOwners: result?.teamOwners || [], creators: result?.creators || [] };
+          state.members = await remote.members.list(true);
+          saveMembers();
+          toast("账号已拉入 ACG 团队");
+          draw();
+        } catch (error) {
+          toast(error?.message || "拉入团队失败", "error");
+        }
       }));
       $$("[data-team-supplier-password]", root).forEach(button => button.addEventListener("click", () => {
         const account = teamSupplierAccounts.find(item => item.id === button.dataset.teamSupplierPassword);

@@ -33,6 +33,115 @@ def map_supplier_parent(store, parent_id, team_id=None):
 
 
 class SupplierStateTest(unittest.TestCase):
+    def test_production_publish_is_atomic_idempotent_and_preserves_server_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_docs("accounts", [{
+                "id": "account-static-video",
+                "ownerId": "creator-a",
+                "name": "静态视频账号",
+                "mode": "视频",
+                "platform": "视频号",
+                "monthlyDone": 2,
+                "exportSeq": 4,
+                "updatedAt": 100,
+            }])
+            store.upsert_docs("productions", [{
+                "id": "production-static-video",
+                "ownerId": "creator-a",
+                "accountId": "account-static-video",
+                "mode": "视频",
+                "stage": "review",
+                "serverOnly": "keep-me",
+                "artifacts": {"finalVideoUrl": "/api/video/composed/static.mp4"},
+                "updatedAt": 110,
+            }])
+            store.upsert_docs("assets", [{
+                "id": "cover-static-video",
+                "ownerId": "creator-a",
+                "accountId": "account-static-video",
+                "productionId": "production-static-video",
+                "type": "图片",
+                "name": "静态视频封面",
+                "createdAt": 120,
+                "updatedAt": 120,
+            }])
+
+            def bundle(delivery_id):
+                return {
+                    "deliveryId": delivery_id,
+                    "delivery": {
+                        "id": delivery_id,
+                        "productionId": "production-static-video",
+                        "accountId": "account-static-video",
+                        "type": "视频",
+                        "videoUrl": "/api/video/composed/static.mp4",
+                        "coverAssetId": "cover-static-video",
+                        "delivered": True,
+                        "productTag": "百度搭子",
+                        "publishedUrl": "https://stale.example",
+                        "viewCount": 999,
+                    },
+                    "assets": [{
+                        "id": "cover-static-video",
+                        "ownerId": "creator-a",
+                        "accountId": "account-static-video",
+                        "productionId": "production-static-video",
+                        "type": "图片",
+                    }],
+                    "account": {"id": "account-static-video"},
+                    "production": {
+                        "id": "production-static-video",
+                        "ownerId": "creator-a",
+                        "accountId": "account-static-video",
+                        "mode": "视频",
+                        "stage": "delivered",
+                        "artifacts": {"finalVideoUrl": "/api/video/composed/static.mp4"},
+                    },
+                }
+
+            first, first_error = store.publish_production_bundle(
+                "production-static-video", "creator-a", bundle("delivery-static-video-a"),
+            )
+            self.assertIsNone(first_error)
+            self.assertEqual(first["delivery"]["pubSeq"], 1)
+            self.assertNotIn("publishedUrl", first["delivery"])
+            self.assertNotIn("viewCount", first["delivery"])
+            self.assertEqual(first["account"]["monthlyDone"], 3)
+            self.assertEqual(first["account"]["exportSeq"], 5)
+            self.assertEqual(first["production"]["serverOnly"], "keep-me")
+            self.assertEqual(first["production"]["stage"], "delivered")
+            self.assertTrue(first["assets"][0]["shared"])
+
+            retried, retry_error = store.publish_production_bundle(
+                "production-static-video", "creator-a", bundle("delivery-static-video-retry"),
+            )
+            self.assertIsNone(retry_error)
+            self.assertEqual(retried["delivery"]["id"], "delivery-static-video-a")
+            self.assertEqual(retried["delivery"]["pubSeq"], 1)
+            self.assertEqual(retried["account"]["monthlyDone"], 3)
+            self.assertEqual(retried["account"]["exportSeq"], 5)
+
+    def test_supplier_parent_and_child_receive_served_team_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            parent_id = default_supplier_parent_id(store)
+            child = store.create_supplier_children(parent_id, [{
+                "name": "团队子账号",
+                "username": "supplier_team_identity_child",
+                "pin": "local-test-pin",
+            }])[0]
+
+            parent_public = store.member_public(store.get_member(parent_id))
+            child_public = store.member_public(store.get_member(child["id"]))
+
+            self.assertEqual(store.INTERNAL_TEAM_ID, parent_public["teamId"])
+            self.assertEqual(store.INTERNAL_TEAM_ID, child_public["teamId"])
+            self.assertEqual("supplier", parent_public["teamRole"])
+            self.assertEqual("supplier", child_public["teamRole"])
+            self.assertNotEqual("personal", parent_public["plan"])
+            self.assertNotEqual("personal", child_public["plan"])
+
     def test_global_editing_assets_are_visible_across_creator_owners(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
@@ -194,6 +303,11 @@ class SupplierStateTest(unittest.TestCase):
             self.assertEqual(updated["status"], "已下载")
             self.assertGreater(updated["supplierDownloadedAt"], 0)
             self.assertEqual(updated["supplierDownloadedBy"], parent_id)
+            projection = store.list_delivery_asset_metrics(parent_id, "supplier_parent")
+            projected = next(row for row in projection if row["id"] == "delivery-1")
+            self.assertEqual(projected["supplierDownloadedAt"], updated["supplierDownloadedAt"])
+            self.assertEqual(projected["supplierDownloadedBy"], parent_id)
+            self.assertEqual(projected["status"], "已下载")
 
     def test_supplier_return_link_updates_creator_asset_and_active_analytics_atomically(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,6 +349,14 @@ class SupplierStateTest(unittest.TestCase):
             self.assertEqual(first_link["assetId"], "delivery-link-1")
             self.assertEqual(first_link["url"], first["publishedUrl"])
             self.assertEqual(first_link["status"], "pending")
+            projected = next(
+                row for row in store.list_delivery_asset_metrics(parent_id, "supplier_parent")
+                if row["id"] == "delivery-link-1"
+            )
+            self.assertEqual(projected["publishedUrl"], first["publishedUrl"])
+            self.assertEqual(projected["publishedTitle"], "首轮标题")
+            self.assertEqual(projected["supplierNote"], "首轮备注")
+            self.assertEqual(projected["status"], "已发布")
 
             creator_snapshot = store.state_for("admin-1", "admin")
             creator_asset = next(row for row in creator_snapshot["assets"] if row["id"] == "delivery-link-1")
@@ -290,6 +412,13 @@ class SupplierStateTest(unittest.TestCase):
             cleared_snapshot = store.state_for("admin-1", "admin")
             cleared_asset = next(row for row in cleared_snapshot["assets"] if row["id"] == "delivery-link-1")
             self.assertNotIn("publishedUrl", cleared_asset)
+            cleared_projection = next(
+                row for row in store.list_delivery_asset_metrics(parent_id, "supplier_parent")
+                if row["id"] == "delivery-link-1"
+            )
+            self.assertEqual(cleared_projection["publishedUrl"], "")
+            self.assertEqual(cleared_projection["publishedTitle"], "")
+            self.assertEqual(cleared_projection["status"], "已下载")
             cleared_link = next(row for row in cleared_snapshot["analyticsLinks"] if row["id"] == archived_link["id"])
             self.assertEqual(cleared_link["status"], "superseded")
             archived_snapshot = next(row for row in cleared_snapshot["metricSnapshots"] if row["id"] == "snapshot-first")
@@ -311,6 +440,27 @@ class SupplierStateTest(unittest.TestCase):
             self.assertNotIn("publishedUrl", after_stale_push)
             self.assertEqual(after_stale_push["status"], "已下载")
             self.assertEqual(preserved["status"], "已发布")
+
+            no_publish, no_publish_link, err = store.mark_supplier_asset_no_publish(
+                "delivery-link-1", "无需发布备注", parent_id, "supplier_parent",
+            )
+            self.assertIsNone(err)
+            self.assertIsNone(no_publish_link)
+            self.assertTrue(no_publish["publishedWithoutLink"])
+            self.assertEqual(no_publish["status"], "已发布")
+            no_publish_projection = next(
+                row for row in store.list_delivery_asset_metrics(parent_id, "supplier_parent")
+                if row["id"] == "delivery-link-1"
+            )
+            self.assertTrue(no_publish_projection["publishedWithoutLink"])
+
+            linked_again, linked_again_row, err = store.update_supplier_asset_published_link(
+                "delivery-link-1", "https://www.xiaohongshu.com/explore/after-no-publish",
+                "", "", "", parent_id, "supplier_parent",
+            )
+            self.assertIsNone(err)
+            self.assertFalse(linked_again.get("publishedWithoutLink", False))
+            self.assertEqual(linked_again_row["url"], linked_again["publishedUrl"])
 
     def test_supplier_child_only_sees_assigned_deliveries_and_can_return_their_links(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -462,6 +612,40 @@ class SupplierStateTest(unittest.TestCase):
                 conn.close()
             self.assertNotIn("projectedSeq", __import__("json").loads(raw))
 
+    def test_new_video_delivery_is_server_numbered_and_visible_to_assigned_supplier(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            parent = store.add_member("供应商管理员", "new_video_parent", "local-test-pin", "supplier_parent")
+            map_supplier_parent(store, parent[0])
+            child = store.create_supplier_children(parent[0], [{
+                "name": "视频供应商子账号", "username": "new_video_child", "pin": "local-test-pin",
+            }])[0]
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["video-account"])
+            store.set_supplier_child_accounts(parent[0], child["id"], ["video-account"], parent[0])
+            store.upsert_docs("accounts", [{
+                "id": "video-account", "name": "视频账号", "platform": "视频号", "mode": "视频", "updatedAt": 1,
+            }])
+            store.upsert_docs("assets", [{
+                "id": "old-delivery", "accountId": "video-account", "name": "历史交付",
+                "delivered": True, "deliveredAt": 10, "pubSeq": 600, "updatedAt": 10,
+            }])
+            admin_id = store.get_member_by_username(store.DEFAULT_ADMIN_USERNAME)[0]
+            store.upsert_member_assets(admin_id, "admin", [{
+                "id": "new-video-delivery", "accountId": "video-account", "name": "新静态视频",
+                "type": "视频", "delivered": True, "deliveredAt": 20,
+                "pubSeq": 401, "updatedAt": 20,
+            }])
+
+            snapshots = [
+                store.state_for(admin_id, "admin"),
+                store.state_for(parent[0], "supplier_parent"),
+                store.state_for(child["id"], "supplier_child", parent[0]),
+            ]
+            for snapshot in snapshots:
+                delivery = next(row for row in snapshot["assets"] if row["id"] == "new-video-delivery")
+                self.assertEqual(delivery["pubSeq"], 601)
+                self.assertEqual(delivery["accountId"], "video-account")
+
     def test_delivery_sequence_reconciliation_is_global_across_creators_and_suppliers(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
@@ -514,6 +698,51 @@ class SupplierStateTest(unittest.TestCase):
             }])
             after_new = {row["id"]: row for row in store.state_for("admin-1", "admin")["assets"]}
             self.assertEqual(after_new["third-delivery"]["pubSeq"], 3)
+
+    def test_historical_metric_recovery_is_explicit_max_only_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            parent = store.add_member(
+                "供应商管理员", "metric_recovery_parent", "local-test-pin", "supplier_parent"
+            )
+            map_supplier_parent(store, parent[0])
+            store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-a"])
+            store.upsert_docs("assets", [{
+                "id": "delivery-metric-recovery",
+                "delivered": True,
+                "accountId": "account-a",
+                "viewCount": 2,
+                "exposureCount": 8,
+                "updatedAt": 10,
+            }])
+
+            plan = [{
+                "assetId": "delivery-metric-recovery",
+                "viewCount": 7,
+                "exposureCount": 3,
+            }]
+            preview = store.recover_delivery_asset_metrics(plan, "admin-1", apply=False)
+            self.assertFalse(preview["applied"])
+            self.assertEqual(preview["wouldUpdate"], 1)
+            untouched = store.state_for("admin-1", "admin")["assets"][0]
+            self.assertEqual((untouched["viewCount"], untouched["exposureCount"]), (2, 8))
+
+            applied = store.recover_delivery_asset_metrics(plan, "admin-1", apply=True)
+            self.assertTrue(applied["applied"])
+            self.assertEqual(applied["updated"], 1)
+            recovered = store.state_for("admin-1", "admin")["assets"][0]
+            self.assertEqual((recovered["viewCount"], recovered["exposureCount"]), (7, 8))
+
+            replay = store.recover_delivery_asset_metrics(plan, "admin-1", apply=True)
+            self.assertEqual(replay["updated"], 0)
+            self.assertEqual(replay["wouldUpdate"], 0)
+
+            # 日常供应商专用写入仍是后写覆盖，不被一次性恢复规则改成永久 max。
+            item, error = store.update_supplier_asset_views(
+                "delivery-metric-recovery", 1, parent[0], "supplier_parent"
+            )
+            self.assertIsNone(error)
+            self.assertEqual(item["viewCount"], 1)
 
     def test_state_projection_decodes_each_asset_once(self):
         with tempfile.TemporaryDirectory() as tmp:

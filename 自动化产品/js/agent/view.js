@@ -4,17 +4,17 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260805-v140-platform-stability-3";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260806-v140-platform-stability-5";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
-  resetPlanReferences, prunePlanReferences
-} from "./orchestrator.js?v=20260805-v140-platform-stability-3";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260805-v140-platform-stability-3";
+  resetPlanReferences, prunePlanReferences, agentSay
+} from "./orchestrator.js?v=20260806-v140-platform-stability-5";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260806-v140-platform-stability-5";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260805-v140-platform-stability-3";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260806-v140-platform-stability-5";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
@@ -74,6 +74,9 @@ function applyPlanKind(payload, kind) {
   payload.accountIds = accountIdsForKind(nextKind, payload.accountIds || [], oldCount);
   payload.accountCount = payload.accountIds.length;
   payload.manualAccountSelection = true;
+  if (nextKind === "static" && !String(payload.staticVideoStyle || "").trim()) {
+    payload.staticVideoStyle = "现代漫画分镜风";
+  }
   applyPlanMode(payload);
 }
 
@@ -552,7 +555,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260805-v140-platform-stability-3");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260806-v140-platform-stability-5");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -947,19 +950,44 @@ function wire(root) {
       }
       case "open-prod": if (p) openProductionDrawer(p.id); break;
       case "batch-generate": if (batch) { const n = startGeneration(batch); toast(n ? `已派发 ${n} 个渲染任务` : "没有就绪任务"); } break;
-      case "batch-retry": if (batch) { const n = retryFailedIn(batch); toast(n ? `正在重试 ${n} 个失败任务` : "没有失败任务"); } break;
+      case "batch-retry": if (batch) {
+        const n = retryFailedIn(batch);
+        const text = n
+          ? `已收到重试指令，正在重新排队 ${n} 个失败任务。任务会原位更新，不会重复提交已成功项。`
+          : "已检查当前批次，没有可重试的失败任务。";
+        agentSay(text);
+        toast(n ? `正在重试 ${n} 个失败任务` : "没有失败任务");
+        refreshLiveCards();
+        renderBoard();
+      } break;
       case "batch-deliver-all": {
         if (!batch) break;
         const cnt = batchProds(batch).filter(x => x.stage === "review").length;
         if (!cnt) { toast("本批没有待发布的内容"); break; }
         const r = await publishModal({ title: `定稿并发布本批 ${cnt} 条内容`, okText: "全部发布" });
-        if (r != null) { const n = deliverAll(batch, r); toast(`已发布 ${n} 条入供应商端${r.planDate ? ` · 计划 ${r.planDate}` : ""}`); refreshLiveCards(); }
+        if (r != null) {
+          try {
+            const n = await deliverAll(batch, r);
+            toast(`已发布 ${n} 条入供应商端${r.planDate ? ` · 计划 ${r.planDate}` : ""}`);
+          } catch (error) {
+            toast(error?.message || "批量发布失败，请重试", "error");
+          }
+          refreshLiveCards();
+        }
         break;
       }
       case "prod-deliver": {
         if (!p) break;
         const r = await publishModal({ title: `定稿并发布「${p.artifacts.copy.title || p.title}」` });
-        if (r != null) { const a = deliver(p, r); toast(a ? `已发布 · #${String(a.pubSeq).padStart(3, "0")}${a.planDate ? ` · 计划 ${a.planDate}` : ""}` : "发布失败"); refreshLiveCards(); }
+        if (r != null) {
+          try {
+            const a = await deliver(p, r);
+            toast(a ? `已发布 · #${String(a.pubSeq).padStart(3, "0")}${a.planDate ? ` · 计划 ${a.planDate}` : ""}` : "发布失败");
+          } catch (error) {
+            toast(error?.message || "发布失败，请重试", "error");
+          }
+          refreshLiveCards();
+        }
         break;
       }
     }

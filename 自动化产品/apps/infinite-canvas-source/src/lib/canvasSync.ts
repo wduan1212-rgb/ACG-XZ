@@ -1,4 +1,4 @@
-import { platformFetch } from "./api";
+import { platformFetchWithRetry } from "./api";
 import {
   CANVAS_OWNER,
   recoverInterruptedCanvasState,
@@ -96,7 +96,7 @@ function normalizeState(value: unknown): CanvasProjectState | null {
 export async function getCanvasProjectIndex(
   signal?: AbortSignal,
 ): Promise<CanvasServerProjectIndex> {
-  const response = await platformFetch("/projects", { method: "GET", signal });
+  const response = await platformFetchWithRetry("/projects", { method: "GET", signal });
   if (!response.ok) throw await readableResponseError(response, `项目列表同步失败 (${response.status})`);
   const payload = await response.json() as { items?: unknown[]; tombstones?: unknown[] };
   const items = (Array.isArray(payload.items) ? payload.items : [])
@@ -116,7 +116,7 @@ export async function getCanvasProject(
   sourceId: string,
   signal?: AbortSignal,
 ): Promise<CanvasServerProjectResponse | null> {
-  const response = await platformFetch(`/projects/${encodeURIComponent(sourceId)}`, {
+  const response = await platformFetchWithRetry(`/projects/${encodeURIComponent(sourceId)}`, {
     method: "GET",
     signal,
   });
@@ -134,7 +134,7 @@ export async function putCanvasProject(
   payload: CanvasProjectPutPayload,
   signal?: AbortSignal,
 ): Promise<CanvasProjectPutResult> {
-  const response = await platformFetch(`/projects/${encodeURIComponent(sourceId)}`, {
+  const response = await platformFetchWithRetry(`/projects/${encodeURIComponent(sourceId)}`, {
     method: "PUT",
     signal,
     body: JSON.stringify({
@@ -162,7 +162,7 @@ export async function deleteCanvasProject(
   sourceId: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await platformFetch(`/projects/${encodeURIComponent(sourceId)}`, {
+  const response = await platformFetchWithRetry(`/projects/${encodeURIComponent(sourceId)}`, {
     method: "DELETE",
     signal,
   });

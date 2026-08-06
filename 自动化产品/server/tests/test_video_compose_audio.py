@@ -81,6 +81,14 @@ class VideoComposeAudioTest(unittest.TestCase):
         self.assertNotIn('/api/video/audio-timing', cut_source)
         self.assertFalse((APP_DIR / "tools/install_whisper_cpp.sh").exists())
 
+    def test_optional_legacy_bgm_cannot_fail_static_video(self):
+        main_source = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
+        marker = "[static-compose] optional BGM skipped"
+        self.assertIn(marker, main_source)
+        bgm_block = main_source[main_source.index("elif req.bgmUrl:"):main_source.index(marker) + len(marker)]
+        self.assertIn("except HTTPException", bgm_block)
+        self.assertIn("_write_video_source", bgm_block)
+
     def test_workshop_upload_transcription_stays_isolated(self):
         """Removing main-platform subtitle ASR must not break workshop audio uploads."""
         workshop = (APP_DIR / "apps/video-workshop/app/transcription.py").read_text(encoding="utf-8")

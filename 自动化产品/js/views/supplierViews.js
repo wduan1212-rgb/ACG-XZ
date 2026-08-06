@@ -1,7 +1,7 @@
 import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { state, save, refreshRemoteCollections } from "../core/store.js";
-import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260805-v140-platform-stability-3";
+import { state, save, refreshRemoteCollections, refreshDeliveryMetrics } from "../core/store.js";
+import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260806-v140-platform-stability-5";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliveryViewsSummary } from "../domain/delivery.js";
@@ -29,6 +29,7 @@ let activeSupplierSettingsController = null;
 let supplierAuthorityRefreshPromise = null;
 let supplierAuthorityRefreshedAt = 0;
 const SUPPLIER_ACTIVITY_PAGE_SIZE = 4;
+const SUPPLIER_AUTHORITY_POLL_MS = 15000;
 const SUPPLIER_ASSISTANT_HISTORY_PREFIX = "xingzhen:supplier-data-assistant:";
 const onSupplierRoute = zone => document.body.dataset.zone === zone;
 const SUPPLIER_AUTHORITY_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
@@ -37,9 +38,12 @@ async function refreshSupplierAuthorityState({ force = false, showError = false 
   if (!SUPPLIER_AUTHORITY_ROLES.has(state.role) || !remote.isOn() || !remote.hasToken()) return false;
   if (supplierAuthorityRefreshPromise) return supplierAuthorityRefreshPromise;
   if (!force && Date.now() - supplierAuthorityRefreshedAt < 5000) return false;
-  supplierAuthorityRefreshPromise = refreshRemoteCollections(["accounts", "assets"])
-    .then(refreshed => {
-      if (!refreshed) return false;
+  supplierAuthorityRefreshPromise = refreshRemoteCollections(["assets", "accounts"])
+    .then(async collectionRefreshed => {
+      // 资产快照可能比专用指标投影更早生成。始终最后应用服务端权威指标，
+      // 避免并发请求完成顺序不同导致父/子账号短暂看到旧播放量或曝光量。
+      const metricRefreshed = await refreshDeliveryMetrics({ force: true });
+      if (!collectionRefreshed && !metricRefreshed?.refreshed) return false;
       supplierAuthorityRefreshedAt = Date.now();
       activeSupplierOverviewController?.syncAuthority?.();
       activeSupplierAccountController?.syncAuthority?.();
@@ -81,6 +85,12 @@ if (typeof document !== "undefined") {
     if (!["overview", "assets", "settings"].includes(document.body.dataset.zone)) return;
     void refreshSupplierAuthorityState({ showError: true }).catch(() => null);
   });
+  window.setInterval(() => {
+    if (document.visibilityState !== "visible") return;
+    if (!SUPPLIER_AUTHORITY_ROLES.has(state.role)) return;
+    if (!["overview", "assets", "settings"].includes(document.body.dataset.zone)) return;
+    void refreshSupplierAuthorityState().catch(() => null);
+  }, SUPPLIER_AUTHORITY_POLL_MS);
 }
 
 function clearSupplierActivityCarousel() {
@@ -574,7 +584,7 @@ export async function renderSupplierAccounts(root) {
         .reduce((sum, asset) => sum + Math.max(0, Number(asset.viewCount || 0)), 0);
       return { derived, total: derived };
     };
-    root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div></div>
+    root.innerHTML = `<div class="supplier-shell"><div class="page-head"><div><div class="eyebrow">全部账号</div><h2>自媒体账号分配看板</h2></div>${canEditHomepage ? `<button class="btn primary sm" type="button" data-supplier-create-children>${icon("plus", 13)} 新建子账号</button>` : ""}</div>
       <nav class="supplier-account-platform-tabs" aria-label="按平台筛选账号">${accountPlatformTabs.map(([value, label, count]) => `<button type="button" data-supplier-platform-filter="${esc(value)}" class="${supplierPlatform === value ? "is-active" : ""}" aria-pressed="${supplierPlatform === value ? "true" : "false"}"><span>${esc(label)}</span><em>${count}</em></button>`).join("")}</nav>
       <div class="supplier-account-grid">${state.accounts.map(acc => {
         const binding = bindings.find(x => x.accountId === acc.id);
@@ -591,6 +601,9 @@ export async function renderSupplierAccounts(root) {
         return `<article class="supplier-account${disabled ? " is-disabled" : ""}${fresh ? " is-new-account" : ""}" data-account-id="${esc(acc.id)}" data-account-search="${esc(searchable)}" data-account-platform="${esc(acc.platform || "")}" ${hidden ? "hidden" : ""}><span class="supplier-account-sequence">#${String(sequence).padStart(2, "0")}</span><div class="supplier-account-avatar">${accountAvatar(acc)}</div><div class="supplier-account-copy"><b>${esc(acc.name)} ${fresh ? `<i class="supplier-new-account-badge">新</i>` : ""}</b>${disabled ? `<em class="supplier-account-status"><strong>已停用</strong></em>` : ""}</div><div class="supplier-account-controls">${acc.homepageUrl ? `<a class="supplier-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("link", 12)} 主页链接</a>` : ""}<div class="supplier-account-control-row"><div class="supplier-content-account-actions"><span class="supplier-account-total-views" data-supplier-account-views="${esc(acc.id)}" title="由该账号全部交付内容的观看量自动汇总">${icon("pulse", 12)} ${Number(viewSummary.total).toLocaleString("zh-CN")}</span>${canEditHomepage ? `<button class="icon-btn sm" type="button" data-content-account-edit="${esc(acc.id)}" title="编辑账号（含主页链接）">${icon("edit", 13)}</button><button class="icon-btn sm${disabled ? " restore" : " danger"}" type="button" data-content-account-status="${esc(acc.id)}" title="${disabled ? "恢复账号" : "停用账号"}">${icon(disabled ? "unlock" : "lock", 13)}</button>` : ""}</div><label class="supplier-inline-assign"><span>分配给</span><select data-account-assign="${esc(acc.id)}" ${canEditHomepage && !disabled ? "" : "disabled"}><option value="">未分配</option>${children.map(c => `<option value="${esc(c.id)}" ${c.id === child?.id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label></div></div></article>`;
       }).join("")}</div><p class="supplier-account-filter-empty" hidden>没有匹配的账号</p></div>`;
     $$('[data-content-account-edit]', root).forEach(button => button.addEventListener("click", () => openAccountDialog(button.dataset.contentAccountEdit)));
+    $("[data-supplier-create-children]", root)?.addEventListener("click", () => {
+      createChildrenDialog(() => renderSupplierAccounts(root));
+    });
     $$('[data-content-account-status]', root).forEach(button => button.addEventListener("click", async () => {
       const account = state.accounts.find(item => item.id === button.dataset.contentAccountStatus);
       if (!account || !canEditHomepage) return;
@@ -871,7 +884,7 @@ export async function renderSupplierSettings(root, { page } = {}) {
       if (!onSupplierRoute("settings")) return;
       emitSupplierChildren(children, bindings);
       root.innerHTML = `<div class="supplier-shell">
-        <div class="page-head"><div><div class="eyebrow">设置</div><h2>${pageTitle}</h2></div></div>
+        <div class="page-head"><div><div class="eyebrow">设置</div><h2>${pageTitle}</h2></div><button class="btn primary sm" type="button" data-supplier-create-children>${icon("plus", 13)} 新建子账号</button></div>
         ${activePage === "requests" ? `<section class="card supplier-requests supplier-settings-panel"><div class="card-head"><span><b>${icon("inbox", 14)} 子账号申请</b><em>${requests.length} 条待处理 · 与创作端申请看板实时一致</em></span><button class="btn ghost sm" id="supplierRequestRefresh">${icon("refresh", 13)} 刷新</button></div>
           ${requests.length ? requests.map(r => `<div class="supplier-child-row"><span class="mem-ava supplier-member-fallback">${icon("user", 15)}</span><span><b>${esc(r.name)}</b><em>@${esc(r.username)} · ${r.createdAt ? timeAgo(r.createdAt) : "刚刚"}</em></span><button class="btn primary sm" data-supplier-approve="${r.id}">通过</button><button class="btn ghost sm danger" data-supplier-reject="${r.id}">拒绝</button></div>`).join("") : `<p class="supplier-empty">暂无待处理申请</p>`}
         </section>` : `<section class="card supplier-children supplier-settings-panel"><div class="card-head"><span><b>全部供应商账号</b><em>管理员可维护所有管理员与子账号；子账号可单独分配自媒体账号</em></span></div>
@@ -883,6 +896,9 @@ export async function renderSupplierSettings(root, { page } = {}) {
         button.disabled = true;
         button.innerHTML = `${icon("refresh", 13)} 读取中…`;
         draw();
+      });
+      $("[data-supplier-create-children]", root)?.addEventListener("click", () => {
+        createChildrenDialog(draw);
       });
       $$('[data-supplier-edit]', root).forEach(b => b.addEventListener("click", () => editSupplierMemberDialog(members.find(x => x.id === b.dataset.supplierEdit), draw)));
       $$('[data-supplier-assign]', root).forEach(b => b.addEventListener("click", () => assignDialog(children.find(x => x.id === b.dataset.supplierAssign), bindings, draw)));

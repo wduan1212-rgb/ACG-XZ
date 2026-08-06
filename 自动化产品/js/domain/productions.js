@@ -335,10 +335,10 @@ export function stageDone(p, stage) {
     case "workshop": {
       const units = A.boards.units || [];
       if (!units.length) return false;
-      const jobs = jobsOf(p);
+      const jobs = currentJobsOf(p);
       return units.every((u, i) => jobs.some(j => j.segIndex === i && j.status === "succeeded"));
     }
-    case "render": { const jobs = jobsOf(p); return jobs.length > 0 && jobs.every(j => j.status === "succeeded"); }
+    case "render": { const jobs = currentJobsOf(p); return jobs.length > 0 && jobs.every(j => j.status === "succeeded"); }
     case "cut": return (A.timeline || []).length > 0;
     case "copy": return !!(A.copy.title && A.copy.body);
     case "review": return p.review.state === "approved";
@@ -348,6 +348,37 @@ export function stageDone(p, stage) {
 
 export function jobsOf(p) {
   return state.jobs.filter(j => j.productionId === p.id && !j.superseded);
+}
+
+/*
+ * 同一视频片段可能经历多次显式重试。旧任务保留用于审计，但不能继续
+ * 参与当前状态判断，否则会出现“成片已完成、批次仍生成中/失败”。
+ */
+export function currentJobsOf(p) {
+  const jobs = jobsOf(p);
+  const latestVideoBySlot = new Map();
+  const result = [];
+  const jobStamp = job => {
+    const value = job?.updatedAt || job?.createdAt || 0;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(String(value || ""));
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  jobs.forEach((job, index) => {
+    if (job.kind !== "video") {
+      result.push(job);
+      return;
+    }
+    const slot = String(job.segmentId || `index:${Number(job.segIndex ?? -1)}`);
+    const stamp = jobStamp(job);
+    const previous = latestVideoBySlot.get(slot);
+    if (!previous || stamp > previous.stamp || (stamp === previous.stamp && index > previous.index)) {
+      latestVideoBySlot.set(slot, { job, stamp, index });
+    }
+  });
+  latestVideoBySlot.forEach(({ job }) => result.push(job));
+  return result;
 }
 
 /* 状态徽章数据：[label, css 类] */

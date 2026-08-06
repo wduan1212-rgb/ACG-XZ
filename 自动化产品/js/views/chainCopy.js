@@ -6,10 +6,10 @@ import { canDeliver, save } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { toast, openLightbox, publishModal } from "../ui/components.js?v=20260805-v140-platform-stability-3";
+import { toast, openLightbox, publishModal } from "../ui/components.js?v=20260806-v140-platform-stability-5";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260805-v140-platform-stability-3";
-import { reviewPreviewHtml } from "./prodDrawer.js?v=20260805-v140-platform-stability-3";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260806-v140-platform-stability-5";
+import { reviewPreviewHtml } from "./prodDrawer.js?v=20260806-v140-platform-stability-5";
 
 export function renderCopyPage(root, p) {
   const isImg = p.mode === "图文";
@@ -60,7 +60,7 @@ export function renderReviewPage(root, p) {
     wireStepper(root);
     const run = async () => {
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260805-v140-platform-stability-3");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260806-v140-platform-stability-5");
         await ensureVideoCover(p);
         if (root.isConnected) renderReviewPage(root, p);
       } catch (err) {
@@ -158,7 +158,7 @@ export function renderReviewPage(root, p) {
     if (publish) publish.addEventListener("click", async () => {
       const result = await publishModal({ title: `定稿并发布「${p.artifacts.copy.title || p.title}」` });
       if (result == null) return;
-      const asset = deliver(p, result);
+      const asset = await deliver(p, result);
       toast(asset ? `已发布入供应商端 · #${String(asset.pubSeq).padStart(3, "0")}${asset.planDate ? ` · 计划 ${asset.planDate}` : ""}` : "发布失败");
       renderReviewPage(root, p);
     });
@@ -201,7 +201,7 @@ export function renderReviewPage(root, p) {
     }
     const r = await publishModal({ title: `定稿并发布「${p.artifacts.copy.title || p.title}」` });
     if (r == null) return;
-    const a = deliver(p, r);
+    const a = await deliver(p, r);
     toast(a ? `已发布入供应商端 · #${String(a.pubSeq).padStart(3, "0")}${a.planDate ? ` · 计划 ${a.planDate}` : ""}` : "发布失败");
     renderReviewPage(root, p);
   });

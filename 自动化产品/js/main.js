@@ -5,7 +5,7 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, currentTeam, hasEntitlement, canManageAccounts, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260805-v140-platform-stability-3";
+import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260806-v140-platform-stability-5";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
@@ -16,30 +16,30 @@ import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountPro
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260727-v118-7";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260805-v140-platform-stability-3";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260806-v140-platform-stability-5";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
-import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260805-v140-platform-stability-3";
+import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260806-v140-platform-stability-5";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
-import { initLoginBeams } from "./ui/loginBeams.js?v=20260805-v140-platform-stability-3";
+import { initLoginBeams } from "./ui/loginBeams.js?v=20260806-v140-platform-stability-5";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
-import { overviewView } from "./views/overview.js?v=20260805-v140-platform-stability-3";
-import { homeView } from "./views/home.js?v=20260805-v140-platform-stability-3";
-import { subscriptionView } from "./views/subscription.js?v=20260805-v140-platform-stability-3";
-import { voiceLabView } from "./views/voiceLab.js?v=20260805-v140-platform-stability-3";
-import { customCreationView } from "./views/customCreation.js?v=20260805-v140-platform-stability-3";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260805-v140-platform-stability-3";
-import { studioView } from "./views/studio.js?v=20260805-v140-platform-stability-3";
-import { assetsView } from "./views/assetsView.js?v=20260805-v140-platform-stability-3";
-import { deliveryView } from "./views/deliveryView.js?v=20260805-v140-platform-stability-3";
+import { overviewView } from "./views/overview.js?v=20260806-v140-platform-stability-5";
+import { homeView } from "./views/home.js?v=20260806-v140-platform-stability-5";
+import { subscriptionView } from "./views/subscription.js?v=20260806-v140-platform-stability-5";
+import { voiceLabView } from "./views/voiceLab.js?v=20260806-v140-platform-stability-5";
+import { customCreationView } from "./views/customCreation.js?v=20260806-v140-platform-stability-5";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260806-v140-platform-stability-5";
+import { studioView } from "./views/studio.js?v=20260806-v140-platform-stability-5";
+import { assetsView } from "./views/assetsView.js?v=20260806-v140-platform-stability-5";
+import { deliveryView } from "./views/deliveryView.js?v=20260806-v140-platform-stability-5";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js?v=20260805-v140-platform-stability-3";
-import { settingsView } from "./views/settings.js?v=20260805-v140-platform-stability-3";
+import { draftsView } from "./views/draftsView.js?v=20260806-v140-platform-stability-5";
+import { settingsView } from "./views/settings.js?v=20260806-v140-platform-stability-5";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260805-v140-platform-stability-3";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260806-v140-platform-stability-5";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260805-v140-platform-stability-3";
+const APP_BUILD_ID = "20260806-v140-platform-stability-5";
 const GUEST_MEMBER_ID = "guest-local-preview";
 const GUEST_MEMBER = Object.freeze({
   id: GUEST_MEMBER_ID,
@@ -688,6 +688,7 @@ function recordFirstRender(startedAt, source) {
 }
 
 function continueRemoteHydration(member, alreadyComplete = false) {
+  let batchCollectionsRecovered = false;
   const run = alreadyComplete
     ? Promise.resolve(true)
     : hydrateRemoteInBackground({
@@ -696,6 +697,15 @@ function continueRemoteHydration(member, alreadyComplete = false) {
           if (progress?.error) {
             toast("部分工作区数据同步失败，已自动重试。请刷新页面再试，本地空态不会回写服务器。", "error");
             return;
+          }
+          const collections = new Set(progress?.collections || []);
+          if (
+            !batchCollectionsRecovered
+            && ["productions", "batches", "jobs"].every(name => collections.has(name))
+          ) {
+            batchCollectionsRecovered = true;
+            resumeJobs();
+            resumeActiveBatches();
           }
           renderHydrationProgress();
         }

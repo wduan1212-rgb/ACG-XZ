@@ -2817,7 +2817,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 
 /* ---------- 剪辑页 ---------- */
 .view-root .chain-stepper.cut-stepper { display: flex; max-width: 1320px; margin: 0 auto 8px; top: 0; }
-.view-root:has(.cut-page) { display: flex; padding-bottom: 10px; }
+.view-root:has(.cut-page) { display: flex; flex-direction: column; width: 100%; min-width: 0; padding-bottom: 10px; }
 .cut-page { max-width: 1320px; width: 100%; margin: 0 auto; display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; gap: 8px; }
 .cut-top { display: grid; flex: 1 1 auto; min-height: 0; grid-template-columns: minmax(0, 1fr) 258px; gap: 8px; align-items: stretch; }
 .cut-preview { padding: 10px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: linear-gradient(165deg, #0B1020, #101831); min-height: 0; border-radius: 0; }
@@ -6100,11 +6100,12 @@ button.overview-viz-card { cursor: pointer; }
 .team-rename-form .btn { min-height: 46px; }
 .team-name-managed { margin: 0 0 18px; color: #9399a2; font-size: 12px; }
 .home-team-join-dialog {
-  width: min(620px, calc(100vw - 40px));
+  box-sizing: border-box;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   overflow-x: hidden;
-  padding: 34px;
+  padding: 14px;
 }
 .home-team-join-dialog > *,
 .home-team-join-dialog .field,

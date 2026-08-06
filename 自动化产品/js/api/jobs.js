@@ -5,13 +5,15 @@ import { state, saveIncremental, emit, productionById, notify, assetById } from 
 import { uid } from "../core/util.js";
 import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
-import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260805-v140-platform-stability-3";
+import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260806-v140-platform-stability-5";
 
 const IMAGE_CONCURRENCY = 4;
-// 浏览器只维持 3 个受控视频槽。数字人与信息流都可能由一条 production
-// 拆成 3-4 个片段；把 10 槽全部铺满会同时放大轮询、DOM 与持久化压力。
-const VIDEO_CONCURRENCY = 3;
+// 与服务端 VideoTaskGate 保持一致：全平台最多同时处理 10 个视频任务，
+// 超出的任务留在持久队列中按创建时间补位。普通视频仍单独限制为 3 路，
+// 避免信息流/静态视频把数字人的生产槽全部占满。
+const VIDEO_CONCURRENCY = 10;
 const STANDARD_VIDEO_CONCURRENCY = 3;
+const DIGITAL_HUMAN_CONCURRENCY = 10;
 const TICK_MS = 1000;
 const DEFAULT_POLL_MS = 8000;
 const DIGITAL_HUMAN_POLL_MS = 12000;
@@ -131,13 +133,16 @@ export function selectQueuedJobs(active = [], queued = []) {
   const activeImages = active.filter(j => !isVideoJob(j)).length;
   const activeVideos = active.filter(isVideoJob).length;
   const activeStandardVideos = active.filter(j => isVideoJob(j) && !isDigitalHumanJob(j)).length;
+  const activeDigitalVideos = active.filter(isDigitalHumanJob).length;
   const imageSlots = Math.max(0, IMAGE_CONCURRENCY - activeImages);
   const videoSlots = Math.max(0, VIDEO_CONCURRENCY - activeVideos);
   const standardVideoSlots = Math.max(0, STANDARD_VIDEO_CONCURRENCY - activeStandardVideos);
+  const digitalVideoSlots = Math.max(0, DIGITAL_HUMAN_CONCURRENCY - activeDigitalVideos);
   const limit = imageSlots + videoSlots;
   let imagePicked = 0;
   let videoPicked = 0;
   let standardVideoPicked = 0;
+  let digitalVideoPicked = 0;
   const candidates = [];
   for (const job of queued) {
     if (candidates.length >= limit) break;
@@ -146,7 +151,10 @@ export function selectQueuedJobs(active = [], queued = []) {
       imagePicked += 1;
     } else {
       if (videoPicked >= videoSlots) continue;
-      if (!isDigitalHumanJob(job)) {
+      if (isDigitalHumanJob(job)) {
+        if (digitalVideoPicked >= digitalVideoSlots) continue;
+        digitalVideoPicked += 1;
+      } else {
         if (standardVideoPicked >= standardVideoSlots) continue;
         standardVideoPicked += 1;
       }

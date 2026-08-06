@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 from unittest.mock import patch
 
 from starlette.requests import Request
@@ -141,6 +142,54 @@ def write_media_override(
 
 
 class PrivateMediaRegistryTest(unittest.TestCase):
+    def test_provider_media_url_is_signed_registered_and_range_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            name = "owner-a--digital-human-reference.png"
+            (paths["UPLOAD_DIR"] / name).write_bytes(b"reference-image")
+            store.register_private_media(
+                "upload",
+                name,
+                "owner-a",
+                team_id="team-a",
+                provenance_kind="asset",
+                provenance_id="digital-human-reference",
+            )
+
+            main = importlib.import_module("main")
+            with patch.object(main, "store", store), patch.object(
+                main, "UPLOAD_DIR", paths["UPLOAD_DIR"]
+            ), patch.object(main, "PUBLIC_BASE_URL", "https://media.example.test"):
+                signed_url = main._ref_url(main.VideoRef(
+                    url=f"/api/files/{name}?asset_rev=9",
+                ))
+                parsed = urlparse(signed_url)
+                query = parse_qs(parsed.query)
+                self.assertEqual("media.example.test", parsed.netloc)
+                self.assertEqual(
+                    f"/api/provider-media/upload/{name}",
+                    unquote(parsed.path),
+                )
+                self.assertNotIn("asset_rev", query)
+                self.assertEqual(1, len(query.get("expires", [])))
+                self.assertEqual(1, len(query.get("sig", [])))
+
+                response = main.provider_upload_get(
+                    name,
+                    request_with_range("bytes=0-8"),
+                    expires=int(query["expires"][0]),
+                    sig=query["sig"][0],
+                )
+                self.assertEqual(206, response.status_code)
+                self.assertEqual("bytes 0-8/15", response.headers["content-range"])
+                with self.assertRaises(Exception):
+                    main.provider_upload_get(
+                        name,
+                        request_with_range("bytes=0-8"),
+                        expires=int(query["expires"][0]),
+                        sig="tampered",
+                    )
+
     def test_supplier_delivery_linked_reads_are_exact_and_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, paths = load_media_store(tmp)

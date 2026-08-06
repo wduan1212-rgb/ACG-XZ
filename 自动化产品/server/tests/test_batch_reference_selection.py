@@ -141,6 +141,7 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         )
 
         self.assertEqual(["image", "material", "real"], result["accountIds"])
+        self.assertEqual("现代漫画分镜风", result["staticVideoStyle"])
         self.assertEqual(["shared-image"], result["sharedRefAssetIds"])
         self.assertEqual([], result["coverRefAssetIds"])
         self.assertEqual({
@@ -203,6 +204,8 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn('PLAN_KIND_GROUP = { image: "图文组", static: "静态视频"', view)
         self.assertIn("buildStaticVideoCustomCopyShots", orchestrator)
         self.assertIn("不为了凑时长机械切图", orchestrator)
+        self.assertIn('data-pf="staticVideoStyle"', cards)
+        self.assertIn('batch.staticVideoStyle || acc?.styleProfile', orchestrator)
 
     def test_static_batch_pacing_splits_semantic_clauses_without_changing_normal_video(self):
         result = self.run_node(
@@ -525,6 +528,20 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn('act.innerHTML = `${icon("loader", 14)} 正在启动…`', view)
         self.assertIn('toast(err?.message ? `批量任务启动失败：${err.message}`', view)
         self.assertIn('act.removeAttribute("aria-busy")', view)
+
+    def test_digital_human_queue_and_remote_batch_hydration_match_v120_capacity(self):
+        jobs = (APP_DIR / "js/api/jobs.js").read_text(encoding="utf-8")
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+        main = (APP_DIR / "js/main.js").read_text(encoding="utf-8")
+
+        self.assertIn("const VIDEO_CONCURRENCY = 10", jobs)
+        self.assertIn("const DIGITAL_HUMAN_CONCURRENCY = 10", jobs)
+        self.assertIn("const DIGITAL_HUMAN_QUEUE_CONCURRENCY = 10", orchestrator)
+        self.assertIn("activeDigitalJobCount()", orchestrator)
+        self.assertIn('await refreshRemoteCollections(["batches", "productions", "jobs"])', orchestrator)
+        self.assertIn("batchCollectionsRecovered", main)
+        self.assertIn('["productions", "batches", "jobs"].every', main)
+        self.assertIn("resumeActiveBatches()", main)
 
     def test_video_review_prefers_composed_output_and_uses_larger_preview(self):
         drawer = (APP_DIR / "js/views/prodDrawer.js").read_text(encoding="utf-8")

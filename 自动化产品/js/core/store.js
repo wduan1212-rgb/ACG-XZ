@@ -4,7 +4,7 @@ import { db } from "./db.js";
 import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
 import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js";
-import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260805-v140-platform-stability-3";
+import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260806-v140-platform-stability-5";
 
 const DEFAULT_ADMIN_USERNAME = String.fromCharCode(97, 100, 109, 105, 110);
 const LEGACY_ADMIN_USERNAME = String.fromCharCode(121, 117, 120, 117, 97, 110);
@@ -205,6 +205,41 @@ export function save(...collections) {
   (collections.length ? collections : ["meta"]).forEach(c => dirty.add(c));
   persist();
   emit("change", { collections });
+}
+
+/* 专用事务接口返回的服务器规范文档只写本地缓存，不再触发整集合回推。 */
+export async function cacheCanonicalDocuments(collection, ...items) {
+  if (!db.collections.includes(collection)) return;
+  const docs = items.flat().filter(item => item?.id);
+  if (!docs.length) return;
+  await db.putMany(collection, JSON.parse(JSON.stringify(docs)));
+  emit("change", { collections: [collection], phase: "canonical-ack" });
+}
+
+/* 恢复索引等关键增量数据必须等待服务器确认。
+   普通 saveIncremental 为了轮询性能会静默后台写入，不适合承载“刷新后仍必须存在”的恢复结果。 */
+export async function persistRecoveredDocuments(collection, ...items) {
+  if (!db.collections.includes(collection)) throw new Error("未知数据集合");
+  const docs = items.flat().filter(item => item?.id).map(item => JSON.parse(JSON.stringify(item)));
+  if (!docs.length) return { ok: true, local: 0, remote: 0 };
+  await db.putMany(collection, docs);
+  if (!remote.isOn()) {
+    emit("change", { collections: [collection], phase: "recovery-local" });
+    return { ok: true, local: docs.length, remote: 0 };
+  }
+  let lastError = null;
+  for (const waitMs of [0, 500, 1500]) {
+    if (waitMs) await new Promise(resolve => globalThis.setTimeout(resolve, waitMs));
+    try {
+      const result = await remote.syncCollection(collection, docs);
+      emit("change", { collections: [collection], phase: "recovery-ack" });
+      return { ok: true, local: docs.length, remote: docs.length, result };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  emit("change", { collections: [collection], phase: "recovery-pending" });
+  throw lastError || new Error("服务器恢复写入失败");
 }
 
 export async function persistNow() {
@@ -766,6 +801,20 @@ const DELIVERY_METRIC_GROUPS = [
   ["viewCount", "viewsUpdatedAt", "viewsUpdatedBy"],
   ["exposureCount", "exposureUpdatedAt", "exposureUpdatedBy"],
 ];
+const DELIVERY_AUTHORITY_FIELDS = [
+  "supplierDownloadedAt",
+  "supplierDownloadedBy",
+  "publishedUrl",
+  "supplierNote",
+  "publishedTitle",
+  "publishedRawText",
+  "publishedAt",
+  "publishedUpdatedAt",
+  "publishedUpdatedBy",
+  "publishedClearedAt",
+  "publishedWithoutLink",
+  "status",
+];
 
 export function applyDeliveryMetricProjection(asset, row) {
   if (!asset || !row || String(asset.id || "") !== String(row.id || "")) return false;
@@ -781,11 +830,18 @@ export function applyDeliveryMetricProjection(asset, row) {
       changed = true;
     }
   }
+  for (const field of DELIVERY_AUTHORITY_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(row, field)) continue;
+    const next = row[field] ?? (field.endsWith("At") ? 0 : "");
+    if (asset[field] === next) continue;
+    asset[field] = next;
+    changed = true;
+  }
   return changed;
 }
 
-/* 供应商指标采用专用服务端权威投影。只原位合并观看量/曝光量字段，
-   不替换资产集合，也不会把浏览器旧快照回推服务端。 */
+/* 供应商交付状态采用专用服务端权威投影。只原位合并指标、下载和
+   当前发布状态，不替换资产集合，也不会把浏览器旧快照回推服务端。 */
 export async function refreshDeliveryMetrics({ force = false } = {}) {
   if (!remote.isOn() || !remote.hasToken()) return { refreshed: false, changed: false };
   if (deliveryMetricRefreshPromise) return deliveryMetricRefreshPromise;

@@ -192,7 +192,22 @@ class SupplierTenantPolicyTests(unittest.TestCase):
             )
             self.assertIsNone(error)
             self.assertEqual(654, asset["exposureCount"])
-            authoritative = dict(asset)
+            # The dedicated endpoint is the authoritative edit path. A later
+            # supplier edit intentionally replaces the earlier value, even
+            # when the corrected value is smaller.
+            parent_after_lower, error = store.update_supplier_asset_views(
+                "delivery-positive", 12, tenant["parentId"], "supplier_parent"
+            )
+            self.assertIsNone(error)
+            self.assertEqual(12, parent_after_lower["viewCount"])
+            self.assertEqual(tenant["parentId"], parent_after_lower["viewsUpdatedBy"])
+            parent_after_lower, error = store.update_supplier_asset_exposure(
+                "delivery-positive", 34, tenant["parentId"], "supplier_parent"
+            )
+            self.assertIsNone(error)
+            self.assertEqual(34, parent_after_lower["exposureCount"])
+            self.assertEqual(tenant["parentId"], parent_after_lower["exposureUpdatedBy"])
+            authoritative = dict(parent_after_lower)
 
             # A parent account or another old tab may later push a complete
             # document with an unrelated, newer updatedAt. Dedicated metric

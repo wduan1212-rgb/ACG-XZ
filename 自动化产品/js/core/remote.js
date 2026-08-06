@@ -79,14 +79,32 @@ async function fetchWithTimeout(path, options = {}, timeoutMs = FETCH_TIMEOUT_MS
   }
 }
 
-async function req(path, { method = "GET", body, auth = true, metric = "", metricDetail = {} } = {}) {
+async function req(path, {
+  method = "GET", body, auth = true, metric = "", metricDetail = {},
+  timeoutMs = FETCH_TIMEOUT_MS, transientRetries = 0,
+} = {}) {
   const startedAt = perfNow();
   const headers = { "Content-Type": "application/json", "Cache-Control": "no-cache" };
   if (auth && _token) headers.Authorization = "Bearer " + _token;
   let res;
-  try {
-    res = await fetchWithTimeout(path, { method, headers, body: body != null ? JSON.stringify(body) : undefined });
-  } catch (e) {
+  let requestError = null;
+  for (let attempt = 0; attempt <= transientRetries; attempt += 1) {
+    try {
+      res = await fetchWithTimeout(
+        path,
+        { method, headers, body: body != null ? JSON.stringify(body) : undefined },
+        timeoutMs,
+      );
+      requestError = null;
+      break;
+    } catch (error) {
+      requestError = error;
+      if (attempt >= transientRetries) break;
+      await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
+  if (requestError) {
+    const e = requestError;
     if (metric) recordPerformance(metric, {
       ...metricDetail,
       durationMs: Math.max(0, Math.round(perfNow() - startedAt)),
@@ -210,6 +228,8 @@ export function getState(collections = []) {
     ? `?collections=${encodeURIComponent(names.join(","))}`
     : "";
   return req(`/api/state${query}`, {
+    timeoutMs: 20000,
+    transientRetries: 1,
     metric: "state",
     metricDetail: {
       phase: names.length ? "partial" : "full",
@@ -375,6 +395,10 @@ export const admin = {
   setPlatformAccountStatus: (id, status) => req(
     "/api/platform/accounts/" + encodeURIComponent(id) + "/status",
     { method: "PUT", body: { status } }
+  ),
+  adoptPlatformAccount: id => req(
+    "/api/platform/accounts/" + encodeURIComponent(id) + "/adopt",
+    { method: "POST" }
   )
 };
 
@@ -402,6 +426,19 @@ export const supplier = {
 };
 
 export const deliveryMetrics = () => req("/api/deliveries/metrics");
+
+export const productionDeliveries = {
+  publish: (productionId, payload) => req(
+    "/api/productions/" + encodeURIComponent(productionId) + "/publish",
+    {
+      method: "POST",
+      body: payload,
+      metric: "production-publish",
+      timeoutMs: 20000,
+      transientRetries: 1,
+    }
+  )
+};
 
 export const deliveryRemarks = {
   list: (assetId) => req("/api/deliveries/" + encodeURIComponent(assetId) + "/remarks"),

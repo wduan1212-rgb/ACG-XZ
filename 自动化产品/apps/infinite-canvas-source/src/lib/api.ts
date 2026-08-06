@@ -13,6 +13,19 @@ import type { EnhanceOp } from "./types";
 /** Client-side wrappers around the route handlers. */
 
 type ClientImageProvider = typeof import("./clientImageApi");
+const TRANSIENT_PLATFORM_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const PLATFORM_RETRY_DELAYS_MS = [250, 800, 1_600] as const;
+const CANVAS_JOB_QUERY_CACHE_MS = 1_000;
+const CANVAS_JOB_TERMINAL_CACHE_MS = 30_000;
+const CANVAS_JOB_QUERY_TIMEOUT_MS = 20_000;
+
+interface CanvasJobQueryEntry {
+  promise?: Promise<CanvasGenerationJob>;
+  value?: CanvasGenerationJob;
+  observedAt: number;
+}
+
+const canvasJobQueries = new Map<string, CanvasJobQueryEntry>();
 
 async function loadStandaloneClientImageProvider(): Promise<{
   key: string;
@@ -39,7 +52,62 @@ export function platformFetch(path: string, init: RequestInit = {}) {
     if (token) headers.set("Authorization", `Bearer ${token}`);
   }
   const target = IS_PLATFORM_EMBED ? `/api/custom-canvas${path}` : `/api${path}`;
-  return fetch(target, { ...init, headers });
+  return fetch(target, {
+    ...init,
+    cache: IS_PLATFORM_EMBED ? "no-store" : init.cache,
+    credentials: IS_PLATFORM_EMBED ? "same-origin" : init.credentials,
+    headers,
+  });
+}
+
+function waitForPlatformRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException("cancelled", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason ?? new DOMException("cancelled", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Retry only idempotent platform operations with the same request payload. */
+export async function platformFetchWithRetry(
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const signal = init.signal ?? undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= PLATFORM_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (signal?.aborted) {
+      throw signal.reason ?? new DOMException("cancelled", "AbortError");
+    }
+    try {
+      const response = await platformFetch(path, init);
+      if (
+        !TRANSIENT_PLATFORM_STATUSES.has(response.status)
+        || attempt === PLATFORM_RETRY_DELAYS_MS.length
+      ) {
+        return response;
+      }
+      await response.body?.cancel().catch(() => undefined);
+      lastError = new Error(`平台服务暂时不可用 (${response.status})`);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      lastError = error;
+      if (attempt === PLATFORM_RETRY_DELAYS_MS.length) throw error;
+    }
+    await waitForPlatformRetry(PLATFORM_RETRY_DELAYS_MS[attempt], signal);
+  }
+  throw lastError ?? new Error("平台服务暂时不可用");
 }
 
 async function responseDetail(response: Response): Promise<string> {
@@ -64,7 +132,7 @@ export async function callAgent(
     if (!idempotencyKey) throw new Error("导演理解缺少稳定的任务标识");
     const stableRequest = { ...req, idempotencyKey };
     if (IS_GITHUB_PAGES && !IS_PLATFORM_EMBED) return buildAgentResult(stableRequest);
-    const res = await platformFetch("/agent", {
+    const res = await platformFetchWithRetry("/agent", {
       method: "POST",
       signal,
       body: JSON.stringify(stableRequest),
@@ -151,7 +219,7 @@ export async function submitCanvasGenerationJob(
   requestOptions: AbortableRequestOptions = {},
 ): Promise<CanvasGenerationJob> {
   return runAbortableRequest(async (signal) => {
-    const res = await platformFetch("/generation-jobs", {
+    const res = await platformFetchWithRetry("/generation-jobs", {
       method: "POST",
       signal,
       headers: { "Idempotency-Key": payload.jobId },
@@ -160,24 +228,70 @@ export async function submitCanvasGenerationJob(
     if (!res.ok) {
       throw canvasHttpError(res.status, await responseDetail(res), "画布后台任务提交");
     }
-    return (await res.json()) as CanvasGenerationJob;
+    const job = (await res.json()) as CanvasGenerationJob;
+    canvasJobQueries.delete(payload.jobId);
+    return job;
   }, { timeoutMs: 30_000, label: "画布后台任务提交", ...requestOptions });
+}
+
+function isTerminalCanvasJob(job: CanvasGenerationJob): boolean {
+  return job.status === "succeeded" || job.status === "failed";
+}
+
+async function fetchCanvasGenerationJob(jobId: string): Promise<CanvasGenerationJob> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(new DOMException("timeout", "TimeoutError")),
+    CANVAS_JOB_QUERY_TIMEOUT_MS,
+  );
+  try {
+    const res = await platformFetchWithRetry(`/generation-jobs/${encodeURIComponent(jobId)}`, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw canvasHttpError(res.status, await responseDetail(res), "画布后台任务查询");
+    }
+    return (await res.json()) as CanvasGenerationJob;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function sharedCanvasGenerationJob(jobId: string): Promise<CanvasGenerationJob> {
+  const now = Date.now();
+  const cached = canvasJobQueries.get(jobId);
+  if (cached?.promise) return cached.promise;
+  if (cached?.value) {
+    const ttl = isTerminalCanvasJob(cached.value)
+      ? CANVAS_JOB_TERMINAL_CACHE_MS
+      : CANVAS_JOB_QUERY_CACHE_MS;
+    if (now - cached.observedAt < ttl) return Promise.resolve(cached.value);
+  }
+
+  const entry: CanvasJobQueryEntry = { observedAt: now };
+  const promise = fetchCanvasGenerationJob(jobId)
+    .then((job) => {
+      canvasJobQueries.set(jobId, { value: job, observedAt: Date.now() });
+      return job;
+    })
+    .catch((error) => {
+      if (canvasJobQueries.get(jobId) === entry) canvasJobQueries.delete(jobId);
+      throw error;
+    });
+  entry.promise = promise;
+  canvasJobQueries.set(jobId, entry);
+  return promise;
 }
 
 export async function getCanvasGenerationJob(
   jobId: string,
   requestOptions: AbortableRequestOptions = {},
 ): Promise<CanvasGenerationJob> {
-  return runAbortableRequest(async (signal) => {
-    const res = await platformFetch(`/generation-jobs/${encodeURIComponent(jobId)}`, {
-      method: "GET",
-      signal,
-    });
-    if (!res.ok) {
-      throw canvasHttpError(res.status, await responseDetail(res), "画布后台任务查询");
-    }
-    return (await res.json()) as CanvasGenerationJob;
-  }, { timeoutMs: 20_000, label: "画布后台任务查询", ...requestOptions });
+  return runAbortableRequest(
+    async () => sharedCanvasGenerationJob(jobId),
+    { timeoutMs: CANVAS_JOB_QUERY_TIMEOUT_MS, label: "画布后台任务查询", ...requestOptions },
+  );
 }
 
 function waitForCanvasPoll(signal?: AbortSignal, delayMs = 1_500): Promise<void> {

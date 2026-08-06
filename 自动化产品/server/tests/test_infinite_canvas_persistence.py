@@ -457,6 +457,7 @@ def test_real_v92_two_phase_migration_and_empty_read_recovery():
 
 def test_client_contract_gates_empty_canvas_and_matches_server_proxy():
     persistence = (CANVAS_ROOT / "src" / "lib" / "canvasPersistence.ts").read_text(encoding="utf-8")
+    api = (CANVAS_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
     sync = (CANVAS_ROOT / "src" / "lib" / "canvasSync.ts").read_text(encoding="utf-8")
     store = (CANVAS_ROOT / "src" / "lib" / "store.ts").read_text(encoding="utf-8")
     project_client = (
@@ -467,8 +468,15 @@ def test_client_contract_gates_empty_canvas_and_matches_server_proxy():
     assert "legacy-backup" in persistence
     assert "writeCanvasProjectVerified" in persistence
     assert "readback = await readCanvasProject" in persistence
-    assert 'platformFetch("/projects"' in sync
-    assert 'platformFetch(`/projects/${encodeURIComponent(sourceId)}`' in sync
+    assert 'platformFetchWithRetry("/projects"' in sync
+    assert 'platformFetchWithRetry(`/projects/${encodeURIComponent(sourceId)}`' in sync
+    assert 'cache: IS_PLATFORM_EMBED ? "no-store"' in api
+    assert 'credentials: IS_PLATFORM_EMBED ? "same-origin"' in api
+    assert "TRANSIENT_PLATFORM_STATUSES" in api
+    assert "PLATFORM_RETRY_DELAYS_MS" in api
+    assert 'platformFetchWithRetry("/agent"' in api
+    assert 'platformFetchWithRetry("/generation-jobs"' in api
+    assert 'platformFetchWithRetry(`/generation-jobs/${encodeURIComponent(jobId)}`' in api
     assert 'method: "GET"' in sync
     assert 'method: "PUT"' in sync
     assert 'method: "DELETE"' in sync

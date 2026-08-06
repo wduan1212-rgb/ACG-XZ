@@ -94,6 +94,10 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertIn('supplierContextSearch("delivery", "搜索账号或素材")', main_source)
         self.assertIn('data-ws-supplier-account-create', main_source)
         self.assertIn('data-ws-supplier-child-create', main_source)
+        self.assertIn('data-supplier-create-children', source)
+        self.assertIn('新建子账号', source)
+        self.assertIn('createChildrenDialog(() => renderSupplierAccounts(root))', source)
+        self.assertIn('createChildrenDialog(draw)', source)
         self.assertIn('data-ws-supplier-favorite=', main_source)
         self.assertIn('data-ws-supplier-batch-download', main_source)
         self.assertIn('xingzhen:supplier-account-query', source)
@@ -200,6 +204,13 @@ class SupplierAccountManagementTests(unittest.TestCase):
         self.assertIn('renderSupplierSettings(root, { page: supplierPage })', settings_source)
         self.assertIn('contextRow({ title: "账号申请"', main_source)
         self.assertIn('contextRow({ title: "全部账号"', main_source)
+
+    def test_cut_workspace_keeps_stepper_above_editor(self):
+        css = (APP_DIR / "styles/views.css").read_text(encoding="utf-8")
+        self.assertIn(
+            ".view-root:has(.cut-page) { display: flex; flex-direction: column; width: 100%; min-width: 0;",
+            css,
+        )
 
     def test_registration_name_field_requests_real_name(self):
         html = (APP_DIR / "index.html").read_text(encoding="utf-8")

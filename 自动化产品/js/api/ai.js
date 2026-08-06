@@ -668,6 +668,21 @@ function stripLeadingDuplicateTitle(copy = "", title = "") {
   return lines.join("\n").replace(/^\s*[:：,，.。!！?？-]+/, "").trim();
 }
 
+function cleanSingleImagePublishCopy(copy = "", title = "") {
+  const raw = stripLeadingDuplicateTitle(normalizeGeneratedEscapes(copy), title)
+    .replace(/```[\s\S]*?```/g, block => block.replace(/```[^\n]*\n?/g, "").replace(/```/g, ""))
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+    .replace(/^\s*(?:[-*+]\s+|\d+[.)、]\s+)/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
+    .replace(/[ \t]*\n+[ \t]*/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return stripLeadingDuplicateTitle(raw, title);
+}
+
 function polishCopyResult(result, {
   topic,
   shots,
@@ -2249,14 +2264,25 @@ function parseInfoFlowCreativePlan(content = "") {
   };
 }
 
+function countInfoFlowScenes(prompt = "") {
+  const text = String(prompt || "");
+  const timed = text.match(
+    /(?:^|\n)\s*(?:[-*•]\s*)?(?:镜头|场景|分镜)?\s*(?:\d+[.\u3001:：)）]\s*)?(?:第\s*)?\d{1,2}(?::\d{2})?\s*(?:s|秒)?\s*[-—–~至到]\s*\d{1,2}(?::\d{2})?\s*(?:s|秒)\b/gim
+  ) || [];
+  const labeled = text.match(
+    /(?:^|\n)\s*(?:[-*•]\s*)?(?:镜头|场景|分镜)\s*(?:0?[1-9]|[1-9]\d)\s*[.\u3001:：)）-]?/gim
+  ) || [];
+  return Math.max(timed.length, labeled.length);
+}
+
 function assertInfoFlowCreativePlan(plan, previousPrompts = []) {
   const combined = `${plan.frontPrompt}\n${plan.backPrompt}`;
   const normalizedCombined = combined.replace(/[^\u4e00-\u9fff]+/g, "");
   if (!plan.frontPrompt || !plan.backPrompt) throw new Error("模型未返回完整的 A/B 面视频提示词");
   if (plan.frontPrompt.length < 240 || plan.backPrompt.length < 220) throw new Error("信息流提示词细节不足，请重新创作");
   if (INFO_FLOW_BANNED_LINES.some(line => normalizedCombined.includes(line.replace(/[^\u4e00-\u9fff]+/g, "")))) throw new Error("信息流仍含固定模板台词，请重新创作");
-  const timedFront = (plan.frontPrompt.match(/\d+\s*[-—–~至]\s*\d+\s*(?:s|秒)/gi) || []).length;
-  const timedBack = (plan.backPrompt.match(/\d+\s*[-—–~至]\s*\d+\s*(?:s|秒)/gi) || []).length;
+  const timedFront = countInfoFlowScenes(plan.frontPrompt);
+  const timedBack = countInfoFlowScenes(plan.backPrompt);
   if (timedFront < 4 || timedBack < 4) throw new Error("信息流提示词缺少完整的分时镜头设计");
   if (infoFlowSimilarity(plan.frontPrompt, plan.backPrompt) > 0.62) throw new Error("A/B 面内容过于雷同，请重新创作");
   if ((previousPrompts || []).some(prev => infoFlowSimilarity(combined, prev) > 0.68)) throw new Error("新提示词与上一版过于相似，请重新创作");
@@ -2765,7 +2791,10 @@ ${productRelationLine(rel.slice(0, 2))}
         ], { json: true, temperature: attempt ? 0.72 : 0.92 });
         const data = sanitizeXhsObject(parseJSONLoose(content));
         const copyText = normalizeOwnProductNoise(
-          ensureImagePublishTags(assertProfessionalImageCopy(data.copy || data.body || ""), null, sourceTitle),
+          cleanSingleImagePublishCopy(
+            ensureImagePublishTags(cleanSingleImagePublishCopy(assertProfessionalImageCopy(data.copy || data.body || ""), sourceTitle), null, sourceTitle),
+            sourceTitle,
+          ),
           chineseProductDisplayName(product, "百度搭子"),
         );
         if (!copyText) throw new Error("模型没有返回与标题对应的正文");

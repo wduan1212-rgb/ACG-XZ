@@ -249,6 +249,7 @@ class ImageReferenceReceiptFrontendTest(unittest.TestCase):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
         jobs = (APP_DIR / "js/api/jobs.js").read_text(encoding="utf-8")
         self.assertIn("fresh.referenceReceipt = out.output?.referenceReceipt", boards)
+        self.assertIn("strictRatio: true", boards)
         self.assertIn("参考图实际使用 ${used}/${intended}", boards)
         self.assertIn("it.referenceReceipt = out.output?.referenceReceipt", orchestrator)
         self.assertIn("j.referenceReceipt = r.referenceReceipt || r.output?.referenceReceipt", jobs)

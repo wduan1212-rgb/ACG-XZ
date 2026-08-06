@@ -852,6 +852,7 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn("coverCopy = generatedCopy.trim();", publishing)
         self.assertIn("文案已生成，现有封面已保留。", publishing)
         self.assertNotIn("发布文案已重新生成，请按新文案重新生成封面。", publishing)
+        self.assertNotIn("AI 封面与当前标题或文案不一致，请重新生成", publishing)
         self.assertIn("productTagLabel(product)", publishing)
         self.assertIn("remote.customProjects.list(kind)", publishing)
         self.assertIn("await remote.customProjects.get(existingId)", publishing)

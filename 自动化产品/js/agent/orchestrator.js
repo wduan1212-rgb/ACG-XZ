@@ -1,12 +1,12 @@
 /* 批次编排器：事件驱动的状态机（替代 v4 的 setInterval 盯进度）
    会话/消息/批次全部持久化，刷新后 resumeActiveBatches() 接续 */
 
-import { state, save, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync } from "../core/store.js";
+import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260805-v140-platform-stability-3";
+import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260806-v140-platform-stability-5";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
@@ -735,6 +735,53 @@ export function pruneEmptySessions() {
 export function sessionBatches(sessionId) {
   return state.batches.filter(b => b.sessionId === sessionId);
 }
+
+/* 旧同步或异常中断可能留下 batch，但对应 session 文档缺失。
+   只补会话索引和批次进度卡，不修改或重跑任何业务任务。 */
+export function restoreMissingBatchSessions({ persist = true } = {}) {
+  const currentOwnerId = state.ui.currentMemberId || null;
+  const knownSessionIds = new Set(state.sessions.map(session => session.id));
+  const recovered = [];
+  [...state.batches]
+    .filter(batch => batch?.sessionId && !knownSessionIds.has(batch.sessionId))
+    .filter(batch => !currentOwnerId || !batch.ownerId || batch.ownerId === currentOwnerId)
+    .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0))
+    .forEach(batch => {
+      const ts = Number(batch.createdAt || batch.updatedAt || Date.now());
+      const session = {
+        id: batch.sessionId,
+        ownerId: batch.ownerId || currentOwnerId,
+        title: String(batch.topic || batch.goal || "已恢复批次").trim().slice(0, 24) || "已恢复批次",
+        createdAt: ts,
+        updatedAt: Math.max(ts, Number(batch.updatedAt || 0)),
+        recoveredFromBatchId: batch.id,
+        messages: [{
+          id: `recovered-${batch.id}`,
+          role: "agent",
+          type: "progress",
+          payload: { batchId: batch.id },
+          ts
+        }]
+      };
+      state.sessions.push(session);
+      knownSessionIds.add(session.id);
+      recovered.push(session);
+    });
+  if (!recovered.length) return recovered;
+  state.sessions.sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
+  if (!mySessions().some(session => session.id === state.ui.activeSessionId)) {
+    state.ui.activeSessionId = mySessions()[0]?.id || null;
+  }
+  if (persist) {
+    void persistRecoveredDocuments("sessions", ...recovered).catch(error => {
+      console.warn("批次会话服务器恢复失败", error);
+      notify("已在本机找回缺失批次，但服务器暂未确认。稍后刷新时会再次尝试恢复。", "warn");
+    });
+    save("meta");
+  }
+  emit("agent:session");
+  return recovered;
+}
 /* 删除整批（连同未交付的在制产物与其 job） */
 export async function deleteBatch(batchId) {
   const b = batchById(batchId); if (!b) return;
@@ -920,6 +967,7 @@ export function defaultPlan(goal = "新量产计划") {
     accountImageCounts: {}, accountImageCreationModes: {}, accountImagePrompts: {},
     useOnlineTrends: false,
     imageCount: DEFAULT_XHS_IMAGE_COUNT,
+    staticVideoStyle: "现代漫画分镜风",
     style: params.style || "", tags: [], group: params.group,
     sort: params.sort,
     pickFrom: params.pickFrom || "",
@@ -1606,7 +1654,7 @@ async function queueBatchDigitalHuman(p, batch, acc, product) {
   A.digitalHuman.error = "";
   setStage(p, "workshop", "running");
   const queued = createUnitVideoJobs(p);
-  const active = jobsOf(p).some(job => ["queued", "submitted", "running"].includes(job.status));
+  const active = currentJobsOf(p).some(job => ["queued", "submitted", "running"].includes(job.status));
   if (!queued && !active) {
     setStatus(p, "failed", "数字人口播和角色图已准备，但没有成功派发视频任务");
     return false;
@@ -1808,7 +1856,7 @@ async function queueBatchStaticVideo(p, batch, acc, product) {
     source: body ? "manual" : "batch-static-agent"
   };
   p.artifacts.script.title = p.title;
-  p.artifacts.script.style = acc?.styleProfile || acc?.lockedStyle || batch.style || "";
+  p.artifacts.script.style = batch.staticVideoStyle || acc?.styleProfile || acc?.lockedStyle || batch.style || "现代漫画分镜风";
   p.artifacts.script.source = "batch-static-agent";
   p.artifacts.script.aspectRatio = "16:9";
   const previousAgent = p.staticAgent;
@@ -2678,10 +2726,11 @@ function latestDigitalJob(p, segIndex, segmentId = "") {
   );
 }
 
-function activeDigitalJobCount(p) {
+const DIGITAL_HUMAN_QUEUE_CONCURRENCY = 10;
+
+function activeDigitalJobCount() {
   return (state.jobs || []).filter(j =>
     !j.superseded
-    && j.productionId === p.id
     && j.kind === "video"
     && j.model === "__digital_human__"
     && ["queued", "submitted", "running"].includes(j.status)
@@ -2740,7 +2789,9 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
   const audioRefs = [...voiceRefs].filter(Boolean);
   let n = 0;
   if (useDigitalHumanModel) {
-    const availableSlots = Math.max(0, 10 - activeDigitalJobCount(p));
+    // 与 v120/服务端的十路视频闸门一致：当前工作区最多保留十个数字人
+    // 任务在持久队列里，超出的 production 由 evaluate 在空位出现后补入。
+    const availableSlots = Math.max(0, DIGITAL_HUMAN_QUEUE_CONCURRENCY - activeDigitalJobCount());
     if (!availableSlots) return 0;
     const segs = Array.isArray(A.digitalHuman?.segments) ? A.digitalHuman.segments : [];
     segs.forEach((seg, i) => {
@@ -2820,11 +2871,15 @@ export const createShotVideoJobs = createUnitVideoJobs;
 export async function regenerateBatchVideo(p) {
   if (!p || p.mode === "图文" || !p.batchId) throw new Error("当前任务不是批量视频任务");
   if (p.staticVideo) throw new Error("静态视频不支持单独微调，请从批次中重试整条任务");
-  const currentJobs = jobsOf(p).filter(job => job.kind === "video" && !job.superseded);
+  const currentJobs = currentJobsOf(p).filter(job => job.kind === "video" && !job.superseded);
   if (currentJobs.some(job => ["queued", "submitted", "running"].includes(job.status))) {
     throw new Error("当前视频仍在生成，请完成后再重新生成");
   }
-  const batch = batchById(p.batchId);
+  let batch = batchById(p.batchId);
+  if (!batch && remote.isOn() && remote.hasToken()) {
+    await refreshRemoteCollections(["batches", "productions", "jobs"]);
+    batch = batchById(p.batchId);
+  }
   if (!batch) throw new Error("原批次不存在，无法恢复视频任务");
   const hasPreparedUnits = Boolean(
     (p.artifacts?.boards?.units || []).some(unit => String(unit?.videoPrompt || "").trim())
@@ -2839,7 +2894,7 @@ export async function regenerateBatchVideo(p) {
     setStage(p, "script", "running");
     setStatus(p, "running");
     await draftOne(p, batch);
-    const recoveredJobs = jobsOf(p).filter(job =>
+    const recoveredJobs = currentJobsOf(p).filter(job =>
       job.kind === "video" && !job.superseded
       && ["queued", "submitted", "running", "succeeded"].includes(job.status)
     );
@@ -3011,11 +3066,11 @@ export function approveAll(batch) {
   emit("batch:update", batch);
   return n;
 }
-export function deliverAll(batch, opts = {}) {
+export async function deliverAll(batch, opts = {}) {
   let n = 0;
-  batchProds(batch).forEach(p => {
-    if (p.stage === "review") { if (deliver(p, opts)) n++; }   // deliver 自带定稿，无需先 approve
-  });
+  for (const p of batchProds(batch)) {
+    if (p.stage === "review" && await deliver(p, opts)) n++;
+  }
   evaluate(batch.id);
   return n;
 }
@@ -3025,7 +3080,7 @@ export function retryFailedIn(batch) {
     const jobStage = p.stage === "render" || p.stage === "workshop";
     if (p.stageStatus !== "failed") {
       // 渲染/工坊中的失败 job 也重试
-      if (jobStage) jobsOf(p).filter(j => j.status === "failed").forEach(j => { setStatus(p, "running"); retryJob(j.id); n++; });
+      if (jobStage) currentJobsOf(p).filter(j => j.status === "failed").forEach(j => { setStatus(p, "running"); retryJob(j.id); n++; });
       return;
     }
     if (p.stage === "script") { setStatus(p, "pending"); draftOne(p, batch).then(() => evaluate(batch.id)); n++; }
@@ -3073,7 +3128,7 @@ export function retryFailedIn(batch) {
         p.artifacts.composeError = "";
       }
       setStatus(p, "running");
-      const failed = jobsOf(p).filter(j => j.status === "failed");
+      const failed = currentJobsOf(p).filter(j => j.status === "failed");
       if (failed.length) failed.forEach(j => retryJob(j.id));
       else if (p.stage === "workshop") {
         const prepared = (p.artifacts?.boards?.units || []).some(unit => String(unit?.videoPrompt || "").trim())
@@ -3128,7 +3183,7 @@ export function evaluate(batchId) {
 
   // 渲染完成检测：所有 job 成功 → 智能剪辑 → 进审核
   rendering.forEach(p => {
-    const jobs = jobsOf(p);
+    const jobs = currentJobsOf(p);
     if (!jobs.length) return;
     const allOk = jobs.every(j => j.status === "succeeded");
     const anyFail = jobs.some(j => j.status === "failed");
@@ -3200,6 +3255,7 @@ on("job:done", evaluateAll);
 
 /* 启动恢复：把中断的起草接着跑 */
 export function resumeActiveBatches() {
+  restoreMissingBatchSessions();
   settleHydratedVideoProductions();
   let resumed = 0;
   const batches = activeBatches();

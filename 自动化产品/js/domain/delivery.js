@@ -1,7 +1,7 @@
 /* 发布清单：定稿入库（创作端） + 素材分发（供应商端）
    交付 = 内部定稿归档，产物进入交付库供供应商下载，不涉及任何平台发布 */
 
-import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote } from "../core/store.js";
+import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote, cacheCanonicalDocuments } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
 import { setStage, touch } from "./productions.js";
@@ -75,14 +75,18 @@ function deliverySnapshotFromProduction(p, acc, productTag = productTagFor(p)) {
 }
 
 export function supplierHasPublished(asset) {
-  return !!asset?.publishedUrl || asset?.status === "已发布";
+  return !!asset?.publishedUrl || asset?.publishedWithoutLink === true || asset?.status === "已发布";
 }
 
 export function applySupplierReturnResponse(asset, response) {
   const returned = response?.asset;
   if (!asset || !returned || String(returned.id || "") !== String(asset.id || "")) return false;
+  if (returned.publishedUrl) delete asset.publishedWithoutLink;
+  if (returned.publishedWithoutLink) {
+    for (const key of ["publishedUrl", "publishedTitle", "publishedRawText"] ) delete asset[key];
+  }
   if (returned.publishedClearedAt && !returned.publishedUrl) {
-    for (const key of ["publishedUrl", "supplierNote", "publishedTitle", "publishedRawText", "publishedAt"]) delete asset[key];
+    for (const key of ["publishedUrl", "supplierNote", "publishedTitle", "publishedRawText", "publishedAt", "publishedWithoutLink"]) delete asset[key];
   }
   Object.assign(asset, returned);
   // A successful clear-link response intentionally returns the same asset
@@ -104,11 +108,10 @@ export function supplierReturnRowState(asset) {
   };
 }
 
-/* 发布清单的序号必须来自所有交付物的统一时间线，不能按当前角色可见的子集
-   重新连续编号。globalSeq 是服务端给所有角色的只读全局投影；pubSeq 是迁移
-   后的持久化账本字段；projectedSeq 仅兼容尚未校准的旧记录。 */
+/* 服务端 globalSeq 是跨成员、跨供应商视角的全局时间线投影；历史 pubSeq
+   可能是旧浏览器按个人可见子集生成的编号，只在没有全局投影时兼容使用。 */
 export function deliveryDisplaySequence(asset, fallback = 0) {
-  for (const value of [asset?.globalSeq, asset?.pubSeq, asset?.projectedSeq, fallback]) {
+  for (const value of [asset?.globalSeq, asset?.projectedSeq, asset?.pubSeq, fallback]) {
     const seq = Number(value || 0);
     if (Number.isSafeInteger(seq) && seq > 0) return seq;
   }
@@ -228,7 +231,7 @@ function markDeliveryCoverShared(coverAssetId, {
 
 /* 发布交付：创作者自行定稿入库（无强制审核门槛），分配全局发布序号 + 记录发布账号/成员
    交付 = 内部定稿归档，产物进入交付库供供应商下载，不涉及任何平台发布 */
-export function deliver(p, opts = {}) {
+export async function deliver(p, opts = {}) {
   const acc = accountById(p.accountId);
   if (!acc) return null;
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
@@ -239,31 +242,75 @@ export function deliver(p, opts = {}) {
   const planDate = normalizePlanDate(opts.planDate);
   const productTag = String(opts.productTag || "").trim().slice(0, 20);
   if (!productTag) { window.__toast && window.__toast("请在发布弹窗填写产品标签", "error"); return null; }
-  p.review.state = "approved";   // 创作者点击发布即定稿
-  const replaced = purgeOpenDeliveryAssetsForProduction(p);
-  if (replaced && (acc.monthlyDone || 0) > 0) acc.monthlyDone = Math.max(0, (acc.monthlyDone || 0) - replaced);
-  acc.exportSeq = (acc.exportSeq || 0) + 1;
-  const name = insertProductTagBeforeDate(buildDeliveryName(acc, acc.exportSeq), productTag);
+  const nextExportSeq = (acc.exportSeq || 0) + 1;
+  const name = insertProductTagBeforeDate(buildDeliveryName(acc, nextExportSeq), productTag);
   const mem = currentMember();
   const publisherName = mem?.name || memberNameById(p.ownerId);
-  const pubSeq = (state.ui.deliverSeq = (state.ui.deliverSeq || 0) + 1);
+  const pubSeq = (state.ui.deliverSeq || 0) + 1;
   const snapshot = deliverySnapshotFromProduction(p, acc, productTag);
+  const now = Date.now();
 
   const asset = {
     id: uid(), accountId: acc.id, name,
     ...snapshot,
-    createdAt: Date.now(), delivered: true, status: "未下载",
+    createdAt: now, delivered: true, status: "未下载",
     productionId: p.id,
-    pubSeq, deliveredAt: Date.now(),
-    sourceCreatedAt: p.createdAt || Date.now(),      // 创作端建立该任务的时间
+    pubSeq, deliveredAt: now,
+    sourceCreatedAt: p.createdAt || now,      // 创作端建立该任务的时间
     byAccount: acc.name,                          // 发布所属内容账号
     byMemberId: mem?.id || p.ownerId || null,
     byMemberName: publisherName || "",            // 谁点的发布
-    sourceUpdatedAt: p.updatedAt || Date.now(),
+    sourceUpdatedAt: p.updatedAt || now,
     planDate,                                     // 计划发布日期（必填，默认今天）
     publishNote: opts.note || "",                 // 简短备注（可选）
     adminReviewed: false                          // 管理员「已审阅」标注（非强制门槛）
   };
+  const dependencyIds = snapshot.type === "图集"
+    ? snapshot.packAssetIds
+    : [snapshot.coverAssetId].filter(Boolean);
+  const dependencyAssets = dependencyIds.map(assetById).filter(Boolean).map(item => ({ ...item }));
+  const productionDraft = JSON.parse(JSON.stringify(p));
+  productionDraft.review = { ...(productionDraft.review || {}), state: "approved", at: now };
+  productionDraft.delivery = { assetId: asset.id, name, at: now, pubSeq, planDate: asset.planDate, productTag, note: asset.publishNote, sourceUpdatedAt: asset.sourceUpdatedAt };
+  productionDraft.stage = "delivered";
+  productionDraft.stageStatus = "done";
+  productionDraft.updatedAt = now;
+
+  if (remote.isOn()) {
+    const response = await remote.productionDeliveries.publish(p.id, {
+      deliveryId: asset.id,
+      delivery: asset,
+      assets: dependencyAssets,
+      account: { ...acc },
+      production: productionDraft,
+    });
+    const canonical = response?.delivery;
+    if (!canonical?.id || !response?.production?.id || !response?.account?.id) {
+      throw new Error("服务器未返回完整发布确认");
+    }
+    Object.assign(acc, response.account);
+    Object.assign(p, response.production);
+    for (const item of response.assets || []) {
+      const current = assetById(item.id);
+      if (current) Object.assign(current, item);
+      else state.assets.push(item);
+    }
+    const existing = assetById(canonical.id);
+    if (existing) Object.assign(existing, canonical);
+    else state.assets.push(canonical);
+    state.ui.deliverSeq = Math.max(Number(state.ui.deliverSeq || 0), Number(canonical.pubSeq || 0));
+    await Promise.all([
+      cacheCanonicalDocuments("assets", ...(response.assets || []), canonical),
+      cacheCanonicalDocuments("accounts", response.account),
+      cacheCanonicalDocuments("productions", response.production),
+    ]);
+    save("meta");
+    notify("delivery", `「${canonical.title || canonical.name}」已发布`, `#${String(canonical.pubSeq || 0).padStart(3, "0")} · ${canonical.name}${canonical.type === "图集" ? ".zip" : ".mp4"} · 供应商端可见`);
+    return canonical;
+  }
+
+  p.review = productionDraft.review;
+  acc.exportSeq = nextExportSeq;
   if (snapshot.type === "图集") markPackImagesShared(p, productTag);
   else markDeliveryCoverShared(snapshot.coverAssetId, {
     productionId: p.id,
@@ -274,12 +321,10 @@ export function deliver(p, opts = {}) {
   });
   state.assets.push(asset);
   acc.monthlyDone = (acc.monthlyDone || 0) + 1;
-  p.delivery = { assetId: asset.id, name, at: Date.now(), pubSeq, planDate: asset.planDate, productTag, note: asset.publishNote, sourceUpdatedAt: asset.sourceUpdatedAt };
-  p.review.at = Date.now();
-  touch(p);
-  setStage(p, "delivered", "done");
+  Object.assign(p, productionDraft);
+  state.ui.deliverSeq = pubSeq;
   save("assets", "accounts", "productions", "analyticsLinks", "meta");
-  persistNow();
+  await persistNow();
   notify("delivery", `「${asset.title || name}」已发布`, `#${String(pubSeq).padStart(3, "0")} · ${name}${snapshot.type === "图集" ? ".zip" : ".mp4"} · 供应商端可见`);
   return asset;
 }

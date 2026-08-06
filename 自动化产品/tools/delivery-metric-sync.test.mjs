@@ -93,3 +93,35 @@ test("view and exposure triplets merge independently", () => {
   assert.equal(asset.exposureCount, 900);
   assert.equal(asset.exposureUpdatedBy, "new-exposure");
 });
+
+test("server delivery authority clears stale links and synchronizes download state", () => {
+  const asset = {
+    id: "delivery-1",
+    status: "已发布",
+    publishedUrl: "https://stale.example/old",
+    publishedTitle: "旧标题",
+    supplierNote: "旧备注",
+    supplierDownloadedAt: 1,
+    supplierDownloadedBy: "old-tab",
+  };
+  const changed = applyDeliveryMetricProjection(asset, {
+    id: "delivery-1",
+    status: "已下载",
+    publishedUrl: "",
+    publishedTitle: "",
+    supplierNote: "",
+    publishedRawText: "",
+    publishedAt: 0,
+    publishedUpdatedAt: 500,
+    publishedUpdatedBy: "supplier-child",
+    publishedClearedAt: 500,
+    supplierDownloadedAt: 400,
+    supplierDownloadedBy: "supplier-parent",
+  });
+  assert.equal(changed, true);
+  assert.equal(asset.status, "已下载");
+  assert.equal(asset.publishedUrl, "");
+  assert.equal(asset.publishedTitle, "");
+  assert.equal(asset.supplierDownloadedAt, 400);
+  assert.equal(asset.supplierDownloadedBy, "supplier-parent");
+});

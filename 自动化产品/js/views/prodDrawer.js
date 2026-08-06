@@ -3,13 +3,13 @@
 import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
-import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260805-v140-platform-stability-3";
-import { STAGES, jobsOf } from "../domain/productions.js";
+import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260806-v140-platform-stability-5";
+import { STAGES, currentJobsOf } from "../domain/productions.js";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { maybeAdvanceAfterInput, regenerateBatchImage, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260805-v140-platform-stability-3";
+import { maybeAdvanceAfterInput, regenerateBatchImage, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260806-v140-platform-stability-5";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */
@@ -31,7 +31,7 @@ export function reviewPreviewHtml(p) {
   const coverUrl = coverId ? urlFor(coverId) : null;
   const firstSub = (p.artifacts.subs || []).find(s => (s.text || "").trim());
   const total = tl.reduce((s, c) => s + (c.dur || 15), 0);
-  const jobs = jobsOf(p);
+  const jobs = currentJobsOf(p);
   const clipUrl = c => c?.jobId ? (jobs.find(j => j.id === c.jobId)?.output?.url || "") : "";
   const firstRealClipUrl = tl.map(clipUrl).find(Boolean);
   const previewVideoUrl = p.artifacts.finalVideoUrl || firstRealClipUrl || "";
@@ -70,7 +70,7 @@ function workshopPreviewHtml(p) {
   if (composedUrl) {
     return `<div class="pd-workshop-preview is-composed ${p.staticVideo ? "is-landscape" : ""}"><div class="pd-note">已剪辑完整成片 · 可播放声音，点击放大查看</div><div class="pd-video-grid"><article><video src="${esc(composedUrl)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="0" data-video-url="${esc(composedUrl)}">${icon("eye", 12)} 放大</button><em>完整成片</em></article></div></div>`;
   }
-  const ready = jobsOf(p).filter(j => j.status === "succeeded").map(j => ({ name: j.segName || `片段 ${Number(j.segIndex || 0) + 1}`, url: outputUrl(j.output) })).filter(x => x.url);
+  const ready = currentJobsOf(p).filter(j => j.status === "succeeded").map(j => ({ name: j.segName || `片段 ${Number(j.segIndex || 0) + 1}`, url: outputUrl(j.output) })).filter(x => x.url);
   if (!ready.length) return `<div class="pd-empty compact">${icon("film", 20)}<p>视频生成后会直接在${p.subType === "数字人" ? "数字人制作" : "信息流制作"}阶段出现预览</p></div>`;
   return `<div class="pd-workshop-preview"><div class="pd-note">视频预览 ${ready.length} 段 · 可播放声音，点击放大查看</div><div class="pd-video-grid">${ready.map((item, i) => `<article><video src="${esc(item.url)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="${i}" data-video-url="${esc(item.url)}">${icon("eye", 12)} 放大</button><em>${esc(item.name)}</em></article>`).join("")}</div></div>`;
 }
@@ -342,7 +342,7 @@ export function openProductionDrawer(pid, tab) {
         if (dl) dl.addEventListener("click", async () => {
           const r = await publishModal({ title: `定稿并发布「${p.artifacts.copy.title || p.title}」` });
           if (r == null) return;
-          const a = deliver(p, r);
+          const a = await deliver(p, r);
           toast(a ? `已发布 · #${String(a.pubSeq).padStart(3, "0")}${a.planDate ? ` · 计划 ${a.planDate}` : ""}` : "发布失败");
           render();
         });
@@ -458,7 +458,7 @@ const TAB = {
       if (!units.length) return `<div class="pd-empty">${icon("layers", 22)}<p>脚本起草后会按场景合并成分镜单元，进工坊编排</p></div>`;
       return `<div class="pd-note">${units.length} 个分镜单元 · ${p.subType === "数字人" ? "数字人制作" : "信息流制作"}生成后直接预览视频，再进入剪辑</div>
         <div class="pd-units">${units.map((u, i) => {
-          const jobs = jobsOf(p).filter(j => j.segIndex === i);
+          const jobs = currentJobsOf(p).filter(j => j.segIndex === i);
           const ok = jobs.some(j => j.status === "succeeded");
           return `<div class="pd-unit ${u.needsImage ? "i2v" : "t2v"}"><b>S${String(u.scene).padStart(2, "0")}${u.sceneParts > 1 ? `·${u.part}` : ""}</b><span>${u.needsImage ? "图生" : "文生"} · ${u.shotIndexes.length}镜 · ${Math.min(15, Math.ceil(u.dur))}s</span>${ok ? icon("checkCircle", 13, "ok") : `<em class="muted">未出片</em>`}</div>`;
         }).join("")}</div>
@@ -481,7 +481,7 @@ const TAB = {
   },
 
   render(p) {
-    const jobs = jobsOf(p);
+    const jobs = currentJobsOf(p);
     const tl = p.artifacts.timeline || [];
     if (!jobs.length && !tl.length) return `<div class="pd-empty">${icon("film", 22)}<p>还没有渲染任务。分镜齐了之后由 Agent 派发，或进完整工作台手动生成。</p></div>`;
     return `${workshopPreviewHtml(p)}

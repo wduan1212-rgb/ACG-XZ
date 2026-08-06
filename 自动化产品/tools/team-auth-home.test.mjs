@@ -135,15 +135,35 @@ test("delivery metrics converge through one lightweight server-authoritative pro
   assert.match(deliveryView, /refreshDeliveryMetrics/);
   assert.match(deliveryView, /setInterval/);
   assert.match(overview, /refreshDeliveryMetrics/);
-  assert.match(supplierViews, /refreshRemoteCollections\(\["accounts", "assets"\]\)/);
+  assert.match(supplierViews, /refreshDeliveryMetrics\(\{ force: true \}\)/);
+  assert.match(supplierViews, /refreshRemoteCollections\(\["assets", "accounts"\]\)/);
+  assert.ok(
+    supplierViews.indexOf('refreshRemoteCollections(["assets", "accounts"])')
+      < supplierViews.indexOf('refreshDeliveryMetrics({ force: true })'),
+    "supplier delivery metrics must be projected after the collection snapshot",
+  );
   assert.match(supplierViews, /addEventListener\("focus"/);
   assert.match(supplierViews, /xingzhen:supplier-authority-refreshed/);
+  assert.match(supplierViews, /SUPPLIER_AUTHORITY_POLL_MS = 15000/);
+  assert.match(supplierViews, /setInterval\(/);
   assert.match(deliveryView, /syncAuthority/);
   assert.match(deliveryView, /观看量更新失败", "error"/);
+  assert.match(remoteJs, /timeoutMs: 20000/);
+  assert.match(remoteJs, /transientRetries: 1/);
   assert.match(storePy, /def list_delivery_asset_metrics/);
   assert.match(storePy, /SUPPLIER_ASSET_SERVER_METRIC_FIELDS/);
   assert.match(storePy, /_preserve_supplier_asset_server_metrics/);
-  assert.doesNotMatch(supplierViews, /setInterval\(/);
+});
+
+test("join-team dialog stays inside the modal content box", async () => {
+  const styles = await read("styles/views.css");
+  const start = styles.indexOf(".home-team-join-dialog {");
+  const end = styles.indexOf("}", start);
+  const block = styles.slice(start, end + 1);
+  assert.ok(start >= 0 && end > start);
+  assert.match(block, /box-sizing:\s*border-box/);
+  assert.match(block, /width:\s*100%/);
+  assert.doesNotMatch(block, /calc\(100vw/);
 });
 
 test("creator total views modal includes account summaries and delivery-level rows", async () => {
@@ -359,7 +379,7 @@ test("all runtime modules share the v140 cache identity", async () => {
     read("index.html"),
     read("js/main.js"),
   ]);
-  assert.match(indexHtml, /20260805-v140-platform-stability-3/);
-  assert.match(mainJs, /APP_BUILD_ID = "20260805-v140-platform-stability-3"/);
+  assert.match(indexHtml, /20260806-v140-platform-stability-5/);
+  assert.match(mainJs, /APP_BUILD_ID = "20260806-v140-platform-stability-5"/);
   assert.doesNotMatch(indexHtml + mainJs, /20260729-v121-shell-22|20260729-v122-shell-1/);
 });

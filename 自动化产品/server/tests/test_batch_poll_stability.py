@@ -144,15 +144,21 @@ class BatchPollStabilityTest(unittest.TestCase):
             ];
             const light = Array.from({ length:4 }, (_, i) => make("light", "info", i + 1));
             let heavyMax = 0;
+            let digitalMax = 0;
+            let standardMax = 0;
             let lightMax = 0;
             for (let poll = 0; poll < 100; poll++) {
               heavyMax = Math.max(heavyMax, selectQueuedJobs([], heavy).length);
+              digitalMax = Math.max(digitalMax, selectQueuedJobs([], heavy.filter((job) => job.model === "__digital_human__")).length);
+              standardMax = Math.max(standardMax, selectQueuedJobs([], heavy.filter((job) => job.model !== "__digital_human__")).length);
               lightMax = Math.max(lightMax, selectQueuedJobs([], light).length);
             }
-            console.log(JSON.stringify({ heavyMax, lightMax, lightUnaffected:light.length }));
+            console.log(JSON.stringify({ heavyMax, digitalMax, standardMax, lightMax, lightUnaffected:light.length }));
             """
         )
-        self.assertEqual(result["heavyMax"], 3)
+        self.assertEqual(result["heavyMax"], 10)
+        self.assertEqual(result["digitalMax"], 10)
+        self.assertEqual(result["standardMax"], 3)
         self.assertEqual(result["lightMax"], 3)
         self.assertEqual(result["lightUnaffected"], 4)
 
@@ -188,6 +194,51 @@ class BatchPollStabilityTest(unittest.TestCase):
             self.assertEqual(len(heavy), 48)
             self.assertEqual(len(light), 4)
             self.assertTrue(all(item["ownerId"] == "creator-light" for item in light))
+
+    def test_missing_batch_session_is_rebuilt_without_touching_tasks(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { state } = await import("./js/core/store.js");
+            const { restoreMissingBatchSessions } = await import("./js/agent/orchestrator.js");
+            state.ui.currentMemberId = "creator-one";
+            state.ui.activeSessionId = "missing-session";
+            state.sessions = [{ id:"other-session", ownerId:"creator-two", title:"其他成员", messages:[] }];
+            state.batches = [{
+              id:"batch-preserved",
+              sessionId:"missing-session",
+              ownerId:"creator-one",
+              topic:"刷新后恢复的批次",
+              createdAt:100,
+              updatedAt:200,
+              phase:"generating",
+              productionIds:["production-preserved"]
+            }];
+            state.productions = [{ id:"production-preserved", ownerId:"creator-one", stage:"images", stageStatus:"running" }];
+            state.jobs = [{ id:"job-preserved", ownerId:"creator-one", productionId:"production-preserved", status:"running" }];
+            const before = JSON.stringify({ batches:state.batches, productions:state.productions, jobs:state.jobs });
+            const first = restoreMissingBatchSessions({ persist:false });
+            const second = restoreMissingBatchSessions({ persist:false });
+            const session = state.sessions.find(item => item.id === "missing-session");
+            console.log(JSON.stringify({
+              first:first.length,
+              second:second.length,
+              activeSessionId:state.ui.activeSessionId,
+              title:session?.title,
+              batchId:session?.messages?.[0]?.payload?.batchId,
+              tasksUntouched:before === JSON.stringify({ batches:state.batches, productions:state.productions, jobs:state.jobs })
+            }));
+            """
+        )
+        self.assertEqual(result["first"], 1)
+        self.assertEqual(result["second"], 0)
+        self.assertEqual(result["activeSessionId"], "missing-session")
+        self.assertEqual(result["title"], "刷新后恢复的批次")
+        self.assertEqual(result["batchId"], "batch-preserved")
+        self.assertTrue(result["tasksUntouched"])
 
     def test_polling_sources_do_not_full_save_or_full_render(self):
         jobs = (APP_DIR / "js/api/jobs.js").read_text(encoding="utf-8")

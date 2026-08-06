@@ -8,8 +8,8 @@ import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
 import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260805-v140-platform-stability-3";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260805-v140-platform-stability-3";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260806-v140-platform-stability-5";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260806-v140-platform-stability-5";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
 import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
@@ -320,10 +320,13 @@ async function returnLinkFlow(asset, acc) {
   });
   if (ret == null) return false;
   const clearing = !!ret.clear;
+  const noPublish = !!ret.noPublish;
   const raw = ret.raw || "";
   let payload;
   if (clearing) {
     payload = { clear: true };
+  } else if (noPublish) {
+    payload = { noPublish: true, note: String(ret.note || "").trim().slice(0, 300) };
   } else {
     const url = extractUrl(raw);
     if (!url) { toast("没有识别到链接：请粘贴包含 http:// 或 https:// 的分享内容"); return false; }
@@ -355,7 +358,14 @@ async function returnLinkFlow(asset, acc) {
       delete asset.publishedAt;
       asset.publishedClearedAt = now;
       asset.status = asset.supplierDownloadedAt ? "已下载" : "未下载";
+      delete asset.publishedWithoutLink;
+    } else if (noPublish) {
+      asset.publishedWithoutLink = true;
+      asset.supplierNote = payload.note;
+      asset.publishedAt = now;
+      asset.status = "已发布";
     } else {
+      delete asset.publishedWithoutLink;
       asset.publishedUrl = payload.url;
       asset.supplierNote = payload.note;
       if (payload.title) asset.publishedTitle = payload.title;
@@ -372,6 +382,9 @@ async function returnLinkFlow(asset, acc) {
   if (clearing) {
     notify("delivery", `「${asset.title || asset.name}」已清除回传链接`, "已恢复为未回传状态，历史数据仅保留存档。");
     toast("已清除回传链接，素材恢复为未回传状态");
+  } else if (noPublish) {
+    notify("delivery", `「${asset.title || asset.name}」无需发布`, "供应商已确认无需对外发布，已计入发布完成。");
+    toast("已标记为无需发布");
   } else {
     notify("delivery", `「${asset.title || asset.name}」已发布`, `供应商回传了发布链接，链路闭环 ✓`);
     toast("已记录发布链接，素材标记为「已发布」");
@@ -1011,6 +1024,7 @@ export const deliveryView = {
           try {
             const result = await remote.supplier.updateViews(a.id, nextViews);
             Object.assign(a, result.asset || {});
+            await refreshDeliveryMetrics({ force: true });
           } catch (err) {
             toast(err?.message || "观看量更新失败", "error");
             return;
@@ -1039,6 +1053,7 @@ export const deliveryView = {
           try {
             const result = await remote.supplier.updateExposure(a.id, nextExposure);
             Object.assign(a, result.asset || {});
+            await refreshDeliveryMetrics({ force: true });
           } catch (err) {
             toast(err?.message || "曝光量更新失败", "error");
             return;

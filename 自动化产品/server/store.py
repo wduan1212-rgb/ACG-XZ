@@ -6314,6 +6314,38 @@ def parse_token(token: str):
         return None
 
 
+def make_provider_media_signature(kind: str, key: str, ttl_seconds: int = 1800):
+    """Create a short-lived token for an upstream model to read one media file."""
+
+    media_kind, media_key = _normalize_private_media_key(kind, key)
+    ttl = max(60, min(int(ttl_seconds or 0), 3600))
+    expires = int(time.time()) + ttl
+    payload = f"provider-media:{media_kind}:{media_key}:{expires}"
+    signature = hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()
+    return expires, signature
+
+
+def validate_provider_media_signature(kind: str, key: str, expires, signature: str):
+    """Validate signature and confirm the media still has authoritative ownership."""
+
+    try:
+        media_kind, media_key = _normalize_private_media_key(kind, key)
+        deadline = int(expires)
+        now = int(time.time())
+        if deadline < now or deadline > now + 3600:
+            return False
+        payload = f"provider-media:{media_kind}:{media_key}:{deadline}"
+        expected = hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(str(signature or ""), expected):
+            return False
+        return bool(_fetchone(
+            "SELECT 1 FROM private_media_registry WHERE media_kind=? AND media_key=? LIMIT 1",
+            (media_kind, media_key),
+        ))
+    except Exception:
+        return False
+
+
 # ---------- 成员 ----------
 def _seed_admin():
     _ensure_db()
@@ -6350,6 +6382,30 @@ def member_team(member_id):
         (member_id,),
     )
     return _team_public_row(row)
+
+
+def supplier_member_team(member_id, role=None):
+    """Project a supplier parent/child into the customer team it serves.
+
+    Suppliers are intentionally not inserted into ``team_members`` because
+    their permissions are governed by ``team_suppliers`` and child bindings.
+    They still need the team identity in the session so every supplier account
+    displays the shared workspace name instead of incorrectly falling back to
+    the personal plan label.
+    """
+    context = supplier_access_context(member_id, role)
+    if not context:
+        return None
+    row = _fetchone(
+        "SELECT id,name,kind,status,plan,quota_mode FROM teams WHERE id=? AND status='active'",
+        (context["teamId"],),
+    )
+    if not row:
+        return None
+    return {
+        "id": row[0], "name": row[1], "kind": row[2], "status": row[3],
+        "plan": row[4], "quotaMode": row[5], "role": "supplier",
+    }
 
 
 def member_entitlements(member_id, role):
@@ -8210,6 +8266,8 @@ def delete_member(mid):
 def member_public(row):
     item = _member_public(row)
     team = member_team(item["id"])
+    if not team and item["role"] in {"supplier_parent", "supplier_child"}:
+        team = supplier_member_team(item["id"], item["role"])
     item["team"] = team
     item["teamId"] = team["id"] if team else None
     item["teamRole"] = team["role"] if team else None
@@ -8630,6 +8688,64 @@ def list_platform_account_summaries():
             for row in creator_rows
         ],
     }
+
+
+def adopt_personal_member_into_internal_team(member_id, reviewer_id):
+    """Move one unowned creator account into the internal ACG team.
+
+    This is an additive membership operation.  It preserves the member row and
+    all owned resources, and is deliberately unavailable for supplier roles or
+    accounts that already belong to any active team.
+    """
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            manager = conn.execute(
+                "SELECT 1 FROM team_members WHERE team_id=? AND member_id=? "
+                "AND status='active' AND team_role IN ('owner','admin')",
+                (INTERNAL_TEAM_ID, str(reviewer_id or "")),
+            ).fetchone()
+            if not manager:
+                conn.rollback()
+                return None, "forbidden"
+            row = conn.execute(
+                "SELECT role FROM members WHERE id=?",
+                (str(member_id or ""),),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, "not_found"
+            if str(row[0]) not in {"user", "editor"}:
+                conn.rollback()
+                return None, "not_creator"
+            if conn.execute(
+                "SELECT 1 FROM team_members tm JOIN teams t ON t.id=tm.team_id "
+                "WHERE tm.member_id=? AND tm.status='active' AND t.status='active'",
+                (str(member_id),),
+            ).fetchone():
+                conn.rollback()
+                return None, "already_in_team"
+            now = int(time.time() * 1000)
+            conn.execute(
+                "INSERT INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
+                "VALUES(?,?,?,?,?,?)",
+                (INTERNAL_TEAM_ID, str(member_id), "creator", "active", now, str(reviewer_id)),
+            )
+            conn.execute(
+                "UPDATE members SET role='editor' WHERE id=? AND role='user'",
+                (str(member_id),),
+            )
+            conn.execute(
+                "UPDATE team_join_requests SET status='approved',reviewed_at=?,reviewed_by=? "
+                "WHERE member_id=? AND team_id=? AND status='pending'",
+                (now, str(reviewer_id), str(member_id), INTERNAL_TEAM_ID),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return member_public(get_member(member_id)), None
 
 
 def team_account_ids(team_id):
@@ -11770,7 +11886,8 @@ def _upsert_docs_in_conn(conn, collection, items, *, actor_id=""):
             if server_published_at and server_published_at > client_published_at:
                 for key in (
                     "publishedUrl", "supplierNote", "publishedTitle", "publishedRawText",
-                    "publishedAt", "publishedUpdatedAt", "publishedUpdatedBy", "publishedClearedAt", "status",
+                    "publishedAt", "publishedUpdatedAt", "publishedUpdatedBy", "publishedClearedAt",
+                    "publishedWithoutLink", "status",
                 ):
                     if key in existing:
                         it[key] = existing[key]
@@ -11786,8 +11903,13 @@ def _upsert_docs_in_conn(conn, collection, items, *, actor_id=""):
                 existing_pub_seq = _int_at_least_zero(existing.get("pubSeq"))
                 if existing_pub_seq:
                     it["pubSeq"] = existing_pub_seq
-        elif collection == "assets" and it.get("delivered") and _delivery_sequences_reconciled(conn):
-            # 新交付也必须由共享账本分配编号，不能信任旧前端的本地计数器。
+        elif (
+            collection == "assets"
+            and it.get("delivered")
+            and (actor_id or _delivery_sequences_reconciled(conn))
+        ):
+            # 所有新交付都必须由共享账本分配编号，不能依赖是否执行过历史校准，
+            # 也不能信任各浏览器按自身可见子集生成的本地计数器。
             it["pubSeq"] = _next_delivery_pub_seq(conn)
         _ensure_doc_resource_scope_locked(
             conn,
@@ -15156,6 +15278,286 @@ def _custom_publish_result(project, account, delivery):
     }
 
 
+def _production_publish_result(production, account, delivery, assets):
+    return {
+        "production": dict(production),
+        "account": dict(account),
+        "delivery": dict(delivery),
+        "assets": [dict(item) for item in assets],
+    }
+
+
+def _production_delivery_dependencies(delivery):
+    if str(delivery.get("type") or "") == "图集":
+        ids = []
+        for value in (delivery.get("packAssetIds") or [])[:20]:
+            asset_id = str(value or "").strip()
+            if asset_id and asset_id not in ids:
+                ids.append(asset_id)
+        return ids, set(ids)
+    cover_id = str(delivery.get("coverAssetId") or "").strip()
+    return ([cover_id] if cover_id else []), ({cover_id} if cover_id else set())
+
+
+def publish_production_bundle(production_id, actor_id, payload):
+    """原子发布常规单号/批量任务，避免浏览器跨集合写入中途丢失。"""
+    _ensure_db()
+    incoming = payload if isinstance(payload, dict) else {}
+    pid = str(production_id or "").strip()
+    actor = str(actor_id or "").strip()
+    did = str(incoming.get("deliveryId") or "").strip()
+    delivery_input = incoming.get("delivery") if isinstance(incoming.get("delivery"), dict) else {}
+    production_input = incoming.get("production") if isinstance(incoming.get("production"), dict) else {}
+    account_input = incoming.get("account") if isinstance(incoming.get("account"), dict) else {}
+    asset_items = {
+        str(item.get("id")): dict(item)
+        for item in (incoming.get("assets") or [])
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    }
+    if (
+        not pid or not actor or not did
+        or str(delivery_input.get("id") or "") != did
+        or str(delivery_input.get("productionId") or "") != pid
+        or str(production_input.get("id") or "") != pid
+        or not delivery_input.get("delivered")
+    ):
+        return None, "invalid_publish_request"
+    now = int(time.time() * 1000)
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            production_row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection='productions' AND id=?",
+                (pid,),
+            ).fetchone()
+            if not production_row:
+                return None, "production_not_found"
+            if not _resource_scope_allows_actor_locked(conn, "productions", pid, actor):
+                return None, "forbidden"
+            try:
+                production = json.loads(production_row[1])
+            except (TypeError, json.JSONDecodeError):
+                return None, "production_not_found"
+
+            account_id = str(delivery_input.get("accountId") or production.get("accountId") or "").strip()
+            if not account_id or (
+                account_input.get("id") and str(account_input.get("id")) != account_id
+            ):
+                return None, "delivery_mismatch"
+            if conn.execute(
+                "SELECT 1 FROM deleted_docs WHERE collection='accounts' AND id=?",
+                (account_id,),
+            ).fetchone():
+                return None, "account_deleted"
+            account_row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection='accounts' AND id=?",
+                (account_id,),
+            ).fetchone()
+            if not account_row or not _resource_scope_allows_actor_locked(
+                conn, "accounts", account_id, actor,
+            ):
+                return None, "account_not_found"
+            try:
+                account = json.loads(account_row[1])
+            except (TypeError, json.JSONDecodeError):
+                return None, "account_not_found"
+
+            delivery_type = str(delivery_input.get("type") or "")
+            expected_type = "图集" if str(production.get("mode") or "") == "图文" else "视频"
+            if delivery_type != expected_type or str(account.get("mode") or "") != str(production.get("mode") or ""):
+                return None, "delivery_mismatch"
+            if expected_type == "视频" and not str(delivery_input.get("videoUrl") or "").strip():
+                return None, "delivery_mismatch"
+
+            dependencies, shared_ids = _production_delivery_dependencies(delivery_input)
+            if expected_type == "图集" and not dependencies:
+                return None, "delivery_asset_missing"
+            normalized_assets = []
+            normalized_asset_owners = {}
+            for asset_id in dependencies:
+                if conn.execute(
+                    "SELECT 1 FROM deleted_docs WHERE collection='assets' AND id=?",
+                    (asset_id,),
+                ).fetchone():
+                    return None, "delivery_asset_deleted"
+                row = conn.execute(
+                    "SELECT owner_id,data FROM docs WHERE collection='assets' AND id=?",
+                    (asset_id,),
+                ).fetchone()
+                if row:
+                    try:
+                        asset = json.loads(row[1])
+                    except (TypeError, json.JSONDecodeError):
+                        return None, "delivery_asset_mismatch"
+                    if not _resource_scope_allows_actor_locked(conn, "assets", asset_id, actor):
+                        return None, "delivery_asset_mismatch"
+                    normalized_asset_owners[asset_id] = str(row[0] or production_row[0] or actor)
+                else:
+                    asset = dict(asset_items.get(asset_id) or {})
+                    if not asset:
+                        return None, "delivery_asset_missing"
+                    asset["id"] = asset_id
+                    asset["ownerId"] = actor
+                    asset["createdAt"] = int(asset.get("createdAt") or now)
+                    normalized_asset_owners[asset_id] = actor
+                if asset.get("delivered") or str(asset.get("accountId") or "") != account_id:
+                    return None, "delivery_asset_mismatch"
+                expected_asset_type = "图片"
+                if str(asset.get("type") or "") != expected_asset_type:
+                    return None, "delivery_asset_mismatch"
+                asset["shared"] = True
+                asset["sharedAt"] = int(asset.get("sharedAt") or now)
+                asset["sharedSource"] = "delivered-production"
+                asset["productionId"] = pid
+                asset["updatedAt"] = now
+                normalized_assets.append(asset)
+
+            existing_delivery = None
+            existing_delivery_owner = ""
+            existing_row = conn.execute(
+                "SELECT owner_id,data FROM docs WHERE collection='assets' AND id=?",
+                (did,),
+            ).fetchone()
+            if existing_row:
+                try:
+                    existing_delivery = json.loads(existing_row[1])
+                except (TypeError, json.JSONDecodeError):
+                    return None, "delivery_mismatch"
+                if (
+                    not existing_delivery.get("delivered")
+                    or str(existing_delivery.get("productionId") or "") != pid
+                ):
+                    return None, "delivery_mismatch"
+                existing_delivery_owner = str(existing_row[0] or "")
+            if existing_delivery is None:
+                for row in conn.execute(
+                    "SELECT owner_id,data FROM docs WHERE collection='assets'",
+                ).fetchall():
+                    try:
+                        candidate = json.loads(row[1])
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if candidate.get("delivered") and str(candidate.get("productionId") or "") == pid:
+                        existing_delivery = candidate
+                        existing_delivery_owner = str(row[0] or "")
+                        did = str(candidate.get("id") or did)
+                        break
+
+            is_new = existing_delivery is None
+            if is_new:
+                pub_seq = _next_delivery_pub_seq(conn)
+                account["monthlyDone"] = _int_at_least_zero(account.get("monthlyDone")) + 1
+                account["exportSeq"] = _int_at_least_zero(account.get("exportSeq")) + 1
+                delivery = dict(delivery_input)
+                delivery["id"] = did
+                delivery["pubSeq"] = pub_seq
+                delivery["exportSeq"] = account["exportSeq"]
+                delivery["createdAt"] = int(delivery.get("createdAt") or now)
+                delivery["deliveredAt"] = now
+                delivery["status"] = "未下载"
+                for key in (
+                    "publishedUrl", "supplierNote", "publishedTitle", "publishedRawText",
+                    "publishedAt", "publishedUpdatedAt", "publishedUpdatedBy",
+                    "publishedClearedAt", "supplierDownloadedAt", "supplierDownloadedBy",
+                    "viewCount", "viewsUpdatedAt", "viewsUpdatedBy", "exposureCount",
+                    "exposureUpdatedAt", "exposureUpdatedBy",
+                ):
+                    delivery.pop(key, None)
+            else:
+                delivery = dict(existing_delivery)
+                for key, value in delivery_input.items():
+                    if key not in {
+                        "id", "pubSeq", "exportSeq", "createdAt", "deliveredAt",
+                        "status", "publishedUrl", "supplierNote", "publishedTitle",
+                        "publishedRawText", "publishedAt", "publishedUpdatedAt",
+                        "publishedUpdatedBy", "publishedClearedAt", "supplierDownloadedAt",
+                        "supplierDownloadedBy", "viewCount", "viewsUpdatedAt", "viewsUpdatedBy",
+                        "exposureCount", "exposureUpdatedAt", "exposureUpdatedBy",
+                    }:
+                        delivery[key] = value
+            delivery_owner = existing_delivery_owner or str(production_row[0] or actor)
+            delivery.update({
+                "ownerId": delivery_owner,
+                "accountId": account_id,
+                "productionId": pid,
+                "byMemberId": actor,
+                "byAccount": str(account.get("name") or ""),
+                "delivered": True,
+                "type": expected_type,
+                "updatedAt": now,
+            })
+            if is_new:
+                product_tag = " ".join(str(delivery.get("productTag") or "").strip().split())[:20]
+                delivery["name"] = _custom_delivery_authoritative_name(
+                    account, account["exportSeq"], product_tag, now,
+                )
+
+            for asset in normalized_assets:
+                asset_id = str(asset["id"])
+                owner_id = normalized_asset_owners.get(asset_id) or str(asset.get("ownerId") or actor)
+                asset["ownerId"] = owner_id
+                _ensure_doc_resource_scope_locked(
+                    conn, "assets", asset_id, asset,
+                    actor_id=actor, owner_id=owner_id,
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                    ("assets", asset_id, owner_id, now, json.dumps(asset, ensure_ascii=False)),
+                )
+            _ensure_doc_resource_scope_locked(
+                conn, "assets", did, delivery,
+                actor_id=actor, owner_id=delivery_owner,
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("assets", did, delivery_owner, now, json.dumps(delivery, ensure_ascii=False)),
+            )
+            account["updatedAt"] = now
+            conn.execute(
+                "UPDATE docs SET updated_at=?,data=? WHERE collection='accounts' AND id=?",
+                (now, json.dumps(account, ensure_ascii=False), account_id),
+            )
+            stored_production = dict(production)
+            production = dict(stored_production)
+            for key, value in production_input.items():
+                if key not in {"id", "ownerId", "teamId", "createdAt"}:
+                    production[key] = value
+            production["id"] = pid
+            production["ownerId"] = str(production_row[0] or production.get("ownerId") or actor)
+            production["accountId"] = account_id
+            production["stage"] = "delivered"
+            production["stageStatus"] = "done"
+            production["delivery"] = {
+                "assetId": did,
+                "name": delivery.get("name"),
+                "at": delivery.get("deliveredAt"),
+                "pubSeq": delivery.get("pubSeq"),
+                "planDate": delivery.get("planDate"),
+                "productTag": delivery.get("productTag"),
+                "note": delivery.get("publishNote"),
+                "sourceUpdatedAt": delivery.get("sourceUpdatedAt"),
+            }
+            review = dict(production.get("review") or {})
+            review["state"] = "approved"
+            review["at"] = now
+            production["review"] = review
+            production["updatedAt"] = now
+            conn.execute(
+                "UPDATE docs SET updated_at=?,data=? WHERE collection='productions' AND id=?",
+                (now, json.dumps(production, ensure_ascii=False), pid),
+            )
+            conn.commit()
+            return _production_publish_result(
+                production, account, delivery, normalized_assets,
+            ), None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def publish_custom_project_bundle(project_id, owner_id, payload):
     """由服务器在一个写事务中分配序号、更新账号并写入完整定制交付。"""
     _ensure_db()
@@ -16309,12 +16711,12 @@ def _supplier_account_row_locked(conn, account_id, member_id, role):
 
 
 def list_delivery_asset_metrics(member_id, role):
-    """Return the authoritative metric triplets for deliveries visible to one actor.
+    """Return the authoritative delivery state visible to one actor.
 
     This is deliberately a lightweight projection rather than another full
     ``assets`` snapshot.  Supplier children, supplier parents and creators can
-    therefore converge on the same server values without repeatedly hydrating
-    every delivery media document.
+    therefore converge on the same server metrics, download state and current
+    publication link without repeatedly hydrating every delivery media document.
     """
     _ensure_db()
     with _lock:
@@ -16407,6 +16809,18 @@ def list_delivery_asset_metrics(member_id, role):
                     "exposureCount": _int_at_least_zero(item.get("exposureCount")),
                     "exposureUpdatedAt": _int_at_least_zero(item.get("exposureUpdatedAt")),
                     "exposureUpdatedBy": str(item.get("exposureUpdatedBy") or ""),
+                    "supplierDownloadedAt": _int_at_least_zero(item.get("supplierDownloadedAt")),
+                    "supplierDownloadedBy": str(item.get("supplierDownloadedBy") or ""),
+                    "publishedUrl": str(item.get("publishedUrl") or ""),
+                    "supplierNote": str(item.get("supplierNote") or ""),
+                    "publishedTitle": str(item.get("publishedTitle") or ""),
+                    "publishedRawText": str(item.get("publishedRawText") or ""),
+                    "publishedAt": _int_at_least_zero(item.get("publishedAt")),
+                    "publishedUpdatedAt": _int_at_least_zero(item.get("publishedUpdatedAt")),
+                    "publishedUpdatedBy": str(item.get("publishedUpdatedBy") or ""),
+                    "publishedClearedAt": _int_at_least_zero(item.get("publishedClearedAt")),
+                    "publishedWithoutLink": bool(item.get("publishedWithoutLink")),
+                    "status": str(item.get("status") or ""),
                 })
             return result
         finally:
@@ -16425,8 +16839,9 @@ def update_supplier_asset_views(asset_id, view_count, member_id, role):
             )
             if error:
                 return None, error
+            incoming = max(0, int(view_count or 0))
             now = int(time.time() * 1000)
-            item["viewCount"] = max(0, int(view_count or 0))
+            item["viewCount"] = incoming
             item["viewsUpdatedAt"] = now
             item["viewsUpdatedBy"] = member_id
             item["updatedAt"] = now
@@ -16452,8 +16867,9 @@ def update_supplier_asset_exposure(asset_id, exposure_count, member_id, role):
             )
             if error:
                 return None, error
+            incoming = max(0, int(exposure_count or 0))
             now = int(time.time() * 1000)
-            item["exposureCount"] = max(0, int(exposure_count or 0))
+            item["exposureCount"] = incoming
             item["exposureUpdatedAt"] = now
             item["exposureUpdatedBy"] = member_id
             item["updatedAt"] = now
@@ -16463,6 +16879,102 @@ def update_supplier_asset_exposure(asset_id, exposure_count, member_id, role):
             )
             conn.commit()
             return item, None
+        finally:
+            conn.close()
+
+
+def recover_delivery_asset_metrics(items, actor_id, *, apply=False):
+    """Preview or apply an explicit one-time recovery of lost delivery metrics.
+
+    Normal supplier edits remain last-write-wins. This admin-only repair path
+    keeps the larger of the current value and each audited historical value.
+    Replaying the same plan is therefore a zero-write operation.
+    """
+    _ensure_db()
+    requested = items if isinstance(items, list) else []
+    if len(requested) > 1000:
+        raise ValueError("too_many_metric_recovery_items")
+    actor = str(actor_id or "").strip()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            now = int(time.time() * 1000)
+            changes = []
+            missing = []
+            seen = set()
+            for raw in requested:
+                if not isinstance(raw, dict):
+                    continue
+                asset_id = str(raw.get("assetId") or raw.get("id") or "").strip()
+                if not asset_id or asset_id in seen:
+                    continue
+                seen.add(asset_id)
+                row = conn.execute(
+                    "SELECT owner_id,data FROM docs WHERE collection='assets' AND id=?",
+                    (asset_id,),
+                ).fetchone()
+                if not row:
+                    missing.append(asset_id)
+                    continue
+                try:
+                    item = json.loads(row[1])
+                except (TypeError, json.JSONDecodeError):
+                    missing.append(asset_id)
+                    continue
+                if not isinstance(item, dict) or not item.get("delivered"):
+                    missing.append(asset_id)
+                    continue
+
+                before_view = _int_at_least_zero(item.get("viewCount"))
+                before_exposure = _int_at_least_zero(item.get("exposureCount"))
+                requested_view = (
+                    _int_at_least_zero(raw.get("viewCount"))
+                    if "viewCount" in raw else before_view
+                )
+                requested_exposure = (
+                    _int_at_least_zero(raw.get("exposureCount"))
+                    if "exposureCount" in raw else before_exposure
+                )
+                after_view = max(before_view, requested_view)
+                after_exposure = max(before_exposure, requested_exposure)
+                if after_view == before_view and after_exposure == before_exposure:
+                    continue
+                changes.append({
+                    "assetId": asset_id,
+                    "before": {"viewCount": before_view, "exposureCount": before_exposure},
+                    "after": {"viewCount": after_view, "exposureCount": after_exposure},
+                })
+                if not apply:
+                    continue
+                if after_view != before_view:
+                    item["viewCount"] = after_view
+                    item["viewsUpdatedAt"] = now
+                    item["viewsUpdatedBy"] = actor
+                if after_exposure != before_exposure:
+                    item["exposureCount"] = after_exposure
+                    item["exposureUpdatedAt"] = now
+                    item["exposureUpdatedBy"] = actor
+                item["updatedAt"] = max(_int_at_least_zero(item.get("updatedAt")), now)
+                conn.execute(
+                    "UPDATE docs SET updated_at=?,data=? WHERE collection='assets' AND id=?",
+                    (item["updatedAt"], json.dumps(item, ensure_ascii=False), asset_id),
+                )
+
+            if apply:
+                conn.commit()
+            else:
+                conn.rollback()
+            return {
+                "applied": bool(apply),
+                "updated": len(changes) if apply else 0,
+                "wouldUpdate": len(changes),
+                "changes": changes,
+                "missing": missing,
+            }
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -16770,6 +17282,7 @@ def update_supplier_asset_published_link(asset_id, published_url, note, title, r
                 return None, None, error
 
             now = int(time.time() * 1000)
+            item.pop("publishedWithoutLink", None)
             item["publishedUrl"] = normalized
             item["supplierNote"] = str(note or "").strip()[:300]
             if str(title or "").strip():
@@ -16897,6 +17410,42 @@ def update_supplier_asset_published_link(asset_id, published_url, note, title, r
             conn.close()
 
 
+def mark_supplier_asset_no_publish(asset_id, note, member_id, role):
+    """Mark a delivered item complete without an external publish URL."""
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            _context, asset_row, item, error = _supplier_delivery_row_locked(
+                conn, asset_id, member_id, role
+            )
+            if error:
+                return None, None, error
+            if str(item.get("publishedUrl") or "").strip():
+                return None, None, "link_exists"
+
+            now = int(time.time() * 1000)
+            item["publishedWithoutLink"] = True
+            item["supplierNote"] = str(note or "").strip()[:300]
+            item["publishedAt"] = now
+            item["publishedUpdatedAt"] = now
+            item["publishedUpdatedBy"] = member_id
+            item["status"] = "已发布"
+            item["updatedAt"] = now
+            conn.execute(
+                "INSERT OR REPLACE INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
+                ("assets", str(asset_id), asset_row[1], now, json.dumps(item, ensure_ascii=False)),
+            )
+            conn.commit()
+            return item, None, None
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
 def clear_supplier_asset_published_link(asset_id, member_id, role):
     """Clear a mistaken supplier return link without deleting its history.
 
@@ -16916,7 +17465,10 @@ def clear_supplier_asset_published_link(asset_id, member_id, role):
                 return None, None, error
 
             now = int(time.time() * 1000)
-            for key in ("publishedUrl", "supplierNote", "publishedTitle", "publishedRawText", "publishedAt"):
+            for key in (
+                "publishedUrl", "supplierNote", "publishedTitle", "publishedRawText",
+                "publishedAt", "publishedWithoutLink",
+            ):
                 item.pop(key, None)
             item["publishedUpdatedAt"] = now
             item["publishedUpdatedBy"] = member_id

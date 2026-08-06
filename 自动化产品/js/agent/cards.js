@@ -5,7 +5,7 @@ import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset, accountCreatedToday, isAccountDisabled } from "../domain/accounts.js";
 import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260805-v140-platform-stability-3";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260806-v140-platform-stability-5";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -193,6 +193,7 @@ const CARD = {
     const isStaticKind = p.contentKind === "static";
     const isMaterialKind = p.contentKind === "material";
     const isRealKind = p.contentKind === "real";
+    const staticVideoStyle = String(p.staticVideoStyle || "现代漫画分镜风");
     // 图文账号也能参与静态视频，但此时它走独立的视频产物链路，不能继续
     // 显示“多图 / 单图”和每条图数等图文专属编辑项。
     const isImageAcc = a => isImageKind && (a?.mode === "图文" || groupOf(a) === "图文组");
@@ -263,6 +264,19 @@ const CARD = {
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
       </div>
       <div class="agc-custom-hint">${icon("spark", 13)} ${esc(CONTENT_KIND_LABEL[p.contentKind])} · 新任务只使用任务板明确选择的参考图；数字人账号会额外使用管理员锁定的角色版。</div>
+      ${isStaticKind ? `<div class="agc-static-style-row">
+        <label>画面风格
+          <select data-pf="staticVideoStyle" ${locked ? "disabled" : ""}>
+            ${[
+              ["现代漫画分镜风", "现代漫画（默认）"],
+              ["清爽 2.5D 动画广告风", "2.5D 动画"],
+              ["写实电影感短片风", "写实电影感"],
+              ["极简产品演示风", "极简产品演示"]
+            ].map(([value, label]) => `<option value="${esc(value)}" ${staticVideoStyle === value ? "selected" : ""}>${esc(label)}</option>`).join("")}
+          </select>
+        </label>
+        <span>用于本次全部静态视频；账号设定只补充人物与品牌细节。</span>
+      </div>` : ""}
       ${(() => {
         const editable = !locked;
         const usesUnifiedImageRefs = isImageKind || isStaticKind;

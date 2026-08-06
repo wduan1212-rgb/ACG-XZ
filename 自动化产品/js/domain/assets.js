@@ -1,7 +1,7 @@
 /* 资产领域：共享模式下二进制上传到服务端，离线模式保留 IndexedDB Blob 缓存 */
 
 import { db } from "../core/db.js";
-import { state, save, assetById, accountById, removeRemote, ownedBy } from "../core/store.js";
+import { state, save, assetById, accountById, removeRemote, ownedBy, persistRecoveredDocuments } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { uid, esc, gradFor, dataUrlToBlob, extOfMime } from "../core/util.js";
 
@@ -458,7 +458,8 @@ export async function addAssetFromDataUrl(accountId, { name, type = "图片", ta
     }
   }
   state.assets.push(a);
-  save("assets", "meta");
+  await persistRecoveredDocuments("assets", a);
+  save("meta");
   return a;
 }
 
@@ -500,7 +501,8 @@ export async function addAssetFromFile(accountId, file, {
   urlCache.set(a.id, URL.createObjectURL(blob));
   await uploadServerFile(a, blob, file.name);
   state.assets.push(a);
-  save("assets", "meta");
+  await persistRecoveredDocuments("assets", a);
+  save("meta");
   return a;
 }
 
@@ -524,7 +526,7 @@ export async function replaceAssetBlob(assetId, dataUrl) {
   a.blobUpdatedAt = revisionAt;
   a.updatedAt = revisionAt;
   a.hasBlob = true; delete a.dataUrl;
-  save("assets");
+  await persistRecoveredDocuments("assets", a);
 }
 
 export async function removeAsset(id) {

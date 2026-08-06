@@ -108,7 +108,7 @@ class BatchFrontendRegressionTest(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
-    def test_browser_queue_uses_three_controlled_video_slots_for_infoflow_and_digital_human(self):
+    def test_browser_queue_keeps_ten_digital_human_slots_with_fifo_overflow(self):
         result = self.run_node(
             """
             globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
@@ -122,16 +122,80 @@ class BatchFrontendRegressionTest(unittest.TestCase):
             const mixed = selectQueuedJobs([], [...info.slice(0, 8), ...digital]);
             const digitalOnly = selectQueuedJobs([], digital);
             const withTwoInfo = selectQueuedJobs(info.slice(0, 2), digital);
+            const withFourDigital = selectQueuedJobs(digital.slice(0, 4), digital.slice(4));
             console.log(JSON.stringify({
               mixed: mixed.map(x => x.id),
               digitalOnly: digitalOnly.map(x => x.id),
-              withTwoInfo: withTwoInfo.map(x => x.id)
+              withTwoInfo: withTwoInfo.map(x => x.id),
+              withFourDigital: withFourDigital.map(x => x.id)
             }));
             """
         )
-        self.assertEqual(result["mixed"], ["i1", "i2", "i3"])
-        self.assertEqual(len(result["digitalOnly"]), 3)
-        self.assertEqual(result["withTwoInfo"], ["d1"])
+        self.assertEqual(result["mixed"], ["i1", "i2", "i3", *[f"d{i}" for i in range(1, 8)]])
+        self.assertEqual(result["digitalOnly"], [f"d{i}" for i in range(1, 11)])
+        self.assertEqual(result["withTwoInfo"], [f"d{i}" for i in range(1, 9)])
+        self.assertEqual(result["withFourDigital"], [f"d{i}" for i in range(5, 11)])
+
+    def test_digital_human_dispatch_uses_shared_ten_slot_queue_across_productions(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin: "http://127.0.0.1:8787", hash: "" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { state } = await import("./js/core/store.js");
+            const { createProduction } = await import("./js/domain/productions.js");
+            const { createUnitVideoJobs } = await import("./js/agent/orchestrator.js");
+
+            state.ui.currentMemberId = "creator-a";
+            state.accounts = [
+              { id:"digital-a", name:"数字人 A", mode:"视频", subType:"数字人", platform:"视频号", charBoardAssetId:"char-a" },
+              { id:"digital-b", name:"数字人 B", mode:"视频", subType:"数字人", platform:"视频号", charBoardAssetId:"char-b" }
+            ];
+            state.assets = [
+              { id:"char-a", ownerId:"creator-a", accountId:"digital-a", type:"图片", dataUrl:"data:image/png;base64,QQ==" },
+              { id:"char-b", ownerId:"creator-a", accountId:"digital-b", type:"图片", dataUrl:"data:image/png;base64,Qg==" },
+              { id:"audio-a", ownerId:"creator-a", accountId:"digital-a", type:"音频", dataUrl:"data:audio/wav;base64,QQ==" },
+              { id:"audio-b", ownerId:"creator-a", accountId:"digital-b", type:"音频", dataUrl:"data:audio/wav;base64,Qg==" }
+            ];
+            state.productions = [];
+            state.jobs = [];
+
+            const makeDigital = (accountId, charId, audioId) => {
+              const p = createProduction({ accountId, topic:`${accountId} 测试`, batchId:"batch-digital" });
+              p.subType = "数字人";
+              p.artifacts.boards.generationMode = "digitalHuman";
+              p.artifacts.boards.characterRefAssetId = charId;
+              p.artifacts.boards.digitalHuman = { segments:[{
+                id:`${accountId}-seg-1`, characterRefAssetId:charId,
+                audioAssetId:audioId, audioDuration:8,
+                videoPrompt:"人物正脸自然口播，动作稳定。"
+              }] };
+              return p;
+            };
+            const first = makeDigital("digital-a", "char-a", "audio-a");
+            const second = makeDigital("digital-b", "char-b", "audio-b");
+
+            const firstQueued = createUnitVideoJobs(first);
+            const secondQueued = createUnitVideoJobs(second);
+            state.jobs[0].status = "succeeded";
+            state.jobs[0].output = { url:"/api/video/composed/first.mp4" };
+            const duplicateSecond = createUnitVideoJobs(second);
+
+            console.log(JSON.stringify({
+              firstQueued,
+              secondQueued,
+              duplicateSecond,
+              jobs:state.jobs.map(job => ({ productionId:job.productionId, status:job.status }))
+            }));
+            """
+        )
+        self.assertEqual(result["firstQueued"], 1)
+        self.assertEqual(result["secondQueued"], 1)
+        self.assertEqual(result["duplicateSecond"], 0)
+        self.assertEqual(len(result["jobs"]), 2)
+        self.assertEqual(result["jobs"][0]["status"], "succeeded")
+        self.assertNotEqual(result["jobs"][0]["productionId"], result["jobs"][1]["productionId"])
 
     def test_infoflow_and_digital_batch_compose_one_final_video(self):
         result = self.run_node(

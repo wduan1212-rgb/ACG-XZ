@@ -35,7 +35,7 @@ from contextlib import asynccontextmanager
 from datetime import date as calendar_date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
@@ -4199,14 +4199,24 @@ def _ref_url(ref: VideoRef) -> str:
         return ""
     if src.startswith("data:"):
         return src
+    if "/api/files/" in src:
+        file_part = unquote(src[src.index("/api/files/") + len("/api/files/"):].split("?", 1)[0].split("#", 1)[0])
+        if PUBLIC_BASE_URL:
+            try:
+                expires, signature = store.make_provider_media_signature("upload", file_part)
+                return (
+                    PUBLIC_BASE_URL
+                    + "/api/provider-media/upload/"
+                    + quote(file_part, safe="")
+                    + "?"
+                    + urlencode({"expires": expires, "sig": signature})
+                )
+            except Exception:
+                return ""
+        local_data_url = _local_upload_data_url(file_part)
+        if local_data_url:
+            return local_data_url
     if src.startswith(("http://localhost", "https://localhost", "http://127.0.0.1", "https://127.0.0.1")):
-        if "/api/files/" in src:
-            file_part = src[src.index("/api/files/") + len("/api/files/"):].split("?", 1)[0].split("#", 1)[0]
-            if PUBLIC_BASE_URL:
-                return PUBLIC_BASE_URL + "/api/files/" + file_part
-            local_data_url = _local_upload_data_url(file_part)
-            if local_data_url:
-                return local_data_url
         return ""
     return src
 
@@ -5724,9 +5734,18 @@ async def _video_compose_once(req: ComposeReq, _me: dict, out_name: str):
             if req.bgmDataUrl:
                 _write_data_url(bgm_path, req.bgmDataUrl)
             elif req.bgmUrl:
-                await _write_video_source(
-                    client, req.bgmUrl, bgm_path, "下载 BGM 失败", member=_me,
-                )
+                try:
+                    await _write_video_source(
+                        client, req.bgmUrl, bgm_path, "下载 BGM 失败", member=_me,
+                    )
+                except HTTPException as exc:
+                    # 配乐是静态视频的可选增强。历史共享 BGM 可能早于私有
+                    # 媒体登记表，不能因此让已经完成的分镜和口播整单失败。
+                    print(
+                        "[static-compose] optional BGM skipped: "
+                        f"HTTP {exc.status_code}",
+                        file=sys.stderr,
+                    )
         concat = tdir / "concat.txt"
         lines = []
         for f in files:
@@ -7161,6 +7180,14 @@ class CustomProjectPublishReq(BaseModel):
     account: dict = Field(default_factory=dict)
 
 
+class ProductionPublishReq(BaseModel):
+    deliveryId: str = ""
+    delivery: dict = Field(default_factory=dict)
+    assets: list = Field(default_factory=list)
+    account: dict = Field(default_factory=dict)
+    production: dict = Field(default_factory=dict)
+
+
 class CustomCanvasAgentReq(BaseModel):
     brief: str = ""
     scene: str = "brand_kv"
@@ -7302,6 +7329,17 @@ class SupplierExposureReq(BaseModel):
     exposureCount: int = 0
 
 
+class DeliveryMetricRecoveryItem(BaseModel):
+    assetId: str
+    viewCount: Optional[int] = None
+    exposureCount: Optional[int] = None
+
+
+class DeliveryMetricRecoveryReq(BaseModel):
+    items: List[DeliveryMetricRecoveryItem] = Field(default_factory=list)
+    apply: bool = False
+
+
 class SupplierHomepageReq(BaseModel):
     homepageUrl: str = ""
 
@@ -7321,6 +7359,7 @@ class SupplierPublishedLinkReq(BaseModel):
     title: str = ""
     rawText: str = ""
     clear: bool = False
+    noPublish: bool = False
 
 
 class DeliveryRemarkReq(BaseModel):
@@ -9957,6 +9996,35 @@ def custom_projects_publish(
     return {"ok": True, **result}
 
 
+@app.post("/api/productions/{production_id}/publish")
+def productions_publish(
+    production_id: str,
+    req: ProductionPublishReq,
+    me=Depends(require_member),
+):
+    if me.get("role") not in {"admin", "editor"}:
+        raise HTTPException(403, "当前账号没有发布权限")
+    payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    result, error = store.publish_production_bundle(
+        production_id,
+        me["id"],
+        payload,
+    )
+    if error in {
+        "production_not_found", "account_not_found", "account_deleted",
+        "delivery_asset_deleted", "delivery_asset_missing",
+        "delivery_asset_mismatch", "delivery_mismatch",
+    }:
+        raise HTTPException(409, "发布所需任务、账号或媒体尚未完整同步")
+    if error == "invalid_publish_request":
+        raise HTTPException(400, "发布请求不完整")
+    if error == "forbidden":
+        raise HTTPException(403, "无权发布该任务")
+    if error:
+        raise HTTPException(500, "发布失败，请稍后重试")
+    return {"ok": True, **result}
+
+
 @app.post("/api/custom-projects/{project_id}/unpublish")
 def custom_projects_unpublish(
     project_id: str,
@@ -10043,6 +10111,22 @@ def api_put(collection: str, req: PutReq, me=Depends(require_member)):
 def reconcile_delivery_sequences(me=Depends(require_admin)):
     """管理员受控执行一次历史发布编号校准。"""
     return {"ok": True, **store.reconcile_delivery_sequences()}
+
+
+@app.post("/api/admin/deliveries/recover-metrics")
+def recover_delivery_metrics(req: DeliveryMetricRecoveryReq, me=Depends(require_admin)):
+    """预览或执行明确清单内的历史指标恢复；不会改变日常后写覆盖语义。"""
+    try:
+        result = store.recover_delivery_asset_metrics(
+            [item.dict(exclude_none=True) for item in req.items],
+            me["id"],
+            apply=req.apply,
+        )
+    except ValueError as exc:
+        if str(exc) == "too_many_metric_recovery_items":
+            raise HTTPException(400, "单次最多恢复 1000 条交付指标")
+        raise
+    return {"ok": True, **result}
 
 
 @app.delete("/api/db/{collection}/{doc_id}")
@@ -10333,6 +10417,30 @@ def file_get(
     return _private_ranged_file_response(request, path, media_type=media)
 
 
+@app.get("/api/provider-media/upload/{name}")
+def provider_upload_get(
+    name: str,
+    request: Request,
+    expires: int,
+    sig: str,
+):
+    """Short-lived, read-only URL used only by configured upstream models."""
+
+    safe_name = Path(name).name
+    if safe_name != name or not store.validate_provider_media_signature(
+        "upload", safe_name, expires, sig,
+    ):
+        raise HTTPException(404, "媒体不存在或链接已失效")
+    path = _upload_path(safe_name)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, "媒体不存在或链接已失效")
+    return _private_ranged_file_response(
+        request,
+        path,
+        media_type=_media_type_for_path(path),
+    )
+
+
 @app.delete("/api/files/{name}")
 def file_delete(name: str, me=Depends(require_member)):
     path = _upload_path(name)
@@ -10539,6 +10647,25 @@ def platform_account_status_update(
         raise HTTPException(400, "账号状态只允许 active 或 disabled")
     if error:
         raise HTTPException(409, "账号状态更新失败")
+    return {"ok": True, "account": item}
+
+
+@app.post("/api/platform/accounts/{mid}/adopt")
+def platform_account_adopt(mid: str, me=Depends(require_team_manager)):
+    """Add an unowned creator account to the internal ACG team."""
+    if not _can_review_platform_registrations(me):
+        raise HTTPException(403, "仅 ACG 市场部管理员可拉入无主创作账号")
+    item, error = store.adopt_personal_member_into_internal_team(mid, me["id"])
+    if error == "not_found":
+        raise HTTPException(404, "创作端账号不存在")
+    if error == "not_creator":
+        raise HTTPException(403, "只能拉入普通创作端账号")
+    if error == "already_in_team":
+        raise HTTPException(409, "该账号已经加入团队")
+    if error == "forbidden":
+        raise HTTPException(403, "无权执行该操作")
+    if error:
+        raise HTTPException(409, "拉入团队失败")
     return {"ok": True, "account": item}
 
 
@@ -10758,6 +10885,10 @@ def supplier_asset_published_link(asset_id: str, req: SupplierPublishedLinkReq, 
         item, analytics_link, err = store.clear_supplier_asset_published_link(
             asset_id, me["id"], me["role"]
         )
+    elif req.noPublish:
+        item, analytics_link, err = store.mark_supplier_asset_no_publish(
+            asset_id, req.note, me["id"], me["role"]
+        )
     else:
         item, analytics_link, err = store.update_supplier_asset_published_link(
             asset_id, req.url, req.note, req.title, req.rawText, me["id"], me["role"]
@@ -10770,6 +10901,8 @@ def supplier_asset_published_link(asset_id: str, req: SupplierPublishedLinkReq, 
         raise HTTPException(400, "发布链接仅支持完整的 http:// 或 https:// 地址")
     if err == "not_delivered":
         raise HTTPException(400, "只能为已交付素材回传发布链接")
+    if err == "link_exists":
+        raise HTTPException(409, "当前素材已有发布链接，请先清除链接再标记无需发布")
     if err:
         raise HTTPException(404, "交付素材不存在")
     parent_id = me.get("parentId") or (me["id"] if me["role"] in {"supplier_parent", "supplier"} else "")
@@ -10777,10 +10910,10 @@ def supplier_asset_published_link(asset_id: str, req: SupplierPublishedLinkReq, 
         parent_id,
         me["id"] if me["role"] == "supplier_child" else "",
         me["id"],
-        "clear_link" if req.clear else "return_link",
+        "clear_link" if req.clear else ("no_publish" if req.noPublish else "return_link"),
         item.get("accountId") or "",
         asset_id,
-        "清除了回传发布链接" if req.clear else "回传或更新了发布链接",
+        "清除了回传发布链接" if req.clear else ("标记为无需发布" if req.noPublish else "回传或更新了发布链接"),
     )
     return {"ok": True, "asset": item, "analyticsLink": analytics_link}
 

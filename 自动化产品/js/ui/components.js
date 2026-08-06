@@ -101,8 +101,8 @@ export function promptModal({ title, placeholder = "", value = "", okText = "确
   });
 }
 
-/* 供应商回传链接：已有链接可直接清空，撤回当前回传状态。
-   确认 → { raw, note }；清除 → { clear: true }；取消 → null */
+/* 供应商回传链接：确认 → { raw, note }；无需发布 → { noPublish, note }；
+   清除 → { clear: true }；取消 → null。 */
 export function supplierReturnModal({ title = "回传发布链接", platform = "平台", value = "", note = "" } = {}) {
   return new Promise(res => {
     const ov = document.createElement("div");
@@ -117,6 +117,7 @@ export function supplierReturnModal({ title = "回传发布链接", platform = "
         </div>
         <div class="mp-foot">
           <button class="btn ghost" data-r="0">取消</button>
+          ${value ? "" : '<button class="btn ghost" data-r="no-publish">无需发布</button>'}
           ${value ? '<button class="btn danger" data-r="clear">清除链接</button>' : ""}
           <button class="btn primary" data-r="1">确认回传</button>
         </div>
@@ -139,6 +140,8 @@ export function supplierReturnModal({ title = "回传发布链接", platform = "
         if (!raw && value) return close({ clear: true });
         if (!raw) { toast("请先粘贴发布链接", "error"); $("#retRaw", ov).focus(); return; }
         close({ raw, note: $("#retNote", ov).value.trim() });
+      } else if (b.dataset.r === "no-publish") {
+        close({ noPublish: true, note: $("#retNote", ov).value.trim() });
       } else if (b.dataset.r === "clear") close({ clear: true });
       else close(null);
     });
