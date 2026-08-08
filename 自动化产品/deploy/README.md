@@ -174,6 +174,11 @@ snapshot ID 的备份与恢复；不得为了通过 readiness 删除来源未核
 `dereferenceInternalSymlinks` 都是精确契约。该解引用开关默认关闭，只有计划中的
 `model-cache` 和 `nginx-site` 必须显式为 `true`，其他组件开启或这两项关闭都会在 create
 前拒绝；该 production plan 自身也属于 runtime manifest 验签闭包。
+复制计划后，必须把 `runtime-env-v140.path` 改成两个 systemd unit 实际共同加载的
+`EnvironmentFile=` 绝对路径；只允许 `/data/dumate-studio/config` 下命名为
+`runtime-v140*.env` 的直接文件。create 会同时读取两个 unit 并要求其中的环境文件集合
+与计划精确一致；文件缺失、unit 指向不同版本或还加载了未纳入快照的环境文件都会
+fail closed。不得用同名旧配置或通用示例路径代替实际 systemd 配置。
 数据库、uploads、composed、canvas blobs、视频 runtime、BGM、模型缓存、现用环境、systemd
 和 Nginx 等必保组件不得缺失；只有计划中明确 `required=false` 的 legacy data、usage
 spool、server logs 或未启用的 v140 外部环境才可以以 `absent` 状态记录，仍不得从计划删除。

@@ -36,6 +36,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import stat
@@ -83,8 +84,7 @@ PRODUCTION_COMPLETE_COMPONENTS = {
     "runtime-env-public": ("file", True, ".env", False, False),
     "runtime-env-private": ("file", True, ".env.local", False, False),
     "runtime-env-v140": (
-        "file", False, "/data/dumate-studio/config/runtime-v140.env", True,
-        False,
+        "file", False, None, True, False,
     ),
     "systemd-main": (
         "file", True, "/etc/systemd/system/dumate-studio.service", True,
@@ -113,6 +113,10 @@ PRODUCTION_MEDIA_COMPONENTS = {
     "video-uploads",
     "video-outputs",
 }
+PRODUCTION_RUNTIME_ENV_ROOT = Path("/data/dumate-studio/config")
+PRODUCTION_RUNTIME_ENV_NAME_RE = re.compile(
+    r"^runtime-v140(?:-[A-Za-z0-9][A-Za-z0-9._-]{0,127})?\.env$"
+)
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
 
@@ -286,6 +290,99 @@ def _validate_production_component_contract(
                 raise SnapshotError(
                     f"production_profile_component_path_invalid:{name}"
                 )
+        elif name == "runtime-env-v140":
+            _validate_production_runtime_env_path(source)
+
+
+def _validate_production_runtime_env_path(source: Path) -> None:
+    """Allow only the versioned v140 environment file beside production config."""
+
+    source = _lexical_absolute(source)
+    allowed_root = _lexical_absolute(PRODUCTION_RUNTIME_ENV_ROOT)
+    if (
+        source.parent != allowed_root
+        or not PRODUCTION_RUNTIME_ENV_NAME_RE.fullmatch(source.name)
+    ):
+        raise SnapshotError(
+            "production_profile_component_path_invalid:runtime-env-v140"
+        )
+
+
+def _systemd_environment_files(path: Path, component: str) -> set[Path]:
+    try:
+        raw_lines = path.read_text("utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise SnapshotError(
+            f"production_profile_systemd_unit_unreadable:{component}"
+        ) from exc
+
+    logical_lines: list[str] = []
+    pending = ""
+    for raw_line in raw_lines:
+        stripped = raw_line.strip()
+        if pending:
+            stripped = pending + stripped
+        if stripped.endswith("\\"):
+            pending = stripped[:-1]
+            continue
+        logical_lines.append(stripped)
+        pending = ""
+    if pending:
+        raise SnapshotError(
+            f"production_profile_systemd_unit_invalid:{component}"
+        )
+
+    paths: set[Path] = set()
+    for line in logical_lines:
+        if not line or line.startswith(("#", ";")):
+            continue
+        key, separator, value = line.partition("=")
+        if separator != "=" or key.strip() != "EnvironmentFile":
+            continue
+        try:
+            entries = shlex.split(value, posix=True)
+        except ValueError as exc:
+            raise SnapshotError(
+                f"production_profile_systemd_unit_invalid:{component}"
+            ) from exc
+        if not entries:
+            raise SnapshotError(
+                f"production_profile_systemd_unit_invalid:{component}"
+            )
+        for entry in entries:
+            candidate = entry[1:] if entry.startswith("-") else entry
+            path_value = Path(candidate)
+            if not path_value.is_absolute():
+                raise SnapshotError(
+                    f"production_profile_systemd_environment_invalid:{component}"
+                )
+            paths.add(_lexical_absolute(path_value))
+    return paths
+
+
+def _validate_production_systemd_environment_binding(
+    components: list[dict],
+) -> None:
+    by_name = {str(item.get("name") or ""): item for item in components}
+    required_names = {"runtime-env-v140", "systemd-main", "systemd-video"}
+    if not required_names.issubset(by_name):
+        return
+
+    runtime_env = by_name["runtime-env-v140"]
+    runtime_path = _lexical_absolute(Path(str(runtime_env.get("path") or "")))
+    _validate_production_runtime_env_path(runtime_path)
+    content_path = Path(str(runtime_env.get("contentPath") or ""))
+    if not content_path.is_file():
+        raise SnapshotError("production_profile_runtime_environment_missing")
+
+    expected = {runtime_path}
+    for component in ("systemd-main", "systemd-video"):
+        unit_path = Path(str(by_name[component].get("contentPath") or ""))
+        actual = _systemd_environment_files(unit_path, component)
+        if actual != expected:
+            raise SnapshotError(
+                f"production_profile_systemd_environment_mismatch:{component}"
+            )
 
 
 def _media_inventory_digest_from_components(components: list[dict]) -> str:
@@ -405,6 +502,7 @@ def _validate_plan(plan: dict, persistent_root: Path) -> list[dict]:
             persistent_root,
             snapshot=False,
         )
+        _validate_production_systemd_environment_binding(components)
     return components
 
 

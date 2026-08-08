@@ -587,6 +587,104 @@ class RuntimeSnapshotTests(unittest.TestCase):
                     absent, persistent, snapshot=True
                 )
 
+    def test_production_runtime_environment_path_is_config_scoped(self):
+        module = load_module()
+        module._validate_production_runtime_env_path(
+            Path("/data/dumate-studio/config/runtime-v140-0d690d6.env")
+        )
+        module._validate_production_runtime_env_path(
+            Path("/data/dumate-studio/config/runtime-v140.env")
+        )
+        for path in (
+            Path("/tmp/runtime-v140.env"),
+            Path("/data/dumate-studio/config/runtime-v139.env"),
+            Path("/data/dumate-studio/config/nested/runtime-v140.env"),
+        ):
+            with self.subTest(path=path), self.assertRaisesRegex(
+                module.SnapshotError, "path_invalid:runtime-env-v140"
+            ):
+                module._validate_production_runtime_env_path(path)
+
+    def test_production_profile_binds_both_systemd_units_to_snapshotted_env(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config"
+            config.mkdir()
+            runtime_env = config / "runtime-v140-release.env"
+            runtime_env.write_text("ACG_ENV=production\n", encoding="utf-8")
+            main_unit = root / "main.service"
+            video_unit = root / "video.service"
+            for unit in (main_unit, video_unit):
+                unit.write_text(
+                    "[Service]\nEnvironmentFile=-"
+                    f"{runtime_env}\n",
+                    encoding="utf-8",
+                )
+            components = [
+                {
+                    "name": "runtime-env-v140",
+                    "path": runtime_env,
+                    "contentPath": runtime_env,
+                },
+                {
+                    "name": "systemd-main",
+                    "contentPath": main_unit,
+                },
+                {
+                    "name": "systemd-video",
+                    "contentPath": video_unit,
+                },
+            ]
+            with patch.object(module, "PRODUCTION_RUNTIME_ENV_ROOT", config):
+                module._validate_production_systemd_environment_binding(components)
+                video_unit.write_text(
+                    "[Service]\nEnvironmentFile=/wrong/runtime.env\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    module.SnapshotError,
+                    "systemd_environment_mismatch:systemd-video",
+                ):
+                    module._validate_production_systemd_environment_binding(
+                        components
+                    )
+
+    def test_production_profile_rejects_absent_snapshotted_runtime_env(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "config"
+            config.mkdir()
+            runtime_env = config / "runtime-v140-release.env"
+            main_unit = root / "main.service"
+            main_unit.write_text(
+                f"[Service]\nEnvironmentFile={runtime_env}\n",
+                encoding="utf-8",
+            )
+            components = [
+                {
+                    "name": "runtime-env-v140",
+                    "path": runtime_env,
+                    "contentPath": runtime_env,
+                },
+                {
+                    "name": "systemd-main",
+                    "contentPath": main_unit,
+                },
+                {
+                    "name": "systemd-video",
+                    "contentPath": main_unit,
+                },
+            ]
+            with patch.object(module, "PRODUCTION_RUNTIME_ENV_ROOT", config):
+                with self.assertRaisesRegex(
+                    module.SnapshotError, "runtime_environment_missing"
+                ):
+                    module._validate_production_systemd_environment_binding(
+                        components
+                    )
+
     def test_media_inventory_digest_changes_on_same_size_same_mtime_content_drift(self):
         module = load_module()
         components = [
