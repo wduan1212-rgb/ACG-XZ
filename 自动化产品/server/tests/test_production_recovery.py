@@ -274,6 +274,7 @@ class ProductionRecoveryTest(unittest.TestCase):
         self._member("adoption-user", role="editor")
         joined_at = int(time.time() * 1000) + 60_000
         captured_at = joined_at - 1_000
+        post_join_at = joined_at + 1_000
         with store._connect() as conn:
             conn.execute(
                 "INSERT INTO teams(id,name,slug,kind,status,plan,quota_mode,created_at) "
@@ -310,8 +311,54 @@ class ProductionRecoveryTest(unittest.TestCase):
                 "'server-asset','prejoin-asset',?,?)",
                 (captured_at, captured_at),
             )
+            post_join_payload = {
+                "id": "postjoin-team-asset", "ownerId": "adoption-user",
+                "name": "加入团队后正常创建的团队资产",
+            }
+            conn.execute(
+                "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                "VALUES('assets','postjoin-team-asset','adoption-user',?,?)",
+                (
+                    post_join_at,
+                    json.dumps(post_join_payload, ensure_ascii=False),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO resource_scopes(resource_kind,resource_id,scope_type,"
+                "scope_id,owner_id,provenance,captured_at,updated_at) "
+                "VALUES('doc:assets','postjoin-team-asset','team','team-adopt',"
+                "'adoption-user','normal-team-write',?,?)",
+                (post_join_at, post_join_at),
+            )
+            conn.execute(
+                "INSERT INTO private_media_registry(media_kind,media_key,owner_id,"
+                "team_id,provenance_kind,provenance_id,created_at,updated_at) "
+                "VALUES('upload','adoption-user--postjoin.png','adoption-user',"
+                "'team-adopt','server-asset','postjoin-team-asset',?,?)",
+                (post_join_at, post_join_at),
+            )
             conn.commit()
 
+        with store._connect(read_only=True) as conn:
+            member_plan = store._personal_tenant_adoption_plan_locked(
+                conn, "adoption-user", "team-adopt",
+            )
+        self.assertEqual(
+            [("doc:assets", "prejoin-asset")],
+            member_plan["personalScopes"],
+        )
+        self.assertEqual(
+            [("upload", "adoption-user--prejoin.png")],
+            member_plan["personalMedia"],
+        )
+        self.assertEqual(
+            [("doc:assets", "postjoin-team-asset")],
+            member_plan["alreadyTeamScopes"],
+        )
+        self.assertEqual(
+            [("upload", "adoption-user--postjoin.png")],
+            member_plan["alreadyTeamMedia"],
+        )
         preview = self._call(
             production_recovery.settle_tenant_adoptions, dry_run=True,
         )
@@ -330,14 +377,121 @@ class ProductionRecoveryTest(unittest.TestCase):
                 "SELECT team_id FROM private_media_registry "
                 "WHERE media_kind='upload' AND media_key='adoption-user--prejoin.png'"
             ).fetchone()[0]
+            post_join_scope = conn.execute(
+                "SELECT scope_type,scope_id,provenance FROM resource_scopes "
+                "WHERE resource_kind='doc:assets' "
+                "AND resource_id='postjoin-team-asset'"
+            ).fetchone()
+            post_join_media = conn.execute(
+                "SELECT team_id,provenance_kind FROM private_media_registry "
+                "WHERE media_kind='upload' "
+                "AND media_key='adoption-user--postjoin.png'"
+            ).fetchone()
         self.assertEqual(("team", "team-adopt"), scope)
         self.assertEqual("team-adopt", media_team)
+        self.assertEqual(
+            ("team", "team-adopt", "normal-team-write"), post_join_scope,
+        )
+        self.assertEqual(("team-adopt", "server-asset"), post_join_media)
         before = logical_database_dump(store.DB_PATH)
         replay = self._call(
             production_recovery.settle_tenant_adoptions, dry_run=False,
         )
         self.assertFalse(replay["applied"])
         self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+    def test_historical_team_adoption_rejects_postjoin_personal_media(self):
+        self._member("late-media-user", role="editor")
+        joined_at = int(time.time() * 1000)
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO teams(id,name,slug,kind,status,plan,quota_mode,created_at) "
+                "VALUES('late-media-team','团队','late-media-team','customer',"
+                "'active','team','shared',?)",
+                (joined_at - 1,),
+            )
+            conn.execute(
+                "INSERT INTO team_members(team_id,member_id,team_role,status,"
+                "joined_at,added_by) VALUES('late-media-team','late-media-user',"
+                "'creator','active',?,'owner')",
+                (joined_at,),
+            )
+            conn.execute(
+                "INSERT INTO private_media_registry(media_kind,media_key,owner_id,"
+                "team_id,provenance_kind,provenance_id,created_at,updated_at) "
+                "VALUES('upload','late-media-user--late.png','late-media-user','',"
+                "'server-asset','late-media',?,?)",
+                (joined_at + 1, joined_at + 1),
+            )
+            conn.commit()
+        with store._connect(read_only=True) as conn:
+            with self.assertRaisesRegex(
+                store.StoreNotReadyError,
+                "tenant adoption media was created after team join",
+            ):
+                store._personal_tenant_adoption_plan_locked(
+                    conn, "late-media-user", "late-media-team",
+                )
+
+    def test_historical_team_adoption_rejects_wrong_team_resource_and_media(self):
+        for suffix, wrong_kind in (("resource", "resource"), ("media", "media")):
+            member_id = f"wrong-team-{suffix}-user"
+            target_team = f"target-{suffix}-team"
+            wrong_team = f"other-{suffix}-team"
+            self._member(member_id, role="editor")
+            joined_at = int(time.time() * 1000)
+            with store._connect() as conn:
+                for team_id in (target_team, wrong_team):
+                    conn.execute(
+                        "INSERT INTO teams(id,name,slug,kind,status,plan,quota_mode,"
+                        "created_at) VALUES(?,?,?,?, 'active','team','shared',?)",
+                        (team_id, team_id, team_id, "customer", joined_at - 1),
+                    )
+                conn.execute(
+                    "INSERT INTO team_members(team_id,member_id,team_role,status,"
+                    "joined_at,added_by) VALUES(?,?, 'creator','active',?,'owner')",
+                    (target_team, member_id, joined_at),
+                )
+                if wrong_kind == "resource":
+                    payload = json.dumps(
+                        {"id": f"wrong-{suffix}-asset", "ownerId": member_id},
+                        ensure_ascii=False,
+                    )
+                    conn.execute(
+                        "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                        "VALUES('assets',?,?,?,?)",
+                        (f"wrong-{suffix}-asset", member_id, joined_at + 1, payload),
+                    )
+                    conn.execute(
+                        "INSERT INTO resource_scopes(resource_kind,resource_id,"
+                        "scope_type,scope_id,owner_id,provenance,captured_at,updated_at) "
+                        "VALUES('doc:assets',?,'team',?,?, 'wrong-team',?,?)",
+                        (
+                            f"wrong-{suffix}-asset", wrong_team, member_id,
+                            joined_at + 1, joined_at + 1,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO private_media_registry(media_kind,media_key,"
+                        "owner_id,team_id,provenance_kind,provenance_id,created_at,"
+                        "updated_at) VALUES('upload',?,?,?,'server-asset','wrong',?,?)",
+                        (
+                            f"{member_id}--wrong.png", member_id, wrong_team,
+                            joined_at + 1, joined_at + 1,
+                        ),
+                    )
+                conn.commit()
+            expected = (
+                "tenant adoption resource scope conflicts"
+                if wrong_kind == "resource"
+                else "tenant adoption private media team conflicts"
+            )
+            with self.subTest(kind=wrong_kind), store._connect(read_only=True) as conn:
+                with self.assertRaisesRegex(store.StoreNotReadyError, expected):
+                    store._personal_tenant_adoption_plan_locked(
+                        conn, member_id, target_team,
+                    )
 
     def _historical_evidence(self, owner_id, media_key, stored_name):
         snapshot_root = self.root / "historical-snapshot"

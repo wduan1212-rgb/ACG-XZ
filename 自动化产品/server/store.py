@@ -9045,10 +9045,12 @@ def _personal_tenant_adoption_plan_locked(conn, member_id, team_id):
             raise StoreNotReadyError("tenant adoption document identity conflicts")
         if not (str(scope_owner or "") == member or str(doc_owner or "") == member or member in claimed):
             raise StoreNotReadyError("tenant adoption document ownership is unproven")
-        if joined_at and int(captured_at or 0) > joined_at:
-            raise StoreNotReadyError("tenant adoption resource was created after team join")
         current = (str(scope_type), str(scope_id))
         if current == ("member", member):
+            if joined_at and int(captured_at or 0) > joined_at:
+                raise StoreNotReadyError(
+                    "tenant adoption resource was created after team join"
+                )
             personal_scopes.append((str(kind), str(resource_id)))
         elif current == ("team", target_team):
             already_team_scopes.append((str(kind), str(resource_id)))
@@ -9064,9 +9066,11 @@ def _personal_tenant_adoption_plan_locked(conn, member_id, team_id):
     ).fetchall():
         team = str(stored_team or "")
         identity = (str(kind), str(key))
-        if joined_at and int(created_at or 0) > joined_at:
-            raise StoreNotReadyError("tenant adoption media was created after team join")
         if not team:
+            if joined_at and int(created_at or 0) > joined_at:
+                raise StoreNotReadyError(
+                    "tenant adoption media was created after team join"
+                )
             personal_media.append(identity)
         elif team == target_team:
             already_team_media.append(identity)

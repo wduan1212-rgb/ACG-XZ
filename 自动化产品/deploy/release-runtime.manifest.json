@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260809-v140-production-recovery-1",
   "fileCount": 58,
-  "totalBytes": 2899648,
+  "totalBytes": 2899740,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -286,8 +286,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 821230,
-      "sha256": "86e6cf7c1120d4942b58abf61320469681257686ec316df71927bc696b529b34"
+      "size": 821322,
+      "sha256": "553d7f508d56317341c1e2b7e75ad3d81388e9d57d959af9c1262afd2e1c1a92"
     },
     {
       "path": "tools/verify_release_contracts.py",
