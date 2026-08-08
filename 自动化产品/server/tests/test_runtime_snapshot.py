@@ -72,6 +72,8 @@ class RuntimeSnapshotTests(unittest.TestCase):
                 "runtime-env-v140",
                 "systemd-main",
                 "systemd-video",
+                "systemd-main-dropins",
+                "systemd-video-dropins",
                 "nginx-site",
             }.issubset(production_names)
         )
@@ -615,6 +617,16 @@ class RuntimeSnapshotTests(unittest.TestCase):
             runtime_env.write_text("ACG_ENV=production\n", encoding="utf-8")
             main_unit = root / "main.service"
             video_unit = root / "video.service"
+            main_dropins = root / "main.service.d"
+            video_dropins = root / "video.service.d"
+            main_dropins.mkdir()
+            video_dropins.mkdir()
+            (main_dropins / "limits.conf").write_text(
+                "[Service]\nRestart=on-failure\n", encoding="utf-8"
+            )
+            (video_dropins / "model.conf").write_text(
+                "[Service]\nEnvironment=MODEL_SOURCE=local\n", encoding="utf-8"
+            )
             for unit in (main_unit, video_unit):
                 unit.write_text(
                     "[Service]\nEnvironmentFile=-"
@@ -635,6 +647,14 @@ class RuntimeSnapshotTests(unittest.TestCase):
                     "name": "systemd-video",
                     "contentPath": video_unit,
                 },
+                {
+                    "name": "systemd-main-dropins",
+                    "contentPath": main_dropins,
+                },
+                {
+                    "name": "systemd-video-dropins",
+                    "contentPath": video_dropins,
+                },
             ]
             with patch.object(module, "PRODUCTION_RUNTIME_ENV_ROOT", config):
                 module._validate_production_systemd_environment_binding(components)
@@ -649,6 +669,21 @@ class RuntimeSnapshotTests(unittest.TestCase):
                     module._validate_production_systemd_environment_binding(
                         components
                     )
+                video_unit.write_text(
+                    f"[Service]\nEnvironmentFile={runtime_env}\n",
+                    encoding="utf-8",
+                )
+                (video_dropins / "override.conf").write_text(
+                    f"[Service]\nEnvironmentFile={runtime_env}\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    module.SnapshotError,
+                    "environment_override_unsupported:systemd-video",
+                ):
+                    module._validate_production_systemd_environment_binding(
+                        components
+                    )
 
     def test_production_profile_rejects_absent_snapshotted_runtime_env(self):
         module = load_module()
@@ -658,6 +693,8 @@ class RuntimeSnapshotTests(unittest.TestCase):
             config.mkdir()
             runtime_env = config / "runtime-v140-release.env"
             main_unit = root / "main.service"
+            dropins = root / "unit.service.d"
+            dropins.mkdir()
             main_unit.write_text(
                 f"[Service]\nEnvironmentFile={runtime_env}\n",
                 encoding="utf-8",
@@ -676,6 +713,14 @@ class RuntimeSnapshotTests(unittest.TestCase):
                     "name": "systemd-video",
                     "contentPath": main_unit,
                 },
+                {
+                    "name": "systemd-main-dropins",
+                    "contentPath": dropins,
+                },
+                {
+                    "name": "systemd-video-dropins",
+                    "contentPath": dropins,
+                },
             ]
             with patch.object(module, "PRODUCTION_RUNTIME_ENV_ROOT", config):
                 with self.assertRaisesRegex(
@@ -684,6 +729,48 @@ class RuntimeSnapshotTests(unittest.TestCase):
                     module._validate_production_systemd_environment_binding(
                         components
                     )
+
+    def test_production_profile_allows_only_declared_external_directories(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            persistent = root / "persistent"
+            persistent.mkdir()
+            database = persistent / "data.sqlite"
+            with sqlite3.connect(database) as conn:
+                conn.execute("CREATE TABLE records(id INTEGER PRIMARY KEY)")
+            dropins = root / "unit.service.d"
+            dropins.mkdir()
+            (dropins / "runtime.conf").write_text(
+                "[Service]\nRestart=on-failure\n", encoding="utf-8"
+            )
+            contract = {
+                "database": ("sqlite", True, "data.sqlite", False, False),
+                "systemd-main-dropins": (
+                    "directory", True, str(dropins), True, False,
+                ),
+            }
+            plan = {
+                "format": module.PLAN_FORMAT,
+                "profile": module.PRODUCTION_COMPLETE_PROFILE,
+                "releaseId": "release",
+                "components": [
+                    {
+                        "name": "database",
+                        "type": "sqlite",
+                        "path": str(database),
+                    },
+                    {
+                        "name": "systemd-main-dropins",
+                        "type": "directory",
+                        "path": str(dropins),
+                        "allowOutsidePersistentRoot": True,
+                    },
+                ],
+            }
+            with patch.object(module, "PRODUCTION_COMPLETE_COMPONENTS", contract):
+                validated = module._validate_plan(plan, persistent)
+            self.assertEqual(2, len(validated))
 
     def test_media_inventory_digest_changes_on_same_size_same_mtime_content_drift(self):
         module = load_module()

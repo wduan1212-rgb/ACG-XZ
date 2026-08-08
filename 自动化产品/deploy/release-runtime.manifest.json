@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260808-v140-platform-stability-15",
   "fileCount": 56,
-  "totalBytes": 2764206,
+  "totalBytes": 2766415,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -181,8 +181,8 @@
     },
     {
       "path": "deploy/runtime-snapshot.production-v120.plan.example.json",
-      "size": 2892,
-      "sha256": "55aff86d72fc0e42d85b5678bc165e3e1a6e83a8067812836ac3bc93b36f4079"
+      "size": 3268,
+      "sha256": "6c1976ace576b522faa83fa47c8ecf287981a9b137d1f25f274af4f1a6ad0dc2"
     },
     {
       "path": "deploy/start_server.sh",
@@ -271,8 +271,8 @@
     },
     {
       "path": "server/scripts/runtime_snapshot.py",
-      "size": 47192,
-      "sha256": "40d74e8626e287e57246fd611a855c3f3977716b28fafd45e0f1245dddefdde9"
+      "size": 49025,
+      "sha256": "9ae7705a3456add4aed03b57d1cb0a853c2c0faf308d2c8d247ad9fd4d082058"
     },
     {
       "path": "server/store.py",

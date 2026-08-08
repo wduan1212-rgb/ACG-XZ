@@ -179,6 +179,11 @@ snapshot ID 的备份与恢复；不得为了通过 readiness 删除来源未核
 `runtime-v140*.env` 的直接文件。create 会同时读取两个 unit 并要求其中的环境文件集合
 与计划精确一致；文件缺失、unit 指向不同版本或还加载了未纳入快照的环境文件都会
 fail closed。不得用同名旧配置或通用示例路径代替实际 systemd 配置。
+两个 unit 的完整 `.service.d` drop-in 目录也属于必保组件；production profile 仅为这
+两个精确目录开放外部 directory 边界。create 会检查其中所有 `.conf` 都是普通文件，
+并拒绝任何未建模的 `EnvironmentFile=` 覆盖，避免只备份 base unit 却遗漏实际
+WorkingDirectory、ExecStart 或环境覆盖。目录中的其他 systemd 覆盖会随同快照、验签和
+restore-drill 一起保留。
 数据库、uploads、composed、canvas blobs、视频 runtime、BGM、模型缓存、现用环境、systemd
 和 Nginx 等必保组件不得缺失；只有计划中明确 `required=false` 的 legacy data、usage
 spool、server logs 或未启用的 v140 外部环境才可以以 `absent` 状态记录，仍不得从计划删除。

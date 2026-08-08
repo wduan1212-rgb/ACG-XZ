@@ -97,6 +97,18 @@
       "allowOutsidePersistentRoot": true
     },
     {
+      "name": "systemd-main-dropins",
+      "type": "directory",
+      "path": "/etc/systemd/system/dumate-studio.service.d",
+      "allowOutsidePersistentRoot": true
+    },
+    {
+      "name": "systemd-video-dropins",
+      "type": "directory",
+      "path": "/etc/systemd/system/dumate-studio-video-workshop.service.d",
+      "allowOutsidePersistentRoot": true
+    },
+    {
       "name": "nginx-site",
       "type": "file",
       "path": "/etc/nginx/sites-enabled/xingzhenworld.com",

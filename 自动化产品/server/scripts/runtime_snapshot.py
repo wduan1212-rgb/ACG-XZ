@@ -95,6 +95,15 @@ PRODUCTION_COMPLETE_COMPONENTS = {
         "/etc/systemd/system/dumate-studio-video-workshop.service", True,
         False,
     ),
+    "systemd-main-dropins": (
+        "directory", True,
+        "/etc/systemd/system/dumate-studio.service.d", True, False,
+    ),
+    "systemd-video-dropins": (
+        "directory", True,
+        "/etc/systemd/system/dumate-studio-video-workshop.service.d", True,
+        False,
+    ),
     "nginx-site": (
         "file", True, "/etc/nginx/sites-enabled/xingzhenworld.com", True,
         True,
@@ -364,7 +373,13 @@ def _validate_production_systemd_environment_binding(
     components: list[dict],
 ) -> None:
     by_name = {str(item.get("name") or ""): item for item in components}
-    required_names = {"runtime-env-v140", "systemd-main", "systemd-video"}
+    required_names = {
+        "runtime-env-v140",
+        "systemd-main",
+        "systemd-video",
+        "systemd-main-dropins",
+        "systemd-video-dropins",
+    }
     if not required_names.issubset(by_name):
         return
 
@@ -376,13 +391,36 @@ def _validate_production_systemd_environment_binding(
         raise SnapshotError("production_profile_runtime_environment_missing")
 
     expected = {runtime_path}
-    for component in ("systemd-main", "systemd-video"):
+    unit_dropins = {
+        "systemd-main": "systemd-main-dropins",
+        "systemd-video": "systemd-video-dropins",
+    }
+    for component, dropin_component in unit_dropins.items():
         unit_path = Path(str(by_name[component].get("contentPath") or ""))
         actual = _systemd_environment_files(unit_path, component)
         if actual != expected:
             raise SnapshotError(
                 f"production_profile_systemd_environment_mismatch:{component}"
             )
+        dropin_root = Path(
+            str(by_name[dropin_component].get("contentPath") or "")
+        )
+        if not dropin_root.is_dir():
+            raise SnapshotError(
+                f"production_profile_systemd_dropins_missing:{component}"
+            )
+        for dropin in sorted(dropin_root.iterdir(), key=lambda path: path.name):
+            if not dropin.name.endswith(".conf"):
+                continue
+            if dropin.is_symlink() or not dropin.is_file():
+                raise SnapshotError(
+                    f"production_profile_systemd_dropin_invalid:{component}"
+                )
+            if _systemd_environment_files(dropin, component):
+                raise SnapshotError(
+                    "production_profile_systemd_environment_override_unsupported:"
+                    f"{component}"
+                )
 
 
 def _media_inventory_digest_from_components(components: list[dict]) -> str:
@@ -473,7 +511,18 @@ def _validate_plan(plan: dict, persistent_root: Path) -> list[dict]:
             content_path = source.resolve(strict=False)
         allow_outside = raw.get("allowOutsidePersistentRoot") is True
         if not _within(content_path, persistent_root):
-            if not (allow_outside and kind == "file"):
+            production_external_directory = (
+                profile == PRODUCTION_COMPLETE_PROFILE
+                and kind == "directory"
+                and allow_outside
+                and name in PRODUCTION_COMPLETE_COMPONENTS
+                and PRODUCTION_COMPLETE_COMPONENTS[name][0] == "directory"
+                and PRODUCTION_COMPLETE_COMPONENTS[name][3] is True
+            )
+            if not (
+                allow_outside
+                and (kind == "file" or production_external_directory)
+            ):
                 raise SnapshotError(f"plan_component_outside_persistent_root:{name}")
         required = raw.get("required", True) is not False
         if required and not content_path.exists():
