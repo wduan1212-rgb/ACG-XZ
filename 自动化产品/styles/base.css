@@ -1924,7 +1924,8 @@ body.workspace-shell-v2 .wsctx-row-shell.is-menu-open {
   background: #efefec;
 }
 body.workspace-shell-v2 .wsctx-canvas-project-shell.is-active,
-body.workspace-shell-v2 .wsctx-video-project-shell.is-active {
+body.workspace-shell-v2 .wsctx-video-project-shell.is-active,
+body.workspace-shell-v2 .wsctx-batch-session-shell.is-active {
   background: #e8e8e5;
 }
 body.workspace-shell-v2 .wsctx-canvas-project-shell.is-active::before {
@@ -1988,6 +1989,12 @@ body.workspace-shell-v2 .wsctx-row-more {
   pointer-events: none;
   cursor: pointer;
   transition: opacity 140ms ease, color 140ms ease, background 140ms ease;
+}
+/* 批量生产是用户频繁管理的会话列表，更多操作必须直接可见，
+   不能依赖鼠标悬停（触屏上根本没有 hover）。 */
+body.workspace-shell-v2 .wsctx-batch-session-shell .wsctx-row-more {
+  opacity: 1;
+  pointer-events: auto;
 }
 body.workspace-shell-v2 .wsctx-row-shell:hover .wsctx-row-more,
 body.workspace-shell-v2 .wsctx-row-shell:focus-within .wsctx-row-more,

@@ -696,6 +696,29 @@ async function remoteFileU8(url, { deliveryId = "", label = "视频成片" } = {
   }
 }
 
+/* 供应商只能经由自己可见的具体交付读取私有媒体。缩略图和预览与 ZIP 下载
+   使用同一条 delivery-linked 授权链路；创作端与外部公开地址保持原样。 */
+export function deliveryScopedMediaUrl(url, deliveryId, role = state.role) {
+  const raw = String(url || "").trim();
+  const did = String(deliveryId || "").trim();
+  if (!raw || !did || !SUPPLIER_ROLES.has(String(role || ""))) return raw;
+  try {
+    const origin = String(globalThis.location?.origin || "http://local.invalid");
+    const scoped = new URL(raw, origin);
+    const sameOrigin = scoped.origin === origin;
+    const deliveryLinkedPath = scoped.pathname.startsWith("/api/files/")
+      || scoped.pathname.startsWith("/api/video/composed/")
+      || scoped.pathname.startsWith("/custom-video/outputs/");
+    if (!sameOrigin || !deliveryLinkedPath) return raw;
+    scoped.searchParams.set("deliveryId", did);
+    return /^https?:\/\//i.test(raw)
+      ? scoped.href
+      : `${scoped.pathname}${scoped.search}${scoped.hash}`;
+  } catch (_) {
+    return raw;
+  }
+}
+
 export async function deliveryEntries(asset, folder = "") {
   asset = syncDeliveryAssetSnapshot(asset);
   const base = folder ? safeName(folder) + "/" : "";

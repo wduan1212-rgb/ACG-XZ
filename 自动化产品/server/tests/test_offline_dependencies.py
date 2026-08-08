@@ -101,6 +101,7 @@ class OfflineDependencyTests(unittest.TestCase):
         self.assertIn("requirements-test.lock.txt", script)
         self.assertIn("Secret-free test refused", script)
         self.assertIn("env -i", script)
+        self.assertIn("lsof", script)
         self.assertIn("run_server_unittest_suite.py", script)
         suite_runner = (
             APP_DIR / "tools" / "run_server_unittest_suite.py"

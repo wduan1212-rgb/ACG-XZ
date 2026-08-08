@@ -5,7 +5,7 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, currentTeam, hasEntitlement, canManageAccounts, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260806-v140-platform-stability-5";
+import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260808-v140-platform-stability-15";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
@@ -16,30 +16,30 @@ import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountPro
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260727-v118-7";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260806-v140-platform-stability-5";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260808-v140-platform-stability-15";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
-import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260806-v140-platform-stability-5";
+import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260808-v140-platform-stability-15";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
-import { initLoginBeams } from "./ui/loginBeams.js?v=20260806-v140-platform-stability-5";
+import { initLoginBeams } from "./ui/loginBeams.js?v=20260808-v140-platform-stability-15";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
-import { overviewView } from "./views/overview.js?v=20260806-v140-platform-stability-5";
-import { homeView } from "./views/home.js?v=20260806-v140-platform-stability-5";
-import { subscriptionView } from "./views/subscription.js?v=20260806-v140-platform-stability-5";
-import { voiceLabView } from "./views/voiceLab.js?v=20260806-v140-platform-stability-5";
-import { customCreationView } from "./views/customCreation.js?v=20260806-v140-platform-stability-5";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260806-v140-platform-stability-5";
-import { studioView } from "./views/studio.js?v=20260806-v140-platform-stability-5";
-import { assetsView } from "./views/assetsView.js?v=20260806-v140-platform-stability-5";
-import { deliveryView } from "./views/deliveryView.js?v=20260806-v140-platform-stability-5";
+import { overviewView } from "./views/overview.js?v=20260808-v140-platform-stability-15";
+import { homeView } from "./views/home.js?v=20260808-v140-platform-stability-15";
+import { subscriptionView } from "./views/subscription.js?v=20260808-v140-platform-stability-15";
+import { voiceLabView } from "./views/voiceLab.js?v=20260808-v140-platform-stability-15";
+import { customCreationView } from "./views/customCreation.js?v=20260808-v140-platform-stability-15";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260808-v140-platform-stability-15";
+import { studioView } from "./views/studio.js?v=20260808-v140-platform-stability-15";
+import { assetsView } from "./views/assetsView.js?v=20260808-v140-platform-stability-15";
+import { deliveryView } from "./views/deliveryView.js?v=20260808-v140-platform-stability-15";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js?v=20260806-v140-platform-stability-5";
-import { settingsView } from "./views/settings.js?v=20260806-v140-platform-stability-5";
+import { draftsView } from "./views/draftsView.js?v=20260808-v140-platform-stability-15";
+import { settingsView } from "./views/settings.js?v=20260808-v140-platform-stability-15";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260806-v140-platform-stability-5";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260808-v140-platform-stability-15";
 import { productionsOf } from "./domain/productions.js";
 
-const APP_BUILD_ID = "20260806-v140-platform-stability-5";
+const APP_BUILD_ID = "20260808-v140-platform-stability-15";
 const GUEST_MEMBER_ID = "guest-local-preview";
 const GUEST_MEMBER = Object.freeze({
   id: GUEST_MEMBER_ID,
@@ -641,7 +641,10 @@ function hydrationCollectionsForView(zone) {
   if (zone === "assets" || zone === "delivery") return ["assets"];
   if (zone === "drafts") return ["productions"];
   if (zone === "analytics") return ["assets", "analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory"];
-  if (zone === "agent") return ["productions", "sessions", "batches", "jobs", "assets"];
+  // 批量工作台只用生产、会话、批次和任务恢复当前上下文。
+  // 资产只服务参考图和预览，继续在后台水合，不应阻塞刷新后打开会话。
+  // job 轮询在 production 到达后继续后台水合，不再阻塞批量工作台首屏。
+  if (zone === "agent") return ["productions", "sessions", "batches"];
   if (zone === "studio") return ["productions", "jobs", "assets"];
   return [];
 }
@@ -689,6 +692,7 @@ function recordFirstRender(startedAt, source) {
 
 function continueRemoteHydration(member, alreadyComplete = false) {
   let batchCollectionsRecovered = false;
+  const batchCollectionsReady = new Set();
   const run = alreadyComplete
     ? Promise.resolve(true)
     : hydrateRemoteInBackground({
@@ -699,9 +703,10 @@ function continueRemoteHydration(member, alreadyComplete = false) {
             return;
           }
           const collections = new Set(progress?.collections || []);
+          collections.forEach(name => batchCollectionsReady.add(name));
           if (
             !batchCollectionsRecovered
-            && ["productions", "batches", "jobs"].every(name => collections.has(name))
+            && ["productions", "sessions", "batches", "jobs"].every(name => batchCollectionsReady.has(name))
           ) {
             batchCollectionsRecovered = true;
             resumeJobs();
@@ -1703,13 +1708,14 @@ function canvasProjectContextRow(project, resourceId) {
 }
 
 function batchSessionContextRow(session) {
+  const active = session.id === state.ui.activeSessionId;
   return `
-    <div class="wsctx-row-shell" data-session-shell="batch" data-session-id="${esc(session.id)}">
+    <div class="wsctx-row-shell wsctx-batch-session-shell${active ? " is-active" : ""}" data-session-shell="batch" data-session-id="${esc(session.id)}">
       ${contextRow({
         title: session.title || "新量产计划",
         zone: "agent",
         id: session.id,
-        active: session.id === state.ui.activeSessionId,
+        active,
         className: `wsctx-batch-session${session.favorite ? " is-favorite" : ""}`,
         attrs: session.favorite ? `data-session-favorite="true"` : ""
       })}

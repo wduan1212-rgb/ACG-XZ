@@ -294,16 +294,23 @@ export async function getCanvasGenerationJob(
   );
 }
 
-function waitForCanvasPoll(signal?: AbortSignal, delayMs = 1_500): Promise<void> {
+function waitForCanvasPoll(signal?: AbortSignal, delayMs?: number): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason ?? new DOMException("cancelled", "AbortError"));
       return;
     }
+    const adaptiveDelay = delayMs ?? (
+      typeof navigator !== "undefined" && navigator.onLine === false
+        ? 10_000
+        : typeof document !== "undefined" && document.visibilityState === "hidden"
+          ? 5_000
+          : 1_500
+    );
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
       resolve();
-    }, delayMs);
+    }, adaptiveDelay);
     const onAbort = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
@@ -321,7 +328,10 @@ export async function waitCanvasGenerationJob(
     const job = await getCanvasGenerationJob(jobId, requestOptions);
     if (job.status === "succeeded") return job;
     if (job.status === "failed") {
-      throw canvasHttpError(502, String(job.error || "图片生成失败"), "图片生成");
+      // This is a persisted terminal job result, not a transient gateway error.
+      // Keep it outside the connectivity status set so hydration can expose a
+      // real retryable failure instead of polling the same failed job forever.
+      throw canvasHttpError(422, String(job.error || "图片生成失败"), "图片生成");
     }
     await waitForCanvasPoll(requestOptions.signal);
   }

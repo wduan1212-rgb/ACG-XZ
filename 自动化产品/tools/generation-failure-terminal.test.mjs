@@ -91,7 +91,8 @@ test("runtime removes upload fallback cards, routing, mappings and refresh retry
   assert.doesNotMatch(view, /routeMediaFiles|等待上传的任务/);
   assert.doesNotMatch(productions, /needs_input:\s*"等待上传"|stageStatus === "needs_input"/);
   assert.doesNotMatch(migrate, /stageStatus\s*=\s*"needs_input"/);
-  assert.match(orchestrator, /p\.stageStatus === "pending"/);
+  assert.match(orchestrator, /productionCanAutoGenerate\(p\)/);
+  assert.match(orchestrator, /\["running", "pending"\]\.includes\(String\(p\.stageStatus/);
   assert.match(digitalHumanQueue, /setStage\(p, "workshop", "failed"\)/);
   assert.match(digitalHumanQueue, /setStatus\(p, "failed", prepared\.error\)/);
   assert.doesNotMatch(

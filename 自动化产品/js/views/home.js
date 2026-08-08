@@ -3,13 +3,15 @@ import { currentMember, currentTeam } from "../core/store.js";
 import { community, teams, memberProfile } from "../core/remote.js";
 import { go } from "../core/router.js";
 import { icon } from "../ui/icons.js";
-import { openModal, openLightbox, toast } from "../ui/components.js?v=20260806-v140-platform-stability-5";
-import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260806-v140-platform-stability-5";
+import { openModal, openLightbox, toast } from "../ui/components.js?v=20260808-v140-platform-stability-15";
+import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260808-v140-platform-stability-15";
 
 const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
 const HOME_LAUNCH_REGISTRY_KEY = "__starmatrixHomeLaunchRegistry";
 const HOME_LAUNCH_TTL_MS = 10 * 60 * 1000;
 const MAX_HOME_ATTACHMENTS = 8;
+const HOME_INSPIRATION_PAGE_SIZE = 16;
+const HOME_INSPIRATION_VIDEO_ROOT_MARGIN = "360px 0px";
 const HOME_TYPEWRITER_PHRASES = [
   "做一支节奏轻快的品牌解释短片",
   "把这些参考图变成连贯的静态视频",
@@ -122,8 +124,8 @@ function inspirationCard(item) {
   const ratio = media.width && media.height ? `${media.width} / ${media.height}` : "auto";
   const poster = item.cover?.url || media.poster || "";
   const content = media.type === "video"
-    ? `<video src="${esc(media.url)}" ${poster ? `poster="${esc(poster)}"` : ""} muted loop playsinline preload="metadata" aria-label="${esc(item.title)}"></video>`
-    : `<img src="${esc(media.url)}" alt="${esc(item.title)}" loading="lazy" />`;
+    ? `<video data-home-video-src="${esc(media.url)}" ${poster ? `poster="${esc(poster)}"` : ""} muted loop playsinline preload="none" aria-label="${esc(item.title)}"></video>`
+    : `<img src="${esc(media.url)}" alt="${esc(item.title)}" loading="lazy" decoding="async" />`;
   const byline = `${item.authorName || "星阵用户"}${item.teamName ? ` · ${item.teamName}` : ""}`;
   return `<button class="home-inspiration-card" style="--community-ratio:${esc(ratio)}" type="button" data-home-inspiration="${esc(item.id)}" aria-label="${esc(`${item.title}，${byline}`)}">
     <span class="home-inspiration-media">${content}</span>
@@ -399,7 +401,13 @@ export const homeView = {
     let attachments = [];
     let inspirations = [];
     let inspirationRequest = 0;
+    let inspirationBefore = 0;
+    let inspirationBeforeId = "";
+    let inspirationLoadingMore = false;
     let disposeInspirationLayout = () => {};
+    let inspirationLoadObserver = null;
+    let inspirationVideoObserver = null;
+    const hydratedInspirationVideos = new Set();
 
     root.innerHTML = `<section class="product-home product-home-lovart product-home-miaoda">
       <header class="home-topline">
@@ -468,6 +476,10 @@ export const homeView = {
             ${CATEGORIES.map(item => `<button type="button" aria-pressed="false" data-home-category="${esc(item)}">${esc(item)}</button>`).join("")}
           </nav>
           <div class="home-inspiration-grid" id="homeInspirationGrid" aria-live="polite"><div class="home-community-empty">正在读取社区灵感…</div></div>
+          <div class="home-inspiration-pager" id="homeInspirationPager" hidden>
+            <button type="button" data-community-more>加载更多灵感</button>
+            <span data-community-page-status role="status" aria-live="polite"></span>
+          </div>
         </section>
       </main>
     </section>`;
@@ -486,6 +498,9 @@ export const homeView = {
     const videoModeToggle = root.querySelector("#homeVideoMode");
     const videoModeWrap = root.querySelector(".home-video-mode");
     const inspirationGrid = root.querySelector("#homeInspirationGrid");
+    const inspirationPager = root.querySelector("#homeInspirationPager");
+    const inspirationMore = inspirationPager?.querySelector("[data-community-more]");
+    const inspirationPageStatus = inspirationPager?.querySelector("[data-community-page-status]");
     const lightfall = root.querySelector("#homeLightfall");
     const homeSection = root.querySelector(".product-home");
     const eventController = new AbortController();
@@ -498,38 +513,120 @@ export const homeView = {
       stopTypewriter();
       lightfallController.destroy();
       disposeInspirationLayout();
+      inspirationLoadObserver?.disconnect();
+      inspirationVideoObserver?.disconnect();
+      hydratedInspirationVideos.forEach(video => {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      });
+      hydratedInspirationVideos.clear();
     };
 
-    const bindCommunityPreview = () => {
-      inspirationGrid.querySelectorAll("video").forEach(video => {
-        video.addEventListener("mouseenter", () => video.play().catch(() => {}), { signal: eventController.signal });
+    const hydrateInspirationVideo = video => {
+      if (!(video instanceof HTMLVideoElement) || hydratedInspirationVideos.has(video)) return;
+      const source = String(video.dataset.homeVideoSrc || "").trim();
+      if (!source) return;
+      video.src = source;
+      video.load();
+      hydratedInspirationVideos.add(video);
+    };
+    const bindCommunityPreview = scope => {
+      scope.querySelectorAll("video[data-home-video-src]").forEach(video => {
+        if (video.dataset.homeVideoBound === "1") return;
+        video.dataset.homeVideoBound = "1";
+        inspirationVideoObserver?.observe(video);
+        video.addEventListener("mouseenter", () => {
+          hydrateInspirationVideo(video);
+          video.play().catch(() => {});
+        }, { signal: eventController.signal });
         video.addEventListener("mouseleave", () => {
           video.pause();
           try { video.currentTime = 0; } catch (_) {}
         }, { signal: eventController.signal });
       });
     };
-    const loadInspirations = async () => {
+    if (typeof IntersectionObserver === "function") {
+      inspirationVideoObserver = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return;
+          hydrateInspirationVideo(entry.target);
+          inspirationVideoObserver?.unobserve(entry.target);
+        });
+      }, { rootMargin: HOME_INSPIRATION_VIDEO_ROOT_MARGIN });
+    }
+    const syncInspirationPager = ({ error = "" } = {}) => {
+      if (!inspirationPager || !inspirationMore || !inspirationPageStatus) return;
+      const hasMore = Boolean(inspirationBefore);
+      inspirationPager.hidden = !hasMore && !error;
+      inspirationMore.hidden = !hasMore;
+      inspirationMore.disabled = inspirationLoadingMore;
+      inspirationMore.textContent = inspirationLoadingMore ? "正在加载…" : "加载更多灵感";
+      inspirationPageStatus.textContent = error || (!hasMore && inspirations.length ? "已经看到全部灵感" : "");
+    };
+    const mountInspirationPager = () => {
+      inspirationLoadObserver?.disconnect();
+      if (!inspirationBefore || typeof IntersectionObserver !== "function") return;
+      inspirationLoadObserver = new IntersectionObserver(entries => {
+        if (entries.some(entry => entry.isIntersecting)) void loadInspirations({ append: true });
+      }, { rootMargin: "480px 0px" });
+      inspirationLoadObserver.observe(inspirationPager);
+    };
+    const loadInspirations = async ({ append = false } = {}) => {
+      if (append && (inspirationLoadingMore || !inspirationBefore)) return;
       const requestId = ++inspirationRequest;
-      disposeInspirationLayout();
-      disposeInspirationLayout = () => {};
+      inspirationLoadingMore = append;
+      let appendError = "";
       inspirationGrid.setAttribute("aria-busy", "true");
-      inspirationGrid.innerHTML = `<div class="home-community-empty">正在读取社区灵感…</div>`;
+      if (!append) {
+        disposeInspirationLayout();
+        disposeInspirationLayout = () => {};
+        inspirations = [];
+        inspirationBefore = 0;
+        inspirationBeforeId = "";
+        inspirationLoadObserver?.disconnect();
+        inspirationGrid.innerHTML = `<div class="home-community-empty">正在读取社区灵感…</div>`;
+      }
+      syncInspirationPager();
       try {
-        const page = await community.list({ category, limit: 48 });
+        const page = await community.list({
+          category,
+          limit: HOME_INSPIRATION_PAGE_SIZE,
+          before: append ? inspirationBefore : 0,
+          beforeId: append ? inspirationBeforeId : "",
+        });
         if (requestId !== inspirationRequest || !inspirationGrid.isConnected) return;
-        inspirations = Array.isArray(page?.items) ? page.items : [];
-        inspirationGrid.innerHTML = inspirations.length
-          ? inspirations.map(inspirationCard).join("")
+        const known = new Set(inspirations.map(item => String(item.id)));
+        const incoming = (Array.isArray(page?.items) ? page.items : [])
+          .filter(item => item?.id && !known.has(String(item.id)));
+        inspirations = append ? [...inspirations, ...incoming] : incoming;
+        inspirationBefore = Number(page?.nextBefore || 0) || 0;
+        inspirationBeforeId = String(page?.nextBeforeId || "");
+        const markup = incoming.map(inspirationCard).join("");
+        if (append) inspirationGrid.insertAdjacentHTML("beforeend", markup);
+        else inspirationGrid.innerHTML = inspirations.length
+          ? markup
           : `<div class="home-community-empty"><b>这个分类还没有人分享</b><span>在视频工坊、无限画布或发布清单中将成果分享到社区。</span></div>`;
-        bindCommunityPreview();
+        bindCommunityPreview(inspirationGrid);
+        disposeInspirationLayout();
         disposeInspirationLayout = mountInspirationGrid(inspirationGrid);
+        syncInspirationPager();
+        mountInspirationPager();
       } catch (error) {
         if (requestId !== inspirationRequest || !inspirationGrid.isConnected) return;
-        inspirations = [];
-        inspirationGrid.innerHTML = `<button class="home-community-empty is-error" type="button" data-community-retry><b>社区灵感暂时没有读取成功</b><span>点击重试</span></button>`;
+        if (append) {
+          appendError = "后续灵感暂时没有加载成功，可点击重试。";
+          syncInspirationPager({ error: appendError });
+        } else {
+          inspirations = [];
+          inspirationGrid.innerHTML = `<button class="home-community-empty is-error" type="button" data-community-retry><b>社区灵感暂时没有读取成功</b><span>点击重试</span></button>`;
+        }
       } finally {
-        if (requestId === inspirationRequest) inspirationGrid.removeAttribute("aria-busy");
+        if (requestId === inspirationRequest) {
+          inspirationLoadingMore = false;
+          inspirationGrid.removeAttribute("aria-busy");
+          syncInspirationPager({ error: appendError });
+        }
       }
     };
     void loadInspirations();
@@ -695,6 +792,10 @@ export const homeView = {
     root.addEventListener("click", event => {
       if (event.target.closest("[data-community-retry]")) {
         void loadInspirations();
+        return;
+      }
+      if (event.target.closest("[data-community-more]")) {
+        void loadInspirations({ append: true });
         return;
       }
       const card = event.target.closest("[data-home-inspiration]");

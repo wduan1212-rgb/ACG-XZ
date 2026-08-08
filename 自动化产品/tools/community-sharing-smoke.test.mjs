@@ -12,7 +12,13 @@ test("home inspiration is populated from the public community API", async () => 
     read("styles/views.css"),
   ]);
 
-  assert.match(home, /await community\.list\(\{ category, limit: 48 \}\)/);
+  assert.match(home, /HOME_INSPIRATION_PAGE_SIZE = 16/);
+  assert.match(home, /limit: HOME_INSPIRATION_PAGE_SIZE/);
+  assert.match(home, /beforeId: append \? inspirationBeforeId : ""/);
+  assert.match(home, /data-community-more/);
+  assert.match(home, /data-home-video-src/);
+  assert.match(home, /preload="none"/);
+  assert.match(home, /IntersectionObserver/);
   assert.match(home, /muted loop playsinline/);
   assert.match(home, /mouseenter[\s\S]*?video\.play\(\)/);
   assert.match(home, /mouseleave[\s\S]*?video\.pause\(\)/);
@@ -28,6 +34,7 @@ test("home inspiration is populated from the public community API", async () => 
   assert.doesNotMatch(home, /const INSPIRATIONS\s*=/);
   assert.match(remote, /export const community =/);
   assert.match(remote, /\/api\/community\/posts/);
+  assert.match(remote, /beforeId/);
 });
 
 test("all product surfaces expose only output-targeted share actions", async () => {
@@ -118,10 +125,14 @@ test("delivery preview renders every image, scrollable copy, and video controls"
 
   assert.match(delivery, /\(asset\.packAssetIds \|\| \[\]\)\.map/);
   assert.match(delivery, /delivery-preview-media/);
-  assert.match(delivery, /<video src="\$\{esc\(item\.url\)\}" \$\{cover\?\.url \? `poster=/);
+  assert.match(delivery, /<video src="\$\{esc\(item\.url\)\}" \$\{cover\?\.url \? `poster=[\s\S]*?data-delivery-media/);
   assert.match(delivery, /data-delivery-preview-image/);
+  assert.match(delivery, /bindDeliveryMediaFallback/);
+  assert.match(delivery, /图片暂时无法读取/);
+  assert.match(delivery, /colspan="10"/);
   assert.match(styles, /\.delivery-preview-copy pre[\s\S]*?overflow:\s*auto/);
   assert.match(styles, /\.delivery-preview-media\.is-gallery/);
+  assert.match(styles, /\.sup-detail\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) minmax\(200px, 280px\)/);
 });
 
 test("delivery community share keeps title, full copy, all media and the saved cover", async () => {

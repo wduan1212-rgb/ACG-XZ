@@ -58,7 +58,7 @@ globalThis.fetch = async (input, options = {}) => {
 const remote = await import("../js/core/remote.js");
 const { state } = await import("../js/core/store.js");
 const { buildZipBlob } = await import("../js/core/util.js");
-const { deliveryEntries } = await import("../js/domain/delivery.js");
+const { deliveryEntries, deliveryScopedMediaUrl } = await import("../js/domain/delivery.js");
 
 remote.setToken("supplier-test-token");
 await remote.init();
@@ -143,6 +143,29 @@ test("supplier image and video downloads build real complete zip entries", async
   assert.ok(requests.every(request => request.authorization === "Bearer supplier-test-token"));
   assert.ok(requests.some(request => request.deliveryId === "delivery-images"));
   assert.ok(requests.some(request => request.deliveryId === "delivery-video"));
+});
+
+test("supplier thumbnails and previews use the exact delivery-linked media grant", () => {
+  assert.equal(
+    deliveryScopedMediaUrl("/api/files/owner--pack-1.png?asset_rev=abc", "delivery-images"),
+    "/api/files/owner--pack-1.png?asset_rev=abc&deliveryId=delivery-images",
+  );
+  assert.equal(
+    deliveryScopedMediaUrl("/api/video/composed/final.mp4", "delivery-video"),
+    "/api/video/composed/final.mp4?deliveryId=delivery-video",
+  );
+  assert.equal(
+    deliveryScopedMediaUrl("https://cdn.example.test/public.png", "delivery-images"),
+    "https://cdn.example.test/public.png",
+  );
+  assert.equal(
+    deliveryScopedMediaUrl("//attacker.example/api/files/owner--pack-1.png", "delivery-images"),
+    "//attacker.example/api/files/owner--pack-1.png",
+  );
+  assert.equal(
+    deliveryScopedMediaUrl("/api/files/owner--pack-1.png", "delivery-images", "editor"),
+    "/api/files/owner--pack-1.png",
+  );
 });
 
 test("one denied dependency aborts instead of producing a text-only zip", async () => {

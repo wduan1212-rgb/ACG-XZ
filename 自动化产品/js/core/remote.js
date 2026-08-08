@@ -447,11 +447,12 @@ export const deliveryRemarks = {
 };
 
 export const community = {
-  list: ({ category = "", limit = 40, before = 0 } = {}) => {
+  list: ({ category = "", limit = 40, before = 0, beforeId = "" } = {}) => {
     const params = new URLSearchParams();
     if (category) params.set("category", category);
     params.set("limit", String(limit));
     if (before) params.set("before", String(before));
+    if (beforeId) params.set("beforeId", String(beforeId));
     return req("/api/community/posts?" + params.toString(), { auth: Boolean(_token) });
   },
   get: (postId) => req("/api/community/posts/" + encodeURIComponent(postId), { auth: Boolean(_token) }),

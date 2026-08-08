@@ -387,7 +387,7 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260806-v140-platform-stability-5/);
+  assert.match(videoWorkshopHtml, /20260808-v140-platform-stability-15/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -428,11 +428,20 @@ test("video workshop is white, has no duplicate history rail, and exposes publis
   assert.match(mainJs, /hideWorkspaceVideoProject\(id\)/);
   assert.match(baseCss, /\.wsctx-row-more\s*\{[^}]*opacity:\s*0\s*;[^}]*pointer-events:\s*none\s*;/s);
   assert.match(baseCss, /\.wsctx-row-shell:hover\s+\.wsctx-row-more,[\s\S]*?opacity:\s*1\s*;[^}]*pointer-events:\s*auto\s*;/s);
+  assert.match(baseCss, /\.wsctx-batch-session-shell\s+\.wsctx-row-more\s*\{[^}]*opacity:\s*1\s*;[^}]*pointer-events:\s*auto\s*;/s);
+  const batchSessionRow = section(mainJs, "function batchSessionContextRow", "function workspaceCanvasProjectMenu");
+  assert.match(batchSessionRow, /wsctx-batch-session-shell\$\{active\s*\?\s*" is-active"/);
+  assert.doesNotMatch(batchSessionRow, /tag:\s*active\s*\?\s*"当前"/);
+  assert.match(agentCss, /\.wsctx-batch-session-shell\s+\.wsctx-row-more\s*\{[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*opacity:\s*1;/s);
+  assert.match(agentCss, /\.wsctx-batch-session-shell\.is-active\s*\{[^}]*background:\s*#eef0f3;[^}]*box-shadow:\s*0\s+8px\s+20px/s);
+  assert.match(agentCss, /\.wsctx-batch-session-shell\.is-active::after\s*\{[^}]*animation:\s*batch-session-lightflow\s+3\.4s\s+ease-in-out\s+infinite;/s);
+  assert.match(agentCss, /\.wsctx-batch-session-shell\s+\.wsctx-row-menu\s*\{[^}]*position:\s*absolute;[^}]*width:\s*176px;/s);
+  assert.doesNotMatch(agentCss, /\.wsctx-batch-session-shell\.is-active\s*>\s*\*\s*\{/);
   assert.match(baseCss, /\.wsctx-row-menu\s*\{[^}]*display:\s*none\s*;/s);
   assert.match(baseCss, /\.wsctx-row-shell\.is-menu-open\s+\.wsctx-row-menu\s*\{[^}]*display:\s*grid\s*;/s);
   assert.match(
     baseCss,
-    /\.wsctx-canvas-project-shell\.is-active,[\s\S]*?\.wsctx-video-project-shell\.is-active\s*\{[^}]*background:\s*#e8e8e5\s*;/s,
+    /\.wsctx-canvas-project-shell\.is-active,[\s\S]*?\.wsctx-video-project-shell\.is-active,[\s\S]*?\.wsctx-batch-session-shell\.is-active\s*\{[^}]*background:\s*#e8e8e5\s*;/s,
   );
   assert.match(
     baseCss,
@@ -810,27 +819,27 @@ test("canvas and video switches wait for the real latest project before routing"
 test("all modified workspace-shell resources use the v140 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260806-v140-platform-stability-5"/);
-  assert.match(indexHtml, /styles\/components\.css\?v=20260806-v140-platform-stability-5"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260806-v140-platform-stability-5"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260806-v140-platform-stability-5"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260806-v140-platform-stability-5"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260806-v140-platform-stability-5"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260806-v140-platform-stability-5"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260806-v140-platform-stability-5"/);
-  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260806-v140-platform-stability-5"/);
-  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260806-v140-platform-stability-5"/);
-  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260806-v140-platform-stability-5"/);
-  assert.match(mainJs, /ui\/components\.js\?v=20260806-v140-platform-stability-5/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260806-v140-platform-stability-5"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260808-v140-platform-stability-15"/);
+  assert.match(indexHtml, /styles\/components\.css\?v=20260808-v140-platform-stability-15"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260808-v140-platform-stability-15"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260808-v140-platform-stability-15"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260808-v140-platform-stability-15"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260808-v140-platform-stability-15"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260808-v140-platform-stability-15"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260808-v140-platform-stability-15"/);
+  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260808-v140-platform-stability-15"/);
+  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260808-v140-platform-stability-15"/);
+  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260808-v140-platform-stability-15"/);
+  assert.match(mainJs, /ui\/components\.js\?v=20260808-v140-platform-stability-15/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260808-v140-platform-stability-15"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js"/);
   assert.doesNotMatch(mainJs, /ui\/icons\.js\?v=/);
   assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js"/);
   assert.doesNotMatch(mainJs, /domain\/delivery\.js\?v=/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
   assert.doesNotMatch(mainJs, /core\/remote\.js\?v=/);
-  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260806-v140-platform-stability-5/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260806-v140-platform-stability-5"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260808-v140-platform-stability-15/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260808-v140-platform-stability-15"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

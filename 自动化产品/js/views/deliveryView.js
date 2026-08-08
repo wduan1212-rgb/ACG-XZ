@@ -5,11 +5,11 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById, currentMember, refreshDeliveryMetrics } from "../core/store.js";
 import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
-import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState } from "../domain/delivery.js";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState, deliveryScopedMediaUrl } from "../domain/delivery.js";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260806-v140-platform-stability-5";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260806-v140-platform-stability-5";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260808-v140-platform-stability-15";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260808-v140-platform-stability-15";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
 import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
@@ -129,19 +129,46 @@ function deliveryMedia(asset) {
   if (asset?.type === "图集") {
     return (asset.packAssetIds || []).map(id => {
       const item = state.assets.find(entry => entry.id === id);
-      const url = item ? urlFor(item) : urlFor(id);
-      return url ? { type: "image", url, title: item?.name || asset.title || asset.name || "发布图片" } : null;
-    }).filter(Boolean);
+      const url = deliveryScopedMediaUrl(item ? urlFor(item) : urlFor(id), asset.id);
+      return {
+        type: "image",
+        url: url || "",
+        title: item?.name || asset.title || asset.name || "发布图片",
+      };
+    });
   }
-  const url = urlFor(asset) || asset?.videoUrl || asset?.fileUrl || asset?.url || "";
+  const url = deliveryScopedMediaUrl(
+    urlFor(asset) || asset?.videoUrl || asset?.fileUrl || asset?.url || "",
+    asset.id,
+  );
   return url ? [{ type: "video", url, title: asset.title || asset.name || "发布视频" }] : [];
+}
+
+function bindDeliveryMediaFallback(scope) {
+  scope?.querySelectorAll?.("img[data-delivery-media],video[data-delivery-media]").forEach(media => {
+    if (media.dataset.deliveryMediaBound === "1") return;
+    media.dataset.deliveryMediaBound = "1";
+    const showUnavailable = () => {
+      const frame = media.closest("[data-delivery-media-frame]");
+      if (!frame) return;
+      frame.classList.add("is-media-unavailable");
+      const status = frame.querySelector("[data-delivery-media-error]");
+      if (status) status.hidden = false;
+      media.hidden = true;
+      if (frame instanceof HTMLButtonElement) frame.disabled = true;
+    };
+    media.addEventListener("error", showUnavailable, { once: true });
+    if (media instanceof HTMLImageElement && media.complete && media.naturalWidth === 0) {
+      showUnavailable();
+    }
+  });
 }
 
 function deliveryCover(asset) {
   const coverId = asset?.coverAssetId || (asset?.type === "图集" ? (asset.packAssetIds || [])[0] : "");
   if (!coverId) return null;
   const item = state.assets.find(entry => entry.id === coverId);
-  const url = item ? urlFor(item) : urlFor(coverId);
+  const url = deliveryScopedMediaUrl(item ? urlFor(item) : urlFor(coverId), asset.id);
   return url ? {
     type: "image",
     url,
@@ -169,15 +196,16 @@ function openDeliveryPreview(asset) {
   openModal(`<article class="delivery-preview-dialog">
     <header><div><span>${asset.type === "图集" ? `${media.length} 张图片` : "视频预览"}</span><h2>${esc(asset.title || asset.name || "发布内容")}</h2></div><button class="icon-btn" data-close>${icon("x", 16)}</button></header>
     <div class="delivery-preview-media ${asset.type === "图集" ? "is-gallery" : "is-video"}">${media.map((item, index) => item.type === "video"
-      ? `<video src="${esc(item.url)}" ${cover?.url ? `poster="${esc(cover.url)}"` : ""} controls playsinline preload="metadata"></video>`
-      : `<button type="button" data-delivery-preview-image="${index}"><img src="${esc(item.url)}" alt="${esc(item.title)}" loading="lazy" /><span>${index + 1}</span></button>`).join("")}</div>
+      ? `<div class="delivery-preview-video-frame" data-delivery-media-frame><video src="${esc(item.url)}" ${cover?.url ? `poster="${esc(cover.url)}"` : ""} controls playsinline preload="metadata" data-delivery-media></video><em data-delivery-media-error hidden>视频暂时无法读取，请刷新后重试</em></div>`
+      : `<button type="button" data-delivery-preview-image="${index}" data-delivery-media-frame ${item.url ? "" : "disabled class=\"is-media-unavailable\""}>${item.url ? `<img src="${esc(item.url)}" alt="${esc(item.title)}" loading="lazy" decoding="async" data-delivery-media />` : ""}<em data-delivery-media-error ${item.url ? "hidden" : ""}>图片暂时无法读取</em><span>${index + 1}</span></button>`).join("")}</div>
     ${asset.copy ? `<div class="delivery-preview-copy"><b>发布文案</b><pre>${esc(asset.copy)}</pre></div>` : ""}
   </article>`, {
     onMount(panel) {
       panel.classList.add("delivery-preview-panel");
+      bindDeliveryMediaFallback(panel);
       panel.querySelectorAll("[data-delivery-preview-image]").forEach((button, index) => button.addEventListener("click", () => {
         const img = button.querySelector("img");
-        if (img) openLightbox(img, media[index]?.url || img.src, media[index]?.title || "发布图片");
+        if (img && !img.hidden) openLightbox(img, media[index]?.url || img.src, media[index]?.title || "发布图片");
       }));
     },
   });
@@ -401,7 +429,7 @@ function supplierDetailHtml(asset, acc, accountSequence = 0) {
   const submittedAt = dateTimeFromTime(deliverySubmittedAt(asset));
   const accountNumber = accountSequence > 0 ? `#${String(accountSequence).padStart(2, "0")}` : "未记录";
   return `<tr class="sup-detail-row" data-sup-detail="${asset.id}" hidden>
-    <td colspan="9">
+    <td colspan="10">
       <div class="sup-detail">
         <div class="sup-detail-copy">
           <b>${esc(title)}</b>
@@ -422,8 +450,8 @@ function supplierDetailHtml(asset, acc, accountSequence = 0) {
           </div>
         </div>
         ${ids.length ? `<div class="sup-detail-imgs">${ids.map((id, k) => {
-          const u = urlFor(id);
-          return u ? `<button class="sup-thumb" data-supimg="${id}" title="预览第 ${k + 1} 张"><img src="${u}" alt="第 ${k + 1} 张"/><span>${k + 1}</span></button>` : "";
+          const u = deliveryScopedMediaUrl(urlFor(id), asset.id);
+          return `<button class="sup-thumb${u ? "" : " is-media-unavailable"}" data-supimg="${id}" data-delivery-media-frame title="预览第 ${k + 1} 张" ${u ? "" : "disabled"}>${u ? `<img src="${esc(u)}" alt="第 ${k + 1} 张" loading="lazy" decoding="async" data-delivery-media/>` : ""}<em data-delivery-media-error ${u ? "hidden" : ""}>图片暂不可用</em><span>${k + 1}</span></button>`;
         }).join("")}</div>` : `<div class="sup-detail-empty">${isImg ? "图集文件缺少预览图" : "视频素材可下载后预览"}</div>`}
       </div>
     </td>
@@ -1102,8 +1130,12 @@ export const deliveryView = {
         e.stopPropagation();
         const a = state.assets.find(x => x.id === b.dataset.supimg);
         const img = b.querySelector("img");
-        if (a && img) openLightbox(img, urlFor(a), a.name);
+        if (a && img && !img.hidden) {
+          const deliveryId = b.closest("[data-sup-detail]")?.dataset.supDetail || "";
+          openLightbox(img, deliveryScopedMediaUrl(urlFor(a), deliveryId), a.name);
+        }
       }));
+      bindDeliveryMediaFallback(body);
     }
 
     async function batchDl() {

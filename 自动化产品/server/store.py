@@ -17722,6 +17722,18 @@ def state_for(member_id, role, parent_id=None, collections=None):
     with _lock:
         conn = _connect()
         try:
+            # Strict resource scope used to be checked document by document.
+            # Each check re-read the migration marker, resource scope row and
+            # actor membership, turning one state snapshot into thousands of
+            # SQLite statements while holding the process-wide store lock.
+            # Resolve the actor once and let SQLite join the indexed scope table
+            # when selecting each collection. The predicate is exactly the same
+            # (scope_type + scope_id equality) and remains deny-by-default.
+            scopes_enforced = _resource_scopes_enforced_locked(conn)
+            actor_scope = (
+                _member_resource_scope_locked(conn, member_id)
+                if scopes_enforced else None
+            )
             delivery_projected_sequences = {}
             if role in {"supplier_parent", "supplier_child"}:
                 production_rows = conn.execute("SELECT id, data FROM docs WHERE collection='productions'").fetchall()
@@ -17740,10 +17752,24 @@ def state_for(member_id, role, parent_id=None, collections=None):
                     out[col] = []
                     continue
                 account_order = " ORDER BY rowid" if col == "accounts" else ""
-                rows = conn.execute(
-                    f"SELECT id,data,owner_id FROM docs WHERE collection=?{account_order}",
-                    (col,),
-                ).fetchall()
+                if scopes_enforced:
+                    if not actor_scope:
+                        rows = []
+                    else:
+                        scoped_order = " ORDER BY d.rowid" if col == "accounts" else ""
+                        rows = conn.execute(
+                            "SELECT d.id,d.data,d.owner_id FROM docs AS d "
+                            "JOIN resource_scopes AS rs "
+                            "ON rs.resource_kind=? AND rs.resource_id=d.id "
+                            "WHERE d.collection=? AND rs.scope_type=? AND rs.scope_id=?"
+                            f"{scoped_order}",
+                            (_doc_resource_kind(col), col, actor_scope[0], actor_scope[1]),
+                        ).fetchall()
+                else:
+                    rows = conn.execute(
+                        f"SELECT id,data,owner_id FROM docs WHERE collection=?{account_order}",
+                        (col,),
+                    ).fetchall()
                 items = []
                 if col == "accounts":
                     decoded_rows = [
@@ -17782,10 +17808,6 @@ def state_for(member_id, role, parent_id=None, collections=None):
                         for doc_id, data, owner in rows
                     )
                 for doc_id, item, owner in row_items:
-                    if not _resource_scope_allows_actor_locked(
-                        conn, col, doc_id, member_id, role, parent_id
-                    ):
-                        continue
                     healed = False
                     if col == "productions":
                         item, healed = _heal_production_runtime_state(item)
@@ -18443,19 +18465,23 @@ def get_community_post(post_id, include_non_published=False, viewer_id=""):
     return _community_post_public(row, viewer_id)
 
 
-def list_community_posts(category="", limit=40, before=0, viewer_id=""):
+def list_community_posts(category="", limit=40, before=0, before_id="", viewer_id=""):
     _ensure_db()
     category = str(category or "").strip()
     limit = max(1, min(80, int(limit or 40)))
     before = max(0, int(before or 0))
+    before_id = str(before_id or "").strip()
     clauses = ["status='published'"]
     params = []
     if category:
         if category not in COMMUNITY_CATEGORIES:
-            return {"items": [], "nextBefore": 0}
+            return {"items": [], "nextBefore": 0, "nextBeforeId": ""}
         clauses.append("category=?")
         params.append(category)
-    if before:
+    if before and before_id:
+        clauses.append("(created_at<? OR (created_at=? AND id<?))")
+        params.extend((before, before, before_id))
+    elif before:
         clauses.append("created_at<?")
         params.append(before)
     params.append(limit + 1)
@@ -18476,6 +18502,7 @@ def list_community_posts(category="", limit=40, before=0, viewer_id=""):
     return {
         "items": items,
         "nextBefore": items[-1]["createdAt"] if has_more and items else 0,
+        "nextBeforeId": items[-1]["id"] if has_more and items else "",
     }
 
 

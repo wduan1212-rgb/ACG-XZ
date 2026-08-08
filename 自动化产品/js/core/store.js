@@ -4,7 +4,7 @@ import { db } from "./db.js";
 import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
 import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js";
-import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260806-v140-platform-stability-5";
+import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260808-v140-platform-stability-15";
 
 const DEFAULT_ADMIN_USERNAME = String.fromCharCode(97, 100, 109, 105, 110);
 const LEGACY_ADMIN_USERNAME = String.fromCharCode(121, 117, 120, 117, 97, 110);
@@ -433,7 +433,11 @@ export async function removeRemoteAsync(collection, ...ids) {
 export const REMOTE_BOOTSTRAP_COLLECTIONS = ["accounts", "products", "voicePresets"];
 export const REMOTE_SUPPLIER_BOOTSTRAP_COLLECTIONS = ["accounts", "products"];
 export const REMOTE_DEFERRED_COLLECTION_GROUPS = [
-  ["productions", "sessions", "batches", "jobs"],
+  // 刷新批量生产时先返回轻量会话索引，让左栏和当前会话立即可见。
+  // production 与 job 携带的产物/轮询状态更大，分组返回可避免它们把整个导航锁在开屏。
+  ["sessions", "batches"],
+  ["productions"],
+  ["jobs"],
   ["assets"],
   ["analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory"]
 ];

@@ -47,7 +47,9 @@ class FrontendPerformanceTest(unittest.TestCase):
         self.assertIn('registerView("delivery", hydrationAwareView("delivery"', self.main)
 
     def test_deferred_state_is_split_and_old_unfiltered_server_is_consumed_once(self):
-        self.assertIn('["productions", "sessions", "batches", "jobs"]', self.store)
+        self.assertIn('["sessions", "batches"]', self.store)
+        self.assertIn('["productions"]', self.store)
+        self.assertIn('["jobs"]', self.store)
         self.assertIn('["assets"]', self.store)
         self.assertIn('["analyticsLinks", "metricSnapshots", "insightReports", "creativeMemory"]', self.store)
         hydration = self.store.split("export function hydrateRemoteInBackground", 1)[1].split(
@@ -92,6 +94,78 @@ class FrontendPerformanceTest(unittest.TestCase):
         self.assertIn("data-remote-hydration-retry", self.main)
         for zone in ("overview", "agent", "studio", "assets", "drafts", "delivery", "analytics"):
             self.assertIn(f'registerView("{zone}", hydrationAwareView("{zone}"', self.main)
+
+    def test_batch_workspace_opens_after_core_state_while_assets_continue_in_background(self):
+        picker = self.main.split("function hydrationCollectionsForView", 1)[1].split(
+            "function hydrationAwareView", 1
+        )[0]
+        self.assertIn(
+            'if (zone === "agent") return ["productions", "sessions", "batches"]',
+            picker,
+        )
+        self.assertNotIn(
+            'if (zone === "agent") return ["productions", "sessions", "batches", "jobs", "assets"]',
+            picker,
+        )
+        self.assertNotIn(
+            'if (zone === "agent") return ["productions", "sessions", "batches", "jobs"]',
+            picker,
+        )
+        self.assertIn('["assets"]', self.store)
+        self.assertLess(
+            self.store.index('["sessions", "batches"]'),
+            self.store.index('["productions"]'),
+        )
+        self.assertLess(
+            self.store.index('["productions"]'),
+            self.store.index('["jobs"]'),
+        )
+        self.assertLess(
+            self.store.index('["jobs"]'),
+            self.store.index('["assets"]'),
+        )
+
+    def test_batch_resume_waits_for_cumulative_split_collections(self):
+        hydration = self.main.split("function continueRemoteHydration", 1)[1].split(
+            "/* 共享后端登录", 1
+        )[0]
+        self.assertIn("const batchCollectionsReady = new Set();", hydration)
+        self.assertIn("collections.forEach(name => batchCollectionsReady.add(name));", hydration)
+        self.assertIn(
+            '["productions", "sessions", "batches", "jobs"].every(name => batchCollectionsReady.has(name))',
+            hydration,
+        )
+
+    def test_batch_sessions_have_accessible_more_menu_and_visual_current_feedback(self):
+        agent = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
+        styles = (APP_DIR / "styles/agent.css").read_text(encoding="utf-8")
+        self.assertIn('data-session-menu-toggle="${s.id}"', agent)
+        self.assertIn('aria-haspopup="menu"', agent)
+        self.assertIn('aria-expanded="false"', agent)
+        self.assertIn('role="menuitem" data-srename="${s.id}"', agent)
+        self.assertIn('role="menuitem" class="is-danger" data-sdel="${s.id}"', agent)
+        self.assertIn('aria-current="page"', agent)
+        self.assertNotIn('agw-current-badge">当前', agent)
+        self.assertIn('e.key === "Escape"', agent)
+        self.assertIn('e.key === "ArrowDown"', agent)
+        self.assertIn('.agw-sitem.is-menu-open .agw-session-menu', styles)
+        self.assertIn("animation: batch-session-lightflow 3.4s ease-in-out infinite", styles)
+
+        shell_styles = (APP_DIR / "styles/base.css").read_text(encoding="utf-8")
+        shell_row = self.main.split("function batchSessionContextRow", 1)[1].split(
+            "function workspaceCanvasProjectMenu", 1
+        )[0]
+        self.assertNotIn('tag: active ? "当前" : ""', shell_row)
+        self.assertIn("wsctx-batch-session-shell", shell_row)
+        self.assertIn('aria-current="page"', self.main)
+        self.assertIn(
+            ".wsctx-batch-session-shell .wsctx-row-more",
+            shell_styles,
+        )
+        self.assertIn(
+            ".wsctx-batch-session-shell .wsctx-row-more",
+            styles,
+        )
 
     def test_account_switch_cancels_old_hydration_and_guards_cache_writes(self):
         self.assertIn("let remoteSyncGeneration = 0;", self.store)

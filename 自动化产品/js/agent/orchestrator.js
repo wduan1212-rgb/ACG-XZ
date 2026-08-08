@@ -6,7 +6,7 @@ import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationProm
 import { AI } from "../api/ai.js?v=20260727-v118-7";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
 import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260806-v140-platform-stability-5";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260808-v140-platform-stability-15";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
 import { deliver } from "../domain/delivery.js";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
@@ -34,8 +34,10 @@ const COVER_STYLE_HINTS = [
   "信息图封面风，一个核心数字或关键词、清晰箭头关系、象牙白底配墨绿和亮橙，信息少而有力"
 ];
 const activeImageRecoveries = new Set();
+const activeHydrationDrafts = new Set();
 const activeHydrationCompositions = new Set();
 const activeComposeRequests = new Map();
+const HYDRATION_REDRAFT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
 
@@ -910,6 +912,90 @@ export function templatePlan(key) {
 export const batchById = id => state.batches.find(b => b.id === id);
 export const batchProds = b => (b.productionIds || []).map(productionById).filter(Boolean);
 export const activeBatches = () => state.batches.filter(b => b.phase !== "done" && ownedBy(b));
+
+/* 浏览器刷新会中止还没落下阶段产物的前端 await。批次、production 和 job
+   都是权威持久态，因此只按可证明的检查点分类：已有图片提示词才接续生图，
+   图片已齐只推进审核，空计划则回到起草，不把 0/0 外壳永久留在生成中。 */
+export function classifyHydratedBatchRecovery(batch) {
+  const recovery = { draft: [], images: [], settle: [], waiting: [], stale: [] };
+  const createdAt = Number(batch?.createdAt || 0);
+  const staleRedraft = !createdAt || Date.now() - createdAt > HYDRATION_REDRAFT_MAX_AGE_MS;
+  batchProds(batch).forEach(p => {
+    if (!p || !["running", "pending"].includes(String(p.stageStatus || ""))) return;
+    if (p.stage === "script") {
+      (p.mode === "图文" && staleRedraft ? recovery.stale : recovery.draft).push(p);
+      return;
+    }
+    if (p.mode === "图文" && p.stage === "images") {
+      const items = Array.isArray(p.artifacts?.images?.items) ? p.artifacts.images.items : [];
+      if (items.length && items.every(item => item?.assetId)) {
+        recovery.settle.push(p);
+        return;
+      }
+      const missing = items.filter(item => !item?.assetId);
+      if (missing.length && missing.every(item => String(item?.prompt || "").trim())) {
+        recovery.images.push(p);
+      } else {
+        (staleRedraft ? recovery.stale : recovery.draft).push(p);
+      }
+      return;
+    }
+    if (["render", "workshop"].includes(p.stage)) recovery.waiting.push(p);
+  });
+  return recovery;
+}
+
+export function hydratedBatchThinkingState(sessionId = state.ui.activeSessionId) {
+  const batches = sessionBatches(sessionId).filter(ownedBy).filter(batch => batch.phase !== "done");
+  if (!batches.length) return { active: false, step: "", done: 0, total: 0 };
+  const entries = batches.map(batch => {
+    const productions = batchProds(batch);
+    const productionIds = new Set(productions.map(p => p.id));
+    const recovery = classifyHydratedBatchRecovery(batch);
+    const activeJobs = state.jobs.filter(job =>
+      productionIds.has(job.productionId)
+      && ["queued", "submitted", "running"].includes(job.status)
+    );
+    const active = recovery.draft.length > 0
+      || recovery.images.length > 0
+      || recovery.settle.length > 0
+      || recovery.waiting.length > 0
+      || activeJobs.length > 0;
+    return { batch, productions, recovery, activeJobs, active };
+  });
+  // 一个会话可以保留多轮历史批次。思考卡只统计本次仍有真实活动的批次，
+  // 不把已进入审核/失败终态的旧批次混入分母，避免出现误导性的 1/13。
+  const activeEntries = entries.filter(entry => entry.active);
+  if (!activeEntries.length) return { active: false, step: "", done: 0, total: 0, batchIds: [] };
+  const recovery = activeEntries.map(entry => entry.recovery);
+  const draft = recovery.flatMap(item => item.draft);
+  const images = recovery.flatMap(item => item.images);
+  const settle = recovery.flatMap(item => item.settle);
+  const waiting = recovery.flatMap(item => item.waiting);
+  const all = [...new Map(
+    activeEntries.flatMap(entry => entry.productions).map(production => [production.id, production])
+  ).values()];
+  const activeJobs = activeEntries.flatMap(entry => entry.activeJobs);
+  const active = draft.length > 0 || images.length > 0 || settle.length > 0 || waiting.length > 0 || activeJobs.length > 0;
+  const step = draft.length
+    ? `刷新后正在接续起草 ${draft.length} 条内容…`
+    : images.length
+      ? `刷新后正在接续生成 ${images.length} 条内容…`
+      : settle.length
+        ? `正在确认 ${settle.length} 条已完成内容的持久状态…`
+      : activeJobs.length
+        ? `正在恢复 ${activeJobs.length} 个已派发任务的进度…`
+        : waiting.length
+          ? `正在核对 ${waiting.length} 条生成任务的持久状态…`
+          : "";
+  return {
+    active,
+    step,
+    done: all.filter(p => ["review", "delivered"].includes(p.stage)).length,
+    total: all.length,
+    batchIds: activeEntries.map(entry => entry.batch.id),
+  };
+}
 /* 当前会话的批次（看板按会话独立） */
 export const currentSessionBatches = () => sessionBatches(state.ui.activeSessionId)
   .filter(ownedBy)
@@ -1343,6 +1429,19 @@ export function buildStaticVideoCustomCopyShots(copy, product) {
   }));
 }
 
+/* 图文生成的提示词与逐张结果是刷新恢复的权威检查点。普通 save() 会在
+   600ms 后整集合回推，页面刷新或旧标签页竞争时可能来不及落到服务器；
+   每次真正调用图片上游前、以及每张结果完成后都必须先推进 updatedAt，
+   再等待单文档远端确认。 */
+async function persistBatchProductionCheckpoint(p) {
+  touch(p);
+  const result = await persistRecoveredDocuments("productions", p);
+  if (remote.isOn() && Number(result?.result?.n || 0) < 1) {
+    throw new Error("服务器未确认当前任务检查点，请刷新后重试");
+  }
+  return result;
+}
+
 async function generateBatchImagesInHouse(p, batch, acc) {
   if (!imageApiConfigured()) throw new Error("图片生成服务未配置，无法执行站内生图");
   const provider = activeProviderFor("image");
@@ -1360,6 +1459,7 @@ async function generateBatchImagesInHouse(p, batch, acc) {
   const items = A.items || [];
   await ensureBatchImageReferencePlan(p, batch, acc, refGroups, defaultRefs);
   setStage(p, "images", "running");
+  await persistBatchProductionCheckpoint(p);
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (!it?.prompt) continue;
@@ -1387,7 +1487,7 @@ async function generateBatchImagesInHouse(p, batch, acc) {
     it.status = "loading";
     it.error = "";
     it.referenceReceipt = null;
-    save("productions");
+    await persistBatchProductionCheckpoint(p);
     try {
       const req = await provider.submit({
         prompt: enrichBatchImagePrompt(it.prompt, refs, it.referenceInstruction),
@@ -1410,12 +1510,12 @@ async function generateBatchImagesInHouse(p, batch, acc) {
       });
       it.assetId = a.id;
       it.status = "done";
-      save("productions");
+      await persistBatchProductionCheckpoint(p);
     } catch (err) {
       it.status = "failed";
       it.error = err?.message || String(err);
       if (err?.referenceReceipt) it.referenceReceipt = err.referenceReceipt;
-      save("productions");
+      await persistBatchProductionCheckpoint(p).catch(() => {});
       throw err;
     }
   }
@@ -1503,9 +1603,14 @@ async function runBatchImagesToReview(p, batch) {
     setBatchPhase(batch, "generating");
     const generated = await generateBatchImagesInHouse(p, batch, acc);
     setStage(p, "review", "pending");
+    // “全部图片已完成”与逐张结果一样属于刷新恢复的权威检查点。
+    // 只依赖 setStage() 的延迟整集合 save，刷新或旧标签页竞争时仍可能
+    // 把 4/4 的任务留在 images/running，外层批次就会永久显示生成中。
+    await persistBatchProductionCheckpoint(p);
     return generated;
   } catch (e) {
     setStatus(p, "failed", "站内图片生成失败：" + (e.message || e));
+    await persistBatchProductionCheckpoint(p).catch(() => {});
     return false;
   } finally {
     activeImageRecoveries.delete(p.id);
@@ -2358,6 +2463,7 @@ async function draftOne(p, batch) {
         status: "idle"
       }));
       applyBatchImageReferencePlan(p, batch, imageReferencePlan.refGroups, p.artifacts.images.items);
+      await persistBatchProductionCheckpoint(p);
       await runBatchImagesToReview(p, batch);
       return;
     }
@@ -3253,6 +3359,19 @@ const evaluateAll = debounce(() => activeBatches().forEach(b => evaluate(b.id)),
 on("production:update", evaluateAll);
 on("job:done", evaluateAll);
 
+async function resumeHydratedDraft(p, batch) {
+  const key = String(p?.id || "");
+  if (!key || activeHydrationDrafts.has(key)) return false;
+  activeHydrationDrafts.add(key);
+  try {
+    await draftOne(p, batch);
+    return true;
+  } finally {
+    activeHydrationDrafts.delete(key);
+    evaluate(batch.id);
+  }
+}
+
 /* 启动恢复：把中断的起草接着跑 */
 export function resumeActiveBatches() {
   restoreMissingBatchSessions();
@@ -3263,6 +3382,7 @@ export function resumeActiveBatches() {
     batches.filter(batch => batchNeedsHydrationEvaluation(batch, state.productions)).map(batch => batch.id)
   );
   batches.forEach(b => {
+    const hydration = classifyHydratedBatchRecovery(b);
     const staticStuck = batchProds(b).filter(p =>
       (p.staticVideo || b.contentKind === "static")
       && p.stage === "workshop"
@@ -3273,14 +3393,30 @@ export function resumeActiveBatches() {
       resetStaticAgentProduction(p, { preserveFrames: true, preserveAgent: true });
       setStage(p, "script", "pending");
     });
-    const stuck = batchProds(b).filter(p => p.stage === "script" && (p.stageStatus === "running" || p.stageStatus === "pending"));
-    if (stuck.length) { runPool(stuck, p => draftOne(p, b), 2).then(() => evaluate(b.id)); resumed += stuck.length; }
-    const imageStuck = batchProds(b).filter(p =>
-      p.mode === "图文"
-      && p.stage === "images"
-      && (p.stageStatus === "running" || p.stageStatus === "pending")
-      && (p.artifacts?.images?.items || []).some(x => x.prompt && !x.assetId)
-    );
+    hydration.stale.forEach(p => setStatus(
+      p,
+      "failed",
+      "刷新前的图文起草没有留下可确认结果，已安全停止；请手动重试，避免重复生成和扣费。",
+    ));
+    const settledImages = hydration.settle;
+    if (settledImages.length) {
+      runPool(settledImages, async p => {
+        setStage(p, "review", "pending");
+        try {
+          await persistBatchProductionCheckpoint(p);
+        } catch (error) {
+          setStatus(p, "failed", "图片已生成，但刷新恢复状态写入失败：" + (error?.message || error));
+          await persistBatchProductionCheckpoint(p).catch(() => {});
+        }
+      }, 1).then(() => evaluate(b.id));
+      resumed += settledImages.length;
+    }
+    const stuck = [...new Set([...staticStuck, ...hydration.draft])];
+    if (stuck.length) {
+      runPool(stuck, p => resumeHydratedDraft(p, b), 2).then(() => evaluate(b.id));
+      resumed += stuck.length;
+    }
+    const imageStuck = hydration.images;
     if (imageStuck.length) {
       runPool(imageStuck, p => runBatchImagesToReview(p, b), 1).then(() => evaluate(b.id));
       resumed += imageStuck.length;

@@ -4294,7 +4294,7 @@ body.workspace-shell-v2[data-zone="delivery"] .supplier-filters {
 .sup-actions-inner { display: flex; justify-content: flex-end; gap: 6px; white-space: nowrap; }
 .sup-detail-row td { padding: 0 13px 13px; background: var(--soft); }
 .sup-detail {
-  display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 34%);
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 280px);
   gap: 12px; padding: 12px; border: 1px solid var(--hairline);
   border-radius: var(--r-md); background: var(--surface);
 }
@@ -4314,7 +4314,27 @@ body.workspace-shell-v2[data-zone="delivery"] .supplier-filters {
 .sup-thumb { position: relative; border-radius: 10px; overflow: hidden; border: 1px solid var(--hairline); background: var(--soft); aspect-ratio: 3 / 4; }
 .sup-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .sup-thumb span { position: absolute; left: 5px; top: 5px; border-radius: 999px; background: rgba(15, 23, 42, .72); color: #fff; font-size: 9px; padding: 1px 5px; }
+.sup-thumb em,
+.delivery-preview-media [data-delivery-media-error] {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  color: #8a95a3;
+  background: #f2f5f8;
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.5;
+  text-align: center;
+}
+.sup-thumb em[hidden],
+.delivery-preview-media [data-delivery-media-error][hidden] { display: none; }
+.sup-thumb.is-media-unavailable { cursor: not-allowed; }
 .sup-detail-empty { display: grid; place-items: center; min-height: 120px; border: 1px dashed var(--hairline); border-radius: var(--r-md); color: var(--faint); font-size: 12px; }
+@media (max-width: 760px) {
+  .sup-detail { grid-template-columns: 1fr; }
+}
 .sup-return-note {
   display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--brand); font-style: normal;
@@ -6771,6 +6791,35 @@ body.workspace-shell-v2[data-zone="subscription"] .view-root {
   display: block;
   object-fit: cover !important;
 }
+.product-home-miaoda .home-inspiration-pager {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 18px 0 4px;
+}
+.product-home-miaoda .home-inspiration-pager[hidden] { display: none; }
+.product-home-miaoda .home-inspiration-pager button {
+  min-height: 36px;
+  padding: 8px 16px;
+  border: 1px solid #dce4ed;
+  border-radius: 999px;
+  color: #344054;
+  background: rgba(255, 255, 255, .92);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.product-home-miaoda .home-inspiration-pager button:hover,
+.product-home-miaoda .home-inspiration-pager button:focus-visible {
+  border-color: #9ebde2;
+  color: #235c9f;
+  outline: none;
+}
+.product-home-miaoda .home-inspiration-pager button:disabled { cursor: progress; opacity: .58; }
+.product-home-miaoda .home-inspiration-pager span { color: #858b95; font-size: 11px; }
 @media (max-width: 1080px) {
   .product-home-miaoda .home-inspiration-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
 }
@@ -7035,11 +7084,19 @@ body.workspace-shell-v2[data-zone="subscription"] .view-root {
   background: #0e1420;
   object-fit: contain;
 }
+.delivery-preview-video-frame { position: relative; min-height: 220px; }
+.delivery-preview-video-frame > [data-delivery-media-error] { border-radius: 14px; }
 .delivery-preview-media.is-gallery {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 300px));
+  justify-content: center;
   align-items: start;
   gap: 12px;
+}
+.delivery-preview-media.is-gallery button:only-child {
+  width: min(100%, 420px);
+  justify-self: center;
+  grid-column: 1 / -1;
 }
 .delivery-preview-media.is-gallery button {
   position: relative;
@@ -7050,6 +7107,10 @@ body.workspace-shell-v2[data-zone="subscription"] .view-root {
   border-radius: 12px;
   background: #fff;
   cursor: zoom-in;
+}
+.delivery-preview-media.is-gallery button.is-media-unavailable {
+  min-height: 220px;
+  cursor: not-allowed;
 }
 .delivery-preview-media.is-gallery img {
   width: 100%;

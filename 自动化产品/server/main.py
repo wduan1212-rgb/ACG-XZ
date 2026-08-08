@@ -8161,11 +8161,11 @@ def _community_verified_source_identity(author, req: CommunityPostReq):
 
 @app.get("/api/community/posts")
 def community_posts_list(
-    category: str = "", limit: int = 40, before: int = 0,
+    category: str = "", limit: int = 40, before: int = 0, beforeId: str = "",
     viewer=Depends(optional_member),
 ):
     page = store.list_community_posts(
-        category=category, limit=limit, before=before,
+        category=category, limit=limit, before=before, before_id=beforeId,
         viewer_id=(viewer or {}).get("id") or "",
     )
     return {
@@ -12274,4 +12274,10 @@ def favicon_ico():
 
 @app.get("/logo.png")
 def logo():
-    return no_cache_file(FRONTEND_DIR / "logo.png", media_type="image/png")
+    legacy_logo = FRONTEND_DIR / "logo.png"
+    stable_logo = (
+        legacy_logo
+        if legacy_logo.is_file()
+        else FRONTEND_DIR / "assets" / "brand" / "starmatrix-favicon.png"
+    )
+    return no_cache_file(stable_logo, media_type="image/png")

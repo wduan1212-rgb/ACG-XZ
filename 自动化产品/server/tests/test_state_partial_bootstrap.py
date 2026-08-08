@@ -86,6 +86,17 @@ class PartialStateBootstrapTest(unittest.TestCase):
         self.assertIn('if not filtered or "members" in requested_names:', endpoint)
         self.assertIn('X-Xingzhen-State-Mode', endpoint)
 
+    def test_state_scope_filter_is_one_indexed_join_not_one_check_per_document(self):
+        source = (SERVER_DIR / "store.py").read_text(encoding="utf-8")
+        state_for = source.split("def state_for(", 1)[1].split(
+            "# ---------- 社区灵感", 1
+        )[0]
+        self.assertIn("scopes_enforced = _resource_scopes_enforced_locked(conn)", state_for)
+        self.assertIn("actor_scope = (", state_for)
+        self.assertIn("JOIN resource_scopes AS rs", state_for)
+        self.assertIn("rs.scope_type=? AND rs.scope_id=?", state_for)
+        self.assertNotIn("_resource_scope_allows_actor_locked(", state_for)
+
     def test_supplier_bootstrap_returns_assets_with_source_time_without_leaking_productions(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store_without_global_module(tmp)

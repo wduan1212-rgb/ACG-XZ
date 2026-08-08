@@ -21,6 +21,47 @@ def load_isolated_store(tmpdir):
 
 
 class CommunityPostsTest(unittest.TestCase):
+    def test_cursor_keeps_posts_that_share_the_same_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            created_ids = []
+            for index in range(7):
+                post = store.create_community_post(
+                    f"member-{index}", f"创作者 {index}", "team-a", "canvas", f"canvas-{index}",
+                    f"同秒灵感 {index}", "", "", "视觉设计",
+                    [{"url": f"/api/files/member-{index}--same-time-{index}.png", "type": "image"}],
+                )
+                created_ids.append(post["id"])
+
+            shared_timestamp = 1_777_777_777_000
+            conn = store._connect()
+            try:
+                conn.execute(
+                    "UPDATE community_posts SET created_at=?, updated_at=?",
+                    (shared_timestamp, shared_timestamp),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            seen = []
+            before = 0
+            before_id = ""
+            while True:
+                page = store.list_community_posts(
+                    limit=3,
+                    before=before,
+                    before_id=before_id,
+                )
+                seen.extend(item["id"] for item in page["items"])
+                before = page["nextBefore"]
+                before_id = page["nextBeforeId"]
+                if not before:
+                    break
+
+            self.assertEqual(sorted(created_ids, reverse=True), seen)
+            self.assertEqual(len(seen), len(set(seen)))
+
     def test_create_list_filter_and_soft_delete(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)

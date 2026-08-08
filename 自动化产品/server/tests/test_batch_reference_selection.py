@@ -540,7 +540,8 @@ class BatchReferenceSelectionTest(unittest.TestCase):
         self.assertIn("activeDigitalJobCount()", orchestrator)
         self.assertIn('await refreshRemoteCollections(["batches", "productions", "jobs"])', orchestrator)
         self.assertIn("batchCollectionsRecovered", main)
-        self.assertIn('["productions", "batches", "jobs"].every', main)
+        self.assertIn("batchCollectionsReady", main)
+        self.assertIn('["productions", "sessions", "batches", "jobs"].every', main)
         self.assertIn("resumeActiveBatches()", main)
 
     def test_video_review_prefers_composed_output_and_uses_larger_preview(self):

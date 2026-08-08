@@ -97,12 +97,20 @@
 .agw-slist { display: flex; flex-direction: column; gap: 2px; }
 .agw-sitem {
   width: 100%; min-height: 38px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
-  text-align: left; border-radius: 0; padding: 8px 10px; border: 0; border-bottom: 1px solid rgba(132,152,255,.10); border-left: 2px solid transparent;
+  text-align: left; border-radius: 0; padding: 0; border: 0; border-bottom: 1px solid rgba(132,152,255,.10); border-left: 2px solid transparent;
   transition: all var(--t-fast); position: relative;
 }
 .agw-sitem:hover { background: rgba(255, 255, 255, .03); }
 .agw-sitem.is-active { background: rgba(124, 154, 255, .08); border-left-color: #7C9AFF; }
 .agw-sitem b { display: block; min-width: 0; font-size: 12px; color: var(--d-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agw-session-open {
+  min-width: 0; min-height: 38px; padding: 8px 4px 8px 9px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px;
+  border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer;
+}
+.agw-session-open:focus-visible { outline: 2px solid rgba(124, 154, 255, .72); outline-offset: -2px; }
+.agw-session-title { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.agw-session-title b { flex: 0 1 auto; }
 .agw-stime { justify-self: end; font-size: 10px; color: var(--d-faint); display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .agw-run-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(148,163,184,.45); box-shadow: 0 0 0 2px rgba(148,163,184,.10); }
 .agw-run-dot.is-running { background: #38d6ad; box-shadow: 0 0 0 2px rgba(56,214,173,.16), 0 0 10px rgba(56,214,173,.35); }
@@ -1037,22 +1045,35 @@
 .agw-sugs-head .link-btn { color: #9BB0FF; font-size: 11px; }
 .agw-sugs-head .link-btn:disabled { opacity: .5; }
 
-/* 会话操作（hover 显示） */
+/* 会话操作：每行固定三点菜单，不在 hover 中隐藏关键操作。 */
 .agw-sitem { cursor: pointer; }
-.agw-sacts {
-  position: absolute; right: 7px; top: 50%; transform: translateY(-50%); display: flex; gap: 4px;
-  opacity: 0; transition: opacity var(--t-fast);
+.agw-session-more {
+  width: 28px; height: 28px; margin-right: 5px; display: grid; place-items: center;
+  border: 0; border-radius: 7px; background: transparent; color: var(--d-muted); cursor: pointer;
+  transition: color var(--t-fast), background var(--t-fast);
 }
-.agw-sitem:hover .agw-sacts { opacity: 1; }
-.agw-sitem:hover .agw-stime { opacity: 0; }
-.sact {
-  width: 22px; height: 22px; border-radius: 6px;
-  display: grid; place-items: center; color: var(--d-muted);
-  background: rgba(255, 255, 255, .07); border: 1px solid var(--ag-line);
-  transition: all var(--t-fast);
+.agw-session-more:hover,
+.agw-session-more:focus-visible,
+.agw-sitem.is-menu-open .agw-session-more {
+  outline: 0; color: #fff; background: rgba(255, 255, 255, .10);
 }
-.sact:hover { color: #fff; background: rgba(255, 255, 255, .14); }
-.sact.danger:hover { color: #FF8787; background: rgba(224, 49, 49, .18); border-color: rgba(224, 49, 49, .4); }
+.agw-session-menu {
+  position: absolute; z-index: 30; top: 34px; right: 5px; width: 142px; display: none; padding: 5px;
+  border: 1px solid rgba(148, 163, 184, .22); border-radius: 10px;
+  background: rgba(18, 22, 34, .98); box-shadow: 0 16px 38px rgba(0, 0, 0, .34);
+}
+.agw-sitem.is-menu-open { z-index: 31; }
+.agw-sitem.is-menu-open .agw-session-menu { display: grid; }
+.agw-session-menu > button {
+  width: 100%; min-height: 32px; display: flex; align-items: center; gap: 8px; padding: 6px 9px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--d-text); font: inherit;
+  font-size: 11.5px; text-align: left; cursor: pointer;
+}
+.agw-session-menu > button:hover,
+.agw-session-menu > button:focus-visible { outline: 0; background: rgba(255, 255, 255, .09); }
+.agw-session-menu > button.is-danger { color: #FF9A9A; }
+.agw-session-menu > button.is-danger:hover,
+.agw-session-menu > button.is-danger:focus-visible { background: rgba(224, 49, 49, .17); }
 
 /* 计划卡 · 随机主题模式 */
 .agc-random {
@@ -1405,6 +1426,92 @@ body.workspace-shell-v2[data-zone="agent"] .topbar .top-btn:hover {
   border-color: #c9d0db;
   background: #f5f6f8;
   color: #20242b;
+}
+/* 统一左栏与画布/视频会话保持同一语言：三点常显，但不额外画按钮框。 */
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell .wsctx-row-more {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: #747b85;
+  opacity: 1;
+  pointer-events: auto;
+  box-shadow: none;
+}
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell .wsctx-row-more:hover,
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell .wsctx-row-more:focus-visible,
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell.is-menu-open .wsctx-row-more {
+  background: rgba(59, 72, 92, .07);
+  color: #2f3742;
+  box-shadow: none;
+}
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell.is-active {
+  overflow: visible;
+  isolation: isolate;
+  background: #eef0f3;
+  box-shadow: 0 8px 20px rgba(40, 52, 70, .09);
+}
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell.is-active::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 1px;
+  border-radius: 9px;
+  background: linear-gradient(105deg, transparent 0%, rgba(91, 130, 221, .02) 30%, rgba(91, 130, 221, .12) 49%, rgba(255, 255, 255, .34) 56%, transparent 76%);
+  background-size: 240% 100%;
+  pointer-events: none;
+  animation: batch-session-lightflow 3.4s ease-in-out infinite;
+}
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell.is-active > .wsctx-row,
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell.is-active > .wsctx-row-more {
+  position: relative;
+  z-index: 1;
+}
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell.is-menu-open {
+  z-index: 90;
+}
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell .wsctx-row-menu {
+  position: absolute;
+  z-index: 100;
+  top: 30px;
+  right: 0;
+  width: 176px;
+  gap: 1px;
+  padding: 5px;
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(31, 43, 61, .14);
+}
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell .wsctx-row-menu > button {
+  min-height: 30px;
+  padding-block: 5px;
+}
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell .wsctx-menu-label {
+  padding-top: 6px;
+}
+body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell .wsctx-menu-groups {
+  max-height: 92px;
+}
+@keyframes batch-session-lightflow {
+  0% { background-position: 115% 0; opacity: .42; }
+  50% { opacity: .82; }
+  100% { background-position: -115% 0; opacity: .42; }
+}
+
+/* 旧独立工作台仍可单独运行，三点也不增加额外框感。 */
+.agw-session-more {
+  border: 0;
+  background: transparent;
+  color: #747b85;
+  box-shadow: none;
+}
+.agw-sitem.is-active {
+  background: #eef0f3;
+  box-shadow: 0 8px 20px rgba(40, 52, 70, .09);
+}
+@media (prefers-reduced-motion: reduce) {
+  body.workspace-shell-v2[data-zone="agent"] .wsctx-batch-session-shell.is-active::after {
+    animation: none;
+  }
 }
 body.workspace-shell-v2[data-zone="agent"] .agent-shell {
   --ag-bg: #f5f6f8;

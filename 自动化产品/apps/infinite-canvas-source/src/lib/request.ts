@@ -91,6 +91,24 @@ export function isCanvasRequestCancelled(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+const CANVAS_CONNECTIVITY_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+/**
+ * A temporary browser-to-platform disconnect is not a provider failure. Once a
+ * background generation job has been accepted, callers must keep its local
+ * placeholder recoverable instead of inviting a second paid submission.
+ */
+export function isCanvasConnectivityError(error: unknown): boolean {
+  if (error instanceof CanvasRequestError) {
+    if (error.code === "timeout") return true;
+    return error.code === "http" && CANVAS_CONNECTIVITY_HTTP_STATUSES.has(error.status);
+  }
+  if (typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "TimeoutError") return true;
+  if (error instanceof TypeError) return true;
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /(?:failed to fetch|network(?:error)?|load failed|fetch failed|连接.*(?:中断|失败)|网络.*(?:中断|失败)|timeout|timed out)/i.test(message);
+}
+
 export function throwIfCanvasRequestAborted(
   signal: AbortSignal,
   label = "任务",

@@ -29,6 +29,7 @@ import { runConcurrentQueue } from "@/lib/concurrencyQueue";
 import {
   CanvasRequestError,
   canvasRequestUserMessage,
+  isCanvasConnectivityError,
   isCanvasRequestCancelled,
   throwIfCanvasRequestAborted,
 } from "@/lib/request";
@@ -91,6 +92,8 @@ export function useStudioActions(projectId: string) {
   useEffect(() => {
     let disposed = false;
     const recoveryControllers = new Map<string, AbortController>();
+    const recoveryRetry = new Map<string, { attempt: number; nextAt: number }>();
+    const retryDelays = [2_000, 5_000, 10_000, 20_000, 30_000] as const;
 
     const settleLinkedState = (itemId: string) => {
       const state = useStore.getState();
@@ -153,14 +156,38 @@ export function useStudioActions(projectId: string) {
           },
         } as Partial<CanvasItem>);
         await flushCanvasProjectLocal(projectId);
+        recoveryRetry.delete(item.jobId);
         settleLinkedState(item.id);
       } catch (error) {
         if (disposed || isCanvasRequestCancelled(error)) return;
         if (
           error instanceof CanvasRequestError
           && error.status === 404
-          && Date.now() - Number(item.createdAt || 0) < 30_000
-        ) return;
+          && Date.now() - Number(item.createdAt || 0) < 120_000
+        ) {
+          const retry = recoveryRetry.get(item.jobId) ?? { attempt: 0, nextAt: 0 };
+          recoveryRetry.set(item.jobId, {
+            attempt: retry.attempt + 1,
+            nextAt: Date.now() + retryDelays[Math.min(retry.attempt, retryDelays.length - 1)],
+          });
+          return;
+        }
+        if (isCanvasConnectivityError(error)) {
+          const retry = recoveryRetry.get(item.jobId) ?? { attempt: 0, nextAt: 0 };
+          recoveryRetry.set(item.jobId, {
+            attempt: retry.attempt + 1,
+            nextAt: Date.now() + retryDelays[Math.min(retry.attempt, retryDelays.length - 1)],
+          });
+          updateItem(projectId, item.id, {
+            loading: true,
+            generationStatus: "running",
+            label: "连接暂时中断，后台任务仍在继续",
+            error: undefined,
+          } as Partial<CanvasItem>);
+          await flushCanvasProjectLocal(projectId).catch(() => undefined);
+          return;
+        }
+        recoveryRetry.delete(item.jobId);
         const message = canvasRequestUserMessage(error);
         updateItem(projectId, item.id, {
           loading: false,
@@ -184,19 +211,29 @@ export function useStudioActions(projectId: string) {
           && item.loading
           && item.provenance?.backgroundJob === true
           && item.jobId
+          && Date.now() >= (recoveryRetry.get(item.jobId)?.nextAt ?? 0)
         ) void recoverOne(item);
       }
     };
 
     scan();
-    const interval = window.setInterval(scan, 1_500);
+    const interval = window.setInterval(scan, 2_000);
+    const resumeAfterReconnect = () => {
+      for (const [jobId, retry] of recoveryRetry) {
+        recoveryRetry.set(jobId, { ...retry, nextAt: 0 });
+      }
+      scan();
+    };
+    window.addEventListener("online", resumeAfterReconnect);
     return () => {
       disposed = true;
       window.clearInterval(interval);
+      window.removeEventListener("online", resumeAfterReconnect);
       for (const controller of recoveryControllers.values()) {
         controller.abort(new DOMException("canvas closed", "AbortError"));
       }
       recoveryControllers.clear();
+      recoveryRetry.clear();
     };
   }, [flushCanvasProjectLocal, projectId, recordFailure, updateItem, updateMessage, updateTask]);
 
@@ -443,15 +480,18 @@ export function useStudioActions(projectId: string) {
         results.forEach((result, index) => {
           if (result.status !== "rejected") return;
           const job = jobs[index];
-          const cancelled = isCanvasRequestCancelled(result.reason);
-          const error = cancelled
+          const continuingInBackground = isCanvasRequestCancelled(result.reason)
+            || isCanvasConnectivityError(result.reason);
+          const error = continuingInBackground
             ? CANVAS_INTERRUPTED_TASK_TEXT
             : canvasRequestUserMessage(result.reason);
-          (cancelled ? continuing : failed).push(job.index);
-          updateItem(projectId, job.id, cancelled ? {
+          (continuingInBackground ? continuing : failed).push(job.index);
+          updateItem(projectId, job.id, continuingInBackground ? {
             loading: true,
             generationStatus: "running",
-            label: "服务器后台编辑中",
+            label: isCanvasConnectivityError(result.reason)
+              ? "连接暂时中断，后台编辑仍在继续"
+              : "服务器后台编辑中",
             error: undefined,
           } as Partial<CanvasItem> : {
             loading: false,
@@ -460,11 +500,11 @@ export function useStudioActions(projectId: string) {
             error,
           } as Partial<CanvasItem>);
           job.task.stop({
-            status: cancelled ? "running" : "failed",
-            progress: cancelled ? 0.08 : 1,
+            status: continuingInBackground ? "running" : "failed",
+            progress: continuingInBackground ? 0.08 : 1,
             error,
             resultItemIds: [job.id],
-            label: cancelled
+            label: continuingInBackground
               ? `图 ${job.index + 1} · 后台编辑中`
               : `图 ${job.index + 1} · 编辑失败`,
           });
@@ -489,7 +529,7 @@ export function useStudioActions(projectId: string) {
             text: continuing.length && !failed.length
               ? "服务器继续编辑中，重新进入本项目后会自动恢复。"
               : "定向编辑未完成，已保留原参考图且没有产出无关新图，请稍后重试。",
-            status: "error",
+            status: continuing.length && !failed.length ? "thinking" : "error",
           });
           if (failed.length) recordFailure(projectId);
         }
@@ -689,15 +729,18 @@ export function useStudioActions(projectId: string) {
         const continuing: string[] = [];
         results.forEach((result, index) => {
           if (result.status !== "rejected") return;
-          const cancelled = isCanvasRequestCancelled(result.reason);
-          const message = cancelled
+          const continuingInBackground = isCanvasRequestCancelled(result.reason)
+            || isCanvasConnectivityError(result.reason);
+          const message = continuingInBackground
             ? "服务器继续生成中，重新进入本项目后会自动恢复。"
             : canvasRequestUserMessage(result.reason);
-          (cancelled ? continuing : failures).push(message);
-          updateItem(projectId, ids[index], cancelled ? {
+          (continuingInBackground ? continuing : failures).push(message);
+          updateItem(projectId, ids[index], continuingInBackground ? {
             loading: true,
             generationStatus: "running",
-            label: "服务器后台生成中",
+            label: isCanvasConnectivityError(result.reason)
+              ? "连接暂时中断，后台生成仍在继续"
+              : "服务器后台生成中",
             error: undefined,
           } as Partial<CanvasItem> : {
             loading: false,

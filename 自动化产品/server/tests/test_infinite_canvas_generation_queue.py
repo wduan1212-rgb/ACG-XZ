@@ -68,6 +68,10 @@ def test_abort_timeout_499_and_413_are_recognizable():
         assert.equal(request.canvasHttpError(413, "", "图片").code, "payload-too-large");
         assert.match(request.canvasHttpError(413, "", "图片").message, /过大/);
         assert.equal(request.canvasHttpError(499, "", "图片").code, "cancelled");
+        assert.equal(request.isCanvasConnectivityError(request.canvasHttpError(503, "", "画布")), true);
+        assert.equal(request.isCanvasConnectivityError(request.canvasHttpError(429, "", "画布")), true);
+        assert.equal(request.isCanvasConnectivityError(request.canvasHttpError(401, "", "画布")), false);
+        assert.equal(request.isCanvasConnectivityError(new TypeError("Failed to fetch")), true);
 
         const caller = new AbortController();
         const cancelled = request.runAbortableRequest(
@@ -285,6 +289,11 @@ def test_generation_source_contract_persists_progressive_results():
     assert "backgroundJob: true" in source
     assert "waitCanvasGenerationJob" in source
     assert "服务器继续生成中" in source
+    assert "isCanvasConnectivityError" in source
+    assert "连接暂时中断，后台任务仍在继续" in source
+    assert "Date.now() - Number(item.createdAt || 0) < 120_000" in source
+    assert "retryDelays = [2_000, 5_000, 10_000, 20_000, 30_000]" in source
+    assert 'window.addEventListener("online", resumeAfterReconnect)' in source
     assert "resultItemIds: jobs.map((job) => job.id)" in source
     assert "resultItemIds: [job.id]" in source
     assert "resultItemIds: ids" in source
@@ -299,6 +308,8 @@ def test_generation_source_contract_persists_progressive_results():
     assert 'status: continuing.length > 0 ? "thinking"' in source
     assert 'done.length === count ? "done" : done.length > 0 ? "partial" : "error"' in source
     assert "Promise.allSettled" not in source
+    api_source = (CANVAS_ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+    assert 'throw canvasHttpError(422, String(job.error || "图片生成失败")' in api_source
 
 
 def load_tests(loader, tests, pattern):

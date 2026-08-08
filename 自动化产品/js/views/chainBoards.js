@@ -9,10 +9,10 @@ import { productionAssets as accountAssets } from "../domain/accounts.js";
 import { urlFor, thumbHtml, addAssetFromDataUrl, replaceAssetBlob, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
 import { activeProviderFor, imageApiConfigured, providerKeyFor } from "../api/providers.js";
-import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260806-v140-platform-stability-5";
-import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260806-v140-platform-stability-5";
+import { maybeAdvanceAfterInput } from "../agent/orchestrator.js?v=20260808-v140-platform-stability-15";
+import { toast, withLoading, openLightbox, confirmModal } from "../ui/components.js?v=20260808-v140-platform-stability-15";
 import { currentRoute, go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260806-v140-platform-stability-5";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260808-v140-platform-stability-15";
 
 const modeBySlot = new Map(); // productionId -> "in"
 const MAX_IMAGE_REFS = 5;

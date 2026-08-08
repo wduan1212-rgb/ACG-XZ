@@ -50,7 +50,7 @@ if ! [[ "$MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
   exit 2
 fi
 
-for required_tool in node ffmpeg ffprobe git; do
+for required_tool in node ffmpeg ffprobe git lsof; do
   if ! command -v "$required_tool" >/dev/null 2>&1; then
     echo "Secret-free full regression requires $required_tool on PATH." >&2
     exit 2

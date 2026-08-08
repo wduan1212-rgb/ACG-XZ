@@ -240,6 +240,64 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertEqual(result["batchId"], "batch-preserved")
         self.assertTrue(result["tasksUntouched"])
 
+    def test_refresh_classifies_empty_image_shell_for_redraft_and_restores_thinking(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { state } = await import("./js/core/store.js");
+            const { classifyHydratedBatchRecovery, hydratedBatchThinkingState } = await import("./js/agent/orchestrator.js");
+            state.ui.currentMemberId = "creator-one";
+            state.ui.activeSessionId = "session-refresh";
+            state.sessions = [{ id:"session-refresh", ownerId:"creator-one", messages:[] }];
+            state.batches = [{
+              id:"batch-refresh", sessionId:"session-refresh", ownerId:"creator-one",
+              phase:"generating", createdAt:Date.now(),
+              productionIds:["empty", "prompted", "complete", "provider"]
+            }, {
+              id:"batch-history", sessionId:"session-refresh", ownerId:"creator-one",
+              phase:"review", createdAt:Date.now() - 60_000,
+              productionIds:["history-review", "history-failed"]
+            }];
+            state.productions = [
+              { id:"empty", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[] } } },
+              { id:"prompted", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[{ prompt:"图卡提示词", assetId:null }] } } },
+              { id:"complete", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[{ prompt:"已完成", assetId:"asset-1" }] } } },
+              { id:"provider", ownerId:"creator-one", mode:"视频", stage:"workshop", stageStatus:"running", artifacts:{} },
+              { id:"stale", ownerId:"creator-one", mode:"图文", stage:"images", stageStatus:"running", artifacts:{ images:{ items:[] } } },
+              { id:"history-review", ownerId:"creator-one", mode:"图文", stage:"review", stageStatus:"pending", artifacts:{} },
+              { id:"history-failed", ownerId:"creator-one", mode:"图文", stage:"script", stageStatus:"failed", artifacts:{} },
+            ];
+            state.jobs = [{ id:"job-provider", productionId:"provider", status:"submitted", providerRef:"remote-task" }];
+            const batch = state.batches[0];
+            const classified = classifyHydratedBatchRecovery(batch);
+            const stale = classifyHydratedBatchRecovery({
+              id:"batch-stale", createdAt:Date.now() - 7 * 60 * 60 * 1000,
+              productionIds:["stale"]
+            });
+            const thinking = hydratedBatchThinkingState("session-refresh");
+            console.log(JSON.stringify({
+              draft:classified.draft.map(item => item.id),
+              images:classified.images.map(item => item.id),
+              settle:classified.settle.map(item => item.id),
+              waiting:classified.waiting.map(item => item.id),
+              stale:stale.stale.map(item => item.id),
+              thinking,
+            }));
+            """
+        )
+        self.assertEqual(result["draft"], ["empty"])
+        self.assertEqual(result["images"], ["prompted"])
+        self.assertEqual(result["settle"], ["complete"])
+        self.assertEqual(result["waiting"], ["provider"])
+        self.assertEqual(result["stale"], ["stale"])
+        self.assertTrue(result["thinking"]["active"])
+        self.assertIn("刷新后正在接续起草", result["thinking"]["step"])
+        self.assertEqual(result["thinking"]["total"], 4)
+        self.assertEqual(result["thinking"]["batchIds"], ["batch-refresh"])
+
     def test_polling_sources_do_not_full_save_or_full_render(self):
         jobs = (APP_DIR / "js/api/jobs.js").read_text(encoding="utf-8")
         view = (APP_DIR / "js/agent/view.js").read_text(encoding="utf-8")
@@ -254,6 +312,32 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertIn("putMany(collection, items)", store)
         self.assertIn("remote.putDocuments(collection, items)", store)
         self.assertIn("return putCollection(name, items);", remote)
+
+    def test_batch_image_recovery_persists_plan_and_each_output_before_continuing(self):
+        source = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+        self.assertIn('persistRecoveredDocuments("productions", p)', source)
+        self.assertIn(
+            "await persistBatchProductionCheckpoint(p);\n      await runBatchImagesToReview",
+            source,
+        )
+        loading = source.index('it.status = "loading";')
+        submit = source.index("const req = await provider.submit", loading)
+        checkpoint = source.index("await persistBatchProductionCheckpoint(p);", loading)
+        self.assertLess(checkpoint, submit)
+        asset = source.index("it.assetId = a.id;", submit)
+        completed = source.index("await persistBatchProductionCheckpoint(p);", asset)
+        self.assertGreater(completed, asset)
+        recovery = source.index("async function runBatchImagesToReview")
+        review = source.index('setStage(p, "review", "pending");', recovery)
+        terminal_checkpoint = source.index(
+            "await persistBatchProductionCheckpoint(p);", review
+        )
+        self.assertGreater(terminal_checkpoint, review)
+        self.assertIn("const settledImages = hydration.settle;", source)
+        self.assertIn(
+            "runPool(settledImages, async p => {\n        setStage(p, \"review\", \"pending\");",
+            source,
+        )
 
 
 if __name__ == "__main__":

@@ -4,17 +4,17 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260806-v140-platform-stability-5";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260808-v140-platform-stability-15";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
-  resetPlanReferences, prunePlanReferences, agentSay
-} from "./orchestrator.js?v=20260806-v140-platform-stability-5";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260806-v140-platform-stability-5";
+  resetPlanReferences, prunePlanReferences, agentSay, hydratedBatchThinkingState
+} from "./orchestrator.js?v=20260808-v140-platform-stability-15";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260808-v140-platform-stability-15";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260806-v140-platform-stability-5";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260808-v140-platform-stability-15";
 import { deliver } from "../domain/delivery.js";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
@@ -265,6 +265,7 @@ function schedule({ cards = false, structural = false, productionId = "" } = {})
       if (missing) renderBoard();
     }
     renderPhase();
+    renderThinking();
     _needCards = _needStructure = false;
     _needRows.clear();
   });
@@ -279,16 +280,29 @@ function renderSessions() {
     <div class="agw-slist">${sessions.map(s => {
       const last = s.messages[s.messages.length - 1];
       const hasActive = state.batches.some(b => ownedBy(b) && b.sessionId === s.id && b.phase !== "done");
+      const isActive = s.id === state.ui.activeSessionId;
       const hint = last ? textOf(last) : "新会话";
-      return `<div class="agw-sitem ${s.id === state.ui.activeSessionId ? "is-active" : ""}" data-session="${s.id}" role="button" tabindex="0" title="${esc(hint)}">
-        <b>${esc(s.title)}</b>
-        <span class="agw-stime"><i class="agw-run-dot ${hasActive ? "is-running" : ""}" title="${hasActive ? "运行中" : "未运行"}"></i>${timeAgo(s.createdAt)}</span>
-        <span class="agw-sacts">
-          <button class="sact" data-srename="${s.id}" title="重命名">${icon("edit", 12)}</button>
-          <button class="sact danger" data-sdel="${s.id}" title="删除会话">${icon("trash", 12)}</button>
-        </span>
+      const menuId = `agw-session-menu-${s.id}`;
+      return `<div class="agw-sitem ${isActive ? "is-active" : ""}" data-session-shell="${s.id}">
+        <button class="agw-session-open" type="button" data-session="${s.id}" title="${esc(hint)}" ${isActive ? 'aria-current="page"' : ""}>
+          <span class="agw-session-title"><b>${esc(s.title)}</b></span>
+          <span class="agw-stime"><i class="agw-run-dot ${hasActive ? "is-running" : ""}" title="${hasActive ? "运行中" : "未运行"}"></i>${timeAgo(s.createdAt)}</span>
+        </button>
+        <button class="agw-session-more" type="button" data-session-menu-toggle="${s.id}" aria-haspopup="menu" aria-expanded="false" aria-controls="${menuId}" aria-label="${esc(s.title)}的更多操作" title="更多操作">${icon("more", 15)}</button>
+        <div class="agw-session-menu" id="${menuId}" role="menu" aria-label="${esc(s.title)}的会话操作">
+          <button type="button" role="menuitem" data-srename="${s.id}">${icon("edit", 13)}<span>重命名</span></button>
+          <button type="button" role="menuitem" class="is-danger" data-sdel="${s.id}">${icon("trash", 13)}<span>删除会话</span></button>
+        </div>
       </div>`;
     }).join("")}</div>`;
+}
+
+function closeSessionMenus(except = null) {
+  $$("[data-session-shell].is-menu-open", rootEl || document).forEach(item => {
+    if (item === except) return;
+    item.classList.remove("is-menu-open");
+    item.querySelector("[data-session-menu-toggle]")?.setAttribute("aria-expanded", "false");
+  });
 }
 
 function textOf(m) {
@@ -313,22 +327,45 @@ function renderMsgs(scroll = false) {
   } else if (scroll) el.scrollTop = el.scrollHeight;
 }
 
+function visibleThinkingState() {
+  const transient = thinkingBySession.get(state.ui.activeSessionId);
+  const hydrated = hydratedBatchThinkingState(state.ui.activeSessionId);
+  if (transient?.active) {
+    return {
+      ...transient,
+      done: hydrated.active ? hydrated.done : 0,
+      total: hydrated.active ? hydrated.total : 0,
+      batchIds: hydrated.active ? hydrated.batchIds : [],
+    };
+  }
+  if (hydrated.active) {
+    return {
+      active: true,
+      steps: hydrated.step ? [hydrated.step] : [],
+      done: hydrated.done,
+      total: hydrated.total,
+      batchIds: hydrated.batchIds,
+    };
+  }
+  return transient || { active: false, steps: [] };
+}
+
 function thinkStepsHtml() {
-  const steps = (thinkingBySession.get(state.ui.activeSessionId)?.steps || []).slice(-4);
+  const steps = (visibleThinkingState().steps || []).slice(-4);
   return steps.map((s, i) => `<div class="think-step ${i === steps.length - 1 ? "cur" : "done"}">${i === steps.length - 1 ? `<span class="ts-dot spin"></span>` : icon("check", 11, "ok")}<span>${esc(s)}</span></div>`).join("")
     || `<div class="think-step cur"><span class="ts-dot spin"></span><span>整理思路…</span></div>`;
 }
 function thinkProgHtml() {
-  const bs = currentSessionBatches().filter(b => b.phase !== "done");
-  if (!bs.length) return "";
-  const all = bs.flatMap(b => batchProds(b));
-  const done = all.filter(p => p.stage === "delivered").length;
-  const pct = all.length ? Math.round(done / all.length * 100) : 0;
-  return `<div class="think-prog"><span>批次进度 ${done}/${all.length}</span><i><b style="width:${pct}%"></b></i></div>`;
+  const cur = visibleThinkingState();
+  const total = Math.max(0, Number(cur?.total || 0));
+  if (!cur?.active || !total) return "";
+  const done = Math.max(0, Math.min(total, Number(cur.done || 0)));
+  const pct = Math.round(done / total * 100);
+  return `<div class="think-prog"><span>本轮批次 ${done}/${total}</span><i><b style="width:${pct}%"></b></i></div>`;
 }
 function renderThinking() {
   const t = $("#agwThinking"); if (!t) return;
-  const cur = thinkingBySession.get(state.ui.activeSessionId);
+  const cur = visibleThinkingState();
   if (!cur?.active) { t.innerHTML = ""; return; }
   // 已存在面板：只就地更新步骤/进度，避免整块重渲染导致动效重启「一跳一跳」
   const panel = t.querySelector(".think-panel");
@@ -521,6 +558,7 @@ function renderBoard() {
       try {
         await removeWithMotion(b.closest(".mb-group"), () => deleteBatch(batch.id));
         renderPhase();
+        renderThinking();
       } catch (err) {
         toast("服务器删除失败，请刷新或重新登录后再试", "error");
       }
@@ -555,7 +593,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260806-v140-platform-stability-5");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260808-v140-platform-stability-15");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -647,6 +685,18 @@ function wire(root) {
 
   // 全局委托
   shell.addEventListener("click", async e => {
+    const sessionMenuToggle = e.target.closest("[data-session-menu-toggle]");
+    if (sessionMenuToggle) {
+      e.stopPropagation();
+      const sessionShell = sessionMenuToggle.closest("[data-session-shell]");
+      const opening = !sessionShell?.classList.contains("is-menu-open");
+      closeSessionMenus(opening ? sessionShell : null);
+      sessionShell?.classList.toggle("is-menu-open", opening);
+      sessionMenuToggle.setAttribute("aria-expanded", opening ? "true" : "false");
+      return;
+    }
+    if (!e.target.closest(".agw-session-menu")) closeSessionMenus();
+
     const exit = e.target.closest('[data-agw="exit"]');
     if (exit) { go("overview"); return; }
     if (e.target.closest('[data-agw="new-session"]')) { scrollTopOnce = true; newSession(); scrollMsgsTopSoon(); return; }
@@ -655,6 +705,7 @@ function wire(root) {
     // 会话重命名 / 删除（先于会话切换判断）
     const srn = e.target.closest("[data-srename]");
     if (srn) {
+      closeSessionMenus();
       const s2 = state.sessions.find(x => x.id === srn.dataset.srename);
       const name = await promptModal({ title: "重命名会话", value: s2?.title || "", placeholder: "会话名称" });
       if (name) { renameSession(srn.dataset.srename, name); renderSessions(); }
@@ -662,6 +713,7 @@ function wire(root) {
     }
     const sdl = e.target.closest("[data-sdel]");
     if (sdl) {
+      closeSessionMenus();
       const ok = await confirmModal({ title: "删除这个会话？", body: "对话记录会被删除；批次与任务数据保留，可在看板/单号创作里继续查看。", danger: true, okText: "删除" });
       if (ok) {
         try {
@@ -673,6 +725,8 @@ function wire(root) {
       }
       return;
     }
+
+    if (e.target.closest(".agw-session-menu")) return;
 
     const sess = e.target.closest("[data-session]");
     if (sess) { openAgentSession(sess.dataset.session); return; }
@@ -1080,6 +1134,34 @@ function wire(root) {
   shell.addEventListener("input", updatePlanField);
   shell.addEventListener("change", updatePlanField);
 
+  shell.addEventListener("keydown", e => {
+    const openShell = e.target.closest?.("[data-session-shell]");
+    if (!openShell) return;
+    if (e.key === "Escape" && openShell.classList.contains("is-menu-open")) {
+      e.preventDefault();
+      const toggle = openShell.querySelector("[data-session-menu-toggle]");
+      closeSessionMenus();
+      toggle?.focus();
+      return;
+    }
+    const toggle = e.target.closest?.("[data-session-menu-toggle]");
+    if (toggle && e.key === "ArrowDown") {
+      e.preventDefault();
+      closeSessionMenus(openShell);
+      openShell.classList.add("is-menu-open");
+      toggle.setAttribute("aria-expanded", "true");
+      openShell.querySelector(".agw-session-menu [role='menuitem']")?.focus();
+      return;
+    }
+    const menuItem = e.target.closest?.(".agw-session-menu [role='menuitem']");
+    if (!menuItem || !["ArrowDown", "ArrowUp"].includes(e.key)) return;
+    e.preventDefault();
+    const items = [...openShell.querySelectorAll(".agw-session-menu [role='menuitem']")];
+    const index = items.indexOf(menuItem);
+    const step = e.key === "ArrowDown" ? 1 : -1;
+    items[(index + step + items.length) % items.length]?.focus();
+  });
+
   wireDrops();
 }
 
@@ -1319,6 +1401,7 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
       sync();
     }
   });
+
 }
 
 function openPlanContentEditor(mid, accountId, kind = "copy") {

@@ -1,7 +1,7 @@
 import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, refreshRemoteCollections, refreshDeliveryMetrics } from "../core/store.js";
-import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260806-v140-platform-stability-5";
+import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260808-v140-platform-stability-15";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliveryViewsSummary } from "../domain/delivery.js";
