@@ -111,6 +111,79 @@ class ProductionRecoveryTest(unittest.TestCase):
             )
             conn.commit()
 
+    def test_current_snapshot_contract_accepts_20_and_rejects_legacy_18(self):
+        current_names = frozenset(runtime_snapshot.PRODUCTION_COMPLETE_COMPONENTS)
+        legacy_names = production_recovery.HISTORICAL_COMPLETE_COMPONENTS_V140
+        self.assertEqual(20, len(current_names))
+        self.assertEqual(
+            current_names,
+            store.PRIVATE_MEDIA_RUNTIME_SNAPSHOT_COMPLETE_COMPONENTS,
+        )
+        self.assertEqual(
+            current_names - {"systemd-main-dropins", "systemd-video-dropins"},
+            legacy_names,
+        )
+        self.assertEqual(18, len(legacy_names))
+
+        identity, backup, current = self._bindings()
+        common = {
+            "expected_identity": identity,
+            "expected_schema_version": store.LATEST_SCHEMA_MIGRATION_VERSION,
+            "backup_binding": backup,
+            "created_by": "test-operator",
+            "dry_run": True,
+        }
+        with patch.dict(
+            os.environ,
+            {"ACG_RUNTIME_MODE": "production", "ACG_READ_ONLY": "1"},
+            clear=False,
+        ):
+            resource = production_recovery.settle_resource_scopes_incremental(
+                runtime_snapshot_binding=current,
+                **common,
+            )
+            tenant = production_recovery.settle_tenant_adoptions(
+                runtime_snapshot_binding=current,
+                **common,
+            )
+            self.assertTrue(resource["ok"])
+            self.assertTrue(tenant["ok"])
+            with self.assertRaisesRegex(
+                production_recovery.ProductionRecoveryError,
+                "canvas_recovery_plan_fields_invalid",
+            ):
+                production_recovery.recover_canvas_blobs_reviewed(
+                    plan={}, plan_sha256="a" * 64,
+                    runtime_snapshot_binding=current,
+                    **common,
+                )
+
+            legacy_current_binding = {
+                **current,
+                "componentNames": sorted(legacy_names),
+            }
+            for function in (
+                production_recovery.settle_resource_scopes_incremental,
+                production_recovery.settle_tenant_adoptions,
+            ):
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError,
+                    "production runtime snapshot component set is incomplete",
+                ):
+                    function(
+                        runtime_snapshot_binding=legacy_current_binding,
+                        **common,
+                    )
+            with self.assertRaisesRegex(
+                store.StoreNotReadyError,
+                "production runtime snapshot component set is incomplete",
+            ):
+                production_recovery.recover_canvas_blobs_reviewed(
+                    plan={}, plan_sha256="a" * 64,
+                    runtime_snapshot_binding=legacy_current_binding,
+                    **common,
+                )
+
     def _insert_scoped_doc(self, collection, resource_id, owner_id, payload,
                            *, scope_type="member", scope_id=None,
                            captured_at=None):

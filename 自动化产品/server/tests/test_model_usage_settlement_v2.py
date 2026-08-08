@@ -236,6 +236,34 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
         self.assertEqual(0, replay["insertedRows"])
         self.assertEqual(before, logical_database_dump(store.DB_PATH))
 
+    def test_production_binding_accepts_20_and_rejects_legacy_18(self):
+        plan, plan_sha256, current = self._plan()
+        self.assertEqual(20, len(current["componentNames"]))
+        with patch.dict(
+            os.environ,
+            {"ACG_RUNTIME_MODE": "production", "ACG_READ_ONLY": "1"},
+            clear=False,
+        ):
+            preview = self._apply(
+                plan, plan_sha256, current, dry_run=True,
+            )
+            self.assertEqual(5, preview["plannedRows"])
+
+            legacy_current_binding = {
+                **current,
+                "componentNames": sorted(
+                    set(current["componentNames"])
+                    - {"systemd-main-dropins", "systemd-video-dropins"}
+                ),
+            }
+            with self.assertRaisesRegex(
+                store.StoreNotReadyError,
+                "production runtime snapshot component set is incomplete",
+            ):
+                self._apply(
+                    plan, plan_sha256, legacy_current_binding, dry_run=True,
+                )
+
     def test_missing_extra_or_changed_hash_fails_closed(self):
         plan, _plan_sha256, snapshot = self._plan()
         missing = {**plan, "entries": plan["entries"][:-1]}

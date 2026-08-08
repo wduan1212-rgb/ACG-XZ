@@ -100,7 +100,8 @@ def runtime_snapshot_binding(digest, media_inventory_digest):
             "model-usage-spool", "server-logs", "video-projects",
             "video-uploads", "video-outputs", "bgm-library", "model-cache",
             "runtime-env-public", "runtime-env-private", "runtime-env-v140",
-            "systemd-main", "systemd-video", "nginx-site",
+            "systemd-main", "systemd-video", "systemd-main-dropins",
+            "systemd-video-dropins", "nginx-site",
         }),
         "mediaInventoryDigest": media_inventory_digest,
     }

@@ -1183,7 +1183,8 @@ PRIVATE_MEDIA_RUNTIME_SNAPSHOT_COMPLETE_COMPONENTS = frozenset({
     "model-usage-spool", "server-logs", "video-projects", "video-uploads",
     "video-outputs", "bgm-library", "model-cache", "runtime-env-public",
     "runtime-env-private", "runtime-env-v140", "systemd-main",
-    "systemd-video", "nginx-site",
+    "systemd-video", "systemd-main-dropins", "systemd-video-dropins",
+    "nginx-site",
 })
 _RESOURCE_SCOPE_DATA_MIGRATION_IDENTITY = "|".join((
     "requires-acg-137004",
