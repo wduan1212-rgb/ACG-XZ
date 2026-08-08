@@ -1,6 +1,6 @@
 # 星阵版本记录
 
-## v140.3 - 2026-08-08（高并发页面与长任务恢复候选，本地待验收）
+## v140.3 - 2026-08-09（受保护生产部署，当前 active + RO）
 
 ### 本版范围
 
@@ -15,10 +15,19 @@
 
 ### 自动验证与边界
 
-- Python 3.12.13、精确 20 包测试锁、无私密 `env -i` 的单一 locked runner 最终收集主服务 `741` 项：`740` 通过，唯一跳过是规则允许的旧 v120 只读快照未进入隔离副本；无功能失败、错误或其他 skip。测试 wheelhouse `20` files，lock SHA-256 `2761fda33970336dcca73c7cf1e82e1c0a0d045a89c23fef0b3b70549b87c32e`、manifest SHA-256 `ede9d2a04963282960b5b32b7483e45b5add01d8d463a15ec08ebc0dffd71409`。locked runner 现显式要求 Node、FFmpeg/FFprobe、Git 与 `lsof`，避免缺少端口证明工具时把安全退出误判成业务失败。视频工坊 `140/140`；Node 全量 `123/123`。供应商交付关联预览/下载/回传、父子账号权限，批次刷新恢复、持久思考态、社区分享、Free 积分、画布后台任务和创作端各模型账本均已纳入。
-- 无限画布 TypeScript、ESLint、production embed build 和 vendor 闭包校验通过；最终闭包为 `63` files / `1,767,334` bytes。Python 编译、全部现存跟踪 JavaScript 语法、`git diff --check` 均通过。当前浏览器证据只覆盖本地统一缓存启动、首页与两个健康端点；供应商缩略图、批次刷新恢复、三点会话菜单及选中呼吸阴影仍留给用户在当前候选上手动验收，不能沿用前一缓存的视觉结果冒充通过。
-- release verifier 通过：Phase 0 SHA-256 `aaae98eca11df2d614a22cee8e138a7612731a3057bcdb28c954b2aac5a343af`；ESM `60` modules / `342` edges，graph SHA-256 `9dff4d2bc3a9641e5e8b3cb769e0b87d11f5546a8f8d22212f18517febb6ae26`、closure SHA-256 `cb3fea9879aa38e352f6ae01bc9a8c42c9829d09c2dd5a4ff9d63d76652cc70e`；canvas `63` files / `1,767,334` bytes，manifest SHA-256 `59b1d83c6235ad26c4b20c1e0182dec47205c53677a06035f95cde42667d6789`；runtime `56` files / `2,760,564` bytes，manifest SHA-256 `73b93a5efd0f5be135019301895b63811ead624e9522de6242c3b6e8ab6fe418`。
-- 当前仅为本地未提交工作树：没有推送、部署、生产迁移、补数或向服务器部署线程发出变更指令。本地启动验收曾按安全截止规则接续用户当天已派发的两条 `123` 图文任务并产生图片，旧任务均明确失败且没有自动重放；这不是生产调用或生产写入。后续只有在用户本地验收通过后才能精确提交，部署仍必须另行受控处理媒体/registry/usage 门禁，且不得覆盖服务器 SQLite、账号、资产、发布清单、uploads/composed/canvas/video runtime、认证与私密配置。
+- Python 3.12.13、精确 20 包测试锁、无私密 `env -i` 的单一 locked runner 最终收集主服务 `745` 项：`744` 通过，唯一跳过是规则允许的旧 v120 只读快照未进入隔离副本；无功能失败、错误或其他 skip。测试 wheelhouse `20` files，lock SHA-256 `2761fda33970336dcca73c7cf1e82e1c0a0d045a89c23fef0b3b70549b87c32e`、目标 Linux manifest SHA-256 `fd48f76360949430fd8bf217026544e8b63fa25814579316f1a1d0513033918a`。locked runner 显式要求 Node、FFmpeg/FFprobe、Git 与 `lsof`，避免缺少端口证明工具时把安全退出误判成业务失败。视频工坊 `140/140`；Node 全量 `123/123`。供应商交付关联预览/下载/回传、父子账号权限，批次刷新恢复、持久思考态、社区分享、Free 积分、画布后台任务和创作端各模型账本均已纳入。
+- 无限画布 TypeScript、ESLint、production embed build 和 vendor 闭包校验通过；最终闭包为 `63` files / `1,767,334` bytes。Python 编译、全部现存跟踪 JavaScript 语法、`git diff --check` 均通过。本地视觉证据覆盖统一缓存启动、首页与两个健康端点；生产只读浏览器证据另列于下方。供应商缩略图、批次刷新恢复、三点会话菜单及选中呼吸阴影没有生产业务账号验收，不能沿用前一缓存或源码测试冒充通过。
+- release verifier 通过：Phase 0 SHA-256 `91e5f5457070c0da0cac4f1ecca28d17927fe3f30ff38126a3c500db2dac692b`；ESM `60` modules / `342` edges，graph SHA-256 `9dff4d2bc3a9641e5e8b3cb769e0b87d11f5546a8f8d22212f18517febb6ae26`、closure SHA-256 `cb3fea9879aa38e352f6ae01bc9a8c42c9829d09c2dd5a4ff9d63d76652cc70e`；canvas `63` files / `1,767,334` bytes，manifest SHA-256 `59b1d83c6235ad26c4b20c1e0182dec47205c53677a06035f95cde42667d6789`；runtime `56` files / `2,766,415` bytes，manifest SHA-256 `b6845c5b8e82fa0d453c4fc2d9c852e0f9d9fca07fbf5005880689374388801c`。
+- 本地启动验收曾按安全截止规则接续用户当天已派发的两条 `123` 图文任务并产生图片，旧任务均明确失败且没有自动重放；这不是生产调用或生产写入。生产部署只接收最终干净提交的代码/静态闭包，服务器 SQLite、账号、资产、发布清单、uploads/composed/canvas/video runtime、认证与私密配置继续使用既有绝对持久路径。
+
+### 生产部署结果（受保护 RO）
+
+- 2026-08-09 从最终部署提交 `7aeec8f65e02e7f5aa183ef6aa623c785813646a` 建立 sibling release `/data/dumate-studio/releases/20260809-v140-platform-stability-15-7aeec8f`。主服务与视频工坊 sidecar 的 systemd 实际进程均解析到该 release，统一业务身份为 `20260808-v140-platform-stability-15`；两套服务 active、健康端点和主站/视频工坊/无限画布静态入口均为 200，切换后 `NRestarts=0`，错误与严重异常日志命中均为 0。
+- 切换前在双写入进程冻结窗口内创建 fresh SQLite v2 备份 `/data/dumate-studio/migration-backups/pre-v1403-final-20260808T163547Z`，manifest SHA-256 `8db8e2e84fa58459b6b74cf316d6aa13611a54740d74bfedff521e1d1c4f4bdb`；另创建包含实际 systemd drop-in 的 20 组件完整快照 `/data/dumate-studio/snapshots/pre-v1403-final-7aeec8f-20260808T163547Z`，snapshot ID `f13c9d95e6a94e4299a032c50ebbfe62`、manifest SHA-256 `36a78674cb60a2c83db4a8cedb48cafc506a192954cdcc827ec1a99827b815ea`、媒体摘要 `e0ad0f8d1a33925c3f10f5c28bcc9fdf481609938abc9a7c1f99ac1b6014c9d0`。独立 verify、空目录 restore-drill 和恢复库 `quick_check` 均通过；既有 rollback 未轮换。
+- 目标 Ubuntu / CPython 3.12 三套 wheelhouse 重新验签并离线 `--no-deps` install-check、exact-installed、`pip check`：主 runtime `18` 包 / manifest `3f8b942eb34b7ea757e9ad7ea9378e615152e4f07031c583d495f3dcdd27e77b`，主 test `20` 包 / `fd48f76360949430fd8bf217026544e8b63fa25814579316f1a1d0513033918a`，sidecar `37` 包 / `81d36bc2822f25dd4ec7df8589f6b0ca5e8ac722e3b43225cc7707383cab7262`。干净无私密环境复跑主服务 `744 passed + 1 approved skip`、sidecar `140/140`、Node `123/123` 和上述 release verifier。
+- 切换前后生产 SQLite 均为 `42` 表 / `56,957` 行，`quick_check=ok`，物理 SHA-256 都是 `740d28eaddd98808722bd47a98eaf7ee6fdcf8290eb8760e6804a86bc81b88c9`；成员、团队、账号、供应商关系、文档、媒体 registry、resource scope、模型用量、画布与社区等关键表均无异常减少，切换后媒体 inventory digest 与 final snapshot 完全一致。生产环境、数据库、媒体、账号和私密配置没有被 release 同步覆盖。
+- RW 未解除。新 release 的受保护 `/api/ready` 为 `ok=true / ready=true / writeReady=false`：resource preflight 仍有 `166` 条 unresolved 和 `15` 个无效目标；media preflight 仍有 `48` 条 pending、`51` 个缺失引用文件、`45` 个 registry conflict；usage 仍有 `83` 条 unresolved，其中 snapshot 仅找到 `27` 条 sidecar receipt、缺 `56` 条，现有证据也不足以安全结算。既有 `140002/140004/140007` 成功账本禁止重放，所有 preview 均 fail closed，本轮未运行 apply、裸 SQL、provider 重试或猜补用量。
+- 真实浏览器只读验收确认公网首页、灵感首屏与复合游标加载更多、社区详情、视频工坊登录边界和无限画布静态闭包可达；浏览器同时复现了缺失社区媒体的 404，与 preflight 阻断一致。任务没有提供生产业务验收账号，且写门禁未闭合，因此供应商父子账号、管理员/创作者写入、付费模型、发布/回传、团队踢出和账号停用等多角色场景未执行，不能沿用源码测试或游客烟测冒充生产 RW 验收。
 
 ## v140.2 - 2026-08-06（平台稳定性与交付恢复候选，尚未部署）
 

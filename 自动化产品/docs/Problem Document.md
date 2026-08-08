@@ -4,6 +4,14 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-09 v140.3 生产受保护切换：代码上线不等于 RW 门禁闭合
+
+- **实际结果**：干净部署提交 `7aeec8f65e02e7f5aa183ef6aa623c785813646a` 已切到 sibling release `20260809-v140-platform-stability-15-7aeec8f`，主服务与视频 sidecar 都 active/healthy，实际进程 cwd、release 环境和缓存身份一致；但受保护 readiness 明确为 `ready=true / writeReady=false`，两套进程继续 `ACG_READ_ONLY=1`。不能把健康 200、静态页面可达或 RO readiness 当成恢复完整业务写入。
+- **resource 硬阻断**：当前库 `14,786` 条 docs 中 `14,620` 条已有 scope，仍有 `166` 条 unresolved；另有 `15` 个无效 scope target、`56` 个 dangling reference、`14` 个 account mapping 缺口和 `4` 个 owner identity 缺口。历史 `140002` 已成功，受控 CLI 按设计拒绝重放；在没有绑定 fresh snapshot/backup 的增量修复计划前，不得用 override、默认团队或裸 SQL补齐。
+- **media 硬阻断**：inventory `9,694`，registry 已登记 `9,364`，仍有 `48` 条 pending、`51` 个缺失引用文件和 `45` 个 registry conflict；`282` 个 quarantine 只作警告证据。历史 `140004` 已成功，当前 `media-settle` 因 `readyForApply=false` 整体停止。浏览器实际复现社区媒体 404，证明这是现网可见缺口，不能靠隐藏破图、删除历史引用或伪造归属收口。
+- **usage 硬阻断**：中央账本仍有 `83` 条 unresolved。complete snapshot 的 sidecar receipt 只找到 `27` 条，缺 `56` 条；找到的记录中 `7` 条为 submitted 且无 providerRef，`1` 条 succeeded 且有 providerRef，`19` 条 unknown 且无 providerRef，仍不足以形成覆盖全部 operation 的精确结算计划。`usage-settle-inspect` 因 `snapshot_sidecar_receipt_missing` 失败关闭；不得猜 token/calls、重试 provider 或只结算可见子集。
+- **处置与防回归**：切换前 fresh SQLite v2 备份和含实际 systemd drop-in 的 20 组件 complete snapshot 均完成验签与隔离 restore-drill；切换前后库保持 `42` 表 / `56,957` 行、同一物理 SHA-256，媒体摘要一致，日志无新增严重异常。当前正确状态是“新代码 active + 生产可读 + 写入冻结”，后续必须先为三类未决项建立逐条、可审计、绑定 fresh 证据的增量计划，preview 零冲突、apply 后双跑零写并取得 `writeReady=true`，才能执行多角色 RW 与最小真实付费验收。
+
 ## 2026-08-08 v140.3 本地候选：首页首屏、供应商破图和画布掉线必须分别收敛
 
 - **首页性能**：社区接口原先一次读取 48 条，卡片视频又在挂载时全部设置 `src + preload=metadata`；帖子变多后会同时放大数据库响应、媒体鉴权和浏览器网络/解码压力。现在每页只读取 16 条，使用 `createdAt + id` 复合游标保证同一毫秒的帖子不漏不重；图片懒加载，视频仅在接近视口或悬停时挂载源。追加失败保留已显示内容并提供显式重试，不能退回一次性读取全量帖子。
