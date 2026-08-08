@@ -138,6 +138,7 @@ def _resource_incremental_plan_locked(conn):
     ).fetchall()
     issues = []
     rows = []
+    absent_source_projects = 0
     for collection, resource_id, owner_id, raw in missing:
         collection = str(collection)
         resource_id = str(resource_id)
@@ -161,23 +162,61 @@ def _resource_incremental_plan_locked(conn):
             issues.append("canvas_job_owner_scope_missing")
             continue
         project_id = str(payload.get("sourceProjectId") or "").strip()
+        provenance = "v140008-canvas-job-incremental"
         if project_id:
+            project_row = conn.execute(
+                "SELECT owner_id,data FROM docs "
+                "WHERE collection='customProjects' AND id=?",
+                (project_id,),
+            ).fetchone()
             project_scope = store._resource_scope_row_locked(
                 conn, "customProjects", project_id,
             )
-            if not project_scope:
-                issues.append("canvas_job_project_scope_missing")
-                continue
-            if (str(project_scope[0]), str(project_scope[1])) != actor_scope[:2]:
-                issues.append("canvas_job_project_scope_conflict")
-                continue
+            if not project_row:
+                if project_scope:
+                    issues.append("canvas_job_absent_project_scope_conflict")
+                    continue
+                absent_source_projects += 1
+                provenance = (
+                    "v140008-canvas-job-incremental-"
+                    "historical-source-project-absent"
+                )
+            else:
+                project_owner = str(project_row[0] or "")
+                try:
+                    project_payload = json.loads(project_row[1])
+                except (TypeError, json.JSONDecodeError):
+                    issues.append("canvas_job_project_payload_invalid")
+                    continue
+                if (
+                    not isinstance(project_payload, dict)
+                    or str(project_payload.get("id") or "") != project_id
+                ):
+                    issues.append("canvas_job_project_identity_invalid")
+                    continue
+                if (
+                    project_owner != owner
+                    or str(project_payload.get("ownerId") or "") != owner
+                ):
+                    issues.append("canvas_job_project_owner_invalid")
+                    continue
+            if project_row:
+                if not project_scope:
+                    issues.append("canvas_job_project_scope_missing")
+                    continue
+                if str(project_scope[2] or "") != owner:
+                    issues.append("canvas_job_project_scope_owner_conflict")
+                    continue
+                if (str(project_scope[0]), str(project_scope[1])) != actor_scope[:2]:
+                    issues.append("canvas_job_project_scope_conflict")
+                    continue
         rows.append({
             "resourceKind": store._doc_resource_kind(collection),
             "resourceId": resource_id,
             "scopeType": actor_scope[0],
             "scopeId": actor_scope[1],
             "ownerId": owner,
-            "provenance": "v140008-canvas-job-incremental",
+            "provenance": provenance,
         })
     invalid_targets = int(conn.execute(
         "SELECT COUNT(*) FROM resource_scopes s "
@@ -193,6 +232,7 @@ def _resource_incremental_plan_locked(conn):
         "issues": sorted(set(issues)),
         "missingRows": len(missing),
         "plannedRows": len(rows),
+        "historicalSourceProjectsAbsent": absent_source_projects,
         "invalidTargets": invalid_targets,
         "rows": rows,
     }

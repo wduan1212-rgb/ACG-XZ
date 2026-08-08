@@ -210,56 +210,92 @@ class ProductionRecoveryTest(unittest.TestCase):
             conn.commit()
 
     def test_resource_scope_incremental_settlement_is_exact_and_idempotent(self):
-        self._member("resource-user")
+        self._member("resource-user", role="editor")
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO teams(id,name,slug,kind,status,plan,quota_mode,created_at) "
+                "VALUES('resource-team','资源团队','resource-team','customer',"
+                "'active','team','shared',1)"
+            )
+            conn.execute(
+                "INSERT INTO team_members(team_id,member_id,team_role,status,"
+                "joined_at,added_by) VALUES('resource-team','resource-user',"
+                "'creator','active',1,'owner')"
+            )
+            conn.commit()
         self._insert_scoped_doc(
             "customProjects", "canvas-project", "resource-user",
             {"id": "canvas-project", "ownerId": "resource-user"},
+            scope_type="team", scope_id="resource-team",
         )
-        job_id = "canvas-job-missing-scope"
-        payload = {
-            "id": job_id,
-            "jobId": "client-job",
-            "ownerId": "resource-user",
-            "sourceProjectId": "canvas-project",
-            "requestFingerprint": "a" * 64,
-            "status": "succeeded",
-            "images": [],
+        jobs = {
+            "canvas-job-absent-project": "browser-local-project",
+            "canvas-job-matching-project": "canvas-project",
         }
         with store._connect() as conn:
-            conn.execute(
-                "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
-                "VALUES(?,?,?,?,?)",
-                (
-                    store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
-                    job_id, "resource-user", 100, json.dumps(payload),
-                ),
-            )
+            for index, (job_id, project_id) in enumerate(jobs.items(), 1):
+                payload = {
+                    "id": job_id,
+                    "jobId": f"client-job-{index}",
+                    "ownerId": "resource-user",
+                    "sourceProjectId": project_id,
+                    "requestFingerprint": f"{index}" * 64,
+                    "status": "succeeded",
+                    "images": [],
+                }
+                conn.execute(
+                    "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                    "VALUES(?,?,?,?,?)",
+                    (
+                        store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                        job_id, "resource-user", 100 + index,
+                        json.dumps(payload),
+                    ),
+                )
             conn.commit()
 
         preview = self._call(
             production_recovery.settle_resource_scopes_incremental,
             dry_run=True,
         )
-        self.assertEqual(1, preview["missingRows"])
-        self.assertEqual(1, preview["plannedRows"])
+        self.assertEqual(2, preview["missingRows"])
+        self.assertEqual(2, preview["plannedRows"])
+        self.assertEqual(1, preview["historicalSourceProjectsAbsent"])
         result = self._call(
             production_recovery.settle_resource_scopes_incremental,
             dry_run=False,
         )
         self.assertTrue(result["applied"])
-        self.assertEqual(1, result["insertedRows"])
+        self.assertEqual(2, result["insertedRows"])
         with store._connect() as conn:
-            scope = conn.execute(
-                "SELECT scope_type,scope_id,owner_id,provenance FROM resource_scopes "
-                "WHERE resource_kind=? AND resource_id=?",
-                (store._doc_resource_kind(
-                    store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION
-                ), job_id),
-            ).fetchone()
+            scopes = {
+                row[0]: tuple(row[1:])
+                for row in conn.execute(
+                    "SELECT resource_id,scope_type,scope_id,owner_id,provenance "
+                    "FROM resource_scopes WHERE resource_kind=? "
+                    "AND resource_id IN (?,?) ORDER BY resource_id",
+                    (
+                        store._doc_resource_kind(
+                            store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION
+                        ),
+                        *sorted(jobs),
+                    ),
+                ).fetchall()
+            }
         self.assertEqual(
-            ("member", "resource-user", "resource-user",
-             "v140008-canvas-job-incremental"),
-            scope,
+            (
+                "team", "resource-team", "resource-user",
+                "v140008-canvas-job-incremental-"
+                "historical-source-project-absent",
+            ),
+            scopes["canvas-job-absent-project"],
+        )
+        self.assertEqual(
+            (
+                "team", "resource-team", "resource-user",
+                "v140008-canvas-job-incremental",
+            ),
+            scopes["canvas-job-matching-project"],
         )
         before = logical_database_dump(store.DB_PATH)
         replay = self._call(
@@ -269,6 +305,158 @@ class ProductionRecoveryTest(unittest.TestCase):
         self.assertFalse(replay["applied"])
         self.assertEqual(0, replay["insertedRows"])
         self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+    def test_resource_incremental_existing_project_scope_must_match(self):
+        self._member("project-boundary-user")
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO teams(id,name,slug,kind,status,plan,quota_mode,created_at) "
+                "VALUES('conflicting-project-team','冲突团队','conflicting-project-team',"
+                "'customer','active','team','shared',1)"
+            )
+            for project_id in ("project-no-scope", "project-wrong-scope"):
+                project = {
+                    "id": project_id, "ownerId": "project-boundary-user",
+                }
+                conn.execute(
+                    "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                    "VALUES('customProjects',?,'project-boundary-user',1,?)",
+                    (project_id, json.dumps(project)),
+                )
+                job_id = f"job-{project_id}"
+                job = {
+                    "id": job_id, "jobId": job_id,
+                    "ownerId": "project-boundary-user",
+                    "sourceProjectId": project_id,
+                    "requestFingerprint": "a" * 64,
+                    "status": "succeeded", "images": [],
+                }
+                conn.execute(
+                    "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                    "VALUES(?,?,?,?,?)",
+                    (
+                        store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                        job_id, "project-boundary-user", 2, json.dumps(job),
+                    ),
+                )
+            conn.execute(
+                "INSERT INTO resource_scopes(resource_kind,resource_id,scope_type,"
+                "scope_id,owner_id,provenance,captured_at,updated_at) "
+                "VALUES('doc:customProjects','project-wrong-scope','team',"
+                "'conflicting-project-team','project-boundary-user','test',1,1)"
+            )
+            conn.commit()
+        with store._connect(read_only=True) as conn:
+            plan = production_recovery._resource_incremental_plan_locked(conn)
+        self.assertFalse(plan["ok"])
+        self.assertEqual(3, plan["missingRows"])
+        self.assertEqual(0, plan["plannedRows"])
+        self.assertEqual(
+            {
+                "canvas_job_project_scope_missing",
+                "canvas_job_project_scope_conflict",
+                "unexpected_missing_resource_collection",
+            },
+            set(plan["issues"]),
+        )
+
+    def test_resource_incremental_rejects_job_actor_and_project_identity_drift(self):
+        self._member("resource-identity-user")
+        self._member("other-project-owner")
+        with store._connect() as conn:
+            projects = {
+                "project-owner-conflict": {
+                    "dbOwner": "other-project-owner",
+                    "payload": {
+                        "id": "project-owner-conflict",
+                        "ownerId": "other-project-owner",
+                    },
+                },
+                "project-identity-conflict": {
+                    "dbOwner": "resource-identity-user",
+                    "payload": {
+                        "id": "different-project-id",
+                        "ownerId": "resource-identity-user",
+                    },
+                },
+            }
+            for project_id, project in projects.items():
+                conn.execute(
+                    "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                    "VALUES('customProjects',?,?,1,?)",
+                    (
+                        project_id, project["dbOwner"],
+                        json.dumps(project["payload"]),
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO resource_scopes(resource_kind,resource_id,"
+                    "scope_type,scope_id,owner_id,provenance,captured_at,updated_at) "
+                    "VALUES('doc:customProjects',?,'member','resource-identity-user',"
+                    "'resource-identity-user','test',1,1)",
+                    (project_id,),
+                )
+                job_id = f"job-{project_id}"
+                job = {
+                    "id": job_id, "jobId": job_id,
+                    "ownerId": "resource-identity-user",
+                    "sourceProjectId": project_id,
+                    "requestFingerprint": "b" * 64,
+                    "status": "succeeded", "images": [],
+                }
+                conn.execute(
+                    "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                    "VALUES(?,?,?,?,?)",
+                    (
+                        store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                        job_id, "resource-identity-user", 2, json.dumps(job),
+                    ),
+                )
+            invalid_owner_job = {
+                "id": "job-owner-conflict", "jobId": "job-owner-conflict",
+                "ownerId": "other-project-owner", "sourceProjectId": "",
+                "requestFingerprint": "c" * 64,
+                "status": "succeeded", "images": [],
+            }
+            missing_actor_job = {
+                "id": "job-missing-actor", "jobId": "job-missing-actor",
+                "ownerId": "missing-actor", "sourceProjectId": "",
+                "requestFingerprint": "d" * 64,
+                "status": "succeeded", "images": [],
+            }
+            conn.execute(
+                "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                "VALUES(?,?,?,?,?)",
+                (
+                    store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                    "job-owner-conflict", "resource-identity-user", 3,
+                    json.dumps(invalid_owner_job),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                "VALUES(?,?,?,?,?)",
+                (
+                    store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                    "job-missing-actor", "missing-actor", 4,
+                    json.dumps(missing_actor_job),
+                ),
+            )
+            conn.commit()
+        with store._connect(read_only=True) as conn:
+            plan = production_recovery._resource_incremental_plan_locked(conn)
+        self.assertFalse(plan["ok"])
+        self.assertEqual(4, plan["missingRows"])
+        self.assertEqual(0, plan["plannedRows"])
+        self.assertEqual(
+            {
+                "canvas_job_owner_invalid",
+                "canvas_job_owner_scope_missing",
+                "canvas_job_project_owner_invalid",
+                "canvas_job_project_identity_invalid",
+            },
+            set(plan["issues"]),
+        )
 
     def test_historical_team_adoption_moves_only_prejoin_personal_rows(self):
         self._member("adoption-user", role="editor")
