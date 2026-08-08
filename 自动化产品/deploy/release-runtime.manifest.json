@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260808-v140-platform-stability-15",
-  "fileCount": 56,
-  "totalBytes": 2766415,
+  "releaseId": "20260809-v140-production-recovery-1",
+  "fileCount": 58,
+  "totalBytes": 2899595,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -22,7 +22,7 @@
     {
       "path": "apps/video-workshop/app/main.py",
       "size": 100717,
-      "sha256": "4d3a35465050666f142cbb6175ae42a291a33ac22812968a791f500f3900cd79"
+      "sha256": "7b855808617917d18bb63695e366329a070dca452d8ad99f3c520a32dc0ffcfd"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -167,7 +167,7 @@
     {
       "path": "apps/video-workshop/web/index.html",
       "size": 22382,
-      "sha256": "8daaae35690afdddbe23d02b2f2ae9bc8c105f1d75789a3ce779c4c4d3cad28a"
+      "sha256": "f46ac62499ed80fe6b15a10eb591910edb4d544cb2ba071fe172901b4075bf11"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -231,8 +231,8 @@
     },
     {
       "path": "server/migrations/__main__.py",
-      "size": 24934,
-      "sha256": "ab94a530c3408ad89673fc5cfc0ce330635af9d40f6020d2b0f1cf78dba4b23a"
+      "size": 37511,
+      "sha256": "abad94b58f7c5fb73a5aa575763405217932942a99d0b45d53ebb952db7ece2e"
     },
     {
       "path": "server/minimax_system_voices.json",
@@ -248,6 +248,16 @@
       "path": "server/model_usage_settlement.py",
       "size": 11529,
       "sha256": "910ccd259ebe3cfdefa9f7b50c6e24ca61f32784757e09e58e4251fdfbb4c292"
+    },
+    {
+      "path": "server/model_usage_settlement_v2.py",
+      "size": 7907,
+      "sha256": "68dca90b687a42a4c3e1e59b9438161deee2a052bb490ea50f745c7ff4766a3f"
+    },
+    {
+      "path": "server/production_recovery.py",
+      "size": 56896,
+      "sha256": "2857354f7d5d00b1ffc2bf8c2ae00dc2ef763ce2495242cd25a6eaf23a3812f7"
     },
     {
       "path": "server/requirements.lock.txt",
@@ -276,13 +286,13 @@
     },
     {
       "path": "server/store.py",
-      "size": 765457,
-      "sha256": "59183ec0c72e0770511c000a405c5bbf80dd5f08ccece8fac843590ed51845b5"
+      "size": 821177,
+      "sha256": "82d4330b445780cafa940c219f9e282e474d73339c86fb05829e26f85235a676"
     },
     {
       "path": "tools/verify_release_contracts.py",
-      "size": 37304,
-      "sha256": "6ac65528f338a36c7090227a9fc589aebcd5c6efbaad0eb2b7eec938e7ec3afa"
+      "size": 37384,
+      "sha256": "4f8ca6446c0cbdf20415ffb1ccff12f070f0c3ae4c611908544263b9da8d2dd6"
     }
   ]
 }

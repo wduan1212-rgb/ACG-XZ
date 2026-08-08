@@ -360,7 +360,7 @@ class ModelUsageSettlementTest(unittest.TestCase):
                         root, sorted(self.sidecars),
                     )
 
-    def test_140007_is_additive_for_the_previous_read_only_schema_contract(self):
+    def test_140008_and_140009_are_additive_for_140007_read_only_contract(self):
         before = logical_database_dump(store.DB_PATH)
         uri = f"file:{store.DB_PATH}?mode=ro"
         with sqlite3.connect(uri, uri=True) as conn:
@@ -369,11 +369,13 @@ class ModelUsageSettlementTest(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-            old_expected = set(store.EXPECTED_SCHEMA_TABLES) - {
-                "model_usage_settlements",
-                "model_usage_settlement_entries",
+            previous_expected = set(store.EXPECTED_SCHEMA_TABLES) - {
+                "production_recovery_settlements",
+                "production_recovery_entries",
+                "model_usage_settlements_v2",
+                "model_usage_settlement_entries_v2",
             }
-            self.assertFalse(old_expected - tables)
+            self.assertFalse(previous_expected - tables)
             known_versions = (
                 store.SCHEMA_MIGRATION_VERSION,
                 store.MODEL_USAGE_SCHEMA_MIGRATION_VERSION,
@@ -381,6 +383,7 @@ class ModelUsageSettlementTest(unittest.TestCase):
                 store.PRIVATE_MEDIA_SCHEMA_MIGRATION_VERSION,
                 store.VIDEO_COMPOSE_SCHEMA_MIGRATION_VERSION,
                 store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
+                store.MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION,
             )
             for version in known_versions:
                 self.assertEqual(

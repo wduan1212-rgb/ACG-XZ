@@ -35,14 +35,14 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260808-v140-platform-stability-15",
-            "prodDrawer.js": "v=20260808-v140-platform-stability-15",
-            "deliveryView.js": "v=20260808-v140-platform-stability-15",
-            "supplierViews.js": "v=20260808-v140-platform-stability-15",
-            "draftsView.js": "v=20260808-v140-platform-stability-15",
-            "voiceLab.js": "v=20260808-v140-platform-stability-15",
-            "chainWorkshop.js": "v=20260808-v140-platform-stability-15",
-            "orchestrator.js": "v=20260808-v140-platform-stability-15",
+            "studio.js": "v=20260809-v140-production-recovery-1",
+            "prodDrawer.js": "v=20260809-v140-production-recovery-1",
+            "deliveryView.js": "v=20260809-v140-production-recovery-1",
+            "supplierViews.js": "v=20260809-v140-production-recovery-1",
+            "draftsView.js": "v=20260809-v140-production-recovery-1",
+            "voiceLab.js": "v=20260809-v140-production-recovery-1",
+            "chainWorkshop.js": "v=20260809-v140-production-recovery-1",
+            "orchestrator.js": "v=20260809-v140-production-recovery-1",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
@@ -61,21 +61,21 @@ class FrontendModuleIdentityTest(unittest.TestCase):
         imports = self._module_imports("components.js")
         self.assertGreaterEqual(len(imports), 2)
         queries = {specifier.partition("?")[2] for _, specifier in imports}
-        self.assertEqual({"v=20260808-v140-platform-stability-15"}, queries, imports)
+        self.assertEqual({"v=20260809-v140-production-recovery-1"}, queries, imports)
 
     def test_custom_publish_is_loaded_with_the_current_module_identity(self):
         source = (APP_DIR / "js/views/customCreation.js").read_text(encoding="utf-8")
-        self.assertIn('import("./customPublish.js?v=20260808-v140-platform-stability-15")', source)
+        self.assertIn('import("./customPublish.js?v=20260809-v140-production-recovery-1")', source)
 
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
-            "base.css": "v=20260808-v140-platform-stability-15",
-            "components.css": "v=20260808-v140-platform-stability-15",
-            "views.css": "v=20260808-v140-platform-stability-15",
-            "agent.css": "v=20260808-v140-platform-stability-15",
-            "ui-motion.css": "v=20260808-v140-platform-stability-15",
-            "custom-creation.css": "v=20260808-v140-platform-stability-15",
+            "base.css": "v=20260809-v140-production-recovery-1",
+            "components.css": "v=20260809-v140-production-recovery-1",
+            "views.css": "v=20260809-v140-production-recovery-1",
+            "agent.css": "v=20260809-v140-production-recovery-1",
+            "ui-motion.css": "v=20260809-v140-production-recovery-1",
+            "custom-creation.css": "v=20260809-v140-production-recovery-1",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():

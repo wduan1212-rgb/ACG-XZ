@@ -100,6 +100,169 @@ def draft_payload(
 
 
 class CustomCanvasDraftPersistenceTest(unittest.TestCase):
+    @staticmethod
+    def _expire_staging_and_run_gc(store, owner_id):
+        with store._lock:
+            conn = store._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "UPDATE custom_canvas_blob_staging SET created_at=1 "
+                    "WHERE owner_id=?",
+                    (owner_id,),
+                )
+                orphaned = store._custom_canvas_gc_blobs_locked(conn, owner_id)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+        store._custom_canvas_unlink_orphans(orphaned)
+        return orphaned
+
+    def test_gc_preserves_succeeded_background_job_result_after_staging_expiry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            saved = store.save_custom_canvas_blob("creator-a", PNG_DATA_URL)
+            fingerprint = hashlib.sha256(b"durable-job").hexdigest()
+            store.create_custom_canvas_generation_job(
+                "creator-a", "durable-job", fingerprint,
+                source_project_id="canvas-job-source",
+            )
+            store.finish_custom_canvas_generation_job(
+                "creator-a",
+                "durable-job",
+                status="succeeded",
+                result={"images": [{
+                    "dataUrl": saved["url"],
+                    "assetUrl": saved["url"],
+                    "contentHash": saved["contentHash"],
+                }]},
+            )
+
+            self.assertEqual([], self._expire_staging_and_run_gc(store, "creator-a"))
+            blob, error = store.get_custom_canvas_blob(
+                "creator-a", saved["contentHash"]
+            )
+            self.assertIsNone(error)
+            self.assertTrue(blob["path"].is_file())
+
+    def test_gc_preserves_published_community_blob_after_staging_expiry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            saved = store.save_custom_canvas_blob("creator-a", PNG_DATA_URL)
+            store.create_community_post(
+                "creator-a", "creator-a", "", "canvas", "community-canvas",
+                "已发布画布", "", "", "视觉设计",
+                [{"url": saved["url"], "type": "image"}],
+            )
+
+            self.assertEqual([], self._expire_staging_and_run_gc(store, "creator-a"))
+            self.assertIsNotNone(store.get_custom_canvas_blob(
+                "creator-a", saved["contentHash"]
+            )[0])
+
+    def test_gc_does_not_let_another_owner_reference_keep_this_copy_alive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            first = store.save_custom_canvas_blob("creator-a", PNG_DATA_URL)
+            second = store.save_custom_canvas_blob("creator-b", PNG_DATA_URL)
+            fingerprint = hashlib.sha256(b"other-owner-job").hexdigest()
+            store.create_custom_canvas_generation_job(
+                "creator-b", "other-owner-job", fingerprint,
+                source_project_id="creator-b-canvas",
+            )
+            store.finish_custom_canvas_generation_job(
+                "creator-b", "other-owner-job", status="succeeded",
+                result={"images": [{"assetUrl": second["url"]}]},
+            )
+
+            orphaned = self._expire_staging_and_run_gc(store, "creator-a")
+            self.assertEqual(1, len(orphaned))
+            self.assertIsNone(store.get_custom_canvas_blob(
+                "creator-a", first["contentHash"]
+            )[0])
+            self.assertIsNotNone(store.get_custom_canvas_blob(
+                "creator-b", second["contentHash"]
+            )[0])
+
+    def test_gc_fails_closed_on_malformed_or_cross_scope_business_reference(self):
+        for mode in ("malformed", "cross-scope"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                store = load_canvas_store(tmp)
+                saved = store.save_custom_canvas_blob("creator-a", PNG_DATA_URL)
+                with store._lock:
+                    conn = store._connect()
+                    try:
+                        now = 100
+                        doc_id = f"gc-{mode}"
+                        if mode == "malformed":
+                            raw = '{"assetUrl":"' + saved["url"]
+                        else:
+                            raw = json.dumps({
+                                "id": doc_id,
+                                "ownerId": "creator-a",
+                                "assetUrl": saved["url"],
+                            })
+                        conn.execute(
+                            "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                            "VALUES('assets',?,?,?,?)",
+                            (doc_id, "creator-a", now, raw),
+                        )
+                        if mode == "cross-scope":
+                            conn.execute(
+                                "UPDATE members SET role='user' "
+                                "WHERE id IN ('creator-a','creator-b')"
+                            )
+                            conn.execute(
+                                "INSERT INTO resource_scopes("
+                                "resource_kind,resource_id,scope_type,scope_id,owner_id,"
+                                "provenance,captured_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                                (
+                                    "doc:assets", doc_id, "member", "creator-b",
+                                    "creator-a", "test-conflict", now, now,
+                                ),
+                            )
+                            conn.execute(
+                                "INSERT OR REPLACE INTO schema_migrations("
+                                "version,name,checksum,app_version,started_at,finished_at,"
+                                "status,summary) VALUES(?,?,?,?,?,?,?,?)",
+                                (
+                                    store.RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                                    store.RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+                                    store.RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+                                    "test", now, now, "success", "{}",
+                                ),
+                            )
+                        conn.execute(
+                            "UPDATE custom_canvas_blob_staging SET created_at=1 "
+                            "WHERE owner_id='creator-a'"
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "invalid_custom_canvas_business_reference|"
+                    "custom_canvas_business_reference_scope_conflict",
+                ):
+                    self._expire_staging_and_run_gc(store, "creator-a")
+                self.assertIsNotNone(store.get_custom_canvas_blob(
+                    "creator-a", saved["contentHash"]
+                )[0])
+
+    def test_gc_removes_only_truly_unreferenced_blob(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            saved = store.save_custom_canvas_blob("creator-a", PNG_DATA_URL)
+            orphaned = self._expire_staging_and_run_gc(store, "creator-a")
+            self.assertEqual(1, len(orphaned))
+            self.assertIsNone(store.get_custom_canvas_blob(
+                "creator-a", saved["contentHash"]
+            )[0])
+
     def test_http_contract_accepts_structured_migration_and_returns_source_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_canvas_store(tmp)

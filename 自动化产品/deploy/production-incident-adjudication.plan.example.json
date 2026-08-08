@@ -1,0 +1,19 @@
+{
+  "format": "acg-production-incident-adjudication-plan-v1",
+  "databaseIdentity": "<exact-16-char-live-database-identity>",
+  "snapshotManifestSha256": "<fresh-complete-snapshot-manifest-sha256>",
+  "snapshotMediaInventoryDigest": "<fresh-complete-snapshot-media-digest>",
+  "entries": [
+    {
+      "domain": "missing-media",
+      "targetKind": "canvas-blob",
+      "targetId": "<exact-missing-media-key>",
+      "disposition": "no-verified-recovery-evidence",
+      "evidence": "<operator-reviewed search and business-reference evidence>",
+      "evidenceSha256": "<sha256-of-the-exact-UTF-8-evidence-string>",
+      "businessClass": "succeeded-canvas-generation-job"
+    }
+  ],
+  "reviewedBy": "<operator-identity>",
+  "reviewedAt": 1786233600000
+}

@@ -780,6 +780,120 @@ BEGIN
   SELECT RAISE(ABORT, 'model_usage_settlement_entry_immutable');
 END;
 """
+MODEL_USAGE_SETTLEMENT_V2_SCHEMA = """
+CREATE TABLE IF NOT EXISTS model_usage_settlements_v2(
+  settlement_id             TEXT PRIMARY KEY,
+  plan_sha256               TEXT NOT NULL UNIQUE,
+  database_identity         TEXT NOT NULL,
+  snapshot_manifest_sha256  TEXT NOT NULL,
+  snapshot_media_digest     TEXT NOT NULL,
+  receipt_count             INTEGER NOT NULL,
+  terminal_rows             INTEGER NOT NULL,
+  projected_rows            INTEGER NOT NULL,
+  indeterminate_rows        INTEGER NOT NULL,
+  created_at                INTEGER NOT NULL,
+  created_by                TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS model_usage_settlement_entries_v2(
+  settlement_id                 TEXT NOT NULL,
+  receipt_id                    TEXT NOT NULL,
+  source                        TEXT NOT NULL,
+  operation_id                  TEXT NOT NULL,
+  resolution                    TEXT NOT NULL,
+  central_receipt_before_sha256 TEXT NOT NULL,
+  sidecar_receipt_sha256        TEXT NOT NULL DEFAULT '',
+  central_receipt_after_sha256  TEXT NOT NULL,
+  projected                     INTEGER NOT NULL DEFAULT 0,
+  created_at                    INTEGER NOT NULL,
+  PRIMARY KEY(settlement_id, receipt_id),
+  FOREIGN KEY(settlement_id) REFERENCES model_usage_settlements_v2(settlement_id),
+  CHECK(resolution IN (
+    'central-attempt-outcome-unknown',
+    'sidecar-attempt-outcome-unknown',
+    'sidecar-succeeded',
+    'sidecar-submitted-indeterminate'
+  )),
+  CHECK(projected IN (0,1))
+);
+CREATE INDEX IF NOT EXISTS idx_model_usage_settlement_entries_v2_operation
+  ON model_usage_settlement_entries_v2(source,operation_id,created_at DESC);
+CREATE TRIGGER IF NOT EXISTS trg_model_usage_settlements_v2_immutable_update
+BEFORE UPDATE ON model_usage_settlements_v2
+BEGIN
+  SELECT RAISE(ABORT, 'model_usage_settlement_v2_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_model_usage_settlements_v2_immutable_delete
+BEFORE DELETE ON model_usage_settlements_v2
+BEGIN
+  SELECT RAISE(ABORT, 'model_usage_settlement_v2_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_model_usage_settlement_entries_v2_immutable_update
+BEFORE UPDATE ON model_usage_settlement_entries_v2
+BEGIN
+  SELECT RAISE(ABORT, 'model_usage_settlement_entry_v2_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_model_usage_settlement_entries_v2_immutable_delete
+BEFORE DELETE ON model_usage_settlement_entries_v2
+BEGIN
+  SELECT RAISE(ABORT, 'model_usage_settlement_entry_v2_immutable');
+END;
+"""
+PRODUCTION_RECOVERY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS production_recovery_settlements(
+  settlement_id             TEXT PRIMARY KEY,
+  settlement_kind           TEXT NOT NULL,
+  plan_sha256               TEXT NOT NULL DEFAULT '',
+  database_identity         TEXT NOT NULL,
+  snapshot_manifest_sha256  TEXT NOT NULL,
+  snapshot_media_digest     TEXT NOT NULL,
+  planned_rows              INTEGER NOT NULL,
+  applied_rows              INTEGER NOT NULL,
+  created_at                INTEGER NOT NULL,
+  created_by                TEXT NOT NULL,
+  CHECK(settlement_kind IN (
+    'resource-scope-incremental','tenant-adoption',
+    'canvas-blob-recovery','incident-adjudication'
+  ))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_production_recovery_plan
+  ON production_recovery_settlements(settlement_kind,plan_sha256)
+  WHERE plan_sha256<>'';
+CREATE TABLE IF NOT EXISTS production_recovery_entries(
+  settlement_id  TEXT NOT NULL,
+  entry_kind     TEXT NOT NULL,
+  target_kind    TEXT NOT NULL,
+  target_id      TEXT NOT NULL,
+  owner_id       TEXT NOT NULL DEFAULT '',
+  before_value   TEXT NOT NULL DEFAULT '',
+  after_value    TEXT NOT NULL DEFAULT '',
+  evidence       TEXT NOT NULL DEFAULT '',
+  created_at     INTEGER NOT NULL,
+  PRIMARY KEY(settlement_id,entry_kind,target_kind,target_id,owner_id),
+  FOREIGN KEY(settlement_id) REFERENCES production_recovery_settlements(settlement_id)
+);
+CREATE INDEX IF NOT EXISTS idx_production_recovery_entries_target
+  ON production_recovery_entries(target_kind,target_id,created_at DESC);
+CREATE TRIGGER IF NOT EXISTS trg_production_recovery_settlements_immutable_update
+BEFORE UPDATE ON production_recovery_settlements
+BEGIN
+  SELECT RAISE(ABORT, 'production_recovery_settlement_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_production_recovery_settlements_immutable_delete
+BEFORE DELETE ON production_recovery_settlements
+BEGIN
+  SELECT RAISE(ABORT, 'production_recovery_settlement_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_production_recovery_entries_immutable_update
+BEFORE UPDATE ON production_recovery_entries
+BEGIN
+  SELECT RAISE(ABORT, 'production_recovery_entry_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_production_recovery_entries_immutable_delete
+BEFORE DELETE ON production_recovery_entries
+BEGIN
+  SELECT RAISE(ABORT, 'production_recovery_entry_immutable');
+END;
+"""
 # 137001/137002 were exercised by local pre-release builds before the v137
 # schema identity was frozen.  Migration versions are immutable once written,
 # even outside production, so the audited release advances to fresh numbers
@@ -884,7 +998,41 @@ MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
         + _MODEL_USAGE_SETTLEMENT_SCHEMA_IDENTITY
     ).encode("utf-8")
 ).hexdigest()
-LATEST_SCHEMA_MIGRATION_VERSION = MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION
+PRODUCTION_RECOVERY_SCHEMA_MIGRATION_VERSION = 140008
+PRODUCTION_RECOVERY_SCHEMA_MIGRATION_NAME = "v140-production-recovery-settlement"
+_PRODUCTION_RECOVERY_SCHEMA_IDENTITY = "|".join((
+    "post-140002-resource-scope-incremental-only",
+    "personal-to-team-tenant-adoption",
+    "post-140004-media-team-adoption",
+    "verified-canvas-blob-recovery-without-overwrite",
+    "non-resolving-incident-adjudication",
+    "immutable-recovery-receipts",
+))
+PRODUCTION_RECOVERY_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (
+        PRODUCTION_RECOVERY_SCHEMA
+        + "\n"
+        + _PRODUCTION_RECOVERY_SCHEMA_IDENTITY
+    ).encode("utf-8")
+).hexdigest()
+MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION = 140009
+MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_NAME = "v140-model-usage-multi-source-settlement"
+_MODEL_USAGE_SETTLEMENT_V2_SCHEMA_IDENTITY = "|".join((
+    "exact-receipt-reviewed-plan",
+    "central-and-video-sidecar-evidence",
+    "fresh-backup-snapshot-and-database-binding",
+    "central-timeout-attempt-zero-observed-usage",
+    "sidecar-submitted-terminal-indeterminate-without-projection",
+    "immutable-v2-settlement-receipts",
+))
+MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (
+        MODEL_USAGE_SETTLEMENT_V2_SCHEMA
+        + "\n"
+        + _MODEL_USAGE_SETTLEMENT_V2_SCHEMA_IDENTITY
+    ).encode("utf-8")
+).hexdigest()
+LATEST_SCHEMA_MIGRATION_VERSION = MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION
 EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", SCHEMA)
 ) | frozenset(
@@ -916,6 +1064,16 @@ EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(
         r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
         MODEL_USAGE_SETTLEMENT_SCHEMA,
+    )
+) | frozenset(
+    re.findall(
+        r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+        PRODUCTION_RECOVERY_SCHEMA,
+    )
+) | frozenset(
+    re.findall(
+        r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+        MODEL_USAGE_SETTLEMENT_V2_SCHEMA,
     )
 ) | {"schema_migrations"}
 EXPECTED_SCHEMA_COLUMNS = {
@@ -961,6 +1119,29 @@ EXPECTED_SCHEMA_COLUMNS = {
         "settlement_id", "operation_id", "central_receipt_id", "resolution",
         "central_receipt_before_sha256", "sidecar_receipt_sha256",
         "central_receipt_after_sha256", "created_at",
+    },
+    "production_recovery_settlements": {
+        "settlement_id", "settlement_kind", "plan_sha256",
+        "database_identity", "snapshot_manifest_sha256",
+        "snapshot_media_digest", "planned_rows", "applied_rows",
+        "created_at", "created_by",
+    },
+    "production_recovery_entries": {
+        "settlement_id", "entry_kind", "target_kind", "target_id",
+        "owner_id", "before_value", "after_value", "evidence",
+        "created_at",
+    },
+    "model_usage_settlements_v2": {
+        "settlement_id", "plan_sha256", "database_identity",
+        "snapshot_manifest_sha256", "snapshot_media_digest",
+        "receipt_count", "terminal_rows", "projected_rows",
+        "indeterminate_rows", "created_at", "created_by",
+    },
+    "model_usage_settlement_entries_v2": {
+        "settlement_id", "receipt_id", "source", "operation_id",
+        "resolution", "central_receipt_before_sha256",
+        "sidecar_receipt_sha256", "central_receipt_after_sha256",
+        "projected", "created_at",
     },
 }
 ACG_DATA_MIGRATION_VERSION = 137004
@@ -1441,6 +1622,22 @@ def _apply_model_usage_settlement_schema_locked(conn, *, begin_transaction=True)
     _execute_sql_script_locked(conn, MODEL_USAGE_SETTLEMENT_SCHEMA)
 
 
+def _apply_production_recovery_schema_locked(conn, *, begin_transaction=True):
+    """Add immutable recovery receipts without changing any business row."""
+
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, PRODUCTION_RECOVERY_SCHEMA)
+
+
+def _apply_model_usage_settlement_v2_schema_locked(conn, *, begin_transaction=True):
+    """Add multi-source settlement receipts without changing usage rows."""
+
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, MODEL_USAGE_SETTLEMENT_V2_SCHEMA)
+
+
 def _record_schema_migration_locked(conn, *, summary=None):
     existing = conn.execute(
         "SELECT checksum,status FROM schema_migrations WHERE version=?",
@@ -1745,6 +1942,86 @@ def _record_model_usage_settlement_schema_migration_locked(conn, *, summary=None
         )
 
 
+def _record_production_recovery_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (PRODUCTION_RECOVERY_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != PRODUCTION_RECOVERY_SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("production recovery schema checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {
+            "schema": "production-recovery-settlement",
+            "mode": "expand-only",
+        },
+        ensure_ascii=False,
+    )
+    values = (
+        PRODUCTION_RECOVERY_SCHEMA_MIGRATION_NAME,
+        PRODUCTION_RECOVERY_SCHEMA_MIGRATION_CHECKSUM,
+        runtime_config.release_id() or "unidentified",
+        now,
+        encoded_summary,
+        PRODUCTION_RECOVERY_SCHEMA_MIGRATION_VERSION,
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            values,
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "name,checksum,app_version,finished_at,status,summary,version,started_at"
+            ") VALUES(?,?,?,?,'success',?,?,?)",
+            (*values, now),
+        )
+
+
+def _record_model_usage_settlement_v2_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("model usage settlement v2 schema checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {
+            "schema": "model-usage-multi-source-settlement",
+            "mode": "expand-only",
+        },
+        ensure_ascii=False,
+    )
+    values = (
+        MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_NAME,
+        MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM,
+        runtime_config.release_id() or "unidentified",
+        now,
+        encoded_summary,
+        MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            values,
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "name,checksum,app_version,finished_at,status,summary,version,started_at"
+            ") VALUES(?,?,?,?,'success',?,?,?)",
+            (*values, now),
+        )
+
+
 def _database_identity(path):
     try:
         stat = Path(path).stat()
@@ -1939,6 +2216,10 @@ def database_readiness():
         "memberControlSchemaChecksum": "",
         "modelUsageSettlementSchemaVersion": None,
         "modelUsageSettlementSchemaChecksum": "",
+        "productionRecoverySchemaVersion": None,
+        "productionRecoverySchemaChecksum": "",
+        "modelUsageSettlementV2SchemaVersion": None,
+        "modelUsageSettlementV2SchemaChecksum": "",
     }
     spool_status = model_usage_completion_spool_status()
     result["modelUsageCompletionSpoolPending"] = spool_status["pending"]
@@ -2013,6 +2294,16 @@ def database_readiness():
                 "WHERE version=?",
                 (MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
+            production_recovery_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (PRODUCTION_RECOVERY_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            usage_settlement_v2_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
             if base_row:
                 result["migrationVersion"] = int(base_row[0])
                 result["checksum"] = str(base_row[1] or "")[:16]
@@ -2058,6 +2349,24 @@ def database_readiness():
                 result["modelUsageSettlementSchemaChecksum"] = str(
                     usage_settlement_row[1] or ""
                 )[:16]
+            if production_recovery_row:
+                result["migrationVersion"] = int(production_recovery_row[0])
+                result["checksum"] = str(production_recovery_row[1] or "")[:16]
+                result["productionRecoverySchemaVersion"] = int(
+                    production_recovery_row[0]
+                )
+                result["productionRecoverySchemaChecksum"] = str(
+                    production_recovery_row[1] or ""
+                )[:16]
+            if usage_settlement_v2_row:
+                result["migrationVersion"] = int(usage_settlement_v2_row[0])
+                result["checksum"] = str(usage_settlement_v2_row[1] or "")[:16]
+                result["modelUsageSettlementV2SchemaVersion"] = int(
+                    usage_settlement_v2_row[0]
+                )
+                result["modelUsageSettlementV2SchemaChecksum"] = str(
+                    usage_settlement_v2_row[1] or ""
+                )[:16]
             result["migrationDirty"] = int(conn.execute(
                 "SELECT COUNT(*) FROM schema_migrations WHERE status<>'success'"
             ).fetchone()[0] or 0)
@@ -2084,6 +2393,14 @@ def database_readiness():
                 and usage_settlement_row[1]
                 == MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_CHECKSUM
                 and usage_settlement_row[2] == "success"
+                and production_recovery_row
+                and production_recovery_row[1]
+                == PRODUCTION_RECOVERY_SCHEMA_MIGRATION_CHECKSUM
+                and production_recovery_row[2] == "success"
+                and usage_settlement_v2_row
+                and usage_settlement_v2_row[1]
+                == MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM
+                and usage_settlement_v2_row[2] == "success"
                 and result["migrationDirty"] == 0
             )
         else:
@@ -2395,6 +2712,20 @@ def apply_schema_migrations(
                     MODEL_USAGE_SETTLEMENT_SCHEMA_MIGRATION_CHECKSUM,
                     _apply_model_usage_settlement_schema_locked,
                     _record_model_usage_settlement_schema_migration_locked,
+                ),
+                (
+                    PRODUCTION_RECOVERY_SCHEMA_MIGRATION_VERSION,
+                    PRODUCTION_RECOVERY_SCHEMA_MIGRATION_NAME,
+                    PRODUCTION_RECOVERY_SCHEMA_MIGRATION_CHECKSUM,
+                    _apply_production_recovery_schema_locked,
+                    _record_production_recovery_schema_migration_locked,
+                ),
+                (
+                    MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,
+                    MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_NAME,
+                    MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM,
+                    _apply_model_usage_settlement_v2_schema_locked,
+                    _record_model_usage_settlement_v2_schema_migration_locked,
                 ),
             )
             migrations = all_migrations
@@ -3154,6 +3485,7 @@ _RESOURCE_SCOPE_REFERENCE_FIELDS = {
     "creativeMemory": (("sourceReportId", "insightReports"),),
     "customOutputs": (("projectId", "customProjects"), ("customProjectId", "customProjects")),
     "customVideoJobs": (("projectId", "customProjects"), ("customProjectId", "customProjects")),
+    CUSTOM_CANVAS_GENERATION_JOB_COLLECTION: (("sourceProjectId", "customProjects"),),
 }
 _RESOURCE_SCOPE_ACG_GLOBAL_COLLECTIONS = {"products", "publishTags"}
 
@@ -4295,6 +4627,24 @@ def _ensure_db():
                 },
             )
             conn.commit()
+            _apply_production_recovery_schema_locked(conn)
+            _record_production_recovery_schema_migration_locked(
+                conn,
+                summary={
+                    "schema": "production-recovery-settlement",
+                    "mode": "local-auto",
+                },
+            )
+            conn.commit()
+            _apply_model_usage_settlement_v2_schema_locked(conn)
+            _record_model_usage_settlement_v2_schema_migration_locked(
+                conn,
+                summary={
+                    "schema": "model-usage-multi-source-settlement",
+                    "mode": "local-auto",
+                },
+            )
+            conn.commit()
             _initialized = True
         finally:
             conn.close()
@@ -5200,6 +5550,7 @@ def _private_media_plan_locked(
     override_database_logical_sha256="",
     include_database_logical_digest=False,
     include_media_content_digest=False,
+    include_issue_identities=False,
 ):
     """Build a deterministic, redacted legacy-attribution plan.
 
@@ -5702,6 +6053,7 @@ def _private_media_plan_locked(
 
     pending = 0
     registry_conflicts = 0
+    registry_conflict_rows = []
     for kind, key, owner, team_id, _proof_kind, _proof_id in rows:
         existing = existing_registry.get(((kind, key), owner))
         if not existing:
@@ -5709,6 +6061,11 @@ def _private_media_plan_locked(
             continue
         if str(existing[3] or "") != str(team_id or ""):
             registry_conflicts += 1
+            registry_conflict_rows.append({
+                "mediaKind": str(kind), "mediaKey": str(key),
+                "ownerId": str(owner), "storedTeamId": str(existing[3] or ""),
+                "plannedTeamId": str(team_id or ""),
+            })
     issue_counts["registryConflicts"] = registry_conflicts
     warning_names = {
         "temporaryFiles",
@@ -5759,6 +6116,23 @@ def _private_media_plan_locked(
         },
         "rows": rows,
     }
+    if include_issue_identities:
+        summary["_issueIdentities"] = {
+            "missingReferencedFiles": [
+                {"mediaKind": kind, "mediaKey": key}
+                for kind, key in sorted(missing_file_identities)
+            ],
+            "missingReferenceOwners": [
+                {"mediaKind": kind, "mediaKey": key}
+                for kind, key in sorted(missing_reference_owners)
+            ],
+            "registryConflicts": sorted(
+                registry_conflict_rows,
+                key=lambda item: (
+                    item["mediaKind"], item["mediaKey"], item["ownerId"],
+                ),
+            ),
+        }
     return summary
 
 
@@ -8477,6 +8851,13 @@ def activate_customer_team_plan(member_id, team_name, plan="team"):
                     "customer", "active", clean_plan, "metered", now, member_id,
                 ),
             )
+            _apply_personal_tenant_adoption_locked(
+                conn,
+                member_id,
+                team_id,
+                created_by=member_id,
+                now=now,
+            )
             conn.execute(
                 "INSERT INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
                 "VALUES(?,?,?,?,?,?)",
@@ -8594,6 +8975,200 @@ def list_team_join_requests(reviewer_id, status="pending"):
     } for row in rows]
 
 
+def _personal_tenant_adoption_plan_locked(conn, member_id, team_id):
+    """Return only rows that can safely move from one personal tenant.
+
+    The member and media owner columns are the authority.  A document scoped
+    to some other member/team, a non-empty different media team, a missing
+    document, or a second active membership rejects the whole caller
+    transaction.  Already-adopted rows are accepted only for idempotent
+    settlement and are never rewritten.
+    """
+
+    member = str(member_id or "").strip()
+    target_team = str(team_id or "").strip()
+    if not member or not target_team:
+        raise StoreNotReadyError("tenant adoption identity is required")
+    member_row = conn.execute(
+        "SELECT role FROM members WHERE id=?", (member,),
+    ).fetchone()
+    if not member_row or str(member_row[0]) not in {"user", "editor"}:
+        raise StoreNotReadyError("tenant adoption member is not eligible")
+    if not conn.execute(
+        "SELECT 1 FROM teams WHERE id=? AND status='active'", (target_team,),
+    ).fetchone():
+        raise StoreNotReadyError("tenant adoption team is not active")
+    active_memberships = conn.execute(
+            "SELECT tm.team_id,tm.joined_at FROM team_members tm "
+            "JOIN teams t ON t.id=tm.team_id "
+            "WHERE tm.member_id=? AND tm.status='active' AND t.status='active'",
+            (member,),
+        ).fetchall()
+    active_teams = {str(row[0]) for row in active_memberships}
+    if active_teams and active_teams != {target_team}:
+        raise StoreNotReadyError("tenant adoption member has another active team")
+    joined_at = int(active_memberships[0][1] or 0) if active_memberships else 0
+    if active_memberships and joined_at <= 0:
+        raise StoreNotReadyError("tenant adoption membership time is invalid")
+
+    personal_scopes = []
+    already_team_scopes = []
+    rows = conn.execute(
+        "SELECT s.resource_kind,s.resource_id,s.scope_type,s.scope_id,s.owner_id,s.captured_at,"
+        "d.owner_id,d.data FROM resource_scopes s "
+        "LEFT JOIN docs d ON s.resource_kind=('doc:' || d.collection) "
+        "AND s.resource_id=d.id "
+        "WHERE (s.scope_type='member' AND s.scope_id=?) OR s.owner_id=? "
+        "ORDER BY s.resource_kind,s.resource_id",
+        (member, member),
+    ).fetchall()
+    for kind, resource_id, scope_type, scope_id, scope_owner, captured_at, doc_owner, raw in rows:
+        if not str(kind).startswith("doc:") or raw is None:
+            raise StoreNotReadyError("tenant adoption resource document is missing")
+        if str(scope_owner or "") not in {"", member}:
+            raise StoreNotReadyError("tenant adoption resource owner conflicts")
+        if str(doc_owner or "") not in {"", member}:
+            raise StoreNotReadyError("tenant adoption document owner conflicts")
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise StoreNotReadyError("tenant adoption document JSON is invalid") from exc
+        if not isinstance(payload, dict):
+            raise StoreNotReadyError("tenant adoption document JSON is invalid")
+        claimed = {
+            str(payload.get(field) or "").strip()
+            for field in _RESOURCE_SCOPE_MEMBER_FIELDS
+            if str(payload.get(field) or "").strip()
+        }
+        if any(identity != member for identity in claimed):
+            raise StoreNotReadyError("tenant adoption document identity conflicts")
+        if not (str(scope_owner or "") == member or str(doc_owner or "") == member or member in claimed):
+            raise StoreNotReadyError("tenant adoption document ownership is unproven")
+        if joined_at and int(captured_at or 0) > joined_at:
+            raise StoreNotReadyError("tenant adoption resource was created after team join")
+        current = (str(scope_type), str(scope_id))
+        if current == ("member", member):
+            personal_scopes.append((str(kind), str(resource_id)))
+        elif current == ("team", target_team):
+            already_team_scopes.append((str(kind), str(resource_id)))
+        else:
+            raise StoreNotReadyError("tenant adoption resource scope conflicts")
+
+    personal_media = []
+    already_team_media = []
+    for kind, key, stored_team, created_at in conn.execute(
+        "SELECT media_kind,media_key,team_id,created_at FROM private_media_registry "
+        "WHERE owner_id=? ORDER BY media_kind,media_key",
+        (member,),
+    ).fetchall():
+        team = str(stored_team or "")
+        identity = (str(kind), str(key))
+        if joined_at and int(created_at or 0) > joined_at:
+            raise StoreNotReadyError("tenant adoption media was created after team join")
+        if not team:
+            personal_media.append(identity)
+        elif team == target_team:
+            already_team_media.append(identity)
+        else:
+            raise StoreNotReadyError("tenant adoption private media team conflicts")
+    return {
+        "memberId": member,
+        "teamId": target_team,
+        "joinedAt": joined_at,
+        "personalScopes": personal_scopes,
+        "personalMedia": personal_media,
+        "alreadyTeamScopes": already_team_scopes,
+        "alreadyTeamMedia": already_team_media,
+    }
+
+
+def _apply_personal_tenant_adoption_locked(
+    conn,
+    member_id,
+    team_id,
+    *,
+    created_by,
+    now=None,
+    snapshot_manifest_sha256="",
+    snapshot_media_digest="",
+):
+    plan = _personal_tenant_adoption_plan_locked(conn, member_id, team_id)
+    timestamp = int(now if now is not None else time.time() * 1000)
+    for kind, resource_id in plan["personalScopes"]:
+        changed = conn.execute(
+            "UPDATE resource_scopes SET scope_type='team',scope_id=?,"
+            "provenance=?,updated_at=? WHERE resource_kind=? AND resource_id=? "
+            "AND scope_type='member' AND scope_id=?",
+            (
+                plan["teamId"], "v140-team-adoption", timestamp,
+                kind, resource_id, plan["memberId"],
+            ),
+        ).rowcount
+        if changed != 1:
+            raise StoreNotReadyError("tenant adoption resource scope changed")
+    for kind, key in plan["personalMedia"]:
+        changed = conn.execute(
+            "UPDATE private_media_registry SET team_id=?,updated_at=? "
+            "WHERE media_kind=? AND media_key=? AND owner_id=? AND team_id=''",
+            (plan["teamId"], timestamp, kind, key, plan["memberId"]),
+        ).rowcount
+        if changed != 1:
+            raise StoreNotReadyError("tenant adoption private media changed")
+
+    entries = [
+        ("resource-scope-adopt", kind, resource_id, plan["memberId"],
+         f"member:{plan['memberId']}", f"team:{plan['teamId']}")
+        for kind, resource_id in plan["personalScopes"]
+    ] + [
+        ("private-media-adopt", kind, key, plan["memberId"], "", plan["teamId"])
+        for kind, key in plan["personalMedia"]
+    ]
+    plan_sha = hashlib.sha256(json.dumps(
+        {
+            "memberId": plan["memberId"], "teamId": plan["teamId"],
+            "entries": entries,
+        },
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    settlement_id = hashlib.sha256(
+        f"tenant-adoption:{_database_identity(DB_PATH)}:{plan_sha}".encode("utf-8")
+    ).hexdigest()
+    existing = conn.execute(
+        "SELECT applied_rows FROM production_recovery_settlements "
+        "WHERE settlement_id=?",
+        (settlement_id,),
+    ).fetchone()
+    if existing:
+        if entries:
+            raise StoreNotReadyError("tenant adoption receipt already exists before apply")
+        return {**plan, "appliedRows": 0, "settlementId": settlement_id}
+    conn.execute(
+        "INSERT INTO production_recovery_settlements("
+        "settlement_id,settlement_kind,plan_sha256,database_identity,"
+        "snapshot_manifest_sha256,snapshot_media_digest,planned_rows,"
+        "applied_rows,created_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (
+            settlement_id, "tenant-adoption", plan_sha,
+            _database_identity(DB_PATH), str(snapshot_manifest_sha256 or ""),
+            str(snapshot_media_digest or ""), len(entries), len(entries),
+            timestamp, str(created_by or "system")[:120],
+        ),
+    )
+    conn.executemany(
+        "INSERT INTO production_recovery_entries("
+        "settlement_id,entry_kind,target_kind,target_id,owner_id,before_value,"
+        "after_value,evidence,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                settlement_id, entry_kind, target_kind, target_id, owner,
+                before, after, "personal-owner-and-single-active-team", timestamp,
+            )
+            for entry_kind, target_kind, target_id, owner, before, after in entries
+        ],
+    )
+    return {**plan, "appliedRows": len(entries), "settlementId": settlement_id}
+
+
 def review_team_join_request(request_id, reviewer_id, approve):
     _ensure_db()
     reviewed_member_id = None
@@ -8638,6 +9213,13 @@ def review_team_join_request(request_id, reviewer_id, approve):
                     ).fetchone()[0]
                     if int(count or 0) >= limit:
                         return None, "team_full"
+                _apply_personal_tenant_adoption_locked(
+                    conn,
+                    row[2],
+                    row[1],
+                    created_by=reviewer_id,
+                    now=now,
+                )
                 conn.execute(
                     "INSERT INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
                     "VALUES(?,?,?,?,?,?)",
@@ -8754,6 +9336,13 @@ def adopt_personal_member_into_internal_team(member_id, reviewer_id):
                 conn.rollback()
                 return None, "already_in_team"
             now = int(time.time() * 1000)
+            _apply_personal_tenant_adoption_locked(
+                conn,
+                str(member_id),
+                INTERNAL_TEAM_ID,
+                created_by=str(reviewer_id),
+                now=now,
+            )
             conn.execute(
                 "INSERT INTO team_members(team_id,member_id,team_role,status,joined_at,added_by) "
                 "VALUES(?,?,?,?,?,?)",
@@ -10065,6 +10654,10 @@ def complete_model_usage_receipt(
             raise ModelUsageReceiptConflict(
                 "failed model usage attempt requires a new attempt key"
             )
+        if row[15] == "indeterminate":
+            raise ModelUsageReceiptConflict(
+                "indeterminate model usage attempt is terminal and cannot be retried"
+            )
         actual_provider = provider or str(row[8] or "")
         actual_model = model or str(row[9] or "")
         if provider_ref:
@@ -10148,6 +10741,10 @@ def fail_model_usage_receipt(
             raise ValueError("model_usage_receipt_not_found")
         if row[15] == "succeeded":
             raise ModelUsageReceiptConflict("completed model usage receipt cannot be downgraded")
+        if row[15] == "indeterminate":
+            raise ModelUsageReceiptConflict(
+                "indeterminate model usage attempt is terminal"
+            )
         if row[15] == status:
             return _model_usage_receipt_dict(
                 row,
@@ -10525,6 +11122,7 @@ def _model_usage_settlement_completion(entry, sidecar, central):
         total = _usage_int(sidecar.get("totalTokens")) or prompt + completion
         output_units = _usage_int(sidecar.get("outputUnits"))
         error = ""
+        calls = 1
     elif resolution == "operator-confirmed-unknown":
         if status != "unknown" or provider_ref:
             raise StoreNotReadyError(
@@ -10540,6 +11138,24 @@ def _model_usage_settlement_completion(entry, sidecar, central):
         error = (
             "operator-reviewed provider call confirmed; token and output usage unknown"
         )
+        calls = 1
+    elif resolution == "sidecar-submitted-indeterminate":
+        if status != "submitted" or provider_ref:
+            raise StoreNotReadyError(
+                f"model usage settlement submitted evidence invalid:{operation_id}"
+            )
+        if entry.get("operatorReviewed") is not True or not str(
+            entry.get("reviewNote") or ""
+        ).strip():
+            raise StoreNotReadyError(
+                f"model usage settlement operator review missing:{operation_id}"
+            )
+        prompt = completion = total = output_units = 0
+        error = (
+            "operator-reviewed sidecar submission remains indeterminate; "
+            "provider call occurrence and usage are unknown"
+        )
+        calls = 0
     else:
         raise StoreNotReadyError(
             f"model usage settlement resolution invalid:{operation_id}"
@@ -10551,7 +11167,7 @@ def _model_usage_settlement_completion(entry, sidecar, central):
         "promptTokens": prompt,
         "completionTokens": completion,
         "totalTokens": total,
-        "calls": 1,
+        "calls": calls,
         "outputUnits": output_units,
         "unitLabel": normalized_unit_label,
         "error": error,
@@ -10924,6 +11540,449 @@ def settle_model_usage_receipts_reviewed(
                 "settlementId": settlement_id, "plannedRows": len(completed),
                 "insertedRows": len(completed), "resolvedRows": len(completed),
                 "projectedRows": len(completed), "unresolved": 0,
+                "outboxPending": 0, "quickCheck": "ok",
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+_MODEL_USAGE_SETTLEMENT_V2_PLAN_KEYS = {
+    "format", "databaseIdentity", "snapshotManifestSha256",
+    "snapshotMediaInventoryDigest", "reviewedBy", "reviewedAt", "entries",
+}
+_MODEL_USAGE_SETTLEMENT_V2_ENTRY_KEYS = {
+    "receiptId", "source", "operationId", "centralReceiptSha256",
+    "sidecarReceiptSha256", "resolution", "operatorReviewed", "reviewNote",
+}
+_MODEL_USAGE_SETTLEMENT_V2_RESOLUTIONS = {
+    "central-attempt-outcome-unknown",
+    "sidecar-attempt-outcome-unknown",
+    "sidecar-succeeded",
+    "sidecar-submitted-indeterminate",
+}
+_MODEL_USAGE_CENTRAL_UNKNOWN_SOURCES = {"main-provider", "custom-canvas"}
+
+
+def model_usage_settlement_v2_evidence(receipt_ids):
+    """Read immutable hashes for one exact operator-supplied receipt set."""
+
+    clean = [str(item or "").strip() for item in list(receipt_ids or [])]
+    if (
+        not clean
+        or clean != sorted(set(clean))
+        or len(clean) > 200
+        or any(not re.fullmatch(r"[A-Za-z0-9._:/+\-]{1,220}", item) for item in clean)
+    ):
+        raise ValueError("model_usage_settlement_v2_receipt_ids_invalid")
+    _ensure_db()
+    conn = _connect(read_only=True)
+    try:
+        entries = []
+        for receipt_id in clean:
+            row = _model_usage_receipt_row_locked(conn, receipt_id)
+            if not row:
+                raise StoreNotReadyError(
+                    f"model usage settlement v2 receipt missing:{receipt_id}"
+                )
+            evidence = _model_usage_settlement_central_evidence_locked(conn, row)
+            entries.append({
+                "receiptId": receipt_id,
+                "source": str(row[22] or ""),
+                "operationId": str(row[11] or ""),
+                "status": str(row[15] or ""),
+                "outboxState": evidence["outboxState"],
+                "error": str(row[23] or ""),
+                "centralReceiptSha256": _canonical_json_sha256(evidence),
+            })
+        return {
+            "databaseIdentity": _database_identity(DB_PATH),
+            "entries": entries,
+        }
+    finally:
+        conn.close()
+
+
+def _model_usage_v2_unresolved_receipt_ids_locked(conn):
+    return [
+        str(row[0]) for row in conn.execute(
+            "SELECT r.receipt_id FROM model_usage_receipts r "
+            "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
+            "WHERE r.call_status IN ('pending','unknown') OR "
+            "(r.call_status='succeeded' AND COALESCE(o.state,'')<>'projected') "
+            "ORDER BY r.receipt_id"
+        ).fetchall()
+    ]
+
+
+def _model_usage_central_unknown_error_allowed(error):
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    if "readtimeout" in text or "read timeout" in text:
+        return True
+    if "connecttimeout" in text or "connect timeout" in text:
+        return True
+    return bool(re.search(
+        r"(?:http(?:error|status|response)?[\s:()_-]*|status[\s:()_-]*)(5\d\d)\b",
+        text,
+    ))
+
+
+def _model_usage_v2_prepare_locked(conn, entry, row, sidecar_receipts):
+    receipt_id = entry["receiptId"]
+    evidence = _model_usage_settlement_central_evidence_locked(conn, row)
+    if _canonical_json_sha256(evidence) != entry["centralReceiptSha256"]:
+        raise StoreNotReadyError(
+            f"model usage settlement v2 central receipt hash mismatch:{receipt_id}"
+        )
+    if str(row[22] or "") != entry["source"] or str(row[11] or "") != entry[
+        "operationId"
+    ]:
+        raise StoreNotReadyError(
+            f"model usage settlement v2 receipt identity mismatch:{receipt_id}"
+        )
+    resolution = entry["resolution"]
+    if resolution == "central-attempt-outcome-unknown":
+        if (
+            entry["source"] not in _MODEL_USAGE_CENTRAL_UNKNOWN_SOURCES
+            or str(row[15] or "") != "unknown"
+            or str(row[14] or "")
+            or any(int(row[index] or 0) for index in (16, 17, 18, 19, 20))
+            or not _model_usage_central_unknown_error_allowed(row[23])
+            or entry["sidecarReceiptSha256"]
+        ):
+            raise StoreNotReadyError(
+                f"model usage settlement v2 central unknown evidence invalid:{receipt_id}"
+            )
+        return {
+            "terminalStatus": "succeeded",
+            "provider": str(row[8] or ""),
+            "model": str(row[9] or ""),
+            "providerRef": "",
+            "promptTokens": 0,
+            "completionTokens": 0,
+            "totalTokens": 0,
+            "calls": 1,
+            "outputUnits": 0,
+            "unitLabel": str(row[21] or ""),
+            "error": str(row[23] or ""),
+            "eventAt": int(row[24] or row[26] or 0),
+            "project": True,
+        }
+    if entry["source"] != "video-workshop-sidecar":
+        raise StoreNotReadyError(
+            f"model usage settlement v2 sidecar source invalid:{receipt_id}"
+        )
+    sidecar = (sidecar_receipts or {}).get(entry["operationId"])
+    if not isinstance(sidecar, dict) or _canonical_json_sha256(sidecar) != entry[
+        "sidecarReceiptSha256"
+    ]:
+        raise StoreNotReadyError(
+            f"model usage settlement v2 sidecar hash mismatch:{receipt_id}"
+        )
+    helper_entry = dict(entry)
+    if resolution == "sidecar-attempt-outcome-unknown":
+        helper_entry["resolution"] = "operator-confirmed-unknown"
+    completion = _model_usage_settlement_completion(
+        helper_entry, sidecar, evidence,
+    )
+    if resolution == "sidecar-submitted-indeterminate":
+        if str(row[15] or "") not in {"pending", "unknown"}:
+            raise StoreNotReadyError(
+                f"model usage settlement v2 submitted central status invalid:{receipt_id}"
+            )
+        return {**completion, "terminalStatus": "indeterminate", "project": False}
+    if str(row[15] or "") not in {"pending", "unknown", "succeeded"}:
+        raise StoreNotReadyError(
+            f"model usage settlement v2 central status invalid:{receipt_id}"
+        )
+    return {**completion, "terminalStatus": "succeeded", "project": True}
+
+
+def settle_model_usage_receipts_reviewed_v2(
+    *, plan, plan_sha256, sidecar_receipts, expected_identity,
+    expected_schema_version, backup_binding, runtime_snapshot_binding,
+    created_by="deployment", dry_run=False,
+):
+    """Atomically close one exact mixed-source unresolved receipt set.
+
+    No provider is called.  ``submitted`` sidecar receipts become a terminal
+    non-billing ``indeterminate`` state with no legacy projection; a future
+    provider retry therefore remains unauthorized.
+    """
+
+    global _initialized
+    if not isinstance(plan, dict) or set(plan) != _MODEL_USAGE_SETTLEMENT_V2_PLAN_KEYS:
+        raise StoreNotReadyError("model usage settlement v2 plan fields are invalid")
+    if plan.get("format") != "acg-model-usage-settlement-plan-v2":
+        raise StoreNotReadyError("model usage settlement v2 plan format is invalid")
+    entries = plan.get("entries")
+    if not isinstance(entries, list) or not entries or len(entries) > 200:
+        raise StoreNotReadyError("model usage settlement v2 entries are invalid")
+    if any(
+        not isinstance(entry, dict)
+        or set(entry) != _MODEL_USAGE_SETTLEMENT_V2_ENTRY_KEYS
+        or entry.get("resolution") not in _MODEL_USAGE_SETTLEMENT_V2_RESOLUTIONS
+        or entry.get("operatorReviewed") is not True
+        for entry in entries
+    ):
+        raise StoreNotReadyError("model usage settlement v2 entry fields are invalid")
+    receipt_ids = [str(entry.get("receiptId") or "") for entry in entries]
+    if receipt_ids != sorted(set(receipt_ids)):
+        raise StoreNotReadyError("model usage settlement v2 receipts are not exact")
+    sidecar_operation_ids = {
+        entry["operationId"] for entry in entries
+        if entry["source"] == "video-workshop-sidecar"
+    }
+    if set(sidecar_receipts or {}) != sidecar_operation_ids:
+        raise StoreNotReadyError("model usage settlement v2 sidecar set mismatch")
+    plan_sha256 = str(plan_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", plan_sha256):
+        raise StoreNotReadyError("model usage settlement v2 plan sha256 is invalid")
+    actual_identity = _database_identity(DB_PATH)
+    if (
+        not hmac.compare_digest(str(expected_identity or ""), actual_identity)
+        or not hmac.compare_digest(str(plan.get("databaseIdentity") or ""), actual_identity)
+    ):
+        raise StoreNotReadyError("model usage settlement v2 database identity mismatch")
+    if int(expected_schema_version or 0) != MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION:
+        raise StoreNotReadyError("model usage settlement v2 schema confirmation mismatch")
+    snapshot = _verify_runtime_snapshot_binding(runtime_snapshot_binding, required=True)
+    if not dry_run:
+        if runtime_config.is_read_only():
+            raise StoreNotReadyError("read-only runtime cannot settle model usage")
+        if str(os.getenv("ACG_ALLOW_MODEL_USAGE_SETTLEMENT_V2", "")).strip() != "1":
+            raise StoreNotReadyError("model usage settlement v2 authorization is required")
+    settlement_id = hashlib.sha256((
+        "model-usage-settlement-v2|" + actual_identity + "|"
+        + str(plan.get("snapshotManifestSha256") or "") + "|" + plan_sha256
+    ).encode("utf-8")).hexdigest()
+    with _lock:
+        conn = _connect(read_only=True) if dry_run else _connect_migration_target()
+        try:
+            conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
+            if not hmac.compare_digest(actual_identity, _database_identity(DB_PATH)):
+                raise StoreNotReadyError("model usage settlement v2 database identity drift")
+            _verify_migration_backup_binding_locked(conn, backup_binding)
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError("model usage settlement v2 quick_check failed")
+            for version, checksum in (
+                (MODEL_USAGE_SCHEMA_MIGRATION_VERSION, MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM),
+                (MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,
+                 MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM),
+            ):
+                row = conn.execute(
+                    "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                    (version,),
+                ).fetchone()
+                if row != (checksum, "success"):
+                    raise StoreNotReadyError(
+                        f"model usage settlement v2 prerequisite {version} is not ready"
+                    )
+            existing = conn.execute(
+                "SELECT plan_sha256,database_identity,snapshot_manifest_sha256,"
+                "snapshot_media_digest,receipt_count,terminal_rows,projected_rows,"
+                "indeterminate_rows FROM model_usage_settlements_v2 "
+                "WHERE settlement_id=?",
+                (settlement_id,),
+            ).fetchone()
+            if existing:
+                stored_entries = conn.execute(
+                    "SELECT receipt_id,source,operation_id,resolution,"
+                    "central_receipt_before_sha256,sidecar_receipt_sha256,"
+                    "central_receipt_after_sha256,projected "
+                    "FROM model_usage_settlement_entries_v2 WHERE settlement_id=? "
+                    "ORDER BY receipt_id",
+                    (settlement_id,),
+                ).fetchall()
+                indeterminate = sum(
+                    entry["resolution"] == "sidecar-submitted-indeterminate"
+                    for entry in entries
+                )
+                expected_header = (
+                    plan_sha256, actual_identity,
+                    str(plan.get("snapshotManifestSha256") or ""),
+                    str(plan.get("snapshotMediaInventoryDigest") or ""),
+                    len(entries), len(entries),
+                    len(entries) - indeterminate, indeterminate,
+                )
+                if tuple(existing) != expected_header or len(stored_entries) != len(entries):
+                    raise StoreNotReadyError("model usage settlement v2 receipt conflict")
+                for entry, stored in zip(entries, stored_entries):
+                    expected_projected = int(
+                        entry["resolution"] != "sidecar-submitted-indeterminate"
+                    )
+                    if tuple(stored[:6]) != (
+                        entry["receiptId"], entry["source"], entry["operationId"],
+                        entry["resolution"], entry["centralReceiptSha256"],
+                        entry["sidecarReceiptSha256"],
+                    ) or int(stored[7]) != expected_projected:
+                        raise StoreNotReadyError(
+                            "model usage settlement v2 immutable entry conflict"
+                        )
+                    row = _model_usage_receipt_row_locked(conn, entry["receiptId"])
+                    current = _model_usage_settlement_central_evidence_locked(conn, row)
+                    expected_status = (
+                        "indeterminate" if not expected_projected else "succeeded"
+                    )
+                    expected_outbox = "ignored" if not expected_projected else "projected"
+                    if (
+                        not row
+                        or str(row[15] or "") != expected_status
+                        or current["outboxState"] != expected_outbox
+                        or _canonical_json_sha256(current) != stored[6]
+                    ):
+                        raise StoreNotReadyError(
+                            "model usage settlement v2 completed receipt drift"
+                        )
+                if _model_usage_v2_unresolved_receipt_ids_locked(conn):
+                    raise StoreNotReadyError("model usage settlement v2 replay readiness drift")
+                if conn.execute(
+                    "SELECT COUNT(*) FROM model_usage_outbox WHERE state IN ('pending','retry')"
+                ).fetchone()[0]:
+                    raise StoreNotReadyError("model usage settlement v2 outbox replay drift")
+                conn.rollback()
+                return {
+                    "ok": True, "dryRun": bool(dry_run), "applied": False,
+                    "reused": True, "settlementId": settlement_id,
+                    "plannedRows": len(entries), "insertedRows": 0,
+                    "terminalRows": 0, "projectedRows": 0,
+                    "indeterminateRows": 0, "unresolved": 0,
+                    "outboxPending": 0, "quickCheck": "ok",
+                }
+            if (
+                not hmac.compare_digest(
+                    str(plan.get("snapshotManifestSha256") or ""),
+                    snapshot["manifestSha256"],
+                )
+                or not hmac.compare_digest(
+                    str(plan.get("snapshotMediaInventoryDigest") or ""),
+                    snapshot["mediaInventoryDigest"],
+                )
+            ):
+                raise StoreNotReadyError(
+                    "model usage settlement v2 snapshot binding mismatch"
+                )
+            if _model_usage_v2_unresolved_receipt_ids_locked(conn) != receipt_ids:
+                raise StoreNotReadyError(
+                    "model usage settlement v2 plan does not exactly cover unresolved receipts"
+                )
+            prepared = []
+            for entry in entries:
+                row = _model_usage_receipt_row_locked(conn, entry["receiptId"])
+                if not row:
+                    raise StoreNotReadyError(
+                        f"model usage settlement v2 receipt missing:{entry['receiptId']}"
+                    )
+                completion = _model_usage_v2_prepare_locked(
+                    conn, entry, row, sidecar_receipts,
+                )
+                prepared.append((entry, row, completion))
+            if dry_run:
+                outbox_pending = int(conn.execute(
+                    "SELECT COUNT(*) FROM model_usage_outbox WHERE state IN ('pending','retry')"
+                ).fetchone()[0] or 0)
+                conn.rollback()
+                return {
+                    "ok": True, "dryRun": True, "applied": False,
+                    "reused": False, "settlementId": settlement_id,
+                    "plannedRows": len(prepared), "insertedRows": 0,
+                    "terminalRows": 0, "projectedRows": 0,
+                    "indeterminateRows": sum(not item[2]["project"] for item in prepared),
+                    "unresolved": len(prepared), "outboxPending": outbox_pending,
+                    "quickCheck": "ok",
+                }
+            now = int(time.time() * 1000)
+            completed = []
+            projected_rows = 0
+            indeterminate_rows = 0
+            for entry, row, completion in prepared:
+                event_at = completion["eventAt"] or now
+                conn.execute(
+                    "UPDATE model_usage_receipts SET provider=?,model=?,provider_ref=?,"
+                    "call_status=?,prompt_tokens=?,completion_tokens=?,total_tokens=?,"
+                    "calls=?,output_units=?,unit_label=?,error=?,event_at=?,updated_at=?,"
+                    "completed_at=? WHERE receipt_id=?",
+                    (
+                        completion["provider"], completion["model"],
+                        completion["providerRef"], completion["terminalStatus"],
+                        completion["promptTokens"], completion["completionTokens"],
+                        completion["totalTokens"], completion["calls"],
+                        completion["outputUnits"], completion["unitLabel"],
+                        completion["error"], event_at, now, now, row[0],
+                    ),
+                )
+                if completion["project"]:
+                    conn.execute(
+                        "UPDATE model_usage_outbox SET state='pending',available_at=?,"
+                        "last_error='',updated_at=?,projected_at=NULL WHERE receipt_id=?",
+                        (now, now, row[0]),
+                    )
+                    _project_model_usage_settlement_receipt_locked(
+                        conn, _model_usage_receipt_row_locked(conn, row[0]), now,
+                    )
+                    projected_rows += 1
+                else:
+                    conn.execute(
+                        "UPDATE model_usage_outbox SET state='ignored',available_at=?,"
+                        "last_error=?,legacy_event_kind='',legacy_event_id='',"
+                        "updated_at=?,projected_at=? WHERE receipt_id=?",
+                        (now, completion["error"], now, now, row[0]),
+                    )
+                    indeterminate_rows += 1
+                final = _model_usage_settlement_central_evidence_locked(
+                    conn, _model_usage_receipt_row_locked(conn, row[0]),
+                )
+                completed.append((
+                    entry, _canonical_json_sha256(final), int(completion["project"]),
+                ))
+            unresolved = len(_model_usage_v2_unresolved_receipt_ids_locked(conn))
+            outbox_pending = int(conn.execute(
+                "SELECT COUNT(*) FROM model_usage_outbox WHERE state IN ('pending','retry')"
+            ).fetchone()[0] or 0)
+            if unresolved or outbox_pending:
+                raise StoreNotReadyError("model usage settlement v2 final readiness failed")
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError("model usage settlement v2 final quick_check failed")
+            conn.execute(
+                "INSERT INTO model_usage_settlements_v2("
+                "settlement_id,plan_sha256,database_identity,snapshot_manifest_sha256,"
+                "snapshot_media_digest,receipt_count,terminal_rows,projected_rows,"
+                "indeterminate_rows,created_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    settlement_id, plan_sha256, actual_identity,
+                    snapshot["manifestSha256"], snapshot["mediaInventoryDigest"],
+                    len(completed), len(completed), projected_rows,
+                    indeterminate_rows, now, str(created_by or "deployment")[:120],
+                ),
+            )
+            conn.executemany(
+                "INSERT INTO model_usage_settlement_entries_v2("
+                "settlement_id,receipt_id,source,operation_id,resolution,"
+                "central_receipt_before_sha256,sidecar_receipt_sha256,"
+                "central_receipt_after_sha256,projected,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        settlement_id, entry["receiptId"], entry["source"],
+                        entry["operationId"], entry["resolution"],
+                        entry["centralReceiptSha256"], entry["sidecarReceiptSha256"],
+                        after_sha, projected, now,
+                    )
+                    for entry, after_sha, projected in completed
+                ],
+            )
+            conn.commit()
+            _initialized = False
+            return {
+                "ok": True, "dryRun": False, "applied": True,
+                "reused": False, "settlementId": settlement_id,
+                "plannedRows": len(completed), "insertedRows": len(completed),
+                "terminalRows": len(completed), "projectedRows": projected_rows,
+                "indeterminateRows": indeterminate_rows, "unresolved": 0,
                 "outboxPending": 0, "quickCheck": "ok",
             }
         except Exception:
@@ -12837,6 +13896,11 @@ def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delive
                             raise PermissionError("resource_scope_conflict")
                         _delete_doc_in_conn(conn, "jobs", job_id)
                 if collection == "assets":
+                    asset_row = _doc_row_in_conn(conn, "assets", doc_id)
+                    if asset_row and _asset_reference_protection_locked(
+                        conn, doc_id, asset_row[1]
+                    ):
+                        raise PermissionError("protected_asset_reference")
                     _clear_legacy_style_reference_locked(conn, doc_id)
                 _delete_doc_in_conn(
                     conn,
@@ -12985,11 +14049,23 @@ def can_delete_asset_file(filename, member_id, role):
                 file_url = str(item.get("fileUrl") or item.get("url") or "")
                 if file_name == target or file_url.endswith("/" + target):
                     if _resource_scopes_enforced_locked(conn):
-                        return _resource_scope_allows_actor_locked(
+                        if not _resource_scope_allows_actor_locked(
                             conn, "assets", asset_id, member_id, role
+                        ):
+                            return False
+                        if _asset_reference_protection_locked(
+                            conn, asset_id, item
+                        ):
+                            return False
+                        if role == "admin":
+                            return True
+                        return _editor_can_delete_reference_asset_locked(
+                            conn, asset_id, member_id
                         )
                     if role == "admin":
-                        return True
+                        return not bool(_asset_reference_protection_locked(
+                            conn, asset_id, item
+                        ))
                     return _editor_can_delete_reference_asset_locked(
                         conn, asset_id, member_id
                     )
@@ -13467,6 +14543,29 @@ def _custom_canvas_collect_blob_hashes(value, output):
                 _custom_canvas_collect_blob_hashes(item, output)
 
 
+def _custom_canvas_collect_business_blob_hashes(value, output):
+    """Collect persisted blob refs from both draft objects and stable URLs."""
+
+    if isinstance(value, str):
+        stable = _custom_canvas_parse_blob_url(value)
+        if stable:
+            output.add(str(stable["contentHash"]))
+        return
+    if isinstance(value, list):
+        for item in value:
+            _custom_canvas_collect_business_blob_hashes(item, output)
+        return
+    if isinstance(value, dict):
+        if value.get("$type") == CUSTOM_CANVAS_BLOB_REF_TYPE:
+            digest = str(value.get("contentHash") or "")
+            if not re.fullmatch(r"[a-f0-9]{64}", digest):
+                raise ValueError("invalid_custom_canvas_blob_ref")
+            output.add(digest)
+            return
+        for item in value.values():
+            _custom_canvas_collect_business_blob_hashes(item, output)
+
+
 def _custom_canvas_materialize_blob_refs(value, blob_urls):
     if isinstance(value, list):
         return [
@@ -13585,14 +14684,130 @@ def _custom_canvas_materialize_payloads_locked(conn, owner_id, *payloads):
 
 
 def _custom_canvas_gc_blobs_locked(conn, owner_id):
-    """Delete only this owner's blob rows no longer used by a live draft.
+    """Delete only blobs unreferenced by every valid owner-scoped surface.
 
     The caller commits the database transaction before unlinking the returned
     files. This makes a failed transaction harmless; a failed unlink merely
     leaves an unreferenced file that a later maintenance pass can remove.
+
+    A succeeded background job is a durable result, not a 24-hour staging
+    object.  Published community posts and other owner-scoped documents are
+    equally live.  Malformed JSON, missing owner rows or cross-tenant refs fail
+    closed before a single registry/database row is deleted.
     """
     owner = str(owner_id)
+    if not owner:
+        raise ValueError("invalid_custom_canvas_owner")
     referenced = set()
+    blob_rows = conn.execute(
+        "SELECT content_hash,stored_name FROM custom_canvas_blobs WHERE owner_id=?",
+        (owner,),
+    ).fetchall()
+    owned_hashes = {str(row[0]) for row in blob_rows}
+    owner_scope = _member_resource_scope_locked(conn, owner)
+    if _resource_scopes_enforced_locked(conn) and not owner_scope:
+        raise ValueError("custom_canvas_gc_owner_scope_missing")
+
+    # Every persisted owner document may contain a stable canvas URL.  The
+    # generation-job collection has an explicit lifecycle: only succeeded
+    # results are live; deleting one in the future must be an explicit
+    # tombstone operation rather than an implicit staging expiry.
+    for collection, resource_id, stored_owner, raw in conn.execute(
+        "SELECT collection,id,owner_id,data FROM docs ORDER BY collection,id"
+    ).fetchall():
+        raw_text = str(raw or "")
+        if "/api/custom-canvas/blobs/" not in raw_text and CUSTOM_CANVAS_BLOB_REF_TYPE not in raw_text:
+            continue
+        try:
+            payload = json.loads(raw_text)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid_custom_canvas_business_reference") from exc
+        hashes = set()
+        _custom_canvas_collect_business_blob_hashes(payload, hashes)
+        if not hashes:
+            continue
+        document_owner = str(
+            stored_owner
+            or (payload.get("ownerId") if isinstance(payload, dict) else "")
+            or (payload.get("byMemberId") if isinstance(payload, dict) else "")
+            or ""
+        )
+        if not document_owner:
+            raise ValueError("custom_canvas_business_reference_owner_missing")
+        if collection == CUSTOM_CANVAS_GENERATION_JOB_COLLECTION:
+            if str(payload.get("status") or "") != "succeeded":
+                continue
+        if _resource_scopes_enforced_locked(conn):
+            scope = _resource_scope_row_locked(conn, str(collection), str(resource_id))
+            document_scope = _member_resource_scope_locked(conn, document_owner)
+            if not scope or not document_scope or document_scope[:2] != (
+                str(scope[0]), str(scope[1]),
+            ):
+                raise ValueError("custom_canvas_business_reference_scope_conflict")
+        if document_owner == owner:
+            if not hashes.issubset(owned_hashes):
+                raise ValueError("custom_canvas_business_reference_blob_missing")
+            referenced.update(hashes)
+            continue
+        # A content hash may legitimately exist in two owner namespaces.  The
+        # other document can retain only its own row; it never keeps this
+        # owner's copy alive.
+        other_owned = {
+            str(row[0]) for row in conn.execute(
+                "SELECT content_hash FROM custom_canvas_blobs WHERE owner_id=? "
+                "AND content_hash IN (%s)" % ",".join("?" for _ in hashes),
+                (document_owner, *sorted(hashes)),
+            ).fetchall()
+        }
+        if other_owned != hashes:
+            raise ValueError("custom_canvas_cross_owner_reference_conflict")
+
+    # Community rows are not in docs/resource_scopes.  Published posts remain
+    # durable references; drafts/deleted rows do not.  Author tenancy must
+    # match the stored team scope when one is present.
+    for post_id, author_id, team_id, status, media_raw, cover_raw in conn.execute(
+        "SELECT id,author_id,team_id,status,media_json,cover_json "
+        "FROM community_posts ORDER BY id"
+    ).fetchall():
+        if str(status) != "published":
+            continue
+        raw_text = f"{media_raw or ''}\n{cover_raw or ''}"
+        if "/api/custom-canvas/blobs/" not in raw_text and CUSTOM_CANVAS_BLOB_REF_TYPE not in raw_text:
+            continue
+        try:
+            media = json.loads(media_raw or "[]")
+            cover = json.loads(cover_raw or "null")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid_custom_canvas_community_reference") from exc
+        hashes = set()
+        _custom_canvas_collect_business_blob_hashes(media, hashes)
+        _custom_canvas_collect_business_blob_hashes(cover, hashes)
+        author = str(author_id or "")
+        author_scope = _member_resource_scope_locked(conn, author)
+        scopes_enforced = _resource_scopes_enforced_locked(conn)
+        if not author or (scopes_enforced and not author_scope):
+            raise ValueError("custom_canvas_community_reference_owner_missing")
+        stored_team = str(team_id or "")
+        if author_scope and (
+            (author_scope[0] == "team" and stored_team != author_scope[1])
+            or (author_scope[0] == "member" and stored_team)
+        ):
+            raise ValueError("custom_canvas_community_reference_scope_conflict")
+        if author == owner:
+            if not hashes.issubset(owned_hashes):
+                raise ValueError("custom_canvas_community_reference_blob_missing")
+            referenced.update(hashes)
+            continue
+        other_owned = {
+            str(row[0]) for row in conn.execute(
+                "SELECT content_hash FROM custom_canvas_blobs WHERE owner_id=? "
+                "AND content_hash IN (%s)" % ",".join("?" for _ in hashes),
+                (author, *sorted(hashes)),
+            ).fetchall()
+        } if hashes else set()
+        if other_owned != hashes:
+            raise ValueError("custom_canvas_cross_owner_reference_conflict")
+
     # A generation result is uploaded before its lightweight URL is committed
     # into the draft. Keep that short hand-off race owner-scoped and bounded.
     staging_cutoff = int(time.time() * 1000) - 24 * 60 * 60 * 1000
@@ -13623,10 +14838,6 @@ def _custom_canvas_gc_blobs_locked(conn, owner_id):
         _custom_canvas_collect_blob_hashes(project, referenced)
         _custom_canvas_collect_blob_hashes(draft, referenced)
 
-    blob_rows = conn.execute(
-        "SELECT content_hash,stored_name FROM custom_canvas_blobs WHERE owner_id=?",
-        (owner,),
-    ).fetchall()
     orphaned = [
         (str(content_hash), str(stored_name))
         for content_hash, stored_name in blob_rows
@@ -14038,6 +15249,14 @@ def create_custom_canvas_generation_job(
                 "createdAt": now,
                 "updatedAt": now,
             }
+            _ensure_doc_resource_scope_locked(
+                conn,
+                CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                internal_id,
+                item,
+                actor_id=owner,
+                owner_id=owner,
+            )
             conn.execute(
                 "INSERT INTO docs(collection,id,owner_id,updated_at,data) VALUES(?,?,?,?,?)",
                 (

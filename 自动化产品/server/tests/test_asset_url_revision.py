@@ -104,7 +104,7 @@ class AssetUrlRevisionTest(unittest.TestCase):
             const thirdRevision = asset.blobUpdatedAt;
 
             await removeAsset(asset.id);
-            const deleteRequest = requests.find(item => item.method === "DELETE");
+            const deleteRequests = requests.filter(item => item.method === "DELETE");
 
             console.log(JSON.stringify({
               initialUrl,
@@ -123,7 +123,7 @@ class AssetUrlRevisionTest(unittest.TestCase):
               idAfterSecond,
               countAfterFirst,
               countAfterSecond,
-              deleteRequest
+              deleteRequests
             }));
             """
         )
@@ -142,8 +142,11 @@ class AssetUrlRevisionTest(unittest.TestCase):
         self.assertEqual(result["countAfterFirst"], 1)
         self.assertEqual(result["countAfterSecond"], 1)
         self.assertEqual(
-            result["deleteRequest"],
-            {"url": "/api/files/editor--asset-cache.png", "method": "DELETE"},
+            result["deleteRequests"],
+            [
+                {"url": "/api/db/assets/asset-cache", "method": "DELETE"},
+                {"url": "/api/files/editor--asset-cache.png", "method": "DELETE"},
+            ],
         )
 
     def test_existing_query_and_hash_are_preserved_and_external_url_is_untouched(self):

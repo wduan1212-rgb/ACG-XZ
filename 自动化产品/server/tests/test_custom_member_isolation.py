@@ -213,6 +213,45 @@ class CustomMemberIsolationStoreTest(unittest.TestCase):
                         "assets", protected_id, "creator-b", "editor"
                     )
 
+    def test_platform_admin_cannot_delete_file_before_protected_asset_document(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            admin_id = store.get_member_by_username(store.DEFAULT_ADMIN_USERNAME)[0]
+            store.upsert_docs("assets", [{
+                "id": "published-protected",
+                "ownerId": admin_id,
+                "type": "图片",
+                "delivered": True,
+                "serverFileName": f"{admin_id}--published.png",
+            }])
+
+            # The exact production accident sequence must fail at the first
+            # destructive step.  Platform admin scope is not a bypass for a
+            # published/shared/avatar/delivery dependency.
+            self.assertFalse(store.can_delete_asset_file(
+                f"{admin_id}--published.png", admin_id, "admin"
+            ))
+            with self.assertRaises(PermissionError):
+                store.delete_member_doc(
+                    "assets", "published-protected", admin_id, "admin"
+                )
+            self.assertIsNotNone(store._fetchone(
+                "SELECT 1 FROM docs WHERE collection='assets' AND id=?",
+                ("published-protected",),
+            ))
+
+    def test_asset_client_deletes_authoritative_document_before_file_cleanup(self):
+        source = (Path(__file__).resolve().parents[2] / "js/domain/assets.js").read_text(
+            encoding="utf-8"
+        )
+        function = source[source.index("export async function removeAsset"):
+                          source.index("export async function assetBlob")]
+        self.assertLess(
+            function.index('await remote.deleteDoc("assets", id)'),
+            function.index('fetch(`/api/files/${encodeURIComponent(a.serverFileName)}`'),
+        )
+        self.assertNotIn('removeRemote("assets", id)', function)
+
     def test_creator_snapshots_isolate_custom_projects_outputs_and_private_audio(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)

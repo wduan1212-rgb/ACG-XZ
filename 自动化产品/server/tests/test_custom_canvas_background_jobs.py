@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import importlib
+import json
 import sys
 import tempfile
 import unittest
@@ -25,6 +26,45 @@ class CustomCanvasBackgroundJobTest(unittest.TestCase):
     def test_store_jobs_are_owner_scoped_idempotent_and_success_is_immutable(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_canvas_store(tmp)
+            with store._lock:
+                conn = store._connect()
+                try:
+                    now = 100
+                    conn.execute(
+                        "UPDATE members SET role='user' WHERE id='creator-a'"
+                    )
+                    project = {
+                        "id": "project-a", "ownerId": "creator-a",
+                        "name": "scope source", "updatedAt": now,
+                    }
+                    conn.execute(
+                        "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                        "VALUES('customProjects','project-a','creator-a',?,?)",
+                        (now, json.dumps(project)),
+                    )
+                    conn.execute(
+                        "INSERT INTO resource_scopes("
+                        "resource_kind,resource_id,scope_type,scope_id,owner_id,"
+                        "provenance,captured_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            "doc:customProjects", "project-a", "member", "creator-a",
+                            "creator-a", "test-source", now, now,
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,"
+                        "status,summary) VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+                            "test", now, now, "success", "{}",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
             fingerprint = hashlib.sha256(b"request-a").hexdigest()
             created, inserted = store.create_custom_canvas_generation_job(
                 "creator-a",
@@ -35,6 +75,25 @@ class CustomCanvasBackgroundJobTest(unittest.TestCase):
             self.assertTrue(inserted)
             self.assertEqual(created["status"], "queued")
             self.assertEqual(created["sourceProjectId"], "project-a")
+            with store._lock:
+                conn = store._connect()
+                try:
+                    internal_id = store._custom_canvas_generation_job_id(
+                        "creator-a", "job-a"
+                    )
+                    scope = conn.execute(
+                        "SELECT scope_type,scope_id,owner_id FROM resource_scopes "
+                        "WHERE resource_kind=? AND resource_id=?",
+                        (
+                            store._doc_resource_kind(
+                                store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION
+                            ),
+                            internal_id,
+                        ),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            self.assertEqual(("member", "creator-a", "creator-a"), scope)
 
             duplicate, inserted = store.create_custom_canvas_generation_job(
                 "creator-a",
@@ -96,6 +155,10 @@ class CustomCanvasBackgroundJobTest(unittest.TestCase):
             generated = {
                 "images": [{
                     "dataUrl": "data:image/png;base64,c2FmZQ==",
+                    # Provider URLs are deliberately transient: the worker
+                    # persists only the verified local blob URL/hash.
+                    "providerUrl": "https://provider.invalid/transient.png",
+                    "sourceUrl": "https://provider.invalid/source.png",
                     "width": 1024,
                     "height": 1024,
                     "label": "测试图",
@@ -129,6 +192,8 @@ class CustomCanvasBackgroundJobTest(unittest.TestCase):
                 self.assertEqual(job["status"], "succeeded")
                 self.assertEqual(job["images"][0]["dataUrl"], stable["url"])
                 self.assertEqual(job["images"][0]["assetUrl"], stable["url"])
+                self.assertNotIn("providerUrl", job["images"][0])
+                self.assertNotIn("sourceUrl", job["images"][0])
                 self.assertEqual(provider.await_count, 1)
 
                 asyncio.run(main._run_custom_canvas_generation_job(

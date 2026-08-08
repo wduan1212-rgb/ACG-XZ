@@ -1,5 +1,25 @@
 # 星阵版本记录
 
+## v140.4 - 2026-08-09（生产恢复门禁本地候选，未部署）
+
+### 本版范围
+
+- 新增 expand-only `140008`/`140009`：前者只增加生产恢复审计账本，后者只增加多来源模型用量裁决账本；不修改旧表、不重放 `140002/140004`，不在应用启动时自动修复生产数据。
+- `customCanvasGenerationJobs` 新写入与 resource scope 同事务；成员加入团队时先完整验证其旧个人 scope/private registry，再原子收编到唯一活动团队。踢出团队不反向改写已归团队的资源，账号保留为 Free 且不再获得访问权。
+- 增加只针对当前精确异常集的 resource scope 增量结算、历史个人租户收编、画布 Blob 恢复和缺失媒体事故裁决 CLI。所有 apply 都绑定当前 DB identity、fresh SQLite v2 backup、fresh `acg-production-complete-v1` snapshot 与 live media digest，计划哈希/条目不一致时整体 fail closed，第二次执行必须零写。
+- 5 个已验签的历史社区画布 Blob 可从指定的历史完整快照/恢复证据安全复原：历史 DB owner/mime/size/stored name、当前唯一业务引用和 `sha256(mime + NUL + bytes)` 必须全部一致，目标已存在则禁止覆盖。历史 18 组件快照只是媒体证据源，不被伪装成当前 20 组件回滚点，恢复器也不读取其 env/systemd 内容。
+- 无限画布 GC 的 live-set 纳入同 owner 已成功后台 job 和已发布 community 的持久引用；坏 JSON、归属不明或跨 scope 冲突时整批不删除，只有真正无引用 Blob 才能 GC。已发布/交付/账号引用的 server asset 删除改为文档权威保护先行，不再先删物理文件、再异步删文档而留下悬空引用。
+- 多来源 usage v2 严格覆盖人工计划列出的全部 unresolved：中央 timeout/5xx unknown 只记录“已知调用尝试”且 Token/输出为未知 0；sidecar succeeded 按唯一回执投影；sidecar unknown 只记尝试；sidecar submitted 裁决为不计费、不投影的 terminal indeterminate。任何模式都不重试 provider，不补扣积分，不猜 Token/providerRef。
+- 代码审计确认：无限画布上游图片 URL 只在当次请求内用于下载，随后即转为 data URL 和本机 Blob；后台 job、generation receipt 与 completion spool 都不持久化原始成片 URL。因此剩余 38 个 job 结果、1 个 community 媒体和 7 个 upload 不能通过现有外部 URL 可验签恢复，不得重新提交 provider、伪造占位或删除业务引用。事故裁决只会写不可变证据，不会让 readiness 通过。
+- 本地候选统一缓存身份为 `20260809-v140-production-recovery-1`；生产仍以 v140.3 受保护只读 release 为事实基线。本版未连接、修改、重启或解冻服务器，也未携带本地 SQLite/媒体/私密配置。
+
+### 验证与发布边界
+
+- CPython 3.12.13、精确 20 包测试锁和已验签本机 wheelhouse 中，无私密 `env -i` 主服务 locked runner 收集 `760` 项：`759` 通过，唯一 skip 是规则允许的旧 v120 只读快照不在干净工作树。新增核心组合回归 `97/97`；视频工坊 `140/140`；Node `123/123`；Python compileall、全部现存 JavaScript 语法、新 CLI help 与 `git diff --check` 通过。本轮不含私密配置，没有调用真实 provider。
+- release verifier 通过：Phase 0 SHA-256 `de398d744d242774533e43250c8e6d1663fc89e32efd07ad398913afa49117c8`；ESM `60` modules / `342` edges，graph SHA-256 `8a8b7888449f2d6ccdcf53164994d919ded4e6800cd5138146b60f1bac956aef`、closure SHA-256 `1db4271109d46345afda01a60a27a3610e5aae222c4683f7583e27de476126f2`；已审计画布闭包 `63` files / `1,767,334` bytes，manifest SHA-256 `59b1d83c6235ad26c4b20c1e0182dec47205c53677a06035f95cde42667d6789`；runtime `58` files / `2,899,595` bytes，manifest SHA-256 `35f9c7e40b70e77872bdf8b54ac63bd3ec48075d265d3a7f1ab0e9b946b43a39`。画布源码本轮零修改；隔离环境 typecheck/lint/build 通过，发布仍使用当前已验签 vendor manifest，不用未批准的随机 Next build ID 重写静态闭包。
+- 最终唯一提交号与推送状态以 Git 推送回执和部署交接消息为准，避免在同一提交内记录无法验签的自指 SHA。
+- 生产执行仍必须由部署线程在 fresh complete snapshot/restore-drill 与每步 fresh SQLite v2 backup 之后进行。只有五个可恢复 Blob、租户/resource drift 和 usage 全部结算闭合，且剩余 46 个物理缺失从真实源恢复或经用户另行批准的业务隔离方案处理后，才可重新 arm RW gate。
+
 ## v140.3 - 2026-08-09（受保护生产部署，当前 active + RO）
 
 ### 本版范围

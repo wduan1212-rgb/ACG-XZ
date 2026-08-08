@@ -54,6 +54,8 @@ from .. import config
 config.load_environment()
 from .. import store  # noqa: E402
 from .. import model_usage_settlement  # noqa: E402
+from .. import model_usage_settlement_v2  # noqa: E402
+from .. import production_recovery  # noqa: E402
 from ..scripts import consistent_sqlite_backup  # noqa: E402
 from ..scripts import runtime_snapshot  # noqa: E402
 
@@ -103,6 +105,12 @@ def _safe_status() -> dict:
         ),
         "modelUsageSettlementSchemaChecksum": status.get(
             "modelUsageSettlementSchemaChecksum"
+        ) or "",
+        "productionRecoverySchemaVersion": status.get(
+            "productionRecoverySchemaVersion"
+        ),
+        "productionRecoverySchemaChecksum": status.get(
+            "productionRecoverySchemaChecksum"
         ) or "",
         "privateMediaMigration": bool(status.get("privateMediaMigration")),
         "privateMediaMigrationVersion": status.get("privateMediaMigrationVersion"),
@@ -259,10 +267,27 @@ def _add_usage_settlement_plan_confirmation(command):
         required=True,
         help="exact operator-reviewed acg-model-usage-settlement-plan-v1 file",
     )
+
+
+def _add_usage_settlement_v2_plan_confirmation(command):
+    command.add_argument(
+        "--review-plan",
+        type=Path,
+        required=True,
+        help="exact operator-reviewed acg-model-usage-settlement-plan-v2 file",
+    )
     command.add_argument(
         "--confirm-review-plan-sha256",
         required=True,
-        help="independently recorded SHA-256 of the exact review plan bytes",
+        help="independently recorded SHA-256 of the exact reviewed plan bytes",
+    )
+
+
+def _add_recovery_plan_confirmation(command, *, help_text):
+    command.add_argument("--review-plan", type=Path, required=True, help=help_text)
+    command.add_argument(
+        "--confirm-review-plan-sha256", required=True,
+        help="independently recorded SHA-256 of the exact reviewed plan bytes",
     )
 
 
@@ -281,6 +306,21 @@ def _verified_usage_settlement_inputs(args):
         operation_ids,
     )
     model_usage_settlement.verify_sidecar_hashes(plan, sidecar_receipts)
+    return plan, plan_sha256, sidecar_receipts, backup_binding, runtime_snapshot_binding
+
+
+def _verified_usage_settlement_v2_inputs(args):
+    plan, plan_sha256 = model_usage_settlement_v2.load_review_plan(
+        args.review_plan,
+        expected_sha256=args.confirm_review_plan_sha256,
+    )
+    backup_binding = _verified_backup_binding(args, required=True)
+    runtime_snapshot_binding = _verified_runtime_snapshot_binding(
+        args, required=True,
+    )
+    sidecar_receipts = model_usage_settlement_v2.extract_and_verify_sidecars(
+        args.runtime_snapshot, plan,
+    )
     return plan, plan_sha256, sidecar_receipts, backup_binding, runtime_snapshot_binding
 
 
@@ -363,6 +403,103 @@ def main(argv=None) -> int:
     _add_usage_settlement_plan_confirmation(usage_settle)
     _add_runtime_snapshot_confirmation(usage_settle, required=True)
     _add_backup_confirmation(usage_settle)
+    usage_v2_inspect = subparsers.add_parser(
+        "usage-settle-v2-inspect",
+        help="read exact mixed-source central and snapshot receipt hashes",
+    )
+    usage_v2_inspect.add_argument(
+        "--receipt-id", action="append", required=True,
+        help="exact central receipt ID; repeat for the complete reviewed set",
+    )
+    _add_runtime_snapshot_confirmation(usage_v2_inspect, required=True)
+    usage_v2_preflight = subparsers.add_parser(
+        "usage-settle-v2-preflight",
+        help="validate one exact mixed-source reviewed usage plan without writes",
+    )
+    _add_resource_confirmations(usage_v2_preflight)
+    _add_usage_settlement_v2_plan_confirmation(usage_v2_preflight)
+    _add_runtime_snapshot_confirmation(usage_v2_preflight, required=True)
+    _add_backup_confirmation(usage_v2_preflight)
+    usage_v2_settle = subparsers.add_parser(
+        "usage-settle-v2",
+        help="atomically settle exact central/sidecar receipts without provider calls",
+    )
+    _add_resource_confirmations(usage_v2_settle)
+    _add_usage_settlement_v2_plan_confirmation(usage_v2_settle)
+    _add_runtime_snapshot_confirmation(usage_v2_settle, required=True)
+    _add_backup_confirmation(usage_v2_settle)
+    resource_settle_preflight = subparsers.add_parser(
+        "resource-settle-preflight",
+        help="preview deterministic post-140002 canvas job scopes",
+    )
+    _add_resource_confirmations(resource_settle_preflight)
+    _add_runtime_snapshot_confirmation(resource_settle_preflight, required=True)
+    _add_backup_confirmation(resource_settle_preflight)
+    resource_settle = subparsers.add_parser(
+        "resource-settle",
+        help="atomically add only deterministic post-140002 canvas job scopes",
+    )
+    _add_resource_confirmations(resource_settle)
+    _add_runtime_snapshot_confirmation(resource_settle, required=True)
+    _add_backup_confirmation(resource_settle)
+    tenant_settle_preflight = subparsers.add_parser(
+        "tenant-settle-preflight",
+        help="preview strict personal-to-team scope and media adoption",
+    )
+    _add_resource_confirmations(tenant_settle_preflight)
+    _add_runtime_snapshot_confirmation(tenant_settle_preflight, required=True)
+    _add_backup_confirmation(tenant_settle_preflight)
+    tenant_settle = subparsers.add_parser(
+        "tenant-settle",
+        help="atomically adopt verified personal scopes and media into one team",
+    )
+    _add_resource_confirmations(tenant_settle)
+    _add_runtime_snapshot_confirmation(tenant_settle, required=True)
+    _add_backup_confirmation(tenant_settle)
+    canvas_recover_preflight = subparsers.add_parser(
+        "canvas-recover-preflight",
+        help="preview exact evidence-bound missing canvas blob recovery",
+    )
+    _add_resource_confirmations(canvas_recover_preflight)
+    _add_recovery_plan_confirmation(
+        canvas_recover_preflight,
+        help_text="operator-reviewed acg-canvas-blob-recovery-plan-v1",
+    )
+    _add_runtime_snapshot_confirmation(canvas_recover_preflight, required=True)
+    _add_backup_confirmation(canvas_recover_preflight)
+    canvas_recover = subparsers.add_parser(
+        "canvas-recover",
+        help="restore only exact verified canvas blobs without overwrite",
+    )
+    _add_resource_confirmations(canvas_recover)
+    _add_recovery_plan_confirmation(
+        canvas_recover,
+        help_text="operator-reviewed acg-canvas-blob-recovery-plan-v1",
+    )
+    _add_runtime_snapshot_confirmation(canvas_recover, required=True)
+    _add_backup_confirmation(canvas_recover)
+    incident_preflight = subparsers.add_parser(
+        "incident-adjudicate-preflight",
+        help="validate the exact non-resolving missing-media adjudication set",
+    )
+    _add_resource_confirmations(incident_preflight)
+    _add_recovery_plan_confirmation(
+        incident_preflight,
+        help_text="operator-reviewed acg-production-incident-adjudication-plan-v1",
+    )
+    _add_runtime_snapshot_confirmation(incident_preflight, required=True)
+    _add_backup_confirmation(incident_preflight)
+    incident_apply = subparsers.add_parser(
+        "incident-adjudicate",
+        help="record immutable adjudications without changing readiness",
+    )
+    _add_resource_confirmations(incident_apply)
+    _add_recovery_plan_confirmation(
+        incident_apply,
+        help_text="operator-reviewed acg-production-incident-adjudication-plan-v1",
+    )
+    _add_runtime_snapshot_confirmation(incident_apply, required=True)
+    _add_backup_confirmation(incident_apply)
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -562,12 +699,144 @@ def main(argv=None) -> int:
                 created_by=plan.get("reviewedBy") or "deployment",
                 dry_run=args.command == "usage-settle-preflight",
             )
+        elif args.command == "usage-settle-v2-inspect":
+            runtime_snapshot_binding = _verified_runtime_snapshot_binding(
+                args, required=True,
+            )
+            receipt_ids = sorted(set(args.receipt_id or []))
+            if len(receipt_ids) != len(args.receipt_id or []):
+                raise model_usage_settlement_v2.SettlementPlanV2Error(
+                    "inspection_receipt_id_duplicate"
+                )
+            central = store.model_usage_settlement_v2_evidence(receipt_ids)
+            sidecar_operations = [
+                entry["operationId"] for entry in central["entries"]
+                if entry["source"] == model_usage_settlement_v2.SIDECAR_SOURCE
+            ]
+            sidecars = (
+                model_usage_settlement.extract_sidecar_receipts(
+                    args.runtime_snapshot, sidecar_operations,
+                ) if sidecar_operations else {}
+            )
+            result = {
+                "ok": True,
+                "dryRun": True,
+                "databaseIdentity": central["databaseIdentity"],
+                "snapshotManifestSha256": runtime_snapshot_binding["manifestSha256"],
+                "snapshotMediaInventoryDigest": runtime_snapshot_binding[
+                    "mediaInventoryDigest"
+                ],
+                "entries": [
+                    {
+                        **entry,
+                        "sidecarReceiptSha256": (
+                            model_usage_settlement_v2.canonical_sha256(
+                                sidecars[entry["operationId"]]
+                            ) if entry["source"] == model_usage_settlement_v2.SIDECAR_SOURCE
+                            else ""
+                        ),
+                        "sidecarStatus": (
+                            str(sidecars[entry["operationId"]].get("status") or "")
+                            if entry["source"] == model_usage_settlement_v2.SIDECAR_SOURCE
+                            else ""
+                        ),
+                    }
+                    for entry in central["entries"]
+                ],
+            }
+        elif args.command in {"usage-settle-v2-preflight", "usage-settle-v2"}:
+            if (
+                args.command == "usage-settle-v2"
+                and str(os.getenv("ACG_ALLOW_MODEL_USAGE_SETTLEMENT_V2", "")).strip()
+                != "1"
+            ):
+                parser.error("ACG_ALLOW_MODEL_USAGE_SETTLEMENT_V2=1 is required")
+            (
+                plan,
+                plan_sha256,
+                sidecar_receipts,
+                backup_binding,
+                runtime_snapshot_binding,
+            ) = _verified_usage_settlement_v2_inputs(args)
+            result = store.settle_model_usage_receipts_reviewed_v2(
+                plan=plan,
+                plan_sha256=plan_sha256,
+                sidecar_receipts=sidecar_receipts,
+                expected_identity=args.confirm_identity,
+                expected_schema_version=args.confirm_schema_version,
+                backup_binding=backup_binding,
+                runtime_snapshot_binding=runtime_snapshot_binding,
+                created_by=plan.get("reviewedBy") or "deployment",
+                dry_run=args.command == "usage-settle-v2-preflight",
+            )
+        elif args.command in {
+            "resource-settle-preflight", "resource-settle",
+            "tenant-settle-preflight", "tenant-settle",
+        }:
+            backup_binding = _verified_backup_binding(args, required=True)
+            runtime_snapshot_binding = _verified_runtime_snapshot_binding(
+                args, required=True,
+            )
+            if args.command.startswith("resource-"):
+                result = production_recovery.settle_resource_scopes_incremental(
+                    expected_identity=args.confirm_identity,
+                    expected_schema_version=args.confirm_schema_version,
+                    backup_binding=backup_binding,
+                    runtime_snapshot_binding=runtime_snapshot_binding,
+                    dry_run=args.command.endswith("preflight"),
+                )
+            else:
+                result = production_recovery.settle_tenant_adoptions(
+                    expected_identity=args.confirm_identity,
+                    expected_schema_version=args.confirm_schema_version,
+                    backup_binding=backup_binding,
+                    runtime_snapshot_binding=runtime_snapshot_binding,
+                    dry_run=args.command.endswith("preflight"),
+                )
+        elif args.command in {"canvas-recover-preflight", "canvas-recover"}:
+            plan, plan_sha256 = production_recovery.load_review_plan(
+                args.review_plan,
+                expected_sha256=args.confirm_review_plan_sha256,
+                expected_format=production_recovery.CANVAS_RECOVERY_PLAN_FORMAT,
+            )
+            result = production_recovery.recover_canvas_blobs_reviewed(
+                plan=plan, plan_sha256=plan_sha256,
+                expected_identity=args.confirm_identity,
+                expected_schema_version=args.confirm_schema_version,
+                backup_binding=_verified_backup_binding(args, required=True),
+                runtime_snapshot_binding=_verified_runtime_snapshot_binding(
+                    args, required=True,
+                ),
+                created_by=plan.get("reviewedBy") or "deployment",
+                dry_run=args.command.endswith("preflight"),
+            )
+        elif args.command in {
+            "incident-adjudicate-preflight", "incident-adjudicate",
+        }:
+            plan, plan_sha256 = production_recovery.load_review_plan(
+                args.review_plan,
+                expected_sha256=args.confirm_review_plan_sha256,
+                expected_format=production_recovery.INCIDENT_ADJUDICATION_PLAN_FORMAT,
+            )
+            result = production_recovery.record_incident_adjudications(
+                plan=plan, plan_sha256=plan_sha256,
+                expected_identity=args.confirm_identity,
+                expected_schema_version=args.confirm_schema_version,
+                backup_binding=_verified_backup_binding(args, required=True),
+                runtime_snapshot_binding=_verified_runtime_snapshot_binding(
+                    args, required=True,
+                ),
+                created_by=plan.get("reviewedBy") or "deployment",
+                dry_run=args.command.endswith("preflight"),
+            )
         else:
             raise ValueError("unsupported migration command")
     except (
         FileNotFoundError, OSError, sqlite3.Error, store.StoreNotReadyError,
         runtime_snapshot.SnapshotError,
         model_usage_settlement.SettlementPlanError,
+        model_usage_settlement_v2.SettlementPlanV2Error,
+        production_recovery.ProductionRecoveryError,
         ValueError,
     ) as exc:
         print(json.dumps({

@@ -1,7 +1,7 @@
 /* 资产领域：共享模式下二进制上传到服务端，离线模式保留 IndexedDB Blob 缓存 */
 
 import { db } from "../core/db.js";
-import { state, save, assetById, accountById, removeRemote, ownedBy, persistRecoveredDocuments } from "../core/store.js";
+import { state, save, assetById, accountById, ownedBy, persistRecoveredDocuments } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { uid, esc, gradFor, dataUrlToBlob, extOfMime } from "../core/util.js";
 
@@ -531,6 +531,11 @@ export async function replaceAssetBlob(assetId, dataUrl) {
 
 export async function removeAsset(id) {
   const a = assetById(id); if (!a) return;
+  // 先让服务端在同一事务内完成租户权限与业务引用保护检查。
+  // 只有文档删除获准后才清理物理文件，避免“文件 200、文档 403”
+  // 留下不可恢复的悬空业务引用。
+  const remoteActive = remote.isOn() && remote.hasToken();
+  if (remoteActive) await remote.deleteDoc("assets", id);
   if (a.serverFileName && remote.isOn() && remote.hasToken()) {
     const response = await fetch(`/api/files/${encodeURIComponent(a.serverFileName)}`, {
       method: "DELETE",
@@ -558,7 +563,6 @@ export async function removeAsset(id) {
   const u = urlCache.get(id);
   if (u) { URL.revokeObjectURL(u); urlCache.delete(id); }
   save("assets", "accounts", "productions", "jobs");
-  removeRemote("assets", id);
 }
 
 export async function assetBlob(id, { deliveryId = "", required = false, label = "素材" } = {}) {

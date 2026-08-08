@@ -1,0 +1,43 @@
+{
+  "format": "acg-canvas-blob-recovery-plan-v1",
+  "databaseIdentity": "<exact-16-char-live-database-identity>",
+  "snapshotManifestSha256": "<fresh-current-20-component-snapshot-manifest-sha256>",
+  "snapshotMediaInventoryDigest": "<fresh-current-snapshot-media-digest>",
+  "evidenceSets": [
+    {
+      "id": "historical-v140-599c576",
+      "snapshotRoot": "<verified-historical-snapshot-root>",
+      "snapshotManifestSha256": "<historical-snapshot-manifest-sha256>",
+      "restoreRoot": "<verified-historical-restore-root>",
+      "restoreReportSha256": "<historical-restore-report-sha256>",
+      "mode": "historical-media-evidence-v1",
+      "verifiedByRelease": "599c576",
+      "verifiedComponentCount": 18,
+      "verifiedMediaInventoryDigest": "<historical-snapshot-media-digest>"
+    }
+  ],
+  "entries": [
+    {
+      "mediaKey": "<semantic-sha256-of-mime-nul-bytes>",
+      "ownerId": "<exact-current-and-historical-owner-id>",
+      "mime": "image/png",
+      "size": 12345,
+      "storedName": "<deterministic-owner-scoped-relative-path>",
+      "sourceEvidenceId": "historical-v140-599c576",
+      "sourceRelativePath": "canvas-blobs/<deterministic-owner-scoped-relative-path>",
+      "historicalRows": [
+        {
+          "evidenceId": "historical-v140-599c576",
+          "databaseRelativePath": "database"
+        }
+      ],
+      "currentReference": {
+        "resourceKind": "community-post",
+        "resourceId": "<exact-published-community-post-id>"
+      },
+      "evidence": "Historical DB owner, MIME, size and stored name match the single current owner-scoped reference and semantic content hash."
+    }
+  ],
+  "reviewedBy": "<operator-identity>",
+  "reviewedAt": 1786233600000
+}

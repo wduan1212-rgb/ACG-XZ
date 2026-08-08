@@ -1,0 +1,30 @@
+{
+  "format": "acg-model-usage-settlement-plan-v2",
+  "databaseIdentity": "<exact-16-char-database-identity>",
+  "snapshotManifestSha256": "<fresh-complete-snapshot-manifest-sha256>",
+  "snapshotMediaInventoryDigest": "<fresh-complete-snapshot-media-digest>",
+  "reviewedBy": "<operator-identity>",
+  "reviewedAt": "<ISO-8601-timestamp-with-timezone>",
+  "entries": [
+    {
+      "receiptId": "<exact-central-receipt-id>",
+      "source": "main-provider",
+      "operationId": "<exact-operation-id>",
+      "centralReceiptSha256": "<exact-central-receipt-sha256>",
+      "sidecarReceiptSha256": "",
+      "resolution": "central-attempt-outcome-unknown",
+      "operatorReviewed": true,
+      "reviewNote": "The immutable central receipt proves one provider attempt with an indeterminate result; no retry is authorized."
+    },
+    {
+      "receiptId": "<exact-sidecar-receipt-id>",
+      "source": "video-workshop-sidecar",
+      "operationId": "<exact-sidecar-operation-id>",
+      "centralReceiptSha256": "<exact-central-receipt-sha256>",
+      "sidecarReceiptSha256": "<exact-sidecar-receipt-sha256>",
+      "resolution": "sidecar-submitted-indeterminate",
+      "operatorReviewed": true,
+      "reviewNote": "The sidecar persisted submitted before the HTTP call; occurrence and billing remain indeterminate and no provider retry is authorized."
+    }
+  ]
+}

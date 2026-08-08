@@ -346,7 +346,104 @@ python3 -m server.migrations media-settle \
 `pendingRows=0`。第二次在新 fresh v2 备份绑定下执行，要求
 `applied=false`、`insertedRows=0` 且数据库逻辑摘要不变。
 
-### 模型用量精确结算（开放 RW 前 P0）
+### v140.3 增量恢复与结算（开放 RW 前 P0）
+
+`140008`/`140009` 都是 expand-only，不修改 `PRAGMA user_version`。先按上文
+`apply` 契约分别应用两个版本，每次 apply 前都重新生成 fresh v2 SQLite
+备份，不得复用上一步备份。之后固定顺序为：
+
+1. `tenant-settle-preflight` / `tenant-settle`：先收编“先个人创建、后加入团队”的
+   resource scope 与 private-media team；只允许单一 active team、owner 一致且
+   `captured_at/created_at <= joined_at`的行。
+2. `resource-settle-preflight` / `resource-settle`：只补确定的
+   `doc:customCanvasGenerationJobs`，其他缺失 collection 整批拒绝。
+3. `canvas-recover-preflight` / `canvas-recover`：只恢复已验签历史快照中的
+   5 个 community canvas blob。历史 18-component 快照只是媒体证据，不是当前
+   rollback binding；apply 仍必须绑定当场 fresh 20-component complete snapshot 和
+   fresh v2 backup。工具不读历史 env/systemd，并同时验证 snapshot/restore、
+   archive inventory、语义哈希、历史 DB owner/MIME/size/stored-name 和当前唯一引用。
+4. `incident-adjudicate-preflight` / `incident-adjudicate`：计划必须精确覆盖当时
+   全部仍缺失媒体，并按 `published-community` / `server-asset-upload` /
+   `succeeded-canvas-generation-job` 分类。它只写不可变审计回执，不删引用、
+   不伪造文件，也不改 readiness。
+5. `usage-settle-v2-inspect` / `usage-settle-v2-preflight` / `usage-settle-v2`：精确
+   覆盖当时全部 unresolved receipt，不调 provider。
+
+前四类命令共用 `--confirm-schema-version 140009`、identity、fresh complete snapshot
+和 fresh v2 backup 参数。预检与 apply 之间数据库未变时可复用当次备份；
+apply 成功后的二跑必须重新快照/备份，工具会用新绑定核对当前状态，
+再用不可变回执核对原审阅计划，结果必须是 `applied=false` 且零写。
+
+```bash
+ACG_READ_ONLY=1 python3 -m server.migrations tenant-settle-preflight <common-bindings>
+ACG_READ_ONLY=0 ACG_ALLOW_PRODUCTION_RECOVERY=1 \
+  python3 -m server.migrations tenant-settle <common-bindings>
+
+ACG_READ_ONLY=1 python3 -m server.migrations resource-settle-preflight <common-bindings>
+ACG_READ_ONLY=0 ACG_ALLOW_PRODUCTION_RECOVERY=1 \
+  python3 -m server.migrations resource-settle <common-bindings>
+
+ACG_READ_ONLY=1 python3 -m server.migrations canvas-recover-preflight \
+  --review-plan <reviewed-canvas-recovery-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> <common-bindings>
+ACG_READ_ONLY=0 ACG_ALLOW_CANVAS_BLOB_RECOVERY=1 \
+  python3 -m server.migrations canvas-recover \
+  --review-plan <reviewed-canvas-recovery-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> <common-bindings>
+
+ACG_READ_ONLY=1 python3 -m server.migrations incident-adjudicate-preflight \
+  --review-plan <reviewed-incident-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> <common-bindings>
+ACG_READ_ONLY=0 ACG_ALLOW_INCIDENT_ADJUDICATION=1 \
+  python3 -m server.migrations incident-adjudicate \
+  --review-plan <reviewed-incident-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> <common-bindings>
+```
+
+`<common-bindings>` 代表 CLI help 中的 schema version、identity、runtime snapshot manifest SHA
+和 backup manifest/database/SHA 全部参数，不是可直接输入的 shell 标记。审阅模板见
+`deploy/canvas-blob-recovery.plan.example.json`、
+`deploy/production-incident-adjudication.plan.example.json` 和
+`deploy/model-usage-settlement-v2.plan.example.json`。
+
+当前证据中剩余 46 个文件（38 个 succeeded canvas job、1 个 published community、
+7 个 server assets/upload）无任何可验证副本。上述 adjudication 不会解除该
+readiness 阻断；只有从用户原始文件按哈希/归属重新恢复，或另行批准且审计的
+业务隔离方案后才能评估 RW；不得为开 RW 忽略它们。
+
+### 模型用量精确结算 v2（开放 RW 前 P0）
+
+`140009` 使用 receipt ID 而不是范围扫描，同时覆盖 `main-provider`、
+`custom-canvas` 和 `video-workshop-sidecar`。`central-attempt-outcome-unknown`
+只接受已是 unknown、无 providerRef/用量且错误属于 ReadTimeout、ConnectTimeout 或
+HTTP 5xx 的中央回执；calls=1 只表示调用尝试已知，Token/输出仍记 0 且保留
+原错误。`sidecar-submitted-indeterminate` 记为终态 indeterminate、calls=0、
+不投影 legacy usage，因为 submitted 写入发生在 HTTP 调用之前。
+
+```bash
+ACG_READ_ONLY=1 python3 -m server.migrations usage-settle-v2-inspect \
+  --receipt-id <exact-receipt-id-1> --receipt-id <exact-receipt-id-2> \
+  --runtime-snapshot <fresh-complete-snapshot-directory> \
+  --confirm-runtime-snapshot-manifest-sha256 <recorded-manifest-sha256>
+
+ACG_READ_ONLY=1 python3 -m server.migrations usage-settle-v2-preflight \
+  --confirm-schema-version 140009 --confirm-identity <identity> \
+  --review-plan <reviewed-v2-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> <snapshot-and-backup-bindings>
+
+ACG_READ_ONLY=0 ACG_ALLOW_MODEL_USAGE_SETTLEMENT_V2=1 \
+  python3 -m server.migrations usage-settle-v2 \
+  --confirm-schema-version 140009 --confirm-identity <identity> \
+  --review-plan <reviewed-v2-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> <snapshot-and-backup-bindings>
+```
+
+计划必须按 receipt ID 排序并与全部 unresolved 精确相等；缺一条、多一条、
+中央/sidecar hash 漂移或 source/resolution 不匹配都整批零写。首次要求
+`unresolved=0`、`outboxPending=0`、`quickCheck=ok`；第二次用新 fresh snapshot/backup
+也必须零写。全过程不修改积分/任务/项目/媒体，不调 provider。
+
+### 旧版视频 sidecar 用量结算 v1（仅历史记录）
 
 `140007` 双跑后，writer 继续冻结。重新创建并验签 fresh
 `acg-production-complete-v1` snapshot/restore-drill；该快照中的

@@ -1,8 +1,17 @@
 # Problem Document
 
-更新时间：2026-08-08
+更新时间：2026-08-09
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
+
+## 2026-08-09 v140.4 本地修复：画布 GC、部分删除与受保护恢复必须同时收口
+
+- **画布物理丢失根因**：旧 `_custom_canvas_gc_blobs_locked` 只把 24 小时 staging 和当前 draft 当作 live-set，没有读 succeeded `customCanvasGenerationJobs` 或已发布 community 引用。staging 过期后，下一次 draft GC 会同时删除 Blob 行、registry 和物理文件，但保留 succeeded job URL，形成不可回读的“成功”结果。修复后只保活同 owner 的持久业务引用；坏 JSON、归属不明或跨 scope 冲突会在任何删除前整批 fail closed，其他 owner 的引用不能跨用户保活。
+- **upload 部分删除根因**：旧前端先 `DELETE /api/files/<storedName>`，再异步删 asset 文档；file delete 只检查 scope，文档删除则会对已发布/共享/账号/交付引用返回 403，因而能出现文件 200 已删、文档 403 保留。现在 file delete 在移动任何文件前运行与权威文档删除相同的 reference protection，前端也必须先完成文档撤回/删除，再清理文件。已受保护资产的第一步就必须 403，不能再出现部分成功。
+- **入团后租户漂移**：只改 `team_members`/角色而不收编成员旧 personal `resource_scopes` 和 `private_media_registry.team_id` 会让同一成员出现无效 target 与 registry conflict。新流程在 join 事务内要求唯一活动团队、owner 一致、原 scope 确实是 personal、历史行早于 joinedAt；任一异常整个 join 回滚。踢出不改写已收编的团队资源，离开者回到 Free 且无权访问。
+- **恢复与裁决不是绕过 readiness**：`140008` 只提供绑定当前 DB identity、fresh v2 backup、fresh complete snapshot/live media digest 的审计账本。仅 5 个历史社区画布 Blob 有同版本验签快照、历史 DB 归属、当前唯一引用和语义哈希四重证据，可在目标不存在时原子复原。剩余 46 个只能写显式事故裁决回执，该回执不删引用、不伪造文件、不改归属、不使门禁转绿。
+- **原始 provider URL 不可恢复**：图片 adapter 会在当次 HTTP 请求中下载 provider URL，然后只返回 data URL；后台 job 将其立即替换为本机 Blob URL/hash。job 公开字段、generation receipt、中央 usage receipt 与 completion spool 均不持久化上游成片 URL 或原始回包。因此不能为 38 个丢失 job 新增“猜 URL/URL 失效后重试”恢复器；那会扩展为付费重试或伪证据。
+- **多来源 usage 终态**：旧 usage settlement 只支持 sidecar，无法裁决 main-provider/custom-canvas timeout 与 sidecar submitted。`140009` 只允许精确 receipt ID/hash 全集：central timeout/5xx unknown 记 calls=1/Token=0 作为“尝试已发生但结果未知”；sidecar submitted 记 calls=0 的 terminal indeterminate 且不投影。任何模式都不能重试 provider、伪造 providerRef/Token/输出或修改积分。
 
 ## 2026-08-09 v140.3 生产受保护切换：代码上线不等于 RW 门禁闭合
 

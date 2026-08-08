@@ -69,6 +69,31 @@ class TeamAuthorizationStoreTest(unittest.TestCase):
     def test_team_join_requires_request_and_manager_approval(self):
         owner = self._admin()
         personal = store.add_member("申请加入者", "join-user", "123456", "user")
+        store.upsert_member_assets(personal[0], "user", [{
+            "id": "prejoin-personal-asset",
+            "ownerId": personal[0],
+            "name": "入团前个人素材",
+            "type": "图片",
+            "serverFileName": f"{personal[0]}--prejoin.png",
+        }])
+        store.register_private_media(
+            "upload", f"{personal[0]}--prejoin.png", personal[0],
+            provenance_kind="asset", provenance_id="prejoin-personal-asset",
+        )
+        with store._lock:
+            conn = store._connect()
+            try:
+                now = int(time.time() * 1000) - 10
+                conn.execute(
+                    "INSERT INTO resource_scopes(resource_kind,resource_id,scope_type,"
+                    "scope_id,owner_id,provenance,captured_at,updated_at) "
+                    "VALUES('doc:assets',?,'member',?,?,?, ?, ?)",
+                    ("prejoin-personal-asset", personal[0], personal[0],
+                     "test-prejoin", now, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
         request, error = store.add_team_join_request(
             personal[0], store.INTERNAL_TEAM_NAME, "申请加入市场部"
         )
@@ -85,6 +110,23 @@ class TeamAuthorizationStoreTest(unittest.TestCase):
         self.assertEqual(store.INTERNAL_TEAM_ID, approved["teamId"])
         self.assertEqual("creator", approved["teamRole"])
         self.assertEqual(set(store.TEAM_FEATURES), set(approved["entitlements"]))
+        with store._lock:
+            conn = store._connect()
+            try:
+                scope = conn.execute(
+                    "SELECT scope_type,scope_id FROM resource_scopes "
+                    "WHERE resource_kind='doc:assets' AND resource_id=?",
+                    ("prejoin-personal-asset",),
+                ).fetchone()
+                media_team = conn.execute(
+                    "SELECT team_id FROM private_media_registry "
+                    "WHERE media_kind='upload' AND media_key=?",
+                    (f"{personal[0]}--prejoin.png",),
+                ).fetchone()[0]
+            finally:
+                conn.close()
+        self.assertEqual(("team", store.INTERNAL_TEAM_ID), scope)
+        self.assertEqual(store.INTERNAL_TEAM_ID, media_team)
 
     def test_kick_preserves_account_and_turns_member_into_free_user(self):
         owner = self._admin()
@@ -115,6 +157,35 @@ class TeamAuthorizationStoreTest(unittest.TestCase):
             "id": "kick-preserved-asset", "name": "保留记录", "type": "图片",
             "updatedAt": 10,
         }])
+        with store._lock:
+            conn = store._connect()
+            try:
+                now = int(time.time() * 1000)
+                conn.execute(
+                    "INSERT INTO resource_scopes(resource_kind,resource_id,scope_type,"
+                    "scope_id,owner_id,provenance,captured_at,updated_at) "
+                    "VALUES('doc:assets',?,'team',?,?,?, ?, ?)",
+                    ("kick-preserved-asset", store.INTERNAL_TEAM_ID, member[0],
+                     "test-team-write", now, now),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_migrations("
+                    "version,name,checksum,app_version,status,started_at,finished_at,summary"
+                    ") VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        store.RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                        store.RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+                        store.RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+                        "test",
+                        "success",
+                        now,
+                        now,
+                        json.dumps({"test": True}),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
         kicked, error = store.kick_team_member(
             store.INTERNAL_TEAM_ID, member[0], owner[0],
@@ -140,6 +211,65 @@ class TeamAuthorizationStoreTest(unittest.TestCase):
                 conn.close()
         self.assertEqual("removed", row[0])
         self.assertEqual(member[0], asset[0])
+        with store._lock:
+            conn = store._connect()
+            try:
+                scope = conn.execute(
+                    "SELECT scope_type,scope_id FROM resource_scopes "
+                    "WHERE resource_kind='doc:assets' AND resource_id=?",
+                    ("kick-preserved-asset",),
+                ).fetchone()
+            finally:
+                conn.close()
+        self.assertEqual(("team", store.INTERNAL_TEAM_ID), scope)
+        self.assertNotIn(
+            "kick-preserved-asset",
+            {item["id"] for item in store.state_for(
+                member[0], "user", collections=["assets"]
+            )["assets"]},
+        )
+
+    def test_historical_adoption_rejects_rows_created_after_join_time(self):
+        owner = self._admin()
+        member = store.add_member("历史收编测试", "adoption-time-test", "123456", "user")
+        request, error = store.add_team_join_request(
+            member[0], store.INTERNAL_TEAM_NAME, "时间边界测试"
+        )
+        self.assertIsNone(error)
+        joined, error = store.review_team_join_request(request["id"], owner[0], True)
+        self.assertIsNone(error)
+        self.assertEqual(store.INTERNAL_TEAM_ID, joined["teamId"])
+        with store._lock:
+            conn = store._connect()
+            try:
+                joined_at = conn.execute(
+                    "SELECT joined_at FROM team_members WHERE team_id=? AND member_id=?",
+                    (store.INTERNAL_TEAM_ID, member[0]),
+                ).fetchone()[0]
+                now = int(joined_at) + 1
+                payload = json.dumps({
+                    "id": "late-personal-doc", "ownerId": member[0],
+                }, ensure_ascii=False)
+                conn.execute(
+                    "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                    "VALUES('assets',?,?,?,?)",
+                    ("late-personal-doc", member[0], now, payload),
+                )
+                conn.execute(
+                    "INSERT INTO resource_scopes(resource_kind,resource_id,scope_type,"
+                    "scope_id,owner_id,provenance,captured_at,updated_at) "
+                    "VALUES('doc:assets',?,'member',?,?,?, ?, ?)",
+                    ("late-personal-doc", member[0], member[0], "test-drift", now, now),
+                )
+                with self.assertRaisesRegex(
+                    store.StoreNotReadyError, "created after team join"
+                ):
+                    store._personal_tenant_adoption_plan_locked(
+                        conn, member[0], store.INTERNAL_TEAM_ID,
+                    )
+                conn.rollback()
+            finally:
+                conn.close()
 
     def test_internal_owner_membership_is_repaired_after_migration_marker_exists(self):
         owner = self._admin()
