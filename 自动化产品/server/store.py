@@ -2286,6 +2286,26 @@ def database_readiness():
     return result
 
 
+def read_only_database_operational(database):
+    """Return whether an existing database is safe for pure read traffic.
+
+    Production maintenance mode must stay useful when a write-release gate is
+    closed by pending migrations, media coverage, or unresolved usage.  Those
+    conditions still block every mutation, but they must not turn login and
+    ordinary reads into 500 responses.  Corrupt SQLite or completion-spool
+    evidence remains fail-closed because even read traffic cannot be trusted.
+    """
+
+    database = database if isinstance(database, dict) else {}
+    return bool(
+        database.get("exists")
+        and str(database.get("quickCheck") or "") == "ok"
+        and int(database.get("modelUsageCompletionSpoolCorrupt") or 0) == 0
+        and int(database.get("modelUsageCompletionSpoolConflicts") or 0) == 0
+        and not database.get("modelUsageCompletionSpoolError")
+    )
+
+
 def apply_schema_migrations(
     *, expected_identity="", backup_binding=None, migration_version=None,
 ):
@@ -4209,7 +4229,13 @@ def _ensure_db():
         if runtime_config.runtime_mode() == "invalid":
             raise StoreNotReadyError("invalid ACG_RUNTIME_MODE")
         bootstrap_mode = runtime_config.db_bootstrap_mode()
-        if runtime_config.is_read_only() or bootstrap_mode == "validate":
+        if runtime_config.is_read_only():
+            status = database_readiness()
+            if not read_only_database_operational(status):
+                raise StoreNotReadyError("read-only database integrity validation failed")
+            _initialized = True
+            return
+        if bootstrap_mode == "validate":
             status = database_readiness()
             if not status.get("ok"):
                 raise StoreNotReadyError("database migration/readiness validation failed")

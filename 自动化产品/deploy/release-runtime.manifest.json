@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260806-v140-platform-stability-5",
   "fileCount": 56,
-  "totalBytes": 2757968,
+  "totalBytes": 2758681,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -221,8 +221,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 502523,
-      "sha256": "a31daf83be25e1ee0cf66403c9dc2b71354eeabdff8c1438c2e2563e77dcf867"
+      "size": 502076,
+      "sha256": "58fa02bf2786b5419d2a42b7f6a98eb98c70e40d2f5d532a826377e930cbcab4"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -276,8 +276,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 762641,
-      "sha256": "c60c96358269cc729ef3b462d14410cbd5564476ae5df13a8ca85f9db9cbb9d4"
+      "size": 763801,
+      "sha256": "004cba07e71ee17dbc31524ed067be0650d4a9fac862e5b18f3a6661b73835e7"
     },
     {
       "path": "tools/verify_release_contracts.py",

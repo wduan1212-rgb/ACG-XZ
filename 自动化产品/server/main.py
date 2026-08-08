@@ -483,7 +483,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # The write contract is a backend deployment invariant, not a UI switch.  A
 # production read-write process remains closed until one complete read-only
 # audit proves the exact migration/data/security closure.  The resulting
-# snapshot is O(1) on normal requests; /api/ready refreshes it explicitly.
+# snapshot is O(1) on normal requests.  Only startup arms it; readiness probes
+# are observations and must never change live request admission.
 PRODUCTION_WRITE_CONTRACT = "v140-production-write-gate-2"
 _PRODUCTION_WRITE_GATE_SNAPSHOT = None
 _PRODUCTION_WRITE_MIGRATIONS = {
@@ -7063,14 +7064,7 @@ async def _prime_production_write_gate():
 def _read_only_database_operational(database):
     """Read-only maintenance needs integrity, not completed write migrations."""
 
-    database = database if isinstance(database, dict) else {}
-    return bool(
-        database.get("exists")
-        and str(database.get("quickCheck") or "") == "ok"
-        and int(database.get("modelUsageCompletionSpoolCorrupt") or 0) == 0
-        and int(database.get("modelUsageCompletionSpoolConflicts") or 0) == 0
-        and not database.get("modelUsageCompletionSpoolError")
-    )
+    return store.read_only_database_operational(database)
 
 
 @app.get("/api/ready")
@@ -7097,9 +7091,6 @@ async def readiness(
     checks = await _deployment_readiness_checks()
     write_gate = _production_write_contract_readiness(checks)
     checks["tenantSecurity"] = write_gate
-    if runtime_config.is_production() and not runtime_config.is_read_only():
-        global _PRODUCTION_WRITE_GATE_SNAPSHOT
-        _PRODUCTION_WRITE_GATE_SNAPSHOT = dict(write_gate)
 
     if runtime_config.is_production() and runtime_config.is_read_only():
         # An old-but-integral production database must be able to boot in

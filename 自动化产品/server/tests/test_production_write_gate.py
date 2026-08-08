@@ -283,6 +283,48 @@ class ProductionWriteGateTests(unittest.TestCase):
         self.assertTrue(cached["ok"])
         self.assertTrue(cached["startupVerified"])
 
+    def test_ready_is_observational_and_cannot_revoke_live_write_gate(self):
+        failing = healthy_checks()
+        failing["database"] = {
+            **failing["database"],
+            "ok": False,
+            "modelUsageUnresolved": 3,
+        }
+        failing["mediaRegistry"] = {
+            "ok": False,
+            "issues": ["missingReferencedFiles"],
+        }
+        mode, production, read_only, mode_status = self.production_mode()
+        with mode, production, read_only, mode_status:
+            with patch.object(
+                server_main,
+                "_deployment_readiness_checks",
+                new=AsyncMock(return_value=healthy_checks()),
+            ):
+                asyncio.run(server_main._prime_production_write_gate())
+            armed = server_main._production_write_contract_readiness()
+            self.assertTrue(armed["ok"])
+            with (
+                patch.object(
+                    server_main,
+                    "_deployment_readiness_checks",
+                    new=AsyncMock(return_value=failing),
+                ),
+                patch.object(
+                    server_main.runtime_config,
+                    "readiness_token",
+                    return_value="ready-token",
+                ),
+            ):
+                response = asyncio.run(server_main.readiness("ready-token", ""))
+
+            self.assertEqual(503, response.status_code)
+            observed = json.loads(response.body)
+            self.assertFalse(observed["ready"])
+            self.assertFalse(observed["writeReady"])
+            self.assertFalse(observed["checks"]["tenantSecurity"]["ok"])
+            self.assertEqual(armed, server_main._production_write_contract_readiness())
+
     def test_read_only_ready_reports_migration_blockers_without_blocking_boot(self):
         checks = healthy_checks()
         checks["database"]["ok"] = False
