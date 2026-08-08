@@ -11631,7 +11631,7 @@ def _model_usage_central_unknown_error_allowed(error):
     if "connecttimeout" in text or "connect timeout" in text:
         return True
     return bool(re.search(
-        r"(?:http(?:error|status|response)?[\s:()_-]*|status[\s:()_-]*)(5\d\d)\b",
+        r"\b(?:http(?:error|status|response)?[\s:=()_-]*|status[\s:=()_-]*)(5\d\d)\b",
         text,
     ))
 

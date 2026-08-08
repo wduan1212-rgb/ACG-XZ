@@ -35,7 +35,8 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
         )
         self._add_central_unknown(
             "custom-canvas:generation-timeout", source="custom-canvas",
-            usage_kind="image", error="HTTP status 503 from provider",
+            usage_kind="image",
+            error="HTTPException;status=502;evidence_sha256=" + "a" * 64,
         )
         self._add_sidecar(
             "video-workshop:project-a:director:success", usage_kind="llm",
@@ -211,7 +212,10 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
             by_operation["main-provider:asset-image-timeout"],
         )
         self.assertEqual(
-            ("succeeded", 1, 0, 0, "HTTP status 503 from provider"),
+            (
+                "succeeded", 1, 0, 0,
+                "HTTPException;status=502;evidence_sha256=" + "a" * 64,
+            ),
             by_operation["custom-canvas:generation-timeout"],
         )
         submitted = "video-workshop:project-a:image:submitted"
@@ -235,6 +239,25 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
         self.assertTrue(replay["reused"])
         self.assertEqual(0, replay["insertedRows"])
         self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+    def test_central_unknown_error_accepts_exact_5xx_status_only(self):
+        self.assertTrue(store._model_usage_central_unknown_error_allowed(
+            "HTTPException;status=502;evidence_sha256=" + "b" * 64,
+        ))
+        self.assertTrue(store._model_usage_central_unknown_error_allowed(
+            "HTTPException;status=599;evidence_sha256=" + "c" * 64,
+        ))
+        for error in (
+            "HTTPException;status=401;evidence_sha256=" + "d" * 64,
+            "HTTPException;evidence_sha256=" + "e" * 64,
+            "HTTPException;xstatus=502;evidence_sha256=" + "f" * 64,
+            "HTTPException;status=5020;evidence_sha256=" + "0" * 64,
+            "provider returned an arbitrary error",
+        ):
+            with self.subTest(error=error):
+                self.assertFalse(
+                    store._model_usage_central_unknown_error_allowed(error)
+                )
 
     def test_production_binding_accepts_20_and_rejects_legacy_18(self):
         plan, plan_sha256, current = self._plan()
