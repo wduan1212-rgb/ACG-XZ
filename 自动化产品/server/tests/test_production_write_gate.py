@@ -54,6 +54,7 @@ def healthy_checks():
         "mediaRegistry": {"ok": True},
         "paths": {"ok": True},
         "sidecar": {"ok": True},
+        "usageSidecar": {"ok": True},
         "canvas": {"ok": True},
     }
 
@@ -218,7 +219,7 @@ uvicorn.run(
         self.assertTrue(gate["ok"])
         self.assertTrue(gate["writeReady"])
         self.assertEqual([], gate["writeEnableBlockers"])
-        self.assertEqual("v140-production-write-gate-3", gate["contract"])
+        self.assertEqual("v140-production-write-gate-4", gate["contract"])
 
     def test_every_security_layer_is_authoritative(self):
         cases = (
@@ -244,6 +245,7 @@ uvicorn.run(
                 ("mediaRegistry", "private-media-registry-coverage"),
                 ("paths", "runtime-paths"),
                 ("sidecar", "video-sidecar"),
+                ("usageSidecar", "video-workshop-usage-receipts"),
                 ("canvas", "infinite-canvas-manifest"),
                 ("release", "release-identity"),
             ):

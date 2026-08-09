@@ -503,7 +503,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # audit proves the exact migration/data/security closure.  The resulting
 # snapshot is O(1) on normal requests.  Only startup arms it; readiness probes
 # are observations and must never change live request admission.
-PRODUCTION_WRITE_CONTRACT = "v140-production-write-gate-3"
+PRODUCTION_WRITE_CONTRACT = "v140-production-write-gate-4"
 _PRODUCTION_WRITE_GATE_SNAPSHOT = None
 _PRODUCTION_WRITE_MIGRATIONS = {
     "acgMigrationVersion": 137004,
@@ -573,6 +573,7 @@ def _production_write_gate_from_checks(checks):
         ("mediaRegistry", "private-media-registry-coverage"),
         ("paths", "runtime-paths"),
         ("sidecar", "video-sidecar"),
+        ("usageSidecar", "video-workshop-usage-receipts"),
         ("canvas", "infinite-canvas-manifest"),
         ("release", "release-identity"),
     ):
@@ -6990,6 +6991,23 @@ def _runtime_path_readiness():
     return runtime_config.storage_path_status(specs)
 
 
+def _video_workshop_usage_readiness():
+    """Cross-audit durable sidecar receipts without changing either store."""
+
+    project_root = Path(os.getenv(
+        "VIDEO_WORKSHOP_PROJECTS_DIR",
+        VIDEO_WORKSHOP_ROOT / "data" / "projects",
+    ))
+    try:
+        return store.video_workshop_usage_readiness(project_root)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "video workshop usage audit unavailable",
+            "error": exc.__class__.__name__,
+        }
+
+
 def _private_media_registry_readiness():
     """Return a redacted ownership-coverage report for deployment gating."""
 
@@ -7023,11 +7041,12 @@ def _private_media_registry_readiness():
 async def _deployment_readiness_checks(*, include_sidecar=True):
     """Collect the expensive deployment checks once, outside request traffic."""
 
-    database, paths, media_registry, canvas = await asyncio.gather(
+    database, paths, media_registry, canvas, usage_sidecar = await asyncio.gather(
         asyncio.to_thread(store.database_readiness),
         asyncio.to_thread(_runtime_path_readiness),
         asyncio.to_thread(_private_media_registry_readiness),
         asyncio.to_thread(_canvas_manifest_readiness),
+        asyncio.to_thread(_video_workshop_usage_readiness),
     )
     sidecar = (
         await _video_sidecar_readiness()
@@ -7049,6 +7068,7 @@ async def _deployment_readiness_checks(*, include_sidecar=True):
         "mediaRegistry": media_registry,
         "paths": paths,
         "sidecar": sidecar,
+        "usageSidecar": usage_sidecar,
         "canvas": canvas,
     }
 
@@ -11440,6 +11460,30 @@ def _video_workshop_usage_completion_matches(central: dict, completion: dict) ->
     )
 
 
+def _require_video_workshop_usage_ready(me, project_id: str):
+    """Block a new sidecar mutation when historical usage evidence is unsafe."""
+
+    project_root = Path(os.getenv(
+        "VIDEO_WORKSHOP_PROJECTS_DIR",
+        VIDEO_WORKSHOP_ROOT / "data" / "projects",
+    ))
+    try:
+        status = store.video_workshop_usage_readiness(
+            project_root,
+            project_id=str(project_id or "").strip(),
+            member_id=str((me or {}).get("id") or "").strip(),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            503, "视频工坊用量审计暂不可用，未发起新调用"
+        ) from exc
+    if not status.get("ok"):
+        raise HTTPException(
+            409, "视频工坊历史用量证据待处理，未发起新调用"
+        )
+    return status
+
+
 def _reconcile_video_workshop_usage_receipts(me, source) -> dict:
     """Import sidecar outbox receipts under the verified current member.
 
@@ -11458,6 +11502,8 @@ def _reconcile_video_workshop_usage_receipts(me, source) -> dict:
         "reconciled": 0,
         "pending": 0,
         "failed": 0,
+        "indeterminate": 0,
+        "conflicts": 0,
     }
     source_project_id = str((source or {}).get("id") or "").strip()
     member_id = str((me or {}).get("id") or "").strip()
@@ -11512,34 +11558,25 @@ def _reconcile_video_workshop_usage_receipts(me, source) -> dict:
         ).hexdigest()
         try:
             team_id = str((me or {}).get("teamId") or "")
-            central = store.find_model_usage_receipt(
-                member_id,
-                source="video-workshop-sidecar",
-                stable_credential=operation_id,
+            inspection = store.video_workshop_usage_receipt_status(
+                member_id, team_id, source_project_id, sidecar_receipt,
             )
-            if central:
-                immutable_expected = {
-                    "memberId": member_id,
-                    "teamId": team_id,
-                    "surface": "video-workshop",
-                    "feature": feature,
-                    "usageKind": usage_kind,
-                    "provider": provider,
-                    "model": model,
-                    "operation": "provider-call",
-                    "operationId": operation_id,
-                    "idempotencyKey": operation_id,
-                    "requestFingerprint": request_fingerprint,
-                    "source": "video-workshop-sidecar",
-                }
-                if any(
-                    str((central or {}).get(key) or "") != str(expected or "")
-                    for key, expected in immutable_expected.items()
-                ):
-                    raise store.ModelUsageReceiptConflict(
-                        "video workshop receipt immutable identity mismatch"
-                    )
-            else:
+            if inspection.get("state") == "terminal":
+                reason = str(inspection.get("reason") or "")
+                if reason == "failed":
+                    summary["failed"] += 1
+                else:
+                    summary["reconciled"] += 1
+                    if reason == "settled-indeterminate":
+                        summary["indeterminate"] += 1
+                continue
+            if inspection.get("state") == "conflict":
+                raise store.ModelUsageReceiptConflict(
+                    "video workshop receipt "
+                    + str(inspection.get("reason") or "evidence conflict")
+                )
+            central = inspection.get("central")
+            if not central:
                 central = store.begin_model_usage_receipt(
                     member_id,
                     surface="video-workshop",
@@ -11633,6 +11670,15 @@ def _reconcile_video_workshop_usage_receipts(me, source) -> dict:
                 summary["pending"] += 1
             else:
                 summary["reconciled"] += 1
+        except store.ModelUsageReceiptConflict as exc:
+            summary["conflicts"] += 1
+            summary["pending"] += 1
+            print(
+                f"[model-usage] video-workshop receipt conflict: "
+                f"project={source_project_id[:40]} operation={operation_id[:80]} "
+                f"{exc.__class__.__name__}: {str(exc)[:200]}",
+                file=sys.stderr,
+            )
         except Exception as exc:
             summary["pending"] += 1
             print(
@@ -12194,6 +12240,10 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
         mapped_project = _video_workshop_owned_project(me, project_id)
         if project_action == "speed-version" and method != "POST":
             raise HTTPException(405, "视频工坊变速接口只接受 POST")
+        if project_action in {"retry", "speed-version"}:
+            await asyncio.to_thread(
+                _require_video_workshop_usage_ready, me, project_id,
+            )
         upstream = await _video_workshop_request(request, path)
         if upstream.status_code >= 400:
             return Response(content=upstream.content, status_code=upstream.status_code, media_type="application/json")
@@ -12228,6 +12278,9 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
         existing_project_id = str(payload.get("projectId") or "").strip()
         if existing_project_id:
             _video_workshop_owned_project(me, existing_project_id)
+            await asyncio.to_thread(
+                _require_video_workshop_usage_ready, me, existing_project_id,
+            )
         if not str(payload.get("voiceId") or "").strip():
             payload["voiceId"] = _video_workshop_preferred_voice(me)["voiceId"]
         reservation = _static_video_reservation(me, request, payload)

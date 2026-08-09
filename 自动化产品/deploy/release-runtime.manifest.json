@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260809-v140-media-isolation-1",
   "fileCount": 58,
-  "totalBytes": 2945960,
+  "totalBytes": 2963008,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -221,8 +221,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 506414,
-      "sha256": "09188dd1ac68fc9579701b38b036a8414f19b2da63b5bf35c2650a828246cde3"
+      "size": 508363,
+      "sha256": "4e44a7c1736d41dd681b6e6506b5196c4b60920946de8c761d102dd6b436a8bb"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -286,8 +286,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 844792,
-      "sha256": "fe21625f4272a2ca2c910443265323319636715ca3cf703057405e73c8c3e175"
+      "size": 859891,
+      "sha256": "a0d96cf8b216d1a79d6bdfd6409cf6d6fae5f936e97cbf015209065ca7763b94"
     },
     {
       "path": "tools/verify_release_contracts.py",

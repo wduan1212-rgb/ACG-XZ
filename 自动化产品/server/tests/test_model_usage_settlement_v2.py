@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from server import model_usage_settlement_v2, store
+from server import main, model_usage_settlement_v2, store
 from server.tests.test_runtime_bootstrap_safety import (
     current_backup_binding,
     current_runtime_snapshot_binding,
@@ -24,8 +24,10 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
         store.DB_PATH = Path(self.temp.name) / "usage-settlement-v2.sqlite"
         store.CUSTOM_CANVAS_BLOB_DIR = Path(self.temp.name) / "canvas-blobs"
         store._initialized = False
+        self.team_id = store.INTERNAL_TEAM_ID
         self.member = store.add_member(
-            "结算测试创作者", "usage-settlement-v2-editor", "123456", "editor"
+            "结算测试创作者", "usage-settlement-v2-editor", "123456", "editor",
+            team_id=self.team_id, team_role="creator",
         )
         self.rows = {}
         self.sidecars = {}
@@ -102,6 +104,13 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
             )
         self.sidecars[operation_id] = {
             **immutable,
+            # Production legacy error paths retained the recorder default
+            # after central intent had already frozen the typed image unit.
+            "unitLabel": (
+                "次"
+                if usage_kind == "image" and status in {"unknown", "submitted"}
+                else unit_label
+            ),
             "providerRef": provider_ref,
             "status": status,
             "inputTokens": input_tokens,
@@ -225,6 +234,64 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
         self.assertEqual(3, len(api_events))
         self.assertTrue(all(event[1:] == (1, 0) for event in api_events))
         self.assertEqual([(20,)], llm_events)
+
+        project = {
+            "id": "project-a",
+            "name": "受保护用量双跑",
+            "status": "failed",
+            "phase": "delivery",
+            "progress": 100,
+            "updatedAt": "2026-08-09T10:00:00+08:00",
+            "plan": {"title": "受保护用量双跑", "aspect_ratio": "9:16"},
+            "outputs": [],
+            "modelUsageReceipts": [
+                self.sidecars["video-workshop:project-a:image:unknown"],
+                self.sidecars["video-workshop:project-a:image:submitted"],
+            ],
+        }
+        mapped, error = store.sync_custom_video_project(self.member[0], project)
+        self.assertIsNone(error)
+        self.assertTrue(mapped)
+        project_root = Path(self.temp.name) / "video-projects"
+        project_root.mkdir()
+        (project_root / "project-a.json").write_text(
+            json.dumps(project, ensure_ascii=False), encoding="utf-8",
+        )
+
+        before_replay = logical_database_dump(store.DB_PATH)
+        replay_summary = main._reconcile_video_workshop_usage_receipts(
+            {"id": self.member[0], "teamId": self.team_id}, project,
+        )
+        self.assertEqual(2, replay_summary["reconciled"])
+        self.assertEqual(1, replay_summary["indeterminate"])
+        self.assertEqual(0, replay_summary["pending"])
+        self.assertEqual(0, replay_summary["conflicts"])
+        self.assertEqual(before_replay, logical_database_dump(store.DB_PATH))
+
+        audit = store.video_workshop_usage_readiness(project_root)
+        self.assertTrue(audit["ok"], audit)
+        self.assertEqual(2, audit["receiptRows"])
+        self.assertEqual(2, audit["rawPendingRows"])
+        self.assertEqual(2, audit["terminalRows"])
+        self.assertEqual(2, audit["settledRows"])
+        self.assertEqual(0, audit["effectivePendingRows"])
+        self.assertEqual(0, audit["conflictRows"])
+
+        tampered = json.loads(json.dumps(project))
+        tampered["modelUsageReceipts"][0]["outputUnits"] = 1
+        before_conflict = logical_database_dump(store.DB_PATH)
+        conflict = main._reconcile_video_workshop_usage_receipts(
+            {"id": self.member[0], "teamId": self.team_id}, tampered,
+        )
+        self.assertEqual(1, conflict["conflicts"])
+        self.assertEqual(1, conflict["pending"])
+        self.assertEqual(before_conflict, logical_database_dump(store.DB_PATH))
+        (project_root / "project-a.json").write_text(
+            json.dumps(tampered, ensure_ascii=False), encoding="utf-8",
+        )
+        drift = store.video_workshop_usage_readiness(project_root)
+        self.assertFalse(drift["ok"])
+        self.assertEqual(1, drift["conflictRows"])
 
         with self.assertRaises(store.ModelUsageReceiptConflict):
             store.complete_model_usage_receipt(

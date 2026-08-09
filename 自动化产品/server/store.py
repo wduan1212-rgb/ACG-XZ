@@ -12551,6 +12551,374 @@ def settle_model_usage_receipts_reviewed_v2(
             conn.close()
 
 
+_VIDEO_WORKSHOP_RUNTIME_USAGE_STATUSES = {
+    "submitted", "unknown", "failed", "confirmed", "succeeded",
+}
+
+
+def _video_workshop_runtime_usage_identity(sidecar, project_id):
+    """Return the exact sidecar identity and its one approved legacy variant."""
+
+    if not isinstance(sidecar, dict):
+        raise ValueError("video_workshop_usage_receipt_invalid")
+    operation_id = str(sidecar.get("operationId") or "").strip()
+    receipt_project_id = str(sidecar.get("projectId") or "").strip()
+    surface = str(sidecar.get("surface") or "").strip()
+    usage_kind = str(sidecar.get("usageKind") or "").strip().lower()
+    status = str(sidecar.get("status") or "").strip().lower()
+    feature = str(sidecar.get("feature") or "").strip()[:120]
+    provider = str(sidecar.get("provider") or "").strip()[:80]
+    model = str(sidecar.get("model") or "").strip()[:180]
+    unit_label = str(sidecar.get("unitLabel") or "").strip()[:24]
+    if (
+        not operation_id
+        or len(operation_id) > 180
+        or not project_id
+        or receipt_project_id != str(project_id)
+        or surface != "video-workshop"
+        or usage_kind not in _MODEL_USAGE_KINDS
+        or status not in _VIDEO_WORKSHOP_RUNTIME_USAGE_STATUSES
+        or not feature
+        or not provider
+        or not model
+        or not unit_label
+    ):
+        raise ValueError("video_workshop_usage_receipt_identity_invalid")
+    immutable = {
+        "schemaVersion": int(sidecar.get("schemaVersion") or 1),
+        "surface": "video-workshop",
+        "projectId": str(project_id),
+        "operationId": operation_id,
+        "usageKind": usage_kind,
+        "feature": feature,
+        "provider": provider,
+        "model": model,
+        "unitLabel": unit_label,
+    }
+    fingerprints = {_canonical_json_sha256(immutable)}
+    normalized_unit_label = unit_label
+    typed_unit_label = _VIDEO_WORKSHOP_USAGE_UNIT_LABELS.get(usage_kind, "")
+    if unit_label == "次" and typed_unit_label and typed_unit_label != unit_label:
+        # Historical sidecar error paths persisted the recorder default after
+        # the central receipt had frozen the typed initial identity.  v140's
+        # reviewed settlement already recognizes only this exact variant.
+        typed = dict(immutable)
+        typed["unitLabel"] = typed_unit_label
+        fingerprints.add(_canonical_json_sha256(typed))
+        normalized_unit_label = typed_unit_label
+    return {
+        "operationId": operation_id,
+        "status": status,
+        "feature": feature,
+        "usageKind": usage_kind,
+        "provider": provider,
+        "model": model,
+        "unitLabel": unit_label,
+        "normalizedUnitLabel": normalized_unit_label,
+        "requestFingerprints": fingerprints,
+    }
+
+
+def _video_workshop_usage_receipt_status_locked(
+    conn, member_id, team_id, project_id, sidecar,
+):
+    """Classify one sidecar receipt without changing SQLite or project JSON."""
+
+    try:
+        identity = _video_workshop_runtime_usage_identity(sidecar, project_id)
+    except (TypeError, ValueError, OverflowError) as exc:
+        return {"state": "conflict", "reason": str(exc), "central": None}
+    receipt_key, _ = _model_usage_receipt_identifiers(
+        "video-workshop-sidecar", str(member_id), identity["operationId"],
+    )
+    row = conn.execute(
+        f"SELECT {_MODEL_USAGE_RECEIPT_COLUMNS} FROM model_usage_receipts "
+        "WHERE receipt_key=?",
+        (receipt_key,),
+    ).fetchone()
+    if not row:
+        return {"state": "pending", "reason": "central-missing", "central": None}
+    outbox_state = _model_usage_outbox_state_locked(conn, row[0])
+    central = _model_usage_receipt_dict(
+        row, reused=True, outbox_state=outbox_state,
+    )
+    immutable_expected = {
+        "memberId": str(member_id),
+        "teamId": str(team_id or ""),
+        "surface": "video-workshop",
+        "feature": identity["feature"],
+        "usageKind": identity["usageKind"],
+        "provider": identity["provider"],
+        "model": identity["model"],
+        "operation": "provider-call",
+        "operationId": identity["operationId"],
+        "idempotencyKey": identity["operationId"],
+        "source": "video-workshop-sidecar",
+    }
+    if any(
+        str(central.get(key) or "") != str(expected or "")
+        for key, expected in immutable_expected.items()
+    ) or str(central.get("requestFingerprint") or "") not in identity[
+        "requestFingerprints"
+    ]:
+        return {
+            "state": "conflict",
+            "reason": "central-immutable-identity-mismatch",
+            "central": central,
+        }
+    central_status = str(central.get("status") or "").strip().lower()
+    sidecar_status = identity["status"]
+    if central_status in {"pending", "unknown"}:
+        return {"state": "pending", "reason": central_status, "central": central}
+
+    settlement_rows = conn.execute(
+        "SELECT source,operation_id,resolution,sidecar_receipt_sha256,"
+        "central_receipt_after_sha256 FROM model_usage_settlement_entries_v2 "
+        "WHERE receipt_id=? ORDER BY created_at",
+        (str(row[0]),),
+    ).fetchall()
+    settlement = settlement_rows[0] if len(settlement_rows) == 1 else None
+    settlement_exact = bool(
+        settlement
+        and settlement[0] == "video-workshop-sidecar"
+        and settlement[1] == identity["operationId"]
+        and hmac.compare_digest(
+            str(settlement[3] or ""), _canonical_json_sha256(sidecar),
+        )
+        and hmac.compare_digest(
+            str(settlement[4] or ""),
+            _canonical_json_sha256(
+                _model_usage_settlement_central_evidence_locked(conn, row)
+            ),
+        )
+    )
+    if len(settlement_rows) > 1:
+        return {
+            "state": "conflict",
+            "reason": "settlement-evidence-duplicate",
+            "central": central,
+        }
+    if sidecar_status in {"confirmed", "succeeded"}:
+        prompt = _usage_int(sidecar.get("inputTokens"))
+        completion = _usage_int(sidecar.get("outputTokens"))
+        total = _usage_int(sidecar.get("totalTokens")) or prompt + completion
+        completion_matches = bool(
+            central_status == "succeeded"
+            and outbox_state == "projected"
+            and bool(str(sidecar.get("providerRef") or "").strip())
+            and str(central.get("providerRef") or "")
+            == str(sidecar.get("providerRef") or "").strip()[:240]
+            and int(central.get("promptTokens") or 0) == prompt
+            and int(central.get("completionTokens") or 0) == completion
+            and int(central.get("totalTokens") or 0) == total
+            and int(central.get("calls") or 0) == 1
+            and int(central.get("outputUnits") or 0)
+            == _usage_int(sidecar.get("outputUnits"))
+            and str(central.get("unitLabel") or "")
+            == identity["normalizedUnitLabel"]
+        )
+        return {
+            "state": "terminal" if completion_matches else "conflict",
+            "reason": "succeeded" if completion_matches else "completion-mismatch",
+            "central": central,
+        }
+    if sidecar_status == "failed":
+        terminal = central_status == "failed" and outbox_state == "ignored"
+        return {
+            "state": "terminal" if terminal else "conflict",
+            "reason": "failed" if terminal else "failed-terminal-mismatch",
+            "central": central,
+        }
+    if sidecar_status == "unknown":
+        terminal = bool(
+            settlement_exact
+            and settlement[2] == "sidecar-attempt-outcome-unknown"
+            and central_status == "succeeded"
+            and outbox_state == "projected"
+            and int(central.get("calls") or 0) == 1
+            and not str(central.get("providerRef") or "")
+            and int(central.get("promptTokens") or 0) == 0
+            and int(central.get("completionTokens") or 0) == 0
+            and int(central.get("totalTokens") or 0) == 0
+            and int(central.get("outputUnits") or 0) == 0
+        )
+        return {
+            "state": "terminal" if terminal else "conflict",
+            "reason": "settled-unknown" if terminal else "unknown-terminal-mismatch",
+            "central": central,
+        }
+    if sidecar_status == "submitted":
+        terminal = bool(
+            settlement_exact
+            and settlement[2] == "sidecar-submitted-indeterminate"
+            and central_status == "indeterminate"
+            and outbox_state == "ignored"
+            and int(central.get("calls") or 0) == 0
+            and not str(central.get("providerRef") or "")
+            and int(central.get("promptTokens") or 0) == 0
+            and int(central.get("completionTokens") or 0) == 0
+            and int(central.get("totalTokens") or 0) == 0
+            and int(central.get("outputUnits") or 0) == 0
+        )
+        return {
+            "state": "terminal" if terminal else "conflict",
+            "reason": "settled-indeterminate" if terminal
+            else "submitted-terminal-mismatch",
+            "central": central,
+        }
+    return {"state": "conflict", "reason": "status-invalid", "central": central}
+
+
+def video_workshop_usage_receipt_status(member_id, team_id, project_id, sidecar):
+    """Read one main/sidecar receipt pair without writing either authority."""
+
+    _ensure_db()
+    conn = _connect(read_only=True)
+    try:
+        return _video_workshop_usage_receipt_status_locked(
+            conn, str(member_id), str(team_id or ""), str(project_id), sidecar,
+        )
+    finally:
+        conn.close()
+
+
+def video_workshop_usage_readiness(
+    project_root, *, project_id="", member_id="",
+):
+    """Cross-audit sidecar receipts against central immutable terminal evidence."""
+
+    root = Path(project_root).expanduser()
+    result = {
+        "ok": False,
+        "projectFiles": 0,
+        "mappedProjectFiles": 0,
+        "unmappedProjectFiles": 0,
+        "invalidProjectFiles": 0,
+        "receiptRows": 0,
+        "rawPendingRows": 0,
+        "terminalRows": 0,
+        "settledRows": 0,
+        "effectivePendingRows": 0,
+        "conflictRows": 0,
+    }
+    if not root.is_dir() or root.is_symlink():
+        result["invalidProjectFiles"] = 1
+        return result
+    target_id = str(project_id or "").strip()
+    target_member = str(member_id or "").strip()
+    if target_id and (Path(target_id).name != target_id or target_id in {".", ".."}):
+        result["invalidProjectFiles"] = 1
+        return result
+    _ensure_db()
+    conn = _connect(read_only=True)
+    try:
+        owners = {}
+        mapping_conflicts = set()
+        for doc_id, owner_id, raw in conn.execute(
+            "SELECT id,owner_id,data FROM docs WHERE collection='customProjects' "
+            "ORDER BY id"
+        ).fetchall():
+            try:
+                payload = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            state = payload.get("projectState")
+            workshop_id = str(
+                (state or {}).get("workshopProjectId")
+                if isinstance(state, dict) else ""
+            ).strip()
+            if payload.get("kind") != "video" or not workshop_id:
+                continue
+            if (
+                str(payload.get("id") or "") != str(doc_id)
+                or str(payload.get("ownerId") or "") != str(owner_id)
+                or not _resource_scope_allows_actor_locked(
+                    conn, "customProjects", doc_id, owner_id,
+                )
+            ):
+                mapping_conflicts.add(workshop_id)
+            else:
+                owners.setdefault(workshop_id, set()).add(str(owner_id))
+        paths = [root / f"{target_id}.json"] if target_id else sorted(root.glob("*.json"))
+        seen_operations = set()
+        for path in paths:
+            if not path.is_file() or path.is_symlink():
+                result["invalidProjectFiles"] += 1
+                continue
+            result["projectFiles"] += 1
+            try:
+                payload = json.loads(path.read_text("utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                result["invalidProjectFiles"] += 1
+                continue
+            file_project_id = str((payload or {}).get("id") or "").strip()
+            receipts = (payload or {}).get("modelUsageReceipts") or []
+            if (
+                not isinstance(payload, dict)
+                or file_project_id != path.stem
+                or not isinstance(receipts, list)
+            ):
+                result["invalidProjectFiles"] += 1
+                continue
+            project_owners = owners.get(file_project_id, set())
+            if target_member:
+                project_owners = {
+                    owner for owner in project_owners if owner == target_member
+                }
+            if file_project_id in mapping_conflicts or len(project_owners) != 1:
+                if receipts:
+                    result["unmappedProjectFiles"] += 1
+                    if (
+                        target_id
+                        or file_project_id in mapping_conflicts
+                        or len(project_owners) > 1
+                    ):
+                        result["conflictRows"] += len(receipts)
+                continue
+            result["mappedProjectFiles"] += 1
+            owner_id = next(iter(project_owners))
+            scope = _member_resource_scope_locked(conn, owner_id)
+            if not scope:
+                result["conflictRows"] += len(receipts)
+                continue
+            team_id = scope[1] if scope[0] == "team" else ""
+            for receipt in receipts:
+                result["receiptRows"] += 1
+                if isinstance(receipt, dict) and str(
+                    receipt.get("reconcileState") or "pending"
+                ) == "pending":
+                    result["rawPendingRows"] += 1
+                operation_id = str(
+                    (receipt or {}).get("operationId")
+                    if isinstance(receipt, dict) else ""
+                ).strip()
+                if not operation_id or operation_id in seen_operations:
+                    result["conflictRows"] += 1
+                    continue
+                seen_operations.add(operation_id)
+                status = _video_workshop_usage_receipt_status_locked(
+                    conn, owner_id, team_id, file_project_id, receipt,
+                )
+                if status["state"] == "terminal":
+                    result["terminalRows"] += 1
+                    if str(status["reason"]).startswith("settled-"):
+                        result["settledRows"] += 1
+                elif status["state"] == "pending":
+                    result["effectivePendingRows"] += 1
+                else:
+                    result["conflictRows"] += 1
+        result["ok"] = bool(
+            result["invalidProjectFiles"] == 0
+            and result["effectivePendingRows"] == 0
+            and result["conflictRows"] == 0
+        )
+        return result
+    finally:
+        conn.close()
+
+
 # ---------- 模型用量 completion spool（SQLite 锁外持久兜底） ----------
 _MODEL_USAGE_COMPLETION_PAYLOAD_KEYS = frozenset({
     "version", "receiptId", "providerRef", "provider", "model",
