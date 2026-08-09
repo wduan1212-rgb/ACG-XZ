@@ -10062,6 +10062,16 @@ def custom_projects_publish(
         me["id"],
         payload,
     )
+    publish_text_errors = {
+        "xiaohongshu_title_too_long": "小红书标题不能超过 20 字，标点符号也计入",
+        "xiaohongshu_copy_too_long": "小红书文案不能超过 1000 字",
+        "wechat_channels_title_too_long": "视频号标题不能超过 16 字",
+        "wechat_channels_title_has_punctuation": "视频号标题不能包含标点符号",
+    }
+    if error in publish_text_errors:
+        raise HTTPException(422, publish_text_errors[error])
+    if error == "account_daily_creation_quota_exceeded":
+        raise HTTPException(409, "该账号今日已达到 2 条内容的创作上限")
     if error in {
         "delivery_not_found",
         "delivery_mismatch",
@@ -10102,6 +10112,14 @@ def productions_publish(
         me["id"],
         payload,
     )
+    publish_text_errors = {
+        "xiaohongshu_title_too_long": "小红书标题不能超过 20 字，标点符号也计入",
+        "xiaohongshu_copy_too_long": "小红书文案不能超过 1000 字",
+        "wechat_channels_title_too_long": "视频号标题不能超过 16 字",
+        "wechat_channels_title_has_punctuation": "视频号标题不能包含标点符号",
+    }
+    if error in publish_text_errors:
+        raise HTTPException(422, publish_text_errors[error])
     if error in {
         "production_not_found", "account_not_found", "account_deleted",
         "delivery_asset_deleted", "delivery_asset_missing",
@@ -10175,6 +10193,16 @@ def publish_tags_create(req: PublishTagReq, me=Depends(require_member)):
     return {"item": item}
 
 
+@app.get("/api/account-creation-quotas")
+def api_account_creation_quotas(
+    accountIds: str = "", me=Depends(require_member)
+):
+    account_ids = [item.strip() for item in accountIds.split(",") if item.strip()]
+    if not account_ids:
+        return {"dayKey": "", "limit": store.ACCOUNT_DAILY_CREATION_LIMIT, "items": []}
+    return store.account_creation_quotas(me["id"], account_ids)
+
+
 @app.put("/api/db/{collection}")
 def api_put(collection: str, req: PutReq, me=Depends(require_member)):
     """写穿透：管理员管理共享配置，创作者只能同步本人或关联交付的数据。"""
@@ -10193,6 +10221,13 @@ def api_put(collection: str, req: PutReq, me=Depends(require_member)):
             store.upsert_voice_presets(me["id"], me["role"], req.items)
         else:
             result = store.upsert_member_collection(me["id"], me["role"], collection, req.items)
+    except store.AccountDailyCreationQuotaExceeded as exc:
+        accounts = "、".join(exc.account_ids[:3])
+        suffix = "等账号" if len(exc.account_ids) > 3 else ""
+        raise HTTPException(
+            409,
+            f"{accounts}{suffix}今日已达每个账号 {exc.limit} 条的创作上限，请明日再创作或更换账号。",
+        )
     except PermissionError:
         raise HTTPException(403, "当前账号无权修改该共享配置或其他成员的业务数据")
     except ValueError as exc:

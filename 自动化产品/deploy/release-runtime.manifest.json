@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260809-v140-core-connectivity-3",
+  "releaseId": "20260809-v141-content-governance-2",
   "fileCount": 58,
-  "totalBytes": 3001887,
+  "totalBytes": 3017493,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,13 +21,13 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100715,
-      "sha256": "02ca0111a4aa0648f2860c71b692c0460c31786e7798801e29096182d80e7314"
+      "size": 100716,
+      "sha256": "71184153904884f5e0c31ddcce63149ef9dead5e8b875bf950c909009fde369d"
     },
     {
       "path": "apps/video-workshop/app/media.py",
-      "size": 44995,
-      "sha256": "11efb5cda9a30648110e15cc12ea40f7d840642d8780c93c6c0f10ccbac83883"
+      "size": 46770,
+      "sha256": "49cfc0b0b66e490b57c9d30c75be8cf301d7d052d941822d410ea004ff6731f2"
     },
     {
       "path": "apps/video-workshop/app/openmontage_bridge.py",
@@ -36,8 +36,8 @@
     },
     {
       "path": "apps/video-workshop/app/pipeline.py",
-      "size": 93082,
-      "sha256": "05773dc4d9713037541ec7cab8024640f0f6bc0e72ca5ef4b9eca1ebbb718896"
+      "size": 95505,
+      "sha256": "f2e6ecbd9b0371d267687cbeecd10092bf34e8ebedacb96d720a7ee225f37795"
     },
     {
       "path": "apps/video-workshop/app/providers.py",
@@ -66,8 +66,8 @@
     },
     {
       "path": "apps/video-workshop/requirements.lock.txt",
-      "size": 865,
-      "sha256": "a062e5b9021c5430e585baeeb555d986e9644f0a80af23712a205481dc42fc59"
+      "size": 875,
+      "sha256": "24642abce07a9ba9ba0cc01769a3bee028a898239667117afce2f22bfe419960"
     },
     {
       "path": "apps/video-workshop/requirements.txt",
@@ -166,8 +166,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22376,
-      "sha256": "40430af2c297827b43acb315eb42db113a457f87cd5a3bd7c0454510eed93d2a"
+      "size": 22379,
+      "sha256": "a3a9af9912b8430809f8b9e818691272c156327a8353844f9f38f708b7bbf76b"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -221,8 +221,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 508722,
-      "sha256": "dbd8f335f7d180745b8f88b073e30e23af8764ff881925ba8adf0872de92eb2f"
+      "size": 510580,
+      "sha256": "e558526a2ea8d36a89b1350c2f264e2935f463156042a4864bcad1fa3cc69925"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -286,8 +286,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 894415,
-      "sha256": "efd9b200f7cc6e8cdf1a6a7499a942f836218e3d40b3d0d39e271dc57817cb63"
+      "size": 903951,
+      "sha256": "790f282eee1e7a3a6a63ad33f7b56736d337cb403f82e75bf9b22a6449e858d1"
     },
     {
       "path": "tools/verify_release_contracts.py",

@@ -1,14 +1,16 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260809-v140-core-connectivity-3";
+import { AI } from "../api/ai.js?v=20260809-v141-content-governance-2";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
-import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js";
+import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260809-v141-content-governance-2";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260809-v140-core-connectivity-3";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260809-v141-content-governance-2";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260809-v140-core-connectivity-3";
-import { accountCreatedToday, groupOf, isAccountDisabled } from "../domain/accounts.js";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260809-v141-content-governance-2";
+import { groupOf, isAccountDisabled } from "../domain/accounts.js";
+import { accountCreationAvailable, accountCreationQuota, refreshAccountCreationQuotas } from "../domain/productionQuota.js?v=20260809-v141-content-governance-2";
+import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260809-v141-content-governance-2";
 
 let activeCustomPublishModal = null;
 const CUSTOM_PUBLISH_DRAFT_PREFIX = "xingzhen:custom-publish-draft:v1";
@@ -116,11 +118,15 @@ function eligibleAccounts(kind) {
 }
 
 function accountOptions(accounts, selectedId = "") {
-  return accounts.map(account => `
-    <option value="${esc(account.id)}" ${account.id === selectedId ? "selected" : ""}>
-      ${accountCreatedToday(account.id) ? "【今日已创作】" : ""}${esc(account.name)} · ${esc(account.platform || "")} · ${esc(account.mode || "")}
-    </option>
-  `).join("");
+  return accounts.map(account => {
+    const quota = accountCreationQuota(account.id);
+    const blocked = quota.remaining <= 0;
+    return `
+      <option value="${esc(account.id)}" ${account.id === selectedId ? "selected" : ""} ${blocked ? "disabled" : ""}>
+        【今日 ${quota.used}/${quota.limit}】${esc(account.name)} · ${esc(account.platform || "")} · ${esc(account.mode || "")}
+      </option>
+    `;
+  }).join("");
 }
 
 function productOptions(products, selectedId = "") {
@@ -457,7 +463,7 @@ async function rollbackPending(asset, materialized) {
   await persistNow();
 }
 
-export function openCustomPublish(output = {}, { onPublished } = {}) {
+export async function openCustomPublish(output = {}, { onPublished } = {}) {
   if (activeCustomPublishModal?.el?.isConnected) {
     activeCustomPublishModal.el.querySelector("input, select, textarea, button")?.focus();
     toast("发布设置已经打开");
@@ -470,15 +476,21 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
     toast(`请先创建至少一个${kind === "video" ? "素材" : "图文"}账号`, "error");
     return null;
   }
+  await refreshAccountCreationQuotas(accounts.map(account => account.id), { force: true });
+  const availableAccounts = accounts.filter(account => accountCreationAvailable(account.id));
+  if (!availableAccounts.length) {
+    toast("可用账号今日均已达到 2 条内容的创作上限", "error");
+    return null;
+  }
   const products = state.products.filter(product => product?.id);
   if (!products.length) {
     toast("请先在设置中配置至少一个产品", "error");
     return null;
   }
   const requestedAccountId = String(draft.accountId || output.accountId || "");
-  const selectedAccountId = accounts.some(account => account.id === requestedAccountId)
+  const selectedAccountId = availableAccounts.some(account => account.id === requestedAccountId)
     ? requestedAccountId
-    : accounts[0].id;
+    : availableAccounts[0].id;
   const requestedProductId = String(draft.productId || output.productId || "");
   const selectedProductId = products.some(product => product.id === requestedProductId)
     ? requestedProductId
@@ -554,6 +566,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       <label class="field custom-publish-copy-field">
         <span>发布文案 <button class="link-btn" type="button" id="customPublishGenerateCopy">${icon("spark", 12)} 根据标题生成</button></span>
         <textarea class="input" id="customPublishCopy" rows="${kind === "canvas" ? 4 : 6}" placeholder="可自己填写，也可以根据标题生成">${esc(initialCopy)}</textarea>
+        <small id="customPublishTextRule" aria-live="polite"></small>
       </label>
       ${kind === "video" ? `
         <section class="custom-publish-cover">
@@ -650,6 +663,32 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
       const coverStyleInput = panel.querySelector("#customPublishCoverStyle");
       const coverPaletteInput = panel.querySelector("#customPublishCoverPalette");
       const submitButton = panel.querySelector("#customPublishSubmit");
+      const textRule = panel.querySelector("#customPublishTextRule");
+      const updateTextRule = () => {
+        const account = accountById(accountInput?.value || "");
+        const result = validatePublishText({
+          platform: account?.platform || "",
+          title: titleInput?.value || "",
+          copy: copyInput?.value || "",
+        });
+        if (titleInput) titleInput.maxLength = account?.platform === "小红书" ? 20 : account?.platform === "视频号" ? 16 : 80;
+        if (copyInput) {
+          if (account?.platform === "小红书") copyInput.maxLength = 1000;
+          else copyInput.removeAttribute("maxlength");
+        }
+        if (textRule) {
+          textRule.classList.toggle("is-error", !result.ok);
+          textRule.textContent = result.ok
+            ? (account?.platform === "小红书"
+              ? `小红书：标题 ${result.titleLength}/20 · 文案 ${result.copyLength}/1000`
+              : account?.platform === "视频号"
+                ? `视频号：标题 ${result.titleLength}/16 · 不可含标点`
+                : `标题 ${result.titleLength} 字`)
+            : result.message;
+        }
+        if (submitButton && !pendingSubmission) submitButton.disabled = !result.ok;
+        return result;
+      };
       let draftTimer = 0;
       const saveDraftNow = () => writePublishDraft(output, kind, {
         accountId: accountInput?.value || selectedAccountId,
@@ -884,6 +923,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         }
         clearCoverReferences("发布账号已变化，已清除仅属于原账号的自定义封面参考图。");
         updateCoverHint();
+        updateTextRule();
         queueDraftSave();
       });
       productInput.addEventListener("change", () => {
@@ -898,12 +938,14 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         if (coverSource === "generated" && coverTitle !== titleInput.value.trim()) {
           markGeneratedCoverStale("发布标题已变化。");
         }
+        updateTextRule();
         queueDraftSave();
       });
       copyInput.addEventListener("input", () => {
         if (coverSource === "generated" && coverCopy !== copyInput.value.trim() && coverAssetId) {
           markGeneratedCoverStale("发布文案已变化。");
         }
+        updateTextRule();
         queueDraftSave();
       });
       dateInput?.addEventListener("change", queueDraftSave);
@@ -927,6 +969,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
         status.textContent = `已随机选择「${selected[1]}」，生成封面时会加入这组配色提示。`;
       });
       updateCoverHint();
+      updateTextRule();
       saveDraftNow();
 
       coverPreview?.addEventListener("click", () => {
@@ -1065,6 +1108,7 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
               ? compactCanvasPublishCopy(generated.copy || "")
               : String(generated.copy || "");
             copyInput.value = generatedCopy;
+            updateTextRule();
             if (coverSource === "generated" && coverAssetId) {
               // Generating copy after a cover is an intentional publish workflow.
               // Keep the chosen cover, then use the new copy as the next edit baseline.
@@ -1129,8 +1173,10 @@ export function openCustomPublish(output = {}, { onPublished } = {}) {
           const title = titleInput.value.trim();
           if (!canDeliver()) throw new Error("当前账号没有发布权限");
           if (!account) throw new Error("请先选择发布账号");
+          if (!accountCreationAvailable(accountId)) throw new Error("该账号今日已达到 2 条内容的创作上限");
           if (!product) throw new Error("请先选择产品");
           if (!title) throw new Error("发布标题为必填项");
+          assertPublishText({ platform: account.platform, title, copy: copyInput.value.trim() });
           if (kind === "video" && (
             !coverAssetId
             || coverAccountId !== accountId

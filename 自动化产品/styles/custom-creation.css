@@ -715,6 +715,12 @@ body.workspace-shell-v2 .custom-tool-host.is-voice .vl-console .vl-voice-paramet
   gap: 10px;
 }
 .custom-publish-copy-field textarea { resize: vertical; }
+#customPublishTextRule {
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+#customPublishTextRule.is-error { color: var(--danger); font-weight: 650; }
 .custom-publish-cover {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr);

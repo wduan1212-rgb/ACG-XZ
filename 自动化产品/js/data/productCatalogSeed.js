@@ -3,7 +3,7 @@
 
 const now = () => Date.now();
 
-export const PRODUCT_CATALOG_VERSION = "20260629-product-db-v2";
+export const PRODUCT_CATALOG_VERSION = "20260809-product-db-v3-baige";
 
 export const PRODUCT_CATALOG_SEED = [
   {
@@ -36,6 +36,40 @@ export const PRODUCT_CATALOG_SEED = [
     visualAngles: ["一句需求到页面原型", "页面/数据表/发布按钮三段流程", "非技术人拖拽修改应用", "活动页和后台数据表对照"],
     competitors: ["trae", "manus", "cursor", "codex"],
     toneRule: "像真实产品体验笔记：讲清适合谁、能做什么小应用、哪里仍需要人工确认；不要夸成万能开发者。",
+    updatedAt: now()
+  },
+  {
+    id: "baige",
+    owner: "ours",
+    name: "百度百舸 6.0",
+    shortName: "百度百舸",
+    keywords: ["百舸", "百舸6.0", "百度百舸", "百度百舸6.0", "具身智能 AI Infra"],
+    category: "具身智能 AI Infra 与工具链",
+    brief: "百度智能云面向具身智能场景打造的 AI Infra 与工具链，重点覆盖数据生产、开发训练、仿真评测和推理四个环节，通过工作流、模型与仿真环境适配及性能优化降低研发和部署门槛。",
+    coreFeatures: [
+      "数据生产与多模态数据清洗、标注、质量评估",
+      "VLA、VLM、世界模型与强化学习开发训练",
+      "Isaac、Maniskill3 等仿真环境预置与快速适配",
+      "多机并行、多模态训练加速与 GPU/昆仑芯 XPU 支持",
+      "Cosmos 等具身模型推理优化",
+      "vLLM-Kunlun 主流大模型推理适配"
+    ],
+    verifiedFacts: [
+      "vLLM-Kunlun 已适配 Qwen、DeepSeek、GLM、MiMo 等 50+ 款主流大模型",
+      "Offload + 动态 Fetch 机制可节省 32% 显存容量",
+      "VLM 模型训练性能较社区版本提升 40%+",
+      "世界模型训练性能提升 20%+，推理性能提升 36%+",
+      "424B MoE VL 模型千卡训练 MFU 达 47%",
+      "72B 多模态混训 Packing + CP 吞吐提升 1–5 倍",
+      "已支撑北京、上海、浙江、广东等多地具身智能创新中心建设，并为产业链上 20+ 家重点企业提供技术与算力支撑"
+    ],
+    forbiddenClaims: ["不将 LoongForge 作为已确认正式能力；原始材料将其标注为待确定"],
+    tutorialAngles: ["具身智能四阶段工具链怎么串起来", "长尾数据如何通过仿真补充", "小显存场景如何用 Offload + 动态 Fetch", "Isaac/Maniskill3 仿真环境快速部署"],
+    comparisonAngles: ["从单点训练工具到全流程 AI Infra 的边界", "GPU 与昆仑芯 XPU 多模态训练适配", "数据、训练、仿真、推理四环节的工程成本对照"],
+    blogAngles: ["具身智能落地为什么先卡在 AI Infra", "开发环境从数天压缩到分钟级意味着什么", "仿真不只是演示，它还在补长尾数据"],
+    visualAngles: ["数据生产→开发训练→仿真评测→推理四段流程", "机器人仿真环境与训练集群对照", "32% 显存节省和 40%+ VLM 训练性能提升数据卡"],
+    competitors: [],
+    toneRule: "仅使用产品库中明确记录的能力和数据；性能数字必须保留指标口径，不外推到未记录模型、平台或客户。不得将待确定的 LoongForge 写成已发布能力。",
     updatedAt: now()
   },
   {

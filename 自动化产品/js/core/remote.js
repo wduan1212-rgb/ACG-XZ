@@ -135,7 +135,10 @@ async function req(path, {
       status: res.status,
       ok: false
     });
-    const error = new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 160));
+    const raw = (await res.text()).slice(0, 500);
+    let detail = raw;
+    try { detail = String(JSON.parse(raw)?.detail || raw); } catch (_) {}
+    const error = new Error("HTTP " + res.status + " " + detail.slice(0, 240));
     error.status = res.status;
     throw error;
   }
@@ -322,6 +325,13 @@ export function syncCollection(name, items) {
   if (!_on || !_token || _authBlocked) return Promise.reject(new Error("服务器登录已失效"));
   if (!SYNCED.has(name)) return Promise.reject(new Error("该数据集合不允许同步"));
   return req("/api/db/" + name, { method: "PUT", body: { items: items || [] } });
+}
+
+export function accountCreationQuotas(accountIds = []) {
+  if (!_on || !_token || _authBlocked) return Promise.resolve(null);
+  const ids = [...new Set((accountIds || []).map(String).filter(Boolean))].slice(0, 200);
+  if (!ids.length) return Promise.resolve({ dayKey: "", limit: 2, items: [] });
+  return req("/api/account-creation-quotas?accountIds=" + encodeURIComponent(ids.join(",")));
 }
 export function deleteDoc(name, id) {
   if (!_on || !_token || _authBlocked || !SYNCED.has(name) || id == null) return Promise.resolve();

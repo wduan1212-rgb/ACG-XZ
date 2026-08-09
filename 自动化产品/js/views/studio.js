@@ -3,16 +3,17 @@
 import { $, $$, esc, gradFor, timeAgo, wireDropZone, fileToDataUrl } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, activeAccount, activeProduction, productionById, canManageAccounts } from "../core/store.js";
-import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, accountCreatedToday, isAccountDisabled } from "../domain/accounts.js";
-import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js";
-import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260809-v140-core-connectivity-3";
+import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, isAccountDisabled } from "../domain/accounts.js";
+import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, commitProductionCreations, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js?v=20260809-v141-content-governance-2";
+import { accountCreationQuota, refreshAccountCreationQuotas } from "../domain/productionQuota.js?v=20260809-v141-content-governance-2";
+import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260809-v141-content-governance-2";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260809-v140-core-connectivity-3";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260809-v141-content-governance-2";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260809-v140-core-connectivity-3";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260809-v140-core-connectivity-3";
-import { renderCutPage } from "./chainCut.js?v=20260809-v140-core-connectivity-3";
-import { renderReviewPage } from "./chainCopy.js?v=20260809-v140-core-connectivity-3";
+import { renderSlotsPage } from "./chainBoards.js?v=20260809-v141-content-governance-2";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260809-v141-content-governance-2";
+import { renderCutPage } from "./chainCut.js?v=20260809-v141-content-governance-2";
+import { renderReviewPage } from "./chainCopy.js?v=20260809-v141-content-governance-2";
 
 export const studioView = {
   render(root, { page }) {
@@ -106,6 +107,12 @@ function renderHome(root, acc) {
   const charRefUrl = board ? urlFor(board) : "";
   const showRoleRef = acc.mode === "视频" && acc.subType === "数字人";
   const disabledAccount = isAccountDisabled(acc);
+  const creationQuota = accountCreationQuota(acc.id);
+  void refreshAccountCreationQuotas([acc.id]).then(changed => {
+    if (changed && root.isConnected && state.ui.activeAccountId === acc.id && document.body.dataset.zone === "studio") {
+      renderHome(root, acc);
+    }
+  });
   const styleText = String(acc.styleProfile || acc.lockedStyle || "")
     .replace(/^整体风格\s*[:：]\s*/g, "")
     .replace(/^账号风格\s*[:：]\s*/g, "")
@@ -129,7 +136,7 @@ function renderHome(root, acc) {
           </div>
         </div>
         <div class="sh-actions">
-          ${accountCreatedToday(acc.id) ? `<span class="status-pill ok" title="该账号今天已经交付过内容">今日已创作</span>` : ""}
+          <span class="status-pill ${creationQuota.remaining ? "ok" : "warn"}" title="同一账号的所有成员每日合计最多创作 ${creationQuota.limit} 条">今日 ${creationQuota.used}/${creationQuota.limit}</span>
           ${acc.homepageUrl
             ? `<a class="btn ghost sh-homepage-link" href="${esc(acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">${icon("external", 13)} 跳转主页</a>`
             : `<button class="btn ghost sh-homepage-link is-disabled" type="button" disabled title="管理员尚未填写主页链接">${icon("external", 13)} 跳转主页</button>`}
@@ -137,7 +144,9 @@ function renderHome(root, acc) {
           ${admin ? `<button class="icon-btn account-edit-trigger" data-sh="edit" title="编辑账号" aria-label="编辑账号">${icon("edit", 16)}</button><button class="icon-btn danger" data-sh="delete" title="删除账号" aria-label="删除账号">${icon("trash", 16)}</button>` : ""}
           ${disabledAccount
             ? `<button class="btn ghost is-disabled" type="button" disabled title="账号已停用，历史数据仍可查看">账号已停用</button>`
-            : `<button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>`}
+            : creationQuota.remaining <= 0
+              ? `<button class="btn ghost is-disabled" type="button" disabled title="今日配额已用完">今日配额已用完</button>`
+              : `<button class="btn primary" data-sh="new">${icon("plus", 14)} 开始新创作</button>`}
         </div>
       </header>
 
@@ -270,10 +279,16 @@ function renderHome(root, acc) {
     go("studio", b.dataset.shFlow);
   }));
   const onAct = {
-    new: () => {
-      const p = createProduction({ accountId: acc.id, origin: "manual" });
-      state.ui.activeProductionId = p.id; save("meta");
-      go("studio", acc.mode === "视频" ? "workshop" : "images");
+    new: async () => {
+      const p = createProduction({ accountId: acc.id, origin: "manual", persist: false });
+      try {
+        await commitProductionCreations([p]);
+        state.ui.activeProductionId = p.id; save("meta");
+        go("studio", acc.mode === "视频" ? "workshop" : "images");
+      } catch (error) {
+        toast(error?.message || "创作配额校验失败，请稍后重试", "error");
+        void refreshAccountCreationQuotas([acc.id], { force: true }).then(() => renderHome(root, acc));
+      }
     },
 	    edit: () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: { accountId: acc.id } })),
 	    delete: async () => {

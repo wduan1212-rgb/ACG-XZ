@@ -3,12 +3,12 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260809-v140-core-connectivity-3";
+import { AI } from "../api/ai.js?v=20260809-v141-content-governance-2";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260809-v140-core-connectivity-3";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js?v=20260809-v141-content-governance-2";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260809-v141-content-governance-2";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver } from "../domain/delivery.js";
+import { deliver } from "../domain/delivery.js?v=20260809-v141-content-governance-2";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
@@ -3056,6 +3056,7 @@ export async function startBatch(plan, session) {
     const n = Math.max(1, Math.min(12, Number((plan.accountCounts || {})[acc.id] || defaultPerAccountCount) || defaultPerAccountCount));
     return sum + n;
   }, 0);
+  const pendingProductions = [];
   accounts.forEach(acc => {
     const rawProductId = (plan.accountProductIds || {})[acc.id] || plan.productId || "dumate";
     const productId = primaryProductById(rawProductId)?.id || "dumate";
@@ -3070,7 +3071,7 @@ export async function startBatch(plan, session) {
         || plan.topic
         || ""
       ).trim();
-      const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId });
+      const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId, persist: false });
       if (p) {
         if (batch.contentKind === "static") {
           // 静态视频是独立视频产物，允许图文/小红书账号参与，但不改账号本身的模式。
@@ -3091,9 +3092,17 @@ export async function startBatch(plan, session) {
           applyBatchCoverRefs(p, batch);
         }
         batch.productionIds.push(p.id);
+        pendingProductions.push(p);
       }
     }
   });
+  try {
+    await commitProductionCreations(pendingProductions);
+  } catch (error) {
+    state.batches = state.batches.filter(item => item.id !== batch.id);
+    save("batches");
+    throw error;
+  }
   save("batches", "productions");
   emit("batch:update", batch);
   addMsg(session, { role: "agent", type: "progress", payload: { batchId: batch.id } });

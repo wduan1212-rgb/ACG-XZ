@@ -15,6 +15,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Condition, Lock
@@ -114,6 +115,8 @@ ADMIN_ONLY_GENERIC_COLLECTIONS = {"accounts", "products"}
 OWNER_SCOPED_GENERIC_COLLECTIONS = {
     "productions", "sessions", "batches", "insightReports", "creativeMemory",
 }
+ACCOUNT_DAILY_CREATION_LIMIT = 2
+ACCOUNT_DAILY_CREATION_TIMEZONE = timezone(timedelta(hours=8))
 CUSTOM_PROJECT_KINDS = {"video", "canvas"}
 CUSTOM_PROJECT_STATUSES = {"draft", "published", "archived"}
 MAX_CUSTOM_PROJECT_STATE_BYTES = 2 * 1024 * 1024
@@ -1311,6 +1314,16 @@ PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM = hashlib.sha256(
 
 class StoreNotReadyError(RuntimeError):
     """Raised when normal production startup sees an unapplied/dirty schema."""
+
+
+class AccountDailyCreationQuotaExceeded(RuntimeError):
+    """One or more content accounts already consumed today's shared quota."""
+
+    def __init__(self, account_ids, *, limit=ACCOUNT_DAILY_CREATION_LIMIT, day_key=""):
+        self.account_ids = tuple(sorted({str(item) for item in account_ids if str(item)}))
+        self.limit = int(limit)
+        self.day_key = str(day_key or "")
+        super().__init__("account_daily_creation_quota_exceeded")
 
 
 class ModelUsageReceiptError(RuntimeError):
@@ -14556,6 +14569,13 @@ def _upsert_docs_in_conn(conn, collection, items, *, actor_id=""):
             existing_payload = json.loads(cur[1]) if cur else {}
         except (TypeError, json.JSONDecodeError):
             existing_payload = {}
+        if collection == "productions" and cur:
+            # These fields are assigned by the server when the id is first
+            # created.  Whole-document writes from an older browser may omit
+            # them, but may never move or erase the consumed quota day.
+            for key in ("quotaDayKey", "quotaCreatedAt"):
+                if key in existing_payload:
+                    it[key] = existing_payload[key]
         _private_media_new_reference_guard_locked(conn, existing_payload, it)
         if collection == "assets" and cur:
             # 备注、下载与观看量由专用原子接口维护。旧浏览器回推整条资产时，
@@ -15043,6 +15063,176 @@ def _editor_can_upsert(conn, collection, incoming, existing_row, actor):
     return False
 
 
+def _account_creation_day_key(timestamp_ms=None):
+    if timestamp_ms is None:
+        moment = datetime.now(ACCOUNT_DAILY_CREATION_TIMEZONE)
+    else:
+        try:
+            moment = datetime.fromtimestamp(
+                max(0, int(timestamp_ms)) / 1000,
+                tz=ACCOUNT_DAILY_CREATION_TIMEZONE,
+            )
+        except (TypeError, ValueError, OverflowError, OSError):
+            return ""
+    return moment.strftime("%Y-%m-%d")
+
+
+def _production_creation_day_key(item):
+    if not isinstance(item, dict):
+        return ""
+    stamped = str(item.get("quotaDayKey") or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", stamped):
+        return stamped
+    timestamp_ms = item.get("quotaCreatedAt") or item.get("createdAt")
+    if not timestamp_ms:
+        return ""
+    return _account_creation_day_key(timestamp_ms)
+
+
+def _account_creation_used_locked(conn, member_id, account_ids, day_key):
+    wanted = {str(item) for item in (account_ids or []) if str(item)}
+    counts = {account_id: 0 for account_id in wanted}
+    if not wanted:
+        return counts
+    rows = conn.execute(
+        "SELECT id,data FROM docs WHERE collection='productions'"
+    ).fetchall()
+    for _production_id, raw in rows:
+        try:
+            item = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        account_id = str(item.get("accountId") or "")
+        if account_id in wanted and _production_creation_day_key(item) == day_key:
+            counts[account_id] += 1
+    # 无限画布 / 视频工坊在最终发布窗口才绑定账号，没有 production 行。
+    # 将已原子发布的定制交付也计入同一账号的当日共享额度。
+    rows = conn.execute(
+        "SELECT id,data FROM docs WHERE collection='assets'"
+    ).fetchall()
+    for _asset_id, raw in rows:
+        try:
+            item = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        account_id = str(item.get("accountId") or "")
+        if (
+            account_id in wanted
+            and item.get("delivered")
+            and item.get("customProjectId")
+            and _production_creation_day_key({
+                "quotaDayKey": item.get("quotaDayKey"),
+                "quotaCreatedAt": item.get("quotaCreatedAt"),
+                "createdAt": item.get("deliveredAt") or item.get("createdAt"),
+            }) == day_key
+        ):
+            counts[account_id] += 1
+    return counts
+
+
+def _account_creation_access_locked(conn, member_id, account_id):
+    row = conn.execute(
+        "SELECT 1 FROM docs WHERE collection='accounts' AND id=?",
+        (str(account_id),),
+    ).fetchone()
+    if not row:
+        return False
+    if _resource_scopes_enforced_locked(conn):
+        return _resource_scope_allows_actor_locked(
+            conn, "accounts", str(account_id), member_id
+        )
+    actor_scope = _member_resource_scope_locked(conn, member_id)
+    account_scope = _account_resource_scope_locked(conn, account_id)
+    if actor_scope and account_scope:
+        return (actor_scope[0], actor_scope[1]) == (account_scope[0], account_scope[1])
+    return True
+
+
+def _prepare_account_daily_creation_writes_locked(conn, member_id, items):
+    """Validate and stamp new productions while holding the caller's write lock.
+
+    Existing ids are updates and never consume quota again.  New ids always use
+    the server's China-calendar day, so an old or stale browser cannot backdate a
+    third creation to bypass the shared per-account limit.
+    """
+    prepared = [dict(item) if isinstance(item, dict) else item for item in (items or [])]
+    new_items = []
+    seen_ids = set()
+    for item in prepared:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        production_id = str(item["id"])
+        if production_id in seen_ids:
+            continue
+        seen_ids.add(production_id)
+        if _doc_row_in_conn(conn, "productions", production_id):
+            continue
+        account_id = str(item.get("accountId") or "")
+        # Historical/imported production rows may predate account linkage.
+        # Preserve their compatibility, but they cannot consume or bypass a
+        # real account quota because publish still requires a valid account.
+        if not account_id:
+            continue
+        if not _account_creation_access_locked(conn, member_id, account_id):
+            raise PermissionError("forbidden")
+        new_items.append(item)
+    if not new_items:
+        return prepared
+    day_key = _account_creation_day_key()
+    account_ids = {str(item.get("accountId") or "") for item in new_items}
+    used = _account_creation_used_locked(conn, member_id, account_ids, day_key)
+    requested = {account_id: 0 for account_id in account_ids}
+    for item in new_items:
+        requested[str(item.get("accountId") or "")] += 1
+    exceeded = [
+        account_id for account_id in sorted(account_ids)
+        if used.get(account_id, 0) + requested.get(account_id, 0)
+        > ACCOUNT_DAILY_CREATION_LIMIT
+    ]
+    if exceeded:
+        raise AccountDailyCreationQuotaExceeded(
+            exceeded, limit=ACCOUNT_DAILY_CREATION_LIMIT, day_key=day_key
+        )
+    now = int(time.time() * 1000)
+    for item in new_items:
+        item["quotaDayKey"] = day_key
+        item["quotaCreatedAt"] = now
+    return prepared
+
+
+def account_creation_quotas(member_id, account_ids):
+    """Return today's tenant-wide usage for accounts visible to the actor."""
+    requested = list(dict.fromkeys(
+        str(item).strip() for item in (account_ids or []) if str(item).strip()
+    ))[:200]
+    _ensure_db()
+    with _lock:
+        conn = _connect()
+        try:
+            allowed = [
+                account_id for account_id in requested
+                if _account_creation_access_locked(conn, member_id, account_id)
+            ]
+            day_key = _account_creation_day_key()
+            used = _account_creation_used_locked(conn, member_id, allowed, day_key)
+            return {
+                "dayKey": day_key,
+                "limit": ACCOUNT_DAILY_CREATION_LIMIT,
+                "items": [
+                    {
+                        "accountId": account_id,
+                        "used": min(ACCOUNT_DAILY_CREATION_LIMIT, used.get(account_id, 0)),
+                        "remaining": max(
+                            0, ACCOUNT_DAILY_CREATION_LIMIT - used.get(account_id, 0)
+                        ),
+                    }
+                    for account_id in allowed
+                ],
+            }
+        finally:
+            conn.close()
+
+
 def upsert_member_collection(owner_id, role, collection, items):
     """通用同步权限矩阵。
 
@@ -15092,8 +15282,15 @@ def upsert_member_collection(owner_id, role, collection, items):
                             for _account_id, team_id in rows
                         ):
                             raise PermissionError("forbidden")
+                    prepared_items = (
+                        _prepare_account_daily_creation_writes_locked(
+                            conn, owner_id, items
+                        )
+                        if collection == "productions"
+                        else items
+                    )
                     written = _upsert_docs_in_conn(
-                        conn, collection, items, actor_id=owner_id
+                        conn, collection, prepared_items, actor_id=owner_id
                     )
                     if collection == "accounts" and team:
                         now = int(time.time() * 1000)
@@ -15122,6 +15319,7 @@ def upsert_member_collection(owner_id, role, collection, items):
     with _lock:
         conn = _connect()
         try:
+            conn.execute("BEGIN IMMEDIATE")
             allowed = []
             denied = 0
             unchanged = 0
@@ -15141,11 +15339,18 @@ def upsert_member_collection(owner_id, role, collection, items):
                 allowed.append(incoming)
             if denied and not allowed:
                 raise PermissionError("forbidden")
+            if collection == "productions":
+                allowed = _prepare_account_daily_creation_writes_locked(
+                    conn, owner_id, allowed
+                )
             written = _upsert_docs_in_conn(
                 conn, collection, allowed, actor_id=owner_id
             )
             conn.commit()
             return {"written": written, "denied": denied, "unchanged": unchanged}
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -18246,6 +18451,23 @@ def _production_delivery_dependencies(delivery):
     return ([cover_id] if cover_id else []), ({cover_id} if cover_id else set())
 
 
+def _publish_text_rule_error(account, delivery):
+    platform = str((account or {}).get("platform") or "").strip()
+    title = str((delivery or {}).get("title") or "").strip()
+    copy = str((delivery or {}).get("copy") or "").strip()
+    if platform == "小红书":
+        if len(title) > 20:
+            return "xiaohongshu_title_too_long"
+        if len(copy) > 1000:
+            return "xiaohongshu_copy_too_long"
+    if platform == "视频号":
+        if len(title) > 16:
+            return "wechat_channels_title_too_long"
+        if any(unicodedata.category(char).startswith("P") for char in title):
+            return "wechat_channels_title_has_punctuation"
+    return None
+
+
 def publish_production_bundle(production_id, actor_id, payload):
     """原子发布常规单号/批量任务，避免浏览器跨集合写入中途丢失。"""
     _ensure_db()
@@ -18320,6 +18542,10 @@ def publish_production_bundle(production_id, actor_id, payload):
                 account = json.loads(account_row[1])
             except (TypeError, json.JSONDecodeError):
                 return None, "account_not_found"
+
+            text_error = _publish_text_rule_error(account, delivery_input)
+            if text_error:
+                return None, text_error
 
             delivery_type = str(delivery_input.get("type") or "")
             expected_type = "图集" if str(production.get("mode") or "") == "图文" else "视频"
@@ -18590,6 +18816,10 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
             except (TypeError, json.JSONDecodeError):
                 return None, "account_not_found"
 
+            text_error = _publish_text_rule_error(account, delivery_input)
+            if text_error:
+                return None, text_error
+
             kind = str(project.get("kind") or "").strip().lower()
             delivery_type = str(delivery_input.get("type") or "")
             expected_mode = "视频" if kind == "video" else "图文"
@@ -18633,6 +18863,11 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
                     owner,
                 ).get(pid, 0)
                 return _custom_publish_result(project_result, account, existing_delivery), None
+
+            day_key = _account_creation_day_key()
+            used = _account_creation_used_locked(conn, owner, [account_id], day_key)
+            if used.get(account_id, 0) >= ACCOUNT_DAILY_CREATION_LIMIT:
+                return None, "account_daily_creation_quota_exceeded"
 
             dependency_ids, shared_dependency_ids = _custom_delivery_dependencies(kind, delivery_input)
             if not dependency_ids or did in dependency_ids:
@@ -18755,6 +18990,8 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
                 "productTag": product_tag,
                 "createdAt": int(delivery.get("createdAt") or now),
                 "deliveredAt": now,
+                "quotaDayKey": day_key,
+                "quotaCreatedAt": now,
                 "updatedAt": now,
             })
 

@@ -4,9 +4,10 @@
 import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote, cacheCanonicalDocuments } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
-import { setStage, touch } from "./productions.js";
+import { setStage, touch } from "./productions.js?v=20260809-v141-content-governance-2";
 import { assetU8, urlFor } from "./assets.js";
 import * as remote from "../core/remote.js";
+import { assertPublishText } from "./publishRules.js?v=20260809-v141-content-governance-2";
 
 const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 
@@ -235,6 +236,11 @@ export async function deliver(p, opts = {}) {
   const acc = accountById(p.accountId);
   if (!acc) return null;
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
+  assertPublishText({
+    platform: acc.platform,
+    title: p.artifacts?.copy?.title || p.title || "",
+    copy: p.artifacts?.copy?.body || "",
+  });
   if (p.mode === "视频" && !String(p.artifacts?.finalVideoUrl || "").trim()) {
     window.__toast && window.__toast("完整成片尚未合成，请先回到剪辑台完成合成", "error");
     return null;
@@ -337,6 +343,7 @@ export function deliverCustomOutput(output = {}, opts = {}) {
   if (!canDeliver()) { window.__toast && window.__toast("当前账号没有发布权限"); return null; }
   const title = String(output.title || "").trim();
   if (!title) { window.__toast && window.__toast("请先填写发布标题", "error"); return null; }
+  assertPublishText({ platform: acc.platform, title, copy: output.copy || "" });
   const kind = output.kind === "canvas" || output.type === "图集" ? "canvas" : "video";
   const expectedMode = kind === "canvas" ? "图文" : "视频";
   if (acc.mode !== expectedMode) {

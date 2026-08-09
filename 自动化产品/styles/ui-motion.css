@@ -650,8 +650,8 @@ body:not(.immersive) .view-root a:not(.btn):hover { color: #000; }
 .sup-table .sup-name b { font-size: 11.5px; }
 .sup-table .sup-name em { margin-top: 1px; font-size: 10px; }
 .sup-table .btn.sm { min-height: 30px; padding: 4px 7px; }
-.sup-col-actions { width: 286px; }
-.sup-actions-inner { gap: 8px; }
+.sup-col-actions { width: 390px; }
+.sup-actions-inner { gap: 0; }
 
 .agent-avatar-mono {
   display: inline-grid;

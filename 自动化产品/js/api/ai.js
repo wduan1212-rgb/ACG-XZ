@@ -8,7 +8,7 @@ import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsG
 import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260809-v141-content-governance-2";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -409,6 +409,7 @@ function stripVisibleTextLabels(text = "") {
 
 function genericProductLabel(product = null) {
   const text = `${product?.id || ""} ${product?.name || ""} ${product?.shortName || ""} ${product?.category || ""}`;
+  if (/baige|百舸|AI\s*Infra/i.test(text)) return "具身智能 AI Infra";
   if (/miaoda|秒哒/i.test(text)) return "AI应用搭建工具";
   if (/dumate|百度搭子|搭子|桌面智能体/i.test(text)) return "桌面智能体";
   if (/agent|智能体/i.test(text)) return "AI智能体工具";
@@ -793,7 +794,10 @@ function isDumateProduct(product) {
 }
 
 function ownProductAliases(product = null) {
-  const ours = allProductsForAI().filter(p => p?.owner === "ours" || isDumateProduct(p) || /miaoda|秒哒/i.test(`${p?.id || ""} ${p?.name || ""} ${p?.shortName || ""}`));
+  const ours = allProductsForAI().filter(p => (
+    p?.id !== "baige"
+    && (p?.owner === "ours" || isDumateProduct(p) || /miaoda|秒哒/i.test(`${p?.id || ""} ${p?.name || ""} ${p?.shortName || ""}`))
+  ));
   const list = [product, ...ours].filter(Boolean);
   return [...new Set(list.flatMap(productAliases))]
     .filter(x => x && !/^AI$/i.test(x))
@@ -829,7 +833,9 @@ function productRelationLine(list = []) {
       .slice(0, 2)
       .join("；");
     const features = (p.coreFeatures || []).slice(0, 4).join("/");
-    return `${productDisplayName(p, "同类工具")}：${sanitizeProduct(p.category || "同类工具")}；能力 ${sanitizeProduct(features || "按已知信息克制引用")}；可用角度 ${sanitizeProduct(angles || "只作场景对照")}`;
+    const facts = (p.verifiedFacts || []).slice(0, 3).join("；");
+    const forbidden = (p.forbiddenClaims || []).slice(0, 2).join("；");
+    return `${productDisplayName(p, "同类工具")}：${sanitizeProduct(p.category || "同类工具")}；能力 ${sanitizeProduct(features || "按已知信息克制引用")}；${facts ? `已核实事实 ${sanitizeProduct(facts)}；` : ""}${forbidden ? `禁止外推 ${sanitizeProduct(forbidden)}；` : ""}可用角度 ${sanitizeProduct(angles || "只作场景对照")}`;
   }).join("\n");
 }
 
@@ -956,6 +962,22 @@ function productsMentionedIn(text = "", currentProduct = null, limit = 4) {
     .slice(0, limit);
 }
 
+function primaryProductForText(text = "", currentProduct = null) {
+  const source = cleanText(text || "");
+  if (!source) return currentProduct;
+  const explicit = allProductsForAI()
+    .filter(product => product?.owner === "ours")
+    .map(product => ({
+      product,
+      matched: productAliases(product)
+        .filter(alias => productMentionRegex(alias)?.test(source))
+        .sort((left, right) => right.length - left.length)[0] || "",
+    }))
+    .filter(item => item.matched)
+    .sort((left, right) => right.matched.length - left.matched.length)[0];
+  return explicit?.product || currentProduct;
+}
+
 function productRoleLine(product) {
   if (!product) return "";
   const name = productDisplayName(product, "同类工具");
@@ -1031,6 +1053,8 @@ function productBrief(product) {
   const tutorialLine = (p.tutorialAngles || []).slice(0, 5).join("；");
   const comparisonLine = (p.comparisonAngles || []).slice(0, 5).join("；");
   const blogLine = (p.blogAngles || []).slice(0, 5).join("；");
+  const verifiedLine = (p.verifiedFacts || []).slice(0, 8).join("；");
+  const forbiddenLine = (p.forbiddenClaims || []).slice(0, 5).join("；");
   return `【本次宣传产品】${name}
 产品身份：${ownerLine}
 产品类别：${p.category || "办公效率 AI Agent"}
@@ -1039,7 +1063,7 @@ function productBrief(product) {
 教程选题可用角度：${sanitizeProduct(tutorialLine || "围绕真实使用流程和可复用方法展开。")}
 对比/测评可用角度：${sanitizeProduct(comparisonLine || "可与同类工具做场景、能力边界、适用人群对比。")}
 AI 博主视角：${sanitizeProduct(blogLine || "像真实创作者做工具观察，不只硬讲单个产品。")}
-可参考同类产品：${productListLine(rel) || "无"}
+${verifiedLine ? `已核实数据与事实：${sanitizeProduct(verifiedLine)}\n` : ""}${forbiddenLine ? `不得生成的未确认信息：${sanitizeProduct(forbiddenLine)}\n` : ""}可参考同类产品：${productListLine(rel) || "无"}
 同类/互补工具细节：
 ${productRelationLine(rel) || "无"}
 表达要求：${sanitizeProduct(p.toneRule || "可信、理性、有梗、像真实用户经验分享；不要硬广，不要强 CTA。")}
@@ -1056,11 +1080,16 @@ function copyProductBrief(product) {
     .slice(0, 4)
     .join(" / ");
   const brief = sanitizeProduct(p.brief || "");
+  const verified = (p.verifiedFacts || []).slice(0, 5).map(x => sanitizeProduct(x)).join("；");
+  const forbidden = (p.forbiddenClaims || []).slice(0, 3).map(x => sanitizeProduct(x)).join("；");
+  const categoryAliases = p.id === "baige"
+    ? `${label}、具身智能工具链、这个平台`
+    : `${label}、AI工具、桌面智能体、这个工具`;
   return `【发布文案轻量产品事实】
 当前主产品：${name}。标题、正文和标签可以自然出现当前主产品名；如果用户主题里有同类/竞品产品名，按对比、联动或替换关系自然处理。
-品类指代：${label}、AI工具、桌面智能体、这个工具。
+品类指代：${categoryAliases}。
 可用事实：${features || brief || "按用户创作需求和图卡内容写，不编造未确认能力。"}
-优先级：用户创作需求 > 发布文案 > 图卡脚本 > 产品事实校准。产品事实只用于纠错和补充边界，不允许覆盖用户主题。`;
+${verified ? `已核实数据：${verified}\n` : ""}${forbidden ? `禁止外推：${forbidden}\n` : ""}优先级：用户创作需求 > 发布文案 > 图卡脚本 > 产品事实校准。产品事实只用于纠错和补充边界，不允许覆盖用户主题。`;
 }
 
 function imagePromptProductBrief(product) {
@@ -2585,6 +2614,7 @@ ${productRelationLine(rel.slice(0, 2))}
   async generateScript({ topic, duration = 30, account, image, direction = "", style = "", imageCount = DEFAULT_XHS_IMAGE_COUNT, product = null, imageTemplate = "", styleRefName = "", batchVariant = null, useOnlineTrends = false, trendGuide = "", trendPrep = null }) {
     const requiredTopic = sanitizeXhsText(cleanText(topic || "")).trim();
     if (!requiredTopic) throw new Error("请先填写发布标题或创作内容");
+    product = primaryProductForText(`${requiredTopic}\n${direction}`, product);
     const hasImageTemplate = image && String(imageTemplate || "").trim();
     const mentionedTools = productsMentionedIn(`${requiredTopic}\n${direction}`, product, 4);
     const mentionedGuide = productRelationLine(mentionedTools);
@@ -2780,6 +2810,7 @@ ${productRelationLine(rel.slice(0, 2))}
   async generateImageCopyFromTitle({ title = "", account = {}, product = null, referenceContext = "", referenceTerms = [] } = {}) {
     const sourceTitle = stripVisibleTextLabels(cleanText(title || "")).trim();
     if (!sourceTitle) throw new Error("请先填写发布标题");
+    product = primaryProductForText(sourceTitle, product);
     const visualContext = String(referenceContext || "").replace(/\s+/g, " ").trim().slice(0, 420);
     const requiredTerms = normalizeReferenceTerms(referenceTerms);
     let lastError = null;
@@ -2787,7 +2818,7 @@ ${productRelationLine(rel.slice(0, 2))}
       try {
         const content = await llm([
           { role: "system", content: `你是专业的小红书图文正文写手。先理解标题是点击入口还是完整主题；再写一篇与标题和已确认视觉主题都强相关、可直接发布的干货正文。不得写成泛化的 AI 办公、效率清单、桌面整理或其他常见模板；不得引入无法从标题、视觉摘要或产品事实确认的新能力。视觉编辑摘要来自用户上传的统一参考图：当它确认了品牌、产品、功能套件、界面流程或成果证据，而标题只是泛化入口时，正文必须以该确认的宣传重点为主线，同时保留标题的点击承诺；不要把它降级成泛化同义词。正文必须自然覆盖视觉编辑给出的核心主题词，不能只提 logo 或只写一个泛化功能。正文自然保留标题中的主产品名、核心对象和任务关系词；内容采用测评、教学或可信种草结构，给出判断依据、具体步骤、真实结果、适用边界或选择建议。不要逐项描述图片外观，不要把附件文字逐字复述，也不要编造能力。语气专业、清楚、克制、可信，不把标题原样重复成第一句。全文禁止使用“兄弟们、家人们、姐妹们、宝子们、老铁们、集美们、亲们、朋友们”等直播式群体称呼，也禁止“闭眼入、无脑冲、冲就完了、绝绝子”等夸张带货话术。最后一行给 4-7 个相关话题标签。账号信息只决定表达风格，不改变主题和专业度。只输出单行 JSON：{"copy":"正文和标签"}。JSON 字符串里的换行必须写成 \\n，不能在引号内直接换行。` },
-          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。${visualContext ? `\n统一参考图确认的内容关联摘要（这是正文主题锚点，不是让你复述图片细节）：${visualContext}` : ""}${requiredTerms.length ? `\n正文必须自然覆盖的视觉主题词：${requiredTerms.join("、")}。` : ""}\n请先确定真实宣传重点，再写正文。` }
+          { role: "user", content: `发布标题：${sourceTitle}\n账号语气：${copyAccountVoice(account, account?.tone || "真实、清楚、有具体信息", sourceTitle)}\n所选产品：${productDisplayName(product) || "未指定"}。产品资料只用于事实边界；标题没有谈到该产品时不得强行植入，标题明确涉及产品时不得写成其他产品。\n${copyProductBrief(product)}${visualContext ? `\n统一参考图确认的内容关联摘要（这是正文主题锚点，不是让你复述图片细节）：${visualContext}` : ""}${requiredTerms.length ? `\n正文必须自然覆盖的视觉主题词：${requiredTerms.join("、")}。` : ""}\n请先确定真实宣传重点，再写正文。` }
         ], { json: true, temperature: attempt ? 0.72 : 0.92 });
         const data = sanitizeXhsObject(parseJSONLoose(content));
         const copyText = normalizeOwnProductNoise(
@@ -2831,6 +2862,7 @@ ${productRelationLine(rel.slice(0, 2))}
     trendGuide = "";
     trendPrep = null;
     const safeTopic = sanitizeXhsText(cleanText(topic || ""));
+    product = primaryProductForText(safeTopic, product);
     const safeShots = sanitizeXhsObject(JSON.parse(JSON.stringify(shots || [])));
     const safeStyle = sanitizeXhsText(cleanText(style || ""));
     const visualContext = String(referenceContext || "").replace(/\s+/g, " ").trim().slice(0, 420);
@@ -2850,8 +2882,8 @@ ${productRelationLine(rel.slice(0, 2))}
     const messages = [
       { role: "system", content: sys + "\n\n" + copyGroundRules },
       { role: "user", content: kind === "video"
-        ? `平台：${account.platform}\n账号语气：${accountVoice}\n口播风格：${speechVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}已定口播内容：\n${script}\n${this.memoryLine(account)}`
-        : `平台：${account.platform}\n账号语气：${accountVoice}\n当前主产品：${videoProductName}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${offlineCopyLine}\n${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}${visualContext ? `统一参考图的内容关联摘要（仅在和主题直接相关时作为场景、证据或功能关系；不要复述图片细节或编造能力）：${visualContext}\n` : ""}图卡内容：\n${script}` }
+        ? `平台：${account.platform}\n账号语气：${accountVoice}\n口播风格：${speechVoice}\n当前主产品：${videoProductName}\n${copyProductBrief(product)}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}已定口播内容：\n${script}\n${this.memoryLine(account)}`
+        : `平台：${account.platform}\n账号语气：${accountVoice}\n当前主产品：${videoProductName}\n${copyProductBrief(product)}\n用户主题：${safeTopic}\n${variantGuide ? `${variantGuide}\n` : ""}${offlineCopyLine}\n${safeStyle ? `视觉/口吻参考：${safeStyle}\n` : ""}${visualContext ? `统一参考图的内容关联摘要（仅在和主题直接相关时作为场景、证据或功能关系；不要复述图片细节或编造能力）：${visualContext}\n` : ""}图卡内容：\n${script}` }
     ];
     let lastError = null;
     const attempts = requireLlm ? 2 : 1;

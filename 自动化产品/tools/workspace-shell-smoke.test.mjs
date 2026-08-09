@@ -387,7 +387,7 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260809-v140-core-connectivity-3/);
+  assert.match(videoWorkshopHtml, /20260809-v141-content-governance-2/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -747,6 +747,9 @@ test("supplier workspaces move account and delivery tools into the left context"
   assert.match(mainJs, /deliveryView\.focusAsset\?\.\(asset\.id/);
   assert.match(mainJs, /openPalette\(paletteCommands,\s*\{/);
   assert.match(mainJs, /event\.target\.closest\?\.\("\[data-ws-supplier-search\]"\)/);
+  assert.match(mainJs, /let transientSupplierDeliveryQuery = ""/);
+  assert.match(mainJs, /if \(scope === "delivery"\) return transientSupplierDeliveryQuery/);
+  assert.match(mainJs, /if \(scope === "delivery"\) \{[\s\S]*?transientSupplierDeliveryQuery = String\(value \|\| ""\);[\s\S]*?return;/);
   assert.match(contextRows, /title:\s*"账号申请"/);
   assert.match(contextRows, /title:\s*"全部账号"/);
   assert.doesNotMatch(mainJs, /id="topSupplierOverviewSearch"/);
@@ -800,6 +803,10 @@ test("supplier workspaces move account and delivery tools into the left context"
   assert.match(supplierViewsJs, /supplier-trend-labels[^`]*days\.map\(\(item,\s*index\)\s*=>\s*`<i style="--x:\$\{points\[index\]\.x\}%"/s);
   assert.match(viewsCss, /\.supplier-trend-labels i\s*\{[^}]*position:\s*absolute;[^}]*left:\s*var\(--x\);[^}]*transform:\s*translateX\(-50%\)/s);
   assert.match(viewsCss, /\.sup-actions-inner\s*\{[^}]*border-radius:\s*999px/s);
+  assert.match(viewsCss, /\.sup-col-actions\s*\{\s*width:\s*390px;\s*\}/);
+  assert.match(uiMotionCss, /\.sup-col-actions\s*\{\s*width:\s*390px;\s*\}/);
+  assert.match(uiMotionCss, /\.sup-actions-inner\s*\{\s*gap:\s*0;\s*\}/);
+  assert.match(viewsCss, /\.sup-acts\s+\.sup-actions-inner\s+\.btn\s*\{[^}]*padding-inline:\s*5px/s);
   assert.match(viewsCss, /\.sup-acts\s+\.sup-actions-inner\s+\.btn\.primary\s*\{[^}]*color:\s*#fff;[^}]*background:\s*#171b22/s);
 });
 
@@ -816,30 +823,29 @@ test("canvas and video switches wait for the real latest project before routing"
   assert.match(load, /target\.pending\s*=\s*pending/);
 });
 
-test("all modified workspace-shell resources use the v140 cache marker", () => {
+test("all modified workspace-shell resources use the v141 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(indexHtml, /styles\/components\.css\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260809-v140-core-connectivity-3"/);
-  assert.match(mainJs, /ui\/components\.js\?v=20260809-v140-core-connectivity-3/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260809-v140-core-connectivity-3"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260809-v141-content-governance-2"/);
+  assert.match(indexHtml, /styles\/components\.css\?v=20260809-v141-content-governance-2"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260809-v141-content-governance-2"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260809-v141-content-governance-2"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260809-v141-content-governance-2"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260809-v141-content-governance-2"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260809-v141-content-governance-2"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260809-v141-content-governance-2"/);
+  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260809-v141-content-governance-2"/);
+  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260809-v141-content-governance-2"/);
+  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260809-v141-content-governance-2"/);
+  assert.match(mainJs, /ui\/components\.js\?v=20260809-v141-content-governance-2/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260809-v141-content-governance-2"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js"/);
   assert.doesNotMatch(mainJs, /ui\/icons\.js\?v=/);
-  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js"/);
-  assert.doesNotMatch(mainJs, /domain\/delivery\.js\?v=/);
+  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js\?v=20260809-v141-content-governance-2"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
   assert.doesNotMatch(mainJs, /core\/remote\.js\?v=/);
-  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260809-v140-core-connectivity-3/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260809-v140-core-connectivity-3"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260809-v141-content-governance-2/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260809-v141-content-governance-2"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 
@@ -881,12 +887,14 @@ test("batch workspace uses a light task-board shell with one create button", () 
   assert.doesNotMatch(agentCardsJs, /<div class="static-agent-progress">/);
 });
 
-test("batch account selection stays spatially stable and marks accounts created today", () => {
+test("batch account selection stays spatially stable and shows shared daily quota", () => {
   const planCard = section(agentCardsJs, "  plan(m) {", "  /* 进度卡：活卡片，从 store 实时取数 */");
 
   assert.match(planCard, /aria-pressed="\$\{on \? "true" : "false"\}"/);
   assert.match(planCard, /class="agc-select-mark \$\{on \? "is-visible" : ""\}"/);
-  assert.match(planCard, /class="agc-account-meta"[\s\S]*?class="agc-account-type"[\s\S]*?今日已创作/);
+  assert.match(planCard, /const creationQuota = accountCreationQuota\(a\.id\)/);
+  assert.match(planCard, /class="agc-account-meta"[\s\S]*?class="agc-account-type"[\s\S]*?今日 \$\{quota\.used\}\/\$\{quota\.limit\}/);
+  assert.match(planCard, /quotaFull && !on/);
   assert.doesNotMatch(planCard, /\$\{on \? icon\("check"/);
   assert.match(uiMotionCss, /v130 batch interaction:[\s\S]*?\.agc-acc\s*\{[\s\S]*?grid-template-columns:\s*48px\s+minmax\(0,\s*1fr\)\s+minmax\(104px,\s*max-content\)\s+24px/);
   assert.match(uiMotionCss, /\.agc-select-mark\.is-visible\s*\{[\s\S]*?background:\s*linear-gradient/);
@@ -898,6 +906,8 @@ test("image batch keeps per-item image count in the copy row and reference picke
   const imageCopyRow = section(planCard, 'class="agc-account-copy ${imgAcc ? "has-mode-switch has-image-count" : ""}"', "</div>`}\n        </div>`;");
 
   assert.match(planCard, /const imageCountControl\s*=\s*imgAcc\s*&&\s*imageCreationMode\s*!==\s*"single"/);
+  assert.match(planCard, /统一每条图数[\s\S]*?data-pf="imageCount"/);
+  assert.match(planCard, /data-act="plan-apply-image-count"[\s\S]*?应用到全部图文/);
   assert.match(imageCopyRow, /\$\{imageModeSwitch\}[\s\S]*?data-pacc-copy-title[\s\S]*?data-act="plan-edit-copy"[\s\S]*?\$\{imageCountControl\}/);
   assert.match(uiMotionCss, /v132:[\s\S]*?@media \(min-width:\s*981px\)[\s\S]*?\.agc-account-copy\.has-mode-switch\.has-image-count\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?flex-flow:\s*row nowrap\s*!important/);
   assert.match(uiMotionCss, /\.agc-account-copy\.has-mode-switch\.has-image-count\s+\.agc-mini-count\.img-count\s*\{[\s\S]*?grid-area:\s*auto\s*!important[\s\S]*?position:\s*static\s*!important[\s\S]*?flex:\s*0 0 78px/);

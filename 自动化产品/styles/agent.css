@@ -330,6 +330,8 @@
 .agc-acc.on { background: rgba(80, 110, 255, .14); border-color: rgba(132, 152, 255, .45); }
 .agc-acc.is-video { border-color: rgba(34, 211, 238, .16); }
 .agc-acc.is-video.on { background: rgba(20, 184, 166, .12); border-color: rgba(45, 212, 191, .42); }
+.agc-acc.is-quota-full:not(.on) { opacity: .48; cursor: not-allowed; }
+.agc-acc.is-quota-full .agc-created-today { color: #ff9f9f; }
 .agc-idx {
   flex: none; min-width: 34px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
   border-radius: 999px; border: 1px solid rgba(132,152,255,.22);

@@ -21,6 +21,7 @@ from .media import (
     ASPECTS,
     build_scene_timeline,
     compose_variant,
+    compress_image_for_provider,
     normalize_narration,
     probe,
     render_still_clip,
@@ -1145,26 +1146,84 @@ class VideoPipeline:
         return data_urls
 
     @staticmethod
-    def _static_reference_images(
+    async def _static_reference_images(
         project_id: str,
         plan: dict[str, Any],
+        work_dir: Path,
     ) -> list[dict[str, Any]]:
-        """Resolve every current-turn still so each storyboard request carries it."""
-        resolved: list[dict[str, Any]] = []
+        """Resolve and budget every current-turn still before building JSON/base64."""
+        source_items: list[tuple[dict[str, Any], Path]] = []
+        seen_paths: set[Path] = set()
         for item in list(plan.get("reference_images") or [])[:8]:
             filename = Path(str(item.get("url") or "")).name
             path = settings.uploads_dir / project_id / filename
             if (
                 not filename
                 or not path.is_file()
-                or path.stat().st_size > 12 * 1024 * 1024
+                or path.stat().st_size > 64 * 1024 * 1024
             ):
                 continue
-            resolved.append({
-                **item,
-                "path": str(path),
-            })
-        return resolved
+            resolved_path = path.resolve()
+            if resolved_path in seen_paths:
+                continue
+            seen_paths.add(resolved_path)
+            source_items.append((item, path))
+        if not source_items:
+            return []
+        # Base64 adds roughly one third.  Keeping raw references below 5.5MB
+        # leaves room for prompt/model fields under the provider's 10MB body cap.
+        per_image_budget = min(
+            700 * 1024,
+            max(320 * 1024, (5_500_000 // len(source_items))),
+        )
+        safe_paths = await asyncio.gather(*[
+            compress_image_for_provider(
+                path,
+                work_dir / "provider-references",
+                max_bytes=per_image_budget,
+            )
+            for _item, path in source_items
+        ])
+        return [
+            {**item, "path": str(safe_path)}
+            for (item, _source), safe_path in zip(source_items, safe_paths)
+        ]
+
+    @staticmethod
+    async def _budget_static_reference_images(
+        items: list[dict[str, Any]],
+        work_dir: Path,
+    ) -> list[dict[str, Any]]:
+        """Keep user references plus generated continuity anchors under one request budget."""
+        resolved: list[tuple[dict[str, Any], Path]] = []
+        seen_paths: set[Path] = set()
+        for item in list(items or [])[:8]:
+            path = Path(str(item.get("path") or ""))
+            if not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
+                continue
+            key = path.resolve()
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            resolved.append((item, path))
+        if not resolved:
+            return []
+        per_image_budget = min(
+            700 * 1024,
+            max(320 * 1024, 5_500_000 // len(resolved)),
+        )
+        safe_paths = await asyncio.gather(*[
+            compress_image_for_provider(
+                path,
+                work_dir / "provider-references",
+                max_bytes=per_image_budget,
+            )
+            for _item, path in resolved
+        ])
+        return [
+            {**item, "path": str(safe_path)}
+            for (item, _path), safe_path in zip(resolved, safe_paths)
+        ]
 
     @staticmethod
     def _material_assets(project_id: str, plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1466,7 +1525,7 @@ class VideoPipeline:
             scene_jobs: list[dict[str, Any]] = []
             static_references: list[dict[str, Any]] = []
             user_static_references = (
-                self._static_reference_images(project_id, plan) if is_static else []
+                await self._static_reference_images(project_id, plan, work_dir) if is_static else []
             )
             for index, unit in enumerate(render_units):
                 scene_number = int(unit["render_number"])
@@ -1564,6 +1623,10 @@ class VideoPipeline:
                     work_dir=work_dir,
                     user_references=user_static_references,
                     callback=callback,
+                )
+                static_references = await self._budget_static_reference_images(
+                    static_references,
+                    work_dir,
                 )
                 for job in scene_jobs:
                     job["reference_images"] = static_references

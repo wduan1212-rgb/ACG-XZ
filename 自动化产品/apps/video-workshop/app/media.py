@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -177,6 +178,49 @@ async def extract_video_preview(source: Path, output: Path) -> dict[str, Any]:
         ]
     )
     return info
+
+
+async def compress_image_for_provider(
+    source: Path,
+    cache_dir: Path,
+    *,
+    max_bytes: int = 700 * 1024,
+) -> Path:
+    """Create a provider-safe JPEG without modifying the uploaded original."""
+    source = Path(source)
+    if not source.is_file():
+        raise MediaError("参考图不存在，无法压缩后提交")
+    budget = max(96 * 1024, int(max_bytes or 0))
+    if source.stat().st_size <= budget:
+        return source
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    stat = source.stat()
+    digest = hashlib.sha256(
+        f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{budget}".encode("utf-8")
+    ).hexdigest()[:18]
+    output = cache_dir / f"{source.stem[:40]}-{digest}.jpg"
+    if output.is_file() and 0 < output.stat().st_size <= budget:
+        return output
+    candidate = output.with_suffix(".candidate.jpg")
+    try:
+        for dimension in (1600, 1280, 960, 720):
+            for quality in (5, 9, 13, 18, 23, 28, 31):
+                await run([
+                    _binary("ffmpeg"), "-y", "-i", str(source),
+                    "-frames:v", "1",
+                    "-vf", f"scale={dimension}:{dimension}:force_original_aspect_ratio=decrease",
+                    "-q:v", str(quality), "-map_metadata", "-1", str(candidate),
+                ])
+                if candidate.is_file() and 0 < candidate.stat().st_size <= budget:
+                    candidate.replace(output)
+                    return output
+        size_mb = candidate.stat().st_size / 1024 / 1024 if candidate.exists() else 0
+        raise MediaError(
+            f"参考图自动压缩后仍过大（{size_mb:.1f}MB），请换用更小的图片"
+        )
+    finally:
+        if candidate.exists():
+            candidate.unlink()
 
 
 async def normalize_narration(source: Path, output: Path) -> dict[str, Any]:

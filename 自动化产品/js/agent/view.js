@@ -4,21 +4,22 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260809-v140-core-connectivity-3";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260809-v141-content-governance-2";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
   batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences, agentSay, hydratedBatchThinkingState
-} from "./orchestrator.js?v=20260809-v140-core-connectivity-3";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260809-v140-core-connectivity-3";
+} from "./orchestrator.js?v=20260809-v141-content-governance-2";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260809-v141-content-governance-2";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260809-v140-core-connectivity-3";
-import { deliver } from "../domain/delivery.js";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260809-v141-content-governance-2";
+import { deliver } from "../domain/delivery.js?v=20260809-v141-content-governance-2";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { groupOf, isAvatarAsset } from "../domain/accounts.js";
+import { accountCreationAvailable, refreshAccountCreationQuotas } from "../domain/productionQuota.js?v=20260809-v141-content-governance-2";
 
 let mounted = false;
 let rootEl = null;
@@ -181,6 +182,9 @@ export const agentView = {
     renderBoard();
     renderPhase();
     wire(root);
+    void refreshAccountCreationQuotas(state.accounts.map(account => account.id)).then(changed => {
+      if (changed && isLive()) schedule({ cards: true, structural: true });
+    });
 
     if (!mounted) {
       mounted = true;
@@ -593,7 +597,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260809-v140-core-connectivity-3");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260809-v141-content-governance-2");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -673,6 +677,10 @@ function wire(root) {
     } else {
       const id = accBtn.dataset.pacc;
       const i = m.payload.accountIds.indexOf(id);
+      if (i < 0 && !accountCreationAvailable(id)) {
+        toast("该账号今日已达 2 条创作上限，无法再选择", "error");
+        return true;
+      }
       i >= 0 ? m.payload.accountIds.splice(i, 1) : m.payload.accountIds.push(id);
       m.payload.accountCount = m.payload.accountIds.length;
       m.payload.manualAccountSelection = true;
@@ -765,11 +773,25 @@ function wire(root) {
     const s = ensureSession();
 
     switch (act.dataset.act) {
+      case "plan-apply-image-count": {
+        const { msg: m } = findMessageInSessions(act.dataset.mid);
+        if (!m || m.payload.status !== "pending") return;
+        const count = Math.max(1, Math.min(12, Number(m.payload.imageCount || 4) || 4));
+        m.payload.imageCount = count;
+        m.payload.accountImageCounts = m.payload.accountImageCounts || {};
+        (m.payload.accountIds || []).forEach(accountId => {
+          m.payload.accountImageCounts[accountId] = count;
+        });
+        save("sessions");
+        rerenderPlanCard(m.id);
+        toast(`已将全部已选图文账号设为每条 ${count} 张图`);
+        break;
+      }
       case "plan-select-all": {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
         const group = planGroupForKind(m.payload.contentKind || normalizePlanKind("", m.payload.group));
-        const pool = matchAccounts({ group, tags: [], sort: "" });
+        const pool = matchAccounts({ group, tags: [], sort: "" }).filter(account => accountCreationAvailable(account.id));
         const allSelected = pool.length > 0 && pool.every(account => (m.payload.accountIds || []).includes(account.id));
         m.payload.accountIds = allSelected ? [] : pool.map(account => account.id);
         m.payload.accountCount = m.payload.accountIds.length;
@@ -822,7 +844,8 @@ function wire(root) {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
         m.payload.group = planGroupForKind(m.payload.contentKind || normalizePlanKind("", m.payload.group));
-        const pool = matchAccounts({ group: m.payload.group || "all", tags: m.payload.tags || [], sort: m.payload.sort || "" });
+        const pool = matchAccounts({ group: m.payload.group || "all", tags: m.payload.tags || [], sort: m.payload.sort || "" })
+          .filter(account => accountCreationAvailable(account.id));
         if (!pool.length) { toast("当前条件下没有可选账号"); break; }
         const picked = pool
           .map(a => ({ a, r: Math.random() }))

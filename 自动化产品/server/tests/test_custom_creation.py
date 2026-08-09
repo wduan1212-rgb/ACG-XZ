@@ -388,6 +388,7 @@ class CustomCreationStoreTest(unittest.TestCase):
                     store.assign_team_accounts(store.INTERNAL_TEAM_ID, ["account-video"])
                     supplier_parent_id = default_supplier_parent_id(store)
                     bundle = self._video_bundle(made["id"], f"protected-{index}")
+                    bundle["delivery"]["title"] = f"受保护标题{index}"
                     published, publish_error = store.publish_custom_project_bundle(
                         made["id"], "creator-a", bundle,
                     )
@@ -711,7 +712,7 @@ class CustomCreationStoreTest(unittest.TestCase):
                 [],
             )
 
-    def test_concurrent_custom_publishes_allocate_unique_server_sequences(self):
+    def test_concurrent_custom_publishes_atomically_enforce_quota_and_sequences(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
             made, _ = store.save_custom_project("creator-a", {
@@ -739,7 +740,17 @@ class CustomCreationStoreTest(unittest.TestCase):
                     ),
                     bundles,
                 ))
-            self.assertTrue(all(error is None for _, error in results))
+            succeeded = [
+                (bundle, result)
+                for bundle, result in zip(bundles, results)
+                if result[1] is None
+            ]
+            rejected = [error for _, error in results if error is not None]
+            self.assertEqual(len(succeeded), 2)
+            self.assertEqual(
+                rejected,
+                ["account_daily_creation_quota_exceeded"] * 4,
+            )
             deliveries = [
                 item for item in store.state_for("creator-a", "editor")["assets"]
                 if item.get("delivered") and item.get("customProjectId") == made["id"]
@@ -747,9 +758,9 @@ class CustomCreationStoreTest(unittest.TestCase):
             pub_sequences = sorted(item["pubSeq"] for item in deliveries)
             export_sequences = sorted(item["exportSeq"] for item in deliveries)
             delivery_names = {item["name"] for item in deliveries}
-            self.assertEqual(pub_sequences, list(range(1, 7)))
-            self.assertEqual(export_sequences, list(range(6, 12)))
-            self.assertEqual(len(delivery_names), 6)
+            self.assertEqual(pub_sequences, [1, 2])
+            self.assertEqual(export_sequences, [6, 7])
+            self.assertEqual(len(delivery_names), 2)
             date_stamp = time.strftime(
                 "%Y%m%d",
                 time.gmtime(time.time() + 8 * 60 * 60),
@@ -767,11 +778,11 @@ class CustomCreationStoreTest(unittest.TestCase):
                 item for item in store.state_for("creator-a", "editor")["accounts"]
                 if item["id"] == "account-video"
             )
-            self.assertEqual(account["monthlyDone"], 8)
-            self.assertEqual(account["exportSeq"], 11)
+            self.assertEqual(account["monthlyDone"], 4)
+            self.assertEqual(account["exportSeq"], 7)
 
-            # 同一个 deliveryId 并发重试不能重复计数。
-            retry_bundle = self._video_bundle(made["id"], "idempotent")
+            # 配额已满时，同一个成功 deliveryId 的并发重试仍必须幂等返回。
+            retry_bundle = succeeded[0][0]
             with ThreadPoolExecutor(max_workers=4) as pool:
                 retries = list(pool.map(
                     lambda _: store.publish_custom_project_bundle(
@@ -782,14 +793,14 @@ class CustomCreationStoreTest(unittest.TestCase):
             self.assertTrue(all(error is None for _, error in retries))
             self.assertEqual(
                 {result["delivery"]["pubSeq"] for result, _ in retries},
-                {7},
+                {succeeded[0][1][0]["delivery"]["pubSeq"]},
             )
             account = next(
                 item for item in store.state_for("creator-a", "editor")["accounts"]
                 if item["id"] == "account-video"
             )
-            self.assertEqual(account["monthlyDone"], 9)
-            self.assertEqual(account["exportSeq"], 12)
+            self.assertEqual(account["monthlyDone"], 4)
+            self.assertEqual(account["exportSeq"], 7)
 
     def test_custom_project_routes_block_generic_collection_writes(self):
         backend = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
@@ -861,6 +872,10 @@ class CustomCreationStoreTest(unittest.TestCase):
         self.assertIn("projectState.sourceProjectId", publishing)
         self.assertIn("projectState.workshopProjectId", publishing)
         self.assertIn("activeCustomPublishModal?.el?.isConnected", publishing)
+        self.assertIn("await refreshAccountCreationQuotas", publishing)
+        self.assertIn("accountCreationAvailable(accountId)", publishing)
+        self.assertIn("assertPublishText({ platform: account.platform", publishing)
+        self.assertIn("await openCustomPublish(", shell)
         self.assertIn("coverAccountId !== accountId", publishing)
         self.assertIn("output.customProjectId || output.projectId", delivery)
         self.assertNotIn("image.accountId = acc.id", delivery)

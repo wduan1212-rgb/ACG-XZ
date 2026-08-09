@@ -3,10 +3,10 @@
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, ownedBy, accountById, productionById } from "../core/store.js";
-import { STAGES, statusPill, deleteProduction } from "../domain/productions.js";
+import { STAGES, statusPill, deleteProduction } from "../domain/productions.js?v=20260809-v141-content-governance-2";
 import { urlFor } from "../domain/assets.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260809-v140-core-connectivity-3";
-import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js?v=20260809-v140-core-connectivity-3";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260809-v141-content-governance-2";
+import { emptyState, toast, confirmModal, removeWithMotion } from "../ui/components.js?v=20260809-v141-content-governance-2";
 import { go } from "../core/router.js";
 
 const DRAFT_RENDER_BATCH = 24;

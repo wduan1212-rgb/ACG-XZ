@@ -3260,7 +3260,7 @@ video:-webkit-full-screen { object-fit: contain !important; width: 100% !importa
 .sup-col-tags { width: 70px; }
 .sup-col-exposure { width: 70px; }
 .sup-col-status { width: 70px; }
-.sup-col-actions { width: 286px; }
+.sup-col-actions { width: 390px; }
 .sup-table th { text-align: left; padding: 11px 13px; font-size: 10.5px; color: var(--faint); letter-spacing: .05em; border-bottom: 1px solid var(--line); background: var(--soft); white-space: nowrap; }
 .sup-table td { padding: 11px 13px; border-bottom: 1px solid var(--hairline); vertical-align: middle; overflow: hidden; }
 .sup-table tr[data-sup] { cursor: pointer; transition: background var(--t-fast); }
@@ -5163,7 +5163,7 @@ button.overview-viz-card { cursor: pointer; }
 .sup-acts .sup-actions-inner .btn {
   width: auto;
   min-width: 0;
-  padding-inline: 9px;
+  padding-inline: 5px;
   border: 0;
   border-left: 1px solid var(--line);
   border-radius: 0;

@@ -4,6 +4,12 @@
 
 import { state, save, emit, accountById, ownedBy, removeRemoteAsync } from "../core/store.js";
 import { uid, spreadCaption } from "../core/util.js";
+import * as remote from "../core/remote.js";
+import {
+  invalidateAccountCreationQuotas,
+  refreshAccountCreationQuotas,
+  validateAccountCreationRequests,
+} from "./productionQuota.js?v=20260809-v141-content-governance-2";
 
 export const STAGES = {
   script: { label: "脚本", icon: "fileText" },
@@ -269,7 +275,7 @@ export function buildMaterialUnits(p) {
 export const materialUnits = p => p.artifacts.boards.units || [];
 export const unitShots = (p, u) => (u.shotIndexes || []).map(i => p.artifacts.script.shots[i]).filter(Boolean);
 
-export function createProduction({ accountId, topic = "", origin = "manual", batchId = null, style = "", productId = "dumate" }) {
+export function createProduction({ accountId, topic = "", origin = "manual", batchId = null, style = "", productId = "dumate", persist = true }) {
   const acc = accountById(accountId);
   if (!acc) return null;
   const p = {
@@ -291,9 +297,28 @@ export function createProduction({ accountId, topic = "", origin = "manual", bat
     p.artifacts.boards.materialMode = acc.subType === "数字人" ? p.artifacts.boards.materialMode : "infoFlow";
     p.artifacts.boards.digitalHuman = { provider: "", model: "", segments: [] };
   }
-  state.productions.push(p);
-  save("productions");
+  if (persist) {
+    state.productions.push(p);
+    save("productions");
+  }
   return p;
+}
+
+export async function commitProductionCreations(items = []) {
+  const docs = (items || []).filter(item => item?.id && !state.productions.some(existing => existing.id === item.id));
+  if (!docs.length) return [];
+  validateAccountCreationRequests(docs);
+  if (remote.isOn()) {
+    if (!remote.hasToken()) throw new Error("登录已过期，请重新登录后创作");
+    await remote.syncCollection("productions", docs);
+  }
+  state.productions.push(...docs);
+  save("productions");
+  docs.forEach(item => emit("production:update", item));
+  const accountIds = [...new Set(docs.map(item => item.accountId).filter(Boolean))];
+  invalidateAccountCreationQuotas(accountIds);
+  void refreshAccountCreationQuotas(accountIds, { force: true });
+  return docs;
 }
 
 export function touch(p) { p.updatedAt = Date.now(); }

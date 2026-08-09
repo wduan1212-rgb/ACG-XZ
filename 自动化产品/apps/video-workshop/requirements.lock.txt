@@ -1,4 +1,4 @@
-# v140 production lock for the isolated video-workshop sidecar.
+# v141 candidate dependency lock for the isolated video-workshop sidecar.
 # These exact versions mirror the currently running Ubuntu 24.04 / CPython
 # 3.12 sidecar environment; a separately hashed Linux wheelhouse is required.
 annotated-doc==0.0.4
