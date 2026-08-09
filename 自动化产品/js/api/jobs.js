@@ -5,7 +5,7 @@ import { state, saveIncremental, emit, productionById, notify, assetById } from 
 import { uid } from "../core/util.js";
 import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
-import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260809-v140-core-connectivity-2";
+import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260809-v140-core-connectivity-3";
 
 const IMAGE_CONCURRENCY = 4;
 // 与服务端 VideoTaskGate 保持一致：全平台最多同时处理 10 个视频任务，

@@ -35,14 +35,14 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260809-v140-core-connectivity-2",
-            "prodDrawer.js": "v=20260809-v140-core-connectivity-2",
-            "deliveryView.js": "v=20260809-v140-core-connectivity-2",
-            "supplierViews.js": "v=20260809-v140-core-connectivity-2",
-            "draftsView.js": "v=20260809-v140-core-connectivity-2",
-            "voiceLab.js": "v=20260809-v140-core-connectivity-2",
-            "chainWorkshop.js": "v=20260809-v140-core-connectivity-2",
-            "orchestrator.js": "v=20260809-v140-core-connectivity-2",
+            "studio.js": "v=20260809-v140-core-connectivity-3",
+            "prodDrawer.js": "v=20260809-v140-core-connectivity-3",
+            "deliveryView.js": "v=20260809-v140-core-connectivity-3",
+            "supplierViews.js": "v=20260809-v140-core-connectivity-3",
+            "draftsView.js": "v=20260809-v140-core-connectivity-3",
+            "voiceLab.js": "v=20260809-v140-core-connectivity-3",
+            "chainWorkshop.js": "v=20260809-v140-core-connectivity-3",
+            "orchestrator.js": "v=20260809-v140-core-connectivity-3",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
@@ -51,31 +51,35 @@ class FrontendModuleIdentityTest(unittest.TestCase):
             self.assertEqual({expected_query}, queries, imports)
 
     def test_llm_client_and_consumers_share_current_cache_identity(self):
-        for module_name in ("llm.js", "ai.js"):
+        expected = {
+            "llm.js": "v=20260727-v118-7",
+            "ai.js": "v=20260809-v140-core-connectivity-3",
+        }
+        for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
             self.assertGreaterEqual(len(imports), 2)
             queries = {specifier.partition("?")[2] for _, specifier in imports}
-            self.assertEqual({"v=20260727-v118-7"}, queries, imports)
+            self.assertEqual({expected_query}, queries, imports)
 
     def test_shared_ui_components_have_one_cache_identity(self):
         imports = self._module_imports("components.js")
         self.assertGreaterEqual(len(imports), 2)
         queries = {specifier.partition("?")[2] for _, specifier in imports}
-        self.assertEqual({"v=20260809-v140-core-connectivity-2"}, queries, imports)
+        self.assertEqual({"v=20260809-v140-core-connectivity-3"}, queries, imports)
 
     def test_custom_publish_is_loaded_with_the_current_module_identity(self):
         source = (APP_DIR / "js/views/customCreation.js").read_text(encoding="utf-8")
-        self.assertIn('import("./customPublish.js?v=20260809-v140-core-connectivity-2")', source)
+        self.assertIn('import("./customPublish.js?v=20260809-v140-core-connectivity-3")', source)
 
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
-            "base.css": "v=20260809-v140-core-connectivity-2",
-            "components.css": "v=20260809-v140-core-connectivity-2",
-            "views.css": "v=20260809-v140-core-connectivity-2",
-            "agent.css": "v=20260809-v140-core-connectivity-2",
-            "ui-motion.css": "v=20260809-v140-core-connectivity-2",
-            "custom-creation.css": "v=20260809-v140-core-connectivity-2",
+            "base.css": "v=20260809-v140-core-connectivity-3",
+            "components.css": "v=20260809-v140-core-connectivity-3",
+            "views.css": "v=20260809-v140-core-connectivity-3",
+            "agent.css": "v=20260809-v140-core-connectivity-3",
+            "ui-motion.css": "v=20260809-v140-core-connectivity-3",
+            "custom-creation.css": "v=20260809-v140-core-connectivity-3",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():

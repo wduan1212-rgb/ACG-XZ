@@ -8,13 +8,13 @@ import { STAGES, statusPill } from "../domain/productions.js";
 import { deliveredAssets } from "../domain/delivery.js";
 import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=20260727-v118-7";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260727-v118-7";
+import { AI } from "../api/ai.js?v=20260809-v140-core-connectivity-3";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260809-v140-core-connectivity-2";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260809-v140-core-connectivity-2";
-import { emptyState, openModal } from "../ui/components.js?v=20260809-v140-core-connectivity-2";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260809-v140-core-connectivity-3";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260809-v140-core-connectivity-3";
+import { emptyState, openModal } from "../ui/components.js?v=20260809-v140-core-connectivity-3";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260809-v140-core-connectivity-2";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260809-v140-core-connectivity-3";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}

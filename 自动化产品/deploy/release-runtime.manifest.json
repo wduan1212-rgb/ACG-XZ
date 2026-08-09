@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260809-v140-core-connectivity-2",
+  "releaseId": "20260809-v140-core-connectivity-3",
   "fileCount": 58,
   "totalBytes": 3001887,
   "files": [
@@ -22,7 +22,7 @@
     {
       "path": "apps/video-workshop/app/main.py",
       "size": 100715,
-      "sha256": "8422f3fc587c96286c585d27265c4b6209b260cd85d868d4d45116b1edea4ef6"
+      "sha256": "02ca0111a4aa0648f2860c71b692c0460c31786e7798801e29096182d80e7314"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -167,7 +167,7 @@
     {
       "path": "apps/video-workshop/web/index.html",
       "size": 22376,
-      "sha256": "73c76efa8782fda27743dcdb934d70999fd07ca516ca2b38e36fee6a13415e4e"
+      "sha256": "40430af2c297827b43acb315eb42db113a457f87cd5a3bd7c0454510eed93d2a"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
