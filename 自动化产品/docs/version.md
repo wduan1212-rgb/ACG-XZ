@@ -1,5 +1,22 @@
 # 星阵版本记录
 
+## v140.6 - 2026-08-09（核心生成链路恢复与信息流缓存闭环）
+
+### 本版范围
+
+- 生产功能 SHA 为 `2d48b0efa5d836f8f0d9c50ad52ef8540f73a578`，分支 `codex/v122-team-auth-home`，release/cache identity 为 `20260809-v140-core-connectivity-3`；实际运行 release 为 `20260809-v140-core-connectivity-3-2d48b0e`。主服务和视频 sidecar 均从该 release 以完整 RW 运行，`NRestarts=0`。
+- 无限画布后台 job 兼容浏览器 `sourceProjectId` 与服务端稳定项目 ID 的历史映射，但仍严格校验 job/project owner、payload identity 和唯一 team/resource scope；已授权媒体隔离证据加入 GC live-set 后，既有 38 条隔离历史结果不再误触发跨 owner 冲突。生产真实画布 job 已进入 `succeeded`。
+- OmniHuman 1.5 的角色图和音频必须能由上游公网读取。生产 `PUBLIC_BASE_URL` 已显式设置为 `http://xingzhenworld.com`；签名后的公网图片、音频 Range 探针分别返回 `206 image/png` 与 `206 audio/mpeg`，数字人 submit/poll 真实请求返回 200。私有源文件和鉴权配置没有公开或覆盖。
+- 信息流失败不是模型未生成镜头：真实服务器 LLM 首轮已返回前后各 5 条 `0.0-2.0s | ...` 式分时镜头。首个修复放宽了中文秒数边界，但六个上游模块仍以旧 `v=20260727-v118-7` 导入 `js/api/ai.js`，浏览器 immutable cache 因而继续执行旧解析器。最终提交把 `ai.js` 和完整 ESM 依赖图统一到新 identity；生产浏览器已实际请求 `ai.js?v=20260809-v140-core-connectivity-3`，线上字节 SHA 与 release 完全一致。
+
+### 验证与数据保护
+
+- 目标 Linux 上 release verifier 通过：Phase 0 `6f257170c55084814298d4387e397c794d12da9d8879f1639f62f6806d6af96e`，ESM `60` modules / `342` edges，graph `06aa09adc2c0d5d0e2cda8b58fbcf9966ddd191ba1e06cd3fc3193ea0a9b5bb6`，closure `80e5670dca6263206efdb7d2553480b99575f429e9ae4b06cd20b40456bf17f5`，canvas manifest 保持 `59b1d83c6235ad26c4b20c1e0182dec47205c53677a06035f95cde42667d6789`，runtime `58` files / `3,001,887` bytes / `526ab76ee1d7636711bd4d65dc1b5d479a1e59226b055358278da12b2bb81556`。完整功能提交通过主服务 `773 passed + 1 approved skip`、sidecar `140/140`、Node `124/124`；最终缓存提交另在 Linux 通过 `57/57` 定向 Python 与 `124/124` Node。
+- 切换前 SQLite v2 backup 为 `pre-v1406-core-connectivity-7c0bff0-20260809T080435Z`，manifest `2e951862723aca70356f7ecd0dc0d34dc09230dbe085c1154612dc8157f119a1`；20-component snapshot 为 `pre-v1406-core-connectivity-7c0bff0-20260809T080833Z`，manifest `53d3e10b44be6b6710c73ed74ecc1e0b9f27ecc6114c8b1362c48814e99b2b2d`，已 verify 并 restore-drill，恢复库 `quick_check=ok`。前一生产 release 和 systemd 配置回滚点均保留。
+- 生产 readiness 为 `ready=true / writeReady=true / startupVerified=true`，数据库 `quick_check=ok`；resource missing、usage unresolved/outbox/spool、unisolated media、isolation conflict/drift 均为 0。raw 缺失事实仍保留为 `missingReferencedFiles=46 / pendingRows=48`，但精确 `isolated=46 / unisolated=0 / effectivePending=0`，没有删除引用或伪造媒体。
+- 部署前后均为 48 张表，行数 `57,843 -> 58,045`，没有任何表下降；媒体 uploads `6,232 -> 6,238`、composed `986 -> 991`、canvas blobs `632 -> 634`，video projects/uploads/outputs 保持 `56/168/1,694`，没有任何受保护媒体减少。增长来自部署窗口内的正常生产活动并完整保留。
+- 公网 root、health、OpenAPI、community 均为 200；未认证受保护 API 为 401。重复读取 `/api/ready` 不改变 live gate。部署仅更新验签代码、静态文件和受控 systemd release 指针，未用本地 SQLite、账号、媒体、认证状态、私密配置或 Nginx 覆盖生产。
+
 ## v140.5 - 2026-08-09（生产已恢复完整 RW）
 
 ### 本版范围

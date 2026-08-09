@@ -4,6 +4,13 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-09 v140.6 生产核心生成失败：历史项目映射、公网媒体地址与 immutable ESM 缓存必须分别核对
+
+- **无限画布**：生产 500 `resource_reference_scope_missing` 并不等于 owner 或团队归属缺失。浏览器 `sourceProjectId` 可映射到另一个服务端稳定项目 ID；新建 job 前先解析稳定项目，再对 job/project owner、payload identity 和唯一 resource scope 做精确校验。画布 GC 同时识别已经受 140010 不可变证据隔离的历史缺失结果，不能把已批准隔离误报成跨 owner 引用；未隔离漂移仍 fail closed。
+- **OmniHuman**：仅把本机上传路径或 `data:`/localhost 地址提交给上游必然失败。角色图和音频必须经受控公网媒体代理形成上游可 GET/Range 的 URL；生产必须显式配置 `PUBLIC_BASE_URL`，并用真实签名 URL 验证 MIME、Range 与权限边界，不能把私有上传目录改成公开静态目录。
+- **信息流解析**：模型返回 `0.0-2.0s | ...`、`2.0-5.5s | ...` 等完整分时镜头时，中文/英文时间单位边界必须都被识别。更隐蔽的生产根因是 `ai.js` 虽已修复，但六个 importer 仍引用旧 `v118-7` URL；在一年 immutable cache 下，服务器新字节和浏览器执行字节可以长期不一致。凡修改共享 ESM，必须沿所有可达 importer 统一提升 cache identity，并同时用 release graph、生产访问日志和 HTTP 字节 SHA 验证浏览器实际命中新 URL。
+- **防回归**：回归必须覆盖中文秒、英文 `s`、小数区间、前后两段完整镜头、缺段负例和所有 import identity；真实验收至少证明服务器管理 LLM 返回可通过解析的双段镜头、sidecar 配置 ready、生产浏览器请求新 `ai.js`。不得因旧失败卡仍保存历史错误就重放 provider；只有用户明确重试才创建新任务。
+
 ## 2026-08-09 v140.5 生产恢复：旧栈启动、sidecar 历史证据与中央账本必须同时闭合
 
 - **构造参数被接受不等于生命周期被执行**：生产锁定 FastAPI 0.68.1 / Starlette 0.14.2 会接受较新的 `lifespan=` 参数但不执行其中的写门武装，表现为实时 `/api/ready` 看似全绿，普通请求却因进程内 `_PRODUCTION_WRITE_GATE_SNAPSHOT` 未武装而持续 503。关键启动门禁必须使用锁定旧栈原生 startup/shutdown 事件，并以真实 Uvicorn 子进程验证：RW 审计通过后才出现 `Application startup complete`，失败不开放请求；`/api/ready` 继续只观察、不能代替 startup 武装。
