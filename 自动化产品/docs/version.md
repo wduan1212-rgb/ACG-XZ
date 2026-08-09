@@ -1,6 +1,6 @@
 # 星阵版本记录
 
-## v140.4 - 2026-08-09（生产恢复门禁本地候选，未部署）
+## v140.4 - 2026-08-09（生产恢复工具已受保护上线，保持 RO）
 
 ### 本版范围
 
@@ -11,14 +11,21 @@
 - 无限画布 GC 的 live-set 纳入同 owner 已成功后台 job 和已发布 community 的持久引用；坏 JSON、归属不明或跨 scope 冲突时整批不删除，只有真正无引用 Blob 才能 GC。已发布/交付/账号引用的 server asset 删除改为文档权威保护先行，不再先删物理文件、再异步删文档而留下悬空引用。
 - 多来源 usage v2 严格覆盖人工计划列出的全部 unresolved：中央 timeout/5xx unknown 只记录“已知调用尝试”且 Token/输出为未知 0；sidecar succeeded 按唯一回执投影；sidecar unknown 只记尝试；sidecar submitted 裁决为不计费、不投影的 terminal indeterminate。任何模式都不重试 provider，不补扣积分，不猜 Token/providerRef。
 - 代码审计确认：无限画布上游图片 URL 只在当次请求内用于下载，随后即转为 data URL 和本机 Blob；后台 job、generation receipt 与 completion spool 都不持久化原始成片 URL。因此剩余 38 个 job 结果、1 个 community 媒体和 7 个 upload 不能通过现有外部 URL 可验签恢复，不得重新提交 provider、伪造占位或删除业务引用。事故裁决只会写不可变证据，不会让 readiness 通过。
-- 本地候选统一缓存身份为 `20260809-v140-production-recovery-1`；生产仍以 v140.3 受保护只读 release 为事实基线。本版未连接、修改、重启或解冻服务器，也未携带本地 SQLite/媒体/私密配置。
+- 生产已运行功能提交 `eb4c9c599c25aaad3d361d0aa2d6697e870c5f0f`，release/缓存身份为 `20260809-v140-production-recovery-1`，实际 release 目录后缀为 `eb4c9c5`。主服务和 sidecar 均 active/healthy，systemd 与进程 cwd 已核对指向同一受审计 release；`ACG_READ_ONLY=1` 继续保持，本地数据、媒体和私密配置未覆盖生产。
 
 ### 验证与发布边界
 
-- CPython 3.12.13、精确 20 包测试锁和已验签本机 wheelhouse 中，无私密 `env -i` 主服务 locked runner 收集 `760` 项：`759` 通过，唯一 skip 是规则允许的旧 v120 只读快照不在干净工作树。新增核心组合回归 `97/97`；视频工坊 `140/140`；Node `123/123`；Python compileall、全部现存 JavaScript 语法、新 CLI help 与 `git diff --check` 通过。本轮不含私密配置，没有调用真实 provider。
-- release verifier 通过：Phase 0 SHA-256 `de398d744d242774533e43250c8e6d1663fc89e32efd07ad398913afa49117c8`；ESM `60` modules / `342` edges，graph SHA-256 `8a8b7888449f2d6ccdcf53164994d919ded4e6800cd5138146b60f1bac956aef`、closure SHA-256 `1db4271109d46345afda01a60a27a3610e5aae222c4683f7583e27de476126f2`；已审计画布闭包 `63` files / `1,767,334` bytes，manifest SHA-256 `59b1d83c6235ad26c4b20c1e0182dec47205c53677a06035f95cde42667d6789`；runtime `58` files / `2,899,595` bytes，manifest SHA-256 `35f9c7e40b70e77872bdf8b54ac63bd3ec48075d265d3a7f1ab0e9b946b43a39`。画布源码本轮零修改；隔离环境 typecheck/lint/build 通过，发布仍使用当前已验签 vendor manifest，不用未批准的随机 Next build ID 重写静态闭包。
-- 最终唯一提交号与推送状态以 Git 推送回执和部署交接消息为准，避免在同一提交内记录无法验签的自指 SHA。
-- 生产执行仍必须由部署线程在 fresh complete snapshot/restore-drill 与每步 fresh SQLite v2 backup 之后进行。只有五个可恢复 Blob、租户/resource drift 和 usage 全部结算闭合，且剩余 46 个物理缺失从真实源恢复或经用户另行批准的业务隔离方案处理后，才可重新 arm RW gate。
+- 目标 Linux x86_64 / CPython 3.12.3 三套 wheelhouse 全部通过 build/verify、离线 `--no-deps`、exact-installed 与 `pip check`：主 runtime `18` 包 / manifest `b9db22222b6af456656c628fd2d416b64f9f05a049751a3b0dcc5eb184b4327c`，主 test `20` 包 / `a3ff598a8d2c3cece4ad74f1b069f5213dee3dc7888a9147aa97f11840ae7471`，视频 sidecar `37` 包 / `69943e2e8ee1936b6d819c44ef91395d543af7ab930b1e1cccc10dee12ed39e4`。
+- Linux 无私密 locked 主服务收集 `767` 项：`766` 通过，唯一 skip 是已批准的 v120 快照项；sidecar `140/140`，Node `123/123`，compileall 通过。release verifier 通过：Phase 0 `87fb5996ddd38bc6027b3a7d2b050b10017965a09b13d731c08e8fb7f8f4de85`，ESM `60` modules / `342` edges，graph `8a8b7888449f2d6ccdcf53164994d919ded4e6800cd5138146b60f1bac956aef`，closure `1db4271109d46345afda01a60a27a3610e5aae222c4683f7583e27de476126f2`，canvas manifest `59b1d83c6235ad26c4b20c1e0182dec47205c53677a06035f95cde42667d6789`，runtime `58` files / `2,901,522` bytes / `a1782177ab8d2ac14beb1d25d791c5aa8df78ea58b9b10f8d4209c52749be61c`。
+
+### 生产受控数据闭环
+
+- expand-only schema `140008/140009` 已早前双跑成功，本轮没有重放。tenant adoption 精确 apply `60` 行且二跑 `0`；resource settlement apply `166`，全部记录 `historical source project absent`，二跑 `insertedRows=0`；canvas recovery 仅恢复已验签的 `5` 个 Blob / `10,924,695` bytes，二跑 `recoveredRows=0`。
+- incident adjudication 精确覆盖 `46` 条缺失事故，二跑 `insertedRows=0`，且 `readinessUnchanged=true`。usage v2 精确结算 `83`：`56` central unknown、`19` sidecar unknown、`7` submitted indeterminate、`1` succeeded；apply 结果 `insertedRows=83 / terminalRows=83 / projectedRows=76 / indeterminateRows=7 / unresolved=0 / outboxPending=0 / quickCheck=ok`，二跑 `applied=false / insertedRows=0 / reused=true`，全程无 provider retry。
+- 最终 fresh post-usage 保护点为 `v1404-post-usage-20260808T234813Z`：SQLite backup manifest `bd1527e81e0e99d99499f021297866f5eb6124042860567a5837f36e4b3b9660`，DB logical `3106ebfa610a3cdf7e9e7d8d32ad9b0625027bb7cdfed248c3257c998733e026`，20 组件 snapshot manifest `8426d3e038e6cea2618ac06945a35b6daf2634718f7b1cddf4b58e25f73c58d2`，media digest `b8946380118911ab6530be35444e19d38b0e0764b3a2e08bc0c03cfd595c30b9`。verify、restore-drill 和 SQLite `quick_check` 均通过；已保留报告、哈希、SQLite backup、snapshot 与既有 rollback，只清理可由保留 snapshot 重建的重复 restore-drill 副本。
+- 与部署前保护点对账，最终 `46` 张表无任何行数下降，docs 仍为 `14,786`；members `88`、teams `1`、team_members `76`、team_suppliers `4`、supplier bindings `52`、team accounts `80`、community posts `60`。媒体 inventory 为 uploads `6,223`、composed `984`、canvas blobs `627 -> 632`、video projects `56`、video uploads `168`、video outputs `1,694`；新增仅来自受控账本/scope 和 `5` 个真实 Blob，usage ledger v2 entries=`83`。
+- 公网 root/index/health/community/download manifest 均为 `200`；未认证受保护资源为 `401`，无效登录为 `401`，无认证写入探针为 `503 maintenance`；sidecar health ready 且 deny-mutations。重复携带保护 token 请求 `/api/ready` 结果完全一致，不改变 live gate。60 个 community posts 共 `138` 个媒体，`137` 个返回 200，唯一 404 与唯一缺失的已发布 community 媒体精确对应。
+- **完整 RW 尚未恢复**：最终 `/api/ready` 为 `ok=true / ready=true / writeReady=false`。resource missing/orphans/invalid、usage unresolved/outbox/spool 和 registry conflicts 均已归零，但 media registry 仍有 `missingReferencedFiles=46`、`pendingRows=48`，`issues=[missingReferencedFiles]`。46 条分为 `38` 个 succeeded `customCanvasGenerationJobs` 输出、`1` 个已发布 community canvas 和 `7` 个 server asset/upload；除已恢复的 5 个外，已穷尽现有可验签证据而无可靠原件。不得用裁决回执、占位、删引用、伪造归属或放宽 readiness 解锁 RW；只有用户提供精确原件/独立可验签来源，或另行明确批准不丢数据的业务隔离设计后，才能继续恢复写入。
 
 ## v140.3 - 2026-08-09（受保护生产部署，当前 active + RO）
 

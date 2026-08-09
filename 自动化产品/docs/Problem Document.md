@@ -4,6 +4,14 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-09 v140.4 生产恢复：审计闭环不能替代缺失的真实媒体
+
+- **已闭合的不再是 RW 阻断**：tenant adoption `60`、resource settlement `166`、可验签 canvas recovery `5`、incident adjudication `46` 和 usage v2 `83` 均按 fresh backup/snapshot/DB identity 精确 apply 并二跑零写。usage 已达 `unresolved=0 / outboxPending=0`，resource missing/orphans/invalid 与 registry conflicts 均归零，SQLite `quick_check=ok`；不得在后续重放已成功 migration/settlement。
+- **不可自动修复的真实缺口**：最终仍有 `46` 个 referenced file 无可靠原件，精确为 `38` 个 succeeded `customCanvasGenerationJobs` 输出、`1` 个已发布 community canvas 和 `7` 个 server asset/upload。服务器现存文件、历史快照、数据库、文件系统恢复证据和已持久化 provider URL 均已穷尽核对，除已恢复的 5 个外没有独立可验签来源。
+- **裁决账本不是文件恢复**：46 条 incident receipt 只证明异常已被逐条审查，明确 `readinessUnchanged=true`；它不得生成占位文件、删除业务引用、伪造 owner/team 或将 pending 当作已登记。否则只是隐藏用户数据丢失，并会让后续备份带着错误的“绿灯”继续演进。
+- **正确运行状态**：主服务、sidecar、静态入口和普通只读 API 已稳定，但 `ACG_READ_ONLY=1`、`ready=true / writeReady=false`必须继续保持。不得把 health 200、usage/resource 归零或重启服务解读为可解锁全部写功能。
+- **后续唯一安全路径**：用户提供与精确引用匹配的原件/独立可验签来源，经 MIME、size、内容哈希、owner/scope 和 fresh 保护点复核后受控恢复；或由用户另行明确批准一套不删引用、不伪造媒体、可逆的业务隔离设计。在此之前 media `missingReferencedFiles=46 / pendingRows=48` 必须持续 fail closed。
+
 ## 2026-08-09 v140.4 本地修复：画布 GC、部分删除与受保护恢复必须同时收口
 
 - **画布物理丢失根因**：旧 `_custom_canvas_gc_blobs_locked` 只把 24 小时 staging 和当前 draft 当作 live-set，没有读 succeeded `customCanvasGenerationJobs` 或已发布 community 引用。staging 过期后，下一次 draft GC 会同时删除 Blob 行、registry 和物理文件，但保留 succeeded job URL，形成不可回读的“成功”结果。修复后只保活同 owner 的持久业务引用；坏 JSON、归属不明或跨 scope 冲突会在任何删除前整批 fail closed，其他 owner 的引用不能跨用户保活。
