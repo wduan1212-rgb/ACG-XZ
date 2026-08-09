@@ -31,7 +31,6 @@ import sqlite3
 import sys
 import math
 import weakref
-from contextlib import asynccontextmanager
 from datetime import date as calendar_date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -459,16 +458,30 @@ JUSTONE_WECHAT_BASIC_PATH = os.getenv("JUSTONE_WECHAT_BASIC_PATH", "/api/weixin-
 JUSTONE_WECHAT_METRICS_PATH = os.getenv("JUSTONE_WECHAT_METRICS_PATH", "/api/weixin-channels/get-video-metrics/v1")
 JUSTONE_TIMEOUT = float(os.getenv("JUSTONE_TIMEOUT", "90") or "90")
 
-@asynccontextmanager
-async def _app_lifespan(_app):
-    # The helpers are resolved when startup runs, after this module has been
-    # fully loaded.  Importing the application therefore remains read-only.
+async def _app_startup():
+    """Arm production writes before the legacy ASGI stack accepts traffic."""
+
+    # FastAPI 0.68 / Starlette 0.14 do not execute FastAPI's newer ``lifespan``
+    # constructor argument.  Register this coroutine with their supported
+    # startup event API so a failed write gate aborts Uvicorn startup instead
+    # of leaving a live-but-permanently-unarmed read-write process.
     await _prime_production_write_gate()
-    await _start_model_usage_completion_spool_reconciler()
     try:
-        yield
-    finally:
+        await _start_model_usage_completion_spool_reconciler()
+    except BaseException:
+        # The reconciler start is currently side-effect-light and idempotent,
+        # but keep cleanup explicit if that contract ever changes.
         await _stop_model_usage_completion_spool_reconciler()
+        _clear_production_write_gate()
+        raise
+
+
+async def _app_shutdown():
+    """Stop the reconciler exactly once and revoke the process-local gate."""
+
+    try:
+        await _stop_model_usage_completion_spool_reconciler()
+    finally:
         _clear_production_write_gate()
 
 
@@ -476,8 +489,13 @@ app = FastAPI(
     title="ACG 视频工具 API",
     version="0.1.0",
     description="账号化 AI 视频生产工作台后端。CLI / agent 可直接按本 OpenAPI 调用。",
-    lifespan=_app_lifespan,
 )
+# Keep the registration compatible with the production-locked FastAPI 0.68.1
+# / Starlette 0.14.2 stack.  Function names are resolved when startup runs,
+# after this module is fully loaded, so importing the application stays
+# read-only.
+app.add_event_handler("startup", _app_startup)
+app.add_event_handler("shutdown", _app_shutdown)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # The write contract is a backend deployment invariant, not a UI switch.  A

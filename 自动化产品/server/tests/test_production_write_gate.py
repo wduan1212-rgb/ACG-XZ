@@ -1,11 +1,15 @@
 import asyncio
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 from unittest.mock import AsyncMock, patch
 
 
@@ -69,6 +73,143 @@ class ProductionWriteGateTests(unittest.TestCase):
                 return_value={"ok": True, "readOnly": read_only},
             ),
         )
+
+    @staticmethod
+    def _free_local_port():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+
+    @staticmethod
+    def _uvicorn_probe_script():
+        return r'''
+import json
+import os
+
+import fastapi
+import starlette
+import uvicorn
+
+from server import main
+
+mode = os.environ["ACG_STARTUP_PROBE_MODE"]
+report_path = os.environ["ACG_STARTUP_PROBE_REPORT"]
+calls = {"prime": 0, "spoolStart": 0, "spoolStop": 0}
+
+main.runtime_config.runtime_mode = lambda: "production"
+main.runtime_config.is_production = lambda: True
+main.runtime_config.is_read_only = lambda: mode == "ro"
+main.runtime_config.read_only_mode_status = lambda: {
+    "ok": True,
+    "readOnly": mode == "ro",
+}
+
+async def prime():
+    calls["prime"] += 1
+    print("PROBE_PRIME", mode, flush=True)
+    main._clear_production_write_gate()
+    if mode == "fail":
+        raise RuntimeError("forced startup write-gate failure")
+    if mode == "rw":
+        main._PRODUCTION_WRITE_GATE_SNAPSHOT = {
+            "ok": True,
+            "writeReady": True,
+            "contract": main.PRODUCTION_WRITE_CONTRACT,
+            "mode": "read-write",
+            "productionReadOnlyRequired": False,
+            "startupVerified": True,
+            "writeEnableBlockers": [],
+        }
+
+async def start_spool():
+    calls["spoolStart"] += 1
+    snapshot = main._production_write_contract_readiness()
+    print("PROBE_SPOOL_START", calls["spoolStart"], flush=True)
+    print("PROBE_STARTUP_SNAPSHOT", json.dumps(snapshot, sort_keys=True), flush=True)
+
+async def stop_spool():
+    calls["spoolStop"] += 1
+    print("PROBE_SPOOL_STOP", calls["spoolStop"], flush=True)
+    with open(report_path, "w", encoding="utf-8") as handle:
+        json.dump({
+            **calls,
+            "fastapi": fastapi.__version__,
+            "starlette": starlette.__version__,
+            "uvicorn": uvicorn.__version__,
+        }, handle, sort_keys=True)
+
+main._prime_production_write_gate = prime
+main._start_model_usage_completion_spool_reconciler = start_spool
+main._stop_model_usage_completion_spool_reconciler = stop_spool
+
+uvicorn.run(
+    main.app,
+    host="127.0.0.1",
+    port=int(os.environ["ACG_STARTUP_PROBE_PORT"]),
+    log_level="info",
+    lifespan="on",
+)
+'''
+
+    def _start_uvicorn_probe(self, root, mode):
+        port = self._free_local_port()
+        report = Path(root) / f"{mode}-report.json"
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PYTHONPATH": str(APP_DIR),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "ACG_RUNTIME_MODE": "test",
+            "ACG_DB_BOOTSTRAP_MODE": "auto",
+            "ACG_READ_ONLY": "1",
+            "ACG_RELEASE_ID": "v140-startup-probe",
+            "ACG_STARTUP_PROBE_MODE": mode,
+            "ACG_STARTUP_PROBE_PORT": str(port),
+            "ACG_STARTUP_PROBE_REPORT": str(report),
+        }
+        process = subprocess.Popen(
+            [sys.executable, "-u", "-c", self._uvicorn_probe_script()],
+            cwd=APP_DIR,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        return process, port, report
+
+    def _wait_for_http_status(self, process, url, expected=200, timeout=15):
+        deadline = time.monotonic() + timeout
+        last_status = None
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            try:
+                with urlopen(url, timeout=0.5) as response:
+                    last_status = int(response.status)
+            except HTTPError as exc:
+                last_status = int(exc.code)
+            except (URLError, TimeoutError):
+                time.sleep(0.05)
+                continue
+            if last_status == expected:
+                return
+            time.sleep(0.05)
+        output = ""
+        if process.poll() is not None:
+            output = process.communicate(timeout=2)[0]
+        self.fail(
+            f"uvicorn probe did not return {expected}; "
+            f"last={last_status} returncode={process.poll()} output={output}"
+        )
+
+    @staticmethod
+    def _stop_uvicorn_probe(process):
+        if process.poll() is None:
+            process.terminate()
+        try:
+            return process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return process.communicate(timeout=5)
 
     def test_exact_v140_contract_allows_production_write(self):
         mode, production, read_only, mode_status = self.production_mode()
@@ -215,6 +356,69 @@ class ProductionWriteGateTests(unittest.TestCase):
                 self.assertFalse(path.exists(), path)
             self.assertFalse((root / "runtime.env").exists())
 
+    def test_locked_legacy_uvicorn_runs_rw_startup_gate_before_serving(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            process, port, report = self._start_uvicorn_probe(tmp, "rw")
+            try:
+                self._wait_for_http_status(process, f"http://127.0.0.1:{port}/")
+                self._wait_for_http_status(
+                    process,
+                    f"http://127.0.0.1:{port}/openapi.json",
+                )
+            finally:
+                output, _ = self._stop_uvicorn_probe(process)
+
+            self.assertEqual(0, process.returncode, output)
+            self.assertIn("Application startup complete", output)
+            self.assertIn("PROBE_PRIME rw", output)
+            self.assertIn("PROBE_SPOOL_START 1", output)
+            self.assertIn('"startupVerified": true', output)
+            self.assertIn("PROBE_SPOOL_STOP 1", output)
+            lifecycle = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(
+                {
+                    "fastapi": "0.68.1",
+                    "prime": 1,
+                    "spoolStart": 1,
+                    "spoolStop": 1,
+                    "starlette": "0.14.2",
+                    "uvicorn": "0.15.0",
+                },
+                lifecycle,
+            )
+
+    def test_locked_legacy_uvicorn_refuses_socket_when_rw_gate_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            process, _, report = self._start_uvicorn_probe(tmp, "fail")
+            output, _ = process.communicate(timeout=15)
+
+            self.assertIn("forced startup write-gate failure", output)
+            self.assertIn("Application startup failed. Exiting.", output)
+            self.assertNotIn("Application startup complete", output)
+            self.assertNotIn("PROBE_SPOOL_START", output)
+            self.assertFalse(report.exists())
+
+    def test_locked_legacy_uvicorn_keeps_read_only_reads_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            process, port, report = self._start_uvicorn_probe(tmp, "ro")
+            try:
+                self._wait_for_http_status(process, f"http://127.0.0.1:{port}/")
+                self._wait_for_http_status(
+                    process,
+                    f"http://127.0.0.1:{port}/openapi.json",
+                )
+            finally:
+                output, _ = self._stop_uvicorn_probe(process)
+
+            self.assertEqual(0, process.returncode, output)
+            self.assertIn("Application startup complete", output)
+            self.assertIn("PROBE_PRIME ro", output)
+            self.assertIn('"mode": "read-only"', output)
+            lifecycle = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(1, lifecycle["prime"])
+            self.assertEqual(1, lifecycle["spoolStart"])
+            self.assertEqual(1, lifecycle["spoolStop"])
+
     def test_unverified_process_is_closed_and_read_only_is_always_allowed(self):
         mode, production, read_only, mode_status = self.production_mode()
         with mode, production, read_only, mode_status:
@@ -327,6 +531,40 @@ class ProductionWriteGateTests(unittest.TestCase):
             self.assertFalse(observed["writeReady"])
             self.assertFalse(observed["checks"]["tenantSecurity"]["ok"])
             self.assertEqual(armed, server_main._production_write_contract_readiness())
+
+    def test_ready_is_observational_and_cannot_arm_an_unverified_process(self):
+        mode, production, read_only, mode_status = self.production_mode()
+        with (
+            mode,
+            production,
+            read_only,
+            mode_status,
+            patch.object(
+                server_main,
+                "_deployment_readiness_checks",
+                new=AsyncMock(return_value=healthy_checks()),
+            ),
+            patch.object(
+                server_main.runtime_config,
+                "readiness_token",
+                return_value="ready-token",
+            ),
+        ):
+            self.assertIsNone(server_main._PRODUCTION_WRITE_GATE_SNAPSHOT)
+            response = asyncio.run(server_main.readiness("ready-token", ""))
+            self.assertEqual(200, response.status_code)
+            observed = json.loads(response.body)
+            self.assertTrue(observed["ready"])
+            self.assertTrue(observed["writeReady"])
+            self.assertIsNone(server_main._PRODUCTION_WRITE_GATE_SNAPSHOT)
+            cached = server_main._production_write_contract_readiness()
+
+        self.assertFalse(cached["ok"])
+        self.assertFalse(cached["startupVerified"])
+        self.assertEqual(
+            ["startup-contract-unverified"],
+            cached["writeEnableBlockers"],
+        )
 
     def test_read_only_ready_reports_migration_blockers_without_blocking_boot(self):
         checks = healthy_checks()
