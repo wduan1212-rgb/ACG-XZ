@@ -12595,7 +12595,8 @@ def _video_workshop_runtime_usage_identity(sidecar, project_id):
         "model": model,
         "unitLabel": unit_label,
     }
-    fingerprints = {_canonical_json_sha256(immutable)}
+    request_fingerprint = _canonical_json_sha256(immutable)
+    fingerprints = {request_fingerprint}
     normalized_unit_label = unit_label
     typed_unit_label = _VIDEO_WORKSHOP_USAGE_UNIT_LABELS.get(usage_kind, "")
     if unit_label == "次" and typed_unit_label and typed_unit_label != unit_label:
@@ -12615,6 +12616,7 @@ def _video_workshop_runtime_usage_identity(sidecar, project_id):
         "model": model,
         "unitLabel": unit_label,
         "normalizedUnitLabel": normalized_unit_label,
+        "requestFingerprint": request_fingerprint,
         "requestFingerprints": fingerprints,
     }
 
@@ -12678,7 +12680,7 @@ def _video_workshop_usage_receipt_status_locked(
         (str(row[0]),),
     ).fetchall()
     settlement = settlement_rows[0] if len(settlement_rows) == 1 else None
-    settlement_exact = bool(
+    settlement_v2_exact = bool(
         settlement
         and settlement[0] == "video-workshop-sidecar"
         and settlement[1] == identity["operationId"]
@@ -12698,6 +12700,34 @@ def _video_workshop_usage_receipt_status_locked(
             "reason": "settlement-evidence-duplicate",
             "central": central,
         }
+    legacy_rows = conn.execute(
+        "SELECT operation_id,central_receipt_id,resolution,"
+        "sidecar_receipt_sha256,central_receipt_after_sha256 "
+        "FROM model_usage_settlement_entries WHERE operation_id=? "
+        "AND central_receipt_id=? ORDER BY created_at",
+        (identity["operationId"], str(row[0])),
+    ).fetchall()
+    if len(legacy_rows) > 1:
+        return {
+            "state": "conflict",
+            "reason": "legacy-settlement-evidence-duplicate",
+            "central": central,
+        }
+    legacy_settlement = legacy_rows[0] if legacy_rows else None
+    settlement_v1_exact = bool(
+        legacy_settlement
+        and legacy_settlement[0] == identity["operationId"]
+        and legacy_settlement[1] == str(row[0])
+        and hmac.compare_digest(
+            str(legacy_settlement[3] or ""), _canonical_json_sha256(sidecar),
+        )
+        and hmac.compare_digest(
+            str(legacy_settlement[4] or ""),
+            _canonical_json_sha256(
+                _model_usage_settlement_central_evidence_locked(conn, row)
+            ),
+        )
+    )
     if sidecar_status in {"confirmed", "succeeded"}:
         prompt = _usage_int(sidecar.get("inputTokens"))
         completion = _usage_int(sidecar.get("outputTokens"))
@@ -12731,8 +12761,16 @@ def _video_workshop_usage_receipt_status_locked(
         }
     if sidecar_status == "unknown":
         terminal = bool(
-            settlement_exact
-            and settlement[2] == "sidecar-attempt-outcome-unknown"
+            (
+                (
+                    settlement_v2_exact
+                    and settlement[2] == "sidecar-attempt-outcome-unknown"
+                )
+                or (
+                    settlement_v1_exact
+                    and legacy_settlement[2] == "operator-confirmed-unknown"
+                )
+            )
             and central_status == "succeeded"
             and outbox_state == "projected"
             and int(central.get("calls") or 0) == 1
@@ -12749,7 +12787,7 @@ def _video_workshop_usage_receipt_status_locked(
         }
     if sidecar_status == "submitted":
         terminal = bool(
-            settlement_exact
+            settlement_v2_exact
             and settlement[2] == "sidecar-submitted-indeterminate"
             and central_status == "indeterminate"
             and outbox_state == "ignored"
@@ -12801,7 +12839,7 @@ def video_workshop_usage_readiness(
         "effectivePendingRows": 0,
         "conflictRows": 0,
     }
-    if not root.is_dir() or root.is_symlink():
+    if not root.is_absolute() or not root.is_dir() or root.is_symlink():
         result["invalidProjectFiles"] = 1
         return result
     target_id = str(project_id or "").strip()
@@ -12917,6 +12955,643 @@ def video_workshop_usage_readiness(
         return result
     finally:
         conn.close()
+
+
+VIDEO_WORKSHOP_USAGE_RECOVERY_PLAN_FORMAT = (
+    "acg-video-workshop-usage-recovery-plan-v1"
+)
+VIDEO_WORKSHOP_USAGE_RECOVERY_AUTHORIZATION = (
+    "operator-reviewed-durable-sidecar-completion-no-provider-call"
+)
+_VIDEO_WORKSHOP_USAGE_RECOVERY_PLAN_KEYS = {
+    "format", "authorization", "databaseIdentity",
+    "snapshotManifestSha256", "snapshotMediaInventoryDigest",
+    "reviewedBy", "reviewedAt", "entries",
+}
+_VIDEO_WORKSHOP_USAGE_RECOVERY_ENTRY_KEYS = {
+    "projectId", "memberId", "teamId", "operationId", "receiptId",
+    "receiptKey", "requestFingerprint", "centralReceiptBeforeSha256",
+    "sidecarReceiptSha256",
+}
+
+
+def _video_workshop_usage_absent_evidence(
+    *, receipt_id, receipt_key, member_id, operation_id,
+):
+    return {
+        "state": "absent",
+        "receiptId": str(receipt_id),
+        "receiptKey": str(receipt_key),
+        "memberId": str(member_id),
+        "operationId": str(operation_id),
+        "source": "video-workshop-sidecar",
+    }
+
+
+def _video_workshop_usage_recovery_candidates_locked(conn, project_root):
+    """Freeze all central-missing, terminal sidecar completions.
+
+    The sidecar project files are evidence only.  This helper never mutates
+    them and rejects the complete batch if any receipt is ambiguous, nonterminal
+    or conflicts with central immutable state.
+    """
+
+    root = Path(project_root).expanduser()
+    if not root.is_dir() or root.is_symlink():
+        raise StoreNotReadyError("video workshop usage project root invalid")
+    owners = {}
+    mapping_conflicts = set()
+    for doc_id, owner_id, raw in conn.execute(
+        "SELECT id,owner_id,data FROM docs WHERE collection='customProjects' "
+        "ORDER BY id"
+    ).fetchall():
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        state = payload.get("projectState")
+        workshop_id = str(
+            (state or {}).get("workshopProjectId")
+            if isinstance(state, dict) else ""
+        ).strip()
+        if payload.get("kind") != "video" or not workshop_id:
+            continue
+        if (
+            str(payload.get("id") or "") != str(doc_id)
+            or str(payload.get("ownerId") or "") != str(owner_id)
+            or not _resource_scope_allows_actor_locked(
+                conn, "customProjects", doc_id, owner_id,
+            )
+        ):
+            mapping_conflicts.add(workshop_id)
+        else:
+            owners.setdefault(workshop_id, set()).add(str(owner_id))
+
+    entries = []
+    sidecars = {}
+    seen_operations = set()
+    for path in sorted(root.glob("*.json")):
+        if not path.is_file() or path.is_symlink():
+            raise StoreNotReadyError("video workshop usage project file invalid")
+        try:
+            payload = json.loads(path.read_text("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise StoreNotReadyError(
+                "video workshop usage project JSON invalid"
+            ) from exc
+        project_id = str((payload or {}).get("id") or "").strip()
+        receipts = (payload or {}).get("modelUsageReceipts") or []
+        if (
+            not isinstance(payload, dict)
+            or project_id != path.stem
+            or not isinstance(receipts, list)
+        ):
+            raise StoreNotReadyError("video workshop usage project identity invalid")
+        if not receipts:
+            continue
+        project_owners = owners.get(project_id, set())
+        if project_id in mapping_conflicts or len(project_owners) != 1:
+            raise StoreNotReadyError(
+                f"video workshop usage project owner invalid:{project_id}"
+            )
+        member_id = next(iter(project_owners))
+        scope = _member_resource_scope_locked(conn, member_id)
+        if not scope:
+            raise StoreNotReadyError(
+                f"video workshop usage member scope invalid:{project_id}"
+            )
+        team_id = scope[1] if scope[0] == "team" else ""
+        for sidecar in receipts:
+            try:
+                identity = _video_workshop_runtime_usage_identity(
+                    sidecar, project_id,
+                )
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise StoreNotReadyError(str(exc)) from exc
+            operation_id = identity["operationId"]
+            if operation_id in seen_operations:
+                raise StoreNotReadyError(
+                    f"video workshop usage operation duplicate:{operation_id}"
+                )
+            seen_operations.add(operation_id)
+            status = _video_workshop_usage_receipt_status_locked(
+                conn, member_id, team_id, project_id, sidecar,
+            )
+            if status["state"] == "terminal":
+                continue
+            if not (
+                status["state"] == "pending"
+                and status["reason"] == "central-missing"
+                and identity["status"] in {"confirmed", "succeeded"}
+                and str(sidecar.get("providerRef") or "").strip()
+            ):
+                raise StoreNotReadyError(
+                    f"video workshop usage recovery conflict:{operation_id}:"
+                    f"{status['reason']}"
+                )
+            receipt_key, receipt_id = _model_usage_receipt_identifiers(
+                "video-workshop-sidecar", member_id, operation_id,
+            )
+            collisions = conn.execute(
+                "SELECT receipt_id FROM model_usage_receipts WHERE receipt_id=? "
+                "OR receipt_key=? OR (source='video-workshop-sidecar' "
+                "AND operation_id=?)",
+                (receipt_id, receipt_key, operation_id),
+            ).fetchall()
+            if collisions:
+                raise StoreNotReadyError(
+                    f"video workshop usage recovery central collision:{operation_id}"
+                )
+            provider_ref = str(sidecar.get("providerRef") or "").strip()[:240]
+            if conn.execute(
+                "SELECT 1 FROM model_usage_receipts WHERE provider_ref=? LIMIT 1",
+                (provider_ref,),
+            ).fetchone():
+                raise StoreNotReadyError(
+                    f"video workshop usage recovery provider reference collision:"
+                    f"{operation_id}"
+                )
+            absent_sha = _canonical_json_sha256(
+                _video_workshop_usage_absent_evidence(
+                    receipt_id=receipt_id,
+                    receipt_key=receipt_key,
+                    member_id=member_id,
+                    operation_id=operation_id,
+                )
+            )
+            entries.append({
+                "projectId": project_id,
+                "memberId": member_id,
+                "teamId": team_id,
+                "operationId": operation_id,
+                "receiptId": receipt_id,
+                "receiptKey": receipt_key,
+                "requestFingerprint": identity["requestFingerprint"],
+                "centralReceiptBeforeSha256": absent_sha,
+                "sidecarReceiptSha256": _canonical_json_sha256(sidecar),
+            })
+            sidecars[operation_id] = sidecar
+    entries.sort(key=lambda item: item["operationId"])
+    return entries, sidecars
+
+
+def video_workshop_usage_recovery_evidence(
+    project_root, *, expected_identity, expected_schema_version,
+    backup_binding, runtime_snapshot_binding,
+):
+    """Preview the exact recoverable central-missing sidecar completion set."""
+
+    actual_identity = _database_identity(DB_PATH)
+    if not hmac.compare_digest(str(expected_identity or ""), actual_identity):
+        raise StoreNotReadyError("video workshop usage recovery identity mismatch")
+    if (
+        int(expected_schema_version or 0)
+        != MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION
+    ):
+        raise StoreNotReadyError("video workshop usage recovery schema mismatch")
+    snapshot = _verify_runtime_snapshot_binding(
+        runtime_snapshot_binding, required=True,
+    )
+    with _lock:
+        conn = _connect(read_only=True)
+        try:
+            conn.execute("BEGIN")
+            _verify_migration_backup_binding_locked(conn, backup_binding)
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError(
+                    "video workshop usage recovery quick_check failed"
+                )
+            prerequisite = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            if prerequisite != (
+                MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM, "success",
+            ):
+                raise StoreNotReadyError(
+                    "video workshop usage recovery prerequisite is not ready"
+                )
+            if _model_usage_v2_unresolved_receipt_ids_locked(conn):
+                raise StoreNotReadyError(
+                    "video workshop usage recovery central unresolved rows exist"
+                )
+            entries, _sidecars = _video_workshop_usage_recovery_candidates_locked(
+                conn, project_root,
+            )
+            conn.rollback()
+            return {
+                "ok": True,
+                "dryRun": True,
+                "format": VIDEO_WORKSHOP_USAGE_RECOVERY_PLAN_FORMAT,
+                "authorization": VIDEO_WORKSHOP_USAGE_RECOVERY_AUTHORIZATION,
+                "databaseIdentity": actual_identity,
+                "snapshotManifestSha256": snapshot["manifestSha256"],
+                "snapshotMediaInventoryDigest": snapshot["mediaInventoryDigest"],
+                "plannedRows": len(entries),
+                "entries": entries,
+            }
+        finally:
+            conn.close()
+
+
+def _validate_video_workshop_usage_recovery_plan(plan):
+    if (
+        not isinstance(plan, dict)
+        or set(plan) != _VIDEO_WORKSHOP_USAGE_RECOVERY_PLAN_KEYS
+    ):
+        raise StoreNotReadyError("video workshop usage recovery plan fields invalid")
+    if plan.get("format") != VIDEO_WORKSHOP_USAGE_RECOVERY_PLAN_FORMAT:
+        raise StoreNotReadyError("video workshop usage recovery plan format invalid")
+    if plan.get("authorization") != VIDEO_WORKSHOP_USAGE_RECOVERY_AUTHORIZATION:
+        raise StoreNotReadyError(
+            "video workshop usage recovery authorization invalid"
+        )
+    reviewed_by = str(plan.get("reviewedBy") or "").strip()
+    reviewed_at = plan.get("reviewedAt")
+    if (
+        not reviewed_by
+        or len(reviewed_by) > 120
+        or type(reviewed_at) is not int
+        or reviewed_at <= 0
+        or reviewed_at > int(time.time() * 1000) + 5 * 60 * 1000
+    ):
+        raise StoreNotReadyError(
+            "video workshop usage recovery operator review invalid"
+        )
+    for field, length in (
+        ("databaseIdentity", 16),
+        ("snapshotManifestSha256", 64),
+        ("snapshotMediaInventoryDigest", 64),
+    ):
+        value = str(plan.get(field) or "").strip().lower()
+        if not re.fullmatch(rf"[0-9a-f]{{{length}}}", value):
+            raise StoreNotReadyError(
+                f"video workshop usage recovery {field} invalid"
+            )
+    entries = plan.get("entries")
+    if not isinstance(entries, list) or not entries or len(entries) > 100:
+        raise StoreNotReadyError("video workshop usage recovery entries invalid")
+    operation_ids = []
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != _VIDEO_WORKSHOP_USAGE_RECOVERY_ENTRY_KEYS
+        ):
+            raise StoreNotReadyError(
+                "video workshop usage recovery entry fields invalid"
+            )
+        operation_id = str(entry.get("operationId") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:/+\-]{1,180}", operation_id):
+            raise StoreNotReadyError(
+                "video workshop usage recovery operation invalid"
+            )
+        for field in (
+            "requestFingerprint", "centralReceiptBeforeSha256",
+            "sidecarReceiptSha256", "receiptKey",
+        ):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(entry.get(field) or "")):
+                raise StoreNotReadyError(
+                    f"video workshop usage recovery entry {field} invalid"
+                )
+        if not re.fullmatch(r"mur_[0-9a-f]{28}", str(entry.get("receiptId") or "")):
+            raise StoreNotReadyError(
+                "video workshop usage recovery receipt ID invalid"
+            )
+        for field, limit in (("projectId", 180), ("memberId", 120), ("teamId", 120)):
+            value = str(entry.get(field) or "").strip()
+            if (field != "teamId" and not value) or len(value) > limit:
+                raise StoreNotReadyError(
+                    f"video workshop usage recovery entry {field} invalid"
+                )
+        operation_ids.append(operation_id)
+    if operation_ids != sorted(set(operation_ids)):
+        raise StoreNotReadyError(
+            "video workshop usage recovery operations are not exact"
+        )
+    return entries
+
+
+def recover_video_workshop_usage_reviewed(
+    *, plan, plan_sha256, sidecar_receipts, project_root, expected_identity,
+    expected_schema_version, backup_binding, runtime_snapshot_binding,
+    created_by="deployment", dry_run=False,
+):
+    """Import exact durable sidecar completions without any provider call."""
+
+    global _initialized
+    entries = _validate_video_workshop_usage_recovery_plan(plan)
+    operation_ids = [entry["operationId"] for entry in entries]
+    if set(sidecar_receipts or {}) != set(operation_ids):
+        raise StoreNotReadyError(
+            "video workshop usage recovery sidecar set mismatch"
+        )
+    plan_sha256 = str(plan_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", plan_sha256):
+        raise StoreNotReadyError("video workshop usage recovery plan hash invalid")
+    actual_identity = _database_identity(DB_PATH)
+    if not (
+        hmac.compare_digest(str(expected_identity or ""), actual_identity)
+        and hmac.compare_digest(
+            str(plan.get("databaseIdentity") or ""), actual_identity,
+        )
+    ):
+        raise StoreNotReadyError("video workshop usage recovery identity mismatch")
+    if (
+        int(expected_schema_version or 0)
+        != MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION
+    ):
+        raise StoreNotReadyError("video workshop usage recovery schema mismatch")
+    snapshot = _verify_runtime_snapshot_binding(
+        runtime_snapshot_binding, required=True,
+    )
+    if not dry_run:
+        if runtime_config.is_read_only():
+            raise StoreNotReadyError(
+                "read-only runtime cannot recover video workshop usage"
+            )
+        if str(os.getenv("ACG_ALLOW_VIDEO_WORKSHOP_USAGE_RECOVERY", "")).strip() != "1":
+            raise StoreNotReadyError(
+                "video workshop usage recovery authorization required"
+            )
+    settlement_id = hashlib.sha256((
+        "video-workshop-usage-recovery-v1|" + actual_identity + "|"
+        + str(plan.get("snapshotManifestSha256") or "") + "|" + plan_sha256
+    ).encode("utf-8")).hexdigest()
+    with _lock:
+        conn = _connect(read_only=True) if dry_run else _connect_migration_target()
+        try:
+            conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
+            if not hmac.compare_digest(actual_identity, _database_identity(DB_PATH)):
+                raise StoreNotReadyError(
+                    "video workshop usage recovery database identity drift"
+                )
+            _verify_migration_backup_binding_locked(conn, backup_binding)
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError(
+                    "video workshop usage recovery quick_check failed"
+                )
+            if (
+                not hmac.compare_digest(
+                    str(plan.get("snapshotManifestSha256") or ""),
+                    snapshot["manifestSha256"],
+                )
+                or not hmac.compare_digest(
+                    str(plan.get("snapshotMediaInventoryDigest") or ""),
+                    snapshot["mediaInventoryDigest"],
+                )
+            ):
+                raise StoreNotReadyError(
+                    "video workshop usage recovery snapshot binding mismatch"
+                )
+            prerequisite = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
+            if prerequisite != (
+                MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM, "success",
+            ):
+                raise StoreNotReadyError(
+                    "video workshop usage recovery prerequisite is not ready"
+                )
+            existing = conn.execute(
+                "SELECT plan_sha256,database_identity,snapshot_manifest_sha256,"
+                "snapshot_media_digest,receipt_count,terminal_rows,projected_rows,"
+                "indeterminate_rows FROM model_usage_settlements_v2 "
+                "WHERE settlement_id=?",
+                (settlement_id,),
+            ).fetchone()
+            if existing:
+                expected_header = (
+                    plan_sha256, actual_identity,
+                    str(plan["snapshotManifestSha256"]),
+                    str(plan["snapshotMediaInventoryDigest"]),
+                    len(entries), len(entries), len(entries), 0,
+                )
+                stored_entries = conn.execute(
+                    "SELECT receipt_id,source,operation_id,resolution,"
+                    "central_receipt_before_sha256,sidecar_receipt_sha256,"
+                    "central_receipt_after_sha256,projected "
+                    "FROM model_usage_settlement_entries_v2 "
+                    "WHERE settlement_id=? ORDER BY operation_id",
+                    (settlement_id,),
+                ).fetchall()
+                if (
+                    tuple(existing) != expected_header
+                    or len(stored_entries) != len(entries)
+                ):
+                    raise StoreNotReadyError(
+                        "video workshop usage recovery immutable header conflict"
+                    )
+                for entry, stored in zip(entries, stored_entries):
+                    if tuple(stored[:6]) != (
+                        entry["receiptId"], "video-workshop-sidecar",
+                        entry["operationId"], "sidecar-succeeded",
+                        entry["centralReceiptBeforeSha256"],
+                        entry["sidecarReceiptSha256"],
+                    ) or int(stored[7]) != 1:
+                        raise StoreNotReadyError(
+                            "video workshop usage recovery immutable entry conflict"
+                        )
+                    row = _model_usage_receipt_row_locked(
+                        conn, entry["receiptId"],
+                    )
+                    if not row:
+                        raise StoreNotReadyError(
+                            "video workshop usage recovery receipt missing"
+                        )
+                    current = _model_usage_settlement_central_evidence_locked(
+                        conn, row,
+                    )
+                    status = _video_workshop_usage_receipt_status_locked(
+                        conn, entry["memberId"], entry["teamId"],
+                        entry["projectId"], sidecar_receipts[entry["operationId"]],
+                    )
+                    if (
+                        status["state"] != "terminal"
+                        or _canonical_json_sha256(current) != stored[6]
+                    ):
+                        raise StoreNotReadyError(
+                            "video workshop usage recovery replay drift"
+                        )
+                if _model_usage_v2_unresolved_receipt_ids_locked(conn):
+                    raise StoreNotReadyError(
+                        "video workshop usage recovery replay unresolved drift"
+                    )
+                conn.rollback()
+                return {
+                    "ok": True, "dryRun": bool(dry_run), "applied": False,
+                    "reused": True, "settlementId": settlement_id,
+                    "plannedRows": len(entries), "insertedRows": 0,
+                    "terminalRows": 0, "projectedRows": 0,
+                    "unresolved": 0, "outboxPending": 0, "quickCheck": "ok",
+                }
+            if _model_usage_v2_unresolved_receipt_ids_locked(conn):
+                raise StoreNotReadyError(
+                    "video workshop usage recovery central unresolved rows exist"
+                )
+            live_entries, _live_sidecars = (
+                _video_workshop_usage_recovery_candidates_locked(conn, project_root)
+            )
+            if live_entries != entries:
+                raise StoreNotReadyError(
+                    "video workshop usage recovery plan does not match live evidence"
+                )
+            for entry in entries:
+                sidecar = sidecar_receipts[entry["operationId"]]
+                if _canonical_json_sha256(sidecar) != entry["sidecarReceiptSha256"]:
+                    raise StoreNotReadyError(
+                        "video workshop usage recovery snapshot evidence mismatch:"
+                        + entry["operationId"]
+                    )
+            if dry_run:
+                conn.rollback()
+                return {
+                    "ok": True, "dryRun": True, "applied": False,
+                    "reused": False, "settlementId": settlement_id,
+                    "plannedRows": len(entries), "insertedRows": 0,
+                    "terminalRows": 0, "projectedRows": 0,
+                    "unresolved": 0, "outboxPending": 0, "quickCheck": "ok",
+                }
+            now = int(time.time() * 1000)
+            completed = []
+            for entry in entries:
+                operation_id = entry["operationId"]
+                sidecar = sidecar_receipts[operation_id]
+                identity = _video_workshop_runtime_usage_identity(
+                    sidecar, entry["projectId"],
+                )
+                if not hmac.compare_digest(
+                    identity["requestFingerprint"], entry["requestFingerprint"],
+                ):
+                    raise StoreNotReadyError(
+                        f"video workshop usage recovery fingerprint drift:{operation_id}"
+                    )
+                resolved_member, member_name, resolved_team = (
+                    _model_usage_authority_locked(
+                        conn, entry["memberId"], entry["teamId"],
+                    )
+                )
+                if (
+                    resolved_member != entry["memberId"]
+                    or resolved_team != entry["teamId"]
+                ):
+                    raise StoreNotReadyError(
+                        f"video workshop usage recovery actor drift:{operation_id}"
+                    )
+                central_identity = {
+                    "memberId": resolved_member,
+                    "teamId": resolved_team,
+                    "surface": "video-workshop",
+                    "feature": identity["feature"],
+                    "usageKind": identity["usageKind"],
+                    "provider": identity["provider"],
+                    "model": identity["model"],
+                    "operation": "provider-call",
+                    "operationId": operation_id,
+                    "idempotencyKey": operation_id,
+                    "requestFingerprint": identity["requestFingerprint"],
+                    "source": "video-workshop-sidecar",
+                }
+                completion = _model_usage_settlement_completion(
+                    {"operationId": operation_id, "resolution": "sidecar-succeeded"},
+                    sidecar, central_identity,
+                )
+                event_at = completion["eventAt"] or now
+                conn.execute(
+                    "INSERT INTO model_usage_receipts("
+                    "receipt_id,receipt_key,member_id,member_name,team_id,surface,"
+                    "feature,usage_kind,provider,model,operation,operation_id,"
+                    "idempotency_key,request_fingerprint,provider_ref,call_status,"
+                    "prompt_tokens,completion_tokens,total_tokens,calls,output_units,"
+                    "unit_label,source,error,event_at,created_at,updated_at,completed_at"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        entry["receiptId"], entry["receiptKey"], resolved_member,
+                        member_name, resolved_team, "video-workshop",
+                        identity["feature"], identity["usageKind"],
+                        completion["provider"], completion["model"], "provider-call",
+                        operation_id, operation_id, identity["requestFingerprint"],
+                        completion["providerRef"], "succeeded",
+                        completion["promptTokens"], completion["completionTokens"],
+                        completion["totalTokens"], 1, completion["outputUnits"],
+                        completion["unitLabel"], "video-workshop-sidecar", "",
+                        event_at, event_at, now, now,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO model_usage_outbox("
+                    "receipt_id,state,attempts,available_at,last_error,legacy_event_kind,"
+                    "legacy_event_id,created_at,updated_at,projected_at"
+                    ") VALUES(?,'pending',0,?,'','','',?,?,NULL)",
+                    (entry["receiptId"], now, now, now),
+                )
+                row = _model_usage_receipt_row_locked(conn, entry["receiptId"])
+                _project_model_usage_settlement_receipt_locked(conn, row, now)
+                final = _model_usage_settlement_central_evidence_locked(
+                    conn, _model_usage_receipt_row_locked(conn, entry["receiptId"]),
+                )
+                completed.append((entry, _canonical_json_sha256(final)))
+            if _model_usage_v2_unresolved_receipt_ids_locked(conn):
+                raise StoreNotReadyError(
+                    "video workshop usage recovery final unresolved rows"
+                )
+            outbox_pending = int(conn.execute(
+                "SELECT COUNT(*) FROM model_usage_outbox "
+                "WHERE state IN ('pending','retry')"
+            ).fetchone()[0] or 0)
+            if outbox_pending:
+                raise StoreNotReadyError(
+                    "video workshop usage recovery final outbox pending"
+                )
+            if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
+                raise StoreNotReadyError(
+                    "video workshop usage recovery final quick_check failed"
+                )
+            conn.execute(
+                "INSERT INTO model_usage_settlements_v2("
+                "settlement_id,plan_sha256,database_identity,snapshot_manifest_sha256,"
+                "snapshot_media_digest,receipt_count,terminal_rows,projected_rows,"
+                "indeterminate_rows,created_at,created_by) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    settlement_id, plan_sha256, actual_identity,
+                    snapshot["manifestSha256"], snapshot["mediaInventoryDigest"],
+                    len(completed), len(completed), len(completed), 0, now,
+                    str(created_by or plan.get("reviewedBy") or "deployment")[:120],
+                ),
+            )
+            conn.executemany(
+                "INSERT INTO model_usage_settlement_entries_v2("
+                "settlement_id,receipt_id,source,operation_id,resolution,"
+                "central_receipt_before_sha256,sidecar_receipt_sha256,"
+                "central_receipt_after_sha256,projected,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,1,?)",
+                [
+                    (
+                        settlement_id, entry["receiptId"],
+                        "video-workshop-sidecar", entry["operationId"],
+                        "sidecar-succeeded", entry["centralReceiptBeforeSha256"],
+                        entry["sidecarReceiptSha256"], after_sha, now,
+                    )
+                    for entry, after_sha in completed
+                ],
+            )
+            conn.commit()
+            _initialized = False
+            return {
+                "ok": True, "dryRun": False, "applied": True,
+                "reused": False, "settlementId": settlement_id,
+                "plannedRows": len(completed), "insertedRows": len(completed),
+                "terminalRows": len(completed), "projectedRows": len(completed),
+                "unresolved": 0, "outboxPending": 0, "quickCheck": "ok",
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 # ---------- 模型用量 completion spool（SQLite 锁外持久兜底） ----------

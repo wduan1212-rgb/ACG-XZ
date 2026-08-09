@@ -222,6 +222,19 @@ class ModelUsageSettlementTest(unittest.TestCase):
         self.assertEqual(1, settlements)
         self.assertEqual(2, entries)
 
+        unknown_operation = "video-workshop:project-a:storyboard:operation-b"
+        status = store.video_workshop_usage_receipt_status(
+            self.member[0], "", "project-a", self.sidecars[unknown_operation],
+        )
+        self.assertEqual("terminal", status["state"])
+        self.assertEqual("settled-unknown", status["reason"])
+        tampered_unknown = dict(self.sidecars[unknown_operation])
+        tampered_unknown["feature"] = "tampered-feature"
+        tampered_status = store.video_workshop_usage_receipt_status(
+            self.member[0], "", "project-a", tampered_unknown,
+        )
+        self.assertEqual("conflict", tampered_status["state"])
+
         before = logical_database_dump(store.DB_PATH)
         second = self._apply(plan, plan_sha256, snapshot)
         self.assertFalse(second["applied"])

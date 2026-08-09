@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -401,6 +402,190 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
             model_usage_settlement_v2.load_review_plan(
                 path, expected_sha256=hashlib.sha256(invalid_raw).hexdigest(),
             )
+
+
+class VideoWorkshopUsageRecoveryTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.previous_path = store.DB_PATH
+        self.previous_blob_dir = store.CUSTOM_CANVAS_BLOB_DIR
+        self.previous_initialized = store._initialized
+        store.DB_PATH = Path(self.temp.name) / "video-usage-recovery.sqlite"
+        store.CUSTOM_CANVAS_BLOB_DIR = Path(self.temp.name) / "canvas-blobs"
+        store._initialized = False
+        self.project_root = Path(self.temp.name) / "video-projects"
+        self.project_root.mkdir()
+        self.member = store.add_member(
+            "视频恢复测试", "video-usage-recovery-editor", "123456", "editor",
+            team_id=store.INTERNAL_TEAM_ID, team_role="creator",
+        )
+        self.operation_id = "video-workshop:recovery-project:video:confirmed"
+        immutable = {
+            "schemaVersion": 1,
+            "surface": "video-workshop",
+            "projectId": "recovery-project",
+            "operationId": self.operation_id,
+            "usageKind": "video",
+            "feature": "动态分镜视频生成",
+            "provider": "seedance",
+            "model": "seedance-2.0",
+            "unitLabel": "秒",
+        }
+        self.sidecar = {
+            **immutable,
+            "providerRef": "provider-recovery-confirmed-1",
+            "status": "confirmed",
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "totalTokens": 0,
+            "usageObserved": True,
+            "outputUnits": 8,
+            "occurredAt": "2026-08-09T13:00:00+08:00",
+            "reconcileState": "pending",
+        }
+        self.project = {
+            "id": "recovery-project",
+            "name": "视频用量恢复",
+            "status": "succeeded",
+            "phase": "delivery",
+            "progress": 100,
+            "updatedAt": "2026-08-09T13:00:00+08:00",
+            "plan": {"title": "视频用量恢复", "aspect_ratio": "9:16"},
+            "outputs": [],
+            "modelUsageReceipts": [self.sidecar],
+        }
+        mapped, error = store.sync_custom_video_project(
+            self.member[0], self.project,
+        )
+        self.assertIsNone(error)
+        self.assertTrue(mapped)
+        (self.project_root / "recovery-project.json").write_text(
+            json.dumps(self.project, ensure_ascii=False), encoding="utf-8",
+        )
+
+    def tearDown(self):
+        store.DB_PATH = self.previous_path
+        store.CUSTOM_CANVAS_BLOB_DIR = self.previous_blob_dir
+        store._initialized = self.previous_initialized
+        self.temp.cleanup()
+
+    def _evidence(self):
+        snapshot = current_runtime_snapshot_binding(store)
+        evidence = store.video_workshop_usage_recovery_evidence(
+            self.project_root,
+            expected_identity=store._database_identity(store.DB_PATH),
+            expected_schema_version=(
+                store.MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION
+            ),
+            backup_binding=current_backup_binding(store, store.DB_PATH),
+            runtime_snapshot_binding=snapshot,
+        )
+        return evidence, snapshot
+
+    def _plan(self):
+        evidence, snapshot = self._evidence()
+        plan = {
+            "format": evidence["format"],
+            "authorization": evidence["authorization"],
+            "databaseIdentity": evidence["databaseIdentity"],
+            "snapshotManifestSha256": evidence["snapshotManifestSha256"],
+            "snapshotMediaInventoryDigest": evidence[
+                "snapshotMediaInventoryDigest"
+            ],
+            "reviewedBy": "test-operator",
+            "reviewedAt": int(time.time() * 1000),
+            "entries": evidence["entries"],
+        }
+        return plan, store._canonical_json_sha256(plan), snapshot
+
+    def _apply(self, plan, plan_sha256, snapshot, *, dry_run=False):
+        environment = {
+            "ACG_ALLOW_VIDEO_WORKSHOP_USAGE_RECOVERY": "1",
+            "ACG_READ_ONLY": "0",
+        }
+        with patch.dict(os.environ, environment, clear=False):
+            return store.recover_video_workshop_usage_reviewed(
+                plan=plan,
+                plan_sha256=plan_sha256,
+                sidecar_receipts={self.operation_id: self.sidecar},
+                project_root=self.project_root,
+                expected_identity=store._database_identity(store.DB_PATH),
+                expected_schema_version=(
+                    store.MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION
+                ),
+                backup_binding=current_backup_binding(store, store.DB_PATH),
+                runtime_snapshot_binding=snapshot,
+                created_by="test-operator",
+                dry_run=dry_run,
+            )
+
+    def test_exact_missing_central_completion_imports_and_replays_zero_write(self):
+        plan, plan_sha256, snapshot = self._plan()
+        self.assertEqual(1, len(plan["entries"]))
+        preview = self._apply(plan, plan_sha256, snapshot, dry_run=True)
+        self.assertEqual(1, preview["plannedRows"])
+        self.assertEqual(0, preview["insertedRows"])
+
+        first = self._apply(plan, plan_sha256, snapshot)
+        self.assertTrue(first["applied"])
+        self.assertEqual(1, first["insertedRows"])
+        with sqlite3.connect(store.DB_PATH) as conn:
+            receipt = conn.execute(
+                "SELECT call_status,calls,output_units,unit_label,provider_ref "
+                "FROM model_usage_receipts WHERE operation_id=?",
+                (self.operation_id,),
+            ).fetchone()
+            outbox = conn.execute(
+                "SELECT state FROM model_usage_outbox o JOIN model_usage_receipts r "
+                "ON r.receipt_id=o.receipt_id WHERE r.operation_id=?",
+                (self.operation_id,),
+            ).fetchone()[0]
+            event = conn.execute(
+                "SELECT api_type,calls,output_units,unit_label FROM api_usage_events"
+            ).fetchone()
+        self.assertEqual(
+            ("succeeded", 1, 8, "秒", "provider-recovery-confirmed-1"), receipt,
+        )
+        self.assertEqual("projected", outbox)
+        self.assertEqual(("video", 1, 8, "秒"), event)
+        audit = store.video_workshop_usage_readiness(self.project_root)
+        self.assertTrue(audit["ok"], audit)
+        self.assertEqual(1, audit["terminalRows"])
+
+        before = logical_database_dump(store.DB_PATH)
+        second = self._apply(plan, plan_sha256, snapshot)
+        self.assertFalse(second["applied"])
+        self.assertTrue(second["reused"])
+        self.assertEqual(0, second["insertedRows"])
+        self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+        tampered = dict(self.sidecar)
+        tampered["providerRef"] = "provider-recovery-tampered"
+        before_tamper = logical_database_dump(store.DB_PATH)
+        with self.assertRaisesRegex(
+            store.StoreNotReadyError, "replay drift",
+        ):
+            with patch.dict(
+                os.environ,
+                {
+                    "ACG_ALLOW_VIDEO_WORKSHOP_USAGE_RECOVERY": "1",
+                    "ACG_READ_ONLY": "0",
+                },
+                clear=False,
+            ):
+                store.recover_video_workshop_usage_reviewed(
+                    plan=plan,
+                    plan_sha256=plan_sha256,
+                    sidecar_receipts={self.operation_id: tampered},
+                    project_root=self.project_root,
+                    expected_identity=store._database_identity(store.DB_PATH),
+                    expected_schema_version=(
+                        store.MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION
+                    ),
+                    backup_binding=current_backup_binding(store, store.DB_PATH),
+                    runtime_snapshot_binding=snapshot,
+                )
+        self.assertEqual(before_tamper, logical_database_dump(store.DB_PATH))
 
 
 if __name__ == "__main__":

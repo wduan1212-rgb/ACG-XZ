@@ -436,6 +436,35 @@ def main(argv=None) -> int:
     _add_usage_settlement_v2_plan_confirmation(usage_v2_settle)
     _add_runtime_snapshot_confirmation(usage_v2_settle, required=True)
     _add_backup_confirmation(usage_v2_settle)
+    video_usage_recover_inspect = subparsers.add_parser(
+        "video-usage-recover-inspect",
+        help="inspect exact durable sidecar completions missing from central usage",
+    )
+    _add_resource_confirmations(video_usage_recover_inspect)
+    _add_runtime_snapshot_confirmation(video_usage_recover_inspect, required=True)
+    _add_backup_confirmation(video_usage_recover_inspect)
+    video_usage_recover_preflight = subparsers.add_parser(
+        "video-usage-recover-preflight",
+        help="validate an exact reviewed sidecar-to-central recovery plan",
+    )
+    _add_resource_confirmations(video_usage_recover_preflight)
+    _add_recovery_plan_confirmation(
+        video_usage_recover_preflight,
+        help_text="operator-reviewed acg-video-workshop-usage-recovery-plan-v1",
+    )
+    _add_runtime_snapshot_confirmation(video_usage_recover_preflight, required=True)
+    _add_backup_confirmation(video_usage_recover_preflight)
+    video_usage_recover = subparsers.add_parser(
+        "video-usage-recover",
+        help="atomically import exact durable sidecar completions without provider calls",
+    )
+    _add_resource_confirmations(video_usage_recover)
+    _add_recovery_plan_confirmation(
+        video_usage_recover,
+        help_text="operator-reviewed acg-video-workshop-usage-recovery-plan-v1",
+    )
+    _add_runtime_snapshot_confirmation(video_usage_recover, required=True)
+    _add_backup_confirmation(video_usage_recover)
     resource_settle_preflight = subparsers.add_parser(
         "resource-settle-preflight",
         help="preview deterministic post-140002 canvas job scopes",
@@ -805,6 +834,60 @@ def main(argv=None) -> int:
                 runtime_snapshot_binding=runtime_snapshot_binding,
                 created_by=plan.get("reviewedBy") or "deployment",
                 dry_run=args.command == "usage-settle-v2-preflight",
+            )
+        elif args.command == "video-usage-recover-inspect":
+            project_root = Path(
+                str(os.getenv("VIDEO_WORKSHOP_PROJECTS_DIR", "")).strip()
+            ).expanduser()
+            result = store.video_workshop_usage_recovery_evidence(
+                project_root,
+                expected_identity=args.confirm_identity,
+                expected_schema_version=args.confirm_schema_version,
+                backup_binding=_verified_backup_binding(args, required=True),
+                runtime_snapshot_binding=_verified_runtime_snapshot_binding(
+                    args, required=True,
+                ),
+            )
+        elif args.command in {
+            "video-usage-recover-preflight", "video-usage-recover",
+        }:
+            if (
+                args.command == "video-usage-recover"
+                and str(
+                    os.getenv("ACG_ALLOW_VIDEO_WORKSHOP_USAGE_RECOVERY", "")
+                ).strip() != "1"
+            ):
+                parser.error(
+                    "ACG_ALLOW_VIDEO_WORKSHOP_USAGE_RECOVERY=1 is required"
+                )
+            plan, plan_sha256 = production_recovery.load_review_plan(
+                args.review_plan,
+                expected_sha256=args.confirm_review_plan_sha256,
+                expected_format=store.VIDEO_WORKSHOP_USAGE_RECOVERY_PLAN_FORMAT,
+            )
+            operation_ids = [
+                str(entry.get("operationId") or "")
+                for entry in list(plan.get("entries") or [])
+                if isinstance(entry, dict)
+            ]
+            sidecar_receipts = model_usage_settlement.extract_sidecar_receipts(
+                args.runtime_snapshot, operation_ids,
+            )
+            result = store.recover_video_workshop_usage_reviewed(
+                plan=plan,
+                plan_sha256=plan_sha256,
+                sidecar_receipts=sidecar_receipts,
+                project_root=Path(
+                    str(os.getenv("VIDEO_WORKSHOP_PROJECTS_DIR", "")).strip()
+                ).expanduser(),
+                expected_identity=args.confirm_identity,
+                expected_schema_version=args.confirm_schema_version,
+                backup_binding=_verified_backup_binding(args, required=True),
+                runtime_snapshot_binding=_verified_runtime_snapshot_binding(
+                    args, required=True,
+                ),
+                created_by=plan.get("reviewedBy") or "deployment",
+                dry_run=args.command == "video-usage-recover-preflight",
             )
         elif args.command in {
             "resource-settle-preflight", "resource-settle",
