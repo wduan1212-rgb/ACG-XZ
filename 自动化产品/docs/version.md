@@ -1,21 +1,23 @@
 # 星阵版本记录
 
-## v140.5 - 2026-08-09（媒体隔离闭环本地候选，尚未部署）
+## v140.5 - 2026-08-09（生产已恢复完整 RW）
 
 ### 本版范围
 
-- 新增 expand-only `140010` 媒体隔离账本，不改写原 docs、引用、`private_media_registry` 或物理文件。只有用户明确授权、操作员逐条审核且精确绑定当前 DB identity、fresh SQLite v2 backup、fresh 20-component complete snapshot 和 live media digest 的计划才可 preview/apply；任意缺一、多一、owner/scope/hash/reference 或库/媒体摘要漂移均整批 fail closed。
-- 当前精确 `46` 个无可靠原件引用仍全部保留：`38` 个 succeeded `customCanvasGenerationJobs` 输出、`1` 个已发布 community canvas 与 `7` 个 server asset/upload。隔离只记录“历史存在、原件不可用”，不伪造占位、hash、归属或 provider 结果，不重试 provider，不删除业务记录。二跑必须 `applied=false / insertedRows=0`。
-- 媒体审计继续显示 raw `missingReferencedFiles`和 `pendingRows`，并新增 `isolatedMissingReferencedFiles`、`unisolatedMissingReferencedFiles` 和 `effectivePendingRows`。现网形态下 raw `48 pending = 46 精确隔离 + 2 publicAvatarExemptions`；不硬编数量，只有当场审计计算出 unisolated/effective 均为 `0`，且 schema/resource/registry/usage/SQLite 其他门禁全部正常，写门才可进入可解锁状态；任何未来新增缺失仍阻断。
-- 受影响条目的元数据和历史继续可见；精确媒体读取返回 `410 media_isolated`，社区卡片/详情显示“原件不可用”，不白屏或无限重试。下载、ZIP、发布、转发、复用等依赖原件的操作对该条目显式拒绝；其他媒体和业务权限不放宽。社区列表在同一读快照中批量解析隔离身份，避免按卡片重复打开数据库。
-- 隔离基线建立后，新写路径不得新建物理不存在的引用，已隔离历史条目可修改无关元数据，但不能暗中删掉/替换实际引用。跨 owner/team 读取仍拒绝，供应商仅保留既有 delivery-linked 精确只读边界。
-- 主平台、供应商视图和视频工坊的本地候选缓存身份统一为 `20260809-v140-media-isolation-1`。生产仍运行功能提交 `eb4c9c599c25aaad3d361d0aa2d6697e870c5f0f` / `20260809-v140-production-recovery-1` 且保持 `ACG_READ_ONLY=1`；本节不代表已部署、已 apply `140010` 或已恢复生产 RW。
+- 生产功能 SHA 为 `390a563802fa62d2fa1278a25fe7ad266e1f294c`（`fix: recover durable video usage receipts`，parent `5f2ee647a6421bb782aa8079646f860c0a681eb8`），分支 `codex/v122-team-auth-home`；release/cache identity 继续为 `20260809-v140-media-isolation-1`。主服务与视频 sidecar 已从同一受审计 release 以 `ACG_READ_ONLY=0` 稳定运行。
+- expand-only `140010` 媒体隔离账本已按用户授权的精确计划 apply。`46` 个无可靠原件引用仍全部保留：`38` 个 succeeded `customCanvasGenerationJobs` 输出、`1` 个已发布 community canvas 与 `7` 个 server asset/upload；不改写原 docs、引用、`private_media_registry` 或物理文件，不伪造占位、hash、归属或 provider 结果。隔离媒体返回 `410 media_isolated`，依赖原件的下载、发布、转发和复用逐条拒绝，其他业务恢复正常。
+- 媒体审计继续显示 raw `missingReferencedFiles=46 / pendingRows=48 / publicAvatarExemptions=2`，同时严格计算 `isolated=46 / unisolated=0 / effectivePending=0`。隔离不是恢复文件；任何未来新增缺失、owner/scope/hash/reference 或数据库/媒体摘要漂移仍会重新阻断写门。
+- 生产锁定 FastAPI 0.68.1 / Starlette 0.14.2 不执行较新 `FastAPI(..., lifespan=...)` 的问题已改为旧栈原生 startup/shutdown 事件。主服务必须在 `_prime_production_write_gate` 完整通过后才进入 `Application startup complete`，失败则不提供服务；`/api/ready` 保持纯观察，不能武装或撤销 live gate。
+- 视频工坊用量审计接受精确的旧 v1 `operator-confirmed-unknown` 不可变结算证据，从而识别并关闭 `14` 个历史假冲突而不改写历史 receipt。另新增绑定 plan、snapshot、backup 与 DB identity 的耐久恢复 CLI，仅导入 `3` 条 sidecar 已持久化且已确认完成、但中央账本缺失的记录；原子写 receipt/outbox/projection/v2 settlement，全程不调用或重试 provider。
 
 ### 验证与发布边界
 
-- 定向回归覆盖精确 46 条 inspect/preflight/apply/二跑、raw/effective readiness、raw pending/公共头像例外基线漂移重新阻断、410 媒体契约、社区 UI、owner/team 负例、下载/发布拒绝、新缺失 fail closed 和清单/缓存一致性。Python 3.12.13 无私密 locked 主服务最终收集 `768` 项：`767` 通过，唯一 skip 是已批准的 v120 快照项；视频工坊 `140/140`，Node `124/124`，Python compileall 和全部跟踪 JavaScript `node --check` 通过。不使用系统 Python 的 TestClient 依赖偏差冒充生产锁定门禁。
-- release verifier 通过：Phase 0 `ad5c56536f96324faab3bf4481446651e60a9aaee0dfa832a8ff756c64f90dec`；ESM `60` modules / `342` edges，graph `0663e6de301a4d370e35202165ac18b70944b1560af4b57139283e7e9b84efe6`，closure `eb8d4d131f5d4d7c40cbcaa876bfc39237708a24c72673b72e4b8a1e9ebc7a0f`；canvas `63` files / `1,767,334` bytes / `59b1d83c6235ad26c4b20c1e0182dec47205c53677a06035f95cde42667d6789`；runtime `58` files / `2,945,104` bytes / `5cda7b76001c4ead92d525a986be4d89798ffb899e94855f35334936e5e136ca`。本轮敏感差异扫描和 `git diff --check` 通过，未执行真实 provider 调用或生产写入。
-- 服务器执行顺序必须是：从干净唯一提交重建 Linux 闭包和完整回归 → 保持 RO 并创建/verify/restore-drill fresh 20-component snapshot 与 fresh v2 backup → 显式 apply `140010` → 从 live inspect 生成且人工审核精确计划 → preflight/apply → 立即重建 fresh 保护点并二跑零写 → 核对 raw/isolated/unisolated/effective 和 `/api/ready` → 只有 `writeReady=true` 才解除 RO 并做多角色验收。禁止重放既有 `140008/140009` 或 incident receipt，禁止用本地数据覆盖生产。
+- 目标 Ubuntu x86_64 / CPython 3.12.3 三套 wheelhouse 重新验签，离线 `--no-deps`、exact-installed 与 `pip check` 全部通过：主 runtime `18` 包 / manifest `a683258aec8c78864792d90184eed682709659dd6127f84ccfa04a6b2bb2a089`，主 test `20` 包 / `f064da114e892e9607ad076d728c23967ffdef4b560b0ba622c9edc1f22bfb79`，sidecar `37` 包 / `2288f55ffcf180da34e7e7b02c119990dda042ad1de48d3ec479c6af96bbc1ac`。
+- Linux locked 主服务收集 `773` 项：`772` 通过，唯一 skip 是已批准的 v120 快照项；sidecar `140/140`、Node `124/124`，compileall、全部跟踪 JavaScript `node --check` 和 release verifier 通过。Phase 0 为 `7c920495f0f67c630b0686891f16b5b90dea9571af8e42ba2e9ac54e35cc717c`；ESM `60` modules / `342` edges；canvas manifest `59b1d83c6235ad26c4b20c1e0182dec47205c53677a06035f95cde42667d6789`；runtime `58` files / `2,997,715` bytes / `15ce077bfa61dba6e4bf54a59afc3804f6a4dced16fe467c7f5833cb085fe972`。
+- `3` 条耐久用量恢复 apply 结果为 `applied=true / inserted=3 / projected=3 / terminal=3 / unresolved=0 / outbox=0 / quick_check=ok`；fresh post binding 二跑为 `applied=false / reused=true / insertedRows=0`。最终 sidecar 审计为 receipt `810`、raw pending `810`、terminal `810`、settled `40`、effective pending `0`、conflict `0`；raw 是历史证据计数，不等于未结算，且全程没有 provider retry。
+- apply 前后分别创建并验签 fresh SQLite v2 backup，当前 20-component complete snapshot 也通过 verify/restore-drill；没有重放 `140008/140009/140010`、tenant/resource/canvas/incident 或旧 usage settlement。所有业务表行数无下降，新增仅为预期的 `3` 条 usage receipt/outbox/projection 及对应 v2 settlement；媒体文件数完全不变。
+- 最终主服务和 sidecar 均 active/running、`NRestarts=0`，两者 `ACG_READ_ONLY=0`。连续受保护 `/api/ready` 为 `ok=true / ready=true / writeReady=true / startupVerified=true / blockers=[]`，SQLite `quick_check=ok`；root、OpenAPI、health、community 均为 `200`，受保护负例为 `401`，隔离媒体精确为 `410`。真实浏览器首页和社区正常渲染，隔离卡明确显示历史原件不可用，控制台无应用 error/warn。
+- 部署仅更新受审计代码与公开 systemd RW 覆盖层；生产数据库、账号、媒体、认证状态、私密环境和 Nginx 未被本地状态覆盖。既有 RO 配置、旧 release、代码/服务回滚点以及 pre/post 数据保护点均保留；回滚只能恢复代码和服务配置，不能用旧数据库覆盖当前业务写入。
 
 ## v140.4 - 2026-08-09（生产恢复工具已受保护上线，保持 RO）
 

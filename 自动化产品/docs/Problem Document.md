@@ -4,6 +4,14 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-09 v140.5 生产恢复：旧栈启动、sidecar 历史证据与中央账本必须同时闭合
+
+- **构造参数被接受不等于生命周期被执行**：生产锁定 FastAPI 0.68.1 / Starlette 0.14.2 会接受较新的 `lifespan=` 参数但不执行其中的写门武装，表现为实时 `/api/ready` 看似全绿，普通请求却因进程内 `_PRODUCTION_WRITE_GATE_SNAPSHOT` 未武装而持续 503。关键启动门禁必须使用锁定旧栈原生 startup/shutdown 事件，并以真实 Uvicorn 子进程验证：RW 审计通过后才出现 `Application startup complete`，失败不开放请求；`/api/ready` 继续只观察、不能代替 startup 武装。
+- **sidecar 已结算证据不能按新格式误判为冲突**：旧 v1 `operator-confirmed-unknown` 是已经人工审核、不可变的合法终态。中央审计若只接受新 v2 形态，会把 `14` 条历史证据误计为 immutable identity conflict，且可能出现中央 readiness `unresolved=0`、sidecar 冲突却不可见的假绿。兼容规则只能接受精确旧证据结构与哈希，不能泛化错误语法、修改历史 receipt 或重新调用 provider；write gate 必须计入 sidecar raw/terminal/settled/effective/conflict 指标。
+- **“sidecar 已完成、central 缺失”只能从耐久证据恢复**：本次只有 `3` 条记录同时满足 sidecar 已持久化、完成状态可验证、中央记录精确缺失。恢复必须使用逐条 reviewed plan，并绑定 fresh DB identity、SQLite v2 backup、20-component snapshot 与 media digest；原子写 receipt、outbox、projection 和 v2 settlement，二跑必须零写。不得根据项目成功猜费用、重试 provider、修改业务任务或把范围扫描结果自动补入账本。
+- **RW 覆盖层有加载顺序**：systemd 的基础 `EnvironmentFile` 可能覆盖更早的单条 `Environment=`。切换 RW 时应使用后置、只包含公开 `ACG_READ_ONLY=0` 的独立覆盖文件，并同时核对主服务/sidecar `/proc` 环境、进程 cwd、sidecar write policy 与主服务 startup journal；不得修改或复制私密环境。
+- **媒体隔离继续保留真实缺失事实**：完整 RW 恢复不代表 `46` 个历史原件被找回。raw `missingReferencedFiles=46 / pendingRows=48 / publicAvatarExemptions=2` 仍需显示；只有精确隔离后的 `unisolated=0 / effectivePending=0` 可闭合当前门禁。读取返回 `410`、历史记录保留，未来新增缺失仍必须 fail closed。
+
 ## 2026-08-09 v140.5 本地候选：“已隔离”不等于“已恢复”
 
 - **原始事实必须保留**：隔离后 raw `missingReferencedFiles=46`、raw `pendingRows=48` 和 `publicAvatarExemptions=2` 仍在审计响应中显示，不得把隔离账本伪装成文件恢复或 registry 补齐。写门只根据严格重算的 `unisolatedMissingReferencedFiles` 和 `effectivePendingRows` 判断本类阻断，不依赖硬编的 46/48/2。
