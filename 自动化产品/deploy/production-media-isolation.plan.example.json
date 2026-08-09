@@ -1,0 +1,25 @@
+{
+  "format": "acg-production-media-isolation-plan-v1",
+  "databaseIdentity": "<status identity>",
+  "snapshotManifestSha256": "<fresh 20-component snapshot manifest sha256>",
+  "snapshotMediaInventoryDigest": "<fresh live media inventory digest>",
+  "authorization": "user-approved-preserve-history-isolation",
+  "rawPendingRows": 0,
+  "publicAvatarExemptions": 0,
+  "entries": [
+    {
+      "mediaKind": "canvas-blob",
+      "mediaKey": "<exact missing content hash>",
+      "ownerId": "<exact owner id>",
+      "scopeType": "team",
+      "scopeId": "<exact tenant id>",
+      "resourceKind": "doc:customCanvasGenerationJobs",
+      "resourceId": "<exact job id>",
+      "businessClass": "succeeded-canvas-generation-job",
+      "referenceSha256": "<inspect output reference sha256>",
+      "disposition": "preserve-history-media-unavailable"
+    }
+  ],
+  "reviewedBy": "<operator identity>",
+  "reviewedAt": 0
+}

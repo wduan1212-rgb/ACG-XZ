@@ -28,6 +28,7 @@ RESOURCE_SETTLEMENT_KIND = "resource-scope-incremental"
 TENANT_SETTLEMENT_KIND = "tenant-adoption"
 CANVAS_RECOVERY_KIND = "canvas-blob-recovery"
 ADJUDICATION_KIND = "incident-adjudication"
+MEDIA_ISOLATION_PLAN_FORMAT = "acg-production-media-isolation-plan-v1"
 CANVAS_RECOVERY_PLAN_FORMAT = "acg-canvas-blob-recovery-plan-v1"
 INCIDENT_ADJUDICATION_PLAN_FORMAT = "acg-production-incident-adjudication-plan-v1"
 MAX_PLAN_BYTES = 2 * 1024 * 1024
@@ -1238,6 +1239,290 @@ def record_incident_adjudications(*, plan, plan_sha256, expected_identity,
         return {"ok": True, "applied": True, "insertedRows": len(entries),
                 "plannedRows": len(entries), "settlementId": settlement_id,
                 "readinessUnchanged": True}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _validate_media_isolation_plan(plan, *, actual_identity, reviewed_snapshot):
+    required_top = {
+        "format", "databaseIdentity", "snapshotManifestSha256",
+        "snapshotMediaInventoryDigest", "authorization", "rawPendingRows",
+        "publicAvatarExemptions", "entries", "reviewedBy", "reviewedAt",
+    }
+    if not isinstance(plan, dict) or set(plan) != required_top:
+        raise ProductionRecoveryError("media_isolation_plan_fields_invalid")
+    _require_operator_review(plan, "media_isolation")
+    if plan.get("authorization") != "user-approved-preserve-history-isolation":
+        raise ProductionRecoveryError("media_isolation_authorization_invalid")
+    if not hmac.compare_digest(
+        str(plan.get("databaseIdentity") or ""), actual_identity,
+    ):
+        raise ProductionRecoveryError("media_isolation_database_identity_mismatch")
+    if not hmac.compare_digest(
+        str(plan.get("snapshotManifestSha256") or "").lower(),
+        reviewed_snapshot["manifestSha256"],
+    ) or not hmac.compare_digest(
+        str(plan.get("snapshotMediaInventoryDigest") or "").lower(),
+        reviewed_snapshot["mediaInventoryDigest"],
+    ):
+        raise ProductionRecoveryError("media_isolation_snapshot_binding_mismatch")
+    for field in ("rawPendingRows", "publicAvatarExemptions"):
+        value = plan.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ProductionRecoveryError("media_isolation_audit_counts_invalid")
+    entries = plan.get("entries")
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_PLAN_ENTRIES:
+        raise ProductionRecoveryError("media_isolation_entries_invalid")
+    required_entry = {
+        "mediaKind", "mediaKey", "ownerId", "scopeType", "scopeId",
+        "resourceKind", "resourceId", "businessClass", "referenceSha256",
+        "disposition",
+    }
+    allowed_classes = {
+        "published-community", "server-asset-upload",
+        "succeeded-canvas-generation-job",
+    }
+    normalized = []
+    seen = set()
+    for raw in entries:
+        if not isinstance(raw, dict) or set(raw) != required_entry:
+            raise ProductionRecoveryError("media_isolation_entry_fields_invalid")
+        entry = {key: str(raw.get(key) or "").strip() for key in required_entry}
+        identity = (entry["mediaKind"], entry["mediaKey"])
+        if (
+            identity in seen
+            or entry["mediaKind"] not in {"canvas-blob", "upload"}
+            or entry["scopeType"] not in {"member", "team"}
+            or not all(entry[key] for key in (
+                "mediaKey", "ownerId", "scopeId", "resourceKind",
+                "resourceId", "referenceSha256",
+            ))
+            or entry["businessClass"] not in allowed_classes
+            or not re.fullmatch(r"[0-9a-f]{64}", entry["referenceSha256"])
+            or entry["disposition"] != "preserve-history-media-unavailable"
+        ):
+            raise ProductionRecoveryError("media_isolation_entry_invalid")
+        seen.add(identity)
+        normalized.append(entry)
+    return sorted(normalized, key=lambda item: (item["mediaKind"], item["mediaKey"]))
+
+
+def media_isolation_evidence(*, expected_identity, expected_schema_version,
+                             backup_binding, runtime_snapshot_binding):
+    """Inspect exact live missing references without authorizing any write."""
+
+    conn = store._connect(read_only=True)
+    try:
+        conn.execute("BEGIN")
+        actual_identity, snapshot = _require_locked_state(
+            conn, expected_identity=expected_identity,
+            expected_schema_version=expected_schema_version,
+            backup_binding=backup_binding,
+            runtime_snapshot_binding=runtime_snapshot_binding,
+        )
+        media_plan = store._private_media_plan_locked(
+            conn,
+            snapshot_media_inventory_digest=snapshot["mediaInventoryDigest"],
+            include_media_content_digest=True,
+            include_issue_identities=True,
+        )
+        if int((media_plan.get("counts") or {}).get("mediaIsolationEvidenceConflicts") or 0):
+            raise ProductionRecoveryError("media_isolation_live_evidence_conflict")
+        missing = sorted(
+            (str(row["mediaKind"]), str(row["mediaKey"]))
+            for row in (media_plan.get("_issueIdentities") or {}).get(
+                "missingReferencedFiles", []
+            )
+        )
+        entries = [
+            {
+                **store._private_media_missing_reference_evidence_locked(conn, kind, key),
+                "disposition": "preserve-history-media-unavailable",
+            }
+            for kind, key in missing
+        ]
+        conn.rollback()
+        return {
+            "ok": True, "dryRun": True,
+            "databaseIdentity": actual_identity,
+            "snapshotManifestSha256": snapshot["manifestSha256"],
+            "snapshotMediaInventoryDigest": snapshot["mediaInventoryDigest"],
+            "missingReferencedFiles": len(entries),
+            "rawPendingRows": int((media_plan.get("counts") or {}).get("pendingRows") or 0),
+            "publicAvatarExemptions": int(
+                (media_plan.get("counts") or {}).get("publicAvatarExemptions") or 0
+            ),
+            "entries": entries,
+        }
+    finally:
+        conn.close()
+
+
+def isolate_missing_media_reviewed(*, plan, plan_sha256, expected_identity,
+                                   expected_schema_version, backup_binding,
+                                   runtime_snapshot_binding,
+                                   created_by="deployment", dry_run=False):
+    """Record exact user-authorized missing-media isolation receipts."""
+
+    if not dry_run:
+        if runtime_config.is_read_only():
+            raise store.StoreNotReadyError("read-only runtime cannot isolate media")
+        if str(os.getenv("ACG_ALLOW_MEDIA_ISOLATION", "")).strip() != "1":
+            raise store.StoreNotReadyError("media isolation authorization is required")
+    conn = store._connect_migration_target() if not dry_run else store._connect(read_only=True)
+    try:
+        conn.execute("BEGIN IMMEDIATE" if not dry_run else "BEGIN")
+        actual_identity, snapshot = _require_locked_state(
+            conn, expected_identity=expected_identity,
+            expected_schema_version=expected_schema_version,
+            backup_binding=backup_binding,
+            runtime_snapshot_binding=runtime_snapshot_binding,
+        )
+        migration = conn.execute(
+            "SELECT checksum,status FROM schema_migrations WHERE version=?",
+            (store.MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION,),
+        ).fetchone()
+        if migration != (store.MEDIA_ISOLATION_SCHEMA_MIGRATION_CHECKSUM, "success"):
+            raise store.StoreNotReadyError("media isolation schema is not ready")
+        existing = conn.execute(
+            "SELECT settlement_id,database_identity,snapshot_manifest_sha256,"
+            "snapshot_media_digest,isolated_rows,raw_pending_rows,"
+            "public_avatar_exemptions FROM media_isolation_settlements "
+            "WHERE plan_sha256=?",
+            (str(plan_sha256 or ""),),
+        ).fetchone()
+        reviewed_snapshot = snapshot if not existing else {
+            "manifestSha256": str(existing[2]),
+            "mediaInventoryDigest": str(existing[3]),
+        }
+        entries = _validate_media_isolation_plan(
+            plan, actual_identity=actual_identity,
+            reviewed_snapshot=reviewed_snapshot,
+        )
+        if existing and (
+            str(existing[1]) != actual_identity or int(existing[4]) != len(entries)
+        ):
+            raise ProductionRecoveryError("media_isolation_receipt_conflict")
+        media_plan = store._private_media_plan_locked(
+            conn,
+            snapshot_media_inventory_digest=snapshot["mediaInventoryDigest"],
+            include_media_content_digest=True,
+            include_issue_identities=True,
+        )
+        missing = {
+            (str(row["mediaKind"]), str(row["mediaKey"]))
+            for row in (media_plan.get("_issueIdentities") or {}).get(
+                "missingReferencedFiles", []
+            )
+        }
+        planned = {(entry["mediaKind"], entry["mediaKey"]) for entry in entries}
+        if planned != missing:
+            raise ProductionRecoveryError("media_isolation_exact_set_mismatch")
+        current_counts = media_plan.get("counts") or {}
+        current_pending = int(current_counts.get("pendingRows") or 0)
+        current_avatar_exemptions = int(
+            current_counts.get("publicAvatarExemptions") or 0
+        )
+        if (
+            int(plan["rawPendingRows"]) != current_pending
+            or int(plan["publicAvatarExemptions"]) != current_avatar_exemptions
+        ):
+            raise ProductionRecoveryError("media_isolation_audit_counts_mismatch")
+        if existing and (
+            int(existing[5]) != current_pending
+            or int(existing[6]) != current_avatar_exemptions
+        ):
+            raise ProductionRecoveryError("media_isolation_receipt_audit_drift")
+        incident_rows = conn.execute(
+            "SELECT e.target_kind,e.target_id,e.entry_kind,e.after_value "
+            "FROM production_recovery_entries e "
+            "JOIN production_recovery_settlements s "
+            "ON s.settlement_id=e.settlement_id "
+            "WHERE s.settlement_kind=?",
+            (ADJUDICATION_KIND,),
+        ).fetchall()
+        incident = {
+            (str(row[0]), str(row[1])): (str(row[2]), str(row[3]))
+            for row in incident_rows
+        }
+        if set(incident) != missing:
+            raise ProductionRecoveryError("media_isolation_incident_set_mismatch")
+        for entry in entries:
+            identity = (entry["mediaKind"], entry["mediaKey"])
+            actual = store._private_media_missing_reference_evidence_locked(
+                conn, *identity,
+            )
+            expected = {key: entry[key] for key in actual}
+            if actual != expected:
+                raise ProductionRecoveryError("media_isolation_reference_evidence_mismatch")
+            incident_kind, disposition = incident[identity]
+            if (
+                incident_kind != f"{entry['businessClass']}-adjudication"
+                or disposition != "no-verified-recovery-evidence"
+            ):
+                raise ProductionRecoveryError("media_isolation_incident_evidence_mismatch")
+        if dry_run:
+            conn.rollback()
+            return {
+                "ok": True, "dryRun": True, "plannedRows": len(entries),
+                "isolatedRows": 0, "unisolatedMissingReferencedFiles": len(entries),
+            }
+        if existing:
+            conn.rollback()
+            return {
+                "ok": True, "applied": False, "insertedRows": 0,
+                "plannedRows": len(entries), "settlementId": str(existing[0]),
+                "reused": True,
+            }
+        now = int(time.time() * 1000)
+        settlement_id = hashlib.sha256(
+            f"media-isolation:{actual_identity}:{plan_sha256}".encode("utf-8")
+        ).hexdigest()
+        conn.execute(
+            "INSERT INTO media_isolation_settlements("
+            "settlement_id,plan_sha256,database_identity,"
+            "snapshot_manifest_sha256,snapshot_media_digest,isolated_rows,"
+            "raw_pending_rows,public_avatar_exemptions,created_at,created_by) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (settlement_id, plan_sha256, actual_identity,
+             snapshot["manifestSha256"], snapshot["mediaInventoryDigest"],
+             len(entries), current_pending, current_avatar_exemptions,
+             now, str(created_by or "deployment")[:120]),
+        )
+        conn.executemany(
+            "INSERT INTO media_isolation_entries("
+            "settlement_id,media_kind,media_key,owner_id,scope_type,scope_id,"
+            "resource_kind,resource_id,business_class,reference_sha256,"
+            "disposition,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (settlement_id, entry["mediaKind"], entry["mediaKey"],
+                 entry["ownerId"], entry["scopeType"], entry["scopeId"],
+                 entry["resourceKind"], entry["resourceId"],
+                 entry["businessClass"], entry["referenceSha256"],
+                 entry["disposition"], now)
+                for entry in entries
+            ],
+        )
+        after = store._private_media_plan_locked(conn, include_issue_identities=True)
+        counts = after.get("counts") or {}
+        if (
+            int(counts.get("isolatedMissingReferencedFiles") or 0) != len(entries)
+            or int(counts.get("unisolatedMissingReferencedFiles") or 0) != 0
+            or int(counts.get("effectivePendingRows") or 0) != 0
+            or int(counts.get("mediaIsolationAuditDrift") or 0) != 0
+        ):
+            raise ProductionRecoveryError("media_isolation_post_apply_mismatch")
+        conn.commit()
+        store._initialized = False
+        return {
+            "ok": True, "applied": True, "insertedRows": len(entries),
+            "plannedRows": len(entries), "settlementId": settlement_id,
+            "isolatedMissingReferencedFiles": len(entries),
+            "unisolatedMissingReferencedFiles": 0,
+        }
     except Exception:
         conn.rollback()
         raise

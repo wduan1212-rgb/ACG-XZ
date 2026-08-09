@@ -360,7 +360,7 @@ class ModelUsageSettlementTest(unittest.TestCase):
                         root, sorted(self.sidecars),
                     )
 
-    def test_140008_and_140009_are_additive_for_140007_read_only_contract(self):
+    def test_140008_through_140010_are_additive_for_140007_read_only_contract(self):
         before = logical_database_dump(store.DB_PATH)
         uri = f"file:{store.DB_PATH}?mode=ro"
         with sqlite3.connect(uri, uri=True) as conn:
@@ -374,6 +374,8 @@ class ModelUsageSettlementTest(unittest.TestCase):
                 "production_recovery_entries",
                 "model_usage_settlements_v2",
                 "model_usage_settlement_entries_v2",
+                "media_isolation_settlements",
+                "media_isolation_entries",
             }
             self.assertFalse(previous_expected - tables)
             known_versions = (

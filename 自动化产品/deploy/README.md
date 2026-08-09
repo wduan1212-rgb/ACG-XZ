@@ -408,8 +408,49 @@ ACG_READ_ONLY=0 ACG_ALLOW_INCIDENT_ADJUDICATION=1 \
 
 当前证据中剩余 46 个文件（38 个 succeeded canvas job、1 个 published community、
 7 个 server assets/upload）无任何可验证副本。上述 adjudication 不会解除该
-readiness 阻断；只有从用户原始文件按哈希/归属重新恢复，或另行批准且审计的
-业务隔离方案后才能评估 RW；不得为开 RW 忽略它们。
+readiness 阻断。用户现已明确批准“保留历史、不伪造媒体、不删除引用”的精确业务隔离；
+只能按下节 `140010` 契约在 fresh live audit 上重新生成计划，不得直接使用历史数字、老 incident receipt 或本地数据解锁。
+
+### 精确缺失媒体业务隔离（`140010`，恢复 RW 前 P0）
+
+`140010` 只新增不可变 isolation settlement/entry 账本，不改原 docs、媒体
+registry、引用或物理文件。先按 schema apply 契约为当前生产显式 apply
+`140010`；不重放 `140008/140009` 和既有 settlement。然后保持业务 RO，立即创建
+fresh 20-component complete snapshot + verify + restore-drill 和 fresh v2 SQLite backup。
+
+```bash
+ACG_READ_ONLY=1 python3 -m server.migrations media-isolate-inspect \
+  --confirm-schema-version 140010 --confirm-identity <identity> \
+  --runtime-snapshot <fresh-complete-snapshot-directory> \
+  --confirm-runtime-snapshot-manifest-sha256 <recorded-manifest-sha256> \
+  --backup-manifest <fresh-backup.manifest.json> \
+  --backup-database <fresh-backup.sqlite> \
+  --confirm-backup-manifest-sha256 <recorded-backup-manifest-sha256>
+
+ACG_READ_ONLY=1 python3 -m server.migrations media-isolate-preflight \
+  --review-plan <reviewed-media-isolation-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> <same-common-bindings>
+
+ACG_READ_ONLY=0 ACG_ALLOW_MEDIA_ISOLATION=1 \
+  python3 -m server.migrations media-isolate \
+  --review-plan <reviewed-media-isolation-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> <same-common-bindings>
+```
+
+`<same-common-bindings>` 代表 inspect 中同一组 schema/identity/runtime snapshot/backup 全部参数，
+不是 shell 标记。review plan 必须从 inspect 当场输出逐条生成，format 为
+`acg-production-media-isolation-plan-v1`，authorization 固定为
+`user-approved-preserve-history-isolation`，并保留每条 owner/scope/resource/business class/
+`referenceSha256`。模板见 `deploy/production-media-isolation.plan.example.json`。缺一、多一、哈希、
+归属或绑定漂移必须在写前整批拒绝。
+
+apply 后必须重新创建 fresh snapshot/backup，在新绑定下对原计划二跑，要求
+`applied=false / insertedRows=0`，且数据库逻辑摘要不变。readiness 仍必须显示 raw
+`missingReferencedFiles`、raw `pendingRows` 和 `publicAvatarExemptions`，同时要求
+`unisolatedMissingReferencedFiles=0 / effectivePendingRows=0 / mediaIsolationEvidenceConflicts=0`。
+当前 raw 48 = 46 精确隔离 + 2 公共头像例外是审计形态，不是可硬编的规则；
+数量或证据变化必须 fail closed。只有最终 `/api/ready` 给出
+`ready=true / writeReady=true`，才可解除 `ACG_READ_ONLY=1` 并执行多角色业务验收。
 
 ### 模型用量精确结算 v2（开放 RW 前 P0）
 

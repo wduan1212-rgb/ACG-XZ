@@ -253,6 +253,10 @@ class ModelUsageReceiptStoreTest(unittest.TestCase):
                 "SELECT checksum,status FROM schema_migrations WHERE version=?",
                 (store.MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
+            media_isolation_ledger = conn.execute(
+                "SELECT checksum,status FROM schema_migrations WHERE version=?",
+                (store.MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
         self.assertEqual(
             (store.MODEL_USAGE_SCHEMA_MIGRATION_CHECKSUM, "success"), ledger
         )
@@ -281,7 +285,11 @@ class ModelUsageReceiptStoreTest(unittest.TestCase):
             settlement_v2_ledger,
         )
         self.assertEqual(
-            store.MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,
+            (store.MEDIA_ISOLATION_SCHEMA_MIGRATION_CHECKSUM, "success"),
+            media_isolation_ledger,
+        )
+        self.assertEqual(
+            store.MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION,
             store.LATEST_SCHEMA_MIGRATION_VERSION,
         )
 

@@ -591,7 +591,8 @@ export async function assetBlob(id, { deliveryId = "", required = false, label =
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const reason = body.detail || body.error || `HTTP ${res.status}`;
+      const reason = (typeof body.detail === "string" ? body.detail : body.detail?.message)
+        || body.error || `HTTP ${res.status}`;
       if (required) throw new Error(`${label}下载失败：${reason}`);
       return null;
     }

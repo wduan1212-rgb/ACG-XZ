@@ -485,7 +485,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # audit proves the exact migration/data/security closure.  The resulting
 # snapshot is O(1) on normal requests.  Only startup arms it; readiness probes
 # are observations and must never change live request admission.
-PRODUCTION_WRITE_CONTRACT = "v140-production-write-gate-2"
+PRODUCTION_WRITE_CONTRACT = "v140-production-write-gate-3"
 _PRODUCTION_WRITE_GATE_SNAPSHOT = None
 _PRODUCTION_WRITE_MIGRATIONS = {
     "acgMigrationVersion": 137004,
@@ -499,6 +499,9 @@ _PRODUCTION_SCHEMA_MIGRATIONS = {
     "videoComposeSchemaVersion": 140005,
     "memberControlSchemaVersion": 140006,
     "modelUsageSettlementSchemaVersion": 140007,
+    "productionRecoverySchemaVersion": 140008,
+    "modelUsageSettlementV2SchemaVersion": 140009,
+    "mediaIsolationSchemaVersion": 140010,
 }
 
 
@@ -7819,23 +7822,39 @@ def auth_me(
     return _set_private_media_session_cookie(JSONResponse(me), request, token)
 
 
-def _community_post_response(post):
+def _community_post_response(post, isolated_identities=None):
     if not post:
         return None
     result = dict(post)
-    result["media"] = [
-        {
+    isolated = (
+        set(isolated_identities)
+        if isolated_identities is not None
+        else store.community_media_isolation_identities(post.get("id"))
+    )
+
+    def media_response(item, url):
+        source = str((item or {}).get("url") or "")
+        identity = store._private_media_reference(source)
+        is_isolated = bool(identity and identity in isolated)
+        return {
             **dict(item),
-            "url": f"/api/community/posts/{quote(str(post['id']), safe='')}/media/{index}",
+            "url": url,
+            "availability": "isolated" if is_isolated else "available",
+            "available": not is_isolated,
         }
+    result["media"] = [
+        media_response(
+            item,
+            f"/api/community/posts/{quote(str(post['id']), safe='')}/media/{index}",
+        )
         for index, item in enumerate(post.get("media") or [])
         if isinstance(item, dict)
     ]
     cover = post.get("cover") if isinstance(post.get("cover"), dict) else {}
-    result["cover"] = {
-        **cover,
-        "url": f"/api/community/posts/{quote(str(post['id']), safe='')}/cover",
-    } if cover.get("url") else {}
+    result["cover"] = media_response(
+        cover,
+        f"/api/community/posts/{quote(str(post['id']), safe='')}/cover",
+    ) if cover.get("url") else {}
     return result
 
 
@@ -8168,18 +8187,32 @@ def community_posts_list(
         category=category, limit=limit, before=before, before_id=beforeId,
         viewer_id=(viewer or {}).get("id") or "",
     )
+    items = page.get("items") or []
+    isolation_map = store.community_media_isolation_identity_map(
+        item.get("id") for item in items
+    )
     return {
         **page,
-        "items": [_community_post_response(item) for item in page.get("items") or []],
+        "items": [
+            _community_post_response(item, isolation_map.get(str(item.get("id") or ""), set()))
+            for item in items
+        ],
     }
 
 
 @app.get("/api/community/favorites")
 def community_favorites(me=Depends(require_member), limit: int = 80):
     page = store.list_community_favorites(me["id"], limit=limit)
+    items = page.get("items") or []
+    isolation_map = store.community_media_isolation_identity_map(
+        item.get("id") for item in items
+    )
     return {
         **page,
-        "items": [_community_post_response(item) for item in page.get("items") or []],
+        "items": [
+            _community_post_response(item, isolation_map.get(str(item.get("id") or ""), set()))
+            for item in items
+        ],
     }
 
 
@@ -8219,6 +8252,13 @@ def community_post_media(post_id: str, media_index: int, request: Request):
     if not post or media_index < 0 or media_index >= len(media):
         raise HTTPException(404, "社区媒体不存在")
     source = str(media[media_index].get("url") or "")
+    identity = store._private_media_reference(source)
+    if identity and store.public_community_media_isolation(*identity, post_id):
+        raise HTTPException(
+            410,
+            {"code": "media_isolated", "mediaState": "isolated",
+             "message": "历史媒体原件不可用，内容记录仍保留"},
+        )
     path = None
     mime = ""
     if source.startswith("/api/custom-canvas/blobs/"):
@@ -8250,6 +8290,13 @@ def community_post_cover(post_id: str, request: Request):
     source = str((cover or {}).get("url") or "")
     if not source:
         raise HTTPException(404, "社区封面不存在")
+    identity = store._private_media_reference(source)
+    if identity and store.public_community_media_isolation(*identity, post_id):
+        raise HTTPException(
+            410,
+            {"code": "media_isolated", "mediaState": "isolated",
+             "message": "历史媒体原件不可用，内容记录仍保留"},
+        )
     path = None
     mime = ""
     if source.startswith("/api/custom-canvas/blobs/"):
@@ -9982,6 +10029,14 @@ def custom_projects_publish(
         raise HTTPException(409, "交付记录尚未完整同步或与当前项目不匹配")
     if error == "invalid_publish_request":
         raise HTTPException(400, "缺少定制项目或交付记录编号")
+    if error == "media_isolated":
+        raise HTTPException(
+            410,
+            {"code": "media_isolated", "mediaState": "isolated",
+             "message": "历史媒体原件不可用，该条交付暂不能发布"},
+        )
+    if error == "media_missing":
+        raise HTTPException(409, "发布引用的媒体原件不存在，本次未发布")
     if error:
         _custom_project_error(error)
     return {"ok": True, **result}
@@ -10009,6 +10064,14 @@ def productions_publish(
         raise HTTPException(409, "发布所需任务、账号或媒体尚未完整同步")
     if error == "invalid_publish_request":
         raise HTTPException(400, "发布请求不完整")
+    if error == "media_isolated":
+        raise HTTPException(
+            410,
+            {"code": "media_isolated", "mediaState": "isolated",
+             "message": "历史媒体原件不可用，该条交付暂不能发布"},
+        )
+    if error == "media_missing":
+        raise HTTPException(409, "发布引用的媒体原件不存在，本次未发布")
     if error == "forbidden":
         raise HTTPException(403, "无权发布该任务")
     if error:
@@ -10233,8 +10296,25 @@ def _private_media_access_or_404(
     """Resolve one registered media row without leaking cross-tenant names."""
 
     enforced = _private_media_registry_enforced()
+    requester = str((member or {}).get("id") or "")
     try:
-        requester = str((member or {}).get("id") or "")
+        isolated, isolation_error = store.private_media_isolation_access(
+            kind, key, requester, str(delivery_id or ""),
+        )
+    except Exception as exc:
+        print(
+            f"[private-media] isolation lookup unavailable: {kind} "
+            f"{exc.__class__.__name__}: {str(exc)[:160]}",
+            file=sys.stderr,
+        )
+        raise HTTPException(503, "私有媒体隔离状态暂不可用") from exc
+    if isolated and not isolation_error:
+        raise HTTPException(
+            410,
+            {"code": "media_isolated", "mediaState": "isolated",
+             "message": "历史媒体原件不可用，相关记录仍保留"},
+        )
+    try:
         if delivery_id:
             record, error = store.private_media_access(
                 kind, key, requester, str(delivery_id),
@@ -10395,8 +10475,6 @@ def file_get(
     me=Depends(_private_media_session_member),
 ):
     path = _upload_path(name)
-    if not path.exists():
-        raise HTTPException(404, "文件不存在或已被清理")
     _private_media_access_or_404(
         "upload",
         path.name,
@@ -10404,6 +10482,8 @@ def file_get(
         delivery_id=deliveryId,
         legacy_authorizer=lambda: _legacy_upload_access_allowed(path.name, me),
     )
+    if not path.exists():
+        raise HTTPException(404, "文件不存在或已被清理")
     media = _media_type_for_path(path)
     return _private_ranged_file_response(request, path, media_type=media)
 

@@ -32,6 +32,9 @@ def healthy_checks():
             "videoComposeSchemaVersion": 140005,
             "memberControlSchemaVersion": 140006,
             "modelUsageSettlementSchemaVersion": 140007,
+            "productionRecoverySchemaVersion": 140008,
+            "modelUsageSettlementV2SchemaVersion": 140009,
+            "mediaIsolationSchemaVersion": 140010,
             "acgMigration": True,
             "acgMigrationVersion": 137004,
             "resourceScopeMigration": True,
@@ -74,7 +77,7 @@ class ProductionWriteGateTests(unittest.TestCase):
         self.assertTrue(gate["ok"])
         self.assertTrue(gate["writeReady"])
         self.assertEqual([], gate["writeEnableBlockers"])
-        self.assertEqual("v140-production-write-gate-2", gate["contract"])
+        self.assertEqual("v140-production-write-gate-3", gate["contract"])
 
     def test_every_security_layer_is_authoritative(self):
         cases = (

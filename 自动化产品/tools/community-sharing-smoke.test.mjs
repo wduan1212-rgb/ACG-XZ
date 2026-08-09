@@ -176,6 +176,10 @@ test("community detail keeps media fixed, copy scrollable, and manual video play
   assert.match(home, /downloadBlob\(/);
   assert.match(home, /openLightbox\(image, image\.src/);
   assert.match(home, /target\.origin !== window\.location\.origin/);
+  assert.match(home, /media\.availability === "isolated" \|\| media\.available === false/);
+  assert.match(home, /历史媒体原件不可用/);
+  assert.match(home, /downloadButton\.disabled = Boolean\(unavailable\)/);
+  assert.match(styles, /\.home-inspiration-unavailable/);
   assert.match(home, /\$\{icon\(isLike \? "heart" : "bookmark", 18\)\}<\/button>/);
   assert.match(styles, /\.home-inspiration-detail-stage[\s\S]*?place-items:\s*center/);
   assert.match(styles, /\.home-inspiration-panel\s*\{[^}]*overflow:\s*hidden/);
@@ -188,6 +192,15 @@ test("community detail keeps media fixed, copy scrollable, and manual video play
   assert.match(styles, /\.community-detail-action\.is-favorite\[aria-pressed="true"\]/);
   assert.match(styles, /\.home-prompt-preview\s*\{[^}]*max-height:\s*none;\s*overflow:\s*visible/);
   assert.match(styles, /@media \(max-width: 760px\)[\s\S]*?\.home-inspiration-detail\s*\{[^}]*height:\s*auto;[^}]*overflow:\s*visible[\s\S]*?\.home-inspiration-detail-copy\s*\{[^}]*overflow:\s*visible/);
+});
+
+test("isolated delivery downloads surface the server message instead of object text", async () => {
+  const [delivery, assets] = await Promise.all([
+    read("js/domain/delivery.js"),
+    read("js/domain/assets.js"),
+  ]);
+  assert.match(delivery, /typeof body\.detail === "string" \? body\.detail : body\.detail\?\.message/);
+  assert.match(assets, /typeof body\.detail === "string" \? body\.detail : body\.detail\?\.message/);
 });
 
 test("favorite detail matches audible playback, fixed media, and icon-only reactions", async () => {

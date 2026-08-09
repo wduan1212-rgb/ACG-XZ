@@ -4,6 +4,13 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-09 v140.5 本地候选：“已隔离”不等于“已恢复”
+
+- **原始事实必须保留**：隔离后 raw `missingReferencedFiles=46`、raw `pendingRows=48` 和 `publicAvatarExemptions=2` 仍在审计响应中显示，不得把隔离账本伪装成文件恢复或 registry 补齐。写门只根据严格重算的 `unisolatedMissingReferencedFiles` 和 `effectivePendingRows` 判断本类阻断，不依赖硬编的 46/48/2。
+- **授权和证据绑定不可省略**：`140010` 只接受当场 live audit 的精确全集，并绑定 DB identity、fresh v2 backup、fresh 20-component snapshot 和 media digest。旧 incident adjudication 只是必需的事故证据，不能直接解锁；缺一/多一、引用、owner/scope/hash 或库/媒体漂移必须在写前整批停止。
+- **业务仅对精确条目降级**：元数据/历史继续存在，媒体读取返回可识别的 `410 media_isolated`；下载、ZIP、再发布、转发或复用不能跳过原件校验。社区 UI 应显示明确不可用状态，不发起无穷 404 重试；其他未隔离业务不得因此放宽权限或隐藏错误。
+- **未来缺失仍是事故**：隔离集只对 apply 时的精确引用生效。新缺失、新 owner/scope 漂移或物理文件再丢失必须重新计入 unisolated 并 fail closed；不能用前一次用户授权给未来事故免责。
+
 ## 2026-08-09 v140.4 生产恢复：审计闭环不能替代缺失的真实媒体
 
 - **已闭合的不再是 RW 阻断**：tenant adoption `60`、resource settlement `166`、可验签 canvas recovery `5`、incident adjudication `46` 和 usage v2 `83` 均按 fresh backup/snapshot/DB identity 精确 apply 并二跑零写。usage 已达 `unresolved=0 / outboxPending=0`，resource missing/orphans/invalid 与 registry conflicts 均归零，SQLite `quick_check=ok`；不得在后续重放已成功 migration/settlement。

@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from server import main as server_main
 from server import production_recovery, store
 from server.scripts import runtime_snapshot
 from server.tests.test_runtime_bootstrap_safety import (
@@ -86,6 +87,7 @@ class ProductionRecoveryTest(unittest.TestCase):
                 "ACG_ALLOW_PRODUCTION_RECOVERY": "1",
                 "ACG_ALLOW_CANVAS_BLOB_RECOVERY": "1",
                 "ACG_ALLOW_INCIDENT_ADJUDICATION": "1",
+                "ACG_ALLOW_MEDIA_ISOLATION": "1",
             },
             clear=False,
         ):
@@ -1010,6 +1012,265 @@ class ProductionRecoveryTest(unittest.TestCase):
         self.assertFalse(replay["applied"])
         self.assertEqual(0, replay["insertedRows"])
         self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+    def test_exact_46_media_isolation_preserves_history_and_fails_closed_on_drift(self):
+        owner = "isolation-owner"
+        self._member(owner)
+        now = int(time.time() * 1000)
+        job_keys = [f"{index:064x}" for index in range(1, 39)]
+        upload_keys = [f"{owner}--lost-{index}.png" for index in range(1, 8)]
+        community_key = "f" * 64
+        for index, media_key in enumerate(job_keys, 1):
+            self._insert_scoped_doc(
+                store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+                f"isolated-job-{index}", owner,
+                {
+                    "id": f"isolated-job-{index}", "ownerId": owner,
+                    "status": "succeeded",
+                    "images": [{
+                        "assetUrl": f"/api/custom-canvas/blobs/{media_key}",
+                        "contentHash": media_key,
+                    }],
+                },
+            )
+        for index, media_key in enumerate(upload_keys, 1):
+            self._insert_scoped_doc(
+                "assets", f"isolated-asset-{index}", owner,
+                {
+                    "id": f"isolated-asset-{index}", "ownerId": owner,
+                    "serverFileName": media_key,
+                    "fileUrl": f"/api/files/{media_key}", "hasBlob": True,
+                },
+            )
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO community_posts("
+                "id,author_id,author_name,team_id,source_kind,source_id,title,"
+                "copy_text,prompt_text,category,media_json,cover_json,identity_key,"
+                "status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "isolated-community", owner, owner, "", "canvas", "source",
+                    "历史社区媒体", "", "", "视觉设计",
+                    json.dumps([{
+                        "url": f"/api/custom-canvas/blobs/{community_key}",
+                        "type": "image",
+                    }]),
+                    "{}", "isolated-community-identity", "published", now, now,
+                ),
+            )
+            conn.commit()
+
+        identity, backup, snapshot = self._bindings()
+        inspection = production_recovery.media_isolation_evidence(
+            expected_identity=identity,
+            expected_schema_version=store.LATEST_SCHEMA_MIGRATION_VERSION,
+            backup_binding=backup,
+            runtime_snapshot_binding=snapshot,
+        )
+        self.assertEqual(46, inspection["missingReferencedFiles"])
+
+        adjudication_entries = []
+        for entry in inspection["entries"]:
+            evidence = (
+                f"No verified recovery evidence remains for "
+                f"{entry['mediaKind']}:{entry['mediaKey']}."
+            )
+            adjudication_entries.append({
+                "domain": "missing-media",
+                "targetKind": entry["mediaKind"],
+                "targetId": entry["mediaKey"],
+                "disposition": "no-verified-recovery-evidence",
+                "evidence": evidence,
+                "evidenceSha256": hashlib.sha256(evidence.encode()).hexdigest(),
+                "businessClass": entry["businessClass"],
+            })
+        adjudication_plan = {
+            "format": production_recovery.INCIDENT_ADJUDICATION_PLAN_FORMAT,
+            "databaseIdentity": identity,
+            "snapshotManifestSha256": snapshot["manifestSha256"],
+            "snapshotMediaInventoryDigest": snapshot["mediaInventoryDigest"],
+            "entries": adjudication_entries,
+            "reviewedBy": "test-operator",
+            "reviewedAt": int(time.time() * 1000),
+        }
+        self._call(
+            production_recovery.record_incident_adjudications,
+            plan=adjudication_plan,
+            plan_sha256=production_recovery.canonical_sha256(adjudication_plan),
+            dry_run=False,
+        )
+
+        identity, backup, snapshot = self._bindings()
+        inspection = production_recovery.media_isolation_evidence(
+            expected_identity=identity,
+            expected_schema_version=store.LATEST_SCHEMA_MIGRATION_VERSION,
+            backup_binding=backup,
+            runtime_snapshot_binding=snapshot,
+        )
+        isolation_plan = {
+            "format": production_recovery.MEDIA_ISOLATION_PLAN_FORMAT,
+            "databaseIdentity": identity,
+            "snapshotManifestSha256": snapshot["manifestSha256"],
+            "snapshotMediaInventoryDigest": snapshot["mediaInventoryDigest"],
+            "authorization": "user-approved-preserve-history-isolation",
+            "rawPendingRows": inspection["rawPendingRows"],
+            "publicAvatarExemptions": inspection["publicAvatarExemptions"],
+            "entries": inspection["entries"],
+            "reviewedBy": "test-operator",
+            "reviewedAt": int(time.time() * 1000),
+        }
+        plan_sha = production_recovery.canonical_sha256(isolation_plan)
+        incomplete = {**isolation_plan, "entries": isolation_plan["entries"][:-1]}
+        with self.assertRaisesRegex(
+            production_recovery.ProductionRecoveryError, "exact_set",
+        ):
+            self._call(
+                production_recovery.isolate_missing_media_reviewed,
+                plan=incomplete,
+                plan_sha256=production_recovery.canonical_sha256(incomplete),
+                dry_run=True,
+            )
+        changed = json.loads(json.dumps(isolation_plan))
+        changed["entries"][0]["ownerId"] = "different-owner"
+        with self.assertRaisesRegex(
+            production_recovery.ProductionRecoveryError, "evidence_mismatch",
+        ):
+            self._call(
+                production_recovery.isolate_missing_media_reviewed,
+                plan=changed,
+                plan_sha256=production_recovery.canonical_sha256(changed),
+                dry_run=True,
+            )
+        changed_counts = {**isolation_plan, "rawPendingRows": isolation_plan["rawPendingRows"] + 1}
+        with self.assertRaisesRegex(
+            production_recovery.ProductionRecoveryError, "audit_counts_mismatch",
+        ):
+            self._call(
+                production_recovery.isolate_missing_media_reviewed,
+                plan=changed_counts,
+                plan_sha256=production_recovery.canonical_sha256(changed_counts),
+                dry_run=True,
+            )
+        applied = self._call(
+            production_recovery.isolate_missing_media_reviewed,
+            plan=isolation_plan, plan_sha256=plan_sha, dry_run=False,
+        )
+        self.assertTrue(applied["applied"])
+        self.assertEqual(46, applied["insertedRows"])
+        status = store.private_media_registry_status()
+        self.assertEqual(46, status["counts"]["missingReferencedFiles"])
+        self.assertEqual(46, status["counts"]["isolatedMissingReferencedFiles"])
+        self.assertEqual(0, status["counts"]["unisolatedMissingReferencedFiles"])
+        self.assertEqual(0, status["counts"]["effectivePendingRows"])
+        with store._connect(read_only=True) as conn:
+            self.assertEqual(
+                46,
+                conn.execute(
+                    "SELECT COUNT(*) FROM media_isolation_entries"
+                ).fetchone()[0],
+            )
+        isolated_upload, error = store.private_media_isolation_access(
+            "upload", upload_keys[0], owner,
+        )
+        self.assertIsNone(error)
+        self.assertEqual("isolated", isolated_upload["state"])
+        self._member("outside-member")
+        outside, outside_error = store.private_media_isolation_access(
+            "upload", upload_keys[0], "outside-member",
+        )
+        self.assertIsNone(outside)
+        self.assertEqual("forbidden", outside_error)
+        self.assertIsNotNone(store.public_community_media_isolation(
+            "canvas-blob", community_key, "isolated-community",
+        ))
+        isolation_map = store.community_media_isolation_identity_map([
+            "isolated-community", "other-post",
+        ])
+        self.assertEqual(
+            {("canvas-blob", community_key)},
+            isolation_map["isolated-community"],
+        )
+        self.assertEqual(set(), isolation_map["other-post"])
+        post = store.get_community_post("isolated-community")
+        response = server_main._community_post_response(post)
+        self.assertEqual("isolated", response["media"][0]["availability"])
+        self.assertFalse(response["media"][0]["available"])
+        with self.assertRaises(server_main.HTTPException) as media_error:
+            server_main.community_post_media(
+                "isolated-community", 0,
+                type("Request", (), {"headers": {}})(),
+            )
+        self.assertEqual(410, media_error.exception.status_code)
+        with self.assertRaises(server_main.HTTPException) as file_error:
+            server_main.file_get(
+                upload_keys[0],
+                type("Request", (), {"headers": {}})(),
+                me={"id": owner},
+            )
+        self.assertEqual(410, file_error.exception.status_code)
+        with store._connect() as conn:
+            existing = {
+                "id": "isolated-asset-1", "ownerId": owner,
+                "fileUrl": f"/api/files/{upload_keys[0]}",
+            }
+            store._private_media_new_reference_guard_locked(
+                conn, existing, {**existing, "title": "metadata remains editable"},
+            )
+            with self.assertRaisesRegex(ValueError, "immutable"):
+                store._private_media_new_reference_guard_locked(
+                    conn, existing, {"id": "isolated-asset-1", "ownerId": owner},
+                )
+            with self.assertRaisesRegex(ValueError, "reference_missing"):
+                store._private_media_new_reference_guard_locked(
+                    conn, {}, {
+                        "id": "new-missing", "ownerId": owner,
+                        "fileUrl": f"/api/files/{owner}--future-missing.png",
+                    },
+                )
+
+        before = logical_database_dump(store.DB_PATH)
+        fresh_snapshot = current_runtime_snapshot_binding(store)
+        fresh_snapshot["manifestSha256"] = "9" * 64
+        with patch.dict(
+            os.environ, {"ACG_ALLOW_MEDIA_ISOLATION": "1"}, clear=False,
+        ):
+            replay = production_recovery.isolate_missing_media_reviewed(
+                plan=isolation_plan, plan_sha256=plan_sha,
+                expected_identity=store._database_identity(store.DB_PATH),
+                expected_schema_version=store.LATEST_SCHEMA_MIGRATION_VERSION,
+                backup_binding=current_backup_binding(store, store.DB_PATH),
+                runtime_snapshot_binding=fresh_snapshot,
+                created_by="test-operator", dry_run=False,
+            )
+        self.assertFalse(replay["applied"])
+        self.assertEqual(0, replay["insertedRows"])
+        self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+        avatar = store.PRIVATE_MEDIA_UPLOAD_DIR / "member-avatar-drift.png"
+        avatar.parent.mkdir(parents=True, exist_ok=True)
+        avatar.write_bytes(b"avatar")
+        audit_drift = store.private_media_registry_status()
+        self.assertEqual(1, audit_drift["counts"]["mediaIsolationAuditDrift"])
+        self.assertFalse(audit_drift["ok"])
+        avatar.unlink()
+        self.assertEqual(
+            0,
+            store.private_media_registry_status()["counts"]["mediaIsolationAuditDrift"],
+        )
+
+        future_key = "e" * 64
+        self._insert_scoped_doc(
+            store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
+            "future-missing-job", owner,
+            {
+                "id": "future-missing-job", "ownerId": owner,
+                "status": "succeeded",
+                "images": [{"assetUrl": f"/api/custom-canvas/blobs/{future_key}"}],
+            },
+        )
+        drifted = store.private_media_registry_status()
+        self.assertEqual(1, drifted["counts"]["unisolatedMissingReferencedFiles"])
+        self.assertFalse(drifted["ok"])
 
 
 if __name__ == "__main__":

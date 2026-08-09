@@ -6860,6 +6860,15 @@ body.workspace-shell-v2[data-zone="subscription"] .view-root {
 }
 .home-inspiration-detail-stage img.home-inspiration-detail-item { cursor: zoom-in; }
 .home-inspiration-detail-stage .home-inspiration-detail-item[hidden] { display: none; }
+.home-inspiration-unavailable {
+  width: 100%; min-height: 150px; display: grid; place-content: center; gap: 7px;
+  padding: 22px; color: #718096; text-align: center;
+  background: linear-gradient(145deg, #f5f7fa, #edf1f6); border-radius: 14px;
+}
+.home-inspiration-unavailable b { color: #39475a; font-size: 14px; font-style: normal; }
+.home-inspiration-unavailable small { color: #8a96a6; font-size: 12px; }
+.home-inspiration-detail-stage .home-inspiration-unavailable { height: 100%; min-height: 280px; }
+.home-inspiration-detail-thumbs button.is-unavailable { color: #7b8796; background: #eef2f6; }
 .home-inspiration-detail-thumbs { min-width: 0; display: flex; flex-wrap: nowrap; justify-content: flex-start; gap: 8px; overflow-x: auto; overscroll-behavior-inline: contain; }
 .home-inspiration-detail-thumbs button {
   position: relative;

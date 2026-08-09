@@ -1,5 +1,22 @@
 # 星阵版本记录
 
+## v140.5 - 2026-08-09（媒体隔离闭环本地候选，尚未部署）
+
+### 本版范围
+
+- 新增 expand-only `140010` 媒体隔离账本，不改写原 docs、引用、`private_media_registry` 或物理文件。只有用户明确授权、操作员逐条审核且精确绑定当前 DB identity、fresh SQLite v2 backup、fresh 20-component complete snapshot 和 live media digest 的计划才可 preview/apply；任意缺一、多一、owner/scope/hash/reference 或库/媒体摘要漂移均整批 fail closed。
+- 当前精确 `46` 个无可靠原件引用仍全部保留：`38` 个 succeeded `customCanvasGenerationJobs` 输出、`1` 个已发布 community canvas 与 `7` 个 server asset/upload。隔离只记录“历史存在、原件不可用”，不伪造占位、hash、归属或 provider 结果，不重试 provider，不删除业务记录。二跑必须 `applied=false / insertedRows=0`。
+- 媒体审计继续显示 raw `missingReferencedFiles`和 `pendingRows`，并新增 `isolatedMissingReferencedFiles`、`unisolatedMissingReferencedFiles` 和 `effectivePendingRows`。现网形态下 raw `48 pending = 46 精确隔离 + 2 publicAvatarExemptions`；不硬编数量，只有当场审计计算出 unisolated/effective 均为 `0`，且 schema/resource/registry/usage/SQLite 其他门禁全部正常，写门才可进入可解锁状态；任何未来新增缺失仍阻断。
+- 受影响条目的元数据和历史继续可见；精确媒体读取返回 `410 media_isolated`，社区卡片/详情显示“原件不可用”，不白屏或无限重试。下载、ZIP、发布、转发、复用等依赖原件的操作对该条目显式拒绝；其他媒体和业务权限不放宽。社区列表在同一读快照中批量解析隔离身份，避免按卡片重复打开数据库。
+- 隔离基线建立后，新写路径不得新建物理不存在的引用，已隔离历史条目可修改无关元数据，但不能暗中删掉/替换实际引用。跨 owner/team 读取仍拒绝，供应商仅保留既有 delivery-linked 精确只读边界。
+- 主平台、供应商视图和视频工坊的本地候选缓存身份统一为 `20260809-v140-media-isolation-1`。生产仍运行功能提交 `eb4c9c599c25aaad3d361d0aa2d6697e870c5f0f` / `20260809-v140-production-recovery-1` 且保持 `ACG_READ_ONLY=1`；本节不代表已部署、已 apply `140010` 或已恢复生产 RW。
+
+### 验证与发布边界
+
+- 定向回归覆盖精确 46 条 inspect/preflight/apply/二跑、raw/effective readiness、raw pending/公共头像例外基线漂移重新阻断、410 媒体契约、社区 UI、owner/team 负例、下载/发布拒绝、新缺失 fail closed 和清单/缓存一致性。Python 3.12.13 无私密 locked 主服务最终收集 `768` 项：`767` 通过，唯一 skip 是已批准的 v120 快照项；视频工坊 `140/140`，Node `124/124`，Python compileall 和全部跟踪 JavaScript `node --check` 通过。不使用系统 Python 的 TestClient 依赖偏差冒充生产锁定门禁。
+- release verifier 通过：Phase 0 `ad5c56536f96324faab3bf4481446651e60a9aaee0dfa832a8ff756c64f90dec`；ESM `60` modules / `342` edges，graph `0663e6de301a4d370e35202165ac18b70944b1560af4b57139283e7e9b84efe6`，closure `eb8d4d131f5d4d7c40cbcaa876bfc39237708a24c72673b72e4b8a1e9ebc7a0f`；canvas `63` files / `1,767,334` bytes / `59b1d83c6235ad26c4b20c1e0182dec47205c53677a06035f95cde42667d6789`；runtime `58` files / `2,945,104` bytes / `5cda7b76001c4ead92d525a986be4d89798ffb899e94855f35334936e5e136ca`。本轮敏感差异扫描和 `git diff --check` 通过，未执行真实 provider 调用或生产写入。
+- 服务器执行顺序必须是：从干净唯一提交重建 Linux 闭包和完整回归 → 保持 RO 并创建/verify/restore-drill fresh 20-component snapshot 与 fresh v2 backup → 显式 apply `140010` → 从 live inspect 生成且人工审核精确计划 → preflight/apply → 立即重建 fresh 保护点并二跑零写 → 核对 raw/isolated/unisolated/effective 和 `/api/ready` → 只有 `writeReady=true` 才解除 RO 并做多角色验收。禁止重放既有 `140008/140009` 或 incident receipt，禁止用本地数据覆盖生产。
+
 ## v140.4 - 2026-08-09（生产恢复工具已受保护上线，保持 RO）
 
 ### 本版范围

@@ -112,6 +112,14 @@ def _safe_status() -> dict:
         "productionRecoverySchemaChecksum": status.get(
             "productionRecoverySchemaChecksum"
         ) or "",
+        "modelUsageSettlementV2SchemaVersion": status.get(
+            "modelUsageSettlementV2SchemaVersion"
+        ),
+        "modelUsageSettlementV2SchemaChecksum": status.get(
+            "modelUsageSettlementV2SchemaChecksum"
+        ) or "",
+        "mediaIsolationSchemaVersion": status.get("mediaIsolationSchemaVersion"),
+        "mediaIsolationSchemaChecksum": status.get("mediaIsolationSchemaChecksum") or "",
         "privateMediaMigration": bool(status.get("privateMediaMigration")),
         "privateMediaMigrationVersion": status.get("privateMediaMigrationVersion"),
         "privateMediaMigrationChecksum": status.get("privateMediaMigrationChecksum") or "",
@@ -500,6 +508,35 @@ def main(argv=None) -> int:
     )
     _add_runtime_snapshot_confirmation(incident_apply, required=True)
     _add_backup_confirmation(incident_apply)
+    media_isolation_inspect = subparsers.add_parser(
+        "media-isolate-inspect",
+        help="inspect exact current missing-media isolation evidence",
+    )
+    _add_resource_confirmations(media_isolation_inspect)
+    _add_runtime_snapshot_confirmation(media_isolation_inspect, required=True)
+    _add_backup_confirmation(media_isolation_inspect)
+    media_isolation_preflight = subparsers.add_parser(
+        "media-isolate-preflight",
+        help="validate one exact user-authorized media isolation plan",
+    )
+    _add_resource_confirmations(media_isolation_preflight)
+    _add_recovery_plan_confirmation(
+        media_isolation_preflight,
+        help_text="operator-reviewed acg-production-media-isolation-plan-v1",
+    )
+    _add_runtime_snapshot_confirmation(media_isolation_preflight, required=True)
+    _add_backup_confirmation(media_isolation_preflight)
+    media_isolation_apply = subparsers.add_parser(
+        "media-isolate",
+        help="record exact immutable isolation receipts without changing media/docs",
+    )
+    _add_resource_confirmations(media_isolation_apply)
+    _add_recovery_plan_confirmation(
+        media_isolation_apply,
+        help_text="operator-reviewed acg-production-media-isolation-plan-v1",
+    )
+    _add_runtime_snapshot_confirmation(media_isolation_apply, required=True)
+    _add_backup_confirmation(media_isolation_apply)
     args = parser.parse_args(argv)
 
     if args.command == "status":
@@ -819,6 +856,37 @@ def main(argv=None) -> int:
                 expected_format=production_recovery.INCIDENT_ADJUDICATION_PLAN_FORMAT,
             )
             result = production_recovery.record_incident_adjudications(
+                plan=plan, plan_sha256=plan_sha256,
+                expected_identity=args.confirm_identity,
+                expected_schema_version=args.confirm_schema_version,
+                backup_binding=_verified_backup_binding(args, required=True),
+                runtime_snapshot_binding=_verified_runtime_snapshot_binding(
+                    args, required=True,
+                ),
+                created_by=plan.get("reviewedBy") or "deployment",
+                dry_run=args.command.endswith("preflight"),
+            )
+        elif args.command == "media-isolate-inspect":
+            result = production_recovery.media_isolation_evidence(
+                expected_identity=args.confirm_identity,
+                expected_schema_version=args.confirm_schema_version,
+                backup_binding=_verified_backup_binding(args, required=True),
+                runtime_snapshot_binding=_verified_runtime_snapshot_binding(
+                    args, required=True,
+                ),
+            )
+        elif args.command in {"media-isolate-preflight", "media-isolate"}:
+            if (
+                args.command == "media-isolate"
+                and str(os.getenv("ACG_ALLOW_MEDIA_ISOLATION", "")).strip() != "1"
+            ):
+                parser.error("ACG_ALLOW_MEDIA_ISOLATION=1 is required")
+            plan, plan_sha256 = production_recovery.load_review_plan(
+                args.review_plan,
+                expected_sha256=args.confirm_review_plan_sha256,
+                expected_format=production_recovery.MEDIA_ISOLATION_PLAN_FORMAT,
+            )
+            result = production_recovery.isolate_missing_media_reviewed(
                 plan=plan, plan_sha256=plan_sha256,
                 expected_identity=args.confirm_identity,
                 expected_schema_version=args.confirm_schema_version,

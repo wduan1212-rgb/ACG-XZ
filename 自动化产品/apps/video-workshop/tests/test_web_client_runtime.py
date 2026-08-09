@@ -358,10 +358,10 @@ console.log(JSON.stringify({{
         self.assertIn('textarea.addEventListener("paste", async (event) => {', source)
         self.assertIn('dom.fileInput.addEventListener("change", async () => {', source)
         self.assertGreaterEqual(source.count("showAttachmentError(error)"), 4)
-        self.assertIn("app.js?v=20260809-v140-production-recovery-1", index)
-        self.assertIn("styles.css?v=20260809-v140-production-recovery-1", index)
+        self.assertIn("app.js?v=20260809-v140-media-isolation-1", index)
+        self.assertIn("styles.css?v=20260809-v140-media-isolation-1", index)
         self.assertIn(
-            'VIDEO_WORKSHOP_BUILD_ID = "20260809-v140-production-recovery-1"',
+            'VIDEO_WORKSHOP_BUILD_ID = "20260809-v140-media-isolation-1"',
             (ROOT / "app" / "main.py").read_text(encoding="utf-8"),
         )
         self.assertIn("projectAssetsButton", index)

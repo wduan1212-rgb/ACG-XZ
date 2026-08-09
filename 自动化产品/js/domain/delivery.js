@@ -685,7 +685,8 @@ async function remoteFileU8(url, { deliveryId = "", label = "视频成片" } = {
         });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.detail || body.error || `HTTP ${res.status}`);
+      const detail = typeof body.detail === "string" ? body.detail : body.detail?.message;
+      throw new Error(detail || body.error || `HTTP ${res.status}`);
     }
     const ct = res.headers.get("content-type") || "video/mp4";
     const ext = /webm/.test(ct) ? "webm" : /quicktime|mov/.test(ct) ? "mov" : "mp4";

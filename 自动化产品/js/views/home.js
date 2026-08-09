@@ -3,8 +3,8 @@ import { currentMember, currentTeam } from "../core/store.js";
 import { community, teams, memberProfile } from "../core/remote.js";
 import { go } from "../core/router.js";
 import { icon } from "../ui/icons.js";
-import { openModal, openLightbox, toast } from "../ui/components.js?v=20260809-v140-production-recovery-1";
-import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260809-v140-production-recovery-1";
+import { openModal, openLightbox, toast } from "../ui/components.js?v=20260809-v140-media-isolation-1";
+import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260809-v140-media-isolation-1";
 
 const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
 const HOME_LAUNCH_REGISTRY_KEY = "__starmatrixHomeLaunchRegistry";
@@ -123,7 +123,10 @@ function inspirationCard(item) {
   const media = (item.media || [])[0] || {};
   const ratio = media.width && media.height ? `${media.width} / ${media.height}` : "auto";
   const poster = item.cover?.url || media.poster || "";
-  const content = media.type === "video"
+  const unavailable = media.availability === "isolated" || media.available === false;
+  const content = unavailable
+    ? `<span class="home-inspiration-unavailable" role="img" aria-label="历史媒体原件不可用">${icon("image", 22)}<b>历史媒体原件不可用</b><small>内容记录已保留</small></span>`
+    : media.type === "video"
     ? `<video data-home-video-src="${esc(media.url)}" ${poster ? `poster="${esc(poster)}"` : ""} muted loop playsinline preload="none" aria-label="${esc(item.title)}"></video>`
     : `<img src="${esc(media.url)}" alt="${esc(item.title)}" loading="lazy" decoding="async" />`;
   const byline = `${item.authorName || "星阵用户"}${item.teamName ? ` · ${item.teamName}` : ""}`;
@@ -218,13 +221,16 @@ function syncDetailReactionButton(button, field, active) {
 function inspirationDetail(item) {
   const entries = (item.media || []).filter(entry => entry?.url);
   const cover = item.cover?.url || entries.find(entry => entry?.poster)?.poster || "";
-  const media = entries.map((entry, index) => entry.type === "video"
+  const media = entries.map((entry, index) => (entry.availability === "isolated" || entry.available === false)
+    ? `<div class="home-inspiration-detail-item home-inspiration-unavailable${index ? "" : " is-active"}" data-home-detail-media="${index}" ${index ? "hidden" : ""}>${icon("image", 28)}<b>历史媒体原件不可用</b><small>该条内容与原始引用仍然保留</small></div>`
+    : entry.type === "video"
     ? `<video class="home-inspiration-detail-item${index ? "" : " is-active"}" data-home-detail-media="${index}" src="${esc(entry.url)}" ${entry.poster || cover ? `poster="${esc(entry.poster || cover)}"` : ""} controls playsinline preload="metadata" ${index ? "hidden" : ""}></video>`
     : `<img class="home-inspiration-detail-item${index ? "" : " is-active"}" data-home-detail-media="${index}" src="${esc(entry.url)}" alt="${esc(entry.alt || item.title)}" ${index ? "hidden" : ""} />`
   ).join("");
   const thumbs = entries.length > 1 ? `<div class="home-inspiration-detail-thumbs" role="tablist" aria-label="查看全部媒体">${entries.map((entry, index) => {
     const preview = entry.type === "video" ? (entry.poster || cover) : entry.url;
-    return `<button class="${index ? "" : "is-active"}" type="button" role="tab" aria-selected="${index ? "false" : "true"}" data-home-detail-thumb="${index}" aria-label="查看第 ${index + 1} 项媒体">${preview ? `<img src="${esc(preview)}" alt="" />` : icon("video", 15)}${entry.type === "video" ? `<i>${icon("play", 10)}</i>` : ""}</button>`;
+    const unavailable = entry.availability === "isolated" || entry.available === false;
+    return `<button class="${index ? "" : "is-active"}${unavailable ? " is-unavailable" : ""}" type="button" role="tab" aria-selected="${index ? "false" : "true"}" data-home-detail-thumb="${index}" aria-label="查看第 ${index + 1} 项媒体">${unavailable ? icon("image", 15) : (preview ? `<img src="${esc(preview)}" alt="" />` : icon("video", 15))}${entry.type === "video" && !unavailable ? `<i>${icon("play", 10)}</i>` : ""}</button>`;
   }).join("")}</div>` : "";
   openModal(`
     <article class="home-inspiration-detail">
@@ -248,6 +254,16 @@ function inspirationDetail(item) {
     onMount(panel, close) {
       panel.classList.add("home-inspiration-panel");
       let activeMediaIndex = 0;
+      const downloadButton = panel.querySelector("[data-home-detail-download]");
+      const syncDownloadState = () => {
+        const entry = entries[activeMediaIndex];
+        const unavailable = entry?.availability === "isolated" || entry?.available === false;
+        if (downloadButton) {
+          downloadButton.disabled = Boolean(unavailable);
+          downloadButton.title = unavailable ? "原件不可用，无法下载" : "下载当前媒体";
+        }
+      };
+      syncDownloadState();
       panel.querySelectorAll("video[data-home-detail-media]").forEach(video => {
         video.defaultMuted = false;
         video.muted = false;
@@ -255,6 +271,7 @@ function inspirationDetail(item) {
       panel.querySelectorAll("[data-home-detail-thumb]").forEach(button => button.addEventListener("click", () => {
         const index = button.dataset.homeDetailThumb;
         activeMediaIndex = Number(index || 0);
+        syncDownloadState();
         panel.querySelectorAll("[data-home-detail-media]").forEach(mediaItem => {
           const active = mediaItem.dataset.homeDetailMedia === index;
           mediaItem.hidden = !active;
@@ -270,8 +287,12 @@ function inspirationDetail(item) {
       panel.querySelectorAll('img[data-home-detail-media]').forEach(image => image.addEventListener("click", () => {
         if (!image.hidden) openLightbox(image, image.src, item.title || "灵感图片");
       }));
-      panel.querySelector("[data-home-detail-download]")?.addEventListener("click", async buttonEvent => {
+      downloadButton?.addEventListener("click", async buttonEvent => {
         const entry = entries[activeMediaIndex];
+        if (entry?.availability === "isolated" || entry?.available === false) {
+          toast("历史媒体原件不可用，无法下载", "error");
+          return;
+        }
         if (!entry?.url) return;
         const button = buttonEvent.currentTarget;
         button.disabled = true;

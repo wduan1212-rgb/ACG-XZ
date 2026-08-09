@@ -838,6 +838,62 @@ BEGIN
   SELECT RAISE(ABORT, 'model_usage_settlement_entry_v2_immutable');
 END;
 """
+MEDIA_ISOLATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS media_isolation_settlements(
+  settlement_id             TEXT PRIMARY KEY,
+  plan_sha256               TEXT NOT NULL UNIQUE,
+  database_identity         TEXT NOT NULL,
+  snapshot_manifest_sha256  TEXT NOT NULL,
+  snapshot_media_digest     TEXT NOT NULL,
+  isolated_rows             INTEGER NOT NULL,
+  raw_pending_rows          INTEGER NOT NULL,
+  public_avatar_exemptions  INTEGER NOT NULL,
+  created_at                INTEGER NOT NULL,
+  created_by                TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS media_isolation_entries(
+  settlement_id     TEXT NOT NULL,
+  media_kind        TEXT NOT NULL,
+  media_key         TEXT NOT NULL,
+  owner_id          TEXT NOT NULL,
+  scope_type        TEXT NOT NULL,
+  scope_id          TEXT NOT NULL,
+  resource_kind     TEXT NOT NULL,
+  resource_id       TEXT NOT NULL,
+  business_class    TEXT NOT NULL,
+  reference_sha256  TEXT NOT NULL,
+  disposition       TEXT NOT NULL,
+  created_at        INTEGER NOT NULL,
+  PRIMARY KEY(settlement_id, media_kind, media_key),
+  FOREIGN KEY(settlement_id) REFERENCES media_isolation_settlements(settlement_id),
+  CHECK(scope_type IN ('member','team')),
+  CHECK(disposition='preserve-history-media-unavailable')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_media_isolation_identity
+  ON media_isolation_entries(media_kind,media_key);
+CREATE INDEX IF NOT EXISTS idx_media_isolation_owner
+  ON media_isolation_entries(owner_id,media_kind,media_key);
+CREATE TRIGGER IF NOT EXISTS trg_media_isolation_settlements_immutable_update
+BEFORE UPDATE ON media_isolation_settlements
+BEGIN
+  SELECT RAISE(ABORT, 'media_isolation_settlement_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_media_isolation_settlements_immutable_delete
+BEFORE DELETE ON media_isolation_settlements
+BEGIN
+  SELECT RAISE(ABORT, 'media_isolation_settlement_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_media_isolation_entries_immutable_update
+BEFORE UPDATE ON media_isolation_entries
+BEGIN
+  SELECT RAISE(ABORT, 'media_isolation_entry_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_media_isolation_entries_immutable_delete
+BEFORE DELETE ON media_isolation_entries
+BEGIN
+  SELECT RAISE(ABORT, 'media_isolation_entry_immutable');
+END;
+"""
 PRODUCTION_RECOVERY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS production_recovery_settlements(
   settlement_id             TEXT PRIMARY KEY,
@@ -1032,7 +1088,20 @@ MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
         + _MODEL_USAGE_SETTLEMENT_V2_SCHEMA_IDENTITY
     ).encode("utf-8")
 ).hexdigest()
-LATEST_SCHEMA_MIGRATION_VERSION = MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION
+MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION = 140010
+MEDIA_ISOLATION_SCHEMA_MIGRATION_NAME = "v140-reviewed-missing-media-isolation"
+_MEDIA_ISOLATION_SCHEMA_IDENTITY = "|".join((
+    "exact-current-missing-reference-set",
+    "fresh-backup-snapshot-and-database-binding",
+    "immutable-owner-scope-and-reference-evidence",
+    "preserve-history-without-placeholder-content",
+    "isolated-versus-unisolated-readiness",
+    "operator-only-fail-closed-authorization",
+))
+MEDIA_ISOLATION_SCHEMA_MIGRATION_CHECKSUM = hashlib.sha256(
+    (MEDIA_ISOLATION_SCHEMA + "\n" + _MEDIA_ISOLATION_SCHEMA_IDENTITY).encode("utf-8")
+).hexdigest()
+LATEST_SCHEMA_MIGRATION_VERSION = MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION
 EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)", SCHEMA)
 ) | frozenset(
@@ -1074,6 +1143,11 @@ EXPECTED_SCHEMA_TABLES = frozenset(
     re.findall(
         r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
         MODEL_USAGE_SETTLEMENT_V2_SCHEMA,
+    )
+) | frozenset(
+    re.findall(
+        r"CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)",
+        MEDIA_ISOLATION_SCHEMA,
     )
 ) | {"schema_migrations"}
 EXPECTED_SCHEMA_COLUMNS = {
@@ -1142,6 +1216,17 @@ EXPECTED_SCHEMA_COLUMNS = {
         "resolution", "central_receipt_before_sha256",
         "sidecar_receipt_sha256", "central_receipt_after_sha256",
         "projected", "created_at",
+    },
+    "media_isolation_settlements": {
+        "settlement_id", "plan_sha256", "database_identity",
+        "snapshot_manifest_sha256", "snapshot_media_digest",
+        "isolated_rows", "raw_pending_rows", "public_avatar_exemptions",
+        "created_at", "created_by",
+    },
+    "media_isolation_entries": {
+        "settlement_id", "media_kind", "media_key", "owner_id",
+        "scope_type", "scope_id", "resource_kind", "resource_id",
+        "business_class", "reference_sha256", "disposition", "created_at",
     },
 }
 ACG_DATA_MIGRATION_VERSION = 137004
@@ -1639,6 +1724,14 @@ def _apply_model_usage_settlement_v2_schema_locked(conn, *, begin_transaction=Tr
     _execute_sql_script_locked(conn, MODEL_USAGE_SETTLEMENT_V2_SCHEMA)
 
 
+def _apply_media_isolation_schema_locked(conn, *, begin_transaction=True):
+    """Add immutable reviewed isolation receipts without changing media/docs."""
+
+    if begin_transaction and not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    _execute_sql_script_locked(conn, MEDIA_ISOLATION_SCHEMA)
+
+
 def _record_schema_migration_locked(conn, *, summary=None):
     existing = conn.execute(
         "SELECT checksum,status FROM schema_migrations WHERE version=?",
@@ -2023,6 +2116,46 @@ def _record_model_usage_settlement_v2_schema_migration_locked(conn, *, summary=N
         )
 
 
+def _record_media_isolation_schema_migration_locked(conn, *, summary=None):
+    existing = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if existing and existing[0] != MEDIA_ISOLATION_SCHEMA_MIGRATION_CHECKSUM:
+        raise StoreNotReadyError("media isolation schema checksum mismatch")
+    if existing and existing[1] == "success":
+        return
+    now = int(time.time() * 1000)
+    encoded_summary = json.dumps(
+        summary or {
+            "schema": "reviewed-missing-media-isolation",
+            "mode": "expand-only",
+        },
+        ensure_ascii=False,
+    )
+    values = (
+        MEDIA_ISOLATION_SCHEMA_MIGRATION_NAME,
+        MEDIA_ISOLATION_SCHEMA_MIGRATION_CHECKSUM,
+        runtime_config.release_id() or "unidentified",
+        now,
+        encoded_summary,
+        MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION,
+    )
+    if existing:
+        conn.execute(
+            "UPDATE schema_migrations SET name=?,checksum=?,app_version=?,"
+            "finished_at=?,status='success',summary=? WHERE version=?",
+            values,
+        )
+    else:
+        conn.execute(
+            "INSERT INTO schema_migrations("
+            "name,checksum,app_version,finished_at,status,summary,version,started_at"
+            ") VALUES(?,?,?,?,'success',?,?,?)",
+            (*values, now),
+        )
+
+
 def _database_identity(path):
     try:
         stat = Path(path).stat()
@@ -2305,6 +2438,11 @@ def database_readiness():
                 "WHERE version=?",
                 (MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_VERSION,),
             ).fetchone()
+            media_isolation_row = conn.execute(
+                "SELECT version,checksum,status FROM schema_migrations "
+                "WHERE version=?",
+                (MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION,),
+            ).fetchone()
             if base_row:
                 result["migrationVersion"] = int(base_row[0])
                 result["checksum"] = str(base_row[1] or "")[:16]
@@ -2368,6 +2506,15 @@ def database_readiness():
                 result["modelUsageSettlementV2SchemaChecksum"] = str(
                     usage_settlement_v2_row[1] or ""
                 )[:16]
+            if media_isolation_row:
+                result["migrationVersion"] = int(media_isolation_row[0])
+                result["checksum"] = str(media_isolation_row[1] or "")[:16]
+                result["mediaIsolationSchemaVersion"] = int(
+                    media_isolation_row[0]
+                )
+                result["mediaIsolationSchemaChecksum"] = str(
+                    media_isolation_row[1] or ""
+                )[:16]
             result["migrationDirty"] = int(conn.execute(
                 "SELECT COUNT(*) FROM schema_migrations WHERE status<>'success'"
             ).fetchone()[0] or 0)
@@ -2402,6 +2549,10 @@ def database_readiness():
                 and usage_settlement_v2_row[1]
                 == MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM
                 and usage_settlement_v2_row[2] == "success"
+                and media_isolation_row
+                and media_isolation_row[1]
+                == MEDIA_ISOLATION_SCHEMA_MIGRATION_CHECKSUM
+                and media_isolation_row[2] == "success"
                 and result["migrationDirty"] == 0
             )
         else:
@@ -2727,6 +2878,13 @@ def apply_schema_migrations(
                     MODEL_USAGE_SETTLEMENT_V2_SCHEMA_MIGRATION_CHECKSUM,
                     _apply_model_usage_settlement_v2_schema_locked,
                     _record_model_usage_settlement_v2_schema_migration_locked,
+                ),
+                (
+                    MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION,
+                    MEDIA_ISOLATION_SCHEMA_MIGRATION_NAME,
+                    MEDIA_ISOLATION_SCHEMA_MIGRATION_CHECKSUM,
+                    _apply_media_isolation_schema_locked,
+                    _record_media_isolation_schema_migration_locked,
                 ),
             )
             migrations = all_migrations
@@ -4646,6 +4804,15 @@ def _ensure_db():
                 },
             )
             conn.commit()
+            _apply_media_isolation_schema_locked(conn)
+            _record_media_isolation_schema_migration_locked(
+                conn,
+                summary={
+                    "schema": "reviewed-missing-media-isolation",
+                    "mode": "local-auto",
+                },
+            )
+            conn.commit()
             _initialized = True
         finally:
             conn.close()
@@ -5241,6 +5408,141 @@ def private_media_access(kind, key, member_id, delivery_id=""):
             conn.close()
 
 
+def _private_media_isolation_row_locked(conn, kind, key):
+    media_kind, media_key = _normalize_private_media_key(kind, key)
+    valid, _conflicts = _private_media_valid_isolations_locked(
+        conn, {(media_kind, media_key)},
+    )
+    evidence = valid.get((media_kind, media_key))
+    if not evidence:
+        return None
+    if media_kind == "upload" and (PRIVATE_MEDIA_UPLOAD_DIR / media_key).is_file():
+        return None
+    if media_kind == "canvas-blob":
+        rows = conn.execute(
+            "SELECT stored_name FROM custom_canvas_blobs "
+            "WHERE owner_id=? AND content_hash=?",
+            (evidence["ownerId"], media_key),
+        ).fetchall()
+        for row in rows:
+            try:
+                if _custom_canvas_blob_path(row[0]).is_file():
+                    return None
+            except ValueError:
+                continue
+    return {
+        **evidence,
+        "state": "isolated",
+        "available": False,
+        "reason": "verified-original-unavailable",
+    }
+
+
+def private_media_isolation_access(kind, key, member_id, delivery_id=""):
+    """Authorize metadata-only access to one exact isolated media identity."""
+
+    requester = str(member_id or "").strip()
+    if not requester:
+        return None, "forbidden"
+    _ensure_db()
+    with _lock:
+        conn = _connect(read_only=True)
+        try:
+            member_row = conn.execute(
+                "SELECT role FROM members WHERE id=?", (requester,),
+            ).fetchone()
+            if not member_row:
+                return None, "forbidden"
+            record = _private_media_isolation_row_locked(conn, kind, key)
+            if not record:
+                return None, "not_isolated"
+            teams = set(_private_media_member_teams_locked(conn, requester))
+            if (
+                record["ownerId"] == requester
+                or (record["scopeType"] == "team" and record["scopeId"] in teams)
+            ):
+                return record, None
+            if _supplier_delivery_media_allowed_locked(
+                conn, requester, str(member_row[0] or ""), delivery_id,
+                record["mediaKind"], record["mediaKey"],
+            ):
+                return {**record, "accessVia": "supplier-delivery"}, None
+            return None, "forbidden"
+        finally:
+            conn.close()
+
+
+def public_community_media_isolation(kind, key, post_id):
+    """Return isolation metadata only for the exact published post reference."""
+
+    _ensure_db()
+    with _lock:
+        conn = _connect(read_only=True)
+        try:
+            record = _private_media_isolation_row_locked(conn, kind, key)
+            if (
+                record
+                and record["resourceKind"] == "community-post"
+                and record["resourceId"] == str(post_id or "")
+            ):
+                return record
+            return None
+        finally:
+            conn.close()
+
+
+def community_media_isolation_identities(post_id):
+    """Return exact valid isolated identities for one published community post."""
+
+    _ensure_db()
+    with _lock:
+        conn = _connect(read_only=True)
+        try:
+            identities = {
+                (str(row[0]), str(row[1]))
+                for row in conn.execute(
+                    "SELECT media_kind,media_key FROM media_isolation_entries "
+                    "WHERE resource_kind='community-post' AND resource_id=?",
+                    (str(post_id or ""),),
+                ).fetchall()
+            }
+            valid, _conflicts = _private_media_valid_isolations_locked(
+                conn, identities,
+            )
+            return set(valid)
+        finally:
+            conn.close()
+
+
+def community_media_isolation_identity_map(post_ids):
+    """Resolve valid isolated media for a community page in one read snapshot."""
+
+    ids = sorted({str(value or "").strip() for value in (post_ids or []) if str(value or "").strip()})
+    if not ids:
+        return {}
+    _ensure_db()
+    with _lock:
+        conn = _connect(read_only=True)
+        try:
+            placeholders = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                "SELECT resource_id,media_kind,media_key FROM media_isolation_entries "
+                f"WHERE resource_kind='community-post' AND resource_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+            identities = {(str(row[1]), str(row[2])) for row in rows}
+            valid, _conflicts = _private_media_valid_isolations_locked(conn, identities)
+            valid = set(valid)
+            result = {post_id: set() for post_id in ids}
+            for row in rows:
+                identity = (str(row[1]), str(row[2]))
+                if identity in valid:
+                    result[str(row[0])].add(identity)
+            return result
+        finally:
+            conn.close()
+
+
 def private_media_data_migration_completed():
     """Cheap ledger check used to retire local legacy-read compatibility."""
 
@@ -5435,6 +5737,180 @@ def _private_media_collect_references(value, output):
             output.add(reference)
 
 
+def _private_media_isolated_references_locked(conn, value):
+    references = set()
+    _private_media_collect_references(value, references)
+    return sorted(
+        identity
+        for identity in references
+        if _private_media_isolation_row_locked(conn, *identity)
+    )
+
+
+def _private_media_reference_available_locked(conn, identity):
+    kind, key = identity
+    try:
+        kind, key = _normalize_private_media_key(kind, key)
+    except ValueError:
+        return False
+    if kind == "upload":
+        return (PRIVATE_MEDIA_UPLOAD_DIR / key).is_file()
+    if kind == "composed":
+        return (PRIVATE_MEDIA_COMPOSED_DIR / key).is_file()
+    if kind == "video-output":
+        return (PRIVATE_MEDIA_VIDEO_OUTPUT_DIR / key).is_file()
+    if kind == "video-upload":
+        return (PRIVATE_MEDIA_VIDEO_UPLOAD_DIR / key).is_file()
+    if kind == "canvas-blob":
+        for row in conn.execute(
+            "SELECT stored_name FROM custom_canvas_blobs WHERE content_hash=?",
+            (key,),
+        ).fetchall():
+            try:
+                if _custom_canvas_blob_path(row[0]).is_file():
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def _private_media_new_reference_guard_locked(conn, previous, incoming):
+    if not _table_exists_locked(conn, "media_isolation_settlements") or not conn.execute(
+        "SELECT 1 FROM media_isolation_settlements LIMIT 1"
+    ).fetchone():
+        # Normal upload/generation flows persist a document and its binary in
+        # separate bounded steps.  The strict no-new-missing invariant begins
+        # only after the reviewed isolation baseline is committed.
+        return
+    before = set()
+    after = set()
+    _private_media_collect_references(previous, before)
+    _private_media_collect_references(incoming, after)
+    for identity in sorted(after - before):
+        if not _private_media_reference_available_locked(conn, identity):
+            raise ValueError("private_media_reference_missing")
+    for identity in sorted(before - after):
+        if _private_media_isolation_row_locked(conn, *identity):
+            raise ValueError("isolated_media_reference_is_immutable")
+
+
+def _private_media_reference_evidence_sha256(value):
+    return hashlib.sha256(json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def _private_media_missing_reference_evidence_locked(conn, kind, key):
+    """Resolve one missing reference to one exact owner/scope/business record.
+
+    This helper never infers from a filename alone.  It is shared by the
+    reviewed isolation CLI and readiness, so a later owner/scope/reference
+    change makes the immutable receipt stop matching and closes writes again.
+    """
+
+    media_kind, media_key = _normalize_private_media_key(kind, key)
+    identity = (media_kind, media_key)
+    matches = []
+    for collection, resource_id, stored_owner, raw in conn.execute(
+        "SELECT collection,id,owner_id,data FROM docs WHERE data LIKE ? "
+        "ORDER BY collection,id",
+        (f"%{media_key}%",),
+    ).fetchall():
+        try:
+            payload = json.loads(raw)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise StoreNotReadyError(
+                "isolated media reference document is invalid"
+            ) from exc
+        references = set()
+        _private_media_collect_references(payload, references)
+        if identity not in references:
+            continue
+        collection = str(collection)
+        owner = str(stored_owner or "").strip()
+        if (
+            not isinstance(payload, dict)
+            or not owner
+            or str(payload.get("ownerId") or payload.get("byMemberId") or owner)
+            != owner
+        ):
+            raise StoreNotReadyError("isolated media reference owner is invalid")
+        scope = _resource_scope_row_locked(conn, collection, str(resource_id))
+        owner_scope = _member_resource_scope_locked(conn, owner)
+        if (
+            not scope
+            or not owner_scope
+            or str(scope[2] or "") != owner
+            or (str(scope[0]), str(scope[1])) != owner_scope[:2]
+        ):
+            raise StoreNotReadyError("isolated media reference scope is invalid")
+        if media_kind == "upload" and collection == "assets":
+            business_class = "server-asset-upload"
+        elif (
+            media_kind == "canvas-blob"
+            and collection == CUSTOM_CANVAS_GENERATION_JOB_COLLECTION
+            and str(payload.get("status") or "") == "succeeded"
+        ):
+            business_class = "succeeded-canvas-generation-job"
+        else:
+            raise StoreNotReadyError("isolated media reference class is unsupported")
+        matches.append({
+            "mediaKind": media_kind,
+            "mediaKey": media_key,
+            "ownerId": owner,
+            "scopeType": str(scope[0]),
+            "scopeId": str(scope[1]),
+            "resourceKind": _doc_resource_kind(collection),
+            "resourceId": str(resource_id),
+            "businessClass": business_class,
+        })
+    if media_kind == "canvas-blob":
+        for post_id, author_id, team_id, raw_media, raw_cover in conn.execute(
+            "SELECT id,author_id,team_id,media_json,cover_json "
+            "FROM community_posts WHERE status='published' "
+            "AND (media_json LIKE ? OR cover_json LIKE ?) ORDER BY id",
+            (f"%{media_key}%", f"%{media_key}%"),
+        ).fetchall():
+            try:
+                media = json.loads(raw_media or "[]")
+                cover = json.loads(raw_cover or "{}")
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise StoreNotReadyError(
+                    "isolated community media reference is invalid"
+                ) from exc
+            references = set()
+            _private_media_collect_references(media, references)
+            _private_media_collect_references(cover, references)
+            if identity not in references:
+                continue
+            owner = str(author_id or "").strip()
+            owner_scope = _member_resource_scope_locked(conn, owner)
+            stored_team = str(team_id or "")
+            if (
+                not owner_scope
+                or (owner_scope[0] == "team" and stored_team != owner_scope[1])
+                or (owner_scope[0] == "member" and stored_team)
+            ):
+                raise StoreNotReadyError("isolated community media scope is invalid")
+            matches.append({
+                "mediaKind": media_kind,
+                "mediaKey": media_key,
+                "ownerId": owner,
+                "scopeType": owner_scope[0],
+                "scopeId": owner_scope[1],
+                "resourceKind": "community-post",
+                "resourceId": str(post_id),
+                "businessClass": "published-community",
+            })
+    if len(matches) != 1:
+        raise StoreNotReadyError("isolated media reference is ambiguous")
+    evidence = matches[0]
+    return {
+        **evidence,
+        "referenceSha256": _private_media_reference_evidence_sha256(evidence),
+    }
+
+
 def _private_media_inventory_files(root, kind, *, recursive):
     root = Path(root).expanduser()
     if not root.is_dir():
@@ -5540,6 +6016,52 @@ def _private_media_active_teams_by_member_locked(conn):
     return teams
 
 
+def _private_media_valid_isolations_locked(conn, missing_identities):
+    """Return receipts whose immutable evidence still matches live references."""
+
+    if not _table_exists_locked(conn, "media_isolation_entries"):
+        return {}, 0
+    row = conn.execute(
+        "SELECT checksum,status FROM schema_migrations WHERE version=?",
+        (MEDIA_ISOLATION_SCHEMA_MIGRATION_VERSION,),
+    ).fetchone()
+    if row != (MEDIA_ISOLATION_SCHEMA_MIGRATION_CHECKSUM, "success"):
+        return {}, 0
+    stored = {
+        (str(item[0]), str(item[1])): item
+        for item in conn.execute(
+            "SELECT media_kind,media_key,owner_id,scope_type,scope_id,"
+            "resource_kind,resource_id,business_class,reference_sha256,"
+            "disposition FROM media_isolation_entries"
+        ).fetchall()
+    }
+    valid = {}
+    conflicts = 0
+    for identity in sorted(set(missing_identities or set())):
+        receipt = stored.get(identity)
+        if not receipt:
+            continue
+        try:
+            evidence = _private_media_missing_reference_evidence_locked(
+                conn, identity[0], identity[1],
+            )
+        except (StoreNotReadyError, ValueError):
+            conflicts += 1
+            continue
+        expected = (
+            evidence["mediaKind"], evidence["mediaKey"], evidence["ownerId"],
+            evidence["scopeType"], evidence["scopeId"],
+            evidence["resourceKind"], evidence["resourceId"],
+            evidence["businessClass"], evidence["referenceSha256"],
+            "preserve-history-media-unavailable",
+        )
+        if tuple(str(value or "") for value in receipt) != expected:
+            conflicts += 1
+            continue
+        valid[identity] = evidence
+    return valid, conflicts
+
+
 def _private_media_plan_locked(
     conn,
     *,
@@ -5611,6 +6133,8 @@ def _private_media_plan_locked(
         "overrideInventoryMismatch": 0,
         "overrideDatabaseMismatch": 0,
         "snapshotInventoryMismatch": 0,
+        "mediaIsolationEvidenceConflicts": 0,
+        "mediaIsolationAuditDrift": 0,
     }
     for root, kind, recursive in (
         (PRIVATE_MEDIA_UPLOAD_DIR, "upload", False),
@@ -5870,6 +6394,11 @@ def _private_media_plan_locked(
         )
     }
     issue_counts["missingReferencedFiles"] = len(missing_file_identities)
+    valid_isolations, isolation_conflicts = _private_media_valid_isolations_locked(
+        conn, missing_file_identities,
+    )
+    issue_counts["mediaIsolationEvidenceConflicts"] = isolation_conflicts
+    unisolated_missing = len(missing_file_identities - set(valid_isolations))
 
     migration_row = conn.execute(
         "SELECT checksum,status,summary FROM schema_migrations WHERE version=?",
@@ -6068,27 +6597,53 @@ def _private_media_plan_locked(
                 "plannedTeamId": str(team_id or ""),
             })
     issue_counts["registryConflicts"] = registry_conflicts
+    public_avatar_exemptions = sum(
+        1
+        for path in (
+            PRIVATE_MEDIA_UPLOAD_DIR.iterdir()
+            if PRIVATE_MEDIA_UPLOAD_DIR.is_dir()
+            else []
+        )
+        if path.is_file() and path.name.startswith("member-avatar-")
+    )
+    effective_pending = max(
+        0, pending - len(valid_isolations) - public_avatar_exemptions,
+    )
+    isolation_baseline = conn.execute(
+        "SELECT isolated_rows,raw_pending_rows,public_avatar_exemptions "
+        "FROM media_isolation_settlements ORDER BY created_at,settlement_id"
+    ).fetchall() if _table_exists_locked(conn, "media_isolation_settlements") else []
+    if isolation_baseline:
+        if len(isolation_baseline) != 1 or tuple(map(int, isolation_baseline[0])) != (
+            len(valid_isolations), pending, public_avatar_exemptions,
+        ):
+            issue_counts["mediaIsolationAuditDrift"] += 1
+
     warning_names = {
         "temporaryFiles",
         "quarantinedFiles",
         "canvasFilesystemQuarantined",
     }
+    nonblocking_issue_names = warning_names | {"missingReferencedFiles"}
     blocking = sum(
         value
         for name, value in issue_counts.items()
-        if name not in warning_names
-    )
+        if name not in nonblocking_issue_names
+    ) + unisolated_missing
     issues = sorted(
         name for name, value in issue_counts.items()
         if value and name not in warning_names
     )
+    if unisolated_missing:
+        issues.append("unisolatedMissingReferencedFiles")
+        issues = sorted(set(issues))
     warnings = sorted(
         name for name, value in issue_counts.items()
         if value and name in warning_names
     )
     ready_for_apply = blocking == 0
     summary = {
-        "ok": bool(ready_for_apply and migrated and pending == 0),
+        "ok": bool(ready_for_apply and migrated and effective_pending == 0),
         "readyForApply": ready_for_apply,
         "dataMigration": migrated,
         "dataMigrationVersion": PRIVATE_MEDIA_DATA_MIGRATION_VERSION if migrated else None,
@@ -6108,12 +6663,11 @@ def _private_media_plan_locked(
             "plannedRows": len(rows),
             "registeredRows": len(registry_rows),
             "pendingRows": pending,
+            "effectivePendingRows": effective_pending,
+            "isolatedMissingReferencedFiles": len(valid_isolations),
+            "unisolatedMissingReferencedFiles": unisolated_missing,
             "overrideEntries": len(override_entries),
-            "publicAvatarExemptions": sum(
-                1
-                for path in (PRIVATE_MEDIA_UPLOAD_DIR.iterdir() if PRIVATE_MEDIA_UPLOAD_DIR.is_dir() else [])
-                if path.is_file() and path.name.startswith("member-avatar-")
-            ),
+            "publicAvatarExemptions": public_avatar_exemptions,
         },
         "rows": rows,
     }
@@ -12955,6 +13509,11 @@ def _upsert_docs_in_conn(conn, collection, items, *, actor_id=""):
         ).fetchone()
         if cur and cur[0] > ua:
             continue  # 服务器已有更新的版本，跳过（避免旧端覆盖新数据）
+        try:
+            existing_payload = json.loads(cur[1]) if cur else {}
+        except (TypeError, json.JSONDecodeError):
+            existing_payload = {}
+        _private_media_new_reference_guard_locked(conn, existing_payload, it)
         if collection == "assets" and cur:
             # 备注、下载与观看量由专用原子接口维护。旧浏览器回推整条资产时，
             # 不允许缺字段的本地快照把这些服务器权威字段清掉。
@@ -16577,6 +17136,17 @@ def publish_production_bundle(production_id, actor_id, payload):
         conn = _connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            if _private_media_isolated_references_locked(conn, incoming):
+                return None, "media_isolated"
+            incoming_references = set()
+            _private_media_collect_references(incoming, incoming_references)
+            if conn.execute(
+                "SELECT 1 FROM media_isolation_settlements LIMIT 1"
+            ).fetchone() and any(
+                not _private_media_reference_available_locked(conn, identity)
+                for identity in incoming_references
+            ):
+                return None, "media_missing"
             production_row = conn.execute(
                 "SELECT owner_id,data FROM docs WHERE collection='productions' AND id=?",
                 (pid,),
@@ -16828,6 +17398,17 @@ def publish_custom_project_bundle(project_id, owner_id, payload):
         conn = _connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            if _private_media_isolated_references_locked(conn, incoming):
+                return None, "media_isolated"
+            incoming_references = set()
+            _private_media_collect_references(incoming, incoming_references)
+            if conn.execute(
+                "SELECT 1 FROM media_isolation_settlements LIMIT 1"
+            ).fetchone() and any(
+                not _private_media_reference_available_locked(conn, identity)
+                for identity in incoming_references
+            ):
+                return None, "media_missing"
             row = _custom_project_row(pid, conn)
             if not row:
                 return None, "not_found"
