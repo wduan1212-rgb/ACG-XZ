@@ -6,10 +6,10 @@ import { canDeliver, save } from "../core/store.js";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
 import { deliver } from "../domain/delivery.js";
-import { toast, openLightbox, publishModal } from "../ui/components.js?v=20260809-v140-media-isolation-1";
+import { toast, openLightbox, publishModal } from "../ui/components.js?v=20260809-v140-core-connectivity-2";
 import { go } from "../core/router.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260809-v140-media-isolation-1";
-import { reviewPreviewHtml } from "./prodDrawer.js?v=20260809-v140-media-isolation-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260809-v140-core-connectivity-2";
+import { reviewPreviewHtml } from "./prodDrawer.js?v=20260809-v140-core-connectivity-2";
 
 export function renderCopyPage(root, p) {
   const isImg = p.mode === "图文";
@@ -60,7 +60,7 @@ export function renderReviewPage(root, p) {
     wireStepper(root);
     const run = async () => {
       try {
-        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260809-v140-media-isolation-1");
+        const { ensureVideoCover } = await import("./chainWorkshop.js?v=20260809-v140-core-connectivity-2");
         await ensureVideoCover(p);
         if (root.isConnected) renderReviewPage(root, p);
       } catch (err) {

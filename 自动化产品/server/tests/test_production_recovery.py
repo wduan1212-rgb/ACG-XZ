@@ -1191,6 +1191,22 @@ class ProductionRecoveryTest(unittest.TestCase):
             isolation_map["isolated-community"],
         )
         self.assertEqual(set(), isolation_map["other-post"])
+        # Exact historical isolation must not make every later canvas save run
+        # fail during its conservative GC pass.  The isolated owner's missing
+        # references and another owner's same-hash namespace are both accepted
+        # only through the still-valid immutable receipts; no reference, blob
+        # or ownership row is rewritten.
+        with store._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self.assertEqual([], store._custom_canvas_gc_blobs_locked(conn, owner))
+            conn.rollback()
+        with store._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self.assertEqual(
+                [],
+                store._custom_canvas_gc_blobs_locked(conn, "outside-member"),
+            )
+            conn.rollback()
         post = store.get_community_post("isolated-community")
         response = server_main._community_post_response(post)
         self.assertEqual("isolated", response["media"][0]["availability"])

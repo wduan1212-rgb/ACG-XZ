@@ -9762,6 +9762,14 @@ async def custom_canvas_generation_job_create(
             fingerprint,
             source_project_id=req.sourceProjectId,
         )
+    except PermissionError as exc:
+        reason = str(exc)
+        if reason in {
+            "resource_scope_required",
+            "resource_reference_scope_missing",
+        }:
+            raise HTTPException(409, "画布项目尚未完成服务器同步，请稍后重试")
+        raise HTTPException(403, "画布项目不属于当前账号或团队")
     except ValueError as exc:
         reason = str(exc)
         if reason == "custom_canvas_generation_job_conflict":

@@ -16290,6 +16290,42 @@ def _custom_canvas_materialize_payloads_locked(conn, owner_id, *payloads):
     ]
 
 
+def _custom_canvas_isolated_missing_hashes_locked(
+    conn,
+    *,
+    owner_id,
+    resource_kind,
+    resource_id,
+    content_hashes,
+):
+    """Resolve only exact, still-valid canvas isolation receipts.
+
+    Historical media isolation preserves the original business reference while
+    explicitly recording that the owner-scoped binary is unavailable.  Such a
+    reference must neither keep another owner's same-hash blob alive nor block
+    unrelated draft writes.  Evidence drift remains fail closed because
+    ``_private_media_isolation_row_locked`` revalidates the immutable receipt
+    against the live owner, scope, resource and reference hash.
+    """
+    isolated = set()
+    expected_owner = str(owner_id or "")
+    expected_kind = str(resource_kind or "")
+    expected_id = str(resource_id or "")
+    for content_hash in sorted(set(content_hashes or set())):
+        evidence = _private_media_isolation_row_locked(
+            conn, "canvas-blob", str(content_hash),
+        )
+        if not evidence:
+            continue
+        if (
+            str(evidence.get("ownerId") or "") == expected_owner
+            and str(evidence.get("resourceKind") or "") == expected_kind
+            and str(evidence.get("resourceId") or "") == expected_id
+        ):
+            isolated.add(str(content_hash))
+    return isolated
+
+
 def _custom_canvas_gc_blobs_locked(conn, owner_id):
     """Delete only blobs unreferenced by every valid owner-scoped surface.
 
@@ -16351,22 +16387,33 @@ def _custom_canvas_gc_blobs_locked(conn, owner_id):
                 str(scope[0]), str(scope[1]),
             ):
                 raise ValueError("custom_canvas_business_reference_scope_conflict")
+        missing = hashes - (
+            owned_hashes if document_owner == owner else {
+                str(row[0]) for row in conn.execute(
+                    "SELECT content_hash FROM custom_canvas_blobs WHERE owner_id=? "
+                    "AND content_hash IN (%s)" % ",".join("?" for _ in hashes),
+                    (document_owner, *sorted(hashes)),
+                ).fetchall()
+            }
+        )
+        isolated_missing = _custom_canvas_isolated_missing_hashes_locked(
+            conn,
+            owner_id=document_owner,
+            resource_kind=f"doc:{collection}",
+            resource_id=resource_id,
+            content_hashes=missing,
+        )
+        unresolved_missing = missing - isolated_missing
         if document_owner == owner:
-            if not hashes.issubset(owned_hashes):
+            if unresolved_missing:
                 raise ValueError("custom_canvas_business_reference_blob_missing")
-            referenced.update(hashes)
+            referenced.update(hashes & owned_hashes)
             continue
         # A content hash may legitimately exist in two owner namespaces.  The
         # other document can retain only its own row; it never keeps this
-        # owner's copy alive.
-        other_owned = {
-            str(row[0]) for row in conn.execute(
-                "SELECT content_hash FROM custom_canvas_blobs WHERE owner_id=? "
-                "AND content_hash IN (%s)" % ",".join("?" for _ in hashes),
-                (document_owner, *sorted(hashes)),
-            ).fetchall()
-        }
-        if other_owned != hashes:
+        # owner's copy alive.  An exact isolation receipt records the missing
+        # owner-scoped original without transferring or inferring ownership.
+        if unresolved_missing:
             raise ValueError("custom_canvas_cross_owner_reference_conflict")
 
     # Community rows are not in docs/resource_scopes.  Published posts remain
@@ -16400,19 +16447,30 @@ def _custom_canvas_gc_blobs_locked(conn, owner_id):
             or (author_scope[0] == "member" and stored_team)
         ):
             raise ValueError("custom_canvas_community_reference_scope_conflict")
+        author_owned = (
+            owned_hashes if author == owner else {
+                str(row[0]) for row in conn.execute(
+                    "SELECT content_hash FROM custom_canvas_blobs WHERE owner_id=? "
+                    "AND content_hash IN (%s)" % ",".join("?" for _ in hashes),
+                    (author, *sorted(hashes)),
+                ).fetchall()
+            } if hashes else set()
+        )
+        missing = hashes - author_owned
+        isolated_missing = _custom_canvas_isolated_missing_hashes_locked(
+            conn,
+            owner_id=author,
+            resource_kind="community-post",
+            resource_id=post_id,
+            content_hashes=missing,
+        )
+        unresolved_missing = missing - isolated_missing
         if author == owner:
-            if not hashes.issubset(owned_hashes):
+            if unresolved_missing:
                 raise ValueError("custom_canvas_community_reference_blob_missing")
-            referenced.update(hashes)
+            referenced.update(hashes & owned_hashes)
             continue
-        other_owned = {
-            str(row[0]) for row in conn.execute(
-                "SELECT content_hash FROM custom_canvas_blobs WHERE owner_id=? "
-                "AND content_hash IN (%s)" % ",".join("?" for _ in hashes),
-                (author, *sorted(hashes)),
-            ).fetchall()
-        } if hashes else set()
-        if other_owned != hashes:
+        if unresolved_missing:
             raise ValueError("custom_canvas_cross_owner_reference_conflict")
 
     # A generation result is uploaded before its lightweight URL is committed
@@ -16803,6 +16861,39 @@ def _custom_canvas_generation_job_public(item):
     }
 
 
+def _validate_custom_canvas_generation_source_scope_locked(
+    conn, owner_id, source_project_id,
+):
+    """Bind a browser canvas source id to its stable server project scope."""
+
+    owner = str(owner_id or "").strip()
+    source_id = str(source_project_id or "").strip()
+    if not source_id or not _resource_scopes_enforced_locked(conn):
+        return
+    actor = _member_resource_scope_locked(conn, owner)
+    if not actor:
+        raise PermissionError("resource_scope_required")
+    project = _find_custom_project_by_source_locked(
+        conn, owner, "canvas", {source_id},
+    )
+    project_id = str((project or {}).get("id") or "").strip()
+    if not project_id:
+        # Older callers used the customProjects primary key as source id.
+        exact = _doc_row_in_conn(conn, "customProjects", source_id)
+        if exact and str(exact[0] or "") == owner:
+            project_id = source_id
+    if not project_id:
+        raise PermissionError("resource_reference_scope_missing")
+    scope = _resource_scope_row_locked(conn, "customProjects", project_id)
+    if not scope:
+        raise PermissionError("resource_reference_scope_missing")
+    if (
+        str(scope[2] or "") != owner
+        or (str(scope[0]), str(scope[1])) != actor[:2]
+    ):
+        raise PermissionError("resource_scope_conflict")
+
+
 def create_custom_canvas_generation_job(
     owner_id,
     client_job_id,
@@ -16856,11 +16947,15 @@ def create_custom_canvas_generation_job(
                 "createdAt": now,
                 "updatedAt": now,
             }
+            _validate_custom_canvas_generation_source_scope_locked(
+                conn, owner, project_id,
+            )
+            scope_payload = {**item, "sourceProjectId": ""}
             _ensure_doc_resource_scope_locked(
                 conn,
                 CUSTOM_CANVAS_GENERATION_JOB_COLLECTION,
                 internal_id,
-                item,
+                scope_payload,
                 actor_id=owner,
                 owner_id=owner,
             )

@@ -23,6 +23,87 @@ main = importlib.import_module("main")
 
 
 class CustomCanvasBackgroundJobTest(unittest.TestCase):
+    def test_store_job_resolves_browser_source_id_to_stable_project_scope(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            with store._lock:
+                conn = store._connect()
+                try:
+                    now = 100
+                    conn.execute("UPDATE members SET role='user' WHERE id='creator-a'")
+                    project = {
+                        "id": "canvas-stable-a",
+                        "ownerId": "creator-a",
+                        "kind": "canvas",
+                        "projectState": {"sourceProjectId": "browser-project-a"},
+                    }
+                    conn.execute(
+                        "INSERT INTO docs(collection,id,owner_id,updated_at,data) "
+                        "VALUES('customProjects',?,?,?,?)",
+                        ("canvas-stable-a", "creator-a", now, json.dumps(project)),
+                    )
+                    conn.execute(
+                        "INSERT INTO resource_scopes("
+                        "resource_kind,resource_id,scope_type,scope_id,owner_id,"
+                        "provenance,captured_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            "doc:customProjects", "canvas-stable-a", "member",
+                            "creator-a", "creator-a", "test-source", now, now,
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,"
+                        "status,summary) VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_VERSION,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_NAME,
+                            store.RESOURCE_SCOPE_DATA_MIGRATION_CHECKSUM,
+                            "test", now, now, "success", "{}",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            created, inserted = store.create_custom_canvas_generation_job(
+                "creator-a",
+                "browser-job-a",
+                hashlib.sha256(b"browser-request-a").hexdigest(),
+                source_project_id="browser-project-a",
+            )
+            self.assertTrue(inserted)
+            self.assertEqual(created["sourceProjectId"], "browser-project-a")
+            with store._lock:
+                conn = store._connect()
+                try:
+                    internal_id = store._custom_canvas_generation_job_id(
+                        "creator-a", "browser-job-a"
+                    )
+                    scope = conn.execute(
+                        "SELECT scope_type,scope_id,owner_id FROM resource_scopes "
+                        "WHERE resource_kind=? AND resource_id=?",
+                        (
+                            store._doc_resource_kind(
+                                store.CUSTOM_CANVAS_GENERATION_JOB_COLLECTION
+                            ),
+                            internal_id,
+                        ),
+                    ).fetchone()
+                finally:
+                    conn.close()
+            self.assertEqual(("member", "creator-a", "creator-a"), scope)
+
+            with self.assertRaisesRegex(
+                PermissionError, "resource_reference_scope_missing"
+            ):
+                store.create_custom_canvas_generation_job(
+                    "creator-a",
+                    "browser-job-missing",
+                    hashlib.sha256(b"browser-request-missing").hexdigest(),
+                    source_project_id="browser-project-missing",
+                )
+
     def test_store_jobs_are_owner_scoped_idempotent_and_success_is_immutable(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_canvas_store(tmp)

@@ -3,7 +3,7 @@
 
 import { esc } from "../core/util.js";
 import { icon } from "./icons.js";
-import { openModal } from "./components.js?v=20260809-v140-media-isolation-1";
+import { openModal } from "./components.js?v=20260809-v140-core-connectivity-2";
 
 const MANIFEST_URL = "/downloads/client/manifest.json";
 const SAFE_DOWNLOAD_PREFIX = "/downloads/client/";

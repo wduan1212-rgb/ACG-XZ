@@ -548,15 +548,15 @@ const structuralResponse = {
   creativeAngle: '任务卡空间错位',
   visualStyle: '电影纪实质感。',
   frontPrompt: `统一画面风格：电影纪实质感。
-0-3s：第一张任务卡从桌面边缘滑入，冷白顶光在纸面形成细长反光，特写→拉出，展示办公桌与散落资料的空间关系。
-3-7s：第一栏待办被蓝色便签逐项覆盖，侧面中景跟随便签移动，背景人物只保留模糊轮廓，文件夹沿桌角形成清晰纵深。
-7-11s：资料卡像多米诺骨牌连续倒下，低机位横移捕捉纸张、回形针和印章的真实材质，窗外自然光逐渐变暖，冲突持续升级。
-11-15s：所有卡片在桌面中央重新排成清单，俯拍镜头缓慢稳定下来，最后一张完成标记亮起，画面用干净留白完成反转。`,
+0-3秒：第一张任务卡从桌面边缘滑入，冷白顶光在纸面形成细长反光，特写→拉出，展示办公桌与散落资料的空间关系。
+3-7 秒：第一栏待办被蓝色便签逐项覆盖，侧面中景跟随便签移动，背景人物只保留模糊轮廓，文件夹沿桌角形成清晰纵深。
+7—11秒：资料卡像多米诺骨牌连续倒下，低机位横移捕捉纸张、回形针和印章的真实材质，窗外自然光逐渐变暖，冲突持续升级。
+11至15秒：所有卡片在桌面中央重新排成清单，俯拍镜头缓慢稳定下来，最后一张完成标记亮起，画面用干净留白完成反转。`,
   backPrompt: `统一画面风格：电影纪实质感。
-0-3s：竖屏桌面录屏进入资料选择页，文件卡从左侧依次滑入中央工作区，鼠标轨迹短促明确，界面保持低文字密度和真实阴影。
-3-7s：右侧参数栏依次选择分类规则与输出格式，镜头只展示窗口、文件和流程卡，蓝色进度线沿底部平稳推进，按钮反馈清楚。
-7-11s：处理区把散乱资料转换为结构化清单与结果表格，局部放大字段对应关系，窗口层级、圆角和留白保持统一，不出现人物或手部。
-11-15s：完成页并排展示归档文件夹、复核清单和可导出报告，镜头轻微推近绿色完成状态，最后以清爽桌面窗口自然收束。`
+0-3秒：竖屏桌面录屏进入资料选择页，文件卡从左侧依次滑入中央工作区，鼠标轨迹短促明确，界面保持低文字密度和真实阴影。
+3-7 秒：右侧参数栏依次选择分类规则与输出格式，镜头只展示窗口、文件和流程卡，蓝色进度线沿底部平稳推进，按钮反馈清楚。
+7—11秒：处理区把散乱资料转换为结构化清单与结果表格，局部放大字段对应关系，窗口层级、圆角和留白保持统一，不出现人物或手部。
+11至15秒：完成页并排展示归档文件夹、复核清单和可导出报告，镜头轻微推近绿色完成状态，最后以清爽桌面窗口自然收束。`
 };
 
 const validRetryResponse = {
@@ -1302,8 +1302,8 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260809-v140-media-isolation-1"', main)
-        self.assertIn('js/main.js?v=20260809-v140-media-isolation-1', index)
+        self.assertIn('const APP_BUILD_ID = "20260809-v140-core-connectivity-2"', main)
+        self.assertIn('js/main.js?v=20260809-v140-core-connectivity-2', index)
         self.assertIn('id = "topSyncAnalytics"', main)
         self.assertIn("syncHomepageAnalytics", main)
         self.assertIn("refreshAllAnalytics", main)

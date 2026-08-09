@@ -2267,7 +2267,7 @@ function parseInfoFlowCreativePlan(content = "") {
 function countInfoFlowScenes(prompt = "") {
   const text = String(prompt || "");
   const timed = text.match(
-    /(?:^|\n)\s*(?:[-*•]\s*)?(?:镜头|场景|分镜)?\s*(?:\d+[.\u3001:：)）]\s*)?(?:第\s*)?\d{1,2}(?::\d{2})?\s*(?:s|秒)?\s*[-—–~至到]\s*\d{1,2}(?::\d{2})?\s*(?:s|秒)\b/gim
+    /(?:^|\n)\s*(?:[-*•]\s*)?(?:镜头|场景|分镜)?\s*(?:\d+[.\u3001:：)）]\s*)?(?:第\s*)?\d{1,2}(?::\d{2})?\s*(?:s|秒)?\s*[-—–~至到]\s*\d{1,2}(?::\d{2})?\s*(?:s|秒)?(?=\s*(?:[:：,，.。;；)）\]】]|$))/gim
   ) || [];
   const labeled = text.match(
     /(?:^|\n)\s*(?:[-*•]\s*)?(?:镜头|场景|分镜)\s*(?:0?[1-9]|[1-9]\d)\s*[.\u3001:：)）-]?/gim
