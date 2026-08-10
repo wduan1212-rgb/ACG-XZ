@@ -10,6 +10,8 @@
 - **精确前向修复**：增量结算只对 `effectivePendingRows` 建计划，逐条排除已登记、已隔离、公共头像例外、物理缺失和 owner/project 证据不唯一的记录。允许进入预检的审计异常只能是这批尚待登记记录自身造成的 `missingReferencedFiles/mediaIsolationAuditDrift`；写入同一事务后必须完整重算并证明 effective=0、drift=0、raw 回到不可变隔离基线，否则整体回滚。相同 settlement ID 二跑零写；结算后再出现 pending 则报 immutable replay drift。
 - **关页根因**：sidecar 的项目与输出会在本地 runtime 持久化，但主服务过去只在浏览器请求项目 list/detail/chat 时调用同步。最后一个页面关闭后，sidecar 成功终态不会触发主服务媒体登记、积分/usage reconciliation，久而久之阻断启动门。修复后的 finalizer 只观察已认证 owner 的本地 checkpoint，摘要变化时调用既有同步函数；不向 provider 发 submit/poll/retry，不从未访问项目做全盘猜测扫描，terminal 或 shutdown 时退出。
 - **当前恢复顺序**：若 sidecar checkpoint 仍为真实 active，先等待其自然终态；否则在 writer 冻结下逐次创建 fresh complete snapshot 与 v2 backup，先做 effective media settlement，再用精确 reviewed plan 覆盖全部 central unresolved 执行 `usage-settle-v2`，最后只对 sidecar 已持久化 terminal 且中央缺失的记录执行 `video-usage-recover`。每一步之后重新只读审计并在新绑定下二跑零写；任何集合、hash、owner、状态或备份漂移都停止切换。
+- **生产第二层根因**：状态层正确算出 effective `25`，但首个 apply 的 plan selector 仍遍历 raw 73 条，属于“计数口径已改、执行集合未改”的内部不一致。不能凭目标数字截前 25 条，也不能把历史 48 条重新登记。生产证据恰好是同一不可变隔离基线、同一 `video-output / video-workshop-project` provenance 的完整时间分区：基线前 48、基线后 25；修复要求类型、provenance、count 与每个文件 `mtime` 全部满足该分区，任何历史文件被触碰或集合不完整都 fail closed。最终只插入 25，历史隔离记录保持原样，二跑零写。
+- **部署可用性边界**：代码-only sibling build、wheelhouse 验签和只读检查期间保持旧 release active/RW；数据 settlement 只在 fresh binding apply 的最短 writer freeze 内执行，结束立即恢复旧服务。新 release 只有在启动门和健康检查通过后才滚动接管，异常直接保留旧 release，不能让 Nginx 长时间没有 upstream，也不能为了 readiness 数字自动把已在线服务切 RO。`/api/ready` 是证据观察端点；正在进行的正常模型请求可能短暂产生 pending receipt，此时 `/api/health`、systemd 状态和已武装进程才是可用性判断，pending 由原请求路径闭合而不是部署线程猜补。
 
 ## 2026-08-10 v141.2 本地候选：多选不应制造写冲突，历史坏引用也不能伪装成草稿格式错误
 
@@ -50,7 +52,7 @@
 - **构造参数被接受不等于生命周期被执行**：生产锁定 FastAPI 0.68.1 / Starlette 0.14.2 会接受较新的 `lifespan=` 参数但不执行其中的写门武装，表现为实时 `/api/ready` 看似全绿，普通请求却因进程内 `_PRODUCTION_WRITE_GATE_SNAPSHOT` 未武装而持续 503。关键启动门禁必须使用锁定旧栈原生 startup/shutdown 事件，并以真实 Uvicorn 子进程验证：RW 审计通过后才出现 `Application startup complete`，失败不开放请求；`/api/ready` 继续只观察、不能代替 startup 武装。
 - **sidecar 已结算证据不能按新格式误判为冲突**：旧 v1 `operator-confirmed-unknown` 是已经人工审核、不可变的合法终态。中央审计若只接受新 v2 形态，会把 `14` 条历史证据误计为 immutable identity conflict，且可能出现中央 readiness `unresolved=0`、sidecar 冲突却不可见的假绿。兼容规则只能接受精确旧证据结构与哈希，不能泛化错误语法、修改历史 receipt 或重新调用 provider；write gate 必须计入 sidecar raw/terminal/settled/effective/conflict 指标。
 - **“sidecar 已完成、central 缺失”只能从耐久证据恢复**：本次只有 `3` 条记录同时满足 sidecar 已持久化、完成状态可验证、中央记录精确缺失。恢复必须使用逐条 reviewed plan，并绑定 fresh DB identity、SQLite v2 backup、20-component snapshot 与 media digest；原子写 receipt、outbox、projection 和 v2 settlement，二跑必须零写。不得根据项目成功猜费用、重试 provider、修改业务任务或把范围扫描结果自动补入账本。
-- **RW 覆盖层有加载顺序**：systemd 的基础 `EnvironmentFile` 可能覆盖更早的单条 `Environment=`。切换 RW 时应使用后置、只包含公开 `ACG_READ_ONLY=0` 的独立覆盖文件，并同时核对主服务/sidecar `/proc` 环境、进程 cwd、sidecar write policy 与主服务 startup journal；不得修改或复制私密环境。
+- **RW 覆盖层有加载顺序**：systemd 的基础 `EnvironmentFile` 可能覆盖 drop-in 中看似更晚的单条 `Environment=`；本次实际复现为重启后进程仍拿到旧 RO 值。临时维护和 release 切换应在后置 `ExecStart` 中通过 `/usr/bin/env ACG_READ_ONLY=... ACG_RELEASE_ID=... ACG_RELEASE_ROOT=...` 显式包装原启动命令，并同时核对主服务/sidecar `/proc` 环境、进程 cwd、sidecar write policy 与主服务 startup journal。只覆盖这些公开运行指针，不得修改、复制或回显私密环境。
 - **媒体隔离继续保留真实缺失事实**：完整 RW 恢复不代表 `46` 个历史原件被找回。raw `missingReferencedFiles=46 / pendingRows=48 / publicAvatarExemptions=2` 仍需显示；只有精确隔离后的 `unisolated=0 / effectivePending=0` 可闭合当前门禁。读取返回 `410`、历史记录保留，未来新增缺失仍必须 fail closed。
 
 ## 2026-08-09 v140.5 本地候选：“已隔离”不等于“已恢复”

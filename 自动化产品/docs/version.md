@@ -1,20 +1,25 @@
 # 星阵版本记录
 
-## v141.3 - 2026-08-10（生产候选：隔离基线后的增量媒体结算与视频工坊关页终态收口）
+## v141.3 - 2026-08-10（生产已发布：隔离后增量媒体结算与视频工坊关页终态收口）
+
+### 生产部署结果
+
+- 生产功能 SHA 为 `1332f8c8e9408c7e9a36f49ab13b48a46ca353f5`，分支 `codex/v141-content-governance`，release/cache identity 为 `20260810-v1413-runtime-finalization-1`，active sibling release 为 `20260810-v1413-runtime-finalization-1-1332f8c`。旧 v140.6 在构建、验签和受保护结算期间始终 active/RW；先恢复并确认其公网 200 和完整写能力，再以约 9 秒的滚动窗口切到 v141.3。主服务与 sidecar 当前均 active/RW、`NRestarts=0`，进程工作目录和公开 release 环境精确指向新 release，生产 SQLite、账号、媒体、认证、私密配置与 Nginx 没有被本地状态覆盖。
+- 原候选按 `effectivePendingRows=25` 生成状态，但 apply 错把 raw 73 条候选全部纳入计划而安全失败。最终前向修复以不可变 `140010` 隔离时间为边界，只接受同一历史基线下、精确 `video-output / video-workshop-project` 拓扑，并证明基线前 48 条与基线后 25 条完整分区；任何数量、类型、mtime 或历史文件漂移仍整批 fail closed。生产首次 apply 只登记 25 条，raw `73→48`、effective `25→0`、drift `1→0`，fresh binding 二跑 `applied=false / insertedRows=0`。
+- usage v2 对切换前精确 2 条中央未决记录写入 2 条终态并二跑零写；随后 `video-usage-recover` 仅导入 13 条 sidecar 已持久化成功、中央精确缺失的终态，二跑仍零写。结算结束时 unresolved/outbox/spool/effective sidecar 均为 0，SQLite `quick_check=ok`，全程没有 provider submit、retry 或猜补费用。切换后的正常用户请求可短暂产生新的 pending receipt；它只由业务请求自然闭合，`/api/ready` 继续纯观察，不能把一次 GET 用来停服或切只读。
+- 部署前后均为 48 张表，总行数 `58,509→58,595`，没有任何表减少；媒体 inventory digest 始终为 `d0c6af65bf266bc5f314bf0f354912b50361e3b10ae84aca635c9a67f0f0659f`，uploads/composed/canvas/video projects/uploads/outputs 分别保持 `6,240 / 993 / 634 / 58 / 176 / 1,777`，无文件减少。供应商活动 2,354 行、账号绑定 52 行、团队供应商 4 行及其摘要部署前后完全一致，80 个账号文档不变；曝光量、观看量和回传数据未被迁移或重写。
 
 ### 本版范围
 
 - v141.2 已在目标 Linux 完成构建和测试，但生产切换前的实时门禁发现新增视频工坊成片尚未登记到私有媒体 registry，raw `pendingRows=73` 中只有既有隔离基线 `48` 条可保留，新增 `effectivePendingRows=25` 且 `mediaIsolationAuditDrift=1`。v141.3 将 `media-settle` 改为只处理 effective 增量：仅登记物理文件存在、owner/project 证据唯一、未隔离且不属于公共头像例外的行；事务提交前必须同时证明 effective/drift 归零并且 raw 精确回到不可变隔离基线。既有隔离引用、原文档和物理文件均不删除、不伪造、不改写。
 - 视频工坊原先只在用户再次打开项目时由主服务水合 sidecar 终态；用户关页后 sidecar 虽可完成任务，主服务却不会及时登记成片和闭合中央用量。现在主服务为已认证成员实际访问到的 active 项目启动 owner-scoped、进程内去重的 checkpoint finalizer，只观察本地耐久项目文件的摘要变化并复用既有 `_sync_video_workshop_project`。它不提交、轮询或重试 provider，项目进入 terminal 后自动退出，主服务 shutdown 时统一清理。
-- 生产当前另外存在中央 usage unresolved `2` 与 sidecar effective pending `14`。本版不猜补结果或调用供应商：维护窗应先用 fresh snapshot 判断 sidecar 是否仍真实 active；仍 active 则继续等待，已 terminal 才按全部中央 unresolved 的精确 reviewed plan 执行既有 `usage-settle-v2`，再用 `video-usage-recover` 导入中央缺失但 sidecar 已持久化完成的终态。每次 apply 绑定 fresh v2 backup/complete snapshot，二跑必须零写。
-- 本版吸收 v141.2 的发布配额、百舸路由、无限画布有序多图与精修、v141.1 数据看板和 v141.0 内容治理功能；不新增 schema、依赖、持久路径或 systemd/Nginx 配置。release/cache identity 为 `20260810-v1413-runtime-finalization-1`，功能提交为 `54d245b5d589e95dd9f9cf375a209bf13632c3e0`。生产仍运行 v140.6，v141.2 sibling release 未启用且没有覆盖生产 SQLite、账号、媒体、认证或私密配置。
+- 本版吸收 v141.2 的发布配额、百舸路由、无限画布有序多图与精修、v141.1 数据看板和 v141.0 内容治理功能；不新增 schema、依赖、持久路径或 Nginx 配置。systemd 只增加可回滚的新 release 指针，数据与私密环境继续使用原服务器持久路径。
 
 ### 验证与发布边界
 
-- 锁定 CPython 3.12.13 / 20 包离线 wheelhouse 已通过 manifest 验签、exact-installed 与 `pip check`；主服务全量收集 `781` 项，`780` 通过，唯一 skip 为既有批准的 v120 只读快照项。视频 sidecar `142/142`、Node `127/127`，Python compileall、全部 JavaScript 语法、`git diff --check` 通过。
-- 定向回归覆盖两类核心证明：在已审核隔离基线之上新增一条确定存在的 video-output 后，首次增量结算只登记该行并恢复 raw 基线/effective=0/drift=0，二跑零写，已用 settlement ID 后再制造漂移会 fail closed；关页 finalizer 从 generating checkpoint 收敛到 succeeded，复用原同步路径并在 terminal 退出，同一成员/项目只保留一个 watcher，RO 路径不启动 watcher。
-- release verifier 通过：Phase 0 `1716e424a50de98623da591e1dfb2321f97a4b1c767e7f9159024dbc99e381d7`；ESM `62` modules / `354` edges，graph `500f6ec6a4a4261d48a7fcd55a5ef3f30635e6d0bb658d638369a30d7d5c3d14`、closure `a6a641e6aa01a2c4a1f3bbdaf6e1c8a950fc6a554992518da38734ca739a25f1`；canvas `63` files / `1,768,916` bytes / `efd2eff99df225ebbfabe37fa90571f21e430c5ced91cec34168d53daf578dd5`；runtime `58` files / `3,023,051` bytes / `d8e34e7a2c0f247e3b9b125b9c14714b5f06e50445d50c6986027529f68d7c2a`。
-- 这些是本地候选和目标 Linux 前一候选的构建证据，不代表生产已切换。新候选必须由部署线程从最终提交重建；只有实时媒体/usage/sidecar 门禁精确闭合、`/api/ready` 恢复 `ready/writeReady/startupVerified=true` 且关键链路验收通过后，才能切换 release。
+- 目标 Ubuntu / CPython 3.12 三套 wheelhouse 已从最终 SHA 重建，并通过 manifest 验签、离线 `--no-deps` install-check、exact-installed 与 `pip check`。主 runtime/test/sidecar wheelhouse manifest 分别为 `9093dfce52d392123b803534c21998c3e259a243578921ef796d6c464be62fc7`、`d748941d9b0cf6dd78fd24d432df24784e7e1ff6601bce467b5ead58b4957de7`、`d41503a784a27373bc6069ae7ecd6d9d34183dc58101e5d2a0fe2dc05808d1e2`；主服务全量 `781 passed + 1 approved skip`，视频 sidecar `142/142`、Node `127/127`。
+- 最终 release verifier 通过：Phase 0 `5160b64d7ad75ebbf69fa54dce8146d840b82ee07d061087e32d5ceeb800f2e2`；ESM `62` modules / `354` edges，graph `500f6ec6a4a4261d48a7fcd55a5ef3f30635e6d0bb658d638369a30d7d5c3d14`、closure `a6a641e6aa01a2c4a1f3bbdaf6e1c8a950fc6a554992518da38734ca739a25f1`；canvas `63` files / `1,768,916` bytes / `efd2eff99df225ebbfabe37fa90571f21e430c5ced91cec34168d53daf578dd5`；runtime `58` files / `3,025,471` bytes / `730bf796628acf05cf50e8bbad4e505333d97d5e3f2e5a38702438d48cf00616`。
+- 切换门禁曾精确达到 `ready=true / writeReady=true / startupVerified=true`；公网 root、health、OpenAPI、community、无限画布和视频工坊静态入口均为 200，未认证受保护 API 为 401。真实浏览器加载 v141.3 cache identity，首页和社区媒体正常渲染，历史隔离项显示保留记录，来宾进入无限画布触发登录边界；未发起重复或付费生成，因此三条生成链路以目标 Linux/Node 全量回归、静态闭包和现有生产配置健康为本轮部署证据，不冒充新的付费成片验收。
 
 ## v141.2 - 2026-08-10（本地候选：发布配额、百舸智能路由与无限画布有序多图发布）
 
