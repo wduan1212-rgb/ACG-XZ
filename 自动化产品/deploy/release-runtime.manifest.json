@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "releaseId": "20260810-v1413-runtime-finalization-1",
   "fileCount": 58,
-  "totalBytes": 3023051,
+  "totalBytes": 3025471,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -286,8 +286,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 903314,
-      "sha256": "17cbe8688b7018d89a431ef19e9b5a8ba7469dec9ffac33509841ba84907ac7c"
+      "size": 905734,
+      "sha256": "4a126aeb8a31714ef2ac245c316a56b1b9d1dfd05f16e8491f01a92be41220b7"
     },
     {
       "path": "tools/verify_release_contracts.py",

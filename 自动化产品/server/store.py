@@ -7190,6 +7190,50 @@ def settle_private_media_registry_incremental(
                 recoverable_rows.append(
                     (kind, key, owner, team_id, proof_kind, proof_id)
                 )
+            # The reviewed isolation baseline predates incremental sidecar
+            # registration.  Its raw pending count is intentionally preserved
+            # as historical evidence, so it is not an identity subset of the
+            # isolation entries.  When runtime files accumulated after that
+            # baseline, select only the exact post-baseline video-output
+            # partition.  Any touched historical file, unsupported media kind,
+            # or count mismatch remains fail closed instead of guessing rows.
+            if len(recoverable_rows) != effective_pending and effective_pending > 0:
+                isolation_baseline = conn.execute(
+                    "SELECT created_at,raw_pending_rows "
+                    "FROM media_isolation_settlements "
+                    "ORDER BY created_at,settlement_id"
+                ).fetchall()
+                if len(isolation_baseline) == 1:
+                    cutoff_ms = int(isolation_baseline[0][0])
+                    historical_rows = int(isolation_baseline[0][1])
+                    before_baseline = []
+                    after_baseline = []
+                    unsupported = False
+                    for row in recoverable_rows:
+                        kind, key, _owner, _team_id, proof_kind, _proof_id = row
+                        if kind != "video-output" or proof_kind != "video-workshop-project":
+                            unsupported = True
+                            break
+                        try:
+                            mtime_ms = int(
+                                (PRIVATE_MEDIA_VIDEO_OUTPUT_DIR / key).stat().st_mtime_ns
+                                // 1_000_000
+                            )
+                        except OSError:
+                            unsupported = True
+                            break
+                        if mtime_ms < cutoff_ms:
+                            before_baseline.append(row)
+                        else:
+                            after_baseline.append(row)
+                    if (
+                        not unsupported
+                        and len(before_baseline) == historical_rows
+                        and len(after_baseline) == effective_pending
+                        and len(recoverable_rows) - effective_pending
+                        == historical_rows
+                    ):
+                        recoverable_rows = after_baseline
             if len(recoverable_rows) != effective_pending:
                 raise StoreNotReadyError(
                     "private media settlement effective pending set is not exact"

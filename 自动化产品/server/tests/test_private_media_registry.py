@@ -876,6 +876,98 @@ class PrivateMediaRegistryTest(unittest.TestCase):
                         created_by="test-deployer",
                     )
 
+    def test_incremental_settlement_only_registers_post_isolation_video_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, paths = load_media_store(tmp)
+            project_id = "workshop-runtime-delta"
+            project = {
+                "id": project_id,
+                "name": "隔离基线后的成片",
+                "status": "succeeded",
+                "outputs": [],
+            }
+            mapped, error = store.sync_custom_video_project("owner-a", project)
+            self.assertIsNone(error)
+            self.assertEqual(project_id, mapped["projectState"]["workshopProjectId"])
+
+            output_dir = paths["VIDEO_WORKSHOP_OUTPUT_DIR"] / project_id
+            output_dir.mkdir(parents=True)
+            historical = output_dir / "historical.mp4"
+            historical.write_bytes(b"historical")
+            os.utime(historical, ns=(5_000_000_000, 5_000_000_000))
+            avatar = paths["UPLOAD_DIR"] / "member-avatar-baseline.png"
+            avatar.write_bytes(b"avatar")
+
+            with store._lock:
+                conn = store._connect()
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations("
+                        "version,name,checksum,app_version,started_at,finished_at,status,summary"
+                        ") VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_VERSION,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_NAME,
+                            store.PRIVATE_MEDIA_DATA_MIGRATION_CHECKSUM,
+                            "test", 10_000, 10_000, "success", "{}",
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT INTO media_isolation_settlements("
+                        "settlement_id,plan_sha256,database_identity,"
+                        "snapshot_manifest_sha256,snapshot_media_digest,"
+                        "isolated_rows,raw_pending_rows,public_avatar_exemptions,"
+                        "created_at,created_by) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            "reviewed-runtime-baseline", "a" * 64,
+                            store._database_identity(store.DB_PATH),
+                            "b" * 64, "c" * 64, 0, 1, 1, 10_000, "test",
+                        ),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            current = output_dir / "current.mp4"
+            current.write_bytes(b"current")
+            os.utime(current, ns=(15_000_000_000, 15_000_000_000))
+            drifted = store.private_media_registry_status()
+            self.assertEqual(2, drifted["counts"]["pendingRows"])
+            self.assertEqual(1, drifted["counts"]["effectivePendingRows"])
+            self.assertEqual(1, drifted["counts"]["mediaIsolationAuditDrift"])
+
+            snapshot = runtime_snapshot_binding(
+                "d" * 64, store._private_media_live_inventory_digest(),
+            )
+            with patch.dict(
+                os.environ, {"ACG_ALLOW_PRIVATE_MEDIA_SETTLEMENT": "1"},
+            ):
+                result = store.settle_private_media_registry_incremental(
+                    expected_identity=store._database_identity(store.DB_PATH),
+                    expected_schema_version=store.MEMBER_CONTROL_SCHEMA_MIGRATION_VERSION,
+                    backup_binding=current_backup_binding(store, store.DB_PATH),
+                    runtime_snapshot_binding=snapshot,
+                    created_by="test-deployer",
+                )
+            self.assertTrue(result["applied"])
+            self.assertEqual(1, result["plannedRows"])
+            self.assertEqual(1, result["insertedRows"])
+            self.assertEqual(1, result["rawPendingRowsAfter"])
+            with store._connect(read_only=True) as conn:
+                keys = {
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT media_key FROM private_media_registry "
+                        "WHERE media_kind='video-output' AND media_key LIKE ?",
+                        (f"{project_id}/%",),
+                    ).fetchall()
+                }
+            self.assertEqual({f"{project_id}/current.mp4"}, keys)
+            settled = store.private_media_registry_status()
+            self.assertTrue(settled["ok"])
+            self.assertEqual(0, settled["counts"]["effectivePendingRows"])
+            self.assertEqual(0, settled["counts"]["mediaIsolationAuditDrift"])
+
     def test_nonempty_data_migration_is_atomic_and_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             store, paths = load_media_store(tmp)
