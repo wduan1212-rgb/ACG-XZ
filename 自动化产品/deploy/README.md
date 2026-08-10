@@ -1,18 +1,23 @@
-# v140 部署入口契约
+# v140+ 部署入口契约
 
-> 本文件是代码仓内契约，不代表当前候选已部署。生产当前仍在受保护只读维护态，
-> 部署线程已对 `f642571` 完成 `140005`、`140006`、complete snapshot/restore 与
-> `media-settle` 双跑，尚未开放 RW。新候选只允许在 fresh v2 备份绑定后双跑
-> expand-only `140007`，再以 fresh complete snapshot、精确人工复核计划和 fresh
-> backup 执行 `usage-settle`；不得重做历史团队/资源/媒体迁移或覆盖现有数据。
-> 本轮 P0 候选尚未上线；部署前必须从唯一提交重建并验签完整 release。
+> 本文件是代码仓内契约，不代表当前候选已部署。生产当前运行 v140.6，v141.2 sibling
+> release 已构建但未启用；v141.3 必须从最终唯一提交重新构建。当前 schema 已到
+> `140010`，不得重放任何既有 schema、团队、资源、媒体或 usage 迁移，也不得用候选目录
+> 覆盖生产 SQLite、账号、媒体 runtime、认证、私密配置或 Nginx。实时门禁未闭合时保持
+> 旧 release active；受保护恢复只允许使用本文件后述的增量 settlement/recovery CLI。
 
 正式操作前还必须阅读：
 
 - `docs/服务器部署交接指南.md`
-- `docs/ACG市场部生产团队迁移计划.md`
-- `docs/本地代码架构优化与服务器迁移部署方案.md`
+- `运行与架构说明.md`
+- `docs/version.md` 当前版本
+- `docs/Problem Document.md` 当前问题
+- `docs/Server Deployment Log.md` 最近一次生产记录
 - `deploy/release-runtime.manifest.json`
+
+`docs/ACG市场部生产团队迁移计划.md` 与
+`docs/本地代码架构优化与服务器迁移部署方案.md` 的首次迁移执行部分只作历史归档，不能作为
+当前 runbook 重跑；其中仍有效的架构方向以当前架构说明为准。
 
 ## 运行边界
 
@@ -297,12 +302,12 @@ identity 确认；结束后先恢复 `ACG_READ_ONLY=1` 再启动服务。禁止�
 
 当前生产只读维护窗已经完成 `140005`、`140006` 和 `media-settle`，因此新候选不得重跑它们。先以紧接执行前生成的 fresh v2 backup 双跑 `140007`；它只增加不可变模型用量 settlement header/entry 表与防更新/删除触发器，不改 receipt、outbox 或业务数据。第一次要求 `appliedVersions=[140007]`，第二次使用新 fresh backup 要求 `appliedVersions=[]`。
 
-生产当前 post-140004 的 114 条 pending 全部为新 `video-output`。schema 双跑完成后，
-必须在 writer 仍冻结时新建并验签 `acg-production-complete-v1` snapshot/restore-drill，
-另外生成 fresh v2 SQLite 备份，然后执行独立 `media-settle`。该命令只能写入
-当次 plan 确定且无冲突的 pending registry 行及一条 audit receipt，在同一事务内重算
-pending=0 后才提交；再次使用同一已验签 snapshot 及当前 fresh backup 执行必须零写。
-禁止设置 `ACG_ALLOW_PRIVATE_MEDIA_MIGRATION`重跑 `140004`，也禁止裸 SQL 或放宽 readiness。
+历史上生产 post-140004 的新增 `video-output` 曾使用 `media-settle` 收口；`140010` 建立隔离
+账本后，raw pending 已不再是归零目标。当前命令只能写入当次 plan 中
+`effectivePendingRows` 对应、物理文件存在、owner/project 证据唯一、未隔离且非公共头像例外
+的 registry 行及一条 audit receipt；在同一事务内重算 effective=0、drift=0，且 raw pending
+精确回到不可变隔离基线后才提交。禁止设置 `ACG_ALLOW_PRIVATE_MEDIA_MIGRATION` 重跑
+`140004`，禁止把新增可恢复成片追加隔离，也禁止裸 SQL、删除引用或放宽 readiness。
 
 每一个会写库的 apply 都必须绑定“紧接在该 apply 前”生成的 v2 SQLite
 备份；上一个 apply 成功后数据库逻辑摘要已变，不得复用旧 manifest。备份
@@ -342,9 +347,10 @@ python3 -m server.migrations media-settle \
   --confirm-backup-manifest-sha256 <recorded-settlement-backup-manifest-sha256>
 ```
 
-第一次要求 `plannedRows=insertedRows`，然后以只读 `status`/媒体状态确认
-`pendingRows=0`。第二次在新 fresh v2 备份绑定下执行，要求
-`applied=false`、`insertedRows=0` 且数据库逻辑摘要不变。
+第一次要求 `plannedRows=insertedRows=effectivePendingRows(before)`，然后以只读
+`status`/媒体状态确认 `effectivePendingRows=0 / mediaIsolationAuditDrift=0`，并核对 raw
+pending 等于 apply 前已审核的隔离基线，不要求 raw=0。第二次必须创建新的 fresh v2
+备份并在新绑定下执行，要求 `applied=false`、`insertedRows=0` 且数据库逻辑摘要不变。
 
 ### v140.3 增量恢复与结算（开放 RW 前 P0）
 
@@ -483,6 +489,46 @@ ACG_READ_ONLY=0 ACG_ALLOW_MODEL_USAGE_SETTLEMENT_V2=1 \
 中央/sidecar hash 漂移或 source/resolution 不匹配都整批零写。首次要求
 `unresolved=0`、`outboxPending=0`、`quickCheck=ok`；第二次用新 fresh snapshot/backup
 也必须零写。全过程不修改积分/任务/项目/媒体，不调 provider。
+
+### v141.3 视频工坊实时门禁前向恢复（切换前 P0）
+
+v141.3 不增加新迁移，只把既有受保护 CLI 用于 `140010` 后的新 runtime 增量。writer
+冻结后先从 fresh complete snapshot 和当前 sidecar 项目文件逐条分类：`planning/generating/
+running/queued/processing` 仍是 active，必须等待自然终态；只有 sidecar 已持久化为 terminal
+才可进入以下顺序，且任何步骤都不得 submit/poll/retry provider：
+
+1. 以 fresh snapshot + fresh v2 backup 执行上文 `media-settle`，要求只登记完整
+   effective 集合，结果为 effective/drift=0、raw 回到隔离基线；新绑定二跑零写。
+2. 重新取证并以精确 reviewed plan 覆盖**全部** central unresolved，执行
+   `usage-settle-v2`；缺一、多一或状态/hash 漂移都整批停止。新绑定二跑零写。
+3. 只有 central unresolved 已为 0 后，重新创建 fresh snapshot + fresh v2 backup，运行：
+
+```bash
+ACG_READ_ONLY=1 python3 -m server.migrations video-usage-recover-inspect \
+  --confirm-schema-version 140009 --confirm-identity <identity> \
+  <snapshot-and-backup-bindings>
+
+ACG_READ_ONLY=1 python3 -m server.migrations video-usage-recover-preflight \
+  --confirm-schema-version 140009 --confirm-identity <identity> \
+  --review-plan <reviewed-video-recovery-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> \
+  <snapshot-and-backup-bindings>
+
+ACG_READ_ONLY=0 ACG_ALLOW_VIDEO_WORKSHOP_USAGE_RECOVERY=1 \
+  python3 -m server.migrations video-usage-recover \
+  --confirm-schema-version 140009 --confirm-identity <identity> \
+  --review-plan <reviewed-video-recovery-plan.json> \
+  --confirm-review-plan-sha256 <plan-sha256> \
+  <snapshot-and-backup-bindings>
+```
+
+inspect 输出是中央缺失、sidecar 已 confirmed/succeeded 且具有 providerRef 的完整确定集合；
+review plan 的 format 必须为 `acg-video-workshop-usage-recovery-plan-v1`，authorization 必须为
+`operator-reviewed-durable-sidecar-completion-no-provider-call`，entries 原样保留并补充
+`reviewedBy/reviewedAt`。apply 原子写 central receipt/outbox/projection/v2 settlement，不改
+项目、成片或 sidecar 文件。成功后重新建 fresh snapshot/backup，以同一 plan 二跑要求
+`applied=false / insertedRows=0`；最后必须同时确认 central unresolved/outbox、sidecar
+effective/conflict、media effective/drift 均为 0，且 `/api/ready` 明确恢复 writeReady，才可切换。
 
 ### 旧版视频 sidecar 用量结算 v1（仅历史记录）
 

@@ -4,6 +4,13 @@
 
 本文档是星阵项目的长期避坑日志。遇到明确报错、白屏、交互错位、数据覆盖风险、权限串数据、服务器与本地差异或部署失败时必须更新；普通功能流水账写入 `version.md`。
 
+## 2026-08-10 v141.3 生产门禁：隔离后的 raw pending 不是结算目标，关页也不能丢失 sidecar 终态
+
+- **循环阻断**：`140010` 建立历史媒体隔离后，raw `pendingRows` 会永久保留“已隔离引用 + 公共头像例外”；旧 `media-settle` 仍要求 raw 归零，并在 `mediaIsolationAuditDrift` 出现时连预检都拒绝，导致物理文件真实存在、归属确定的新增 video-output 既无法登记，也无法消除 drift。不能用重放 `140004/140010`、新增隔离、删引用或放宽 readiness 解决。
+- **精确前向修复**：增量结算只对 `effectivePendingRows` 建计划，逐条排除已登记、已隔离、公共头像例外、物理缺失和 owner/project 证据不唯一的记录。允许进入预检的审计异常只能是这批尚待登记记录自身造成的 `missingReferencedFiles/mediaIsolationAuditDrift`；写入同一事务后必须完整重算并证明 effective=0、drift=0、raw 回到不可变隔离基线，否则整体回滚。相同 settlement ID 二跑零写；结算后再出现 pending 则报 immutable replay drift。
+- **关页根因**：sidecar 的项目与输出会在本地 runtime 持久化，但主服务过去只在浏览器请求项目 list/detail/chat 时调用同步。最后一个页面关闭后，sidecar 成功终态不会触发主服务媒体登记、积分/usage reconciliation，久而久之阻断启动门。修复后的 finalizer 只观察已认证 owner 的本地 checkpoint，摘要变化时调用既有同步函数；不向 provider 发 submit/poll/retry，不从未访问项目做全盘猜测扫描，terminal 或 shutdown 时退出。
+- **当前恢复顺序**：若 sidecar checkpoint 仍为真实 active，先等待其自然终态；否则在 writer 冻结下逐次创建 fresh complete snapshot 与 v2 backup，先做 effective media settlement，再用精确 reviewed plan 覆盖全部 central unresolved 执行 `usage-settle-v2`，最后只对 sidecar 已持久化 terminal 且中央缺失的记录执行 `video-usage-recover`。每一步之后重新只读审计并在新绑定下二跑零写；任何集合、hash、owner、状态或备份漂移都停止切换。
+
 ## 2026-08-10 v141.2 本地候选：多选不应制造写冲突，历史坏引用也不能伪装成草稿格式错误
 
 - **多图功能暴露的交互回归**：首版多选在每次 `pointerdown` 都调用 `bringToFront`。因此用户只是 Command/Shift 点选图片，也会改变 z-order 并排队保存；验收窗口和用户窗口同时打开同一项目时会产生 revision 竞争，出现“服务器同步暂时失败”。修复后 selection 只存在客户端，真实拖动超过 `3px` 才置顶并持久化；Mac Command、Windows Ctrl/Shift 与拖框多选均保留。浏览器复核两次只切换选择后服务端 revision 保持 `3`。
