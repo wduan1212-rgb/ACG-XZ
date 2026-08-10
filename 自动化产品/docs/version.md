@@ -1,5 +1,22 @@
 # 星阵版本记录
 
+## v141.2 - 2026-08-10（本地候选：发布配额、百舸智能路由与无限画布有序多图发布）
+
+### 本版范围
+
+- 每个内容账号的中国日历日上限改为只统计“成功发布到供应商清单”的内容，不再把草稿创建或生成过程计入配额；同一团队的所有成员共享每账号每日 `2` 条额度。普通单号/批量发布与视频工坊/无限画布定制发布都在服务端 `BEGIN IMMEDIATE` 内做最终裁决，发布成功后立即刷新权威用量；旧页面兼容接口也返回同一发布口径，不能凭未刷新视角绕过。
+- 百舸产品库把“百舸”“百舸 6.0”等别名与“百度百舸 6.0”绑定。批量图文、单号、素材号、静态/动态口播、图片提示词和定制视频会从标题、正文、主题及口播中识别该产品，优先使用产品库已确认事实并保留禁止外推边界；不再要求用户必须写完整“百度百舸”才能命中。
+- 无限画布支持按点选顺序发布 `1–20` 张图片：Mac 使用 Command，Windows 使用 Ctrl/Shift，也可拖框多选；桥接协议保留选择数组顺序，主平台逐张调用既有 `polishImageForPublish`，再按同一顺序写入发布图集。批量图文和单号原有精修链路保持不变，没有增加第二套精修或重复精修。
+- 多选本身不再改变 z-order 或保存草稿，只有真实拖动超过 `3px` 后才置顶并持久化；瞬态同步失败按 `1s/3s/8s` 有界重试并提供手动重试，真正 revision 冲突仍保留本地恢复包和服务器版本。历史业务媒体缺失会返回明确的存储异常，不再误报为“草稿数据格式无效”。
+- 本版不新增 schema、数据迁移、持久路径、依赖或 systemd/Nginx 配置；release/cache identity 为 `20260810-v1412-publish-quota-baige-canvas-1`，功能提交为 `9833a0e94d49b7fc0e70e3c955dff7449fc30721`。v141.1 被本版吸收并取代，生产仍为 v140.6，当前待部署。
+
+### 验证与本地数据边界
+
+- 服务端相关 `217/217`、Node `127/127`、视频 sidecar `142/142` 通过；无限画布 TypeScript、ESLint、vendor closure、Python compileall 与 `git diff --check` 通过。release verifier 最终为 Phase 0 `57ea4b62c2479af08a6813735374cd27bb1c56a64e230935ae5d8739b28085a6`；ESM `62` modules / `354` edges，graph `8317808b62e4701865add94a8b2b8a217cbd5713fb0e4f0002bcea702aa774d1`、closure `8eebbc7a11934ee2abf1fb30ae2efd20d28779f948b5ba520bde69f70e42d5c9`；canvas `63` files / `1,768,916` bytes / `efd2eff99df225ebbfabe37fa90571f21e430c5ced91cec34168d53daf578dd5`；runtime `58` files / `3,015,341` bytes / `f4e261e612abd464a95179615197bc791f089891d4d029dabfbcbe22469e52a7`。
+- 真实浏览器只使用独立验收画布：两张图片以 `acceptance-one → acceptance-two` 顺序形成发布请求，按钮显示“导出 2 张 / 发布 2 张”，两次只切换选择后服务端 revision 保持 `3`，未产生同步写；请求中两个 `sourceItemId`、PNG data URL 和顺序均完整。验收画布随后精确删除，未触发真实发布或付费生成。
+- 本机反复同步提示的直接阻断来自临时本地库中一条与当前画布无关、且原图已不存在的旧社区记录。用户明确授权本地坏数据可删除后，先生成 `acg-sqlite-backup-v2` 一致性备份，再仅将该记录软删除；当前画布未删除、GC 预检无待删图片，清理前后 `quick_check=ok`。这是本地数据处置，不进入 Git、不随发布同步，也不授权删除或改写生产历史媒体。
+- 本机 v141.2 主服务和 sidecar 已用同一 release identity 重启，`ready=true / writeReady=true / startupVerified=true / sidecarOk=true`，SQLite `quick_check=ok`。这些是本地候选证据，不等于生产已发布。
+
 ## v141.1 - 2026-08-10（本地候选：数据看板逐条曝光、播放与互动明细）
 
 ### 本版范围
