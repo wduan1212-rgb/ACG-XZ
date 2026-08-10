@@ -4,11 +4,11 @@
 
 ### 本版范围
 
-- 真实生成验证结论：百度千帆搜索已真实返回 HTTP 200、`request_id` 和 3 条 references。火山方舟 `/api/v3/models` 虽可见 `doubao-seedance-2-5-260628`，但按用户授权发起的真实付费生成提交返回 HTTP 404 `ModelNotOpen`：当前账号未开通该模型，任务没有创建、也没有进入轮询或成片阶段。v142.3 因此仍是受阻候选；必须先在方舟控制台开通模型，再通过“提交 → 轮询 → 成片 → 剪辑台”受控真实验收后才能发布。API key 只能进入 release 外私密 env，禁止进入 Git、release、日志或交接消息正文。
+- 真实生成验证结论：百度千帆搜索已真实返回 HTTP 200、`request_id` 和 3 条 references。火山方舟控制台的 Seedance 2.5 服务已由“未开通”切换为“已开通”；随后使用本地 release 外私密环境向 `doubao-seedance-2-5-260628` 提交最小真实任务，提交 HTTP 200、任务 `cgt-20260811065820-5dj9d`，轮询最终返回 `succeeded` 且包含真实输出。此前 HTTP 404 `ModelNotOpen` 的账号能力阻断已解除；该证据只证明当前授权环境的 2.5 提交/轮询/输出连通，生产仍须由部署线程在目标 release 和服务器私密环境完成故事板全链路验收后切换。API key 只能进入 release 外私密 env，禁止进入 Git、release、日志或交接消息正文。
 
 - 故事版链路修正为“一张多格素描故事板”：语言模型仍输出覆盖 `0–30s` 的 5–10 个逻辑分镜，但 image-2 只执行一次生图，把全部分镜组合到同一张 `9:16` 铅笔/灰阶故事板。用户原参考图只用来生成这张故事板；Seedance 提交时只携带这一张图和连续视频提示词，视频 `duration=30` 与 `ratio=9:16` 由任务数据显式传入上游，不依赖模型默认值。生成看板也改为一张大图预览与整张微调，不再展示多张彩色分镜卡。
 
-- 发布前真实连通复核：使用本地私密环境直接请求百度千帆 `POST /v2/ai_search/web_search`，返回 HTTP 200、`request_id` 与 3 条 references；使用同一私密运行环境对火山方舟 `/api/v3/models` 做不产生视频任务的只读鉴权查询，返回 HTTP 200，授权模型列表包含 `doubao-seedance-2-5-260628`。部署契约据此固定 `SEEDANCE_CREATIVE_MODEL=doubao-seedance-2-5-260628`；两把 API key 仍只允许安全转存到 release 外生产 env，禁止进入 Git、release、日志或交接消息正文。该连通测试不等于生产创意视频成片验收，切换后仍需用受控测试任务跑通故事板、2.5 提交、轮询、成片与剪辑台。
+- 发布前真实连通复核：使用本地私密环境直接请求百度千帆 `POST /v2/ai_search/web_search`，返回 HTTP 200、`request_id` 与 3 条 references；火山方舟在服务开通后完成一次最小、受控的真实 Seedance 2.5 提交、轮询和输出闭环。部署契约据此固定 `SEEDANCE_CREATIVE_MODEL=doubao-seedance-2-5-260628` 与 `SEEDANCE_CREATIVE_MAX_DURATION=30`；两把 API key 仍只允许安全转存到 release 外生产 env，禁止进入 Git、release、日志或交接消息正文。该最小任务不代替生产故事板、30 秒 9:16 音画同出和剪辑台的完整验收。
 
 - 视频号账号从“永久绑定真人/素材链路”调整为纯发布身份：批量任务板对同一批视频号同时开放“数字人”和“创意视频”，本次任务选择数字人时沿用角色版、口播与既有数字人生成链路，选择创意视频时进入新的故事版与创意成片链路。历史账号 `subType` 和历史任务不迁移、不删除，只用于旧任务兼容；视频工坊与定制发布的账号选择均开放全部未停用视频号。
 - 原“素材视频”对外更名为“创意视频”，原“真人视频”更名为“数字人”。新创意视频先由语言模型返回覆盖 `0–30s` 的结构化故事版、完整口播、统一画风和单条 30 秒视频提示词；用户提供参考图时作为故事版主体/产品/画风参考，未提供时仍先生成故事版。故事版逐帧复用无限画布和批量图文同一个 `activeProviderFor("image")`、服务器图片配置、参考图协议和幂等 operation key，不新增第二套图片密钥或模型；完成的故事版逐张保存，失败重试只续跑缺失帧。
@@ -25,7 +25,7 @@
 - 最终 release verifier：Phase 0 `36d33cbc500dcdcbd84379fe114cfbacc2f6dbaed5093ab9ca5379e9cecef5d4`；ESM `61` modules / `349` local edges，graph `6019e999874c254346ff519c0bfa06eb80de1f5c9da4ad2fe92b19bf5bcb17c6`、closure `37d83522323797e2451a0e2cc844ebc2e5b6940b12242b11474b7371bbf57a0e`；canvas `63` files / `1,768,481` bytes / `6ca04ee8ff6c4fba5bc581c641e542830dc7d7c0d187311b89663bed4f63a018`；runtime `65` files / `3,311,104` bytes / `3dc993d95b9b64a3b22f49d253dc37e3ee9e6e3fcf4b3d02eb1ca07c3edef032`。
 
 - 创意视频计费/模型路由、数字人兼容、故事版未知结果恢复、批量剪辑台桥接、画布和前端静态契约的相关主服务 Python 回归 `163/163`，视频 sidecar `160/160`，工作区 Node 全量 `129/129`；相关 JavaScript 语法与 `server/main.py` 编译通过。无模型的创意请求在调用前失败，有显式测试模型时按单条 30 秒任务生成 payload；剪辑台桥接测试只使用临时本地媒体，全部自动测试均没有触发真实图片、视频、语音、发布或供应商回传。
-- 自动回归确认新任务使用同一图片 provider 生成故事版、同一视频号可选两条链路、创意任务只创建一个 `30s` job、单号入口跳到批量任务板，且新提示词拒绝 A/B 面结构。真实授权列表已经确认 `doubao-seedance-2-5-260628`；私密密钥仍必须由获授权运行环境注入，本地代码和仓库均不保存用户密钥。
+- 自动回归确认新任务使用同一图片 provider 生成故事版、同一视频号可选两条链路、创意任务只创建一个 `30s` job、单号入口跳到批量任务板，且新提示词拒绝 A/B 面结构。`doubao-seedance-2-5-260628` 已完成真实任务闭环；私密密钥仍必须由获授权运行环境注入，本地代码和仓库均不保存用户密钥。
 - 当前 runtime manifest 已按本轮最终代码重建，release verifier 通过：Phase 0 `c977182cca0c3f9fe9bfa0f0dd5950af77ae89a2cdf9e04a0d011a1f83fbebae`；ESM `61` modules / `349` local edges，closure `4c575baae9629492abf29c9f6822afdc8711bf9afd3440f38ef3612c0a5d46dc`；canvas `63` files / `1,768,481` bytes / `6ca04ee8ff6c4fba5bc581c641e542830dc7d7c0d187311b89663bed4f63a018`；runtime `65` files / `3,311,104` bytes / `3dc993d95b9b64a3b22f49d253dc37e3ee9e6e3fcf4b3d02eb1ca07c3edef032`。
 
 ## v142.1 - 2026-08-10（本地候选：百度搜索 AI 选题、批次控制与可折叠工作区）

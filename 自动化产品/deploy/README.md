@@ -102,10 +102,10 @@ SEEDANCE_CREATIVE_MAX_DURATION=30
 sidecar URL 只允许 `http` + 字面回环 IP + 显式同端口，不允许用户信息、
 path、query 或 fragment。
 
-> Seedance 2.5 发布阻断：`/api/v3/models` 可见 `doubao-seedance-2-5-260628` 不代表账号已开通。本轮真实提交返回 HTTP 404 `ModelNotOpen`，没有创建任务。部署前必须先在方舟控制台开通模型，然后使用生产 release 外私密 env 完成一次受控的提交、轮询和成片验收。未开通或未配置时必须 fail closed，禁止静默回退到 `SEEDANCE_MODEL`。
+> Seedance 2.5 开通状态：控制台已显示 `doubao-seedance-2-5-260628` 服务“已开通”，本地 release 外私密环境已完成一次最小真实提交、轮询和输出闭环。部署时仍必须使用生产 release 外私密 env 复核目标环境，并完成故事板、30 秒 9:16 音画同出与剪辑台验收。未配置时必须 fail closed，禁止静默回退到 `SEEDANCE_MODEL`。
 
 `SEEDANCE_CREATIVE_MODEL` 当前使用 `doubao-seedance-2-5-260628`：该 ID 已通过本地私密
-方舟凭据对官方 `/api/v3/models` 的只读鉴权查询确认在账号授权列表内。部署时仍须使用生产
+方舟凭据完成真实任务闭环。部署时仍须使用生产
 服务器自己的外部私密环境复核授权；未配置时创意视频必须在计费和 provider 调用前 fail closed，禁止
 为了表面可用而静默回退到普通 `SEEDANCE_MODEL`。该值与 API key 一样只存在 release 外的
 私密环境，不得写入源码、manifest 或浏览器。
