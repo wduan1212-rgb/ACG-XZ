@@ -102,7 +102,7 @@ SEEDANCE_CREATIVE_MAX_DURATION=30
 sidecar URL 只允许 `http` + 字面回环 IP + 显式同端口，不允许用户信息、
 path、query 或 fragment。
 
-> Seedance 2.5 开通状态：控制台已显示 `doubao-seedance-2-5-260628` 服务“已开通”，本地 release 外私密环境已完成一次最小真实提交、轮询和输出闭环。部署时仍必须使用生产 release 外私密 env 复核目标环境，并完成故事板、30 秒 9:16 音画同出与剪辑台验收。未配置时必须 fail closed，禁止静默回退到 `SEEDANCE_MODEL`。
+> Seedance 2.5 开通状态：控制台已显示 `doubao-seedance-2-5-260628` 服务“已开通”，本地 release 外私密环境已完成一次最小真实提交、轮询和输出闭环。部署时仍必须使用生产 release 外私密 env 复核目标环境，并完成“16:9 单张多格故事板 + 用户统一参考图 → 默认 9:16、30 秒音画同出视频 → 剪辑台”验收。未配置时必须 fail closed，禁止静默回退到 `SEEDANCE_MODEL`。
 
 `SEEDANCE_CREATIVE_MODEL` 当前使用 `doubao-seedance-2-5-260628`：该 ID 已通过本地私密
 方舟凭据完成真实任务闭环。部署时仍须使用生产

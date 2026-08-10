@@ -183,11 +183,14 @@ export function buildMaterialUnits(p) {
     const old = A.units || [];
     const storyboards = Array.isArray(A.creativeVideo.storyboards) ? A.creativeVideo.storyboards : [];
     const storyboardSheetId = A.creativeVideo.storyboardSheet?.assetId || null;
-    // Seedance 2.5 receives one complete sketch storyboard sheet. The original
-    // user references are used to build that sheet and are not fanned out as
-    // extra scene images at video-submit time.
+    // Seedance 2.5 receives one complete sketch storyboard sheet plus the
+    // user's unified references. The sheet is the narrative reference; the
+    // originals preserve the real subject, product and visual identity.
     const storyboardRefs = [storyboardSheetId].filter(Boolean);
-    const directVideoRefs = [...storyboardRefs];
+    const originalVideoRefs = Array.isArray(A.creativeVideo.originalRefAssetIds)
+      ? A.creativeVideo.originalRefAssetIds.filter(Boolean)
+      : [];
+    const directVideoRefs = [...new Set([...storyboardRefs, ...originalVideoRefs])].slice(0, 9);
     const narration = String(A.creativeVideo.narration || "").trim();
     const duration = Math.max(4, Math.min(30, Number(A.creativeVideo.duration || 30)));
     const ratio = A.creativeVideo.ratio || A.ratio || "9:16";

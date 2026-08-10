@@ -561,7 +561,7 @@ function buildBatchCreativeVideoPlan({ topic = "", title = "", publishCopy = "",
     error: ""
   }));
   const storyboardSheetPrompt = [
-    "生成一张完整的 9:16 竖版电影故事板总览图，不是多张独立成图。",
+    "生成一张完整的 16:9 横版电影故事板总览图，不是多张独立成图。故事板画布比例只服务于分镜阅读，不决定最终视频比例。",
     `把下面 ${storyboards.length} 个连续镜头绘制在同一张分镜板内，按时间顺序从左到右、从上到下排成清楚的矩形分镜格。`,
     "视觉必须是专业导演分镜稿：铅笔线稿、灰阶明暗、少量蓝色动作箭头和镜头运动标记；保持同一主体、场景空间和造型连续。不要写实成片、不要海报、不要彩色商业成图。",
     "每格只保留清晰的镜头序号和时间范围，不生成字幕、花字、宣传文案、水印、页码、logo 或二维码。",
@@ -578,7 +578,7 @@ function buildBatchCreativeVideoPlan({ topic = "", title = "", publishCopy = "",
     `统一画风：${visualStyle}。`,
     String(creativePlan?.videoPrompt || "").trim(),
     `完整口播：${narration}`,
-    "系统会将一张包含全部镜头格的素描分镜板作为唯一故事版视觉参考提交；请按分镜格顺序还原动作，保持主体、场景、构图和空间连续，转场清晰但不跳轴。",
+    "系统会将一张 16:9、包含全部镜头格的素描故事板作为主叙事参考，并把用户提供的统一参考图作为主体、产品或画风参考一同提交；请按分镜格顺序还原动作，同时遵守统一参考图里的真实主体特征，保持主体、场景、构图和空间连续，转场清晰但不跳轴。",
     "口播、环境声和画面动作必须同步生成；不要烧录字幕、花字、水印、页码或二维码。",
     VIDEO_NEGATIVE_PROMPT
   ].filter(Boolean).join("\n");
@@ -811,7 +811,7 @@ async function generateCreativeVideoStoryboards(p, batch, acc) {
       prompt: sheet.imagePrompt,
       refs,
       intendedRefAssetIds: originalRefIds,
-      ratio: creative.ratio || A.ratio || "9:16",
+      ratio: "16:9",
       strictRatio: true,
       apiKey: key?.secret,
       endpoint: key?.provider,
