@@ -1,3 +1,34 @@
+# v142.1 无限画布同步与统一侧栏 Design QA
+
+- source visual truth:
+  - 画布重复收起按钮：`/var/folders/l6/1m22n40x5g1fr2cd39v0jj2h0000gn/T/codex-clipboard-09a7625a-aa75-406f-87c6-53f697dce469.png`。
+  - 工作区菜单“无限画布”换行：`/var/folders/l6/1m22n40x5g1fr2cd39v0jj2h0000gn/T/codex-clipboard-cc8221c2-0563-4893-8e35-4527c68eb677.png`。
+  - 采用服务器版本后再次出现冲突：`/var/folders/l6/1m22n40x5g1fr2cd39v0jj2h0000gn/T/codex-clipboard-949059ec-2917-4f71-af9a-68b372d8d9d9.png`。
+- implementation screenshots:
+  - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/artifacts/design-qa/v1421-infinite-canvas-final.png`
+  - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/artifacts/design-qa/v1421-infinite-canvas-collapsed-final.png`
+  - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/artifacts/design-qa/v1421-menu-reference-vs-final.png`
+  - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/artifacts/design-qa/v1421-collapse-reference-vs-final.png`
+- implementation state: `http://127.0.0.1:8787/?qa=v1421-qianfan-workspace-controls-4#/custom/canvas/project_mrumr58w3cbb085c83dc`。
+- viewport: `1680×1050` CSS px。
+
+## Full-view comparison evidence
+
+- 展开状态只保留平台统一的“收起左侧栏”；旧画布专属箭头、父页面 ViewportControls portal 和为其预留的上下文区均已移除。小地图、缩放和适应内容控件完整保留在画布左下角。
+- 收起后是白色 `56px` 图标 rail，顺序为“首页 → 视频工坊 → 无限画布 → 批量生产 → 整体资产 → 发布清单 → 账号数据”，只有无限画布高亮；底部为当前用户头像。展开按钮与图标入口互不覆盖。
+- Logo 下拉菜单同样按上述顺序显示；“无限画布”在窄菜单内保持单行，没有文字挤压或换行。两组并排比较图分别把用户原问题图与最终真实页面放在同一画面中复核，而不是只凭最终截图判断。
+- 真实恢复画布连续三次刷新均未出现“服务器与本地都出现了新编辑”“采用服务器版本”或同步失败横幅；实际画布保存请求返回 `200`。历史社区缺失图片仍保持缺失，没有因本次 UI/同步修复被删除或伪造。
+
+## Validation and findings
+
+- 无限画布草稿与集成测试 `85/85` 通过；Node 工作区烟测覆盖统一 rail、菜单单行、无旧 portal 与左下角 ViewportControls。浏览器分别验证展开、收起和重复刷新状态。
+- 根因是无关历史社区缺失媒体让同事务全量 GC 抛错并回滚当前保存；修复只把已知历史阻断隔离到 GC savepoint，当前草稿仍在 GC 前执行严格 Blob 校验，真实并发冲突仍 fail closed。
+- boundary: 未删除/移动历史引用，未伪造媒体，未放宽未来缺失门禁；没有真实生成、发布、供应商回传、生产连接、Git 提交、推送或部署。
+
+final result: passed
+
+---
+
 # v142.0 生成稳定性、视频会话续开与供应商媒体 Design QA
 
 - source visual truth:
@@ -13,7 +44,7 @@
   - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/output/design-qa/v1419-greeting-thinking-final-9.png`
   - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/output/design-qa/v1419-greeting-final-9.png`
   - `/Users/macbookpro/.codex/worktrees/052d/codex自动化产品2/自动化产品/output/design-qa/v1419-running-scope-menu-final-15.png`
-- implementation state: `http://127.0.0.1:8787/?qa=v1420-generation-resilience-1#/custom/video/d2bbf44b8928`，加载资源身份 `20260810-v1420-generation-resilience-1`。
+- implementation state: `http://127.0.0.1:8787/?qa=v1420-generation-resilience-1#/custom/video/d2bbf44b8928`，加载资源身份 `20260811-v1423-batch-video-editor-1`。
 - viewport: 两个最终页面均在 `1280×720` CSS px 验证；单页截图均为 `1280×720` px。
 
 ## Full-view comparison evidence

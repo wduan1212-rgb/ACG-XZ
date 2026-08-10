@@ -4,28 +4,30 @@
 import { $, $$, esc, wireDropZone, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, on, productionById, ownedBy } from "../core/store.js";
-import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
+import { toast, confirmModal, promptModal, publishModal, openModal, removeWithMotion } from "../ui/components.js?v=20260811-v1423-batch-video-editor-1";
 import {
   ensureSession, mySessions, newSession, renameSession, deleteSession, addMsg, handleUserText,
-  batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, removeProductionFromBatch,
+  batchById, batchProds, activeBatches, currentSessionBatches, deleteBatch, setBatchPaused, removeProductionFromBatch,
   selectAccountsForPlan, matchAccounts, startBatch, startGeneration, deliverAll, retryFailedIn,
   templatePlan, defaultPlan, regenerateBatchImage, regenerateBatchVideoCover, regenerateBatchVideo,
   resetPlanReferences, prunePlanReferences, agentSay, hydratedBatchThinkingState
-} from "./orchestrator.js?v=20260810-v1420-generation-resilience-1";
-import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260810-v1420-generation-resilience-1";
+} from "./orchestrator.js?v=20260811-v1423-batch-video-editor-1";
+import { renderMessage, boardRow, accountDisplayName } from "./cards.js?v=20260811-v1423-batch-video-editor-1";
 import { boardStructureKey, patchBoardRow } from "./boardRuntime.js?v=20260727-v118-7";
-import { openProductionDrawer } from "../views/prodDrawer.js?v=20260810-v1420-generation-resilience-1";
-import { deliver } from "../domain/delivery.js?v=20260810-v1420-generation-resilience-1";
+import { openProductionDrawer } from "../views/prodDrawer.js?v=20260811-v1423-batch-video-editor-1";
+import { deliver } from "../domain/delivery.js?v=20260811-v1423-batch-video-editor-1";
 import { go } from "../core/router.js";
 import { urlFor, addAssetFromFile, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
 import { groupOf, isAvatarAsset } from "../domain/accounts.js";
-import { accountPublishAvailable, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260810-v1420-generation-resilience-1";
+import { accountPublishAvailable, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260811-v1423-batch-video-editor-1";
+import { qianfanTopicIdeas } from "../core/remote.js";
+import { validatePublishText } from "../domain/publishRules.js?v=20260811-v1423-batch-video-editor-1";
 
 let mounted = false;
 let rootEl = null;
 const thinkingBySession = new Map(); // sessionId -> { active, steps }
 let scrollTopOnce = false;
-const PLAN_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
+const PLAN_KIND_GROUP = { image: "图文组", static: "静态视频", material: "视频号", real: "视频号" };
 
 function normalizePlanKind(kind = "", group = "") {
   if (["image", "static", "material", "real"].includes(kind)) return kind;
@@ -77,6 +79,9 @@ function applyPlanKind(payload, kind) {
   payload.manualAccountSelection = true;
   if (nextKind === "static" && !String(payload.staticVideoStyle || "").trim()) {
     payload.staticVideoStyle = "现代漫画分镜风";
+  }
+  if (nextKind === "material" && !String(payload.creativeVideoStyle || "").trim()) {
+    payload.creativeVideoStyle = "电影级超写实怪诞广告";
   }
   applyPlanMode(payload);
 }
@@ -520,7 +525,7 @@ function updateBoardGroups() {
     const topic = group.querySelector(".mb-ghead > b");
     const stat = group.querySelector(".mb-gstat");
     if (topic) topic.textContent = b.topic || "";
-    if (stat) stat.textContent = `${PH[b.phase] || b.phase} · ${done}/${prods.length}`;
+    if (stat) stat.textContent = `${b.paused ? "已暂停" : (PH[b.phase] || b.phase)} · ${done}/${prods.length}`;
   });
 }
 
@@ -549,19 +554,34 @@ function renderBoard() {
       return `<div class="mb-group" data-batchid="${b.id}">
         <div class="mb-ghead">
           <b>${esc(b.topic)}</b>
-          <span class="mb-gstat">${PH[b.phase] || b.phase} · ${done}/${prods.length}</span>
-          <button class="mb-gdel" data-batchdel="${b.id}" title="删除整批">${icon("trash", 12)}</button>
+          <span class="mb-gstat">${b.paused ? "已暂停" : (PH[b.phase] || b.phase)} · ${done}/${prods.length}</span>
+          <span class="mb-gactions"><button class="mb-gpause" data-batchpause="${b.id}" title="${b.paused ? "继续项目" : "暂停项目"}">${icon(b.paused ? "play" : "pause", 12)}<span>${b.paused ? "继续" : "暂停"}</span></button><button class="mb-gdel" data-batchdel="${b.id}" title="删除整批">${icon("trash", 12)}<span>删除</span></button></span>
         </div>
         ${prods.map(boardRow).join("")}
       </div>`;
     }).join("");
-  // 删除整批任务
+  // 暂停只阻止后续阶段和新 provider 调用；已经在途的单次调用允许安全落盘。
+  $$("#agwBoard [data-batchpause]").forEach(button => button.addEventListener("click", async event => {
+    event.stopPropagation();
+    const batch = batchById(button.dataset.batchpause);
+    if (!batch) return;
+    if (!batch.paused) {
+      const ok = await confirmModal({ title: "暂停这一批任务？", body: "正在执行的单次调用会安全完成并保存；后续账号和阶段不会继续启动，之后可在这里继续。", okText: "确认暂停" });
+      if (!ok) return;
+    }
+    setBatchPaused(batch.id, !batch.paused);
+    renderBoard();
+    toast(batch.paused ? "项目已暂停" : "项目已继续");
+  }));
+  // 删除整批任务：两次确认，避免误删右侧看板项目。
   $$("#agwBoard [data-batchdel]").forEach(b => b.addEventListener("click", async e => {
     e.stopPropagation();
     const batch = batchById(b.dataset.batchdel);
     if (!batch) return;
     const ok = await confirmModal({ title: `删除这一批任务？`, body: `「${batch.topic}」共 ${(batch.productionIds || []).length} 条，连同其在制产物一并移除（已交付的保留）。`, danger: true, okText: "删除" });
     if (ok) {
+      const confirmed = await confirmModal({ title: "再次确认永久删除？", body: `只会删除「${batch.topic}」的未交付任务及其在制数据；已交付内容仍保留。此操作无法在看板中撤销。`, danger: true, okText: "确认删除" });
+      if (!confirmed) return;
       try {
         await removeWithMotion(b.closest(".mb-group"), () => deleteBatch(batch.id));
         renderPhase();
@@ -600,7 +620,7 @@ function renderBoard() {
 async function routeFilesToProduction(p, files) {
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260810-v1420-generation-resilience-1");
+  const { maybeAdvanceAfterInput } = await import("./orchestrator.js?v=20260811-v1423-batch-video-editor-1");
   const isImg = p.mode === "图文";
   const items = isImg ? p.artifacts.images.items : p.artifacts.boards.items;
   let n = 0;
@@ -790,6 +810,10 @@ function wire(root) {
         toast(`已将全部已选图文账号设为每条 ${count} 张图`);
         break;
       }
+      case "plan-ai-topic": {
+        openAiTopicPicker(act.dataset.mid);
+        break;
+      }
       case "plan-select-all": {
         const { msg: m } = findMessageInSessions(act.dataset.mid);
         if (!m || m.payload.status !== "pending") return;
@@ -899,7 +923,7 @@ function wire(root) {
             const missingRole = (m.payload.accountIds || []).filter(id => !state.accounts.find(a => a.id === id)?.charBoardAssetId);
             if (missingRole.length) {
               const names = missingRole.slice(0, 3).map(id => state.accounts.find(a => a.id === id)?.name || "未命名账号").join("、");
-              throw new Error(`真人视频请先上传角色形象：${names}${missingRole.length > 3 ? "等" : ""}`);
+              throw new Error(`数字人创作请先上传角色形象：${names}${missingRole.length > 3 ? "等" : ""}`);
             }
           }
           act.disabled = true;
@@ -1203,7 +1227,7 @@ async function setPlanRefs(mid, files, kind = "shared") {
   if (!imgs.length) { toast(`${isCover ? "统一视频参考图" : "统一参考图"}最多 5 张`); return; }
   const { fileToDataUrl } = await import("../core/util.js");
   const { addAssetFromDataUrl } = await import("../domain/assets.js");
-  const acc0 = state.accounts.find(a => m.payload.accountIds.includes(a.id) && a.subType === "无数字人") || state.accounts.find(a => m.payload.accountIds.includes(a.id));
+  const acc0 = state.accounts.find(a => m.payload.accountIds.includes(a.id) && a.mode === "视频") || state.accounts.find(a => m.payload.accountIds.includes(a.id));
   const newIds = [];
   for (const file of imgs) {
     const dataUrl = await fileToDataUrl(file);
@@ -1428,6 +1452,142 @@ async function openPlanAssetPicker(mid, kind = "shared", accountId = "") {
     }
   });
 
+}
+
+function openAiTopicPicker(mid) {
+  const { msg: m } = findMessageInSessions(mid);
+  if (!m || m.payload.status !== "pending") return;
+  const accounts = (m.payload.accountIds || [])
+    .map(id => state.accounts.find(account => account.id === id))
+    .filter(Boolean);
+  if (!accounts.length) {
+    toast("请先选择要填写的账号");
+    return;
+  }
+  const initialQuery = String(m.payload.content || m.payload.topic || "").trim();
+  let preview = null;
+  openModal(`<div class="mp-head"><div><b>百度搜索 AI 选题</b><em>搜索事实来源，预览后只填所选账号的空白标题和文案</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div>
+    <div class="mp-body agc-ai-topic-modal">
+      <div class="agc-ai-topic-query">
+        <label><span>选题方向</span><input class="input" id="agcAiTopicQuery" maxlength="300" value="${esc(initialQuery)}" placeholder="例如：AI 视频生成行业最新动态" /></label>
+        <div class="agc-ai-topic-recency" role="group" aria-label="搜索时间范围">
+          <button class="is-active" type="button" data-ai-recency="week">近一周</button>
+          <button type="button" data-ai-recency="month">近一月</button>
+        </div>
+        <button class="btn primary" id="agcAiTopicGenerate" type="button">${icon("search", 14)} 搜索并生成预览</button>
+      </div>
+      <div class="agc-ai-topic-note">已选择 ${accounts.length} 个账号。生成内容会遵守小红书标题 20 字/正文 1000 字，以及视频号标题 16 字且无标点的规则。</div>
+      <div class="agc-ai-topic-preview" id="agcAiTopicPreview"><p>输入方向后生成预览；这里不会直接覆盖任务板已有内容。</p></div>
+    </div>
+    <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="agcAiTopicApply" disabled>填入空白行</button></div>`, {
+    wide: true,
+    onMount(panel, close) {
+      panel.classList.add("agc-ai-topic-panel");
+      const queryInput = $("#agcAiTopicQuery", panel);
+      const generateButton = $("#agcAiTopicGenerate", panel);
+      const applyButton = $("#agcAiTopicApply", panel);
+      const previewNode = $("#agcAiTopicPreview", panel);
+      let recency = "week";
+      const sourceMap = () => new Map((preview?.references || []).map(item => [Number(item.id), item]));
+      const renderPreview = () => {
+        if (!previewNode || !preview) return;
+        const references = sourceMap();
+        const items = preview.items || [];
+        const previewAccountIds = new Set(items.map(item => String(item.accountId || "")));
+        const missingAccounts = accounts.filter(account => !previewAccountIds.has(String(account.id)));
+        const invalidItems = items.filter(item => !validatePublishText({ platform: item.platform, title: item.title, copy: item.copy }).ok);
+        previewNode.innerHTML = items.map(item => {
+          const validation = validatePublishText({ platform: item.platform, title: item.title, copy: item.copy });
+          const sources = (item.sourceIds || []).map(id => references.get(Number(id))).filter(Boolean);
+          return `<article class="agc-ai-topic-item ${validation.ok ? "" : "is-invalid"}">
+            <header><span><b>${esc(item.accountName || "账号")}</b><em>${esc(item.platform || "平台")}</em></span><small>${validation.titleLength}/${item.platform === "视频号" ? 16 : 20} 字</small></header>
+            <h4>${esc(item.title || "")}</h4>
+            <p>${esc(item.copy || "").replace(/\n/g, "<br>")}</p>
+            ${validation.ok ? "" : `<strong>${esc(validation.message)}</strong>`}
+            ${sources.length ? `<footer>${sources.map(source => `<a href="${esc(source.url || "#")}" target="_blank" rel="noopener noreferrer">${esc(source.title || "来源")}</a>`).join("")}</footer>` : ""}
+          </article>`;
+        }).join("") || `<p>本次没有生成可填入的账号内容，请换一个选题方向。</p>`;
+        if (missingAccounts.length) {
+          previewNode.insertAdjacentHTML("afterbegin", `<p class="is-error">还有 ${missingAccounts.length} 个账号未生成：${esc(missingAccounts.slice(0, 4).map(accountDisplayName).join("、"))}${missingAccounts.length > 4 ? "等" : ""}。请重新生成预览，系统不会只填部分账号。</p>`);
+        }
+        applyButton.disabled = !items.length || missingAccounts.length > 0 || invalidItems.length > 0;
+        applyButton.textContent = missingAccounts.length ? `等待补齐 ${missingAccounts.length} 个账号` : `填入 ${items.length} 个账号的空白行`;
+      };
+      panel.querySelectorAll("[data-ai-recency]").forEach(button => button.addEventListener("click", () => {
+        recency = button.dataset.aiRecency === "month" ? "month" : "week";
+        panel.querySelectorAll("[data-ai-recency]").forEach(item => item.classList.toggle("is-active", item === button));
+      }));
+      generateButton?.addEventListener("click", async () => {
+        const query = String(queryInput?.value || "").trim();
+        if (query.length < 2) {
+          toast("请填写至少 2 个字的选题方向");
+          queryInput?.focus();
+          return;
+        }
+        generateButton.disabled = true;
+        applyButton.disabled = true;
+        generateButton.innerHTML = `${icon("loader", 14)} 正在搜索并生成…`;
+        previewNode.innerHTML = `<p class="is-loading">正在读取百度搜索结果，并为全部所选账号生成候选内容…</p>`;
+        try {
+          const payloadAccounts = accounts.map(account => {
+            const productId = (m.payload.accountProductIds || {})[account.id] || m.payload.productId || "";
+            const product = state.products.find(item => item.id === productId);
+            return {
+              id: account.id,
+              name: accountDisplayName(account),
+              platform: account.platform || (account.mode === "图文" ? "小红书" : "视频号"),
+              product: product?.name || "",
+            };
+          });
+          const requestId = `batch-topic-${mid}-${Date.now().toString(36)}`;
+          preview = await qianfanTopicIdeas({ query, recency, accounts: payloadAccounts }, requestId);
+          renderPreview();
+        } catch (error) {
+          preview = null;
+          previewNode.innerHTML = `<p class="is-error">${esc(error?.message || "AI 选题生成失败，请稍后重试")}</p>`;
+          toast(error?.message || "AI 选题生成失败", "error");
+        } finally {
+          generateButton.disabled = false;
+          generateButton.innerHTML = `${icon("search", 14)} 重新生成预览`;
+        }
+      });
+      applyButton?.addEventListener("click", () => {
+        if (!preview) return;
+        m.payload.accountCopyTitles = m.payload.accountCopyTitles || {};
+        m.payload.accountCopyBodies = m.payload.accountCopyBodies || {};
+        m.payload.accountSingleImageTitles = m.payload.accountSingleImageTitles || {};
+        m.payload.accountCustomCopyModes = m.payload.accountCustomCopyModes || {};
+        let filled = 0;
+        (preview.items || []).forEach(item => {
+          const validation = validatePublishText({ platform: item.platform, title: item.title, copy: item.copy });
+          if (!validation.ok || !(m.payload.accountIds || []).includes(item.accountId)) return;
+          let changed = false;
+          if (!String(m.payload.accountCopyTitles[item.accountId] || "").trim()) {
+            m.payload.accountCopyTitles[item.accountId] = item.title;
+            changed = true;
+          }
+          if (!String(m.payload.accountCopyBodies[item.accountId] || "").trim()) {
+            m.payload.accountCopyBodies[item.accountId] = item.copy;
+            changed = true;
+          }
+          if ((m.payload.accountImageCreationModes || {})[item.accountId] === "single"
+            && !String(m.payload.accountSingleImageTitles[item.accountId] || "").trim()) {
+            m.payload.accountSingleImageTitles[item.accountId] = item.title;
+            changed = true;
+          }
+          if (changed) {
+            m.payload.accountCustomCopyModes[item.accountId] = true;
+            filled += 1;
+          }
+        });
+        save("sessions");
+        close();
+        rerenderPlanCard(mid);
+        toast(filled ? `已填入 ${filled} 个账号的空白内容` : "已有内容均已保留，没有覆盖任何一行");
+      });
+      requestAnimationFrame(() => queryInput?.focus());
+    }
+  });
 }
 
 function openPlanContentEditor(mid, accountId, kind = "copy") {

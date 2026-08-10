@@ -1,44 +1,44 @@
 /* 应用入口：装载数据 → 迁移 → 恢复任务 → 外壳 → 路由 */
 
 import { $, $$, esc, uid } from "./core/util.js";
-import { icon, brandGlyph } from "./ui/icons.js";
+import { icon } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, currentTeam, hasEntitlement, canManageAccounts, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260810-v1420-generation-resilience-1";
+import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260811-v1423-batch-video-editor-1";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
-import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260810-v1420-generation-resilience-1";
+import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260811-v1423-batch-video-editor-1";
 import { buildSupplierSearchResults } from "./domain/supplierSearch.js";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260727-v118-7";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260810-v1420-generation-resilience-1";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260811-v1423-batch-video-editor-1";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
-import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260810-v1420-generation-resilience-1";
+import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260811-v1423-batch-video-editor-1";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
-import { initLoginBeams } from "./ui/loginBeams.js?v=20260810-v1420-generation-resilience-1";
+import { initLoginBeams } from "./ui/loginBeams.js?v=20260811-v1423-batch-video-editor-1";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
-import { overviewView } from "./views/overview.js?v=20260810-v1420-generation-resilience-1";
-import { homeView } from "./views/home.js?v=20260810-v1420-generation-resilience-1";
-import { subscriptionView } from "./views/subscription.js?v=20260810-v1420-generation-resilience-1";
-import { customCreationView } from "./views/customCreation.js?v=20260810-v1420-generation-resilience-1";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260810-v1420-generation-resilience-1";
-import { studioView } from "./views/studio.js?v=20260810-v1420-generation-resilience-1";
-import { assetsView } from "./views/assetsView.js?v=20260810-v1420-generation-resilience-1";
-import { deliveryView } from "./views/deliveryView.js?v=20260810-v1420-generation-resilience-1";
+import { overviewView } from "./views/overview.js?v=20260811-v1423-batch-video-editor-1";
+import { homeView } from "./views/home.js?v=20260811-v1423-batch-video-editor-1";
+import { subscriptionView } from "./views/subscription.js?v=20260811-v1423-batch-video-editor-1";
+import { customCreationView } from "./views/customCreation.js?v=20260811-v1423-batch-video-editor-1";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260811-v1423-batch-video-editor-1";
+import { studioView } from "./views/studio.js?v=20260811-v1423-batch-video-editor-1";
+import { assetsView } from "./views/assetsView.js?v=20260811-v1423-batch-video-editor-1";
+import { deliveryView } from "./views/deliveryView.js?v=20260811-v1423-batch-video-editor-1";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js?v=20260810-v1420-generation-resilience-1";
-import { settingsView } from "./views/settings.js?v=20260810-v1420-generation-resilience-1";
+import { draftsView } from "./views/draftsView.js?v=20260811-v1423-batch-video-editor-1";
+import { settingsView } from "./views/settings.js?v=20260811-v1423-batch-video-editor-1";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260810-v1420-generation-resilience-1";
-import { productionsOf } from "./domain/productions.js?v=20260810-v1420-generation-resilience-1";
-import { installAccountPublishQuotaAutoRefresh } from "./domain/productionQuota.js?v=20260810-v1420-generation-resilience-1";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260811-v1423-batch-video-editor-1";
+import { productionsOf } from "./domain/productions.js?v=20260811-v1423-batch-video-editor-1";
+import { installAccountPublishQuotaAutoRefresh } from "./domain/productionQuota.js?v=20260811-v1423-batch-video-editor-1";
 
-const APP_BUILD_ID = "20260810-v1420-generation-resilience-1";
+const APP_BUILD_ID = "20260811-v1423-batch-video-editor-1";
 const GUEST_MEMBER_ID = "guest-local-preview";
 const GUEST_MEMBER = Object.freeze({
   id: GUEST_MEMBER_ID,
@@ -56,6 +56,7 @@ const GUEST_MEMBER = Object.freeze({
 let announcedBuildId = "";
 const WORKSPACE_HIDDEN_VIDEO_PROJECTS_KEY = "xingzhen.workspaceHiddenVideoProjects";
 const WORKSPACE_VIDEO_META_KEY = "xingzhen.workspaceVideoMeta";
+const WORKSPACE_CONTEXT_COLLAPSED_KEY = "xingzhen.workspaceContextCollapsed";
 let workspaceSwitcherGlobalWired = false;
 let workspaceContextFrame = 0;
 let workspaceUtilityDockWired = false;
@@ -104,7 +105,34 @@ function workspaceShellEnabled() {
 function applyWorkspaceShellMode() {
   const enabled = workspaceShellEnabled();
   document.body.classList.toggle("workspace-shell-v2", enabled);
+  document.body.classList.toggle(
+    "workspace-context-collapsed",
+    enabled && localStorage.getItem(WORKSPACE_CONTEXT_COLLAPSED_KEY) === "1",
+  );
   if (!enabled) document.body.classList.remove("workspace-context-open");
+}
+
+function setWorkspaceContextCollapsed(collapsed) {
+  const next = !!collapsed;
+  document.body.classList.toggle("workspace-context-collapsed", next);
+  localStorage.setItem(WORKSPACE_CONTEXT_COLLAPSED_KEY, next ? "1" : "0");
+  $("#workspaceContextCollapse")?.setAttribute("aria-label", next ? "展开左侧栏" : "收起左侧栏");
+  $("#railBrand")?.setAttribute("title", next ? "展开左侧栏" : "星阵");
+  window.dispatchEvent(new Event("resize"));
+}
+
+function renderCollapsedRailProfile() {
+  const button = $("#railProfile");
+  const host = $("#railProfileAvatar");
+  if (!button || !host) return;
+  const member = currentMember() || {};
+  const name = String(member.name || member.username || "我的").trim() || "我的";
+  const initial = name.slice(0, 1) || "我";
+  host.innerHTML = member.avatarUrl
+    ? `<img src="${esc(member.avatarUrl)}" alt="" />`
+    : `<span>${esc(initial)}</span>`;
+  button.title = `${name} · 我的`;
+  button.setAttribute("aria-label", `打开${name}的账号菜单`);
 }
 
 applyWorkspaceShellMode();
@@ -166,7 +194,7 @@ function accountFromProfile(profile) {
     createdAt: Date.now(),
     updatedAt: Date.now()
   };
-  if (account.mode === "视频" && account.subType !== "无数字人") account.appearanceAnchor = appearanceAnchorFor(account);
+  if (account.mode === "视频") account.appearanceAnchor = appearanceAnchorFor(account);
   return account;
 }
 
@@ -430,7 +458,7 @@ function applyRoleClasses() {
   document.body.classList.toggle("role-admin", state.role === "admin");
   const parent = state.role === "supplier" || state.role === "supplier_parent";
   const labels = {
-    overview: parent ? "首页" : "数据看板",
+    overview: parent ? "首页" : "账号数据",
     assets: parent ? "全部账号" : "整体资产",
     delivery: "发布清单",
     settings: workspaceShellEnabled() ? "我的" : (state.role === "editor" ? "我的" : "设置")
@@ -442,6 +470,7 @@ function applyRoleClasses() {
     const span = item.querySelector("span");
     if (span) span.textContent = label;
   });
+  syncCollapsedRailNavigation();
   const logoutButton = $("#navLogout");
   if (logoutButton) {
     const label = state.role === "guest" ? "登录" : "退出登录";
@@ -450,6 +479,7 @@ function applyRoleClasses() {
     const span = logoutButton.querySelector("span");
     if (span) span.textContent = label;
   }
+  renderCollapsedRailProfile();
 }
 
 function enterGuest({ routeHome = true } = {}) {
@@ -954,6 +984,28 @@ function workspaceNavItems() {
     (order.get(left.key) ?? Number.MAX_SAFE_INTEGER)
     - (order.get(right.key) ?? Number.MAX_SAFE_INTEGER)
   ));
+}
+
+function syncCollapsedRailNavigation() {
+  const host = $("#collapsedRailItems");
+  if (!host) return;
+  const items = workspaceNavItems();
+  const byKey = new Map(items.map((item, index) => [item.key, { item, index }]));
+  $$("[data-nav-key]", host).forEach(button => {
+    const match = byKey.get(button.dataset.navKey);
+    button.hidden = !match;
+    if (!match) return;
+    const { item, index } = match;
+    button.style.order = String(index);
+    button.title = item.label;
+    button.dataset.nav = item.zone;
+    if (item.page) button.dataset.page = item.page;
+    else delete button.dataset.page;
+    button.classList.toggle("is-locked", !!item.locked);
+    button.setAttribute("aria-disabled", item.locked ? "true" : "false");
+    const label = button.querySelector(":scope > span");
+    if (label) label.textContent = item.label;
+  });
 }
 
 function workspaceCurrentItem() {
@@ -1946,6 +1998,7 @@ function ensureWorkspaceContextShell(panel) {
       <header class="workspace-context-brand">
         <div id="workspaceSwitcherHost"></div>
         <div class="workspace-context-actions" id="workspaceContextActions"></div>
+        <button class="workspace-context-collapse" id="workspaceContextCollapse" type="button" aria-label="收起左侧栏" title="收起左侧栏">${icon("chevronLeft", 16)}</button>
         <button class="workspace-context-close" id="workspaceContextClose" type="button" aria-label="关闭当前工作区列表">${icon("x", 16)}</button>
       </header>
       <div class="wsctx-groups" id="workspaceContextList"></div>
@@ -1965,6 +2018,10 @@ function ensureWorkspaceContextShell(panel) {
   if (panel.dataset.workspaceShellWired === "1") return;
   panel.dataset.workspaceShellWired = "1";
   panel.addEventListener("click", async event => {
+    if (event.target.closest("#workspaceContextCollapse")) {
+      setWorkspaceContextCollapsed(true);
+      return;
+    }
     if (event.target.closest("#workspaceContextClose")) {
       setWorkspaceContextOpen(false);
       return;
@@ -2510,17 +2567,10 @@ function renderWorkspaceContextPanel() {
             .map(account => accountContextRow(account, accountIndex))
         },
         {
-          key: "avatar",
-          title: "真人数字人",
+          key: "video",
+          title: "视频号",
           rows: state.accounts
-            .filter(account => !isAccountDisabled(account) && account.mode === "视频" && account.subType === "数字人")
-            .map(account => accountContextRow(account, accountIndex))
-        },
-        {
-          key: "feed",
-          title: "素材无数字人",
-          rows: state.accounts
-            .filter(account => !isAccountDisabled(account) && account.mode === "视频" && account.subType !== "数字人")
+            .filter(account => !isAccountDisabled(account) && account.mode === "视频")
             .map(account => accountContextRow(account, accountIndex))
         },
         {
@@ -2807,8 +2857,7 @@ function renderContextPanel() {
   }
   const groups = [
     { key: "图文组", list: state.accounts.filter(a => !isAccountDisabled(a) && a.mode === "图文" && f(a)) },
-    { key: "真人 · 数字人", list: state.accounts.filter(a => !isAccountDisabled(a) && a.mode === "视频" && a.subType === "数字人" && f(a)) },
-    { key: "素材 · 无数字人", list: state.accounts.filter(a => !isAccountDisabled(a) && a.mode === "视频" && a.subType !== "数字人" && f(a)) },
+    { key: "视频号", list: state.accounts.filter(a => !isAccountDisabled(a) && a.mode === "视频" && f(a)) },
     { key: "已停用账号", list: state.accounts.filter(a => isAccountDisabled(a) && f(a)), disabled: true }
   ];
   panel.innerHTML = `
@@ -2898,7 +2947,7 @@ function renderContextPanel() {
 }
 
 /* ---------- 顶栏 ---------- */
-const ZONE_TITLE = { home: "首页", subscription: "订阅管理", overview: "账号数据", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
+const ZONE_TITLE = { home: "首页", subscription: "订阅管理", overview: "账号数据", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "账号数据", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
 
 function renderTopbar() {
   const zone = document.body.dataset.zone;
@@ -2924,7 +2973,7 @@ function renderTopbar() {
     : acc?.mode === "视频" && ["script", "boards", "prompts", "render", "copy"].includes(page)
       ? "workshop"
       : page;
-  if (zone === "studio" && acc) crumb = `单号创作 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: acc.subType === "数字人" ? "数字人制作" : "信息流制作", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
+  if (zone === "studio" && acc) crumb = `账号数据 / ${acc.name}${shownPage && shownPage !== "home" ? " / " + ({ script: "脚本", boards: "分镜", images: "图文创作台", prompts: "提示词", workshop: acc.subType === "数字人" ? "数字人制作" : "创意视频制作", render: "生成台", cut: "剪辑", copy: "文案", review: "审核" }[shownPage] || "") : ""}`;
   bc.textContent = crumb;
   renderWorkspaceSwitcher();
   if (!workspaceShellEnabled()) {
@@ -3131,9 +3180,20 @@ async function boot() {
     initLoginBeams();
 
     // 外壳
-    $("#railBrand").innerHTML = brandGlyph(28);
+    $("#railBrand").innerHTML = `<img class="rail-original-star" src="./assets/brand/starmatrix-original-star.png?v=${APP_BUILD_ID}" alt="星阵" />`;
+    $("#railBrand")?.addEventListener("click", () => setWorkspaceContextCollapsed(false));
+    $("#workspaceContextExpand")?.addEventListener("click", event => {
+      event.stopPropagation();
+      setWorkspaceContextCollapsed(false);
+    });
+    syncCollapsedRailNavigation();
     $$("[data-nav]").forEach(b => b.addEventListener("click", () => {
       state.ui.returnTo = null;
+      if (b.dataset.navKey) {
+        const item = workspaceNavItems().find(candidate => candidate.key === b.dataset.navKey);
+        if (item) openWorkspaceItem(item);
+        return;
+      }
       if (state.role === "guest" && !["home", "assets"].includes(b.dataset.nav)) {
         window.dispatchEvent(new CustomEvent("xingzhen:auth-required", {
           detail: { reason: "create", target: { zone: b.dataset.nav } }
@@ -3141,7 +3201,7 @@ async function boot() {
         return;
       }
       if (b.dataset.nav === "studio") allowStudioFromAgent();
-      go(b.dataset.nav);
+      go(b.dataset.nav, b.dataset.page || null);
     }));
     $("#navLogout").addEventListener("click", logout);
     $("#topSearch").addEventListener("click", openGlobalPalette);
@@ -3161,12 +3221,17 @@ async function boot() {
     document.addEventListener("keydown", e => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openGlobalPalette(); }
     });
-    window.addEventListener("view:rendered", () => { renderContextPanel(); renderTopbar(); });
+    window.addEventListener("view:rendered", () => {
+      syncCollapsedRailNavigation();
+      renderContextPanel();
+      renderTopbar();
+    });
     window.addEventListener("xingzhen:account-publish-quotas", () => {
       const route = parseHash();
       if (route.zone === "studio" && (!route.page || route.page === "home")) render();
     });
     on("change", () => {
+      syncCollapsedRailNavigation();
       if (workspaceShellEnabled()) scheduleWorkspaceContextRender();
       else if (document.body.dataset.zone === "studio") renderContextPanel();
       updateNotifyBadge();

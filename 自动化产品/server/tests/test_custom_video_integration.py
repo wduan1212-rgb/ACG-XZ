@@ -4,6 +4,7 @@ import sys
 import json
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 APP_DIR = Path(__file__).resolve().parents[2]
 VIDEO_WORKSHOP_DIR = APP_DIR / "apps" / "video-workshop"
@@ -15,6 +16,85 @@ from test_store_tombstone import load_isolated_store
 
 
 class CustomVideoIntegrationTest(unittest.TestCase):
+    def test_batch_video_editor_bridge_is_owner_visible_idempotent_and_provider_free(self):
+        from server import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            projects = root / "projects"
+            outputs = root / "outputs"
+            source = root / "source.mp4"
+            final = root / "final.mp4"
+            source.write_bytes(b"source-video")
+            final.write_bytes(b"final-video")
+            production = {
+                "id": "production-creative",
+                "mode": "视频",
+                "title": "30秒创意成片",
+                "artifacts": {
+                    "finalVideoUrl": "/api/video/composed/final.mp4",
+                    "timeline": [{"jobId": "job-1", "dur": 30, "name": "30s创意成片"}],
+                    "boards": {
+                        "generationMode": "creativeVideo",
+                        "creativeVideo": {
+                            "narration": "真实口播",
+                            "storyboardSheet": {
+                                "assetId": "storyboard-sheet-asset",
+                                "imagePrompt": "一张多格素描故事板",
+                                "status": "done",
+                            },
+                            "storyboards": [{
+                                "title": "规则怪谈开场",
+                                "visual": "夜间校园走廊",
+                                "imagePrompt": "电影感校园走廊，冷色光",
+                            }],
+                        },
+                    },
+                },
+            }
+            job = {
+                "id": "job-1",
+                "productionId": production["id"],
+                "status": "succeeded",
+                "segIndex": 0,
+                "segName": "30s创意成片",
+                "duration": 30,
+                "output": {"url": "/api/video/composed/source.mp4"},
+            }
+
+            def local_path(url):
+                return final if "final.mp4" in str(url) else source
+
+            with (
+                patch.dict("os.environ", {"VIDEO_WORKSHOP_PROJECTS_DIR": str(projects)}),
+                patch.object(main, "VIDEO_WORKSHOP_OUTPUT_DIR", outputs),
+                patch.object(main.store, "state_for", return_value={
+                    "productions": [production], "jobs": [job],
+                }),
+                patch.object(main, "_local_server_file_path", side_effect=local_path),
+                patch.object(main, "_sync_video_workshop_project", side_effect=lambda _me, payload: payload),
+            ):
+                created = main._prepare_batch_video_editor_project(
+                    {"id": "creator-a", "role": "editor"}, production["id"],
+                )
+                reused = main._prepare_batch_video_editor_project(
+                    {"id": "creator-a", "role": "editor"}, production["id"],
+                )
+
+            self.assertTrue(created["ok"])
+            self.assertFalse(created["reused"])
+            self.assertTrue(reused["reused"])
+            self.assertEqual(created["projectId"], reused["projectId"])
+            project = json.loads((projects / f"{created['projectId']}.json").read_text("utf-8"))
+            self.assertEqual("batch-output", project["editorAutoloadOutputId"])
+            self.assertEqual(30, project["outputs"][0]["probe"]["duration"])
+            self.assertEqual("规则怪谈开场", project["plan"]["scenes"][0]["title"])
+            composition = json.loads((outputs / created["projectId"] / "composition.json").read_text("utf-8"))
+            self.assertEqual(1, len(composition["cuts"]))
+            self.assertEqual(30, composition["cuts"][0]["out_seconds"])
+            self.assertEqual(b"source-video", (outputs / created["projectId"] / "source-01.mp4").read_bytes())
+            self.assertEqual(b"final-video", (outputs / created["projectId"] / "batch-preview.mp4").read_bytes())
+
     def test_video_outputs_keep_independent_publish_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)
@@ -214,6 +294,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertIn("markPublished(", integration)
         self.assertIn("publishedCount", integration)
         self.assertIn('(video-editor|assets|timeline-revision)', backend)
+        self.assertIn('@app.post("/api/productions/{production_id}/video-editor")', backend)
+        self.assertIn("_prepare_batch_video_editor_project", backend)
         self.assertIn('editor_action == "video-editor"', backend)
         self.assertIn('editor_action == "assets"', backend)
         self.assertIn('_video_workshop_timing(editor_action, started)', backend)
@@ -239,6 +321,10 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         ):
             self.assertIn(field, integration)
 
+        workshop_app = (VIDEO_WORKSHOP_DIR / "web/assets/app.js").read_text(encoding="utf-8")
+        self.assertIn("editorAutoloadOutputId", workshop_app)
+        self.assertIn("openVideoEditor(editorOutput, null)", workshop_app)
+
     def test_embedded_workshop_hides_duplicate_header_and_guards_ime_enter(self):
         html = (VIDEO_WORKSHOP_DIR / "web/index.html").read_text(encoding="utf-8")
         css = (
@@ -248,8 +334,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260810-v1420-generation-resilience-1", html)
-        self.assertIn("app.js?v=20260810-v1420-generation-resilience-1", html)
+        self.assertIn("styles.css?v=20260811-v1423-batch-video-editor-1", html)
+        self.assertIn("app.js?v=20260811-v1423-batch-video-editor-1", html)
         self.assertIn('data-creation-mode="video" aria-pressed="true">动态</button>', html)
         self.assertIn('data-creation-mode="static" aria-pressed="false">静态</button>', html)
         self.assertNotIn(">动态视频</button>", html)
@@ -387,7 +473,8 @@ for (const candidate of [
             "captureConversationScroll(dom.conversationColumn)",
             "stabilizeConversationBottom(dom.conversationColumn, dom.conversation, project.id)",
             "const openingProject = state.conversationRenderProjectId !== project.id",
-            "forceBottom: Boolean(pendingScrollId)",
+            "if (pendingScrollId || hasActiveBottomLock)",
+            "pendingScrollId\n        ? 12000",
         ):
             self.assertIn(token, javascript)
         self.assertNotIn("scrollIntoView(", javascript)
@@ -563,7 +650,7 @@ host.replaceChildren = child => {{
   if (child !== frame) throw new Error("wrong iframe mounted");
 }};
 mountCustomVideo(host, {{ projectId: "history-project-1" }});
-if (frame.currentSrc !== "/custom-video/?embed=1&workspace=1&canPublish=1&release=20260810-v1420-generation-resilience-1&project=history-project-1") {{
+if (frame.currentSrc !== "/custom-video/?embed=1&workspace=1&canPublish=1&release=20260811-v1423-batch-video-editor-1&project=history-project-1") {{
   throw new Error(`unexpected iframe source ${{frame.currentSrc}}`);
 }}
 """
@@ -598,7 +685,12 @@ global.window = {{
   parent: {{}},
 }};
 global.localStorage = {{
-  getItem() {{ throw new Error("workspace mode must not read the standalone project"); }},
+  getItem(key) {{
+    if (key === "member-project-key") {{
+      throw new Error("workspace mode must not read the standalone project");
+    }}
+    return null;
+  }},
 }};
 {bootstrap}
 if (state.projectId !== "history-project-1") {{

@@ -234,7 +234,7 @@ class CustomCanvasStaticIntegrationTest(unittest.TestCase):
         self.assertIn("const announceCreatedProject = createdProjectId =>", integration)
         self.assertIn("if (launchProjectId) announceCreatedProject(launchProjectId)", integration)
 
-    def test_canvas_embed_ui_keeps_entitlements_preview_and_collapsible_minimap(self):
+    def test_canvas_embed_ui_keeps_entitlements_preview_and_uses_platform_sidebar(self):
         source_dir = APP_DIR / "apps" / "infinite-canvas-source" / "src"
         workspace = (source_dir / "components/workspace/Workspace.tsx").read_text(encoding="utf-8")
         panel = (source_dir / "components/workspace/AgentPanel.tsx").read_text(encoding="utf-8")
@@ -256,13 +256,10 @@ class CustomCanvasStaticIntegrationTest(unittest.TestCase):
         self.assertIn("onPreviewItem", workspace)
         self.assertIn("flex-nowrap", workspace)
         self.assertIn("whitespace-nowrap", workspace)
-        self.assertIn("canvas-context-collapsed", integration)
-        self.assertIn("canvasContextTools.classList.add(\"is-detached\")", integration)
-        self.assertIn("bottom: 12px", integration)
-        self.assertIn('child.classList.contains("workspace-account-footer")', integration)
-        self.assertIn('activeShell.classList.add("has-canvas-context-tools")', integration)
-        self.assertIn('window.addEventListener("view:rendered", onCanvasViewRendered)', integration)
-        self.assertIn('window.removeEventListener("view:rendered", onCanvasViewRendered)', integration)
+        self.assertNotIn("canvas-context-collapsed", integration)
+        self.assertNotIn("canvas-context-collapse-toggle", integration)
+        self.assertNotIn("canvas-context-collapse-restore", integration)
+        self.assertNotIn("canvas-context-tools", integration)
 
     def test_homepage_first_generation_uses_the_new_project_size(self):
         workspace = (
@@ -731,17 +728,11 @@ console.log(JSON.stringify({{
         self.assertIn('style.id = "xingzhenCanvasEmbedStyle"', integration)
         self.assertIn('button[aria-label="返回"]', integration)
         self.assertIn('a[href$="#/"]', integration)
-        self.assertIn('dock.dataset.canvasContextTools = "true"', integration)
-        self.assertIn('class="canvas-context-portal"', integration)
-        self.assertIn('data-canvas-context-portal="${canvasContextPortalNonce}"', integration)
-        self.assertIn("contextPortalId: canvasContextPortalId", integration)
-        self.assertIn("contextPortalNonce: canvasContextPortalNonce", integration)
+        self.assertNotIn('class="canvas-context-portal"', integration)
+        self.assertNotIn("contextPortalId", integration)
+        self.assertNotIn("contextPortalNonce", integration)
         self.assertNotIn("data-canvas-control=", integration)
         self.assertNotIn("dataset.platformCanvasControls", integration)
-        self.assertLess(
-            integration.index("installCanvasContextTools();\n    iframe ="),
-            integration.index('iframe.name = JSON.stringify(canvasBootstrap)'),
-        )
         self.assertIn('childWindow.addEventListener("hashchange", keepProjectRoute)', integration)
         self.assertIn("childWindow.location.replace(projectHash(currentProjectId))", integration)
         self.assertIn("removeCanvasRouteGuard()", integration)
@@ -804,12 +795,13 @@ console.log(JSON.stringify({{
             / "lib"
             / "platformBridge.ts"
         ).read_text(encoding="utf-8")
-        self.assertIn("createPortal(controls, contextPortal.target)", source)
-        self.assertIn('data-canvas-viewport-controls={portaled ? "context" : "canvas"}', source)
+        self.assertNotIn("createPortal", source)
+        self.assertIn('data-canvas-viewport-controls="canvas"', source)
+        self.assertIn('"absolute bottom-4 left-4"', source)
         self.assertIn('className="canvas-viewport-minimap', source)
         self.assertIn("setViewport(projectId", source)
-        self.assertIn("canvasContextPortalFromBootstrap", bridge)
-        self.assertIn("contextPortalNonce", bridge)
+        self.assertNotIn("canvasContextPortalFromBootstrap", bridge)
+        self.assertNotIn("contextPortalNonce", bridge)
 
     def test_canvas_publish_reuses_image_polish_without_changing_direct_export(self):
         publish = (APP_DIR / "js" / "views" / "customPublish.js").read_text(encoding="utf-8")

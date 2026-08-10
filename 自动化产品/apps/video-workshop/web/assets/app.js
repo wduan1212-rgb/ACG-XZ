@@ -22,6 +22,7 @@ if (WORKSPACE_MODE && typeof document !== "undefined") {
 }
 const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 const HOME_PREFILL_IDS = new Set();
+const EDITOR_AUTOLOAD_KEYS = new Set();
 const VIDEO_VOICE_OPTIONS = (Array.isArray(window.__XINGZHEN_VIDEO_VOICES__)
   ? window.__XINGZHEN_VIDEO_VOICES__
   : [])
@@ -37,6 +38,7 @@ const VIDEO_VOICE_OPTIONS = (Array.isArray(window.__XINGZHEN_VIDEO_VOICES__)
   .filter(item => item.voiceId);
 const VIDEO_VOICE_MEMBER_ID = String(window.__XINGZHEN_VIDEO_MEMBER_ID__ || "standalone");
 const VIDEO_VOICE_SETTINGS_KEY = `xingzhen-video-voice:${VIDEO_VOICE_MEMBER_ID}`;
+const VIDEO_VOICE_RAIL_KEY = `xingzhen-video-voice-rail:${VIDEO_VOICE_MEMBER_ID}`;
 
 function savedVideoVoiceSettings() {
   try {
@@ -91,6 +93,7 @@ const state = {
   generateVoiceId: String(initialVideoVoiceSettings.generateVoiceId || initialVideoVoiceSettings.voiceId || "").trim(),
   favoriteVoiceIds: new Set(),
   pendingDesignedVoice: null,
+  voiceRailCollapsed: localStorage.getItem(VIDEO_VOICE_RAIL_KEY) === "1",
 };
 
 const dom = {
@@ -186,6 +189,7 @@ const dom = {
   creationModeButtons: [...document.querySelectorAll("[data-creation-mode]")],
   voiceRailTabs: [...document.querySelectorAll("[data-voice-rail-tab]")],
   voiceRailPanels: [...document.querySelectorAll("[data-voice-rail-panel]")],
+  voiceWorkbenchToggle: document.querySelector("#voiceWorkbenchToggle"),
   voiceModeButtons: [...document.querySelectorAll("[data-voice-mode]")],
   videoVoicePicker: document.querySelector("#videoVoicePicker"),
   videoVoicePickerButton: document.querySelector("#videoVoicePickerButton"),
@@ -1038,6 +1042,22 @@ async function saveDesignedVideoVoice() {
 
 function initializeVideoVoiceWorkbench() {
   if (!dom.videoVoicePickerButton || !dom.videoVoiceMenu) return;
+  const syncVoiceRail = () => {
+    dom.studioView?.classList.toggle("voice-rail-collapsed", state.voiceRailCollapsed);
+    if (dom.voiceWorkbenchToggle) {
+      dom.voiceWorkbenchToggle.setAttribute("aria-expanded", state.voiceRailCollapsed ? "false" : "true");
+      dom.voiceWorkbenchToggle.setAttribute("aria-label", state.voiceRailCollapsed ? "展开声音工作台" : "收起声音工作台");
+      dom.voiceWorkbenchToggle.title = state.voiceRailCollapsed ? "展开声音工作台" : "收起声音工作台";
+      const label = dom.voiceWorkbenchToggle.querySelector("span");
+      if (label) label.textContent = state.voiceRailCollapsed ? "展开" : "收起";
+    }
+  };
+  syncVoiceRail();
+  dom.voiceWorkbenchToggle?.addEventListener("click", () => {
+    state.voiceRailCollapsed = !state.voiceRailCollapsed;
+    localStorage.setItem(VIDEO_VOICE_RAIL_KEY, state.voiceRailCollapsed ? "1" : "0");
+    syncVoiceRail();
+  });
   if (state.fixedVoiceId && !VIDEO_VOICE_OPTIONS.some(item => item.voiceId === state.fixedVoiceId)) {
     state.fixedVoiceId = "";
     state.voiceMode = "random";
@@ -3676,6 +3696,19 @@ function renderProject(project) {
   renderConversation(project);
   renderEvents(project);
   renderDelivery(project);
+  const editorOutputId = String(project.editorAutoloadOutputId || "").trim();
+  const editorAutoloadKey = `${project.id}:${editorOutputId}`;
+  if (editorOutputId && !EDITOR_AUTOLOAD_KEYS.has(editorAutoloadKey)) {
+    const editorOutput = (project.outputs || []).find(
+      item => String(item?.id || "") === editorOutputId,
+    );
+    if (editorOutput) {
+      EDITOR_AUTOLOAD_KEYS.add(editorAutoloadKey);
+      window.setTimeout(() => {
+        if (state.project?.id === project.id) void openVideoEditor(editorOutput, null);
+      }, 120);
+    }
+  }
 
   const running = project.status === "running";
   if (running) startProductionHeartbeat(project);

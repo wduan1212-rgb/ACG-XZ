@@ -4,15 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>星阵</title>
-    <link rel="icon" type="image/png" href="./assets/brand/starmatrix-favicon.png?v=20260810-v1420-generation-resilience-1" />
+    <link rel="icon" type="image/png" href="./assets/brand/starmatrix-favicon.png?v=20260811-v1423-batch-video-editor-1" />
     <link rel="stylesheet" href="./styles/tokens.css?v=20260711-v70" />
-    <link rel="stylesheet" href="./styles/base.css?v=20260810-v1420-generation-resilience-1" />
-    <link rel="stylesheet" href="./styles/components.css?v=20260810-v1420-generation-resilience-1" />
-    <link rel="stylesheet" href="./styles/views.css?v=20260810-v1420-generation-resilience-1" />
+    <link rel="stylesheet" href="./styles/base.css?v=20260811-v1423-batch-video-editor-1" />
+    <link rel="stylesheet" href="./styles/components.css?v=20260811-v1423-batch-video-editor-1" />
+    <link rel="stylesheet" href="./styles/views.css?v=20260811-v1423-batch-video-editor-1" />
     <link rel="stylesheet" href="./styles/analytics.css?v=20260711-v70" />
-    <link rel="stylesheet" href="./styles/agent.css?v=20260810-v1420-generation-resilience-1" />
-    <link rel="stylesheet" href="./styles/ui-motion.css?v=20260810-v1420-generation-resilience-1" />
-    <link rel="stylesheet" href="./styles/custom-creation.css?v=20260810-v1420-generation-resilience-1" />
+    <link rel="stylesheet" href="./styles/agent.css?v=20260811-v1423-batch-video-editor-1" />
+    <link rel="stylesheet" href="./styles/ui-motion.css?v=20260811-v1423-batch-video-editor-1" />
+    <link rel="stylesheet" href="./styles/custom-creation.css?v=20260811-v1423-batch-video-editor-1" />
     <link rel="stylesheet" href="./styles/client-download.css?v=20260727-v119-4" />
     <script>
       (function () {
@@ -35,7 +35,7 @@
         <section class="lg-visual" aria-label="星阵创作平台">
           <canvas class="lg-beams" id="lgBeams" aria-hidden="true"></canvas>
           <div class="lg-visual-shade" aria-hidden="true"></div>
-          <img class="lg-visual-logo" src="./assets/brand/starmatrix-mascot-blue-transparent.png?v=20260810-v1420-generation-resilience-1" alt="星阵" />
+          <img class="lg-visual-logo" src="./assets/brand/starmatrix-mascot-blue-transparent.png?v=20260811-v1423-batch-video-editor-1" alt="星阵" />
           <div class="lg-visual-copy">
             <span>创作 · 管理 · 交付</span>
             <h2>让灵感成为<br />可交付的作品</h2>
@@ -105,33 +105,47 @@
     <div class="app-shell">
       <nav class="nav-rail">
         <div class="rail-logo" id="railBrand" title="星阵"></div>
-        <div class="rail-items">
-          <button class="rail-item" data-nav="overview" title="首页">
-            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M3 10l9-7 9 7v10a1 1 0 01-1 1h-5v-7h-6v7H4a1 1 0 01-1-1V10z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <button class="workspace-context-expand" id="workspaceContextExpand" type="button" title="展开左侧栏目" aria-label="展开左侧栏目">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="rail-items" id="collapsedRailItems">
+          <button class="rail-item" data-nav="home" data-nav-key="home" title="首页">
+            <svg viewBox="0 0 24 24" width="19" height="19"><rect x="3" y="3" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="14" y="3" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="3" y="14" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="14" y="14" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
             <span>首页</span>
           </button>
-          <button class="rail-item accent" data-nav="agent" title="批量创作">
-            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M12 2l2.1 5.6L20 10l-5.9 2.4L12 18l-2.1-5.6L4 10l5.9-2.4L12 2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M18.5 15.5l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9.9-2.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
-            <span>批量创作</span>
+          <button class="rail-item" data-nav="custom" data-page="video" data-nav-key="custom-video" title="视频工坊">
+            <svg viewBox="0 0 24 24" width="19" height="19"><rect x="3" y="5" width="14" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M17 10l4-2v8l-4-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+            <span>视频工坊</span>
           </button>
-          <button class="rail-item" data-nav="studio" title="单号创作">
-            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M4 6h11v12H4z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M15 10l5-3v10l-5-3z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+          <button class="rail-item" data-nav="custom" data-page="canvas" data-nav-key="custom-canvas" title="无限画布">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M12 2l9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 17l9 5 9-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>无限画布</span>
+          </button>
+          <button class="rail-item" data-nav="studio" data-nav-key="studio" title="单号创作">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M4 5h16v14H4zM8 9h8M8 13h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <span>单号创作</span>
           </button>
-          <button class="rail-item" data-nav="custom" title="定制创作">
-            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M12 2l9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 17l9 5 9-5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span>定制创作</span>
+          <button class="rail-item accent" data-nav="agent" data-nav-key="agent" title="批量生产">
+            <svg viewBox="0 0 24 24" width="19" height="19"><path d="M12 2l2.1 5.6L20 10l-5.9 2.4L12 18l-2.1-5.6L4 10l5.9-2.4L12 2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M18.5 15.5l.9 2.3 2.3.9-2.3.9-.9 2.3-.9-2.3-2.3-.9 2.3-.9.9-2.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+            <span>批量生产</span>
           </button>
-          <button class="rail-item" data-nav="assets" title="整体资产">
+          <button class="rail-item" data-nav="assets" data-nav-key="assets" title="整体资产">
             <svg viewBox="0 0 24 24" width="19" height="19"><path d="M3 7a2 2 0 012-2h4l2 2h9a1 1 0 011 1v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             <span>整体资产</span>
           </button>
-          <button class="rail-item" data-nav="delivery" title="发布清单">
+          <button class="rail-item" data-nav="delivery" data-nav-key="delivery" title="发布清单">
             <svg viewBox="0 0 24 24" width="19" height="19"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M3.3 8.3L12 13l8.7-4.7M12 13v8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
             <span>发布清单</span>
           </button>
+          <button class="rail-item" data-nav="overview" data-nav-key="overview" title="账号数据">
+            <svg viewBox="0 0 24 24" width="19" height="19"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 10v6M12 7h.01" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>
+            <span>账号数据</span>
+          </button>
         </div>
         <div class="rail-bottom">
+          <button class="rail-profile" id="railProfile" data-nav="settings" type="button" title="我的" aria-label="打开我的账号">
+            <span class="rail-profile-avatar" id="railProfileAvatar"><span>我</span></span>
+          </button>
           <div class="client-rail-entry" id="clientRailEntry">
             <button class="rail-item" id="clientRailButton" type="button" title="下载客户端" aria-haspopup="dialog" aria-expanded="false">
               <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="M4 4h16v11H4zM8 20h8M12 15v5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 7v5m0 0l-2-2m2 2l2-2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -208,6 +222,6 @@
         }, 7000);
       })();
     </script>
-    <script type="module" src="./js/main.js?v=20260810-v1420-generation-resilience-1"></script>
+    <script type="module" src="./js/main.js?v=20260811-v1423-batch-video-editor-1"></script>
   </body>
 </html>

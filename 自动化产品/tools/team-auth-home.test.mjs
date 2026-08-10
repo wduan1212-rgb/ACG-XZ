@@ -44,7 +44,7 @@ test("personal entry routes to the new home while suppliers retain their current
   ]);
   assert.match(routerJs, /location\.hash \|\| "#\/home"/);
   assert.match(mainJs, /supplierRole \? "overview" : "home"/);
-  assert.match(mainJs, /parent \? "首页" : "数据看板"/);
+  assert.match(mainJs, /parent \? "首页" : "账号数据"/);
   assert.match(mainJs, /zone === "home" && !supplier/);
 });
 
@@ -98,7 +98,7 @@ test("team removal preserves the account as Free and ACG managers can disable cr
   assert.match(storePy, /UPDATE members SET role='user'/);
   assert.match(mainPy, /\/api\/platform\/accounts\/\{mid\}\/status/);
   assert.match(mainPy, /member_account_disabled/);
-  assert.match(settingsJs, /全部创作端账号/);
+  assert.doesNotMatch(settingsJs, /全部创作端账号/);
   assert.match(settingsJs, /停用账号/);
 });
 
@@ -397,7 +397,7 @@ test("all runtime modules share the v141 cache identity", async () => {
     read("index.html"),
     read("js/main.js"),
   ]);
-  assert.match(indexHtml, /20260810-v1420-generation-resilience-1/);
-  assert.match(mainJs, /APP_BUILD_ID = "20260810-v1420-generation-resilience-1"/);
+  assert.match(indexHtml, /20260811-v1423-batch-video-editor-1/);
+  assert.match(mainJs, /APP_BUILD_ID = "20260811-v1423-batch-video-editor-1"/);
   assert.doesNotMatch(indexHtml + mainJs, /20260729-v121-shell-22|20260729-v122-shell-1/);
 });

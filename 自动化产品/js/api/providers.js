@@ -18,7 +18,11 @@ import { ACCOUNT_PROFILE_SEED } from "../data/accountProfilesSeed.js";
 
 const registry = new Map();
 const imageRuns = new Map();
-const serverVideo = { checked: false, failed: false, configured: false, reachable: true, provider: "", model: "", error: "" };
+const serverVideo = {
+  checked: false, failed: false, configured: false, reachable: true,
+  provider: "", model: "", creativeModel: "", creativeConfigured: false,
+  creativeMaxDuration: 30, error: ""
+};
 const serverImage = {
   checked: false,
   failed: false,
@@ -445,6 +449,9 @@ export async function refreshProviderStatus() {
     reachable: true,
     provider: "",
     model: "",
+    creativeModel: "",
+    creativeConfigured: false,
+    creativeMaxDuration: 30,
     error: ""
   });
   const load = async (url, target, unavailable) => {
@@ -456,6 +463,9 @@ export async function refreshProviderStatus() {
       if ("reachable" in data) target.reachable = data.reachable !== false;
       target.provider = data.provider || "";
       target.model = data.model || "";
+      target.creativeModel = data.creativeModel || "";
+      target.creativeConfigured = data.creativeConfigured === true;
+      target.creativeMaxDuration = Number(data.creativeMaxDuration || 30);
       target.mode = data.mode || target.mode || "";
       if ("referenceReceipt" in data) target.referenceReceipt = data.referenceReceipt === true;
       target.voiceId = data.voiceId || target.voiceId || "";
@@ -586,8 +596,8 @@ registerProvider({
   id: "seedance-video",
   kind: "video",
   label: "Seedance",
-  capabilities: { ratios: ["9:16", "16:9"], maxDuration: 15, refImages: true, characterLock: true },
-  async submit({ prompt, refs, ratio, duration, generateAudio, model }) {
+  capabilities: { ratios: ["9:16", "16:9"], maxDuration: 30, refImages: true, characterLock: true },
+  async submit({ prompt, refs, ratio, duration, generateAudio, model, creative = false }) {
     const operationKey = globalThis.crypto?.randomUUID?.()
       || `video-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const cleanRefs = [];
@@ -608,7 +618,7 @@ registerProvider({
           "Content-Type": "application/json",
           "Idempotency-Key": operationKey
         }),
-        body: JSON.stringify({ prompt, refs: cleanRefs, ratio, duration: duration || 15, generateAudio, model: model || "" })
+        body: JSON.stringify({ prompt, refs: cleanRefs, ratio, duration: duration || (creative ? 30 : 15), generateAudio, model: model || "", creative: creative === true })
       });
     } catch (e) {
       throw new Error("连不上本地服务端 /api/video/submit —— 请确认用 start-shared.command（python 服务端）打开、且改完后已重启它（" + (e.message || e) + "）");
@@ -706,7 +716,15 @@ registerProvider({
     try {
       ({ data } = await postJsonWithFallback("/api/image/generate", body));
     } catch (error) {
-      if (error?.outcomeUnknown || Number(error?.status || 0) === 409) {
+      const providerResultUnknown = error?.outcomeUnknown
+        || error?.code === "IMAGE_PROVIDER_RESULT_UNKNOWN"
+        || Number(error?.status || 0) === 409
+        || (
+          error?.providerCalled === true
+          && error?.retryable === true
+          && [502, 503, 504].includes(Number(error?.status || 0))
+        );
+      if (providerResultUnknown) {
         let reconciliation = null;
         try { reconciliation = await imageOperationStatus(ref); } catch (_) {}
         const deferred = new Error(

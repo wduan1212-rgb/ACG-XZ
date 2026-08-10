@@ -8,16 +8,16 @@ import { $, $$, esc, gradFor, copyText, fileToDataUrl, wireDropZone, fmtTC, uid 
 import { sanitizeXhsText } from "../core/xhsGuard.js";
 import { icon } from "../ui/icons.js";
 import { state, save, persistNow, on, accountById, productById, primaryProductById, primaryProducts } from "../core/store.js";
-import { AI } from "../api/ai.js?v=20260810-v1420-generation-resilience-1";
+import { AI } from "../api/ai.js?v=20260811-v1423-batch-video-editor-1";
 import { activeProviderFor, defaultTtsVoiceId, findKnownTtsVoice, imageApiConfigured, lookupTtsVoice, providerKeyFor, synthesizeTts, ttsApiConfigured, ttsVoicePresets } from "../api/providers.js";
-import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial, enforceSupportedVideoMode } from "../domain/productions.js?v=20260810-v1420-generation-resilience-1";
+import { estimateAudio, setStage, setStatus, jobsOf, rebindUnitClip, autoAssemble, buildMaterialUnits, materialUnits, unitShots, isMaterial, enforceSupportedVideoMode } from "../domain/productions.js?v=20260811-v1423-batch-video-editor-1";
 import { urlFor, addAssetFromDataUrl, addAssetFromFile, removeAsset, thumbHtml } from "../domain/assets.js";
 import { polishImageForPublish as polishPublishImage } from "../domain/imagePolish.js";
-import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260810-v1420-generation-resilience-1";
-import { toast, withLoading, openLightbox } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
+import { createUnitVideoJobs } from "../agent/orchestrator.js?v=20260811-v1423-batch-video-editor-1";
+import { toast, withLoading, openLightbox } from "../ui/components.js?v=20260811-v1423-batch-video-editor-1";
 import { go, currentRoute } from "../core/router.js";
 import * as remote from "../core/remote.js";
-import { stepperHtml, wireStepper } from "./studio.js?v=20260810-v1420-generation-resilience-1";
+import { stepperHtml, wireStepper } from "./studio.js?v=20260811-v1423-batch-video-editor-1";
 import { productionAssets as accAssets } from "../domain/accounts.js";
 import { favoriteVoiceIds as sharedFavoriteVoiceIds, setFavoriteVoice, voicePickerGroups } from "../domain/voices.js";
 import {
@@ -1202,9 +1202,9 @@ export function renderWorkshopPage(root, p) {
                   <b>${icon("fileText", 13)} 创作主题 / 发布文案</b>
                   <em>主题、发布文案和封面统一在这里定稿；封面跟随标题与正文生成</em>
                 </div>` : ""}
-                ${customCopyMode ? "" : `<div class="input-with-action"><input class="input" id="wsTopic" value="${esc(p.topic || "")}" placeholder="详细写创作主题，例如：AI工作流提效、Skill速通、资料整理对比" /><button class="icon-btn sm" id="wsDice" title="随机创作内容">${icon("dice", 13)}</button></div>`}
+                ${customCopyMode ? "" : `<div class="input-with-action"><input class="input" id="wsTopic" value="${esc(p.topic || "")}" placeholder="详细写创作主题，例如：AI工作流提效、Skill速通、资料整理对比" /><button class="icon-btn sm" id="wsDice" title="${A.materialMode === "creativeVideo" ? "创意视频选题请回批量生产修改" : "随机创作内容"}" ${A.materialMode === "creativeVideo" ? "disabled" : ""}>${icon("dice", 13)}</button></div>`}
                 <div class="ws-topic-actions">
-                  <button class="btn gen sm" id="wsBriefGenerate">${icon("spark", 13)} 一键生成</button>
+                  <button class="btn gen sm" ${A.materialMode === "creativeVideo" ? "data-creative-video-submit" : 'id="wsBriefGenerate"'}>${icon("spark", 13)} ${A.materialMode === "creativeVideo" ? "生成创意视频" : "一键生成"}</button>
                   <button class="btn primary button-anthe" id="wsNext"><span>下一步：智能混剪 ${icon("arrowRight", 14)}</span></button>
                 </div>
               </div>
@@ -1317,6 +1317,7 @@ export function renderWorkshopPage(root, p) {
   };
 
   function infoFlowPanel(infoFlow, sceneRefs = [], referenceAudio = null) {
+    if (A.materialMode === "creativeVideo") return creativeVideoPanel(sceneRefs);
     const segs = (infoFlow.segments || []).length
       ? infoFlow.segments
       : [
@@ -1420,6 +1421,49 @@ export function renderWorkshopPage(root, p) {
           <em>${videoState[2]}</em>
         </div>
       </div>` : ""}
+    </div>`;
+  }
+
+  function creativeVideoPanel(sceneRefs = []) {
+    const creative = A.creativeVideo || {};
+    const storyboards = Array.isArray(creative.storyboards) ? creative.storyboards : [];
+    const unit = materialUnits(p)[0];
+    const job = jobOfUnit(0);
+    const busy = ["queued", "submitted", "running"].includes(job?.status || "");
+    const done = job?.status === "succeeded";
+    const failed = job?.status === "failed";
+    const videoUrl = done ? outputUrl(job?.output) : "";
+    return `<div class="infoflow-panel card creative-video-panel" id="wsCreativeVideo">
+      <div class="infoflow-head">
+        <div>
+          <b>${icon("film", 14)} 创意视频 · 30 秒</b>
+          <em>故事版由与无限画布相同的 image-2 图片通道生成，再与完整口播和视频提示词一起提交 Seedance 2.5 音画同出。</em>
+        </div>
+        <button class="btn gen sm" data-creative-video-submit ${busy || !unit?.videoPrompt ? "disabled" : ""}>${busy ? "生成中…" : done ? "重新生成" : failed ? "重试生成" : "生成创意视频"}</button>
+      </div>
+      ${creative.error ? `<div class="sc-error">${esc(creative.error)}</div>` : ""}
+      <div class="creative-storyboard-strip">
+        ${storyboards.map((scene, index) => {
+          const asset = scene.assetId ? assetById(scene.assetId) : null;
+          return `<div class="creative-storyboard-card ${scene.status || "idle"}">
+            <b>${String(index + 1).padStart(2, "0")} · ${esc(scene.start)}-${esc(scene.end)}s</b>
+            ${asset ? thumbHtml(asset) : `<div class="if-video-placeholder">${icon(scene.status === "failed" ? "alert" : "image", 18)}<em>${esc(scene.error || "等待故事版")}</em></div>`}
+            <span>${esc(scene.title || `分镜${index + 1}`)}</span>
+          </div>`;
+        }).join("") || `<div class="empty-state slim"><b>故事版尚未准备</b><p>请回到批量生产重新启动这条创意视频任务。</p></div>`}
+      </div>
+      <div class="if-segment-editor creative-video-editor" data-ws="0">
+        <textarea class="input" rows="12" data-creative-prompt placeholder="30 秒创意视频提示词">${esc(unit?.videoPrompt || creative.videoPrompt || "")}</textarea>
+        <div class="if-segment-media ${busy ? "running" : done ? "done" : failed ? "failed" : ""}">
+          ${videoUrl
+            ? `<div class="if-video-frame has-video"><video src="${esc(videoUrl)}" controls playsinline preload="metadata"></video></div>`
+            : `<div class="if-video-placeholder">${busy ? `<span class="if-video-pulse"></span>` : icon(failed ? "alert" : "film", 22)}<b>30s 创意成片</b><em>${failed ? esc(job?.error || "生成失败") : busy ? `正在生成 · ${Math.max(1, Math.round(job?.progress || 1))}%` : "等待生成"}</em></div>`}
+        </div>
+      </div>
+      <div class="infoflow-ref-row">
+        <div><b>${icon("star", 13)} 已使用视觉参考</b><em>故事版优先，其次是本次任务上传的参考图。</em></div>
+        <div class="refbar-chip">${sceneRefs.map(asset => `<span class="ref-chip">${thumbHtml(asset)}<span>${esc(asset.name)}</span></span>`).join("") || `<span class="muted">纯文本故事版</span>`}</div>
+      </div>
     </div>`;
   }
 
@@ -2086,6 +2130,27 @@ export function renderWorkshopPage(root, p) {
       save("productions");
       toast(AI.sourceNote("已从四方向库随机生成视频选题"));
     }, "随机中…"));
+    const syncCreativePrompt = () => {
+      if (A.materialMode !== "creativeVideo") return;
+      const value = ($("[data-creative-prompt]", root)?.value || A.creativeVideo?.videoPrompt || "").trim();
+      if (!value) return;
+      A.creativeVideo.videoPrompt = value;
+      const unit = materialUnits(p)[0];
+      if (unit) unit.videoPrompt = value;
+      touchProduction(p, A.creativeVideo);
+      save("productions");
+    };
+    $("[data-creative-prompt]", root)?.addEventListener("blur", syncCreativePrompt);
+    $$('[data-creative-video-submit]', root).forEach(button => button.addEventListener("click", e => withLoading(e.currentTarget, async () => {
+      syncCreativePrompt();
+      const unit = materialUnits(p)[0];
+      if (!unit?.videoPrompt) throw new Error("创意视频提示词尚未准备完成");
+      const n = createUnitVideoJobs(p, 0);
+      if (n) setStatus(p, "running");
+      save("productions");
+      toast(n ? "30 秒创意视频已提交" : "当前创意视频已经在队列中");
+      draw();
+    }, "提交中…")));
     $("#wsBriefGenerate", root)?.addEventListener("click", e => withLoading(e.currentTarget, async () => {
       const title = ($("#wsCopyTitle", root)?.value || "").trim();
       if (!title) {

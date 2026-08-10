@@ -254,6 +254,80 @@ class CustomCanvasDraftPersistenceTest(unittest.TestCase):
                     "creator-a", saved["contentHash"]
                 )[0])
 
+    def test_historical_missing_reference_defers_gc_without_blocking_canvas_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            created, error, outcome = store.save_custom_canvas_draft(
+                "creator-a",
+                "canvas-history-gap",
+                draft_payload("canvas-history-gap", updated_at=100),
+            )
+            self.assertIsNone(error)
+            self.assertEqual("created", outcome)
+
+            updated = draft_payload(
+                "canvas-history-gap",
+                updated_at=101,
+                base_revision=created["project"]["revision"],
+            )
+            updated["messages"].append({
+                "id": "message-2",
+                "role": "user",
+                "text": "历史缺失媒体不能阻断正常编辑",
+                "createdAt": 101,
+            })
+            with patch.object(
+                store,
+                "_custom_canvas_gc_blobs_locked",
+                side_effect=ValueError("custom_canvas_community_reference_blob_missing"),
+            ):
+                saved, error, outcome = store.save_custom_canvas_draft(
+                    "creator-a", "canvas-history-gap", updated,
+                )
+
+            self.assertIsNone(error)
+            self.assertEqual("updated", outcome)
+            self.assertEqual(2, saved["project"]["revision"])
+            self.assertEqual(2, len(saved["state"]["messages"]))
+            with store._connect(read_only=True) as conn:
+                self.assertEqual(
+                    1,
+                    conn.execute(
+                        "SELECT COUNT(*) FROM custom_canvas_blobs WHERE owner_id=?",
+                        ("creator-a",),
+                    ).fetchone()[0],
+                )
+
+    def test_non_historical_gc_error_still_rolls_back_canvas_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            created, _, _ = store.save_custom_canvas_draft(
+                "creator-a",
+                "canvas-corrupt-state",
+                draft_payload("canvas-corrupt-state", updated_at=100),
+            )
+            updated = draft_payload(
+                "canvas-corrupt-state",
+                updated_at=101,
+                base_revision=created["project"]["revision"],
+            )
+            updated["project"]["name"] = "不能越过损坏状态"
+            with patch.object(
+                store,
+                "_custom_canvas_gc_blobs_locked",
+                side_effect=ValueError("invalid_custom_canvas_stored_state"),
+            ), self.assertRaisesRegex(ValueError, "invalid_custom_canvas_stored_state"):
+                store.save_custom_canvas_draft(
+                    "creator-a", "canvas-corrupt-state", updated,
+                )
+
+            current, error = store.get_custom_canvas_draft(
+                "creator-a", "canvas-corrupt-state",
+            )
+            self.assertIsNone(error)
+            self.assertEqual(1, current["project"]["revision"])
+            self.assertEqual("权威画布草稿", current["project"]["name"])
+
     def test_gc_removes_only_truly_unreferenced_blob(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_canvas_store(tmp)
@@ -861,6 +935,39 @@ class CustomCanvasDraftPersistenceTest(unittest.TestCase):
             )
             self.assertIsNone(result)
             self.assertEqual(error, "server_newer")
+
+    def test_lost_response_retry_with_same_canvas_does_not_create_false_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_canvas_store(tmp)
+            created, error, outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", draft_payload(updated_at=100)
+            )
+            self.assertIsNone(error)
+            self.assertEqual(outcome, "created")
+
+            retry = draft_payload(updated_at=900, base_revision=0)
+            retry["project"]["sourceId"] = "canvas-local-1"
+            retry["project"]["sourceProjectId"] = "canvas-local-1"
+            retry["project"]["appVersion"] = "new-static-build"
+            unchanged, retry_error, retry_outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", retry
+            )
+
+            self.assertIsNone(retry_error)
+            self.assertEqual(retry_outcome, "unchanged")
+            self.assertEqual(unchanged["project"]["revision"], created["project"]["revision"])
+
+            changed = draft_payload(
+                updated_at=901,
+                base_revision=0,
+                messages=[{"id": "new", "role": "user", "text": "真正的新编辑", "createdAt": 901}],
+            )
+            result, changed_error, changed_outcome = store.save_custom_canvas_draft(
+                "creator-a", "canvas-local-1", changed
+            )
+            self.assertIsNone(result)
+            self.assertEqual(changed_error, "conflict")
+            self.assertEqual(changed_outcome, "conflict")
 
     def test_nonempty_migration_fills_empty_server_shell(self):
         with tempfile.TemporaryDirectory() as tmp:

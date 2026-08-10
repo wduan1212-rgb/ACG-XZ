@@ -245,30 +245,13 @@ export async function mountCustomCanvas(
   let iframeReady = false;
   let canvasAppReady = false;
   let canvasBootstrap = null;
-  let canvasContextTools = null;
-  let canvasContextPortal = null;
-  let canvasContextShell = null;
-  let canvasContextInstallFrame = 0;
-  let canvasContextInstallAttempts = 0;
   let messageListenerInstalled = false;
   let createProjectWhenReady = false;
   let pendingLaunchPayload = launchPayload && typeof launchPayload === "object" ? launchPayload : null;
   let pendingLaunchSent = false;
-  let canvasContextCollapseButton = null;
-  let canvasContextRestoreButton = null;
-  let canvasContextCollapseStyle = null;
-  let canvasContextCollapsed = false;
-  let canvasContextRouteActive = true;
-  let canvasRouteListenerInstalled = false;
   const projectIndexWaits = new Set();
   const announcedProjectIds = new Set();
   let removeCanvasRouteGuard = () => {};
-  const canvasContextToken = (
-    globalThis.crypto?.randomUUID?.()
-    || `${Date.now()}-${Math.random().toString(36).slice(2)}`
-  ).replace(/[^A-Za-z0-9_-]/g, "");
-  const canvasContextPortalId = `canvasContextPortal_${canvasContextToken}`.slice(0, 80);
-  const canvasContextPortalNonce = `canvasPortal_${canvasContextToken}`.slice(0, 96);
   const normalizedLaunchPayload = payload => {
     if (!payload || typeof payload !== "object") return null;
     return {
@@ -381,259 +364,18 @@ export async function mountCustomCanvas(
     return false;
   };
 
-  const setCanvasContextCollapsed = collapsed => {
-    canvasContextCollapsed = Boolean(collapsed);
-    document.body.classList.toggle(
-      "canvas-context-collapsed",
-      canvasContextRouteActive && canvasContextCollapsed,
-    );
-    canvasContextCollapseButton?.setAttribute("aria-expanded", canvasContextCollapsed ? "false" : "true");
-    canvasContextCollapseButton?.setAttribute(
-      "aria-label",
-      canvasContextCollapsed ? "展开画布项目栏" : "折叠画布项目栏",
-    );
-    if (canvasContextCollapseButton) canvasContextCollapseButton.hidden = !canvasContextRouteActive;
-    if (canvasContextRestoreButton) {
-      canvasContextRestoreButton.hidden = !canvasContextRouteActive || !canvasContextCollapsed;
-    }
-    if (canvasContextTools) canvasContextTools.hidden = !canvasContextRouteActive;
-    if (!canvasContextRouteActive) return;
-    if (canvasContextTools?.isConnected) {
-      if (canvasContextCollapsed) {
-        canvasContextTools.classList.add("is-detached");
-        document.body.append(canvasContextTools);
-      } else {
-        canvasContextTools.classList.remove("is-detached");
-        const activeShell = canvasContextShell?.isConnected
-          ? canvasContextShell
-          : document.querySelector("#ctxPanel .workspace-context-shell");
-        if (activeShell) canvasContextShell = activeShell;
-        const footer = activeShell
-          ? Array.from(activeShell.children).find(child => child.classList.contains("workspace-account-footer"))
-          : null;
-        if (activeShell && footer?.parentElement === activeShell) {
-          activeShell.insertBefore(canvasContextTools, footer);
-          activeShell.classList.add("has-canvas-context-tools");
-        }
-      }
-    }
-    try {
-      sessionStorage.setItem("xingzhen.canvasContextCollapsed.v1", canvasContextCollapsed ? "1" : "0");
-    } catch (_) {}
-  };
-
-  const syncCanvasContextRoute = detail => {
-    const routeIsCanvas = detail && typeof detail === "object"
-      ? detail.zone === "custom" && detail.page === "canvas"
-      : /^#\/custom\/canvas(?:\/|$)/.test(window.location.hash || "");
-    canvasContextRouteActive = Boolean(routeIsCanvas);
-    if (!canvasContextRouteActive) {
-      document.body.classList.remove("canvas-context-collapsed");
-      canvasContextShell?.classList.remove("has-canvas-context-tools");
-      if (canvasContextCollapseButton) canvasContextCollapseButton.hidden = true;
-      if (canvasContextRestoreButton) canvasContextRestoreButton.hidden = true;
-      if (canvasContextTools) canvasContextTools.hidden = true;
-      return;
-    }
-    let storedCollapsed = canvasContextCollapsed;
-    try { storedCollapsed = sessionStorage.getItem("xingzhen.canvasContextCollapsed.v1") === "1"; } catch (_) {}
-    setCanvasContextCollapsed(storedCollapsed);
-  };
-
-  const onCanvasViewRendered = event => syncCanvasContextRoute(event?.detail);
-  window.addEventListener("view:rendered", onCanvasViewRendered);
-  canvasRouteListenerInstalled = true;
-
-  const removeCanvasContextCollapseControls = () => {
-    document.body.classList.remove("canvas-context-collapsed");
-    canvasContextCollapseButton?.remove();
-    canvasContextCollapseButton = null;
-    canvasContextRestoreButton?.remove();
-    canvasContextRestoreButton = null;
-    canvasContextCollapseStyle?.remove();
-    canvasContextCollapseStyle = null;
-    canvasContextCollapsed = false;
-  };
-
-  const installCanvasContextCollapseControls = () => {
-    const shell = canvasContextShell?.isConnected
-      ? canvasContextShell
-      : document.querySelector("#ctxPanel .workspace-context-shell");
-    const header = shell?.querySelector(".workspace-context-brand");
-    if (!shell || !header) return false;
-    if (!canvasContextCollapseStyle) {
-      const style = document.createElement("style");
-      style.dataset.canvasContextCollapseStyle = canvasContextToken;
-      style.textContent = `
-        .canvas-context-collapse-toggle,
-        .canvas-context-collapse-restore {
-          width: 30px;
-          height: 30px;
-          display: grid;
-          place-items: center;
-          border: 0;
-          border-radius: 9px;
-          color: #696963;
-          background: transparent;
-          cursor: pointer;
-          transition: color 160ms ease, background 160ms ease, transform 160ms ease;
-        }
-        .canvas-context-collapse-toggle:hover,
-        .canvas-context-collapse-toggle:focus-visible,
-        .canvas-context-collapse-restore:hover,
-        .canvas-context-collapse-restore:focus-visible {
-          outline: 0;
-          color: #1769d2;
-          background: #edf5ff;
-          transform: translateY(-1px);
-        }
-        .canvas-context-collapse-restore {
-          position: fixed;
-          left: 14px;
-          top: 14px;
-          z-index: 96;
-          border: 1px solid rgba(32, 91, 169, .16);
-          background: rgba(255,255,255,.94);
-          box-shadow: 0 8px 24px rgba(24, 62, 112, .12);
-          backdrop-filter: blur(12px);
-        }
-        body.workspace-shell-v2.canvas-context-collapsed .app-shell,
-        body.workspace-shell-v2.canvas-context-collapsed.has-panel .app-shell {
-          grid-template-columns: 0 minmax(0, 1fr) !important;
-        }
-        body.workspace-shell-v2.canvas-context-collapsed #ctxPanel {
-          width: 0 !important;
-          min-width: 0 !important;
-          border-right: 0 !important;
-          overflow: visible !important;
-        }
-        body.workspace-shell-v2.canvas-context-collapsed #ctxPanel > .workspace-context-shell {
-          display: none !important;
-        }
-        .canvas-context-tools.is-detached {
-          position: fixed;
-          left: 12px;
-          bottom: 12px;
-          z-index: 94;
-          width: 224px;
-          margin: 0;
-          padding: 10px;
-          border: 1px solid rgba(28, 79, 145, .13);
-          border-radius: 14px;
-          background: rgba(255,255,255,.94);
-          box-shadow: 0 14px 34px rgba(20, 55, 105, .14);
-          backdrop-filter: blur(14px);
-        }
-        .canvas-context-tools.is-detached > span { display: none; }
-        .canvas-context-tools.is-detached .canvas-context-portal { min-height: 154px; }
-      `;
-      document.head.append(style);
-      canvasContextCollapseStyle = style;
-    }
-    if (!canvasContextCollapseButton?.isConnected) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "canvas-context-collapse-toggle";
-      button.setAttribute("aria-expanded", "true");
-      button.setAttribute("aria-label", "折叠画布项目栏");
-      button.title = "折叠画布项目栏";
-      button.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M14.5 6.5 9 12l5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-      button.addEventListener("click", () => setCanvasContextCollapsed(true));
-      header.append(button);
-      canvasContextCollapseButton = button;
-    }
-    if (!canvasContextRestoreButton?.isConnected) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "canvas-context-collapse-restore";
-      button.setAttribute("aria-label", "展开画布项目栏");
-      button.title = "展开画布项目栏";
-      button.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="m9.5 6.5 5.5 5.5-5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-      button.hidden = true;
-      button.addEventListener("click", () => setCanvasContextCollapsed(false));
-      document.body.append(button);
-      canvasContextRestoreButton = button;
-    }
-    let storedCollapsed = false;
-    try { storedCollapsed = sessionStorage.getItem("xingzhen.canvasContextCollapsed.v1") === "1"; } catch (_) {}
-    setCanvasContextCollapsed(storedCollapsed);
-    return true;
-  };
-
-  const removeCanvasContextTools = () => {
-    window.cancelAnimationFrame(canvasContextInstallFrame);
-    canvasContextInstallFrame = 0;
-    canvasContextInstallAttempts = 0;
-    canvasContextPortal?.replaceChildren();
-    canvasContextPortal = null;
-    canvasContextTools?.remove();
-    canvasContextTools = null;
-    canvasContextShell?.classList.remove("has-canvas-context-tools");
-    canvasContextShell = null;
-  };
-
-  const installCanvasContextTools = () => {
-    if (
-      canvasContextTools?.isConnected
-      && canvasContextPortal?.isConnected
-      && canvasContextPortal.id === canvasContextPortalId
-    ) {
-      syncCanvasContextRoute();
-      installCanvasContextCollapseControls();
-      return true;
-    }
-    if (!document.body.classList.contains("workspace-shell-v2")) return false;
-    const shell = document.querySelector("#ctxPanel .workspace-context-shell");
-    const footer = shell
-      ? Array.from(shell.children).find(child => child.classList.contains("workspace-account-footer"))
-      : null;
-    if (!shell || !footer || footer.parentElement !== shell) {
-      canvasContextInstallAttempts += 1;
-      if (!disposed && canvasContextInstallAttempts < 180) {
-        canvasContextInstallFrame = window.requestAnimationFrame(installCanvasContextTools);
-      }
-      return false;
-    }
-    removeCanvasContextTools();
-    const dock = document.createElement("section");
-    dock.className = "canvas-context-tools";
-    dock.dataset.canvasContextTools = "true";
-    dock.setAttribute("aria-label", "画布小地图与视图控制");
-    dock.innerHTML = `
-      <span>画布小地图</span>
-      <div
-        class="canvas-context-portal"
-        id="${canvasContextPortalId}"
-        data-canvas-context-portal="${canvasContextPortalNonce}"
-        aria-label="当前画布小地图"
-      ></div>
-    `;
-    shell.insertBefore(dock, footer);
-    const isCanvasRoute = /^#\/custom\/canvas(?:\/|$)/.test(window.location.hash || "");
-    dock.hidden = !isCanvasRoute;
-    shell.classList.toggle("has-canvas-context-tools", isCanvasRoute);
-    canvasContextTools = dock;
-    canvasContextPortal = dock.querySelector(".canvas-context-portal");
-    canvasContextShell = shell;
-    canvasContextInstallAttempts = 0;
-    syncCanvasContextRoute();
-    installCanvasContextCollapseControls();
-    return true;
-  };
-
   const mountCanvasFrame = () => {
     if (disposed || !canvasBootstrap) return false;
     iframeReady = false;
     canvasAppReady = false;
     pendingLaunchSent = false;
-    installCanvasContextTools();
     iframe = document.createElement("iframe");
     iframe.title = "星阵无限画布";
     iframe.name = JSON.stringify(canvasBootstrap);
     // Cache-bust the iframe entry alongside the main application build. The
     // canvas itself continues to own hashed chunk URLs; this only prevents a
     // browser from reusing an old entry document after a safe static rebuild.
-    iframe.src = `/XZ-Design/?embed=1&v=20260810-v1420-generation-resilience-1${projectHash(currentProjectId)}`;
+    iframe.src = `/XZ-Design/?embed=1&v=20260811-v1423-batch-video-editor-1${projectHash(currentProjectId)}`;
     iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-downloads allow-forms allow-modals");
     iframe.setAttribute("allow", "clipboard-read; clipboard-write");
     iframe.referrerPolicy = "same-origin";
@@ -641,7 +383,6 @@ export async function mountCustomCanvas(
     iframe.addEventListener("load", () => {
       iframeReady = true;
       installCanvasRouteGuard();
-      installCanvasContextTools();
       if (pendingLaunchPayload) {
         try {
           iframe.contentWindow?.sessionStorage?.setItem(
@@ -670,13 +411,13 @@ export async function mountCustomCanvas(
     if (!iframe) return mountCanvasFrame();
     const nextHash = projectHash(nextProjectId);
     if (!iframeReady) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260810-v1420-generation-resilience-1${nextHash}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260811-v1423-batch-video-editor-1${nextHash}`;
       return true;
     }
     try {
       iframe.contentWindow.location.hash = nextHash.slice(1);
     } catch (_) {
-      iframe.src = `/XZ-Design/?embed=1&v=20260810-v1420-generation-resilience-1${nextHash}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260811-v1423-batch-video-editor-1${nextHash}`;
     }
     return true;
   };
@@ -701,11 +442,7 @@ export async function mountCustomCanvas(
     controller.abort();
     unsubscribeOutput();
     if (messageListenerInstalled) window.removeEventListener("message", onMessage);
-    if (canvasRouteListenerInstalled) window.removeEventListener("view:rendered", onCanvasViewRendered);
-    canvasRouteListenerInstalled = false;
     removeCanvasRouteGuard();
-    removeCanvasContextCollapseControls();
-    removeCanvasContextTools();
     iframe?.remove();
     delete host.dataset.customCanvasWorkspace;
     if (host.__customCanvasCleanup === cleanup) delete host.__customCanvasCleanup;
@@ -750,7 +487,7 @@ export async function mountCustomCanvas(
       iframeReady = false;
       canvasAppReady = false;
       pendingLaunchSent = false;
-      iframe.src = `/XZ-Design/?embed=1&v=20260810-v1420-generation-resilience-1${projectHash(currentProjectId)}`;
+      iframe.src = `/XZ-Design/?embed=1&v=20260811-v1423-batch-video-editor-1${projectHash(currentProjectId)}`;
       return true;
     },
     markPublished({
@@ -910,8 +647,6 @@ export async function mountCustomCanvas(
       kind: "xingzhen-canvas-bootstrap",
       storageNamespace,
       canPublish: Boolean(canPublish),
-      contextPortalId: canvasContextPortalId,
-      contextPortalNonce: canvasContextPortalNonce,
       publishedProjects: Array.isArray(config.publishedProjects)
         ? config.publishedProjects
         : []

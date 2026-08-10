@@ -99,6 +99,59 @@ test("workspace v2 removes the legacy black primary navigation rail", () => {
   );
 });
 
+test("workspace sidebar collapses to a white reversible icon rail with home and account data separated", () => {
+  assert.match(mainJs, /WORKSPACE_CONTEXT_COLLAPSED_KEY/);
+  assert.match(mainJs, /function setWorkspaceContextCollapsed\(collapsed\)/);
+  assert.match(mainJs, /id="workspaceContextCollapse"/);
+  assert.match(indexHtml, /id="workspaceContextExpand"/);
+  assert.match(indexHtml, /data-nav="home"[^>]*title="首页"/);
+  assert.match(indexHtml, /data-nav="overview"[^>]*title="账号数据"/);
+  assert.match(indexHtml, /data-nav="custom"[^>]*data-page="video"[^>]*data-nav-key="custom-video"[^>]*title="视频工坊"/);
+  assert.match(indexHtml, /data-nav="custom"[^>]*data-page="canvas"[^>]*data-nav-key="custom-canvas"[^>]*title="无限画布"/);
+  assert.match(indexHtml, /data-nav="studio"[^>]*data-nav-key="studio"[^>]*title="单号创作"/);
+  const collapsedRail = indexHtml.slice(indexHtml.indexOf('id="collapsedRailItems"'), indexHtml.indexOf('<div class="rail-bottom">'));
+  const collapsedKeys = ["home", "custom-video", "custom-canvas", "studio", "agent", "assets", "delivery", "overview"];
+  let collapsedCursor = -1;
+  for (const key of collapsedKeys) {
+    const next = collapsedRail.indexOf(`data-nav-key="${key}"`, collapsedCursor + 1);
+    assert.ok(next > collapsedCursor, `${key} should preserve the workspace switcher order`);
+    collapsedCursor = next;
+  }
+  assert.match(mainJs, /function syncCollapsedRailNavigation\(\)/);
+  assert.match(mainJs, /const items = workspaceNavItems\(\)/);
+  assert.match(mainJs, /button\.style\.order = String\(index\)/);
+  assert.match(mainJs, /openWorkspaceItem\(item\)/);
+  assert.match(indexHtml, /id="railProfile"[^>]*data-nav="settings"/);
+  assert.match(mainJs, /starmatrix-original-star\.png/);
+  assert.match(mainJs, /workspaceContextExpand[\s\S]*?setWorkspaceContextCollapsed\(false\)/);
+  assert.match(baseCss, /workspace-context-collapsed\s+\.nav-rail\s*\{[^}]*display:\s*flex\s*!important/s);
+  assert.match(baseCss, /workspace-context-collapsed\s+\.nav-rail\s*\{[^}]*background:\s*#fff\s*!important/s);
+  assert.match(baseCss, /workspace-context-collapsed[\s\S]*?grid-template-columns:\s*56px\s+minmax\(0,\s*1fr\)/);
+  assert.match(baseCss, /workspace-context-collapsed\s+\.rail-bottom\s*>\s*\.client-rail-entry[\s\S]*?display:\s*none\s*!important/);
+  assert.match(baseCss, /workspace-context-collapsed\s+\.rail-profile\s*\{[^}]*display:\s*grid/s);
+  assert.match(videoWorkshopHtml, /id="voiceWorkbenchToggle"/);
+  assert.match(videoWorkshopJs, /VIDEO_VOICE_RAIL_KEY/);
+  assert.match(videoWorkshopCss, /voice-rail-collapsed[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+48px/);
+});
+
+test("batch AI topics preview verified search results and project controls are guarded", () => {
+  assert.match(agentCardsJs, /data-act="plan-ai-topic"/);
+  assert.match(agentViewJs, /qianfanTopicIdeas\(/);
+  assert.match(agentViewJs, /填入空白行/);
+  assert.match(agentViewJs, /为全部所选账号生成候选内容/);
+  assert.doesNotMatch(agentViewJs, /按账号风格生成候选内容/);
+  assert.match(agentViewJs, /系统不会只填部分账号/);
+  assert.match(agentViewJs, /missingAccounts\.length\s*>\s*0/);
+  assert.match(agentViewJs, /data-batchpause/);
+  assert.match(agentViewJs, /再次确认永久删除/);
+  assert.match(agentOrchestratorJs, /export function setBatchPaused/);
+  assert.match(agentOrchestratorJs, /if \(!batch \|\| batch\.paused\) return 0/);
+  assert.match(remoteJs, /\/api\/qianfan\/topic-ideas/);
+  assert.doesNotMatch(settingsJs, /全部创作端账号/);
+  assert.match(settingsJs, /data-usage-days="7"/);
+  assert.match(settingsJs, /data-usage-days="30"/);
+});
+
 test("v120 is the only workspace shell and uses the release-list label", () => {
   const items = section(mainJs, "function workspaceNavItems()", "function workspaceCurrentItem()");
   assert.match(mainJs, /function workspaceShellEnabled\(\)\s*\{\s*return true;\s*\}/s);
@@ -126,12 +179,13 @@ test("supplier and creator settings share the centered symmetric gear icon", () 
   assert.match(mainJs, /label:\s*"设置"[^}]*icon:\s*"gear"/s);
 });
 
-test("single-account workspace lists every account group without a 40-account cap", () => {
+test("single-account workspace lists all publishing accounts without subtype groups or a 40-account cap", () => {
   const studioRows = section(mainJs, 'if (zone === "studio") {', 'if (zone === "agent") {');
   assert.doesNotMatch(studioRows, /\.slice\(\s*0\s*,\s*40\s*\)/);
   assert.match(studioRows, /title:\s*"图文组"/);
-  assert.match(studioRows, /title:\s*"真人数字人"/);
-  assert.match(studioRows, /title:\s*"素材无数字人"/);
+  assert.match(studioRows, /title:\s*"视频号"/);
+  assert.doesNotMatch(studioRows, /title:\s*"真人数字人"/);
+  assert.doesNotMatch(studioRows, /title:\s*"素材无数字人"/);
   assert.match(studioRows, /title:\s*"已停用账号"/);
   assert.match(studioRows, /\.filter\(isAccountDisabled\)/);
 });
@@ -244,6 +298,8 @@ test("workspace switcher folds voice generation into video workshop without gray
   assert.match(switcher, /<span><b>\$\{esc\(item\.label\)\}<\/b><\/span>/);
   assert.doesNotMatch(switcher, /workspaceItemHint\(item\)/);
   assert.doesNotMatch(switcher, /workspace-menu-kicker/);
+  assert.match(baseCss, /\.workspace-menu button > span\s*\{[^}]*white-space:\s*nowrap/s);
+  assert.match(baseCss, /\.workspace-menu b\s*\{[^}]*white-space:\s*nowrap/s);
 
   const commands = section(mainJs, "function paletteCommands()", "async function boot()");
   assert.match(commands, /\{\s*label:\s*"视频工坊 · 语音生成"[^}]*go\("custom",\s*"video"\)/s);
@@ -331,7 +387,7 @@ test("voice generation moves the real voice library into the unified left contex
   );
 });
 
-test("canvas embed avoids the legacy home and moves view controls into the context column", () => {
+test("canvas embed avoids the legacy home and keeps one platform rail with bottom-left view controls", () => {
   assert.doesNotMatch(canvasRootTsx, /HomeView/);
   assert.match(canvasRootTsx, /data-canvas-project-opening/);
   assert.match(canvasRootTsx, /正在打开画布/);
@@ -351,43 +407,29 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
   assert.match(canvasIntegrationJs, /if\s*\(!iframe\)\s*return\s+mountCanvasFrame\(\)/);
   assert.match(canvasIntegrationJs, /\{\s*type:\s*"custom-canvas:create-project"\s*\}/);
   assert.match(canvasIntegrationJs, /a\[href\$="#\/"\]/);
-  assert.match(canvasIntegrationJs, /contextPortalId:\s*canvasContextPortalId/);
-  assert.match(canvasIntegrationJs, /contextPortalNonce:\s*canvasContextPortalNonce/);
-  assert.match(canvasIntegrationJs, /class="canvas-context-portal"/);
-  assert.match(canvasIntegrationJs, /data-canvas-context-portal="\$\{canvasContextPortalNonce\}"/);
+  assert.doesNotMatch(canvasIntegrationJs, /contextPortalId/);
+  assert.doesNotMatch(canvasIntegrationJs, /contextPortalNonce/);
+  assert.doesNotMatch(canvasIntegrationJs, /class="canvas-context-portal"/);
   assert.doesNotMatch(canvasIntegrationJs, /data-canvas-control=/);
   assert.doesNotMatch(canvasIntegrationJs, /dataset\.platformCanvasControls/);
   assert.match(canvasIntegrationJs, /background:#fff/);
-  assert.match(canvasSourceTsx, /createPortal\(controls,\s*contextPortal\.target\)/);
-  assert.match(canvasSourceTsx, /data-canvas-viewport-controls=\{portaled\s*\?\s*"context"\s*:\s*"canvas"\}/);
+  assert.doesNotMatch(canvasSourceTsx, /createPortal/);
+  assert.match(canvasSourceTsx, /data-canvas-viewport-controls="canvas"/);
+  assert.match(canvasSourceTsx, /"absolute bottom-4 left-4"/);
   assert.match(canvasSourceTsx, /className="canvas-viewport-minimap/);
-  assert.match(canvasBridgeTs, /contextPortalId/);
-  assert.match(canvasBridgeTs, /contextPortalNonce/);
+  assert.doesNotMatch(canvasBridgeTs, /contextPortalId/);
+  assert.doesNotMatch(canvasBridgeTs, /contextPortalNonce/);
   assert.match(canvasBridgeTs, /bootstrap\.canPublish\s*===\s*true/);
   assert.match(canvasBridgeTs, /return\s*\{\s*canPublish:\s*false\s*\}/);
-  assert.match(
-    customCreationCss,
-    /\.workspace-context-shell\.has-canvas-context-tools\s*\{[^}]*grid-template-rows\s*:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s+auto\s*;/s,
-  );
-  assert.match(
-    customCreationCss,
-    /\.canvas-context-tools\s*\{[^}]*border-top\s*:\s*1px\s+solid\s+#ececea\s*;/s,
-  );
-  assert.match(
-    customCreationCss,
-    /\.canvas-context-portal\s+\.canvas-viewport-minimap\s*\{[^}]*width\s*:\s*196px\s*;[^}]*height\s*:\s*116px\s*;/s,
-  );
-  assert.match(
-    customCreationCss,
-    />\s*\.workspace-account-footer\s*\{[^}]*grid-row\s*:\s*4\s*;/s,
-  );
+  assert.doesNotMatch(customCreationCss, /has-canvas-context-tools/);
+  assert.doesNotMatch(customCreationCss, /canvas-context-portal/);
   const ownerSwitch = section(mainJs, "function renderWorkspaceContextPanel()", "if (zone === \"studio\"");
   assert.match(ownerSwitch, /canvasContextTools\.hidden\s*=\s*activeContextTool\s*!==\s*"canvas"/);
 });
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260810-v1420-generation-resilience-1/);
+  assert.match(videoWorkshopHtml, /20260811-v1423-batch-video-editor-1/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -831,26 +873,26 @@ test("canvas and video switches wait for the real latest project before routing"
 test("all modified workspace-shell resources use the v141 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(indexHtml, /styles\/components\.css\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260810-v1420-generation-resilience-1"/);
-  assert.match(mainJs, /ui\/components\.js\?v=20260810-v1420-generation-resilience-1/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(indexHtml, /styles\/components\.css\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260811-v1423-batch-video-editor-1"/);
+  assert.match(mainJs, /ui\/components\.js\?v=20260811-v1423-batch-video-editor-1/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260811-v1423-batch-video-editor-1"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js"/);
   assert.doesNotMatch(mainJs, /ui\/icons\.js\?v=/);
-  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js\?v=20260811-v1423-batch-video-editor-1"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
   assert.doesNotMatch(mainJs, /core\/remote\.js\?v=/);
-  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260810-v1420-generation-resilience-1/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260810-v1420-generation-resilience-1"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260811-v1423-batch-video-editor-1/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260811-v1423-batch-video-editor-1"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

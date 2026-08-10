@@ -8,7 +8,7 @@ import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsG
 import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260810-v1420-generation-resilience-1";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260811-v1423-batch-video-editor-1";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -2338,6 +2338,66 @@ function assertInfoFlowCreativePlan(plan, previousPrompts = []) {
   return plan;
 }
 
+function parseCreativeVideoPlan(content = "") {
+  const raw = parseJSONLoose(content);
+  const sourceScenes = raw.storyboard || raw.storyboards || raw.scenes || raw.shots || [];
+  const storyboards = (Array.isArray(sourceScenes) ? sourceScenes : []).map((scene, index) => {
+    if (!scene || typeof scene !== "object") return null;
+    const range = String(scene.time || scene.timeRange || scene.range || "").match(/(\d+(?:\.\d+)?)\s*(?:s|秒)?\s*[-—–~至到]\s*(\d+(?:\.\d+)?)/i);
+    const start = Number(scene.start ?? range?.[1]);
+    const end = Number(scene.end ?? range?.[2]);
+    const visual = cleanInfoFlowDirectorText(scene.visual || scene.picture || scene.action || scene.description || "", { stripTags: true });
+    const imagePrompt = cleanInfoFlowDirectorText(scene.imagePrompt || scene.storyboardPrompt || scene.prompt || visual, { stripTags: true });
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || !visual || !imagePrompt) return null;
+    return {
+      id: String(scene.id || `storyboard-${index + 1}`),
+      start,
+      end,
+      title: cleanInfoFlowDirectorText(scene.title || scene.label || `分镜${index + 1}`, { stripTags: true }),
+      visual,
+      imagePrompt,
+      camera: cleanInfoFlowDirectorText(scene.camera || scene.shot || scene.movement || "", { stripTags: true }),
+      audio: cleanInfoFlowDirectorText(scene.audio || scene.dialogue || scene.sound || "", { stripTags: true }),
+      transition: cleanInfoFlowDirectorText(scene.transition || "", { stripTags: true })
+    };
+  }).filter(Boolean).sort((a, b) => a.start - b.start);
+  const narration = cleanInfoFlowDirectorText(raw.narration || raw.voiceover || raw.script || "", { stripTags: true });
+  const visualStyle = cleanInfoFlowDirectorText(raw.visualStyle || raw.style || "电影级高创意广告质感", { stripTags: true });
+  let videoPrompt = cleanInfoFlowDirectorText(raw.videoPrompt || raw.prompt || raw.finalPrompt || "", { stripTags: true });
+  if (!videoPrompt && storyboards.length) {
+    videoPrompt = storyboards.map((scene, index) => [
+      `分镜${index + 1} ${scene.start}-${scene.end}秒`,
+      scene.camera,
+      scene.visual,
+      scene.audio,
+      scene.transition
+    ].filter(Boolean).join("；")).join("\n");
+  }
+  return {
+    creativeAngle: cleanInfoFlowDirectorText(raw.creativeAngle || raw.angle || "30秒创意视频", { stripTags: true }),
+    visualStyle,
+    narration,
+    storyboards,
+    videoPrompt
+  };
+}
+
+function assertCreativeVideoPlan(plan, previousPrompts = []) {
+  const scenes = plan.storyboards || [];
+  if (scenes.length < 5) throw new Error("创意视频故事版不足 5 个有效分镜");
+  if (scenes[0].start > 0.2 || scenes[scenes.length - 1].end < 29.5) throw new Error("创意视频故事版没有完整覆盖 0-30 秒");
+  for (let index = 0; index < scenes.length; index++) {
+    const scene = scenes[index];
+    if (scene.start < 0 || scene.end > 30.2) throw new Error("创意视频故事版时间超出 30 秒");
+    if (index && scene.start - scenes[index - 1].end > 0.3) throw new Error("创意视频故事版存在未覆盖的时间段");
+  }
+  if (!plan.narration || plan.narration.length < 20) throw new Error("创意视频缺少完整口播");
+  if (!plan.videoPrompt || plan.videoPrompt.length < 280) throw new Error("创意视频提示词细节不足");
+  if (/\bA\s*面|\bB\s*面|前15|后15/i.test(plan.videoPrompt)) throw new Error("创意视频仍包含已停用的 A/B 面结构");
+  if ((previousPrompts || []).some(prev => infoFlowSimilarity(plan.videoPrompt, prev) > 0.72)) throw new Error("新提示词与上一版过于相似，请重新创作");
+  return plan;
+}
+
 export const AI = {
   lastSource: "mock",
   lastError: "",
@@ -2968,7 +3028,7 @@ ${productRelationLine(rel.slice(0, 2))}
     const productName = chineseProductDisplayName(product);
     const platform = account?.platform || "视频号";
     const accountVoice = copyAccountVoice(account, account?.styleProfile || account?.lockedStyle || "", safeTitle || safeBody);
-    const isInfoFlowMode = mode === "infoFlow";
+    const isInfoFlowMode = mode === "infoFlow" || mode === "creativeVideo";
     const sys = [
       "你是短视频内容策划和发布文案写手。先理解用户标题/文案的真实意图，再写内容，不套固定模板。",
       "发布文案：专业、克制、偏解析测评，像真人创作者发平台内容；第一句直接给判断或场景，不要完整复述标题，不要用 哎/跟你说/说个事/你感受一下 这类闲聊开场，不要写 本条围绕/这条围绕/本文围绕/本期围绕。",
@@ -2981,7 +3041,7 @@ ${productRelationLine(rel.slice(0, 2))}
       ? `用户已写文案：\n${safeBody}\n\n如果里面有 #标签，只把标签留给发布文案最后一行，不要写进口播和视频提示词。`
       : "用户未写正文：请根据标题补出发布文案和口播。";
     const visualAsk = isInfoFlowMode
-        ? "画面提示固定写：由后续信息流创意链路生成。不要在这里提前套用剧情、台词或视频提示词。"
+        ? "画面提示固定写：由后续创意视频故事版链路生成。不要在这里提前套用剧情、台词或视频提示词。"
       : "visualPrompt 写成真人/数字人画面提示词：同一角色、办公室场景、自然讲述，可穿插产品界面和资料处理结果，不要写标签。";
     const messages = [
       { role: "system", content: sys },
@@ -3112,6 +3172,55 @@ ${productRelationLine(rel.slice(0, 2))}
     this.lastSource = "error";
     this.lastError = lastError?.message || String(lastError || "信息流创意生成失败");
     throw new Error(`信息流创意需要语言模型重新生成：${this.lastError}`);
+  },
+
+  async generateCreativeVideoPlan({ title = "", copy = "", narration = "", account = {}, product = null, style = "", previousPrompts = [] } = {}) {
+    product = primaryProductForText(`${title}\n${copy}\n${narration}`, product);
+    const safeTitle = cleanInfoFlowDirectorText(title, { stripTags: true });
+    const safeCopy = cleanInfoFlowDirectorText(copy, { stripTags: true });
+    const safeNarration = cleanInfoFlowDirectorText(narration, { stripTags: true });
+    if (!safeTitle && !safeCopy) throw new Error("生成创意视频前需要标题或发布文案");
+    const productName = chineseProductDisplayName(product);
+    const chosenStyle = cleanInfoFlowDirectorText(style || "电影级超写实怪诞广告", { stripTags: true });
+    let lastError = null;
+    let lastDraft = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const system = [
+        "你是电影广告导演和故事版设计师。为 Seedance 2.5 生成一条连续的 30 秒、9:16、音画同出的创意视频方案。",
+        "旧的 A/B 面流程已经停用：禁止拆成前15秒/后15秒，也禁止输出两条独立视频。整条视频必须是一条连续故事。",
+        `用户选择的画风是「${chosenStyle}」，要贯穿故事版、运镜、材质、灯光、色彩和转场。创意强、动效有冲击，但叙事必须连贯且服务标题。`,
+        "输出 5-10 个连续的逻辑分镜，时间必须无空档覆盖 0-30 秒。这些分镜最终会被组合到同一张多格素描故事板，不是逐格生成多张成片图。每个分镜都要给出 start、end、title、visual、imagePrompt、camera、audio、transition。",
+        "imagePrompt 是单张素描故事板里对应分镜格的绘制说明：必须写清主体、环境、构图、动作瞬间与镜头运动；不要把它写成独立彩色成片、海报或写实广告图，不要写字幕、花字、水印、logo或二维码。",
+        "videoPrompt 用于 Seedance 2.5：将全部故事版连成一条 30 秒视频，明确各时间段的动作、镜头运动、转场、环境声和口播；声音和画面同步生成。",
+        "narration 是自然完整的中文口播。口播内容要与画面动作相辅相成，不要照念镜头说明，不要生成字幕。",
+        "参考图片会由系统用 image-2 先组合生成一张素描故事板；随后系统只把这一张故事板和 videoPrompt 提交给 Seedance 2.5。你不得声称已经看到未提供的图片。",
+        "只输出 JSON：{\"creativeAngle\":\"一句话创意\",\"visualStyle\":\"统一画风\",\"narration\":\"完整口播\",\"storyboard\":[{\"start\":0,\"end\":4,\"title\":\"分镜名\",\"visual\":\"画面动作\",\"imagePrompt\":\"故事版生图提示词\",\"camera\":\"景别和运镜\",\"audio\":\"对应声音或口播\",\"transition\":\"转场\"}],\"videoPrompt\":\"完整30秒视频提示词\"}"
+      ].join("\n");
+      const user = [
+        `平台：${account?.platform || "视频号"}`,
+        `产品：${productName}`,
+        `标题：${safeTitle || "未填写"}`,
+        `发布文案：${safeCopy || "未填写"}`,
+        `已有口播依据：${safeNarration || safeCopy || safeTitle}`,
+        `指定画风：${chosenStyle}`,
+        lastDraft ? `上一版未通过校验，请只修复结构并保持主题相关：${lastError?.message || "结构不完整"}\n上一版：${lastDraft.slice(0, 7000)}` : ""
+      ].filter(Boolean).join("\n\n");
+      try {
+        const content = await llm([
+          { role: "system", content: system },
+          { role: "user", content: user }
+        ], { json: true, temperature: attempt === 0 ? 0.78 : 0.35, timeoutMs: 90000, thinking: "disabled", maxTokens: 6200 });
+        lastDraft = String(content || "");
+        const plan = parseCreativeVideoPlan(content);
+        assertCreativeVideoPlan(plan, previousPrompts);
+        return this._ok(plan);
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error || "创意视频方案校验失败"));
+      }
+    }
+    this.lastSource = "error";
+    this.lastError = lastError?.message || "创意视频方案生成失败";
+    throw new Error(`创意视频故事版需要语言模型重新生成：${this.lastError}`);
   },
 
   /* ---------- md / 自然语言 → 批量账号 ---------- */

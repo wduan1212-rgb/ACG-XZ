@@ -4,15 +4,15 @@
 import { state, save, persistNow, notify, accountById, assetById, canDeliver, currentMember, productById, pullRemote, removeRemote, cacheCanonicalDocuments } from "../core/store.js";
 import { uid, esc, buildZipBlob, downloadBlob } from "../core/util.js";
 import { buildDeliveryName, modeLabel } from "./accounts.js";
-import { setStage, touch } from "./productions.js?v=20260810-v1420-generation-resilience-1";
+import { setStage, touch } from "./productions.js?v=20260811-v1423-batch-video-editor-1";
 import { assetU8, urlFor } from "./assets.js";
 import * as remote from "../core/remote.js";
-import { assertPublishText } from "./publishRules.js?v=20260810-v1420-generation-resilience-1";
+import { assertPublishText } from "./publishRules.js?v=20260811-v1423-batch-video-editor-1";
 import {
   accountPublishAvailable,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "./productionQuota.js?v=20260810-v1420-generation-resilience-1";
+} from "./productionQuota.js?v=20260811-v1423-batch-video-editor-1";
 
 const SUPPLIER_ROLES = new Set(["supplier", "supplier_parent", "supplier_child"]);
 

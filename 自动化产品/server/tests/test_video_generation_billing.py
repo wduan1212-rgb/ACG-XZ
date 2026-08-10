@@ -67,6 +67,29 @@ class VideoGenerationBillingTest(unittest.TestCase):
         self.assertEqual(960, fast["ratePerMinute"])
         self.assertEqual(1200, standard["ratePerMinute"])
 
+    def test_creative_video_requires_explicit_model_and_bills_full_30_seconds(self):
+        request = main.VideoSubmitReq(
+            prompt="生成一条 30 秒创意视频",
+            duration=30,
+            creative=True,
+            generateAudio=True,
+        )
+        with patch.object(main, "SEEDANCE_CREATIVE_MODEL", ""):
+            with self.assertRaises(HTTPException) as missing:
+                main._video_generation_billing_spec(request)
+        self.assertEqual(503, missing.exception.status_code)
+
+        with patch.object(main, "SEEDANCE_CREATIVE_MODEL", "seedance-2.5-explicit"):
+            spec = main._video_generation_billing_spec(request)
+            payload = main._video_payload(request, [{"type": "text", "text": request.prompt}])
+        self.assertEqual(30, spec["durationSeconds"])
+        self.assertEqual(600, spec["points"])
+        self.assertEqual("seedance-2.5-explicit", spec["model"])
+        self.assertEqual("创意视频生成 Seedance 2.5", spec["feature"])
+        self.assertEqual(30, payload["duration"] if "duration" in payload else payload["metadata"]["duration"])
+        self.assertEqual("9:16", payload["ratio"] if "ratio" in payload else payload["metadata"]["ratio"])
+        self.assertTrue(payload["generate_audio"] if "generate_audio" in payload else payload["metadata"]["generate_audio"])
+
     def test_submit_reserves_idempotently_and_success_poll_settles(self):
         response, upstream = self._submit("success-key", "provider-success")
         self.assertEqual(300, response["billing"]["requestedPoints"])

@@ -19,7 +19,12 @@ export const STAGES = {
   delivered: { label: "已交付", icon: "package" }
 };
 
-export const isMaterial = p => p && p.mode === "视频" && p.subType === "无数字人";
+export const videoCreationModeOf = p => {
+  if (!p || p.mode !== "视频") return "";
+  if (["creative", "digitalHuman"].includes(p.videoCreationMode)) return p.videoCreationMode;
+  return p.subType === "数字人" ? "digitalHuman" : "creative";
+};
+export const isMaterial = p => videoCreationModeOf(p) === "creative";
 export const isVideoWorkshop = p => p && p.mode === "视频";
 
 /* 主平台的视频旧入口已退役：
@@ -31,21 +36,21 @@ export function enforceSupportedVideoMode(p) {
   p.artifacts = p.artifacts || blankArtifacts();
   const A = p.artifacts.boards || (p.artifacts.boards = blankArtifacts().boards);
   let changed = false;
-  if (p.subType === "数字人") {
+  if (videoCreationModeOf(p) === "digitalHuman") {
     if (A.generationMode !== "digitalHuman") {
       if (A.generationMode && !A.legacyGenerationMode) A.legacyGenerationMode = A.generationMode;
       A.generationMode = "digitalHuman";
       changed = true;
     }
   } else {
-    if (A.materialMode !== "infoFlow") {
+    if (A.materialMode !== "creativeVideo") {
       if (A.materialMode && !A.legacyMaterialMode) A.legacyMaterialMode = A.materialMode;
-      A.materialMode = "infoFlow";
+      A.materialMode = "creativeVideo";
       changed = true;
     }
-    if (A.generationMode !== "infoFlow") {
+    if (A.generationMode !== "creativeVideo") {
       if (A.generationMode && !A.legacyGenerationMode) A.legacyGenerationMode = A.generationMode;
-      A.generationMode = "infoFlow";
+      A.generationMode = "creativeVideo";
       changed = true;
     }
   }
@@ -174,6 +179,53 @@ function speechFromPrompt(text = "") {
 
 export function buildMaterialUnits(p) {
   const A = p.artifacts.boards || (p.artifacts.boards = {});
+  if (A.materialMode === "creativeVideo" && A.creativeVideo?.videoPrompt) {
+    const old = A.units || [];
+    const storyboards = Array.isArray(A.creativeVideo.storyboards) ? A.creativeVideo.storyboards : [];
+    const storyboardSheetId = A.creativeVideo.storyboardSheet?.assetId || null;
+    // Seedance 2.5 receives one complete sketch storyboard sheet. The original
+    // user references are used to build that sheet and are not fanned out as
+    // extra scene images at video-submit time.
+    const storyboardRefs = [storyboardSheetId].filter(Boolean);
+    const directVideoRefs = [...storyboardRefs];
+    const narration = String(A.creativeVideo.narration || "").trim();
+    const duration = Math.max(4, Math.min(30, Number(A.creativeVideo.duration || 30)));
+    const ratio = A.creativeVideo.ratio || A.ratio || "9:16";
+    A.ratio = ratio;
+    p.artifacts.audio.perShot = [{ dur: duration }];
+    p.artifacts.audio.duration = duration;
+    p.artifacts.audio.source = "seedance-native";
+    p.artifacts.script.shots = storyboards.map((scene, index) => ({
+      time: `${Number(scene.start || 0)}-${Number(scene.end || 0)}s`,
+      scene: index + 1,
+      idea: scene.title || `分镜${index + 1}`,
+      visual: scene.visual || scene.imagePrompt || "",
+      line: scene.audio || "",
+      ui: false
+    }));
+    const prev = old.find(unit => unit.creativeVideo === true) || {};
+    A.units = [{
+      id: prev.id || uid(),
+      creativeVideo: true,
+      scene: 1,
+      scenes: storyboards.map((_, index) => index + 1),
+      shotIndexes: storyboards.map((_, index) => index),
+      label: `${duration}s创意成片`,
+      needsImage: directVideoRefs.length > 0,
+      mode: directVideoRefs.length ? "i2v" : "t2v",
+      imagePrompt: "",
+      videoPrompt: String(A.creativeVideo.videoPrompt || "").trim(),
+      imageAssetId: storyboardRefs[0] || null,
+      refAssetId: storyboardRefs[0] || null,
+      refAssetIds: directVideoRefs,
+      narration,
+      dur: duration,
+      status: prev.status || "idle",
+      part: 1,
+      sceneParts: 1
+    }];
+    return A.units;
+  }
   if (A.materialMode === "infoFlow" && Array.isArray(A.infoFlow?.segments) && A.infoFlow.segments.length) {
     const old = A.units || [];
     const segments = A.infoFlow.segments.slice(0, 2);
@@ -270,13 +322,22 @@ export function buildMaterialUnits(p) {
 export const materialUnits = p => p.artifacts.boards.units || [];
 export const unitShots = (p, u) => (u.shotIndexes || []).map(i => p.artifacts.script.shots[i]).filter(Boolean);
 
-export function createProduction({ accountId, topic = "", origin = "manual", batchId = null, style = "", productId = "dumate", persist = true }) {
+export function createProduction({ accountId, topic = "", origin = "manual", batchId = null, style = "", productId = "dumate", videoCreationMode = "", creativeVideoStyle = "", persist = true }) {
   const acc = accountById(accountId);
   if (!acc) return null;
   const p = {
     id: uid(), accountId, origin, batchId,
     ownerId: state.ui.currentMemberId || null,   // 创作互不干扰
-    mode: acc.mode, subType: acc.subType || "",
+    mode: acc.mode,
+    // subType remains a compatibility projection for the existing workshop UI.
+    // The authoritative switch for new video work is videoCreationMode.
+    subType: acc.mode === "视频"
+      ? ((videoCreationMode || (acc.subType === "数字人" ? "digitalHuman" : "creative")) === "digitalHuman" ? "数字人" : "无数字人")
+      : "",
+    videoCreationMode: acc.mode === "视频"
+      ? (videoCreationMode || (acc.subType === "数字人" ? "digitalHuman" : "creative"))
+      : "",
+    creativeVideoStyle: creativeVideoStyle || "",
     topic, title: topic, style,
     stage: acc.mode === "视频" ? "workshop" : "images", stageStatus: "pending",
     artifacts: blankArtifacts(),
@@ -288,8 +349,8 @@ export function createProduction({ accountId, topic = "", origin = "manual", bat
   if (style) p.artifacts.script.style = style;
   p.artifacts.script.productId = productId || "dumate";
   if (acc.mode === "视频") {
-    p.artifacts.boards.generationMode = acc.subType === "数字人" ? "digitalHuman" : "infoFlow";
-    p.artifacts.boards.materialMode = acc.subType === "数字人" ? p.artifacts.boards.materialMode : "infoFlow";
+    p.artifacts.boards.generationMode = p.videoCreationMode === "digitalHuman" ? "digitalHuman" : "creativeVideo";
+    p.artifacts.boards.materialMode = p.videoCreationMode === "digitalHuman" ? p.artifacts.boards.materialMode : "creativeVideo";
     p.artifacts.boards.digitalHuman = { provider: "", model: "", segments: [] };
   }
   if (persist) {

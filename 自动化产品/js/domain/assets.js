@@ -119,7 +119,6 @@ export function isProtectedReferenceAsset(asset) {
   if (state.accounts.some(account => account?.avatarAssetId === asset.id)) return true;
   return state.accounts.some(account =>
     account?.mode === "视频"
-    && account?.subType === "数字人"
     && account?.charBoardAssetId === asset.id
   );
 }
@@ -131,7 +130,6 @@ export function canDeleteReferenceAsset(asset) {
   const protectedAsset = isProtectedReferenceAsset(asset);
   const isDigitalRoleBoard = state.accounts.some(account =>
     account?.mode === "视频"
-    && account?.subType === "数字人"
     && account?.charBoardAssetId === asset.id
   );
   if (protectedAsset) return state.role === "admin" && isDigitalRoleBoard;

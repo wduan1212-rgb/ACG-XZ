@@ -5,10 +5,10 @@ import { icon } from "../ui/icons.js";
 import { state, save, persistNow, accountById, canManageAccounts } from "../core/store.js";
 import { platformCode, createAccount, updateAccount, normalizeHomepageUrl, productionAssets } from "../domain/accounts.js";
 import { addAssetFromDataUrl, urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260810-v1420-generation-resilience-1";
+import { AI } from "../api/ai.js?v=20260811-v1423-batch-video-editor-1";
 import { defaultTtsVoiceId, lookupTtsVoice } from "../api/providers.js";
 import { findVoiceOption, voicePickerGroups } from "../domain/voices.js";
-import { openModal, toast } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
+import { openModal, toast } from "../ui/components.js?v=20260811-v1423-batch-video-editor-1";
 import { go, render as routerRender } from "../core/router.js";
 import * as remote from "../core/remote.js";
 
@@ -50,7 +50,7 @@ export function openAccountDialog(accountId = null) {
         const previousHeight = root.getBoundingClientRect().height;
         if (previousHeight > 0) root.style.minHeight = `${Math.round(previousHeight)}px`;
         const isVideo = draft.mode === "视频";
-        const isDH = isVideo && draft.subType === "数字人";
+        const isDH = isVideo;
         const avatarUrl = draft.avatarDataUrl || (editing?.avatarAssetId ? urlFor(editing.avatarAssetId) : "");
         const voiceGroups = voicePickerGroups({ selectedId: draft.voiceId, selectedName: draft.voiceName });
         const referenceAudioAssets = productionAssets(editing?.id || "__new_account__")
@@ -90,12 +90,7 @@ export function openAccountDialog(accountId = null) {
                   ].map(([v, ic, help]) => `<button type="button" class="ad-choice-button ${draft.mode === v ? "is-active" : ""}" data-v="${v}" data-choice-help="${help}" aria-pressed="${draft.mode === v ? "true" : "false"}" aria-label="${v}：${help}">${icon(ic, 14)}<span>${v}</span></button>`).join("")}
                 </div>
               </label>
-              ${isVideo ? `<label class="field">视频类型
-                <div class="seg-group" id="adSub">
-                  <button type="button" class="${draft.subType === "数字人" ? "is-active" : ""}" data-v="数字人">${icon("user", 14)}数字人<span class="seg-sub">固定出镜口播</span></button>
-                  <button type="button" class="${draft.subType === "无数字人" ? "is-active" : ""}" data-v="无数字人">${icon("layers", 14)}无数字人<span class="seg-sub">场景/界面混剪</span></button>
-                </div>
-              </label>` : ""}
+              ${isVideo ? `<div class="field ad-choice-field"><span>视频创作能力</span><em class="ad-choice-guidance">该视频号可在批量任务中自由选择“数字人”或“创意视频”，账号本身不再绑定单一链路。</em></div>` : ""}
               ${!isSupplierManager ? `<label class="field full">创作风格 <em class="muted" style="font-weight:500">账号自带的固定风格：量产/随机主题时自动使用，不必每次填</em>
                 <input class="input" id="adStyle" value="${esc(draft.styleProfile)}" placeholder="例如：白底极简种草风 / 口播犀利有梗 / 深度测评冷静叙事" /></label>
               ` : ""}
@@ -135,7 +130,7 @@ export function openAccountDialog(accountId = null) {
                 </div>
                 ${draft.voiceLookup ? `<em class="voice-lookup-note">${esc(draft.voiceLookup)}</em>` : ""}
               </div>
-              ${!isDH ? `<div class="field full ad-reference-audio">
+              <div class="field full ad-reference-audio">
                 <span>Seedance 总参考音频 <em class="muted">每一段视频共用同一条音色参考</em></span>
                 <div class="ad-reference-audio-row">
                   <select class="input" id="adReferenceAudio">
@@ -145,7 +140,7 @@ export function openAccountDialog(accountId = null) {
                   <label class="btn ghost sm">${icon("upload", 13)} 拖入总参考音频<input type="file" accept="audio/*" hidden id="adReferenceAudioUp" /></label>
                 </div>
                 ${draft.seedanceVoiceRefName ? `<em class="voice-lookup-note">待加入总参考音频库：${esc(draft.seedanceVoiceRefName)}</em>` : ""}
-              </div>` : ""}
+              </div>
               ` : ""}
             </div>
 
@@ -165,7 +160,7 @@ export function openAccountDialog(accountId = null) {
               <div class="ad-asset-grid" id="adAssetGrid">${draft.assets.map((a, i) => `<div class="ad-thumb"><img src="${a.dataUrl}"/><button class="ref-x" data-ax="${i}">${icon("x", 10)}</button></div>`).join("")}</div>
             </div>` : ""}
 
-            <div class="ad-naming">素材命名规则：<b>${platformCode(draft.platform)}-${esc((draft.name || "账号名").replace(/\s+/g, ""))}-${draft.mode === "视频" ? esc(draft.subType) : "图文"}-001-${todayStamp()}</b></div>
+            <div class="ad-naming">素材命名规则：<b>${platformCode(draft.platform)}-${esc((draft.name || "账号名").replace(/\s+/g, ""))}-${draft.mode === "视频" ? "视频" : "图文"}-001-${todayStamp()}</b></div>
           </div>
           <div class="mp-foot">
             <button class="btn ghost account-dialog-cancel" data-close>取消</button>
@@ -265,7 +260,7 @@ export function openAccountDialog(accountId = null) {
         segWire("#adSub", "subType", true);
         function refreshNaming() {
           const el = root.querySelector(".ad-naming");
-          if (el) el.innerHTML = `素材命名规则：<b>${platformCode(draft.platform)}-${esc((draft.name || "账号名").replace(/\s+/g, ""))}-${draft.mode === "视频" ? esc(draft.subType) : "图文"}-001-${todayStamp()}</b>`;
+          if (el) el.innerHTML = `素材命名规则：<b>${platformCode(draft.platform)}-${esc((draft.name || "账号名").replace(/\s+/g, ""))}-${draft.mode === "视频" ? "视频" : "图文"}-001-${todayStamp()}</b>`;
         }
 
         async function setCharBoard(file, msg = "已选择角色形象") {
@@ -335,8 +330,7 @@ export function openAccountDialog(accountId = null) {
           let homepageUrl = "";
           try { homepageUrl = normalizeHomepageUrl(draft.homepageUrl); }
           catch (err) { toast(err.message || "主页链接格式不正确", "error"); return; }
-          const isDH = draft.mode === "视频" && draft.subType === "数字人";
-          if (isDH && !editing && !draft.charDataUrl && !isSupplierManager) { toast("数字人账号请先上传角色形象"); return; }
+          const isDH = draft.mode === "视频";
           const accountSnapshot = editing ? JSON.parse(JSON.stringify(editing)) : null;
           const beforeAssetIds = new Set(state.assets.map(asset => asset.id));
           // 供应商账号走专用 API。先拦住通用集合的延迟回写，避免它在专用请求
@@ -360,11 +354,12 @@ export function openAccountDialog(accountId = null) {
             }
             const patch = {
               name, platform: draft.platform, mode: draft.mode,
-              subType: draft.mode === "图文" ? "" : draft.subType,
+              // 保留旧字段供历史任务读取；新任务的数字人/创意视频模式在任务板选择。
+              subType: draft.mode === "图文" ? "" : (editing?.subType || "数字人"),
               position: "", styleProfile: isSupplierManager ? (editing?.styleProfile || "") : draft.styleProfile.trim(),
               styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now(), voiceName: isSupplierManager ? (editing?.voiceName || "") : draft.voiceName.trim(),
               voiceId: isSupplierManager ? (editing?.voiceId || "") : draft.voiceId.trim(),
-              voiceRefAssetId: isSupplierManager ? (editing?.voiceRefAssetId || editing?.seedanceVoiceRefAssetId || null) : (draft.subType === "无数字人" ? seedanceVoiceRefAssetId : null),
+              voiceRefAssetId: isSupplierManager ? (editing?.voiceRefAssetId || editing?.seedanceVoiceRefAssetId || null) : (seedanceVoiceRefAssetId || null),
               imagePromptTemplate: isSupplierManager ? (editing?.imagePromptTemplate || "") : draft.imagePromptTemplate.trim(), homepageUrl,
               status: editing?.status === "disabled" ? "disabled" : "active",
             };
@@ -373,7 +368,7 @@ export function openAccountDialog(accountId = null) {
               const aa = await addAssetFromDataUrl(acc.id, { name: name + " 账号头像", tags: ["头像"], dataUrl: draft.avatarDataUrl });
               acc.avatarAssetId = aa.id;
             }
-            if (draft.charDataUrl && draft.mode === "视频" && draft.subType === "数字人") {
+            if (draft.charDataUrl && draft.mode === "视频") {
               const ca = await addAssetFromDataUrl(acc.id, { name: name + " 角色形象", tags: ["角色形象", "角色版"], dataUrl: draft.charDataUrl });
               acc.charBoardAssetId = ca.id;
             }

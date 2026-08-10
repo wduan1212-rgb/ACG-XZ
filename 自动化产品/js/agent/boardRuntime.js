@@ -2,7 +2,7 @@
    这里不依赖业务 store，便于对数字人/信息流的轮询压力做纯前端回归。 */
 
 export function boardStructureKey(groups = []) {
-  return groups.map(group => `${group.id}:${(group.productionIds || []).join(",")}`).join("|");
+  return groups.map(group => `${group.id}:${group.paused ? "paused" : "active"}:${(group.productionIds || []).join(",")}`).join("|");
 }
 
 /* 将新状态打到现有行上；行、缩略图和 src 未变时均保留原 DOM。 */

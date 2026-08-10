@@ -3,14 +3,15 @@
 import { esc, gradFor, fileToDataUrl, wireDropZone, $, $$ } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, productionById, canDeliver } from "../core/store.js";
-import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
-import { STAGES, currentJobsOf } from "../domain/productions.js?v=20260810-v1420-generation-resilience-1";
+import { openDrawer, openModal, toast, confirmModal, openLightbox, openVideoPreview, publishModal } from "../ui/components.js?v=20260811-v1423-batch-video-editor-1";
+import { STAGES, currentJobsOf } from "../domain/productions.js?v=20260811-v1423-batch-video-editor-1";
 import { platChip } from "../domain/accounts.js";
 import { urlFor } from "../domain/assets.js";
 import { addAssetFromDataUrl, addAssetFromFile } from "../domain/assets.js";
-import { deliver } from "../domain/delivery.js?v=20260810-v1420-generation-resilience-1";
-import { maybeAdvanceAfterInput, regenerateBatchImage, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260810-v1420-generation-resilience-1";
+import { deliver } from "../domain/delivery.js?v=20260811-v1423-batch-video-editor-1";
+import { maybeAdvanceAfterInput, regenerateBatchImage, regenerateCreativeStoryboard, reviseBatchStaticVideo } from "../agent/orchestrator.js?v=20260811-v1423-batch-video-editor-1";
 import { go, currentRoute, allowStudioFromAgent } from "../core/router.js";
+import { batchVideoEditor } from "../core/remote.js";
 
 /* 成片预览：只展示真实成片，不用空场景块代替尚未生成的素材。 */
 export function reviewPreviewHtml(p) {
@@ -71,8 +72,78 @@ function workshopPreviewHtml(p) {
     return `<div class="pd-workshop-preview is-composed ${p.staticVideo ? "is-landscape" : ""}"><div class="pd-note">已剪辑完整成片 · 可播放声音，点击放大查看</div><div class="pd-video-grid"><article><video src="${esc(composedUrl)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="0" data-video-url="${esc(composedUrl)}">${icon("eye", 12)} 放大</button><em>完整成片</em></article></div></div>`;
   }
   const ready = currentJobsOf(p).filter(j => j.status === "succeeded").map(j => ({ name: j.segName || `片段 ${Number(j.segIndex || 0) + 1}`, url: outputUrl(j.output) })).filter(x => x.url);
-  if (!ready.length) return `<div class="pd-empty compact">${icon("film", 20)}<p>视频生成后会直接在${p.subType === "数字人" ? "数字人制作" : "信息流制作"}阶段出现预览</p></div>`;
+  if (!ready.length) return `<div class="pd-empty compact">${icon("film", 20)}<p>视频生成后会直接在生成阶段出现预览</p></div>`;
   return `<div class="pd-workshop-preview"><div class="pd-note">视频预览 ${ready.length} 段 · 可播放声音，点击放大查看</div><div class="pd-video-grid">${ready.map((item, i) => `<article><video src="${esc(item.url)}" controls playsinline preload="metadata"></video><button class="link-btn" data-pd-video-preview="${i}" data-video-url="${esc(item.url)}">${icon("eye", 12)} 放大</button><em>${esc(item.name)}</em></article>`).join("")}</div></div>`;
+}
+
+function openCreativeStoryboardModal(p, sceneIndex, onDone) {
+  const index = Number(sceneIndex);
+  const creative = p?.artifacts?.boards?.creativeVideo;
+  const sheet = creative?.storyboardSheet;
+  const storyboards = Array.isArray(creative?.storyboards) ? creative.storyboards : [];
+  if (!sheet) return;
+  let refIds = [...new Set((creative.originalRefAssetIds || []).filter(Boolean))].slice(0, 8);
+  const currentUrl = sheet.assetId ? urlFor(sheet.assetId) : "";
+  const panelSummary = storyboards.map((scene, panelIndex) => `${panelIndex + 1}. ${scene.start ?? 0}-${scene.end ?? 30}s ${scene.title || scene.visual || "分镜"}`).join("\n");
+  openModal(`<div class="mp-head"><b>微调素描故事板</b><button class="icon-btn" data-close>${icon("x", 15)}</button></div>
+    <div class="mp-body batch-image-editor creative-storyboard-editor">
+      ${currentUrl ? `<img src="${esc(currentUrl)}" alt="素描故事板"/>` : `<div class="creative-storyboard-editor-empty">素描故事板尚未生成</div>`}
+      <div class="batch-image-editor-fields">
+        <label class="field"><span>整张素描故事板提示词</span><textarea class="input" id="pdStoryboardPrompt" rows="9" placeholder="描述一张多格素描故事板的主体、连续动作、镜头与构图">${esc(sheet.imagePrompt || "")}</textarea></label>
+        ${panelSummary ? `<label class="field"><span>板内分镜时间轴</span><textarea class="input" rows="7" readonly>${esc(panelSummary)}</textarea></label>` : ""}
+        <section class="batch-image-ref-section">
+          <div class="batch-image-ref-head"><span>本条创意视频参考图</span><label class="btn ghost sm">${icon("plus", 12)} 增加参考图<input id="pdStoryboardRefAdd" type="file" accept="image/*" hidden></label></div>
+          <p class="muted">这些参考图只用来生成一张多格素描故事板；上游视频模型只使用这一张故事板作为画面参考。</p>
+          <div class="batch-image-ref-list" id="pdStoryboardRefList"></div>
+        </section>
+      </div>
+      ${sheet.error ? `<p class="sc-error">${esc(sheet.error)}</p>` : ""}
+    </div>
+    <div class="mp-foot"><button class="btn ghost" data-close>取消</button><button class="btn primary" id="pdStoryboardRegenerate">${icon("refresh", 13)} 保存并重新生成故事版</button></div>`, {
+    wide: true,
+    onMount(panel, closeModal) {
+      const refList = panel.querySelector("#pdStoryboardRefList");
+      const drawRefs = () => {
+        refList.innerHTML = refIds.length ? refIds.map((id, refIndex) => {
+          const asset = state.assets.find(entry => entry.id === id);
+          const src = asset ? urlFor(asset) : "";
+          return `<article class="batch-image-ref-card">
+            ${src ? `<img src="${esc(src)}" alt="${esc(asset?.name || `参考图 ${refIndex + 1}`)}">` : `<span class="muted">参考图不可用</span>`}
+            <div><b>${esc(asset?.name || `参考图 ${refIndex + 1}`)}</b><span><button class="link-btn danger" type="button" data-story-ref-remove="${refIndex}">${icon("trash", 11)} 删除</button></span></div>
+          </article>`;
+        }).join("") : `<div class="batch-image-ref-empty">本条未使用参考图，将仅依据提示词生成故事版。</div>`;
+        panel.querySelectorAll("[data-story-ref-remove]").forEach(button => button.addEventListener("click", () => {
+          refIds.splice(Number(button.dataset.storyRefRemove), 1);
+          drawRefs();
+        }));
+      };
+      drawRefs();
+      panel.querySelector("#pdStoryboardRefAdd")?.addEventListener("change", async event => {
+        const file = event.currentTarget.files?.[0];
+        if (!file || refIds.length >= 8) return;
+        const asset = await addAssetFromFile(p.accountId, file, { tags: ["创意视频参考", "故事版微调"], name: file.name.replace(/\.[^.]+$/, "") });
+        refIds.push(asset.id);
+        drawRefs();
+      });
+      panel.querySelector("#pdStoryboardRegenerate")?.addEventListener("click", async event => {
+        const prompt = panel.querySelector("#pdStoryboardPrompt")?.value.trim() || "";
+        if (!prompt) { toast("请先填写故事版提示词", "error"); return; }
+        const button = event.currentTarget;
+        button.disabled = true;
+        button.textContent = "重新生成中…";
+        try {
+          await regenerateCreativeStoryboard(p, index, prompt, refIds);
+          closeModal();
+          onDone?.();
+          toast("素描故事板已重新生成");
+        } catch (error) {
+          button.disabled = false;
+          button.innerHTML = `${icon("refresh", 13)} 重试生成`;
+          toast(error?.message || "故事版重新生成失败", "error");
+        }
+      });
+    }
+  });
 }
 
 function staticAgentHtml(p) {
@@ -209,11 +280,9 @@ export function openProductionDrawer(pid, tab) {
         const acc = accountById(p.accountId);
         const tabs = p.staticVideo
           ? [["agent", "静态视频 Agent"], ["review", "成片"]]
-          : [
-              [isImg ? "images" : "boards", isImg ? "图文创作台" : p.subType === "数字人" ? "数字人制作" : "信息流制作"],
-              ...(isImg ? [] : [["render", "剪辑"]]),
-              ["review", "审核"]
-            ];
+          : (isImg
+            ? [["images", "图文创作台"], ["review", "审核"]]
+            : [["generate", "1 生成"], ["review", "2 审核"]]);
         if (p.staticVideo && !tabs.some(([key]) => key === curTab)) curTab = "agent";
         root.innerHTML = `
           <div class="pd-head">
@@ -228,7 +297,9 @@ export function openProductionDrawer(pid, tab) {
           <div class="pd-body">${p.staticVideo && curTab === "agent" ? staticAgentHtml(p) : TAB[curTab] ? TAB[curTab](p) : ""}</div>
           <div class="pd-foot">
             <span class="muted">${p.error ? `⚠ ${esc(p.error)}` : ""}</span>
-            ${p.staticVideo ? "" : `<button class="btn ghost sm" data-pd="workbench">${icon("sliders", 14)} 进入单号工坊微调</button>`}
+            ${p.staticVideo ? "" : isImg
+              ? `<button class="btn ghost sm" data-pd="workbench">${icon("sliders", 14)} 进入图文微调</button>`
+              : `<button class="btn primary sm" data-pd-video-editor>${icon("sliders", 14)} 进入剪辑台</button>`}
           </div>`;
         wire(root);
       };
@@ -299,6 +370,27 @@ export function openProductionDrawer(pid, tab) {
         // 槽位图放大
         rootEl.querySelectorAll(".pd-slot img").forEach(im => im.addEventListener("click", () => openLightbox(im, im.src, "")));
         rootEl.querySelectorAll("[data-pd-video-preview]").forEach(button => button.addEventListener("click", () => openVideoPreview(button.dataset.videoUrl, "视频片段预览")));
+        rootEl.querySelectorAll("[data-storyboard-preview]").forEach(button => button.addEventListener("click", () => {
+          const image = rootEl.querySelector(`img[data-storyboard-image="${button.dataset.storyboardPreview}"]`);
+          if (image?.src) openLightbox(image, image.src, image.alt || "故事版预览");
+        }));
+        rootEl.querySelectorAll("[data-storyboard-refine]").forEach(button => button.addEventListener("click", () => {
+          openCreativeStoryboardModal(p, button.dataset.storyboardRefine, render);
+        }));
+        rootEl.querySelectorAll("[data-pd-video-editor]").forEach(button => button.addEventListener("click", async () => {
+          button.disabled = true;
+          button.innerHTML = `${icon("refresh", 13)} 正在准备剪辑台`;
+          try {
+            const result = await batchVideoEditor.open(p.id);
+            if (!result?.projectId) throw new Error("剪辑台项目创建失败");
+            close();
+            go("custom", "video", result.projectId);
+          } catch (error) {
+            button.disabled = false;
+            button.innerHTML = `${icon("sliders", 14)} 进入剪辑台`;
+            toast(error?.message || "剪辑台暂不可用", "error");
+          }
+        }));
         rootEl.querySelector("[data-static-agent-form]")?.addEventListener("submit", async event => {
           event.preventDefault();
           const form = event.currentTarget;
@@ -354,6 +446,7 @@ export function openProductionDrawer(pid, tab) {
 
 function defaultTab(p) {
   if (p.stage === "review" || p.stage === "delivered") return "review";
+  if (p.mode === "视频" && !p.staticVideo) return "generate";
   if (p.stage === "copy") return p.mode === "图文" ? "images" : ((p.artifacts?.timeline || []).length ? "review" : "boards");
   if (p.mode === "视频" && (p.stage === "workshop" || p.stage === "render")) return "boards";
   if (p.stage === "cut") return "render";
@@ -379,6 +472,7 @@ function tabStage(p, tab) {
   switch (tab) {
     case "script": return video ? "workshop" : "images";
     case "boards": return video ? "workshop" : "boards";
+    case "generate": return video ? "workshop" : "images";
     case "images": return "images";
     case "prompts": return "prompts";
     case "render": return video ? "cut" : "review";
@@ -386,6 +480,34 @@ function tabStage(p, tab) {
     case "review": return "review";
     default: return stagePage(p);
   }
+}
+
+function videoGenerateHtml(p) {
+  const creative = p.artifacts?.boards?.creativeVideo;
+  const isCreative = Boolean(creative && (p.artifacts?.boards?.generationMode === "creativeVideo" || creative.storyboards?.length));
+  const duration = isCreative ? Math.max(4, Math.min(30, Number(creative?.duration || 30))) : Math.max(1, Math.ceil(Number(p.artifacts?.audio?.duration || 0) || (p.artifacts?.timeline || []).reduce((sum, clip) => sum + Number(clip.dur || 0), 0) || 30));
+  const ratio = isCreative ? (creative?.ratio || p.artifacts?.boards?.ratio || "9:16") : "9:16";
+  const storyboards = Array.isArray(creative?.storyboards) ? creative.storyboards : [];
+  const sheet = creative?.storyboardSheet || null;
+  const sheetUrl = sheet?.assetId ? urlFor(sheet.assetId) : "";
+  const sheetStateLabel = sheet?.status === "done" ? "已生成" : sheet?.status === "loading" ? "生成中" : sheet?.status === "confirming" ? "结果核对中" : sheet?.status === "failed" ? "生成失败" : "待生成";
+  const storyHtml = isCreative ? `<section class="pd-creative-storyboards">
+    <div class="pd-section-head"><div><b>${icon("layers", 15)} 素描故事板</b><span>1 张多格故事板 · ${storyboards.length} 个分镜 · ${duration}s</span></div></div>
+    <div class="pd-storyboard-grid"><article class="pd-storyboard-card pd-storyboard-sheet ${esc(sheet?.status || "idle")}">
+      <div class="pd-storyboard-media">${sheetUrl
+        ? `<img data-storyboard-image="0" src="${esc(sheetUrl)}" alt="素描故事板">`
+        : `<div class="pd-storyboard-placeholder">${icon("image", 20)}<span>${esc(sheetStateLabel)}</span></div>`}
+        <span>${esc(ratio)} · ${duration}s</span>
+      </div>
+      <div class="pd-storyboard-copy"><b>完整故事板</b><p>${esc(sheet?.imagePrompt || "正在组合多格素描故事板。")}</p></div>
+      <div class="pd-storyboard-actions">${sheetUrl ? `<button class="link-btn" data-storyboard-preview="0">${icon("eye", 12)} 预览</button>` : ""}<button class="link-btn" data-storyboard-refine="0">${icon("sliders", 12)} 微调</button></div>
+    </article></div>
+  </section>` : "";
+  return `<section class="pd-video-generate ${isCreative ? "is-creative" : "is-digital"}">
+    <div class="pd-video-generation-summary"><div><b>${isCreative ? "创意视频" : "数字人视频"}</b><span>${duration}s · ${esc(ratio)} · 生成与剪辑统一在本节点完成</span></div><button class="btn primary sm" data-pd-video-editor>${icon("sliders", 14)} 进入剪辑台</button></div>
+    ${storyHtml}
+    <section class="pd-video-preview-section"><div class="pd-section-head"><div><b>${icon("play", 15)} 成片预览</b><span>${p.artifacts?.finalVideoUrl ? "完整成片已就绪" : "生成完成后可直接播放"}</span></div></div>${workshopPreviewHtml(p)}</section>
+  </section>`;
 }
 
 function copyTags(body = "", fallback = []) {
@@ -442,6 +564,7 @@ async function fillSlot(p, idx, file) {
 
 /* ---------- 各 Tab 内容 ---------- */
 const TAB = {
+  generate(p) { return videoGenerateHtml(p); },
   script(p) {
     const shots = p.artifacts.script.shots || [];
     const isImg = p.mode === "图文";
@@ -454,16 +577,7 @@ const TAB = {
 
   boards(p) {
     if (p.mode === "视频") {
-      const units = p.artifacts.boards.units || [];
-      if (!units.length) return `<div class="pd-empty">${icon("layers", 22)}<p>脚本起草后会按场景合并成分镜单元，进工坊编排</p></div>`;
-      return `<div class="pd-note">${units.length} 个分镜单元 · ${p.subType === "数字人" ? "数字人制作" : "信息流制作"}生成后直接预览视频，再进入剪辑</div>
-        <div class="pd-units">${units.map((u, i) => {
-          const jobs = currentJobsOf(p).filter(j => j.segIndex === i);
-          const ok = jobs.some(j => j.status === "succeeded");
-          return `<div class="pd-unit ${u.needsImage ? "i2v" : "t2v"}"><b>S${String(u.scene).padStart(2, "0")}${u.sceneParts > 1 ? `·${u.part}` : ""}</b><span>${u.needsImage ? "图生" : "文生"} · ${u.shotIndexes.length}镜 · ${Math.min(15, Math.ceil(u.dur))}s</span>${ok ? icon("checkCircle", 13, "ok") : `<em class="muted">未出片</em>`}</div>`;
-        }).join("")}</div>
-        ${workshopPreviewHtml(p)}
-        <div class="pd-note" style="margin-top:8px"><button class="link-btn" data-pd="workbench">进工坊编排 →</button></div>`;
+      return videoGenerateHtml(p);
     }
     return slotsTab(p, false);
   },

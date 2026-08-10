@@ -1377,7 +1377,20 @@ html[data-platform-workspace="true"] .chat-delivery-card .chat-delivery-actions 
 }
 
 .voice-workbench-rail { display: flex; flex-direction: column; gap: 12px; background: #090a0b; }
-.voice-rail-heading { display: grid; gap: 10px; }
+.voice-rail-heading { position: relative; display: grid; gap: 10px; }
+.voice-rail-collapse { position: absolute; top: -3px; right: -3px; min-width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 0 6px; border: 0; border-radius: 8px; color: var(--faint); background: transparent; font-size: 9px; cursor: pointer; }
+.voice-rail-collapse:hover { color: var(--text); background: rgb(255 255 255 / 7%); }
+.voice-rail-collapse svg { width: 14px; height: 14px; transition: transform 160ms ease; }
+.studio-view.voice-rail-collapsed .studio-body { grid-template-columns: 204px minmax(0, 1fr) 48px; }
+.studio-view.voice-rail-collapsed.history-collapsed .studio-body { grid-template-columns: 0 minmax(0, 1fr) 48px; }
+.studio-view.voice-rail-collapsed .voice-workbench-rail { padding: 14px 10px; overflow: hidden; }
+.studio-view.voice-rail-collapsed .voice-rail-heading { display: block; height: 28px; }
+.studio-view.voice-rail-collapsed .voice-rail-heading > div,
+.studio-view.voice-rail-collapsed .voice-rail-tabs,
+.studio-view.voice-rail-collapsed .voice-rail-panel { display: none !important; }
+.studio-view.voice-rail-collapsed .voice-rail-collapse { position: static; width: 28px; padding: 0; }
+.studio-view.voice-rail-collapsed .voice-rail-collapse span { display: none; }
+.studio-view.voice-rail-collapsed .voice-rail-collapse svg { transform: rotate(180deg); }
 .voice-rail-heading > div { display: grid; gap: 2px; }
 .voice-rail-heading > div > span { color: var(--faint); font-size: 9px; letter-spacing: .13em; }
 .voice-rail-heading h2 { margin: 0; font-size: 17px; }
@@ -2979,6 +2992,10 @@ html[data-platform-workspace="true"] .studio-view {
 html[data-platform-workspace="true"] .studio-body,
 html[data-platform-workspace="true"] .studio-view.history-collapsed .studio-body {
   grid-template-columns: minmax(0, 1fr) clamp(260px, 28vw, 320px) !important;
+}
+html[data-platform-workspace="true"] .studio-view.voice-rail-collapsed .studio-body,
+html[data-platform-workspace="true"] .studio-view.voice-rail-collapsed.history-collapsed .studio-body {
+  grid-template-columns: minmax(0, 1fr) 48px !important;
 }
 
 html[data-platform-workspace="true"] .conversation-pane {

@@ -2,32 +2,32 @@
   "schemaVersion": 1,
   "basePath": "/XZ-Design",
   "fileCount": 63,
-  "totalBytes": 1768916,
+  "totalBytes": 1768481,
   "files": [
     {
       "path": "__next.__PAGE__.txt",
       "size": 495,
-      "sha256": "de212679a5a794e62ff1f82cbb8f36580fc0d0ee0958c8411db2aaf405074cf5"
+      "sha256": "b5661c941a5ac55efb05d7a61fffb8a3b7dbb5624b1fb2b8db94bd9b38d136fb"
     },
     {
       "path": "__next._full.txt",
       "size": 3718,
-      "sha256": "e55b403fa20febac7ace14a34c955a29dc79500951d9e0deeada64109484e0d3"
+      "sha256": "cc18cfbc0e9e271e99f68eb5605cd8454f894338e2353d2c6f39b2535fecd183"
     },
     {
       "path": "__next._head.txt",
       "size": 895,
-      "sha256": "ce336157bd1f9ef1f39bddd60e820e64b46f697f74c3d23c1a842f0ec427f267"
+      "sha256": "0267624c6c847a7f887bfebdb43ac4fcb4ee62f1a498ab19816019193ff5d12a"
     },
     {
       "path": "__next._index.txt",
       "size": 1866,
-      "sha256": "96fe98dccd3a070274f77698f75eb45cb6dcadeba35316e8468c5a3713940ffd"
+      "sha256": "249ac2abaa97dfc9336bb143ff9b7351d7c3e54f08555a9fc67fcfd706a8b35a"
     },
     {
       "path": "__next._tree.txt",
       "size": 472,
-      "sha256": "6e70db92a29c537ecbb7a84acba8b1b3644e7ad67b98c0436c414a2906d923f7"
+      "sha256": "7e40d57f8c314d4c12273e992af54230bf9edeccd5ce90074f84888a1444a0ed"
     },
     {
       "path": "_next/static/chunks/264-1ad1e60eafd0937d.js",
@@ -45,9 +45,9 @@
       "sha256": "f768811066891848dc107ada37148d3af9d37db69ed00ef12aae26c1017ad72d"
     },
     {
-      "path": "_next/static/chunks/559-a787d0105ab6a3f9.js",
-      "size": 191765,
-      "sha256": "596a684a33cd9d5cb3749b06bda8a0a5ab9338dd55894e932ee01f54ff410de5"
+      "path": "_next/static/chunks/559-d6d14f34c0ec19d0.js",
+      "size": 191330,
+      "sha256": "a0cdd7f9a06f888278e5853762b93afda328060d67a6f024560b88f7ff8232f9"
     },
     {
       "path": "_next/static/chunks/58.553537616dcb5cb3.js",
@@ -165,16 +165,6 @@
       "sha256": "0d722e546740050999e8c5b5d4da80cf92ea6ede7994aa2cdd298f5f8166e1d8"
     },
     {
-      "path": "_next/static/l2ziY0j_LJOEJDKpKw1ms/_buildManifest.js",
-      "size": 709,
-      "sha256": "f677916c81ca591fa9808d60dd59678b5ca26cba1c2b5a4617c532b8d8fa1303"
-    },
-    {
-      "path": "_next/static/l2ziY0j_LJOEJDKpKw1ms/_ssgManifest.js",
-      "size": 105,
-      "sha256": "1357bfd798c71bd9b46093bd05f15b0af2ac3f88e39c10939894a02246d00336"
-    },
-    {
       "path": "_next/static/media/0b78ff376f6b9734-s.p.woff2",
       "size": 69652,
       "sha256": "a369fcf5628ea2aa4e1b9e2ec6a5b3624e365bda588e1f0f2f12b564f728fbb8"
@@ -185,49 +175,59 @@
       "sha256": "fba8f577f38a2bbcbe818efa6348dd58f36303a10b8737c42fefad275be563ab"
     },
     {
+      "path": "_next/static/R4Xnom41ywj9PLvx23CAP/_buildManifest.js",
+      "size": 709,
+      "sha256": "f677916c81ca591fa9808d60dd59678b5ca26cba1c2b5a4617c532b8d8fa1303"
+    },
+    {
+      "path": "_next/static/R4Xnom41ywj9PLvx23CAP/_ssgManifest.js",
+      "size": 105,
+      "sha256": "1357bfd798c71bd9b46093bd05f15b0af2ac3f88e39c10939894a02246d00336"
+    },
+    {
       "path": "_not-found/__next._full.txt",
       "size": 3998,
-      "sha256": "53d8f321778454e8428f5be690f3595e77175e397c90c5754e15eb0af7640ee6"
+      "sha256": "cf6c428eb046e34537f384fe21bf4b3e619f9c336799fe907466cbcee1b856a6"
     },
     {
       "path": "_not-found/__next._head.txt",
       "size": 946,
-      "sha256": "c3e8aeb8bf1586c1f4eb07dbcf04e75ac4ee8f427f767a5f388cd1ec0efff390"
+      "sha256": "b8be923fd719162f11c07d93e1bab9df2766ca6d8ed8bd2ac5d265de6d5584c0"
     },
     {
       "path": "_not-found/__next._index.txt",
       "size": 772,
-      "sha256": "d038af0b3940882729fb291d457800ae90c77c13edb6fca0c5e4c02f2a5b3835"
+      "sha256": "421abcaf6be250794730641b24290d67cf153fe27df052e82000ee9c77ff4b27"
     },
     {
       "path": "_not-found/__next._not-found.__PAGE__.txt",
       "size": 1381,
-      "sha256": "e05107510282692cd0cf14af4c57bf178a7aebac8828ca262cc0efa4fda1424f"
+      "sha256": "33b64a11a22c4463144db4d7dbb072519739047fec4592d507b7e95c1cefddf3"
     },
     {
       "path": "_not-found/__next._not-found.txt",
       "size": 271,
-      "sha256": "cdd13ee1fb2ae30c08f7dee951fda8d746f2244e03c1029626d82d476e5c065b"
+      "sha256": "af30d60b0718e005f376f14652a6e7ae992d42a818abfacf4668f891d846c0be"
     },
     {
       "path": "_not-found/__next._tree.txt",
       "size": 546,
-      "sha256": "1f44ef40d763826dce920bbb0a4bf5cf36e78971240b101e42af62e06ee6e0f3"
+      "sha256": "bd7bf0e8a81598ac7003527e86f5921c85c0fe3dce1632de05c05d0ec67f922b"
     },
     {
       "path": "_not-found.html",
       "size": 7409,
-      "sha256": "3c1f329dc5eda4bd43771de95e1baaa9025ea518c0b2a135398af72ed720ffc6"
+      "sha256": "9a3833c797970b692289f619849d52b6c530d6e9a02dcfa6f14bf171f5cf87c6"
     },
     {
       "path": "_not-found.txt",
       "size": 3998,
-      "sha256": "53d8f321778454e8428f5be690f3595e77175e397c90c5754e15eb0af7640ee6"
+      "sha256": "cf6c428eb046e34537f384fe21bf4b3e619f9c336799fe907466cbcee1b856a6"
     },
     {
       "path": "404.html",
       "size": 7409,
-      "sha256": "3c1f329dc5eda4bd43771de95e1baaa9025ea518c0b2a135398af72ed720ffc6"
+      "sha256": "9a3833c797970b692289f619849d52b6c530d6e9a02dcfa6f14bf171f5cf87c6"
     },
     {
       "path": "favicon.ico",
@@ -247,12 +247,12 @@
     {
       "path": "index.html",
       "size": 6553,
-      "sha256": "ba874f1d6ee1c08cc60c106d1e4326a0bd3ff9b09148e7321c772c305f293ff8"
+      "sha256": "0fec73e543a47fea90e4e1f242ddae12f0677468376122a45cd5fd49b3795e89"
     },
     {
       "path": "index.txt",
       "size": 3718,
-      "sha256": "e55b403fa20febac7ace14a34c955a29dc79500951d9e0deeada64109484e0d3"
+      "sha256": "cc18cfbc0e9e271e99f68eb5605cd8454f894338e2353d2c6f39b2535fecd183"
     },
     {
       "path": "next.svg",
@@ -262,47 +262,47 @@
     {
       "path": "project/__static-export-placeholder__/__next._full.txt",
       "size": 4651,
-      "sha256": "b590318215c3d68276b932eb4be3c8f7ecaad3d401983b9d834ad8a0aa387109"
+      "sha256": "2b2168f48c93fa561eaec550740bbdadcf3e269eb0295d40b85353545e60b693"
     },
     {
       "path": "project/__static-export-placeholder__/__next._head.txt",
       "size": 895,
-      "sha256": "ce336157bd1f9ef1f39bddd60e820e64b46f697f74c3d23c1a842f0ec427f267"
+      "sha256": "0267624c6c847a7f887bfebdb43ac4fcb4ee62f1a498ab19816019193ff5d12a"
     },
     {
       "path": "project/__static-export-placeholder__/__next._index.txt",
       "size": 1866,
-      "sha256": "96fe98dccd3a070274f77698f75eb45cb6dcadeba35316e8468c5a3713940ffd"
+      "sha256": "249ac2abaa97dfc9336bb143ff9b7351d7c3e54f08555a9fc67fcfd706a8b35a"
     },
     {
       "path": "project/__static-export-placeholder__/__next._tree.txt",
       "size": 671,
-      "sha256": "445b7ecfef802999225264bbbd1ced9d5ad6cbf2928520e1d982354ee4494350"
+      "sha256": "3a8632552ea6f5327b771a2ad604e834f50b72ee28c5dce2bc7dfe92430514c2"
     },
     {
       "path": "project/__static-export-placeholder__/__next.project.$d$id.__PAGE__.txt",
       "size": 552,
-      "sha256": "8ebbbe4e04bbabd734071c03eb474cc97d1a8dd9d6f81fc004dac5537d80ed58"
+      "sha256": "05efe76f355116768ec0428b7cc8f7e4bf14cd02b32bbe44e80a4abf11f120b7"
     },
     {
       "path": "project/__static-export-placeholder__/__next.project.$d$id.txt",
       "size": 271,
-      "sha256": "cdd13ee1fb2ae30c08f7dee951fda8d746f2244e03c1029626d82d476e5c065b"
+      "sha256": "af30d60b0718e005f376f14652a6e7ae992d42a818abfacf4668f891d846c0be"
     },
     {
       "path": "project/__static-export-placeholder__/__next.project.txt",
       "size": 271,
-      "sha256": "cdd13ee1fb2ae30c08f7dee951fda8d746f2244e03c1029626d82d476e5c065b"
+      "sha256": "af30d60b0718e005f376f14652a6e7ae992d42a818abfacf4668f891d846c0be"
     },
     {
       "path": "project/__static-export-placeholder__.html",
       "size": 8051,
-      "sha256": "f4394edc579e61e383d69e712c02a7055a61a63b1519f8f53cf828e33928c509"
+      "sha256": "c76bd303fe379d3660dd94a4f2beb187bf24c1cabbda149a14088388ec3a1da4"
     },
     {
       "path": "project/__static-export-placeholder__.txt",
       "size": 4651,
-      "sha256": "b590318215c3d68276b932eb4be3c8f7ecaad3d401983b9d834ad8a0aa387109"
+      "sha256": "2b2168f48c93fa561eaec550740bbdadcf3e269eb0295d40b85353545e60b693"
     },
     {
       "path": "star-logo.png",

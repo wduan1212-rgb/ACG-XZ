@@ -14293,8 +14293,12 @@ def record_llm_usage(member_id, member_name, feature, model, usage):
             conn.close()
 
 
-def llm_usage_summary():
+def llm_usage_summary(since_ms=0):
     """管理员只读汇总；列出管理员与创作成员，即使尚无可统计调用。"""
+    try:
+        since_ms = max(0, int(since_ms or 0))
+    except (TypeError, ValueError, OverflowError):
+        since_ms = 0
     _ensure_db()
     with _lock:
         conn = _connect()
@@ -14306,8 +14310,10 @@ def llm_usage_summary():
                 "COALESCE(SUM(u.total_tokens),0) AS total_tokens,"
                 "COUNT(u.id) AS calls,MAX(u.created_at) AS last_used_at "
                 "FROM members m LEFT JOIN llm_usage_events u ON u.member_id=m.id "
+                "AND (?=0 OR u.created_at>=?) "
                 "WHERE m.role IN ('admin','editor','user') "
-                "GROUP BY m.id,m.name,m.username,m.role ORDER BY total_tokens DESC,m.created_at ASC"
+                "GROUP BY m.id,m.name,m.username,m.role ORDER BY total_tokens DESC,m.created_at ASC",
+                (since_ms, since_ms),
             ).fetchall()
             return [{
                 "memberId": row[0], "memberName": row[1], "username": row[2], "role": row[3],
@@ -14352,9 +14358,13 @@ def record_api_usage(member_id, member_name, api_type, feature, model, output_un
             conn.close()
 
 
-def model_usage_summary():
+def model_usage_summary(since_ms=0):
     """按成员汇总真实语言 Token 与非 Token 的图片/视频调用账本。"""
-    rows = {row["memberId"]: row for row in llm_usage_summary()}
+    try:
+        since_ms = max(0, int(since_ms or 0))
+    except (TypeError, ValueError, OverflowError):
+        since_ms = 0
+    rows = {row["memberId"]: row for row in llm_usage_summary(since_ms)}
     _ensure_db()
     with _lock:
         conn = _connect()
@@ -14363,8 +14373,10 @@ def model_usage_summary():
                 "SELECT m.id,m.name,m.username,m.role,u.api_type,"
                 "COALESCE(SUM(u.calls),0),COALESCE(SUM(u.output_units),0),MAX(u.created_at) "
                 "FROM members m LEFT JOIN api_usage_events u ON u.member_id=m.id "
+                "AND (?=0 OR u.created_at>=?) "
                 "WHERE m.role IN ('admin','editor','user') "
-                "GROUP BY m.id,m.name,m.username,m.role,u.api_type"
+                "GROUP BY m.id,m.name,m.username,m.role,u.api_type",
+                (since_ms, since_ms),
             ).fetchall()
             receipt_rows = conn.execute(
                 "SELECT m.id,m.name,m.username,m.role,r.usage_kind,COUNT(r.receipt_id),"
@@ -14393,7 +14405,9 @@ def model_usage_summary():
                 "FROM members m JOIN model_usage_receipts r ON r.member_id=m.id "
                 "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
                 "WHERE m.role IN ('admin','editor','user') AND r.call_status='succeeded' "
-                "GROUP BY m.id,m.name,m.username,m.role,r.usage_kind"
+                "AND (?=0 OR r.event_at>=?) "
+                "GROUP BY m.id,m.name,m.username,m.role,r.usage_kind",
+                (since_ms, since_ms),
             ).fetchall()
         finally:
             conn.close()
@@ -14469,7 +14483,7 @@ def model_usage_summary():
     ))
 
 
-def llm_usage_details(limit=120, member_id=""):
+def llm_usage_details(limit=120, member_id="", since_ms=0):
     """管理员用的调用明细：按功能 / 模型汇总，并保留最近可核验的原始记录。
 
     明细只来自上游响应的 usage 字段；不把图片、视频、语音或没有 usage 的请求估算成 token。
@@ -14479,8 +14493,20 @@ def llm_usage_details(limit=120, member_id=""):
     except (TypeError, ValueError, OverflowError):
         limit = 120
     member_id = str(member_id or "").strip()
-    where = "WHERE u.member_id=?" if member_id else ""
-    params = (member_id,) if member_id else ()
+    try:
+        since_ms = max(0, int(since_ms or 0))
+    except (TypeError, ValueError, OverflowError):
+        since_ms = 0
+    clauses = []
+    params = []
+    if member_id:
+        clauses.append("u.member_id=?")
+        params.append(member_id)
+    if since_ms:
+        clauses.append("u.created_at>=?")
+        params.append(since_ms)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params = tuple(params)
     _ensure_db()
     with _lock:
         conn = _connect()
@@ -14517,18 +14543,39 @@ def llm_usage_details(limit=120, member_id=""):
             conn.close()
 
 
-def model_usage_details(member_id="", limit=120):
+def model_usage_details(member_id="", limit=120, since_ms=0):
     """管理员明细：语言 Token 与实际图片/视频调用分开展示。"""
     try:
         limit = max(1, min(int(limit or 120), 500))
     except (TypeError, ValueError, OverflowError):
         limit = 120
-    details = llm_usage_details(limit, member_id)
+    try:
+        since_ms = max(0, int(since_ms or 0))
+    except (TypeError, ValueError, OverflowError):
+        since_ms = 0
+    details = llm_usage_details(limit, member_id, since_ms)
     member_id = str(member_id or "").strip()
     _ensure_db()
-    where = "WHERE u.member_id=?" if member_id else ""
-    params = (member_id,) if member_id else ()
-    receipt_where = "WHERE r.member_id=?" if member_id else ""
+    api_clauses = []
+    params = []
+    if member_id:
+        api_clauses.append("u.member_id=?")
+        params.append(member_id)
+    if since_ms:
+        api_clauses.append("u.created_at>=?")
+        params.append(since_ms)
+    where = ("WHERE " + " AND ".join(api_clauses)) if api_clauses else ""
+    params = tuple(params)
+    receipt_clauses = []
+    receipt_params = []
+    if member_id:
+        receipt_clauses.append("r.member_id=?")
+        receipt_params.append(member_id)
+    if since_ms:
+        receipt_clauses.append("r.event_at>=?")
+        receipt_params.append(since_ms)
+    receipt_where = ("WHERE " + " AND ".join(receipt_clauses)) if receipt_clauses else ""
+    receipt_params = tuple(receipt_params)
     with _lock:
         conn = _connect()
         try:
@@ -14557,7 +14604,7 @@ def model_usage_details(member_id="", limit=120):
                 "FROM model_usage_receipts r " + receipt_where + " "
                 "GROUP BY r.usage_kind,r.surface,r.feature,COALESCE(r.model,''),r.call_status "
                 "ORDER BY MAX(r.updated_at) DESC,r.usage_kind,r.feature",
-                params,
+                receipt_params,
             ).fetchall()
             receipt_events = conn.execute(
                 "SELECT r.receipt_id,r.member_id,r.member_name,COALESCE(m.username,''),"
@@ -14569,7 +14616,7 @@ def model_usage_details(member_id="", limit=120):
                 "LEFT JOIN members m ON m.id=r.member_id "
                 "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id " +
                 receipt_where + " ORDER BY r.updated_at DESC LIMIT ?",
-                (*params, limit),
+                (*receipt_params, limit),
             ).fetchall()
             unresolved_events = [
                 row for row in receipt_events
@@ -16907,6 +16954,43 @@ def _custom_canvas_gc_blobs_locked(conn, owner_id):
     return [stored_name for _, stored_name in orphaned]
 
 
+_CUSTOM_CANVAS_GC_DEFERABLE_HISTORY_ERRORS = {
+    "custom_canvas_business_reference_blob_missing",
+    "custom_canvas_community_reference_blob_missing",
+    "custom_canvas_cross_owner_reference_conflict",
+}
+
+
+def _custom_canvas_gc_or_defer_locked(conn, owner_id):
+    """Run conservative blob GC without coupling it to a normal canvas save.
+
+    A historical business/community reference can be missing its original
+    binary while the active canvas draft and all of its own blobs are valid.
+    In that case deletion safety is unknown, so the safest result is to keep
+    every blob row/file and commit the user's draft.  The missing reference is
+    deliberately not rewritten or isolated here; readiness and the reviewed
+    isolation workflow remain authoritative.  New/forged draft references are
+    still rejected by ``_custom_canvas_validate_blob_refs_locked`` before this
+    helper runs.
+    """
+    savepoint = "custom_canvas_gc"
+    conn.execute(f"SAVEPOINT {savepoint}")
+    try:
+        orphaned = _custom_canvas_gc_blobs_locked(conn, owner_id)
+    except ValueError as exc:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if str(exc) in _CUSTOM_CANVAS_GC_DEFERABLE_HISTORY_ERRORS:
+            return []
+        raise
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+    return orphaned
+
+
 def _custom_canvas_unlink_orphans(stored_names):
     for stored_name in stored_names:
         try:
@@ -17647,6 +17731,26 @@ def _prepare_custom_canvas_draft(source_project_id, payload):
     }
 
 
+def _custom_canvas_same_logical_draft(existing, prepared):
+    """Treat a lost successful response as an idempotent retry.
+
+    ``clientUpdatedAt`` is copied into ``project.updatedAt`` for ordering, so a
+    browser that retries the exact same verified canvas after losing the first
+    response otherwise produces a different content hash and a false revision
+    conflict.  Only transport/server-owned metadata is ignored here; project
+    fields edited by the user and the complete canvas draft must still match.
+    """
+    existing_project = dict((existing or {}).get("project") or {})
+    incoming_project = dict((prepared or {}).get("project") or {})
+    for project in (existing_project, incoming_project):
+        for key in ("updatedAt", "sourceId", "sourceProjectId", "appVersion"):
+            project.pop(key, None)
+    return (
+        existing_project == incoming_project
+        and (existing or {}).get("draft") == (prepared or {}).get("draft")
+    )
+
+
 def _ensure_custom_canvas_project_locked(
     conn,
     owner_id,
@@ -17949,6 +18053,13 @@ def save_custom_canvas_draft(owner_id, source_project_id, payload):
                 result = _custom_canvas_payload_locked(conn, owner, existing)
                 conn.rollback()
                 return result, None, "unchanged"
+            if existing and _custom_canvas_same_logical_draft(existing, prepared):
+                # The server already has this exact canvas.  Preserve its
+                # revision/timestamp instead of turning a lost response into a
+                # user-visible concurrent-edit conflict.
+                result = _custom_canvas_payload_locked(conn, owner, existing)
+                conn.rollback()
+                return result, None, "unchanged"
             if existing:
                 old_items = existing["draft"].get("items")
                 old_messages = existing["draft"].get("messages")
@@ -18075,7 +18186,7 @@ def save_custom_canvas_draft(owner_id, source_project_id, payload):
                     prepared["draftJson"],
                 ),
             )
-            orphaned_files = _custom_canvas_gc_blobs_locked(conn, owner)
+            orphaned_files = _custom_canvas_gc_or_defer_locked(conn, owner)
             stored = _custom_canvas_draft_row_locked(conn, owner, source_id)
             result = _custom_canvas_payload_locked(conn, owner, stored)
             conn.commit()
@@ -18143,7 +18254,7 @@ def delete_custom_canvas_draft(owner_id, source_project_id):
                         now,
                     ),
                 )
-                orphaned_files = _custom_canvas_gc_blobs_locked(conn, owner)
+                orphaned_files = _custom_canvas_gc_or_defer_locked(conn, owner)
                 conn.commit()
                 _custom_canvas_unlink_orphans(orphaned_files)
                 return {
@@ -18170,7 +18281,7 @@ def delete_custom_canvas_draft(owner_id, source_project_id):
                 """,
                 (revision, now, now, owner, source_id),
             )
-            orphaned_files = _custom_canvas_gc_blobs_locked(conn, owner)
+            orphaned_files = _custom_canvas_gc_or_defer_locked(conn, owner)
             conn.commit()
             _custom_canvas_unlink_orphans(orphaned_files)
             return {

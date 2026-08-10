@@ -82,11 +82,12 @@ async function fetchWithTimeout(path, options = {}, timeoutMs = FETCH_TIMEOUT_MS
 
 async function req(path, {
   method = "GET", body, auth = true, metric = "", metricDetail = {},
-  timeoutMs = FETCH_TIMEOUT_MS, transientRetries = 0,
+  timeoutMs = FETCH_TIMEOUT_MS, transientRetries = 0, idempotencyKey = "",
 } = {}) {
   const startedAt = perfNow();
   const headers = { "Content-Type": "application/json", "Cache-Control": "no-cache" };
   if (auth && _token) headers.Authorization = "Bearer " + _token;
+  if (idempotencyKey) headers["Idempotency-Key"] = String(idempotencyKey).slice(0, 160);
   let res;
   let requestError = null;
   for (let attempt = 0; attempt <= transientRetries; attempt += 1) {
@@ -339,6 +340,16 @@ export function accountPublishQuotas(accountIds = []) {
   if (!ids.length) return Promise.resolve({ dayKey: "", limit: 2, items: [] });
   return req("/api/account-publish-quotas?accountIds=" + encodeURIComponent(ids.join(",")));
 }
+
+export function qianfanTopicIdeas(payload, idempotencyKey = "") {
+  if (!_on || !_token || _authBlocked) return Promise.reject(new Error("服务器登录已失效"));
+  return req("/api/qianfan/topic-ideas", {
+    method: "POST",
+    body: payload,
+    idempotencyKey,
+    timeoutMs: 180000,
+  });
+}
 export function deleteDoc(name, id) {
   if (!_on || !_token || _authBlocked || !SYNCED.has(name) || id == null) return Promise.resolve();
   return req("/api/db/" + name + "/" + encodeURIComponent(id), { method: "DELETE" });
@@ -405,8 +416,12 @@ export const teams = {
 
 /* 管理员用量看板：语言 Token 与实际图片/视频调用分账展示。 */
 export const admin = {
-  llmUsage: () => req("/api/admin/llm-usage"),
-  llmUsageDetails: (memberId = "") => req("/api/admin/llm-usage/details" + (memberId ? "?memberId=" + encodeURIComponent(memberId) : "")),
+  llmUsage: (days = 7) => req("/api/admin/llm-usage?days=" + (Number(days) === 30 ? "30" : "7")),
+  llmUsageDetails: (memberId = "", days = 7) => {
+    const params = new URLSearchParams({ days: Number(days) === 30 ? "30" : "7" });
+    if (memberId) params.set("memberId", memberId);
+    return req("/api/admin/llm-usage/details?" + params.toString());
+  },
   platformAccounts: () => req("/api/platform/accounts"),
   setPlatformAccountStatus: (id, status) => req(
     "/api/platform/accounts/" + encodeURIComponent(id) + "/status",
@@ -454,6 +469,19 @@ export const productionDeliveries = {
       transientRetries: 1,
     }
   )
+};
+
+export const batchVideoEditor = {
+  open: productionId => req(
+    "/api/productions/" + encodeURIComponent(productionId) + "/video-editor",
+    {
+      method: "POST",
+      metric: "batch-video-editor-open",
+      timeoutMs: 20000,
+      transientRetries: 1,
+      idempotencyKey: `batch-video-editor-${String(productionId || "").slice(0, 120)}`,
+    },
+  ),
 };
 
 export const deliveryRemarks = {

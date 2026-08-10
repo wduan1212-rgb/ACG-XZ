@@ -5,7 +5,7 @@ import { state, saveIncremental, emit, productionById, notify, assetById } from 
 import { uid } from "../core/util.js";
 import { getProvider, providerKeyFor, providerReadyForSubmit } from "./providers.js";
 import { assetBlob, urlFor } from "../domain/assets.js";
-import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260810-v1420-generation-resilience-1";
+import { productionAllowsJobProcessing } from "../domain/productionFailureState.js?v=20260811-v1423-batch-video-editor-1";
 
 const IMAGE_CONCURRENCY = 4;
 // 与服务端 VideoTaskGate 保持一致：全平台最多同时处理 10 个视频任务，
@@ -56,11 +56,11 @@ function normalizeOutput(output) {
   return url ? { url } : null;
 }
 
-export function createJob({ kind = "video", productionId, segIndex = 0, segName = "", prompt, refAssetIds = [], ratio = "9:16", duration = 15, generateAudio = null, model = "", segmentId = "" }) {
+export function createJob({ kind = "video", productionId, segIndex = 0, segName = "", prompt, refAssetIds = [], ratio = "9:16", duration = 15, generateAudio = null, model = "", creative = false, segmentId = "" }) {
   const intendedRefAssetIds = [...new Set((refAssetIds || []).filter(Boolean))];
   const job = {
     id: uid(), kind, productionId, segIndex, segName,
-    prompt, refAssetIds: intendedRefAssetIds, intendedRefAssetIds, ratio, duration, generateAudio, model,
+    prompt, refAssetIds: intendedRefAssetIds, intendedRefAssetIds, ratio, duration, generateAudio, model, creative: creative === true,
     segmentId,
     provider: null, providerRef: null,
     status: "queued", progress: 0, attempts: 0,
@@ -366,6 +366,7 @@ async function tick() {
           intendedRefAssetIds,
           generateAudio: j.generateAudio,
           model: j.model || key?.model || "",
+          creative: j.creative === true,
           attempt: j.attempts - 1,
           apiKey: key?.secret || "",
           endpoint,

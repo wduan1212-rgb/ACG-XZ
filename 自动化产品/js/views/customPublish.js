@@ -1,21 +1,21 @@
 import { esc } from "../core/util.js";
 import { state, save, persistNow, accountById, assetById, productById, canDeliver } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { AI } from "../api/ai.js?v=20260810-v1420-generation-resilience-1";
+import { AI } from "../api/ai.js?v=20260811-v1423-batch-video-editor-1";
 import { addAssetFromDataUrl, addAssetFromFile, removeAsset, urlFor } from "../domain/assets.js";
-import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260810-v1420-generation-resilience-1";
+import { commitCustomDelivery, deliverCustomOutput, discardCustomDelivery, productTagLabel } from "../domain/delivery.js?v=20260811-v1423-batch-video-editor-1";
 import { polishImageForPublish } from "../domain/imagePolish.js";
-import { ensureVideoCover } from "./chainWorkshop.js?v=20260810-v1420-generation-resilience-1";
+import { ensureVideoCover } from "./chainWorkshop.js?v=20260811-v1423-batch-video-editor-1";
 import { icon } from "../ui/icons.js";
-import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
-import { groupOf, isAccountDisabled } from "../domain/accounts.js";
+import { openLightbox, openModal, toast, withLoading } from "../ui/components.js?v=20260811-v1423-batch-video-editor-1";
+import { isAccountDisabled } from "../domain/accounts.js";
 import {
   accountPublishAvailable,
   accountPublishQuota,
   invalidateAccountPublishQuotas,
   refreshAccountPublishQuotas,
-} from "../domain/productionQuota.js?v=20260810-v1420-generation-resilience-1";
-import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260810-v1420-generation-resilience-1";
+} from "../domain/productionQuota.js?v=20260811-v1423-batch-video-editor-1";
+import { assertPublishText, validatePublishText } from "../domain/publishRules.js?v=20260811-v1423-batch-video-editor-1";
 
 let activeCustomPublishModal = null;
 const CUSTOM_PUBLISH_DRAFT_PREFIX = "xingzhen:custom-publish-draft:v1";
@@ -119,7 +119,7 @@ function outputItems(output = {}) {
 
 function eligibleAccounts(kind) {
   const expectedMode = kind === "canvas" ? "图文" : "视频";
-  return state.accounts.filter(account => !isAccountDisabled(account) && account.mode === expectedMode && (kind !== "video" || groupOf(account) === "素材"));
+  return state.accounts.filter(account => !isAccountDisabled(account) && account.mode === expectedMode);
 }
 
 function accountOptions(accounts, selectedId = "") {
@@ -478,7 +478,7 @@ export async function openCustomPublish(output = {}, { onPublished } = {}) {
   const draft = readPublishDraft(output, kind);
   const accounts = eligibleAccounts(kind);
   if (!accounts.length) {
-    toast(`请先创建至少一个${kind === "video" ? "素材" : "图文"}账号`, "error");
+    toast(`请先创建至少一个${kind === "video" ? "视频号" : "图文"}账号`, "error");
     return null;
   }
   await refreshAccountPublishQuotas(accounts.map(account => account.id), { force: true });

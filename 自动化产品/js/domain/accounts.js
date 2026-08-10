@@ -17,8 +17,10 @@ export function accountDisplaySequenceMap(accounts = state.accounts) {
   }));
 }
 
-export const groupOf = a => a.mode === "图文" ? "图文组" : (a.subType === "数字人" ? "真人" : "素材");
-export const modeLabel = a => a.mode === "视频" ? (a.subType || "视频") : "图文";
+/* 视频号账号只表达发布身份，不再把账号永久绑定到“数字人/素材”创作链路。
+   历史 subType 继续保留用于旧任务兼容；新任务由任务板的 videoCreationMode 决定。 */
+export const groupOf = a => a.mode === "图文" ? "图文组" : "视频号";
+export const modeLabel = a => a.mode === "视频" ? "视频" : "图文";
 export const isAccountDisabled = account => account?.status === "disabled" || Number(account?.disabledAt || 0) > 0;
 export function isNewAccount(account, now = Date.now()) {
   const createdAt = typeof account?.createdAt === "string" ? Date.parse(account.createdAt) : Number(account?.createdAt || 0);
@@ -93,7 +95,7 @@ export function createAccount(data) {
     imageStyleAssetId: data.imageStyleAssetId || null,
     imagePromptTemplate: data.imagePromptTemplate || "",
     homepageUrl: normalizeHomepageUrl(data.homepageUrl || ""),
-    appearanceAnchor: data.appearanceAnchor || (data.mode === "视频" && data.subType !== "无数字人" ? appearanceAnchorFor(data) : ""),
+    appearanceAnchor: data.appearanceAnchor || (data.mode === "视频" ? appearanceAnchorFor(data) : ""),
     lockedStyle: null, customStyleChips: [],
     createdAt: Date.now(), updatedAt: Date.now()
   };

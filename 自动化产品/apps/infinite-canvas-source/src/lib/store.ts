@@ -1217,6 +1217,32 @@ export const useStore = create<AppState>()(
             }
           };
 
+          const settleEquivalentDirtyCheckpoint = async (
+            projectId: string,
+            local: NonNullable<Awaited<ReturnType<typeof readCanvasProject>>>,
+          ): Promise<"settled" | "conflict" | "deferred"> => {
+            const snapshot = canvasProjectSnapshot(get(), projectId, local.clientUpdatedAt);
+            if (!snapshot) return "deferred";
+            const expectedGeneration = canvasMutationGeneration.get(projectId) || 0;
+            try {
+              const result = await putCanvasProject(projectId, {
+                ...snapshot,
+                clientUpdatedAt: local.clientUpdatedAt,
+                baseRevision: local.serverRevision,
+              }, controller.signal);
+              await applyCanonical(projectId, result, {
+                expectedGeneration,
+                expectedClientUpdatedAt: local.clientUpdatedAt,
+                advanceRevisionOnMutation: true,
+              });
+              return "settled";
+            } catch (error) {
+              if (error instanceof CanvasSyncError && error.status === 409) return "conflict";
+              console.warn("[canvas-sync] dirty checkpoint confirmation deferred:", error);
+              return "deferred";
+            }
+          };
+
           // Complete every legacy migration through the idempotent server
           // handshake before normal index reconciliation. A matching server ID
           // may only be an empty shell; GET+install here would destroy the
@@ -1311,7 +1337,26 @@ export const useStore = create<AppState>()(
               const localRevision = local.serverRevision;
               const remoteIsNewer = Number(serverProject.revision || 0) > Number(localRevision || 0)
                 || Number(serverProject.updatedAt || 0) > Number(local.clientUpdatedAt || 0);
-              const hasConflict = local.conflicted || remoteIsNewer;
+              let hasConflict = local.conflicted || remoteIsNewer;
+              if (hasConflict) {
+                // A response can be lost after the server committed the exact
+                // same canvas. Confirm that checkpoint once before presenting
+                // a concurrent-edit conflict. The server accepts only a
+                // semantically identical retry; genuinely different drafts
+                // still return 409 and remain protected.
+                const settlement = await settleEquivalentDirtyCheckpoint(projectId, local);
+                if (settlement === "settled") continue;
+                if (settlement === "deferred") {
+                  set((state) => ({
+                    projectSyncError: {
+                      ...state.projectSyncError,
+                      [projectId]: "服务器同步暂时中断，本地内容已保留；联网后会继续核对。",
+                    },
+                  }));
+                  continue;
+                }
+                hasConflict = true;
+              }
               if (hasConflict) {
                 conflictedCanvasProjects.add(projectId);
                 if (!local.conflicted) {

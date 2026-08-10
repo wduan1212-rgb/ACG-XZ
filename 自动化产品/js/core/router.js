@@ -126,7 +126,11 @@ export function render() {
   document.body.classList.toggle("immersive", !workspaceShell && (zone === "agent" || zone === "custom"));
 
   // 导航高亮
-  $$("[data-nav]").forEach(b => b.classList.toggle("is-active", b.dataset.nav === zone));
+  $$("[data-nav]").forEach(b => {
+    const navPage = String(b.dataset.page || "").trim();
+    const currentPage = zone === "custom" ? (page || "video") : (page || "");
+    b.classList.toggle("is-active", b.dataset.nav === zone && (!navPage || navPage === currentPage));
+  });
 
   const view = routes.get(zone);
   const root = $("#viewRoot");

@@ -3,9 +3,9 @@
 import { $, $$, esc, fileToDataUrl, uid } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, saveMembers, currentMember, currentTeam, ROLE_LABEL } from "../core/store.js";
-import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
+import { toast, confirmModal, promptModal, openModal } from "../ui/components.js?v=20260811-v1423-batch-video-editor-1";
 import * as remote from "../core/remote.js";
-import { renderSupplierSettings } from "./supplierViews.js?v=20260810-v1420-generation-resilience-1";
+import { renderSupplierSettings } from "./supplierViews.js?v=20260811-v1423-batch-video-editor-1";
 
 const ROLE_DESC = { admin: "团队管理员", editor: "创作成员", user: "个人用户", supplier_parent: "供应商管理员", supplier_child: "供应商子账号" };
 const ROLE_OPTS = ["admin", "editor"];
@@ -229,6 +229,7 @@ export const settingsView = {
     let apiUsageRows = [];
     let apiUsageLoaded = false;
     let apiUsageLoading = false;
+    let apiUsageDays = 7;
     let productLibraryOpen = managementPage === "products";
     const canReviewRegistrations = () => remote.isOn() && team?.kind === "internal" && canManageTeam;
     const canReviewPlatformAccounts = () => remote.isOn() && team?.kind === "internal" && canManageTeam;
@@ -315,7 +316,13 @@ export const settingsView = {
                   <span class="settings-member-avatar ${m.teamRole || m.role}">${m.avatarUrl ? `<img src="${esc(m.avatarUrl)}" alt="${esc(m.name)} 的头像"/>` : icon(["owner", "admin"].includes(m.teamRole) ? "shield" : "user", 14)}</span>
                   <span class="ovt-main"><b>${esc(m.name)} ${m.id === state.ui.currentMemberId ? `<i class="mem-me">当前</i>` : ""}</b><em>@${esc(m.username)} · ${ROLE_DESC[m.role] || ROLE_LABEL[m.role] || m.role}</em></span>
                   <span class="mem-role tag ${m.teamRole || m.role}">${m.teamRole === "owner" ? "团队所有者" : m.teamRole === "admin" ? "团队管理员" : "创作成员"}</span>
-                  <span class="settings-member-actions"><button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-mdel="${m.id}" title="踢出团队" ${m.id === state.ui.currentMemberId || m.teamRole === "owner" ? "disabled" : ""}>${icon("logOut", 13)}</button></span>
+                  <span class="settings-member-actions">${canReviewPlatformAccounts() ? (() => {
+                    const account = platformAccounts.creators.find(item => item.id === m.id);
+                    if (!account) return "";
+                    const disabled = account.accountStatus === "disabled";
+                    const protectedAccount = account.id === state.ui.currentMemberId || (account.teamId === "team-acg-marketing" && account.teamRole === "owner");
+                    return `<button class="btn ghost sm ${disabled ? "" : "danger"}" type="button" data-platform-status="${esc(account.id)}" data-next-status="${disabled ? "active" : "disabled"}" ${protectedAccount ? "disabled" : ""}>${disabled ? "恢复账号" : "停用账号"}</button>`;
+                  })() : ""}<button class="icon-btn sm" data-medit="${m.id}" title="编辑">${icon("edit", 13)}</button><button class="icon-btn sm danger" data-mdel="${m.id}" title="踢出团队" ${m.id === state.ui.currentMemberId || m.teamRole === "owner" ? "disabled" : ""}>${icon("logOut", 13)}</button></span>
                 </article>`).join("")}
             </div>
           </section>
@@ -341,20 +348,12 @@ export const settingsView = {
                 <div class="settings-request-title"><b>团队版账号</b><span>${platformAccounts.teamOwners.length} 个</span></div>
                 <div class="mem-list">${platformAccounts.teamOwners.length ? platformAccounts.teamOwners.map(account => `
                   <div class="mem-row"><span class="ovt-main"><b>${esc(account.teamName || "团队")}</b><em>所有者 ${esc(account.name || "用户")} · @${esc(account.username || "")}</em></span><span class="tag admin">${account.plan === "team-pro" ? "团队专业版" : "团队版"}</span></div>`).join("") : `<div class="muted" style="padding:8px 2px">暂无已开通的外部团队。</div>`}</div>
-              </div>
-              <div class="settings-request-section">
-                <div class="settings-request-title"><b>全部创作端账号</b><span>${platformAccounts.creators.length} 个</span></div>
-                <div class="mem-list">${platformAccounts.creators.length ? platformAccounts.creators.map(account => {
-                  const disabled = account.accountStatus === "disabled";
-                  const protectedAccount = account.id === state.ui.currentMemberId || (account.teamId === "team-acg-marketing" && account.teamRole === "owner");
-                  return `<div class="mem-row"><span class="ovt-main"><b>${esc(account.name || "创作用户")}</b><em>@${esc(account.username || "")} · ${esc(account.teamName || "Free")} · ${disabled ? "已停用" : "使用中"}</em></span><span class="tag ${disabled ? "danger" : "user"}">${disabled ? "已停用" : "正常"}</span><button class="btn ghost sm ${disabled ? "" : "danger"}" type="button" data-platform-status="${esc(account.id)}" data-next-status="${disabled ? "active" : "disabled"}" ${protectedAccount ? "disabled" : ""}>${disabled ? "恢复账号" : "停用账号"}</button></div>`;
-                }).join("") : `<div class="muted" style="padding:8px 2px">暂无创作端账号。</div>`}</div>
               </div>`}
           </section>` : ""}` : ""}
 
           ${managementPage === "usage" ? `<section class="card set-data api-usage-panel" id="apiUsagePanel">
             <div class="card-head"><span><b>创作者模型用量</b><em>语言只显示上游真实 Token；图片、视频、语音显示已确认调用，未回传 Token 会明确标记未知</em></span>
-              ${canSeeApiUsage() ? `<span class="api-usage-actions"><button class="btn ghost sm" id="apiUsageDetails">${icon("list", 13)} 查看 API 明细</button><button class="btn ghost sm" id="apiUsageRefresh" ${apiUsageLoading ? "disabled" : ""}>${icon("pulse", 13)} ${apiUsageLoading ? "刷新中…" : "刷新"}</button></span>` : ""}</div>
+              ${canSeeApiUsage() ? `<span class="api-usage-actions"><span class="api-usage-range" role="group" aria-label="模型用量时间范围"><button type="button" data-usage-days="7" class="${apiUsageDays === 7 ? "is-active" : ""}">近一周</button><button type="button" data-usage-days="30" class="${apiUsageDays === 30 ? "is-active" : ""}">近一月</button></span><button class="btn ghost sm" id="apiUsageDetails">${icon("list", 13)} 查看 API 明细</button><button class="btn ghost sm" id="apiUsageRefresh" ${apiUsageLoading ? "disabled" : ""}>${icon("pulse", 13)} ${apiUsageLoading ? "刷新中…" : "刷新"}</button></span>` : ""}</div>
             <div class="api-usage-table">${canSeeApiUsage() ? apiUsageSummaryHtml() : `<div class="muted api-usage-empty">模型用量仅在管理员连接主服务后可用。</div>`}</div>
           </section>` : ""}
 
@@ -412,7 +411,7 @@ export const settingsView = {
         refreshApiUsagePanel();
       }
       try {
-        const result = await remote.admin.llmUsage();
+        const result = await remote.admin.llmUsage(apiUsageDays);
         apiUsageRows = Array.isArray(result?.rows) ? result.rows : [];
       } catch (e) {
         toast("读取接口用量失败：" + (e.message || e));
@@ -445,7 +444,7 @@ export const settingsView = {
       openModal(`<div class="mp-head"><div><b>${member ? `${esc(member.memberName || "成员")} · 模型调用明细` : "模型调用明细"}</b><em>真实 Token 与图片 / 视频 / 语音输出分开统计，未知状态单独标记</em></div><button class="icon-btn" data-close>${icon("x", 16)}</button></div><div class="api-usage-detail-body"><div class="muted" style="padding:12px 2px">正在读取 API 明细...</div></div>`, { wide: true, onMount(panel) {
         panel.classList.add("api-usage-modal");
         const body = $(".api-usage-detail-body", panel);
-        remote.admin.llmUsageDetails(memberId).then(details => {
+        remote.admin.llmUsageDetails(memberId, apiUsageDays).then(details => {
           if (body) body.innerHTML = apiUsageDetailsHtml(details, member);
         }).catch(error => {
           if (body) body.innerHTML = `<p class="muted api-detail-empty">读取明细失败：${esc(error?.message || String(error))}</p>`;
@@ -526,6 +525,14 @@ export const settingsView = {
       $("#reqRefresh", root)?.addEventListener("click", () => loadRequests());
       $("#apiUsageRefresh", root)?.addEventListener("click", () => loadApiUsage({ inPlace: true }));
       $("#apiUsageDetails", root)?.addEventListener("click", openApiUsageDetails);
+      $$('[data-usage-days]', root).forEach(button => button.addEventListener("click", () => {
+        const days = Number(button.dataset.usageDays) === 30 ? 30 : 7;
+        if (days === apiUsageDays || apiUsageLoading) return;
+        apiUsageDays = days;
+        apiUsageLoaded = false;
+        draw();
+        loadApiUsage({ inPlace: true });
+      }));
       wireApiUsageMemberButtons(root);
       $$("[data-rapprove]", root).forEach(b => b.addEventListener("click", async () => {
         const req = memberRequests.find(x => x.id === b.dataset.rapprove);

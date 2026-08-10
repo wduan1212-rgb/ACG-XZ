@@ -260,6 +260,7 @@
   border: 1px solid var(--ag-line); border-radius: var(--r-sm); background: rgba(255, 255, 255, .035);
 }
 .agc-static-style-row label { display: flex; align-items: center; gap: 8px; color: var(--d-muted); font-size: 11px; font-weight: 700; }
+.agc-static-style-row .agc-creative-style-label { flex-flow: row nowrap; white-space: nowrap; }
 .agc-static-style-row select {
   min-width: 170px; height: 32px; padding: 0 28px 0 9px; border: 1px solid var(--ag-line);
   border-radius: var(--r-sm); background: rgba(255, 255, 255, .06); color: var(--d-text); color-scheme: dark;
@@ -767,8 +768,11 @@
 .mb-ghead { display: flex; align-items: center; gap: 8px; padding: 2px 2px 8px; }
 .mb-ghead b { font-size: 11.5px; font-weight: 700; color: var(--d-text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mb-gstat { font-size: 10px; color: var(--d-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.mb-gdel { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; color: var(--d-faint); flex: none; opacity: 0; transition: all var(--t-fast); }
-.mb-group:hover .mb-gdel { opacity: 1; }
+.mb-gactions { display: inline-flex; align-items: center; gap: 3px; flex: none; opacity: 0; transition: opacity var(--t-fast); }
+.mb-group:hover .mb-gactions, .mb-gactions:focus-within { opacity: 1; }
+.mb-gpause, .mb-gdel { min-width: 24px; height: 24px; padding: 0 6px; border: 0; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; color: var(--d-faint); background: transparent; font-size: 10px; cursor: pointer; transition: all var(--t-fast); }
+.mb-gpause span, .mb-gdel span { display: none; }
+.mb-gpause:hover { color: #c5d9ff; background: rgba(70, 120, 210, .16); }
 .mb-gdel:hover { color: #FF8787; background: rgba(224, 49, 49, .15); }
 /* 极简平铺：去掉重边框，靠左侧一条细色条 + 间距分隔，科技感 */
 .mb-row {
@@ -1700,4 +1704,31 @@ body.workspace-shell-v2[data-zone="agent"] .agent-shell.board-hidden .agw-body {
     max-width: 100%;
     flex-wrap: wrap;
   }
+}
+.agc-random-pick.is-ai-topic { color: #0d63ce; border-color: #b8d5fa; background: #f2f7ff; }
+.agc-random-pick.is-ai-topic:hover { background: #e7f1ff; }
+.agc-ai-topic-panel { width: min(980px, calc(100vw - 36px)); }
+.agc-ai-topic-modal { display: grid; gap: 14px; }
+.agc-ai-topic-query { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 10px; }
+.agc-ai-topic-query label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.agc-ai-topic-recency { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--line); border-radius: 11px; background: #f6f6f4; }
+.agc-ai-topic-recency button { min-height: 34px; padding: 0 12px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; cursor: pointer; }
+.agc-ai-topic-recency button.is-active { color: #fff; background: #1f2329; }
+.agc-ai-topic-note { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.agc-ai-topic-preview { max-height: min(56vh, 620px); overflow: auto; display: grid; gap: 10px; padding-right: 4px; }
+.agc-ai-topic-preview > p { margin: 0; padding: 34px 18px; border: 1px dashed var(--line); border-radius: 14px; color: var(--muted); text-align: center; }
+.agc-ai-topic-preview > p.is-error { color: #b73b36; background: #fff8f7; }
+.agc-ai-topic-item { display: grid; gap: 8px; padding: 14px 16px; border: 1px solid #e4e8ee; border-radius: 14px; background: #fff; }
+.agc-ai-topic-item header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.agc-ai-topic-item header span { display: flex; align-items: baseline; gap: 8px; }
+.agc-ai-topic-item header em, .agc-ai-topic-item header small { color: var(--muted); font-size: 11px; font-style: normal; }
+.agc-ai-topic-item h4 { margin: 0; font-size: 15px; }
+.agc-ai-topic-item p { margin: 0; color: #50545b; font-size: 13px; line-height: 1.65; }
+.agc-ai-topic-item > strong { color: #b73b36; font-size: 12px; }
+.agc-ai-topic-item.is-invalid { border-color: #efc4c0; background: #fffafa; }
+.agc-ai-topic-item footer { display: flex; flex-wrap: wrap; gap: 6px; }
+.agc-ai-topic-item footer a { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 8px; border-radius: 999px; color: #1769c2; background: #edf5ff; font-size: 11px; text-decoration: none; }
+@media (max-width: 720px) {
+  .agc-ai-topic-query { grid-template-columns: 1fr; align-items: stretch; }
+  .agc-ai-topic-recency { width: max-content; }
 }

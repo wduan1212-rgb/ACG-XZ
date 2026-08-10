@@ -4,14 +4,14 @@ import { esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, canDeliver, ownedBy } from "../core/store.js";
 import { platChip, groupOf, isAvatarAsset, isAccountDisabled } from "../domain/accounts.js";
-import { accountPublishQuota } from "../domain/productionQuota.js?v=20260810-v1420-generation-resilience-1";
-import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260810-v1420-generation-resilience-1";
-import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260810-v1420-generation-resilience-1";
+import { accountPublishQuota } from "../domain/productionQuota.js?v=20260811-v1423-batch-video-editor-1";
+import { STAGES, flowOf, normalizeStage, stageDone, statusPill, jobsOf } from "../domain/productions.js?v=20260811-v1423-batch-video-editor-1";
+import { batchById, batchProds, currentSessionBatches, selectAccountsForPlan, prunePlanReferences } from "./orchestrator.js?v=20260811-v1423-batch-video-editor-1";
 import { urlFor } from "../domain/assets.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
-const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
-const CONTENT_KIND_LABEL = { image: "图文", static: "静态视频", material: "素材视频", real: "真人视频" };
+const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "视频号", real: "视频号" };
+const CONTENT_KIND_LABEL = { image: "图文", static: "静态视频", material: "创意视频", real: "数字人" };
 
 /* 旧数据里偶尔会把“昵称+英文别名”整段重复写入 name。
    这里只修正展示投影，不回写账号数据，避免影响历史任务和交付命名。 */
@@ -53,8 +53,7 @@ function normalizePlanKind(p) {
     const g = groupOf(a);
     if (p.contentKind === "image") return a?.mode === "图文" || g === "图文组";
     if (p.contentKind === "static") return true;
-    if (p.contentKind === "material") return a?.mode === "视频" && g === "素材";
-    if (p.contentKind === "real") return a?.mode === "视频" && g === "真人";
+    if (p.contentKind === "material" || p.contentKind === "real") return a?.mode === "视频";
     return true;
   };
   p.accountIds = (p.accountIds || []).filter(id => match(accountById(id)));
@@ -214,7 +213,7 @@ const CARD = {
         const singleImageTitle = ((p.accountSingleImageTitles || {})[a.id] || "").trim();
         const customCopyTitle = ((p.accountCopyTitles || {})[a.id] || "").trim();
         const customCopyBody = ((p.accountCopyBodies || {})[a.id] || "").trim();
-        const presetRefId = !imgAcc && isRealKind && a.subType === "数字人" ? a.charBoardAssetId : "";
+        const presetRefId = !imgAcc && isRealKind ? a.charBoardAssetId : "";
         const taskRefIds = (accountRefs[a.id] || []).slice(0, 3);
         const presetRefHtml = presetRefId ? `<span class="agc-ref-origin is-preset">数字人角色版 · 生成时自动用于锁定角色身份</span>${refChips([presetRefId], "", m.id, a.id)}` : "";
         const imageModeSwitch = imgAcc ? `<div class="agc-image-mode-switch" data-mode="${imageCreationMode}" aria-label="图文创作模式">
@@ -260,7 +259,7 @@ const CARD = {
     return `<div class="ag-card plan ${confirmed ? "resolved" : ""}" data-plan="${m.id}">
       <div class="agc-head">${icon("kanban", 15)}<b>量产任务板</b>
         <div class="agc-modebar">
-          <span class="agc-seg-group">${kindBtn("image", "图文")}${kindBtn("static", "静态视频")}${kindBtn("material", "素材视频")}${kindBtn("real", "真人视频")}</span>
+          <span class="agc-seg-group">${kindBtn("image", "图文")}${kindBtn("static", "静态视频")}${kindBtn("material", "创意视频")}${kindBtn("real", "数字人")}</span>
         </div>
         <span class="agc-state ${confirmed ? "ok" : cancelled ? "off" : starting ? "busy" : ""}">${confirmed ? "已执行" : cancelled ? "已取消" : starting ? "启动中" : "待确认"}</span>
       </div>
@@ -278,6 +277,19 @@ const CARD = {
         </label>
         <span>用于本次全部静态视频；账号设定只补充人物与品牌细节。</span>
       </div>` : ""}
+      ${isMaterialKind ? `<div class="agc-static-style-row">
+        <label class="agc-creative-style-label"><span>创意画风</span>
+          <select data-pf="creativeVideoStyle" ${locked ? "disabled" : ""}>
+            ${[
+              ["电影级超写实怪诞广告", "电影级怪诞广告（默认）"],
+              ["高燃动漫与二维赛璐璐", "高燃动漫"],
+              ["三维超现实产品大片", "三维超现实"],
+              ["纪实手持伪纪录片", "伪纪录片"],
+              ["先锋时尚视觉拼贴", "先锋视觉拼贴"]
+            ].map(([value, label]) => `<option value="${esc(value)}" ${String(p.creativeVideoStyle || "电影级超写实怪诞广告") === value ? "selected" : ""}>${esc(label)}</option>`).join("")}
+          </select>
+        </label>
+      </div>` : ""}
       ${(() => {
         const editable = !locked;
         const usesUnifiedImageRefs = isImageKind || isStaticKind;
@@ -287,14 +299,14 @@ const CARD = {
         const clearAct = usesUnifiedImageRefs ? "plan-refclear" : "plan-cover-refclear";
         const dropAttr = usesUnifiedImageRefs ? `data-plan-refdrop="${m.id}"` : `data-plan-cover-refdrop="${m.id}"`;
         const inputAttr = usesUnifiedImageRefs ? `data-plan-ref="${m.id}"` : `data-plan-cover-ref="${m.id}"`;
-        const refTitle = usesUnifiedImageRefs ? "统一参考图" : isMaterialKind ? "统一素材视频参考" : "统一真人视频封面参考";
+        const refTitle = usesUnifiedImageRefs ? "统一参考图" : isMaterialKind ? "统一创意视频参考" : "统一数字人封面参考";
         const refDesc = isStaticKind
           ? "静态视频的每张图片分镜都会携带这些参考图，最多5张；单账号可再追加"
           : isImageKind
           ? "图文成图会参考，最多5张；单账号定制图可单独追加"
           : isMaterialKind
-          ? "用于视频封面、信息流 B 面分镜和功能演示参考，最多5张"
-          : "用于视频封面参考；角色形象仍读取账号角色图，缺失时生成会拦截";
+          ? "作为故事版主体、产品与视觉风格参考，最多5张；未提供时也会先生成故事版"
+          : "用于视频封面参考；数字人角色形象读取账号角色版，缺失时生成会拦截";
         return `<div class="agc-ref">
           <div class="agc-ref-top">
             <span class="agc-ref-l">${icon("star", 12)} ${refTitle}<em>${refDesc}</em></span>
@@ -316,6 +328,7 @@ const CARD = {
       })()}
       <div class="agc-sec"><span>命中 ${matched.length} 个账号 · 共 ${totalCount} 条 <em>点击账号可增减</em></span>
         ${locked ? "" : `<span class="agc-sec-tools">
+          <button class="agc-random-pick is-ai-topic" data-act="plan-ai-topic" data-mid="${m.id}">${icon("search", 13)} AI选题</button>
           ${customMode ? "" : `<label class="agc-count-inline">每号内容数<input type="number" min="1" max="12" data-pf="perAccountCount" value="${esc(perAccountCount)}" /></label>`}
           ${isImageKind ? `<label class="agc-count-inline">统一每条图数<input type="number" min="1" max="12" data-pf="imageCount" value="${esc(imageCountDefault)}" /></label>
           <button class="agc-random-pick" data-act="plan-apply-image-count" data-mid="${m.id}">应用到全部图文</button>` : ""}
@@ -503,7 +516,7 @@ export function boardRow(p) {
   } else if (p.stageStatus === "failed") {
     sub = `<span class="mb-sub fail-text">${esc((p.error || "失败").slice(0, 18))}</span>`;
   }
-  const TYPE = p.mode === "图文" ? ["图文", "img"] : p.staticVideo ? ["静态", "mat"] : p.subType === "无数字人" ? ["素材", "mat"] : ["真人", "dh"];
+  const TYPE = p.mode === "图文" ? ["图文", "img"] : p.staticVideo ? ["静态", "mat"] : p.subType === "无数字人" ? ["创意", "mat"] : ["数字人", "dh"];
   const previewAssetId = p.mode === "图文"
     ? p.artifacts.images?.items?.find(item => item.assetId)?.assetId
     : p.artifacts.boards?.cover?.assetId;

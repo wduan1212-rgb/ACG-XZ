@@ -4,16 +4,17 @@ import { $, $$, esc, gradFor, timeAgo, wireDropZone, fileToDataUrl } from "../co
 import { icon } from "../ui/icons.js";
 import { state, save, activeAccount, activeProduction, productionById, canManageAccounts } from "../core/store.js";
 import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, isAccountDisabled } from "../domain/accounts.js";
-import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, commitProductionCreations, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js?v=20260810-v1420-generation-resilience-1";
-import { accountPublishQuota, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260810-v1420-generation-resilience-1";
-import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
+import { STAGES, flowOf, normalizeStage, stageDone, statusPill, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js?v=20260811-v1423-batch-video-editor-1";
+import { accountPublishQuota, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260811-v1423-batch-video-editor-1";
+import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260811-v1423-batch-video-editor-1";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260810-v1420-generation-resilience-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260811-v1423-batch-video-editor-1";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260810-v1420-generation-resilience-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260810-v1420-generation-resilience-1";
-import { renderCutPage } from "./chainCut.js?v=20260810-v1420-generation-resilience-1";
-import { renderReviewPage } from "./chainCopy.js?v=20260810-v1420-generation-resilience-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260811-v1423-batch-video-editor-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260811-v1423-batch-video-editor-1";
+import { renderCutPage } from "./chainCut.js?v=20260811-v1423-batch-video-editor-1";
+import { renderReviewPage } from "./chainCopy.js?v=20260811-v1423-batch-video-editor-1";
+import { newSession, addMsg, defaultPlan } from "../agent/orchestrator.js?v=20260811-v1423-batch-video-editor-1";
 
 export const studioView = {
   render(root, { page }) {
@@ -71,7 +72,7 @@ export function stepperHtml(p, currentPage) {
       const done = stageDone(p, st);
       const cur = pageStage(currentPage) === st;
       const fail = cur && p.stageStatus === "failed";
-      const stageLabel = st === "workshop" ? (p.subType === "数字人" ? "数字人制作" : "信息流制作") : STAGES[st].label;
+      const stageLabel = st === "workshop" ? (p.subType === "数字人" ? "数字人制作" : "创意视频制作") : STAGES[st].label;
       return `<button class="cs-step ${cur ? "is-current" : ""} ${done ? "is-done" : ""} ${fail ? "is-fail" : ""}" data-chain="${stagePageName(st)}">
         <span class="cs-dot">${done && !cur ? icon("check", 11) : `<i>${i + 1}</i>`}</span>
         <span class="cs-label">${stageLabel}</span>
@@ -105,7 +106,7 @@ function renderHome(root, acc) {
   const accAssets = accountAssets(acc.id);
   const avatarUrl = acc.avatarAssetId ? urlFor(acc.avatarAssetId) : "";
   const charRefUrl = board ? urlFor(board) : "";
-  const showRoleRef = acc.mode === "视频" && acc.subType === "数字人";
+  const showRoleRef = acc.mode === "视频";
   const disabledAccount = isAccountDisabled(acc);
   const publishQuota = accountPublishQuota(acc.id);
   void refreshAccountPublishQuotas([acc.id], { force: true }).then(changed => {
@@ -279,15 +280,22 @@ function renderHome(root, acc) {
     go("studio", b.dataset.shFlow);
   }));
   const onAct = {
-    new: async () => {
-      const p = createProduction({ accountId: acc.id, origin: "manual", persist: false });
-      try {
-        await commitProductionCreations([p]);
-        state.ui.activeProductionId = p.id; save("meta");
-        go("studio", acc.mode === "视频" ? "workshop" : "images");
-      } catch (error) {
-        toast(error?.message || "创建失败，请稍后重试", "error");
-      }
+    new: () => {
+      // 单号主页只作为账号数据与历史任务入口；新创作统一进入批量任务板，
+      // 让同一个视频号在“创意视频/数字人”之间按本次任务自由选择。
+      const session = newSession();
+      const plan = defaultPlan(`为「${acc.name}」开始新创作`);
+      plan.contentKind = acc.mode === "视频" ? "material" : "image";
+      plan.group = acc.mode === "视频" ? "视频号" : "图文组";
+      plan.accountIds = [acc.id];
+      plan.accountCount = 1;
+      plan.manualAccountSelection = true;
+      plan.creativeMode = "custom";
+      plan.creativeVideoStyle = "电影级超写实怪诞广告";
+      plan.accountCustomCopyModes = { [acc.id]: true };
+      session.title = `${acc.name} · 新创作`.slice(0, 24);
+      addMsg(session, { role: "agent", type: "plan", payload: plan });
+      go("agent", null, session.id);
     },
 	    edit: () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: { accountId: acc.id } })),
 	    delete: async () => {
@@ -330,7 +338,7 @@ function renderHome(root, acc) {
             ? `<img src="${currentUrl}" alt="${esc(acc.name)}角色版"/><span>${admin ? "拖入或点击可由管理员替换" : "账号固定角色版"}</span>`
             : `<i>${icon("user", 28)}</i><b>暂未设置角色版</b><span>${admin ? "拖入图片，或点击选择文件" : "请联系管理员补充角色版"}</span>`}
         </button>
-        <p>${admin ? "保存后会固定到该数字人账号，单号与批量创作都会自动引用；只有管理员可以替换。" : "该角色版由管理员统一维护，普通成员只能查看。"}</p>
+        <p>${admin ? "保存后会固定到该视频号；本次任务选择“数字人”时自动引用，选择“创意视频”时不会强制带入。只有管理员可以替换。" : "该角色版由管理员统一维护，普通成员只能查看；仅数字人任务会自动引用。"}</p>
         ${admin ? `<input type="file" accept="image/*" hidden data-role-file />` : ""}
       </div>
       <div class="mp-foot"><button class="btn ghost" data-close>关闭</button></div>

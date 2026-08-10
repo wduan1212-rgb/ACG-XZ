@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260810-v1420-generation-resilience-1",
+  "releaseId": "20260811-v1423-batch-video-editor-1",
   "fileCount": 65,
-  "totalBytes": 3275572,
+  "totalBytes": 3311104,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,8 +21,8 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 121607,
-      "sha256": "580dd6bc7b36544387338b0f9715fe83d8e6e95bd0c9b861ffcb41b069f0781b"
+      "size": 121604,
+      "sha256": "11533a662b098e6eff914e8855faba490e85e3bdda187ef6f2acbdf5dd8e06ae"
     },
     {
       "path": "apps/video-workshop/app/media.py",
@@ -146,8 +146,8 @@
     },
     {
       "path": "apps/video-workshop/web/assets/app.js",
-      "size": 216604,
-      "sha256": "8333bce818251deeafddd0bf636cc94e1171175136fe448bc855bc13a63d16c7"
+      "size": 218359,
+      "sha256": "41d804eb4fc35ddb5d2c9966a56f409fa943df949c4468f1e0726700a5b56d8e"
     },
     {
       "path": "apps/video-workshop/web/assets/lucide.min.js",
@@ -191,8 +191,8 @@
     },
     {
       "path": "apps/video-workshop/web/assets/styles.css",
-      "size": 80292,
-      "sha256": "9e2f2be7e6e025e972a2ebdbbe7be9736b6d93e1308a876d089009e8622b5cdc"
+      "size": 81908,
+      "sha256": "7238be46922d0ced9144f6a1df20da1420527bf5b34e97a2b877229da8b744eb"
     },
     {
       "path": "apps/video-workshop/web/assets/xingzhen-logo-white.png",
@@ -201,8 +201,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 35197,
-      "sha256": "49f495b346acce5b3b5cbdc9364c8f85bc7a5b9c1d7c0494f91013712d113e01"
+      "size": 35428,
+      "sha256": "2ac32f7e66143fab2b2fd5614d57fa1af528383eeec72bbf79b43834167fddba"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -256,8 +256,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 524437,
-      "sha256": "2ed7fdda8fdaaafcdfb730e50640f4ddf9534e5793fe37344b77ec6fbc1c8074"
+      "size": 551800,
+      "sha256": "1da5b7dd683dfee42b10a52c3a92c764f15089656998ab4fcda044dce74b3b15"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -321,8 +321,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 912607,
-      "sha256": "f66e5c92a1dd274217f912f7007233b2ec0867be1b1b3312a3454987c8f40ed6"
+      "size": 917177,
+      "sha256": "8119f0c4237d954016866bb289d32e88b5734df751aed76a80db12380c3cdb89"
     },
     {
       "path": "tools/verify_release_contracts.py",

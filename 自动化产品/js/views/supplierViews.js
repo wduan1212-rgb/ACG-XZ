@@ -1,10 +1,10 @@
 import { $, $$, copyText, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, refreshRemoteCollections, refreshDeliveryMetrics } from "../core/store.js";
-import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
+import { emptyState, openModal, confirmModal, promptModal, toast } from "../ui/components.js?v=20260811-v1423-batch-video-editor-1";
 import * as remote from "../core/remote.js";
 import { urlFor } from "../domain/assets.js";
-import { deliveryViewsSummary } from "../domain/delivery.js?v=20260810-v1420-generation-resilience-1";
+import { deliveryViewsSummary } from "../domain/delivery.js?v=20260811-v1423-batch-video-editor-1";
 import { accountDisplaySequenceMap, isAccountDisabled, isNewAccount } from "../domain/accounts.js";
 import { openAccountDialog } from "./accountDialog.js";
 

@@ -90,6 +90,8 @@ VIDEO_WORKSHOP_HOST=127.0.0.1
 VIDEO_WORKSHOP_PORT=8765
 VIDEO_WORKSHOP_URL=http://127.0.0.1:8765
 VIDEO_WORKSHOP_HEALTH_URL=http://127.0.0.1:8765
+SEEDANCE_CREATIVE_MODEL=doubao-seedance-2-5-260628
+SEEDANCE_CREATIVE_MAX_DURATION=30
 ```
 
 `BACKUP_ROOT`、`LOG_DIR`、`BGM_LIBRARY_DIR` 和上述所有其他目录必须在获授权的
@@ -99,6 +101,14 @@ VIDEO_WORKSHOP_HEALTH_URL=http://127.0.0.1:8765
 
 sidecar URL 只允许 `http` + 字面回环 IP + 显式同端口，不允许用户信息、
 path、query 或 fragment。
+
+> Seedance 2.5 发布阻断：`/api/v3/models` 可见 `doubao-seedance-2-5-260628` 不代表账号已开通。本轮真实提交返回 HTTP 404 `ModelNotOpen`，没有创建任务。部署前必须先在方舟控制台开通模型，然后使用生产 release 外私密 env 完成一次受控的提交、轮询和成片验收。未开通或未配置时必须 fail closed，禁止静默回退到 `SEEDANCE_MODEL`。
+
+`SEEDANCE_CREATIVE_MODEL` 当前使用 `doubao-seedance-2-5-260628`：该 ID 已通过本地私密
+方舟凭据对官方 `/api/v3/models` 的只读鉴权查询确认在账号授权列表内。部署时仍须使用生产
+服务器自己的外部私密环境复核授权；未配置时创意视频必须在计费和 provider 调用前 fail closed，禁止
+为了表面可用而静默回退到普通 `SEEDANCE_MODEL`。该值与 API key 一样只存在 release 外的
+私密环境，不得写入源码、manifest 或浏览器。
 `PUBLIC_BASE_URL` 必须是当前经审计的公网 origin；`PRIVATE_MEDIA_LEGACY_ORIGINS`
 只能列出生产副本中确实出现过的历史 origin。两者均不接受凭据、path、query、
 fragment 或回环地址；不得为了让 `140004` 通过而添加宽泛域名。

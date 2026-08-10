@@ -3,19 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260810-v1420-generation-resilience-1";
+import { AI } from "../api/ai.js?v=20260811-v1423-batch-video-editor-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js?v=20260810-v1420-generation-resilience-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260810-v1420-generation-resilience-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode, videoCreationModeOf } from "../domain/productions.js?v=20260811-v1423-batch-video-editor-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260811-v1423-batch-video-editor-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver } from "../domain/delivery.js?v=20260810-v1420-generation-resilience-1";
+import { deliver } from "../domain/delivery.js?v=20260811-v1423-batch-video-editor-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260810-v1420-generation-resilience-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260811-v1423-batch-video-editor-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -40,12 +40,13 @@ const activeHydrationCompositions = new Set();
 const activeComposeRequests = new Map();
 const HYDRATION_REDRAFT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
-const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "素材", real: "真人" };
+const CONTENT_KIND_GROUP = { image: "图文组", static: "静态视频", material: "视频号", real: "视频号" };
 
 function contentKindFromGroup(group = "") {
   if (group === "静态视频") return "static";
   if (group === "素材") return "material";
   if (group === "真人") return "real";
+  if (group === "视频号") return "material";
   return "image";
 }
 
@@ -64,8 +65,7 @@ function accountMatchesKind(acc, kind = "image") {
   const g = groupOf(acc);
   if (kind === "image") return acc?.mode === "图文" || g === "图文组";
   if (kind === "static") return true;
-  if (kind === "material") return acc?.mode === "视频" && g === "素材";
-  if (kind === "real") return acc?.mode === "视频" && g === "真人";
+  if (kind === "material" || kind === "real") return acc?.mode === "视频";
   return true;
 }
 
@@ -549,6 +549,114 @@ function applyBatchInfoFlowPlan(p, plan, { preserveCopy = false } = {}) {
   touch(p);
 }
 
+function buildBatchCreativeVideoPlan({ topic = "", title = "", publishCopy = "", copyText = "", product = null, creativePlan = null, style = "" } = {}) {
+  const finalTitle = String(title || topic || creativePlan?.creativeAngle || "创意视频").trim();
+  const narration = String(creativePlan?.narration || copyText || publishCopy || finalTitle).trim();
+  const visualStyle = String(creativePlan?.visualStyle || style || "电影级超写实怪诞广告").trim();
+  const storyboards = (creativePlan?.storyboards || []).map((scene, index) => ({
+    ...scene,
+    id: scene.id || `storyboard-${index + 1}`,
+    status: "planned",
+    assetId: null,
+    error: ""
+  }));
+  const storyboardSheetPrompt = [
+    "生成一张完整的 9:16 竖版电影故事板总览图，不是多张独立成图。",
+    `把下面 ${storyboards.length} 个连续镜头绘制在同一张分镜板内，按时间顺序从左到右、从上到下排成清楚的矩形分镜格。`,
+    "视觉必须是专业导演分镜稿：铅笔线稿、灰阶明暗、少量蓝色动作箭头和镜头运动标记；保持同一主体、场景空间和造型连续。不要写实成片、不要海报、不要彩色商业成图。",
+    "每格只保留清晰的镜头序号和时间范围，不生成字幕、花字、宣传文案、水印、页码、logo 或二维码。",
+    ...storyboards.map((scene, index) => [
+      `分镜 ${index + 1}（${Number(scene.start || 0)}-${Number(scene.end || 30)} 秒）`,
+      scene.title || "",
+      scene.imagePrompt || scene.visual || "",
+      scene.camera ? `镜头：${scene.camera}` : "",
+      scene.transition ? `衔接：${scene.transition}` : ""
+    ].filter(Boolean).join("；"))
+  ].filter(Boolean).join("\n");
+  const videoPrompt = [
+    "生成一条连续的 30 秒、9:16、音画同出的高创意短视频。禁止拆成 A/B 面或两条独立视频。",
+    `统一画风：${visualStyle}。`,
+    String(creativePlan?.videoPrompt || "").trim(),
+    `完整口播：${narration}`,
+    "系统会将一张包含全部镜头格的素描分镜板作为唯一故事版视觉参考提交；请按分镜格顺序还原动作，保持主体、场景、构图和空间连续，转场清晰但不跳轴。",
+    "口播、环境声和画面动作必须同步生成；不要烧录字幕、花字、水印、页码或二维码。",
+    VIDEO_NEGATIVE_PROMPT
+  ].filter(Boolean).join("\n");
+  return {
+    title: finalTitle,
+    topic: String(topic || finalTitle).trim(),
+    copy: String(publishCopy || "").trim(),
+    creativeAngle: creativePlan?.creativeAngle || finalTitle,
+    visualStyle,
+    narration,
+    storyboards,
+    storyboardSheet: {
+      id: "storyboard-sheet",
+      imagePrompt: storyboardSheetPrompt,
+      assetId: null,
+      status: "idle",
+      error: "",
+      operationKey: ""
+    },
+    ratio: "9:16",
+    duration: 30,
+    videoPrompt
+  };
+}
+
+function applyBatchCreativeVideoPlan(p, plan, { preserveCopy = false } = {}) {
+  const A = p.artifacts.boards || (p.artifacts.boards = {});
+  const oldCopy = p.artifacts.copy || {};
+  const oldSheet = A.creativeVideo?.storyboardSheet || {};
+  A.materialMode = "creativeVideo";
+  A.generationMode = "creativeVideo";
+  A.creativeVideo = {
+    ...(A.creativeVideo || {}),
+    status: "storyboard",
+    error: "",
+    creativeAngle: plan.creativeAngle,
+    visualStyle: plan.visualStyle,
+    narration: plan.narration,
+    videoPrompt: plan.videoPrompt,
+    ratio: plan.ratio || A.ratio || "9:16",
+    duration: Math.max(4, Math.min(30, Number(plan.duration || 30))),
+    originalRefAssetIds: [...new Set([
+      ...(A.creativeVideo?.originalRefAssetIds || []),
+    ].filter(Boolean))].slice(0, 8),
+    storyboards: (plan.storyboards || []).map(scene => ({
+      ...scene,
+      assetId: null,
+      status: "planned",
+      error: ""
+    })),
+    storyboardSheet: {
+      ...(plan.storyboardSheet || {}),
+      assetId: oldSheet.assetId || plan.storyboardSheet?.assetId || null,
+      status: oldSheet.assetId ? "done" : (plan.storyboardSheet?.status || "idle"),
+      error: oldSheet.assetId ? "" : (plan.storyboardSheet?.error || ""),
+      operationKey: oldSheet.operationKey || plan.storyboardSheet?.operationKey || ""
+    }
+  };
+  A.ratio = A.creativeVideo.ratio;
+  p.topic = plan.topic || p.topic || "";
+  p.title = preserveCopy ? (oldCopy.title || plan.title || p.title) : (plan.title || p.title);
+  p.artifacts.script.title = p.title;
+  p.artifacts.copy = {
+    ...oldCopy,
+    title: p.title,
+    body: preserveCopy ? (oldCopy.body || plan.copy || "") : (plan.copy || oldCopy.body || "")
+  };
+  Object.assign(p.artifacts.audio, {
+    assetId: null,
+    duration: 30,
+    perShot: [{ dur: 30 }],
+    source: "seedance-native",
+    lastError: ""
+  });
+  buildMaterialUnits(p);
+  touch(p);
+}
+
 function referenceRewriteForCopy(trendPrep, copy) {
   const rw = trendPrep?.referenceRewrite || null;
   if (!rw) return null;
@@ -669,6 +777,109 @@ async function generateVideoCoverInHouse(p, { force = false } = {}) {
     save("productions");
     return false;
   }
+}
+
+async function generateCreativeVideoStoryboards(p, batch, acc) {
+  const A = p?.artifacts?.boards || {};
+  const creative = A.creativeVideo;
+  const storyboards = Array.isArray(creative?.storyboards) ? creative.storyboards : [];
+  if (!storyboards.length) throw new Error("创意视频缺少可执行的故事版");
+  if (!imageApiConfigured()) throw new Error("图片生成服务未配置，无法用 image-2 生成故事版");
+  const provider = activeProviderFor("image");
+  if (!provider || provider.mock) throw new Error("image-2 图片服务当前不可用");
+  const key = providerKeyFor("image", provider);
+  const originalRefIds = batchSceneRefIds(batch, acc.id);
+  creative.originalRefAssetIds = [...originalRefIds];
+  const refs = await imageRefsForIds(originalRefIds, "storyboard-reference");
+  const sheet = creative.storyboardSheet || (creative.storyboardSheet = {
+    id: "storyboard-sheet", imagePrompt: "", assetId: null, status: "idle", error: "", operationKey: ""
+  });
+  if (!sheet.imagePrompt) {
+    sheet.imagePrompt = buildBatchCreativeVideoPlan({
+      topic: p.topic, title: p.title, publishCopy: p.artifacts?.copy?.body || "",
+      copyText: creative.narration || "", creativePlan: creative, style: creative.visualStyle || p.creativeVideoStyle || ""
+    }).storyboardSheet.imagePrompt;
+  }
+  if (sheet.assetId && sheet.status === "done") return [sheet.assetId];
+  const operationKey = sheet.operationKey || `${p.id}-creative-storyboard-sheet`;
+  sheet.operationKey = operationKey;
+  sheet.status = "loading";
+  sheet.error = "";
+  await persistBatchProductionCheckpoint(p);
+  try {
+    const request = await provider.submit({
+      prompt: sheet.imagePrompt,
+      refs,
+      intendedRefAssetIds: originalRefIds,
+      ratio: creative.ratio || A.ratio || "9:16",
+      strictRatio: true,
+      apiKey: key?.secret,
+      endpoint: key?.provider,
+      model: key?.model || "",
+      idempotencyKey: operationKey
+    });
+    const output = await provider.poll(request.providerRef);
+    if (output.status !== "succeeded" || !output.output?.dataUrl) {
+      throw new Error(output.error || "素描故事板未返回结果");
+    }
+    const dataUrl = output.output.dataUrl.startsWith("data:")
+      ? output.output.dataUrl
+      : await dataUrlFromUrl(output.output.dataUrl);
+    const asset = await addAssetFromDataUrl(acc.id, {
+      name: `创意视频素描故事板_${String(p.title || "").slice(0, 18)}`,
+      tags: ["创意视频故事版", "素描分镜板", "image-2", "视频参考", "账号资产"],
+      dataUrl
+    });
+    sheet.assetId = asset.id;
+    sheet.status = "done";
+    sheet.error = "";
+  } catch (error) {
+    const deferred = generationDeferred(error);
+    sheet.status = error?.outcomeUnknown || error?.code === "PROVIDER_RESULT_UNKNOWN"
+      ? "confirming"
+      : (deferred ? "pending" : "failed");
+    sheet.error = deferred ? "" : (error?.message || String(error || "故事板生成失败"));
+    creative.status = deferred ? "pending" : "failed";
+    creative.error = deferred ? "" : sheet.error;
+    await persistBatchProductionCheckpoint(p).catch(() => null);
+    throw error;
+  }
+  A.sceneRefAssetIds = [sheet.assetId];
+  A.omniRefAssetIds = [sheet.assetId];
+  creative.status = "ready";
+  creative.error = "";
+  buildMaterialUnits(p);
+  await persistBatchProductionCheckpoint(p);
+  return [sheet.assetId];
+}
+
+export async function regenerateCreativeStoryboard(p, sceneIndex, prompt = "", refAssetIds = null) {
+  if (!p || p.mode !== "视频" || !p.batchId) throw new Error("当前任务不是批量创意视频");
+  const batch = state.batches.find(item => item.id === p.batchId);
+  const acc = accountById(p.accountId);
+  const creative = p.artifacts?.boards?.creativeVideo;
+  const sheet = creative?.storyboardSheet;
+  if (!batch || !acc || !sheet) throw new Error("故事版或批次信息不存在");
+  const nextPrompt = String(prompt || sheet.imagePrompt || "").trim();
+  if (!nextPrompt) throw new Error("请先填写故事版提示词");
+  sheet.imagePrompt = nextPrompt;
+  const revision = Math.max(0, Number(sheet.revision || 0)) + 1;
+  sheet.revision = revision;
+  sheet.operationKey = `${p.id}-creative-storyboard-sheet-r${revision}`;
+  sheet.assetId = null;
+  sheet.status = "pending";
+  sheet.error = "";
+  if (Array.isArray(refAssetIds)) {
+    creative.originalRefAssetIds = [...new Set(refAssetIds.filter(Boolean))].slice(0, 8);
+    batch.accountRefAssetIds = batch.accountRefAssetIds || {};
+    batch.accountRefAssetIds[p.accountId] = [...creative.originalRefAssetIds];
+    save("batches");
+  }
+  await persistBatchProductionCheckpoint(p);
+  await generateCreativeVideoStoryboards(p, batch, acc);
+  p.error = null;
+  save("productions");
+  return sheet;
 }
 
 export async function regenerateBatchVideoCover(p, prompt = "", refAssetIds = null) {
@@ -815,6 +1026,20 @@ export async function deleteBatch(batchId) {
   save("productions", "jobs", "batches");
   emit("batch:update", b);
 }
+
+export function setBatchPaused(batchId, paused = true) {
+  const batch = batchById(batchId);
+  if (!batch || batch.phase === "done") return false;
+  const next = !!paused;
+  if (!!batch.paused === next) return true;
+  batch.paused = next;
+  batch.pausedAt = next ? Date.now() : 0;
+  batch.updatedAt = Date.now();
+  save("batches");
+  emit("batch:update", batch);
+  if (!next) evaluate(batch.id);
+  return true;
+}
 /* 从批次里删除单条任务 */
 export async function removeProductionFromBatch(pid) {
   const p = productionById(pid);
@@ -883,6 +1108,7 @@ export function createBatch(plan, sessionId) {
     useOnlineTrends: false,
     imageCount: Math.max(1, Math.min(12, Number(plan.imageCount || DEFAULT_XHS_IMAGE_COUNT) || DEFAULT_XHS_IMAGE_COUNT)),
     style: plan.style || "",
+    creativeVideoStyle: plan.creativeVideoStyle || "电影级超写实怪诞广告",
     accountCount: Number(plan.accountCount || plan.count) || null,
     perAccountCount: Math.max(1, Math.min(12, Number(plan.perAccountCount || 1) || 1)),
     referenceSelectionId: plan.referenceSelectionId || uid(),
@@ -905,15 +1131,15 @@ export function createBatch(plan, sessionId) {
 /* 固定流程模板：只预选账号与内容类型，标题和文案由用户逐个填写。 */
 export const FLOW_TEMPLATES = {
   notes: { label: "全部图文号 · 自定义笔记", group: "图文组", icon: "image", desc: "预选图文账号 · 逐个填写标题与正文" },
-  material: { label: "全部素材号 · 自定义视频", group: "素材", icon: "layers", desc: "预选素材账号 · 逐个填写标题与文案" },
-  dh: { label: "全部真人号 · 自定义口播", group: "真人", icon: "user", desc: "预选真人账号 · 逐个填写标题与口播文案" }
+  material: { label: "全部视频号 · 创意视频", group: "视频号", contentKind: "material", icon: "layers", desc: "全部视频号均可选择 · 逐个填写标题与文案" },
+  dh: { label: "全部视频号 · 数字人", group: "视频号", contentKind: "real", icon: "user", desc: "全部视频号均可选择 · 使用账号角色版与口播" }
 };
 export function templatePlan(key) {
   const t = FLOW_TEMPLATES[key];
   if (!t) return null;
   const matched = selectAccountsForPlan({ tags: [], group: t.group, accountCount: 3, sort: "stale" });
   return enforcePlanKind({
-    goal: t.label, creativeMode: "custom", contentKind: contentKindFromGroup(t.group), topicMode: "fixed", topic: "", productId: "dumate", content: "", style: "",
+    goal: t.label, creativeMode: "custom", contentKind: t.contentKind || contentKindFromGroup(t.group), topicMode: "fixed", topic: "", productId: "dumate", content: "", style: "",
     tags: [], group: t.group, sort: "stale", accountCount: 3, perAccountCount: 1,
     accountIds: matched.map(a => a.id), template: key,
     accountCounts: {},
@@ -1041,6 +1267,7 @@ export function matchAccounts({ group = "all", sort = "" } = {}) {
   const list = state.accounts.filter(a => {
     if (isAccountDisabled(a)) return false;
     if (group === "静态视频") return true;
+    if (["视频号", "素材", "真人"].includes(group)) return a.mode === "视频";
     return group === "all" || !group || groupOf(a) === group;
   });
   if (sort === "stale") {
@@ -1080,6 +1307,7 @@ export function defaultPlan(goal = "新量产计划") {
     useOnlineTrends: false,
     imageCount: DEFAULT_XHS_IMAGE_COUNT,
     staticVideoStyle: "现代漫画分镜风",
+    creativeVideoStyle: "电影级超写实怪诞广告",
     style: params.style || "", tags: [], group: params.group,
     sort: params.sort,
     pickFrom: params.pickFrom || "",
@@ -2430,7 +2658,7 @@ async function draftOne(p, batch) {
             body: customCopyBody,
             account: acc,
             product,
-            mode: material && p.artifacts.boards?.materialMode === "infoFlow" ? "infoFlow" : "digital"
+            mode: material ? "creativeVideo" : "digital"
           });
           p.title = customCopyTitle || p.title || customVideoDraft.title;
           p.artifacts.copy = {
@@ -2445,22 +2673,23 @@ async function draftOne(p, batch) {
           return;
         }
       }
-      if (material && p.artifacts.boards?.materialMode === "infoFlow") {
+      if (material) {
         let creativePlan;
         try {
-          creativePlan = await AI.generateInfoFlowCreativePlan({
+          creativePlan = await AI.generateCreativeVideoPlan({
             title: p.artifacts.copy.title || customTopic,
             copy: p.artifacts.copy.body || customVideoDraft?.copy || "",
             narration: customVideoDraft?.narration || p.artifacts.copy.body || "",
             account: acc,
             product,
-            previousPrompts: (p.artifacts.boards?.infoFlow?.segments || []).map(segment => segment?.videoPrompt || "").filter(Boolean)
+            style: batch.creativeVideoStyle || p.creativeVideoStyle || "",
+            previousPrompts: [p.artifacts.boards?.creativeVideo?.videoPrompt].filter(Boolean)
           });
         } catch (err) {
-          setStatus(p, "failed", err?.message || "信息流创意提示词生成失败，请稍后重试");
+          setStatus(p, "failed", err?.message || "创意视频故事版生成失败，请稍后重试");
           return;
         }
-        const planInfo = buildBatchInfoFlowPlan({
+        const planInfo = buildBatchCreativeVideoPlan({
           topic: customTopic,
           title: p.artifacts.copy.title,
           copyText: customVideoDraft?.narration || p.artifacts.copy.body,
@@ -2468,17 +2697,19 @@ async function draftOne(p, batch) {
           product,
           acc,
           seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
-          creativePlan
+          creativePlan,
+          style: batch.creativeVideoStyle || p.creativeVideoStyle || ""
         });
-        applyBatchInfoFlowPlan(p, planInfo, { preserveCopy: true });
+        applyBatchCreativeVideoPlan(p, planInfo, { preserveCopy: true });
         p.artifacts.copy.title = customCopyTitle || p.artifacts.copy.title || customVideoDraft?.title || planInfo.title || p.title;
         p.artifacts.copy.body = stripLeadingCopyTitle(customCopyBody || p.artifacts.copy.body || customVideoDraft?.copy || planInfo.copy || "", p.artifacts.copy.title);
-        p.artifacts.script.source = "llm-custom-infoflow";
+        p.artifacts.script.source = "llm-custom-creative-video";
         p.artifacts.script.style = style;
         if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
         const explicitVideoRefs = batchSceneRefIds(batch, acc.id);
         p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
         p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
+        await generateCreativeVideoStoryboards(p, batch, acc);
         applyBatchCoverRefs(p, batch);
         ensureVideoCoverPrompt(p, product);
         await generateVideoCoverInHouse(p);
@@ -2595,7 +2826,7 @@ async function draftOne(p, batch) {
       return;
     }
 
-    if (material && p.artifacts.boards?.materialMode === "infoFlow") {
+    if (material) {
       let infoDraft;
       let creativePlan;
       try {
@@ -2604,24 +2835,25 @@ async function draftOne(p, batch) {
           body: "",
           account: acc,
           product,
-          mode: "infoFlow"
+          mode: "creativeVideo"
         });
         p.title = infoDraft.title || p.title || topic;
         p.artifacts.copy = { title: p.title, body: infoDraft.copy || "" };
         p.artifacts.script.generatedNarration = infoDraft.narration || "";
-        creativePlan = await AI.generateInfoFlowCreativePlan({
+        creativePlan = await AI.generateCreativeVideoPlan({
           title: p.title,
           copy: p.artifacts.copy.body,
           narration: infoDraft.narration || "",
           account: acc,
           product,
-          previousPrompts: (p.artifacts.boards?.infoFlow?.segments || []).map(segment => segment?.videoPrompt || "").filter(Boolean)
+          style: batch.creativeVideoStyle || p.creativeVideoStyle || "",
+          previousPrompts: [p.artifacts.boards?.creativeVideo?.videoPrompt].filter(Boolean)
         });
       } catch (err) {
-        setStatus(p, "failed", err?.message || "信息流文案或创意提示词生成失败，请稍后重试");
+        setStatus(p, "failed", err?.message || "创意视频文案或故事版生成失败，请稍后重试");
         return;
       }
-      const planInfo = buildBatchInfoFlowPlan({
+      const planInfo = buildBatchCreativeVideoPlan({
         topic,
         title: p.artifacts.copy.title,
         publishCopy: p.artifacts.copy.body,
@@ -2629,15 +2861,17 @@ async function draftOne(p, batch) {
         product,
         acc,
         seed: `${batch.id}:${p.id}:${acc.id}:${p.batchItemIndex || 1}`,
-        creativePlan
+        creativePlan,
+        style: batch.creativeVideoStyle || p.creativeVideoStyle || ""
       });
-      applyBatchInfoFlowPlan(p, planInfo, { preserveCopy: true });
-      p.artifacts.script.source = "llm-infoflow";
+      applyBatchCreativeVideoPlan(p, planInfo, { preserveCopy: true });
+      p.artifacts.script.source = "llm-creative-video";
       p.artifacts.script.style = style;
       if (acc.voiceId && !p.artifacts.audio.voiceId) p.artifacts.audio.voiceId = acc.voiceId;
       const explicitVideoRefs = batchSceneRefIds(batch, acc.id);
       p.artifacts.boards.omniRefAssetIds = [...explicitVideoRefs];
       p.artifacts.boards.sceneRefAssetIds = [...explicitVideoRefs];
+      await generateCreativeVideoStoryboards(p, batch, acc);
       applyBatchCoverRefs(p, batch);
       ensureVideoCoverPrompt(p, product);
       await generateVideoCoverInHouse(p);
@@ -2776,6 +3010,18 @@ async function draftOne(p, batch) {
     createUnitVideoJobs(p);   // t2v 单元直接生成；i2v 单元无图时也先出片占位，回工坊可补图重生成
     return;
   } catch (e) {
+    if (generationDeferred(e)) {
+      p.stageStatus = "pending";
+      p.error = null;
+      if (p.artifacts?.boards?.creativeVideo) {
+        p.artifacts.boards.creativeVideo.status = e?.outcomeUnknown ? "confirming" : "pending";
+        p.artifacts.boards.creativeVideo.error = "";
+      }
+      touch(p);
+      saveIncremental("productions", p);
+      emit("production:update", p);
+      return;
+    }
     setStatus(p, "failed", "起草失败：" + (e.message || e));
   }
 }
@@ -2998,12 +3244,13 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
   enforceSupportedVideoMode(p);
   const units = buildMaterialUnits(p); // 重算确保与脚本同步
   const A = p.artifacts.boards;
+  const creationMode = videoCreationModeOf(p);
   // 单号和批量都只使用当前任务明确选择的场景参考；数字人角色板仍按账号身份配置单独处理。
   const acc = accountById(p.accountId);
   A.omniRefAssetIds = A.omniRefAssetIds || [];
   A.sceneRefAssetIds = A.sceneRefAssetIds || [];
-  if (p.subType === "数字人" && !A.characterRefAssetId && acc?.charBoardAssetId) A.characterRefAssetId = acc.charBoardAssetId;
-  const characterRefId = p.subType === "数字人" ? (A.characterRefAssetId || acc?.charBoardAssetId || null) : null;
+  if (creationMode === "digitalHuman" && !A.characterRefAssetId && acc?.charBoardAssetId) A.characterRefAssetId = acc.charBoardAssetId;
+  const characterRefId = creationMode === "digitalHuman" ? (A.characterRefAssetId || acc?.charBoardAssetId || null) : null;
   const sceneRefs = [...new Set([
     ...(A.sceneRefAssetIds || []),
     ...(A.omniRefAssetIds || []).filter(id => id !== characterRefId),
@@ -3011,8 +3258,8 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
   ].filter(Boolean))];
   const hasExternalVoice = !!p.artifacts.audio.assetId && ["tts", "upload"].includes(p.artifacts.audio.source);
   const productionReferenceAudioId = A.referenceAudioAssetId || null;
-  const wantsSeedanceVoice = p.subType === "无数字人" && !!(productionReferenceAudioId || acc?.voiceRefAssetId);
-  const useDigitalHumanModel = p.subType === "数字人" && A.generationMode === "digitalHuman";
+  const wantsSeedanceVoice = creationMode === "creative" && !!(productionReferenceAudioId || acc?.voiceRefAssetId);
+  const useDigitalHumanModel = creationMode === "digitalHuman" && A.generationMode === "digitalHuman";
   const voiceRefs = wantsSeedanceVoice ? [productionReferenceAudioId || acc.voiceRefAssetId] : [];
   const audioRefs = [...voiceRefs].filter(Boolean);
   let n = 0;
@@ -3064,7 +3311,7 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
     if (onlyUnitIndex == null && existing?.status === "succeeded") return;
     supersedeUnitJobs(p, i, prompt);
     // 真人只在第一段带角色参考；场景/产品参考按需要挂载，避免角色图污染纯场景片段。
-    const needsCharacter = p.subType === "数字人" && i === 0;
+    const needsCharacter = creationMode === "digitalHuman" && i === 0;
     // Seedance 2.0 上游不接受“音频是唯一参考模态”；固定声线时为每段同时挂一张已有视觉参考。
     const audioCompanionVisual = wantsSeedanceVoice
       ? ((u.refAssetIds || [])[0] || sceneRefs[0] || characterRefId || A.cover?.assetId || acc?.avatarAssetId || null)
@@ -3076,18 +3323,19 @@ export function createUnitVideoJobs(p, onlyUnitIndex = null) {
     const refs = [...new Set([
       needsCharacter ? characterRefId : null,
       audioCompanionVisual,
+      ...audioRefs,
       ...(u.refAssetIds || []),
-      ...(u.needsImage || needsCharacter ? sceneRefs : []),
-      ...audioRefs
+      ...(u.needsImage || needsCharacter ? sceneRefs : [])
     ].filter(Boolean))].slice(0, 9);
     createJob({
       kind: "video", productionId: p.id, segIndex: i,
-      segName: u.infoFlow ? (u.label || `信息流${String(i + 1).padStart(2, "0")}`) : `场景${String(u.scene).padStart(2, "0")}${u.shotIndexes.length > 1 ? `·${u.shotIndexes.length}镜` : ""}`,
+      segName: u.creativeVideo ? `${Math.max(4, Math.min(30, Math.ceil(u.dur || 30)))}s创意成片` : (u.infoFlow ? (u.label || `历史信息流${String(i + 1).padStart(2, "0")}`) : `场景${String(u.scene).padStart(2, "0")}${u.shotIndexes.length > 1 ? `·${u.shotIndexes.length}镜` : ""}`),
       prompt, refAssetIds: refs,
       ratio: A.ratio || "9:16",
-      duration: Math.min(15, Math.max(2, Math.ceil(u.dur || 4))),
-      generateAudio: wantsSeedanceVoice || !hasExternalVoice,
-      model: useDigitalHumanModel ? "__digital_human__" : ""
+      duration: u.creativeVideo ? Math.max(4, Math.min(30, Math.ceil(u.dur || 30))) : Math.min(15, Math.max(2, Math.ceil(u.dur || 4))),
+      generateAudio: u.creativeVideo ? true : (wantsSeedanceVoice || !hasExternalVoice),
+      model: useDigitalHumanModel ? "__digital_human__" : "",
+      creative: u.creativeVideo === true
     });
     n++;
   });
@@ -3198,12 +3446,28 @@ export async function startBatch(plan, session) {
         primaryProductById(rawProductId),
       );
       const productId = selectedProduct?.id || primaryProductById(rawProductId)?.id || "dumate";
-      const p = createProduction({ accountId: acc.id, topic, origin: "agent", batchId: batch.id, style: plan.style, productId, persist: false });
+      const videoCreationMode = batch.contentKind === "real"
+        ? "digitalHuman"
+        : batch.contentKind === "material"
+          ? "creative"
+          : "";
+      const p = createProduction({
+        accountId: acc.id,
+        topic,
+        origin: "agent",
+        batchId: batch.id,
+        style: plan.style,
+        productId,
+        videoCreationMode,
+        creativeVideoStyle: batch.creativeVideoStyle,
+        persist: false
+      });
       if (p) {
         if (batch.contentKind === "static") {
           // 静态视频是独立视频产物，允许图文/小红书账号参与，但不改账号本身的模式。
           p.mode = "视频";
           p.subType = "无数字人";
+          p.videoCreationMode = "creative";
           p.stage = "workshop";
           p.staticVideo = true;
           p.artifacts.boards.generationMode = "static";
@@ -3240,6 +3504,8 @@ export async function startBatch(plan, session) {
   let drafted = 0;
   const total = batch.productionIds.length;
   runPool(batchProds(batch), async p => {
+    while (batch.paused && state.batches.includes(batch)) await delay(250);
+    if (!state.batches.includes(batch)) return;
     await draftOne(p, batch);
     drafted++;
     think(`起草完成 ${drafted}/${total} · ${accountById(p.accountId)?.name || ""}`, session.id);
@@ -3277,6 +3543,7 @@ export function maybeAdvanceAfterInput(p) {
 
 /* ---------- 渲染 ---------- */
 export function startGeneration(batch) {
+  if (!batch || batch.paused) return 0;
   let jobs = 0;
   batchProds(batch).forEach(p => {
     if (isVideoWorkshop(p) && p.stage === "workshop") {
@@ -3317,6 +3584,7 @@ export async function deliverAll(batch, opts = {}) {
   return n;
 }
 export function retryFailedIn(batch) {
+  if (!batch || batch.paused) return 0;
   let n = 0;
   batchProds(batch).forEach(p => {
     const jobStage = p.stage === "render" || p.stage === "workshop";
@@ -3410,6 +3678,12 @@ export function retryFailedIn(batch) {
 export function evaluate(batchId) {
   const batch = batchById(batchId);
   if (!batch || batch.phase === "done") return;
+  if (batch.paused) {
+    batch.updatedAt = Date.now();
+    save("batches");
+    emit("batch:update", batch);
+    return;
+  }
   if (batch.autoAdvance !== true) batch.autoAdvance = true;
   const prods = batchProds(batch);
   if (!prods.length) return;
@@ -3532,6 +3806,7 @@ export function resumeActiveBatches() {
     batches.filter(batch => batchNeedsHydrationEvaluation(batch, state.productions)).map(batch => batch.id)
   );
   batches.forEach(b => {
+    if (b.paused) return;
     const hydration = classifyHydratedBatchRecovery(b);
     const staticStuck = batchProds(b).filter(p =>
       (p.staticVideo || b.contentKind === "static")
