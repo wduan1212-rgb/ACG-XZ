@@ -2,15 +2,14 @@ import { go } from "../core/router.js";
 import { state, canDeliver, save } from "../core/store.js";
 import { uid } from "../core/util.js";
 import { addAssetFromDataUrl } from "../domain/assets.js";
+import { favoriteVoiceIds, rememberCustomVoice } from "../domain/voices.js";
 import { icon } from "../ui/icons.js";
-import { toast } from "../ui/components.js?v=20260810-v1413-runtime-finalization-1";
-import { voiceLabView } from "./voiceLab.js?v=20260810-v1413-runtime-finalization-1";
+import { toast } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
 import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
 
 const TOOLS = [
   { key: "video", label: "视频工坊", mountId: "customVideoMount" },
-  { key: "canvas", label: "无限画布", mountId: "customCanvasMount" },
-  { key: "voice", label: "语音生成", mountId: "customVoiceMount" }
+  { key: "canvas", label: "无限画布", mountId: "customCanvasMount" }
 ];
 const CUSTOM_PERF_KEY = "xingzhen.customCreation.performance.v1";
 const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
@@ -326,7 +325,7 @@ export const customCreationView = {
         toast(key === "canvas" ? "当前画布还没有可发布的图片" : "请先在视频工坊完成成片");
         return;
       }
-      const { openCustomPublish } = await import("./customPublish.js?v=20260810-v1413-runtime-finalization-1");
+      const { openCustomPublish } = await import("./customPublish.js?v=20260810-v1420-generation-resilience-1");
       output.kind = key === "canvas" ? "canvas" : "video";
       await openCustomPublish(
         output,
@@ -382,8 +381,8 @@ export const customCreationView = {
       mountedTools.set(key, { loading: true });
       try {
         const module = key === "video"
-          ? await import("./customVideoIntegration.js?v=20260810-v1413-runtime-finalization-1")
-          : await import("./customCanvasIntegration.js?v=20260810-v1413-runtime-finalization-1");
+          ? await import("./customVideoIntegration.js?v=20260810-v1420-generation-resilience-1")
+          : await import("./customCanvasIntegration.js?v=20260810-v1420-generation-resilience-1");
         const mount = key === "video" ? module.mountCustomVideo : module.mountCustomCanvas;
         if (typeof mount !== "function") throw new Error(`缺少 ${key} 挂载函数`);
         const initialProjectId = pendingProjectIds.get(key);
@@ -404,6 +403,8 @@ export const customCreationView = {
             const output = setLatestOutput(key, payload);
             if (output) openCommunityFor(key, output);
           },
+          favoriteVoiceIds: [...favoriteVoiceIds()],
+          onVoicePresetChanged: voice => rememberCustomVoice(voice),
           ownerId: state.ui.currentMemberId || ""
         });
         mountedTools.set(key, {
@@ -497,14 +498,7 @@ export const customCreationView = {
           });
         }
       });
-      const voiceHost = root.querySelector('[data-custom-tool-host="voice"]');
-      if (next === "voice" && voiceHost && voiceHost.dataset.customMounted !== "true") {
-        const voiceStarted = perfNow();
-        voiceLabView.render(voiceHost, { embedded: true });
-        voiceHost.dataset.customMounted = "true";
-        recordCustomPerformance("tool-mount", voiceStarted, { tool: "voice", ok: true });
-      }
-      if (next !== "voice") mountTool(next);
+      mountTool(next);
       requestAnimationFrame(() => {
         positionIndicator(activeTab());
         recordCustomPerformance("tab-activate", activateStarted, { tool: next });

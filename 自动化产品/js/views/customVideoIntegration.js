@@ -1,4 +1,5 @@
 const mounted = new WeakMap();
+const CUSTOM_VIDEO_FRAME_RELEASE = "20260810-v1420-generation-resilience-1";
 
 function normalizedOutput(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
@@ -74,7 +75,15 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest, onCommunity
   const onProjects = typeof mountOptions.onProjects === "function"
     ? mountOptions.onProjects
     : null;
+  const onVoicePresetChanged = typeof mountOptions.onVoicePresetChanged === "function"
+    ? mountOptions.onVoicePresetChanged
+    : null;
   const canPublish = mountOptions.canPublish !== false;
+  const favoriteVoiceIds = [...new Set(
+    (Array.isArray(mountOptions.favoriteVoiceIds) ? mountOptions.favoriteVoiceIds : [])
+      .map(item => String(item || "").trim())
+      .filter(Boolean)
+  )].slice(0, 500);
   let pendingPrefill = mountOptions.launchPayload && typeof mountOptions.launchPayload === "object"
     ? mountOptions.launchPayload
     : null;
@@ -83,6 +92,7 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest, onCommunity
     embed: "1",
     workspace: "1",
     canPublish: canPublish ? "1" : "0",
+    release: CUSTOM_VIDEO_FRAME_RELEASE,
   });
   if (initialProjectId) entryParams.set("project", initialProjectId);
   const entryUrl = `/custom-video/?${entryParams.toString()}`;
@@ -195,6 +205,7 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest, onCommunity
     const message = event.data && typeof event.data === "object" ? event.data : {};
     if (message.type === "custom-video:workspace-ready") {
       workspaceReady = true;
+      postWorkspaceAction("workspace:voice-preferences", { favoriteVoiceIds });
       if (pendingCreate) {
         pendingCreate = false;
         postWorkspaceAction("workspace:create");
@@ -217,6 +228,18 @@ export function mountCustomVideo(host, { onOutput, onPublishRequest, onCommunity
       }
       window.dispatchEvent(new CustomEvent("xingzhen:video-projects", {
         detail: { projects },
+      }));
+      return;
+    }
+    if (message.type === "custom-video:voice-presets-changed") {
+      const voice = message.voice && typeof message.voice === "object" ? message.voice : null;
+      if (voice && onVoicePresetChanged) {
+        Promise.resolve(onVoicePresetChanged(voice)).catch(error => {
+          console.error("视频工坊音色同步失败", error);
+        });
+      }
+      window.dispatchEvent(new CustomEvent("xingzhen:voice-presets-changed", {
+        detail: { voice },
       }));
       return;
     }

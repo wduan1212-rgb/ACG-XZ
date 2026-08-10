@@ -3,7 +3,7 @@
 
 const now = () => Date.now();
 
-export const PRODUCT_CATALOG_VERSION = "20260810-product-db-v4-baige-aliases";
+export const PRODUCT_CATALOG_VERSION = "20260810-product-db-v5-baige-6-full-infra";
 
 export const PRODUCT_CATALOG_SEED = [
   {
@@ -45,31 +45,48 @@ export const PRODUCT_CATALOG_SEED = [
     shortName: "百度百舸",
     keywords: ["百舸", "百舸6.0", "百度百舸", "百度百舸6.0", "具身智能 AI Infra"],
     category: "具身智能 AI Infra 与工具链",
-    brief: "百度智能云面向具身智能场景打造的 AI Infra 与工具链，重点覆盖数据生产、开发训练、仿真评测和推理四个环节，通过工作流、模型与仿真环境适配及性能优化降低研发和部署门槛。",
+    brief: "百度百舸 6.0 是百度智能云面向具身智能推出的全流程 AI Infra，覆盖数据生产、开发训练、仿真评测和推理四个环节，通过开箱即用的工作流、主流模型与仿真环境适配以及训练、仿真、推理性能优化，帮助团队从单点研发走向规模化落地。",
     coreFeatures: [
-      "数据生产与多模态数据清洗、标注、质量评估",
-      "VLA、VLM、世界模型与强化学习开发训练",
-      "Isaac、Maniskill3 等仿真环境预置与快速适配",
-      "多机并行、多模态训练加速与 GPU/昆仑芯 XPU 支持",
-      "Cosmos 等具身模型推理优化",
+      "数据生成、分布式处理、多模态清洗标注、质量评估与长尾仿真补充",
+      "RealOmni-Open DataSet 接入以及具身预训练、技能泛化和长程任务验证",
+      "VLM、VLA、WAM、世界模型和强化学习的云端开发训练工作流",
+      "LoongForge 全模态训练框架与 GPU、昆仑芯 XPU 多模态训练加速",
+      "Isaac、Maniskill3、RoboTwin2 等仿真评测环境预置与快速适配",
+      "NVIDIA SONIC、CLOT、RLinf v0.3 等运控与持续进化链路",
+      "Cosmos 系列、AHA-WAM 等具身模型训练与推理优化",
       "vLLM-Kunlun 主流大模型推理适配"
     ],
     verifiedFacts: [
+      "RealOmni-Open DataSet 超过 1 万小时、100 万条以上真实操作记录，覆盖 10 个场景任务、30+ 技能和 3000+ 真实家庭场景，长程任务占比超过 99.2%",
+      "LoongForge 基于 Megatron 深度定制，已在 GPU 与昆仑芯 XPU 两大平台、数千卡规模集群上完成长期生产验证",
+      "LoongForge DP 负载均衡在 DP256 规模下性能提升约 3.3%，DP512 超大规模场景下提升接近 10%",
+      "LoongForge 针对 Qwen3-VL 32k 序列长度、4 机异构并行优化，Level 3 相比基线提升约 12.5%",
+      "LoongForge 优化 GR00T N1.6 后训练吞吐达到 2.3 倍，训练周期减少 56.6%",
+      "Cosmos3-Nano-Policy-DROID 采用 1 台训练实例加 2 台编码实例时，约 1.5 倍硬件投入获得 2.1 倍吞吐，同样预算可多获得约 35% 训练吞吐",
+      "LoongForge 多模态训练提速 45%，面向多模态 VLM 的 SFT 训练加速方案提速 5–6 倍",
+      "Newton 物理引擎替换 PhysX 后，强化学习吞吐提升接近 50%",
+      "dVLA-RL 在 LIBERO Benchmark 平均任务成功率达到 99.7%，在 RoboTwin 2.0 上从 61.4% 提升至 92.0%",
+      "AHA-WAM 单步动作推理延迟从 415 毫秒降至 41 毫秒，AHA-WAM-Flash 闭环推理频率达到 56.95Hz，真机多任务综合成功率达到 78.3%",
       "vLLM-Kunlun 已适配 Qwen、DeepSeek、GLM、MiMo 等 50+ 款主流大模型",
+      "万卡集群有效训练时长达到 99.5%",
       "Offload + 动态 Fetch 机制可节省 32% 显存容量",
       "VLM 模型训练性能较社区版本提升 40%+",
       "世界模型训练性能提升 20%+，推理性能提升 36%+",
       "424B MoE VL 模型千卡训练 MFU 达 47%",
       "72B 多模态混训 Packing + CP 吞吐提升 1–5 倍",
-      "已支撑北京、上海、浙江、广东等多地具身智能创新中心建设，并为产业链上 20+ 家重点企业提供技术与算力支撑"
+      "Cosmos3-Nano-Policy-DROID 训练启动速度提升 89 倍、单机吞吐提升 99.3%、12 节点扩展效率达到 98.3%",
+      "Cosmos3-Super 从 4 节点 32 卡扩展至 64 节点 512 卡，扩展效率达到 97.48%",
+      "NVIDIA SONIC 训练 Recipe 支持运控策略参数从 1M 扩展到 40M，并可一键扩展至 128 卡训练",
+      "已支撑北京、上海、浙江、广东等多地具身智能创新中心建设；最新材料口径为服务超过 30 家具身智能头部企业及创新中心"
     ],
-    forbiddenClaims: ["不将 LoongForge 作为已确认正式能力；原始材料将其标注为待确定"],
-    tutorialAngles: ["具身智能四阶段工具链怎么串起来", "长尾数据如何通过仿真补充", "小显存场景如何用 Offload + 动态 Fetch", "Isaac/Maniskill3 仿真环境快速部署"],
-    comparisonAngles: ["从单点训练工具到全流程 AI Infra 的边界", "GPU 与昆仑芯 XPU 多模态训练适配", "数据、训练、仿真、推理四环节的工程成本对照"],
-    blogAngles: ["具身智能落地为什么先卡在 AI Infra", "开发环境从数天压缩到分钟级意味着什么", "仿真不只是演示，它还在补长尾数据"],
-    visualAngles: ["数据生产→开发训练→仿真评测→推理四段流程", "机器人仿真环境与训练集群对照", "32% 显存节省和 40%+ VLM 训练性能提升数据卡"],
+    forbiddenClaims: ["不得把某一模型、硬件或训练规模下的性能数据外推为所有场景的统一效果", "不得省略最高、约、接近、特定规模等原始指标口径", "不得虚构未在产品资料中出现的客户名称、商业承诺或功能"],
+    tutorialAngles: ["具身智能数据、训练、仿真、推理四阶段如何串起来", "RealOmni 如何补充真实操作与长程任务数据", "LoongForge 如何解决多模态训练负载不均", "小显存场景如何使用 Offload + 动态 Fetch", "Isaac、Maniskill3、RoboTwin2 仿真环境如何快速部署"],
+    comparisonAngles: ["从单点训练工具到全流程 AI Infra 的边界", "GPU 与昆仑芯 XPU 多模态训练适配", "数据、训练、仿真、推理四环节的工程成本对照", "LoongForge 同构并行与异构训练的资源效率差异"],
+    blogAngles: ["具身智能落地为什么先卡在 AI Infra", "开发环境从数天压缩到分钟级意味着什么", "RealOmni 为什么从机器人采集转向真实人类操作", "LoongForge 如何把多模态训练提速 45%", "仿真不只是演示，它还在补长尾数据"],
+    visualAngles: ["数据生产→开发训练→仿真评测→推理四段流程", "RealOmni 1 万小时、100 万条操作数据卡", "机器人仿真环境与训练集群对照", "LoongForge 45% 多模态训练提速与 5–6 倍 SFT 加速数据卡", "AHA-WAM 415ms→41ms 延迟对比"],
     competitors: [],
-    toneRule: "仅使用产品库中明确记录的能力和数据；性能数字必须保留指标口径，不外推到未记录模型、平台或客户。不得将待确定的 LoongForge 写成已发布能力。",
+    sourceDocument: "百度百舸产品信息与数据汇总-2.md",
+    toneRule: "优先使用产品库中明确记录的能力和数据；涉及 LoongForge、RealOmni、Cosmos、dVLA-RL、AHA-WAM 时必须保留对应模型、硬件、规模或评测口径，不把局部性能外推为通用承诺。",
     updatedAt: now()
   },
   {
@@ -260,7 +277,10 @@ export function mergeProductCatalog(existing = []) {
   (existing || []).forEach(p => {
     if (!p || !p.id) return;
     const seeded = byId.get(p.id);
-    byId.set(p.id, normalizeProductDisplay(seeded ? { ...seeded, ...p, updatedAt: p.updatedAt || seeded.updatedAt } : { ...p }));
+    const managedSeed = seeded?.id === "baige";
+    byId.set(p.id, normalizeProductDisplay(seeded
+      ? (managedSeed ? { ...p, ...seeded } : { ...seeded, ...p, updatedAt: p.updatedAt || seeded.updatedAt })
+      : { ...p }));
   });
   return [...byId.values()];
 }

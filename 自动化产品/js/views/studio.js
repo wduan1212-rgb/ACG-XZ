@@ -4,16 +4,16 @@ import { $, $$, esc, gradFor, timeAgo, wireDropZone, fileToDataUrl } from "../co
 import { icon } from "../ui/icons.js";
 import { state, save, activeAccount, activeProduction, productionById, canManageAccounts } from "../core/store.js";
 import { platChip, monthlyBarHtml, modeLabel, charBoardOf, accountAssets, deleteAccount, isAccountDisabled } from "../domain/accounts.js";
-import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, commitProductionCreations, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js?v=20260810-v1413-runtime-finalization-1";
-import { accountPublishQuota, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260810-v1413-runtime-finalization-1";
-import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260810-v1413-runtime-finalization-1";
+import { STAGES, flowOf, normalizeStage, stageDone, statusPill, createProduction, commitProductionCreations, productionsOf, deleteProduction, isVideoWorkshop } from "../domain/productions.js?v=20260810-v1420-generation-resilience-1";
+import { accountPublishQuota, refreshAccountPublishQuotas } from "../domain/productionQuota.js?v=20260810-v1420-generation-resilience-1";
+import { emptyState, toast, confirmModal, openLightbox, openVideoPreview, openModal, removeWithMotion } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
 import { go } from "../core/router.js";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260810-v1413-runtime-finalization-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260810-v1420-generation-resilience-1";
 import { urlFor, thumbHtml, assetCode, addAssetFromFile, addAssetFromDataUrl, removeAsset, canDeleteReferenceAsset } from "../domain/assets.js";
-import { renderSlotsPage } from "./chainBoards.js?v=20260810-v1413-runtime-finalization-1";
-import { renderWorkshopPage } from "./chainWorkshop.js?v=20260810-v1413-runtime-finalization-1";
-import { renderCutPage } from "./chainCut.js?v=20260810-v1413-runtime-finalization-1";
-import { renderReviewPage } from "./chainCopy.js?v=20260810-v1413-runtime-finalization-1";
+import { renderSlotsPage } from "./chainBoards.js?v=20260810-v1420-generation-resilience-1";
+import { renderWorkshopPage } from "./chainWorkshop.js?v=20260810-v1420-generation-resilience-1";
+import { renderCutPage } from "./chainCut.js?v=20260810-v1420-generation-resilience-1";
+import { renderReviewPage } from "./chainCopy.js?v=20260810-v1420-generation-resilience-1";
 
 export const studioView = {
   render(root, { page }) {

@@ -2,13 +2,13 @@
 
 import { $, $$, esc, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
-import { toast, withLoading, emptyState } from "../ui/components.js?v=20260810-v1413-runtime-finalization-1";
+import { toast, withLoading, emptyState } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
 import { state } from "../core/store.js";
 import {
   analyticsRows, analyticsSummary,
   syncExistingPublishedAssets, refreshAllAnalytics, refreshAnalyticsLink, justOneAnalyticsStatus
 } from "../domain/analytics.js?v=20260727-v118-7";
-import { deliveryViewsSummary } from "../domain/delivery.js?v=20260810-v1413-runtime-finalization-1";
+import { deliveryViewsSummary } from "../domain/delivery.js?v=20260810-v1420-generation-resilience-1";
 
 let filter = "all";
 let platformFilter = "all";

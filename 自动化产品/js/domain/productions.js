@@ -315,7 +315,9 @@ export async function commitProductionCreations(items = []) {
 export function touch(p) { p.updatedAt = Date.now(); }
 
 export function setStage(p, stage, status = "pending") {
-  p.stage = stage; p.stageStatus = status; touch(p);
+  p.stage = stage; p.stageStatus = status;
+  if (status !== "failed") p.error = null;
+  touch(p);
   save("productions");
   emit("production:update", p);
 }

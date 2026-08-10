@@ -3,8 +3,8 @@ import { currentMember, currentTeam } from "../core/store.js";
 import { community, teams, memberProfile } from "../core/remote.js";
 import { go } from "../core/router.js";
 import { icon } from "../ui/icons.js";
-import { openModal, openLightbox, toast } from "../ui/components.js?v=20260810-v1413-runtime-finalization-1";
-import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260810-v1413-runtime-finalization-1";
+import { openModal, openLightbox, toast } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
+import { mountHomeLightfall } from "../effects/homeLightfall.js?v=20260810-v1420-generation-resilience-1";
 
 const HOME_LAUNCH_KEY = "starmatrix.homeLaunch.v1";
 const HOME_LAUNCH_REGISTRY_KEY = "__starmatrixHomeLaunchRegistry";
@@ -413,6 +413,7 @@ export const homeView = {
     root.__viewCleanup = null;
     const member = currentMember() || {};
     const team = currentTeam();
+    const showAllAccounts = Boolean(team);
     const unlimited = team?.name === "ACG市场部" || team?.kind === "internal";
     const canRequestTeam = member.role === "user" && !team;
     const pointLabel = unlimited ? "∞" : String(member.pointsRemaining ?? member.dailyPointsRemaining ?? 0);
@@ -434,6 +435,7 @@ export const homeView = {
       <header class="home-topline">
         <div class="home-account-tools">
           ${canRequestTeam ? `<button class="home-team-join-button" type="button" data-home-team-join>${icon("users", 14)}<span>加入团队</span></button>` : ""}
+          ${showAllAccounts ? `<button class="home-team-join-button home-all-accounts-button" type="button" data-home-all-accounts>${icon("analytics", 14)}<span>账号数据</span></button>` : ""}
           <div class="home-points-wrap">
             <button class="home-points-button" type="button" data-subscription-open aria-label="查看积分与订阅方案">
               ${icon("spark", 14)} <b data-home-points-value>${esc(pointLabel)}</b><i></i><span>升级</span>
@@ -715,6 +717,7 @@ export const homeView = {
       });
     });
     root.querySelector("[data-home-team-join]")?.addEventListener("click", openHomeTeamJoinDialog);
+    root.querySelector("[data-home-all-accounts]")?.addEventListener("click", () => go("overview"));
     videoModeToggle.addEventListener("click", () => {
       creationMode = creationMode === "static" ? "video" : "static";
       videoModeToggle.dataset.mode = creationMode;

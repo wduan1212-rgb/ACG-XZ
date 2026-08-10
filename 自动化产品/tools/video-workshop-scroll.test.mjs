@@ -49,7 +49,8 @@ function column({ scrollHeight, scrollTop, clientHeight }) {
 
 test("explicit send scrolls only the conversation container to show user and pending messages", () => {
   assert.doesNotMatch(source, /\.scrollIntoView\s*\(/);
-  assert.match(source, /forceBottom:\s*Boolean\(pendingScrollId\)/);
+  assert.match(source, /if \(pendingScrollId \|\| hasActiveBottomLock\)/);
+  assert.match(source, /stabilizeConversationBottom\([\s\S]*?pendingScrollId[\s\S]*?12000/);
 
   const harness = scrollHarness();
   const conversationColumn = column({ scrollHeight: 1280, scrollTop: 260, clientHeight: 420 });

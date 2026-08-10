@@ -23,15 +23,14 @@ test("account avatar picker exposes real selected and drag feedback", () => {
   assert.match(componentsCss, /@keyframes accountAvatarSelected/);
 });
 
-test("video workshop uses compact branded mode controls and assistant identity", () => {
+test("video workshop uses compact branded mode controls and a restrained assistant identity", () => {
   assert.equal((workshopHtml.match(/data-creation-mode="video"[^>]*>动态<\/button>/g) || []).length, 2);
   assert.equal((workshopHtml.match(/data-creation-mode="static"[^>]*>静态<\/button>/g) || []).length, 2);
   assert.doesNotMatch(workshopHtml, />动态视频<\/button>|>静态视频<\/button>/);
   assert.match(workshopJs, /function createMessageIdentity\(message\)/);
   assert.match(workshopJs, /className = `message-agent-avatar/);
-  assert.match(workshopJs, /starmatrix-mascot-wink\.webp/);
   assert.match(workshopJs, /starmatrix-mascot-transparent\.png/);
-  assert.match(workshopJs, /image\.src = "assets\/xingzhen-logo-white\.png"/);
+  assert.doesNotMatch(workshopJs, /starmatrix-mascot-wink\.webp/);
   assert.match(workshopCss, /\.message-agent-avatar\.is-working/);
   assert.match(workshopCss, /html\[data-platform-workspace="true"\] \.creation-mode-switch button\.active[\s\S]*?#c9e3fb/);
 });

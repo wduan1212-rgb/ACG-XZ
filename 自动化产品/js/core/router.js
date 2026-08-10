@@ -62,15 +62,15 @@ export function render() {
   // 旧语音直链继续可用，但统一收口到“定制创作”外壳。
   if (zone === "voice") {
     zone = "custom";
-    page = "voice";
+    page = "video";
     resourceId = null;
   }
   if (zone === "custom") {
-    if (!["video", "canvas", "voice"].includes(page)) {
+    if (page === "voice") page = "video";
+    if (!["video", "canvas"].includes(page)) {
       page = "video";
       resourceId = null;
     }
-    if (page === "voice") resourceId = null;
     const canonical = `#/custom/${page}${resourceId ? `/${encodeURIComponent(resourceId)}` : ""}`;
     if (location.hash !== canonical) {
       // 只规范 URL，不触发第二次 hashchange/render，避免子应用重复挂载和页面闪烁。

@@ -240,6 +240,30 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertEqual(result["batchId"], "batch-preserved")
         self.assertTrue(result["tasksUntouched"])
 
+    def test_deleted_batch_session_marker_is_never_rebuilt(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { state } = await import("./js/core/store.js");
+            const { restoreMissingBatchSessions } = await import("./js/agent/orchestrator.js");
+            state.ui.currentMemberId = "creator-one";
+            state.ui.activeSessionId = null;
+            state.sessions = [];
+            state.batches = [{
+              id:"batch-kept", sessionId:"", archivedSessionId:"deleted-session",
+              sessionDeletedAt:500, ownerId:"creator-one", productionIds:["production-kept"]
+            }];
+            const recovered = restoreMissingBatchSessions({ persist:false });
+            console.log(JSON.stringify({ recovered:recovered.length, sessions:state.sessions.length, batch:state.batches[0] }));
+            """
+        )
+        self.assertEqual(result["recovered"], 0)
+        self.assertEqual(result["sessions"], 0)
+        self.assertEqual(result["batch"]["archivedSessionId"], "deleted-session")
+
     def test_refresh_classifies_empty_image_shell_for_redraft_and_restores_thinking(self):
         result = self.run_node(
             """
@@ -335,9 +359,72 @@ class BatchPollStabilityTest(unittest.TestCase):
         self.assertGreater(terminal_checkpoint, review)
         self.assertIn("const settledImages = hydration.settle;", source)
         self.assertIn(
-            "runPool(settledImages, async p => {\n        setStage(p, \"review\", \"pending\");",
+            "runPool(settledImages, async p => {\n        clearCompletedBatchImageErrors(p);\n        setStage(p, \"review\", \"pending\");",
             source,
         )
+
+    def test_generation_timeout_contracts_and_retry_topologies(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){}, __toast(){} };
+            globalThis.document = { querySelector(){ return null; }, querySelectorAll(){ return []; } };
+            const { effectiveLlmTimeoutMs } = await import("./js/api/llm.js");
+            const { IMAGE_GENERATION_TIMEOUT_MS } = await import("./js/api/providers.js");
+            const { RECOVERY_SYNC_TIMEOUT_MS } = await import("./js/core/remote.js");
+            const { batchImageRetryAction } = await import("./js/agent/orchestrator.js");
+            console.log(JSON.stringify({
+              llm45:effectiveLlmTimeoutMs(true, 45000),
+              llm90:effectiveLlmTimeoutMs(true, 90000),
+              direct45:effectiveLlmTimeoutMs(false, 45000),
+              image:IMAGE_GENERATION_TIMEOUT_MS,
+              checkpoint:RECOVERY_SYNC_TIMEOUT_MS,
+              resume:batchImageRetryAction([
+                {assetId:"asset-1",prompt:"完成"},
+                {assetId:"asset-2",prompt:"完成"},
+                {assetId:null,prompt:"缺失图片"}
+              ]),
+              redraft:batchImageRetryAction([]),
+              confirm:batchImageRetryAction([{assetId:null,prompt:"不可盲重试",status:"confirming"}]),
+            }));
+            """
+        )
+        self.assertEqual(result["llm45"], 270000)
+        self.assertEqual(result["llm90"], 270000)
+        self.assertEqual(result["direct45"], 45000)
+        self.assertGreater(result["image"], 240000)
+        self.assertEqual(result["checkpoint"], 20000)
+        self.assertEqual(result["resume"], "resume")
+        self.assertEqual(result["redraft"], "redraft")
+        self.assertEqual(result["confirm"], "confirm")
+
+    def test_unknown_image_outcome_is_not_terminal_failure_or_duplicate_submit(self):
+        orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
+        providers = (APP_DIR / "js/api/providers.js").read_text(encoding="utf-8")
+        self.assertIn('it.status = "confirming";', orchestrator)
+        self.assertIn('idempotencyKey: operationKey', orchestrator)
+        self.assertIn('batchImageRetryAction(imageItems)', orchestrator)
+        self.assertIn('retryAction === "confirm"', orchestrator)
+        self.assertIn('error?.outcomeUnknown || Number(error?.status || 0) === 409', providers)
+        self.assertIn('await imageOperationStatus(ref)', providers)
+        self.assertIn('deferred.outcomeUnknown = true', providers)
+
+    def test_review_transition_clears_stale_production_and_item_errors(self):
+        result = self.run_node(
+            """
+            globalThis.localStorage = { getItem(){ return null; }, setItem(){}, removeItem(){} };
+            globalThis.location = { origin:"http://127.0.0.1:8787", hash:"" };
+            globalThis.window = { addEventListener(){}, dispatchEvent(){} };
+            const { setStage } = await import("./js/domain/productions.js");
+            const production = { id:"p", stage:"images", stageStatus:"failed", error:"old timeout" };
+            setStage(production, "review", "pending");
+            console.log(JSON.stringify(production));
+            """
+        )
+        self.assertEqual(result["stage"], "review")
+        self.assertEqual(result["stageStatus"], "pending")
+        self.assertIsNone(result["error"])
 
 
 if __name__ == "__main__":

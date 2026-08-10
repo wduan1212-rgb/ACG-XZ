@@ -3,8 +3,8 @@
 import { db } from "./db.js";
 import { debounce, sanitizeProduct, uid } from "./util.js";
 import * as remote from "./remote.js";
-import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js?v=20260810-v1413-runtime-finalization-1";
-import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260810-v1413-runtime-finalization-1";
+import { mergeProductCatalog, PRODUCT_CATALOG_VERSION } from "../data/productCatalogSeed.js?v=20260810-v1420-generation-resilience-1";
+import { normalizeLegacyInputFallbackState } from "../domain/productionFailureState.js?v=20260810-v1420-generation-resilience-1";
 
 const DEFAULT_ADMIN_USERNAME = String.fromCharCode(97, 100, 109, 105, 110);
 const LEGACY_ADMIN_USERNAME = String.fromCharCode(121, 117, 120, 117, 97, 110);
@@ -231,7 +231,13 @@ export async function persistRecoveredDocuments(collection, ...items) {
   for (const waitMs of [0, 500, 1500]) {
     if (waitMs) await new Promise(resolve => globalThis.setTimeout(resolve, waitMs));
     try {
-      const result = await remote.syncCollection(collection, docs);
+      // Recovery checkpoints are single-document upserts. Give SQLite lock
+      // contention enough time to settle, while keeping the three attempts
+      // bounded and visible to the caller.
+      const result = await remote.syncCollection(collection, docs, {
+        timeoutMs: remote.RECOVERY_SYNC_TIMEOUT_MS,
+        transientRetries: 0,
+      });
       emit("change", { collections: [collection], phase: "recovery-ack" });
       return { ok: true, local: docs.length, remote: docs.length, result };
     } catch (error) {

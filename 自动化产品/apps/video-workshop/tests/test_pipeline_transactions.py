@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 pipeline_module = importlib.import_module("app.pipeline")
+media_module = importlib.import_module("app.media")
 
 
 def _plan(scene_count: int = 1) -> dict:
@@ -118,6 +119,111 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
+    def test_scene_files_are_isolated_per_accepted_production(self) -> None:
+        scenes = [{"title": "第一镜", "visual_prompt": "校园走廊"}]
+        timeline = [{
+            "sceneNumber": 1,
+            "sourceSceneNumber": 1,
+            "start": 0,
+            "end": 5,
+            "duration": 5,
+        }]
+        first_plan = {"reference_scope_id": "china-joy-production"}
+        second_plan = {"reference_scope_id": "campus-rule-production"}
+
+        first_units = pipeline_module._render_units(
+            scenes,
+            timeline,
+            self.work_dir,
+            creation_mode="static",
+            plan=first_plan,
+        )
+        second_units = pipeline_module._render_units(
+            scenes,
+            timeline,
+            self.work_dir,
+            creation_mode="static",
+            plan=second_plan,
+        )
+        first_path = Path(first_units[0]["target_path"])
+        second_path = Path(second_units[0]["target_path"])
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        first_path.write_bytes(b"old exhibition scene")
+
+        self.assertNotEqual(first_path, second_path)
+        self.assertTrue(
+            pipeline_module._scene_output_exists(first_plan, self.work_dir, 1)
+        )
+        self.assertFalse(
+            pipeline_module._scene_output_exists(second_plan, self.work_dir, 1)
+        )
+        self.assertFalse(second_path.exists())
+
+    def test_manual_timeline_keeps_order_trim_and_duplicate_sources(self) -> None:
+        scenes = [
+            {"title": "镜头一", "visual_prompt": "一"},
+            {"title": "镜头二", "visual_prompt": "二"},
+        ]
+        plan = {
+            "timeline_edit": {
+                "clips": [
+                    {
+                        "source_file": "scene-scope-02.mp4",
+                        "source_scene_number": 2,
+                        "duration": 3.5,
+                        "trim_start": 0.8,
+                        "transition": "slideleft",
+                    },
+                    {
+                        "source_file": "scene-scope-01.mp4",
+                        "source_scene_number": 1,
+                        "duration": 1.5,
+                        "trim_start": 0,
+                    },
+                    {
+                        "source_file": "scene-scope-02.mp4",
+                        "source_scene_number": 2,
+                        "duration": 2,
+                        "trim_start": 4.3,
+                    },
+                ]
+            }
+        }
+        units = pipeline_module._timeline_edit_render_units(
+            plan,
+            scenes,
+            self.work_dir,
+        )
+
+        self.assertEqual([unit["source_scene_number"] for unit in units], [2, 1, 2])
+        self.assertEqual([unit["target_duration"] for unit in units], [3.5, 1.5, 2.0])
+        self.assertEqual([unit["trim_start"] for unit in units], [0.8, 0.0, 4.3])
+        self.assertEqual([unit["transition"] for unit in units], ["slideleft", "fade", "fade"])
+
+    def test_custom_pip_coordinates_survive_material_timeline(self) -> None:
+        timeline = media_module._material_timeline(
+            [{
+                "asset_id": "pip-custom",
+                "mime": "video/mp4",
+                "path": "/tmp/pip-custom.mp4",
+                "presentation": "pip",
+                "position": "custom",
+                "position_x": 0.237,
+                "position_y": 0.684,
+                "start_sec": 1.0,
+                "duration_sec": 3.0,
+            }],
+            "自由拖动画中画",
+            8.0,
+            [{"sceneNumber": 1, "sourceSceneNumber": 1, "start": 0.0, "end": 8.0}],
+        )
+
+        self.assertEqual(timeline[0]["position"], "custom")
+        self.assertEqual(timeline[0]["position_x"], 0.237)
+        self.assertEqual(timeline[0]["position_y"], 0.684)
+        self.assertEqual(timeline[0]["mime"], "video/mp4")
+        self.assertEqual(timeline[0]["path"], "/tmp/pip-custom.mp4")
+
     async def test_qa_failure_keeps_existing_scene(self) -> None:
         instance = pipeline_module.VideoPipeline()
         self.work_dir.mkdir()
@@ -213,6 +319,7 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
             compose_calls.append({
                 "bgm_path": kwargs.get("bgm_path"),
                 "bgm_volume": kwargs.get("bgm_volume"),
+                "narration_volume": kwargs.get("narration_volume"),
             })
             return await self._compose(*args, **kwargs)
 
@@ -221,6 +328,7 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
             "bgm_enabled": True,
             "bgm_track_id": selected_bgm.id,
             "bgm_volume": 0.18,
+            "narration_volume": 0.76,
         }
         with ExitStack() as stack:
             for common_patch in self._common_patches(instance):
@@ -247,12 +355,32 @@ class PipelineTransactionTests(unittest.IsolatedAsyncioTestCase):
             await instance.run(self.project_id, plan)
 
         self.assertEqual(
-            [{"bgm_path": selected_path, "bgm_volume": 0.18}],
+            [{"bgm_path": selected_path, "bgm_volume": 0.18, "narration_volume": 0.76}],
             compose_calls,
         )
         self.assertEqual("platform:bgm-test", self.project["production"]["bgm"]["id"])
         self.assertEqual("platform", self.project["production"]["bgm"]["source"])
         self.assertEqual("platform:bgm-test", self.project["outputs"][0]["bgm"]["id"])
+
+    async def test_bundled_editor_sound_effect_resolves_without_project_upload_copy(self) -> None:
+        plan = {
+            "sfx_assets": [{
+                "builtin_sfx_id": "kenney-impact-light",
+                "start_sec": 1.0,
+                "duration_sec": 0.3,
+                "volume": 0.7,
+            }],
+        }
+
+        resolved = pipeline_module.VideoPipeline._audio_assets(
+            self.project_id,
+            plan,
+            "sfx_assets",
+        )
+
+        self.assertEqual(len(resolved), 1)
+        self.assertTrue(Path(resolved[0]["path"]).is_file())
+        self.assertEqual(Path(resolved[0]["path"]).name, "kenney-impact-light.ogg")
 
     async def test_static_mode_generates_images_in_parallel_with_every_turn_reference(self) -> None:
         instance = pipeline_module.VideoPipeline()

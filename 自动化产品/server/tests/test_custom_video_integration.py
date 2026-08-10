@@ -213,6 +213,10 @@ class CustomVideoIntegrationTest(unittest.TestCase):
         self.assertIn("onOutput(listener)", integration)
         self.assertIn("markPublished(", integration)
         self.assertIn("publishedCount", integration)
+        self.assertIn('(video-editor|assets|timeline-revision)', backend)
+        self.assertIn('editor_action == "video-editor"', backend)
+        self.assertIn('editor_action == "assets"', backend)
+        self.assertIn('_video_workshop_timing(editor_action, started)', backend)
         self.assertIn("(retry|cancel|speed-version)", backend)
         self.assertIn('project_action == "speed-version"', backend)
         self.assertIn('project_action == "speed-version" and method != "POST"', backend)
@@ -244,8 +248,8 @@ class CustomVideoIntegrationTest(unittest.TestCase):
             VIDEO_WORKSHOP_DIR / "web/assets/app.js"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("styles.css?v=20260810-v1413-runtime-finalization-1", html)
-        self.assertIn("app.js?v=20260810-v1413-runtime-finalization-1", html)
+        self.assertIn("styles.css?v=20260810-v1420-generation-resilience-1", html)
+        self.assertIn("app.js?v=20260810-v1420-generation-resilience-1", html)
         self.assertIn('data-creation-mode="video" aria-pressed="true">动态</button>', html)
         self.assertIn('data-creation-mode="static" aria-pressed="false">静态</button>', html)
         self.assertNotIn(">动态视频</button>", html)
@@ -381,6 +385,8 @@ for (const candidate of [
             "/cancel",
             "pendingScrollMessageId",
             "captureConversationScroll(dom.conversationColumn)",
+            "stabilizeConversationBottom(dom.conversationColumn, dom.conversation, project.id)",
+            "const openingProject = state.conversationRenderProjectId !== project.id",
             "forceBottom: Boolean(pendingScrollId)",
         ):
             self.assertIn(token, javascript)
@@ -557,7 +563,7 @@ host.replaceChildren = child => {{
   if (child !== frame) throw new Error("wrong iframe mounted");
 }};
 mountCustomVideo(host, {{ projectId: "history-project-1" }});
-if (frame.currentSrc !== "/custom-video/?embed=1&workspace=1&canPublish=1&project=history-project-1") {{
+if (frame.currentSrc !== "/custom-video/?embed=1&workspace=1&canPublish=1&release=20260810-v1420-generation-resilience-1&project=history-project-1") {{
   throw new Error(`unexpected iframe source ${{frame.currentSrc}}`);
 }}
 """
@@ -735,7 +741,7 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         self.assertIn('os.getenv("LLM_MAX_TOKENS", "16000")', config)
         self.assertNotIn("sk-", config)
 
-    def test_video_publish_requires_live_llm_and_prefers_shared_designed_voice(self):
+    def test_video_publish_requires_live_llm_and_randomizes_shared_designed_voice(self):
         ai = (APP_DIR / "js/api/ai.js").read_text(encoding="utf-8")
         publish = (APP_DIR / "js/views/customPublish.js").read_text(encoding="utf-8")
         backend = (APP_DIR / "server/main.py").read_text(encoding="utf-8")
@@ -750,11 +756,52 @@ print(json.dumps({"degraded": degraded, "incomplete": incomplete}, ensure_ascii=
         self.assertIn("def _video_workshop_preferred_voice(me):", backend)
         self.assertIn('"preferredVoice": _video_workshop_preferred_voice(me)', backend)
         self.assertIn(
-            'payload["voiceId"] = _video_workshop_preferred_voice(me)["voiceId"]',
+            'payload["voiceId"] = _video_workshop_random_voice(me)["voiceId"]',
             backend,
         )
+        self.assertIn('"voiceOptions": _video_workshop_voice_options(me)', backend)
+        self.assertIn("def _video_workshop_designed_voice_options(me):", backend)
+        self.assertIn("for item in MINIMAX_VOICE_PRESETS:", backend)
+        self.assertIn("options = _video_workshop_designed_voice_options(me)", backend)
         self.assertIn('"presenter_female"', config)
         self.assertNotIn("sk-api-", ai + publish + backend + store + config)
+
+    def test_video_voice_picker_uses_platform_menu_and_forwards_favorites(self):
+        app_js = (VIDEO_WORKSHOP_DIR / "web/assets/app.js").read_text(encoding="utf-8")
+        index = (VIDEO_WORKSHOP_DIR / "web/index.html").read_text(encoding="utf-8")
+        styles = (VIDEO_WORKSHOP_DIR / "web/assets/styles.css").read_text(encoding="utf-8")
+        integration = (APP_DIR / "js/views/customVideoIntegration.js").read_text(encoding="utf-8")
+        creation = (APP_DIR / "js/views/customCreation.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="videoVoicePickerButton"', index)
+        self.assertIn('id="videoVoiceMenu"', index)
+        self.assertIn('data-voice-rail-tab="design"', index)
+        self.assertIn('id="videoGenerateVoicePickerButton"', index)
+        self.assertIn('id="videoGenerateVoiceMenu"', index)
+        self.assertIn('id="videoVoiceDesignPrompt"', index)
+        self.assertIn('id="videoVoiceDesignSave"', index)
+        self.assertNotIn('id="videoVoiceSelect"', index)
+        self.assertIn('title: "收藏音色"', app_js)
+        self.assertIn('title: "MiniMax 系统音色"', app_js)
+        self.assertIn('search.placeholder = "搜索音色名称或 ID"', app_js)
+        self.assertIn("option.dataset.videoVoiceSearch", app_js)
+        self.assertIn("previewVideoVoice(preview.dataset.videoVoicePreview, preview)", app_js)
+        self.assertIn('mainFetch("/api/tts/voice/design"', app_js)
+        self.assertIn('mainFetch("/api/db/voicePresets"', app_js)
+        self.assertIn("state.generateVoiceId || nextNarrationVoiceId()", app_js)
+        self.assertIn('type: "custom-video:voice-presets-changed"', app_js)
+        self.assertIn('message.type === "workspace:voice-preferences"', app_js)
+        self.assertIn('message.type === "custom-video:voice-presets-changed"', integration)
+        self.assertIn('postWorkspaceAction("workspace:voice-preferences", { favoriteVoiceIds })', integration)
+        self.assertIn("favoriteVoiceIds: [...favoriteVoiceIds()]", creation)
+        self.assertIn("onVoicePresetChanged: voice => rememberCustomVoice(voice)", creation)
+        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", styles)
+        thinking_rule = styles.split(".live-thinking-summary > summary", 1)[1].split("}", 1)[0]
+        self.assertIn("border: 0", thinking_rule)
+        self.assertIn("background: transparent", thinking_rule)
+        thinking_events = styles.split(".live-thinking-events {", 1)[1].split("}", 1)[0]
+        self.assertIn("border: 0", thinking_events)
+        self.assertIn("background: transparent", thinking_events)
 
     def test_video_publish_cover_is_locked_to_three_by_four(self):
         workshop = (APP_DIR / "js/views/chainWorkshop.js").read_text(

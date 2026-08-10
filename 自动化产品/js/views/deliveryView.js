@@ -5,11 +5,11 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon } from "../ui/icons.js";
 import { state, save, notify, accountById, productionById, canMarkReviewed, productById, currentMember, refreshDeliveryMetrics } from "../core/store.js";
 import { accountDisplaySequenceMap, platChip } from "../domain/accounts.js";
-import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState, deliveryScopedMediaUrl } from "../domain/delivery.js?v=20260810-v1413-runtime-finalization-1";
+import { canDeleteDelivery, canSeeDeliveryRetract, deleteDeliveryAsset, deliveredAssets, deliveryRetractBlockReason, downloadDelivery, batchDownloadZip, toggleAdminReviewed, productTagLabel, supplierHasDownloaded, supplierHasPublished, matchesDeliveryStatusFilters, deliveryDisplaySequence, deliverySubmittedAt, parseSupplierViewCount, supplierViewCountPromptValue, applySupplierReturnResponse, supplierReturnRowState, deliveryScopedMediaUrl } from "../domain/delivery.js?v=20260810-v1420-generation-resilience-1";
 import { urlFor } from "../domain/assets.js";
 import { ensureAnalyticsForAsset } from "../domain/analytics.js?v=20260727-v118-7";
-import { openProductionDrawer } from "./prodDrawer.js?v=20260810-v1413-runtime-finalization-1";
-import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260810-v1413-runtime-finalization-1";
+import { openProductionDrawer } from "./prodDrawer.js?v=20260810-v1420-generation-resilience-1";
+import { confirmModal, emptyState, toast, openLightbox, supplierReturnModal, promptModal, openModal } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
 import { copyText } from "../core/util.js";
 import * as remote from "../core/remote.js";
 import { openCommunityShare, syncCommunityShareStatus } from "./communityShare.js";
@@ -475,6 +475,7 @@ const deliveryFilterKeys = new Set(Object.keys(deliveryFilterDefaults));
 const deliveryDateRangeKeys = new Set(["returnedFrom", "returnedTo", "createdFrom", "createdTo"]);
 let supFilters = { ...deliveryFilterDefaults };
 let creatorRemarkFilter = "all";
+let hydratedDeliveryFilterScope = "";
 let activeDeliveryController = null;
 let supplierDeliveryQuery = "";
 let supplierDeliveryFocusId = "";
@@ -483,6 +484,39 @@ const supplierAccountCollator = new Intl.Collator("zh-CN-u-co-pinyin", {
   numeric: true,
   sensitivity: "base",
 });
+
+function deliveryFilterScopeKey() {
+  return `${state.role || "member"}:${state.ui.currentMemberId || currentMember()?.id || "current"}`;
+}
+
+function normalizedDeliveryFilterState(value = {}) {
+  const normalized = { ...deliveryFilterDefaults };
+  deliveryFilterKeys.forEach(key => {
+    const candidate = String(value?.[key] ?? deliveryFilterDefaults[key]).trim();
+    normalized[key] = deliveryDateRangeKeys.has(key)
+      ? (/^\d{4}-\d{2}-\d{2}$/.test(candidate) ? candidate : "")
+      : (candidate || "all");
+  });
+  return normalized;
+}
+
+function hydrateDeliveryFilters() {
+  const key = deliveryFilterScopeKey();
+  if (hydratedDeliveryFilterScope === key) return;
+  const saved = state.ui.deliveryFiltersByScope?.[key];
+  supFilters = normalizedDeliveryFilterState(saved?.filters);
+  creatorRemarkFilter = saved?.remarks === "unread" ? "unread" : "all";
+  hydratedDeliveryFilterScope = key;
+}
+
+function persistDeliveryFilters() {
+  const key = deliveryFilterScopeKey();
+  state.ui.deliveryFiltersByScope = {
+    ...(state.ui.deliveryFiltersByScope || {}),
+    [key]: { filters: { ...supFilters }, remarks: creatorRemarkFilter },
+  };
+  save("meta");
+}
 
 if (typeof window !== "undefined") {
   window.addEventListener("xingzhen:supplier-authority-refreshed", () => {
@@ -498,6 +532,7 @@ const filterOption = (value, label) => ({ value, label });
 const withAllOption = (label, options) => [filterOption("all", label), ...options];
 
 export function getDeliveryFilterModel() {
+  hydrateDeliveryFilters();
   const all = sortDelivered(deliveredAssets());
   const isSupplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
   const canFilterPublisher = isSupplierRole || ["admin", "editor"].includes(state.role);
@@ -619,6 +654,7 @@ export function setDeliveryFilter(key, value, { toggle = false, redraw = true } 
     if (normalizedKey === "publish" && !["all", "published", "unpublished"].includes(normalizedValue)) return getDeliveryFilterModel();
     supFilters[normalizedKey] = toggle && supFilters[normalizedKey] === normalizedValue ? "all" : normalizedValue;
   }
+  persistDeliveryFilters();
   if (redraw && activeDeliveryController?.draw) activeDeliveryController.draw();
   emitDeliveryFilterModel();
   return getDeliveryFilterModel();
@@ -627,6 +663,7 @@ export function setDeliveryFilter(key, value, { toggle = false, redraw = true } 
 export function resetDeliveryFilters({ redraw = true } = {}) {
   supFilters = { ...deliveryFilterDefaults };
   creatorRemarkFilter = "all";
+  persistDeliveryFilters();
   if (redraw && activeDeliveryController?.draw) activeDeliveryController.draw();
   emitDeliveryFilterModel();
   return getDeliveryFilterModel();
@@ -674,6 +711,7 @@ export const deliveryView = {
   render(root) {
     const isSupplierRole = ["supplier", "supplier_parent", "supplier_child"].includes(state.role);
     const canUpdateViews = ["supplier_parent", "supplier_child"].includes(state.role);
+    hydrateDeliveryFilters();
     if (!isSupplierRole) {
       // 团队交付对创作成员可见，但每次进入发布清单先聚焦当前发布人。
       supFilters.publisher = currentMember()?.name || "all";
@@ -926,7 +964,7 @@ export const deliveryView = {
               <tr data-sup="${asset.id}" data-sup-product="${esc(ptag)}" data-sup-type="${esc(acc.mode || "")}" data-sup-publisher="${esc(publisherLabel(asset))}" data-sup-account="${esc(acc.id)}" data-sup-date="${esc(dayKey(asset))}" data-sup-search="${esc(searchValue(item))}" data-sup-visible="${matchesFilters(item) ? "1" : "0"}" ${matchesFilters(item) ? "" : "hidden"}>
                 <td class="c-check"><input type="checkbox" class="sup-check" /></td>
                 <td class="sup-seq">${seqText(seqMap.get(asset.id)) || "—"}</td>
-                <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}${remarkDot(asset)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}<span class="sup-date-line">${dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt) ? `<em class="sup-created">${icon("calendar", 10)} 创作 ${esc(dateFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt))}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}</span>${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
+                <td class="sup-name" title="${esc(asset.name)}"><b>${esc(asset.name)}${remarkDot(asset)}</b>${asset.title ? `<em title="${esc(asset.title)}">${esc(asset.title)}</em>` : ""}<span class="sup-date-line">${dateTimeFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt) ? `<em class="sup-created">${icon("calendar", 10)} 创作 ${esc(dateTimeFromTime(productionById(asset.productionId)?.createdAt || asset.sourceCreatedAt || asset.createdAt))}</em>` : ""}${asset.planDate ? `<em class="sup-plan">${icon("clock", 10)} 计划发布 ${esc(dateOnly(asset.planDate))}</em>` : ""}</span>${asset.publishNote ? `<em class="sup-pubnote" title="${esc(asset.publishNote)}">${icon("fileText", 10)} ${esc(asset.publishNote.slice(0, 20))}${asset.publishNote.length > 20 ? "…" : ""}</em>` : ""}${asset.supplierNote ? `<em class="sup-return-note" title="${esc(asset.supplierNote)}">${icon("fileText", 10)} 回传备注：${esc(asset.supplierNote.slice(0, 18))}${asset.supplierNote.length > 18 ? "…" : ""}</em>` : ""}</td>
                 <td><span class="tag product">${esc(asset.productTag || productTagLabel(productById(asset.productId || "")) || "未标记")}</span></td>
                 <td><b>${esc(publisherLabel(asset))}</b></td>
                 <td>${platChip(acc.platform, true)}</td>

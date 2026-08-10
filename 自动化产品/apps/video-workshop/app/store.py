@@ -167,7 +167,14 @@ def mutate_project(project_id: str, mutator) -> dict[str, Any]:
         project = load_project(project_id)
         if project is None:
             raise KeyError(project_id)
+        was_running = project.get("status") == "running"
         mutator(project)
+        is_running = project.get("status") == "running"
+        if is_running and (not was_running or not project.get("runStartedAt")):
+            # This timestamp belongs to the durable production run rather than
+            # the browser view. Re-entering the page must not restart elapsed
+            # time while the same run is still active.
+            project["runStartedAt"] = _now()
         return save_project(project)
 
 

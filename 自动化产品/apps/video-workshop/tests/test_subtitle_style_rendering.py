@@ -8,6 +8,26 @@ from app.media import write_ass
 
 
 class SubtitleStyleRenderingTests(unittest.TestCase):
+    def test_manual_clip_cues_preserve_selected_subtitle_text_and_timing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "manual-captions.ass"
+            cues = write_ass(
+                "原始口播不应覆盖手动字幕",
+                target,
+                "16:9",
+                6.0,
+                manual_cues=[
+                    {"start": 0.0, "end": 2.5, "text": "字幕一，保留标点！"},
+                    {"start": 2.5, "end": 6.0, "text": "字幕二：可单独修改。"},
+                ],
+            )
+            rendered = target.read_text(encoding="utf-8")
+
+        self.assertEqual(cues[0]["text"], "字幕一，保留标点！")
+        self.assertEqual(cues[1]["start"], 2.5)
+        self.assertIn("字幕一，保留标点！", rendered)
+        self.assertIn("字幕二：可单独修改。", rendered)
+
     def test_smaller_higher_minimal_style_changes_layout_without_overlapping_cues(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "captions.ass"

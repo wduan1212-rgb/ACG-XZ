@@ -85,6 +85,15 @@ function cleanModelText(text = "") {
 }
 
 const TRANSIENT_LLM_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+// The deployed proxy can spend up to two 120s provider attempts plus its
+// bounded retry delay. A caller-provided 45/90s UI budget must not abort that
+// same request while the server is still legitimately working.
+export const SERVER_MANAGED_LLM_TIMEOUT_MS = 270000;
+
+export function effectiveLlmTimeoutMs(serverManaged, timeoutMs = 45000) {
+  const requested = Math.max(1000, Number(timeoutMs) || 45000);
+  return serverManaged ? Math.max(requested, SERVER_MANAGED_LLM_TIMEOUT_MS) : requested;
+}
 
 function jsonModelTextIsValid(text = "") {
   let source = String(text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
@@ -126,9 +135,10 @@ export async function llm(messages, { json = false, temperature = 0.7, signal, t
   const headers = { "Content-Type": "application/json" };
   if (authKey) headers.Authorization = "Bearer " + authKey;
   let lastError = null;
+  const requestTimeoutMs = effectiveLlmTimeoutMs(serverManaged, timeoutMs);
   for (let attempt = 0; attempt < 2; attempt++) {
     const ctrl = signal ? null : new AbortController();
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), requestTimeoutMs) : null;
     let res = null;
     try {
       res = await fetch(ep, {
@@ -182,10 +192,15 @@ export async function llm(messages, { json = false, temperature = 0.7, signal, t
       return content;
     } catch (error) {
       if (error?.name === "AbortError") {
-        throw new Error(`语言模型请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+        const timeoutError = new Error(serverManaged
+          ? "语言模型服务仍在处理，当前结果待确认；请勿重复提交"
+          : `语言模型请求超时（${Math.round(requestTimeoutMs / 1000)} 秒）`);
+        timeoutError.code = serverManaged ? "LLM_RESULT_UNKNOWN" : "LLM_TIMEOUT";
+        timeoutError.outcomeUnknown = serverManaged;
+        throw timeoutError;
       }
       lastError = error;
-      const retryableClientFailure = !signal && attempt === 0
+      const retryableClientFailure = !serverManaged && !signal && attempt === 0
         && (!res || (res.ok && error instanceof SyntaxError));
       if (retryableClientFailure) {
         await new Promise(resolve => setTimeout(resolve, 320));

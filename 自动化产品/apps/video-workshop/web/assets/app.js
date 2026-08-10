@@ -22,6 +22,32 @@ if (WORKSPACE_MODE && typeof document !== "undefined") {
 }
 const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 const HOME_PREFILL_IDS = new Set();
+const VIDEO_VOICE_OPTIONS = (Array.isArray(window.__XINGZHEN_VIDEO_VOICES__)
+  ? window.__XINGZHEN_VIDEO_VOICES__
+  : [])
+  .map(item => ({
+    voiceId: String(item?.voiceId || "").trim(),
+    name: String(item?.name || item?.voiceId || "").trim(),
+    source: ["mine", "shared", "system"].includes(String(item?.source || ""))
+      ? String(item.source)
+      : "system",
+    ownerId: String(item?.ownerId || "").trim(),
+    previewAudioDataUrl: String(item?.previewAudioDataUrl || item?.audioDataUrl || "").trim(),
+  }))
+  .filter(item => item.voiceId);
+const VIDEO_VOICE_MEMBER_ID = String(window.__XINGZHEN_VIDEO_MEMBER_ID__ || "standalone");
+const VIDEO_VOICE_SETTINGS_KEY = `xingzhen-video-voice:${VIDEO_VOICE_MEMBER_ID}`;
+
+function savedVideoVoiceSettings() {
+  try {
+    const value = JSON.parse(localStorage.getItem(VIDEO_VOICE_SETTINGS_KEY) || "null");
+    return value && typeof value === "object" ? value : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+const initialVideoVoiceSettings = savedVideoVoiceSettings();
 const state = {
   // 统一工作区由外层路由决定当前会话，不读取子应用自己的最近项目，
   // 避免进入视频工坊时先闪出旧首页或错误的历史项目。
@@ -36,6 +62,10 @@ const state = {
   busy: false,
   pollTimer: null,
   messageSignature: "",
+  conversationRenderProjectId: "",
+  conversationBottomLockToken: 0,
+  conversationBottomLockUntil: 0,
+  conversationBottomLockProjectId: "",
   eventSignature: "",
   outputSignature: "",
   outputMediaSignature: "",
@@ -56,6 +86,11 @@ const state = {
   historyDeliveryCloseTimer: null,
   chatComposerResizeObserver: null,
   communitySharedOutputs: {},
+  voiceMode: initialVideoVoiceSettings.mode === "fixed" ? "fixed" : "random",
+  fixedVoiceId: String(initialVideoVoiceSettings.voiceId || "").trim(),
+  generateVoiceId: String(initialVideoVoiceSettings.generateVoiceId || initialVideoVoiceSettings.voiceId || "").trim(),
+  favoriteVoiceIds: new Set(),
+  pendingDesignedVoice: null,
 };
 
 const dom = {
@@ -85,6 +120,51 @@ const dom = {
   historyDeliveryFilterMenu: document.querySelector("#historyDeliveryFilterMenu"),
   historyDeliveryFilterLabel: document.querySelector("#historyDeliveryFilterLabel"),
   historyDeliveryList: document.querySelector("#historyDeliveryList"),
+  videoEditorModal: document.querySelector("#videoEditorModal"),
+  videoEditorPreviewCanvas: document.querySelector("#videoEditorPreviewCanvas"),
+  videoEditorPreview: document.querySelector("#videoEditorPreview"),
+  videoEditorReplacementPreviewLayer: document.querySelector("#videoEditorReplacementPreviewLayer"),
+  videoEditorOverlayPreviewLayer: document.querySelector("#videoEditorOverlayPreviewLayer"),
+  videoEditorSubtitleReplaceMask: document.querySelector("#videoEditorSubtitleReplaceMask"),
+  videoEditorSubtitlePreview: document.querySelector("#videoEditorSubtitlePreview"),
+  videoEditorAssetList: document.querySelector("#videoEditorAssetList"),
+  videoEditorAssetCount: document.querySelector("#videoEditorAssetCount"),
+  videoEditorTimelineScroll: document.querySelector("#videoEditorTimelineScroll"),
+  videoEditorTimelineCanvas: document.querySelector("#videoEditorTimelineCanvas"),
+  videoEditorRuler: document.querySelector("#videoEditorRuler"),
+  videoEditorVideoTrack: document.querySelector("#videoEditorVideoTrack"),
+  videoEditorOverlayTrack: document.querySelector("#videoEditorOverlayTrack"),
+  videoEditorSubtitleTrack: document.querySelector("#videoEditorSubtitleTrack"),
+  videoEditorAudioTrack: document.querySelector("#videoEditorAudioTrack"),
+  videoEditorBgmTrack: document.querySelector("#videoEditorBgmTrack"),
+  videoEditorSfxTrack: document.querySelector("#videoEditorSfxTrack"),
+  videoEditorPlayhead: document.querySelector("#videoEditorPlayhead"),
+  videoEditorTimecode: document.querySelector("#videoEditorTimecode"),
+  videoEditorPlay: document.querySelector("#videoEditorPlay"),
+  videoEditorScrubber: document.querySelector("#videoEditorScrubber"),
+  videoEditorUndo: document.querySelector("#videoEditorUndo"),
+  videoEditorRedo: document.querySelector("#videoEditorRedo"),
+  videoEditorSplit: document.querySelector("#videoEditorSplit"),
+  videoEditorDelete: document.querySelector("#videoEditorDelete"),
+  videoEditorZoom: document.querySelector("#videoEditorZoom"),
+  videoEditorSelectionTitle: document.querySelector("#videoEditorSelectionTitle"),
+  videoEditorClipInspector: document.querySelector("#videoEditorClipInspector"),
+  videoEditorSubtitleInspector: document.querySelector("#videoEditorSubtitleInspector"),
+  videoEditorSubtitleText: document.querySelector("#videoEditorSubtitleText"),
+  videoEditorOverlayInspector: document.querySelector("#videoEditorOverlayInspector"),
+  videoEditorOverlayEntry: document.querySelector("#videoEditorOverlayEntry"),
+  videoEditorOverlayExit: document.querySelector("#videoEditorOverlayExit"),
+  videoEditorAudioInspector: document.querySelector("#videoEditorAudioInspector"),
+  videoEditorVolumeLabel: document.querySelector("#videoEditorVolumeLabel"),
+  videoEditorTrackVolume: document.querySelector("#videoEditorTrackVolume"),
+  videoEditorTrackVolumeValue: document.querySelector("#videoEditorTrackVolumeValue"),
+  videoEditorBgm: document.querySelector("#videoEditorBgm"),
+  videoEditorBgmDelete: document.querySelector("#videoEditorBgmDelete"),
+  videoEditorSfx: document.querySelector("#videoEditorSfx"),
+  videoEditorSfxPreview: document.querySelector("#videoEditorSfxPreview"),
+  videoEditorSfxAdd: document.querySelector("#videoEditorSfxAdd"),
+  videoEditorSubtitle: document.querySelector("#videoEditorSubtitle"),
+  videoEditorSubmit: document.querySelector("#videoEditorSubmit"),
   projectAssetsButton: document.querySelector("#projectAssetsButton"),
   speedVersionControl: document.querySelector("#speedVersionControl"),
   speedVersionSelect: document.querySelector("#speedVersionSelect"),
@@ -104,6 +184,30 @@ const dom = {
   toast: document.querySelector("#toast"),
   conversationColumn: document.querySelector(".conversation-column"),
   creationModeButtons: [...document.querySelectorAll("[data-creation-mode]")],
+  voiceRailTabs: [...document.querySelectorAll("[data-voice-rail-tab]")],
+  voiceRailPanels: [...document.querySelectorAll("[data-voice-rail-panel]")],
+  voiceModeButtons: [...document.querySelectorAll("[data-voice-mode]")],
+  videoVoicePicker: document.querySelector("#videoVoicePicker"),
+  videoVoicePickerButton: document.querySelector("#videoVoicePickerButton"),
+  videoVoiceMenu: document.querySelector("#videoVoiceMenu"),
+  videoVoiceSelectedName: document.querySelector("#videoVoiceSelectedName"),
+  videoVoiceSelectedMeta: document.querySelector("#videoVoiceSelectedMeta"),
+  videoGenerateVoicePicker: document.querySelector("#videoGenerateVoicePicker"),
+  videoGenerateVoicePickerButton: document.querySelector("#videoGenerateVoicePickerButton"),
+  videoGenerateVoiceMenu: document.querySelector("#videoGenerateVoiceMenu"),
+  videoGenerateVoiceSelectedName: document.querySelector("#videoGenerateVoiceSelectedName"),
+  videoGenerateVoiceSelectedMeta: document.querySelector("#videoGenerateVoiceSelectedMeta"),
+  videoVoiceCurrent: document.querySelector("#videoVoiceCurrent"),
+  videoVoiceHint: document.querySelector("#videoVoiceHint"),
+  videoVoiceText: document.querySelector("#videoVoiceText"),
+  videoVoiceGenerate: document.querySelector("#videoVoiceGenerate"),
+  videoVoiceResult: document.querySelector("#videoVoiceResult"),
+  videoVoiceDesignName: document.querySelector("#videoVoiceDesignName"),
+  videoVoiceDesignPrompt: document.querySelector("#videoVoiceDesignPrompt"),
+  videoVoiceDesignPreview: document.querySelector("#videoVoiceDesignPreview"),
+  videoVoiceDesign: document.querySelector("#videoVoiceDesign"),
+  videoVoiceDesignResult: document.querySelector("#videoVoiceDesignResult"),
+  videoVoiceDesignSave: document.querySelector("#videoVoiceDesignSave"),
 };
 
 const rotatingPrompts = [
@@ -125,8 +229,41 @@ let promptCycle = { index: 0, position: 0, deleting: false, timer: null, stopped
 let toastTimer = null;
 let clientIdSequence = 0;
 const compositionStates = new WeakMap();
+const publicProgressTypingStates = new WeakMap();
 
 const CONVERSATION_BOTTOM_THRESHOLD = 140;
+
+function typePublicProgress(element, value) {
+  if (!element) return;
+  const target = String(value || "");
+  const existing = publicProgressTypingStates.get(element);
+  if (existing?.target === target) return;
+  if (existing?.timer) window.clearTimeout(existing.timer);
+  element.setAttribute("aria-label", target);
+  if (!target || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+    element.textContent = target;
+    publicProgressTypingStates.set(element, { target, timer: null });
+    return;
+  }
+  const characters = Array.from(target);
+  let index = 1;
+  element.textContent = characters[0] || "";
+  const typingState = { target, timer: null };
+  publicProgressTypingStates.set(element, typingState);
+  const revealNext = () => {
+    if (!element.isConnected || publicProgressTypingStates.get(element) !== typingState) return;
+    index += 1;
+    element.textContent = characters.slice(0, index).join("");
+    if (index >= characters.length) {
+      typingState.timer = null;
+      return;
+    }
+    const previous = characters[index - 1];
+    const delay = /[，。！？、,.!?]/.test(previous) ? 140 : 46;
+    typingState.timer = window.setTimeout(revealNext, delay);
+  };
+  typingState.timer = window.setTimeout(revealNext, 46);
+}
 
 function captureConversationScroll(column) {
   if (!column) return { scrollTop: 0, wasNearBottom: true };
@@ -156,6 +293,55 @@ function scheduleConversationScroll(column, snapshot, { forceBottom = false, smo
     // embedded parent page, unlike scrolling a message element into view.
     column.scrollTop = snapshot.scrollTop;
   });
+}
+
+function stabilizeConversationBottom(column, content, projectId, durationMs = 900) {
+  if (!column) return;
+  const lockProjectId = String(projectId || "");
+  const requestedUntil = Date.now() + Math.max(0, Number(durationMs) || 0);
+  if (state.conversationBottomLockProjectId === lockProjectId) {
+    state.conversationBottomLockUntil = Math.max(
+      state.conversationBottomLockUntil,
+      requestedUntil,
+    );
+  } else {
+    state.conversationBottomLockProjectId = lockProjectId;
+    state.conversationBottomLockUntil = requestedUntil;
+  }
+  const token = ++state.conversationBottomLockToken;
+  const pin = () => {
+    if (
+      token !== state.conversationBottomLockToken
+      || String(state.projectId || "") !== lockProjectId
+      || state.conversationBottomLockProjectId !== lockProjectId
+      || Date.now() > state.conversationBottomLockUntil
+    ) return;
+    const top = Math.max(0, Number(column.scrollHeight) || 0);
+    if (typeof column.scrollTo === "function") {
+      column.scrollTo({ top, behavior: "auto" });
+    } else {
+      column.scrollTop = top;
+    }
+  };
+  // The workspace is still boot-hidden here. Pin synchronously, then cover
+  // deferred image/video sizing without introducing a visible smooth-scroll
+  // jump when a long conversation is first opened.
+  pin();
+  window.requestAnimationFrame(() => {
+    pin();
+    window.requestAnimationFrame(pin);
+  });
+  const observer = typeof ResizeObserver === "function"
+    ? new ResizeObserver(pin)
+    : null;
+  observer?.observe(content || column);
+  content?.addEventListener?.("load", pin, true);
+  window.setTimeout(() => pin(), 90);
+  window.setTimeout(() => {
+    pin();
+    observer?.disconnect();
+    content?.removeEventListener?.("load", pin, true);
+  }, Math.max(0, state.conversationBottomLockUntil - Date.now()));
 }
 
 function createClientId() {
@@ -415,6 +601,10 @@ function createChatDeliveryCard(message) {
   speedButton.type = "button";
   speedButton.textContent = "另存变速版";
   speedButton.addEventListener("click", () => createSpeedVersion(output, speedPicker.dataset.value, speedButton));
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.textContent = "剪辑台";
+  edit.addEventListener("click", () => openVideoEditor(output, delivery));
   const publish = document.createElement("button");
   publish.type = "button";
   publish.textContent = publication ? "已发布" : "发布";
@@ -428,7 +618,7 @@ function createChatDeliveryCard(message) {
   share.disabled = Boolean(sharedPost);
   share.classList.toggle("is-shared", Boolean(sharedPost));
   share.addEventListener("click", () => requestOutputCommunityShare(output, delivery));
-  actions.append(speedPicker, speedButton);
+  actions.append(edit, speedPicker, speedButton);
   if (CAN_PUBLISH) actions.append(publish);
   actions.append(share);
   footer.append(meta, actions);
@@ -445,6 +635,538 @@ function showToast(message) {
   dom.toast.textContent = message;
   dom.toast.classList.add("show");
   toastTimer = window.setTimeout(() => dom.toast.classList.remove("show"), 2800);
+}
+
+function hideToast() {
+  window.clearTimeout(toastTimer);
+  dom.toast.classList.remove("show");
+}
+
+function apiErrorMessage(data, fallback) {
+  const detail = data?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object") {
+    const message = detail.message || detail.detail;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return fallback;
+}
+
+function videoVoiceName(voiceId) {
+  const id = String(voiceId || "").trim();
+  if (!id) return "平台默认音色";
+  return VIDEO_VOICE_OPTIONS.find(item => item.voiceId === id)?.name || id;
+}
+
+function persistVideoVoiceSettings() {
+  try {
+    localStorage.setItem(VIDEO_VOICE_SETTINGS_KEY, JSON.stringify({
+      mode: state.voiceMode,
+      voiceId: state.fixedVoiceId,
+      generateVoiceId: state.generateVoiceId,
+    }));
+  } catch (_) {}
+}
+
+function nextNarrationVoiceId() {
+  if (state.voiceMode === "fixed" && state.fixedVoiceId) return state.fixedVoiceId;
+  const designed = VIDEO_VOICE_OPTIONS.filter(item => item.source === "mine" || item.source === "shared");
+  if (designed.length) {
+    const randomIndex = globalThis.crypto?.getRandomValues
+      ? (() => {
+          const values = new Uint32Array(1);
+          globalThis.crypto.getRandomValues(values);
+          return values[0] % designed.length;
+        })()
+      : Math.floor(Math.random() * designed.length);
+    return designed[randomIndex]?.voiceId || "";
+  }
+  return String(window.__XINGZHEN_VIDEO_PREFERRED_VOICE__?.voiceId || "").trim();
+}
+
+function videoVoiceSourceLabel(voice = {}) {
+  if (state.favoriteVoiceIds.has(voice.voiceId)) return "已收藏";
+  return ({ mine: "我的设计", shared: "团队设计", system: "MiniMax 系统音色" }[voice.source]) || "可用声线";
+}
+
+function preferredFixedVoiceId() {
+  return VIDEO_VOICE_OPTIONS.find(item => state.favoriteVoiceIds.has(item.voiceId))?.voiceId
+    || VIDEO_VOICE_OPTIONS.find(item => item.source === "mine")?.voiceId
+    || VIDEO_VOICE_OPTIONS.find(item => item.source === "shared")?.voiceId
+    || VIDEO_VOICE_OPTIONS[0]?.voiceId
+    || "";
+}
+
+function videoVoiceGroups() {
+  const favorites = VIDEO_VOICE_OPTIONS.filter(item => state.favoriteVoiceIds.has(item.voiceId));
+  const favoriteIds = new Set(favorites.map(item => item.voiceId));
+  const available = VIDEO_VOICE_OPTIONS.filter(item => !favoriteIds.has(item.voiceId));
+  return [
+    { title: "收藏音色", items: favorites },
+    { title: "我的设计", items: available.filter(item => item.source === "mine") },
+    { title: "团队设计", items: available.filter(item => item.source === "shared") },
+    { title: "MiniMax 系统音色", items: available.filter(item => item.source === "system") },
+  ].filter(group => group.items.length);
+}
+
+const voicePreviewCache = new Map();
+let activeVoicePreviewAudio = null;
+let activeVoicePreviewId = "";
+
+function videoVoicePickerContext(target = "narration") {
+  if (target === "generate") {
+    return {
+      target,
+      picker: dom.videoGenerateVoicePicker,
+      button: dom.videoGenerateVoicePickerButton,
+      menu: dom.videoGenerateVoiceMenu,
+      selectedName: dom.videoGenerateVoiceSelectedName,
+      selectedMeta: dom.videoGenerateVoiceSelectedMeta,
+      selectedId: state.generateVoiceId,
+    };
+  }
+  return {
+    target: "narration",
+    picker: dom.videoVoicePicker,
+    button: dom.videoVoicePickerButton,
+    menu: dom.videoVoiceMenu,
+    selectedName: dom.videoVoiceSelectedName,
+    selectedMeta: dom.videoVoiceSelectedMeta,
+    selectedId: state.fixedVoiceId,
+  };
+}
+
+function setVideoVoiceMenuOpen(open, target = "narration") {
+  const context = videoVoicePickerContext(target);
+  if (!context.menu || !context.button) return;
+  ["narration", "generate"].forEach(otherTarget => {
+    const other = videoVoicePickerContext(otherTarget);
+    const next = otherTarget === target && Boolean(open);
+    if (other.menu) other.menu.hidden = !next;
+    other.button?.setAttribute("aria-expanded", next ? "true" : "false");
+    other.picker?.classList.toggle("is-open", next);
+  });
+}
+
+function updateVoicePreviewButtons() {
+  document.querySelectorAll("[data-video-voice-preview]").forEach(button => {
+    const isPlaying = button.dataset.videoVoicePreview === activeVoicePreviewId
+      && activeVoicePreviewAudio
+      && !activeVoicePreviewAudio.paused;
+    button.classList.toggle("is-playing", Boolean(isPlaying));
+    button.setAttribute("aria-label", isPlaying ? "停止试听" : "试听音色");
+    button.title = isPlaying ? "停止试听" : "试听音色";
+    button.replaceChildren();
+    const iconNode = document.createElement("i");
+    iconNode.dataset.lucide = isPlaying ? "square" : "play";
+    button.append(iconNode);
+  });
+  refreshIcons();
+}
+
+async function previewVideoVoice(voiceId, trigger) {
+  const id = String(voiceId || "").trim();
+  if (!id) return;
+  if (activeVoicePreviewId === id && activeVoicePreviewAudio && !activeVoicePreviewAudio.paused) {
+    activeVoicePreviewAudio.pause();
+    activeVoicePreviewAudio.currentTime = 0;
+    activeVoicePreviewId = "";
+    updateVoicePreviewButtons();
+    return;
+  }
+  if (activeVoicePreviewAudio) {
+    activeVoicePreviewAudio.pause();
+    activeVoicePreviewAudio.currentTime = 0;
+  }
+  const voice = VIDEO_VOICE_OPTIONS.find(item => item.voiceId === id) || {};
+  let audioUrl = voice.previewAudioDataUrl || voicePreviewCache.get(id) || "";
+  trigger.disabled = true;
+  trigger.classList.add("is-loading");
+  try {
+    if (!audioUrl) {
+      const token = String(window.__XINGZHEN_VIDEO_AUTH_TOKEN__ || "").trim();
+      const mainFetch = window.__XINGZHEN_VIDEO_MAIN_FETCH__ || window.fetch.bind(window);
+      const response = await mainFetch("/api/tts/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+          "Idempotency-Key": globalThis.crypto?.randomUUID?.() || `video-voice-preview-${Date.now()}`,
+        },
+        body: JSON.stringify({
+          text: "你好，这是一段星阵音色试听。",
+          voiceId: id,
+          speed: 1,
+          vol: 1,
+          pitch: 0,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.audioDataUrl) {
+        const detail = typeof data.detail === "string" ? data.detail : data.detail?.detail;
+        throw new Error(detail || "音色试听失败");
+      }
+      audioUrl = data.audioDataUrl;
+      voicePreviewCache.set(id, audioUrl);
+    }
+    const audio = new Audio(audioUrl);
+    activeVoicePreviewAudio = audio;
+    activeVoicePreviewId = id;
+    audio.addEventListener("ended", () => {
+      if (activeVoicePreviewAudio !== audio) return;
+      activeVoicePreviewId = "";
+      updateVoicePreviewButtons();
+    }, { once: true });
+    audio.addEventListener("error", () => {
+      if (activeVoicePreviewAudio !== audio) return;
+      activeVoicePreviewId = "";
+      updateVoicePreviewButtons();
+      showToast("音色试听加载失败");
+    }, { once: true });
+    await audio.play();
+  } catch (error) {
+    activeVoicePreviewId = "";
+    showToast(error?.message || "音色试听失败");
+  } finally {
+    trigger.disabled = false;
+    trigger.classList.remove("is-loading");
+    updateVoicePreviewButtons();
+  }
+}
+
+function renderVideoVoiceMenu(target = "narration") {
+  const context = videoVoicePickerContext(target);
+  if (!context.menu) return;
+  const { menu } = context;
+  menu.replaceChildren();
+  const searchWrap = document.createElement("label");
+  searchWrap.className = "video-voice-search";
+  const searchIcon = document.createElement("i");
+  searchIcon.dataset.lucide = "search";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "搜索音色名称或 ID";
+  search.setAttribute("aria-label", "搜索音色");
+  searchWrap.append(searchIcon, search);
+  menu.append(searchWrap);
+  videoVoiceGroups().forEach(group => {
+    const section = document.createElement("section");
+    section.className = "video-voice-menu-group";
+    const heading = document.createElement("div");
+    heading.className = "video-voice-menu-title";
+    heading.textContent = group.title;
+    section.append(heading);
+    group.items.forEach(voice => {
+      const option = document.createElement("div");
+      const active = voice.voiceId === context.selectedId
+        && (target === "generate" || state.voiceMode === "fixed");
+      option.className = `video-voice-option${active ? " is-active" : ""}${state.favoriteVoiceIds.has(voice.voiceId) ? " is-favorite" : ""}`;
+      option.dataset.videoVoiceOption = voice.voiceId;
+      option.dataset.videoVoiceTarget = target;
+      option.dataset.videoVoiceSearch = `${voice.name} ${voice.voiceId} ${videoVoiceSourceLabel(voice)}`.toLocaleLowerCase("zh-Hans-CN");
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", active ? "true" : "false");
+      const select = document.createElement("button");
+      select.type = "button";
+      select.className = "video-voice-option-select";
+      const marker = document.createElement("i");
+      marker.dataset.lucide = state.favoriteVoiceIds.has(voice.voiceId) ? "star" : (active ? "check" : "mic");
+      const copy = document.createElement("span");
+      const name = document.createElement("strong");
+      name.textContent = voice.name;
+      const meta = document.createElement("small");
+      meta.textContent = `${videoVoiceSourceLabel(voice)} · ${voice.voiceId}`;
+      copy.append(name, meta);
+      select.append(marker, copy);
+      const preview = document.createElement("button");
+      preview.type = "button";
+      preview.className = "video-voice-preview-button";
+      preview.dataset.videoVoicePreview = voice.voiceId;
+      preview.setAttribute("aria-label", "试听音色");
+      preview.title = "试听音色";
+      const previewIcon = document.createElement("i");
+      previewIcon.dataset.lucide = "play";
+      preview.append(previewIcon);
+      option.append(select, preview);
+      section.append(option);
+    });
+    menu.append(section);
+  });
+  search.addEventListener("input", () => {
+    const keyword = search.value.trim().toLocaleLowerCase("zh-Hans-CN");
+    menu.querySelectorAll(".video-voice-menu-group").forEach(section => {
+      let visible = 0;
+      section.querySelectorAll(".video-voice-option").forEach(option => {
+        const matches = !keyword || String(option.dataset.videoVoiceSearch || "").includes(keyword);
+        option.hidden = !matches;
+        if (matches) visible += 1;
+      });
+      section.hidden = visible === 0;
+    });
+  });
+  if (!VIDEO_VOICE_OPTIONS.length) {
+    const empty = document.createElement("p");
+    empty.className = "video-voice-menu-empty";
+    empty.textContent = "暂无可用音色";
+    menu.append(empty);
+  }
+  updateVoicePreviewButtons();
+}
+
+function syncVideoVoiceUi() {
+  dom.voiceModeButtons.forEach(button => {
+    const active = button.dataset.voiceMode === state.voiceMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  const selected = VIDEO_VOICE_OPTIONS.find(item => item.voiceId === state.fixedVoiceId);
+  if (dom.videoVoiceSelectedName) {
+    dom.videoVoiceSelectedName.textContent = selected?.name || "平台自动选择";
+  }
+  if (dom.videoVoiceSelectedMeta) {
+    dom.videoVoiceSelectedMeta.textContent = selected
+      ? `${videoVoiceSourceLabel(selected)} · ${selected.voiceId}`
+      : "优先从可用的定制音色中随机";
+  }
+  const generated = VIDEO_VOICE_OPTIONS.find(item => item.voiceId === state.generateVoiceId);
+  if (dom.videoGenerateVoiceSelectedName) {
+    dom.videoGenerateVoiceSelectedName.textContent = generated?.name || "平台默认音色";
+  }
+  if (dom.videoGenerateVoiceSelectedMeta) {
+    dom.videoGenerateVoiceSelectedMeta.textContent = generated
+      ? `${videoVoiceSourceLabel(generated)} · ${generated.voiceId}`
+      : "可直接选择并试听";
+  }
+  dom.videoVoicePicker?.classList.toggle("is-random", state.voiceMode !== "fixed");
+  if (dom.videoVoiceHint) {
+    const designedCount = VIDEO_VOICE_OPTIONS.filter(item => item.source === "mine" || item.source === "shared").length;
+    dom.videoVoiceHint.textContent = state.voiceMode === "fixed"
+      ? `下一次将固定使用：${videoVoiceName(state.fixedVoiceId)}`
+      : (designedCount
+          ? `下一次将从 ${designedCount} 条定制音色中随机选择`
+          : "未找到定制音色，将使用平台默认音色");
+  }
+  renderVideoVoiceMenu("narration");
+  renderVideoVoiceMenu("generate");
+}
+
+function wireVideoVoicePicker(target = "narration") {
+  const context = videoVoicePickerContext(target);
+  if (!context.button || !context.menu) return;
+  context.button.addEventListener("click", event => {
+    event.stopPropagation();
+    setVideoVoiceMenuOpen(context.menu.hidden, target);
+  });
+  context.menu.addEventListener("click", async event => {
+    const preview = event.target.closest?.("[data-video-voice-preview]");
+    if (preview) {
+      event.preventDefault();
+      event.stopPropagation();
+      await previewVideoVoice(preview.dataset.videoVoicePreview, preview);
+      return;
+    }
+    const option = event.target.closest?.("[data-video-voice-option]");
+    if (!option) return;
+    const voiceId = String(option.dataset.videoVoiceOption || "");
+    if (target === "generate") {
+      state.generateVoiceId = voiceId;
+    } else {
+      state.fixedVoiceId = voiceId;
+      state.voiceMode = voiceId ? "fixed" : "random";
+    }
+    persistVideoVoiceSettings();
+    setVideoVoiceMenuOpen(false, target);
+    syncVideoVoiceUi();
+  });
+}
+
+function resetVideoVoiceDesignResult() {
+  state.pendingDesignedVoice = null;
+  if (dom.videoVoiceDesignResult) dom.videoVoiceDesignResult.hidden = true;
+  const audio = dom.videoVoiceDesignResult?.querySelector("audio");
+  if (audio) {
+    audio.pause();
+    audio.removeAttribute("src");
+  }
+}
+
+async function saveDesignedVideoVoice() {
+  const candidate = state.pendingDesignedVoice;
+  if (!candidate?.voiceId) return;
+  const token = String(window.__XINGZHEN_VIDEO_AUTH_TOKEN__ || "").trim();
+  const now = Date.now();
+  const item = {
+    id: `video-voice-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    voiceId: candidate.voiceId,
+    name: candidate.name || candidate.voiceId,
+    description: candidate.description || "",
+    source: "mine",
+    ownerId: VIDEO_VOICE_MEMBER_ID,
+    createdAt: now,
+    updatedAt: now,
+    previewAudioDataUrl: candidate.audioDataUrl || "",
+  };
+  const mainFetch = window.__XINGZHEN_VIDEO_MAIN_FETCH__ || window.fetch.bind(window);
+  const response = await mainFetch("/api/db/voicePresets", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+    },
+    body: JSON.stringify({ items: [item] }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = typeof data.detail === "string" ? data.detail : data.detail?.detail;
+    throw new Error(detail || "音色保存失败");
+  }
+  const existing = VIDEO_VOICE_OPTIONS.find(entry => entry.voiceId === item.voiceId);
+  if (existing) Object.assign(existing, item);
+  else VIDEO_VOICE_OPTIONS.unshift(item);
+  voicePreviewCache.set(item.voiceId, item.previewAudioDataUrl);
+  state.generateVoiceId = item.voiceId;
+  persistVideoVoiceSettings();
+  resetVideoVoiceDesignResult();
+  syncVideoVoiceUi();
+  window.parent?.postMessage?.({
+    type: "custom-video:voice-presets-changed",
+    scope: "video",
+    voice: item,
+  }, window.location.origin);
+  showToast(`已保存音色“${item.name}”，并选为语音生成声线`);
+}
+
+function initializeVideoVoiceWorkbench() {
+  if (!dom.videoVoicePickerButton || !dom.videoVoiceMenu) return;
+  if (state.fixedVoiceId && !VIDEO_VOICE_OPTIONS.some(item => item.voiceId === state.fixedVoiceId)) {
+    state.fixedVoiceId = "";
+    state.voiceMode = "random";
+  }
+  if (!state.generateVoiceId || !VIDEO_VOICE_OPTIONS.some(item => item.voiceId === state.generateVoiceId)) {
+    state.generateVoiceId = preferredFixedVoiceId();
+  }
+  dom.voiceRailTabs.forEach(button => button.addEventListener("click", () => {
+    const tab = button.dataset.voiceRailTab;
+    dom.voiceRailTabs.forEach(item => item.classList.toggle("active", item === button));
+    dom.voiceRailPanels.forEach(panel => {
+      const active = panel.dataset.voiceRailPanel === tab;
+      panel.hidden = !active;
+      panel.classList.toggle("active", active);
+    });
+    setVideoVoiceMenuOpen(false, "narration");
+  }));
+  dom.voiceModeButtons.forEach(button => button.addEventListener("click", () => {
+    state.voiceMode = button.dataset.voiceMode === "fixed" ? "fixed" : "random";
+    if (state.voiceMode === "fixed" && !state.fixedVoiceId) {
+      state.fixedVoiceId = preferredFixedVoiceId();
+    }
+    persistVideoVoiceSettings();
+    syncVideoVoiceUi();
+  }));
+  wireVideoVoicePicker("narration");
+  wireVideoVoicePicker("generate");
+  document.addEventListener("click", event => {
+    if (!dom.videoVoicePicker?.contains(event.target) && !dom.videoGenerateVoicePicker?.contains(event.target)) {
+      setVideoVoiceMenuOpen(false, "narration");
+    }
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") setVideoVoiceMenuOpen(false, "narration");
+  });
+  dom.videoVoiceGenerate?.addEventListener("click", async () => {
+    const text = String(dom.videoVoiceText?.value || "").trim();
+    if (!text) {
+      showToast("请先输入要生成的口播文本");
+      return;
+    }
+    const token = String(window.__XINGZHEN_VIDEO_AUTH_TOKEN__ || "").trim();
+    const original = dom.videoVoiceGenerate.querySelector("span")?.textContent || "生成音频";
+    dom.videoVoiceGenerate.disabled = true;
+    if (dom.videoVoiceGenerate.querySelector("span")) dom.videoVoiceGenerate.querySelector("span").textContent = "生成中…";
+    try {
+      const mainFetch = window.__XINGZHEN_VIDEO_MAIN_FETCH__ || window.fetch.bind(window);
+      const response = await mainFetch("/api/tts/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+          "Idempotency-Key": globalThis.crypto?.randomUUID?.() || `video-voice-${Date.now()}`,
+        },
+        body: JSON.stringify({ text, voiceId: state.generateVoiceId || nextNarrationVoiceId(), speed: 1.2, vol: 1, pitch: 0 }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.audioDataUrl) throw new Error(data.detail || "语音生成失败");
+      const audio = dom.videoVoiceResult?.querySelector("audio");
+      const download = dom.videoVoiceResult?.querySelector("a");
+      if (audio) audio.src = data.audioDataUrl;
+      if (download) download.href = data.audioDataUrl;
+      if (dom.videoVoiceResult) dom.videoVoiceResult.hidden = false;
+      showToast(`已使用“${videoVoiceName(data.voiceId)}”生成音频`);
+    } catch (error) {
+      showToast(error?.message || "语音生成失败");
+    } finally {
+      dom.videoVoiceGenerate.disabled = false;
+      if (dom.videoVoiceGenerate.querySelector("span")) dom.videoVoiceGenerate.querySelector("span").textContent = original;
+    }
+  });
+  dom.videoVoiceDesign?.addEventListener("click", async () => {
+    const name = String(dom.videoVoiceDesignName?.value || "").trim();
+    const prompt = String(dom.videoVoiceDesignPrompt?.value || "").trim();
+    const previewText = String(dom.videoVoiceDesignPreview?.value || "").trim()
+      || "这是一段用于试听新音色的中文口播。";
+    if (!prompt) {
+      showToast("请先填写音色描述");
+      return;
+    }
+    const token = String(window.__XINGZHEN_VIDEO_AUTH_TOKEN__ || "").trim();
+    const original = dom.videoVoiceDesign.querySelector("span")?.textContent || "生成试听音色";
+    dom.videoVoiceDesign.disabled = true;
+    if (dom.videoVoiceDesign.querySelector("span")) dom.videoVoiceDesign.querySelector("span").textContent = "设计中…";
+    try {
+      const mainFetch = window.__XINGZHEN_VIDEO_MAIN_FETCH__ || window.fetch.bind(window);
+      const response = await mainFetch("/api/tts/voice/design", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+          "Idempotency-Key": globalThis.crypto?.randomUUID?.() || `video-voice-design-${Date.now()}`,
+        },
+        body: JSON.stringify({ prompt, previewText, name }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.voiceId) {
+        const detail = typeof data.detail === "string" ? data.detail : data.detail?.detail;
+        throw new Error(detail || "音色设计失败");
+      }
+      state.pendingDesignedVoice = {
+        voiceId: String(data.voiceId || "").trim(),
+        name: name || data.name || data.voiceId,
+        description: prompt,
+        audioDataUrl: String(data.audioDataUrl || "").trim(),
+      };
+      const audio = dom.videoVoiceDesignResult?.querySelector("audio");
+      if (audio) audio.src = state.pendingDesignedVoice.audioDataUrl;
+      if (dom.videoVoiceDesignResult) dom.videoVoiceDesignResult.hidden = false;
+      showToast("音色候选已生成，试听后可保存");
+    } catch (error) {
+      showToast(error?.message || "音色设计失败");
+    } finally {
+      dom.videoVoiceDesign.disabled = false;
+      if (dom.videoVoiceDesign.querySelector("span")) dom.videoVoiceDesign.querySelector("span").textContent = original;
+    }
+  });
+  dom.videoVoiceDesignSave?.addEventListener("click", async () => {
+    dom.videoVoiceDesignSave.disabled = true;
+    try {
+      await saveDesignedVideoVoice();
+    } catch (error) {
+      showToast(error?.message || "音色保存失败");
+    } finally {
+      dom.videoVoiceDesignSave.disabled = false;
+    }
+  });
+  dom.videoVoiceDesignResult?.querySelector("[data-video-voice-design-discard]")?.addEventListener("click", resetVideoVoiceDesignResult);
+  syncVideoVoiceUi();
 }
 
 async function copyText(value) {
@@ -699,11 +1421,7 @@ function createMessageIdentity(message) {
   avatar.className = `message-agent-avatar${message.kind === "pending" ? " is-working" : ""}${message.kind === "plan" ? " is-director" : ""}`;
   avatar.setAttribute("aria-hidden", "true");
   const image = document.createElement("img");
-  const reduceMotion = typeof window.matchMedia === "function"
-    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  image.src = reduceMotion
-    ? "/assets/brand/starmatrix-mascot-transparent.png"
-    : "/assets/brand/starmatrix-mascot-wink.webp";
+  image.src = "/assets/brand/starmatrix-mascot-transparent.png";
   image.addEventListener("error", () => {
     image.src = "assets/xingzhen-logo-white.png";
   }, { once: true });
@@ -711,6 +1429,33 @@ function createMessageIdentity(message) {
   avatar.append(image);
   identity.append(avatar, label);
   return identity;
+}
+
+function liveThinkingDetails(content) {
+  const details = document.createElement("details");
+  details.className = "live-thinking-summary";
+  details.open = true;
+  const summary = document.createElement("summary");
+  const label = document.createElement("span");
+  label.className = "live-thinking-label";
+  label.textContent = "思考中";
+  summary.append(label, content);
+  const progress = document.createElement("b");
+  progress.className = "live-thinking-progress";
+  progress.textContent = `${Number(state.project?.progress || 0)}%`;
+  summary.append(progress);
+  const events = document.createElement("div");
+  events.className = "live-thinking-events";
+  const placeholder = document.createElement("div");
+  placeholder.className = "live-thinking-placeholder";
+  const placeholderTitle = document.createElement("strong");
+  placeholderTitle.textContent = "正在梳理执行步骤";
+  const placeholderDetail = document.createElement("span");
+  placeholderDetail.textContent = "这里会持续显示已确认的制作判断与当前进度。";
+  placeholder.append(placeholderTitle, placeholderDetail);
+  events.append(placeholder);
+  details.append(summary, events);
+  return details;
 }
 
 function createMessage(message, isRetryTarget = false) {
@@ -726,7 +1471,7 @@ function createMessage(message, isRetryTarget = false) {
     ring.setAttribute("aria-hidden", "true");
     const pendingText = document.createElement("span");
     pendingText.className = "pending-live-text";
-    pendingText.textContent = assistantText(message.content);
+    typePublicProgress(pendingText, assistantText(message.content));
     content.append(ring, pendingText);
   } else {
     content.textContent = message.role === "assistant"
@@ -778,7 +1523,7 @@ function createMessage(message, isRetryTarget = false) {
     article.append(details);
   }
 
-  article.append(content);
+  article.append(message.kind === "pending" ? liveThinkingDetails(content) : content);
 
   if (message.kind === "question" && Array.isArray(message.suggestions) && message.suggestions.length) {
     const suggestions = document.createElement("div");
@@ -916,6 +1661,56 @@ function createMessage(message, isRetryTarget = false) {
   return article;
 }
 
+function isLegacyGenericPublicEvent(event) {
+  const title = assistantText(event?.title || "");
+  const detail = assistantText(event?.detail || "");
+  return (
+    title === "正在思考"
+    && detail === "正在理解这条消息，并判断应当回答、追问还是开始制作。"
+  ) || (
+    title === "等待补充关键信息"
+    && detail === "导演只保留了一个会显著影响成片的问题。"
+  );
+}
+
+function uniqueLivePublicEvents(events, limit = 3) {
+  const unique = [];
+  const seen = new Set();
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (isLegacyGenericPublicEvent(event)) continue;
+    const key = `${assistantText(event?.title || "")}\n${assistantText(event?.detail || "")}`;
+    if (!key.trim() || seen.has(key)) continue;
+    seen.add(key);
+    unique.unshift(event);
+    if (unique.length >= limit) break;
+  }
+  return unique;
+}
+
+function currentRunPublicEvents(project, events = project?.events || []) {
+  const startedAt = Date.parse(String(project?.runStartedAt || ""));
+  if (!Number.isFinite(startedAt)) return events;
+  return events.filter(event => {
+    const eventAt = Date.parse(String(event?.at || event?.createdAt || ""));
+    return Number.isFinite(eventAt) && eventAt >= startedAt;
+  });
+}
+
+function latestProjectUserSubject(project) {
+  const message = [...(project?.messages || [])]
+    .reverse()
+    .find(item => item?.role === "user" && String(item?.content || "").trim());
+  return publicProgressSubject(message?.content || "");
+}
+
+function liveProductionTitle(project, events = project?.events || []) {
+  const latestVisibleEvent = uniqueLivePublicEvents(currentRunPublicEvents(project, events), 1).at(-1);
+  if (latestVisibleEvent) return assistantText(latestVisibleEvent.title || "制作任务正在运行");
+  const subject = latestProjectUserSubject(project);
+  return subject ? `正在处理“${subject}”` : "制作任务正在运行";
+}
+
 function createLiveProductionIndicator(project) {
   const article = document.createElement("article");
   article.className = "message assistant production-live";
@@ -928,7 +1723,7 @@ function createLiveProductionIndicator(project) {
   text.className = "production-live-text";
   const title = document.createElement("span");
   title.className = "production-live-title";
-  title.textContent = assistantText(project.events?.at(-1)?.title || "制作任务正在运行");
+  title.textContent = liveProductionTitle(project);
   const detail = document.createElement("span");
   detail.className = "production-live-detail";
   const separator = document.createElement("span");
@@ -944,11 +1739,14 @@ function createLiveProductionIndicator(project) {
   stageWindow.append(stage);
   const elapsed = document.createElement("span");
   elapsed.className = "production-live-elapsed";
-  elapsed.textContent = "1 秒";
+  elapsed.textContent = "1秒";
   detail.append(separator, stageWindow, elapsed);
   text.append(title, detail);
   content.append(ring, text);
-  article.append(createMessageIdentity({ role: "assistant", kind: "pending" }), content);
+  article.append(
+    createMessageIdentity({ role: "assistant", kind: "pending" }),
+    liveThinkingDetails(content),
+  );
   return article;
 }
 
@@ -969,15 +1767,43 @@ function renderConversation(project) {
   });
   if (signature === state.messageSignature) return;
   state.messageSignature = signature;
+  const openingProject = state.conversationRenderProjectId !== project.id;
+  state.conversationRenderProjectId = project.id;
   const scrollSnapshot = captureConversationScroll(dom.conversationColumn);
   const messages = (project.messages || []).map((message) => createMessage(message, message.id === retryMessageId));
   if (project.status === "running") messages.push(createLiveProductionIndicator(project));
   dom.conversation.replaceChildren(...messages);
   const pendingScrollId = state.pendingScrollMessageId;
   state.pendingScrollMessageId = "";
+  const hasActiveBottomLock = (
+    state.conversationBottomLockProjectId === String(project.id || "")
+    && Date.now() < state.conversationBottomLockUntil
+  );
+  if (openingProject) {
+    stabilizeConversationBottom(dom.conversationColumn, dom.conversation, project.id);
+    return;
+  }
+  if (pendingScrollId || hasActiveBottomLock) {
+    // A send can grow more than once: the optimistic user row, public progress
+    // rows, and the final director reply all change the scroll height. Keep the
+    // active send pinned for a bounded interval instead of restoring a stale
+    // pre-send offset after every re-render.
+    stabilizeConversationBottom(
+      dom.conversationColumn,
+      dom.conversation,
+      project.id,
+      pendingScrollId
+        ? 12000
+        : Math.max(0, state.conversationBottomLockUntil - Date.now()),
+    );
+    return;
+  }
+  state.conversationBottomLockToken += 1;
+  state.conversationBottomLockUntil = 0;
+  state.conversationBottomLockProjectId = "";
   scheduleConversationScroll(dom.conversationColumn, scrollSnapshot, {
-    forceBottom: Boolean(pendingScrollId),
-    smooth: Boolean(pendingScrollId),
+    forceBottom: false,
+    smooth: false,
   });
 }
 
@@ -1043,9 +1869,60 @@ function renderEvents(project) {
   const progress = Number(project.progress || 0);
   dom.progressNumber.textContent = `${progress}%`;
   dom.progressBar.style.width = `${progress}%`;
+  document.querySelectorAll(".live-thinking-summary").forEach(details => {
+    const progressLabel = details.querySelector(".live-thinking-progress");
+    if (progressLabel) progressLabel.textContent = `${progress}%`;
+    const list = details.querySelector(".live-thinking-events");
+    if (!list) return;
+    const pendingMessageId = String(details.closest(".message")?.dataset.messageId || "");
+    const pendingToken = pendingMessageId.endsWith("-assistant")
+      ? pendingMessageId.slice(0, -"-assistant".length)
+      : "";
+    const isPendingMessage = details.closest(".message")?.classList.contains("pending");
+    const scopedEvents = pendingToken
+      ? events.filter(event => String(event.id || "").startsWith(`${pendingToken}-event`))
+      : isPendingMessage
+        ? []
+        : events;
+    const nextEvents = isPendingMessage
+      ? scopedEvents.slice(-1)
+      : uniqueLivePublicEvents(currentRunPublicEvents(project, scopedEvents));
+    const existingItems = new Map(
+      [...list.children]
+        .filter(item => item.dataset.eventId)
+        .map(item => [item.dataset.eventId, item]),
+    );
+    const retainedIds = new Set();
+    nextEvents.forEach(event => {
+      const eventId = String(event.id || `${event.title || ""}:${event.detail || ""}`);
+      retainedIds.add(eventId);
+      const item = existingItems.get(eventId) || document.createElement("div");
+      item.dataset.eventId = eventId;
+      let title = item.querySelector("strong");
+      if (isPendingMessage) {
+        title?.remove();
+      } else {
+        if (!title) {
+          title = document.createElement("strong");
+          item.append(title);
+        }
+        typePublicProgress(title, assistantText(event.title || "导演处理中"));
+      }
+      let detail = item.querySelector("span");
+      if (!detail) {
+        detail = document.createElement("span");
+        item.append(detail);
+      }
+      typePublicProgress(detail, assistantText(event.detail || ""));
+      list.append(item);
+    });
+    [...list.children].forEach(item => {
+      if (!retainedIds.has(String(item.dataset.eventId || ""))) item.remove();
+    });
+  });
   const liveTitle = document.querySelector(".production-live-title");
-  if (liveTitle && events.length) {
-    liveTitle.textContent = assistantText(events.at(-1).title || "制作任务正在运行");
+  if (liveTitle) {
+    liveTitle.textContent = liveProductionTitle(project, events);
   }
 }
 
@@ -1214,7 +2091,7 @@ async function createSpeedVersion(output, speed, trigger) {
       body: JSON.stringify({ outputId: output.id, speed: Number(speed) }),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.ok) throw new Error(data.detail || "生成变速版本失败");
+    if (!response.ok || !data.ok) throw new Error(apiErrorMessage(data, "生成变速版本失败"));
     closeHistoryDeliveryModal();
     state.outputSignature = "";
     state.outputMediaSignature = "";
@@ -1299,7 +2176,11 @@ function renderHistoryDeliveryModal() {
     speedButton.type = "button";
     speedButton.textContent = "另存变速版";
     speedButton.addEventListener("click", () => createSpeedVersion(output, speedSelect.dataset.value, speedButton));
-    actions.append(download, speedSelect, speedButton);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.textContent = "剪辑台";
+    edit.addEventListener("click", () => openVideoEditor(output, delivery));
+    actions.append(download, edit, speedSelect, speedButton);
     if (CAN_PUBLISH) actions.append(publish);
     content.append(title, meta, actions);
     card.append(video, content);
@@ -1319,6 +2200,1245 @@ function openHistoryDeliveryModal() {
   });
   document.body.classList.add("history-delivery-open");
   refreshIcons();
+}
+
+function projectEditorAssets(project) {
+  return (Array.isArray(project?.assets) ? project.assets : [])
+    .filter(item => item && !String(item.mime || "").startsWith("audio/"))
+    .map(item => ({
+      id: String(item.id || item.asset_id || item.url || item.name || ""),
+      label: String(item.label || item.name || "未命名素材"),
+      name: String(item.name || item.label || "未命名素材"),
+      mime: String(item.mime || ""),
+      url: String(item.url || ""),
+      duration: Math.max(0.1, Number(item.duration) || 0.6),
+    }))
+    .filter(item => item.id);
+}
+
+function projectEditorAudioAssets(project) {
+  return (Array.isArray(project?.assets) ? project.assets : [])
+    .filter(item => item && String(item.mime || "").startsWith("audio/"))
+    .map(item => ({
+      id: String(item.id || item.asset_id || item.url || item.name || ""),
+      label: String(item.label || item.name || "未命名音频"),
+      name: String(item.name || item.label || "未命名音频"),
+      mime: String(item.mime || ""),
+      url: String(item.url || ""),
+      duration: Math.max(0.1, Number(item.duration) || 0.6),
+    }))
+    .filter(item => item.id);
+}
+
+function editorExternalFiles(dataTransfer) {
+  if (![...(dataTransfer?.types || [])].includes("Files")) return [];
+  return [...(dataTransfer?.files || [])].filter(file => /^(?:image\/(?:png|jpeg|webp)|video\/(?:mp4|quicktime|webm)|audio\/(?:mpeg|mp3|wav|x-wav|mp4|x-m4a|m4a))$/.test(file.type));
+}
+
+async function uploadEditorFiles(fileList) {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft || !state.project?.id) return { visual: [], audio: [] };
+  const files = [...(fileList || [])].filter(file => /^(?:image\/(?:png|jpeg|webp)|video\/(?:mp4|quicktime|webm)|audio\/(?:mpeg|mp3|wav|x-wav|mp4|x-m4a|m4a))$/.test(file.type)).slice(0, MAX_ATTACHMENTS_PER_MESSAGE);
+  if (!files.length) {
+    showToast("剪辑台支持 PNG/JPG/WebP、MP4/MOV/WebM 与 MP3/WAV/M4A");
+    return { visual: [], audio: [] };
+  }
+  const attachments = [];
+  for (const file of files) {
+    const isImage = file.type.startsWith("image/");
+    const sizeLimit = isImage ? 6 * 1024 * 1024 : 40 * 1024 * 1024;
+    if (file.size > sizeLimit) {
+      showToast(`${file.name} 超过 ${isImage ? "6MB" : "40MB"}`);
+      continue;
+    }
+    attachments.push({
+      label: file.name,
+      name: file.name,
+      mime: file.type,
+      dataUrl: await fileToDataUrl(file),
+    });
+  }
+  if (!attachments.length) return { visual: [], audio: [] };
+  const response = await fetch(`/api/projects/${state.project.id}/assets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ attachments }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || "外部素材导入失败");
+  const items = Array.isArray(data.items) ? data.items : [];
+  state.project.assets = [...(state.project.assets || []), ...items];
+  const visual = projectEditorAssets({ assets: items });
+  const audio = projectEditorAudioAssets({ assets: items });
+  const appendUnique = (current, incoming) => {
+    const seen = new Set(current.map(item => item.id));
+    return [...current, ...incoming.filter(item => !seen.has(item.id))];
+  };
+  draft.assets = appendUnique(draft.assets, visual);
+  draft.audioAssets = appendUnique(draft.audioAssets, audio);
+  renderVideoEditor();
+  return { visual, audio };
+}
+
+async function importEditorFiles(fileList, { target = "overlay", clipId = "", time = null } = {}) {
+  try {
+    const draft = dom.videoEditorModal?.__editorDraft;
+    if (!draft) return;
+    const { visual, audio } = await uploadEditorFiles(fileList);
+    const dropTime = Number(time ?? draft.playhead);
+    if (target === "overlay") {
+      visual.forEach((asset, index) => addEditorOverlay(asset.id, dropTime + index * 0.15));
+      audio.forEach((asset, index) => addEditorSoundEffect("asset", asset.id, dropTime + index * 0.15));
+      const total = visual.length + audio.length;
+      if (total) showToast(`已导入 ${visual.length ? `${visual.length} 个画中画` : ""}${visual.length && audio.length ? "和" : ""}${audio.length ? `${audio.length} 个音效` : ""}`);
+      return;
+    }
+    if (target === "clip" && clipId && visual.length) {
+      replaceEditorClipAsset(clipId, visual[0].id, { announce: false });
+      showToast(`已导入并替换「${visual[0].label}」`);
+      return;
+    }
+    if (target === "bgm" && audio.length) {
+      commitEditorMutation(current => { current.bgmSelection = `asset:${audio[0].id}`; });
+      showToast(`已导入并使用配乐「${audio[0].label}」`);
+      return;
+    }
+    if (target === "sfx" && audio.length) {
+      audio.forEach((asset, index) => addEditorSoundEffect("asset", asset.id, dropTime + index * 0.15));
+      showToast(`已导入并添加 ${audio.length} 个音效`);
+      return;
+    }
+    showToast(`已导入 ${visual.length + audio.length} 个项目素材`);
+  } catch (error) {
+    showAttachmentError(error, "外部素材导入失败，请重试");
+  }
+}
+
+function formatEditorTime(value) {
+  const safe = Math.max(0, Number(value) || 0);
+  const minutes = Math.floor(safe / 60);
+  const seconds = safe - minutes * 60;
+  return `${String(minutes).padStart(2, "0")}:${seconds.toFixed(1).padStart(4, "0")}`;
+}
+
+function editorSnapshot(draft) {
+  return JSON.stringify({
+    clips: draft.clips,
+    overlays: draft.overlays,
+    subtitleEffect: draft.subtitleEffect,
+    bgmSelection: draft.bgmSelection,
+    narrationVolume: draft.narrationVolume,
+    bgmVolume: draft.bgmVolume,
+    soundEffects: draft.soundEffects,
+    selected: draft.selected,
+    playhead: draft.playhead,
+  });
+}
+
+function restoreEditorSnapshot(draft, snapshot) {
+  const parsed = JSON.parse(snapshot);
+  draft.clips = parsed.clips || [];
+  draft.overlays = parsed.overlays || [];
+  draft.subtitleEffect = String(parsed.subtitleEffect || "");
+  draft.bgmSelection = String(parsed.bgmSelection || "keep");
+  draft.narrationVolume = Math.max(0, Math.min(2, Number(parsed.narrationVolume ?? 1)));
+  draft.bgmVolume = Math.max(0, Math.min(1, Number(parsed.bgmVolume ?? 0.12)));
+  draft.soundEffects = Array.isArray(parsed.soundEffects) ? parsed.soundEffects : [];
+  draft.selected = parsed.selected || null;
+  draft.playhead = Math.max(0, Number(parsed.playhead) || 0);
+}
+
+function commitEditorMutation(callback) {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft) return;
+  draft.history.push(editorSnapshot(draft));
+  draft.history = draft.history.slice(-80);
+  draft.future = [];
+  callback(draft);
+  renderVideoEditor();
+}
+
+function editorClipLayout(draft) {
+  let start = 0;
+  const rows = draft.clips.map((clip, index) => {
+    const duration = Math.max(0.25, Number(clip.duration) || 0.25);
+    const row = { clip, index, start, end: start + duration, duration };
+    start += duration;
+    return row;
+  });
+  return { rows, total: Math.max(0.25, start) };
+}
+
+function selectedEditorEntity(draft) {
+  if (!draft?.selected) return null;
+  if (["narration", "bgm"].includes(draft.selected.type)) {
+    return { type: draft.selected.type, item: null };
+  }
+  if (draft.selected.type === "sound-effect") {
+    const item = draft.soundEffects.find(row => row.id === draft.selected.id);
+    return item ? { type: draft.selected.type, item } : null;
+  }
+  if (draft.selected.type === "subtitle") {
+    const item = draft.clips.find(row => row.id === draft.selected.id);
+    return item ? { type: draft.selected.type, item } : null;
+  }
+  const rows = draft.selected.type === "clip" ? draft.clips : draft.overlays;
+  const item = rows.find(row => row.id === draft.selected.id);
+  return item ? { type: draft.selected.type, item } : null;
+}
+
+function editorClipSeekTime(draft, clipId) {
+  const row = editorClipLayout(draft).rows.find(item => item.clip.id === clipId);
+  return row ? row.start + Math.min(0.08, row.duration / 2) : draft.playhead;
+}
+
+function selectEditorClip(clipId, { seek = true } = {}) {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const clip = draft?.clips.find(item => item.id === clipId);
+  if (!draft || !clip) return;
+  draft.selected = { type: "clip", id: clipId };
+  if (seek) draft.playhead = editorClipSeekTime(draft, clipId);
+  renderVideoEditor();
+  if (seek) setEditorPlayhead(draft.playhead);
+}
+
+function replaceEditorClipAsset(clipId, assetId, { announce = true } = {}) {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const clip = draft?.clips.find(item => item.id === clipId);
+  const asset = assetId ? draft?.assets.find(item => item.id === assetId) : null;
+  if (!draft || !clip || (assetId && !asset)) return;
+  commitEditorMutation(current => {
+    const currentClip = current.clips.find(item => item.id === clipId);
+    if (!currentClip) return;
+    currentClip.replacementAssetId = assetId;
+    current.selected = { type: "clip", id: clipId };
+    current.playhead = editorClipSeekTime(current, clipId);
+  });
+  setEditorPlayhead(draft.playhead);
+  if (announce) {
+    showToast(asset ? `已用「${asset.label}」替换当前片段` : "已恢复当前片段的原镜头");
+  }
+}
+
+function renderEditorAssets(draft) {
+  dom.videoEditorAssetList.replaceChildren();
+  dom.videoEditorAssetCount.textContent = `${draft.assets.length} 项`;
+  if (!draft.assets.length) {
+    const empty = document.createElement("p");
+    empty.className = "video-editor-empty-assets";
+    empty.textContent = "当前项目还没有图片或视频素材";
+    dom.videoEditorAssetList.append(empty);
+    return;
+  }
+  draft.assets.forEach(asset => {
+    const card = document.createElement("article");
+    card.className = "video-editor-asset-card";
+    card.draggable = true;
+    card.dataset.assetId = asset.id;
+    card.title = "拖到主轨片段可替换画面，拖到 V2 可添加画中画";
+    card.addEventListener("dragstart", event => {
+      event.dataTransfer.effectAllowed = "copy";
+      event.dataTransfer.setData("application/x-xingzhen-asset", asset.id);
+      card.classList.add("is-dragging");
+    });
+    card.addEventListener("dragend", () => card.classList.remove("is-dragging"));
+    const preview = document.createElement(asset.mime.startsWith("video/") ? "video" : "img");
+    preview.src = asset.url;
+    preview.alt = asset.label;
+    if (preview.tagName === "VIDEO") {
+      preview.muted = true;
+      preview.preload = "metadata";
+    }
+    const info = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = asset.label;
+    const meta = document.createElement("span");
+    meta.textContent = asset.mime.startsWith("video/") ? "视频素材" : "图片素材";
+    info.append(name, meta);
+    const actions = document.createElement("div");
+    const replace = document.createElement("button");
+    replace.type = "button";
+    replace.textContent = "替换片段";
+    replace.addEventListener("click", () => {
+      const selected = selectedEditorEntity(draft);
+      if (!selected || selected.type !== "clip") {
+        showToast("请先在主轨选择一个片段");
+        return;
+      }
+      replaceEditorClipAsset(selected.item.id, asset.id);
+    });
+    const overlay = document.createElement("button");
+    overlay.type = "button";
+    overlay.textContent = "画中画";
+    overlay.addEventListener("click", () => addEditorOverlay(asset.id, draft.playhead));
+    actions.append(replace, overlay);
+    card.append(preview, info, actions);
+    dom.videoEditorAssetList.append(card);
+  });
+}
+
+function addEditorOverlay(assetId, start) {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const asset = draft?.assets.find(item => item.id === assetId);
+  if (!draft || !asset) return;
+  const total = editorClipLayout(draft).total;
+  commitEditorMutation(current => {
+    const overlay = {
+      id: `overlay-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      assetId,
+      label: asset.label,
+      start: Math.max(0, Math.min(total - 0.5, Number(start) || 0)),
+      duration: Math.min(4, total),
+      position: "top-right",
+      positionX: 1,
+      positionY: 0,
+      scale: 0.32,
+      entryEffect: "fade",
+      exitEffect: "fade",
+    };
+    current.overlays.push(overlay);
+    current.selected = { type: "overlay", id: overlay.id };
+  });
+}
+
+function addEditorSoundEffect(sourceType, sourceId, start) {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft) return;
+  const source = sourceType === "catalog"
+    ? draft.soundEffectCatalog.find(item => item.id === sourceId)
+    : draft.audioAssets.find(item => item.id === sourceId);
+  if (!source) return;
+  const total = editorClipLayout(draft).total;
+  commitEditorMutation(current => {
+    const effect = {
+      id: `sfx-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      sourceType,
+      sourceId,
+      label: String(source.name || source.label || "音效"),
+      start: Math.max(0, Math.min(total - 0.1, Number(start) || 0)),
+      duration: Math.max(0.1, Math.min(total, Number(source.duration) || 0.6)),
+      volume: 0.72,
+    };
+    current.soundEffects.push(effect);
+    current.selected = { type: "sound-effect", id: effect.id };
+  });
+}
+
+function editorSubtitleText(clip) {
+  return String(clip?.subtitle || clip?.narrationExcerpt || clip?.title || "").trim();
+}
+
+function editorSubtitleEffectClass(value) {
+  if (value === "逐字高亮") return "is-word-highlight";
+  if (value === "简洁淡入") return "is-fade";
+  if (value === "关键词放大") return "is-keyword-pop";
+  return "";
+}
+
+function editorTransitionLabel(value) {
+  return ({
+    fade: "淡化",
+    dissolve: "溶解",
+    slideleft: "左滑",
+    wipeleft: "擦除",
+    circleopen: "圆形",
+  })[value] || "淡化";
+}
+
+function editorBgmLabel(draft) {
+  const value = String(draft.bgmSelection || "keep");
+  if (value === "none") return "无配乐";
+  if (value === "keep") return `原配乐 · ${draft.currentBgm?.name || "保持现状"}`;
+  if (value.startsWith("catalog:")) {
+    const id = value.slice("catalog:".length);
+    return draft.bgmCatalog.find(item => item.id === id)?.name || "配乐库音乐";
+  }
+  if (value.startsWith("asset:")) {
+    const id = value.slice("asset:".length);
+    return draft.audioAssets.find(item => item.id === id)?.label || "项目音频";
+  }
+  return "保持原配乐";
+}
+
+function renderEditorBgmOptions(draft) {
+  if (!dom.videoEditorBgm) return;
+  dom.videoEditorBgm.replaceChildren();
+  const keep = document.createElement("option");
+  keep.value = "keep";
+  keep.textContent = `保持原配乐${draft.currentBgm?.name ? ` · ${draft.currentBgm.name}` : ""}`;
+  const none = document.createElement("option");
+  none.value = "none";
+  none.textContent = "不使用 BGM";
+  dom.videoEditorBgm.append(keep, none);
+  if (draft.bgmCatalog.length) {
+    const catalogGroup = document.createElement("optgroup");
+    catalogGroup.label = "平台配乐库";
+    draft.bgmCatalog.forEach(track => {
+      const option = document.createElement("option");
+      option.value = `catalog:${track.id}`;
+      option.textContent = track.name;
+      catalogGroup.append(option);
+    });
+    dom.videoEditorBgm.append(catalogGroup);
+  }
+  if (draft.audioAssets.length) {
+    const assetGroup = document.createElement("optgroup");
+    assetGroup.label = "项目音频";
+    draft.audioAssets.forEach(asset => {
+      const option = document.createElement("option");
+      option.value = `asset:${asset.id}`;
+      option.textContent = asset.label;
+      assetGroup.append(option);
+    });
+    dom.videoEditorBgm.append(assetGroup);
+  }
+  dom.videoEditorBgm.value = draft.bgmSelection || "keep";
+  if (dom.videoEditorBgm.value !== (draft.bgmSelection || "keep")) dom.videoEditorBgm.value = "keep";
+}
+
+function renderEditorSfxOptions(draft) {
+  if (!dom.videoEditorSfx) return;
+  const previous = dom.videoEditorSfx.value;
+  dom.videoEditorSfx.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "选择一个音效";
+  dom.videoEditorSfx.append(placeholder);
+  if (draft.soundEffectCatalog.length) {
+    const catalogGroup = document.createElement("optgroup");
+    catalogGroup.label = "平台基础音效 · CC0";
+    draft.soundEffectCatalog.forEach(effect => {
+      const option = document.createElement("option");
+      option.value = `catalog:${effect.id}`;
+      option.textContent = effect.name;
+      catalogGroup.append(option);
+    });
+    dom.videoEditorSfx.append(catalogGroup);
+  }
+  if (draft.audioAssets.length) {
+    const projectGroup = document.createElement("optgroup");
+    projectGroup.label = "项目音频";
+    draft.audioAssets.forEach(asset => {
+      const option = document.createElement("option");
+      option.value = `asset:${asset.id}`;
+      option.textContent = asset.label;
+      projectGroup.append(option);
+    });
+    dom.videoEditorSfx.append(projectGroup);
+  }
+  dom.videoEditorSfx.value = [...dom.videoEditorSfx.options].some(item => item.value === previous)
+    ? previous
+    : (dom.videoEditorSfx.options[1]?.value || "");
+  dom.videoEditorSfxPreview.disabled = !dom.videoEditorSfx.value;
+  dom.videoEditorSfxAdd.disabled = !dom.videoEditorSfx.value;
+}
+
+function selectedEditorSfxSource(draft) {
+  const [sourceType, ...idParts] = String(dom.videoEditorSfx?.value || "").split(":");
+  const sourceId = idParts.join(":");
+  if (!sourceId || !["catalog", "asset"].includes(sourceType)) return null;
+  const source = sourceType === "catalog"
+    ? draft.soundEffectCatalog.find(item => item.id === sourceId)
+    : draft.audioAssets.find(item => item.id === sourceId);
+  return source ? { sourceType, sourceId, source } : null;
+}
+
+function previewEditorSoundEffect() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const selected = selectedEditorSfxSource(draft);
+  if (!draft || !selected) return;
+  const url = String(selected.source.url || "");
+  if (!url) {
+    showToast("当前音效没有可试听文件");
+    return;
+  }
+  const player = new Audio(url);
+  player.volume = 0.78;
+  void player.play().catch(() => showToast("浏览器暂时无法播放该音效"));
+}
+
+function applyEditorPipPreviewEffect(item, overlay, playhead) {
+  const duration = Math.max(0.5, Number(overlay.duration) || 0.5);
+  const elapsed = Math.max(0, playhead - Number(overlay.start || 0));
+  const remaining = Math.max(0, duration - elapsed);
+  const windowSize = Math.min(0.35, duration / 3);
+  const showPausedBoundary = Boolean(dom.videoEditorPreview?.paused) && elapsed <= 0.01;
+  let opacity = 1;
+  let transform = "translate(0, 0)";
+  if (!showPausedBoundary && elapsed < windowSize) {
+    const progress = Math.max(0, Math.min(1, elapsed / windowSize));
+    if (overlay.entryEffect === "fade") opacity = progress;
+    if (overlay.entryEffect === "slide-left") transform = `translateX(${(1 - progress) * 120}%)`;
+    if (overlay.entryEffect === "slide-up") transform = `translateY(${(1 - progress) * 120}%)`;
+  }
+  if (remaining < windowSize) {
+    const progress = Math.max(0, Math.min(1, 1 - remaining / windowSize));
+    if (overlay.exitEffect === "fade") opacity = Math.min(opacity, 1 - progress);
+    if (overlay.exitEffect === "slide-left") transform = `translateX(${-progress * 120}%)`;
+    if (overlay.exitEffect === "slide-up") transform = `translateY(${-progress * 120}%)`;
+  }
+  item.style.opacity = String(opacity);
+  item.style.setProperty("--pip-effect-transform", transform);
+}
+
+function syncEditorOverlayVideo(media, overlay, draft) {
+  if (!(media instanceof HTMLVideoElement)) return;
+  const offset = Math.max(0, draft.playhead - Number(overlay.start || 0));
+  if (Number.isFinite(media.duration) && media.duration > 0) {
+    const target = Math.min(media.duration - 0.05, offset % media.duration);
+    if (Math.abs((media.currentTime || 0) - target) > 0.35) media.currentTime = target;
+  }
+  if (dom.videoEditorPreview?.paused) {
+    media.pause();
+  } else {
+    void media.play().catch(() => {});
+  }
+}
+
+function syncEditorReplacementPreview(media, row, draft) {
+  if (!(media instanceof HTMLVideoElement) || !row) return;
+  const offset = Math.max(0, draft.playhead - row.start + Number(row.clip.trimStart || 0));
+  if (Number.isFinite(media.duration) && media.duration > 0) {
+    const target = Math.min(Math.max(0, media.duration - 0.05), offset % media.duration);
+    if (Math.abs((media.currentTime || 0) - target) > 0.35) media.currentTime = target;
+  }
+  if (dom.videoEditorPreview?.paused) media.pause();
+  else void media.play().catch(() => {});
+}
+
+function positionEditorPipPreview(item, overlay) {
+  if (!item || overlay.position !== "custom") return;
+  const canvas = dom.videoEditorPreviewCanvas;
+  const availableX = Math.max(0, (canvas?.clientWidth || 0) - item.offsetWidth);
+  const availableY = Math.max(0, (canvas?.clientHeight || 0) - item.offsetHeight);
+  item.style.left = `${Math.max(0, Math.min(1, Number(overlay.positionX) || 0)) * availableX}px`;
+  item.style.top = `${Math.max(0, Math.min(1, Number(overlay.positionY) || 0)) * availableY}px`;
+  item.style.right = "auto";
+  item.style.bottom = "auto";
+  item.style.setProperty("--pip-position-transform", "translate(0, 0)");
+}
+
+function startEditorPipCanvasDrag(event, overlayId, item) {
+  if (event.button !== 0 || event.target.closest(".video-editor-pip-resize-handle")) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const overlay = draft?.overlays.find(entry => entry.id === overlayId);
+  if (!draft || !overlay || !dom.videoEditorPreviewCanvas) return;
+  const before = editorSnapshot(draft);
+  const canvasRect = dom.videoEditorPreviewCanvas.getBoundingClientRect();
+  const itemRect = item.getBoundingClientRect();
+  const pointerOffsetX = event.clientX - itemRect.left;
+  const pointerOffsetY = event.clientY - itemRect.top;
+  draft.selected = { type: "overlay", id: overlayId };
+  item.classList.add("is-selected", "is-dragging");
+  item.setPointerCapture?.(event.pointerId);
+  const onMove = moveEvent => {
+    const availableX = Math.max(1, canvasRect.width - item.offsetWidth);
+    const availableY = Math.max(1, canvasRect.height - item.offsetHeight);
+    const left = Math.max(0, Math.min(availableX, moveEvent.clientX - canvasRect.left - pointerOffsetX));
+    const top = Math.max(0, Math.min(availableY, moveEvent.clientY - canvasRect.top - pointerOffsetY));
+    overlay.position = "custom";
+    overlay.positionX = left / availableX;
+    overlay.positionY = top / availableY;
+    item.dataset.position = "custom";
+    item.style.left = `${left}px`;
+    item.style.top = `${top}px`;
+    item.style.right = "auto";
+    item.style.bottom = "auto";
+    item.style.setProperty("--pip-position-transform", "translate(0, 0)");
+  };
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    item.classList.remove("is-dragging");
+    if (editorSnapshot(draft) !== before) {
+      draft.history.push(before);
+      draft.history = draft.history.slice(-80);
+      draft.future = [];
+    }
+    renderVideoEditor();
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp, { once: true });
+  renderVideoEditorInspector();
+}
+
+function startEditorPipCanvasResize(event, overlayId, item) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const overlay = draft?.overlays.find(entry => entry.id === overlayId);
+  if (!draft || !overlay || !dom.videoEditorPreviewCanvas) return;
+  const before = editorSnapshot(draft);
+  const canvasRect = dom.videoEditorPreviewCanvas.getBoundingClientRect();
+  const startX = event.clientX;
+  const originalScale = Number(overlay.scale) || 0.32;
+  draft.selected = { type: "overlay", id: overlayId };
+  item.classList.add("is-selected", "is-resizing");
+  item.setPointerCapture?.(event.pointerId);
+  const onMove = moveEvent => {
+    overlay.scale = Math.max(0.1, Math.min(0.65, originalScale + (moveEvent.clientX - startX) / canvasRect.width));
+    item.style.width = `${overlay.scale * 100}%`;
+    if (overlay.position === "custom") {
+      positionEditorPipPreview(item, overlay);
+    }
+  };
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    item.classList.remove("is-resizing");
+    if (editorSnapshot(draft) !== before) {
+      draft.history.push(before);
+      draft.history = draft.history.slice(-80);
+      draft.future = [];
+    }
+    renderVideoEditor();
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp, { once: true });
+  renderVideoEditorInspector();
+}
+
+function renderVideoEditorPreviewLayers() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft || !dom.videoEditorOverlayPreviewLayer || !dom.videoEditorSubtitlePreview || !dom.videoEditorReplacementPreviewLayer) return;
+  const layout = editorClipLayout(draft);
+  const activeRow = layout.rows.find(row => (
+    draft.playhead >= row.start
+    && (draft.playhead < row.end || (row === layout.rows.at(-1) && draft.playhead === row.end))
+  ));
+  const replacementAsset = activeRow?.clip.replacementAssetId
+    ? draft.assets.find(item => item.id === activeRow.clip.replacementAssetId)
+    : null;
+  const replacementSignature = replacementAsset
+    ? `${activeRow.clip.id}:${replacementAsset.id}:${replacementAsset.url}`
+    : "";
+  if (dom.videoEditorReplacementPreviewLayer.dataset.signature !== replacementSignature) {
+    dom.videoEditorReplacementPreviewLayer.dataset.signature = replacementSignature;
+    dom.videoEditorReplacementPreviewLayer.replaceChildren();
+    if (replacementAsset?.url) {
+      const media = document.createElement(String(replacementAsset.mime || "").startsWith("video/") ? "video" : "img");
+      media.src = replacementAsset.url;
+      media.setAttribute("aria-label", `替换画面：${replacementAsset.label || "项目素材"}`);
+      if (media instanceof HTMLVideoElement) {
+        media.muted = true;
+        media.loop = true;
+        media.playsInline = true;
+        media.preload = "metadata";
+        media.addEventListener("loadedmetadata", () => syncEditorReplacementPreview(media, activeRow, draft), { once: true });
+      } else {
+        media.alt = replacementAsset.label || "替换画面";
+      }
+      dom.videoEditorReplacementPreviewLayer.append(media);
+    }
+  }
+  const replacementMedia = dom.videoEditorReplacementPreviewLayer.querySelector("video");
+  if (replacementMedia) syncEditorReplacementPreview(replacementMedia, activeRow, draft);
+  const activeOverlays = draft.overlays.filter(overlay => (
+    draft.playhead >= Number(overlay.start || 0)
+    && draft.playhead < Number(overlay.start || 0) + Number(overlay.duration || 0)
+  ));
+  const overlaySignature = JSON.stringify(activeOverlays.map(overlay => [
+    overlay.id,
+    overlay.assetId,
+    overlay.position,
+    Number(overlay.positionX ?? 1),
+    Number(overlay.positionY ?? 0),
+    Number(overlay.scale || 0.32),
+    overlay.entryEffect,
+    overlay.exitEffect,
+  ]));
+  if (dom.videoEditorOverlayPreviewLayer.dataset.signature !== overlaySignature) {
+    dom.videoEditorOverlayPreviewLayer.dataset.signature = overlaySignature;
+    dom.videoEditorOverlayPreviewLayer.replaceChildren();
+    activeOverlays.forEach(overlay => {
+      const asset = draft.assets.find(item => item.id === overlay.assetId);
+      if (!asset?.url) return;
+      const item = document.createElement("div");
+      item.className = "video-editor-pip-preview";
+      item.dataset.overlayId = overlay.id;
+      item.dataset.position = overlay.position || "top-right";
+      const scale = Math.max(0.1, Math.min(0.65, Number(overlay.scale) || 0.32));
+      item.style.width = `${scale * 100}%`;
+      item.title = "拖动画中画；拖右下角缩放";
+      item.addEventListener("pointerdown", event => startEditorPipCanvasDrag(event, overlay.id, item));
+      const media = document.createElement(String(asset.mime || "").startsWith("video/") ? "video" : "img");
+      media.src = asset.url;
+      media.setAttribute("aria-label", overlay.label || asset.label || "画中画素材");
+      if (media instanceof HTMLVideoElement) {
+        media.muted = true;
+        media.loop = true;
+        media.playsInline = true;
+        media.preload = "metadata";
+        media.addEventListener("loadedmetadata", () => syncEditorOverlayVideo(media, overlay, draft), { once: true });
+      } else {
+        media.alt = overlay.label || asset.label || "画中画素材";
+      }
+      const resizeHandle = document.createElement("button");
+      resizeHandle.type = "button";
+      resizeHandle.className = "video-editor-pip-resize-handle";
+      resizeHandle.setAttribute("aria-label", "缩放画中画");
+      resizeHandle.addEventListener("pointerdown", event => startEditorPipCanvasResize(event, overlay.id, item));
+      item.append(media, resizeHandle);
+      dom.videoEditorOverlayPreviewLayer.append(item);
+      positionEditorPipPreview(item, overlay);
+    });
+  }
+  activeOverlays.forEach(overlay => {
+    const item = [...dom.videoEditorOverlayPreviewLayer.children]
+      .find(candidate => candidate.dataset.overlayId === overlay.id);
+    if (item) {
+      item.classList.toggle("is-selected", draft.selected?.type === "overlay" && draft.selected.id === overlay.id);
+      positionEditorPipPreview(item, overlay);
+      applyEditorPipPreviewEffect(item, overlay, draft.playhead);
+    }
+    const media = item?.querySelector("video");
+    if (media) syncEditorOverlayVideo(media, overlay, draft);
+  });
+  const subtitleText = draft.subtitleEffect === "去掉字幕" ? "" : editorSubtitleText(activeRow?.clip);
+  if (dom.videoEditorSubtitleReplaceMask) dom.videoEditorSubtitleReplaceMask.hidden = !subtitleText;
+  dom.videoEditorSubtitlePreview.hidden = !subtitleText;
+  dom.videoEditorSubtitlePreview.textContent = subtitleText;
+  dom.videoEditorSubtitlePreview.className = `video-editor-subtitle-preview ${editorSubtitleEffectClass(draft.subtitleEffect)}`.trim();
+}
+
+function startEditorResize(event, type, id, edge) {
+  event.preventDefault();
+  event.stopPropagation();
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft) return;
+  const rows = type === "clip"
+    ? draft.clips
+    : (type === "overlay" ? draft.overlays : draft.soundEffects);
+  const item = rows.find(row => row.id === id);
+  if (!item) return;
+  const before = editorSnapshot(draft);
+  const startX = event.clientX;
+  const originalDuration = Number(item.duration) || 0.25;
+  const originalStart = Number(item.start) || 0;
+  const originalTrim = Number(item.trimStart) || 0;
+  const onMove = moveEvent => {
+    const delta = (moveEvent.clientX - startX) / draft.zoom;
+    if (type === "clip" && edge === "start") {
+      const nextTrim = Math.max(0, originalTrim + delta);
+      const actualDelta = nextTrim - originalTrim;
+      item.trimStart = nextTrim;
+      item.duration = Math.max(0.25, originalDuration - actualDelta);
+    } else if (["overlay", "sound-effect"].includes(type) && edge === "start") {
+      const nextStart = Math.max(0, originalStart + delta);
+      const actualDelta = nextStart - originalStart;
+      item.start = nextStart;
+      item.duration = Math.max(type === "sound-effect" ? 0.1 : 0.5, originalDuration - actualDelta);
+    } else {
+      item.duration = Math.max(type === "clip" ? 0.25 : (type === "sound-effect" ? 0.1 : 0.5), originalDuration + delta);
+    }
+    renderVideoEditorTimeline();
+    renderVideoEditorInspector();
+    renderVideoEditorPreviewLayers();
+  };
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    if (editorSnapshot(draft) !== before) {
+      draft.history.push(before);
+      draft.history = draft.history.slice(-80);
+      draft.future = [];
+    }
+    renderVideoEditor();
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp, { once: true });
+}
+
+function renderVideoEditorTimeline() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft) return;
+  const { rows, total } = editorClipLayout(draft);
+  const canvasWidth = Math.max(880, Math.ceil(total * draft.zoom) + 32);
+  dom.videoEditorTimelineCanvas.style.width = `${canvasWidth}px`;
+  dom.videoEditorRuler.replaceChildren();
+  for (let second = 0; second <= Math.ceil(total); second += 1) {
+    const tick = document.createElement("span");
+    tick.className = second % 5 === 0 ? "is-major" : "";
+    tick.style.left = `${second * draft.zoom}px`;
+    tick.textContent = second % 5 === 0 ? formatEditorTime(second) : "";
+    dom.videoEditorRuler.append(tick);
+  }
+  dom.videoEditorVideoTrack.replaceChildren();
+  rows.forEach(({ clip, start, duration }, index) => {
+    const block = document.createElement("article");
+    block.className = "video-editor-timeline-clip";
+    if (draft.selected?.type === "clip" && draft.selected.id === clip.id) block.classList.add("is-selected");
+    if (clip.replacementAssetId) block.classList.add("has-replacement");
+    block.style.left = `${start * draft.zoom}px`;
+    block.style.width = `${Math.max(28, duration * draft.zoom)}px`;
+    block.draggable = true;
+    block.tabIndex = 0;
+    block.dataset.clipId = clip.id;
+    block.addEventListener("click", () => selectEditorClip(clip.id));
+    block.addEventListener("dragover", event => {
+      const types = [...(event.dataTransfer?.types || [])];
+      if (!types.includes("application/x-xingzhen-asset") && !types.includes("Files")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+      block.classList.add("is-drop-target");
+    });
+    block.addEventListener("dragleave", () => block.classList.remove("is-drop-target"));
+    block.addEventListener("drop", async event => {
+      const assetId = event.dataTransfer?.getData("application/x-xingzhen-asset");
+      const files = editorExternalFiles(event.dataTransfer);
+      if (!assetId && !files.length) return;
+      event.preventDefault();
+      event.stopPropagation();
+      block.classList.remove("is-drop-target");
+      if (files.length) await importEditorFiles(files, { target: "clip", clipId: clip.id });
+      else replaceEditorClipAsset(clip.id, assetId);
+    });
+    block.addEventListener("dragstart", event => {
+      if (event.target.closest(".video-editor-trim-handle")) return;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-xingzhen-clip", clip.id);
+    });
+    const startHandle = document.createElement("span");
+    startHandle.className = "video-editor-trim-handle is-start";
+    startHandle.addEventListener("pointerdown", event => startEditorResize(event, "clip", clip.id, "start"));
+    const body = document.createElement("div");
+    const number = document.createElement("i");
+    number.textContent = String(index + 1).padStart(2, "0");
+    const title = document.createElement("strong");
+    title.textContent = clip.title || `镜头 ${clip.sourceSceneNumber}`;
+    const meta = document.createElement("span");
+    meta.textContent = `${duration.toFixed(1)}s · ${editorTransitionLabel(clip.transition)}${clip.replacementAssetId ? " · 已替换" : ""}`;
+    body.append(number, title, meta);
+    const endHandle = document.createElement("span");
+    endHandle.className = "video-editor-trim-handle is-end";
+    endHandle.addEventListener("pointerdown", event => startEditorResize(event, "clip", clip.id, "end"));
+    block.append(startHandle, body, endHandle);
+    dom.videoEditorVideoTrack.append(block);
+  });
+  dom.videoEditorOverlayTrack.replaceChildren();
+  draft.overlays.forEach(overlay => {
+    const block = document.createElement("article");
+    block.className = "video-editor-timeline-overlay";
+    if (draft.selected?.type === "overlay" && draft.selected.id === overlay.id) block.classList.add("is-selected");
+    block.style.left = `${overlay.start * draft.zoom}px`;
+    block.style.width = `${Math.max(36, overlay.duration * draft.zoom)}px`;
+    block.draggable = true;
+    block.addEventListener("dragstart", event => {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-xingzhen-overlay", overlay.id);
+    });
+    block.addEventListener("click", () => {
+      draft.selected = { type: "overlay", id: overlay.id };
+      renderVideoEditor();
+    });
+    const startHandle = document.createElement("span");
+    startHandle.className = "video-editor-trim-handle is-start";
+    startHandle.addEventListener("pointerdown", event => startEditorResize(event, "overlay", overlay.id, "start"));
+    const label = document.createElement("strong");
+    label.textContent = overlay.label || "画中画";
+    const endHandle = document.createElement("span");
+    endHandle.className = "video-editor-trim-handle is-end";
+    endHandle.addEventListener("pointerdown", event => startEditorResize(event, "overlay", overlay.id, "end"));
+    block.append(startHandle, label, endHandle);
+    dom.videoEditorOverlayTrack.append(block);
+  });
+  dom.videoEditorSubtitleTrack.replaceChildren();
+  if (draft.subtitleEffect !== "去掉字幕") {
+    rows.forEach(({ clip, start, duration }) => {
+      const text = editorSubtitleText(clip);
+      if (!text) return;
+      const subtitle = document.createElement("button");
+      subtitle.type = "button";
+      subtitle.className = `video-editor-caption-track-block ${editorSubtitleEffectClass(draft.subtitleEffect)}`.trim();
+      if (draft.selected?.type === "subtitle" && draft.selected.id === clip.id) subtitle.classList.add("is-selected");
+      subtitle.style.left = `${start * draft.zoom}px`;
+      subtitle.style.width = `${Math.max(28, duration * draft.zoom)}px`;
+      subtitle.title = text;
+      const label = document.createElement("span");
+      label.textContent = text;
+      subtitle.append(label);
+      subtitle.tabIndex = 0;
+      subtitle.addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        draft.selected = { type: "subtitle", id: clip.id };
+        draft.playhead = editorClipSeekTime(draft, clip.id);
+        renderVideoEditor();
+        setEditorPlayhead(draft.playhead);
+      });
+      dom.videoEditorSubtitleTrack.append(subtitle);
+    });
+  }
+  dom.videoEditorAudioTrack.replaceChildren();
+  const narration = document.createElement("div");
+  narration.className = "video-editor-static-track-block is-audio";
+  narration.classList.toggle("is-selected", draft.selected?.type === "narration");
+  narration.style.width = `${Math.max(40, total * draft.zoom)}px`;
+  narration.innerHTML = `<i data-lucide="audio-waveform"></i><span>口播 · ${Math.round(draft.narrationVolume * 100)}%</span>`;
+  narration.tabIndex = 0;
+  narration.addEventListener("click", () => {
+    draft.selected = { type: "narration", id: "narration" };
+    renderVideoEditor();
+  });
+  dom.videoEditorAudioTrack.append(narration);
+  dom.videoEditorBgmTrack.replaceChildren();
+  const bgm = document.createElement("div");
+  bgm.className = "video-editor-static-track-block is-bgm";
+  bgm.classList.toggle("is-selected", draft.selected?.type === "bgm");
+  bgm.style.width = `${Math.max(40, total * draft.zoom)}px`;
+  bgm.innerHTML = `<i data-lucide="music-2"></i><span>${editorBgmLabel(draft)} · ${Math.round(draft.bgmVolume * 100)}%</span>`;
+  bgm.tabIndex = 0;
+  bgm.addEventListener("click", () => {
+    draft.selected = { type: "bgm", id: "bgm" };
+    renderVideoEditor();
+  });
+  dom.videoEditorBgmTrack.append(bgm);
+  dom.videoEditorSfxTrack.replaceChildren();
+  draft.soundEffects.forEach(effect => {
+    const block = document.createElement("article");
+    block.className = "video-editor-sfx-track-block";
+    block.classList.toggle("is-selected", draft.selected?.type === "sound-effect" && draft.selected.id === effect.id);
+    block.style.left = `${effect.start * draft.zoom}px`;
+    block.style.width = `${Math.max(24, effect.duration * draft.zoom)}px`;
+    block.draggable = true;
+    block.dataset.soundEffectId = effect.id;
+    block.addEventListener("dragstart", event => {
+      if (event.target.closest(".video-editor-trim-handle")) return;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-xingzhen-sfx", effect.id);
+    });
+    block.addEventListener("click", () => {
+      draft.selected = { type: "sound-effect", id: effect.id };
+      draft.playhead = effect.start;
+      renderVideoEditor();
+      setEditorPlayhead(effect.start);
+    });
+    const startHandle = document.createElement("span");
+    startHandle.className = "video-editor-trim-handle is-start";
+    startHandle.addEventListener("pointerdown", event => startEditorResize(event, "sound-effect", effect.id, "start"));
+    const label = document.createElement("strong");
+    label.textContent = `${effect.label} · ${Math.round(effect.volume * 100)}%`;
+    const endHandle = document.createElement("span");
+    endHandle.className = "video-editor-trim-handle is-end";
+    endHandle.addEventListener("pointerdown", event => startEditorResize(event, "sound-effect", effect.id, "end"));
+    block.append(startHandle, label, endHandle);
+    dom.videoEditorSfxTrack.append(block);
+  });
+  draft.playhead = Math.max(0, Math.min(total, draft.playhead));
+  dom.videoEditorPlayhead.style.left = `${draft.playhead * draft.zoom}px`;
+  dom.videoEditorTimecode.textContent = `${formatEditorTime(draft.playhead)} / ${formatEditorTime(total)}`;
+  dom.videoEditorScrubber.max = String(total);
+  dom.videoEditorScrubber.value = String(draft.playhead);
+  refreshIcons();
+}
+
+function renderVideoEditorInspector() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft) return;
+  const selected = selectedEditorEntity(draft);
+  dom.videoEditorClipInspector.hidden = selected?.type !== "clip";
+  dom.videoEditorSubtitleInspector.hidden = selected?.type !== "subtitle";
+  dom.videoEditorOverlayInspector.hidden = selected?.type !== "overlay";
+  dom.videoEditorAudioInspector.hidden = !["narration", "bgm", "sound-effect"].includes(selected?.type);
+  if (!selected) {
+    dom.videoEditorSelectionTitle.textContent = "音频与字幕";
+  } else if (selected.type === "clip") {
+    const clip = selected.item;
+    dom.videoEditorSelectionTitle.textContent = clip.title || `镜头 ${clip.sourceSceneNumber}`;
+  } else if (selected.type === "subtitle") {
+    const clip = selected.item;
+    dom.videoEditorSelectionTitle.textContent = `字幕 · ${clip.title || `镜头 ${clip.sourceSceneNumber}`}`;
+    dom.videoEditorSubtitleText.value = String(clip.subtitle || "");
+  } else if (selected.type === "overlay") {
+    const overlay = selected.item;
+    dom.videoEditorSelectionTitle.textContent = overlay.label || "画中画";
+    dom.videoEditorOverlayEntry.value = overlay.entryEffect || "fade";
+    dom.videoEditorOverlayExit.value = overlay.exitEffect || "fade";
+  } else if (selected.type === "narration") {
+    dom.videoEditorSelectionTitle.textContent = "口播音轨";
+    dom.videoEditorVolumeLabel.textContent = "口播音量";
+    dom.videoEditorTrackVolume.max = "200";
+    dom.videoEditorTrackVolume.value = String(Math.round(draft.narrationVolume * 100));
+  } else if (selected.type === "bgm") {
+    dom.videoEditorSelectionTitle.textContent = "BGM 配乐";
+    dom.videoEditorVolumeLabel.textContent = "BGM 音量";
+    dom.videoEditorTrackVolume.max = "100";
+    dom.videoEditorTrackVolume.value = String(Math.round(draft.bgmVolume * 100));
+  } else if (selected.type === "sound-effect") {
+    dom.videoEditorSelectionTitle.textContent = selected.item.label || "音效";
+    dom.videoEditorVolumeLabel.textContent = "音效音量";
+    dom.videoEditorTrackVolume.max = "150";
+    dom.videoEditorTrackVolume.value = String(Math.round(selected.item.volume * 100));
+  }
+  dom.videoEditorTrackVolumeValue.textContent = `${dom.videoEditorTrackVolume.value}%`;
+  dom.videoEditorSubtitle.value = draft.subtitleEffect;
+  renderEditorBgmOptions(draft);
+  renderEditorSfxOptions(draft);
+  dom.videoEditorBgmDelete.disabled = draft.bgmSelection === "none";
+  dom.videoEditorUndo.disabled = !draft.history.length;
+  dom.videoEditorRedo.disabled = !draft.future.length;
+  dom.videoEditorDelete.disabled = !selected || ["narration", "subtitle"].includes(selected.type);
+  dom.videoEditorSplit.disabled = selected?.type !== "clip";
+}
+
+function renderVideoEditor() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft) return;
+  renderEditorAssets(draft);
+  renderVideoEditorTimeline();
+  renderVideoEditorInspector();
+  renderVideoEditorPreviewLayers();
+}
+
+function editorUndo() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft?.history.length) return;
+  draft.future.push(editorSnapshot(draft));
+  restoreEditorSnapshot(draft, draft.history.pop());
+  renderVideoEditor();
+}
+
+function editorRedo() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft?.future.length) return;
+  draft.history.push(editorSnapshot(draft));
+  restoreEditorSnapshot(draft, draft.future.pop());
+  renderVideoEditor();
+}
+
+function splitEditorClip() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const selected = selectedEditorEntity(draft);
+  if (!draft || selected?.type !== "clip") return;
+  const { rows } = editorClipLayout(draft);
+  const row = rows.find(item => item.clip.id === selected.item.id);
+  const local = draft.playhead - row.start;
+  if (local < 0.25 || row.duration - local < 0.25) {
+    showToast("请把播放头移到片段内部再分割");
+    return;
+  }
+  commitEditorMutation(current => {
+    const index = current.clips.findIndex(item => item.id === selected.item.id);
+    const original = current.clips[index];
+    const second = {
+      ...original,
+      id: `${original.id}-split-${Date.now()}`,
+      duration: original.duration - local,
+      trimStart: Number(original.trimStart || 0) + local,
+      title: `${original.title} · 下半段`,
+    };
+    original.duration = local;
+    current.clips.splice(index + 1, 0, second);
+    current.selected = { type: "clip", id: second.id };
+  });
+}
+
+function deleteEditorSelection() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const selected = selectedEditorEntity(draft);
+  if (!draft || !selected) return;
+  if (selected.type === "clip" && draft.clips.length <= 1) {
+    showToast("主轨至少需要保留一个片段");
+    return;
+  }
+  commitEditorMutation(current => {
+    if (selected.type === "clip") current.clips = current.clips.filter(item => item.id !== selected.item.id);
+    else if (selected.type === "overlay") current.overlays = current.overlays.filter(item => item.id !== selected.item.id);
+    else if (selected.type === "sound-effect") current.soundEffects = current.soundEffects.filter(item => item.id !== selected.item.id);
+    else if (selected.type === "bgm") current.bgmSelection = "none";
+    current.selected = null;
+  });
+}
+
+let videoEditorPlaybackFrame = 0;
+
+function stopVideoEditorPlaybackClock() {
+  if (!videoEditorPlaybackFrame) return;
+  window.cancelAnimationFrame(videoEditorPlaybackFrame);
+  videoEditorPlaybackFrame = 0;
+}
+
+function syncVideoEditorPlaybackClock() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const preview = dom.videoEditorPreview;
+  const duration = Number(preview?.duration || 0);
+  if (!draft || !preview || !Number.isFinite(duration) || duration <= 0) return;
+  setEditorPlayhead(preview.currentTime / duration * editorClipLayout(draft).total, false);
+}
+
+function startVideoEditorPlaybackClock() {
+  stopVideoEditorPlaybackClock();
+  const tick = () => {
+    const preview = dom.videoEditorPreview;
+    if (!preview || preview.paused || preview.ended || dom.videoEditorModal?.hidden) {
+      videoEditorPlaybackFrame = 0;
+      syncVideoEditorPlaybackClock();
+      return;
+    }
+    syncVideoEditorPlaybackClock();
+    videoEditorPlaybackFrame = window.requestAnimationFrame(tick);
+  };
+  videoEditorPlaybackFrame = window.requestAnimationFrame(tick);
+}
+
+function closeVideoEditor() {
+  if (!dom.videoEditorModal) return;
+  stopVideoEditorPlaybackClock();
+  dom.videoEditorModal.classList.remove("is-open", "is-file-target");
+  window.setTimeout(() => {
+    dom.videoEditorModal.hidden = true;
+    dom.videoEditorPreview?.pause();
+  }, 180);
+  document.body.classList.remove("video-editor-open");
+}
+
+async function openVideoEditor(output, delivery) {
+  if (!dom.videoEditorModal || !output || !state.project) return;
+  dom.videoEditorModal.hidden = false;
+  dom.videoEditorModal.classList.add("is-loading");
+  window.requestAnimationFrame(() => dom.videoEditorModal.classList.add("is-open"));
+  document.body.classList.add("video-editor-open");
+  try {
+    const response = await fetch(`/api/projects/${state.project.id}/video-editor?outputId=${encodeURIComponent(output.id)}`, { cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "剪辑时间线加载失败");
+    const clips = (data.clips || []).map(clip => ({ ...clip, duration: Number(clip.duration), trimStart: Number(clip.trimStart || 0), transition: String(clip.transition || "fade") }));
+    const assets = (data.assets || projectEditorAssets(state.project)).map(asset => ({ ...asset, id: String(asset.id) }));
+    dom.videoEditorModal.__editorDraft = {
+      output,
+      delivery,
+      clips,
+      assets,
+      audioAssets: (data.audioAssets || projectEditorAudioAssets(state.project)).map(asset => ({ ...asset, id: String(asset.id) })),
+      bgmCatalog: (data.bgmCatalog || []).map(track => ({ id: String(track.id), name: String(track.name || "未命名配乐"), source: String(track.source || "") })),
+      soundEffectCatalog: (data.soundEffectCatalog || []).map(effect => ({
+        id: String(effect.id),
+        name: String(effect.name || "未命名音效"),
+        url: String(effect.url || ""),
+        duration: Math.max(0.1, Number(effect.duration) || 0.6),
+        license: String(effect.license || ""),
+      })),
+      currentBgm: data.currentBgm || output.bgm || null,
+      bgmSelection: String(data.bgmSelection || "keep"),
+      narrationVolume: Math.max(0, Math.min(2, Number(data.narrationVolume ?? 1))),
+      bgmVolume: Math.max(0, Math.min(1, Number(data.bgmVolume ?? 0.12))),
+      soundEffects: (data.soundEffects || []).map((item, index) => ({
+        id: String(item.id || `sfx-${index}-${Date.now()}`),
+        sourceType: String(item.source_type || item.sourceType || "catalog"),
+        sourceId: String(item.source_id || item.sourceId || ""),
+        label: String(item.label || "音效"),
+        start: Math.max(0, Number(item.start || 0)),
+        duration: Math.max(0.1, Number(item.duration || 0.6)),
+        volume: Math.max(0, Math.min(1.5, Number(item.volume ?? 0.72))),
+      })).filter(item => item.sourceId),
+      overlays: (data.overlays || []).map((item, index) => ({
+        id: String(item.id || `overlay-${index}-${Date.now()}`),
+        assetId: String(item.asset_id || item.assetId || ""),
+        label: assets.find(asset => asset.id === String(item.asset_id || item.assetId || ""))?.label || "画中画",
+        start: Number(item.start || 0),
+        duration: Number(item.duration || 3.6),
+        position: String(item.position || "top-right"),
+        positionX: Math.max(0, Math.min(1, Number(item.position_x ?? item.positionX ?? 1))),
+        positionY: Math.max(0, Math.min(1, Number(item.position_y ?? item.positionY ?? 0))),
+        scale: Number(item.scale || 0.32),
+        entryEffect: String(item.entry_effect || item.entryEffect || "fade"),
+        exitEffect: String(item.exit_effect || item.exitEffect || "fade"),
+      })).filter(item => item.assetId),
+      subtitleEffect: String(data.subtitleEffect || ""),
+      selected: clips[0] ? { type: "clip", id: clips[0].id } : null,
+      playhead: 0,
+      zoom: Number(dom.videoEditorZoom.value || 56),
+      history: [],
+      future: [],
+    };
+    if (!clips.length) throw new Error("当前成片没有可编辑的镜头源文件");
+  } catch (error) {
+    closeVideoEditor();
+    showToast(error.message || "剪辑台加载失败");
+    return;
+  } finally {
+    dom.videoEditorModal.classList.remove("is-loading");
+  }
+  dom.videoEditorPreview.src = String(output.url || output.downloadUrl || "");
+  const aspect = String(output.aspectRatio || state.project?.plan?.aspect_ratio || "16:9").split(":").map(Number);
+  if (aspect.length === 2 && aspect.every(value => Number.isFinite(value) && value > 0)) {
+    dom.videoEditorPreviewCanvas.style.aspectRatio = `${aspect[0]} / ${aspect[1]}`;
+  }
+  renderVideoEditor();
+  refreshIcons();
+}
+
+async function submitVideoEditorDraft() {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft || state.busy) return;
+  if (!draft.history.length) {
+    showToast("请先调整一项剪辑设置");
+    return;
+  }
+  dom.videoEditorSubmit.disabled = true;
+  dom.videoEditorSubmit.classList.add("is-busy");
+  try {
+    const response = await fetch(`/api/projects/${state.project.id}/timeline-revision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        outputId: draft.output.id,
+        clips: draft.clips.map(clip => ({
+          id: clip.id,
+          sourceFile: clip.sourceFile,
+          sourceSceneNumber: clip.sourceSceneNumber,
+          segmentNumber: clip.segmentNumber || 1,
+          segmentCount: clip.segmentCount || 1,
+          duration: Number(clip.duration),
+          trimStart: Number(clip.trimStart || 0),
+          subtitle: String(clip.subtitle || ""),
+          replacementAssetId: String(clip.replacementAssetId || ""),
+          transition: String(clip.transition || "fade"),
+        })),
+        overlays: draft.overlays.map(item => ({
+          assetId: item.assetId,
+          start: Number(item.start),
+          duration: Number(item.duration),
+          position: item.position,
+          positionX: Number(item.positionX ?? 1),
+          positionY: Number(item.positionY ?? 0),
+          scale: Number(item.scale),
+          entryEffect: String(item.entryEffect || "fade"),
+          exitEffect: String(item.exitEffect || "fade"),
+        })),
+        soundEffects: draft.soundEffects.map(item => ({
+          id: item.id,
+          sourceType: item.sourceType,
+          sourceId: item.sourceId,
+          label: item.label,
+          start: Number(item.start),
+          duration: Number(item.duration),
+          volume: Number(item.volume),
+        })),
+        bgmSelection: String(draft.bgmSelection || "keep"),
+        narrationVolume: Number(draft.narrationVolume),
+        bgmVolume: Number(draft.bgmVolume),
+        subtitleEffect: draft.subtitleEffect,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "剪辑修改提交失败");
+    closeVideoEditor();
+    if (data.project) {
+      state.project = data.project;
+      renderProject(data.project);
+    }
+    showToast("已保存剪辑，正在复用原素材生成新版");
+  } catch (error) {
+    showToast(error.message || "剪辑修改提交失败");
+  } finally {
+    dom.videoEditorSubmit.disabled = false;
+    dom.videoEditorSubmit.classList.remove("is-busy");
+  }
 }
 
 function renderDelivery(project) {
@@ -1443,11 +3563,50 @@ function stopProductionHeartbeat() {
   state.productionHeartbeatStageIndex = -1;
 }
 
+function productionRunClockKey(projectId) {
+  return `xingzhen-video-run-clock:${VIDEO_VOICE_MEMBER_ID}:${String(projectId || "")}`;
+}
+
+function productionRunStartedAt(project) {
+  const key = productionRunClockKey(project?.id);
+  const serverStartedAt = Date.parse(String(project?.runStartedAt || ""));
+  let storedStartedAt = 0;
+  try {
+    storedStartedAt = Number(localStorage.getItem(key) || 0);
+  } catch (_) {
+    storedStartedAt = 0;
+  }
+  const startedAt = Number.isFinite(serverStartedAt) && serverStartedAt > 0
+    ? serverStartedAt
+    : storedStartedAt > 0 ? storedStartedAt : Date.now();
+  try {
+    localStorage.setItem(key, String(startedAt));
+  } catch (_) {
+    // Private browsing or a blocked storage layer must not stop production UI.
+  }
+  return startedAt;
+}
+
+function clearProductionRunClock(projectId) {
+  try {
+    localStorage.removeItem(productionRunClockKey(projectId));
+  } catch (_) {
+    // The durable server timestamp remains authoritative when storage is blocked.
+  }
+}
+
+function productionElapsedLabel(seconds) {
+  const value = Math.max(1, Math.floor(Number(seconds) || 1));
+  if (value < 60) return `${value}秒`;
+  if (value < 3600) return `${Math.floor(value / 60)}分${String(value % 60).padStart(2, "0")}秒`;
+  return `${Math.floor(value / 3600)}小时${String(Math.floor(value % 3600 / 60)).padStart(2, "0")}分`;
+}
+
 function startProductionHeartbeat(project) {
   if (state.productionHeartbeatTimer && state.productionHeartbeatProjectId === project.id) return;
   stopProductionHeartbeat();
   state.productionHeartbeatProjectId = project.id;
-  state.productionHeartbeatStartedAt = Date.now();
+  state.productionHeartbeatStartedAt = productionRunStartedAt(project);
   state.productionHeartbeatStageIndex = -1;
   const tick = () => {
     if (state.project?.id !== project.id || state.project?.status !== "running") {
@@ -1456,7 +3615,7 @@ function startProductionHeartbeat(project) {
     }
     const elapsed = Math.max(1, Math.round((Date.now() - state.productionHeartbeatStartedAt) / 1000));
     const elapsedText = document.querySelector(".production-live-elapsed");
-    if (elapsedText) elapsedText.textContent = `${elapsed} 秒`;
+    if (elapsedText) elapsedText.textContent = productionElapsedLabel(elapsed);
     const stageIndex = Math.floor((elapsed - 1) / 6) % productionHeartbeatStages.length;
     if (stageIndex !== state.productionHeartbeatStageIndex) {
       state.productionHeartbeatStageIndex = stageIndex;
@@ -1509,13 +3668,21 @@ function renderProject(project) {
   dom.projectLabel.textContent = project.name && project.name !== "新会话"
     ? project.name
     : project.plan?.title || `项目 ${project.id.slice(0, 6)}`;
+  if (dom.videoVoiceCurrent) {
+    dom.videoVoiceCurrent.textContent = project.voiceId
+      ? videoVoiceName(project.voiceId)
+      : "尚未生成口播";
+  }
   renderConversation(project);
   renderEvents(project);
   renderDelivery(project);
 
   const running = project.status === "running";
   if (running) startProductionHeartbeat(project);
-  else stopProductionHeartbeat();
+  else {
+    clearProductionRunClock(project.id);
+    stopProductionHeartbeat();
+  }
   dom.chatInput.disabled = running;
   const chatSubmitButton = dom.chatForm.querySelector("button[type='submit']");
   if (chatSubmitButton) {
@@ -1773,6 +3940,7 @@ async function createNewConversation() {
 }
 
 async function loadProject(projectId, silent = false) {
+  if (String(projectId || "") !== String(state.projectId || "")) hideToast();
   const requestEpoch = ++state.projectLoadEpoch;
   try {
     const response = await fetch(`/api/projects/${projectId}`, { cache: "no-store" });
@@ -1781,6 +3949,15 @@ async function loadProject(projectId, silent = false) {
     if (requestEpoch !== state.projectLoadEpoch) return;
     isolatePendingAttachments(project.id);
     renderProject(project);
+    const reconciliation = project?._usageReconciliation;
+    if (
+      dom.toast.textContent.includes("安全收口")
+      && Number(reconciliation?.pending || 0) === 0
+      && Number(reconciliation?.conflicts || 0) === 0
+    ) {
+      hideToast();
+    }
+    return project;
   } catch (error) {
     if (requestEpoch !== state.projectLoadEpoch) return;
     if (!silent) showToast(error.message);
@@ -1800,35 +3977,120 @@ function schedulePoll(active) {
   }, 1300);
 }
 
-const pendingThoughtStages = [
-  ["正在思考", "正在理解这条消息，并判断应当回答、追问还是开始制作"],
-  ["正在提取核心诉求", "从你的描述中识别主题、受众和最重要的表达目标"],
-  ["正在识别附件用途", "判断图片、视频和音频分别承担参考、剪辑、口播或声音设计"],
-  ["正在听取口播时间线", "口播音频会先转写，再按真实语义和时长组织镜头"],
-  ["正在判断画幅与节奏", "根据描述确认画幅，并自主决定成片长度和镜头数量"],
-  ["正在组织镜头关系", "为每个叙事节点选择连续、跳切或转场方式"],
-  ["正在检查口播与画面", "避免视觉信息和旁白相互争抢，保留清晰字幕空间"],
-  ["正在整理导演方案", "把创意转换成可执行的配音、画面和合成任务"],
-];
+const simpleGreetingPattern = /^(?:你好|您好|嗨|哈喽|在吗|早上好|上午好|中午好|下午好|晚上好|hi|hello|hey)[\s！!。.?？]*$/i;
+const productionRequestPattern = /(?:帮我|请|开始|继续|重新|直接)?(?:做|制作|生成|创作|合成|剪辑|渲染|配音|配乐|出片|成片|拍)(?:一下|一个|一条|一段|这条|这个|视频|图片|图文|口播|分镜|字幕|音频|声音)?/;
+const contextualContinuationPattern = /(?:继续(?:上一|上个|刚才|之前|原来|原有|这个|这条|那个|那条)?|上一条|上一个|上次|刚才|之前|原任务|原视频|原方案|按(?:刚才|之前|上一条|上一个|这个|那个)|沿用|接着|续做|重做)/;
+const contextualEditPattern = /(?:修改|调整|改成|换成|替换|删掉|删除|去掉|增加|添加|补上|缩短|加长|放大|缩小|挪动|移动|保留|不要|只要|字幕|转场|画中画|配乐|口播|声线|镜头|片段)/;
+
+function publicProgressSubject(message) {
+  const compact = assistantText(String(message || ""))
+    .replace(/\s+/g, " ")
+    .trim();
+  const characters = Array.from(compact);
+  return characters.length > 28
+    ? `${characters.slice(0, 28).join("")}…`
+    : compact;
+}
+
+function previousConversationSubject(message) {
+  const current = assistantText(String(message || "")).replace(/\s+/g, " ").trim();
+  const messages = Array.isArray(state.project?.messages) ? state.project.messages : [];
+  let skippedCurrent = false;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const item = messages[index];
+    if (item?.role !== "user") continue;
+    const content = assistantText(String(item.content || "")).replace(/\s+/g, " ").trim();
+    if (!content) continue;
+    if (!skippedCurrent && current && content === current) {
+      skippedCurrent = true;
+      continue;
+    }
+    if (simpleGreetingPattern.test(content)) continue;
+    const compact = content.replace(/[\s，。！？、,.!?]+/g, "");
+    if (/^(?:请)?(?:继续|接着|按这个做|按那个做|执行吧|开始吧|确认继续)$/.test(compact)) continue;
+    return publicProgressSubject(content);
+  }
+  const planTitle = String(state.project?.plan?.title || "").trim();
+  if (planTitle) return publicProgressSubject(planTitle);
+  const projectName = String(state.project?.name || "").trim();
+  return projectName && projectName !== "新会话"
+    ? publicProgressSubject(projectName)
+    : "";
+}
+
+function contextualRequestFor(message) {
+  const cleanMessage = assistantText(String(message || "")).replace(/\s+/g, " ").trim();
+  const previousSubject = previousConversationSubject(cleanMessage);
+  if (!previousSubject || simpleGreetingPattern.test(cleanMessage)) return null;
+  const referencesEarlierTurn = contextualContinuationPattern.test(cleanMessage);
+  const editsExistingResult = contextualEditPattern.test(cleanMessage)
+    && !/^(?:请)?(?:做|制作|生成|创作)(?:一个|一条|一段)?/.test(cleanMessage);
+  if (!referencesEarlierTurn && !editsExistingResult) return null;
+  return {
+    previousSubject,
+    editsExistingResult,
+  };
+}
+
+function pendingThoughtStagesFor(message, attachments = []) {
+  const cleanMessage = String(message || "").trim();
+  const subject = publicProgressSubject(cleanMessage);
+  const hasAssets = attachments.length > 0;
+  const hasAudio = attachments.some((item) => String(item.mime || "").startsWith("audio/"));
+  if (simpleGreetingPattern.test(cleanMessage)) {
+    return [
+      ["识别问候意图", `已识别为普通问候“${subject}”，本轮不会沿用之前的视频制作状态`],
+      ["组织本轮回应", `正在直接回应“${subject}”，不会启动图片、视频或语音任务`],
+    ];
+  }
+  const contextualRequest = contextualRequestFor(cleanMessage);
+  if (contextualRequest) {
+    const { previousSubject, editsExistingResult } = contextualRequest;
+    return [
+      ["识别为承接请求", `正在承接当前会话中的“${previousSubject}”，本轮要求是“${subject}”`],
+      [
+        editsExistingResult ? "定位本轮修改范围" : "恢复上一任务上下文",
+        editsExistingResult
+          ? `保留“${previousSubject}”的有效内容，只处理“${subject}”提出的修改`
+          : `沿用“${previousSubject}”已经确认的内容，按“${subject}”继续推进`,
+      ],
+      ...(hasAssets
+        ? [["识别本轮新增素材", "把这次上传的素材作为当前续作的新增输入，不混入其他会话附件"]]
+        : []),
+      ["确认续作路径", "复用当前会话中仍然有效的计划与素材，只从本轮指定的位置继续"],
+    ];
+  }
+  if (!hasAssets && !productionRequestPattern.test(cleanMessage)) {
+    return [
+      ["聚焦当前问题", `正在围绕“${subject}”判断这是咨询、反馈还是修改请求`],
+      ["整理回答重点", `只回答“${subject}”相关内容，不沿用上一轮制作步骤`],
+    ];
+  }
+  return [
+    ["提取本轮制作要求", `正在从“${subject || "本轮附件"}”识别主题、受众和表达目标`],
+    ...(hasAssets
+      ? [["识别本轮附件用途", "判断这次提交的图片、视频和音频分别承担参考、剪辑、口播或声音设计"]]
+      : []),
+    ...(hasAudio
+      ? [["读取本轮口播时间线", "这次提交的口播音频会先转写，再按真实语义和时长组织镜头"]]
+      : []),
+    ["确认本轮制作路径", "根据当前要求判断补问关键条件或进入对应制作流程"],
+    ["整理公开执行步骤", "把本轮已确认的要求组织成后续可执行的导演任务"],
+  ];
+}
 
 function stopPendingThoughts() {
   window.clearInterval(state.pendingThoughtTimer);
   state.pendingThoughtTimer = null;
 }
 
-function startPendingThoughts(token, attachments) {
+function startPendingThoughts(token, attachments, message) {
   stopPendingThoughts();
   state.pendingRequestToken = token;
   const startedAt = Date.now();
-  const hasAssets = attachments.length > 0;
-  const hasAudio = attachments.some((item) => String(item.mime || "").startsWith("audio/"));
-  const stages = pendingThoughtStages.filter(([title]) => {
-    if (title === "正在识别附件用途" && !hasAssets) return false;
-    if (title === "正在听取口播时间线" && !hasAudio) return false;
-    return true;
-  });
+  const stages = pendingThoughtStagesFor(message, attachments);
   let index = 0;
-  state.pendingThoughtTimer = window.setInterval(() => {
+  const advancePublicThoughts = () => {
     if (!state.busy || state.pendingRequestToken !== token || !state.project) {
       stopPendingThoughts();
       return;
@@ -1838,29 +4100,46 @@ function startPendingThoughts(token, attachments) {
       stopPendingThoughts();
       return;
     }
-    const stage = stages[index % stages.length];
-    const cycle = Math.floor(index / stages.length);
     const elapsed = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
-    const title = cycle > 0 ? `仍在完善方案 · ${elapsed} 秒` : stage[0];
-    const detail = cycle > 0 ? `${stage[1]}，导演任务保持连接` : stage[1];
+    const stage = stages[index];
+    const waitingId = `${token}-event-waiting`;
+    const title = stage ? stage[0] : "等待导演返回";
+    const detail = stage
+      ? stage[1]
+      : `公开执行步骤已整理完成，本轮请求仍在处理中 · ${elapsed} 秒`;
     pendingMessage.content = title;
-    state.project.events = [
-      ...(state.project.events || []),
-      {
-        id: `${token}-event-${index}`,
-        title,
-        detail,
-        status: "running",
-      },
-    ];
+    const currentEvents = [...(state.project.events || [])];
+    if (stage) {
+      const stageId = `${token}-event-${index}`;
+      const stageEvent = currentEvents.find(event => event.id === stageId);
+      if (stageEvent) {
+        stageEvent.title = title;
+        stageEvent.detail = detail;
+        stageEvent.status = "running";
+      } else {
+        currentEvents.push({ id: stageId, title, detail, status: "running" });
+      }
+      index += 1;
+    } else {
+      const waitingEvent = currentEvents.find(event => event.id === waitingId);
+      if (waitingEvent) {
+        waitingEvent.title = title;
+        waitingEvent.detail = detail;
+        waitingEvent.status = "running";
+      } else {
+        currentEvents.push({ id: waitingId, title, detail, status: "running" });
+      }
+    }
+    state.project.events = currentEvents;
     state.eventSignature = "";
     const pendingText = dom.conversation.querySelector(
       `[data-message-id="${pendingMessage.id}"] .pending-live-text`,
     );
-    if (pendingText) pendingText.textContent = publicText(title);
+    if (pendingText) typePublicProgress(pendingText, publicText(title));
     renderEvents(state.project);
-    index += 1;
-  }, 1800);
+  };
+  advancePublicThoughts();
+  state.pendingThoughtTimer = window.setInterval(advancePublicThoughts, 1800);
 }
 
 function isDirectContinuation(message) {
@@ -1898,19 +4177,21 @@ function renderPendingRequest(message, attachments, { resuming = false } = {}) {
         id: `${pendingId}-assistant`,
         role: "assistant",
         kind: "pending",
-        content: resuming ? "正在继续上一轮创作" : "正在思考",
+        content: resuming
+          ? "正在继续上一轮创作"
+          : pendingThoughtStagesFor(message, attachments)[0]?.[0] || "正在思考",
       },
     ],
     events: [
       ...(current.events || []),
-      {
-        id: `${pendingId}-event`,
-        title: resuming ? "正在继续原任务" : "正在思考",
-        detail: resuming
-          ? "正在复用上一轮导演计划与已完成素材，从缺失步骤接着执行"
-          : "正在理解这条消息，并判断应当回答、追问还是开始制作",
-        status: "running",
-      },
+      ...(resuming
+        ? [{
+          id: `${pendingId}-event-resume`,
+          title: "正在继续原任务",
+          detail: "正在复用上一轮导演计划与已完成素材，从缺失步骤接着执行",
+          status: "running",
+        }]
+        : []),
     ],
     outputs: current.outputs || [],
   };
@@ -1927,7 +4208,7 @@ function renderPendingRequest(message, attachments, { resuming = false } = {}) {
   dom.startForm.querySelector("button[type='submit']").disabled = true;
   refreshIcons();
   if (resuming) stopPendingThoughts();
-  else startPendingThoughts(pendingId, attachments);
+  else startPendingThoughts(pendingId, attachments, message);
   return pendingId;
 }
 
@@ -1961,9 +4242,10 @@ function renderPendingFailure(message, token) {
 async function sendMessage(message, fromStart = false) {
   const cleanMessage = String(message || "").trim();
   if (state.busy || !cleanMessage) return;
-  const requestProjectId = state.projectId;
+  let requestProjectId = state.projectId;
   let requestAttachments = [];
   let pendingToken = "";
+  let pendingVisibleStartedAt = 0;
   let requestAccepted = false;
   state.busy = true;
   try {
@@ -1980,29 +4262,52 @@ async function sendMessage(message, fromStart = false) {
       && resumableTypes.has(String(state.project?.retryable?.type || ""))
     );
     pendingToken = renderPendingRequest(cleanMessage, requestAttachments, { resuming });
-    const response = await fetch("/api/chat", {
+    pendingVisibleStartedAt = Date.now();
+    const idempotencyKey = globalThis.crypto?.randomUUID?.()
+      || `static-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const requestChat = (projectId) => fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        idempotencyKey: globalThis.crypto?.randomUUID?.()
-          || `static-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        projectId: requestProjectId,
+        idempotencyKey,
+        projectId,
         message: cleanMessage,
         aspectRatio: state.ratio,
         creationMode: state.creationMode,
+        voiceId: nextNarrationVoiceId(),
         attachments: requestAttachments.map(({ label, name, mime, dataUrl }) => ({ label, name, mime, dataUrl })),
       }),
     });
+    const response = await requestChat(requestProjectId);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || "导演请求失败");
+    if (
+      response.status === 409
+      && data?.detail?.code === "video_workshop_usage_pending"
+    ) {
+      const pendingError = new Error(apiErrorMessage(data, "历史用量待处理"));
+      pendingError.code = "video_workshop_usage_pending";
+      throw pendingError;
+    }
+    if (!response.ok) throw new Error(apiErrorMessage(data, "导演请求失败"));
     requestAccepted = true;
+    const minimumPendingMs = simpleGreetingPattern.test(cleanMessage) ? 760 : 520;
+    const pendingRemainingMs = minimumPendingMs - (Date.now() - pendingVisibleStartedAt);
+    if (pendingRemainingMs > 0) {
+      await new Promise(resolve => window.setTimeout(resolve, pendingRemainingMs));
+    }
     stopPendingThoughts();
+    hideToast();
+    state.pendingScrollMessageId = pendingToken
+      ? `${pendingToken}-assistant`
+      : "";
     renderProject(data);
   } catch (error) {
     stopPendingThoughts();
     const errorMessage = String(error?.message || error || "请求失败");
-    if (pendingToken) {
+    const keepCurrentConversation = error?.code === "video_workshop_usage_pending";
+    if (pendingToken && !keepCurrentConversation) {
       try {
+        state.pendingScrollMessageId = `${pendingToken}-assistant`;
         renderPendingFailure(errorMessage, pendingToken);
       } catch {
         // The original failure still needs to unlock the composer and remain retryable.
@@ -2028,8 +4333,15 @@ async function sendMessage(message, fromStart = false) {
           // Text restoration is best effort; busy recovery is handled below.
         }
       }
+      if (keepCurrentConversation && requestProjectId) {
+        state.messageSignature = "";
+        state.eventSignature = "";
+        await loadProject(requestProjectId, true).catch(() => {});
+      }
     }
-    showToast(errorMessage);
+    showToast(keepCurrentConversation
+      ? "该旧会话仍在安全收口；已保留输入，可切换其他会话正常使用"
+      : errorMessage);
   } finally {
     state.busy = false;
     const startSubmit = dom.startForm?.querySelector("button[type='submit']");
@@ -2056,7 +4368,9 @@ async function retryProject(button) {
   try {
     const response = await fetch(`/api/projects/${state.projectId}/retry`, { method: "POST" });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || (isResume ? "恢复制作失败" : "安全改写失败"));
+    if (!response.ok) {
+      throw new Error(apiErrorMessage(data, isResume ? "恢复制作失败" : "安全改写失败"));
+    }
     state.messageSignature = "";
     state.eventSignature = "";
     state.historySignature = "";
@@ -2107,6 +4421,7 @@ async function stopProject(button) {
 }
 
 function resetProject(showStart = true) {
+  hideToast();
   state.projectLoadEpoch += 1;
   window.clearTimeout(state.pollTimer);
   stopPendingThoughts();
@@ -2118,6 +4433,8 @@ function resetProject(showStart = true) {
   syncCreationMode("video");
   state.outputIndex = 0;
   state.messageSignature = "";
+  state.conversationRenderProjectId = "";
+  state.conversationBottomLockToken += 1;
   state.eventSignature = "";
   state.outputSignature = "";
   state.historySignature = "";
@@ -2168,6 +4485,11 @@ function installGlobalDropZone() {
   const setDragging = (active) => {
     document.body.classList.toggle("is-file-dragging", active);
     dom.dropOverlay.setAttribute("aria-hidden", String(!active));
+    const editorOpen = Boolean(dom.videoEditorModal && !dom.videoEditorModal.hidden);
+    const title = dom.dropOverlay.querySelector("strong");
+    const detail = dom.dropOverlay.querySelector("span");
+    if (title) title.textContent = editorOpen ? "松开导入剪辑素材" : "松开添加创作素材";
+    if (detail) detail.textContent = editorOpen ? "拖到 V2 添加画中画，拖到 V1 替换片段" : "图片 / 视频 / MP3 / WAV / M4A";
   };
   const resetDragging = () => {
     dragDepth = 0;
@@ -2198,6 +4520,10 @@ function installGlobalDropZone() {
     const files = event.dataTransfer.files;
     resetDragging();
     try {
+      if (dom.videoEditorModal && !dom.videoEditorModal.hidden) {
+        await importEditorFiles(files, { target: "overlay" });
+        return;
+      }
       await addFiles(files);
     } catch (error) {
       showAttachmentError(error);
@@ -2205,6 +4531,33 @@ function installGlobalDropZone() {
   });
   window.addEventListener("blur", resetDragging);
   window.addEventListener("dragend", resetDragging);
+}
+
+function installVideoEditorDropZone() {
+  if (!dom.videoEditorModal) return;
+  const isFileDrag = event => [...(event.dataTransfer?.types || [])].includes("Files");
+  ["dragenter", "dragover"].forEach(type => {
+    dom.videoEditorModal.addEventListener(type, event => {
+      if (!isFileDrag(event) || dom.videoEditorModal.hidden) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+      dom.videoEditorModal.classList.add("is-file-target");
+    });
+  });
+  dom.videoEditorModal.addEventListener("dragleave", event => {
+    if (!isFileDrag(event)) return;
+    if (!dom.videoEditorModal.contains(event.relatedTarget)) {
+      dom.videoEditorModal.classList.remove("is-file-target");
+    }
+  });
+  dom.videoEditorModal.addEventListener("drop", async event => {
+    if (!isFileDrag(event) || dom.videoEditorModal.hidden) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dom.videoEditorModal.classList.remove("is-file-target");
+    await importEditorFiles(event.dataTransfer.files, { target: "overlay" });
+  });
 }
 
 function updateSkillMenu(textarea) {
@@ -2373,6 +4726,19 @@ window.addEventListener("message", (event) => {
   if (
     WORKSPACE_MODE
     && message.scope === "video"
+    && message.type === "workspace:voice-preferences"
+  ) {
+    state.favoriteVoiceIds = new Set(
+      (Array.isArray(message.favoriteVoiceIds) ? message.favoriteVoiceIds : [])
+        .map(item => String(item || "").trim())
+        .filter(Boolean)
+    );
+    syncVideoVoiceUi();
+    return;
+  }
+  if (
+    WORKSPACE_MODE
+    && message.scope === "video"
     && message.type === "workspace:prefill"
   ) {
     const launchId = String(message.launchId || "").trim().slice(0, 180);
@@ -2520,6 +4886,257 @@ window.addEventListener("message", (event) => {
 dom.publishOutputButton.addEventListener("click", requestSelectedOutputPublish);
 dom.historyDeliveryButton.addEventListener("click", openHistoryDeliveryModal);
 dom.projectAssetsButton?.addEventListener("click", openHistoryDeliveryModal);
+dom.videoEditorModal?.querySelectorAll("[data-video-editor-close]").forEach(button => {
+  button.addEventListener("click", closeVideoEditor);
+});
+dom.videoEditorSubmit?.addEventListener("click", submitVideoEditorDraft);
+dom.videoEditorUndo?.addEventListener("click", editorUndo);
+dom.videoEditorRedo?.addEventListener("click", editorRedo);
+dom.videoEditorSplit?.addEventListener("click", splitEditorClip);
+dom.videoEditorDelete?.addEventListener("click", deleteEditorSelection);
+dom.videoEditorPlay?.addEventListener("click", () => {
+  if (!dom.videoEditorPreview) return;
+  if (dom.videoEditorPreview.paused) void dom.videoEditorPreview.play();
+  else dom.videoEditorPreview.pause();
+});
+dom.videoEditorZoom?.addEventListener("input", () => {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft) return;
+  draft.zoom = Number(dom.videoEditorZoom.value || 56);
+  renderVideoEditorTimeline();
+});
+dom.videoEditorSubtitleText?.addEventListener("focus", () => {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const selected = selectedEditorEntity(draft);
+  if (selected?.type === "subtitle") dom.videoEditorSubtitleText.dataset.originalValue = String(selected.item.subtitle || "");
+});
+dom.videoEditorSubtitleText?.addEventListener("input", () => {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const selected = selectedEditorEntity(draft);
+  if (selected?.type !== "subtitle") return;
+  selected.item.subtitle = dom.videoEditorSubtitleText.value;
+  renderVideoEditorTimeline();
+  renderVideoEditorPreviewLayers();
+});
+dom.videoEditorSubtitleText?.addEventListener("change", () => {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const selected = selectedEditorEntity(draft);
+  if (selected?.type !== "subtitle") return;
+  const nextValue = dom.videoEditorSubtitleText.value.trim();
+  const originalValue = String(dom.videoEditorSubtitleText.dataset.originalValue ?? selected.item.subtitle ?? "");
+  selected.item.subtitle = originalValue;
+  draft.history.push(editorSnapshot(draft));
+  draft.history = draft.history.slice(-80);
+  draft.future = [];
+  selected.item.subtitle = nextValue;
+  delete dom.videoEditorSubtitleText.dataset.originalValue;
+  renderVideoEditor();
+});
+[dom.videoEditorOverlayEntry, dom.videoEditorOverlayExit].forEach((control, index) => {
+  control?.addEventListener("change", () => {
+    const draft = dom.videoEditorModal?.__editorDraft;
+    const selected = selectedEditorEntity(draft);
+    if (selected?.type !== "overlay") return;
+    commitEditorMutation(current => {
+      const overlay = current.overlays.find(item => item.id === selected.item.id);
+      overlay[index === 0 ? "entryEffect" : "exitEffect"] = control.value;
+    });
+  });
+});
+dom.videoEditorSubtitle?.addEventListener("change", () => {
+  commitEditorMutation(draft => { draft.subtitleEffect = dom.videoEditorSubtitle.value; });
+});
+dom.videoEditorBgm?.addEventListener("change", () => {
+  commitEditorMutation(draft => {
+    draft.bgmSelection = dom.videoEditorBgm.value;
+    draft.selected = { type: "bgm", id: "bgm" };
+  });
+});
+dom.videoEditorBgmDelete?.addEventListener("click", () => {
+  commitEditorMutation(draft => {
+    draft.bgmSelection = "none";
+    draft.selected = { type: "bgm", id: "bgm" };
+  });
+});
+dom.videoEditorTrackVolume?.addEventListener("input", () => {
+  dom.videoEditorTrackVolumeValue.textContent = `${dom.videoEditorTrackVolume.value}%`;
+});
+dom.videoEditorTrackVolume?.addEventListener("change", () => {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const selected = selectedEditorEntity(draft);
+  if (!draft || !["narration", "bgm", "sound-effect"].includes(selected?.type)) return;
+  const volume = Math.max(0, Math.min(2, Number(dom.videoEditorTrackVolume.value) / 100));
+  commitEditorMutation(current => {
+    if (selected.type === "narration") current.narrationVolume = volume;
+    else if (selected.type === "bgm") current.bgmVolume = Math.min(1, volume);
+    else current.soundEffects.find(item => item.id === selected.item.id).volume = Math.min(1.5, volume);
+  });
+});
+dom.videoEditorSfx?.addEventListener("change", () => {
+  const active = Boolean(dom.videoEditorSfx.value);
+  dom.videoEditorSfxPreview.disabled = !active;
+  dom.videoEditorSfxAdd.disabled = !active;
+});
+dom.videoEditorSfxPreview?.addEventListener("click", previewEditorSoundEffect);
+dom.videoEditorSfxAdd?.addEventListener("click", () => {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  const selected = selectedEditorSfxSource(draft);
+  if (!draft || !selected) return;
+  addEditorSoundEffect(selected.sourceType, selected.sourceId, draft.playhead);
+});
+
+function editorTimeAtPointer(event) {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft) return 0;
+  const rect = dom.videoEditorTimelineCanvas.getBoundingClientRect();
+  return Math.max(0, (event.clientX - rect.left) / draft.zoom);
+}
+
+function setEditorPlayhead(time, syncVideo = true) {
+  const draft = dom.videoEditorModal?.__editorDraft;
+  if (!draft) return;
+  const total = editorClipLayout(draft).total;
+  draft.playhead = Math.max(0, Math.min(total, Number(time) || 0));
+  dom.videoEditorPlayhead.style.left = `${draft.playhead * draft.zoom}px`;
+  dom.videoEditorTimecode.textContent = `${formatEditorTime(draft.playhead)} / ${formatEditorTime(total)}`;
+  dom.videoEditorScrubber.max = String(total);
+  dom.videoEditorScrubber.value = String(draft.playhead);
+  if (syncVideo && Number.isFinite(dom.videoEditorPreview.duration) && dom.videoEditorPreview.duration > 0) {
+    dom.videoEditorPreview.currentTime = draft.playhead / total * dom.videoEditorPreview.duration;
+  }
+  renderVideoEditorPreviewLayers();
+}
+
+[dom.videoEditorRuler, dom.videoEditorVideoTrack, dom.videoEditorOverlayTrack].forEach(track => {
+  track?.addEventListener("click", event => {
+    if (event.target.closest("article")) return;
+    setEditorPlayhead(editorTimeAtPointer(event));
+  });
+});
+
+dom.videoEditorPlayhead?.addEventListener("pointerdown", event => {
+  event.preventDefault();
+  const onMove = moveEvent => setEditorPlayhead(editorTimeAtPointer(moveEvent));
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp, { once: true });
+});
+
+dom.videoEditorPreview?.addEventListener("timeupdate", () => {
+  if (!videoEditorPlaybackFrame) syncVideoEditorPlaybackClock();
+});
+dom.videoEditorPreview?.addEventListener("play", () => {
+  renderVideoEditorPreviewLayers();
+  startVideoEditorPlaybackClock();
+});
+dom.videoEditorPreview?.addEventListener("pause", () => {
+  stopVideoEditorPlaybackClock();
+  syncVideoEditorPlaybackClock();
+  renderVideoEditorPreviewLayers();
+});
+dom.videoEditorPreview?.addEventListener("ended", () => {
+  stopVideoEditorPlaybackClock();
+  syncVideoEditorPlaybackClock();
+});
+dom.videoEditorScrubber?.addEventListener("input", () => {
+  setEditorPlayhead(Number(dom.videoEditorScrubber.value));
+});
+
+[dom.videoEditorVideoTrack, dom.videoEditorOverlayTrack, dom.videoEditorBgmTrack, dom.videoEditorSfxTrack].forEach(track => {
+  track?.addEventListener("dragover", event => {
+    const types = [...(event.dataTransfer?.types || [])];
+    if (types.includes("Files") || types.some(type => type.startsWith("application/x-xingzhen-"))) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = types.includes("Files") || types.includes("application/x-xingzhen-asset") ? "copy" : "move";
+    }
+  });
+  track?.addEventListener("drop", async event => {
+    const draft = dom.videoEditorModal?.__editorDraft;
+    if (!draft) return;
+    const time = editorTimeAtPointer(event);
+    const files = editorExternalFiles(event.dataTransfer);
+    if (files.length) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (track === dom.videoEditorOverlayTrack) {
+        await importEditorFiles(files, { target: "overlay", time });
+      } else if (track === dom.videoEditorBgmTrack) {
+        await importEditorFiles(files, { target: "bgm", time });
+      } else if (track === dom.videoEditorSfxTrack) {
+        await importEditorFiles(files, { target: "sfx", time });
+      } else {
+        const row = editorClipLayout(draft).rows.find(item => time >= item.start && time <= item.end);
+        if (row) await importEditorFiles(files, { target: "clip", clipId: row.clip.id, time });
+        else await importEditorFiles(files, { target: "overlay", time });
+      }
+      return;
+    }
+    const assetId = event.dataTransfer.getData("application/x-xingzhen-asset");
+    const clipId = event.dataTransfer.getData("application/x-xingzhen-clip");
+    const overlayId = event.dataTransfer.getData("application/x-xingzhen-overlay");
+    if (assetId) {
+      event.preventDefault();
+      if (track === dom.videoEditorOverlayTrack) {
+        addEditorOverlay(assetId, time);
+      } else {
+        const row = editorClipLayout(draft).rows.find(item => time >= item.start && time <= item.end);
+        if (row) replaceEditorClipAsset(row.clip.id, assetId);
+        else addEditorOverlay(assetId, time);
+      }
+      return;
+    }
+    if (clipId && track === dom.videoEditorVideoTrack) {
+      event.preventDefault();
+      commitEditorMutation(current => {
+        const from = current.clips.findIndex(item => item.id === clipId);
+        if (from < 0) return;
+        const [clip] = current.clips.splice(from, 1);
+        const layout = editorClipLayout(current).rows;
+        const to = Math.max(0, layout.findIndex(item => time < item.start + item.duration / 2));
+        current.clips.splice(to < 0 ? current.clips.length : to, 0, clip);
+        current.selected = { type: "clip", id: clipId };
+      });
+      return;
+    }
+    if (overlayId && track === dom.videoEditorOverlayTrack) {
+      event.preventDefault();
+      commitEditorMutation(current => {
+        const overlay = current.overlays.find(item => item.id === overlayId);
+        if (overlay) overlay.start = Math.max(0, time - overlay.duration / 2);
+        current.selected = { type: "overlay", id: overlayId };
+      });
+      return;
+    }
+    const soundEffectId = event.dataTransfer.getData("application/x-xingzhen-sfx");
+    if (soundEffectId && track === dom.videoEditorSfxTrack) {
+      event.preventDefault();
+      event.stopPropagation();
+      commitEditorMutation(current => {
+        const effect = current.soundEffects.find(item => item.id === soundEffectId);
+        if (effect) effect.start = Math.max(0, time - effect.duration / 2);
+        current.selected = { type: "sound-effect", id: soundEffectId };
+      });
+    }
+  });
+});
+
+document.addEventListener("keydown", event => {
+  if (dom.videoEditorModal?.hidden) return;
+  const inputActive = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    if (event.shiftKey) editorRedo(); else editorUndo();
+    return;
+  }
+  if (!inputActive && ["Delete", "Backspace"].includes(event.key)) {
+    event.preventDefault();
+    deleteEditorSelection();
+  }
+});
 dom.historyDeliveryFilter.addEventListener("change", renderHistoryDeliveryModal);
 document.querySelectorAll("[data-history-delivery-close]").forEach(button => {
   button.addEventListener("click", closeHistoryDeliveryModal);
@@ -2551,6 +5168,7 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && dom.deliverySpeedMenu) dom.deliverySpeedMenu.open = false;
   if (event.key === "Escape" && dom.historyDeliveryFilterMenu) dom.historyDeliveryFilterMenu.open = false;
   if (event.key === "Escape" && !dom.historyDeliveryModal.hidden) closeHistoryDeliveryModal();
+  if (event.key === "Escape" && !dom.videoEditorModal?.hidden) closeVideoEditor();
 });
 dom.deliveryToggleButton.addEventListener("click", () => {
   if (!state.project?.outputs?.length) return;
@@ -2569,9 +5187,11 @@ dom.startHistoryToggleButton.addEventListener("click", () => {
   dom.startView.classList.toggle("history-open");
 });
 installGlobalDropZone();
+installVideoEditorDropZone();
 
 async function bootstrapApplication() {
   refreshIcons();
+  initializeVideoVoiceWorkbench();
   installChatComposerSafeSpace();
   typePlaceholder();
   checkHealth();

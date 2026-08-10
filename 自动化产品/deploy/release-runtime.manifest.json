@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "releaseId": "20260810-v1413-runtime-finalization-1",
-  "fileCount": 58,
-  "totalBytes": 3025471,
+  "releaseId": "20260810-v1420-generation-resilience-1",
+  "fileCount": 65,
+  "totalBytes": 3275572,
   "files": [
     {
       "path": "apps/video-workshop/app/__init__.py",
@@ -21,13 +21,13 @@
     },
     {
       "path": "apps/video-workshop/app/main.py",
-      "size": 100719,
-      "sha256": "498ae95409c03b1ab6caf80538ef52fd6f191f419d1091e7ca9f74dc83814926"
+      "size": 121607,
+      "sha256": "580dd6bc7b36544387338b0f9715fe83d8e6e95bd0c9b861ffcb41b069f0781b"
     },
     {
       "path": "apps/video-workshop/app/media.py",
-      "size": 46770,
-      "sha256": "49cfc0b0b66e490b57c9d30c75be8cf301d7d052d941822d410ea004ff6731f2"
+      "size": 53032,
+      "sha256": "bcfb7949dd53f01b70dd9451eac7077b62c62b19d15c784fa02952663441b36d"
     },
     {
       "path": "apps/video-workshop/app/openmontage_bridge.py",
@@ -36,18 +36,23 @@
     },
     {
       "path": "apps/video-workshop/app/pipeline.py",
-      "size": 95505,
-      "sha256": "f2e6ecbd9b0371d267687cbeecd10092bf34e8ebedacb96d720a7ee225f37795"
+      "size": 104346,
+      "sha256": "f46c28646ce400b3e659a55f2afd9d65dc2aa8bd6af5b592affc92f0ba12cdfe"
     },
     {
       "path": "apps/video-workshop/app/providers.py",
-      "size": 185341,
-      "sha256": "437c3544e34865471473e2588921881ba9bac5ec9bbaae08299e15db2cf89cea"
+      "size": 186467,
+      "sha256": "4344469d5ec7d3e0ec24a316332cb7123bacacf7f7d2a6d8eb51ea8f5f8b2df4"
+    },
+    {
+      "path": "apps/video-workshop/app/sfx.py",
+      "size": 1851,
+      "sha256": "a58ed750c48e0516d309758731d1e3c2963d6ff57af2229cf3bd377601de2a06"
     },
     {
       "path": "apps/video-workshop/app/store.py",
-      "size": 6562,
-      "sha256": "d7ef6955989706082a68b5e003e6c4ed7228bd77d60038bff3edd46263e71e9e"
+      "size": 7012,
+      "sha256": "854eb0590361e64b04e15b8ab798652b24d0bfce4a3e7d62ded1f37fa4f72fa6"
     },
     {
       "path": "apps/video-workshop/app/transcription.py",
@@ -141,8 +146,8 @@
     },
     {
       "path": "apps/video-workshop/web/assets/app.js",
-      "size": 100529,
-      "sha256": "579566d0d0b7760547438694e004c1482d4315d2bb766d92ebd50a69fa49d9f1"
+      "size": 216604,
+      "sha256": "8333bce818251deeafddd0bf636cc94e1171175136fe448bc855bc13a63d16c7"
     },
     {
       "path": "apps/video-workshop/web/assets/lucide.min.js",
@@ -155,9 +160,39 @@
       "sha256": "cabf0f0fcb6fb94c670acedb0ebecc68def55a991b4b052ad6a12df50fe9dc9c"
     },
     {
+      "path": "apps/video-workshop/web/assets/sfx/LICENSE.md",
+      "size": 761,
+      "sha256": "4135bd16b5d3bd9e911b665745d28a5c9f08a779087dad06a952ca597786b518"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/sfx/kenney-bell.ogg",
+      "size": 13915,
+      "sha256": "94b8bb5f2d43ab65e4bcc32b28562416e9bc2c51d9fd4be1e333660ee52f977f"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/sfx/kenney-click1.ogg",
+      "size": 4983,
+      "sha256": "59175ac17cd49a68dd736285738441287636112a84a6f7ce0d89921bda5a5360"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/sfx/kenney-impact-light.ogg",
+      "size": 5827,
+      "sha256": "f0e982611e97512fee5f777986b67e8b435434b601f94992ec044f7e89fb5acb"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/sfx/kenney-impact-soft.ogg",
+      "size": 6570,
+      "sha256": "49e7ca88743fca974bb8676ea138b751cfd8f9033b5e7af8736c2a215d6edbc1"
+    },
+    {
+      "path": "apps/video-workshop/web/assets/sfx/kenney-switch1.ogg",
+      "size": 6104,
+      "sha256": "efdd1d1e2904fb2d81259cd96bb80101caceae94be02baa4b5310714a6708b19"
+    },
+    {
       "path": "apps/video-workshop/web/assets/styles.css",
-      "size": 51200,
-      "sha256": "4ce794583d00cda2e670e17661e24b983583ba47087d4a905eea7ecbd8daf7cd"
+      "size": 80292,
+      "sha256": "9e2f2be7e6e025e972a2ebdbbe7be9736b6d93e1308a876d089009e8622b5cdc"
     },
     {
       "path": "apps/video-workshop/web/assets/xingzhen-logo-white.png",
@@ -166,8 +201,8 @@
     },
     {
       "path": "apps/video-workshop/web/index.html",
-      "size": 22388,
-      "sha256": "09110010b35d66b22cd13ddc67b37c325206b3bdcb62b84bb25b7228c9ba2312"
+      "size": 35197,
+      "sha256": "49f495b346acce5b3b5cbdc9364c8f85bc7a5b9c1d7c0494f91013712d113e01"
     },
     {
       "path": "deploy/docker_entrypoint.sh",
@@ -221,8 +256,8 @@
     },
     {
       "path": "server/main.py",
-      "size": 516763,
-      "sha256": "a8e666bb26b0e0a486337fc01a959e0250dfc044527e68e710151caac9c5d340"
+      "size": 524437,
+      "sha256": "2ed7fdda8fdaaafcdfb730e50640f4ddf9534e5793fe37344b77ec6fbc1c8074"
     },
     {
       "path": "server/migrations/__init__.py",
@@ -286,8 +321,8 @@
     },
     {
       "path": "server/store.py",
-      "size": 905734,
-      "sha256": "4a126aeb8a31714ef2ac245c316a56b1b9d1dfd05f16e8491f01a92be41220b7"
+      "size": 912607,
+      "sha256": "f66e5c92a1dd274217f912f7007233b2ec0867be1b1b3312a3454987c8f40ed6"
     },
     {
       "path": "tools/verify_release_contracts.py",

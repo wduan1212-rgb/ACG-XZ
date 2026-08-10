@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import math
 import mimetypes
 import os
@@ -21,8 +22,9 @@ from .bgm import bgm_library
 from .config import settings
 from .media import MediaError, extract_video_preview, probe
 from .openmontage_bridge import openmontage
-from .pipeline import pipeline
+from .pipeline import _scene_output_exists, _scene_output_paths, pipeline
 from .providers import ProviderError, director, seedance, tts
+from .sfx import sfx_library
 from .store import add_event, add_message, create_project, list_project_summaries, load_project, mutate_project
 from .transcription import TranscriptionError, transcriber
 from .usage_receipts import project_usage_scope
@@ -35,7 +37,7 @@ app.mount("/outputs", StaticFiles(directory=settings.outputs_dir), name="outputs
 app.mount("/uploads", StaticFiles(directory=settings.uploads_dir), name="uploads")
 
 VIDEO_WORKSHOP_CONTRACT_VERSION = "video-workshop-v137-read-only-1"
-VIDEO_WORKSHOP_BUILD_ID = "20260810-v1413-runtime-finalization-1"
+VIDEO_WORKSHOP_BUILD_ID = "20260810-v1420-generation-resilience-1"
 
 
 def _runtime_read_only() -> bool:
@@ -104,6 +106,10 @@ class Attachment(BaseModel):
     dataUrl: str
 
 
+class ProjectAssetUploadRequest(BaseModel):
+    attachments: list[Attachment] = Field(min_length=1, max_length=8)
+
+
 class ChatRequest(BaseModel):
     projectId: str = ""
     message: str = Field(min_length=1, max_length=8000)
@@ -128,6 +134,52 @@ class VoiceTestRequest(BaseModel):
 class SpeedVersionRequest(BaseModel):
     outputId: str = Field(min_length=1, max_length=180)
     speed: float = Field(ge=1.2, le=2.0)
+
+
+class TimelineClipEdit(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    sourceFile: str = Field(min_length=1, max_length=255)
+    sourceSceneNumber: int = Field(ge=1, le=500)
+    segmentNumber: int = Field(default=1, ge=1, le=500)
+    segmentCount: int = Field(default=1, ge=1, le=500)
+    duration: float = Field(ge=0.25, le=120)
+    trimStart: float = Field(default=0, ge=0, le=7200)
+    subtitle: str = Field(default="", max_length=1200)
+    replacementAssetId: str = Field(default="", max_length=500)
+    transition: str = Field(default="fade", max_length=24)
+
+
+class TimelineOverlayEdit(BaseModel):
+    assetId: str = Field(min_length=1, max_length=500)
+    start: float = Field(default=0, ge=0, le=7200)
+    duration: float = Field(default=3.6, ge=0.5, le=7200)
+    position: str = Field(default="top-right", max_length=24)
+    positionX: float = Field(default=1.0, ge=0, le=1)
+    positionY: float = Field(default=0.0, ge=0, le=1)
+    scale: float = Field(default=0.32, ge=0.1, le=0.65)
+    entryEffect: str = Field(default="fade", max_length=24)
+    exitEffect: str = Field(default="fade", max_length=24)
+
+
+class TimelineSoundEffectEdit(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    sourceType: str = Field(default="catalog", max_length=24)
+    sourceId: str = Field(min_length=1, max_length=500)
+    label: str = Field(default="音效", max_length=180)
+    start: float = Field(default=0, ge=0, le=7200)
+    duration: float = Field(default=0.5, ge=0.1, le=7200)
+    volume: float = Field(default=0.72, ge=0, le=1.5)
+
+
+class TimelineRevisionRequest(BaseModel):
+    outputId: str = Field(min_length=1, max_length=180)
+    clips: list[TimelineClipEdit] = Field(min_length=1, max_length=120)
+    overlays: list[TimelineOverlayEdit] = Field(default_factory=list, max_length=24)
+    soundEffects: list[TimelineSoundEffectEdit] = Field(default_factory=list, max_length=80)
+    bgmSelection: str = Field(default="keep", max_length=540)
+    narrationVolume: float = Field(default=1.0, ge=0, le=2)
+    bgmVolume: float = Field(default=0.12, ge=0, le=1)
+    subtitleEffect: str = Field(default="", max_length=40)
 
 
 def _track_project_task(project_id: str, awaitable: Any) -> bool:
@@ -244,7 +296,7 @@ def _retry_info(project: dict[str, Any]) -> dict[str, Any] | None:
     missing_scenes = [
         scene_number
         for scene_number in range(1, scene_count + 1)
-        if not (work_dir / f"scene-{scene_number:02d}.mp4").is_file()
+        if not _scene_output_exists(project.get("plan"), work_dir, scene_number)
     ]
     if project_id and narration_exists and missing_scenes:
         return {"type": "resume_missing", "sceneNumber": missing_scenes[0]}
@@ -570,7 +622,7 @@ def _mark_orphaned_running_project(project_id: str) -> dict[str, Any]:
                 (
                     scene_number
                     for scene_number in range(1, len(scenes) + 1)
-                    if not (work_dir / f"scene-{scene_number:02d}.mp4").is_file()
+                    if not _scene_output_exists(project.get("plan"), work_dir, scene_number)
                 ),
                 1,
             )
@@ -1690,6 +1742,403 @@ async def project_detail(project_id: str):
     return _project_response(project)
 
 
+@app.post("/api/projects/{project_id}/assets")
+async def project_asset_upload(project_id: str, req: ProjectAssetUploadRequest):
+    """Import editor material without starting the director or media pipeline."""
+
+    project = await asyncio.to_thread(load_project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+    decoded = await asyncio.to_thread(_decode_attachments, req.attachments)
+    if not decoded:
+        raise HTTPException(400, "没有可导入的图片、视频或音频")
+    saved = await asyncio.to_thread(_save_attachments, project_id, decoded)
+    saved = await _enrich_saved_attachments(project_id, saved)
+
+    def append_assets(item: dict[str, Any]) -> None:
+        item["assets"] = [*(item.get("assets") or []), *saved]
+
+    updated = await asyncio.to_thread(mutate_project, project_id, append_assets)
+    return {"ok": True, "items": saved, "project": _project_response(updated)}
+
+
+def _find_project_output(project: dict[str, Any], output_id: str) -> dict[str, Any] | None:
+    rows: list[dict[str, Any]] = []
+    rows.extend(item for item in project.get("outputs") or [] if isinstance(item, dict))
+    for delivery in project.get("deliveries") or []:
+        if isinstance(delivery, dict):
+            rows.extend(
+                item for item in delivery.get("outputs") or [] if isinstance(item, dict)
+            )
+    return next(
+        (item for item in rows if str(item.get("id") or "") == str(output_id or "")),
+        None,
+    )
+
+
+def _video_editor_state(
+    project: dict[str, Any],
+    output_id: str,
+) -> dict[str, Any]:
+    project_id = str(project.get("id") or "")
+    output = _find_project_output(project, output_id)
+    if output is None:
+        raise HTTPException(404, "成片不存在")
+    work_dir = settings.outputs_dir / project_id
+    composition_file = Path(str(output.get("compositionFile") or "composition.json")).name
+    composition_path = work_dir / composition_file
+    if not composition_path.is_file() and composition_file != "composition.json":
+        composition_path = work_dir / "composition.json"
+    if not composition_path.is_file():
+        raise HTTPException(409, "当前成片缺少可编辑的时间线快照")
+    try:
+        composition = json.loads(composition_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(409, f"成片时间线不可读取：{exc}")
+    scenes = [
+        item for item in list((project.get("plan") or {}).get("scenes") or [])
+        if isinstance(item, dict)
+    ]
+    timeline_edit = (
+        project.get("plan", {}).get("timeline_edit")
+        if isinstance(project.get("plan"), dict)
+        else {}
+    )
+    saved_clips = [
+        item for item in list((timeline_edit or {}).get("clips") or [])
+        if isinstance(item, dict)
+    ]
+    clips = []
+    for index, cut in enumerate(composition.get("cuts") or [], start=1):
+        if not isinstance(cut, dict):
+            continue
+        source = Path(str(cut.get("source") or ""))
+        if not source.is_file():
+            continue
+        director_number = max(1, int(cut.get("directorSceneNumber") or index))
+        scene = scenes[director_number - 1] if director_number <= len(scenes) else {}
+        saved_clip = saved_clips[index - 1] if index <= len(saved_clips) else {}
+        start = float(cut.get("in_seconds") or 0)
+        end = float(cut.get("out_seconds") or start + 1)
+        clips.append(
+            {
+                "id": f"clip-{index}-{uuid.uuid4().hex[:8]}",
+                "sourceFile": source.name,
+                "sourceSceneNumber": director_number,
+                "segmentNumber": max(1, int(cut.get("segmentNumber") or 1)),
+                "segmentCount": max(1, int(cut.get("segmentCount") or 1)),
+                "title": str(scene.get("title") or f"镜头 {director_number}"),
+                "subtitle": str(
+                    saved_clip.get("subtitle")
+                    if "subtitle" in saved_clip
+                    else (
+                        scene.get("narration_excerpt")
+                        or scene.get("title")
+                        or f"镜头 {director_number}"
+                    )
+                ).strip()[:1200],
+                "purpose": str(
+                    scene.get("purpose")
+                    or scene.get("visual_prompt")
+                    or "成片镜头"
+                )[:160],
+                "duration": round(max(0.25, end - start), 3),
+                "trimStart": max(0.0, float(cut.get("trimStart") or 0)),
+                "replacementAssetId": str(saved_clip.get("replacement_asset_id") or ""),
+                "transition": str(saved_clip.get("transition") or "fade"),
+            }
+        )
+    if not clips:
+        raise HTTPException(409, "当前成片没有可编辑的镜头源文件")
+    audio_design = (
+        dict(project.get("plan", {}).get("audio_design") or {})
+        if isinstance(project.get("plan"), dict)
+        else {}
+    )
+    assets = []
+    audio_assets = []
+    for asset in project.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = str(asset.get("id") or asset.get("asset_id") or asset.get("url") or asset.get("name") or "")
+        if not asset_id:
+            continue
+        public_asset = {
+            "id": asset_id,
+            "label": str(asset.get("label") or asset.get("name") or "未命名素材"),
+            "name": str(asset.get("name") or asset.get("label") or "未命名素材"),
+            "mime": str(asset.get("mime") or ""),
+            "url": str(asset.get("url") or ""),
+            "duration": max(0.1, float(asset.get("duration") or 0.6)),
+        }
+        if public_asset["mime"].startswith("audio/"):
+            audio_assets.append(public_asset)
+        else:
+            assets.append(public_asset)
+    return {
+        "output": output,
+        "clips": clips,
+        "assets": assets,
+        "audioAssets": audio_assets,
+        "bgmCatalog": bgm_library.catalog(),
+        "soundEffectCatalog": sfx_library.catalog(),
+        "currentBgm": output.get("bgm") or None,
+        "bgmSelection": str((timeline_edit or {}).get("bgm_selection") or "keep"),
+        "narrationVolume": float(audio_design.get("narration_volume", 1.0)),
+        "bgmVolume": float(audio_design.get("bgm_volume", 0.12)),
+        "soundEffects": list((timeline_edit or {}).get("sound_effects") or []),
+        "overlays": list((timeline_edit or {}).get("overlays") or []),
+        "subtitleEffect": str((timeline_edit or {}).get("subtitle_effect") or ""),
+        "compositionFile": composition_path.name,
+    }
+
+
+@app.get("/api/projects/{project_id}/video-editor")
+async def project_video_editor(project_id: str, outputId: str):
+    project = await asyncio.to_thread(load_project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+    return {"ok": True, **_video_editor_state(project, outputId)}
+
+
+@app.post("/api/projects/{project_id}/timeline-revision")
+async def project_timeline_revision(project_id: str, req: TimelineRevisionRequest):
+    project = await asyncio.to_thread(load_project, project_id)
+    if project is None:
+        raise HTTPException(404, "项目不存在")
+    if _project_has_active_work(project_id):
+        raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
+    if project.get("status") != "succeeded":
+        raise HTTPException(409, "请等待当前成片完成后再进入剪辑台")
+    editor_state = _video_editor_state(project, req.outputId)
+    allowed_sources = {str(item["sourceFile"]) for item in editor_state["clips"]}
+    assets_by_id = {str(item["id"]): item for item in editor_state["assets"]}
+    audio_assets_by_id = {str(item["id"]): item for item in editor_state["audioAssets"]}
+    project_assets_by_id = {
+        str(item.get("id") or item.get("asset_id") or item.get("url") or item.get("name") or ""): item
+        for item in project.get("assets") or []
+        if isinstance(item, dict)
+    }
+    bgm_catalog_by_id = {str(item.get("id") or ""): item for item in editor_state["bgmCatalog"]}
+    sfx_catalog_by_id = {str(item.get("id") or ""): item for item in editor_state["soundEffectCatalog"]}
+    valid_transitions = {"fade", "dissolve", "slideleft", "wipeleft", "circleopen"}
+    clips = []
+    for item in req.clips:
+        source_file = Path(item.sourceFile).name
+        if source_file != item.sourceFile or source_file not in allowed_sources:
+            raise HTTPException(400, "剪辑台包含不属于当前成片的镜头")
+        if item.replacementAssetId and item.replacementAssetId not in assets_by_id:
+            raise HTTPException(400, "剪辑台替换素材不属于当前项目")
+        clips.append(
+            {
+                "id": item.id,
+                "source_file": source_file,
+                "source_scene_number": item.sourceSceneNumber,
+                "segment_number": item.segmentNumber,
+                "segment_count": item.segmentCount,
+                "duration": round(item.duration, 3),
+                "trim_start": round(item.trimStart, 3),
+                "subtitle": item.subtitle.strip()[:1200],
+                "replacement_asset_id": item.replacementAssetId,
+                "transition": item.transition if item.transition in valid_transitions else "fade",
+            }
+        )
+    valid_positions = {"top-left", "top-right", "bottom-left", "bottom-right", "center", "custom"}
+    valid_overlay_effects = {"none", "fade", "slide-left", "slide-up"}
+    overlays = []
+    editor_materials = []
+    for item in req.overlays:
+        asset = assets_by_id.get(item.assetId)
+        if asset is None:
+            raise HTTPException(400, "画中画素材不属于当前项目")
+        position = item.position if item.position in valid_positions else "top-right"
+        overlay = {
+            "asset_id": item.assetId,
+            "start": round(item.start, 3),
+            "duration": round(item.duration, 3),
+            "position": position,
+            "position_x": round(item.positionX, 6),
+            "position_y": round(item.positionY, 6),
+            "scale": round(item.scale, 3),
+            "entry_effect": item.entryEffect if item.entryEffect in valid_overlay_effects else "fade",
+            "exit_effect": item.exitEffect if item.exitEffect in valid_overlay_effects else "fade",
+        }
+        overlays.append(overlay)
+        editor_materials.append(
+            {
+                "asset_id": item.assetId,
+                "label": asset["label"],
+                "name": asset["name"],
+                "mime": asset["mime"],
+                "url": asset["url"],
+                "scene_number": 1,
+                "start_sec": overlay["start"],
+                "duration_sec": overlay["duration"],
+                "presentation": "pip",
+                "position": position,
+                "position_x": overlay["position_x"],
+                "position_y": overlay["position_y"],
+                "scale": overlay["scale"],
+                "entry_effect": overlay["entry_effect"],
+                "exit_effect": overlay["exit_effect"],
+                "editor_origin": True,
+            }
+        )
+    sound_effects = []
+    editor_sfx_assets = []
+    for item in req.soundEffects:
+        source_type = item.sourceType if item.sourceType in {"catalog", "asset"} else ""
+        source_id = item.sourceId.strip()
+        if source_type == "catalog":
+            catalog_item = sfx_catalog_by_id.get(source_id)
+            if catalog_item is None or sfx_library.resolve(source_id) is None:
+                raise HTTPException(400, "选中的平台音效不可用")
+            source_asset = {
+                "builtin_sfx_id": source_id,
+                "label": str(catalog_item.get("name") or item.label or "平台音效"),
+                "name": str(catalog_item.get("name") or item.label or "平台音效"),
+                "mime": "audio/ogg",
+                "url": str(catalog_item.get("url") or ""),
+                "license": str(catalog_item.get("license") or "CC0 1.0"),
+            }
+        elif source_type == "asset":
+            if source_id not in audio_assets_by_id or source_id not in project_assets_by_id:
+                raise HTTPException(400, "选中的音效音频不属于当前项目")
+            source_asset = dict(project_assets_by_id[source_id])
+        else:
+            raise HTTPException(400, "音效来源无效")
+        normalized = {
+            "id": item.id,
+            "source_type": source_type,
+            "source_id": source_id,
+            "label": str(source_asset.get("label") or source_asset.get("name") or item.label or "音效")[:180],
+            "start": round(item.start, 3),
+            "duration": round(item.duration, 3),
+            "volume": round(item.volume, 3),
+        }
+        sound_effects.append(normalized)
+        editor_sfx_assets.append({
+            **source_asset,
+            "asset_id": str(source_asset.get("asset_id") or source_id),
+            "scene_number": 1,
+            "start_sec": normalized["start"],
+            "duration_sec": normalized["duration"],
+            "volume": normalized["volume"],
+            "editor_origin": True,
+        })
+    subtitle_styles = {
+        "逐字高亮": {"animation": "word-highlight", "public_summary": "逐字高亮"},
+        "简洁淡入": {"animation": "fade", "public_summary": "简洁淡入"},
+        "关键词放大": {"animation": "keyword-pop", "public_summary": "关键词放大"},
+        "去掉字幕": {"enabled": False, "public_summary": "去掉字幕"},
+    }
+    edit_id = uuid.uuid4().hex[:16]
+    plan = dict(project.get("plan") or {})
+    bgm_selection = req.bgmSelection.strip() or "keep"
+    audio_design = dict(plan.get("audio_design") or {})
+    audio_design["narration_volume"] = round(req.narrationVolume, 3)
+    audio_design["bgm_volume"] = round(req.bgmVolume, 3)
+    if bgm_selection == "none":
+        audio_design["bgm_enabled"] = False
+        audio_design.pop("bgm_track_id", None)
+        plan["bgm_assets"] = []
+    elif bgm_selection.startswith("catalog:"):
+        track_id = bgm_selection.removeprefix("catalog:")
+        if track_id not in bgm_catalog_by_id:
+            raise HTTPException(400, "选中的 BGM 不属于当前可用配乐库")
+        audio_design["bgm_enabled"] = True
+        audio_design["bgm_track_id"] = track_id
+        plan["bgm_assets"] = []
+    elif bgm_selection.startswith("asset:"):
+        asset_id = bgm_selection.removeprefix("asset:")
+        if asset_id not in audio_assets_by_id or asset_id not in project_assets_by_id:
+            raise HTTPException(400, "选中的 BGM 音频不属于当前项目")
+        audio_design["bgm_enabled"] = True
+        audio_design.pop("bgm_track_id", None)
+        plan["bgm_assets"] = [dict(project_assets_by_id[asset_id])]
+    elif bgm_selection == "keep":
+        current_bgm = editor_state.get("currentBgm")
+        if not current_bgm:
+            audio_design["bgm_enabled"] = False
+            audio_design.pop("bgm_track_id", None)
+            plan["bgm_assets"] = []
+        else:
+            current_track_id = str(current_bgm.get("id") or "")
+            if current_track_id in bgm_catalog_by_id:
+                audio_design["bgm_enabled"] = True
+                audio_design["bgm_track_id"] = current_track_id
+                plan["bgm_assets"] = []
+    elif bgm_selection != "keep":
+        raise HTTPException(400, "BGM 选择无效")
+    plan["audio_design"] = audio_design
+    plan["timeline_edit"] = {
+        "id": edit_id,
+        "base_output_id": req.outputId,
+        "clips": clips,
+        "overlays": overlays,
+        "sound_effects": sound_effects,
+        "bgm_selection": bgm_selection,
+        "subtitle_effect": req.subtitleEffect,
+    }
+    original_materials = [
+        item for item in list(plan.get("material_assets") or [])
+        if isinstance(item, dict) and not item.get("editor_origin")
+    ]
+    plan["material_assets"] = [*original_materials, *editor_materials]
+    original_sfx_assets = [
+        item for item in list(plan.get("sfx_assets") or [])
+        if isinstance(item, dict) and not item.get("editor_origin")
+    ]
+    plan["sfx_assets"] = [*original_sfx_assets, *editor_sfx_assets]
+    if req.subtitleEffect:
+        plan["subtitle_style"] = subtitle_styles.get(
+            req.subtitleEffect,
+            plan.get("subtitle_style") or {},
+        )
+
+    revision_record = {
+        "id": edit_id,
+        "type": "manual_timeline",
+        "baseOutputId": req.outputId,
+        "clipCount": len(clips),
+        "overlayCount": len(overlays),
+        "soundEffectCount": len(sound_effects),
+        "subtitleEffect": req.subtitleEffect,
+    }
+
+    def mark_revision(item: dict[str, Any]) -> None:
+        history = [row for row in item.get("revisionHistory") or [] if isinstance(row, dict)]
+        item["revisionHistory"] = [revision_record, *history][:50]
+        item["plan"] = plan
+        item["status"] = "running"
+        item["phase"] = "production"
+        item["progress"] = 18
+        item["error"] = ""
+        item["retryable"] = None
+
+    with _launching_project(project_id):
+        await asyncio.to_thread(mutate_project, project_id, mark_revision)
+        await asyncio.to_thread(
+            add_event,
+            project_id,
+            "手动剪辑时间线已锁定",
+            f"已保存 {len(clips)} 个主轨片段和 {len(overlays)} 个画中画片段，正在复用原素材合成新版。",
+            "running",
+            18,
+            "production",
+        )
+        await asyncio.to_thread(
+            add_message,
+            project_id,
+            "assistant",
+            "剪辑台修改已保存。原成片继续保留，本次不重新调用画面或口播生成，只重新剪辑、合成和质检。",
+            kind="plan",
+        )
+        if not _schedule(project_id, plan, recompose_only=True):
+            raise HTTPException(409, "当前项目仍有制作任务正在收尾，请稍后再试")
+    return {"ok": True, "project": _project_response(await asyncio.to_thread(load_project, project_id))}
+
+
 @app.patch("/api/projects/{project_id}")
 async def project_rename(project_id: str, req: RenameProjectRequest):
     name = " ".join(req.name.split()).strip()
@@ -1940,7 +2389,7 @@ async def project_cancel(project_id: str):
             (
                 scene_number
                 for scene_number in range(1, len(scenes) + 1)
-                if not (work_dir / f"scene-{scene_number:02d}.mp4").is_file()
+                if not _scene_output_exists(plan, work_dir, scene_number)
             ),
             1,
         )
@@ -2043,17 +2492,20 @@ async def _handle_local_revision(
     required_sources = [work_dir / "narration.mp3"]
     if revision_type == "scene":
         requested_number = int(revision.get("sceneNumber") or 0)
-        required_sources.extend(
-            work_dir / f"scene-{index:02d}.mp4"
-            for index in range(1, len(scenes) + 1)
-            if index != requested_number
-        )
+        for index in range(1, len(scenes) + 1):
+            if index != requested_number:
+                required_sources.extend(_scene_output_paths(plan, work_dir, index))
     else:
-        required_sources.extend(
-            work_dir / f"scene-{index:02d}.mp4"
-            for index in range(1, len(scenes) + 1)
-        )
+        for index in range(1, len(scenes) + 1):
+            required_sources.extend(_scene_output_paths(plan, work_dir, index))
+    missing_logical_scenes = [
+        index
+        for index in range(1, len(scenes) + 1)
+        if (revision_type != "scene" or index != int(revision.get("sceneNumber") or 0))
+        and not _scene_output_exists(plan, work_dir, index)
+    ]
     missing_sources = [path.name for path in required_sources if not path.is_file()]
+    missing_sources.extend(f"镜头 {index}" for index in missing_logical_scenes)
     if missing_sources:
         reply = (
             "原成片的音画源文件不完整，不能安全执行局部修改，否则会意外重做口播或其他镜头。"

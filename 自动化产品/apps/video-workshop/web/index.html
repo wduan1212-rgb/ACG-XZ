@@ -24,7 +24,7 @@
       html.app-booting body { visibility: hidden; }
     </style>
     <link rel="icon" type="image/png" href="assets/xingzhen-logo-white.png" />
-    <link rel="stylesheet" href="/assets/styles.css?v=20260810-v1413-runtime-finalization-1" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260810-v1420-generation-resilience-1" />
     <style>
       /* 主平台嵌入态由外层工作区负责一级导航，内部只保留创作、素材与成片能力。 */
       html[data-platform-workspace="true"] {
@@ -437,16 +437,64 @@
             </form>
           </div>
 
-          <aside class="director-rail" aria-label="导演过程">
-            <div class="rail-heading">
-              <div>
-                <span>DIRECTOR LOG</span>
-                <h2>导演记录</h2>
-              </div>
-              <span id="progressNumber">0%</span>
+          <aside class="director-rail voice-workbench-rail" aria-label="视频声线与语音工作台">
+            <div class="voice-rail-heading">
+              <div><span>VOICE WORKBENCH</span><h2>声音工作台</h2></div>
+              <nav class="voice-rail-tabs" aria-label="切换声音工具">
+                <button class="active" type="button" data-voice-rail-tab="narration">口播声线</button>
+                <button type="button" data-voice-rail-tab="generate">语音生成</button>
+                <button type="button" data-voice-rail-tab="design">音色设计</button>
+              </nav>
             </div>
-            <div class="progress-track"><span id="progressBar"></span></div>
-            <div class="event-list" id="eventList"></div>
+            <section class="voice-rail-panel active" data-voice-rail-panel="narration">
+              <p class="voice-rail-intro">优先随机使用定制音色；需要一致性时固定声线。</p>
+              <div class="voice-mode-switch" role="group" aria-label="口播声线选择方式">
+                <button class="active" type="button" data-voice-mode="random">优先随机</button>
+                <button type="button" data-voice-mode="fixed">固定声线</button>
+              </div>
+              <div class="voice-rail-field">
+                <span>固定使用</span>
+                <div class="video-voice-picker" id="videoVoicePicker">
+                  <button class="video-voice-picker-button" id="videoVoicePickerButton" type="button" aria-haspopup="listbox" aria-expanded="false">
+                    <span><strong id="videoVoiceSelectedName">平台默认音色</strong><small id="videoVoiceSelectedMeta">自动选择可用声线</small></span>
+                    <i data-lucide="chevron-down"></i>
+                  </button>
+                  <div class="video-voice-menu" id="videoVoiceMenu" role="listbox" aria-label="选择固定声线" hidden></div>
+                </div>
+              </div>
+              <div class="voice-current-card"><span>本次项目声线</span><strong id="videoVoiceCurrent">尚未生成口播</strong><small id="videoVoiceHint">下一次发起制作时生效</small></div>
+            </section>
+            <section class="voice-rail-panel" data-voice-rail-panel="generate" hidden>
+              <div class="voice-rail-field">
+                <span>生成声线</span>
+                <div class="video-voice-picker" id="videoGenerateVoicePicker">
+                  <button class="video-voice-picker-button" id="videoGenerateVoicePickerButton" type="button" aria-haspopup="listbox" aria-expanded="false">
+                    <span><strong id="videoGenerateVoiceSelectedName">平台默认音色</strong><small id="videoGenerateVoiceSelectedMeta">可直接选择并试听</small></span>
+                    <i data-lucide="chevron-down"></i>
+                  </button>
+                  <div class="video-voice-menu" id="videoGenerateVoiceMenu" role="listbox" aria-label="选择语音生成声线" hidden></div>
+                </div>
+              </div>
+              <label class="voice-rail-field"><span>口播文本</span><textarea id="videoVoiceText" maxlength="5000" rows="5" placeholder="输入要生成的口播文本"></textarea></label>
+              <button class="voice-generate-button" id="videoVoiceGenerate" type="button"><i data-lucide="sparkles"></i><span>生成音频</span></button>
+              <div class="voice-generated-result" id="videoVoiceResult" hidden><audio controls preload="metadata"></audio><a download="xingzhen-voice.mp3">下载音频</a></div>
+            </section>
+            <section class="voice-rail-panel voice-design-panel" data-voice-rail-panel="design" hidden>
+              <p class="voice-rail-intro">描述声音特征，生成后可试听并保存到“我的设计”。</p>
+              <label class="voice-rail-field"><span>音色名称</span><input id="videoVoiceDesignName" maxlength="40" placeholder="例如：冷静教程女声" /></label>
+              <label class="voice-rail-field"><span>音色描述</span><textarea id="videoVoiceDesignPrompt" maxlength="1200" rows="4" placeholder="例如：成熟、温和、略带笑意，适合产品讲解"></textarea></label>
+              <label class="voice-rail-field"><span>试听文本</span><textarea id="videoVoiceDesignPreview" maxlength="2000" rows="2" placeholder="这是一段用于试听新音色的口播。"></textarea></label>
+              <button class="voice-generate-button" id="videoVoiceDesign" type="button"><i data-lucide="wand-sparkles"></i><span>生成试听音色</span></button>
+              <div class="voice-design-result" id="videoVoiceDesignResult" hidden>
+                <audio controls preload="metadata"></audio>
+                <div><button type="button" data-video-voice-design-discard>放弃</button><button type="button" class="voice-design-save" id="videoVoiceDesignSave">保存到我的音色</button></div>
+              </div>
+            </section>
+            <div class="director-telemetry" hidden aria-hidden="true">
+              <span id="progressNumber">0%</span>
+              <span id="progressBar"></span>
+              <div id="eventList"></div>
+            </div>
           </aside>
         </div>
       </section>
@@ -481,6 +529,98 @@
       </section>
     </div>
 
+    <div class="video-editor-modal" id="videoEditorModal" hidden>
+      <div class="video-editor-backdrop" data-video-editor-close></div>
+      <section class="video-editor-panel" role="dialog" aria-modal="true" aria-labelledby="videoEditorTitle">
+        <header class="video-editor-topbar">
+          <div class="video-editor-heading"><span>EDIT WORKSTATION</span><h2 id="videoEditorTitle">成片剪辑台</h2><em>本地非破坏性编辑</em></div>
+          <div class="video-editor-project-actions" aria-label="剪辑操作">
+            <button type="button" id="videoEditorUndo" title="撤销"><i data-lucide="undo-2"></i><span>撤销</span></button>
+            <button type="button" id="videoEditorRedo" title="重做"><i data-lucide="redo-2"></i><span>重做</span></button>
+            <button type="button" id="videoEditorSplit" title="在播放头处分割"><i data-lucide="scissors"></i><span>分割</span></button>
+            <button type="button" id="videoEditorDelete" title="删除选中片段"><i data-lucide="trash-2"></i><span>删除</span></button>
+          </div>
+          <button class="video-editor-close" type="button" data-video-editor-close aria-label="关闭剪辑台"><i data-lucide="x"></i></button>
+        </header>
+        <div class="video-editor-workspace">
+          <aside class="video-editor-media-panel" aria-label="项目素材">
+            <div><b>项目素材</b><span id="videoEditorAssetCount">0 项</span></div>
+            <p>外部图片/视频拖入剪辑台默认成为画中画；只有明确落到 V1 片段才替换主画面。</p>
+            <div class="video-editor-asset-list" id="videoEditorAssetList"></div>
+          </aside>
+          <section class="video-editor-stage" aria-label="成片预览">
+            <div class="video-editor-monitor">
+              <div class="video-editor-preview-canvas" id="videoEditorPreviewCanvas">
+                <video id="videoEditorPreview" playsinline preload="metadata"></video>
+                <div class="video-editor-replacement-preview-layer" id="videoEditorReplacementPreviewLayer" aria-label="替换画面预览"></div>
+                <div class="video-editor-overlay-preview-layer" id="videoEditorOverlayPreviewLayer" aria-label="画中画预览"></div>
+                <div class="video-editor-subtitle-replace-mask" id="videoEditorSubtitleReplaceMask" hidden aria-hidden="true"></div>
+                <div class="video-editor-subtitle-preview" id="videoEditorSubtitlePreview" hidden></div>
+              </div>
+            </div>
+            <div class="video-editor-transport">
+              <button type="button" id="videoEditorPlay" aria-label="播放或暂停"><i data-lucide="play"></i></button>
+              <input id="videoEditorScrubber" type="range" min="0" max="1" step="0.01" value="0" aria-label="成片播放进度">
+              <output id="videoEditorTimecode">00:00.0 / 00:00.0</output>
+              <span>预览为当前成片；提交后保留旧版并生成新版。</span>
+            </div>
+          </section>
+          <aside class="video-editor-inspector" aria-label="属性检查器">
+            <div class="video-editor-inspector-title"><span>INSPECTOR</span><b id="videoEditorSelectionTitle">音频与字幕</b></div>
+            <div id="videoEditorClipInspector" hidden>
+              <p class="video-editor-context-note">片段长度、入点和顺序直接在 V1 轨道拖动；把新素材落到具体片段即可替换。</p>
+            </div>
+            <div id="videoEditorSubtitleInspector" hidden>
+              <label><span>字幕内容</span><textarea id="videoEditorSubtitleText" rows="4" maxlength="1200"></textarea></label>
+              <label><span>字幕表现</span><select id="videoEditorSubtitle"><option value="">保持现状</option><option value="逐字高亮">逐字高亮</option><option value="简洁淡入">简洁淡入</option><option value="关键词放大">关键词放大</option><option value="去掉字幕">去掉字幕</option></select></label>
+            </div>
+            <div id="videoEditorOverlayInspector" hidden>
+              <label><span>入场效果</span><select id="videoEditorOverlayEntry"><option value="fade">淡入</option><option value="slide-left">从右滑入</option><option value="slide-up">从下滑入</option><option value="none">直接出现</option></select></label>
+              <label><span>出场效果</span><select id="videoEditorOverlayExit"><option value="fade">淡出</option><option value="slide-left">向左滑出</option><option value="slide-up">向上滑出</option><option value="none">直接消失</option></select></label>
+            </div>
+            <div id="videoEditorAudioInspector" hidden>
+              <label><span id="videoEditorVolumeLabel">轨道音量</span><div class="video-editor-volume-row"><input id="videoEditorTrackVolume" type="range" min="0" max="200" step="1" value="100"><output id="videoEditorTrackVolumeValue">100%</output></div></label>
+            </div>
+            <div class="video-editor-bgm-control">
+              <div><span>BGM 配乐</span><button type="button" id="videoEditorBgmDelete">移除</button></div>
+              <select id="videoEditorBgm"><option value="keep">保持原配乐</option><option value="none">不使用 BGM</option></select>
+            </div>
+            <div class="video-editor-sfx-control">
+              <div><span>基础音效</span><button type="button" id="videoEditorSfxPreview">试听</button></div>
+              <select id="videoEditorSfx"><option value="">选择一个音效</option></select>
+              <button type="button" id="videoEditorSfxAdd"><i data-lucide="plus"></i>添加到播放头</button>
+              <small>内置音效来自 Kenney CC0；也可把项目音频或外部音频拖到 A3。</small>
+            </div>
+          </aside>
+        </div>
+        <section class="video-editor-timeline-shell" aria-label="多轨时间线">
+          <div class="video-editor-timeline-toolbar">
+            <div><b>多轨时间线</b><span>拖动排序 · 两侧拖柄裁剪 · 播放头处分割</span></div>
+            <label><i data-lucide="zoom-out"></i><input id="videoEditorZoom" type="range" min="32" max="120" step="4" value="56"><i data-lucide="zoom-in"></i></label>
+          </div>
+          <div class="video-editor-timeline-scroll" id="videoEditorTimelineScroll">
+            <div class="video-editor-track-labels" aria-hidden="true">
+              <span>时间</span><span>V2 画中画</span><span>V1 主画面</span><span>T 字幕</span><span>A1 口播</span><span>A2 配乐</span><span>A3 音效</span>
+            </div>
+            <div class="video-editor-timeline-canvas" id="videoEditorTimelineCanvas">
+              <div class="video-editor-ruler" id="videoEditorRuler"></div>
+              <div class="video-editor-track video-editor-overlay-track" id="videoEditorOverlayTrack" data-editor-drop="overlay"></div>
+              <div class="video-editor-track video-editor-video-track" id="videoEditorVideoTrack" data-editor-drop="video"></div>
+              <div class="video-editor-track video-editor-subtitle-track" id="videoEditorSubtitleTrack"></div>
+              <div class="video-editor-track video-editor-audio-track" id="videoEditorAudioTrack"></div>
+              <div class="video-editor-track video-editor-bgm-track" id="videoEditorBgmTrack"></div>
+              <div class="video-editor-track video-editor-sfx-track" id="videoEditorSfxTrack" data-editor-drop="sfx"></div>
+              <button class="video-editor-playhead" id="videoEditorPlayhead" type="button" aria-label="播放头"><i data-lucide="chevron-down"></i></button>
+            </div>
+          </div>
+        </section>
+        <footer>
+          <span id="videoEditorHint">所有修改会走现有剪辑、合成与质检链路。</span>
+          <div><button type="button" data-video-editor-close>取消</button><button class="video-editor-submit" id="videoEditorSubmit" type="button"><i data-lucide="sparkles"></i>提交修改并重渲染</button></div>
+        </footer>
+      </section>
+    </div>
+
     <div class="drop-overlay" id="dropOverlay" aria-hidden="true">
       <div class="drop-overlay-content">
         <i data-lucide="file-up"></i>
@@ -491,7 +631,7 @@
     <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp3,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,.m4a" multiple hidden />
     <div class="toast" id="toast" role="status"></div>
     <script src="/assets/lucide.min.js"></script>
-    <script src="/assets/publishPolicy.js?v=20260810-v1413-runtime-finalization-1"></script>
-    <script src="/assets/app.js?v=20260810-v1413-runtime-finalization-1"></script>
+    <script src="/assets/publishPolicy.js?v=20260810-v1420-generation-resilience-1"></script>
+    <script src="/assets/app.js?v=20260810-v1420-generation-resilience-1"></script>
   </body>
 </html>

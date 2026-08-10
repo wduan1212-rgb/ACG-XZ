@@ -244,7 +244,7 @@ class FrontendPerformanceTest(unittest.TestCase):
         activate = self.custom.split("const activate = (nextPage, nextResourceId = null) =>", 1)[1].split(
             "root.querySelector(\"[data-custom-back]\")", 1
         )[0]
-        self.assertIn('if (next !== "voice") mountTool(next);', activate)
+        self.assertIn("mountTool(next);", activate)
         self.assertNotIn('mountTool("video")', self.custom.split("root.__customCreationContext", 1)[0])
         self.assertNotIn('mountTool("canvas")', self.custom.split("root.__customCreationContext", 1)[0])
 

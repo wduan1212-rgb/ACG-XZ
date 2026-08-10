@@ -498,11 +498,12 @@ console.log(JSON.stringify({
         cleaner_end = source.index("function withSharedInfoFlowStyle", cleaner_start)
         cleaner = source[cleaner_start:cleaner_end]
 
-        self.assertIn("for (let attempt = 0; attempt < 3; attempt++)", director)
+        self.assertIn("for (let attempt = 0; attempt < 2; attempt++)", director)
         self.assertIn("上一轮未通过原因", director)
-        self.assertIn("A/B 面必须各至少 4 个明确时间段", director)
+        self.assertIn("这是唯一一次结构修复", director)
+        self.assertIn("frontScenes 与 backScenes 必须各有至少 4 个真实镜头", director)
         self.assertIn("lastDraft.slice(0, 7000)", director)
-        self.assertIn("temperature: 1.15", director)
+        self.assertIn("temperature: attempt === 0 ? 0.75 : 0.35", director)
         self.assertIn("至少 4 个分时镜头；台词必须原创、短促、自然", director)
         self.assertIn("例如超写实、电影纪实、夸张舞台广告或高质感三维界面", director)
         for tightened in (
@@ -647,6 +648,59 @@ console.log(JSON.stringify({
         self.assertTrue(data["inputFidelity"]["keepsFirstStep"])
         self.assertFalse(data["inputFidelity"]["hasCorruptedFirstStep"])
 
+    def test_infoflow_structured_scenes_are_normalized_and_true_shortage_fails_before_generation(self):
+        script = r"""
+globalThis.localStorage = { getItem:()=>null, setItem:()=>{}, removeItem:()=>{} };
+globalThis.location = { origin:'http://127.0.0.1:8787', protocol:'http:', hostname:'127.0.0.1', port:'8787', hash:'' };
+globalThis.window = { location:globalThis.location, addEventListener:()=>{}, dispatchEvent:()=>{} };
+globalThis.document = { querySelector:()=>null, querySelectorAll:()=>[], body:{ dataset:{} } };
+let queue = [];
+let calls = 0;
+globalThis.fetch = async (_url, options = {}) => {
+  calls += 1;
+  const next = queue.shift();
+  return { ok:true, status:200, text:async()=>'', json:async()=>({ choices:[{ message:{ content:JSON.stringify(next) } }] }) };
+};
+const { AI } = await import('./js/api/ai.js');
+window.XingzhenConfig.endpoint = '/api/chat/completions';
+window.XingzhenConfig.apiKey = 'unit-test-only';
+window.XingzhenConfig.serverManaged = true;
+const detail = i => ({
+  start:[0,3,7,11][i], end:[3,7,11,15][i],
+  shot:`镜头${i + 1}使用不同景别与稳定机位`,
+  visual:`围绕本次资料核对主题推进第${i + 1}个真实动作，展示文件、空间、状态变化与清晰光影关系，绝不重复前一镜头`,
+  audio:`第${i + 1}段环境声与原创短句`, transition:'自然转场'
+});
+const structured = {
+  creativeAngle:'结构化资料追逐', visualStyle:'电影纪实广告质感',
+  frontScenes:[0,1,2,3].map(detail), backScenes:[0,1,2,3].map(i => ({...detail(i), visual:`真实产品界面完成第${i + 1}步资料核对操作，只有窗口、文件、字段与进度状态，不出现人物或手部`}))
+};
+queue = [structured]; calls = 0;
+const ok = await AI.generateInfoFlowCreativePlan({ title:'核对资料', copy:'把遗漏项检查清楚', account:{platform:'视频号'} });
+const okCalls = calls;
+const lone = { ...detail(0), visual:detail(0).visual.repeat(5) };
+const short = { ...structured, frontScenes:[lone], backScenes:[lone] };
+queue = [short, short]; calls = 0;
+let failed = false;
+try { await AI.generateInfoFlowCreativePlan({ title:'核对资料', copy:'把遗漏项检查清楚', account:{platform:'视频号'} }); }
+catch (error) { failed = /缺少完整的分时镜头设计/.test(error.message); }
+console.log(JSON.stringify({
+  okCalls, front:(ok.frontPrompt.match(/镜头\d/g) || []).length,
+  back:(ok.backPrompt.match(/镜头\d/g) || []).length,
+  failed, repairCalls:calls
+}));
+"""
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=APP_DIR, text=True, capture_output=True, check=True,
+        )
+        data = json.loads(result.stdout.strip())
+        self.assertEqual(1, data["okCalls"])
+        self.assertGreaterEqual(data["front"], 4)
+        self.assertGreaterEqual(data["back"], 4)
+        self.assertTrue(data["failed"])
+        self.assertEqual(2, data["repairCalls"])
+
     def test_old_account_classification_prompts_are_removed(self):
         active_paths = [
             APP_DIR / "js/api/prompts.js",
@@ -687,8 +741,8 @@ console.log(JSON.stringify({
         self.assertNotIn("/api/video/audio-timing", cut)
         self.assertIn("未生成猜测字幕", cut)
         self.assertIn("function plainAssistantText", overview)
-        self.assertIn('data-overview-account=', overview)
-        self.assertIn("逐条查看赞、藏、评与播放", overview)
+        self.assertIn('data-view-select="account"', overview)
+        self.assertIn("内容数据", overview)
 
     def test_cut_preview_disables_digital_human_audio_crossfade(self):
         source = (APP_DIR / "js/views/chainCut.js").read_text(encoding="utf-8")
@@ -1228,10 +1282,13 @@ console.log(JSON.stringify({
         self.assertNotIn('data-overview-detail="published"><span>发布数量</span>', overview)
         self.assertIn('data-overview-detail="publishedPlatforms"', overview)
         self.assertIn('data-overview-detail="views"', overview)
-        self.assertIn('内容曝光与播放', overview)
+        self.assertIn('内容数据 · ${accountViewRows.length} 个账号', overview)
         self.assertIn('data-view-filter-kind=', overview)
         self.assertIn('data-view-custom-date=', overview)
-        self.assertIn('个账号累计', overview)
+        self.assertIn('data-view-select="account"', overview)
+        self.assertIn('data-view-select="creator"', overview)
+        self.assertIn('data-view-number="minViews"', overview)
+        self.assertIn('data-view-number="maxViews"', overview)
         self.assertIn('const analyticsByAssetId = new Map', overview)
         self.assertIn('const viewRows = delivered.map(({ asset, acc }) =>', overview)
         self.assertIn('const manualViews = Math.max(0, Number(asset.viewCount || 0));', overview)
@@ -1242,6 +1299,7 @@ console.log(JSON.stringify({
         self.assertIn('exposure: derivedExposure', overview)
         self.assertIn('overview-view-filterbar', overview)
         self.assertIn('overview-interaction-row', overview)
+        self.assertIn('创作人 ${esc(item.creator)}', overview)
         self.assertIn("发布数量明细", overview)
         self.assertIn("overview-donut", overview)
         self.assertIn("overview-trend-line", overview)
@@ -1255,20 +1313,22 @@ console.log(JSON.stringify({
         self.assertIn("data-recent-custom-date", overview)
         self.assertNotIn("overview-flow-card", overview)
         self.assertIn("openDeliveryRemarks", overview)
-        self.assertIn("accountCarouselTimer", overview)
-        self.assertIn("accountCarouselTransitionTimer", overview)
+        self.assertNotIn('data-account-carousel', overview)
         self.assertIn("trendArea", overview)
         self.assertIn("overviewTrendFill", overview)
         self.assertIn("图文 ${item.image} · 视频 ${item.video}", overview)
-        self.assertIn("overview-account-avatar", overview)
         self.assertIn("homepageUrl", overview)
         self.assertIn("publishedPlatformRows", overview)
         self.assertIn("publishedPlatformSummary", overview)
         self.assertIn("publishedXhs.tooltip", overview)
         self.assertIn("publishedVideo.tooltip", overview)
         self.assertIn('data-overview-detail="publishedPlatforms"', overview)
-        self.assertIn('<header><b>发布分布</b><em>${published.length} 条发布</em></header>', overview)
-        self.assertIn('<i><b>${published.length}</b><em>已发布</em></i>', overview)
+        self.assertIn('<section class="overview-summary-grid"', overview)
+        self.assertIn('<header><b>播放量分布</b><em>${accountViewRows.length} 个账号</em></header>', overview)
+        self.assertIn('<header><b>发布量分布</b><em>${published.length} 条发布</em></header>', overview)
+        self.assertIn('<button class="overview-donut-center" type="button" data-overview-detail="publishedPlatforms"><b>${published.length}</b><em>已发布</em></button>', overview)
+        self.assertIn("overview-remark-preview", overview)
+        self.assertIn('<article class="overview-viz-card overview-trend-card">', overview)
         self.assertNotIn('<header><b>平台分布</b><em>${delivered.length} 条交付</em></header>', overview)
         self.assertIn('data-overview-platform="小红书"', overview)
         self.assertIn('data-overview-platform="视频号"', overview)
@@ -1277,14 +1337,12 @@ console.log(JSON.stringify({
         self.assertNotIn("overview-kpi-strip", overview)
         self.assertNotIn("overview-kpi-card", overview)
         self.assertNotIn('data-overview-detail="todo"', overview)
-        self.assertIn("const accountPageSize = 16", overview)
-        self.assertLess(overview.index("overview-action-grid"), overview.index("overview-viz-grid"))
-        self.assertLess(overview.index("overview-viz-grid"), overview.index("overview-account-strip"))
-        self.assertIn("overview-action-icon is-views", overview)
-        self.assertIn('${icon("eye", 16)}', overview)
-        self.assertIn("overview-action-icon is-pulse", overview)
-        self.assertIn("overview-action-icon is-note", overview)
-        self.assertNotIn("overview-action-icon is-link", overview)
+        self.assertNotIn("overview-account-strip", overview)
+        self.assertIn('<details class="overview-view-account">', overview)
+        self.assertNotIn('<details class="overview-view-account" open>', overview)
+        self.assertIn('class="overview-view-link"', overview)
+        self.assertIn('target="_blank" rel="noopener noreferrer">跳转链接</a>', overview)
+        self.assertIn('<span>链接</span></div>', overview)
         self.assertNotIn("data-dashboard-mode", overview)
         self.assertNotIn("analyticsView.render(host, { embedded: true })", overview)
         self.assertIn('Object.freeze({ key: "drafts", label: "草稿箱", shortLabel: "草稿箱" })', assets)
@@ -1306,14 +1364,12 @@ console.log(JSON.stringify({
         self.assertNotIn("preserveManualStyle", main)
         self.assertNotIn('remote.deleteDoc("accounts"', main)
         self.assertIn("styleEditedAt: isSupplierManager ? (editing?.styleEditedAt || Date.now()) : Date.now()", dialog)
-        self.assertIn('const APP_BUILD_ID = "20260810-v1413-runtime-finalization-1"', main)
-        self.assertIn('js/main.js?v=20260810-v1413-runtime-finalization-1', index)
-        self.assertIn('id = "topSyncAnalytics"', main)
-        self.assertIn("syncHomepageAnalytics", main)
-        self.assertIn("refreshAllAnalytics", main)
-        self.assertIn("if (!syncDataBtn && actions) {", main)
-        self.assertNotIn("if (!syncDataBtn && actions && newAccBtn) {", main)
-        self.assertIn('syncDataBtn.hidden = !(zone === "overview" && teamManager)', main)
+        self.assertIn('const APP_BUILD_ID = "20260810-v1420-generation-resilience-1"', main)
+        self.assertIn('js/main.js?v=20260810-v1420-generation-resilience-1', index)
+        self.assertIn('const syncDataBtn = $("#topSyncAnalytics")', main)
+        self.assertIn("syncDataBtn?.remove();", main)
+        self.assertNotIn("syncHomepageAnalytics", main)
+        self.assertNotIn("refreshAllAnalytics", main)
 
     def test_batch_reference_images_are_explicit_and_title_changes_refresh_copy(self):
         orchestrator = (APP_DIR / "js/agent/orchestrator.js").read_text(encoding="utf-8")
@@ -1391,6 +1447,26 @@ console.log(JSON.stringify(state.jobs.map(job => job.refAssetIds)));
         self.assertIn("PRODUCT_CATALOG_SEED", ai)
         self.assertIn("relatedProducts", ai)
         self.assertIn("account?.styleProfile || account?.lockedStyle", ai)
+
+    def test_v1418_account_data_supplier_filters_and_baige_catalog_contract(self):
+        main = (APP_DIR / "js/main.js").read_text(encoding="utf-8")
+        home = (APP_DIR / "js/views/home.js").read_text(encoding="utf-8")
+        delivery = (APP_DIR / "js/views/deliveryView.js").read_text(encoding="utf-8")
+        catalog = (APP_DIR / "js/data/productCatalogSeed.js").read_text(encoding="utf-8")
+
+        self.assertIn('label: "账号数据", zone: "overview"', main)
+        self.assertIn('title: "数据看板", zone: "overview"', main)
+        self.assertGreaterEqual(main.count('key: "account-data-dashboard"'), 2)
+        self.assertIn('title: "所有账号"', main)
+        self.assertIn('<span>账号数据</span>', home)
+        self.assertIn('go("overview")', home)
+        self.assertIn("deliveryFiltersByScope", delivery)
+        self.assertIn("persistDeliveryFilters();", delivery)
+        self.assertIn("创作 ${esc(dateTimeFromTime", delivery)
+        self.assertIn('PRODUCT_CATALOG_VERSION = "20260810-product-db-v5-baige-6-full-infra"', catalog)
+        self.assertIn("LoongForge 多模态训练提速 45%", catalog)
+        self.assertIn("RealOmni-Open DataSet 超过 1 万小时", catalog)
+        self.assertNotIn("不得将待确定的 LoongForge 写成已发布能力", catalog)
 
 
 if __name__ == "__main__":

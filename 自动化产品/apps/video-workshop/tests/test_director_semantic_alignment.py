@@ -18,6 +18,25 @@ from app import main, media, pipeline, providers
 
 
 class DirectorSemanticAlignmentTests(unittest.IsolatedAsyncioTestCase):
+    def test_director_question_is_not_cut_inside_a_complete_reply(self):
+        question = (
+            "你好！欢迎来到星阵视频工坊。\n\n"
+            "请告诉我选题、口播文本或口播音频。\n\n"
+            "我可以为你自主完成视频结构、口播规划、分镜设计、画面生成与成片组装，"
+            "也可以基于你上传的图片、视频或音频保持品牌语义一致。\n\n"
+            "只要给出一个可执行的主题，其他创作细节可以由导演自主决定，"
+            "不需要你先填完所有选项。\n\n"
+            "如果你已经有口播文本，我会保留原文并按语义规划画面；如果只有一个选题，"
+            "我会自动补齐适合平台的叙事节奏、画面层次和声音设计，直接开始制作。\n\n"
+            "有真实产品图、品牌标志或现有素材时，也可以一起上传，我会将它们放在语义最相关的镜头中。\n\n"
+            "🎯 目标受众：年轻用户\n"
+            "🎨 风格调性：温暖、专业\n"
+            "⏱️ 时长：30 秒左右"
+        )
+        self.assertGreater(len(question), 240)
+        self.assertEqual(question, providers._complete_director_question(question))
+        self.assertTrue(providers._complete_director_question(question).endswith("30 秒左右"))
+
     def test_static_timeline_keeps_semantic_weights_without_forcing_five_seconds(self):
         timeline, _ = media.build_scene_timeline([2, 8], 24)
         self.assertGreater(

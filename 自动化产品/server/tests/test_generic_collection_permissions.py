@@ -23,6 +23,32 @@ def stored_doc(store, collection, doc_id):
 
 
 class GenericCollectionPermissionTest(unittest.TestCase):
+    def test_session_creator_can_delete_legacy_owner_drift_and_batch_is_detached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = load_isolated_store(tmp)
+            store.upsert_member_collection("editor-a", "editor", "sessions", [{
+                "id": "session-a", "title": "本人会话", "updatedAt": 100,
+            }])
+            store.upsert_member_collection("editor-a", "editor", "batches", [{
+                "id": "batch-a", "sessionId": "session-a", "topic": "保留批次", "updatedAt": 110,
+            }])
+            # Reproduce the historical mismatch: docs drifted, but the immutable
+            # resource registry still identifies the exact original creator.
+            conn = store._connect()
+            try:
+                conn.execute(
+                    "UPDATE docs SET owner_id='legacy-owner' WHERE collection='sessions' AND id='session-a'"
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            store.delete_member_doc("sessions", "session-a", "editor-a", "editor")
+            self.assertIsNone(stored_doc(store, "sessions", "session-a"))
+            batch = stored_doc(store, "batches", "batch-a")[1]
+            self.assertEqual(batch["sessionId"], "")
+            self.assertEqual(batch["archivedSessionId"], "session-a")
+            self.assertGreater(batch["sessionDeletedAt"], 0)
+
     def test_generic_api_returns_403_for_editor_account_write_and_allows_admin(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = load_isolated_store(tmp)

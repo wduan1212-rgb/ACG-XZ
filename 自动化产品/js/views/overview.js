@@ -4,57 +4,23 @@ import { $, $$, esc, gradFor, timeAgo } from "../core/util.js";
 import { icon, agentAvatar } from "../ui/icons.js";
 import { state, save, accountById, ownedBy, assetById, refreshDeliveryMetrics } from "../core/store.js";
 import { platChip, groupOf } from "../domain/accounts.js";
-import { STAGES, statusPill } from "../domain/productions.js?v=20260810-v1413-runtime-finalization-1";
-import { deliveredAssets } from "../domain/delivery.js?v=20260810-v1413-runtime-finalization-1";
+import { STAGES, statusPill } from "../domain/productions.js?v=20260810-v1420-generation-resilience-1";
+import { deliveredAssets } from "../domain/delivery.js?v=20260810-v1420-generation-resilience-1";
 import { analyticsRows, analyticsSummary } from "../domain/analytics.js?v=20260727-v118-7";
 import { urlFor } from "../domain/assets.js";
-import { AI } from "../api/ai.js?v=20260810-v1413-runtime-finalization-1";
+import { AI } from "../api/ai.js?v=20260810-v1420-generation-resilience-1";
 import { LLM_CONFIG } from "../api/llm.js?v=20260727-v118-7";
-import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260810-v1413-runtime-finalization-1";
-import { openDeliveryRemarks } from "./deliveryView.js?v=20260810-v1413-runtime-finalization-1";
-import { emptyState, openModal } from "../ui/components.js?v=20260810-v1413-runtime-finalization-1";
+import { openProductionDrawer, stagePage } from "./prodDrawer.js?v=20260810-v1420-generation-resilience-1";
+import { openDeliveryRemarks } from "./deliveryView.js?v=20260810-v1420-generation-resilience-1";
+import { emptyState, openModal } from "../ui/components.js?v=20260810-v1420-generation-resilience-1";
 import { go } from "../core/router.js";
-import { renderSupplierOverview } from "./supplierViews.js?v=20260810-v1413-runtime-finalization-1";
+import { renderSupplierOverview } from "./supplierViews.js?v=20260810-v1420-generation-resilience-1";
 
 /* ---------- 数据问答（会话仅存内存，问的是库里的真实数据） ---------- */
 let chatLog = [];   // {role:"user"|"agent", text}
 let chatBusy = false;
-let accountCarouselPage = 0;
-let accountCarouselTimer = null;
-let accountCarouselTransitionTimer = null;
 let overviewTrendWindow = { kind: "days", days: 7, start: "", end: "" };
 let overviewMetricPollTimer = 0;
-
-function overviewAccountPerformance(accounts = [], analyticsAccounts = []) {
-  const snapshotsByName = new Map(
-    analyticsAccounts
-      .filter(Boolean)
-      .map(item => [String(item.name || "").trim(), item])
-      .filter(([name]) => name)
-  );
-  const numberOrZero = value => Math.max(0, Number(value || 0) || 0);
-  return accounts
-    .filter(Boolean)
-    .map(account => {
-      const name = String(account.name || "未命名账号").trim() || "未命名账号";
-      const snapshot = snapshotsByName.get(name) || null;
-      return {
-        ...(snapshot || {}),
-        id: account.id || "",
-        accountId: account.id || "",
-        name,
-        count: snapshot
-          ? numberOrZero(snapshot.count)
-          : numberOrZero(account.count ?? account.monthlyDone ?? 0),
-        engagement: snapshot ? numberOrZero(snapshot.engagement) : 0,
-        hasSnapshot: Boolean(snapshot),
-      };
-    })
-    .sort((a, b) => Number(b.hasSnapshot) - Number(a.hasSnapshot)
-      || numberOrZero(b.score) - numberOrZero(a.score)
-      || numberOrZero(b.count) - numberOrZero(a.count)
-      || a.name.localeCompare(b.name, "zh-CN"));
-}
 
 const dayKey = ts => { const d = new Date(ts); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 function overviewTrendGeometry(pointCount = 0, {
@@ -298,6 +264,9 @@ export const overviewView = {
     // 永远不拆分、不回写单条内容；接口快照只补充链接和互动信息。
     const viewRows = delivered.map(({ asset, acc }) => {
       const analyticsRow = analyticsByAssetId.get(asset.id);
+      const production = state.productions.find(item => item.id === asset.productionId);
+      const creatorId = asset.byMemberId || production?.ownerId || "";
+      const creator = state.members.find(item => item.id === creatorId)?.name || asset.byMemberName || "未记录";
       const manualViews = Math.max(0, Number(asset.viewCount || 0));
       const manualExposure = Math.max(0, Number(asset.exposureCount || 0));
       const manualUpdatedAt = Number(asset.viewsUpdatedAt || 0);
@@ -313,6 +282,7 @@ export const overviewView = {
           publishedAt: asset.publishedAt || asset.publishedUpdatedAt || 0
         } : null),
         latest: analyticsRow?.latest || null,
+        creator,
         views: manualViews,
         exposure: manualExposure,
         updatedAt: Math.max(
@@ -365,10 +335,23 @@ export const overviewView = {
     const totalViews = accountViewRows.reduce((sum, row) => sum + row.views, 0);
     const totalExposure = accountViewRows.reduce((sum, row) => sum + row.exposure, 0);
     const totalEngagement = Number(analytics.totalEngagement || 0);
+    const platformViewTotals = viewRows.reduce((totals, row) => {
+      const platform = row.acc?.platform || "未知平台";
+      totals[platform] = (totals[platform] || 0) + Math.max(0, Number(row.views || 0));
+      return totals;
+    }, {});
+    const xhsViews = Number(platformViewTotals["小红书"] || 0);
+    const videoViews = Number(platformViewTotals["视频号"] || 0);
+    const trackedPlatformViews = Math.max(0, xhsViews + videoViews);
+    const xhsViewShare = Math.round(xhsViews / Math.max(1, trackedPlatformViews) * 100);
     const fmt = value => Number(value || 0).toLocaleString("zh-CN");
     const memberId = state.ui.currentMemberId || "";
     const remarked = delivered.filter(({ asset }) => (asset.remarks || []).length);
     const unreadRemarks = remarked.filter(({ asset }) => Number(asset.latestRemarkAt || 0) > Number(asset.remarkReadAt?.[memberId] || 0));
+    const remarkPreview = remarked
+      .slice()
+      .sort((a, b) => Number(b.asset?.latestRemarkAt || b.asset?.createdAt || 0) - Number(a.asset?.latestRemarkAt || a.asset?.createdAt || 0))
+      .slice(0, 3);
 
     const stat = (key, label, n, sub, accent = "") => `
       <button class="ov-stat card ${accent}" data-ov-stat="${key}">
@@ -455,19 +438,6 @@ export const overviewView = {
     const publishedTimestamp = ({ asset }) => asset?.publishedUpdatedAt || asset?.publishedAt || asset?.deliveredAt || asset?.createdAt || 0;
     let trendModel = overviewTrendModel(published, { timestamp: publishedTimestamp });
     let { recentDays, trendPoints, trendCurve, trendChartWidth, trendArea } = trendModel;
-    const accountPerformance = overviewAccountPerformance(accounts, analytics.accounts);
-    const accountPageSize = 16;
-    const accountPages = Array.from(
-      { length: Math.max(1, Math.ceil(accountPerformance.length / accountPageSize)) },
-      (_, page) => accountPerformance.slice(page * accountPageSize, page * accountPageSize + accountPageSize)
-    );
-    accountCarouselPage %= accountPages.length;
-    const accountAvatarHtml = item => {
-      const account = accounts.find(candidate => candidate.id === item.accountId) || accounts.find(candidate => candidate.name === item.name);
-      const avatarUrl = account?.avatarAssetId ? urlFor(account.avatarAssetId) : (account?.avatarUrl || "");
-      return `<span class="overview-account-avatar">${avatarUrl ? `<img src="${esc(avatarUrl)}" alt=""/>` : `<i>${esc(String(item.name || "账").trim().slice(0, 1) || "账")}</i>`}</span>`;
-    };
-    const accountPageHtml = page => (accountPages[page] || []).map((item, index) => `<button data-overview-account="${esc(item.name)}" data-overview-account-id="${esc(item.accountId || "")}">${accountAvatarHtml(item)}<span><b><i>${page * accountPageSize + index + 1}</i>${esc(item.name)}</b><em>${item.count || 0} 条 · ${fmt(item.engagement || 0)} 互动</em></span></button>`).join("") || `<p>暂无账号数据</p>`;
 
     let refreshOverviewTrend = () => render(root);
     const openDataDetail = (key, accountName = "", initialRecentFilter = null, accountId = "", platform = "") => {
@@ -547,7 +517,8 @@ export const overviewView = {
         rows = `<div data-recent-detail-content>${recentDetailHtml()}</div>`;
       } else if (key === "views") {
         const platforms = [...new Set(accountViewRows.map(row => row.platform))];
-        viewFilter = { platform: "all", period: "all", start: "", end: "" };
+        const creators = [...new Set(viewRows.map(row => row.creator).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
+        viewFilter = { platform: platform || "all", account: "all", creator: "all", period: "all", start: "", end: "", minViews: "", maxViews: "" };
         viewDetailHtml = () => {
           const now = Date.now();
           const contentMatchesPeriod = item => {
@@ -558,10 +529,19 @@ export const overviewView = {
             if (viewFilter.period === "custom") return (!viewFilter.start || date >= viewFilter.start) && (!viewFilter.end || date <= viewFilter.end);
             return true;
           };
+          const contentMatchesViews = item => {
+            const views = Math.max(0, Number(item.views || 0));
+            const min = viewFilter.minViews === "" ? null : Math.max(0, Number(viewFilter.minViews || 0));
+            const max = viewFilter.maxViews === "" ? null : Math.max(0, Number(viewFilter.maxViews || 0));
+            return (min == null || views >= min) && (max == null || views <= max);
+          };
           const scoped = accountViewRows
             .filter(row => viewFilter.platform === "all" || row.platform === viewFilter.platform)
+            .filter(row => viewFilter.account === "all" || row.acc?.id === viewFilter.account)
             .map(row => {
-              const rows = row.rows.filter(contentMatchesPeriod);
+              const rows = row.rows.filter(item => contentMatchesPeriod(item)
+                && contentMatchesViews(item)
+                && (viewFilter.creator === "all" || item.creator === viewFilter.creator));
               return {
                 ...row,
                 rows,
@@ -574,29 +554,44 @@ export const overviewView = {
             .sort((a, b) => b.views - a.views || b.exposure - a.exposure || b.updatedAt - a.updatedAt || a.acc.name.localeCompare(b.acc.name, "zh-CN"));
           const total = scoped.reduce((sum, row) => sum + row.views, 0);
           const exposureTotal = scoped.reduce((sum, row) => sum + row.exposure, 0);
+          const engagementTotal = scoped.reduce((sum, row) => sum + row.rows.reduce((rowSum, item) => {
+            const metrics = item.latest?.metrics || {};
+            return rowSum + Number(metrics.likes || 0) + Number(metrics.collects || 0) + Number(metrics.comments || 0) + Number(metrics.shares || 0);
+          }, 0), 0);
           const filterButton = (kind, value, label) => `<button type="button" class="overview-detail-filter${viewFilter[kind] === value ? " is-active" : ""}" data-view-filter-kind="${esc(kind)}" data-view-filter-value="${esc(value)}">${esc(label)}</button>`;
           const platformButtons = [filterButton("platform", "all", "全部平台"), ...platforms.map(platformName => filterButton("platform", platformName, platformName))].join("");
           const periodButtons = [filterButton("period", "all", "全部时间"), filterButton("period", "7", "近 7 天"), filterButton("period", "30", "近 30 天")].join("");
+          const accountOptions = accounts.map(account => `<option value="${esc(account.id)}" ${viewFilter.account === account.id ? "selected" : ""}>${esc(account.name || "未命名账号")}</option>`).join("");
+          const creatorOptions = creators.map(name => `<option value="${esc(name)}" ${viewFilter.creator === name ? "selected" : ""}>${esc(name)}</option>`).join("");
           const list = scoped.map(row => {
             const updated = row.updatedAt ? timeAgo(row.updatedAt) : "暂无更新时间";
             const deliveries = row.rows
               .slice()
               .sort((a, b) => b.views - a.views || b.exposure - a.exposure || b.updatedAt - a.updatedAt)
-              .map(item => `<div class="overview-view-delivery">
-                <span class="overview-view-content"><b>${esc(item.asset?.title || item.asset?.name || "未命名交付")}</b><em>${esc(item.sourceLabel)} · ${item.updatedAt ? esc(timeAgo(item.updatedAt)) : "暂无更新时间"}</em></span>
+              .map(item => {
+                const metrics = item.latest?.metrics || {};
+                const publishedUrl = String(item.link?.url || item.asset?.publishedUrl || "").trim();
+                return `<div class="overview-view-delivery is-combined">
+                <span class="overview-view-content"><b>${esc(item.asset?.title || item.asset?.name || "未命名交付")}</b><em>${esc(row.acc?.name || "未命名账号")} · 创作人 ${esc(item.creator)} · ${esc(item.sourceLabel)} · ${item.updatedAt ? esc(timeAgo(item.updatedAt)) : "暂无更新时间"}</em></span>
                 <span class="overview-view-value is-exposure"><em>曝光量</em><strong>${fmt(item.exposure)}</strong></span>
                 <span class="overview-view-value is-views"><em>播放量</em><strong>${fmt(item.views)}</strong></span>
-              </div>`).join("");
-            return `<article class="overview-view-account">
-              <header><span class="overview-view-account-name"><b>${esc(row.acc?.name || "未命名账号")}</b><em>${esc(row.platform)} · ${updated} · ${row.rows.length} 条内容</em></span><span class="overview-view-account-totals"><span><em>曝光合计</em><strong>${fmt(row.exposure)}</strong></span><span><em>播放合计</em><strong>${fmt(row.views)}</strong></span></span>${row.acc?.homepageUrl ? `<a class="btn ghost sm" href="${esc(row.acc.homepageUrl)}" target="_blank" rel="noopener noreferrer">账号主页</a>` : ""}</header>
-              <div class="overview-view-columns" aria-hidden="true"><span>单条内容</span><span>曝光量</span><span>播放量</span></div>
+                <span class="overview-view-value"><em>点赞</em><strong>${fmt(metrics.likes)}</strong></span>
+                <span class="overview-view-value"><em>收藏</em><strong>${fmt(metrics.collects)}</strong></span>
+                <span class="overview-view-value"><em>评论</em><strong>${fmt(metrics.comments)}</strong></span>
+                <span class="overview-view-value"><em>分享</em><strong>${fmt(metrics.shares)}</strong></span>
+                ${publishedUrl ? `<a class="overview-view-link" href="${esc(publishedUrl)}" target="_blank" rel="noopener noreferrer">跳转链接</a>` : `<span class="overview-view-link is-empty">—</span>`}
+              </div>`;
+              }).join("");
+            return `<details class="overview-view-account">
+              <summary><span class="overview-view-account-name"><b>${esc(row.acc?.name || "未命名账号")}</b><em>${esc(row.platform)} · ${updated} · ${row.rows.length} 条内容</em></span><span class="overview-view-account-totals"><span><em>曝光合计</em><strong>${fmt(row.exposure)}</strong></span><span><em>播放合计</em><strong>${fmt(row.views)}</strong></span></span><span class="overview-view-account-chevron">${icon("chevronDown", 14)}</span></summary>
+              <div class="overview-view-columns is-combined" aria-hidden="true"><span>内容、账号与创作人</span><span>曝光</span><span>播放</span><span>赞</span><span>藏</span><span>评</span><span>分享</span><span>链接</span></div>
               <div class="overview-view-deliveries">${deliveries || `<div class="overview-task-empty">暂无单条播放量</div>`}</div>
-            </article>`;
+            </details>`;
           }).join("");
           const scopeLabel = viewFilter.period === "all" ? "全部时间" : viewFilter.period === "custom" ? `${viewFilter.start || "开始"} 至 ${viewFilter.end || "今天"}` : `近 ${viewFilter.period} 天`;
-          return `<section class="overview-view-filterbar"><div class="overview-view-filter-group"><b>平台</b><span class="overview-detail-filter-tags">${platformButtons}</span></div><div class="overview-view-filter-group"><b>更新时间</b><span class="overview-detail-filter-tags">${periodButtons}</span></div><div class="overview-detail-custom-range overview-view-custom-range"><b>自定义</b><label>开始<input type="date" data-view-custom-date="start" value="${esc(viewFilter.start)}"/></label><label>结束<input type="date" data-view-custom-date="end" value="${esc(viewFilter.end)}"/></label><button class="overview-detail-filter${viewFilter.period === "custom" ? " is-active" : ""}" type="button" data-view-filter-kind="period" data-view-filter-value="custom">应用</button></div></section><div class="overview-detail-summary"><span>${scopeLabel} · ${scoped.length} 个账号</span><strong>累计曝光 ${fmt(exposureTotal)} · 累计播放 ${fmt(total)}</strong></div><div class="overview-task-list overview-view-list">${list || `<div class="overview-task-empty">该筛选范围没有曝光或播放数据</div>`}</div>`;
+          return `<section class="overview-view-filterbar"><div class="overview-view-filter-group"><b>平台</b><span class="overview-detail-filter-tags">${platformButtons}</span></div><div class="overview-view-filter-group"><b>更新时间</b><span class="overview-detail-filter-tags">${periodButtons}</span></div><div class="overview-view-filter-selects"><label>账号<select data-view-select="account"><option value="all">全部账号</option>${accountOptions}</select></label><label>创作人<select data-view-select="creator"><option value="all">全部创作人</option>${creatorOptions}</select></label><label>播放量<input type="number" min="0" inputmode="numeric" placeholder="最低" data-view-number="minViews" value="${esc(viewFilter.minViews)}"/></label><i>—</i><label><span class="sr-only">最高播放量</span><input type="number" min="0" inputmode="numeric" placeholder="最高" data-view-number="maxViews" value="${esc(viewFilter.maxViews)}"/></label><button class="overview-detail-filter" type="button" data-apply-view-range>筛选</button></div><div class="overview-detail-custom-range overview-view-custom-range"><b>自定义</b><label>开始<input type="date" data-view-custom-date="start" value="${esc(viewFilter.start)}"/></label><label>结束<input type="date" data-view-custom-date="end" value="${esc(viewFilter.end)}"/></label><button class="overview-detail-filter${viewFilter.period === "custom" ? " is-active" : ""}" type="button" data-view-filter-kind="period" data-view-filter-value="custom">应用</button></div></section><div class="overview-detail-summary"><span>${scopeLabel} · ${scoped.length} 个账号</span><strong>累计曝光 ${fmt(exposureTotal)} · 播放 ${fmt(total)} · 互动 ${fmt(engagementTotal)}</strong></div><div class="overview-task-list overview-view-list">${list || `<div class="overview-task-empty">该筛选范围没有内容数据</div>`}</div>`;
         };
-        title = `内容曝光与播放 · ${accountViewRows.length} 个账号`;
+        title = `内容数据 · ${accountViewRows.length} 个账号`;
         rows = `<div data-view-detail-content>${viewDetailHtml()}</div>`;
       } else if (key === "links") {
         title = `回传链接 · ${links.length} 条`;
@@ -649,7 +644,21 @@ export const overviewView = {
           panel.classList.add("overview-task-panel");
           if (key === "views") panel.classList.add("overview-views-panel");
           if (key === "interactions" || accountName) panel.classList.add("overview-interactions-panel");
+          let viewNumberFilterTimer = 0;
           panel.addEventListener("click", event => {
+            const applyViewRange = event.target.closest("[data-apply-view-range]");
+            if (key === "views" && applyViewRange && viewFilter && viewDetailHtml) {
+              const minInput = panel.querySelector('[data-view-number="minViews"]');
+              const maxInput = panel.querySelector('[data-view-number="maxViews"]');
+              viewFilter = {
+                ...viewFilter,
+                minViews: minInput?.value === "" ? "" : String(Math.max(0, Number(minInput?.value || 0))),
+                maxViews: maxInput?.value === "" ? "" : String(Math.max(0, Number(maxInput?.value || 0))),
+              };
+              const target = panel.querySelector("[data-view-detail-content]");
+              if (target) target.innerHTML = viewDetailHtml();
+              return;
+            }
             const viewFilterButton = event.target.closest("[data-view-filter-kind]");
             if (key === "views" && viewFilterButton && viewFilter && viewDetailHtml) {
               viewFilter = { ...viewFilter, [viewFilterButton.dataset.viewFilterKind]: viewFilterButton.dataset.viewFilterValue || "all" };
@@ -684,7 +693,36 @@ export const overviewView = {
               refreshOverviewTrend();
             }
           });
+          panel.addEventListener("input", event => {
+            const viewNumber = event.target.closest("[data-view-number]");
+            if (key !== "views" || !viewNumber || !viewFilter || !viewDetailHtml) return;
+            viewFilter = {
+              ...viewFilter,
+              [viewNumber.dataset.viewNumber]: viewNumber.value === "" ? "" : String(Math.max(0, Number(viewNumber.value || 0))),
+            };
+            window.clearTimeout(viewNumberFilterTimer);
+            viewNumberFilterTimer = window.setTimeout(() => {
+              const target = panel.querySelector("[data-view-detail-content]");
+              if (target) target.innerHTML = viewDetailHtml();
+            }, 220);
+          });
           panel.addEventListener("change", event => {
+            const viewSelect = event.target.closest("[data-view-select]");
+            if (key === "views" && viewSelect && viewFilter && viewDetailHtml) {
+              viewFilter = { ...viewFilter, [viewSelect.dataset.viewSelect]: viewSelect.value || "all" };
+              const target = panel.querySelector("[data-view-detail-content]");
+              if (target) target.innerHTML = viewDetailHtml();
+              return;
+            }
+            const viewNumber = event.target.closest("[data-view-number]");
+            if (key === "views" && viewNumber && viewFilter && viewDetailHtml) {
+              window.clearTimeout(viewNumberFilterTimer);
+              const value = viewNumber.value === "" ? "" : String(Math.max(0, Number(viewNumber.value || 0)));
+              viewFilter = { ...viewFilter, [viewNumber.dataset.viewNumber]: value };
+              const target = panel.querySelector("[data-view-detail-content]");
+              if (target) target.innerHTML = viewDetailHtml();
+              return;
+            }
             const viewDate = event.target.closest("[data-view-custom-date]");
             if (key === "views" && viewDate && viewFilter && viewDetailHtml) {
               viewFilter = { ...viewFilter, [viewDate.dataset.viewCustomDate]: viewDate.value };
@@ -705,19 +743,21 @@ export const overviewView = {
     root.innerHTML = `<div class="overview overview-dashboard overview-integrated">
       <div class="overview-dashboard-layout">
         <main class="overview-dashboard-main">
-          <section class="overview-action-grid" aria-label="关键指标">
-            <button class="overview-action-card" data-overview-detail="views"><span class="overview-action-icon is-views">${icon("eye", 16)}</span><div><b>总播放量</b><em>${accountViewRows.length} 个账号累计</em></div><strong>${fmt(totalViews)}</strong></button>
-            <button class="overview-action-card" data-overview-detail="interactions"><span class="overview-action-icon is-pulse">${icon("pulse", 16)}</span><div><b>互动构成</b><em>逐条查看赞、藏、评与播放</em></div><strong>${fmt(totalEngagement)}</strong></button>
-            <button class="overview-action-card" data-overview-detail="remarks"><span class="overview-action-icon is-note">${icon("fileText", 16)}</span><div><b>发布沟通</b><em>${unreadRemarks.length} 条有未读消息</em></div><strong>${remarked.length}</strong></button>
-          </section>
-          <section class="overview-viz-grid">
-            <article class="overview-viz-card overview-donut-card" aria-label="发布分布，悬停或聚焦扇区查看各平台发布数量，点击查看对应账号明细">
-              <header><b>发布分布</b><em>${published.length} 条发布</em></header>
-              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="overview-donut-track" cx="70" cy="70" r="51" pathLength="100"/><circle class="overview-donut-segment is-xhs" cx="70" cy="70" r="51" pathLength="100" style="--segment:${xhsShare};--offset:0" data-overview-detail="publishedPlatforms" data-overview-platform="小红书" data-chart-tip="${esc(publishedXhs.tooltip)}" tabindex="0" role="button" aria-label="小红书 ${xhsCount} 条发布，查看小红书发布明细"/><circle class="overview-donut-segment is-video" cx="70" cy="70" r="51" pathLength="100" style="--segment:${100 - xhsShare};--offset:${-xhsShare}" data-overview-detail="publishedPlatforms" data-overview-platform="视频号" data-chart-tip="${esc(publishedVideo.tooltip)}" tabindex="0" role="button" aria-label="视频号 ${videoCount} 条发布，查看视频号发布明细"/></svg><i><b>${published.length}</b><em>已发布</em></i></span></div>
+          <section class="overview-summary-grid" aria-label="账号数据概览">
+            <article class="overview-viz-card overview-donut-card" aria-label="播放量分布，点击查看逐条内容数据">
+              <header><b>播放量分布</b><em>${accountViewRows.length} 个账号</em></header>
+              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsViewShare}%"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="overview-donut-track" cx="70" cy="70" r="51" pathLength="100"/><circle class="overview-donut-segment is-xhs" cx="70" cy="70" r="51" pathLength="100" style="--segment:${xhsViewShare};--offset:0" data-overview-detail="views" data-overview-platform="小红书" data-chart-tip="小红书播放 ${fmt(xhsViews)}" tabindex="0" role="button" aria-label="小红书播放 ${fmt(xhsViews)}，查看内容数据"/><circle class="overview-donut-segment is-video" cx="70" cy="70" r="51" pathLength="100" style="--segment:${100 - xhsViewShare};--offset:${-xhsViewShare}" data-overview-detail="views" data-overview-platform="视频号" data-chart-tip="视频号播放 ${fmt(videoViews)}" tabindex="0" role="button" aria-label="视频号播放 ${fmt(videoViews)}，查看内容数据"/></svg><button class="overview-donut-center" type="button" data-overview-detail="views"><b>${fmt(totalViews)}</b><em>总播放</em></button></span></div>
             </article>
-            <article class="overview-viz-card overview-trend-card">${overviewTrendCardContent(trendModel)}</article>
+            <article class="overview-viz-card overview-donut-card" aria-label="发布量分布，悬停或聚焦扇区查看各平台发布数量，点击查看对应账号明细">
+              <header><b>发布量分布</b><em>${published.length} 条发布</em></header>
+              <div class="overview-donut-wrap"><span class="overview-donut" style="--share:${xhsShare}%"><svg viewBox="0 0 140 140" aria-hidden="true"><circle class="overview-donut-track" cx="70" cy="70" r="51" pathLength="100"/><circle class="overview-donut-segment is-xhs" cx="70" cy="70" r="51" pathLength="100" style="--segment:${xhsShare};--offset:0" data-overview-detail="publishedPlatforms" data-overview-platform="小红书" data-chart-tip="${esc(publishedXhs.tooltip)}" tabindex="0" role="button" aria-label="小红书 ${xhsCount} 条发布，查看小红书发布明细"/><circle class="overview-donut-segment is-video" cx="70" cy="70" r="51" pathLength="100" style="--segment:${100 - xhsShare};--offset:${-xhsShare}" data-overview-detail="publishedPlatforms" data-overview-platform="视频号" data-chart-tip="${esc(publishedVideo.tooltip)}" tabindex="0" role="button" aria-label="视频号 ${videoCount} 条发布，查看视频号发布明细"/></svg><button class="overview-donut-center" type="button" data-overview-detail="publishedPlatforms"><b>${published.length}</b><em>已发布</em></button></span></div>
+            </article>
+            <article class="overview-viz-card overview-remark-preview">
+              <header><span><b>发布沟通</b><em>${unreadRemarks.length} 条未读 · 共 ${remarked.length} 条</em></span><button type="button" data-overview-detail="remarks">查看全部</button></header>
+              <div class="overview-remark-preview-list">${remarkPreview.map(({ asset, acc }) => `<button type="button" data-overview-detail="remarks"><span><b>${esc(asset.title || asset.name || "未命名交付")}</b><em>${esc(acc?.name || "未命名账号")} · ${(asset.remarks || []).length} 条消息</em></span><time>${esc(timeAgo(asset.latestRemarkAt || asset.createdAt))}</time></button>`).join("") || `<div class="overview-remark-empty">暂无发布沟通</div>`}</div>
+            </article>
           </section>
-          <section class="overview-account-strip"><header><b>账号表现</b><em>${accountPerformance.length > accountPageSize ? "每 4 秒切换下一组账号" : "点击查看逐条数据"}</em></header><div class="overview-account-viewport" data-account-carousel><div class="overview-account-page">${accountPageHtml(accountCarouselPage)}</div></div></section>
+          <article class="overview-viz-card overview-trend-card">${overviewTrendCardContent(trendModel)}</article>
         </main>
         <aside class="overview-dashboard-assistant"><section class="ov-chat" id="ovChat"><div class="ovc-head"><span class="ovc-ava">${agentAvatar(24)}</span><div><b>星阵数据助手</b><em>独立问答区 · 只读真实数据</em></div></div><div class="ovc-msgs" id="ovcMsgs"></div><div class="ovc-input"><input id="ovcInput" name="overviewDataQuestion" autocomplete="off" aria-label="向数据助手提问" placeholder="问问数据：昨天产出多少素材？" /><button class="ovc-send" id="ovcSend" type="button" title="发送" aria-label="发送数据问题">${icon("send", 15)}</button></div></section></aside>
       </div>
@@ -737,8 +777,6 @@ export const overviewView = {
         });
       }
     });
-    const wireAccountButtons = host => host.querySelectorAll("[data-overview-account]").forEach(button => button.addEventListener("click", () => openDataDetail("interactions", button.dataset.overviewAccount, null, button.dataset.overviewAccountId || "")));
-    wireAccountButtons(root);
     const chartTooltip = $("#overviewChartTooltip", root);
     const hideChartTooltip = () => chartTooltip?.classList.remove("is-visible");
     const showChartTooltip = target => {
@@ -787,33 +825,8 @@ export const overviewView = {
     };
     wireOverviewTrend();
 
-    window.clearInterval(accountCarouselTimer);
-    window.clearTimeout(accountCarouselTransitionTimer);
-    accountCarouselTimer = null;
-    accountCarouselTransitionTimer = null;
-    const accountCarousel = root.querySelector("[data-account-carousel]");
-    const rotateAccounts = () => {
-      if (!accountCarousel || accountPages.length < 2) return;
-      const page = accountCarousel.querySelector(".overview-account-page");
-      if (!page) return;
-      page.classList.add("is-switching");
-      accountCarouselTransitionTimer = window.setTimeout(() => {
-        accountCarouselPage = (accountCarouselPage + 1) % accountPages.length;
-        page.innerHTML = accountPageHtml(accountCarouselPage);
-        wireAccountButtons(page);
-        page.classList.remove("is-switching");
-        accountCarouselTransitionTimer = null;
-      }, 150);
-    };
-    if (accountPages.length > 1 && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      accountCarouselTimer = window.setInterval(rotateAccounts, 4200);
-    }
     root.__viewCleanup = () => {
-      window.clearInterval(accountCarouselTimer);
-      window.clearTimeout(accountCarouselTransitionTimer);
       window.clearInterval(overviewMetricPollTimer);
-      accountCarouselTimer = null;
-      accountCarouselTransitionTimer = null;
       overviewMetricPollTimer = 0;
     };
 

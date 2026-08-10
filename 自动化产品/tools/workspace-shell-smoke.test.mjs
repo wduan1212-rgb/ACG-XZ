@@ -235,12 +235,10 @@ test("topbar business actions render inside the nested action dock while the leg
   );
 });
 
-test("workspace switcher exposes voice generation without rendering gray item hints", () => {
+test("workspace switcher folds voice generation into video workshop without gray item hints", () => {
   const items = section(mainJs, "function workspaceNavItems()", "function workspaceCurrentItem()");
-  assert.match(
-    items,
-    /\{\s*key:\s*"custom-voice",\s*label:\s*"语音生成",\s*zone:\s*"custom",\s*page:\s*"voice",\s*iconName:\s*"mic"\s*\}/,
-  );
+  assert.doesNotMatch(items, /key:\s*"custom-voice"/);
+  assert.match(items, /key:\s*"custom-video"[\s\S]*label:\s*"视频工坊"/);
 
   const switcher = section(mainJs, "function renderWorkspaceSwitcher()", "function normalizeWorkspaceProject");
   assert.match(switcher, /<span><b>\$\{esc\(item\.label\)\}<\/b><\/span>/);
@@ -248,7 +246,9 @@ test("workspace switcher exposes voice generation without rendering gray item hi
   assert.doesNotMatch(switcher, /workspace-menu-kicker/);
 
   const commands = section(mainJs, "function paletteCommands()", "async function boot()");
-  assert.match(commands, /\{\s*label:\s*"语音生成"[^}]*go\("custom",\s*"voice"\)/s);
+  assert.match(commands, /\{\s*label:\s*"视频工坊 · 语音生成"[^}]*go\("custom",\s*"video"\)/s);
+  assert.match(videoWorkshopHtml, /data-voice-rail-tab="narration"/);
+  assert.match(videoWorkshopHtml, /data-voice-rail-tab="generate"/);
 });
 
 test("voice generation moves the real voice library into the unified left context column", () => {
@@ -387,7 +387,7 @@ test("canvas embed avoids the legacy home and moves view controls into the conte
 
 test("video workshop is white, has no duplicate history rail, and exposes published counts", () => {
   assert.match(videoWorkshopHtml, /document\.documentElement\.dataset\.platformWorkspace\s*=\s*"true"/);
-  assert.match(videoWorkshopHtml, /20260810-v1413-runtime-finalization-1/);
+  assert.match(videoWorkshopHtml, /20260810-v1420-generation-resilience-1/);
   assert.doesNotMatch(videoWorkshopHtml, /20260727-v120-shell-3/);
   assert.match(
     videoWorkshopHtml,
@@ -452,6 +452,12 @@ test("video workshop is white, has no duplicate history rail, and exposes publis
     baseCss,
     /\.wsctx-video-project-shell\.is-working::after\s*\{[^}]*animation:\s*workspace-video-heatwave\s+2\.7s\s+ease-in-out\s+infinite\s*;/s,
   );
+  assert.doesNotMatch(baseCss, /\.wsctx-video-project-shell\.is-working\s*>\s*\*\s*\{/);
+  assert.match(
+    baseCss,
+    /\.wsctx-video-project-shell\.is-working\s*>\s*\.wsctx-row,[\s\S]*?\.wsctx-video-project-shell\.is-working\s*>\s*\.wsctx-row-more\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s,
+  );
+  assert.match(baseCss, /\.wsctx-row-menu\s*\{[^}]*position:\s*absolute;/s);
   const projectSetter = section(mainJs, "function setWorkspaceProjects", "async function loadWorkspaceProjects");
   assert.match(projectSetter, /const retainedItems\s*=\s*target\.items/);
   assert.match(projectSetter, /target\.items\s*=\s*\[\.\.\.newItems,\s*\.\.\.retainedItems\]/);
@@ -693,12 +699,11 @@ test("administrator settings use four isolated context routes while profile stay
   );
 });
 
-test("administrator overview sync action is created independently from the new-account button", () => {
+test("administrator overview removes the legacy manual sync action", () => {
   const renderTopbar = section(mainJs, "function renderTopbar()", "function paletteCommands()");
-  assert.match(renderTopbar, /if\s*\(!syncDataBtn\s*&&\s*actions\)\s*\{/);
-  assert.doesNotMatch(renderTopbar, /if\s*\(!syncDataBtn\s*&&\s*actions\s*&&\s*newAccBtn\)/);
-  assert.match(renderTopbar, /syncDataBtn\.hidden\s*=\s*!\(zone === "overview"\s*&&\s*teamManager\)/);
-  assert.match(renderTopbar, /const syncAnchor\s*=\s*\[newAccBtn\]/);
+  assert.match(renderTopbar, /const syncDataBtn\s*=\s*\$\("#topSyncAnalytics"\)/);
+  assert.match(renderTopbar, /syncDataBtn\?\.remove\(\)/);
+  assert.doesNotMatch(renderTopbar, /syncHomepageAnalytics|refreshAllAnalytics/);
 });
 
 test("creator and administrator account menus expose the lightweight feedback dialog", () => {
@@ -826,26 +831,26 @@ test("canvas and video switches wait for the real latest project before routing"
 test("all modified workspace-shell resources use the v141 cache marker", () => {
   assert.doesNotMatch(indexHtml, /v120-shell-3/);
   assert.doesNotMatch(mainJs, /v120-shell-3/);
-  assert.match(indexHtml, /styles\/base\.css\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(indexHtml, /styles\/components\.css\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(indexHtml, /styles\/views\.css\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(indexHtml, /styles\/agent\.css\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(indexHtml, /js\/main\.js\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260810-v1413-runtime-finalization-1"/);
-  assert.match(mainJs, /ui\/components\.js\?v=20260810-v1413-runtime-finalization-1/);
-  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260810-v1413-runtime-finalization-1"/);
+  assert.match(indexHtml, /styles\/base\.css\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(indexHtml, /styles\/components\.css\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(indexHtml, /styles\/views\.css\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(indexHtml, /styles\/agent\.css\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(indexHtml, /styles\/ui-motion\.css\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(indexHtml, /styles\/custom-creation\.css\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(indexHtml, /js\/main\.js\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/overview\.js\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/assetsView\.js\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/deliveryView\.js\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(mainJs, /from\s+"\.\/views\/customCreation\.js\?v=20260810-v1420-generation-resilience-1"/);
+  assert.match(mainJs, /ui\/components\.js\?v=20260810-v1420-generation-resilience-1/);
+  assert.match(mainJs, /from\s+"\.\/agent\/view\.js\?v=20260810-v1420-generation-resilience-1"/);
   assert.match(mainJs, /from\s+"\.\/ui\/icons\.js"/);
   assert.doesNotMatch(mainJs, /ui\/icons\.js\?v=/);
-  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js\?v=20260810-v1413-runtime-finalization-1"/);
+  assert.match(mainJs, /from\s+"\.\/domain\/delivery\.js\?v=20260810-v1420-generation-resilience-1"/);
   assert.match(mainJs, /from\s+"\.\/core\/remote\.js"/);
   assert.doesNotMatch(mainJs, /core\/remote\.js\?v=/);
-  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260810-v1413-runtime-finalization-1/);
-  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260810-v1413-runtime-finalization-1"/);
+  assert.match(mainJs, /ui\/loginBeams\.js\?v=20260810-v1420-generation-resilience-1/);
+  assert.match(mainJs, /const APP_BUILD_ID\s*=\s*"20260810-v1420-generation-resilience-1"/);
   assert.doesNotMatch(mainJs, /core\/router\.js\?v=/);
 });
 

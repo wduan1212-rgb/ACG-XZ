@@ -1078,6 +1078,30 @@ async def _download_seedance_video(
         temp_path.unlink(missing_ok=True)
 
 
+def _complete_director_question(value: Any, limit: int = 1200) -> str:
+    """Keep an ask-user response complete instead of cutting it mid-sentence.
+
+    The former 240-character slice could end inside Markdown (for example at
+    ``- ⏱️ **时``), leaving the user with a visibly unfinished answer.  The
+    director is still bounded, but only unusually long replies are shortened
+    and they are shortened at the last complete paragraph or sentence.
+    """
+
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    candidate = text[:limit].rstrip()
+    boundaries = [
+        candidate.rfind("\n\n"),
+        candidate.rfind("\n"),
+        *(candidate.rfind(mark) for mark in ("。", "！", "？", "!", "?")),
+    ]
+    boundary = max(boundaries)
+    if boundary >= max(80, int(limit * 0.6)):
+        candidate = candidate[:boundary + (0 if candidate[boundary] == "\n" else 1)].rstrip()
+    return f"{candidate}\n\n（回复较长，已保留完整语义。）"
+
+
 class MiniMaxDirector:
     def __init__(self) -> None:
         self.tools = [
@@ -2106,7 +2130,11 @@ class MiniMaxDirector:
         if not call:
             content = str(message.get("content") or "").strip()
             if content:
-                return {"action": "ask", "question": content[:240], "missing": ["模型未调用导演工具"]}
+                return {
+                    "action": "ask",
+                    "question": _complete_director_question(content),
+                    "missing": ["模型未调用导演工具"],
+                }
             raise ProviderError("MiniMax-M3 未调用导演工具")
 
         name, arguments = call
@@ -2121,7 +2149,7 @@ class MiniMaxDirector:
                 )
             return {
                 "action": "ask",
-                "question": question[:240] or "你最想让观众记住哪一句话？",
+                "question": _complete_director_question(question) or "你最想让观众记住哪一句话？",
                 "missing": arguments.get("missing") or [],
                 "suggestions": suggestions,
             }

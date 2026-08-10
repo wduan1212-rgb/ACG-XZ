@@ -140,6 +140,22 @@ class ProjectSummaryCacheTest(unittest.TestCase):
         self.assertEqual(len(parsed_payloads), 1)
         self.assertEqual(original_loads(parsed_payloads[0])["id"], "owned")
 
+    def test_running_project_keeps_one_durable_run_started_at_until_next_run(self):
+        store.save_project(project("clock", "持续计时"))
+
+        with patch.object(store, "_now", return_value="2026-08-10T10:00:01+08:00"):
+            first = store.mutate_project("clock", lambda item: item.update(status="running"))
+        with patch.object(store, "_now", return_value="2026-08-10T10:00:02+08:00"):
+            active = store.mutate_project("clock", lambda item: item.update(progress=42))
+        with patch.object(store, "_now", return_value="2026-08-10T10:00:03+08:00"):
+            store.mutate_project("clock", lambda item: item.update(status="succeeded"))
+        with patch.object(store, "_now", return_value="2026-08-10T10:00:04+08:00"):
+            restarted = store.mutate_project("clock", lambda item: item.update(status="running"))
+
+        self.assertEqual(first["runStartedAt"], "2026-08-10T10:00:01+08:00")
+        self.assertEqual(active["runStartedAt"], first["runStartedAt"])
+        self.assertEqual(restarted["runStartedAt"], "2026-08-10T10:00:04+08:00")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -84,13 +84,14 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
 
     def _add_sidecar(self, operation_id, *, usage_kind, status, provider_ref="",
                      input_tokens=0, output_tokens=0, total_tokens=0):
+        project_id = operation_id.split(":", 2)[1]
         feature = "视频工坊导演理解" if usage_kind == "llm" else "静态分镜图片生成"
         provider = "minimax" if usage_kind == "llm" else "tencent-maas"
         model = "MiniMax-M3" if usage_kind == "llm" else "image-model"
         unit_label = "次" if usage_kind == "llm" else "张"
         immutable = {
             "schemaVersion": 1, "surface": "video-workshop",
-            "projectId": "project-a", "operationId": operation_id,
+            "projectId": project_id, "operationId": operation_id,
             "usageKind": usage_kind, "feature": feature, "provider": provider,
             "model": model, "unitLabel": unit_label,
         }
@@ -307,6 +308,66 @@ class ModelUsageSettlementV2Test(unittest.TestCase):
         self.assertTrue(replay["reused"])
         self.assertEqual(0, replay["insertedRows"])
         self.assertEqual(before, logical_database_dump(store.DB_PATH))
+
+    def test_one_project_submitted_plan_closes_only_that_project(self):
+        operation_id = "video-workshop:project-b:image:submitted"
+        self._add_sidecar(operation_id, usage_kind="image", status="submitted")
+        receipt_id = self.rows[operation_id]
+        evidence = store.model_usage_settlement_v2_evidence([receipt_id])
+        row = evidence["entries"][0]
+        snapshot = current_runtime_snapshot_binding(store)
+        plan = {
+            "format": model_usage_settlement_v2.PLAN_FORMAT,
+            "databaseIdentity": evidence["databaseIdentity"],
+            "snapshotManifestSha256": snapshot["manifestSha256"],
+            "snapshotMediaInventoryDigest": snapshot["mediaInventoryDigest"],
+            "reviewedBy": "test-operator",
+            "reviewedAt": "2026-08-10T18:00:00+08:00",
+            "entries": [{
+                "receiptId": receipt_id,
+                "source": "video-workshop-sidecar",
+                "operationId": operation_id,
+                "centralReceiptSha256": row["centralReceiptSha256"],
+                "sidecarReceiptSha256": model_usage_settlement_v2.canonical_sha256(
+                    self.sidecars[operation_id]
+                ),
+                "resolution": "sidecar-submitted-indeterminate",
+                "operatorReviewed": True,
+                "reviewNote": (
+                    "Reviewed this completed project's abandoned submitted attempt; "
+                    "no provider retry or billing projection is authorized."
+                ),
+            }],
+        }
+        plan_sha256 = model_usage_settlement_v2.canonical_sha256(plan)
+
+        preview = self._apply(plan, plan_sha256, snapshot, dry_run=True)
+        self.assertEqual(1, preview["plannedRows"])
+        self.assertEqual(1, preview["unresolved"])
+
+        result = self._apply(plan, plan_sha256, snapshot)
+        self.assertTrue(result["applied"])
+        self.assertEqual(1, result["indeterminateRows"])
+        self.assertEqual(0, result["unresolved"])
+
+        with sqlite3.connect(store.DB_PATH) as conn:
+            remaining = store._model_usage_v2_unresolved_receipt_ids_locked(conn)
+            scoped = store._model_usage_v2_unresolved_receipt_ids_for_project_locked(
+                conn, "project-b",
+            )
+            stored = conn.execute(
+                "SELECT call_status,calls,total_tokens,output_units FROM "
+                "model_usage_receipts WHERE receipt_id=?",
+                (receipt_id,),
+            ).fetchone()
+        self.assertEqual(5, len(remaining))
+        self.assertEqual([], scoped)
+        self.assertEqual(("indeterminate", 0, 0, 0), stored)
+
+        replay = self._apply(plan, plan_sha256, snapshot)
+        self.assertFalse(replay["applied"])
+        self.assertTrue(replay["reused"])
+        self.assertEqual(0, replay["insertedRows"])
 
     def test_central_unknown_error_accepts_exact_5xx_status_only(self):
         self.assertTrue(store._model_usage_central_unknown_error_allowed(

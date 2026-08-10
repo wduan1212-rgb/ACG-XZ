@@ -4,17 +4,11 @@ import test from "node:test";
 
 const overviewSource = readFileSync(new URL("../js/views/overview.js", import.meta.url), "utf8");
 const viewsCss = readFileSync(new URL("../styles/views.css", import.meta.url), "utf8");
-const performanceStart = overviewSource.indexOf("function overviewAccountPerformance");
-const performanceEnd = overviewSource.indexOf("\n}\n\nconst dayKey", performanceStart) + 2;
 const geometryStart = overviewSource.indexOf("function overviewTrendGeometry");
 const geometryEnd = overviewSource.indexOf("\n}\n\nfunction overviewTrendModel", geometryStart) + 2;
 
-assert.ok(performanceStart >= 0 && performanceEnd > performanceStart, "应能提取账号表现合并函数");
 assert.ok(geometryStart >= 0 && geometryEnd > geometryStart, "应能提取趋势图几何函数");
 
-const overviewAccountPerformance = Function(
-  `"use strict"; ${overviewSource.slice(performanceStart, performanceEnd)}; return overviewAccountPerformance;`
-)();
 const overviewTrendGeometry = Function(
   `"use strict"; ${overviewSource.slice(geometryStart, geometryEnd)}; return overviewTrendGeometry;`
 )();
@@ -52,60 +46,31 @@ test("趋势图使用动态网格首尾并显式同步标签间距", () => {
   assert.match(overviewSource, /style="gap:\$\{trendLabelGap\}px"/);
 });
 
-test("首页指标、图表与账号区域按新层级排列", () => {
+test("账号数据以双环图和沟通预览为上层，趋势图在下层", () => {
   assert.doesNotMatch(overviewSource, /overview-kpi-strip|overview-kpi-card/);
   assert.doesNotMatch(overviewSource, /data-overview-detail="todo"/);
-  assert.doesNotMatch(overviewSource, /data-overview-detail="dataQuality"|overview-action-icon is-link/);
-  assert.match(overviewSource, /overview-action-icon is-views/);
-  assert.match(overviewSource, /\$\{icon\("eye", 16\)\}/);
-  assert.match(overviewSource, /const accountPageSize = 16/);
-  assert.ok(overviewSource.indexOf("overview-action-grid") < overviewSource.indexOf("overview-viz-grid"));
-  assert.ok(overviewSource.indexOf("overview-viz-grid") < overviewSource.indexOf("overview-account-strip"));
+  assert.match(overviewSource, /overview-summary-grid/);
+  assert.match(overviewSource, /<b>播放量分布<\/b>/);
+  assert.match(overviewSource, /<b>发布量分布<\/b>/);
+  assert.match(overviewSource, /overview-remark-preview/);
+  assert.ok(overviewSource.indexOf("overview-summary-grid") < overviewSource.indexOf("overview-trend-card"));
+  assert.doesNotMatch(overviewSource, /overview-account-strip/);
 });
 
-test("账号表现以真实账号为清单并合并已有分析快照", () => {
-  const rows = overviewAccountPerformance(
-    [
-      { id: "a1", name: "账号一", monthlyDone: 3 },
-      { id: "a2", name: "账号二", count: 5, monthlyDone: 2 },
-      { id: "a3", name: "账号三" },
-    ],
-    [
-      { name: "账号一", count: 2, engagement: 9, score: 88 },
-      { name: "账号三", count: 1, engagement: 4, score: 70 },
-      { name: "不存在的快照账号", count: 99, engagement: 99, score: 99 },
-    ]
-  );
-
-  assert.equal(rows.length, 3);
-  assert.deepEqual(new Set(rows.map(item => item.accountId)), new Set(["a1", "a2", "a3"]));
-  assert.equal(rows.find(item => item.accountId === "a1").count, 2);
-  assert.equal(rows.find(item => item.accountId === "a1").engagement, 9);
-  assert.equal(rows.find(item => item.accountId === "a2").count, 5);
-  assert.equal(rows.find(item => item.accountId === "a2").engagement, 0);
-  assert.equal(rows.some(item => item.name === "不存在的快照账号"), false);
-});
-
-test("首页三栏使用统一白色基底并扩大账号表现区", () => {
+test("账号数据使用统一白色基底和仅两层的满高排版", () => {
   assert.match(viewsCss, /body\[data-zone="overview"\] \.view-root \{[\s\S]*?background: #fff !important;/);
   assert.match(viewsCss, /\.overview\.overview-dashboard\.overview-integrated \{[\s\S]*?background: #fff;/);
   assert.match(viewsCss, /padding: 8px 0 10px 16px;/);
-  assert.match(viewsCss, /--overview-data-columns: repeat\(3, minmax\(0, 1fr\)\);/);
   assert.match(viewsCss, /--overview-data-gap: 10px;/);
-  assert.match(viewsCss, /grid-template-rows: auto repeat\(2, minmax\(0, 1fr\)\)/);
-  assert.match(viewsCss, /\.overview-action-grid \{[^}]*grid-template-columns: var\(--overview-data-columns\); gap: var\(--overview-data-gap\);/);
-  assert.match(viewsCss, /\.overview-viz-grid \{[^}]*grid-template-columns: var\(--overview-data-columns\); gap: var\(--overview-data-gap\);/);
-  assert.match(viewsCss, /\.overview-viz-grid > \.overview-donut-card \{ grid-column: 1; \}/);
-  assert.match(viewsCss, /\.overview-viz-grid > \.overview-trend-card \{ grid-column: 2 \/ span 2; \}/);
-  assert.match(viewsCss, /\.overview-account-strip \{ min-height: 0;/);
-  assert.match(viewsCss, /\.overview-account-page \{ height: 100%;[\s\S]*?grid-template-columns: repeat\(4, minmax\(0, 1fr\)\); grid-template-rows: repeat\(4, minmax\(0, 1fr\)\); grid-auto-rows: minmax\(0, 1fr\); align-content: stretch;/);
-  assert.match(viewsCss, /\.overview-account-strip button \{[^}]*min-height: 0; height: auto;[^}]*align-self: stretch;/);
-  assert.match(viewsCss, /\.overview-account-strip button:hover,[\s\S]*?color: #315fbe; border: 0; outline: none; background: transparent; transform: none;/);
+  assert.match(viewsCss, /grid-template-rows: minmax\(210px, \.62fr\) minmax\(260px, 1\.38fr\);/);
+  assert.match(viewsCss, /\.overview-summary-grid \{[^}]*grid-template-columns: minmax\(180px, \.7fr\) minmax\(180px, \.7fr\) minmax\(250px, 1\.25fr\);/);
+  assert.match(viewsCss, /\.overview-trend-card \{[^}]*grid-template-rows: auto minmax\(0, 1fr\);/);
   assert.doesNotMatch(viewsCss, /\.overview-kpi-card/);
 });
 
-test("发布分布保持左窄右宽且环图只保留中心总数", () => {
-  assert.match(overviewSource, /<i><b>\$\{published\.length\}<\/b><em>已发布<\/em><\/i><\/span><\/div>/);
+test("播放与发布环图都使用可点击中心总数", () => {
+  assert.match(overviewSource, /class="overview-donut-center" type="button" data-overview-detail="views"/);
+  assert.match(overviewSource, /class="overview-donut-center" type="button" data-overview-detail="publishedPlatforms"/);
   assert.doesNotMatch(overviewSource, /小红书 <b>\$\{xhsCount\}<\/b>/);
   assert.doesNotMatch(overviewSource, /视频号 <b>\$\{videoCount\}<\/b>/);
   assert.doesNotMatch(viewsCss, /\.overview-donut-wrap > div|\.overview-donut-wrap p/);
@@ -115,6 +80,14 @@ test("发布分布保持左窄右宽且环图只保留中心总数", () => {
   assert.match(viewsCss, /\.supplier-donut-segment:hover,[^}]*\{[^}]*stroke-width: 20;/);
   assert.doesNotMatch(viewsCss, /\.overview-donut-segment[^}]*transform:\s*scale/);
   assert.doesNotMatch(viewsCss, /\.supplier-donut-segment[^}]*transform:\s*scale/);
+});
+
+test("内容数据按账号默认折叠并仅对真实回传地址显示跳转链接", () => {
+  assert.match(overviewSource, /<details class="overview-view-account">/);
+  assert.doesNotMatch(overviewSource, /<details class="overview-view-account" open>/);
+  assert.match(overviewSource, /const publishedUrl = String\(item\.link\?\.url \|\| item\.asset\?\.publishedUrl/);
+  assert.match(overviewSource, /target="_blank" rel="noopener noreferrer">跳转链接<\/a>/);
+  assert.match(overviewSource, /<span>链接<\/span><\/div>/);
 });
 
 test("数据助手删除建议问题并在空白区显示居中引导", () => {

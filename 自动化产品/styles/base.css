@@ -1953,7 +1953,8 @@ body.workspace-shell-v2 .wsctx-video-project-shell.is-working::after {
   pointer-events: none;
   animation: workspace-video-heatwave 2.7s ease-in-out infinite;
 }
-body.workspace-shell-v2 .wsctx-video-project-shell.is-working > * {
+body.workspace-shell-v2 .wsctx-video-project-shell.is-working > .wsctx-row,
+body.workspace-shell-v2 .wsctx-video-project-shell.is-working > .wsctx-row-more {
   position: relative;
   z-index: 1;
 }

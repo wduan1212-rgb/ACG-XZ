@@ -35,14 +35,13 @@ class FrontendModuleIdentityTest(unittest.TestCase):
 
     def test_stateful_view_modules_have_one_cache_identity(self):
         expected = {
-            "studio.js": "v=20260810-v1413-runtime-finalization-1",
-            "prodDrawer.js": "v=20260810-v1413-runtime-finalization-1",
-            "deliveryView.js": "v=20260810-v1413-runtime-finalization-1",
-            "supplierViews.js": "v=20260810-v1413-runtime-finalization-1",
-            "draftsView.js": "v=20260810-v1413-runtime-finalization-1",
-            "voiceLab.js": "v=20260810-v1413-runtime-finalization-1",
-            "chainWorkshop.js": "v=20260810-v1413-runtime-finalization-1",
-            "orchestrator.js": "v=20260810-v1413-runtime-finalization-1",
+            "studio.js": "v=20260810-v1420-generation-resilience-1",
+            "prodDrawer.js": "v=20260810-v1420-generation-resilience-1",
+            "deliveryView.js": "v=20260810-v1420-generation-resilience-1",
+            "supplierViews.js": "v=20260810-v1420-generation-resilience-1",
+            "draftsView.js": "v=20260810-v1420-generation-resilience-1",
+            "chainWorkshop.js": "v=20260810-v1420-generation-resilience-1",
+            "orchestrator.js": "v=20260810-v1420-generation-resilience-1",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
@@ -53,7 +52,7 @@ class FrontendModuleIdentityTest(unittest.TestCase):
     def test_llm_client_and_consumers_share_current_cache_identity(self):
         expected = {
             "llm.js": "v=20260727-v118-7",
-            "ai.js": "v=20260810-v1413-runtime-finalization-1",
+            "ai.js": "v=20260810-v1420-generation-resilience-1",
         }
         for module_name, expected_query in expected.items():
             imports = self._module_imports(module_name)
@@ -65,21 +64,21 @@ class FrontendModuleIdentityTest(unittest.TestCase):
         imports = self._module_imports("components.js")
         self.assertGreaterEqual(len(imports), 2)
         queries = {specifier.partition("?")[2] for _, specifier in imports}
-        self.assertEqual({"v=20260810-v1413-runtime-finalization-1"}, queries, imports)
+        self.assertEqual({"v=20260810-v1420-generation-resilience-1"}, queries, imports)
 
     def test_custom_publish_is_loaded_with_the_current_module_identity(self):
         source = (APP_DIR / "js/views/customCreation.js").read_text(encoding="utf-8")
-        self.assertIn('import("./customPublish.js?v=20260810-v1413-runtime-finalization-1")', source)
+        self.assertIn('import("./customPublish.js?v=20260810-v1420-generation-resilience-1")', source)
 
     def test_modified_stylesheets_share_current_build_identity(self):
         index = (APP_DIR / "index.html").read_text(encoding="utf-8")
         expected_versions = {
-            "base.css": "v=20260810-v1413-runtime-finalization-1",
-            "components.css": "v=20260810-v1413-runtime-finalization-1",
-            "views.css": "v=20260810-v1413-runtime-finalization-1",
-            "agent.css": "v=20260810-v1413-runtime-finalization-1",
-            "ui-motion.css": "v=20260810-v1413-runtime-finalization-1",
-            "custom-creation.css": "v=20260810-v1413-runtime-finalization-1",
+            "base.css": "v=20260810-v1420-generation-resilience-1",
+            "components.css": "v=20260810-v1420-generation-resilience-1",
+            "views.css": "v=20260810-v1420-generation-resilience-1",
+            "agent.css": "v=20260810-v1420-generation-resilience-1",
+            "ui-motion.css": "v=20260810-v1420-generation-resilience-1",
+            "custom-creation.css": "v=20260810-v1420-generation-resilience-1",
             "client-download.css": "v=20260727-v119-4",
         }
         for stylesheet, version in expected_versions.items():
@@ -89,23 +88,23 @@ class FrontendModuleIdentityTest(unittest.TestCase):
                 stylesheet,
             )
 
-    def test_overview_publish_distribution_is_narrower_than_trend_chart(self):
+    def test_overview_summary_row_sits_above_full_width_trend_chart(self):
         source = (APP_DIR / "styles/views.css").read_text(encoding="utf-8")
         self.assertIn(
-            "--overview-data-columns: repeat(3, minmax(0, 1fr));",
+            "grid-template-rows: minmax(210px, .62fr) minmax(260px, 1.38fr);",
             source,
         )
         self.assertIn(
-            ".overview-viz-grid { min-height: 0; display: grid; "
-            "grid-template-columns: var(--overview-data-columns); gap: var(--overview-data-gap); }",
+            ".overview-summary-grid { min-height: 0; display: grid; "
+            "grid-template-columns: minmax(180px, .7fr) minmax(180px, .7fr) minmax(250px, 1.25fr);",
             source,
         )
         self.assertIn(
-            ".overview-viz-grid > .overview-donut-card { grid-column: 1; }",
+            ".overview-remark-preview { display: grid; grid-template-rows: auto minmax(0, 1fr); }",
             source,
         )
         self.assertIn(
-            ".overview-viz-grid > .overview-trend-card { grid-column: 2 / span 2; }",
+            ".overview-trend-card { display: grid; grid-template-rows: auto minmax(0, 1fr); }",
             source,
         )
 

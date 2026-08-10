@@ -8,7 +8,7 @@ import { sanitizeXhsText, sanitizeXhsObject, xhsGuardPrompt } from "../core/xhsG
 import { getCreativeMemoryContext } from "../domain/analytics.js?v=20260727-v118-7";
 import { state } from "../core/store.js";
 import * as remote from "../core/remote.js";
-import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260810-v1413-runtime-finalization-1";
+import { PRODUCT_CATALOG_SEED, relatedProducts } from "../data/productCatalogSeed.js?v=20260810-v1420-generation-resilience-1";
 import { buildTrendGuide, buildTrendPrep } from "../data/xhsTrendLibrary.js";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
@@ -2283,8 +2283,25 @@ function infoFlowSimilarity(left = "", right = "") {
 
 function parseInfoFlowCreativePlan(content = "") {
   const raw = parseJSONLoose(content);
-  const front = raw.frontPrompt || raw.front?.videoPrompt || raw.front?.prompt || raw.segments?.[0]?.videoPrompt || raw.segments?.[0]?.prompt || "";
-  const back = raw.backPrompt || raw.back?.videoPrompt || raw.back?.prompt || raw.segments?.[1]?.videoPrompt || raw.segments?.[1]?.prompt || "";
+  const scenePrompt = scenes => (Array.isArray(scenes) ? scenes : []).map((scene, index) => {
+    if (!scene || typeof scene !== "object") return "";
+    const range = String(scene.time || scene.timeRange || "").trim()
+      || ((scene.start != null && scene.end != null) ? `${scene.start}-${scene.end}秒` : "");
+    const detail = [
+      scene.shot || scene.camera || "",
+      scene.visual || scene.picture || scene.action || "",
+      scene.audio || scene.dialogue || scene.sound || "",
+      scene.transition || "",
+    ].map(value => String(value || "").trim()).filter(Boolean).join("；");
+    if (!range || !detail) return "";
+    return `镜头${index + 1} ${range}：${detail}`;
+  }).filter(Boolean).join("\n");
+  const front = raw.frontPrompt || raw.front?.videoPrompt || raw.front?.prompt
+    || scenePrompt(raw.frontScenes || raw.front?.scenes)
+    || raw.segments?.[0]?.videoPrompt || raw.segments?.[0]?.prompt || "";
+  const back = raw.backPrompt || raw.back?.videoPrompt || raw.back?.prompt
+    || scenePrompt(raw.backScenes || raw.back?.scenes)
+    || raw.segments?.[1]?.videoPrompt || raw.segments?.[1]?.prompt || "";
   return {
     creativeAngle: cleanInfoFlowDirectorText(raw.creativeAngle || raw.angle || raw.front?.creativeAngle || "全新信息流创意", { stripTags: true }),
     visualStyle: cleanInfoFlowDirectorText(raw.visualStyle || raw.style || raw.front?.visualStyle || "超写实商业广告质感，自然电影光影，真实材质，统一色彩与镜头语言", { stripTags: true }),
@@ -2296,12 +2313,15 @@ function parseInfoFlowCreativePlan(content = "") {
 function countInfoFlowScenes(prompt = "") {
   const text = String(prompt || "");
   const timed = text.match(
-    /(?:^|\n)\s*(?:[-*•]\s*)?(?:镜头|场景|分镜)?\s*(?:\d+[.\u3001:：)）]\s*)?(?:第\s*)?\d{1,2}(?::\d{2})?\s*(?:s|秒)?\s*[-—–~至到]\s*\d{1,2}(?::\d{2})?\s*(?:s|秒)?(?=\s*(?:[:：,，.。;；)）\]】]|$))/gim
+    /(?:\b\d{1,2}:)?\d{1,2}\s*(?:s|秒)?\s*[-—–~至到]\s*(?:\d{1,2}:)?\d{1,2}\s*(?:s|秒)?/gim
   ) || [];
   const labeled = text.match(
     /(?:^|\n)\s*(?:[-*•]\s*)?(?:镜头|场景|分镜)\s*(?:0?[1-9]|[1-9]\d)\s*[.\u3001:：)）-]?/gim
   ) || [];
-  return Math.max(timed.length, labeled.length);
+  const numbered = text.match(
+    /(?:^|\n)\s*(?:[-*•]\s*)?(?:0?[1-9]|[1-9]\d)\s*[.\u3001:：)）]\s*[^\n]{8,}/gim
+  ) || [];
+  return Math.max(timed.length, labeled.length, numbered.length);
 }
 
 function assertInfoFlowCreativePlan(plan, previousPrompts = []) {
@@ -3036,7 +3056,7 @@ ${productRelationLine(rel.slice(0, 2))}
     let lastError = null;
     let lastDraft = "";
     let lastFailure = "";
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
       const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${attempt}`;
       const engine = engines[Math.floor(Math.random() * engines.length)];
       const avoid = (previousPrompts || []).some(Boolean)
@@ -3051,7 +3071,8 @@ ${productRelationLine(rel.slice(0, 2))}
         "不得出现这些固定句：这不是一个需求这是来拆我的、别再给我加需求了、字很多但完全不能用。不得写模板、同上、延续常规、根据文案等空话。",
         "发布标签不进入台词、画面或提示词。",
         "先为整条视频定义一个统一画面风格，例如超写实、电影纪实、夸张舞台广告或高质感三维界面；A/B 两面必须使用完全相同的光影、色彩、材质和镜头语言。",
-        "只输出 JSON：{\"creativeAngle\":\"一句话创意\",\"visualStyle\":\"A/B面共用的画面风格\",\"frontPrompt\":\"A面完整导演提示词\",\"backPrompt\":\"B面完整导演提示词\"}"
+        "只输出结构化 JSON：{\"creativeAngle\":\"一句话创意\",\"visualStyle\":\"A/B面共用的画面风格\",\"frontScenes\":[{\"start\":0,\"end\":3,\"shot\":\"景别与机位\",\"visual\":\"画面和动作\",\"audio\":\"声音或台词\",\"transition\":\"转场\"}],\"backScenes\":[同结构]}",
+        "frontScenes 与 backScenes 必须各有至少 4 个真实镜头，时间连续覆盖 0-15 秒；不要用空对象或重复镜头凑数。兼容字段 frontPrompt/backPrompt，但优先输出 scenes 数组。"
       ].join("\n");
       const user = [
         `创意引擎：${engine}`,
@@ -3066,7 +3087,7 @@ ${productRelationLine(rel.slice(0, 2))}
         lastDraft
           ? [
               `上一轮未通过原因：${lastFailure || "结构不完整"}`,
-              "请保留上轮中与主题紧密相关的创意，定向补齐缺失的分时镜头、动作、台词和转场；A/B 面必须各至少 4 个明确时间段。",
+              "这是唯一一次结构修复：保留与主题紧密相关的创意，只修正校验指出的问题；A/B 面必须各至少 4 个真实且不同的明确时间段。",
               `上一轮草稿：${lastDraft.slice(0, 7000)}`
             ].join("\n")
           : ""
@@ -3075,7 +3096,7 @@ ${productRelationLine(rel.slice(0, 2))}
         const content = await llm([
           { role: "system", content: system },
           { role: "user", content: user }
-        ], { json: true, temperature: 1.15, timeoutMs: 90000, thinking: "disabled", maxTokens: 5200 });
+        ], { json: true, temperature: attempt === 0 ? 0.75 : 0.35, timeoutMs: 90000, thinking: "disabled", maxTokens: 5200 });
         lastDraft = String(content || "");
         const plan = parseInfoFlowCreativePlan(content);
         const sharedStyle = plan.visualStyle || "超写实商业广告质感，自然电影光影，真实材质，统一色彩与镜头语言";

@@ -5,42 +5,40 @@ import { icon, brandGlyph } from "./ui/icons.js";
 import { db } from "./core/db.js";
 import { state, save, saveMembers, on, loadIdentityCache, loadAll, persistNow, pullRemoteBootstrap, hydrateRemoteInBackground, retryRemoteHydration, remoteCollectionHydrationState, cancelRemoteHydration, activeAccount, currentMember, currentTeam, hasEntitlement, canManageAccounts, ROLE_LABEL, productById, ownedBy } from "./core/store.js";
 import * as remote from "./core/remote.js";
-import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260810-v1413-runtime-finalization-1";
+import { pruneEmptySessions, newSession, renameSession, deleteSession } from "./agent/orchestrator.js?v=20260810-v1420-generation-resilience-1";
 import { migrateFromV4 } from "./core/migrate.js";
 import { preloadBlobUrls } from "./domain/assets.js";
 import { accountDisplaySequenceMap, deleteAccount, groupOf, platformCode, appearanceAnchorFor, isAccountDisabled, isNewAccount } from "./domain/accounts.js";
-import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260810-v1413-runtime-finalization-1";
+import { deliveredAssets, productTagLabel } from "./domain/delivery.js?v=20260810-v1420-generation-resilience-1";
 import { buildSupplierSearchResults } from "./domain/supplierSearch.js";
-import { refreshAllAnalytics, syncExistingPublishedAssets } from "./domain/analytics.js?v=20260727-v118-7";
 import { ACCOUNT_PROFILE_SEED, ACCOUNT_PROFILE_VERSION } from "./data/accountProfilesSeed.js";
 import { applyKeyOverrides, enableServerProxyIfConfigured } from "./api/llm.js?v=20260727-v118-7";
 import { refreshProviderStatus } from "./api/providers.js";
 import { resumeJobs } from "./api/jobs.js";
-import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260810-v1413-runtime-finalization-1";
+import { resumeActiveBatches } from "./agent/orchestrator.js?v=20260810-v1420-generation-resilience-1";
 import { registerView, initRouter, render, go, parseHash, allowStudioFromAgent } from "./core/router.js";
-import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260810-v1413-runtime-finalization-1";
+import { toast, confirmModal, promptModal, openModal, openPalette, toggleNotifyPanel, updateNotifyBadge } from "./ui/components.js?v=20260810-v1420-generation-resilience-1";
 import { installSelectEnhancer } from "./ui/selectEnhancer.js?v=20260723-v117-8";
-import { initLoginBeams } from "./ui/loginBeams.js?v=20260810-v1413-runtime-finalization-1";
+import { initLoginBeams } from "./ui/loginBeams.js?v=20260810-v1420-generation-resilience-1";
 import { installUIEnhancements } from "./ui/uiEnhancements.js";
 import { initClientDistribution } from "./ui/clientDistribution.js?v=20260728-v120-shell-13";
-import { overviewView } from "./views/overview.js?v=20260810-v1413-runtime-finalization-1";
-import { homeView } from "./views/home.js?v=20260810-v1413-runtime-finalization-1";
-import { subscriptionView } from "./views/subscription.js?v=20260810-v1413-runtime-finalization-1";
-import { voiceLabView } from "./views/voiceLab.js?v=20260810-v1413-runtime-finalization-1";
-import { customCreationView } from "./views/customCreation.js?v=20260810-v1413-runtime-finalization-1";
-import { agentView, openAgentSession } from "./agent/view.js?v=20260810-v1413-runtime-finalization-1";
-import { studioView } from "./views/studio.js?v=20260810-v1413-runtime-finalization-1";
-import { assetsView } from "./views/assetsView.js?v=20260810-v1413-runtime-finalization-1";
-import { deliveryView } from "./views/deliveryView.js?v=20260810-v1413-runtime-finalization-1";
+import { overviewView } from "./views/overview.js?v=20260810-v1420-generation-resilience-1";
+import { homeView } from "./views/home.js?v=20260810-v1420-generation-resilience-1";
+import { subscriptionView } from "./views/subscription.js?v=20260810-v1420-generation-resilience-1";
+import { customCreationView } from "./views/customCreation.js?v=20260810-v1420-generation-resilience-1";
+import { agentView, openAgentSession } from "./agent/view.js?v=20260810-v1420-generation-resilience-1";
+import { studioView } from "./views/studio.js?v=20260810-v1420-generation-resilience-1";
+import { assetsView } from "./views/assetsView.js?v=20260810-v1420-generation-resilience-1";
+import { deliveryView } from "./views/deliveryView.js?v=20260810-v1420-generation-resilience-1";
 import { analyticsView } from "./views/analyticsView.js?v=20260727-v118-7";
-import { draftsView } from "./views/draftsView.js?v=20260810-v1413-runtime-finalization-1";
-import { settingsView } from "./views/settings.js?v=20260810-v1413-runtime-finalization-1";
+import { draftsView } from "./views/draftsView.js?v=20260810-v1420-generation-resilience-1";
+import { settingsView } from "./views/settings.js?v=20260810-v1420-generation-resilience-1";
 import "./views/accountDialog.js";
-import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260810-v1413-runtime-finalization-1";
-import { productionsOf } from "./domain/productions.js?v=20260810-v1413-runtime-finalization-1";
-import { installAccountPublishQuotaAutoRefresh } from "./domain/productionQuota.js?v=20260810-v1413-runtime-finalization-1";
+import { stagePage, openProductionDrawer } from "./views/prodDrawer.js?v=20260810-v1420-generation-resilience-1";
+import { productionsOf } from "./domain/productions.js?v=20260810-v1420-generation-resilience-1";
+import { installAccountPublishQuotaAutoRefresh } from "./domain/productionQuota.js?v=20260810-v1420-generation-resilience-1";
 
-const APP_BUILD_ID = "20260810-v1413-runtime-finalization-1";
+const APP_BUILD_ID = "20260810-v1420-generation-resilience-1";
 const GUEST_MEMBER_ID = "guest-local-preview";
 const GUEST_MEMBER = Object.freeze({
   id: GUEST_MEMBER_ID,
@@ -939,16 +937,16 @@ function workspaceNavItems() {
     item({ key: "home", label: "首页", zone: "home", iconName: "grid" }, "home"),
     item({ key: "custom-video", label: "视频工坊", zone: "custom", page: "video", iconName: "film" }, "video_workshop"),
     item({ key: "custom-canvas", label: "无限画布", zone: "custom", page: "canvas", iconName: "layers" }, "canvas"),
-    item({ key: "custom-voice", label: "语音生成", zone: "custom", page: "voice", iconName: "mic" }, "voice"),
     item({ key: "studio", label: "单号创作", zone: "studio", iconName: "film" }, "studio"),
     item({ key: "agent", label: "批量生产", zone: "agent", iconName: "spark" }, "batch"),
     item({ key: "assets", label: "整体资产", zone: "assets", iconName: "folder" }, "assets"),
     item({ key: "delivery", label: "发布清单", zone: "delivery", iconName: "package" }, "delivery"),
-    item({ key: "overview", label: "数据看板", zone: "overview", iconName: "analytics" }, "dashboard")
+    item({ key: "overview", label: "账号数据", zone: "overview", iconName: "analytics" }, "dashboard")
   ];
-  if (currentTeam()) return items;
+  // 团队的单号创作从首页“全部账号”进入，不再与产品工具并列在 Logo 切换器。
+  if (currentTeam()) return items.filter(entry => entry.key !== "studio");
   const personalOrder = [
-    "home", "custom-video", "custom-canvas", "custom-voice", "assets",
+    "home", "custom-video", "custom-canvas", "assets",
     "studio", "agent", "delivery", "overview",
   ];
   const order = new Map(personalOrder.map((key, index) => [key, index]));
@@ -1796,14 +1794,15 @@ function groupedWorkspaceRows(items, groups, getGroup, rowFor, kind) {
   return rows;
 }
 
-function accountContextRow(account, accountIndex) {
+function accountContextRow(account, accountIndex, { markActive = true } = {}) {
   const disabled = isAccountDisabled(account);
   const platformClass = platformCode(account.platform).toLowerCase();
   const number = `#${String(accountIndex.get(account.id) || 0).padStart(2, "0")}`;
+  const active = markActive && account.id === state.ui.activeAccountId;
   return `
-    <button class="wsctx-row wsctx-account-row${account.id === state.ui.activeAccountId ? " is-active" : ""}${disabled ? " is-disabled" : ""}"
+    <button class="wsctx-row wsctx-account-row${active ? " is-active" : ""}${disabled ? " is-disabled" : ""}"
       type="button"
-      ${account.id === state.ui.activeAccountId ? `aria-current="page"` : ""}
+      ${active ? `aria-current="page"` : ""}
       aria-disabled="${disabled ? "true" : "false"}"
       data-ws-go="studio"
       data-ws-id="${esc(account.id)}"
@@ -2476,21 +2475,33 @@ function renderWorkspaceContextPanel() {
           ],
         }];
       }
-      const pending = myProductions
-        .filter(p => p.stage !== "delivered")
-        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
-        .slice(0, 8);
-      const recent = deliveredAssets
-        .sort((a, b) => Number(b.deliveredAt || b.createdAt || 0) - Number(a.deliveredAt || a.createdAt || 0))
-        .slice(0, 6);
+      const accountIndex = accountDisplaySequenceMap(state.accounts);
       return [
-        { key: "pending", title: "待处理任务", rows: pending.map(p => contextRow({ title: p.artifacts?.copy?.title || p.title || p.topic || "在制任务", zone: "studio" })) },
-        { key: "recent", title: "最近访问", rows: recent.map(a => contextRow({ title: a.title || a.name || "已交付内容", zone: "delivery" })) }
+        {
+          key: "account-data-dashboard",
+          title: "账号数据",
+          collapsible: false,
+          rows: [contextRow({ title: "数据看板", zone: "overview", iconName: "analytics", active: true, className: "wsctx-account-dashboard" })],
+        },
+        {
+          key: "account-data-accounts",
+          title: "所有账号",
+          rows: state.accounts
+            .slice()
+            .sort((a, b) => Number(accountIndex.get(a.id) || 0) - Number(accountIndex.get(b.id) || 0))
+            .map(account => accountContextRow(account, accountIndex, { markActive: false })),
+        },
       ];
     }
     if (zone === "studio") {
       const accountIndex = accountDisplaySequenceMap(state.accounts);
       const groups = [
+        {
+          key: "account-data-dashboard",
+          title: "账号数据",
+          collapsible: false,
+          rows: [contextRow({ title: "数据看板", zone: "overview", iconName: "analytics", className: "wsctx-account-dashboard" })],
+        },
         {
           key: "text",
           title: "图文组",
@@ -2887,31 +2898,7 @@ function renderContextPanel() {
 }
 
 /* ---------- 顶栏 ---------- */
-const ZONE_TITLE = { home: "首页", subscription: "订阅管理", overview: "数据看板", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
-
-async function syncHomepageAnalytics(button) {
-  if (button.disabled) return;
-  const label = button.querySelector("span");
-  const originalLabel = label?.textContent || "同步数据";
-  button.disabled = true;
-  button.classList.add("is-loading");
-  if (label) label.textContent = "同步中…";
-  try {
-    // 与数据分析页保持同一条 JustOne 同步链路：先补齐已回传素材，再逐条拉取快照。
-    syncExistingPublishedAssets();
-    const result = await refreshAllAnalytics();
-    if (!result.total) toast("还没有可刷新的小红书或视频号回链");
-    else if (result.failed.length) toast(`已同步 ${result.ok}/${result.total} 条，${result.failed.length} 条待处理`, "error");
-    else toast(`已同步 ${result.ok}/${result.total} 条数据快照`);
-    if (document.body.dataset.zone === "overview") render();
-  } catch (error) {
-    toast(`同步数据失败：${error?.message || error || "请稍后重试"}`, "error");
-  } finally {
-    button.disabled = false;
-    button.classList.remove("is-loading");
-    if (label) label.textContent = originalLabel;
-  }
-}
+const ZONE_TITLE = { home: "首页", subscription: "订阅管理", overview: "账号数据", custom: "定制创作", voice: "语音生成", agent: "批量创作", studio: "单号创作", assets: "整体资产", drafts: "草稿箱", delivery: "发布清单", analytics: "数据分析", settings: "设置" };
 
 function renderTopbar() {
   const zone = document.body.dataset.zone;
@@ -2962,20 +2949,9 @@ function renderTopbar() {
     newAccBtn.addEventListener("click", () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })));
     actions.appendChild(newAccBtn);
   }
-  let syncDataBtn = $("#topSyncAnalytics");
-  if (!syncDataBtn && actions) {
-    syncDataBtn = document.createElement("button");
-    syncDataBtn.id = "topSyncAnalytics";
-    syncDataBtn.className = "top-btn";
-    syncDataBtn.title = "手动从 JustOne 同步已回传内容的数据快照";
-    syncDataBtn.innerHTML = `${icon("refresh", 13)} <span>同步数据</span>`;
-    syncDataBtn.addEventListener("click", () => syncHomepageAnalytics(syncDataBtn));
-    const syncAnchor = [newAccBtn]
-      .find(node => node?.parentElement === actions) || null;
-    actions.insertBefore(syncDataBtn, syncAnchor);
-  }
+  const syncDataBtn = $("#topSyncAnalytics");
+  syncDataBtn?.remove();
   if (newAccBtn) newAccBtn.hidden = !(zone === "overview" && teamManager);
-  if (syncDataBtn) syncDataBtn.hidden = !(zone === "overview" && teamManager);
   const supplierParent = ["supplier", "supplier_parent"].includes(state.role);
   // 供应商资产页已经在内容区提供账号/平台筛选；顶栏再渲染一组会
   // 造成两个互不共享状态的重复筛选器。保留内容区这一处即可。
@@ -3024,12 +3000,12 @@ function paletteCommands() {
   ] : [
     { label: "首页", group: "导航", icon: "grid", run: () => go("home") },
     { label: "批量创作", group: "导航", icon: "spark", run: () => go("agent") },
-    { label: "语音生成", group: "导航", icon: "mic", run: () => go("custom", "voice") },
+    { label: "视频工坊 · 语音生成", group: "导航", icon: "mic", run: () => go("custom", "video") },
     { label: "单号创作", group: "导航", icon: "film", run: () => { allowStudioFromAgent(); go("studio"); } },
     { label: "整体资产", group: "导航", icon: "folder", run: () => go("assets") },
     { label: "发布清单", group: "导航", icon: "package", run: () => go("delivery") },
     { label: "定制创作", group: "导航", icon: "layers", run: () => go("custom", "video") },
-    ...(hasEntitlement("dashboard") ? [{ label: "数据看板", group: "导航", icon: "analytics", run: () => go("overview") }] : []),
+    ...(hasEntitlement("dashboard") ? [{ label: "账号数据", group: "导航", icon: "analytics", run: () => go("overview") }] : []),
     ...(state.role === "admin" ? [
       { label: "设置", group: "导航", icon: "gear", run: () => go("settings") },
       { label: "创建账号", group: "操作", icon: "plus", run: () => document.dispatchEvent(new CustomEvent("open-account-dialog", { detail: {} })) }
@@ -3139,7 +3115,6 @@ async function boot() {
     registerView("subscription", subscriptionView);
     registerView("overview", hydrationAwareView("overview", overviewView));
     registerView("custom", customCreationView);
-    registerView("voice", voiceLabView);
     registerView("agent", hydrationAwareView("agent", agentView));
     registerView("studio", hydrationAwareView("studio", studioView));
     registerView("assets", hydrationAwareView("assets", assetsView));

@@ -31,6 +31,8 @@ import sqlite3
 import sys
 import math
 import weakref
+import secrets
+from contextlib import asynccontextmanager
 from datetime import date as calendar_date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -176,6 +178,8 @@ VOICE_DESIGN_POINTS = _positive_env_int("VOICE_DESIGN_POINTS", 200)
 # module-level instances make a clean import fail after another loop was closed
 # (and can bind production work to the wrong bootstrap loop).
 IMAGE_SUBMIT_CONCURRENCY = _positive_env_int("IMAGE_SUBMIT_CONCURRENCY", 3)
+IMAGE_SUBMIT_QUEUE_WAIT_SECONDS = _positive_env_int("IMAGE_SUBMIT_QUEUE_WAIT_SECONDS", 30)
+IMAGE_PROVIDER_BUSY_RETRIES = _positive_env_int("IMAGE_PROVIDER_BUSY_RETRIES", 4)
 VIDEO_SUBMIT_CONCURRENCY = _positive_env_int("VIDEO_SUBMIT_CONCURRENCY", 10)
 _IMAGE_SUBMIT_QUEUES = weakref.WeakKeyDictionary()
 _VIDEO_SUBMIT_QUEUES = weakref.WeakKeyDictionary()
@@ -190,8 +194,36 @@ def _loop_submit_queue(queues, limit: int):
     return queue
 
 
+@asynccontextmanager
+async def _bounded_submit_slot(queue, wait_seconds: int, *, kind: str):
+    acquired = False
+    try:
+        try:
+            await asyncio.wait_for(queue.acquire(), timeout=max(1, int(wait_seconds)))
+            acquired = True
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                503,
+                detail={
+                    "code": f"{kind}_queue_busy",
+                    "message": "生成队列繁忙，本次未调用上游；任务可安全重试",
+                    "retryable": True,
+                    "providerCalled": False,
+                },
+            ) from exc
+        yield
+    finally:
+        if acquired:
+            queue.release()
+
+
 def _image_submit_queue():
-    return _loop_submit_queue(_IMAGE_SUBMIT_QUEUES, IMAGE_SUBMIT_CONCURRENCY)
+    queue = _loop_submit_queue(_IMAGE_SUBMIT_QUEUES, IMAGE_SUBMIT_CONCURRENCY)
+    return _bounded_submit_slot(
+        queue,
+        IMAGE_SUBMIT_QUEUE_WAIT_SECONDS,
+        kind="image",
+    )
 
 
 def _video_submit_queue():
@@ -1625,20 +1657,24 @@ async def _post_json_with_retry(
     endpoint: str,
     body: dict,
     headers: dict,
-    retries: int = 24,
+    retries: Optional[int] = None,
     *,
     attempt_ledger=None,
 ):
+    retries = IMAGE_PROVIDER_BUSY_RETRIES if retries is None else max(0, int(retries))
     last_r = None
     last_data = None
     for attempt in range(retries + 1):
-        attempt_receipt = (
-            await attempt_ledger.acquire()
-            if attempt_ledger is not None
-            else None
-        )
         try:
             async with _image_submit_queue():
+                # Queue admission is explicitly not a provider attempt. Open
+                # the durable usage receipt only after a slot is acquired and
+                # immediately before the network call.
+                attempt_receipt = (
+                    await attempt_ledger.acquire()
+                    if attempt_ledger is not None
+                    else None
+                )
                 r = await client.post(endpoint, json=body, headers=headers)
         except asyncio.CancelledError as exc:
             if attempt_ledger is not None:
@@ -1677,18 +1713,19 @@ async def _post_image_form_with_retry(
     data,
     files,
     headers,
-    retries: int = 24,
+    retries: Optional[int] = None,
     attempt_ledger=None,
 ):
+    retries = IMAGE_PROVIDER_BUSY_RETRIES if retries is None else max(0, int(retries))
     last_response = None
     for attempt in range(retries + 1):
-        attempt_receipt = (
-            await attempt_ledger.acquire()
-            if attempt_ledger is not None
-            else None
-        )
         try:
             async with _image_submit_queue():
+                attempt_receipt = (
+                    await attempt_ledger.acquire()
+                    if attempt_ledger is not None
+                    else None
+                )
                 response = await client.post(endpoint, data=data, files=files, headers=headers)
         except asyncio.CancelledError as exc:
             if attempt_ledger is not None:
@@ -3239,6 +3276,49 @@ def image_config(_me=Depends(require_creator)):
         ),
         "endpoint": _mask_endpoint(endpoint),
         "baseUrl": _public_base(endpoint),
+    }
+
+
+@app.get("/api/image/operations/{operation_key}")
+def image_operation_status(operation_key: str, _me=Depends(require_creator)):
+    """Reconcile a lost browser response without touching the provider."""
+    raw_key = re.sub(r"[\x00-\x1f\x7f]+", "", str(operation_key or "")).strip()
+    if not raw_key:
+        raise HTTPException(400, "图片任务操作键为空")
+    attempts = []
+    for ordinal in range(1, IMAGE_PROVIDER_BUSY_RETRIES + 2):
+        receipt = store.find_model_usage_receipt(
+            str((_me or {}).get("id") or ""),
+            source="main-provider",
+            stable_credential=_quota_operation_key(
+                "image.generate", f"{raw_key}:attempt:{ordinal}",
+            ),
+        )
+        if not receipt:
+            continue
+        attempts.append({
+            "attempt": ordinal,
+            "status": str(receipt.get("status") or ""),
+            "providerRef": str(receipt.get("providerRef") or ""),
+            "calls": int(receipt.get("calls") or 0),
+            "outputUnits": int(receipt.get("outputUnits") or 0),
+            "updatedAt": int(receipt.get("updatedAt") or 0),
+        })
+    if not attempts:
+        return {
+            "ok": True, "operationKey": raw_key,
+            "status": "not_called", "providerCalled": False, "attempts": [],
+        }
+    statuses = {item["status"] for item in attempts}
+    if "succeeded" in statuses:
+        status = "succeeded"
+    elif statuses & {"pending", "unknown", "indeterminate"}:
+        status = "unknown"
+    else:
+        status = "failed"
+    return {
+        "ok": True, "operationKey": raw_key, "status": status,
+        "providerCalled": True, "attempts": attempts,
     }
 
 
@@ -11446,6 +11526,57 @@ def _video_workshop_preferred_voice(me):
     }
 
 
+def _video_workshop_designed_voice_options(me):
+    member_id = str(me.get("id") or "").strip()
+    options = []
+    for item in store.list_voice_presets(member_id):
+        voice_id = str(item.get("voiceId") or "").strip()
+        if not voice_id:
+            continue
+        owner_id = str(item.get("ownerId") or "").strip()
+        options.append({
+            "voiceId": voice_id,
+            "name": str(item.get("name") or voice_id).strip()[:120],
+            "source": "mine" if owner_id and owner_id == member_id else "shared",
+            "ownerId": owner_id,
+        })
+    return options
+
+
+def _video_workshop_voice_options(me):
+    """Expose every usable fixed voice while preferring designed identities.
+
+    Random narration remains restricted to user/team-designed voices.  The
+    fixed selector additionally offers the real MiniMax system presets so it is
+    never a decorative one-option native select.
+    """
+
+    options = []
+    seen = set()
+    for item in _video_workshop_designed_voice_options(me):
+        if item["voiceId"] in seen:
+            continue
+        seen.add(item["voiceId"])
+        options.append(item)
+    for item in MINIMAX_VOICE_PRESETS:
+        voice_id = str(item.get("voiceId") or "").strip()
+        if not voice_id or voice_id in seen:
+            continue
+        seen.add(voice_id)
+        options.append({
+            "voiceId": voice_id,
+            "name": str(item.get("name") or voice_id).strip()[:120],
+            "source": "system",
+            "ownerId": "",
+        })
+    return options
+
+
+def _video_workshop_random_voice(me):
+    options = _video_workshop_designed_voice_options(me)
+    return secrets.choice(options) if options else _video_workshop_preferred_voice(me)
+
+
 def _custom_video_session_member(request: Request):
     token = str(request.cookies.get(VIDEO_WORKSHOP_SESSION_COOKIE) or "").strip()
     if not token:
@@ -11671,7 +11802,11 @@ def _require_video_workshop_usage_ready(me, project_id: str):
         ) from exc
     if not status.get("ok"):
         raise HTTPException(
-            409, "视频工坊历史用量证据待处理，未发起新调用"
+            409,
+            {
+                "code": "video_workshop_usage_pending",
+                "message": "视频工坊历史用量证据待处理，未发起新调用",
+            },
         )
     return status
 
@@ -12109,6 +12244,7 @@ def _video_workshop_index_html():
       const LEGACY_PROJECT_KEY = "xingzhen-video-project";
       const PROJECT_KEY_PREFIX = "xingzhen-video-project:";
       const nativeFetch = window.fetch.bind(window);
+      window.__XINGZHEN_VIDEO_MAIN_FETCH__ = nativeFetch;
       let latestProject = null;
 
       function fail(message) {
@@ -12232,6 +12368,10 @@ def _video_workshop_index_html():
         if (savedProjectId && !allowed.has(savedProjectId)) {
           localStorage.removeItem(projectKey);
         }
+        window.__XINGZHEN_VIDEO_MEMBER_ID__ = String(session.memberId || "");
+        window.__XINGZHEN_VIDEO_AUTH_TOKEN__ = token;
+        window.__XINGZHEN_VIDEO_VOICES__ = Array.isArray(session.voiceOptions) ? session.voiceOptions : [];
+        window.__XINGZHEN_VIDEO_PREFERRED_VOICE__ = session.preferredVoice || {};
         window.parent.postMessage({ type: "custom-video:ready" }, window.location.origin);
         const script = document.createElement("script");
         script.src = APP_SRC;
@@ -12259,6 +12399,7 @@ def custom_video_session(request: Request, me=Depends(require_member)):
         "memberId": me["id"],
         "allowedProjectIds": allowed_project_ids,
         "preferredVoice": _video_workshop_preferred_voice(me),
+        "voiceOptions": _video_workshop_voice_options(me),
     }, server_timing=_video_workshop_timing("session", started))
     response.set_cookie(
         VIDEO_WORKSHOP_SESSION_COOKIE,
@@ -12423,6 +12564,53 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
             server_timing=_video_workshop_timing("project-create", started),
         )
 
+    editor_match = re.fullmatch(
+        r"projects/([^/]+)/(video-editor|assets|timeline-revision)",
+        path,
+    )
+    if editor_match:
+        project_id = editor_match.group(1)
+        editor_action = str(editor_match.group(2) or "")
+        mapped_project = _video_workshop_owned_project(me, project_id)
+        expected_method = "GET" if editor_action == "video-editor" else "POST"
+        if method != expected_method:
+            raise HTTPException(405, f"视频工坊{editor_action}接口只接受 {expected_method}")
+        upstream = await _video_workshop_request(request, path)
+        if upstream.status_code >= 400:
+            return Response(
+                content=upstream.content,
+                status_code=upstream.status_code,
+                media_type="application/json",
+            )
+        try:
+            data = upstream.json()
+        except Exception:
+            raise HTTPException(502, "视频工坊剪辑台返回异常")
+        if editor_action == "video-editor":
+            return _video_workshop_json_response(
+                _rewrite_video_workshop_urls(data),
+                server_timing=_video_workshop_timing("video-editor", started),
+            )
+        project = data.get("project") if isinstance(data, dict) else None
+        if not isinstance(project, dict):
+            raise HTTPException(502, "视频工坊剪辑素材或任务返回异常")
+        if runtime_config.is_read_only():
+            project_response = _video_workshop_project_response(
+                project, mapped_project,
+            )
+        else:
+            project_response = await asyncio.to_thread(
+                _sync_video_workshop_project, me, project,
+            )
+            _schedule_video_workshop_project_finalizer(me, project)
+        response_data = {"ok": True, "project": project_response}
+        if editor_action == "assets":
+            response_data["items"] = _rewrite_video_workshop_urls(data.get("items") or [])
+        return _video_workshop_json_response(
+            response_data,
+            server_timing=_video_workshop_timing(editor_action, started),
+        )
+
     project_match = re.fullmatch(
         r"projects/([^/]+)(?:/(retry|cancel|speed-version))?",
         path,
@@ -12482,7 +12670,7 @@ async def custom_video_api(api_path: str, request: Request, me=Depends(_custom_v
                 _require_video_workshop_usage_ready, me, existing_project_id,
             )
         if not str(payload.get("voiceId") or "").strip():
-            payload["voiceId"] = _video_workshop_preferred_voice(me)["voiceId"]
+            payload["voiceId"] = _video_workshop_random_voice(me)["voiceId"]
         reservation = _static_video_reservation(me, request, payload)
         dialogue_reservation = (
             None if reservation else _video_workshop_dialogue_reservation(me, request, payload)

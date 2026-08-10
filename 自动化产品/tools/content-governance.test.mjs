@@ -40,7 +40,8 @@ test("Baige catalog carries verified facts and explicit-title routing", () => {
   assert.ok(baige);
   assert.ok(baige.verifiedFacts.some(fact => fact.includes("32%")));
   assert.ok(baige.verifiedFacts.some(fact => fact.includes("40%+")));
-  assert.ok(baige.forbiddenClaims.some(claim => claim.includes("LoongForge")));
+  assert.ok(baige.forbiddenClaims.some(claim => claim.includes("不得把某一模型")));
+  assert.match(baige.toneRule, /LoongForge/);
   const fallback = PRODUCT_CATALOG_SEED.find(product => product.id === "dumate");
   assert.equal(catalogProductForText(PRODUCT_CATALOG_SEED, "做一期百舸工具链", fallback)?.id, "baige");
   assert.equal(catalogProductForText(PRODUCT_CATALOG_SEED, "百度百舸 6.0", fallback)?.id, "baige");

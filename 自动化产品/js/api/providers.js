@@ -31,6 +31,7 @@ const serverImage = {
   error: ""
 };
 const serverTts = { checked: false, failed: false, configured: false, provider: "", model: "", voiceId: "", voices: [], error: "" };
+export const IMAGE_GENERATION_TIMEOUT_MS = 570000;
 let providerStatusPromise = null;
 export function registerProvider(adapter) { registry.set(adapter.id, adapter); }
 export function getProvider(id) { return registry.get(id) || null; }
@@ -126,7 +127,7 @@ async function fetchJsonWithTimeout(url, timeoutMs = 3500) {
   throw lastError || new Error("API 请求失败");
 }
 
-async function postJsonWithFallback(url, body, timeoutMs = 240000) {
+async function postJsonWithFallback(url, body, timeoutMs = IMAGE_GENERATION_TIMEOUT_MS) {
   let lastError = null;
   for (const candidate of apiCandidates(url)) {
     const ctrl = new AbortController();
@@ -141,6 +142,13 @@ async function postJsonWithFallback(url, body, timeoutMs = 240000) {
       const payload = await readResponsePayload(res);
       if (res.ok) return { data: payload.data || {}, url: candidate };
       lastError = new Error(payload.message || `HTTP ${res.status}`);
+      lastError.status = res.status;
+      const detail = payload.data?.detail;
+      if (detail && typeof detail === "object") {
+        lastError.code = String(detail.code || "");
+        lastError.retryable = detail.retryable === true;
+        lastError.providerCalled = detail.providerCalled !== false;
+      }
       if (![404, 405].includes(res.status)) throw lastError;
     } catch (e) {
       const localBackend = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(candidate);
@@ -152,11 +160,37 @@ async function postJsonWithFallback(url, body, timeoutMs = 240000) {
             : `无法连接服务端 API：${candidate}。请确认当前平台服务可访问。`)
           : (e?.message || String(e)));
       lastError = new Error(msg);
+      if (e?.name === "AbortError") {
+        lastError.code = "PROVIDER_RESULT_UNKNOWN";
+        lastError.outcomeUnknown = true;
+        lastError.providerCalled = true;
+      } else {
+        lastError.status = e?.status;
+        lastError.code = e?.code;
+        lastError.retryable = e?.retryable;
+        lastError.providerCalled = e?.providerCalled;
+      }
     } finally {
       clearTimeout(timer);
     }
   }
   throw lastError || new Error("API 请求失败");
+}
+
+export async function imageOperationStatus(operationKey, timeoutMs = 10000) {
+  const key = String(operationKey || "").trim();
+  if (!key) return { status: "not_called", providerCalled: false, attempts: [] };
+  try {
+    return await fetchJsonWithTimeout(
+      `/api/image/operations/${encodeURIComponent(key)}`,
+      timeoutMs,
+    );
+  } catch (error) {
+    if (Number(error?.status || 0) === 404) {
+      return { status: "not_called", providerCalled: false, attempts: [] };
+    }
+    throw error;
+  }
 }
 
 export function providerKeyFor(kind, adapter = null) {
@@ -634,8 +668,9 @@ registerProvider({
   kind: "image",
   label: "OpenAI-compatible Image",
   capabilities: { ratios: ["3:4", "9:16", "1:1"], refImages: true },
-  async submit({ prompt, refs = [], intendedRefAssetIds = [], ratio = "3:4", strictRatio = false, apiKey, endpoint, model }) {
-    const ref = "img_" + Math.random().toString(36).slice(2, 10);
+  async submit({ prompt, refs = [], intendedRefAssetIds = [], ratio = "3:4", strictRatio = false, apiKey, endpoint, model, idempotencyKey = "" }) {
+    const ref = String(idempotencyKey || "").trim()
+      || generationOperationKey("image");
     const intendedIds = cleanRefIds(intendedRefAssetIds);
     const preparedRefs = (refs || []).slice(0, 8).filter(Boolean);
     const preflightReceipt = normalizeImageReferenceReceipt({}, preparedRefs, intendedIds);
@@ -667,7 +702,26 @@ registerProvider({
       endpoint: useServer ? "" : endpoint,
       apiKey: useServer ? "" : apiKey
     };
-    const { data } = await postJsonWithFallback("/api/image/generate", body);
+    let data;
+    try {
+      ({ data } = await postJsonWithFallback("/api/image/generate", body));
+    } catch (error) {
+      if (error?.outcomeUnknown || Number(error?.status || 0) === 409) {
+        let reconciliation = null;
+        try { reconciliation = await imageOperationStatus(ref); } catch (_) {}
+        const deferred = new Error(
+          reconciliation?.status === "succeeded"
+            ? "图片上游已完成，但浏览器回包丢失；正在核对结果，禁止重复生成"
+            : "图片请求结果待确认，已保留操作凭证；禁止重复生成"
+        );
+        deferred.code = "PROVIDER_RESULT_UNKNOWN";
+        deferred.outcomeUnknown = true;
+        deferred.operationKey = ref;
+        deferred.reconciliation = reconciliation;
+        throw deferred;
+      }
+      throw error;
+    }
     const output = data.dataUrl || dataUrlFromImageResponse(data);
     if (!output) throw new Error("图片 API 没有返回图片数据");
     const referenceReceipt = normalizeImageReferenceReceipt(data, preparedRefs, intendedIds);

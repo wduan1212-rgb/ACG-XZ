@@ -37,6 +37,7 @@ from .providers import (
     seedance,
     tts,
 )
+from .sfx import sfx_library
 from .store import add_event, add_message, load_project, mutate_project
 from .usage_receipts import bind_project_usage, reset_project_usage
 
@@ -457,12 +458,75 @@ def _expand_static_timeline_by_semantic_beats(
     return expanded
 
 
+def _production_scope_token(plan: dict[str, Any] | None) -> str:
+    """Return the persisted production scope used by restart-safe scene files.
+
+    v141.5+ plans receive a fresh ``reference_scope_id`` for every accepted
+    production, even when several productions live in the same conversation.
+    Older plans deliberately keep their legacy unscoped filenames so an
+    interrupted historical delivery can still resume without renaming files.
+    """
+    if not isinstance(plan, dict):
+        return ""
+    return re.sub(
+        r"[^A-Za-z0-9_-]+",
+        "",
+        str(plan.get("reference_scope_id") or ""),
+    )[:64]
+
+
+def _scene_output_name(
+    plan: dict[str, Any] | None,
+    source_scene_number: int,
+    segment_number: int = 1,
+    segment_count: int = 1,
+) -> str:
+    scope = _production_scope_token(plan)
+    stem = "scene-"
+    if scope:
+        stem += f"{scope}-"
+    stem += f"{int(source_scene_number):02d}"
+    if int(segment_count) > 1:
+        stem += f"-part-{int(segment_number):02d}"
+    return stem + ".mp4"
+
+
+def _scene_output_paths(
+    plan: dict[str, Any] | None,
+    work_dir: Path,
+    source_scene_number: int,
+) -> list[Path]:
+    """List only the files owned by one logical scene in this production."""
+    scope = _production_scope_token(plan)
+    prefix = "scene-"
+    if scope:
+        prefix += f"{scope}-"
+    prefix += f"{int(source_scene_number):02d}"
+    direct = work_dir / f"{prefix}.mp4"
+    paths = [direct] if direct.is_file() else []
+    paths.extend(
+        path
+        for path in sorted(work_dir.glob(f"{prefix}-part-*.mp4"))
+        if path.is_file()
+    )
+    return paths
+
+
+def _scene_output_exists(
+    plan: dict[str, Any] | None,
+    work_dir: Path,
+    source_scene_number: int,
+) -> bool:
+    return bool(_scene_output_paths(plan, work_dir, source_scene_number))
+
+
 def _render_units(
     scenes: list[dict[str, Any]],
     timeline: list[dict[str, Any]],
     work_dir: Path,
     *,
     creation_mode: str = "video",
+    plan: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Turn technical time windows into independently generated visual beats.
 
@@ -511,10 +575,11 @@ def _render_units(
                 source_scene["static_semantic_frame"] = semantic_brief
             source_scene["image_prompt"] = image_prompt
             source_scene["visual_prompt"] = image_prompt
-            filename = (
-                f"scene-{source_number:02d}.mp4"
-                if segment_count == 1
-                else f"scene-{source_number:02d}-part-{segment_number:02d}.mp4"
+            filename = _scene_output_name(
+                plan,
+                source_number,
+                segment_number,
+                segment_count,
             )
             units.append({
                 "render_number": render_index,
@@ -597,10 +662,11 @@ def _render_units(
                 "需要强调或连续列举时可紧凑快切，需要理解信息、建立情绪或看清结果时主动停留；"
                 "不要等间隔切换，也不要为了显得快而制造没有新增价值的镜头。"
             )
-        filename = (
-            f"scene-{source_number:02d}.mp4"
-            if segment_count == 1
-            else f"scene-{source_number:02d}-part-{segment_number:02d}.mp4"
+        filename = _scene_output_name(
+            plan,
+            source_number,
+            segment_number,
+            segment_count,
         )
         units.append(
             {
@@ -611,6 +677,55 @@ def _render_units(
                 "scene": source_scene,
                 "target_duration": target_duration,
                 "target_path": work_dir / filename,
+            }
+        )
+    return units
+
+
+def _timeline_edit_render_units(
+    plan: dict[str, Any],
+    scenes: list[dict[str, Any]],
+    work_dir: Path,
+) -> list[dict[str, Any]]:
+    """Build a provider-free render list from an approved manual timeline."""
+    timeline_edit = plan.get("timeline_edit")
+    clips = (
+        list(timeline_edit.get("clips") or [])
+        if isinstance(timeline_edit, dict)
+        else []
+    )
+    units: list[dict[str, Any]] = []
+    for render_number, clip in enumerate(clips, start=1):
+        if not isinstance(clip, dict):
+            continue
+        source_scene_number = int(clip.get("source_scene_number") or 0)
+        if not 1 <= source_scene_number <= len(scenes):
+            raise RuntimeError("剪辑台时间线包含无效的导演镜头")
+        source_file = Path(str(clip.get("source_file") or "")).name
+        if not source_file:
+            raise RuntimeError("剪辑台时间线缺少原镜头文件")
+        target_path = work_dir / source_file
+        units.append(
+            {
+                "render_number": render_number,
+                "source_scene_number": source_scene_number,
+                "segment_number": int(clip.get("segment_number") or 1),
+                "segment_count": int(clip.get("segment_count") or 1),
+                "scene": dict(scenes[source_scene_number - 1]),
+                "target_duration": max(0.25, float(clip.get("duration") or 0.25)),
+                "target_path": target_path,
+                "trim_start": max(0.0, float(clip.get("trim_start") or 0.0)),
+                "replacement_asset_id": str(clip.get("replacement_asset_id") or ""),
+                "subtitle": str(
+                    clip.get("subtitle")
+                    if "subtitle" in clip
+                    else (
+                        scenes[source_scene_number - 1].get("narration_excerpt")
+                        or scenes[source_scene_number - 1].get("title")
+                        or ""
+                    )
+                ).strip(),
+                "transition": str(clip.get("transition") or "fade"),
             }
         )
     return units
@@ -1251,6 +1366,12 @@ class VideoPipeline:
     def _audio_assets(project_id: str, plan: dict[str, Any], key: str) -> list[dict[str, Any]]:
         resolved: list[dict[str, Any]] = []
         for item in list(plan.get(key) or []):
+            builtin_id = str(item.get("builtin_sfx_id") or "")
+            if builtin_id:
+                effect = sfx_library.resolve(builtin_id)
+                if effect is not None:
+                    resolved.append({**item, "path": str(effect.path)})
+                continue
             filename = Path(str(item.get("url") or "")).name
             path = settings.uploads_dir / project_id / filename
             if filename and path.is_file():
@@ -1462,7 +1583,11 @@ class VideoPipeline:
                     ),
                     20,
                 )
-            material_assets = [] if is_static else self._material_assets(project_id, plan)
+            material_assets = (
+                self._material_assets(project_id, plan)
+                if (not is_static or recompose_only)
+                else []
+            )
             sfx_assets = self._audio_assets(project_id, plan, "sfx_assets")
             scene_durations = _scene_timeline_weights(scenes)
             scene_timeline, _transition_duration = build_scene_timeline(
@@ -1474,12 +1599,24 @@ class VideoPipeline:
                     scenes,
                     scene_timeline,
                 )
-            render_units = _render_units(
-                scenes,
-                scene_timeline,
-                work_dir,
-                creation_mode="static" if is_static else "video",
+            render_units = (
+                _timeline_edit_render_units(plan, scenes, work_dir)
+                if recompose_only and isinstance(plan.get("timeline_edit"), dict)
+                else _render_units(
+                    scenes,
+                    scene_timeline,
+                    work_dir,
+                    creation_mode="static" if is_static else "video",
+                    plan=plan,
+                )
             )
+            if recompose_only and isinstance(plan.get("timeline_edit"), dict):
+                if not render_units:
+                    raise RuntimeError("剪辑台时间线不能为空")
+                scene_timeline, _transition_duration = build_scene_timeline(
+                    [float(unit["target_duration"]) for unit in render_units],
+                    narration_duration,
+                )
             (work_dir / "render-plan.json").write_text(
                 json.dumps(
                     {
@@ -1494,6 +1631,7 @@ class VideoPipeline:
                                 "segment_number": int(unit["segment_number"]),
                                 "segment_count": int(unit["segment_count"]),
                                 "target_duration": round(float(unit["target_duration"]), 3),
+                                "target_file": Path(unit["target_path"]).name,
                                 "visual_prompt": str(unit["scene"].get("visual_prompt") or ""),
                                 "image_prompt": str(unit["scene"].get("image_prompt") or ""),
                                 "visual_identity": str(unit["scene"].get("visual_identity") or ""),
@@ -1632,7 +1770,51 @@ class VideoPipeline:
                     job["reference_images"] = static_references
 
             if recompose_only:
+                current_project = await asyncio.to_thread(load_project, project_id) or {}
+                asset_by_id = {
+                    str(asset.get("id") or asset.get("asset_id") or asset.get("url") or asset.get("name") or ""): asset
+                    for asset in list(current_project.get("assets") or [])
+                    if isinstance(asset, dict)
+                }
+                edit_id = re.sub(
+                    r"[^A-Za-z0-9_-]+",
+                    "",
+                    str((plan.get("timeline_edit") or {}).get("id") or "edit"),
+                )[:40] or "edit"
                 for unit in render_units:
+                    replacement_id = str(unit.get("replacement_asset_id") or "")
+                    if replacement_id:
+                        asset = asset_by_id.get(replacement_id)
+                        if not isinstance(asset, dict):
+                            raise RuntimeError("剪辑台替换素材已不存在")
+                        filename = Path(str(asset.get("url") or "")).name
+                        asset_path = settings.uploads_dir / project_id / filename
+                        if not filename or not asset_path.is_file():
+                            raise RuntimeError("剪辑台替换素材文件已不存在")
+                        if str(asset.get("mime") or "").startswith("image/"):
+                            replacement_path = work_dir / (
+                                f"timeline-{edit_id}-{int(unit['render_number']):02d}.mp4"
+                            )
+                            await render_still_clip(
+                                asset_path,
+                                replacement_path,
+                                str(plan.get("aspect_ratio") or "16:9"),
+                                float(unit["target_duration"]),
+                            )
+                            unit["target_path"] = replacement_path
+                        elif str(asset.get("mime") or "").startswith("video/"):
+                            replacement_path = work_dir / (
+                                f"timeline-{edit_id}-{int(unit['render_number']):02d}"
+                                f"{asset_path.suffix.lower() or '.mp4'}"
+                            )
+                            await asyncio.to_thread(
+                                shutil.copy2,
+                                asset_path,
+                                replacement_path,
+                            )
+                            unit["target_path"] = replacement_path
+                        else:
+                            raise RuntimeError("剪辑台只能用图片或视频替换画面")
                     target_path = Path(unit["target_path"])
                     if target_path.is_file():
                         continue
@@ -1823,9 +2005,10 @@ class VideoPipeline:
                     {
                         "id": f"scene-{index:02d}",
                         "sourceSceneNumber": index,
-                        "directorSceneNumber": int(scene.get("sourceSceneNumber") or scene["sceneNumber"]),
-                        "segmentNumber": int(scene.get("segmentNumber") or 1),
+                        "directorSceneNumber": int(render_units[index - 1]["source_scene_number"]),
+                        "segmentNumber": int(render_units[index - 1].get("segment_number") or 1),
                         "source": str(render_scene_paths[index - 1]),
+                        "trimStart": round(float(render_units[index - 1].get("trim_start") or 0), 3),
                         "in_seconds": round(float(scene["start"]), 3),
                         "out_seconds": round(float(scene["end"]), 3),
                     }
@@ -1842,7 +2025,7 @@ class VideoPipeline:
                         "track_id": selected_bgm.id if selected_bgm else "",
                         "name": selected_bgm.name if selected_bgm else "",
                         "source": selected_bgm.source if selected_bgm else "",
-                        "volume": float(audio_design.get("bgm_volume") or 0.12),
+                        "volume": float(audio_design.get("bgm_volume", 0.12)),
                     },
                 },
                 "subtitles": {
@@ -1920,13 +2103,21 @@ class VideoPipeline:
                     material_assets=material_assets,
                     scene_durations=[float(unit["target_duration"]) for unit in render_units],
                     bgm_path=selected_bgm.path if selected_bgm else None,
-                    bgm_volume=float(audio_design.get("bgm_volume") or 0.12),
+                    bgm_volume=float(audio_design.get("bgm_volume", 0.12)),
+                    narration_volume=float(audio_design.get("narration_volume", 1.0)),
                     sfx_assets=sfx_assets,
                     subtitle_style=(
                         plan.get("subtitle_style")
                         if isinstance(plan.get("subtitle_style"), dict)
                         else None
                     ),
+                    subtitle_texts=(
+                        [str(unit.get("subtitle") or "") for unit in render_units]
+                        if isinstance(plan.get("timeline_edit"), dict)
+                        else None
+                    ),
+                    clip_trims=[float(unit.get("trim_start") or 0) for unit in render_units],
+                    clip_transitions=[str(unit.get("transition") or "fade") for unit in render_units],
                 )
                 if (variant.get("probe") or {}).get("syncRepaired"):
                     await self._event(
@@ -1985,6 +2176,12 @@ class VideoPipeline:
                 raise RuntimeError("成片质检未通过，请查看内部质检记录")
 
             delivery_id = uuid.uuid4().hex[:16]
+            composition_archive_name = f"delivery-{delivery_id}-composition.json"
+            composition_archive_path = work_dir / composition_archive_name
+            composition_archive_path.write_text(
+                json.dumps(composition, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
             outputs = []
             for output_index, variant in enumerate(variants, start=1):
                 source_path = Path(variant["path"])
@@ -2004,6 +2201,7 @@ class VideoPipeline:
                         "url": f"/outputs/{project_id}/{filename}",
                         "downloadUrl": f"/outputs/{project_id}/{filename}",
                         "retimeSourceUrl": f"/outputs/{project_id}/{retime_source_name}",
+                        "compositionFile": composition_archive_name,
                         "probe": variant["probe"],
                         "speed": float(variant.get("speed") or 1.0),
                         "sourceDuration": float(
@@ -2043,6 +2241,10 @@ class VideoPipeline:
                     json.dumps(composition, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
+            composition_archive_path.write_text(
+                json.dumps(composition, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
             def complete(project: dict[str, Any]) -> None:
                 project["status"] = "succeeded"

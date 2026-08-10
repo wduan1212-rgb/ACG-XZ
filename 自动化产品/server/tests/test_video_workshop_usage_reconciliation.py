@@ -229,6 +229,24 @@ class VideoWorkshopUsageReconciliationTest(unittest.TestCase):
         self.assertEqual(1, response["_usageReconciliation"]["pending"])
         self.assertEqual(0, response["_usageReconciliation"]["reconciled"])
 
+    def test_usage_gate_returns_machine_code_without_rewriting_evidence(self):
+        with patch.object(
+            store,
+            "video_workshop_usage_readiness",
+            return_value={"ok": False, "effectivePendingRows": 1},
+        ) as readiness:
+            with self.assertRaises(HTTPException) as raised:
+                main._require_video_workshop_usage_ready(
+                    self._member(self.owner), "workshop-usage-1"
+                )
+
+        self.assertEqual(409, raised.exception.status_code)
+        self.assertEqual(
+            "video_workshop_usage_pending",
+            raised.exception.detail["code"],
+        )
+        readiness.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

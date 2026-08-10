@@ -176,7 +176,10 @@ test("creator metrics modals expose per-content exposure, views, and interaction
   assert.match(overview, /item\.asset\?\.title \|\| item\.asset\?\.name/);
   assert.match(overview, /item\.sourceLabel/);
   assert.match(overview, /item\.exposure/);
-  assert.match(overview, /row\.rows\.filter\(contentMatchesPeriod\)/);
+  assert.match(overview, /row\.rows\.filter\(item => contentMatchesPeriod\(item\)/);
+  assert.match(overview, /data-view-number="minViews"/);
+  assert.match(overview, /data-view-number="maxViews"/);
+  assert.match(overview, /创作人/);
   assert.match(overview, /曝光量/);
   assert.match(overview, /播放量/);
   assert.match(overview, /overview-view-filterbar/);
@@ -214,7 +217,7 @@ test("home launch keeps binary attachments in a short-lived token registry", asy
   assert.match(customCreationJs, /stagedPayload\.attachments/);
 });
 
-test("personal workspace unlocks home plus the three basic creation tools in the requested order", async () => {
+test("personal workspace keeps voice inside video while team studio moves to the home action", async () => {
   const [mainJs, storePy, routerJs] = await Promise.all([
     read("js/main.js"),
     read("server/store.py"),
@@ -224,7 +227,7 @@ test("personal workspace unlocks home plus the three basic creation tools in the
   const personalEnd = mainJs.indexOf("];", personalStart);
   const personalOrder = mainJs.slice(personalStart, personalEnd);
   const orderedKeys = [
-    "home", "custom-video", "custom-canvas", "custom-voice", "assets",
+    "home", "custom-video", "custom-canvas", "assets",
     "studio", "agent", "delivery", "overview",
   ];
   let cursor = -1;
@@ -233,13 +236,17 @@ test("personal workspace unlocks home plus the three basic creation tools in the
     assert.ok(next > cursor, `${key} should follow the requested personal navigation order`);
     cursor = next;
   }
+  assert.doesNotMatch(personalOrder, /custom-voice/);
   assert.match(mainJs, /if \(currentTeam\(\)\) return items/);
   const sharedStart = mainJs.indexOf('item({ key: "home"');
   const sharedEnd = mainJs.indexOf("];", sharedStart);
   const sharedItems = mainJs.slice(sharedStart, sharedEnd);
   assert.ok(sharedItems.indexOf('key: "studio"') < sharedItems.indexOf('key: "assets"'), "team navigation order must stay unchanged");
+  assert.match(mainJs, /items\.filter\(entry => entry\.key !== "studio"\)/);
+  assert.match(await read("js/views/home.js"), /data-home-all-accounts[\s\S]*账号数据/);
   assert.match(storePy, /PERSONAL_FEATURES = \([\s\S]*"home", "video_workshop", "canvas", "voice", "assets", "profile", "team_join"[\s\S]*\)/);
-  assert.match(routerJs, /voice: "voice"/);
+  assert.match(routerJs, /if \(zone === "voice"\)[\s\S]*page = "video"/);
+  assert.match(routerJs, /if \(page === "voice"\) page = "video"/);
 });
 
 test("overall assets keeps the new hierarchy and gates personal source filters by plan", async () => {
@@ -390,7 +397,7 @@ test("all runtime modules share the v141 cache identity", async () => {
     read("index.html"),
     read("js/main.js"),
   ]);
-  assert.match(indexHtml, /20260810-v1413-runtime-finalization-1/);
-  assert.match(mainJs, /APP_BUILD_ID = "20260810-v1413-runtime-finalization-1"/);
+  assert.match(indexHtml, /20260810-v1420-generation-resilience-1/);
+  assert.match(mainJs, /APP_BUILD_ID = "20260810-v1420-generation-resilience-1"/);
   assert.doesNotMatch(indexHtml + mainJs, /20260729-v121-shell-22|20260729-v122-shell-1/);
 });

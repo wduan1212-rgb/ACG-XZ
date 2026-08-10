@@ -3,19 +3,19 @@
 
 import { state, save, saveIncremental, persistRecoveredDocuments, emit, on, notify, accountById, productionById, productById, primaryProductById, ownedBy, removeRemoteAsync, refreshRemoteCollections } from "../core/store.js";
 import { uid, runPool, debounce, delay, fileToDataUrl, singleImageGenerationPrompt } from "../core/util.js";
-import { AI } from "../api/ai.js?v=20260810-v1413-runtime-finalization-1";
+import { AI } from "../api/ai.js?v=20260810-v1420-generation-resilience-1";
 import { groupOf, isAccountDisabled } from "../domain/accounts.js";
-import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js?v=20260810-v1413-runtime-finalization-1";
-import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260810-v1413-runtime-finalization-1";
+import { createProduction, commitProductionCreations, setStage, setStatus, touch, autoAssemble, jobsOf, currentJobsOf, isMaterial, isVideoWorkshop, estimateAudio, buildMaterialUnits, shotsToText, enforceSupportedVideoMode } from "../domain/productions.js?v=20260810-v1420-generation-resilience-1";
+import { batchNeedsHydrationEvaluation, classifyHydratedVideoSettlement, productionCanAdvanceAfterExplicitUpload, productionCanAutoGenerate, recoverableVideoUrl } from "../domain/productionFailureState.js?v=20260810-v1420-generation-resilience-1";
 import { createRenderJobsFor, retryJob, createJob } from "../api/jobs.js";
-import { deliver } from "../domain/delivery.js?v=20260810-v1413-runtime-finalization-1";
+import { deliver } from "../domain/delivery.js?v=20260810-v1420-generation-resilience-1";
 import { addAssetFromDataUrl, assetBlob, globalBgmAssets, replaceAssetBlob, urlFor } from "../domain/assets.js";
 import { polishImageForPublish } from "../domain/imagePolish.js";
 import { activeProviderFor, defaultTtsVoiceId, imageApiConfigured, providerKeyFor, refreshProviderStatus, synthesizeTts, ttsApiConfigured } from "../api/providers.js";
 import { routeIntent, parseGoalFallback } from "./intent.js";
 import { DIGITAL_HUMAN_FIXED_PROMPT, planDigitalNarrationSegments } from "../domain/digitalHuman.js";
 import * as remote from "../core/remote.js";
-import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260810-v1413-runtime-finalization-1";
+import { catalogProductForText } from "../data/productCatalogSeed.js?v=20260810-v1420-generation-resilience-1";
 
 const DEFAULT_XHS_IMAGE_COUNT = 4;
 const IMAGE_NEGATIVE_PROMPT = "负面约束：不出现二维码，不出现过多小字。";
@@ -719,9 +719,17 @@ export async function deleteSession(id) {
   const target = state.sessions.find(x => x.id === id);
   if (!target || !ownedBy(target)) return;
   await removeRemoteAsync("sessions", id);
+  const now = Date.now();
+  state.batches.forEach(batch => {
+    if (batch?.sessionId !== id || !ownedBy(batch)) return;
+    batch.archivedSessionId = id;
+    batch.sessionDeletedAt = now;
+    batch.sessionId = "";
+    batch.updatedAt = Math.max(now, Number(batch.updatedAt || 0));
+  });
   state.sessions = state.sessions.filter(x => x.id !== id);
   if (state.ui.activeSessionId === id) state.ui.activeSessionId = mySessions()[0]?.id || null;
-  save("sessions", "meta");
+  save("sessions", "batches", "meta");
   emit("agent:session");
 }
 /* 启动清理：历史遗留的空会话只保留最新一个 */
@@ -746,7 +754,12 @@ export function restoreMissingBatchSessions({ persist = true } = {}) {
   const knownSessionIds = new Set(state.sessions.map(session => session.id));
   const recovered = [];
   [...state.batches]
-    .filter(batch => batch?.sessionId && !knownSessionIds.has(batch.sessionId))
+    .filter(batch => (
+      batch?.sessionId
+      && !batch.sessionDeletedAt
+      && !batch.archivedSessionId
+      && !knownSessionIds.has(batch.sessionId)
+    ))
     .filter(batch => !currentOwnerId || !batch.ownerId || batch.ownerId === currentOwnerId)
     .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0))
     .forEach(batch => {
@@ -934,6 +947,10 @@ export function classifyHydratedBatchRecovery(batch) {
         return;
       }
       const missing = items.filter(item => !item?.assetId);
+      if (missing.some(item => item?.status === "confirming")) {
+        recovery.waiting.push(p);
+        return;
+      }
       if (missing.length && missing.every(item => String(item?.prompt || "").trim())) {
         recovery.images.push(p);
       } else {
@@ -944,6 +961,14 @@ export function classifyHydratedBatchRecovery(batch) {
     if (["render", "workshop"].includes(p.stage)) recovery.waiting.push(p);
   });
   return recovery;
+}
+
+export function batchImageRetryAction(items = []) {
+  const rows = Array.isArray(items) ? items : [];
+  const missing = rows.filter(item => !item?.assetId);
+  if (missing.some(item => item?.status === "confirming")) return "confirm";
+  if (missing.some(item => String(item?.prompt || "").trim())) return "resume";
+  return "redraft";
 }
 
 export function hydratedBatchThinkingState(sessionId = state.ui.activeSessionId) {
@@ -1436,11 +1461,56 @@ export function buildStaticVideoCustomCopyShots(copy, product) {
    再等待单文档远端确认。 */
 async function persistBatchProductionCheckpoint(p) {
   touch(p);
-  const result = await persistRecoveredDocuments("productions", p);
-  if (remote.isOn() && Number(result?.result?.n || 0) < 1) {
-    throw new Error("服务器未确认当前任务检查点，请刷新后重试");
+  try {
+    const result = await persistRecoveredDocuments("productions", p);
+    if (remote.isOn() && Number(result?.result?.n || 0) < 1) {
+      throw new Error("服务器未确认当前任务检查点，请刷新后重试");
+    }
+    if (p.artifacts?.images?.checkpoint?.status === "pending") {
+      p.artifacts.images.checkpoint = {
+        status: "confirmed", confirmedAt: Date.now(), error: "",
+      };
+    }
+    return result;
+  } catch (error) {
+    const A = p.artifacts?.images || (p.artifacts.images = { items: [] });
+    A.checkpoint = {
+      status: "pending", pendingAt: Date.now(),
+      error: error?.message || String(error || "检查点写入失败"),
+    };
+    saveIncremental("productions", p);
+    const deferred = new Error("生成结果已在本地保留，服务器保存状态待确认");
+    deferred.code = "BATCH_CHECKPOINT_PENDING";
+    deferred.checkpointPending = true;
+    deferred.cause = error;
+    throw deferred;
   }
-  return result;
+}
+
+function stableBatchImageOperationKey(p, item, index) {
+  const existing = String(item?.operationKey || "").trim();
+  if (existing) return existing;
+  const key = `batch-image-${String(p?.id || "unknown")}-${Number(index) + 1}`;
+  item.operationKey = key;
+  return key;
+}
+
+function generationDeferred(error) {
+  return !!(error?.checkpointPending || error?.outcomeUnknown
+    || error?.code === "BATCH_CHECKPOINT_PENDING"
+    || error?.code === "PROVIDER_RESULT_UNKNOWN"
+    || (error?.retryable === true && error?.providerCalled === false));
+}
+
+function clearCompletedBatchImageErrors(p) {
+  (p.artifacts?.images?.items || []).forEach(item => {
+    if (!item?.assetId) return;
+    item.status = "done";
+    item.error = "";
+    item.confirmation = null;
+  });
+  if (p.artifacts?.images?.recovery) p.artifacts.images.recovery = null;
+  p.error = null;
 }
 
 async function generateBatchImagesInHouse(p, batch, acc) {
@@ -1485,10 +1555,16 @@ async function generateBatchImagesInHouse(p, batch, acc) {
     const refs = (hasItemRefOverride || isPlannedBatch)
       ? await imageRefsForSelection(intendedRefAssetIds, refGroups)
       : defaultRefs;
+    const operationKey = stableBatchImageOperationKey(p, it, i);
     it.status = "loading";
     it.error = "";
     it.referenceReceipt = null;
-    await persistBatchProductionCheckpoint(p);
+    try {
+      await persistBatchProductionCheckpoint(p);
+    } catch (error) {
+      it.status = "pending";
+      throw error;
+    }
     try {
       const req = await provider.submit({
         prompt: enrichBatchImagePrompt(it.prompt, refs, it.referenceInstruction),
@@ -1497,7 +1573,8 @@ async function generateBatchImagesInHouse(p, batch, acc) {
         ratio: "3:4",
         apiKey: key?.secret,
         endpoint: key?.provider,
-        model: key?.model || ""
+        model: key?.model || "",
+        idempotencyKey: operationKey,
       });
       const out = await provider.poll(req.providerRef);
       it.referenceReceipt = out.output?.referenceReceipt || req.referenceReceipt || null;
@@ -1511,10 +1588,25 @@ async function generateBatchImagesInHouse(p, batch, acc) {
       });
       it.assetId = a.id;
       it.status = "done";
+      it.error = "";
+      it.confirmation = null;
       await persistBatchProductionCheckpoint(p);
     } catch (err) {
-      it.status = "failed";
-      it.error = err?.message || String(err);
+      if (err?.checkpointPending) {
+        it.status = it.assetId ? "done" : "pending";
+      } else if (err?.outcomeUnknown || err?.code === "PROVIDER_RESULT_UNKNOWN") {
+        it.status = "confirming";
+        it.confirmation = {
+          operationKey,
+          status: err?.reconciliation?.status || "unknown",
+          checkedAt: Date.now(),
+        };
+      } else if (err?.retryable === true && err?.providerCalled === false) {
+        it.status = "pending";
+      } else {
+        it.status = "failed";
+      }
+      it.error = generationDeferred(err) ? "" : (err?.message || String(err));
       if (err?.referenceReceipt) it.referenceReceipt = err.referenceReceipt;
       await persistBatchProductionCheckpoint(p).catch(() => {});
       throw err;
@@ -1554,8 +1646,10 @@ export async function regenerateBatchImage(p, imageIndex) {
   item.status = "loading";
   item.error = "";
   item.referenceReceipt = null;
-  save("productions");
+  item.generationRevision = Math.max(0, Number(item.generationRevision || 0)) + 1;
+  item.operationKey = `batch-image-${String(p.id)}-${Number(imageIndex) + 1}-revision-${item.generationRevision}`;
   try {
+    await persistBatchProductionCheckpoint(p);
     const req = await provider.submit({
       prompt: enrichBatchImagePrompt(item.prompt, refs),
       refs,
@@ -1563,7 +1657,8 @@ export async function regenerateBatchImage(p, imageIndex) {
       ratio: "3:4",
       apiKey: key?.secret,
       endpoint: key?.provider,
-      model: key?.model || ""
+      model: key?.model || "",
+      idempotencyKey: item.operationKey,
     });
     const out = await provider.poll(req.providerRef);
     item.referenceReceipt = out.output?.referenceReceipt || req.referenceReceipt || null;
@@ -1580,12 +1675,19 @@ export async function regenerateBatchImage(p, imageIndex) {
       item.assetId = asset.id;
     }
     item.status = "done";
+    item.error = "";
+    item.confirmation = null;
     item.updatedAt = Date.now();
-    save("productions");
+    await persistBatchProductionCheckpoint(p);
     return item;
   } catch (err) {
-    item.status = "failed";
-    item.error = err?.message || String(err);
+    if (generationDeferred(err)) {
+      item.status = err?.outcomeUnknown ? "confirming" : (item.assetId ? "done" : "pending");
+      item.error = "";
+    } else {
+      item.status = "failed";
+      item.error = err?.message || String(err);
+    }
     if (err?.referenceReceipt) item.referenceReceipt = err.referenceReceipt;
     save("productions");
     throw err;
@@ -1603,6 +1705,7 @@ async function runBatchImagesToReview(p, batch) {
   try {
     setBatchPhase(batch, "generating");
     const generated = await generateBatchImagesInHouse(p, batch, acc);
+    clearCompletedBatchImageErrors(p);
     setStage(p, "review", "pending");
     // “全部图片已完成”与逐张结果一样属于刷新恢复的权威检查点。
     // 只依赖 setStage() 的延迟整集合 save，刷新或旧标签页竞争时仍可能
@@ -1610,6 +1713,18 @@ async function runBatchImagesToReview(p, batch) {
     await persistBatchProductionCheckpoint(p);
     return generated;
   } catch (e) {
+    if (generationDeferred(e)) {
+      p.stageStatus = "pending";
+      p.error = null;
+      p.artifacts.images.recovery = {
+        status: e?.outcomeUnknown ? "result-confirming" : "checkpoint-pending",
+        updatedAt: Date.now(),
+      };
+      touch(p);
+      saveIncremental("productions", p);
+      emit("production:update", p);
+      return false;
+    }
     setStatus(p, "failed", "站内图片生成失败：" + (e.message || e));
     await persistBatchProductionCheckpoint(p).catch(() => {});
     return false;
@@ -3219,8 +3334,22 @@ export function retryFailedIn(batch) {
       n++;
     }
     else if (p.mode === "图文" && (p.stage === "images" || p.artifacts?.images?.items?.length)) {
-      runBatchImagesToReview(p, batch);
-      n++;
+      const imageItems = Array.isArray(p.artifacts?.images?.items) ? p.artifacts.images.items : [];
+      const retryAction = batchImageRetryAction(imageItems);
+      if (retryAction === "confirm") {
+        p.stageStatus = "pending";
+        p.error = null;
+        touch(p);
+        save("productions");
+      } else if (retryAction === "resume") {
+        runBatchImagesToReview(p, batch);
+        n++;
+      } else {
+        setStage(p, "script", "running");
+        setStatus(p, "running");
+        draftOne(p, batch).then(() => evaluate(batch.id));
+        n++;
+      }
     }
     else if (jobStage) {
       const composeRecovery = classifyHydratedVideoSettlement(
@@ -3422,12 +3551,17 @@ export function resumeActiveBatches() {
     const settledImages = hydration.settle;
     if (settledImages.length) {
       runPool(settledImages, async p => {
+        clearCompletedBatchImageErrors(p);
         setStage(p, "review", "pending");
         try {
           await persistBatchProductionCheckpoint(p);
         } catch (error) {
-          setStatus(p, "failed", "图片已生成，但刷新恢复状态写入失败：" + (error?.message || error));
-          await persistBatchProductionCheckpoint(p).catch(() => {});
+          p.stageStatus = "pending";
+          p.error = null;
+          p.artifacts.images.recovery = {
+            status: "checkpoint-pending", updatedAt: Date.now(),
+          };
+          saveIncremental("productions", p);
         }
       }, 1).then(() => evaluate(b.id));
       resumed += settledImages.length;

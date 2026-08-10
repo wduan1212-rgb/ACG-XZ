@@ -278,6 +278,7 @@ def write_ass(
     aspect_ratio: str,
     speech_duration: float,
     subtitle_style: dict[str, Any] | None = None,
+    manual_cues: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     width, height = ASPECTS[aspect_ratio]
     if aspect_ratio == "9:16":
@@ -297,29 +298,37 @@ def write_ass(
     elif vertical_position == "lower":
         margin_v = max(36, margin_v - max(28, int(height * 0.06)))
     animation_mode = str(style.get("animation") or "dynamic")
-    chunks = _caption_chunks(text, max_chars)
-    weights = [max(2, len(item)) for item in chunks]
-    total_weight = sum(weights)
     usable_duration = max(0.5, _finite_number(speech_duration, 0.5))
-    minimum_cue = min(0.55, usable_duration / len(chunks))
-    flexible_duration = max(0.0, usable_duration - minimum_cue * len(chunks))
-    cue_durations = [minimum_cue + flexible_duration * weight / total_weight for weight in weights]
-    cues = []
-    cursor = 0.0
-    for index, (chunk, duration) in enumerate(zip(chunks, cue_durations)):
-        if index == len(chunks) - 1:
-            end = usable_duration
-        else:
-            end = min(usable_duration, cursor + duration)
-        if end <= cursor:
-            break
-        safe_text = "".join(
-            character
-            for character in chunk.replace("{", "").replace("}", "").replace("\\", "")
-            if not unicodedata.category(character).startswith("P")
-        )
-        cues.append({"start": cursor, "end": end, "text": safe_text})
-        cursor = end
+    cues: list[dict[str, Any]] = []
+    if manual_cues is not None:
+        for item in manual_cues:
+            start = max(0.0, min(usable_duration, _finite_number(item.get("start"), 0.0)))
+            end = max(start, min(usable_duration, _finite_number(item.get("end"), start)))
+            safe_text = str(item.get("text") or "").replace("{", "").replace("}", "").replace("\\", "").strip()
+            if safe_text and end > start:
+                cues.append({"start": start, "end": end, "text": safe_text})
+    else:
+        chunks = _caption_chunks(text, max_chars)
+        weights = [max(2, len(item)) for item in chunks]
+        total_weight = sum(weights)
+        minimum_cue = min(0.55, usable_duration / len(chunks))
+        flexible_duration = max(0.0, usable_duration - minimum_cue * len(chunks))
+        cue_durations = [minimum_cue + flexible_duration * weight / total_weight for weight in weights]
+        cursor = 0.0
+        for index, (chunk, duration) in enumerate(zip(chunks, cue_durations)):
+            if index == len(chunks) - 1:
+                end = usable_duration
+            else:
+                end = min(usable_duration, cursor + duration)
+            if end <= cursor:
+                break
+            safe_text = "".join(
+                character
+                for character in chunk.replace("{", "").replace("}", "").replace("\\", "")
+                if not unicodedata.category(character).startswith("P")
+            )
+            cues.append({"start": cursor, "end": end, "text": safe_text})
+            cursor = end
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -442,12 +451,15 @@ async def _normalize_clip(
     height: int,
     target_duration: float,
     source_duration: float | None = None,
+    source_start: float = 0.0,
 ) -> None:
     measured_duration = _finite_number(source_duration, 0.0)
     if measured_duration <= 0:
         measured_duration = float((await probe(source)).get("duration") or 0)
     if measured_duration <= 0:
         raise MediaError(f"镜头 {source.name} 没有可用时长")
+    safe_source_start = max(0.0, _finite_number(source_start, 0.0))
+    measured_duration = max(0.1, measured_duration - safe_source_start)
     required_duration = max(0.1, _finite_number(target_duration, 0.1))
     shortfall = required_duration - measured_duration
     filters = [
@@ -475,6 +487,8 @@ async def _normalize_clip(
         [
             _binary("ffmpeg"),
             "-y",
+            "-ss",
+            f"{safe_source_start:.6f}",
             "-i",
             str(source),
             "-vf",
@@ -573,6 +587,34 @@ def _material_timeline(
     )
     for index, asset in enumerate(assets):
         scene_number = max(1, min(scene_count, int(_finite_number(asset.get("scene_number"), 1))))
+        requested_duration = max(0.5, _finite_number(asset.get("duration_sec"), 3.6))
+        explicit_start = asset.get("start_sec")
+        if explicit_start is not None:
+            duration = min(requested_duration, total_duration)
+            start = max(
+                0.0,
+                min(total_duration - duration, _finite_number(explicit_start, 0.0)),
+            )
+            timeline.append(
+                {
+                    **asset,
+                    "index": index + 1,
+                    "sceneNumber": scene_number,
+                    "start": round(start, 3),
+                    "end": round(start + duration, 3),
+                    "duration": round(duration, 3),
+                    "presentation": str(asset.get("presentation") or "auto"),
+                    "position": str(asset.get("position") or "top-right"),
+                    "position_x": max(0.0, min(1.0, _finite_number(asset.get("position_x"), 1.0))),
+                    "position_y": max(0.0, min(1.0, _finite_number(asset.get("position_y"), 0.0))),
+                    "scale": max(0.1, min(0.65, _finite_number(asset.get("scale"), 0.36))),
+                    "positionExplicit": asset.get("position") is not None,
+                    "scaleExplicit": asset.get("scale") is not None,
+                    "entry_effect": str(asset.get("entry_effect") or "fade"),
+                    "exit_effect": str(asset.get("exit_effect") or "fade"),
+                }
+            )
+            continue
         scene_fragments = [
             item
             for item in scene_timeline
@@ -585,7 +627,6 @@ def _material_timeline(
         scene_end = min(total_duration, max(float(item["end"]) for item in scene_fragments))
         scene_window = max(0.25, scene_end - scene_start)
         padding = min(0.35, scene_window * 0.08)
-        requested_duration = max(0.5, _finite_number(asset.get("duration_sec"), 3.6))
         duration = min(requested_duration, max(0.25, scene_window - padding * 2))
         anchor = str(asset.get("narration_anchor") or "").strip()
         scene_excerpt = str(asset.get("scene_narration_excerpt") or "").strip()
@@ -616,9 +657,13 @@ def _material_timeline(
                 "duration": round(duration, 3),
                 "presentation": str(asset.get("presentation") or "auto"),
                 "position": str(asset.get("position") or "top-right"),
+                "position_x": max(0.0, min(1.0, _finite_number(asset.get("position_x"), 1.0))),
+                "position_y": max(0.0, min(1.0, _finite_number(asset.get("position_y"), 0.0))),
                 "scale": max(0.1, min(0.65, _finite_number(asset.get("scale"), 0.36))),
                 "positionExplicit": asset.get("position") is not None,
                 "scaleExplicit": asset.get("scale") is not None,
+                "entry_effect": str(asset.get("entry_effect") or "fade"),
+                "exit_effect": str(asset.get("exit_effect") or "fade"),
             }
         )
     return sorted(timeline, key=lambda item: item["start"])
@@ -945,13 +990,18 @@ async def _apply_material_cutaways(
                 if str(cue.get("mime") or "").startswith("image/")
                 else f"trim=start={max(0.0, _finite_number(cue.get('source_start_sec'), 0.0)):.3f}:duration={duration:.3f}"
             )
+            entry_effect = str(cue.get("entry_effect") or "fade")
+            exit_effect = str(cue.get("exit_effect") or "fade")
+            effect_filters = []
+            if entry_effect == "fade":
+                effect_filters.append(f"fade=t=in:st=0:d={fade_duration:.3f}:alpha=1")
+            if exit_effect == "fade":
+                effect_filters.append(f"fade=t=out:st={fade_out:.3f}:d={fade_duration:.3f}:alpha=1")
+            effects = ("," + ",".join(effect_filters)) if effect_filters else ""
             filters.append(
                 f"[{index}:v]{trim},setpts=PTS-STARTPTS,"
                 f"scale={target_width}:{target_height}:force_original_aspect_ratio=decrease,"
-                "format=rgba,"
-                f"fade=t=in:st=0:d={fade_duration:.3f}:alpha=1,"
-                f"fade=t=out:st={fade_out:.3f}:d={fade_duration:.3f}:alpha=1,"
-                f"setpts=PTS+{start:.3f}/TB[ov{index}]"
+                f"format=rgba{effects},setpts=PTS+{start:.3f}/TB[ov{index}]"
             )
             position = str(cue.get("position") or "top-right")
             coordinates = {
@@ -961,10 +1011,24 @@ async def _apply_material_cutaways(
                 "bottom-right": (f"W-w-{margin}", f"H-h-{margin}"),
                 "center": ("(W-w)/2", "(H-h)/2"),
             }
-            x, y = coordinates.get(position, coordinates["top-right"])
+            if position == "custom":
+                position_x = max(0.0, min(1.0, _finite_number(cue.get("position_x"), 1.0)))
+                position_y = max(0.0, min(1.0, _finite_number(cue.get("position_y"), 0.0)))
+                x, y = f"(W-w)*{position_x:.6f}", f"(H-h)*{position_y:.6f}"
+            else:
+                x, y = coordinates.get(position, coordinates["top-right"])
+            end = float(cue["end"])
+            if entry_effect == "slide-left":
+                x = f"if(lt(t,{start + fade_duration:.3f}),W-(W-({x}))*(t-{start:.3f})/{fade_duration:.3f},{x})"
+            elif entry_effect == "slide-up":
+                y = f"if(lt(t,{start + fade_duration:.3f}),H-(H-({y}))*(t-{start:.3f})/{fade_duration:.3f},{y})"
+            if exit_effect == "slide-left":
+                x = f"if(gt(t,{end - fade_duration:.3f}),({x})-(({x})+w)*(t-{end - fade_duration:.3f})/{fade_duration:.3f},{x})"
+            elif exit_effect == "slide-up":
+                y = f"if(gt(t,{end - fade_duration:.3f}),({y})-(({y})+h)*(t-{end - fade_duration:.3f})/{fade_duration:.3f},{y})"
             output_label = f"[vo{index}]"
             filters.append(
-                f"{base}[ov{index}]overlay=x={x}:y={y}:"
+                f"{base}[ov{index}]overlay=x='{x}':y='{y}':"
                 f"enable='between(t,{start:.3f},{float(cue['end']):.3f})':"
                 f"eof_action=pass:shortest=0:format=auto{output_label}"
             )
@@ -1009,7 +1073,11 @@ async def _apply_material_cutaways(
                 "duration",
                 "presentation",
                 "position",
+                "position_x",
+                "position_y",
                 "scale",
+                "entry_effect",
+                "exit_effect",
                 "narration_anchor",
                 "reason",
             )
@@ -1029,8 +1097,12 @@ async def compose_variant(
     scene_durations: list[float | int] | None = None,
     bgm_path: Path | None = None,
     bgm_volume: float = 0.12,
+    narration_volume: float = 1.0,
     sfx_assets: list[dict[str, Any]] | None = None,
     subtitle_style: dict[str, Any] | None = None,
+    subtitle_texts: list[str] | None = None,
+    clip_trims: list[float | int] | None = None,
+    clip_transitions: list[str] | None = None,
 ) -> dict[str, Any]:
     if not clip_paths:
         raise MediaError("没有可用于合成的 Seedance 视频")
@@ -1046,7 +1118,32 @@ async def compose_variant(
     planned = list(scene_durations or [1] * len(clip_paths))
     if len(planned) != len(clip_paths):
         raise MediaError("镜头数量与导演时间计划不一致")
+    trims = list(clip_trims or [0] * len(clip_paths))
+    if len(trims) != len(clip_paths):
+        raise MediaError("镜头数量与裁剪计划不一致")
+    transitions = list(clip_transitions or ["fade"] * len(clip_paths))
+    if len(transitions) != len(clip_paths):
+        raise MediaError("镜头数量与转场计划不一致")
+    allowed_transitions = {"fade", "dissolve", "slideleft", "wipeleft", "circleopen"}
+    transitions = [item if item in allowed_transitions else "fade" for item in transitions]
     scene_timeline, transition_duration = build_scene_timeline(planned, narration_duration)
+    manual_caption_cues = None
+    if subtitle_texts is not None:
+        if len(subtitle_texts) != len(clip_paths):
+            raise MediaError("镜头数量与手动字幕计划不一致")
+        manual_caption_cues = []
+        for source_index, subtitle_text in enumerate(subtitle_texts, start=1):
+            fragments = [
+                item for item in scene_timeline
+                if int(item.get("sourceSceneNumber") or item.get("sceneNumber") or 0) == source_index
+            ]
+            if not fragments:
+                continue
+            manual_caption_cues.append({
+                "start": min(float(item["start"]) for item in fragments),
+                "end": max(float(item["end"]) for item in fragments),
+                "text": str(subtitle_text or "").strip(),
+            })
     normalized = [work_dir / f"normalized-{slug}-{index + 1}.mp4" for index in range(len(clip_paths))]
     clip_infos = await asyncio.gather(*(probe(path) for path in clip_paths))
     normalization_targets = [
@@ -1066,12 +1163,14 @@ async def compose_variant(
                 height,
                 target_duration,
                 float(info.get("duration") or 0),
+                float(source_start or 0),
             )
-            for source, target, target_duration, info in zip(
+            for source, target, target_duration, info, source_start in zip(
                 clip_paths,
                 normalized,
                 normalization_targets,
                 clip_infos,
+                trims,
             )
         ]
     )
@@ -1100,8 +1199,16 @@ async def compose_variant(
             for index in range(1, len(physical_clips)):
                 output_label = f"[vx{index}]"
                 transition_offset = max(0.0, current_duration - transition_duration)
+                source_index = max(
+                    0,
+                    min(
+                        len(transitions) - 1,
+                        int(scene_timeline[index - 1].get("sourceSceneNumber") or index) - 1,
+                    ),
+                )
+                transition_name = transitions[source_index]
                 filters.append(
-                    f"{current_label}[{index}:v]xfade=transition=fade:"
+                    f"{current_label}[{index}:v]xfade=transition={transition_name}:"
                     f"duration={transition_duration:.6f}:offset={transition_offset:.6f}{output_label}"
                 )
                 current_label = output_label
@@ -1148,6 +1255,7 @@ async def compose_variant(
         aspect_ratio,
         audio_info["duration"],
         subtitle_style=subtitle_style,
+        manual_cues=manual_caption_cues,
     )
     sfx_cues = [
         item
@@ -1163,9 +1271,11 @@ async def compose_variant(
         "-i",
         str(narration_path),
     ]
+    safe_narration_volume = max(0.0, min(2.0, _finite_number(narration_volume, 1.0)))
     filters = [
         f"[0:v]ass={captions_path.name}[v]",
-        "[1:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,asetpts=PTS-STARTPTS[voicebase]",
+        f"[1:a]aresample=48000,loudnorm=I=-16:TP=-1.5:LRA=11,asetpts=PTS-STARTPTS,"
+        f"volume={safe_narration_volume:.4f}[voicebase]",
     ]
     audio_labels = ["[voice]"]
     input_index = 2
@@ -1173,7 +1283,7 @@ async def compose_variant(
     if resolved_bgm:
         filters.append("[voicebase]asplit=2[voice][sidechain]")
         command.extend(["-stream_loop", "-1", "-i", str(resolved_bgm)])
-        safe_bgm_volume = max(0.0, min(0.3, _finite_number(bgm_volume, 0.12)))
+        safe_bgm_volume = max(0.0, min(1.0, _finite_number(bgm_volume, 0.12)))
         filters.append(
             f"[{input_index}:a]aresample=48000,atrim=duration={narration_duration:.6f},"
             f"asetpts=PTS-STARTPTS,volume={safe_bgm_volume:.4f}[music]"
@@ -1255,6 +1365,7 @@ async def compose_variant(
             for cue in sfx_cues
         ],
         "bgm": str(resolved_bgm) if resolved_bgm else "",
+        "narrationVolume": safe_narration_volume,
         "sceneTimeline": [
             {
                 key: (

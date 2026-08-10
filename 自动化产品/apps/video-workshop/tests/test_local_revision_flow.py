@@ -25,9 +25,9 @@ def _project() -> dict:
             "aspect_ratio": "9:16",
             "narration": "第一句口播。第二句口播。",
             "scenes": [
-                {"title": "镜头一", "visual_prompt": "原镜头一", "duration_sec": 5},
-                {"title": "镜头二", "visual_prompt": "原镜头二", "duration_sec": 5},
-                {"title": "镜头三", "visual_prompt": "原镜头三", "duration_sec": 5},
+                {"title": "镜头一", "visual_prompt": "原镜头一", "narration_excerpt": "第一句口播。", "duration_sec": 5},
+                {"title": "镜头二", "visual_prompt": "原镜头二", "narration_excerpt": "第二句口播。", "duration_sec": 5},
+                {"title": "镜头三", "visual_prompt": "原镜头三", "narration_excerpt": "第三句口播。", "duration_sec": 5},
             ],
         },
     }
@@ -44,6 +44,95 @@ def _local_sources(root: str, project: dict) -> object:
 
 
 class LocalRevisionRecognitionTests(unittest.TestCase):
+    def test_video_editor_reads_delivery_composition_snapshot(self):
+        project = _project()
+        project["assets"] = [
+            {
+                "asset_id": "video-pip-asset",
+                "label": "外部视频",
+                "name": "pip.mp4",
+                "mime": "video/mp4",
+                "url": "/uploads/revision-project/pip.mp4",
+            },
+            {
+                "asset_id": "audio-bgm-asset",
+                "label": "外部配乐",
+                "name": "bgm.mp3",
+                "mime": "audio/mpeg",
+                "url": "/uploads/revision-project/bgm.mp3",
+            },
+        ]
+        project["outputs"] = [{
+            "id": "delivery-1",
+            "url": "/outputs/revision-project/delivery-1.mp4",
+            "compositionFile": "delivery-1-composition.json",
+        }]
+        project["plan"]["timeline_edit"] = {
+            "clips": [{
+                "replacement_asset_id": "asset-replacement",
+                "transition": "wipeleft",
+                "subtitle": "这段字幕已单独修改。",
+            }],
+            "sound_effects": [{
+                "id": "sfx-1",
+                "source_type": "catalog",
+                "source_id": "kenney-bell",
+                "label": "清脆提示",
+                "start": 1.2,
+                "duration": 1.48,
+                "volume": 0.64,
+            }],
+        }
+        project["plan"]["audio_design"] = {
+            "narration_volume": 0.8,
+            "bgm_volume": 0.22,
+        }
+        with tempfile.TemporaryDirectory() as root:
+            work_dir = Path(root) / project["id"]
+            work_dir.mkdir(parents=True, exist_ok=True)
+            scene = work_dir / "scene-production-a-01.mp4"
+            scene.write_bytes(b"video")
+            (work_dir / "delivery-1-composition.json").write_text(
+                json.dumps({
+                    "cuts": [{
+                        "source": str(scene),
+                        "directorSceneNumber": 1,
+                        "segmentNumber": 1,
+                        "in_seconds": 0,
+                        "out_seconds": 4.5,
+                    }]
+                }),
+                encoding="utf-8",
+            )
+            scoped_settings = replace(main.settings, outputs_dir=Path(root))
+            with patch.object(main, "settings", scoped_settings):
+                state = main._video_editor_state(project, "delivery-1")
+
+        self.assertEqual(state["clips"][0]["sourceFile"], scene.name)
+        self.assertEqual(state["clips"][0]["duration"], 4.5)
+        self.assertEqual(state["clips"][0]["title"], "镜头一")
+        self.assertEqual(state["clips"][0]["transition"], "wipeleft")
+        self.assertEqual(state["clips"][0]["replacementAssetId"], "asset-replacement")
+        self.assertEqual(state["clips"][0]["subtitle"], "这段字幕已单独修改。")
+        self.assertEqual(state["assets"][0]["id"], "video-pip-asset")
+        self.assertEqual(state["assets"][0]["mime"], "video/mp4")
+        self.assertEqual(state["audioAssets"][0]["id"], "audio-bgm-asset")
+        self.assertEqual(state["narrationVolume"], 0.8)
+        self.assertEqual(state["bgmVolume"], 0.22)
+        self.assertEqual(state["soundEffects"][0]["source_id"], "kenney-bell")
+        self.assertTrue(any(item["id"] == "kenney-bell" for item in state["soundEffectCatalog"]))
+
+    def test_bundled_sound_effect_catalog_resolves_only_shipped_cc0_files(self):
+        catalog = main.sfx_library.catalog()
+
+        self.assertGreaterEqual(len(catalog), 5)
+        self.assertTrue(all(item["license"] == "CC0 1.0" for item in catalog))
+        for item in catalog:
+            effect = main.sfx_library.resolve(item["id"])
+            self.assertIsNotNone(effect)
+            self.assertTrue(effect.path.is_file())
+            self.assertEqual(effect.path.suffix, ".ogg")
+
     def test_static_mode_defaults_to_landscape_but_keeps_explicit_user_ratio(self):
         self.assertEqual(main._infer_aspect_ratio("做一条静态视频", default="16:9"), "16:9")
         self.assertEqual(main._infer_aspect_ratio("改成竖屏静态视频", default="16:9"), "9:16")
@@ -57,6 +146,25 @@ class LocalRevisionRecognitionTests(unittest.TestCase):
         self.assertEqual(
             main._retry_info(project),
             {"type": "resume_plan", "sceneNumber": 1},
+        )
+
+    def test_retry_does_not_count_previous_production_scene_as_current(self):
+        project = _project()
+        project["status"] = "failed"
+        project["error"] = "服务重启"
+        project["plan"]["reference_scope_id"] = "current-campus-production"
+        with tempfile.TemporaryDirectory() as root:
+            work_dir = Path(root) / project["id"]
+            work_dir.mkdir(parents=True, exist_ok=True)
+            (work_dir / "narration.mp3").write_bytes(b"narration")
+            (work_dir / "scene-previous-exhibition-01.mp4").write_bytes(b"old")
+            scoped_settings = replace(main.settings, outputs_dir=Path(root))
+            with patch.object(main, "settings", scoped_settings):
+                retryable = main._retry_info(project)
+
+        self.assertEqual(
+            retryable,
+            {"type": "resume_missing", "sceneNumber": 1},
         )
 
     def test_scene_video_and_subtitle_requests_are_separated(self):
@@ -211,6 +319,101 @@ class LocalRevisionRecognitionTests(unittest.TestCase):
 
 
 class LocalRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_editor_revision_persists_separate_audio_volumes_and_builtin_sfx(self):
+        project = _project()
+        project["outputs"] = [{"id": "delivery-1", "bgm": None}]
+        editor_state = {
+            "clips": [{
+                "sourceFile": "scene-01.mp4",
+                "sourceSceneNumber": 1,
+            }],
+            "assets": [],
+            "audioAssets": [],
+            "bgmCatalog": [],
+            "soundEffectCatalog": main.sfx_library.catalog(),
+            "currentBgm": None,
+        }
+        request = main.TimelineRevisionRequest(
+            outputId="delivery-1",
+            clips=[main.TimelineClipEdit(
+                id="clip-1",
+                sourceFile="scene-01.mp4",
+                sourceSceneNumber=1,
+                duration=4.0,
+                subtitle="第一句口播。",
+            )],
+            soundEffects=[main.TimelineSoundEffectEdit(
+                id="sfx-1",
+                sourceType="catalog",
+                sourceId="kenney-bell",
+                label="清脆提示",
+                start=1.25,
+                duration=1.48,
+                volume=0.66,
+            )],
+            bgmSelection="none",
+            narrationVolume=0.82,
+            bgmVolume=0.2,
+        )
+
+        def mutate(_project_id, callback):
+            callback(project)
+            return project
+
+        with (
+            patch.object(main, "load_project", return_value=project),
+            patch.object(main, "_video_editor_state", return_value=editor_state),
+            patch.object(main, "mutate_project", side_effect=mutate),
+            patch.object(main, "add_event"),
+            patch.object(main, "add_message"),
+            patch.object(main, "_schedule", return_value=True),
+        ):
+            result = await main.project_timeline_revision(project["id"], request)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(project["plan"]["audio_design"]["narration_volume"], 0.82)
+        self.assertEqual(project["plan"]["audio_design"]["bgm_volume"], 0.2)
+        self.assertFalse(project["plan"]["audio_design"]["bgm_enabled"])
+        self.assertEqual(project["plan"]["timeline_edit"]["sound_effects"][0]["source_id"], "kenney-bell")
+        self.assertEqual(project["plan"]["sfx_assets"][0]["builtin_sfx_id"], "kenney-bell")
+        self.assertTrue(project["plan"]["sfx_assets"][0]["editor_origin"])
+
+    async def test_editor_asset_upload_persists_without_starting_director(self):
+        project = _project()
+        saved = {
+            "asset_id": "video-editor-upload",
+            "label": "视频1",
+            "name": "external-pip.mp4",
+            "mime": "video/mp4",
+            "url": "/uploads/revision-project/external-pip.mp4",
+        }
+
+        def mutate(_project_id, callback):
+            callback(project)
+            return project
+
+        request = main.ProjectAssetUploadRequest(
+            attachments=[main.Attachment(
+                label="external-pip.mp4",
+                name="external-pip.mp4",
+                mime="video/mp4",
+                dataUrl="data:video/mp4;base64,AA==",
+            )]
+        )
+        with (
+            patch.object(main, "load_project", return_value=project),
+            patch.object(main, "_decode_attachments", return_value=[(request.attachments[0], "video/mp4", b"video")]),
+            patch.object(main, "_save_attachments", return_value=[saved]),
+            patch.object(main, "_enrich_saved_attachments", AsyncMock(return_value=[saved])),
+            patch.object(main, "mutate_project", side_effect=mutate),
+            patch.object(main.director, "decide", AsyncMock()) as decide,
+        ):
+            result = await main.project_asset_upload(project["id"], request)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(project["assets"], [saved])
+        decide.assert_not_awaited()
+
     async def test_static_director_route_persists_mode_before_pipeline(self):
         project = _project()
         project["status"] = "running"

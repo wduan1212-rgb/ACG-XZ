@@ -12280,6 +12280,60 @@ def _model_usage_v2_unresolved_receipt_ids_locked(conn):
     ]
 
 
+def _model_usage_v2_scoped_submitted_project(entries):
+    """Return the one project covered by an all-indeterminate sidecar plan.
+
+    Mixed-source recovery keeps the original global exact-set contract.  The
+    narrower form exists only so one completed video project can close its own
+    abandoned ``submitted`` attempts without adjudicating unrelated central
+    provider failures from other screens or users.
+    """
+
+    projects = set()
+    for entry in entries or []:
+        if (
+            entry.get("source") != "video-workshop-sidecar"
+            or entry.get("resolution") != "sidecar-submitted-indeterminate"
+        ):
+            return ""
+        match = re.fullmatch(
+            r"video-workshop:([A-Za-z0-9_-]{1,80}):.+",
+            str(entry.get("operationId") or ""),
+        )
+        if not match:
+            return ""
+        projects.add(match.group(1))
+    return next(iter(projects)) if len(projects) == 1 else ""
+
+
+def _model_usage_v2_unresolved_receipt_ids_for_project_locked(conn, project_id):
+    prefix = f"video-workshop:{project_id}:"
+    return [
+        str(row[0]) for row in conn.execute(
+            "SELECT r.receipt_id FROM model_usage_receipts r "
+            "LEFT JOIN model_usage_outbox o ON o.receipt_id=r.receipt_id "
+            "WHERE r.source='video-workshop-sidecar' "
+            "AND substr(r.operation_id,1,?)=? AND ("
+            "r.call_status IN ('pending','unknown') OR "
+            "(r.call_status='succeeded' AND COALESCE(o.state,'')<>'projected')) "
+            "ORDER BY r.receipt_id",
+            (len(prefix), prefix),
+        ).fetchall()
+    ]
+
+
+def _model_usage_v2_outbox_pending_for_receipts_locked(conn, receipt_ids):
+    clean = sorted(set(str(value or "") for value in receipt_ids if str(value or "")))
+    if not clean:
+        return 0
+    placeholders = ",".join("?" for _ in clean)
+    return int(conn.execute(
+        "SELECT COUNT(*) FROM model_usage_outbox "
+        f"WHERE receipt_id IN ({placeholders}) AND state IN ('pending','retry')",
+        clean,
+    ).fetchone()[0] or 0)
+
+
 def _model_usage_central_unknown_error_allowed(error):
     text = str(error or "").strip().lower()
     if not text:
@@ -12402,6 +12456,7 @@ def settle_model_usage_receipts_reviewed_v2(
     }
     if set(sidecar_receipts or {}) != sidecar_operation_ids:
         raise StoreNotReadyError("model usage settlement v2 sidecar set mismatch")
+    scoped_submitted_project = _model_usage_v2_scoped_submitted_project(entries)
     plan_sha256 = str(plan_sha256 or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", plan_sha256):
         raise StoreNotReadyError("model usage settlement v2 plan sha256 is invalid")
@@ -12501,11 +12556,24 @@ def settle_model_usage_receipts_reviewed_v2(
                         raise StoreNotReadyError(
                             "model usage settlement v2 completed receipt drift"
                         )
-                if _model_usage_v2_unresolved_receipt_ids_locked(conn):
+                replay_unresolved = (
+                    _model_usage_v2_unresolved_receipt_ids_for_project_locked(
+                        conn, scoped_submitted_project,
+                    )
+                    if scoped_submitted_project
+                    else _model_usage_v2_unresolved_receipt_ids_locked(conn)
+                )
+                if replay_unresolved:
                     raise StoreNotReadyError("model usage settlement v2 replay readiness drift")
-                if conn.execute(
-                    "SELECT COUNT(*) FROM model_usage_outbox WHERE state IN ('pending','retry')"
-                ).fetchone()[0]:
+                replay_outbox_pending = (
+                    _model_usage_v2_outbox_pending_for_receipts_locked(conn, receipt_ids)
+                    if scoped_submitted_project
+                    else int(conn.execute(
+                        "SELECT COUNT(*) FROM model_usage_outbox "
+                        "WHERE state IN ('pending','retry')"
+                    ).fetchone()[0] or 0)
+                )
+                if replay_outbox_pending:
                     raise StoreNotReadyError("model usage settlement v2 outbox replay drift")
                 conn.rollback()
                 return {
@@ -12529,7 +12597,14 @@ def settle_model_usage_receipts_reviewed_v2(
                 raise StoreNotReadyError(
                     "model usage settlement v2 snapshot binding mismatch"
                 )
-            if _model_usage_v2_unresolved_receipt_ids_locked(conn) != receipt_ids:
+            unresolved_before = (
+                _model_usage_v2_unresolved_receipt_ids_for_project_locked(
+                    conn, scoped_submitted_project,
+                )
+                if scoped_submitted_project
+                else _model_usage_v2_unresolved_receipt_ids_locked(conn)
+            )
+            if unresolved_before != receipt_ids:
                 raise StoreNotReadyError(
                     "model usage settlement v2 plan does not exactly cover unresolved receipts"
                 )
@@ -12545,9 +12620,14 @@ def settle_model_usage_receipts_reviewed_v2(
                 )
                 prepared.append((entry, row, completion))
             if dry_run:
-                outbox_pending = int(conn.execute(
-                    "SELECT COUNT(*) FROM model_usage_outbox WHERE state IN ('pending','retry')"
-                ).fetchone()[0] or 0)
+                outbox_pending = (
+                    _model_usage_v2_outbox_pending_for_receipts_locked(conn, receipt_ids)
+                    if scoped_submitted_project
+                    else int(conn.execute(
+                        "SELECT COUNT(*) FROM model_usage_outbox "
+                        "WHERE state IN ('pending','retry')"
+                    ).fetchone()[0] or 0)
+                )
                 conn.rollback()
                 return {
                     "ok": True, "dryRun": True, "applied": False,
@@ -12602,10 +12682,21 @@ def settle_model_usage_receipts_reviewed_v2(
                 completed.append((
                     entry, _canonical_json_sha256(final), int(completion["project"]),
                 ))
-            unresolved = len(_model_usage_v2_unresolved_receipt_ids_locked(conn))
-            outbox_pending = int(conn.execute(
-                "SELECT COUNT(*) FROM model_usage_outbox WHERE state IN ('pending','retry')"
-            ).fetchone()[0] or 0)
+            unresolved = len(
+                _model_usage_v2_unresolved_receipt_ids_for_project_locked(
+                    conn, scoped_submitted_project,
+                )
+                if scoped_submitted_project
+                else _model_usage_v2_unresolved_receipt_ids_locked(conn)
+            )
+            outbox_pending = (
+                _model_usage_v2_outbox_pending_for_receipts_locked(conn, receipt_ids)
+                if scoped_submitted_project
+                else int(conn.execute(
+                    "SELECT COUNT(*) FROM model_usage_outbox "
+                    "WHERE state IN ('pending','retry')"
+                ).fetchone()[0] or 0)
+            )
             if unresolved or outbox_pending:
                 raise StoreNotReadyError("model usage settlement v2 final readiness failed")
             if str(conn.execute("PRAGMA quick_check").fetchone()[0]) != "ok":
@@ -14942,6 +15033,56 @@ def _stored_owner(row):
     return str(row[0] or row[1].get("ownerId") or "")
 
 
+def _resource_scope_owner_locked(conn, collection, resource_id):
+    """Return the immutable owner captured by the v140 tenant registry."""
+    row = _resource_scope_row_locked(conn, collection, resource_id)
+    return str(row[2] or "") if row else ""
+
+
+def _detach_batches_for_deleted_session_locked(conn, session_id, owner_id):
+    """Keep batch history while preventing a deleted conversation from reviving.
+
+    Older clients rebuild a missing session from ``batch.sessionId``.  Detaching
+    that reference in the same transaction as the session tombstone makes a
+    user deletion durable across refreshes and devices without deleting any
+    production, job, or batch business record.
+    """
+    sid = str(session_id or "")
+    owner = str(owner_id or "")
+    if not sid or not owner:
+        return 0
+    now = int(time.time() * 1000)
+    changed = 0
+    rows = conn.execute(
+        "SELECT id,owner_id,updated_at,data FROM docs WHERE collection='batches'"
+    ).fetchall()
+    for batch_id, stored_owner, updated_at, raw in rows:
+        try:
+            batch = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if str(batch.get("sessionId") or "") != sid:
+            continue
+        batch_owner = str(stored_owner or batch.get("ownerId") or "")
+        scope_owner = _resource_scope_owner_locked(conn, "batches", batch_id)
+        if owner not in {batch_owner, scope_owner}:
+            continue
+        batch["archivedSessionId"] = sid
+        batch["sessionDeletedAt"] = now
+        batch["sessionId"] = ""
+        batch["updatedAt"] = max(now, int(batch.get("updatedAt") or 0))
+        conn.execute(
+            "UPDATE docs SET updated_at=?,data=? WHERE collection='batches' AND id=?",
+            (
+                max(now, int(updated_at or 0)),
+                json.dumps(batch, ensure_ascii=False),
+                str(batch_id),
+            ),
+        )
+        changed += 1
+    return changed
+
+
 def _production_owned_by(conn, production_id, actor):
     if not production_id:
         return False
@@ -15731,6 +15872,16 @@ def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delive
                     ):
                         raise PermissionError("protected_asset_reference")
                     _clear_legacy_style_reference_locked(conn, doc_id)
+                if collection == "sessions":
+                    session_row = _doc_row_in_conn(conn, "sessions", doc_id)
+                    session_owner = (
+                        _resource_scope_owner_locked(conn, "sessions", doc_id)
+                        or str((session_row or (None, {}))[1].get("ownerId") or "")
+                        or _stored_owner(session_row)
+                    )
+                    _detach_batches_for_deleted_session_locked(
+                        conn, doc_id, session_owner,
+                    )
                 _delete_doc_in_conn(
                     conn,
                     collection,
@@ -15759,6 +15910,15 @@ def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delive
                     if collection == "assets"
                     else _stored_owner(row) == actor
                 )
+                if collection == "sessions" and not allowed:
+                    # A small set of pre-v140 sessions has a stale ownerId in
+                    # docs while the immutable resource registry correctly
+                    # records who created it.  Trust that exact creator record,
+                    # never mere same-team visibility.
+                    allowed = actor in {
+                        str(row[1].get("ownerId") or ""),
+                        _resource_scope_owner_locked(conn, collection, doc_id),
+                    }
                 if collection == "insightReports" and not allowed:
                     allowed = _report_writable_by(conn, doc_id, actor)
                 elif collection == "creativeMemory" and not allowed:
@@ -15798,6 +15958,10 @@ def delete_member_doc(collection, doc_id, member_id, role, protect_custom_delive
                         _delete_doc_in_conn(conn, "jobs", job_id)
             if collection == "assets":
                 _clear_legacy_style_reference_locked(conn, doc_id)
+            if collection == "sessions":
+                _detach_batches_for_deleted_session_locked(
+                    conn, doc_id, actor,
+                )
             _delete_doc_in_conn(
                 conn,
                 collection,

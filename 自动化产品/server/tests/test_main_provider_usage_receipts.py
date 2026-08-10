@@ -179,6 +179,63 @@ class MainProviderUsageReceiptTest(unittest.TestCase):
         self.assertNotIn('_record_llm_usage(_me, data, "通用文案"', source)
         self.assertNotIn('_record_model_api_usage(_me, "video"', source)
 
+    def test_image_queue_timeout_happens_before_receipt_and_provider_call(self):
+        events = []
+
+        class Ledger:
+            async def acquire(self):
+                events.append("receipt")
+                return {"receiptId": "must-not-open"}
+
+            async def mark_latest(self, *_args, **_kwargs):
+                events.append("mark")
+
+        client = FakeClient([FakeResponse(200, {"data": [{"url": "ok"}]})])
+
+        @asynccontextmanager
+        async def busy_queue():
+            raise main.HTTPException(
+                503,
+                detail={
+                    "code": "image_queue_busy",
+                    "providerCalled": False,
+                    "retryable": True,
+                },
+            )
+            yield
+
+        async def run():
+            with patch.object(main, "_image_submit_queue", new=busy_queue):
+                with self.assertRaises(main.HTTPException) as caught:
+                    await main._post_json_with_retry(
+                        client, "https://provider.test/images", {}, {},
+                        retries=0, attempt_ledger=Ledger(),
+                    )
+                return caught.exception
+
+        error = asyncio.run(run())
+        self.assertEqual(503, error.status_code)
+        self.assertEqual([], events)
+        self.assertEqual(1, len(client.responses))
+
+    def test_image_operation_reconciliation_is_read_only(self):
+        receipts = {
+            "image.generate:image-op:attempt:1": {
+                "status": "succeeded", "providerRef": "provider-1",
+                "calls": 1, "outputUnits": 1, "updatedAt": 123,
+            },
+        }
+
+        def find(_member_id, *, source, stable_credential):
+            self.assertEqual("main-provider", source)
+            return receipts.get(stable_credential)
+
+        with patch.object(main.store, "find_model_usage_receipt", new=find):
+            status = main.image_operation_status("image-op", {"id": "member-a"})
+        self.assertEqual("succeeded", status["status"])
+        self.assertTrue(status["providerCalled"])
+        self.assertEqual("provider-1", status["attempts"][0]["providerRef"])
+
 
 if __name__ == "__main__":
     unittest.main()

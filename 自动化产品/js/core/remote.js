@@ -12,6 +12,7 @@ let _authBlocked = false;
 const _collectionSyncHolds = new Map();
 const _heldCollectionSnapshots = new Map();
 const FETCH_TIMEOUT_MS = 9000;
+export const RECOVERY_SYNC_TIMEOUT_MS = 20000;
 const PERFORMANCE_KEY = "xingzhen.remote.performance.v1";
 const LOCAL_PUBLISH_TAGS_KEY = "xingzhen.publish-tags.v1";
 const PERFORMANCE_DETAIL_KEYS = new Set([
@@ -321,10 +322,15 @@ export function holdCollectionSync(collections = [...SYNCED]) {
   };
 }
 /* 关键提交使用显式同步：错误交给调用方展示，不能像普通后台写穿透一样静默吞掉。 */
-export function syncCollection(name, items) {
+export function syncCollection(name, items, { timeoutMs = RECOVERY_SYNC_TIMEOUT_MS, transientRetries = 0 } = {}) {
   if (!_on || !_token || _authBlocked) return Promise.reject(new Error("服务器登录已失效"));
   if (!SYNCED.has(name)) return Promise.reject(new Error("该数据集合不允许同步"));
-  return req("/api/db/" + name, { method: "PUT", body: { items: items || [] } });
+  return req("/api/db/" + name, {
+    method: "PUT",
+    body: { items: items || [] },
+    timeoutMs,
+    transientRetries,
+  });
 }
 
 export function accountPublishQuotas(accountIds = []) {
